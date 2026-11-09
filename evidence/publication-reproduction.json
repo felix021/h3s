@@ -1,0 +1,36 @@
+{
+  "checks": {
+    "noop": {
+      "sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+      "bytes": 1326848,
+      "integrity_passed": true
+    },
+    "tones": {
+      "sha256": "d1f7a067b169285d23457f8c182a8626bc75c01d679f2846a1f7c5e84b9b752d",
+      "bytes": 1326848,
+      "integrity_passed": true
+    },
+    "anc": {
+      "sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+      "bytes": 1326848,
+      "integrity_passed": true
+    },
+    "exact_app_delta": [
+      [
+        648208,
+        1,
+        2
+      ]
+    ],
+    "stale_boot_crc_rejected": {
+      "sha256": "5651bff3f91c3bd37262014d267c5a6c85fc4e81703a04bc2ce21d4b6fd5c906",
+      "errors": [
+        "dual-bank plaintext CRC invalid",
+        "dual-bank ciphertext CRC invalid"
+      ]
+    },
+    "wrong_source_rejected": true
+  },
+  "hardware_accessed": false,
+  "passed": true
+}

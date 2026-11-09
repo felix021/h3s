@@ -1,0 +1,36 @@
+{
+  "candidate_sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+  "app_sha256": "8f594d5908f6d4eac9b63e5e4538d3c0dbf0ed1a1e285547fcf2d9c6b0914517",
+  "app_diff": [
+    [
+      648208,
+      1,
+      2
+    ]
+  ],
+  "ufw_bytes_changed_vs_running_tone_candidate": 20,
+  "ufw_offsets_changed": [
+    0,
+    1,
+    2,
+    3,
+    68,
+    69,
+    9729,
+    9730,
+    9731,
+    9732,
+    9733,
+    9760,
+    9761,
+    9762,
+    9763,
+    9792,
+    9793,
+    9794,
+    9795,
+    658224
+  ],
+  "original_instruction_bytes_unchanged": true,
+  "all_non_app_outer_resources_identical": true
+}

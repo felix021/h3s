@@ -1,0 +1,78 @@
+{
+  "device": {
+    "getVersionCode": 280,
+    "getVersionName": "V_0.1.1.8",
+    "getPid": 16764,
+    "getVid": 7250,
+    "getUid": 7250,
+    "getUbootVersionName": "1.11.3.4",
+    "getSdkType": 10,
+    "getProjectCode": "jl_sdk_ac697_publish",
+    "getLowPowerLimit": 30,
+    "isSupportDoubleBackup": true,
+    "isNeedBootLoader": false,
+    "isMandatoryUpgrade": false,
+    "isSupportMD5": false
+  },
+  "raw_target_attribute_types": [
+    "0x00",
+    "0x01",
+    "0x02",
+    "0x04",
+    "0x05",
+    "0x06",
+    "0x07",
+    "0x08",
+    "0x09",
+    "0x0a",
+    "0x0b",
+    "0x0c",
+    "0x0d",
+    "0x11",
+    "0x12",
+    "0x13",
+    "0x15"
+  ],
+  "raw_version_code": 280,
+  "raw_pid": 16764,
+  "generic_quantity_attribute_present": true,
+  "generic_quantity_raw": 0,
+  "generic_low_power_limit_present": false,
+  "raw_double_backup": true,
+  "raw_need_bootloader": false,
+  "tx_opcode_counts": {
+    "0x03": 1,
+    "0xff": 20
+  },
+  "upgrade_or_reboot_frames_sent": false,
+  "observations": [
+    {
+      "event": "battery_response",
+      "data": "status=0 raw=2f03006400"
+    },
+    {
+      "event": "battery_slots",
+      "data": [
+        {
+          "slot": 0,
+          "percent": 0,
+          "charging": false
+        },
+        {
+          "slot": 1,
+          "percent": 100,
+          "charging": false
+        },
+        {
+          "slot": 2,
+          "percent": 0,
+          "charging": false
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "E2 eligibility with offset=0/len=0 sends no firmware bytes and does not validate downgrade or a particular file",
+    "Double-backup capability is not a tested recovery procedure"
+  ]
+}

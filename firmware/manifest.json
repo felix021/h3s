@@ -1,0 +1,32 @@
+{
+  "release_tag": "firmware",
+  "tested_on": "2026-11-09",
+  "model": "QCY H3S",
+  "model_id": 16764,
+  "container_chip": "AC701N",
+  "version": "0.1.1.8",
+  "version_code": 280,
+  "assets": {
+    "original": {
+      "filename": "QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw",
+      "bytes": 1326848,
+      "sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+      "kind": "unmodified official OTA image"
+    },
+    "current": {
+      "filename": "H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw",
+      "bytes": 1326848,
+      "sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+      "kind": "tested ANC key two-state image",
+      "key_cycle_user_confirmed": true,
+      "tone_parameter_offset_db": -10,
+      "acoustic_attenuation_verified": false,
+      "original_build_filename": "H3S_0.1.1.8_tones_minus10dB_anc_on_trans_UNTESTED.ufw"
+    }
+  },
+  "limitations": [
+    "One H3S tested; no general model compatibility claim",
+    "No independent flash readback or calibrated acoustic measurement",
+    "No original 0.1.1.9 image or tested recovery procedure"
+  ]
+}

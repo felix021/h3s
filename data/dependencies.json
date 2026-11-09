@@ -1,0 +1,38 @@
+{
+  "unpacker": {
+    "url": "https://github.com/kagaimiq/jl-misctools",
+    "commit": "0a5b12db0ef38f3042acffbe2452730a37fd2405",
+    "license": "MIT"
+  },
+  "jieli_android": {
+    "url": "https://github.com/Jieli-Tech/Android-JL_Bluetooth",
+    "commit": "6293873b641ffd8d461773873ecedef1a9d9038d",
+    "aar": "jl_bt_ota_V1.10.0_10932-release.aar",
+    "sha256": "7b0671e4f98b39537ed1a0701fcd0aecd16c17eebc43468fa58f17af0e84ee15"
+  },
+  "reference_sdk": {
+    "url": "https://gitlab.zh-jieli.com/ai_test/701n",
+    "commit": "67328f4741c69993c88e504c67377b196c724f97",
+    "not_exact_qcy_source": true
+  },
+  "reference_source_sha256": {
+    "volume_node.c": "87009fbd59538421c5a4b91a28ff19d50c2e82a2e49f931276d0753a70eadb04",
+    "volume_node.h": "57fd6b6c15de9b7c7b5c3f8147953b411c49adfce866bf4628995d2151534c9b"
+  },
+  "androidx_core": {
+    "version": "1.7.0",
+    "sha256": "aaf6734226fff923784f92f65d78a2984dbf17534138855c5ce2038f18656e0b"
+  },
+  "disassembler": {
+    "source": "https://pkgman.jieliapp.com/s/linux-toolchain",
+    "tested_archive_version": "20260730.1",
+    "llvm_version": "4.0.1",
+    "target": "pi32v2",
+    "cpu": "r3"
+  },
+  "ghidra_processor_reference": {
+    "url": "https://github.com/quarkslab/ghidra-jieli",
+    "commit": "e1bd0707874b77b759401555d24839ad43af1267",
+    "use": "check PC-relative semantics; no claim of full decompilation"
+  }
+}

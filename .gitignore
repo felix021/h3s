@@ -1,0 +1,23 @@
+# Generated artifacts and private investigation data
+.venv/
+__pycache__/
+*.pyc
+/analysis/
+/release-assets/
+/firmware/*.ufw
+/firmware/*.part
+/tools/android-query/build/
+/tools/android-query/vendor/*.aar
+/tools/reference-cache/
+/tools/toolchain-cache/
+/private/
+*.jsonl
+*.pcap
+*.pcapng
+*.cfa
+*.keystore
+*.jks
+*.apk
+*.dex
+.env
+.env.*

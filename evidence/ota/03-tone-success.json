@@ -1,0 +1,79 @@
+{
+  "log": "private session; raw logs intentionally not published",
+  "firmware_sha256": "d1f7a067b169285d23457f8c182a8626bc75c01d679f2846a1f7c5e84b9b752d",
+  "block_responses_verified": 1834,
+  "block_response_payload_bytes": 936627,
+  "unique_file_bytes_requested": 935539,
+  "requested_ranges": [
+    [
+      0,
+      1024
+    ],
+    [
+      1536,
+      2048
+    ],
+    [
+      9728,
+      939635
+    ],
+    [
+      1057056,
+      1061152
+    ]
+  ],
+  "eof_responses": 1,
+  "tx_opcode_counts": {
+    "0x03": 3,
+    "0xff": 2,
+    "0xe1": 3,
+    "0xe2": 3,
+    "0xe3": 1,
+    "0xe5": 1835,
+    "0xe8": 1,
+    "0xe6": 1,
+    "0xe7": 1
+  },
+  "states": [
+    "IDLE",
+    "PREPARING",
+    "PREPARED",
+    "RECHECKING",
+    "FLASHING",
+    "SUCCEEDED"
+  ],
+  "device_result_responses": [
+    {
+      "opcode": "0xe2",
+      "body": "00d500"
+    },
+    {
+      "opcode": "0xe2",
+      "body": "00d900"
+    },
+    {
+      "opcode": "0xe2",
+      "body": "00db00"
+    },
+    {
+      "opcode": "0xe3",
+      "body": "00dc00"
+    },
+    {
+      "opcode": "0xe6",
+      "body": "00dd00"
+    },
+    {
+      "opcode": "0xe7",
+      "body": "00de"
+    }
+  ],
+  "pending_block_requests": 0,
+  "incomplete_rx_bytes": 0,
+  "issues": [],
+  "limitations": [
+    "Matching sent bytes and SDK success do not independently prove flash contents or audible effect"
+  ],
+  "changed_ufw_bytes": 53,
+  "changed_ufw_bytes_not_requested": []
+}

@@ -1,0 +1,176 @@
+{
+  "file": "firmware/H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw",
+  "sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+  "bytes": 1326848,
+  "passed": true,
+  "errors": [],
+  "outer": [
+    {
+      "name": "flash.bin",
+      "crc_ok": true
+    },
+    {
+      "name": "info.log",
+      "crc_ok": true
+    },
+    {
+      "name": "uboot.version",
+      "crc_ok": true
+    },
+    {
+      "name": "TON",
+      "crc_ok": true
+    },
+    {
+      "name": "TON1",
+      "crc_ok": true
+    },
+    {
+      "name": "ANCIF",
+      "crc_ok": true
+    },
+    {
+      "name": "ANCIF1",
+      "crc_ok": true
+    },
+    {
+      "name": "isd_config.ini",
+      "crc_ok": true
+    },
+    {
+      "name": "v_ota.bin",
+      "crc_ok": true
+    },
+    {
+      "name": "ota.bin",
+      "crc_ok": true
+    },
+    {
+      "name": "farg.cfg",
+      "crc_ok": true
+    },
+    {
+      "name": "blimit.bin",
+      "crc_ok": true
+    },
+    {
+      "name": "tail.bin",
+      "crc_ok": true
+    }
+  ],
+  "dual_bank": {
+    "header": {
+      "expected": 1802,
+      "actual": 1802,
+      "ok": true
+    },
+    "plaintext": {
+      "expected": 62191,
+      "actual": 62191,
+      "ok": true
+    },
+    "ciphertext": {
+      "expected": 34233,
+      "actual": 34233,
+      "ok": true
+    }
+  },
+  "app_bytes": 929875,
+  "jlfs": [
+    {
+      "name": "app_area_head",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "app_area_head/app.bin",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "app_area_head/VM",
+      "header_crc_ok": true
+    },
+    {
+      "name": "app_area_head/PRCT",
+      "header_crc_ok": true
+    },
+    {
+      "name": "app_area_head/BTIF",
+      "header_crc_ok": true
+    },
+    {
+      "name": "app_area_head/ANCIF",
+      "header_crc_ok": true
+    },
+    {
+      "name": "app_area_head/ANCIF1",
+      "header_crc_ok": true
+    },
+    {
+      "name": "EXT_RESERVED",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "ALIGN_DIR",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "ALIGN_DIR/anc_ext.bin",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "3mic_coeff.bin",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "cfg_tool.bin",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "p11_code.bin",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "scene.bin",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "stream.bin",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    },
+    {
+      "name": "config.dat",
+      "header_crc_ok": true,
+      "data_crc_ok": true
+    }
+  ],
+  "volume_parameters": {
+    "Vol_SysTone": [
+      0,
+      16,
+      -55,
+      1,
+      -10,
+      6,
+      0
+    ],
+    "Vol_SysKTone": [
+      0,
+      16,
+      -70,
+      2,
+      -10,
+      6,
+      64
+    ]
+  }
+}

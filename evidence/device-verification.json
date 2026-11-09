@@ -1,0 +1,11 @@
+{
+  "user_feedback": "符合预期，达到效果了",
+  "feature": "Physical ANC mode key alternates ANC ON and transparency, excluding OFF",
+  "user_confirmed_success": true,
+  "device_final_e6_result": 0,
+  "all_sent_blocks_match": true,
+  "changed_byte_transmitted": true,
+  "version_expected": 280,
+  "version_change_used_as_proof": false,
+  "full_key_cycle_automatically_captured": false
+}
