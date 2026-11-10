@@ -6,7 +6,7 @@ from pathlib import Path
 import struct
 import unittest
 
-from br28_model import BR28Model, SFC_BASE, MMU_BASE
+from br28_model import BR28Model, SFC_BASE, MMU_BASE, EMU_CON
 from probe_boot import ENTRY, STACK_TOP, application, explore
 from probe_boot_handoff import RAM_CODE, SENTINEL_A, package_header, profile
 from probe_pi32v2 import ROOT, upstream
@@ -129,6 +129,69 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['last_registers']['r'][3],'0x2')
         self.assertEqual(result['last_instructions'][-1]['text'],'r3 = 2')
         self.assertEqual(result['last_instructions'][-1]['bytes'],new[:2].hex())
+
+    def guarded_hardware(self,flash_low,flash_high,enabled=True):
+        hardware=BR28Model(debug_execution_projection=True,initial_debug_controls=(0,None))
+        for i,(low,high) in enumerate(((flash_low,flash_high),(0x12a640,0x12ef14),(4,0x20000))):
+            hardware.write(0xffe218+8*i,high);hardware.write(0xffe21c+8*i,low)
+        if enabled:hardware.write(EMU_CON,0xe000001f)
+        return hardware
+
+    def test_cached_instruction_must_obey_newly_enabled_pc_guard(self):
+        regs=[0]*16;regs[1]=0xe000001f;regs[2]=EMU_CON
+        result=explore(self.module,self.app,name='cached_pc_guard',handoff=self.handoff(),
+            hardware=self.guarded_hardware(ENTRY+2,ENTRY+128,enabled=False),
+            diagnostics={'entry_pc':0x12e41e,'initial_sp':STACK_TOP,'initial_rets':ENTRY,
+                         'initial_gprs':regs,'exact_parallel_stores':True,'predecode_pcs':[ENTRY]},budget=4)
+        self.assertEqual(result['completed_steps'],2)
+        self.assertEqual(result['stop_pc'],hex(ENTRY))
+        self.assertEqual(result['stop']['kind'],'projected_pc_range_violation')
+
+    def test_data_read_is_not_an_executing_pc_range_check(self):
+        regs=[0]*16;regs[0]=ENTRY
+        result=explore(self.module,self.app,name='unguarded_data_read',handoff=self.handoff(),
+            hardware=self.guarded_hardware(ENTRY+8,ENTRY+128),
+            diagnostics={'entry_pc':0x12e414,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['last_registers']['r'][1],hex(self.app[0]))
+
+    def test_pc_guard_checks_entire_parallel_instruction_before_effects(self):
+        regs=[0]*16;regs[0]=0xffff;regs[5]=0xfd6000
+        pc=0x060689d2
+        result=explore(self.module,self.app,name='parallel_range_crossing',handoff=self.handoff(),
+            hardware=self.guarded_hardware(pc,pc+4),
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'projected_pc_range_violation')
+        self.assertEqual(result['stop']['size'],6)
+
+    def test_actual_task_frame_doubleword_store_preserves_unknown_gpr_slots(self):
+        h=self.handoff();base=0x124f00
+        h['snapshots'].append(('frame_head',base,24))
+        regs=[0]*16;regs[0]=0x06012028;regs[1]=0;regs[2]=base
+        result=explore(self.module,self.app,name='frame_doubleword',handoff=h,
+            diagnostics={'entry_pc':0x06065f9e,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_doubleword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['frame_head']['bytes_with_unknowns'],
+                         '2820010600000000'+'??'*16)
+
+    def test_second_p33_return_stays_opaque_through_call_and_configuration(self):
+        def run(budget,mutation=None):
+            h=self.handoff();sp=STACK_TOP-64
+            h['seeds'].append((sp,struct.pack('<6I',0,0,0,0,0,0x06035306)))
+            regs=[0]*16;regs[8]=0xf2c120;app=self.app
+            if mutation is not None:
+                app=bytearray(app);app[mutation-ENTRY:mutation-ENTRY+2]=bytes.fromhex('0416')
+            return explore(self.module,bytes(app),name='second_p33_return',handoff=h,
+                hardware=BR28Model(reset_history_projection=True),
+                diagnostics={'entry_pc':0x0606745e,'initial_sp':sp,'initial_gprs':regs,'opaque_pin_read':True},budget=budget)
+        for budget in (1,2,5):self.assertEqual(run(budget)['last_registers']['r'][0],'unknown')
+        self.assertEqual(run(7)['last_registers']['r'][0],'0x3fdf')
+        for pc,steps in ((0x06035306,2),(0x06068c88,5),(0x06068c8c,6)):
+            result=run(10,mutation=pc)
+            self.assertEqual(result['completed_steps'],steps)
+            self.assertIn('opaque pin0 return would be consumed',result['stop']['message'])
 
     def pwm_case(self,budget,caller=0x060006e2,consume=False):
         h=self.handoff();sp=STACK_TOP-64

@@ -24,6 +24,8 @@
 
 [离线仿真边界已收敛](docs/simulation-boundaries.md)：13组严格／假设／隔离用例覆盖ICFG、保留RAM、实际CRC和升级结果处理；连续假设路径停在ROM初始化前的控制写，隔离`setup_arch`停在IPMASK写。完整启动需要ROM所依赖的中断／控制寄存器模型，本轮未刷机。
 
+**2026-11-11：[连续启动到CPU1释放](docs/platform-startup.md)**，真实保护配置、MPU与app_core任务创建已运行，推进到127,239步。隔离钩子回放使用实际写出的范围，旧r2被拒绝、修复候选可进入载荷；双核、任务运行及整机EQ验证仍未完成，未再次刷机。
+
 ## 下载固件
 
 原始固件和当前版本均在 **[firmware Release](https://github.com/felix021/h3s/releases/tag/firmware)**，不放进 Git 历史。
@@ -140,6 +142,7 @@ bash tools/android-query/build.sh
 | [docs/hardware-contracts.md](docs/hardware-contracts.md) | P33／PLL／Timer0／IRQ／双核锁的来源、模型、13组场景和新的GPIO边界 |
 | [docs/gpio-irq.md](docs/gpio-irq.md) | 部分已知GPIO、死返回值证明、真实28B Timer ISR、11组场景与MMU边界 |
 | [docs/mmu-startup.md](docs/mmu-startup.md) | 页表／物理tag来源、真实初始化、并行存储适配和P11握手边界 |
+| [docs/platform-startup.md](docs/platform-startup.md) | 连续CPU0至CPU1释放、真实保护配置、未知任务栈、复位／唤醒与严格反例 |
 | [docs/clock-rtos-startup.md](docs/clock-rtos-startup.md) | 看门狗／OTP／时钟／SFC、实际OS分配、MMU修正、双核与首任务剩余缺口 |
 | [docs/p11-domain.md](docs/p11-domain.md) | P11寄存器、固件校验、q32s静态解码／ROM线索、外部状态条件探索 |
 | [docs/eq-fence-repair.md](docs/eq-fence-repair.md) | 单独离线EQ范围修复候选、精确字节绑定、CRC有效负向样本和完整启动限制 |

@@ -127,6 +127,10 @@
     "SDK/interface/driver/power/wdt.h": {
       "sha256": "f9da0e25d738e3a0b0a637f9525c3762abeb37990117e4279953e496fec334f6",
       "bytes": 529
+    },
+    "SDK/interface/driver/power/power_reset.h": {
+      "sha256": "8fdcf9ddd9189d06efca38aee26ca00794f855627fef105ad0b5826f5cc18d53",
+      "bytes": 2954
     }
   },
   "hardware_reference_objects": {
@@ -161,6 +165,18 @@
     "port.c.o": {
       "archive": "cpu.a",
       "sha256": "32f5e2a17352714329a35febe42eee55caafedc5b1cfb93ae7912459201a834c"
+    },
+    "reset.c.o": {
+      "archive": "cpu.a",
+      "sha256": "acf33e34c3b2bebdf35c6e98ad33fe8997c4913679526a82bfcd2d0fc2e4996f"
+    },
+    "power_reset.c.o": {
+      "archive": "cpu.a",
+      "sha256": "19f971c403397a8833f28a66216dc3d7ae9f57d6f97a4f9dece9d1c7d8bda47a"
+    },
+    "pmu_wakeup.c.o": {
+      "archive": "cpu.a",
+      "sha256": "9d2f0b238772bdec4a2c18bac60be2afffaa6b3d6d655f5ec94bb54c9ef2f410"
     }
   },
   "official_bootloader_reference": {
@@ -191,7 +207,9 @@
       "hw/fm1-2026-10-24-app2/README.md": "8c5fed89d2521c9d55055924f135b28be7fd7d0d2302f7c964207b5033bdede9",
       "hw/fm1-2026-10-24-app3/README.md": "f4bf9397c9c32b2b66588f81578ee3c1b40bd65f08dc2f81c0b94c9b648e1130",
       "hw/report5-k.md": "e56cc759f8936ca786cf94babb65f070be1777a5dc5080612cba74a3e974f1c5",
-      "hw/fm1-2026-10-24-v4/results.jsonl": "1ac72426cd6fd54fcebc55151527619cbc36c47472920f299e21ca78380a9dd0"
+      "hw/fm1-2026-10-24-v4/results.jsonl": "1ac72426cd6fd54fcebc55151527619cbc36c47472920f299e21ca78380a9dd0",
+      "hw/fm1-2026-10-24-app4/observations.json": "8868c98f21e1f61b5fbfcdfa7e2628c12710a9e0538b82190e60220b79d2996d",
+      "hw/fm1-2026-10-24-app4/attempts.json": "690583ccb759a649d346b38a1f599be71c24691ad7cd7974ded00cfcedf8ec8a"
     }
   },
   "memory_reference_objects": {

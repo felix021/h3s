@@ -25,7 +25,7 @@ SNAPSHOTS=(('first_allocated_pte',0x120600,2),('tail_allocated_pte',0x1227fe,2),
 
 
 def architecture_case(module,app,header,rom,name,*,options=None,diagnostic_options=None,
-                      regions=REGIONS,readonly=(),budget=250000):
+                      regions=REGIONS,readonly=(),budget=250000,registers=None,snapshots=()):
     parameters={'voltage_configuration_projection':True,'pll1_configuration_projection':True,
                 'cache_status_probe':True,'cache_status_words':dict.fromkeys(CACHE_STATUS_REGISTERS,0x80000000),
                 'sfc_read_bus':True,'initial_sfc_control':1,'core_tick_progress':(4,4),
@@ -36,8 +36,8 @@ def architecture_case(module,app,header,rom,name,*,options=None,diagnostic_optio
                               0x06035350,0x06035356,0x060660da], 'watch_registers':[0,1,4]}
     diagnostics.update(diagnostic_options or {})
     return startup(module,app,header,rom,name=name,options=parameters,
-        registers={**dict.fromkeys(VOLTAGE_CONFIG,0),PLL1_CON3:0},budget=budget,
-        diagnostic_options=diagnostics,extra_regions=regions,extra_readonly=readonly,extra_snapshots=SNAPSHOTS)
+        registers={**dict.fromkeys(VOLTAGE_CONFIG,0),PLL1_CON3:0,**(registers or {})},budget=budget,
+        diagnostic_options=diagnostics,extra_regions=regions,extra_readonly=readonly,extra_snapshots=SNAPSHOTS+tuple(snapshots))
 
 
 def candidate_view(path,expected,official):

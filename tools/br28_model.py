@@ -34,6 +34,118 @@ VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
 PLL1_CON3=0xfd470c
 CACHE_STATUS_REGISTERS=(0xff0500,0xffe400,0xffec00)
 SFC_BASE=0xfe0200
+SDTAP_CON=0xff0100
+PSRAM_CON0=0xfe0300
+IOMAP_CON0=0xfd6014
+USB_IO_CON0=0xfd6000
+USB_DISABLE_REGISTERS=(0xfd1800,0xfd1804)
+PORT_INPUT_REGISTERS=(SDTAP_CON,PSRAM_CON0)
+P11_PORT_DIGITAL=(0xf2b21c,0xf2b220)  # PB_DIE / PB_DIEH, initialized by p11_io_init
+DEBUG_BANK_STRIDE=0x800
+EMU_CON=0xffe200
+DEBUG_OFFSETS=(0x1c0,0x200,0x208,0x20c,0x210,0x214,0x218,0x21c,0x220,0x224,0x228,0x22c)
+
+
+class DebugExecutionProjection:
+    """Actual configuration shadows plus explicit half-open PC-range policy.
+
+    Not silicon endpoint/alignment certification, MPU or exception delivery.
+    Never manufacture status, inherit CPU0 state into CPU1, or check data reads.
+    """
+    def __init__(self,initial_controls=None):
+        if initial_controls is not None and (len(initial_controls)!=2 or any(v not in (None,0) for v in initial_controls)):
+            raise ValueError('need two unknown or explicitly disabled initial debug controls')
+        self.initial_controls=tuple(initial_controls or (None,None));self.registers={}
+        for core,value in enumerate(self.initial_controls):
+            if value is not None:self.registers[EMU_CON+core*DEBUG_BANK_STRIDE]=value
+        self.checks=0;self.violation=None
+
+    def handles(self,address):
+        return any(address==0xffe000+core*DEBUG_BANK_STRIDE+offset for core in (0,1) for offset in DEBUG_OFFSETS)
+
+    def require_live(self):
+        if self.violation is not None:raise Blocked('pc_guard_violation_requires_delivery')
+
+    def read(self,address):
+        self.require_live()
+        if address not in self.registers:raise Blocked('unknown_debug_configuration',address=hex(address))
+        return self.registers[address]
+
+    def write(self,address,value):
+        self.require_live()
+        offset=(address-0xffe000)%DEBUG_BANK_STRIDE
+        if offset==0x200 and value not in (0,0xe0000007,0xe000000f,0xe000001f):
+            raise Blocked('debug_control_mode_not_modeled',value=hex(value))
+        if offset==0x1c0 and value!=1:raise Blocked('etm_control_mode_not_modeled',value=hex(value))
+        self.registers[address]=value
+
+    def check_fetch(self,pc,size,core=0):
+        self.require_live()
+        if core not in (0,1) or size<1:raise ValueError('invalid execution guard request')
+        self.checks+=1;base=0xffe000+core*DEBUG_BANK_STRIDE
+        if base+0x200 not in self.registers:raise Blocked('unknown_initial_pc_guard',core=core)
+        if not self.registers[base+0x200]&16:return
+        if 0x400000<=pc<0x800000:raise Blocked('pc_guard_virtual_comparison_unverified',pc=hex(pc))
+        ranges=[]
+        for index in range(3):
+            high=base+0x218+8*index;low=high+4
+            if low not in self.registers or high not in self.registers:
+                raise Blocked('pc_guard_range_unknown',core=core,index=index)
+            begin,end=self.registers[low],self.registers[high]
+            if end<begin:raise Blocked('invalid_pc_guard_range',core=core,index=index)
+            ranges.append((begin,end))
+        if not any(begin<=pc and pc+size<=end for begin,end in ranges):
+            self.violation={'core':core,'pc':hex(pc),'size':size,
+                            'ranges':[[hex(a),hex(b)] for a,b in ranges]}
+            raise Blocked('projected_pc_range_violation',**self.violation)
+
+    def report(self):
+        return {'registers':{hex(a):hex(v) for a,v in sorted(self.registers.items())},
+                'initial_control_fixtures':self.initial_controls,'checked_executing_fetches':self.checks,
+                'violation':self.violation,'policy':'union of three half-open numeric PC ranges; full instruction extent',
+                'endpoint_alignment_readback_silicon_verified':False,'virtual_pc_comparison_modeled':False,
+                'stack_limit_or_mpu_enforced':False,'exception_status_entry_reset_delivery_modeled':False,
+                'other_emu_etm_effects_modeled':False,'cpu_banks_independent':True}
+
+
+class MPUConfigurationProjection:
+    """Scoped eight-slot configuration and explicit E7 write-gate projection.
+
+    Opposite polling helpers both write E7, supporting a toggle protocol.
+    Readback upper bits/ack latency and actual access enforcement are unverified.
+    """
+    WREN=0xff03fc
+
+    def __init__(self,initial_wren=None):
+        if initial_wren not in (None,0,1):raise ValueError('MPU gate must be unknown or explicit0/1')
+        self.initial_wren=initial_wren;self.wren=initial_wren;self.registers={};self.key_writes=0
+
+    def handles(self,address):
+        return address==self.WREN or any(base<=address<base+32 and address%4==0
+                                        for base in (0xff0300,0xff0340,0xff0380,0xff03c0))
+
+    def read(self,address):
+        if address==self.WREN:
+            if self.wren is None:raise Blocked('unknown_initial_mpu_write_gate')
+            return self.wren
+        if address not in self.registers:raise Blocked('unknown_mpu_slot_configuration',address=hex(address))
+        return self.registers[address]
+
+    def write(self,address,value):
+        if address==self.WREN:
+            if value!=0xe7:raise Blocked('mpu_write_gate_command_not_modeled',value=hex(value))
+            if self.wren is None:raise Blocked('unknown_initial_mpu_write_gate')
+            self.wren^=1;self.key_writes+=1
+        else:
+            if self.wren!=1:raise Blocked('mpu_configuration_requires_known_open_write_gate')
+            self.registers[address]=value
+
+    def report(self):
+        return {'registers':{hex(a):hex(v) for a,v in sorted(self.registers.items())},
+                'write_gate':self.wren,'initial_write_gate_fixture':self.initial_wren,'key_writes':self.key_writes,
+                'gate_projection':'E7 toggles bit0; upper readback bits0; synchronous acknowledgment',
+                'write_gate_latency_readback_silicon_verified':False,'cpu_dma_access_permissions_enforced':False,
+                'unknown_unwritten_slots_preserved':True}
 
 
 class SFCReadBus:
@@ -347,6 +459,77 @@ class PartialWord:
         return self.value
 
 
+RESET_FLAGS=(0xfd0004,0xf2a400,0xf2c0c0)
+RESET_REASON_INPUTS=(0xfd0000,0xf2a404,0xf2c048,0xf2a60c,
+                    0xf2c158,0xf2c15c,0xf2c194,0xf2c198,0xf2c2a0,0xf2d2a0,0xf2d24c)
+RESET_CONFIG_MASKS={0xf2a628:0xffffffef,0xf2c054:0x3fdf,0xf2c128:0xff00}
+WAKE_CLEAR_TARGETS={0xf2a608:(0xf2a60c,0xffffffff),0xf2c160:(0xf2c158,0xff),
+                    0xf2c164:(0xf2c15c,0xff)}
+RTC_WAKE_CLEAR=0xf2d248
+
+
+class ResetHistoryProjection:
+    """Explicit reset/wake history snapshots, not inferred reset defaults.
+
+    Flag-clear commands do not erase the reason snapshot read afterwards.
+    Their post-command readback is unknown. No mailbox, IRQ or wake generation.
+    """
+    def __init__(self,words=None):
+        self.initial_words=dict(words or {});self.words=dict(self.initial_words)
+        allowed=RESET_FLAGS+RESET_REASON_INPUTS
+        if any(a not in allowed or not isinstance(v,int) or not 0<=v<=0xffffffff for a,v in self.words.items()):
+            raise ValueError('invalid reset/wake snapshot fixture')
+        self.configuration={a:PartialWord() for a in RESET_CONFIG_MASKS}
+        self.flag_clear_commands=set();self.clear_commands=[]
+
+    def handles(self,address):
+        return (address in RESET_FLAGS+RESET_REASON_INPUTS or address in self.configuration or
+                address in WAKE_CLEAR_TARGETS or address==RTC_WAKE_CLEAR)
+
+    def read(self,address):
+        if address in self.configuration:
+            word=self.configuration[address]
+            if word.known!=0xffffffff:raise Blocked('unknown_reset_configuration_bits',address=hex(address),known_mask=hex(word.known))
+            return word.value
+        if address in WAKE_CLEAR_TARGETS or address==RTC_WAKE_CLEAR:
+            raise Blocked('wake_clear_register_readback_not_modeled',address=hex(address))
+        if address in self.flag_clear_commands:raise Blocked('reset_flag_post_clear_state_unknown',address=hex(address))
+        if address not in self.words:raise Blocked('unknown_reset_or_wake_history',address=hex(address))
+        return self.words[address]
+
+    def rmw(self,address,kind,operand):
+        if kind!='and' or operand&0xffffffff!=RESET_CONFIG_MASKS[address]:
+            raise Blocked('reset_configuration_operation_not_modeled',address=hex(address))
+        self.configuration[address].apply(kind,operand)
+
+    def write(self,address,value):
+        if address in RESET_FLAGS:
+            old=self.read(address)
+            expected=(old&0x7fbf)|64 if address==0xf2c0c0 else old|64
+            if value!=expected:raise Blocked('reset_flag_command_not_modeled',address=hex(address),value=hex(value))
+            self.flag_clear_commands.add(address)
+        elif address==RTC_WAKE_CLEAR:
+            if value:raise Blocked('rtc_wake_clear_nonzero_mapping_unverified',value=hex(value))
+            self.clear_commands.append({'address':hex(address),'value':hex(value)})
+        elif address in WAKE_CLEAR_TARGETS:
+            target,mask=WAKE_CLEAR_TARGETS[address]
+            if value&~mask:raise Blocked('wake_clear_mask_not_modeled',address=hex(address),value=hex(value))
+            if value:
+                if target not in self.words:raise Blocked('unknown_wake_pending_before_clear',address=hex(target))
+                self.words[target]&=~value&0xffffffff
+            self.clear_commands.append({'address':hex(address),'value':hex(value)})
+        else:raise Blocked('reset_history_snapshot_or_config_write_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'initial_full_word_fixtures':{hex(a):hex(v) for a,v in self.initial_words.items()},
+                'physical_history_measured':False,'flags_cleared':[hex(a) for a in sorted(self.flag_clear_commands)],
+                'flag_post_clear_readback_modeled':False,
+                'configuration':{hex(a):{'known_mask':hex(w.known),'known_value':hex(w.value)} for a,w in self.configuration.items()},
+                'pending_clear_commands':self.clear_commands,
+                'wake_mailbox_irq_generation_or_latency_simulated':False,
+                'reason_snapshots_preserved_after_flag_clear':True}
+
+
 class Timer0:
     def __init__(self,allowed_sources=(4,)):
         self.allowed_sources=tuple(allowed_sources)
@@ -420,7 +603,11 @@ class BR28Model:
                  cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
-                 core_tick_progress=None,core_tick_count_while_held=None):
+                 core_tick_progress=None,core_tick_count_while_held=None,
+                 port_initialization_projection=False,port_input_words=None,initial_usb_io_word=None,
+                 debug_execution_projection=False,initial_debug_controls=None,
+                 reset_history_projection=False,reset_history_words=None,
+                 mpu_configuration_projection=False,initial_mpu_write_gate=None):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
         if timer_lsb_ticks_per_step is not None and (not isinstance(timer_lsb_ticks_per_step,int) or not 0<=timer_lsb_ticks_per_step<=256):
             raise ValueError('invalid explicit LSB virtual tick rate')
@@ -464,11 +651,26 @@ class BR28Model:
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
                for address,value in self.cache_status_words.items()):raise ValueError('invalid explicit cache status fixture')
         self.sfc=SFCReadBus(initial_sfc_control) if sfc_read_bus else None
+        self.debug=DebugExecutionProjection(initial_debug_controls) if debug_execution_projection else None
+        self.reset=ResetHistoryProjection(reset_history_words) if reset_history_projection else None
+        self.mpu=MPUConfigurationProjection(initial_mpu_write_gate) if mpu_configuration_projection else None
+        self.port_initialization_projection=port_initialization_projection
+        self.port_input_words=dict(port_input_words or {})
+        if any(a not in PORT_INPUT_REGISTERS or not isinstance(v,int) or not 0<=v<=0xffffffff
+               for a,v in self.port_input_words.items()):raise ValueError('invalid port input fixture')
+        if self.port_input_words and not port_initialization_projection:raise ValueError('port fixtures require explicit projection')
+        self.usb_disable_writes=[]
+        if initial_usb_io_word is not None:
+            if not port_initialization_projection or not gpio_model:raise ValueError('USB IO fixture requires explicit port/GPIO projections')
+            if not isinstance(initial_usb_io_word,int) or not 0<=initial_usb_io_word<=0xffffffff:raise ValueError('invalid USB IO fixture')
+            self.gpio[USB_IO_CON0]=PartialWord(initial_usb_io_word,0xffffffff)
+        self.initial_usb_io_word=initial_usb_io_word
         self.additional_configuration=set()
         for enabled,addresses in ((oscillator_configuration_projection,OSC_CONFIG),
                                   (clock_divider_projection,(SYS_DIV,)),
                                   (voltage_configuration_projection,VOLTAGE_CONFIG),
-                                  (pll1_configuration_projection,(PLL1_CON3,))):
+                                  (pll1_configuration_projection,(PLL1_CON3,)),
+                                  (port_initialization_projection,(IOMAP_CON0,)+P11_PORT_DIGITAL)):
             if enabled:self.additional_configuration.update(addresses)
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
@@ -479,9 +681,13 @@ class BR28Model:
 
     def handles(self,address,size):
         return size==4 and address%4==0 and (self.handles_gpio(address) or
+            (self.debug is not None and self.debug.handles(address)) or
+            (self.reset is not None and self.reset.handles(address)) or
+            (self.mpu is not None and self.mpu.handles(address)) or
             (self.cache_status_probe and address in CACHE_STATUS_REGISTERS) or
             (self.sfc is not None and address in (SFC_BASE,SFC_BASE+4)) or
             address in self.additional_configuration or
+            (self.port_initialization_projection and address in PORT_INPUT_REGISTERS+USB_DISABLE_REGISTERS) or
             (self.cpu1_held_projection and address==CPU1_CONTROL) or
             self.handles_core_tick(address) or
             self.handles_gpcnt(address) or
@@ -494,7 +700,8 @@ class BR28Model:
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
 
     def handles_gpio(self,address):
-        return self.gpio_model and address%4==0 and any(base<=address<=base+32 for base in GPIO_BASES)
+        return self.gpio_model and address%4==0 and (any(base<=address<=base+32 for base in GPIO_BASES) or
+            (self.port_initialization_projection and address==USB_IO_CON0))
 
     def handles_core_tick(self,address):
         return self.core_ticks is not None and any(base<=address<=base+8 for base in CORE_TICK_BASES)
@@ -534,6 +741,14 @@ class BR28Model:
 
     def read(self,address):
         self.counts['reads']+=1
+        if self.debug is not None and self.debug.handles(address):return self.debug.read(address)
+        if self.reset is not None and self.reset.handles(address):return self.reset.read(address)
+        if self.mpu is not None and self.mpu.handles(address):return self.mpu.read(address)
+        if self.port_initialization_projection and address in PORT_INPUT_REGISTERS:
+            if address not in self.port_input_words:raise Blocked('unknown_port_input',address=hex(address))
+            return self.port_input_words[address]
+        if self.port_initialization_projection and address in USB_DISABLE_REGISTERS:
+            raise Blocked('usb_controller_status_not_modeled',address=hex(address))
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:
             if address not in self.cache_status_words:raise Blocked('unknown_cache_status_input',address=hex(address))
             return self.cache_status_words[address]
@@ -564,6 +779,22 @@ class BR28Model:
     def write(self,address,value):
         if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('MMIO value must be unsigned32')
         if not self.handles(address,4):raise Blocked('unsupported_peripheral_write',address=hex(address))
+        if self.debug is not None and self.debug.handles(address):
+            self.debug.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
+            return
+        if self.reset is not None and self.reset.handles(address):
+            self.reset.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
+            return
+        if self.mpu is not None and self.mpu.handles(address):
+            self.mpu.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
+            return
+        if self.port_initialization_projection and address in PORT_INPUT_REGISTERS:
+            raise Blocked('port_input_snapshot_write_not_modeled',address=hex(address))
+        if self.port_initialization_projection and address in USB_DISABLE_REGISTERS:
+            if value!=0:raise Blocked('usb_controller_enable_or_configuration_not_modeled',address=hex(address),value=hex(value))
+            self.usb_disable_writes.append(address)
+            self.record_write({'address':hex(address),'value':hex(value),'projection':'port initialization disable only'})
+            return
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:raise Blocked('cache_control_write_not_modeled',address=hex(address))
         if self.handles_gpcnt(address):raise Blocked('gpcnt_full_control_store_not_modeled')
         if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
@@ -676,6 +907,17 @@ class BR28Model:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}
             result['assumptions']['cache_contents_and_coherence_simulated']=False
         if self.sfc is not None:result['sfc_read_bus']=self.sfc.report()
+        if self.debug is not None:result['debug_execution_projection']=self.debug.report()
+        if self.reset is not None:result['reset_history_projection']=self.reset.report()
+        if self.mpu is not None:result['mpu_configuration_projection']=self.mpu.report()
+        if self.port_initialization_projection:
+            result['port_initialization_projection']={
+                'input_words_fixture':{hex(a):hex(v) for a,v in self.port_input_words.items()},
+                'physical_initial_values_measured':False,
+                'initial_usb_io_word_fixture':self.initial_usb_io_word,
+                'usb_disable_writes':[hex(a) for a in self.usb_disable_writes],
+                'usb_controller_status_transfer_or_pin_electrical_model':False,
+                'iomap_configuration_only':True,'usb_io_unknown_bits_preserved':True}
         if self.counts.get('opaque_pwm_configuration_reads',0):
             result['assumptions']['pwm_configuration_reads']='R0 remains unknown through guarded loop/return until actual overwrite; no value fabricated'
         if self.oscillator_configuration_projection:

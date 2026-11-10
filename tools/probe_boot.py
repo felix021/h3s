@@ -148,6 +148,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 require(diagnostics and diagnostics.get('opaque_pwm_read') and
                         allowed.get(self.pc)==(insn.id,raw),'opaque PWM value would be consumed')
                 if self.pc==0x060006e4:require(self.R[5]<self.R[6],'opaque PWM return lacks proven next callback')
+            elif self.opaque_source=='p33_pin0_return':
+                allowed={0x06067462:('pop.pc_rl',{'l':8}),
+                         0x06035306:('call.xl',{'n':105658}),
+                         0x06068c80:('push.rets_rl',{'l':7}),
+                         0x06068c82:('li.u32',{'r':2,'n':15902216}),
+                         0x06068c88:('rmw.and.nmodimm',{'r':2,'n':8,'m':16}),
+                         0x06068c8c:('li.s16',{'r':0,'n':16351})}
+                require(diagnostics and diagnostics.get('opaque_pin_read') and
+                        allowed.get(self.pc)==(insn.id,raw),'opaque pin0 return would be consumed')
             else:
                 require(diagnostics and diagnostics.get('opaque_pin_read') and
                         ((self.pc==0x06067462 and insn.id=='pop.pc_rl' and raw=={'l':8}) or
@@ -218,6 +227,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     milestone['registers']={f'r{i}':hex(self.R[i]) if self.R[i] is not None else 'unknown'
                                              for i in diagnostics['watch_registers']}
                 milestones.append(milestone)
+            if diagnostics and before_pc in diagnostics.get('watch_ram_after_pc',{}):
+                spans=diagnostics['watch_ram_after_pc'][before_pc]
+                require(len(spans)<=4,'too many watched RAM spans')
+                for label,address,length in spans:
+                    require(1<=length<=32 and self.mem.region(address,length),'watched span must be bounded physical harness RAM')
+                    values=[self.mem.ram.get(address+i) for i in range(length)]
+                    milestones.append({'kind':'watched_ram_after_pc','pc':hex(before_pc),'label':label,
+                        'address':hex(address),'size':length,'initialized_bytes':sum(v is not None for v in values),
+                        'bytes_with_unknowns':''.join('??' if v is None else f'{v:02x}' for v in values)})
             if helper_return:
                 self.repeat=None
                 adapters['irq_repeat_return_hypothesis']+=1
@@ -235,6 +253,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
             self.check_opaque(insn,raw)
+            if diagnostics and diagnostics.get('exact_doubleword_stores') and insn.id=='st.d.l':
+                op=module.check.operands(insn,raw);address=(self.R[op['r']]+op['n'])&0xffffffff
+                require(address%4==0 and op['s']%2==0 and 0<=op['s']<=14,
+                        'unsupported unaligned or odd-register doubleword store')
+                self.mem.write(address,struct.pack('<II',self.R[op['s']]&0xffffffff,self.R[op['s']+1]&0xffffffff))
+                self.finish_exact(self.pc+size);adapters['exact_doubleword_store']+=1
+                return
             if diagnostics and diagnostics.get('immediate_rep_projection') and insn.id=='rep.i':
                 op=module.check.operands(insn,raw)
                 body,fields,body_size=self.decode(self.pc+size)
@@ -300,12 +325,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if hardware is not None and diagnostics and diagnostics.get('opaque_pin_read') and self.pc==0x0606745e:
                 require(insn.id=='ld.w.l' and raw=={'r':0,'s':8,'n':120} and self.R[8]+480==0xf2c300
                         and self.after_then is None,'P33 discarded read shape changed')
-                require(int.from_bytes(self.mem.read(self.sp+20,4),'little')==0x0603502c,
-                        'P33 read has a caller that might consume R0')
-                ret_insn,ret_fields,_=self.decode(0x0603502c)
-                require(ret_insn.id=='li.s16' and ret_fields=={'r':0,'n':848},'caller no longer kills R0')
+                caller=int.from_bytes(self.mem.read(self.sp+20,4),'little')
+                require(caller in (0x0603502c,0x06035306),'P33 read has a caller that might consume R0')
+                if caller==0x0603502c:
+                    ret_insn,ret_fields,_=self.decode(caller)
+                    require(ret_insn.id=='li.s16' and ret_fields=={'r':0,'n':848},'caller no longer kills R0')
                 hardware.observe_dead_port_selection_read(0xf2c300)
-                self.opaque_source='p33_dead_return'
+                self.opaque_source='p33_pin0_return' if caller==0x06035306 else 'p33_dead_return'
                 self.R[0]=None  # opaque, never a fake register value
                 self.pc+=size;self.steps+=1
                 adapters['proven_dead_p33_read']+=1
@@ -331,6 +357,16 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.pc+=size;self.steps+=1
                 adapters['cpu0_shared_lock_ownership']+=1
                 return
+            if hardware is not None and hardware.reset is not None and insn.id in ('rmw.and.nmodimm','rmw.and.modimm','rmw.and.r'):
+                op=module.check.operands(insn,raw);address=(self.R[op['r']]+op['n'])&0xffffffff
+                if address in hardware.reset.configuration:
+                    operand=self.R[op['s']] if insn.id=='rmw.and.r' else op['m']
+                    hardware.reset.rmw(address,'and',operand)
+                    word=hardware.reset.configuration[address]
+                    hardware.counts['reads']+=1
+                    hardware.record_write({'address':hex(address),'known_mask':hex(word.known),'known_value':hex(word.value)})
+                    self.finish_exact(self.pc+size);adapters['reset_unknown_preserving_configuration_rmw']+=1
+                    return
             if hardware is not None and insn.id in ('rmw.or.modimm','rmw.and.nmodimm','rmw.and.invbitr','rmw.or.bitr','rmw.or.r','rmw.and.invr'):
                 op=module.check.operands(insn,raw)
                 address=(self.R[op['r']]+op['n'])&0xffffffff
@@ -634,7 +670,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             break
         row={'pc':hex(c.pc)}
         try:
+            if hardware is not None and hardware.debug is not None:hardware.debug.check_fetch(c.pc,1)
             insn,raw,size=c.decode(c.pc)
+            if hardware is not None and hardware.debug is not None:
+                extent=size
+                if insn.id.endswith('.p'):extent+=c.decode(c.pc+size)[2]
+                hardware.debug.check_fetch(c.pc,extent)
             row.update(instruction_id=insn.id,text=module.codec.format(insn,raw),
                        bytes=c.mem.read(c.pc,size).hex())
             c.step()

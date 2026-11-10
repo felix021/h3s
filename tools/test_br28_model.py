@@ -6,9 +6,114 @@ from probe_boot import Blocked
 from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV
+from br28_model import SDTAP_CON, PSRAM_CON0, IOMAP_CON0, USB_IO_CON0, USB_DISABLE_REGISTERS
+from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection, RESET_CONFIG_MASKS
+from br28_model import MPUConfigurationProjection
 
 
 class ModelTests(unittest.TestCase):
+    def test_mpu_gate_toggle_is_explicit_and_unwritten_slots_stay_unknown(self):
+        with self.assertRaisesRegex(Blocked,'unknown_initial_mpu_write_gate'):MPUConfigurationProjection().read(0xff03fc)
+        m=MPUConfigurationProjection(0)
+        with self.assertRaisesRegex(Blocked,'requires_known_open'):m.write(0xff0300,0)
+        m.write(0xff03fc,0xe7);self.assertEqual(m.read(0xff03fc),1)
+        m.write(0xff0300,0x60607);self.assertEqual(m.read(0xff0300),0x60607)
+        with self.assertRaisesRegex(Blocked,'unknown_mpu_slot'):m.read(0xff0304)
+        m.write(0xff03fc,0xe7);self.assertEqual(m.read(0xff03fc),0)
+        with self.assertRaisesRegex(Blocked,'command_not_modeled'):m.write(0xff03fc,1)
+
+    def debug(self):
+        d=DebugExecutionProjection((0,None))
+        for i,(low,high) in enumerate(((0x6000100,0x60e31c5),(0x12a640,0x1344c6),(4,0x20000))):
+            d.write(0xffe218+8*i,high);d.write(0xffe21c+8*i,low)
+        d.write(EMU_CON,0xe000001f)
+        return d
+
+    def test_pc_guard_uses_three_ranges_and_independent_cpu_banks(self):
+        d=self.debug()
+        for pc in (4,0x12a640,0x6000100,0x60e3092):d.check_fetch(pc,6)
+        with self.assertRaisesRegex(Blocked,'unknown_initial_pc_guard'):d.check_fetch(0x6000100,2,core=1)
+        with self.assertRaisesRegex(Blocked,'unknown_debug_configuration'):d.read(EMU_CON+0x800)
+        with self.assertRaisesRegex(Blocked,'virtual_comparison_unverified'):d.check_fetch(0x400000,2)
+
+    def test_pc_guard_unknown_control_ranges_and_terminal_violation(self):
+        with self.assertRaisesRegex(Blocked,'unknown_initial_pc_guard'):DebugExecutionProjection().check_fetch(4,2)
+        d=DebugExecutionProjection((0,None));d.write(EMU_CON,0xe000001f)
+        with self.assertRaisesRegex(Blocked,'range_unknown'):d.check_fetch(4,2)
+        d=self.debug()
+        with self.assertRaisesRegex(Blocked,'projected_pc_range_violation'):d.check_fetch(0x30000,2)
+        for action in (lambda:d.check_fetch(4,2),lambda:d.write(EMU_CON,0),lambda:d.read(EMU_CON)):
+            with self.assertRaisesRegex(Blocked,'requires_delivery'):action()
+
+    def test_pc_guard_checks_full_extent_without_truncating_odd_upper_limit(self):
+        d=self.debug();d.check_fetch(0x60e31c2,3)
+        with self.assertRaisesRegex(Blocked,'projected_pc_range_violation'):d.check_fetch(0x60e31c4,2)
+        self.assertEqual(d.registers[0xffe218],0x60e31c5)
+
+    def test_reset_clear_preserves_reason_and_rejects_guessed_flag_readback(self):
+        h=ResetHistoryProjection({0xfd0004:0x80,0xfd0000:2})
+        h.write(0xfd0004,0xc0)
+        self.assertEqual(h.read(0xfd0000),2)
+        with self.assertRaisesRegex(Blocked,'post_clear_state_unknown'):h.read(0xfd0004)
+        with self.assertRaisesRegex(Blocked,'unknown_reset_or_wake_history'):h.read(0xf2a400)
+
+    def test_reset_configuration_masks_preserve_unknown_neighbours(self):
+        h=ResetHistoryProjection()
+        for address,mask in RESET_CONFIG_MASKS.items():
+            h.rmw(address,'and',mask)
+            self.assertEqual(h.configuration[address].known,(~mask)&0xffffffff)
+            self.assertEqual(h.configuration[address].value,0)
+            with self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits'):h.read(address)
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):h.rmw(0xf2a628,'or',16)
+
+    def test_wake_clear_is_a_command_and_retains_unselected_pending_bits(self):
+        h=ResetHistoryProjection({0xf2c158:0x123})
+        h.write(0xf2c160,1)
+        self.assertEqual(h.read(0xf2c158),0x122)
+        with self.assertRaisesRegex(Blocked,'readback_not_modeled'):h.read(0xf2c160)
+        with self.assertRaisesRegex(Blocked,'mask_not_modeled'):h.write(0xf2c160,0x100)
+
+    def test_rtc_clear_targets_pending_not_the_separate_source_history(self):
+        h=ResetHistoryProjection({0xf2d2a0:0x11})
+        h.write(0xf2d248,0)  # no-op leaves unknown pending unknown
+        with self.assertRaisesRegex(Blocked,'nonzero_mapping_unverified'):h.write(0xf2d248,1)
+        h=ResetHistoryProjection({0xf2d2a0:0x11,0xf2d24c:3})
+        with self.assertRaisesRegex(Blocked,'nonzero_mapping_unverified'):h.write(0xf2d248,1)
+        self.assertEqual(h.read(0xf2d24c),3)
+        self.assertEqual(h.read(0xf2d2a0),0x11)
+
+    def test_port_state_inputs_are_explicit_and_snapshot_writes_rejected(self):
+        self.assertFalse(BR28Model().handles(SDTAP_CON,4))
+        h=BR28Model(port_initialization_projection=True)
+        for address in (SDTAP_CON,PSRAM_CON0):
+            with self.assertRaisesRegex(Blocked,'unknown_port_input'):h.read(address)
+            with self.assertRaisesRegex(Blocked,'snapshot_write_not_modeled'):h.write(address,0)
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):h.read(IOMAP_CON0)
+        h=BR28Model(port_initialization_projection=True,
+                    port_input_words={SDTAP_CON:0xa5a5a5a4,PSRAM_CON0:2},initial_registers={IOMAP_CON0:0x20000})
+        self.assertEqual(h.read(SDTAP_CON),0xa5a5a5a4)
+        self.assertEqual(h.read(PSRAM_CON0),2)
+        self.assertEqual(h.read(IOMAP_CON0),0x20000)
+        with self.assertRaises(ValueError):BR28Model(port_initialization_projection=True,port_input_words={0xfd6018:0})
+
+    def test_port_usb_disable_does_not_supply_controller_status_or_enable(self):
+        h=BR28Model(port_initialization_projection=True)
+        for address in USB_DISABLE_REGISTERS:
+            h.write(address,0)
+            with self.assertRaisesRegex(Blocked,'status_not_modeled'):h.read(address)
+            with self.assertRaisesRegex(Blocked,'enable_or_configuration_not_modeled'):h.write(address,1)
+        self.assertEqual(h.usb_disable_writes,list(USB_DISABLE_REGISTERS))
+
+    def test_usb_io_preserves_unknown_bits_unless_initial_fixture_provided(self):
+        h=BR28Model(port_initialization_projection=True,gpio_model=True)
+        h.gpio_rmw(USB_IO_CON0,'or',0x5000)
+        self.assertEqual(h.gpio[USB_IO_CON0].known,0x5000)
+        with self.assertRaisesRegex(Blocked,'uninitialized_gpio_bits'):h.read(USB_IO_CON0)
+        h=BR28Model(port_initialization_projection=True,gpio_model=True,initial_usb_io_word=0x40000008)
+        h.gpio_rmw(USB_IO_CON0,'or',0x5000)
+        self.assertEqual(h.read(USB_IO_CON0),0x40005008)
+        with self.assertRaises(ValueError):BR28Model(initial_usb_io_word=0)
+
     def test_core_tick_overflow_is_terminal_until_external_resolution(self):
         h=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),core_tick_progress=(1,1))
         base=CORE_TICK_BASES[0]

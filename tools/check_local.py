@@ -38,6 +38,8 @@ def main():
     run(sys.executable,'tools/analyze_qcy_irq.py','--report','analysis/local-checks/qcy-irq.json')
     run(sys.executable,'tools/analyze_p11.py','--report','analysis/local-checks/p11-resource.json')
     run(sys.executable,'tools/analyze_startup_chain.py','--report','analysis/local-checks/startup-chain.json')
+    run(sys.executable,'tools/analyze_cpu_context.py','--report','analysis/local-checks/cpu-context.json')
+    run(sys.executable,'tools/probe_debug_startup.py','--report','analysis/local-checks/debug-startup.json')
     if args.rom:
         run(sys.executable,'tools/probe_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/rom-execution.json')
         run(sys.executable,'tools/probe_hardware.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/hardware-execution.json')
@@ -47,6 +49,7 @@ def main():
         run(sys.executable,'tools/probe_watchdog.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/watchdog-execution.json')
         run(sys.executable,'tools/probe_clock_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/clock-startup.json')
         run(sys.executable,'tools/probe_arch_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/architecture-startup.json')
+        run(sys.executable,'tools/probe_platform_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/platform-startup.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:

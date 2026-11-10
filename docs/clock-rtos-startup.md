@@ -13,6 +13,8 @@
 | [probe_arch_startup.py](../tools/probe_arch_startup.py) | [architecture-startup.json](../evidence/architecture-startup.json) | 9 组 Flash／缓存输入／PWM／OS 堆边界，以及可选的两个精确镜像前缀 |
 | [analyze_startup_chain.py](../tools/analyze_startup_chain.py) | [startup-chain.json](../evidence/startup-chain.json) | 实际 QCY 调用、CPU1 启动、任务帧和活跃输入的静态锚点 |
 
+后续[平台回放](platform-startup.md)已继续执行端口、复位／唤醒、实际debug_init与任务创建；本页保留较早阶段的严格输入边界和验证记录。
+
 ## 实际执行到了哪里
 
 暖路径继承此前 ROM、GPIO、MMU 模型和明确标注的 REP／ICFG 假设；P11 的 `PMU_STA` 全字测试输入固定为 1，仍未证明域间握手的响应因果关系。
