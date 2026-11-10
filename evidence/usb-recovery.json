@@ -65,6 +65,8 @@
   "user_confirmed_anc_key_switching": true,
   "user_confirmed_qcy_app_control": true,
   "user_accepted_recovery": true,
-  "temporary_key_symptom_resolution_action": "not recorded; no additional flash was performed",
-  "automatic_multi_cycle_capture": false
+  "temporary_key_symptom_resolution_action": "user reports normal key/App operation after one manual headset restart; no additional flash was performed",
+  "automatic_multi_cycle_capture": false,
+  "user_reported_manual_headset_restarts_before_acceptance": 1,
+  "manual_restart_mechanism_determined": false
 }

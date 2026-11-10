@@ -39,5 +39,6 @@
   "post_restore_mode_key_issue_reported": true,
   "user_confirmed_anc_key_switching": true,
   "user_confirmed_qcy_app_control": true,
-  "user_accepted_recovery": true
+  "user_accepted_recovery": true,
+  "recovery_manual_headset_restart_count_user_reported": 1
 }
