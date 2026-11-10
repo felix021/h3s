@@ -1,0 +1,391 @@
+{
+  "mode": "static excerpts only; not instruction execution",
+  "resource_sha256": "1fe36008118168d2178c0cb3aeec265fc78e47ce70cd652e633236beb8270882",
+  "common_sha256": "6c3b388928ae3b95c970308724c2196b497a5625a93640cc85e4c3a91ce7d6e6",
+  "decoder_commit": "e1bd0707874b77b759401555d24839ad43af1267",
+  "pypcode_version": "3.3.3",
+  "compiled_sla_sha256": "699df315a7e160393aed1e65308bba0339fcd00e5fb8bd8094edbfcf432f6daf",
+  "device_accessed": false,
+  "q32s_code_executed": false,
+  "reset_pc_proven": false,
+  "p11_rom_acquired": false,
+  "relative_call_fields_and_dispatch_table_crosschecked": true,
+  "whole_h3s_boot_simulated": false,
+  "regions": [
+    {
+      "start": "0x80",
+      "end_exclusive": "0xa4",
+      "anchor": "resource common-section start; reset PC unproven",
+      "instructions": [
+        {
+          "pc": "0x80",
+          "length": 4,
+          "mnemonic": "mov",
+          "operands": "r0, icfg"
+        },
+        {
+          "pc": "0x84",
+          "length": 2,
+          "mnemonic": "bitset",
+          "operands": "r0, 0xb"
+        },
+        {
+          "pc": "0x86",
+          "length": 4,
+          "mnemonic": "mov",
+          "operands": "reti, r11"
+        },
+        {
+          "pc": "0x8a",
+          "length": 6,
+          "mnemonic": "mov",
+          "operands": "ssp, #0x3d00"
+        },
+        {
+          "pc": "0x90",
+          "length": 6,
+          "mnemonic": "mov",
+          "operands": "sp, #0x3d00"
+        },
+        {
+          "pc": "0x96",
+          "length": 6,
+          "mnemonic": "mov",
+          "operands": "usp, #0x3d00"
+        },
+        {
+          "pc": "0x9c",
+          "length": 6,
+          "mnemonic": "mov",
+          "operands": "reti, #0xa4"
+        },
+        {
+          "pc": "0xa2",
+          "length": 2,
+          "mnemonic": "rti",
+          "operands": ""
+        }
+      ]
+    },
+    {
+      "start": "0xa4",
+      "end_exclusive": "0xc6",
+      "anchor": "decoded immediate RETI target; RTI not executed",
+      "instructions": [
+        {
+          "pc": "0xa4",
+          "length": 2,
+          "mnemonic": "mov",
+          "operands": "r0, #0x0"
+        },
+        {
+          "pc": "0xa6",
+          "length": 6,
+          "mnemonic": "mov",
+          "operands": "r1, #0x2fe0"
+        },
+        {
+          "pc": "0xac",
+          "length": 6,
+          "mnemonic": "mov",
+          "operands": "r2, #0x714"
+        },
+        {
+          "pc": "0xb2",
+          "length": 2,
+          "mnemonic": "lsr",
+          "operands": "r2, r2, 0x2"
+        },
+        {
+          "pc": "0xb4",
+          "length": 2,
+          "mnemonic": "goto",
+          "operands": "0xba"
+        },
+        {
+          "pc": "0xb6",
+          "length": 4,
+          "mnemonic": "sw",
+          "operands": "r0, [r1 ++= 0x4]"
+        },
+        {
+          "pc": "0xba",
+          "length": 4,
+          "mnemonic": "sub",
+          "operands": "r2, r2, #0x1"
+        },
+        {
+          "pc": "0xbe",
+          "length": 4,
+          "mnemonic": "jge",
+          "operands": "r2, #0x0, 0xb6"
+        },
+        {
+          "pc": "0xc2",
+          "length": 4,
+          "mnemonic": "goto",
+          "operands": "0x9c0"
+        }
+      ]
+    },
+    {
+      "start": "0xa70",
+      "end_exclusive": "0xa88",
+      "anchor": "independent window, no claim of reachable predecessor",
+      "instructions": [
+        {
+          "pc": "0xa70",
+          "length": 4,
+          "mnemonic": "call",
+          "operands": "0x230"
+        },
+        {
+          "pc": "0xa74",
+          "length": 2,
+          "mnemonic": "call",
+          "operands": "0x406"
+        },
+        {
+          "pc": "0xa76",
+          "length": 4,
+          "mnemonic": "add",
+          "operands": "r10, r4, #0xa0"
+        },
+        {
+          "pc": "0xa7a",
+          "length": 6,
+          "mnemonic": "mov",
+          "operands": "r1, #0x31e0"
+        },
+        {
+          "pc": "0xa80",
+          "length": 2,
+          "mnemonic": "mov",
+          "operands": "r0, r10"
+        },
+        {
+          "pc": "0xa82",
+          "length": 2,
+          "mnemonic": "call",
+          "operands": "0x3ba"
+        },
+        {
+          "pc": "0xa84",
+          "length": 2,
+          "mnemonic": "call",
+          "operands": "0x3ee"
+        }
+      ],
+      "stop": {
+        "pc": "0xa86",
+        "reason": "undecodable; not skipped"
+      }
+    },
+    {
+      "start": "0xac0",
+      "end_exclusive": "0xb06",
+      "anchor": "independent MOV immediate0xa400 anchor through bit5 clear",
+      "instructions": [
+        {
+          "pc": "0xac0",
+          "length": 4,
+          "mnemonic": "mov",
+          "operands": "r0, #0xa400"
+        },
+        {
+          "pc": "0xac4",
+          "length": 4,
+          "mnemonic": "mem.bset",
+          "operands": "0x8, [r0 + 0x8]"
+        },
+        {
+          "pc": "0xac8",
+          "length": 2,
+          "mnemonic": "lw",
+          "operands": "r1, [r0 + 0x8]"
+        },
+        {
+          "pc": "0xaca",
+          "length": 4,
+          "mnemonic": "mov",
+          "operands": "r2, #0xa04"
+        },
+        {
+          "pc": "0xace",
+          "length": 2,
+          "mnemonic": "or",
+          "operands": "r1, r2"
+        },
+        {
+          "pc": "0xad0",
+          "length": 2,
+          "mnemonic": "sw",
+          "operands": "r1, [r0 + 0x8]"
+        },
+        {
+          "pc": "0xad2",
+          "length": 4,
+          "mnemonic": "mem.bset",
+          "operands": "0x40, [r12 + 0x24]"
+        },
+        {
+          "pc": "0xad6",
+          "length": 4,
+          "mnemonic": "mov",
+          "operands": "r1, #0xc000"
+        },
+        {
+          "pc": "0xada",
+          "length": 4,
+          "mnemonic": "mem.bset",
+          "operands": "0x4, [r1 + 0x5c]"
+        },
+        {
+          "pc": "0xade",
+          "length": 4,
+          "mnemonic": "mem.bset",
+          "operands": "0x8, [r0 + 0x0]"
+        },
+        {
+          "pc": "0xae2",
+          "length": 4,
+          "mnemonic": "mov",
+          "operands": "r2, #0xa500"
+        },
+        {
+          "pc": "0xae6",
+          "length": 4,
+          "mnemonic": "mem.set",
+          "operands": "0xf, [r2 + 0x0]"
+        },
+        {
+          "pc": "0xaea",
+          "length": 2,
+          "mnemonic": "lw",
+          "operands": "r2, [r0 + 0x0]"
+        },
+        {
+          "pc": "0xaec",
+          "length": 2,
+          "mnemonic": "sxtb",
+          "operands": "r2, r2"
+        },
+        {
+          "pc": "0xaee",
+          "length": 4,
+          "mnemonic": "jgt",
+          "operands": "r2, #-0x1, 0xaf8"
+        },
+        {
+          "pc": "0xaf2",
+          "length": 4,
+          "mnemonic": "mem.bset",
+          "operands": "0x40, [r0 + 0x0]"
+        },
+        {
+          "pc": "0xaf6",
+          "length": 2,
+          "mnemonic": "nop",
+          "operands": ""
+        },
+        {
+          "pc": "0xaf8",
+          "length": 2,
+          "mnemonic": "lw",
+          "operands": "r2, [r0 + 0x0]"
+        },
+        {
+          "pc": "0xafa",
+          "length": 2,
+          "mnemonic": "bitclr",
+          "operands": "r2, 0x5"
+        },
+        {
+          "pc": "0xafc",
+          "length": 2,
+          "mnemonic": "sw",
+          "operands": "r2, [r0 + 0x0]"
+        },
+        {
+          "pc": "0xafe",
+          "length": 2,
+          "mnemonic": "nop",
+          "operands": ""
+        },
+        {
+          "pc": "0xb00",
+          "length": 4,
+          "mnemonic": "mem.bset",
+          "operands": "0x2, [r1 + 0x0]"
+        },
+        {
+          "pc": "0xb04",
+          "length": 2,
+          "mnemonic": "call",
+          "operands": "0x3d4"
+        }
+      ]
+    },
+    {
+      "start": "0xc14",
+      "end_exclusive": "0xc2c",
+      "anchor": "independent direct-call candidate block",
+      "instructions": [
+        {
+          "pc": "0xc14",
+          "length": 4,
+          "mnemonic": "call",
+          "operands": "0x8000"
+        },
+        {
+          "pc": "0xc18",
+          "length": 2,
+          "mnemonic": "goto",
+          "operands": "0xc30"
+        },
+        {
+          "pc": "0xc1a",
+          "length": 4,
+          "mnemonic": "call",
+          "operands": "0x800a"
+        },
+        {
+          "pc": "0xc1e",
+          "length": 2,
+          "mnemonic": "goto",
+          "operands": "0xc30"
+        },
+        {
+          "pc": "0xc20",
+          "length": 4,
+          "mnemonic": "call",
+          "operands": "0x801a"
+        },
+        {
+          "pc": "0xc24",
+          "length": 2,
+          "mnemonic": "goto",
+          "operands": "0xc30"
+        },
+        {
+          "pc": "0xc26",
+          "length": 4,
+          "mnemonic": "call",
+          "operands": "0x802a"
+        },
+        {
+          "pc": "0xc2a",
+          "length": 2,
+          "mnemonic": "goto",
+          "operands": "0xc30"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "incomplete external decoder; successful decode is not ISA validation",
+    "0x86 special-register decode is suspicious; backend JGE p-code conflicts with mnemonic",
+    "independent windows do not bridge unknown instructions or prove control-flow reachability",
+    "calls outside resource suggest a P11 ROM dependency; memory type and CPU0 alias unproven"
+  ]
+}

@@ -138,7 +138,7 @@ bash tools/android-query/build.sh
 | [docs/hardware-contracts.md](docs/hardware-contracts.md) | P33／PLL／Timer0／IRQ／双核锁的来源、模型、13组场景和新的GPIO边界 |
 | [docs/gpio-irq.md](docs/gpio-irq.md) | 部分已知GPIO、死返回值证明、真实28B Timer ISR、11组场景与MMU边界 |
 | [docs/mmu-startup.md](docs/mmu-startup.md) | 页表／物理tag来源、真实初始化、并行存储适配和P11握手边界 |
-| [docs/p11-domain.md](docs/p11-domain.md) | P11寄存器身份、QCY q32s固件与14项CRC、未知／0／1外部状态条件探索 |
+| [docs/p11-domain.md](docs/p11-domain.md) | P11寄存器、固件校验、q32s静态解码／ROM线索、外部状态条件探索 |
 | [docs/eq-fence-repair.md](docs/eq-fence-repair.md) | 单独离线EQ范围修复候选、精确字节绑定、CRC有效负向样本和完整启动限制 |
 | [docs/preflash-emulation.md](docs/preflash-emulation.md) | 杰理资料和社区模拟器、pi32v2 实际指令回放、r2 拒绝回归、API 桩和整机边界 |
 | [docs/boot-exploration.md](docs/boot-exploration.md) | 从应用入口做有界试跑，PLL0／ROM／交接参数阻塞点及模拟器适配差异 |

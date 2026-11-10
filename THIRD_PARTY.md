@@ -46,3 +46,7 @@ BR28 RAM loader是该提交的 `data/loaderblobs/usb/br28loader.bin`，23552B、
 ## 官方 BR28 bootloader 的外设参考
 
 [Jieli-Tech/fw-Bootloader](https://github.com/Jieli-Tech/fw-Bootloader)，固定提交`ff3b9299d1b94d834b995fd858b3f75e2faa9840`，上游采用Apache-2.0。本轮下载BR28 `delay.c`及IRQ/CSFR头文件到忽略缓存，用于交叉核对Timer0轮询和寄存器定义，未将其整份源码重新发布或称为QCY确切bootloader。URL、长度和摘要在data/dependencies.json，获取流程见[外设模型说明](docs/hardware-contracts.md)。新增外设模型依据寄存器行为独立实现，未复制FM-1 QEMU的GPL模型。
+
+## q32s 静态解码依赖
+
+`tools/analyze_q32s.py`另通过固定quarkslab/ghidra-jieli提交获取q32s Sleigh源码，只放在忽略缓存、保留摘要；没有把语言后端源码或编译SLA复制进本仓库，也没有运行其不完整p-code。pypcode3.3.3的外围代码采用BSD-2-Clause，随附Sleigh及Ghidra部分采用Apache-2.0，具体通知保留在安装包内。公开工具封装、固件段校验、地址交叉核算和少量脱敏结果属于本项目分析；不能把后端解码成功当成q32s硬件认证。

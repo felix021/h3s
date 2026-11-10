@@ -119,6 +119,10 @@
     "SDK/interface/driver/cpu/br28/asm/power/p11_csfr.h": {
       "sha256": "ec1464e07b86879902ea02ad338e9616913ef2cf9eda3e79194224cec232717e",
       "bytes": 5892
+    },
+    "SDK/interface/driver/cpu/br28/asm/power/p11_app.h": {
+      "sha256": "3263a6a7869aaceaf3d5a82369944614f79a71170427a665a87d6e4f60e1be9c",
+      "bytes": 9302
     }
   },
   "hardware_reference_objects": {
@@ -137,6 +141,10 @@
     "hwi.S.o": {
       "archive": "system.a",
       "sha256": "b93872f84cb278c66bc7c0eba0b67c53edf43bea35c632cbbef09537ef205215"
+    },
+    "wdt.c.o": {
+      "archive": "cpu.a",
+      "sha256": "374fe0ca87accb6b97496f74582b118da37674ebd4ad8949266e8ad615f0090d"
     }
   },
   "official_bootloader_reference": {
@@ -194,6 +202,70 @@
       "functions": [
         "p11_init"
       ]
+    }
+  },
+  "q32s_decoder_reference": {
+    "url": "https://github.com/quarkslab/ghidra-jieli",
+    "commit": "e1bd0707874b77b759401555d24839ad43af1267",
+    "pypcode_version": "3.3.3",
+    "use": "incomplete static decoder only; do not execute its p-code or claim reset/ROM provenance",
+    "files": {
+      "q32s.slaspec": {
+        "sha256": "31921a18e7acd1c0302fb158461ca32e318699927e4017808d221acb4f21ff83",
+        "bytes": 9119
+      },
+      "q32s_ins_arithops.sinc": {
+        "sha256": "084517f8e6b0fe1b4a1ea6449215d04b353891f2ae7663a16253ff90dc31fce4",
+        "bytes": 5275
+      },
+      "q32s_ins_bitops.sinc": {
+        "sha256": "b36101deb4355195292a8ccfe8a3c56b99e86e21b0c4fb4ec0fcbaf6157bcc1c",
+        "bytes": 1152
+      },
+      "q32s_ins_loadimm.sinc": {
+        "sha256": "cd0082f52cd719c85f19e7438e61c972dfcfa3116697b7e43a0d070c77a53a57",
+        "bytes": 1360
+      },
+      "q32s_ins_loadstore.sinc": {
+        "sha256": "3374d142dda88342f40c633f4ac0f3e14f7fbcffff0c4a8137d79afea73010cf",
+        "bytes": 13134
+      },
+      "q32s_ins_logicops.sinc": {
+        "sha256": "89e5d7232e5633335896b8edd03ab82596b28dcabaf331581b5c2651e05ac183",
+        "bytes": 2827
+      },
+      "q32s_ins_move.sinc": {
+        "sha256": "da98a07ee73e82131cff1812743bf01eb148f2c31cb45fc06a9e3b0f08b6007f",
+        "bytes": 3611
+      },
+      "q32s_ins_progflow.sinc": {
+        "sha256": "82ba8b2762324f76e7d6230301e00aa3b9d1c9872c5c4e0d5502dcd7baf14137",
+        "bytes": 8964
+      },
+      "q32s_ins_regfield.sinc": {
+        "sha256": "d7382cb1b80feb6d91f055d9f8276d808ecc023e482f84ab12b0842b4b4b86e7",
+        "bytes": 1471
+      },
+      "q32s_ins_shiftrot.sinc": {
+        "sha256": "45315704e94114ffc376e60b541c37b7e31e955bd7861bf25f6d177c4dba7084",
+        "bytes": 2116
+      },
+      "q32s_ins_stack.sinc": {
+        "sha256": "a6265199dacbf2bcae36f2ed976dcdf8ed62367c51d63c1aa65cdbf0d18a0015",
+        "bytes": 951
+      },
+      "JieLi.ldefs": {
+        "sha256": "cdde0dc64788a990eb17b6d50b40637ff29056b77854ef5e6f955b4d22a838c5",
+        "bytes": 1243
+      },
+      "pi32.pspec": {
+        "sha256": "a450706760f8304c144cf8db96da662103e708a183426a9c98265c5e9fe89bf0",
+        "bytes": 139
+      },
+      "pi32.cspec": {
+        "sha256": "1f317d834a8eccbac88b8f836de3ff4410b3bc6ec4b04245d16af2d575e2324e",
+        "bytes": 2238
+      }
     }
   }
 }

@@ -46,3 +46,26 @@ python3 tools/probe_p11_status.py --rom /private/path/rom.bin \
 ```
 
 下一步可沿真实P11公共段核对入口、外部调用与清PWR_CON bit5的代码，确定P11是否另依赖ROM；主核侧则需继续查PMU握手定义和watchdog命令。普通IRQ entry／RTI也仍缺BR28完整契约，不能用恢复整个旧ICFG的主机影子状态代替：AC791N已有反例显示RTI后高位并不完整恢复。
+
+## q32s 静态反汇编已实跑
+
+新增[analyze_q32s.py](../tools/analyze_q32s.py)，用固定ghidra-jieli语言定义和pypcode3.3.3自带的Sleigh编译器，不需要安装完整Ghidra，也不需要GPU。后端源码按SHA256下载到忽略缓存；只反汇编短片段，不执行p-code。公开结果：[q32s-static.json](../evidence/q32s-static.json)。
+
+```bash
+python3 -m venv analysis/q32s-env
+analysis/q32s-env/bin/pip install pypcode==3.3.3
+analysis/q32s-env/bin/python tools/analyze_q32s.py --fetch \
+  --report analysis/q32s-static.json
+```
+
+如果固定源码已在缓存，省略`--fetch`，仍核对摘要并重新编译。上游编译器提示的NOP构造不据此补任何指令语义。静态结果包括：
+
+- 公共段开始附近有设置SSP／SP／USP为`0x3d00`、RETI=`0xa4`并RTI的初始化形状；`0xa4`附近清BSS，`0xc2`跳转`0x9c0`。这不证明硬件从`0x80`复位。
+- 独立可解码片段`0xac0`将R0设为`0xa400`，随后`0xaf8`读取、`0xafa`清bit5、`0xafc`写回。固定`p11_app.h`把该位明确命名为`LP_PWR_INIT_FLAG`，正好与更晚CPU0等待相符。此前`0xa86`存在解码缺口，所以没有把独立片段拼成已执行的连续路径。
+- `0xc14 / 0xc1a / 0xc20 / 0xc26`四处直接调用`0x8000 / 0x800a / 0x801a / 0x802a`。工具另用原始半字字段独立重算`PC+4+((signed6(w0&63)<<17)|(w1<<1))`，并核对前方五项跳转表确实定位这些分支及第五分支，排除明显的错位解码和PC基准错误。它仍是依据同一参考ISA规则的静态交叉核对，不是新增硬件测量。
+
+固定`p11_app.h`给出P11 RAM大小`0x8000`；以上调用位于这个RAM上界之外、SFR`0xa000`以下，稳定目标强烈提示独立ROM入口。P11局部RAM／SFR分别有主核映射，但据此外推`0xf28000..0xf2a000`只是**候选窗口**，没有证据证明这个洞可读、属于ROM或与CPU0 ROM共用。现有USB读取工具的固定主核ROM范围没有因此放开，也没有尝试读取该窗口。
+
+后端存在实际缺口：`0x86`的special-register解码与附近ICFG修改形状不符；另一个JGE的p-code方向与mnemonic冲突。工具遇未知即停，不修改后端去迎合预期，也不执行这些有疑问的语义。离整机启动还需要补P11 ROM／主核访问映射、可信q32s指令执行，以及此前的PMU、watchdog和BR28硬件IRQ契约。
+
+看门狗方面，固定`wdt.c.o`的`wdt_key_patch`确实先加软件锁，再写KEY `0x048c159d / 0x26ae37bf`，`wdt_init`随后先写CON=0。这补上了当前条件路径下一步的命令身份；KEY生命周期、非法KEY规则与超时行为仍未建模，不能只把它当普通RW存储继续。
