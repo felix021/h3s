@@ -93,4 +93,4 @@ E6响应体 `00 1A 00`：status0、SN1A、result0。E7响应 `00 1B`。服务等
 
 r2通过E6/传输验证但启动和连接异常，详见[EQ实验](eq-toggle.md)。用户授权恢复后，通过[USB救砖](usb-recovery.md)读取两份一致的2MiB备份，确认A为good b79、B为bad r2，保留A和最新VM/配对/校准，只恢复B的6个4KiB扇区。419B实际变化，逐扇区及整片读回全部匹配；两bank应用均与b79相同，boot头/明文/密文CRC通过。
 
-用户确认蓝牙回连、拔线后播放正常。BLE GATT/CCCD/SDK、版本V_0.1.1.8、PID16764和电量查询恢复。用户随后报告模式键无反应，尚未完成按键验收，不能宣称所有功能已经恢复。脱敏证据见[evidence/usb-recovery.json](../evidence/usb-recovery.json)。完整备份和运行日志留私有。
+用户确认蓝牙回连、拔线后播放正常。BLE GATT/CCCD/SDK、版本V_0.1.1.8、PID16764和电量查询恢复。用户曾报告模式键无反应，随后明确确认“按键也可以正常切换了，app也可以控制了”，本次恢复通过用户验收。该临时症状的具体解除操作未记录，期间没有再次刷写；不据此推断某个App操作为必要恢复步骤。脱敏证据见[evidence/usb-recovery.json](../evidence/usb-recovery.json)。完整备份和运行日志留私有。

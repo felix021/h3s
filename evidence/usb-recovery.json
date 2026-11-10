@@ -58,8 +58,13 @@
   "version": "V_0.1.1.8",
   "pid": 16764,
   "user_confirmed_bluetooth_playback": true,
-  "mode_key_regression": "independent ANC key: no prompt and no audible mode change; unresolved",
+  "mode_key_regression": "temporary report; user subsequently explicitly confirmed normal key switching",
   "public_cli_reflashed_device": false,
   "public_planner_reproduced_historical_target_exactly": true,
-  "qcy_app_direct_mode_comparison": "awaiting user observation"
+  "qcy_app_direct_mode_comparison": "user explicitly confirmed App control works",
+  "user_confirmed_anc_key_switching": true,
+  "user_confirmed_qcy_app_control": true,
+  "user_accepted_recovery": true,
+  "temporary_key_symptom_resolution_action": "not recorded; no additional flash was performed",
+  "automatic_multi_cycle_capture": false
 }

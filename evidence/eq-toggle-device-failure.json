@@ -1,5 +1,5 @@
 {
-  "status": "r2 rejected; USB restoration readback verified; Bluetooth/playback restored; mode key issue unresolved",
+  "status": "r2 rejected; USB restoration readback verified; user confirmed Bluetooth/playback, ANC key switching and App control recovered",
   "candidate_sha256": "c8dae5233678102aac152f0ff94952edea83c6eeca6afaf216db43226d0b6696",
   "ota_attempts": 1,
   "e6_result": 0,
@@ -36,5 +36,8 @@
   "rollback_flash_readback_verified": true,
   "user_confirmed_bluetooth_reconnection": true,
   "user_confirmed_bluetooth_playback": true,
-  "post_restore_mode_key_issue_reported": true
+  "post_restore_mode_key_issue_reported": true,
+  "user_confirmed_anc_key_switching": true,
+  "user_confirmed_qcy_app_control": true,
+  "user_accepted_recovery": true
 }
