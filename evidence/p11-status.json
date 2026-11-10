@@ -580,7 +580,7 @@
           "table_begin": 1179648,
           "table_end_inclusive": 1189887,
           "walks": 0,
-          "translation": "128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000",
+          "translation": "128B pages;2B tags;valid bit15;absolute physical page number;virtual base0x400000",
           "initial_con_is_synthetic": true,
           "hardware_tlb_cache_timing_simulated": false
         },
@@ -1254,7 +1254,7 @@
           "table_begin": 1179648,
           "table_end_inclusive": 1189887,
           "walks": 0,
-          "translation": "128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000",
+          "translation": "128B pages;2B tags;valid bit15;absolute physical page number;virtual base0x400000",
           "initial_con_is_synthetic": true,
           "hardware_tlb_cache_timing_simulated": false
         },
@@ -1846,7 +1846,7 @@
           "table_begin": 1179648,
           "table_end_inclusive": 1189887,
           "walks": 0,
-          "translation": "128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000",
+          "translation": "128B pages;2B tags;valid bit15;absolute physical page number;virtual base0x400000",
           "initial_con_is_synthetic": true,
           "hardware_tlb_cache_timing_simulated": false
         },

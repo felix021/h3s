@@ -14,6 +14,14 @@
     "power_driver.c.o": {
       "sha256": "c4d67d91fb38c3701f1067297204d5b497e267ac6839c594f953201b81867d95",
       "bytes": 176532
+    },
+    "pmalloc_continue.c.o": {
+      "sha256": "e8a2ec2a84ee8f8dbc7244670ddc574b39adda96e85dbc6dadf451f3a4b723a5",
+      "bytes": 63484
+    },
+    "memory.c.o": {
+      "sha256": "746668b06acdb4f11c79828e687d6d4c9429daac81120821804026c3e088acb4",
+      "bytes": 7928
     }
   },
   "function_ir_sha256": {
@@ -22,6 +30,12 @@
     "vmem_get_phy_adr": "3085f76d47b6b55021c246184988c86229fcdc5cf1f3656528b65345e9aea403",
     "pmalloc_init": "935ca9cd24a6c161c5ec772085e0d9290691eb46f90937be04c3724450e7384d",
     "get_physic_address": "2bf6dc13bef656338c54fd1a1ddad827cd90b91b166ff8cf71bff0906fdc81e5",
-    "p11_init": "9d1479ea912ce21dd8b97225cd020416252d1b2d1daf95646f23b90391104b40"
+    "pmalloc": "3be644e0107d856d51da710d36056199c630fd46478a998d49c464b9d9e67341",
+    "pfree": "967ecb55c73b105c346f20dbf3236ff3a787a00086ba034fe175c77e54751b1a",
+    "p11_init": "9d1479ea912ce21dd8b97225cd020416252d1b2d1daf95646f23b90391104b40",
+    "__pmalloc_continue": "60baff1aea1856fcf10db5c67164594cefd55d6750dccd76d89bc70904c3bf73",
+    "__pfree_continue": "118a8965de6b6a8b5ee25913e5ba2a6187d945f6aa7d86dec6a3102b6b566bea",
+    "memory_in_phy": "c249a520c53a8c1d723ea743a771f9d7bb9500be715e7b561f0c35ff945fc8cc",
+    "dma_malloc": "e3b6239ed9ce5b39d1a603bd980cb675516b2d311dcbdb9d289c94f6001d6c36"
   }
 }

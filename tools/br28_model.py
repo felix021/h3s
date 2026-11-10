@@ -10,6 +10,7 @@ from probe_boot import Blocked
 TIMER0=0xfd0400
 PLL0=0xfd4600
 CLOCK0=0xfd0018
+SYS_DIV=0xfd0014
 PINR1=0xf2c11c
 PINR0=0xf2c120
 IRQ_CONFIG=0xffe100
@@ -19,6 +20,239 @@ GPIO_BASES=(0xfd5000,0xfd5100,0xfd5200,0xfd5300,0xfd5400,0xfd5500,0xfd5700)
 MMU_BASE=0xff0400
 P11_UART_CON2=0xf2af10
 PMU_STA=0xfd3e04
+WDT_CON=0xf2a800
+WDT_KEY=WDT_CON+4
+EFUSE_CON0=0xf2c2c0
+EFUSE_CON1=EFUSE_CON0+4
+EFUSE_RDAT=EFUSE_CON0+8
+OSC_CONFIG=(0xfd1920,0xfd1924,0xfd1928,0xfd1940,0xfd1954)  # WLA_CON8/9/10/16/21
+OSC_STATUS=0xfd1978  # WLA_CON30, RO; sampled by actual QCY calibration
+GPCNT_CON=0xfd1100
+CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
+CPU1_CONTROL=0xffe8c0
+VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
+PLL1_CON3=0xfd470c
+CACHE_STATUS_REGISTERS=(0xff0500,0xffe400,0xffec00)
+SFC_BASE=0xfe0200
+
+
+class SFCReadBus:
+    """Functional decoded-Flash read bus, with real enable/configuration gates.
+
+    Transactions are synchronous. No SPI waveform/cache coherence/timing claim.
+    """
+    def __init__(self,initial_con=None):
+        if initial_con is not None and (not isinstance(initial_con,int) or initial_con&~0xf00001):
+            raise ValueError('unsupported initial SFC mode')
+        self.initial_con=initial_con;self.con=initial_con;self.baud=None;self.writes=0
+
+    def check_flash_access(self,address):
+        if not 0x06000000<=address<0x08000000:return
+        if self.con is None:raise Blocked('unknown_sfc_enable_state')
+        if not self.con&1:raise Blocked('sfc_disabled_flash_access',address=hex(address))
+
+    def read(self,address):
+        value=self.con if address==SFC_BASE else self.baud
+        if value is None:raise Blocked('unknown_sfc_configuration',address=hex(address))
+        return value  # bit31 busy=0: no queued transaction in this synchronous model
+
+    def write(self,address,value):
+        if address==SFC_BASE:
+            if value&~0xf00001:raise Blocked('sfc_mode_not_modeled',value=hex(value))
+            self.con=value
+        elif address==SFC_BASE+4:
+            if self.con is None or self.con&1:raise Blocked('sfc_baud_change_requires_observed_disable')
+            if value>255:raise Blocked('unsupported_sfc_baud',value=value)
+            self.baud=value
+        else:raise Blocked('sfc_register_not_modeled',address=hex(address))
+        self.writes+=1
+
+    def report(self):
+        return {'initial_control_fixture':self.initial_con,'con':self.con,'baud':self.baud,'writes':self.writes,
+                'busy_projection':'zero outstanding transactions; synchronous decoded-Flash memory',
+                'flash_fetch_and_data_access_require_enable':True,'spi_or_cache_timing_simulated':False}
+
+
+class CoreTickStopped:
+    """Optional nominal counter; real IRQ entry and pending readback stay strict."""
+    def __init__(self,initial_con=None,progress=None):
+        if initial_con not in (None,0):raise ValueError('only unknown or explicitly disabled core tick supported')
+        if progress is not None and (not isinstance(progress,int) or not 0<=progress<=256):raise ValueError('invalid explicit core tick progress')
+        self.initial_con=initial_con
+        self.con=initial_con;self.cnt=self.prd=None;self.pending=None if initial_con is None else False;self.writes=0
+        self.progress=progress;self.expirations=0
+        self.unresolved_overflow=False
+
+    def read(self,offset):
+        if self.unresolved_overflow:raise Blocked('core_tick_overflow_requires_resolution')
+        value={0:self.con,4:self.cnt,8:self.prd}[offset]
+        if value is None or (offset==0 and self.pending is None):raise Blocked('unknown_core_tick_state')
+        if offset==0 and self.pending:raise Blocked('core_tick_pending_readback_unverified')
+        return value
+
+    def write(self,offset,value):
+        if self.unresolved_overflow:raise Blocked('core_tick_overflow_requires_resolution')
+        if offset==0:
+            if value&~0x41:raise Blocked('core_tick_control_not_modeled',value=hex(value))
+            if value&1:
+                if self.progress is None:raise Blocked('core_tick_enable_not_modeled',value=hex(value))
+                if self.cnt is None or self.prd is None or self.pending is None:raise Blocked('unknown_core_tick_state')
+                if self.prd in (0,0xffffffff):raise Blocked('core_tick_period_edge_unverified',period=hex(self.prd))
+                if self.cnt>self.prd:raise Blocked('core_tick_count_exceeds_period')
+            self.con=value&1
+            if value&64:self.pending=False
+        elif offset in (4,8):
+            if self.con is not None and self.con&1:raise Blocked('active_core_tick_reconfiguration_unverified')
+            if offset==4:self.cnt=value
+            else:self.prd=value
+        else:raise ValueError('invalid core tick offset')
+        self.writes+=1
+
+    def advance(self):
+        if self.unresolved_overflow:raise Blocked('core_tick_overflow_requires_resolution')
+        if self.con is None or not self.con&1:return
+        periods,self.cnt=divmod(self.cnt+self.progress,self.prd+1)
+        if periods:self.pending=True;self.expirations+=periods;self.unresolved_overflow=True
+
+    def report(self):
+        return {'con':self.con,'cnt':self.cnt,'prd':self.prd,'pending':self.pending,'writes':self.writes,
+                'virtual_source_ticks_per_step':self.progress,'expirations':self.expirations,
+                'counter_projection_enabled':self.progress is not None,'irq_delivery_simulated':False,'initial_control_fixture':self.initial_con,
+                'physical_initial_state_measured':False,'pending_bit7_readback_proven':False,
+                'unresolved_overflow':self.unresolved_overflow,
+                'counter_projection':'PRD+1 from SDK formula; no inferred core-held clock gating or physical phase'}
+
+
+class GPCNTCleanup:
+    """Only the observed disable/clear path; unknown neighbouring bits stay so."""
+    def __init__(self):
+        self.bits=PartialWord();self.pending=None;self.disable_writes=0;self.clear_writes=0
+
+    def rmw(self,kind,operand):
+        if kind=='and' and operand&0xffffffff==0xfffffffe:
+            self.bits.apply('and',operand);self.disable_writes+=1
+        elif kind=='or' and operand==64:
+            if not self.bits.known&1 or self.bits.value&1:raise Blocked('gpcnt_disable_state_unknown')
+            self.pending=False;self.bits.apply('and',~128);self.clear_writes+=1
+        else:raise Blocked('gpcnt_counting_or_configuration_not_modeled',operation=kind,operand=hex(operand&0xffffffff))
+
+    def read(self):
+        raise Blocked('unknown_gpcnt_configuration_bits',known_mask=hex(self.bits.known))
+
+    def report(self):
+        return {'known_value':hex(self.bits.value),'known_mask':hex(self.bits.known),'pending':self.pending,
+                'disable_writes':self.disable_writes,'clear_writes':self.clear_writes,
+                'pending_clear_is_immediate_projection':True,
+                'counting_or_prior_bootloader_state_simulated':False,'command_bit6_readback_proven':False}
+
+
+class EfuseReadProjection:
+    """Exact CPU0 read transaction shape with explicitly supplied OTP inputs.
+
+    No programming commands, read latency or inferred device calibration.
+    Upper read bits are an explicit fixture to test the guest low-byte mask.
+    """
+    def __init__(self,words=None,read_upper_bits=0xa5a50000):
+        if words is not None and (len(words)!=4 or any(not isinstance(w,int) or not 0<=w<=0xffffffff for w in words)):
+            raise ValueError('need four explicit unsigned32 EFUSE words')
+        if not 0<=read_upper_bits<=0xffffffff or read_upper_bits&255:raise ValueError('invalid EFUSE upper-bit fixture')
+        self.words=None if words is None else tuple(words);self.upper=read_upper_bits
+        self.page=None;self.byte=0;self.active=False;self.read_done=False;self.reads=0
+
+    def read(self,address):
+        if address!=EFUSE_RDAT:raise Blocked('efuse_control_read_not_modeled',address=hex(address))
+        if not self.active or self.read_done:raise Blocked('efuse_read_outside_selected_byte')
+        if self.words is None:raise Blocked('unknown_efuse_input',page=self.page,byte=self.byte)
+        value=(self.words[self.page]>>(8*self.byte))&255
+        self.read_done=True;self.reads+=1
+        return self.upper|value
+
+    def write(self,address,value):
+        if address==EFUSE_CON0:
+            if self.active or value&~0xc0:raise Blocked('efuse_page_select_not_modeled',value=hex(value))
+            self.page=value>>6;self.byte=0;return
+        if address!=EFUSE_CON1:raise Blocked('efuse_data_is_readonly')
+        if value==0:
+            if not self.active or not self.read_done:raise Blocked('efuse_deassert_before_completed_read')
+            self.active=self.read_done=False;self.byte+=1;return
+        if self.page is None or self.active or self.byte>=4 or value!=0x82|(self.byte<<2):
+            raise Blocked('unsupported_efuse_command',value=hex(value))
+        self.active=True;self.read_done=False
+
+    def report(self):
+        return {'words_fixture':None if self.words is None else [hex(w) for w in self.words],
+                'read_upper_bits_fixture':hex(self.upper),'selected_page':self.page,'selected_byte':self.byte,
+                'active':self.active,'completed_data_reads':self.reads,'device_otp_measured':False,
+                'physical_read_latency_or_programming_modeled':False}
+
+
+class WatchdogProjection:
+    """SDK command projection with an optional, explicit nominal timeout clock.
+
+    One CON command per observed KEY pair is a constrained software contract,
+    not a claim about silicon unlock lifetime. Enabling requires an explicit
+    clock; counting before the first CON initialization is outside this model.
+    Expiry stops execution; hardware reset/exception delivery is not invented.
+    """
+    keys=(0x048c159d,0x26ae37bf)
+
+    def __init__(self,progress=None):
+        if progress is not None:
+            if len(progress)!=2 or not all(isinstance(x,int) for x in progress) or progress[0]<0 or progress[1]<1:
+                raise ValueError('watchdog progress needs explicit nonnegative numerator/positive denominator')
+            progress=tuple(progress)
+        self.progress=progress;self.con=None;self.key_phase=0
+        self.elapsed=0;self.remainder=0;self.commands=0;self.feeds=0;self.expired=False
+        self.command_values=[]
+
+    def read(self,address):
+        if self.expired:raise Blocked('watchdog_requires_reset_after_expiry')
+        if address!=WDT_CON:raise Blocked('watchdog_key_read_not_modeled')
+        if self.con is None:raise Blocked('uninitialized_watchdog_control')
+        return self.con
+
+    def write(self,address,value):
+        if self.expired:raise Blocked('watchdog_requires_reset_after_expiry')
+        if address==WDT_KEY:
+            if self.key_phase>=2 or value!=self.keys[self.key_phase]:
+                raise Blocked('watchdog_key_sequence_not_modeled',value=hex(value),phase=self.key_phase)
+            self.key_phase+=1;return
+        if address!=WDT_CON:raise ValueError('not a watchdog register')
+        if self.key_phase!=2:raise Blocked('watchdog_command_without_observed_key_pair')
+        if value&~0x100ff or (value&31)>17:raise Blocked('unsupported_watchdog_control',value=hex(value))
+        if value&32 and value&0xc0:raise Blocked('watchdog_assert_irq_mode_not_modeled',value=hex(value))
+        if value&32 and self.progress is None:
+            raise Blocked('watchdog_timeout_clock_unknown',value=hex(value))
+        if self.con is not None and self.con&32 and value&32 and (value&31)!=(self.con&31):
+            raise Blocked('active_watchdog_period_change_not_modeled')
+        if value&0x10000:self.elapsed=self.remainder=0;self.feeds+=1
+        if not value&32 or self.con is None or not self.con&32:
+            self.elapsed=self.remainder=0
+        self.con=value&~0x10000;self.key_phase=0;self.commands+=1
+        self.command_values.append(value)
+        if len(self.command_values)>32:self.command_values.pop(16)
+
+    def advance(self):
+        if self.expired:raise Blocked('watchdog_requires_reset_after_expiry')
+        if self.con is None or not self.con&32:return
+        ticks,self.remainder=divmod(self.remainder+self.progress[0],self.progress[1])
+        self.elapsed+=ticks
+        if self.elapsed>=1<<(self.con&31):
+            self.expired=True
+            raise Blocked('watchdog_expired_delivery_not_implemented',control=hex(self.con),
+                          elapsed_nominal_units=self.elapsed)
+
+    def report(self):
+        return {'con':self.con,'key_phase':self.key_phase,'commands':self.commands,'feeds':self.feeds,
+                'command_values':self.command_values,'command_values_truncated':self.commands>len(self.command_values),
+                'elapsed_nominal_units':self.elapsed,'fraction_remainder':self.remainder,'expired':self.expired,
+                'assumptions':{'nominal_units_per_model_step':self.progress,
+                    'period_units':'1 << time_code, from SDK query table; hardware calibration unverified',
+                    'counter_phase':'fresh enable/disable reset elapsed; feed rearms full period; explicit projection, silicon phase unmeasured',
+                    'counting_before_first_explicit_CON_initialization_modeled':False,
+                    'bit16_readback':'configuration projection omits command bit; silicon readback unmeasured',
+                    'key_policy':'one CON command per observed KEY pair; hardware key lifetime unverified',
+                    'expiry_reset_or_irq_delivery_simulated':False}}
 
 
 class P11AccessProbe:
@@ -56,6 +290,7 @@ class MMU:
         if initial_con not in (None,0):raise ValueError('only explicit disabled MMU initial state supported')
         self.con=initial_con;self.begin=self.end=None
         self.walks=0
+        self.last_walk=None
 
     def read(self,address):
         value={MMU_BASE:self.con,MMU_BASE+4:self.begin,MMU_BASE+8:self.end}[address]
@@ -84,12 +319,15 @@ class MMU:
         tag=int.from_bytes(read_physical(entry,2),'little')
         if not tag&0x8000:raise Blocked('mmu_invalid_page',address=hex(address),entry=hex(entry))
         self.walks+=1
-        return 0x100000+((tag&0x7fff)<<7)+(address&127)
+        physical=((tag&0x7fff)<<7)+(address&127)
+        self.last_walk={'virtual':hex(address),'physical':hex(physical),'entry_address':hex(entry),'tag':hex(tag)}
+        return physical
 
     def report(self):
         return {'con':self.con,'table_begin':self.begin,'table_end_inclusive':self.end,'walks':self.walks,
-                'translation':'128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000',
-                'initial_con_is_synthetic':True,'hardware_tlb_cache_timing_simulated':False}
+                'translation':'128B pages;2B tags;valid bit15;absolute physical page number;virtual base0x400000',
+                'initial_con_is_synthetic':True,'hardware_tlb_cache_timing_simulated':False,
+                **({'last_walk':self.last_walk} if self.last_walk is not None else {})}
 
 
 class PartialWord:
@@ -110,7 +348,8 @@ class PartialWord:
 
 
 class Timer0:
-    def __init__(self):
+    def __init__(self,allowed_sources=(4,)):
+        self.allowed_sources=tuple(allowed_sources)
         self.con=self.cnt=self.prd=None
         self.pending=False
         self.remainder=0
@@ -127,7 +366,7 @@ class Timer0:
             mode=value&3
             if value&~0xfcf3 or mode not in (0,1):
                 raise Blocked('unsupported_timer_mode',value=hex(value))
-            if mode and (value>>10)&15!=4:
+            if mode and (value>>10)&15 not in self.allowed_sources:
                 raise Blocked('unsupported_timer_clock_source',value=hex(value))
             if mode and (self.cnt is None or self.prd is None):
                 raise Blocked('uninitialized_timer_count_or_period')
@@ -174,9 +413,21 @@ class BR28Model:
     def __init__(self,*,source_ticks_per_step=4,initial_registers=None,
                  initial_irq_config=None,initial_ipmask=None,reset_inputs_inactive=False,
                  bus_lock_model=False,initial_lock_owner='unknown',gpio_model=False,
-                 mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None):
+                 mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None,
+                 watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
+                 oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
+                 gpcnt_cleanup_projection=False,core_tick_configuration=False,
+                 cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
+                 clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
+                 cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
+                 core_tick_progress=None,core_tick_count_while_held=None):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
-        self.timer=Timer0()
+        if timer_lsb_ticks_per_step is not None and (not isinstance(timer_lsb_ticks_per_step,int) or not 0<=timer_lsb_ticks_per_step<=256):
+            raise ValueError('invalid explicit LSB virtual tick rate')
+        if oscillator_status_word is not None and (not isinstance(oscillator_status_word,int) or not 0<=oscillator_status_word<=0xffffffff):
+            raise ValueError('oscillator status fixture must be unknown or unsigned32')
+        self.timer_lsb_ticks_per_step=timer_lsb_ticks_per_step
+        self.timer=Timer0((4,) if timer_lsb_ticks_per_step is None else (0,4))
         self.irq=IRQController(initial_config=initial_irq_config,initial_ipmask=initial_ipmask)
         self.registers={}
         self.reset_inputs_inactive=reset_inputs_inactive
@@ -191,13 +442,52 @@ class BR28Model:
         self.gpio={}
         self.mmu=MMU(initial_mmu_con) if mmu_model else None
         self.p11=P11AccessProbe(p11_status) if p11_access_probe else None
+        self.watchdog=WatchdogProjection(watchdog_progress) if watchdog_projection else None
+        self.efuse=EfuseReadProjection(efuse_words) if efuse_read_projection else None
+        self.oscillator_configuration_projection=oscillator_configuration_projection
+        self.oscillator_status_word=oscillator_status_word
+        self.gpcnt=GPCNTCleanup() if gpcnt_cleanup_projection else None
+        if initial_core_tick_controls is not None and len(initial_core_tick_controls)!=2:raise ValueError('need two explicit core tick controls')
+        if core_tick_progress is not None and len(core_tick_progress)!=2:raise ValueError('need explicit progress for two core ticks')
+        self.core_ticks=[CoreTickStopped(value,rate) for value,rate in zip(initial_core_tick_controls or (None,None),
+                       core_tick_progress or (None,None))] if core_tick_configuration else None
+        if core_tick_count_while_held not in (None,False,True):raise ValueError('invalid held-core clock hypothesis')
+        self.core_tick_count_while_held=core_tick_count_while_held
+        if initial_cpu1_control not in (None,0):raise ValueError('only unknown or explicitly held CPU1 fixture supported')
+        self.cpu1_held_projection=cpu1_held_projection;self.initial_cpu1_control=initial_cpu1_control
+        self.cpu1_control=initial_cpu1_control
+        self.clock_divider_projection=clock_divider_projection
+        self.voltage_configuration_projection=voltage_configuration_projection
+        self.pll1_configuration_projection=pll1_configuration_projection
+        self.cache_status_probe=cache_status_probe
+        self.cache_status_words=dict(cache_status_words or {})
+        if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
+               for address,value in self.cache_status_words.items()):raise ValueError('invalid explicit cache status fixture')
+        self.sfc=SFCReadBus(initial_sfc_control) if sfc_read_bus else None
+        self.additional_configuration=set()
+        for enabled,addresses in ((oscillator_configuration_projection,OSC_CONFIG),
+                                  (clock_divider_projection,(SYS_DIV,)),
+                                  (voltage_configuration_projection,VOLTAGE_CONFIG),
+                                  (pll1_configuration_projection,(PLL1_CON3,))):
+            if enabled:self.additional_configuration.update(addresses)
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
-            if address not in (CLOCK0,CLOCK0+4,CLOCK0+8,PLL0):raise ValueError('unsupported initial register')
+            if address not in (CLOCK0,CLOCK0+4,CLOCK0+8,PLL0) and address not in self.additional_configuration:
+                raise ValueError('unsupported initial register')
+            if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('initial register must be unsigned32')
             self.registers[address]=value
 
     def handles(self,address,size):
         return size==4 and address%4==0 and (self.handles_gpio(address) or
+            (self.cache_status_probe and address in CACHE_STATUS_REGISTERS) or
+            (self.sfc is not None and address in (SFC_BASE,SFC_BASE+4)) or
+            address in self.additional_configuration or
+            (self.cpu1_held_projection and address==CPU1_CONTROL) or
+            self.handles_core_tick(address) or
+            self.handles_gpcnt(address) or
+            (self.oscillator_configuration_projection and address==OSC_STATUS) or
+            (self.efuse is not None and address in (EFUSE_CON0,EFUSE_CON1,EFUSE_RDAT)) or
+            (self.watchdog is not None and address in (WDT_CON,WDT_KEY)) or
             (self.p11 is not None and address in (P11_UART_CON2,PMU_STA)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
@@ -205,6 +495,22 @@ class BR28Model:
 
     def handles_gpio(self,address):
         return self.gpio_model and address%4==0 and any(base<=address<=base+32 for base in GPIO_BASES)
+
+    def handles_core_tick(self,address):
+        return self.core_ticks is not None and any(base<=address<=base+8 for base in CORE_TICK_BASES)
+
+    def core_tick(self,address):
+        index=0 if address<CORE_TICK_BASES[1] else 1
+        return self.core_ticks[index],address-CORE_TICK_BASES[index]
+
+    def handles_gpcnt(self,address):
+        return self.gpcnt is not None and address==GPCNT_CON
+
+    def gpcnt_rmw(self,address,kind,operand):
+        if not self.handles_gpcnt(address):raise ValueError('not modeled GPCNT CON')
+        self.gpcnt.rmw(kind,operand);self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
+                           'known_value':hex(self.gpcnt.bits.value),'known_mask':hex(self.gpcnt.bits.known)})
 
     def writable_gpio(self,address):
         if not self.handles_gpio(address):raise ValueError('not a GPIO register')
@@ -222,8 +528,27 @@ class BR28Model:
         self.counts['reads']+=1
         self.counts['opaque_port_selection_reads']+=1
 
+    def observe_dead_pwm_read(self,address):
+        if address not in (0xfd2964,0xfd2974,0xfd2984,0xfd2994):raise ValueError('not the four proven PWM config reads')
+        self.counts['reads']+=1;self.counts['opaque_pwm_configuration_reads']+=1
+
     def read(self,address):
         self.counts['reads']+=1
+        if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:
+            if address not in self.cache_status_words:raise Blocked('unknown_cache_status_input',address=hex(address))
+            return self.cache_status_words[address]
+        if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):return self.sfc.read(address)
+        if self.cpu1_held_projection and address==CPU1_CONTROL:
+            if self.cpu1_control is None:raise Blocked('unknown_initial_cpu1_control')
+            return self.cpu1_control
+        if self.handles_core_tick(address):
+            timer,offset=self.core_tick(address);return timer.read(offset)
+        if self.handles_gpcnt(address):return self.gpcnt.read()
+        if self.oscillator_configuration_projection and address==OSC_STATUS:
+            if self.oscillator_status_word is None:raise Blocked('unknown_oscillator_status_input')
+            return self.oscillator_status_word
+        if self.efuse is not None and address in (EFUSE_CON0,EFUSE_CON1,EFUSE_RDAT):return self.efuse.read(address)
+        if self.watchdog is not None and address in (WDT_CON,WDT_KEY):return self.watchdog.read(address)
         if self.p11 is not None and address in (P11_UART_CON2,PMU_STA):
             if address!=PMU_STA:raise Blocked('unmodeled_p11_register_read',address=hex(address))
             return self.p11.read()
@@ -239,7 +564,23 @@ class BR28Model:
     def write(self,address,value):
         if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('MMIO value must be unsigned32')
         if not self.handles(address,4):raise Blocked('unsupported_peripheral_write',address=hex(address))
-        if self.p11 is not None and address in (P11_UART_CON2,PMU_STA):
+        if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:raise Blocked('cache_control_write_not_modeled',address=hex(address))
+        if self.handles_gpcnt(address):raise Blocked('gpcnt_full_control_store_not_modeled')
+        if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
+        if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):self.sfc.write(address,value)
+        elif self.cpu1_held_projection and address==CPU1_CONTROL:
+            if value&1:raise Blocked('cpu1_release_not_implemented',value=hex(value))
+            if value!=0:raise Blocked('cpu1_control_write_not_modeled',value=hex(value))
+            self.cpu1_control=0
+        elif self.handles_core_tick(address):
+            timer,offset=self.core_tick(address)
+            if address==CORE_TICK_BASES[1] and value&1:
+                if not self.cpu1_held_projection or self.cpu1_control is None:raise Blocked('core1_execution_state_unknown')
+                if self.cpu1_control==0 and self.core_tick_count_while_held is None:raise Blocked('core1_tick_held_clock_unknown')
+            timer.write(offset,value)
+        elif self.efuse is not None and address in (EFUSE_CON0,EFUSE_CON1,EFUSE_RDAT):self.efuse.write(address,value)
+        elif self.watchdog is not None and address in (WDT_CON,WDT_KEY):self.watchdog.write(address,value)
+        elif self.p11 is not None and address in (P11_UART_CON2,PMU_STA):
             if address!=P11_UART_CON2:raise Blocked('pmu_status_is_not_a_configuration_latch')
             self.p11.write(value)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
@@ -279,7 +620,20 @@ class BR28Model:
 
     def advance(self,icfg):
         self.counts['completed_model_steps']+=1
-        self.timer.advance(self.source_ticks_per_step)
+        if self.watchdog is not None:self.watchdog.advance()
+        if self.core_ticks is not None:
+            if self.core_ticks[1].con is not None and self.core_ticks[1].con&1:
+                if not self.cpu1_held_projection or self.cpu1_control is None:raise Blocked('core1_execution_state_unknown')
+                if self.cpu1_control==0 and self.core_tick_count_while_held is None:raise Blocked('core1_tick_held_clock_unknown')
+            for core,timer in enumerate(self.core_ticks):
+                if core==1 and self.cpu1_held_projection and self.cpu1_control==0 and self.core_tick_count_while_held is False:continue
+                before=timer.expirations;timer.advance()
+                if timer.expirations!=before:
+                    raise Blocked('core_tick_overflow_delivery_unresolved',core=core,irq=3,
+                                  note='internal pending set; no guessed readback bit, wake or interrupt entry')
+        if self.timer.con is None or not self.timer.con&3:self.timer.advance(0)
+        elif ((self.timer.con>>10)&15)==0:self.timer.advance(self.timer_lsb_ticks_per_step)
+        else:self.timer.advance(self.source_ticks_per_step)
         if self.timer.pending and self.irq.eligible(4,icfg):
             raise Blocked('interrupt_delivery_not_implemented',irq=4,
                           note='Timer0 pending and enabled after priority filtering; CPU entry not bypassed')
@@ -304,6 +658,31 @@ class BR28Model:
             result['assumptions']['gpio']='exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model'
         if self.mmu is not None:result['mmu']=self.mmu.report()
         if self.p11 is not None:result['p11_access_counterfactual']=self.p11.report()
+        if self.watchdog is not None:result['watchdog_projection']=self.watchdog.report()
+        if self.efuse is not None:result['efuse_read_projection']=self.efuse.report()
+        if self.gpcnt is not None:result['gpcnt_cleanup_projection']=self.gpcnt.report()
+        if self.core_ticks is not None:
+            result['core_tick_configuration']=[timer.report() for timer in self.core_ticks]
+            result['assumptions']['core_tick_count_while_cpu1_held']=self.core_tick_count_while_held
+        if self.cpu1_held_projection:
+            result['cpu1_held_projection']={'initial_control_fixture':self.initial_cpu1_control,
+                                            'current_control':self.cpu1_control,'secondary_cpu_executed':False,
+                                            'release_is_a_stop_not_ready_injection':True}
+        if self.clock_divider_projection:result['assumptions']['sys_div_configuration_projection']=True
+        if self.voltage_configuration_projection:
+            result['assumptions']['voltage_configuration_projection']='five scoped P33/CMNG configuration registers; analog voltage/ramp/settling and RAM wait-state timing not modeled'
+        if self.pll1_configuration_projection:result['assumptions']['pll1_con3_configuration_projection']='RW config only; analog PLL1 not modeled'
+        if self.cache_status_probe:
+            result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}
+            result['assumptions']['cache_contents_and_coherence_simulated']=False
+        if self.sfc is not None:result['sfc_read_bus']=self.sfc.report()
+        if self.counts.get('opaque_pwm_configuration_reads',0):
+            result['assumptions']['pwm_configuration_reads']='R0 remains unknown through guarded loop/return until actual overwrite; no value fabricated'
+        if self.oscillator_configuration_projection:
+            result['assumptions']['oscillator_configuration']='five scoped WLA RW configuration registers; analog oscillator/lock/settling and clock propagation not modeled'
+            result['assumptions']['oscillator_status_word_fixture']=self.oscillator_status_word
+        if self.timer_lsb_ticks_per_step is not None:
+            result['assumptions']['timer_lsb_ticks_per_step']=self.timer_lsb_ticks_per_step
         if self.counts['opaque_port_selection_reads']:
             result['assumptions']['port_selection_read']='opaque R0 until validated caller overwrites it; value never supplied as zero'
         return result

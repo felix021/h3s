@@ -538,7 +538,7 @@
           "table_begin": 1179648,
           "table_end_inclusive": 1189887,
           "walks": 0,
-          "translation": "128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000",
+          "translation": "128B pages;2B tags;valid bit15;absolute physical page number;virtual base0x400000",
           "initial_con_is_synthetic": true,
           "hardware_tlb_cache_timing_simulated": false
         }
@@ -1081,7 +1081,7 @@
           "table_begin": 1179648,
           "table_end_inclusive": 1189887,
           "walks": 0,
-          "translation": "128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000",
+          "translation": "128B pages;2B tags;valid bit15;absolute physical page number;virtual base0x400000",
           "initial_con_is_synthetic": true,
           "hardware_tlb_cache_timing_simulated": false
         }
@@ -1642,7 +1642,7 @@
           "table_begin": 1179648,
           "table_end_inclusive": 1189887,
           "walks": 0,
-          "translation": "128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000",
+          "translation": "128B pages;2B tags;valid bit15;absolute physical page number;virtual base0x400000",
           "initial_con_is_synthetic": true,
           "hardware_tlb_cache_timing_simulated": false
         }
@@ -1701,7 +1701,7 @@
       "instruction_adapters": {
         "entry_li_sp_ssp": 2,
         "bootstrap_full_width_clock_store": 1,
-        "exact_full_word_store": 78,
+        "exact_full_word_store": 102,
         "mmio_rmw_always_writes": 24,
         "parallel_full_word_store_old_registers": 7,
         "typed_handoff_byte_exact_store": 5,
@@ -2316,7 +2316,7 @@
           "table_begin": 1179648,
           "table_end_inclusive": 1189887,
           "walks": 0,
-          "translation": "128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000",
+          "translation": "128B pages;2B tags;valid bit15;absolute physical page number;virtual base0x400000",
           "initial_con_is_synthetic": true,
           "hardware_tlb_cache_timing_simulated": false
         }

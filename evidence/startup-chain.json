@@ -1,0 +1,696 @@
+{
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "decoder_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "device_accessed": false,
+  "execution_performed": false,
+  "scope": "static exact-QCY call/address anchors, SDK labels are structural correspondence, not byte-match provenance",
+  "calls": [
+    {
+      "pc": "0x6035188",
+      "id": "call.l",
+      "fields": {
+        "n": 4123908
+      },
+      "target": "0x6012b94"
+    },
+    {
+      "pc": "0x603518e",
+      "id": "call.l",
+      "fields": {
+        "n": 4194063
+      },
+      "target": "0x6034fb0"
+    },
+    {
+      "pc": "0x603519a",
+      "id": "call.l",
+      "fields": {
+        "n": 4194057
+      },
+      "target": "0x6034fb0"
+    },
+    {
+      "pc": "0x60351a2",
+      "id": "call.l",
+      "fields": {
+        "n": 4194053
+      },
+      "target": "0x6034fb0"
+    },
+    {
+      "pc": "0x60351aa",
+      "id": "call.l",
+      "fields": {
+        "n": 4194049
+      },
+      "target": "0x6034fb0"
+    },
+    {
+      "pc": "0x60352d8",
+      "id": "call.xl",
+      "fields": {
+        "n": 98376
+      },
+      "target": "0x606536e"
+    },
+    {
+      "pc": "0x60352de",
+      "id": "call.xl",
+      "fields": {
+        "n": 100136
+      },
+      "target": "0x6066134"
+    },
+    {
+      "pc": "0x60352e4",
+      "id": "call.xl",
+      "fields": {
+        "n": 101575
+      },
+      "target": "0x6066c78"
+    },
+    {
+      "pc": "0x6035334",
+      "id": "call.l",
+      "fields": {
+        "n": 4193646
+      },
+      "target": "0x6034e14"
+    },
+    {
+      "pc": "0x6035350",
+      "id": "call.xl",
+      "fields": {
+        "n": 102262
+      },
+      "target": "0x6067242"
+    },
+    {
+      "pc": "0x6035356",
+      "id": "call.xl",
+      "fields": {
+        "n": 98230
+      },
+      "target": "0x60652c8"
+    },
+    {
+      "pc": "0x606534e",
+      "id": "call.xl",
+      "fields": {
+        "n": 1714
+      },
+      "target": "0x60660b8"
+    },
+    {
+      "pc": "0x606535a",
+      "id": "call.l",
+      "fields": {
+        "n": 4192241
+      },
+      "target": "0x6064340"
+    },
+    {
+      "pc": "0x606535e",
+      "id": "call.xl",
+      "fields": {
+        "n": 1729
+      },
+      "target": "0x60660e6"
+    },
+    {
+      "pc": "0x6065364",
+      "id": "call.xl",
+      "fields": {
+        "n": 1742
+      },
+      "target": "0x6066106"
+    },
+    {
+      "pc": "0x606611c",
+      "id": "call.l",
+      "fields": {
+        "n": 137
+      },
+      "target": "0x6066232"
+    }
+  ],
+  "anchors": [
+    {
+      "pc": "0x12caf4",
+      "id": "li.sr_u32",
+      "fields": {
+        "s": 12,
+        "n": 1198144
+      }
+    },
+    {
+      "pc": "0x12cafa",
+      "id": "li.sr_u32",
+      "fields": {
+        "s": 14,
+        "n": 1198144
+      }
+    },
+    {
+      "pc": "0x12cb00",
+      "id": "li.sr_u32",
+      "fields": {
+        "s": 0,
+        "n": 1231572
+      }
+    },
+    {
+      "pc": "0x12cb06",
+      "id": "rti",
+      "fields": {}
+    },
+    {
+      "pc": "0x12cad4",
+      "id": "mov.r_sr",
+      "fields": {
+        "r": 0,
+        "s": 11
+      }
+    },
+    {
+      "pc": "0x12cad8",
+      "id": "and.nmodimm.rri",
+      "fields": {
+        "r": 0,
+        "s": 0,
+        "n": 3904
+      }
+    },
+    {
+      "pc": "0x12cadc",
+      "id": "mov.sr_r",
+      "fields": {
+        "r": 0,
+        "s": 11
+      }
+    },
+    {
+      "pc": "0x12cae0",
+      "id": "call.xl",
+      "fields": {
+        "n": 2146933099
+      },
+      "target": "0x1fdbc"
+    },
+    {
+      "pc": "0x12cae6",
+      "id": "call.xl",
+      "fields": {
+        "n": 2146933098
+      },
+      "target": "0x1fdc0"
+    },
+    {
+      "pc": "0x12caec",
+      "id": "li.u32",
+      "fields": {
+        "r": 0,
+        "n": 100880184
+      }
+    },
+    {
+      "pc": "0x12caf2",
+      "id": "goto.r",
+      "fields": {
+        "x": 0
+      }
+    },
+    {
+      "pc": "0x60660b8",
+      "id": "li.u32",
+      "fields": {
+        "r": 0,
+        "n": 1703424
+      }
+    },
+    {
+      "pc": "0x60660be",
+      "id": "li.u32",
+      "fields": {
+        "r": 1,
+        "n": 1231604
+      }
+    },
+    {
+      "pc": "0x60660c4",
+      "id": "st.w.l",
+      "fields": {
+        "r": 0,
+        "n": 62,
+        "s": 1
+      }
+    },
+    {
+      "pc": "0x60660ce",
+      "id": "li.u8",
+      "fields": {
+        "r": 1,
+        "n": 0
+      }
+    },
+    {
+      "pc": "0x60660d0",
+      "id": "st.b.l",
+      "fields": {
+        "r": 0,
+        "n": 53,
+        "s": 1
+      }
+    },
+    {
+      "pc": "0x60660d4",
+      "id": "li.u32",
+      "fields": {
+        "r": 1,
+        "n": 16771264
+      }
+    },
+    {
+      "pc": "0x60660da",
+      "id": "rmw.or.modimm",
+      "fields": {
+        "r": 1,
+        "n": 0,
+        "m": 1
+      }
+    },
+    {
+      "pc": "0x60660de",
+      "id": "ld.bu.l",
+      "fields": {
+        "r": 1,
+        "s": 0,
+        "n": 53
+      }
+    },
+    {
+      "pc": "0x60660e2",
+      "id": "beqz",
+      "fields": {
+        "r": 1,
+        "n": 253
+      },
+      "target": "0x60660de"
+    },
+    {
+      "pc": "0x6066024",
+      "id": "li.u32",
+      "fields": {
+        "r": 0,
+        "n": 1205696
+      }
+    },
+    {
+      "pc": "0x606602a",
+      "id": "st.b.l",
+      "fields": {
+        "r": 0,
+        "n": 53,
+        "s": 2
+      }
+    },
+    {
+      "pc": "0x606602e",
+      "id": "li.u32",
+      "fields": {
+        "r": 0,
+        "n": 1703424
+      }
+    },
+    {
+      "pc": "0x6066034",
+      "id": "st.w.l",
+      "fields": {
+        "r": 0,
+        "n": 85,
+        "s": 2
+      }
+    },
+    {
+      "pc": "0x6066116",
+      "id": "ld.w.idxs",
+      "fields": {
+        "r": 4,
+        "s": 4,
+        "t": 1
+      }
+    },
+    {
+      "pc": "0x6066120",
+      "id": "ld.w",
+      "fields": {
+        "d": 1,
+        "b": 4,
+        "n": 0
+      }
+    },
+    {
+      "pc": "0x6066122",
+      "id": "mov.sr_r",
+      "fields": {
+        "r": 1,
+        "s": 14
+      }
+    },
+    {
+      "pc": "0x6066126",
+      "id": "pop.srl",
+      "fields": {
+        "m": 41
+      }
+    },
+    {
+      "pc": "0x6066128",
+      "id": "pop.rmask",
+      "fields": {
+        "n": 65535
+      }
+    },
+    {
+      "pc": "0x606612c",
+      "id": "lockclr",
+      "fields": {}
+    },
+    {
+      "pc": "0x606612e",
+      "id": "sti",
+      "fields": {}
+    },
+    {
+      "pc": "0x6066130",
+      "id": "rti",
+      "fields": {}
+    },
+    {
+      "pc": "0x6065f96",
+      "id": "add.ri.neg7",
+      "fields": {
+        "r": 2,
+        "n": 52
+      }
+    },
+    {
+      "pc": "0x6065f98",
+      "id": "st.w",
+      "fields": {
+        "d": 1,
+        "b": 2,
+        "n": 3
+      }
+    },
+    {
+      "pc": "0x6065f9a",
+      "id": "li.u8",
+      "fields": {
+        "r": 1,
+        "n": 0
+      }
+    },
+    {
+      "pc": "0x6065f9c",
+      "id": "st.w",
+      "fields": {
+        "d": 1,
+        "b": 2,
+        "n": 2
+      }
+    },
+    {
+      "pc": "0x6065f9e",
+      "id": "st.d.l",
+      "fields": {
+        "r": 2,
+        "n": 0,
+        "s": 0
+      }
+    },
+    {
+      "pc": "0x6065fa2",
+      "id": "mov.rr",
+      "fields": {
+        "x": 0,
+        "y": 2
+      }
+    }
+  ],
+  "cpu1": {
+    "enable_function": "0x60660b8",
+    "entry_pointer_address": "0x19fef8",
+    "entry": "0x12caf4",
+    "usp_sp": "0x124840",
+    "first_reti": "0x12cad4",
+    "first_rti": "0x12cb06",
+    "rom_calls": [
+      "0x1fdbc",
+      "0x1fdc0"
+    ],
+    "cpu1_main": "0x6034f38",
+    "release_register": "0xffe8c0",
+    "release_bit": 0,
+    "run_notify": "0x6066018",
+    "run_flag": "0x1265f5",
+    "os_running_bitmap": "0x1265f4",
+    "first_wait_pc": "0x60660de",
+    "second_wait_pc": "0x6065354"
+  },
+  "first_task": {
+    "entry": "0x6066106",
+    "current_tcb_array": "0x126c5c",
+    "prepare": "0x6066232",
+    "stack_from_tcb_offset": 0,
+    "sp_switch": "0x6066122",
+    "frame_bytes": 76,
+    "frame_words_low_to_high": [
+      "reti",
+      "rets",
+      "psr",
+      "r0",
+      "r1",
+      "r2",
+      "r3",
+      "r4",
+      "r5",
+      "r6",
+      "r7",
+      "r8",
+      "r9",
+      "r10",
+      "r11",
+      "r12",
+      "r13",
+      "r14",
+      "r15"
+    ],
+    "sti": "0x606612e",
+    "rti": "0x6066130",
+    "frame_initializer": "0x6065f96",
+    "initializer_known_words": {
+      "0": "task PC",
+      "4": 0,
+      "8": 0,
+      "12": "pdata"
+    },
+    "other_frame_words": "not initialized by OSTaskStkInit; do not infer zero",
+    "app_core": {
+      "table": "0x609d780",
+      "name_pointer": "0x60a1d11",
+      "entry": "0x6012028",
+      "pdata": 0,
+      "priority": 1,
+      "affinity": 0,
+      "stack_words": 768,
+      "queue_bytes": 512
+    },
+    "first_selected_tcb": "must execute scheduler, not force app_core"
+  },
+  "efuse": {
+    "reader": "0x6034fb0",
+    "page_select": "0xf2c2c0",
+    "byte_control": "0xf2c2c4",
+    "byte_read": "0xf2c2c8",
+    "transaction": "page<<6; for i=0..3 write 0x82|(i<<2), delay50us, read low8 bits, write control0; little-endian accumulation",
+    "ram_page_words": {
+      "0": "0x126860",
+      "1": "0x126864",
+      "2": "0x12686c",
+      "3": "0x126868"
+    },
+    "first_live_fields": [
+      {
+        "page": 2,
+        "bits": "15:12",
+        "sdk_name": "efuse_get_btvbg_xosc_trim",
+        "extract_pc": "0x60351ec",
+        "unknown_branch_pc": "0x60351fa",
+        "output": "0xfd1940",
+        "value": "nibble==15 ? 0x40000 : nibble<<15"
+      },
+      {
+        "page": 2,
+        "bits": "19:16",
+        "sdk_name": "efuse_get_btvbg_syspll_trim",
+        "extract_pc": "0x6035286",
+        "unknown_branch_pc": "0x6035294",
+        "output": "0xfd4600",
+        "value": "nibble==15 ? 0x408929b0 : 0x8929b0|(nibble<<27)",
+        "literal_base": 8989104,
+        "literal_default": 1082730928
+      }
+    ],
+    "values_measured": false,
+    "boot_handoff_equivalence_proven": false
+  },
+  "constraints": [
+    "No CPU1 ready injection",
+    "No RTI jump-only replacement",
+    "No zero filling unknown task-stack registers",
+    "No OTP all-zero/all-ones inference",
+    "No arbitrary MMIO RW fallback"
+  ],
+  "port_initialization": {
+    "call": {
+      "pc": "0x60352ea",
+      "id": "call.xl",
+      "fields": {
+        "n": 105234
+      },
+      "target": "0x6068914"
+    },
+    "reference": "cpu.a/port.c.o/msys_io_init; structural correspondence",
+    "reference_object_sha256": "32f5e2a17352714329a35febe42eee55caafedc5b1cfb93ae7912459201a834c",
+    "anchors": [
+      {
+        "pc": "0x6068918",
+        "id": "add.r_sp_i",
+        "fields": {
+          "r": 0,
+          "n": 2
+        }
+      },
+      {
+        "pc": "0x606891a",
+        "id": "li.neg5",
+        "fields": {
+          "r": 6,
+          "n": 31
+        }
+      },
+      {
+        "pc": "0x606891c",
+        "id": "rep.i",
+        "fields": {
+          "n": 6,
+          "b": 0
+        }
+      },
+      {
+        "pc": "0x606891e",
+        "id": "st.h.pin",
+        "fields": {
+          "d": 6,
+          "b": 0,
+          "n": 0
+        }
+      },
+      {
+        "pc": "0x6068920",
+        "id": "li.u32",
+        "fields": {
+          "r": 0,
+          "n": 16711936
+        }
+      },
+      {
+        "pc": "0x6068926",
+        "id": "ld.w",
+        "fields": {
+          "d": 0,
+          "b": 0,
+          "n": 0
+        }
+      },
+      {
+        "pc": "0x606892e",
+        "id": "if.ne.and.rm",
+        "fields": {
+          "r": 0,
+          "n": 1,
+          "t": 1,
+          "e": 0
+        }
+      },
+      {
+        "pc": "0x6068932",
+        "id": "ld.w",
+        "fields": {
+          "d": 0,
+          "b": 5,
+          "n": 5
+        }
+      },
+      {
+        "pc": "0x6068934",
+        "id": "uextra.rrii",
+        "fields": {
+          "r": 6,
+          "s": 0,
+          "n": 17,
+          "m": 2
+        }
+      },
+      {
+        "pc": "0x6068a8a",
+        "id": "beq.ri",
+        "fields": {
+          "r": 6,
+          "i": 1,
+          "n": 98
+        },
+        "target": "0x6068b52"
+      },
+      {
+        "pc": "0x6068b56",
+        "id": "beq.ri",
+        "fields": {
+          "r": 6,
+          "i": 1,
+          "n": 98
+        },
+        "target": "0x6068c1e"
+      }
+    ],
+    "repeat": "seven halfword writes at SP+2..SP+14; old-base postincrement2; flags unchanged",
+    "live_inputs": [
+      {
+        "address": "0xff0100",
+        "name": "JL_SDTAP.CON",
+        "bits": "0",
+        "consumer": "when enabled, read IOMAP.CON0(fd6014)[18:17]; channel1 preserves USB DP/DM"
+      },
+      {
+        "address": "0xf2c120",
+        "name": "P3_PINR_CON",
+        "bits": "0",
+        "consumer": "when enabled, P3_PORT_SEL0(f2c300)[7:0] selects a live protected reset pin"
+      },
+      {
+        "address": "0xfe0200",
+        "name": "JL_SFC.CON",
+        "bits": "11:8",
+        "consumer": "protect SPI pins"
+      },
+      {
+        "address": "0xfe0300",
+        "name": "JL_PSRAM.PSRAM_CON0",
+        "bits": "1",
+        "consumer": "when enabled protect pins64,65,66,69"
+      }
+    ],
+    "physical_initial_values_measured": false
+  }
+}

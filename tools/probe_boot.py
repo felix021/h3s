@@ -87,6 +87,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     'invalid memory request')
             if hardware is not None and hardware.mmu is not None:
                 address=hardware.mmu.translate(address,size,self.read)
+            if hardware is not None and hardware.sfc is not None:hardware.sfc.check_flash_access(address)
             if ENTRY<=address and address+size<=ENTRY+len(app):
                 return app[address-ENTRY:address-ENTRY+size]
             if rom is not None and 0<=address and address+size<=len(rom):
@@ -130,13 +131,37 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     class CPU(module.CPU):
         ssp=0
         repeat=None
+        opaque_source=None
+        mutable_decode_bytes=None
+
+        def check_opaque(self,insn,raw):
+            if None not in self.R:return
+            require(self.R[0] is None and all(x is not None for x in self.R[1:]),'unsupported opaque register')
+            if self.opaque_source=='pwm_dead_read':
+                allowed={0x06034a84:('add.ri.u5',{'r':4,'n':1}),
+                         0x06034a86:('bne.ri',{'r':4,'i':4,'n':503}),
+                         0x06034a78:('mov.rr',{'x':0,'y':4}),
+                         0x06034a8a:('pop.pc_rl',{'l':5}),
+                         0x060006e2:('add.ri.u5',{'r':5,'n':8}),
+                         0x060006e4:('blt.rr',{'r':5,'s':6,'n':507}),
+                         0x060006de:('ld.w',{'d':0,'b':5,'n':1})}
+                require(diagnostics and diagnostics.get('opaque_pwm_read') and
+                        allowed.get(self.pc)==(insn.id,raw),'opaque PWM value would be consumed')
+                if self.pc==0x060006e4:require(self.R[5]<self.R[6],'opaque PWM return lacks proven next callback')
+            else:
+                require(diagnostics and diagnostics.get('opaque_pin_read') and
+                        ((self.pc==0x06067462 and insn.id=='pop.pc_rl' and raw=={'l':8}) or
+                         (self.pc==0x0603502c and insn.id=='li.s16' and raw=={'r':0,'n':848})),
+                        'opaque register would be consumed outside verified dead-value path')
 
         def word_store(self,insn,raw):
             op=module.check.operands(insn,raw)
             if insn.id=='st.w.modimm':address=self.R[op['r']]+op['n'];value=op['m']
             elif insn.id=='st.w.idxs':address=self.R[op['r']]+(self.R[op['s']]<<2);value=self.R[op['t']]
+            elif insn.id=='st.w.idx':address=self.R[op['r']]+self.R[op['s']];value=self.R[op['t']]
             elif insn.id=='st.w.l':address=self.R[op['r']]+op['n'];value=self.R[op['s']]
             elif insn.id=='st.w':address=self.R[op['b']]+op['n'];value=self.R[op['d']]
+            elif insn.id=='st.w.sp':address=self.sp+op['n'];value=self.R[op['r']]
             else:raise ValueError('unsupported exact word store')
             return address&0xffffffff,value&0xffffffff
 
@@ -148,9 +173,21 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def decode(self,pc):
             if pc%2:
                 raise Blocked('unaligned_instruction_fetch',address=hex(pc))
+            if hardware is not None and hardware.sfc is not None:hardware.sfc.check_flash_access(pc)
             old=self.mem.operation
             self.mem.operation='fetch'
             try:
+                # RAM and virtual mappings may change. Reuse a decode only
+                # after checking its actual bytes through the current mapping.
+                if not ((rom is not None and 0<=pc<len(rom)) or 0x06000000<=pc<0x08000000):
+                    if self.mutable_decode_bytes is None:self.mutable_decode_bytes={}
+                    if pc in self.cache:
+                        actual=self.mem.read(pc,self.cache[pc][2])
+                        if self.mutable_decode_bytes.get(pc)==actual:return self.cache[pc]
+                        self.cache.pop(pc)
+                    result=super().decode(pc)
+                    self.mutable_decode_bytes[pc]=self.mem.read(pc,result[2])
+                    return result
                 if rom is not None and len(rom)-6<pc<len(rom):
                     # Upstream asks for6B even for a2B/4B instruction. Decode
                     # available tail bytes without reading/padding beyond ROM.
@@ -176,7 +213,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 milestones.append({'kind':kind,'pc':hex(before_pc),'icfg':hex(self.icfg),
                                    'r0':hex(self.R[0]),'sp':hex(self.sp)})
             if diagnostics and before_pc in diagnostics.get('watch_pcs',()):
-                milestones.append({'kind':'watched_pc_executed','pc':hex(before_pc),'r0':hex(self.R[0])})
+                milestone={'kind':'watched_pc_executed','pc':hex(before_pc),'r0':hex(self.R[0]) if self.R[0] is not None else 'unknown'}
+                if diagnostics.get('watch_registers'):
+                    milestone['registers']={f'r{i}':hex(self.R[i]) if self.R[i] is not None else 'unknown'
+                                             for i in diagnostics['watch_registers']}
+                milestones.append(milestone)
             if helper_return:
                 self.repeat=None
                 adapters['irq_repeat_return_hypothesis']+=1
@@ -193,10 +234,40 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
+            self.check_opaque(insn,raw)
+            if diagnostics and diagnostics.get('immediate_rep_projection') and insn.id=='rep.i':
+                op=module.check.operands(insn,raw)
+                body,fields,body_size=self.decode(self.pc+size)
+                allowed_stores=('st.w.pin','st.h.pin','st.b.pin') if diagnostics.get('exact_subword_stores') else ('st.w.pin',)
+                if body_size==op['b'] and body.id in allowed_stores:
+                    require(self.repeat is None and self.after_then is None and 1<=op['n']<=32,
+                            'immediate REP projection has an unsupported context')
+                    self.repeat={'start':self.pc+size,'end':self.pc+size+op['b'],'register':None,'remaining':op['n']}
+                    self.pc+=size;self.steps+=1;adapters['immediate_rep_single_store_projection']+=1
+                    return
+            if diagnostics and diagnostics.get('immediate_rep_projection') and (insn.id=='st.w.pin' or
+                    (diagnostics.get('exact_subword_stores') and insn.id in ('st.h.pin','st.b.pin'))):
+                op=module.check.operands(insn,raw);address=self.R[op['b']]
+                width={'st.w.pin':4,'st.h.pin':2,'st.b.pin':1}[insn.id]
+                require(address%width==0,'unaligned postincrement store')
+                value=self.R[op['d']]&((1<<(width*8))-1)
+                self.mem.write(address&0xffffffff,value.to_bytes(width,'little'))
+                self.R[op['b']]=(address+op['n'])&0xffffffff
+                self.finish_exact(self.pc+size);adapters['exact_postincrement_store']+=1
+                return
+            if diagnostics and diagnostics.get('exact_subword_stores') and insn.id in ('st.h','st.b','st.h.l','st.b.l'):
+                op=module.check.operands(insn,raw)
+                if insn.id.endswith('.l'):address=self.R[op['r']]+op['n'];value=self.R[op['s']]
+                else:address=self.R[op['b']]+op['n'];value=self.R[op['d']]
+                width=2 if insn.id.startswith('st.h') else 1
+                require(address%width==0,'unaligned exact subword store')
+                self.mem.write(address&0xffffffff,(value&((1<<(width*8))-1)).to_bytes(width,'little'))
+                self.finish_exact(self.pc+size);adapters['exact_subword_store']+=1
+                return
             if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id.endswith('.p'):
                 pair,pair_raw,pair_size=self.decode(self.pc+size)
                 base=self.tab.by_id(insn.id[:-2])
-                if base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.')) and pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs'):
+                if base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.')) and pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
                     params=module.table.placeholders(insn.syntax);plain=module.table.placeholders(base.syntax)
                     base_raw=dict(zip(plain,(raw[k] for k in params)))
                     base_raw.update({k:raw[k] for k in base.fields if k not in base_raw and k in raw})
@@ -210,18 +281,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     self.apply(effect);self.finish_exact(self.pc+size+pair_size)
                     adapters['parallel_full_word_store_old_registers']+=1
                     return
-            if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs'):
+            if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
                 address,value=self.word_store(insn,raw)
                 require(address%4==0,'unaligned exact word store')
                 self.mem.write(address,struct.pack('<I',value));self.finish_exact(self.pc+size)
                 adapters['exact_full_word_store']+=1
                 return
-            if None in self.R:
-                require(diagnostics and diagnostics.get('opaque_pin_read') and self.R[0] is None and
-                        all(x is not None for x in self.R[1:]) and
-                        ((self.pc==0x06067462 and insn.id=='pop.pc_rl' and raw=={'l':8}) or
-                         (self.pc==0x0603502c and insn.id=='li.s16' and raw=={'r':0,'n':848})),
-                        'opaque register would be consumed outside verified dead-value path')
+            if hardware is not None and diagnostics and diagnostics.get('opaque_pwm_read') and self.pc==0x06034a82:
+                require(insn.id=='ld.w' and raw=={'d':0,'b':5,'n':0} and self.after_then is None and
+                        0<=self.R[4]<4 and self.R[5]==0xfd2964+(self.R[4]<<4),'discarded PWM read shape changed')
+                require(int.from_bytes(self.mem.read(self.sp+8,4),'little')==0x060006e2 and
+                        int.from_bytes(self.mem.read(self.sp+4,4),'little')+8<self.R[6],
+                        'PWM return might be consumed by caller')
+                hardware.observe_dead_pwm_read(self.R[5])
+                self.R[0]=None;self.opaque_source='pwm_dead_read';self.pc+=size;self.steps+=1
+                adapters['proven_dead_pwm_configuration_read']+=1
+                return
             if hardware is not None and diagnostics and diagnostics.get('opaque_pin_read') and self.pc==0x0606745e:
                 require(insn.id=='ld.w.l' and raw=={'r':0,'s':8,'n':120} and self.R[8]+480==0xf2c300
                         and self.after_then is None,'P33 discarded read shape changed')
@@ -230,6 +305,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 ret_insn,ret_fields,_=self.decode(0x0603502c)
                 require(ret_insn.id=='li.s16' and ret_fields=={'r':0,'n':848},'caller no longer kills R0')
                 hardware.observe_dead_port_selection_read(0xf2c300)
+                self.opaque_source='p33_dead_return'
                 self.R[0]=None  # opaque, never a fake register value
                 self.pc+=size;self.steps+=1
                 adapters['proven_dead_p33_read']+=1
@@ -259,6 +335,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 op=module.check.operands(insn,raw)
                 address=(self.R[op['r']]+op['n'])&0xffffffff
                 if 0xf00000<=address<0x1000000:
+                    if hardware.handles_gpcnt(address):
+                        if insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
+                        elif insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        else:raise Blocked('gpcnt_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.gpcnt_rmw(address,kind,operand)
+                        self.finish_exact(self.pc+size);adapters['gpcnt_unknown_preserving_cleanup_rmw']+=1
+                        return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
                         elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
@@ -274,7 +357,6 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                             adapters['gpio_conditional_rmw']+=1
                         adapters['gpio_symbolic_rmw']+=1
                         return
-                    require(self.after_then is None,'MMIO RMW adapter inside conditional block is not implemented')
                     old=int.from_bytes(self.mem.read(address,4),'little')
                     if insn.id=='rmw.or.modimm':value=old|op['m']
                     elif insn.id=='rmw.and.nmodimm':value=old&op['m']
@@ -285,7 +367,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # Always emit the bus write, even when the value is equal.
                     # Upstream scratch-memory models can drop unchanged writes.
                     self.mem.write(address,struct.pack('<I',value&0xffffffff))
-                    self.pc+=size;self.steps+=1
+                    if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
+                    self.finish_exact(self.pc+size)
                     adapters['mmio_rmw_always_writes']+=1
                     return
             if hardware is not None and insn.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs'):
@@ -517,6 +600,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     c.R[0]=r0
     c.sp=c.rets=c.icfg=0
     if diagnostics:
+        if 'initial_rets' in diagnostics:
+            value=diagnostics['initial_rets']
+            require(isinstance(value,int) and value&~0x07fffffe==0,'initial RETS must fit writable bits26..1')
+            c.rets=value
         if 'initial_gprs' in diagnostics:
             values=diagnostics['initial_gprs']
             require(len(values)==16 and all(isinstance(v,int) and 0<=v<=0xffffffff for v in values),
@@ -534,6 +621,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         c.icfg_known=diagnostics.get('icfg_initial') is not None
         if c.icfg_known:
             c.icfg=diagnostics['icfg_initial']
+        for pc in diagnostics.get('predecode_pcs',()):c.decode(pc)
     trace=[]
     completed=0
     stop=None

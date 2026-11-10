@@ -123,6 +123,10 @@
     "SDK/interface/driver/cpu/br28/asm/power/p11_app.h": {
       "sha256": "3263a6a7869aaceaf3d5a82369944614f79a71170427a665a87d6e4f60e1be9c",
       "bytes": 9302
+    },
+    "SDK/interface/driver/power/wdt.h": {
+      "sha256": "f9da0e25d738e3a0b0a637f9525c3762abeb37990117e4279953e496fec334f6",
+      "bytes": 529
     }
   },
   "hardware_reference_objects": {
@@ -145,6 +149,18 @@
     "wdt.c.o": {
       "archive": "cpu.a",
       "sha256": "374fe0ca87accb6b97496f74582b118da37674ebd4ad8949266e8ad615f0090d"
+    },
+    "efuse.c.o": {
+      "archive": "cpu.a",
+      "sha256": "c1735bd2767e7bf9f85d9681d65abba909415442e11d220229bd053e5c9ae127"
+    },
+    "cap_rch.c.o": {
+      "archive": "cpu.a",
+      "sha256": "1ed2dbbd37eb1e3cd9cda1fa924bf761a5e62cfe7d443e624e5da78f4efe782e"
+    },
+    "port.c.o": {
+      "archive": "cpu.a",
+      "sha256": "32f5e2a17352714329a35febe42eee55caafedc5b1cfb93ae7912459201a834c"
     }
   },
   "official_bootloader_reference": {
@@ -193,7 +209,9 @@
       "sha256": "ce3eed456baaf9fc00aca28e3cd8cc510e0f6ad8e7c16d1feb36f8baa38b7fe1",
       "functions": [
         "pmalloc_init",
-        "get_physic_address"
+        "get_physic_address",
+        "pmalloc",
+        "pfree"
       ]
     },
     "power_driver.c.o": {
@@ -201,6 +219,22 @@
       "sha256": "c4d67d91fb38c3701f1067297204d5b497e267ac6839c594f953201b81867d95",
       "functions": [
         "p11_init"
+      ]
+    },
+    "pmalloc_continue.c.o": {
+      "archive": "system.a",
+      "sha256": "e8a2ec2a84ee8f8dbc7244670ddc574b39adda96e85dbc6dadf451f3a4b723a5",
+      "functions": [
+        "__pmalloc_continue",
+        "__pfree_continue"
+      ]
+    },
+    "memory.c.o": {
+      "archive": "system.a",
+      "sha256": "746668b06acdb4f11c79828e687d6d4c9429daac81120821804026c3e088acb4",
+      "functions": [
+        "memory_in_phy",
+        "dma_malloc"
       ]
     }
   },

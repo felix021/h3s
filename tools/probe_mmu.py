@@ -13,17 +13,22 @@ from probe_boot_handoff import HANDOFF, SENTINEL_A, package_header, profile
 from probe_pi32v2 import PIN, ROOT, require, upstream
 
 
-def run(module,app,header,rom,*,p11_status_cases=False):
+def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False):
+    require(not(p11_status_cases and watchdog_cases),'independent scenario groups required')
     results=[]
     cases=[('mmu_unknown_control',False,None,True),
                                ('mmu_unmapped_table',False,0,False),
                                ('warm_mmu_initialized',False,0,True),
                                ('cold_mmu_initialized',True,0,True)]
     if p11_status_cases:cases=[(name,False,0,True) for name in ('p11_status_unknown','p11_status_zero','p11_status_one')]
+    if watchdog_cases:
+        cases=[(name,name=='watchdog_cold_virtual',0,True) for name in ('watchdog_strict','watchdog_unknown_clock',
+               'watchdog_stopped_clock','watchdog_virtual_clock','watchdog_expires','watchdog_cold_virtual')]
     for name,cold,con,table in cases:
         h=profile(header,SENTINEL_A)
         h['description']['phase']='continuous application entry with functional MMU configuration'
         if p11_status_cases:h['description']['phase']='conditional startup with fixed external PMU status hypothesis; no P11 response model'
+        if watchdog_cases:h['description']['phase']='conditional PMU=1 startup with optional SDK watchdog command/nominal-time projection'
         h['regions'] += [(UPDATE,UPDATE+128,'retained_update_parameters'),(0x19fd68,0x19fda4,'rom_mask_context')]
         h['seeds'].append((UPDATE+8,update_block('empty')[0]))
         if table:h['regions'].append((0x120000,0x122800,'mmu_page_table'))
@@ -34,18 +39,23 @@ def run(module,app,header,rom,*,p11_status_cases=False):
         hardware=BR28Model(initial_registers={CLOCK0:0,CLOCK0+4:0,CLOCK0+8:0,PLL0:0 if cold else 1},
             initial_irq_config=[0]*32,initial_ipmask=0,reset_inputs_inactive=True,
             bus_lock_model=True,initial_lock_owner=None,gpio_model=True,mmu_model=True,initial_mmu_con=con,
-            p11_access_probe=p11_status_cases,p11_status={'p11_status_zero':0,'p11_status_one':1}.get(name))
+            p11_access_probe=p11_status_cases or watchdog_cases,
+            p11_status=1 if watchdog_cases else {'p11_status_zero':0,'p11_status_one':1}.get(name),
+            watchdog_projection=watchdog_cases and name!='watchdog_strict',
+            watchdog_progress={'watchdog_stopped_clock':(0,1),'watchdog_virtual_clock':(1,4000),
+                               'watchdog_expires':(16384,1),'watchdog_cold_virtual':(1,4000)}.get(name))
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
               'watch_pcs':[0x060350dc,0x06035116]}
+        if watchdog_cases:diag['watch_pcs'].append(0x0603518c)
         r=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
                   diagnostics=diag,hardware=hardware,startup_loops=True,budget=85000 if p11_status_cases else 120000)
         results.append(r)
     h=profile(header,SENTINEL_A)
     regs=[0]*16;regs[0]=37;regs[1]=TIMER0
     hardware=BR28Model(source_ticks_per_step=0)
-    if not p11_status_cases:
+    if not p11_status_cases and not watchdog_cases:
         results.append(explore(module,app,name='parallel_store_reads_old_r0',rom=rom,handoff=h,hardware=hardware,
             diagnostics={'entry_pc':0xa30c,'initial_gprs':regs,'initial_sp':STACK_TOP,
                          'icfg_initial':0,'exact_parallel_stores':True},budget=1))
@@ -76,7 +86,7 @@ def check(report):
         start,end,size,first,last=struct.unpack_from('<IIIHH',descriptor)
         require((start,end,size)==(0x134500,0x19fb80,0x6b680) and
                 first==((start-0x100000)>>7) and last==((end-0x100000)>>7),
-                'actual QCY allocator no longer corroborates physical tag origin')
+                'actual QCY allocator relative bitmap indices changed')
     r=rows['parallel_store_reads_old_r0']
     require(r['completed_steps']==1 and r['last_registers']['r'][0]=='0x1011' and
             r['peripherals']['timer0']['prd']==37,'parallel store read the new R0')

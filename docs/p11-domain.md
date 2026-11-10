@@ -2,6 +2,8 @@
 
 当前连续主核启动的严格边界是`0x060688f8`写`0xf2af10`。固定SDK及真实QCY代码已确认发送侧序列，但还没有PMU状态位的完整硬件定义。本轮由gpt-6-astra协助独立查证，全部离线，没有连接设备。
 
+后续[条件启动回放](clock-rtos-startup.md)已在明确的PMU状态输入下运行真实看门狗、OTP、时钟和OS初始化，推进至端口状态读取。本页的严格P11边界及状态未知／0／1反例仍保留；新的主核进展不证明P11响应因果或q32s执行已经完成。
+
 ## 两条不同阶段的调用链
 
 固定SDK [p11_sfr.h](https://gitlab.zh-jieli.com/ai_test/701n/-/blob/67328f4741c69993c88e504c67377b196c724f97/SDK/interface/driver/cpu/br28/asm/power/p11_sfr.h)定义P11主核窗口基址`0xf2a000`；UART0基址`+0xf00`、CON2偏移`0x10`，所以当前写入是`P11_UART0.CON2`。`p11_init`向它发送`ff ee ab 0e 55`并轮询`JL_PMU.PMU_STA=0xfd3e04`的bit0。
@@ -68,4 +70,4 @@ analysis/q32s-env/bin/python tools/analyze_q32s.py --fetch \
 
 后端存在实际缺口：`0x86`的special-register解码与附近ICFG修改形状不符；另一个JGE的p-code方向与mnemonic冲突。工具遇未知即停，不修改后端去迎合预期，也不执行这些有疑问的语义。离整机启动还需要补P11 ROM／主核访问映射、可信q32s指令执行，以及此前的PMU、watchdog和BR28硬件IRQ契约。
 
-看门狗方面，固定`wdt.c.o`的`wdt_key_patch`确实先加软件锁，再写KEY `0x048c159d / 0x26ae37bf`，`wdt_init`随后先写CON=0。这补上了当前条件路径下一步的命令身份；KEY生命周期、非法KEY规则与超时行为仍未建模，不能只把它当普通RW存储继续。
+看门狗方面，固定`wdt.c.o`的`wdt_key_patch`确实先加软件锁，再写KEY `0x048c159d / 0x26ae37bf`，`wdt_init`随后先写CON=0。后续已有受限KEY命令投影和显式名义时钟下的超时检查，见[看门狗回放](clock-rtos-startup.md)；硬件KEY生命周期、真实时钟校准和复位交付仍未知，不能把它当普通RW存储继续。
