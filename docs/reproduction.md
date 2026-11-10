@@ -2,6 +2,8 @@
 
 ## 1. 输入和环境
 
+仓库检查在本机执行，GitHub Actions已停用。依赖和输入就绪后运行`python3 tools/check_local.py`；首次可加`--fetch-inputs`下载固定输入，固件完整复现加`--reproduce`，本机Android SDK35构建加`--android-build`。启动模拟的独立复现见[交接与内存初始化](boot-handoff.md)。
+
 唯一支持的输入原包是 `QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw`，SHA256：
 
 ```text

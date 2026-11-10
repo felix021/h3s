@@ -6,6 +6,8 @@
 
 后续已完成 [第一轮应用入口启动探索](boot-exploration.md)：五个独立场景分别定位指令模型适配、PLL0 寄存器、ROM `_pll_init` 和未知启动参数；尚未进入 BSS 初始化或 RTOS。
 
+[第二轮](boot-handoff.md)在明确的交接／PLL／循环假设下完成BSS、data和RAM代码初始化摘要验证，停在零计数`rep`；尚未进入RTOS或模拟真实ROM。
+
 ## 杰理资料和现成模拟器
 
 本机使用的固件和参考 SDK 指向 AC701N / BR28。杰理官方 [Bootloader 芯片映射](https://doc.zh-jieli.com/SDKWiki/master/Jieli-Tech/gitee-repos-Other/2-fw-bootloader/2-1-bootloader-architecture-chip-support.html) 明确区分 AC701N→br28、AC791N→wl82。两者的 Flash、时钟、引脚和加密适配不同，不能直接把其他板子的模拟器当成 H3S。
@@ -32,7 +34,7 @@ python3 tools/probe_pi32v2.py --fetch-simulator \
   --report analysis/emulation/baseline.json
 ```
 
-模拟器固定为提交 `3608ed19bc21324f8ecfe79cc0018d05e43d9563`，下载到忽略的 `tools/reference-cache/pi32v2-isa/`，检查 HEAD 和已跟踪文件差异。不会自动升级上游。后续已有缓存时可省略 `--fetch-simulator`。CI 执行这一流程。
+模拟器固定为提交 `3608ed19bc21324f8ecfe79cc0018d05e43d9563`，下载到忽略的 `tools/reference-cache/pi32v2-isa/`，检查 HEAD 和已跟踪文件差异。不会自动升级上游。后续已有缓存时可省略 `--fetch-simulator`。检查使用 `python3 tools/check_local.py` 在本机执行，GitHub Actions 已停用。
 
 基础运行不需要归档 ELF：它执行原固件的限界参数加载、原始 source-read 指令，并执行五组冻结的 r2 入口机器码，确认目标均被取指策略拒绝。这是历史失败回归，不是任意新候选的通用准入器。
 

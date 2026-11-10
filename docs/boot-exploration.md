@@ -1,5 +1,7 @@
 # 应用入口启动探索：第一轮
 
+后续：[第二轮交接结构和内存初始化](boot-handoff.md)已区分`BOOT_DEVICE_INFO`与PLL的`boot_arg_list`，第一轮的R0候选不再作为有效交接模型。在明确假设下完成三段内存回放，尚未进入RTOS。下文保留第一轮的原始结果。
+
 2026-11-10，从官方 0.1.1.8 的应用入口 `0x06000100` 做了五组独立、有指令预算的离线试跑。**尚未启动 H3S：已定位到 PLL 状态、ROM 函数和启动参数三类具体依赖。** 最远的一组执行了 13 条指令后进入未映射 ROM；还没有到 BSS 清零、数据复制、RTOS 或蓝牙初始化。
 
 工具：[tools/probe_boot.py](../tools/probe_boot.py)。完整脱敏结果：[evidence/boot-exploration.json](../evidence/boot-exploration.json)。真实固件指令摘录：[evidence/boot-entry.asm](../evidence/boot-entry.asm)。这轮没有操作设备或生成固件，耳机继续使用已恢复、已验收的 b79 ANC 镜像。

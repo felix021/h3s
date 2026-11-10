@@ -43,15 +43,23 @@ def application(path):
     return app
 
 
-def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000):
+def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
+            handoff=None,startup_loops=False):
     events=[]
     adapters=Counter()
+    event_counts=Counter()
+
+    def event(row):
+        events.append(row)
+        event_counts[row['access']]+=1
+        if handoff and len(events)>64:
+            events.pop(32)  # first32 + last32; never publish a RAM/code mirror
 
     class Memory:
         # Only the observed bootstrap stack and 24B handoff object are writable.
         # Allocated RAM starts UNINITIALIZED, not as a successful zero read.
         regions=((0x00123000,STACK_TOP,'bootstrap_stack'),
-                 (BOOT_ARGS,BOOT_ARGS+24,'hypothesized_boot_argument_object'))
+                 (BOOT_ARGS,BOOT_ARGS+24,'hypothesized_boot_argument_object'))+tuple(handoff['regions'] if handoff else ())
         operation='read'
 
         def __init__(self):
@@ -68,9 +76,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     'invalid memory request')
             if ENTRY<=address and address+size<=ENTRY+len(app):
                 return app[address-ENTRY:address-ENTRY+size]
+            for base,data in handoff['readonly'] if handoff else ():
+                if base<=address and address+size<=base+len(data):
+                    return data[address-base:address-base+size]
             detail={'access':self.operation,'address':hex(address),'size':size}
             if self.operation!='fetch' and address==PLL and size==4 and pll is not None:
-                events.append({**detail,'hypothesis':'PLL0_CON0','value':hex(pll)})
+                event({**detail,'hypothesis':'PLL0_CON0','value':hex(pll)})
                 return struct.pack('<I',pll)
             region=self.region(address,size)
             if region:
@@ -89,10 +100,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if not region:
                 raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data))
             self.ram.update((address+i,byte) for i,byte in enumerate(data))
-            events.append({'access':'write','address':hex(address),'bytes':data.hex(),'region':region})
+            event({'access':'write','address':hex(address),'bytes':data.hex(),'region':region})
 
     class CPU(module.CPU):
         ssp=0
+        repeat=None
 
         def decode(self,pc):
             if pc%2:
@@ -105,6 +117,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.mem.operation=old
 
         def step(self):
+            self.step_body()
+            if self.repeat and self.pc==self.repeat['end']:
+                self.R[2]-=1
+                if self.R[2]:
+                    self.pc=self.repeat['start']
+                else:
+                    self.repeat=None
+
+        def step_body(self):
             insn,raw,size=self.decode(self.pc)
             if adapt_stack and self.pc in (ENTRY,ENTRY+6):
                 expected=14 if self.pc==ENTRY else 13
@@ -132,6 +153,45 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.steps+=1
                 adapters['bootstrap_full_width_clock_store']+=1
                 return
+            if handoff and self.pc in (0x060664e2,0x060664ea,0x060664ee,
+                                      0x060664f2,0x060664f6,0x060664fc):
+                forms={0x060664e2:('st.d.l',16,8,2),0x060664ea:('st.w',24,4,3),
+                       0x060664ee:('st.b',0,1,2),0x060664f2:('st.h',28,2,2),
+                       0x060664f6:('st.h',30,2,2),0x060664fc:('st.d.l',32,8,2)}
+                expected,offset,width,reg=forms[self.pc]
+                require(insn.id==expected and self.after_then is None,'handoff store form changed')
+                value=self.R[reg] | (self.R[reg+1]<<32 if width==8 else 0)
+                self.mem.write(self.R[1]+offset,(value&((1<<(width*8))-1)).to_bytes(width,'little'))
+                self.pc+=size
+                self.steps+=1
+                adapters['typed_handoff_byte_exact_store']+=1
+                return
+            if startup_loops and self.pc in (0x06000130,0x0600014a,0x06000166,0x06000182):
+                require(insn.id=='rep' and self.repeat is None,'unexpected startup repeat form')
+                op=module.check.operands(insn,raw)
+                body_size=2 if self.pc==0x06000130 else 4
+                require(op['r']==2 and op['n']==body_size,'startup repeat operands changed')
+                if self.R[2]==0:
+                    raise Blocked('unverified_zero_count_rep',instruction_id=insn.id,
+                                  note='upstream hardware evidence does not establish count=0 behaviour')
+                require(self.R[2]<=10000,'unexpected startup repeat count')
+                self.repeat={'start':self.pc+size,'end':self.pc+size+body_size}
+                self.pc+=size
+                self.steps+=1
+                adapters['bounded_startup_rep_controller']+=1
+                return
+            if startup_loops and self.pc in (0x06000132,0x0600014e,0x0600016a):
+                expected={'d':1,'b':3,'n':4} if self.pc==0x06000132 else {'d':3,'b':4,'n':4}
+                operands=module.check.operands(insn,raw)
+                require(insn.id=='st.w.pin' and all(operands.get(k)==v for k,v in expected.items()),
+                        'startup word store changed')
+                base,reg=expected['b'],expected['d']
+                self.mem.write(self.R[base],struct.pack('<I',self.R[reg]))
+                self.R[base]=(self.R[base]+4)&0xffffffff
+                self.pc+=size
+                self.steps+=1
+                adapters['startup_word_store']+=1
+                return
             # Context-specific control models must never pretend to be hardware.
             if insn.id.startswith(('rep','lock','idle','wfe','sev','swi','syscall',
                                    'btbclr','bkpt','hbkpt','cli','sti','rti','rtx','rte')):
@@ -140,6 +200,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
     c=CPU()
     c.mem=Memory()
+    if handoff:
+        for address,data in handoff['seeds']:
+            require(c.mem.region(address,len(data)) is not None,'seed outside declared RAM')
+            c.mem.ram.update((address+i,value) for i,value in enumerate(data))
     c.pc=ENTRY
     c.R=[0]*16
     c.R[0]=r0
@@ -170,7 +234,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             break
     if stop is None:
         stop={'kind':'instruction_budget'}
-    return {'name':name,'entry':hex(ENTRY),'completed_steps':completed,'stop_pc':hex(c.pc),
+    result={'name':name,'entry':hex(ENTRY),'completed_steps':completed,'stop_pc':hex(c.pc),
         'stop':stop,'assumptions':{
             'cpu0_single_thread_no_interrupts':True,
             'unobserved_initial_gprs_flags_sp_rets_icfg':'zero placeholders, not a measured boot state',
@@ -181,6 +245,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         'instruction_adapters':dict(adapters),'memory_events':events,
         'last_instructions':trace,'last_registers':{'r':[hex(x) for x in c.R],
             'sp':hex(c.sp),'ssp':hex(c.ssp),'rets':hex(c.rets),'icfg':hex(c.icfg)}}
+    if handoff:
+        result['assumptions']['typed_handoff']=handoff['description']
+        if startup_loops:
+            result['assumptions']['nonzero_rep_counts']='full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified'
+        result['memory_event_counts']=dict(event_counts)
+        result['memory_events_truncated']=sum(event_counts.values())>len(events)
+        result['memory_snapshots']={}
+        for label,address,length in handoff['snapshots']:
+            values=[c.mem.ram.get(a) for a in range(address,address+length)]
+            snap={'address':hex(address),'size':length,'initialized_bytes':sum(v is not None for v in values)}
+            if all(v is not None for v in values):
+                snap['sha256']=hashlib.sha256(bytes(values)).hexdigest()
+            if length<=40:
+                snap['bytes_with_unknowns']=''.join('??' if v is None else f'{v:02x}' for v in values)
+            result['memory_snapshots'][label]=snap
+    return result
 
 
 def check_known_blockers(report):

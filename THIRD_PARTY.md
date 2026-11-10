@@ -19,6 +19,8 @@ AndroidX Core1.7.0来自Google Maven，遵循其上游许可与通知。构建�
 
 芯片参考源码来自公开JL701N SDK的固定提交，用来对照结构和行为；它不是QCY的确切源码。缓存不纳入Git，保留来源链接、版本和摘要。Linux工具链通过厂商入口取得，不随仓库重新打包。
 
+启动研究另从同一固定SDK的`SDK/interface/system/boot.h`、`cpu.a`、`system.a`核对交接布局及IR。完整库、提取对象和IR只进入忽略的本机缓存／analysis，未重新发布，也不适用本仓库自编工具的软件许可。下载和本机LLVM分析流程见[第二轮启动记录](docs/boot-handoff.md)。
+
 quarkslab/ghidra-jieli派生于kagaimiq的处理器定义，本项目仅引用固定版本来核对分支语义，未复制整个模块；其权利和许可按各上游说明。
 
 ## pi32v2 指令模拟器

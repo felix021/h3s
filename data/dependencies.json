@@ -21,6 +21,16 @@
     "br28.h": "111e29ea8d3d72e504a221caf035552250dcda959d4b79e8e1cd13623a6aad01",
     "maskrom_stubs.ld": "331e973cbd71d5f9add4b77a796036f88e8dad93f940b70bb82398b7748a4547"
   },
+  "boot_reference_files": {
+    "SDK/interface/system/boot.h": {"bytes": 1189, "sha256": "002046f3f94f30b5a288d7611eb522fadb167320ff09f87783f39950305eec37"},
+    "SDK/cpu/br28/liba/cpu.a": {"bytes": 2405408, "sha256": "8e3d3f25067d150b42d1c8d3b7988a7b735a216cbebd68f5ad95d25d293af96b"},
+    "SDK/cpu/br28/liba/system.a": {"bytes": 781702, "sha256": "0826d426af9e204309396cf8e8fd9d3d9678b66b8a805becfb14092af017c8f9"}
+  },
+  "boot_reference_objects": {
+    "startup.S.o": {"archive": "cpu.a", "sha256": "5cc9416001cf5e7114e53ceda88ae023787a0d76a1884bb142ef52d26bb9bc14"},
+    "clock.c.o": {"archive": "cpu.a", "sha256": "0647578227fc1d87fa2d7f07b98abc1936e2f9e953ed15526df0d1d31c53ea19"},
+    "boot.c.o": {"archive": "system.a", "sha256": "bfeb6d1c9501561a303fa0265113acf28041a065294ad727d6beba6b402dfe65"}
+  },
   "androidx_core": {
     "version": "1.7.0",
     "sha256": "aaf6734226fff923784f92f65d78a2984dbf17534138855c5ce2038f18656e0b"
