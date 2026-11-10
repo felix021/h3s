@@ -26,7 +26,7 @@ def load_image(path):
     return raw, flash, plain
 
 
-def audit(baseline, candidate, assembly):
+def audit(baseline, candidate, assembly, *, repaired_fence=False):
     for path in (baseline, candidate):
         if not verify(path)['passed']:
             raise ValueError('Independent CRC failure: ' + str(path))
@@ -41,6 +41,9 @@ def audit(baseline, candidate, assembly):
         raise ValueError('Unexpected outer header/directory changes')
     if old_flash[:0x2000] != new_flash[:0x2000]:
         raise ValueError('Bootloader changed')
+    old_boot,new_boot=decode(old_flash[0x2000:0x2020]),decode(new_flash[0x2000:0x2020])
+    if old_boot[6:8]!=new_boot[6:8] or old_boot[12:]!=new_boot[12:]:
+        raise ValueError('Unrelated boot-info fields changed')
     end = 0x2020 + len(new)
     if old_flash[end:] != new_flash[end:]:
         raise ValueError('Flash data beyond extension changed')
@@ -53,6 +56,7 @@ def audit(baseline, candidate, assembly):
                 0xE4F01 - 0x2020, 0xE4F02 - 0x2020}
     for address in sites:
         allowed.update(range(address - 0x06000000, address - 0x06000000 + 6))
+    if repaired_fence:allowed.update(range(0x34e9a,0x34e9e))
     differences = [i for i, (a, b) in enumerate(zip(old, new)) if a != b]
     unexpected = [hex(i + 0x2020) for i in differences if i not in allowed]
     if unexpected:
@@ -91,7 +95,22 @@ def audit(baseline, candidate, assembly):
     payload_address = 0x06000000 + start + 33
     if payload_address != 0x060E3074 or not 1 <= len(payload) <= 0xF6C:
         raise ValueError('Payload outside fixed location')
-    if not 0x06000100 <= payload_address < payload_address + len(payload) <= 0x060C3338:
+    upper=0x060C3338
+    if repaired_fence:
+        if len(payload)!=337 or hashlib.sha256(payload).hexdigest()!= 'f4e9501e515a7f74e7114633ba9bc165d1da9b399481530a78be8663dbe0e49a':
+            raise ValueError('Repair policy requires the exact archived337B compiled payload')
+        for address,expected in zip(sites,('c6ea60eb0000','80ff7ae00b00','80ffaedf0b00','c5ea86ee0000','c3ea2b540000')):
+            offset=address-0x06000000
+            if new[offset:offset+6]!=bytes.fromhex(expected):
+                raise ValueError('Repair policy requires exact archived hook instructions')
+        if old[0x34e92:0x34e9e]!=bytes.fromhex('c0ff00010006c1ff38330c06'):
+            raise ValueError('Baseline PC limit loads changed')
+        if new[0x34e92:0x34e9a]!=old[0x34e92:0x34e9a] or new[0x34e9e:0x34eb0]!=old[0x34e9e:0x34eb0]:
+            raise ValueError('PC limit lower/load/call/enable changed')
+        upper=struct.unpack_from('<I',new,0x34e9a)[0]
+        if upper!=payload_address+len(payload):
+            raise ValueError('Repaired fence does not end exactly at payload end')
+    if not 0x06000100 <= payload_address < payload_address + len(payload) <= upper:
         raise ValueError('REJECTED: payload is outside the enabled Flash PC execution range')
 
     labels, rows, waiting = {}, {}, None
@@ -151,9 +170,13 @@ def audit(baseline, candidate, assembly):
             'payload_sha256': hashlib.sha256(payload).hexdigest(),
             'changed_plaintext_bytes_before_extension': len(differences),
             'existing_resources_identical_to_tested_image': True,
+            'unrelated_boot_info_fields_preserved':True,
             'anc_two_state_table_preserved': True, 'hook_targets_and_resumes_verified': True,
             'actual_disassembly_bytes_match_image': True,
-            'new_file': 'eq_toggle.bin', 'device_verified': False}
+            'new_file': 'eq_toggle.bin', 'device_verified': False,
+            **({'code_fence_repair':{'programmed_upper_limit':hex(upper),'lower_and_enable_preserved':True,
+                                    'exact_hardware_endpoint_and_low_bits_unverified':True,
+                                    'whole_boot_validated':False}} if repaired_fence else {})}
 
 
 if __name__ == '__main__':
@@ -162,8 +185,9 @@ if __name__ == '__main__':
     parser.add_argument('candidate', type=Path)
     parser.add_argument('--patch-asm', type=Path, required=True)
     parser.add_argument('--report', type=Path)
+    parser.add_argument('--repaired-fence',action='store_true',help='audit the distinct offline PC-fence repair candidate')
     args = parser.parse_args()
-    result = audit(args.baseline, args.candidate, args.patch_asm)
+    result = audit(args.baseline, args.candidate, args.patch_asm,repaired_fence=args.repaired_fence)
     text = json.dumps(result, ensure_ascii=False, indent=2) + '\n'
     if args.report:
         args.report.write_text(text)

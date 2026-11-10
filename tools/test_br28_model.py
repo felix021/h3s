@@ -1,11 +1,46 @@
 """Offline peripheral contract tests; never opens a device or needs private ROM."""
 import unittest
 
-from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0, PartialWord
+from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0, PartialWord, MMU, MMU_BASE, P11AccessProbe, PMU_STA
 from probe_boot import Blocked
 
 
 class ModelTests(unittest.TestCase):
+    def test_p11_access_writes_never_invent_an_acknowledgement(self):
+        for status in (None,0,1):
+            probe=P11AccessProbe(status)
+            with self.assertRaises(Blocked):probe.read()
+            for _ in range(3):
+                for value in P11AccessProbe.sequence:probe.write(value)
+                if status is None:
+                    with self.assertRaisesRegex(Blocked,'unknown_external_pmu_status'):probe.read()
+                else:self.assertEqual(probe.read(),status)
+            self.assertEqual(probe.status,status)
+        with self.assertRaises(Blocked):P11AccessProbe(1).write(0)
+        with self.assertRaises(Blocked):BR28Model(p11_access_probe=True,p11_status=1).write(PMU_STA,1)
+
+    def test_mmu_aliases_invalid_pages_and_bounds(self):
+        m=MMU(0)
+        m.write(MMU_BASE+4,0x120000);m.write(MMU_BASE+8,0x120003)
+        m.write(MMU_BASE,1)
+        table=bytes.fromhex('00860186')  # physical0x130000,0x130080
+        read=lambda a,n:table[a-0x120000:a-0x120000+n]
+        self.assertEqual(m.translate(0x400004,4,read),0x130004)
+        self.assertEqual(m.translate(0x4000fc,4,read),0x1300fc)
+        self.assertEqual(m.translate(0x06000100,6,read),0x06000100)
+        with self.assertRaisesRegex(Blocked,'outside_table'):m.translate(0x400100,4,read)
+        with self.assertRaisesRegex(Blocked,'invalid_page'):m.translate(0x400000,4,lambda a,n:bytes(n))
+        with self.assertRaisesRegex(Blocked,'cross_page'):m.translate(0x40007f,2,read)
+
+    def test_mmu_initial_control_and_bounds_are_not_fabricated(self):
+        with self.assertRaisesRegex(Blocked,'uninitialized_mmu'):MMU().read(MMU_BASE)
+        with self.assertRaisesRegex(Blocked,'disabled'):MMU(0).translate(0x400000,4,lambda a,n:bytes(n))
+        with self.assertRaisesRegex(Blocked,'invalid_mmu_table'):MMU(0).write(MMU_BASE,1)
+        h=BR28Model(mmu_model=True,initial_mmu_con=0)
+        h.write(MMU_BASE+4,0x120000);h.write(MMU_BASE+8,0x1227ff);h.write(MMU_BASE,0x11)
+        self.assertEqual(h.read(MMU_BASE),0x11)
+        with self.assertRaisesRegex(Blocked,'unsupported_mmu_control'):h.write(MMU_BASE,0x80)
+
     def test_partial_gpio_bits_stay_unknown(self):
         h=BR28Model(gpio_model=True)
         h.gpio_rmw(0xfd5108,'or',2)

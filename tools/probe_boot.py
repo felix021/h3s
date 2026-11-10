@@ -85,6 +85,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def read(self,address,size):
             require(size>0 and 0<=address<=0xffffffff and address+size<=0x100000000,
                     'invalid memory request')
+            if hardware is not None and hardware.mmu is not None:
+                address=hardware.mmu.translate(address,size,self.read)
             if ENTRY<=address and address+size<=ENTRY+len(app):
                 return app[address-ENTRY:address-ENTRY+size]
             if rom is not None and 0<=address and address+size<=len(rom):
@@ -111,6 +113,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                           reference_sdk_register='JL_PLL0.CON0' if address==PLL else None)
 
         def write(self,address,data):
+            if hardware is not None and hardware.mmu is not None:
+                address=hardware.mmu.translate(address,len(data),self.read)
             if rom is not None and address<len(rom) and address+len(data)>0:
                 raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data))
             if hardware is not None and hardware.handles(address,len(data)):
@@ -126,6 +130,20 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     class CPU(module.CPU):
         ssp=0
         repeat=None
+
+        def word_store(self,insn,raw):
+            op=module.check.operands(insn,raw)
+            if insn.id=='st.w.modimm':address=self.R[op['r']]+op['n'];value=op['m']
+            elif insn.id=='st.w.idxs':address=self.R[op['r']]+(self.R[op['s']]<<2);value=self.R[op['t']]
+            elif insn.id=='st.w.l':address=self.R[op['r']]+op['n'];value=self.R[op['s']]
+            elif insn.id=='st.w':address=self.R[op['b']]+op['n'];value=self.R[op['d']]
+            else:raise ValueError('unsupported exact word store')
+            return address&0xffffffff,value&0xffffffff
+
+        def finish_exact(self,end):
+            self.seq=end;self.pc=end;self.steps+=1
+            if self.after_then is not None:
+                self.after_then[0]-=1;self.check_then()
 
         def decode(self,pc):
             if pc%2:
@@ -175,6 +193,29 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
+            if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id.endswith('.p'):
+                pair,pair_raw,pair_size=self.decode(self.pc+size)
+                base=self.tab.by_id(insn.id[:-2])
+                if base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.')) and pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs'):
+                    params=module.table.placeholders(insn.syntax);plain=module.table.placeholders(base.syntax)
+                    base_raw=dict(zip(plain,(raw[k] for k in params)))
+                    base_raw.update({k:raw[k] for k in base.fields if k not in base_raw and k in raw})
+                    # Evaluate only pure ALU half on old registers. The store also
+                    # uses old registers, without a host scratch-word merge read.
+                    effect,_,_=super().effect(base,base_raw,self.pc,size,self.R)
+                    require(set(effect)<= {'regs','flags'},'parallel ALU produced non-ALU effects')
+                    address,value=self.word_store(pair,pair_raw)
+                    require(address%4==0,'unaligned exact parallel word store')
+                    self.mem.write(address,struct.pack('<I',value))
+                    self.apply(effect);self.finish_exact(self.pc+size+pair_size)
+                    adapters['parallel_full_word_store_old_registers']+=1
+                    return
+            if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs'):
+                address,value=self.word_store(insn,raw)
+                require(address%4==0,'unaligned exact word store')
+                self.mem.write(address,struct.pack('<I',value));self.finish_exact(self.pc+size)
+                adapters['exact_full_word_store']+=1
+                return
             if None in self.R:
                 require(diagnostics and diagnostics.get('opaque_pin_read') and self.R[0] is None and
                         all(x is not None for x in self.R[1:]) and
@@ -194,7 +235,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 adapters['proven_dead_p33_read']+=1
                 return
             if diagnostics and diagnostics.get('irq_context') and self.pc in (diagnostics['entry_pc'],diagnostics['irq_pop_pc']):
-                push=self.pc==diagnostics['entry_pc']
+                push=self.pc!=diagnostics['irq_pop_pc']
                 require(insn.id==('push.srl' if push else 'pop.srl') and raw.get('m',raw.get('n'))==0x29
                         and self.after_then is None,'QCY IRQ special-frame shape changed')
                 if push:
@@ -204,7 +245,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     self.flags=0  # pinned hardware report5-k: pushing PSR saves then clears low flags
                 else:
                     self.reti,self.rets,self.irq_psr=struct.unpack('<III',self.mem.read(self.sp,12))
-                    self.rets&=0x07fffffe;self.flags=self.irq_psr&15;self.sp+=12
+                    self.reti&=0x07fffffe;self.rets&=0x07fffffe;self.flags=self.irq_psr&15;self.sp+=12
                 self.pc+=size;self.steps+=1
                 adapters['qcy_irq_special_frame']+=1
                 return
@@ -214,7 +255,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.pc+=size;self.steps+=1
                 adapters['cpu0_shared_lock_ownership']+=1
                 return
-            if hardware is not None and insn.id in ('rmw.or.modimm','rmw.and.nmodimm','rmw.and.invbitr','rmw.or.r','rmw.and.invr'):
+            if hardware is not None and insn.id in ('rmw.or.modimm','rmw.and.nmodimm','rmw.and.invbitr','rmw.or.bitr','rmw.or.r','rmw.and.invr'):
                 op=module.check.operands(insn,raw)
                 address=(self.R[op['r']]+op['n'])&0xffffffff
                 if 0xf00000<=address<0x1000000:
@@ -223,6 +264,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
                         elif insn.id=='rmw.and.invbitr':kind='and';operand=~(1<<(self.R[op['s']]&31))
                         elif insn.id=='rmw.and.invr':kind='and';operand=~self.R[op['s']]
+                        elif insn.id=='rmw.or.bitr':kind='or';operand=1<<(self.R[op['s']]&31)
                         else:kind='or';operand=self.R[op['s']]
                         hardware.gpio_rmw(address,kind,operand)
                         self.pc+=size;self.steps+=1
@@ -238,6 +280,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     elif insn.id=='rmw.and.nmodimm':value=old&op['m']
                     elif insn.id=='rmw.and.invbitr':value=old&~(1<<(self.R[op['s']]&31))
                     elif insn.id=='rmw.and.invr':value=old&~self.R[op['s']]
+                    elif insn.id=='rmw.or.bitr':value=old|(1<<(self.R[op['s']]&31))
                     else:value=old|self.R[op['s']]
                     # Always emit the bus write, even when the value is equal.
                     # Upstream scratch-memory models can drop unchanged writes.

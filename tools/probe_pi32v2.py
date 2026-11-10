@@ -105,7 +105,7 @@ def firmware_app(path):
     return plain[0x100:0x100+842654]
 
 
-def run_probe(module, app, elf=None):
+def run_probe(module, app, elf=None, *, repaired_app=None,repaired_payload=None):
     class Memory(module.Memory):
         def __init__(self):
             super().__init__()
@@ -161,11 +161,20 @@ def run_probe(module, app, elf=None):
     require((low,high) == (0x06000100,0x060c3338),'QCY PC range loads changed')
     require(app[0x06034eac-BASE:0x06034eb0-BASE] == bytes.fromhex('00ef1000'),
             'QCY PC guard enable instruction changed')
+    repaired_bounds=None
+    if repaired_app is not None:
+        require(elf is not None and len(repaired_app)==len(app),'repair requires archived ELF and full application')
+        repaired_setup=cpu();repaired_setup.mem.map(BASE,repaired_app);repaired_setup.pc=0x06034e92
+        for _ in range(2):repaired_setup.step()
+        repaired_bounds=tuple(repaired_setup.R[:2])
+        require(repaired_bounds==(low,0x060e3074+337),'unexpected repaired execution range')
+        require(repaired_app[0x34eac-0x100:0x34eb0-0x100]==app[0x34eac-0x100:0x34eb0-0x100],
+                'repaired candidate changed guard enable')
 
     def guarded_step(c,override=False):
         # Enforce at decode too, including the second slot of a parallel pair
         # and instruction lookahead inside upstream's control-flow machinery.
-        c.execution_bounds=None if override else (low,high)
+        c.execution_bounds=repaired_bounds if override and repaired_bounds else None if override else (low,high)
         c.step()
 
     def must_reject(action,error):
@@ -227,10 +236,18 @@ def run_probe(module, app, elf=None):
     for site,raw in zip(SITES,R2_ENTRY_BYTES):
         require(next(s['data'] for s in sections if s['addr'] == site) == bytes.fromhex(raw),
                 'ELF hook does not match archived r2 branch vector')
+    if repaired_app is not None:
+        require(repaired_payload==payload,'candidate payload differs from executed ELF')
+        for section in sections:
+            if section['addr'] in SITES:
+                offset=section['addr']-BASE
+                require(repaired_app[offset:offset+len(section['data'])]==section['data'],
+                        'candidate hook differs from executed ELF')
     symbols={name:value for name,value,*_ in exe['symbols'] if name}
 
     def patched_cpu():
         c=cpu()
+        if repaired_app is not None:c.mem.map(BASE,repaired_app)
         for s in sections:
             c.mem.map(s['addr'],s['data'])
         return c
@@ -338,6 +355,25 @@ def run_probe(module, app, elf=None):
             'real_compiled_toggle_cases_with_api_stubs':3,'real_compiled_node_open_cases':open_cases,
             'dsp_rtos_calls_are_explicit_stubs':True,
             'permission_override_for_diagnostics_only':True,'not_a_safe_firmware_verdict':True})
+    if repaired_bounds:
+        diagnostic=report.pop('permission_override_diagnostics')
+        diagnostic['permission_override_for_diagnostics_only']=False
+        diagnostic['execution_bounds_extracted_from_candidate']=[hex(x) for x in repaired_bounds]
+        diagnostic['endpoint_policy']='half-open full-instruction fetch check; exact silicon endpoint/low bits unverified'
+        positive=[]
+        for site in SITES:
+            c=patched_cpu();c.pc=site;c.R[0]=QCY;c.R[6]=QCY
+            guarded_step(c,override=True);target=c.pc;guarded_step(c,override=True)
+            require(0x060e3074<=target<repaired_bounds[1],'repair hook did not enter payload')
+            positive.append({'site':hex(site),'target':hex(target),'result':'EXECUTED_WITH_CANDIDATE_FENCE'})
+        c=patched_cpu();c.execution_bounds=repaired_bounds
+        must_reject(lambda:c.decode(repaired_bounds[1]+1),PermissionError)
+        report['repaired_fence_function_diagnostics']=diagnostic
+        report['repaired_candidate_hook_entries']=positive
+        report['repaired_candidate_upper_bound_still_rejects']=True
+        report['repaired_candidate_whole_boot_validated']=False
+        report['repaired_application_sha256']=sha(repaired_app)
+        report['actual_candidate_payload_and_hooks_match_executed_elf']=True
     return report
 
 
@@ -346,10 +382,22 @@ def main():
     p.add_argument('--fetch-simulator',action='store_true')
     p.add_argument('--firmware',type=Path,default=ROOT/'firmware/H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw')
     p.add_argument('--patch-elf',type=Path,help='optional archived r2 ELF; never produces a flashable image')
+    p.add_argument('--repaired-candidate',type=Path,help='distinct offline fence-repair UFW; independent audit required')
+    p.add_argument('--patch-asm',type=Path,help='vendor patch disassembly for the independent repaired-candidate audit')
     p.add_argument('--report',type=Path)
     args=p.parse_args()
+    if args.repaired_candidate and (not args.patch_elf or not args.patch_asm):
+        p.error('--repaired-candidate requires --patch-elf and --patch-asm')
     module=upstream(args.fetch_simulator)
-    result=run_probe(module,firmware_app(args.firmware),args.patch_elf.read_bytes() if args.patch_elf else None)
+    repaired_app=repaired_payload=None
+    if args.repaired_candidate:
+        from verify_eq_candidate import audit,load_image
+        audit(args.firmware,args.repaired_candidate,args.patch_asm,repaired_fence=True)
+        plain=load_image(args.repaired_candidate)[2]
+        repaired_app=plain[0x100:0x100+842654];repaired_payload=plain[0xe3074:]
+    result=run_probe(module,firmware_app(args.firmware),args.patch_elf.read_bytes() if args.patch_elf else None,
+                     repaired_app=repaired_app,repaired_payload=repaired_payload)
+    if args.repaired_candidate:result['repaired_candidate_sha256']=sha(args.repaired_candidate.read_bytes())
     text=json.dumps(result,indent=2)+'\n'
     if args.report:
         args.report.parent.mkdir(parents=True,exist_ok=True)

@@ -55,12 +55,16 @@ def main():
                    help="将已逆向的按键轮转表由 OFF/TRANS/ON 改为 ON/TRANS/ON；App 直接选模式不变")
     p.add_argument("--eq-toggle-elf", type=Path,
                    help="实验性 EQ 双击开关补丁 ELF；必须同时启用 ANC 两态选项")
+    p.add_argument('--eq-code-fence-repair',action='store_true',
+                   help='离线修复候选：扩展实际Flash PC上界到EQ载荷末尾；不代表启动验证通过')
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
     args = p.parse_args()
     if args.eq_toggle_elf and not args.anc_cycle_two_state:
         p.error('--eq-toggle-elf requires --anc-cycle-two-state')
+    if args.eq_code_fence_repair and not args.eq_toggle_elf:
+        p.error('--eq-code-fence-repair requires --eq-toggle-elf')
     source = args.source.read_bytes()
     if hashlib.sha256(source).hexdigest() != SOURCE_SHA:
         raise ValueError("原包摘要不匹配")
@@ -146,7 +150,7 @@ def main():
     eq_toggle = None
     if args.eq_toggle_elf:
         from eq_toggle_image import apply_eq_patch
-        eq_toggle = apply_eq_patch(flash_plain, args.eq_toggle_elf)
+        eq_toggle = apply_eq_patch(flash_plain, args.eq_toggle_elf,repair_code_fence=args.eq_code_fence_repair)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -206,6 +210,8 @@ def main():
     filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB{suffix}_UNTESTED.ufw"
     if eq_toggle:
         filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB_ANC_EQ_TOGGLE_EXPERIMENTAL.ufw"
+        if args.eq_code_fence_repair:
+            filename=filename.replace('_EXPERIMENTAL.ufw','_FENCE_REPAIR_OFFLINE_UNTESTED.ufw')
     path = args.output_dir / filename
     path.write_bytes(result)
     (args.output_dir / "stream.bin").write_bytes(stream)

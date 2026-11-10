@@ -35,10 +35,13 @@ def main():
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json')
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json')
     run(sys.executable,'tools/analyze_qcy_irq.py','--report','analysis/local-checks/qcy-irq.json')
+    run(sys.executable,'tools/analyze_p11.py','--report','analysis/local-checks/p11-resource.json')
     if args.rom:
         run(sys.executable,'tools/probe_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/rom-execution.json')
         run(sys.executable,'tools/probe_hardware.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/hardware-execution.json')
         run(sys.executable,'tools/probe_gpio_irq.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/gpio-irq-execution.json')
+        run(sys.executable,'tools/probe_mmu.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/mmu-execution.json')
+        run(sys.executable,'tools/probe_p11_status.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/p11-status.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:

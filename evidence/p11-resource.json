@@ -1,0 +1,88 @@
+{
+  "official_ufw_sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+  "resource": "p11_code.bin",
+  "jlfs_header_offset": "0xdd8bc",
+  "resource_bytes": 12248,
+  "resource_sha256": "1fe36008118168d2178c0cb3aeec265fc78e47ce70cd652e633236beb8270882",
+  "bankcb_entries": [
+    {
+      "index": 0,
+      "bank_field": 7,
+      "bytes": 12112,
+      "address_field": "0x80",
+      "file_offset": 112,
+      "header_crc_ok": true,
+      "data_crc_ok": true,
+      "data_sha256": "6c3b388928ae3b95c970308724c2196b497a5625a93640cc85e4c3a91ce7d6e6"
+    },
+    {
+      "index": 1,
+      "bank_field": 0,
+      "bytes": 4,
+      "address_field": "0xaa55aa55",
+      "file_offset": 12224,
+      "header_crc_ok": true,
+      "data_crc_ok": true,
+      "data_sha256": "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e"
+    },
+    {
+      "index": 2,
+      "bank_field": 1,
+      "bytes": 4,
+      "address_field": "0xaa55aa55",
+      "file_offset": 12228,
+      "header_crc_ok": true,
+      "data_crc_ok": true,
+      "data_sha256": "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e"
+    },
+    {
+      "index": 3,
+      "bank_field": 2,
+      "bytes": 4,
+      "address_field": "0xaa55aa55",
+      "file_offset": 12232,
+      "header_crc_ok": true,
+      "data_crc_ok": true,
+      "data_sha256": "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e"
+    },
+    {
+      "index": 4,
+      "bank_field": 3,
+      "bytes": 4,
+      "address_field": "0xaa55aa55",
+      "file_offset": 12236,
+      "header_crc_ok": true,
+      "data_crc_ok": true,
+      "data_sha256": "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e"
+    },
+    {
+      "index": 5,
+      "bank_field": 4,
+      "bytes": 4,
+      "address_field": "0xaa55aa55",
+      "file_offset": 12240,
+      "header_crc_ok": true,
+      "data_crc_ok": true,
+      "data_sha256": "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e"
+    },
+    {
+      "index": 6,
+      "bank_field": 5,
+      "bytes": 4,
+      "address_field": "0xaa55aa55",
+      "file_offset": 12244,
+      "header_crc_ok": true,
+      "data_crc_ok": true,
+      "data_sha256": "ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e"
+    }
+  ],
+  "sdk_loader_common_code_mapping": {
+    "p11_local": "0x80",
+    "main_cpu": "0xf20080"
+  },
+  "q32s_code_executed": false,
+  "p11_rom_acquired": false,
+  "early_handshake_semantics_proven": false,
+  "whole_h3s_boot_simulated": false,
+  "device_accessed": false
+}

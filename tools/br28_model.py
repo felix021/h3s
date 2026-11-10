@@ -16,6 +16,80 @@ IRQ_CONFIG=0xffe100
 IPMASK=0xffe1a8
 DIVISORS=(1,4,16,64,2,8,32,128,256,1024,4096,16384,512,2048,8192,32768)
 GPIO_BASES=(0xfd5000,0xfd5100,0xfd5200,0xfd5300,0xfd5400,0xfd5500,0xfd5700)
+MMU_BASE=0xff0400
+P11_UART_CON2=0xf2af10
+PMU_STA=0xfd3e04
+
+
+class P11AccessProbe:
+    """Explicit external-status counterfactual, NOT a P11 response model.
+
+    CPU0 source establishes the five writes and bit0 poll, not their causality.
+    A supplied status is fixed from the beginning; writes never manufacture it.
+    """
+    sequence=(0xff,0xee,0xab,0x0e,0x55)
+
+    def __init__(self,status=None):
+        if status not in (None,0,1):raise ValueError('P11 status fixture must be unknown,0 or1')
+        self.status=status;self.phase=0;self.sequences=0;self.polls=0
+
+    def write(self,value):
+        if value!=self.sequence[self.phase]:raise Blocked('unmodeled_p11_access_write',value=hex(value))
+        self.phase+=1
+        if self.phase==5:self.phase=0;self.sequences+=1
+
+    def read(self):
+        if self.phase or not self.sequences:raise Blocked('p11_status_read_outside_known_sequence')
+        self.polls+=1
+        if self.status is None:raise Blocked('unknown_external_pmu_status',address=hex(PMU_STA))
+        return self.status
+
+    def report(self):
+        return {'fixed_external_status_hypothesis':self.status,'completed_sequences':self.sequences,
+                'phase':self.phase,'status_polls':self.polls,'response_causality_or_timing_modeled':False,
+                'q32s_executed':False}
+
+
+class MMU:
+    """Functional SDK page-table projection, no TLB/cache or bus timing model."""
+    def __init__(self,initial_con=None):
+        if initial_con not in (None,0):raise ValueError('only explicit disabled MMU initial state supported')
+        self.con=initial_con;self.begin=self.end=None
+        self.walks=0
+
+    def read(self,address):
+        value={MMU_BASE:self.con,MMU_BASE+4:self.begin,MMU_BASE+8:self.end}[address]
+        if value is None:raise Blocked('uninitialized_mmu_register',address=hex(address))
+        return value
+
+    def write(self,address,value):
+        if address==MMU_BASE:
+            if value&~0x31:raise Blocked('unsupported_mmu_control',value=hex(value))
+            if value&1 and (self.begin is None or self.end is None or
+                            self.begin%2 or self.end<self.begin or (self.end-self.begin+1)%2):
+                raise Blocked('invalid_mmu_table_bounds')
+            self.con=value
+        elif address==MMU_BASE+4:self.begin=value
+        elif address==MMU_BASE+8:self.end=value
+        else:raise ValueError('not an MMU register')
+
+    def translate(self,address,size,read_physical):
+        if not 0x400000<=address<0x800000:return address
+        if self.con is None:raise Blocked('uninitialized_mmu_enable',address=hex(address))
+        if not self.con&1:raise Blocked('virtual_access_with_mmu_disabled',address=hex(address))
+        page=(address-0x400000)//128
+        entry=self.begin+page*2
+        if entry+1>self.end:raise Blocked('mmu_page_outside_table',address=hex(address))
+        if (address&127)+size>128:raise Blocked('mmu_cross_page_access_not_split',address=hex(address),size=size)
+        tag=int.from_bytes(read_physical(entry,2),'little')
+        if not tag&0x8000:raise Blocked('mmu_invalid_page',address=hex(address),entry=hex(entry))
+        self.walks+=1
+        return 0x100000+((tag&0x7fff)<<7)+(address&127)
+
+    def report(self):
+        return {'con':self.con,'table_begin':self.begin,'table_end_inclusive':self.end,'walks':self.walks,
+                'translation':'128B pages;2B tags;valid bit15;physical base0x100000;virtual base0x400000',
+                'initial_con_is_synthetic':True,'hardware_tlb_cache_timing_simulated':False}
 
 
 class PartialWord:
@@ -99,7 +173,8 @@ class IRQController:
 class BR28Model:
     def __init__(self,*,source_ticks_per_step=4,initial_registers=None,
                  initial_irq_config=None,initial_ipmask=None,reset_inputs_inactive=False,
-                 bus_lock_model=False,initial_lock_owner='unknown',gpio_model=False):
+                 bus_lock_model=False,initial_lock_owner='unknown',gpio_model=False,
+                 mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
         self.timer=Timer0()
         self.irq=IRQController(initial_config=initial_irq_config,initial_ipmask=initial_ipmask)
@@ -114,13 +189,17 @@ class BR28Model:
         self.initial_lock_owner=initial_lock_owner
         self.gpio_model=gpio_model
         self.gpio={}
+        self.mmu=MMU(initial_mmu_con) if mmu_model else None
+        self.p11=P11AccessProbe(p11_status) if p11_access_probe else None
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
             if address not in (CLOCK0,CLOCK0+4,CLOCK0+8,PLL0):raise ValueError('unsupported initial register')
             self.registers[address]=value
 
     def handles(self,address,size):
-        return size==4 and address%4==0 and (self.handles_gpio(address) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
+        return size==4 and address%4==0 and (self.handles_gpio(address) or
+            (self.p11 is not None and address in (P11_UART_CON2,PMU_STA)) or
+            (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
 
@@ -145,6 +224,10 @@ class BR28Model:
 
     def read(self,address):
         self.counts['reads']+=1
+        if self.p11 is not None and address in (P11_UART_CON2,PMU_STA):
+            if address!=PMU_STA:raise Blocked('unmodeled_p11_register_read',address=hex(address))
+            return self.p11.read()
+        if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
         if IRQ_CONFIG<=address<IRQ_CONFIG+128:value=self.irq.config[(address-IRQ_CONFIG)//4]
@@ -156,7 +239,11 @@ class BR28Model:
     def write(self,address,value):
         if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('MMIO value must be unsigned32')
         if not self.handles(address,4):raise Blocked('unsupported_peripheral_write',address=hex(address))
-        if self.handles_gpio(address):
+        if self.p11 is not None and address in (P11_UART_CON2,PMU_STA):
+            if address!=P11_UART_CON2:raise Blocked('pmu_status_is_not_a_configuration_latch')
+            self.p11.write(value)
+        elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
+        elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
         elif TIMER0<=address<=TIMER0+8:self.timer.write(address-TIMER0,value)
         elif address==PINR1:
@@ -215,6 +302,8 @@ class BR28Model:
             result['gpio']={hex(a):{'known_value':hex(w.value),'known_mask':hex(w.known)}
                             for a,w in sorted(self.gpio.items())}
             result['assumptions']['gpio']='exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model'
+        if self.mmu is not None:result['mmu']=self.mmu.report()
+        if self.p11 is not None:result['p11_access_counterfactual']=self.p11.report()
         if self.counts['opaque_port_selection_reads']:
             result['assumptions']['port_selection_read']='opaque R0 until validated caller overwrites it; value never supplied as zero'
         return result

@@ -58,6 +58,14 @@ def run(module,app,header,rom):
         if context:diag.update(irq_context=IRQ_CONTEXT,irq_pop_pc=IRQ_POP)
         r=explore(module,app,name=name,rom=rom,handoff=h,diagnostics=diag,hardware=hardware)
         results.append(r);print(name,r['completed_steps'],r['stop_pc'],r['stop'],flush=True)
+    h=profile(header,SENTINEL_A)
+    h['description']['phase']='isolated corrupted saved IRQ frame; not architectural IRQ entry'
+    dst,src,n=RAM_CODE;h['seeds'].append((dst,app[src-ENTRY:src-ENTRY+n]))
+    h['seeds'].append((STACK_TOP-12,struct.pack('<III',0x12345679,0x12345679,IRQ_CONTEXT['psr'])))
+    r=explore(module,app,name='isr_saved_return_masks',rom=rom,handoff=h,
+              diagnostics={'entry_pc':IRQ_POP,'initial_sp':STACK_TOP-12,'initial_gprs':GPRS,
+                           'irq_context':IRQ_CONTEXT,'irq_pop_pc':IRQ_POP,'icfg_initial':0})
+    results.append(r);print(r['name'],r['completed_steps'],r['stop_pc'],r['stop'],flush=True)
     for result in results:
         result['last_instructions']=result['last_instructions'][-8:]
         for row in result['last_instructions']:row.pop('bytes',None)
@@ -93,6 +101,10 @@ def check(report):
         hits=[m for m in r['milestones'] if m['kind']=='watched_pc_executed']
         require(len(hits)==(1 if name=='isr_actual_rts_callback' else 0),'callback path mismatch')
     require(rows['isr_invalid_callback']['stop_pc']=='0x13ff00','invalid ISR callback escaped the fetch fence')
+    r=rows['isr_saved_return_masks']
+    require(r['stop_pc']==hex(IRQ_RTI) and r['completed_steps']==2 and
+            r['last_registers']['reti']=='0x2345678' and r['last_registers']['rets']=='0x2345678' and
+            r['last_registers']['sp']==hex(STACK_TOP),'saved RETI/RETS were not masked to bits26..1')
     report['gpio_irq_regression_passed']=True
 
 

@@ -4632,6 +4632,159 @@
           "cpu_interrupt_delivery_simulated": false
         }
       }
+    },
+    {
+      "name": "isr_saved_return_masks",
+      "entry": "0x12ed08",
+      "completed_steps": 2,
+      "stop_pc": "0x12ed0c",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "rti"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false,
+          "phase": "isolated corrupted saved IRQ frame; not architectural IRQ entry"
+        },
+        "diagnostics": {
+          "entry_pc": 1240328,
+          "initial_sp": 1194036,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "irq_context": {
+            "reti": 101367006,
+            "rets": 100667956,
+            "psr": 2768240650
+          },
+          "irq_pop_pc": 1240328,
+          "icfg_initial": 0
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis",
+        "irq_execution": "isolated post-entry software frame; architectural IRQ entry/RTI, bank selection and nesting not implemented"
+      },
+      "instruction_adapters": {
+        "qcy_irq_special_frame": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "0aed1200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12ed08",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]",
+          "next_pc": "0x12ed0a"
+        },
+        {
+          "pc": "0x12ed0a",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12ed0c"
+        },
+        {
+          "pc": "0x12ed0c",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x13570000",
+          "0x13570001",
+          "0x13570002",
+          "0x13570003",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x0",
+        "rets": "0x2345678",
+        "icfg": "0x0",
+        "reti": "0x2345678",
+        "psr_projection": "0xa500000a"
+      },
+      "memory_event_counts": {
+        "write": 1
+      },
+      "memory_events_truncated": false,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 0
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 0
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 0
     }
   ],
   "gpio_irq_regression_passed": true

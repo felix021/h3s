@@ -1,0 +1,27 @@
+{
+  "sdk_commit": "67328f4741c69993c88e504c67377b196c724f97",
+  "not_exact_qcy_source": true,
+  "device_accessed": false,
+  "objects": {
+    "vmalloc.c.o": {
+      "sha256": "4eb039c5de685db7b0613ed45d177cebadab77643c8860fb8ad4c2693c75f442",
+      "bytes": 29304
+    },
+    "pmalloc.c.o": {
+      "sha256": "ce3eed456baaf9fc00aca28e3cd8cc510e0f6ad8e7c16d1feb36f8baa38b7fe1",
+      "bytes": 26024
+    },
+    "power_driver.c.o": {
+      "sha256": "c4d67d91fb38c3701f1067297204d5b497e267ac6839c594f953201b81867d95",
+      "bytes": 176532
+    }
+  },
+  "function_ir_sha256": {
+    "vmm_init_": "d55ba645d54ce6ab32d92d9cccf58786a118ccaebb2acd77854c2f4c0a0445f0",
+    "hw_mmu_disable": "b9c0ce05cd0157a4e4b043bdf875119767353152a869dadb5b6502b35fac48f6",
+    "vmem_get_phy_adr": "3085f76d47b6b55021c246184988c86229fcdc5cf1f3656528b65345e9aea403",
+    "pmalloc_init": "935ca9cd24a6c161c5ec772085e0d9290691eb46f90937be04c3724450e7384d",
+    "get_physic_address": "2bf6dc13bef656338c54fd1a1ddad827cd90b91b166ff8cf71bff0906fdc81e5",
+    "p11_init": "9d1479ea912ce21dd8b97225cd020416252d1b2d1daf95646f23b90391104b40"
+  }
+}

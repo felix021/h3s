@@ -45,7 +45,7 @@ def read_sections(path):
     return data, result
 
 
-def apply_eq_patch(flash, elf):
+def apply_eq_patch(flash, elf, *, repair_code_fence=False):
     raw_elf, sections = read_sections(elf)
     app = bytes(flash[APP_DATA:APP_DATA + APP_SIZE])
     if hashlib.sha256(app).hexdigest() != '8f594d5908f6d4eac9b63e5e4538d3c0dbf0ed1a1e285547fcf2d9c6b0914517':
@@ -67,8 +67,25 @@ def apply_eq_patch(flash, elf):
     # 0x06000100..0x060c3338 into LIM_PC0_L/H and enables the PC guard. File/CRC
     # coverage does NOT make a resource's address executable. Keep the faulty
     # design blocked, even though its historical offline CRC audit passed.
-    if not 0x06000100 <= address < address + len(code) <= 0x060C3338:
+    if not repair_code_fence and not 0x06000100 <= address < address + len(code) <= 0x060C3338:
         raise ValueError('REJECTED: EQ payload exceeds the firmware Flash PC execution range; redesign required')
+    fence_repair=None
+    if repair_code_fence:
+        if len(code)!=337 or hashlib.sha256(code).hexdigest()!= 'f4e9501e515a7f74e7114633ba9bc165d1da9b399481530a78be8663dbe0e49a':
+            raise ValueError('Fence repair is limited to the archived337B compiled payload')
+        # A distinct offline candidate. Preserve guard enable and lower bound;
+        # extend only the actual debug_init upper-limit immediate. This fixes
+        # the known execution-policy failure, not a whole-boot verdict.
+        position=APP_DATA+0x06034e98-APP_BASE
+        before=bytes.fromhex('c1ff38330c06')
+        if flash[position:position+6]!=before:
+            raise ValueError('Flash PC upper-limit instruction changed')
+        upper=address+len(code)
+        flash[position+2:position+6]=struct.pack('<I',upper)
+        fence_repair={'site':'0x6034e98','old_programmed_upper_limit':'0x60c3338',
+                      'new_programmed_upper_limit':hex(upper),'lower_and_enable_preserved':True,
+                      'exact_hardware_endpoint_and_low_bits_unverified':True,
+                      'whole_boot_validated':False,'status':'OFFLINE_UNTESTED'}
     # Existing entries already include unaligned headers (config.dat starts
     # flash+0xe4ef3). No old file is moved or extended. Append a normal JLFS file.
     last_header = 0xE4EF3
@@ -105,4 +122,5 @@ def apply_eq_patch(flash, elf):
             'payload_runtime': hex(address), 'payload_flash_offset': hex(payload_flash),
             'extension_file': 'eq_toggle.bin', 'old_app_end': OLD_APP_END, 'new_app_end': end,
             'hook_sites': sites, 'state': 'volatile EQ source byte bit 7; enabled after boot',
-            'spatial_eq_type_10': 'double click ignored', 'device_verified': False}
+            'spatial_eq_type_10': 'double click ignored', 'device_verified': False,
+            **({'code_fence_repair':fence_repair} if fence_repair else {})}

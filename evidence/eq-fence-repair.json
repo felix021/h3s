@@ -1,0 +1,153 @@
+{
+  "device_accessed": false,
+  "whole_h3s_boot_simulated": false,
+  "suitable_for_flash_approval_alone": false,
+  "default_builder_rejects_r2": true,
+  "default_auditor_does_not_silently_accept_repair": true,
+  "crc_valid_unrelated_boot_info_and_payload_mutants_rejected": true,
+  "audit": {
+    "status": "offline audit passed; NOT hardware validation",
+    "candidate_sha256": "67ba97efb83a15ec9df14de574667c6a77126d43ac6d8e5f5e645cb91126f222",
+    "bytes": 1326848,
+    "new_crc_covered_app_bytes": 930245,
+    "payload_bytes": 337,
+    "whole_ufw_changed_bytes_vs_tested_image": 428,
+    "payload_sha256": "f4e9501e515a7f74e7114633ba9bc165d1da9b399481530a78be8663dbe0e49a",
+    "changed_plaintext_bytes_before_extension": 44,
+    "existing_resources_identical_to_tested_image": true,
+    "unrelated_boot_info_fields_preserved": true,
+    "anc_two_state_table_preserved": true,
+    "hook_targets_and_resumes_verified": true,
+    "actual_disassembly_bytes_match_image": true,
+    "new_file": "eq_toggle.bin",
+    "device_verified": false,
+    "code_fence_repair": {
+      "programmed_upper_limit": "0x60e31c5",
+      "lower_and_enable_preserved": true,
+      "exact_hardware_endpoint_and_low_bits_unverified": true,
+      "whole_boot_validated": false
+    }
+  },
+  "execution": {
+    "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+    "baseline_ufw_sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+    "device_accessed": false,
+    "firmware_created": false,
+    "pc_limits_extracted_by_executing_qcy_loads": [
+      "0x6000100",
+      "0x60c3338"
+    ],
+    "original_source_read_machine_code_passed": true,
+    "harness_negative_checks_passed": 5,
+    "policy": "H3S-derived explicit instruction-fetch fence; not hardware exception emulation",
+    "whole_h3s_boot_simulated": false,
+    "suitable_for_flash_approval_alone": false,
+    "archived_r2_branch_vectors": [
+      {
+        "site": "0x60059ce",
+        "target": "0x60e3092",
+        "result": "BLOCKED"
+      },
+      {
+        "site": "0x6025030",
+        "target": "0x60e30b0",
+        "result": "BLOCKED"
+      },
+      {
+        "site": "0x602510e",
+        "target": "0x60e30c2",
+        "result": "BLOCKED"
+      },
+      {
+        "site": "0x6025364",
+        "target": "0x60e3074",
+        "result": "BLOCKED"
+      },
+      {
+        "site": "0x6078846",
+        "target": "0x60e30a0",
+        "result": "BLOCKED"
+      }
+    ],
+    "archived_r2_verdict": "REJECTED",
+    "patch_elf_sha256": "f8fdcf50f12c2d421b7c5ad4487dd21b372d3ef89e3dffdd4096fc52f5486c08",
+    "guarded_patch_entries": [
+      {
+        "site": "0x60059ce",
+        "target": "0x60e3092",
+        "result": "BLOCKED",
+        "reason": "Flash execution fence: 0x060e3092 outside 0x06000100..0x060c3338"
+      },
+      {
+        "site": "0x6025030",
+        "target": "0x60e30b0",
+        "result": "BLOCKED",
+        "reason": "Flash execution fence: 0x060e30b0 outside 0x06000100..0x060c3338"
+      },
+      {
+        "site": "0x602510e",
+        "target": "0x60e30c2",
+        "result": "BLOCKED",
+        "reason": "Flash execution fence: 0x060e30c2 outside 0x06000100..0x060c3338"
+      },
+      {
+        "site": "0x6025364",
+        "target": "0x60e3074",
+        "result": "BLOCKED",
+        "reason": "Flash execution fence: 0x060e3074 outside 0x06000100..0x060c3338"
+      },
+      {
+        "site": "0x6078846",
+        "target": "0x60e30a0",
+        "result": "BLOCKED",
+        "reason": "Flash execution fence: 0x060e30a0 outside 0x06000100..0x060c3338"
+      }
+    ],
+    "repaired_fence_function_diagnostics": {
+      "real_compiled_source_function_cases": 8,
+      "register_and_stack_checks_passed": true,
+      "real_compiled_toggle_cases_with_api_stubs": 3,
+      "real_compiled_node_open_cases": 4,
+      "dsp_rtos_calls_are_explicit_stubs": true,
+      "permission_override_for_diagnostics_only": false,
+      "not_a_safe_firmware_verdict": true,
+      "execution_bounds_extracted_from_candidate": [
+        "0x6000100",
+        "0x60e31c5"
+      ],
+      "endpoint_policy": "half-open full-instruction fetch check; exact silicon endpoint/low bits unverified"
+    },
+    "repaired_candidate_hook_entries": [
+      {
+        "site": "0x60059ce",
+        "target": "0x60e3092",
+        "result": "EXECUTED_WITH_CANDIDATE_FENCE"
+      },
+      {
+        "site": "0x6025030",
+        "target": "0x60e30b0",
+        "result": "EXECUTED_WITH_CANDIDATE_FENCE"
+      },
+      {
+        "site": "0x602510e",
+        "target": "0x60e30c2",
+        "result": "EXECUTED_WITH_CANDIDATE_FENCE"
+      },
+      {
+        "site": "0x6025364",
+        "target": "0x60e3074",
+        "result": "EXECUTED_WITH_CANDIDATE_FENCE"
+      },
+      {
+        "site": "0x6078846",
+        "target": "0x60e30a0",
+        "result": "EXECUTED_WITH_CANDIDATE_FENCE"
+      }
+    ],
+    "repaired_candidate_upper_bound_still_rejects": true,
+    "repaired_candidate_whole_boot_validated": false,
+    "repaired_application_sha256": "3788e3a1e25ed4e14ac3e8167674279e2d9e48e1904684c4aeaa06bc11d579cb",
+    "actual_candidate_payload_and_hooks_match_executed_elf": true
+  },
+  "historical_r2_rejected_by_repair_policy": true
+}
