@@ -58,7 +58,8 @@
   "version": "V_0.1.1.8",
   "pid": 16764,
   "user_confirmed_bluetooth_playback": true,
-  "mode_key_regression": "user reports no response; unresolved",
+  "mode_key_regression": "independent ANC key: no prompt and no audible mode change; unresolved",
   "public_cli_reflashed_device": false,
-  "public_planner_reproduced_historical_target_exactly": true
+  "public_planner_reproduced_historical_target_exactly": true,
+  "qcy_app_direct_mode_comparison": "awaiting user observation"
 }
