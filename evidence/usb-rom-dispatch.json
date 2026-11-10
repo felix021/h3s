@@ -1,0 +1,519 @@
+{
+  "format_version": 1,
+  "rom_sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+  "rom_bytes": 131072,
+  "decoder_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "offline_only": true,
+  "device_accessed": false,
+  "hardware_cpu_executed": false,
+  "payload_executed": false,
+  "deployable": false,
+  "suitable_for_payload_execution_approval": false,
+  "scope": "Pinned ROM windows and selected anchors, plus two isolated instruction-model fixtures. Not a USB session, complete ABI, ownership or timing certification.",
+  "regions": [
+    {
+      "name": "receive_copy",
+      "start": "0x468a",
+      "end_exclusive": "0x470c",
+      "sha256": "aa378eacee20fed1b246dd499395bb35d71b9e2037ae2ebbe546bbc4d127248e"
+    },
+    {
+      "name": "argument_and_receive_wrapper",
+      "start": "0x470c",
+      "end_exclusive": "0x4728",
+      "sha256": "be0cd1bf56eb1305cdcf2154bcc3da8cb6963e17e44206f316544c99156588a1"
+    },
+    {
+      "name": "send_copy",
+      "start": "0x4738",
+      "end_exclusive": "0x47b2",
+      "sha256": "b8aeb501a499d14b6a18f241d40c69136f0cddb599ae7c501f8924c6b21b0c2a"
+    },
+    {
+      "name": "usb_setup",
+      "start": "0x4808",
+      "end_exclusive": "0x48f2",
+      "sha256": "a8a0757f9562ff2e305b8d53a8de3332d645998cb0c7d64ab459c711b1f36767"
+    },
+    {
+      "name": "hook_dispatch_and_fb06",
+      "start": "0x4938",
+      "end_exclusive": "0x499a",
+      "sha256": "a35e73901c1bcc6b7d5f5a9bf339786d8298a8ac7db238a68115c487a12c9ef3"
+    },
+    {
+      "name": "fd07",
+      "start": "0x499a",
+      "end_exclusive": "0x49f4",
+      "sha256": "c6ac77e5597ec4ae3fdd75a2c09a99bc49f4f007057e166d22223f375bec56e4"
+    },
+    {
+      "name": "fb08",
+      "start": "0x4a70",
+      "end_exclusive": "0x4ad0",
+      "sha256": "13b23d155fc045f14dcf596a80537bbaba8f79bc9490c372e2a58108f3608922"
+    },
+    {
+      "name": "memory_transform",
+      "start": "0xaa1e",
+      "end_exclusive": "0xaa62",
+      "sha256": "0a0118c9693fbcc1d1fd3ef2d0aa61d098c1abd7b998278e74c58f234bcd744c"
+    },
+    {
+      "name": "transform_lookup",
+      "start": "0x1f619",
+      "end_exclusive": "0x1f629",
+      "sha256": "2f3e78fc341f7ee59c7577e9318cd3e10cd9b5b4222ad02274408cdca61f3936"
+    }
+  ],
+  "selected_instruction_anchors": [
+    {
+      "pc": "0x4692",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x4698",
+      "instruction_id": "ld.w.l",
+      "size": 4
+    },
+    {
+      "pc": "0x46ce",
+      "instruction_id": "mov.rr",
+      "size": 2
+    },
+    {
+      "pc": "0x46d0",
+      "instruction_id": "mov.rr",
+      "size": 2
+    },
+    {
+      "pc": "0x46d4",
+      "instruction_id": "call.xl",
+      "size": 6,
+      "target": "0x413c"
+    },
+    {
+      "pc": "0x470c",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x4712",
+      "instruction_id": "ld.bu.l",
+      "size": 4
+    },
+    {
+      "pc": "0x4716",
+      "instruction_id": "ld.bu.l",
+      "size": 4
+    },
+    {
+      "pc": "0x471a",
+      "instruction_id": "insert.rrii",
+      "size": 4
+    },
+    {
+      "pc": "0x471e",
+      "instruction_id": "rts",
+      "size": 2
+    },
+    {
+      "pc": "0x4724",
+      "instruction_id": "call.s",
+      "size": 2,
+      "target": "0x468a"
+    },
+    {
+      "pc": "0x473a",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x4740",
+      "instruction_id": "ld.w.l",
+      "size": 4
+    },
+    {
+      "pc": "0x4778",
+      "instruction_id": "if.ge.ri.s12",
+      "size": 4
+    },
+    {
+      "pc": "0x4782",
+      "instruction_id": "mov.rr",
+      "size": 2
+    },
+    {
+      "pc": "0x4784",
+      "instruction_id": "mov.rr",
+      "size": 2
+    },
+    {
+      "pc": "0x4788",
+      "instruction_id": "call.xl",
+      "size": 6,
+      "target": "0x413c"
+    },
+    {
+      "pc": "0x478e",
+      "instruction_id": "st.w.l",
+      "size": 4
+    },
+    {
+      "pc": "0x4810",
+      "instruction_id": "li.u8",
+      "size": 2
+    },
+    {
+      "pc": "0x4884",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x488a",
+      "instruction_id": "st.w",
+      "size": 2
+    },
+    {
+      "pc": "0x4894",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x489a",
+      "instruction_id": "st.w",
+      "size": 2
+    },
+    {
+      "pc": "0x48a4",
+      "instruction_id": "add.ri.u6_hi",
+      "size": 2
+    },
+    {
+      "pc": "0x48aa",
+      "instruction_id": "st.w",
+      "size": 2
+    },
+    {
+      "pc": "0x48c8",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x48da",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x4938",
+      "instruction_id": "ld.w.l",
+      "size": 4
+    },
+    {
+      "pc": "0x493c",
+      "instruction_id": "beqz",
+      "size": 2,
+      "target": "0x4948"
+    },
+    {
+      "pc": "0x4942",
+      "instruction_id": "call.r",
+      "size": 2
+    },
+    {
+      "pc": "0x4944",
+      "instruction_id": "bne.ri",
+      "size": 4,
+      "target": "0x4ad0"
+    },
+    {
+      "pc": "0x4956",
+      "instruction_id": "beq.ri",
+      "size": 4,
+      "target": "0x4a70"
+    },
+    {
+      "pc": "0x495a",
+      "instruction_id": "bne.ri",
+      "size": 4,
+      "target": "0x4a64"
+    },
+    {
+      "pc": "0x4982",
+      "instruction_id": "call.l",
+      "size": 4,
+      "target": "0x4720"
+    },
+    {
+      "pc": "0x498e",
+      "instruction_id": "call.xl",
+      "size": 6,
+      "target": "0xaa1e"
+    },
+    {
+      "pc": "0x4994",
+      "instruction_id": "st.w.l",
+      "size": 4
+    },
+    {
+      "pc": "0x49ce",
+      "instruction_id": "call.xl",
+      "size": 6,
+      "target": "0xaa1e"
+    },
+    {
+      "pc": "0x49e0",
+      "instruction_id": "call.l",
+      "size": 4,
+      "target": "0x4738"
+    },
+    {
+      "pc": "0x49ec",
+      "instruction_id": "call.xl",
+      "size": 6,
+      "target": "0xaa1e"
+    },
+    {
+      "pc": "0x4a82",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x4a88",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x4a92",
+      "instruction_id": "st.w",
+      "size": 2
+    },
+    {
+      "pc": "0x4a94",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0x4a9e",
+      "instruction_id": "st.w",
+      "size": 2
+    },
+    {
+      "pc": "0x4aa0",
+      "instruction_id": "st.w.l",
+      "size": 4
+    },
+    {
+      "pc": "0x4aa8",
+      "instruction_id": "st.w",
+      "size": 2
+    },
+    {
+      "pc": "0x4aae",
+      "instruction_id": "st.w",
+      "size": 2
+    },
+    {
+      "pc": "0x4ab4",
+      "instruction_id": "rev8.rr",
+      "size": 4
+    },
+    {
+      "pc": "0x4ab8",
+      "instruction_id": "mov.rr",
+      "size": 2
+    },
+    {
+      "pc": "0x4aba",
+      "instruction_id": "call.r",
+      "size": 2
+    },
+    {
+      "pc": "0x4abc",
+      "instruction_id": "li.u8",
+      "size": 2
+    },
+    {
+      "pc": "0x4abe",
+      "instruction_id": "st.b.sp.l",
+      "size": 4
+    },
+    {
+      "pc": "0x4aca",
+      "instruction_id": "li.u8",
+      "size": 2
+    },
+    {
+      "pc": "0x4acc",
+      "instruction_id": "call.l",
+      "size": 4,
+      "target": "0x4738"
+    },
+    {
+      "pc": "0xaa20",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0xaa26",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0xaa2c",
+      "instruction_id": "st.w",
+      "size": 2
+    },
+    {
+      "pc": "0xaa36",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0xaa48",
+      "instruction_id": "ld.bu",
+      "size": 2
+    },
+    {
+      "pc": "0xaa4a",
+      "instruction_id": "ld.w",
+      "size": 2
+    },
+    {
+      "pc": "0xaa4c",
+      "instruction_id": "xor.rr",
+      "size": 2
+    },
+    {
+      "pc": "0xaa4e",
+      "instruction_id": "st.b.pin",
+      "size": 2
+    }
+  ],
+  "hook_dispatch": {
+    "hook_pointer_address": "0x181428",
+    "load_pc": "0x4938",
+    "callback_call_pc": "0x4942",
+    "nonzero_callback_result_branch_pc": "0x4944",
+    "rule": "If installed, the hook runs before ROM dispatch; nonzero callback result bypasses ROM command handling."
+  },
+  "fb06": {
+    "receive_call_pc": "0x4982",
+    "receive_target": "0x4720",
+    "transform_call_pc": "0x498e",
+    "transform_target": "0xaa1e",
+    "hook_clear_pc": "0x4994",
+    "hook_clear_address": "0x181428",
+    "limit": "This is the ROM handling path, reached only if an installed hook does not consume the command. No transfer, CRC acceptance or timeout behavior was exercised."
+  },
+  "fb08": {
+    "dispatch_branch_pc": "0x4956",
+    "tail_entry_pc": "0x4a70",
+    "call_pc": "0x4aba",
+    "post_call_pc": "0x4abc",
+    "argument_pointer_in": "R0",
+    "arglist_address": "0x18142c",
+    "arglist_fields": [
+      "send_pointer=0x4738",
+      "receive_pointer=0x4720",
+      "hook_pointer_address=0x181428",
+      "16-bit_command_argument",
+      "zero"
+    ],
+    "hook_effect": "The selected FB08 tail preserves the hook; it does not perform the FB06 hook clear.",
+    "response": {
+      "send_call_pc": "0x4acc",
+      "send_target": "0x4738",
+      "bytes": 16,
+      "r0_return_value_overwrite_pc": "0x4abc",
+      "r0_replacement": "0xfb",
+      "limit": "The payload return value in R0 is overwritten, not forwarded as an application result. The response is constructed after return; this fixture stops before executing the payload or sending a response."
+    }
+  },
+  "fd07": {
+    "transform_before_send_pc": "0x49ce",
+    "send_pc": "0x49e0",
+    "transform_after_send_pc": "0x49ec",
+    "transform_target": "0xaa1e",
+    "operation": "Transform source RAM in place, send it, then transform it again on the normal returning path.",
+    "transform_engine_base": "0xfd3500",
+    "transform_lookup_address": "0x1f619",
+    "limit": "The static CRC-engine/XOR path supports the MengLi protocol interpretation. Engine behavior, USB completion, interruption and guaranteed source restoration were not executed or certified. Read-only regions and MMIO do not have ordinary writable-RAM behavior."
+  },
+  "usb_copy_buffers": {
+    "setup_control_offsets": [
+      "0x1c",
+      "0x20",
+      "0x24"
+    ],
+    "setup_buffer_addresses": [
+      "0x181040",
+      "0x181080",
+      "0x1810c0"
+    ],
+    "receive_buffer_pointer_slot": "0x181454",
+    "receive_copy_call_pc": "0x46d4",
+    "send_buffer_pointer_slot": "0x181444",
+    "send_copy_call_pc": "0x4788",
+    "copy_target": "0x413c",
+    "send_chunk_limit_bytes": 64,
+    "limit": "These routines copy through fixed USB buffers. They do not establish that every DMA engine or CPU1 is idle, or that arbitrary RAM is available."
+  },
+  "fb08_tail_fixture": {
+    "initial_register_policy": "Distinct synthetic GPR values; R4=0x1813f8, R7=0, R8=0x181428. Other simulator defaults are not measured ROM initial state.",
+    "workspace": "Explicit synthetic 128-byte region at 0x1813f8, command target 0x120000 and argument 0xa5a5; no implicit zero reads elsewhere.",
+    "memory_policy": "ROM read-only; only five aligned 4-byte arglist writes accepted; uninitialized reads and all other writes rejected.",
+    "entry_assumption": "Starts after command dispatch selected the ROM FB08 path. A nonzero installed hook is assumed to have returned zero; its callback is not executed.",
+    "cases": [
+      {
+        "initial_hook": "0x0",
+        "final_hook": "0x0",
+        "completed_model_instructions": 23,
+        "stop_before_payload": "0x120000",
+        "rets": "0x4abc",
+        "arglist": "0x18142c",
+        "arglist_words": [
+          "0x4738",
+          "0x4720",
+          "0x181428",
+          "0xa5a5",
+          "0x0"
+        ],
+        "write_count": 5,
+        "write_span": {
+          "start": "0x18142c",
+          "end_exclusive": "0x181440"
+        }
+      },
+      {
+        "initial_hook": "0x121cfe",
+        "final_hook": "0x121cfe",
+        "completed_model_instructions": 23,
+        "stop_before_payload": "0x120000",
+        "rets": "0x4abc",
+        "arglist": "0x18142c",
+        "arglist_words": [
+          "0x4738",
+          "0x4720",
+          "0x181428",
+          "0xa5a5",
+          "0x0"
+        ],
+        "write_count": 5,
+        "write_span": {
+          "start": "0x18142c",
+          "end_exclusive": "0x181440"
+        }
+      }
+    ],
+    "limit": "46 completed model instructions total; no payload fetch, USB/MMIO function, RTI, interrupt or other core runs."
+  },
+  "unproved": [
+    "A USB identity alone identifies whether a RAM loader hook owns a command.",
+    "The normal-application transition executes every cold-ROM initialization path or yields measured ICFG, stack, reset and cache state.",
+    "RAM upload space is free: 0x120000..0x122800 is the actual application MMU-table range before transition; overlap requires separate ownership and MMU evidence.",
+    "CPU1, DMA and caches cannot use the proposed RAM range, or a self-written payload can safely restore mode, interrupt configuration and stack banks.",
+    "A completed USB response proves full machine-state restoration or allows any new hardware action."
+  ]
+}

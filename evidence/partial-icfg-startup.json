@@ -1,0 +1,440 @@
+{
+  "date": "2026-11-11",
+  "scope": "Opt-in partial ICFG startup projection; strict active-priority consumer and conditional first-task RTI frontier.",
+  "source_tool": "tools/probe_icfg_startup.py",
+  "source_report_sha256": "6793be3b41a1e7aa59cce5868c5a185c888bc616e19e24d7b021985ae569197e",
+  "firmware_sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "rom_sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "device_accessed": false,
+  "whole_h3s_boot_simulated": false,
+  "candidate_whole_boot_validated": false,
+  "suitable_for_flash_approval_alone": false,
+  "task_rti_delivered": false,
+  "literal_gate_projection_certified_on_br28": false,
+  "empty_active_priorities_are_explicit_fixture": true,
+  "partial_icfg_checks_passed": true,
+  "primary_source_evidence": "evidence/icfg-status.json",
+  "legacy_dualcore_profiles_retained": 10,
+  "validation": {
+    "icfg_unit_tests_passed": 12,
+    "official_profiles_checked": 2,
+    "candidate_prefixes_checked": 2,
+    "full_local_rom_regression_this_checkpoint": "passed",
+    "full_local_rom_regression_exit_code": 0,
+    "full_local_rom_regression_log_sha256": "a49f8255d25687cabedce2b5c6f037dbbeed85b0fb778f40a725532a873a607a",
+    "icfg_unit_tests_python_optimized_passed": 12,
+    "legacy_reports_byte_identical": 21,
+    "legacy_baseline_commit": "2d7726f",
+    "legacy_baseline_manifest_sha256": "dd5e2aa05a86621c49b4217dbbc3a50b0def2ce81424ed1962a5e7a63dc29640",
+    "official_scenarios_identical_to_candidate_combined_report": 2,
+    "usb_rom_tool_checked_separately_after_full_suite": true,
+    "usb_rom_windows": 9,
+    "usb_rom_anchors": 62,
+    "usb_rom_fixture_steps_per_case": [
+      23,
+      23
+    ],
+    "negative_partial_reports_rejected": [
+      "invented_status_knowledge",
+      "wholeword_zero",
+      "auto_ack",
+      "guard_bypass",
+      "rti_executed",
+      "unknown_priority_assumed_zero"
+    ]
+  },
+  "complete_br28_writable_mask_certified": false,
+  "whole_icfg_known_zero_inferred_from_gate_demand": false,
+  "generic_irq_entry_or_task_rti_implemented": false,
+  "raw_rom_included": false,
+  "private_input_paths_included": false,
+  "full_instruction_trace_included": false,
+  "scenarios": [
+    {
+      "name": "hardware_status_unknown",
+      "completed_steps": 16093,
+      "stop_core": 0,
+      "stop_pc": "0x6000ed2",
+      "stop": {
+        "kind": "partial_icfg_value_consumed",
+        "known_mask": "0xffffff00",
+        "known_value": "0x0"
+      },
+      "conditions": {
+        "initial_known_masks": [
+          "0x300",
+          "0x300"
+        ],
+        "bootstrap_status_preserve_mask": "0x0",
+        "literal_patterns": [
+          0,
+          512,
+          768
+        ],
+        "hardware_status_is_not_guest_fullword_rw": true,
+        "core_icfg_in_peripheral_report_is_gate_demand_only": true,
+        "other_platform_and_bootstrap_conditions": "docs/dualcore-startup.md"
+      },
+      "cores": {
+        "0": {
+          "pc": "0x6000ed2",
+          "steps": 16093,
+          "sp": "0x123824",
+          "ssp": "unknown",
+          "usp": "unknown",
+          "reti": "unknown",
+          "rets": "0x6000f14",
+          "icfg": "unknown",
+          "partial_icfg": {
+            "known_mask": "0x300",
+            "known_value": "0x0",
+            "source_core": 0,
+            "status_generation": 0,
+            "identity_mask": "0xffffffff",
+            "gate_demand": 0,
+            "writes": 1,
+            "bit9_updates": 0,
+            "complete_br28_writable_mask_certified": false,
+            "status_or_task_rti_transition_simulated": false
+          }
+        }
+      },
+      "launches": 0,
+      "lock_wait_attempts": 0,
+      "ready_injected": false
+    },
+    {
+      "name": "explicit_empty_active_priorities",
+      "completed_steps": 147268,
+      "stop_core": 1,
+      "stop_pc": "0x6066130",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "rti"
+      },
+      "conditions": {
+        "initial_known_masks": [
+          "0x3ff",
+          "0x3ff"
+        ],
+        "bootstrap_status_preserve_mask": "0xff",
+        "literal_patterns": [
+          0,
+          512,
+          768
+        ],
+        "hardware_status_is_not_guest_fullword_rw": true,
+        "core_icfg_in_peripheral_report_is_gate_demand_only": true,
+        "other_platform_and_bootstrap_conditions": "docs/dualcore-startup.md"
+      },
+      "cores": {
+        "0": {
+          "pc": "0x12b5ae",
+          "steps": 136405,
+          "sp": "0x1237ec",
+          "ssp": "unknown",
+          "usp": "unknown",
+          "reti": "unknown",
+          "rets": "0x6065db0",
+          "icfg": "unknown",
+          "partial_icfg": {
+            "known_mask": "0x3ff",
+            "known_value": "0x200",
+            "source_core": 0,
+            "status_generation": 0,
+            "identity_mask": "0xffffffff",
+            "gate_demand": 0,
+            "writes": 1,
+            "bit9_updates": 266,
+            "complete_br28_writable_mask_certified": false,
+            "status_or_task_rti_transition_simulated": false
+          }
+        },
+        "1": {
+          "pc": "0x6066130",
+          "steps": 10863,
+          "sp": "0x401bfc",
+          "ssp": "unknown",
+          "usp": "unknown",
+          "reti": "0x12c57e",
+          "rets": "0x0",
+          "icfg": "unknown",
+          "partial_icfg": {
+            "known_mask": "0x3ff",
+            "known_value": "0x200",
+            "source_core": 1,
+            "status_generation": 1,
+            "identity_mask": "0xffffffff",
+            "gate_demand": 0,
+            "writes": 1,
+            "bit9_updates": 60,
+            "complete_br28_writable_mask_certified": false,
+            "status_or_task_rti_transition_simulated": false
+          }
+        }
+      },
+      "launches": 1,
+      "lock_wait_attempts": 2130,
+      "ready_injected": false,
+      "cpu1_gprs": [
+        "0x0",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown"
+      ],
+      "task_gpr_frame_initialized_bytes": 0,
+      "cpu1_ready": "01",
+      "peripheral_core_icfg_gate_demand_only": {
+        "0": 0,
+        "1": 0
+      },
+      "shared_lock_owner": 0,
+      "cpu0_software_irq_pending": {
+        "known_mask": "0x8",
+        "known_value": "0x8"
+      },
+      "executing_fetch_guard": {
+        "checked_fetches": 298798,
+        "violation": null,
+        "core0_flash_upper": "0x60c3338",
+        "core1_flash_upper": "0x60c3338"
+      }
+    }
+  ],
+  "candidate_prefixes": [
+    {
+      "name": "repaired_candidate",
+      "completed_steps": 147268,
+      "stop_core": 1,
+      "stop_pc": "0x6066130",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "rti"
+      },
+      "ufw_sha256": "67ba97efb83a15ec9df14de574667c6a77126d43ac6d8e5f5e645cb91126f222",
+      "conditions": {
+        "initial_known_masks": [
+          "0x3ff",
+          "0x3ff"
+        ],
+        "bootstrap_status_preserve_mask": "0xff",
+        "literal_patterns": [
+          0,
+          512,
+          768
+        ],
+        "hardware_status_is_not_guest_fullword_rw": true,
+        "core_icfg_in_peripheral_report_is_gate_demand_only": true,
+        "other_platform_and_bootstrap_conditions": "docs/dualcore-startup.md"
+      },
+      "cores": {
+        "0": {
+          "pc": "0x12b5ae",
+          "steps": 136405,
+          "sp": "0x1237ec",
+          "ssp": "unknown",
+          "usp": "unknown",
+          "reti": "unknown",
+          "rets": "0x6065db0",
+          "icfg": "unknown",
+          "partial_icfg": {
+            "known_mask": "0x3ff",
+            "known_value": "0x200",
+            "source_core": 0,
+            "status_generation": 0,
+            "identity_mask": "0xffffffff",
+            "gate_demand": 0,
+            "writes": 1,
+            "bit9_updates": 266,
+            "complete_br28_writable_mask_certified": false,
+            "status_or_task_rti_transition_simulated": false
+          }
+        },
+        "1": {
+          "pc": "0x6066130",
+          "steps": 10863,
+          "sp": "0x401bfc",
+          "ssp": "unknown",
+          "usp": "unknown",
+          "reti": "0x12c57e",
+          "rets": "0x0",
+          "icfg": "unknown",
+          "partial_icfg": {
+            "known_mask": "0x3ff",
+            "known_value": "0x200",
+            "source_core": 1,
+            "status_generation": 1,
+            "identity_mask": "0xffffffff",
+            "gate_demand": 0,
+            "writes": 1,
+            "bit9_updates": 60,
+            "complete_br28_writable_mask_certified": false,
+            "status_or_task_rti_transition_simulated": false
+          }
+        }
+      },
+      "launches": 1,
+      "lock_wait_attempts": 2130,
+      "ready_injected": false,
+      "cpu1_gprs": [
+        "0x0",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown"
+      ],
+      "task_gpr_frame_initialized_bytes": 0,
+      "cpu1_ready": "01",
+      "peripheral_core_icfg_gate_demand_only": {
+        "0": 0,
+        "1": 0
+      },
+      "shared_lock_owner": 0,
+      "cpu0_software_irq_pending": {
+        "known_mask": "0x8",
+        "known_value": "0x8"
+      },
+      "executing_fetch_guard": {
+        "checked_fetches": 298798,
+        "violation": null,
+        "core0_flash_upper": "0x60e31c5",
+        "core1_flash_upper": "0x60e31c5"
+      }
+    },
+    {
+      "name": "archived_failed_r2",
+      "completed_steps": 147268,
+      "stop_core": 1,
+      "stop_pc": "0x6066130",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "rti"
+      },
+      "ufw_sha256": "c8dae5233678102aac152f0ff94952edea83c6eeca6afaf216db43226d0b6696",
+      "conditions": {
+        "initial_known_masks": [
+          "0x3ff",
+          "0x3ff"
+        ],
+        "bootstrap_status_preserve_mask": "0xff",
+        "literal_patterns": [
+          0,
+          512,
+          768
+        ],
+        "hardware_status_is_not_guest_fullword_rw": true,
+        "core_icfg_in_peripheral_report_is_gate_demand_only": true,
+        "other_platform_and_bootstrap_conditions": "docs/dualcore-startup.md"
+      },
+      "cores": {
+        "0": {
+          "pc": "0x12b5ae",
+          "steps": 136405,
+          "sp": "0x1237ec",
+          "ssp": "unknown",
+          "usp": "unknown",
+          "reti": "unknown",
+          "rets": "0x6065db0",
+          "icfg": "unknown",
+          "partial_icfg": {
+            "known_mask": "0x3ff",
+            "known_value": "0x200",
+            "source_core": 0,
+            "status_generation": 0,
+            "identity_mask": "0xffffffff",
+            "gate_demand": 0,
+            "writes": 1,
+            "bit9_updates": 266,
+            "complete_br28_writable_mask_certified": false,
+            "status_or_task_rti_transition_simulated": false
+          }
+        },
+        "1": {
+          "pc": "0x6066130",
+          "steps": 10863,
+          "sp": "0x401bfc",
+          "ssp": "unknown",
+          "usp": "unknown",
+          "reti": "0x12c57e",
+          "rets": "0x0",
+          "icfg": "unknown",
+          "partial_icfg": {
+            "known_mask": "0x3ff",
+            "known_value": "0x200",
+            "source_core": 1,
+            "status_generation": 1,
+            "identity_mask": "0xffffffff",
+            "gate_demand": 0,
+            "writes": 1,
+            "bit9_updates": 60,
+            "complete_br28_writable_mask_certified": false,
+            "status_or_task_rti_transition_simulated": false
+          }
+        }
+      },
+      "launches": 1,
+      "lock_wait_attempts": 2130,
+      "ready_injected": false,
+      "cpu1_gprs": [
+        "0x0",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown"
+      ],
+      "task_gpr_frame_initialized_bytes": 0,
+      "cpu1_ready": "01",
+      "peripheral_core_icfg_gate_demand_only": {
+        "0": 0,
+        "1": 0
+      },
+      "shared_lock_owner": 0,
+      "cpu0_software_irq_pending": {
+        "known_mask": "0x8",
+        "known_value": "0x8"
+      },
+      "executing_fetch_guard": {
+        "checked_fetches": 298798,
+        "violation": null,
+        "core0_flash_upper": "0x60c3338",
+        "core1_flash_upper": "0x60c3338"
+      }
+    }
+  ]
+}

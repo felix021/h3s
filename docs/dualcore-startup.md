@@ -6,7 +6,9 @@
 
 CPU1已经执行真实ROM、QCY trampoline、缓存初始化等待和两个ready通知写入；调度代码实际选中了任务TCB并恢复12B特殊寄存器帧。**首任务尚未进入，完整耳机启动和EQ修复仍未验证。** 未连接设备、未刷机、未运行GitHub CI。新增profile只允许受限的未知值搬运；任务RTI仍是独立的严格边界，不借用bootstrap RTI投影。
 
-工具是 [probe_dualcore.py](../tools/probe_dualcore.py)，共享执行器是 [br28_machine.py](../tools/br28_machine.py)，精简结果见 [dualcore-startup.json](../evidence/dualcore-startup.json)。工具现包含10组严格／条件场景，可选两个精确候选各运行strict与abstract两条前缀，共4条候选结果。本轮10组场景与4条候选前缀的汇总检查，以及包含私有ROM的完整本机回归均通过。退出成功表示回归条件匹配，不表示启动完成。
+工具是 [probe_dualcore.py](../tools/probe_dualcore.py)，共享执行器是 [br28_machine.py](../tools/br28_machine.py)，精简结果见 [dualcore-startup.json](../evidence/dualcore-startup.json)。工具现包含10组严格／条件场景，可选两个精确候选各运行strict与abstract两条前缀，共4条候选结果。本文检查点的10组场景与4条候选前缀的汇总检查，以及包含私有ROM的完整本机回归均通过。退出成功表示回归条件匹配，不表示启动完成。
+
+后续的[部分已知ICFG路径](partial-icfg-startup.md)是单独开启的模型，保留本文10组场景：只有gates8/9已知时，在16,093步读取未知活动优先级字节而停止；显式增加低字节为零及其跨bootstrap保留条件后，才再次到达147,268步的任务RTI前。此时两核ICFG known mask=`0x3ff`、value=`0x200`，其余状态仍未知，不能沿用本文旧profile的完整字解释。新路径的12项定向测试（含Python优化模式）、2+2条前缀及包含私有ROM的完整本机回归均通过；21份旧报告逐字节不变，两组官方结果与候选合并回放一致，见[精简证据](../evidence/partial-icfg-startup.json)。
 
 ## CPU1实际经过的路径
 
@@ -19,6 +21,8 @@ CPU1实际执行25条ROM指令：从PC0进入 `0xa120`，在 `0xa144` 读到核�
 新增 [analyze_cpu1_rom.py](../tools/analyze_cpu1_rom.py) 对固定128KiB ROM中的8个窗口校验摘要，并核对46个bootstrap／cache指令锚点及相关控制地址，[精简静态结果](../evidence/cpu1-rom-static.json)保留这些锚点。该检查已接入本机回归，只输出有限元数据；它确认所执行字节与控制流来源，不认证reset、缓存时序或RTI模式。
 
 ## 必须保留的未验证条件
+
+下表记载本文保留的旧profile。新的partial ICFG条件单独列在[后续说明](partial-icfg-startup.md)，不将旧完整字fixture解释为硬件测量。
 
 | 条件 | 当前显式策略 | 尚未证明的部分 |
 | --- | --- | --- |

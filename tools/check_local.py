@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--fetch-inputs',action='store_true',help='download hash-pinned firmware and simulator if missing')
+    parser.add_argument('--fetch-inputs',action='store_true',help='download hash-pinned firmware, simulator and reference SDK inputs if missing')
     parser.add_argument('--reproduce',action='store_true',help='also rebuild the three published firmware baselines offline')
     parser.add_argument('--android-build',action='store_true',help='also build the APK for a synthetic target; requires local SDK35/JDK')
     parser.add_argument('--rom',type=Path,help='also run ROM execution probes with an explicitly supplied private ROM file')
@@ -23,6 +23,7 @@ def main():
 
     if args.fetch_inputs:
         run(sys.executable,'tools/fetch_firmware.py','--variant','both')
+        run(sys.executable,'tools/fetch_boot_reference.py','--hardware')
     run(sys.executable,'-m','compileall','-q','tools','-x','jl-misctools|build|reference-cache')
     run('bash','tools/android-query/test.sh')
     run('bash','tools/eq-toggle/test.sh')
@@ -34,6 +35,7 @@ def main():
     run(sys.executable,'tools/test_boot_bus.py')
     run(sys.executable,'tools/test_br28_machine.py')
     run(sys.executable,'tools/test_task_unknown.py')
+    run(sys.executable,'tools/test_icfg.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json')
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json')
@@ -41,6 +43,7 @@ def main():
     run(sys.executable,'tools/analyze_p11.py','--report','analysis/local-checks/p11-resource.json')
     run(sys.executable,'tools/analyze_startup_chain.py','--report','analysis/local-checks/startup-chain.json')
     run(sys.executable,'tools/analyze_cpu_context.py','--report','analysis/local-checks/cpu-context.json')
+    run(sys.executable,'tools/analyze_icfg_status.py','--report','analysis/local-checks/icfg-status.json')
     run(sys.executable,'tools/probe_debug_startup.py','--report','analysis/local-checks/debug-startup.json')
     if args.rom:
         run(sys.executable,'tools/probe_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/rom-execution.json')
@@ -53,7 +56,9 @@ def main():
         run(sys.executable,'tools/probe_arch_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/architecture-startup.json')
         run(sys.executable,'tools/probe_platform_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/platform-startup.json')
         run(sys.executable,'tools/analyze_cpu1_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/cpu1-rom.json')
+        run(sys.executable,'tools/analyze_usb_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/usb-rom-dispatch.json')
         run(sys.executable,'tools/probe_dualcore.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/dualcore-startup.json')
+        run(sys.executable,'tools/probe_icfg_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/icfg-startup.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:

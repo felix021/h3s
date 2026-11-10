@@ -135,6 +135,10 @@
     "SDK/interface/driver/power/power_reset.h": {
       "sha256": "8fdcf9ddd9189d06efca38aee26ca00794f855627fef105ad0b5826f5cc18d53",
       "bytes": 2954
+    },
+    "SDK/interface/utils/debug.h": {
+      "bytes": 7285,
+      "sha256": "f9d03b0b251f0913fcb858dbf97f599f09d77fdda7bb36fcd81bb3c63e81041e"
     }
   },
   "hardware_reference_objects": {

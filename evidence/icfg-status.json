@@ -1,0 +1,391 @@
+{
+  "write_constraints": [
+    {
+      "file": "hw/fm1-2026-10-24-app2/results.jsonl",
+      "line": 45,
+      "batch": "batch-controls-005",
+      "case_file": "hw/fm1-2026-10-24-app2/controls.json",
+      "case_index": 5,
+      "write_sequence": "ICFG=0x200",
+      "plain_whole_word_rw_prediction": "0x200",
+      "sampled_icfg": "0x33f0600",
+      "irq_counts_before_sample": [
+        0,
+        0
+      ],
+      "irq_count_after_later_reopen": 3,
+      "sample_precedes_later_icfg_300_write": true
+    },
+    {
+      "file": "hw/fm1-2026-10-24-app2/results.jsonl",
+      "line": 48,
+      "batch": "batch-controls-006",
+      "case_file": "hw/fm1-2026-10-24-app2/controls.json",
+      "case_index": 6,
+      "write_sequence": "ICFG=0; STI",
+      "plain_whole_word_rw_prediction": "0x200",
+      "sampled_icfg": "0x33f0600",
+      "irq_counts_before_sample": [
+        0,
+        0
+      ],
+      "irq_count_after_later_reopen": 3,
+      "sample_precedes_later_icfg_300_write": true
+    }
+  ],
+  "nested_priority_constraints": {
+    "file": "hw/fm1-2026-10-24-app3/observations.json",
+    "records": [
+      {
+        "pointer": "/1/batches/0",
+        "batch": "batch-nesting-000",
+        "outer_priority": 3,
+        "child_priority": 7,
+        "gate_selection": 0,
+        "max_depth": 1,
+        "entry_icfg": "0x7790280",
+        "active_priority_bitmap": "0x80"
+      },
+      {
+        "pointer": "/1/batches/1",
+        "batch": "batch-nesting-001",
+        "outer_priority": 3,
+        "child_priority": 7,
+        "gate_selection": 1,
+        "max_depth": 2,
+        "entry_icfg": "0x7790288",
+        "active_priority_bitmap": "0x88"
+      },
+      {
+        "pointer": "/1/batches/2",
+        "batch": "batch-nesting-002",
+        "outer_priority": 3,
+        "child_priority": 7,
+        "gate_selection": 2,
+        "max_depth": 1,
+        "entry_icfg": "0x7790280",
+        "active_priority_bitmap": "0x80"
+      },
+      {
+        "pointer": "/1/batches/3",
+        "batch": "batch-nesting-003",
+        "outer_priority": 3,
+        "child_priority": 7,
+        "gate_selection": 3,
+        "max_depth": 1,
+        "entry_icfg": "0x7790280",
+        "active_priority_bitmap": "0x80"
+      },
+      {
+        "pointer": "/1/batches/4",
+        "batch": "batch-nesting-004",
+        "outer_priority": 3,
+        "child_priority": 3,
+        "gate_selection": 1,
+        "max_depth": 1,
+        "entry_icfg": "0x3790208",
+        "active_priority_bitmap": "0x8"
+      },
+      {
+        "pointer": "/1/batches/5",
+        "batch": "batch-nesting-005",
+        "outer_priority": 7,
+        "child_priority": 3,
+        "gate_selection": 1,
+        "max_depth": 1,
+        "entry_icfg": "0x3790208",
+        "active_priority_bitmap": "0x8"
+      },
+      {
+        "pointer": "/1/batches/6",
+        "batch": "batch-nesting-006",
+        "outer_priority": 0,
+        "child_priority": 7,
+        "gate_selection": 1,
+        "max_depth": 2,
+        "entry_icfg": "0x7790281",
+        "active_priority_bitmap": "0x81"
+      },
+      {
+        "pointer": "/1/batches/7",
+        "batch": "batch-nesting-007",
+        "outer_priority": 7,
+        "child_priority": 0,
+        "gate_selection": 1,
+        "max_depth": 1,
+        "entry_icfg": "0x790201",
+        "active_priority_bitmap": "0x1"
+      },
+      {
+        "pointer": "/1/batches/8",
+        "batch": "batch-nesting-008",
+        "outer_priority": 3,
+        "child_priority": 7,
+        "gate_selection": 1,
+        "max_depth": 2,
+        "entry_icfg": "0x7790288",
+        "active_priority_bitmap": "0x88"
+      }
+    ]
+  },
+  "return_tail_constraints": [
+    {
+      "entry_file": "hw/fm1-2026-10-24-app3/observations.json",
+      "entry_pointer": "/0/batches/7",
+      "post_file": "hw/fm1-2026-10-24-app3/results.jsonl",
+      "post_line": 24,
+      "entry_icfg": "0x3780208",
+      "post_return_tail_icfg": "0x3780700",
+      "xor": "0x508",
+      "tail": "Restore entry ICFG; restore RETI, PSR, GPRs and RETS; CSYNC; RTI",
+      "causal_limit": "Observation covers the entire tail and later sampling, not an isolated RTI side effect."
+    },
+    {
+      "entry_file": "hw/fm1-2026-10-24-app3/observations.json",
+      "entry_pointer": "/0/batches/8",
+      "post_file": "hw/fm1-2026-10-24-app3/results.jsonl",
+      "post_line": 27,
+      "entry_icfg": "0x37f0208",
+      "post_return_tail_icfg": "0x37f0700",
+      "xor": "0x508",
+      "tail": "Restore entry ICFG; restore RETI, PSR, GPRs and RETS; CSYNC; RTI",
+      "causal_limit": "Observation covers the entire tail and later sampling, not an isolated RTI side effect."
+    }
+  ],
+  "v4_rti_endpoint": {
+    "file": "hw/fm1-2026-10-24-v4/results.jsonl",
+    "line": 291,
+    "icfg_before": "0x1090700",
+    "icfg_after": "0x1090700",
+    "sp_before": "0x1c28cc0",
+    "sp_after": "0x1c28cc0",
+    "limit": "ROM runner context only."
+  },
+  "syscall_low_byte_counterexamples": [
+    {
+      "file": "hw/fm1-2026-10-24-v5/results.jsonl",
+      "line": 273,
+      "batch": "batch-handler-owned-001",
+      "entry_icfg": "0x1090200",
+      "supplied_ssp": "0x1c20cd8",
+      "limit": "A zero low byte occurs at real syscall entry; it cannot alone prove thread mode."
+    },
+    {
+      "file": "hw/fm1-2026-10-24-v5/results.jsonl",
+      "line": 294,
+      "batch": "batch-handler-routes-rest-000",
+      "entry_icfg": "0x1090200",
+      "supplied_ssp": "0x1c28d1c",
+      "limit": "A zero low byte occurs at real syscall entry; it cannot alone prove thread mode."
+    }
+  ],
+  "app4_endpoint_scope": {
+    "run_id": "0x4005",
+    "checked_batches": 9,
+    "source_snapshot_sha256": "85dbb265f59661558c99d7d87242cfc84e1e518b184b755ca70323ff29ec8138",
+    "sampled_usp_ssp_sp": [
+      "0x1c12000",
+      "0x1c14000",
+      "0x1c12000"
+    ],
+    "explicit_cli_and_icfg_zero_before_samples": true,
+    "immediate_post_rti_icfg_sampled": false
+  },
+  "gate8_endpoint_witnesses": {
+    "rules": [
+      {
+        "rule": "open_only_with_active_return_context",
+        "v4_already_open_endpoint": 1,
+        "app3_active_return_tail_endpoint": 1,
+        "app4_after_explicit_gate_clear": 0,
+        "unobserved_no_active_context_old_gate8_zero": 0
+      },
+      {
+        "rule": "open_on_every_return",
+        "v4_already_open_endpoint": 1,
+        "app3_active_return_tail_endpoint": 1,
+        "app4_after_explicit_gate_clear": 0,
+        "unobserved_no_active_context_old_gate8_zero": 1
+      }
+    ],
+    "limit": "Illustrates non-uniqueness at the selected gate8 endpoints only. Neither rule is a complete CPU model or proven to satisfy every measurement or silicon behavior. App3 includes a whole software return tail; app4 masks both candidates before sampling."
+  },
+  "sdk_definitions": {
+    "commit": "67328f4741c69993c88e504c67377b196c724f97",
+    "not_exact_qcy_source": true,
+    "debug_header": "SDK/interface/utils/debug.h",
+    "traceSUPER_MODE": "Empty macro; commented body tests bit10. A mode-related clue, not an executed assertion, polarity specification or stack-bank rule.",
+    "cpu_header": "SDK/interface/driver/cpu/br28/asm/cpu.h",
+    "cpu_in_irq_mask": "0xff",
+    "cpu_irq_disabled_without_unmask_support": "(ICFG & 0x300) != 0x300"
+  },
+  "format_version": 1,
+  "decoder_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "static_only": true,
+  "measurement_repository": "https://github.com/jvitkauskas/pi32v2-isa.git",
+  "measurement_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "sdk_repository": "https://gitlab.zh-jieli.com/ai_test/701n",
+  "record_hash_encoding": "UTF-8 json.dumps(record, sort_keys=True, separators=(comma, colon)); default ensure_ascii=True",
+  "device_accessed": false,
+  "cpu_executed": false,
+  "whole_h3s_boot_validated": false,
+  "task_rti_authorized": false,
+  "scope": "Pinned AC791N records and BR28 SDK definitions; source constraints for review, not a CPU implementation or measured QCY initial state.",
+  "source_files": {
+    "hw/fm1-2026-10-24-app2/controls.json": {
+      "sha256": "46d6a86d88f70c381f3df7d424e6d88b8551542fcd6b057189bdf5427ad7f9f7",
+      "bytes": 15059
+    },
+    "hw/fm1-2026-10-24-app2/results.jsonl": {
+      "sha256": "216b1069c522808f98928be87e24dab9ead2f244ee3cf70c7ac6eda375cfcae5",
+      "bytes": 68512
+    },
+    "hw/fm1-2026-10-24-app2/observations.json": {
+      "sha256": "0262e84960c4ce528830b365dbe2309dbcb0487709ce7a5e1a2010d289489bd0",
+      "bytes": 401155
+    },
+    "hw/fm1-2026-10-24-app3/results.jsonl": {
+      "sha256": "4b4b3690394972180bd358111c721b4853b1be7c90b84787bdef0ee4f50090f5",
+      "bytes": 217216
+    },
+    "hw/fm1-2026-10-24-app3/observations.json": {
+      "sha256": "a75398cd196511e70b1cf176a33229c962d5db4908dba4fae427ffceae39327d",
+      "bytes": 1236112
+    },
+    "hw/fm1-2026-10-24-app3/nesting.json": {
+      "sha256": "64863ac034aae201661d952d82601caf1689430aad68dc321d3207a6827beb63",
+      "bytes": 20234
+    },
+    "hw/fm1-2026-10-24-v4/results.jsonl": {
+      "sha256": "1ac72426cd6fd54fcebc55151527619cbc36c47472920f299e21ca78380a9dd0",
+      "bytes": 399716
+    },
+    "hw/fm1-2026-10-24-v5/results.jsonl": {
+      "sha256": "f1c704084bf475297f485bb2df5a73bd4f856bc2951039da4b08c15d725b6f81",
+      "bytes": 515633
+    },
+    "tools/hwtest/app/advanced-platform.S": {
+      "sha256": "e4cdbdb247301c4c1f68c8b93f307b200dcaf33825780c2b4441f1b82bc0a4d7",
+      "bytes": 4290
+    },
+    "tools/hwtest/app/platform.S": {
+      "sha256": "bf5044b67870f7a1511cd13d2d3ab8e7f91041e5b39a14ddeb8d37b4ca127eaa",
+      "bytes": 5486
+    },
+    "tools/hwtest/app/peer.S": {
+      "sha256": "b5b270557c010fe30475a30871a0a1800023ceb4af888f421d5e49822707b8b2",
+      "bytes": 4696
+    },
+    "tools/hwtest/semantics/v4.py": {
+      "sha256": "32b8835f0616bcb6a3cf4123148be57649051850598a03098fe9a9222ca660f5",
+      "bytes": 6781
+    },
+    "hw/fm1-2026-10-24-app4/observations.json": {
+      "sha256": "8868c98f21e1f61b5fbfcdfa7e2628c12710a9e0538b82190e60220b79d2996d",
+      "bytes": 1132882
+    },
+    "hw/fm1-2026-10-24-app4/attempts.json": {
+      "sha256": "690583ccb759a649d346b38a1f599be71c24691ad7cd7974ded00cfcedf8ec8a",
+      "bytes": 2926692
+    },
+    "SDK/interface/utils/debug.h": {
+      "sha256": "f9d03b0b251f0913fcb858dbf97f599f09d77fdda7bb36fcd81bb3c63e81041e",
+      "bytes": 7285
+    },
+    "SDK/interface/driver/cpu/br28/asm/cpu.h": {
+      "sha256": "17fefa223674f3fe8fefd37bf7f4d14cc35735d80dcbe435186c06b7e4ed07fc",
+      "bytes": 4729
+    }
+  },
+  "exact_record_sha256": {
+    "hw/fm1-2026-10-24-app2/controls.json#/5": "a8cc305672360b39533fd7ec0ffa8ce18c7d6f972536fe51aa2374f56138830c",
+    "hw/fm1-2026-10-24-app2/controls.json#/6": "4ae176bd433071b7d843ffddebc5b4beb8e1704b9af85f35763ea47fae4f40fd",
+    "hw/fm1-2026-10-24-app2/results.jsonl#line:45": "5478a1361ed944dd20705079195b7578d6e78c23d7f8c5ec2eb6a28dfc9a2622",
+    "hw/fm1-2026-10-24-app2/results.jsonl#line:48": "5ea2c3d0eaee3eb7fd7f647192b64785ece42f14b8b9f46ba2c89307441399a3",
+    "hw/fm1-2026-10-24-app3/nesting.json#/0": "be57be4f685598d79c95be58e56c34b55f1440b410e981a41a55827622d06dbc",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/0": "38ac68661b677d8ded4a1a5ea1f56f99c130e1dad9b67296f733e51839ed049b",
+    "hw/fm1-2026-10-24-app3/nesting.json#/1": "57c71f13c159ba601867a5275fda8c661a155e951ca84480b998fc0937307972",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/1": "d7148913ae253fc21a6b78637d1421b7792e8bff3e9abb790700563b6d0b7ee4",
+    "hw/fm1-2026-10-24-app3/nesting.json#/2": "be0c8687fa4e57ac32c5b8b9cd01509540763c2ae973460e6424366f2e1c273c",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/2": "f33ff80ac1d337a66648683a8aaf22b667cfa8986c95639300abf7839b454480",
+    "hw/fm1-2026-10-24-app3/nesting.json#/3": "7c20cc27a95b100229cd55353321b81f015bf0079ad8a05bf2f8e1deec3fc997",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/3": "bb5fafe4b31243e971cfb0a68e09cf0fc822231dfe064a74c606ea1328d64ef1",
+    "hw/fm1-2026-10-24-app3/nesting.json#/4": "2035201681115c0c04134486031d488390add6acf5995df479d40b142c3c3b48",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/4": "0e62054e5610acd9a96ad85cbe5ca30eea80f3d83acc4dd6356177e9f17b65fb",
+    "hw/fm1-2026-10-24-app3/nesting.json#/5": "d8921f74813cc3c2076454b9f9023685f8d61533caa77e59ccec53a08a2fff9e",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/5": "d54e74c1736db8bfd24eb01ae900dd3c79e2363e77c3281c92fa3b62a480b16c",
+    "hw/fm1-2026-10-24-app3/nesting.json#/6": "708ea1dcac15e597fc755475f99c6167a6b337ac5d256a6ac23316bd35b61793",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/6": "9c172208c8bc726c6bc79ef88980fdf064a71eb69fc79c84a655bd3aac3ba057",
+    "hw/fm1-2026-10-24-app3/nesting.json#/7": "6b686f0751eefdc92b3a576d388f0b764bf619f8e85fae2a3ee71fd0a14fd9d5",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/7": "d9cf626bfdafa4595639c18a34e35644b992a1ec2c7ed6ff27e65b252b86c0d6",
+    "hw/fm1-2026-10-24-app3/nesting.json#/8": "6fcaab8426749666bf562e0521d5b93653d4d3d2289a0ab668ae4f4cdc64ea40",
+    "hw/fm1-2026-10-24-app3/observations.json#/1/batches/8": "f3af4b81f6522c881c2e97bca09acd441fa4d540b8f9fa286ce9169690d85704",
+    "hw/fm1-2026-10-24-app3/observations.json#/0/batches/7": "9add3f097ffc3209a9c0e8904cc80b9464b2a921613cb9994658e47563df4bb0",
+    "hw/fm1-2026-10-24-app3/results.jsonl#line:24": "4ff0da517ebbd393f218e2c32c75d0ea75d749f438332f09a4b04de2974bf4b3",
+    "hw/fm1-2026-10-24-app3/observations.json#/0/batches/8": "1884ee3b105ba7655fff66680cbc29b44c8b4f5cda6e406774883c879e75174f",
+    "hw/fm1-2026-10-24-app3/results.jsonl#line:27": "bcb29f2be8f284080048da6acbc59e92838f1807425a36509280e36ce2d502b0",
+    "hw/fm1-2026-10-24-v4/results.jsonl#line:291": "8a733292610e6fbd5c203e7ac155acf35372230648f8b58bbfcdf32edc4136db",
+    "hw/fm1-2026-10-24-v5/results.jsonl#line:273": "0d8836a4c988a30f89acfa0abbc6c80c553311475974fd99cb595dfc2a2961d0",
+    "hw/fm1-2026-10-24-v5/results.jsonl#line:294": "78c2160746242b7ef1b862fe113a497d282990accb0fcc4ff57e1c4752c9d8f8",
+    "hw/fm1-2026-10-24-app4/observations.json#/4": "1ac7b19266d16375499d77c9103f37ba7649f5019677879345fb98c17eed36ec",
+    "hw/fm1-2026-10-24-app4/attempts.json#/4": "f9ce3c0685c31c23d0f04d4857d0b5c9b29bfaef0db5962d20cc61e6d5404756"
+  },
+  "rom_reset_startup": {
+    "checked": true,
+    "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+    "bytes": 131072,
+    "anchors": [
+      {
+        "pc": "0xa15c",
+        "instruction_id": "li.sr_u32",
+        "size": 6
+      },
+      {
+        "pc": "0xa162",
+        "instruction_id": "mov.sp_ssp",
+        "size": 2
+      },
+      {
+        "pc": "0xa164",
+        "instruction_id": "li.sr_u32",
+        "size": 6
+      },
+      {
+        "pc": "0xa170",
+        "instruction_id": "li.sr_u32",
+        "size": 6
+      },
+      {
+        "pc": "0xa176",
+        "instruction_id": "rti",
+        "size": 2
+      }
+    ],
+    "direct_icfg_writes_absent_in": {
+      "begin": "0xc606",
+      "end_exclusive": "0xc636"
+    },
+    "limit": "Static reset path contains RTI after distinct SSP/SP and USP without an ordinary IRQ software frame. This is not an observed post-RTI state and does not establish task-return gates, mode, bank writeback or permission."
+  },
+  "counterexamples": {
+    "whole_word_rw": "ICFG=0 followed by STI, or a direct 0x200 write, does not yield the plain-RW prediction 0x200: the sampled word is 0x033f0600 before later IRQ reopening. These cases constrain status/cause preservation, not every writable bit.",
+    "writing_300_clears_active_priorities": "Nested samples retain an outer active-priority bit across the gate-opening write.",
+    "low_byte_zero_proves_thread_mode": "The two syscall entry samples have low byte zero.",
+    "bit10_alone_selects_usp": "Not established by the commented SDK macro or the sampled return contexts.",
+    "v4_identifies_universal_return_behavior": "The app3 complete return tails change low fields, without isolating which step causes that change. Unchanged v4 endpoints do not identify a universal RTI rule."
+  },
+  "partial_model_review_contract": [
+    "Track ICFG value, known mask and provenance separately from active return-context knowledge; a numeric initial fixture is not a measured reset state.",
+    "CLI/STI affect observed gate9. CLI.r copies partial ICFG; STI.r must inspect only the required source bit9, without manufacturing unrelated known bits.",
+    "An actual same-core read/AND~0x300/write expression may justify clearing gates8/9 while preserving other bit knowledge; a guessed literal word is a different operation.",
+    "A separately explicit AC791N-derived literal gate-write projection can retain status knowledge, but these samples do not establish a universal writable mask or status-one-write behavior.",
+    "Query only bits needed by a consumer. A known closed gate, disabled source or insufficient priority may establish ineligibility despite unrelated unknown bits; unknown required bits still stop delivery.",
+    "Do not infer a real IRQ-entry token from caller-written low bits or a guessed bit10. Partial ICFG modeling does not authorize first-task RTI."
+  ],
+  "unidentified_first_task_contract": [
+    "Gate8 after return with old gate8=0 and no observed ordinary IRQ-entry context.",
+    "Bit10/mode and SP/USP/SSP writeback after dynamic task-frame restoration.",
+    "Hidden return-permission creation or consumption by RETI writes, frame pops or RTI.",
+    "The required discriminating observation is an immediate return-state sample before CLI or another ICFG write, with distinct stack banks and known entry history. No new hardware action is requested or performed."
+  ]
+}

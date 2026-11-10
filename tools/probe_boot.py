@@ -15,6 +15,7 @@ import struct
 from probe_pi32v2 import ROOT, PIN, require, upstream
 from verify_ufw_integrity import decode, sfc
 from br28_unknown import UnknownWord, word
+from br28_icfg import IcfgValue, M as WORD_MASK
 
 OFFICIAL_SHA='65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af'
 APP_SHA='18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041'
@@ -82,6 +83,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def __init__(self):
             self.ram={}
             self.unknown_origins={}
+            self.icfg_spills={}
 
         def region(self,address,size):
             for low,high,kind in self.regions:
@@ -132,6 +134,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if not region:
                 details={'value_bytes':data.hex()} if diagnostics else {}
                 raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data),**details)
+            for base,value in list(self.icfg_spills.items()):
+                low,high=max(base,address),min(base+4,address+len(data))
+                if low<high:
+                    updated=value.overlay_bytes(low-base,data[low-address:high-address])
+                    if updated.known==WORD_MASK:del self.icfg_spills[base]
+                    else:self.icfg_spills[base]=updated
             self.ram.update((address+i,byte) for i,byte in enumerate(data))
             for a in range(address,address+len(data)):self.unknown_origins.pop(a,None)
             if machine is not None:machine.note_memory_write(address,data)
@@ -151,6 +159,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     any(physical<base+len(data) and physical+4>base for base,data in (handoff['readonly'] if handoff else ()))):
                 raise Blocked('abstract_read_crosses_readonly_boundary',address=hex(physical),size=4)
             if not self.region(physical,4):return int.from_bytes(self.read(address,4),'little')
+            if physical in self.icfg_spills:return self.icfg_spills[physical]
             values=[self.ram.get(physical+i) for i in range(4)]
             if all(v is not None for v in values):return int.from_bytes(bytes(values),'little')
             for i,v in enumerate(values):
@@ -161,14 +170,35 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def write_abstract_word(self,address,value):
             if isinstance(value,int):self.write(address,struct.pack('<I',value&0xffffffff));return
-            require(isinstance(value,UnknownWord),'unsupported abstract memory value')
-            physical=self.abstract_write_target(address);region=self.region(physical,4)
+            require(isinstance(value,(UnknownWord,IcfgValue)),'unsupported abstract memory value')
+            physical=self.preflight_abstract_word(address,value);region=self.region(physical,4)
+            if isinstance(value,IcfgValue):
+                self.icfg_spills[physical]=value
+                for i in range(4):
+                    a=physical+i;mask=255<<(8*i)
+                    if value.known&mask==mask:self.ram[a]=(value.value>>(8*i))&255
+                    else:self.ram.pop(a,None)
+                    self.unknown_origins.pop(a,None)
+                event({'access':'abstract_write','address':hex(physical),'size':4,'region':region,
+                       'known_mask':hex(value.known),'known_value':hex(value.value)})
+                return
+            self.icfg_spills.pop(physical,None)
             for i,v in enumerate(value.bytes):
                 a=physical+i
                 if v is None:self.ram.pop(a,None);self.unknown_origins[a]=value.origins[i]
                 else:self.ram[a]=v;self.unknown_origins.pop(a,None)
             event({'access':'abstract_write','address':hex(physical),'size':4,'region':region,
                    'bytes_with_unknowns':''.join('??' if v is None else f'{v:02x}' for v in value.bytes)})
+
+        def preflight_abstract_word(self,address,value):
+            require(isinstance(value,(int,UnknownWord,IcfgValue)),'unsupported abstract stack source')
+            physical=self.abstract_write_target(address)
+            if isinstance(value,IcfgValue) and physical%4:
+                raise Blocked('partial_icfg_spill_unaligned',address=hex(physical))
+            if isinstance(value,UnknownWord) and any(physical<base+4 and physical+4>base and physical!=base
+                                                    for base in self.icfg_spills):
+                raise Blocked('mixed_abstract_spill_unaligned',address=hex(physical))
+            return physical
 
         def abstract_write_target(self,address):
             physical=hardware.mmu.translate(address,4,self.read) if hardware is not None and hardware.mmu is not None else address
@@ -228,7 +258,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                          (self.pc==0x0603502c and insn.id=='li.s16' and raw=={'r':0,'n':848})),
                         'opaque register would be consumed outside verified dead-value path')
 
-        def word_store(self,insn,raw):
+        def word_store(self,insn,raw,abstract=False):
             op=module.check.operands(insn,raw)
             if insn.id=='st.w.modimm':address=self.R[op['r']]+op['n'];value=op['m']
             elif insn.id=='st.w.idxs':address=self.R[op['r']]+(self.R[op['s']]<<2);value=self.R[op['t']]
@@ -237,7 +267,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             elif insn.id=='st.w':address=self.R[op['b']]+op['n'];value=self.R[op['d']]
             elif insn.id=='st.w.sp':address=self.sp+op['n'];value=self.R[op['r']]
             else:raise ValueError('unsupported exact word store')
-            return address&0xffffffff,value&0xffffffff
+            return address&0xffffffff,value if abstract and isinstance(value,IcfgValue) else value&0xffffffff
 
         def finish_exact(self,end):
             self.seq=end;self.pc=end;self.steps+=1
@@ -250,9 +280,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             # unsupported abstract outputs before upstream apply mutates any
             # register/memory; explicit copy/stack adapters handle valid moves.
             values=result[0]
+            for group in ('regs','mem'):
+                for key,value in list(values.get(group,{}).items()):
+                    if isinstance(value,IcfgValue):values[group][key]=value.concrete()
+            for key in ('flags','sp','rets','exit'):
+                if isinstance(values.get(key),IcfgValue):values[key]=values[key].concrete()
             for value in (*values.get('regs',{}).values(),*values.get('mem',{}).values(),
                           *(values.get(k) for k in ('flags','sp','rets','exit'))):
-                if isinstance(value,UnknownWord):value.consumed()
+                if isinstance(value,(UnknownWord,IcfgValue)):value.consumed()
             return result
 
         def decode(self,pc):
@@ -291,6 +326,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             before_sp=self.sp
             helper_return=bool(self.repeat and self.repeat.get('allow_helper_return') and self.pc==0x0012cb2a)
             self.step_body()
+            if isinstance(self.pc,IcfgValue):self.pc=self.pc.concrete()
             if machine is not None and self.sp!=before_sp:machine.note_sp_write(self)
             if machine is not None and before_pc==0x06066120:
                 self.task_frame_load=(self.R[4],self.R[1])
@@ -299,7 +335,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if diagnostics and before_pc in (0x06000192,0x06000f08,0x060108bc):
                 kind={0x06000192:'startup_icfg_mask_applied',0x06000f08:'software_crc_result',
                       0x060108bc:'update_result_get_return'}[before_pc]
-                milestones.append({**({'core':self.core_id} if machine is not None else {}),'kind':kind,'pc':hex(before_pc),'icfg':hex(self.icfg),
+                milestones.append({**({'core':self.core_id} if machine is not None else {}),'kind':kind,'pc':hex(before_pc),
+                                   'icfg':hex(self.icfg) if machine is None or not machine.partial_icfg or self.icfg_known else 'unknown',
+                                   **({'icfg_known_mask':hex(self.icfg_state.known)} if machine is not None and machine.partial_icfg else {}),
                                    'r0':word(self.R[0]),'sp':hex(self.sp)})
             if diagnostics and before_pc in diagnostics.get('watch_pcs',()):
                 milestone={'kind':'watched_pc_executed','pc':hex(before_pc),'r0':word(self.R[0])}
@@ -335,11 +373,73 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             insn,raw,size=self.decode(self.pc)
             self.check_opaque(insn,raw)
             if machine is not None:
-                if insn.id in ('goto.r','call.r') and isinstance(self.R[raw['x']],UnknownWord):
-                    self.R[raw['x']].consumed()
                 if self.pc==0x06066120:
                     require(insn.id=='ld.w' and raw=={'d':1,'b':4,'n':0} and self.after_then is None,
                             'first-task TCB stack load changed')
+                if not self.sp_known and (insn.id.startswith(('push','pop','add.sp','add.r_sp')) or
+                        ('.sp' in insn.id and insn.id!='mov.sp_ssp')):
+                    raise Blocked('unknown_core_stack_pointer',core=self.core_id)
+                if insn.id in ('goto.r','call.r'):
+                    target=self.R[raw['x']]
+                    if isinstance(target,UnknownWord):target.consumed()
+                    if isinstance(target,IcfgValue):target.concrete()
+                if machine.partial_icfg:
+                    state=self.icfg_state;kind=insn.id
+                    if kind in ('mov.r_sr','mov.sr_r','li.sr_u32') and raw.get('s')==11:
+                        if kind=='mov.r_sr':self.R[raw['r']]=state.read()
+                        else:state.write(raw['n'] if kind=='li.sr_u32' else self.R[raw['r']])
+                        machine.sync_icfg(self)
+                        event({'access':'special-read' if kind=='mov.r_sr' else 'special-write',
+                               'register':'icfg','known_mask':hex(state.known),'known_value':hex(state.value)})
+                        self.finish_exact(self.pc+size);adapters['partial_icfg_read_or_gate_write']+=1
+                        return
+                    if kind in ('cli','cli.r','sti','sti.r'):
+                        saved=state.read()
+                        if kind=='sti.r':
+                            source=self.R[raw['x']]
+                            if isinstance(source,IcfgValue):value,known=source.value,bool(source.known&0x200)
+                            elif isinstance(source,int):value,known=source,True
+                            else:source.consumed()
+                        else:value,known=(0 if kind.startswith('cli') else 0x200),True
+                        if kind=='cli.r':self.R[raw['x']]=saved
+                        state.bit9(value,known);machine.sync_icfg(self)
+                        event({'access':'special-write','register':'icfg','known_mask':hex(state.known),'known_value':hex(state.value)})
+                        self.finish_exact(self.pc+size);adapters['partial_icfg_bit9_only']+=1
+                        return
+                    if kind=='mov.rr' and isinstance(self.R[raw['y']],IcfgValue):
+                        self.R[raw['x']]=self.R[raw['y']]
+                        self.finish_exact(self.pc+size);adapters['partial_icfg_register_copy']+=1
+                        return
+                    if kind in ('and.nmodimm.rri','and.modimm.rri','or.modimm.rri') and isinstance(self.R[raw['s']],IcfgValue):
+                        op=module.check.operands(insn,raw)
+                        value=self.R[op['s']].mask('and' if kind.startswith('and.') else 'or',op['n'])
+                        # Fully known extracts can be consumed numerically;
+                        # preserve source identity for actual ICFG restoration.
+                        self.R[op['r']]=(value.value if value.known==WORD_MASK and value.identity&~0x300&WORD_MASK!=
+                                        (~0x300&WORD_MASK) else value)
+                        self.finish_exact(self.pc+size);adapters['partial_icfg_pure_bit_mask']+=1
+                        return
+                    if kind=='ext.b0.u' and isinstance(self.R[raw['s']],IcfgValue):
+                        source=self.R[raw['s']]
+                        self.R[raw['d']]=source.mask('and',255).concrete()
+                        self.finish_exact(self.pc+size);adapters['partial_icfg_known_lowbyte']+=1
+                        return
+                    if kind in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
+                        address,value=self.word_store(insn,raw,abstract=True)
+                        if isinstance(value,IcfgValue):
+                            self.mem.write_abstract_word(address,value)
+                            self.finish_exact(self.pc+size);adapters['partial_icfg_word_spill']+=1
+                            return
+                    if self.mem.icfg_spills and kind in ('ld.w','ld.w.l','ld.w.sp','ld.w.idxs','ld.w.idx'):
+                        op=module.check.operands(insn,raw)
+                        if kind=='ld.w':address=self.R[op['b']]+op['n'];dest=op['d']
+                        elif kind=='ld.w.l':address=self.R[op['s']]+op['n'];dest=op['r']
+                        elif kind=='ld.w.sp':address=self.sp+op['n'];dest=op['r']
+                        else:
+                            address=self.R[op['s']]+(self.R[op['t']]<<(2 if kind=='ld.w.idxs' else 0));dest=op['r']
+                        self.R[dest]=self.mem.abstract_word(address&WORD_MASK)
+                        self.finish_exact(self.pc+size);adapters['partial_icfg_word_reload']+=1
+                        return
                 if self.core_id==1 and self.pc==0x12cad8 and self.opaque_source=='cpu1_bootstrap_icfg':
                     require(self.bootstrap_icfg_pending and self.R[0] is None and insn.id=='and.nmodimm.rri' and
                             raw=={'r':0,'s':0,'n':3904},'bootstrap ICFG mask requires its one-use unknown read')
@@ -347,9 +447,6 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     self.bootstrap_icfg_pending=False;self.opaque_source=None
                     self.finish_exact(self.pc+size);adapters['bootstrap_icfg_actual_gate_mask']+=1
                     return
-                if not self.sp_known and (insn.id.startswith(('push','pop','add.sp','add.r_sp')) or
-                        ('.sp' in insn.id and insn.id!='mov.sp_ssp')):
-                    raise Blocked('unknown_core_stack_pointer',core=self.core_id)
                 if insn.id=='li.sr_u32' and raw['s'] in (0,1,2,3,5,12,13,14):
                     sr,value=raw['s'],raw['n']
                     if sr in (1,2,5) and value!=0:raise Blocked('special_register_nonzero_semantics_unmodeled',register=sr)
@@ -371,6 +468,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     else:
                         value=self.R[raw['r']]
                         if isinstance(value,UnknownWord):value.consumed()
+                        if isinstance(value,IcfgValue):value=value.concrete()
                         if sr in (1,2,5) and value!=0:raise Blocked('special_register_nonzero_semantics_unmodeled',register=sr)
                         if sr in (0,3):value&=0x07fffffe
                         if self.pc==0x06066122:
@@ -434,13 +532,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         values=[self.R[i] for i in regs]+([self.rets] if special else [])
                         base=self.sp-4*count
                         # Validate the complete destination before changing any byte or SP.
-                        for i in range(count):self.mem.abstract_write_target(base+4*i)
+                        for i,v in enumerate(values):self.mem.preflight_abstract_word(base+4*i,v)
                         for i,v in enumerate(values):self.mem.write_abstract_word(base+4*i,v)
                         self.sp=base
                     else:
                         values=[self.mem.abstract_word(self.sp+4*i) for i in range(count)]
                         target=values[-1] if special else None
                         if isinstance(target,UnknownWord):target.consumed()
+                        if isinstance(target,IcfgValue):target=target.concrete()
                         for i,v in zip(regs,values):self.R[i]=v
                         self.sp+=4*count
                         if special=='rets':self.rets=target&0x07fffffe
@@ -505,9 +604,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # uses old registers, without a host scratch-word merge read.
                     effect,_,_=self.effect(base,base_raw,self.pc,size,self.R)
                     require(set(effect)<= {'regs','flags'},'parallel ALU produced non-ALU effects')
-                    address,value=self.word_store(pair,pair_raw)
+                    address,value=self.word_store(pair,pair_raw,abstract=machine is not None and machine.partial_icfg)
                     require(address%4==0,'unaligned exact parallel word store')
-                    self.mem.write(address,struct.pack('<I',value))
+                    if isinstance(value,IcfgValue):self.mem.write_abstract_word(address,value)
+                    else:self.mem.write(address,struct.pack('<I',value))
                     self.apply(effect);self.finish_exact(self.pc+size+pair_size)
                     adapters['parallel_full_word_store_old_registers']+=1
                     return

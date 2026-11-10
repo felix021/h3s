@@ -59,6 +59,8 @@ RAM address 0x120000; block 512B; argument 1 (SPI NOR)
 
 该 blob 是 MengLi 预编码形式，BR28 ROM 的 memory-rw-mengli-crypt quirk 已核对，**按原文件分块上传，不再额外编码一次**。`FB06` 把它装进 RAM，`FB08` 跳转运行。这两步没有烧写 Flash，也没有写 OTP/chipkey。
 
+后续[固定 ROM 分派的离线核对](usb-rom-dispatch.md)区分了 ROM 与 loader hook：这份 ROM 在 FB06 完成路径清 hook，FB08 尾部保留 hook；FB08 返回后会覆盖 R0，再构造响应。既有恢复步骤及实测结果不变，这些静态结论不授权任意 RAM payload，也不证明拟用 RAM 的 MMU／CPU1／DMA 所有权。
+
 USB 使用 MSC Bulk-Only Transport：31B CBW → 数据阶段 → 13B CSW，检查 `USBC/USBS` 签名、tag、residue 和 status。这里的 512B 协议块和 USB 64B 最大包是不同层，不要手工把 CBW 当作音频/HID 报告发出去。
 
 厂商 CDB 为大端 2B opcode 加参数，总共补 `ff` 至 16B；地址和长度大端，数据 CRC16 为小端，算法 `binascii.crc_hqx(data,0)`。

@@ -42,6 +42,8 @@
 
 上游 [Read memory 协议说明](https://github.com/kagaimiq/jl-uboot-tool/blob/adb3f18889e88ac512ce0a3c4d8cc3d3cb30696a/docs/usb-loader-v2.md#read-memory) 还说明部分原始 UBOOT1 的内存读会对源位置执行 MengLi 原地变换。这里使用已加载的 RAM reader，不直接对原始 UBOOT1 的 RAM／SFR 做任意读取。
 
+后续[固定 ROM 的离线分派核对](usb-rom-dispatch.md)确认：这份 ROM 在 FB06 完成路径清 hook，FB08 尾部保留 hook；ROM 的 FD07 对源 RAM 原地变换、经 USB 中转缓冲区发送后再变换。这些结论不改变上面的 RAM loader 实测流程，也不能据一次 FB08 或 INQUIRY 身份推断后续命令已切回 ROM 语义。
+
 ## 整理后的工具
 
 [read_rom.py](../tools/usb-recovery/read_rom.py) 是成功会话后整理的独立入口：固定 loader 摘要、顺序和入口；只有确认 loader 后才允许 `FD07`，窗口限 `0..0x20000`，每次最多 128B。Flash 读取、擦写、OTP、任意跳转和重启命令均拒绝。没有扩大原救砖工具的通用命令白名单。

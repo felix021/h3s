@@ -38,4 +38,6 @@ class UnknownWord:
 
 
 def word(value):
+    from br28_icfg import IcfgValue
+    if isinstance(value,IcfgValue):return hex(value.value) if value.known==0xffffffff else 'unknown'
     return hex(value) if isinstance(value,int) else 'unknown'
