@@ -27,6 +27,7 @@ The user explicitly requested recording the USB rescue workflow and tools in thi
 - `tools/android-query/`: Android query/OTA client, bounded transport and fixed-candidate approval gate.
 - `tools/usb-recovery/`: Linux/Android USB ROM entry, pinned RAM loader, double full backups, offline fixed-profile planning, six-sector restore and full readback. `plan` is offline; only `restore --apply` erases/programs Flash.
 - `tools/probe_pi32v2.py`: pinned community pi32v2 instruction simulator plus explicit H3S-derived execution fence. Historical r2 branch regression runs without a private ELF; optional exact archived ELF adds 15 actual compiled function cases with explicit API stubs. See docs/preflash-emulation.md. This is not full H3S boot or a general candidate approval tool; diagnostic fence override never permits flashing r2.
+- `tools/probe_boot.py`: exact OFFICIAL UFW application-entry exploration, five independent bounded scenarios. Known prefixes stop at upstream context gaps, PLL0 read, ROM `_pll_init`, or uninitialized handoff fields; no BSS/RTOS boot achieved. See docs/boot-exploration.md. SP/SSP and one full-width store have explicit local adapters; PLL/R0 assumptions are not measured device state. Unknown RAM does not read as zero.
 - `evidence/`: curated analysis excerpts and sanitized verification summaries; no raw device session logs.
 - `tools/jl-misctools/`: upstream MIT submodule, pinned to `0a5b12db0ef38f3042acffbe2452730a37fd2405`.
 
@@ -48,6 +49,8 @@ For firmware changes, run the independent integrity verifier and `tools/check_re
 For USB recovery code, run `python3 tools/usb-recovery/test_recovery.py`; compare offline planning to preserved private session data when available, without publishing those dumps.
 
 For offline instruction-probe changes, use Python3.11+: `python3 tools/fetch_firmware.py --variant current`, then `python3 tools/probe_pi32v2.py --fetch-simulator`. Retain rejection of all five archived r2 branches and unknown memory/instructions; never replace unsupported semantics with a NOP. The pinned upstream targets AC791N, not a certified BR28 board. Keep its source clean, document the missing-ID-file adapter, and distinguish stubbed API results from real DSP/RTOS behaviour. Optional archived ELF diagnosis must preserve `archived_r2_verdict=REJECTED` and `suitable_for_flash_approval_alone=false`.
+
+For boot-probe changes: download `--variant original`, then run `python3 tools/probe_boot.py --fetch-simulator --check-known-blockers`. Keep the first unmodified-upstream result, distinguish store-model bookkeeping reads from architectural loads, track RAM initialization, and stop on unknown MMIO/ROM/runtime instructions. Exit0 for a known blocked regression is not boot success. Do not infer real R0/PLL values from the diagnostic profiles or publish private Flash/RAM dumps.
 
 For Android changes, run `tools/android-query/test.sh`; build with Android35/build-tools35.0.0 and an explicit `H3S_BLE_ADDRESS`. The generated DeviceConfig and signing key stay under ignored build/. Do not commit a real device address. Maintain strict target/file/version/nonce/fresh-read gates and do not add arbitrary packet write entry points.
 

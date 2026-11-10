@@ -1,0 +1,729 @@
+{
+  "format_version": 1,
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "reference_sdk_commit": "67328f4741c69993c88e504c67377b196c724f97",
+  "firmware_sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "device_accessed": false,
+  "firmware_created": false,
+  "instruction_budget_per_scenario": 100000,
+  "architectural_reset_simulated": false,
+  "whole_h3s_boot_simulated": false,
+  "suitable_for_flash_approval_alone": false,
+  "scenarios": [
+    {
+      "name": "unmodified_upstream",
+      "entry": "0x6000100",
+      "completed_steps": 0,
+      "stop_pc": "0x6000100",
+      "stop": {
+        "kind": "upstream_simulator_failure",
+        "error_type": "RuntimeError",
+        "message": "0x6000100: li.sr_u32: its model needs the hardware run's context ('id')"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders, not a measured boot state",
+        "initial_r0": "0x0",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true
+      },
+      "instruction_adapters": {},
+      "memory_events": [],
+      "last_instructions": [
+        {
+          "pc": "0x6000100",
+          "instruction_id": "li.sr_u32",
+          "text": "sp = 1194048",
+          "bytes": "eeff40381200"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x0",
+        "ssp": "0x0",
+        "rets": "0x0",
+        "icfg": "0x0"
+      }
+    },
+    {
+      "name": "stack_adapter_only",
+      "entry": "0x6000100",
+      "completed_steps": 6,
+      "stop_pc": "0x603561e",
+      "stop": {
+        "kind": "unmapped_memory",
+        "access": "read",
+        "address": "0xfd4600",
+        "size": 4,
+        "reference_sdk_register": "JL_PLL0.CON0"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders, not a measured boot state",
+        "initial_r0": "0x0",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6000100",
+          "instruction_id": "li.sr_u32",
+          "text": "sp = 1194048",
+          "bytes": "eeff40381200",
+          "next_pc": "0x6000106"
+        },
+        {
+          "pc": "0x6000106",
+          "instruction_id": "li.sr_u32",
+          "text": "ssp = 1194048",
+          "bytes": "edff40381200",
+          "next_pc": "0x600010c"
+        },
+        {
+          "pc": "0x600010c",
+          "instruction_id": "push.rmask",
+          "text": "[--sp] = {r2-r0}",
+          "bytes": "d8e80700",
+          "next_pc": "0x6000110"
+        },
+        {
+          "pc": "0x6000110",
+          "instruction_id": "call.xl",
+          "text": "call 218368",
+          "bytes": "80ff00550300",
+          "next_pc": "0x6035616"
+        },
+        {
+          "pc": "0x6035616",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x6035618"
+        },
+        {
+          "pc": "0x6035618",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16598528",
+          "bytes": "c0ff0046fd00",
+          "next_pc": "0x603561e"
+        },
+        {
+          "pc": "0x603561e",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r0+0]",
+          "bytes": "0060"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0xfd4600",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123830",
+        "ssp": "0x123840",
+        "rets": "0x6000116",
+        "icfg": "0x0"
+      }
+    },
+    {
+      "name": "pll_bit0_clear_store_context",
+      "entry": "0x6000100",
+      "completed_steps": 11,
+      "stop_pc": "0x6035636",
+      "stop": {
+        "kind": "upstream_store_bookkeeping_read",
+        "access": "read",
+        "address": "0x19fc2c",
+        "size": 4,
+        "region": "hypothesized_boot_argument_object",
+        "first_missing": "0x19fc2c",
+        "note": "upstream store model reads previous words to merge/drop writes; not a guest load"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders, not a measured boot state",
+        "initial_r0": "0x0",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x0",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "read",
+          "address": "0xfd4600",
+          "size": 4,
+          "hypothesis": "PLL0_CON0",
+          "value": "0x0"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6000100",
+          "instruction_id": "li.sr_u32",
+          "text": "sp = 1194048",
+          "bytes": "eeff40381200",
+          "next_pc": "0x6000106"
+        },
+        {
+          "pc": "0x6000106",
+          "instruction_id": "li.sr_u32",
+          "text": "ssp = 1194048",
+          "bytes": "edff40381200",
+          "next_pc": "0x600010c"
+        },
+        {
+          "pc": "0x600010c",
+          "instruction_id": "push.rmask",
+          "text": "[--sp] = {r2-r0}",
+          "bytes": "d8e80700",
+          "next_pc": "0x6000110"
+        },
+        {
+          "pc": "0x6000110",
+          "instruction_id": "call.xl",
+          "text": "call 218368",
+          "bytes": "80ff00550300",
+          "next_pc": "0x6035616"
+        },
+        {
+          "pc": "0x6035616",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x6035618"
+        },
+        {
+          "pc": "0x6035618",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16598528",
+          "bytes": "c0ff0046fd00",
+          "next_pc": "0x603561e"
+        },
+        {
+          "pc": "0x603561e",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r0+0]",
+          "bytes": "0060",
+          "next_pc": "0x6035620"
+        },
+        {
+          "pc": "0x6035620",
+          "instruction_id": "bne.and.ri",
+          "text": "if ((r0 & 1) != 0) goto 28",
+          "bytes": "50e80e02",
+          "next_pc": "0x6035624"
+        },
+        {
+          "pc": "0x6035624",
+          "instruction_id": "li.u32",
+          "text": "r0 = 1702952",
+          "bytes": "c0ff28fc1900",
+          "next_pc": "0x603562a"
+        },
+        {
+          "pc": "0x603562a",
+          "instruction_id": "li.u32",
+          "text": "r2 = 24000000",
+          "bytes": "c2ff00366e01",
+          "next_pc": "0x6035630"
+        },
+        {
+          "pc": "0x6035630",
+          "instruction_id": "li.u32",
+          "text": "r3 = 48000000",
+          "bytes": "c3ff006cdc02",
+          "next_pc": "0x6035636"
+        },
+        {
+          "pc": "0x6035636",
+          "instruction_id": "st.d.l",
+          "text": "d[r0+4] = r3_r2",
+          "bytes": "50ec0520"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x19fc28",
+          "0x0",
+          "0x16e3600",
+          "0x2dc6c00",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123830",
+        "ssp": "0x123840",
+        "rets": "0x6000116",
+        "icfg": "0x0"
+      }
+    },
+    {
+      "name": "pll_bit0_clear_store_adapter",
+      "entry": "0x6000100",
+      "completed_steps": 13,
+      "stop_pc": "0x1fe14",
+      "stop": {
+        "kind": "unmapped_instruction_fetch",
+        "access": "fetch",
+        "address": "0x1fe14",
+        "size": 6,
+        "reference_sdk_symbol": "_pll_init"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders, not a measured boot state",
+        "initial_r0": "0x0",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x0",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "bootstrap_full_width_clock_store": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "read",
+          "address": "0xfd4600",
+          "size": 4,
+          "hypothesis": "PLL0_CON0",
+          "value": "0x0"
+        },
+        {
+          "access": "write",
+          "address": "0x19fc2c",
+          "bytes": "00366e01006cdc02",
+          "region": "hypothesized_boot_argument_object"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6000100",
+          "instruction_id": "li.sr_u32",
+          "text": "sp = 1194048",
+          "bytes": "eeff40381200",
+          "next_pc": "0x6000106"
+        },
+        {
+          "pc": "0x6000106",
+          "instruction_id": "li.sr_u32",
+          "text": "ssp = 1194048",
+          "bytes": "edff40381200",
+          "next_pc": "0x600010c"
+        },
+        {
+          "pc": "0x600010c",
+          "instruction_id": "push.rmask",
+          "text": "[--sp] = {r2-r0}",
+          "bytes": "d8e80700",
+          "next_pc": "0x6000110"
+        },
+        {
+          "pc": "0x6000110",
+          "instruction_id": "call.xl",
+          "text": "call 218368",
+          "bytes": "80ff00550300",
+          "next_pc": "0x6035616"
+        },
+        {
+          "pc": "0x6035616",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x6035618"
+        },
+        {
+          "pc": "0x6035618",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16598528",
+          "bytes": "c0ff0046fd00",
+          "next_pc": "0x603561e"
+        },
+        {
+          "pc": "0x603561e",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r0+0]",
+          "bytes": "0060",
+          "next_pc": "0x6035620"
+        },
+        {
+          "pc": "0x6035620",
+          "instruction_id": "bne.and.ri",
+          "text": "if ((r0 & 1) != 0) goto 28",
+          "bytes": "50e80e02",
+          "next_pc": "0x6035624"
+        },
+        {
+          "pc": "0x6035624",
+          "instruction_id": "li.u32",
+          "text": "r0 = 1702952",
+          "bytes": "c0ff28fc1900",
+          "next_pc": "0x603562a"
+        },
+        {
+          "pc": "0x603562a",
+          "instruction_id": "li.u32",
+          "text": "r2 = 24000000",
+          "bytes": "c2ff00366e01",
+          "next_pc": "0x6035630"
+        },
+        {
+          "pc": "0x6035630",
+          "instruction_id": "li.u32",
+          "text": "r3 = 48000000",
+          "bytes": "c3ff006cdc02",
+          "next_pc": "0x6035636"
+        },
+        {
+          "pc": "0x6035636",
+          "instruction_id": "st.d.l",
+          "text": "d[r0+4] = r3_r2",
+          "bytes": "50ec0520",
+          "next_pc": "0x603563a"
+        },
+        {
+          "pc": "0x603563a",
+          "instruction_id": "call.xl",
+          "text": "call -100751404",
+          "bytes": "80ffd4a7fef9",
+          "next_pc": "0x1fe14"
+        },
+        {
+          "pc": "0x1fe14"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x19fc28",
+          "0x0",
+          "0x16e3600",
+          "0x2dc6c00",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123830",
+        "ssp": "0x123840",
+        "rets": "0x6035640",
+        "icfg": "0x0"
+      }
+    },
+    {
+      "name": "pll_bit0_set_r0_hypothesis",
+      "entry": "0x6000100",
+      "completed_steps": 11,
+      "stop_pc": "0x60664d8",
+      "stop": {
+        "kind": "uninitialized_memory",
+        "access": "read",
+        "address": "0x19fc2c",
+        "size": 4,
+        "region": "hypothesized_boot_argument_object",
+        "first_missing": "0x19fc2c"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders, not a measured boot state",
+        "initial_r0": "0x19fc28",
+        "r0_boot_args_pointer_is_hypothesis": true,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "28fc1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "read",
+          "address": "0xfd4600",
+          "size": 4,
+          "hypothesis": "PLL0_CON0",
+          "value": "0x1"
+        },
+        {
+          "access": "write",
+          "address": "0x12382c",
+          "bytes": "40560306",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6000100",
+          "instruction_id": "li.sr_u32",
+          "text": "sp = 1194048",
+          "bytes": "eeff40381200",
+          "next_pc": "0x6000106"
+        },
+        {
+          "pc": "0x6000106",
+          "instruction_id": "li.sr_u32",
+          "text": "ssp = 1194048",
+          "bytes": "edff40381200",
+          "next_pc": "0x600010c"
+        },
+        {
+          "pc": "0x600010c",
+          "instruction_id": "push.rmask",
+          "text": "[--sp] = {r2-r0}",
+          "bytes": "d8e80700",
+          "next_pc": "0x6000110"
+        },
+        {
+          "pc": "0x6000110",
+          "instruction_id": "call.xl",
+          "text": "call 218368",
+          "bytes": "80ff00550300",
+          "next_pc": "0x6035616"
+        },
+        {
+          "pc": "0x6035616",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x6035618"
+        },
+        {
+          "pc": "0x6035618",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16598528",
+          "bytes": "c0ff0046fd00",
+          "next_pc": "0x603561e"
+        },
+        {
+          "pc": "0x603561e",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r0+0]",
+          "bytes": "0060",
+          "next_pc": "0x6035620"
+        },
+        {
+          "pc": "0x6035620",
+          "instruction_id": "bne.and.ri",
+          "text": "if ((r0 & 1) != 0) goto 28",
+          "bytes": "50e80e02",
+          "next_pc": "0x6035640"
+        },
+        {
+          "pc": "0x6035640",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "bytes": "0004",
+          "next_pc": "0x6000116"
+        },
+        {
+          "pc": "0x6000116",
+          "instruction_id": "pop.rmask",
+          "text": "{r2-r0} = [sp++]",
+          "bytes": "d4e80700",
+          "next_pc": "0x600011a"
+        },
+        {
+          "pc": "0x600011a",
+          "instruction_id": "call.xl",
+          "text": "call 418744",
+          "bytes": "80ffb8630600",
+          "next_pc": "0x60664d8"
+        },
+        {
+          "pc": "0x60664d8",
+          "instruction_id": "ld.d.l",
+          "text": "r3_r2 = d[r0+4]",
+          "bytes": "50ec0420"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x19fc28",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x123840",
+        "rets": "0x6000120",
+        "icfg": "0x0"
+      }
+    }
+  ],
+  "known_blocker_regression_passed": true
+}

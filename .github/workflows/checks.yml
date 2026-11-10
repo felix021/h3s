@@ -28,6 +28,10 @@ jobs:
         run: |
           python tools/fetch_firmware.py --variant current
           python tools/probe_pi32v2.py --fetch-simulator --report analysis/emulation/baseline.json
+      - name: Reproduce bounded application-entry blockers
+        run: |
+          python tools/fetch_firmware.py --variant original
+          python tools/probe_boot.py --check-known-blockers --report analysis/emulation/boot-prefix.json
 
   policies-and-build:
     if: github.event_name != 'release'

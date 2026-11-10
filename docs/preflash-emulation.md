@@ -4,6 +4,8 @@
 
 工具：[tools/probe_pi32v2.py](../tools/probe_pi32v2.py)。实跑脱敏结果：[evidence/emulation-probe.json](../evidence/emulation-probe.json)。本轮没有连接设备、刷写或生成新固件。当前耳机继续使用已恢复、已验收的 b79 ANC 两态版本。
 
+后续已完成 [第一轮应用入口启动探索](boot-exploration.md)：五个独立场景分别定位指令模型适配、PLL0 寄存器、ROM `_pll_init` 和未知启动参数；尚未进入 BSS 初始化或 RTOS。
+
 ## 杰理资料和现成模拟器
 
 本机使用的固件和参考 SDK 指向 AC701N / BR28。杰理官方 [Bootloader 芯片映射](https://doc.zh-jieli.com/SDKWiki/master/Jieli-Tech/gitee-repos-Other/2-fw-bootloader/2-1-bootloader-architecture-chip-support.html) 明确区分 AC701N→br28、AC791N→wl82。两者的 Flash、时钟、引脚和加密适配不同，不能直接把其他板子的模拟器当成 H3S。

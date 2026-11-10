@@ -8,6 +8,8 @@
 
 已跑通 [pi32v2 离线执行原型](docs/preflash-emulation.md)：真实指令回放配合 H3S 取指范围策略，能拒绝历史 r2 的五个越界入口；另有 15 个实际编译函数诊断用例。它尚不模拟完整耳机启动或蓝牙／声音，不能单独作为刷机批准依据。
 
+[第一轮启动探索](docs/boot-exploration.md) 已从官方应用入口运行五组独立场景，定位到 PLL0、ROM `_pll_init` 和启动交接参数依赖；最远执行13条指令，尚未到 BSS／RTOS。
+
 ## 下载固件
 
 原始固件和当前版本均在 **[firmware Release](https://github.com/felix021/h3s/releases/tag/firmware)**，不放进 Git 历史。
@@ -118,6 +120,7 @@ bash tools/android-query/build.sh
 | [docs/protocol.md](docs/protocol.md) | BLE 服务、RCSP 帧、端序、QCY 自定义命令与通用接口实测边界 |
 | [docs/usb-recovery.md](docs/usb-recovery.md) | 实测 USB 救砖、ROM入口、RAM loader、整片双备份、双分区与6扇区恢复工具 |
 | [docs/preflash-emulation.md](docs/preflash-emulation.md) | 杰理资料和社区模拟器、pi32v2 实际指令回放、r2 拒绝回归、API 桩和整机边界 |
+| [docs/boot-exploration.md](docs/boot-exploration.md) | 从应用入口做有界试跑，PLL0／ROM／交接参数阻塞点及模拟器适配差异 |
 | [docs/ota.md](docs/ota.md) | E1～E8、前台服务、MTU 分包、队列、回连、确认与成功条件 |
 | [docs/stream-volume.md](docs/stream-volume.md) | 两个音量节点、表结构、stream 流程标识和听感未确认的原因范围 |
 | [docs/validation.md](docs/validation.md) | 四次实际传输、两类失败、修复、成功与用户反馈，哪些结论不能推出 |

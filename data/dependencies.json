@@ -17,7 +17,9 @@
   },
   "reference_source_sha256": {
     "volume_node.c": "87009fbd59538421c5a4b91a28ff19d50c2e82a2e49f931276d0753a70eadb04",
-    "volume_node.h": "57fd6b6c15de9b7c7b5c3f8147953b411c49adfce866bf4628995d2151534c9b"
+    "volume_node.h": "57fd6b6c15de9b7c7b5c3f8147953b411c49adfce866bf4628995d2151534c9b",
+    "br28.h": "111e29ea8d3d72e504a221caf035552250dcda959d4b79e8e1cd13623a6aad01",
+    "maskrom_stubs.ld": "331e973cbd71d5f9add4b77a796036f88e8dad93f940b70bb82398b7748a4547"
   },
   "androidx_core": {
     "version": "1.7.0",
