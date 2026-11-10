@@ -1,0 +1,511 @@
+{
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "pointer_table": "0x60a2508",
+  "irq_vector_base": "0x19fe00",
+  "vector_registration_routine": "0x6065d86",
+  "callback_table": "0x126f6c",
+  "handlers": [
+    {
+      "irq": 4,
+      "runtime": "0x12ece8",
+      "source": "0x60c84c0",
+      "bytes": 38,
+      "software_save_bytes": 28,
+      "calls": [
+        {
+          "site": "0x12ecec",
+          "target": "0x12b746"
+        },
+        {
+          "site": "0x12ecfc",
+          "target": "0x12b772"
+        },
+        {
+          "site": "0x12ed04",
+          "target": "0x12ecd4"
+        }
+      ],
+      "instructions": [
+        {
+          "pc": "0x12ece8",
+          "instruction_id": "push.srl",
+          "text": "[--sp] = {psr, rets, reti}"
+        },
+        {
+          "pc": "0x12ecea",
+          "instruction_id": "push.rl",
+          "text": "[--sp] = {r3-r0}"
+        },
+        {
+          "pc": "0x12ecec",
+          "instruction_id": "call.xl",
+          "text": "call -13740"
+        },
+        {
+          "pc": "0x12ecf2",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16581632"
+        },
+        {
+          "pc": "0x12ecf8",
+          "instruction_id": "rmw.or.modimm",
+          "text": "[r0+0] |= 0x4000"
+        },
+        {
+          "pc": "0x12ecfc",
+          "instruction_id": "call.xl",
+          "text": "call -13712"
+        },
+        {
+          "pc": "0x12ed02",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0"
+        },
+        {
+          "pc": "0x12ed04",
+          "instruction_id": "call.s",
+          "text": "call -50"
+        },
+        {
+          "pc": "0x12ed06",
+          "instruction_id": "pop.rl",
+          "text": "{r3-r0} = [sp++]"
+        },
+        {
+          "pc": "0x12ed08",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]"
+        },
+        {
+          "pc": "0x12ed0a",
+          "instruction_id": "csync",
+          "text": "csync"
+        },
+        {
+          "pc": "0x12ed0c",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ]
+    },
+    {
+      "irq": 5,
+      "runtime": "0x12ed0e",
+      "source": "0x60c84e6",
+      "bytes": 38,
+      "software_save_bytes": 28,
+      "calls": [
+        {
+          "site": "0x12ed12",
+          "target": "0x12b746"
+        },
+        {
+          "site": "0x12ed22",
+          "target": "0x12b772"
+        },
+        {
+          "site": "0x12ed2a",
+          "target": "0x12ecd4"
+        }
+      ],
+      "instructions": [
+        {
+          "pc": "0x12ed0e",
+          "instruction_id": "push.srl",
+          "text": "[--sp] = {psr, rets, reti}"
+        },
+        {
+          "pc": "0x12ed10",
+          "instruction_id": "push.rl",
+          "text": "[--sp] = {r3-r0}"
+        },
+        {
+          "pc": "0x12ed12",
+          "instruction_id": "call.xl",
+          "text": "call -13778"
+        },
+        {
+          "pc": "0x12ed18",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16581888"
+        },
+        {
+          "pc": "0x12ed1e",
+          "instruction_id": "rmw.or.modimm",
+          "text": "[r0+0] |= 0x4000"
+        },
+        {
+          "pc": "0x12ed22",
+          "instruction_id": "call.xl",
+          "text": "call -13750"
+        },
+        {
+          "pc": "0x12ed28",
+          "instruction_id": "li.u8",
+          "text": "r0 = 1"
+        },
+        {
+          "pc": "0x12ed2a",
+          "instruction_id": "call.s",
+          "text": "call -88"
+        },
+        {
+          "pc": "0x12ed2c",
+          "instruction_id": "pop.rl",
+          "text": "{r3-r0} = [sp++]"
+        },
+        {
+          "pc": "0x12ed2e",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]"
+        },
+        {
+          "pc": "0x12ed30",
+          "instruction_id": "csync",
+          "text": "csync"
+        },
+        {
+          "pc": "0x12ed32",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ]
+    },
+    {
+      "irq": 6,
+      "runtime": "0x12ed34",
+      "source": "0x60c850c",
+      "bytes": 38,
+      "software_save_bytes": 28,
+      "calls": [
+        {
+          "site": "0x12ed38",
+          "target": "0x12b746"
+        },
+        {
+          "site": "0x12ed48",
+          "target": "0x12b772"
+        },
+        {
+          "site": "0x12ed50",
+          "target": "0x12ecd4"
+        }
+      ],
+      "instructions": [
+        {
+          "pc": "0x12ed34",
+          "instruction_id": "push.srl",
+          "text": "[--sp] = {psr, rets, reti}"
+        },
+        {
+          "pc": "0x12ed36",
+          "instruction_id": "push.rl",
+          "text": "[--sp] = {r3-r0}"
+        },
+        {
+          "pc": "0x12ed38",
+          "instruction_id": "call.xl",
+          "text": "call -13816"
+        },
+        {
+          "pc": "0x12ed3e",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16582144"
+        },
+        {
+          "pc": "0x12ed44",
+          "instruction_id": "rmw.or.modimm",
+          "text": "[r0+0] |= 0x4000"
+        },
+        {
+          "pc": "0x12ed48",
+          "instruction_id": "call.xl",
+          "text": "call -13788"
+        },
+        {
+          "pc": "0x12ed4e",
+          "instruction_id": "li.u8",
+          "text": "r0 = 2"
+        },
+        {
+          "pc": "0x12ed50",
+          "instruction_id": "call.s",
+          "text": "call -126"
+        },
+        {
+          "pc": "0x12ed52",
+          "instruction_id": "pop.rl",
+          "text": "{r3-r0} = [sp++]"
+        },
+        {
+          "pc": "0x12ed54",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]"
+        },
+        {
+          "pc": "0x12ed56",
+          "instruction_id": "csync",
+          "text": "csync"
+        },
+        {
+          "pc": "0x12ed58",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ]
+    },
+    {
+      "irq": 7,
+      "runtime": "0x12ed5a",
+      "source": "0x60c8532",
+      "bytes": 38,
+      "software_save_bytes": 28,
+      "calls": [
+        {
+          "site": "0x12ed5e",
+          "target": "0x12b746"
+        },
+        {
+          "site": "0x12ed6e",
+          "target": "0x12b772"
+        },
+        {
+          "site": "0x12ed76",
+          "target": "0x12ecd4"
+        }
+      ],
+      "instructions": [
+        {
+          "pc": "0x12ed5a",
+          "instruction_id": "push.srl",
+          "text": "[--sp] = {psr, rets, reti}"
+        },
+        {
+          "pc": "0x12ed5c",
+          "instruction_id": "push.rl",
+          "text": "[--sp] = {r3-r0}"
+        },
+        {
+          "pc": "0x12ed5e",
+          "instruction_id": "call.xl",
+          "text": "call -13854"
+        },
+        {
+          "pc": "0x12ed64",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16582400"
+        },
+        {
+          "pc": "0x12ed6a",
+          "instruction_id": "rmw.or.modimm",
+          "text": "[r0+0] |= 0x4000"
+        },
+        {
+          "pc": "0x12ed6e",
+          "instruction_id": "call.xl",
+          "text": "call -13826"
+        },
+        {
+          "pc": "0x12ed74",
+          "instruction_id": "li.u8",
+          "text": "r0 = 3"
+        },
+        {
+          "pc": "0x12ed76",
+          "instruction_id": "call.s",
+          "text": "call -164"
+        },
+        {
+          "pc": "0x12ed78",
+          "instruction_id": "pop.rl",
+          "text": "{r3-r0} = [sp++]"
+        },
+        {
+          "pc": "0x12ed7a",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]"
+        },
+        {
+          "pc": "0x12ed7c",
+          "instruction_id": "csync",
+          "text": "csync"
+        },
+        {
+          "pc": "0x12ed7e",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ]
+    },
+    {
+      "irq": 8,
+      "runtime": "0x12ed80",
+      "source": "0x60c8558",
+      "bytes": 38,
+      "software_save_bytes": 28,
+      "calls": [
+        {
+          "site": "0x12ed84",
+          "target": "0x12b746"
+        },
+        {
+          "site": "0x12ed94",
+          "target": "0x12b772"
+        },
+        {
+          "site": "0x12ed9c",
+          "target": "0x12ecd4"
+        }
+      ],
+      "instructions": [
+        {
+          "pc": "0x12ed80",
+          "instruction_id": "push.srl",
+          "text": "[--sp] = {psr, rets, reti}"
+        },
+        {
+          "pc": "0x12ed82",
+          "instruction_id": "push.rl",
+          "text": "[--sp] = {r3-r0}"
+        },
+        {
+          "pc": "0x12ed84",
+          "instruction_id": "call.xl",
+          "text": "call -13892"
+        },
+        {
+          "pc": "0x12ed8a",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16582656"
+        },
+        {
+          "pc": "0x12ed90",
+          "instruction_id": "rmw.or.modimm",
+          "text": "[r0+0] |= 0x4000"
+        },
+        {
+          "pc": "0x12ed94",
+          "instruction_id": "call.xl",
+          "text": "call -13864"
+        },
+        {
+          "pc": "0x12ed9a",
+          "instruction_id": "li.u8",
+          "text": "r0 = 4"
+        },
+        {
+          "pc": "0x12ed9c",
+          "instruction_id": "call.s",
+          "text": "call -202"
+        },
+        {
+          "pc": "0x12ed9e",
+          "instruction_id": "pop.rl",
+          "text": "{r3-r0} = [sp++]"
+        },
+        {
+          "pc": "0x12eda0",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]"
+        },
+        {
+          "pc": "0x12eda2",
+          "instruction_id": "csync",
+          "text": "csync"
+        },
+        {
+          "pc": "0x12eda4",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ]
+    },
+    {
+      "irq": 9,
+      "runtime": "0x12eda6",
+      "source": "0x60c857e",
+      "bytes": 38,
+      "software_save_bytes": 28,
+      "calls": [
+        {
+          "site": "0x12edaa",
+          "target": "0x12b746"
+        },
+        {
+          "site": "0x12edba",
+          "target": "0x12b772"
+        },
+        {
+          "site": "0x12edc2",
+          "target": "0x12ecd4"
+        }
+      ],
+      "instructions": [
+        {
+          "pc": "0x12eda6",
+          "instruction_id": "push.srl",
+          "text": "[--sp] = {psr, rets, reti}"
+        },
+        {
+          "pc": "0x12eda8",
+          "instruction_id": "push.rl",
+          "text": "[--sp] = {r3-r0}"
+        },
+        {
+          "pc": "0x12edaa",
+          "instruction_id": "call.xl",
+          "text": "call -13930"
+        },
+        {
+          "pc": "0x12edb0",
+          "instruction_id": "li.u32",
+          "text": "r0 = 16582912"
+        },
+        {
+          "pc": "0x12edb6",
+          "instruction_id": "rmw.or.modimm",
+          "text": "[r0+0] |= 0x4000"
+        },
+        {
+          "pc": "0x12edba",
+          "instruction_id": "call.xl",
+          "text": "call -13902"
+        },
+        {
+          "pc": "0x12edc0",
+          "instruction_id": "li.u8",
+          "text": "r0 = 5"
+        },
+        {
+          "pc": "0x12edc2",
+          "instruction_id": "call.s",
+          "text": "call -240"
+        },
+        {
+          "pc": "0x12edc4",
+          "instruction_id": "pop.rl",
+          "text": "{r3-r0} = [sp++]"
+        },
+        {
+          "pc": "0x12edc6",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]"
+        },
+        {
+          "pc": "0x12edc8",
+          "instruction_id": "csync",
+          "text": "csync"
+        },
+        {
+          "pc": "0x12edca",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ]
+    }
+  ],
+  "device_accessed": false,
+  "architectural_interrupt_entry_or_rti_proven": false,
+  "meaning": "actual QCY C ISR bytes and software-frame shape; not the SDK76B assembly veneer"
+}

@@ -12,6 +12,8 @@
 
 [外设信息与模型已补齐一轮](docs/hardware-contracts.md)：确认`0xf2c11c`为P33引脚复位配置，补入Timer0计数／pending、IRQ屏蔽与共享锁。真实ROM PLL能完成等待并返回；在显式初态下，冷、暖连续启动均完成6次Timer IRQ关闭，推进到PORTB.DIR初值读取。新增13组离线场景，尚未完成整机启动。
 
+[GPIO与真实QCY中断函数已推进](docs/gpio-irq.md)：保留未知GPIO位，连续冷／暖启动到MMU页表配置；实际Timer0 ISR完成清pending及软件上下文恢复，严格停在`rti`前。新增11组场景，整机启动和EQ修复验证仍在进行。
+
 已跑通 [pi32v2 离线执行原型](docs/preflash-emulation.md)：真实指令回放配合 H3S 取指范围策略，能拒绝历史 r2 的五个越界入口；另有 15 个实际编译函数诊断用例。它尚不模拟完整耳机启动或蓝牙／声音，不能单独作为刷机批准依据。
 
 [第二轮启动探索](docs/boot-handoff.md) 已核对交接结构；在明确的 PLL／测试参数／循环模型下执行16077次step，完成BSS、data和RAM代码初始化摘要验证，停在未验证的零计数`rep`。尚未进入RTOS，PLL硬件行为和真实交接初态仍待补齐；[第一轮](docs/boot-exploration.md)结果保留。
@@ -132,6 +134,7 @@ bash tools/android-query/build.sh
 | [docs/rom-read.md](docs/rom-read.md) | 128 KiB CPU ROM窗口双读、162个导出入口、128B分块、读取工具与离线校验 |
 | [docs/rom-execution.md](docs/rom-execution.md) | 真实ROM只读映射、冷PLL写入边界、mask_init／memset实际指令与显式REP假设 |
 | [docs/hardware-contracts.md](docs/hardware-contracts.md) | P33／PLL／Timer0／IRQ／双核锁的来源、模型、13组场景和新的GPIO边界 |
+| [docs/gpio-irq.md](docs/gpio-irq.md) | 部分已知GPIO、死返回值证明、真实28B Timer ISR、11组场景与MMU边界 |
 | [docs/preflash-emulation.md](docs/preflash-emulation.md) | 杰理资料和社区模拟器、pi32v2 实际指令回放、r2 拒绝回归、API 桩和整机边界 |
 | [docs/boot-exploration.md](docs/boot-exploration.md) | 从应用入口做有界试跑，PLL0／ROM／交接参数阻塞点及模拟器适配差异 |
 | [docs/boot-handoff.md](docs/boot-handoff.md) | 区分两种交接对象、参考库IR分析、启动内存摘要、REP边界和本机检查 |

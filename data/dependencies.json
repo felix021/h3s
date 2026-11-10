@@ -150,5 +150,15 @@
         "bytes": 12800
       }
     }
+  },
+  "gpio_irq_semantics_reference": {
+    "repository": "https://github.com/jvitkauskas/pi32v2-isa",
+    "commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+    "use": "AC791N measurements of independent IRQ gates8/9, PSR save/flag clearing, and register save order; not BR28 hardware certification",
+    "source_sha256": {
+      "hw/fm1-2026-10-24-app2/README.md": "8c5fed89d2521c9d55055924f135b28be7fd7d0d2302f7c964207b5033bdede9",
+      "hw/fm1-2026-10-24-app3/README.md": "f4bf9397c9c32b2b66588f81578ee3c1b40bd65f08dc2f81c0b94c9b648e1130",
+      "hw/report5-k.md": "e56cc759f8936ca786cf94babb65f070be1777a5dc5080612cba74a3e974f1c5"
+    }
   }
 }

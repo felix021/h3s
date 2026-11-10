@@ -157,6 +157,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                       0x060108bc:'update_result_get_return'}[before_pc]
                 milestones.append({'kind':kind,'pc':hex(before_pc),'icfg':hex(self.icfg),
                                    'r0':hex(self.R[0]),'sp':hex(self.sp)})
+            if diagnostics and before_pc in diagnostics.get('watch_pcs',()):
+                milestones.append({'kind':'watched_pc_executed','pc':hex(before_pc),'r0':hex(self.R[0])})
             if helper_return:
                 self.repeat=None
                 adapters['irq_repeat_return_hypothesis']+=1
@@ -173,21 +175,69 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
+            if None in self.R:
+                require(diagnostics and diagnostics.get('opaque_pin_read') and self.R[0] is None and
+                        all(x is not None for x in self.R[1:]) and
+                        ((self.pc==0x06067462 and insn.id=='pop.pc_rl' and raw=={'l':8}) or
+                         (self.pc==0x0603502c and insn.id=='li.s16' and raw=={'r':0,'n':848})),
+                        'opaque register would be consumed outside verified dead-value path')
+            if hardware is not None and diagnostics and diagnostics.get('opaque_pin_read') and self.pc==0x0606745e:
+                require(insn.id=='ld.w.l' and raw=={'r':0,'s':8,'n':120} and self.R[8]+480==0xf2c300
+                        and self.after_then is None,'P33 discarded read shape changed')
+                require(int.from_bytes(self.mem.read(self.sp+20,4),'little')==0x0603502c,
+                        'P33 read has a caller that might consume R0')
+                ret_insn,ret_fields,_=self.decode(0x0603502c)
+                require(ret_insn.id=='li.s16' and ret_fields=={'r':0,'n':848},'caller no longer kills R0')
+                hardware.observe_dead_port_selection_read(0xf2c300)
+                self.R[0]=None  # opaque, never a fake register value
+                self.pc+=size;self.steps+=1
+                adapters['proven_dead_p33_read']+=1
+                return
+            if diagnostics and diagnostics.get('irq_context') and self.pc in (diagnostics['entry_pc'],diagnostics['irq_pop_pc']):
+                push=self.pc==diagnostics['entry_pc']
+                require(insn.id==('push.srl' if push else 'pop.srl') and raw.get('m',raw.get('n'))==0x29
+                        and self.after_then is None,'QCY IRQ special-frame shape changed')
+                if push:
+                    self.sp-=12
+                    psr=(self.irq_psr&~15)|(self.flags&15)
+                    self.mem.write(self.sp,struct.pack('<III',self.reti,self.rets,psr))
+                    self.flags=0  # pinned hardware report5-k: pushing PSR saves then clears low flags
+                else:
+                    self.reti,self.rets,self.irq_psr=struct.unpack('<III',self.mem.read(self.sp,12))
+                    self.rets&=0x07fffffe;self.flags=self.irq_psr&15;self.sp+=12
+                self.pc+=size;self.steps+=1
+                adapters['qcy_irq_special_frame']+=1
+                return
             if hardware is not None and hardware.bus_lock_model and insn.id in ('lockset','lockclr'):
                 require(self.after_then is None,'shared lock adapter inside conditional block is not implemented')
                 hardware.lock(insn.id=='lockset')
                 self.pc+=size;self.steps+=1
                 adapters['cpu0_shared_lock_ownership']+=1
                 return
-            if hardware is not None and insn.id in ('rmw.or.modimm','rmw.and.nmodimm','rmw.and.invbitr','rmw.or.r'):
+            if hardware is not None and insn.id in ('rmw.or.modimm','rmw.and.nmodimm','rmw.and.invbitr','rmw.or.r','rmw.and.invr'):
                 op=module.check.operands(insn,raw)
                 address=(self.R[op['r']]+op['n'])&0xffffffff
                 if 0xf00000<=address<0x1000000:
+                    if hardware.handles_gpio(address):
+                        if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
+                        elif insn.id=='rmw.and.invbitr':kind='and';operand=~(1<<(self.R[op['s']]&31))
+                        elif insn.id=='rmw.and.invr':kind='and';operand=~self.R[op['s']]
+                        else:kind='or';operand=self.R[op['s']]
+                        hardware.gpio_rmw(address,kind,operand)
+                        self.pc+=size;self.steps+=1
+                        if self.after_then is not None:
+                            self.after_then[0]-=1
+                            self.check_then()  # same then-count / else-skip policy as upstream
+                            adapters['gpio_conditional_rmw']+=1
+                        adapters['gpio_symbolic_rmw']+=1
+                        return
                     require(self.after_then is None,'MMIO RMW adapter inside conditional block is not implemented')
                     old=int.from_bytes(self.mem.read(address,4),'little')
                     if insn.id=='rmw.or.modimm':value=old|op['m']
                     elif insn.id=='rmw.and.nmodimm':value=old&op['m']
                     elif insn.id=='rmw.and.invbitr':value=old&~(1<<(self.R[op['s']]&31))
+                    elif insn.id=='rmw.and.invr':value=old&~self.R[op['s']]
                     else:value=old|self.R[op['s']]
                     # Always emit the bus write, even when the value is equal.
                     # Upstream scratch-memory models can drop unchanged writes.
@@ -432,6 +482,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if diagnostics.get('stop_on_rom_return'):
             require(rom is not None,'ROM return sentinel requires an explicit ROM mapping')
             c.rets=ROM_RETURN
+        if diagnostics.get('irq_context'):
+            ctx=diagnostics['irq_context']
+            require(set(ctx)=={'reti','rets','psr'} and all(0<=v<=0xffffffff for v in ctx.values()),
+                    'explicit synthetic RETI/RETS/PSR required')
+            c.reti=ctx['reti'];c.rets=ctx['rets'];c.irq_psr=ctx['psr'];c.flags=ctx['psr']&15
         c.sp=diagnostics.get('initial_sp',0)
         c.icfg_known=diagnostics.get('icfg_initial') is not None
         if c.icfg_known:
@@ -478,7 +533,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             'writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map':True,
             'uninitialized_memory_reads_stop':True},
         'instruction_adapters':dict(adapters),'memory_events':events,
-        'last_instructions':trace,'last_registers':{'r':[hex(x) for x in c.R],
+        'last_instructions':trace,'last_registers':{'r':[hex(x) if x is not None else 'unknown' for x in c.R],
             'sp':hex(c.sp),'ssp':hex(c.ssp),'rets':hex(c.rets),'icfg':hex(c.icfg)}}
     if handoff:
         result['assumptions']['typed_handoff']=handoff['description']
@@ -508,6 +563,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         result['assumptions']['rom_rep_model']='strict unless explicitly selected nonzero countdown / zero skip hypothesis'
     if hardware is not None:
         result['peripherals']=hardware.report()
+    if diagnostics and diagnostics.get('irq_context'):
+        result['last_registers']['reti']=hex(c.reti)
+        result['last_registers']['psr_projection']=hex((c.irq_psr&~15)|(c.flags&15))
+        result['assumptions']['irq_execution']='isolated post-entry software frame; architectural IRQ entry/RTI, bank selection and nesting not implemented'
     return result
 
 

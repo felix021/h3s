@@ -1,11 +1,39 @@
 """Offline peripheral contract tests; never opens a device or needs private ROM."""
 import unittest
 
-from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0
+from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0, PartialWord
 from probe_boot import Blocked
 
 
 class ModelTests(unittest.TestCase):
+    def test_partial_gpio_bits_stay_unknown(self):
+        h=BR28Model(gpio_model=True)
+        h.gpio_rmw(0xfd5108,'or',2)
+        word=h.gpio[0xfd5108]
+        self.assertEqual((word.value,word.known),(2,2))
+        with self.assertRaises(Blocked):h.read(0xfd5108)
+        h.gpio_rmw(0xfd5108,'and',~2)
+        self.assertEqual((word.value,word.known),(0,2))
+        with self.assertRaises(Blocked):h.read(0xfd5108)
+        h.write(0xfd5108,0xa5a55a5a);h.gpio_rmw(0xfd5108,'or',1)
+        self.assertEqual(h.read(0xfd5108),0xa5a55a5b)
+
+    def test_gpio_input_never_becomes_a_configuration_latch(self):
+        h=BR28Model(gpio_model=True)
+        with self.assertRaises(Blocked):h.read(0xfd5104)
+        with self.assertRaises(Blocked):h.write(0xfd5104,1)
+        with self.assertRaises(Blocked):h.gpio_rmw(0xfd5104,'or',1)
+
+    def test_partial_words_represent_all_initial_completions(self):
+        # Exhaustively compare symbolic narrowing with all8-bit initial values.
+        w=PartialWord(0,0xffffff00)
+        w.apply('or',0x12);w.apply('and',~0x28)
+        results=[(value|0x12)&~0x28 for value in range(256)]
+        for result in results:self.assertEqual(result&w.known,w.value)
+        known_from_results=0xffffffff
+        for result in results:known_from_results&=~(result^results[0])&0xffffffff
+        self.assertEqual(w.known,known_from_results)
+
     def timer(self):
         t=Timer0();t.write(0,0x4000);t.write(4,0);t.write(8,2);t.write(0,0x1011)
         return t
@@ -43,18 +71,19 @@ class ModelTests(unittest.TestCase):
     def test_irq_mask_priority_and_unknowns(self):
         i=IRQController(initial_config=[0]*32,initial_ipmask=6)
         i.config[0]=(1|3<<1)<<16
-        self.assertFalse(i.eligible(4,0x200));i.ipmask=3
-        self.assertTrue(i.eligible(4,0x200));self.assertFalse(i.eligible(4,0))
-        with self.assertRaises(Blocked):IRQController().eligible(4,0x200)
+        self.assertFalse(i.eligible(4,0x300));i.ipmask=3
+        self.assertTrue(i.eligible(4,0x300))
+        for gates in (0,0x100,0x200):self.assertFalse(i.eligible(4,gates))
+        with self.assertRaises(Blocked):IRQController().eligible(4,0x300)
 
     def test_enabled_pending_irq_stops_before_unmodeled_delivery(self):
         h=BR28Model(initial_irq_config=[0]*32,initial_ipmask=0)
         h.write(IRQ_CONFIG,(1|3<<1)<<16)
         for address,value in ((TIMER0,0x4000),(TIMER0+4,0),(TIMER0+8,0),(TIMER0,0x1011)):
             h.write(address,value)
-        with self.assertRaisesRegex(Blocked,'interrupt_delivery_not_implemented'):h.advance(0x200)
+        with self.assertRaisesRegex(Blocked,'interrupt_delivery_not_implemented'):h.advance(0x300)
         self.assertTrue(h.timer.pending)
-        h.write(IPMASK,6);h.advance(0x200)
+        h.write(IPMASK,6);h.advance(0x300)
 
     def test_lock_owner_and_unknowns_are_enforced(self):
         with self.assertRaises(Blocked):BR28Model(bus_lock_model=True).lock(True)

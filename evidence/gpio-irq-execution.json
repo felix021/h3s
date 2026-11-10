@@ -1,0 +1,4638 @@
+{
+  "format_version": 1,
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "firmware_sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "rom_sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+  "device_accessed": false,
+  "firmware_created": false,
+  "whole_h3s_boot_simulated": false,
+  "architectural_irq_entry_or_rti_simulated": false,
+  "suitable_for_flash_approval_alone": false,
+  "scenarios": [
+    {
+      "name": "gpio_strict",
+      "entry": "0x6000100",
+      "completed_steps": 17789,
+      "stop_pc": "0x6084f72",
+      "stop": {
+        "kind": "unmapped_memory",
+        "access": "read",
+        "address": "0xfd5108",
+        "size": 4,
+        "reference_sdk_register": null
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "phase": "continuous application entry with exact bitwise GPIO projection"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true,
+          "opaque_pin_read": false
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 26,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 14,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 25,
+        "cpu0_shared_lock_ownership": 12,
+        "mmio_rmw_always_writes": 6
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x126c7c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x1261d8",
+          "bytes": "ff000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x1237ec",
+          "bytes": "6eb71200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237ec",
+          "bytes": "70b71200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6065866",
+          "instruction_id": "li.u32",
+          "text": "r0 = 1204696",
+          "next_pc": "0x606586c"
+        },
+        {
+          "pc": "0x606586c",
+          "instruction_id": "testset.b",
+          "text": "testset b[r0]",
+          "next_pc": "0x606586e"
+        },
+        {
+          "pc": "0x606586e",
+          "instruction_id": "bc.eq",
+          "text": "ifeq goto -6",
+          "next_pc": "0x6065872"
+        },
+        {
+          "pc": "0x6065872",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0x12b76e"
+        },
+        {
+          "pc": "0x12b76e",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12b770"
+        },
+        {
+          "pc": "0x12b770",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x6084f6a"
+        },
+        {
+          "pc": "0x6084f6a",
+          "instruction_id": "if.eq.ri.s12",
+          "text": "if (r4 == 0) {",
+          "next_pc": "0x6084f72"
+        },
+        {
+          "pc": "0x6084f72",
+          "instruction_id": "rmw.or.r",
+          "text": "[r3+8] |= r5"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x1261d8",
+          "0x0",
+          "0x1",
+          "0xfd5100",
+          "0x1",
+          "0x2",
+          "0x1",
+          "0x0",
+          "0xf2c120",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x1237f4",
+        "ssp": "0x123840",
+        "rets": "0x12b76e",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10865,
+        "special-read": 3,
+        "special-write": 26
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "5f3c560699c78db1ab65904c63df6d2fe44721be72ab90f8549b8524cbbb0f1a"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 17789,
+          "reads": 7,
+          "writes": 20,
+          "lock_acquire": 6,
+          "lock_release": 6
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      }
+    },
+    {
+      "name": "gpio_partial",
+      "entry": "0x6000100",
+      "completed_steps": 18195,
+      "stop_pc": "0x606745e",
+      "stop": {
+        "kind": "unmapped_memory",
+        "access": "read",
+        "address": "0xf2c300",
+        "size": 4,
+        "reference_sdk_register": null
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "phase": "continuous application entry with exact bitwise GPIO projection"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true,
+          "opaque_pin_read": false
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 35,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 15,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 34,
+        "cpu0_shared_lock_ownership": 12,
+        "mmio_rmw_always_writes": 6,
+        "gpio_symbolic_rmw": 9,
+        "gpio_conditional_rmw": 4
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x1237e8",
+          "bytes": "b6b71200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237f0",
+          "bytes": "24510806",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123800",
+          "bytes": "b2510806",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12b7b6",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "next_pc": "0x6085124"
+        },
+        {
+          "pc": "0x6085124",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r6-r4} = [sp++]",
+          "next_pc": "0x60851b2"
+        },
+        {
+          "pc": "0x60851b2",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r5, r4} = [sp++]",
+          "next_pc": "0x60673f6"
+        },
+        {
+          "pc": "0x60673f6",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "next_pc": "0x60673f8"
+        },
+        {
+          "pc": "0x60673f8",
+          "instruction_id": "goto.s",
+          "text": "goto 92",
+          "next_pc": "0x6067456"
+        },
+        {
+          "pc": "0x6067456",
+          "instruction_id": "st.w.l",
+          "text": "[r8+0] = r0",
+          "next_pc": "0x606745a"
+        },
+        {
+          "pc": "0x606745a",
+          "instruction_id": "ld.w.l",
+          "text": "r0 = [r8+0]",
+          "next_pc": "0x606745e"
+        },
+        {
+          "pc": "0x606745e",
+          "instruction_id": "ld.w.l",
+          "text": "r0 = [r8+480]"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x1265c0",
+          "0x11",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xf2c120",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123810",
+        "ssp": "0x123840",
+        "rets": "0x12b79a",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 10966,
+        "special-read": 3,
+        "special-write": 35
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "e70d929ec5c7ce6f9136219432e251f2a00876ae60acc893d36664da5c4230c5"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xf2c120": "0x0",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 18195,
+          "reads": 17,
+          "writes": 30,
+          "lock_acquire": 6,
+          "lock_release": 6
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd5108",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xf2c120",
+            "value": "0x0"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false,
+          "gpio": "exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model"
+        },
+        "gpio": {
+          "0xfd5108": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd510c": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5110": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5114": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5120": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          }
+        }
+      }
+    },
+    {
+      "name": "opaque_value_visible",
+      "entry": "0x6000100",
+      "completed_steps": 18196,
+      "stop_pc": "0x6067462",
+      "stop": {
+        "kind": "instruction_budget"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "phase": "continuous application entry with exact bitwise GPIO projection"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true,
+          "opaque_pin_read": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 35,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 15,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 34,
+        "cpu0_shared_lock_ownership": 12,
+        "mmio_rmw_always_writes": 6,
+        "gpio_symbolic_rmw": 9,
+        "gpio_conditional_rmw": 4,
+        "proven_dead_p33_read": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x1237e8",
+          "bytes": "b6b71200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237f0",
+          "bytes": "24510806",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123800",
+          "bytes": "b2510806",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12b7b6",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "next_pc": "0x6085124"
+        },
+        {
+          "pc": "0x6085124",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r6-r4} = [sp++]",
+          "next_pc": "0x60851b2"
+        },
+        {
+          "pc": "0x60851b2",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r5, r4} = [sp++]",
+          "next_pc": "0x60673f6"
+        },
+        {
+          "pc": "0x60673f6",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "next_pc": "0x60673f8"
+        },
+        {
+          "pc": "0x60673f8",
+          "instruction_id": "goto.s",
+          "text": "goto 92",
+          "next_pc": "0x6067456"
+        },
+        {
+          "pc": "0x6067456",
+          "instruction_id": "st.w.l",
+          "text": "[r8+0] = r0",
+          "next_pc": "0x606745a"
+        },
+        {
+          "pc": "0x606745a",
+          "instruction_id": "ld.w.l",
+          "text": "r0 = [r8+0]",
+          "next_pc": "0x606745e"
+        },
+        {
+          "pc": "0x606745e",
+          "instruction_id": "ld.w.l",
+          "text": "r0 = [r8+480]",
+          "next_pc": "0x6067462"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "unknown",
+          "0x0",
+          "0x0",
+          "0x1265c0",
+          "0x11",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xf2c120",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123810",
+        "ssp": "0x123840",
+        "rets": "0x12b79a",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 10966,
+        "special-read": 3,
+        "special-write": 35
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "e70d929ec5c7ce6f9136219432e251f2a00876ae60acc893d36664da5c4230c5"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xf2c120": "0x0",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 18196,
+          "reads": 18,
+          "writes": 30,
+          "lock_acquire": 6,
+          "lock_release": 6,
+          "opaque_port_selection_reads": 1
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd5108",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xf2c120",
+            "value": "0x0"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false,
+          "gpio": "exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model",
+          "port_selection_read": "opaque R0 until validated caller overwrites it; value never supplied as zero"
+        },
+        "gpio": {
+          "0xfd5108": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd510c": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5110": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5114": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5120": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          }
+        }
+      }
+    },
+    {
+      "name": "opaque_after_return",
+      "entry": "0x6000100",
+      "completed_steps": 18197,
+      "stop_pc": "0x603502c",
+      "stop": {
+        "kind": "instruction_budget"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "phase": "continuous application entry with exact bitwise GPIO projection"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true,
+          "opaque_pin_read": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 35,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 15,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 34,
+        "cpu0_shared_lock_ownership": 12,
+        "mmio_rmw_always_writes": 6,
+        "gpio_symbolic_rmw": 9,
+        "gpio_conditional_rmw": 4,
+        "proven_dead_p33_read": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237e8",
+          "bytes": "b6b71200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237f0",
+          "bytes": "24510806",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123800",
+          "bytes": "b2510806",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12380c",
+          "bytes": "62740606",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6085124",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r6-r4} = [sp++]",
+          "next_pc": "0x60851b2"
+        },
+        {
+          "pc": "0x60851b2",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r5, r4} = [sp++]",
+          "next_pc": "0x60673f6"
+        },
+        {
+          "pc": "0x60673f6",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "next_pc": "0x60673f8"
+        },
+        {
+          "pc": "0x60673f8",
+          "instruction_id": "goto.s",
+          "text": "goto 92",
+          "next_pc": "0x6067456"
+        },
+        {
+          "pc": "0x6067456",
+          "instruction_id": "st.w.l",
+          "text": "[r8+0] = r0",
+          "next_pc": "0x606745a"
+        },
+        {
+          "pc": "0x606745a",
+          "instruction_id": "ld.w.l",
+          "text": "r0 = [r8+0]",
+          "next_pc": "0x606745e"
+        },
+        {
+          "pc": "0x606745e",
+          "instruction_id": "ld.w.l",
+          "text": "r0 = [r8+480]",
+          "next_pc": "0x6067462"
+        },
+        {
+          "pc": "0x6067462",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r8-r4} = [sp++]",
+          "next_pc": "0x603502c"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "unknown",
+          "0x0",
+          "0x0",
+          "0x1265c0",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x1",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123828",
+        "ssp": "0x123840",
+        "rets": "0x12b79a",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 10967,
+        "special-read": 3,
+        "special-write": 35
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "e70d929ec5c7ce6f9136219432e251f2a00876ae60acc893d36664da5c4230c5"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xf2c120": "0x0",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 18197,
+          "reads": 18,
+          "writes": 30,
+          "lock_acquire": 6,
+          "lock_release": 6,
+          "opaque_port_selection_reads": 1
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd5108",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xf2c120",
+            "value": "0x0"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false,
+          "gpio": "exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model",
+          "port_selection_read": "opaque R0 until validated caller overwrites it; value never supplied as zero"
+        },
+        "gpio": {
+          "0xfd5108": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd510c": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5110": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5114": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5120": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          }
+        }
+      }
+    },
+    {
+      "name": "opaque_overwritten",
+      "entry": "0x6000100",
+      "completed_steps": 18198,
+      "stop_pc": "0x6035030",
+      "stop": {
+        "kind": "instruction_budget"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "phase": "continuous application entry with exact bitwise GPIO projection"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true,
+          "opaque_pin_read": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 35,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 15,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 34,
+        "cpu0_shared_lock_ownership": 12,
+        "mmio_rmw_always_writes": 6,
+        "gpio_symbolic_rmw": 9,
+        "gpio_conditional_rmw": 4,
+        "proven_dead_p33_read": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237e8",
+          "bytes": "b6b71200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237f0",
+          "bytes": "24510806",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123800",
+          "bytes": "b2510806",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12380c",
+          "bytes": "62740606",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x60851b2",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r5, r4} = [sp++]",
+          "next_pc": "0x60673f6"
+        },
+        {
+          "pc": "0x60673f6",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "next_pc": "0x60673f8"
+        },
+        {
+          "pc": "0x60673f8",
+          "instruction_id": "goto.s",
+          "text": "goto 92",
+          "next_pc": "0x6067456"
+        },
+        {
+          "pc": "0x6067456",
+          "instruction_id": "st.w.l",
+          "text": "[r8+0] = r0",
+          "next_pc": "0x606745a"
+        },
+        {
+          "pc": "0x606745a",
+          "instruction_id": "ld.w.l",
+          "text": "r0 = [r8+0]",
+          "next_pc": "0x606745e"
+        },
+        {
+          "pc": "0x606745e",
+          "instruction_id": "ld.w.l",
+          "text": "r0 = [r8+480]",
+          "next_pc": "0x6067462"
+        },
+        {
+          "pc": "0x6067462",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r8-r4} = [sp++]",
+          "next_pc": "0x603502c"
+        },
+        {
+          "pc": "0x603502c",
+          "instruction_id": "li.s16",
+          "text": "r0 = 848",
+          "next_pc": "0x6035030"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x350",
+          "0x0",
+          "0x0",
+          "0x1265c0",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x1",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123828",
+        "ssp": "0x123840",
+        "rets": "0x12b79a",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 10967,
+        "special-read": 3,
+        "special-write": 35
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "e70d929ec5c7ce6f9136219432e251f2a00876ae60acc893d36664da5c4230c5"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xf2c120": "0x0",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 18198,
+          "reads": 18,
+          "writes": 30,
+          "lock_acquire": 6,
+          "lock_release": 6,
+          "opaque_port_selection_reads": 1
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd5108",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xf2c120",
+            "value": "0x0"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false,
+          "gpio": "exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model",
+          "port_selection_read": "opaque R0 until validated caller overwrites it; value never supplied as zero"
+        },
+        "gpio": {
+          "0xfd5108": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd510c": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5110": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5114": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5120": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          }
+        }
+      }
+    },
+    {
+      "name": "warm_to_mmu",
+      "entry": "0x6000100",
+      "completed_steps": 73436,
+      "stop_pc": "0x60350e8",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xff0404",
+        "size": 4,
+        "value_bytes": "00001200"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "phase": "continuous application entry with exact bitwise GPIO projection"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true,
+          "opaque_pin_read": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 37,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 16,
+        "rom_nonzero_rep_countdown_hypothesis": 2,
+        "rom_byte_exact_store": 187,
+        "rom_zero_rep_skip_hypothesis": 2,
+        "cli_sti_visible_bit9_only": 36,
+        "cpu0_shared_lock_ownership": 13,
+        "mmio_rmw_always_writes": 6,
+        "gpio_symbolic_rmw": 9,
+        "gpio_conditional_rmw": 4,
+        "proven_dead_p33_read": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "7eb51200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x126c6c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "acb51200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12b5a4",
+          "instruction_id": "st.w.idxs",
+          "text": "[r0+r1<<2] = r3",
+          "next_pc": "0x12b5a8"
+        },
+        {
+          "pc": "0x12b5a8",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto 2",
+          "next_pc": "0x12b5aa"
+        },
+        {
+          "pc": "0x12b5aa",
+          "instruction_id": "lockset",
+          "text": "lockset",
+          "next_pc": "0x12b5ac"
+        },
+        {
+          "pc": "0x12b5ac",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12b5ae"
+        },
+        {
+          "pc": "0x12b5ae",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0x60350dc"
+        },
+        {
+          "pc": "0x60350dc",
+          "instruction_id": "li.u32",
+          "text": "r4 = 1179648",
+          "next_pc": "0x60350e2"
+        },
+        {
+          "pc": "0x60350e2",
+          "instruction_id": "li.u32",
+          "text": "r6 = 16712704",
+          "next_pc": "0x60350e8"
+        },
+        {
+          "pc": "0x60350e8",
+          "instruction_id": "li.s16.p",
+          "text": "r0 = 10239  #"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x27ff",
+          "0x1ab",
+          "0x0",
+          "0x1",
+          "0x120000",
+          "0x1265c0",
+          "0xff0400",
+          "0x16",
+          "0x1",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123828",
+        "ssp": "0x123840",
+        "rets": "0x60350dc",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 14696,
+        "special-read": 3,
+        "special-write": 37
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "efbe596d1ea1057a0e18f98d9c565754883d6a8c950b7b539fd4a465e8b10538"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 223,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xf2c120": "0x0",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 6,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 73436,
+          "reads": 18,
+          "writes": 31,
+          "lock_acquire": 7,
+          "lock_release": 6,
+          "opaque_port_selection_reads": 1
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd5108",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xf2c120",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": 0,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false,
+          "gpio": "exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model",
+          "port_selection_read": "opaque R0 until validated caller overwrites it; value never supplied as zero"
+        },
+        "gpio": {
+          "0xfd5108": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd510c": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5110": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5114": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5120": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          }
+        }
+      }
+    },
+    {
+      "name": "cold_to_mmu",
+      "entry": "0x6000100",
+      "completed_steps": 74474,
+      "stop_pc": "0x60350e8",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xff0404",
+        "size": 4,
+        "value_bytes": "00001200"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "phase": "continuous application entry with exact bitwise GPIO projection"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true,
+          "opaque_pin_read": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "bootstrap_full_width_clock_store": 1,
+        "mmio_full_width_store": 29,
+        "mmio_rmw_always_writes": 21,
+        "rom_timer_parallel_store_old_register": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 37,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "rom_nonzero_rep_countdown_hypothesis": 2,
+        "rom_byte_exact_store": 187,
+        "rom_zero_rep_skip_hypothesis": 2,
+        "cli_sti_visible_bit9_only": 36,
+        "cpu0_shared_lock_ownership": 13,
+        "gpio_symbolic_rmw": 9,
+        "gpio_conditional_rmw": 4,
+        "proven_dead_p33_read": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "7eb51200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x126c6c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "acb51200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12b5a4",
+          "instruction_id": "st.w.idxs",
+          "text": "[r0+r1<<2] = r3",
+          "next_pc": "0x12b5a8"
+        },
+        {
+          "pc": "0x12b5a8",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto 2",
+          "next_pc": "0x12b5aa"
+        },
+        {
+          "pc": "0x12b5aa",
+          "instruction_id": "lockset",
+          "text": "lockset",
+          "next_pc": "0x12b5ac"
+        },
+        {
+          "pc": "0x12b5ac",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12b5ae"
+        },
+        {
+          "pc": "0x12b5ae",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0x60350dc"
+        },
+        {
+          "pc": "0x60350dc",
+          "instruction_id": "li.u32",
+          "text": "r4 = 1179648",
+          "next_pc": "0x60350e2"
+        },
+        {
+          "pc": "0x60350e2",
+          "instruction_id": "li.u32",
+          "text": "r6 = 16712704",
+          "next_pc": "0x60350e8"
+        },
+        {
+          "pc": "0x60350e8",
+          "instruction_id": "li.s16.p",
+          "text": "r0 = 10239  #"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x27ff",
+          "0x1ab",
+          "0x0",
+          "0x1",
+          "0x120000",
+          "0x1265c0",
+          "0xff0400",
+          "0x16",
+          "0x1",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123828",
+        "ssp": "0x123840",
+        "rets": "0x60350dc",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 14730,
+        "special-read": 3,
+        "special-write": 37
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "efbe596d1ea1057a0e18f98d9c565754883d6a8c950b7b539fd4a465e8b10538"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 1256,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xf2c120": "0x0",
+          "0xfd0018": "0x30",
+          "0xfd001c": "0x643",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x40892d93",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x31f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 6,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 0,
+          "cnt": 2,
+          "prd": 800,
+          "pending": false,
+          "expirations": 2
+        },
+        "counts": {
+          "completed_model_steps": 74474,
+          "reads": 460,
+          "writes": 61,
+          "lock_acquire": 7,
+          "lock_release": 6,
+          "opaque_port_selection_reads": 1
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d93"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x320"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x31f"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0020",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x643"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd5108",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd510c",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5120",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5110",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x0",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xfd5114",
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          {
+            "address": "0xf2c120",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": 0,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x0"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false,
+          "gpio": "exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model",
+          "port_selection_read": "opaque R0 until validated caller overwrites it; value never supplied as zero"
+        },
+        "gpio": {
+          "0xfd5108": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd510c": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5110": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5114": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          },
+          "0xfd5120": {
+            "known_value": "0x2",
+            "known_mask": "0x2"
+          }
+        }
+      }
+    },
+    {
+      "name": "isr_strict",
+      "entry": "0x12ece8",
+      "completed_steps": 0,
+      "stop_pc": "0x12ece8",
+      "stop": {
+        "kind": "upstream_simulator_failure",
+        "error_type": "RuntimeError",
+        "message": "0x12ece8: push of special register 0"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "phase": "isolated post-entry Timer0 ISR; not a continuation of startup"
+        },
+        "diagnostics": {
+          "entry_pc": 1240296,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "icfg_initial": 0,
+          "adapt_icfg": true,
+          "irq_repeat_return": true,
+          "visible_cli": true,
+          "watch_pcs": [
+            100666128
+          ]
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {},
+      "memory_events": [],
+      "last_instructions": [
+        {
+          "pc": "0x12ece8",
+          "instruction_id": "push.srl",
+          "text": "[--sp] = {psr, rets, reti}"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x13570000",
+          "0x13570001",
+          "0x13570002",
+          "0x13570003",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x123834",
+        "ssp": "0x0",
+        "rets": "0x0",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {},
+      "memory_events_truncated": false,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 0,
+      "peripherals": {
+        "registers": {},
+        "ipmask": 6,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 4113,
+          "cnt": 0,
+          "prd": 2,
+          "pending": true,
+          "expirations": 1
+        },
+        "counts": {
+          "writes": 4
+        },
+        "writes": [
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x2"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 0,
+          "initial_registers": {},
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 6,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      }
+    },
+    {
+      "name": "isr_null_callback",
+      "entry": "0x12ece8",
+      "completed_steps": 62,
+      "stop_pc": "0x12ed0c",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "rti"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "phase": "isolated post-entry Timer0 ISR; not a continuation of startup"
+        },
+        "diagnostics": {
+          "entry_pc": 1240296,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "icfg_initial": 0,
+          "adapt_icfg": true,
+          "irq_repeat_return": true,
+          "visible_cli": true,
+          "watch_pcs": [
+            100666128
+          ],
+          "irq_context": {
+            "reti": 101367006,
+            "rets": 100667956,
+            "psr": 2768240650
+          },
+          "irq_pop_pc": 1240328
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis",
+        "irq_execution": "isolated post-entry software frame; architectural IRQ entry/RTI, bank selection and nesting not implemented"
+      },
+      "instruction_adapters": {
+        "qcy_irq_special_frame": 2,
+        "cli_sti_visible_bit9_only": 2,
+        "core0_visible_cnum": 2,
+        "mmio_rmw_always_writes": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "debc0a06341200060a0000a5",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "00005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123828",
+          "bytes": "01005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12382c",
+          "bytes": "02005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12381c",
+          "bytes": "e4ec1200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12381c",
+          "bytes": "e6ec1200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123820",
+          "bytes": "06ed1200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "0aed1200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12ecdc",
+          "instruction_id": "ld.w.idxs",
+          "text": "r1 = [r1+r0<<2]",
+          "next_pc": "0x12ece0"
+        },
+        {
+          "pc": "0x12ece0",
+          "instruction_id": "beqz",
+          "text": "if (r1 == 0) goto 2",
+          "next_pc": "0x12ece4"
+        },
+        {
+          "pc": "0x12ece4",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12ece6"
+        },
+        {
+          "pc": "0x12ece6",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x12ed06"
+        },
+        {
+          "pc": "0x12ed06",
+          "instruction_id": "pop.rl",
+          "text": "{r3-r0} = [sp++]",
+          "next_pc": "0x12ed08"
+        },
+        {
+          "pc": "0x12ed08",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]",
+          "next_pc": "0x12ed0a"
+        },
+        {
+          "pc": "0x12ed0a",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12ed0c"
+        },
+        {
+          "pc": "0x12ed0c",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x13570000",
+          "0x13570001",
+          "0x13570002",
+          "0x13570003",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x0",
+        "rets": "0x6001234",
+        "icfg": "0x200",
+        "reti": "0x60abcde",
+        "psr_projection": "0xa500000a"
+      },
+      "memory_event_counts": {
+        "write": 23,
+        "special-write": 2
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 0,
+      "peripherals": {
+        "registers": {},
+        "ipmask": 6,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 4113,
+          "cnt": 0,
+          "prd": 2,
+          "pending": false,
+          "expirations": 1
+        },
+        "counts": {
+          "writes": 5,
+          "completed_model_steps": 62,
+          "reads": 1
+        },
+        "writes": [
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x2"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0xd011"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 0,
+          "initial_registers": {},
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 6,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      }
+    },
+    {
+      "name": "isr_actual_rts_callback",
+      "entry": "0x12ece8",
+      "completed_steps": 64,
+      "stop_pc": "0x12ed0c",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "rti"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "phase": "isolated post-entry Timer0 ISR; not a continuation of startup"
+        },
+        "diagnostics": {
+          "entry_pc": 1240296,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "icfg_initial": 0,
+          "adapt_icfg": true,
+          "irq_repeat_return": true,
+          "visible_cli": true,
+          "watch_pcs": [
+            100666128
+          ],
+          "irq_context": {
+            "reti": 101367006,
+            "rets": 100667956,
+            "psr": 2768240650
+          },
+          "irq_pop_pc": 1240328
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis",
+        "irq_execution": "isolated post-entry software frame; architectural IRQ entry/RTI, bank selection and nesting not implemented"
+      },
+      "instruction_adapters": {
+        "qcy_irq_special_frame": 2,
+        "cli_sti_visible_bit9_only": 2,
+        "core0_visible_cnum": 2,
+        "mmio_rmw_always_writes": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "debc0a06341200060a0000a5",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "00005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123828",
+          "bytes": "01005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12382c",
+          "bytes": "02005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12381c",
+          "bytes": "e4ec1200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12381c",
+          "bytes": "e6ec1200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123820",
+          "bytes": "06ed1200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "0aed1200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12ece2",
+          "instruction_id": "call.r",
+          "text": "call r1",
+          "next_pc": "0x6000b10"
+        },
+        {
+          "pc": "0x6000b10",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0x12ece4"
+        },
+        {
+          "pc": "0x12ece4",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12ece6"
+        },
+        {
+          "pc": "0x12ece6",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x12ed06"
+        },
+        {
+          "pc": "0x12ed06",
+          "instruction_id": "pop.rl",
+          "text": "{r3-r0} = [sp++]",
+          "next_pc": "0x12ed08"
+        },
+        {
+          "pc": "0x12ed08",
+          "instruction_id": "pop.srl",
+          "text": "{psr, rets, reti} = [sp++]",
+          "next_pc": "0x12ed0a"
+        },
+        {
+          "pc": "0x12ed0a",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12ed0c"
+        },
+        {
+          "pc": "0x12ed0c",
+          "instruction_id": "rti",
+          "text": "rti"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x13570000",
+          "0x13570001",
+          "0x13570002",
+          "0x13570003",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x0",
+        "rets": "0x6001234",
+        "icfg": "0x200",
+        "reti": "0x60abcde",
+        "psr_projection": "0xa500000a"
+      },
+      "memory_event_counts": {
+        "write": 23,
+        "special-write": 2
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "01db6540b66508c0eb63df0f108fd5521b9ea50fe12e8486c0956ede9c14d615"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "watched_pc_executed",
+          "pc": "0x6000b10",
+          "r0": "0x0"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 0,
+      "peripherals": {
+        "registers": {},
+        "ipmask": 6,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 4113,
+          "cnt": 0,
+          "prd": 2,
+          "pending": false,
+          "expirations": 1
+        },
+        "counts": {
+          "writes": 5,
+          "completed_model_steps": 64,
+          "reads": 1
+        },
+        "writes": [
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x2"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0xd011"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 0,
+          "initial_registers": {},
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 6,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      }
+    },
+    {
+      "name": "isr_invalid_callback",
+      "entry": "0x12ece8",
+      "completed_steps": 58,
+      "stop_pc": "0x13ff00",
+      "stop": {
+        "kind": "unmapped_instruction_fetch",
+        "access": "fetch",
+        "address": "0x13ff00",
+        "size": 6,
+        "reference_sdk_symbol": null
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "phase": "isolated post-entry Timer0 ISR; not a continuation of startup"
+        },
+        "diagnostics": {
+          "entry_pc": 1240296,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "icfg_initial": 0,
+          "adapt_icfg": true,
+          "irq_repeat_return": true,
+          "visible_cli": true,
+          "watch_pcs": [
+            100666128
+          ],
+          "irq_context": {
+            "reti": 101367006,
+            "rets": 100667956,
+            "psr": 2768240650
+          },
+          "irq_pop_pc": 1240328
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis",
+        "irq_execution": "isolated post-entry software frame; architectural IRQ entry/RTI, bank selection and nesting not implemented"
+      },
+      "instruction_adapters": {
+        "qcy_irq_special_frame": 1,
+        "cli_sti_visible_bit9_only": 2,
+        "core0_visible_cnum": 2,
+        "mmio_rmw_always_writes": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "debc0a06341200060a0000a5",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "00005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123828",
+          "bytes": "01005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12382c",
+          "bytes": "02005713",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x126c74",
+          "bytes": "00000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x123818",
+          "bytes": "b6b71200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123820",
+          "bytes": "06ed1200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12ed02",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "next_pc": "0x12ed04"
+        },
+        {
+          "pc": "0x12ed04",
+          "instruction_id": "call.s",
+          "text": "call -50",
+          "next_pc": "0x12ecd4"
+        },
+        {
+          "pc": "0x12ecd4",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "next_pc": "0x12ecd6"
+        },
+        {
+          "pc": "0x12ecd6",
+          "instruction_id": "li.u32",
+          "text": "r1 = 1208172",
+          "next_pc": "0x12ecdc"
+        },
+        {
+          "pc": "0x12ecdc",
+          "instruction_id": "ld.w.idxs",
+          "text": "r1 = [r1+r0<<2]",
+          "next_pc": "0x12ece0"
+        },
+        {
+          "pc": "0x12ece0",
+          "instruction_id": "beqz",
+          "text": "if (r1 == 0) goto 2",
+          "next_pc": "0x12ece2"
+        },
+        {
+          "pc": "0x12ece2",
+          "instruction_id": "call.r",
+          "text": "call r1",
+          "next_pc": "0x13ff00"
+        },
+        {
+          "pc": "0x13ff00"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0x13ff00",
+          "0x0",
+          "0x1265c0",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x123820",
+        "ssp": "0x0",
+        "rets": "0x12ece4",
+        "icfg": "0x200",
+        "reti": "0x60abcde",
+        "psr_projection": "0xa5000000"
+      },
+      "memory_event_counts": {
+        "write": 19,
+        "special-write": 2
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "52b7621a3cdf5a04f1228f6463d27708c3f17aafdb2c1b03058ff03777fb31fd"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 0,
+      "peripherals": {
+        "registers": {},
+        "ipmask": 6,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 4113,
+          "cnt": 0,
+          "prd": 2,
+          "pending": false,
+          "expirations": 1
+        },
+        "counts": {
+          "writes": 5,
+          "completed_model_steps": 58,
+          "reads": 1
+        },
+        "writes": [
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x2"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0xd011"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 0,
+          "initial_registers": {},
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 6,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      }
+    }
+  ],
+  "gpio_irq_regression_passed": true
+}

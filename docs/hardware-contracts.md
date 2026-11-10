@@ -1,5 +1,7 @@
 # 补齐 BR28 外设信息与启动模型
 
+后续：[GPIO和真实QCY ISR探索](gpio-irq.md)推进到MMU边界；本页保留上一轮13组结果。普通IRQ全局使能筛选已修正为ICFG bits8与9同时开启。
+
 2026-11-10，在[真实ROM执行](rom-execution.md)的基础上，从固定SDK头文件、库中LLVM IR、官方BR28 bootloader和既有指令硬件结果补齐外设定义，并实现受限行为模型。**真实`_pll_init`现在能完成两次定时等待并返回；冷、暖两条连续应用入口路径都执行了ROM `mask_init`及6次Timer IRQ关闭，随后停在GPIO初值读取。** 没有操作耳机、写Flash或生成新固件，检查全部在本机执行。
 
 工具：[br28_model.py](../tools/br28_model.py)、[probe_hardware.py](../tools/probe_hardware.py)、[test_br28_model.py](../tools/test_br28_model.py)。结果：[hardware-execution.json](../evidence/hardware-execution.json)。模型是可检查的外设子集，尚未完成整机启动，也未验证实机周期、模拟电路或中断进入／返回。
