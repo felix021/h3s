@@ -1,0 +1,85 @@
+{
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "baseline_ufw_sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+  "device_accessed": false,
+  "firmware_created": false,
+  "pc_limits_extracted_by_executing_qcy_loads": [
+    "0x6000100",
+    "0x60c3338"
+  ],
+  "original_source_read_machine_code_passed": true,
+  "harness_negative_checks_passed": 5,
+  "policy": "H3S-derived explicit instruction-fetch fence; not hardware exception emulation",
+  "whole_h3s_boot_simulated": false,
+  "suitable_for_flash_approval_alone": false,
+  "archived_r2_branch_vectors": [
+    {
+      "site": "0x60059ce",
+      "target": "0x60e3092",
+      "result": "BLOCKED"
+    },
+    {
+      "site": "0x6025030",
+      "target": "0x60e30b0",
+      "result": "BLOCKED"
+    },
+    {
+      "site": "0x602510e",
+      "target": "0x60e30c2",
+      "result": "BLOCKED"
+    },
+    {
+      "site": "0x6025364",
+      "target": "0x60e3074",
+      "result": "BLOCKED"
+    },
+    {
+      "site": "0x6078846",
+      "target": "0x60e30a0",
+      "result": "BLOCKED"
+    }
+  ],
+  "archived_r2_verdict": "REJECTED",
+  "patch_elf_sha256": "f8fdcf50f12c2d421b7c5ad4487dd21b372d3ef89e3dffdd4096fc52f5486c08",
+  "guarded_patch_entries": [
+    {
+      "site": "0x60059ce",
+      "target": "0x60e3092",
+      "result": "BLOCKED",
+      "reason": "Flash execution fence: 0x060e3092 outside 0x06000100..0x060c3338"
+    },
+    {
+      "site": "0x6025030",
+      "target": "0x60e30b0",
+      "result": "BLOCKED",
+      "reason": "Flash execution fence: 0x060e30b0 outside 0x06000100..0x060c3338"
+    },
+    {
+      "site": "0x602510e",
+      "target": "0x60e30c2",
+      "result": "BLOCKED",
+      "reason": "Flash execution fence: 0x060e30c2 outside 0x06000100..0x060c3338"
+    },
+    {
+      "site": "0x6025364",
+      "target": "0x60e3074",
+      "result": "BLOCKED",
+      "reason": "Flash execution fence: 0x060e3074 outside 0x06000100..0x060c3338"
+    },
+    {
+      "site": "0x6078846",
+      "target": "0x60e30a0",
+      "result": "BLOCKED",
+      "reason": "Flash execution fence: 0x060e30a0 outside 0x06000100..0x060c3338"
+    }
+  ],
+  "permission_override_diagnostics": {
+    "real_compiled_source_function_cases": 8,
+    "register_and_stack_checks_passed": true,
+    "real_compiled_toggle_cases_with_api_stubs": 3,
+    "real_compiled_node_open_cases": 4,
+    "dsp_rtos_calls_are_explicit_stubs": true,
+    "permission_override_for_diagnostics_only": true,
+    "not_a_safe_firmware_verdict": true
+  }
+}

@@ -6,6 +6,8 @@
 
 **2026-11-10 更新：** EQ 实验导致连接异常后，已通过 [USB 救砖流程](docs/usb-recovery.md) 恢复原 ANC 两态镜像，整片读回通过，蓝牙和播放恢复；用户手动重启耳机一次后，确认独立降噪键能正常切换、App 也能控制。
 
+已跑通 [pi32v2 离线执行原型](docs/preflash-emulation.md)：真实指令回放配合 H3S 取指范围策略，能拒绝历史 r2 的五个越界入口；另有 15 个实际编译函数诊断用例。它尚不模拟完整耳机启动或蓝牙／声音，不能单独作为刷机批准依据。
+
 ## 下载固件
 
 原始固件和当前版本均在 **[firmware Release](https://github.com/felix021/h3s/releases/tag/firmware)**，不放进 Git 历史。
@@ -115,6 +117,7 @@ bash tools/android-query/build.sh
 | [docs/app-analysis.md](docs/app-analysis.md) | QCY「声音」页调用链、命令注册记录、保存与应用路径 |
 | [docs/protocol.md](docs/protocol.md) | BLE 服务、RCSP 帧、端序、QCY 自定义命令与通用接口实测边界 |
 | [docs/usb-recovery.md](docs/usb-recovery.md) | 实测 USB 救砖、ROM入口、RAM loader、整片双备份、双分区与6扇区恢复工具 |
+| [docs/preflash-emulation.md](docs/preflash-emulation.md) | 杰理资料和社区模拟器、pi32v2 实际指令回放、r2 拒绝回归、API 桩和整机边界 |
 | [docs/ota.md](docs/ota.md) | E1～E8、前台服务、MTU 分包、队列、回连、确认与成功条件 |
 | [docs/stream-volume.md](docs/stream-volume.md) | 两个音量节点、表结构、stream 流程标识和听感未确认的原因范围 |
 | [docs/validation.md](docs/validation.md) | 四次实际传输、两类失败、修复、成功与用户反馈，哪些结论不能推出 |

@@ -30,6 +30,13 @@
     "target": "pi32v2",
     "cpu": "r3"
   },
+  "pi32v2_simulator": {
+    "url": "https://github.com/jvitkauskas/pi32v2-isa",
+    "commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+    "code_license": "MIT-0",
+    "documentation_and_table_license": "CC0-1.0",
+    "use": "offline function-level instruction replay; not a complete H3S/BR28 board model"
+  },
   "ghidra_processor_reference": {
     "url": "https://github.com/quarkslab/ghidra-jieli",
     "commit": "e1bd0707874b77b759401555d24839ad43af1267",
