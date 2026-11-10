@@ -1,0 +1,858 @@
+{
+  "status": "ROM_ADDRESS_WINDOW_ACQUIRED_AND_VALIDATED",
+  "device_family": "QCY H3S / BR28",
+  "start": 0,
+  "end_exclusive": 131072,
+  "bytes": 131072,
+  "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+  "two_full_reads_identical": true,
+  "export_probe_matches_dump": true,
+  "matched_named_export_stubs": 162,
+  "read_protocol": "USB RAM loader FD07",
+  "bulk_memory_read_block": 128,
+  "ram_loader_sha256": "ab1b77eb73385aaa78ab769253b2af7ef63d0ade46f391bd7424cc598a40267c",
+  "successful_command_counts": {
+    "0x1200": 1,
+    "0xfb06": 46,
+    "0xfb08": 1,
+    "0xfc0a": 1,
+    "0xfd07": 2054
+  },
+  "flash_erase_or_program_commands": 0,
+  "otp_write_commands": 0,
+  "failed_probe_observations": [
+    {
+      "address": 0,
+      "length": 512,
+      "result": "USB endpoint shutdown and return to application"
+    },
+    {
+      "address": 16384,
+      "length": 512,
+      "result": "same shutdown; same address read32 succeeded"
+    },
+    {
+      "interpretation": "address0 later read successfully with128B; failure is size-sensitive, exact buffer limit not established"
+    }
+  ],
+  "read_256_byte_block_tested": false,
+  "full_silicon_rom_extent_established": false,
+  "post_read_user_report": "耳机启动后正常",
+  "raw_rom_binary_published": false,
+  "flash_contents_not_full_chip_compared_this_session": true,
+  "exports": [
+    {
+      "name": "lp_signature_set",
+      "entry": "0x1fd6c",
+      "target": "0xa1d0"
+    },
+    {
+      "name": "memmem",
+      "entry": "0x1fd70",
+      "target": "0x41fe"
+    },
+    {
+      "name": "memcpy",
+      "entry": "0x1fd74",
+      "target": "0x413c"
+    },
+    {
+      "name": "memmove",
+      "entry": "0x1fd78",
+      "target": "0x413c"
+    },
+    {
+      "name": "memcmp",
+      "entry": "0x1fd7c",
+      "target": "0x4104"
+    },
+    {
+      "name": "memset",
+      "entry": "0x1fd80",
+      "target": "0x4226"
+    },
+    {
+      "name": "strcmp",
+      "entry": "0x1fd84",
+      "target": "0x42f4"
+    },
+    {
+      "name": "strcpy",
+      "entry": "0x1fd88",
+      "target": "0x4394"
+    },
+    {
+      "name": "strlen",
+      "entry": "0x1fd8c",
+      "target": "0x4402"
+    },
+    {
+      "name": "strncmp",
+      "entry": "0x1fd90",
+      "target": "0x440e"
+    },
+    {
+      "name": "strstr",
+      "entry": "0x1fd94",
+      "target": "0x442e"
+    },
+    {
+      "name": "strchr",
+      "entry": "0x1fd98",
+      "target": "0x42e0"
+    },
+    {
+      "name": "__divdi3",
+      "entry": "0x1fd9c",
+      "target": "0x179ac"
+    },
+    {
+      "name": "__udivmoddi4",
+      "entry": "0x1fda0",
+      "target": "0x17a60"
+    },
+    {
+      "name": "__adddf3",
+      "entry": "0x1fda4",
+      "target": "0x176d8"
+    },
+    {
+      "name": "__fixdfsi",
+      "entry": "0x1fda8",
+      "target": "0x17a06"
+    },
+    {
+      "name": "flush_dcache",
+      "entry": "0x1fdac",
+      "target": "0xc780"
+    },
+    {
+      "name": "flushinv_dcache",
+      "entry": "0x1fdb0",
+      "target": "0xc78c"
+    },
+    {
+      "name": "IcuWaitIdle",
+      "entry": "0x1fdb4",
+      "target": "0xc792"
+    },
+    {
+      "name": "DcuWaitIdle",
+      "entry": "0x1fdb8",
+      "target": "0xbb20"
+    },
+    {
+      "name": "IcuInitial",
+      "entry": "0x1fdbc",
+      "target": "0xbae0"
+    },
+    {
+      "name": "DcuInitial",
+      "entry": "0x1fdc0",
+      "target": "0xbb30"
+    },
+    {
+      "name": "sfc_drop_cache",
+      "entry": "0x1fdcc",
+      "target": "0xc726"
+    },
+    {
+      "name": "chip_crc16",
+      "entry": "0x1fdd0",
+      "target": "0xa9d6"
+    },
+    {
+      "name": "CrcDecode",
+      "entry": "0x1fdd4",
+      "target": "0xaa1e"
+    },
+    {
+      "name": "get_flash_file_key",
+      "entry": "0x1fdd8",
+      "target": "0xaeae"
+    },
+    {
+      "name": "dec_isd_cfg_ini",
+      "entry": "0x1fddc",
+      "target": "0xaf20"
+    },
+    {
+      "name": "_jlfs_mount",
+      "entry": "0x1fde0",
+      "target": "0xafca"
+    },
+    {
+      "name": "sfc_boot",
+      "entry": "0x1fde4",
+      "target": "0xb9d0"
+    },
+    {
+      "name": "mask_init",
+      "entry": "0x1fde8",
+      "target": "0x4590"
+    },
+    {
+      "name": "nvram_set_boot_state",
+      "entry": "0x1fdf0",
+      "target": "0x44c6"
+    },
+    {
+      "name": "chip_reset",
+      "entry": "0x1fdf4",
+      "target": "0x4506"
+    },
+    {
+      "name": "the_debug_isr",
+      "entry": "0x1fdf8",
+      "target": "0xa0bc"
+    },
+    {
+      "name": "print",
+      "entry": "0x1fdfc",
+      "target": "0xb450"
+    },
+    {
+      "name": "sprintf",
+      "entry": "0x1fe00",
+      "target": "0xc7b0"
+    },
+    {
+      "name": "printf",
+      "entry": "0x1fe04",
+      "target": "0xb9b4"
+    },
+    {
+      "name": "puts",
+      "entry": "0x1fe08",
+      "target": "0xb0b6"
+    },
+    {
+      "name": "doe",
+      "entry": "0x1fe0c",
+      "target": "0xaf78"
+    },
+    {
+      "name": "spi_get_port",
+      "entry": "0x1fe10",
+      "target": "0xad9a"
+    },
+    {
+      "name": "_pll_init",
+      "entry": "0x1fe14",
+      "target": "0xc2ce"
+    },
+    {
+      "name": "flash_poweron",
+      "entry": "0x1fe18",
+      "target": "0xa42c"
+    },
+    {
+      "name": "spi_unmount",
+      "entry": "0x1fe1c",
+      "target": "0xc0e8"
+    },
+    {
+      "name": "spi_port_io_init",
+      "entry": "0x1fe20",
+      "target": "0xacf6"
+    },
+    {
+      "name": "usb_slave_mode",
+      "entry": "0x1fe24",
+      "target": "0x4808"
+    },
+    {
+      "name": "LZ4_setStreamDecode",
+      "entry": "0x1fe28",
+      "target": "0xc89c"
+    },
+    {
+      "name": "LZ4_decompress_safe_continue",
+      "entry": "0x1fe2c",
+      "target": "0xbdee"
+    },
+    {
+      "name": "LZ4_decompress_generic",
+      "entry": "0x1fe30",
+      "target": "0xbb70"
+    },
+    {
+      "name": "_sdk_mkey_lock",
+      "entry": "0x1fe34",
+      "target": "0xc8b2"
+    },
+    {
+      "name": "g_hash_function",
+      "entry": "0x1fe38",
+      "target": "0x8522"
+    },
+    {
+      "name": "f1_hash_function",
+      "entry": "0x1fe3c",
+      "target": "0x84e8"
+    },
+    {
+      "name": "f2_hash_function",
+      "entry": "0x1fe40",
+      "target": "0x8568"
+    },
+    {
+      "name": "f3_hash_function",
+      "entry": "0x1fe44",
+      "target": "0x85c6"
+    },
+    {
+      "name": "h2_hash_function",
+      "entry": "0x1fe48",
+      "target": "0x8630"
+    },
+    {
+      "name": "h3_hash_function",
+      "entry": "0x1fe4c",
+      "target": "0x8658"
+    },
+    {
+      "name": "h4_hash_function",
+      "entry": "0x1fe50",
+      "target": "0x869c"
+    },
+    {
+      "name": "h5_hash_function",
+      "entry": "0x1fe54",
+      "target": "0x86d6"
+    },
+    {
+      "name": "g_function",
+      "entry": "0x1fe58",
+      "target": "0x8712"
+    },
+    {
+      "name": "f1_function",
+      "entry": "0x1fe5c",
+      "target": "0x87b4"
+    },
+    {
+      "name": "f2_function",
+      "entry": "0x1fe60",
+      "target": "0x8820"
+    },
+    {
+      "name": "f3_function",
+      "entry": "0x1fe64",
+      "target": "0x88e8"
+    },
+    {
+      "name": "sha256Compute",
+      "entry": "0x1fe68",
+      "target": "0x842a"
+    },
+    {
+      "name": "uECC_compute_public_key",
+      "entry": "0x1fe6c",
+      "target": "0x943c"
+    },
+    {
+      "name": "uECC_shared_secret",
+      "entry": "0x1fe70",
+      "target": "0x9398"
+    },
+    {
+      "name": "bi_initialize",
+      "entry": "0x1fe74",
+      "target": "0x98dc"
+    },
+    {
+      "name": "bi_read_from_byte",
+      "entry": "0x1fe78",
+      "target": "0x9894"
+    },
+    {
+      "name": "bi_poly_mod2",
+      "entry": "0x1fe7c",
+      "target": "0x9732"
+    },
+    {
+      "name": "bi_poly_mul",
+      "entry": "0x1fe80",
+      "target": "0x97e4"
+    },
+    {
+      "name": "trim",
+      "entry": "0x1fe84",
+      "target": "0x954e"
+    },
+    {
+      "name": "bi_wirte_to_byte",
+      "entry": "0x1fe88",
+      "target": "0x9866"
+    },
+    {
+      "name": "bi_free",
+      "entry": "0x1fe8c",
+      "target": "0x9708"
+    },
+    {
+      "name": "bi_terminate",
+      "entry": "0x1fe90",
+      "target": "0x9904"
+    },
+    {
+      "name": "get_cvsd_codec_ops",
+      "entry": "0x1fe94",
+      "target": "0x5534"
+    },
+    {
+      "name": "get_wtgv2dec_rom_ops",
+      "entry": "0x1fe98",
+      "target": "0x7092"
+    },
+    {
+      "name": "wtgv2_silk_Decode",
+      "entry": "0x1fe9c",
+      "target": "0x71ee"
+    },
+    {
+      "name": "wtgv2_silk_decode_frame",
+      "entry": "0x1fea0",
+      "target": "0x6fe4"
+    },
+    {
+      "name": "wtgv2_silk_decoder_set_fs",
+      "entry": "0x1fea4",
+      "target": "0x710c"
+    },
+    {
+      "name": "wtgv2_silk_decode_indices",
+      "entry": "0x1fea8",
+      "target": "0x5ef8"
+    },
+    {
+      "name": "wtgv2_silk_decode_pulses",
+      "entry": "0x1feac",
+      "target": "0x6170"
+    },
+    {
+      "name": "wtgv2_silk_decode_parameters",
+      "entry": "0x1feb0",
+      "target": "0x6ac2"
+    },
+    {
+      "name": "wtgv2_silk_decode_core",
+      "entry": "0x1feb4",
+      "target": "0x5636"
+    },
+    {
+      "name": "logAprx_CORDIC_float",
+      "entry": "0x1feb8",
+      "target": "0xc934"
+    },
+    {
+      "name": "expAprx_CORDIC_float",
+      "entry": "0x1febc",
+      "target": "0xc968"
+    },
+    {
+      "name": "magnAprx_float",
+      "entry": "0x1fec0",
+      "target": "0xc9a8"
+    },
+    {
+      "name": "MatrixCopy_float_c_c",
+      "entry": "0x1fec4",
+      "target": "0xc9d6"
+    },
+    {
+      "name": "MatrixCopy_float_f_f",
+      "entry": "0x1fec8",
+      "target": "0xca22"
+    },
+    {
+      "name": "MatrixEwMulAndSumOneDim_float_c_c_c_s0",
+      "entry": "0x1fecc",
+      "target": "0xca68"
+    },
+    {
+      "name": "MatrixEwMulAndSumOneDim_float_c_c_c_s1",
+      "entry": "0x1fed0",
+      "target": "0xcaf0"
+    },
+    {
+      "name": "MatrixEwMulAndSumOneDim_float_f_f_f_s0",
+      "entry": "0x1fed4",
+      "target": "0xcb78"
+    },
+    {
+      "name": "MatrixEwMulAndSumOneDim_float_f_f_f_s1",
+      "entry": "0x1fed8",
+      "target": "0xcbdc"
+    },
+    {
+      "name": "MatrixEwConjMulAndSumOneDim_float_c_c_c_s0",
+      "entry": "0x1fedc",
+      "target": "0xcc40"
+    },
+    {
+      "name": "MatrixEwConjMulAndSumOneDim_float_c_c_c_s1",
+      "entry": "0x1fee0",
+      "target": "0xccc8"
+    },
+    {
+      "name": "VecMeanSq_s16_f32",
+      "entry": "0x1fee4",
+      "target": "0xcd50"
+    },
+    {
+      "name": "VecOverShift_s16_f32",
+      "entry": "0x1fee8",
+      "target": "0xcd90"
+    },
+    {
+      "name": "VecMinus_s16_f32_f32",
+      "entry": "0x1feec",
+      "target": "0xcdee"
+    },
+    {
+      "name": "VectorCopy_f32_s16",
+      "entry": "0x1fef0",
+      "target": "0xce2c"
+    },
+    {
+      "name": "VecEleMul_s16_s16_f32",
+      "entry": "0x1fef4",
+      "target": "0xce56"
+    },
+    {
+      "name": "VecEleMul_f32_s16_f32",
+      "entry": "0x1fef8",
+      "target": "0xceba"
+    },
+    {
+      "name": "VecMeanSq_float_f_f",
+      "entry": "0x1fefc",
+      "target": "0xd83a"
+    },
+    {
+      "name": "VectorSet_float_f_f",
+      "entry": "0x1ff00",
+      "target": "0xcf06"
+    },
+    {
+      "name": "VecMagRecAve_float_c_f_f",
+      "entry": "0x1ff04",
+      "target": "0xcf1e"
+    },
+    {
+      "name": "VecMulScalar_float_c_f_c",
+      "entry": "0x1ff08",
+      "target": "0xcf5a"
+    },
+    {
+      "name": "VecConjEleMul_float_c_c_c",
+      "entry": "0x1ff0c",
+      "target": "0xcf88"
+    },
+    {
+      "name": "VecPlus_float_f_f_f",
+      "entry": "0x1ff10",
+      "target": "0xcfcc"
+    },
+    {
+      "name": "VecDivide_float_c_f_c_f",
+      "entry": "0x1ff14",
+      "target": "0xd004"
+    },
+    {
+      "name": "VecPlus_float_c_c_c",
+      "entry": "0x1ff18",
+      "target": "0xd042"
+    },
+    {
+      "name": "VecConjMulRecAve_float_c_c_c_f",
+      "entry": "0x1ff1c",
+      "target": "0xd082"
+    },
+    {
+      "name": "VecGetMag_float_c_f",
+      "entry": "0x1ff20",
+      "target": "0xd0d6"
+    },
+    {
+      "name": "VecMax_float_f_f",
+      "entry": "0x1ff24",
+      "target": "0xd102"
+    },
+    {
+      "name": "VecRecAve_float_f_f_f",
+      "entry": "0x1ff28",
+      "target": "0xd122"
+    },
+    {
+      "name": "VecEleMul_float_f_f_f",
+      "entry": "0x1ff2c",
+      "target": "0xd15a"
+    },
+    {
+      "name": "VecMagAndDiv_float_c_f_f_f",
+      "entry": "0x1ff30",
+      "target": "0xd18a"
+    },
+    {
+      "name": "VecMin_float_f_f",
+      "entry": "0x1ff34",
+      "target": "0xd1ca"
+    },
+    {
+      "name": "VecMinus_float_f_f_f",
+      "entry": "0x1ff38",
+      "target": "0xd1ea"
+    },
+    {
+      "name": "VecMean_float_f_f",
+      "entry": "0x1ff3c",
+      "target": "0xd222"
+    },
+    {
+      "name": "VecEleMul_float_c_f_c",
+      "entry": "0x1ff40",
+      "target": "0xd252"
+    },
+    {
+      "name": "VecMeanSqu_float_c_f",
+      "entry": "0x1ff44",
+      "target": "0xd288"
+    },
+    {
+      "name": "VecCopy_float_f_f",
+      "entry": "0x1ff48",
+      "target": "0xd2c6"
+    },
+    {
+      "name": "VecMin_float_f_f_f",
+      "entry": "0x1ff4c",
+      "target": "0xd2ea"
+    },
+    {
+      "name": "VecDivide_float_f_f_f_f",
+      "entry": "0x1ff50",
+      "target": "0xd322"
+    },
+    {
+      "name": "VecCompBT_float_f_f_f",
+      "entry": "0x1ff54",
+      "target": "0xd360"
+    },
+    {
+      "name": "VecCondCopy_float_f_f_f",
+      "entry": "0x1ff58",
+      "target": "0xd394"
+    },
+    {
+      "name": "VecMulScalar_float_f_f_f",
+      "entry": "0x1ff5c",
+      "target": "0xd3cc"
+    },
+    {
+      "name": "VecPlusScalar_float_f_f_f",
+      "entry": "0x1ff60",
+      "target": "0xd3f6"
+    },
+    {
+      "name": "VecMinScalar_float_f_f_f",
+      "entry": "0x1ff64",
+      "target": "0xd420"
+    },
+    {
+      "name": "VecOpposite_float_f_f",
+      "entry": "0x1ff68",
+      "target": "0xd44a"
+    },
+    {
+      "name": "VecEleMla_float_f_f_f",
+      "entry": "0x1ff6c",
+      "target": "0xd472"
+    },
+    {
+      "name": "VecEleMla_float_c_c_c",
+      "entry": "0x1ff70",
+      "target": "0xd4a8"
+    },
+    {
+      "name": "VecMinus_float_c_c_c",
+      "entry": "0x1ff74",
+      "target": "0xd4f0"
+    },
+    {
+      "name": "VecDotProduct_float_f_f_f",
+      "entry": "0x1ff78",
+      "target": "0xd530"
+    },
+    {
+      "name": "VecDotProduct_float_c_c_c",
+      "entry": "0x1ff7c",
+      "target": "0xd55e"
+    },
+    {
+      "name": "VecDotProduct_float_c_f_c",
+      "entry": "0x1ff80",
+      "target": "0xd5a2"
+    },
+    {
+      "name": "VecCopy_float_c_c",
+      "entry": "0x1ff84",
+      "target": "0xd5d8"
+    },
+    {
+      "name": "VecCopy_float_f_c",
+      "entry": "0x1ff88",
+      "target": "0xd5fc"
+    },
+    {
+      "name": "VecConjDotProduct_float_c_c_c",
+      "entry": "0x1ff8c",
+      "target": "0xd624"
+    },
+    {
+      "name": "VecNormalize_float_c_c_f",
+      "entry": "0x1ff90",
+      "target": "0xd668"
+    },
+    {
+      "name": "VecRecAve_float_c_c_f",
+      "entry": "0x1ff94",
+      "target": "0xd6c6"
+    },
+    {
+      "name": "VecOverlapShift_float_f_f_i",
+      "entry": "0x1ff98",
+      "target": "0xd706"
+    },
+    {
+      "name": "VecMax_float_f_f_f",
+      "entry": "0x1ff9c",
+      "target": "0xd75e"
+    },
+    {
+      "name": "VecConjEwMulAndDiv_float_c_c_f_f_c",
+      "entry": "0x1ffa0",
+      "target": "0xd796"
+    },
+    {
+      "name": "VecPlusMulScalar_float_c_c_f_c",
+      "entry": "0x1ffa4",
+      "target": "0xd7fa"
+    },
+    {
+      "name": "VecCondCopy_float_c_i_c",
+      "entry": "0x1ffa8",
+      "target": "0xd86c"
+    },
+    {
+      "name": "VecEleMulAndDiv_float_f_f_f_f_f",
+      "entry": "0x1ffac",
+      "target": "0xd8a6"
+    },
+    {
+      "name": "VectorSet_float_f_c",
+      "entry": "0x1ffb0",
+      "target": "0xd8fa"
+    },
+    {
+      "name": "VecDivScalar_float_f_f_f",
+      "entry": "0x1ffb4",
+      "target": "0xd914"
+    },
+    {
+      "name": "VecDivScalar_float_c_f_c",
+      "entry": "0x1ffb8",
+      "target": "0xd93e"
+    },
+    {
+      "name": "VecPlusScalar_float_c_f_c",
+      "entry": "0x1ffbc",
+      "target": "0xd96c"
+    },
+    {
+      "name": "VecMinScalar_float_c_f_c",
+      "entry": "0x1ffc0",
+      "target": "0xd996"
+    },
+    {
+      "name": "get_aacrom_ops",
+      "entry": "0x1ffc4",
+      "target": "0xdb80"
+    },
+    {
+      "name": "get_opus_enc_ops",
+      "entry": "0x1ffc8",
+      "target": "0x1132c"
+    },
+    {
+      "name": "opus_encode",
+      "entry": "0x1ffcc",
+      "target": "0x16e2a"
+    },
+    {
+      "name": "silk_Encode",
+      "entry": "0x1ffd0",
+      "target": "0x16b30"
+    },
+    {
+      "name": "silk_encode_do_VAD_FIX",
+      "entry": "0x1ffd4",
+      "target": "0x1159e"
+    },
+    {
+      "name": "silk_encode_frame_FIX",
+      "entry": "0x1ffd8",
+      "target": "0x167f2"
+    },
+    {
+      "name": "silk_find_pitch_lags_FIX",
+      "entry": "0x1ffdc",
+      "target": "0x1255e"
+    },
+    {
+      "name": "silk_noise_shape_analysis_FIX",
+      "entry": "0x1ffe0",
+      "target": "0x12b48"
+    },
+    {
+      "name": "silk_find_pred_coefs_FIX",
+      "entry": "0x1ffe4",
+      "target": "0x156e8"
+    },
+    {
+      "name": "silk_process_gains_FIX",
+      "entry": "0x1ffe8",
+      "target": "0x15f30"
+    },
+    {
+      "name": "silk_prefilter_FIX",
+      "entry": "0x1ffec",
+      "target": "0x161a4"
+    },
+    {
+      "name": "silk_NSQ_del_dec_c",
+      "entry": "0x1fff0",
+      "target": "0x10444"
+    },
+    {
+      "name": "silk_encode_indices",
+      "entry": "0x1fff4",
+      "target": "0x1116c"
+    },
+    {
+      "name": "silk_encode_pulses",
+      "entry": "0x1fff8",
+      "target": "0x16474"
+    },
+    {
+      "name": "silk_ana_filt_bank_1",
+      "entry": "0x1fffc",
+      "target": "0x10fb8"
+    }
+  ],
+  "date_utc": "2026-11-10",
+  "public_reader_hardware_retested": false,
+  "public_validator_checked_captured_images": true
+}

@@ -26,6 +26,7 @@ def main():
     run('bash','tools/android-query/test.sh')
     run('bash','tools/eq-toggle/test.sh')
     run(sys.executable,'tools/usb-recovery/test_recovery.py')
+    run(sys.executable,'tools/usb-recovery/test_rom.py')
     options=['--fetch-simulator'] if args.fetch_inputs else []
     run(sys.executable,'tools/probe_pi32v2.py',*options,'--report','analysis/local-checks/functions.json')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json')

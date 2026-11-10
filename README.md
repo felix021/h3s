@@ -6,9 +6,11 @@
 
 **2026-11-10 更新：** EQ 实验导致连接异常后，已通过 [USB 救砖流程](docs/usb-recovery.md) 恢复原 ANC 两态镜像，整片读回通过，蓝牙和播放恢复；用户手动重启耳机一次后，确认独立降噪键能正常切换、App 也能控制。
 
+**同日取得 [CPU ROM 地址窗口](docs/rom-read.md)：** `0..0x20000` 共128 KiB，两次读取完全一致，162个参考SDK具名导出入口匹配，包含真实 `mask_init`／`_pll_init` 代码。没有执行Flash擦写，用户反馈“耳机启动后正常”。原始ROM留在私有目录；公开读取工具、离线校验器与脱敏结果，尚未接入启动模拟器。
+
 已跑通 [pi32v2 离线执行原型](docs/preflash-emulation.md)：真实指令回放配合 H3S 取指范围策略，能拒绝历史 r2 的五个越界入口；另有 15 个实际编译函数诊断用例。它尚不模拟完整耳机启动或蓝牙／声音，不能单独作为刷机批准依据。
 
-[第二轮启动探索](docs/boot-handoff.md) 已核对交接结构；在明确的 PLL／测试参数／循环模型下执行16077次step，完成BSS、data和RAM代码初始化摘要验证，停在未验证的零计数`rep`。尚未进入RTOS，真实ROM／PLL和交接初态仍缺失；[第一轮](docs/boot-exploration.md)结果保留。
+[第二轮启动探索](docs/boot-handoff.md) 已核对交接结构；在明确的 PLL／测试参数／循环模型下执行16077次step，完成BSS、data和RAM代码初始化摘要验证，停在未验证的零计数`rep`。尚未进入RTOS，ROM接入、PLL硬件行为和真实交接初态仍待补齐；[第一轮](docs/boot-exploration.md)结果保留。
 
 [离线仿真边界已收敛](docs/simulation-boundaries.md)：13组严格／假设／隔离用例覆盖ICFG、保留RAM、实际CRC和升级结果处理；连续假设路径停在ROM初始化前的控制写，隔离`setup_arch`停在IPMASK写。完整启动需要ROM和中断／控制寄存器模型，本轮未刷机。
 
@@ -123,6 +125,7 @@ bash tools/android-query/build.sh
 | [docs/app-analysis.md](docs/app-analysis.md) | QCY「声音」页调用链、命令注册记录、保存与应用路径 |
 | [docs/protocol.md](docs/protocol.md) | BLE 服务、RCSP 帧、端序、QCY 自定义命令与通用接口实测边界 |
 | [docs/usb-recovery.md](docs/usb-recovery.md) | 实测 USB 救砖、ROM入口、RAM loader、整片双备份、双分区与6扇区恢复工具 |
+| [docs/rom-read.md](docs/rom-read.md) | 128 KiB CPU ROM窗口双读、162个导出入口、128B分块、读取工具与离线校验 |
 | [docs/preflash-emulation.md](docs/preflash-emulation.md) | 杰理资料和社区模拟器、pi32v2 实际指令回放、r2 拒绝回归、API 桩和整机边界 |
 | [docs/boot-exploration.md](docs/boot-exploration.md) | 从应用入口做有界试跑，PLL0／ROM／交接参数阻塞点及模拟器适配差异 |
 | [docs/boot-handoff.md](docs/boot-handoff.md) | 区分两种交接对象、参考库IR分析、启动内存摘要、REP边界和本机检查 |
