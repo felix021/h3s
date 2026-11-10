@@ -44,10 +44,11 @@ def application(path):
 
 
 def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
-            handoff=None,startup_loops=False):
+            handoff=None,startup_loops=False,diagnostics=None):
     events=[]
     adapters=Counter()
     event_counts=Counter()
+    milestones=[]
 
     def event(row):
         events.append(row)
@@ -98,7 +99,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def write(self,address,data):
             region=self.region(address,len(data))
             if not region:
-                raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data))
+                details={'value_bytes':data.hex()} if diagnostics else {}
+                raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data),**details)
             self.ram.update((address+i,byte) for i,byte in enumerate(data))
             event({'access':'write','address':hex(address),'bytes':data.hex(),'region':region})
 
@@ -117,16 +119,59 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.mem.operation=old
 
         def step(self):
+            before_pc=self.pc
+            helper_return=bool(self.repeat and self.repeat.get('allow_helper_return') and self.pc==0x0012cb2a)
             self.step_body()
+            if diagnostics and before_pc in (0x06000192,0x06000f08,0x060108bc):
+                kind={0x06000192:'startup_icfg_mask_applied',0x06000f08:'software_crc_result',
+                      0x060108bc:'update_result_get_return'}[before_pc]
+                milestones.append({'kind':kind,'pc':hex(before_pc),'icfg':hex(self.icfg),
+                                   'r0':hex(self.R[0]),'sp':hex(self.sp)})
+            if helper_return:
+                self.repeat=None
+                adapters['irq_repeat_return_hypothesis']+=1
+                return
             if self.repeat and self.pc==self.repeat['end']:
-                self.R[2]-=1
-                if self.R[2]:
+                register=self.repeat['register']
+                if register is not None:
+                    self.R[register]-=1
+                self.repeat['remaining']-=1
+                if self.repeat['remaining']:
                     self.pc=self.repeat['start']
                 else:
                     self.repeat=None
 
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
+            if diagnostics and diagnostics.get('visible_cli') and insn.id in ('cli','cli.r','sti','sti.r'):
+                if not self.icfg_known:
+                    raise Blocked('uninitialized_special_register',register='icfg')
+                module.CPU.step(self)  # upstream's visible bit9 effect, not IRQ delivery
+                adapters['cli_sti_visible_bit9_only']+=1
+                event({'access':'special-write','register':'icfg','value':hex(self.icfg)})
+                return
+            if diagnostics and diagnostics.get('irq_repeat_return') and insn.id=='mov.r_sr' and raw.get('s')==6:
+                self.R[raw['r']]=0  # explicit single CPU0 research profile
+                self.pc+=size
+                self.steps+=1
+                adapters['core0_visible_cnum']+=1
+                return
+            if diagnostics and insn.id in ('mov.r_sr','mov.sr_r') and raw.get('s')==11:
+                if not diagnostics.get('adapt_icfg'):
+                    raise Blocked('unsupported_special_register',register='icfg',instruction_id=insn.id)
+                if insn.id=='mov.r_sr':
+                    if not self.icfg_known:
+                        raise Blocked('uninitialized_special_register',register='icfg')
+                    self.R[raw['r']]=self.icfg
+                    event({'access':'special-read','register':'icfg','value':hex(self.icfg)})
+                else:
+                    self.icfg=self.R[raw['r']]
+                    self.icfg_known=True
+                    event({'access':'special-write','register':'icfg','value':hex(self.icfg)})
+                self.pc+=size
+                self.steps+=1
+                adapters['icfg_visible_value_only']+=1
+                return
             if adapt_stack and self.pc in (ENTRY,ENTRY+6):
                 expected=14 if self.pc==ENTRY else 13
                 require(insn.id=='li.sr_u32' and raw=={'s':expected,'n':STACK_TOP},
@@ -172,10 +217,20 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 body_size=2 if self.pc==0x06000130 else 4
                 require(op['r']==2 and op['n']==body_size,'startup repeat operands changed')
                 if self.R[2]==0:
+                    if diagnostics and diagnostics.get('zero_rep')=='skip_hypothesis':
+                        require(self.pc==0x06000182,'zero REP hypothesis scoped to empty PSRAM copy')
+                        self.pc+=size+body_size
+                        self.steps+=1
+                        adapters['zero_rep_skip_hypothesis']+=1
+                        return
                     raise Blocked('unverified_zero_count_rep',instruction_id=insn.id,
                                   note='upstream hardware evidence does not establish count=0 behaviour')
                 require(self.R[2]<=10000,'unexpected startup repeat count')
-                self.repeat={'start':self.pc+size,'end':self.pc+size+body_size}
+                count=self.R[2]
+                if diagnostics and diagnostics.get('rep_chunk'):
+                    require(1<=diagnostics['rep_chunk']<=10000,'invalid REP chunk hypothesis')
+                    count=min(count,diagnostics['rep_chunk'])
+                self.repeat={'start':self.pc+size,'end':self.pc+size+body_size,'register':2,'remaining':count}
                 self.pc+=size
                 self.steps+=1
                 adapters['bounded_startup_rep_controller']+=1
@@ -192,6 +247,49 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.steps+=1
                 adapters['startup_word_store']+=1
                 return
+            if diagnostics and diagnostics.get('update_repeat') and self.pc==0x060108b8:
+                require(insn.id=='rep.i' and module.check.operands(insn,raw)['n']==20,
+                        'retained update-clear repeat changed')
+                require(self.repeat is None,'nested update clear loop')
+                self.repeat={'start':self.pc+size,'end':self.pc+size+2,'register':None,'remaining':20}
+                self.pc+=size
+                self.steps+=1
+                adapters['retained_update_clear_rep_i']+=1
+                return
+            if diagnostics and diagnostics.get('irq_repeat_return') and self.pc==0x0012cb12:
+                op=module.check.operands(insn,raw)
+                require(insn.id=='rep.i' and op['n']==2 and op['b']==24 and self.repeat is None,
+                        'IRQ-disabled helper repeat changed')
+                self.repeat={'start':self.pc+size,'end':self.pc+size+24,'register':None,
+                             'remaining':2,'allow_helper_return':True}
+                self.pc+=size
+                self.steps+=1
+                adapters['irq_repeat_return_hypothesis']+=1
+                return
+            if diagnostics and diagnostics.get('update_repeat') and self.pc==0x060108ba:
+                op=module.check.operands(insn,raw)
+                require(insn.id=='st.w.pin' and all(op.get(k)==v for k,v in {'d':2,'b':1,'n':4}.items()),
+                        'retained update-clear store changed')
+                self.mem.write(self.R[1],struct.pack('<I',self.R[2]))
+                self.R[1]=(self.R[1]+4)&0xffffffff
+                self.pc+=size
+                self.steps+=1
+                adapters['retained_update_clear_word_store']+=1
+                return
+            if diagnostics and self.pc==0x060664c4:
+                require(insn.id=='st.w','maskrom-init control store changed')
+                self.mem.write(self.R[1],struct.pack('<I',self.R[0]))
+                self.pc+=size
+                self.steps+=1
+                adapters['maskrom_init_control_store']+=1
+                return
+            if diagnostics and self.pc==0x0012b56c:
+                require(insn.id=='st.w.idxs','IPMASK control store changed')
+                self.mem.write((self.R[0]+(self.R[2]<<2))&0xffffffff,struct.pack('<I',self.R[3]))
+                self.pc+=size
+                self.steps+=1
+                adapters['ipmask_control_store']+=1
+                return
             # Context-specific control models must never pretend to be hardware.
             if insn.id.startswith(('rep','lock','idle','wfe','sev','swi','syscall',
                                    'btbclr','bkpt','hbkpt','cli','sti','rti','rtx','rte')):
@@ -204,10 +302,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         for address,data in handoff['seeds']:
             require(c.mem.region(address,len(data)) is not None,'seed outside declared RAM')
             c.mem.ram.update((address+i,value) for i,value in enumerate(data))
-    c.pc=ENTRY
+    c.pc=diagnostics.get('entry_pc',ENTRY) if diagnostics else ENTRY
     c.R=[0]*16
     c.R[0]=r0
     c.sp=c.rets=c.icfg=0
+    if diagnostics:
+        c.sp=diagnostics.get('initial_sp',0)
+        c.icfg_known=diagnostics.get('icfg_initial') is not None
+        if c.icfg_known:
+            c.icfg=diagnostics['icfg_initial']
     trace=[]
     completed=0
     stop=None
@@ -234,7 +337,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             break
     if stop is None:
         stop={'kind':'instruction_budget'}
-    result={'name':name,'entry':hex(ENTRY),'completed_steps':completed,'stop_pc':hex(c.pc),
+    result={'name':name,'entry':hex(diagnostics.get('entry_pc',ENTRY) if diagnostics else ENTRY),'completed_steps':completed,'stop_pc':hex(c.pc),
         'stop':stop,'assumptions':{
             'cpu0_single_thread_no_interrupts':True,
             'unobserved_initial_gprs_flags_sp_rets_icfg':'zero placeholders, not a measured boot state',
@@ -249,6 +352,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         result['assumptions']['typed_handoff']=handoff['description']
         if startup_loops:
             result['assumptions']['nonzero_rep_counts']='full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified'
+            if diagnostics and diagnostics.get('rep_chunk'):
+                result['assumptions']['nonzero_rep_counts']='counterfactual REP chunks of '+str(diagnostics['rep_chunk'])+'; not verified BR28 behaviour'
         result['memory_event_counts']=dict(event_counts)
         result['memory_events_truncated']=sum(event_counts.values())>len(events)
         result['memory_snapshots']={}
@@ -260,6 +365,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if length<=40:
                 snap['bytes_with_unknowns']=''.join('??' if v is None else f'{v:02x}' for v in values)
             result['memory_snapshots'][label]=snap
+    if diagnostics:
+        result['assumptions']['diagnostics']=dict(diagnostics)
+        result['assumptions']['unobserved_initial_gprs_flags_sp_rets_icfg']='zero placeholders except explicit diagnostic overrides; not a measured boot state'
+        result['milestones']=milestones
     return result
 
 

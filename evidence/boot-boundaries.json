@@ -1,0 +1,3639 @@
+{
+  "format_version": 1,
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "reference_sdk_commit": "67328f4741c69993c88e504c67377b196c724f97",
+  "qemu_policy_reference_commit": "519a13b879d744f5c05bfe3c4e5d4e04d8d4ae34",
+  "firmware_sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "device_accessed": false,
+  "firmware_created": false,
+  "whole_h3s_boot_simulated": false,
+  "suitable_for_flash_approval_alone": false,
+  "rom_functions_stubbed": false,
+  "unknown_control_writes_applied": false,
+  "static_call_edges": [
+    {
+      "site": "0x6000196",
+      "target": "0x6010882",
+      "reference_name": "update_result_get",
+      "executed_in_contiguous_profile": true
+    },
+    {
+      "site": "0x600019c",
+      "target": "0x60664ba",
+      "reference_name": "maskrom_init",
+      "executed_in_contiguous_profile": true
+    },
+    {
+      "site": "0x60664d0",
+      "target": "0x1fde8",
+      "reference_name": "mask_init (reference ROM export)",
+      "executed_in_contiguous_profile": false
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "strict_zero",
+      "entry": "0x6000100",
+      "completed_steps": 16077,
+      "stop_pc": "0x6000182",
+      "stop": {
+        "kind": "unverified_zero_count_rep",
+        "instruction_id": "rep",
+        "note": "upstream hardware evidence does not establish count=0 behaviour"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders, not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef04",
+          "bytes": "0e000500",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef08",
+          "bytes": "10ef0806",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef0c",
+          "bytes": "d8f30806",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef10",
+          "bytes": "dcf40806",
+          "region": "qcy_ram_code"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6000168",
+          "instruction_id": "ld.w.pin",
+          "text": "r3 = [r1++=4]",
+          "bytes": "1305",
+          "next_pc": "0x600016a"
+        },
+        {
+          "pc": "0x600016a",
+          "instruction_id": "st.w.pin",
+          "text": "[r4++=4] = r3",
+          "bytes": "c305",
+          "next_pc": "0x6000168"
+        },
+        {
+          "pc": "0x6000168",
+          "instruction_id": "ld.w.pin",
+          "text": "r3 = [r1++=4]",
+          "bytes": "1305",
+          "next_pc": "0x600016a"
+        },
+        {
+          "pc": "0x600016a",
+          "instruction_id": "st.w.pin",
+          "text": "[r4++=4] = r3",
+          "bytes": "c305",
+          "next_pc": "0x6000168"
+        },
+        {
+          "pc": "0x6000168",
+          "instruction_id": "ld.w.pin",
+          "text": "r3 = [r1++=4]",
+          "bytes": "1305",
+          "next_pc": "0x600016a"
+        },
+        {
+          "pc": "0x600016a",
+          "instruction_id": "st.w.pin",
+          "text": "[r4++=4] = r3",
+          "bytes": "c305",
+          "next_pc": "0x600016c"
+        },
+        {
+          "pc": "0x600016c",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto -8",
+          "bytes": "f25c",
+          "next_pc": "0x600016e"
+        },
+        {
+          "pc": "0x600016e",
+          "instruction_id": "li.u32",
+          "text": "r4 = 33554432",
+          "bytes": "c4ff00000002",
+          "next_pc": "0x6000174"
+        },
+        {
+          "pc": "0x6000174",
+          "instruction_id": "li.u32",
+          "text": "r1 = 101506206",
+          "bytes": "c1ff9edc0c06",
+          "next_pc": "0x600017a"
+        },
+        {
+          "pc": "0x600017a",
+          "instruction_id": "li.u32",
+          "text": "r2 = 0",
+          "bytes": "c2ff00000000",
+          "next_pc": "0x6000180"
+        },
+        {
+          "pc": "0x6000180",
+          "instruction_id": "lsr.rri",
+          "text": "r2 = r2 >> 2",
+          "bytes": "a2a2",
+          "next_pc": "0x6000182"
+        },
+        {
+          "pc": "0x6000182",
+          "instruction_id": "rep",
+          "text": "rep 4 r2 {",
+          "bytes": "1203"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x19fd00",
+          "0x60cdc9e",
+          "0x0",
+          "0x608f4dc",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x123840",
+        "rets": "0x6000120",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10684,
+        "read": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+          "bytes_with_unknowns": "00000000"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 0
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 0
+        }
+      },
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "zero_skip_icfg_unmodeled",
+      "entry": "0x6000100",
+      "completed_steps": 16079,
+      "stop_pc": "0x600018a",
+      "stop": {
+        "kind": "unsupported_special_register",
+        "register": "icfg",
+        "instruction_id": "mov.r_sr"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis"
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef04",
+          "bytes": "0e000500",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef08",
+          "bytes": "10ef0806",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef0c",
+          "bytes": "d8f30806",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef10",
+          "bytes": "dcf40806",
+          "region": "qcy_ram_code"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6000168",
+          "instruction_id": "ld.w.pin",
+          "text": "r3 = [r1++=4]",
+          "bytes": "1305",
+          "next_pc": "0x600016a"
+        },
+        {
+          "pc": "0x600016a",
+          "instruction_id": "st.w.pin",
+          "text": "[r4++=4] = r3",
+          "bytes": "c305",
+          "next_pc": "0x6000168"
+        },
+        {
+          "pc": "0x6000168",
+          "instruction_id": "ld.w.pin",
+          "text": "r3 = [r1++=4]",
+          "bytes": "1305",
+          "next_pc": "0x600016a"
+        },
+        {
+          "pc": "0x600016a",
+          "instruction_id": "st.w.pin",
+          "text": "[r4++=4] = r3",
+          "bytes": "c305",
+          "next_pc": "0x600016c"
+        },
+        {
+          "pc": "0x600016c",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto -8",
+          "bytes": "f25c",
+          "next_pc": "0x600016e"
+        },
+        {
+          "pc": "0x600016e",
+          "instruction_id": "li.u32",
+          "text": "r4 = 33554432",
+          "bytes": "c4ff00000002",
+          "next_pc": "0x6000174"
+        },
+        {
+          "pc": "0x6000174",
+          "instruction_id": "li.u32",
+          "text": "r1 = 101506206",
+          "bytes": "c1ff9edc0c06",
+          "next_pc": "0x600017a"
+        },
+        {
+          "pc": "0x600017a",
+          "instruction_id": "li.u32",
+          "text": "r2 = 0",
+          "bytes": "c2ff00000000",
+          "next_pc": "0x6000180"
+        },
+        {
+          "pc": "0x6000180",
+          "instruction_id": "lsr.rri",
+          "text": "r2 = r2 >> 2",
+          "bytes": "a2a2",
+          "next_pc": "0x6000182"
+        },
+        {
+          "pc": "0x6000182",
+          "instruction_id": "rep",
+          "text": "rep 4 r2 {",
+          "bytes": "1203",
+          "next_pc": "0x6000188"
+        },
+        {
+          "pc": "0x6000188",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto -8",
+          "bytes": "f25c",
+          "next_pc": "0x600018a"
+        },
+        {
+          "pc": "0x600018a",
+          "instruction_id": "mov.r_sr",
+          "text": "r2 = icfg",
+          "bytes": "64e0002b"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x19fd00",
+          "0x60cdc9e",
+          "0x0",
+          "0x608f4dc",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x123840",
+        "rets": "0x6000120",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10684,
+        "read": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+          "bytes_with_unknowns": "00000000"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 0
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 0
+        }
+      },
+      "milestones": [],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "zero_skip_icfg_unknown",
+      "entry": "0x6000100",
+      "completed_steps": 16079,
+      "stop_pc": "0x600018a",
+      "stop": {
+        "kind": "uninitialized_special_register",
+        "register": "icfg"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef04",
+          "bytes": "0e000500",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef08",
+          "bytes": "10ef0806",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef0c",
+          "bytes": "d8f30806",
+          "region": "qcy_ram_code"
+        },
+        {
+          "access": "write",
+          "address": "0x12ef10",
+          "bytes": "dcf40806",
+          "region": "qcy_ram_code"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6000168",
+          "instruction_id": "ld.w.pin",
+          "text": "r3 = [r1++=4]",
+          "bytes": "1305",
+          "next_pc": "0x600016a"
+        },
+        {
+          "pc": "0x600016a",
+          "instruction_id": "st.w.pin",
+          "text": "[r4++=4] = r3",
+          "bytes": "c305",
+          "next_pc": "0x6000168"
+        },
+        {
+          "pc": "0x6000168",
+          "instruction_id": "ld.w.pin",
+          "text": "r3 = [r1++=4]",
+          "bytes": "1305",
+          "next_pc": "0x600016a"
+        },
+        {
+          "pc": "0x600016a",
+          "instruction_id": "st.w.pin",
+          "text": "[r4++=4] = r3",
+          "bytes": "c305",
+          "next_pc": "0x600016c"
+        },
+        {
+          "pc": "0x600016c",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto -8",
+          "bytes": "f25c",
+          "next_pc": "0x600016e"
+        },
+        {
+          "pc": "0x600016e",
+          "instruction_id": "li.u32",
+          "text": "r4 = 33554432",
+          "bytes": "c4ff00000002",
+          "next_pc": "0x6000174"
+        },
+        {
+          "pc": "0x6000174",
+          "instruction_id": "li.u32",
+          "text": "r1 = 101506206",
+          "bytes": "c1ff9edc0c06",
+          "next_pc": "0x600017a"
+        },
+        {
+          "pc": "0x600017a",
+          "instruction_id": "li.u32",
+          "text": "r2 = 0",
+          "bytes": "c2ff00000000",
+          "next_pc": "0x6000180"
+        },
+        {
+          "pc": "0x6000180",
+          "instruction_id": "lsr.rri",
+          "text": "r2 = r2 >> 2",
+          "bytes": "a2a2",
+          "next_pc": "0x6000182"
+        },
+        {
+          "pc": "0x6000182",
+          "instruction_id": "rep",
+          "text": "rep 4 r2 {",
+          "bytes": "1203",
+          "next_pc": "0x6000188"
+        },
+        {
+          "pc": "0x6000188",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto -8",
+          "bytes": "f25c",
+          "next_pc": "0x600018a"
+        },
+        {
+          "pc": "0x600018a",
+          "instruction_id": "mov.r_sr",
+          "text": "r2 = icfg",
+          "bytes": "64e0002b"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x19fd00",
+          "0x60cdc9e",
+          "0x0",
+          "0x608f4dc",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x123840",
+        "rets": "0x6000120",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10684,
+        "read": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+          "bytes_with_unknowns": "00000000"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 0
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 0
+        }
+      },
+      "milestones": [],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "icfg_seeded_irq_rep_strict",
+      "entry": "0x6000100",
+      "completed_steps": 16099,
+      "stop_pc": "0x12cb12",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "rep.i"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "92080106",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-read",
+          "register": "icfg",
+          "value": "0x0"
+        },
+        {
+          "access": "special-read",
+          "register": "icfg",
+          "value": "0x0"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6000f0c",
+          "instruction_id": "push.rets_rl",
+          "text": "[--sp] = {rets, r7-r4}",
+          "bytes": "7704",
+          "next_pc": "0x6000f0e"
+        },
+        {
+          "pc": "0x6000f0e",
+          "instruction_id": "mov.rr",
+          "text": "r4 = r1",
+          "bytes": "1416",
+          "next_pc": "0x6000f10"
+        },
+        {
+          "pc": "0x6000f10",
+          "instruction_id": "mov.rr",
+          "text": "r5 = r0",
+          "bytes": "0516",
+          "next_pc": "0x6000f12"
+        },
+        {
+          "pc": "0x6000f12",
+          "instruction_id": "call.s",
+          "text": "call -70",
+          "bytes": "619d",
+          "next_pc": "0x6000ece"
+        },
+        {
+          "pc": "0x6000ece",
+          "instruction_id": "mov.r_sr",
+          "text": "r0 = icfg",
+          "bytes": "64e0000b",
+          "next_pc": "0x6000ed2"
+        },
+        {
+          "pc": "0x6000ed2",
+          "instruction_id": "ext.b0.u",
+          "text": "r0 = r0.b0 (u)",
+          "bytes": "0017",
+          "next_pc": "0x6000ed4"
+        },
+        {
+          "pc": "0x6000ed4",
+          "instruction_id": "rts",
+          "text": "rts",
+          "bytes": "8000",
+          "next_pc": "0x6000f14"
+        },
+        {
+          "pc": "0x6000f14",
+          "instruction_id": "bnez",
+          "text": "if (r0 != 0) goto 8",
+          "bytes": "8044",
+          "next_pc": "0x6000f16"
+        },
+        {
+          "pc": "0x6000f16",
+          "instruction_id": "call.xl",
+          "text": "call -99435540",
+          "bytes": "80ffecbb12fa",
+          "next_pc": "0x12cb08"
+        },
+        {
+          "pc": "0x12cb08",
+          "instruction_id": "li.u32",
+          "text": "r1 = 1204688",
+          "bytes": "c1ffd0611200",
+          "next_pc": "0x12cb0e"
+        },
+        {
+          "pc": "0x12cb0e",
+          "instruction_id": "mov.r_sr",
+          "text": "r3 = icfg",
+          "bytes": "64e0003b",
+          "next_pc": "0x12cb12"
+        },
+        {
+          "pc": "0x12cb12",
+          "instruction_id": "rep.i",
+          "text": "rep 24 2 {",
+          "bytes": "b081"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0x1261d0",
+          "0x0",
+          "0x0",
+          "0x4e",
+          "0x19fb8a",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123824",
+        "ssp": "0x123840",
+        "rets": "0x6000f1c",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10691,
+        "read": 1,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+          "bytes_with_unknowns": "00000000"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 0
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 0
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        }
+      ],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "retained_unknown",
+      "entry": "0x6000100",
+      "completed_steps": 16116,
+      "stop_pc": "0x6000ee0",
+      "stop": {
+        "kind": "uninitialized_memory",
+        "access": "read",
+        "address": "0x19fb8a",
+        "size": 1,
+        "region": "retained_update_parameters",
+        "first_missing": "0x19fb8a"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123814",
+          "bytes": "4e000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123818",
+          "bytes": "8afb1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12381c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123820",
+          "bytes": "260f0006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12cb28",
+          "instruction_id": "or.rr",
+          "text": "r0 |= r1",
+          "bytes": "1019",
+          "next_pc": "0x12cb2a"
+        },
+        {
+          "pc": "0x12cb2a",
+          "instruction_id": "rts",
+          "text": "rts",
+          "bytes": "8000",
+          "next_pc": "0x6000f1c"
+        },
+        {
+          "pc": "0x6000f1c",
+          "instruction_id": "beqz",
+          "text": "if (r0 == 0) goto 14",
+          "bytes": "0047",
+          "next_pc": "0x6000f1e"
+        },
+        {
+          "pc": "0x6000f1e",
+          "instruction_id": "li.u8",
+          "text": "r2 = 0",
+          "bytes": "4220",
+          "next_pc": "0x6000f20"
+        },
+        {
+          "pc": "0x6000f20",
+          "instruction_id": "mov.rr",
+          "text": "r0 = r5",
+          "bytes": "5016",
+          "next_pc": "0x6000f22"
+        },
+        {
+          "pc": "0x6000f22",
+          "instruction_id": "mov.rr",
+          "text": "r1 = r4",
+          "bytes": "4116",
+          "next_pc": "0x6000f24"
+        },
+        {
+          "pc": "0x6000f24",
+          "instruction_id": "call.s",
+          "text": "call -80",
+          "bytes": "6198",
+          "next_pc": "0x6000ed6"
+        },
+        {
+          "pc": "0x6000ed6",
+          "instruction_id": "push.rets_rl",
+          "text": "[--sp] = {rets, r6-r4}",
+          "bytes": "7604",
+          "next_pc": "0x6000ed8"
+        },
+        {
+          "pc": "0x6000ed8",
+          "instruction_id": "li.u32",
+          "text": "r3 = 101352972",
+          "bytes": "c3ff0c860a06",
+          "next_pc": "0x6000ede"
+        },
+        {
+          "pc": "0x6000ede",
+          "instruction_id": "goto.s",
+          "text": "goto 38",
+          "bytes": "0493",
+          "next_pc": "0x6000f06"
+        },
+        {
+          "pc": "0x6000f06",
+          "instruction_id": "bnez",
+          "text": "if (r1 != 0) goto -40",
+          "bytes": "f14c",
+          "next_pc": "0x6000ee0"
+        },
+        {
+          "pc": "0x6000ee0",
+          "instruction_id": "uextra.rrii.p",
+          "text": "r5 = uextra(r2, p:12, l:4)  #",
+          "bytes": "b5f11026"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x19fb8a",
+          "0x4e",
+          "0x0",
+          "0x60a860c",
+          "0x4e",
+          "0x19fb8a",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123814",
+        "ssp": "0x123840",
+        "rets": "0x6000f26",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10695,
+        "read": 1,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+          "bytes_with_unknowns": "00000000"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 0
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 0
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        }
+      ],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "retained_empty",
+      "entry": "0x6000100",
+      "completed_steps": 17248,
+      "stop_pc": "0x60664c4",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xf2c11c",
+        "size": 4,
+        "value_bytes": "00000000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 1,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd0",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd4",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "bc080106",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "a2010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108bc"
+        },
+        {
+          "pc": "0x60108bc",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "bytes": "5404",
+          "next_pc": "0x600019c"
+        },
+        {
+          "pc": "0x600019c",
+          "instruction_id": "call.xl",
+          "text": "call 418584",
+          "bytes": "80ff18630600",
+          "next_pc": "0x60664ba"
+        },
+        {
+          "pc": "0x60664ba",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x60664bc"
+        },
+        {
+          "pc": "0x60664bc",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "bytes": "4020",
+          "next_pc": "0x60664be"
+        },
+        {
+          "pc": "0x60664be",
+          "instruction_id": "li.u32",
+          "text": "r1 = 15909148",
+          "bytes": "c1ff1cc1f200",
+          "next_pc": "0x60664c4"
+        },
+        {
+          "pc": "0x60664c4",
+          "instruction_id": "st.w",
+          "text": "[r1+0] = r0",
+          "bytes": "9060"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0xf2c11c",
+          "0x0",
+          "0x60a860c",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x123840",
+        "rets": "0x60001a2",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10720,
+        "read": 1,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "e70d929ec5c7ce6f9136219432e251f2a00876ae60acc893d36664da5c4230c5"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "0b42fdbe70c68bb3a0c406b00287d941e96f25ea6c62e499b2169eed6ca035ac",
+          "bytes_with_unknowns": "005a0000"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 80,
+          "sha256": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8"
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 80
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "retained_valid",
+      "entry": "0x6000100",
+      "completed_steps": 17251,
+      "stop_pc": "0x60664c4",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xf2c11c",
+        "size": 4,
+        "value_bytes": "00000000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 1,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd0",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd4",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "bc080106",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "a2010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108bc"
+        },
+        {
+          "pc": "0x60108bc",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "bytes": "5404",
+          "next_pc": "0x600019c"
+        },
+        {
+          "pc": "0x600019c",
+          "instruction_id": "call.xl",
+          "text": "call 418584",
+          "bytes": "80ff18630600",
+          "next_pc": "0x60664ba"
+        },
+        {
+          "pc": "0x60664ba",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x60664bc"
+        },
+        {
+          "pc": "0x60664bc",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "bytes": "4020",
+          "next_pc": "0x60664be"
+        },
+        {
+          "pc": "0x60664be",
+          "instruction_id": "li.u32",
+          "text": "r1 = 15909148",
+          "bytes": "c1ff1cc1f200",
+          "next_pc": "0x60664c4"
+        },
+        {
+          "pc": "0x60664c4",
+          "instruction_id": "st.w",
+          "text": "[r1+0] = r0",
+          "bytes": "9060"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0xf2c11c",
+          "0x0",
+          "0x60a860c",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x123840",
+        "rets": "0x60001a2",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10720,
+        "read": 1,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "7d3fee2473efae6f827af42253bace79df6e95117d15fdf607a9ee5b7713841c"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "6599c29e68b245d79da584442d3e168d331b3c4f764f2feea0c13d29a43dfa43",
+          "bytes_with_unknowns": "015a0200"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 80,
+          "sha256": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8"
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 80
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0xf65f",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a01",
+          "sp": "0x123840"
+        }
+      ],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "retained_invalid",
+      "entry": "0x6000100",
+      "completed_steps": 17250,
+      "stop_pc": "0x60664c4",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xf2c11c",
+        "size": 4,
+        "value_bytes": "00000000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 1,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd0",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd4",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "bc080106",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "a2010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108bc"
+        },
+        {
+          "pc": "0x60108bc",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "bytes": "5404",
+          "next_pc": "0x600019c"
+        },
+        {
+          "pc": "0x600019c",
+          "instruction_id": "call.xl",
+          "text": "call 418584",
+          "bytes": "80ff18630600",
+          "next_pc": "0x60664ba"
+        },
+        {
+          "pc": "0x60664ba",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x60664bc"
+        },
+        {
+          "pc": "0x60664bc",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "bytes": "4020",
+          "next_pc": "0x60664be"
+        },
+        {
+          "pc": "0x60664be",
+          "instruction_id": "li.u32",
+          "text": "r1 = 15909148",
+          "bytes": "c1ff1cc1f200",
+          "next_pc": "0x60664c4"
+        },
+        {
+          "pc": "0x60664c4",
+          "instruction_id": "st.w",
+          "text": "[r1+0] = r0",
+          "bytes": "9060"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0xf2c11c",
+          "0x0",
+          "0x60a860c",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x123840",
+        "rets": "0x60001a2",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10720,
+        "read": 1,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "39a97bf87892438f3c0d6213b3973902e294b1d1148fbc9719308e4381ba9490"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "3d2a53006e16337142905466aaf42d7e2aa434fa2130fc629d4ae57c9ce120b1",
+          "bytes_with_unknowns": "005a0200"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 80,
+          "sha256": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8"
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 80
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0xf65f",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "retained_valid_alt_icfg",
+      "entry": "0x6000100",
+      "completed_steps": 17251,
+      "stop_pc": "0x60664c4",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xf2c11c",
+        "size": 4,
+        "value_bytes": "00000000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 17368832,
+          "irq_repeat_return": true,
+          "update_repeat": true
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 1,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd0",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd4",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "bc080106",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "a2010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108bc"
+        },
+        {
+          "pc": "0x60108bc",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "bytes": "5404",
+          "next_pc": "0x600019c"
+        },
+        {
+          "pc": "0x600019c",
+          "instruction_id": "call.xl",
+          "text": "call 418584",
+          "bytes": "80ff18630600",
+          "next_pc": "0x60664ba"
+        },
+        {
+          "pc": "0x60664ba",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x60664bc"
+        },
+        {
+          "pc": "0x60664bc",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "bytes": "4020",
+          "next_pc": "0x60664be"
+        },
+        {
+          "pc": "0x60664be",
+          "instruction_id": "li.u32",
+          "text": "r1 = 15909148",
+          "bytes": "c1ff1cc1f200",
+          "next_pc": "0x60664c4"
+        },
+        {
+          "pc": "0x60664c4",
+          "instruction_id": "st.w",
+          "text": "[r1+0] = r0",
+          "bytes": "9060"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0xf2c11c",
+          "0x0",
+          "0x60a860c",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x123840",
+        "rets": "0x60001a2",
+        "icfg": "0x1090400"
+      },
+      "memory_event_counts": {
+        "write": 10720,
+        "read": 1,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "7d3fee2473efae6f827af42253bace79df6e95117d15fdf607a9ee5b7713841c"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "6599c29e68b245d79da584442d3e168d331b3c4f764f2feea0c13d29a43dfa43",
+          "bytes_with_unknowns": "015a0200"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 80,
+          "sha256": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8"
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 80
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x1090400",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x1090400",
+          "r0": "0xf65f",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x1090400",
+          "r0": "0x5a01",
+          "sp": "0x123840"
+        }
+      ],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "retained_valid_chunk7",
+      "entry": "0x6000100",
+      "completed_steps": 20297,
+      "stop_pc": "0x60664c4",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xf2c11c",
+        "size": 4,
+        "value_bytes": "00000000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "counterfactual REP chunks of 7; not verified BR28 behaviour",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rep_chunk": 7
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 1526,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 1,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd0",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd4",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "bc080106",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "a2010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108bc"
+        },
+        {
+          "pc": "0x60108bc",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "bytes": "5404",
+          "next_pc": "0x600019c"
+        },
+        {
+          "pc": "0x600019c",
+          "instruction_id": "call.xl",
+          "text": "call 418584",
+          "bytes": "80ff18630600",
+          "next_pc": "0x60664ba"
+        },
+        {
+          "pc": "0x60664ba",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x60664bc"
+        },
+        {
+          "pc": "0x60664bc",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "bytes": "4020",
+          "next_pc": "0x60664be"
+        },
+        {
+          "pc": "0x60664be",
+          "instruction_id": "li.u32",
+          "text": "r1 = 15909148",
+          "bytes": "c1ff1cc1f200",
+          "next_pc": "0x60664c4"
+        },
+        {
+          "pc": "0x60664c4",
+          "instruction_id": "st.w",
+          "text": "[r1+0] = r0",
+          "bytes": "9060"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0xf2c11c",
+          "0x0",
+          "0x60a860c",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x123840",
+        "rets": "0x60001a2",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10720,
+        "read": 1,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "7d3fee2473efae6f827af42253bace79df6e95117d15fdf607a9ee5b7713841c"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "6599c29e68b245d79da584442d3e168d331b3c4f764f2feea0c13d29a43dfa43",
+          "bytes_with_unknowns": "015a0200"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 80,
+          "sha256": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8"
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 80
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0xf65f",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a01",
+          "sp": "0x123840"
+        }
+      ],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "retained_valid_chunk256",
+      "entry": "0x6000100",
+      "completed_steps": 17331,
+      "stop_pc": "0x60664c4",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xf2c11c",
+        "size": 4,
+        "value_bytes": "00000000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": "0x1",
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false
+        },
+        "nonzero_rep_counts": "counterfactual REP chunks of 256; not verified BR28 behaviour",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rep_chunk": 256
+        }
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 43,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 1,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd0",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd4",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "bc080106",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "a2010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "bytes": "9205",
+          "next_pc": "0x60108bc"
+        },
+        {
+          "pc": "0x60108bc",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "bytes": "5404",
+          "next_pc": "0x600019c"
+        },
+        {
+          "pc": "0x600019c",
+          "instruction_id": "call.xl",
+          "text": "call 418584",
+          "bytes": "80ff18630600",
+          "next_pc": "0x60664ba"
+        },
+        {
+          "pc": "0x60664ba",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "bytes": "1004",
+          "next_pc": "0x60664bc"
+        },
+        {
+          "pc": "0x60664bc",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "bytes": "4020",
+          "next_pc": "0x60664be"
+        },
+        {
+          "pc": "0x60664be",
+          "instruction_id": "li.u32",
+          "text": "r1 = 15909148",
+          "bytes": "c1ff1cc1f200",
+          "next_pc": "0x60664c4"
+        },
+        {
+          "pc": "0x60664c4",
+          "instruction_id": "st.w",
+          "text": "[r1+0] = r0",
+          "bytes": "9060"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0xf2c11c",
+          "0x0",
+          "0x60a860c",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x123840",
+        "rets": "0x60001a2",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10720,
+        "read": 1,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "7d3fee2473efae6f827af42253bace79df6e95117d15fdf607a9ee5b7713841c"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "6599c29e68b245d79da584442d3e168d331b3c4f764f2feea0c13d29a43dfa43",
+          "bytes_with_unknowns": "015a0200"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 80,
+          "sha256": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8"
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 80
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0xf65f",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a01",
+          "sp": "0x123840"
+        }
+      ],
+      "phase": "application-entry prefix"
+    },
+    {
+      "name": "isolated_setup_cli_strict",
+      "entry": "0x6034fea",
+      "completed_steps": 10,
+      "stop_pc": "0x12b55c",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "cli"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false,
+          "isolated_phase": "setup_arch only; memory seeded from known initializer outputs, not contiguous startup"
+        },
+        "diagnostics": {
+          "entry_pc": 100880362,
+          "initial_sp": 1194048,
+          "icfg_initial": 0,
+          "adapt_icfg": true,
+          "irq_repeat_return": true
+        }
+      },
+      "instruction_adapters": {},
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123828",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12382c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12381c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123820",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "f44f0306",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6034fea",
+          "instruction_id": "push.rets_rl",
+          "text": "[--sp] = {rets, r8-r4}",
+          "bytes": "7804",
+          "next_pc": "0x6034fec"
+        },
+        {
+          "pc": "0x6034fec",
+          "instruction_id": "li.u8",
+          "text": "r0 = 4",
+          "bytes": "4024",
+          "next_pc": "0x6034fee"
+        },
+        {
+          "pc": "0x6034fee",
+          "instruction_id": "call.xl",
+          "text": "call 200626",
+          "bytes": "80ffb20f0300",
+          "next_pc": "0x6065fa6"
+        },
+        {
+          "pc": "0x6065fa6",
+          "instruction_id": "push.rets_rl",
+          "text": "[--sp] = {rets, r5, r4}",
+          "bytes": "7504",
+          "next_pc": "0x6065fa8"
+        },
+        {
+          "pc": "0x6065fa8",
+          "instruction_id": "lsr.rri",
+          "text": "r1 = r0 >> 3",
+          "bytes": "81a3",
+          "next_pc": "0x6065faa"
+        },
+        {
+          "pc": "0x6065faa",
+          "instruction_id": "li.u32",
+          "text": "r4 = 16769280",
+          "bytes": "c4ff00e1ff00",
+          "next_pc": "0x6065fb0"
+        },
+        {
+          "pc": "0x6065fb0",
+          "instruction_id": "insert.rrii",
+          "text": "r4 <= insert(r1, p:2, l:5)",
+          "bytes": "a4e11411",
+          "next_pc": "0x6065fb4"
+        },
+        {
+          "pc": "0x6065fb4",
+          "instruction_id": "lsl.rri",
+          "text": "r0 = r0 << 2",
+          "bytes": "00a2",
+          "next_pc": "0x6065fb6"
+        },
+        {
+          "pc": "0x6065fb6",
+          "instruction_id": "and.modimm.rri",
+          "text": "r5 = r0 & 0x1C",
+          "bytes": "65e11c00",
+          "next_pc": "0x6065fba"
+        },
+        {
+          "pc": "0x6065fba",
+          "instruction_id": "call.xl",
+          "text": "call -99854948",
+          "bytes": "80ff9c550cfa",
+          "next_pc": "0x12b55c"
+        },
+        {
+          "pc": "0x12b55c",
+          "instruction_id": "cli",
+          "text": "cli",
+          "bytes": "6000"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x10",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0xffe100",
+          "0x10",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12381c",
+        "ssp": "0x0",
+        "rets": "0x6065fc0",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 9
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+          "bytes_with_unknowns": "00000000"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 0
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 0
+        }
+      },
+      "milestones": [],
+      "phase": "isolated setup_arch"
+    },
+    {
+      "name": "isolated_setup_cli_visible",
+      "entry": "0x6034fea",
+      "completed_steps": 15,
+      "stop_pc": "0x12b56c",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "access": "write",
+        "address": "0xffe1a8",
+        "size": 4,
+        "value_bytes": "06000000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "pll0_bit0_set_is_hypothesis": true,
+          "maskrom_executed": false,
+          "isolated_phase": "setup_arch only; memory seeded from known initializer outputs, not contiguous startup"
+        },
+        "diagnostics": {
+          "entry_pc": 100880362,
+          "initial_sp": 1194048,
+          "icfg_initial": 0,
+          "adapt_icfg": true,
+          "irq_repeat_return": true,
+          "visible_cli": true
+        }
+      },
+      "instruction_adapters": {
+        "cli_sti_visible_bit9_only": 1,
+        "core0_visible_cnum": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123828",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12382c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12381c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123820",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "f44f0306",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x0"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6065fa8",
+          "instruction_id": "lsr.rri",
+          "text": "r1 = r0 >> 3",
+          "bytes": "81a3",
+          "next_pc": "0x6065faa"
+        },
+        {
+          "pc": "0x6065faa",
+          "instruction_id": "li.u32",
+          "text": "r4 = 16769280",
+          "bytes": "c4ff00e1ff00",
+          "next_pc": "0x6065fb0"
+        },
+        {
+          "pc": "0x6065fb0",
+          "instruction_id": "insert.rrii",
+          "text": "r4 <= insert(r1, p:2, l:5)",
+          "bytes": "a4e11411",
+          "next_pc": "0x6065fb4"
+        },
+        {
+          "pc": "0x6065fb4",
+          "instruction_id": "lsl.rri",
+          "text": "r0 = r0 << 2",
+          "bytes": "00a2",
+          "next_pc": "0x6065fb6"
+        },
+        {
+          "pc": "0x6065fb6",
+          "instruction_id": "and.modimm.rri",
+          "text": "r5 = r0 & 0x1C",
+          "bytes": "65e11c00",
+          "next_pc": "0x6065fba"
+        },
+        {
+          "pc": "0x6065fba",
+          "instruction_id": "call.xl",
+          "text": "call -99854948",
+          "bytes": "80ff9c550cfa",
+          "next_pc": "0x12b55c"
+        },
+        {
+          "pc": "0x12b55c",
+          "instruction_id": "cli",
+          "text": "cli",
+          "bytes": "6000",
+          "next_pc": "0x12b55e"
+        },
+        {
+          "pc": "0x12b55e",
+          "instruction_id": "mov.r_sr",
+          "text": "r1 = cnum",
+          "bytes": "64e00016",
+          "next_pc": "0x12b562"
+        },
+        {
+          "pc": "0x12b562",
+          "instruction_id": "lsl.rri",
+          "text": "r0 = r1 << 11",
+          "bytes": "10ab",
+          "next_pc": "0x12b564"
+        },
+        {
+          "pc": "0x12b564",
+          "instruction_id": "li.u32",
+          "text": "r2 = 4192362",
+          "bytes": "c2ff6af83f00",
+          "next_pc": "0x12b56a"
+        },
+        {
+          "pc": "0x12b56a",
+          "instruction_id": "li.u8",
+          "text": "r3 = 6",
+          "bytes": "4326",
+          "next_pc": "0x12b56c"
+        },
+        {
+          "pc": "0x12b56c",
+          "instruction_id": "st.w.idxs",
+          "text": "[r0+r2<<2] = r3",
+          "bytes": "d8ec0b32"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0x0",
+          "0x3ff86a",
+          "0x6",
+          "0xffe100",
+          "0x10",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12381c",
+        "ssp": "0x0",
+        "rets": "0x6065fc0",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 9,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "6093aaccf45ae08bda2a08bf9f169e854fddd2be2f6009a3aab87d0e94ae59d3"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "update_result": {
+          "address": "0x126718",
+          "size": 4,
+          "initialized_bytes": 4,
+          "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+          "bytes_with_unknowns": "00000000"
+        },
+        "retained_update_clear": {
+          "address": "0x19fb88",
+          "size": 80,
+          "initialized_bytes": 0
+        },
+        "retained_window": {
+          "address": "0x19fb80",
+          "size": 128,
+          "initialized_bytes": 0
+        }
+      },
+      "milestones": [],
+      "phase": "isolated setup_arch"
+    }
+  ],
+  "boundary_regression_passed": true,
+  "qcy_software_crc_matches_stdlib": true,
+  "rep_chunk_and_icfg_sensitivity_memory_equal": true,
+  "reference_startup_match": {
+    "object_sha256": "5cc9416001cf5e7114e53ceda88ae023787a0d76a1884bb142ef52d26bb9bc14",
+    "startup_bytes": 170,
+    "relocations": [
+      {
+        "instruction": "0x6000100",
+        "reference_symbol": "_cpu0_stack",
+        "resolved_qcy_value": "0x123840",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000106",
+        "reference_symbol": "_cpu0_stack",
+        "resolved_qcy_value": "0x123840",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000110",
+        "reference_symbol": "boot_clk_init",
+        "resolved_qcy_value": "0x6035616",
+        "relocation_type": 4
+      },
+      {
+        "instruction": "0x600011a",
+        "reference_symbol": "boot_info_init",
+        "resolved_qcy_value": "0x60664d8",
+        "relocation_type": 4
+      },
+      {
+        "instruction": "0x6000120",
+        "reference_symbol": "bss_begin",
+        "resolved_qcy_value": "0x125320",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000128",
+        "reference_symbol": "bss_size",
+        "resolved_qcy_value": "0x530c",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000136",
+        "reference_symbol": "data_addr",
+        "resolved_qcy_value": "0x124840",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x600013c",
+        "reference_symbol": "data_begin",
+        "resolved_qcy_value": "0x60c3338",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000142",
+        "reference_symbol": "data_size",
+        "resolved_qcy_value": "0xae0",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000152",
+        "reference_symbol": "data_code_addr",
+        "resolved_qcy_value": "0x12a640",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000158",
+        "reference_symbol": "data_code_begin",
+        "resolved_qcy_value": "0x60c3e18",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x600015e",
+        "reference_symbol": "data_code_size",
+        "resolved_qcy_value": "0x48d4",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x600016e",
+        "reference_symbol": "psr_data_code_addr",
+        "resolved_qcy_value": "0x2000000",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000174",
+        "reference_symbol": "psr_data_code_begin",
+        "resolved_qcy_value": "0x60cdc9e",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x600017a",
+        "reference_symbol": "psr_data_code_size",
+        "resolved_qcy_value": "0x0",
+        "relocation_type": 5
+      },
+      {
+        "instruction": "0x6000196",
+        "reference_symbol": "update_result_get",
+        "resolved_qcy_value": "0x6010882",
+        "relocation_type": 4
+      },
+      {
+        "instruction": "0x600019c",
+        "reference_symbol": "maskrom_init",
+        "resolved_qcy_value": "0x60664ba",
+        "relocation_type": 4
+      },
+      {
+        "instruction": "0x60001a2",
+        "reference_symbol": "setup_arch",
+        "resolved_qcy_value": "0x6034fea",
+        "relocation_type": 5
+      }
+    ],
+    "non_relocated_bytes_checked": 98,
+    "all_non_relocated_bytes_equal": true,
+    "irq_disabled_helper": {
+      "reference_offset": "0x34",
+      "qcy_runtime": "0x12cb08",
+      "bytes": 36,
+      "non_relocated_bytes_checked": 32,
+      "all_non_relocated_bytes_equal": true
+    },
+    "meaning": "matching startup structure and relocation identities; not proof of exact QCY SDK source"
+  },
+  "public_trace_limits": {
+    "last_instructions": 12,
+    "memory_events": 8
+  }
+}

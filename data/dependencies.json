@@ -19,17 +19,31 @@
     "volume_node.c": "87009fbd59538421c5a4b91a28ff19d50c2e82a2e49f931276d0753a70eadb04",
     "volume_node.h": "57fd6b6c15de9b7c7b5c3f8147953b411c49adfce866bf4628995d2151534c9b",
     "br28.h": "111e29ea8d3d72e504a221caf035552250dcda959d4b79e8e1cd13623a6aad01",
+    "csfr.h": "c548d6367931098ff1c6ca4c63ba614899ff04d72b951472fdcdf876820986a1",
     "maskrom_stubs.ld": "331e973cbd71d5f9add4b77a796036f88e8dad93f940b70bb82398b7748a4547"
   },
   "boot_reference_files": {
     "SDK/interface/system/boot.h": {"bytes": 1189, "sha256": "002046f3f94f30b5a288d7611eb522fadb167320ff09f87783f39950305eec37"},
+    "SDK/interface/driver/cpu/br28/asm/csfr.h": {"bytes": 12798, "sha256": "c548d6367931098ff1c6ca4c63ba614899ff04d72b951472fdcdf876820986a1"},
     "SDK/cpu/br28/liba/cpu.a": {"bytes": 2405408, "sha256": "8e3d3f25067d150b42d1c8d3b7988a7b735a216cbebd68f5ad95d25d293af96b"},
     "SDK/cpu/br28/liba/system.a": {"bytes": 781702, "sha256": "0826d426af9e204309396cf8e8fd9d3d9678b66b8a805becfb14092af017c8f9"}
   },
   "boot_reference_objects": {
     "startup.S.o": {"archive": "cpu.a", "sha256": "5cc9416001cf5e7114e53ceda88ae023787a0d76a1884bb142ef52d26bb9bc14"},
     "clock.c.o": {"archive": "cpu.a", "sha256": "0647578227fc1d87fa2d7f07b98abc1936e2f9e953ed15526df0d1d31c53ea19"},
-    "boot.c.o": {"archive": "system.a", "sha256": "bfeb6d1c9501561a303fa0265113acf28041a065294ad727d6beba6b402dfe65"}
+    "boot.c.o": {"archive": "system.a", "sha256": "bfeb6d1c9501561a303fa0265113acf28041a065294ad727d6beba6b402dfe65"},
+    "crc16.c.o": {"archive": "cpu.a", "sha256": "52640b05ced5d7c3a354f078f4849eb8a5ee5e6a983d88ce11fa619aed32db70"},
+    "os_cpu_c_v2.c.o": {"archive": "system.a", "sha256": "86581948e072da8f901a37e9c888fa22b53b19557344287a0258dee00e2436a0"}
+  },
+  "qemu_repeat_policy_reference": {
+    "url": "https://github.com/simonjohansson/fm1-emulator",
+    "commit": "519a13b879d744f5c05bfe3c4e5d4e04d8d4ae34",
+    "use": "source inspection of zero-count policy; no code copied/linked and no BR28 hardware proof",
+    "source_sha256": {
+      "src/target/pi32v2/translate.c": "9dda833ca1a52ac61d9c34f62863ee934b736ea23d82a145edb3fc1b2fc0e864",
+      "src/target/pi32v2/helper.c": "2427024664f0896d0ee040181aae6df75d2838d0fea8cbdcd6668cc1b1464fe5",
+      "tests/test_repeat.py": "363cf3eeb61ac77d466b7a58774cb79d2d8f0882d49b4f64260fe2ea72e36bd4"
+    }
   },
   "androidx_core": {
     "version": "1.7.0",

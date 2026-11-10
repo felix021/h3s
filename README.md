@@ -10,6 +10,8 @@
 
 [第二轮启动探索](docs/boot-handoff.md) 已核对交接结构；在明确的 PLL／测试参数／循环模型下执行16077次step，完成BSS、data和RAM代码初始化摘要验证，停在未验证的零计数`rep`。尚未进入RTOS，真实ROM／PLL和交接初态仍缺失；[第一轮](docs/boot-exploration.md)结果保留。
 
+[离线仿真边界已收敛](docs/simulation-boundaries.md)：13组严格／假设／隔离用例覆盖ICFG、保留RAM、实际CRC和升级结果处理；连续假设路径停在ROM初始化前的控制写，隔离`setup_arch`停在IPMASK写。完整启动需要ROM和中断／控制寄存器模型，本轮未刷机。
+
 ## 下载固件
 
 原始固件和当前版本均在 **[firmware Release](https://github.com/felix021/h3s/releases/tag/firmware)**，不放进 Git 历史。
@@ -124,6 +126,7 @@ bash tools/android-query/build.sh
 | [docs/preflash-emulation.md](docs/preflash-emulation.md) | 杰理资料和社区模拟器、pi32v2 实际指令回放、r2 拒绝回归、API 桩和整机边界 |
 | [docs/boot-exploration.md](docs/boot-exploration.md) | 从应用入口做有界试跑，PLL0／ROM／交接参数阻塞点及模拟器适配差异 |
 | [docs/boot-handoff.md](docs/boot-handoff.md) | 区分两种交接对象、参考库IR分析、启动内存摘要、REP边界和本机检查 |
+| [docs/simulation-boundaries.md](docs/simulation-boundaries.md) | 探索结论、13组回归、CRC／保留RAM、控制写／ROM／IPMASK实际边界 |
 | [docs/ota.md](docs/ota.md) | E1～E8、前台服务、MTU 分包、队列、回连、确认与成功条件 |
 | [docs/stream-volume.md](docs/stream-volume.md) | 两个音量节点、表结构、stream 流程标识和听感未确认的原因范围 |
 | [docs/validation.md](docs/validation.md) | 四次实际传输、两类失败、修复、成功与用户反馈，哪些结论不能推出 |

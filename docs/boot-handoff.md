@@ -1,5 +1,7 @@
 # 启动探索第二轮：交接结构和内存初始化
 
+后续已完成[边界探索](simulation-boundaries.md)：保留本轮严格停止，新增显式假设路径继续执行升级结果和CRC处理，并定位控制写／ROM和IPMASK边界。下文的零计数停止结果不变。
+
 2026-11-10，已从参考 SDK 的头文件、库中的 LLVM bitcode，以及 QCY 的真实指令交叉确定启动交接结构。在明确的 PLL／测试参数／非零循环模型下，执行 **16077 次 step**，完成三段启动内存初始化并核对摘要。现在停止在 `0x06000182` 的零计数 `rep`，尚未进入 RTOS、蓝牙或音频硬件初始化，也没有执行内部 ROM。
 
 工具：[tools/probe_boot_handoff.py](../tools/probe_boot_handoff.py)，结果：[evidence/boot-handoff.json](../evidence/boot-handoff.json)。[第一轮](boot-exploration.md)的五个结果保留，并继续逐字节复现原报告。全过程离线，没有修改耳机或固件。

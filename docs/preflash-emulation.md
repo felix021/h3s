@@ -8,6 +8,8 @@
 
 [第二轮](boot-handoff.md)在明确的交接／PLL／循环假设下完成BSS、data和RAM代码初始化摘要验证，停在零计数`rep`；尚未进入RTOS或模拟真实ROM。
 
+[后续边界探索](simulation-boundaries.md)已用13组用例区分严格停止、显式假设和隔离调用，定位到ROM初始化前的控制写及中断IPMASK写；没有跳过控制副作用或用ROM空函数制造启动成功。
+
 ## 杰理资料和现成模拟器
 
 本机使用的固件和参考 SDK 指向 AC701N / BR28。杰理官方 [Bootloader 芯片映射](https://doc.zh-jieli.com/SDKWiki/master/Jieli-Tech/gitee-repos-Other/2-fw-bootloader/2-1-bootloader-architecture-chip-support.html) 明确区分 AC701N→br28、AC791N→wl82。两者的 Flash、时钟、引脚和加密适配不同，不能直接把其他板子的模拟器当成 H3S。
