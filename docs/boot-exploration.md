@@ -1,6 +1,6 @@
 # 应用入口启动探索：第一轮
 
-后续已[取得CPU ROM窗口](rom-read.md)，尚未接入模拟器；本页ROM缺失与停止位置保留为第一轮历史结果。
+后续已[取得CPU ROM窗口](rom-read.md)，并[可选接入离线执行](rom-execution.md)；本页ROM缺失与停止位置保留为第一轮历史结果，默认回归不变。
 
 后续：[第二轮交接结构和内存初始化](boot-handoff.md)已区分`BOOT_DEVICE_INFO`与PLL的`boot_arg_list`，第一轮的R0候选不再作为有效交接模型。在明确假设下完成三段内存回放，尚未进入RTOS。下文保留第一轮的原始结果。
 

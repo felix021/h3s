@@ -22,6 +22,13 @@ PLL=0x00fd4600
 BOOT_ARGS=0x0019fc28
 STACK_TOP=0x00123840
 SDK_PIN='67328f4741c69993c88e504c67377b196c724f97'
+ROM_SHA='7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793'
+ROM_RETURN=0x01c70000  # simulator sentinel, never fetched as real code
+
+
+def check_rom(rom):
+    require(len(rom)==0x20000 and hashlib.sha256(rom).hexdigest()==ROM_SHA,
+            'requires exact privately acquired 128KiB ROM window')
 
 
 class Blocked(RuntimeError):
@@ -44,9 +51,12 @@ def application(path):
 
 
 def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
-            handoff=None,startup_loops=False,diagnostics=None):
+            handoff=None,startup_loops=False,diagnostics=None,rom=None):
+    if rom is not None:
+        check_rom(rom)
     events=[]
     adapters=Counter()
+    rom_steps=Counter()
     event_counts=Counter()
     milestones=[]
 
@@ -77,6 +87,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     'invalid memory request')
             if ENTRY<=address and address+size<=ENTRY+len(app):
                 return app[address-ENTRY:address-ENTRY+size]
+            if rom is not None and 0<=address and address+size<=len(rom):
+                return rom[address:address+size]
             for base,data in handoff['readonly'] if handoff else ():
                 if base<=address and address+size<=base+len(data):
                     return data[address-base:address-base+size]
@@ -97,6 +109,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                           reference_sdk_register='JL_PLL0.CON0' if address==PLL else None)
 
         def write(self,address,data):
+            if rom is not None and address<len(rom) and address+len(data)>0:
+                raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data))
             region=self.region(address,len(data))
             if not region:
                 details={'value_bytes':data.hex()} if diagnostics else {}
@@ -114,6 +128,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             old=self.mem.operation
             self.mem.operation='fetch'
             try:
+                if rom is not None and len(rom)-6<pc<len(rom):
+                    # Upstream asks for6B even for a2B/4B instruction. Decode
+                    # available tail bytes without reading/padding beyond ROM.
+                    if pc not in self.cache:
+                        got=module.codec.decode(self.tab,self.mem.read(pc,len(rom)-pc))
+                        if got is None:
+                            raise Blocked('truncated_rom_instruction_fetch',address=hex(pc))
+                        self.cache[pc]=got
+                    return self.cache[pc]
                 return super().decode(pc)
             finally:
                 self.mem.operation=old
@@ -122,6 +145,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             before_pc=self.pc
             helper_return=bool(self.repeat and self.repeat.get('allow_helper_return') and self.pc==0x0012cb2a)
             self.step_body()
+            if rom is not None and 0<=before_pc<len(rom):
+                rom_steps['completed_model_steps_in_rom']+=1
             if diagnostics and before_pc in (0x06000192,0x06000f08,0x060108bc):
                 kind={0x06000192:'startup_icfg_mask_applied',0x06000f08:'software_crc_result',
                       0x060108bc:'update_result_get_return'}[before_pc]
@@ -143,6 +168,50 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
+            if rom is not None and diagnostics and diagnostics.get('rom_exact_stores') and self.pc==0xc2d6:
+                require(insn.id=='st.w.modimm' and raw=={'r':3,'n':4,'m':0},'ROM PLL first store changed')
+                # Reject the actual MMIO write, rather than an upstream
+                # read/merge of the old destination that is not a guest load.
+                self.mem.write((self.R[3]+16)&0xffffffff,bytes(4))
+                raise AssertionError('unknown PLL control write must never be accepted')
+            if rom is not None and diagnostics and diagnostics.get('rom_memset_rep') and self.pc in (0x4242,0x424c):
+                register=4 if self.pc==0x4242 else 2
+                require(insn.id=='rep' and raw=={'n':0,'r':register} and self.repeat is None,
+                        'ROM memset REP form changed')
+                count=self.R[register]
+                require(0<=count<=10000,'unexpected ROM memset count')
+                if count==0:
+                    if not diagnostics.get('rom_zero_rep_skip'):
+                        raise Blocked('unverified_zero_count_rep',instruction_id=insn.id,
+                                      note='ROM memset tail; BR28 count=0 semantics unmeasured')
+                    self.pc+=size+2
+                    adapters['rom_zero_rep_skip_hypothesis']+=1
+                else:
+                    self.repeat={'start':self.pc+size,'end':self.pc+size+2,
+                                 'register':register,'remaining':count}
+                    self.pc+=size
+                    adapters['rom_nonzero_rep_countdown_hypothesis']+=1
+                self.steps+=1
+                return
+            if rom is not None and diagnostics and diagnostics.get('rom_exact_stores') and self.pc in (0x4244,0x424e,0x45b0,0x45b8):
+                # Actual full-width stores do not architecturally load old RAM.
+                # Restrict the upstream bookkeeping workaround to verified sites.
+                if self.pc in (0x45b0,0x45b8):
+                    value_reg=4 if self.pc==0x45b0 else 5
+                    require(insn.id=='st.w' and raw=={'b':0,'n':0,'d':value_reg},'ROM pointer store changed')
+                    address=self.R[0];value=self.R[value_reg];width=4;increment=False
+                else:
+                    width=4 if self.pc==0x4244 else 1
+                    require(insn.id==('st.w.pin' if width==4 else 'st.b.pin') and
+                            raw=={'b':3,'d':1,'n':0},'ROM memset store changed')
+                    address=self.R[3];value=self.R[1];increment=True
+                require(self.after_then is None,'ROM store adapter cannot skip a conditional block')
+                self.mem.write(address,(value&((1<<(width*8))-1)).to_bytes(width,'little'))
+                if increment:self.R[3]=(address+width)&0xffffffff
+                self.pc+=size
+                self.steps+=1
+                adapters['rom_byte_exact_store']+=1
+                return
             if diagnostics and diagnostics.get('visible_cli') and insn.id in ('cli','cli.r','sti','sti.r'):
                 if not self.icfg_known:
                     raise Blocked('uninitialized_special_register',register='icfg')
@@ -307,6 +376,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     c.R[0]=r0
     c.sp=c.rets=c.icfg=0
     if diagnostics:
+        if 'initial_gprs' in diagnostics:
+            values=diagnostics['initial_gprs']
+            require(len(values)==16 and all(isinstance(v,int) and 0<=v<=0xffffffff for v in values),
+                    'diagnostic GPRs must contain16 unsigned words')
+            c.R=list(values)
+        if diagnostics.get('stop_on_rom_return'):
+            require(rom is not None,'ROM return sentinel requires an explicit ROM mapping')
+            c.rets=ROM_RETURN
         c.sp=diagnostics.get('initial_sp',0)
         c.icfg_known=diagnostics.get('icfg_initial') is not None
         if c.icfg_known:
@@ -315,6 +392,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     completed=0
     stop=None
     for _ in range(budget):
+        if diagnostics and diagnostics.get('stop_on_rom_return') and c.pc==ROM_RETURN:
+            stop={'kind':'isolated_function_return','sentinel':hex(ROM_RETURN)}
+            break
         row={'pc':hex(c.pc)}
         try:
             insn,raw,size=c.decode(c.pc)
@@ -341,7 +421,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         'stop':stop,'assumptions':{
             'cpu0_single_thread_no_interrupts':True,
             'unobserved_initial_gprs_flags_sp_rets_icfg':'zero placeholders, not a measured boot state',
-            'initial_r0':hex(r0),'r0_boot_args_pointer_is_hypothesis':r0==BOOT_ARGS,
+            'initial_r0':hex(diagnostics['initial_gprs'][0] if diagnostics and 'initial_gprs' in diagnostics else r0),'r0_boot_args_pointer_is_hypothesis':r0==BOOT_ARGS,
             'pll0_con0_read_hypothesis':hex(pll) if pll is not None else None,
             'writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map':True,
             'uninitialized_memory_reads_stop':True},
@@ -369,6 +449,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         result['assumptions']['diagnostics']=dict(diagnostics)
         result['assumptions']['unobserved_initial_gprs_flags_sp_rets_icfg']='zero placeholders except explicit diagnostic overrides; not a measured boot state'
         result['milestones']=milestones
+    if rom is not None:
+        result['rom_mapping']={'start':0,'end_exclusive':len(rom),'sha256':ROM_SHA,
+                               'readonly':True,'silicon_extent_not_established':True}
+        result['completed_model_steps_in_rom']=rom_steps['completed_model_steps_in_rom']
+        result['assumptions']['rom_rep_model']='strict unless explicitly selected nonzero countdown / zero skip hypothesis'
     return result
 
 

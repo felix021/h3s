@@ -1,6 +1,6 @@
 # 启动探索第二轮：交接结构和内存初始化
 
-后续已[取得CPU ROM窗口](rom-read.md)，包括真实`mask_init`／`_pll_init`；尚未接入模拟器。下文缺失ROM的描述和停止位置记录当时模型状态。
+后续已[取得CPU ROM窗口](rom-read.md)，包括真实`mask_init`／`_pll_init`；并[可选接入离线执行](rom-execution.md)。下文缺失ROM的描述和停止位置记录当时模型状态，默认回归不变。
 
 后续已完成[边界探索](simulation-boundaries.md)：保留本轮严格停止，新增显式假设路径继续执行升级结果和CRC处理，并定位控制写／ROM和IPMASK边界。下文的零计数停止结果不变。
 

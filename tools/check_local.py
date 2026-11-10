@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--fetch-inputs',action='store_true',help='download hash-pinned firmware and simulator if missing')
     parser.add_argument('--reproduce',action='store_true',help='also rebuild the three published firmware baselines offline')
     parser.add_argument('--android-build',action='store_true',help='also build the APK for a synthetic target; requires local SDK35/JDK')
+    parser.add_argument('--rom',type=Path,help='also run ROM execution probes with an explicitly supplied private ROM file')
     args=parser.parse_args()
 
     def run(*command,env=None):
@@ -32,6 +33,8 @@ def main():
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json')
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json')
+    if args.rom:
+        run(sys.executable,'tools/probe_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/rom-execution.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:
