@@ -1,0 +1,38 @@
+{
+  "status": "offline audit passed; NOT hardware validation",
+  "candidate_sha256": "c8dae5233678102aac152f0ff94952edea83c6eeca6afaf216db43226d0b6696",
+  "bytes": 1326848,
+  "new_crc_covered_app_bytes": 930245,
+  "payload_bytes": 337,
+  "whole_ufw_changed_bytes_vs_tested_image": 425,
+  "payload_sha256": "f4e9501e515a7f74e7114633ba9bc165d1da9b399481530a78be8663dbe0e49a",
+  "changed_plaintext_bytes_before_extension": 41,
+  "existing_resources_identical_to_tested_image": true,
+  "anc_two_state_table_preserved": true,
+  "hook_targets_and_resumes_verified": true,
+  "actual_disassembly_bytes_match_image": true,
+  "new_file": "eq_toggle.bin",
+  "device_verified": false,
+  "date": "2026-11-10",
+  "candidate_revision": "r2",
+  "candidate_filename": "H3S_0.1.1.8_tones_minus10dB_ANC_EQ_TOGGLE_EXPERIMENTAL.ufw",
+  "compiler": "Jieli clang 4.0.1, pi32v2 r3, jieli-linux-toolchains-20260730.1",
+  "clean_original_reproduction_passed": true,
+  "original_tone_anc_baseline_reproduction_passed": true,
+  "host_behavior_tests_passed": true,
+  "address_and_undefined_sanitizers_passed": true,
+  "wrong_gesture_0x82_draft_rejected": true,
+  "default_key_gesture_action_checked": [
+    7,
+    2,
+    7
+  ],
+  "source_sha256": {
+    "patch.c": "e12c26e20db9ecd823ac0a33226629e3ea5474baae4e55399cbede98efedb9a6",
+    "hooks.S": "769d40cea825b03c177a2d1d9605ee02285641c21146ab7ce3183311f8ac27ab",
+    "patch.ld": "798539d6b1cd44ba90df5000b30f33f7cbbbcb9f0bbfc0f7e35625309ac8bb6c",
+    "build.sh": "1ec61cf62ab2a76fc1e749f875b98e8a7cb735aa4628fe720c5d62b3e1bfdffe"
+  },
+  "no_device_writes": true,
+  "published_firmware_release_changed": false
+}

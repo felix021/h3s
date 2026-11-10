@@ -317,7 +317,7 @@ public class UpgradeService extends Service {
         // SDK may report completion immediately before queueing its final reboot command.
         if(attempt>=2 && queue.isEmpty() && !busy) {
             gate.succeed(); log("transport_totals","bytes="+sentBytes+" chunks="+chunks);
-            finish("SDK 报告完成；版本仍为 0.1.1.8，需实际验证 ANC 按键只切降噪/通透"); return;
+            finish("SDK 报告完成；需重连确认已恢复正常连接、声音和 ANC 两态"); return;
         }
         if(attempt>=12) { fail("SDK 完成后发送队列未清空"); return; }
         main.postDelayed(() -> drainSuccess(attempt+1),500);

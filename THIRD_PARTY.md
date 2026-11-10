@@ -26,3 +26,9 @@ quarkslab/ghidra-jieli派生于kagaimiq的处理器定义，本项目仅引用�
 原始固件、App和型号控制面板来源于QCY相关产品。本仓库提供用户要求保存的原始／修改固件附件、分析结果和复现代码，不声称拥有厂商原程序版权，也不对这些厂商材料另行授予软件许可。
 
 完整QCY APK和整棵反编译源码未纳入仓库。分析中的方法名、协议格式、地址与小型机器码片段用于说明实际研究结论；人工伪代码不是厂商原始源码。
+
+## jl-uboot-tool 与 USB RAM loader
+
+USB MSC/BR28协议参考Andrey Grigoryev (kagaimiq) 的 https://github.com/kagaimiq/jl-uboot-tool ，固定提交 `adb3f18889e88ac512ce0a3c4d8cc3d3cb30696a`，MIT许可。对应许可全文保存在 `tools/usb-recovery/UPSTREAM_LICENSE`，相关协议实现保留来源说明。
+
+BR28 RAM loader是该提交的 `data/loaderblobs/usb/br28loader.bin`，23552B、SHA256 `ab1b77eb73385aaa78ab769253b2af7ef63d0ade46f391bd7424cc598a40267c`。本仓库提供固定URL和摘要下载，不重新打包第三方二进制，也不把仓库级MIT声明泛化为拥有厂商二进制的版权。参考芯片SDK的USB入口来自固定JL701N提交；实际QCY机器码和设备响应另行核对。

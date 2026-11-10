@@ -4,7 +4,7 @@ package cn.felix021.h3squery;
 public final class UpgradeGate {
     public static final String SHA = "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b";
     public static final int EXPECTED_VERSION = 280;
-    public static final String DESCRIPTION = "ANC 按键只轮换降噪/通透；保留提示音 -10 dB 参数";
+    public static final String DESCRIPTION = "恢复已实测的 ANC 降噪/通透两态版本；移除 EQ 实验补丁";
     public static final int FILE_BYTES = 1326848;
     public static final long MAX_AGE_MS = 120000;
     public enum State { IDLE, PREPARING, PREPARED, RECHECKING, FLASHING, RECONNECTING, SUCCEEDED, FAILED }
@@ -23,7 +23,7 @@ public final class UpgradeGate {
         nonce = null; state = State.PREPARING;
     }
     public static void validate(Snapshot s, String sha, int bytes) {
-        if (!SHA.equals(sha) || bytes != FILE_BYTES) throw new IllegalStateException("文件不是已复核的 ANC 两态候选");
+        if (!SHA.equals(sha) || bytes != FILE_BYTES) throw new IllegalStateException("文件不是已验证的 ANC 两态恢复镜像");
         if (s == null || !DeviceConfig.ADDRESS.equals(s.address) || s.pid != 16764 || s.vid != 7250 || s.uid != 7250) throw new IllegalStateException("设备身份不匹配");
         if (s.version != EXPECTED_VERSION) throw new IllegalStateException("设备版本不是已查询的 0.1.1.8");
         if (!s.doubleBackup || s.needBootloader || s.mandatory) throw new IllegalStateException("仅支持本次确认的双备份正常模式");

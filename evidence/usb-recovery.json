@@ -1,0 +1,64 @@
+{
+  "date": "2026-11-10",
+  "scope": "one QCY H3S, exact known r2-to-b79 profile",
+  "normal_usb": {
+    "vid": "0x3654",
+    "pid": "0x4a55"
+  },
+  "rom_usb": {
+    "vid": "0x4c4a",
+    "pid": "0x3442",
+    "inquiry": [
+      "BR28",
+      "UBOOT1.00"
+    ],
+    "bulk_in": "0x81",
+    "bulk_out": "0x01"
+  },
+  "host_that_succeeded": "64-bit Linux userspace on rooted Android",
+  "mac_usb_accessory_allowed": true,
+  "mac_interface_open_succeeded": false,
+  "full_flash_bytes": 2097152,
+  "initial_independent_full_reads": 2,
+  "initial_backup_bytes_equal": true,
+  "bank_a": {
+    "boot_info": "0x2000",
+    "app": "0x2020",
+    "sequence_preserved": 2,
+    "app_matches_tested_anc_before_and_after": true
+  },
+  "bank_b": {
+    "boot_info": "0xee000",
+    "app": "0xee020",
+    "sequence_preserved": 3,
+    "before_app_matches_rejected_r2": true,
+    "after_app_matches_tested_anc": true
+  },
+  "restored_ufw_sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+  "physical_changed_bytes": 419,
+  "write_order": [
+    "0xf3000",
+    "0x113000",
+    "0x166000",
+    "0x1d0000",
+    "0x1d1000",
+    "0xee000"
+  ],
+  "erase_readback_ff_verified": true,
+  "per_sector_program_readback_verified": true,
+  "final_full_chip_bytes_equal_target": true,
+  "bank_header_plain_cipher_crcs_verified": true,
+  "bank_a_untouched": true,
+  "latest_vm_preserved": true,
+  "all_bytes_from_1d2000_unchanged": true,
+  "chip_erase_used": false,
+  "otp_write_used": false,
+  "private_backups_published": false,
+  "bluetooth_and_version_queries_restored": true,
+  "version": "V_0.1.1.8",
+  "pid": 16764,
+  "user_confirmed_bluetooth_playback": true,
+  "mode_key_regression": "user reports no response; unresolved",
+  "public_cli_reflashed_device": false,
+  "public_planner_reproduced_historical_target_exactly": true
+}

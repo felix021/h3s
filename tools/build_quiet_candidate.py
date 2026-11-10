@@ -14,7 +14,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/jl-misctools/firmware"))
-from jltech.cipher import jl_enc_cipher
+from jltech.cipher import jl_enc_cipher, jl_sfc_cipher
 from jltech.crc import jl_crc16
 
 SOURCE_SHA = "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af"
@@ -53,10 +53,14 @@ def main():
     p.add_argument("--attenuation-db", type=int, default=10, choices=range(0, 31))
     p.add_argument("--anc-cycle-two-state", action="store_true",
                    help="将已逆向的按键轮转表由 OFF/TRANS/ON 改为 ON/TRANS/ON；App 直接选模式不变")
+    p.add_argument("--eq-toggle-elf", type=Path,
+                   help="实验性 EQ 双击开关补丁 ELF；必须同时启用 ANC 两态选项")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
     args = p.parse_args()
+    if args.eq_toggle_elf and not args.anc_cycle_two_state:
+        p.error('--eq-toggle-elf requires --anc-cycle-two-state')
     source = args.source.read_bytes()
     if hashlib.sha256(source).hexdigest() != SOURCE_SHA:
         raise ValueError("原包摘要不匹配")
@@ -139,6 +143,10 @@ def main():
                      "code_bytes_changed": 0, "table_bytes_changed": 1,
                      "direct_app_selection_modified": False,
                      "evidence": "analysis/anc-cycle-20261109/", "device_verified": False}
+    eq_toggle = None
+    if args.eq_toggle_elf:
+        from eq_toggle_image import apply_eq_patch
+        eq_toggle = apply_eq_patch(flash_plain, args.eq_toggle_elf)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -152,6 +160,14 @@ def main():
         if old != new:
             result[flash_pos + offset] ^= old ^ new
             changed_offsets.append(offset)
+    if eq_toggle:
+        # Unpacked bytes beyond the old JLFS end are raw padding, not decoded
+        # SFC plaintext. Encode the extended region explicitly, including its
+        # partial original last cipher block, using the original app-area base.
+        extended_end = eq_toggle['new_app_end']
+        encrypted_app = bytearray(flash_plain[0x2020:extended_end])
+        jl_sfc_cipher(encrypted_app, 0, len(encrypted_app), 0, 0x3496)
+        result[flash_pos + 0x2020:flash_pos + extended_end] = encrypted_app
     # 双备份 boot-info 在 app JLFS 前另有一层总校验，使用 0xffff 独立编码，
     # 不属于上面从 0x2020 开始的 SFC 区。首次候选遗漏了这一层。
     boot_pos, app_pos = 0x2000, 0x2020
@@ -166,6 +182,10 @@ def main():
         raise ValueError("原始双备份明文总体 CRC 不匹配")
     if jl_crc16(source[flash_pos + app_pos:flash_pos + app_end]) != cipher_crc:
         raise ValueError("原始双备份密文总体 CRC 不匹配")
+    if eq_toggle:
+        app_end = eq_toggle['new_app_end']
+        app_size = app_end - app_pos
+        struct.pack_into('<I', boot, 8, app_size)
     new_plain_crc = jl_crc16(flash_plain[app_pos:app_end])
     new_cipher_crc = jl_crc16(result[flash_pos + app_pos:flash_pos + app_end])
     struct.pack_into("<HH", boot, 2, new_plain_crc, new_cipher_crc)
@@ -177,11 +197,16 @@ def main():
     struct.pack_into("<H", ufw_header, 2, jl_crc16(result[64:64 + count * 80]))
     struct.pack_into("<H", ufw_header, 0, jl_crc16(ufw_header[2:]))
     result[:64] = encode_header(ufw_header)
-    if args.attenuation_db == 0 and not args.anc_cycle_two_state and result != source:
+    if args.attenuation_db == 0 and not args.anc_cycle_two_state and not eq_toggle and result != source:
         raise ValueError("零改动重打包不一致")
     args.output_dir.mkdir(parents=True)
     suffix = "_anc_on_trans" if args.anc_cycle_two_state else ""
-    path = args.output_dir / f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB{suffix}_UNTESTED.ufw"
+    if eq_toggle:
+        suffix += "_eq_toggle_EXPERIMENTAL"
+    filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB{suffix}_UNTESTED.ufw"
+    if eq_toggle:
+        filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB_ANC_EQ_TOGGLE_EXPERIMENTAL.ufw"
+    path = args.output_dir / filename
     path.write_bytes(result)
     (args.output_dir / "stream.bin").write_bytes(stream)
     report = {"status": "offline_candidate_not_device_verified", "source_sha256": SOURCE_SHA,
@@ -189,6 +214,7 @@ def main():
               "attenuation_db": args.attenuation_db, "nodes": changes,
               "changed_flash_offsets": changed_offsets,
               "anc_cycle": anc_cycle,
+              **({'eq_toggle': eq_toggle} if eq_toggle else {}),
               "zero_change_identical": bytes(result) == source,
               "dual_bank_boot_info": {"flash_offset": boot_pos, "app_offset": app_pos,
                                       "app_bytes": app_size, "plain_crc_before": plain_crc,

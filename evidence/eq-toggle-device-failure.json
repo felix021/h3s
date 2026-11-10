@@ -1,0 +1,40 @@
+{
+  "status": "r2 rejected; USB restoration readback verified; Bluetooth/playback restored; mode key issue unresolved",
+  "candidate_sha256": "c8dae5233678102aac152f0ff94952edea83c6eeca6afaf216db43226d0b6696",
+  "ota_attempts": 1,
+  "e6_result": 0,
+  "e7_acknowledged": true,
+  "sdk_succeeded": true,
+  "nonempty_blocks_verified": 1834,
+  "eof_verified": 1,
+  "changed_bytes_vs_original_covered": 466,
+  "post_update_normal_connection": false,
+  "post_update_version_read_succeeded": false,
+  "reported_symptoms": [
+    "no shutdown voice",
+    "manual power-on then blue/white blinking LED",
+    "pairing failed",
+    "normal power-off failed",
+    "volume-button factory reset no expected response"
+  ],
+  "ble_advertisement_observed": true,
+  "ble_connection_status": 147,
+  "static_design_error": {
+    "flash_pc_begin": "0x06000100",
+    "flash_pc_end": "0x060c3338",
+    "payload": "0x060e3074",
+    "payload_outside_flash_pc_range": true,
+    "device_exception_trace_obtained": false
+  },
+  "rollback_authorized": true,
+  "rollback_target_sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+  "rollback_started": true,
+  "usb_descriptors_read": true,
+  "usb_vid": "0x3654",
+  "usb_pid": "0x4a55",
+  "usb_vendor_commands_sent": true,
+  "rollback_flash_readback_verified": true,
+  "user_confirmed_bluetooth_reconnection": true,
+  "user_confirmed_bluetooth_playback": true,
+  "post_restore_mode_key_issue_reported": true
+}

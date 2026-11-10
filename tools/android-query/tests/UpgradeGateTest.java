@@ -34,6 +34,8 @@ public class UpgradeGateTest {
         badSnapshot(s -> s.pid=1); badSnapshot(s -> s.vid=1); badSnapshot(s -> s.uid=1);
         badSnapshot(s -> s.address=null); badSnapshot(s -> s.version=281);
         rejected(() -> UpgradeGate.validate(snapshot(), "d1f7a067b169285d23457f8c182a8626bc75c01d679f2846a1f7c5e84b9b752d", UpgradeGate.FILE_BYTES));
+        rejected(() -> UpgradeGate.validate(snapshot(), "c8dae5233678102aac152f0ff94952edea83c6eeca6afaf216db43226d0b6696", UpgradeGate.FILE_BYTES));
+        rejected(() -> UpgradeGate.validate(snapshot(), "516aa05559690be1e1e266f03108ba0ddeb35a4e8b041be336f325573f1ac44d", UpgradeGate.FILE_BYTES));
         badSnapshot(s -> s.doubleBackup=false); badSnapshot(s -> s.needBootloader=true); badSnapshot(s -> s.mandatory=true);
         badSnapshot(s -> s.battery=0); badSnapshot(s -> s.battery=101); badSnapshot(s -> s.offset=1);
         badSnapshot(s -> s.length=1); badSnapshot(s -> s.eligibility=1);

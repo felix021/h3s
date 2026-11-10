@@ -69,7 +69,7 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this); scroll.addView(output); layout.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(layout);
         adapter = ((BluetoothManager)getSystemService(BLUETOOTH_SERVICE)).getAdapter();
-        log("session", "查询/升级工具 0.4.1-public；SDK 1.10.0/10932；日志 " + logFile.getName());
+        log("session", "查询/升级工具 0.5.1-restore-anc；SDK 1.10.0/10932；日志 " + logFile.getName());
         if (!permissions()) requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN}, 1);
         probeIntent(getIntent());
     }
@@ -167,7 +167,7 @@ public class MainActivity extends Activity {
             JSONObject plan=readUpgradeState();
             if(!upgradeServiceRunning() || !"PREPARED".equals(plan.optString("state"))) { log("error", "没有有效的升级计划，请先准备"); return; }
             String token=plan.getString("nonce"); JSONObject device=plan.getJSONObject("device");
-            String detail="设备：本次确认的 QCY H3S\n电量："+device.getInt("battery")+"%\n版本：0.1.1.8 同版本更新\n修改："+UpgradeGate.DESCRIPTION+"\nSHA-256："+plan.getString("sha256")+"\n\n已验证此前修正版 OTA 成功。本次修改按键循环表一个字节，行为和同版本更新尚未实测；失败恢复仍未验证。版本号不会改变，需要实际按键验证。\n\n确认后立即复查设备，并开始实际写入。";
+            String detail="设备：本次确认的 QCY H3S\n电量："+device.getInt("battery")+"%\n版本：0.1.1.8 同版本更新\n修改："+UpgradeGate.DESCRIPTION+"\nSHA-256："+plan.getString("sha256")+"\n\n恢复镜像此前已通过实际 OTA 和 ANC 按键验收。EQ 实验镜像已停用。仍须当前设备连接和即时准入检查通过后才能刷写。\n\n确认后立即复查设备，并开始实际写入。";
             new android.app.AlertDialog.Builder(this).setTitle("确认实际刷入候选固件").setMessage(detail)
                 .setNegativeButton("取消",null)
                 .setPositiveButton("确认刷入",(dialog,which) -> startService(new Intent(this,UpgradeService.class).setAction(UpgradeService.CONFIRM).putExtra("nonce",token))).show();
