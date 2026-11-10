@@ -18,7 +18,7 @@ CACHE=ROOT/'tools/reference-cache/701n-boot'
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--decode-ir',action='store_true',help='extract pinned objects and run local llvm-dis')
-    p.add_argument('--hardware',action='store_true',help='also fetch pinned BR28 peripheral headers, driver IR and official bootloader references')
+    p.add_argument('--hardware',action='store_true',help='also fetch pinned BR28 peripheral/cache headers, driver IR and official bootloader references')
     p.add_argument('--llvm-dis',default='llvm-dis-16')
     p.add_argument('--output-dir',type=Path,default=ROOT/'analysis/boot-reference')
     args=p.parse_args()
@@ -47,7 +47,7 @@ def main():
         archive=CACHE/'SDK/cpu/br28/liba'/item['archive']
         data=subprocess.check_output(['ar','p',str(archive),name])
         digest=hashlib.sha256(data).hexdigest()
-        if digest!=item['sha256']:
+        if digest!=item['sha256'] or ('bytes' in item and len(data)!=item['bytes']):
             raise ValueError('unexpected archive member: '+name)
         target=args.output_dir/name
         target.write_bytes(data)

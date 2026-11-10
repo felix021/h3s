@@ -16,7 +16,7 @@
 
 [MMU初始化已运行](docs/mmu-startup.md)：实际代码清零10 KiB页表并开启MMU，冷／暖路径到P11低功耗核启动握手；同时已构建单独的[EQ执行范围修复候选](docs/eq-fence-repair.md)，离线审计和函数回放通过，完整启动验证仍未完成，未刷机。
 
-**最新[条件启动回放](docs/clock-rtos-startup.md)：** 实际看门狗、OTP读取、Flash重配置、OS初始化及系统定时器代码已运行，推进到110,818步后的端口状态读取；真实分配器已写页表并访问虚拟内存，也纠正了早期MMU换算错误。外部状态仍使用明确的测试输入，CPU1／任务调度尚未运行。失败镜像与修复候选仅通过同一启动前缀，尚不能证明修复成功，未再次刷机。
+**较早的[条件启动回放](docs/clock-rtos-startup.md)：** 实际看门狗、OTP读取、Flash重配置、OS初始化及系统定时器代码已运行，推进到110,818步后的端口状态读取；真实分配器已写页表并访问虚拟内存，也纠正了早期MMU换算错误。该阶段外部状态使用明确的测试输入，尚未运行CPU1／任务调度。失败镜像与修复候选仅通过同一启动前缀，尚不能证明修复成功，未再次刷机。
 
 已跑通 [pi32v2 离线执行原型](docs/preflash-emulation.md)：真实指令回放配合 H3S 取指范围策略，能拒绝历史 r2 的五个越界入口；另有 15 个实际编译函数诊断用例。它尚不模拟完整耳机启动或蓝牙／声音，不能单独作为刷机批准依据。
 
@@ -24,7 +24,9 @@
 
 [离线仿真边界已收敛](docs/simulation-boundaries.md)：13组严格／假设／隔离用例覆盖ICFG、保留RAM、实际CRC和升级结果处理；连续假设路径停在ROM初始化前的控制写，隔离`setup_arch`停在IPMASK写。完整启动需要ROM所依赖的中断／控制寄存器模型，本轮未刷机。
 
-**2026-11-11：[连续启动到CPU1释放](docs/platform-startup.md)**，真实保护配置、MPU与app_core任务创建已运行，推进到127,239步。隔离钩子回放使用实际写出的范围，旧r2被拒绝、修复候选可进入载荷；双核、任务运行及整机EQ验证仍未完成，未再次刷机。
+**2026-11-11：[连续启动到CPU1释放](docs/platform-startup.md)**，真实保护配置、MPU与app_core任务创建已运行，推进到127,239步。隔离钩子回放使用实际写出的范围，旧r2被拒绝、修复候选可进入载荷；该阶段尚未运行CPU1，未再次刷机。
+
+**当前[双核条件启动](docs/dualcore-startup.md)：** CPU1从真实ROM执行到trampoline，在显式的一次性bootstrap RTI、缓存进度等投影下写出ready，调度代码已选择真实TCB并恢复12B特殊帧。原strict基线仍在147,263步停于未初始化GPR槽；新增显式UnknownWord搬运保留R1–R15未知，推进到147,268步的首任务RTI前，未进入任务。10组场景及4条候选前缀的汇总检查、完整本机回归均通过；仍不能据此证明整机启动、EQ修复或批准刷机。
 
 ## 下载固件
 
@@ -142,6 +144,7 @@ bash tools/android-query/build.sh
 | [docs/hardware-contracts.md](docs/hardware-contracts.md) | P33／PLL／Timer0／IRQ／双核锁的来源、模型、13组场景和新的GPIO边界 |
 | [docs/gpio-irq.md](docs/gpio-irq.md) | 部分已知GPIO、死返回值证明、真实28B Timer ISR、11组场景与MMU边界 |
 | [docs/mmu-startup.md](docs/mmu-startup.md) | 页表／物理tag来源、真实初始化、并行存储适配和P11握手边界 |
+| [docs/dualcore-startup.md](docs/dualcore-startup.md) | 真实ROM双核路径、条件bootstrap RTI、ready写入、缓存／WO投影、UnknownWord搬运与首任务RTI严格边界 |
 | [docs/platform-startup.md](docs/platform-startup.md) | 连续CPU0至CPU1释放、真实保护配置、未知任务栈、复位／唤醒与严格反例 |
 | [docs/clock-rtos-startup.md](docs/clock-rtos-startup.md) | 看门狗／OTP／时钟／SFC、实际OS分配、MMU修正、双核与首任务剩余缺口 |
 | [docs/p11-domain.md](docs/p11-domain.md) | P11寄存器、固件校验、q32s静态解码／ROM线索、外部状态条件探索 |

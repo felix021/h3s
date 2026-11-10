@@ -1,0 +1,341 @@
+{
+  "format_version": 1,
+  "rom_sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+  "rom_bytes": 131072,
+  "decoder_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "reference_sdk_commit": "67328f4741c69993c88e504c67377b196c724f97",
+  "static_only": true,
+  "device_accessed": false,
+  "cpu_executed": false,
+  "scope": "Bounded ROM bootstrap and cache anchors; not a hardware release or timing model",
+  "regions": [
+    {
+      "start": "0x0",
+      "end_exclusive": "0x4",
+      "sha256": "bd0fd76c0a4f06376ea3b0c7f96b9e7469b91f61a4a5782ab1432b13b78564f5"
+    },
+    {
+      "start": "0xa120",
+      "end_exclusive": "0xa15c",
+      "sha256": "31adb62dd67b530c0aee4725cc6b01be1fb835773aea848c8027f750a6978efb"
+    },
+    {
+      "start": "0xc5f0",
+      "end_exclusive": "0xc606",
+      "sha256": "f3ad82f53a9116d49bf0687a71a2887109d5bd49820380763a89b620e6744e04"
+    },
+    {
+      "start": "0xbac0",
+      "end_exclusive": "0xbb20",
+      "sha256": "8a58916477de2e621ed89936a6eb75290c64a200505abaa6294ea7476ffe5e75"
+    },
+    {
+      "start": "0xbb20",
+      "end_exclusive": "0xbb30",
+      "sha256": "eb6ebda4f4949503554ac7f266c31f42727b50bc0bfd9b973370d12ac602cfec"
+    },
+    {
+      "start": "0xbb30",
+      "end_exclusive": "0xbb70",
+      "sha256": "a548204ef2794b73d30eb9379f66198e29bc9095635938c6f70982e33dc40349"
+    },
+    {
+      "start": "0xc792",
+      "end_exclusive": "0xc7b0",
+      "sha256": "e33f61812d910490043a38b19348b4d9a770f04cf0a5a3e9d991c02dca9a3a41"
+    },
+    {
+      "start": "0x1fdb4",
+      "end_exclusive": "0x1fdc4",
+      "sha256": "96f6d567fe2aa27393ad6c4f35f80fe894cb5b2417ed137fb8fbd5117e25eb24"
+    }
+  ],
+  "bootstrap_anchors": [
+    {
+      "pc": "0x0",
+      "instruction_id": "goto.l",
+      "size": 4,
+      "target": "0xa120"
+    },
+    {
+      "pc": "0xa120",
+      "instruction_id": "li.zero_pair",
+      "size": 2
+    },
+    {
+      "pc": "0xa122",
+      "instruction_id": "li.zero_pair",
+      "size": 2
+    },
+    {
+      "pc": "0xa124",
+      "instruction_id": "li.zero_pair",
+      "size": 2
+    },
+    {
+      "pc": "0xa126",
+      "instruction_id": "li.zero_pair",
+      "size": 2
+    },
+    {
+      "pc": "0xa128",
+      "instruction_id": "li.zero_pair",
+      "size": 2
+    },
+    {
+      "pc": "0xa12a",
+      "instruction_id": "li.zero_pair",
+      "size": 2
+    },
+    {
+      "pc": "0xa12c",
+      "instruction_id": "li.zero_pair",
+      "size": 2
+    },
+    {
+      "pc": "0xa12e",
+      "instruction_id": "li.zero_pair",
+      "size": 2
+    },
+    {
+      "pc": "0xa130",
+      "instruction_id": "mov.sr_r",
+      "size": 4
+    },
+    {
+      "pc": "0xa134",
+      "instruction_id": "mov.sr_r",
+      "size": 4
+    },
+    {
+      "pc": "0xa138",
+      "instruction_id": "mov.sr_r",
+      "size": 4
+    },
+    {
+      "pc": "0xa13c",
+      "instruction_id": "mov.sr_r",
+      "size": 4
+    },
+    {
+      "pc": "0xa140",
+      "instruction_id": "mov.sr_r",
+      "size": 4
+    },
+    {
+      "pc": "0xa144",
+      "instruction_id": "mov.r_sr",
+      "size": 4
+    },
+    {
+      "pc": "0xa148",
+      "instruction_id": "beqz",
+      "size": 2,
+      "target": "0xa15c"
+    },
+    {
+      "pc": "0xa14a",
+      "instruction_id": "li.sr_u32",
+      "size": 6
+    },
+    {
+      "pc": "0xa150",
+      "instruction_id": "mov.sp_ssp",
+      "size": 2
+    },
+    {
+      "pc": "0xa152",
+      "instruction_id": "li.sr_u32",
+      "size": 6
+    },
+    {
+      "pc": "0xa158",
+      "instruction_id": "goto.l",
+      "size": 4,
+      "target": "0xc5f0"
+    },
+    {
+      "pc": "0xc5f0",
+      "instruction_id": "mov.r_sr",
+      "size": 4
+    },
+    {
+      "pc": "0xc5f4",
+      "instruction_id": "rsub.modimm.rri",
+      "size": 4
+    },
+    {
+      "pc": "0xc5f8",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0xc5fe",
+      "instruction_id": "ld.w.idxs",
+      "size": 4
+    },
+    {
+      "pc": "0xc602",
+      "instruction_id": "call.r",
+      "size": 2
+    },
+    {
+      "pc": "0xc604",
+      "instruction_id": "goto.s",
+      "size": 2,
+      "target": "0xc604"
+    }
+  ],
+  "cache_anchors": [
+    {
+      "pc": "0x1fdb4",
+      "instruction_id": "goto.l",
+      "size": 4,
+      "target": "0xc792"
+    },
+    {
+      "pc": "0x1fdb8",
+      "instruction_id": "goto.l",
+      "size": 4,
+      "target": "0xbb20"
+    },
+    {
+      "pc": "0x1fdbc",
+      "instruction_id": "goto.l",
+      "size": 4,
+      "target": "0xbae0"
+    },
+    {
+      "pc": "0x1fdc0",
+      "instruction_id": "goto.l",
+      "size": 4,
+      "target": "0xbb30"
+    },
+    {
+      "pc": "0xbae2",
+      "instruction_id": "mov.r_sr",
+      "size": 4
+    },
+    {
+      "pc": "0xbae6",
+      "instruction_id": "cli.r",
+      "size": 2
+    },
+    {
+      "pc": "0xbae8",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0xbaee",
+      "instruction_id": "testset.b",
+      "size": 2
+    },
+    {
+      "pc": "0xbafc",
+      "instruction_id": "li.u32",
+      "size": 6
+    },
+    {
+      "pc": "0xbb02",
+      "instruction_id": "st.w.idxs",
+      "size": 4
+    },
+    {
+      "pc": "0xbaca",
+      "instruction_id": "ld.w.idxs",
+      "size": 4
+    },
+    {
+      "pc": "0xbace",
+      "instruction_id": "bne.and.ri",
+      "size": 4,
+      "target": "0xbaca"
+    },
+    {
+      "pc": "0xbadc",
+      "instruction_id": "st.b",
+      "size": 2
+    },
+    {
+      "pc": "0xbb0a",
+      "instruction_id": "sti.r",
+      "size": 2
+    },
+    {
+      "pc": "0xbb1a",
+      "instruction_id": "rmw.or.modimm",
+      "size": 4
+    },
+    {
+      "pc": "0xbb32",
+      "instruction_id": "mov.r_sr",
+      "size": 4
+    },
+    {
+      "pc": "0xbb36",
+      "instruction_id": "bnez",
+      "size": 2,
+      "target": "0xbb6e"
+    },
+    {
+      "pc": "0xbb6e",
+      "instruction_id": "pop.pc",
+      "size": 2
+    },
+    {
+      "pc": "0xbb28",
+      "instruction_id": "ld.w",
+      "size": 2
+    },
+    {
+      "pc": "0xc7a0",
+      "instruction_id": "ld.w.idxs",
+      "size": 4
+    }
+  ],
+  "cpu1_path": {
+    "conditional_start_pc": "0x0",
+    "explicit_cnum_input": 1,
+    "entry_pointer_formula": "0x19fe00 + (0x3f - CNUM) * 4",
+    "entry_pointer_address": "0x19fef8",
+    "indirect_call_pc": "0xc602",
+    "return_pc": "0xc604",
+    "instructions_through_indirect_call": 25,
+    "ssp_written": "0x19fd94",
+    "sp_written": "SSP",
+    "usp_written": "0x19fda4",
+    "cleared_gprs": "R0..R15 before CNUM selection",
+    "cleared_special": [
+      "PSR",
+      "RETE",
+      "RETX",
+      "RETS",
+      "RETI"
+    ],
+    "icfg": "not read or written on this bootstrap path; initial value unknown"
+  },
+  "cpu1_cache_path": {
+    "icu_export": "0x1fdbc",
+    "icu_implementation": "0xbae0",
+    "shared_ram_lock": "0x19fd78",
+    "icu_command_address": "0xffec10",
+    "icu_command": "0xca000010",
+    "icu_con_address": "0xffec00",
+    "command_wait": "poll bit30 until clear; separate from idle bit31",
+    "enable": "OR bit0 after command wait and software unlock",
+    "dcu_export": "0x1fdc0",
+    "dcu_implementation": "0xbb30",
+    "dcu_nonzero_cnum_branch": "0xbb36 -> 0xbb6e; push/pop RETS only",
+    "idle_helpers": {
+      "icu": "0x1fdb4 -> 0xc792; both core CON bit31",
+      "dcu": "0x1fdb8 -> 0xbb20; shared L1P CON 0xff0500 bit31"
+    }
+  },
+  "unproved": [
+    "CPU1 release starts at ROM address0",
+    "Initial ICFG, privilege mode and stack bank selection",
+    "Architectural RTI behavior at the application trampoline",
+    "Cache command latency, clock, coherence and hardware status causality"
+  ]
+}

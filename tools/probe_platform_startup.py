@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from br28_model import SDTAP_CON, PSRAM_CON0, IOMAP_CON0
-from probe_arch_startup import architecture_case, candidate_view, REPAIRED_SHA, FAILED_SHA
+from probe_arch_startup import architecture_case, candidate_view, REPAIRED_SHA, FAILED_SHA, REGIONS
 from probe_boot import application, check_rom, OFFICIAL_SHA, APP_SHA, ROM_SHA
 from probe_boot_handoff import package_header
 from probe_pi32v2 import ROOT, PIN, upstream, require
@@ -21,7 +21,8 @@ WATCH=[0x060352d8,0x060352de,0x060352e4,0x060352ea,0x060352f8,0x06035334,
        0x06035338,0x06035350,0x06035356,0x06065f9e,0x060660c8]
 
 
-def platform_case(module,app,header,rom,name,*,options=None,iomap=0,stop=None,readonly=()):
+def platform_case(module,app,header,rom,name,*,options=None,iomap=0,stop=None,readonly=(),machine=None,diagnostic_options=None,
+                  extra_regions=(),extra_snapshots=(),budget=250000):
     parameters={'port_initialization_projection':True,'port_input_words':{SDTAP_CON:0,PSRAM_CON0:0},
         'initial_usb_io_word':0,'reset_history_projection':True,'reset_history_words':{**POR_HISTORY,**NO_WAKE},
         'debug_execution_projection':True,'initial_debug_controls':(0,None),
@@ -30,8 +31,10 @@ def platform_case(module,app,header,rom,name,*,options=None,iomap=0,stop=None,re
     diagnostics={'exact_doubleword_stores':True,'watch_pcs':WATCH,'watch_registers':[0,1,2,4],
                  'watch_ram_after_pc':{0x06068a1e:[('port_keep',0x1237fe,14)]}}
     if stop is not None:diagnostics['stop_before_pc']=stop
+    diagnostics.update(diagnostic_options or {})
     return architecture_case(module,app,header,rom,name,options=parameters,registers={IOMAP_CON0:iomap},
-        diagnostic_options=diagnostics,snapshots=SNAPSHOTS,readonly=readonly)
+        diagnostic_options=diagnostics,snapshots=SNAPSHOTS+tuple(extra_snapshots),readonly=readonly,machine=machine,
+        regions=REGIONS+tuple(extra_regions),budget=budget)
 
 
 def run(module,app,header,rom):

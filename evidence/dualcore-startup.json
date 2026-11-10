@@ -1,0 +1,584 @@
+{
+  "firmware_sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "rom_sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "device_accessed": false,
+  "whole_h3s_boot_simulated": false,
+  "candidate_whole_boot_validated": false,
+  "suitable_for_flash_approval_alone": false,
+  "cpu1_reset_and_bootstrap_mode_certified": false,
+  "architectural_irq_or_task_rti_delivered": false,
+  "dualcore_prefix_checks_passed": true,
+  "date": "2026-11-11",
+  "scope": "Curated strict unknown-GPR and opt-in abstract restore frontiers; task RTI is not executed. Expected blocked regressions are not boot success.",
+  "source_report_sha256": "290b6b7f04db63466501f774f6f6447a3ea6d0ec491a45f7f880a1d615d07959",
+  "source_tool": "tools/probe_dualcore.py",
+  "curation": {
+    "full_traces_included": false,
+    "raw_rom_or_bulk_ram_included": false,
+    "private_input_paths_included": false,
+    "hardware_or_ci_accessed": false
+  },
+  "scenarios": [
+    {
+      "name": "reset_vector_unknown",
+      "completed_model_instructions": 127239,
+      "stop_core": 0,
+      "stop_pc": "0x60660da",
+      "stop": {
+        "kind": "cpu1_reset_vector_unknown"
+      },
+      "cpu1_completed_model_instructions": 0,
+      "cpu1_launches": 0
+    },
+    {
+      "name": "cpu1_guard_unknown",
+      "completed_model_instructions": 127240,
+      "stop_core": 1,
+      "stop_pc": "0x0",
+      "stop": {
+        "kind": "unknown_initial_pc_guard"
+      },
+      "cpu1_completed_model_instructions": 0,
+      "cpu1_launches": 1
+    },
+    {
+      "name": "bootstrap_rti_strict",
+      "completed_model_instructions": 127296,
+      "stop_core": 1,
+      "stop_pc": "0x12cb06",
+      "stop": {
+        "kind": "cpu1_bootstrap_rti_contract_unknown"
+      },
+      "cpu1_completed_model_instructions": 28,
+      "cpu1_launches": 1
+    },
+    {
+      "name": "bootstrap_icfg_unknown",
+      "completed_model_instructions": 127296,
+      "stop_core": 1,
+      "stop_pc": "0x12cb06",
+      "stop": {
+        "kind": "cpu1_bootstrap_icfg_fixture_unknown"
+      },
+      "cpu1_completed_model_instructions": 28,
+      "cpu1_launches": 1
+    },
+    {
+      "name": "cpu1_stack_unmapped",
+      "completed_model_instructions": 127308,
+      "stop_core": 1,
+      "stop_pc": "0xbae0",
+      "stop": {
+        "kind": "unmapped_or_readonly_write",
+        "address": "0x124838",
+        "size": 4
+      },
+      "cpu1_completed_model_instructions": 34,
+      "cpu1_launches": 1
+    },
+    {
+      "name": "icu_progress_unknown",
+      "completed_model_instructions": 127326,
+      "stop_core": 1,
+      "stop_pc": "0xbb02",
+      "stop": {
+        "kind": "icu_command_progress_unknown",
+        "address": "0xffec10"
+      },
+      "cpu1_completed_model_instructions": 43,
+      "cpu1_launches": 1
+    },
+    {
+      "name": "icu_clock_stopped",
+      "completed_model_instructions": 150000,
+      "stop_core": 0,
+      "stop_pc": "0x60660de",
+      "stop": {
+        "kind": "instruction_budget"
+      },
+      "cpu1_completed_model_instructions": 11380,
+      "cpu1_launches": 1
+    },
+    {
+      "name": "software_irq_wo_strict",
+      "completed_model_instructions": 145183,
+      "stop_core": 0,
+      "stop_pc": "0x60644a6",
+      "stop": {
+        "kind": "unmapped_memory",
+        "address": "0xffe1a0",
+        "size": 4
+      },
+      "cpu1_completed_model_instructions": 8882,
+      "cpu1_launches": 1
+    },
+    {
+      "name": "dualcore_first_task",
+      "completed_model_instructions": 147263,
+      "stop_core": 1,
+      "stop_pc": "0x6066128",
+      "stop": {
+        "kind": "uninitialized_memory",
+        "address": "0x19f640",
+        "size": 4,
+        "first_missing": "0x19f640"
+      },
+      "cpu1_completed_model_instructions": 10860,
+      "cpu1_launches": 1
+    },
+    {
+      "name": "first_task_rti_strict",
+      "completed_model_instructions": 147268,
+      "stop_core": 1,
+      "stop_pc": "0x6066130",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "rti"
+      },
+      "cpu1_completed_model_instructions": 10863,
+      "cpu1_launches": 1
+    }
+  ],
+  "strict_frontier": {
+    "total_completed_model_instructions": 147263,
+    "per_core_instructions": {
+      "0": 136403,
+      "1": 10860
+    },
+    "lock_wait_attempts": 2129,
+    "lock_owner_at_stop": 1,
+    "cpu1_boot_anchors": [
+      {
+        "pc": "0x0",
+        "next_pc": "0xa120",
+        "r0": "0x0",
+        "rets": "0x0"
+      },
+      {
+        "pc": "0xa144",
+        "next_pc": "0xa148",
+        "r0": "0x1",
+        "rets": "0x0"
+      },
+      {
+        "pc": "0xc5fe",
+        "next_pc": "0xc602",
+        "r0": "0x12caf4",
+        "rets": "0x0"
+      },
+      {
+        "pc": "0xc602",
+        "next_pc": "0x12caf4",
+        "r0": "0x12caf4",
+        "rets": "0xc604"
+      },
+      {
+        "pc": "0x12caf4",
+        "next_pc": "0x12cafa",
+        "r0": "0x12caf4",
+        "rets": "0xc604"
+      },
+      {
+        "pc": "0x12cafa",
+        "next_pc": "0x12cb00",
+        "r0": "0x12caf4",
+        "rets": "0xc604"
+      },
+      {
+        "pc": "0x12cb00",
+        "next_pc": "0x12cb06",
+        "r0": "0x12caf4",
+        "rets": "0xc604"
+      }
+    ],
+    "rom_instructions_before_trampoline": 25,
+    "trampoline_instructions_before_strict_rti": 3,
+    "guest_cpu1_notifications": [
+      {
+        "kind": "guest_notification_write",
+        "core": 1,
+        "pc": "0x606602a",
+        "address": "0x1265f5",
+        "value": "0x1"
+      },
+      {
+        "kind": "guest_notification_write",
+        "core": 1,
+        "pc": "0x6066034",
+        "address": "0x19ff54",
+        "value": "0x1"
+      }
+    ],
+    "first_task_special_frame": {
+      "kind": "first_task_special_frame_restored",
+      "core": 1,
+      "tcb": "0x127e10",
+      "frame": "0x401bb0",
+      "reti": "0x12c57e",
+      "rets": "0x0",
+      "psr": "0x0",
+      "sp_after": "0x401bbc"
+    },
+    "first_task_frame_backing": "0x19f630",
+    "known_pdata_slot": 0,
+    "unknown_gpr_slots": {
+      "backing_begin": "0x19f640",
+      "size": 60,
+      "initialized_bytes": 0,
+      "registers": "R1-R15"
+    },
+    "stack_banks_at_stop": {
+      "0": {
+        "sp": "0x1237ec",
+        "ssp": "unknown",
+        "usp": "unknown",
+        "last_explicit_ssp": "0x123840",
+        "last_explicit_usp": "unknown"
+      },
+      "1": {
+        "sp": "0x401bbc",
+        "ssp": "unknown",
+        "usp": "unknown",
+        "last_explicit_ssp": "0x19fd94",
+        "last_explicit_usp": "0x124840"
+      }
+    },
+    "cpu0_current_tcb": "0x127db8",
+    "cpu1_current_tcb": "0x127e10",
+    "os_running": 0,
+    "cache_lock": 0,
+    "ready_flag": 1,
+    "ready_injected": false,
+    "conditional_bootstrap_rti_count": 1,
+    "executing_fetch_checks": 298786
+  },
+  "explicit_unverified_policies": {
+    "prior_platform_inputs": "PMU/OTP/oscillator/clock/port/reset/wake and MPU gate fixtures remain as documented in docs/platform-startup.md",
+    "cpu1_reset_vector_fixture": 0,
+    "cpu1_initial_icfg_fixture": 0,
+    "initial_debug_controls": [
+      0,
+      0
+    ],
+    "cpu1_initial_irq_config_words": "32 explicit zero words",
+    "cpu1_initial_ipmask": 0,
+    "bootstrap_rti": "One-use exact QCY path only; assumes startup exception to thread. Generic IRQ/task RTI is not implemented.",
+    "post_bootstrap_icfg": "Gates8/9 unknown until actual read/mask/write; other bits conditionally preserve explicit initial fixture.",
+    "stack_bank_policy": "Unresolved SP/USP/SSP alias/writeback preserves unknown. Last explicit bank writes are historical values, not current-state guesses.",
+    "pc_guard": "Union of actual per-core ranges with unverified half-open/full-instruction software policy; virtual comparison and exception delivery remain strict.",
+    "mpu": "Configuration/write-gate projection only; no CPU/DMA access enforcement.",
+    "scheduling": "round-robin one instruction per runnable core; no cycle accuracy",
+    "icu": {
+      "initial_word_fixtures": {
+        "0xffe400": "0x80000000",
+        "0xffec00": "0x80000000"
+      },
+      "con": {
+        "0xffe400": "0x80000000",
+        "0xffec00": "0x80000001"
+      },
+      "command_steps_fixture": 64,
+      "pending_cores": [],
+      "commands": [
+        {
+          "address": "0xffec10",
+          "value": "0xca000010"
+        }
+      ],
+      "completed_commands": 1,
+      "busy_reads": 14,
+      "bit31_is_independent_external_status": true,
+      "physical_latency_or_command4_semantics_certified": false,
+      "cache_contents_or_coherence_simulated": false
+    },
+    "software_irq": {
+      "pending": {
+        "0": {
+          "known_mask": "0x8",
+          "known_value": "0x8"
+        },
+        "1": {
+          "known_mask": "0x0",
+          "known_value": "0x0"
+        }
+      },
+      "commands": 1,
+      "mapping": "BR28 software IRQ124+n, n=0..3; bank selects target core",
+      "selected_bit_command_is_explicit_projection": true,
+      "wo_readback_certified": false,
+      "exception_delivery_simulated": false,
+      "initial_pending_assumed_zero": false
+    }
+  },
+  "candidate_prefixes": [
+    {
+      "name": "repaired_candidate",
+      "ufw_sha256": "67ba97efb83a15ec9df14de574667c6a77126d43ac6d8e5f5e645cb91126f222",
+      "completed_model_instructions": 147263,
+      "stop_core": 1,
+      "stop_pc": "0x6066128",
+      "stop_kind": "uninitialized_memory",
+      "first_unknown_address": "0x19f640",
+      "cpu0_programmed_flash_upper": "0x60e31c5",
+      "cpu1_programmed_flash_upper": "0x60e31c5",
+      "whole_boot_validated": false,
+      "flash_approved": false
+    },
+    {
+      "name": "archived_failed_r2",
+      "ufw_sha256": "c8dae5233678102aac152f0ff94952edea83c6eeca6afaf216db43226d0b6696",
+      "completed_model_instructions": 147263,
+      "stop_core": 1,
+      "stop_pc": "0x6066128",
+      "stop_kind": "uninitialized_memory",
+      "first_unknown_address": "0x19f640",
+      "cpu0_programmed_flash_upper": "0x60c3338",
+      "cpu1_programmed_flash_upper": "0x60c3338",
+      "whole_boot_validated": false,
+      "flash_approved": false
+    }
+  ],
+  "remaining_boundaries": [
+    "Original strict profile stops on uninitialized GPR slots. Opt-in abstract restore preserves them and executes lockclr/STI, then stops before task RTI; no task body executed.",
+    "No architectural interrupt entry/return or generic RTI.",
+    "No P11 execution, full cache coherence, full MPU/DMA, Bluetooth, audio or EQ behavior validation.",
+    "Archived failed r2 remains forbidden to reflash; repaired candidate remains offline and untested on device."
+  ],
+  "verification": {
+    "official_scenarios": 10,
+    "candidate_strict_prefixes": 2,
+    "candidate_abstract_prefixes": 2,
+    "combined_profile_checks_passed": true,
+    "full_local_regression_completion_claimed": true,
+    "full_local_regression_exit_code": 0,
+    "full_check_official_scenarios_match_combined_replay": true,
+    "prior_16_platform_scenarios_identical": true,
+    "tests": {
+      "peripheral": 41,
+      "bus": 18,
+      "machine": 11,
+      "unknown_task_words": 10
+    },
+    "late_readonly_boundary_hardening_focused_tests_passed": true,
+    "full_local_regression_log_sha256": "586fb3fcd66ec4aab178e2ba0bd56567ffa8be9c8fd9b67e9cdb965d1d21c740",
+    "abstract_frontier_negative_report_mutations_rejected": [
+      "early_stop",
+      "zero_gprs",
+      "lost_provenance",
+      "invented_initialized_frame",
+      "auto_ack",
+      "guard_bypass",
+      "rti_silently_executed"
+    ]
+  },
+  "task_frontier": {
+    "profile": "first_task_rti_strict",
+    "unknown_task_gprs_opt_in": true,
+    "total_completed_model_instructions": 147268,
+    "per_core_instructions": {
+      "0": 136405,
+      "1": 10863
+    },
+    "lock_wait_attempts": 2130,
+    "stop_core": 1,
+    "stop_pc": "0x6066130",
+    "stop": {
+      "kind": "unsupported_runtime_instruction",
+      "instruction_id": "rti"
+    },
+    "frame_virtual_base": "0x401bb0",
+    "frame_backing_base": "0x19f630",
+    "sp_before_gpr_pop": "0x401bbc",
+    "sp_after_gpr_pop": "0x401bfc",
+    "reti": "0x12c57e",
+    "rets": "0x0",
+    "ssp": "unknown",
+    "usp": "unknown",
+    "r0_pdata": "0x0",
+    "r1_to_r15": "unknown",
+    "unknown_gpr_sources": {
+      "1": [
+        "0x19f640",
+        "0x19f641",
+        "0x19f642",
+        "0x19f643"
+      ],
+      "2": [
+        "0x19f644",
+        "0x19f645",
+        "0x19f646",
+        "0x19f647"
+      ],
+      "3": [
+        "0x19f648",
+        "0x19f649",
+        "0x19f64a",
+        "0x19f64b"
+      ],
+      "4": [
+        "0x19f64c",
+        "0x19f64d",
+        "0x19f64e",
+        "0x19f64f"
+      ],
+      "5": [
+        "0x19f650",
+        "0x19f651",
+        "0x19f652",
+        "0x19f653"
+      ],
+      "6": [
+        "0x19f654",
+        "0x19f655",
+        "0x19f656",
+        "0x19f657"
+      ],
+      "7": [
+        "0x19f658",
+        "0x19f659",
+        "0x19f65a",
+        "0x19f65b"
+      ],
+      "8": [
+        "0x19f65c",
+        "0x19f65d",
+        "0x19f65e",
+        "0x19f65f"
+      ],
+      "9": [
+        "0x19f660",
+        "0x19f661",
+        "0x19f662",
+        "0x19f663"
+      ],
+      "10": [
+        "0x19f664",
+        "0x19f665",
+        "0x19f666",
+        "0x19f667"
+      ],
+      "11": [
+        "0x19f668",
+        "0x19f669",
+        "0x19f66a",
+        "0x19f66b"
+      ],
+      "12": [
+        "0x19f66c",
+        "0x19f66d",
+        "0x19f66e",
+        "0x19f66f"
+      ],
+      "13": [
+        "0x19f670",
+        "0x19f671",
+        "0x19f672",
+        "0x19f673"
+      ],
+      "14": [
+        "0x19f674",
+        "0x19f675",
+        "0x19f676",
+        "0x19f677"
+      ],
+      "15": [
+        "0x19f678",
+        "0x19f679",
+        "0x19f67a",
+        "0x19f67b"
+      ]
+    },
+    "source_frame_unwritten_bytes": {
+      "begin": "0x19f640",
+      "end_inclusive": "0x19f67b",
+      "size": 60,
+      "initialized_bytes": 0
+    },
+    "abstract_restore_event": {
+      "kind": "first_task_gprs_restored",
+      "core": 1,
+      "frame": "0x401bb0",
+      "sp_after": "0x401bfc",
+      "unknown_registers": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ]
+    },
+    "actual_post_restore_operations": [
+      {
+        "pc": "0x606612c",
+        "operation": "lockclr"
+      },
+      {
+        "pc": "0x606612e",
+        "operation": "sti",
+        "visible_icfg": "0x200"
+      }
+    ],
+    "lock_owner_at_stop": 0,
+    "cpu0_software_irq_pending": {
+      "known_mask": "0x8",
+      "known_value": "0x8"
+    },
+    "executing_fetch_checks": 298798,
+    "task_rti_executed": false,
+    "task_body_entered": false
+  },
+  "candidate_task_prefixes": [
+    {
+      "name": "repaired_candidate_task_restore",
+      "ufw_sha256": "67ba97efb83a15ec9df14de574667c6a77126d43ac6d8e5f5e645cb91126f222",
+      "completed_model_instructions": 147268,
+      "stop_core": 1,
+      "stop_pc": "0x6066130",
+      "stop_kind": "unsupported_runtime_instruction",
+      "cpu0_programmed_flash_upper": "0x60e31c5",
+      "cpu1_programmed_flash_upper": "0x60e31c5",
+      "whole_boot_validated": false,
+      "flash_approved": false
+    },
+    {
+      "name": "archived_failed_r2_task_restore",
+      "ufw_sha256": "c8dae5233678102aac152f0ff94952edea83c6eeca6afaf216db43226d0b6696",
+      "completed_model_instructions": 147268,
+      "stop_core": 1,
+      "stop_pc": "0x6066130",
+      "stop_kind": "unsupported_runtime_instruction",
+      "cpu0_programmed_flash_upper": "0x60c3338",
+      "cpu1_programmed_flash_upper": "0x60c3338",
+      "whole_boot_validated": false,
+      "flash_approved": false
+    }
+  ],
+  "abstract_value_contract": {
+    "new_unknowns": "Only selected mapped task-frame loads may introduce unknown words; no unknown MMIO/address/fetch allowance.",
+    "transport": "Explicit MOV and register-list stack save/restore preserve per-byte knownness and physical origin; reload of other unwritten memory remains strict.",
+    "overwrite": "Unknown stores invalidate old known destination bytes; known overwrites replace corresponding provenance.",
+    "consumption": "Arithmetic, comparisons, predicates, addresses, indirect control/return targets and special-register writes consuming an unknown operand stop before relevant state changes.",
+    "ordinary_strict_profile_retained": true,
+    "unknown_ram_zero_filled": false
+  },
+  "static_support": {
+    "cpu1_rom_tool": "tools/analyze_cpu1_rom.py",
+    "pinned_window_count": 8,
+    "bounded_anchor_count": 46,
+    "rom_sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+    "certifies_hardware_mode_or_latency": false,
+    "first_task_basis": "Actual QCY task constructor initializes only RETI/RETS/PSR/pdata; pinned ISA full-register pop restores ascending GPR slots and advances SP64 without changing flags. Bootstrap return is not authority for task RTI."
+  }
+}

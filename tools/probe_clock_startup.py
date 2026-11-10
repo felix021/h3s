@@ -20,7 +20,7 @@ OTP_CACHE=(0x126860,0x126864,0x12686c,0x126868)
 
 
 def startup(module,app,header,rom,*,name,options=None,registers=None,budget=250000,
-            diagnostic_options=None,extra_regions=(),extra_readonly=(),extra_snapshots=()):
+            diagnostic_options=None,extra_regions=(),extra_readonly=(),extra_snapshots=(),machine=None):
     h=profile(header,SENTINEL_A)
     h['description']['phase']='conditional startup with explicit virtual OTP, oscillator and held-CPU1 inputs'
     h['description'].pop('maskrom_executed',None)
@@ -51,7 +51,7 @@ def startup(module,app,header,rom,*,name,options=None,registers=None,budget=2500
         'watch_pcs':[0x0603518c,0x060351cc,0x06035200,0x0603529e,0x060352d8,0x060352de,0x06035334]}
     diagnostics.update(diagnostic_options or {})
     result=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
-                   diagnostics=diagnostics,hardware=BR28Model(**parameters),startup_loops=True,budget=budget)
+                   diagnostics=diagnostics,hardware=BR28Model(**parameters),startup_loops=True,budget=budget,machine=machine)
     result['last_instructions']=result['last_instructions'][-8:]
     for row in result['last_instructions']:row.pop('bytes',None)
     if len(result['memory_events'])>8:result['memory_events']=result['memory_events'][:4]+result['memory_events'][-4:]

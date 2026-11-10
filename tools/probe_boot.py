@@ -14,6 +14,7 @@ import struct
 
 from probe_pi32v2 import ROOT, PIN, require, upstream
 from verify_ufw_integrity import decode, sfc
+from br28_unknown import UnknownWord, word
 
 OFFICIAL_SHA='65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af'
 APP_SHA='18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041'
@@ -51,7 +52,7 @@ def application(path):
 
 
 def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
-            handoff=None,startup_loops=False,diagnostics=None,rom=None,hardware=None):
+            handoff=None,startup_loops=False,diagnostics=None,rom=None,hardware=None,machine=None):
     if rom is not None:
         check_rom(rom)
     events=[]
@@ -59,8 +60,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     rom_steps=Counter()
     event_counts=Counter()
     milestones=[]
+    if machine is not None:
+        from br28_machine import CoreStall
+        require(hardware is not None,'machine requires a peripheral model; board frontend separately pins ROM')
+    else:CoreStall=()
 
     def event(row):
+        if machine is not None:row={'core':hardware.current_core,**row}
         events.append(row)
         event_counts[row['access']]+=1
         if handoff and len(events)>64:
@@ -75,6 +81,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def __init__(self):
             self.ram={}
+            self.unknown_origins={}
 
         def region(self,address,size):
             for low,high,kind in self.regions:
@@ -126,16 +133,70 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 details={'value_bytes':data.hex()} if diagnostics else {}
                 raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data),**details)
             self.ram.update((address+i,byte) for i,byte in enumerate(data))
+            for a in range(address,address+len(data)):self.unknown_origins.pop(a,None)
+            if machine is not None:machine.note_memory_write(address,data)
             event({'access':'write','address':hex(address),'bytes':data.hex(),'region':region})
 
+        def abstract_word(self,address,*,task_frame=False):
+            # Only task-frame loads may introduce new unknowns. A later stack
+            # reload must have provenance from an explicit abstract store.
+            physical=hardware.mmu.translate(address,4,self.read) if hardware is not None and hardware.mmu is not None else address
+            if ((rom is not None and 0<=physical and physical+4<=len(rom)) or
+                    ENTRY<=physical and physical+4<=ENTRY+len(app) or
+                    any(base<=physical and physical+4<=base+len(data) for base,data in (handoff['readonly'] if handoff else ())) or
+                    hardware is not None and hardware.handles(physical,4)):
+                return int.from_bytes(self.read(address,4),'little')
+            if ((rom is not None and physical<len(rom) and physical+4>0) or
+                    physical<ENTRY+len(app) and physical+4>ENTRY or
+                    any(physical<base+len(data) and physical+4>base for base,data in (handoff['readonly'] if handoff else ()))):
+                raise Blocked('abstract_read_crosses_readonly_boundary',address=hex(physical),size=4)
+            if not self.region(physical,4):return int.from_bytes(self.read(address,4),'little')
+            values=[self.ram.get(physical+i) for i in range(4)]
+            if all(v is not None for v in values):return int.from_bytes(bytes(values),'little')
+            for i,v in enumerate(values):
+                if v is None and not task_frame and physical+i not in self.unknown_origins:
+                    self.read(address,4)  # preserve the ordinary strict failure
+            origins=[self.unknown_origins.get(physical+i,physical+i) if v is None else None for i,v in enumerate(values)]
+            return UnknownWord(values,origins)
+
+        def write_abstract_word(self,address,value):
+            if isinstance(value,int):self.write(address,struct.pack('<I',value&0xffffffff));return
+            require(isinstance(value,UnknownWord),'unsupported abstract memory value')
+            physical=self.abstract_write_target(address);region=self.region(physical,4)
+            for i,v in enumerate(value.bytes):
+                a=physical+i
+                if v is None:self.ram.pop(a,None);self.unknown_origins[a]=value.origins[i]
+                else:self.ram[a]=v;self.unknown_origins.pop(a,None)
+            event({'access':'abstract_write','address':hex(physical),'size':4,'region':region,
+                   'bytes_with_unknowns':''.join('??' if v is None else f'{v:02x}' for v in value.bytes)})
+
+        def abstract_write_target(self,address):
+            physical=hardware.mmu.translate(address,4,self.read) if hardware is not None and hardware.mmu is not None else address
+            protected=((rom is not None and physical<len(rom) and physical+4>0) or
+                physical<ENTRY+len(app) and physical+4>ENTRY or
+                any(physical<base+len(data) and physical+4>base for base,data in (handoff['readonly'] if handoff else ())) or
+                hardware is not None and hardware.handles(physical,4))
+            if protected:raise Blocked('abstract_store_requires_ram',address=hex(physical),size=4)
+            if not self.region(physical,4):raise Blocked('abstract_store_requires_ram',address=hex(physical),size=4)
+            return physical
+
     class CPU(module.CPU):
+        core_id=0
+        usp=None
+        reti=None
+        sp_known=True
+        bootstrap_context=False
+        bootstrap_icfg_pending=False
+        task_frame_load=None
+        task_frame_restore=None
+        task_gpr_frame=None
         ssp=0
         repeat=None
         opaque_source=None
         mutable_decode_bytes=None
 
         def check_opaque(self,insn,raw):
-            if None not in self.R:return
+            if not any(x is None for x in self.R):return
             require(self.R[0] is None and all(x is not None for x in self.R[1:]),'unsupported opaque register')
             if self.opaque_source=='pwm_dead_read':
                 allowed={0x06034a84:('add.ri.u5',{'r':4,'n':1}),
@@ -148,6 +209,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 require(diagnostics and diagnostics.get('opaque_pwm_read') and
                         allowed.get(self.pc)==(insn.id,raw),'opaque PWM value would be consumed')
                 if self.pc==0x060006e4:require(self.R[5]<self.R[6],'opaque PWM return lacks proven next callback')
+            elif self.opaque_source=='cpu1_bootstrap_icfg':
+                require(machine is not None and self.core_id==1 and self.pc==0x12cad8 and
+                        insn.id=='and.nmodimm.rri' and raw=={'r':0,'s':0,'n':3904},
+                        'opaque bootstrap ICFG consumed outside exact gate mask')
             elif self.opaque_source=='p33_pin0_return':
                 allowed={0x06067462:('pop.pc_rl',{'l':8}),
                          0x06035306:('call.xl',{'n':105658}),
@@ -178,6 +243,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             self.seq=end;self.pc=end;self.steps+=1
             if self.after_then is not None:
                 self.after_then[0]-=1;self.check_then()
+
+        def effect(self,insn,raw,pc,size,R):
+            result=super().effect(insn,raw,pc,size,R)
+            # Models can transport a source by returning it unchanged. Reject
+            # unsupported abstract outputs before upstream apply mutates any
+            # register/memory; explicit copy/stack adapters handle valid moves.
+            values=result[0]
+            for value in (*values.get('regs',{}).values(),*values.get('mem',{}).values(),
+                          *(values.get(k) for k in ('flags','sp','rets','exit'))):
+                if isinstance(value,UnknownWord):value.consumed()
+            return result
 
         def decode(self,pc):
             if pc%2:
@@ -212,20 +288,25 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def step(self):
             before_pc=self.pc
+            before_sp=self.sp
             helper_return=bool(self.repeat and self.repeat.get('allow_helper_return') and self.pc==0x0012cb2a)
             self.step_body()
+            if machine is not None and self.sp!=before_sp:machine.note_sp_write(self)
+            if machine is not None and before_pc==0x06066120:
+                self.task_frame_load=(self.R[4],self.R[1])
             if rom is not None and 0<=before_pc<len(rom):
                 rom_steps['completed_model_steps_in_rom']+=1
             if diagnostics and before_pc in (0x06000192,0x06000f08,0x060108bc):
                 kind={0x06000192:'startup_icfg_mask_applied',0x06000f08:'software_crc_result',
                       0x060108bc:'update_result_get_return'}[before_pc]
-                milestones.append({'kind':kind,'pc':hex(before_pc),'icfg':hex(self.icfg),
-                                   'r0':hex(self.R[0]),'sp':hex(self.sp)})
+                milestones.append({**({'core':self.core_id} if machine is not None else {}),'kind':kind,'pc':hex(before_pc),'icfg':hex(self.icfg),
+                                   'r0':word(self.R[0]),'sp':hex(self.sp)})
             if diagnostics and before_pc in diagnostics.get('watch_pcs',()):
-                milestone={'kind':'watched_pc_executed','pc':hex(before_pc),'r0':hex(self.R[0]) if self.R[0] is not None else 'unknown'}
+                milestone={'kind':'watched_pc_executed','pc':hex(before_pc),'r0':word(self.R[0])}
                 if diagnostics.get('watch_registers'):
-                    milestone['registers']={f'r{i}':hex(self.R[i]) if self.R[i] is not None else 'unknown'
+                    milestone['registers']={f'r{i}':word(self.R[i])
                                              for i in diagnostics['watch_registers']}
+                if machine is not None:milestone['core']=self.core_id
                 milestones.append(milestone)
             if diagnostics and before_pc in diagnostics.get('watch_ram_after_pc',{}):
                 spans=diagnostics['watch_ram_after_pc'][before_pc]
@@ -233,7 +314,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 for label,address,length in spans:
                     require(1<=length<=32 and self.mem.region(address,length),'watched span must be bounded physical harness RAM')
                     values=[self.mem.ram.get(address+i) for i in range(length)]
-                    milestones.append({'kind':'watched_ram_after_pc','pc':hex(before_pc),'label':label,
+                    milestones.append({**({'core':self.core_id} if machine is not None else {}),'kind':'watched_ram_after_pc','pc':hex(before_pc),'label':label,
                         'address':hex(address),'size':length,'initialized_bytes':sum(v is not None for v in values),
                         'bytes_with_unknowns':''.join('??' if v is None else f'{v:02x}' for v in values)})
             if helper_return:
@@ -253,6 +334,128 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
             self.check_opaque(insn,raw)
+            if machine is not None:
+                if insn.id in ('goto.r','call.r') and isinstance(self.R[raw['x']],UnknownWord):
+                    self.R[raw['x']].consumed()
+                if self.pc==0x06066120:
+                    require(insn.id=='ld.w' and raw=={'d':1,'b':4,'n':0} and self.after_then is None,
+                            'first-task TCB stack load changed')
+                if self.core_id==1 and self.pc==0x12cad8 and self.opaque_source=='cpu1_bootstrap_icfg':
+                    require(self.bootstrap_icfg_pending and self.R[0] is None and insn.id=='and.nmodimm.rri' and
+                            raw=={'r':0,'s':0,'n':3904},'bootstrap ICFG mask requires its one-use unknown read')
+                    self.R[0]=self.icfg&~0x300
+                    self.bootstrap_icfg_pending=False;self.opaque_source=None
+                    self.finish_exact(self.pc+size);adapters['bootstrap_icfg_actual_gate_mask']+=1
+                    return
+                if not self.sp_known and (insn.id.startswith(('push','pop','add.sp','add.r_sp')) or
+                        ('.sp' in insn.id and insn.id!='mov.sp_ssp')):
+                    raise Blocked('unknown_core_stack_pointer',core=self.core_id)
+                if insn.id=='li.sr_u32' and raw['s'] in (0,1,2,3,5,12,13,14):
+                    sr,value=raw['s'],raw['n']
+                    if sr in (1,2,5) and value!=0:raise Blocked('special_register_nonzero_semantics_unmodeled',register=sr)
+                    if sr in (0,3):value&=0x07fffffe
+                    name={0:'reti',1:'retx',2:'rete',3:'rets',5:'irq_psr',12:'usp',13:'ssp',14:'sp'}[sr]
+                    setattr(self,name,value)
+                    if sr in (12,13):machine.note_bank_write(self,name,value)
+                    if sr==5:self.flags=0
+                    if sr==14:self.sp_known=True;machine.note_sp_write(self)
+                    self.finish_exact(self.pc+size);adapters['multicore_visible_special_write']+=1
+                    return
+                if insn.id in ('mov.r_sr','mov.sr_r') and raw['s'] in (0,1,2,3,5,12,13,14):
+                    sr=raw['s'];name={0:'reti',1:'retx',2:'rete',3:'rets',5:'irq_psr',12:'usp',13:'ssp',14:'sp'}[sr]
+                    if insn.id=='mov.r_sr':
+                        value=getattr(self,name,None)
+                        if value is None or (sr==14 and not self.sp_known):raise Blocked('unknown_core_special_register',core=self.core_id,register=name)
+                        if sr==5:value=(value&~15)|(self.flags&15)
+                        self.R[raw['r']]=value
+                    else:
+                        value=self.R[raw['r']]
+                        if isinstance(value,UnknownWord):value.consumed()
+                        if sr in (1,2,5) and value!=0:raise Blocked('special_register_nonzero_semantics_unmodeled',register=sr)
+                        if sr in (0,3):value&=0x07fffffe
+                        if self.pc==0x06066122:
+                            require(sr==14 and raw['r']==1 and self.task_frame_load==(self.R[4],value),
+                                    'first-task SP switch lacks its actual TCB load')
+                        setattr(self,name,value)
+                        if sr in (12,13):machine.note_bank_write(self,name,value)
+                        if sr==5:self.flags=0
+                        if sr==14:self.sp_known=True;machine.note_sp_write(self)
+                        if self.pc==0x06066122:
+                            self.task_frame_restore={'tcb':self.R[4],'base':value}
+                            self.task_frame_load=None
+                    self.finish_exact(self.pc+size);adapters['multicore_visible_special_move']+=1
+                    return
+                if insn.id=='mov.sp_ssp':
+                    if self.ssp is None:raise Blocked('unknown_core_special_register',core=self.core_id,register='ssp')
+                    self.sp=self.ssp;self.sp_known=True
+                    machine.note_sp_write(self)
+                    self.finish_exact(self.pc+size);adapters['multicore_visible_sp_from_ssp']+=1
+                    return
+                if insn.id=='rti' and self.core_id==1 and self.pc==0x12cb06:
+                    machine.return_bootstrap(self);adapters['conditional_cpu1_bootstrap_rti']+=1
+                    return
+                if self.pc==0x06066126:
+                    require(insn.id=='pop.srl' and raw.get('m',raw.get('n'))==0x29 and self.task_frame_restore and
+                            self.sp==self.task_frame_restore['base'],'first-task special frame lacks its selected stack')
+                    reti,rets,psr=struct.unpack('<III',self.mem.read(self.sp,12))
+                    self.reti=reti&0x07fffffe;self.rets=rets&0x07fffffe;self.irq_psr=psr;self.flags=psr&15;self.sp+=12
+                    machine.record_event({'kind':'first_task_special_frame_restored','core':self.core_id,
+                        'tcb':hex(self.task_frame_restore['tcb']),'frame':hex(self.task_frame_restore['base']),
+                        'reti':hex(self.reti),'rets':hex(self.rets),'psr':hex(psr),'sp_after':hex(self.sp)})
+                    self.task_gpr_frame=dict(self.task_frame_restore)
+                    self.task_frame_restore=None
+                    self.finish_exact(self.pc+size);adapters['actual_first_task_special_frame']+=1
+                    return
+                if machine.unknown_task_gprs and self.pc==0x06066128:
+                    require(insn.id=='pop.rmask' and raw=={'n':0xffff} and self.task_gpr_frame and
+                            self.sp==self.task_gpr_frame['base']+12 and self.after_then is None,
+                            'abstract first-task GPR load requires the actual selected frame')
+                    values=[self.mem.abstract_word(self.sp+4*i,task_frame=True) for i in range(16)]
+                    self.R=values;self.sp+=64
+                    machine.record_event({'kind':'first_task_gprs_restored','core':self.core_id,
+                        'frame':hex(self.task_gpr_frame['base']),'sp_after':hex(self.sp),
+                        'unknown_registers':[i for i,v in enumerate(values) if isinstance(v,UnknownWord)]})
+                    self.task_gpr_frame=None
+                    self.finish_exact(self.pc+size);adapters['actual_first_task_abstract_gprs']+=1
+                    return
+                if machine.unknown_task_gprs and insn.id=='mov.rr' and isinstance(self.R[raw['y']],UnknownWord):
+                    self.R[raw['x']]=self.R[raw['y']]
+                    self.finish_exact(self.pc+size);adapters['unknown_gpr_copy']+=1
+                    return
+                if machine.unknown_task_gprs and insn.id in ('push.rl','push.rets_rl','push.rmask','push.rets_rmask',
+                        'pop.rl','pop.rets_rl','pop.pc_rl','pop.rmask','pop.rets_rmask','pop.pc_rmask'):
+                    if insn.id.endswith('_rl') or insn.id in ('push.rl','pop.rl'):
+                        last=raw['l'];regs=list(range(last,4)) if last<4 else list(range(4,last+1))
+                    else:
+                        mask=raw.get('m',raw.get('n'));regs=[i for i in range(16) if mask>>i&1]
+                    special='rets' if '.rets_' in insn.id else 'pc' if '.pc_' in insn.id else None
+                    count=len(regs)+(special is not None)
+                    if insn.id.startswith('push'):
+                        values=[self.R[i] for i in regs]+([self.rets] if special else [])
+                        base=self.sp-4*count
+                        # Validate the complete destination before changing any byte or SP.
+                        for i in range(count):self.mem.abstract_write_target(base+4*i)
+                        for i,v in enumerate(values):self.mem.write_abstract_word(base+4*i,v)
+                        self.sp=base
+                    else:
+                        values=[self.mem.abstract_word(self.sp+4*i) for i in range(count)]
+                        target=values[-1] if special else None
+                        if isinstance(target,UnknownWord):target.consumed()
+                        for i,v in zip(regs,values):self.R[i]=v
+                        self.sp+=4*count
+                        if special=='rets':self.rets=target&0x07fffffe
+                    end=self.pc+size
+                    self.seq=end;self.pc=target&0xfffffffe if special=='pc' else end;self.steps+=1
+                    if self.after_then is not None:
+                        self.after_then[0]-=1;self.check_then()
+                    adapters['abstract_task_stack_transport']+=1
+                    return
+                if insn.id in ('li.sr_u32','mov.r_sr','mov.sr_r') and not (
+                        (insn.id=='mov.r_sr' and raw['s']==6) or
+                        (insn.id in ('mov.r_sr','mov.sr_r') and raw['s']==11)):
+                    raise Blocked('multicore_special_register_semantics_unmodeled',register=raw['s'],instruction_id=insn.id)
+                if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and not (diagnostics or {}).get('irq_context'):
+                    raise Blocked('multicore_special_frame_unmodeled',instruction_id=insn.id)
             if diagnostics and diagnostics.get('exact_doubleword_stores') and insn.id=='st.d.l':
                 op=module.check.operands(insn,raw);address=(self.R[op['r']]+op['n'])&0xffffffff
                 require(address%4==0 and op['s']%2==0 and 0<=op['s']<=14,
@@ -292,13 +495,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id.endswith('.p'):
                 pair,pair_raw,pair_size=self.decode(self.pc+size)
                 base=self.tab.by_id(insn.id[:-2])
-                if base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.')) and pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
+                pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.')) or (
+                    diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
+                if pure_alu and pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
                     params=module.table.placeholders(insn.syntax);plain=module.table.placeholders(base.syntax)
                     base_raw=dict(zip(plain,(raw[k] for k in params)))
                     base_raw.update({k:raw[k] for k in base.fields if k not in base_raw and k in raw})
                     # Evaluate only pure ALU half on old registers. The store also
                     # uses old registers, without a host scratch-word merge read.
-                    effect,_,_=super().effect(base,base_raw,self.pc,size,self.R)
+                    effect,_,_=self.effect(base,base_raw,self.pc,size,self.R)
                     require(set(effect)<= {'regs','flags'},'parallel ALU produced non-ALU effects')
                     address,value=self.word_store(pair,pair_raw)
                     require(address%4==0,'unaligned exact parallel word store')
@@ -371,6 +576,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 op=module.check.operands(insn,raw)
                 address=(self.R[op['r']]+op['n'])&0xffffffff
                 if 0xf00000<=address<0x1000000:
+                    if hardware.software_irq is not None and hardware.software_irq.handles(address):
+                        if insn.id=='rmw.or.bitr':mask=1<<(self.R[op['s']]&31)
+                        elif insn.id=='rmw.or.modimm':mask=op['m']
+                        else:raise Blocked('software_irq_rmw_form_unmodeled',instruction_id=insn.id)
+                        hardware.software_irq_command(address,mask)
+                        self.finish_exact(self.pc+size);adapters['software_irq_selected_bit_command']+=1
+                        return
+                    if machine is not None and address in hardware.core_power:
+                        if insn.id!='rmw.and.nmodimm':raise Blocked('core_power_rmw_form_not_modeled')
+                        hardware.core_power_rmw(address,'and',op['m'])
+                        self.finish_exact(self.pc+size);adapters['core_power_unknown_preserving_rmw']+=1
+                        return
                     if hardware.handles_gpcnt(address):
                         if insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
                         elif insn.id=='rmw.or.modimm':kind='or';operand=op['m']
@@ -479,23 +696,31 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 adapters['cli_sti_visible_bit9_only']+=1
                 event({'access':'special-write','register':'icfg','value':hex(self.icfg)})
                 return
-            if diagnostics and diagnostics.get('irq_repeat_return') and insn.id=='mov.r_sr' and raw.get('s')==6:
-                self.R[raw['r']]=0  # explicit single CPU0 research profile
+            if (machine is not None or (diagnostics and diagnostics.get('irq_repeat_return'))) and insn.id=='mov.r_sr' and raw.get('s')==6:
+                self.R[raw['r']]=self.core_id
                 self.pc+=size
                 self.steps+=1
-                adapters['core0_visible_cnum']+=1
+                adapters['per_core_visible_cnum' if machine is not None else 'core0_visible_cnum']+=1
                 return
-            if diagnostics and insn.id in ('mov.r_sr','mov.sr_r') and raw.get('s')==11:
-                if not diagnostics.get('adapt_icfg'):
+            if (machine is not None or diagnostics) and insn.id in ('mov.r_sr','mov.sr_r') and raw.get('s')==11:
+                if machine is None and not diagnostics.get('adapt_icfg'):
                     raise Blocked('unsupported_special_register',register='icfg',instruction_id=insn.id)
                 if insn.id=='mov.r_sr':
                     if not self.icfg_known:
-                        raise Blocked('uninitialized_special_register',register='icfg')
-                    self.R[raw['r']]=self.icfg
-                    event({'access':'special-read','register':'icfg','value':hex(self.icfg)})
+                        if (machine is not None and self.core_id==1 and self.pc==0x12cad4 and
+                                getattr(self,'icfg_unknown_mask',None)==0x300 and raw['r']==0):
+                            self.R[0]=None;self.opaque_source='cpu1_bootstrap_icfg';self.bootstrap_icfg_pending=True
+                            event({'access':'special-read','register':'icfg','value':'unknown gates8/9; other bits explicit fixture'})
+                        else:raise Blocked('uninitialized_special_register',register='icfg')
+                    else:
+                        self.R[raw['r']]=self.icfg
+                        event({'access':'special-read','register':'icfg','value':hex(self.icfg)})
                 else:
-                    self.icfg=self.R[raw['r']]
+                    value=self.R[raw['r']]
+                    if isinstance(value,UnknownWord):value.consumed()
+                    self.icfg=value
                     self.icfg_known=True
+                    if machine is not None:self.icfg_unknown_mask=0
                     event({'access':'special-write','register':'icfg','value':hex(self.icfg)})
                 self.pc+=size
                 self.steps+=1
@@ -661,7 +886,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     trace=[]
     completed=0
     stop=None
+    if machine is not None:
+        cpu0=c
+        def factory():
+            cpu=CPU();cpu.mem=cpu0.mem
+            return cpu
+        machine.attach(c,factory,hardware)
     for _ in range(budget):
+        if machine is not None:c=machine.select()
         if hardware is not None and diagnostics and c.pc==diagnostics.get('stop_before_pc'):
             stop={'kind':'diagnostic_milestone_reached','address':hex(c.pc)}
             break
@@ -669,19 +901,28 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             stop={'kind':'isolated_function_return','sentinel':hex(ROM_RETURN)}
             break
         row={'pc':hex(c.pc)}
+        if machine is not None:row['core']=c.core_id
         try:
-            if hardware is not None and hardware.debug is not None:hardware.debug.check_fetch(c.pc,1)
+            if hardware is not None and hardware.debug is not None:hardware.debug.check_fetch(c.pc,1,c.core_id)
             insn,raw,size=c.decode(c.pc)
             if hardware is not None and hardware.debug is not None:
                 extent=size
                 if insn.id.endswith('.p'):extent+=c.decode(c.pc+size)[2]
-                hardware.debug.check_fetch(c.pc,extent)
+                hardware.debug.check_fetch(c.pc,extent,c.core_id)
             row.update(instruction_id=insn.id,text=module.codec.format(insn,raw),
                        bytes=c.mem.read(c.pc,size).hex())
             c.step()
             completed+=1
             row['next_pc']=hex(c.pc)
+            if machine is not None:
+                if c.core_id==1:hardware.secondary_cpu_executed=True
+                machine.after_step(c,int(row['pc'],16))
             if hardware is not None:hardware.advance(c.icfg)
+        except CoreStall as e:
+            machine.note_stall(c,e.details);row['stall']=e.details
+            machine.after_step()
+            try:hardware.advance(c.icfg)
+            except Blocked as pending:stop=pending.details
         except Blocked as e:
             stop=e.details
             if row.get('instruction_id','').startswith('st.') and stop['kind']=='uninitialized_memory':
@@ -705,8 +946,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             'writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map':True,
             'uninitialized_memory_reads_stop':True},
         'instruction_adapters':dict(adapters),'memory_events':events,
-        'last_instructions':trace,'last_registers':{'r':[hex(x) if x is not None else 'unknown' for x in c.R],
-            'sp':hex(c.sp),'ssp':hex(c.ssp),'rets':hex(c.rets),'icfg':hex(c.icfg)}}
+        'last_instructions':trace,'last_registers':{'r':[word(x) for x in c.R],
+            'sp':hex(c.sp) if c.sp_known else 'unknown','ssp':hex(c.ssp) if c.ssp is not None else 'unknown','rets':hex(c.rets),
+            'icfg':hex(c.icfg) if c.icfg is not None and (machine is None or c.icfg_known) else 'unknown'}}
+    if machine is not None:
+        result['stop_core']=c.core_id;result['machine']=machine.report()
+        result['assumptions']['cpu0_single_thread_no_interrupts']=False
+        result['assumptions']['deterministic_dual_core_interleaving_without_irq_entry']=True
     if handoff:
         result['assumptions']['typed_handoff']=handoff['description']
         if startup_loops:

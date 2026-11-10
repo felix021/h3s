@@ -7,6 +7,7 @@ import struct
 import unittest
 
 from br28_model import BR28Model, SFC_BASE, MMU_BASE, EMU_CON
+from br28_machine import DualCoreMachine
 from probe_boot import ENTRY, STACK_TOP, application, explore
 from probe_boot_handoff import RAM_CODE, SENTINEL_A, package_header, profile
 from probe_pi32v2 import ROOT, upstream
@@ -175,6 +176,36 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['completed_steps'],1)
         self.assertEqual(result['memory_snapshots']['frame_head']['bytes_with_unknowns'],
                          '2820010600000000'+'??'*16)
+
+    def test_parallel_extension_stores_to_uninitialized_stack_without_merge_read(self):
+        h=self.handoff();sp=STACK_TOP-128
+        h['snapshots'].append(('parallel_stack_word',sp,4))
+        regs=[0]*16;regs[0]=0xfe123456;regs[4]=0xdeadbeef
+        result=explore(self.module,self.app,name='extension_parallel_store',handoff=h,
+            diagnostics={'entry_pc':0x06011530,'initial_sp':sp,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_extensions':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['last_registers']['r'][1],'0x56')
+        self.assertEqual(result['memory_snapshots']['parallel_stack_word']['bytes_with_unknowns'],'efbeadde')
+
+    def test_first_task_partial_restore_does_not_zero_or_half_restore_unknown_gprs(self):
+        h=self.handoff();tcb=0x124f00;frame=0x124f40
+        h['seeds'] += [(tcb,struct.pack('<I',frame)),(frame,struct.pack('<IIII',ENTRY,0,0,0))]
+        regs=[0]*16;regs[0]=0x12345678;regs[4]=tcb
+        def run(budget):
+            return explore(self.module,self.app,name='selected_task_frame',handoff=h,
+                hardware=BR28Model(cpu1_held_projection=True,initial_cpu1_control=0),machine=DualCoreMachine(),
+                diagnostics={'entry_pc':0x06066120,'initial_sp':STACK_TOP,'initial_gprs':regs,'icfg_initial':0},budget=budget)
+        r=run(3)
+        self.assertEqual(r['completed_steps'],3)
+        self.assertEqual(r['last_registers']['sp'],hex(frame+12))
+        self.assertEqual(r['machine']['cores']['0']['reti'],hex(ENTRY))
+        r=run(4)
+        self.assertEqual(r['completed_steps'],3)
+        self.assertEqual(r['stop_pc'],'0x6066128')
+        self.assertEqual(r['stop']['kind'],'uninitialized_memory')
+        self.assertEqual(r['last_registers']['r'][0],'0x12345678')
+        self.assertEqual(r['last_registers']['sp'],hex(frame+12))
 
     def test_second_p33_return_stays_opaque_through_call_and_configuration(self):
         def run(budget,mutation=None):

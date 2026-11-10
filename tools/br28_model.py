@@ -33,6 +33,8 @@ CPU1_CONTROL=0xffe8c0
 VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
 PLL1_CON3=0xfd470c
 CACHE_STATUS_REGISTERS=(0xff0500,0xffe400,0xffec00)
+ICU_BASES=(0xffe400,0xffec00)
+CORE_PMU_CON1=(0xffe0c4,0xffe8c4)
 SFC_BASE=0xfe0200
 SDTAP_CON=0xff0100
 PSRAM_CON0=0xfe0300
@@ -183,6 +185,65 @@ class SFCReadBus:
         return {'initial_control_fixture':self.initial_con,'con':self.con,'baud':self.baud,'writes':self.writes,
                 'busy_projection':'zero outstanding transactions; synchronous decoded-Flash memory',
                 'flash_fetch_and_data_access_require_enable':True,'spi_or_cache_timing_simulated':False}
+
+
+class IcuInitializationProjection:
+    """Only observed command4 and enable bit; explicit global-step completion.
+
+    Bit30 is command busy. Bit31 stays an independent external status fixture.
+    No cache contents, physical latency, instruction-cache coherence or DMA.
+    """
+    def __init__(self,initial_words=None,command_steps=None):
+        if command_steps is not None and (not isinstance(command_steps,int) or not 0<=command_steps<=10000):
+            raise ValueError('invalid explicit ICU command step count')
+        self.initial=dict(initial_words or {});self.control={b:self.initial.get(b) for b in ICU_BASES}
+        if any(v is not None and (not isinstance(v,int) or v&~0xc0000001) for v in self.control.values()):
+            raise ValueError('ICU initial configuration outside scoped bits')
+        self.command_steps=command_steps;self.pending={};self.commands=[];self.completed=0;self.busy_reads=0
+
+    def handles(self,address):return any(address in (b,b+16) for b in ICU_BASES)
+
+    def base(self,address):return ICU_BASES[0] if address<ICU_BASES[1] else ICU_BASES[1]
+
+    def peek(self,address):
+        base=self.base(address)
+        if address!=base:raise Blocked('icu_command_readback_not_modeled',address=hex(address))
+        if self.control[base] is None:raise Blocked('unknown_initial_icu_control',address=hex(address))
+        return self.control[base]|(0x40000000 if base in self.pending else 0)
+
+    def read(self,address):
+        value=self.peek(address)
+        if value&0x40000000:self.busy_reads+=1
+        return value
+
+    def write(self,address,value):
+        base=self.base(address)
+        if address==base+16:
+            if value!=0xca000010:raise Blocked('icu_command_not_modeled',value=hex(value))
+            if self.control[base] is None:raise Blocked('unknown_initial_icu_control',address=hex(base))
+            if self.peek(base)&0x40000000:raise Blocked('icu_prior_command_state_unresolved',address=hex(base))
+            if self.command_steps is None:raise Blocked('icu_command_progress_unknown',address=hex(address))
+            self.pending[base]=self.command_steps
+            self.commands.append({'address':hex(address),'value':hex(value)})
+        else:
+            old=self.peek(base)
+            if base in self.pending:raise Blocked('icu_enable_before_command_completed')
+            if value!=(old|1):raise Blocked('icu_control_write_not_modeled',address=hex(address),value=hex(value))
+            self.control[base]=old|1
+
+    def advance(self):
+        if self.command_steps==0:return  # explicit stopped completion clock
+        for base in tuple(self.pending):
+            self.pending[base]-=1
+            if self.pending[base]<=0:del self.pending[base];self.completed+=1
+
+    def report(self):
+        return {'initial_word_fixtures':{hex(a):hex(v) for a,v in self.initial.items()},
+                'con':{hex(a):None if v is None else hex(v) for a,v in self.control.items()},
+                'command_steps_fixture':self.command_steps,'pending_cores':[ICU_BASES.index(b) for b in self.pending],
+                'commands':self.commands,'completed_commands':self.completed,'busy_reads':self.busy_reads,
+                'bit31_is_independent_external_status':True,'physical_latency_or_command4_semantics_certified':False,
+                'cache_contents_or_coherence_simulated':False}
 
 
 class CoreTickStopped:
@@ -459,6 +520,33 @@ class PartialWord:
         return self.value
 
 
+class SoftwareIrqCommands:
+    """Opt-in selected-bit SET/CLR contract; WO bus readback is unverified.
+
+    Never returns a fabricated read word or silently initializes other pending.
+    BR28 mapping124+n is cross-checked against actual QCY registration/ACK.
+    """
+    bases=(0xffe1a0,0xffe9a0)
+
+    def __init__(self):self.pending=[PartialWord(),PartialWord()];self.commands=0
+
+    def handles(self,address):return any(address in (b,b+4) for b in self.bases)
+
+    def command(self,address,mask):
+        if not self.handles(address):raise Blocked('software_irq_command_address_unmodeled',address=hex(address))
+        if mask&~15:raise Blocked('software_irq_command_bits_unmodeled',address=hex(address),mask=hex(mask))
+        core=0 if address<self.bases[1] else 1
+        clear=address==self.bases[core]+4
+        self.pending[core].apply('and' if clear else 'or',~mask if clear else mask)
+        self.commands+=1
+
+    def report(self):
+        return {'pending':{str(i):{'known_mask':hex(w.known&15),'known_value':hex(w.value&15)} for i,w in enumerate(self.pending)},
+                'commands':self.commands,'mapping':'BR28 software IRQ124+n, n=0..3; bank selects target core',
+                'selected_bit_command_is_explicit_projection':True,'wo_readback_certified':False,
+                'exception_delivery_simulated':False,'initial_pending_assumed_zero':False}
+
+
 RESET_FLAGS=(0xfd0004,0xf2a400,0xf2c0c0)
 RESET_REASON_INPUTS=(0xfd0000,0xf2a404,0xf2c048,0xf2a60c,
                     0xf2c158,0xf2c15c,0xf2c194,0xf2c198,0xf2c2a0,0xf2d2a0,0xf2d24c)
@@ -607,7 +695,8 @@ class BR28Model:
                  port_initialization_projection=False,port_input_words=None,initial_usb_io_word=None,
                  debug_execution_projection=False,initial_debug_controls=None,
                  reset_history_projection=False,reset_history_words=None,
-                 mpu_configuration_projection=False,initial_mpu_write_gate=None):
+                 mpu_configuration_projection=False,initial_mpu_write_gate=None,
+                 icu_initialization_projection=False,icu_command_steps=None,software_irq_command_projection=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
         if timer_lsb_ticks_per_step is not None and (not isinstance(timer_lsb_ticks_per_step,int) or not 0<=timer_lsb_ticks_per_step<=256):
             raise ValueError('invalid explicit LSB virtual tick rate')
@@ -616,6 +705,9 @@ class BR28Model:
         self.timer_lsb_ticks_per_step=timer_lsb_ticks_per_step
         self.timer=Timer0((4,) if timer_lsb_ticks_per_step is None else (0,4))
         self.irq=IRQController(initial_config=initial_irq_config,initial_ipmask=initial_ipmask)
+        self.multicore_enabled=False;self.current_core=0;self.irq1=None;self.core_icfg={}
+        self.cpu1_release_handler=None;self.secondary_cpu_executed=False
+        self.software_irq=SoftwareIrqCommands() if software_irq_command_projection else None
         self.registers={}
         self.reset_inputs_inactive=reset_inputs_inactive
         self.initial_registers=dict(initial_registers or {})
@@ -650,6 +742,7 @@ class BR28Model:
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
                for address,value in self.cache_status_words.items()):raise ValueError('invalid explicit cache status fixture')
+        self.icu=IcuInitializationProjection({a:v for a,v in self.cache_status_words.items() if a in ICU_BASES},icu_command_steps) if icu_initialization_projection else None
         self.sfc=SFCReadBus(initial_sfc_control) if sfc_read_bus else None
         self.debug=DebugExecutionProjection(initial_debug_controls) if debug_execution_projection else None
         self.reset=ResetHistoryProjection(reset_history_words) if reset_history_projection else None
@@ -681,6 +774,10 @@ class BR28Model:
 
     def handles(self,address,size):
         return size==4 and address%4==0 and (self.handles_gpio(address) or
+            (self.software_irq is not None and self.software_irq.handles(address)) or
+            (self.icu is not None and self.icu.handles(address)) or
+            (self.multicore_enabled and (address==IPMASK+0x800 or IRQ_CONFIG+0x800<=address<IRQ_CONFIG+0x880)) or
+            (self.multicore_enabled and address in CORE_PMU_CON1) or
             (self.debug is not None and self.debug.handles(address)) or
             (self.reset is not None and self.reset.handles(address)) or
             (self.mpu is not None and self.mpu.handles(address)) or
@@ -741,6 +838,17 @@ class BR28Model:
 
     def read(self,address):
         self.counts['reads']+=1
+        if self.software_irq is not None and self.software_irq.handles(address):
+            raise Blocked('software_irq_wo_readback_unverified',address=hex(address))
+        if self.icu is not None and self.icu.handles(address):return self.icu.read(address)
+        if self.multicore_enabled and address in CORE_PMU_CON1:return self.core_power[address].read(address)
+        if self.multicore_enabled and address==IPMASK+0x800:
+            if self.irq1.ipmask is None:raise Blocked('unknown_cpu1_ipmask')
+            return self.irq1.ipmask
+        if self.multicore_enabled and IRQ_CONFIG+0x800<=address<IRQ_CONFIG+0x880:
+            value=self.irq1.config[(address-IRQ_CONFIG-0x800)//4]
+            if value is None:raise Blocked('unknown_cpu1_irq_configuration',address=hex(address))
+            return value
         if self.debug is not None and self.debug.handles(address):return self.debug.read(address)
         if self.reset is not None and self.reset.handles(address):return self.reset.read(address)
         if self.mpu is not None and self.mpu.handles(address):return self.mpu.read(address)
@@ -779,6 +887,12 @@ class BR28Model:
     def write(self,address,value):
         if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('MMIO value must be unsigned32')
         if not self.handles(address,4):raise Blocked('unsupported_peripheral_write',address=hex(address))
+        if self.software_irq is not None and self.software_irq.handles(address):
+            raise Blocked('software_irq_full_store_contract_unmodeled',address=hex(address))
+        if self.icu is not None and self.icu.handles(address):
+            self.icu.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
+            return
+        if self.multicore_enabled and address in CORE_PMU_CON1:raise Blocked('core_power_full_write_not_modeled',address=hex(address))
         if self.debug is not None and self.debug.handles(address):
             self.debug.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
             return
@@ -800,9 +914,14 @@ class BR28Model:
         if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
         if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):self.sfc.write(address,value)
         elif self.cpu1_held_projection and address==CPU1_CONTROL:
-            if value&1:raise Blocked('cpu1_release_not_implemented',value=hex(value))
-            if value!=0:raise Blocked('cpu1_control_write_not_modeled',value=hex(value))
-            self.cpu1_control=0
+            if value&1:
+                if self.cpu1_release_handler is None:raise Blocked('cpu1_release_not_implemented',value=hex(value))
+                if self.cpu1_control!=0:raise Blocked('unsupported_cpu1_release_transition')
+                self.cpu1_release_handler(value);self.cpu1_control=value
+            else:
+                if value!=0:raise Blocked('cpu1_control_write_not_modeled',value=hex(value))
+                if self.multicore_enabled and self.cpu1_control==1:raise Blocked('cpu1_hold_after_release_not_implemented')
+                self.cpu1_control=0
         elif self.handles_core_tick(address):
             timer,offset=self.core_tick(address)
             if address==CORE_TICK_BASES[1] and value&1:
@@ -826,6 +945,11 @@ class BR28Model:
         elif address==PINR0:
             if value!=0:raise Blocked('pin0_reset_enable_not_modeled',value=hex(value))
             self.registers[address]=0  # SDK gpio_longpress_pin0_reset_config(time=0)
+        elif self.multicore_enabled and address==IPMASK+0x800:
+            if not 0<=value<=7:raise Blocked('unsupported_cpu1_ipmask',value=value)
+            self.irq1.ipmask=value
+        elif self.multicore_enabled and IRQ_CONFIG+0x800<=address<IRQ_CONFIG+0x880:
+            self.irq1.config[(address-IRQ_CONFIG-0x800)//4]=value
         elif address==IPMASK:
             if not 0<=value<=7:raise Blocked('unsupported_ipmask',value=value)
             self.irq.ipmask=value
@@ -839,18 +963,41 @@ class BR28Model:
         self.writes.append(row)
         if len(self.writes)>64:self.writes.pop(32)
 
+    def enable_multicore(self,irq1_config,ipmask1,release_handler):
+        if self.multicore_enabled or not self.cpu1_held_projection:raise ValueError('multicore requires a fresh held-CPU1 model')
+        self.irq1=IRQController(initial_config=irq1_config,initial_ipmask=ipmask1)
+        self.core_power={a:PartialWord() for a in CORE_PMU_CON1}
+        self.cpu1_release_handler=release_handler;self.multicore_enabled=True
+
+    def core_power_rmw(self,address,kind,operand):
+        if kind!='and' or operand&0xffffffff!=0xfffffeff:raise Blocked('core_power_operation_not_modeled',address=hex(address))
+        word=self.core_power[address];word.apply(kind,operand)
+        self.counts['reads']+=1
+        self.record_write({'address':hex(address),'known_mask':hex(word.known),'known_value':hex(word.value)})
+
+    def software_irq_command(self,address,mask):
+        self.software_irq.command(address,mask)
+        self.counts['reads']+=1
+        self.record_write({'address':hex(address),'selected_mask':hex(mask),'projection':'WO selected-bit command; no read value fabricated'})
+
     def lock(self,acquire):
         if self.lock_owner=='unknown':raise Blocked('uninitialized_shared_lock')
+        actor=self.current_core if self.multicore_enabled else 0
         if acquire:
-            if self.lock_owner is not None:raise Blocked('shared_lock_contention_or_recursion',owner=self.lock_owner)
-            self.lock_owner=0
+            if self.lock_owner is not None:
+                if self.multicore_enabled and self.lock_owner!=actor:
+                    from br28_machine import CoreStall
+                    raise CoreStall('shared_lock_wait',owner=self.lock_owner)
+                raise Blocked('shared_lock_contention_or_recursion',owner=self.lock_owner)
+            self.lock_owner=actor
         else:
-            if self.lock_owner!=0:raise Blocked('shared_lock_release_by_nonowner',owner=self.lock_owner)
+            if self.lock_owner!=actor:raise Blocked('shared_lock_release_by_nonowner',owner=self.lock_owner)
             self.lock_owner=None
         self.counts['lock_acquire' if acquire else 'lock_release']+=1
 
     def advance(self,icfg):
         self.counts['completed_model_steps']+=1
+        if self.icu is not None:self.icu.advance()
         if self.watchdog is not None:self.watchdog.advance()
         if self.core_ticks is not None:
             if self.core_ticks[1].con is not None and self.core_ticks[1].con&1:
@@ -865,9 +1012,28 @@ class BR28Model:
         if self.timer.con is None or not self.timer.con&3:self.timer.advance(0)
         elif ((self.timer.con>>10)&15)==0:self.timer.advance(self.timer_lsb_ticks_per_step)
         else:self.timer.advance(self.source_ticks_per_step)
-        if self.timer.pending and self.irq.eligible(4,icfg):
-            raise Blocked('interrupt_delivery_not_implemented',irq=4,
-                          note='Timer0 pending and enabled after priority filtering; CPU entry not bypassed')
+        if self.timer.pending:
+            if self.multicore_enabled:
+                for core,irq in enumerate((self.irq,self.irq1)):
+                    if core==1 and self.cpu1_control!=1:continue
+                    gate=self.core_icfg.get(core)
+                    if gate is None:
+                        if irq.eligible(4,0x300):raise Blocked('pending_irq_with_unknown_core_icfg',core=core,irq=4)
+                    elif irq.eligible(4,gate):raise Blocked('interrupt_delivery_not_implemented',core=core,irq=4)
+            elif self.irq.eligible(4,icfg):
+                raise Blocked('interrupt_delivery_not_implemented',irq=4,
+                              note='Timer0 pending and enabled after priority filtering; CPU entry not bypassed')
+        if self.software_irq is not None:
+            for core,word in enumerate(self.software_irq.pending):
+                if core==1 and (not self.multicore_enabled or self.cpu1_control!=1):continue
+                irq=self.irq if core==0 else self.irq1
+                gate=self.core_icfg.get(core) if self.multicore_enabled else icfg
+                for bit in range(4):
+                    if word.known&(1<<bit) and not word.value&(1<<bit):continue
+                    if irq.eligible(124+bit,0x300 if gate is None else gate):
+                        if gate is None:raise Blocked('software_irq_with_unknown_icfg',core=core,irq=124+bit)
+                        kind='software_irq_delivery_not_implemented' if word.known&(1<<bit) else 'software_irq_pending_unknown'
+                        raise Blocked(kind,core=core,irq=124+bit)
 
     def report(self):
         result={'registers':{hex(a):hex(v) for a,v in sorted(self.registers.items())},
@@ -897,8 +1063,14 @@ class BR28Model:
             result['assumptions']['core_tick_count_while_cpu1_held']=self.core_tick_count_while_held
         if self.cpu1_held_projection:
             result['cpu1_held_projection']={'initial_control_fixture':self.initial_cpu1_control,
-                                            'current_control':self.cpu1_control,'secondary_cpu_executed':False,
-                                            'release_is_a_stop_not_ready_injection':True}
+                                            'current_control':self.cpu1_control,'secondary_cpu_executed':self.secondary_cpu_executed,
+                                            'release_is_a_stop_not_ready_injection':not self.multicore_enabled}
+        if self.multicore_enabled:
+            result['multicore']={'current_core':self.current_core,'cpu1_irq_words':self.irq1.config,
+                'cpu1_ipmask':self.irq1.ipmask,'core_icfg':{str(k):v for k,v in self.core_icfg.items()},
+                'shared_lock_ownership_is_per_core':True,'ready_flag_injected':False}
+            result['multicore']['pmu_con1']={hex(a):{'known_mask':hex(w.known),'known_value':hex(w.value)}
+                                              for a,w in self.core_power.items()}
         if self.clock_divider_projection:result['assumptions']['sys_div_configuration_projection']=True
         if self.voltage_configuration_projection:
             result['assumptions']['voltage_configuration_projection']='five scoped P33/CMNG configuration registers; analog voltage/ramp/settling and RAM wait-state timing not modeled'
@@ -907,6 +1079,8 @@ class BR28Model:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}
             result['assumptions']['cache_contents_and_coherence_simulated']=False
         if self.sfc is not None:result['sfc_read_bus']=self.sfc.report()
+        if self.icu is not None:result['icu_initialization_projection']=self.icu.report()
+        if self.software_irq is not None:result['software_irq_commands']=self.software_irq.report()
         if self.debug is not None:result['debug_execution_projection']=self.debug.report()
         if self.reset is not None:result['reset_history_projection']=self.reset.report()
         if self.mpu is not None:result['mpu_configuration_projection']=self.mpu.report()

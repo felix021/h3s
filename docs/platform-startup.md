@@ -1,5 +1,7 @@
 # 连续启动到 CPU1 释放：实际保护配置与任务栈
 
+本页记录释放前的严格基线；更新的147,263步strict基线及147,268步任务RTI边界见[双核条件启动](dualcore-startup.md)。
+
 2026-11-11，本机条件仿真从应用入口连续执行 **127,239 步**，停在 `0x060660da` 设置 CPU1 释放位之前。真实端口初始化、复位／唤醒历史记录、`debug_init`、MPU 配置和 `app_core` 任务创建均已执行；`os_start` 已进入，但尚未切入任务或运行 CPU1。没有访问设备，没有新刷机，没有 GitHub CI。
 
 另一次**隔离**回放执行真实 `debug_init` 的126步前缀，再以同一硬件模型保存的实际范围值执行钩子：旧 r2 在 `0x060e3092` 被软件范围策略拒绝，修复候选能执行第一条载荷指令。它比直接给探针指定范围更接近启动中的实际配置，但不等于完整启动、EQ开关或实机故障已经修复。
@@ -93,7 +95,7 @@ ff03c0 END = 001344c5
 
 仅选中slot的四个字先清零后写入，其他slot仍未知；共两次key写，最后门关闭。这里的MPU END是调用者给的末字节地址，与LIM_PC原始上限不可混用。目前只模拟配置和写门，**未执行CPU／DMA访问权限检查**。
 
-## 实际任务已创建，CPU1仍未执行
+## 本阶段实际任务已创建，CPU1仍未执行
 
 `task_create` 返回0。实际 `OSTaskStkInit` 构造的app_core帧为虚拟 `0x400bb0`，本模型CPU RAM backing `0x19f7b0`：前16B依次为任务入口 `0x06012028`、RETS=0、PSR=0、pdata=0；后60B的R1–R15槽仍完全未知。
 
@@ -101,7 +103,7 @@ ff03c0 END = 001344c5
 
 CPU0已经真实写入 `0x19fef8=0x12caf4`，将CPU1 ready字节 `0x1265f5` 清0，然后在 `0xffe8c0` bit0释放指令前停止。两个精确候选都通过该相同前缀，并分别核对其实际保护上限、MPU值、任务返回值、unknown栈槽、取指检查计数及opaque轨迹。
 
-下一步必须让CPU1使用共享RAM／MMIO和独立CPU状态运行实际trampoline、ROM缓存初始化及ready写入；不能在释放寄存器里直接置ready。
+此阶段保留释放前strict边界。后续[双核条件回放](dualcore-startup.md)已用共享RAM／MMIO、独立CPU状态执行真实ROM、trampoline、缓存等待及ready写入，保留首任务未知GPR读取的strict基线，并在显式UnknownWord搬运下推进到任务RTI前；其中reset向量、bootstrap RTI和缓存进度均是显式未认证投影。
 
 静态研究补查了固定AC791N app4的9次测量：整个启动序列结束时SP等于USP，而与先前写入的SSP不同；另一RTI测量则保持SP。采样前还执行过CLI和ICFG修改，因此两组都不能单独推出通用RTI规则。QCY trampoline只显式设置USP=SP=`124840`、RETI=`12cad4`，尚未确定其初始SSP／ICFG／模式。首任务恢复另有76B软件帧，不能套用Timer ISR的28B保存或将RTI改成goto。
 
@@ -126,4 +128,4 @@ python3 tools/probe_debug_startup.py \
 
 完整本机回归、两个精确候选前缀、隔离保护对照、固定SDK提取与CPU上下文静态检查均通过。原boot、handoff、ROM、硬件、GPIO、MMU、P11状态、看门狗和时钟报告逐字节一致；原架构场景也与此前保留结果一致。公开证据仅保留有限事件、掩码、摘要和小段合成状态。
 
-CPU1／调度尚未运行，架构级IRQ／RTI、完整MPU／DMA、P11执行及蓝牙音频仍未完成。旧r2仍禁止重刷，修复候选仍未刷入；隔离范围拒绝与函数测试均不代替整机验证。原始ROM、Flash、完整RAM及研究反汇编不发布。
+本页的127,239步profile仍不运行CPU1；后续双核结果另见[双核启动](dualcore-startup.md)。架构级IRQ／任务RTI、完整MPU／DMA、P11执行及蓝牙音频仍未完成。旧r2仍禁止重刷，修复候选仍未刷入；隔离范围拒绝与函数测试均不代替整机验证。原始ROM、Flash、完整RAM及研究反汇编不发布。

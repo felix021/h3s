@@ -32,6 +32,8 @@ def main():
     options=['--fetch-simulator'] if args.fetch_inputs else []
     run(sys.executable,'tools/probe_pi32v2.py',*options,'--report','analysis/local-checks/functions.json')
     run(sys.executable,'tools/test_boot_bus.py')
+    run(sys.executable,'tools/test_br28_machine.py')
+    run(sys.executable,'tools/test_task_unknown.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json')
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json')
@@ -50,6 +52,8 @@ def main():
         run(sys.executable,'tools/probe_clock_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/clock-startup.json')
         run(sys.executable,'tools/probe_arch_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/architecture-startup.json')
         run(sys.executable,'tools/probe_platform_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/platform-startup.json')
+        run(sys.executable,'tools/analyze_cpu1_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/cpu1-rom.json')
+        run(sys.executable,'tools/probe_dualcore.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/dualcore-startup.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:
