@@ -1,5 +1,7 @@
 # 真实 ROM 接入后的离线执行
 
+后续已补入[外设信息与受限模型](hardware-contracts.md)：可选场景中真实PLL完成返回、连续启动推进到GPIO初态。本文原9组严格／隔离回归仍保持，默认不启用新外设模型。
+
 2026-11-10，使用[实机双读得到的128 KiB ROM窗口](rom-read.md)，按精确摘要接入启动探针的只读取指和数据映射。本轮完全在本机离线完成，没有连接设备、写Flash或产生新固件。
 
 结果：**冷PLL路径执行到了真实ROM，停在首次PLL控制写；隔离的`mask_init`在明确REP假设下完成返回。** 整机启动、外设时序和中断交付仍未实现。工具：[probe_rom.py](../tools/probe_rom.py)，脱敏结果：[rom-execution.json](../evidence/rom-execution.json)。

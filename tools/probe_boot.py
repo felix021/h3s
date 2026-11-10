@@ -51,7 +51,7 @@ def application(path):
 
 
 def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
-            handoff=None,startup_loops=False,diagnostics=None,rom=None):
+            handoff=None,startup_loops=False,diagnostics=None,rom=None,hardware=None):
     if rom is not None:
         check_rom(rom)
     events=[]
@@ -93,6 +93,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 if base<=address and address+size<=base+len(data):
                     return data[address-base:address-base+size]
             detail={'access':self.operation,'address':hex(address),'size':size}
+            if hardware is not None and self.operation!='fetch' and hardware.handles(address,size):
+                return struct.pack('<I',hardware.read(address))
             if self.operation!='fetch' and address==PLL and size==4 and pll is not None:
                 event({**detail,'hypothesis':'PLL0_CON0','value':hex(pll)})
                 return struct.pack('<I',pll)
@@ -111,6 +113,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def write(self,address,data):
             if rom is not None and address<len(rom) and address+len(data)>0:
                 raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data))
+            if hardware is not None and hardware.handles(address,len(data)):
+                hardware.write(address,int.from_bytes(data,'little'))
+                return
             region=self.region(address,len(data))
             if not region:
                 details={'value_bytes':data.hex()} if diagnostics else {}
@@ -168,6 +173,49 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
+            if hardware is not None and hardware.bus_lock_model and insn.id in ('lockset','lockclr'):
+                require(self.after_then is None,'shared lock adapter inside conditional block is not implemented')
+                hardware.lock(insn.id=='lockset')
+                self.pc+=size;self.steps+=1
+                adapters['cpu0_shared_lock_ownership']+=1
+                return
+            if hardware is not None and insn.id in ('rmw.or.modimm','rmw.and.nmodimm','rmw.and.invbitr','rmw.or.r'):
+                op=module.check.operands(insn,raw)
+                address=(self.R[op['r']]+op['n'])&0xffffffff
+                if 0xf00000<=address<0x1000000:
+                    require(self.after_then is None,'MMIO RMW adapter inside conditional block is not implemented')
+                    old=int.from_bytes(self.mem.read(address,4),'little')
+                    if insn.id=='rmw.or.modimm':value=old|op['m']
+                    elif insn.id=='rmw.and.nmodimm':value=old&op['m']
+                    elif insn.id=='rmw.and.invbitr':value=old&~(1<<(self.R[op['s']]&31))
+                    else:value=old|self.R[op['s']]
+                    # Always emit the bus write, even when the value is equal.
+                    # Upstream scratch-memory models can drop unchanged writes.
+                    self.mem.write(address,struct.pack('<I',value&0xffffffff))
+                    self.pc+=size;self.steps+=1
+                    adapters['mmio_rmw_always_writes']+=1
+                    return
+            if hardware is not None and insn.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs'):
+                op=module.check.operands(insn,raw)
+                if insn.id=='st.w.modimm':address=(self.R[op['r']]+op['n'])&0xffffffff;value=op['m']
+                elif insn.id=='st.w.idxs':address=(self.R[op['r']]+(self.R[op['s']]<<2))&0xffffffff;value=self.R[op['t']]
+                elif insn.id=='st.w.l':address=(self.R[op['r']]+op['n'])&0xffffffff;value=self.R[op['s']]
+                else:address=(self.R[op['b']]+op['n'])&0xffffffff;value=self.R[op['d']]
+                if 0xf00000<=address<0x1000000:
+                    require(self.after_then is None,'MMIO exact store inside conditional block is not adapted')
+                    self.mem.write(address,struct.pack('<I',value&0xffffffff))
+                    self.pc+=size;self.steps+=1
+                    adapters['mmio_full_width_store']+=1
+                    return
+            if hardware is not None and rom is not None and self.pc==0xa30c:
+                pair,pair_raw,pair_size=self.decode(self.pc+size)
+                require(insn.id=='li.s16.p' and raw=={'d':0,'n':4113} and
+                        pair.id=='st.w' and pair_raw=={'d':0,'b':1,'n':2} and self.after_then is None,
+                        'ROM timer parallel parameter store changed')
+                self.mem.write((self.R[1]+8)&0xffffffff,struct.pack('<I',self.R[0]))
+                self.R[0]=4113;self.pc+=size+pair_size;self.steps+=1
+                adapters['rom_timer_parallel_store_old_register']+=1
+                return
             if rom is not None and diagnostics and diagnostics.get('rom_exact_stores') and self.pc==0xc2d6:
                 require(insn.id=='st.w.modimm' and raw=={'r':3,'n':4,'m':0},'ROM PLL first store changed')
                 # Reject the actual MMIO write, rather than an upstream
@@ -392,6 +440,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     completed=0
     stop=None
     for _ in range(budget):
+        if hardware is not None and diagnostics and c.pc==diagnostics.get('stop_before_pc'):
+            stop={'kind':'diagnostic_milestone_reached','address':hex(c.pc)}
+            break
         if diagnostics and diagnostics.get('stop_on_rom_return') and c.pc==ROM_RETURN:
             stop={'kind':'isolated_function_return','sentinel':hex(ROM_RETURN)}
             break
@@ -403,6 +454,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             c.step()
             completed+=1
             row['next_pc']=hex(c.pc)
+            if hardware is not None:hardware.advance(c.icfg)
         except Blocked as e:
             stop=e.details
             if row.get('instruction_id','').startswith('st.') and stop['kind']=='uninitialized_memory':
@@ -454,6 +506,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                                'readonly':True,'silicon_extent_not_established':True}
         result['completed_model_steps_in_rom']=rom_steps['completed_model_steps_in_rom']
         result['assumptions']['rom_rep_model']='strict unless explicitly selected nonzero countdown / zero skip hypothesis'
+    if hardware is not None:
+        result['peripherals']=hardware.report()
     return result
 
 

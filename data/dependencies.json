@@ -23,17 +23,44 @@
     "maskrom_stubs.ld": "331e973cbd71d5f9add4b77a796036f88e8dad93f940b70bb82398b7748a4547"
   },
   "boot_reference_files": {
-    "SDK/interface/system/boot.h": {"bytes": 1189, "sha256": "002046f3f94f30b5a288d7611eb522fadb167320ff09f87783f39950305eec37"},
-    "SDK/interface/driver/cpu/br28/asm/csfr.h": {"bytes": 12798, "sha256": "c548d6367931098ff1c6ca4c63ba614899ff04d72b951472fdcdf876820986a1"},
-    "SDK/cpu/br28/liba/cpu.a": {"bytes": 2405408, "sha256": "8e3d3f25067d150b42d1c8d3b7988a7b735a216cbebd68f5ad95d25d293af96b"},
-    "SDK/cpu/br28/liba/system.a": {"bytes": 781702, "sha256": "0826d426af9e204309396cf8e8fd9d3d9678b66b8a805becfb14092af017c8f9"}
+    "SDK/interface/system/boot.h": {
+      "bytes": 1189,
+      "sha256": "002046f3f94f30b5a288d7611eb522fadb167320ff09f87783f39950305eec37"
+    },
+    "SDK/interface/driver/cpu/br28/asm/csfr.h": {
+      "bytes": 12798,
+      "sha256": "c548d6367931098ff1c6ca4c63ba614899ff04d72b951472fdcdf876820986a1"
+    },
+    "SDK/cpu/br28/liba/cpu.a": {
+      "bytes": 2405408,
+      "sha256": "8e3d3f25067d150b42d1c8d3b7988a7b735a216cbebd68f5ad95d25d293af96b"
+    },
+    "SDK/cpu/br28/liba/system.a": {
+      "bytes": 781702,
+      "sha256": "0826d426af9e204309396cf8e8fd9d3d9678b66b8a805becfb14092af017c8f9"
+    }
   },
   "boot_reference_objects": {
-    "startup.S.o": {"archive": "cpu.a", "sha256": "5cc9416001cf5e7114e53ceda88ae023787a0d76a1884bb142ef52d26bb9bc14"},
-    "clock.c.o": {"archive": "cpu.a", "sha256": "0647578227fc1d87fa2d7f07b98abc1936e2f9e953ed15526df0d1d31c53ea19"},
-    "boot.c.o": {"archive": "system.a", "sha256": "bfeb6d1c9501561a303fa0265113acf28041a065294ad727d6beba6b402dfe65"},
-    "crc16.c.o": {"archive": "cpu.a", "sha256": "52640b05ced5d7c3a354f078f4849eb8a5ee5e6a983d88ce11fa619aed32db70"},
-    "os_cpu_c_v2.c.o": {"archive": "system.a", "sha256": "86581948e072da8f901a37e9c888fa22b53b19557344287a0258dee00e2436a0"}
+    "startup.S.o": {
+      "archive": "cpu.a",
+      "sha256": "5cc9416001cf5e7114e53ceda88ae023787a0d76a1884bb142ef52d26bb9bc14"
+    },
+    "clock.c.o": {
+      "archive": "cpu.a",
+      "sha256": "0647578227fc1d87fa2d7f07b98abc1936e2f9e953ed15526df0d1d31c53ea19"
+    },
+    "boot.c.o": {
+      "archive": "system.a",
+      "sha256": "bfeb6d1c9501561a303fa0265113acf28041a065294ad727d6beba6b402dfe65"
+    },
+    "crc16.c.o": {
+      "archive": "cpu.a",
+      "sha256": "52640b05ced5d7c3a354f078f4849eb8a5ee5e6a983d88ce11fa619aed32db70"
+    },
+    "os_cpu_c_v2.c.o": {
+      "archive": "system.a",
+      "sha256": "86581948e072da8f901a37e9c888fa22b53b19557344287a0258dee00e2436a0"
+    }
   },
   "qemu_repeat_policy_reference": {
     "url": "https://github.com/simonjohansson/fm1-emulator",
@@ -67,5 +94,61 @@
     "url": "https://github.com/quarkslab/ghidra-jieli",
     "commit": "e1bd0707874b77b759401555d24839ad43af1267",
     "use": "check PC-relative semantics; no claim of full decompilation"
+  },
+  "hardware_reference_files": {
+    "SDK/interface/driver/cpu/br28/asm/gptimer_hw.h": {
+      "bytes": 3447,
+      "sha256": "e8e3e1c1450baed25c12b0bbb43c1bd7f9a2a95244c88ea856a7dc96d9c9348a"
+    },
+    "SDK/interface/driver/cpu/br28/asm/hwi.h": {
+      "bytes": 4930,
+      "sha256": "126f7f2e8604aceb24d37d458d19da46b5c93f4f973ac4ef128de341c17f1c29"
+    },
+    "SDK/interface/driver/cpu/br28/asm/cpu.h": {
+      "bytes": 4729,
+      "sha256": "17fefa223674f3fe8fefd37bf7f4d14cc35735d80dcbe435186c06b7e4ed07fc"
+    },
+    "SDK/interface/driver/cpu/br28/asm/power/p33/p33_sfr.h": {
+      "bytes": 12068,
+      "sha256": "adde010ff2d103ccf282812082d0153ce67df456c06287dc6d4226a4c1944c59"
+    }
+  },
+  "hardware_reference_objects": {
+    "gptimer_hw_v2.c.o": {
+      "archive": "cpu.a",
+      "sha256": "6f987b45b7ce9f845d4208868a56171d5856d0ef7700192c76667ceb94ba2269"
+    },
+    "p33_io_pinr_v1.c.o": {
+      "archive": "cpu.a",
+      "sha256": "fca3b8262025bdea803dae0fbdf73ee621f3ff0bb4e56558cdf846ba815de97f"
+    },
+    "hwi.c.o": {
+      "archive": "system.a",
+      "sha256": "193abc600160387bf469fae3ccccbcc6a4a9b97d79bb40c8417bb87ceb70a794"
+    },
+    "hwi.S.o": {
+      "archive": "system.a",
+      "sha256": "b93872f84cb278c66bc7c0eba0b67c53edf43bea35c632cbbef09537ef205215"
+    }
+  },
+  "official_bootloader_reference": {
+    "url": "https://github.com/Jieli-Tech/fw-Bootloader",
+    "commit": "ff3b9299d1b94d834b995fd858b3f75e2faa9840",
+    "license": "Apache-2.0",
+    "use": "BR28 Timer0 polling and IRQ register cross-check, not exact H3S bootloader",
+    "files": {
+      "user_boot/cpu/br28/delay.c": {
+        "sha256": "321d99b84b89377f40b9ecfe3572082dea261e9497c69a8b094cf01364d1b2f5",
+        "bytes": 689
+      },
+      "user_boot/include_lib/cpu/br28/irq.h": {
+        "sha256": "aa93228b8ffc2eca3af83282fc4c29acccccf7f6cb39bad5492daf9de6b89dca",
+        "bytes": 4019
+      },
+      "user_boot/include_lib/cpu/br28/csfr.h": {
+        "sha256": "aadca6385060ab1da3ea511ab6e2959cc9567507ccf4b0a7f3e23c3bc4283cc3",
+        "bytes": 12800
+      }
+    }
   }
 }

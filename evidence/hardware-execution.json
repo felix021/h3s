@@ -1,0 +1,5126 @@
+{
+  "format_version": 1,
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "reference_sdk_commit": "67328f4741c69993c88e504c67377b196c724f97",
+  "rom_sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+  "firmware_sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "device_accessed": false,
+  "firmware_created": false,
+  "whole_h3s_boot_simulated": false,
+  "suitable_for_flash_approval_alone": false,
+  "cpu_interrupt_delivery_simulated": false,
+  "analog_pll_lock_simulated": false,
+  "scenarios": [
+    {
+      "name": "pll_unknown_clock_initials",
+      "entry": "0x1fe14",
+      "completed_steps": 894,
+      "stop_pc": "0xc322",
+      "stop": {
+        "kind": "uninitialized_peripheral",
+        "address": "0xfd0018"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "isolated ROM PLL call",
+          "pll_boot_arg_seed": {
+            "osc_hz": 24000000,
+            "initial_output_slot": 123
+          }
+        },
+        "diagnostics": {
+          "entry_pc": 130580,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "stop_on_rom_return": true,
+          "rom_exact_stores": true,
+          "icfg_initial": 0
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "mmio_full_width_store": 13,
+        "mmio_rmw_always_writes": 3,
+        "rom_timer_parallel_store_old_register": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "0000c701",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0xa316",
+          "instruction_id": "beq.and.ri",
+          "text": "if ((r0 & 32768) == 0) goto -6",
+          "next_pc": "0xa314"
+        },
+        {
+          "pc": "0xa314",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r1+0]",
+          "next_pc": "0xa316"
+        },
+        {
+          "pc": "0xa316",
+          "instruction_id": "beq.and.ri",
+          "text": "if ((r0 & 32768) == 0) goto -6",
+          "next_pc": "0xa31a"
+        },
+        {
+          "pc": "0xa31a",
+          "instruction_id": "st.w.modimm",
+          "text": "[r1+0] = 0x4000",
+          "next_pc": "0xa31e"
+        },
+        {
+          "pc": "0xa31e",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0xc318"
+        },
+        {
+          "pc": "0xc318",
+          "instruction_id": "rmw.or.modimm",
+          "text": "[r3+12] |= 0x200",
+          "next_pc": "0xc31c"
+        },
+        {
+          "pc": "0xc31c",
+          "instruction_id": "li.u32",
+          "text": "r3 = 16580632",
+          "next_pc": "0xc322"
+        },
+        {
+          "pc": "0xc322",
+          "instruction_id": "rmw.and.nmodimm",
+          "text": "[r3+0] &= 0xFFFFFF0F"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x9011",
+          "0xfd0400",
+          "0x19fc28",
+          "0xfd0018",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x0",
+        "rets": "0xc318",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 1
+      },
+      "memory_events_truncated": false,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 0
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 0
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 0
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 0
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 8,
+          "sha256": "3818b78af169e5ebda105bec11c22d734ea230f15c42bf89dd8c3d8f35fdb66d",
+          "bytes_with_unknowns": "00366e017b000000"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 894,
+      "peripherals": {
+        "registers": {
+          "0xfd4600": "0x40892d93",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x31f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 0,
+          "cnt": 2,
+          "prd": 800,
+          "pending": false,
+          "expirations": 2
+        },
+        "counts": {
+          "completed_model_steps": 894,
+          "writes": 18,
+          "reads": 431
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d93"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x320"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x31f"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "isolated ROM PLL call"
+    },
+    {
+      "name": "pll_ticks1",
+      "entry": "0x1fe14",
+      "completed_steps": 3591,
+      "stop_pc": "0x1c70000",
+      "stop": {
+        "kind": "isolated_function_return",
+        "sentinel": "0x1c70000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "isolated ROM PLL call",
+          "pll_boot_arg_seed": {
+            "osc_hz": 24000000,
+            "initial_output_slot": 123
+          }
+        },
+        "diagnostics": {
+          "entry_pc": 130580,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "stop_on_rom_return": true,
+          "rom_exact_stores": true,
+          "icfg_initial": 0
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "mmio_full_width_store": 13,
+        "mmio_rmw_always_writes": 15,
+        "rom_timer_parallel_store_old_register": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "0000c701",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "b8c20000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "0a000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "09000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "ffffffff",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "cac20000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fc30",
+          "bytes": "006cdc02",
+          "region": "hypothesized_boot_argument_object"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "66c30000",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0xc2c2",
+          "instruction_id": "add.s14.rri",
+          "text": "r1 = r0 + -1",
+          "next_pc": "0xc2c6"
+        },
+        {
+          "pc": "0xc2c6",
+          "instruction_id": "st.w.sp",
+          "text": "[sp] = r1",
+          "next_pc": "0xc2c8"
+        },
+        {
+          "pc": "0xc2c8",
+          "instruction_id": "bnez",
+          "text": "if (r0 != 0) goto -12",
+          "next_pc": "0xc2ca"
+        },
+        {
+          "pc": "0xc2ca",
+          "instruction_id": "add.sp_i",
+          "text": "sp += 4",
+          "next_pc": "0xc2cc"
+        },
+        {
+          "pc": "0xc2cc",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0xc35e"
+        },
+        {
+          "pc": "0xc35e",
+          "instruction_id": "li.u32",
+          "text": "r0 = 48000000",
+          "next_pc": "0xc364"
+        },
+        {
+          "pc": "0xc364",
+          "instruction_id": "st.w",
+          "text": "[r2+8] = r0",
+          "next_pc": "0xc366"
+        },
+        {
+          "pc": "0xc366",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x1c70000"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x2dc6c00",
+          "0xffffffff",
+          "0x19fc28",
+          "0xfd0018",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x0",
+        "rets": "0xc35e",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 33
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 0
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 0
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 0
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 0
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 8,
+          "sha256": "fb62be470ce29a5c2ca2402c27f5b76564ad1213087b2f10fe3e5f3a0791182f",
+          "bytes_with_unknowns": "00366e01006cdc02"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 3591,
+      "peripherals": {
+        "registers": {
+          "0xfd0018": "0x30",
+          "0xfd001c": "0x643",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x40892d93",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x31f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 0,
+          "cnt": 0,
+          "prd": 800,
+          "pending": false,
+          "expirations": 2
+        },
+        "counts": {
+          "completed_model_steps": 3591,
+          "writes": 30,
+          "reads": 1721
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d93"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x320"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x31f"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0020",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x643"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 1,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "isolated ROM PLL call"
+    },
+    {
+      "name": "pll_ticks4",
+      "entry": "0x1fe14",
+      "completed_steps": 1033,
+      "stop_pc": "0x1c70000",
+      "stop": {
+        "kind": "isolated_function_return",
+        "sentinel": "0x1c70000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "isolated ROM PLL call",
+          "pll_boot_arg_seed": {
+            "osc_hz": 24000000,
+            "initial_output_slot": 123
+          }
+        },
+        "diagnostics": {
+          "entry_pc": 130580,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "stop_on_rom_return": true,
+          "rom_exact_stores": true,
+          "icfg_initial": 0
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "mmio_full_width_store": 13,
+        "mmio_rmw_always_writes": 15,
+        "rom_timer_parallel_store_old_register": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "0000c701",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "b8c20000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "0a000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "09000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "ffffffff",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "cac20000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fc30",
+          "bytes": "006cdc02",
+          "region": "hypothesized_boot_argument_object"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "66c30000",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0xc2c2",
+          "instruction_id": "add.s14.rri",
+          "text": "r1 = r0 + -1",
+          "next_pc": "0xc2c6"
+        },
+        {
+          "pc": "0xc2c6",
+          "instruction_id": "st.w.sp",
+          "text": "[sp] = r1",
+          "next_pc": "0xc2c8"
+        },
+        {
+          "pc": "0xc2c8",
+          "instruction_id": "bnez",
+          "text": "if (r0 != 0) goto -12",
+          "next_pc": "0xc2ca"
+        },
+        {
+          "pc": "0xc2ca",
+          "instruction_id": "add.sp_i",
+          "text": "sp += 4",
+          "next_pc": "0xc2cc"
+        },
+        {
+          "pc": "0xc2cc",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0xc35e"
+        },
+        {
+          "pc": "0xc35e",
+          "instruction_id": "li.u32",
+          "text": "r0 = 48000000",
+          "next_pc": "0xc364"
+        },
+        {
+          "pc": "0xc364",
+          "instruction_id": "st.w",
+          "text": "[r2+8] = r0",
+          "next_pc": "0xc366"
+        },
+        {
+          "pc": "0xc366",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x1c70000"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x2dc6c00",
+          "0xffffffff",
+          "0x19fc28",
+          "0xfd0018",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x0",
+        "rets": "0xc35e",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 33
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 0
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 0
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 0
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 0
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 8,
+          "sha256": "fb62be470ce29a5c2ca2402c27f5b76564ad1213087b2f10fe3e5f3a0791182f",
+          "bytes_with_unknowns": "00366e01006cdc02"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 1033,
+      "peripherals": {
+        "registers": {
+          "0xfd0018": "0x30",
+          "0xfd001c": "0x643",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x40892d93",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x31f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 0,
+          "cnt": 2,
+          "prd": 800,
+          "pending": false,
+          "expirations": 2
+        },
+        "counts": {
+          "completed_model_steps": 1033,
+          "writes": 30,
+          "reads": 442
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d93"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x320"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x31f"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0020",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x643"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "isolated ROM PLL call"
+    },
+    {
+      "name": "pll_ticks17",
+      "entry": "0x1fe14",
+      "completed_steps": 383,
+      "stop_pc": "0x1c70000",
+      "stop": {
+        "kind": "isolated_function_return",
+        "sentinel": "0x1c70000"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "isolated ROM PLL call",
+          "pll_boot_arg_seed": {
+            "osc_hz": 24000000,
+            "initial_output_slot": 123
+          }
+        },
+        "diagnostics": {
+          "entry_pc": 130580,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "stop_on_rom_return": true,
+          "rom_exact_stores": true,
+          "icfg_initial": 0
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "mmio_full_width_store": 13,
+        "mmio_rmw_always_writes": 15,
+        "rom_timer_parallel_store_old_register": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "0000c701",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "b8c20000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "0a000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "09000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "ffffffff",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "cac20000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fc30",
+          "bytes": "006cdc02",
+          "region": "hypothesized_boot_argument_object"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "66c30000",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0xc2c2",
+          "instruction_id": "add.s14.rri",
+          "text": "r1 = r0 + -1",
+          "next_pc": "0xc2c6"
+        },
+        {
+          "pc": "0xc2c6",
+          "instruction_id": "st.w.sp",
+          "text": "[sp] = r1",
+          "next_pc": "0xc2c8"
+        },
+        {
+          "pc": "0xc2c8",
+          "instruction_id": "bnez",
+          "text": "if (r0 != 0) goto -12",
+          "next_pc": "0xc2ca"
+        },
+        {
+          "pc": "0xc2ca",
+          "instruction_id": "add.sp_i",
+          "text": "sp += 4",
+          "next_pc": "0xc2cc"
+        },
+        {
+          "pc": "0xc2cc",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0xc35e"
+        },
+        {
+          "pc": "0xc35e",
+          "instruction_id": "li.u32",
+          "text": "r0 = 48000000",
+          "next_pc": "0xc364"
+        },
+        {
+          "pc": "0xc364",
+          "instruction_id": "st.w",
+          "text": "[r2+8] = r0",
+          "next_pc": "0xc366"
+        },
+        {
+          "pc": "0xc366",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x1c70000"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x2dc6c00",
+          "0xffffffff",
+          "0x19fc28",
+          "0xfd0018",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x123840",
+        "ssp": "0x0",
+        "rets": "0xc35e",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 33
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 0
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 0
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 0
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 0
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 8,
+          "sha256": "fb62be470ce29a5c2ca2402c27f5b76564ad1213087b2f10fe3e5f3a0791182f",
+          "bytes_with_unknowns": "00366e01006cdc02"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 383,
+      "peripherals": {
+        "registers": {
+          "0xfd0018": "0x30",
+          "0xfd001c": "0x643",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x40892d93",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x31f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 0,
+          "cnt": 10,
+          "prd": 800,
+          "pending": false,
+          "expirations": 2
+        },
+        "counts": {
+          "completed_model_steps": 383,
+          "writes": 30,
+          "reads": 117
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d93"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x320"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x31f"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0020",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x643"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 17,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "isolated ROM PLL call"
+    },
+    {
+      "name": "pll_stopped_clock",
+      "entry": "0x1fe14",
+      "completed_steps": 400,
+      "stop_pc": "0xa316",
+      "stop": {
+        "kind": "instruction_budget"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x13570000",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "isolated ROM PLL call",
+          "pll_boot_arg_seed": {
+            "osc_hz": 24000000,
+            "initial_output_slot": 123
+          }
+        },
+        "diagnostics": {
+          "entry_pc": 130580,
+          "initial_sp": 1194048,
+          "initial_gprs": [
+            324468736,
+            324468737,
+            324468738,
+            324468739,
+            324468740,
+            324468741,
+            324468742,
+            324468743,
+            324468744,
+            324468745,
+            324468746,
+            324468747,
+            324468748,
+            324468749,
+            324468750,
+            324468751
+          ],
+          "stop_on_rom_return": true,
+          "rom_exact_stores": true,
+          "icfg_initial": 0
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "mmio_full_width_store": 8,
+        "mmio_rmw_always_writes": 1,
+        "rom_timer_parallel_store_old_register": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "0000c701",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0xa316",
+          "instruction_id": "beq.and.ri",
+          "text": "if ((r0 & 32768) == 0) goto -6",
+          "next_pc": "0xa314"
+        },
+        {
+          "pc": "0xa314",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r1+0]",
+          "next_pc": "0xa316"
+        },
+        {
+          "pc": "0xa316",
+          "instruction_id": "beq.and.ri",
+          "text": "if ((r0 & 32768) == 0) goto -6",
+          "next_pc": "0xa314"
+        },
+        {
+          "pc": "0xa314",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r1+0]",
+          "next_pc": "0xa316"
+        },
+        {
+          "pc": "0xa316",
+          "instruction_id": "beq.and.ri",
+          "text": "if ((r0 & 32768) == 0) goto -6",
+          "next_pc": "0xa314"
+        },
+        {
+          "pc": "0xa314",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r1+0]",
+          "next_pc": "0xa316"
+        },
+        {
+          "pc": "0xa316",
+          "instruction_id": "beq.and.ri",
+          "text": "if ((r0 & 32768) == 0) goto -6",
+          "next_pc": "0xa314"
+        },
+        {
+          "pc": "0xa314",
+          "instruction_id": "ld.w",
+          "text": "r0 = [r1+0]",
+          "next_pc": "0xa316"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x1011",
+          "0xfd0400",
+          "0x19fc28",
+          "0xfd4600",
+          "0x13570004",
+          "0x13570005",
+          "0x13570006",
+          "0x13570007",
+          "0x13570008",
+          "0x13570009",
+          "0x1357000a",
+          "0x1357000b",
+          "0x1357000c",
+          "0x1357000d",
+          "0x1357000e",
+          "0x1357000f"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x0",
+        "rets": "0xc30e",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 1
+      },
+      "memory_events_truncated": false,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 0
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 0
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 0
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 0
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 8,
+          "sha256": "3818b78af169e5ebda105bec11c22d734ea230f15c42bf89dd8c3d8f35fdb66d",
+          "bytes_with_unknowns": "00366e017b000000"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 400,
+      "peripherals": {
+        "registers": {
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x40892d91",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x11f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 4113,
+          "cnt": 0,
+          "prd": 50,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 400,
+          "writes": 10,
+          "reads": 189
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 0,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "isolated ROM PLL call"
+    },
+    {
+      "name": "warm_unknown_reset_inputs",
+      "entry": "0x6000100",
+      "completed_steps": 17248,
+      "stop_pc": "0x60664c4",
+      "stop": {
+        "kind": "unmodeled_pin_reset_input",
+        "address": "0xf2c11c",
+        "value": "0x0"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "contiguous application entry"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 1,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd0",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x19fbd4",
+          "bytes": "00000000",
+          "region": "retained_update_parameters"
+        },
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "bc080106",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "a2010006",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "next_pc": "0x60108ba"
+        },
+        {
+          "pc": "0x60108ba",
+          "instruction_id": "st.w.pin",
+          "text": "[r1++=4] = r2",
+          "next_pc": "0x60108bc"
+        },
+        {
+          "pc": "0x60108bc",
+          "instruction_id": "pop.pc_rl",
+          "text": "{pc, r4} = [sp++]",
+          "next_pc": "0x600019c"
+        },
+        {
+          "pc": "0x600019c",
+          "instruction_id": "call.xl",
+          "text": "call 418584",
+          "next_pc": "0x60664ba"
+        },
+        {
+          "pc": "0x60664ba",
+          "instruction_id": "push.rets",
+          "text": "[--sp] = rets",
+          "next_pc": "0x60664bc"
+        },
+        {
+          "pc": "0x60664bc",
+          "instruction_id": "li.u8",
+          "text": "r0 = 0",
+          "next_pc": "0x60664be"
+        },
+        {
+          "pc": "0x60664be",
+          "instruction_id": "li.u32",
+          "text": "r1 = 15909148",
+          "next_pc": "0x60664c4"
+        },
+        {
+          "pc": "0x60664c4",
+          "instruction_id": "st.w",
+          "text": "[r1+0] = r0"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x0",
+          "0xf2c11c",
+          "0x0",
+          "0x60a860c",
+          "0x2000000",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12383c",
+        "ssp": "0x123840",
+        "rets": "0x60001a2",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10720,
+        "special-read": 3,
+        "special-write": 1
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "e70d929ec5c7ce6f9136219432e251f2a00876ae60acc893d36664da5c4230c5"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 0
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 0,
+      "peripherals": {
+        "registers": {
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 17248,
+          "reads": 1
+        },
+        "writes": [],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": false,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "contiguous application entry"
+    },
+    {
+      "name": "warm_known_inputs",
+      "entry": "0x6000100",
+      "completed_steps": 17329,
+      "stop_pc": "0x12b5aa",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "lockset"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "contiguous application entry"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 3,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 3,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1261d0",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x123818",
+          "bytes": "7eb51200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x126c6c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12b596",
+          "instruction_id": "lsl.rri",
+          "text": "r1 = r1 << 2",
+          "next_pc": "0x12b598"
+        },
+        {
+          "pc": "0x12b598",
+          "instruction_id": "add.rr",
+          "text": "r0 += r1",
+          "next_pc": "0x12b59a"
+        },
+        {
+          "pc": "0x12b59a",
+          "instruction_id": "li.s16",
+          "text": "r1 = 427",
+          "next_pc": "0x12b59e"
+        },
+        {
+          "pc": "0x12b59e",
+          "instruction_id": "ld.w.idxs",
+          "text": "r2 = [r0+r1<<2]",
+          "next_pc": "0x12b5a2"
+        },
+        {
+          "pc": "0x12b5a2",
+          "instruction_id": "add.rri",
+          "text": "r3 = r2 + 1",
+          "next_pc": "0x12b5a4"
+        },
+        {
+          "pc": "0x12b5a4",
+          "instruction_id": "st.w.idxs",
+          "text": "[r0+r1<<2] = r3",
+          "next_pc": "0x12b5a8"
+        },
+        {
+          "pc": "0x12b5a8",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto 2",
+          "next_pc": "0x12b5aa"
+        },
+        {
+          "pc": "0x12b5aa",
+          "instruction_id": "lockset",
+          "text": "lockset"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x1265c0",
+          "0x1ab",
+          "0x0",
+          "0x1",
+          "0xffe100",
+          "0x10",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12381c",
+        "ssp": "0x123840",
+        "rets": "0x6065fc0",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 10757,
+        "special-read": 3,
+        "special-write": 3
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "73b66fece49e797825333889a18c41202d8c1252800a889fcf48c57c461a21ff"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 60,
+          "sha256": "ea9e019585ef384ad5ac3cf20c850a89421f368ff8ac290cee544ab7d2ae6ceb"
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 6,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 17329,
+          "reads": 1,
+          "writes": 3
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "contiguous application entry"
+    },
+    {
+      "name": "warm_unknown_irq_initials",
+      "entry": "0x6000100",
+      "completed_steps": 17329,
+      "stop_pc": "0x12b5aa",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "lockset"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "contiguous application entry"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 3,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 3,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1261d0",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x123818",
+          "bytes": "7eb51200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x126c6c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12b596",
+          "instruction_id": "lsl.rri",
+          "text": "r1 = r1 << 2",
+          "next_pc": "0x12b598"
+        },
+        {
+          "pc": "0x12b598",
+          "instruction_id": "add.rr",
+          "text": "r0 += r1",
+          "next_pc": "0x12b59a"
+        },
+        {
+          "pc": "0x12b59a",
+          "instruction_id": "li.s16",
+          "text": "r1 = 427",
+          "next_pc": "0x12b59e"
+        },
+        {
+          "pc": "0x12b59e",
+          "instruction_id": "ld.w.idxs",
+          "text": "r2 = [r0+r1<<2]",
+          "next_pc": "0x12b5a2"
+        },
+        {
+          "pc": "0x12b5a2",
+          "instruction_id": "add.rri",
+          "text": "r3 = r2 + 1",
+          "next_pc": "0x12b5a4"
+        },
+        {
+          "pc": "0x12b5a4",
+          "instruction_id": "st.w.idxs",
+          "text": "[r0+r1<<2] = r3",
+          "next_pc": "0x12b5a8"
+        },
+        {
+          "pc": "0x12b5a8",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto 2",
+          "next_pc": "0x12b5aa"
+        },
+        {
+          "pc": "0x12b5aa",
+          "instruction_id": "lockset",
+          "text": "lockset"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x1265c0",
+          "0x1ab",
+          "0x0",
+          "0x1",
+          "0xffe100",
+          "0x10",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12381c",
+        "ssp": "0x123840",
+        "rets": "0x6065fc0",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 10757,
+        "special-read": 3,
+        "special-write": 3
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "73b66fece49e797825333889a18c41202d8c1252800a889fcf48c57c461a21ff"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 60,
+          "sha256": "ea9e019585ef384ad5ac3cf20c850a89421f368ff8ac290cee544ab7d2ae6ceb"
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 6,
+        "irq_config_known_words": 0,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 17329,
+          "reads": 1,
+          "writes": 3
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": null,
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "contiguous application entry"
+    },
+    {
+      "name": "cold_clock_prefix",
+      "entry": "0x6000100",
+      "completed_steps": 1047,
+      "stop_pc": "0x6000116",
+      "stop": {
+        "kind": "diagnostic_milestone_reached",
+        "address": "0x6000116"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "contiguous application entry"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true,
+          "stop_before_pc": 100663574
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "bootstrap_full_width_clock_store": 1,
+        "mmio_full_width_store": 13,
+        "mmio_rmw_always_writes": 15,
+        "rom_timer_parallel_store_old_register": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123824",
+          "bytes": "cac20000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x19fc30",
+          "bytes": "006cdc02",
+          "region": "hypothesized_boot_argument_object"
+        },
+        {
+          "access": "write",
+          "address": "0x123828",
+          "bytes": "66c30000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12382c",
+          "bytes": "40560306",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0xc2c6",
+          "instruction_id": "st.w.sp",
+          "text": "[sp] = r1",
+          "next_pc": "0xc2c8"
+        },
+        {
+          "pc": "0xc2c8",
+          "instruction_id": "bnez",
+          "text": "if (r0 != 0) goto -12",
+          "next_pc": "0xc2ca"
+        },
+        {
+          "pc": "0xc2ca",
+          "instruction_id": "add.sp_i",
+          "text": "sp += 4",
+          "next_pc": "0xc2cc"
+        },
+        {
+          "pc": "0xc2cc",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0xc35e"
+        },
+        {
+          "pc": "0xc35e",
+          "instruction_id": "li.u32",
+          "text": "r0 = 48000000",
+          "next_pc": "0xc364"
+        },
+        {
+          "pc": "0xc364",
+          "instruction_id": "st.w",
+          "text": "[r2+8] = r0",
+          "next_pc": "0xc366"
+        },
+        {
+          "pc": "0xc366",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x6035640"
+        },
+        {
+          "pc": "0x6035640",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x6000116"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x2dc6c00",
+          "0xffffffff",
+          "0x19fc28",
+          "0xfd0018",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x123834",
+        "ssp": "0x123840",
+        "rets": "0xc35e",
+        "icfg": "0x300"
+      },
+      "memory_event_counts": {
+        "write": 39
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????????????????????????????????????????????????????????????????????"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 0
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 0
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 0
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 0
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 8,
+          "sha256": "fb62be470ce29a5c2ca2402c27f5b76564ad1213087b2f10fe3e5f3a0791182f",
+          "bytes_with_unknowns": "00366e01006cdc02"
+        }
+      },
+      "milestones": [],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 1033,
+      "peripherals": {
+        "registers": {
+          "0xfd0018": "0x30",
+          "0xfd001c": "0x643",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x40892d93",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x31f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 0,
+          "cnt": 2,
+          "prd": 800,
+          "pending": false,
+          "expirations": 2
+        },
+        "counts": {
+          "completed_model_steps": 1047,
+          "reads": 443,
+          "writes": 30
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d93"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x320"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x31f"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0020",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x643"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x0"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "contiguous application entry"
+    },
+    {
+      "name": "cold_contiguous",
+      "entry": "0x6000100",
+      "completed_steps": 18367,
+      "stop_pc": "0x12b5aa",
+      "stop": {
+        "kind": "unsupported_runtime_instruction",
+        "instruction_id": "lockset"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "contiguous application entry"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "bootstrap_full_width_clock_store": 1,
+        "mmio_full_width_store": 16,
+        "mmio_rmw_always_writes": 15,
+        "rom_timer_parallel_store_old_register": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 3,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 2
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1261d0",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x123818",
+          "bytes": "7eb51200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x126c6c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12b596",
+          "instruction_id": "lsl.rri",
+          "text": "r1 = r1 << 2",
+          "next_pc": "0x12b598"
+        },
+        {
+          "pc": "0x12b598",
+          "instruction_id": "add.rr",
+          "text": "r0 += r1",
+          "next_pc": "0x12b59a"
+        },
+        {
+          "pc": "0x12b59a",
+          "instruction_id": "li.s16",
+          "text": "r1 = 427",
+          "next_pc": "0x12b59e"
+        },
+        {
+          "pc": "0x12b59e",
+          "instruction_id": "ld.w.idxs",
+          "text": "r2 = [r0+r1<<2]",
+          "next_pc": "0x12b5a2"
+        },
+        {
+          "pc": "0x12b5a2",
+          "instruction_id": "add.rri",
+          "text": "r3 = r2 + 1",
+          "next_pc": "0x12b5a4"
+        },
+        {
+          "pc": "0x12b5a4",
+          "instruction_id": "st.w.idxs",
+          "text": "[r0+r1<<2] = r3",
+          "next_pc": "0x12b5a8"
+        },
+        {
+          "pc": "0x12b5a8",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto 2",
+          "next_pc": "0x12b5aa"
+        },
+        {
+          "pc": "0x12b5aa",
+          "instruction_id": "lockset",
+          "text": "lockset"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x1265c0",
+          "0x1ab",
+          "0x0",
+          "0x1",
+          "0xffe100",
+          "0x10",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12381c",
+        "ssp": "0x123840",
+        "rets": "0x6065fc0",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 10791,
+        "special-read": 3,
+        "special-write": 3
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "73b66fece49e797825333889a18c41202d8c1252800a889fcf48c57c461a21ff"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 60,
+          "sha256": "ea9e019585ef384ad5ac3cf20c850a89421f368ff8ac290cee544ab7d2ae6ceb"
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 8,
+          "sha256": "fb62be470ce29a5c2ca2402c27f5b76564ad1213087b2f10fe3e5f3a0791182f",
+          "bytes_with_unknowns": "00366e01006cdc02"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 1073,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xfd0018": "0x30",
+          "0xfd001c": "0x643",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x40892d93",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x31f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 6,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 0,
+          "cnt": 2,
+          "prd": 800,
+          "pending": false,
+          "expirations": 2
+        },
+        "counts": {
+          "completed_model_steps": 18367,
+          "reads": 443,
+          "writes": 33
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d93"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x320"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x31f"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0020",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x643"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x0"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": false,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "contiguous application entry"
+    },
+    {
+      "name": "warm_bus_lock_modeled",
+      "entry": "0x6000100",
+      "completed_steps": 17789,
+      "stop_pc": "0x6084f72",
+      "stop": {
+        "kind": "unmapped_memory",
+        "access": "read",
+        "address": "0xfd5108",
+        "size": 4,
+        "reference_sdk_register": null
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "contiguous application entry"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 26,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 14,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 25,
+        "cpu0_shared_lock_ownership": 12,
+        "mmio_rmw_always_writes": 6
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x126c7c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x1261d8",
+          "bytes": "ff000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x1237ec",
+          "bytes": "6eb71200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237ec",
+          "bytes": "70b71200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6065866",
+          "instruction_id": "li.u32",
+          "text": "r0 = 1204696",
+          "next_pc": "0x606586c"
+        },
+        {
+          "pc": "0x606586c",
+          "instruction_id": "testset.b",
+          "text": "testset b[r0]",
+          "next_pc": "0x606586e"
+        },
+        {
+          "pc": "0x606586e",
+          "instruction_id": "bc.eq",
+          "text": "ifeq goto -6",
+          "next_pc": "0x6065872"
+        },
+        {
+          "pc": "0x6065872",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0x12b76e"
+        },
+        {
+          "pc": "0x12b76e",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12b770"
+        },
+        {
+          "pc": "0x12b770",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x6084f6a"
+        },
+        {
+          "pc": "0x6084f6a",
+          "instruction_id": "if.eq.ri.s12",
+          "text": "if (r4 == 0) {",
+          "next_pc": "0x6084f72"
+        },
+        {
+          "pc": "0x6084f72",
+          "instruction_id": "rmw.or.r",
+          "text": "[r3+8] |= r5"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x1261d8",
+          "0x0",
+          "0x1",
+          "0xfd5100",
+          "0x1",
+          "0x2",
+          "0x1",
+          "0x0",
+          "0xf2c120",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x1237f4",
+        "ssp": "0x123840",
+        "rets": "0x12b76e",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10865,
+        "special-read": 3,
+        "special-write": 26
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "5f3c560699c78db1ab65904c63df6d2fe44721be72ab90f8549b8524cbbb0f1a"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 60,
+          "sha256": "ea9e019585ef384ad5ac3cf20c850a89421f368ff8ac290cee544ab7d2ae6ceb"
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 17789,
+          "reads": 7,
+          "writes": 20,
+          "lock_acquire": 6,
+          "lock_release": 6
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "contiguous application entry"
+    },
+    {
+      "name": "warm_bus_lock_unknown_irq",
+      "entry": "0x6000100",
+      "completed_steps": 17332,
+      "stop_pc": "0x6065fc0",
+      "stop": {
+        "kind": "uninitialized_peripheral",
+        "address": "0xffe100"
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "contiguous application entry"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 3,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "mmio_full_width_store": 3,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 2,
+        "cpu0_shared_lock_ownership": 1
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123818",
+          "bytes": "7eb51200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "special-write",
+          "register": "icfg",
+          "value": "0x200"
+        },
+        {
+          "access": "write",
+          "address": "0x126c6c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x123818",
+          "bytes": "acb51200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x12b59e",
+          "instruction_id": "ld.w.idxs",
+          "text": "r2 = [r0+r1<<2]",
+          "next_pc": "0x12b5a2"
+        },
+        {
+          "pc": "0x12b5a2",
+          "instruction_id": "add.rri",
+          "text": "r3 = r2 + 1",
+          "next_pc": "0x12b5a4"
+        },
+        {
+          "pc": "0x12b5a4",
+          "instruction_id": "st.w.idxs",
+          "text": "[r0+r1<<2] = r3",
+          "next_pc": "0x12b5a8"
+        },
+        {
+          "pc": "0x12b5a8",
+          "instruction_id": "bnez",
+          "text": "if (r2 != 0) goto 2",
+          "next_pc": "0x12b5aa"
+        },
+        {
+          "pc": "0x12b5aa",
+          "instruction_id": "lockset",
+          "text": "lockset",
+          "next_pc": "0x12b5ac"
+        },
+        {
+          "pc": "0x12b5ac",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12b5ae"
+        },
+        {
+          "pc": "0x12b5ae",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0x6065fc0"
+        },
+        {
+          "pc": "0x6065fc0",
+          "instruction_id": "rmw.and.invbitr",
+          "text": "[r4+0] &= ~(1 << r5)"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x1265c0",
+          "0x1ab",
+          "0x0",
+          "0x1",
+          "0xffe100",
+          "0x10",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x12381c",
+        "ssp": "0x123840",
+        "rets": "0x6065fc0",
+        "icfg": "0x200"
+      },
+      "memory_event_counts": {
+        "write": 10758,
+        "special-read": 3,
+        "special-write": 3
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "73b66fece49e797825333889a18c41202d8c1252800a889fcf48c57c461a21ff"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 60,
+          "sha256": "ea9e019585ef384ad5ac3cf20c850a89421f368ff8ac290cee544ab7d2ae6ceb"
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 0,
+          "bytes_with_unknowns": "????????????????"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 40,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xfd0018": "0x0",
+          "0xfd001c": "0x0",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x1"
+        },
+        "ipmask": 6,
+        "irq_config_known_words": 0,
+        "timer0": {
+          "con": null,
+          "cnt": null,
+          "prd": null,
+          "pending": false,
+          "expirations": 0
+        },
+        "counts": {
+          "completed_model_steps": 17332,
+          "reads": 2,
+          "writes": 3,
+          "lock_acquire": 1
+        },
+        "writes": [
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": 0,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x1"
+          },
+          "initial_irq_config": null,
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "contiguous application entry"
+    },
+    {
+      "name": "cold_bus_lock_modeled",
+      "entry": "0x6000100",
+      "completed_steps": 18827,
+      "stop_pc": "0x6084f72",
+      "stop": {
+        "kind": "unmapped_memory",
+        "access": "read",
+        "address": "0xfd5108",
+        "size": 4,
+        "reference_sdk_register": null
+      },
+      "assumptions": {
+        "cpu0_single_thread_no_interrupts": true,
+        "unobserved_initial_gprs_flags_sp_rets_icfg": "zero placeholders except explicit diagnostic overrides; not a measured boot state",
+        "initial_r0": "0x19fd00",
+        "r0_boot_args_pointer_is_hypothesis": false,
+        "pll0_con0_read_hypothesis": null,
+        "writable_ram_windows_are_scoped_harness_regions_not_a_full_chip_map": true,
+        "uninitialized_memory_reads_stop": true,
+        "typed_handoff": {
+          "layout": "BOOT_DEVICE_INFO, matched to reference SDK boot.h and QCY copy routine",
+          "r0_and_fs_info_addresses": "synthetic harness allocations",
+          "sfc_mapping": "bank-A physical0x2020 -> runtime0x06000000 model",
+          "flash_header_fields": "decoded exact official package; FlashSize is header value, not a capacity measurement",
+          "chip_trim_mac_crc": "synthetic test sentinel 571368240200000000015a5a",
+          "execution_scope": "contiguous application entry"
+        },
+        "nonzero_rep_counts": "full countdown model; upstream hardware tested counts1..7 on AC791N; large counts/BR28 unverified",
+        "diagnostics": {
+          "zero_rep": "skip_hypothesis",
+          "adapt_icfg": true,
+          "icfg_initial": 768,
+          "irq_repeat_return": true,
+          "update_repeat": true,
+          "rom_exact_stores": true,
+          "rom_memset_rep": true,
+          "rom_zero_rep_skip": true,
+          "visible_cli": true
+        },
+        "rom_rep_model": "strict unless explicitly selected nonzero countdown / zero skip hypothesis"
+      },
+      "instruction_adapters": {
+        "entry_li_sp_ssp": 2,
+        "bootstrap_full_width_clock_store": 1,
+        "mmio_full_width_store": 27,
+        "mmio_rmw_always_writes": 21,
+        "rom_timer_parallel_store_old_register": 2,
+        "typed_handoff_byte_exact_store": 6,
+        "bounded_startup_rep_controller": 3,
+        "startup_word_store": 10672,
+        "zero_rep_skip_hypothesis": 1,
+        "icfg_visible_value_only": 4,
+        "irq_repeat_return_hypothesis": 2,
+        "core0_visible_cnum": 26,
+        "retained_update_clear_rep_i": 1,
+        "retained_update_clear_word_store": 20,
+        "rom_nonzero_rep_countdown_hypothesis": 1,
+        "rom_byte_exact_store": 17,
+        "rom_zero_rep_skip_hypothesis": 1,
+        "cli_sti_visible_bit9_only": 25,
+        "cpu0_shared_lock_ownership": 12
+      },
+      "memory_events": [
+        {
+          "access": "write",
+          "address": "0x123834",
+          "bytes": "00fd1900",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123838",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x12383c",
+          "bytes": "00000000",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x123830",
+          "bytes": "16010006",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x126c7c",
+          "bytes": "01000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x1261d8",
+          "bytes": "ff000000",
+          "region": "qcy_bss"
+        },
+        {
+          "access": "write",
+          "address": "0x1237ec",
+          "bytes": "6eb71200",
+          "region": "bootstrap_stack"
+        },
+        {
+          "access": "write",
+          "address": "0x1237ec",
+          "bytes": "70b71200",
+          "region": "bootstrap_stack"
+        }
+      ],
+      "last_instructions": [
+        {
+          "pc": "0x6065866",
+          "instruction_id": "li.u32",
+          "text": "r0 = 1204696",
+          "next_pc": "0x606586c"
+        },
+        {
+          "pc": "0x606586c",
+          "instruction_id": "testset.b",
+          "text": "testset b[r0]",
+          "next_pc": "0x606586e"
+        },
+        {
+          "pc": "0x606586e",
+          "instruction_id": "bc.eq",
+          "text": "ifeq goto -6",
+          "next_pc": "0x6065872"
+        },
+        {
+          "pc": "0x6065872",
+          "instruction_id": "rts",
+          "text": "rts",
+          "next_pc": "0x12b76e"
+        },
+        {
+          "pc": "0x12b76e",
+          "instruction_id": "csync",
+          "text": "csync",
+          "next_pc": "0x12b770"
+        },
+        {
+          "pc": "0x12b770",
+          "instruction_id": "pop.pc",
+          "text": "pc = [sp++]",
+          "next_pc": "0x6084f6a"
+        },
+        {
+          "pc": "0x6084f6a",
+          "instruction_id": "if.eq.ri.s12",
+          "text": "if (r4 == 0) {",
+          "next_pc": "0x6084f72"
+        },
+        {
+          "pc": "0x6084f72",
+          "instruction_id": "rmw.or.r",
+          "text": "[r3+8] |= r5"
+        }
+      ],
+      "last_registers": {
+        "r": [
+          "0x1261d8",
+          "0x0",
+          "0x1",
+          "0xfd5100",
+          "0x1",
+          "0x2",
+          "0x1",
+          "0x0",
+          "0xf2c120",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "sp": "0x1237f4",
+        "ssp": "0x123840",
+        "rets": "0x12b76e",
+        "icfg": "0x0"
+      },
+      "memory_event_counts": {
+        "write": 10899,
+        "special-read": 3,
+        "special-write": 26
+      },
+      "memory_events_truncated": true,
+      "memory_snapshots": {
+        "boot_info": {
+          "address": "0x122800",
+          "size": 40,
+          "initialized_bytes": 25,
+          "bytes_with_unknowns": "10??????????????????????????????202000000000000600f01f00571368240200000000015a5a"
+        },
+        "bss": {
+          "address": "0x125320",
+          "size": 21260,
+          "initialized_bytes": 21260,
+          "sha256": "5f3c560699c78db1ab65904c63df6d2fe44721be72ab90f8549b8524cbbb0f1a"
+        },
+        "data": {
+          "address": "0x124840",
+          "size": 2784,
+          "initialized_bytes": 2784,
+          "sha256": "c418a633c5f97a95682c6e83221741873779392c1815268d3655ef4c01b310c7"
+        },
+        "ram_code": {
+          "address": "0x12a640",
+          "size": 18644,
+          "initialized_bytes": 18644,
+          "sha256": "f4b326ca44b5eb08ca6acc05c634a4c0386a33841e045a9a658810f20c8f71e3"
+        },
+        "rom_mask_context": {
+          "address": "0x19fd68",
+          "size": 60,
+          "initialized_bytes": 60,
+          "sha256": "ea9e019585ef384ad5ac3cf20c850a89421f368ff8ac290cee544ab7d2ae6ceb"
+        },
+        "rom_clock_pair": {
+          "address": "0x19fc2c",
+          "size": 8,
+          "initialized_bytes": 8,
+          "sha256": "fb62be470ce29a5c2ca2402c27f5b76564ad1213087b2f10fe3e5f3a0791182f",
+          "bytes_with_unknowns": "00366e01006cdc02"
+        }
+      },
+      "milestones": [
+        {
+          "kind": "startup_icfg_mask_applied",
+          "pc": "0x6000192",
+          "icfg": "0x0",
+          "r0": "0x19fd00",
+          "sp": "0x123840"
+        },
+        {
+          "kind": "software_crc_result",
+          "pc": "0x6000f08",
+          "icfg": "0x0",
+          "r0": "0x0",
+          "sp": "0x123814"
+        },
+        {
+          "kind": "update_result_get_return",
+          "pc": "0x60108bc",
+          "icfg": "0x0",
+          "r0": "0x5a00",
+          "sp": "0x123840"
+        }
+      ],
+      "rom_mapping": {
+        "start": 0,
+        "end_exclusive": 131072,
+        "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+        "readonly": true,
+        "silicon_extent_not_established": true
+      },
+      "completed_model_steps_in_rom": 1073,
+      "peripherals": {
+        "registers": {
+          "0xf2c11c": "0x17",
+          "0xfd0018": "0x30",
+          "0xfd001c": "0x643",
+          "0xfd0020": "0x0",
+          "0xfd4600": "0x40892d93",
+          "0xfd4604": "0x80a",
+          "0xfd4608": "0x5e",
+          "0xfd460c": "0x31f",
+          "0xfd4610": "0x0"
+        },
+        "ipmask": 0,
+        "irq_config_known_words": 32,
+        "timer0": {
+          "con": 0,
+          "cnt": 2,
+          "prd": 800,
+          "pending": false,
+          "expirations": 2
+        },
+        "counts": {
+          "completed_model_steps": 18827,
+          "reads": 449,
+          "writes": 50,
+          "lock_acquire": 6,
+          "lock_release": 6
+        },
+        "writes": [
+          {
+            "address": "0xfd4610",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x11f"
+          },
+          {
+            "address": "0xfd4608",
+            "value": "0x5e"
+          },
+          {
+            "address": "0xfd4604",
+            "value": "0x80a"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d90"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d91"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x32"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd4600",
+            "value": "0x40892d93"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd0404",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0408",
+            "value": "0x320"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x1011"
+          },
+          {
+            "address": "0xfd0400",
+            "value": "0x4000"
+          },
+          {
+            "address": "0xfd460c",
+            "value": "0x31f"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0018",
+            "value": "0x30"
+          },
+          {
+            "address": "0xfd0020",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x3"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x43"
+          },
+          {
+            "address": "0xfd001c",
+            "value": "0x643"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x0"
+          },
+          {
+            "address": "0xf2c11c",
+            "value": "0x17"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe100",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x6"
+          },
+          {
+            "address": "0xffe104",
+            "value": "0x0"
+          },
+          {
+            "address": "0xffe1a8",
+            "value": "0x0"
+          }
+        ],
+        "writes_truncated": false,
+        "shared_lock_owner": null,
+        "assumptions": {
+          "source_ticks_per_model_step": 4,
+          "initial_registers": {
+            "0xfd0018": "0x0",
+            "0xfd001c": "0x0",
+            "0xfd0020": "0x0",
+            "0xfd4600": "0x0"
+          },
+          "initial_irq_config": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "initial_ipmask": 0,
+          "shared_lock_model": true,
+          "initial_lock_owner": null,
+          "timer_progress_is_virtual_not_cycle_calibrated": true,
+          "external_reset_inputs_inactive": true,
+          "analog_pll_lock_simulated": false,
+          "cpu_interrupt_delivery_simulated": false
+        }
+      },
+      "phase": "contiguous application entry"
+    }
+  ],
+  "hardware_contract_regression_passed": true,
+  "timer_tick_sensitivity_preserves_pll_programming": true
+}

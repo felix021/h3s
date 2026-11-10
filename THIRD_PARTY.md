@@ -42,3 +42,7 @@ FM-1 的 QEMU／Rust 模拟器目前仅作为研究来源链接，没有复制�
 USB MSC/BR28协议参考Andrey Grigoryev (kagaimiq) 的 https://github.com/kagaimiq/jl-uboot-tool ，固定提交 `adb3f18889e88ac512ce0a3c4d8cc3d3cb30696a`，MIT许可。对应许可全文保存在 `tools/usb-recovery/UPSTREAM_LICENSE`，相关协议实现保留来源说明。
 
 BR28 RAM loader是该提交的 `data/loaderblobs/usb/br28loader.bin`，23552B、SHA256 `ab1b77eb73385aaa78ab769253b2af7ef63d0ade46f391bd7424cc598a40267c`。本仓库提供固定URL和摘要下载，不重新打包第三方二进制，也不把仓库级MIT声明泛化为拥有厂商二进制的版权。参考芯片SDK的USB入口来自固定JL701N提交；实际QCY机器码和设备响应另行核对。
+
+## 官方 BR28 bootloader 的外设参考
+
+[Jieli-Tech/fw-Bootloader](https://github.com/Jieli-Tech/fw-Bootloader)，固定提交`ff3b9299d1b94d834b995fd858b3f75e2faa9840`，上游采用Apache-2.0。本轮下载BR28 `delay.c`及IRQ/CSFR头文件到忽略缓存，用于交叉核对Timer0轮询和寄存器定义，未将其整份源码重新发布或称为QCY确切bootloader。URL、长度和摘要在data/dependencies.json，获取流程见[外设模型说明](docs/hardware-contracts.md)。新增外设模型依据寄存器行为独立实现，未复制FM-1 QEMU的GPL模型。

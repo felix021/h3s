@@ -28,6 +28,7 @@ def main():
     run('bash','tools/eq-toggle/test.sh')
     run(sys.executable,'tools/usb-recovery/test_recovery.py')
     run(sys.executable,'tools/usb-recovery/test_rom.py')
+    run(sys.executable,'tools/test_br28_model.py')
     options=['--fetch-simulator'] if args.fetch_inputs else []
     run(sys.executable,'tools/probe_pi32v2.py',*options,'--report','analysis/local-checks/functions.json')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json')
@@ -35,6 +36,7 @@ def main():
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json')
     if args.rom:
         run(sys.executable,'tools/probe_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/rom-execution.json')
+        run(sys.executable,'tools/probe_hardware.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/hardware-execution.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:

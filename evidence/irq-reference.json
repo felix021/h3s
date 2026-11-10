@@ -1,0 +1,42 @@
+{
+  "reference_object_sha256": "b93872f84cb278c66bc7c0eba0b67c53edf43bea35c632cbbef09537ef205215",
+  "application_sha256": "18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041",
+  "reference_irq": 4,
+  "reference_veneer_bytes": 22,
+  "nonrelocated_bytes_compared": 18,
+  "reference_software_save_bytes": 76,
+  "instructions": [
+    {
+      "instruction_id": "push.rmask",
+      "text": "[--sp] = {r15-r0}"
+    },
+    {
+      "instruction_id": "push.srl",
+      "text": "[--sp] = {psr, rets, reti}"
+    },
+    {
+      "instruction_id": "li.u8",
+      "text": "r0 = 4"
+    },
+    {
+      "instruction_id": "call.xl",
+      "text": "call 0"
+    },
+    {
+      "instruction_id": "pop.srl",
+      "text": "{psr, rets, reti} = [sp++]"
+    },
+    {
+      "instruction_id": "pop.rmask",
+      "text": "{r15-r0} = [sp++]"
+    },
+    {
+      "instruction_id": "rti",
+      "text": "rti"
+    }
+  ],
+  "qcy_matching_sites": [],
+  "reference_is_proven_qcy_irq_abi": false,
+  "device_accessed": false,
+  "cpu_interrupt_delivery_simulated": false
+}
