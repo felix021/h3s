@@ -120,6 +120,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             detail={'access':self.operation,'address':hex(address),'size':size}
             if hardware is not None and self.operation!='fetch' and hardware.handles(address,size):
                 return struct.pack('<I',hardware.read(address))
+            if hardware is not None and self.operation!='fetch':
+                # Byte-granular explicit fixtures (P2M heap info); without a
+                # fixture this returns None and the ordinary strict path applies.
+                data=hardware.read_bytes(address,size)
+                if data is not None:return data
             if self.operation!='fetch' and address==PLL and size==4 and pll is not None:
                 event({**detail,'hypothesis':'PLL0_CON0','value':hex(pll)})
                 return struct.pack('<I',pll)
@@ -866,6 +871,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         else:raise Blocked('cpu1_control_rmw_form_not_modeled',instruction_id=insn.id)
                         hardware.cpu1_control_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['cpu1_control_rmw']+=1
+                        return
+                    if hardware.handles_p11_lpwr_rmw(address):
+                        # power_init 0x60679a0 请求:PWR_CON |=0x20(LP_PWR_INIT_FLAG)。
+                        # opt-in P11 响应投影只记录该请求;合并写回不落在严格复位
+                        # 标志路径(该路径只认 bit6 清标志命令)。其他形式保持严格拒绝。
+                        hardware.p11_lpwr_rmw(address,insn.id,op.get('m'))
+                        self.finish_exact(self.pc+size);adapters['p11_lpwr_request_rmw']+=1
                         return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']

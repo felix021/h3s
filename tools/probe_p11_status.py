@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Conditional external PMU status exploration; never creates a P11 response."""
+"""Conditional external PMU status exploration plus the opt-in bit0 readiness response."""
 import argparse
 import json
 from pathlib import Path
@@ -27,9 +27,25 @@ def main():
     require(one['stop_pc']=='0x600a57c' and one['stop']['address']=='0xf2a804' and
             one['peripherals']['p11_access_counterfactual']['completed_sequences']==1,
             'status1 conditional boundary changed')
+    # Opt-in PMU_STA bit0 readiness response projection: base word stays the
+    # explicit 0 fixture and only bit0 is forced to 1 after the CON2 request
+    # sequence, so the p11_init prefix must cross its 0x606890c poll and stop
+    # at exactly the same next strict boundary as the full-word status1 case.
+    ready=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_cases=True)
+    r=ready[0]
+    require(r['completed_steps']==one['completed_steps'] and r['stop']==one['stop'] and
+            r['stop_pc']=='0x600a57c','PMU ready response did not cross the p11_init poll to the same boundary')
+    projection=r['peripherals']['p11_access_counterfactual']
+    require(projection['fixed_external_status_hypothesis']==0 and
+            projection['status_polls']==1 and
+            projection['pmu_ready_response_projection']['bit0_set_mechanism_proven'] is False and
+            projection['pmu_ready_response_projection']['causal_link_to_pwr_con_bit5_assumed'] is False,
+            'ready response projection labels or trigger evidence missing')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
-            'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,'scenarios':results}
+            'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,
+            'pmu_ready_response_projection_passed':True,'scenarios':results,
+            'ready_response_scenarios':ready}
     args.report.parent.mkdir(parents=True,exist_ok=True);args.report.write_text(json.dumps(report,indent=2)+'\n')
 
 

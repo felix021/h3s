@@ -22,6 +22,9 @@ GPIO_BASES=(0xfd5000,0xfd5100,0xfd5200,0xfd5300,0xfd5400,0xfd5500,0xfd5700)
 MMU_BASE=0xff0400
 P11_UART_CON2=0xf2af10
 PMU_STA=0xfd3e04
+PWR_CON=0xf2a400  # PMU PWR_CON; bit5 LP_PWR_INIT_FLAG (main-core request), bit7 POR flag
+LP_PWR_INIT_FLAG=0x20
+P11_HEAP_INFO=0xf27f4a  # P11 RAM P2M message area +0xa: 4B heap begin/size written by P11 init (value unproven)
 WDT_CON=0xf2a800
 WDT_KEY=WDT_CON+4
 EFUSE_CON0=0xf2c2c0
@@ -499,12 +502,18 @@ class P11AccessProbe:
 
     CPU0 source establishes the five writes and bit0 poll, not their causality.
     A supplied status is fixed from the beginning; writes never manufacture it.
+    The opt-in ready_response projection is separate: after the observed CON2
+    request sequence it forces bit0 to 1 on top of the explicit base fixture
+    word (no other bit is invented), with its own weaker evidence label.
     """
     sequence=(0xff,0xee,0xab,0x0e,0x55)
 
-    def __init__(self,status=None):
+    def __init__(self,status=None,ready_response=False):
         if status not in (None,0,1):raise ValueError('P11 status fixture must be unknown,0 or1')
-        self.status=status;self.phase=0;self.sequences=0;self.polls=0
+        if ready_response and status is None:
+            raise ValueError('PMU ready response projection requires an explicit base status fixture')
+        self.status=status;self.ready_response=ready_response
+        self.phase=0;self.sequences=0;self.polls=0
 
     def write(self,value):
         if value!=self.sequence[self.phase]:raise Blocked('unmodeled_p11_access_write',value=hex(value))
@@ -515,12 +524,57 @@ class P11AccessProbe:
         if self.phase or not self.sequences:raise Blocked('p11_status_read_outside_known_sequence')
         self.polls+=1
         if self.status is None:raise Blocked('unknown_external_pmu_status',address=hex(PMU_STA))
-        return self.status
+        return (self.status|1) if self.ready_response else self.status
 
     def report(self):
-        return {'fixed_external_status_hypothesis':self.status,'completed_sequences':self.sequences,
+        result={'fixed_external_status_hypothesis':self.status,'completed_sequences':self.sequences,
                 'phase':self.phase,'status_polls':self.polls,'response_causality_or_timing_modeled':False,
                 'q32s_executed':False}
+        if self.ready_response:
+            # 独立标注:置位机制没有任何 P11 侧软件证据,证据等级低于 PWR_CON bit5。
+            result['pmu_ready_response_projection']={
+                'trigger':'PMU_STA read after the completed CON2 request sequence (p11_init poll 0x606890c)',
+                'readback':'base fixture word with bit0 forced to 1; no other bit invented',
+                'evidence_level':'weaker than the PWR_CON bit5 response: only the main-core poll is proven, the P11-side bit0 set mechanism is unproven',
+                'bit0_set_mechanism_proven':False,'response_latency_modeled':False,
+                'causal_link_to_pwr_con_bit5_assumed':False}
+        return result
+
+
+class P11LowPowerResponse:
+    """PWR_CON(0xf2a400) bit5(LP_PWR_INIT_FLAG)最小请求-响应投影。
+
+    主核 power_init(0x60679a0,rmw.or.modimm |=0x20)请求 P11 低功耗初始化后死等该位
+    清零(0x60679ae/b0)。P11 侧 q32s 0xafa `bitclr r2,0x5` 无条件执行已证实,但「主核
+    置位→P11 清位」的时序/可达性是推断。投影规则:仅在观察到主核真实的 |=0x20 RMW
+    之后,PWR_CON 读回把 bit5 投影为 0(显式假设:P11 已处理请求,延迟未建模);其余位
+    保持复位快照原样(POR bit7 等),不发明其他效应,也不与 PMU_STA bit0 假定因果。
+    """
+
+    def __init__(self):
+        self.requests=0
+
+    def handles_rmw(self,address,kind,operand):
+        # 只匹配已证实的请求形式:对 PWR_CON 的 or 0x20;其他形式保持严格路径
+        return (address==PWR_CON and kind=='or' and
+                operand is not None and operand&0xffffffff==LP_PWR_INIT_FLAG)
+
+    def request(self):
+        self.requests+=1
+
+    def read(self,address,value):
+        # 请求之后 bit5 读回 0;请求之前不臆造(快照原样返回,包括 POR bit7)
+        if address==PWR_CON and self.requests:
+            return value&~LP_PWR_INIT_FLAG&0xffffffff
+        return value
+
+    def report(self):
+        return {'requests_observed':self.requests,
+                'trigger':'exact main-core rmw.or.modimm |=0x20 on PWR_CON (power_init 0x60679a0)',
+                'readback_after_request':'bit5=0 (P11 processed the request); other bits unchanged from the reset snapshot',
+                'evidence_level':'q32s 0xafa bitclr bit5 executes unconditionally (local software evidence); main-core release timing and q32s reachability inferred, silicon unverified',
+                'response_latency_modeled':False,'causal_link_to_pmu_sta_bit0_assumed':False,
+                'other_bits_or_registers_modeled':False}
 
 
 class MMU:
@@ -850,6 +904,8 @@ class BR28Model:
                  initial_irq_config=None,initial_ipmask=None,reset_inputs_inactive=False,
                  bus_lock_model=False,initial_lock_owner='unknown',gpio_model=False,
                  mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None,
+                 p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
+                 p11_heap_info_bytes=None,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
                  gpcnt_cleanup_projection=False,core_tick_configuration=False,
@@ -895,7 +951,17 @@ class BR28Model:
         self.gpio_model=gpio_model
         self.gpio={}
         self.mmu=MMU(initial_mmu_con) if mmu_model else None
-        self.p11=P11AccessProbe(p11_status) if p11_access_probe else None
+        if p11_pmu_ready_projection and not p11_access_probe:
+            raise ValueError('PMU ready response projection requires the P11 access probe')
+        self.p11=(P11AccessProbe(p11_status,p11_pmu_ready_projection) if p11_access_probe else None)
+        # PWR_CON bit5 响应投影叠在复位快照读回之上,没有快照就没有可投影的基础字
+        if p11_lpwr_response_projection and not reset_history_projection:
+            raise ValueError('P11 low-power response projection requires the reset history snapshot')
+        self.p11_lp=P11LowPowerResponse() if p11_lpwr_response_projection else None
+        if p11_heap_info_bytes is not None and (not isinstance(p11_heap_info_bytes,(bytes,bytearray))
+                                                or len(p11_heap_info_bytes)!=4):
+            raise ValueError('P11 heap info fixture must be exactly 4 bytes')
+        self.p11_heap_info_bytes=(None if p11_heap_info_bytes is None else bytes(p11_heap_info_bytes))
         self.watchdog=WatchdogProjection(watchdog_progress) if watchdog_projection else None
         self.efuse=EfuseReadProjection(efuse_words) if efuse_read_projection else None
         self.oscillator_configuration_projection=oscillator_configuration_projection
@@ -1081,7 +1147,9 @@ class BR28Model:
             if value is None:raise Blocked('unknown_cpu1_irq_configuration',address=hex(address))
             return value
         if self.debug is not None and self.debug.handles(address):return self.debug.read(address)
-        if self.reset is not None and self.reset.handles(address):return self.reset.read(address)
+        if self.reset is not None and self.reset.handles(address):
+            value=self.reset.read(address)
+            return self.p11_lp.read(address,value) if self.p11_lp is not None else value
         if self.mpu is not None and self.mpu.handles(address):return self.mpu.read(address)
         if self.port_initialization_projection and address in PORT_INPUT_REGISTERS:
             if address not in self.port_input_words:raise Blocked('unknown_port_input',address=hex(address))
@@ -1251,6 +1319,37 @@ class BR28Model:
             return
         self.write(address,merged)
 
+    def handles_p11_lpwr_rmw(self,address):
+        return self.p11_lp is not None and address==PWR_CON
+
+    def p11_lpwr_rmw(self,address,instruction_id,operand):
+        """主核 PWR_CON |=0x20 请求 RMW 的 opt-in 拦截。
+
+        只接受已证实的 rmw.or.modimm |=0x20 形式(0x60679a0);记录请求后指令完成,
+        合并写回不落在严格复位标志路径上(该路径只允许 bit6 清标志命令)。其他形式
+        保持原有严格语义(整字 store 或其他 RMW 仍被拒)。
+        """
+        if not self.handles_p11_lpwr_rmw(address):raise ValueError('not the modeled P11 low-power request register')
+        kind='or' if instruction_id=='rmw.or.modimm' else instruction_id
+        if not self.p11_lp.handles_rmw(address,kind,operand):
+            raise Blocked('p11_lpwr_request_form_not_modeled',instruction_id=instruction_id,
+                          operand=None if operand is None else hex(operand&0xffffffff))
+        self.p11_lp.request();self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':'or','operand':hex(LP_PWR_INIT_FLAG),
+                           'projection':'P11 processed the LP_PWR_INIT_FLAG request; bit5 reads back 0'})
+
+    def read_bytes(self,address,size):
+        """Byte-granular explicit P2M heap-info fixture reads; None keeps the strict stop.
+
+        power_init 读取 0xf27f4a..4d(P11 init 写入的 heap begin/size,值未证实)。
+        fixture 由调用方显式提供;未提供时返回 None,普通存储路径继续严格停。
+        """
+        if (self.p11_heap_info_bytes is None or not isinstance(size,int) or size<1 or
+                not P11_HEAP_INFO<=address or address+size>P11_HEAP_INFO+4):return None
+        self.counts['reads']+=1
+        offset=address-P11_HEAP_INFO
+        return self.p11_heap_info_bytes[offset:offset+size]
+
     def software_irq_command(self,address,mask):
         self.software_irq.command(address,mask)
         self.counts['reads']+=1
@@ -1361,6 +1460,11 @@ class BR28Model:
             result['assumptions']['gpio']='exact bitwise configuration projection; external levels unknown; no GPIO IRQ/electrical model'
         if self.mmu is not None:result['mmu']=self.mmu.report()
         if self.p11 is not None:result['p11_access_counterfactual']=self.p11.report()
+        if self.p11_lp is not None:result['p11_low_power_response']=self.p11_lp.report()
+        if self.p11_heap_info_bytes is not None:
+            result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
+                'bytes':self.p11_heap_info_bytes.hex(),
+                'source':'explicit caller fixture; P11 init writes heap begin/size (P11 code references 0xa1c), value unproven'}
         if self.watchdog is not None:result['watchdog_projection']=self.watchdog.report()
         if self.efuse is not None:result['efuse_read_projection']=self.efuse.report()
         if self.gpcnt is not None:result['gpcnt_cleanup_projection']=self.gpcnt.report()

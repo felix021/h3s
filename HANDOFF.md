@@ -30,6 +30,11 @@
 - **CPU1 PMU_CON0 RMW + kick 唤醒**（本次）：0xffe8c0=CPU1 PMU_CON0（csfr.h q32DSP(1)+0x30*4；0xffe0c0 同位为 CPU0）。含 bit0 的 RMW 与严格写路径等价（实际释放指令 0x60660da 就是 `|=1`）；释放后 bit0 不参与的 or 置位记为 kick 位（0x12b732/0x12c71c 双证据，只置位不回读不清除）。machine 侧 `cpu1_control_kick_wake` 投影：kick 让挂在 idle 的 CPU1 按完成计步并唤醒——「bit3 就是唤醒源」是从握手协议推断的显式假设（SDK 无 PMU_CON0 位定义，硅语义未验证，已写入 report 假设）。
 - **入口原子性**（cb109b3）：deliver 先完整校验银行假设再提交状态，失败不留部分变化。
 - **core tick 机制**（303e388）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + 单测。**首次溢出 ~450k 步 > 当前 153k，未真实触发——C2 未完成。**
+- **P11 最小条件响应投影**（本次，sim-p11-proj）：两个位分开建模、分开标注证据等级，互不假定因果。
+  - **PWR_CON bit5 请求-响应**（`p11_lpwr_response_projection`，需 reset_history 投影）：只在观察到主核真实的 `rmw.or.modimm [0xf2a400] |= 0x20`（power_init 0x60679a0）之后，该寄存器读回把 bit5 投影为 0（「P11 已处理请求」显式假设）；其余位保持复位快照（POR bit7=0x80）原样；请求之前不臆造；夹带其他位的 RMW / and 形式 / 整字 store 仍严格拒绝；bit6 清标志命令语义不变，清标志后读回仍是 unknown。合并写回不落在严格复位标志路径。UART CON2 写入不制造任何 ready。
+  - **PMU_STA bit0 就绪响应**（`p11_pmu_ready_projection`，需 p11_access_probe + 显式基线 fixture 0/1）：复用 P11AccessProbe 的 CON2 序列门控（序列完成后才有意义），在基线 fixture 字之上仅强制 bit0=1；与固定外部状态 fixture（None/0/1）机制并存且独立开关，report 里 `pmu_ready_response_projection` 单独标注「置位机制未证实，证据等级低于 bit5」。不提供基线时读回仍严格 unknown。
+  - **堆信息 4 字节显式 fixture**（`p11_heap_info_bytes`，调用方传入 4 字节）：0xf27f4a..4d（P2M 消息区 +0xa，P11 init 写入 heap begin/size，值未证实）按字节粒度读回 fixture；未提供时走普通存储路径严格停（unmapped/uninitialized）。字节粒度经 `BR28Model.read_bytes` 新钩子进 `Memory.read`，不影响字对齐外设分发。
+  - 验证：PMU_STA bit0 在真实 p11_init 前缀验证（`p11_ready_response` 场景越过 0x606890c 轮询，83,094 步停在 0x600a57c 0xf2a804，与全字 status=1 场景逐字段一致）；PWR_CON bit5 **尚未在真实前缀观察到**（app_core 路径前沿 154,263 未到 power_init），以真实指令最小场景（test_boot_bus：0x60679a0 请求 RMW 严格/投影对照、0x60679ae/b0 轮询仅在请求后退出、0x60679ba/be 堆装载 fixture/严格停）+ 模型单测验证。
 
 ## codex (gpt-6-astra) 参谋结论（2026-11-11 二次，已核实）
 
@@ -65,11 +70,24 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 **最小接口结论**：(a) 必须建模为 P11 响应——PWR_CON bit5 清除、PMU_STA bit0 置位（主核死等）；(b) 可投影复位固定值——PWR_CON bit7=1（POR 0x80）、堆信息 4 字节、纯写寄存器们；(c) 需仿真/其他证据才能定——堆信息具体数值、清 bit5 时序、PMU_STA bit0 置位机制。
 
+### P11 条件响应投影：显式假设表（2026-11-11 已实现，两个位分开标注）
+
+| 投影 | 规则 | 证据等级 | 延迟/因果 |
+|---|---|---|---|
+| PWR_CON bit5（LP_PWR_INIT_FLAG） | 仅在观察到主核真实 `rmw.or.modimm [0xf2a400] \|=0x20` 后读回投影 0；其余位保持复位快照；请求前/夹带其他位/and 形式/整字 store 严格 | **局部软件证据**：q32s 0xafa `bitclr r2,0x5` 无条件执行已证实；「主核置位→P11 清位」时序/可达性是推断（q32s 解码 0xa86 有缺口），硅时序未验证 | 响应延迟未建模（假设立即处理）；与 PMU_STA bit0 无因果假定 |
+| PMU_STA bit0（就绪） | CON2 请求序列完成后读回=基线 fixture 字 \|1（仅强制 bit0，不发明其他位）；序列外读回仍按门控/fixture 严格 | **弱于 bit5**：只有主核轮询证据（0x606890c/e），P11 侧置位机制无任何软件证据 | 同上，且不假定由 CON2 序列「导致」（只记录条件顺序） |
+| 堆信息 4 字节 0xf27f4a..4d | 调用方显式 4 字节 fixture 按字节读回；未提供严格停 | 值完全未知，不臆造具体数值；P11 代码 0xa1c 引用但数值未证实 | — |
+
+开关：`p11_lpwr_response_projection`（需 reset_history 投影提供基线字）、`p11_pmu_ready_projection`（需 p11_access_probe + p11_status 基线）、`p11_heap_info_bytes`。全部默认关闭，legacy 场景字节不变。
+
+**P11 剩余缺口**（推进到 power_init 内部时仍会依次停）：q32s PMU_CON 0xf2a0c0 释放 RMW/bit0（0x60679a4/a8，读回未知）、CLK_CON0 0xf2a414=1、SYS_DIV 0xf2a410=0、P2M_CLK 0xf2a618=8（纯写寄存器，可投影为可写）、p11_code.bin 公共段拷贝到 0xf20080（需 P11 RAM 可写 region）；p11_status_one/ready 前缀的下一停点是 0x600a57c 写 WDT_KEY 0xf2a804（需 watchdog 投影）。这些均未建模，留给下一路。
+
 ## 当前并行任务
 
 - 路 A（sim-sfc-clk，c3f399e 已合并推送）：SFC 时钟 +8 分频 / PLL-lock 读回完成。
 - 路 B（只读调研）：P11 主核读写依赖清单完成，结论见上节。
 - 路 C（sim-cpu1-ctl，本次）：CPU1 PMU_CON0 kick RMW + 唤醒投影完成，前沿 154,263（0x606633e）。
+- 路 D（sim-p11-proj，本次）：P11 最小条件响应投影完成（上表）；主核两条死循环的建模前提已解除，但 app_core 前缀尚未推进到 power_init（前沿 154,263 未到），bit5 投影仅有真实指令最小场景+单测验证。
 - 下一路：0x606633e CPU1 irq125 handler 尾部特殊帧弹出（pop.srl 的 psr/rets/reti 恢复 + handler RTI）。
 
 ## 下一步（按 codex 建议）
@@ -77,7 +95,7 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 1. CPU1 irq125 handler 退出：0x606633e 的 `{psr,rets,reti}=[sp++]`（multicore 特殊帧弹出）与其后的 RTI（现有 return_software_irq 只认 CPU0 handler 尾 0x12ade8，需按 active_context 推广）；随后是对核暂停/释放完整周期（0x12c6e6 备用启动函数：读回 bit0 守卫的 RMW 释放 `|=1` + 等待 ready 的 kick 循环 0x12c71c，均未在当前前缀触发）。
 2. 补齐每个镜像的资源映射（candidate_view 目前只返回 app+337B payload）。
 3. 补可重复中断交付 + 事件时间推进（解决暂停点 1/2）。
-4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用、P11 接口。
+4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用；P11 接口剩 power_init 内部的纯写寄存器与 0xf20080 拷贝（见上节剩余缺口）。
 5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。
 
 ## 关键技术事实（已钉）

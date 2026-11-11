@@ -1,4 +1,4 @@
-"""Isolated instruction tests for the SFC gate, stack stores and opaque PWM read.
+"""Isolated instruction tests for the SFC gate, stack stores, opaque PWM read and P11 responses.
 
 No private ROM, device access, vendor compiler or firmware output required.
 """
@@ -6,7 +6,7 @@ from pathlib import Path
 import struct
 import unittest
 
-from br28_model import BR28Model, SFC_BASE, MMU_BASE, EMU_CON
+from br28_model import BR28Model, SFC_BASE, MMU_BASE, EMU_CON, PWR_CON, P11_HEAP_INFO
 from br28_machine import DualCoreMachine
 from probe_boot import ENTRY, STACK_TOP, application, explore
 from probe_boot_handoff import RAM_CODE, SENTINEL_A, package_header, profile
@@ -96,6 +96,59 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['memory_snapshots']['repeat_extent']['initialized_bytes'],68)
         self.assertEqual(result['memory_snapshots']['repeat_head']['bytes_with_unknowns'],'4433221144332211')
         self.assertEqual(result['memory_snapshots']['repeat_tail']['bytes_with_unknowns'],'44332211????????')
+
+    def test_power_init_lpwr_request_rmw_projects_only_with_the_response(self):
+        # 实际 power_init 指令 0x60679a0(rmw.or.modimm [r4] |=0x20,r4=PWR_CON)。
+        regs=[0]*16;regs[4]=PWR_CON
+        strict=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80})
+        result=explore(self.module,self.app,name='lpwr_request_strict',handoff=self.handoff(),
+            hardware=strict,diagnostics={'entry_pc':0x60679a0,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=4)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop_pc'],'0x60679a0')
+        self.assertEqual(result['stop']['kind'],'reset_flag_command_not_modeled')
+        projected=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                            p11_lpwr_response_projection=True)
+        result=explore(self.module,self.app,name='lpwr_request_projected',handoff=self.handoff(),
+            hardware=projected,diagnostics={'entry_pc':0x60679a0,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=4)
+        # 请求 RMW 完成;停在下一个尚未建模的 q32s PMU_CON(0xf2a0c0)释放读。
+        self.assertEqual(result['completed_steps'],2)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2a0c0')
+        self.assertEqual(projected.p11_lp.requests,1)
+
+    def test_power_init_bit5_poll_exits_only_after_the_observed_request(self):
+        # 实际轮询 0x60679ae(ld.w [r4])/0x60679b0(bne.and.ri r0,bit5)。快照显式含
+        # bit5 的反事实下:无请求时死循环;记录真实请求后同一路径退出循环。
+        regs=[0]*16;regs[4]=PWR_CON
+        waiting=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0xa0},
+                          p11_lpwr_response_projection=True)
+        result=explore(self.module,self.app,name='lpwr_poll_waiting',handoff=self.handoff(),
+            hardware=waiting,diagnostics={'entry_pc':0x60679ae,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=6)
+        self.assertEqual(result['completed_steps'],6)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        requested=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0xa0},
+                            p11_lpwr_response_projection=True)
+        requested.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',0x20)
+        result=explore(self.module,self.app,name='lpwr_poll_released',handoff=self.handoff(),
+            hardware=requested,diagnostics={'entry_pc':0x60679ae,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=2)
+        self.assertEqual(result['completed_steps'],2)
+        self.assertEqual(result['stop_pc'],'0x60679b4')  # bne 未跳,走到堆信息装载
+        self.assertEqual(result['last_registers']['r'][0],'0x80')  # bit5=0,bit7 保留
+
+    def test_power_init_heap_info_byte_loads_need_the_explicit_fixture(self):
+        # 实际堆信息装载 0x60679ba(ld.bu.l [r4+1])/0x60679be(ld.bu [r4])。
+        regs=[0]*16;regs[4]=P11_HEAP_INFO
+        result=explore(self.module,self.app,name='heap_info_strict',handoff=self.handoff(),
+            hardware=BR28Model(),diagnostics={'entry_pc':0x60679ba,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],hex(P11_HEAP_INFO+1))
+        fixed=BR28Model(p11_heap_info_bytes=bytes.fromhex('78563412'))
+        result=explore(self.module,self.app,name='heap_info_fixture',handoff=self.handoff(),
+            hardware=fixed,diagnostics={'entry_pc':0x60679ba,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=2)
+        self.assertEqual(result['completed_steps'],2)
+        self.assertEqual(result['last_registers']['r'][8],'0x56')
+        self.assertEqual(result['last_registers']['r'][5],'0x78')
 
     def test_actual_halfword_repeat_preserves_stack_neighbours(self):
         h=self.handoff();base=0x123702
