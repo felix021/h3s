@@ -158,29 +158,66 @@ class MPUConfigurationProjection:
                 'unknown_unwritten_slots_preserved':True}
 
 
+SFC_WINDOW_OFFSETS=(0x18,0x20,0x24)  # VM flash 窗口组:SDK 头文件无名,语义由 app 反汇编钉死(见 SFCReadBus)
+SFC_PRIMARY_WINDOW_ADDRESSES=(SFC_BASE,SFC_BASE+4)+tuple(SFC_BASE+o for o in SFC_WINDOW_OFFSETS)
+SFC_SECONDARY_WINDOW_ADDRESSES=(SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4)+tuple(SFC_SECONDARY_BASE+o for o in SFC_WINDOW_OFFSETS)
+
+
 class SFCReadBus:
     """Functional decoded-Flash read bus, with real enable/configuration gates.
 
     Transactions are synchronous. No SPI waveform/cache coherence/timing claim.
+
+    窗口组(+0x18/+0x20/+0x24)是 VM 区 flash 窗口配置,write-only 记录:
+    app 全量反汇编只有两个引用点,ROM 零引用(reference SDK 头文件亦无该块命名)——
+      - 0x600a36e 起的 VM 窗口设置序列(r1=0xfe0218):[r1+12]=0x061d7fe0
+        (=0x06000000+vm_saddr-0x2020,call 0x12bdc6 算出的 VM 区 flash 窗口地址)、
+        [r1+8]=0x7ffffff、[r1+0]|=2(唯一一处 +0x18 访问,只置 bit1);
+      - SFC 上下文恢复函数 0x60c5bc0 尾部(r1=0xfe0220):[r1+4]=call 0x60c55a0 结果、
+        [r1+0]=0x7ffffff,不重写 +0x18(与「bit1 是窗口使能位」自洽但未硅验证)。
+    两侧都没有任何读回,复位值/读回语义无观察——读一律停止,写只记录。
+    +0x20 的两次观测值都是 0x7ffffff(=flash 直访区顶 0x08000000-1),像窗口
+    界限/掩码;但 CPU 在窗口配置前就大量直访 0x06000000..0x08000000(CON bit0
+    使能即可),所以窗口组不建模为 flash 访问门,check_flash_access 判定不变。
     """
     def __init__(self,initial_con=None,base=SFC_BASE):
         if initial_con is not None and (not isinstance(initial_con,int) or initial_con&~0xf00001):
             raise ValueError('unsupported initial SFC mode')
         if base not in (SFC_BASE,SFC_SECONDARY_BASE):raise ValueError('unsupported SFC base')
         self.initial_con=initial_con;self.con=initial_con;self.baud=None;self.writes=0;self.base=base
+        # 窗口组:+0x18 只观测过 rmw.or(置位,不经过读回);+0x20/+0x24 只观测过整字写
+        self.window_control=PartialWord();self.window_control_operations=[]
+        self.window_limit=None;self.window_limit_writes=0
+        self.window_base=None;self.window_base_writes=0
 
     def check_flash_access(self,address):
         if not 0x06000000<=address<0x08000000:return
         if self.con is None:raise Blocked('unknown_sfc_enable_state')
         if not self.con&1:raise Blocked('sfc_disabled_flash_access',address=hex(address))
 
+    def window_rmw(self,operand):
+        # 唯一观测形状:0x600a37e `rmw.or.modimm [0xfe0218]|=2`。RMW 不经过读回,
+        # 按位记录置位;未写位保持 unknown,任何整字消费仍走严格路径。
+        self.window_control.apply('or',operand)
+        self.window_control_operations.append(('or',operand&0xffffffff))
+
     def read(self,address):
+        if address-self.base in SFC_WINDOW_OFFSETS:
+            # 固件从不读窗口组(app/ROM 全量反汇编),读回语义无证据,一律诚实停。
+            raise Blocked('sfc_window_readback_not_observed',address=hex(address))
         value=self.con if address==self.base else self.baud
         if value is None:raise Blocked('unknown_sfc_configuration',address=hex(address))
         return value  # bit31 busy=0: no queued transaction in this synchronous model
 
     def write(self,address,value):
-        if address==self.base:
+        offset=address-self.base
+        if offset in SFC_WINDOW_OFFSETS:
+            if offset==0x18:
+                # 整字写无观测(固件只做 |=2 置位),形状外一律拒绝
+                raise Blocked('sfc_window_control_full_store_not_modeled',address=hex(address),value=hex(value))
+            if offset==0x20:self.window_limit=value;self.window_limit_writes+=1
+            else:self.window_base=value;self.window_base_writes+=1
+        elif address==self.base:
             if value&~0xf00001:raise Blocked('sfc_mode_not_modeled',value=hex(value))
             self.con=value
         elif address==self.base+4:
@@ -197,7 +234,26 @@ class SFCReadBus:
     def report(self):
         return {'base':hex(self.base),'initial_control_fixture':self.initial_con,'con':self.con,'baud':self.baud,'writes':self.writes,
                 'busy_projection':'zero outstanding transactions; synchronous decoded-Flash memory',
-                'flash_fetch_and_data_access_require_enable':True,'spi_or_cache_timing_simulated':False}
+                'flash_fetch_and_data_access_require_enable':True,'spi_or_cache_timing_simulated':False,
+                'window_registers':{'control_address':hex(self.base+0x18),
+                    'control_known_value':hex(self.window_control.value),
+                    'control_known_mask':hex(self.window_control.known),
+                    'control_operations':[{'kind':kind,'operand':hex(operand)}
+                                          for kind,operand in self.window_control_operations],
+                    'limit_address':hex(self.base+0x20),
+                    'limit':None if self.window_limit is None else hex(self.window_limit),
+                    'limit_writes':self.window_limit_writes,
+                    'base_address':hex(self.base+0x24),
+                    'base':None if self.window_base is None else hex(self.window_base),
+                    'base_writes':self.window_base_writes,
+                    'write_only':True,'readback_observed':False,'bit_semantics_verified':False,
+                    'evidence':('app 0x600a36e..0x600a37e (r1=0xfe0218: [+12]=VM flash window 0x061d7fe0, '
+                        '[+8]=0x7ffffff, [0]|=2) and the SFC context-restore tail 0x60c5bfa..0x60c5c0a '
+                        '(r1=0xfe0220: [+4]=window calc, [0]=0x7ffffff, control not rewritten); '
+                        'the ROM references +0x18/+0x20/+0x24 nowhere; reference SDK headers name none of them'),
+                    'flash_access_gate_unchanged':('assumption: the 0x06000000..0x08000000 direct-access gate stays '
+                        'CON bit0 only; the firmware fetches/reads flash through that window long before these '
+                        'registers are configured, so they are not modeled as an access gate')}}
 
 
 class SfcClockGateProjection:
@@ -1119,8 +1175,8 @@ class BR28Model:
             (self.reset is not None and self.reset.handles(address)) or
             (self.mpu is not None and self.mpu.handles(address)) or
             (self.cache_status_probe and address in CACHE_STATUS_REGISTERS) or
-            (self.sfc is not None and address in (SFC_BASE,SFC_BASE+4)) or
-            (self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4)) or
+            (self.sfc is not None and address in SFC_PRIMARY_WINDOW_ADDRESSES) or
+            (self.sfc_secondary is not None and address in SFC_SECONDARY_WINDOW_ADDRESSES) or
             (self.crc_engine is not None and self.crc_engine.handles(address)) or
             self.handles_sfc_clock(address) or
             self.handles_sfc_clock_select(address) or
@@ -1160,6 +1216,19 @@ class BR28Model:
 
     def handles_sfc_clock(self,address):
         return self.sfc_clock is not None and address==SFC_CLOCK_GATE
+
+    def handles_sfc_window_rmw(self,address):
+        # 只有 +0x18 有 RMW 观测(0x600a37e |=2);+0x20/+0x24 的 RMW 无观测形状,
+        # 不在此分发,落到普通路径即因窗口读回无证据而停止。
+        return ((self.sfc is not None and address==SFC_BASE+0x18) or
+                (self.sfc_secondary is not None and address==SFC_SECONDARY_BASE+0x18))
+
+    def sfc_window_rmw(self,address,operand):
+        if not self.handles_sfc_window_rmw(address):raise ValueError('not a modeled SFC window control')
+        bus=self.sfc if address==SFC_BASE+0x18 else self.sfc_secondary
+        bus.window_rmw(operand);self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':'or','operand':hex(operand&0xffffffff),
+                           'known_value':hex(bus.window_control.value),'known_mask':hex(bus.window_control.known)})
 
     def handles_sfc_clock_divider(self,address):
         return self.sfc_clock is not None and address==SFC_CLOCK_GATE+8
@@ -1254,8 +1323,10 @@ class BR28Model:
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:
             if address not in self.cache_status_words:raise Blocked('unknown_cache_status_input',address=hex(address))
             return self.cache_status_words[address]
-        if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):return self.sfc.read(address)
-        if self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4):return self.sfc_secondary.read(address)
+        if self.sfc is not None and address in SFC_PRIMARY_WINDOW_ADDRESSES:
+            return self.sfc.read(address)
+        if self.sfc_secondary is not None and address in SFC_SECONDARY_WINDOW_ADDRESSES:
+            return self.sfc_secondary.read(address)
         if self.crc_engine is not None and self.crc_engine.handles(address):return self.crc_engine.read(address)
         if self.handles_sfc_clock(address) or self.handles_sfc_clock_select(address) or self.handles_sfc_clock_divider(address):return self.sfc_clock.read(address)
         if self.cpu1_held_projection and address==CPU1_CONTROL:
@@ -1309,8 +1380,10 @@ class BR28Model:
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:raise Blocked('cache_control_write_not_modeled',address=hex(address))
         if self.handles_gpcnt(address):raise Blocked('gpcnt_full_control_store_not_modeled')
         if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
-        if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):self.sfc.write(address,value)
-        elif self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4):self.sfc_secondary.write(address,value)
+        if self.sfc is not None and address in SFC_PRIMARY_WINDOW_ADDRESSES:
+            self.sfc.write(address,value)
+        elif self.sfc_secondary is not None and address in SFC_SECONDARY_WINDOW_ADDRESSES:
+            self.sfc_secondary.write(address,value)
         elif self.crc_engine is not None and self.crc_engine.handles(address):self.crc_engine.write(address,value)
         elif self.handles_sfc_clock(address):raise Blocked('sfc_clock_gate_full_store_not_modeled',address=hex(address))
         elif self.handles_sfc_clock_select(address):self.sfc_clock.write_select(value)
@@ -1322,7 +1395,8 @@ class BR28Model:
                 self.cpu1_release_handler(value);self.cpu1_control=value
             else:
                 if value!=0:raise Blocked('cpu1_control_write_not_modeled',value=hex(value))
-                if self.multicore_enabled and self.cpu1_control==1:raise Blocked('cpu1_hold_after_release_not_implemented')
+                # bit0 是释放位:kick 只写记录(值可达 9),不影响「已释放」判定
+                if self.multicore_enabled and self.cpu1_control&1:raise Blocked('cpu1_hold_after_release_not_implemented')
                 self.cpu1_control=0
         elif self.handles_core_tick(address):
             timer,offset=self.core_tick(address)
@@ -1508,7 +1582,8 @@ class BR28Model:
         if self.timer.pending:
             if self.multicore_enabled:
                 for core,irq in enumerate((self.irq,self.irq1)):
-                    if core==1 and self.cpu1_control!=1:continue
+                    # bit0=已释放;kick 位(bit3,值可达 9)只是只写记录,不得改变交付资格
+                    if core==1 and not self.cpu1_control&1:continue
                     gate=self.core_icfg.get(core)
                     if gate is None:
                         if irq.eligible(4,0x300):raise Blocked('pending_irq_with_unknown_core_icfg',core=core,irq=4)
@@ -1518,7 +1593,7 @@ class BR28Model:
                               note='Timer0 pending and enabled after priority filtering; CPU entry not bypassed')
         if self.software_irq is not None:
             for core,word in enumerate(self.software_irq.pending):
-                if core==1 and (not self.multicore_enabled or self.cpu1_control!=1):continue
+                if core==1 and (not self.multicore_enabled or not self.cpu1_control&1):continue
                 irq=self.irq if core==0 else self.irq1
                 gate=self.core_icfg.get(core) if self.multicore_enabled else icfg
                 for bit in range(4):

@@ -240,7 +240,7 @@ def check(report):
             'the firmware issued unexpected extra software IRQ commands before the frontier')
     r=rows['crc_engine_roundtrip']
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
-    require([(d['core'],d['irq'],d['handler']) for d in deliveries]==
+    require([(d['core'],d['irq'],d['handler']) for d in deliveries[:2]]==
             [(0,127,'0x12ad2a'),(1,125,'0x60662c8')],
             'the CRC scenario must reuse the exact scheduler/sync deliveries')
     crc=r['peripherals']['hardware_crc_projection']
@@ -265,19 +265,46 @@ def check(report):
     # 之后 0x600a352 rep 4 4 从 qcy_boot_info 0x122800 拷 16 字节头:bytes
     # 1-3/8-11 无任何写入者(boot.h vm_info 的 C padding 与 vm_res),按
     # rep_copy_unknown_transport 运输未知字节;消费函数 0x600a2aa 只用
-    # vm_saddr(word 4-7,VM init 0x6011102 写入的 0x1da000),call 0x12C326
-    # 算出 VM 区窗口地址 0x061d7fe0(=0x06000000+0x1da000-0x2020)。前沿推进
-    # 到 162,646 步,停在 0x600a374 st.w [r1+12]=r0 写 0xfe0224——SFC 主块
-    # 0xfe0200 的 +0x24 偏移(r1=0xfe0218)未建模,是下一个外设边界。
-    require(r['stop_core']==0 and r['stop_pc']=='0x600a374' and
-            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xfe0224',
+    # vm_saddr(word 4-7,VM init 0x6011102 写入的 0x1da000),call 0x12bdc6
+    # 算出 VM 区窗口地址 0x061d7fe0(=0x06000000+0x1da000-0x2020)。随后
+    # 0x600a36e..0x600a37e 的 SFC 窗口组写入(r1=0xfe0218:[+12]=0x061d7fe0、
+    # [+8]=0x7ffffff、[0]|=2)按 write-only 记录走完(sfc_read_bus 扩展),
+    # call 0x12c030 后 CPU0 真实地第二次 pend irq125 到 CPU1(repeat 投影
+    # +cpu1_control bit0 释放位修正),第二次交付把 CPU1 从停泊唤醒、
+    # handler 处理完回停泊。前沿推进到 162,898 步,停在 ROM 0xc75a
+    # `st.w [r3+20]=r10` 写 0xffe414=0x061d7fe0——ROM 0xc726 函数把 VM flash
+    # 窗口配进两核 ICU(0xffe400/0xffec00,每核 +0x14=begin/+0x18=end-1/
+    # +0x10=命令字),ICU region 寄存器组未建模,是下一个外设边界。
+    require(r['stop_core']==0 and r['stop_pc']=='0xc75a' and
+            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xffe414',
                         'size':4,'value_bytes':'e07f1d06'},
-            'after the boot-info copy the stop must be the unmodeled SFC window write')
-    require(r['completed_steps']==162646,'the boot-info copy transport changed its step count')
+            'after the SFC window writes the stop must be the unmodeled ICU region write')
+    require(r['completed_steps']==162898,'the SFC window writes changed their step count')
     gate=r['peripherals']['sfc_clock_gate_projection']
     require(gate['select']=='0x3' and gate['select_writes']==1 and
             gate['select_write_only'] is True and gate['select_readback_observed'] is False,
             'the SFC clock +4 select write-only record differs')
+    # SFC 主块窗口组(0xfe0218/+0x20/+0x24)write-only 记录:初始配置序列
+    # 各写一次,+0x18 只有一次 |=2(or 置位,不经读回)。
+    window=r['peripherals']['sfc_read_bus']['window_registers']
+    require(window['base']=='0x61d7fe0' and window['base_writes']==1 and
+            window['limit']=='0x7ffffff' and window['limit_writes']==1 and
+            window['control_operations']==[{'kind':'or','operand':'0x2'}] and
+            window['control_known_mask']=='0x2' and
+            window['write_only'] is True and window['readback_observed'] is False,
+            'the SFC window register record differs')
+    require(r['instruction_adapters'].get('sfc_window_enable_rmw')==1,
+            'the SFC window control RMW was not executed exactly once')
+    # 窗口组放行后 CPU0 第二次 pend irq125(commands 4→6),第二次交付把
+    # 停泊的 CPU1 再唤醒一次:暂停点1 的真实第二次交付在此前沿被观察到。
+    deliveries=r['machine']['software_irq_entry_projection']['deliveries']
+    require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
+            [(0,127,'0x12ad2a','0x12b608'),(1,125,'0x60662c8','0x12c5ca'),
+             (1,125,'0x60662c8','0x12c5ca')],
+            'the real second delivery to the parked CPU1 did not occur through the repeat projection')
+    require(r['peripherals']['software_irq_commands']['commands']==6 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==3,
+            'the second cross-core request changed the software IRQ command bookkeeping')
     # 70 个体来自资源表扫描,第 71 个是 0x600a352 rep 4 4(拷 16 字节 boot_info
     # 头);其中第 1/3 轮(word0 含 padding、word2 是 vm_res)走未知字节运输,
     # 第 2/4 轮(vm_saddr/vm_size 全已知)走常规严格读。
@@ -297,12 +324,12 @@ def check(report):
                 'candidate handler left the modeled region unexpectedly')
     report['irq127_entry_checks_passed']=True
     report['generic_irq_entry_implemented']=False
-    report['repeat_delivery_second_observation']=('no real second per-core delivery occurs before the '
-        '155127 frontier (re-verified after the CPU1 handler tail pop.srl/RTI merge): the firmware '
-        'pends each core exactly once (4 commands: pend+clear per core), and the CPU0 tick cannot '
-        'overflow twice inside the post-enable gate-open windows (total span ~4.4k per-core steps < '
-        'the 4688-step minimum spacing at progress 256); a second delivery is first observable after '
-        'the CRC engine and later boundaries are modeled')
+    report['repeat_delivery_second_observation']=('observed at the 162898 frontier: after the SFC window '
+        'writes are recorded, CPU0 really pends irq125 to CPU1 a second time (software IRQ commands '
+        '4 to 6) and the repeat delivery projection wakes the parked CPU1 once more; the handler '
+        'returns to the same idle park 0x12c5ca. Delivering it also required the cpu1_control '
+        'release-bit (bit0) fix: the kick bit3 record (control word 9) must not revoke the released '
+        'core delivery eligibility that the advance() pending checks gate on')
 
 
 def main():
@@ -331,7 +358,7 @@ def main():
                      irq_case(module,app,header,rom,'crc_engine_roundtrip',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
-                              rep_block=True,rep_unknown_transport=True,flash_image_bytes=image)]}
+                              rep_block=True,rep_unknown_transport=True,repeat=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

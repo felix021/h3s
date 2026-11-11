@@ -904,6 +904,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         hardware.sfc_clock_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['sfc_clock_gate_rmw']+=1
                         return
+                    if hardware.handles_sfc_window_rmw(address):
+                        # 0x600a37e `rmw.or.modimm [0xfe0218]|=2`:VM flash 窗口
+                        # 使能位置位,唯一观测形状。窗口组只写不读,RMW 不经过
+                        # 读回,按位记录;其他形式(and/整字写)无证据,保持拒绝。
+                        if insn.id!='rmw.or.modimm':
+                            raise Blocked('sfc_window_control_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.sfc_window_rmw(address,op['m'])
+                        self.finish_exact(self.pc+size);adapters['sfc_window_enable_rmw']+=1
+                        return
                     if hardware.handles_core_tick(address):
                         # Handler ACK |=0x40 (bit6 W1C clear-pending) on CON.
                         # Only the RMW form is modeled; a full-word CON store

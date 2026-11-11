@@ -8,6 +8,7 @@ from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
+from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
 from br28_model import SDTAP_CON, PSRAM_CON0, IOMAP_CON0, USB_IO_CON0, USB_DISABLE_REGISTERS
 from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection, RESET_CONFIG_MASKS
 from br28_model import MPUConfigurationProjection, GpioOutValue
@@ -584,6 +585,70 @@ class ModelTests(unittest.TestCase):
         report=model.report()['sfc_clock_gate_projection']
         self.assertEqual((report['select'],report['select_writes']),('0x3',1))
         self.assertEqual(report['select_address'],'0xfd1c04')
+
+    def test_sfc_window_registers_take_only_the_observed_shapes(self):
+        # VM flash 窗口组(+0x18/+0x20/+0x24)挂在 sfc_read_bus 下。全部证据只有
+        # app 两个引用点的写:0x600a36e..0x600a37e(r1=0xfe0218:[+12]=0x061d7fe0、
+        # [+8]=0x7fffffff、[0]|=2)与 SFC 上下文恢复尾 0x60c5bfa..0x60c5c0a(r1=
+        # 0xfe0220:[+4]=call 结果、[0]=0x7fffffff,不重写控制位);ROM 零引用,SDK
+        # 头文件无名。因此:+0x20/+0x24 整字写只记录,+0x18 只接受 or 置位(不经
+        # 读回、按位记录),读回与形状外的写一律诚实停。
+        bus=SFCReadBus(1)
+        bus.write(SFC_BASE+0x24,0x061d7fe0)
+        bus.write(SFC_BASE+0x20,0x7ffffff)
+        bus.window_rmw(2)
+        for address in (SFC_BASE+0x18,SFC_BASE+0x20,SFC_BASE+0x24):
+            with self.assertRaisesRegex(Blocked,'sfc_window_readback_not_observed'):bus.read(address)
+        with self.assertRaisesRegex(Blocked,'sfc_window_control_full_store_not_modeled'):
+            bus.write(SFC_BASE+0x18,3)
+        window=bus.report()['window_registers']
+        self.assertEqual((window['base'],window['base_writes']),('0x61d7fe0',1))
+        self.assertEqual((window['limit'],window['limit_writes']),('0x7ffffff',1))
+        self.assertEqual(window['control_operations'],[{'kind':'or','operand':'0x2'}])
+        self.assertEqual((window['control_known_value'],window['control_known_mask']),('0x2','0x2'))
+        self.assertTrue(window['write_only'] and not window['readback_observed'])
+        self.assertFalse(window['bit_semantics_verified'])
+        self.assertIn('flash_access_gate_unchanged',window)
+
+    def test_sfc_window_group_routes_through_both_buses_and_stays_off_by_default(self):
+        # 默认(BR28Model() 不开 sfc_read_bus)窗口组仍是不支持的外设写;打开后
+        # 主/副 SFC 共用同一形状门,副 SFC 独立记录(实际固件从不写它)。
+        model=BR28Model()
+        self.assertFalse(model.handles(SFC_BASE+0x24,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):model.write(SFC_BASE+0x24,1)
+        model=BR28Model(sfc_read_bus=True,initial_sfc_control=1,
+                        secondary_sfc_read_bus=True,initial_secondary_sfc_control=0)
+        model.write(SFC_BASE+0x24,0x061d7fe0);model.write(SFC_BASE+0x20,0x7ffffff)
+        model.sfc_window_rmw(SFC_BASE+0x18,2)
+        model.write(SFC_SECONDARY_BASE+0x24,0x061d7fe0)
+        with self.assertRaisesRegex(Blocked,'sfc_window_readback_not_observed'):
+            model.read(SFC_BASE+0x20)
+        primary=model.report()['sfc_read_bus']['window_registers']
+        secondary=model.report()['sfc_read_bus_secondary']['window_registers']
+        self.assertEqual((primary['base'],primary['limit']),('0x61d7fe0','0x7ffffff'))
+        self.assertEqual(secondary['base'],'0x61d7fe0')
+        self.assertEqual(model.report()['sfc_read_bus']['writes'],2)  # 两次整字写;RMW 不计入
+        # 窗口 RMW 不经过读回:已知位只含置位过的 bit1,整字消费仍严格停
+        with self.assertRaisesRegex(Blocked,'sfc_window_readback_not_observed'):
+            model.read(SFC_BASE+0x18)
+
+    def test_cpu1_release_bit_survives_kick_bit_record(self):
+        # kick 位(bit3,只写记录)把 cpu1_control 记到 9;CPU1 的交付资格判定必须
+        # 看 bit0 释放位,否则 kick 会产生「负调度效应」——第二次 pend(窗口组建模
+        # 后 162,646 前沿真实发生:CPU0 再 pend irq125 到 CPU1)被静默吞掉,CPU1 永不
+        # 醒、CPU0 在 0x12b66a 死等。bit0 语义是既有 kick 投影声明的一部分。
+        config=[0]*32;config[15]=0xd00000  # irq125:word15 bit20,enable+priority6(unmaskable 类)
+        h=BR28Model(cpu1_held_projection=True,initial_cpu1_control=0,
+                    software_irq_command_projection=True,initial_software_irq_pending=(0,0))
+        h.cpu1_release_handler=lambda value:None
+        h.enable_multicore(config,0,lambda value:None)
+        h.cpu1_control_rmw(CPU1_CONTROL,'or',1)   # 释放(0x60660da 形状)
+        h.cpu1_control_rmw(CPU1_CONTROL,'or',8)   # kick(0x12b732 形状)→ control=9
+        h.software_irq.command(0xffe9a0,2)        # CPU0 第二次 pend irq125 到 CPU1
+        with self.assertRaisesRegex(Blocked,'unmodeled_unmaskable_irq'):
+            h.advance(0x300)  # CPU1 的 pending 检查必须仍然发生
+        with self.assertRaisesRegex(Blocked,'cpu1_hold_after_release_not_implemented'):
+            h.write(CPU1_CONTROL,0)  # kick 后的 hold 也不能漏过已释放判定
 
 
 if __name__=='__main__':unittest.main()
