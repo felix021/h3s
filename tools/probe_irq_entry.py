@@ -14,7 +14,10 @@ The trailing crc_bankb_erased_fixture scenario layers an explicit unverified
 erased-bank fixture (32 bytes of 0xFF over the only bank-B read observed on
 this prefix) on top of crc_engine_roundtrip: the consumer really computes the
 header CRC and selects its benign mismatch branch; crc_engine_roundtrip itself
-keeps stopping honestly on the unmapped bank-B read.
+keeps stopping honestly on the unmapped bank-B read. The exact-doubleword
+gate (st.d.l/st.d.sp.l) writes full-overwrite doubleword stores without the
+upstream merge bookkeeping read, so this scenario runs past its store to the
+next unmapped bank-B byte.
 """
 import argparse
 import json
@@ -457,15 +460,24 @@ def check(report):
             'the fifth probe entry must really CRC the 0xFF header bytes and the chain must continue')
     require(crc_ff['result_reads'][15:]==['0xc190','0xf271','0xb758','0x5ddd'],
             'the post-probe VM-init CRC usages changed after the fixture took the mismatch branch')
-    # 新停点:探测良性失败后 VM init 链再走 6,829 步,停在 0x6060a74 的
-    # d[sp]=r1_r0 双字存储——上游 store 模型合并写前需要读旧 word,sp≈0x19e2fc
-    # 落在 physical_heap 未初始化区(簿记读,非 guest load),下一个独立决策点。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6060a74' and
-            r['stop']['kind']=='upstream_store_bookkeeping_read' and
-            r['stop']['access']=='read' and r['stop']['address']=='0x19e2fc' and
-            r['stop']['region']=='physical_heap',
-            'the erased fixture frontier must stop at the upstream store bookkeeping read boundary')
-    require(r['completed_steps']==183117,'the erased fixture scenario changed its step count')
+    # 簿记读边界已解决:st.d.sp.l 双字存储是全 8 字节覆盖写,exact_doubleword_
+    # stores 扩展后直接写两半、不读旧 word(旧值对结果无关;上游 m2 的 Writes
+    # 合并读是模型内部簿记,非 guest load;实测该模型最终 mem 效果恰为
+    # {addr:R[d],addr+4:R[d+1]},旧 word 不参与)。链再走 369 步:qcy 消费函数
+    # 0x6060a4a 完成首次调用(0x6060a74 双字清零栈结构→0x600ad2e 填充→
+    # 0x6060a82 把 flash 窗口基址 0x061ddfe0=window(bank B 偏移 0x1e0000,
+    # 0x1da000 VM 区+0x6000)缓存进全局 0x126544),随后 0x60609ec 表查找
+    # 命中项读头字节 b[基址+[r4+4]+3]=0x61ddfe3——bank B 偏移 0x1e0003,
+    # 在 32 字节 fixture 窗口(0x60fdfe0..0x60fe000)之外、公开工件之外,
+    # 诚实停 unmapped,下一个独立决策点。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6060a00' and
+            r['stop']['kind']=='unmapped_memory' and
+            r['stop']['access']=='read' and r['stop']['address']=='0x61ddfe3' and
+            r['stop']['size']==1,
+            'the erased fixture frontier must stop at the next bank-B data boundary')
+    require(r['completed_steps']==183486,'the erased fixture scenario changed its step count')
+    require(r['instruction_adapters'].get('exact_doubleword_store')==13,
+            'the doubleword stores of the extended prefix must run through the exact gate')
     require(r['peripherals']['software_irq_commands']['commands']==16 and
             r['peripherals']['software_irq_commands']['acknowledgements']==8,
             'the extended VM-init sync requests changed the software IRQ bookkeeping')

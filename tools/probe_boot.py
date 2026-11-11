@@ -716,11 +716,23 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     return
                 if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and not (diagnostics or {}).get('irq_context'):
                     raise Blocked('multicore_special_frame_unmodeled',instruction_id=insn.id)
-            if diagnostics and diagnostics.get('exact_doubleword_stores') and insn.id=='st.d.l':
-                op=module.check.operands(insn,raw);address=(self.R[op['r']]+op['n'])&0xffffffff
-                require(address%4==0 and op['s']%2==0 and 0<=op['s']<=14,
+            if diagnostics and diagnostics.get('exact_doubleword_stores') and insn.id in ('st.d.l','st.d.sp.l'):
+                # A doubleword store overwrites all eight bytes, so the old
+                # words cannot affect its result. Writing both halves directly
+                # skips the upstream store model's merge bookkeeping, which
+                # reads the old words first (a model-internal read, not a
+                # guest load) and would stop on uninitialized RAM. Neither
+                # form updates its base register, so both halves are the
+                # current registers (upstream reads the odd half after a base
+                # update only on the pi/prer forms).
+                op=module.check.operands(insn,raw)
+                if insn.id=='st.d.l':
+                    address=(self.R[op['r']]+op['n'])&0xffffffff;source=op['s']
+                else:
+                    address=(self.sp+op['n'])&0xffffffff;source=op['r']
+                require(address%4==0 and source%2==0 and 0<=source<=14,
                         'unsupported unaligned or odd-register doubleword store')
-                self.mem.write(address,struct.pack('<II',self.R[op['s']]&0xffffffff,self.R[op['s']+1]&0xffffffff))
+                self.mem.write(address,struct.pack('<II',self.R[source]&0xffffffff,self.R[source+1]&0xffffffff))
                 self.finish_exact(self.pc+size);adapters['exact_doubleword_store']+=1
                 return
             if diagnostics and diagnostics.get('immediate_rep_projection') and insn.id=='rep.i':

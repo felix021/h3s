@@ -435,6 +435,38 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['memory_snapshots']['frame_head']['bytes_with_unknowns'],
                          '2820010600000000'+'??'*16)
 
+    def test_sp_doubleword_store_overwrites_unknowns_without_old_word_read(self):
+        # 0x6060a74 is the real `st.d.sp.l d[sp]=r1_r0` of the qcy consumer
+        # (0x6060a4a). The store overwrites all eight bytes, so the old words
+        # cannot matter; through the exact-doubleword gate it must write both
+        # halves directly, clearing the previous unknown stack bytes instead
+        # of stopping on the upstream merge bookkeeping.
+        h=self.handoff();sp=0x123700
+        h['snapshots'].append(('doubleword_and_neighbours',sp-4,16))
+        regs=[0]*16;regs[0]=0x11223344;regs[1]=0x55667788
+        result=explore(self.module,self.app,name='sp_doubleword',handoff=h,
+            diagnostics={'entry_pc':0x6060a74,'initial_sp':sp,'initial_gprs':regs,
+                         'exact_doubleword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],hex(0x6060a78))
+        self.assertEqual(result['last_registers']['sp'],hex(sp))
+        self.assertEqual(result['instruction_adapters'],{'exact_doubleword_store':1})
+        self.assertEqual(result['memory_snapshots']['doubleword_and_neighbours']['bytes_with_unknowns'],
+                         '????????'+'4433221188776655'+'????????')
+
+    def test_sp_doubleword_store_defaults_to_strict_bookkeeping_read_stop(self):
+        # Without the opt-in gate the same instruction must keep stopping on
+        # the upstream store model's merge read of the uninitialized old word
+        # (a model-internal read, not a guest load): legacy behaviour unchanged.
+        sp=0x123700
+        regs=[0]*16;regs[0]=0x11223344;regs[1]=0x55667788
+        result=explore(self.module,self.app,name='sp_doubleword_strict',
+            diagnostics={'entry_pc':0x6060a74,'initial_sp':sp,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'upstream_store_bookkeeping_read')
+        self.assertEqual(result['stop']['address'],hex(sp))
+        self.assertEqual(result['stop']['region'],'bootstrap_stack')
+
     def test_parallel_extension_stores_to_uninitialized_stack_without_merge_read(self):
         h=self.handoff();sp=STACK_TOP-128
         h['snapshots'].append(('parallel_stack_word',sp,4))
