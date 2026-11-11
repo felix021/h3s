@@ -11,21 +11,25 @@ projection (handler return re-enables delivery) stays inert on this prefix
 until the firmware actually pends a second time. No flash approval.
 
 The trailing crc_bankb_erased_fixture scenario layers an explicit unverified
-erased-bank fixture (three evidence-bounded windows of 0xFF: the 32-byte header
+erased-bank fixture (four evidence-bounded windows of 0xFF: the 32-byte header
 read of the probe-table entry 5, the 20-byte window-table structure the qcy
-consumer enumerates at flash offset 0x1e0000, and the full declared VM region
-0x2000 bytes at flash offset 0x1da000) on top of crc_engine_roundtrip: the
-consumers really compute the header CRC / parse the erased headers / blank-
-scan the VM halves and select their benign branches; crc_engine_roundtrip
-itself keeps stopping honestly on the unmapped bank-B read. The VM window is
-declared structurally (not incrementally) because its consumer is a
-data-dependent byte-by-byte blank scan over each whole half — a partial
-window would just move the unmapped stop one byte later. After the blank scan
-confirms an all-erased VM, the chain meets the misaligned-source ROM memcpy
-variant (insert.rrii.p + ld.bu.pin compose pairs) and runs it through the
-opt-in exact_parallel_insert_load projection before stopping honestly at the
-next independent boundary: the first header byte of a bank-B structure at
-window offset +0x200, outside every fixture window.
+consumer enumerates at flash offset 0x1e0000, the full declared VM region
+0x2000 bytes at flash offset 0x1da000, and the 8-byte first-record header at
+window offset +0x200 the cfg-tool/btif storage backend init 0x6060d7c parses)
+on top of crc_engine_roundtrip: the consumers really compute the header CRC /
+parse the erased headers / blank-scan the VM halves / range-check the erased
+record header and select their benign branches; crc_engine_roundtrip itself
+keeps stopping honestly on the unmapped bank-B read. The VM window is declared
+structurally (not incrementally) because its consumer is a data-dependent
+byte-by-byte blank scan over each whole half — a partial window would just
+move the unmapped stop one byte later. After the blank scan confirms an
+all-erased VM, the chain meets the misaligned-source ROM memcpy variant
+(insert.rrii.p + ld.bu.pin compose pairs), runs it through the opt-in
+exact_parallel_insert_load projection, then the record-header init rejects
+the erased 8-byte header (only its first 4 bytes are read) and the chain
+stops honestly at the next independent boundary: an upstream pair-store
+bookkeeping read of uninitialized stack RAM at 0x6011370 (mov.rr.p with a
+halfword-store second half), not a bank-B data question.
 """
 import argparse
 import json
@@ -70,6 +74,29 @@ ERASED_BANKB_WINDOW_RANGE=(0x61ddfe0,20)
 # 写入且头无效时执行、本前缀 trace 零执行;随后设置 VM 空状态、从 app flash 表
 # 0x60a9344 重建位图、return 0。见 irq_case 的 erased_bankb 注释。
 ERASED_BANKB_VM_RANGE=(0x61d7fe0,0x2000)
+
+# bank B 第四数据窗 fixture 的显式范围:window(0x61ddfe0)+0x200 处的记录区
+# 首条目头 8 字节(0x61de1e0..0x61de1e7=0x06000000+0x1e0200-0x2020 起 8 字节)。
+# 消费者是 cfg_tool/btif 存储后端 ops 表(28 字节记录,0x60c32c8 起,成员含
+# 0x6060a4a/0x6060c3c/0x6060f9a/0x6060d7c)的 init 成员 0x6060d7c——平台 init
+# 尾部 0x601206c 表遍历的最后一项:thunk("flash/res/cfg_tool.bin") 与
+# thunk("flash/app/btif") 各取描述符,把状态块写到全局 0x12655C(+0 有效=1、
+# +4/+8 cfg_tool 内容界、+12 条目有效位清 0、+16 游标=window+0x200、+20 长度),
+# 然后解析 window+0x200 的 8 字节首条目头 {u32 len;u32{b0 crc,bits20+ size}}:
+# 0x6060e0e 对 len 做无符号范围检查((len-1)>2047 拒绝)、0x6060e2a 对
+# size 做 >800 检查、都过了才 call 0x6000f0c 对数据区算 CRC 并与头 b0 比较,
+# 匹配才置 +12 条目有效位=1 并推进游标。0xFF 擦除态下(len=0xffffffff,
+# (len-1)=0xfffffffe 无符号 >2047)真实代码只读头 4 字节就在 0x6060e0e 拒绝、
+# 返回 0(动态 trace 钉死:bytes 4-7 不读、CRC call 不执行、无 flash 写)——
+# +12 有效位保持 0,把按 index 找条目的 walker 0x60112c8(入口判 b[0x126568]
+# !=1 即跳过)挡在门外。fixture 覆盖消费者自己解析的完整 8 字节头结构
+# (同第二窗「表结构=擦除态」语义:按结构整体声明,避免把一个头切成一半已知
+# 一半未知),不扩 +0x208 之后的数据区/后续条目——擦除态分支到不了,无任何
+# 全记录区扫描证据(记录区其余消费者:0x60112c8 被 +12=0 门控、0x6060c6a/
+# 0x600a412 的 walk 基址=getter(103)+OTP 槽 827(本前缀 find_partition 失败
+# 已清 0,0x600a412 入口判槽 828==0 直接返回 -250)、表区写路径 0x6060b80 与
+# VM 窗口 0x6060f9a 各自独立)。见 irq_case 的 erased_bankb 注释。
+ERASED_BANKB_RECORD_RANGE=(0x61de1e0,8)
 
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
@@ -170,15 +197,23 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 性映射 0x2000 字节(范围依据见 ERASED_BANKB_VM_RANGE 注释:boot_info
     # vm 字段+消费者切半算法+空白检查 len,均固件自己的声明);全空白分支
     # 良性(格式化写 call 零执行、空 VM 状态、位图重建自 app flash 表、
-    # return 0),由真实代码自己扫描自己选分支。三个窗都是显式环境假设
-    # (unverified erased-bank fixture),不是已知出厂状态;范围外 bank B
-    # (含 TON 0x1e1000)继续严格 unmapped。
+    # return 0),由真实代码自己扫描自己选分支。窗 4(本次反汇编+trace):
+    # cfg_tool/btif 存储后端 init 0x6060d7c 解析 window+0x200 的 8 字节首
+    # 条目头 {u32 len;u32{b0 crc,bits20+ size}},0xFF 擦除态下 (len-1)=
+    # 0xfffffffe 无符号 >2047,真实代码只读头 4 字节就在 0x6060e0e 拒绝、
+    # 返回 0(bytes 4-7 不读、CRC 不算、无 flash 写,trace 钉死),条目有效
+    # 位 b[0x126568] 保持 0 把按 index 找条目的 walker 0x60112c8 挡在门外
+    # ——fixture 覆盖消费者自己解析的完整 8 字节头结构(范围依据见
+    # ERASED_BANKB_RECORD_RANGE 注释),不扩数据区/后续条目。四个窗都是
+    # 显式环境假设(unverified erased-bank fixture),不是已知出厂状态;
+    # 范围外 bank B(含 TON 0x1e1000)继续严格 unmapped。
     if erased_bankb:
         base,length=ERASED_BANKB_HEADER_RANGE
         wbase,wlength=ERASED_BANKB_WINDOW_RANGE
         vbase,vlength=ERASED_BANKB_VM_RANGE
+        rbase,rlength=ERASED_BANKB_RECORD_RANGE
         readonly=tuple(readonly)+((base,b'\xff'*length),(wbase,b'\xff'*wlength),
-                                  (vbase,b'\xff'*vlength))
+                                  (vbase,b'\xff'*vlength),(rbase,b'\xff'*rlength))
     if sfc_suspend:
         # The SFC suspend tail sets 0xfd1c00|=1 (write-only RMW projection) and
         # then the wrapper reads the second SFC 0xfe0100 CON. The second SFC is
@@ -561,18 +596,37 @@ def check(report):
     # 后 r0=[desc+8]+512=window(0x61ddfe0)+0x200=0x61de1e0,首个头字节读
     # 在 +3——bank B flash 偏移 0x1e0203,在第二窗 20 字节 fixture
     # (0x1e0000..0x1e0014)之外、仍在 0x1e0000 window 区内(VM 尾与 TON
-    # 0x1e1000 之间)——新独立决策点:window+0x200 结构区的消费者分支图
-    # 与 fixture 范围声明(235,942,新前沿)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6060df4' and
-            r['stop']['kind']=='unmapped_memory' and r['stop']['address']=='0x61de1e3',
-            'the compose-pair projection frontier must stop at the genuine bank-B window read at +0x200')
-    require(r['completed_steps']==235942,'the erased fixture scenario changed its step count')
+    # 0x1e1000 之间)——旧决策点:window+0x200 结构区的消费者分支图
+    # 与 fixture 范围声明(235,942)。路 U(本次):静态全图+动态 trace 钉死
+    # window 区(0x1e0000..0x1e1000)不是被系统性枚举——消费者=cfg_tool/btif
+    # 存储后端 ops 表(0x60c32c8 起 28 字节记录)的成员,init 0x6060d7c 是
+    # 平台 init 表遍历(0x601206c)最后一项:双 thunk("flash/res/cfg_tool.bin"
+    # +"flash/app/btif")后解析 window+0x200 的 8 字节首条目头
+    # {u32 len;u32{b0 crc,bits20+ size}};0xFF 擦除态下 (len-1)=0xfffffffe
+    # 无符号 >2047,真实代码只读头 4 字节就在 0x6060e0e 拒绝返回 0(bytes
+    # 4-7 不读、CRC 不算、无 flash 写),条目有效位 b[0x126568] 保持 0 把
+    # walker 0x60112c8(入口判 !=1 即跳)挡住;其余记录区消费者 0x6060c6a/
+    # 0x600a412 的 walk 基址=getter(103)+OTP 槽 827(本前缀已清 0,槽 828
+    # ==0 直接返回 -250)、表区写路径 0x6060b80 未调用——故 fixture 只按
+    # 结构声明映射完整 8 字节头(第四窗,同 opt-in erased_bankb),不扩
+    # 记录区其余 0xE00 字节。放行后链继续 473 步(仅双字存储 21→22;rep/
+    # 运输/compose/CRC 26 次往返 780 字节/IRQ commands 16/acks 8/交付 1+7
+    # 全不变——记录头校验是 4 字节读+分支,无新跨核同步),停在 app
+    # 0x6011370 `mov.rr.p`(A 半 r6=r0 ∥ B 半 h[r4+0]=r5,0x6011366 记录
+    # 解析 helper 入口把出参半字清零)写虚拟栈 0x400b96(物理 0x19f794,
+    # 未初始化)——上游 pair 存储模型的簿记读边界(uninitialized_memory),
+    # 与 183,486 的 st.d.sp.l 同类(半字部分写、邻字节真保持旧值,决策归
+    # 下一路),非 bank B 数据可得性问题(236,415,新前沿)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6011370' and
+            r['stop']['kind']=='uninitialized_memory' and r['stop']['address']=='0x19f794',
+            'the record-header fixture frontier must stop at the pair-store bookkeeping read')
+    require(r['completed_steps']==236415,'the erased fixture scenario changed its step count')
     # compose 对(装载+组装)假设执行:2 轮 rep×2 对=4 次,adapter 名带
     # _is_assumption 显式标注旧值方向无硬件捕获证据。
     require(r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==4,
             'the insert/load parallel pair must execute exactly four times (two REP rounds) '
             'through the old-register assumption adapter')
-    require(r['instruction_adapters'].get('exact_doubleword_store')==21,
+    require(r['instruction_adapters'].get('exact_doubleword_store')==22,
             'the doubleword stores of the extended prefix must run through the exact gate')
     require(r['peripherals']['software_irq_commands']['commands']==16 and
             r['peripherals']['software_irq_commands']['acknowledgements']==8,
@@ -601,7 +655,7 @@ def check(report):
     report['dual_core_sync_handshake_executed']=True
     report['hardware_crc_engine_modeled']=True
     report['erased_bankb_fixture_assumption']=(
-        'unverified erased-bank fixture (NOT a known factory state), three evidence-bounded windows: '
+        'unverified erased-bank fixture (NOT a known factory state), four evidence-bounded windows: '
         '(1) the 32-byte bank-B header read at 0x60fdfe0 (flash offset 0x100000, probe-table entry 5) '
         'is mapped read-only to 0xFF; the consumer find_partition 0x6010f32 really computes CRC-16 over '
         'the 30 header data bytes (golden value 0x75f8, recomputed in the assertion from the app software '
@@ -623,10 +677,21 @@ def check(report):
         'the empty-VM state, rebuilds the bitmap from the app-flash table 0x60a9344 and returns 0 '
         'again selected by real code; the window is declared structurally, not incrementally, '
         'because the scan is data-dependent — a partial window would only move the unmapped stop '
-        'one byte later. Every other bank-B address (including the TON window at flash 0x1e1000 and '
-        'the +0x200 structure area of the 0x1e0000 window the new frontier reads at 0x61de1e3) '
-        'stays strictly unmapped; the crc_engine_roundtrip scenario without the fixture still stops '
-        'honestly at 176,288 on the unmapped 0x60fdfe0 read')
+        'one byte later. (4) The 8-byte first-record header at 0x61de1e0 (window+0x200, flash offset '
+        '0x1e0200) of the record area the cfg-tool/btif storage backend initializes: its init member '
+        '0x6060d7c (the last platform-init table call at 0x601206c) parses the header as '
+        '{u32 len; u32{b0 crc, bits20+ size}}; with erased bytes len=0xffffffff and the unsigned '
+        'range check (len-1)>2047 at 0x6060e0e rejects after reading only the first 4 header bytes '
+        '(observed in the trace: bytes 4-7 unread, no CRC call, no flash write, return 0), leaving '
+        'the entry-valid byte b[0x126568] at 0 which gates the find-by-index walker 0x60112c8 — '
+        'the fixture covers the complete 8-byte header structure the consumer itself parses '
+        '(same structure-unit semantics as window 2), not the remaining record area, for which no '
+        'erased-state read exists (the other record-area consumers walk from getter(103)+OTP slot '
+        '827 and the OTP slot 828==0 gate returns -250 immediately in this prefix). Every other '
+        'bank-B address (including the TON window at flash 0x1e1000 and the record payload area '
+        'beyond the 8-byte header at window+0x208) stays strictly unmapped; the '
+        'crc_engine_roundtrip scenario without the fixture still stops honestly at 176,288 on the '
+        'unmapped 0x60fdfe0 read')
     report['insert_load_parallel_pair_assumption']=(
         'opt-in exact_parallel_insert_load: the compose pair of the misaligned-source ROM memcpy '
         '(0x417e, rep r5,22: four ld.bu.pin byte loads + insert.rrii.p||ld.bu.pin pairs assembling '

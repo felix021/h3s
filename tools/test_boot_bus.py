@@ -912,5 +912,85 @@ class BusInstructionTests(unittest.TestCase):
         self.assertNotIn(erased,(0x5a5a5a5a,0xffff5a5a,0xffffff56,0xff5a5a5a))
         self.assertNotEqual(erased,0xff5a5a5a)
 
+    # ---- bank B 第四数据窗 0xFF fixture(opt-in erased_bankb,机制层钉子)----
+
+    def erased_bankb_record_case(self,addr,*,fixture=True,store=False):
+        h=self.handoff()
+        h['description']['phase']='erased bank-B record fixture mechanism test'
+        if fixture:h['readonly'].append((0x61de1e0,b'\xff'*8))
+        # 真实 app 指令:读侧 0x6060df4 `r1=b[r0+3] (u)`(cfg_tool/btif 存储后端
+        # init 0x6060d7c 解析 window+0x200 首 8 字节记录头的首条装载,r0=
+        # window+0x200,本前缀实测读 0x61de1e3)——r0 预减 3 使被读字节恰为
+        # addr;写侧 0x6010fca `[r1++=4]=r2`(find_partition 拷贝路径的字存储,
+        # 形状先例)。
+        regs=[0]*16
+        if store:
+            regs[1]=addr;regs[2]=0x12345678
+            entry_pc=0x6010fca
+        else:
+            regs[0]=addr-3
+            entry_pc=0x6060df4
+        return explore(self.module,self.app,name='erased_bankb_record_fixture',handoff=h,
+            diagnostics={'entry_pc':entry_pc,'initial_sp':STACK_TOP,
+                         'initial_rets':ENTRY,'initial_gprs':regs},budget=1)
+
+    def test_erased_bankb_record_fixture_reads_back_0xff_bytes(self):
+        # 区内(含实测首读字节 0x61de1e3 与 8 字节头末字节 0x61de1e7)读出
+        # 0xff——记录头 init 在 0x6060df4 读到的正是这些擦除态头字节。
+        for addr in (0x61de1e0,0x61de1e3,0x61de1e7):
+            result=self.erased_bankb_record_case(addr)
+            self.assertEqual(result['completed_steps'],1)
+            self.assertEqual(result['stop']['kind'],'instruction_budget')
+            self.assertEqual(result['last_registers']['r'][1],'0xff')
+
+    def test_erased_bankb_record_fixture_bounds_and_default_stay_strict(self):
+        # fixture 只覆盖消费者自己解析的完整 8 字节头结构(0x61de1e0..0x61de1e7
+        # =flash 0x1e0200..0x1e0207):紧邻区外(下界 0x61de1df/上界 0x61de1e8
+        # =记录数据区首字节)与默认(不挂 fixture)都继续严格停 unmapped——
+        # bank B 其余字节(记录载荷区/后续条目/TON 0x1e1000 窗)不臆造。
+        for addr in (0x61de1df,0x61de1e8):
+            result=self.erased_bankb_record_case(addr)
+            self.assertEqual(result['completed_steps'],0)
+            self.assertEqual(result['stop'],{'kind':'unmapped_memory','access':'read',
+                'address':hex(addr),'size':1,'reference_sdk_register':None})
+        result=self.erased_bankb_record_case(0x61de1e0,fixture=False)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+
+    def test_erased_bankb_record_fixture_is_read_only(self):
+        result=self.erased_bankb_record_case(0x61de1e0,store=True)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+            'address':'0x61de1e0','size':4,'value_bytes':'78563412'})
+
+    def test_erased_bankb_record_header_and_gates_are_firmware_declared(self):
+        # 黄金算术钉子:记录头窗范围与擦除态分支全部由固件自己的代码/结构
+        # 声明——window 基址=0x06000000+0x1e0000-0x2020(资源描述符经填充
+        # 函数 0x600ae2e 给出,动态 trace 钉死)、init 0x6060dec 自己加 512
+        # (0x200)得记录区基址、窗口全长 0x1000(填充结果 [sp+4],TON
+        # 0x1e1000 的 CPU 基址恰为窗口末);8 字节头窗在窗口区内、不与第二
+        # 窗 20 字节表结构(0x61ddfe0..0x61ddff4)重叠。0xFF 擦除态下头 word0
+        # =0xffffffff,(word0-1)=0xfffffffe 无符号 >2047 → 0x6060e0e 拒绝
+        # (真实分支只读头 4 字节);条目有效位 [0x126568] 由 0x6060dd0 预清
+        # 0、只在 CRC 匹配分支 0x6060e42 置 1,按 index 找条目的 walker
+        # 0x60112c8 入口 0x60112d4 判其 !=1 即跳——擦除态把后续记录区读取
+        # 全部挡在门外,fixture 无需也不应扩到 8 字节头之外。
+        window=0x06000000+0x1e0000-0x2020
+        self.assertEqual(window,0x61ddfe0)
+        self.assertEqual(window+512,0x61de1e0)                  # 0x6060dec 的 +512
+        self.assertEqual(window+0x1000,0x06000000+0x1e1000-0x2020)  # 窗口末=TON CPU 基址
+        self.assertLess(0x61ddfe0+20,0x61de1e0)                 # 不与表结构(fixture 窗 2)重叠
+        self.assertLess(0x61de1e0+8,window+0x1000)              # 8 字节头在窗口区内
+        word0=struct.unpack('<I',b'\xff'*4)[0]
+        self.assertEqual(word0,0xffffffff)
+        self.assertGreater((word0-1)&0xffffffff,2047)           # 无符号范围检查拒绝
+        self.assertEqual((0xffffffff>>20),0xfff)                # 即使走到第二检查也 >800
+        self.assertGreater(0xfff,800)
+        # 状态块 0x12655C 的成员偏移(0x6060d7c 用 r8+偏移访问):
+        # +12 条目有效位(0x6060dd0 清 0/0x6060e42 置 1)、+16 游标
+        # (0x6060df0 写 window+0x200)、+20 长度(0x6060e4a 写 word0)。
+        self.assertEqual(0x126568-0x12655c,12)
+        self.assertEqual(0x12656c-0x12655c,16)
+        self.assertEqual(0x126570-0x12655c,20)
+
 
 if __name__=='__main__':unittest.main()
