@@ -541,6 +541,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # bank writeback and ICFG effects stay uncertified.
                     machine.return_software_irq(self);adapters['conditional_software_irq_rti']+=1
                     return
+                if (insn.id=='rti' and machine.core_tick_rti and
+                        getattr(self,'active_context',None)=='core_tick_handler' and self.pc==0x60661e6):
+                    machine.return_core_tick(self);adapters['conditional_core_tick_rti']+=1
+                    return
                 if self.pc==0x06066126:
                     require(insn.id=='pop.srl' and raw.get('m',raw.get('n'))==0x29 and self.task_frame_restore and
                             self.sp==self.task_frame_restore['base'],'first-task special frame lacks its selected stack')
@@ -613,13 +617,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         (insn.id=='mov.r_sr' and raw['s']==6) or
                         (insn.id in ('mov.r_sr','mov.sr_r') and raw['s']==11)):
                     raise Blocked('multicore_special_register_semantics_unmodeled',register=raw['s'],instruction_id=insn.id)
-                frames=(diagnostics or {}).get('software_irq_frames') or {}
+                frames=dict((diagnostics or {}).get('software_irq_frames') or {})
+                core_tick_frames=(diagnostics or {}).get('core_tick_frames') or {}
+                frames.update(core_tick_frames)
                 if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and self.pc in frames:
                     shape=frames[self.pc];push=shape.endswith('push')
                     require(shape in ('psr_push','psr_pop','frame12_push','frame12_pop') and
                             insn.id==('push.srl' if push else 'pop.srl') and
                             raw.get('m',raw.get('n'))==(32 if shape.startswith('psr') else 41) and
-                            self.after_then is None,'software IRQ handler special-frame shape changed')
+                            self.after_then is None,'IRQ handler special-frame shape changed')
                     if shape=='psr_push':
                         self.sp-=4
                         psr=(getattr(self,'irq_psr',0)&~15)|(self.flags&15)
@@ -638,8 +644,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         self.reti&=0x07fffffe;self.rets&=0x07fffffe
                         self.irq_psr=psr;self.flags=psr&15;self.sp+=12
                     self.pc+=size;self.steps+=1
-                    adapters['software_irq_handler_psr_frame' if shape.startswith('psr') else
-                             'software_irq_handler_context_frame']+=1
+                    if self.pc in core_tick_frames:adapters['core_tick_handler_frame']+=1
+                    else:adapters['software_irq_handler_psr_frame' if shape.startswith('psr') else
+                                 'software_irq_handler_context_frame']+=1
                     return
                 if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and not (diagnostics or {}).get('irq_context'):
                     raise Blocked('multicore_special_frame_unmodeled',instruction_id=insn.id)
@@ -791,6 +798,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         else:raise Blocked('gpcnt_rmw_form_not_modeled',instruction_id=insn.id)
                         hardware.gpcnt_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['gpcnt_unknown_preserving_cleanup_rmw']+=1
+                        return
+                    if hardware.handles_core_tick(address):
+                        # Handler ACK |=0x40 (bit6 W1C clear-pending) on CON.
+                        # Only the RMW form is modeled; a full-word CON store
+                        # still goes through the strict write path.
+                        if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        else:raise Blocked('core_tick_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.core_tick_rmw(address,kind,operand)
+                        self.finish_exact(self.pc+size);adapters['core_tick_ack_rmw']+=1
                         return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
@@ -1135,13 +1151,21 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 stop={**stop,'kind':'upstream_store_bookkeeping_read',
                       'note':'upstream store model reads previous words to merge/drop writes; not a guest load'}
         except IrqDeliveryRequest as request:
-            if machine is None or not machine.software_irq_entry:
+            if machine is None:
                 raise ValueError('delivery request without the opt-in machine entry projection')
             # The requesting advance may fire for the peer core; deliver to
             # the target core, whose current PC is the interrupted context.
-            target=machine.cores.get(request.details['core'],c)
-            machine.deliver_software_irq(target,request.details['irq'])
-            row['software_irq_entry']=request.details
+            if request.details['irq']==3:
+                if not machine.core_tick_entry:
+                    raise ValueError('core tick delivery request without the opt-in machine entry projection')
+                machine.deliver_core_tick(request.details['core'])
+                row['core_tick_entry']=request.details
+            else:
+                if not machine.software_irq_entry:
+                    raise ValueError('delivery request without the opt-in machine entry projection')
+                target=machine.cores.get(request.details['core'],c)
+                machine.deliver_software_irq(target,request.details['irq'])
+                row['software_irq_entry']=request.details
         except (RuntimeError,ValueError,KeyError,IndexError) as e:
             stop={'kind':'upstream_simulator_failure','error_type':type(e).__name__,'message':str(e)}
         trace.append(row)

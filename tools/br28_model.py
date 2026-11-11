@@ -259,7 +259,7 @@ class CoreTickStopped:
         self.initial_con=initial_con
         self.con=initial_con;self.cnt=self.prd=None;self.pending=None if initial_con is None else False;self.writes=0
         self.progress=progress;self.expirations=0
-        self.unresolved_overflow=False
+        self.unresolved_overflow=False;self.acknowledgements=0
 
     def read(self,offset):
         if self.unresolved_overflow:raise Blocked('core_tick_overflow_requires_resolution')
@@ -292,11 +292,20 @@ class CoreTickStopped:
         periods,self.cnt=divmod(self.cnt+self.progress,self.prd+1)
         if periods:self.pending=True;self.expirations+=periods;self.unresolved_overflow=True
 
+    def ack_rmw(self,kind,operand):
+        # The handler acknowledges by |=0x40 (bit6 W1C clear-pending) on CON.
+        # The RMW readback bypasses the pending-readback stop; only the exact
+        # ACK shape is allowed, and only for a genuinely delivered overflow.
+        if kind!='or' or operand!=0x40:raise Blocked('core_tick_rmw_not_modeled',operation=kind,operand=hex(operand&0xffffffff))
+        if self.pending is None:raise Blocked('unknown_core_tick_state')
+        if not self.pending:raise Blocked('core_tick_ack_without_pending')
+        self.pending=False;self.unresolved_overflow=False;self.acknowledgements+=1
+
     def report(self):
         return {'con':self.con,'cnt':self.cnt,'prd':self.prd,'pending':self.pending,'writes':self.writes,
                 'virtual_source_ticks_per_step':self.progress,'expirations':self.expirations,
-                'counter_projection_enabled':self.progress is not None,'irq_delivery_simulated':False,'initial_control_fixture':self.initial_con,
-                'physical_initial_state_measured':False,'pending_bit7_readback_proven':False,
+                'counter_projection_enabled':self.progress is not None,'irq_delivery_simulated':self.acknowledgements>0,'initial_control_fixture':self.initial_con,
+                'acknowledgements':self.acknowledgements,'physical_initial_state_measured':False,'pending_bit7_readback_proven':False,
                 'unresolved_overflow':self.unresolved_overflow,
                 'counter_projection':'PRD+1 from SDK formula; no inferred core-held clock gating or physical phase'}
 
@@ -746,7 +755,7 @@ class BR28Model:
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,software_irq_command_projection=False,
                  initial_software_irq_pending=None,software_irq_delivery_requests=False,
-                 unmaskable_irq_projection=False):
+                 unmaskable_irq_projection=False,core_tick_delivery_requests=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
         if timer_lsb_ticks_per_step is not None and (not isinstance(timer_lsb_ticks_per_step,int) or not 0<=timer_lsb_ticks_per_step<=256):
             raise ValueError('invalid explicit LSB virtual tick rate')
@@ -786,6 +795,9 @@ class BR28Model:
         if core_tick_progress is not None and len(core_tick_progress)!=2:raise ValueError('need explicit progress for two core ticks')
         self.core_ticks=[CoreTickStopped(value,rate) for value,rate in zip(initial_core_tick_controls or (None,None),
                        core_tick_progress or (None,None))] if core_tick_configuration else None
+        if core_tick_delivery_requests and not core_tick_configuration:
+            raise ValueError('core tick delivery requests require the core tick configuration')
+        self.core_tick_delivery_requests=core_tick_delivery_requests
         if core_tick_count_while_held not in (None,False,True):raise ValueError('invalid held-core clock hypothesis')
         self.core_tick_count_while_held=core_tick_count_while_held
         if initial_cpu1_control not in (None,0):raise ValueError('only unknown or explicitly held CPU1 fixture supported')
@@ -871,6 +883,14 @@ class BR28Model:
         self.gpcnt.rmw(kind,operand);self.counts['reads']+=1
         self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
                            'known_value':hex(self.gpcnt.bits.value),'known_mask':hex(self.gpcnt.bits.known)})
+
+    def core_tick_rmw(self,address,kind,operand):
+        if not self.handles_core_tick(address):raise ValueError('not a modeled core tick register')
+        timer,offset=self.core_tick(address)
+        if offset!=0:raise Blocked('core_tick_rmw_not_modeled',address=hex(address))
+        timer.ack_rmw(kind,operand);self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
+                           'pending':timer.pending,'acknowledgements':timer.acknowledgements})
 
     def writable_gpio(self,address):
         if not self.handles_gpio(address):raise ValueError('not a GPIO register')
@@ -1076,10 +1096,24 @@ class BR28Model:
                 if self.cpu1_control==0 and self.core_tick_count_while_held is None:raise Blocked('core1_tick_held_clock_unknown')
             for core,timer in enumerate(self.core_ticks):
                 if core==1 and self.cpu1_held_projection and self.cpu1_control==0 and self.core_tick_count_while_held is False:continue
+                if timer.unresolved_overflow:
+                    # Opt-in delivery: the handler's ACK clears pending; until
+                    # then the counter holds (no re-entrancy) and no second
+                    # overflow is raised. The strict default keeps the terminal
+                    # stop for any already-overflowed timer.
+                    if self.core_tick_delivery_requests:continue
+                    raise Blocked('core_tick_overflow_requires_resolution')
                 before=timer.expirations;timer.advance()
                 if timer.expirations!=before:
-                    raise Blocked('core_tick_overflow_delivery_unresolved',core=core,irq=3,
-                                  note='internal pending set; no guessed readback bit, wake or interrupt entry')
+                    if not self.core_tick_delivery_requests:
+                        raise Blocked('core_tick_overflow_delivery_unresolved',core=core,irq=3,
+                                      note='internal pending set; no guessed readback bit, wake or interrupt entry')
+                    irq=self.irq if core==0 else self.irq1
+                    gate=self.core_icfg.get(core) if self.multicore_enabled else None
+                    try:eligible=irq.eligible(3,0x300 if gate is None else gate)
+                    except Blocked as e:
+                        raise Blocked('core_tick_delivery_blocked',core=core,irq=3,reason=e.details['kind']) from None
+                    if eligible:raise IrqDeliveryRequest(core=core,irq=3)
         if self.timer.con is None or not self.timer.con&3:self.timer.advance(0)
         elif ((self.timer.con>>10)&15)==0:self.timer.advance(self.timer_lsb_ticks_per_step)
         else:self.timer.advance(self.source_ticks_per_step)
@@ -1142,6 +1176,7 @@ class BR28Model:
         if self.core_ticks is not None:
             result['core_tick_configuration']=[timer.report() for timer in self.core_ticks]
             result['assumptions']['core_tick_count_while_cpu1_held']=self.core_tick_count_while_held
+            result['assumptions']['core_tick_delivery_requests']=self.core_tick_delivery_requests
         if self.cpu1_held_projection:
             result['cpu1_held_projection']={'initial_control_fixture':self.initial_cpu1_control,
                                             'current_control':self.cpu1_control,'secondary_cpu_executed':self.secondary_cpu_executed,

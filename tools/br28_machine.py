@@ -38,7 +38,8 @@ class DualCoreMachine:
                  bootstrap_rti=False,unknown_task_gprs=False,partial_icfg=False,
                  initial_icfg_masks=(0xffffffff,0xffffffff),bootstrap_status_preserve_mask=0,
                  first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False,
-                 software_irq_entry_banks=False,idle_wait_projection=False,software_irq_rti=False):
+                 software_irq_entry_banks=False,idle_wait_projection=False,software_irq_rti=False,
+                 core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -70,6 +71,13 @@ class DualCoreMachine:
         self.software_irq_rti=software_irq_rti
         require(not software_irq_rti or software_irq_entry,
                 'IRQ RTI projection requires the software IRQ entry projection')
+        require(isinstance(core_tick_entry,bool),'core tick entry projection is opt-in boolean')
+        self.core_tick_entry=core_tick_entry;self.core_tick_deliveries=[]
+        require(isinstance(core_tick_entry_banks,bool),'core tick entry banks are an opt-in assumption')
+        require(not core_tick_entry_banks or core_tick_entry,'core tick entry bank assumption requires the entry projection')
+        self.core_tick_entry_banks=core_tick_entry_banks
+        self.core_tick_rti=core_tick_rti
+        require(not core_tick_rti or core_tick_entry,'core tick RTI projection requires the entry projection')
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -147,6 +155,23 @@ class DualCoreMachine:
         cpu.pc=interrupted_task;cpu.sp=cpu.usp;cpu.sp_known=True;cpu.steps+=1
         cpu.active_context=None
         self.record_event({'kind':'software_irq_rti','core':cpu.core_id,'pc_after':hex(cpu.pc),
+                           'sp_after':hex(cpu.sp),'reti_from_frame':hex(interrupted_task),
+                           'bank_writeback_is_assumption':True,'icfg_effects_certified':False})
+
+    def return_core_tick(self,cpu):
+        # Symmetric opt-in return for the per-core tick handler at its exact
+        # tail 0x60661e6: PC=RETI and SP=USP. RETI/PSR come from the real
+        # popped frame; bank writeback and ICFG effects are assumptions.
+        require(self.core_tick_rti and cpu.pc==0x60661e6 and
+                getattr(cpu,'active_context',None)=='core_tick_handler' and
+                cpu.after_then is None and cpu.repeat is None,
+                'core tick RTI projection requires the exact handler tail')
+        require(cpu.usp is not None and isinstance(cpu.reti,int),
+                'core tick RTI lacks a restored frame or task stack')
+        interrupted_task=cpu.reti
+        cpu.pc=interrupted_task;cpu.sp=cpu.usp;cpu.sp_known=True;cpu.steps+=1
+        cpu.active_context=None
+        self.record_event({'kind':'core_tick_rti','core':cpu.core_id,'pc_after':hex(cpu.pc),
                            'sp_after':hex(cpu.sp),'reti_from_frame':hex(interrupted_task),
                            'bank_writeback_is_assumption':True,'icfg_effects_certified':False})
 
@@ -274,6 +299,49 @@ class DualCoreMachine:
                'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
         self.software_irq_deliveries.append(event);self.record_event(event)
 
+    def deliver_core_tick(self,core):
+        # Opt-in minimal CPU entry for a per-core system tick IRQ3 overflow.
+        # RETI-load and vector-slot reading are checked before any state
+        # change; entry SP bank and ICFG side effects stay unknown. The tick
+        # pending bit is NOT cleared here: the handler ACKs it with |=0x40.
+        require(self.core_tick_entry and core in self.cores and
+                all(d['core']!=core for d in self.core_tick_deliveries),
+                'core tick entry requires an eligible overflow on a launched core')
+        cpu=self.cores[core]
+        require(not cpu.bootstrap_context and cpu.after_then is None and cpu.repeat is None,
+                'core tick entry requires an instruction boundary on the overflowed core')
+        slot=0x19fe00+3*4
+        try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
+        except Blocked:raise Blocked('vector_slot_uninitialized',core=core,irq=3,
+                                     address=hex(slot)) from None
+        if core in self.idle_wait_cores:
+            self.idle_wait_cores.discard(core)
+            self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':3})
+        interrupted=cpu.pc
+        cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
+        cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
+        entry_banks=None
+        if self.core_tick_entry_banks:
+            # Explicit unverified assumption: the entry switches SP to the
+            # kernel stack (SSP = last explicit SSP fixture) while USP keeps
+            # the interrupted task stack. Silicon bank behaviour is unknown.
+            kernel_sp=getattr(cpu,'last_explicit_ssp',None)
+            require(kernel_sp is not None,'core tick entry bank assumption lacks an explicit SSP fixture')
+            cpu.usp=cpu.sp if cpu.sp_known else None
+            require(cpu.usp is not None,'interrupted task stack pointer is unknown')
+            cpu.ssp=kernel_sp;cpu.sp=kernel_sp;cpu.sp_known=True
+            entry_banks={'usp':hex(cpu.usp),'ssp':hex(cpu.ssp),
+                         'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
+        cpu.active_context='core_tick_handler'
+        event={'kind':'core_tick_entry','core':core,'irq':3,'vector_address':hex(slot),
+               'handler':hex(handler),'reti_from':hex(interrupted),'entry_counted_as_model_step':True,
+               'reti_load_is_assumption':True,'delivery_clears_pending':False,
+               'pending_cleared_by_handler_ack':True,
+               'entry_psr_high_bits_unknown_pushed_as_zero':True,
+               'entry_banks':entry_banks,
+               'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
+        self.core_tick_deliveries.append(event);self.record_event(event)
+
     def note_stall(self,cpu,details):
         self.stalls+=1
         self.record_event({'core':cpu.core_id,**details})
@@ -339,6 +407,12 @@ class DualCoreMachine:
                     'entry_bank_assumption':self.software_irq_entry_banks,
                     'bank_switch_silicon_semantics_certified':False,
                     'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.software_irq_entry else {}),
+                **({'core_tick_entry_projection':{'enabled':True,'deliveries':self.core_tick_deliveries,
+                    'vector_slot_formula':'0x19fe00+3*4 (IRQ3) pinned by the actual per-core timer init 0x60661e8',
+                    'entry_bank_assumption':self.core_tick_entry_banks,
+                    'bank_switch_silicon_semantics_certified':False,
+                    'pending_cleared_by_handler_ack_not_delivery':True,
+                    'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.core_tick_entry else {}),
                 'bootstrap_mode_or_ssp_writeback_certified':False,'launches':self.launches,'stalls':self.stalls,
                 'unknown_task_gprs_preserved':self.unknown_task_gprs,
                 **({'first_task_return_comparison':{'hypothesis':self.first_task_return_hypothesis,
