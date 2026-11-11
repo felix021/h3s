@@ -1,4 +1,4 @@
-# 交接：整机启动仿真推进中（阶段 D 进行，前沿 153,558 步）
+# 交接：整机启动仿真推进中（阶段 D 进行，前沿 153,629 步）
 
 2026-11-11 恢复工作。阶段 A/B/C1 完成，C2（tick 真实触发）与 D 进行中。停止时请更新本文件。
 
@@ -12,9 +12,9 @@
 | irq127_entry_minimal | 149,679 | 0x12ad68 | unknown_core_special_register (usp) |
 | irq127_scheduler_entry | 151,500 | 0x12c5ca | unsupported idle（对核 IDLE 边界）|
 | irq127_appcore_roundtrip | 153,430 | 0x12b66a | unmodeled_unmaskable_irq irq125 |
-| **irq125_sync_roundtrip** | **153,558** | **0x12b910** | **unmapped_memory 0xfd1c00** |
+| **irq125_sync_roundtrip** | **153,629** | **0x12ba5c** | **unmapped 0xfd1c08 写** |
 
-**153,558 步含义**：CPU0 的 app_core（入口 0x6012028）发跨核同步 IPI（IRQ125，CPU1 handler 0x60662c8 应答、清 0x1265f7 忙等位）→ CPU0 继续 → 进入 SFC 挂起序列（0x12b916→0x12b890，已放行 baud=0 写 + GPIO RMW 按位精化）→ 停在 `rmw.or.modimm [0xfd1c00] |= 1`（未建模 MMIO）。
+**153,629 步含义**：CPU0 的 app_core 发跨核同步 IPI（IRQ125）→ CPU1 应答 → CPU0 继续 → SFC 挂起序列（0x12b916→0x12b890：GPIO RMW 按位、baud=0、disable、0xfd1c00 时钟门、第二 SFC 0xfe0100 复位态跳过）→ GPIO port D OUT 读回按位精化（GpioOutValue 偏字）→ SFC 恢复（0xfd1c00 |=8、&=~0x1000）→ 停在 `st.w [0xfd1c08]=3`（SFC 时钟门 +8 偏移，未建模）。
 
 ## 已实现（按序，均 opt-in 投影，默认关闭 legacy 报告不变）
 
@@ -22,9 +22,12 @@
 - **返回对照**（f4394dd）：probe_task_returns.py 5 反事实停止点。
 - **IRQ127 调度闭环**（f4394dd→469e579）：每核 IPI 交付、向量槽读取、RETI 装载、pending 清除（software）/handler ACK（tick）、入口银行假设、IDLE 等待投影、对称 IRQ RTI 投影。
 - **IRQ125 同步握手**（6ac1d8c）：unmaskable IRQ（6/7=GIEMASK 类）投递投影；交付目标按请求核解析。
-- **SFC 挂起序列**（8e356df）：使能态写 baud=0 放行（挂起路径先 baud=0 后 disable）；非零速率切换仍拒绝。
-- **GPIO RMW 按位精化**（420c874）：and/or 逐位确定（清 0/置 1 位变已知），XOR/ADD/SUB 仍保守；补 rmw.and.r/rmw.and.modimm 路由。
-- **core tick 机制**（303e388，来自 sim-tick 分支）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + test_core_tick.py 10 单测 + probe_core_tick.py 3 场景。**但首次溢出 ~450k 步 > 当前 153k，未在真实前缀触发——C2 未完成。**
+- **SFC 挂起序列**（8e356df）：使能态写 baud=0 放行；非零速率切换仍拒绝。
+- **GPIO RMW 按位精化**（420c874）：and/or 逐位确定，XOR/ADD/SUB 仍保守。
+- **SFC 时钟门 + 第二 SFC**（8770401）：0xfd1c00 时钟门投影（只记录置/清、读回严格 unknown）、第二 SFC 0xfe0100（复位态 CON=0 显式假设）。
+- **GPIO OUT 读回按位**（8e5df35）：GpioOutValue 偏字类型，and/or 位操作传递、全字消费（算术/比较/存 RAM）严格停；未写位 unknown 不臆造。
+- **入口原子性**（cb109b3）：deliver 先完整校验银行假设再提交状态，失败不留部分变化。
+- **core tick 机制**（303e388）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + 单测。**首次溢出 ~450k 步 > 当前 153k，未真实触发——C2 未完成。**
 
 ## codex (gpt-6-astra) 参谋结论（2026-11-11 二次，已核实）
 
