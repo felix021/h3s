@@ -1,73 +1,76 @@
-# 交接：整机启动仿真推进中（调度闭环已贯通，app_core 已进入）
+# 交接：整机启动仿真推进中（阶段 D 进行，前沿 153,558 步）
 
-2026-11-11 恢复工作。阶段 A（基线）+ 阶段 C 主体（IRQ127 调度闭环 → app_core）已完成。停止时请更新本文件。
+2026-11-11 恢复工作。阶段 A/B/C1 完成，C2（tick 真实触发）与 D 进行中。停止时请更新本文件。
 
-## 当前状态（按时间序，均已在 worktree `sim-baseline` 提交）
+## 当前前沿
 
-- **基线已重建**（`921c2d5`）：k2 副作用修正后完整回归通过；13 组外设场景与 MMU 边界、双核 147,263/147,268、partial-ICFG 边界与 `ab9f4e1` 一致。
-- **返回对照固化**（`f4394dd`，`probe_task_returns.py`）：5 个反事实停止点全部复现（147,270/147,404/149,660×2/149,661）。
-- **IRQ127 入口**（`f4394dd`）：双 opt-in（`software_irq_delivery_requests`+`software_irq_entry`）交付；向量槽 `0x19fffc`、RETI 装载、pending 清除均为显式假设；负例单测固定。
-- **handler 头部 + 真调度器**（`734c60b`）：PSR 小帧（m=32）与 76B 上下文帧（m=41）锚定执行；`0xFFE200` 源使能位跟踪；真实 IPMASK 地址 `0xFFE168+cnum*0x800`（idle 循环 `0x12b56c` 与 handler `0x12ad5c` 一致）接入 IRQ 控制器；银行读指令 `mov.sp_usp`/`mov.usp_sp` 实现；入口银行假设（USP=中断任务栈、SSP=last_explicit_ssp）下 handler 存 76B 帧入真实 TCB 槽并调用真调度器 `0x12ADEC`，151,500 步停对核 IDLE。dualcore/partial-ICFG 边界不变。
-- **调度闭环贯通**（`469e579`，最新）：opt-in IDLE 等待投影（核停发指令直到真实交付唤醒；全核等待→`all_cores_idle_waiting` 停止）；交付泛化到每核 IPI（IRQ 127-cnum，CPU1 槽 `0x19fff8`）；调度器自身的任务恢复 `pop.rmask` 装载任务帧 GPR（未初始化槽→UnknownWord，同首任务语义）；对称一次性 IRQ RTI 投影（PC=RETI、SP=USP，银行回写不认证）。**完整回路**：IPI 交付 → handler → 真调度器 → 任务切换 → RTI 进入真实 app_core 入口 `0x6012028` → 任务执行并 pend CPU1（IRQ125，优先级 6）→ **153,430 步停在 CPU1 侧 unmaskable 软件 IRQ（下一真实边界）**。
-- **报告差异**：执行器类报告 vs `ab9f4e1` 的差异均为元数据；`evidence/` 执行器类 JSON 待下一里程碑重新策划。
+五级停止阶梯（`tools/probe_irq_entry.py`，逐步 opt-in 叠加，全部回归通过）：
 
-## 当前停止点与下一层
+| 场景 | 步数 | 停止点 | kind |
+|---|---|---|---|
+| irq127_request_strict | 149,660 | 0x12b608 | software_irq_delivery_not_implemented |
+| irq127_entry_minimal | 149,679 | 0x12ad68 | unknown_core_special_register (usp) |
+| irq127_scheduler_entry | 151,500 | 0x12c5ca | unsupported idle（对核 IDLE 边界）|
+| irq127_appcore_roundtrip | 153,430 | 0x12b66a | unmodeled_unmaskable_irq irq125 |
+| **irq125_sync_roundtrip** | **153,558** | **0x12b910** | **unmapped_memory 0xfd1c00** |
 
-153,430 步：`unmodeled_unmaskable_irq` core=1 irq=125 priority=6 source=software_irq。CPU0 的 app_core 任务执行中 SET 了 CPU1 的 IRQ125（`rmw.or.bitr` @ `0x12b666`），而优先级 6 在模型里是 unmaskable（`IPMASK 0..7` 中 6/7 不可屏蔽）——需要弄清 IRQ125 的真实语义（config nibble 优先级 6 的实际含义、BR28 是否真有不可屏蔽软件 IRQ）后扩展模型或显式假设。这是下一个真实边界，不是死路。
+**153,558 步含义**：CPU0 的 app_core（入口 0x6012028）发跨核同步 IPI（IRQ125，CPU1 handler 0x60662c8 应答、清 0x1265f7 忙等位）→ CPU0 继续 → 进入 SFC 挂起序列（0x12b916→0x12b890，已放行 baud=0 写 + GPIO RMW 按位精化）→ 停在 `rmw.or.modimm [0xfd1c00] |= 1`（未建模 MMIO）。
 
-## 下一步（恢复时按序）
+## 已实现（按序，均 opt-in 投影，默认关闭 legacy 报告不变）
 
-1. IRQ125/优先级 6 语义：读 `analyze_qcy_irq.py` 的 config nibble 布局与 SDK 参考，判定 6/7 是否真的不可屏蔽、CPU1 侧交付需要什么；可能只是模型的 `priority>=6` 假设过严（`br28_model.py` 的 `unmodeled_unmaskable_irq` 抛出条件）。
-2. CPU1 侧 IRQ126/125 交付 + CPU1 handler 跑通（对称复用本层全部投影；CPU1 银行 fixture=`last_explicit_ssp 0x19fd94`）。
-3. core tick IRQ3（`core_tick_overflow_delivery_unresolved`；handler `0x60661A4`、ACK `0xFFE0EC+bank` bit6、CPU0 PRD=1 高频溢出）——codex 阶段 C 后半的"tick 唤醒"。
-4. 阶段 D：app_core 任务推进（0x6012028 之后的初始化链条：资源映射、外设、P11、蓝牙音频）。
-5. 阶段 E：三镜像 EQ 差分（L0-L3）。
+- **基线重建**（921c2d5）：k2 副作用修正 + probe_hardware/gpio_irq 全字存储 + probe_pi32v2 architectural_k2。
+- **返回对照**（f4394dd）：probe_task_returns.py 5 反事实停止点。
+- **IRQ127 调度闭环**（f4394dd→469e579）：每核 IPI 交付、向量槽读取、RETI 装载、pending 清除（software）/handler ACK（tick）、入口银行假设、IDLE 等待投影、对称 IRQ RTI 投影。
+- **IRQ125 同步握手**（6ac1d8c）：unmaskable IRQ（6/7=GIEMASK 类）投递投影；交付目标按请求核解析。
+- **SFC 挂起序列**（8e356df）：使能态写 baud=0 放行（挂起路径先 baud=0 后 disable）；非零速率切换仍拒绝。
+- **GPIO RMW 按位精化**（420c874）：and/or 逐位确定（清 0/置 1 位变已知），XOR/ADD/SUB 仍保守；补 rmw.and.r/rmw.and.modimm 路由。
+- **core tick 机制**（303e388，来自 sim-tick 分支）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + test_core_tick.py 10 单测 + probe_core_tick.py 3 场景。**但首次溢出 ~450k 步 > 当前 153k，未在真实前缀触发——C2 未完成。**
 
-## 关键技术事实（本日新钉）
+## codex (gpt-6-astra) 参谋结论（2026-11-11 二次，已核实）
 
-- IPMASK 物理地址 `0xFFE168+cnum*0x800`；模型常量 `IPMASK=0xffe1a8` 是 setup_arch 侧另一路径，两者都更新 `IRQController.ipmask`。
-- `0xFFE200` = `EMU_CON`（debug control）兼软件 IRQ 源使能位（bits0-3）；handler 入口 `&=~8` 出口 `|=8`，模型分位跟踪、不影响 eligible。
-- 调度 IPI 公式 `IRQ 127-cnum`；两核 handler 同为 `0x12AD2A`（固件注册）。
-- app_core 帧 `0x19f7b0`：16B 特殊帧已知（PC `0x6012028`）、60B GPR 未初始化（真实语义，非仿真缺陷）。
-- IDLE 等待投影：`CoreStall('core_idle_waiting')` + `select()` 跳过等待核；唤醒仅来自真实交付。
+阶段划分修正：
+- **C1**（IPI 调度进入应用）：条件模型下完成。
+- **C2**（时间驱动恢复）：未完成。退出条件=实际计数产生 pending→IRQ3→真实 handler/ACK→RTOS 时间或就绪状态变化→任务恢复并继续进展。机制+单测不能替代。
+- **D1**（控制服务就绪）：初始化依赖闭合；真实队列/分派接收输入；产生可检查状态变化；随后还能处理下一事件及定时事件。可启动 L2 差分。
+- **D2**（音频服务就绪）：真实软件创建/启动/停止/重建音频链。为 L3 提供环境。
+
+"完整仿真"边界（诚实定义）：**指定 UFW/初态/场景集合的整机软件功能仿真；硬件用列明契约的模型，未认证语义保持条件结论。** 软件（CPU0/1 指令、ROM、调度器、handler、锁队列、资源解析、EQ 钩子）真实执行；硬件（Flash 总线、计时器、中断控制器、DMA、GPIO、ADC/DAC 端、蓝牙外部环境）功能模型；P11 可用接口等价模型（不声称验证 P11 软件）；射频/功耗/模拟/声压不能离线认证。
+
+三镜像 EQ 差分可提前到 L2（事件循环+EQ 控制面），不必先跑通蓝牙/PCM。L3 才需 PCM 证据。
+
+## 四个待处理暂停点（codex 指出，按优先级）
+
+1. **一次性交付限制**：software IRQ / tick 都要求"该核从未交付过"，下一次事件被拒（br28_machine.py deliver 的 require）。扩展重复交付需验证完成状态、活动 handler、银行恢复。
+2. **全核 IDLE 后时间停**：当前立即 `all_cores_idle_waiting` 停止。持续服务需独立事件时钟，时钟契约允许时推进到下个事件。
+3. **入口失败原子性**：银行假设路径先改 PC/RETI、移除等待状态再查 SSP/任务 SP；检查失败可能留部分状态。应先完整校验再提交。
+4. **文档/场景名落后证据**：HANDOFF 旧边界、tick 探针仍停 IRQ125。建议每里程碑绑定提交+场景+报告+退出条件+剩余假设。
+
+## 当前并行任务
+
+- 路 A（subagent）：0xfd1c00 + 第二块 SFC 0xfe0100 建模（推进下一边界）——worktree sim-sfc2。
+- 路 B（subagent）：P11 主核读写依赖清单（判断 P11 硬/软前提）——只读调研。
+- codex 参谋已出（见上）。
+
+## 下一步（按 codex 建议）
+
+1. 路 A 完成后：完成 SFC 挂起-恢复完整周期（对核暂停、Flash 禁用期间访问限制、恢复、对核释放）。
+2. 补齐每个镜像的资源映射（candidate_view 目前只返回 app+337B payload）。
+3. 补可重复中断交付 + 事件时间推进（解决暂停点 1/2）。
+4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用、P11 接口。
+5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。
+
+## 关键技术事实（已钉）
+
+- IPMASK 物理地址 0xFFE168+cnum*0x800；模型常量 0xffe1a8 是另一路径，都更新 IRQController.ipmask。
+- 0xFFE200 = EMU_CON（debug control）兼软件 IRQ 源使能位（bits0-3）。
+- 调度 IPI 公式 IRQ 127-cnum（两核 handler 同为 0x12AD2A）；同步 IPI IRQ125（CPU1 handler 0x60662c8）。
+- IRQ125 = OS_SYNC_SOFT_IRQ，优先级 6 = GIEMASK 类（SDK hwi.h + hwi.c.o IR 双重印证）。
+- app_core 帧 0x19f7b0：16B 特殊帧（PC 0x6012028）+ 60B GPR 未初始化（真实语义）。
+- SFC 挂起路径 0x12b890（先 baud=0 后 disable）vs 使能路径 0x12e1e8（先 disable 后 baud）。
+- core tick PRD=1199999（CPU0）/479999999（CPU1），非"PRD=1 高频"（那是独立叶子 0x6066134 未在当前前缀调用）。
 
 ## 资料和硬件边界（不变）
 
-- 历史失败 r2（`c8dae523…`）禁止重刷；修复候选（`67ba97ef…`）未验证未刷。
-- ROM 公开 Release asset（`QCY_H3S_BR28_ROM_000000-020000.bin`）。
+- 历史失败 r2（c8dae523…）禁止重刷；修复候选（67ba97ef…）未验证未刷。
+- ROM 公开 Release asset（QCY_H3S_BR28_ROM_000000-020000.bin）。
 - RAM 观测候选仍 nondeployable；检查全部本机执行，不用 GitHub CI；发布需用户确认。
-
-## codex (gpt-6-astra) 调研路线（已核实采纳）
-
-阶段划分（每阶段退出条件见 codex 报告 `~/tmp/codex/202611111059-h3s-ufw-boot-sim/final.md`，关键断言已核实）：
-
-| 阶段 | 内容 | 状态 |
-| --- | --- | --- |
-| A | 恢复可信基线（回归、入口审计、测试接入） | **完成** |
-| B | 返回契约（bootstrap/首任务/普通 IRQ 返回分开描述；独立前端 + 负例 + 来源审查） | **前端完成**（5 场景固化+断言；来源审查见 `docs/icfg-status.md` 反例边界） |
-| C | 最小调度闭环（IRQ127 入口 → handler → ACK → 调度 → 返回；之后 core tick IRQ3） | **第一层完成**（入口+2条handler指令）；第二层：push.srl 特殊帧、0xFFE200 源使能 RMW、IPMASK `0xFFE168` 映射、sp=usp/ssp 栈银行 |
-| D | 应用启动（资源映射、外设、IDLE 唤醒、P11 接口、蓝牙音频初始化） | 未开始 |
-| E | 三镜像 EQ 差分（b79/r2/修复候选；L0-L3 四层验收） | 未开始 |
-
-关键裁决：保留现有严格执行器，不迁 QEMU；RTI 用互斥 opt-in 假设（方案 B），拒绝从 b79 反推 gate8 必开；P11 先建主核读写依赖清单再决定投入。
-
-## IRQ127 subagent 调研要点（已核实关键断言）
-
-- SET 写入点 `0x60644a6`（调度器按核 pend IPI 循环，前缀内唯一一次 RMW）。
-- 向量表 `0x19fe00`+`irq*4`；IRQ127 槽 `0x19fffc`、handler `0x12AD2A`（注册调用 `0x6066100`：`r0=0x7f-cnum, r2=0x12AD2A, call 0x6065d86`）。CPU1 同路径写 IRQ126 槽 `0x19fff8`。
-- handler ABI：入口小帧（cli → push r2-r0+psr → `[0xFFE200+bank]&=~8` → `[0x1261D0+cnum*4]=1` → IPMASK=7）→ 切换 76B RTOS 帧 → `sp=usp/ssp` 银行切换 → 调真调度器 `0x12ADEC` → 恢复 → 出口（`|=8`、IPMASK=0、sti、rti）。
-- 缺口分类：G2 RETI 装载 / G5 pending 清除 / G9 无硬件压栈 = 显式假设（第一层已带标注）；G3 SP bank / G4 ICFG 入口效应 / G6 `0xFFE200` 模型冲突 / G8 通用 RTI = 第二层或必须 strict；G12 core tick IRQ3（`0xFFE0EC` ACK bit6、PRD=1 高频溢出）是闭环的下一个硬点。
-
-## 下一步（恢复时按序）
-
-1. 第二层：push.srl 特殊帧投影（含 PSR push 清低位 flags 语义，参照首任务帧）、`0xFFE200` bit3 源使能 RMW 投影（与 debug control 白名单的冲突要显式拆分）、IPMASK `0xFFE168` 地址映射、`sp=usp/ssp` 栈银行（SSP 用 `last_explicit_ssp` 显式 fixture 或保持 strict）。
-2. 第二层目标：跑完 handler 头部到 `sp=usp`，进入真调度器 `0x12ADEC`，看到实际 TCB 选择——那之后按 codex 里程碑定义（IRQ127 驱动调度、连续进入 app_core、tick 唤醒恢复任务）。
-3. core tick IRQ3：`core_tick_overflow_delivery_unresolved` → 入口契约复用本层机制。
-4. 阶段 D 前置：`candidate_view` 按镜像映射完整资源（当前只映射 app+payload）。
-
-## 资料和硬件边界（不变）
-
-- 历史失败 r2（`c8dae523…`）禁止重刷；修复候选（`67ba97ef…`）未验证未刷。
-- ROM 已作为公开 Release asset 发布（`QCY_H3S_BR28_ROM_000000-020000.bin`，SHA256 `7cae0a02…`），可用 `gh release download firmware --pattern 'QCY_H3S_BR28_ROM*'` 获取后跑 `--rom` 回归。
-- RAM 观测候选仍 nondeployable；不进入任务或文档流程。
-- 整片 Flash、完整 RAM/轨迹、私人路径不进公共仓库；本仓检查全部本机执行，不用 GitHub CI。
