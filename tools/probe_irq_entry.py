@@ -44,7 +44,7 @@ SFC_RESUME_OPERATIONS=(
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
-             icu_region=False,flash_image_bytes=None,readonly=()):
+             icu_region=False,dcu_cmo=False,flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -63,6 +63,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # [+0x14]=begin、[+0x18]=end-1(write-only 记录)、[+0x10]=命令字
     # 0xca000020/0x40(与 0xca000010 同族,复用 CON bit30 完成投影)。默认关。
     if icu_region:options['icu_region_projection']=True
+    # dcu_cmo:opt-in 的 DCU CMO 逐地址 cache 维护口(0xff05c8/0xff05cc,
+    # SDK csfr.h JL_L1P 的 CMO[18]/CMO[19],__WO 只写)。sfc_drop_cache 两核
+    # region 命令完成后尾调 flushinv_dcache(0xc71a,r2=0xff05cc):0xc6f4 把
+    # (beg,len) 折算成 32 字节行数,寄存器计数 `rep r1,4` 体=add.rrr.p(r0+=32)
+    # +st.w [r2]=旧 r0 并行对,每行写一次口——write-only 记录,读回一律拒绝。
+    # 默认关。
+    if dcu_cmo:options['dcu_cmo_projection']=True
     # rep_block:opt-in 的多指令 rep.i 体执行(0x6010b14 rep 4 32 字节拷贝,
     # 及其 callee 0x6010a64 内的四个 rep 4 8)。默认关闭,legacy 报告不变。
     # rep_unknown_transport:opt-in 的 rep 拷贝体未知字节运输(0x600a352 rep 4 4
@@ -260,9 +267,13 @@ def check(report):
         reference^=byte<<8
         for _ in range(8):
             reference=((reference<<1)^0x1021)&0xffff if reference&0x8000 else (reference<<1)&0xffff
-    require(crc['seed_writes']==['0x0'] and crc['fed_bytes']==len(fed) and
-            crc['result_reads']==[hex(reference)],
+    require(crc['seed_writes'][0]=='0x0' and crc['result_reads'][0]==hex(reference) and
+            crc['fed_bytes']>=len(fed),
             'the hardware CRC projection did not reproduce the software-table result for the actual wrapper input')
+    # sfc_drop_cache 之后 VM init 链继续:同一 CRC 引擎被再用 11 次(每次种子
+    # 0、喂 30 字节、读一次结果,共 12 次往返 360 字节),首轮黄金校验不变。
+    require(len(crc['seed_writes'])==12 and crc['fed_bytes']==360 and len(crc['result_reads'])==12,
+            'the extended VM-init prefix changed the hardware CRC usage shape')
     # 0x6010b14 rep 4 32(4 字节体 ld.bu.pin+st.b.pin × 32,flash 资源表头部
     # 32 字节拷贝)及其后整条资源表扫描(含 callee 0x6010a64 内四个 rep 4 8)
     # 全部按多指令体真实执行:70 个 rep.i 体、155,389→162,447 步;扫描完成后
@@ -284,13 +295,34 @@ def check(report):
     # call 0xbac0 等 CON bit30 完成(与 0xca000010 使能路径同一条轮询指令)→
     # call 0xbad4 释放锁),r3+=0x800 换核重复 2 次。region 命令完成后尾调
     # flushinv_dcache(0x1fdb0→0xc71a→0xc6f4):0xff05cc 逐地址失效循环,体是
-    # 寄存器计数 `rep r1,4`(add.rrr.p+st.w 并行对)——rep.i 多指令体 gate
-    # 不覆盖寄存器计数形式,寄存器计数 rep 落到不支持运行时指令,是下一个
-    # 边界(0xff05cc DCU 失效口同样未建模,rep 先停)。
-    require(r['stop_core']==0 and r['stop_pc']=='0xc70c' and
-            r['stop']=={'kind':'unsupported_runtime_instruction','instruction_id':'rep'},
-            'after the ICU region writes the stop must be the register-count REP in the DCU invalidate loop')
-    require(r['completed_steps']==163075,'the ICU region projection changed its step count')
+    # 寄存器计数 `rep r1,4`(add.rrr.p+st.w 并行对)。三件套建模后走通:
+    # ①register_rep_multi_block(immediate_rep_multi_block 推广到寄存器计数
+    # rep,计数来自真实寄存器值,计数寄存器按 FM-1 run3 证据递减到 0,体后
+    # 编译器生成的 bnez r1 自然不跳);②并行对体按 exact_parallel_stores 的
+    # 旧寄存器语义执行(存储半读 A 之前的旧 r0,首写 [0xff05cc]=0x061d7fe0
+    # =行地址,r0 递增 32);③dcu_cmo_projection 把 0xff05cc 写入记为
+    # write-only 序列(SDK csfr.h JL_L1P 的 CMO[19],__WO;flush_dcache 用的
+    # 0xff05c8=CMO[18] 一并建模,本前缀未出现)。flushinv_dcache 尾部
+    # csync+ssync 走通(ssync 按 run4「无可见效果」模型),返回 sfc_drop_cache、
+    # VM init 链继续 12k 步,停在 ROM 0x4176 字节拷贝尾循环 `rep r2,4`——
+    # 真实 len&3==0,寄存器计数 rep 的 count=0 语义 BR28 未测量(GAPS.md
+    # 「Not tried: rep with a count of 0」),诚实停(unverified_zero_count_rep)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x4176' and
+            r['stop']=={'kind':'unverified_zero_count_rep','instruction_id':'rep',
+                        'note':'register-count REP; BR28 count=0 semantics unmeasured'},
+            'after the DCU invalidate loop the stop must be the genuine zero-count register REP tail')
+    require(r['completed_steps']==175396,'the DCU CMO projection changed its step count')
+    dcu=r['peripherals']['dcu_cmo_projection']
+    require(dcu['ports']['0xff05cc']=={'values':['0x61d7fe0'],'writes':1} and
+            dcu['ports']['0xff05c8']=={'values':[],'writes':0},
+            'the DCU invalidate port did not record exactly the one observed line address')
+    require(dcu['write_only'] and not dcu['readback_observed'] and
+            not dcu['port_index_semantics_verified'] and
+            not dcu['cache_contents_or_coherence_simulated'],
+            'the DCU CMO projection report is missing its explicit assumption record')
+    require(r['instruction_adapters'].get('register_rep_multi_block_projection')==5,
+            'the register-count REP projection must cover exactly the DCU loop (0xc70c) plus the '
+            'four nonzero ROM memcpy counters (0x416a/0x4176 family) in the extended prefix')
     gate=r['peripherals']['sfc_clock_gate_projection']
     require(gate['select']=='0x3' and gate['select_writes']==1 and
             gate['select_write_only'] is True and gate['select_readback_observed'] is False,
@@ -327,19 +359,22 @@ def check(report):
             region['same_busy_machinery_as_command4'],
             'the ICU region projection report is missing its explicit assumption record')
     # 窗口组放行后 CPU0 第二次 pend irq125(commands 4→6),第二次交付把
-    # 停泊的 CPU1 再唤醒一次:暂停点1 的真实第二次交付在此前沿被观察到。
+    # 停泊的 CPU1 再唤醒一次:暂停点1 的真实第二次交付在 162,898 前沿被观察
+    # 到。DCU 失效循环走通后 VM init 链继续与 CPU1 同步:又 pend 4 次(合计
+    # commands 14/acks 7,交付 1+6 次,CPU1 每次回同一停泊 0x12c5ca)。
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
-            [(0,127,'0x12ad2a','0x12b608'),(1,125,'0x60662c8','0x12c5ca'),
-             (1,125,'0x60662c8','0x12c5ca')],
-            'the real second delivery to the parked CPU1 did not occur through the repeat projection')
-    require(r['peripherals']['software_irq_commands']['commands']==6 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==3,
-            'the second cross-core request changed the software IRQ command bookkeeping')
+            [(0,127,'0x12ad2a','0x12b608')]+
+            [(1,125,'0x60662c8','0x12c5ca')]*6,
+            'the repeated cross-core deliveries to the parked CPU1 did not occur through the repeat projection')
+    require(r['peripherals']['software_irq_commands']['commands']==14 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==7,
+            'the VM-init sync requests changed the software IRQ command bookkeeping')
     # 70 个体来自资源表扫描,第 71 个是 0x600a352 rep 4 4(拷 16 字节 boot_info
     # 头);其中第 1/3 轮(word0 含 padding、word2 是 vm_res)走未知字节运输,
-    # 第 2/4 轮(vm_saddr/vm_size 全已知)走常规严格读。
-    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==71,
+    # 第 2/4 轮(vm_saddr/vm_size 全已知)走常规严格读。DCU 失效循环走通后
+    # VM init 链的 ROM 拷贝族再加 9 个 rep.i 体(71→80)。
+    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==80,
             'the flash resource-table scan must execute its rep.i blocks through the multi-block projection')
     require(r['instruction_adapters'].get('rep_copy_unknown_transport_load')==2 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==2,
@@ -390,7 +425,7 @@ def main():
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
-                              flash_image_bytes=image)]}
+                              dcu_cmo=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

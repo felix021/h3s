@@ -1197,23 +1197,64 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.steps+=1
                 adapters['ipmask_control_store']+=1
                 return
-            if diagnostics and diagnostics.get('immediate_rep_multi_block') and insn.id=='rep.i':
-                # 通用多指令 rep.i 体,放在所有针对性 rep 特例之后兜底(实测形状:
-                # 0x6010b14 rep 4 32 = 4 字节体 ld.bu.pin+st.b.pin 重复 32 次,字节
-                # memcpy;编码 n=次数、b=体字节数,上游 v3 硬件模型按「次数×整个
-                # 体」计总效果)。主循环的 repeat 消费按「PC 到达体末尾即完成一
-                # 轮」回卷,与单 store 体同一机制,因此只接受直线体:逐条解码必须
-                # 恰好覆盖 op['b'] 字节,每条都是有模型的非控制流指令;体指令随后
-                # 走常规解码执行,内存效果=真实执行。分支/调用/条件块开启器/并行
-                # 对/嵌套 rep 一律诚实拒绝:REP 与体内控制流的交互没有硬件捕获
-                # 证据,不臆造。
+            if use_architectural_models and insn.id=='ssync':
+                # ssync:上游只有 run4 的 runner 上下文 trace 模型(effect() 按
+                # unsupported_runner_context_model 拒绝)。FM-1 run4 硬件捕获:
+                # 「flags 0/15 下无任何可见寄存器/标志/sp/rets/scratch 变化,
+                # 不证明顺序/排他/事件交付」。按与 csync(k2 模型,仅保 flags)
+                # 同形状的无效果模型执行;只有真实执行到 ssync 的前缀才受影响
+                # 并在报告里计数(启动前缀首个出现点 0xc716,flushinv_dcache 尾)。
+                self.finish_exact(self.pc+size);adapters['ssync_noop']+=1
+                return
+            if diagnostics and diagnostics.get('immediate_rep_multi_block') and insn.id in ('rep.i','rep'):
+                # 通用多指令 rep 体,放在所有针对性 rep 特例之后兜底(实测形状:
+                # 0x6010b14 rep.i 4 32 = 4 字节体 ld.bu.pin+st.b.pin 重复 32 次,
+                # 字节 memcpy;编码 n=次数、b=体字节数,上游 v3 硬件模型按「次数
+                # ×整个体」计总效果)。主循环的 repeat 消费按「PC 到达体末尾即
+                # 完成一轮」回卷,与单 store 体同一机制,因此只接受直线体:逐条
+                # 解码必须恰好覆盖体字节,每条都是有模型的非控制流指令;体指令
+                # 随后走常规解码执行,内存效果=真实执行。分支/调用/条件块开启器/
+                # 嵌套 rep 一律诚实拒绝:REP 与体内控制流的交互没有硬件捕获证据,
+                # 不臆造。
+                # 寄存器计数 rep(ROM 0xc70c `rep r1,4`,flushinv_dcache 的 DCU
+                # CMO 失效循环):上游 FM-1 run3 硬件证据「体执行次数=计数寄存
+                # 器值,寄存器递减到 0」(v3.py rep 模型),计数必须来自真实寄存
+                # 器值——未知/抽象计数值、计数 0(GAPS.md 明确未测)一律诚实停。
+                # ROM 编译形状在体后跟 `bnez r计数控,回 rep`:按递减到 0 的模型
+                # 执行完后 bnez 自然不跳(两种硬件解释的可观测结果一致)。
+                # 并行对体(add.rrr.p+st.w):按一条指令计字节,第二半必须是
+                # exact_parallel_stores 已支持的整字存储形状,执行期由该 gate 按
+                # 「B 读 A 之前的旧寄存器」硬件语义精确执行(run3 证据)。
                 op=module.check.operands(insn,raw)
-                require(self.repeat is None and self.after_then is None and 1<=op['n']<=32,
+                if insn.id=='rep.i':
+                    body_bytes,count,register=op['b'],op['n'],None
+                    require(1<=count<=32,'immediate REP projection has an unsupported context')
+                else:
+                    body_bytes,register=op['n'],op['r']
+                    count=self.R[register]
+                    if not isinstance(count,int):
+                        raise Blocked('rep_register_count_unknown',register=register,
+                                      instruction_id=insn.id)
+                    if count==0:
+                        raise Blocked('unverified_zero_count_rep',instruction_id=insn.id,
+                                      note='register-count REP; BR28 count=0 semantics unmeasured')
+                    require(count<=10000,'register-count REP outside the bounded model')
+                require(self.repeat is None and self.after_then is None,
                         'immediate REP projection has an unsupported context')
                 walk=self.pc+size;covered=0
-                while covered<op['b']:
+                while covered<body_bytes:
                     inner,_,inner_size=self.decode(walk)
-                    if not (not inner.block and not inner.id.endswith('.p') and
+                    if inner.id.endswith('.p'):
+                        pair,_,pair_size=self.decode(walk+inner_size)
+                        base=self.tab.by_id(inner.id[:-2])
+                        pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
+                            diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
+                        if not (diagnostics.get('exact_parallel_stores') and pure_alu and
+                                pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx')):
+                            raise Blocked('rep_multi_block_body_parallel_pair_unsupported',
+                                          instruction_id=inner.id,pair_id=pair.id,address=hex(walk))
+                        covered+=inner_size+pair_size;walk+=inner_size+pair_size;continue
+                    if not (not inner.block and
                             module.branch_field(inner) is None and
                             not inner.id.startswith(('rep','goto','gotoss','call','callns',
                                                      'pop.pc','rts','lock','idle','wfe','sev',
@@ -1224,11 +1265,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         raise Blocked('rep_multi_block_body_not_straight_line',
                                       instruction_id=inner.id,address=hex(walk))
                     covered+=inner_size;walk+=inner_size
-                if covered!=op['b']:
-                    raise Blocked('rep_multi_block_body_unaligned',body_bytes=op['b'],covered=covered)
-                self.repeat={'start':self.pc+size,'end':self.pc+size+op['b'],'register':None,
-                             'remaining':op['n'],'multi_block':True}
-                self.pc+=size;self.steps+=1;adapters['immediate_rep_multi_block_projection']+=1
+                if covered!=body_bytes:
+                    raise Blocked('rep_multi_block_body_unaligned',body_bytes=body_bytes,covered=covered)
+                self.repeat={'start':self.pc+size,'end':self.pc+size+body_bytes,'register':register,
+                             'remaining':count,'multi_block':True}
+                self.pc+=size;self.steps+=1
+                adapters['immediate_rep_multi_block_projection' if insn.id=='rep.i'
+                         else 'register_rep_multi_block_projection']+=1
                 return
             # Context-specific control models must never pretend to be hardware.
             if insn.id.startswith(('rep','lock','idle','wfe','sev','swi','syscall',
@@ -1366,6 +1409,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             'architectural_inner_models':sorted(architectural_model_names),
             'legitimate_stores_are_not_filtered_by_value':True,
             'other_unsupported_contexts_remain_strict':True}
+        if adapters.get('ssync_noop'):
+            # 只有真实执行到 ssync 的前缀才出现该键(legacy 前缀不经过 ssync,
+            # 报告不变)。
+            result['instruction_model_corrections']['ssync_noop_model']=(
+                'fm1 run-4 capture: no visible register/flag/sp/rets change (flags 0 and 15); '
+                'ordering/barrier semantics not modeled; executions: %d'%adapters['ssync_noop'])
     if handoff:
         result['assumptions']['typed_handoff']=handoff['description']
         if startup_loops:

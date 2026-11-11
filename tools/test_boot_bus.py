@@ -201,6 +201,89 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop']['instruction_id'],'if.eq.ri.modimm')
         self.assertEqual(result['stop']['address'],'0x12cb22')
 
+    # ROM 0xc70c-0xc718 的精确编码(flushinv_dcache 0xc71a→0xc6f4 的 DCU CMO
+    # 失效循环):寄存器计数 rep r1 体 4 字节 = add.rrr.p(r0+=r3)+st.w [r2]=旧 r0
+    # 并行对,体后 bnez r1 回卷到 rep,尾 csync+ssync(解码窗口读 6 字节,
+    # 附带尾部保证只读区覆盖)。按字节钉在只读区,不依赖 ROM 文件。
+    DCU_REP_LOOP=bytes.fromhex('110388dca060f15c20002000')
+
+    def dcu_rep_hardware(self):
+        # 0xff05cc=CMO[19](flushinv_dcache 口);0xff05c8 一并建模但本循环不写。
+        return BR28Model(dcu_cmo_projection=True)
+
+    def test_register_count_rep_pair_body_runs_the_dcu_invalidate_loop(self):
+        # 寄存器计数 rep 推广(immediate_rep_multi_block 扩展):计数来自真实
+        # 寄存器值,计数寄存器按 FM-1 run3 硬件证据递减到 0(体后 bnez 自然
+        # 不跳);并行对体按 exact_parallel_stores 的旧寄存器语义执行——存储半
+        # 读 A 之前的旧 r0,所以写入序列是行地址 0x061d7fe0/0x061d8000/
+        # 0x061d8020(步长 32),r0 末值 0x061d8040,r1 归 0。1 步 rep + 3 步
+        # 并行对 + 1 步 bnez = 5 步。
+        pc=0x01c60000
+        h=self.handoff();h['readonly'].append((pc,self.DCU_REP_LOOP))
+        regs=[0]*16;regs[0]=0x061d7fe0;regs[1]=3;regs[2]=0xff05cc;regs[3]=0x20
+        result=explore(self.module,self.app,name='dcu_rep_loop',handoff=h,
+            hardware=self.dcu_rep_hardware(),
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'exact_parallel_stores':True},budget=5)
+        self.assertEqual(result['completed_steps'],5)
+        self.assertEqual(result['stop_pc'],hex(pc+8))
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(result['last_registers']['r'][0],hex(0x061d8040))
+        self.assertEqual(result['last_registers']['r'][1],'0x0')
+        dcu=result['peripherals']['dcu_cmo_projection']
+        self.assertEqual(dcu['ports']['0xff05cc'],
+                         {'values':['0x61d7fe0','0x61d8000','0x61d8020'],'writes':3})
+        self.assertEqual(dcu['ports']['0xff05c8'],{'values':[],'writes':0})
+        self.assertEqual(result['instruction_adapters'].get('register_rep_multi_block_projection'),1)
+        self.assertEqual(result['instruction_adapters'].get('parallel_full_word_store_old_registers'),3)
+
+    def test_register_count_rep_stays_opt_in_and_rejects_risky_counts(self):
+        # 不开 immediate_rep_multi_block:同一指令诚实停在 unsupported_runtime_
+        # instruction(rep),legacy 行为不变。开了 gate 但并行对执行路径
+        # (exact_parallel_stores)未开:体形状拒绝。计数寄存器为 0:BR28 未测量
+        # (GAPS.md「Not tried: rep with a count of 0」),诚实停。
+        pc=0x01c60000
+        h=self.handoff();h['readonly'].append((pc,self.DCU_REP_LOOP))
+        regs=[0]*16;regs[0]=0x061d7fe0;regs[1]=3;regs[2]=0xff05cc;regs[3]=0x20
+        result=explore(self.module,self.app,name='dcu_rep_off',handoff=h,
+            hardware=self.dcu_rep_hardware(),
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_parallel_stores':True},budget=5)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unsupported_runtime_instruction')
+        self.assertEqual(result['stop']['instruction_id'],'rep')
+        result=explore(self.module,self.app,name='dcu_rep_no_pair_gate',handoff=h,
+            hardware=self.dcu_rep_hardware(),
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True},budget=5)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'rep_multi_block_body_parallel_pair_unsupported')
+        self.assertEqual(result['stop']['instruction_id'],'add.rrr.p')
+        self.assertEqual(result['stop']['pair_id'],'st.w')
+        regs[1]=0
+        result=explore(self.module,self.app,name='dcu_rep_zero',handoff=h,
+            hardware=self.dcu_rep_hardware(),
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'exact_parallel_stores':True},budget=5)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unverified_zero_count_rep')
+
+    def test_ssync_executes_as_the_run4_no_visible_effect_model(self):
+        # flushinv_dcache 尾部 0xc714 csync + 0xc716 ssync(ROM 实际编码)。ssync
+        # 上游只有 run4 的 runner 上下文 trace 模型;按 FM-1 run4 捕获「flags
+        # 0/15 下无任何可见寄存器/标志/sp/rets 变化」以无效果模型执行,顺序/
+        # 屏障语义显式不建模(报告键只在真实执行到的前缀出现)。
+        pc=0x01c60010
+        h=self.handoff();h['readonly'].append((pc,bytes.fromhex('2000220020002000')))
+        regs=[0]*16;regs[0]=0x1234
+        result=explore(self.module,self.app,name='ssync_noop',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=2)
+        self.assertEqual(result['completed_steps'],2)
+        self.assertEqual(result['stop_pc'],hex(pc+4))
+        self.assertEqual(result['last_registers']['r'][0],'0x1234')
+        self.assertEqual(result['instruction_adapters'].get('ssync_noop'),1)
+        self.assertIn('ssync_noop_model',result['instruction_model_corrections'])
+
     def test_boot_info_rep_copy_transports_padding_unknowns(self):
         # 实际 boot_info 头拷贝 0x600a352 rep 4 4(r3=[r2++=4]/[r1++=4]=r3,
         # 重复 4 次)。源 0x122800 按真机状态部分初始化:byte0=0x10(vm.align,

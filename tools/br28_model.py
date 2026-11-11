@@ -44,6 +44,13 @@ ICU_BASES=(0xffe400,0xffec00)
 # (0xbac0 轮询),与已建模的 0xca000010(ICU 使能路径 0xbae0)同族。
 ICU_REGION_OFFSETS=(0x14,0x18)
 ICU_REGION_COMMANDS=(0xca000020,0xca000040)
+# SDK csfr.h:JL_L1P(0xff0500=csfr_base+0x500,共享 L1P cache)类型化为
+# JL_TypeDef_q32DSP_DCU,其 CMO[32](+0x80..+0xff,逐地址 cache 维护口)标注
+# __WO 只写。0xff05c8/0xff05cc=CMO[18]/CMO[19]:逐 index 操作语义 SDK 未命名,
+# 由 ROM export wrapper 区分(flush_dcache 用 0xff05c8、flushinv_dcache 用 0xff05cc)。
+DCU_CMO_FLUSH=0xff05c8
+DCU_CMO_FLUSHINV=0xff05cc
+DCU_CMO_PORTS=(DCU_CMO_FLUSH,DCU_CMO_FLUSHINV)
 CORE_PMU_CON1=(0xffe0c4,0xffe8c4)
 SFC_BASE=0xfe0200
 SFC_SECONDARY_BASE=0xfe0100
@@ -491,6 +498,42 @@ class IcuInitializationProjection:
                 'command_low_byte_semantics_verified':False,
                 'same_busy_machinery_as_command4':True}
         return result
+
+
+class DcuCmoProjection:
+    """共享 L1P(JL_L1P,0xff0500)的 CMO 逐地址 cache 维护口 write-only 记录。
+
+    SDK csfr.h 把 JL_L1P 类型化为 JL_TypeDef_q32DSP_DCU:CON(+0,bit31=空闲,
+    DcuWaitIdle 0xbb20 轮询、cache.h WAIT_DCACHE_IDLE 同位)之外,CMO[32]
+    (+0x80..+0xff)标注 __WO 只写;cache.h 只声明 flush_dcache/flushinv_dcache
+    两个函数。ROM export 映射:flush_dcache 0x1fdac→0xc780(r2=0xff05c8)、
+    flushinv_dcache 0x1fdb0→0xc78c→0xc71a(r2=0xff05cc),二者都调同一循环
+    0xc6f4:按 (beg,len) 折算 32 字节行数(寄存器计数 rep),体=add.rrr.p
+    (r0+=32)+st.w [r2]=旧 r0 并行对,每行把行地址写一次口。固件全量字节扫描:
+    两个口各只有 ROM wrapper 一处 li.u32 引用,无任何读回。模型只记录写入
+    序列,不模拟 cache 内容/一致性;读回一律拒绝。哪个 index 是 flush、哪个
+    是 flush+失效只有 wrapper 名字映射证据,行粒度(32 字节)按循环步长推断,
+    硅上未验证。
+    """
+    def __init__(self):
+        self.values={address:[] for address in DCU_CMO_PORTS}
+        self.writes={address:0 for address in DCU_CMO_PORTS}
+    def handles(self,address):
+        return address in self.values
+    def write(self,address,value):
+        values=self.values[address];values.append(value);self.writes[address]+=1
+        if len(values)>64:values.pop(32)  # 同 record_write:保留首 32+末 32
+    def read(self,address):
+        raise Blocked('dcu_cmo_readback_not_modeled',address=hex(address))
+    def report(self):
+        return {'ports':{hex(address):{'values':[hex(v) for v in values],'writes':self.writes[address]}
+                         for address,values in self.values.items()},
+                'values_truncated':any(self.writes[a]>len(v) for a,v in self.values.items()),
+                'sdk_csfr_h_typing':'JL_L1P (0xff0500) typed JL_TypeDef_q32DSP_DCU; CMO[32] at +0x80 marked __WO',
+                'port_index_semantics_verified':False,
+                'line_stride_32_from_loop_body':True,'line_granularity_silicon_verified':False,
+                'write_only':True,'readback_observed':False,
+                'cache_contents_or_coherence_simulated':False}
 
 
 class CoreTickStopped:
@@ -1107,6 +1150,7 @@ class BR28Model:
                  reset_history_projection=False,reset_history_words=None,
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,icu_region_projection=False,
+                 dcu_cmo_projection=False,
                  software_irq_command_projection=False,
                  initial_software_irq_pending=None,software_irq_delivery_requests=False,
                  unmaskable_irq_projection=False,core_tick_delivery_requests=False):
@@ -1181,6 +1225,8 @@ class BR28Model:
             raise ValueError('ICU region projection requires the ICU initialization projection')
         self.icu=IcuInitializationProjection({a:v for a,v in self.cache_status_words.items() if a in ICU_BASES},
                                              icu_command_steps,icu_region_projection) if icu_initialization_projection else None
+        # DCU CMO 口(0xff05c8/0xff05cc)是独立 write-only 记录,不依赖 ICU/CON 机制。
+        self.dcu=DcuCmoProjection() if dcu_cmo_projection else None
         self.sfc=SFCReadBus(initial_sfc_control) if sfc_read_bus else None
         if secondary_sfc_read_bus and not sfc_read_bus:raise ValueError('secondary SFC requires the primary SFC read bus')
         self.sfc_secondary=SFCReadBus(initial_secondary_sfc_control,SFC_SECONDARY_BASE) if secondary_sfc_read_bus else None
@@ -1218,6 +1264,7 @@ class BR28Model:
         return size==4 and address%4==0 and (self.handles_gpio(address) or
             (self.software_irq is not None and self.software_irq.handles(address)) or
             (self.icu is not None and self.icu.handles(address)) or
+            (self.dcu is not None and self.dcu.handles(address)) or
             (self.multicore_enabled and (address==IPMASK+0x800 or IRQ_CONFIG+0x800<=address<IRQ_CONFIG+0x880)) or
             (self.multicore_enabled and address in CORE_PMU_CON1) or
             (self.debug is not None and self.debug.handles(address)) or
@@ -1351,6 +1398,7 @@ class BR28Model:
         if self.software_irq is not None and self.software_irq.handles(address):
             raise Blocked('software_irq_wo_readback_unverified',address=hex(address))
         if self.icu is not None and self.icu.handles(address):return self.icu.read(address)
+        if self.dcu is not None and self.dcu.handles(address):return self.dcu.read(address)
         if self.multicore_enabled and address in CORE_PMU_CON1:return self.core_power[address].read(address)
         if self.multicore_enabled and address==IPMASK+0x800:
             if self.irq1.ipmask is None:raise Blocked('unknown_cpu1_ipmask')
@@ -1408,6 +1456,9 @@ class BR28Model:
             raise Blocked('software_irq_full_store_contract_unmodeled',address=hex(address))
         if self.icu is not None and self.icu.handles(address):
             self.icu.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
+            return
+        if self.dcu is not None and self.dcu.handles(address):
+            self.dcu.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
             return
         if self.multicore_enabled and address in CORE_PMU_CON1:raise Blocked('core_power_full_write_not_modeled',address=hex(address))
         if self.debug is not None and self.debug.handles(address):
@@ -1723,6 +1774,7 @@ class BR28Model:
         if self.crc_engine is not None:result['hardware_crc_projection']=self.crc_engine.report()
         if self.sfc_clock is not None:result['sfc_clock_gate_projection']=self.sfc_clock.report()
         if self.icu is not None:result['icu_initialization_projection']=self.icu.report()
+        if self.dcu is not None:result['dcu_cmo_projection']=self.dcu.report()
         if self.software_irq is not None:result['software_irq_commands']=self.software_irq.report()
         if self.debug is not None:result['debug_execution_projection']=self.debug.report()
         if self.reset is not None:result['reset_history_projection']=self.reset.report()

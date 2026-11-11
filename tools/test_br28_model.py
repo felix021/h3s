@@ -13,6 +13,7 @@ from br28_model import SDTAP_CON, PSRAM_CON0, IOMAP_CON0, USB_IO_CON0, USB_DISAB
 from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection, RESET_CONFIG_MASKS
 from br28_model import MPUConfigurationProjection, GpioOutValue
 from br28_model import IcuInitializationProjection, ICU_BASES
+from br28_model import DcuCmoProjection, DCU_CMO_FLUSH, DCU_CMO_FLUSHINV
 
 
 class ModelTests(unittest.TestCase):
@@ -686,6 +687,50 @@ class ModelTests(unittest.TestCase):
         self.assertEqual([c['address'] for c in icu['commands']],['0xffe410','0xffec10'])
         self.assertEqual(icu['completed_commands'],0)  # 完成仍由显式 advance 步数驱动
         self.assertEqual(icu['pending_cores'],[0,1])
+
+    def test_dcu_cmo_ports_take_only_write_only_line_records(self):
+        # SDK csfr.h 把 JL_L1P(0xff0500,共享 L1P cache)类型化为
+        # JL_TypeDef_q32DSP_DCU,CMO[32](+0x80..+0xff)标注 __WO;0xff05c8/
+        # 0xff05cc=CMO[18]/CMO[19],逐 index 操作语义 SDK 未命名,由 ROM export
+        # wrapper 区分(flush_dcache 0x1fdac→0xc780 用 r2=0xff05c8、
+        # flushinv_dcache 0x1fdb0→0xc78c→0xc71a 用 r2=0xff05cc,都调同一循环
+        # 0xc6f4:寄存器计数 rep,体=add.rrr.p(r0+=32)+st.w [r2]=旧 r0 并行对,
+        # 每行写一次口,存储半按硬件 run3 证据读 A 之前的旧寄存器)。实测
+        # flushinv_dcache(beg=0x061d7fe0,len=0x20)一行,首写=行地址 0x061d7fe0。
+        # 固件全量字节扫描:两个口各只有 wrapper 一处 li.u32 引用,无任何读回
+        # ——write-only 序列记录,读回一律停;长序列按首 32+末 32 截断。
+        proj=DcuCmoProjection()
+        self.assertTrue(proj.handles(DCU_CMO_FLUSHINV) and proj.handles(DCU_CMO_FLUSH))
+        self.assertFalse(proj.handles(0xff05d0))
+        proj.write(DCU_CMO_FLUSHINV,0x061d7fe0)
+        proj.write(DCU_CMO_FLUSH,0x061d7fe0);proj.write(DCU_CMO_FLUSH,0x061d8000)
+        with self.assertRaisesRegex(Blocked,'dcu_cmo_readback_not_modeled'):proj.read(DCU_CMO_FLUSHINV)
+        with self.assertRaisesRegex(Blocked,'dcu_cmo_readback_not_modeled'):proj.read(DCU_CMO_FLUSH)
+        for _ in range(70):proj.write(DCU_CMO_FLUSHINV,0x061d8000)
+        report=proj.report()
+        self.assertEqual(report['ports']['0xff05c8'],{'values':['0x61d7fe0','0x61d8000'],'writes':2})
+        self.assertEqual(len(report['ports']['0xff05cc']['values']),64)  # 首 1+末 63…截断保序
+        self.assertEqual(report['ports']['0xff05cc']['values'][0],'0x61d7fe0')
+        self.assertEqual(report['ports']['0xff05cc']['writes'],71)
+        self.assertTrue(report['values_truncated'])
+        self.assertTrue(report['write_only'] and not report['readback_observed'])
+        self.assertFalse(report['port_index_semantics_verified'])
+        self.assertFalse(report['cache_contents_or_coherence_simulated'])
+
+    def test_dcu_cmo_projection_is_opt_in_and_routed(self):
+        # 默认关:不开 dcu_cmo_projection 时 0xff05cc/0xff05c8 写是不支持的外设写;
+        # 打开后经 BR28Model 路由 write-only 记录(独立开关,不依赖 ICU/CON 机制)。
+        model=BR28Model()
+        self.assertFalse(model.handles(0xff05cc,4) or model.handles(0xff05c8,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):model.write(0xff05cc,1)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):model.write(0xff05c8,1)
+        model=BR28Model(dcu_cmo_projection=True)
+        self.assertTrue(model.handles(0xff05cc,4) and model.handles(0xff05c8,4))
+        model.write(0xff05cc,0x061d7fe0)
+        with self.assertRaisesRegex(Blocked,'dcu_cmo_readback_not_modeled'):model.read(0xff05cc)
+        dcu=model.report()['dcu_cmo_projection']
+        self.assertEqual(dcu['ports']['0xff05cc'],{'values':['0x61d7fe0'],'writes':1})
+        self.assertEqual(dcu['ports']['0xff05c8'],{'values':[],'writes':0})
 
     def test_cpu1_release_bit_survives_kick_bit_record(self):
         # kick 位(bit3,只写记录)把 cpu1_control 记到 9;CPU1 的交付资格判定必须
