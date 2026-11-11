@@ -104,14 +104,14 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 **三镜像结论**：
 - 官方 ↔ 已测试 b79：JLFS 仅 2/9 资源不同——app_area_head（整块 9B：表头/嵌套 CRC 8B + app.bin 内 **0x9e410 单字节** ANC 键循环表，与 AGENTS 钉死事实一致）与 stream.bin（41B：表头 CRC 4B + 音量参数区 0x18f8..0x1954，即 Vol_SysTone/Vol_SysKTone 邻域）；其余 7 资源（含 p11_code.bin、scene.bin、anc_ext.bin、3mic_coeff.bin、cfg_tool.bin、config.dat、分区目录）逐字节相同。外层 13 条仅 flash.bin 不同，TON/TON1 提示音分区字节级相同（-10dB 改动全部落在 flash.bin 内部）。
-- **EQ 修复候选（67ba97ef）文件缺失**：本机全盘（*.ufw/按 1,326,848B 尺寸）、firmware Release assets、私有归档目录均未找到；确定性重建所需的私有 patch.elf 也不在本机。三镜像 diff 待文件补齐后一条命令完成。工具已内置候选形状校验（相对 b79 仅 app_area_head/config.dat 差异 + 追加 eq_toggle.bin = 0xff+337B 载荷，钉死依据 eq_toggle_image.py/verify_eq_candidate.py），已用合成镜像验证 10 条目解析、差异表形状与假载荷负例咬合；真实载荷摘要校验待真实文件。
+- **EQ 修复候选（67ba97ef）三镜像 diff 已闭合（2026-11-11 晚，用户提供 artifacts）**：候选 .ufw 实测 SHA256 与钉死值一致，位于仓库外本机目录 `artifacts/eq-fence-repair-offline-20261110/`（含 patch.elf/patch.asm/patch.map/patch.nm/build-report/verification.json 完整证据链，patch.elf 到位使 check_eq_repair 的确定性重建路径可用）。形状校验自动触发并通过：相对 b79 差异严格限于 app_area_head（41B：8B CRC 元数据 + app.bin 内 6 处站点游程，其中 0x34e9a..0x34e9d 正是 fence 上限立即数 06034e98→060e31c5 的 3 字节中段差异）+ config.dat 3B（index 翻转）+ 追加 eq_toggle.bin（337B 载荷，SHA256 f4e9501e…）；`unexpected_diff_found=false`。flash.bin 422B 差异（0x2000 头 CRC + app 内站点 + 0xe5073..0xe51e5 EQ 表区大块 + 边界小改）与钉死的 5+1 站点 + 337B payload 预期一致。
 - L2 三镜像差分的数据基础：除 app_area_head/stream.bin 外全部资源可三镜像共享加载；候选差异全部集中在 app.bin 内容 + 追加 eq_toggle.bin。
 - 对比报告：`analysis/image-resources.json`（本机 analysis/，git 忽略，不含路径/私有信息）。
 
 ## 下一步（按 codex 建议）
 
 1. **0xfd1c04 SFC 时钟寄存器**（新前沿 0x6010b88 `st.w [r0+4]=3`，r0=0xfd1c00）：0xfd1c00=时钟门 CON、0xfd1c08=分频已建模，+4 偏移未建模。先查 SDK csfr.h clk_sfc 位定义与固件此处的写序列语义（写 3 的含义），再决定投影形状。注意紧邻的 0x6010b84 `rmw.and [0xfd6014] &= 0xFFF7FFFF` 走的是已建模电压配置寄存器路径（additional_configuration 含 0xfd6014），与新边界无关。
-2. ~~补齐每个镜像的资源映射~~ 完成：见上节「镜像资源级映射」（rep.i 落地后 flash_image() 只读区可复用于三镜像加载）；EQ 候选文件补齐后重跑即闭合三镜像 diff。
+2. ~~补齐每个镜像的资源映射~~ 完成：三镜像（官方/b79/EQ 候选）资源级 diff 已闭合，见上节「镜像资源级映射」；rep.i 落地后 flash_image() 只读区可复用于三镜像加载。
 3. 事件时间推进（暂停点 2 事件时钟；暂停点 1 机制已落，前沿推进后补真实第二次交付观察）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用；P11 接口剩 power_init 内部的纯写寄存器与 0xf20080 拷贝（见上节剩余缺口）。
 5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。
