@@ -15,6 +15,7 @@ PINR1=0xf2c11c
 PINR0=0xf2c120
 IRQ_CONFIG=0xffe100
 IPMASK=0xffe1a8
+IRQ_IPMASK_BANKED=0xffe168  # handler/idle-loop addressing: base+cnum*0x800 (0x12b56c, 0x12ad5c)
 DIVISORS=(1,4,16,64,2,8,32,128,256,1024,4096,16384,512,2048,8192,32768)
 GPIO_BASES=(0xfd5000,0xfd5100,0xfd5200,0xfd5300,0xfd5400,0xfd5500,0xfd5700)
 MMU_BASE=0xff0400
@@ -527,16 +528,24 @@ class SoftwareIrqCommands:
     BR28 mapping124+n is cross-checked against actual QCY registration/ACK.
     """
     bases=(0xffe1a0,0xffe9a0)
+    source_bases=(0xffe200,0xffea00)
 
-    def __init__(self,initial_pending=None):
+    def __init__(self,initial_pending=None,initial_source_enable=None):
         if initial_pending is not None and (len(initial_pending)!=2 or any(v is not None and
                 (not isinstance(v,int) or not 0<=v<=15) for v in initial_pending)):
             raise ValueError('software IRQ initial pending requires two explicit low-nibble or unknown fixtures')
+        if initial_source_enable is not None and (len(initial_source_enable)!=2 or any(v is not None and
+                (not isinstance(v,int) or not 0<=v<=15) for v in initial_source_enable)):
+            raise ValueError('software IRQ source enable requires two explicit low-nibble or unknown fixtures')
         self.initial_pending=None if initial_pending is None else tuple(initial_pending)
+        self.initial_source_enable=None if initial_source_enable is None else tuple(initial_source_enable)
         self.pending=[PartialWord() if v is None else PartialWord(v,15) for v in (self.initial_pending or (None,None))]
-        self.commands=0;self.acknowledgements=0
+        self.source_enable=[PartialWord() if v is None else PartialWord(v,15) for v in (self.initial_source_enable or (None,None))]
+        self.commands=0;self.acknowledgements=0;self.source_commands=0
 
     def handles(self,address):return any(address in (b,b+4) for b in self.bases)
+
+    def handles_source(self,address):return address in self.source_bases
 
     def command(self,address,mask):
         if not self.handles(address):raise Blocked('software_irq_command_address_unmodeled',address=hex(address))
@@ -545,6 +554,16 @@ class SoftwareIrqCommands:
         clear=address==self.bases[core]+4
         self.pending[core].apply('and' if clear else 'or',~mask if clear else mask)
         self.commands+=1
+
+    def source_rmw(self,address,kind,operand):
+        # Actual handler masks the source at entry ([base]&=~8) and re-arms it
+        # at exit ([base]|=8). Bit meaning and delivery interaction are
+        # recorded only; eligibility is unchanged in this projection.
+        if not self.handles_source(address):raise Blocked('software_irq_source_address_unmodeled',address=hex(address))
+        core=0 if address<self.source_bases[1] else 1
+        if kind not in ('and','or') or operand&~0xffffffff:raise Blocked('software_irq_source_rmw_form_unmodeled',address=hex(address))
+        self.source_enable[core].apply(kind,operand)
+        self.source_commands+=1
 
     def acknowledge(self,core,bit):
         # Explicit assumption of the opt-in minimal entry: taking the vector
@@ -558,6 +577,10 @@ class SoftwareIrqCommands:
                 'selected_bit_command_is_explicit_projection':True,'wo_readback_certified':False,
                 'exception_delivery_simulated':False,'initial_pending_assumed_zero':self.initial_pending is not None and 0 in self.initial_pending,
                 'acknowledgements':self.acknowledgements,'acknowledged_by_delivery_is_assumption':True,
+                'source_enable':{str(i):{'known_mask':hex(w.known&15),'known_value':hex(w.value&15)} for i,w in enumerate(self.source_enable)},
+                'source_enable_addresses':[hex(a) for a in self.source_bases],
+                'source_rmw_affects_eligibility':False,'source_enable_semantics_inferred_from_handler_bytes':True,
+                'source_commands':self.source_commands,
                 **({'initial_pending_fixture':[None if v is None else hex(v) for v in self.initial_pending],
                     'pending_fixture_is_not_measured_reset_state':True} if self.initial_pending is not None else {})}
 
@@ -974,6 +997,14 @@ class BR28Model:
         elif address==IPMASK:
             if not 0<=value<=7:raise Blocked('unsupported_ipmask',value=value)
             self.irq.ipmask=value
+        elif address==IRQ_IPMASK_BANKED:
+            # Same priority mask as IPMASK: the idle loop (0x12b56c) and the
+            # IRQ127 handler (0x12ad5c/0x12adda) both address 0xFFE168+cnum*0x800.
+            if not 0<=value<=7:raise Blocked('unsupported_ipmask',value=value)
+            self.irq.ipmask=value
+        elif self.multicore_enabled and address==IRQ_IPMASK_BANKED+0x800:
+            if not 0<=value<=7:raise Blocked('unsupported_cpu1_ipmask',value=value)
+            self.irq1.ipmask=value
         elif IRQ_CONFIG<=address<IRQ_CONFIG+128:
             self.irq.config[(address-IRQ_CONFIG)//4]=value
         else:self.registers[address]=value
@@ -1000,6 +1031,12 @@ class BR28Model:
         self.software_irq.command(address,mask)
         self.counts['reads']+=1
         self.record_write({'address':hex(address),'selected_mask':hex(mask),'projection':'WO selected-bit command; no read value fabricated'})
+
+    def software_irq_source_rmw(self,address,kind,operand):
+        self.software_irq.source_rmw(address,kind,operand)
+        self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand),
+                           'projection':'source-enable bit tracking only; eligibility unchanged'})
 
     def lock(self,acquire):
         if self.lock_owner=='unknown':raise Blocked('uninitialized_shared_lock')

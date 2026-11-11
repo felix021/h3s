@@ -14,8 +14,11 @@ from probe_boot import Blocked
 
 class FakeCpu:
     def __init__(self,mem,pc=0x12b608):
-        self.mem=mem;self.pc=pc;self.reti=0;self.steps=7;self.core_id=0
+        self.mem=mem;self.pc=pc;self.reti=0;self.steps=7;self.core_id=0;self.flags=0
+        self.sp_known=True;self.sp=0x4013f0;self.usp=None;self.ssp=0x123840
+        self.last_explicit_ssp=0x123840
         self.bootstrap_context=None;self.after_then=None;self.repeat=None
+        self.active_context=None
 
 
 class UnwrittenMem:

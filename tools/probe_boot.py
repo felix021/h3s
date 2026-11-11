@@ -515,10 +515,21 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 if insn.id=='mov.sp_ssp':
                     if self.ssp is None:raise Blocked('unknown_core_special_register',core=self.core_id,register='ssp')
                     self.sp=self.ssp;self.sp_known=True
-                    machine.note_sp_write(self)
+                    machine.note_bank_switch(self,'ssp')
                     self.finish_exact(self.pc+size);adapters['multicore_visible_sp_from_ssp']+=1
                     return
-                if insn.id.startswith(('mov.sp_','mov.usp_sp','mov.ssp_sp','mov.uspn_sp','mov.sspn_sp')):
+                if insn.id=='mov.sp_usp':
+                    if self.usp is None:raise Blocked('unknown_core_special_register',core=self.core_id,register='usp')
+                    self.sp=self.usp;self.sp_known=True
+                    machine.note_bank_switch(self,'usp')
+                    self.finish_exact(self.pc+size);adapters['multicore_visible_sp_from_usp']+=1
+                    return
+                if insn.id=='mov.usp_sp':
+                    self.usp=self.sp
+                    machine.note_bank_write(self,'usp',self.sp)
+                    self.finish_exact(self.pc+size);adapters['multicore_visible_usp_from_sp']+=1
+                    return
+                if insn.id.startswith(('mov.sp_','mov.ssp_sp','mov.uspn_sp','mov.sspn_sp')):
                     raise Blocked('multicore_stack_bank_transfer_unmodeled',instruction_id=insn.id)
                 if insn.id=='rti' and self.core_id==1 and self.pc==0x12cb06:
                     machine.return_bootstrap(self);adapters['conditional_cpu1_bootstrap_rti']+=1
@@ -586,6 +597,34 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         (insn.id=='mov.r_sr' and raw['s']==6) or
                         (insn.id in ('mov.r_sr','mov.sr_r') and raw['s']==11)):
                     raise Blocked('multicore_special_register_semantics_unmodeled',register=raw['s'],instruction_id=insn.id)
+                frames=(diagnostics or {}).get('software_irq_frames') or {}
+                if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and self.pc in frames:
+                    shape=frames[self.pc];push=shape.endswith('push')
+                    require(shape in ('psr_push','psr_pop','frame12_push','frame12_pop') and
+                            insn.id==('push.srl' if push else 'pop.srl') and
+                            raw.get('m',raw.get('n'))==(32 if shape.startswith('psr') else 41) and
+                            self.after_then is None,'software IRQ handler special-frame shape changed')
+                    if shape=='psr_push':
+                        self.sp-=4
+                        psr=(getattr(self,'irq_psr',0)&~15)|(self.flags&15)
+                        self.mem.write(self.sp,struct.pack('<I',psr))
+                        self.flags=0  # report5-k: pushing PSR saves then clears low flags
+                    elif shape=='psr_pop':
+                        psr=struct.unpack('<I',self.mem.read(self.sp,4))[0]
+                        self.irq_psr=psr;self.flags=psr&15;self.sp+=4
+                    elif shape=='frame12_push':
+                        self.sp-=12
+                        psr=(getattr(self,'irq_psr',0)&~15)|(self.flags&15)
+                        self.mem.write(self.sp,struct.pack('<III',self.reti,self.rets,psr))
+                        self.flags=0
+                    else:
+                        self.reti,self.rets,psr=struct.unpack('<III',self.mem.read(self.sp,12))
+                        self.reti&=0x07fffffe;self.rets&=0x07fffffe
+                        self.irq_psr=psr;self.flags=psr&15;self.sp+=12
+                    self.pc+=size;self.steps+=1
+                    adapters['software_irq_handler_psr_frame' if shape.startswith('psr') else
+                             'software_irq_handler_context_frame']+=1
+                    return
                 if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and not (diagnostics or {}).get('irq_context'):
                     raise Blocked('multicore_special_frame_unmodeled',instruction_id=insn.id)
             if diagnostics and diagnostics.get('exact_doubleword_stores') and insn.id=='st.d.l':
@@ -717,6 +756,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         else:raise Blocked('software_irq_rmw_form_unmodeled',instruction_id=insn.id)
                         hardware.software_irq_command(address,mask)
                         self.finish_exact(self.pc+size);adapters['software_irq_selected_bit_command']+=1
+                        return
+                    if hardware.software_irq is not None and hardware.software_irq.handles_source(address):
+                        if insn.id=='rmw.and.nmodimm':source_kind='and';operand=op['m']
+                        elif insn.id=='rmw.or.modimm':source_kind='or';operand=op['m']
+                        else:raise Blocked('software_irq_source_rmw_form_unmodeled',instruction_id=insn.id)
+                        hardware.software_irq_source_rmw(address,source_kind,operand)
+                        self.finish_exact(self.pc+size);adapters['software_irq_source_enable_rmw']+=1
                         return
                     if machine is not None and address in hardware.core_power:
                         if insn.id!='rmw.and.nmodimm':raise Blocked('core_power_rmw_form_not_modeled')

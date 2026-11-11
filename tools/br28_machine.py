@@ -37,7 +37,8 @@ class DualCoreMachine:
     def __init__(self,*,cpu1_reset_pc=None,cpu1_icfg=None,irq1_config=None,ipmask1=None,
                  bootstrap_rti=False,unknown_task_gprs=False,partial_icfg=False,
                  initial_icfg_masks=(0xffffffff,0xffffffff),bootstrap_status_preserve_mask=0,
-                 first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False):
+                 first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False,
+                 software_irq_entry_banks=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -59,6 +60,9 @@ class DualCoreMachine:
         self.defer_core1_first_idle=defer_core1_first_idle;self.deferred_core1_turns=0
         require(isinstance(software_irq_entry,bool),'software IRQ entry projection is opt-in boolean')
         self.software_irq_entry=software_irq_entry;self.software_irq_deliveries=[]
+        require(isinstance(software_irq_entry_banks,bool),'software IRQ entry banks are an opt-in assumption')
+        require(not software_irq_entry_banks or software_irq_entry,'entry bank assumption requires the entry projection')
+        self.software_irq_entry_banks=software_irq_entry_banks
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -204,10 +208,26 @@ class DualCoreMachine:
                                      address=hex(slot)) from None
         interrupted=cpu.pc
         cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
+        cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
+        entry_banks=None
+        if self.software_irq_entry_banks:
+            # Explicit unverified assumption: the entry switches SP to the
+            # kernel stack (SSP = last explicit SSP fixture) while USP keeps
+            # the interrupted task stack. Silicon bank behaviour is unknown.
+            kernel_sp=getattr(cpu,'last_explicit_ssp',None)
+            require(kernel_sp is not None,'entry bank assumption lacks an explicit SSP fixture')
+            cpu.usp=cpu.sp if cpu.sp_known else None
+            require(cpu.usp is not None,'interrupted task stack pointer is unknown')
+            cpu.ssp=kernel_sp;cpu.sp=kernel_sp;cpu.sp_known=True
+            entry_banks={'usp':hex(cpu.usp),'ssp':hex(cpu.ssp),
+                         'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
+        cpu.active_context='software_irq_handler'
         self.hardware.software_irq.acknowledge(cpu.core_id,irq-124)
         event={'kind':'software_irq_entry','core':cpu.core_id,'irq':irq,'vector_address':hex(slot),
                'handler':hex(handler),'reti_from':hex(interrupted),'entry_counted_as_model_step':True,
                'reti_load_is_assumption':True,'delivery_clears_pending_is_assumption':True,
+               'entry_psr_high_bits_unknown_pushed_as_zero':True,
+               'entry_banks':entry_banks,
                'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
         self.software_irq_deliveries.append(event);self.record_event(event)
 
@@ -222,9 +242,19 @@ class DualCoreMachine:
     def note_sp_write(self,cpu):
         # Alias/writeback mode is unresolved. Equal values are unambiguous;
         # different bank values become unknown until an explicit bank write.
+        # Inside the software-IRQ handler the entry bank fixtures stay: its
+        # pushes/pops are balanced frame pairs, not bank reassignments.
+        if getattr(cpu,'active_context',None)=='software_irq_handler':return
         for name in ('usp','ssp'):
             value=getattr(cpu,name)
             if value is not None and value!=cpu.sp:setattr(cpu,name,None)
+
+    def note_bank_switch(self,cpu,bank):
+        # A bank read into SP changes only the visible SP; the other bank
+        # keeps its own value instead of being invalidated as an alias.
+        cpu.sp_known=True
+        self.record_event({'kind':'stack_bank_switch','core':cpu.core_id,'bank':bank,
+                           'sp':word(cpu.sp) if cpu.sp_known else 'unknown'})
 
     def note_memory_write(self,address,data):
         for target,size in ((0x1265f5,1),(0x19ff54,4)):
@@ -263,6 +293,8 @@ class DualCoreMachine:
                 'reset_vector_release_causality_measured':False,'bootstrap_rti_projection':self.bootstrap_rti,
                 **({'software_irq_entry_projection':{'enabled':True,'deliveries':self.software_irq_deliveries,
                     'vector_slot_formula':'0x19fe00+irq*4 pinned by app bytes at 0x6065d90',
+                    'entry_bank_assumption':self.software_irq_entry_banks,
+                    'bank_switch_silicon_semantics_certified':False,
                     'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.software_irq_entry else {}),
                 'bootstrap_mode_or_ssp_writeback_certified':False,'launches':self.launches,'stalls':self.stalls,
                 'unknown_task_gprs_preserved':self.unknown_task_gprs,
