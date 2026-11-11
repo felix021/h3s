@@ -176,7 +176,11 @@ class SFCReadBus:
             if value&~0xf00001:raise Blocked('sfc_mode_not_modeled',value=hex(value))
             self.con=value
         elif address==SFC_BASE+4:
-            if self.con is None or self.con&1:raise Blocked('sfc_baud_change_requires_observed_disable')
+            if self.con is None:raise Blocked('unknown_sfc_enable_state')
+            # The suspend path (0x12b890/0x12b970) writes baud=0 while enabled
+            # to stop the clock and only then clears CON bit0; a nonzero rate
+            # change while enabled stays an unverified sequence.
+            if self.con&1 and value!=0:raise Blocked('sfc_baud_change_requires_observed_disable')
             if value>255:raise Blocked('unsupported_sfc_baud',value=value)
             self.baud=value
         else:raise Blocked('sfc_register_not_modeled',address=hex(address))

@@ -119,9 +119,9 @@ def check(report):
             not sync['entry_banks']['silicon_bank_switch_certified'],'CPU1 sync delivery record differs')
     require(r['peripherals']['software_irq_commands']['pending']['1']=={'known_mask':'0xf','known_value':'0x0'},
             'CPU1 sync pending was not acknowledged by its real handler')
-    require(r['stop_core']==0 and r['stop_pc']=='0x12b8d8' and
-            r['stop']['kind']=='sfc_baud_change_requires_observed_disable',
-            'after the sync handshake the stop must be the real SFC baud boundary')
+    require(r['stop_core']==0 and r['stop_pc']=='0x12b8fe' and
+            r['stop']['kind']=='uninitialized_gpio_bits' and r['stop']['address']=='0xfd5308',
+            'after the sync handshake and SFC suspend the stop must be the unknown GPIO bits')
     require(r['completed_steps']>153430,'the CPU0 busy-wait did not resume after the CPU1 ack')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
