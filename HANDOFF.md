@@ -1,4 +1,4 @@
-# 交接：整机启动仿真推进中（阶段 D 进行，前沿 154,263 步）
+# 交接：整机启动仿真推进中（阶段 D 进行，前沿 155,127 步）
 
 2026-11-11 恢复工作。阶段 A/B/C1 完成，C2（tick 真实触发）与 D 进行中。停止时请更新本文件。
 
@@ -12,9 +12,9 @@
 | irq127_entry_minimal | 149,679 | 0x12ad68 | unknown_core_special_register (usp) |
 | irq127_scheduler_entry | 151,500 | 0x12c5ca | unsupported idle（对核 IDLE 边界）|
 | irq127_appcore_roundtrip | 153,430 | 0x12b66a | unmodeled_unmaskable_irq irq125 |
-| **irq125_sync_roundtrip** | **154,263** | **0x606633e** | **multicore_special_frame_unmodeled (pop.srl)** |
+| **irq125_sync_roundtrip** | **155,127** | **0x6000f44** | **unmapped_or_readonly_write 0xfd3504（CRC 引擎控制写）** |
 
-**154,263 步含义**：CPU0 的 app_core 发跨核同步 IPI（IRQ125）→ CPU1 应答 → CPU0 继续 → SFC 挂起序列（0x12b916→0x12b890：GPIO RMW 按位、baud=0、disable、0xfd1c00 时钟门、第二 SFC 0xfe0100 复位态跳过）→ GPIO port D OUT 读回按位精化（GpioOutValue 偏字）→ SFC 恢复（0xfd1c00 |=8、&=~0x1000）→ +8 分频寄存器写 3、读回 0xFF（分频/数据寄存器语义）→ 0xfd1c00 bit15 PLL-lock 读回为 1（显式投影）→ CPU0 ack 等待函数（0x12b6de）清 flag(0x1265f7) bit0 后进入轮询：3 次 `[0xffe8c0] |= 0x8` kick（0x12b732）→ kick 唤醒挂在自身 irq125 handler 内 idle（0x6066318）的 CPU1 → CPU1 检查 bit0 已清、清 bit2（0x6066336/38）退出循环 → CPU0 循环退出 → 停在 CPU1 handler 尾部 `{psr,rets,reti}` 特殊帧弹出（0x606633e pop.srl，multicore 特殊帧未建模）。
+**155,127 步含义**：CPU0 的 app_core 发跨核同步 IPI（IRQ125）→ CPU1 应答 → CPU0 继续 → SFC 挂起/恢复序列（时钟门、GPIO OUT 读回按位、+8 分频、PLL-lock bit15）→ CPU0 ack 等待函数（0x12b6de）清 flag(0x1265f7) bit0 后 3 次 `[0xffe8c0] |= 0x8` kick（0x12b732）→ kick 唤醒挂在自身 irq125 handler 内 idle（0x6066318）的 CPU1 → CPU1 检查 bit0 已清、清 bit2（0x6066336/38）→ **CPU1 handler 尾部真实帧弹出 + 对称 RTI 返回**：0x606633a pop.rmask r4-r0、0x606633e pop.srl m=41 从真实栈弹出 {psr,rets,reti}（帧内容是入口 0x60662c8 push 进去的）、0x6066340 csync、0x6066342 rti 投影 PC=RETI(0x12c5ca)/SP=USP(0x401bf8) → CPU1 回到被中断的 idle 任务并重新停泊 → CPU0 握手循环退出、继续启动走到 **0x6000f44 `[0xfd3504]=0`**：硬件 CRC 引擎的种子/控制写（0xfd3500=数据口逐字节馈入），未映射外设写，新边界。
 
 ## 已实现（按序，均 opt-in 投影，默认关闭 legacy 报告不变）
 
@@ -27,7 +27,8 @@
 - **SFC 时钟门 + 第二 SFC**（8770401）：0xfd1c00 时钟门投影（只记录置/清、读回严格 unknown）、第二 SFC 0xfe0100（复位态 CON=0 显式假设）。
 - **GPIO OUT 读回按位**（8e5df35）：GpioOutValue 偏字类型，and/or 位操作传递、全字消费（算术/比较/存 RAM）严格停；未写位 unknown 不臆造。
 - **SFC 时钟 +8 / PLL lock 读回**（c3f399e）：0xfd1c08 分频寄存器可写可读（读回=最后写入值，仅在固件写过后返回，不臆造复位值）；0xfd1c00 bit15 读回显式投影为 PLL 已锁定（0x12ba38 轮询证据）。
-- **CPU1 PMU_CON0 RMW + kick 唤醒**（本次）：0xffe8c0=CPU1 PMU_CON0（csfr.h q32DSP(1)+0x30*4；0xffe0c0 同位为 CPU0）。含 bit0 的 RMW 与严格写路径等价（实际释放指令 0x60660da 就是 `|=1`）；释放后 bit0 不参与的 or 置位记为 kick 位（0x12b732/0x12c71c 双证据，只置位不回读不清除）。machine 侧 `cpu1_control_kick_wake` 投影：kick 让挂在 idle 的 CPU1 按完成计步并唤醒——「bit3 就是唤醒源」是从握手协议推断的显式假设（SDK 无 PMU_CON0 位定义，硅语义未验证，已写入 report 假设）。
+- **CPU1 PMU_CON0 RMW + kick 唤醒**（前置）：0xffe8c0=CPU1 PMU_CON0（csfr.h q32DSP(1)+0x30*4；0xffe0c0 同位为 CPU0）。含 bit0 的 RMW 与严格写路径等价（实际释放指令 0x60660da 就是 `|=1`）；释放后 bit0 不参与的 or 置位记为 kick 位（0x12b732/0x12c71c 双证据，只置位不回读不清除）。machine 侧 `cpu1_control_kick_wake` 投影：kick 让挂在 idle 的 CPU1 按完成计步并唤醒——「bit3 就是唤醒源」是从握手协议推断的显式假设（SDK 无 PMU_CON0 位定义，硅语义未验证，已写入 report 假设）。
+- **CPU1 irq125 handler 尾部帧弹出 + 对称 RTI**（本次）：probe_irq_entry HANDLER_PSR_FRAMES 增加 `0x606633e:'frame12_pop'`（pop.srl m=41，从真实栈弹出 {psr,rets,reti}，字节来源是入口 0x60662c8 frame12_push 写入的交付状态，不臆造）；`br28_machine.SOFTWARE_IRQ_RTI_TAILS=(0x12ade8,0x6066342)` 把对称 RTI 投影（PC=RETI、SP=USP、bank 回写/ICFG 效果仍是假设）推广到 CPU1 的 irq125 handler 尾 0x6066342。RTI 后 CPU1 回到被中断的 idle（0x12c5ca，reti_from_frame=0x12c5ca）并重新停泊。注意：`defer_core1_first_idle` 的 4096 上限在此返回后被重新触发耗尽（CPU1 返回 0x12c5ca 未停泊期间 CPU0 连续发射）——确定性、不改状态，报告 deferred_core1_turns=4096。
 - **入口原子性**（cb109b3）：deliver 先完整校验银行假设再提交状态，失败不留部分变化。
 - **core tick 机制**（303e388）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + 单测。**首次溢出 ~450k 步 > 当前 153k，未真实触发——C2 未完成。**
 
@@ -69,12 +70,13 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 - 路 A（sim-sfc-clk，c3f399e 已合并推送）：SFC 时钟 +8 分频 / PLL-lock 读回完成。
 - 路 B（只读调研）：P11 主核读写依赖清单完成，结论见上节。
-- 路 C（sim-cpu1-ctl，本次）：CPU1 PMU_CON0 kick RMW + 唤醒投影完成，前沿 154,263（0x606633e）。
-- 下一路：0x606633e CPU1 irq125 handler 尾部特殊帧弹出（pop.srl 的 psr/rets/reti 恢复 + handler RTI）。
+- 路 C（sim-cpu1-ctl，已合并）：CPU1 PMU_CON0 kick RMW + 唤醒投影完成。
+- 路 D（sim-frame-pop，本次）：CPU1 irq125 handler 尾部 pop.srl 帧弹出 + 对称 RTI 完成，前沿 155,127（0x6000f44）。
+- 下一路：硬件 CRC 引擎 0xfd3500/0xfd3504（新前沿；ROM 0xaa1e 已钉语义）。
 
 ## 下一步（按 codex 建议）
 
-1. CPU1 irq125 handler 退出：0x606633e 的 `{psr,rets,reti}=[sp++]`（multicore 特殊帧弹出）与其后的 RTI（现有 return_software_irq 只认 CPU0 handler 尾 0x12ade8，需按 active_context 推广）；随后是对核暂停/释放完整周期（0x12c6e6 备用启动函数：读回 bit0 守卫的 RMW 释放 `|=1` + 等待 ready 的 kick 循环 0x12c71c，均未在当前前缀触发）。
+1. CRC 引擎建模：0xfd3504=种子/控制写（app 0x6000f44 写 0）、0xfd3500=逐字节馈入、csync 后从 0xfd3504 读回结果（ROM 0xaa1e：种子 0xffff、表驱动、读 [r2+4] 与数据 XOR）。app 0x6000eec 另有软件 CRC-16 表实现，wrapper 0x6000f0c 走硬件路径。随后是对核暂停/释放完整周期（0x12c6e6 备用启动函数：读回 bit0 守卫的 RMW 释放 `|=1` + 等待 ready 的 kick 循环 0x12c71c，均未在当前前缀触发）。
 2. 补齐每个镜像的资源映射（candidate_view 目前只返回 app+337B payload）。
 3. 补可重复中断交付 + 事件时间推进（解决暂停点 1/2）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用、P11 接口。
@@ -85,6 +87,8 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - IPMASK 物理地址 0xFFE168+cnum*0x800；模型常量 0xffe1a8 是另一路径，都更新 IRQController.ipmask。
 - 0xFFE200 = EMU_CON（debug control）兼软件 IRQ 源使能位（bits0-3）。
 - 调度 IPI 公式 IRQ 127-cnum（两核 handler 同为 0x12AD2A）；同步 IPI IRQ125（CPU1 handler 0x60662c8）。
+- CPU1 irq125 handler 尾部形状（app 反汇编钉死）：0x606633a pop.rmask {r4-r0}、0x606633e pop.srl m=41 {psr,rets,reti}、0x6066340 csync、0x6066342 rti——与入口 0x60662c8 push.srl m=41 / 0x60662ca push.rmask m=31 完全对称；RTI 返回被中断的 idle（reti_from_frame=0x12c5ca）。
+- 硬件 CRC 引擎 0xfd3500：+0=数据口（写一个字节馈入一次）、+4=控制/结果口（写种子，csync 后读回当前 CRC）。ROM 0xaa1e 证据：种子 0xffff、先喂 0xff×2、循环喂表字节、读 [r2+4] 结果。app 0x6000f44 写种子 0 后逐字节馈入（当前停点）。
 - IRQ125 = OS_SYNC_SOFT_IRQ，优先级 6 = GIEMASK 类（SDK hwi.h + hwi.c.o IR 双重印证）。
 - app_core 帧 0x19f7b0：16B 特殊帧（PC 0x6012028）+ 60B GPR 未初始化（真实语义）。
 - SFC 挂起路径 0x12b890（先 baud=0 后 disable）vs 使能路径 0x12e1e8（先 disable 后 baud）。

@@ -576,7 +576,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     machine.return_bootstrap(self);adapters['conditional_cpu1_bootstrap_rti']+=1
                     return
                 if (insn.id=='rti' and machine.software_irq_rti and
-                        getattr(self,'active_context',None)=='software_irq_handler' and self.pc==0x12ade8):
+                        getattr(self,'active_context',None)=='software_irq_handler' and
+                        self.pc in machine.SOFTWARE_IRQ_RTI_TAILS):
                     # Symmetric to the entry assumption: PC=RETI, SP=USP. The
                     # restored RETI/PSR come from the real popped frame; the
                     # bank writeback and ICFG effects stay uncertified.

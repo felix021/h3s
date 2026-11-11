@@ -34,6 +34,12 @@ class CoreStall(Exception):
 
 
 class DualCoreMachine:
+    # 对称 RTI 投影认定的 software-IRQ handler 尾部锚点（均为「弹出真实特殊帧后的 rti」）：
+    # 0x12ade8 调度 IPI handler（0x12ad2a，两核同一份 ROM 拷贝）尾；
+    # 0x6066342 CPU1 的 irq125 同步 handler（0x60662c8）尾——0x606633e pop.srl m=41
+    # 先从真实栈弹出 {psr,rets,reti}，0x6066340 csync，然后 0x6066342 rti（app 反汇编钉死）。
+    SOFTWARE_IRQ_RTI_TAILS=(0x12ade8,0x6066342)
+
     def __init__(self,*,cpu1_reset_pc=None,cpu1_icfg=None,irq1_config=None,ipmask1=None,
                  bootstrap_rti=False,unknown_task_gprs=False,partial_icfg=False,
                  initial_icfg_masks=(0xffffffff,0xffffffff),bootstrap_status_preserve_mask=0,
@@ -171,10 +177,12 @@ class DualCoreMachine:
                            'idle_completion_is_assumption':True,'wake_source_unverified':True})
 
     def return_software_irq(self,cpu):
-        # Symmetric opt-in return for the one-shot scheduler-IPI handler at
-        # its exact tail: PC=RETI and SP=USP. RETI/PSR come from the real
-        # popped frame; bank writeback and ICFG effects are assumptions.
-        require(self.software_irq_rti and cpu.pc==0x12ade8 and
+        # Symmetric opt-in return for a software-IRQ handler at its exact
+        # tail (SOFTWARE_IRQ_RTI_TAILS): PC=RETI and SP=USP. RETI/PSR come
+        # from the real popped frame; bank writeback and ICFG effects are
+        # assumptions. The irq125 tail first pops its {psr,rets,reti} frame
+        # from the real stack (0x606633e, frame adapter) before this RTI.
+        require(self.software_irq_rti and cpu.pc in self.SOFTWARE_IRQ_RTI_TAILS and
                 getattr(cpu,'active_context',None)=='software_irq_handler' and
                 cpu.after_then is None and cpu.repeat is None,
                 'IRQ RTI projection requires the exact handler tail')

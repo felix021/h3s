@@ -20,7 +20,7 @@ from probe_pi32v2 import ROOT, PIN, upstream, require
 
 HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0x12adde:'psr_pop',
                     0x12ad6e:'frame12_push',0x12ada0:'frame12_pop',
-                    0x60662c8:'frame12_push'}
+                    0x60662c8:'frame12_push',0x606633e:'frame12_pop'}
 
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
@@ -157,10 +157,27 @@ def check(report):
             adapters.get('gpio_out_readback_register_copy')==1 and
             adapters.get('gpio_out_readback_writeback')==2,
             'the SFC GPIO OUT read-back path was not exercised through its exact load/mask/copy/write-back shape')
-    require(r['stop_core']==1 and r['stop_pc']=='0x606633e' and
-            r['stop']=={'kind':'multicore_special_frame_unmodeled','instruction_id':'pop.srl'},
-            'after the CPU1 kick handshake the stop must be the peer handler special-frame pop')
-    require(r['completed_steps']==154263,'the CPU1 kick handshake path changed its step count')
+    # The CPU1 handler tail pops its real {psr,rets,reti} frame (0x606633e,
+    # app disassembly: pop.rmask r4-r0 / pop.srl m=41 / csync / rti) and the
+    # symmetric RTI returns the core to its interrupted idle instruction.
+    require(adapters.get('conditional_software_irq_rti')==2 and
+            adapters.get('software_irq_handler_context_frame')==4,
+            'the CPU1 handler tail frame pop and symmetric RTI were skipped')
+    rti=[e for e in r['machine']['events'] if e['kind']=='software_irq_rti']
+    require(len(rti)==2 and rti[1]['core']==1 and rti[1]['pc_after']=='0x12c5ca' and
+            rti[1]['reti_from_frame']=='0x12c5ca' and rti[1]['sp_after']=='0x401bf8' and
+            rti[1]['bank_writeback_is_assumption'],
+            'the CPU1 sync handler did not return to its interrupted idle task through RTI')
+    events=r['machine']['events']
+    parks=[i for i,e in enumerate(events) if e['kind']=='core_idle_wait_entered' and
+           e['core']==1 and e['pc']=='0x12c5ca']
+    require(len(parks)==2 and parks[1]>events.index(rti[1]),
+            'the returned CPU1 idle task did not re-park after its RTI (first park + re-park)')
+    require(r['stop_core']==0 and r['stop_pc']=='0x6000f44' and
+            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xfd3504',
+                        'size':4,'value_bytes':'00000000'},
+            'after the peer return the stop must be CPU0 reaching the CRC engine control write')
+    require(r['completed_steps']==155127,'the CPU1 handler return path changed its step count')
     held=r['peripherals']['cpu1_held_projection']
     require(held['current_control']==9 and held['kick_rmw_writes']==3,
             'the CPU1 PMU_CON0 kick bit was not recorded as exactly three |=8 retries')
