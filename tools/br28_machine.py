@@ -8,6 +8,27 @@ from br28_unknown import UnknownWord, word
 from br28_icfg import IcfgState, IcfgValue
 
 
+# Counterfactual outcomes of one exact QCY startup return. No default, no
+# generic RTI, and no inference of a hardware mode from the software frame.
+FIRST_TASK_RETURN_HYPOTHESES={
+    'unresolved_stack':(False,None),
+    'unknown_gate8':(True,None),
+    'closed_gate8':(True,False),
+    'open_gate8':(True,True),
+}
+CORE1_IDLE_DELAY_LIMIT=4096
+FIRST_TASK_SETUP=(
+    (0x6066106,'cli',{}),(0x6066108,'lockset',{}),(0x606610a,'csync',{}),
+    (0x606610c,'li.u32',{'r':4,'n':0x126c5c}),
+    (0x6066112,'mov.r_sr',{'r':1,'s':6}),
+    (0x6066116,'ld.w.idxs',{'r':4,'s':4,'t':1}),
+    (0x606611a,'mov.rr',{'x':0,'y':4}),(0x606611c,'call.l',{'n':137}),
+    (0x6066120,'ld.w',{'d':1,'b':4,'n':0}),
+    (0x6066122,'mov.sr_r',{'r':1,'s':14}),
+    (0x6066126,'pop.srl',{'m':41}),(0x6066128,'pop.rmask',{'n':65535}),
+)
+
+
 class CoreStall(Exception):
     def __init__(self,reason,**details):self.details={'kind':reason,**details}
 
@@ -15,7 +36,8 @@ class CoreStall(Exception):
 class DualCoreMachine:
     def __init__(self,*,cpu1_reset_pc=None,cpu1_icfg=None,irq1_config=None,ipmask1=None,
                  bootstrap_rti=False,unknown_task_gprs=False,partial_icfg=False,
-                 initial_icfg_masks=(0xffffffff,0xffffffff),bootstrap_status_preserve_mask=0):
+                 initial_icfg_masks=(0xffffffff,0xffffffff),bootstrap_status_preserve_mask=0,
+                 first_task_return_hypothesis=None,defer_core1_first_idle=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -27,6 +49,14 @@ class DualCoreMachine:
                 not bootstrap_status_preserve_mask&0x300,'bootstrap status preservation cannot set gate knowledge')
         self.partial_icfg=partial_icfg;self.initial_icfg_masks=initial_icfg_masks
         self.bootstrap_status_preserve_mask=bootstrap_status_preserve_mask
+        require(first_task_return_hypothesis is None or (first_task_return_hypothesis in FIRST_TASK_RETURN_HYPOTHESES and
+                partial_icfg and unknown_task_gprs),'first-task return comparison requires explicit partial ICFG and abstract GPRs')
+        self.first_task_return_hypothesis=first_task_return_hypothesis
+        self.first_task_calls=set();self.first_task_returns={}
+        self.first_task_setup={}
+        require(not defer_core1_first_idle or first_task_return_hypothesis is not None,
+                'CPU1 issue delay requires explicit first-task comparison')
+        self.defer_core1_first_idle=defer_core1_first_idle;self.deferred_core1_turns=0
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -68,6 +98,11 @@ class DualCoreMachine:
     def select(self):
         core=1-self.last_core
         if core not in self.cores:core=0
+        if (core==1 and self.defer_core1_first_idle and 1 in self.first_task_returns and
+                self.cores[1].pc==0x12c5ca and self.deferred_core1_turns<CORE1_IDLE_DELAY_LIMIT):
+            # Explore another bounded issue order. Do not execute/emulate IDLE,
+            # alter the guest's held-core bit, inject a wake, or skip IRQ checks.
+            core=0;self.deferred_core1_turns+=1
         self.last_core=core;self.hardware.current_core=core
         self.hardware.core_icfg=self.icfg_demands()
         return self.cores[core]
@@ -78,7 +113,81 @@ class DualCoreMachine:
             if len(self.boot_anchors)<16:
                 self.boot_anchors.append({'pc':hex(before_pc),'next_pc':hex(cpu.pc),
                     'r0':word(cpu.R[0]),'rets':hex(cpu.rets)})
+        if self.first_task_return_hypothesis is not None and cpu is not None:
+            if before_pc==0x6065364 and cpu.pc==0x6066106:
+                self.first_task_calls.add(cpu.core_id)
+                self.first_task_setup[cpu.core_id]={'index':0,'pcs':[],'tcb':None,'base':None}
+            setup=self.first_task_setup.get(cpu.core_id)
+            if setup is not None and setup['index']<len(FIRST_TASK_SETUP) and before_pc==FIRST_TASK_SETUP[setup['index']][0]:
+                if before_pc==0x6066116:setup['tcb']=cpu.R[4]
+                if before_pc==0x6066120:setup['base']=cpu.R[1]
+                setup['pcs'].append(hex(before_pc));setup['index']+=1
+            if cpu.first_task_return_frame is not None and before_pc in (0x606612c,0x606612e):
+                cpu.first_task_return_frame['next_pc']=cpu.pc
         self.hardware.core_icfg=self.icfg_demands()
+
+    def first_task_tail(self,cpu,insn,raw):
+        if cpu.pc==0x6065364:
+            require(insn.id=='call.xl' and raw=={'n':1742} and cpu.after_then is None and
+                    cpu.core_id not in self.first_task_setup and cpu.core_id not in self.first_task_returns,
+                    'first-task entry must be the actual scheduler call')
+        if 0x6066106<=cpu.pc<=0x6066128:
+            setup=self.first_task_setup.get(cpu.core_id)
+            require(setup is not None and setup['index']<len(FIRST_TASK_SETUP),
+                    'first-task setup lacks its actual scheduler entry')
+            pc,identity,fields=FIRST_TASK_SETUP[setup['index']]
+            require(cpu.pc==pc and insn.id==identity and raw==fields and cpu.after_then is None and cpu.repeat is None,
+                    'first-task setup skipped or changed a required instruction')
+            if cpu.pc==0x6066116:
+                require(cpu.R[4]==0x126c5c and cpu.R[1]==cpu.core_id,
+                        'TCB selection must read actual per-core current array')
+            if cpu.pc==0x6066120:
+                require(cpu.R[4]==setup['tcb']==0x127db8+88*cpu.core_id,
+                        'first-task comparison must restore the actual initial idle TCB')
+        frame=cpu.first_task_return_frame
+        if frame is not None:
+            expected={0x606612c:'lockclr',0x606612e:'sti',0x6066130:'rti'}
+            require(cpu.pc==frame['next_pc'] and expected.get(cpu.pc)==insn.id and not raw and cpu.after_then is None,
+                    'first-task frame must reach the exact unlock/STI/RTI tail')
+
+    def arm_first_task_return(self,cpu,frame,values):
+        setup=self.first_task_setup.get(cpu.core_id)
+        require(cpu.core_id in self.first_task_calls and cpu.core_id not in self.first_task_returns and
+                setup is not None and setup['index']==len(FIRST_TASK_SETUP)-1 and
+                frame['tcb']==setup['tcb'] and frame['base']==setup['base'] and
+                cpu.first_task_return_frame is None and not cpu.bootstrap_context and
+                cpu.reti==0x12c57e and cpu.rets==0 and cpu.flags==0 and getattr(cpu,'irq_psr',None)==0 and cpu.repeat is None,
+                'hypothesis needs the actual first idle-task frame after scheduler call')
+        require(len(values)==16 and isinstance(values[0],int) and values[0]==0,
+                'initial idle argument differs from the actual startup frame')
+        cpu.first_task_return_frame={**frame,'next_pc':0x606612c,'setup_pcs':setup['pcs']+[hex(cpu.pc)],'gprs':tuple(values)}
+
+    def project_first_task_return(self,cpu):
+        mode=self.first_task_return_hypothesis;frame=cpu.first_task_return_frame
+        require(mode in FIRST_TASK_RETURN_HYPOTHESES and frame is not None and
+                frame['next_pc']==cpu.pc==0x6066130 and cpu.sp_known and cpu.sp==frame['base']+76 and
+                cpu.reti==0x12c57e and cpu.rets==0 and cpu.flags==0 and getattr(cpu,'irq_psr',None)==0 and not cpu.bootstrap_context and
+                cpu.after_then is None and cpu.repeat is None and self.hardware.lock_owner!=cpu.core_id,
+                'first-task return comparison lacks actual restored and unlocked context')
+        require(all(a is b if isinstance(b,(UnknownWord,IcfgValue)) else isinstance(a,int) and a==b
+                    for a,b in zip(cpu.R,frame['gprs'])),
+                'restored GPRs changed before the compared return')
+        state=cpu.icfg_state
+        require(state.known&0x3ff==0x3ff and state.value&0x3ff==0x200,
+                'first-task comparison requires explicit empty active priorities and actual STI')
+        keep_sp,gate8=FIRST_TASK_RETURN_HYPOTHESES[mode]
+        # A valid transfer is common to these counterfactuals. SP and gates
+        # vary explicitly; unknown banks/mode never become numeric defaults.
+        cpu.first_task_return_frame=None;cpu.sp_known=keep_sp;cpu.ssp=cpu.usp=None
+        state.project_first_task_return(gate8);self.sync_icfg(cpu)
+        cpu.active_context='first_task_return_hypothesis';cpu.pc=cpu.reti;cpu.steps+=1
+        event={'kind':'first_task_return_hypothesis','core':cpu.core_id,'hypothesis':mode,
+               'tcb':hex(frame['tcb']),'restored_frame':hex(frame['base']),'pc_after':hex(cpu.pc),
+               'executed_setup_pcs':frame['setup_pcs'],
+               'sp_after':word(cpu.sp) if cpu.sp_known else 'unknown',
+               'gate8_after':gate8,'icfg_after_known_mask':hex(state.known),'icfg_after_known_value':hex(state.value),
+               'hardware_mode_certified':False}
+        self.first_task_returns[cpu.core_id]=event;self.record_event(event)
 
     def note_stall(self,cpu,details):
         self.stalls+=1
@@ -126,11 +235,19 @@ class DualCoreMachine:
                             'sp_after':hex(cpu.sp),'ssp_after':'unknown','icfg_gate_bits':'unknown'})
 
     def report(self):
-        return {'schedule':'round-robin one instruction per runnable core; no cycle accuracy',
+        return {'schedule':('round-robin except bounded CPU1 issue delay before first IDLE; no cycle accuracy'
+                            if self.defer_core1_first_idle else 'round-robin one instruction per runnable core; no cycle accuracy'),
                 'cpu1_reset_vector_fixture':self.cpu1_reset_pc,'cpu1_initial_icfg_fixture':self.cpu1_icfg,
                 'reset_vector_release_causality_measured':False,'bootstrap_rti_projection':self.bootstrap_rti,
                 'bootstrap_mode_or_ssp_writeback_certified':False,'launches':self.launches,'stalls':self.stalls,
                 'unknown_task_gprs_preserved':self.unknown_task_gprs,
+                **({'first_task_return_comparison':{'hypothesis':self.first_task_return_hypothesis,
+                    'returns':list(self.first_task_returns.values()),'valid_transfer_is_assumed':True,
+                    'preserved_psr_rets_gprs_gate9_and_empty_priorities_are_assumptions':True,
+                    'deferred_core1_turns':self.deferred_core1_turns,
+                    'deferred_core1_issue_limit':CORE1_IDLE_DELAY_LIMIT,
+                    'cpu1_idle_executed_or_wake_injected':False,
+                    'silicon_task_return_certified':False}} if self.first_task_return_hypothesis is not None else {}),
                 **({'partial_icfg_projection':{'initial_known_masks':[hex(v) for v in self.initial_icfg_masks],
                      'bootstrap_status_preserve_mask':hex(self.bootstrap_status_preserve_mask),
                      'literal_patterns':[0,0x200,0x300],'hardware_status_is_not_guest_fullword_rw':True,

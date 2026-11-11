@@ -1,5 +1,7 @@
 # H3S project guide for coding agents
 
+**Session paused at the user's explicit request (2026-11-11).** Read [HANDOFF.md](HANDOFF.md) before resuming. The latest checkpoint contains WIP runner-artifact corrections and opt-in task-return comparisons; no full regression of this combined tree has been completed. Do not treat older passing reports or counterfactual returns as complete boot/repair validation. Resume only on the user's request. No new device action is authorized.
+
 ## Purpose and current result
 
 This repository documents and reproduces a QCY H3S / JL AC701N firmware modification. The tested image makes the physical ANC mode key alternate ANC ON and transparency, excluding normal/OFF from the key cycle. The user confirmed the result on 2026-11-09. The image remains version 0.1.1.8 (280). Its tone configuration is reduced by 10 dB, but the user could not clearly hear a reduction; do not report a measured or confirmed 10 dB acoustic improvement.

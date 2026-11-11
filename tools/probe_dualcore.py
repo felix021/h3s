@@ -21,13 +21,13 @@ SNAPSHOTS=(('os_running',0x1265f4,1),('cache_lock',0x19fd78,1),('current_tcbs',0
 
 
 def dual_case(module,app,header,rom,name,*,reset_pc=0,icfg=0,bootstrap=True,stack=True,
-              options=None,budget=250000,readonly=(),abstract=False,machine_options=None):
+              options=None,budget=250000,readonly=(),abstract=False,machine_options=None,watch_pcs=()):
     machine=DualCoreMachine(cpu1_reset_pc=reset_pc,cpu1_icfg=icfg,irq1_config=[0]*32,ipmask1=0,
                             bootstrap_rti=bootstrap,unknown_task_gprs=abstract,**(machine_options or {}))
     params={'initial_debug_controls':(0,0),'icu_initialization_projection':True,'icu_command_steps':64,
             'software_irq_command_projection':True}
     params.update(options or {})
-    diagnostics={'exact_parallel_extensions':True,'watch_pcs':WATCH+[0x606602a,0x6066034,0x6066120,0x6066126],
+    diagnostics={'exact_parallel_extensions':True,'watch_pcs':WATCH+[0x606602a,0x6066034,0x6066120,0x6066126]+list(watch_pcs),
                  'watch_registers':[0,1,4]}
     return platform_case(module,app,header,rom,name,machine=machine,options=params,
         diagnostic_options=diagnostics,extra_regions=CORE1_STACK if stack else (),extra_snapshots=SNAPSHOTS,

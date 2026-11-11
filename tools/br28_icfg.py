@@ -82,6 +82,7 @@ class IcfgState:
     def __init__(self,core,value,known):
         self.core=core;self.known=known&M;self.value=value&self.known;self.status_generation=0
         self.writes=0;self.bit9_updates=0
+        self.task_return_projections=0
 
     def read(self):
         return IcfgValue(self.value,self.known,(self.core,self.status_generation))
@@ -118,7 +119,17 @@ class IcfgState:
         if self.known&~self.value&GATES:return 0
         return GATES if self.known&GATES==GATES else None
 
+    def project_first_task_return(self,gate8):
+        # Common assumptions of the comparison, not a silicon return rule:
+        # retain gate9 and the explicitly empty active-priority byte. Drop
+        # all unrelated status knowledge; evaluate alternative gate8 outcomes.
+        self.known&=0x2ff;self.value&=self.known
+        if gate8 is not None:
+            self.known|=0x100
+            if gate8:self.value|=0x100
+        self.status_generation+=1;self.task_return_projections+=1
+
     def report(self):
         return {**self.read().report(),'gate_demand':self.gate_demand(),'writes':self.writes,
                 'bit9_updates':self.bit9_updates,'complete_br28_writable_mask_certified':False,
-                'status_or_task_rti_transition_simulated':False}
+                'status_or_task_rti_transition_simulated':bool(self.task_return_projections)}

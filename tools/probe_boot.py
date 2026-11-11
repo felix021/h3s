@@ -16,6 +16,7 @@ from probe_pi32v2 import ROOT, PIN, require, upstream
 from verify_ufw_integrity import decode, sfc
 from br28_unknown import UnknownWord, word
 from br28_icfg import IcfgValue, M as WORD_MASK
+from br28_arch_models import architectural_k2, K2_SHA
 
 OFFICIAL_SHA='65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af'
 APP_SHA='18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041'
@@ -61,6 +62,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     rom_steps=Counter()
     event_counts=Counter()
     milestones=[]
+    use_architectural_models=bool(adapt_stack or adapt_store or diagnostics or machine is not None)
+    architectural_model_names=set()
     if machine is not None:
         from br28_machine import CoreStall
         require(hardware is not None,'machine requires a peripheral model; board frontend separately pins ROM')
@@ -212,6 +215,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
     class CPU(module.CPU):
         core_id=0
+        def __init__(self):
+            super().__init__()
+            if use_architectural_models:
+                self.models,names=architectural_k2(self.models)
+                architectural_model_names.update(names)
         usp=None
         reti=None
         sp_known=True
@@ -220,6 +228,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         task_frame_load=None
         task_frame_restore=None
         task_gpr_frame=None
+        first_task_return_frame=None
         ssp=0
         repeat=None
         opaque_source=None
@@ -275,6 +284,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.after_then[0]-=1;self.check_then()
 
         def effect(self,insn,raw,pc,size,R):
+            model=self.models.get(insn.id)
+            if use_architectural_models and getattr(model,'__module__',None)=='semantics.v4':
+                raise Blocked('unsupported_runner_context_model',instruction_id=insn.id)
+            if use_architectural_models and insn.id=='mov.r_sr':
+                # Direct architectural reads are handled in step_body. A
+                # parallel half must not fall back to measured ROM constants.
+                raise Blocked('special_register_effect_requires_explicit_state',register=raw['s'])
             result=super().effect(insn,raw,pc,size,R)
             # Models can transport a source by returning it unchanged. Reject
             # unsupported abstract outputs before upstream apply mutates any
@@ -373,6 +389,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             insn,raw,size=self.decode(self.pc)
             self.check_opaque(insn,raw)
             if machine is not None:
+                if machine.first_task_return_hypothesis is not None:
+                    machine.first_task_tail(self,insn,raw)
+                    if insn.id=='rti' and self.pc==0x6066130:
+                        machine.project_first_task_return(self)
+                        adapters['scoped_first_task_return_hypothesis']+=1
+                        return
                 if self.pc==0x06066120:
                     require(insn.id=='ld.w' and raw=={'d':1,'b':4,'n':0} and self.after_then is None,
                             'first-task TCB stack load changed')
@@ -489,6 +511,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     machine.note_sp_write(self)
                     self.finish_exact(self.pc+size);adapters['multicore_visible_sp_from_ssp']+=1
                     return
+                if insn.id.startswith(('mov.sp_','mov.usp_sp','mov.ssp_sp','mov.uspn_sp','mov.sspn_sp')):
+                    raise Blocked('multicore_stack_bank_transfer_unmodeled',instruction_id=insn.id)
                 if insn.id=='rti' and self.core_id==1 and self.pc==0x12cb06:
                     machine.return_bootstrap(self);adapters['conditional_cpu1_bootstrap_rti']+=1
                     return
@@ -509,6 +533,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                             self.sp==self.task_gpr_frame['base']+12 and self.after_then is None,
                             'abstract first-task GPR load requires the actual selected frame')
                     values=[self.mem.abstract_word(self.sp+4*i,task_frame=True) for i in range(16)]
+                    if machine.first_task_return_hypothesis is not None:
+                        machine.arm_first_task_return(self,self.task_gpr_frame,values)
                     self.R=values;self.sp+=64
                     machine.record_event({'kind':'first_task_gprs_restored','core':self.core_id,
                         'frame':hex(self.task_gpr_frame['base']),'sp_after':hex(self.sp),
@@ -582,9 +608,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.R[op['b']]=(address+op['n'])&0xffffffff
                 self.finish_exact(self.pc+size);adapters['exact_postincrement_store']+=1
                 return
-            if diagnostics and diagnostics.get('exact_subword_stores') and insn.id in ('st.h','st.b','st.h.l','st.b.l'):
+            if diagnostics and diagnostics.get('exact_subword_stores') and insn.id in (
+                    'st.h','st.b','st.h.l','st.b.l','st.h.sp','st.b.sp','st.h.sp.l','st.b.sp.l'):
                 op=module.check.operands(insn,raw)
-                if insn.id.endswith('.l'):address=self.R[op['r']]+op['n'];value=self.R[op['s']]
+                if '.sp' in insn.id:address=self.sp+op['n'];value=self.R[op['r']]
+                elif insn.id.endswith('.l'):address=self.R[op['r']]+op['n'];value=self.R[op['s']]
                 else:address=self.R[op['b']]+op['n'];value=self.R[op['d']]
                 width=2 if insn.id.startswith('st.h') else 1
                 require(address%width==0,'unaligned exact subword store')
@@ -594,7 +622,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id.endswith('.p'):
                 pair,pair_raw,pair_size=self.decode(self.pc+size)
                 base=self.tab.by_id(insn.id[:-2])
-                pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.')) or (
+                pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
                     diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
                 if pure_alu and pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
                     params=module.table.placeholders(insn.syntax);plain=module.table.placeholders(base.syntax)
@@ -796,11 +824,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 adapters['cli_sti_visible_bit9_only']+=1
                 event({'access':'special-write','register':'icfg','value':hex(self.icfg)})
                 return
-            if (machine is not None or (diagnostics and diagnostics.get('irq_repeat_return'))) and insn.id=='mov.r_sr' and raw.get('s')==6:
+            if use_architectural_models and insn.id=='mov.r_sr' and raw.get('s')==6:
                 self.R[raw['r']]=self.core_id
                 self.pc+=size
                 self.steps+=1
                 adapters['per_core_visible_cnum' if machine is not None else 'core0_visible_cnum']+=1
+                return
+            if use_architectural_models and machine is None and insn.id=='mov.r_sr' and raw.get('s') in (3,14,15):
+                self.R[raw['r']]={3:self.rets,14:self.sp,15:self.pc}[raw['s']]
+                self.finish_exact(self.pc+size);adapters['explicit_visible_core_register_read']+=1
                 return
             if (machine is not None or diagnostics) and insn.id in ('mov.r_sr','mov.sr_r') and raw.get('s')==11:
                 if machine is None and not diagnostics.get('adapt_icfg'):
@@ -1053,6 +1085,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         result['stop_core']=c.core_id;result['machine']=machine.report()
         result['assumptions']['cpu0_single_thread_no_interrupts']=False
         result['assumptions']['deterministic_dual_core_interleaving_without_irq_entry']=True
+    if use_architectural_models:
+        result['instruction_model_corrections']={'k2_source_sha256':K2_SHA,
+            'runner_scratch_pc_store_removed':True,'runner_rets_normalization_removed':True,
+            'architectural_inner_models':sorted(architectural_model_names),
+            'legitimate_stores_are_not_filtered_by_value':True,
+            'other_unsupported_contexts_remain_strict':True}
     if handoff:
         result['assumptions']['typed_handoff']=handoff['description']
         if startup_loops:

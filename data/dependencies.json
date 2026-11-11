@@ -88,7 +88,12 @@
     "commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
     "code_license": "MIT-0",
     "documentation_and_table_license": "CC0-1.0",
-    "use": "offline function-level instruction replay; not a complete H3S/BR28 board model"
+    "use": "offline function-level instruction replay; not a complete H3S/BR28 board model",
+    "k2_architectural_adapter": {
+      "path": "tools/hwtest/semantics/k2.py",
+      "sha256": "0bf0b78a61898ee76ce9f74e0058354517a075d350d0ccf255d12253426a21d7",
+      "effect": "call pinned inner models; omit runner scratch-PC store and runner RETS normalization; do not filter architectural stores by value"
+    }
   },
   "ghidra_processor_reference": {
     "url": "https://github.com/quarkslab/ghidra-jieli",
