@@ -4,14 +4,97 @@ No private ROM or physical headset. Board boot probes separately pin real ROM.
 """
 import struct
 import unittest
+from types import SimpleNamespace
 
 from br28_machine import DualCoreMachine, CoreStall
 from br28_model import BR28Model, CPU1_CONTROL, IRQ_CONFIG, IPMASK, IcuInitializationProjection, CORE_PMU_CON1
+from br28_model import SoftwareIrqCommands
 from probe_boot import ENTRY, STACK_TOP, explore, Blocked
 from probe_pi32v2 import upstream
 
 DATA=0x124f00
 LOOP=0x01c60000
+
+
+class RepeatIrqDeliveryCpu:
+    """最小 CPU 桩:只带交付/返回投影触到的字段。"""
+
+    def __init__(self,slots,pc=0x12b608,core_id=0):
+        self.mem=SlotMem(slots);self.pc=pc;self.reti=0;self.steps=7;self.core_id=core_id;self.flags=0
+        self.sp_known=True;self.sp=0x4013f0;self.usp=None;self.ssp=0x123840
+        self.last_explicit_ssp=0x123840
+        self.bootstrap_context=None;self.after_then=None;self.repeat=None
+        self.active_context=None
+
+
+class SlotMem:
+    def __init__(self,slots):self.slots=dict(slots)
+
+    def read(self,address,length):
+        assert (address,length) in ((a,4) for a in self.slots)
+        return struct.pack('<I',self.slots[address])
+
+
+class RepeatIrqDeliveryTests(unittest.TestCase):
+    """暂停点1最小闭环:handler RTI 返回后同核可再次交付,默认关闭仍一次性。"""
+
+    def software_machine(self,**extra):
+        m=DualCoreMachine(software_irq_entry=True,repeat_irq_delivery=True,**extra)
+        m.hardware=SimpleNamespace(software_irq=SoftwareIrqCommands((8,0)))
+        return m
+
+    def test_software_irq_redelivers_after_handler_rti(self):
+        m=self.software_machine(software_irq_entry_banks=True,software_irq_rti=True)
+        cpu=RepeatIrqDeliveryCpu({0x19fffc:0x12AD2A})
+        m.deliver_software_irq(cpu,127)
+        self.assertEqual(m.hardware.software_irq.acknowledgements,1)
+        cpu.pc=0x12ade8  # 真实 handler 尾部 RTI
+        m.return_software_irq(cpu)
+        self.assertIsNone(cpu.active_context)
+        m.hardware.software_irq.command(0xffe1a0,8)  # 固件重新 pend(真实命令路径)
+        m.deliver_software_irq(cpu,127)
+        self.assertEqual([(d['core'],d['irq']) for d in m.software_irq_deliveries],[(0,127),(0,127)])
+        self.assertEqual(m.hardware.software_irq.acknowledgements,2)
+        self.assertEqual((cpu.pc,cpu.active_context),(0x12AD2A,'software_irq_handler'))
+
+    def test_repeat_delivery_rejected_while_a_handler_is_in_flight(self):
+        m=self.software_machine()
+        cpu=RepeatIrqDeliveryCpu({0x19fffc:0x12AD2A})
+        m.deliver_software_irq(cpu,127)
+        with self.assertRaisesRegex(ValueError,'must not nest'):
+            m.deliver_software_irq(cpu,127)  # 软件 IRQ handler 在途
+        cpu.active_context='core_tick_handler'
+        with self.assertRaisesRegex(ValueError,'must not nest'):
+            m.deliver_software_irq(cpu,127)  # tick handler 在途同样拒绝,不嵌套
+        self.assertEqual(len(m.software_irq_deliveries),1)
+
+    def test_default_off_keeps_the_one_shot_limit_after_a_real_rti(self):
+        m=DualCoreMachine(software_irq_entry=True,software_irq_entry_banks=True,software_irq_rti=True)
+        m.hardware=SimpleNamespace(software_irq=SoftwareIrqCommands((8,0)))
+        cpu=RepeatIrqDeliveryCpu({0x19fffc:0x12AD2A})
+        m.deliver_software_irq(cpu,127)
+        cpu.pc=0x12ade8
+        m.return_software_irq(cpu)
+        m.hardware.software_irq.command(0xffe1a0,8)
+        with self.assertRaisesRegex(ValueError,'one-shot'):
+            m.deliver_software_irq(cpu,127)  # 未开 repeat 投影:handler 已返回也仍一次性
+        self.assertEqual(len(m.software_irq_deliveries),1)
+
+    def test_core_tick_redelivers_after_handler_rti(self):
+        m=DualCoreMachine(core_tick_entry=True,core_tick_entry_banks=True,
+                          core_tick_rti=True,repeat_irq_delivery=True)
+        cpu=RepeatIrqDeliveryCpu({0x19fe0c:0x60661a4},pc=0x6012028)
+        m.cores={0:cpu}
+        m.deliver_core_tick(0)
+        cpu.pc=0x60661e6  # 真实 tick handler 尾部 RTI
+        m.return_core_tick(cpu)
+        m.deliver_core_tick(0)  # 第二次溢出交付
+        self.assertEqual([d['core'] for d in m.core_tick_deliveries],[0,0])
+        self.assertEqual((cpu.pc,cpu.active_context),(0x60661a4,'core_tick_handler'))
+
+    def test_repeat_flag_requires_an_entry_projection(self):
+        with self.assertRaisesRegex(ValueError,'entry projection'):
+            DualCoreMachine(repeat_irq_delivery=True)
 
 
 class MachineTests(unittest.TestCase):

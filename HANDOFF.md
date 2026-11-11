@@ -31,11 +31,12 @@
 - **CPU1 irq125 handler 尾部帧弹出 + 对称 RTI**（本次）：probe_irq_entry HANDLER_PSR_FRAMES 增加 `0x606633e:'frame12_pop'`（pop.srl m=41，从真实栈弹出 {psr,rets,reti}，字节来源是入口 0x60662c8 frame12_push 写入的交付状态，不臆造）；`br28_machine.SOFTWARE_IRQ_RTI_TAILS=(0x12ade8,0x6066342)` 把对称 RTI 投影（PC=RETI、SP=USP、bank 回写/ICFG 效果仍是假设）推广到 CPU1 的 irq125 handler 尾 0x6066342。RTI 后 CPU1 回到被中断的 idle（0x12c5ca，reti_from_frame=0x12c5ca）并重新停泊。注意：`defer_core1_first_idle` 的 4096 上限在此返回后被重新触发耗尽（CPU1 返回 0x12c5ca 未停泊期间 CPU0 连续发射）——确定性、不改状态，报告 deferred_core1_turns=4096。
 - **入口原子性**（cb109b3）：deliver 先完整校验银行假设再提交状态，失败不留部分变化。
 - **core tick 机制**（303e388）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + 单测。**首次溢出 ~450k 步 > 当前 153k，未真实触发——C2 未完成。**
-- **P11 最小条件响应投影**（本次，sim-p11-proj）：两个位分开建模、分开标注证据等级，互不假定因果。
+- **P11 最小条件响应投影**（sim-p11-proj）：两个位分开建模、分开标注证据等级，互不假定因果。
   - **PWR_CON bit5 请求-响应**（`p11_lpwr_response_projection`，需 reset_history 投影）：只在观察到主核真实的 `rmw.or.modimm [0xf2a400] |= 0x20`（power_init 0x60679a0）之后，该寄存器读回把 bit5 投影为 0（「P11 已处理请求」显式假设）；其余位保持复位快照（POR bit7=0x80）原样；请求之前不臆造；夹带其他位的 RMW / and 形式 / 整字 store 仍严格拒绝；bit6 清标志命令语义不变，清标志后读回仍是 unknown。合并写回不落在严格复位标志路径。UART CON2 写入不制造任何 ready。
   - **PMU_STA bit0 就绪响应**（`p11_pmu_ready_projection`，需 p11_access_probe + 显式基线 fixture 0/1）：复用 P11AccessProbe 的 CON2 序列门控（序列完成后才有意义），在基线 fixture 字之上仅强制 bit0=1；与固定外部状态 fixture（None/0/1）机制并存且独立开关，report 里 `pmu_ready_response_projection` 单独标注「置位机制未证实，证据等级低于 bit5」。不提供基线时读回仍严格 unknown。
   - **堆信息 4 字节显式 fixture**（`p11_heap_info_bytes`，调用方传入 4 字节）：0xf27f4a..4d（P2M 消息区 +0xa，P11 init 写入 heap begin/size，值未证实）按字节粒度读回 fixture；未提供时走普通存储路径严格停（unmapped/uninitialized）。字节粒度经 `BR28Model.read_bytes` 新钩子进 `Memory.read`，不影响字对齐外设分发。
-  - 验证：PMU_STA bit0 在真实 p11_init 前缀验证（`p11_ready_response` 场景越过 0x606890c 轮询，83,094 步停在 0x600a57c 0xf2a804，与全字 status=1 场景逐字段一致）；PWR_CON bit5 **尚未在真实前缀观察到**（app_core 路径前沿 154,263 未到 power_init），以真实指令最小场景（test_boot_bus：0x60679a0 请求 RMW 严格/投影对照、0x60679ae/b0 轮询仅在请求后退出、0x60679ba/be 堆装载 fixture/严格停）+ 模型单测验证。
+  - 验证：PMU_STA bit0 在真实 p11_init 前缀验证（`p11_ready_response` 场景越过 0x606890c 轮询，83,094 步停在 0x600a57c 0xf2a804，与全字 status=1 场景逐字段一致）；PWR_CON bit5 **尚未在真实前缀观察到**（app_core 路径前沿未到 power_init），以真实指令最小场景（test_boot_bus：0x60679a0 请求 RMW 严格/投影对照、0x60679ae/b0 轮询仅在请求后退出、0x60679ba/be 堆装载 fixture/严格停）+ 模型单测验证。
+- **可重复中断交付**（sim-redeliver）：暂停点 1 最小闭环。新 opt-in 开关 `repeat_irq_delivery`（默认关，legacy 5 场景字节不变）：打开后同核「无在途 handler（active_context 非 software_irq_handler/core_tick_handler）即可交付」，handler RTI 返回后允许再次交付；在途仍拒绝（不嵌套）；向量槽/银行假设每次完整重走，pending 只能由固件真实重新 pend（0xffe1a0/0xffe9a0 |=，全部 pend 走 0x60644a6 通用 IPI 请求函数）。单测覆盖 交付→RTI→再交付、在途拒绝、默认关一次性。新场景 irq125_repeat_inert 钉住 repeat 惰性。**真实第二次交付在其当时前沿（154,263）内不可达（实测）：可达前缀内每核只 pend 一次（commands=4：两核各 pend+clear，CPU1 handler 入口 0x60662de 自清 pending）；CPU0 tick 使能后 gate8/9 开放窗口总跨度 ~4.4k 步 < 最小溢出间距 4688 步，两次 tick 交付数学上不可能。第二次交付待 0x606633e handler 尾建模（已落地）后前沿推进观察。**
 
 ## codex (gpt-6-astra) 参谋结论（2026-11-11 二次，已核实）
 
@@ -51,9 +52,9 @@
 
 ## 四个待处理暂停点（codex 指出，按优先级）
 
-1. **一次性交付限制**：software IRQ / tick 都要求"该核从未交付过"，下一次事件被拒（br28_machine.py deliver 的 require）。扩展重复交付需验证完成状态、活动 handler、银行恢复。
+1. **一次性交付限制**：~~software IRQ / tick 都要求"该核从未交付过"~~ **已解决（机制层）**：`repeat_irq_delivery` opt-in 开关实现「返回后可重新交付」最小闭环（无在途 handler 即可交付、不嵌套、全量重校验、pending 只认真实 pend），单测+前沿不变场景齐备。**真实第二次交付观察未完成**：前沿内固件每核只 pend 一次、tick 双溢出窗口不够（见「已实现」末条），待 0x606633e 建模后在 app_core 下一次跨核请求处观察。
 2. **全核 IDLE 后时间停**：当前立即 `all_cores_idle_waiting` 停止。持续服务需独立事件时钟，时钟契约允许时推进到下个事件。
-3. **入口失败原子性**：银行假设路径先改 PC/RETI、移除等待状态再查 SSP/任务 SP；检查失败可能留部分状态。应先完整校验再提交。
+3. **入口失败原子性**：银行假设路径先改 PC/RETI、移除等待状态再查 SSP/任务 SP；检查失败可能留部分状态。应先完整校验再提交。（cb109b3 已修：先完整校验再提交。）
 4. **文档/场景名落后证据**：HANDOFF 旧边界、tick 探针仍停 IRQ125。建议每里程碑绑定提交+场景+报告+退出条件+剩余假设。
 
 ## P11 主核依赖清单（2026-11-11 路调研，全部反汇编证实）
@@ -96,7 +97,7 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 1. CRC 引擎建模：0xfd3504=种子/控制写（app 0x6000f44 写 0）、0xfd3500=逐字节馈入、csync 后从 0xfd3504 读回结果（ROM 0xaa1e：种子 0xffff、表驱动、读 [r2+4] 与数据 XOR）。app 0x6000eec 另有软件 CRC-16 表实现，wrapper 0x6000f0c 走硬件路径。随后是对核暂停/释放完整周期（0x12c6e6 备用启动函数：读回 bit0 守卫的 RMW 释放 `|=1` + 等待 ready 的 kick 循环 0x12c71c，均未在当前前缀触发）。
 2. 补齐每个镜像的资源映射（candidate_view 目前只返回 app+337B payload）。
-3. 补可重复中断交付 + 事件时间推进（解决暂停点 1/2）。
+3. 事件时间推进（暂停点 2 事件时钟；暂停点 1 机制已落，前沿推进后补真实第二次交付观察）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用；P11 接口剩 power_init 内部的纯写寄存器与 0xf20080 拷贝（见上节剩余缺口）。
 5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。
 
