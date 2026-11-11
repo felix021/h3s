@@ -39,7 +39,7 @@ SFC_RESUME_OPERATIONS=(
 
 
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
-             unmaskable=False,sfc_suspend=False,gpio_out_readback=False,readonly=()):
+             unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -47,6 +47,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if idle_wait:machine_options['idle_wait_projection']=True
     if rti:machine_options['software_irq_rti']=True
     if gpio_out_readback:machine_options['gpio_out_readback']=True
+    if kick_wake:machine_options['cpu1_control_kick_wake']=True
     options={'initial_software_irq_pending':(0,0)}
     if entry:options['software_irq_delivery_requests']=True
     if unmaskable:options['unmaskable_irq_projection']=True
@@ -156,10 +157,21 @@ def check(report):
             adapters.get('gpio_out_readback_register_copy')==1 and
             adapters.get('gpio_out_readback_writeback')==2,
             'the SFC GPIO OUT read-back path was not exercised through its exact load/mask/copy/write-back shape')
-    require(r['stop_core']==0 and r['stop_pc']=='0x12b732' and
-            r['stop']=={'kind':'unsupported_cpu1_release_transition'},
-            'after the SFC resume the stop must be the unmodeled CPU1 control RMW at 0x12b732')
-    require(r['completed_steps']==154242,'the CPU0 SFC resume path changed its step count')
+    require(r['stop_core']==1 and r['stop_pc']=='0x606633e' and
+            r['stop']=={'kind':'multicore_special_frame_unmodeled','instruction_id':'pop.srl'},
+            'after the CPU1 kick handshake the stop must be the peer handler special-frame pop')
+    require(r['completed_steps']==154263,'the CPU1 kick handshake path changed its step count')
+    held=r['peripherals']['cpu1_held_projection']
+    require(held['current_control']==9 and held['kick_rmw_writes']==3,
+            'the CPU1 PMU_CON0 kick bit was not recorded as exactly three |=8 retries')
+    require(r['instruction_adapters'].get('cpu1_control_rmw')==4,
+            'the release RMW plus three kick RMWs must be the only CPU1 control RMWs')
+    wakes=[e for e in r['machine']['events'] if e.get('kind')=='core_woken_by_cpu1_control_kick']
+    require(len(wakes)==1 and wakes[0]['pc_after']=='0x606631a' and
+            wakes[0]['idle_completion_is_assumption'] and wakes[0]['wake_source_unverified'],
+            'the kick wake of the parked peer core must stay an explicit assumption')
+    require('cpu1_control_kick_bit3' in r['peripherals']['assumptions'],
+            'the PMU_CON0 bit3 kick assumption must be recorded explicitly')
     gate=r['peripherals']['sfc_clock_gate_projection']
     require(gate['operations']==list(SFC_RESUME_OPERATIONS),
             'the SFC suspend/resume clock-gate writes changed')
@@ -201,7 +213,7 @@ def main():
                               entry=True,banks=True,idle_wait=True,rti=True),
                      irq_case(module,app,header,rom,'irq125_sync_roundtrip',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
-                              sfc_suspend=True,gpio_out_readback=True)]}
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

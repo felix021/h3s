@@ -856,6 +856,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         hardware.core_tick_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['core_tick_ack_rmw']+=1
                         return
+                    if hardware.handles_cpu1_control_rmw(address):
+                        # CPU1 PMU_CON0 RMWs: the actual release itself is the guarded
+                        # |=1 at 0x60660da; after release CPU0 re-asserts the kick bit3
+                        # while polling a peer-core flag (0x12b732 in the 0x12b73c loop).
+                        # bit0-involved forms keep the strict write-path semantics.
+                        if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        elif insn.id in ('rmw.and.nmodimm','rmw.and.modimm'):kind='and';operand=op['m']
+                        else:raise Blocked('cpu1_control_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.cpu1_control_rmw(address,kind,operand)
+                        self.finish_exact(self.pc+size);adapters['cpu1_control_rmw']+=1
+                        return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
                         elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']

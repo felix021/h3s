@@ -102,6 +102,24 @@ class MachineTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'hold_after_release'):h.write(CPU1_CONTROL,0)
         self.assertEqual(h.read(CPU1_CONTROL),1)
 
+    def test_cpu1_control_kick_wakes_only_a_parked_idle_core_once(self):
+        from types import SimpleNamespace
+        with self.assertRaisesRegex(ValueError,'IDLE wait'):
+            DualCoreMachine(cpu1_control_kick_wake=True)
+        m=DualCoreMachine(cpu1_control_kick_wake=True,idle_wait_projection=True,software_irq_entry=True)
+        m.hardware=SimpleNamespace(cpu1_control_kick_writes=1,current_core=0,core_icfg={})
+        stub=lambda pc:SimpleNamespace(pc=pc,steps=0,icfg=0,icfg_known=True,
+                                       decode=lambda pc:(SimpleNamespace(id='idle'),{},2))
+        m.cores={0:stub(0),1:stub(0x6066318)};m.idle_wait_cores={1}
+        self.assertIs(m.select(),m.cores[0])  # 唤醒后按轮转仍选 core0,idle 已按完成计步
+        parked=m.cores[1]
+        self.assertEqual((parked.pc,parked.steps),(0x606631a,1))
+        self.assertNotIn(1,m.idle_wait_cores)
+        wakes=[e for e in m.events if e['kind']=='core_woken_by_cpu1_control_kick']
+        self.assertEqual(len(wakes),1)  # kick 计数未再增长时不得重复唤醒
+        m.select()
+        self.assertEqual(len([e for e in m.events if e['kind']=='core_woken_by_cpu1_control_kick']),1)
+
     def test_icu_busy_completion_requires_explicit_progress_and_independent_status(self):
         base=0xffec00
         h=IcuInitializationProjection({base:0x80000000})

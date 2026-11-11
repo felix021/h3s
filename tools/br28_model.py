@@ -876,6 +876,7 @@ class BR28Model:
                                unmaskable_irq_projection=unmaskable_irq_projection)
         self.multicore_enabled=False;self.current_core=0;self.irq1=None;self.core_icfg={}
         self.cpu1_release_handler=None;self.secondary_cpu_executed=False
+        self.cpu1_control_kick_writes=0
         if initial_software_irq_pending is not None and not software_irq_command_projection:
             raise ValueError('software IRQ pending fixture requires explicit command projection')
         if software_irq_delivery_requests and not software_irq_command_projection:
@@ -1219,6 +1220,37 @@ class BR28Model:
         self.counts['reads']+=1
         self.record_write({'address':hex(address),'known_mask':hex(word.known),'known_value':hex(word.value)})
 
+    def handles_cpu1_control_rmw(self,address):
+        return self.cpu1_held_projection and address==CPU1_CONTROL
+
+    def cpu1_control_rmw(self,address,kind,operand):
+        """CPU1 PMU_CON0(0xffe8c0) 的 RMW(cpu1_held_projection opt-in)。
+
+        含 bit0 的形式与通用 read+write 路径等价:合并结果交回严格 write(),释放/保持/
+        停止语义逐字节不变(实际释放指令 0x60660da 就是 `rmw.or.modimm |= 0x1`)。
+        释放后 bit0 不参与的 or 置位是新的 kick 位记录。执行证据:RAM_CODE 0x12b732
+        `rmw.or.modimm [r0] |= 0x8`,r0=(1-cnum)<<11+0xffe0c0(core0 侧指向对核 PMU_CON0),
+        位于 0x12b73c 回跳的等待对核 ack 轮询循环;0x12c71c 是同型的 boot 期等待 CPU1
+        ready 循环。两处都只置位 bit3,固件从不回读、从不清除。reference SDK csfr.h 只定义
+        了 PMU_CON0 的地址(q32DSP(n) SFR bank + 0x30*4),没有位定义,bit3 的硅语义未
+        证实——模型侧只做只写位记录,不发明唤醒/调度效应;唤醒在 DualCoreMachine 的
+        cpu1_control_kick_wake 投影里单独 opt-in。
+        """
+        if not self.handles_cpu1_control_rmw(address):raise ValueError('not the modeled CPU1 control register')
+        if self.cpu1_control is None:raise Blocked('unknown_initial_cpu1_control')
+        if kind not in ('or','and'):raise Blocked('cpu1_control_rmw_form_not_modeled',operation=kind)
+        operand&=0xffffffff
+        merged=(self.cpu1_control|operand) if kind=='or' else (self.cpu1_control&operand)
+        merged&=0xffffffff
+        self.counts['reads']+=1
+        if kind=='or' and not operand&1:
+            self.cpu1_control=merged;self.cpu1_control_kick_writes+=1
+            self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand),
+                               'control':hex(merged),
+                               'projection':'kick bit record only; no wake or scheduling effect modeled'})
+            return
+        self.write(address,merged)
+
     def software_irq_command(self,address,mask):
         self.software_irq.command(address,mask)
         self.counts['reads']+=1
@@ -1339,7 +1371,14 @@ class BR28Model:
         if self.cpu1_held_projection:
             result['cpu1_held_projection']={'initial_control_fixture':self.initial_cpu1_control,
                                             'current_control':self.cpu1_control,'secondary_cpu_executed':self.secondary_cpu_executed,
-                                            'release_is_a_stop_not_ready_injection':not self.multicore_enabled}
+                                            'release_is_a_stop_not_ready_injection':not self.multicore_enabled,
+                                            'kick_rmw_writes':self.cpu1_control_kick_writes}
+            if self.cpu1_control_kick_writes:
+                result['assumptions']['cpu1_control_kick_bit3']=(
+                    'post-release |=0x8 on CPU1 PMU_CON0 (evidence 0x12b732 ack-wait poll loop '
+                    'and 0x12c71c CPU1-ready wait) is recorded as a write-only kick bit; the '
+                    'reference SDK csfr.h names no PMU_CON0 bits, so bit3 silicon semantics and '
+                    'any wake effect are unverified; CPU0 code never reads back or clears it')
         if self.multicore_enabled:
             result['multicore']={'current_core':self.current_core,'cpu1_irq_words':self.irq1.config,
                 'cpu1_ipmask':self.irq1.ipmask,'core_icfg':{str(k):v for k,v in self.core_icfg.items()},

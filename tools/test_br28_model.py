@@ -182,6 +182,22 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(h.read(CPU1_CONTROL),0)
         self.assertFalse(h.report()['cpu1_held_projection']['secondary_cpu_executed'])
 
+    def test_cpu1_control_rmw_records_kick_bit_and_keeps_release_strict(self):
+        h=BR28Model(cpu1_held_projection=True,initial_cpu1_control=0)
+        h.cpu1_release_handler=lambda value:None
+        h.cpu1_control_rmw(CPU1_CONTROL,'or',1)  # 实际释放指令就是 |=1(0x60660da)
+        self.assertEqual(h.read(CPU1_CONTROL),1)
+        with self.assertRaisesRegex(Blocked,'unsupported_cpu1_release_transition'):
+            h.cpu1_control_rmw(CPU1_CONTROL,'or',9)  # 释放后含 bit0 的 RMW 仍停
+        h.cpu1_control_rmw(CPU1_CONTROL,'or',8)  # kick bit3(0x12b732 轮询循环)
+        self.assertEqual(h.read(CPU1_CONTROL),9)
+        with self.assertRaisesRegex(Blocked,'cpu1_control_rmw_form_not_modeled'):
+            h.cpu1_control_rmw(CPU1_CONTROL,'xor',1)
+        report=h.report()
+        self.assertEqual((report['cpu1_held_projection']['current_control'],
+                          report['cpu1_held_projection']['kick_rmw_writes']),(9,1))
+        self.assertIn('cpu1_control_kick_bit3',report['assumptions'])
+
     def test_timer_lsb_source_requires_explicit_progress(self):
         h=BR28Model(timer_lsb_ticks_per_step=2)
         for address,value in ((TIMER0,0x40),(TIMER0+4,0),(TIMER0+8,3),(TIMER0,0x41)):

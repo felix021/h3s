@@ -40,7 +40,7 @@ class DualCoreMachine:
                  first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False,
                  software_irq_entry_banks=False,idle_wait_projection=False,software_irq_rti=False,
                  core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False,
-                 gpio_out_readback=False):
+                 gpio_out_readback=False,cpu1_control_kick_wake=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -81,6 +81,10 @@ class DualCoreMachine:
         require(not core_tick_rti or core_tick_entry,'core tick RTI projection requires the entry projection')
         require(isinstance(gpio_out_readback,bool),'GPIO OUT read-back is an opt-in boolean')
         self.gpio_out_readback=gpio_out_readback
+        require(isinstance(cpu1_control_kick_wake,bool),'CPU1 control kick wake is an opt-in boolean')
+        require(not cpu1_control_kick_wake or idle_wait_projection,
+                'CPU1 control kick wake requires the IDLE wait projection')
+        self.cpu1_control_kick_wake=cpu1_control_kick_wake;self.seen_cpu1_control_kicks=0
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -120,6 +124,10 @@ class DualCoreMachine:
         self.record_event({'kind':'cpu1_released','entry':hex(cpu.pc),'ready_flag_written':False})
 
     def select(self):
+        kicks=getattr(self.hardware,'cpu1_control_kick_writes',None)
+        if self.cpu1_control_kick_wake and kicks is not None and kicks!=self.seen_cpu1_control_kicks:
+            self.seen_cpu1_control_kicks=kicks
+            self.wake_cpu1_control_kick()
         core=1-self.last_core
         if core not in self.cores:core=0
         if core in self.idle_wait_cores:
@@ -143,6 +151,24 @@ class DualCoreMachine:
         self.record_event({'kind':'core_idle_wait_entered','core':cpu.core_id,'pc':hex(cpu.pc)})
         if set(self.cores)<=self.idle_wait_cores:
             raise Blocked('all_cores_idle_waiting',idle_cores=sorted(self.idle_wait_cores))
+
+    def wake_cpu1_control_kick(self):
+        """PMU_CON0 kick RMW 唤醒挂起的 CPU1(显式投影,cpu1_control_kick_wake)。
+
+        证据:CPU1 在自身 irq125 handler 内的 idle(0x6066318)挂起;唤醒后 0x606631a 起
+        检查 flag(0x1265f7)bit0,随后清 bit2 并退出 handler;而 CPU0 侧等待 bit2 清零
+        期间唯一的外部动作就是对 0xffe8c0 的 kick RMW(0x12b732)。投影:该 RMW 让 idle
+        按完成计步并前进到下一条指令,不发明中断向量、不改 held 位。「bit3 就是唤醒源」
+        是从握手协议推断的显式假设,硅上未验证。
+        """
+        cpu=self.cores.get(1)
+        if cpu is None or 1 not in self.idle_wait_cores:return
+        insn,_,size=cpu.decode(cpu.pc)
+        require(insn.id=='idle','CPU1 control kick wake requires a parked IDLE instruction')
+        self.idle_wait_cores.discard(1)
+        cpu.pc+=size;cpu.steps+=1
+        self.record_event({'kind':'core_woken_by_cpu1_control_kick','core':1,'pc_after':hex(cpu.pc),
+                           'idle_completion_is_assumption':True,'wake_source_unverified':True})
 
     def return_software_irq(self,cpu):
         # Symmetric opt-in return for the one-shot scheduler-IPI handler at

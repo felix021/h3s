@@ -1,4 +1,4 @@
-# 交接：整机启动仿真推进中（阶段 D 进行，前沿 154,242 步）
+# 交接：整机启动仿真推进中（阶段 D 进行，前沿 154,263 步）
 
 2026-11-11 恢复工作。阶段 A/B/C1 完成，C2（tick 真实触发）与 D 进行中。停止时请更新本文件。
 
@@ -12,9 +12,9 @@
 | irq127_entry_minimal | 149,679 | 0x12ad68 | unknown_core_special_register (usp) |
 | irq127_scheduler_entry | 151,500 | 0x12c5ca | unsupported idle（对核 IDLE 边界）|
 | irq127_appcore_roundtrip | 153,430 | 0x12b66a | unmodeled_unmaskable_irq irq125 |
-| **irq125_sync_roundtrip** | **154,242** | **0x12b732** | **unsupported_cpu1_release_transition** |
+| **irq125_sync_roundtrip** | **154,263** | **0x606633e** | **multicore_special_frame_unmodeled (pop.srl)** |
 
-**154,242 步含义**：CPU0 的 app_core 发跨核同步 IPI（IRQ125）→ CPU1 应答 → CPU0 继续 → SFC 挂起序列（0x12b916→0x12b890：GPIO RMW 按位、baud=0、disable、0xfd1c00 时钟门、第二 SFC 0xfe0100 复位态跳过）→ GPIO port D OUT 读回按位精化（GpioOutValue 偏字）→ SFC 恢复（0xfd1c00 |=8、&=~0x1000）→ +8 分频寄存器写 3、读回 0xFF（分频/数据寄存器语义）→ 0xfd1c00 bit15 PLL-lock 读回为 1（显式投影）→ 停在 `[0xffe8c0] |= 0x8`（对已释放 CPU1 的 CPU1 控制 RMW，未建模）。
+**154,263 步含义**：CPU0 的 app_core 发跨核同步 IPI（IRQ125）→ CPU1 应答 → CPU0 继续 → SFC 挂起序列（0x12b916→0x12b890：GPIO RMW 按位、baud=0、disable、0xfd1c00 时钟门、第二 SFC 0xfe0100 复位态跳过）→ GPIO port D OUT 读回按位精化（GpioOutValue 偏字）→ SFC 恢复（0xfd1c00 |=8、&=~0x1000）→ +8 分频寄存器写 3、读回 0xFF（分频/数据寄存器语义）→ 0xfd1c00 bit15 PLL-lock 读回为 1（显式投影）→ CPU0 ack 等待函数（0x12b6de）清 flag(0x1265f7) bit0 后进入轮询：3 次 `[0xffe8c0] |= 0x8` kick（0x12b732）→ kick 唤醒挂在自身 irq125 handler 内 idle（0x6066318）的 CPU1 → CPU1 检查 bit0 已清、清 bit2（0x6066336/38）退出循环 → CPU0 循环退出 → 停在 CPU1 handler 尾部 `{psr,rets,reti}` 特殊帧弹出（0x606633e pop.srl，multicore 特殊帧未建模）。
 
 ## 已实现（按序，均 opt-in 投影，默认关闭 legacy 报告不变）
 
@@ -26,7 +26,8 @@
 - **GPIO RMW 按位精化**（420c874）：and/or 逐位确定，XOR/ADD/SUB 仍保守。
 - **SFC 时钟门 + 第二 SFC**（8770401）：0xfd1c00 时钟门投影（只记录置/清、读回严格 unknown）、第二 SFC 0xfe0100（复位态 CON=0 显式假设）。
 - **GPIO OUT 读回按位**（8e5df35）：GpioOutValue 偏字类型，and/or 位操作传递、全字消费（算术/比较/存 RAM）严格停；未写位 unknown 不臆造。
-- **SFC 时钟 +8 / PLL lock 读回**（本次）：0xfd1c08 分频寄存器可写可读（读回=最后写入值，仅在固件写过后返回，不臆造复位值）；0xfd1c00 bit15 读回显式投影为 PLL 已锁定（0x12ba38 轮询证据）。
+- **SFC 时钟 +8 / PLL lock 读回**（c3f399e）：0xfd1c08 分频寄存器可写可读（读回=最后写入值，仅在固件写过后返回，不臆造复位值）；0xfd1c00 bit15 读回显式投影为 PLL 已锁定（0x12ba38 轮询证据）。
+- **CPU1 PMU_CON0 RMW + kick 唤醒**（本次）：0xffe8c0=CPU1 PMU_CON0（csfr.h q32DSP(1)+0x30*4；0xffe0c0 同位为 CPU0）。含 bit0 的 RMW 与严格写路径等价（实际释放指令 0x60660da 就是 `|=1`）；释放后 bit0 不参与的 or 置位记为 kick 位（0x12b732/0x12c71c 双证据，只置位不回读不清除）。machine 侧 `cpu1_control_kick_wake` 投影：kick 让挂在 idle 的 CPU1 按完成计步并唤醒——「bit3 就是唤醒源」是从握手协议推断的显式假设（SDK 无 PMU_CON0 位定义，硅语义未验证，已写入 report 假设）。
 - **入口原子性**（cb109b3）：deliver 先完整校验银行假设再提交状态，失败不留部分变化。
 - **core tick 机制**（303e388）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + 单测。**首次溢出 ~450k 步 > 当前 153k，未真实触发——C2 未完成。**
 
@@ -66,13 +67,14 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 ## 当前并行任务
 
-- 路 A（sim-sfc-clk，c3f399e 已合并推送）：SFC 时钟 +8 分频 / PLL-lock 读回完成，前沿 154,242（0x12b732）。
+- 路 A（sim-sfc-clk，c3f399e 已合并推送）：SFC 时钟 +8 分频 / PLL-lock 读回完成。
 - 路 B（只读调研）：P11 主核读写依赖清单完成，结论见上节。
-- 下一路：0x12b732 对核控制 RMW（`[0xffe8c0] |= 0x8`，CPU1 已释放后的 bit3 写）。
+- 路 C（sim-cpu1-ctl，本次）：CPU1 PMU_CON0 kick RMW + 唤醒投影完成，前沿 154,263（0x606633e）。
+- 下一路：0x606633e CPU1 irq125 handler 尾部特殊帧弹出（pop.srl 的 psr/rets/reti 恢复 + handler RTI）。
 
 ## 下一步（按 codex 建议）
 
-1. 继续 SFC 挂起-恢复：0x12b732 的对核控制 RMW（`[0xffe8c0] |= 0x8`）在 CPU1 已释放后的语义未建模（当前 `unsupported_cpu1_release_transition`）；随后还有对核暂停/释放的完整周期。
+1. CPU1 irq125 handler 退出：0x606633e 的 `{psr,rets,reti}=[sp++]`（multicore 特殊帧弹出）与其后的 RTI（现有 return_software_irq 只认 CPU0 handler 尾 0x12ade8，需按 active_context 推广）；随后是对核暂停/释放完整周期（0x12c6e6 备用启动函数：读回 bit0 守卫的 RMW 释放 `|=1` + 等待 ready 的 kick 循环 0x12c71c，均未在当前前缀触发）。
 2. 补齐每个镜像的资源映射（candidate_view 目前只返回 app+337B payload）。
 3. 补可重复中断交付 + 事件时间推进（解决暂停点 1/2）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用、P11 接口。
@@ -87,6 +89,8 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - app_core 帧 0x19f7b0：16B 特殊帧（PC 0x6012028）+ 60B GPR 未初始化（真实语义）。
 - SFC 挂起路径 0x12b890（先 baud=0 后 disable）vs 使能路径 0x12e1e8（先 disable 后 baud）。
 - core tick PRD=1199999（CPU0）/479999999（CPU1），非"PRD=1 高频"（那是独立叶子 0x6066134 未在当前前缀调用）。
+- per-core q32DSP SFR bank：0xffe000+core*0x800；PMU_CON0=+0xc0（0xffe0c0/0xffe8c0，SDK 无位定义）、ILAT_SET=+0x1a0、ILAT_CLR=+0x1a4。固件用 `(1-cnum)<<11+0xffe0c0` 算对核 PMU_CON0。
+- 跨核同步邮箱（0x1265c0 结构）：+54=命令字节（CPU0 写、CPU1 handler 0x60662c8 读）、+55=标志字节——bit1=发送路径 ack（CPU1 清，CPU0 0x12b66e 等）、bit0=CPU0 应答等待门（CPU0 0x12b716 清、CPU1 idle 醒后检查）、bit2=响应完成（CPU1 0x6066336 清、CPU0 0x12b73c kick 循环等）。
 
 ## 资料和硬件边界（不变）
 
