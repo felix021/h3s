@@ -271,24 +271,27 @@ class DualCoreMachine:
         try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
         except Blocked:raise Blocked('vector_slot_uninitialized',core=cpu.core_id,irq=irq,
                                      address=hex(slot)) from None
+        # Validate the whole entry before committing any state change.
+        entry_banks=None;bank_usp=None;bank_ssp=None
+        if self.software_irq_entry_banks:
+            # Explicit unverified assumption: the entry switches SP to the
+            # kernel stack (SSP = last explicit SSP fixture) while USP keeps
+            # the interrupted task stack. Silicon bank behaviour is unknown.
+            bank_ssp=getattr(cpu,'last_explicit_ssp',None)
+            require(bank_ssp is not None,'entry bank assumption lacks an explicit SSP fixture')
+            require(cpu.sp_known,'interrupted task stack pointer is unknown')
+            bank_usp=cpu.sp
+            entry_banks={'usp':hex(bank_usp),'ssp':hex(bank_ssp),
+                         'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
+        # Commit atomically: no further failure is possible past this point.
         if cpu.core_id in self.idle_wait_cores:
             self.idle_wait_cores.discard(cpu.core_id)
             self.record_event({'kind':'core_woken_by_delivery','core':cpu.core_id,'irq':irq})
         interrupted=cpu.pc
         cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
         cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
-        entry_banks=None
         if self.software_irq_entry_banks:
-            # Explicit unverified assumption: the entry switches SP to the
-            # kernel stack (SSP = last explicit SSP fixture) while USP keeps
-            # the interrupted task stack. Silicon bank behaviour is unknown.
-            kernel_sp=getattr(cpu,'last_explicit_ssp',None)
-            require(kernel_sp is not None,'entry bank assumption lacks an explicit SSP fixture')
-            cpu.usp=cpu.sp if cpu.sp_known else None
-            require(cpu.usp is not None,'interrupted task stack pointer is unknown')
-            cpu.ssp=kernel_sp;cpu.sp=kernel_sp;cpu.sp_known=True
-            entry_banks={'usp':hex(cpu.usp),'ssp':hex(cpu.ssp),
-                         'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
+            cpu.usp=bank_usp;cpu.ssp=bank_ssp;cpu.sp=bank_ssp;cpu.sp_known=True
         cpu.active_context='software_irq_handler'
         self.hardware.software_irq.acknowledge(cpu.core_id,irq-124)
         event={'kind':'software_irq_entry','core':cpu.core_id,'irq':irq,'vector_address':hex(slot),
@@ -314,24 +317,27 @@ class DualCoreMachine:
         try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
         except Blocked:raise Blocked('vector_slot_uninitialized',core=core,irq=3,
                                      address=hex(slot)) from None
+        # Validate the whole entry before committing any state change.
+        entry_banks=None;bank_usp=None;bank_ssp=None
+        if self.core_tick_entry_banks:
+            # Explicit unverified assumption: the entry switches SP to the
+            # kernel stack (SSP = last explicit SSP fixture) while USP keeps
+            # the interrupted task stack. Silicon bank behaviour is unknown.
+            bank_ssp=getattr(cpu,'last_explicit_ssp',None)
+            require(bank_ssp is not None,'core tick entry bank assumption lacks an explicit SSP fixture')
+            require(cpu.sp_known,'interrupted task stack pointer is unknown')
+            bank_usp=cpu.sp
+            entry_banks={'usp':hex(bank_usp),'ssp':hex(bank_ssp),
+                         'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
+        # Commit atomically: no further failure is possible past this point.
         if core in self.idle_wait_cores:
             self.idle_wait_cores.discard(core)
             self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':3})
         interrupted=cpu.pc
         cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
         cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
-        entry_banks=None
         if self.core_tick_entry_banks:
-            # Explicit unverified assumption: the entry switches SP to the
-            # kernel stack (SSP = last explicit SSP fixture) while USP keeps
-            # the interrupted task stack. Silicon bank behaviour is unknown.
-            kernel_sp=getattr(cpu,'last_explicit_ssp',None)
-            require(kernel_sp is not None,'core tick entry bank assumption lacks an explicit SSP fixture')
-            cpu.usp=cpu.sp if cpu.sp_known else None
-            require(cpu.usp is not None,'interrupted task stack pointer is unknown')
-            cpu.ssp=kernel_sp;cpu.sp=kernel_sp;cpu.sp_known=True
-            entry_banks={'usp':hex(cpu.usp),'ssp':hex(cpu.ssp),
-                         'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
+            cpu.usp=bank_usp;cpu.ssp=bank_ssp;cpu.sp=bank_ssp;cpu.sp_known=True
         cpu.active_context='core_tick_handler'
         event={'kind':'core_tick_entry','core':core,'irq':3,'vector_address':hex(slot),
                'handler':hex(handler),'reti_from':hex(interrupted),'entry_counted_as_model_step':True,
