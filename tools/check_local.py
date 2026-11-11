@@ -39,6 +39,7 @@ def main():
     run(sys.executable,'tools/test_task_unknown.py')
     run(sys.executable,'tools/test_icfg.py')
     run(sys.executable,'tools/test_irq_entry.py')
+    run(sys.executable,'tools/test_core_tick.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json')
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json')
@@ -64,6 +65,7 @@ def main():
         run(sys.executable,'tools/probe_icfg_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/icfg-startup.json')
         run(sys.executable,'tools/probe_task_returns.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/task-returns.json')
         run(sys.executable,'tools/probe_irq_entry.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/irq-entry.json')
+        run(sys.executable,'tools/probe_core_tick.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/core-tick.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:
