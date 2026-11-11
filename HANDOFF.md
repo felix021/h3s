@@ -96,10 +96,20 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - 路 F（sim-redeliver，已合并 f842ed4）：repeat_irq_delivery 最小闭环；repeat_inert 场景在 155,127 前沿实测惰性。
 - 路 G（sim-crc，本次合并）：硬件 CRC 引擎 0xfd3500/0xfd3504 建模完成（CRC-16/XMODEM 功能等价，黄金软件参数在断言中重算），前沿 155,389（0x6010b14 rep.i）。
 
+## 镜像资源级映射（sim-resmap，2026-11-11 完成）
+
+`tools/analyze_image_resources.py`：单命令枚举一个 UFW 的全部资源——外层 UFW 目录（13 条）+ flash.bin 双备份区顶层 JLFS（9 条）+ 目录条目内嵌套子项（9 项：app.bin/VM/PRCT/BTIF/ANCIF/ANCIF1/anc_ext.bin/TON/TON1 分区描述），逐项 CRC 校验 + 内容 SHA256；多镜像按名字对齐 diff（差异资源给出字节游程摘要，不输出内容）。全部 CRC 失败/越界/未知 flags/重名直接报错。已接 check_local 默认检查（无参数自检：官方镜像清单与钉死摘要逐项一致，app.bin 摘要与 probe_boot.APP_SHA 互证）。用法：`python3 tools/analyze_image_resources.py --image path=label ... --report out.json`；`--expected-missing label=sha256` 如实记录不可用镜像。
+
+**三镜像结论**：
+- 官方 ↔ 已测试 b79：JLFS 仅 2/9 资源不同——app_area_head（整块 9B：表头/嵌套 CRC 8B + app.bin 内 **0x9e410 单字节** ANC 键循环表，与 AGENTS 钉死事实一致）与 stream.bin（41B：表头 CRC 4B + 音量参数区 0x18f8..0x1954，即 Vol_SysTone/Vol_SysKTone 邻域）；其余 7 资源（含 p11_code.bin、scene.bin、anc_ext.bin、3mic_coeff.bin、cfg_tool.bin、config.dat、分区目录）逐字节相同。外层 13 条仅 flash.bin 不同，TON/TON1 提示音分区字节级相同（-10dB 改动全部落在 flash.bin 内部）。
+- **EQ 修复候选（67ba97ef）文件缺失**：本机全盘（*.ufw/按 1,326,848B 尺寸）、firmware Release assets、私有归档目录均未找到；确定性重建所需的私有 patch.elf 也不在本机。三镜像 diff 待文件补齐后一条命令完成。工具已内置候选形状校验（相对 b79 仅 app_area_head/config.dat 差异 + 追加 eq_toggle.bin = 0xff+337B 载荷，钉死依据 eq_toggle_image.py/verify_eq_candidate.py），已用合成镜像验证 10 条目解析、差异表形状与假载荷负例咬合；真实载荷摘要校验待真实文件。
+- L2 三镜像差分的数据基础：除 app_area_head/stream.bin 外全部资源可三镜像共享加载；候选差异全部集中在 app.bin 内容 + 追加 eq_toggle.bin。
+- 对比报告：`analysis/image-resources.json`（本机 analysis/，git 忽略，不含路径/私有信息）。
+
 ## 下一步（按 codex 建议）
 
 1. **rep.i 块重复指令**（新前沿 0x6010b14 `rep 4 32 {`）：32 字节多指令体（含 load/store/call），现有 immediate_rep_projection 只支持单 store 体；需要通用块 repeat 执行或针对该形状的显式投影。块内 0x6010b20/0x6010b28/0x6010b30 的 call 目标（0x6010a5e 附近）像字符串/表处理原语，值得先反汇编确认块体语义再决定投影形状。
-2. 补齐每个镜像的资源映射（candidate_view 目前只返回 app+337B payload）。
+2. ~~补齐每个镜像的资源映射~~ 完成：见上节「镜像资源级映射」；EQ 候选文件补齐后重跑即闭合三镜像 diff。
 3. 事件时间推进（暂停点 2 事件时钟；暂停点 1 机制已落，前沿推进后补真实第二次交付观察）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用；P11 接口剩 power_init 内部的纯写寄存器与 0xf20080 拷贝（见上节剩余缺口）。
 5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。

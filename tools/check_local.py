@@ -48,6 +48,7 @@ def main():
     run(sys.executable,'tools/analyze_startup_chain.py','--report','analysis/local-checks/startup-chain.json')
     run(sys.executable,'tools/analyze_cpu_context.py','--report','analysis/local-checks/cpu-context.json')
     run(sys.executable,'tools/analyze_icfg_status.py','--report','analysis/local-checks/icfg-status.json')
+    run(sys.executable,'tools/analyze_image_resources.py','--report','analysis/local-checks/image-resources.json')
     run(sys.executable,'tools/probe_debug_startup.py','--report','analysis/local-checks/debug-startup.json')
     if args.rom:
         run(sys.executable,'tools/probe_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/rom-execution.json')
