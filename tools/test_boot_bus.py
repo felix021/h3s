@@ -201,6 +201,49 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop']['instruction_id'],'if.eq.ri.modimm')
         self.assertEqual(result['stop']['address'],'0x12cb22')
 
+    def test_boot_info_rep_copy_transports_padding_unknowns(self):
+        # 实际 boot_info 头拷贝 0x600a352 rep 4 4(r3=[r2++=4]/[r1++=4]=r3,
+        # 重复 4 次)。源 0x122800 按真机状态部分初始化:byte0=0x10(vm.align,
+        # 启动拷贝例程 0x60664ee 写入)、word1=0x1da000(vm.vm_saddr)与
+        # word3=0x4000(vm.vm_size)(VM init 0x6011102/08 写入),bytes 1-3
+        # (vm_info 的 C 对齐 padding)与 8-11(vm_res 保留字段)无任何写入者。
+        # 开 rep_copy_unknown_transport 后:已知字节照搬、未知字节按来源运输
+        # (不臆造数值),1 步 rep.i + 4×2 步体 = 9 步,r3 末值为已知的
+        # vm_size,r1/r2 各 +16。
+        h=self.handoff();src,dst=0x122800,0x124f00
+        h['seeds'] += [(src,b'\x10'),(src+4,struct.pack('<I',0x1da000)),
+                       (src+12,struct.pack('<I',0x4000))]
+        h['snapshots'].append(('boot_info_copy_dst',dst,16))
+        regs=[0]*16;regs[1]=dst;regs[2]=src
+        result=explore(self.module,self.app,name='rep_copy_transport',handoff=h,
+            diagnostics={'entry_pc':0x0600a352,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'immediate_rep_multi_block':True,
+                         'rep_copy_unknown_transport':True},budget=9)
+        self.assertEqual(result['completed_steps'],9)
+        self.assertEqual(result['stop_pc'],'0x600a358')
+        self.assertEqual(result['last_registers']['r'][1],hex(dst+16))
+        self.assertEqual(result['last_registers']['r'][2],hex(src+16))
+        self.assertEqual(result['last_registers']['r'][3],hex(0x4000))
+        self.assertEqual(result['memory_snapshots']['boot_info_copy_dst']['bytes_with_unknowns'],
+                         '10??????'+'00a01d00'+'????????'+'00400000')
+        self.assertEqual(result['instruction_adapters'].get('rep_copy_unknown_transport_load'),2)
+        self.assertEqual(result['instruction_adapters'].get('rep_copy_unknown_transport_store'),2)
+
+    def test_boot_info_rep_copy_transport_stays_opt_in(self):
+        # 同一指令不开 rep_copy_unknown_transport 时必须诚实停在体首装载的
+        # 未初始化读上(旧前沿 162,615 的精确形状),legacy 行为不变。
+        h=self.handoff();src,dst=0x122800,0x124f00
+        h['seeds'].append((src,b'\x10'))
+        regs=[0]*16;regs[1]=dst;regs[2]=src
+        result=explore(self.module,self.app,name='rep_copy_transport_off',handoff=h,
+            diagnostics={'entry_pc':0x0600a352,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'immediate_rep_multi_block':True},budget=9)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],'0x600a354')
+        self.assertEqual(result['stop'],{'kind':'uninitialized_memory','access':'read',
+            'address':'0x122800','size':4,'region':'qcy_boot_info_destination',
+            'first_missing':'0x122801'})
+
     def test_actual_halfword_repeat_preserves_stack_neighbours(self):
         h=self.handoff();base=0x123702
         h['snapshots'] += [('halfword_repeat',base-2,18)]

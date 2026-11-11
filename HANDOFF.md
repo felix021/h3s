@@ -1,4 +1,4 @@
-# 交接：整机启动仿真推进中（阶段 D 进行，前沿 162,615 步）
+# 交接：整机启动仿真推进中（阶段 D 进行，前沿 162,646 步）
 
 2026-11-11 恢复工作。阶段 A/B/C1 完成，C2（tick 真实触发）与 D 进行中。停止时请更新本文件。
 
@@ -13,9 +13,9 @@
 | irq127_scheduler_entry | 151,500 | 0x12c5ca | unsupported idle（对核 IDLE 边界）|
 | irq127_appcore_roundtrip | 153,430 | 0x12b66a | unmodeled_unmaskable_irq irq125 |
 | irq125_sync_roundtrip | 155,127 | 0x6000f44 | unmapped_or_readonly_write 0xfd3504（CRC 投影关闭时的边界）|
-| **crc_engine_roundtrip** | **162,615** | **0x600a354** | **uninitialized_memory 读 0x122800（qcy_boot_info_destination 半初始化，新边界）** |
+| **crc_engine_roundtrip** | **162,646** | **0x600a374** | **unmapped_or_readonly_write 0xfe0224（SFC 主块 +0x24 未建模，新边界）** |
 
-**162,615 步含义**：CRC wrapper（见 155,127/155,389 旧含义，此处不赘述）之后，CPU0 进入 flash 资源分区表扫描（app 0x6010aea 起）：`r4=表项指针`（RAM 表 0x126560+idx*4，实为 0x06000000 起的 flash 头），`0x6010b14 rep 4 32`（**4 字节体** `ld.bu.pin r2=b[r1++=1]` + `st.b.pin b[r0++=1]=r2` 重复 **32 次**，即 32 字节 memcpy——旧 HANDOFF「32 字节多指令体含 call」读反了编码：rep.i 语法 `rep {b} {n}` 中 b=体字节数（raw×2+2）、n=次数（raw+1），call 在体之外）把 32 字节表项头拷到栈，再 call 0x6010a64 名字匹配器（内含四个 `rep 4 8` 同形状 8 字节拷贝块）比对 app.bin/PRCT/CODE/BTIF/AUTO/ANCIF/ANCIF1 等名字。整条扫描 70 个 rep.i 多指令体全部逐条真实执行（opt-in `immediate_rep_multi_block`）+ 按需挂完整 sfc 明文只读区（0x06000000 头 0x100 资源表 + app 结束后的资源区，默认只映射 ENTRY 起 app 切片）。扫描完成后固件重配 SFC 时钟：0x6010b72-7a 对 0xfd1c00 三次 RMW（已建模时钟门路径），0x6010b88 `st.w [0xfd1c04]=3`（本次建模为只写记录）——之后 168 步停在 0x600a354 `rep 4 4` 体内 `r3=[r2++=4]` 读 0x122800：**qcy_boot_info_destination 区半初始化**（byte0 有值、0x122801 起未初始化），是 RAM 数据流边界而非外设寄存器。谁写了 0x122800 的 byte0、为什么后续字节缺失，是下一路的调查起点。
+**162,646 步含义**：CRC wrapper（见 155,127/155,389 旧含义，此处不赘述）之后，CPU0 进入 flash 资源分区表扫描（app 0x6010aea 起）：`r4=表项指针`（RAM 表 0x126560+idx*4，实为 0x06000000 起的 flash 头），`0x6010b14 rep 4 32`（**4 字节体** `ld.bu.pin r2=b[r1++=1]` + `st.b.pin b[r0++=1]=r2` 重复 **32 次**，即 32 字节 memcpy——旧 HANDOFF「32 字节多指令体含 call」读反了编码：rep.i 语法 `rep {b} {n}` 中 b=体字节数（raw×2+2）、n=次数（raw+1），call 在体之外）把 32 字节表项头拷到栈，再 call 0x6010a64 名字匹配器（内含四个 `rep 4 8` 同形状 8 字节拷贝块）比对 app.bin/PRCT/CODE/BTIF/AUTO/ANCIF/ANCIF1 等名字。整条扫描 70 个 rep.i 多指令体全部逐条真实执行（opt-in `immediate_rep_multi_block`）+ 按需挂完整 sfc 明文只读区（0x06000000 头 0x100 资源表 + app 结束后的资源区，默认只映射 ENTRY 起 app 切片）。扫描完成后固件重配 SFC 时钟：0x6010b72-7a 对 0xfd1c00 三次 RMW（已建模时钟门路径），0x6010b88 `st.w [0xfd1c04]=3`（只写记录，162,615 旧前沿）——随后 VM init（0x6011000）把扫描到的 VM 分区参数写入 qcy_boot_info 0x122800 的 word1/word3（`[r8+4]=vm_saddr=0x1da000`、`[r8+12]=vm_size=0x4000`），并 call 0x600a2aa SFC 配置分发函数（命令 0x40045601），其中 0x600a352 `rep 4 4` 把 boot_info 头 16 字节拷进 r9+4304 结构：**bytes 1-3/8-11 永远无人写**（boot.h 布局见「关键技术事实」：vm_info 的 C 对齐 padding 与 vm_res 保留字段；app 6 处 0x122800 引用全为读/字段拷贝、ROM 无引用），真机上是残留 RAM 垃圾。opt-in `rep_copy_unknown_transport`（本次）让拷贝体按字节来源运输未知（不臆造数值），消费路径只用 vm_saddr（已知），call 0x12C326 算出 VM 区 flash 窗口地址 0x061d7fe0（=0x06000000+0x1da000-0x2020），随后 0x600a374 `st.w [r1+12]=r0`（r1=0xfe0218）写 **0xfe0224** 停——SFC 主块 0xfe0200 的 +0x18/+0x20/+0x24 偏移未建模（后两条是 `[r1+8]=0x7fffffff`、`[r1+0]|=2`），是下一个外设边界。旧 HANDOFF 猜的 r1=0xfe0208（+8/+0x10/+0x14）有误，实际基址 0xfe0218。
 
 ## 已实现（按序，均 opt-in 投影，默认关闭 legacy 报告不变）
 
@@ -28,7 +28,8 @@
 - **SFC 时钟门 + 第二 SFC**（8770401）：0xfd1c00 时钟门投影（只记录置/清、读回严格 unknown）、第二 SFC 0xfe0100（复位态 CON=0 显式假设）。
 - **GPIO OUT 读回按位**（8e5df35）：GpioOutValue 偏字类型，and/or 位操作传递、全字消费（算术/比较/存 RAM）严格停；未写位 unknown 不臆造。
 - **SFC 时钟 +8 / PLL lock 读回**（c3f399e）：0xfd1c08 分频寄存器可写可读（读回=最后写入值，仅在固件写过后返回，不臆造复位值）；0xfd1c00 bit15 读回显式投影为 PLL 已锁定（0x12ba38 轮询证据）。
-- **SFC 时钟 +4 只写记录**（本次，仍挂在 `sfc_clock_gate_projection` 开关下）：0xfd1c04 整字写只记录最后值+次数，读回一律 Blocked。证据（app+ROM 全量反汇编）：app 仅 0x6010b88 `st.w=3`（一次性重配，0x12762c 标志守卫），ROM 仅 0xc198 `st.w=uextra(flash配置字,p:8,l:8)`（前置 `[0xfd1c00]=0x20` 整字存）；两侧都无任何读回，复位值/读回语义无观察，SDK 头文件无位定义——写 3 的含义（时钟源选择/分频字段）显式标注未证实。+0xc/+0x10 仅 ROM 0xae84/0xae86 整字写（`[r4+12]=r3`/`[r4+16]=r2`，串行读时钟配置），app 不触碰，暂不建模。
+- **SFC 时钟 +4 只写记录**（5543138，仍挂在 `sfc_clock_gate_projection` 开关下）：0xfd1c04 整字写只记录最后值+次数，读回一律 Blocked。证据（app+ROM 全量反汇编）：app 仅 0x6010b88 `st.w=3`（一次性重配，0x12762c 标志守卫），ROM 仅 0xc198 `st.w=uextra(flash配置字,p:8,l:8)`（前置 `[0xfd1c00]=0x20` 整字存）；两侧都无任何读回，复位值/读回语义无观察，SDK 头文件无位定义——写 3 的含义（时钟源选择/分频字段）显式标注未证实。+0xc/+0x10 仅 ROM 0xae84/0xae86 整字写（`[r4+12]=r3`/`[r4+16]=r2`，串行读时钟配置），app 不触碰，暂不建模。
+- **rep 拷贝体未知字节运输**（本次，opt-in `rep_copy_unknown_transport`，需 `immediate_rep_multi_block`）：多指令 rep.i 体内的 `ld.w.pin` 装载若跨未写 RAM 字节，构造 UnknownWord（逐字节来源=源物理地址，经 MMU translate），配套 `st.w.pin` 走 `write_abstract_word` 按来源落盘（未知字节保持未知、目标必须是 RAM region）；全已知字照走常规严格路径。语义依据（见「关键技术事实」boot_info 条目）：0x600a352 rep 4 4 拷贝的源 bytes 1-3/8-11 是结构 padding/保留字段，app/ROM 均无写入者，硅上是残留 RAM 垃圾——模型只运输来源、不臆造数值，任何后续消费者仍严格停。负例：不开开关时同指令停在体首装载 uninitialized_memory（=旧 162,615 前沿形状，单测钉死）。默认关闭，legacy 报告不变。
 - **CPU1 PMU_CON0 RMW + kick 唤醒**（前置）：0xffe8c0=CPU1 PMU_CON0（csfr.h q32DSP(1)+0x30*4；0xffe0c0 同位为 CPU0）。含 bit0 的 RMW 与严格写路径等价（实际释放指令 0x60660da 就是 `|=1`）；释放后 bit0 不参与的 or 置位记为 kick 位（0x12b732/0x12c71c 双证据，只置位不回读不清除）。machine 侧 `cpu1_control_kick_wake` 投影：kick 让挂在 idle 的 CPU1 按完成计步并唤醒——「bit3 就是唤醒源」是从握手协议推断的显式假设（SDK 无 PMU_CON0 位定义，硅语义未验证，已写入 report 假设）。
 - **CPU1 irq125 handler 尾部帧弹出 + 对称 RTI**（cb109b3 前一提交）：probe_irq_entry HANDLER_PSR_FRAMES 增加 `0x606633e:'frame12_pop'`（pop.srl m=41，从真实栈弹出 {psr,rets,reti}，字节来源是入口 0x60662c8 frame12_push 写入的交付状态，不臆造）；`br28_machine.SOFTWARE_IRQ_RTI_TAILS=(0x12ade8,0x6066342)` 把对称 RTI 投影（PC=RETI、SP=USP、bank 回写/ICFG 效果仍是假设）推广到 CPU1 的 irq125 handler 尾 0x6066342。RTI 后 CPU1 回到被中断的 idle（0x12c5ca，reti_from_frame=0x12c5ca）并重新停泊。注意：`defer_core1_first_idle` 的 4096 上限在此返回后被重新触发耗尽（CPU1 返回 0x12c5ca 未停泊期间 CPU0 连续发射）——确定性、不改状态，报告 deferred_core1_turns=4096。
 - **硬件 CRC 引擎投影**（1ea2f59，opt-in `hardware_crc_projection`）：`br28_model.HardwareCrcEngine`。访问形状只接受 ROM 0xaa1e 与 app 0x6000f2c 真实用过的：写 +4 种子（≤0xffff）、写 +0 馈一个字节（st.w 载荷≤0xff）、读 +4 结果；复位态未知（未写种子读/馈入停止）、+0 读、超宽载荷、其他偏移一律 Blocked。算法参数按 app 软件 CRC-16 表推导（多项式 0x1021、MSB-first、初值=种子、无输出异或）——功能等价投影，硬件位序/字节序硅上未验证（report 显式记录）。同步模型无 busy 位（固件写数据后 csync 再读）。单测 test_br28_model 对照 app 表逐位/半字节实现 + CRC-16/XMODEM 标准校验值 0x31C3。
@@ -98,7 +99,8 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - 路 F（sim-redeliver，已合并 f842ed4）：repeat_irq_delivery 最小闭环；repeat_inert 场景在 155,127 前沿实测惰性。
 - 路 G（sim-crc，已合并 1ea2f59）：硬件 CRC 引擎 0xfd3500/0xfd3504 建模完成（CRC-16/XMODEM 功能等价，黄金软件参数在断言中重算），旧前沿 155,389。
 - 路 H（sim-repi，已合并 fa1a762）：rep.i 多指令体重复（通用直线体 gate，opt-in）+ flash 资源区只读映射完成，旧前沿 162,447（0x6010b88 写 0xfd1c04）。
-- 路 I（sim-sfc-clk2，本次）：SFC 时钟 0xfd1c04 只写记录完成，前沿 162,615（0x600a354 读半初始化 qcy_boot_info）。
+- 路 I（sim-sfc-clk2，5543138）：SFC 时钟 0xfd1c04 只写记录完成，旧前沿 162,615（0x600a354 读半初始化 qcy_boot_info）。
+- 路 J（sim-bootinfo，本次）：qcy_boot_info 交接读调查完成（byte0=app 启动拷贝例程写的 vm.align；bytes 1-3/8-11 无写入者）+ rep 拷贝体未知字节运输投影，前沿 162,646（0x600a374 写 0xfe0224，SFC 主块 +0x24 未建模）。
 
 ## 镜像资源级映射（sim-resmap，2026-11-11 完成）
 
@@ -112,7 +114,7 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 ## 下一步（按 codex 建议）
 
-1. **qcy_boot_info 半初始化读**（新前沿 0x600a354 `rep 4 4` 体内 `r3=[r2++=4]` 读 0x122800，first_missing 0x122801）：先查谁初始化了 0x122800 的 byte0（RAM 写日志/上游 region 定义「qcy_boot_info_destination」），判断这是固件 bug 形状（半写的结构体）还是模型缺一段搬运（如 ROM/资源表装载未覆盖）。注意 0x600a342-0x600a362 是把 r6 指向的 16 字节头 + 8 字节 double + [r6+24] 拷进 r9+4304 结构的序列，随后 0x600a36e-0x600a37e 写 r1=0xfe0208 块（`[r1+12]=r0`、`[r1+8]=0x7fffffff`、`[r1+0]|=2`，即 SFC 0xfe0200 块 +8/+0x10/+0x14）——那才是再下一个可能的外设边界。
+1. **SFC 主块 0xfe0200 高偏移写**（新前沿 162,646：0x600a374 `st.w [r1+12]=r0` 写 0xfe0224=r1(0xfe0218)+12，值 0x061d7fe0=VM 区 flash 窗口地址；随后 `[r1+8]=0x7fffffff`→0xfe0220、`[r1+0]|=2`→0xfe0218 RMW）：现有 SFCReadBus 只建模 CON(+0)/BAUD(+4)，+0x18/+0x20/+0x24 语义未知（像是 SFC 间接/DMA 窗口配置）。建模前先反汇编 app+ROM 穷举这三个偏移的全部访问形状（同 0xfd1c00 块的做法）。qcy_boot_info 交接读已闭合（见「关键技术事实」boot_info 条目与 `rep_copy_unknown_transport`）。
 2. ~~补齐每个镜像的资源映射~~ 完成：三镜像（官方/b79/EQ 候选）资源级 diff 已闭合，见上节「镜像资源级映射」；rep.i 落地后 flash_image() 只读区可复用于三镜像加载。
 3. 事件时间推进（暂停点 2 事件时钟；暂停点 1 机制已落，前沿推进后补真实第二次交付观察）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用；P11 接口剩 power_init 内部的纯写寄存器与 0xf20080 拷贝（见上节剩余缺口）。
@@ -120,6 +122,19 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 ## 关键技术事实（已钉）
 
+- **qcy_boot_info 40B 结构布局（本次钉死，参考 SDK boot.h + app 反汇编 + 162,646 步动态写记录三方一致）**：0x122800..0x122828 是 SDK `BOOT_INFO`（`interface/system/boot.h`），字段/写入者全图：
+  | 偏移 | 字段 | 写入者 |
+  |---|---|---|
+  | 0 | vm.align=0x10 | app 启动拷贝例程 0x60664ee `b[r1+0]=fs_info[13]`（flash_head.align，非 FlashSize）|
+  | 1-3 | vm_info C 对齐 padding | **无任何写入者**（残留 RAM）|
+  | 4-7 | vm.vm_saddr=0x1da000 | VM init 0x6011102（资源表扫描结果）|
+  | 8-11 | vm.vm_res（保留，注释 reverse_bytes）| **无任何写入者** |
+  | 12-15 | vm.vm_size=0x4000 | VM init 0x6011108 |
+  | 16-23 | sfc{0x2020,0x06000000} | 0x60664e2 `d[r1+16]=handoff+4..12`（BOOT_DEVICE_INFO.sfc）|
+  | 24-27 | flash_size=0x1ff000 | 0x60664ea `[r1+24]=fs_info+8`（flash_head.FlashSize）|
+  | 28-31 | chip_id+trim | 0x60664f2/f6（handoff+12..16）|
+  | 32-39 | bt_mac_addr[8] | 0x60664fc（handoff+16..24）|
+  写入侧结论：**ROM 完全不碰 0x122800**（字节级常量搜索 0 命中；页表 memset 0x120000..0x122800 恰好止于其前）；app 6 处引用（0x6000f9c/0x6011016/0x6060a8a/0x6065e76/0x60664dc/0x60c1b14）中只有 0x60664dc（拷贝例程）与 0x6011016（VM init）两处写，其余是读（getter 0x6065e76 返回 sfc_base_addr、0x60c1b14 读 vm_saddr、0x6060aa8 读 vm.align 选 flash 参数、0x6000fa6 读 chip_id）。真机上该结构由 app 自己从 r0 交接对象（ROM 写的 BOOT_DEVICE_INFO，模型里是 0x19fd00 typed fixture）拷贝填充——「ROM/更新器直接写 0x122800」的旧猜测不成立。消费函数 0x600a2aa（SFC 配置分发，命令 0x40045601）只消费 vm_saddr：0x600a352 rep 4 4 拷头 16B、`d[r6+16]`/`[r6+24]` 拷 sfc/flash_size 到 r9+4304 结构，随后只用 dest+24（=vm_saddr）call 0x12C326 算 flash 窗口地址（CPU 可见地址=sfc 基 0x06000000+flash 偏移-0x2020 头），padding/vm_res 拷过去即死。
 - **rep.i 编码（本次钉死）**：语法 `rep {b} {n} {`，解码后 b=体字节数（raw×2+2，即体必为偶数字节）、n=重复次数（raw+1，5 位字段最大 32）；固件用法全是小体多次（rep 4 32=4 字节体×32 次、rep 4 8=4 字节体×8 次），体=ld.bu.pin+st.b.pin 字节 memcpy。上游 v3 硬件模型按「次数×整个体」计总效果，与逐条真实执行一致；体内控制流的 REP 语义无硬件捕获证据，多指令体 gate 一律拒绝。0x12cb12 rep 24 2（24 字节体含 if 块）仍由 irq_repeat_return 特例单独处理。
 - **flash 资源布局（本次钉死）**：sfc 明文 0x06000000 起——头 0x100 字节=资源分区表（首 0x20 超级头：magic 0x937d3328、0x06000100 入口指针；其后 32 字节定长项、尾 16 字节名字段：app.bin/PRCT/CODE/BTIF/AUTO/ANCIF/ANCIF1，项内含 flash 偏移/crc 字段，精确结构待与 extract_ufw_resources 的 jlfw.yaml 对照）；0x06000100 起=app 切片（842654 字节，至 0x060CDA26）；其后=资源区（ANCIF 等，含 0x060e3074 r2 payload）。启动扫描：RAM 表 0x126560+idx*4 给出 flash 指针，0x6010b14 rep 4 32 拷 32 字节表项头到栈、call 0x6010a64 名字匹配（大小写不敏感，内含 4 个 rep 4 8 拷 8 字节）。
 - IPMASK 物理地址 0xFFE168+cnum*0x800；模型常量 0xffe1a8 是另一路径，都更新 IRQController.ipmask。

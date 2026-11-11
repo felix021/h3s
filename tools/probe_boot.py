@@ -738,11 +738,43 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 op=module.check.operands(insn,raw);address=self.R[op['b']]
                 width={'st.w.pin':4,'st.h.pin':2,'st.b.pin':1}[insn.id]
                 require(address%width==0,'unaligned postincrement store')
-                value=self.R[op['d']]&((1<<(width*8))-1)
+                source=self.R[op['d']]
+                if (isinstance(source,UnknownWord) and diagnostics.get('rep_copy_unknown_transport') and
+                        self.repeat is not None and self.repeat.get('multi_block')):
+                    # rep 拷贝体的未知字节回存:已知字节落盘、未知字节带来源保持
+                    # 未知(与装载侧 rep_copy_unknown_transport 配对,不臆造数值)。
+                    self.mem.write_abstract_word(address&0xffffffff,source)
+                    self.R[op['b']]=(address+op['n'])&0xffffffff
+                    self.finish_exact(self.pc+size);adapters['rep_copy_unknown_transport_store']+=1
+                    return
+                value=source&((1<<(width*8))-1)
                 self.mem.write(address&0xffffffff,value.to_bytes(width,'little'))
                 self.R[op['b']]=(address+op['n'])&0xffffffff
                 self.finish_exact(self.pc+size);adapters['exact_postincrement_store']+=1
                 return
+            if (diagnostics and diagnostics.get('rep_copy_unknown_transport') and insn.id=='ld.w.pin' and
+                    self.repeat is not None and self.repeat.get('multi_block')):
+                # rep 拷贝体装载(证据形状:0x600a352 rep 4 4 体 r3=[r2++=4]/
+                # [r1++=4]=r3,源是 qcy_boot_info 0x122800)。boot_info 的 bytes
+                # 1-3(vm_info 内 u8 align 后的 C 对齐 padding)与 8-11(vm_res,
+                # boot.h 注释 reverse_bytes 保留字段)在 app/ROM 里没有任何写
+                # 入者——真机上是残留 RAM 垃圾。模型不臆造数值:跨未写 RAM 字节
+                # 的字装载构造 UnknownWord(逐字节来源=源地址),交给存储侧按来
+                # 源运输;任何后续消费者仍严格停。
+                op=module.check.operands(insn,raw);address=self.R[op['b']]&0xffffffff
+                physical=(hardware.mmu.translate(address,4,self.mem.read)
+                          if hardware is not None and hardware.mmu is not None else address)
+                region=self.mem.region(physical,4)
+                values=[self.mem.ram.get(physical+i) for i in range(4)] if region else None
+                if (region and address%4==0 and physical not in self.mem.icfg_spills and
+                        any(v is None for v in values)):
+                    origins=[physical+i if v is None else None for i,v in enumerate(values)]
+                    self.R[op['d']]=UnknownWord(values,origins)
+                    self.R[op['b']]=(address+op['n'])&0xffffffff
+                    event({'access':'abstract-read','address':hex(physical),'size':4,'region':region,
+                           'bytes_with_unknowns':''.join('??' if v is None else f'{v:02x}' for v in values)})
+                    self.finish_exact(self.pc+size);adapters['rep_copy_unknown_transport_load']+=1
+                    return
             if diagnostics and diagnostics.get('exact_subword_stores') and insn.id in (
                     'st.h','st.b','st.h.l','st.b.l','st.h.sp','st.b.sp','st.h.sp.l','st.b.sp.l'):
                 op=module.check.operands(insn,raw)
@@ -1185,7 +1217,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     covered+=inner_size;walk+=inner_size
                 if covered!=op['b']:
                     raise Blocked('rep_multi_block_body_unaligned',body_bytes=op['b'],covered=covered)
-                self.repeat={'start':self.pc+size,'end':self.pc+size+op['b'],'register':None,'remaining':op['n']}
+                self.repeat={'start':self.pc+size,'end':self.pc+size+op['b'],'register':None,
+                             'remaining':op['n'],'multi_block':True}
                 self.pc+=size;self.steps+=1;adapters['immediate_rep_multi_block_projection']+=1
                 return
             # Context-specific control models must never pretend to be hardware.

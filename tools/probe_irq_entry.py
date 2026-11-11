@@ -43,7 +43,8 @@ SFC_RESUME_OPERATIONS=(
 
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
-             repeat=False,hardware_crc=False,rep_block=False,flash_image_bytes=None,readonly=()):
+             repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
+             flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -59,8 +60,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if hardware_crc:options['hardware_crc_projection']=True
     # rep_block:opt-in 的多指令 rep.i 体执行(0x6010b14 rep 4 32 字节拷贝,
     # 及其 callee 0x6010a64 内的四个 rep 4 8)。默认关闭,legacy 报告不变。
+    # rep_unknown_transport:opt-in 的 rep 拷贝体未知字节运输(0x600a352 rep 4 4
+    # 从 qcy_boot_info 0x122800 拷 16 字节,其中 bytes 1-3/8-11 是 boot.h 里
+    # vm_info 的 C 对齐 padding 与 vm_res 保留字段,app/ROM 均无写入者,真机
+    # 为残留 RAM 垃圾;模型按字节来源运输未知,不臆造数值)。默认关闭。
     extra={'software_irq_frames':dict(HANDLER_PSR_FRAMES)} if entry else {}
     if rep_block:extra['immediate_rep_multi_block']=True
+    if rep_unknown_transport:extra['rep_copy_unknown_transport']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -255,24 +261,31 @@ def check(report):
     # 0x6010b14 rep 4 32(4 字节体 ld.bu.pin+st.b.pin × 32,flash 资源表头部
     # 32 字节拷贝)及其后整条资源表扫描(含 callee 0x6010a64 内四个 rep 4 8)
     # 全部按多指令体真实执行:70 个 rep.i 体、155,389→162,447 步;扫描完成后
-    # 的一次性 SFC 时钟重配(0x12762c 标志守卫)写 0xfd1c04=3——+4 已按只写
-    # 记录建模(app 0x6010b88 与 ROM 0xc198 两侧都只整字写、从不读回),前沿
-    # 推进到 162,615 步,停在 0x600a354 rep 4 4 体内读半初始化的
-    # qcy_boot_info 目标区 0x122800(byte0 有值、byte1 起未初始化)——下一个
-    # 独立边界是 RAM 数据流,不再是 SFC 时钟寄存器。
-    require(r['stop_core']==0 and r['stop_pc']=='0x600a354' and
-            r['stop']=={'kind':'uninitialized_memory','access':'read','address':'0x122800',
-                        'size':4,'region':'qcy_boot_info_destination','first_missing':'0x122801'},
-            'after the SFC clock select write the stop must be the uninitialized boot-info read')
-    require(r['completed_steps']==162615,'the SFC clock select projection changed its step count')
+    # 的一次性 SFC 时钟重配(0x12762c 标志守卫)写 0xfd1c04=3(+4 只写记录)。
+    # 之后 0x600a352 rep 4 4 从 qcy_boot_info 0x122800 拷 16 字节头:bytes
+    # 1-3/8-11 无任何写入者(boot.h vm_info 的 C padding 与 vm_res),按
+    # rep_copy_unknown_transport 运输未知字节;消费函数 0x600a2aa 只用
+    # vm_saddr(word 4-7,VM init 0x6011102 写入的 0x1da000),call 0x12C326
+    # 算出 VM 区窗口地址 0x061d7fe0(=0x06000000+0x1da000-0x2020)。前沿推进
+    # 到 162,646 步,停在 0x600a374 st.w [r1+12]=r0 写 0xfe0224——SFC 主块
+    # 0xfe0200 的 +0x24 偏移(r1=0xfe0218)未建模,是下一个外设边界。
+    require(r['stop_core']==0 and r['stop_pc']=='0x600a374' and
+            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xfe0224',
+                        'size':4,'value_bytes':'e07f1d06'},
+            'after the boot-info copy the stop must be the unmodeled SFC window write')
+    require(r['completed_steps']==162646,'the boot-info copy transport changed its step count')
     gate=r['peripherals']['sfc_clock_gate_projection']
     require(gate['select']=='0x3' and gate['select_writes']==1 and
             gate['select_write_only'] is True and gate['select_readback_observed'] is False,
             'the SFC clock +4 select write-only record differs')
-    # 70 个体来自资源表扫描,第 71 个是新前沿 0x600a352 rep 4 4(拷 16 字节
-    # boot_info 头),停在其体内第一条装载指令上(半初始化源)。
+    # 70 个体来自资源表扫描,第 71 个是 0x600a352 rep 4 4(拷 16 字节 boot_info
+    # 头);其中第 1/3 轮(word0 含 padding、word2 是 vm_res)走未知字节运输,
+    # 第 2/4 轮(vm_saddr/vm_size 全已知)走常规严格读。
     require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==71,
             'the flash resource-table scan must execute its rep.i blocks through the multi-block projection')
+    require(r['instruction_adapters'].get('rep_copy_unknown_transport_load')==2 and
+            r['instruction_adapters'].get('rep_copy_unknown_transport_store')==2,
+            'the boot-info padding/reserved words were not transported exactly twice')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -318,7 +331,7 @@ def main():
                      irq_case(module,app,header,rom,'crc_engine_roundtrip',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
-                              rep_block=True,flash_image_bytes=image)]}
+                              rep_block=True,rep_unknown_transport=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
