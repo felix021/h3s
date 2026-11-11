@@ -40,6 +40,7 @@ CORE_PMU_CON1=(0xffe0c4,0xffe8c4)
 SFC_BASE=0xfe0200
 SFC_SECONDARY_BASE=0xfe0100
 SFC_CLOCK_GATE=0xfd1c00  # RMW'd by the SFC suspend tail; register name not in the reference SDK headers
+CRC_ENGINE=0xfd3500  # 硬件 CRC 引擎;寄存器名不在 reference SDK 头文件,语义由 ROM 0xaa1e 与 app 0x6000f2c 的真实用法钉死
 SDTAP_CON=0xff0100
 PSRAM_CON0=0xfe0300
 IOMAP_CON0=0xfd6014
@@ -242,6 +243,72 @@ class SfcClockGateProjection:
                 'divider':None if self.divider is None else hex(self.divider),
                 'divider_readback_is_last_write':True,'divider_writes':self.divider_writes,
                 'reads':self.reads,'reset_value_measured':False}
+
+
+class HardwareCrcEngine:
+    """opt-in 硬件 CRC 引擎功能等价投影(0xfd3500 块)。
+
+    访问形状只接受固件真实用过的两种,ROM 0xaa1e(USB transform)与 app 0x6000f2c
+    (CRC wrapper 硬件路径)用法一致:写 +4 装载种子(st.w,载荷<=16 位)、写 +0 馈入
+    一个数据单位(st.w,载荷<=0xff,即一个字节)、读 +4 取当前 CRC。固件在写完数据后
+    csync 再读结果(ROM 0xaa46、app 0x6000f50),同步模型无需 busy 位。复位状态
+    未知:未写种子就读或馈入一律停止,不臆造复位种子。
+
+    算法参数按 app 的软件 CRC-16 半字节表实现推导(表在 app 0x060a860c,16 项,
+    entry[i]=i*0x1021,GF(2) 乘法):多项式 0x1021(x^16+x^12+x^5+1)、MSB-first 左移、
+    初值=所写种子、无输出异或/反射。app wrapper 0x6000f0c 在软件/硬件两条路径间
+    选择且共用同一初值 0(软件路径 r2=0 ↔ 硬件路径种子 0),固件设计意图即两者功能
+    等价;本投影按软件参数实现,硬件位序/字节序若有差异以软件等价为准,silicon 未验证。
+    """
+
+    POLYNOMIAL=0x1021
+
+    def __init__(self):
+        self.crc=None;self.seed_writes=[];self.feeds=0;self.result_reads=[]
+
+    def handles(self,address):
+        return address in (CRC_ENGINE,CRC_ENGINE+4)
+
+    def _feed(self,crc,byte):
+        crc^=byte<<8
+        for _ in range(8):
+            crc=((crc<<1)^self.POLYNOMIAL)&0xffff if crc&0x8000 else (crc<<1)&0xffff
+        return crc
+
+    def read(self,address):
+        if address==CRC_ENGINE:raise Blocked('crc_data_port_read_not_modeled',address=hex(address))
+        if self.crc is None:raise Blocked('unknown_crc_engine_reset_state',address=hex(address))
+        self.result_reads.append(self.crc)
+        return self.crc
+
+    def write(self,address,value):
+        if address==CRC_ENGINE+4:
+            if value>0xffff:raise Blocked('crc_seed_width_not_modeled',value=hex(value))
+            self.crc=value;self.seed_writes.append(value)
+            if len(self.seed_writes)>32:self.seed_writes.pop(16)
+            return
+        if address!=CRC_ENGINE:raise Blocked('crc_register_not_modeled',address=hex(address))
+        if value>0xff:raise Blocked('crc_feed_width_not_modeled',value=hex(value))
+        if self.crc is None:raise Blocked('crc_feed_before_seed_unknown')
+        self.crc=self._feed(self.crc,value);self.feeds+=1
+
+    def report(self):
+        return {'address':hex(CRC_ENGINE),
+                'algorithm':{'polynomial':hex(self.POLYNOMIAL),
+                    'bit_order':'MSB-first (left shift)','initial_value':'the written seed',
+                    'xor_out':None,'reflected':False},
+                'algorithm_evidence':('app software CRC-16 nibble table at 0x060a860c (16 entries, '
+                    'entry[i]=i*0x1021 extracted from app bytes); wrapper 0x6000f0c selects between '
+                    'software and hardware paths with the shared initial value 0'),
+                'access_shapes':{'0xfd3500':'write one byte (st.w payload <=0xff) feeds one unit',
+                                 '0xfd3504':'write seed (<=0xffff); read returns the current CRC'},
+                'seed_writes':[hex(v) for v in self.seed_writes],'fed_bytes':self.feeds,
+                'result_reads':[hex(v) for v in self.result_reads],
+                'reset_value_measured':False,
+                'hardware_bit_or_byte_order_silicon_verified':False,
+                'synchronous_no_busy_bit':'firmware csyncs after the last feed (ROM 0xaa46, app 0x6000f50) before reading +4',
+                'functional_equivalence_projection':('results follow the app software CRC-16 table; if the hardware '
+                    'engine differs in bit/byte order the software equivalence is the contract, silicon unverified')}
 
 
 class IcuInitializationProjection:
@@ -857,6 +924,7 @@ class BR28Model:
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
+                 hardware_crc_projection=False,
                  core_tick_progress=None,core_tick_count_while_held=None,
                  port_initialization_projection=False,port_input_words=None,initial_usb_io_word=None,
                  debug_execution_projection=False,initial_debug_controls=None,
@@ -925,6 +993,7 @@ class BR28Model:
         if secondary_sfc_read_bus and not sfc_read_bus:raise ValueError('secondary SFC requires the primary SFC read bus')
         self.sfc_secondary=SFCReadBus(initial_secondary_sfc_control,SFC_SECONDARY_BASE) if secondary_sfc_read_bus else None
         self.sfc_clock=SfcClockGateProjection() if sfc_clock_gate_projection else None
+        self.crc_engine=HardwareCrcEngine() if hardware_crc_projection else None
         self.debug=DebugExecutionProjection(initial_debug_controls) if debug_execution_projection else None
         self.reset=ResetHistoryProjection(reset_history_words) if reset_history_projection else None
         self.mpu=MPUConfigurationProjection(initial_mpu_write_gate) if mpu_configuration_projection else None
@@ -965,6 +1034,7 @@ class BR28Model:
             (self.cache_status_probe and address in CACHE_STATUS_REGISTERS) or
             (self.sfc is not None and address in (SFC_BASE,SFC_BASE+4)) or
             (self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4)) or
+            (self.crc_engine is not None and self.crc_engine.handles(address)) or
             self.handles_sfc_clock(address) or
             self.handles_sfc_clock_divider(address) or
             address in self.additional_configuration or
@@ -1093,6 +1163,7 @@ class BR28Model:
             return self.cache_status_words[address]
         if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):return self.sfc.read(address)
         if self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4):return self.sfc_secondary.read(address)
+        if self.crc_engine is not None and self.crc_engine.handles(address):return self.crc_engine.read(address)
         if self.handles_sfc_clock(address) or self.handles_sfc_clock_divider(address):return self.sfc_clock.read(address)
         if self.cpu1_held_projection and address==CPU1_CONTROL:
             if self.cpu1_control is None:raise Blocked('unknown_initial_cpu1_control')
@@ -1147,6 +1218,7 @@ class BR28Model:
         if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
         if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):self.sfc.write(address,value)
         elif self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4):self.sfc_secondary.write(address,value)
+        elif self.crc_engine is not None and self.crc_engine.handles(address):self.crc_engine.write(address,value)
         elif self.handles_sfc_clock(address):raise Blocked('sfc_clock_gate_full_store_not_modeled',address=hex(address))
         elif self.handles_sfc_clock_divider(address):self.sfc_clock.write_divider(value)
         elif self.cpu1_held_projection and address==CPU1_CONTROL:
@@ -1394,6 +1466,7 @@ class BR28Model:
             result['assumptions']['cache_contents_and_coherence_simulated']=False
         if self.sfc is not None:result['sfc_read_bus']=self.sfc.report()
         if self.sfc_secondary is not None:result['sfc_read_bus_secondary']=self.sfc_secondary.report()
+        if self.crc_engine is not None:result['hardware_crc_projection']=self.crc_engine.report()
         if self.sfc_clock is not None:result['sfc_clock_gate_projection']=self.sfc_clock.report()
         if self.icu is not None:result['icu_initialization_projection']=self.icu.report()
         if self.software_irq is not None:result['software_irq_commands']=self.software_irq.report()

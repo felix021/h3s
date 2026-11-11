@@ -6,6 +6,7 @@ from probe_boot import Blocked
 from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV
+from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SDTAP_CON, PSRAM_CON0, IOMAP_CON0, USB_IO_CON0, USB_DISABLE_REGISTERS
 from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection, RESET_CONFIG_MASKS
 from br28_model import MPUConfigurationProjection, GpioOutValue
@@ -440,6 +441,55 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(Blocked):h.lock(True)
         h.lock(False);self.assertIsNone(h.lock_owner)
         with self.assertRaises(Blocked):h.lock(False)
+
+    def test_hardware_crc_engine_matches_the_app_software_table(self):
+        # app 0x060a860c 的 16 项半字节表(直接从 app 字节提取,entry[i]=i*0x1021):
+        # 多项式 0x1021、MSB-first 左移、初值=种子、无输出异或。ROM 0xaa1e 与
+        # app 0x6000f2c 的访问形状一致:写+4 种子、写+0 馈字节、csync 后读+4。
+        APP_TABLE=(0x0000,0x1021,0x2042,0x3063,0x4084,0x50a5,0x60c6,0x70e7,
+                   0x8108,0x9129,0xa14a,0xb16b,0xc18c,0xd1ad,0xe1ce,0xf1ef)
+        def software_table_crc(seed,data):
+            crc=seed
+            for byte in data:
+                for nibble in (byte>>4,byte&15):
+                    crc=((crc<<4)&0xffff)^APP_TABLE[(crc>>12)^nibble]
+            return crc
+        def engine_crc(seed,data):
+            engine=HardwareCrcEngine()
+            engine.write(CRC_ENGINE+4,seed)
+            for byte in data:engine.write(CRC_ENGINE,byte)
+            return engine.read(CRC_ENGINE+4)
+        self.assertEqual(engine_crc(0,b'123456789'),0x31c3)  # CRC-16/XMODEM check value
+        rom_shape=b'\xff\xff'+bytes.fromhex('c3cfc0e8ced2b0aec4e3a3acd3f1c1')
+        for seed,data in ((0,b'123456789'),(0xffff,rom_shape),(0xb00b,b'\x00'),
+                          (0x1234,bytes(range(64))),(0xd97f,b'')):
+            with self.subTest(seed=hex(seed),length=len(data)):
+                self.assertEqual(engine_crc(seed,data),software_table_crc(seed,data))
+
+    def test_hardware_crc_keeps_reset_unknown_and_observed_shapes_only(self):
+        engine=HardwareCrcEngine()
+        with self.assertRaisesRegex(Blocked,'unknown_crc_engine_reset_state'):engine.read(CRC_ENGINE+4)
+        with self.assertRaisesRegex(Blocked,'crc_feed_before_seed'):engine.write(CRC_ENGINE,0)
+        engine.write(CRC_ENGINE+4,0xffff)
+        with self.assertRaisesRegex(Blocked,'crc_seed_width'):engine.write(CRC_ENGINE+4,0x10000)
+        with self.assertRaisesRegex(Blocked,'crc_feed_width'):engine.write(CRC_ENGINE,0x100)
+        self.assertEqual(engine.read(CRC_ENGINE+4),0xffff)  # seed reads back before any feed
+        with self.assertRaisesRegex(Blocked,'crc_data_port_read'):engine.read(CRC_ENGINE)
+        engine.write(CRC_ENGINE,0)
+        with self.assertRaisesRegex(Blocked,'crc_register_not_modeled'):engine.write(CRC_ENGINE+8,0)
+
+    def test_hardware_crc_is_opt_in_and_routed(self):
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):BR28Model().write(CRC_ENGINE+4,0)
+        self.assertFalse(BR28Model().handles(CRC_ENGINE+4,4))
+        model=BR28Model(hardware_crc_projection=True)
+        model.write(CRC_ENGINE+4,0);model.write(CRC_ENGINE,0x31)
+        self.assertEqual(model.read(CRC_ENGINE+4),0x2672)
+        report=model.report()['hardware_crc_projection']
+        self.assertEqual(report['seed_writes'],['0x0'])
+        self.assertEqual(report['fed_bytes'],1)
+        self.assertEqual(report['result_reads'],['0x2672'])
+        self.assertFalse(report['reset_value_measured'])
+        self.assertFalse(report['hardware_bit_or_byte_order_silicon_verified'])
 
 
 if __name__=='__main__':unittest.main()
