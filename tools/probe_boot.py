@@ -799,6 +799,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         hardware.gpcnt_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['gpcnt_unknown_preserving_cleanup_rmw']+=1
                         return
+                    if hardware.handles_sfc_clock(address):
+                        if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
+                        else:raise Blocked('sfc_clock_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.sfc_clock_rmw(address,kind,operand)
+                        self.finish_exact(self.pc+size);adapters['sfc_clock_gate_rmw']+=1
+                        return
                     if hardware.handles_core_tick(address):
                         # Handler ACK |=0x40 (bit6 W1C clear-pending) on CON.
                         # Only the RMW form is modeled; a full-word CON store

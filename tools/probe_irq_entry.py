@@ -24,7 +24,7 @@ HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0
 
 
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
-             unmaskable=False,readonly=()):
+             unmaskable=False,sfc_suspend=False,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -34,6 +34,15 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     options={'initial_software_irq_pending':(0,0)}
     if entry:options['software_irq_delivery_requests']=True
     if unmaskable:options['unmaskable_irq_projection']=True
+    if sfc_suspend:
+        # The SFC suspend tail sets 0xfd1c00|=1 (write-only RMW projection) and
+        # then the wrapper reads the second SFC 0xfe0100 CON. The second SFC is
+        # never referenced by the ROM (byte search) and the H3S boots from a
+        # single 2MiB flash on 0xfe0200, so 0xfe0100 stays at its reset state;
+        # CON=0 is an explicit, unmeasured reset assumption, not a default.
+        options['sfc_clock_gate_projection']=True
+        options['secondary_sfc_read_bus']=True
+        options['initial_secondary_sfc_control']=0
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=250000,
                      extra_diagnostics={'software_irq_frames':dict(HANDLER_PSR_FRAMES)} if entry else None)
@@ -122,10 +131,18 @@ def check(report):
     gpio=r['peripherals']['gpio'].get('0xfd5308')
     require(gpio=={'known_value':'0x60','known_mask':'0x68'},
             'the register-AND must clear the known bit3 and leave the masked-out bit0 unknown')
-    require(r['stop_core']==0 and r['stop_pc']=='0x12b910' and
-            r['stop']['kind']=='unmapped_memory' and r['stop']['address']=='0xfd1c00',
-            'after the sync handshake and SFC suspend the stop must be the next unmodeled MMIO register')
-    require(r['completed_steps']>153430,'the CPU0 busy-wait did not resume after the CPU1 ack')
+    require(r['stop_core']==0 and r['stop_pc']=='0x12ba02' and
+            r['stop']['kind']=='uninitialized_gpio_bits' and r['stop']['address']=='0xfd5300' and
+            r['stop']['known_mask']=='0x8',
+            'after the sync handshake and SFC suspend the stop must be the next GPIO read with unknown bits')
+    require(r['completed_steps']==153609,'the CPU0 SFC suspend path changed its step count')
+    require(r['peripherals']['sfc_clock_gate_projection']['operations']==
+            [{'kind':'or','operand':'0x1'}],
+            'the SFC suspend tail did not record its single |=1 clock-gate write')
+    require(r['peripherals']['sfc_read_bus_secondary']['con']==0 and
+            r['peripherals']['sfc_read_bus_secondary']['writes']==0 and
+            r['peripherals']['sfc_read_bus_secondary']['initial_control_fixture']==0,
+            'the second SFC (0xfe0100) reset-state fixture or write count differs')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -155,7 +172,7 @@ def main():
                      irq_case(module,app,header,rom,'irq127_appcore_roundtrip',
                               entry=True,banks=True,idle_wait=True,rti=True),
                      irq_case(module,app,header,rom,'irq125_sync_roundtrip',
-                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True)]}
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,sfc_suspend=True)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

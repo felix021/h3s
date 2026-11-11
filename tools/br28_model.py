@@ -37,6 +37,8 @@ CACHE_STATUS_REGISTERS=(0xff0500,0xffe400,0xffec00)
 ICU_BASES=(0xffe400,0xffec00)
 CORE_PMU_CON1=(0xffe0c4,0xffe8c4)
 SFC_BASE=0xfe0200
+SFC_SECONDARY_BASE=0xfe0100
+SFC_CLOCK_GATE=0xfd1c00  # RMW'd by the SFC suspend tail; register name not in the reference SDK headers
 SDTAP_CON=0xff0100
 PSRAM_CON0=0xfe0300
 IOMAP_CON0=0xfd6014
@@ -156,10 +158,11 @@ class SFCReadBus:
 
     Transactions are synchronous. No SPI waveform/cache coherence/timing claim.
     """
-    def __init__(self,initial_con=None):
+    def __init__(self,initial_con=None,base=SFC_BASE):
         if initial_con is not None and (not isinstance(initial_con,int) or initial_con&~0xf00001):
             raise ValueError('unsupported initial SFC mode')
-        self.initial_con=initial_con;self.con=initial_con;self.baud=None;self.writes=0
+        if base not in (SFC_BASE,SFC_SECONDARY_BASE):raise ValueError('unsupported SFC base')
+        self.initial_con=initial_con;self.con=initial_con;self.baud=None;self.writes=0;self.base=base
 
     def check_flash_access(self,address):
         if not 0x06000000<=address<0x08000000:return
@@ -167,15 +170,15 @@ class SFCReadBus:
         if not self.con&1:raise Blocked('sfc_disabled_flash_access',address=hex(address))
 
     def read(self,address):
-        value=self.con if address==SFC_BASE else self.baud
+        value=self.con if address==self.base else self.baud
         if value is None:raise Blocked('unknown_sfc_configuration',address=hex(address))
         return value  # bit31 busy=0: no queued transaction in this synchronous model
 
     def write(self,address,value):
-        if address==SFC_BASE:
+        if address==self.base:
             if value&~0xf00001:raise Blocked('sfc_mode_not_modeled',value=hex(value))
             self.con=value
-        elif address==SFC_BASE+4:
+        elif address==self.base+4:
             if self.con is None:raise Blocked('unknown_sfc_enable_state')
             # The suspend path (0x12b890/0x12b970) writes baud=0 while enabled
             # to stop the clock and only then clears CON bit0; a nonzero rate
@@ -187,9 +190,36 @@ class SFCReadBus:
         self.writes+=1
 
     def report(self):
-        return {'initial_control_fixture':self.initial_con,'con':self.con,'baud':self.baud,'writes':self.writes,
+        return {'base':hex(self.base),'initial_control_fixture':self.initial_con,'con':self.con,'baud':self.baud,'writes':self.writes,
                 'busy_projection':'zero outstanding transactions; synchronous decoded-Flash memory',
                 'flash_fetch_and_data_access_require_enable':True,'spi_or_cache_timing_simulated':False}
+
+
+class SfcClockGateProjection:
+    """Write-only RMW projection for 0xfd1c00; identity is unconfirmed.
+
+    The SFC suspend tail (0x12b910) sets bit0; the ROM's clock/PLL code RMWs
+    bits 0/3/8/12/14 and full-stores 0x20 with a +4..+16 register block, which
+    is consistent with a clock/PLL control but its name is not in the reference
+    SDK headers. Observed set/clear writes are recorded bitwise; a read-back is
+    never fabricated, so any guest read of this register still stops unknown.
+    """
+    def __init__(self):
+        self.bits=PartialWord();self.operations=[]
+
+    def rmw(self,kind,operand):
+        if kind not in ('or','and'):raise Blocked('sfc_clock_gate_rmw_form_not_modeled',operation=kind)
+        self.bits.apply(kind,operand)
+        self.operations.append((kind,operand&0xffffffff))
+
+    def read(self):
+        raise Blocked('unknown_sfc_clock_gate_configuration',known_mask=hex(self.bits.known))
+
+    def report(self):
+        return {'known_value':hex(self.bits.value),'known_mask':hex(self.bits.known),
+                'operations':[{'kind':k,'operand':hex(v)} for k,v in self.operations],
+                'address':hex(SFC_CLOCK_GATE),'identity':'register name not in reference SDK headers;待确认',
+                'readback_modeled':False,'reset_value_measured':False}
 
 
 class IcuInitializationProjection:
@@ -748,6 +778,7 @@ class BR28Model:
                  cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
+                 secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  core_tick_progress=None,core_tick_count_while_held=None,
                  port_initialization_projection=False,port_input_words=None,initial_usb_io_word=None,
                  debug_execution_projection=False,initial_debug_controls=None,
@@ -812,6 +843,9 @@ class BR28Model:
                for address,value in self.cache_status_words.items()):raise ValueError('invalid explicit cache status fixture')
         self.icu=IcuInitializationProjection({a:v for a,v in self.cache_status_words.items() if a in ICU_BASES},icu_command_steps) if icu_initialization_projection else None
         self.sfc=SFCReadBus(initial_sfc_control) if sfc_read_bus else None
+        if secondary_sfc_read_bus and not sfc_read_bus:raise ValueError('secondary SFC requires the primary SFC read bus')
+        self.sfc_secondary=SFCReadBus(initial_secondary_sfc_control,SFC_SECONDARY_BASE) if secondary_sfc_read_bus else None
+        self.sfc_clock=SfcClockGateProjection() if sfc_clock_gate_projection else None
         self.debug=DebugExecutionProjection(initial_debug_controls) if debug_execution_projection else None
         self.reset=ResetHistoryProjection(reset_history_words) if reset_history_projection else None
         self.mpu=MPUConfigurationProjection(initial_mpu_write_gate) if mpu_configuration_projection else None
@@ -851,6 +885,8 @@ class BR28Model:
             (self.mpu is not None and self.mpu.handles(address)) or
             (self.cache_status_probe and address in CACHE_STATUS_REGISTERS) or
             (self.sfc is not None and address in (SFC_BASE,SFC_BASE+4)) or
+            (self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4)) or
+            self.handles_sfc_clock(address) or
             address in self.additional_configuration or
             (self.port_initialization_projection and address in PORT_INPUT_REGISTERS+USB_DISABLE_REGISTERS) or
             (self.cpu1_held_projection and address==CPU1_CONTROL) or
@@ -883,6 +919,15 @@ class BR28Model:
         self.gpcnt.rmw(kind,operand);self.counts['reads']+=1
         self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
                            'known_value':hex(self.gpcnt.bits.value),'known_mask':hex(self.gpcnt.bits.known)})
+
+    def handles_sfc_clock(self,address):
+        return self.sfc_clock is not None and address==SFC_CLOCK_GATE
+
+    def sfc_clock_rmw(self,address,kind,operand):
+        if not self.handles_sfc_clock(address):raise ValueError('not the modeled SFC clock gate')
+        self.sfc_clock.rmw(kind,operand);self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
+                           'known_value':hex(self.sfc_clock.bits.value),'known_mask':hex(self.sfc_clock.bits.known)})
 
     def core_tick_rmw(self,address,kind,operand):
         if not self.handles_core_tick(address):raise ValueError('not a modeled core tick register')
@@ -937,6 +982,8 @@ class BR28Model:
             if address not in self.cache_status_words:raise Blocked('unknown_cache_status_input',address=hex(address))
             return self.cache_status_words[address]
         if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):return self.sfc.read(address)
+        if self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4):return self.sfc_secondary.read(address)
+        if self.handles_sfc_clock(address):return self.sfc_clock.read(address)
         if self.cpu1_held_projection and address==CPU1_CONTROL:
             if self.cpu1_control is None:raise Blocked('unknown_initial_cpu1_control')
             return self.cpu1_control
@@ -989,6 +1036,8 @@ class BR28Model:
         if self.handles_gpcnt(address):raise Blocked('gpcnt_full_control_store_not_modeled')
         if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
         if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):self.sfc.write(address,value)
+        elif self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4):self.sfc_secondary.write(address,value)
+        elif self.handles_sfc_clock(address):raise Blocked('sfc_clock_gate_full_store_not_modeled',address=hex(address))
         elif self.cpu1_held_projection and address==CPU1_CONTROL:
             if value&1:
                 if self.cpu1_release_handler is None:raise Blocked('cpu1_release_not_implemented',value=hex(value))
@@ -1195,6 +1244,8 @@ class BR28Model:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}
             result['assumptions']['cache_contents_and_coherence_simulated']=False
         if self.sfc is not None:result['sfc_read_bus']=self.sfc.report()
+        if self.sfc_secondary is not None:result['sfc_read_bus_secondary']=self.sfc_secondary.report()
+        if self.sfc_clock is not None:result['sfc_clock_gate_projection']=self.sfc_clock.report()
         if self.icu is not None:result['icu_initialization_projection']=self.icu.report()
         if self.software_irq is not None:result['software_irq_commands']=self.software_irq.report()
         if self.debug is not None:result['debug_execution_projection']=self.debug.report()
