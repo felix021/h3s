@@ -1219,7 +1219,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # 寄存器计数 rep(ROM 0xc70c `rep r1,4`,flushinv_dcache 的 DCU
                 # CMO 失效循环):上游 FM-1 run3 硬件证据「体执行次数=计数寄存
                 # 器值,寄存器递减到 0」(v3.py rep 模型),计数必须来自真实寄存
-                # 器值——未知/抽象计数值、计数 0(GAPS.md 明确未测)一律诚实停。
+                # 器值——未知/抽象计数值诚实停;计数 0(GAPS.md 明确未测)默认
+                # 诚实停,opt-in zero_count_rep_skip 时按 memset 零跳过先例推广
+                # (跳过体,见下方)。
                 # ROM 编译形状在体后跟 `bnez r计数控,回 rep`:按递减到 0 的模型
                 # 执行完后 bnez 自然不跳(两种硬件解释的可观测结果一致)。
                 # 并行对体(add.rrr.p+st.w):按一条指令计字节,第二半必须是
@@ -1235,7 +1237,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     if not isinstance(count,int):
                         raise Blocked('rep_register_count_unknown',register=register,
                                       instruction_id=insn.id)
-                    if count==0:
+                    if count==0 and not diagnostics.get('zero_count_rep_skip'):
                         raise Blocked('unverified_zero_count_rep',instruction_id=insn.id,
                                       note='register-count REP; BR28 count=0 semantics unmeasured')
                     require(count<=10000,'register-count REP outside the bounded model')
@@ -1267,6 +1269,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     covered+=inner_size;walk+=inner_size
                 if covered!=body_bytes:
                     raise Blocked('rep_multi_block_body_unaligned',body_bytes=body_bytes,covered=covered)
+                if count==0:
+                    # 零计数跳过假设(opt-in zero_count_rep_skip,把 memset 先例
+                    # rom_zero_rep_skip/0x4242、0x424c 的零跳过推广到本 gate):
+                    # count=0 时体一次也不执行,PC 前进到体后,计数寄存器保持 0
+                    # (FM-1 run3「递减到 0」在 0 次执行下的自然延伸)。count=0
+                    # 本身 BR28 未测量(GAPS.md「Not tried: rep with a count of
+                    # 0」),zero_count_skip_is_assumption 显式标注、不声称硅验证;
+                    # 开关关闭仍诚实停(unverified_zero_count_rep)。体形状仍须
+                    # 先通过上方与非零计数完全相同的直线体校验。
+                    self.pc+=size+body_bytes;self.steps+=1
+                    adapters['zero_count_skip_is_assumption']+=1
+                    return
                 self.repeat={'start':self.pc+size,'end':self.pc+size+body_bytes,'register':register,
                              'remaining':count,'multi_block':True}
                 self.pc+=size;self.steps+=1

@@ -268,6 +268,34 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['completed_steps'],0)
         self.assertEqual(result['stop']['kind'],'unverified_zero_count_rep')
 
+    def test_zero_count_rep_skip_generalizes_the_memset_precedent(self):
+        # 零计数跳过假设(opt-in zero_count_rep_skip):memset 先例
+        # rom_zero_rep_skip(0x4242/0x424c)推广到 multi-block gate 的寄存器
+        # 计数形式——count=0 时体一次也不执行、PC 前进到体后、计数寄存器保持
+        # 0(FM-1 run3「递减到 0」在 0 次执行下的自然延伸,count=0 本身 BR28
+        # 未测量,zero_count_skip_is_assumption 显式标注不声称硅验证)。默认
+        # 关闭时的诚实停由 test_register_count_rep_stays_opt_in_and_rejects_
+        # risky_counts 的 dcu_rep_zero 子例钉死。体形状仍须先通过与非零计数
+        # 完全相同的直线体校验(此处:并行对要求 exact_parallel_stores)。
+        pc=0x01c60000
+        h=self.handoff();h['readonly'].append((pc,self.DCU_REP_LOOP))
+        regs=[0]*16;regs[0]=0x061d7fe0;regs[1]=0;regs[2]=0xff05cc;regs[3]=0x20
+        result=explore(self.module,self.app,name='dcu_rep_zero_skip',handoff=h,
+            hardware=self.dcu_rep_hardware(),
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'exact_parallel_stores':True,
+                         'zero_count_rep_skip':True},budget=2)
+        # 1 步跳过(rep→体后 bnez)+ 1 步 bnez(r1=0 不跳)= 2 步,体未执行。
+        self.assertEqual(result['completed_steps'],2)
+        self.assertEqual(result['stop_pc'],hex(pc+8))
+        self.assertEqual(result['last_registers']['r'][1],'0x0')
+        self.assertEqual(result['last_registers']['r'][0],hex(0x061d7fe0))
+        self.assertEqual(result['instruction_adapters'].get('zero_count_skip_is_assumption'),1)
+        self.assertNotIn('register_rep_multi_block_projection',result['instruction_adapters'])
+        dcu=result['peripherals']['dcu_cmo_projection']
+        self.assertEqual(dcu['ports']['0xff05cc'],{'values':[],'writes':0},
+                         'the skipped REP body must not touch memory')
+
     def test_ssync_executes_as_the_run4_no_visible_effect_model(self):
         # flushinv_dcache 尾部 0xc714 csync + 0xc716 ssync(ROM 实际编码)。ssync
         # 上游只有 run4 的 runner 上下文 trace 模型;按 FM-1 run4 捕获「flags

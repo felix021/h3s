@@ -44,7 +44,7 @@ SFC_RESUME_OPERATIONS=(
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
-             icu_region=False,dcu_cmo=False,flash_image_bytes=None,readonly=()):
+             icu_region=False,dcu_cmo=False,zero_rep_skip=False,flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -79,6 +79,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     extra={'software_irq_frames':dict(HANDLER_PSR_FRAMES)} if entry else {}
     if rep_block:extra['immediate_rep_multi_block']=True
     if rep_unknown_transport:extra['rep_copy_unknown_transport']=True
+    # zero_rep_skip:opt-in 的零计数 rep 跳过假设(multi-block gate 的寄存器
+    # 计数形式 count=0 → 体一次也不执行、PC 前进到体后、计数寄存器保持 0)。
+    # memset 先例 rom_zero_rep_skip(0x4242/0x424c)的推广:FM-1 run3 只捕获非零
+    # 计数「体执行次数=计数寄存器值,寄存器递减到 0」,count=0 本身 BR28 未测
+    # 量(GAPS.md「Not tried: rep with a count of 0」),报告以
+    # zero_count_skip_is_assumption 计数、不声称硅验证。默认关闭。
+    if zero_rep_skip:extra['zero_count_rep_skip']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -270,9 +277,9 @@ def check(report):
     require(crc['seed_writes'][0]=='0x0' and crc['result_reads'][0]==hex(reference) and
             crc['fed_bytes']>=len(fed),
             'the hardware CRC projection did not reproduce the software-table result for the actual wrapper input')
-    # sfc_drop_cache 之后 VM init 链继续:同一 CRC 引擎被再用 11 次(每次种子
-    # 0、喂 30 字节、读一次结果,共 12 次往返 360 字节),首轮黄金校验不变。
-    require(len(crc['seed_writes'])==12 and crc['fed_bytes']==360 and len(crc['result_reads'])==12,
+    # sfc_drop_cache 之后 VM init 链继续:同一 CRC 引擎再用 13 次(每次种子 0、
+    # 喂 30 字节、读一次结果,共 14 次往返 420 字节),首轮黄金校验不变。
+    require(len(crc['seed_writes'])==14 and crc['fed_bytes']==420 and len(crc['result_reads'])==14,
             'the extended VM-init prefix changed the hardware CRC usage shape')
     # 0x6010b14 rep 4 32(4 字节体 ld.bu.pin+st.b.pin × 32,flash 资源表头部
     # 32 字节拷贝)及其后整条资源表扫描(含 callee 0x6010a64 内四个 rep 4 8)
@@ -304,14 +311,28 @@ def check(report):
     # write-only 序列(SDK csfr.h JL_L1P 的 CMO[19],__WO;flush_dcache 用的
     # 0xff05c8=CMO[18] 一并建模,本前缀未出现)。flushinv_dcache 尾部
     # csync+ssync 走通(ssync 按 run4「无可见效果」模型),返回 sfc_drop_cache、
-    # VM init 链继续 12k 步,停在 ROM 0x4176 字节拷贝尾循环 `rep r2,4`——
-    # 真实 len&3==0,寄存器计数 rep 的 count=0 语义 BR28 未测量(GAPS.md
-    # 「Not tried: rep with a count of 0」),诚实停(unverified_zero_count_rep)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x4176' and
-            r['stop']=={'kind':'unverified_zero_count_rep','instruction_id':'rep',
-                        'note':'register-count REP; BR28 count=0 semantics unmeasured'},
-            'after the DCU invalidate loop the stop must be the genuine zero-count register REP tail')
-    require(r['completed_steps']==175396,'the DCU CMO projection changed its step count')
+    # VM init 链继续 12k 步后撞上 ROM 0x4176 字节拷贝尾循环 `rep r2,4`(该次
+    # 拷贝 len&3==0,count=0):opt-in zero_count_rep_skip(multi-block gate 的
+    # 零跳过假设,memset 先例 rom_zero_rep_skip/0x4242、0x424c 的推广——体一
+    # 次也不执行、PC 前进到体后、计数寄存器保持 0,FM-1 run3「递减到 0」在
+    # 0 次执行下的自然延伸;count=0 本身 BR28 未测量,报告以
+    # zero_count_skip_is_assumption 计数、不声称硅验证)。跳过两次(0x4176 尾
+    # ×2)后链继续 892 步(ROM 拷贝族再加 2 个非零寄存器计数 rep、CRC 引擎
+    # 再用 2 次 12→14),停在 ROM 0x416c(0x1fd74→0x413c memcpy 字主体首条
+    # ld.w.pin)读 0x60fdfe0——源指针由 app 经 ROM 解析,恰为 flash 偏移
+    # 0x100000(1MiB,app flash 偏移探测表 0x060A0FA4 {0,0x1000,0x10000,
+    # 0x80000,0x100000} 的第 5 项;CPU 可见地址=0x06000000+偏移-0x2020 头)。
+    # 按实测物理布局(docs/usb-recovery.md),0x0ee000 起是 bank B 应用区,
+    # 0x100000 落在 bank B 内;官方 UFW 的 flash.bin 只含引导区+bank A
+    # (0..0xE6000),bank B 字节不在任何公开工件里——不臆造,诚实停。
+    require(r['stop_core']==0 and r['stop_pc']=='0x416c' and
+            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0x60fdfe0',
+                        'size':4,'reference_sdk_register':None},
+            'after the two zero-count REP skips the stop must be the genuine bank-B flash read')
+    require(r['completed_steps']==176288,'the zero-count REP skip changed its step count')
+    require(r['instruction_adapters'].get('zero_count_skip_is_assumption')==2,
+            'the zero-count REP skip assumption must fire exactly twice (both 0x4176 tails) '
+            'and be reported as an explicit assumption')
     dcu=r['peripherals']['dcu_cmo_projection']
     require(dcu['ports']['0xff05cc']=={'values':['0x61d7fe0'],'writes':1} and
             dcu['ports']['0xff05c8']=={'values':[],'writes':0},
@@ -320,9 +341,9 @@ def check(report):
             not dcu['port_index_semantics_verified'] and
             not dcu['cache_contents_or_coherence_simulated'],
             'the DCU CMO projection report is missing its explicit assumption record')
-    require(r['instruction_adapters'].get('register_rep_multi_block_projection')==5,
+    require(r['instruction_adapters'].get('register_rep_multi_block_projection')==7,
             'the register-count REP projection must cover exactly the DCU loop (0xc70c) plus the '
-            'four nonzero ROM memcpy counters (0x416a/0x4176 family) in the extended prefix')
+            'six nonzero ROM memcpy counters (0x416a word bodies and 0x4176 byte tails) in the extended prefix')
     gate=r['peripherals']['sfc_clock_gate_projection']
     require(gate['select']=='0x3' and gate['select_writes']==1 and
             gate['select_write_only'] is True and gate['select_readback_observed'] is False,
@@ -425,7 +446,7 @@ def main():
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
-                              dcu_cmo=True,flash_image_bytes=image)]}
+                              dcu_cmo=True,zero_rep_skip=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
