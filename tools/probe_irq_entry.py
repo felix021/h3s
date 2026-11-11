@@ -18,9 +18,13 @@ roundtrip: the consumers really compute the header CRC / parse the erased
 headers and select their benign branches; crc_engine_roundtrip itself keeps
 stopping honestly on the unmapped bank-B read. The exact-doubleword gate
 (st.d.l/st.d.sp.l) writes full-overwrite doubleword stores without the
-upstream merge bookkeeping read, so this scenario runs past its store; after
-the window-table walker skips its two erased entries the chain stops at the
-next uninitialized-bss byte.
+upstream merge bookkeeping read, and the unknown-byte transport covers both
+load shapes (ld.w.pin word and ld.bu.pin byte) of the rep copy bodies, so
+this scenario runs past its store and past the VM-config GET; after the
+window-table walker skips its two erased entries and the byte transport
+carries the VM-config padding/reserved bytes to the stack, the chain stops
+honestly on the unmapped bank-B VM-window read at the erased-fixture
+frontier.
 """
 import argparse
 import json
@@ -98,10 +102,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if dcu_cmo:options['dcu_cmo_projection']=True
     # rep_block:opt-in 的多指令 rep.i 体执行(0x6010b14 rep 4 32 字节拷贝,
     # 及其 callee 0x6010a64 内的四个 rep 4 8)。默认关闭,legacy 报告不变。
-    # rep_unknown_transport:opt-in 的 rep 拷贝体未知字节运输(0x600a352 rep 4 4
-    # 从 qcy_boot_info 0x122800 拷 16 字节,其中 bytes 1-3/8-11 是 boot.h 里
-    # vm_info 的 C 对齐 padding 与 vm_res 保留字段,app/ROM 均无写入者,真机
-    # 为残留 RAM 垃圾;模型按字节来源运输未知,不臆造数值)。默认关闭。
+    # rep_unknown_transport:opt-in 的 rep 拷贝体未知字节运输。字形式(0x600a352
+    # rep 4 4 从 qcy_boot_info 0x122800 拷 16 字节,其中 bytes 1-3/8-11 是
+    # boot.h 里 vm_info 的 C 对齐 padding 与 vm_res 保留字段,app/ROM 均无写
+    # 入者,真机为残留 RAM 垃圾)与字节形式(0x600a302 rep 4 16 从设备结构
+    # 0x1265C0+0x10E4 拷回同一 16 字节块——SET 路径 rep 4 4 拷入的缓存,同一
+    # 批 padding/vm_res 未知字节;ld.bu.pin 零扩展构造、st.b.pin 只写低字节)
+    # 都按字节来源运输未知,不臆造数值。默认关闭。
     extra={'software_irq_frames':dict(HANDLER_PSR_FRAMES)} if entry else {}
     if rep_block:extra['immediate_rep_multi_block']=True
     if rep_unknown_transport:extra['rep_copy_unknown_transport']=True
@@ -490,15 +497,28 @@ def check(report):
     # 零执行)。本表两项 {id=0x66,size=6}/{id=0x6e,size=6},擦除态实际读取=
     # 两段头各 4 字节(0x61ddfe0..3/0x61ddfea..d);fixture 按表声明的结构
     # 全长覆盖 20 字节。0x6060a4a 返回 0 后链继续 226 步(双字存储 +2、
-    # rep.i 体 +1,CRC/IRQ 计数不变——第二窗消费不经硬件 CRC 引擎),停在
-    # 0x600a304 读 qcy_bss 0x1276a5 未初始化字节——bank B 之外的下一个
-    # 独立停点(bss 数据可得性边界,不是 bank B 问题)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x600a304' and
-            r['stop']['kind']=='uninitialized_memory' and
-            r['stop']['access']=='read' and r['stop']['address']=='0x1276a5' and
+    # rep.i 体 +1,CRC/IRQ 计数不变——第二窗消费不经硬件 CRC 引擎),到达
+    # 旧前沿 183,712:0x600a302 rep 4 16 字节 memcpy(GET 命令 0x40045602)
+    # 读 qcy_bss 0x1276a5 未初始化字节。溯源(本次,反汇编+动态 watch 钉死):
+    # 源 0x1276a4..0x1276b3 = 设备结构 0x1265C0+0x10E4 的 16 字节 VM 配置块,
+    # 写入者是 SET 命令 0x40045601 路径 0x600a352 rep 4 4(VM init 0x601111c
+    # 以 r2=0x122800 调入)从 qcy_boot_info 头 16 字节拷入——watch 实测拷后
+    # 状态 10??????00a01d00????????00400000,7 个未知字节正是 boot-info 路
+    # 钉死的 bytes 1-3(vm_info C padding)/8-11(vm_res 保留字段),真机为
+    # 残留 RAM 垃圾;真实消费者 0x6060f9a(动态 watch 钉死 GET 调用点
+    # 0x6060fb2)只读 [sp](align)/[sp+4](saddr)/[sp+12](size)三个已知字段。
+    # 据此把 rep_copy_unknown_transport 扩展到字节装载形状(ld.bu.pin 零扩展
+    # 构造 UnknownWord:低字节未知带来源、高 3 字节已知 0;配对 st.b.pin 只写
+    # 低字节、按来源落盘)。放行后 VM 配置消费者链走完 +401 步,停在 ROM
+    # 0x4178 字节尾读 bank B VM 窗口基址 0x61d7fe0(=0x06000000+0x1da000-
+    # 0x2020,两个 fixture 窗之外)——与 176,288 同族的 bank B 数据可得性
+    # 诚实停,是运输后的第一个严格消费者停点(184,113,新前沿)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x4178' and
+            r['stop']['kind']=='unmapped_memory' and
+            r['stop']['access']=='read' and r['stop']['address']=='0x61d7fe0' and
             r['stop']['size']==1,
-            'the erased fixture frontier must stop at the post-walker bss boundary')
-    require(r['completed_steps']==183712,'the erased fixture scenario changed its step count')
+            'the erased fixture frontier must stop at the post-transport bank-B VM window read')
+    require(r['completed_steps']==184113,'the erased fixture scenario changed its step count')
     require(r['instruction_adapters'].get('exact_doubleword_store')==15,
             'the doubleword stores of the extended prefix must run through the exact gate')
     require(r['peripherals']['software_irq_commands']['commands']==16 and
@@ -510,12 +530,16 @@ def check(report):
             'the extra cross-core delivery after the probe mismatch differs from the repeat projection')
     # ROM 拷贝族/CPU0-CPU1 同步在 fixture 放行后继续:rep.i 体 80→104(第 5 项
     # 头拷贝+后续链+walker 后链 1 个体)、零计数跳过 2→3(该次拷贝 len&3==0
-    # 的 0x4176 尾)、寄存器计数 rep 7→10。unknown 运输不变(2/2)。
+    # 的 0x4176 尾)、寄存器计数 rep 7→11(walker 后链的 GET 消费链里 ROM
+    # 拷贝族再用 1 次)。unknown 运输 2/2→9/9:字形式 2 轮(boot_info padding/
+    # vm_res)不变,字节形式 +7(GET rep 4 16 的 7 个未知字节,同一 16 字节
+    # 块内的 padding/vm_res,来源链回 0x122800)。CRC 19 次往返 570 字节与
+    # IRQ commands 16/acks 8 不变(GET 消费链不经硬件 CRC、无跨核同步)。
     require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==104 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
-            r['instruction_adapters'].get('register_rep_multi_block_projection')==10 and
-            r['instruction_adapters'].get('rep_copy_unknown_transport_load')==2 and
-            r['instruction_adapters'].get('rep_copy_unknown_transport_store')==2,
+            r['instruction_adapters'].get('register_rep_multi_block_projection')==11 and
+            r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
+            r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9,
             'the fixture-scenario REP projections differ from the observed prefix')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True

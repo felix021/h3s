@@ -355,6 +355,92 @@ class BusInstructionTests(unittest.TestCase):
             'address':'0x122800','size':4,'region':'qcy_boot_info_destination',
             'first_missing':'0x122801'})
 
+    def test_vm_config_byte_rep_copy_transports_unknown_bytes(self):
+        # 实际 VM 配置 GET 0x600a302 rep 4 16(r1=b[r0++=1](u)/b[r6++=1]=r1,
+        # 重复 16 次)。源 0x1276a4..0x1276b3(设备结构 0x1265C0+0x10E4)按
+        # 0x40045601 SET 路径 0x600a352 rep 4 4 拷完后的真机状态部分初始化:
+        # byte0=0x10(vm.align)、word1=0x1da000(vm_saddr)、word3=0x4000
+        # (vm_size)已知,bytes 1-3(vm_info 的 C 对齐 padding)与 8-11(vm_res
+        # 保留字段)无任何写入者——真机上是残留 RAM 垃圾(boot-info 路钉死;
+        # 183,712 前沿 watch 实测状态 10??????00a01d00????????00400000)。
+        # 开 rep_copy_unknown_transport 后:已知字节照搬,未知字节按来源字节
+        # 级运输(零扩展:低字节未知带来源、高 3 字节已知为 0),1 步 rep.i +
+        # 16×2 步体 = 33 步;真实消费者 0x6060f9a 只读 [sp]/[sp+4]/[sp+12]
+        # 三个已知字段(align/saddr/size),未知字节拷到栈上后从不读。
+        h=self.handoff();src,dst=0x1276a4,0x124f00
+        h['seeds'] += [(src,b'\x10'),(src+4,struct.pack('<I',0x1da000)),
+                       (src+12,struct.pack('<I',0x4000))]
+        h['snapshots'].append(('vm_config_copy_dst',dst,16))
+        regs=[0]*16;regs[0]=src;regs[6]=dst
+        result=explore(self.module,self.app,name='rep_byte_copy_transport',handoff=h,
+            diagnostics={'entry_pc':0x0600a302,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'immediate_rep_multi_block':True,
+                         'rep_copy_unknown_transport':True,'exact_subword_stores':True},budget=33)
+        self.assertEqual(result['completed_steps'],33)
+        self.assertEqual(result['stop_pc'],'0x600a308')
+        self.assertEqual(result['last_registers']['r'][0],hex(src+16))
+        self.assertEqual(result['last_registers']['r'][6],hex(dst+16))
+        self.assertEqual(result['last_registers']['r'][1],'0x0')
+        self.assertEqual(result['memory_snapshots']['vm_config_copy_dst']['bytes_with_unknowns'],
+                         '10??????'+'00a01d00'+'????????'+'00400000')
+        self.assertEqual(result['instruction_adapters'].get('rep_copy_unknown_transport_load'),7)
+        self.assertEqual(result['instruction_adapters'].get('rep_copy_unknown_transport_store'),7)
+
+    def test_vm_config_byte_rep_copy_transport_stays_opt_in(self):
+        # 同一指令不开 rep_copy_unknown_transport 时必须诚实停在第二轮体首
+        # 装载的未初始化字节读上(183,712 前沿的精确形状),legacy 行为不变。
+        h=self.handoff();src,dst=0x1276a4,0x124f00
+        h['seeds'].append((src,b'\x10'))
+        regs=[0]*16;regs[0]=src;regs[6]=dst
+        result=explore(self.module,self.app,name='rep_byte_copy_transport_off',handoff=h,
+            diagnostics={'entry_pc':0x0600a302,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'immediate_rep_multi_block':True,
+                         'exact_subword_stores':True},budget=33)
+        self.assertEqual(result['completed_steps'],3)
+        self.assertEqual(result['stop_pc'],'0x600a304')
+        self.assertEqual(result['stop'],{'kind':'uninitialized_memory','access':'read',
+            'address':'0x1276a5','size':1,'region':'qcy_bss','first_missing':'0x1276a5'})
+
+    def test_vm_config_byte_transport_stops_generic_consumers(self):
+        # 运输后的未知字节对通用消费者严格停:自定义直线代码 = 实际 rep 4 16
+        # 字节拷贝体 + 一条真实编码的通用字装载 r0=[r4+0](40 60),读目的
+        # bytes 8-11(vm_res,全部未知)→ 未初始化读诚实停,不返回臆造值。
+        pc=0x01c60000
+        h=self.handoff();h['readonly'].append((pc,bytes.fromhex('108f0107e107406020002000')))
+        src,dst=0x1276a4,0x124f00
+        h['seeds'].append((src,b'\x10'))
+        regs=[0]*16;regs[0]=src;regs[6]=dst;regs[4]=dst+8
+        result=explore(self.module,self.app,name='rep_byte_transport_consumer',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'immediate_rep_multi_block':True,
+                         'rep_copy_unknown_transport':True,'exact_subword_stores':True},budget=34)
+        self.assertEqual(result['completed_steps'],33)
+        self.assertEqual(result['stop_pc'],hex(pc+6))
+        self.assertEqual(result['stop'],{'kind':'uninitialized_memory','access':'read',
+            'address':hex(dst+8),'size':4,'region':'qcy_initialized_data',
+            'first_missing':hex(dst+8)})
+
+    def test_vm_config_byte_transport_register_consumer_stops(self):
+        # 字节装载构造的 UnknownWord 被数值消费时严格停:自定义直线体
+        # rep 4 16 { r1=b[r0++=1](u); r2+=r1 }(真实编码 01 07/12 18)——
+        # 第 1 轮已知字节 0x10 正常加,第 2 轮装载未知字节后 r2+=r1 触发
+        # unknown_task_register_consumed,来源=装载字节的物理地址,高 3 字节
+        # 的已知 0 如实报告(零扩展形状),不臆造数值。
+        pc=0x01c60000
+        h=self.handoff();h['readonly'].append((pc,bytes.fromhex('108f0107121820002000')))
+        src=0x1276a4
+        h['seeds'].append((src,b'\x10'))
+        regs=[0]*16;regs[0]=src;regs[2]=5
+        result=explore(self.module,self.app,name='rep_byte_transport_register',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'immediate_rep_multi_block':True,
+                         'rep_copy_unknown_transport':True},budget=5)
+        self.assertEqual(result['completed_steps'],4)
+        self.assertEqual(result['stop_pc'],hex(pc+4))
+        self.assertEqual(result['stop']['kind'],'unknown_task_register_consumed')
+        self.assertEqual(result['stop']['sources'],['0x1276a5',None,None,None])
+        self.assertEqual(result['stop']['known_bytes'],'??000000')
+
     def test_actual_halfword_repeat_preserves_stack_neighbours(self):
         h=self.handoff();base=0x123702
         h['snapshots'] += [('halfword_repeat',base-2,18)]

@@ -205,6 +205,21 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             origins=[self.unknown_origins.get(physical+i,physical+i) if v is None else None for i,v in enumerate(values)]
             return UnknownWord(values,origins)
 
+        def write_abstract_byte(self,address,value):
+            # rep 拷贝体字节回存(write_abstract_word 的 1 字节形状):字节存储
+            # 只写 UnknownWord 的低字节——已知字节落盘、未知字节带物理来源
+            # 保持未知,不臆造数值;高 3 字节(零扩展字节装载的已知 0)不落盘。
+            # 与 IcfgValue 部分溢出字重叠的字节写没有观测形状,诚实拒绝。
+            require(isinstance(value,UnknownWord),'unsupported abstract memory value')
+            physical=self.abstract_write_target(address,1)
+            require(not any(base<=physical<base+4 for base in self.icfg_spills),
+                    'abstract byte store overlapping a partial icfg spill is unmodeled')
+            byte,origin=value.bytes[0],value.origins[0]
+            if byte is None:self.ram.pop(physical,None);self.unknown_origins[physical]=origin
+            else:self.ram[physical]=byte;self.unknown_origins.pop(physical,None)
+            event({'access':'abstract_write','address':hex(physical),'size':1,'region':self.region(physical,1),
+                   'bytes_with_unknowns':'??' if byte is None else f'{byte:02x}'})
+
         def write_abstract_word(self,address,value):
             if isinstance(value,int):self.write(address,struct.pack('<I',value&0xffffffff));return
             require(isinstance(value,(UnknownWord,IcfgValue)),'unsupported abstract memory value')
@@ -237,14 +252,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 raise Blocked('mixed_abstract_spill_unaligned',address=hex(physical))
             return physical
 
-        def abstract_write_target(self,address):
-            physical=hardware.mmu.translate(address,4,self.read) if hardware is not None and hardware.mmu is not None else address
-            protected=((rom is not None and physical<len(rom) and physical+4>0) or
-                physical<ENTRY+len(app) and physical+4>ENTRY or
-                any(physical<base+len(data) and physical+4>base for base,data in (handoff['readonly'] if handoff else ())) or
-                hardware is not None and hardware.handles(physical,4))
-            if protected:raise Blocked('abstract_store_requires_ram',address=hex(physical),size=4)
-            if not self.region(physical,4):raise Blocked('abstract_store_requires_ram',address=hex(physical),size=4)
+        def abstract_write_target(self,address,size=4):
+            physical=hardware.mmu.translate(address,size,self.read) if hardware is not None and hardware.mmu is not None else address
+            protected=((rom is not None and physical<len(rom) and physical+size>0) or
+                physical<ENTRY+len(app) and physical+size>ENTRY or
+                any(physical<base+len(data) and physical+size>base for base,data in (handoff['readonly'] if handoff else ())) or
+                hardware is not None and hardware.handles(physical,size))
+            if protected:raise Blocked('abstract_store_requires_ram',address=hex(physical),size=size)
+            if not self.region(physical,size):raise Blocked('abstract_store_requires_ram',address=hex(physical),size=size)
             return physical
 
     class CPU(module.CPU):
@@ -752,10 +767,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 require(address%width==0,'unaligned postincrement store')
                 source=self.R[op['d']]
                 if (isinstance(source,UnknownWord) and diagnostics.get('rep_copy_unknown_transport') and
-                        self.repeat is not None and self.repeat.get('multi_block')):
+                        self.repeat is not None and self.repeat.get('multi_block') and width in (1,4)):
                     # rep 拷贝体的未知字节回存:已知字节落盘、未知字节带来源保持
                     # 未知(与装载侧 rep_copy_unknown_transport 配对,不臆造数值)。
-                    self.mem.write_abstract_word(address&0xffffffff,source)
+                    # 字节形式(st.b.pin)只写 UnknownWord 的低字节——零扩展字节
+                    # 装载的形状,高 3 字节的已知 0 不落盘;半字形式无观测形状、
+                    # 不支持(落入下方通用路径,对未知寄存器严格停)。
+                    if width==1:self.mem.write_abstract_byte(address&0xffffffff,source)
+                    else:self.mem.write_abstract_word(address&0xffffffff,source)
                     self.R[op['b']]=(address+op['n'])&0xffffffff
                     self.finish_exact(self.pc+size);adapters['rep_copy_unknown_transport_store']+=1
                     return
@@ -785,6 +804,32 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     self.R[op['b']]=(address+op['n'])&0xffffffff
                     event({'access':'abstract-read','address':hex(physical),'size':4,'region':region,
                            'bytes_with_unknowns':''.join('??' if v is None else f'{v:02x}' for v in values)})
+                    self.finish_exact(self.pc+size);adapters['rep_copy_unknown_transport_load']+=1
+                    return
+            if (diagnostics and diagnostics.get('rep_copy_unknown_transport') and insn.id=='ld.bu.pin' and
+                    self.repeat is not None and self.repeat.get('multi_block')):
+                # rep 拷贝体字节装载(证据形状:0x600a302 rep 4 16 体
+                # r1=b[r0++=1](u)/b[r6++=1]=r1,源是设备结构 0x1265C0+0x10E4 的
+                # 16 字节 VM 配置块)。该块由 0x40045601(SET)路径 0x600a352
+                # rep 4 4 从 qcy_boot_info 头 16 字节拷入,其中 bytes 1-3
+                # (vm_info 的 C 对齐 padding)与 8-11(vm_res 保留字段)在
+                # app/ROM 里没有任何写入者——真机上是残留 RAM 垃圾(与字形式
+                # 同源同语义,boot-info 路钉死)。零扩展装载:低字节未知带来源、
+                # 高 3 字节已知为 0;模型不臆造数值,交给配对 st.b.pin 按来源
+                # 运输;任何数值消费者仍严格停。带符号字节装载(ld.b.pin)的
+                # 符号扩展依赖未知位、无观测形状,不走本路径。
+                op=module.check.operands(insn,raw);address=self.R[op['b']]&0xffffffff
+                physical=(hardware.mmu.translate(address,1,self.mem.read)
+                          if hardware is not None and hardware.mmu is not None else address)
+                region=self.mem.region(physical,1)
+                value=self.mem.ram.get(physical) if region else None
+                if (region and value is None and
+                        not any(base<=physical<base+4 for base in self.mem.icfg_spills)):
+                    origin=self.mem.unknown_origins.get(physical,physical)
+                    self.R[op['d']]=UnknownWord((None,0,0,0),(origin,None,None,None))
+                    self.R[op['b']]=(address+op['n'])&0xffffffff
+                    event({'access':'abstract-read','address':hex(physical),'size':1,'region':region,
+                           'bytes_with_unknowns':'??'})
                     self.finish_exact(self.pc+size);adapters['rep_copy_unknown_transport_load']+=1
                     return
             if diagnostics and diagnostics.get('exact_subword_stores') and insn.id in (
