@@ -22,6 +22,21 @@ HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0
                     0x12ad6e:'frame12_push',0x12ada0:'frame12_pop',
                     0x60662c8:'frame12_push'}
 
+# 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
+# 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
+SFC_RESUME_OPERATIONS=(
+    {'kind':'or','operand':'0x1'},{'kind':'or','operand':'0x8'},
+    {'kind':'and','operand':'0xffffefff'},{'kind':'or','operand':'0x4000'},
+    {'kind':'and','operand':'0xfffffff7'},{'kind':'or','operand':'0x8'},
+    {'kind':'and','operand':'0xffffefff'},{'kind':'or','operand':'0x4000'},
+    {'kind':'and','operand':'0xfffffff7'},{'kind':'or','operand':'0x8'},
+    {'kind':'and','operand':'0xffffefff'},{'kind':'or','operand':'0x4000'},
+    {'kind':'and','operand':'0xfffffff7'},{'kind':'or','operand':'0x8'},
+    {'kind':'and','operand':'0xffffefff'},{'kind':'or','operand':'0x4000'},
+    {'kind':'and','operand':'0xfffffff7'},{'kind':'or','operand':'0x1000'},
+    *([{'kind':'or','operand':'0x4000'}]*32),
+    {'kind':'and','operand':'0xfffff3ff'},{'kind':'and','operand':'0xfffffffe'})
+
 
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,readonly=()):
@@ -133,23 +148,25 @@ def check(report):
     require(gpio=={'known_value':'0x60','known_mask':'0x68'},
             'the register-AND must clear the known bit3 and leave the masked-out bit0 unknown')
     out=r['peripherals']['gpio'].get('0xfd5300')
-    require(out=={'known_value':'0x0','known_mask':'0x8'},
-            'the GPIO OUT read-modify-write must clear the known bit3 without fabricating its neighbours')
+    require(out=={'known_value':'0x8','known_mask':'0x8'},
+            'the SFC resume must re-set the known bit3 on GPIO OUT without fabricating its neighbours')
     adapters=r['instruction_adapters']
-    require(adapters.get('gpio_out_readback_load')==11 and
-            adapters.get('gpio_out_readback_bit_mask')==2 and
+    require(adapters.get('gpio_out_readback_load')==12 and
+            adapters.get('gpio_out_readback_bit_mask')==4 and
             adapters.get('gpio_out_readback_register_copy')==1 and
-            adapters.get('gpio_out_readback_writeback')==1,
+            adapters.get('gpio_out_readback_writeback')==2,
             'the SFC GPIO OUT read-back path was not exercised through its exact load/mask/copy/write-back shape')
-    require(r['stop_core']==0 and r['stop_pc']=='0x12ba5c' and
-            r['stop']['kind']=='unmapped_or_readonly_write' and r['stop']['address']=='0xfd1c08' and
-            r['stop']['value_bytes']=='03000000',
-            'after the GPIO mode switch the stop must be the unmodeled SFC register write 0xfd1c08')
-    require(r['completed_steps']==153629,'the CPU0 SFC suspend path changed its step count')
-    require(r['peripherals']['sfc_clock_gate_projection']['operations']==
-            [{'kind':'or','operand':'0x1'},{'kind':'or','operand':'0x8'},
-             {'kind':'and','operand':'0xffffefff'}],
+    require(r['stop_core']==0 and r['stop_pc']=='0x12b732' and
+            r['stop']=={'kind':'unsupported_cpu1_release_transition'},
+            'after the SFC resume the stop must be the unmodeled CPU1 control RMW at 0x12b732')
+    require(r['completed_steps']==154242,'the CPU0 SFC resume path changed its step count')
+    gate=r['peripherals']['sfc_clock_gate_projection']
+    require(gate['operations']==list(SFC_RESUME_OPERATIONS),
             'the SFC suspend/resume clock-gate writes changed')
+    require(gate['divider']=='0xff' and gate['divider_writes']==36 and gate['reads']==36 and
+            gate['readback_modeled'] is True and gate['known_value']=='0x5000' and
+            gate['known_mask']=='0x5c09',
+            'the SFC +8 divider write/read-back or the PLL-lock bit15 projection differs')
     require(r['peripherals']['sfc_read_bus_secondary']['con']==0 and
             r['peripherals']['sfc_read_bus_secondary']['writes']==0 and
             r['peripherals']['sfc_read_bus_secondary']['initial_control_fixture']==0,

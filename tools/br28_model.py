@@ -197,30 +197,51 @@ class SFCReadBus:
 
 
 class SfcClockGateProjection:
-    """Write-only RMW projection for 0xfd1c00; identity is unconfirmed.
+    """RMW projection for 0xfd1c00 plus the +8 divider register read-back.
 
-    The SFC suspend tail (0x12b910) sets bit0; the ROM's clock/PLL code RMWs
-    bits 0/3/8/12/14 and full-stores 0x20 with a +4..+16 register block, which
-    is consistent with a clock/PLL control but its name is not in the reference
-    SDK headers. Observed set/clear writes are recorded bitwise; a read-back is
-    never fabricated, so any guest read of this register still stops unknown.
+    The SFC suspend tail (0x12b910) sets bit0; the resume helper 0x12ba4c RMWs
+    bit3 (|=8) and bit12 (&=~0x1000), full-stores the divider value into
+    [0xfd1c08] at 0x12ba5c, then polls [0xfd1c00] bit15 at 0x12ba38..0x12ba46.
+    bit15 read-back is an explicit PLL-locked condition projection (not a
+    measured reset value); the +8 read-back returns only the last
+    firmware-written divider, never a fabricated reset value.
     """
+    PLL_LOCK_BIT=0x8000
+
     def __init__(self):
         self.bits=PartialWord();self.operations=[]
+        self.divider=None;self.divider_writes=0;self.reads=0
 
     def rmw(self,kind,operand):
         if kind not in ('or','and'):raise Blocked('sfc_clock_gate_rmw_form_not_modeled',operation=kind)
         self.bits.apply(kind,operand)
         self.operations.append((kind,operand&0xffffffff))
 
-    def read(self):
-        raise Blocked('unknown_sfc_clock_gate_configuration',known_mask=hex(self.bits.known))
+    def read(self,address):
+        if address==SFC_CLOCK_GATE:
+            self.reads+=1
+            # 0x12ba38 轮询 [0xfd1c00] 的 bit15，等它置位后再 |=0x4000 返回。
+            # 该位读回为 1 是显式「PLL 已锁定」条件投影，不是测得复位值。
+            # 其余位沿用已记录 RMW 的已知值；本路径轮询只消费 bit15，未写入位不臆造。
+            return (self.bits.value|self.PLL_LOCK_BIT)&0xffffffff
+        if address==SFC_CLOCK_GATE+8:
+            if self.divider is None:raise Blocked('unknown_sfc_clock_divider',address=hex(address))
+            return self.divider
+        raise Blocked('sfc_clock_register_read_not_modeled',address=hex(address))
+
+    def write_divider(self,value):
+        self.divider=value&0xffffffff;self.divider_writes+=1
 
     def report(self):
         return {'known_value':hex(self.bits.value),'known_mask':hex(self.bits.known),
                 'operations':[{'kind':k,'operand':hex(v)} for k,v in self.operations],
                 'address':hex(SFC_CLOCK_GATE),'identity':'register name not in reference SDK headers;待确认',
-                'readback_modeled':False,'reset_value_measured':False}
+                'readback_modeled':True,
+                'readback_projection':'bit15 PLL-lock condition projected as 1 (0x12ba38 poll); not a measured reset value',
+                'divider_address':hex(SFC_CLOCK_GATE+8),
+                'divider':None if self.divider is None else hex(self.divider),
+                'divider_readback_is_last_write':True,'divider_writes':self.divider_writes,
+                'reads':self.reads,'reset_value_measured':False}
 
 
 class IcuInitializationProjection:
@@ -944,6 +965,7 @@ class BR28Model:
             (self.sfc is not None and address in (SFC_BASE,SFC_BASE+4)) or
             (self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4)) or
             self.handles_sfc_clock(address) or
+            self.handles_sfc_clock_divider(address) or
             address in self.additional_configuration or
             (self.port_initialization_projection and address in PORT_INPUT_REGISTERS+USB_DISABLE_REGISTERS) or
             (self.cpu1_held_projection and address==CPU1_CONTROL) or
@@ -979,6 +1001,9 @@ class BR28Model:
 
     def handles_sfc_clock(self,address):
         return self.sfc_clock is not None and address==SFC_CLOCK_GATE
+
+    def handles_sfc_clock_divider(self,address):
+        return self.sfc_clock is not None and address==SFC_CLOCK_GATE+8
 
     def sfc_clock_rmw(self,address,kind,operand):
         if not self.handles_sfc_clock(address):raise ValueError('not the modeled SFC clock gate')
@@ -1067,7 +1092,7 @@ class BR28Model:
             return self.cache_status_words[address]
         if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):return self.sfc.read(address)
         if self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4):return self.sfc_secondary.read(address)
-        if self.handles_sfc_clock(address):return self.sfc_clock.read(address)
+        if self.handles_sfc_clock(address) or self.handles_sfc_clock_divider(address):return self.sfc_clock.read(address)
         if self.cpu1_held_projection and address==CPU1_CONTROL:
             if self.cpu1_control is None:raise Blocked('unknown_initial_cpu1_control')
             return self.cpu1_control
@@ -1122,6 +1147,7 @@ class BR28Model:
         if self.sfc is not None and address in (SFC_BASE,SFC_BASE+4):self.sfc.write(address,value)
         elif self.sfc_secondary is not None and address in (SFC_SECONDARY_BASE,SFC_SECONDARY_BASE+4):self.sfc_secondary.write(address,value)
         elif self.handles_sfc_clock(address):raise Blocked('sfc_clock_gate_full_store_not_modeled',address=hex(address))
+        elif self.handles_sfc_clock_divider(address):self.sfc_clock.write_divider(value)
         elif self.cpu1_held_projection and address==CPU1_CONTROL:
             if value&1:
                 if self.cpu1_release_handler is None:raise Blocked('cpu1_release_not_implemented',value=hex(value))

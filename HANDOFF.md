@@ -1,4 +1,4 @@
-# 交接：整机启动仿真推进中（阶段 D 进行，前沿 153,629 步）
+# 交接：整机启动仿真推进中（阶段 D 进行，前沿 154,242 步）
 
 2026-11-11 恢复工作。阶段 A/B/C1 完成，C2（tick 真实触发）与 D 进行中。停止时请更新本文件。
 
@@ -12,9 +12,9 @@
 | irq127_entry_minimal | 149,679 | 0x12ad68 | unknown_core_special_register (usp) |
 | irq127_scheduler_entry | 151,500 | 0x12c5ca | unsupported idle（对核 IDLE 边界）|
 | irq127_appcore_roundtrip | 153,430 | 0x12b66a | unmodeled_unmaskable_irq irq125 |
-| **irq125_sync_roundtrip** | **153,629** | **0x12ba5c** | **unmapped 0xfd1c08 写** |
+| **irq125_sync_roundtrip** | **154,242** | **0x12b732** | **unsupported_cpu1_release_transition** |
 
-**153,629 步含义**：CPU0 的 app_core 发跨核同步 IPI（IRQ125）→ CPU1 应答 → CPU0 继续 → SFC 挂起序列（0x12b916→0x12b890：GPIO RMW 按位、baud=0、disable、0xfd1c00 时钟门、第二 SFC 0xfe0100 复位态跳过）→ GPIO port D OUT 读回按位精化（GpioOutValue 偏字）→ SFC 恢复（0xfd1c00 |=8、&=~0x1000）→ 停在 `st.w [0xfd1c08]=3`（SFC 时钟门 +8 偏移，未建模）。
+**154,242 步含义**：CPU0 的 app_core 发跨核同步 IPI（IRQ125）→ CPU1 应答 → CPU0 继续 → SFC 挂起序列（0x12b916→0x12b890：GPIO RMW 按位、baud=0、disable、0xfd1c00 时钟门、第二 SFC 0xfe0100 复位态跳过）→ GPIO port D OUT 读回按位精化（GpioOutValue 偏字）→ SFC 恢复（0xfd1c00 |=8、&=~0x1000）→ +8 分频寄存器写 3、读回 0xFF（分频/数据寄存器语义）→ 0xfd1c00 bit15 PLL-lock 读回为 1（显式投影）→ 停在 `[0xffe8c0] |= 0x8`（对已释放 CPU1 的 CPU1 控制 RMW，未建模）。
 
 ## 已实现（按序，均 opt-in 投影，默认关闭 legacy 报告不变）
 
@@ -26,6 +26,7 @@
 - **GPIO RMW 按位精化**（420c874）：and/or 逐位确定，XOR/ADD/SUB 仍保守。
 - **SFC 时钟门 + 第二 SFC**（8770401）：0xfd1c00 时钟门投影（只记录置/清、读回严格 unknown）、第二 SFC 0xfe0100（复位态 CON=0 显式假设）。
 - **GPIO OUT 读回按位**（8e5df35）：GpioOutValue 偏字类型，and/or 位操作传递、全字消费（算术/比较/存 RAM）严格停；未写位 unknown 不臆造。
+- **SFC 时钟 +8 / PLL lock 读回**（本次）：0xfd1c08 分频寄存器可写可读（读回=最后写入值，仅在固件写过后返回，不臆造复位值）；0xfd1c00 bit15 读回显式投影为 PLL 已锁定（0x12ba38 轮询证据）。
 - **入口原子性**（cb109b3）：deliver 先完整校验银行假设再提交状态，失败不留部分变化。
 - **core tick 机制**（303e388）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + 单测。**首次溢出 ~450k 步 > 当前 153k，未真实触发——C2 未完成。**
 
@@ -50,13 +51,13 @@
 
 ## 当前并行任务
 
-- 路 A（subagent）：0xfd1c00 + 第二块 SFC 0xfe0100 建模（推进下一边界）——worktree sim-sfc2。
+- 路 A（本 worktree sim-sfc-clk）：SFC 时钟 +8 分频 / PLL-lock 读回已完成，前沿推进到 154,242（0x12b732）。
 - 路 B（subagent）：P11 主核读写依赖清单（判断 P11 硬/软前提）——只读调研。
 - codex 参谋已出（见上）。
 
 ## 下一步（按 codex 建议）
 
-1. 路 A 完成后：完成 SFC 挂起-恢复完整周期（对核暂停、Flash 禁用期间访问限制、恢复、对核释放）。
+1. 继续 SFC 挂起-恢复：0x12b732 的对核控制 RMW（`[0xffe8c0] |= 0x8`）在 CPU1 已释放后的语义未建模（当前 `unsupported_cpu1_release_transition`）；随后还有对核暂停/释放的完整周期。
 2. 补齐每个镜像的资源映射（candidate_view 目前只返回 app+337B payload）。
 3. 补可重复中断交付 + 事件时间推进（解决暂停点 1/2）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用、P11 接口。
