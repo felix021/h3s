@@ -38,7 +38,9 @@
   "read_256_byte_block_tested": false,
   "full_silicon_rom_extent_established": false,
   "post_read_user_report": "耳机启动后正常",
-  "raw_rom_binary_published": false,
+  "raw_rom_binary_published": true,
+  "rom_publication_date_utc": "2026-11-11",
+  "rom_release_asset_url": "https://github.com/felix021/h3s/releases/download/firmware/QCY_H3S_BR28_ROM_000000-020000.bin",
   "flash_contents_not_full_chip_compared_this_session": true,
   "exports": [
     {

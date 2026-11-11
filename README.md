@@ -8,7 +8,7 @@
 
 **2026-11-10 更新：** EQ 实验导致连接异常后，已通过 [USB 救砖流程](docs/usb-recovery.md) 恢复原 ANC 两态镜像，整片读回通过，蓝牙和播放恢复；用户手动重启耳机一次后，确认独立降噪键能正常切换、App 也能控制。
 
-**同日取得 [CPU ROM 地址窗口](docs/rom-read.md)：** `0..0x20000` 共128 KiB，两次读取完全一致，162个参考SDK具名导出入口匹配，包含真实 `mask_init`／`_pll_init` 代码。没有执行Flash擦写，用户反馈“耳机启动后正常”。原始ROM留在私有目录；公开读取工具、离线校验器与脱敏结果。
+**同日取得 [CPU ROM 地址窗口](docs/rom-read.md)：** `0..0x20000` 共128 KiB，两次读取完全一致，162个参考SDK具名导出入口匹配，包含真实 `mask_init`／`_pll_init` 代码。没有执行Flash擦写，用户反馈“耳机启动后正常”。2026-11-11经用户要求，原始ROM已作为 `firmware` Release 附件公开；读取工具、离线校验器与脱敏结果在仓库中。
 
 [真实ROM已接入离线执行](docs/rom-execution.md)：冷PLL路径越过ROM入口，停在首次PLL0.CON4写入；隔离`mask_init`在显式REP假设下返回，另有真实`memset`填充和只读保护检查，共9组用例。仍未完成整机启动，原有严格边界保持。
 
@@ -41,6 +41,8 @@
 | [QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw](https://github.com/felix021/h3s/releases/download/firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw) | 未修改的官方 0.1.1.8 OTA 包 |
 | [H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw](https://github.com/felix021/h3s/releases/download/firmware/H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw) | 当前已验证的按键两态版本，保留提示音参数调整 |
 | [SHA256SUMS](https://github.com/felix021/h3s/releases/download/firmware/SHA256SUMS) | 两个固件的校验值 |
+| [QCY_H3S_BR28_ROM_000000-020000.bin](https://github.com/felix021/h3s/releases/download/firmware/QCY_H3S_BR28_ROM_000000-020000.bin) | 128 KiB CPU ROM窗口，仅供分析与离线仿真，不是可刷固件 |
+| [ROM-SHA256SUMS](https://github.com/felix021/h3s/releases/download/firmware/ROM-SHA256SUMS)、[ROM-README.md](https://github.com/felix021/h3s/releases/download/firmware/ROM-README.md) | ROM校验值、读取范围、来源与使用说明 |
 
 两个包均为 **1,326,848 字节**：
 

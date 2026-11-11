@@ -59,4 +59,4 @@ python3 tools/check_local.py --rom /private/path/rom.bin
 
 固定 ISA 上游 HEAD 与现有 PIN 相同，没有新增 RTI 实测。软件活性研究、ROM reset到USB的条件链、实验日志和不完整 RAM 观测方案留在本机忽略的分析目录。
 
-RAM 观测候选仍 **nondeployable**：它们覆盖原应用 MMU 表，CPU1／MMU／DMA 所有权及返回恢复尚未证实。虽然实际 USB 切换链和官方全系统复位说明已找到，仍未执行任何新 payload。不要以本次提交作为硬件执行或刷机授权。原始 ROM、整片 Flash、完整 RAM／轨迹和私人路径不进入公共仓库。
+RAM 观测候选仍 **nondeployable**：它们覆盖原应用 MMU 表，CPU1／MMU／DMA 所有权及返回恢复尚未证实。虽然实际 USB 切换链和官方全系统复位说明已找到，仍未执行任何新 payload。不要以本次提交作为硬件执行或刷机授权。原始 ROM 不进入 Git 历史；2026-11-11用户明确要求公开后，已作为 `firmware` Release 的 `QCY_H3S_BR28_ROM_000000-020000.bin` 附件发布，另附 `ROM-SHA256SUMS` 和 `ROM-README.md`。整片 Flash、完整 RAM／轨迹和私人路径仍不公开。该发布不恢复仿真探索。

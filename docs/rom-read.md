@@ -4,7 +4,17 @@
 
 这是芯片内部 ROM 地址空间的读取，和此前取得的 **2 MiB 外置 Flash 备份**是两份不同材料；OTA UFW 也不包含这份 CPU ROM。我们没有证明该窗口就是硅片上全部 Mask ROM 的物理范围，也没有确定其他映射或硬件批次。
 
-公开结果：[evidence/rom-read.json](../evidence/rom-read.json)。原始 ROM、逐命令日志和完整设备备份留在私有目录，未提交 Git，也未添加到 `firmware` Release；现有固件附件和 tag 没有改变。
+公开结果：[evidence/rom-read.json](../evidence/rom-read.json)。2026-11-11，经用户明确要求，原始 ROM 已添加到 [firmware Release](https://github.com/felix021/h3s/releases/tag/firmware)，不放入 Git 历史。逐命令日志、完整 Flash 备份和 RAM 数据仍不公开；原有固件附件和 tag 保持不变。
+
+下载：[QCY_H3S_BR28_ROM_000000-020000.bin](https://github.com/felix021/h3s/releases/download/firmware/QCY_H3S_BR28_ROM_000000-020000.bin)、[ROM-SHA256SUMS](https://github.com/felix021/h3s/releases/download/firmware/ROM-SHA256SUMS)、[ROM-README.md](https://github.com/felix021/h3s/releases/download/firmware/ROM-README.md)。两次读取完全一致，因此只发布一份，文件偏移对应上述 CPU 地址。它用于分析与离线仿真，**不是 UFW，也不是可刷入的恢复镜像**。
+
+下载 ROM 和校验文件到同一目录后运行 `sha256sum -c ROM-SHA256SUMS`；离线使用示例：
+
+```sh
+python3 tools/probe_rom.py --rom /path/to/QCY_H3S_BR28_ROM_000000-020000.bin --report analysis/rom-execution/results.json
+```
+
+运行前按[复现流程](reproduction.md)准备固定依赖。此次发布未恢复已暂停的仿真探索，也未操作耳机。
 
 ## 文件身份与代码核对
 
