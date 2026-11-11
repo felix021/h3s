@@ -22,11 +22,13 @@ HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0
                     0x12ad6e:'frame12_push',0x12ada0:'frame12_pop'}
 
 
-def irq_case(module,app,header,rom,name,*,entry=False,banks=False,readonly=()):
+def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
     if banks:machine_options['software_irq_entry_banks']=True
+    if idle_wait:machine_options['idle_wait_projection']=True
+    if rti:machine_options['software_irq_rti']=True
     options={'initial_software_irq_pending':(0,0)}
     if entry:options['software_irq_delivery_requests']=True
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
@@ -34,14 +36,15 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,readonly=()):
                      extra_diagnostics={'software_irq_frames':dict(HANDLER_PSR_FRAMES)} if entry else None)
 
 
-def check_delivery(r):
+def check_delivery(r,*,before_rti=True):
     m=r['machine'];projection=m['software_irq_entry_projection']
     require(len(projection['deliveries'])==1,'scheduler IPI was not delivered exactly once')
     d=projection['deliveries'][0]
     require(d['core']==0 and d['irq']==127 and d['vector_address']=='0x19fffc' and
             d['handler']=='0x12ad2a' and d['reti_load_is_assumption'] and
             d['entry_sp_bank_or_icfg_effects_certified'] is False,'unexpected delivery record')
-    require(m['cores']['0']['reti']==d['reti_from'],'RETI did not keep the interrupted PC')
+    if before_rti:
+        require(m['cores']['0']['reti']==d['reti_from'],'RETI did not keep the interrupted PC')
     return d
 
 
@@ -87,7 +90,24 @@ def check(report):
             r['stop']['instruction_id']=='idle',
             'the real scheduler must run and the stop must be the peer-core IDLE boundary')
     require(r['completed_steps']>=151000,'scheduler body 0x12adec did not execute')
+    r=rows['irq127_appcore_roundtrip']
+    d=check_delivery(r,before_rti=False)
+    events=r['machine']['events']
+    rti=[e for e in events if e['kind']=='software_irq_rti']
+    require(len(rti)==1 and rti[0]['core']==0 and rti[0]['pc_after']=='0x6012028' and
+            rti[0]['reti_from_frame']=='0x6012028' and rti[0]['bank_writeback_is_assumption'],
+            'the restored task did not enter the real app_core entry through RTI')
+    restored=[e for e in events if e['kind']=='scheduler_task_gprs_restored']
+    require(restored and restored[0]['unknown_registers']==list(range(1,16)),
+            'scheduler GPR restore lost the unknown task slots')
+    require(any(e['kind']=='core_idle_wait_entered' for e in events),
+            'peer core never reached its IDLE wait under the projection')
+    require(r['stop']['kind']=='unmodeled_unmaskable_irq' and r['stop']['core']==1 and
+            r['stop']['source']=='software_irq',
+            'round trip must stop at the next real boundary: the CPU1 unmaskable software IRQ')
+    require(r['completed_steps']>=153000,'app_core task did not execute after RTI')
     report['irq127_scheduler_loop_entered']=True
+    report['app_core_entered_after_irq_rti']=True
     for r in report.get('candidate_prefixes',[]):
         d=r['machine']['software_irq_entry_projection']['deliveries']
         require(len(d)==1 and d[0]['vector_address']=='0x19fffc','candidate delivery differs')
@@ -110,7 +130,9 @@ def main():
         'vector_slot_formula_evidence':'app bytes [r1+r0<<2]=r2 at 0x6065d90 after li 0x19FE00; caller 0x6066100 passes irq=0x7f-cnum handler=0x12AD2A',
         'scenarios':[irq_case(module,app,header,rom,'irq127_request_strict'),
                      irq_case(module,app,header,rom,'irq127_entry_minimal',entry=True),
-                     irq_case(module,app,header,rom,'irq127_scheduler_entry',entry=True,banks=True)]}
+                     irq_case(module,app,header,rom,'irq127_scheduler_entry',entry=True,banks=True),
+                     irq_case(module,app,header,rom,'irq127_appcore_roundtrip',
+                              entry=True,banks=True,idle_wait=True,rti=True)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

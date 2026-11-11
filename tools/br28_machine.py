@@ -38,7 +38,7 @@ class DualCoreMachine:
                  bootstrap_rti=False,unknown_task_gprs=False,partial_icfg=False,
                  initial_icfg_masks=(0xffffffff,0xffffffff),bootstrap_status_preserve_mask=0,
                  first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False,
-                 software_irq_entry_banks=False):
+                 software_irq_entry_banks=False,idle_wait_projection=False,software_irq_rti=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -63,6 +63,13 @@ class DualCoreMachine:
         require(isinstance(software_irq_entry_banks,bool),'software IRQ entry banks are an opt-in assumption')
         require(not software_irq_entry_banks or software_irq_entry,'entry bank assumption requires the entry projection')
         self.software_irq_entry_banks=software_irq_entry_banks
+        self.idle_wait_projection=idle_wait_projection
+        self.idle_wait_cores=set()
+        require(not idle_wait_projection or software_irq_entry,
+                'IDLE wait requires the software IRQ entry projection for wake-up')
+        self.software_irq_rti=software_irq_rti
+        require(not software_irq_rti or software_irq_entry,
+                'IRQ RTI projection requires the software IRQ entry projection')
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -104,6 +111,9 @@ class DualCoreMachine:
     def select(self):
         core=1-self.last_core
         if core not in self.cores:core=0
+        if core in self.idle_wait_cores:
+            other=1-core
+            if other in self.cores and other not in self.idle_wait_cores:core=other
         if (core==1 and self.defer_core1_first_idle and 1 in self.first_task_returns and
                 self.cores[1].pc==0x12c5ca and self.deferred_core1_turns<CORE1_IDLE_DELAY_LIMIT):
             # Explore another bounded issue order. Do not execute/emulate IDLE,
@@ -112,6 +122,33 @@ class DualCoreMachine:
         self.last_core=core;self.hardware.current_core=core
         self.hardware.core_icfg=self.icfg_demands()
         return self.cores[core]
+
+    def enter_idle_wait(self,cpu):
+        # IDLE semantics are unmeasured; this projection only stops the core
+        # from issuing instructions until a real delivery wakes it.
+        require(self.idle_wait_projection,'IDLE wait projection is not enabled')
+        if cpu.core_id in self.idle_wait_cores:return
+        self.idle_wait_cores.add(cpu.core_id)
+        self.record_event({'kind':'core_idle_wait_entered','core':cpu.core_id,'pc':hex(cpu.pc)})
+        if set(self.cores)<=self.idle_wait_cores:
+            raise Blocked('all_cores_idle_waiting',idle_cores=sorted(self.idle_wait_cores))
+
+    def return_software_irq(self,cpu):
+        # Symmetric opt-in return for the one-shot scheduler-IPI handler at
+        # its exact tail: PC=RETI and SP=USP. RETI/PSR come from the real
+        # popped frame; bank writeback and ICFG effects are assumptions.
+        require(self.software_irq_rti and cpu.pc==0x12ade8 and
+                getattr(cpu,'active_context',None)=='software_irq_handler' and
+                cpu.after_then is None and cpu.repeat is None,
+                'IRQ RTI projection requires the exact handler tail')
+        require(cpu.usp is not None and isinstance(cpu.reti,int),
+                'IRQ RTI lacks a restored frame or task stack')
+        interrupted_task=cpu.reti
+        cpu.pc=interrupted_task;cpu.sp=cpu.usp;cpu.sp_known=True;cpu.steps+=1
+        cpu.active_context=None
+        self.record_event({'kind':'software_irq_rti','core':cpu.core_id,'pc_after':hex(cpu.pc),
+                           'sp_after':hex(cpu.sp),'reti_from_frame':hex(interrupted_task),
+                           'bank_writeback_is_assumption':True,'icfg_effects_certified':False})
 
     def after_step(self,cpu=None,before_pc=None):
         if cpu is not None and cpu.core_id==1 and before_pc in (0,0xa144,0xc5fe,0xc602,0x12caf4,0x12cafa,0x12cb00):
@@ -196,16 +233,22 @@ class DualCoreMachine:
         self.first_task_returns[cpu.core_id]=event;self.record_event(event)
 
     def deliver_software_irq(self,cpu,irq):
-        # Opt-in minimal CPU entry for the actual scheduler IPI. RETI-load and
-        # vector-slot reading are checked before any state changes; entry SP
-        # bank, ICFG side effects and hardware frame writes stay unknown.
-        require(self.software_irq_entry and irq==127 and not self.software_irq_deliveries and
+        # Opt-in minimal CPU entry for the actual per-core scheduler IPI
+        # (IRQ 127-cnum; both handlers are the firmware-registered 0x12AD2A).
+        # RETI-load and vector-slot reading are checked before any state
+        # changes; entry SP bank, ICFG side effects and hardware frame writes
+        # stay unknown.
+        require(self.software_irq_entry and irq==(127-cpu.core_id) and
+                all(d['core']!=cpu.core_id for d in self.software_irq_deliveries) and
                 not cpu.bootstrap_context and cpu.after_then is None and cpu.repeat is None,
-                'software IRQ entry requires the exact single scheduler IPI at an instruction boundary')
+                'software IRQ entry requires the exact per-core scheduler IPI at an instruction boundary')
         slot=0x19fe00+irq*4
         try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
         except Blocked:raise Blocked('vector_slot_uninitialized',core=cpu.core_id,irq=irq,
                                      address=hex(slot)) from None
+        if cpu.core_id in self.idle_wait_cores:
+            self.idle_wait_cores.discard(cpu.core_id)
+            self.record_event({'kind':'core_woken_by_delivery','core':cpu.core_id,'irq':irq})
         interrupted=cpu.pc
         cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
         cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown

@@ -534,6 +534,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 if insn.id=='rti' and self.core_id==1 and self.pc==0x12cb06:
                     machine.return_bootstrap(self);adapters['conditional_cpu1_bootstrap_rti']+=1
                     return
+                if (insn.id=='rti' and machine.software_irq_rti and
+                        getattr(self,'active_context',None)=='software_irq_handler' and self.pc==0x12ade8):
+                    # Symmetric to the entry assumption: PC=RETI, SP=USP. The
+                    # restored RETI/PSR come from the real popped frame; the
+                    # bank writeback and ICFG effects stay uncertified.
+                    machine.return_software_irq(self);adapters['conditional_software_irq_rti']+=1
+                    return
                 if self.pc==0x06066126:
                     require(insn.id=='pop.srl' and raw.get('m',raw.get('n'))==0x29 and self.task_frame_restore and
                             self.sp==self.task_frame_restore['base'],'first-task special frame lacks its selected stack')
@@ -572,6 +579,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         mask=raw.get('m',raw.get('n'));regs=[i for i in range(16) if mask>>i&1]
                     special='rets' if '.rets_' in insn.id else 'pc' if '.pc_' in insn.id else None
                     count=len(regs)+(special is not None)
+                    # The scheduler's own task restore (handler tail after the
+                    # reloaded TCB frame pointer) loads task-frame GPR slots;
+                    # uninitialised slots become UnknownWord like the first task.
+                    task_frame_load=(not insn.id.startswith('push') and self.pc==0x12ada2 and
+                                     getattr(self,'active_context',None)=='software_irq_handler' and
+                                     regs==list(range(16)))
                     if insn.id.startswith('push'):
                         values=[self.R[i] for i in regs]+([self.rets] if special else [])
                         base=self.sp-4*count
@@ -580,7 +593,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         for i,v in enumerate(values):self.mem.write_abstract_word(base+4*i,v)
                         self.sp=base
                     else:
-                        values=[self.mem.abstract_word(self.sp+4*i) for i in range(count)]
+                        values=[self.mem.abstract_word(self.sp+4*i,task_frame=task_frame_load) for i in range(count)]
+                        if task_frame_load:
+                            machine.record_event({'kind':'scheduler_task_gprs_restored','core':self.core_id,
+                                'frame':hex(self.sp),'unknown_registers':[i for i,v in enumerate(values) if isinstance(v,UnknownWord)]})
                         target=values[-1] if special else None
                         if isinstance(target,UnknownWord):target.consumed()
                         if isinstance(target,IcfgValue):target=target.concrete()
@@ -1096,6 +1112,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 hardware.debug.check_fetch(c.pc,extent,c.core_id)
             row.update(instruction_id=insn.id,text=module.codec.format(insn,raw),
                        bytes=c.mem.read(c.pc,size).hex())
+            if machine is not None and insn.id=='idle' and machine.idle_wait_projection:
+                # IDLE semantics unmeasured: the core stops issuing until a
+                # real delivery wakes it. No wake injection, no held-bit edit.
+                machine.enter_idle_wait(c)
+                raise CoreStall('core_idle_waiting',core=c.core_id)
             c.step()
             completed+=1
             row['next_pc']=hex(c.pc)
