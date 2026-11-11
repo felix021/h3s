@@ -1,6 +1,6 @@
 # H3S project guide for coding agents
 
-**Session paused at the user's explicit request (2026-11-11).** Read [HANDOFF.md](HANDOFF.md) before resuming. The latest checkpoint contains WIP runner-artifact corrections and opt-in task-return comparisons; no full regression of this combined tree has been completed. Do not treat older passing reports or counterfactual returns as complete boot/repair validation. Resume only on the user's request. No new device action is authorized.
+**Resumed 2026-11-11; regression baseline rebuilt.** The k2 test-frame corrections are now fully regression-tested: `check_local.py --rom` exits 0 including the newly wired `test_architectural_models.py` and `test_task_returns.py`. `probe_hardware` and `probe_gpio_irq` enable the existing exact full-word-store path for the ROM delay helpers (`st.w.sp` at `0xc2ba`/`0xc2c6`); all 13 hardware scenarios and both MMU boundaries match the `ab9f4e1` baseline again. `probe_pi32v2` now applies `architectural_k2` in its cpu factory; the five r2 vectors stay BLOCKED. Executor-report diffs vs `ab9f4e1` are metadata only (k2-correction records, adapter counter buckets, switch fields) and are explained, not rolled back. Counterfactual first-task returns remain hypotheses, NOT measured RTI semantics; whole boot and EQ repair remain unvalidated. No new device action is authorized. Read [HANDOFF.md](HANDOFF.md) for the current frontier.
 
 ## Purpose and current result
 
