@@ -238,10 +238,10 @@ class DualCoreMachine:
         # RETI-load and vector-slot reading are checked before any state
         # changes; entry SP bank, ICFG side effects and hardware frame writes
         # stay unknown.
-        require(self.software_irq_entry and irq==(127-cpu.core_id) and
+        require(self.software_irq_entry and (irq==(127-cpu.core_id) or (cpu.core_id==1 and irq==125)) and
                 all(d['core']!=cpu.core_id for d in self.software_irq_deliveries) and
                 not cpu.bootstrap_context and cpu.after_then is None and cpu.repeat is None,
-                'software IRQ entry requires the exact per-core scheduler IPI at an instruction boundary')
+                'software IRQ entry requires the exact per-core scheduler/sync IPI at an instruction boundary')
         slot=0x19fe00+irq*4
         try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
         except Blocked:raise Blocked('vector_slot_uninitialized',core=cpu.core_id,irq=irq,

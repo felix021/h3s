@@ -1137,7 +1137,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         except IrqDeliveryRequest as request:
             if machine is None or not machine.software_irq_entry:
                 raise ValueError('delivery request without the opt-in machine entry projection')
-            machine.deliver_software_irq(c,request.details['irq'])
+            # The requesting advance may fire for the peer core; deliver to
+            # the target core, whose current PC is the interrupted context.
+            target=machine.cores.get(request.details['core'],c)
+            machine.deliver_software_irq(target,request.details['irq'])
             row['software_irq_entry']=request.details
         except (RuntimeError,ValueError,KeyError,IndexError) as e:
             stop={'kind':'upstream_simulator_failure','error_type':type(e).__name__,'message':str(e)}

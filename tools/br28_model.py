@@ -700,10 +700,15 @@ class Timer0:
 
 
 class IRQController:
-    def __init__(self,*,initial_config=None,initial_ipmask=None):
+    def __init__(self,*,initial_config=None,initial_ipmask=None,unmaskable_irq_projection=False):
         self.config=[None]*32 if initial_config is None else list(initial_config)
         if len(self.config)!=32:raise ValueError('need32 explicit ICFG words')
         self.ipmask=initial_ipmask
+        # SDK hwi: priorities 6/7 are the unmaskable/GIEMASK class, set only via
+        # irq_unmask_set (+6/clamp 7), delivered independently of IPMASK. The
+        # projection assumes GIEMASK enabled and the enable bit alone gates
+        # delivery; GIEMASK reset value and rules are NOT documented.
+        self.unmaskable_irq_projection=unmaskable_irq_projection
 
     def eligible(self,index,icfg):
         if icfg&0x300!=0x300:return False  # independent gates8/9 in pinned app2/app3 measurements
@@ -714,6 +719,7 @@ class IRQController:
         if self.ipmask is None:raise Blocked('uninitialized_ipmask')
         priority=nibble>>1
         if priority>=6:
+            if self.unmaskable_irq_projection:return True
             raise Blocked('unmodeled_unmaskable_irq',irq=index,priority=priority)
         return priority>=self.ipmask
 
@@ -735,7 +741,8 @@ class BR28Model:
                  reset_history_projection=False,reset_history_words=None,
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,software_irq_command_projection=False,
-                 initial_software_irq_pending=None,software_irq_delivery_requests=False):
+                 initial_software_irq_pending=None,software_irq_delivery_requests=False,
+                 unmaskable_irq_projection=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
         if timer_lsb_ticks_per_step is not None and (not isinstance(timer_lsb_ticks_per_step,int) or not 0<=timer_lsb_ticks_per_step<=256):
             raise ValueError('invalid explicit LSB virtual tick rate')
@@ -743,7 +750,8 @@ class BR28Model:
             raise ValueError('oscillator status fixture must be unknown or unsigned32')
         self.timer_lsb_ticks_per_step=timer_lsb_ticks_per_step
         self.timer=Timer0((4,) if timer_lsb_ticks_per_step is None else (0,4))
-        self.irq=IRQController(initial_config=initial_irq_config,initial_ipmask=initial_ipmask)
+        self.irq=IRQController(initial_config=initial_irq_config,initial_ipmask=initial_ipmask,
+                               unmaskable_irq_projection=unmaskable_irq_projection)
         self.multicore_enabled=False;self.current_core=0;self.irq1=None;self.core_icfg={}
         self.cpu1_release_handler=None;self.secondary_cpu_executed=False
         if initial_software_irq_pending is not None and not software_irq_command_projection:
@@ -1017,7 +1025,8 @@ class BR28Model:
 
     def enable_multicore(self,irq1_config,ipmask1,release_handler):
         if self.multicore_enabled or not self.cpu1_held_projection:raise ValueError('multicore requires a fresh held-CPU1 model')
-        self.irq1=IRQController(initial_config=irq1_config,initial_ipmask=ipmask1)
+        self.irq1=IRQController(initial_config=irq1_config,initial_ipmask=ipmask1,
+                                unmaskable_irq_projection=self.irq.unmaskable_irq_projection)
         self.core_power={a:PartialWord() for a in CORE_PMU_CON1}
         self.cpu1_release_handler=release_handler;self.multicore_enabled=True
 

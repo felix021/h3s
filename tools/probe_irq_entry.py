@@ -19,10 +19,12 @@ from probe_boot_handoff import package_header
 from probe_pi32v2 import ROOT, PIN, upstream, require
 
 HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0x12adde:'psr_pop',
-                    0x12ad6e:'frame12_push',0x12ada0:'frame12_pop'}
+                    0x12ad6e:'frame12_push',0x12ada0:'frame12_pop',
+                    0x60662c8:'frame12_push'}
 
 
-def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,readonly=()):
+def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
+             unmaskable=False,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -31,6 +33,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if rti:machine_options['software_irq_rti']=True
     options={'initial_software_irq_pending':(0,0)}
     if entry:options['software_irq_delivery_requests']=True
+    if unmaskable:options['unmaskable_irq_projection']=True
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=250000,
                      extra_diagnostics={'software_irq_frames':dict(HANDLER_PSR_FRAMES)} if entry else None)
@@ -106,8 +109,23 @@ def check(report):
             r['stop']['source']=='software_irq',
             'round trip must stop at the next real boundary: the CPU1 unmaskable software IRQ')
     require(r['completed_steps']>=153000,'app_core task did not execute after RTI')
+    r=rows['irq125_sync_roundtrip']
+    deliveries=r['machine']['software_irq_entry_projection']['deliveries']
+    require([(d['core'],d['irq'],d['handler']) for d in deliveries]==
+            [(0,127,'0x12ad2a'),(1,125,'0x60662c8')],
+            'the peer sync IPI was not delivered to the real CPU1 handler')
+    sync=deliveries[1]
+    require(sync['vector_address']=='0x19fff4' and sync['entry_banks'] and
+            not sync['entry_banks']['silicon_bank_switch_certified'],'CPU1 sync delivery record differs')
+    require(r['peripherals']['software_irq_commands']['pending']['1']=={'known_mask':'0xf','known_value':'0x0'},
+            'CPU1 sync pending was not acknowledged by its real handler')
+    require(r['stop_core']==0 and r['stop_pc']=='0x12b8d8' and
+            r['stop']['kind']=='sfc_baud_change_requires_observed_disable',
+            'after the sync handshake the stop must be the real SFC baud boundary')
+    require(r['completed_steps']>153430,'the CPU0 busy-wait did not resume after the CPU1 ack')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
+    report['dual_core_sync_handshake_executed']=True
     for r in report.get('candidate_prefixes',[]):
         d=r['machine']['software_irq_entry_projection']['deliveries']
         require(len(d)==1 and d[0]['vector_address']=='0x19fffc','candidate delivery differs')
@@ -132,7 +150,9 @@ def main():
                      irq_case(module,app,header,rom,'irq127_entry_minimal',entry=True),
                      irq_case(module,app,header,rom,'irq127_scheduler_entry',entry=True,banks=True),
                      irq_case(module,app,header,rom,'irq127_appcore_roundtrip',
-                              entry=True,banks=True,idle_wait=True,rti=True)]}
+                              entry=True,banks=True,idle_wait=True,rti=True),
+                     irq_case(module,app,header,rom,'irq125_sync_roundtrip',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
