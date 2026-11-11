@@ -509,5 +509,58 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['completed_steps'],0)
         self.assertIn('PWM return might be consumed',result['stop']['message'])
 
+    # ---- bank B 头 0xFF fixture(opt-in erased_bankb,机制层钉子)----
+
+    def erased_bankb_case(self,ptr,*,fixture=True,store=False):
+        h=self.handoff()
+        h['description']['phase']='erased bank-B fixture mechanism test'
+        if fixture:h['readonly'].append((0x60fdfe0,b'\xff'*32))
+        # 真实 app 指令:0x6010fc8 `r2=[r0++=4]`(rep 4 8 体内的字装载)、0x6010fca
+        # `[r1++=4]=r2`(配套字存储)——find_partition 拷贝路径用的同一指令形状。
+        regs=[0]*16;regs[0]=ptr;regs[1]=ptr;regs[2]=0x12345678
+        return explore(self.module,self.app,name='erased_bankb_fixture',handoff=h,
+            diagnostics={'entry_pc':0x6010fca if store else 0x6010fc8,'initial_sp':STACK_TOP,
+                         'initial_rets':ENTRY,'initial_gprs':regs},budget=1)
+
+    def test_erased_bankb_fixture_reads_back_0xff_words(self):
+        # 区内(含末字 0x60fe000-4)读出 0xffffffff,post-increment 正常递增。
+        for ptr in (0x60fdfe0,0x60fe000-4):
+            result=self.erased_bankb_case(ptr)
+            self.assertEqual(result['completed_steps'],1)
+            self.assertEqual(result['stop']['kind'],'instruction_budget')
+            self.assertEqual(result['last_registers']['r'][2],'0xffffffff')
+            self.assertEqual(result['last_registers']['r'][0],hex(ptr+4))
+
+    def test_erased_bankb_fixture_bounds_and_default_stay_strict(self):
+        # fixture 只覆盖 32 字节头读取窗:紧邻区外(下界 0x60fdfdc/上界 0x60fe000)
+        # 与默认(不挂 fixture)都继续严格停 unmapped——bank B 其余字节不臆造。
+        for ptr in (0x60fdfdc,0x60fe000):
+            result=self.erased_bankb_case(ptr)
+            self.assertEqual(result['completed_steps'],0)
+            self.assertEqual(result['stop'],{'kind':'unmapped_memory','access':'read',
+                'address':hex(ptr),'size':4,'reference_sdk_register':None})
+        result=self.erased_bankb_case(0x60fdfe0,fixture=False)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+
+    def test_erased_bankb_fixture_is_read_only(self):
+        result=self.erased_bankb_case(0x60fdfe0,store=True)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+            'address':'0x60fdfe0','size':4,'value_bytes':'78563412'})
+
+    def test_erased_bankb_header_crc_can_never_match(self):
+        # 黄金算术钉子:消费者(find_partition 0x6010f32)在 0x6010f80 比较
+        # crc16(头 bytes 2..31) 与头前 2 字节期望值;0xFF 擦除态下期望=0xffff,
+        # 而按 app 软件 CRC-16 参数(多项式 0x1021、MSB-first、初值=种子 0、
+        # 无输出异或)计算 30 个 0xff 的结果=0x75f8——既非 0(0x6010f78 的
+        # 「CRC==0 视为无效」分支)也非 0xffff,必然走不匹配→良性跳过分支。
+        crc=0
+        for byte in b'\xff'*30:
+            crc^=byte<<8
+            for _ in range(8):
+                crc=((crc<<1)^0x1021)&0xffff if crc&0x8000 else (crc<<1)&0xffff
+        self.assertEqual(crc,0x75f8)
+        self.assertNotIn(crc,(0,0xffff))
+
 
 if __name__=='__main__':unittest.main()

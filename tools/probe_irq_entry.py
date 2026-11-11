@@ -9,6 +9,12 @@ entry, IDLE wake and hardware frame writes stay unmodeled. The trailing
 irq125_repeat_inert scenario pins that the opt-in repeat_irq_delivery
 projection (handler return re-enables delivery) stays inert on this prefix
 until the firmware actually pends a second time. No flash approval.
+
+The trailing crc_bankb_erased_fixture scenario layers an explicit unverified
+erased-bank fixture (32 bytes of 0xFF over the only bank-B read observed on
+this prefix) on top of crc_engine_roundtrip: the consumer really computes the
+header CRC and selects its benign mismatch branch; crc_engine_roundtrip itself
+keeps stopping honestly on the unmapped bank-B read.
 """
 import argparse
 import json
@@ -24,6 +30,11 @@ from probe_pi32v2 import ROOT, PIN, upstream, require
 HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0x12adde:'psr_pop',
                     0x12ad6e:'frame12_push',0x12ada0:'frame12_pop',
                     0x60662c8:'frame12_push',0x606633e:'frame12_pop'}
+
+# bank B 头 fixture 的显式范围:find_partition 探测表 0x060A0FA4 第 5 项
+# (偏移 0x100000)的 32 字节头读取窗(CPU=0x06000000+偏移-0x2020 头)。
+# 只覆盖消费者分析实测的读取范围;见 irq_case 的 erased_bankb 注释。
+ERASED_BANKB_HEADER_RANGE=(0x60fdfe0,32)
 
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
@@ -44,7 +55,8 @@ SFC_RESUME_OPERATIONS=(
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
-             icu_region=False,dcu_cmo=False,zero_rep_skip=False,flash_image_bytes=None,readonly=()):
+             icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
+             flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -89,6 +101,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
+    # erased_bankb:opt-in 的「未验证擦除态 bank B」显式 fixture。消费者分析
+    # (2026-11-12 反汇编+trace)钉死:app find_partition(0x6010f32) 主循环从
+    # 探测表 0x060A0FA4 第 5 项(flash 偏移 0x100000)读 32 字节头——CPU 可见
+    # 0x60fdfe0=0x06000000+0x100000-0x2020,是本前缀对 bank B 的唯一实际读
+    # 取范围。CRC16(头 bytes 2..31)与头前 2 字节期望值在 0x6010f80 比较,
+    # 不匹配→0x6010f5a 良性跳到下一项;5 项全败→0x6010fe6 return 1;调用者
+    # (VM init 0x6011000 内 0x6011210)只是 free 临时对象并清 OTP 全局槽
+    # 827/828,VM init 返回值被 0x601205a 调用者忽略——失败分支良性。0xFF
+    # 擦除态下期望 CRC=0xffff、真实计算值=0x75f8,必然不匹配,由真实代码
+    # 自己选择分支。这是显式环境假设(unverified erased-bank fixture),不是
+    # 已知出厂状态;范围严格限定这 32 字节,其余 bank B 继续严格 unmapped。
+    if erased_bankb:
+        base,length=ERASED_BANKB_HEADER_RANGE
+        readonly=tuple(readonly)+((base,b'\xff'*length),)
     if sfc_suspend:
         # The SFC suspend tail sets 0xfd1c00|=1 (write-only RMW projection) and
         # then the wrapper reads the second SFC 0xfe0100 CON. The second SFC is
@@ -400,10 +426,76 @@ def check(report):
     require(r['instruction_adapters'].get('rep_copy_unknown_transport_load')==2 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==2,
             'the boot-info padding/reserved words were not transported exactly twice')
+    r=rows['crc_bankb_erased_fixture']
+    # bank B 头 0xFF fixture(显式环境假设,unverified erased-bank fixture,非已知
+    # 出厂状态;范围=探测表第 5 项的 32 字节头读取窗,其余 bank B 严格 unmapped)。
+    # 消费者分支图(app 反汇编+trace 钉死,报告/HANDOFF 有全文):find_partition
+    # 0x6010f32 主循环 5 项逐项读 32B 头→crc16(头 bytes 2..31)→0x6010f80 与头前
+    # 2 字节期望值比较,不匹配→0x6010f5a 良性跳下一项;0xFF 头期望 0xffff、真实
+    # 计算值 0x75f8(下面对黄金软件算法重算),必然不匹配→r4=5→0x6010f5c ifs
+    # (r4>4)→0x6010fe6 return 1;调用者 VM init(0x6011210)free 临时对象、清
+    # OTP 全局槽 827/828 后与成功路径汇合,VM init 返回值被 0x601205a 忽略——
+    # 失败分支良性,由真实代码自己计算 CRC 并选择分支(不强制任何结果)。
+    crc_ff=r['peripherals']['hardware_crc_projection']
+    reference_ff=0
+    for byte in b'\xff'*30:
+        reference_ff^=byte<<8
+        for _ in range(8):
+            reference_ff=((reference_ff<<1)^0x1021)&0xffff if reference_ff&0x8000 else (reference_ff<<1)&0xffff
+    require(reference_ff==0x75f8 and reference_ff not in (0,0xffff),
+            'the golden CRC of an erased 0xFF header must stay a non-matching value')
+    # 前 14 次往返与 crc_engine_roundtrip 完全相同(fixture 不改变既有前缀),
+    # 第 15 次(result_reads[14])是 0xFF 头的真实计算值,后 4 次是探测失败后
+    # VM init 链继续运行时的真实 CRC 使用——失败分支确实继续执行的证据。
+    crc_base=rows['crc_engine_roundtrip']['peripherals']['hardware_crc_projection']
+    require(crc_ff['seed_writes'][:14]==crc_base['seed_writes'] and
+            crc_ff['result_reads'][:14]==crc_base['result_reads'] and
+            crc_ff['fed_bytes']==crc_base['fed_bytes']+150,
+            'the erased fixture must not change the first fourteen CRC round trips')
+    require(crc_ff['result_reads'][14]=='0x75f8' and len(crc_ff['seed_writes'])==19 and
+            crc_ff['fed_bytes']==570 and len(crc_ff['result_reads'])==19,
+            'the fifth probe entry must really CRC the 0xFF header bytes and the chain must continue')
+    require(crc_ff['result_reads'][15:]==['0xc190','0xf271','0xb758','0x5ddd'],
+            'the post-probe VM-init CRC usages changed after the fixture took the mismatch branch')
+    # 新停点:探测良性失败后 VM init 链再走 6,829 步,停在 0x6060a74 的
+    # d[sp]=r1_r0 双字存储——上游 store 模型合并写前需要读旧 word,sp≈0x19e2fc
+    # 落在 physical_heap 未初始化区(簿记读,非 guest load),下一个独立决策点。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6060a74' and
+            r['stop']['kind']=='upstream_store_bookkeeping_read' and
+            r['stop']['access']=='read' and r['stop']['address']=='0x19e2fc' and
+            r['stop']['region']=='physical_heap',
+            'the erased fixture frontier must stop at the upstream store bookkeeping read boundary')
+    require(r['completed_steps']==183117,'the erased fixture scenario changed its step count')
+    require(r['peripherals']['software_irq_commands']['commands']==16 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==8,
+            'the extended VM-init sync requests changed the software IRQ bookkeeping')
+    deliveries=r['machine']['software_irq_entry_projection']['deliveries']
+    require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
+            [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7,
+            'the extra cross-core delivery after the probe mismatch differs from the repeat projection')
+    # ROM 拷贝族/CPU0-CPU1 同步在 fixture 放行后继续:rep.i 体 80→103(第 5 项
+    # 头拷贝+后续链)、零计数跳过 2→3(该次拷贝 len&3==0 的 0x4176 尾)、寄存器
+    # 计数 rep 7→10。unknown 运输不变(2/2)。
+    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==103 and
+            r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
+            r['instruction_adapters'].get('register_rep_multi_block_projection')==10 and
+            r['instruction_adapters'].get('rep_copy_unknown_transport_load')==2 and
+            r['instruction_adapters'].get('rep_copy_unknown_transport_store')==2,
+            'the fixture-scenario REP projections differ from the observed prefix')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
     report['hardware_crc_engine_modeled']=True
+    report['erased_bankb_fixture_assumption']=(
+        'unverified erased-bank fixture (NOT a known factory state): the 32-byte bank-B header read at '
+        '0x60fdfe0 (flash offset 0x100000, probe-table entry 5) is mapped read-only to 0xFF; the consumer '
+        'find_partition 0x6010f32 really computes CRC-16 over the 30 header data bytes (golden value 0x75f8, '
+        'recomputed in the assertion from the app software parameters) and compares it at 0x6010f80 against '
+        'the header word 0xffff, so the benign mismatch branch (0x6010f5a next entry -> table exhausted -> '
+        'return 1 -> caller frees the temp object and clears the OTP slots 827/828, the VM-init return value '
+        'ignored at 0x601205a) is selected by real code, never forced; every other bank-B address stays '
+        'strictly unmapped; the crc_engine_roundtrip scenario without the fixture still stops honestly at '
+        '176,288 on the unmapped 0x60fdfe0 read')
     for r in report.get('candidate_prefixes',[]):
         d=r['machine']['software_irq_entry_projection']['deliveries']
         require(len(d)==1 and d[0]['vector_address']=='0x19fffc','candidate delivery differs')
@@ -446,7 +538,12 @@ def main():
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
-                              dcu_cmo=True,zero_rep_skip=True,flash_image_bytes=image)]}
+                              dcu_cmo=True,zero_rep_skip=True,flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'crc_bankb_erased_fixture',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
