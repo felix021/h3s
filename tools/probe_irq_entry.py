@@ -44,7 +44,7 @@ SFC_RESUME_OPERATIONS=(
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
-             flash_image_bytes=None,readonly=()):
+             icu_region=False,flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -58,6 +58,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if entry:options['software_irq_delivery_requests']=True
     if unmaskable:options['unmaskable_irq_projection']=True
     if hardware_crc:options['hardware_crc_projection']=True
+    # icu_region:opt-in 的两核 ICU region 寄存器组(0xffe400/0xffec00 的
+    # +0x14/+0x18/+0x10)。ROM 0xc726 把 VM flash 窗口配进两核 ICU:每核
+    # [+0x14]=begin、[+0x18]=end-1(write-only 记录)、[+0x10]=命令字
+    # 0xca000020/0x40(与 0xca000010 同族,复用 CON bit30 完成投影)。默认关。
+    if icu_region:options['icu_region_projection']=True
     # rep_block:opt-in 的多指令 rep.i 体执行(0x6010b14 rep 4 32 字节拷贝,
     # 及其 callee 0x6010a64 内的四个 rep 4 8)。默认关闭,legacy 报告不变。
     # rep_unknown_transport:opt-in 的 rep 拷贝体未知字节运输(0x600a352 rep 4 4
@@ -271,15 +276,21 @@ def check(report):
     # [+8]=0x7ffffff、[0]|=2)按 write-only 记录走完(sfc_read_bus 扩展),
     # call 0x12c030 后 CPU0 真实地第二次 pend irq125 到 CPU1(repeat 投影
     # +cpu1_control bit0 释放位修正),第二次交付把 CPU1 从停泊唤醒、
-    # handler 处理完回停泊。前沿推进到 162,898 步,停在 ROM 0xc75a
-    # `st.w [r3+20]=r10` 写 0xffe414=0x061d7fe0——ROM 0xc726 函数把 VM flash
-    # 窗口配进两核 ICU(0xffe400/0xffec00,每核 +0x14=begin/+0x18=end-1/
-    # +0x10=命令字),ICU region 寄存器组未建模,是下一个外设边界。
-    require(r['stop_core']==0 and r['stop_pc']=='0xc75a' and
-            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xffe414',
-                        'size':4,'value_bytes':'e07f1d06'},
-            'after the SFC window writes the stop must be the unmodeled ICU region write')
-    require(r['completed_steps']==162898,'the SFC window writes changed their step count')
+    # handler 处理完回停泊。之后 VM init 链 call ROM export sfc_drop_cache
+    # (0x1fdcc→0xc726,实参 beg=0x061d7fe0/len=0x20):把 [0x061d7fe0,
+    # 0x061d8000) 配进两核 ICU(每核 cli→testset 0x19fd78 抢锁→[+0x14]=begin、
+    # [+0x18]=end-1(write-only 记录)→[+0x10]=0xca000040(0xc72c if.ge len>=
+    # 0x1000 在 0xc730/0xc736 两条谓词 li 里二选一,实测 len=0x20 选 0x40)→
+    # call 0xbac0 等 CON bit30 完成(与 0xca000010 使能路径同一条轮询指令)→
+    # call 0xbad4 释放锁),r3+=0x800 换核重复 2 次。region 命令完成后尾调
+    # flushinv_dcache(0x1fdb0→0xc71a→0xc6f4):0xff05cc 逐地址失效循环,体是
+    # 寄存器计数 `rep r1,4`(add.rrr.p+st.w 并行对)——rep.i 多指令体 gate
+    # 不覆盖寄存器计数形式,寄存器计数 rep 落到不支持运行时指令,是下一个
+    # 边界(0xff05cc DCU 失效口同样未建模,rep 先停)。
+    require(r['stop_core']==0 and r['stop_pc']=='0xc70c' and
+            r['stop']=={'kind':'unsupported_runtime_instruction','instruction_id':'rep'},
+            'after the ICU region writes the stop must be the register-count REP in the DCU invalidate loop')
+    require(r['completed_steps']==163075,'the ICU region projection changed its step count')
     gate=r['peripherals']['sfc_clock_gate_projection']
     require(gate['select']=='0x3' and gate['select_writes']==1 and
             gate['select_write_only'] is True and gate['select_readback_observed'] is False,
@@ -295,6 +306,26 @@ def check(report):
             'the SFC window register record differs')
     require(r['instruction_adapters'].get('sfc_window_enable_rmw')==1,
             'the SFC window control RMW was not executed exactly once')
+    # 两核 ICU region 组(opt-in icu_region_projection):sfc_drop_cache 把
+    # [0x061d7fe0,0x061d8000) 配进两核——+0x14/+0x18 各一写(write-only 记录),
+    # +0x10 命令 0xca000040 与 0xca000010(bootstrap 使能)同走 CON bit30
+    # 完成投影(64 步 fixture),两核各完成一次,busy 读 14→74。
+    icu=r['peripherals']['icu_initialization_projection']
+    region=icu['region_projection']
+    require(icu['commands']==[{'address':'0xffec10','value':'0xca000010'},
+                              {'address':'0xffe410','value':'0xca000040'},
+                              {'address':'0xffec10','value':'0xca000040'}] and
+            icu['completed_commands']==3 and icu['busy_reads']==74 and not icu['pending_cores'],
+            'the two-core ICU region commands did not run through the shared completion projection')
+    require(region['registers']['0xffe400']=={'0x14':{'value':'0x61d7fe0','writes':1},
+                                              '0x18':{'value':'0x61d7fff','writes':1}} and
+            region['registers']['0xffec00']=={'0x14':{'value':'0x61d7fe0','writes':1},
+                                              '0x18':{'value':'0x61d7fff','writes':1}},
+            'the ICU region begin/end records differ from the observed sfc_drop_cache arguments')
+    require(region['write_only'] and not region['readback_observed'] and
+            not region['command_low_byte_semantics_verified'] and
+            region['same_busy_machinery_as_command4'],
+            'the ICU region projection report is missing its explicit assumption record')
     # 窗口组放行后 CPU0 第二次 pend irq125(commands 4→6),第二次交付把
     # 停泊的 CPU1 再唤醒一次:暂停点1 的真实第二次交付在此前沿被观察到。
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
@@ -358,7 +389,8 @@ def main():
                      irq_case(module,app,header,rom,'crc_engine_roundtrip',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
-                              rep_block=True,rep_unknown_transport=True,repeat=True,flash_image_bytes=image)]}
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

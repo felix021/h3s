@@ -12,6 +12,7 @@ from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
 from br28_model import SDTAP_CON, PSRAM_CON0, IOMAP_CON0, USB_IO_CON0, USB_DISABLE_REGISTERS
 from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection, RESET_CONFIG_MASKS
 from br28_model import MPUConfigurationProjection, GpioOutValue
+from br28_model import IcuInitializationProjection, ICU_BASES
 
 
 class ModelTests(unittest.TestCase):
@@ -631,6 +632,60 @@ class ModelTests(unittest.TestCase):
         # 窗口 RMW 不经过读回:已知位只含置位过的 bit1,整字消费仍严格停
         with self.assertRaisesRegex(Blocked,'sfc_window_readback_not_observed'):
             model.read(SFC_BASE+0x18)
+
+    def test_icu_region_registers_take_only_the_observed_shapes(self):
+        # 两核 ICU region 组(0xffe400/0xffec00 的 +0x14/+0x18/+0x10)。证据形状:
+        # ROM export sfc_drop_cache(0x1fdcc→0xc726,SDK cache.h (beg,len) 签名族)
+        # 每核 cli→testset 0x19fd78 抢锁→[+0x14]=begin、[+0x18]=end-1(实测
+        # 0x061d7fe0/0x061d7fff,32 字节窗口)→[+0x10]=0xca000040(0xc72c 按
+        # len>=0x1000 在 0xc730/0xc736 两条谓词 li 里二选一,实测 len=0x20 选
+        # 0x40)→call 0xbac0 轮询 CON bit30(与 0xca000010 使能路径 0xbae0 同一
+        # 条 ld.w.idxs@0xbaca)→call 0xbad4 释放锁。数据寄存器固件只写不读
+        # (该序列与 app 全量扫描均无读回)——write-only 记录,读回一律停。
+        proj=IcuInitializationProjection({0xffe400:0x80000000,0xffec00:0x80000000},4,region_projection=True)
+        proj.write(0xffe414,0x061d7fe0);proj.write(0xffe418,0x061d7fff)
+        proj.write(0xffe410,0xca000040)
+        self.assertEqual(proj.read(0xffe400)&0x40000000,0x40000000)  # CON bit30 busy
+        for _ in range(4):proj.advance()
+        self.assertEqual(proj.read(0xffe400),0x80000000)             # 完成后回到 fixture
+        with self.assertRaisesRegex(Blocked,'icu_region_readback_not_modeled'):proj.read(0xffe414)
+        with self.assertRaisesRegex(Blocked,'icu_region_readback_not_modeled'):proj.read(0xffec18)
+        with self.assertRaisesRegex(Blocked,'icu_command_not_modeled'):proj.write(0xffe410,0xca000030)
+        with self.assertRaisesRegex(Blocked,'icu_command_not_modeled'):proj.write(0xffe410,0xca000010|0xf0)
+        report=proj.report()['region_projection']
+        self.assertEqual(report['registers']['0xffe400'],
+                         {'0x14':{'value':'0x61d7fe0','writes':1},'0x18':{'value':'0x61d7fff','writes':1}})
+        self.assertEqual(report['registers']['0xffec00'],
+                         {'0x14':{'value':None,'writes':0},'0x18':{'value':None,'writes':0}})
+        self.assertTrue(report['write_only'] and not report['readback_observed'])
+        self.assertFalse(report['command_low_byte_semantics_verified'])
+        self.assertTrue(report['same_busy_machinery_as_command4'])
+        self.assertEqual(proj.report()['commands'],[{'address':'0xffe410','value':'0xca000040'}])
+
+    def test_icu_region_projection_is_opt_in_and_routed(self):
+        # 默认关:不开 icu_initialization_projection 时 region 写是不支持的外设写;
+        # 只开 ICU 初始化投影时 +0x14/+0x18 仍不接管、region 命令字仍拒绝;
+        # 两个开关都开才走 write-only 记录 + 共享完成投影(必须挂初始化投影,
+        # 单独开 region 直接报参数错误)。
+        model=BR28Model()
+        self.assertFalse(model.handles(0xffe414,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):model.write(0xffe414,1)
+        model=BR28Model(icu_initialization_projection=True,icu_command_steps=4)
+        self.assertFalse(model.handles(0xffe414,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):model.write(0xffe414,1)
+        with self.assertRaisesRegex(Blocked,'icu_command_not_modeled'):model.write(0xffe410,0xca000040)
+        with self.assertRaises(ValueError):BR28Model(icu_region_projection=True)
+        model=BR28Model(cache_status_probe=True,
+                        cache_status_words={base:0x80000000 for base in ICU_BASES},
+                        icu_initialization_projection=True,icu_command_steps=4,icu_region_projection=True)
+        for base in ICU_BASES:  # 两核独立路由:CPU0/CPU1 的 ICU 各自记录
+            model.write(base+0x14,0x061d7fe0);model.write(base+0x18,0x061d7fff)
+            model.write(base+0x10,0xca000040)
+            with self.assertRaisesRegex(Blocked,'icu_region_readback_not_modeled'):model.read(base+0x18)
+        icu=model.report()['icu_initialization_projection']
+        self.assertEqual([c['address'] for c in icu['commands']],['0xffe410','0xffec10'])
+        self.assertEqual(icu['completed_commands'],0)  # 完成仍由显式 advance 步数驱动
+        self.assertEqual(icu['pending_cores'],[0,1])
 
     def test_cpu1_release_bit_survives_kick_bit_record(self):
         # kick 位(bit3,只写记录)把 cpu1_control 记到 9;CPU1 的交付资格判定必须

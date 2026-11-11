@@ -39,6 +39,11 @@ VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
 PLL1_CON3=0xfd470c
 CACHE_STATUS_REGISTERS=(0xff0500,0xffe400,0xffec00)
 ICU_BASES=(0xffe400,0xffec00)
+# ICU region 组:两核各 +0x14(begin)/+0x18(end-1) 数据寄存器与 +0x10 命令口。
+# ROM 0xc726 按 len>=0x1000 在两个 region 命令字里二选一;完成等待复用 CON bit30
+# (0xbac0 轮询),与已建模的 0xca000010(ICU 使能路径 0xbae0)同族。
+ICU_REGION_OFFSETS=(0x14,0x18)
+ICU_REGION_COMMANDS=(0xca000020,0xca000040)
 CORE_PMU_CON1=(0xffe0c4,0xffe8c4)
 SFC_BASE=0xfe0200
 SFC_SECONDARY_BASE=0xfe0100
@@ -396,21 +401,38 @@ class IcuInitializationProjection:
 
     Bit30 is command busy. Bit31 stays an independent external status fixture.
     No cache contents, physical latency, instruction-cache coherence or DMA.
+
+    region_projection(opt-in,默认关):两核 ICU 的 region 寄存器组 +0x14/+0x18。
+    ROM 0xc726 把 VM flash 窗口配进两核 ICU(每核 cli→testset 0x19fd78 抢锁→
+    [+0x14]=begin、[+0x18]=end-1、[+0x10]=命令字→call 0xbac0 等 CON bit30 完成→
+    call 0xbad4 释放锁→sti,r3+=0x800 换核循环 2 次)。命令字 0xca000020/0xca000040
+    按 len>=0x1000 二选一(0xc72c if.ge + 谓词 li 对),与既有 0xca000010 同走
+    +0x10 命令口、同用 CON bit30 完成等待(0xbaca 轮询锚点与 0xbae0 使能路径同一
+    条指令),是同族命令。+0x14/+0x18 数据寄存器固件只写不读(ROM 该序列与 app
+    全量扫描均无读回),write-only 记录;命令低字节的语义(0x10/0x20/0x40 对应
+    SDK cache.h Icu*Region 家族的哪个操作)无命名证据,不臆造。
     """
-    def __init__(self,initial_words=None,command_steps=None):
+    def __init__(self,initial_words=None,command_steps=None,region_projection=False):
         if command_steps is not None and (not isinstance(command_steps,int) or not 0<=command_steps<=10000):
             raise ValueError('invalid explicit ICU command step count')
         self.initial=dict(initial_words or {});self.control={b:self.initial.get(b) for b in ICU_BASES}
         if any(v is not None and (not isinstance(v,int) or v&~0xc0000001) for v in self.control.values()):
             raise ValueError('ICU initial configuration outside scoped bits')
+        self.region_projection=region_projection
+        self.region={b:{offset:None for offset in ICU_REGION_OFFSETS} for b in ICU_BASES}
+        self.region_writes={b:{offset:0 for offset in ICU_REGION_OFFSETS} for b in ICU_BASES}
         self.command_steps=command_steps;self.pending={};self.commands=[];self.completed=0;self.busy_reads=0
 
-    def handles(self,address):return any(address in (b,b+16) for b in ICU_BASES)
+    def handles(self,address):
+        offsets=(0,0x10)+ICU_REGION_OFFSETS if self.region_projection else (0,0x10)
+        return any(address-b in offsets for b in ICU_BASES)
 
     def base(self,address):return ICU_BASES[0] if address<ICU_BASES[1] else ICU_BASES[1]
 
     def peek(self,address):
         base=self.base(address)
+        if address-base in ICU_REGION_OFFSETS:
+            raise Blocked('icu_region_readback_not_modeled',address=hex(address))
         if address!=base:raise Blocked('icu_command_readback_not_modeled',address=hex(address))
         if self.control[base] is None:raise Blocked('unknown_initial_icu_control',address=hex(address))
         return self.control[base]|(0x40000000 if base in self.pending else 0)
@@ -422,8 +444,13 @@ class IcuInitializationProjection:
 
     def write(self,address,value):
         base=self.base(address)
-        if address==base+16:
-            if value!=0xca000010:raise Blocked('icu_command_not_modeled',value=hex(value))
+        offset=address-base
+        if offset in ICU_REGION_OFFSETS:
+            if not self.region_projection:raise Blocked('icu_region_write_not_modeled',address=hex(address))
+            self.region[base][offset]=value;self.region_writes[base][offset]+=1
+        elif address==base+16:
+            allowed=(0xca000010,)+ICU_REGION_COMMANDS if self.region_projection else (0xca000010,)
+            if value not in allowed:raise Blocked('icu_command_not_modeled',value=hex(value))
             if self.control[base] is None:raise Blocked('unknown_initial_icu_control',address=hex(base))
             if self.peek(base)&0x40000000:raise Blocked('icu_prior_command_state_unresolved',address=hex(base))
             if self.command_steps is None:raise Blocked('icu_command_progress_unknown',address=hex(address))
@@ -442,12 +469,28 @@ class IcuInitializationProjection:
             if self.pending[base]<=0:del self.pending[base];self.completed+=1
 
     def report(self):
-        return {'initial_word_fixtures':{hex(a):hex(v) for a,v in self.initial.items()},
+        result={'initial_word_fixtures':{hex(a):hex(v) for a,v in self.initial.items()},
                 'con':{hex(a):None if v is None else hex(v) for a,v in self.control.items()},
                 'command_steps_fixture':self.command_steps,'pending_cores':[ICU_BASES.index(b) for b in self.pending],
                 'commands':self.commands,'completed_commands':self.completed,'busy_reads':self.busy_reads,
                 'bit31_is_independent_external_status':True,'physical_latency_or_command4_semantics_certified':False,
                 'cache_contents_or_coherence_simulated':False}
+        if self.region_projection:
+            result['region_projection']={
+                'registers':{hex(b):{hex(o):{'value':None if self.region[b][o] is None else hex(self.region[b][o]),
+                                              'writes':self.region_writes[b][o]} for o in ICU_REGION_OFFSETS}
+                             for b in ICU_BASES},
+                'commands_accepted':[hex(v) for v in ICU_REGION_COMMANDS],
+                'observed_sequence':('ROM 0xc726 (export sfc_drop_cache, SDK cache.h (beg,len) family): '
+                                     'per core cli, testset 0x19fd78 lock, [+0x14]=begin, [+0x18]=end-1, '
+                                     '[+0x10]=0xca000020/0x40 chosen by the if.ge len>=0x1000 predicated '
+                                     'li pair (observed run: len=0x20 selects 0xca000040, other branch '
+                                     'untested), call 0xbac0 polls CON bit30 (ld.w.idxs at 0xbaca, same '
+                                     'poll as the 0xca000010 enable path), call 0xbad4 releases the lock'),
+                'write_only':True,'readback_observed':False,
+                'command_low_byte_semantics_verified':False,
+                'same_busy_machinery_as_command4':True}
+        return result
 
 
 class CoreTickStopped:
@@ -1063,7 +1106,8 @@ class BR28Model:
                  debug_execution_projection=False,initial_debug_controls=None,
                  reset_history_projection=False,reset_history_words=None,
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
-                 icu_initialization_projection=False,icu_command_steps=None,software_irq_command_projection=False,
+                 icu_initialization_projection=False,icu_command_steps=None,icu_region_projection=False,
+                 software_irq_command_projection=False,
                  initial_software_irq_pending=None,software_irq_delivery_requests=False,
                  unmaskable_irq_projection=False,core_tick_delivery_requests=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
@@ -1131,7 +1175,12 @@ class BR28Model:
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
                for address,value in self.cache_status_words.items()):raise ValueError('invalid explicit cache status fixture')
-        self.icu=IcuInitializationProjection({a:v for a,v in self.cache_status_words.items() if a in ICU_BASES},icu_command_steps) if icu_initialization_projection else None
+        # ICU region 组投影复用同一命令完成机制(CON bit30 + 全局步数),必须挂在
+        # ICU 初始化投影之下;默认关闭,legacy 行为不变(region 写仍是不支持的外设写)。
+        if icu_region_projection and not icu_initialization_projection:
+            raise ValueError('ICU region projection requires the ICU initialization projection')
+        self.icu=IcuInitializationProjection({a:v for a,v in self.cache_status_words.items() if a in ICU_BASES},
+                                             icu_command_steps,icu_region_projection) if icu_initialization_projection else None
         self.sfc=SFCReadBus(initial_sfc_control) if sfc_read_bus else None
         if secondary_sfc_read_bus and not sfc_read_bus:raise ValueError('secondary SFC requires the primary SFC read bus')
         self.sfc_secondary=SFCReadBus(initial_secondary_sfc_control,SFC_SECONDARY_BASE) if secondary_sfc_read_bus else None

@@ -1,4 +1,4 @@
-# 交接：整机启动仿真推进中（阶段 D 进行，前沿 162,898 步）
+# 交接：整机启动仿真推进中（阶段 D 进行，前沿 163,075 步）
 
 2026-11-11 恢复工作。阶段 A/B/C1 完成，C2（tick 真实触发）与 D 进行中。停止时请更新本文件。
 
@@ -13,9 +13,9 @@
 | irq127_scheduler_entry | 151,500 | 0x12c5ca | unsupported idle（对核 IDLE 边界）|
 | irq127_appcore_roundtrip | 153,430 | 0x12b66a | unmodeled_unmaskable_irq irq125 |
 | irq125_sync_roundtrip | 155,127 | 0x6000f44 | unmapped_or_readonly_write 0xfd3504（CRC 投影关闭时的边界）|
-| **crc_engine_roundtrip** | **162,898** | **0xc75a** | **unmapped_or_readonly_write 0xffe414（ICU region 寄存器组未建模，新边界）** |
+| **crc_engine_roundtrip** | **163,075** | **0xc70c** | **unsupported_runtime_instruction rep（寄存器计数 rep，DCU 失效循环内，新边界）** |
 
-**162,898 步含义**：CRC wrapper（见 155,127 旧含义）之后，flash 资源分区表扫描（70 个 rep.i 体，162,447 旧前沿）、SFC 时钟重配 +0x04=3（162,615 旧前沿）、qcy_boot_info 拷贝未知字节运输（162,646 旧前沿）之后，0x600a36e..0x600a37e 的 **SFC 窗口组写入**走 write-only 记录（`r1=0xfe0218`：`[r1+12]=0x061d7fe0` VM 区 flash 窗口地址、`[r1+8]=0x7ffffff`（=0x08000000-1，flash 直访区顶）、`[r1+0]|=2` 使能位，挂 `sfc_read_bus` 开关）。call 0x12c030 返回后 app_core 继续，CPU0 **真实地第二次 pend irq125 到 CPU1**（software IRQ commands 4→6）——`repeat_irq_delivery` 投影（本场景叠加）把停泊的 CPU1 第二次唤醒，handler（0x60662c8）处理完回到同一停泊点 0x12c5ca。之后 VM init 链路 call ROM 0xc726：把 VM flash 窗口 [0x061d7fe0, 0x061d7fe0+0x4000) 配进**两核 ICU**（0xffe400/0xffec00，每核 `+0x14`=begin、`+0x18`=end-1、`+0x10`=命令字 0xca000020/0xca000040 二选一，cli/testset 0x19fd78 锁、r3+=0x800 换核、r5 循环 2 次），停在第一核第一次 `st.w [r3+20]=r10` 写 **0xffe414**——ICU region 寄存器组（ICU_BASES+0x10/+0x14/+0x18）未建模，是下一个外设边界。
+**163,075 步含义**：CRC wrapper（见 155,127 旧含义）之后，flash 资源分区表扫描（70 个 rep.i 体，162,447 旧前沿）、SFC 时钟重配 +0x04=3（162,615）、qcy_boot_info 未知字节运输（162,646）、SFC 窗口组 write-only 记录（162,898）之后，VM init 链 call ROM export **sfc_drop_cache**（0x1fdcc→0xc726，实参 beg=0x061d7fe0/len=0x20）：把 [0x061d7fe0,0x061d8000) 配进**两核 ICU**——每核 cli→testset 0x19fd78 抢锁→`[+0x14]`=begin、`[+0x18]`=end-1（write-only 记录）→`[+0x10]`=0xca000040→call 0xbac0 等 CON bit30 完成→call 0xbad4 释放锁→sti，r3+=0x800 换核循环 2 次（`icu_region_projection` 投影，两核各完成一次命令，busy 读 14→74）。region 命令完成后 0xc726 尾调 flushinv_dcache（0x1fdb0→0xc71a→0xc6f4）：往 **0xff05cc**（DCU 逐地址失效口）写递增地址的循环体是**寄存器计数 `rep r1,4`**（add.rrr.p+st.w 并行对）——rep.i 多指令体 gate 不覆盖寄存器计数形式，寄存器计数 rep 落到 unsupported_runtime_instruction，是下一个边界（0xff05cc DCU 失效口同样未建模，rep 先停）。
 
 ## 已实现（按序，均 opt-in 投影，默认关闭 legacy 报告不变）
 
@@ -32,7 +32,8 @@
 - **rep 拷贝体未知字节运输**（opt-in `rep_copy_unknown_transport`，需 `immediate_rep_multi_block`）：多指令 rep.i 体内的 `ld.w.pin` 装载若跨未写 RAM 字节，构造 UnknownWord（逐字节来源=源物理地址，经 MMU translate），配套 `st.w.pin` 走 `write_abstract_word` 按来源落盘（未知字节保持未知、目标必须是 RAM region）；全已知字照走常规严格路径。语义依据（见「关键技术事实」boot_info 条目）：0x600a352 rep 4 4 拷贝的源 bytes 1-3/8-11 是结构 padding/保留字段，app/ROM 均无写入者，硅上是残留 RAM 垃圾——模型只运输来源、不臆造数值，任何后续消费者仍严格停。负例：不开开关时同指令停在体首装载 uninitialized_memory（=旧 162,615 前沿形状，单测钉死）。默认关闭，legacy 报告不变。
 - **SFC 主块窗口组 +0x18/+0x20/+0x24**（本次，挂既有 `sfc_read_bus` 开关，主/副 SFC 共用）：VM 区 flash 窗口配置，write-only 记录。形状只接受 app 反汇编观测到的：`+0x20/+0x24` 整字写记最后值+次数、`+0x18` 只接受 `rmw.or.modimm`（唯一观测 0x600a37e `|=2`，RMW 不经读回、PartialWord 按位记录、probe_boot 分发 `sfc_window_enable_rmw`）；读回与形状外写（整字写 +0x18 等）一律 Blocked。窗口语义（+0x24=窗口基址、+0x20=0x7ffffff=flash 顶界限、+0x18 bit1=使能）是从两个写入序列的同构性推断的显式假设，SDK 头文件无名、ROM 零引用、无任何读回——bit 语义未硅验证。`check_flash_access` 判定**不变**（固件配置窗口前就大量直访 0x06000000 区，窗口组不是直访门；report `flash_access_gate_unchanged` 标注假设）。单测 test_br28_model：观测形状/拒绝形状/routing/默认关。
 - **cpu1_control 释放位（bit0）判定修正**（本次，bug 修复非投影）：kick RMW `|=8`（0x12b732）把 cpu1_control 记为 9，而 advance() 的 CPU1 交付资格判定此前用整字 `==1`——kick 后已释放的 CPU1 被误判未释放，第二次 pend 被静默吞掉（kick 产生「负调度效应」，与「kick 只写记录、无调度效应」的投影声明矛盾）。修正为 bit0 判定（advance() 的 software IRQ/timer pending 两处 + hold-after-release 防御路径）。钉死单测：test_cpu1_release_bit_survives_kick_bit_record（释放+kick+第二次 pend 后 advance 必须检查 CPU1 pending）。
-- **真实第二次软件 IRQ 交付观察完成**（本次，crc_engine_roundtrip 叠加 `repeat_irq_delivery`）：窗口组放行后 CPU0 在 162,646..162,898 前缀内第二次 pend irq125 到 CPU1（commands 4→6、acks 3），repeat 投影把停泊的 CPU1 第二次唤醒，handler 0x60662c8 处理完回同一停泊 0x12c5ca——暂停点1（HANDOFF 旧「四个待处理暂停点」第 1 条）的真实观察在此前沿闭合。
+- **真实第二次软件 IRQ 交付观察完成**（crc_engine_roundtrip 叠加 `repeat_irq_delivery`）：窗口组放行后 CPU0 在 162,646..162,898 前缀内第二次 pend irq125 到 CPU1（commands 4→6、acks 3），repeat 投影把停泊的 CPU1 第二次唤醒，handler 0x60662c8 处理完回同一停泊 0x12c5ca——暂停点1（HANDOFF 旧「四个待处理暂停点」第 1 条）的真实观察在此前沿闭合。
+- **两核 ICU region 寄存器组**（本次，opt-in `icu_region_projection`，需 `icu_initialization_projection`）：0xffe400/0xffec00 的 +0x14/+0x18 write-only 记录（每核记最后值+次数），+0x10 命令口接受 0xca000020/0x40（ROM 0xc726 按 len>=0x1000 在 0xc730/0xc736 两条谓词 li 里二选一，实测 len=0x20 选 0x40），与 0xca000010 同走既有 CON bit30 + 显式步数完成投影；+0x14/+0x18 读回一律 Blocked（固件全量扫描无读回）。命令低字节语义（0x10/0x20/0x40 对应 SDK cache.h Icu*Region 族哪个操作/粒度）无命名证据，report 显式标注未验证。默认关，legacy 报告不变；单测 test_br28_model（观测形状/拒绝形状/两核路由/默认关/独立开关参数校验）。
 - **CPU1 PMU_CON0 RMW + kick 唤醒**（前置）：0xffe8c0=CPU1 PMU_CON0（csfr.h q32DSP(1)+0x30*4；0xffe0c0 同位为 CPU0）。含 bit0 的 RMW 与严格写路径等价（实际释放指令 0x60660da 就是 `|=1`）；释放后 bit0 不参与的 or 置位记为 kick 位（0x12b732/0x12c71c 双证据，只置位不回读不清除）。machine 侧 `cpu1_control_kick_wake` 投影：kick 让挂在 idle 的 CPU1 按完成计步并唤醒——「bit3 就是唤醒源」是从握手协议推断的显式假设（SDK 无 PMU_CON0 位定义，硅语义未验证，已写入 report 假设）。
 - **CPU1 irq125 handler 尾部帧弹出 + 对称 RTI**（cb109b3 前一提交）：probe_irq_entry HANDLER_PSR_FRAMES 增加 `0x606633e:'frame12_pop'`（pop.srl m=41，从真实栈弹出 {psr,rets,reti}，字节来源是入口 0x60662c8 frame12_push 写入的交付状态，不臆造）；`br28_machine.SOFTWARE_IRQ_RTI_TAILS=(0x12ade8,0x6066342)` 把对称 RTI 投影（PC=RETI、SP=USP、bank 回写/ICFG 效果仍是假设）推广到 CPU1 的 irq125 handler 尾 0x6066342。RTI 后 CPU1 回到被中断的 idle（0x12c5ca，reti_from_frame=0x12c5ca）并重新停泊。注意：`defer_core1_first_idle` 的 4096 上限在此返回后被重新触发耗尽（CPU1 返回 0x12c5ca 未停泊期间 CPU0 连续发射）——确定性、不改状态，报告 deferred_core1_turns=4096。
 - **硬件 CRC 引擎投影**（1ea2f59，opt-in `hardware_crc_projection`）：`br28_model.HardwareCrcEngine`。访问形状只接受 ROM 0xaa1e 与 app 0x6000f2c 真实用过的：写 +4 种子（≤0xffff）、写 +0 馈一个字节（st.w 载荷≤0xff）、读 +4 结果；复位态未知（未写种子读/馈入停止）、+0 读、超宽载荷、其他偏移一律 Blocked。算法参数按 app 软件 CRC-16 表推导（多项式 0x1021、MSB-first、初值=种子、无输出异或）——功能等价投影，硬件位序/字节序硅上未验证（report 显式记录）。同步模型无 busy 位（固件写数据后 csync 再读）。单测 test_br28_model 对照 app 表逐位/半字节实现 + CRC-16/XMODEM 标准校验值 0x31C3。
@@ -104,7 +105,8 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - 路 H（sim-repi，已合并 fa1a762）：rep.i 多指令体重复（通用直线体 gate，opt-in）+ flash 资源区只读映射完成，旧前沿 162,447（0x6010b88 写 0xfd1c04）。
 - 路 I（sim-sfc-clk2，5543138）：SFC 时钟 0xfd1c04 只写记录完成，旧前沿 162,615（0x600a354 读半初始化 qcy_boot_info）。
 - 路 J（sim-bootinfo，已合并）：qcy_boot_info 交接读调查完成（byte0=app 启动拷贝例程写的 vm.align；bytes 1-3/8-11 无写入者）+ rep 拷贝体未知字节运输投影，旧前沿 162,646。
-- 路 K（sim-sfc-win，本次）：SFC 主块窗口组 0xfe0218/+0x20/+0x24 write-only 建模 + cpu1_control 释放位修正 + 真实第二次交付观察完成，前沿 162,898（ROM 0xc75a 写 0xffe414，ICU region 组未建模）。
+- 路 K（sim-sfc-win，已合并 89de49f）：SFC 主块窗口组 0xfe0218/+0x20/+0x24 write-only 建模 + cpu1_control 释放位修正 + 真实第二次交付观察完成，旧前沿 162,898。
+- 路 L（sim-icu，本次）：两核 ICU region 寄存器组建模（opt-in `icu_region_projection`）完成，前沿 163,075（ROM 0xc70c 寄存器计数 rep，DCU 0xff05cc 失效循环未建模）。
 
 ## 镜像资源级映射（sim-resmap，2026-11-11 完成）
 
@@ -118,13 +120,9 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 ## 下一步（按 codex 建议）
 
-1. **ICU region 寄存器组建模**（新前沿 162,898：ROM 0xc75a `st.w [r3+20]=r10` 写 0xffe414=0x061d7fe0）：ROM 0xc726 函数把 VM flash 窗口 [0x061d7fe0,+0x4000) 配进两核 ICU（ICU_BASES 0xffe400/0xffec00）：每核先 cli、testset 0x19fd78 抢锁，写 `+0x14`=begin、`+0x18`=end-1（=base+len-1）、`+0x10`=命令字（0xca000020/0xca000040 二选一，按 len>=4096 分支），两个 call（0xbac0/0xbad6 附近，疑为 region 命令提交+等待）后 sti，`r3+=0x800` 换下一核重复。SDK cache.h 有 IcuLockRegion/IcuUnlockRegion/IcuPfetchRegion 家族但无寄存器偏移定义；现有 IcuInitializationProjection 只建模 (base,base+16) 的 CON/命令。建模前反汇编 ROM 0xbac0/0xbad6 + app 侧 0xffe41x/0xffec1x 全部访问形状。qcy_boot_info 交接与 SFC 窗口组已闭合。
+1. **DCU 逐地址失效口 0xff05cc + 寄存器计数 rep**（新前沿 163,075：ROM 0xc70c `rep r1,4`）：sfc_drop_cache 两核 ICU region 配置完成后尾调 flushinv_dcache（0x1fdb0→0xc71a→0xc6f4），0xc6f4 把 (beg,len) 按 32 字节对齐折算成迭代次数 r1，往 0xff05cc 写递增地址（首次 [0xff05cc]=0x061d8000）逐行失效 DCU。两个未建模点：①0xff05cc（DCU 失效口，flush_dcache 用 0xff05c8，两个口都在 0xff0500 DCU 块，SDK cache.h 的 DcuWaitIdle/DcuInitial 在 0xbb20/0xbb30）；②`rep r1,4` 是**寄存器计数**形式，现有 rep.i 多指令体 gate 只认立即数计数，且体是 add.rrr.p+st.w 并行对（gate 对 .p 一律拒绝）——寄存器计数 rep 与并行对体的 REP 语义都需要上游 v3 模型证据，不能从 rep.i gate 外推。sfc_drop_cache 返回后 app 侧继续 VM init 链路。
 2. ~~补齐每个镜像的资源映射~~ 完成：三镜像（官方/b79/EQ 候选）资源级 diff 已闭合，见上节「镜像资源级映射」；rep.i 落地后 flash_image() 只读区可复用于三镜像加载。
 3. 事件时间推进（暂停点 2 事件时钟；暂停点 1 机制+真实观察已落，162,898 前缀内 CPU1 两次 irq125 交付都发生在停泊唤醒路径）。
-4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用；P11 接口剩 power_init 内部的纯写寄存器与 0xf20080 拷贝（见上节剩余缺口）。
-5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。
-2. ~~补齐每个镜像的资源映射~~ 完成：三镜像（官方/b79/EQ 候选）资源级 diff 已闭合，见上节「镜像资源级映射」；rep.i 落地后 flash_image() 只读区可复用于三镜像加载。
-3. 事件时间推进（暂停点 2 事件时钟；暂停点 1 机制+真实观察均已闭合）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用；P11 接口剩 power_init 内部的纯写寄存器与 0xf20080 拷贝（见上节剩余缺口）。
 5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。
 
@@ -154,7 +152,7 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - app_core 帧 0x19f7b0：16B 特殊帧（PC 0x6012028）+ 60B GPR 未初始化（真实语义）。
 - SFC 挂起路径 0x12b890（先 baud=0 后 disable）vs 使能路径 0x12e1e8（先 disable 后 baud）。
 - **SFC 主块 0xfe0200 访问全图（本次钉死，app+ROM 线性扫描解码 + 操作数常量比对穷举）**：+0（CON）/+4（BAUD）固件两侧大量使用（已建模）。**窗口组 +0x18/+0x20/+0x24 只有 app 两个引用点、ROM 零引用、SDK 头文件无名**：①0x600a36e..0x600a37e（SFC 配置分发，命令 0x40045601 的 VM 分支）：`r1=0xfe0218`、`[r1+12]=call 0x12bdc6(vm_saddr)` 返回 0x061d7fe0（VM flash 窗口地址=0x06000000+0x1da000-0x2020）、`[r1+8]=0x7ffffff`（=0x08000000-1 flash 直访区顶）、`[r1+0]|=2`；②SFC 上下文恢复 0x60c5bc0 尾 0x60c5bfa..0x60c5c0a：`r1=0xfe0220`、`[r1+4]=call 0x60c55a0(保存值)`、`[r1+0]=0x7ffffff`，**不重写 +0x18**（与「bit1 是窗口使能位」自洽但未硅验证）。0x60c55a0 是 app 侧「flash 偏移→CPU 可见地址」换算（全局模式字节 0x1265cd==1 → +0x4000000 走 MMU，否则直访换算），与 RAM 函数 0x12bdc6 同功能。读写结论：**全部是写，无任何读回**——窗口组 write-only。+0x20 两次观测值都是 0x7ffffff；CPU 在窗口配置前就大量直访 0x06000000..0x08000000（CON bit0 使能即可），窗口组不是直访门（模型判定不变的显式假设）。0x60c5b9c/0x60c5bc0 上下文保存/恢复只碰 0xfd1c00/0xfd1d00 时钟门，窗口恢复值来自软件保存区（0x126500+1082*4），不是硬件读回。
-- **ICU region 组（下一边界初步图，ROM 0xc726 反汇编）**：两核 ICU（0xffe400/0xffec00）各有 region 寄存器 +0x10（命令字 0xca000020/0xca000040 按 len>=4096 选择）/+0x14（begin）/+0x18（end-1）；ROM 写序列 cli→testset 0x19fd78 抢锁→写 begin/end/命令→两个 call（0xbac0/0xbad6，疑命令提交）→sti→r3+=0x800 换核→循环 2 次。SDK cache.h 有 IcuLockRegion/IcuUnlockRegion/IcuPfetchRegion 函数族无偏移定义；固件侧是否读回待穷举（0xffe41x/0xffec1x）。
+- **两核 ICU/DCU cache 控制访问全图（本次钉死，ROM 反汇编 + export 名映射 + 163,075 动态记录三方一致）**：ROM export→实现：`IcuInitial` 0x1fdbc→0xbae0（cli→testset 0x19fd78 抢锁→0xbafc 命令 0xca000010→0xbaca 轮询 CON bit30→0xbadc 释放锁→sti→CON|=1，CPU1 bootstrap 已建模路径）、`IcuWaitIdle` 0x1fdb4→0xc792（轮询两核 CON **bit31**，r1=0x3ff900、地址=r1*4+core<<11，`bgts.ri r3,-1` 按符号判 bit31）、`sfc_drop_cache` 0x1fdcc→0xc726（签名 (beg,len) 同 SDK cache.h Icu*Region 族；每核 cli→testset 0x19fd78→`[+0x14]`=begin、`[+0x18]`=end-1→`[+0x10]`=命令字→call 0xbac0（csync+轮询本核 CON bit30，与 IcuInitial 同一条 ld.w.idxs@0xbaca）→call 0xbad4（释放锁）→sti，r3+=0x800 换核循环 2 次；实测实参 beg=0x061d7fe0/len=0x20，即 32 字节窗口 [0x061d7fe0,0x061d8000)，命令字选 **0xca000040**）、`flush_dcache` 0x1fdac→0xc780（r2=0xff05c8 调 0xc6f4 同族循环）、`flushinv_dcache` 0x1fdb0→0xc78c→0xc71a（r2=0xff05cc 调 0xc6f4）、`DcuWaitIdle` 0x1fdb8→0xbb20（共享 L1P CON 0xff0500 bit31）、`DcuInitial` 0x1fdc0→0xbb30。命令字族 0xca0000{10,20,40}：低字节 bit4/5/6 单位热命令选择；0xc72c `if.ge.ri r1>=0x1000` 在 0xc730(0x20)/0xc736(0x40) 两条谓词 li 里二选一，**实测 len=0x20 选 0x40**（len<0x1000→0x40，另一分支方向未测）；0x10=cache 使能路径、0x20/0x40=region 操作，对应 SDK cache.h IcuLockRegion/IcuUnlockRegion/IcuPfetchRegion/IcuFlushinvRegion 的哪个操作**无命名证据**。+0x14/+0x18 region 数据寄存器 write-only（固件全量扫描无读回）；0xc6f4 DCU 失效循环：迭代数 r1=((len+(beg&0x1f))>>5)+(末址未对齐?1:0)，体=add.rrr.p（r0+=0x20）+st.w（[r2]=r0）并行对（并行对两侧按上游模型语义用旧寄存器值），指令是**寄存器计数 `rep r1,4`**——与 rep.i（立即数计数）不同形式，未建模。
 - **SFC 时钟块 0xfd1c00 访问全图（本次钉死，app 11 处 + ROM 10 处反汇编穷举）**：+0 只有 RMW（bits 0/3/8/9/10/12/14，各挂起/恢复/串行读路径）、整字存三处（ROM 0xc18e=0x20、ROM 0xc0f0=0、app 0x60c5bda 上下文恢复）、bit15 PLL-lock 轮询读（ROM 0xade8、app 0x60c5210）与 app 0x60c5b9c 上下文保存读（同时读 +0 和 +256=0xfd1d00——另一个时钟门，恢复函数 0x60c5bc0 整字写回两者）；+4 只有两处整字写（app 0x6010b88=3、ROM 0xc198=flash 配置字 bits[8:16]），零读回；+8 分频整字写+读回；+0xc/+0x10 仅 ROM 0xae84/0xae86 整字写。SDK 头文件整块无名，全部位语义以反汇编形状为准、未硅验证。
 - core tick PRD=1199999（CPU0）/479999999（CPU1），非"PRD=1 高频"（那是独立叶子 0x6066134 未在当前前缀调用）。
 - per-core q32DSP SFR bank：0xffe000+core*0x800；PMU_CON0=+0xc0（0xffe0c0/0xffe8c0，SDK 无位定义）、ILAT_SET=+0x1a0、ILAT_CLR=+0x1a4。固件用 `(1-cnum)<<11+0xffe0c0` 算对核 PMU_CON0。
