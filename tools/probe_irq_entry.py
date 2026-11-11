@@ -17,7 +17,7 @@ from pathlib import Path
 from probe_dualcore import dual_case
 from probe_task_returns import EMPTY_PRIORITIES
 from probe_arch_startup import candidate_view, REPAIRED_SHA, FAILED_SHA
-from probe_boot import application, check_rom, ROM_SHA, OFFICIAL_SHA, APP_SHA
+from probe_boot import application, flash_image, check_rom, ROM_SHA, OFFICIAL_SHA, APP_SHA
 from probe_boot_handoff import package_header
 from probe_pi32v2 import ROOT, PIN, upstream, require
 
@@ -43,7 +43,7 @@ SFC_RESUME_OPERATIONS=(
 
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
-             repeat=False,hardware_crc=False,readonly=()):
+             repeat=False,hardware_crc=False,rep_block=False,flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -57,6 +57,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if entry:options['software_irq_delivery_requests']=True
     if unmaskable:options['unmaskable_irq_projection']=True
     if hardware_crc:options['hardware_crc_projection']=True
+    # rep_block:opt-in 的多指令 rep.i 体执行(0x6010b14 rep 4 32 字节拷贝,
+    # 及其 callee 0x6010a64 内的四个 rep 4 8)。默认关闭,legacy 报告不变。
+    extra={'software_irq_frames':dict(HANDLER_PSR_FRAMES)} if entry else {}
+    if rep_block:extra['immediate_rep_multi_block']=True
+    # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
+    # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
+    if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
     if sfc_suspend:
         # The SFC suspend tail sets 0xfd1c00|=1 (write-only RMW projection) and
         # then the wrapper reads the second SFC 0xfe0100 CON. The second SFC is
@@ -68,7 +75,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['initial_secondary_sfc_control']=0
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=250000,
-                     extra_diagnostics={'software_irq_frames':dict(HANDLER_PSR_FRAMES)} if entry else None)
+                     extra_diagnostics=extra or None)
 
 
 def check_delivery(r,*,before_rti=True):
@@ -245,10 +252,18 @@ def check(report):
     require(crc['seed_writes']==['0x0'] and crc['fed_bytes']==len(fed) and
             crc['result_reads']==[hex(reference)],
             'the hardware CRC projection did not reproduce the software-table result for the actual wrapper input')
-    require(r['stop_core']==0 and r['stop_pc']=='0x6010b14' and
-            r['stop']=={'kind':'unsupported_runtime_instruction','instruction_id':'rep.i'},
-            'after the CRC wrapper the stop must be the unsupported block-repeat instruction')
-    require(r['completed_steps']==155389,'the CRC engine projection changed its step count')
+    # 0x6010b14 rep 4 32(4 字节体 ld.bu.pin+st.b.pin × 32,flash 资源表头部
+    # 32 字节拷贝)及其后整条资源表扫描(含 callee 0x6010a64 内四个 rep 4 8)
+    # 全部按多指令体真实执行:70 个 rep.i 体、155,389→162,447 步,停在扫描
+    # 完成后重新配置 SFC 时钟 0xfd1c04(未建模寄存器)——与 rep.i 无关的
+    # 下一个独立边界。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6010b88' and
+            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xfd1c04',
+                        'size':4,'value_bytes':'03000000'},
+            'after the resource-table scan the stop must be the unmodeled SFC clock register write')
+    require(r['completed_steps']==162447,'the rep-block projection changed its step count')
+    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==70,
+            'the flash resource-table scan must execute its rep.i blocks through the multi-block projection')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -275,6 +290,7 @@ def main():
     p.add_argument('--repaired-candidate',type=Path);p.add_argument('--failed-r2',type=Path)
     p.add_argument('--report',type=Path,required=True);args=p.parse_args()
     rom=args.rom.read_bytes();check_rom(rom);module=upstream();app=application(args.firmware);header=package_header(args.firmware)
+    image=flash_image(args.firmware)
     report={'firmware_sha256':OFFICIAL_SHA,'application_sha256':APP_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
         'device_accessed':False,'whole_h3s_boot_simulated':False,'candidate_whole_boot_validated':False,
         'suitable_for_flash_approval_alone':False,
@@ -292,7 +308,8 @@ def main():
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,repeat=True),
                      irq_case(module,app,header,rom,'crc_engine_roundtrip',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
-                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True)]}
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
