@@ -11,13 +11,16 @@ projection (handler return re-enables delivery) stays inert on this prefix
 until the firmware actually pends a second time. No flash approval.
 
 The trailing crc_bankb_erased_fixture scenario layers an explicit unverified
-erased-bank fixture (32 bytes of 0xFF over the only bank-B read observed on
-this prefix) on top of crc_engine_roundtrip: the consumer really computes the
-header CRC and selects its benign mismatch branch; crc_engine_roundtrip itself
-keeps stopping honestly on the unmapped bank-B read. The exact-doubleword
-gate (st.d.l/st.d.sp.l) writes full-overwrite doubleword stores without the
-upstream merge bookkeeping read, so this scenario runs past its store to the
-next unmapped bank-B byte.
+erased-bank fixture (two evidence-bounded windows of 0xFF: the 32-byte header
+read of the probe-table entry 5, and the 20-byte window-table structure the
+qcy consumer enumerates at flash offset 0x1e0000) on top of crc_engine_
+roundtrip: the consumers really compute the header CRC / parse the erased
+headers and select their benign branches; crc_engine_roundtrip itself keeps
+stopping honestly on the unmapped bank-B read. The exact-doubleword gate
+(st.d.l/st.d.sp.l) writes full-overwrite doubleword stores without the
+upstream merge bookkeeping read, so this scenario runs past its store; after
+the window-table walker skips its two erased entries the chain stops at the
+next uninitialized-bss byte.
 """
 import argparse
 import json
@@ -38,6 +41,14 @@ HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0
 # (偏移 0x100000)的 32 字节头读取窗(CPU=0x06000000+偏移-0x2020 头)。
 # 只覆盖消费者分析实测的读取范围;见 irq_case 的 erased_bankb 注释。
 ERASED_BANKB_HEADER_RANGE=(0x60fdfe0,32)
+
+# bank B 第二数据窗 fixture 的显式范围:qcy 消费函数 0x6060a4a 缓存进全局
+# 0x126544 的 window(0x061ddfe0=0x06000000+0x1e0000-0x2020,VM 尾与 TON
+# 0x1e1000 之间)上,u16 对表 walker(0x60609be,表 0x60a1e8a,app flash 公开
+# 字节)枚举的全部条目结构范围:两项 {id=0x66,size=6}/{id=0x6e,size=6},
+# 每项 on-flash 形状=4 字节头+size 字节数据,全长 (4+6)*2=20 字节——范围
+# 由 app 自己的表声明,不是任意拍的;见 irq_case 的 erased_bankb 注释。
+ERASED_BANKB_WINDOW_RANGE=(0x61ddfe0,20)
 
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
@@ -104,20 +115,29 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
-    # erased_bankb:opt-in 的「未验证擦除态 bank B」显式 fixture。消费者分析
-    # (2026-11-12 反汇编+trace)钉死:app find_partition(0x6010f32) 主循环从
-    # 探测表 0x060A0FA4 第 5 项(flash 偏移 0x100000)读 32 字节头——CPU 可见
-    # 0x60fdfe0=0x06000000+0x100000-0x2020,是本前缀对 bank B 的唯一实际读
-    # 取范围。CRC16(头 bytes 2..31)与头前 2 字节期望值在 0x6010f80 比较,
-    # 不匹配→0x6010f5a 良性跳到下一项;5 项全败→0x6010fe6 return 1;调用者
-    # (VM init 0x6011000 内 0x6011210)只是 free 临时对象并清 OTP 全局槽
-    # 827/828,VM init 返回值被 0x601205a 调用者忽略——失败分支良性。0xFF
-    # 擦除态下期望 CRC=0xffff、真实计算值=0x75f8,必然不匹配,由真实代码
-    # 自己选择分支。这是显式环境假设(unverified erased-bank fixture),不是
-    # 已知出厂状态;范围严格限定这 32 字节,其余 bank B 继续严格 unmapped。
+    # erased_bankb:opt-in 的「未验证擦除态 bank B」显式 fixture,两个独立
+    # 证据钉死的小窗。窗 1(2026-11-12 反汇编+trace):app find_partition
+    # (0x6010f32) 主循环从探测表 0x060A0FA4 第 5 项(flash 偏移 0x100000)
+    # 读 32 字节头——CPU 可见 0x60fdfe0=0x06000000+0x100000-0x2020。
+    # CRC16(头 bytes 2..31)与头前 2 字节期望值在 0x6010f80 比较,不匹配→
+    # 0x6010f5a 良性跳到下一项;5 项全败→0x6010fe6 return 1;调用者只是
+    # free 临时对象并清 OTP 全局槽 827/828,VM init 返回值被 0x601205a
+    # 调用者忽略——失败分支良性。0xFF 擦除态下期望 CRC=0xffff、真实计算值
+    # =0x75f8,必然不匹配,由真实代码自己选择分支。窗 2(本次反汇编+trace):
+    # qcy 消费函数 0x6060a4a 把 window(flash 0x1e0000)缓存进全局 0x126544
+    # 后,循环 0x6060ad0 从同一张 u16 对表 0x60a1e8a(id==0 终止)取 id、
+    # call 0x60609ec:walker 0x60609be 命中项(offset=Σ前项(4+size))后读
+    # window+offset 起 4 头字节,LE32==0xFFFFFFFF→返回 -248(擦除态),
+    # 调用者 0x6060a9a 对 -248 直接跳下一项、零副作用(错误处理 call 只在
+    # -245/-243/成功路径,trace 零执行)。本表两项 {0x66,6}/{0x6e,6},擦除
+    # 态实际读取只有两段头各 4 字节(offset 0/0xa),fixture 覆盖表声明的
+    # 完整结构范围 20 字节。两个窗都是显式环境假设(unverified erased-bank
+    # fixture),不是已知出厂状态;范围外 bank B(含 TON 0x1e1000)继续严格
+    # unmapped。
     if erased_bankb:
         base,length=ERASED_BANKB_HEADER_RANGE
-        readonly=tuple(readonly)+((base,b'\xff'*length),)
+        wbase,wlength=ERASED_BANKB_WINDOW_RANGE
+        readonly=tuple(readonly)+((base,b'\xff'*length),(wbase,b'\xff'*wlength))
     if sfc_suspend:
         # The SFC suspend tail sets 0xfd1c00|=1 (write-only RMW projection) and
         # then the wrapper reads the second SFC 0xfe0100 CON. The second SFC is
@@ -460,23 +480,26 @@ def check(report):
             'the fifth probe entry must really CRC the 0xFF header bytes and the chain must continue')
     require(crc_ff['result_reads'][15:]==['0xc190','0xf271','0xb758','0x5ddd'],
             'the post-probe VM-init CRC usages changed after the fixture took the mismatch branch')
-    # 簿记读边界已解决:st.d.sp.l 双字存储是全 8 字节覆盖写,exact_doubleword_
-    # stores 扩展后直接写两半、不读旧 word(旧值对结果无关;上游 m2 的 Writes
-    # 合并读是模型内部簿记,非 guest load;实测该模型最终 mem 效果恰为
-    # {addr:R[d],addr+4:R[d+1]},旧 word 不参与)。链再走 369 步:qcy 消费函数
-    # 0x6060a4a 完成首次调用(0x6060a74 双字清零栈结构→0x600ad2e 填充→
-    # 0x6060a82 把 flash 窗口基址 0x061ddfe0=window(bank B 偏移 0x1e0000,
-    # 0x1da000 VM 区+0x6000)缓存进全局 0x126544),随后 0x60609ec 表查找
-    # 命中项读头字节 b[基址+[r4+4]+3]=0x61ddfe3——bank B 偏移 0x1e0003,
-    # 在 32 字节 fixture 窗口(0x60fdfe0..0x60fe000)之外、公开工件之外,
-    # 诚实停 unmapped,下一个独立决策点。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6060a00' and
-            r['stop']['kind']=='unmapped_memory' and
-            r['stop']['access']=='read' and r['stop']['address']=='0x61ddfe3' and
+    # 簿记读边界已解决(st.d.sp.l 双字全 8 字节覆盖写,exact_doubleword_stores
+    # 两半直写);qcy 消费函数 0x6060a4a 完成首次调用后,第二数据窗的表 walker
+    # 分支图(本次反汇编+trace 钉死):0x6060ad0 循环从 u16 对表 0x60a1e8a
+    # (id==0 终止,app flash 公开字节)取 id,call 0x60609ec——walker 0x60609be
+    # 按项累加 offset(每项 4 字节头+size 数据),命中项后读 window+offset 起
+    # 4 头字节拼 LE32,==0xFFFFFFFF → 返回 -248,调用者 0x6060a9a 对 -248
+    # 直接跳下一项(错误处理 call 0x600b2c 等只在 -245/-243/成功路径,trace
+    # 零执行)。本表两项 {id=0x66,size=6}/{id=0x6e,size=6},擦除态实际读取=
+    # 两段头各 4 字节(0x61ddfe0..3/0x61ddfea..d);fixture 按表声明的结构
+    # 全长覆盖 20 字节。0x6060a4a 返回 0 后链继续 226 步(双字存储 +2、
+    # rep.i 体 +1,CRC/IRQ 计数不变——第二窗消费不经硬件 CRC 引擎),停在
+    # 0x600a304 读 qcy_bss 0x1276a5 未初始化字节——bank B 之外的下一个
+    # 独立停点(bss 数据可得性边界,不是 bank B 问题)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x600a304' and
+            r['stop']['kind']=='uninitialized_memory' and
+            r['stop']['access']=='read' and r['stop']['address']=='0x1276a5' and
             r['stop']['size']==1,
-            'the erased fixture frontier must stop at the next bank-B data boundary')
-    require(r['completed_steps']==183486,'the erased fixture scenario changed its step count')
-    require(r['instruction_adapters'].get('exact_doubleword_store')==13,
+            'the erased fixture frontier must stop at the post-walker bss boundary')
+    require(r['completed_steps']==183712,'the erased fixture scenario changed its step count')
+    require(r['instruction_adapters'].get('exact_doubleword_store')==15,
             'the doubleword stores of the extended prefix must run through the exact gate')
     require(r['peripherals']['software_irq_commands']['commands']==16 and
             r['peripherals']['software_irq_commands']['acknowledgements']==8,
@@ -485,10 +508,10 @@ def check(report):
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7,
             'the extra cross-core delivery after the probe mismatch differs from the repeat projection')
-    # ROM 拷贝族/CPU0-CPU1 同步在 fixture 放行后继续:rep.i 体 80→103(第 5 项
-    # 头拷贝+后续链)、零计数跳过 2→3(该次拷贝 len&3==0 的 0x4176 尾)、寄存器
-    # 计数 rep 7→10。unknown 运输不变(2/2)。
-    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==103 and
+    # ROM 拷贝族/CPU0-CPU1 同步在 fixture 放行后继续:rep.i 体 80→104(第 5 项
+    # 头拷贝+后续链+walker 后链 1 个体)、零计数跳过 2→3(该次拷贝 len&3==0
+    # 的 0x4176 尾)、寄存器计数 rep 7→10。unknown 运输不变(2/2)。
+    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==104 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
             r['instruction_adapters'].get('register_rep_multi_block_projection')==10 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_load')==2 and
@@ -499,15 +522,22 @@ def check(report):
     report['dual_core_sync_handshake_executed']=True
     report['hardware_crc_engine_modeled']=True
     report['erased_bankb_fixture_assumption']=(
-        'unverified erased-bank fixture (NOT a known factory state): the 32-byte bank-B header read at '
-        '0x60fdfe0 (flash offset 0x100000, probe-table entry 5) is mapped read-only to 0xFF; the consumer '
-        'find_partition 0x6010f32 really computes CRC-16 over the 30 header data bytes (golden value 0x75f8, '
-        'recomputed in the assertion from the app software parameters) and compares it at 0x6010f80 against '
-        'the header word 0xffff, so the benign mismatch branch (0x6010f5a next entry -> table exhausted -> '
-        'return 1 -> caller frees the temp object and clears the OTP slots 827/828, the VM-init return value '
-        'ignored at 0x601205a) is selected by real code, never forced; every other bank-B address stays '
-        'strictly unmapped; the crc_engine_roundtrip scenario without the fixture still stops honestly at '
-        '176,288 on the unmapped 0x60fdfe0 read')
+        'unverified erased-bank fixture (NOT a known factory state), two evidence-bounded windows: '
+        '(1) the 32-byte bank-B header read at 0x60fdfe0 (flash offset 0x100000, probe-table entry 5) '
+        'is mapped read-only to 0xFF; the consumer find_partition 0x6010f32 really computes CRC-16 over '
+        'the 30 header data bytes (golden value 0x75f8, recomputed in the assertion from the app software '
+        'parameters) and compares it at 0x6010f80 against the header word 0xffff, so the benign mismatch '
+        'branch (0x6010f5a next entry -> table exhausted -> return 1 -> caller frees the temp object and '
+        'clears the OTP slots 827/828, the VM-init return value ignored at 0x601205a) is selected by real '
+        'code, never forced. (2) The 20-byte window-table structure at 0x61ddfe0 (flash offset 0x1e0000, '
+        'the window the qcy consumer 0x6060a4a caches into the global 0x126544) is mapped read-only to '
+        '0xFF over the full on-flash extent declared by the app u16-pair table 0x60a1e8a (two entries '
+        '{id=0x66,size=6}/{id=0x6e,size=6}, each 4-byte header + payload); with erased headers the '
+        'header check 0x60609ec reads only the two 4-byte headers (LE32 0xffffffff -> return -248) and '
+        'the caller loop 0x6060a9a skips to the next entry with zero side effects, again selected by '
+        'real code. Every other bank-B address (including the TON window at flash 0x1e1000) stays '
+        'strictly unmapped; the crc_engine_roundtrip scenario without the fixture still stops honestly '
+        'at 176,288 on the unmapped 0x60fdfe0 read')
     for r in report.get('candidate_prefixes',[]):
         d=r['machine']['software_irq_entry_projection']['deliveries']
         require(len(d)==1 and d[0]['vector_address']=='0x19fffc','candidate delivery differs')

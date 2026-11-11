@@ -594,5 +594,75 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(crc,0x75f8)
         self.assertNotIn(crc,(0,0xffff))
 
+    # ---- bank B 第二数据窗 0xFF fixture(opt-in erased_bankb,机制层钉子)----
+
+    def erased_bankb_window_case(self,addr,*,fixture=True,store=False):
+        h=self.handoff()
+        h['description']['phase']='erased bank-B window fixture mechanism test'
+        if fixture:h['readonly'].append((0x61ddfe0,b'\xff'*20))
+        # 真实 app 指令:读侧 0x6060a00 `r1=b[r0+3] (u)`(qcy 消费函数 0x60609ec
+        # 表 walker 头 4 字节读取的首条,r0=window+条目 offset,实测读 0x61ddfe3)
+        # ——r0 预减 3 使被读字节恰为 addr;写侧 0x6010fca `[r1++=4]=r2`
+        # (find_partition 拷贝路径的字存储,形状先例)。
+        regs=[0]*16;regs[1]=0x12345678
+        if store:
+            regs[1]=addr;regs[2]=0x12345678
+            entry_pc=0x6010fca
+        else:
+            regs[0]=addr-3
+            entry_pc=0x6060a00
+        return explore(self.module,self.app,name='erased_bankb_window_fixture',handoff=h,
+            diagnostics={'entry_pc':entry_pc,'initial_sp':STACK_TOP,
+                         'initial_rets':ENTRY,'initial_gprs':regs},budget=1)
+
+    def test_erased_bankb_window_fixture_reads_back_0xff_bytes(self):
+        # 区内(含两项头读取的实测字节 0x61ddfe3/0x61ddfed 与末字节 0x61ddff3)
+        # 读出 0xff——qcy 消费函数在 0x6060a00 读到的正是这些擦除态头字节。
+        for addr in (0x61ddfe0,0x61ddfe3,0x61ddfed,0x61ddfe0+19):
+            result=self.erased_bankb_window_case(addr)
+            self.assertEqual(result['completed_steps'],1)
+            self.assertEqual(result['stop']['kind'],'instruction_budget')
+            self.assertEqual(result['last_registers']['r'][1],'0xff')
+
+    def test_erased_bankb_window_fixture_bounds_and_default_stay_strict(self):
+        # fixture 只覆盖 walker 表声明的 20 字节结构范围(两项 {id=0x66,size=6}/
+        # {id=0x6e,size=6},每项 4 字节头+size 数据):紧邻区外(下界 0x61ddfdf/
+        # 上界 0x61ddff4)与默认(不挂 fixture)都继续严格停 unmapped——bank B
+        # 其余字节(含 TON 0x1e1000 窗)不臆造。
+        for addr in (0x61ddfdf,0x61ddff4):
+            result=self.erased_bankb_window_case(addr)
+            self.assertEqual(result['completed_steps'],0)
+            self.assertEqual(result['stop'],{'kind':'unmapped_memory','access':'read',
+                'address':hex(addr),'size':1,'reference_sdk_register':None})
+        result=self.erased_bankb_window_case(0x61ddfe0,fixture=False)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+
+    def test_erased_bankb_window_fixture_is_read_only(self):
+        result=self.erased_bankb_window_case(0x61ddfe0,store=True)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+            'address':'0x61ddfe0','size':4,'value_bytes':'78563412'})
+
+    def test_erased_bankb_window_walker_table_and_erased_headers(self):
+        # 黄金算术钉子:walker 表 0x60a1e8a(app flash 公开字节)是 u16 对
+        # {id,size}、id==0 终止;条目 offset=Σ前项(4+size)。两项 {0x66,6}/
+        # {0x6e,6} → offset 0 与 0xa,结构全长 (4+6)*2=20——fixture 范围的
+        # 依据。0xFF 擦除态下两项头 LE32=0xffffffff,0x6060a14 判等成立 →
+        # 0x60609ec 返回 -248,调用者 0x6060a9a 对 -248 直接跳下一项(trace
+        # 钉死零副作用),永远不会走到数据区 CRC(0x6060a28)。
+        table=self.app[0x60a1e8a-ENTRY:0x60a1e8a-ENTRY+12]
+        pairs=struct.unpack('<HHHHHH',table)
+        self.assertEqual(pairs,(0x66,6,0x6e,6,0,0))
+        offsets=[];acc=0
+        for i in range(0,len(pairs),2):
+            id_,size=pairs[i],pairs[i+1]
+            if id_==0:break
+            offsets.append(acc);acc+=4+size
+        self.assertEqual(offsets,[0,0xa])
+        self.assertEqual(acc,20)
+        self.assertEqual(0xffffffff,struct.unpack('<I',b'\xff'*4)[0])
+        self.assertEqual(0xffffffff>>20,0xfff)  # 即使走到 size 检查也不等于 6
+        self.assertNotEqual(0xffffffff>>20,6)
+
 
 if __name__=='__main__':unittest.main()
