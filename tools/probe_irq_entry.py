@@ -43,7 +43,7 @@ SFC_RESUME_OPERATIONS=(
 
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
-             repeat=False,readonly=()):
+             repeat=False,hardware_crc=False,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -56,6 +56,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     options={'initial_software_irq_pending':(0,0)}
     if entry:options['software_irq_delivery_requests']=True
     if unmaskable:options['unmaskable_irq_projection']=True
+    if hardware_crc:options['hardware_crc_projection']=True
     if sfc_suspend:
         # The SFC suspend tail sets 0xfd1c00|=1 (write-only RMW projection) and
         # then the wrapper reads the second SFC 0xfe0100 CON. The second SFC is
@@ -207,9 +208,9 @@ def check(report):
             'the second SFC (0xfe0100) reset-state fixture or write count differs')
     r=rows['irq125_repeat_inert']
     # 暂停点1(repeat_irq_delivery)的实证边界:新投影打开后,前沿前缀必须完全
-    # 不变(合并 frame-pop 后前沿为 155,127 的 CRC 引擎种子写)。前缀内固件对
-    # 每核只 pend 过一次(commands=4:两核各 pend+clear,CPU1 handler 入口自清),
-    # 第二次交付从未被请求;投影保持惰性,直到固件真实地再次 pend。
+    # 不变(该场景不启用 hardware_crc,停在 155,127 的 CRC 引擎种子写)。前缀内
+    # 固件对每核只 pend 过一次(commands=4:两核各 pend+clear,CPU1 handler 入口
+    # 自清),第二次交付从未被请求;投影保持惰性,直到固件真实地再次 pend。
     require(r['completed_steps']==155127 and r['stop_core']==0 and r['stop_pc']=='0x6000f44' and
             r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xfd3504',
                         'size':4,'value_bytes':'00000000'},
@@ -224,9 +225,34 @@ def check(report):
     require(r['peripherals']['software_irq_commands']['commands']==4 and
             r['peripherals']['software_irq_commands']['acknowledgements']==2,
             'the firmware issued unexpected extra software IRQ commands before the frontier')
+    r=rows['crc_engine_roundtrip']
+    deliveries=r['machine']['software_irq_entry_projection']['deliveries']
+    require([(d['core'],d['irq'],d['handler']) for d in deliveries]==
+            [(0,127,'0x12ad2a'),(1,125,'0x60662c8')],
+            'the CRC scenario must reuse the exact scheduler/sync deliveries')
+    crc=r['peripherals']['hardware_crc_projection']
+    # The wrapper (app 0x6000f2c) writes seed 0, feeds the 30 bytes at 0x400b22
+    # one st.w each, csyncs and reads the result once. The expected value is
+    # recomputed here from the app software CRC-16 parameters (poly 0x1021,
+    # MSB-first, init=seed, no xorout) so the projection is checked against the
+    # golden software algorithm, not against its own implementation.
+    fed=bytes.fromhex('60e0e0c183070f3e5c983142a468f0e1c3872e7cd8b163e6ecd9b367cf9f')
+    reference=0
+    for byte in fed:
+        reference^=byte<<8
+        for _ in range(8):
+            reference=((reference<<1)^0x1021)&0xffff if reference&0x8000 else (reference<<1)&0xffff
+    require(crc['seed_writes']==['0x0'] and crc['fed_bytes']==len(fed) and
+            crc['result_reads']==[hex(reference)],
+            'the hardware CRC projection did not reproduce the software-table result for the actual wrapper input')
+    require(r['stop_core']==0 and r['stop_pc']=='0x6010b14' and
+            r['stop']=={'kind':'unsupported_runtime_instruction','instruction_id':'rep.i'},
+            'after the CRC wrapper the stop must be the unsupported block-repeat instruction')
+    require(r['completed_steps']==155389,'the CRC engine projection changed its step count')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
+    report['hardware_crc_engine_modeled']=True
     for r in report.get('candidate_prefixes',[]):
         d=r['machine']['software_irq_entry_projection']['deliveries']
         require(len(d)==1 and d[0]['vector_address']=='0x19fffc','candidate delivery differs')
@@ -263,7 +289,10 @@ def main():
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True),
                      irq_case(module,app,header,rom,'irq125_repeat_inert',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
-                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,repeat=True)]}
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,repeat=True),
+                     irq_case(module,app,header,rom,'crc_engine_roundtrip',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
