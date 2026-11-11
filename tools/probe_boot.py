@@ -55,9 +55,28 @@ def application(path):
     require((offset,length)==(0x600,0xe6000),'unexpected flash entry')
     flash=raw[offset:offset+length]
     app_length=struct.unpack_from('<I',decode(flash[0x2000:0x2020]),8)[0]
-    app=sfc(flash[0x2020:0x2020+app_length])[0x100:0x100+842654]
+    plain=sfc(flash[0x2020:0x2020+app_length])
+    app=plain[0x100:0x100+842654]
     require(hashlib.sha256(app).hexdigest()==APP_SHA,'unexpected application bytes')
     return app
+
+
+def flash_image(path):
+    """0x06000000 起的完整 sfc 明文(默认只映射 ENTRY=0x06000100 起的 app 切片)。
+
+    头 0x100 字节是 flash 资源分区表(app_area_head 等),app 切片之后是资源区
+    (ANCIF 等)。固件启动中段的资源表扫描(如 0x6010b14 rep 4 32 从 0x06000000
+    拷 32 字节)会读这两段:都是官方 UFW 的已知真实字节,按需作为 handoff 只读
+    区传入,不改变默认映射。
+    """
+    raw=path.read_bytes()
+    require(hashlib.sha256(raw).hexdigest()==OFFICIAL_SHA,'requires exact official 0.1.1.8 UFW')
+    row=decode(raw[64:144])
+    offset,length=struct.unpack_from('<II',row,8)
+    require((offset,length)==(0x600,0xe6000),'unexpected flash entry')
+    flash=raw[offset:offset+length]
+    app_length=struct.unpack_from('<I',decode(flash[0x2000:0x2020]),8)[0]
+    return sfc(flash[0x2020:0x2020+app_length])
 
 
 def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
@@ -1136,6 +1155,38 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.pc+=size
                 self.steps+=1
                 adapters['ipmask_control_store']+=1
+                return
+            if diagnostics and diagnostics.get('immediate_rep_multi_block') and insn.id=='rep.i':
+                # 通用多指令 rep.i 体,放在所有针对性 rep 特例之后兜底(实测形状:
+                # 0x6010b14 rep 4 32 = 4 字节体 ld.bu.pin+st.b.pin 重复 32 次,字节
+                # memcpy;编码 n=次数、b=体字节数,上游 v3 硬件模型按「次数×整个
+                # 体」计总效果)。主循环的 repeat 消费按「PC 到达体末尾即完成一
+                # 轮」回卷,与单 store 体同一机制,因此只接受直线体:逐条解码必须
+                # 恰好覆盖 op['b'] 字节,每条都是有模型的非控制流指令;体指令随后
+                # 走常规解码执行,内存效果=真实执行。分支/调用/条件块开启器/并行
+                # 对/嵌套 rep 一律诚实拒绝:REP 与体内控制流的交互没有硬件捕获
+                # 证据,不臆造。
+                op=module.check.operands(insn,raw)
+                require(self.repeat is None and self.after_then is None and 1<=op['n']<=32,
+                        'immediate REP projection has an unsupported context')
+                walk=self.pc+size;covered=0
+                while covered<op['b']:
+                    inner,_,inner_size=self.decode(walk)
+                    if not (not inner.block and not inner.id.endswith('.p') and
+                            module.branch_field(inner) is None and
+                            not inner.id.startswith(('rep','goto','gotoss','call','callns',
+                                                     'pop.pc','rts','lock','idle','wfe','sev',
+                                                     'swi','syscall','btbclr','bkpt','hbkpt',
+                                                     'cli','sti','rti','rtx','rte')) and
+                            inner.id not in ('tbb','tbh') and
+                            self.models.get(inner.id) is not None):
+                        raise Blocked('rep_multi_block_body_not_straight_line',
+                                      instruction_id=inner.id,address=hex(walk))
+                    covered+=inner_size;walk+=inner_size
+                if covered!=op['b']:
+                    raise Blocked('rep_multi_block_body_unaligned',body_bytes=op['b'],covered=covered)
+                self.repeat={'start':self.pc+size,'end':self.pc+size+op['b'],'register':None,'remaining':op['n']}
+                self.pc+=size;self.steps+=1;adapters['immediate_rep_multi_block_projection']+=1
                 return
             # Context-specific control models must never pretend to be hardware.
             if insn.id.startswith(('rep','lock','idle','wfe','sev','swi','syscall',

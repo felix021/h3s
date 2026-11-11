@@ -150,6 +150,57 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['last_registers']['r'][8],'0x56')
         self.assertEqual(result['last_registers']['r'][5],'0x78')
 
+    def test_multi_instruction_rep_block_copies_bytes_like_semantic_expansion(self):
+        # 实际资源表拷贝指令 0x6010b14 rep 4 32(4 字节体 ld.bu.pin+st.b.pin,
+        # 重复 32 次)。开 immediate_rep_multi_block 后逐条真实执行:内存效果
+        # 必须等于语义展开(把源 32 字节逐一搬到目的,两个基址寄存器各 +32),
+        # 1 步 rep.i + 32×2 步体指令 = 65 步,PC 停在体后的 0x6010b1a。
+        h=self.handoff();src,dst=0x124f80,0x124f00
+        payload=bytes(range(0x21,0x41))
+        h['seeds'].append((src,payload))
+        h['snapshots'] += [('rep_multi_src',src,32),('rep_multi_dst',dst,32)]
+        regs=[0]*16;regs[0]=dst;regs[1]=src
+        result=explore(self.module,self.app,name='rep_multi_block',handoff=h,
+            diagnostics={'entry_pc':0x06010b14,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'immediate_rep_multi_block':True,
+                         'exact_subword_stores':True},budget=65)
+        self.assertEqual(result['completed_steps'],65)
+        self.assertEqual(result['stop_pc'],'0x6010b1a')
+        self.assertEqual(result['last_registers']['r'][0],hex(dst+32))
+        self.assertEqual(result['last_registers']['r'][1],hex(src+32))
+        self.assertEqual(result['memory_snapshots']['rep_multi_dst']['bytes_with_unknowns'],payload.hex())
+        self.assertEqual(result['memory_snapshots']['rep_multi_src']['bytes_with_unknowns'],payload.hex())
+        self.assertEqual(result['instruction_adapters'].get('immediate_rep_multi_block_projection'),1)
+
+    def test_multi_instruction_rep_block_stays_opt_in(self):
+        # 不开 immediate_rep_multi_block 时同一指令必须诚实停在
+        # unsupported_runtime_instruction(rep.i),legacy 行为不变。
+        h=self.handoff();src,dst=0x124f80,0x124f00
+        h['seeds'].append((src,bytes(32)))
+        regs=[0]*16;regs[0]=dst;regs[1]=src
+        result=explore(self.module,self.app,name='rep_multi_block_off',handoff=h,
+            diagnostics={'entry_pc':0x06010b14,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'exact_subword_stores':True},budget=65)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop_pc'],'0x6010b14')
+        self.assertEqual(result['stop']['kind'],'unsupported_runtime_instruction')
+        self.assertEqual(result['stop']['instruction_id'],'rep.i')
+
+    def test_multi_instruction_rep_block_rejects_control_flow_body(self):
+        # 实际 IRQ-disabled helper 块 0x12cb12 rep 24 2:24 字节体内含条件块
+        # 开启器 if.eq.ri.modimm(0x12cb22)。多指令体投影必须诚实拒绝——REP
+        # 与体内控制流的交互没有硬件捕获证据(该块由 irq_repeat_return 特例
+        # 单独处理,此处不启用该特例)。
+        regs=[0]*16
+        result=explore(self.module,self.app,name='rep_multi_block_ctlflow',handoff=self.handoff(),
+            diagnostics={'entry_pc':0x12cb12,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'immediate_rep_multi_block':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop_pc'],'0x12cb12')
+        self.assertEqual(result['stop']['kind'],'rep_multi_block_body_not_straight_line')
+        self.assertEqual(result['stop']['instruction_id'],'if.eq.ri.modimm')
+        self.assertEqual(result['stop']['address'],'0x12cb22')
+
     def test_actual_halfword_repeat_preserves_stack_neighbours(self):
         h=self.handoff();base=0x123702
         h['snapshots'] += [('halfword_repeat',base-2,18)]
