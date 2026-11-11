@@ -134,6 +134,10 @@ def run_probe(module, app, elf=None, *, repaired_app=None,repaired_payload=None)
         c.mem.map(BASE,app)
         c.mem.map(0x00124000,bytes(0x11000),writable=True)
         c.sp=0x00134000
+        # Firmware replay uses the real k2 effects; the runner's stack-PC
+        # store and RETS masking are test-frame artifacts only.
+        from br28_arch_models import architectural_k2
+        c.models,_=architectural_k2(c.models)
         return c
 
     class CPU(module.CPU):

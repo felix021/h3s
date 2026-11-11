@@ -33,6 +33,8 @@ def main():
     options=['--fetch-simulator'] if args.fetch_inputs else []
     run(sys.executable,'tools/probe_pi32v2.py',*options,'--report','analysis/local-checks/functions.json')
     run(sys.executable,'tools/test_boot_bus.py')
+    run(sys.executable,'tools/test_architectural_models.py')
+    run(sys.executable,'tools/test_task_returns.py')
     run(sys.executable,'tools/test_br28_machine.py')
     run(sys.executable,'tools/test_task_unknown.py')
     run(sys.executable,'tools/test_icfg.py')

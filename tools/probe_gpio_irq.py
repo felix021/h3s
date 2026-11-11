@@ -37,7 +37,7 @@ def run(module,app,header,rom):
             bus_lock_model=True,initial_lock_owner=None,gpio_model=gpio)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
-              'visible_cli':True,'opaque_pin_read':opaque}
+              'visible_cli':True,'opaque_pin_read':opaque,'exact_parallel_stores':True}
         r=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
                   diagnostics=diag,hardware=hardware,startup_loops=True,budget=budget)
         results.append(r);print(name,r['completed_steps'],r['stop_pc'],r['stop'],flush=True)

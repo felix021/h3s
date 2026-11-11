@@ -48,11 +48,14 @@ def run(module,app,header,rom):
             # must change it, rather than merely preserve our expected value.
             h['seeds'].append((BOOT_ARGS+4,struct.pack('<II',24000000,123)))
             h['description']['pll_boot_arg_seed']={'osc_hz':24000000,'initial_output_slot':123}
-            diag={**function_harness(0x1fe14,[]),'icfg_initial':0}
+            # ROM delay helpers spill full words with st.w.sp; the upstream
+            # merge-read must not demand initialized stack bytes here.
+            diag={**function_harness(0x1fe14,[]),'icfg_initial':0,'exact_parallel_stores':True}
         else:
             diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,
                   'irq_repeat_return':True,'update_repeat':True,'rom_exact_stores':True,
-                  'rom_memset_rep':True,'rom_zero_rep_skip':True,'visible_cli':True}
+                  'rom_memset_rep':True,'rom_zero_rep_skip':True,'visible_cli':True,
+                  'exact_parallel_stores':True}
             if name=='cold_clock_prefix':diag['stop_before_pc']=0x06000116
         r=explore(module,app,name=name,adapt_stack=not isolated,adapt_store=not isolated,
                   r0=HANDOFF if not isolated else 0,rom=rom,handoff=h,diagnostics=diag,hardware=hw,
