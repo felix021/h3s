@@ -1,15 +1,41 @@
-# 交接：整机启动仿真推进中（IRQ127 已入 handler）
+# 交接：整机启动仿真推进中（调度闭环已贯通，app_core 已进入）
 
-2026-11-11 恢复工作。阶段 A（重建可信基线）与阶段 C 第一层（IRQ127 入口交付）已完成。停止时请更新本文件。
+2026-11-11 恢复工作。阶段 A（基线）+ 阶段 C 主体（IRQ127 调度闭环 → app_core）已完成。停止时请更新本文件。
 
-## 当前状态
+## 当前状态（按时间序，均已在 worktree `sim-baseline` 提交）
 
-- **基线已重建**：`921c2d5` 通过完整本机回归（真实 ROM + 新接入的 `test_architectural_models.py` / `test_task_returns.py`）。
-- **修复内容**：`probe_hardware` / `probe_gpio_irq` 为 ROM delay helper（`st.w.sp` @ `0xc2ba`/`0xc2c6`）启用既有的 exact 全字存储路径，绕开上游对未写栈字节的合并读；`probe_pi32v2` 的 cpu 工厂应用 `architectural_k2`，消除测试框架副作用。
-- **边界核对**：13 组外设场景与 MMU 边界（warm 73436 / cold 74474 @ `0xff0404`）、双核 147,263/147,268 步、partial-ICFG 147,268 步边界均与 `ab9f4e1` 一致；r2 五入口仍 BLOCKED。
-- **返回对照固化**（`probe_task_returns.py`，已接入 check_local）：暂停前 HANDOFF 表格的 5 个停止点在重建后的基线上全部复现——147,270（`unknown_core_stack_pointer`）/ 147,404（CPU1 真实 `idle` @ `0x12c5ca`）/ 149,660×2（IRQ127 未知门 / 待交付）/ 149,661（两核 IDLE 边界）。全部保持反事实假设标注。
-- **IRQ127 第一层入口**（`probe_irq_entry.py` + `test_irq_entry.py`，已接入 check_local）：`software_irq_delivery_requests` + `software_irq_entry` 双 opt-in 投影。实际调度 IPI（`0x60644a6` SET 的 pending `0x8`）在 CPU0 `sti` 后请求交付；向量槽 `0x19fffc`（`0x19fe00+irq*4`，app 字节 `0x6065d90` 证明）读出固件注册的 handler `0x12AD2A`；RETI 装载中断 PC `0x12b608` 为显式假设；交付清 pending 为显式假设（`acknowledge` 单独计数）。handler 真实执行 `cli` + `push.rmask`（16B GPR 帧），149,662 步停在 `push.srl` 特殊帧（`multicore_special_frame_unmodeled`）——第一层的自然严格边界。负例：槽未写原子停（`vector_slot_uninitialized`）、非 127 IRQ 拒绝、双次交付拒绝、入口非 opt-in 拒绝。
-- **报告差异**：执行器类报告 vs `ab9f4e1` 的差异均为元数据（k2 修正记录、适配器计数桶改名、开关字段），已在 AGENTS.md 说明；`evidence/` 的执行器类 JSON 尚未按新基线重新策划（待下一里程碑一起做）。
+- **基线已重建**（`921c2d5`）：k2 副作用修正后完整回归通过；13 组外设场景与 MMU 边界、双核 147,263/147,268、partial-ICFG 边界与 `ab9f4e1` 一致。
+- **返回对照固化**（`f4394dd`，`probe_task_returns.py`）：5 个反事实停止点全部复现（147,270/147,404/149,660×2/149,661）。
+- **IRQ127 入口**（`f4394dd`）：双 opt-in（`software_irq_delivery_requests`+`software_irq_entry`）交付；向量槽 `0x19fffc`、RETI 装载、pending 清除均为显式假设；负例单测固定。
+- **handler 头部 + 真调度器**（`734c60b`）：PSR 小帧（m=32）与 76B 上下文帧（m=41）锚定执行；`0xFFE200` 源使能位跟踪；真实 IPMASK 地址 `0xFFE168+cnum*0x800`（idle 循环 `0x12b56c` 与 handler `0x12ad5c` 一致）接入 IRQ 控制器；银行读指令 `mov.sp_usp`/`mov.usp_sp` 实现；入口银行假设（USP=中断任务栈、SSP=last_explicit_ssp）下 handler 存 76B 帧入真实 TCB 槽并调用真调度器 `0x12ADEC`，151,500 步停对核 IDLE。dualcore/partial-ICFG 边界不变。
+- **调度闭环贯通**（`469e579`，最新）：opt-in IDLE 等待投影（核停发指令直到真实交付唤醒；全核等待→`all_cores_idle_waiting` 停止）；交付泛化到每核 IPI（IRQ 127-cnum，CPU1 槽 `0x19fff8`）；调度器自身的任务恢复 `pop.rmask` 装载任务帧 GPR（未初始化槽→UnknownWord，同首任务语义）；对称一次性 IRQ RTI 投影（PC=RETI、SP=USP，银行回写不认证）。**完整回路**：IPI 交付 → handler → 真调度器 → 任务切换 → RTI 进入真实 app_core 入口 `0x6012028` → 任务执行并 pend CPU1（IRQ125，优先级 6）→ **153,430 步停在 CPU1 侧 unmaskable 软件 IRQ（下一真实边界）**。
+- **报告差异**：执行器类报告 vs `ab9f4e1` 的差异均为元数据；`evidence/` 执行器类 JSON 待下一里程碑重新策划。
+
+## 当前停止点与下一层
+
+153,430 步：`unmodeled_unmaskable_irq` core=1 irq=125 priority=6 source=software_irq。CPU0 的 app_core 任务执行中 SET 了 CPU1 的 IRQ125（`rmw.or.bitr` @ `0x12b666`），而优先级 6 在模型里是 unmaskable（`IPMASK 0..7` 中 6/7 不可屏蔽）——需要弄清 IRQ125 的真实语义（config nibble 优先级 6 的实际含义、BR28 是否真有不可屏蔽软件 IRQ）后扩展模型或显式假设。这是下一个真实边界，不是死路。
+
+## 下一步（恢复时按序）
+
+1. IRQ125/优先级 6 语义：读 `analyze_qcy_irq.py` 的 config nibble 布局与 SDK 参考，判定 6/7 是否真的不可屏蔽、CPU1 侧交付需要什么；可能只是模型的 `priority>=6` 假设过严（`br28_model.py` 的 `unmodeled_unmaskable_irq` 抛出条件）。
+2. CPU1 侧 IRQ126/125 交付 + CPU1 handler 跑通（对称复用本层全部投影；CPU1 银行 fixture=`last_explicit_ssp 0x19fd94`）。
+3. core tick IRQ3（`core_tick_overflow_delivery_unresolved`；handler `0x60661A4`、ACK `0xFFE0EC+bank` bit6、CPU0 PRD=1 高频溢出）——codex 阶段 C 后半的"tick 唤醒"。
+4. 阶段 D：app_core 任务推进（0x6012028 之后的初始化链条：资源映射、外设、P11、蓝牙音频）。
+5. 阶段 E：三镜像 EQ 差分（L0-L3）。
+
+## 关键技术事实（本日新钉）
+
+- IPMASK 物理地址 `0xFFE168+cnum*0x800`；模型常量 `IPMASK=0xffe1a8` 是 setup_arch 侧另一路径，两者都更新 `IRQController.ipmask`。
+- `0xFFE200` = `EMU_CON`（debug control）兼软件 IRQ 源使能位（bits0-3）；handler 入口 `&=~8` 出口 `|=8`，模型分位跟踪、不影响 eligible。
+- 调度 IPI 公式 `IRQ 127-cnum`；两核 handler 同为 `0x12AD2A`（固件注册）。
+- app_core 帧 `0x19f7b0`：16B 特殊帧已知（PC `0x6012028`）、60B GPR 未初始化（真实语义，非仿真缺陷）。
+- IDLE 等待投影：`CoreStall('core_idle_waiting')` + `select()` 跳过等待核；唤醒仅来自真实交付。
+
+## 资料和硬件边界（不变）
+
+- 历史失败 r2（`c8dae523…`）禁止重刷；修复候选（`67ba97ef…`）未验证未刷。
+- ROM 公开 Release asset（`QCY_H3S_BR28_ROM_000000-020000.bin`）。
+- RAM 观测候选仍 nondeployable；检查全部本机执行，不用 GitHub CI；发布需用户确认。
 
 ## codex (gpt-6-astra) 调研路线（已核实采纳）
 
