@@ -254,15 +254,24 @@ def check(report):
             'the hardware CRC projection did not reproduce the software-table result for the actual wrapper input')
     # 0x6010b14 rep 4 32(4 字节体 ld.bu.pin+st.b.pin × 32,flash 资源表头部
     # 32 字节拷贝)及其后整条资源表扫描(含 callee 0x6010a64 内四个 rep 4 8)
-    # 全部按多指令体真实执行:70 个 rep.i 体、155,389→162,447 步,停在扫描
-    # 完成后重新配置 SFC 时钟 0xfd1c04(未建模寄存器)——与 rep.i 无关的
-    # 下一个独立边界。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6010b88' and
-            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xfd1c04',
-                        'size':4,'value_bytes':'03000000'},
-            'after the resource-table scan the stop must be the unmodeled SFC clock register write')
-    require(r['completed_steps']==162447,'the rep-block projection changed its step count')
-    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==70,
+    # 全部按多指令体真实执行:70 个 rep.i 体、155,389→162,447 步;扫描完成后
+    # 的一次性 SFC 时钟重配(0x12762c 标志守卫)写 0xfd1c04=3——+4 已按只写
+    # 记录建模(app 0x6010b88 与 ROM 0xc198 两侧都只整字写、从不读回),前沿
+    # 推进到 162,615 步,停在 0x600a354 rep 4 4 体内读半初始化的
+    # qcy_boot_info 目标区 0x122800(byte0 有值、byte1 起未初始化)——下一个
+    # 独立边界是 RAM 数据流,不再是 SFC 时钟寄存器。
+    require(r['stop_core']==0 and r['stop_pc']=='0x600a354' and
+            r['stop']=={'kind':'uninitialized_memory','access':'read','address':'0x122800',
+                        'size':4,'region':'qcy_boot_info_destination','first_missing':'0x122801'},
+            'after the SFC clock select write the stop must be the uninitialized boot-info read')
+    require(r['completed_steps']==162615,'the SFC clock select projection changed its step count')
+    gate=r['peripherals']['sfc_clock_gate_projection']
+    require(gate['select']=='0x3' and gate['select_writes']==1 and
+            gate['select_write_only'] is True and gate['select_readback_observed'] is False,
+            'the SFC clock +4 select write-only record differs')
+    # 70 个体来自资源表扫描,第 71 个是新前沿 0x600a352 rep 4 4(拷 16 字节
+    # boot_info 头),停在其体内第一条装载指令上(半初始化源)。
+    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==71,
             'the flash resource-table scan must execute its rep.i blocks through the multi-block projection')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
