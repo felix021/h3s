@@ -40,6 +40,13 @@ class Blocked(RuntimeError):
         super().__init__(json.dumps(self.details,sort_keys=True))
 
 
+class IrqDeliveryRequest(RuntimeError):
+    """Eligible software IRQ asking the machine for the (opt-in) CPU entry."""
+    def __init__(self,**details):
+        self.details=details
+        super().__init__(json.dumps(self.details,sort_keys=True))
+
+
 def application(path):
     raw=path.read_bytes()
     require(hashlib.sha256(raw).hexdigest()==OFFICIAL_SHA,'requires exact official 0.1.1.8 UFW')
@@ -1060,6 +1067,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if row.get('instruction_id','').startswith('st.') and stop['kind']=='uninitialized_memory':
                 stop={**stop,'kind':'upstream_store_bookkeeping_read',
                       'note':'upstream store model reads previous words to merge/drop writes; not a guest load'}
+        except IrqDeliveryRequest as request:
+            if machine is None or not machine.software_irq_entry:
+                raise ValueError('delivery request without the opt-in machine entry projection')
+            machine.deliver_software_irq(c,request.details['irq'])
+            row['software_irq_entry']=request.details
         except (RuntimeError,ValueError,KeyError,IndexError) as e:
             stop={'kind':'upstream_simulator_failure','error_type':type(e).__name__,'message':str(e)}
         trace.append(row)

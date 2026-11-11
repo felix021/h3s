@@ -5,7 +5,7 @@ capture/PWM modes, reset stimuli and actual CPU interrupt delivery still stop.
 """
 from collections import Counter
 
-from probe_boot import Blocked
+from probe_boot import Blocked, IrqDeliveryRequest
 
 TIMER0=0xfd0400
 PLL0=0xfd4600
@@ -534,7 +534,7 @@ class SoftwareIrqCommands:
             raise ValueError('software IRQ initial pending requires two explicit low-nibble or unknown fixtures')
         self.initial_pending=None if initial_pending is None else tuple(initial_pending)
         self.pending=[PartialWord() if v is None else PartialWord(v,15) for v in (self.initial_pending or (None,None))]
-        self.commands=0
+        self.commands=0;self.acknowledgements=0
 
     def handles(self,address):return any(address in (b,b+4) for b in self.bases)
 
@@ -546,11 +546,18 @@ class SoftwareIrqCommands:
         self.pending[core].apply('and' if clear else 'or',~mask if clear else mask)
         self.commands+=1
 
+    def acknowledge(self,core,bit):
+        # Explicit assumption of the opt-in minimal entry: taking the vector
+        # clears the pending bit. Which agent clears it on silicon is unknown.
+        self.pending[core].apply('and',~(1<<bit)&0xffffffff)
+        self.acknowledgements+=1
+
     def report(self):
         return {'pending':{str(i):{'known_mask':hex(w.known&15),'known_value':hex(w.value&15)} for i,w in enumerate(self.pending)},
                 'commands':self.commands,'mapping':'BR28 software IRQ124+n, n=0..3; bank selects target core',
                 'selected_bit_command_is_explicit_projection':True,'wo_readback_certified':False,
                 'exception_delivery_simulated':False,'initial_pending_assumed_zero':self.initial_pending is not None and 0 in self.initial_pending,
+                'acknowledgements':self.acknowledgements,'acknowledged_by_delivery_is_assumption':True,
                 **({'initial_pending_fixture':[None if v is None else hex(v) for v in self.initial_pending],
                     'pending_fixture_is_not_measured_reset_state':True} if self.initial_pending is not None else {})}
 
@@ -705,7 +712,7 @@ class BR28Model:
                  reset_history_projection=False,reset_history_words=None,
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,software_irq_command_projection=False,
-                 initial_software_irq_pending=None):
+                 initial_software_irq_pending=None,software_irq_delivery_requests=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
         if timer_lsb_ticks_per_step is not None and (not isinstance(timer_lsb_ticks_per_step,int) or not 0<=timer_lsb_ticks_per_step<=256):
             raise ValueError('invalid explicit LSB virtual tick rate')
@@ -718,6 +725,9 @@ class BR28Model:
         self.cpu1_release_handler=None;self.secondary_cpu_executed=False
         if initial_software_irq_pending is not None and not software_irq_command_projection:
             raise ValueError('software IRQ pending fixture requires explicit command projection')
+        if software_irq_delivery_requests and not software_irq_command_projection:
+            raise ValueError('software IRQ delivery requests require the command projection')
+        self.software_irq_delivery_requests=software_irq_delivery_requests
         self.software_irq=SoftwareIrqCommands(initial_software_irq_pending) if software_irq_command_projection else None
         self.registers={}
         self.reset_inputs_inactive=reset_inputs_inactive
@@ -1051,6 +1061,8 @@ class BR28Model:
                         raise
                     if eligible:
                         if gate is None:raise Blocked('software_irq_with_unknown_icfg',core=core,irq=124+bit)
+                        if self.software_irq_delivery_requests:
+                            raise IrqDeliveryRequest(core=core,irq=124+bit)
                         kind='software_irq_delivery_not_implemented' if word.known&(1<<bit) else 'software_irq_pending_unknown'
                         raise Blocked(kind,core=core,irq=124+bit)
 

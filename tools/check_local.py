@@ -38,6 +38,7 @@ def main():
     run(sys.executable,'tools/test_br28_machine.py')
     run(sys.executable,'tools/test_task_unknown.py')
     run(sys.executable,'tools/test_icfg.py')
+    run(sys.executable,'tools/test_irq_entry.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json')
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json')
@@ -61,6 +62,8 @@ def main():
         run(sys.executable,'tools/analyze_usb_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/usb-rom-dispatch.json')
         run(sys.executable,'tools/probe_dualcore.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/dualcore-startup.json')
         run(sys.executable,'tools/probe_icfg_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/icfg-startup.json')
+        run(sys.executable,'tools/probe_task_returns.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/task-returns.json')
+        run(sys.executable,'tools/probe_irq_entry.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/irq-entry.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:

@@ -37,7 +37,7 @@ class DualCoreMachine:
     def __init__(self,*,cpu1_reset_pc=None,cpu1_icfg=None,irq1_config=None,ipmask1=None,
                  bootstrap_rti=False,unknown_task_gprs=False,partial_icfg=False,
                  initial_icfg_masks=(0xffffffff,0xffffffff),bootstrap_status_preserve_mask=0,
-                 first_task_return_hypothesis=None,defer_core1_first_idle=False):
+                 first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -57,6 +57,8 @@ class DualCoreMachine:
         require(not defer_core1_first_idle or first_task_return_hypothesis is not None,
                 'CPU1 issue delay requires explicit first-task comparison')
         self.defer_core1_first_idle=defer_core1_first_idle;self.deferred_core1_turns=0
+        require(isinstance(software_irq_entry,bool),'software IRQ entry projection is opt-in boolean')
+        self.software_irq_entry=software_irq_entry;self.software_irq_deliveries=[]
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -189,6 +191,26 @@ class DualCoreMachine:
                'hardware_mode_certified':False}
         self.first_task_returns[cpu.core_id]=event;self.record_event(event)
 
+    def deliver_software_irq(self,cpu,irq):
+        # Opt-in minimal CPU entry for the actual scheduler IPI. RETI-load and
+        # vector-slot reading are checked before any state changes; entry SP
+        # bank, ICFG side effects and hardware frame writes stay unknown.
+        require(self.software_irq_entry and irq==127 and not self.software_irq_deliveries and
+                not cpu.bootstrap_context and cpu.after_then is None and cpu.repeat is None,
+                'software IRQ entry requires the exact single scheduler IPI at an instruction boundary')
+        slot=0x19fe00+irq*4
+        try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
+        except Blocked:raise Blocked('vector_slot_uninitialized',core=cpu.core_id,irq=irq,
+                                     address=hex(slot)) from None
+        interrupted=cpu.pc
+        cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
+        self.hardware.software_irq.acknowledge(cpu.core_id,irq-124)
+        event={'kind':'software_irq_entry','core':cpu.core_id,'irq':irq,'vector_address':hex(slot),
+               'handler':hex(handler),'reti_from':hex(interrupted),'entry_counted_as_model_step':True,
+               'reti_load_is_assumption':True,'delivery_clears_pending_is_assumption':True,
+               'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
+        self.software_irq_deliveries.append(event);self.record_event(event)
+
     def note_stall(self,cpu,details):
         self.stalls+=1
         self.record_event({'core':cpu.core_id,**details})
@@ -239,6 +261,9 @@ class DualCoreMachine:
                             if self.defer_core1_first_idle else 'round-robin one instruction per runnable core; no cycle accuracy'),
                 'cpu1_reset_vector_fixture':self.cpu1_reset_pc,'cpu1_initial_icfg_fixture':self.cpu1_icfg,
                 'reset_vector_release_causality_measured':False,'bootstrap_rti_projection':self.bootstrap_rti,
+                **({'software_irq_entry_projection':{'enabled':True,'deliveries':self.software_irq_deliveries,
+                    'vector_slot_formula':'0x19fe00+irq*4 pinned by app bytes at 0x6065d90',
+                    'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.software_irq_entry else {}),
                 'bootstrap_mode_or_ssp_writeback_certified':False,'launches':self.launches,'stalls':self.stalls,
                 'unknown_task_gprs_preserved':self.unknown_task_gprs,
                 **({'first_task_return_comparison':{'hypothesis':self.first_task_return_hypothesis,
