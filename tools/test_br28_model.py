@@ -7,6 +7,7 @@ from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV
 from br28_model import HardwareCrcEngine, CRC_ENGINE
+from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SDTAP_CON, PSRAM_CON0, IOMAP_CON0, USB_IO_CON0, USB_DISABLE_REGISTERS
 from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection, RESET_CONFIG_MASKS
 from br28_model import MPUConfigurationProjection, GpioOutValue
@@ -554,6 +555,35 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(report['result_reads'],['0x2672'])
         self.assertFalse(report['reset_value_measured'])
         self.assertFalse(report['hardware_bit_or_byte_order_silicon_verified'])
+
+    def test_sfc_clock_select_is_write_only_and_never_fabricates_readback(self):
+        # 0xfd1c04(+4) 两侧证据都是整字写:app 0x6010b88 `st.w [r0+4]=3`
+        # (资源表扫描后一次性重配)、ROM 0xc198 `st.w [r5+4]=uextra(cfg,8,8)`
+        # (flash 配置字 bits[8:16])。固件从不读回——未写不臆造复位值,
+        # 写过之后读回同样没有证据,一律诚实停。
+        gate=SfcClockGateProjection()
+        with self.assertRaisesRegex(Blocked,'sfc_clock_select_readback_not_observed'):gate.read(SFC_CLOCK_GATE+4)
+        gate.write_select(3)
+        with self.assertRaisesRegex(Blocked,'sfc_clock_select_readback_not_observed'):gate.read(SFC_CLOCK_GATE+4)
+        report=gate.report()
+        self.assertEqual(report['select'],'0x3')
+        self.assertEqual(report['select_writes'],1)
+        self.assertTrue(report['select_write_only'])
+        self.assertFalse(report['select_readback_observed'])
+        self.assertFalse(report['select_bit_semantics_verified'])
+
+    def test_sfc_clock_select_is_opt_in_and_routed(self):
+        # 默认关:0xfd1c04 整字写仍是不支持的外设写;打开既有的
+        # sfc_clock_gate_projection(0xfd1c00 块)后,写走只写记录、读继续停。
+        model=BR28Model()
+        self.assertFalse(model.handles(SFC_CLOCK_GATE+4,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):model.write(SFC_CLOCK_GATE+4,3)
+        model=BR28Model(sfc_clock_gate_projection=True)
+        model.write(SFC_CLOCK_GATE+4,3)
+        with self.assertRaisesRegex(Blocked,'sfc_clock_select_readback_not_observed'):model.read(SFC_CLOCK_GATE+4)
+        report=model.report()['sfc_clock_gate_projection']
+        self.assertEqual((report['select'],report['select_writes']),('0x3',1))
+        self.assertEqual(report['select_address'],'0xfd1c04')
 
 
 if __name__=='__main__':unittest.main()

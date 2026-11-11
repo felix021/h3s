@@ -1,4 +1,4 @@
-# 交接：整机启动仿真推进中（阶段 D 进行，前沿 162,447 步）
+# 交接：整机启动仿真推进中（阶段 D 进行，前沿 162,615 步）
 
 2026-11-11 恢复工作。阶段 A/B/C1 完成，C2（tick 真实触发）与 D 进行中。停止时请更新本文件。
 
@@ -13,9 +13,9 @@
 | irq127_scheduler_entry | 151,500 | 0x12c5ca | unsupported idle（对核 IDLE 边界）|
 | irq127_appcore_roundtrip | 153,430 | 0x12b66a | unmodeled_unmaskable_irq irq125 |
 | irq125_sync_roundtrip | 155,127 | 0x6000f44 | unmapped_or_readonly_write 0xfd3504（CRC 投影关闭时的边界）|
-| **crc_engine_roundtrip** | **162,447** | **0x6010b88** | **unmapped_or_readonly_write 0xfd1c04（资源表扫描后重配 SFC 时钟，新边界）** |
+| **crc_engine_roundtrip** | **162,615** | **0x600a354** | **uninitialized_memory 读 0x122800（qcy_boot_info_destination 半初始化，新边界）** |
 
-**162,447 步含义**：CRC wrapper（见 155,127/155,389 旧含义，此处不赘述）之后，CPU0 进入 flash 资源分区表扫描（app 0x6010aea 起）：`r4=表项指针`（RAM 表 0x126560+idx*4，实为 0x06000000 起的 flash 头），`0x6010b14 rep 4 32`（**4 字节体** `ld.bu.pin r2=b[r1++=1]` + `st.b.pin b[r0++=1]=r2` 重复 **32 次**，即 32 字节 memcpy——旧 HANDOFF「32 字节多指令体含 call」读反了编码：rep.i 语法 `rep {b} {n}` 中 b=体字节数（raw×2+2）、n=次数（raw+1），call 在体之外）把 32 字节表项头拷到栈，再 call 0x6010a64 名字匹配器（内含四个 `rep 4 8` 同形状 8 字节拷贝块）比对 app.bin/PRCT/CODE/BTIF/AUTO/ANCIF/ANCIF1 等名字。整条扫描 70 个 rep.i 多指令体全部逐条真实执行（opt-in `immediate_rep_multi_block`）+ 按需挂完整 sfc 明文只读区（0x06000000 头 0x100 资源表 + app 结束后的资源区，默认只映射 ENTRY 起 app 切片）。扫描完成后固件重配 SFC 时钟：0x6010b72-7a 对 0xfd1c00 三次 RMW（已建模时钟门路径），0x6010b88 `st.w [0xfd1c04]=3` 停——0xfd1c04 未建模（0xfd1c00=时钟门 CON、0xfd1c08=分频已建模；0xfd1c04 疑似时钟选择/第二分频，SDK csfr.h clk_sfc+4，语义待查证）。
+**162,615 步含义**：CRC wrapper（见 155,127/155,389 旧含义，此处不赘述）之后，CPU0 进入 flash 资源分区表扫描（app 0x6010aea 起）：`r4=表项指针`（RAM 表 0x126560+idx*4，实为 0x06000000 起的 flash 头），`0x6010b14 rep 4 32`（**4 字节体** `ld.bu.pin r2=b[r1++=1]` + `st.b.pin b[r0++=1]=r2` 重复 **32 次**，即 32 字节 memcpy——旧 HANDOFF「32 字节多指令体含 call」读反了编码：rep.i 语法 `rep {b} {n}` 中 b=体字节数（raw×2+2）、n=次数（raw+1），call 在体之外）把 32 字节表项头拷到栈，再 call 0x6010a64 名字匹配器（内含四个 `rep 4 8` 同形状 8 字节拷贝块）比对 app.bin/PRCT/CODE/BTIF/AUTO/ANCIF/ANCIF1 等名字。整条扫描 70 个 rep.i 多指令体全部逐条真实执行（opt-in `immediate_rep_multi_block`）+ 按需挂完整 sfc 明文只读区（0x06000000 头 0x100 资源表 + app 结束后的资源区，默认只映射 ENTRY 起 app 切片）。扫描完成后固件重配 SFC 时钟：0x6010b72-7a 对 0xfd1c00 三次 RMW（已建模时钟门路径），0x6010b88 `st.w [0xfd1c04]=3`（本次建模为只写记录）——之后 168 步停在 0x600a354 `rep 4 4` 体内 `r3=[r2++=4]` 读 0x122800：**qcy_boot_info_destination 区半初始化**（byte0 有值、0x122801 起未初始化），是 RAM 数据流边界而非外设寄存器。谁写了 0x122800 的 byte0、为什么后续字节缺失，是下一路的调查起点。
 
 ## 已实现（按序，均 opt-in 投影，默认关闭 legacy 报告不变）
 
@@ -28,10 +28,11 @@
 - **SFC 时钟门 + 第二 SFC**（8770401）：0xfd1c00 时钟门投影（只记录置/清、读回严格 unknown）、第二 SFC 0xfe0100（复位态 CON=0 显式假设）。
 - **GPIO OUT 读回按位**（8e5df35）：GpioOutValue 偏字类型，and/or 位操作传递、全字消费（算术/比较/存 RAM）严格停；未写位 unknown 不臆造。
 - **SFC 时钟 +8 / PLL lock 读回**（c3f399e）：0xfd1c08 分频寄存器可写可读（读回=最后写入值，仅在固件写过后返回，不臆造复位值）；0xfd1c00 bit15 读回显式投影为 PLL 已锁定（0x12ba38 轮询证据）。
+- **SFC 时钟 +4 只写记录**（本次，仍挂在 `sfc_clock_gate_projection` 开关下）：0xfd1c04 整字写只记录最后值+次数，读回一律 Blocked。证据（app+ROM 全量反汇编）：app 仅 0x6010b88 `st.w=3`（一次性重配，0x12762c 标志守卫），ROM 仅 0xc198 `st.w=uextra(flash配置字,p:8,l:8)`（前置 `[0xfd1c00]=0x20` 整字存）；两侧都无任何读回，复位值/读回语义无观察，SDK 头文件无位定义——写 3 的含义（时钟源选择/分频字段）显式标注未证实。+0xc/+0x10 仅 ROM 0xae84/0xae86 整字写（`[r4+12]=r3`/`[r4+16]=r2`，串行读时钟配置），app 不触碰，暂不建模。
 - **CPU1 PMU_CON0 RMW + kick 唤醒**（前置）：0xffe8c0=CPU1 PMU_CON0（csfr.h q32DSP(1)+0x30*4；0xffe0c0 同位为 CPU0）。含 bit0 的 RMW 与严格写路径等价（实际释放指令 0x60660da 就是 `|=1`）；释放后 bit0 不参与的 or 置位记为 kick 位（0x12b732/0x12c71c 双证据，只置位不回读不清除）。machine 侧 `cpu1_control_kick_wake` 投影：kick 让挂在 idle 的 CPU1 按完成计步并唤醒——「bit3 就是唤醒源」是从握手协议推断的显式假设（SDK 无 PMU_CON0 位定义，硅语义未验证，已写入 report 假设）。
 - **CPU1 irq125 handler 尾部帧弹出 + 对称 RTI**（cb109b3 前一提交）：probe_irq_entry HANDLER_PSR_FRAMES 增加 `0x606633e:'frame12_pop'`（pop.srl m=41，从真实栈弹出 {psr,rets,reti}，字节来源是入口 0x60662c8 frame12_push 写入的交付状态，不臆造）；`br28_machine.SOFTWARE_IRQ_RTI_TAILS=(0x12ade8,0x6066342)` 把对称 RTI 投影（PC=RETI、SP=USP、bank 回写/ICFG 效果仍是假设）推广到 CPU1 的 irq125 handler 尾 0x6066342。RTI 后 CPU1 回到被中断的 idle（0x12c5ca，reti_from_frame=0x12c5ca）并重新停泊。注意：`defer_core1_first_idle` 的 4096 上限在此返回后被重新触发耗尽（CPU1 返回 0x12c5ca 未停泊期间 CPU0 连续发射）——确定性、不改状态，报告 deferred_core1_turns=4096。
 - **硬件 CRC 引擎投影**（1ea2f59，opt-in `hardware_crc_projection`）：`br28_model.HardwareCrcEngine`。访问形状只接受 ROM 0xaa1e 与 app 0x6000f2c 真实用过的：写 +4 种子（≤0xffff）、写 +0 馈一个字节（st.w 载荷≤0xff）、读 +4 结果；复位态未知（未写种子读/馈入停止）、+0 读、超宽载荷、其他偏移一律 Blocked。算法参数按 app 软件 CRC-16 表推导（多项式 0x1021、MSB-first、初值=种子、无输出异或）——功能等价投影，硬件位序/字节序硅上未验证（report 显式记录）。同步模型无 busy 位（固件写数据后 csync 再读）。单测 test_br28_model 对照 app 表逐位/半字节实现 + CRC-16/XMODEM 标准校验值 0x31C3。
-- **rep.i 多指令体重复**（本次，opt-in `immediate_rep_multi_block`，probe_boot 通用兜底）：通用方案——主循环 repeat 消费本就按「PC 到达体末尾即完成一轮」回卷（probe_boot step() 393 行起），天然支持区间内多条指令顺序执行；放开的只是单 store 限制。新 gate 放在所有针对性 rep 特例（单 store 体、update_repeat、irq_repeat_return）之后兜底：逐条解码必须恰好覆盖 op['b'] 字节，每条都是有上游 m2 模型的非控制流指令（拒绝分支/goto/call/gotoss、if/iff/ifs 开启器、tbb/tbh、并行对 .p、嵌套 rep、rts/pop.pc/rti 等运行时指令——REP 与体内控制流的交互无硬件捕获证据，不臆造；新 Blocked kind `rep_multi_block_body_not_straight_line`/`rep_multi_block_body_unaligned`）。体指令走常规解码执行：ld.bu.pin 走上游 m2 模型（严格读），st.b.pin 走既有 exact_postincrement_store 适配器（字节粒度写，可写未初始化 RAM）。配套 `probe_boot.flash_image()`：按需把 0x06000000 起完整 sfc 明文作为 handoff 只读区传入（头 0x100 资源分区表 + app 后资源区），不改默认映射。crc_engine_roundtrip 启用后 155,389→162,447（+70 个 rep.i 体），前 6 场景字节不变。单测 test_boot_bus：真实 0x6010b14 块内存效果=语义展开（65 步、r0/r1 各 +32、32 字节快照全中）、开关关=诚实停 rep.i、控制流体（0x12cb12 rep 24 2 含 if.eq.ri.modimm）诚实拒绝。
+- **rep.i 多指令体重复**（fa1a762，opt-in `immediate_rep_multi_block`，probe_boot 通用兜底）：通用方案——主循环 repeat 消费本就按「PC 到达体末尾即完成一轮」回卷（probe_boot step() 393 行起），天然支持区间内多条指令顺序执行；放开的只是单 store 限制。新 gate 放在所有针对性 rep 特例（单 store 体、update_repeat、irq_repeat_return）之后兜底：逐条解码必须恰好覆盖 op['b'] 字节，每条都是有上游 m2 模型的非控制流指令（拒绝分支/goto/call/gotoss、if/iff/ifs 开启器、tbb/tbh、并行对 .p、嵌套 rep、rts/pop.pc/rti 等运行时指令——REP 与体内控制流的交互无硬件捕获证据，不臆造；新 Blocked kind `rep_multi_block_body_not_straight_line`/`rep_multi_block_body_unaligned`）。体指令走常规解码执行：ld.bu.pin 走上游 m2 模型（严格读），st.b.pin 走既有 exact_postincrement_store 适配器（字节粒度写，可写未初始化 RAM）。配套 `probe_boot.flash_image()`：按需把 0x06000000 起完整 sfc 明文作为 handoff 只读区传入（头 0x100 资源分区表 + app 后资源区），不改默认映射。crc_engine_roundtrip 启用后 155,389→162,447（+70 个 rep.i 体），前 6 场景字节不变。单测 test_boot_bus：真实 0x6010b14 块内存效果=语义展开（65 步、r0/r1 各 +32、32 字节快照全中）、开关关=诚实停 rep.i、控制流体（0x12cb12 rep 24 2 含 if.eq.ri.modimm）诚实拒绝。
 - **入口原子性**（cb109b3）：deliver 先完整校验银行假设再提交状态，失败不留部分变化。
 - **core tick 机制**（303e388）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + 单测。**首次溢出 ~450k 步 > 当前 153k，未真实触发——C2 未完成。**
 - **P11 最小条件响应投影**（sim-p11-proj）：两个位分开建模、分开标注证据等级，互不假定因果。
@@ -96,7 +97,8 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - 路 E（sim-p11-proj，已合并 d2eb16b）：P11 最小条件响应投影完成（上表）；主核两条死循环的建模前提已解除，但 app_core 前缀尚未推进到 power_init，bit5 投影仅有真实指令最小场景+单测验证。
 - 路 F（sim-redeliver，已合并 f842ed4）：repeat_irq_delivery 最小闭环；repeat_inert 场景在 155,127 前沿实测惰性。
 - 路 G（sim-crc，已合并 1ea2f59）：硬件 CRC 引擎 0xfd3500/0xfd3504 建模完成（CRC-16/XMODEM 功能等价，黄金软件参数在断言中重算），旧前沿 155,389。
-- 路 H（sim-repi，本次）：rep.i 多指令体重复（通用直线体 gate，opt-in）+ flash 资源区只读映射完成，前沿 162,447（0x6010b88 写 0xfd1c04）。
+- 路 H（sim-repi，已合并 fa1a762）：rep.i 多指令体重复（通用直线体 gate，opt-in）+ flash 资源区只读映射完成，旧前沿 162,447（0x6010b88 写 0xfd1c04）。
+- 路 I（sim-sfc-clk2，本次）：SFC 时钟 0xfd1c04 只写记录完成，前沿 162,615（0x600a354 读半初始化 qcy_boot_info）。
 
 ## 镜像资源级映射（sim-resmap，2026-11-11 完成）
 
@@ -110,8 +112,9 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 ## 下一步（按 codex 建议）
 
-1. **0xfd1c04 SFC 时钟寄存器**（新前沿 0x6010b88 `st.w [r0+4]=3`，r0=0xfd1c00）：0xfd1c00=时钟门 CON、0xfd1c08=分频已建模，+4 偏移未建模。先查 SDK csfr.h clk_sfc 位定义与固件此处的写序列语义（写 3 的含义），再决定投影形状。注意紧邻的 0x6010b84 `rmw.and [0xfd6014] &= 0xFFF7FFFF` 走的是已建模电压配置寄存器路径（additional_configuration 含 0xfd6014），与新边界无关。
+1. **qcy_boot_info 半初始化读**（新前沿 0x600a354 `rep 4 4` 体内 `r3=[r2++=4]` 读 0x122800，first_missing 0x122801）：先查谁初始化了 0x122800 的 byte0（RAM 写日志/上游 region 定义「qcy_boot_info_destination」），判断这是固件 bug 形状（半写的结构体）还是模型缺一段搬运（如 ROM/资源表装载未覆盖）。注意 0x600a342-0x600a362 是把 r6 指向的 16 字节头 + 8 字节 double + [r6+24] 拷进 r9+4304 结构的序列，随后 0x600a36e-0x600a37e 写 r1=0xfe0208 块（`[r1+12]=r0`、`[r1+8]=0x7fffffff`、`[r1+0]|=2`，即 SFC 0xfe0200 块 +8/+0x10/+0x14）——那才是再下一个可能的外设边界。
 2. ~~补齐每个镜像的资源映射~~ 完成：三镜像（官方/b79/EQ 候选）资源级 diff 已闭合，见上节「镜像资源级映射」；rep.i 落地后 flash_image() 只读区可复用于三镜像加载。
+>>>>>>> sim-sfc-clk2
 3. 事件时间推进（暂停点 2 事件时钟；暂停点 1 机制已落，前沿推进后补真实第二次交付观察）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用；P11 接口剩 power_init 内部的纯写寄存器与 0xf20080 拷贝（见上节剩余缺口）。
 5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。
@@ -128,6 +131,7 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - IRQ125 = OS_SYNC_SOFT_IRQ，优先级 6 = GIEMASK 类（SDK hwi.h + hwi.c.o IR 双重印证）。
 - app_core 帧 0x19f7b0：16B 特殊帧（PC 0x6012028）+ 60B GPR 未初始化（真实语义）。
 - SFC 挂起路径 0x12b890（先 baud=0 后 disable）vs 使能路径 0x12e1e8（先 disable 后 baud）。
+- **SFC 时钟块 0xfd1c00 访问全图（本次钉死，app 11 处 + ROM 10 处反汇编穷举）**：+0 只有 RMW（bits 0/3/8/9/10/12/14，各挂起/恢复/串行读路径）、整字存三处（ROM 0xc18e=0x20、ROM 0xc0f0=0、app 0x60c5bda 上下文恢复）、bit15 PLL-lock 轮询读（ROM 0xade8、app 0x60c5210）与 app 0x60c5b9c 上下文保存读（同时读 +0 和 +256=0xfd1d00——另一个时钟门，恢复函数 0x60c5bc0 整字写回两者）；+4 只有两处整字写（app 0x6010b88=3、ROM 0xc198=flash 配置字 bits[8:16]），零读回；+8 分频整字写+读回；+0xc/+0x10 仅 ROM 0xae84/0xae86 整字写。SDK 头文件整块无名，全部位语义以反汇编形状为准、未硅验证。
 - core tick PRD=1199999（CPU0）/479999999（CPU1），非"PRD=1 高频"（那是独立叶子 0x6066134 未在当前前缀调用）。
 - per-core q32DSP SFR bank：0xffe000+core*0x800；PMU_CON0=+0xc0（0xffe0c0/0xffe8c0，SDK 无位定义）、ILAT_SET=+0x1a0、ILAT_CLR=+0x1a4。固件用 `(1-cnum)<<11+0xffe0c0` 算对核 PMU_CON0。
 - 跨核同步邮箱（0x1265c0 结构）：+54=命令字节（CPU0 写、CPU1 handler 0x60662c8 读）、+55=标志字节——bit1=发送路径 ack（CPU1 清，CPU0 0x12b66e 等）、bit0=CPU0 应答等待门（CPU0 0x12b716 清、CPU1 idle 醒后检查）、bit2=响应完成（CPU1 0x6066336 清、CPU0 0x12b73c kick 循环等）。
