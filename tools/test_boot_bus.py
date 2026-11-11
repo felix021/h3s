@@ -296,6 +296,94 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(dcu['ports']['0xff05cc'],{'values':[],'writes':0},
                          'the skipped REP body must not touch memory')
 
+    # ROM 0x417e-0x4197 的精确编码(memcpy「不对齐源组装」变体):寄存器计数
+    # rep 22 r5 体=ld.bu.pin×2+insert.rrii.p∥ld.bu.pin 并行对×2(bits 8/16)
+    # +普通 insert.rrii(bits 24)+st.w.pin,体后 bnez r5 回卷。按字节钉在只读
+    # 区(尾部带到 0x41a3:体走查/解码窗口按上游惯例要读 6 字节),不依赖
+    # ROM 文件。寄存器交叉:pair 的 A 半 insert 读 r4、B 半 ld.bu.pin 写
+    # r4——正确 memcpy 只有在「A 读并行对执行前的旧 r4」语义下才成立(反方
+    # 向会跳过/重复源字节),该方向无硬件捕获证据(FM-1 run3 只捕获过
+    # exact_parallel_stores 的 B 读 A 旧值),adapter 名以 _is_assumption
+    # 显式标注。
+    COMPOSE_REP_LOOP=bytes.fromhex('a503' '1607' '1407' 'a6f12044' '1407'
+                                   'a6f12048' '1407' 'a6e1204c' 'b605' 'f553'
+                                   'f78c' '831c' '911c' '82f9' '1710' '65e1')
+
+    def test_compose_rep_pair_body_assembles_the_misaligned_memcpy(self):
+        # 2 轮 rep:每轮 4 次 ld.bu.pin 取源字节 + 2 个 insert 并行对 + 1 个
+        # 普通 insert 组装 LE32 + st.w.pin 存整字。组装结果必须与纯 Python
+        # 语义展开一致(word = b0 | b1<<8 | b2<<16 | b3<<24)。1 步 rep + 2×6
+        # 步体 = 13 步;体后 bnez(计数寄存器已递减到 0)不在预算内。
+        pc=0x01c60000;src,dst=0x124f00,0x124f40
+        payload=bytes.fromhex('1122334455667788')
+        h=self.handoff();h['readonly'].append((pc,self.COMPOSE_REP_LOOP))
+        h['seeds'].append((src,payload));h['snapshots'].append(('compose_dst',dst,8))
+        regs=[0]*16;regs[1]=src;regs[3]=dst;regs[5]=2
+        result=explore(self.module,self.app,name='compose_rep',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'exact_parallel_stores':True,
+                         'exact_parallel_insert_load':True,'immediate_rep_projection':True,
+                         'exact_subword_stores':True},budget=13)
+        self.assertEqual(result['completed_steps'],13)
+        self.assertEqual(result['stop_pc'],hex(pc+0x18))
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        expected=''.join(f'{b:02x}' for b in payload)
+        self.assertEqual(result['memory_snapshots']['compose_dst']['bytes_with_unknowns'],expected,
+                         'the assembled words must equal the pure-Python little-endian expansion')
+        self.assertEqual(result['last_registers']['r'][1],hex(src+8))
+        self.assertEqual(result['last_registers']['r'][3],hex(dst+8))
+        self.assertEqual(result['last_registers']['r'][5],'0x0')
+        self.assertEqual(result['last_registers']['r'][6],hex(int.from_bytes(payload[4:8],'little')))
+        adapters=result['instruction_adapters']
+        self.assertEqual(adapters.get('register_rep_multi_block_projection'),1)
+        self.assertEqual(adapters.get('parallel_insert_load_old_registers_is_assumption'),4)
+        self.assertEqual(adapters.get('exact_postincrement_store'),2)
+
+    def test_compose_rep_pair_stays_opt_in(self):
+        # 不开 exact_parallel_insert_load:multi-block gate 对装载+组装对诚实
+        # 拒绝(旧前沿 228,250 的停止形状),legacy 行为不变。仅开
+        # exact_parallel_stores 也不行——该 gate 只支持纯 ALU 半+st.w 族。
+        pc=0x01c60000;src,dst=0x124f00,0x124f40
+        h=self.handoff();h['readonly'].append((pc,self.COMPOSE_REP_LOOP))
+        h['seeds'].append((src,bytes.fromhex('11223344')))
+        regs=[0]*16;regs[1]=src;regs[3]=dst;regs[5]=1
+        result=explore(self.module,self.app,name='compose_rep_off',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'exact_parallel_stores':True,
+                         'immediate_rep_projection':True,'exact_subword_stores':True},budget=13)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop_pc'],hex(pc))
+        self.assertEqual(result['stop']['kind'],'rep_multi_block_body_parallel_pair_unsupported')
+        self.assertEqual(result['stop']['instruction_id'],'insert.rrii.p')
+        self.assertEqual(result['stop']['pair_id'],'ld.bu.pin')
+        self.assertEqual(result['stop']['address'],hex(pc+6))
+
+    def test_compose_rep_pair_transports_unknown_source_bytes(self):
+        # 运输路径:源 byte0/byte3 已知、bytes 1-2 未写(真机=残留 RAM 垃圾)。
+        # 体首 ld r4(byte1)走既有字节运输分支,pair 的 B 半(byte2)走本 gate
+        # 的同语义运输;A 半按字节来源组装——r6 未知字节的物理来源必须逐字节
+        # 正确传播,byte3 已知所以普通 insert(bits 24)可精确执行,st.w.pin 走
+        # write_abstract_word 按来源落盘。任何数值消费者仍严格停。
+        pc=0x01c60000;src,dst=0x124f00,0x124f40
+        h=self.handoff();h['readonly'].append((pc,self.COMPOSE_REP_LOOP))
+        h['seeds'].append((src,bytes.fromhex('11')));h['seeds'].append((src+3,bytes.fromhex('44')))
+        h['snapshots'].append(('compose_dst',dst,4))
+        regs=[0]*16;regs[1]=src;regs[3]=dst;regs[5]=1
+        result=explore(self.module,self.app,name='compose_transport',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'exact_parallel_stores':True,
+                         'exact_parallel_insert_load':True,'rep_copy_unknown_transport':True,
+                         'immediate_rep_projection':True,'exact_subword_stores':True},budget=7)
+        self.assertEqual(result['completed_steps'],7)
+        self.assertEqual(result['stop_pc'],hex(pc+0x18))
+        self.assertEqual(result['memory_snapshots']['compose_dst']['bytes_with_unknowns'],'11????44',
+                         'known bytes land, unknown bytes stay unknown at their positions')
+        adapters=result['instruction_adapters']
+        self.assertEqual(adapters.get('parallel_insert_load_old_registers_is_assumption'),2)
+        self.assertEqual(adapters.get('rep_copy_unknown_transport_insert'),1)
+        self.assertEqual(adapters.get('rep_copy_unknown_transport_load'),2)
+        self.assertEqual(adapters.get('rep_copy_unknown_transport_store'),1)
+
     def test_ssync_executes_as_the_run4_no_visible_effect_model(self):
         # flushinv_dcache 尾部 0xc714 csync + 0xc716 ssync(ROM 实际编码)。ssync
         # 上游只有 run4 的 runner 上下文 trace 模型;按 FM-1 run4 捕获「flags

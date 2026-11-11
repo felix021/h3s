@@ -316,6 +316,28 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                          (self.pc==0x0603502c and insn.id=='li.s16' and raw=={'r':0,'n':848})),
                         'opaque register would be consumed outside verified dead-value path')
 
+        def insert_transport_value(self,source,dest,p,l):
+            # insert.rrii 位域 [p,p+l) 的字节粒度组合传播(装载+组装运输路径,
+            # 与 insert.rrii.p∥ld.bu.pin 并行对的 A 半共用):插入位域的字节来
+            # 源=源寄存器对应低位字节(已知落值、未知带物理来源),其余字节保
+            # 持目的寄存器原状;位域非字节对齐无法按字节表达,诚实拒绝。返回
+            # int(全已知)或 UnknownWord。
+            require(isinstance(source,(int,UnknownWord)) and isinstance(dest,(int,UnknownWord)),
+                    'insert operand has an unsupported abstract type')
+            require(p%8==0 and l%8==0 and p+l<=32,
+                    'insert field over transported bytes is not byte-aligned')
+            values=list(dest.bytes if isinstance(dest,UnknownWord) else
+                        [(dest>>(8*i))&255 for i in range(4)])
+            origins=[dest.origins[i] if isinstance(dest,UnknownWord) else None for i in range(4)]
+            for k in range(l//8):
+                if isinstance(source,int):
+                    values[p//8+k]=(source>>(8*k))&255;origins[p//8+k]=None
+                else:
+                    values[p//8+k]=source.bytes[k];origins[p//8+k]=source.origins[k]
+            if all(v is not None for v in values):
+                return int.from_bytes(bytes(values),'little')
+            return UnknownWord(values,origins)
+
         def word_store(self,insn,raw,abstract=False):
             op=module.check.operands(insn,raw)
             if insn.id=='st.w.modimm':address=self.R[op['r']]+op['n'];value=op['m']
@@ -863,6 +885,76 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     self.apply(effect);self.finish_exact(self.pc+size+pair_size)
                     adapters['parallel_full_word_store_old_registers']+=1
                     return
+            if diagnostics and diagnostics.get('exact_parallel_insert_load') and insn.id=='insert.rrii.p':
+                # 「装载+组装」并行对(ROM memcpy 0x417e 族的不对齐源组装变体):
+                # A 半=insert.rrii(把 B 半之前装入的字节插进目的字 bits[p,p+l)),
+                # B 半=ld.bu.pin(同时装入下一个字节)。寄存器交叉:A 读 B 在同
+                # 一并行对里写的寄存器(insert 读 r4、ld 写 r4)——与 FM-1 run3
+                # 硬件捕获的 exact_parallel_stores 方向(B 读 A 之前旧寄存器)
+                # 相反,「A 读 B 写之前的旧值」在本方向上没有硬件捕获证据,按
+                # 对称的旧值假设执行并在 adapter 名里显式标注(厂商 memcpy 的
+                # 软件流水只有在旧值语义下才能把字节按序组装,反方向会拷错)。
+                # 其他第二半形状(如 ROM 0x12af88 的 insert.rrii.p∥ld.bu)不在
+                # 本 gate 内,照旧落回上游通用 pair 模型。
+                pair,pair_raw,pair_size=self.decode(self.pc+size)
+                if pair.id=='ld.bu.pin':
+                    base=self.tab.by_id('insert.rrii')
+                    params=module.table.placeholders(insn.syntax);plain=module.table.placeholders(base.syntax)
+                    base_raw=dict(zip(plain,(raw[k] for k in params)))
+                    base_raw.update({k:raw[k] for k in base.fields if k not in base_raw and k in raw})
+                    op=module.check.operands(base,base_raw);lop=module.check.operands(pair,pair_raw)
+                    require(op['r']!=lop['d'],'insert/load parallel pair writes one register twice')
+                    # B 半(装载)按旧寄存器执行:地址取自旧基址寄存器;已知字节走
+                    # 常规严格读(unmapped/uninitialized 照常诚实停),rep 拷贝体内
+                    # 的未知字节仅在 rep_copy_unknown_transport 开启时构造零扩展
+                    # UnknownWord 运输(与单条 ld.bu.pin 运输分支同语义)。
+                    address=self.R[lop['b']]&0xffffffff
+                    physical=(hardware.mmu.translate(address,1,self.mem.read)
+                              if hardware is not None and hardware.mmu is not None else address)
+                    region=self.mem.region(physical,1)
+                    byte=self.mem.ram.get(physical) if region else None
+                    if (region and byte is None and diagnostics.get('rep_copy_unknown_transport') and
+                            self.repeat is not None and self.repeat.get('multi_block') and
+                            not any(spill<=physical<spill+4 for spill in self.mem.icfg_spills)):
+                        origin=self.mem.unknown_origins.get(physical,physical)
+                        loaded=UnknownWord((None,0,0,0),(origin,None,None,None))
+                        event({'access':'abstract-read','address':hex(physical),'size':1,'region':region,
+                               'bytes_with_unknowns':'??'})
+                        adapters['rep_copy_unknown_transport_load']+=1
+                    else:
+                        loaded=self.mem.read(address,1)[0]
+                    # A 半(组装)按旧寄存器执行:两操作数全已知时走上上游 insert
+                    # 模型(含精确 N/Z flags);带运输 unknown 时按字节粒度组合传播
+                    # (insert_transport_value,插入位域的字节来源=源寄存器对应低位
+                    # 字节,非字节对齐位域诚实停);结果含未知字节时 N/Z 不可计
+                    # 算,flags 保持原值(已验证的直线 rep 体内没有 flags 消费者,
+                    # 体后的 bnez 自行计算比较)。
+                    source=self.R[op['s']];dest=self.R[op['r']]
+                    if isinstance(source,int) and isinstance(dest,int):
+                        effect,_,_=self.effect(base,base_raw,self.pc,size,self.R)
+                        require(set(effect)<={'regs','flags'},'parallel insert produced non-ALU effects')
+                        self.R[lop['d']]=loaded;self.R[lop['b']]=(address+lop['n'])&0xffffffff
+                        self.apply(effect)
+                    else:
+                        self.R[lop['d']]=loaded;self.R[lop['b']]=(address+lop['n'])&0xffffffff
+                        self.R[op['r']]=self.insert_transport_value(source,dest,op['n'],op['m'])
+                    self.finish_exact(self.pc+size+pair_size)
+                    adapters['parallel_insert_load_old_registers_is_assumption']+=1
+                    return
+            if (diagnostics and diagnostics.get('rep_copy_unknown_transport') and insn.id=='insert.rrii' and
+                    self.repeat is not None and self.repeat.get('multi_block') and
+                    any(isinstance(self.R[raw[k]],UnknownWord) for k in ('r','s'))):
+                # rep 拷贝体的普通 insert.rrii(memcpy 组装族的第三个非并行
+                # insert,ROM 0x4190 p:24):目的字或源带运输 unknown 时上游模
+                # 型无法数值求值;按与并行对 A 半完全相同的字节粒度组合传播
+                # (insert_transport_value)。flags 的 N/Z 依赖未知结果、不可计
+                # 算,保持原值(直线 rep 体内无 flags 消费者)。两操作数全已知
+                # 时不进本分支,照走上游精确模型。
+                op=module.check.operands(insn,raw)
+                self.R[op['r']]=self.insert_transport_value(self.R[op['s']],self.R[op['r']],op['n'],op['m'])
+                self.finish_exact(self.pc+size)
+                adapters['rep_copy_unknown_transport_insert']+=1
+                return
             if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
                 address,value=self.word_store(insn,raw)
                 require(address%4==0,'unaligned exact word store')
@@ -1308,8 +1400,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         base=self.tab.by_id(inner.id[:-2])
                         pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
                             diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
-                        if not (diagnostics.get('exact_parallel_stores') and pure_alu and
-                                pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx')):
+                        supported=(diagnostics.get('exact_parallel_stores') and pure_alu and
+                                   pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx')) or (
+                                   diagnostics.get('exact_parallel_insert_load') and
+                                   inner.id=='insert.rrii.p' and pair.id=='ld.bu.pin')
+                        if not supported:
                             raise Blocked('rep_multi_block_body_parallel_pair_unsupported',
                                           instruction_id=inner.id,pair_id=pair.id,address=hex(walk))
                         covered+=inner_size+pair_size;walk+=inner_size+pair_size;continue

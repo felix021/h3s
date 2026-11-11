@@ -21,11 +21,11 @@ itself keeps stopping honestly on the unmapped bank-B read. The VM window is
 declared structurally (not incrementally) because its consumer is a
 data-dependent byte-by-byte blank scan over each whole half — a partial
 window would just move the unmapped stop one byte later. After the blank scan
-confirms an all-erased VM (zero format writes, empty-VM setup, bitmap rebuild
-from app-flash, return 0), the chain continues and stops honestly at the next
-independent boundary: a ROM memcpy variant whose rep body uses an
-insert.rrii.p + ld.bu.pin parallel pair that the multi-block gate does not
-support.
+confirms an all-erased VM, the chain meets the misaligned-source ROM memcpy
+variant (insert.rrii.p + ld.bu.pin compose pairs) and runs it through the
+opt-in exact_parallel_insert_load projection before stopping honestly at the
+next independent boundary: the first header byte of a bank-B structure at
+window offset +0x200, outside every fixture window.
 """
 import argparse
 import json
@@ -91,7 +91,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
-             flash_image_bytes=None,readonly=()):
+             insert_load_pair=False,flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -136,6 +136,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 量(GAPS.md「Not tried: rep with a count of 0」),报告以
     # zero_count_skip_is_assumption 计数、不声称硅验证。默认关闭。
     if zero_rep_skip:extra['zero_count_rep_skip']=True
+    # insert_load_pair:opt-in 的「装载+组装」并行对执行(ROM memcpy 0x417e
+    # 不对齐源组装变体:rep r5,22 体=4 次 ld.bu.pin 逐字节取+insert.rrii.p
+    # ∥ld.bu.pin 并行对组装字(bits 8/16/24)+st.w.pin 存整字)。寄存器交叉
+    # 方向「A 半(insert)读 B 半(ld)写之前的旧寄存器」与 FM-1 run3 捕获的
+    # exact_parallel_stores 方向(B 读 A 之前旧值)相反、无硬件捕获证据,按
+    # 对称旧值假设执行,adapter 以 _is_assumption 后缀显式标注。默认关闭。
+    if insert_load_pair:extra['exact_parallel_insert_load']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -507,12 +514,13 @@ def check(report):
     crc_base=rows['crc_engine_roundtrip']['peripherals']['hardware_crc_projection']
     require(crc_ff['seed_writes'][:14]==crc_base['seed_writes'] and
             crc_ff['result_reads'][:14]==crc_base['result_reads'] and
-            crc_ff['fed_bytes']==crc_base['fed_bytes']+150,
+            crc_ff['fed_bytes']==crc_base['fed_bytes']+360,
             'the erased fixture must not change the first fourteen CRC round trips')
-    require(crc_ff['result_reads'][14]=='0x75f8' and len(crc_ff['seed_writes'])==19 and
-            crc_ff['fed_bytes']==570 and len(crc_ff['result_reads'])==19,
+    require(crc_ff['result_reads'][14]=='0x75f8' and len(crc_ff['seed_writes'])==26 and
+            crc_ff['fed_bytes']==780 and len(crc_ff['result_reads'])==26,
             'the fifth probe entry must really CRC the 0xFF header bytes and the chain must continue')
-    require(crc_ff['result_reads'][15:]==['0xc190','0xf271','0xb758','0x5ddd'],
+    require(crc_ff['result_reads'][15:]==['0xc190','0xf271','0xb758','0x5ddd',
+                                          '0xa1cd','0x9946','0xd1cf','0xc190','0xf271','0xb758','0x5ddd'],
             'the post-probe VM-init CRC usages changed after the fixture took the mismatch branch')
     # 簿记读边界已解决(st.d.sp.l 双字全 8 字节覆盖写,exact_doubleword_stores
     # 两半直写);第二数据窗的表 walker(上一路钉死:有限小窗两项、-248 跳过
@@ -538,21 +546,33 @@ def check(report):
     # 链继续 44,137 步(寄存器计数 rep 11→16、双字存储 15→19、单存 rep
     # 13→16、irq_repeat_return 146→160;CRC 19 次往返 570 字节、IRQ commands
     # 16/acks 8、交付 1+7 全不变——空白扫描是纯字节比较,不经硬件 CRC、
-    # 无跨核同步),停在 ROM 0x417e——memcpy 族的「不对齐源组装」变体:
-    # rep r5,22 体=4 次 ld.bu.pin 逐字节取 + insert.rrii.p 并行对组装字
-    # (bits 8/16/24)+ st.w.pin,multi-block gate 的并行对只支持
-    # exact_parallel_stores 形状(纯 ALU 半+st.w 族),insert.rrii.p∥
-    # ld.bu.pin 是装载+组装对、无硬件捕获证据,诚实停
-    # rep_multi_block_body_parallel_pair_unsupported——纯指令形状边界(源是
-    # app flash 已知字节,与 bank B 数据可得性无关),是下一路的独立决策点
-    # (228,250,新前沿)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x417e' and
-            r['stop']['kind']=='rep_multi_block_body_parallel_pair_unsupported' and
-            r['stop']['instruction_id']=='insert.rrii.p' and
-            r['stop']['pair_id']=='ld.bu.pin' and r['stop']['address']=='0x4184',
-            'the erased fixture frontier must stop at the unsupported compose-pair ROM memcpy body')
-    require(r['completed_steps']==228250,'the erased fixture scenario changed its step count')
-    require(r['instruction_adapters'].get('exact_doubleword_store')==19,
+    # 无跨核同步),旧前沿 228,250 停在 ROM 0x417e——memcpy 族的「不对齐源
+    # 组装」变体。路 T(本次):opt-in exact_parallel_insert_load 按对称旧值
+    # 假设执行 insert.rrii.p∥ld.bu.pin(A 半 insert 读 B 半 ld 写之前的旧
+    # 寄存器——与 FM-1 run3 捕获的 exact_parallel_stores 方向相反,无硬件
+    # 捕获证据;厂商 memcpy 的软件流水只有在旧值语义下才能把字节按序组装,
+    # 未知源字节经 rep_copy_unknown_transport 零扩展运输、按字节来源组装
+    # 传播)。放行后链继续 7,692 步(compose 对执行 4 次=2 轮 rep×2 对、
+    # 寄存器计数 rep 16→21、rep.i 体 104→143、双字存储 19→21、
+    # irq_repeat_return 160→202;CRC 19→26 次往返 780 字节、IRQ commands
+    # 16/acks 8、交付 1+7 全不变——新增前缀是 app 侧重扫描与 memcpy,无新
+    # 跨核同步),停在 app 0x6060df4 `ld.bu b[r0+3]` 读 0x61de1e3——
+    # 0x6060dd6 call 0x60609ac(描述符 thunk,与 0x6060a4a 表 walker 同族)
+    # 后 r0=[desc+8]+512=window(0x61ddfe0)+0x200=0x61de1e0,首个头字节读
+    # 在 +3——bank B flash 偏移 0x1e0203,在第二窗 20 字节 fixture
+    # (0x1e0000..0x1e0014)之外、仍在 0x1e0000 window 区内(VM 尾与 TON
+    # 0x1e1000 之间)——新独立决策点:window+0x200 结构区的消费者分支图
+    # 与 fixture 范围声明(235,942,新前沿)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6060df4' and
+            r['stop']['kind']=='unmapped_memory' and r['stop']['address']=='0x61de1e3',
+            'the compose-pair projection frontier must stop at the genuine bank-B window read at +0x200')
+    require(r['completed_steps']==235942,'the erased fixture scenario changed its step count')
+    # compose 对(装载+组装)假设执行:2 轮 rep×2 对=4 次,adapter 名带
+    # _is_assumption 显式标注旧值方向无硬件捕获证据。
+    require(r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==4,
+            'the insert/load parallel pair must execute exactly four times (two REP rounds) '
+            'through the old-register assumption adapter')
+    require(r['instruction_adapters'].get('exact_doubleword_store')==21,
             'the doubleword stores of the extended prefix must run through the exact gate')
     require(r['peripherals']['software_irq_commands']['commands']==16 and
             r['peripherals']['software_irq_commands']['acknowledgements']==8,
@@ -561,17 +581,18 @@ def check(report):
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7,
             'the extra cross-core delivery after the probe mismatch differs from the repeat projection')
-    # ROM 拷贝族/CPU0-CPU1 同步在 fixture 放行后继续:rep.i 体 80→104(第 5 项
-    # 头拷贝+后续链+walker 后链 1 个体)、零计数跳过 2→3(该次拷贝 len&3==0
-    # 的 0x4176 尾)、寄存器计数 rep 7→16(walker 后链 GET 消费链 +1、VM
-    # 空白扫描后的 cfg 链 +5)。unknown 运输 2/2→9/9:字形式 2 轮(boot_info
-    # padding/vm_res)不变,字节形式 +7(GET rep 4 16 的 7 个未知字节,同一
-    # 16 字节块内的 padding/vm_res,来源链回 0x122800)。CRC 19 次往返 570
-    # 字节与 IRQ commands 16/acks 8 不变(VM 空白扫描是纯字节比较,不经
-    # 硬件 CRC 引擎、无跨核同步)。
-    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==104 and
+    # ROM 拷贝族/CPU0-CPU1 同步在 fixture 放行后继续:rep.i 体 80→143(第 5 项
+    # 头拷贝+后续链+walker 后链+compose 放行后的 app 侧链)、零计数跳过 2→3
+    # 不变、寄存器计数 rep 7→21(walker 后链 GET 消费链 +1、VM 空白扫描后的
+    # cfg 链 +5、compose rep 本体 +1 及其后再 +4)。unknown 运输 2/2→9/9:字
+    # 形式 2 轮(boot_info padding/vm_res)不变,字节形式 +7(GET rep 4 16 的
+    # 7 个未知字节,同一 16 字节块内的 padding/vm_res,来源链回 0x122800);
+    # compose 对的源是 app flash 已知字节,不走运输。CRC 19→26 次往返 780
+    # 字节(app 侧对既有窗口数据的重扫描);IRQ commands 16/acks 8 不变(新
+    # 增前缀无新跨核同步)。
+    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==143 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
-            r['instruction_adapters'].get('register_rep_multi_block_projection')==16 and
+            r['instruction_adapters'].get('register_rep_multi_block_projection')==21 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9,
             'the fixture-scenario REP projections differ from the observed prefix')
@@ -602,9 +623,25 @@ def check(report):
         'the empty-VM state, rebuilds the bitmap from the app-flash table 0x60a9344 and returns 0 '
         'again selected by real code; the window is declared structurally, not incrementally, '
         'because the scan is data-dependent — a partial window would only move the unmapped stop '
-        'one byte later. Every other bank-B address (including the TON window at flash 0x1e1000) '
+        'one byte later. Every other bank-B address (including the TON window at flash 0x1e1000 and '
+        'the +0x200 structure area of the 0x1e0000 window the new frontier reads at 0x61de1e3) '
         'stays strictly unmapped; the crc_engine_roundtrip scenario without the fixture still stops '
         'honestly at 176,288 on the unmapped 0x60fdfe0 read')
+    report['insert_load_parallel_pair_assumption']=(
+        'opt-in exact_parallel_insert_load: the compose pair of the misaligned-source ROM memcpy '
+        '(0x417e, rep r5,22: four ld.bu.pin byte loads + insert.rrii.p||ld.bu.pin pairs assembling '
+        'bits 8/16/24 + one plain insert.rrii + st.w.pin) is executed with BOTH halves reading the '
+        'pre-pair register file: the A half (insert) reads the register the B half (ld.bu.pin) '
+        'writes in the same pair. FM-1 run3 hardware capture only established the opposite '
+        'direction (exact_parallel_stores: the second half reads the register as it was before the '
+        'first half); the A-reads-what-B-writes direction has NO hardware capture evidence and is '
+        'a symmetry assumption — the only semantics under which the vendor compiler software '
+        'pipeline assembles the bytes in order (a new-value read would skip/duplicate source '
+        'bytes and memcpy would be wrong). Reported through the '
+        'parallel_insert_load_old_registers_is_assumption adapter; unknown source bytes are '
+        'transported (zero-extended UnknownWord, rep_copy_unknown_transport) and assembled '
+        'byte-granularly with their physical origins; non-byte-aligned insert fields over '
+        'unknown bytes still stop honestly')
     for r in report.get('candidate_prefixes',[]):
         d=r['machine']['software_irq_entry_projection']['deliveries']
         require(len(d)==1 and d[0]['vector_address']=='0x19fffc','candidate delivery differs')
@@ -652,7 +689,8 @@ def main():
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
-                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,flash_image_bytes=image)]}
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
+                              flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
