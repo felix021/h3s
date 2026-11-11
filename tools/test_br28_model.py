@@ -1,7 +1,7 @@
 """Offline peripheral contract tests; never opens a device or needs private ROM."""
 import unittest
 
-from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0, PartialWord, MMU, MMU_BASE, P11AccessProbe, PMU_STA
+from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0, PartialWord, MMU, MMU_BASE, P11AccessProbe, PMU_STA, PWR_CON, P11_HEAP_INFO
 from probe_boot import Blocked
 from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
@@ -327,6 +327,70 @@ class ModelTests(unittest.TestCase):
             self.assertEqual(probe.status,status)
         with self.assertRaises(Blocked):P11AccessProbe(1).write(0)
         with self.assertRaises(Blocked):BR28Model(p11_access_probe=True,p11_status=1).write(PMU_STA,1)
+
+    def test_pmu_sta_ready_projection_is_separate_from_the_fixed_fixture(self):
+        # 独立 opt-in:需要访问探针和显式基线字;不制造其他位
+        with self.assertRaises(ValueError):P11AccessProbe(None,ready_response=True)
+        with self.assertRaises(ValueError):BR28Model(p11_pmu_ready_projection=True)
+        with self.assertRaises(ValueError):BR28Model(p11_access_probe=True,p11_status=None,
+                                                     p11_pmu_ready_projection=True)
+        probe=P11AccessProbe(0,ready_response=True)
+        with self.assertRaises(Blocked):probe.read()  # 序列未完成前没有响应
+        for value in P11AccessProbe.sequence:probe.write(value)
+        self.assertEqual(probe.read(),1)  # 基线0 + 条件 bit0=1
+        legacy=P11AccessProbe(0)
+        for value in P11AccessProbe.sequence:legacy.write(value)
+        self.assertEqual(legacy.read(),0)  # 投影关闭:读回仍是不变的 fixture
+        self.assertIn('pmu_ready_response_projection',probe.report())
+        self.assertNotIn('pmu_ready_response_projection',P11AccessProbe(1).report())
+        labels=probe.report()['pmu_ready_response_projection']
+        self.assertFalse(labels['bit0_set_mechanism_proven'])
+        self.assertFalse(labels['causal_link_to_pwr_con_bit5_assumed'])
+
+    def test_pwr_con_bit5_response_requires_the_real_request_and_keeps_neighbour_bits(self):
+        # 未启用投影:|=0x20 的写回仍走严格复位标志路径
+        strict=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80})
+        with self.assertRaisesRegex(Blocked,'reset_flag_command_not_modeled'):strict.write(PWR_CON,0xa0)
+        self.assertEqual(strict.read(PWR_CON),0x80)
+        with self.assertRaises(ValueError):BR28Model(p11_lpwr_response_projection=True)  # 需要复位快照
+        h=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                    p11_lpwr_response_projection=True)
+        # 请求之前读回不臆造:POR bit7 保留,bit5 维持快照值
+        self.assertEqual(h.read(PWR_CON),0x80)
+        # 只有已证实的 |=0x20 RMW 形式被接受;夹带其他位或 and 形式仍严格拒绝
+        with self.assertRaisesRegex(Blocked,'p11_lpwr_request_form_not_modeled'):
+            h.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',0x60)
+        with self.assertRaisesRegex(Blocked,'p11_lpwr_request_form_not_modeled'):
+            h.p11_lpwr_rmw(PWR_CON,'rmw.and.nmodimm',0x20)
+        with self.assertRaisesRegex(Blocked,'p11_lpwr_request_form_not_modeled'):
+            h.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',None)
+        self.assertEqual(h.read(PWR_CON),0x80)
+        # 真实请求之后:bit5 读回投影为 0(显式假设 P11 已处理),bit7 不变
+        h.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',0x20)
+        self.assertEqual(h.read(PWR_CON),0x80)
+        self.assertEqual(h.p11_lp.requests,1)
+        # 快照本身未被改写:快照若含 bit5,只有请求之后才被投影清零
+        preset=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0xa0},
+                         p11_lpwr_response_projection=True)
+        self.assertEqual(preset.read(PWR_CON),0xa0)
+        preset.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',0x20)
+        self.assertEqual(preset.read(PWR_CON),0x80)
+        # 投影不给 bit6 清标志命令开后门:清标志之后读回仍是未知
+        preset.write(PWR_CON,0xe0)  # 快照0xa0的 bit6 清标志命令
+        with self.assertRaisesRegex(Blocked,'reset_flag_post_clear_state_unknown'):preset.read(PWR_CON)
+        self.assertEqual(h.report()['p11_low_power_response']['requests_observed'],1)
+
+    def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
+        with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')
+        self.assertEqual(BR28Model().read_bytes(P11_HEAP_INFO,1),None)  # 无 fixture:严格 unknown
+        self.assertEqual(BR28Model().read_bytes(P11_HEAP_INFO,4),None)
+        h=BR28Model(p11_heap_info_bytes=bytes.fromhex('01020304'))
+        self.assertEqual(h.read_bytes(P11_HEAP_INFO,1),b'\x01')
+        self.assertEqual(h.read_bytes(P11_HEAP_INFO+1,2),b'\x02\x03')
+        self.assertEqual(h.read_bytes(P11_HEAP_INFO,4),bytes.fromhex('01020304'))
+        for outside in (P11_HEAP_INFO-1,P11_HEAP_INFO+4):
+            self.assertEqual(h.read_bytes(outside,1),None)  # 范围之外不臆造
+        self.assertEqual(h.report()['p11_heap_info_fixture']['bytes'],'01020304')
 
     def test_mmu_aliases_invalid_pages_and_bounds(self):
         m=MMU(0)
