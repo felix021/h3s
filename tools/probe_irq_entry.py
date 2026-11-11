@@ -5,7 +5,10 @@ The scheduler IPI (pending 0x8 set by the actual QCY code at 0x60644a6)
 reaches an opt-in CPU entry: RETI loads the interrupted PC and execution
 continues at the vector slot written by the firmware. Entry banks, RETI
 load and pending acknowledgement are explicit assumptions; generic IRQ
-entry, IDLE wake and hardware frame writes stay unmodeled. No flash approval.
+entry, IDLE wake and hardware frame writes stay unmodeled. The trailing
+irq125_repeat_inert scenario pins that the opt-in repeat_irq_delivery
+projection (handler return re-enables delivery) stays inert on this prefix
+until the firmware actually pends a second time. No flash approval.
 """
 import argparse
 import json
@@ -39,7 +42,8 @@ SFC_RESUME_OPERATIONS=(
 
 
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
-             unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,readonly=()):
+             unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
+             repeat=False,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -48,6 +52,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if rti:machine_options['software_irq_rti']=True
     if gpio_out_readback:machine_options['gpio_out_readback']=True
     if kick_wake:machine_options['cpu1_control_kick_wake']=True
+    if repeat:machine_options['repeat_irq_delivery']=True
     options={'initial_software_irq_pending':(0,0)}
     if entry:options['software_irq_delivery_requests']=True
     if unmaskable:options['unmaskable_irq_projection']=True
@@ -183,6 +188,23 @@ def check(report):
             r['peripherals']['sfc_read_bus_secondary']['writes']==0 and
             r['peripherals']['sfc_read_bus_secondary']['initial_control_fixture']==0,
             'the second SFC (0xfe0100) reset-state fixture or write count differs')
+    r=rows['irq125_repeat_inert']
+    # 暂停点1(repeat_irq_delivery)的实证边界:新投影打开后,前沿前缀必须完全
+    # 不变。可达前缀内固件对每核只 pend 过一次(commands=4:两核各 pend+clear),
+    # 第二次交付从未被请求;投影保持惰性,直到固件真实地再次 pend。
+    require(r['completed_steps']==154263 and r['stop_core']==1 and r['stop_pc']=='0x606633e' and
+            r['stop']=={'kind':'multicore_special_frame_unmodeled','instruction_id':'pop.srl'},
+            'the repeat delivery projection must not move the frontier stop')
+    require(r['machine']['repeat_irq_delivery_projection']['enabled'] and
+            not r['machine']['repeat_irq_delivery_projection']['nesting_implemented'] and
+            r['machine']['repeat_irq_delivery_projection']['pending_rearmed_only_by_real_firmware_command'],
+            'the repeat delivery projection is missing from the machine report')
+    deliveries=r['machine']['software_irq_entry_projection']['deliveries']
+    require([(d['core'],d['irq']) for d in deliveries]==[(0,127),(1,125)],
+            'enabling repeat delivery changed the delivery set before the frontier')
+    require(r['peripherals']['software_irq_commands']['commands']==4 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==2,
+            'the firmware issued unexpected extra software IRQ commands before the frontier')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -193,6 +215,11 @@ def check(report):
                 'candidate handler left the modeled region unexpectedly')
     report['irq127_entry_checks_passed']=True
     report['generic_irq_entry_implemented']=False
+    report['repeat_delivery_second_observation']=('no real second per-core delivery occurs before the '
+        '154263 frontier: the firmware pends each core exactly once (4 commands: pend+clear per core), '
+        'and the CPU0 tick cannot overflow twice inside the post-enable gate-open windows (total span '
+        '~4.4k per-core steps < the 4688-step minimum spacing at progress 256); a second delivery is '
+        'first observable after the CPU1 handler tail special-frame pop is modeled')
 
 
 def main():
@@ -213,7 +240,10 @@ def main():
                               entry=True,banks=True,idle_wait=True,rti=True),
                      irq_case(module,app,header,rom,'irq125_sync_roundtrip',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
-                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True)]}
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True),
+                     irq_case(module,app,header,rom,'irq125_repeat_inert',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,repeat=True)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

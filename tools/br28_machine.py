@@ -40,7 +40,7 @@ class DualCoreMachine:
                  first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False,
                  software_irq_entry_banks=False,idle_wait_projection=False,software_irq_rti=False,
                  core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False,
-                 gpio_out_readback=False,cpu1_control_kick_wake=False):
+                 gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -85,6 +85,12 @@ class DualCoreMachine:
         require(not cpu1_control_kick_wake or idle_wait_projection,
                 'CPU1 control kick wake requires the IDLE wait projection')
         self.cpu1_control_kick_wake=cpu1_control_kick_wake;self.seen_cpu1_control_kicks=0
+        require(isinstance(repeat_irq_delivery,bool),'repeat IRQ delivery projection is opt-in boolean')
+        require(not repeat_irq_delivery or software_irq_entry or core_tick_entry,
+                'repeat IRQ delivery requires an enabled IRQ entry projection')
+        # codex 暂停点1最小闭环:同核 handler RTI 返回后允许再次交付(见
+        # deliver_software_irq/deliver_core_tick);默认关闭时保持每核一次性限制。
+        self.repeat_irq_delivery=repeat_irq_delivery
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -293,9 +299,19 @@ class DualCoreMachine:
         # changes; entry SP bank, ICFG side effects and hardware frame writes
         # stay unknown.
         require(self.software_irq_entry and (irq==(127-cpu.core_id) or (cpu.core_id==1 and irq==125)) and
-                all(d['core']!=cpu.core_id for d in self.software_irq_deliveries) and
                 not cpu.bootstrap_context and cpu.after_then is None and cpu.repeat is None,
                 'software IRQ entry requires the exact per-core scheduler/sync IPI at an instruction boundary')
+        if self.repeat_irq_delivery:
+            # 暂停点1最小闭环:上一任 IRQ handler 已 RTI 返回(active_context 回到
+            # 线程态)即可再次交付;任一 handler 在途仍然拒绝,不扩展嵌套。向量槽、
+            # 银行假设等校验每次交付都完整重走,pending 由固件重新 pend、交付照旧
+            # acknowledge,不复用旧状态。不要求严格 None:首次交付本来就允许落在
+            # first_task_return/bootstrap 等线程态投影上下文上并覆盖之。
+            require(getattr(cpu,'active_context',None) not in ('software_irq_handler','core_tick_handler'),
+                    'repeated software IRQ delivery must not nest on an in-flight IRQ handler')
+        else:
+            require(all(d['core']!=cpu.core_id for d in self.software_irq_deliveries),
+                    'software IRQ entry is one-shot per core without the repeat delivery projection')
         slot=0x19fe00+irq*4
         try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
         except Blocked:raise Blocked('vector_slot_uninitialized',core=cpu.core_id,irq=irq,
@@ -336,10 +352,16 @@ class DualCoreMachine:
         # RETI-load and vector-slot reading are checked before any state
         # change; entry SP bank and ICFG side effects stay unknown. The tick
         # pending bit is NOT cleared here: the handler ACKs it with |=0x40.
-        require(self.core_tick_entry and core in self.cores and
-                all(d['core']!=core for d in self.core_tick_deliveries),
+        require(self.core_tick_entry and core in self.cores,
                 'core tick entry requires an eligible overflow on a launched core')
         cpu=self.cores[core]
+        if self.repeat_irq_delivery:
+            # 与 deliver_software_irq 对称:handler RTI 返回后可再次交付,在途拒绝。
+            require(getattr(cpu,'active_context',None) not in ('software_irq_handler','core_tick_handler'),
+                    'repeated core tick delivery must not nest on an in-flight IRQ handler')
+        else:
+            require(all(d['core']!=core for d in self.core_tick_deliveries),
+                    'core tick entry is one-shot per core without the repeat delivery projection')
         require(not cpu.bootstrap_context and cpu.after_then is None and cpu.repeat is None,
                 'core tick entry requires an instruction boundary on the overflowed core')
         slot=0x19fe00+3*4
@@ -448,6 +470,11 @@ class DualCoreMachine:
                     'bank_switch_silicon_semantics_certified':False,
                     'pending_cleared_by_handler_ack_not_delivery':True,
                     'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.core_tick_entry else {}),
+                **({'repeat_irq_delivery_projection':{'enabled':True,
+                    'gate':'no in-flight IRQ handler on the target core (previous handler must have RTI returned)',
+                    'nesting_implemented':False,
+                    'full_revalidation_per_delivery':True,
+                    'pending_rearmed_only_by_real_firmware_command':True}} if self.repeat_irq_delivery else {}),
                 'bootstrap_mode_or_ssp_writeback_certified':False,'launches':self.launches,'stalls':self.stalls,
                 'unknown_task_gprs_preserved':self.unknown_task_gprs,
                 **({'first_task_return_comparison':{'hypothesis':self.first_task_return_hypothesis,

@@ -30,6 +30,7 @@
 - **CPU1 PMU_CON0 RMW + kick 唤醒**（本次）：0xffe8c0=CPU1 PMU_CON0（csfr.h q32DSP(1)+0x30*4；0xffe0c0 同位为 CPU0）。含 bit0 的 RMW 与严格写路径等价（实际释放指令 0x60660da 就是 `|=1`）；释放后 bit0 不参与的 or 置位记为 kick 位（0x12b732/0x12c71c 双证据，只置位不回读不清除）。machine 侧 `cpu1_control_kick_wake` 投影：kick 让挂在 idle 的 CPU1 按完成计步并唤醒——「bit3 就是唤醒源」是从握手协议推断的显式假设（SDK 无 PMU_CON0 位定义，硅语义未验证，已写入 report 假设）。
 - **入口原子性**（cb109b3）：deliver 先完整校验银行假设再提交状态，失败不留部分变化。
 - **core tick 机制**（303e388）：deliver_core_tick/return_core_tick + ACK rmw + 停摆策略 + 单测。**首次溢出 ~450k 步 > 当前 153k，未真实触发——C2 未完成。**
+- **可重复中断交付**（本次）：暂停点 1 最小闭环。新 opt-in 开关 `repeat_irq_delivery`（默认关，legacy 5 场景字节不变）：打开后同核「无在途 handler（active_context 非 software_irq_handler/core_tick_handler）即可交付」，handler RTI 返回后允许再次交付；在途仍拒绝（不嵌套）；向量槽/银行假设每次完整重走，pending 只能由固件真实重新 pend（0xffe1a0/0xffe9a0 |=，全部 pend 走 0x60644a6 通用 IPI 请求函数）。单测覆盖 交付→RTI→再交付、在途拒绝、默认关一次性。新场景 irq125_repeat_inert 钉住：repeat 开启后前沿 154,263 完全不动。**真实第二次交付在前沿内不可达（实测）：可达前缀内每核只 pend 一次（commands=4：两核各 pend+clear，CPU1 handler 入口 0x60662de 自清 pending）；CPU0 tick 在 per-core step 136,569 使能（PRD=1199999），其后 gate8/9 开放窗口总跨度 ~4.4k 步 < 最小溢出间距 4688 步（progress 上限 256），两次 tick 交付数学上不可能。第二次交付需等 0x606633e CPU1 handler 尾建模后（app_core 握手完成后的下一次跨核请求）。**
 
 ## codex (gpt-6-astra) 参谋结论（2026-11-11 二次，已核实）
 
@@ -45,9 +46,9 @@
 
 ## 四个待处理暂停点（codex 指出，按优先级）
 
-1. **一次性交付限制**：software IRQ / tick 都要求"该核从未交付过"，下一次事件被拒（br28_machine.py deliver 的 require）。扩展重复交付需验证完成状态、活动 handler、银行恢复。
+1. **一次性交付限制**：~~software IRQ / tick 都要求"该核从未交付过"~~ **已解决（机制层）**：`repeat_irq_delivery` opt-in 开关实现「返回后可重新交付」最小闭环（无在途 handler 即可交付、不嵌套、全量重校验、pending 只认真实 pend），单测+前沿不变场景齐备。**真实第二次交付观察未完成**：前沿内固件每核只 pend 一次、tick 双溢出窗口不够（见「已实现」末条），待 0x606633e 建模后在 app_core 下一次跨核请求处观察。
 2. **全核 IDLE 后时间停**：当前立即 `all_cores_idle_waiting` 停止。持续服务需独立事件时钟，时钟契约允许时推进到下个事件。
-3. **入口失败原子性**：银行假设路径先改 PC/RETI、移除等待状态再查 SSP/任务 SP；检查失败可能留部分状态。应先完整校验再提交。
+3. **入口失败原子性**：银行假设路径先改 PC/RETI、移除等待状态再查 SSP/任务 SP；检查失败可能留部分状态。应先完整校验再提交。（cb109b3 已修：先完整校验再提交。）
 4. **文档/场景名落后证据**：HANDOFF 旧边界、tick 探针仍停 IRQ125。建议每里程碑绑定提交+场景+报告+退出条件+剩余假设。
 
 ## P11 主核依赖清单（2026-11-11 路调研，全部反汇编证实）
@@ -76,7 +77,7 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 1. CPU1 irq125 handler 退出：0x606633e 的 `{psr,rets,reti}=[sp++]`（multicore 特殊帧弹出）与其后的 RTI（现有 return_software_irq 只认 CPU0 handler 尾 0x12ade8，需按 active_context 推广）；随后是对核暂停/释放完整周期（0x12c6e6 备用启动函数：读回 bit0 守卫的 RMW 释放 `|=1` + 等待 ready 的 kick 循环 0x12c71c，均未在当前前缀触发）。
 2. 补齐每个镜像的资源映射（candidate_view 目前只返回 app+337B payload）。
-3. 补可重复中断交付 + 事件时间推进（解决暂停点 1/2）。
+3. 补可重复中断交付 + 事件时间推进（暂停点 1 机制已落，见上；剩暂停点 2 事件时钟，以及前沿推进后补真实第二次交付观察）。
 4. 按实际启动依赖补电源 0xfd3100、trim、ROM 调用、P11 接口。
 5. 到达事件循环 → D1（可启动 L2 三镜像差分）→ D2（音频流）。
 
