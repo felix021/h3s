@@ -119,9 +119,12 @@ def check(report):
             not sync['entry_banks']['silicon_bank_switch_certified'],'CPU1 sync delivery record differs')
     require(r['peripherals']['software_irq_commands']['pending']['1']=={'known_mask':'0xf','known_value':'0x0'},
             'CPU1 sync pending was not acknowledged by its real handler')
-    require(r['stop_core']==0 and r['stop_pc']=='0x12b8fe' and
-            r['stop']['kind']=='uninitialized_gpio_bits' and r['stop']['address']=='0xfd5308',
-            'after the sync handshake and SFC suspend the stop must be the unknown GPIO bits')
+    gpio=r['peripherals']['gpio'].get('0xfd5308')
+    require(gpio=={'known_value':'0x60','known_mask':'0x68'},
+            'the register-AND must clear the known bit3 and leave the masked-out bit0 unknown')
+    require(r['stop_core']==0 and r['stop_pc']=='0x12b910' and
+            r['stop']['kind']=='unmapped_memory' and r['stop']['address']=='0xfd1c00',
+            'after the sync handshake and SFC suspend the stop must be the next unmodeled MMIO register')
     require(r['completed_steps']>153430,'the CPU0 busy-wait did not resume after the CPU1 ack')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True

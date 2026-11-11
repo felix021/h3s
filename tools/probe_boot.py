@@ -769,7 +769,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     hardware.record_write({'address':hex(address),'known_mask':hex(word.known),'known_value':hex(word.value)})
                     self.finish_exact(self.pc+size);adapters['reset_unknown_preserving_configuration_rmw']+=1
                     return
-            if hardware is not None and insn.id in ('rmw.or.modimm','rmw.and.nmodimm','rmw.and.invbitr','rmw.or.bitr','rmw.or.r','rmw.and.invr'):
+            if hardware is not None and insn.id in ('rmw.or.modimm','rmw.and.nmodimm','rmw.and.modimm','rmw.and.invbitr','rmw.or.bitr','rmw.or.r','rmw.and.invr','rmw.and.r'):
                 op=module.check.operands(insn,raw)
                 address=(self.R[op['r']]+op['n'])&0xffffffff
                 if 0xf00000<=address<0x1000000:
@@ -811,9 +811,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
                         elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
+                        elif insn.id=='rmw.and.modimm':kind='and';operand=op['m']
                         elif insn.id=='rmw.and.invbitr':kind='and';operand=~(1<<(self.R[op['s']]&31))
                         elif insn.id=='rmw.and.invr':kind='and';operand=~self.R[op['s']]
                         elif insn.id=='rmw.or.bitr':kind='or';operand=1<<(self.R[op['s']]&31)
+                        elif insn.id=='rmw.and.r':kind='and';operand=self.R[op['s']]
                         else:kind='or';operand=self.R[op['s']]
                         hardware.gpio_rmw(address,kind,operand)
                         self.pc+=size;self.steps+=1
@@ -826,9 +828,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     old=int.from_bytes(self.mem.read(address,4),'little')
                     if insn.id=='rmw.or.modimm':value=old|op['m']
                     elif insn.id=='rmw.and.nmodimm':value=old&op['m']
+                    elif insn.id=='rmw.and.modimm':value=old&op['m']
                     elif insn.id=='rmw.and.invbitr':value=old&~(1<<(self.R[op['s']]&31))
                     elif insn.id=='rmw.and.invr':value=old&~self.R[op['s']]
                     elif insn.id=='rmw.or.bitr':value=old|(1<<(self.R[op['s']]&31))
+                    elif insn.id=='rmw.and.r':value=old&self.R[op['s']]
                     else:value=old|self.R[op['s']]
                     # Always emit the bus write, even when the value is equal.
                     # Upstream scratch-memory models can drop unchanged writes.
