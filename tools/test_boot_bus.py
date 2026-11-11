@@ -750,5 +750,79 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(0xffffffff>>20,0xfff)  # 即使走到 size 检查也不等于 6
         self.assertNotEqual(0xffffffff>>20,6)
 
+    # ---- bank B 第三数据窗 0xFF fixture(opt-in erased_bankb,机制层钉子)----
+
+    def erased_bankb_vm_case(self,addr,*,fixture=True,store=False):
+        h=self.handoff()
+        h['description']['phase']='erased bank-B VM fixture mechanism test'
+        if fixture:h['readonly'].append((0x61d7fe0,b'\xff'*0x2000))
+        # 真实 app 指令:读侧 0x600a78c `r2=b[r0+0] (u)`(VM 空白检查
+        # 0x600a78a 的逐字节装载,本前缀实测扫过 0x61d7fe0..0x61d9fdf 共
+        # 8192 次);写侧 0x6010fca `[r1++=4]=r2`(find_partition 拷贝路径
+        # 的字存储,形状先例)。
+        regs=[0]*16
+        if store:
+            regs[1]=addr;regs[2]=0x12345678
+            entry_pc=0x6010fca
+        else:
+            regs[0]=addr
+            entry_pc=0x600a78c
+        return explore(self.module,self.app,name='erased_bankb_vm_fixture',handoff=h,
+            diagnostics={'entry_pc':entry_pc,'initial_sp':STACK_TOP,
+                         'initial_rets':ENTRY,'initial_gprs':regs},budget=1)
+
+    def test_erased_bankb_vm_fixture_reads_back_0xff_bytes(self):
+        # 区内(两半 magic 基址 0x61d7fe0/0x61d8fe0、扫描末字节 0x61d9fdf)
+        # 读出 0xff——空白检查在 0x600a78c 读到的正是这些擦除态字节。
+        for addr in (0x61d7fe0,0x61d7fe3,0x61d8fe0,0x61d9fdf):
+            result=self.erased_bankb_vm_case(addr)
+            self.assertEqual(result['completed_steps'],1)
+            self.assertEqual(result['stop']['kind'],'instruction_budget')
+            self.assertEqual(result['last_registers']['r'][2],'0xff')
+
+    def test_erased_bankb_vm_fixture_bounds_and_default_stay_strict(self):
+        # fixture 只覆盖结构声明的 VM 区全长 0x2000(两半各 0x1000):
+        # 紧邻区外(下界 0x61d7fdf/上界 0x61d9fe0=flash 0x1dc000,VM 区
+        # 结束)与默认(不挂 fixture)都继续严格停 unmapped——bank B 其余
+        # 字节(VM 尾与第二窗 0x1e0000 之间的 gap、TON 0x1e1000)不臆造。
+        for addr in (0x61d7fdf,0x61d9fe0):
+            result=self.erased_bankb_vm_case(addr)
+            self.assertEqual(result['completed_steps'],0)
+            self.assertEqual(result['stop'],{'kind':'unmapped_memory','access':'read',
+                'address':hex(addr),'size':1,'reference_sdk_register':None})
+        result=self.erased_bankb_vm_case(0x61d7fe0,fixture=False)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+
+    def test_erased_bankb_vm_fixture_is_read_only(self):
+        result=self.erased_bankb_vm_case(0x61d7fe0,store=True)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+            'address':'0x61d7fe0','size':4,'value_bytes':'78563412'})
+
+    def test_erased_bankb_vm_extent_is_firmware_declared(self):
+        # 黄金算术钉子:VM 窗范围由固件自己的结构声明链钉死——boot_info
+        # vm 字段(saddr=0x1da000、size=0x4000,VM init 0x6011102/0x6011108
+        # 写入)→ GET 消费者 0x6060f9a 的 clamp(>=8192→8192)与 4K 对齐切半
+        # (base=(saddr+4095)&~4095、span=对齐后长、half=span>>1、half2=
+        # base+half、end=base+span)→ 空白检查 0x600a79e 每半 len=half →
+        # fixture 全长=span、扫描装载次数=2*half。窗口与第二窗/TON 不重叠。
+        saddr,size=0x1da000,0x4000
+        span=min(size,8192)
+        base=(saddr+4095)&~4095
+        half=span>>1
+        self.assertEqual((base,span,half),(0x1da000,0x2000,0x1000))
+        self.assertEqual((base+half,base+span),(0x1db000,0x1dc000))
+        self.assertEqual(0x06000000+base-0x2020,0x61d7fe0)    # 窗口基址(头修正 0x2020)
+        self.assertEqual(2*half,0x2000)                       # fixture 全长=扫描字节数
+        self.assertLess(base+span,0x1e0000)                   # 不与第二窗(flash 0x1e0000)重叠
+        self.assertLess(0x1e0000,0x1e1000)                    # 第二窗在 TON 之前
+        # 擦除态 magic 判定链:两半头字都是 0xffffffff,不在 {0x5A5A5A5A,
+        # 0xFFFF5A5A,0xFFFFFF56,0xFF5A5A5A} 里→0x6061106→word2≠0xFF5A5A5A
+        # →空白检查路径;全 0xFF 时 0x600a78a 的 `if (r2 == 255) goto` 循环
+        # 恰好走满 len 次到 0x600a79a 的 return 0。
+        erased=0xffffffff
+        self.assertNotIn(erased,(0x5a5a5a5a,0xffff5a5a,0xffffff56,0xff5a5a5a))
+        self.assertNotEqual(erased,0xff5a5a5a)
+
 
 if __name__=='__main__':unittest.main()
