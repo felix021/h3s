@@ -4,6 +4,7 @@ Sources and remaining hypotheses: docs/hardware-contracts.md. Unknown reads,
 capture/PWM modes, reset stimuli and actual CPU interrupt delivery still stop.
 """
 from collections import Counter
+import operator
 
 from probe_boot import Blocked, IrqDeliveryRequest
 
@@ -564,6 +565,62 @@ class PartialWord:
         return self.value
 
 
+class GpioOutValue:
+    """Partial GPIO OUT latch word returned by the opt-in read-back path.
+
+    Only bits the guest already wrote are known; explicit and/or masks can make
+    more bits known. Any full-word consumption stops instead of fabricating the
+    missing bits. Scoped to the SFC suspend/resume read-modify-write on GPIO OUT.
+    """
+    __slots__=('address','value','known')
+
+    def __init__(self,address,value,known):
+        self.address=address;self.known=known&0xffffffff;self.value=value&self.known
+
+    def mask(self,operation,operand):
+        operand&=0xffffffff
+        if operation=='and':
+            return GpioOutValue(self.address,self.value&operand,self.known|(~operand&0xffffffff))
+        if operation=='or':
+            return GpioOutValue(self.address,self.value|operand,self.known|operand)
+        raise Blocked('gpio_out_readback_bit_operation_unmodeled',address=hex(self.address),operation=operation)
+
+    def consumed(self,*args,**kwargs):
+        raise Blocked('gpio_out_readback_consumed',address=hex(self.address),
+                      known_mask=hex(self.known),known_value=hex(self.value))
+
+    def concrete(self):
+        if self.known!=0xffffffff:self.consumed()
+        return self.value
+
+    __int__=__index__=concrete
+    def __float__(self):return float(self.concrete())
+    def __bool__(self):return bool(self.concrete())
+    def __hash__(self):return hash(self.concrete())
+    def __neg__(self):return -self.concrete()
+    def __pos__(self):return self.concrete()
+    def __invert__(self):return ~self.concrete()
+
+    def __repr__(self):return 'GpioOutValue'
+
+
+def _gpio_out_binary(operation,reverse=False):
+    def apply(self,other):
+        lhs=self.concrete();rhs=other.concrete() if isinstance(other,GpioOutValue) else other
+        return operation(rhs,lhs) if reverse else operation(lhs,rhs)
+    return apply
+
+
+for _name,_operation in (('eq',operator.eq),('ne',operator.ne),('lt',operator.lt),('le',operator.le),
+        ('gt',operator.gt),('ge',operator.ge),('and',operator.and_),('or',operator.or_),
+        ('xor',operator.xor),('add',operator.add),('sub',operator.sub),('mul',operator.mul),
+        ('lshift',operator.lshift),('rshift',operator.rshift),('truediv',operator.truediv),
+        ('floordiv',operator.floordiv),('mod',operator.mod),('pow',operator.pow)):
+    setattr(GpioOutValue,'__'+_name+'__',_gpio_out_binary(_operation))
+    if _name not in ('eq','ne','lt','le','gt','ge'):
+        setattr(GpioOutValue,'__r'+_name+'__',_gpio_out_binary(_operation,True))
+
+
 class SoftwareIrqCommands:
     """Opt-in selected-bit SET/CLR contract; WO bus readback is unverified.
 
@@ -946,6 +1003,33 @@ class BR28Model:
         word=self.gpio.setdefault(address,PartialWord())
         word.apply(kind,operand)
         self.counts['reads']+=1
+        self.record_write({'address':hex(address),'known_value':hex(word.value),'known_mask':hex(word.known)})
+
+    def gpio_read(self,address):
+        """Read a GPIO latch for the opt-in read-modify-write path.
+
+        A fully unknown register stays a strict stop; a partially known one
+        returns a GpioOutValue whose unknown bits may only be transported by
+        and/or masks before a write-back. A fully known register is a plain int.
+        """
+        self.counts['reads']+=1
+        word=self.gpio.setdefault(address,PartialWord())
+        if word.known==0:
+            raise Blocked('uninitialized_gpio_bits',address=hex(address),known_mask=hex(word.known))
+        if word.known==0xffffffff:
+            return word.value
+        return GpioOutValue(address,word.value,word.known)
+
+    def gpio_write_partial(self,address,partial):
+        """Write a read-modified partial GPIO word back without fabricating zeros.
+
+        Known bits overwrite the modeled latch; bits the guest never made known
+        stay unknown rather than being forced to a reset value.
+        """
+        self.writable_gpio(address)
+        word=self.gpio.setdefault(address,PartialWord())
+        word.value=(word.value&~partial.known)|(partial.value&partial.known)
+        word.known|=partial.known
         self.record_write({'address':hex(address),'known_value':hex(word.value),'known_mask':hex(word.known)})
 
     def observe_dead_port_selection_read(self,address):

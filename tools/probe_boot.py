@@ -73,8 +73,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     architectural_model_names=set()
     if machine is not None:
         from br28_machine import CoreStall
+        from br28_model import GpioOutValue
         require(hardware is not None,'machine requires a peripheral model; board frontend separately pins ROM')
-    else:CoreStall=()
+    else:
+        CoreStall=()
+        GpioOutValue=()
 
     def event(row):
         if machine is not None:row={'core':hardware.current_core,**row}
@@ -412,6 +415,44 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     target=self.R[raw['x']]
                     if isinstance(target,UnknownWord):target.consumed()
                     if isinstance(target,IcfgValue):target.concrete()
+                if machine.gpio_out_readback:
+                    kind=insn.id;op=module.check.operands(insn,raw)
+                    if kind in ('ld.w','ld.w.l','ld.w.sp','ld.w.idxs','ld.w.idx'):
+                        if kind=='ld.w':address=self.R[op['b']]+op['n'];dest=op['d']
+                        elif kind=='ld.w.l':address=self.R[op['s']]+op['n'];dest=op['r']
+                        elif kind=='ld.w.sp':address=self.sp+op['n'];dest=op['r']
+                        elif kind=='ld.w.idxs':address=self.R[op['s']]+(self.R[op['t']]<<2);dest=op['r']
+                        else:address=self.R[op['s']]+self.R[op['t']];dest=op['r']
+                        address&=0xffffffff
+                        if hardware.handles_gpio(address) and address%256!=4:
+                            self.R[dest]=hardware.gpio_read(address)
+                            self.finish_exact(self.pc+size);adapters['gpio_out_readback_load']+=1
+                            return
+                    if kind in ('and.nmodimm.rri','and.modimm.rri','or.modimm.rri') and isinstance(self.R[op['s']],GpioOutValue):
+                        self.R[op['r']]=self.R[op['s']].mask('and' if kind.startswith('and.') else 'or',op['n'])
+                        self.finish_exact(self.pc+size);adapters['gpio_out_readback_bit_mask']+=1
+                        return
+                    if kind in ('or.bit','and.invbit') and isinstance(self.R[op['r']],GpioOutValue):
+                        self.R[op['r']]=self.R[op['r']].mask('or' if kind=='or.bit' else 'and',op['b'])
+                        self.finish_exact(self.pc+size);adapters['gpio_out_readback_bit_mask']+=1
+                        return
+                    if kind=='mov.rr' and isinstance(self.R[op['y']],GpioOutValue):
+                        self.R[op['x']]=self.R[op['y']]
+                        self.finish_exact(self.pc+size);adapters['gpio_out_readback_register_copy']+=1
+                        return
+                    if kind in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.idx','st.w.sp'):
+                        if kind=='st.w.modimm':address=self.R[op['r']]+op['n'];value=op['m']
+                        elif kind=='st.w.idxs':address=self.R[op['r']]+(self.R[op['s']]<<2);value=self.R[op['t']]
+                        elif kind=='st.w.idx':address=self.R[op['r']]+self.R[op['s']];value=self.R[op['t']]
+                        elif kind=='st.w.l':address=self.R[op['r']]+op['n'];value=self.R[op['s']]
+                        elif kind=='st.w':address=self.R[op['b']]+op['n'];value=self.R[op['d']]
+                        else:address=self.sp+op['n'];value=self.R[op['r']]
+                        address&=0xffffffff
+                        if isinstance(value,GpioOutValue):
+                            if not (hardware.handles_gpio(address) and address%256!=4):value.consumed()
+                            hardware.gpio_write_partial(address,value)
+                            self.finish_exact(self.pc+size);adapters['gpio_out_readback_writeback']+=1
+                            return
                 if machine.partial_icfg:
                     state=self.icfg_state;kind=insn.id
                     if kind in ('mov.r_sr','mov.sr_r','li.sr_u32') and raw.get('s')==11:

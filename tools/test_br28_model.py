@@ -8,7 +8,7 @@ from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV
 from br28_model import SDTAP_CON, PSRAM_CON0, IOMAP_CON0, USB_IO_CON0, USB_DISABLE_REGISTERS
 from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection, RESET_CONFIG_MASKS
-from br28_model import MPUConfigurationProjection
+from br28_model import MPUConfigurationProjection, GpioOutValue
 
 
 class ModelTests(unittest.TestCase):
@@ -113,6 +113,23 @@ class ModelTests(unittest.TestCase):
         h.gpio_rmw(USB_IO_CON0,'or',0x5000)
         self.assertEqual(h.read(USB_IO_CON0),0x40005008)
         with self.assertRaises(ValueError):BR28Model(initial_usb_io_word=0)
+
+    def test_gpio_out_readback_keeps_unknown_neighbours_until_masked_or_consumed(self):
+        h=BR28Model(gpio_model=True)
+        with self.assertRaisesRegex(Blocked,'uninitialized_gpio_bits'):h.gpio_read(0xfd5300)
+        h.gpio_rmw(0xfd5300,'or',0x8)
+        word=h.gpio_read(0xfd5300)
+        self.assertIsInstance(word,GpioOutValue)
+        self.assertEqual((word.value,word.known),(0x8,0x8))
+        cleared=word.mask('and',0xfffffff7)
+        self.assertEqual((cleared.value,cleared.known),(0x0,0x8))
+        set_again=cleared.mask('or',0x8)
+        self.assertEqual((set_again.value,set_again.known),(0x8,0x8))
+        with self.assertRaisesRegex(Blocked,'gpio_out_readback_consumed'):cleared.concrete()
+        h.gpio_write_partial(0xfd5300,cleared)
+        self.assertEqual((h.gpio[0xfd5300].value,h.gpio[0xfd5300].known),(0x0,0x8))
+        h.write(0xfd5300,0x8)
+        self.assertEqual(h.gpio_read(0xfd5300),0x8)
 
     def test_core_tick_overflow_is_terminal_until_external_resolution(self):
         h=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),core_tick_progress=(1,1))

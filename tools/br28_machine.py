@@ -39,7 +39,8 @@ class DualCoreMachine:
                  initial_icfg_masks=(0xffffffff,0xffffffff),bootstrap_status_preserve_mask=0,
                  first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False,
                  software_irq_entry_banks=False,idle_wait_projection=False,software_irq_rti=False,
-                 core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False):
+                 core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False,
+                 gpio_out_readback=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -78,6 +79,8 @@ class DualCoreMachine:
         self.core_tick_entry_banks=core_tick_entry_banks
         self.core_tick_rti=core_tick_rti
         require(not core_tick_rti or core_tick_entry,'core tick RTI projection requires the entry projection')
+        require(isinstance(gpio_out_readback,bool),'GPIO OUT read-back is an opt-in boolean')
+        self.gpio_out_readback=gpio_out_readback
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 

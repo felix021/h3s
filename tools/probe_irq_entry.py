@@ -24,13 +24,14 @@ HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0
 
 
 def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=False,rti=False,
-             unmaskable=False,sfc_suspend=False,readonly=()):
+             unmaskable=False,sfc_suspend=False,gpio_out_readback=False,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
     if banks:machine_options['software_irq_entry_banks']=True
     if idle_wait:machine_options['idle_wait_projection']=True
     if rti:machine_options['software_irq_rti']=True
+    if gpio_out_readback:machine_options['gpio_out_readback']=True
     options={'initial_software_irq_pending':(0,0)}
     if entry:options['software_irq_delivery_requests']=True
     if unmaskable:options['unmaskable_irq_projection']=True
@@ -131,14 +132,24 @@ def check(report):
     gpio=r['peripherals']['gpio'].get('0xfd5308')
     require(gpio=={'known_value':'0x60','known_mask':'0x68'},
             'the register-AND must clear the known bit3 and leave the masked-out bit0 unknown')
-    require(r['stop_core']==0 and r['stop_pc']=='0x12ba02' and
-            r['stop']['kind']=='uninitialized_gpio_bits' and r['stop']['address']=='0xfd5300' and
-            r['stop']['known_mask']=='0x8',
-            'after the sync handshake and SFC suspend the stop must be the next GPIO read with unknown bits')
-    require(r['completed_steps']==153609,'the CPU0 SFC suspend path changed its step count')
+    out=r['peripherals']['gpio'].get('0xfd5300')
+    require(out=={'known_value':'0x0','known_mask':'0x8'},
+            'the GPIO OUT read-modify-write must clear the known bit3 without fabricating its neighbours')
+    adapters=r['instruction_adapters']
+    require(adapters.get('gpio_out_readback_load')==11 and
+            adapters.get('gpio_out_readback_bit_mask')==2 and
+            adapters.get('gpio_out_readback_register_copy')==1 and
+            adapters.get('gpio_out_readback_writeback')==1,
+            'the SFC GPIO OUT read-back path was not exercised through its exact load/mask/copy/write-back shape')
+    require(r['stop_core']==0 and r['stop_pc']=='0x12ba5c' and
+            r['stop']['kind']=='unmapped_or_readonly_write' and r['stop']['address']=='0xfd1c08' and
+            r['stop']['value_bytes']=='03000000',
+            'after the GPIO mode switch the stop must be the unmodeled SFC register write 0xfd1c08')
+    require(r['completed_steps']==153629,'the CPU0 SFC suspend path changed its step count')
     require(r['peripherals']['sfc_clock_gate_projection']['operations']==
-            [{'kind':'or','operand':'0x1'}],
-            'the SFC suspend tail did not record its single |=1 clock-gate write')
+            [{'kind':'or','operand':'0x1'},{'kind':'or','operand':'0x8'},
+             {'kind':'and','operand':'0xffffefff'}],
+            'the SFC suspend/resume clock-gate writes changed')
     require(r['peripherals']['sfc_read_bus_secondary']['con']==0 and
             r['peripherals']['sfc_read_bus_secondary']['writes']==0 and
             r['peripherals']['sfc_read_bus_secondary']['initial_control_fixture']==0,
@@ -172,7 +183,8 @@ def main():
                      irq_case(module,app,header,rom,'irq127_appcore_roundtrip',
                               entry=True,banks=True,idle_wait=True,rti=True),
                      irq_case(module,app,header,rom,'irq125_sync_roundtrip',
-                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,sfc_suspend=True)]}
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
