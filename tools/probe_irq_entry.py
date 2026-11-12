@@ -44,6 +44,25 @@ the P11 request/response hypothesis), and finally stops honestly at the
 first heap-info byte read 0xf27f4b (P2M message area +0xa, value written by
 P11 init and unproven): the explicit p11_heap_info_bytes fixture is the only
 way past this boundary.
+
+The trailing p11_heap_experimental_config scenario layers the STATICALLY
+DERIVED heap-info candidate (P11_HEAP_INFO_DERIVED: begin 0x3d0c / size
+0x39f4, link-time immediates in the p11_code.bin common segment, see the
+derivation chain next to the constant) on top of crc_bankb_erased_fixture
+through that explicit fixture. The value is derived, not measured: the q32s
+init path is statically decoded (raw wide-immediate bytes cross-checked),
+never executed here, and every conclusion past 289,849 in this scenario is a
+CONDITIONAL pass that must not be reported as verified. With the candidate
+bytes the chain consumes them for real (0x60679ba/be first read assembles
+begin 0x3d0c, r0=0xf20000|begin=0xf23d0c, the region call 0x60114ca
+protects [0xf20000, heap begin), the four bytes are re-read at 0x60679ee..f4,
+then the pmu_task creation 0x6067242 really round-trips the scheduler: CPU0
+takes two more irq127 deliveries and RTIs into the pmu_task entry 0x6068f0c
+before power_init resumes), and stops at the next independent boundary: the
+first main-core write into the P11 M2P message area (st.b [0xf27fd6]=1, SDK
+M2P_RVD2PVDD_EN) whose pair-store word-merge read hits the unmapped P11 RAM
+at 0xf27fd4. The crc_bankb_erased_fixture frontier itself stays pinned at
+289,849 without the fixture.
 """
 import argparse
 import json
@@ -122,6 +141,30 @@ ERASED_BANKB_RECORD_RANGE=(0x61de1e0,8)
 # ——堆信息读仍按 p11_heap_info_bytes 显式 fixture/严格停语义。
 P11_COMMON_CODE_WINDOW=(0xf20080,0xf20080+12112,'p11_common_code_window')
 
+# 堆信息 4 字节的静态推导候选(P2M 消息区 +0xa,0xf27f4a..4d)。推导链(全部
+# 公开工件可复算,本注释只记录结论;「静态推导」不等于「硅测量」):
+# ①p11_code.bin 资源(analyze_p11 钉死、CRC 全过)公共段 entry0 12112 字节里,
+#   P11 本地地址 0xa12 处 `mov r0,#0x3d0c`(原始字节 c0ff 0c3d0000,wide 立即数
+#   LE32 独立验证)+0xa18 uxth +0xa1a `mov r5,#0x7f4a`(c5ff 4a7f0000)+0xa20
+#   `sb r0,[r5]`(低字节 0x0c→0x7f4a)+0xa22 lsr 8+0xa24 `sb r0,[r5+1]`(0x3d
+#   →0x7f4b);随后 0xa26 `mov r0,#0x39f4`(c0ff f4390000)+0xa2e `sb`(0xf4
+#   →0x7f4c)+0xa30 lsr 8+0xa32 `sb`(0x39→0x7f4d)——堆 begin/size 是 P11
+#   代码里的链接期立即数,不是运行时计算。
+# ②SDK 固定头对照:lp_ipc.h P2M_P11_HEAP_BEGIN_ADDR_L/H=P2M_MESSAGE_ACCESS
+#   (0x00A/0x00B)、P2M_P11_HEAP_SIZE_L/H=(0x00C/0x00D);p11_app.h
+#   P11_HEAP_BEGIN=P11_RAM_BASE+(H<<8|L)、P11_HEAP_SIZE=(H<<8|L)——字节序
+#   消费语义与此处 sb 序列逐字节一致。
+# ③独立算术互证:p11_app.h 布局 P2M_MESSAGE_RAM_BEGIN=P11_RAM_END(0xF28000)
+#   -0x20(poweroff)-0x60(M2P)-0x40(P2M)=0xF27F40(+0xa=0xF27F4A,与
+#   P11_HEAP_INFO 一致);heap 末=P11_RAM_BASE|0x3d0c+0x39f4=0xF27700,恰好
+#   等于 SDK 布局的 VAD_DVAD_CONFIG_BEGIN(0xF28000-0x20-0x60-0x40-0x20
+#   -0x780(VAD cbuf)-0x50(AVAD cfg)-0x50(DVAD cfg)=0xF27700)——heap size
+#   精确取到 SDK 主核侧下一个结构区的起点,size 值多一层布局级印证。
+# 证据等级:值是推导而非测量(P11 是否真执行该 init 路径依赖 q32s 控制流,
+# 解码存在已知缺口,本仓库不执行 q32s);只作为显式实验配置使用,经此场景
+# 产生的全部推进都是条件通过(derived-not-measured),不算已验证。
+P11_HEAP_INFO_DERIVED=bytes.fromhex('0c3df439')  # begin=0x3d0c size=0x39f4
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -143,6 +186,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
              insert_load_pair=False,halfword_pair=False,p11_power_init=False,
+             heap_info_bytes=None,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -237,6 +281,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # p11_code.bin 公共段拷贝循环(0x6067990..96,每字节 4 条指令 ×12112 字节
         # ≈48k 步)超出默认 250k 预算,前沿场景放宽到 320k。
         budget=320000
+    # heap_info_bytes:显式实验配置(P11_HEAP_INFO_DERIVED 静态推导候选)。只与
+    # p11_power_init 叠加使用;报告把 fixture 标注为 derived-not-measured,
+    # 场景结论一律条件通过,不算已验证(模型侧 read_bytes 只按字节粒度回放,
+    # 不影响任何其他读者)。
+    if heap_info_bytes is not None:
+        require(p11_power_init,'heap-info fixture only layers on the p11_power_init scenario')
+        options['p11_heap_info_bytes']=bytes(heap_info_bytes)
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -769,6 +820,78 @@ def check(report,firmware):
             'the fixture-scenario REP projections differ from the observed prefix')
     require(crc_ff['result_reads'][26:]==['0xa1cd','0x9946','0xd1cf','0x239e'],
             'the P11 resource resolution must add exactly four CRC rounds ending 0x239e')
+    r=rows['p11_heap_experimental_config']
+    # 堆信息 4 字节的显式实验配置(P11_HEAP_INFO_DERIVED 静态推导候选,derived-
+    # not-measured):本场景的一切结论都是条件通过,不构成对堆值或 P11 执行的验证。
+    # 传入后链真实消费:0x60679ba/be 首读(begin L/H 组装 r5=0x3d0c,0x60679d8 并行
+    # 对 r0=r5|0xf20000=0xf23d0c,watch 钉死)、call 0x60114ca(3,0xf20000,0xf23d0b)
+    # (P11 RAM protect 区注册,SDK p11_app.h P11_RAM_PROTECT_END=P11_HEAP_BEGIN 语义)、
+    # 0x60679ee..f4 四字节再读(r0 依次 0x3d/0x0c/0x39/0xf4)、"pmu_task" 创建
+    # (call 0x6067242,r2=名字 0x6083a6a,r0=入口 0x6068f0c)。pmu_task 创建触发
+    # 真实多任务往返:CPU0 又收两次 irq127 调度交付(reti_from 都是调度等待点
+    # 0x12b608),第一次 RTI 进 pmu_task 入口 0x6068f0c(独立栈 sp=0x401ffc,时间片
+    # 执行到 sp=0x401f3c 后让出),第二次 RTI 回调度器、切回 app_core,power_init
+    # 从任务创建调用返回处继续。之后停在 0x6067a74:并行对 A 半 r0=r7-5964、
+    # B 半 st.b [0xf27fd6]=1(SDK lp_ipc.h 命名锚点 M2P_RVD2PVDD_EN,M2P 消息区
+    # +0x56)——主核对 P11 RAM M2P 区的首个写,上游 pair 存储模型合并读包含字
+    # 0xf27fd4 时撞 P11 RAM 未映射(模型只映射了公共段拷贝窗)→ unmapped_memory
+    # 诚实停。这是堆 fixture 放行后的下一个独立边界(需要 M2P 区可写的显式
+    # 决策,留给下一路)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067a74' and
+            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf27fd4',
+                        'size':4,'reference_sdk_register':None},
+            'the heap-experimental scenario must stop at the first main-core M2P-area write '
+            '(pair-store merge read of the unmapped P11 RAM word 0xf27fd4)')
+    require(r['completed_steps']==300187,'the heap experimental config changed its step count')
+    require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
+            'the heap fixture must carry the derived candidate bytes 0c3df439')
+    deliveries=r['machine']['software_irq_entry_projection']['deliveries']
+    require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
+            [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7+
+            [(0,127,'0x12ad2a','0x12b608')]*2,
+            'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 deliveries')
+    rti=[e for e in r['machine']['events'] if e.get('kind')=='software_irq_rti' and e.get('core')==0]
+    require(any(e['pc_after']=='0x6068f0c' and e['sp_after']=='0x401ffc' for e in rti),
+            'the scheduler must really RTI into the pmu_task entry with its own stack')
+    require(r['peripherals']['software_irq_commands']['commands']==20 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==10,
+            'the two scheduler IPI round trips must be the only new software IRQ bookkeeping')
+    # 新前缀不经硬件 CRC 引擎、不动 P11 资源链:CRC 30 次往返 900 字节与
+    # crc_bankb_erased_fixture 完全一致。
+    crc_heap=r['peripherals']['hardware_crc_projection']
+    require(crc_heap['seed_writes']==crc_ff['seed_writes'] and
+            crc_heap['result_reads']==crc_ff['result_reads'] and
+            crc_heap['fed_bytes']==crc_ff['fed_bytes'],
+            'the heap fixture must not change any hardware CRC usage')
+    require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
+            r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
+            'the PWR_CON bit5 request/poll projection must stay at its single observed round')
+    # adapter 计数:双字存储 25→26(新前缀一处),其余投影与 289,849 前沿一致。
+    require(r['instruction_adapters'].get('exact_doubleword_store')==26 and
+            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==165 and
+            r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
+            r['instruction_adapters'].get('register_rep_multi_block_projection')==26 and
+            r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
+            r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
+            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
+            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8,
+            'the heap-experimental prefix adapters differ from the observed conditional frontier')
+    report['heap_info_value_is_derived_not_measured']=(
+        'the p11_heap_experimental_config scenario feeds the four heap-info bytes 0c3df439 '
+        '(begin=0x3d0c, size=0x39f4) as an EXPLICIT EXPERIMENTAL CONFIG derived statically from '
+        'the p11_code.bin common segment (link-time wide-immediate movs at P11-local 0xa12 '
+        '(0x3d0c) and 0xa26 (0x39f4), each followed by the byte-store sequence into 0x7f4a..0x7f4d '
+        'whose pointer immediate 0x7f4a sits at 0xa1a; raw bytes c0ff0c3d0000 / c5ff4a7f0000 / '
+        'c0fff4390000 cross-checked directly, never executed: no q32s execution exists in this '
+        'repository). Consumer semantics match the pinned SDK headers (lp_ipc.h P2M heap offsets '
+        '0x00a..0x00d, p11_app.h P11_HEAP_BEGIN=P11_RAM_BASE+(H<<8|L) / P11_HEAP_SIZE=(H<<8|L)), '
+        'and the size value has an independent layout-level cross-check: heap end 0xf27700 equals '
+        'the SDK-declared VAD_DVAD_CONFIG_BEGIN (0xF28000-0x20-0x60-0x40-0x20-0x780-0x50-0x50). '
+        'The value is nevertheless DERIVED, NOT MEASURED: whether the q32s core really executes '
+        'this init path at boot is unproven (known decode gaps), so every step past 289,849 in '
+        'that scenario (including the pmu_task scheduler round trip and the 300,187 M2P boundary) '
+        'is a CONDITIONAL PASS that must not be reported as verified; without the fixture the '
+        'crc_bankb_erased_fixture frontier stays pinned at 289,849 on the unmapped 0xf27f4b read')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -874,7 +997,14 @@ def main():
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
                               dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
-                              halfword_pair=True,p11_power_init=True,flash_image_bytes=image)]}
+                              halfword_pair=True,p11_power_init=True,flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'p11_heap_experimental_config',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
+                              halfword_pair=True,p11_power_init=True,
+                              heap_info_bytes=P11_HEAP_INFO_DERIVED,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
