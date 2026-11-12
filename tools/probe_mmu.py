@@ -6,7 +6,7 @@ import json
 import struct
 from pathlib import Path
 
-from br28_model import BR28Model, CLOCK0, PLL0, TIMER0
+from br28_model import BR28Model, CLOCK0, PLL0, PLL1_CON3, SYS_DIV, TIMER0, VOLTAGE_CONFIG
 from probe_boot import APP_SHA, OFFICIAL_SHA, ROM_SHA, STACK_TOP, application, check_rom, explore
 from probe_boot_boundaries import UPDATE, update_block
 from probe_boot_handoff import HANDOFF, SENTINEL_A, package_header, profile
@@ -52,9 +52,12 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         if p11_ready_wdt_cases:
             # Oscillator/WLA configuration per the clock-scenario family: the same
             # explicit synthetic initial words (WLA_CON8 0=oscillator off,
-            # WLA_CON21 0) plus the OSC_STATUS word fixture and the LSB timer rate
+            # WLA_CON21 0, SYS_DIV 0 for the divider-field configuration RMW and
+            # the P33/CMNG voltage words all 0 per the clock_voltage_configuration
+            # variant) plus the OSC_STATUS word fixture and the LSB timer rate
             # the real delay loops consume. Never an inferred analog state.
-            initial.update({0xfd1920:0,0xfd1954:0})
+            initial.update({**dict.fromkeys((0xfd1920,0xfd1954,SYS_DIV,PLL1_CON3,
+                                            *VOLTAGE_CONFIG),0)})
         hardware=BR28Model(initial_registers=initial,
             initial_irq_config=[0]*32,initial_ipmask=0,reset_inputs_inactive=True,
             bus_lock_model=True,initial_lock_owner=None,gpio_model=True,mmu_model=True,initial_mmu_con=con,
@@ -78,13 +81,43 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # GPCNT 计数器清理投影按 clock 场景先例接线(同一开关:0xfd1100 只接受
             # 已观测的 disable &=0xFFFFFFFE / clear |=0x40 位 RMW,读回保持严格);
             # 只服务 p11_ready_watchdog 支线。
-            gpcnt_cleanup_projection=p11_ready_wdt_cases)
+            gpcnt_cleanup_projection=p11_ready_wdt_cases,
+            # Core tick 配置投影按 clock 场景先例接线(同一开关 + 同样的显式
+            # 禁用初始字 (0,0)):初始化 walker 表项 0x60a89c8 = {0x606616e,
+            # 0x606617a} 只调第一半,本前缀真实执行只有 CPU1 tick CON=0
+            # disable 写(clock 族越过同一访问后 CPU1 tick writes=1);enable
+            # (bit0=1) 无 progress 证据仍严格停。只服务 p11_ready_watchdog 支线。
+            core_tick_configuration=p11_ready_wdt_cases,
+            initial_core_tick_controls=(0,0) if p11_ready_wdt_cases else None,
+            # CPU1 held 投影按 clock 场景先例接线(同一开关+同样的显式 held
+            # 初始字 0):core tick walker 之后的下一个访问是 RAM 0x12b60a 跨核
+            # 请求函数读对核 PMU_CON0 0xffe8c0 测释放位 bit0——CPU1 在本支线
+            # 从未执行,held fixture 0 让真实代码自己走「未释放→跳过 IPI」
+            # 分支(与 clock 族同一机制越过同一访问);释放效果不模拟。
+            cpu1_held_projection=p11_ready_wdt_cases,
+            initial_cpu1_control=0 if p11_ready_wdt_cases else None,
+            # SYS_DIV 配置投影按 clock 场景先例接线(同一开关 + 同样的显式
+            # 初始字 0):链上下一访问 0x60002a0 对 SYS_DIV 0xfd0014 做
+            # &=0xFFFFFF00 分频字段配置 RMW(读回=初始字/后写值,与 clock 族
+            # sys_div_initial_unknown 负例的严格形状一致);只服务本支线。
+            clock_divider_projection=p11_ready_wdt_cases,
+            # P33 电压配置投影按 clock_voltage_configuration 变体先例接线
+            # (同一开关 + 同样的五寄存器全 0 显式合成初始字):链上下一访问
+            # 0x60002d0/d2 读 P3_PVDD1_AUTO (SDK p33_sfr.h P33_ACCESS(0x44)
+            # =0xf2c110) 两次,低字节 |0xEE 写回 + P3_ANA_CON6 族位段组装,
+            # 全族都在投影域内;模拟电压/爬升/时序不建模;只服务本支线。
+            voltage_configuration_projection=p11_ready_wdt_cases,
+            # PLL1 CON3 配置投影按同一变体先例接线(同一开关 + 同样的
+            # 0xfd470c 初始字 0):链上下一访问 0x60003ce 对 PLL1_CON3 做
+            # |=1 enable RMW;模拟 PLL1 锁定/模拟特性不建模;只服务本支线。
+            pll1_configuration_projection=p11_ready_wdt_cases)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
               'watch_pcs':[0x060350dc,0x06035116]}
         if watchdog_cases or p11_ready_wdt_cases:diag['watch_pcs'].append(0x0603518c)
         if p11_ready_wdt_cases:diag['watch_pcs'].append(0x060351cc)  # WLA_CON8 条件读入口(旧支线停点)
+        if p11_ready_wdt_cases:diag['watch_pcs'].append(0x06066174)  # CPU1 core tick CON=0 写(旧支线停点)
         r=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
                   diagnostics=diag,hardware=hardware,startup_loops=True,
                   budget=85000 if p11_status_cases or p11_ready_cases else

@@ -61,18 +61,25 @@ def main():
     # word and the LSB timer rate the real delay loops consume), the prefix
     # crosses the whole conditional oscillator read at 0x60351d2 and the
     # XOSC/PLL trim segment behind it. With the GPCNT counter-cleanup
-    # projection wired too (the same switch the clock-scenario family uses),
-    # the real disable+clear RMW pair on GPCNT_CON executes, stopping at the
-    # next independent strict boundary: the CPU1 core-tick CON full-word store
-    # 0xffe8ec = 0, a domain only the clock-scenario core_tick_configuration
-    # models (their own frontier crosses the same access and continues to the
-    # P33 voltage read 0xf2c110).
+    # projection and the core-tick chain wired too (core_tick_configuration
+    # with the explicit disabled initial words (0,0), the CPU1-held projection,
+    # SYS_DIV/P33-voltage/PLL1-CON3 configuration projections — all the same
+    # switches and synthetic initial words the clock-scenario family or its
+    # voltage variant uses), the prefix crosses the CPU1 core-tick CON store
+    # 0xffe8ec = 0 (only the first half of the walker table entry executes; the
+    # enable leaf never runs, so no counter behaviour is invented), the peer
+    # PMU_CON0 release-flag read (the real code takes the not-released branch
+    # and skips the IPI), the SYS_DIV divider RMW, the P3_PVDD1_AUTO read-RMW
+    # (SDK p33_sfr.h P33_ACCESS(0x44)) and the PLL1 enable RMW, stopping at
+    # exactly the same boundary as the clock_voltage_configuration variant:
+    # the ROM DcuWaitIdle poll on JL_L1P CON 0xff0500.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==108426 and w['stop_pc']=='0x6066174' and
-            w['stop']['kind']=='unmapped_or_readonly_write' and w['stop']['address']=='0xffe8ec',
-            'watchdog+EFUSE+oscillator+GPCNT projections did not cross the KEY pair, page reads, WLA trim '
-            'and the counter cleanup to the core-tick boundary')
+    require(w['completed_steps']==108859 and w['stop_pc']=='0xbb28' and
+            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xff0500',
+            'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections did not cross the KEY pair, '
+            'page reads, WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/PLL1 '
+            'configuration to the L1P cache-wait boundary')
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
@@ -98,8 +105,12 @@ def main():
     require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x60351cc' for x in w['milestones']),
             'the conditional WLA_CON8 read at the old boundary did not execute')
     regs=w['peripherals']['registers']
+    # WLA_CON8 final word 0x3e0c4191 = the clock_default_trim value 0x360c4191
+    # plus bit27 re-asserted later inside the voltage-configuration segment —
+    # byte-identical to the clock_voltage_configuration variant at the same
+    # merged frontier (108,859 @ 0xbb28), a two-line cross-check.
     require(regs['0xfd1940']=='0x40000' and regs['0xfd4600']=='0x408929b3' and
-            regs['0xfd1920']=='0x360c4191' and regs['0xfd1954']=='0x0',
+            regs['0xfd1920']=='0x3e0c4191' and regs['0xfd1954']=='0x0',
             'real XOSC/PLL trim branches differ from the clock-scenario values')
     assumptions=w['peripherals']['assumptions']
     require(assumptions['oscillator_status_word_fixture']==16 and
@@ -116,6 +127,29 @@ def main():
             gpcnt['disable_writes']==gpcnt['clear_writes']==1 and
             w['instruction_adapters']['gpcnt_unknown_preserving_cleanup_rmw']==2,
             'GPCNT cleanup did not record exactly the observed disable+clear pair')
+    # The core-tick chain is wired with the same opt-ins and synthetic initial
+    # words the clock-scenario family (or its voltage variant) uses: only the
+    # observed CPU1 tick CON=0 disable store executed (the walker table entry
+    # 0x60a89c8 pairs the disable leaf with the enable leaf and only calls the
+    # first half), the CPU0 tick stayed at its explicit disabled fixture and no
+    # counter/overflow/ACK behaviour was invented, and the peer PMU_CON0 read
+    # returned the held fixture 0 so the real code chose the not-released
+    # branch itself. CPU1 never executed in this branch line.
+    require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x6066174' for x in w['milestones']),
+            'the CPU1 core-tick CON store at the old boundary did not execute')
+    cpu0,cpu1=w['peripherals']['core_tick_configuration']
+    require((cpu0['writes'],cpu1['writes'])==(0,1) and cpu1['con']==0 and
+            cpu0['initial_control_fixture']==cpu1['initial_control_fixture']==0 and
+            not cpu0['counter_projection_enabled'] and not cpu1['counter_projection_enabled'] and
+            cpu0['expirations']==cpu1['expirations']==0,
+            'core tick configuration invented writes or counter behaviour')
+    held=w['peripherals']['cpu1_held_projection']
+    require(held['initial_control_fixture']==0 and not held['secondary_cpu_executed'] and
+            held['kick_rmw_writes']==0,'CPU1 held fixture labels missing or CPU1 executed')
+    require(assumptions.get('sys_div_configuration_projection') is True and
+            'voltage_configuration_projection' in assumptions and
+            'pll1_con3_configuration_projection' in assumptions,
+            'SYS_DIV/P33-voltage/PLL1 configuration projections not labelled')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
             'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,
