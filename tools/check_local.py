@@ -55,6 +55,7 @@ def main():
     run(sys.executable,'tools/test_task_unknown.py')
     run(sys.executable,'tools/test_icfg.py')
     run(sys.executable,'tools/test_irq_entry.py')
+    run(sys.executable,'tools/test_image_trace_diff.py')
     run(sys.executable,'tools/test_core_tick.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json',tool='probe_boot.py')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json',tool='probe_boot_handoff.py')
