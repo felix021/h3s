@@ -1457,9 +1457,8 @@ class BusInstructionTests(unittest.TestCase):
                          {'0xf2c94c':{'values':['0x2'],'writes':1}})
         # 下一停点形状钉死:0x6067c42 `st.w.idxs [0xf2c300+r5<<2]=r0` 写
         # P3_PORT_SEL1(SDK 有名,0xf2c300 有 arch_startup opaque 死读先例)——
-        # 整字写不路由到字节投影,p33_window 关闭与否都诚实停(与真实场景
-        # 302,620 停点逐字段一致:unmapped_or_readonly_write,写形状独立决策
-        # 点,归下一路)。
+        # p33_port_sel 投影关闭时整字写不路由,p33_window 关闭与否都诚实停
+        # (与真实场景 302,620 停点逐字段一致:unmapped_or_readonly_write)。
         stop=BR28Model(p33_window_projection=True)
         r1=regs(1);r1[0]=0x12;r1[1]=0xf2c300
         result=explore(self.module,self.app,name='p33_port_sel_stop',handoff=self.handoff(),
@@ -1468,6 +1467,38 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['completed_steps'],0)
         self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
                                          'address':'0xf2c304','size':4,'value_bytes':'12000000'})
+
+    def test_p33_port_sel_store_and_awkup_flt_frontier(self):
+        # 路 AZ:0x6067c42 `st.w.idxs [r1+r5<<2]=r0`(r1=0xF2C300,r5=index,
+        # r0=查表函数 0x60672C8(cfg) 的真实执行结果)写 P3_PORT_SEL{index}。
+        # p33_port_sel_projection(write-only 整字记录,lp_timer SYS_DIV/CLK_CON0
+        # 同族:st.w.idxs 全字覆盖写、旧值无关)开启时放行——idx=1 实测值
+        # 0x12 落记录;关闭时(上一用例)诚实停。
+        regs=lambda idx,val:[val,0xf2c300,0,0,0,idx,0xf2c940,0,0xf2c548,0xf2c960,0,0,0,0,0,0]
+        projected=BR28Model(p33_window_projection=True,p33_port_sel_projection=True)
+        result=explore(self.module,self.app,name='port_sel_projected',handoff=self.handoff(),
+            hardware=projected,diagnostics={'entry_pc':0x6067c42,'initial_sp':STACK_TOP,
+                                            'initial_gprs':regs(1,0x12),
+                                            'exact_subword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(projected.report()['p33_port_sel_projection']['stores'],
+                         {'0xf2c304':{'values':['0x12'],'writes':1}})
+        # 新前沿形状钉死(303,853):walker 第二轮表 item[0](cfg=0xE2,查表
+        # 返回 2=通道)次路径 0x6067c6e `st.w.idxs [r2+r0<<2]=r1`
+        # (r2=0xF2C200,r1=w8)写 [0xF2C208]=P3_AWKUP_FLT2(SDK 有名
+        # P3_AWKUP_FLT0..2=P33_ACCESS(0x80..0x82))——P3_AWKUP 族(SDK 有名、
+        # 固件有真实读回需求:0x6067cac ld.w [0xF2C184]=P3_AWKUP_P_IE 读回
+        # 且被消费、读从未写过的复位值)整族归下一路,port_sel 投影不路由
+        # 该地址,诚实停(与真实场景停点逐字段一致)。
+        awk=BR28Model(p33_window_projection=True,p33_port_sel_projection=True)
+        r=[0]*16;r[2]=0xf2c200;r[0]=2;r[1]=4
+        result=explore(self.module,self.app,name='awkup_flt_stop',handoff=self.handoff(),
+            hardware=awk,diagnostics={'entry_pc':0x6067c6e,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+                                         'address':'0xf2c208','size':4,'value_bytes':'04000000'})
 
     def test_mem_pwr_con_rmw_and_dead_read_shapes(self):
         # 0x606772a li r8=0xf2a62c → 0x6067730 `[r8+0] |= r0`(rmw.or.r)。boot

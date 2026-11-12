@@ -18,7 +18,7 @@ from br28_model import L1PIdleProjection, L1P_CON
 from br28_model import IcuIdleProjection
 from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON, LRCT_NUM
 from br28_model import P11_MEM_PWR_CON
-from br28_model import P33WindowByteRegisters
+from br28_model import P33WindowByteRegisters, P33PortSelRegisters
 
 
 class ModelTests(unittest.TestCase):
@@ -1538,6 +1538,56 @@ class ModelTests(unittest.TestCase):
         # 非 or/and 位 RMW 形式拒绝
         with self.assertRaisesRegex(Blocked,'mem_pwr_con_rmw_form_not_modeled'):
             h.mem_pwr_rmw(P11_MEM_PWR_CON,'xor',1)
+
+    def test_p33_port_sel_projection_is_write_only_word_record(self):
+        # 路 AZ:P3_PORT_SEL0..15(SDK p33_sfr.h 全命名 P33_ACCESS(0xc0..0xcf),
+        # 只有地址宏、无 __RW/__RO/__WO)按 write-only 整字序列记录建模——
+        # 唯一写者是 P33 窗配置函数 0x6067b66 尾部 0x6067c42
+        # `st.w.idxs [0xf2c300+index<<2]=lookup(cfg)`(walker 两轮表 index 0..11
+        # → 访问面 0xf2c300..0xf2c32c);app 字面量 0 处、ROM 0 处;唯一读是
+        # 0x0606745e 的 arch_startup opaque 死读(r8=0xf2c120+480,调用者都立即
+        # 杀死 R0,值从不消费)——读回一律严格停,不臆造任何值。
+        # 默认关:无投影、不 handles、报告无该键——legacy 场景逐字节不变。
+        plain=BR28Model()
+        self.assertFalse(plain.handles(0xf2c304,4))
+        self.assertNotIn('p33_port_sel_projection',plain.report())
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xf2c304)
+        h=BR28Model(p33_port_sel_projection=True)
+        # 访问面 12 个字全部路由(SEL0..11;SEL12..15 是 SDK 命名但 walker
+        # 表结构不可达的地址,不在投影内)
+        for a in P33PortSelRegisters.ADDRESSES:
+            self.assertTrue(h.handles(a,4))
+        self.assertEqual(len(P33PortSelRegisters.ADDRESSES),12)
+        self.assertFalse(h.handles(0xf2c334,4))
+        # 整字写记录(boot 首轮四项的实测序列:lookup(0x11/0xE0/0x05/0x15)
+        # =0x12/0x2f/0x6/0x16,值由真实执行计算)
+        h.write(0xf2c304,0x12);h.write(0xf2c308,0x2f)
+        h.write(0xf2c30c,0x06);h.write(0xf2c310,0x16)
+        r=h.report()['p33_port_sel_projection']
+        self.assertEqual(r['word_writes'],4)
+        self.assertEqual(r['stores'],{'0xf2c304':{'values':['0x12'],'writes':1},
+                                      '0xf2c308':{'values':['0x2f'],'writes':1},
+                                      '0xf2c30c':{'values':['0x6'],'writes':1},
+                                      '0xf2c310':{'values':['0x16'],'writes':1}})
+        self.assertTrue(r['write_only'] and r['readback_not_modeled'])
+        self.assertIn('P3_PORT_SEL0..15',r['sdk_naming'])
+        # 整字写的写入簿记(record_write 计数)
+        self.assertEqual(h.report()['counts']['writes'],4)
+        # 读回严格停(显式 kind 优先于泛 unmapped)
+        with self.assertRaisesRegex(Blocked,'port_sel_readback_not_modeled'):
+            h.read(0xf2c304)
+        # RMW 无观测形状拒绝
+        with self.assertRaisesRegex(Blocked,'port_sel_rmw_not_modeled'):
+            h.p33_port_sel.rmw('or',1)
+        # 字节写不路由(无字节写观测形状,handles_byte_write 只属于 p33_window)
+        self.assertFalse(h.handles_byte_write(0xf2c304))
+        # 与 p33_window/mem_pwr_con 投影叠加互不吞地址
+        both=BR28Model(p33_port_sel_projection=True,p33_window_projection=True,
+                       mem_pwr_con_projection=True)
+        self.assertTrue(both.handles(0xf2c304,4) and both.handles_byte_write(0xf2c948)
+                        and both.handles(P11_MEM_PWR_CON,4))
+        self.assertFalse(both.handles(0xf2c948,4) or both.handles_byte_write(0xf2c304))
 
 
 if __name__=='__main__':unittest.main()
