@@ -111,10 +111,15 @@ P3_ANA_CON5 (0xf2c254) for its 0x3FC7 clear RMW: the opt-in
 p33_analog_config_projection covers P3_ANA_CON2/P3_ANA_CON5 with the same
 explicit synthetic initial word 0 as the VOLTAGE_CONFIG precedent (the
 p33_sfr.h header is address macros only, no __RW/__RO/__WO annotation),
-and the chain next stops honestly at 301,636 on the P3_RST_CON0 (0xf2c054)
-RMW whose and-mask (0xFF7F) is outside the recorded RESET_CONFIG_MASKS —
-the multi-mask access to 0xf2c054 is the next independent decision, and
-power_init's return still lies beyond. No new scheduler round trips occur.
+and the chain next reads P3_RST_CON0 (0xf2c054) with two and-masks
+(0xFF7F at 0x60677fa clearing bit7, 0x7FBF at 0x60677fe clearing bit6)
+different from the main reset-init mask 0x3fdf (clears bit5): the opt-in
+power_init_rstcon_mask_sets extends the reset projection's accepted mask
+set for 0xf2c054 to the three observed masks (applied bitwise, unknown-
+preserving, no SDK bit definition invented), and the chain then stops
+honestly at 301,651 on the P3_WKUP_DLY (0xf2c114) &=0x7F8 RMW — an
+independent, not-yet-modeled P33 register, the next decision; power_init's
+return still lies beyond. No new scheduler round trips occur.
 The crc_bankb_erased_fixture frontier itself stays pinned at 289,849
 without the fixture.
 """
@@ -279,7 +284,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              insert_load_pair=False,halfword_pair=False,p11_power_init=False,
              heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,lrct_trim_done=False,
              lrct_trim_result=None,timer0_std12m=False,lp_timer_con_readback=False,
-             p33_analog_config=False,
+             p33_analog_config=False,power_init_rstcon_masks=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -473,6 +478,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if p33_analog_config:
         require(p11_power_init,'the P33 analog-config readback only layers on the p11_power_init scenario')
         options['p33_analog_config_projection']=True
+    # power_init_rstcon_masks:opt-in 的 0xf2c054(P3_RST_CON0)多掩码访问放行(路 AO)。
+    # 触发点=0x60677a4 的 P33 配置函数内 0x60677fa `rmw.and.r [0xf2c054]&=0xFF7F`
+    # (清 bit7)与 0x60677fe `&=0x7FBF`(清 bit6),与主复位初始化 0x6068c80 的
+    # 0x3fdf(清 bit5)是三个不同掩码——复位投影严格单掩码校验拒绝。证据核验结论:
+    # 固件真实用这三个掩码清该寄存器的不同位(SDK p33_sfr.h 对 P3_RST_CON0 只有
+    # 地址宏、无字段位定义,power_reset.h 只有枚举复位源,bit6/bit7 含义无 SDK
+    # 证据,只记录真实观测掩码、不发明未观测位)。选方案 (a) 掩码集扩展:
+    # extra_configuration_mask_sets 把 0xFF7F/0x7FBF 追加进 0xf2c054 的接受掩码集,
+    # 每个掩码仍按位清(清掉的位已知 0、保留位未知、读回须全知),默认单掩码校验
+    # 行为不变。默认关:0xf2c054 的 0xFF7F 读保持 reset_configuration_operation_
+    # not_modeled 严格停(301,636 前沿形状)。
+    if power_init_rstcon_masks:
+        require(p11_power_init,'the P3_RST_CON0 mask-set extension only layers on the p11_power_init scenario')
+        options['power_init_rstcon_mask_sets']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -1088,18 +1107,32 @@ def check(report,firmware):
     # 复位投影的严格掩码校验拒绝——0xf2c054 的多掩码访问是新独立决策点,归
     # 下一路。power_init 返回(0x60120e0)仍在停点之后;第一个任务句柄半字
     # 0x6067aec h[0x129D94]=1 已执行(旧记录「0x129D90」系地址笔误,实测目标
-    # 是 0x129D94)。TIMER0 精确计数:518+21 步 × 3 tick/步 = cnt 1617(见下方
-    # 断言),con 0x1401,expirations 10 不变(首次到期在启动后 40000 步,远未
-    # 到);无新调度往返(交付 1+7+2、commands 20/acks 10 不变)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x60677fa' and
-            r['stop']=={'kind':'reset_configuration_operation_not_modeled','address':'0xf2c054'},
-            'the heap-experimental scenario must stop at the P3_RST_CON0 (0xf2c054) RMW '
-            'whose and-mask (0xFF7F) is outside the recorded RESET_CONFIG_MASKS after the '
-            'P33 analog-config readback is let through')
-    require(r['completed_steps']==301636,'the heap experimental config changed its step count')
+    # 是 0x129D94)。路 AO(掩码集扩展)放行 0xf2c054 的两个不同掩码后,函数继续:
+    # 0x60677fa `rmw.and.r [0xf2c054]&=0xFF7F`(清 bit7)与 0x60677fe `&=0x7FBF`
+    # (清 bit6)按掩码集放行(与主复位初始化 0x6068c80 的 0x3fdf 清 bit5 按位合并:
+    # 0xf2c054 末态 known_mask=0xffffc0e0=bit5/6/7/14/15/16-31 已知 0);随后
+    # P3_ANA_CON2(0xf2c248)三次读改(p33_analog_config 已覆盖,末态 0x70=bits4/5/6)、
+    # 0x606781e/22 并行对(add∥st.w)写回后,**0x6067824 `rmw.and.nmodimm
+    # [0xf2c114]&=0x7F8` 读 P3_WKUP_DLY(0xf2c114=P33_ACCESS(0x45))撞 unmapped_
+    # memory 诚实停**——P3_WKUP_DLY 是不在 RESET_CONFIG_MASKS/模拟控制族里的新
+    # 独立地址(下一路决策点)。TIMER0 精确计数:518+21+15 步 × 3 tick/步 = cnt
+    # 1662(见下方断言),con 0x1401,expirations 10 不变;无新调度往返(交付
+    # 1+7+2、commands 20/acks 10 不变)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067824' and
+            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf2c114','size':4,
+                        'reference_sdk_register':None},
+            'the heap-experimental scenario must stop at the P3_WKUP_DLY (0xf2c114) RMW '
+            'after the P3_RST_CON0 multi-mask access is let through')
+    require(r['completed_steps']==301651,'the heap experimental config changed its step count')
+    reset_config=r['peripherals']['reset_history_projection']['configuration']['0xf2c054']
+    require(reset_config=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
+            r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
+            {'0xf2c054':['0x3fdf','0xff7f','0x7fbf']},
+            'the P3_RST_CON0 configuration must record the bitwise union of the three observed '
+            'masks (0x3fdf clears bit5, 0xff7f clears bit7, 0x7fbf clears bit6) as the accepted mask set')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':1617,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 539 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':1662,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 554 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1200,7 +1233,8 @@ def check(report,firmware):
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
             r['instruction_adapters'].get('parallel_byte_store_old_registers')==101 and
-            r['instruction_adapters'].get('lp_timer_bit_rmw')==9,
+            r['instruction_adapters'].get('lp_timer_bit_rmw')==9 and
+            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==6,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     report['heap_info_value_is_derived_not_measured']=(
         'the p11_heap_experimental_config scenario feeds the four heap-info bytes 0c3df439 '
@@ -1313,6 +1347,28 @@ def check(report,firmware):
         'configuration RMW on P11_LPTMR0 CON2 (0xf2a908: read -> clear bits0-3 -> |=3 -> '
         'write -> &=0xFFFFFF0F) hits the lp_timer_init_projection write-only boundary at '
         'the first read — lp_timer readback semantics is the NEXT independent decision; '
+        'power_init\'s return (0x60120e0) still lies beyond the stop')
+    report['p3_rstcon_mask_set_assumption']=(
+        'the p11_heap_experimental_config scenario opts into power_init_rstcon_mask_sets: the '
+        'P3_RST_CON0 (0xf2c054) configuration register is written with THREE different and-masks '
+        'across the real firmware — 0x3fdf in the main reset-init path (0x6068c80 @ 0x6068c94, '
+        'clears bit5), and 0xFF7F (0x60677fa, clears bit7) plus 0x7FBF (0x60677fe, clears bit6) in '
+        'the power_init P33 analog-config routine 0x60677a4. The reset projection\'s strict '
+        'single-mask check rejected the two power_init masks, so this scenario opts into an '
+        'accepted-mask-set for 0xf2c054: each observed mask is applied bitwise through the same '
+        'unknown-preserving PartialWord semantics (bits the mask clears become known 0, preserved '
+        'bits stay unknown, readback still requires a fully known word), so the union of the three '
+        'cleared bit sets is recorded bitwise (known_mask 0xffffc0e0: bits 5/6/7/14/15/16..31). '
+        'No SDK field definition exists for P3_RST_CON0 bit6/bit7 — p33_sfr.h only has the '
+        'P33_ACCESS(0x15) address macro and power_reset.h only enumerates reset reasons — so the '
+        'extension records ONLY the truly observed masks and invents no unobserved bits; the '
+        'register NAME (P3 reset control) and the firmware really clearing bits 6/7 are the whole '
+        'evidence, not a claim about their silicon meaning. The strict single-mask behavior stays '
+        'the default for every other configuration (and for 0xf2c054 without the opt-in), and the '
+        'legacy reports are byte-identical. With the masks let through the conditional frontier '
+        'advances 15 steps to 301,651 at 0x6067824: the same routine then reads P3_WKUP_DLY '
+        '(0xf2c114=P33_ACCESS(0x45)) for its &=0x7F8 RMW, an independent, not-yet-modeled P33 '
+        'register that stops the chain honestly (unmapped_memory) as the next decision; '
         'power_init\'s return (0x60120e0) still lies beyond the stop')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
@@ -1429,7 +1485,8 @@ def main():
                               heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
                               lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
                               timer0_std12m=True,lp_timer_con_readback=True,
-                              p33_analog_config=True,flash_image_bytes=image)]}
+                              p33_analog_config=True,power_init_rstcon_masks=True,
+                              flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
