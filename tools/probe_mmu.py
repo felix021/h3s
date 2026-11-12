@@ -143,6 +143,13 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         if watchdog_cases or p11_ready_wdt_cases:diag['watch_pcs'].append(0x0603518c)
         if p11_ready_wdt_cases:diag['watch_pcs'].append(0x060351cc)  # WLA_CON8 条件读入口(旧支线停点)
         if p11_ready_wdt_cases:diag['watch_pcs'].append(0x06066174)  # CPU1 core tick CON=0 写(旧支线停点)
+        # 首读 PWM 死读(0x6034a82,arch_startup `pwm_value_strict` 同边界)按
+        # arch_startup 的 proven-dead-PWM-read 证明接线:四读(0xfd2964/74/84/94
+        # = JL_MCPWM CH0..CH3_CON0)值从不被数值消费(读后 r0 仅被循环头 mov.rr
+        # r0=r4 与调用方表 walker 的 ld.w r0=[r5+4] 覆盖,opaque_pwm_read 门内
+        # 自验指令形状+调用方返回地址 0x060006e2+循环继续 saved_r5+8<R6)。
+        # 复用既有诊断、零新 fixture;只服务本支线,其余场景(均停在本读之前)不变。
+        if p11_ready_wdt_cases:diag['opaque_pwm_read']=True
         r=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
                   diagnostics=diag,hardware=hardware,startup_loops=True,
                   budget=85000 if p11_status_cases or p11_ready_cases else

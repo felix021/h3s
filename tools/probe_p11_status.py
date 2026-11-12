@@ -89,17 +89,35 @@ def main():
     # needed — no new fixture. The SFC part is NOT a cache/ICU access: no bit30
     # command-busy or ICU CON enable-bit write is consumed, so the ICU idle
     # fixture stays scoped to the bit31 poll it serves. After the helper
-    # returns, the next honest stop is the first dead PWM read 0xfd2964 (the
-    # arch_startup pwm_value_strict boundary; its opaque-value proof is a
-    # separate future decision, not an SFC-domain gap).
+    # returns, the PWM init loop 0x6034a70..0x6034a86 reads the four MCPWM
+    # channel CON0 registers (0xfd2964/0xfd2974/0xfd2984/0xfd2994 = SDK br28.h
+    # JL_MCPWM CH0..CH3_CON0) — the same arch_startup pwm_value_strict boundary.
+    # These are proven-dead reads (the value is overwritten by the loop-head
+    # mov.rr r0=r4 and the caller walker's ld.w r0=[r5+4] before any numeric
+    # consumption), so the arch_startup opaque_pwm_read diagnostic is wired in
+    # (reused, no new fixture) to cross all four without fabricating a value.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==109160 and w['stop_pc']=='0x6034a82' and
-            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xfd2964',
-            'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus did not '
-            'cross the KEY pair, page reads, WLA trim, counter cleanup, core tick store, peer PMU read, '
-            'SYS_DIV/P33/PLL1 configuration, the JL_L1P idle poll, the two-core ICU idle poll and the '
-            'full SFC suspend/reconfiguration sequence to the first dead PWM read boundary')
+    require(w['completed_steps']==109365 and w['stop_pc']=='0x606619e' and
+            w['stop']['kind']=='core1_tick_held_clock_unknown',
+            'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus and the '
+            'opaque PWM dead-read wiring did not cross the KEY pair, page reads, WLA trim, counter '
+            'cleanup, core tick store, peer PMU read, SYS_DIV/P33/PLL1 configuration, the JL_L1P idle '
+            'poll, the two-core ICU idle poll, the full SFC suspend/reconfiguration sequence and the '
+            'four dead PWM reads to the CPU1 core-tick enable boundary')
+    require(w['instruction_adapters']['proven_dead_pwm_configuration_read']==4,
+            'the four dead PWM configuration reads were not proven opaque')
+    require(w['peripherals']['assumptions']['pwm_configuration_reads'].startswith('R0 remains unknown'),
+            'the opaque PWM read assumption label is missing')
+    # The next stop is the CPU1 core-tick enable leaf 0x606617a (the second half
+    # of the walker table entry {0x606616e disable, 0x606617a enable}, reached
+    # by the second-half walker pass after the PWM loop): its final store
+    # 0x606619e writes CON=1 (enable) to 0xffe8ec while CPU1 is held
+    # (initial_cpu1_control=0) and no held-core-tick-counting hypothesis is
+    # opted in — the model honestly refuses to invent clock progress for a held
+    # core, the same family as the arch_startup core_tick_held_clock_unknown
+    # boundary. A future route may opt in a held-clock hypothesis or pin this
+    # stop; no counter behaviour is invented here.
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
@@ -148,17 +166,24 @@ def main():
             w['instruction_adapters']['gpcnt_unknown_preserving_cleanup_rmw']==2,
             'GPCNT cleanup did not record exactly the observed disable+clear pair')
     # The core-tick chain is wired with the same opt-ins and synthetic initial
-    # words the clock-scenario family (or its voltage variant) uses: only the
-    # observed CPU1 tick CON=0 disable store executed (the walker table entry
-    # 0x60a89c8 pairs the disable leaf with the enable leaf and only calls the
-    # first half), the CPU0 tick stayed at its explicit disabled fixture and no
-    # counter/overflow/ACK behaviour was invented, and the peer PMU_CON0 read
-    # returned the held fixture 0 so the real code chose the not-released
-    # branch itself. CPU1 never executed in this branch line.
+    # words the clock-scenario family (or its voltage variant) uses: the
+    # observed CPU1 tick CON=0 disable leaf 0x606616e executed (first half of
+    # the walker table entry {0x606616e disable, 0x606617a enable}); after the
+    # PWM loop the second-half walker pass reaches the enable leaf 0x606617a,
+    # whose CNT=0 and PRD=479999999 (the SDK per-core tick conversion from
+    # [0x126540+0x2C0], byte-identical to the known CPU1 PRD) stores go
+    # through while its final CON=1 enable store 0x606619e is honestly refused
+    # (core1_tick_held_clock_unknown: CPU1 is held with initial_cpu1_control=0
+    # and no held-core-tick-counting hypothesis is opted in). The CPU0 tick
+    # stayed at its explicit disabled fixture and no counter/overflow/ACK
+    # behaviour was invented; the peer PMU_CON0 read returned the held fixture 0
+    # so the real code chose the not-released branch itself. CPU1 never
+    # executed in this branch line.
     require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x6066174' for x in w['milestones']),
             'the CPU1 core-tick CON store at the old boundary did not execute')
     cpu0,cpu1=w['peripherals']['core_tick_configuration']
-    require((cpu0['writes'],cpu1['writes'])==(0,1) and cpu1['con']==0 and
+    require((cpu0['writes'],cpu1['writes'])==(0,3) and cpu1['con']==0 and
+            cpu1['cnt']==0 and cpu1['prd']==479999999 and
             cpu0['initial_control_fixture']==cpu1['initial_control_fixture']==0 and
             not cpu0['counter_projection_enabled'] and not cpu1['counter_projection_enabled'] and
             cpu0['expirations']==cpu1['expirations']==0,
