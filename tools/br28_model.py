@@ -1378,6 +1378,19 @@ POWER_INIT_CONFIG_MASKS={0xf2c05c:0x3fd}
 # 位」的观测记录掩码集,不发明未观测位。opt-in 经 extra_configuration_mask_sets
 # 把这两个追加进 0xf2c054 的接受掩码集(默认单掩码校验行为不变,legacy 报告不变)。
 POWER_INIT_RSTCON_MASK_SETS={0xf2c054:(0xff7f,0x7fbf)}
+# power_init 0x60677a4(P33 配置函数)内 0x6067824 `rmw.and.nmodimm [0xf2c114]&=0x7F8`
+# (r1 由 0x606781e `r1=r1-308` 从 P3_ANA_CON2 基址 0xf2c248 算出 0xf2c114,即
+# P33_ACCESS(0x45)=P3_WKUP_DLY)。AND 掩码 0x7F8=bits3-10 置位:&=0x7F8 保留
+# bits3-10(掩码置位位,8 位 delay 字段,保持未知)、清 bits0-2 与 bits11-31(掩码
+# 清零位,已知 0;known_mask=0xfffff807)。掩码 0x7F8 是反汇编钉死的真实观测;SDK
+# p33_sfr.h 只有地址宏、无字段位定义,「wakeup delay 字段」只是寄存器名 + 固件真实
+# 保留这些位,不声称硅语义。注意:0xf2c114 在 app 里还有第二处引用——独立函数
+# 0x6067f84(app.bin 0x67e84,power-off/低功耗例程)0x6067f98 直接 li 0xf2c114 后
+# 0x6067f9e 显式读回 `r=(r&0x7F8)|0x7` 再写回(保留 bits3-10、置 bits0-2=0x7)——该
+# 读回不属于「配置 RMW 不经读回」,本投影不放行(读回仍须全知,未来到达时诚实停
+# unknown_reset_configuration_bits),归后续路;本 opt-in 只放行 power_init 路径的
+# &=0x7F8。默认关、legacy 报告不变。
+POWER_INIT_WKUP_DLY_MASK={0xf2c114:0x7f8}
 WAKE_CLEAR_TARGETS={0xf2a608:(0xf2a60c,0xffffffff),0xf2c160:(0xf2c158,0xff),
                     0xf2c164:(0xf2c15c,0xff)}
 RTC_WAKE_CLEAR=0xf2d248
@@ -1568,6 +1581,7 @@ class BR28Model:
                  p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
                  p11_heap_info_bytes=None,p11_window_projection=False,
                  power_init_config_rmw=False,power_init_rstcon_mask_sets=False,
+                 power_init_wkup_dly_rmw=False,
                  lp_timer_init_projection=False,lrct_trim_done_projection=False,
                  lrct_trim_result_value=None,lp_timer_con_readback_projection=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
@@ -1721,8 +1735,16 @@ class BR28Model:
             raise ValueError('power_init config RMW requires the reset history projection')
         if power_init_rstcon_mask_sets and not reset_history_projection:
             raise ValueError('power_init RST_CON mask sets require the reset history projection')
+        if power_init_wkup_dly_rmw and not reset_history_projection:
+            raise ValueError('power_init wakeup-delay config RMW requires the reset history projection')
+        extra_config_masks=None
+        if power_init_config_rmw:
+            extra_config_masks=dict(POWER_INIT_CONFIG_MASKS)
+        if power_init_wkup_dly_rmw:
+            extra_config_masks=dict(extra_config_masks or {})
+            extra_config_masks.update(POWER_INIT_WKUP_DLY_MASK)
         self.reset=(ResetHistoryProjection(reset_history_words,
-                    POWER_INIT_CONFIG_MASKS if power_init_config_rmw else None,
+                    extra_config_masks,
                     POWER_INIT_RSTCON_MASK_SETS if power_init_rstcon_mask_sets else None)
                     if reset_history_projection else None)
         self.mpu=MPUConfigurationProjection(initial_mpu_write_gate) if mpu_configuration_projection else None

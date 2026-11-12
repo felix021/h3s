@@ -285,6 +285,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,lrct_trim_done=False,
              lrct_trim_result=None,timer0_std12m=False,lp_timer_con_readback=False,
              p33_analog_config=False,power_init_rstcon_masks=False,
+             power_init_wkup_dly=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -492,6 +493,23 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if power_init_rstcon_masks:
         require(p11_power_init,'the P3_RST_CON0 mask-set extension only layers on the p11_power_init scenario')
         options['power_init_rstcon_mask_sets']=True
+    # power_init_wkup_dly:opt-in 的 P3_WKUP_DLY(0xf2c114)配置 RMW 放行(路 AQ)。
+    # 触发点=0x60677a4 的 P33 配置函数内 0x6067824 `rmw.and.nmodimm [0xf2c114]&=0x7F8`
+    # (r1 由 0x606781e `r1=r1-308` 从 P3_ANA_CON2 基址 0xf2c248 算出 0xf2c114=
+    # P33_ACCESS(0x45))。AND 掩码 0x7F8=bits3-10 置位:&=0x7F8 保留 bits3-10(掩码
+    # 置位位,8 位 delay 字段,保持未知)、清 bits0-2 与 bits11-31(掩码清零位,已知 0)。
+    # 掩码 0x7F8 是反汇编钉死的真实观测;SDK p33_sfr.h 只有地址宏、无字段位定义,
+    # 「wakeup delay 字段」只是寄存器名+固件真实保留这些位,不声称硅语义。按
+    # RESET_CONFIG_MASKS「配置 RMW 不经读回」先例进 reset 投影的配置表(extra
+    # masks,opt-in;清掉的位已知 0、保留位未知、读回仍须全知)。注意:0xf2c114 在
+    # app 里还有第二处引用——独立函数 0x6067f84(app.bin 0x67e84,power-off/低功耗
+    # 例程)0x6067f98 直接 li 0xf2c114 后 0x6067f9e 显式读回 `r=(r&0x7F8)|0x7` 再
+    # 写回(保留 bits3-10、置 bits0-2=0x7)——该读回不属于「配置 RMW 不经读回」,本
+    # 投影不放行,未来到达时诚实停 unknown_reset_configuration_bits,归后续路。
+    # 默认关:0xf2c114 读保持 unmapped_memory(301,651 前沿形状)。
+    if power_init_wkup_dly:
+        require(p11_power_init,'the P3_WKUP_DLY config RMW only layers on the p11_power_init scenario')
+        options['power_init_wkup_dly_rmw']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -1112,27 +1130,39 @@ def check(report,firmware):
     # (清 bit6)按掩码集放行(与主复位初始化 0x6068c80 的 0x3fdf 清 bit5 按位合并:
     # 0xf2c054 末态 known_mask=0xffffc0e0=bit5/6/7/14/15/16-31 已知 0);随后
     # P3_ANA_CON2(0xf2c248)三次读改(p33_analog_config 已覆盖,末态 0x70=bits4/5/6)、
-    # 0x606781e/22 并行对(add∥st.w)写回后,**0x6067824 `rmw.and.nmodimm
-    # [0xf2c114]&=0x7F8` 读 P3_WKUP_DLY(0xf2c114=P33_ACCESS(0x45))撞 unmapped_
-    # memory 诚实停**——P3_WKUP_DLY 是不在 RESET_CONFIG_MASKS/模拟控制族里的新
-    # 独立地址(下一路决策点)。TIMER0 精确计数:518+21+15 步 × 3 tick/步 = cnt
-    # 1662(见下方断言),con 0x1401,expirations 10 不变;无新调度往返(交付
-    # 1+7+2、commands 20/acks 10 不变)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067824' and
-            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf2c114','size':4,
+    # 0x606781e/22 并行对(add∥st.w)写回。路 AQ(P3_WKUP_DLY 配置 RMW)放行
+    # 0x6067824 `rmw.and.nmodimm [0xf2c114]&=0x7F8`(掩码 bits3-10 置位:保留 bits3-10、
+    # 清 bits0-2 与 bits11-31,掩码反汇编钉死)后,函数续跑:0x6067828 r1=63→
+    # 0x606782a r4=0xF27F8C(M2P 字节)→0x6067830/34
+    # 并行对(r1=844∥b[0xf27f8c]=0x3f)→0x6067836 r0=b[0x129D1C]→0x606783a
+    # `call 0x60676ec` 进入位域配置助手(0x60676ec..0x6067a2):0x60676ee
+    # r1=0xF27F8C→0x60676f4 读 b[0xf27f8c]→0x60676f6 `r2&=~r0`→0x60676fa/fe
+    # 并行对(r2=r0&1∥b[0xf27f8c]=r2)→… 把 r0(实参=b[0x129D1C])的 bits0-5 按
+    # 位域组装进 r0→0x606772a r8=0xF2A62C(P11_SYSTEM.MEM_PWR_CON)→**0x6067730
+    # `rmw.or.modimm [0xf2a62c]|=r0` 读 P11_SYSTEM.MEM_PWR_CON(0xf2a62c=P11_SYSTEM
+    # _BASE map_adr(0x06,0)+offset 11*4,SDK p11_sfr.h 标 __RW)撞 unmapped_memory
+    # 诚实停**——OR 形状(非 and)、P11 SYSTEM 域(非 P33/PMU 配置族)的新独立地址,
+    # 归下一路。power_init 返回 0x60120e0 仍在停点之后。TIMER0 精确计数:
+    # 518+21+15+25 步 × 3 tick/步 = cnt 1737(见下方断言),con 0x1401,expirations
+    # 10 不变;无新调度往返(交付 1+7+2、commands 20/acks 10 不变)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067730' and
+            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf2a62c','size':4,
                         'reference_sdk_register':None},
-            'the heap-experimental scenario must stop at the P3_WKUP_DLY (0xf2c114) RMW '
-            'after the P3_RST_CON0 multi-mask access is let through')
-    require(r['completed_steps']==301651,'the heap experimental config changed its step count')
-    reset_config=r['peripherals']['reset_history_projection']['configuration']['0xf2c054']
-    require(reset_config=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
+            'the heap-experimental scenario must stop at the P11_SYSTEM.MEM_PWR_CON '
+            '(0xf2a62c) |= RMW after the P3_WKUP_DLY &=0x7F8 is let through')
+    require(r['completed_steps']==301676,'the heap experimental config changed its step count')
+    reset_config=r['peripherals']['reset_history_projection']['configuration']
+    require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
             {'0xf2c054':['0x3fdf','0xff7f','0x7fbf']},
             'the P3_RST_CON0 configuration must record the bitwise union of the three observed '
             'masks (0x3fdf clears bit5, 0xff7f clears bit7, 0x7fbf clears bit6) as the accepted mask set')
+    require(reset_config['0xf2c114']=={'known_mask':'0xfffff807','known_value':'0x0'},
+            'the P3_WKUP_DLY configuration must record bits 0-2 and 11-31 cleared by the '
+            'observed &=0x7F8 mask (known_mask 0xfffff807; bits 3-10 stay unknown)')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':1662,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 554 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':1737,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 579 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1222,8 +1252,10 @@ def check(report,firmware):
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')
     # adapter 计数:与 300,240 前沿一致的全部投影不变;并行对字节存储
-    # 100→101(+1:第二轮 LRC 写 0x60674b8 的 M2P 字节写,LRC 快照值不变)与
-    # LRCT 位 RMW 4→9(+5:trim 函数内 stop-helper 2 + restart-helper 3)。
+    # 100→101(+1:第二轮 LRC 写 0x60674b8 的 M2P 字节写,LRC 快照值不变)→103(路 AQ
+    # 新前缀 +2:0x6067830/34 与 0x60676fa/fe 两处 M2P 字节 pair 存储)、LRCT 位
+    # RMW 4→9(+5:trim 函数内 stop-helper 2 + restart-helper 3)、reset 配置 RMW
+    # 6→7(路 AQ +1:0x6067824 的 0xf2c114 &=0x7F8)。
     require(r['instruction_adapters'].get('exact_doubleword_store')==26 and
             r['instruction_adapters'].get('immediate_rep_multi_block_projection')==165 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
@@ -1232,9 +1264,9 @@ def check(report,firmware):
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==101 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==103 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==9 and
-            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==6,
+            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==7,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     report['heap_info_value_is_derived_not_measured']=(
         'the p11_heap_experimental_config scenario feeds the four heap-info bytes 0c3df439 '
@@ -1365,10 +1397,30 @@ def check(report,firmware):
         'register NAME (P3 reset control) and the firmware really clearing bits 6/7 are the whole '
         'evidence, not a claim about their silicon meaning. The strict single-mask behavior stays '
         'the default for every other configuration (and for 0xf2c054 without the opt-in), and the '
-        'legacy reports are byte-identical. With the masks let through the conditional frontier '
-        'advances 15 steps to 301,651 at 0x6067824: the same routine then reads P3_WKUP_DLY '
-        '(0xf2c114=P33_ACCESS(0x45)) for its &=0x7F8 RMW, an independent, not-yet-modeled P33 '
-        'register that stops the chain honestly (unmapped_memory) as the next decision; '
+        'legacy reports are byte-identical. With the masks let through the P33 config routine '
+        'reaches its P3_WKUP_DLY (0xf2c114) &=0x7F8 RMW, which is the separate '
+        'power_init_wkup_dly_rmw opt-in described next')
+    report['p3_wkup_dly_config_rmw_assumption']=(
+        'the p11_heap_experimental_config scenario opts into power_init_wkup_dly_rmw: the '
+        'P3_WKUP_DLY (0xf2c114=P33_ACCESS(0x45)) configuration register is written by the '
+        'power_init P33 config routine 0x60677a4 with one compound rmw.and.nmodimm &=0x7F8 '
+        '(0x6067824; the base r1=0xf2c248 P3_ANA_CON2 is decremented by 308=77*4 at 0x606781e). '
+        'The mask 0x7F8 has bits 3-10 set, so the AND preserves bits 3-10 and clears bits 0-2 '
+        'and 11-31. The mask 0x7F8 is the truly observed immediate; SDK p33_sfr.h only has the '
+        'P33_ACCESS(0x45) address macro and defines no field bits, so "wakeup delay field" is '
+        'only the register NAME plus the firmware really preserving bits 3-10, not a claim about '
+        'silicon meaning. It is applied through the reset projection\'s unknown-preserving '
+        'PartialWord semantics (cleared bits 0-2/11-31 known 0, preserved bits 3-10 stay unknown, '
+        'readback still requires a fully known word). NOTE: 0xf2c114 is '
+        'referenced a SECOND time in the app — a separate power-off/low-power routine 0x6067f84 '
+        '(app.bin 0x67e84) loads 0xf2c114 directly at 0x6067f98 and reads it back at 0x6067f9e '
+        'with r=(r&0x7F8)|0x7 before writing it back — so that readback is NOT modeled by this '
+        'config-RMW projection: if the frontier ever reaches 0x6067f9e it stops honestly on '
+        'unknown_reset_configuration_bits (a separate, future decision). With the &=0x7F8 let '
+        'through the conditional frontier advances 25 steps to 301,676 at 0x6067730: the routine '
+        'then calls the bit-field helper 0x60676ec and its rmw.or.modimm [0xf2a62c]|=r0 reads '
+        'P11_SYSTEM.MEM_PWR_CON (0xf2a62c, SDK p11_sfr.h __RW), an independent P11 SYSTEM-domain '
+        'OR-shaped access that stops the chain honestly (unmapped_memory) as the next decision; '
         'power_init\'s return (0x60120e0) still lies beyond the stop')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
@@ -1486,6 +1538,7 @@ def main():
                               lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
                               timer0_std12m=True,lp_timer_con_readback=True,
                               p33_analog_config=True,power_init_rstcon_masks=True,
+                              power_init_wkup_dly=True,
                               flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue

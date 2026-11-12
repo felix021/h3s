@@ -658,6 +658,30 @@ class ModelTests(unittest.TestCase):
         # 掩码集不影响其他单掩码地址的严格校验
         with self.assertRaisesRegex(Blocked,'operation_not_modeled'):h.rmw(0xf2a628,'and',0x1)
 
+    def test_power_init_wkup_dly_config_rmw_is_opt_in(self):
+        # 0xf2c114(P3_WKUP_DLY)的 power_init 配置 RMW(0x6067824 `&=0x7F8`)按
+        # opt-in 进 reset 投影配置表;默认关、legacy 报告与默认地址表不变。
+        # 掩码 0x7F8=bits3-10 置位:&=0x7F8 保留 bits3-10(未知)、清 bits0-2 与
+        # bits11-31(已知 0,known_mask 0xfffff807)。
+        self.assertNotIn(0xf2c114,ResetHistoryProjection().configuration)
+        with self.assertRaises(ValueError):
+            BR28Model(power_init_wkup_dly_rmw=True)  # 需要 reset 投影
+        base=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80})
+        self.assertNotIn(0xf2c114,base.reset.configuration)
+        h=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                    power_init_wkup_dly_rmw=True)
+        self.assertIn(0xf2c114,h.reset.configuration)
+        h.reset.rmw(0xf2c114,'and',0x7f8)
+        word=h.reset.configuration[0xf2c114]
+        self.assertEqual(word.known,0xfffff807)  # 清 bits0-2 与 bits11-31 → 已知 0
+        self.assertEqual(word.value,0)
+        with self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits'):h.reset.read(0xf2c114)
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):h.reset.rmw(0xf2c114,'and',0x7f8-1)
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):h.reset.rmw(0xf2c114,'or',0x7)
+        self.assertNotIn('0xf2c114',base.reset.report()['configuration'])
+        self.assertEqual(h.reset.report()['configuration']['0xf2c114'],
+                         {'known_mask':'0xfffff807','known_value':'0x0'})
+
     def test_p11_window_registers_are_write_only_and_shape_checked(self):
         # q32s PMU_CON 0xf2a0c0:唯一观测形状 |=1(0x60679a8),write-only 位记录;
         # SYS_DIV/CLK_CON0 整字写记录;全部读回严格拒绝;默认关时不 handles。
