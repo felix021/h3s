@@ -51,17 +51,29 @@ def main():
             'strict boundary word is not the pinned first watchdog key')
     # Opt-in watchdog projection stacked on the ready response: the same prefix
     # must cross the KEY pair and the SDK CON command sequence (wdt_init at
-    # 0x6035180 really returns) and stop at the next strict boundary, the
-    # EFUSE CON0 write reached by the watchdog scenarios at the same step count.
+    # 0x6035180 really returns) and the EFUSE CON0 page-select write where the
+    # watchdog scenarios stop; the explicit synthetic EFUSE fixture (same shape
+    # as the clock scenarios, never an inferred erased device) lets the real
+    # page reader run to completion (16 data reads assembling the four
+    # page-cache words) and the prefix stops at the next independent strict
+    # boundary: the WLA oscillator configuration read 0xfd1920 at 0x60351d2,
+    # which only the clock-scenario projection family models.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==83417 and w['stop_pc']=='0x6034fba' and
-            w['stop']['kind']=='unmapped_or_readonly_write' and w['stop']['address']=='0xf2c2c0',
-            'watchdog projection did not cross the KEY pair to the EFUSE boundary')
+    require(w['completed_steps']==84002 and w['stop_pc']=='0x60351d2' and
+            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xfd1920',
+            'watchdog+EFUSE projections did not cross the KEY pair and page reads to the WLA boundary')
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
             'watchdog command sequence differs from the SDK projection scenarios')
+    ep=w['peripherals']['efuse_read_projection']
+    require(ep['completed_data_reads']==16 and ep['selected_page']==3 and ep['selected_byte']==4 and
+            ep['words_fixture']==['0xffffffff']*4 and ep['device_otp_measured'] is False,
+            'real EFUSE page reader did not consume the synthetic fixture honestly')
+    for page in range(4):
+        require(w['memory_snapshots'][f'efuse_page{page}']['bytes_with_unknowns']=='ffffffff',
+                'real guest page-cache word assembly differs from the synthetic fixture')
     p11w=w['peripherals']['p11_access_counterfactual']
     require(p11w['fixed_external_status_hypothesis']==0 and p11w['status_polls']==1 and
             p11w['pmu_ready_response_projection']['bit0_set_mechanism_proven'] is False,

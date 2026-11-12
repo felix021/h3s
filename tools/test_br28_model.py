@@ -338,6 +338,37 @@ class ModelTests(unittest.TestCase):
         self.assertEqual((h.read(WDT_CON),h.watchdog.elapsed),(0x2e,0))
         self.assertEqual(h.p11.sequences,1)  # watchdog 命令不干扰 P11 序列状态
 
+    def test_p11_ready_watchdog_and_efuse_projections_stack_on_one_model(self):
+        # p11_ready_watchdog 场景扩展 EFUSE 读投影后的模型层形状:三个独立 opt-in 叠加。
+        # EFUSE 事务(app 0x6034fb0 读函数形状:CON0 page<<6 选择、CON1 0x82|(byte<<2)
+        # 命令、RDAT 读低字节、CON1=0 结束)不扰动 P11 序列与 watchdog 状态;不提供
+        # fixture 字时同事务严格停 unknown_efuse_input(AGENTS 红线:不臆造 OTP 内容)。
+        def stacked_model(words):
+            return BR28Model(p11_access_probe=True,p11_status=0,p11_pmu_ready_projection=True,
+                             watchdog_projection=True,watchdog_progress=(0,1),
+                             efuse_read_projection=True,efuse_words=words)
+        self.assertFalse(BR28Model().handles(EFUSE_CON0,4))  # 默认关:EFUSE 区不映射
+        strict=stacked_model(None)
+        strict.write(EFUSE_CON0,0)
+        strict.write(EFUSE_CON1,0x82)
+        with self.assertRaisesRegex(Blocked,'unknown_efuse_input'):strict.read(EFUSE_RDAT)
+        words=(0x11223344,0x55667788,0x99aabbcc,0xddeeff00)
+        h=stacked_model(words)
+        for value in P11AccessProbe.sequence:h.write(P11_UART_CON2,value)
+        for key in WatchdogProjection.keys:h.write(WDT_KEY,key)
+        h.write(WDT_CON,0x2e)
+        for page,word in enumerate(words):  # 真实页读取器事务逐字重放
+            h.write(EFUSE_CON0,page<<6)
+            assembled=0
+            for byte in range(4):
+                h.write(EFUSE_CON1,0x82|(byte<<2))
+                assembled|=(h.read(EFUSE_RDAT)&255)<<(8*byte)
+                h.write(EFUSE_CON1,0)
+            self.assertEqual(assembled,word)
+        self.assertEqual(h.efuse.reads,16)
+        self.assertEqual((h.read(WDT_CON),h.watchdog.elapsed),(0x2e,0))  # EFUSE 事务不影响 watchdog
+        self.assertEqual(h.p11.sequences,1)  # EFUSE 事务不干扰 P11 序列状态
+
     def test_p11_access_writes_never_invent_an_acknowledgement(self):
         for status in (None,0,1):
             probe=P11AccessProbe(status)

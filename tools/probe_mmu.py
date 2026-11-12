@@ -10,6 +10,7 @@ from br28_model import BR28Model, CLOCK0, PLL0, TIMER0
 from probe_boot import APP_SHA, OFFICIAL_SHA, ROM_SHA, STACK_TOP, application, check_rom, explore
 from probe_boot_boundaries import UPDATE, update_block
 from probe_boot_handoff import HANDOFF, SENTINEL_A, package_header, profile
+from probe_clock_startup import OTP_CACHE, OTP_DEFAULT
 from probe_pi32v2 import PIN, ROOT, require, upstream
 
 
@@ -34,12 +35,16 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         if p11_status_cases:h['description']['phase']='conditional startup with fixed external PMU status hypothesis; no P11 response model'
         if p11_ready_cases:h['description']['phase']='conditional startup with base PMU status0 plus the opt-in PMU_STA bit0 readiness response projection'
         if p11_ready_wdt_cases:h['description']['phase']=('conditional startup with base PMU status0 plus the opt-in PMU_STA bit0 readiness '
-                                                         'response and SDK watchdog command projections')
+                                                         'response, SDK watchdog command projections and the explicit synthetic EFUSE '
+                                                         'read fixture')
         if watchdog_cases:h['description']['phase']='conditional PMU=1 startup with optional SDK watchdog command/nominal-time projection'
         h['regions'] += [(UPDATE,UPDATE+128,'retained_update_parameters'),(0x19fd68,0x19fda4,'rom_mask_context')]
         h['seeds'].append((UPDATE+8,update_block('empty')[0]))
         if table:h['regions'].append((0x120000,0x122800,'mmu_page_table'))
         h['snapshots'].append(('mmu_page_table',0x120000,0x2800))
+        if p11_ready_wdt_cases:
+            # EFUSE 页缓存字快照(与 clock 场景同一形状):验证真实页读取器逐字节组装结果。
+            h['snapshots'] += [(f'efuse_page{page}',address,4) for page,address in enumerate(OTP_CACHE)]
         # Actual pmalloc descriptor and V_MEM object: values written by guest,
         # never used as initial seeds to make initialization appear successful.
         h['snapshots'] += [('physical_heap_descriptor',0x12953c,24),('virtual_heap_descriptor',0x126f14,24)]
@@ -53,7 +58,10 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             watchdog_projection=(watchdog_cases and name!='watchdog_strict') or p11_ready_wdt_cases,
             watchdog_progress={'watchdog_stopped_clock':(0,1),'watchdog_virtual_clock':(1,4000),
                                'watchdog_expires':(16384,1),'watchdog_cold_virtual':(1,4000),
-                               'p11_ready_watchdog':(0,1)}.get(name))
+                               'p11_ready_watchdog':(0,1)}.get(name),
+            # EFUSE 读投影按 clock 场景先例接线:显式合成 fixture 字(0xffffffff,)*4,
+            # 非推导的设备擦除态;只服务 p11_ready_watchdog 支线。
+            efuse_read_projection=p11_ready_wdt_cases,efuse_words=OTP_DEFAULT if p11_ready_wdt_cases else None)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
@@ -61,7 +69,8 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         if watchdog_cases or p11_ready_wdt_cases:diag['watch_pcs'].append(0x0603518c)
         r=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
                   diagnostics=diag,hardware=hardware,startup_loops=True,
-                  budget=85000 if p11_status_cases or p11_ready_cases or p11_ready_wdt_cases else 120000)
+                  budget=85000 if p11_status_cases or p11_ready_cases else
+                         (110000 if p11_ready_wdt_cases else 120000))
         results.append(r)
     h=profile(header,SENTINEL_A)
     regs=[0]*16;regs[0]=37;regs[1]=TIMER0
