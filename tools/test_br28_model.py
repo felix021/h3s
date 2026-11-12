@@ -452,8 +452,12 @@ class ModelTests(unittest.TestCase):
         # bit0,真实代码自走「未释放→跳过 IPI」分支) + SYS_DIV 分频字段 RMW
         # (0x60002a0 &=0xFFFFFF00) + P3_PVDD1_AUTO 两次读+低字节 0xEE 写回
         # (0x60002d0..e0,SDK p33_sfr.h P33_ACCESS(0x44)) + PLL1_CON3 enable RMW
-        # (0x60003ce |=1)。enable 写 bit0=1 无 progress 证据严格停;漏投影时
-        # 这些区不映射;漏初始字严格停;core tick 链事务不扰动其余投影状态。
+        # (0x60003ce |=1)。使能叶 0x606617a 尾 CON=1 写是 CPU0 代表 held 的
+        # CPU1 配置其 core tick 的真实指令:opt-in core_tick_count_while_held
+        # =False(held 核 tick 不计数,held 核实际不 tick)+ core_tick_progress
+        # =(4,4)(显式时钟进度声明让 CON=1 落盘)放行,CNT/PRD/CON 真实落盘、
+        # held 核 tick 在 advance 时被跳过 cnt 恒 0;漏投影时这些区不映射;
+        # 漏初始字严格停;core tick 链事务不扰动其余投影状态。
         def chain_model(initial):
             return BR28Model(p11_access_probe=True,p11_status=0,p11_pmu_ready_projection=True,
                              watchdog_projection=True,watchdog_progress=(0,1),
@@ -461,6 +465,7 @@ class ModelTests(unittest.TestCase):
                              oscillator_configuration_projection=True,oscillator_status_word=16,
                              initial_registers=initial,gpcnt_cleanup_projection=True,
                              core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                             core_tick_progress=(4,4),core_tick_count_while_held=False,
                              cpu1_held_projection=True,initial_cpu1_control=0,
                              clock_divider_projection=True,voltage_configuration_projection=True,
                              pll1_configuration_projection=True)
@@ -476,16 +481,29 @@ class ModelTests(unittest.TestCase):
         h.write(WDT_CON,0x2e)
         h.write(EFUSE_CON0,0);h.write(EFUSE_CON1,0x82);h.read(EFUSE_RDAT);h.write(EFUSE_CON1,0)
         h.gpcnt_rmw(GPCNT_CON,'and',0xfffffffe);h.gpcnt_rmw(GPCNT_CON,'or',64)
-        # CPU1 tick CON=0 disable 写(本前缀唯一真实 tick 写)与 CPU0 tick CON 读回
+        # CPU1 tick CON=0 disable 写(disable 叶 0x606616e)与 CPU0 tick CON 读回
         h.write(CORE_TICK_BASES[1],0)
         self.assertEqual((h.core_ticks[1].writes,h.core_ticks[0].writes,h.core_ticks[1].con),(1,0,0))
         self.assertEqual(h.read(CORE_TICK_BASES[0]),0)  # 0x606580c 测 bit0 的读回形状
-        # enable(bit0=1)无证据严格停:CPU1(held 核)先停在 tick 时钟语义边界,
-        # CPU0 停在无 progress 的计数器行为边界——都不发明 enable 行为
+        # 使能叶 0x606617a 的 CNT=0/PRD=479999999/CON=1 全部真实落盘(opt-in
+        # held 核不计数假设 + 显式时钟进度 (4,4));held 核 tick 在 advance 时被
+        # 跳过 cnt 恒 0——不发明计数器/溢出/ACK 行为;CPU0 tick 保持禁用。
+        h.write(CORE_TICK_BASES[1]+4,0);h.write(CORE_TICK_BASES[1]+8,479999999)
+        h.write(CORE_TICK_BASES[1],1)
+        self.assertEqual((h.core_ticks[1].con,h.core_ticks[1].cnt,h.core_ticks[1].prd,
+                          h.core_ticks[1].writes),(1,0,479999999,4))
+        h.advance(0)
+        self.assertEqual(h.core_ticks[1].cnt,0)  # held 核实际不计数
+        self.assertEqual(h.core_ticks[0].writes,0)
+        # 默认关不变:count_while_held=None 仍严格停 held 时钟语义边界,无
+        # progress 仍严格停计数器行为边界——都不发明 enable 行为
+        strict=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                         cpu1_held_projection=True,initial_cpu1_control=0)
         with self.assertRaisesRegex(Blocked,'core1_tick_held_clock_unknown'):
-            h.write(CORE_TICK_BASES[1],1)
+            strict.write(CORE_TICK_BASES[1],1)
+        noprog=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0))
         with self.assertRaisesRegex(Blocked,'core_tick_enable_not_modeled'):
-            h.write(CORE_TICK_BASES[0],1)
+            noprog.write(CORE_TICK_BASES[0],1)
         # 对核 PMU_CON0 读回 held fixture 0(CPU1 在本支线从未执行)
         self.assertEqual(h.read(CPU1_CONTROL),0)
         self.assertFalse(h.secondary_cpu_executed)
@@ -507,7 +525,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual((h.read(WDT_CON),h.watchdog.elapsed),(0x2e,0))
         self.assertEqual((h.gpcnt.bits.known,h.gpcnt.bits.value),(0x81,0))
         self.assertEqual(h.read(0xfd1978),16)
-        self.assertFalse(h.core_ticks[1].pending)  # disable 状态从不起计数/pending
+        self.assertFalse(h.core_ticks[1].pending)  # held 核不计数,永不 pending/溢出
 
     def test_p11_access_writes_never_invent_an_acknowledgement(self):
         for status in (None,0,1):

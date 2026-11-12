@@ -98,26 +98,27 @@ def main():
     # (reused, no new fixture) to cross all four without fabricating a value.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==109365 and w['stop_pc']=='0x606619e' and
-            w['stop']['kind']=='core1_tick_held_clock_unknown',
+    require(w['completed_steps']==109903 and w['stop_pc']=='0x6065616' and
+            w['stop']['kind']=='unmapped_or_readonly_write' and
+            w['stop']['address']=='0x19faf4' and w['stop']['value_bytes']=='00000000',
             'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus and the '
             'opaque PWM dead-read wiring did not cross the KEY pair, page reads, WLA trim, counter '
             'cleanup, core tick store, peer PMU read, SYS_DIV/P33/PLL1 configuration, the JL_L1P idle '
-            'poll, the two-core ICU idle poll, the full SFC suspend/reconfiguration sequence and the '
-            'four dead PWM reads to the CPU1 core-tick enable boundary')
+            'poll, the two-core ICU idle poll, the full SFC suspend/reconfiguration sequence, the four '
+            'dead PWM reads and the held CPU1 core-tick enable leaf to the allocator PTE boundary')
     require(w['instruction_adapters']['proven_dead_pwm_configuration_read']==4,
             'the four dead PWM configuration reads were not proven opaque')
     require(w['peripherals']['assumptions']['pwm_configuration_reads'].startswith('R0 remains unknown'),
             'the opaque PWM read assumption label is missing')
-    # The next stop is the CPU1 core-tick enable leaf 0x606617a (the second half
-    # of the walker table entry {0x606616e disable, 0x606617a enable}, reached
-    # by the second-half walker pass after the PWM loop): its final store
-    # 0x606619e writes CON=1 (enable) to 0xffe8ec while CPU1 is held
-    # (initial_cpu1_control=0) and no held-core-tick-counting hypothesis is
-    # opted in — the model honestly refuses to invent clock progress for a held
-    # core, the same family as the arch_startup core_tick_held_clock_unknown
-    # boundary. A future route may opt in a held-clock hypothesis or pin this
-    # stop; no counter behaviour is invented here.
+    # The next stop is the allocator's hardware-PTE tag store: 0x6065616
+    # `[r6+4] = r2` writes 0x19faf4 (the PTE for VA 0x49fff4 — "actual b3f5
+    # maps VA49fff4->19faf4", CPU RAM backing ((tag&7fff)<<7)+offset), the same
+    # byte-identical boundary arch_startup's heap_mapping_strict case pins. The
+    # held CPU1 core-tick enable leaf (0x606617a) was crossed first: its
+    # CNT=0/PRD=479999999/CON=1 stores all land under the opt-in held-core-tick
+    # policy (core_tick_count_while_held=False + explicit clock progress (4,4)),
+    # but the held CPU1 tick never counts (cnt stays 0, expirations 0 — no
+    # counter/overflow/ACK behaviour invented). CPU1 never executes in this line.
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
@@ -170,24 +171,31 @@ def main():
     # observed CPU1 tick CON=0 disable leaf 0x606616e executed (first half of
     # the walker table entry {0x606616e disable, 0x606617a enable}); after the
     # PWM loop the second-half walker pass reaches the enable leaf 0x606617a,
-    # whose CNT=0 and PRD=479999999 (the SDK per-core tick conversion from
-    # [0x126540+0x2C0], byte-identical to the known CPU1 PRD) stores go
-    # through while its final CON=1 enable store 0x606619e is honestly refused
-    # (core1_tick_held_clock_unknown: CPU1 is held with initial_cpu1_control=0
-    # and no held-core-tick-counting hypothesis is opted in). The CPU0 tick
-    # stayed at its explicit disabled fixture and no counter/overflow/ACK
-    # behaviour was invented; the peer PMU_CON0 read returned the held fixture 0
-    # so the real code chose the not-released branch itself. CPU1 never
-    # executed in this branch line.
+    # whose CNT=0, PRD=479999999 (the SDK per-core tick conversion from
+    # [0x126540+0x2C0], byte-identical to the known CPU1 PRD) and CON=1 stores
+    # all land under the opt-in held-core-tick policy (core_tick_count_while_held
+    # =False: the held CPU1's tick does NOT count — counting while held would be
+    # the counterfactual, held cores do not actually tick) plus explicit clock
+    # progress (4,4) so the CON=1 enable store is a real recorded register
+    # write. The held CPU1 tick then never advances (cnt stays 0, expirations 0
+    # — no counter/overflow/ACK behaviour invented); the CPU0 tick receives a
+    # real PRD=1/CNT=0 reset pair in the newly-crossed startup steps (recorded,
+    # never fabricated). The peer PMU_CON0 read returned the held fixture 0 so
+    # the real code chose the not-released branch itself. CPU1 never executed
+    # in this branch line.
     require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x6066174' for x in w['milestones']),
             'the CPU1 core-tick CON store at the old boundary did not execute')
     cpu0,cpu1=w['peripherals']['core_tick_configuration']
-    require((cpu0['writes'],cpu1['writes'])==(0,3) and cpu1['con']==0 and
-            cpu1['cnt']==0 and cpu1['prd']==479999999 and
+    require((cpu0['writes'],cpu1['writes'])==(2,4) and
+            cpu0['con']==0 and cpu0['cnt']==0 and cpu0['prd']==1 and
+            cpu1['con']==1 and cpu1['cnt']==0 and cpu1['prd']==479999999 and
             cpu0['initial_control_fixture']==cpu1['initial_control_fixture']==0 and
-            not cpu0['counter_projection_enabled'] and not cpu1['counter_projection_enabled'] and
-            cpu0['expirations']==cpu1['expirations']==0,
+            cpu0['counter_projection_enabled'] and cpu1['counter_projection_enabled'] and
+            cpu0['expirations']==cpu1['expirations']==0 and
+            not cpu0['pending'] and not cpu1['pending'],
             'core tick configuration invented writes or counter behaviour')
+    require(w['peripherals']['assumptions']['core_tick_count_while_cpu1_held'] is False,
+            'the held CPU1 core-tick clock policy is not the honest do-not-count hypothesis')
     held=w['peripherals']['cpu1_held_projection']
     require(held['initial_control_fixture']==0 and not held['secondary_cpu_executed'] and
             held['kick_rmw_writes']==0,'CPU1 held fixture labels missing or CPU1 executed')
