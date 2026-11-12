@@ -1224,6 +1224,86 @@ class MemPwrConRegisters:
                                    '0x6067844 ld.w read is dead (overwritten by 0x6067846 ld.bu)')}
 
 
+class P33WindowByteRegisters:
+    """P33 窗「无名寄存器族」的 write-only 字节序列记录(opt-in)。
+
+    证据(2026-11-12 路 AV 反汇编+动态 watch 钉死):
+    - SDK p33_sfr.h(sha256 adde010f…,与 data/dependencies.json 一致)的 P33 命名
+      止于 P3_LS_PLL=P33_ACCESS(0xd5);本族偏移 0x150-0x153/0x250-0x253/
+      0x258-0x259/0x267/0x280 全部超过命名上限、无 __RW/__RO/__WO 类型标注、
+      无字段位定义(整个 p33_sfr.h 都是纯地址宏)——SDK 无名即不声称硅语义。
+    - app 字面量恰 3 处(0x6067b70/0x6067470/0x6067d28),ROM 整块 0 处;其余
+      引用全部经基址寄存器算术到达(r8=0xF2C548/r6=0xF2C940/r9=0xF2C960 及
+      ±常数偏移),字面量扫描不能穷举。
+    - 固件访问形状(三个引用函数逐一反汇编钉死):全部是**单字节写**
+      (st.b/st.b.l/pair 的 st.b 半),没有任何读回、RMW 或整字写观测。
+      * P33 窗配置函数 0x6067b66(walker 0x6067cb4 的 12 项表 0x0609E964,
+        每项 12 字节{cfg,b1,w4,w8}在 RAM、cfg 低 nibble=bit/高 nibble=port):
+        表项 w4!=0 时 pair 0x6067be4 `uextra.rrii.p∥st.b b[r6+8]=r0` 写
+        [0xF2C948]=(1<<index)&0xFF(302,581 停点)+0x6067c36 写 [0xF2C94C];
+        w4==0 时同两处形状写 [0xF2C548]/[0xF2C54C](清位路径 ~(1<<index));
+        函数尾无条件 0x6067c54/c56 写 [0xF2C940]/[0xF2C944]、0x6067c4a/c50
+        写 [0xF2C960]/[0xF2C964](全部 (1<<index) 低/高字节)。
+      * 独立函数 0x6067464:[0xF2C960]=4/[0xF2C964]=0(st.b.l r2+32/+36),
+        再按参数 r4 分支写 [0xF2C940]=4/[0xF2C944]=0(r4!=0)或
+        [0xF2C540]=251/[0xF2C544]=255(r4==0,st.b)。
+      * walker 完成后的清尾 0x6067d26..d38(r1=0xF2C960):[0xF2C99C]=0xFF
+        (st.b.l r1+60)、[0xF2CA00]=0xFF(+64)、[0xF2C960]/[0xF2C964]=0xFF
+        ——16 位位图寄存器对全部置位。
+      位图语义(index 0..11 各一位、低/高字节相邻两个字节地址构成 16 位对)
+      是从写入值形状归纳的描述,不是 SDK 字段定义;不发明未观测位、不建模
+      寄存器对固件的电气效果。
+    - 建模选择:与 lp_timer SYS_DIV/CLK_CON0 整字写记录同族的 write-only
+      记录,但按字节粒度(观测形状只有字节写);读回一律严格停
+      (p33_window_readback_not_modeled),RMW 无观测形状一律拒绝,
+      整字写不路由到本投影(handles() 不含这族,4 字节写走普通路径诚实停)。
+    """
+    ADDRESSES=(0xf2c540,0xf2c544,0xf2c548,0xf2c54c,
+               0xf2c940,0xf2c944,0xf2c948,0xf2c94c,
+               0xf2c960,0xf2c964,0xf2c99c,0xf2ca00)
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.ADDRESSES}
+        self.byte_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write_byte(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled P33 window byte register')
+        if not isinstance(value,int) or not 0<=value<=0xff:raise ValueError('byte value expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.byte_writes+=1
+
+    def read(self,address):
+        raise Blocked('p33_window_readback_not_modeled',address=hex(address))
+
+    def rmw(self,kind,operand):
+        raise Blocked('p33_window_rmw_not_modeled',address=hex(self.ADDRESSES[0]),operation=kind)
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'byte_writes':self.byte_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes']}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming_limit':'p33_sfr.h names end at P3_LS_PLL=P33_ACCESS(0xd5); '
+                                   'offsets 0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x280 '
+                                   'are unnamed (address macros only, no __RW/__RO/__WO, no bit fields)',
+                'write_only':True,'readback_not_modeled':True,
+                'observed_shapes':('0x6067b66 P33-window init: pair uextra.rrii.p||st.b [0xF2C948] '
+                                   '(w4!=0) / [0xF2C548] clear path (w4==0), st.b [0xF2C94C]/[0xF2C54C], '
+                                   'tail st.b/st.b.l [0xF2C940]/[0xF2C944]/[0xF2C960]/[0xF2C964]; '
+                                   '0x6067464 st.b.l/st.b [0xF2C960]=4/[0xF2C964]=0/[0xF2C940]=4/'
+                                   '[0xF2C944]=0/[0xF2C540]=251/[0xF2C544]=255; '
+                                   'walker tail 0x6067d2e..d38 st.b.l 0xFF into [0xF2C99C]/[0xF2CA00]/'
+                                   '[0xF2C960]/[0xF2C964]; byte stores only, no readback, no RMW, '
+                                   'no full-word store observed'),
+                'assumption':('write-only byte-sequence record; per-bitmap semantics (12 indices, '
+                              'low/high byte pairs) inferred from written-value shapes, not an SDK '
+                              'field definition; no silicon readback or electrical effect modeled')}
+
+
 class MMU:
     """Functional SDK page-table projection, no TLB/cache or bus timing model."""
     def __init__(self,initial_con=None):
@@ -1641,7 +1721,7 @@ class BR28Model:
                  cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  p33_analog_config_projection=False,
-                 mem_pwr_con_projection=False,
+                 mem_pwr_con_projection=False,p33_window_projection=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -1765,6 +1845,10 @@ class BR28Model:
         # 死读由 probe_boot 的 opaque 死读门(证明值从不消费)单独放行。默认关:
         # 0xf2a62c 读保持 unmapped_memory(301,676 前沿形状)。
         self.mem_pwr_con=MemPwrConRegisters() if mem_pwr_con_projection else None
+        # p33_window(opt-in):P33 窗无名寄存器族的 write-only 字节序列记录
+        # (证据与形状见 P33WindowByteRegisters 类注释;默认关,这族地址保持
+        # unmapped,302,581 前沿形状不变)。
+        self.p33_window=P33WindowByteRegisters() if p33_window_projection else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -2046,6 +2130,11 @@ class BR28Model:
             return self.lp_timer.read(address)
         if self.mem_pwr_con is not None and self.mem_pwr_con.handles(address):
             return self.mem_pwr_con.read(address)
+        # P33 窗无名寄存器族:固件访问全是字节写(反汇编钉死,零读回观测),
+        # 读回一律严格停——显式 kind 优先于泛 unmapped,便于诊断。
+        if self.p33_window is not None and self.p33_window.handles(address):
+            self.counts['reads']+=1
+            return self.p33_window.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -2255,6 +2344,23 @@ class BR28Model:
                            'known_value':hex(self.lp_timer.lrct.value),'known_mask':hex(self.lp_timer.lrct.known),
                            'projection':'bitwise record only; no readback, trim completion or LRC value modeled'})
 
+    def handles_byte_write(self,address):
+        """单字节写的模型路由(probe_boot Memory.write 的字节钩子)。
+
+        现有 hardware.handles(address,size) 只接受 size==4 且 4 对齐的字访问;
+        P33 窗无名寄存器族的固件访问形状全是单字节写(st.b/st.b.l/pair 的
+        st.b 半),需要独立的字节粒度入口——只路由到 p33_window 投影,其他
+        地址一律 False(字节写到未建模地址继续走普通路径诚实停)。
+        """
+        return self.p33_window is not None and self.p33_window.handles(address)
+
+    def write_byte(self,address,value):
+        """字节写落进 P33 窗无名寄存器族的 write-only 记录(不经读回)。"""
+        if not self.handles_byte_write(address):raise ValueError('not a modeled P33 window byte register')
+        self.p33_window.write_byte(address,value)
+        self.record_write({'address':hex(address),'value':hex(value),
+                           'projection':'P33 unnamed-window write-only byte record'})
+
     def handles_mem_pwr_rmw(self,address):
         return self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)
 
@@ -2419,6 +2525,7 @@ class BR28Model:
         if self.p11_win is not None:result['p11_window_projection']=self.p11_win.report()
         if self.lp_timer is not None:result['lp_timer_init_projection']=self.lp_timer.report()
         if self.mem_pwr_con is not None:result['mem_pwr_con_projection']=self.mem_pwr_con.report()
+        if self.p33_window is not None:result['p33_window_projection']=self.p33_window.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),

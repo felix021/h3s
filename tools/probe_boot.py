@@ -181,6 +181,16 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if hardware is not None and hardware.handles(address,len(data)):
                 hardware.write(address,int.from_bytes(data,'little'))
                 return
+            # Byte-granular model routing:hardware.handles() only accepts
+            # aligned word accesses, but the P33 unnamed-window family is only
+            # ever written with single-byte stores (st.b/st.b.l/pair st.b half,
+            # pinned by disassembly). A one-byte write to a modeled byte
+            # register goes straight to the write-only record; it never reads
+            # the previous word first (that merge read exists only inside the
+            # upstream store model as bookkeeping).
+            if hardware is not None and len(data)==1 and hardware.handles_byte_write(address):
+                hardware.write_byte(address,data[0])
+                return
             region=self.region(address,len(data))
             if not region:
                 details={'value_bytes':data.hex()} if diagnostics else {}
@@ -891,7 +901,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 base=self.tab.by_id(insn.id[:-2])
                 pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
                     diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
-                if pure_alu and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
+                # uextra.rrii(无符号位域提取,ISA 三源 confirmed,效果只有
+                # regs+flags)与 ext.b0.u 同族;仅当 byte 子开关开启且第二半是
+                # st.b 时接受。判据:全 app 12 处 uextra.rrii.p∥st.b 站点在
+                # 既有前缀(含 289,849 最长)零执行——并入不改任何既有报告
+                # (st.d.sp.l 并入 exact_doubleword_stores 的同款判据,路 AV
+                # 静态扫描+动态 watch 钉死)。证据形状 0x6067be4
+                # `uextra.rrii.p r0=uextra(1<<index,p:8,l:8) ∥ st.b b[r6+8]=r0`
+                # (P33 窗配置函数,B 半按 run3 旧寄存器读源 r0)。
+                byte_extract=(diagnostics.get('exact_parallel_byte_stores') and
+                              base.id=='uextra.rrii' and
+                              pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)
+                if (pure_alu or byte_extract) and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                         (diagnostics.get('exact_parallel_halfword_stores') and
                          pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES) or
                         (diagnostics.get('exact_parallel_byte_stores') and
@@ -1514,7 +1535,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         base=self.tab.by_id(inner.id[:-2])
                         pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
                             diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
-                        supported=(diagnostics.get('exact_parallel_stores') and pure_alu and
+                        # 与主 gate 同步:uextra.rrii A 半仅在 byte 子开关+st.b
+                        # 第二半时接受(既有前缀零执行,判据见主 gate 注释)。
+                        byte_extract=(diagnostics.get('exact_parallel_byte_stores') and
+                                      base.id=='uextra.rrii' and
+                                      pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)
+                        supported=(diagnostics.get('exact_parallel_stores') and (pure_alu or byte_extract) and
                                    (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                                     diagnostics.get('exact_parallel_halfword_stores') and
                                     pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES or
