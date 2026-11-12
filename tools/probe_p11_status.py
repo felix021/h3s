@@ -99,39 +99,55 @@ def main():
     # (reused, no new fixture) to cross all four without fabricating a value.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==110818 and w['stop_pc']=='0x6068926' and
+    require(w['completed_steps']==115727 and w['stop_pc']=='0x6068c88' and
             w['stop']['kind']=='unmapped_memory' and w['stop']['access']=='read' and
-            w['stop']['address']=='0xff0100' and w['stop']['size']==4,
+            w['stop']['address']=='0xf2a628' and w['stop']['size']==4,
             'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus, the '
-            'opaque PWM dead-read wiring, the physical-heap and IRQ-vector-table region mappings and the '
-            'arch_startup exact_subword_stores/immediate_rep_projection diagnostics did not cross the KEY '
-            'pair, page reads, WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/'
-            'PLL1 configuration, the JL_L1P idle poll, the two-core ICU idle poll, the full SFC suspend/'
-            'reconfiguration sequence, the four dead PWM reads, the held CPU1 core-tick enable leaf, the '
-            'allocator heap-page store, the halfword store, the immediate REP bodies and the IRQ vector '
-            'table store to the arch_startup SDTAP boundary')
+            'opaque PWM dead-read wiring, the physical-heap and IRQ-vector-table region mappings, the '
+            'arch_startup exact_subword_stores/immediate_rep_projection diagnostics and the port '
+            'initialization projection did not cross the KEY pair, page reads, WLA trim, counter cleanup, '
+            'core tick store, peer PMU read, SYS_DIV/P33/PLL1 configuration, the JL_L1P idle poll, the '
+            'two-core ICU idle poll, the full SFC suspend/reconfiguration sequence, the four dead PWM '
+            'reads, the held CPU1 core-tick enable leaf, the allocator heap-page store, the halfword '
+            'store, the immediate REP bodies, the IRQ vector table store, the port init function '
+            '(msys_io_init) SDTAP/PSRAM/PINR/P3_PORT_SEL0 reads and the USB-IO/USB-disable/P11-PORT-'
+            'DIGITAL writes to the main reset initialization config RMW boundary')
     require(w['instruction_adapters']['proven_dead_pwm_configuration_read']==4,
             'the four dead PWM configuration reads were not proven opaque')
     require(w['peripherals']['assumptions']['pwm_configuration_reads'].startswith('R0 remains unknown'),
             'the opaque PWM read assumption label is missing')
-    # The next stop is the SDTAP CON read at 0x6068926 (r0=0xff0100, unmapped):
-    # after the physical-heap region mapping lets the allocator heap-page store
-    # 0x6065616 `[r6+4]=r2` land (VA 0x49fff4 -> physical 0x19faf4 via the tail
-    # PTE 0xb3f5 — "actual b3f5 maps VA49fff4->19faf4", CPU RAM backing
-    # ((tag&7fff)<<7)+offset), the chain also crosses the plain halfword store
-    # 0x6066cb4 `h[r4+12]=r0` (arch_startup `exact_subword_stores` diagnostic),
-    # the immediate REP bodies 0x6066cf4 (arch_startup `immediate_rep_projection`)
-    # and the IRQ vector-table store 0x6065d90 `[..]=0x0012ece8` to 0x19fe10
-    # (arch_startup `irq_vector_table` region 0x19fe00..0x1a0000), converging
-    # byte-identically with arch_startup's architecture_virtual_inputs frontier
-    # (110,818 @ 0x6068926, mmu walks 67). The held CPU1 core-tick enable leaf
-    # (0x606617a) was crossed first: its CNT=0/PRD=479999999/CON=1 stores all
-    # land under the opt-in held-core-tick policy (core_tick_count_while_held
-    # =False + explicit clock progress (4,4)), but the held CPU1 tick never
-    # counts (cnt stays 0, expirations 0 — no counter/overflow/ACK behaviour
-    # invented). CPU1 never executes in this line.
+    # The next stop is the main reset initialization config RMW at 0x6068c88
+    # (r2=0xf2a608, `[r2+32] &= 0xFFFFFFEF` -> 0xf2a628). This is the port init
+    # function (msys_io_init, call 0x060352ea -> 0x06068914, reference
+    # cpu.a/port.c.o/msys_io_init) having returned, the P33 pin0 reset-config
+    # helper 0x60673d4 having run its two opaque P3_PORT_SEL0 (0xf2c300) dead
+    # reads, and the caller 0x06035306 entering the main reset/wake init function
+    # 0x6068c80. 0xf2a628 = RESET_CONFIG_MASKS[0xf2a628] (P11_SYSTEM offset 10,
+    # &= 0xffffffef clears bit4), handled by the reset-history projection which
+    # this branch does NOT opt into — the reset/wake config chain is the next
+    # route's decision point, not this route. The SDTAP read itself was crossed
+    # by wiring the existing port_initialization_projection (platform_startup
+    # port_default precedent) with the explicit synthetic live-input words
+    # SDTAP_CON=0 (debug port inactive) / PSRAM_CON0=0 (inactive), the USB IO
+    # fixture 0 and IOMAP_CON0=0 (default USB DP/DM channel mapping) — never
+    # measured silicon state; JL_SDTAP.CON bit0 is consumed (when set the code
+    # reads IOMAP.CON0[18:17] to preserve USB DP/DM), so it is a LIVE input not
+    # a dead read.
     require(w['peripherals']['mmu']['walks']==67,
             'the real virtual-memory allocation prefix did not converge to the arch_startup walk count')
+    port=w['peripherals']['port_initialization_projection']
+    require(port['input_words_fixture']=={'0xff0100':'0x0','0xfe0300':'0x0'} and
+            port['physical_initial_values_measured'] is False and
+            port['initial_usb_io_word_fixture']==0 and
+            port['usb_disable_writes']==['0xfd1800','0xfd1804'],
+            'the port initialization projection did not record the explicit inactive SDTAP/PSRAM '
+            'live-input fixtures or the USB-disable writes')
+    require(w['peripherals']['counts']['opaque_port_selection_reads']==2 and
+            w['instruction_adapters']['proven_dead_p33_read']==2,
+            'the two P33 pin0 reset-config P3_PORT_SEL0 dead reads were not proven opaque')
+    require(w['peripherals']['registers'].get('0xf2c120')=='0x0' and
+            w['peripherals']['assumptions']['initial_registers'].get('0xfd6014')=='0x0',
+            'the port init PINR0 read-back or the IOMAP_CON0 fixture did not match the inactive assumption')
     require(w['peripherals']['mmu']['con']==1 and
             w['peripherals']['mmu']['table_begin']==0x120000 and
             w['peripherals']['mmu']['table_end_inclusive']==0x1227ff,

@@ -6,7 +6,7 @@ import json
 import struct
 from pathlib import Path
 
-from br28_model import BR28Model, CLOCK0, PLL0, PLL1_CON3, SYS_DIV, TIMER0, VOLTAGE_CONFIG
+from br28_model import BR28Model, CLOCK0, IOMAP_CON0, PLL0, PLL1_CON3, PSRAM_CON0, SDTAP_CON, SYS_DIV, TIMER0, VOLTAGE_CONFIG
 from probe_boot import APP_SHA, OFFICIAL_SHA, ROM_SHA, STACK_TOP, application, check_rom, explore
 from probe_boot_boundaries import UPDATE, update_block
 from probe_boot_handoff import HANDOFF, SENTINEL_A, package_header, profile
@@ -77,6 +77,13 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # the real delay loops consume. Never an inferred analog state.
             initial.update({**dict.fromkeys((0xfd1920,0xfd1954,SYS_DIV,PLL1_CON3,
                                             *VOLTAGE_CONFIG),0)})
+            # IOMAP.CON0 (0xfd6014) is the second live port input the port init
+            # function reads (0x60689d6 `r2=[r5+20]`, unconditional in the USB
+            # channel-mapping segment; the SDTAP-gated read at 0x6068932 reads the
+            # same register). 0 = the default USB DP/DM channel mapping (no
+            # alternate channel1 remap), same explicit synthetic input as
+            # platform_startup port_default; not a measured silicon value.
+            initial[IOMAP_CON0]=0
         hardware=BR28Model(initial_registers=initial,
             initial_irq_config=[0]*32,initial_ipmask=0,reset_inputs_inactive=True,
             bus_lock_model=True,initial_lock_owner=None,gpio_model=True,mmu_model=True,initial_mmu_con=con,
@@ -164,7 +171,27 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # 与 arch_startup 钉死的 (con=0x300001,baud=1,4 writes) 同族。只服务
             # 本支线,默认关 legacy 场景报告逐字节不变。
             sfc_read_bus=p11_ready_wdt_cases,
-            initial_sfc_control=1 if p11_ready_wdt_cases else None)
+            initial_sfc_control=1 if p11_ready_wdt_cases else None,
+            # Port initialization projection per the platform_startup port_default
+            # precedent (same switch + the same explicit synthetic live-input
+            # words, never measured silicon state): the SDTAP CON read at
+            # 0x6068926 is the port init function msys_io_init (call 0x060352ea
+            # -> 0x06068914, reference cpu.a/port.c.o/msys_io_init) reading
+            # JL_SDTAP.CON (0xff0100, SDK csfr.h csfr_base+map_adr(0x01,0x00))
+            # bit0 = debug-port enable. It is a LIVE input (AGENTS red line), not
+            # a dead read: when bit0 is set the code reads IOMAP.CON0 (0xfd6014)
+            # [18:17] to preserve the USB DP/DM channel; the SDTAP_CON=0 fixture
+            # is the explicit "inactive debug port" assumption (same as
+            # platform_startup port_default and the P3 PINR1=0xf2c11c inactive
+            # external-input precedent), never a fabricated silicon value. The
+            # same function also reads PSRAM_CON0 (0xfe0300) bit1 and writes the
+            # USB-disable pair 0xfd1800/0xfd1804, USB_IO_CON0 0xfd6000 and the
+            # P11 PORT_DIGITAL pair 0xf2b21c/0xf2b220 — all already scoped by the
+            # same projection (initial_usb_io_word=0 seeds the USB IO RMW). Only
+            # this branch line; default-off legacy scenarios are byte-identical.
+            port_initialization_projection=p11_ready_wdt_cases,
+            port_input_words={SDTAP_CON:0,PSRAM_CON0:0} if p11_ready_wdt_cases else None,
+            initial_usb_io_word=0 if p11_ready_wdt_cases else None)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
