@@ -788,10 +788,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         self.reti&=0x07fffffe;self.rets&=0x07fffffe
                         self.irq_psr=psr;self.flags=psr&15;self.sp+=12
                     self.pc+=size;self.steps+=1
-                    if self.pc in core_tick_frames:adapters['core_tick_handler_frame']+=1
+                    if self.pc-size in core_tick_frames:
+                        # 路 BF 修正:core tick 帧计数原是 next-pc 判断(锚表里
+                        # 恰无 next-pc,从未计数——先前从未真交付故不可观测);
+                        # 对齐 Timer0 的自身地址计数。
+                        adapters['core_tick_handler_frame']+=1
                     elif self.pc-size in timer0_frames:
-                        # 路 BE:Timer0 IRQ4 handler 的 12B 特殊帧锚(与 core_tick
-                        # 的 next-pc 计数形状不同,按本锚计;不改既有计数)。
+                        # 路 BE:Timer0 IRQ4 handler 的 12B 特殊帧锚(按本锚计)。
                         adapters['timer0_irq_handler_frame']+=1
                     else:adapters['software_irq_handler_psr_frame' if shape.startswith('psr') else
                                  'software_irq_handler_context_frame']+=1

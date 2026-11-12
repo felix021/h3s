@@ -162,6 +162,39 @@ world) and pins the inert branch: the expiry only sets pending, no
 request, no stop, same honest P3_LS frontier. Every delivery conclusion is
 a counterfactual projection (entry banks/PSR high bits/bank writeback
 uncertified), not a silicon certification.
+
+The trailing core_tick_irq3_delivery_probe / core_tick_irq3_masked_probe
+scenarios (route BF) layer the CPU0 core-tick (IRQ3) delivery machinery on
+the same full p11_heap_experimental_config stack before the ~447,490-step
+first-overflow hard deadline. A route-BF disassembly pinned the handler
+chain end to end: tick_timer_init 0x60661e8 first stops the tick
+(st.w.prer [0xffe0ec+core*0x800]=0 at 0x60661fe), registers the handler via
+request_irq (0x6065d86) with irq=3/priority=1/handler=0x60661a4 (writing
+the REAL vector slot 0x19fe0c and the IRQ3 nibble bits12-15 of
+IRQ_CONFIG word0 = 0x3), then writes CNT=0/PRD=clk-derived and starts
+(CON=1 at 0x606622e) — so by the start write the whole eligibility chain
+is already real firmware state, and the probe injects no eligibility
+fixture. The handler 0x60661a4 is a 28-byte software frame like the Timer0
+one (push.srl {psr,rets,reti} + push.rl {r3-r0}), ACKs with the real
+rmw.or.modimm [0xffe0ec+(cnum<<11)] |= 0x40 the model already implements
+(CoreTickStopped.ack_rmw; only CPU0 also bumps the software tick counter
+[0x125004] and calls the timeslice scheduler), pops both frames, csync,
+rti at the exact tail 0x60661e6 the machine projection requires. One real
+semantic find: the model previously judged eligibility ONLY at the
+overflow instant, so an overflow inside a critical section (IPMASK raised
+above the tick priority) was silently missed forever — route BF aligns it
+with the Timer0 precedent: while pending, every step re-checks the
+unchanged eligibility chain and raises IrqDeliveryRequest(core, irq=3)
+when it passes (delivery_in_flight prevents duplicates until the handler
+ACK). The expiry counter seed is an explicitly labeled synthetic probe
+fixture; with the seed near the frontier the probe demonstrates the full
+round trip (real handler bytes, ACK, RTI back to the interrupted code)
+and then returns to the SAME honest fd31-ADC-readback frontier.
+core_tick_irq3_masked_probe is the counterfactual control clearing the
+IRQ3 nibble: the overflow only sets pending, nothing is requested or
+delivered. The event clock is NOT enabled here (route BI). Every delivery
+conclusion is a counterfactual projection (entry banks/PSR high
+bits/bank writeback uncertified), not a silicon certification.
 """
 import argparse
 import json
@@ -182,6 +215,18 @@ HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0
 # 反汇编钉死:入口 push.srl {psr,rets,reti}、尾部 pop.srl 后 csync;rti;
 # 28B 软件帧的另外 16B 是普通 push.rl {r3-r0},走既有 abstract 栈运输)。
 TIMER0_IRQ_FRAMES={0x12ece8:'frame12_push',0x12ed08:'frame12_pop'}
+
+# 路 BF:core tick IRQ3 handler 0x60661a4 的 12B 特殊帧锚(本路证据核验,
+# 真实 app 反汇编三方互证:tick_timer_init 0x60661e8 的 0x6066204
+# li.u32 r2=101081508=0x60661a4 经 request_irq(0x6065d86)写进向量槽
+# 0x19fe00+3*4=0x19fe0c;handler 形状=push.srl {psr,rets,reti}(12B)+
+# push.rl {r3-r0}(16B,28B 软件帧,同 IRQ4 handler 族)+cnum 分支+
+# rmw.or.modimm [0xffe0ec+(cnum<<11)] |= 0x40 ACK+CPU0 分支
+# rmw.add.s12 [0x125004]+=1(软件 tick 计数)+call 时间片调度+pop.rl+
+# pop.srl@0x60661e2+csync+rti@0x60661e6——与 br28_machine.return_core_tick
+# 的尾锚 0x60661e6、probe_core_tick.CORE_TICK_FRAMES 同值(此处本地定义
+# 避免 probe_core_tick->probe_irq_entry 的循环 import)。
+CORE_TICK_IRQ_FRAMES={0x60661a4:'frame12_push',0x60661e2:'frame12_pop'}
 
 # bank B 头 fixture 的显式范围:find_partition 探测表 0x060A0FA4 第 5 项
 # (偏移 0x100000)的 32 字节头读取窗(CPU=0x06000000+偏移-0x2020 头)。
@@ -357,6 +402,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              fd31_adc_con=False,
              subword_stores=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
+             core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -764,6 +810,34 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         require(timer0_irq4_probe_steps is not None,
                 'the Timer0 IRQ4 masked probe requires the expiry probe (it arms at the same start write)')
         options['timer0_irq4_masked_probe']=True
+    # core_tick_irq3_*(路 BF,独立成段便于并行路线合并):CPU0 core tick(IRQ3)
+    # 首次溢出交付机制接进主条件场景栈(在 ~447,490 步硬期限前就位)。机制
+    # 全部复用 probe_core_tick/br28_machine 既有件(probe_core_tick 的场景栈
+    # 停在 153,430 的 CPU1 unmaskable-IPI 边界,本路把它接到 304,317 前沿的
+    # p11_heap_experimental_config 全栈):模型 advance() 在溢出且资格合格时抛
+    # IrqDeliveryRequest(core,irq=3)(unresolved_overflow 防重入——counter hold
+    # 到 handler 的 |=0x40 ACK,与 Timer0 的 delivery_in_flight 周期重检不同,
+    # 溢出时刻不合格则保持 pending 等待、不发明重试),机器侧最小进入投影读
+    # 真实向量槽 0x19fe00+3*4=0x19fe0c(运行态由 tick_timer_init 0x60661e8 的
+    # request_irq 写入 0x60661a4),入口银行假设+对称一次性 RTI(尾锚
+    # 0x60661e6=handler rti,反汇编钉死)。资格链无新 fixture:IRQ3 nibble
+    # (bits12-15,priority 1)由同一 request_irq 在启动写之前真实置位。
+    # 探路 fixture core_tick_irq3_probe_steps 把首次溢出拉近到启动写之后
+    # N 步(计数 seed,显式合成假设);masked 是反事实对照(清 IRQ3 nibble)。
+    # 事件时钟不启用(BI 环节)。
+    if core_tick_irq3_delivery:
+        machine_options['core_tick_entry']=True
+        machine_options['core_tick_entry_banks']=True
+        machine_options['core_tick_rti']=True
+        options['core_tick_delivery_requests']=True
+        extra['core_tick_frames']=dict(CORE_TICK_IRQ_FRAMES)
+    if core_tick_irq3_probe_steps is not None:
+        require(core_tick_irq3_delivery,'the core tick IRQ3 probe steps require the delivery layer')
+        options['core_tick_irq3_expiry_probe_steps']=core_tick_irq3_probe_steps
+    if core_tick_irq3_masked:
+        require(core_tick_irq3_probe_steps is not None,
+                'the core tick IRQ3 masked probe requires the expiry probe (it arms at the same start write)')
+        options['core_tick_irq3_masked_probe']=True
     if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
@@ -1754,6 +1828,81 @@ def check(report,firmware):
         'the event clock stays disabled (route BI). The masked probe clears the IRQ4 nibble '
         'as a counterfactual "not installed" world and pins the inert branch on the same '
         'prefix: pending set, no request, no stop, identical honest frontier')
+    # 路 BF:CPU0 core tick(IRQ3)交付/惰性两分支探针(在 ~447,490 步硬期限前把
+    # 交付机制接进主条件场景栈)。资格链无新 fixture——tick_timer_init 的
+    # request_irq 在启动写之前就把向量槽 0x19fe0c=0x60661a4 与 IRQ3 nibble
+    # (priority 1)写好;溢出点 seed 到前沿前 ~800 步(启动写后 156,400 模型
+    # 步,显式合成假设)。溢出瞬间实测落在临界区内(IPMASK=6):本路把模型
+    # 对齐 Timer0 先例——pending 期间每步重检资格,退出临界区即交付。
+    d=rows['core_tick_irq3_delivery_probe']
+    require(d['completed_steps']==305180 and d['stop_core']==0 and d['stop_pc']=='0x60116e6' and
+            d['stop']=={'kind':'fd31_adc_con_readback_not_modeled','address':'0xfd3100'},
+            'the core tick IRQ3 delivery probe must return to the SAME honest fd31-ADC-readback '
+            'frontier after the full delivery round trip (+863 steps of round-trip overhead '
+            'over the 304,317 baseline)')
+    deliveries=d['machine']['core_tick_entry_projection']['deliveries']
+    require(len(deliveries)==1 and
+            (deliveries[0]['core'],deliveries[0]['irq'],deliveries[0]['vector_address'],
+             deliveries[0]['handler'],deliveries[0]['reti_from'])==(0,3,'0x19fe0c','0x60661a4','0x12b608') and
+            not deliveries[0]['delivery_clears_pending'] and
+            deliveries[0]['pending_cleared_by_handler_ack'],
+            'the core tick IRQ3 delivery must read the REAL vector slot 0x19fe0c (firmware-'
+            'registered handler 0x60661a4) and interrupt the scheduler wait 0x12b608 without '
+            'clearing pending')
+    rti=[e for e in d['machine']['events'] if e.get('kind')=='core_tick_rti']
+    require(len(rti)==1 and rti[0]['pc_after']=='0x12b608' and rti[0]['sp_after']=='0x400b88' and
+            rti[0]['reti_from_frame']=='0x12b608' and rti[0]['bank_writeback_is_assumption'],
+            'the symmetric one-shot RTI must return to the interrupted scheduler wait with '
+            'SP=USP from the really popped frame')
+    tick=d['peripherals']['core_tick_configuration'][0]
+    require(tick['pending'] is False and tick['expirations']==1 and
+            tick['acknowledgements']==1 and tick['irq_delivery_simulated'],
+            'the real handler ACK (rmw.or.modimm [0xffe0ec] |= 0x40) must clear pending '
+            'exactly once and the counter must resume after it')
+    require(d['peripherals']['core_tick_configuration'][1]['expirations']==0,
+            "CPU1's tick (PRD=479999999) must never overflow in this prefix")
+    require(d['instruction_adapters'].get('core_tick_handler_frame')==2,
+            'the handler must execute both 12B special-frame anchors (push.srl at 0x60661a4, '
+            'pop.srl at 0x60661e2) with the 16B push.rl/pop.rl frame on the ordinary transport')
+    m=rows['core_tick_irq3_masked_probe']
+    require(m['completed_steps']==304317 and m['stop']==r['stop'] and
+            m['stop_pc']==r['stop_pc'] and
+            m['machine']['core_tick_entry_projection']['deliveries']==[] and
+            m['peripherals']['core_tick_configuration'][0]['pending'] is True and
+            m['peripherals']['core_tick_configuration'][0]['expirations']==1 and
+            m['peripherals']['assumptions']['core_tick_irq3_probe']['irq3_nibble_cleared_counterfactual'],
+            'the masked counterfactual (IRQ3 nibble cleared) must stay inert: the overflow '
+            'only sets pending, nothing is requested or delivered, and the run keeps the '
+            'exact base-scenario honest ADC-readback frontier')
+    report['core_tick_irq3_delivery_projection']=(
+        'route BF: the CPU0 core tick (IRQ3) delivery machinery is wired into the main '
+        'conditional scenario stack before the ~447,490-step first-overflow hard deadline '
+        '(cnt 625452 / prd 1199999 at 304,317). Route-BF disassembly pinned the handler '
+        'chain: tick_timer_init 0x60661e8 stops the tick, registers via request_irq '
+        '(0x6065d86, irq=3 priority=1 handler=0x60661a4 — writing the REAL vector slot '
+        '0x19fe0c and IRQ_CONFIG word0 bits12-15 = 0x3), then writes CNT=0/PRD and starts '
+        '(CON=1 at 0x606622e); the handler 0x60661a4 is a 28B software frame like the '
+        'Timer0 one (push.srl {psr,rets,reti} + push.rl {r3-r0}), ACKs with the real '
+        'rmw.or.modimm [0xffe0ec+(cnum<<11)] |= 0x40 that CoreTickStopped.ack_rmw models, '
+        'on CPU0 also bumps the software tick counter [0x125004] and calls the timeslice '
+        'scheduler, pops both frames, csync, rti at the exact tail 0x60661e6. One real '
+        'model fix surfaced by the probe: eligibility was previously judged ONLY at the '
+        'overflow instant, so an overflow inside a critical section (the seeded overflow '
+        'measurably lands at IPMASK=6) was silently missed forever; route BF aligns it '
+        'with the Timer0 precedent — while pending, every step re-checks the UNCHANGED '
+        'eligibility chain (per-core ICFG gates 8/9 + nibble enable + priority vs IPMASK) '
+        'and raises IrqDeliveryRequest(core,irq=3) when it passes (delivery_in_flight '
+        'until the ACK). The probe delivery round trip runs entirely on real state '
+        '(scheduler-wait interrupt 0x12b608, real handler bytes, ACK clearing pending '
+        'exactly once, frame anchors, csync, RTI back to 0x12b608/SP=USP 0x400b88) and '
+        'then returns to the SAME honest fd31-ADC-readback frontier at 305,180 (+863 '
+        'round-trip steps). The expiry counter seed (156,400 model steps after the real '
+        'start write) is an explicitly labeled synthetic probe fixture; the entry banks, '
+        'entry PSR high bits, RETI load, bank writeback and ICFG effects all remain '
+        'UNCERTIFIED counterfactual assumptions (hardware_mode_certified false), and the '
+        'event clock stays disabled (route BI). The masked probe clears the IRQ3 nibble '
+        'as a counterfactual "not installed" world and pins the inert branch on the same '
+        'prefix: pending set, no request, no stop, identical honest frontier')
     report['heap_info_value_is_derived_not_measured']=(
         'the p11_heap_experimental_config scenario feeds the four heap-info bytes 0c3df439 '
         '(begin=0x3d0c, size=0x39f4) as an EXPLICIT EXPERIMENTAL CONFIG derived statically from '
@@ -2180,6 +2329,37 @@ def main():
                               p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,fd31_adc_con=True,subword_stores=True,
                               timer0_irq4_delivery=True,timer0_irq4_probe_steps=200,
                               timer0_irq4_masked=True,
+                              flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'core_tick_irq3_delivery_probe',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
+                              halfword_pair=True,p11_power_init=True,
+                              heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
+                              lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
+                              timer0_std12m=True,lp_timer_con_readback=True,
+                              p33_analog_config=True,power_init_rstcon_masks=True,
+                              power_init_wkup_dly=True,
+                              mem_pwr_con=True,p33_window=True,p33_port_sel=True,
+                              p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,fd31_adc_con=True,subword_stores=True,
+                              core_tick_irq3_delivery=True,core_tick_irq3_probe_steps=156400,
+                              flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'core_tick_irq3_masked_probe',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
+                              halfword_pair=True,p11_power_init=True,
+                              heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
+                              lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
+                              timer0_std12m=True,lp_timer_con_readback=True,
+                              p33_analog_config=True,power_init_rstcon_masks=True,
+                              power_init_wkup_dly=True,
+                              mem_pwr_con=True,p33_window=True,p33_port_sel=True,
+                              p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,fd31_adc_con=True,subword_stores=True,
+                              core_tick_irq3_delivery=True,core_tick_irq3_probe_steps=156400,
+                              core_tick_irq3_masked=True,
                               flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
