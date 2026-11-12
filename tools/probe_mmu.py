@@ -85,10 +85,20 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # Core tick 配置投影按 clock 场景先例接线(同一开关 + 同样的显式
             # 禁用初始字 (0,0)):初始化 walker 表项 0x60a89c8 = {0x606616e,
             # 0x606617a} 只调第一半,本前缀真实执行只有 CPU1 tick CON=0
-            # disable 写(clock 族越过同一访问后 CPU1 tick writes=1);enable
-            # (bit0=1) 无 progress 证据仍严格停。只服务 p11_ready_watchdog 支线。
+            # disable 写(clock 族越过同一访问后 CPU1 tick writes=1)。
+            # 使能叶 0x606617a(第二半 walker 0x060006dc 调 [r5+4] 到达)尾
+            # CON=1 写是真实指令——CPU0 在启动初始化 walker 里代表 held 的
+            # CPU1 配置其 core tick(CPU1 本支线从未执行)。held 核计时是
+            # 反事实假设:CPU1 held 时其 tick 实际不计数。故 opt-in
+            # core_tick_count_while_held=False(held 核 tick 不计数、不发明
+            # 计数器/溢出/ACK 行为)+ core_tick_progress=(4,4)(显式虚拟时钟
+            # 进度声明,让 CON=1 使能写真实落盘;arch_startup 同款速率,
+            # held 核被跳过故 cnt 恒 0)。只服务 p11_ready_watchdog 支线,
+            # 默认关 legacy 场景逐字节不变。
             core_tick_configuration=p11_ready_wdt_cases,
             initial_core_tick_controls=(0,0) if p11_ready_wdt_cases else None,
+            core_tick_progress=(4,4) if p11_ready_wdt_cases else None,
+            core_tick_count_while_held=False if p11_ready_wdt_cases else None,
             # CPU1 held 投影按 clock 场景先例接线(同一开关+同样的显式 held
             # 初始字 0):core tick walker 之后的下一个访问是 RAM 0x12b60a 跨核
             # 请求函数读对核 PMU_CON0 0xffe8c0 测释放位 bit0——CPU1 在本支线
