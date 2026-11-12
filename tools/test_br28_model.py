@@ -624,6 +624,40 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(h.reset.report()['configuration']['0xf2c05c'],
                          {'known_mask':'0xfffffc02','known_value':'0x0'})
 
+    def test_reset_configuration_mask_sets_are_opt_in(self):
+        # 0xf2c054(P3_RST_CON0)固件真实用 0x3fdf(主复位初始化)/0xFF7F/0x7FBF
+        # (power_init P33 配置函数)三个 and 掩码清不同位。opt-in 的掩码集把
+        # 0xFF7F/0x7FBF 追加进接受集合;默认单掩码校验(operand 恰等于 0x3fdf)
+        # 逐位不变,legacy 报告不带 accepted_configuration_mask_sets 键。
+        default=ResetHistoryProjection()
+        self.assertNotIn('accepted_configuration_mask_sets',default.report())
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):default.rmw(0xf2c054,'and',0xff7f)
+        default.rmw(0xf2c054,'and',0x3fdf)  # 默认单掩码仍接受
+        # 掩码集校验:必须引用既有地址、掩码集合非空、掩码 unsigned32
+        with self.assertRaises(ValueError):
+            ResetHistoryProjection(extra_configuration_mask_sets={0xf2c05c:(0xff7f,)})
+        with self.assertRaises(ValueError):
+            ResetHistoryProjection(extra_configuration_mask_sets={0xf2c054:()})
+        with self.assertRaises(ValueError):
+            ResetHistoryProjection(extra_configuration_mask_sets={0xf2c054:(1<<32,)})
+        with self.assertRaises(ValueError):
+            BR28Model(power_init_rstcon_mask_sets=True)  # 需要 reset 投影
+        h=ResetHistoryProjection(extra_configuration_mask_sets={0xf2c054:(0xff7f,0x7fbf)})
+        # 三个掩码都接受,按位清:0x3fdf 清 bit5、0xFF7F 清 bit7、0x7FBF 清 bit6
+        h.rmw(0xf2c054,'and',0x3fdf)
+        self.assertEqual(h.configuration[0xf2c054].known,0xffffc020)
+        h.rmw(0xf2c054,'and',0xff7f)
+        h.rmw(0xf2c054,'and',0x7fbf)
+        word=h.configuration[0xf2c054]
+        self.assertEqual(word.known,0xffffc0e0)  # bit5/6/7/14/15/16-31 已知 0
+        self.assertEqual(word.value,0)
+        with self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits'):h.read(0xf2c054)
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):h.rmw(0xf2c054,'and',0x7fff)
+        self.assertEqual(h.report()['accepted_configuration_mask_sets'],
+                         {'0xf2c054':['0x3fdf','0xff7f','0x7fbf']})
+        # 掩码集不影响其他单掩码地址的严格校验
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):h.rmw(0xf2a628,'and',0x1)
+
     def test_p11_window_registers_are_write_only_and_shape_checked(self):
         # q32s PMU_CON 0xf2a0c0:唯一观测形状 |=1(0x60679a8),write-only 位记录;
         # SYS_DIV/CLK_CON0 整字写记录;全部读回严格拒绝;默认关时不 handles。

@@ -1369,6 +1369,15 @@ RESET_CONFIG_MASKS={0xf2a628:0xffffffef,0xf2c054:0x3fdf,0xf2c128:0xff00}
 # PMU 配置族,掩码清 bit1 与 bits10+):app+ROM 全量扫描的唯一一处引用,固件从不
 # 回读该地址——无复位值证据,只按 0xf2c054 先例记录「配置 RMW 不经读回」。
 POWER_INIT_CONFIG_MASKS={0xf2c05c:0x3fd}
+# power_init 0x60677a4(P33 配置函数,0x6067b36 调用)对 P3_RST_CON0(0xf2c054)的
+# 两个 and 掩码:0x60677fa `rmw.and.r [0xf2c054]&=0xFF7F`(清 bit7)与 0x60677fe
+# `&=0x7FBF`(清 bit6),与主复位初始化路径 0x6068c80 @ 0x6068c94 的 0x3fdf(清
+# bit5)不同——固件真实用三个不同掩码清该寄存器的不同位。SDK p33_sfr.h 对
+# P3_RST_CON0 只有地址宏(P33_ACCESS(0x15))、无字段位定义,power_reset.h 只有
+# 枚举复位源、无位定义:bit6/bit7 的具体含义无 SDK 证据,只按「固件真实清这些
+# 位」的观测记录掩码集,不发明未观测位。opt-in 经 extra_configuration_mask_sets
+# 把这两个追加进 0xf2c054 的接受掩码集(默认单掩码校验行为不变,legacy 报告不变)。
+POWER_INIT_RSTCON_MASK_SETS={0xf2c054:(0xff7f,0x7fbf)}
 WAKE_CLEAR_TARGETS={0xf2a608:(0xf2a60c,0xffffffff),0xf2c160:(0xf2c158,0xff),
                     0xf2c164:(0xf2c15c,0xff)}
 RTC_WAKE_CLEAR=0xf2d248
@@ -1380,7 +1389,7 @@ class ResetHistoryProjection:
     Flag-clear commands do not erase the reason snapshot read afterwards.
     Their post-command readback is unknown. No mailbox, IRQ or wake generation.
     """
-    def __init__(self,words=None,extra_configuration_masks=None):
+    def __init__(self,words=None,extra_configuration_masks=None,extra_configuration_mask_sets=None):
         self.initial_words=dict(words or {});self.words=dict(self.initial_words)
         allowed=RESET_FLAGS+RESET_REASON_INPUTS
         if any(a not in allowed or not isinstance(v,int) or not 0<=v<=0xffffffff for a,v in self.words.items()):
@@ -1391,7 +1400,21 @@ class ResetHistoryProjection:
                    for a,m in extra_configuration_masks.items()):
                 raise ValueError('invalid extra reset configuration masks')
             masks.update(extra_configuration_masks)
+        # 掩码集(opt-in):默认每地址只接受 RESET_CONFIG_MASKS 里的单个 and 掩码
+        # (严格单掩码校验,legacy 行为逐位不变);extra_configuration_mask_sets 只在
+        # 既有地址上追加固件真实观测到的额外掩码(0xf2c054 的 0xFF7F/0x7FBF)。接受
+        # 集合只记录真实观测掩码、不发明未观测位;apply 仍按位清(清掉的位已知 0、
+        # 保留位未知、读回须全知),不同掩码清掉的位由 PartialWord 自然按位合并。
+        mask_sets={a:(m,) for a,m in masks.items()}
+        if extra_configuration_mask_sets:
+            if any(a not in masks or not isinstance(ms,(tuple,list,frozenset,set)) or not ms
+                   or any(not isinstance(m,int) or not 0<=m<=0xffffffff for m in ms)
+                   for a,ms in extra_configuration_mask_sets.items()):
+                raise ValueError('invalid extra reset configuration mask sets')
+            for a,ms in extra_configuration_mask_sets.items():
+                mask_sets[a]=tuple(dict.fromkeys((masks[a],)+tuple(ms)))
         self.config_masks=masks
+        self.config_mask_sets=mask_sets
         self.configuration={a:PartialWord() for a in masks}
         self.flag_clear_commands=set();self.clear_commands=[]
 
@@ -1411,7 +1434,7 @@ class ResetHistoryProjection:
         return self.words[address]
 
     def rmw(self,address,kind,operand):
-        if kind!='and' or operand&0xffffffff!=self.config_masks[address]:
+        if kind!='and' or operand&0xffffffff not in self.config_mask_sets[address]:
             raise Blocked('reset_configuration_operation_not_modeled',address=hex(address))
         self.configuration[address].apply(kind,operand)
 
@@ -1434,13 +1457,16 @@ class ResetHistoryProjection:
         else:raise Blocked('reset_history_snapshot_or_config_write_not_modeled',address=hex(address))
 
     def report(self):
-        return {'initial_full_word_fixtures':{hex(a):hex(v) for a,v in self.initial_words.items()},
+        result={'initial_full_word_fixtures':{hex(a):hex(v) for a,v in self.initial_words.items()},
                 'physical_history_measured':False,'flags_cleared':[hex(a) for a in sorted(self.flag_clear_commands)],
                 'flag_post_clear_readback_modeled':False,
                 'configuration':{hex(a):{'known_mask':hex(w.known),'known_value':hex(w.value)} for a,w in self.configuration.items()},
                 'pending_clear_commands':self.clear_commands,
                 'wake_mailbox_irq_generation_or_latency_simulated':False,
                 'reason_snapshots_preserved_after_flag_clear':True}
+        multi={hex(a):[hex(m) for m in ms] for a,ms in self.config_mask_sets.items() if len(ms)>1}
+        if multi:result['accepted_configuration_mask_sets']=multi
+        return result
 
 
 class Timer0:
@@ -1541,7 +1567,8 @@ class BR28Model:
                  mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None,
                  p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
                  p11_heap_info_bytes=None,p11_window_projection=False,
-                 power_init_config_rmw=False,lp_timer_init_projection=False,lrct_trim_done_projection=False,
+                 power_init_config_rmw=False,power_init_rstcon_mask_sets=False,
+                 lp_timer_init_projection=False,lrct_trim_done_projection=False,
                  lrct_trim_result_value=None,lp_timer_con_readback_projection=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
@@ -1692,7 +1719,11 @@ class BR28Model:
         self.debug=DebugExecutionProjection(initial_debug_controls) if debug_execution_projection else None
         if power_init_config_rmw and not reset_history_projection:
             raise ValueError('power_init config RMW requires the reset history projection')
-        self.reset=(ResetHistoryProjection(reset_history_words,POWER_INIT_CONFIG_MASKS if power_init_config_rmw else None)
+        if power_init_rstcon_mask_sets and not reset_history_projection:
+            raise ValueError('power_init RST_CON mask sets require the reset history projection')
+        self.reset=(ResetHistoryProjection(reset_history_words,
+                    POWER_INIT_CONFIG_MASKS if power_init_config_rmw else None,
+                    POWER_INIT_RSTCON_MASK_SETS if power_init_rstcon_mask_sets else None)
                     if reset_history_projection else None)
         self.mpu=MPUConfigurationProjection(initial_mpu_write_gate) if mpu_configuration_projection else None
         self.port_initialization_projection=port_initialization_projection
