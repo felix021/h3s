@@ -132,6 +132,33 @@ class Timer0ModelTests(unittest.TestCase):
         h.write(TIMER0,0x1401)  # the STD12M 0->1 start arms the probe
         self.assertTrue(h.timer0_irq4_probe_armed)
 
+    def test_real_prefix_closed_form_horizon_is_36780_steps(self):
+        # 路 BQ/G1:真实前缀形状(BP trace@304,317:con 0x1401/cnt 9660/
+        # prd 119999,每步 3 计数、div=1)的精确闭式 S=(120000-9660)/3=36780。
+        t=Timer0((4,5))
+        t.write(0,0x4000);t.write(8,119999);t.write(4,9660);t.write(0,0x1401)
+        self.assertEqual(t.steps_to_next_expiration(4),36780)
+
+    def test_closed_form_matches_stepwise_advance_from_mid_states(self):
+        # 闭式与逐步 advance() 的首次到期步数在多种源/分频/分数余量中途
+        # 状态(跨整个 pending 片)下逐步互证:走 S-1 步必须仍未到期(不过冲),
+        # 恰第 S 步到期(不只上界)。W1C 后进入下一片,覆盖周期计数语义。
+        for con,prd,cnt,visits in ((0x1401,119999,9660,3),(0x1011,999,123,3),
+                                   (0x1411,999,123,5),(0x1021,50,7,6),(0x1401,9,0,40)):
+            t=Timer0((4,5))
+            t.write(0,0x4000);t.write(8,prd);t.write(4,cnt);t.write(0,con)
+            for _ in range(visits):
+                horizon=t.steps_to_next_expiration(4)
+                self.assertIsNotNone(horizon,msg=hex(con))
+                self.assertGreater(horizon,0,msg=hex(con))
+                for _ in range(horizon-1):
+                    self.assertFalse(t.pending,msg=hex(con))
+                    t.advance(4)
+                self.assertFalse(t.pending,msg='closed form must not overshoot: '+hex(con))
+                t.advance(4)
+                self.assertTrue(t.pending,msg='closed form must be exact: '+hex(con))
+                t.write(0,con|0x4000)  # 真实 handler W1C 形状:清 pending 进下一片
+
 
 class Timer0MachineTests(unittest.TestCase):
     def test_entry_is_opt_in(self):

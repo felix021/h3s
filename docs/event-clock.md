@@ -17,7 +17,8 @@
 - 触发时机：所有已启动核都在 `idle_wait_cores` 中（最后一个核执行 IDLE 指令进入等待的瞬间），且 `event_clock_projection` 开启。
 - 推进目标：**最近的已建模事件**，即
   1. 某个在计数的 core tick 的下一次溢出（`ceil((PRD+1-CNT)/progress)` 步，与每步 `CNT+=progress` 的计数语义精确一致）；或
-  2. 已置位（或未知值）的软件 pending 位（IRq124–127）——若其合格，会在一次探查步内立即请求交付。
+  2. 已置位（或未知值）的软件 pending 位（IRq124–127）——若其合格，会在一次探查步内立即请求交付；或
+  3. **共享 Timer0 计数的下一次到期（路 BQ/G1 补齐）**——当 Timer0 在计数（或 pending 已置位且未在途）且 IRQ4 未被全部核确定屏蔽时，其期限为精确闭式 `S=ceil((den·M−source_remainder)/num)`（`M=divisor·(PRD+1-CNT)−remainder`；STD12M 源 3/4×4 参考tick/步时即 `S=ceil((4·M−source_remainder)/12)`，真实前缀形状 prd=119999/cnt=9660/div=1 给 36,780 步、周期 40,000 步），与每步 `hardware.advance()` 的两级分数余量计数精确互逆；已置位且未在途的 pending 一步即请求交付。闭式只作推进上限，实际到期/交付仍由 advance() 逐步触发。**被屏蔽的 Timer0（IRQ4 全核确定不合格）不是事件**——资格面在全核 IDLE 期间冻结故预检一次有效，预检无法判定（未初始化 config/ipmask、未知 gate）时按事件处理，让推进在到期处显形同一严格停而非隐藏；pending 片已在途（已抛过请求等 handler W1C）同样不是事件（与 core tick 的 `unresolved_overflow` 排除同旨）。
 - 推进方式：逐模型步调用 `hardware.advance()`，与运行循环单核 IDLE 时的推进路径**完全相同**，无批量跳步、无特殊时间路径。途中三种出口：
   - `IrqDeliveryRequest` → 原样抛给既有交付投影（`deliver_core_tick`/`deliver_software_irq`）唤醒目标核，事件时钟退出；
   - `Blocked` → 原样传播（严格诚实边界在它的精确位置显形，例如 Timer0 IRQ4 交付未实现、CPU1 tick 保持态未知）；
@@ -35,7 +36,7 @@
 - **被屏蔽的 pending 不唤醒**：pending 位保持置位、不交付；时间仍推进到下一事件（单测钉死：屏蔽的 irq125 pending 与合格的 tick 溢出并存时，只有 tick 唤醒）。
 - **被屏蔽的 tick 溢出不唤醒**：溢出置 pending 后计数器停在溢出态（`unresolved_overflow`，等 handler 真实 ACK），时间继续推进到下一事件。
 - 全核 IDLE 期间屏蔽状态视为冻结：只有固件写（需要核在跑）才能改 IRQ config/IPMASK/ICFG。
-- Timer0（IRQ4）在默认下**不是唤醒事件**：交付投影未开时，推进中若它到期且合格，按既有严格停（`interrupt_delivery_not_implemented`）诚实显形。路 BE（2026-11-13）起 `timer0_irq_delivery_requests`+`timer0_irq_entry` 可 opt-in：合格到期经同一条 `advance()` 路径抛 `IrqDeliveryRequest(core,irq=4)`，由运行循环既有分发处理（入口/W1C ack/RTI 假设与本投影叠加）；本契约的其余规则不变。
+- Timer0（IRQ4）在默认下**不是唤醒事件**：交付投影未开时，推进中若它到期且合格，按既有严格停（`interrupt_delivery_not_implemented`）诚实显形。路 BE（2026-11-13）起 `timer0_irq_delivery_requests`+`timer0_irq_entry` 可 opt-in：合格到期经同一条 `advance()` 路径抛 `IrqDeliveryRequest(core,irq=4)`，由运行循环既有分发处理（入口/W1C ack/RTI 假设与本投影叠加）；本契约的其余规则不变。路 BQ（2026-11-13）起 Timer0 的到期期限（§2 第 3 条闭式）并入事件时钟的同一 min()——「无 core tick 在计数而唯一事件=Timer0 到期」的世界不再被误判为无事件诚实停；停泊步（CoreStall）嵌套 advance 撞上的交付请求也与主路径共用同一条分发，不再从分发结构逃逸。
 
 ### 5. 显式假设与不声称
 
@@ -59,4 +60,10 @@ D1（控制服务就绪）要求「服务可响应且事件能唤醒处理，单
 | 屏蔽 pending 单独存在也不是事件（一步探查后诚实停） | 同上 `test_masked_pending_alone_is_not_an_event_and_stops_honestly` |
 | 无任何事件零推进诚实停 | 同上 `test_stops_honestly_with_zero_advances_when_nothing_can_fire` |
 | 默认关 = legacy 停点形状逐字节不变 | 同上 `test_default_off_keeps_the_exact_legacy_stop_shape` |
+| 仅 Timer0 在计数且 IRQ4 合格 → 按闭式期限唤醒（36,780/周期 40,000；路 BQ G1/A4） | 同上 `test_timer0_only_counting_wakes_at_the_closed_form_horizon` |
+| 闭式与 core tick 期限并入同一 min()，更近者先醒 | 同上 `test_timer0_nearest_horizon_wins_the_min_against_a_later_tick` |
+| IRQ4 全核屏蔽的 Timer0 不是事件（零推进诚实停） | 同上 `test_masked_irq4_timer0_is_not_an_event_and_stops_honestly` |
+| 已在途的 Timer0 pending 片不是事件（防无限推进） | 同上 `test_timer0_pending_episode_already_in_flight_is_not_an_event` |
+| 闭式对逐步计数精确（多种源/分频/分数余量中途状态，跨 pending 片） | `tools/test_timer0_irq.py::Timer0ModelTests::test_closed_form_matches_stepwise_advance_from_mid_states` |
+| 停泊步嵌套 advance 撞上交付请求走同一分发不逃逸（路 BQ G2） | `tools/test_br28_machine.py::MachineTests::test_parking_step_delivery_request_is_dispatched_not_escaped` |
 | 合成双核端到端（enter_idle_wait → 事件时钟 → 既有交付唤醒） | `tools/probe_event_clock.py`（synthetic_two_core_only，如实标注非真实前缀） |

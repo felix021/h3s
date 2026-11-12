@@ -103,6 +103,10 @@ IRQ config/IPMASK/pending），故资格面静态化，事件集封闭：
 
 ### 3.2 缺口与钩子点（按优先级）
 
+> **实施状态（2026-11-13 路 BQ/sim-evclockfix）**：G1+G2 已实施（闭式/资格
+> 预检/停泊步共用分发+7 个新单测，见 HANDOFF「已实现」路 BQ 条目）；
+> G3（场景接线）仍归 BI。本节保留为原预研证据。
+
 **G1（必改）：期限计算漏 Timer0。** `core_tick_wake_horizon`（190-206）只算两个 core tick；
 Timer0 到期在推进途中会经 advance() 正确抛 IrqDeliveryRequest（BE 机制），但「没有任何
 core tick 在计数且无 pending」时判「无事件」诚实停，**漏掉唯一事件=Timer0 到期的场景**

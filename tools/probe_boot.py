@@ -1664,6 +1664,35 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             cpu=CPU();cpu.mem=cpu0.mem
             return cpu
         machine.attach(c,factory,hardware)
+
+    def dispatch_delivery(request,row):
+        # 路 BQ/G2:主路径与停泊步(CoreStall)嵌套 advance 共用同一条交付分发。
+        # 此前停泊路径的 advance 只捕 Blocked:某核首次执行 idle 的那一步恰好
+        # 撞上交付请求(如 Timer0 恰在此步到期且合格)时,IrqDeliveryRequest 会
+        # 从嵌套 try 逃出整个分发结构、probe 崩溃而非诚实报告。
+        if machine is None:
+            raise ValueError('delivery request without the opt-in machine entry projection')
+        # The requesting advance may fire for the peer core; deliver to
+        # the target core, whose current PC is the interrupted context.
+        if request.details['irq']==3:
+            if not machine.core_tick_entry:
+                raise ValueError('core tick delivery request without the opt-in machine entry projection')
+            machine.deliver_core_tick(request.details['core'])
+            row['core_tick_entry']=request.details
+        elif request.details['irq']==4:
+            # 路 BE:Timer0 pending→IRQ4 合格的交付请求(模型侧
+            # timer0_irq_delivery_requests 逐 pending 片至多抛一次)。
+            if not machine.timer0_irq_entry:
+                raise ValueError('Timer0 IRQ4 delivery request without the opt-in machine entry projection')
+            machine.deliver_timer0_irq(request.details['core'])
+            row['timer0_irq_entry']=request.details
+        else:
+            if not machine.software_irq_entry:
+                raise ValueError('delivery request without the opt-in machine entry projection')
+            target=machine.cores.get(request.details['core'],c)
+            machine.deliver_software_irq(target,request.details['irq'])
+            row['software_irq_entry']=request.details
+
     for _ in range(budget):
         if machine is not None:c=machine.select()
         if hardware is not None and diagnostics and c.pc==diagnostics.get('stop_before_pc'):
@@ -1700,34 +1729,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             machine.after_step()
             try:hardware.advance(c.icfg)
             except Blocked as pending:stop=pending.details
+            except IrqDeliveryRequest as request:dispatch_delivery(request,row)
         except Blocked as e:
             stop=e.details
             if row.get('instruction_id','').startswith('st.') and stop['kind']=='uninitialized_memory':
                 stop={**stop,'kind':'upstream_store_bookkeeping_read',
                       'note':'upstream store model reads previous words to merge/drop writes; not a guest load'}
         except IrqDeliveryRequest as request:
-            if machine is None:
-                raise ValueError('delivery request without the opt-in machine entry projection')
-            # The requesting advance may fire for the peer core; deliver to
-            # the target core, whose current PC is the interrupted context.
-            if request.details['irq']==3:
-                if not machine.core_tick_entry:
-                    raise ValueError('core tick delivery request without the opt-in machine entry projection')
-                machine.deliver_core_tick(request.details['core'])
-                row['core_tick_entry']=request.details
-            elif request.details['irq']==4:
-                # 路 BE:Timer0 pending→IRQ4 合格的交付请求(模型侧
-                # timer0_irq_delivery_requests 逐 pending 片至多抛一次)。
-                if not machine.timer0_irq_entry:
-                    raise ValueError('Timer0 IRQ4 delivery request without the opt-in machine entry projection')
-                machine.deliver_timer0_irq(request.details['core'])
-                row['timer0_irq_entry']=request.details
-            else:
-                if not machine.software_irq_entry:
-                    raise ValueError('delivery request without the opt-in machine entry projection')
-                target=machine.cores.get(request.details['core'],c)
-                machine.deliver_software_irq(target,request.details['irq'])
-                row['software_irq_entry']=request.details
+            dispatch_delivery(request,row)
         except (RuntimeError,ValueError,KeyError,IndexError) as e:
             stop={'kind':'upstream_simulator_failure','error_type':type(e).__name__,'message':str(e)}
         trace.append(row)
