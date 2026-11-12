@@ -65,6 +65,11 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # 范围=固件声明,非拍定、非扩 RAM。只服务本支线,默认关 legacy
             # 场景逐字节不变。
             h['regions'].append((0x19fe00,0x1a0000,'irq_vector_table'))
+            # CPU1 release 边界互证快照(platform_startup SNAPSHOTS 同款钉点):
+            # cpu1_entry=0x19fef8(CPU0 写入的 CPU1 向量,真实链应写 f4ca1200
+            # =0x0012caf4 trampoline)、cpu1_ready=0x1265f5(CPU1 就绪标志,
+            # 本支线不越过 release 边界,必须保持 00=未写,从未注入 ready)。
+            h['snapshots'] += [('cpu1_entry',0x19fef8,4),('cpu1_ready',0x1265f5,1)]
         # Actual pmalloc descriptor and V_MEM object: values written by guest,
         # never used as initial seeds to make initialization appear successful.
         h['snapshots'] += [('physical_heap_descriptor',0x12953c,24),('virtual_heap_descriptor',0x126f14,24)]
@@ -216,7 +221,40 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # reaches power_init's P33 config accesses). Only this branch
             # line; default-off legacy scenarios are byte-identical.
             reset_history_projection=p11_ready_wdt_cases,
-            reset_history_words={**POR_HISTORY,**NO_WAKE} if p11_ready_wdt_cases else None)
+            reset_history_words={**POR_HISTORY,**NO_WAKE} if p11_ready_wdt_cases else None,
+            # Debug/ICFG execution projection per the platform_startup
+            # cpu1_release_boundary precedent (same switch + the same explicit
+            # synthetic initial controls, never measured silicon state): after
+            # the reset/wake init function returns (0x06035334), the caller
+            # enters the debug-init chain whose first access is the per-core
+            # ICFG CON initial store [cnum<<11 + 0xffe200] = 0xE0000007 at
+            # 0x06034e2a (the 116,086 boundary). The whole function
+            # 0x06034e14..0x06034f36 (disassembly-pinned) touches only
+            # DebugExecutionProjection domain addresses: the EMU CON stores
+            # 0xE0000007/0xE000000F (|=0x8)/0xE000001F (|=0x10), the ETM store
+            # 0xffe1c0=1, six debug-range reads, and three RAM range-register
+            # calls that program the ROM/RAM/Flash bounds into 0xffe218..22c
+            # (probe_debug_startup pins the exact resulting words). The RMW
+            # forms resolve through the projection read-back of the just
+            # stored word, and the runtime PC guard runs per executing fetch
+            # with bit4 initially 0 (disabled) until the chain itself sets it.
+            # Only this branch line; default-off legacy scenarios are
+            # byte-identical.
+            debug_execution_projection=p11_ready_wdt_cases,
+            initial_debug_controls=(0,None) if p11_ready_wdt_cases else None,
+            # MPU configuration projection per the same platform_startup
+            # precedent (same switch + the same explicit synthetic initial
+            # write gate 0, never measured silicon state): between the
+            # debug-init return and the CPU1 release boundary the chain
+            # parses and programs the MPU slots 0xff0300/40/80/c0 and toggles
+            # the E7 write gate (platform cpu1_release_boundary pins
+            # slot words 0x60607/0xa4a3/0x12a640/0x1344c5 and key_writes=2).
+            # The 116,086 prefix never touches 0xff03xx (no unknown-slot stop
+            # ever fired), so enabling the projection cannot change any
+            # earlier step. Only this branch line; default-off legacy
+            # scenarios are byte-identical.
+            mpu_configuration_projection=p11_ready_wdt_cases,
+            initial_mpu_write_gate=0 if p11_ready_wdt_cases else None)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
@@ -228,6 +266,11 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         # (platform_startup reset_por_no_wake 场景的同一 stop 钉点):证明整个
         # 复位/唤醒配置链(0x6068c80..0x6068e30)在复位投影下真实执行完毕。
         if p11_ready_wdt_cases:diag['watch_pcs'].append(0x06035334)
+        # task_create 返回里程碑(platform cpu1_release_boundary 的同一钉点):
+        # 0x6035350 call 0x6066c26(app_core 任务创建)后的返回处,断言 r0==0
+        # 证明任务创建真实成功(与本支线 watch_registers=[0] 配套记录 r0)。
+        if p11_ready_wdt_cases:
+            diag['watch_pcs'].append(0x6035356);diag['watch_registers']=[0]
         # 首读 PWM 死读(0x6034a82,arch_startup `pwm_value_strict` 同边界)按
         # arch_startup 的 proven-dead-PWM-read 证明接线:四读(0xfd2964/74/84/94
         # = JL_MCPWM CH0..CH3_CON0)值从不被数值消费(读后 r0 仅被循环头 mov.rr
@@ -247,6 +290,16 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         # gate)放行同形状;按同一先例接进本支线,复用既有诊断、零新机制,只服务
         # 本支线,默认关 legacy 场景逐字节不变。
         if p11_ready_wdt_cases:diag['immediate_rep_projection']=True
+        # Doubleword stores per the platform_startup cpu1_release_boundary
+        # precedent (its diagnostic set adds this same gate): after the MPU
+        # configuration the task_create path writes the app_core task frame at
+        # 0x6065f9e `d[r2+0]=r1_r0` (r2=0x19f7b0, full 8-byte covering store of
+        # the frame PC/RETS words onto UNINITIALIZED physical-heap RAM). The
+        # upstream store model's merge read of the old word is bookkeeping
+        # only; the gate lets both halves write directly (same 183,486
+        # st.d.sp.l precedent, reused diagnostic, zero new mechanism). Only
+        # this branch line; default-off legacy scenarios are byte-identical.
+        if p11_ready_wdt_cases:diag['exact_doubleword_stores']=True
         r=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
                   diagnostics=diag,hardware=hardware,startup_loops=True,
                   budget=85000 if p11_status_cases or p11_ready_cases else

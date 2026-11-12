@@ -99,21 +99,22 @@ def main():
     # (reused, no new fixture) to cross all four without fabricating a value.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==116086 and w['stop_pc']=='0x6034e2a' and
-            w['stop']['kind']=='unmapped_or_readonly_write' and w['stop']['access']=='write' and
-            w['stop']['address']=='0xffe200' and w['stop']['size']==4 and
-            w['stop']['value_bytes']=='070000e0',
+    require(w['completed_steps']==127239 and w['stop_pc']=='0x60660da' and
+            w['stop']['kind']=='cpu1_release_not_implemented' and w['stop']['value']=='0x1',
             'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus, the '
             'opaque PWM dead-read wiring, the physical-heap and IRQ-vector-table region mappings, the '
             'arch_startup exact_subword_stores/immediate_rep_projection diagnostics, the port '
-            'initialization projection and the reset/wake history projection did not cross the KEY '
-            'pair, page reads, WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/'
-            'PLL1 configuration, the JL_L1P idle poll, the two-core ICU idle poll, the full SFC '
+            'initialization projection, the reset/wake history projection, the debug/ICFG execution '
+            'projection and the MPU configuration projection did not cross the KEY pair, page reads, '
+            'WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/PLL1 '
+            'configuration, the JL_L1P idle poll, the two-core ICU idle poll, the full SFC '
             'suspend/reconfiguration sequence, the four dead PWM reads, the held CPU1 core-tick enable '
             'leaf, the allocator heap-page store, the halfword store, the immediate REP bodies, the '
             'IRQ vector table store, the port init function (msys_io_init) SDTAP/PSRAM/PINR/'
-            'P3_PORT_SEL0 reads, the USB-IO/USB-disable/P11-PORT-DIGITAL writes and the whole main '
-            'reset/wake init function 0x6068c80 to the per-core ICFG initial store boundary')
+            'P3_PORT_SEL0 reads, the USB-IO/USB-disable/P11-PORT-DIGITAL writes, the whole main '
+            'reset/wake init function 0x6068c80, the debug-init chain (per-core ICFG CON store, ETM '
+            'store, range-register programming, PC-guard enable) and the task frame/task_create '
+            'stores to the CPU1 release boundary')
     require(w['instruction_adapters']['proven_dead_pwm_configuration_read']==4,
             'the four dead PWM configuration reads were not proven opaque')
     require(w['peripherals']['assumptions']['pwm_configuration_reads'].startswith('R0 remains unknown'),
@@ -138,13 +139,24 @@ def main():
     # clear 0xf2d248 (the pinned f2d248 != SRC f2d2a0 fact: zero ack is a
     # no-op, never a source clear). No power_init extras are needed — this
     # branch never reaches power_init's P33 config accesses (0xf2c05c/extra
-    # 0xf2c054 masks/0xf2c114 stay with the conditional line). The next stop
-    # is the per-core ICFG initial store at 0x6034e2a ([cnum<<11 + 0xffe200]
-    # = 0xe0000007 inside the debug-init chain) — the debug/ICFG domain this
-    # branch does NOT opt into; platform_startup crosses the same write with
-    # debug_execution_projection=True, initial_debug_controls=(0,None). That
-    # wiring (and everything it opens toward the 127,239 CPU1-release
-    # boundary) is the next route's decision point, not this route.
+    # 0xf2c054 masks/0xf2c114 stay with the conditional line). The former
+    # 116,086 stop (the per-core ICFG CON initial store [cnum<<11+0xffe200]
+    # = 0xE0000007 at 0x06034e2a) is crossed with the same two projections
+    # the platform_startup cpu1_release_boundary scenario uses:
+    # debug_execution_projection=True, initial_debug_controls=(0,None) (the
+    # whole debug-init function 0x6034e14..0x06034f36 touches only
+    # DebugExecutionProjection domain addresses — EMU CON stores
+    # 0xE0000007/0xE000000F (|=0x8)/0xE000001F (|=0x10), the ETM store
+    # 0xffe1c0=1, six range reads, and the three RAM range-register calls
+    # programming the ROM/RAM/Flash bounds; probe_debug_startup pins the
+    # exact resulting words) plus mpu_configuration_projection=True,
+    # initial_mpu_write_gate=0 (the chain parses and programs the MPU slots
+    # and toggles the E7 write gate). The runtime PC guard checks every
+    # executing fetch with CPU0's control word initially 0 (guard disabled)
+    # until the chain itself enables bit4. This branch line reaches the same
+    # 127,239-step CPU1 release boundary as platform_startup —
+    # byte-comparable evidence, never a ready injection: the boundary stop
+    # IS the release (CPU1 stays unreleased in this branch line).
     reset=w['peripherals']['reset_history_projection']
     require(reset['initial_full_word_fixtures']=={'0xfd0004':'0x80','0xfd0000':'0x2',
             '0xf2a400':'0x80','0xf2a404':'0x1','0xf2c0c0':'0x80','0xf2c048':'0x1',
@@ -165,8 +177,11 @@ def main():
             'access sequence honestly (fixtures, flag clears, config RMWs, wake no-ops)')
     require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x6035334' for x in w['milestones']),
             'the main reset/wake init function did not really return to the caller milestone')
-    require(w['peripherals']['mmu']['walks']==67,
-            'the real virtual-memory allocation prefix did not converge to the arch_startup walk count')
+    # 67 walks was the 110,818-step convergence point with arch_startup; the
+    # debug/MPU/task-frame extension to the CPU1 release boundary adds 211
+    # more real walks (task frame, TCB and virtual stack accesses).
+    require(w['peripherals']['mmu']['walks']==278,
+            'the real virtual-memory allocation prefix did not converge to the pinned walk count')
     port=w['peripherals']['port_initialization_projection']
     require(port['input_words_fixture']=={'0xff0100':'0x0','0xfe0300':'0x0'} and
             port['physical_initial_values_measured'] is False and
@@ -317,6 +332,58 @@ def main():
             'arch_startup-pinned final state')
     require(sfc['busy_projection']=='zero outstanding transactions; synchronous decoded-Flash memory',
             'SFC busy/read-back semantics label missing')
+    # Debug/ICFG execution projection (platform_startup cpu1_release_boundary
+    # precedent, same switch and the same explicit synthetic initial controls):
+    # the runtime PC guard checked every executing fetch (the same 254480
+    # checks the platform scenario pins), never fired a violation, started
+    # from the explicit (0,None) fixtures (CPU0 disabled, CPU1 unknown) and
+    # recorded the actually programmed debug words — the per-core ICFG/EMU
+    # control ends at 0xe000001f (mode plus |=0x8 then |=0x10 enable) and the
+    # three half-open PC ranges hold the real ROM/RAM/Flash bounds (the same
+    # seven words platform_startup asserts, plus the ETM store 0xffe1c0=1
+    # and the two CPU1-branch RAM sub-range words this prefix observed).
+    guard=w['peripherals']['debug_execution_projection']
+    require(guard['checked_executing_fetches']==254480 and guard['violation'] is None and
+            tuple(guard['initial_control_fixtures'])==(0,None),
+            'the runtime PC guard was bypassed, fired, or ran on inferred initial controls')
+    require(guard['registers']=={'0xffe1c0':'0x1','0xffe200':'0xe000001f',
+            '0xffe208':'0x123840','0xffe20c':'0x122840','0xffe218':'0x60c3338',
+            '0xffe21c':'0x6000100','0xffe220':'0x1344c6','0xffe224':'0x12a640',
+            '0xffe228':'0x20000','0xffe22c':'0x4'},
+            'the actually programmed debug control/range words differ from the platform-pinned bounds')
+    # MPU configuration projection (same platform precedent, same explicit
+    # synthetic initial write gate 0): the real parse/configuration wrote the
+    # four slot words platform_startup pins and toggled the E7 gate exactly
+    # twice, ending closed. CPU/DMA permissions are NOT enforced (labelled
+    # projection, never silicon certification); unwritten slots stay unknown.
+    mpu=w['peripherals']['mpu_configuration_projection']
+    require(mpu['registers']=={'0xff0300':'0x60607','0xff0340':'0xa4a3',
+            '0xff0380':'0x12a640','0xff03c0':'0x1344c5'} and
+            mpu['key_writes']==2 and mpu['write_gate']==0 and
+            mpu['initial_write_gate_fixture']==0 and
+            mpu['cpu_dma_access_permissions_enforced'] is False and
+            mpu['unknown_unwritten_slots_preserved'] is True,
+            'the real MPU parse/configuration differs from the platform-pinned slots')
+    # Task-create milestone and the CPU1-release-boundary cross-evidence
+    # (platform_startup SNAPSHOTS pins the same two words): the app_core task
+    # create at 0x6035350 really returned 0 at 0x6035356, the CPU0-written
+    # CPU1 trampoline vector 0x19fef8 really holds 0x0012caf4, and the CPU1
+    # ready flag 0x1265f5 stays unwritten (00) — the branch stops AT the
+    # release boundary (cpu1_release_not_implemented), ready is never
+    # injected. The task-frame doubleword store at 0x6065f9e (frame
+    # PC/RETS onto uninitialized heap RAM) crossed via the same
+    # exact_doubleword_stores diagnostic the platform scenario uses.
+    task=[x for x in w['milestones'] if x['kind']=='watched_pc_executed' and x['pc']=='0x6035356']
+    require(len(task)==1 and task[0]['r0']==task[0]['registers']['r0']=='0x0',
+            'task_create did not really return success at the caller milestone')
+    snaps=w['memory_snapshots']
+    require(snaps['cpu1_entry']['bytes_with_unknowns']=='f4ca1200' and
+            snaps['cpu1_entry']['initialized_bytes']==4,
+            'the CPU0-written CPU1 trampoline vector is missing')
+    require(snaps['cpu1_ready']['bytes_with_unknowns']=='00',
+            'CPU1 readiness was injected or the ready byte was written')
+    require(w['instruction_adapters']['exact_doubleword_store']==6,
+            'the task-frame doubleword stores did not run through the exact gate')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
             'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,
