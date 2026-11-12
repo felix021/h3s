@@ -931,19 +931,29 @@ class LpTimerInitRegisters:
       ——「trim 已完成」的条件投影(与 SFC PLL-lock bit15 先例同模式),
       措辞明示:busy 位布局由轮询行为推断,SDK __WO 无读回定义,非硅测量;
       RMW mask 外的位不臆造(返回 int 未写位为 0,轮询只消费 bit0/bit7)。
-      未开启时 CON 读回保持 Blocked(300,236 前沿形状)。NUM 读回无论开关
-      一律严格停:trim 计数是硅测量值,无任何推导证据(固件 0xC9C9C9C0/
-      count 的换算也定不出「干净」目标值),LRC 校准效果(频率)不模拟。
+      未开启时 CON 读回保持 Blocked(300,236 前沿形状)。
+      NUM 读回默认一律严格停:trim 计数是硅测量值,无任何测量证据。
+      唯一放行途径是显式参数 lrct_trim_result_value(需 trim-done 投影,
+      与堆信息 4 字节 p11_heap_info_bytes fixture 同族的 opt-in 数据
+      fixture):调用方传入探路值后 NUM 读回该值并计数;探路值选择由
+      调用方的推导链负责(固件消费路径:0x6067526 r2==0 → 重启重试;
+      0x606753e/44 64 位分子 0x1_C9C38000=7.68e9(注意 0x606753e 立即数
+      原始字节 00 80 c3 c9=0xC9C38000,十进制 3385032704)、0x6067546
+      64/32 无符号除法 r2=7.68e9/NUM 得换算频率写 [0x129D98],首次经
+      20 项历史填充平均后写 [0x129D88],0x6067ac8 以它为 Hz 调 LRC 周期
+      写——7.68e9/38400=200000 整除精确,即标称 200kHz 的恒等计数),
+      值本身 derived-not-measured、不模拟 LRC 校准效果(频率)。
     """
 
     TRIM_DONE_BIT=0x80
 
-    def __init__(self,*,trim_done_projection=False):
+    def __init__(self,*,trim_done_projection=False,trim_result_value=None):
         self.stores={address:{'values':[],'writes':0} for address in
                      (P11_LPTMR0_CON0,P11_LPTMR0_CON1,P11_LPTMR0_CON2,
                       POWER_INIT_PMU_CFG0,POWER_INIT_PMU_CFG1)}
         self.lrct=PartialWord();self.lrct_rmws=0
         self.trim_done_projection=trim_done_projection;self.lrct_con_reads=0
+        self.trim_result_value=trim_result_value;self.lrct_num_reads=0
 
     def handles(self,address):
         return address in self.stores
@@ -975,7 +985,12 @@ class LpTimerInitRegisters:
             self.lrct_con_reads+=1
             return (self.lrct.value|self.TRIM_DONE_BIT)&0xffffffff
         if address==LRCT_NUM:
-            # trim 结果计数(SDK __RW NUM):硅测量值,无任何证据,不臆造数值
+            # trim 结果计数(SDK __RW NUM):硅测量值,默认不臆造数值,严格停。
+            # 显式探路值(trim_result_value,derived-not-measured)按堆信息
+            # fixture 先例放行,读回并计数;未提供时严格停语义不变。
+            if self.trim_result_value is not None:
+                self.lrct_num_reads+=1
+                return self.trim_result_value
             raise Blocked('lrct_trim_result_not_modeled',address=hex(address))
         raise Blocked('lp_timer_register_readback_not_modeled',address=hex(address))
 
@@ -987,7 +1002,7 @@ class LpTimerInitRegisters:
                 'sdk_anchors':'p11_sfr.h P11_LPTMR0_BASE=0xf2a000+map_adr(0x09,0); br28.h JL_LRCT=0xfd0000+map_adr(0x36,0) CON __WO NUM __RW; 0xf2c04c family unnamed in SDK headers',
                 'write_only':True,'readback_observed':False,
                 'bit_semantics_or_completion_verified':False,
-                'lrc_trim_result_simulated':False}
+                'lrc_trim_result_simulated':self.trim_result_value is not None}
         if self.trim_done_projection:
             result['lrct_trim_done_projection']={
                 'address':hex(LRCT_CON),'trim_done_bit':hex(self.TRIM_DONE_BIT),
@@ -1003,7 +1018,24 @@ class LpTimerInitRegisters:
                 'completion_timing_modeled':False,
                 'trim_result_register':{'address':hex(LRCT_NUM),'sdk_name':'JL_LRCT.NUM (__RW)',
                     'sole_firmware_access':'0x6067520 ld.w [r3+4] read after the poll exits',
-                    'value_evidence':'none (silicon measurement); reads stay strictly blocked'}}
+                    'value_evidence':('none (silicon measurement); reads stay strictly blocked'
+                        if self.trim_result_value is None else
+                        'explicit probe value (derived-not-measured), see trim_result_fixture')}}
+        if self.trim_result_value is not None:
+            result['lrct_trim_result_fixture']={
+                'address':hex(LRCT_NUM),'value':hex(self.trim_result_value),
+                'reads':self.lrct_num_reads,
+                'value_is_derived_not_measured':True,
+                'derivation':('probe value: the consumer divides the firmware constant '
+                    '0x1_C9C38000 (7,680,000,000 = r1=1:r0=0xC9C38000 at 0x606753e/0x6067544; '
+                    'the immediate raw bytes are 00 80 c3 c9 — earlier notes writing 0xC9C9C9C0 '
+                    'transcribed the decimal 3385032704 wrongly) by NUM to get the LRC frequency '
+                    'in Hz ([0x129D98] raw, [0x129D88] 20-entry average, consumed at 0x6067ac8 as '
+                    '1000000/freq); 7,680,000,000/38,400 = 200,000 exactly, the firmware\'s own '
+                    'nominal LRC constant (first LRC write 0x6067ab2 r0=200000, prd=5), so the '
+                    'probe value is the identity count of a perfectly nominal 200 kHz LRC. It is '
+                    'a DERIVED ARITHMETIC PROBE, not a silicon measurement; the real NUM is a '
+                    'per-chip trim measurement and the LRC calibration effect is not simulated')}
         return result
 
 
@@ -1353,6 +1385,7 @@ class BR28Model:
                  p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
                  p11_heap_info_bytes=None,p11_window_projection=False,
                  power_init_config_rmw=False,lp_timer_init_projection=False,lrct_trim_done_projection=False,
+                 lrct_trim_result_value=None,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
                  gpcnt_cleanup_projection=False,core_tick_configuration=False,
@@ -1420,7 +1453,17 @@ class BR28Model:
         # 中间前沿形状不可复现。
         if lrct_trim_done_projection and not lp_timer_init_projection:
             raise ValueError('the LRCT trim-done readback projection requires the LP-timer init projection')
-        self.lp_timer=(LpTimerInitRegisters(trim_done_projection=True) if lrct_trim_done_projection
+        # lrct_trim_result_value:JL_LRCT NUM(0xfd3604,trim 结果计数,硅测量值)
+        # 的显式探路值(derived-not-measured),与 p11_heap_info_bytes 同族的
+        # opt-in 数据 fixture;必须叠在 trim-done 投影上(NUM 读只有轮询放行
+        # 后才真实到达)。未提供时 NUM 读严格停语义不变(300,240 前沿形状)。
+        if lrct_trim_result_value is not None:
+            if not isinstance(lrct_trim_result_value,int) or not 0<=lrct_trim_result_value<=0xffffffff:
+                raise ValueError('the LRCT trim-result value must be unsigned32')
+            if not lrct_trim_done_projection:
+                raise ValueError('the LRCT trim-result value requires the trim-done readback projection')
+        self.lp_timer=(LpTimerInitRegisters(trim_done_projection=True,trim_result_value=lrct_trim_result_value)
+                       if lrct_trim_done_projection
                        else LpTimerInitRegisters()) if lp_timer_init_projection else None
         if p11_heap_info_bytes is not None and (not isinstance(p11_heap_info_bytes,(bytes,bytearray))
                                                 or len(p11_heap_info_bytes)!=4):
