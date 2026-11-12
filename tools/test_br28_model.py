@@ -617,6 +617,42 @@ class ModelTests(unittest.TestCase):
         self.assertNotIn('lrct_trim_done_projection',g.report()['lp_timer_init_projection'])
         self.assertFalse(BR28Model().handles(LRCT_NUM,4))  # 全关:NUM 不路由
 
+    def test_lrct_trim_result_value_is_an_explicit_probe_fixture(self):
+        # NUM 探路值 fixture(lrct_trim_result_value,需 lrct_trim_done_projection):
+        # 与 p11_heap_info_bytes 同族的 opt-in 数据参数——探路值 38400 的推导链
+        # (固件换算常数 7.68e9/NUM=LRC 频率 Hz、38400=恒等计数 200000)在
+        # probe_irq_entry.LRCT_TRIM_RESULT_PROBE 注释;模型侧只负责:提供时
+        # NUM 读回该值并计数、报告显式 derived-not-measured;未提供时严格停
+        # 语义不变(300,240 前沿形状)。写无论开关一律拒绝(无观测形状)。
+        with self.assertRaises(ValueError):BR28Model(lrct_trim_result_value=38400)
+        with self.assertRaises(ValueError):BR28Model(lp_timer_init_projection=True,
+                                                     lrct_trim_done_projection=True,
+                                                     lrct_trim_result_value=-1)
+        with self.assertRaises(ValueError):BR28Model(lp_timer_init_projection=True,
+                                                     lrct_trim_done_projection=True,
+                                                     lrct_trim_result_value=1<<32)
+        h=BR28Model(lp_timer_init_projection=True,lrct_trim_done_projection=True,
+                    lrct_trim_result_value=38400)
+        self.assertEqual(h.read(LRCT_NUM),38400)
+        self.assertEqual(h.read(LRCT_NUM),38400)  # 稳定回放(任务入口重跑同值)
+        with self.assertRaisesRegex(Blocked,'lrct_trim_result_write_not_modeled'):h.write(LRCT_NUM,1)
+        lp=h.report()['lp_timer_init_projection']
+        self.assertTrue(lp['lrc_trim_result_simulated'])
+        fixture=lp['lrct_trim_result_fixture']
+        self.assertEqual((fixture['address'],fixture['value'],fixture['reads'],
+                          fixture['value_is_derived_not_measured']),
+                         ('0xfd3604','0x9600',2,True))
+        self.assertIn('7,680,000,000/38,400 = 200,000',fixture['derivation'])
+        self.assertIn('not a silicon measurement',fixture['derivation'])
+        # 未提供时:同配置下严格停 + 报告无 fixture 键、simulated=False。
+        g=BR28Model(lp_timer_init_projection=True,lrct_trim_done_projection=True)
+        with self.assertRaisesRegex(Blocked,'lrct_trim_result_not_modeled'):g.read(LRCT_NUM)
+        lpg=g.report()['lp_timer_init_projection']
+        self.assertFalse(lpg['lrc_trim_result_simulated'])
+        self.assertNotIn('lrct_trim_result_fixture',lpg)
+        self.assertTrue(lpg['lrct_trim_done_projection']['trim_result_register']
+                        ['value_evidence'].startswith('none'))
+
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')
         self.assertEqual(BR28Model().read_bytes(P11_HEAP_INFO,1),None)  # 无 fixture:严格 unknown

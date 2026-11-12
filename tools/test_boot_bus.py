@@ -607,6 +607,59 @@ class BusInstructionTests(unittest.TestCase):
         self.assertNotIn('lrct_trim_done_projection',
                          result['peripherals']['lp_timer_init_projection'])
 
+    # NUM 探路值 fixture(lrct_trim_result_value,需 lrct_trim_done_projection,
+    # 与 p11_heap_info_bytes 同族的 opt-in 数据参数)。真实调用链 0x6067aa0 起、
+    # stop_before_pc=0x6067ad4(第一个任务创建调用设置之前):trim 后半全真实执行
+    # ——NUM=38400 读回(0x6067520)、0x6067524 stop-helper(CON &=~1/|=0x40)、
+    # 0x6067526 非零不跳、0x6067532 读设备结构门控字节 b[0x126874](种子 1,
+    # 真实前缀运行态实测已初始化=1)选 64 位分子 0x1_C9C38000=7.68e9
+    # (0x606753e 立即数原始字节 00 80 c3 c9=0xC9C38000,十进制 3385032704;
+    # 旧记录「0xC9C9C9C0」是十进制转写笔误)、0x6067546 64/32 无符号除法
+    # 商=200000、[0x129D98]=raw、首次运行 b[0x129D8E]=1(entry[0]==0)→填充
+    # 路径 20 项全部=商、平均 [0x129D88]=200000、b[0x129D8C] 0→1、
+    # 0x60675e0 restart-helper(CON &=~1/|=0x40/|=1,RMW 合计 4+2+3=9)、
+    # 0x6067ac8 第二轮 LRC 写以 [0x129D88]=200000 重推 prd=5——M2P 字节与
+    # 第一轮完全相同(05??0a2878),探路值数值自洽的逐字节证据。
+    def test_lrct_trim_result_fixture_runs_the_consumer_math(self):
+        h=self.handoff()
+        h['regions'].append((0xF27F80,0xF27FE0,'p11_m2p_message_area'))
+        h['regions'].append((0x129D80,0x129DF0,'lrct_config_bss'))
+        h['regions'].append((0x126870,0x126878,'dev_struct_gate'))
+        h['seeds'].append((0x129D84,bytes.fromhex('01')))  # trim 门控(power_init 0x6067a96)
+        h['seeds'].append((0x129D88,bytes(0x64)))          # bss 清零态的结果块
+        h['seeds'].append((0x126874,bytes.fromhex('01')))  # 64 位分子门控字节
+        h['snapshots'].append(('lrc_head',0x129D88,40))
+        h['snapshots'].append(('lrc_last_entry',0x129DE8,4))
+        h['snapshots'].append(('m2p_head',0xF27F80,8))
+        regs=[0]*16;regs[5]=1
+        result=explore(self.module,self.app,name='lrct_num_probe',handoff=h,
+            hardware=BR28Model(lp_timer_init_projection=True,lrct_trim_done_projection=True,
+                               lrct_trim_result_value=38400),
+            diagnostics={'entry_pc':0x6067aa0,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_subword_stores':True,'exact_parallel_stores':True,
+                         'exact_parallel_byte_stores':True,'stop_before_pc':0x6067ad4},
+            budget=400)
+        self.assertEqual(result['stop'],{'kind':'diagnostic_milestone_reached','address':'0x6067ad4'})
+        self.assertEqual(result['completed_steps'],255)
+        snapshots=result['memory_snapshots']
+        self.assertEqual(snapshots['lrc_head']['bytes_with_unknowns'],
+                         '400d0300'+'01000100'+'00000000'*2+'400d0300'*6,
+                         'avg 200000, counter bytes 1/1, zero handle word, raw 200000 and '
+                         'the seeded history head must all land')
+        self.assertEqual(snapshots['lrc_last_entry']['bytes_with_unknowns'],'400d0300',
+                         'the fill path must seed the last of the twenty history entries')
+        self.assertEqual(snapshots['m2p_head']['bytes_with_unknowns'],'05??0a2878??????',
+                         'the second LRC write must re-derive the same period bytes from '
+                         'the probe-converted 200000 Hz')
+        self.assertEqual(result['instruction_adapters'].get('lp_timer_bit_rmw'),9)
+        lp=result['peripherals']['lp_timer_init_projection']
+        self.assertEqual(lp['lrct_con'],{'address':'0xfd3600','known_mask':'0x7f',
+                                         'known_value':'0x41','rmw_writes':9})
+        fixture=lp['lrct_trim_result_fixture']
+        self.assertEqual((fixture['address'],fixture['value'],fixture['reads'],
+                          fixture['value_is_derived_not_measured']),
+                         ('0xfd3604','0x9600',1,True))
+
     def test_parallel_halfword_pair_store_transports_unknown_bytes_by_origin(self):
         # 运输路径:字形状 rep 拷贝体(0x600a352 的真实编码 rep 4 4:
         # ld.w.pin r3=[r2++=4]/st.w.pin [r1++=4]=r3)把含未知字节的字装进

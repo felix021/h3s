@@ -79,11 +79,25 @@ beq.and.ri bit7 branching BACK while bit7 is clear ("branch if
 (r & (1<<n)) == 0", hardware-confirmed ISA), so the firmware waits for
 bit7 to be SET, and the projection returns the recorded RMW bits
 (bit0 enable=1, bit6=1) with bit7 forced to 1 — the poll really exits on
-its first iteration. The chain then stops honestly at 300,240 on the very
-next instruction: the ld.w of JL_LRCT.NUM at 0x6067520 ([r3+4], the
-trim-result count register, SDK __RW) whose silicon-measured value has no
-derivable evidence at all. The crc_bankb_erased_fixture frontier itself
-stays pinned at 289,849 without the fixture.
+its first iteration. The trim-result register JL_LRCT.NUM at 0x6067520
+(0xfd3604, SDK __RW) is a silicon measurement with no measured value, so its
+read stays strictly blocked by default (300,240); the scenario then feeds the
+EXPLICIT PROBE VALUE 38400 (LRCT_TRIM_RESULT_PROBE, derived-not-measured:
+the consumer divides the firmware constant 7,680,000,000 = 0x1_C9C38000 by
+NUM to get the LRC frequency in Hz, and 7,680,000,000/38,400 = 200,000, the
+firmware's own nominal constant, so the probe is the identity count of a
+perfectly nominal 200 kHz LRC). The chain then really runs the consumer
+math (quotient/first-run history fill/average into 0x129D88, trim re-arm),
+the second LRC period write (same M2P bytes 05/0a/28/78 re-derived from the
+"measured" 200000 Hz) and enters the first task creation at 0x6067ae0
+(entry 0x606750c = the trim function itself, priority 10); inside the
+task-create path a timer bring-up wrapper (0x6000898 with r0=0xa) configures
+TIMER0 and the start RMW at 0x600087c merges CON to 0x1401 — clock source
+field 5, unmodeled (the timer model has only validated source 4) — so the
+chain stops honestly there at 301,097, before the second task creation
+(0x6067b12) and power_init's return. No new scheduler round trips occur.
+The crc_bankb_erased_fixture frontier itself stays pinned at 289,849
+without the fixture.
 """
 import argparse
 import json
@@ -200,6 +214,29 @@ P11_M2P_MESSAGE_WINDOW=(0xF27F80,0xF27FE0,'p11_m2p_message_area')
 # 产生的全部推进都是条件通过(derived-not-measured),不算已验证。
 P11_HEAP_INFO_DERIVED=bytes.fromhex('0c3df439')  # begin=0x3d0c size=0x39f4
 
+# JL_LRCT NUM(0xfd3604,trim 结果计数)的显式探路值(derived-not-measured)。
+# 推导链(trim 函数后半 0x606750c..0x6067600 反汇编 + 固件自己的换算常数):
+# ①0x6067520 r2=NUM;0x6067526 r2==0 → CON|=1 重启 trim 直接返回——NUM 非零
+#   是链继续的必要条件(r2==0 时 [0x129D88] 保持 bss 0,0x6067ac8 第二轮
+#   LRC 写 1000000/0 除零,链必坏)。②0x6067532 读设备结构字节 b[0x1265C0+692]
+#   (运行态实测已初始化,值 1)选择分子:0x606753e r0=0xC9C38000(十进制
+#   3385032704,原始字节 00 80 c3 c9;旧记录「0xC9C9C9C0」是十进制转写笔误)
+#   +0x6067544 r1=1 → 64 位分子 0x1_C9C38000=7,680,000,000(7.68e9,整数
+#   设计常数)。③0x6067546 64/32 无符号除法 r2=7.68e9/NUM 得换算频率写
+#   [0x129D98];历史维护:b[0x129D8E](power_init 0x6067aa6 已写 1)非零 →
+#   r0=20、entry[0]==0(首次运行,bss 零)→ 0x606758e 填充路径把 20 项全部
+#   填成商,平均=商 → [0x129D88];b[0x129D8C] 0→1;0x60675e0 call 0x60674ec
+#   (r0=1)重启 trim(CON &=~1/|=0x40/|=1)。④0x6067ac8 r0=[0x129D88] 调
+#   0x60674b8 第二轮 LRC 写:prd=1000000/r0——[0x129D88] 的单位就是 LRC
+#   频率 Hz,与第一轮(0x6067ab2 r0=200000 标称值 → prd=5,M2P 05/0a/28/78)
+#   同单位。⑤探路值 NUM=38400(0x9600):7,680,000,000/38,400=200,000 整除
+#   精确——「标称 200kHz LRC 在该换算常数下的恒等计数」,商恰等于固件自己
+#   的标称立即数 200000,第二轮 LRC 写重新推导出与第一轮完全相同的字节
+#   (prd=5、10/40/120),下游算术完全自洽。**探路值非硅测量**:真实 NUM
+#   是逐片硅测量值,这里只保证数值侧效应落在固件自己的标称常数上,不构成
+#   对硅行为的任何声称;未提供该参数时 NUM 读严格停(300,240 前沿形状)。
+LRCT_TRIM_RESULT_PROBE=38400  # 7,680,000,000/200,000 = 38,400 = 0x9600
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -222,7 +259,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
              insert_load_pair=False,halfword_pair=False,p11_power_init=False,
              heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,lrct_trim_done=False,
-             flash_image_bytes=None,readonly=()):
+             lrct_trim_result=None,flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -364,6 +401,18 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if lrct_trim_done:
         require(lp_timer_writes,'the LRCT trim-done projection only layers on the LP-timer write records')
         options['lrct_trim_done_projection']=True
+    # lrct_trim_result:JL_LRCT NUM(0xfd3604,trim 结果计数,硅测量值)的显式
+    # 探路值(LRCT_TRIM_RESULT_PROBE 推导链见常量注释;与 heap_info_bytes
+    # 同族的 opt-in 数据 fixture)。只与 lrct_trim_done 叠加(NUM 读只有
+    # trim-done 投影放行轮询后才真实到达);未提供时 NUM 读严格停语义
+    # 不变(300,240 前沿形状)。挂 LRC 结果块快照(40 字节头窗逐字节 + 0x64
+    # 全窗 SHA;avg/计数字节/任务句柄/raw/20 项历史数组),只挂进实验场景,
+    # 不进共享 p11_snapshots(否则 crc_bankb 报告加键、破坏字节不变)。
+    if lrct_trim_result is not None:
+        require(lrct_trim_done,'the LRCT trim-result probe value only layers on the trim-done projection')
+        options['lrct_trim_result_value']=lrct_trim_result
+        p11_snapshots=tuple(p11_snapshots)+(('lrc_trim_result_head',0x129D88,40),
+                                            ('lrc_trim_result_block',0x129D88,0x64))
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -929,26 +978,60 @@ def check(report,firmware):
     # 投影字 0xC1(bit7 完成投影置 1 + RMW 已知 bit0=1/bit6=1),0x6067516 bit0=1
     # 不跳、0x606751c bit7=1 不跳——轮询第一轮真实退出(固件语义:beq.and.ri 在
     # bit7==0 时回跳 0x606751a,等的是置位不是清零;旧记录「busy 死等清零」按
-    # 编码修正)。+4 步停在 0x6067520 `ld.w [r3+1*4]`(n 字段 scale=4)读 NUM
-    # (0xfd3604,SDK br28.h JL_LRCT_TypeDef {CON __WO;NUM __RW} 第二个字)——
-    # trim 结果计数是硅测量值,无任何推导证据(app 全量恰三处 li 引用 0xfd3600、
-    # 0xfd3604 零字面量只能经 [r3+4] 到达、ROM 整块零引用),读回严格停是新的
-    # 独立边界(数据可得性,与堆信息 4 字节同族)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067520' and
-            r['stop']=={'kind':'lrct_trim_result_not_modeled','address':'0xfd3604'},
-            'the heap-experimental scenario must stop at the LRCT NUM (trim-result) read '
-            'after the trim-done projection lets the poll exit')
-    require(r['completed_steps']==300240,'the heap experimental config changed its step count')
+    # 编码修正)。路 AE 曾停在 0x6067520 读 NUM(0xfd3604,SDK __RW trim 结果
+    # 计数)——硅测量值无任何推导证据。本次(路 AF)按堆信息 fixture 先例把
+    # NUM 做成显式探路值参数(lrct_trim_result,推导链见 LRCT_TRIM_RESULT_PROBE
+    # 常量注释):NUM=38400 → 0x6067526 非零不跳 → 0x6067532 读设备结构门控字节
+    # b[0x126874](运行态实测已初始化=1)→ 64 位分子 0x1_C9C38000=7.68e9 →
+    # 0x6067546 64/32 无符号除法,商=200000(=固件自己的标称 LRC 频率立即数)
+    # → [0x129D98]=raw、首次经填充路径 20 项历史全部=商、平均=[0x129D88]=
+    # 200000、b[0x129D8C] 0→1 → 0x60675e0 call 0x60674ec(r0=1)重启 trim(CON
+    # &=~1/|=0x40/|=1,RMW 4→9)→ 0x6067ac8 第二轮 LRC 写以 [0x129D88]=200000
+    # 重推 prd=5/M2P 05/0a/28/78(与第一轮同值,数值自洽)→ **第一个任务创建**
+    # 0x6067ae0(call 0x6066c26→0x6066a7e,入口 0x606750c=trim 函数,优先级
+    # 10,watch 钉死)——任务创建路径内部调定时器 wrapper 0x6000898(r0=0xa)
+    # → 0x60008c0 定时器配置 → 0x60008c6 启动 → 定时器启动函数 0x6000828 内
+    # 0x600087c `rmw.or.modimm [r3+0]|=1`:TIMER0 0xfd0400 CON 0x1400|=1 →
+    # 0x1401(mode=1 启动、时钟源字段 bits10-13=5)——模型 Timer0 只验证过
+    # source 4(LSB 配置下另含 0),source 5 无任何语义证据(trim 完成后把
+    # 系统计时器切到(校准后的)LRC 类时钟源是语境推断,非命名证据),诚实
+    # 停是新的独立决策点。**第二个任务创建 0x6067b12(入口 0x6069538)与
+    # power_init 返回(0x60120e0)都在停点之后未执行**(任务句柄半字存储
+    # 0x6067aec 亦未到,0x129D90 保持 bss 0);整个新前缀无新调度往返(交付
+    # 1+7+2、commands 20/acks 10 全部不变——本次任务创建路径先起定时器,
+    # 未走到调度 IPI)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x600087c' and
+            r['stop']=={'kind':'unsupported_timer_clock_source','value':'0x1401'},
+            'the heap-experimental scenario must stop at the TIMER0 start RMW with the '
+            'unmodeled clock source 5 after the trim-result probe value lets the chain cross')
+    require(r['completed_steps']==301097,'the heap experimental config changed its step count')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
-    # 未写保持 unknown)与 RVD2PVDD_EN 字(实测 0x00)。
+    # 未写保持 unknown)与 RVD2PVDD_EN 字(实测 0x00)。第二轮 LRC 写(0x6067ac8,
+    # 以探路值换算出的 200000 Hz)重推出与第一轮完全相同的字节——数值自洽的
+    # 直接证据。
     require(r['memory_snapshots']['p11_m2p_lrc']['bytes_with_unknowns']=='05??0a2878??????' and
             r['memory_snapshots']['p11_m2p_lrc']['initialized_bytes']==4 and
             r['memory_snapshots']['p11_m2p_rvd2pvdd']['bytes_with_unknowns']=='????00??' and
             r['memory_snapshots']['p11_m2p_rvd2pvdd']['initialized_bytes']==1,
             'the M2P message-window bytes differ from the SDK-anchored LRC derivation and the '
             'executed M2P_RVD2PVDD_EN write')
+    # LRC trim 结果块(0x129D88..0x129DEC):平均 [0x129D88]/计数字节(0x129D8C=1、
+    # 0x129D8E=1)/任务句柄半字 0x129D90(保持 bss 0——句柄存储 0x6067aec 在
+    # 停点之后未执行)/0x129D94 bss 零/raw [0x129D98]/20 项历史数组——探路值
+    # 的全部数值侧效应逐字节钉死(200000=0x00030D40),全窗 0x64 字节另以 SHA
+    # 钉死(窗口 >40 字节无逐字节串)。
+    head=r['memory_snapshots']['lrc_trim_result_head']
+    require(head['bytes_with_unknowns']=='400d0300'+'01000100'+'00000000'*2+'400d0300'*6 and
+            head['initialized_bytes']==40,
+            'the trim-result head must pin avg 200000, counter bytes 1/1, the bss-zero '
+            'task-handle halfword, raw 200000 and the seeded history head of 200000')
+    block=r['memory_snapshots']['lrc_trim_result_block']
+    require(block['initialized_bytes']==0x64 and
+            block['sha256']=='58949283b93bebcc2160c441408dc1b9fffdf2fc5f1a91185a2e15d807f70a97',
+            'the full trim-result block (raw + the twenty-entry history) must match the '
+            'probe-value side effects byte-exactly')
     lp=r['peripherals']['lp_timer_init_projection']
     require(lp['stores']=={'0xf2a900':{'values':['0x5c'],'writes':1},
                            '0xf2a904':{'values':['0x53'],'writes':1},
@@ -956,24 +1039,35 @@ def check(report,firmware):
                            '0xf2c04c':{'values':['0x21'],'writes':1},
                            '0xf2c050':{'values':['0x41'],'writes':1}},
             'the LP-timer init write-only records differ from the observed power_init tail')
+    # LRCT CON 位 RMW:初始化 4 次(0x6067aae + helper r0=1 三条)+ trim 函数
+    # 内 stop-helper 2 次(&=~1/|=0x40)+ 末尾 restart-helper 3 次(&=~1/|=0x40/
+    # |=1)= 9;lrc_trim_result_simulated 因显式探路值翻 True(报告语义如实)。
     require(lp['lrct_con']=={'address':'0xfd3600','known_mask':'0x7f','known_value':'0x41',
-                             'rmw_writes':4} and
+                             'rmw_writes':9} and
             lp['write_only'] and not lp['readback_observed'] and
-            not lp['bit_semantics_or_completion_verified'] and not lp['lrc_trim_result_simulated'],
+            not lp['bit_semantics_or_completion_verified'] and lp['lrc_trim_result_simulated'],
             'the JL_LRCT bit records or the explicit assumption flags differ')
     trim=lp['lrct_trim_done_projection']
     require(trim['address']=='0xfd3600' and trim['trim_done_bit']=='0x80' and
             trim['reads']==2 and trim['projected_word']=='0xc1' and trim['known_mask']=='0x7f' and
             not trim['completion_timing_modeled'] and
-            trim['trim_result_register']['address']=='0xfd3604' and
-            trim['trim_result_register']['value_evidence'].startswith('none'),
+            trim['trim_result_register']['address']=='0xfd3604',
             'the trim-done readback projection differs from the observed two poll reads '
-            '(0x6067514 and 0x606751a) and the strictly-blocked NUM boundary')
+            '(0x6067514 and 0x606751a)')
+    fixture=lp['lrct_trim_result_fixture']
+    require(fixture['address']=='0xfd3604' and fixture['value']=='0x9600' and
+            fixture['reads']==1 and fixture['value_is_derived_not_measured'] and
+            '7,680,000,000/38,400 = 200,000' in fixture['derivation'] and
+            'not a silicon measurement' in fixture['derivation'],
+            'the trim-result probe fixture record must pin 38400, one read and the '
+            'derived-not-measured derivation chain')
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7+
             [(0,127,'0x12ad2a','0x12b608')]*2,
-            'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 deliveries')
+            'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
+            'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
+            'the timer bring-up before any scheduler IPI)')
     rti=[e for e in r['machine']['events'] if e.get('kind')=='software_irq_rti' and e.get('core')==0]
     require(any(e['pc_after']=='0x6068f0c' and e['sp_after']=='0x401ffc' for e in rti),
             'the scheduler must really RTI into the pmu_task entry with its own stack')
@@ -990,11 +1084,9 @@ def check(report,firmware):
     require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')
-    # adapter 计数:与 300,187 前沿一致的全部投影不变;新增并行对字节存储
-    # 100 次(开关全前缀生效,其中 1 次是 0x6067a74 的 M2P 首写,其余是既有
-    # 前缀里原本走上游通用 pair 模型的 ALU∥st.b 形状,gate 与上游模型同样按
-    # 旧寄存器执行、目标字节相同——CRC/IRQ/交付计数全部不变即等价性证据)与
-    # LRCT 位 RMW 4 次。
+    # adapter 计数:与 300,240 前沿一致的全部投影不变;并行对字节存储
+    # 100→101(+1:第二轮 LRC 写 0x60674b8 的 M2P 字节写,LRC 快照值不变)与
+    # LRCT 位 RMW 4→9(+5:trim 函数内 stop-helper 2 + restart-helper 3)。
     require(r['instruction_adapters'].get('exact_doubleword_store')==26 and
             r['instruction_adapters'].get('immediate_rep_multi_block_projection')==165 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
@@ -1003,8 +1095,8 @@ def check(report,firmware):
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==100 and
-            r['instruction_adapters'].get('lp_timer_bit_rmw')==4,
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==101 and
+            r['instruction_adapters'].get('lp_timer_bit_rmw')==9,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     report['heap_info_value_is_derived_not_measured']=(
         'the p11_heap_experimental_config scenario feeds the four heap-info bytes 0c3df439 '
@@ -1019,8 +1111,9 @@ def check(report,firmware):
         'the SDK-declared VAD_DVAD_CONFIG_BEGIN (0xF28000-0x20-0x60-0x40-0x20-0x780-0x50-0x50). '
         'The value is nevertheless DERIVED, NOT MEASURED: whether the q32s core really executes '
         'this init path at boot is unproven (known decode gaps), so every step past 289,849 in '
-        'that scenario (including the pmu_task scheduler round trip, the M2P message-area writes '
-        'and the 300,240 LRCT NUM trim-result boundary) '
+        'that scenario (including the pmu_task scheduler round trip, the M2P message-area writes, '
+        'the 300,240 LRCT NUM boundary, the trim-result probe consumption and the 301,097 '
+        'TIMER0-clock-source stop) '
         'is a CONDITIONAL PASS that must not be reported as verified; without the fixture the '
         'crc_bankb_erased_fixture frontier stays pinned at 289,849 on the unmapped 0xf27f4b read')
     report['p11_m2p_message_window_assumption']=(
@@ -1060,10 +1153,37 @@ def check(report,firmware):
         'instruction reads JL_LRCT.NUM 0xfd3604 (SDK JL_LRCT_TypeDef {CON __WO; NUM __RW}, the '
         'trim-result count, [r3+4] after the poll; app references the LRCT block only via three '
         'li sites of 0xfd3600 and the ROM nowhere): that count is a silicon measurement with NO '
-        'derivable candidate (even the firmware divider 0xC9C9C9C0/NUM has no clean target), so '
-        'its read stays strictly blocked (lrct_trim_result_not_modeled) and the conditional '
-        'frontier stops there at 300,240 — the trim-result data boundary is the next independent '
-        'decision (explicit fixture parameter, behavioral model, or pinned)')
+        'measured value, so its read stays strictly blocked (lrct_trim_result_not_modeled) '
+        'without the explicit probe value — the conditional scenario additionally feeds the '
+        'derived arithmetic probe 38400 (see lrct_trim_result_probe_assumption) to walk the '
+        'consumer chain; the consumer math it feeds is disassembled, the value itself is not a '
+        'silicon measurement')
+    report['lrct_trim_result_probe_assumption']=(
+        'the p11_heap_experimental_config scenario feeds lrct_trim_result_value=38400 (0x9600) '
+        'as an EXPLICIT PROBE VALUE for JL_LRCT.NUM, in the p11_heap_info_bytes fixture family: '
+        'the strict stop (lrct_trim_result_not_modeled) stays the default for every other '
+        'configuration. Derivation chain: the trim function 0x606750c, after the done-poll, '
+        'reads NUM into r2 (0x6067520), retries on zero (0x6067526), selects the 64-bit '
+        'numerator 0x1_C9C38000 = 7,680,000,000 via the device-struct gate byte at 0x126874 '
+        '(executed value 1; the immediate raw bytes at 0x606753e are 00 80 c3 c9 = 0xC9C38000 '
+        '— earlier notes writing 0xC9C9C9C0 transcribed the decimal 3385032704 wrongly), '
+        'divides it by NUM (0x6067546, 64/32 unsigned) to get the converted LRC frequency in Hz, '
+        'stores it at 0x129D98, seeds the twenty-entry history on the first run (count byte '
+        '0x129D8E=1 was set by power_init at 0x6067aa6) and writes the average to 0x129D88, '
+        'which 0x6067ac8 feeds to the second LRC period write (prd=1000000/freq — the first '
+        'write used the nominal constant r0=200000 giving prd=5 and M2P bytes 05/0a/28/78). '
+        '7,680,000,000/38,400 = 200,000 EXACTLY, the firmware\'s own nominal LRC constant, so '
+        'the probe is the identity count of a perfectly nominal 200 kHz LRC and every downstream '
+        'numeric side effect lands on the firmware\'s own constants (avg=raw=history=200000, '
+        'M2P bytes unchanged). It is DERIVED ARITHMETIC, NOT A SILICON MEASUREMENT: the real NUM '
+        'is a per-chip trim measurement, and passing this fixture only walks the disassembled '
+        'consumer chain; the conditional frontier then stops at 301,097 inside the first '
+        'task-creation call (0x6067ae0, entry 0x606750c = the trim function, priority 10): its '
+        'task-create path brings up a timer (wrapper 0x6000898 with r0=0xa -> configure '
+        '0x60008c0 -> start 0x60008c6) whose start RMW at 0x600087c merges TIMER0 CON to '
+        '0x1401 — clock source field 5, unmodeled (the model has only validated source 4, and '
+        '0 in the LSB configuration); the second task creation 0x6067b12 and power_init\'s '
+        'return lie beyond the stop')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -1177,7 +1297,8 @@ def main():
                               dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
                               halfword_pair=True,p11_power_init=True,
                               heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
-                              lrct_trim_done=True,flash_image_bytes=image)]}
+                              lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
+                              flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
