@@ -1398,6 +1398,77 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(Timer0.STD12M_TICKS_PER_REF_TICK,(3,4))
 
 
+    def test_p33_window_pair_and_plain_byte_stores(self):
+        # 路 AV:0x6067be0 `li r0=1`→0x6067be2 `r0 <<= r5`→**0x6067be4 并行对
+        # `uextra.rrii.p r0=uextra(r0,p:8,l:8) ∥ st.b b[r6+8]=r0`**(A 半位域
+        # 提取、B 半字节存储,r6=0xf2c940 → [0xf2c948])。B 半按 run3 旧寄存器
+        # 读源 r0=1<<r5 的低字节;A 半新值=(1<<r5)>>8——用 r5=9 让两个字节
+        # 都非零,单步后两个投影记录互证 A/B 半各自的新旧值语义。strict(无
+        # byte gate、无投影)同指令停上游 pair 存储模型的合并读。
+        regs=lambda r5:[0,0,0,0,0,r5,0xf2c940,0,0xf2c548,0xf2c960,0,0,0,0,0,0]
+        strict=BR28Model()
+        result=explore(self.module,self.app,name='p33_pair_strict',handoff=self.handoff(),
+            hardware=strict,diagnostics={'entry_pc':0x6067be4,'initial_sp':STACK_TOP,
+                                         'initial_gprs':regs(9)},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2c948')
+        self.assertEqual(result['stop']['size'],4)
+        # byte gate(uextra.rrii A 半,挂既有 byte_pair 开关)+ p33_window 投影:
+        # 从 0x6067be0 `li r0=1` 起 3 步真实执行 li→lsl→pair(r5=9 → r0=0x200),
+        # 并行对 B 半旧值 0x200&0xFF=0x00 落 [0xf2c948]、A 半新值 0x200>>8=0x02
+        # 留在 r0(下一步 0x6067c36 再钉)。
+        projected=BR28Model(p33_window_projection=True)
+        result=explore(self.module,self.app,name='p33_pair_projected',handoff=self.handoff(),
+            hardware=projected,diagnostics={'entry_pc':0x6067be0,'initial_sp':STACK_TOP,
+                                            'initial_gprs':regs(9),
+                                            'exact_parallel_stores':True,
+                                            'exact_parallel_byte_stores':True},budget=3)
+        self.assertEqual(result['completed_steps'],3)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(result['instruction_adapters'].get('parallel_byte_store_old_registers'),1)
+        self.assertEqual(projected.report()['p33_window_projection']['stores'],
+                         {'0xf2c948':{'values':['0x0'],'writes':1}})
+        # 函数尾 0x6067bea..c36(含 goto 跳过 w4==0 分支的 [0xF2C548] 写):
+        # 0x6067c36 普通 st.b `b[r1+0]=r0`(r1=0xF2C94C,r0=A 半结果 0x02)——
+        # 上游模型写前合并读旧 word,strict 停;exact_subword_stores(路 AU 先例)
+        # +p33_window 直写。[0xf2c94c]=0x02 与上一步 [0xf2c948]=0x00 互证
+        # B 半旧值/A 半新值方向(r0=0x200 的低/高字节各归其位)。
+        strict2=BR28Model(p33_window_projection=True)
+        r9=regs(9);r9[0]=((1<<9)>>8)&0xff;r9[1]=0xf2c94c
+        result=explore(self.module,self.app,name='p33_plain_strict',handoff=self.handoff(),
+            hardware=strict2,diagnostics={'entry_pc':0x6067c36,'initial_sp':STACK_TOP,
+                                          'initial_gprs':r9},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        # 上游 store 模型写前合并读旧 word(模型内部簿记读非 guest 装载),
+        # p33_window 不进 handles()(字访问),读走普通路径撞 unmapped——
+        # 普通 st.b 的放行必须经 exact_subword_stores 诊断直写。
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2c94c')
+        self.assertEqual(result['stop']['size'],4)
+        projected2=BR28Model(p33_window_projection=True)
+        result=explore(self.module,self.app,name='p33_plain_projected',handoff=self.handoff(),
+            hardware=projected2,diagnostics={'entry_pc':0x6067c36,'initial_sp':STACK_TOP,
+                                            'initial_gprs':list(r9),
+                                            'exact_subword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['instruction_adapters'].get('exact_subword_store'),1)
+        self.assertEqual(projected2.report()['p33_window_projection']['stores'],
+                         {'0xf2c94c':{'values':['0x2'],'writes':1}})
+        # 下一停点形状钉死:0x6067c42 `st.w.idxs [0xf2c300+r5<<2]=r0` 写
+        # P3_PORT_SEL1(SDK 有名,0xf2c300 有 arch_startup opaque 死读先例)——
+        # 整字写不路由到字节投影,p33_window 关闭与否都诚实停(与真实场景
+        # 302,620 停点逐字段一致:unmapped_or_readonly_write,写形状独立决策
+        # 点,归下一路)。
+        stop=BR28Model(p33_window_projection=True)
+        r1=regs(1);r1[0]=0x12;r1[1]=0xf2c300
+        result=explore(self.module,self.app,name='p33_port_sel_stop',handoff=self.handoff(),
+            hardware=stop,diagnostics={'entry_pc':0x6067c42,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r1,'exact_subword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+                                         'address':'0xf2c304','size':4,'value_bytes':'12000000'})
+
     def test_mem_pwr_con_rmw_and_dead_read_shapes(self):
         # 0x606772a li r8=0xf2a62c → 0x6067730 `[r8+0] |= r0`(rmw.or.r)。boot
         # 路径 b[0x129D1C]=0 → operand=r0=0。strict(无投影)停在 0xf2a62c 未建模

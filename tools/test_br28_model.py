@@ -18,6 +18,7 @@ from br28_model import L1PIdleProjection, L1P_CON
 from br28_model import IcuIdleProjection
 from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON, LRCT_NUM
 from br28_model import P11_MEM_PWR_CON
+from br28_model import P33WindowByteRegisters
 
 
 class ModelTests(unittest.TestCase):
@@ -1470,6 +1471,48 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'cpu1_hold_after_release_not_implemented'):
             h.write(CPU1_CONTROL,0)  # kick 后的 hold 也不能漏过已释放判定
 
+
+    def test_p33_window_projection_is_write_only_byte_record(self):
+        # 路 AV:P33 窗「无名寄存器族」(SDK p33_sfr.h 命名止于 0xd5,族内
+        # 0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x280 全无名)按 write-only
+        # 字节序列记录建模——固件访问形状全是单字节写(反汇编钉死:0x6067b66
+        # P33 窗配置函数/0x6067464/walker 清尾 0x6067d2e..38,零读回/零 RMW/
+        # 零整字写),读回一律严格停、不臆造任何值。
+        # 默认关:无投影、不 handles(字与字节路由都关)、报告无该键——
+        # legacy 场景逐字节不变。
+        plain=BR28Model()
+        self.assertFalse(plain.handles_byte_write(0xf2c948))
+        self.assertNotIn('p33_window_projection',plain.report())
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xf2c948)
+        h=BR28Model(p33_window_projection=True)
+        # 12 个字节地址全部路由;handles()(字访问)不含这族——整字写不路由
+        for a in P33WindowByteRegisters.ADDRESSES:
+            self.assertTrue(h.handles_byte_write(a))
+        self.assertFalse(h.handles(0xf2c948,4))
+        # 字节写记录(pair 0x6067be4 → [0xf2c948]=0x02、普通 0x6067c36 →
+        # [0xf2c94c]=0x00,boot 首项 index=1 的实测序列)
+        h.write_byte(0xf2c948,0x02);h.write_byte(0xf2c94c,0x00)
+        r=h.report()['p33_window_projection']
+        self.assertEqual(r['byte_writes'],2)
+        self.assertEqual(r['stores'],{'0xf2c948':{'values':['0x2'],'writes':1},
+                                      '0xf2c94c':{'values':['0x0'],'writes':1}})
+        self.assertTrue(r['write_only'] and r['readback_not_modeled'])
+        self.assertIn('0xd5',r['sdk_naming_limit'])
+        # write_byte 的写入簿记(record_write 计数),未建模地址 ValueError
+        self.assertEqual(h.report()['counts']['writes'],2)
+        with self.assertRaises(ValueError):h.write_byte(0xf2c958,1)
+        with self.assertRaises(ValueError):h.write_byte(0xf2c948,0x100)
+        # 读回严格停(显式 kind 优先于泛 unmapped)
+        with self.assertRaisesRegex(Blocked,'p33_window_readback_not_modeled'):
+            h.read(0xf2c948)
+        # RMW 无观测形状拒绝
+        with self.assertRaisesRegex(Blocked,'p33_window_rmw_not_modeled'):
+            h.p33_window.rmw('or',1)
+        # 与 mem_pwr_con 投影叠加互不吞地址
+        both=BR28Model(p33_window_projection=True,mem_pwr_con_projection=True)
+        self.assertTrue(both.handles_byte_write(0xf2c948) and not both.handles_byte_write(P11_MEM_PWR_CON))
+        self.assertTrue(both.handles(P11_MEM_PWR_CON,4) and not both.handles(0xf2c948,4))
 
     def test_mem_pwr_con_rmw_is_write_only_bit_record_with_strict_readback(self):
         # 默认关:无投影、不 handles、报告无该键——legacy 场景逐字节不变

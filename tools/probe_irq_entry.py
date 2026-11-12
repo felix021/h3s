@@ -286,7 +286,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              lrct_trim_result=None,timer0_std12m=False,lp_timer_con_readback=False,
              p33_analog_config=False,power_init_rstcon_masks=False,
              power_init_wkup_dly=False,
-             mem_pwr_con=False,
+             mem_pwr_con=False,p33_window=False,subword_stores=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -530,6 +530,29 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if mem_pwr_con:
         require(p11_power_init,'the MEM_PWR_CON RMW only layers on the p11_power_init scenario')
         options['mem_pwr_con_projection']=True
+    # p33_window:opt-in 的 P33 窗「无名寄存器族」write-only 字节记录(路 AV)。
+    # 触发点=302,581 停点:post-power_init 的 P33 窗配置函数 0x6067b66(walker
+    # 0x6067cb4 的 12 项表 0x0609E964→RAM 指针,首项 index=1/cfg=0x11/port=1/
+    # bit=1/w4=1≠0→pair 路径)内 0x6067be4 `uextra.rrii.p∥st.b b[r6+8]=r0`
+    # (r6=0xf2c940)对 [0xf2c948]=P33_ACCESS(0x252)的字节写——上游 pair 存储模型
+    # 写前合并读旧 word(模型内部簿记读非 guest 装载)撞 unmapped。证据核验:
+    # SDK p33_sfr.h 命名止于 0xd5(P3_LS_PLL),族内 0x150-0x153/0x250-0x253/
+    # 0x258-0x259/0x267/0x280 全无名无类型标注无位定义;app 字面量恰 3 处+
+    # 寄存器算术、ROM 零引用;三个引用函数(0x6067b66/0x6067464/walker 清尾
+    # 0x6067d26..38)的访问形状全是单字节写、零读回、零 RMW、零整字写——
+    # 故按 lp_timer SYS_DIV/CLK_CON0 整字写记录同族做 write-only 字节序列
+    # 记录(非 p33_analog_config 的合成读回——那族固件真实读回,本族从不)。
+    # 字节写路由:probe_boot Memory.write 的一字节钩子(handles_byte_write,
+    # 绕过「handles 只接受字访问」的字粒度限制);读回一律严格停。
+    # subword_stores:probe_boot 既有 exact_subword_stores 诊断(路 AU 在
+    # probe_mmu 支线同款接线)——普通 st.b/st.b.l(非 pair)直写 1 字节不走
+    # 上游合并读,放行函数尾 0x6067c36 等对本族的普通字节写。uextra.rrii
+    # A 半的 pair 扩展挂在既有 byte_pair 开关内(全 app 12 处站点在既有前缀
+    # 零执行,不改任何既有报告;见 probe_boot 主 gate 注释)。
+    if p33_window:
+        require(p11_power_init,'the P33-window projection only layers on the p11_power_init scenario')
+        options['p33_window_projection']=True
+    if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -1166,20 +1189,30 @@ def check(report,firmware):
     # 0x6067b64 返回(caller app_core 0x60120dc → 0x60120e2)**,链继续进布局在
     # power_init 之后的 P33 窗配置函数 0x6067b66(0x6067ce6 处调用,rets=0x6067cea):
     # 0x6067b6e r8=0xF2C548(=P33_ACCESS(0x152),SDK 无名)、0x6067b74 r6=r8+1016=
-    # 0xF2C940(=P33_ACCESS(0x250),SDK 无名)、0x6067b78 r9=r6+32=0xF2C960。停点
-    # 0x6067be4 `uextra.rrii.p ∥ st.b b[r6+8]=r0`(A 半 uextra.rrii 非纯 ALU,
-    # 落入上游 pair 模型)对 [0xf2c948]=P33_ACCESS(0x252)(SDK 无名)做 4 字节
-    # 合并读撞 unmapped_memory 诚实停——P33 窗「无名寄存器族」(0x150/0x250/0x252)
-    # + 新 pair 形状的独立决策点,归下一路。TIMER0 精确计数:1484 步 × 3 tick/步
-    # = cnt 4452(见下方断言),con 0x1401,expirations 10 不变;无新调度往返
-    # (交付 1+7+2、commands 20/acks 10 不变)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067be4' and
-            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf2c948','size':4,
-                        'reference_sdk_register':None},
-            'the heap-experimental scenario must stop at the P33-window unnamed register '
-            '(0xf2c948=P33_ACCESS(0x252)) read after MEM_PWR_CON and its dead readback '
-            'are let through and power_init returns')
-    require(r['completed_steps']==302581,'the heap experimental config changed its step count')
+    # 0xF2C940(=P33_ACCESS(0x250),SDK 无名)、0x6067b78 r9=r6+32=0xF2C960。路 AV
+    # 按「write-only 字节序列记录」放行无名族:p33_window_projection 覆盖 12 个
+    # 字节地址(0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x280,反汇编钉死访问
+    # 形状全是单字节写、零读回/零 RMW/零整字写;SDK 命名止于 0xd5),0x6067be4
+    # `uextra.rrii.p∥st.b` 走 byte gate(uextra.rrii 是无符号位域提取、效果只有
+    # regs+flags,与 ext.b0.u 同族;全 app 12 处该形状站点在既有前缀零执行,故
+    # 挂既有 byte_pair 开关不加新开关)对 [0xf2c948] 直写 0x02(旧 r0=1<<index
+    # 低字节,run3 方向),A 半 uextra 得 (1<<index)>>8;0x6067c36 普通 st.b 经
+    # exact_subword_stores 诊断(路 AU 先例)直写 [0xf2c94c]=0x00;0x6067c38..c3a
+    # call 0x60672C8(cfg→port_sel 纯查表,uextra+tbb+名字表循环)返回 0x12。
+    # 停点 0x6067c42 `st.w.idxs [0xf2c300+r5<<2]=r0` 写 [0xf2c304]=
+    # P3_PORT_SEL1(SDK 有名 P3_PORT_SEL0..3,字面量 0xf2c300 有 arch_startup 的
+    # opaque 死读先例、写语义无投影)整字写 0x12 撞 unmapped_or_readonly_write
+    # ——SDK 有名寄存器的写投影是下一路独立决策点。TIMER0 精确计数:1523 步 ×
+    # 3 tick/步 = cnt 4569(见下方断言),con 0x1401,expirations 10 不变;无新
+    # 调度往返(交付 1+7+2、commands 20/acks 10 不变;CRC 30 次往返 900 字节
+    # 不变——新前缀 39 步全在函数内,不经 CRC/跨核同步)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067c42' and
+            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xf2c304',
+                        'size':4,'value_bytes':'12000000'},
+            'the heap-experimental scenario must stop at the P3_PORT_SEL1 (0xf2c304, SDK-named) '
+            'full-word store after the P33 unnamed-window byte projection and the uextra pair '
+            'gate let the 0x6067be4/0x6067c36 byte writes through')
+    require(r['completed_steps']==302620,'the heap experimental config changed its step count')
     reset_config=r['peripherals']['reset_history_projection']['configuration']
     require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
@@ -1196,9 +1229,18 @@ def check(report,firmware):
             not mem_pwr['readback_value_consumed'],
             'the MEM_PWR_CON projection must record four OR-RMWs whose operands are all zero '
             '(the argument b[0x129D1C]=0 in this path) and one dead readback')
+    p33win=r['peripherals']['p33_window_projection']
+    require(p33win['byte_writes']==2 and
+            p33win['stores']=={'0xf2c948':{'values':['0x2'],'writes':1},
+                               '0xf2c94c':{'values':['0x0'],'writes':1}} and
+            p33win['write_only'] and p33win['readback_not_modeled'] and
+            len(p33win['addresses'])==12,
+            'the P33 unnamed-window projection must record exactly the two executed byte '
+            'stores (pair 0x6067be4 -> [0xf2c948]=0x02 old-register low byte, plain '
+            '0x6067c36 -> [0xf2c94c]=0x00 bit-8 byte) and stay write-only')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':4452,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 1484 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':4569,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 1523 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1300,7 +1342,7 @@ def check(report,firmware):
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==104 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==105 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==9 and
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==7 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
@@ -1608,7 +1650,7 @@ def main():
                               timer0_std12m=True,lp_timer_con_readback=True,
                               p33_analog_config=True,power_init_rstcon_masks=True,
                               power_init_wkup_dly=True,
-                              mem_pwr_con=True,
+                              mem_pwr_con=True,p33_window=True,subword_stores=True,
                               flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
