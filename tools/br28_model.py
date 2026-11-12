@@ -1230,7 +1230,7 @@ class P33WindowByteRegisters:
     证据(2026-11-12 路 AV 反汇编+动态 watch 钉死):
     - SDK p33_sfr.h(sha256 adde010f…,与 data/dependencies.json 一致)的 P33 命名
       止于 P3_LS_PLL=P33_ACCESS(0xd5);本族偏移 0x150-0x153/0x250-0x253/
-      0x258-0x259/0x267/0x280 全部超过命名上限、无 __RW/__RO/__WO 类型标注、
+      0x258-0x259/0x267/0x268 全部超过命名上限、无 __RW/__RO/__WO 类型标注、
       无字段位定义(整个 p33_sfr.h 都是纯地址宏)——SDK 无名即不声称硅语义。
     - app 字面量恰 3 处(0x6067b70/0x6067470/0x6067d28),ROM 整块 0 处;其余
       引用全部经基址寄存器算术到达(r8=0xF2C548/r6=0xF2C940/r9=0xF2C960 及
@@ -1248,8 +1248,11 @@ class P33WindowByteRegisters:
         再按参数 r4 分支写 [0xF2C940]=4/[0xF2C944]=0(r4!=0)或
         [0xF2C540]=251/[0xF2C544]=255(r4==0,st.b)。
       * walker 完成后的清尾 0x6067d26..d38(r1=0xF2C960):[0xF2C99C]=0xFF
-        (st.b.l r1+60)、[0xF2CA00]=0xFF(+64)、[0xF2C960]/[0xF2C964]=0xFF
-        ——16 位位图寄存器对全部置位。
+        (st.b.l r1+60)、[0xF2C9A0]=0xFF(+64)、[0xF2C960]/[0xF2C964]=0xFF
+        ——16 位位图寄存器对全部置位。(路 AZ 修正:0x6067d32 的 st.b.l
+        原始字段 n=64、r1=0xF2C960 → 实际字节地址 0xF2C9A0=P33_ACCESS(0x268);
+        路 AV 记录的 0xf2ca00(=0xF2C960+160)是十进制/十六进制换算笔误,
+        按原始字段解码修正。)
       位图语义(index 0..11 各一位、低/高字节相邻两个字节地址构成 16 位对)
       是从写入值形状归纳的描述,不是 SDK 字段定义;不发明未观测位、不建模
       寄存器对固件的电气效果。
@@ -1260,7 +1263,7 @@ class P33WindowByteRegisters:
     """
     ADDRESSES=(0xf2c540,0xf2c544,0xf2c548,0xf2c54c,
                0xf2c940,0xf2c944,0xf2c948,0xf2c94c,
-               0xf2c960,0xf2c964,0xf2c99c,0xf2ca00)
+               0xf2c960,0xf2c964,0xf2c99c,0xf2c9a0)
 
     def __init__(self):
         self.stores={address:{'values':[],'writes':0} for address in self.ADDRESSES}
@@ -1288,7 +1291,7 @@ class P33WindowByteRegisters:
                                   'writes':e['writes']}
                           for a,e in sorted(self.stores.items()) if e['writes']},
                 'sdk_naming_limit':'p33_sfr.h names end at P3_LS_PLL=P33_ACCESS(0xd5); '
-                                   'offsets 0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x280 '
+                                   'offsets 0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x268 '
                                    'are unnamed (address macros only, no __RW/__RO/__WO, no bit fields)',
                 'write_only':True,'readback_not_modeled':True,
                 'observed_shapes':('0x6067b66 P33-window init: pair uextra.rrii.p||st.b [0xF2C948] '
@@ -1296,12 +1299,84 @@ class P33WindowByteRegisters:
                                    'tail st.b/st.b.l [0xF2C940]/[0xF2C944]/[0xF2C960]/[0xF2C964]; '
                                    '0x6067464 st.b.l/st.b [0xF2C960]=4/[0xF2C964]=0/[0xF2C940]=4/'
                                    '[0xF2C944]=0/[0xF2C540]=251/[0xF2C544]=255; '
-                                   'walker tail 0x6067d2e..d38 st.b.l 0xFF into [0xF2C99C]/[0xF2CA00]/'
+                                   'walker tail 0x6067d2e..d38 st.b.l 0xFF into [0xF2C99C]/[0xF2C9A0]/'
                                    '[0xF2C960]/[0xF2C964]; byte stores only, no readback, no RMW, '
                                    'no full-word store observed'),
                 'assumption':('write-only byte-sequence record; per-bitmap semantics (12 indices, '
                               'low/high byte pairs) inferred from written-value shapes, not an SDK '
                               'field definition; no silicon readback or electrical effect modeled')}
+
+
+class P33PortSelRegisters:
+    """P3_PORT_SEL0..11(0xf2c300..0xf2c32c)的 write-only 整字记录(opt-in,路 AZ)。
+
+    证据(2026-11-12 路 AZ 反汇编+全量引用扫描钉死):
+    - SDK p33_sfr.h 把 P3_PORT_SEL0..15 全部命名为 P33_ACCESS(0xc0..0xcf)
+      (P3_PORT_SEL0=0xf2c300);与整个 p33_sfr.h 一样只有地址宏、无
+      __RW/__RO/__WO 类型标注、无字段位定义——寄存器名与固件真实写形状
+      是全部证据,不声称硅语义。
+    - app 字面量 0 处、ROM 整块 0 处(0x00f2c300..0x00f2c30c 全部扫描);
+      唯一写者是 post-power_init 的 P33 窗配置函数 0x6067b66(walker
+      0x6067cb4 两轮表循环调入):函数尾 0x6067c3e `r1=0xF2C300` +
+      0x6067c42 `st.w.idxs [r1+r5<<2]=r0`,r5=表 index(第一轮 0..11、
+      第二轮 0..2),值 r0=查表函数 0x60672C8(cfg) 的真实执行结果
+      (cfg=0x11 实测 0x12)。访问面=index 0..11 → 0xf2c300..0xf2c32c
+      共 12 个字;本 boot 表实测写 SEL1..4(第一轮 index 1..4,cfg=
+      0x11/0xE0/0x05/0x15),第二轮 index 0..2 走 P3_AWKUP 次路径
+      (cfg=0xE2/0xE4/0xE5,不写 PORT_SEL)。
+    - 读回证据:app+ROM 全量唯一读是 0x0606745e `ld.w.l r0=[r8+120]`
+      (r8=0xf2c120,n 缩放后=+480 → 0xf2c300=P3_PORT_SEL0)——arch_startup
+      的 opaque 死读先例(R0=None 直到调用方覆盖,调用者 0x0603502c/
+      0x06035306 已钉死都会立即杀死 R0),值从不被消费。没有任何被消费
+      的读回观测——读回一律严格停(port_sel_readback_not_modeled),
+      显式 kind 优先于泛 unmapped;死读由 probe 侧 opaque 死读门单独
+      放行(不经本投影)。
+    - RMW 无任何观测形状,一律拒绝(port_sel_rmw_not_modeled)。
+    - 建模选择:与 lp_timer SYS_DIV/CLK_CON0(路 W)整字写 write-only
+      记录同族——st.w.idxs 全字覆盖写、旧值无关(与 st.d.sp.l「旧值
+      无关」同论证),按字粒度记录写值序列;不为无人消费的读发明值
+      (与 p33_analog_config 的合成读回不同族——那族固件真实读回)。
+    """
+    ADDRESSES=tuple(0xf2c300+4*i for i in range(12))
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.ADDRESSES}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled P3_PORT_SEL register')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('port_sel_readback_not_modeled',address=hex(address))
+
+    def rmw(self,kind,operand):
+        raise Blocked('port_sel_rmw_not_modeled',address=hex(self.ADDRESSES[0]),operation=kind)
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes']}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':'P3_PORT_SEL0..15 = P33_ACCESS(0xc0..0xcf) in p33_sfr.h '
+                             '(address macros only, no __RW/__RO/__WO, no bit fields); '
+                             'modeled face is index 0..11 = 0xf2c300..0xf2c32c (the two '
+                             'walker-table loops of 0x6067cb4)',
+                'write_only':True,'readback_not_modeled':True,
+                'observed_shapes':('0x6067b66 tail 0x6067c3e/c42: r1=0xF2C300 then '
+                                   'st.w.idxs [r1+index<<2]=lookup(cfg) (full-word store, old value '
+                                   'irrelevant); boot table writes SEL1..4 via indexes 1..4; the only '
+                                   'observed read is the arch_startup proven-dead read of P3_PORT_SEL0 '
+                                   'at 0x0606745e (opaque gate, R0 never consumed); no RMW observed'),
+                'assumption':('write-only word-sequence record; the stored value is the real '
+                              'executed lookup result, never invented; no silicon readback or '
+                              'pin-mux electrical effect modeled')}
 
 
 class MMU:
@@ -1722,6 +1797,7 @@ class BR28Model:
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  p33_analog_config_projection=False,
                  mem_pwr_con_projection=False,p33_window_projection=False,
+                 p33_port_sel_projection=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -1849,6 +1925,10 @@ class BR28Model:
         # (证据与形状见 P33WindowByteRegisters 类注释;默认关,这族地址保持
         # unmapped,302,581 前沿形状不变)。
         self.p33_window=P33WindowByteRegisters() if p33_window_projection else None
+        # p33_port_sel(opt-in):P3_PORT_SEL0..11 的 write-only 整字记录(路 AZ;
+        # 证据与形状见 P33PortSelRegisters 类注释;默认关,0xf2c304 写保持
+        # unmapped_or_readonly_write,302,620 前沿形状不变)。
+        self.p33_port_sel=P33PortSelRegisters() if p33_port_sel_projection else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -1958,6 +2038,7 @@ class BR28Model:
             (self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address)
                                             or self.lp_timer.handles_lrct_num(address))) or
             (self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)) or
+            (self.p33_port_sel is not None and self.p33_port_sel.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -2135,6 +2216,11 @@ class BR28Model:
         if self.p33_window is not None and self.p33_window.handles(address):
             self.counts['reads']+=1
             return self.p33_window.read(address)
+        # P3_PORT_SEL0..11:整字写 write-only 记录,读回一律严格停(唯一观测
+        # 读是 arch_startup 的 opaque 死读,由 probe 侧死读门放行、不经这里)。
+        if self.p33_port_sel is not None and self.p33_port_sel.handles(address):
+            self.counts['reads']+=1
+            return self.p33_port_sel.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -2223,6 +2309,9 @@ class BR28Model:
         elif self.mem_pwr_con is not None and self.mem_pwr_con.handles(address):
             # 0xf2a62c 只有 OR/AND 位 RMW 观测,无整字 store;整字写拒绝
             raise Blocked('mem_pwr_con_full_store_not_modeled',address=hex(address),value=hex(value))
+        elif self.p33_port_sel is not None and self.p33_port_sel.handles(address):
+            # P3_PORT_SEL0..11:st.w.idxs 全字覆盖写(旧值无关),write-only 记录
+            self.p33_port_sel.write(address,value)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -2526,6 +2615,7 @@ class BR28Model:
         if self.lp_timer is not None:result['lp_timer_init_projection']=self.lp_timer.report()
         if self.mem_pwr_con is not None:result['mem_pwr_con_projection']=self.mem_pwr_con.report()
         if self.p33_window is not None:result['p33_window_projection']=self.p33_window.report()
+        if self.p33_port_sel is not None:result['p33_port_sel_projection']=self.p33_port_sel.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
