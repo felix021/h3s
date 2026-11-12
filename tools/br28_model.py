@@ -1612,6 +1612,106 @@ class P3LsRegisters:
                               'not modeled at all')}
 
 
+class Fd31AdcConRegisters:
+    """0xfd3100 = JL_ADC->CON 的 write-only 整字记录(opt-in,路 BG/sim-pwrdomain)。
+
+    证据(2026-11-13 路 BG 反汇编+全量引用扫描钉死;修正路 BD 两条记录):
+    - **命名修正(路 BD 记「JL PMU/SFR 段电源口、SDK 头无名」)**:0xfd3100 在
+      参考 SDK br28.h(与路 AC JL_LRCT=ls_base+map_adr(0x36,0) 同一头文件、
+      同一命名锚点家族)里是 **JL_ADC_BASE = ls_base(0xfd0000)+map_adr(0x31,0)**,
+      `JL_ADC_TypeDef { __RW __u32 CON; __RO __u32 RES; }`——+0=CON(可读写)、
+      +4=RES(只读转换结果)。结构体无任何位字段定义;名字是 SDK 参考命名锚点,
+      不声称硅语义。HANDOFF「电源小函数 0x60115b4」实为 ADC 控制函数。
+    - **首写值修正(路 BD 记「[0xfd3100]=0x200」)**:0x60115ba `st.w.modimm
+      {m:0xB00}` 按 modimm 展开(codec 旋转立即数)是 **0x20000**;304,036 停点
+      报告 value_bytes '00000200' 小端即 0x00020000。三连写序列=
+      **0x20000 → 0x20040 → 0x40**。
+    - 电源/控制函数 0x60115b4..0x60115ca 全函数:`li r0=0xfd3100;
+      st.w.modimm [r0]=0x20000; li r1=0x20040; st.w [r0]=r1;
+      st.w.modimm [r0]=0x40; rts`——纯三条整字写,零读回、零 RMW、零轮询。
+      全 app 恰好 5 个 call 点:0x60120f4/0x6012106(app_core 尾段,两次背靠背,
+      中间夹 ROM 0x1fd80→0x4226 的 176 字节缓冲 memset,纯 RAM)、0x60116ee/
+      0x6011706(caller A 内)、0x6034900(caller C 内)。
+    - 全量引用面(app 字面量恰好 7 处 li.u32 0xfd3100、ROM 整块 0 处、
+      0xfd3104 字面量 0 处):①0x60115b6 电源函数(纯写);②0x6011642 轮询
+      helper 0x601163a(csync 后 ≤1000 次循环读 CON,退出条件=byte0 bit7 置位
+      (ext.b0.s<0)或 bit4 清零,轮询间 call ROM 0x12e256 延时——**真实读回+
+      忙等消费**);③0x60116c4 setter 0x6011666 尾(各分支合并:整字写计算值
+      r4 + `rmw.or.modimm |=0x40` 置 bit6);④0x60116e2 caller A 0x60116d0
+      (ADC 采样取值:写通道槽 [0x127DAC](=0x1265C0+1531*4) 后 **读 CON 测
+      bit4 门控**、bit4 置位才调轮询 helper+电源函数,**读 [r4+4]=0xfd3104
+      RES** 把结果半字存进槽+4(st.h n=2、scale 2),经 ROM 0x12b5b0 post
+      后 ld.hu 取回同址槽+4 作返回值);⑤
+      0x6034908 caller C 0x60348e8(push.srl m=41 全帧:槽==0x3FF → 读 CON 测
+      bit7 门控,否则调电源函数);⑥0x60349E8 caller D(槽==0x3FF → 读 CON、
+      bit4 置位退出、byte0 消费(==10 检查));⑦0x6068084 power_init 尾段区域
+      单写 CON=0x40(不在本前缀)。
+    - **读回消费就在启动链上**:304,036 放行后的 app_core 尾段=两次电源函数
+      (6 条纯写)→ 0x60115cc+3 组 getter(0x6001230/0x601160e,纯软件表)→
+      **32 次采样循环 0x6012148..0x601215e**(每轮 call caller A,收集
+      min/max/sum,末尾 (sum-min-max)/30 的 ADC 平均滤波)——caller A 首个
+      fd31 访问就是 0x60116e6 `ld.w [r4]` 读 CON。
+    - 建模选择:CON 写侧按 p33_port_sel/P3_LS/lp_timer SYS_DIV 同族 write-only
+      整字记录(全字覆盖写、旧值无关、值全真实指令计算);**CON 读回(bit4
+      门控/bit7 忙等)与 RES(模拟转换结果)是真实读回消费且无可推导值——
+      RES 是模拟测量、CON 状态位无 SDK 位定义,不发明 fixture**,读回一律
+      严格停(fd31_adc_con_readback_not_modeled,显式 kind 优先于泛 unmapped);
+      RMW(setter 的 |=0x40,在前沿之后)拒绝(fd31_adc_con_rmw_not_modeled,
+      p3_ls 先例:该寄存器有真实读回消费者,位记录也不能声称合并语义)。
+      RES(0xfd3104)固件零写、投影不覆盖——读保持泛 unmapped 严格停。
+    """
+    CON=0xfd3100
+    ADDRESSES=(CON,)
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.ADDRESSES}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled fd31 ADC CON register')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('fd31_adc_con_readback_not_modeled',address=hex(address))
+
+    def rmw(self,kind,operand):
+        raise Blocked('fd31_adc_con_rmw_not_modeled',address=hex(self.ADDRESSES[0]),operation=kind)
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes']}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('0xfd3100 = JL_ADC->CON (__RW), 0xfd3104 = JL_ADC->RES (__RO) in the '
+                              'reference br28.h (ls_base+map_adr(0x31,0); same header family as the '
+                              'JL_LRCT naming anchor; struct has NO bit-field definitions; naming '
+                              'anchor only, not a silicon claim; route BD\'s power/PMU reading corrected)'),
+                'write_only':True,'readback_not_modeled':True,
+                'observed_shapes':('control function 0x60115b4: li r0=0xfd3100, st.w.modimm '
+                                   '[r0]=0x20000 (modimm raw 0xB00 expands to 0x20000, NOT 0x200 '
+                                   'as route BD recorded), li r1=0x20040, st.w [r0]=r1, '
+                                   'st.w.modimm [r0]=0x40, rts; called back-to-back from the '
+                                   'app-core tail 0x60120f4/0x6012106; readback consumers: poll '
+                                   'helper 0x601163a (<=1000 rounds on CON bit7-set/bit4-clear), '
+                                   'caller 0x60116d0 (CON bit4 gate + RES read into a software '
+                                   'slot, 32-round sampling loop 0x6012148), callers 0x60348e8/'
+                                   '0x60349xx (CON bit7/bit4 gates), setter 0x6011666 tail '
+                                   '(whole-word store + rmw.or |=0x40, past the frontier); '
+                                   'RES 0xfd3104 is never written by the firmware'),
+                'assumption':('write-only word-sequence record of CON (a simulator capability, '
+                              'not a WO property claim); stored values are real executed results, '
+                              'never invented; no ADC conversion, analog input or status-bit '
+                              'semantics modeled; CON readback (bit4 gate / bit7 busy poll) and '
+                              'RES (an analog measurement) have no derivable values, so reads '
+                              'stop honestly and no fixture is invented')}
+
+
 class MMU:
     """Functional SDK page-table projection, no TLB/cache or bus timing model."""
     def __init__(self,initial_con=None):
@@ -2045,6 +2145,7 @@ class BR28Model:
                  p33_port_sel_projection=False,
                  p33_awkup_projection=False,p33_awkup_first_read_words=None,
                  p3_ls_projection=False,p11_syscon1_mask_sets=False,
+                 fd31_adc_con_projection=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -2194,6 +2295,12 @@ class BR28Model:
         # unmapped_or_readonly_write,304,012 前沿形状不变)。0xf2a638 全
         # app/ROM 零访问(路 AZ 静态读法修正),不建模。
         self.p3_ls=P3LsRegisters() if p3_ls_projection else None
+        # fd31_adc_con(opt-in,路 BG):0xfd3100=JL_ADC->CON 的 write-only 整字
+        # 记录(证据与形状见 Fd31AdcConRegisters 类注释;命名修正——路 BD 记的
+        # 「PMU/电源口」实为 ADC CON,参考 br28.h 同 JL_LRCT 锚点头)。默认关:
+        # 0xfd3100 写保持 unmapped_or_readonly_write(304,036 前沿形状不变);
+        # RES(0xfd3104)固件零写,投影不覆盖、读保持泛 unmapped。
+        self.fd31_adc_con=Fd31AdcConRegisters() if fd31_adc_con_projection else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -2311,6 +2418,7 @@ class BR28Model:
             (self.p33_port_sel is not None and self.p33_port_sel.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
+            (self.fd31_adc_con is not None and self.fd31_adc_con.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -2503,6 +2611,12 @@ class BR28Model:
         if self.p3_ls is not None and self.p3_ls.handles(address):
             self.counts['reads']+=1
             return self.p3_ls.read(address)
+        # fd31 ADC CON(路 BG):整字写 write-only 记录,读回是真实消费(bit4
+        # 门控/bit7 忙等/RES 模拟值无可推导来源),一律严格停(显式 kind 优先
+        # 于泛 unmapped,便于诊断)。
+        if self.fd31_adc_con is not None and self.fd31_adc_con.handles(address):
+            self.counts['reads']+=1
+            return self.fd31_adc_con.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -2603,6 +2717,10 @@ class BR28Model:
             # P3_LS 族(路 BD):st.w/并行对 st.w 半全字覆盖写(旧值无关,
             # 含 run3 旧值方向 pair),write-only 记录。
             self.p3_ls.write(address,value)
+        elif self.fd31_adc_con is not None and self.fd31_adc_con.handles(address):
+            # fd31 ADC CON(路 BG):st.w.modimm/st.w 全字覆盖写(旧值无关),
+            # write-only 记录;值序列 0x20000/0x20040/0x40 全真实指令计算。
+            self.fd31_adc_con.write(address,value)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -2927,6 +3045,7 @@ class BR28Model:
         if self.p33_port_sel is not None:result['p33_port_sel_projection']=self.p33_port_sel.report()
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
+        if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),

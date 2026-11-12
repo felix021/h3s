@@ -1676,6 +1676,70 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
                                          'address':'0xf2c290','size':4,'value_bytes':'00000000'})
 
+    def test_fd31_adc_con_projection_shapes(self):
+        # 路 BG:0xfd3100=JL_ADC->CON(参考 br28.h 命名锚点,修正路 BD「PMU/
+        # 电源口 SDK 无名」;首写值 0x20000=modimm raw 0xB00 旋转展开,修正
+        # 路 BD「0x200」)的 write-only 整字记录。①控制函数 0x60115b4 首写
+        # 0x60115ba `st.w.modimm [r0+0]=0x20000`:投影开启时落记录。
+        adc=BR28Model(fd31_adc_con_projection=True)
+        r=[0]*16;r[0]=0xfd3100
+        result=explore(self.module,self.app,name='adc_con_first_store',handoff=self.handoff(),
+            hardware=adc,diagnostics={'entry_pc':0x60115ba,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(adc.report()['fd31_adc_con_projection']['stores'],
+                         {'0xfd3100':{'values':['0x20000'],'writes':1}})
+        # ②第二写 0x60115c4 `st.w [r0+0]=r1`(r1=0x20040)同样直写落记录
+        # (三连写 0x20000→0x20040→0x40)。
+        adc2=BR28Model(fd31_adc_con_projection=True)
+        r=[0]*16;r[0]=0xfd3100;r[1]=0x20040
+        result=explore(self.module,self.app,name='adc_con_second_store',handoff=self.handoff(),
+            hardware=adc2,diagnostics={'entry_pc':0x60115c4,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(adc2.report()['fd31_adc_con_projection']['stores'],
+                         {'0xfd3100':{'values':['0x20040'],'writes':1}})
+        # ③读回是真实消费(采样循环 caller 0x60116d0 的 bit4 门控首读
+        # 0x60116e6 `r0=[r4+0]`):投影开启也严格停
+        # fd31_adc_con_readback_not_modeled——新前沿 304,317 的形状。
+        adc3=BR28Model(fd31_adc_con_projection=True)
+        r=[0]*16;r[4]=0xfd3100
+        result=explore(self.module,self.app,name='adc_con_readback_stop',handoff=self.handoff(),
+            hardware=adc3,diagnostics={'entry_pc':0x60116e6,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'fd31_adc_con_readback_not_modeled',
+                                         'address':'0xfd3100'})
+        # ④RMW 拒绝(setter 0x6011666 尾的 |=0x40 在前沿之后;该寄存器有真实
+        # 读回消费者,位记录也不声称合并语义);RES(0xfd3104,固件零写)不在
+        # 投影内,读写都走泛路径。
+        self.assertRaisesRegex(Blocked,'fd31_adc_con_rmw_not_modeled',
+                               adc.fd31_adc_con.rmw,'or',0x40)
+        self.assertFalse(adc.handles(0xfd3104,4))
+        # ⑤与 P3_LS/port_sel 投影叠加互不吞地址。
+        stacked=BR28Model(fd31_adc_con_projection=True,p3_ls_projection=True,
+                          p33_port_sel_projection=True)
+        r=[0]*16;r[0]=0xfd3100
+        result=explore(self.module,self.app,name='adc_con_stacked',handoff=self.handoff(),
+            hardware=stacked,diagnostics={'entry_pc':0x60115ba,'initial_sp':STACK_TOP,
+                                          'initial_gprs':r},budget=1)
+        self.assertEqual(stacked.report()['fd31_adc_con_projection']['stores'],
+                         {'0xfd3100':{'values':['0x20000'],'writes':1}})
+        self.assertEqual(stacked.report()['p3_ls_projection']['word_writes'],0)
+        self.assertEqual(stacked.report()['p33_port_sel_projection']['word_writes'],0)
+        # ⑥默认关:fd31_adc_con_projection 关闭时 0xfd3100 写不路由,诚实停
+        # (与真实场景 304,036 前沿形状逐字段一致;value_bytes '00000200'
+        # 小端=0x00020000)。
+        off=BR28Model()
+        r=[0]*16;r[0]=0xfd3100
+        result=explore(self.module,self.app,name='adc_con_stop',handoff=self.handoff(),
+            hardware=off,diagnostics={'entry_pc':0x60115ba,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+                                         'address':'0xfd3100','size':4,'value_bytes':'00000200'})
+
     def test_mem_pwr_con_rmw_and_dead_read_shapes(self):
         # 0x606772a li r8=0xf2a62c → 0x6067730 `[r8+0] |= r0`(rmw.or.r)。boot
         # 路径 b[0x129D1C]=0 → operand=r0=0。strict(无投影)停在 0xf2a62c 未建模
