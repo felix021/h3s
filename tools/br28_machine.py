@@ -46,6 +46,7 @@ class DualCoreMachine:
                  first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False,
                  software_irq_entry_banks=False,idle_wait_projection=False,software_irq_rti=False,
                  core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False,
+                 timer0_irq_entry=False,timer0_irq_entry_banks=False,timer0_irq_rti=False,
                  gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False,
                  event_clock_projection=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
@@ -86,6 +87,16 @@ class DualCoreMachine:
         self.core_tick_entry_banks=core_tick_entry_banks
         self.core_tick_rti=core_tick_rti
         require(not core_tick_rti or core_tick_entry,'core tick RTI projection requires the entry projection')
+        # 路 BE(Timer0 IRQ4,机制抄 core_tick/软件 IRQ 两先例):最小 CPU 进入
+        # 投影 + 可选入口银行假设 + 对称一次性 RTI,全部 opt-in 默认关。
+        require(isinstance(timer0_irq_entry,bool),'Timer0 IRQ4 entry projection is opt-in boolean')
+        self.timer0_irq_entry=timer0_irq_entry;self.timer0_irq_deliveries=[]
+        require(isinstance(timer0_irq_entry_banks,bool),'Timer0 IRQ4 entry banks are an opt-in assumption')
+        require(not timer0_irq_entry_banks or timer0_irq_entry,'Timer0 IRQ4 entry bank assumption requires the entry projection')
+        self.timer0_irq_entry_banks=timer0_irq_entry_banks
+        require(isinstance(timer0_irq_rti,bool) or timer0_irq_rti is None,'Timer0 IRQ4 RTI projection must be explicit')
+        require(not timer0_irq_rti or timer0_irq_entry,'Timer0 IRQ4 RTI projection requires the entry projection')
+        self.timer0_irq_rti=timer0_irq_rti
         require(isinstance(gpio_out_readback,bool),'GPIO OUT read-back is an opt-in boolean')
         self.gpio_out_readback=gpio_out_readback
         require(isinstance(cpu1_control_kick_wake,bool),'CPU1 control kick wake is an opt-in boolean')
@@ -93,7 +104,7 @@ class DualCoreMachine:
                 'CPU1 control kick wake requires the IDLE wait projection')
         self.cpu1_control_kick_wake=cpu1_control_kick_wake;self.seen_cpu1_control_kicks=0
         require(isinstance(repeat_irq_delivery,bool),'repeat IRQ delivery projection is opt-in boolean')
-        require(not repeat_irq_delivery or software_irq_entry or core_tick_entry,
+        require(not repeat_irq_delivery or software_irq_entry or core_tick_entry or timer0_irq_entry,
                 'repeat IRQ delivery requires an enabled IRQ entry projection')
         # codex 暂停点2最小契约(docs/event-clock.md):全核 IDLE 时虚拟时间推进到
         # 最近的已建模事件再按 IRQ 资格唤醒;默认关闭,保持立即诚实停。
@@ -485,6 +496,89 @@ class DualCoreMachine:
                'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
         self.core_tick_deliveries.append(event);self.record_event(event)
 
+    # 路 BE:Timer0(IRQ4)handler 0x12ece8 的 RTI 尾锚(gpio-irq 域六 handler
+    # 反汇编钉死:每个 38 字节、rti 是最后一条,Timer0 的在 +0x24;RAM 入口
+    # 0x12ece8 的 flash 源 0x60c84c0,evidence/qcy-irq.json 逐指令钉死)。
+    TIMER0_HANDLER=0x12ece8
+    TIMER0_RTI_TAIL=0x12ed0c
+
+    def deliver_timer0_irq(self,core):
+        # Opt-in minimal CPU entry for a Timer0 IRQ4 pending episode. Mirrors
+        # deliver_core_tick: RETI-load and the vector-slot read are checked
+        # before any state change; entry SP bank and ICFG side effects stay
+        # unknown. The pending bit is NOT cleared here: the real handler acks
+        # with rmw.or.modimm [0xfd0400] |= 0x4000 (W1C bit14), which the model
+        # already implements in Timer0.write.
+        require(self.timer0_irq_entry and core in self.cores,
+                'Timer0 IRQ4 entry requires an eligible pending episode on a launched core')
+        cpu=self.cores[core]
+        if self.repeat_irq_delivery:
+            # 与 deliver_software_irq/deliver_core_tick 对称:handler RTI 返回后
+            # 可再次交付,任一 handler 在途仍然拒绝,不扩展嵌套。
+            require(getattr(cpu,'active_context',None) not in ('software_irq_handler','core_tick_handler','timer0_irq_handler'),
+                    'repeated Timer0 IRQ4 delivery must not nest on an in-flight IRQ handler')
+        else:
+            require(all(d['core']!=core for d in self.timer0_irq_deliveries),
+                    'Timer0 IRQ4 entry is one-shot per core without the repeat delivery projection')
+        require(not cpu.bootstrap_context and cpu.after_then is None and cpu.repeat is None,
+                'Timer0 IRQ4 entry requires an instruction boundary')
+        slot=0x19fe00+4*4
+        try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
+        except Blocked:raise Blocked('vector_slot_uninitialized',core=core,irq=4,
+                                     address=hex(slot)) from None
+        # Validate the whole entry before committing any state change.
+        entry_banks=None;bank_usp=None;bank_ssp=None
+        if self.timer0_irq_entry_banks:
+            # Explicit unverified assumption, same as the software-IRQ/core-tick
+            # entries: SP switches to the kernel stack (SSP = last explicit SSP
+            # fixture) while USP keeps the interrupted task stack.
+            bank_ssp=getattr(cpu,'last_explicit_ssp',None)
+            require(bank_ssp is not None,'Timer0 IRQ4 entry bank assumption lacks an explicit SSP fixture')
+            require(cpu.sp_known,'interrupted task stack pointer is unknown')
+            bank_usp=cpu.sp
+            entry_banks={'usp':hex(bank_usp),'ssp':hex(bank_ssp),
+                         'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
+        # Commit atomically: no further failure is possible past this point.
+        if core in self.idle_wait_cores:
+            self.idle_wait_cores.discard(core)
+            self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':4})
+        interrupted=cpu.pc
+        cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
+        cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
+        if self.timer0_irq_entry_banks:
+            cpu.usp=bank_usp;cpu.ssp=bank_ssp;cpu.sp=bank_ssp;cpu.sp_known=True
+        cpu.active_context='timer0_irq_handler'
+        event={'kind':'timer0_irq_entry','core':core,'irq':4,'vector_address':hex(slot),
+               'handler':hex(handler),'reti_from':hex(interrupted),'entry_counted_as_model_step':True,
+               'reti_load_is_assumption':True,'delivery_clears_pending':False,
+               'pending_cleared_by_handler_ack':True,
+               'handler_ack_shape':'real W1C rmw.or.modimm [0xfd0400] |= 0x4000 (bit14) at 0x12ecf8; modeled by Timer0.write',
+               'entry_psr_high_bits_unknown_pushed_as_zero':True,
+               'entry_banks':entry_banks,
+               'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
+        self.timer0_irq_deliveries.append(event);self.record_event(event)
+
+    def return_timer0_irq(self,cpu):
+        # Symmetric opt-in return for the Timer0 IRQ4 handler at its exact tail
+        # 0x12ed0c (push.srl/push.rl frame really popped at 0x12ed06/0x12ed08,
+        # csync at 0x12ed0a): PC=RETI and SP=USP. RETI/PSR come from the real
+        # popped frame; bank writeback and ICFG effects are assumptions.
+        require(self.timer0_irq_rti and cpu.pc==self.TIMER0_RTI_TAIL and
+                getattr(cpu,'active_context',None)=='timer0_irq_handler' and
+                cpu.after_then is None and cpu.repeat is None,
+                'Timer0 IRQ4 RTI projection requires the exact handler tail')
+        require(any(d['core']==cpu.core_id and d['handler']==hex(self.TIMER0_HANDLER)
+                    for d in self.timer0_irq_deliveries),
+                'Timer0 IRQ4 RTI tail does not match the delivered handler identity')
+        require(cpu.usp is not None and isinstance(cpu.reti,int),
+                'Timer0 IRQ4 RTI lacks a restored frame or task stack')
+        interrupted_task=cpu.reti
+        cpu.pc=interrupted_task;cpu.sp=cpu.usp;cpu.sp_known=True;cpu.steps+=1
+        cpu.active_context=None
+        self.record_event({'kind':'timer0_irq_rti','core':cpu.core_id,'pc_after':hex(cpu.pc),
+                           'sp_after':hex(cpu.sp),'reti_from_frame':hex(interrupted_task),
+                           'bank_writeback_is_assumption':True,'icfg_effects_certified':False})
+
     def note_stall(self,cpu,details):
         self.stalls+=1
         self.record_event({'core':cpu.core_id,**details})
@@ -496,9 +590,10 @@ class DualCoreMachine:
     def note_sp_write(self,cpu):
         # Alias/writeback mode is unresolved. Equal values are unambiguous;
         # different bank values become unknown until an explicit bank write.
-        # Inside the software-IRQ handler the entry bank fixtures stay: its
-        # pushes/pops are balanced frame pairs, not bank reassignments.
-        if getattr(cpu,'active_context',None)=='software_irq_handler':return
+        # Inside an IRQ handler context the entry bank fixtures stay: the
+        # handler's pushes/pops are balanced frame pairs, not bank
+        # reassignments (software-IRQ/core-tick/Timer0-IRQ4 entries alike).
+        if getattr(cpu,'active_context',None) in ('software_irq_handler','core_tick_handler','timer0_irq_handler'):return
         for name in ('usp','ssp'):
             value=getattr(cpu,name)
             if value is not None and value!=cpu.sp:setattr(cpu,name,None)
@@ -556,6 +651,16 @@ class DualCoreMachine:
                     'bank_switch_silicon_semantics_certified':False,
                     'pending_cleared_by_handler_ack_not_delivery':True,
                     'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.core_tick_entry else {}),
+                **({'timer0_irq_entry_projection':{'enabled':True,'deliveries':self.timer0_irq_deliveries,
+                    'vector_slot_formula':'0x19fe00+4*4 (IRQ4); handler 0x12ece8 is the QCY Timer ISR table '
+                                          '0x60a2508 entry 0, 28B software frame, NOT the SDK 76B hwi.S veneer',
+                    'entry_bank_assumption':self.timer0_irq_entry_banks,
+                    'bank_switch_silicon_semantics_certified':False,
+                    'pending_cleared_by_handler_ack_not_delivery':True,
+                    'handler_ack':'real W1C rmw.or.modimm [0xfd0400] |= 0x4000 (bit14) at 0x12ecf8',
+                    'rti_tail':'0x12ed0c (exact handler tail; symmetric one-shot RTI projection)'
+                               if self.timer0_irq_rti else 'not enabled',
+                    'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.timer0_irq_entry else {}),
                 **({'repeat_irq_delivery_projection':{'enabled':True,
                     'gate':'no in-flight IRQ handler on the target core (previous handler must have RTI returned)',
                     'nesting_implemented':False,
@@ -571,7 +676,11 @@ class DualCoreMachine:
                                       'reproducibility only, not a silicon timing claim',
                     'masked_pending_or_overflow_wakes':False,
                     'honest_stop_without_events':'all_cores_idle_waiting (note: no modeled event can fire)',
-                    'timer0_irq4_is_not_a_wake_event':'IRQ4 delivery is not implemented; its pending still stops strictly if reached during advancement',
+                    'timer0_irq4_is_not_a_wake_event':('IRQ4 delivery is not implemented; its pending still stops strictly if reached during advancement'
+                        if not self.timer0_irq_entry else
+                        'Timer0 IRQ4 delivery is opt-in (route BE): a qualifying expiry during advancement raises '
+                        'IrqDeliveryRequest(core,irq=4) through the same advance() path and the run-loop dispatch '
+                        'handles it with the entry/W1C-ack/RTI assumptions stacking on this projection'),
                     'silicon_timing_or_interrupt_latency_modeled':False}} if self.event_clock_projection else {}),
                 'bootstrap_mode_or_ssp_writeback_certified':False,'launches':self.launches,'stalls':self.stalls,
                 'unknown_task_gprs_preserved':self.unknown_task_gprs,

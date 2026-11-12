@@ -46,7 +46,7 @@
 | B4 | app_core 资源 getter 链（0x6001230/0x601160e 重复对、ROM 0x1fd80）、0x6065d86 向量槽安装（0x19fe00+irq*4，区已映射）、任务创建 0x6066c26×2+0x6067242+ROM 0x12cc40 | 每个新资源/向量/任务一处；任务创建触发调度 IPI 往返（repeat 已开） | 多数走既有机制；新资源条目按 flash_image 只读区 | 高（task create/IPI 往返/向量写全部有先例） | 中（数量未知，可能夹带新 MMIO） |
 | B5 | 函数表 walker×5 段（0x60121c0..0x6012254 `call.r` 间接调用） | 表目标为 flash 已知字节，执行应可行；新 MMIO 视表内容 | 无新机制 | 中 | 中 |
 | B6 | app_core 尾部大段：0x6064162/0x6064f18/0x6064c8c/0x6064efc/0x606859c/0x6067dda、音频域 0x606dcc6/0x606dc14/0x606dd16/0x606dcd6、OS 域 0x6066a0a/0x60669a6/0x60669f0/0x6066a1a、ROM pend/post 0x12b55c/0x12b5b0 消息循环 | **边界数量未知**——本段是 D1 前最大的不确定段 | 逐边界证据先行；BT/音频外设若被触碰需新 fixture 族 | 低-中（0x606dxxx 域从未到达） | **高**（外部依赖芯片域可能需要大 fixture；0x601249c/0x60124ae 是 power-off 死等分支（call 0x60682a4 清理表 walker 后 goto 自循环），到达即 init 失败金丝雀，建议挂 watch） |
-| B7 | **Timer0 IRQ4 交付** @≈341,097 | advance() 里 `interrupt_delivery_not_implemented`（若 IRQ4 合格；不合格则 pending 静置不阻塞） | 向量槽 0x19fe10=0x12ece8（真实 RAM 已写）；handler 28B 软件保存帧形状 gpio-irq 域已钉（docs/gpio-irq.md「clear pending and restore software context」）；W1C bit14 清 pending 已建模；对称 RTI 复用 | 中-高（deliver_core_tick/deliver_software_irq 两套机制可抄） | IRQ4 资格（enable/优先级 vs IPMASK）在前缀里是否已写未知；到达时观察 |
+| B7 | **Timer0 IRQ4 交付** @≈341,097 | advance() 里 `interrupt_delivery_not_implemented`（若 IRQ4 合格；不合格则 pending 静置不阻塞） | 向量槽 0x19fe10=0x12ece8（真实 RAM 已写）；handler 28B 软件保存帧形状 gpio-irq 域已钉（docs/gpio-irq.md「clear pending and restore software context」）；W1C bit14 清 pending 已建模；对称 RTI 复用 | 中-高（deliver_core_tick/deliver_software_irq 两套机制可抄） | **已解决（路 BE）**：运行态 write trace 证实驱动安装 request_irq 在 ~110,768 步以 priority 1 真实使能 IRQ4（0xffe100=0x30000→0x33b55，此后无清零）——到期必交付；机制已就位（timer0_irq_delivery_requests+timer0_irq_entry/banks/rti，probe 场景已完成真实 handler 字节往返） |
 | B8 | **CPU0 core tick IRQ3 溢出** @≈447,490 | `core_tick_overflow_delivery_unresolved`（主场景栈未开 core tick 交付时） | probe_core_tick 已有 deliver_core_tick/ACK/帧锚（CORE_TICK_FRAMES 0x60661a4/0x60661e2、向量槽 0x19fe0c），**只差接进 irq_entry 主场景栈**（machine.core_tick_entry+core_tick_delivery_requests） | 高（机制全有，纯接线+真实前缀首验） | 低；注意与 B6 的先后（init 链若短于 143k 步则先到全核 IDLE） |
 | B9 | **全核 IDLE→事件时钟真实首验** | CPU0 进 idle（调度器无可运行任务）后 `all_cores_idle_waiting`（默认）或事件时钟推进 | `event_clock_projection`（需 idle_wait_projection；契约 docs/event-clock.md） | 高（8 单测+合成双核端到端已有；真实前缀首验是 C2 退出条件：计数→pending→IRQ3/IRQ4→真实 handler/ACK→RTOS 时间/就绪变化→任务恢复） | 中（首个真实 tick 唤醒的银行假设叠加；Timer0 pending 若合格但交付未实现会在推进中严格停——B7 必须先行） |
 | B10 | **D1 验收**：事件循环自我维持（连续定时事件+至少一个输入事件分发、可检查状态变化、能处理下一事件） | 无单一停点；验收场景设计 | B1..B9 全部 | 低（新验收框架） | 中 |
@@ -71,7 +71,7 @@
 | 路 | 一句话（停点/框架/依赖） | ROI 理由 |
 |---|---|---|
 | BD（BB 收尾+P3_LS 尾段） | 完成 P3_AWKUP 具名零值 fixture（BB 在途）→ 按 AZ 已钉证据放行 P3_LS_*/0xf2a638/0xf2a628 掩码集+清尾，walker 全返回；依赖 BB | 当前停点，证据最全，一步出 walker |
-| BE（Timer0 IRQ4 交付） | 在 ~341,097 必撞前实现 deliver_timer0_irq：向量槽真实读+0x12ece8 28B 帧锚+W1C ack+对称 RTI（抄 core_tick 机制）；依赖无（可与 BD 并行开发、BD 后接进主栈） | 预防性+机制复用高；若 IRQ4 不合格则天然惰性零成本 |
+| BE（Timer0 IRQ4 交付） | 在 ~341,097 必撞前实现 deliver_timer0_irq：向量槽真实读+0x12ece8 28B 帧锚+W1C ack+对称 RTI（抄 core_tick 机制）；依赖无（可与 BD 并行开发、BD 后接进主栈） | **已完成（2026-11-13，基线 f7878d0）**：机制就位且 probe 场景用真实 handler 字节跑通完整往返（交付→临界区→W1C→空回调派发→帧弹出→RTI 回到被中断点→同一诚实停）；IRQ4 运行态合格已证实（~110,768 步真实使能）；基线不含 BD，合并 main（c6f81d9+）后需融合场景参数区 |
 | BF（core tick 交付接线） | 把 probe_core_tick 既有 core_tick_entry/RTI 机制接进 irq_entry 主场景栈（纯接线），在 ~447,490 前就位；依赖无 | 机制全有纯接线；C2/D1 的时间驱动主干 |
 | BG（app_core 尾段推进） | B4/B5（资源 getter/向量安装/任务创建/函数表 walker）逐边界推进，预计以同族投影为主；依赖 BD | 到消息循环前的必经段，重叠度高 |
 | BH（音频/OS 域大段） | B6 未知边界群（0x606dxxx 等）逐个证据先行；可能吸收多路；watch 0x601249c/0x60124ae power-off 金丝雀；依赖 BG | D1 前最大不确定段，尽早探明边界数量本身就是产出 |
@@ -92,6 +92,6 @@
 ## 6. 不确定处（如实标注）
 
 - 步数预测（341,097/447,490）假设 Timer0/tick 的 progress 不被后续固件写暂停或重配（CON/CNT/PRD 再写会移动预测点）；到达前每路按实际报告重钉。
-- IRQ4 与 IRQ3 的资格（enable/IPMASK/优先级）在当前前缀是否已配置未知——B7/B8 的「必撞」以到达时实测为准。
+- ~~IRQ4 与 IRQ3 的资格（enable/IPMASK/优先级）在当前前缀是否已配置未知~~ 已解决（路 BE，2026-11-13）：IRQ4 由驱动安装 request_irq 在 ~110,768 步以 priority 1（maskable）真实使能且此后无清零（write trace：0xffe100=0x30000，字后长成 0x33b55）；IPMASK 运行态在 0/6 间随临界区升降（临界区内 priority≤5 被屏蔽，退出即恢复）。IRQ3 的资格仍以到达时实测为准（B8）。
 - B6 段的边界数量与是否有 BT/音频外设硬依赖（芯片应答类）离线不可判——这是 BH 路要量化的对象。
 - p11_init 是否会在 app_core 尾部被再次调用未反汇编穷举。

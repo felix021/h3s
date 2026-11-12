@@ -35,7 +35,7 @@
 - **被屏蔽的 pending 不唤醒**：pending 位保持置位、不交付；时间仍推进到下一事件（单测钉死：屏蔽的 irq125 pending 与合格的 tick 溢出并存时，只有 tick 唤醒）。
 - **被屏蔽的 tick 溢出不唤醒**：溢出置 pending 后计数器停在溢出态（`unresolved_overflow`，等 handler 真实 ACK），时间继续推进到下一事件。
 - 全核 IDLE 期间屏蔽状态视为冻结：只有固件写（需要核在跑）才能改 IRQ config/IPMASK/ICFG。
-- Timer0（IRQ4）**不是唤醒事件**：其交付未建模；推进中若它到期且合格，按既有严格停（`interrupt_delivery_not_implemented`）诚实显形。
+- Timer0（IRQ4）在默认下**不是唤醒事件**：交付投影未开时，推进中若它到期且合格，按既有严格停（`interrupt_delivery_not_implemented`）诚实显形。路 BE（2026-11-13）起 `timer0_irq_delivery_requests`+`timer0_irq_entry` 可 opt-in：合格到期经同一条 `advance()` 路径抛 `IrqDeliveryRequest(core,irq=4)`，由运行循环既有分发处理（入口/W1C ack/RTI 假设与本投影叠加）；本契约的其余规则不变。
 
 ### 5. 显式假设与不声称
 

@@ -2055,6 +2055,13 @@ class Timer0:
         self.remainder=0
         self.source_remainder=0
         self.expirations=0
+        # 路 BE:opt-in 交付请求的防重入簿记。core tick 的 unresolved_overflow
+        # 让计数器停在溢出态等 ACK;Timer0 是周期计数器,pending 置位后 cnt
+        # 继续走(真实周期定时器行为),故只用 delivery_in_flight 记录「本
+        # pending 片已请求过交付」,W1C(bit14)清 pending 时一并清零、下个
+        # 周期重新具备请求资格。这不是硅状态,是模型侧每个 pending 片至多
+        # 抛一次 IrqDeliveryRequest 的显式投影。
+        self.delivery_in_flight=False
 
     def read(self,offset):
         value={0:self.con,4:self.cnt,8:self.prd}.get(offset)
@@ -2071,7 +2078,7 @@ class Timer0:
                 raise Blocked('unsupported_timer_clock_source',value=hex(value))
             if mode and (self.cnt is None or self.prd is None):
                 raise Blocked('uninitialized_timer_count_or_period')
-            if value&0x4000:self.pending=False
+            if value&0x4000:self.pending=False;self.delivery_in_flight=False
             self.con=value&~0xc000
         elif offset==4:
             # CNT 重写=计数器复位,分频相位与源换算相位一并归零(对 legacy
@@ -2159,7 +2166,9 @@ class BR28Model:
                  icu_idle_projection=False,icu_idle_word=0x80000000,
                  software_irq_command_projection=False,
                  initial_software_irq_pending=None,software_irq_delivery_requests=False,
-                 unmaskable_irq_projection=False,core_tick_delivery_requests=False):
+                 unmaskable_irq_projection=False,core_tick_delivery_requests=False,
+                 timer0_irq_delivery_requests=False,
+                 timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
         if timer_lsb_ticks_per_step is not None and (not isinstance(timer_lsb_ticks_per_step,int) or not 0<=timer_lsb_ticks_per_step<=256):
             raise ValueError('invalid explicit LSB virtual tick rate')
@@ -2251,6 +2260,30 @@ class BR28Model:
         if core_tick_delivery_requests and not core_tick_configuration:
             raise ValueError('core tick delivery requests require the core tick configuration')
         self.core_tick_delivery_requests=core_tick_delivery_requests
+        # 路 BE(opt-in,默认关):Timer0 pending→IRQ4 资格合格时向机器抛
+        # IrqDeliveryRequest(core,irq=4) 而非 interrupt_delivery_not_implemented
+        # 严格停。资格链不变(ICFG gates8/9 + config[0] nibble 使能位 + 优先级
+        # 对 IPMASK,advance() 逐核扫描);每个 pending 片至多请求一次
+        # (Timer0.delivery_in_flight,handler 的 W1C |=0x4000 清 pending 时
+        # 一并清零),pending 不由交付清除。
+        if not isinstance(timer0_irq_delivery_requests,bool):
+            raise ValueError('Timer0 IRQ4 delivery requests are an opt-in boolean')
+        self.timer0_irq_delivery_requests=timer0_irq_delivery_requests
+        # 探路 fixture(显式假设,仅 probe 场景用):把 STD12M Timer0 的首次
+        # 到期拉近到启动写之后 N 个模型步(每步 3 个 STD12M tick)。运行态
+        # 已证实(路 BE trace):驱动安装循环在 ~110,768 步把 IRQ4 以
+        # priority 1 真实使能(0xffe100=0x30000 起,word 后长成 0x33b55,
+        # 此后到前沿无清零)——所以默认探针就是「真实资格」的交付分支;
+        # timer0_irq4_masked_probe 是反事实对照(把 IRQ4 nibble 清零的
+        # 「未安装」世界),演示惰性分支:到期只置 pending、不请求不停。
+        if timer0_irq4_expiry_probe_steps is not None and (not isinstance(timer0_irq4_expiry_probe_steps,int)
+                or not 1<=timer0_irq4_expiry_probe_steps<=100000):
+            raise ValueError('invalid Timer0 IRQ4 expiry probe step count')
+        self.timer0_irq4_expiry_probe_steps=timer0_irq4_expiry_probe_steps
+        if not isinstance(timer0_irq4_masked_probe,bool):
+            raise ValueError('Timer0 IRQ4 masked probe is an opt-in boolean')
+        self.timer0_irq4_masked_probe=timer0_irq4_masked_probe
+        self.timer0_irq4_probe_armed=False
         if core_tick_count_while_held not in (None,False,True):raise ValueError('invalid held-core clock hypothesis')
         self.core_tick_count_while_held=core_tick_count_while_held
         if initial_cpu1_control not in (None,0):raise ValueError('only unknown or explicitly held CPU1 fixture supported')
@@ -2724,7 +2757,10 @@ class BR28Model:
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
-        elif TIMER0<=address<=TIMER0+8:self.timer.write(address-TIMER0,value)
+        elif TIMER0<=address<=TIMER0+8:
+            was_running=self.timer.con is not None and bool(self.timer.con&3)
+            self.timer.write(address-TIMER0,value)
+            self.timer0_irq4_probe_on_start(address,value,was_running)
         elif address==PINR1:
             if not self.reset_inputs_inactive:
                 raise Blocked('unmodeled_pin_reset_input',address=hex(address),value=hex(value))
@@ -2758,6 +2794,34 @@ class BR28Model:
         self.counts['writes']+=1
         self.writes.append(row)
         if len(self.writes)>64:self.writes.pop(32)
+
+    def timer0_irq4_probe_on_start(self,address,value,was_running):
+        """路 BE 探路 fixture:把 STD12M Timer0 首次到期拉近到启动写之后。
+
+        只在真正的「计数启动写」(CON mode 位 0→1、source=STD12M、探针步数
+        已设置)那一刻生效一次:cnt 改为 prd+1-3*steps(每模型步 3 个 STD12M
+        tick,与 advance() 的 3/4 换算精确一致),可选把 IRQ4 使能+优先级 1
+        nibble OR 进 config[0](前缀里固件的 mask-all 已把该字清零,真实
+        request_irq 是否装过 Timer 向量无静态证据——这是探针合成假设,不是
+        硅状态)。改写只动模型计数器/nibble,不改任何资格链代码。
+        """
+        if self.timer0_irq4_expiry_probe_steps is None:return
+        if address!=TIMER0 or was_running or not value&1:return
+        if (value>>10)&15!=Timer0.STD12M_SOURCE:
+            # 早期前缀里固件合法地以 source 4 多次启停 Timer0(PLL/trim 路径,
+            # 到期 10 次都在 IRQ4 不合格期):探针只盯 STD12M(0x1401)那一次
+            # 启动写,其他启动写原样放行。
+            return
+        steps=self.timer0_irq4_expiry_probe_steps
+        if self.timer.prd is None or self.timer.cnt is None or steps*3>self.timer.prd+1:
+            raise ValueError('Timer0 IRQ4 expiry probe needs an initialized period large enough')
+        self.timer.cnt=self.timer.prd+1-steps*3
+        self.timer.remainder=0;self.timer.source_remainder=0
+        self.timer0_irq4_probe_armed=True
+        if self.timer0_irq4_masked_probe:
+            self.irq.config[0]=(self.irq.config[0] or 0)&~0xf0000
+        self.record_write({'address':hex(TIMER0+4),'value':hex(self.timer.cnt),
+                           'projection':'Timer0 IRQ4 expiry probe fixture (counter seed, not a firmware write)'})
 
     def enable_multicore(self,irq1_config,ipmask1,release_handler):
         if self.multicore_enabled or not self.cpu1_held_projection:raise ValueError('multicore requires a fresh held-CPU1 model')
@@ -2991,10 +3055,22 @@ class BR28Model:
                     gate=self.core_icfg.get(core)
                     if gate is None:
                         if irq.eligible(4,0x300):raise Blocked('pending_irq_with_unknown_core_icfg',core=core,irq=4)
-                    elif irq.eligible(4,gate):raise Blocked('interrupt_delivery_not_implemented',core=core,irq=4)
+                    elif irq.eligible(4,gate):
+                        if not self.timer0_irq_delivery_requests:
+                            raise Blocked('interrupt_delivery_not_implemented',core=core,irq=4)
+                        # 路 BE:每个 pending 片只请求一次交付;handler 用真实
+                        # W1C(rmw.or.modimm [0xfd0400] |= 0x4000,Timer0.write)
+                        # 清 pending 并解除 in-flight,下个周期可再请求。
+                        if not self.timer.delivery_in_flight:
+                            self.timer.delivery_in_flight=True
+                            raise IrqDeliveryRequest(core=core,irq=4)
             elif self.irq.eligible(4,icfg):
-                raise Blocked('interrupt_delivery_not_implemented',irq=4,
-                              note='Timer0 pending and enabled after priority filtering; CPU entry not bypassed')
+                if not self.timer0_irq_delivery_requests:
+                    raise Blocked('interrupt_delivery_not_implemented',irq=4,
+                                  note='Timer0 pending and enabled after priority filtering; CPU entry not bypassed')
+                if not self.timer.delivery_in_flight:
+                    self.timer.delivery_in_flight=True
+                    raise IrqDeliveryRequest(core=0,irq=4)
         if self.software_irq is not None:
             for core,word in enumerate(self.software_irq.pending):
                 if core==1 and (not self.multicore_enabled or not self.cpu1_control&1):continue
@@ -3055,6 +3131,27 @@ class BR28Model:
         if self.watchdog is not None:result['watchdog_projection']=self.watchdog.report()
         if self.efuse is not None:result['efuse_read_projection']=self.efuse.report()
         if self.gpcnt is not None:result['gpcnt_cleanup_projection']=self.gpcnt.report()
+        if self.timer0_irq_delivery_requests:
+            # 路 BE:交付请求开(默认关不产生任何报告键,legacy 逐字节不变)。
+            result['assumptions']['timer0_irq_delivery_requests']={
+                'enabled':True,
+                'request_raised_once_per_pending_episode':True,
+                'episode_gate':'Timer0.delivery_in_flight; cleared by the real W1C '
+                               '(rmw.or.modimm [0xfd0400] |= 0x4000, bit14) modeled by Timer0.write',
+                'delivery_does_not_clear_pending':True,
+                'episode_in_flight_at_report':self.timer.delivery_in_flight,
+                'eligibility_chain_unchanged':'ICFG gates8/9 + IRQ_CONFIG word0 nibble enable '
+                                               '+ priority vs IPMASK; per-core advance() scan',
+                'cpu_entry_is_a_counterfactual_projection':True}
+        if self.timer0_irq4_probe_armed:
+            result['assumptions']['timer0_irq4_probe']={
+                'purpose':'pull the ~341097-step first Timer0 IRQ4 boundary inside the observed prefix',
+                'counter_seed_at_std12m_start':self.timer0_irq4_expiry_probe_steps,
+                'seed_ticks_per_model_step':3,
+                'irq4_nibble_cleared_counterfactual':self.timer0_irq4_masked_probe,
+                'real_prefix_irq4_eligibility':'enabled by the driver-install request_irq at ~step 110768 '
+                                               '(0xffe100=0x30000, priority 1, maskable; no later clear)',
+                'is_synthetic_probe_fixture_not_silicon_state':True}
         if self.core_ticks is not None:
             result['core_tick_configuration']=[timer.report() for timer in self.core_ticks]
             result['assumptions']['core_tick_count_while_cpu1_held']=self.core_tick_count_while_held

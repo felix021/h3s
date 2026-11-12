@@ -92,7 +92,7 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     p33_analog_config=True, power_init_rstcon_masks=True,
     power_init_wkup_dly=True,
     mem_pwr_con=True, p33_window=True, p33_port_sel=True,
-    p33_awkup=True, p3_ls=True, p11_syscon1_masks=True,
+    p33_awkup=True, p3_ls=True, p11_syscon1_masks=True, fd31_adc_con=True,
     subword_stores=True)
 
 SCENARIOS = {
@@ -116,8 +116,8 @@ SCENARIOS = {
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。条件前沿随
         # 上游合并前移后按新前沿重钉(前沿前移后可重跑跟进)。
-        'freshness': {'completed_steps': 304036, 'stop_pc': '0x60115ba',
-                      'kind': 'unmapped_or_readonly_write', 'address': '0xfd3100'},
+        'freshness': {'completed_steps': 304317, 'stop_pc': '0x60116e6',
+                      'kind': 'fd31_adc_con_readback_not_modeled', 'address': '0xfd3100'},
     },
 }
 
@@ -673,14 +673,14 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 304036 and run['stop_pc'] == '0x60115ba' and
-                run['stop']['kind'] == 'unmapped_or_readonly_write' and
-                run['per_core_steps'] == {'0': 292872, '1': 11181},
+        require(run['completed_steps'] == 304317 and run['stop_pc'] == '0x60116e6' and
+                run['stop']['kind'] == 'fd31_adc_con_readback_not_modeled' and
+                run['per_core_steps'] == {'0': 293153, '1': 11181},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (304036 @ 0x60115ba)')
+                'conditional frontier stop (304317 @ 0x60116e6)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 304036, 'tested_b79': 304036, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x60115ba', 'b': '0x60115ba', 'same': True} and
+    require(parity['steps'] == {'official': 304317, 'tested_b79': 304317, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x60116e6', 'b': '0x60116e6', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
             parity['stop_record']['a']['address'] == '0xfd3100' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},

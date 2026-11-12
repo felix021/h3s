@@ -131,6 +131,37 @@ its six whole-word writes are recorded write-only, and the chain then
 honestly stops at the first CON readback 0x60116e6 inside the 32-round
 sampling loop's caller 0x60116d0 (CON bit4 gate / bit7 busy poll and the
 analog RES 0xfd3104 have no derivable values) at 304,317.
+
+The trailing timer0_irq4_delivery_probe / timer0_irq4_masked_probe scenarios
+(route BE) layer the Timer0 IRQ4 delivery machinery on the full
+p11_heap_experimental_config stack before the ~341,097-step first-expiry
+hard deadline: the model raises IrqDeliveryRequest(core, irq=4) instead of
+interrupt_delivery_not_implemented when (and only when) the unchanged
+eligibility chain accepts the pending IRQ4 (per-core ICFG gates 8/9 +
+IRQ_CONFIG word0 nibble + priority vs IPMASK), at most once per pending
+episode (delivery_in_flight, cleared by the real handler W1C
+rmw.or.modimm [0xfd0400] |= 0x4000 at 0x12ecf8 which Timer0.write already
+models); the machine reads the REAL vector slot 0x19fe10 (app-written,
+value 0x12ece8 = the QCY Timer ISR table entry 0, 28B software frame, not
+the SDK 76B hwi.S veneer) and enters with the same explicit entry-bank and
+one-shot symmetric-RTI assumptions as the software-IRQ/core-tick entries
+(RTI tail anchor 0x12ed0c). The event clock is NOT enabled here (route BI).
+Both scenarios use the explicit probe fixture timer0_irq4_expiry_probe_steps
+to pull the first STD12M expiry to 200 model steps after the real start
+write (counter seed only, labeled synthetic). A route-BE write trace
+resolved the runtime eligibility question the gap map left open: the
+driver-install request_irq loop enables IRQ4 (nibble 0x3, priority 1,
+maskable) at ~step 110768 (0xffe100=0x30000, later 0x33b55) and nothing
+clears it through the frontier, so timer0_irq4_delivery_probe injects NO
+eligibility fixture — its delivery round trip (scheduler-wait interrupt ->
+0x12ece8 real bytes: critical enter, W1C ack with the pending bit15
+readback visible in the RMW word, empty callback dispatch, frame pops,
+csync, RTI tail) runs entirely on real state; timer0_irq4_masked_probe is
+the counterfactual control that clears the IRQ4 nibble ("not installed"
+world) and pins the inert branch: the expiry only sets pending, no
+request, no stop, same honest P3_LS frontier. Every delivery conclusion is
+a counterfactual projection (entry banks/PSR high bits/bank writeback
+uncertified), not a silicon certification.
 """
 import argparse
 import json
@@ -146,6 +177,11 @@ from probe_pi32v2 import ROOT, PIN, upstream, require
 HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0x12adde:'psr_pop',
                     0x12ad6e:'frame12_push',0x12ada0:'frame12_pop',
                     0x60662c8:'frame12_push',0x606633e:'frame12_pop'}
+
+# 路 BE:Timer0 IRQ4 handler 0x12ece8 的 12B 特殊帧锚(gpio-irq 域六 handler
+# 反汇编钉死:入口 push.srl {psr,rets,reti}、尾部 pop.srl 后 csync;rti;
+# 28B 软件帧的另外 16B 是普通 push.rl {r3-r0},走既有 abstract 栈运输)。
+TIMER0_IRQ_FRAMES={0x12ece8:'frame12_push',0x12ed08:'frame12_pop'}
 
 # bank B 头 fixture 的显式范围:find_partition 探测表 0x060A0FA4 第 5 项
 # (偏移 0x100000)的 32 字节头读取窗(CPU=0x06000000+偏移-0x2020 头)。
@@ -320,6 +356,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              p3_ls=False,p11_syscon1_masks=False,
              fd31_adc_con=False,
              subword_stores=False,
+             timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -700,6 +737,33 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if fd31_adc_con:
         require(p11_power_init,'the fd31 ADC CON projection only layers on the p11_power_init scenario')
         options['fd31_adc_con_projection']=True
+    # timer0_irq4_*(路 BE,独立成段便于并行路线合并):Timer0 pending→IRQ4 交付
+    # 机制就位(在 ~341,097 硬期限前)。机制全部抄 core_tick/软件 IRQ 两先例:
+    # 模型 advance() 在资格合格时抛 IrqDeliveryRequest(core,irq=4)(每个
+    # pending 片至多一次,in-flight 由真实 handler 的 W1C 清),机器侧最小
+    # 进入投影读真实向量槽 0x19fe00+4*4,入口银行假设+对称一次性 RTI(尾锚
+    # 0x12ed0c=gpio-irq 域六 handler 反汇编钉死的 Timer0 handler 0x12ece8 尾)。
+    # 事件时钟不启用(BI 环节)。探路 fixture timer0_irq4_probe_steps 把首次
+    # 到期拉近到 STD12M 启动写之后 N 步(计数 seed,显式合成假设)。运行态
+    # trace 已证实前缀里 IRQ4 被驱动安装循环在 ~110,768 步真实使能(priority
+    # 1,maskable,此后无清零)——所以 delivery_probe 不注入任何资格 fixture,
+    # 就是真实资格的完整交付往返;timer0_irq4_masked 是反事实对照(清 IRQ4
+    # nibble 的「未安装」世界),演示惰性分支:到期只置 pending、不请求不停。
+    if timer0_irq4_delivery:
+        require(p11_power_init and timer0_std12m,
+                'the Timer0 IRQ4 delivery only layers on the STD12M counting prefix')
+        machine_options['timer0_irq_entry']=True
+        machine_options['timer0_irq_entry_banks']=True
+        machine_options['timer0_irq_rti']=True
+        options['timer0_irq_delivery_requests']=True
+        extra['timer0_irq_frames']=dict(TIMER0_IRQ_FRAMES)
+    if timer0_irq4_probe_steps is not None:
+        require(timer0_irq4_delivery,'the Timer0 IRQ4 probe steps require the delivery layer')
+        options['timer0_irq4_expiry_probe_steps']=timer0_irq4_probe_steps
+    if timer0_irq4_masked:
+        require(timer0_irq4_probe_steps is not None,
+                'the Timer0 IRQ4 masked probe requires the expiry probe (it arms at the same start write)')
+        options['timer0_irq4_masked_probe']=True
     if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
@@ -1628,6 +1692,68 @@ def check(report,firmware):
             r['instruction_adapters'].get('p33_awkup_bit_rmw')==14 and
             r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
+    # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
+    # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
+    # 循环在 ~110,768 步把 IRQ4 以 priority 1 真实使能且此后无清零)。
+    d=rows['timer0_irq4_delivery_probe']
+    require(d['completed_steps']==304552 and d['stop_core']==0 and d['stop_pc']=='0x6067d48' and
+            d['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xf2c290',
+                        'size':4,'value_bytes':'00000000'},
+            'the Timer0 IRQ4 delivery probe must return to the SAME honest P3_LS frontier '
+            'after the full delivery round trip')
+    deliveries=d['machine']['timer0_irq_entry_projection']['deliveries']
+    require(len(deliveries)==1 and
+            (deliveries[0]['core'],deliveries[0]['irq'],deliveries[0]['vector_address'],
+             deliveries[0]['handler'],deliveries[0]['reti_from'])==(0,4,'0x19fe10','0x12ece8','0x12b608') and
+            not deliveries[0]['delivery_clears_pending'] and
+            deliveries[0]['pending_cleared_by_handler_ack'],
+            'the Timer0 IRQ4 delivery must read the REAL vector slot 0x19fe10 (app-written '
+            '0x12ece8) and interrupt the scheduler wait 0x12b608 without clearing pending')
+    rti=[e for e in d['machine']['events'] if e.get('kind')=='timer0_irq_rti']
+    require(len(rti)==1 and rti[0]['pc_after']=='0x12b608' and rti[0]['sp_after']=='0x400b38' and
+            rti[0]['reti_from_frame']=='0x12b608' and rti[0]['bank_writeback_is_assumption'],
+            'the symmetric one-shot RTI must return to the interrupted scheduler wait with '
+            'SP=USP from the really popped frame')
+    require(d['peripherals']['timer0']['pending'] is False and
+            d['peripherals']['timer0']['expirations']==11,
+            'the real handler W1C (rmw.or.modimm [0xfd0400] |= 0x4000, the 0xd401 RMW word '
+            'with the pending bit15 readback visible) must clear pending and leave exactly '
+            'the probe expiry counted')
+    require(d['instruction_adapters'].get('timer0_irq_handler_frame')==2,
+            'the handler must execute both 12B special-frame anchors (push.srl at 0x12ece8, '
+            'pop.srl at 0x12ed08) with the 16B push.rl/pop.rl frame on the ordinary transport')
+    m=rows['timer0_irq4_masked_probe']
+    require(m['completed_steps']==304012 and m['stop']==r['stop'] and
+            m['stop_pc']==r['stop_pc'] and
+            m['machine']['timer0_irq_entry_projection']['deliveries']==[] and
+            m['peripherals']['timer0']['pending'] is True and
+            m['peripherals']['timer0']['expirations']==11 and
+            m['peripherals']['assumptions']['timer0_irq4_probe']['irq4_nibble_cleared_counterfactual'],
+            'the masked counterfactual (IRQ4 nibble cleared) must stay inert: the expiry only '
+            'sets pending, nothing is requested or delivered, and the run keeps the exact '
+            'base-scenario honest P3_LS frontier')
+    report['timer0_irq4_delivery_projection']=(
+        'route BE: the Timer0 IRQ4 delivery machinery is in place before the ~341,097-step '
+        'first-expiry hard deadline. The eligibility chain is UNCHANGED (per-core ICFG gates '
+        '8/9 + IRQ_CONFIG word0 nibble + priority vs IPMASK); a route-BE write trace resolved '
+        'the open eligibility question: the driver-install request_irq loop enables IRQ4 '
+        '(nibble 0x3, priority 1, maskable) at ~step 110768 (0xffe100=0x30000, word later '
+        '0x33b55, no clear through the frontier), so the first real STD12M expiry WILL be '
+        'eligible and deliver. The model raises IrqDeliveryRequest(core,irq=4) at most once '
+        'per pending episode (delivery_in_flight, cleared by the real handler W1C), the '
+        'machine reads the real vector slot 0x19fe10 (handler 0x12ece8, the QCY Timer ISR '
+        'table entry 0, 28B software frame, NOT the SDK 76B hwi.S veneer), and the probe '
+        'scenario executes the REAL handler bytes end to end: critical enter/exit (the '
+        'IPMASK 6/0 pairs), the W1C ack whose RMW word 0xd401 shows the pending bit15 '
+        'readback, the empty callback dispatch (callback table 0x126f6c slot 0 is zero in '
+        'this prefix), both frame anchors, csync, and the symmetric RTI tail 0x12ed0c back '
+        'to the interrupted scheduler wait. The expiry counter seed (200 model steps after '
+        'the real STD12M start write) is an explicitly labeled synthetic probe fixture; the '
+        'entry banks, entry PSR high bits, RETI load, bank writeback and ICFG effects all '
+        'remain UNCERTIFIED counterfactual assumptions (hardware_mode_certified false), and '
+        'the event clock stays disabled (route BI). The masked probe clears the IRQ4 nibble '
+        'as a counterfactual "not installed" world and pins the inert branch on the same '
+        'prefix: pending set, no request, no stop, identical honest frontier')
     report['heap_info_value_is_derived_not_measured']=(
         'the p11_heap_experimental_config scenario feeds the four heap-info bytes 0c3df439 '
         '(begin=0x3d0c, size=0x39f4) as an EXPLICIT EXPERIMENTAL CONFIG derived statically from '
@@ -2023,6 +2149,37 @@ def main():
                               p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
                               fd31_adc_con=True,
                               subword_stores=True,
+                              flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'timer0_irq4_delivery_probe',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
+                              halfword_pair=True,p11_power_init=True,
+                              heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
+                              lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
+                              timer0_std12m=True,lp_timer_con_readback=True,
+                              p33_analog_config=True,power_init_rstcon_masks=True,
+                              power_init_wkup_dly=True,
+                              mem_pwr_con=True,p33_window=True,p33_port_sel=True,
+                              p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,fd31_adc_con=True,subword_stores=True,
+                              timer0_irq4_delivery=True,timer0_irq4_probe_steps=200,
+                              flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'timer0_irq4_masked_probe',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
+                              halfword_pair=True,p11_power_init=True,
+                              heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
+                              lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
+                              timer0_std12m=True,lp_timer_con_readback=True,
+                              p33_analog_config=True,power_init_rstcon_masks=True,
+                              power_init_wkup_dly=True,
+                              mem_pwr_con=True,p33_window=True,p33_port_sel=True,
+                              p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,fd31_adc_con=True,subword_stores=True,
+                              timer0_irq4_delivery=True,timer0_irq4_probe_steps=200,
+                              timer0_irq4_masked=True,
                               flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
