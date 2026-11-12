@@ -1117,12 +1117,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         hardware.cpu1_control_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['cpu1_control_rmw']+=1
                         return
-                    if hardware.handles_p11_lpwr_rmw(address):
+                    if hardware.handles_p11_lpwr_rmw(address) and hardware.p11_lp_form_matches(insn,op):
                         # power_init 0x60679a0 请求:PWR_CON |=0x20(LP_PWR_INIT_FLAG)。
-                        # opt-in P11 响应投影只记录该请求;合并写回不落在严格复位
-                        # 标志路径(该路径只认 bit6 清标志命令)。其他形式保持严格拒绝。
+                        # opt-in P11 响应投影只拦截这一种形式;其他 RMW(如复位原因
+                        # 初始化 0x6068cf2 的 |=0x40 bit6 清标志命令)落到下面的通用
+                        # 路径,保持严格复位标志语义不变。
                         hardware.p11_lpwr_rmw(address,insn.id,op.get('m'))
                         self.finish_exact(self.pc+size);adapters['p11_lpwr_request_rmw']+=1
+                        return
+                    if hardware.handles_p11_window_rmw(address):
+                        # power_init 0x60679a8 释放:q32s PMU_CON(0xf2a0c0,=PWR_CON-832,
+                        # 由基址寄存器算出、字面量搜索必漏)|=1,全 app+ROM 唯一引用。
+                        # write-only 位记录(不经读回),释放效果不模拟;其他形式严格拒绝。
+                        if insn.id!='rmw.or.modimm':
+                            raise Blocked('p11_window_release_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.p11_window_rmw(address,'or',op['m'])
+                        self.finish_exact(self.pc+size);adapters['p11_window_release_rmw']+=1
                         return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']

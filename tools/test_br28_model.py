@@ -380,10 +380,81 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(preset.read(PWR_CON),0xa0)
         preset.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',0x20)
         self.assertEqual(preset.read(PWR_CON),0x80)
-        # 投影不给 bit6 清标志命令开后门:清标志之后读回仍是未知
+        # 投影不给 bit6 清标志命令开后门:清标志之后、无请求时读回仍是未知
+        # (真实前缀里主 init 清标志先于 power_init 请求,两个条件都满足才走
+        # post_flag_clear_read 的轮询读回——见 test_pwr_con_post_clear_poll_readback)
         preset.write(PWR_CON,0xe0)  # 快照0xa0的 bit6 清标志命令
+        preset.p11_lp.requests=0    # 反事实:清标志后从未观察到请求
         with self.assertRaisesRegex(Blocked,'reset_flag_post_clear_state_unknown'):preset.read(PWR_CON)
         self.assertEqual(h.report()['p11_low_power_response']['requests_observed'],1)
+
+    def test_pwr_con_post_clear_poll_readback_needs_request_and_only_clears_flag_bits(self):
+        # 真实前缀顺序(反汇编钉死):主 init 复位原因处理 0x6068ce4..e8 读
+        # PWR_CON bit7→0x6068cf2 |=0x40 清标志;app_core power_init 0x60679a0
+        # |=0x20 请求后 0x60679ae 死等 bit5。lpwr 投影开启且已观察到请求时,
+        # 清标志后的轮询读回=快照&~bit7(清标志配对推定)&~bit5(P11 响应);
+        # 其余读者/寄存器保持严格停。
+        h=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                    p11_lpwr_response_projection=True)
+        h.write(PWR_CON,0xc0)  # 快照0x80的 bit6 清标志命令(主 init 0x6068cf2)
+        with self.assertRaisesRegex(Blocked,'reset_flag_post_clear_state_unknown'):h.read(PWR_CON)
+        h.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',0x20)
+        self.assertEqual(h.read(PWR_CON),0x00)   # bit7 配对清零、bit5 响应清零
+        self.assertEqual(h.counts['p11_lpwr_post_clear_poll_reads'],1)
+        # 快照含 bit5 时同样投影清零;其他 RESET_FLAGS 成员不受影响
+        preset=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0xa0,0xfd0004:0x80},
+                         p11_lpwr_response_projection=True)
+        preset.write(PWR_CON,0xe0);preset.write(0xfd0004,0xc0)
+        preset.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',0x20)
+        self.assertEqual(preset.read(PWR_CON),0x00)
+        with self.assertRaisesRegex(Blocked,'reset_flag_post_clear_state_unknown'):preset.read(0xfd0004)
+        labels=preset.report()['p11_low_power_response']
+        self.assertIn('post_flag_clear_readback',labels)
+
+    def test_reset_extra_configuration_masks_are_opt_in(self):
+        # 0xf2c05c(power_init 0x60678f4 唯一引用)按 opt-in 进配置表;默认关,
+        # legacy 报告与默认三地址表不变。
+        self.assertNotIn(0xf2c05c,ResetHistoryProjection().configuration)
+        with self.assertRaises(ValueError):
+            ResetHistoryProjection(extra_configuration_masks={0xf2c054:1})  # 与默认表重叠
+        with self.assertRaises(ValueError):
+            ResetHistoryProjection(extra_configuration_masks={0xf2c05c:1<<32})  # 非法掩码
+        with self.assertRaises(ValueError):
+            BR28Model(power_init_config_rmw=True)  # 需要 reset 投影
+        base=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80})
+        self.assertNotIn(0xf2c05c,base.reset.configuration)
+        h=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                    power_init_config_rmw=True)
+        h.reset.rmw(0xf2c05c,'and',0x3fd)
+        word=h.reset.configuration[0xf2c05c]
+        self.assertEqual(word.known,0xfffffc02)  # 清 bit1 与 bits10+ → 已知 0
+        self.assertEqual(word.value,0)
+        with self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits'):h.reset.read(0xf2c05c)
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):h.reset.rmw(0xf2c05c,'and',0x3fd-1)
+        self.assertNotIn('0xf2c05c',base.reset.report()['configuration'])
+        self.assertEqual(h.reset.report()['configuration']['0xf2c05c'],
+                         {'known_mask':'0xfffffc02','known_value':'0x0'})
+
+    def test_p11_window_registers_are_write_only_and_shape_checked(self):
+        # q32s PMU_CON 0xf2a0c0:唯一观测形状 |=1(0x60679a8),write-only 位记录;
+        # SYS_DIV/CLK_CON0 整字写记录;全部读回严格拒绝;默认关时不 handles。
+        h=BR28Model(p11_window_projection=True)
+        self.assertTrue(h.handles(0xf2a0c0,4) and h.handles(0xf2a410,4) and h.handles(0xf2a414,4))
+        h.p11_window_rmw(0xf2a0c0,'or',1)
+        self.assertEqual(h.p11_win.control.known,1)  # 只 bit0 已知
+        with self.assertRaisesRegex(Blocked,'form_not_modeled'):h.p11_window_rmw(0xf2a0c0,'or',2)
+        with self.assertRaisesRegex(Blocked,'form_not_modeled'):h.p11_window_rmw(0xf2a0c0,'and',1)
+        h.write(0xf2a410,0);h.write(0xf2a414,1)
+        with self.assertRaisesRegex(Blocked,'readback_not_modeled'):h.read(0xf2a410)
+        with self.assertRaisesRegex(Blocked,'readback_not_modeled'):h.read(0xf2a0c0)
+        with self.assertRaisesRegex(Blocked,'full_store_not_modeled'):h.write(0xf2a0c0,1)
+        report=h.report()['p11_window_projection']
+        self.assertEqual(report['q32s_pm_con']['rmw_writes'],1)
+        self.assertEqual(report['stores'],{'0xf2a410':{'values':['0x0'],'writes':1},
+                                           '0xf2a414':{'values':['0x1'],'writes':1}})
+        self.assertTrue(report['write_only'] and not report['readback_observed'])
+        self.assertFalse(report['causal_link_to_pwr_con_bit5_response_assumed'])
+        self.assertFalse(BR28Model().handles(0xf2a0c0,4))  # 默认关
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')

@@ -24,6 +24,10 @@ P11_UART_CON2=0xf2af10
 PMU_STA=0xfd3e04
 PWR_CON=0xf2a400  # PMU PWR_CON; bit5 LP_PWR_INIT_FLAG (main-core request), bit7 POR flag
 LP_PWR_INIT_FLAG=0x20
+LP_RST_FLAG=0x80  # PWR_CON bit7 LP_PWR_RST_FLAG(POR=1;主 init 0x6068cf2 bit6 命令清除)
+Q32S_PMU_CON=0xf2a0c0  # P11 侧 q32s 核的 PMU_CON(p11_sfr 窗口;主核 power_init |=1 释放)
+P11_SYS_DIV=0xf2a410    # SDK p11_sfr.h P11_CLOCK.SYS_DIV
+P11_CLK_CON0=0xf2a414   # SDK p11_sfr.h P11_CLOCK.CLK_CON0
 P11_HEAP_INFO=0xf27f4a  # P11 RAM P2M message area +0xa: 4B heap begin/size written by P11 init (value unproven)
 WDT_CON=0xf2a800
 WDT_KEY=WDT_CON+4
@@ -798,13 +802,92 @@ class P11LowPowerResponse:
             return value&~LP_PWR_INIT_FLAG&0xffffffff
         return value
 
+    def post_flag_clear_read(self,address,snapshot):
+        """清标志后、已观察到请求时的 PWR_CON 读回(真实前缀检验路径)。
+
+        真实顺序(本前缀反汇编钉死):主 init 复位原因处理 0x6068c80 先读 PWR_CON
+        bit7(0x6068ce4..e8)、置位才发 bit6 命令清标志(0x6068cf2 `|=0x40`,
+        复位投影按 flag-clear 记录、此后整字读回严格停),app_core power_init 再
+        |=0x20 请求(0x60679a0)并死等 bit5 清零(0x60679ae/b0)。本方法把该轮询
+        读回从「清标志后 unknown」中放出来:bit7 按观察到的「查 bit7→发 bit6」
+        配对推定已清 0(W1C 目的),其余位保持 POR 快照,bit5 由请求-响应投影清
+        0——清标志后的整字状态无硅测量,仅在 lpwr 投影开启且已观察到真实请求的
+        读回上使用;其他读者、其他 RESET_FLAGS 寄存器仍严格停。
+        """
+        if address!=PWR_CON or not self.requests:
+            raise Blocked('p11_lpwr_readback_requires_request',address=hex(address))
+        return (snapshot&~LP_RST_FLAG&~LP_PWR_INIT_FLAG)&0xffffffff
+
     def report(self):
         return {'requests_observed':self.requests,
                 'trigger':'exact main-core rmw.or.modimm |=0x20 on PWR_CON (power_init 0x60679a0)',
                 'readback_after_request':'bit5=0 (P11 processed the request); other bits unchanged from the reset snapshot',
+                'post_flag_clear_readback':'after the main-init bit6 flag-clear (0x6068cf2) the poll read returns snapshot&~bit7 with bit5=0; bit7-cleared is inferred from the observed check-bit7-then-clear pair, not silicon-measured',
                 'evidence_level':'q32s 0xafa bitclr bit5 executes unconditionally (local software evidence); main-core release timing and q32s reachability inferred, silicon unverified',
                 'response_latency_modeled':False,'causal_link_to_pmu_sta_bit0_assumed':False,
                 'other_bits_or_registers_modeled':False}
+
+
+class P11WindowRegisters:
+    """主核写进 P11(q32s)SFR 窗口的纯写寄存器记录(opt-in,读回一律拒绝)。
+
+    SDK p11_sfr.h:p11_sfr_base=0xf2a000,P11_CLOCK 组(P11_CLOCK_BASE+0x400)的
+    PWR_CON/SYS_DIV(+0x10)/CLK_CON0(+0x14)等;0xf2a0c0 是 P11 侧 q32s 核自己的
+    PMU_CON(HANDOFF P11 清单:主核 power_init 0x60679a4/a8 `|=1` 释放 q32s)。
+    固件全量扫描证据(app 线性反汇编,字节级常量搜索):
+    - 0xf2a0c0(=0xf2a400-832,由 r7=0xf2c04c 基址寄存器算出,字面量搜索必漏):
+      全 app+ROM 仅 power_init 0x60679a8 一处 `rmw.or.modimm [r0+0] |= 0x1`,
+      无任何读回、无整字写、无其他 RMW 形式。
+    - 0xf2a410 SYS_DIV:仅 0x6067920 `[r4+16]=0`(整字写 0)。
+    - 0xf2a414 CLK_CON0:仅 0x606791c `[r4+20]=1`(整字写 1)。
+    (0xf2a618 P2M_CLK 的两处写——0x6069062 `=0x800`(p11_init 0x60688ec 族
+    init 内)与 0x602f464 `=0x80`(0x602f408 低功耗路径)——本前缀都未执行,
+    不建模。)
+    模型只做 write-only 记录:整字写记值+次数;0xf2a0c0 只接受已观察的 |=1
+    (PartialWord 按位记录,不经读回,与 cpu1_control kick 位记录同语义)。全部
+    读回严格拒绝(固件从不读,复位值/读回语义无任何证据);释放/时钟效果(是否
+    真的启动 q32s、分频含义)不模拟——q32s 侧响应在 p11_lpwr_response_projection
+    单独建模,两者不假定因果。
+    """
+    RELEASE_RMW_OPERAND=1
+
+    def __init__(self):
+        self.control=PartialWord()          # 0xf2a0c0 q32s PMU_CON 位记录
+        self.release_rmw_writes=0
+        self.stores={address:{'values':[],'writes':0} for address in (P11_SYS_DIV,P11_CLK_CON0)}
+
+    def handles(self,address):
+        return address in self.stores
+
+    def handles_release_rmw(self,address):
+        return address==Q32S_PMU_CON
+
+    def release_rmw(self,address,kind,operand):
+        if not self.handles_release_rmw(address):raise ValueError('not the modeled q32s PMU_CON')
+        if kind!='or' or operand is None or operand&0xffffffff!=self.RELEASE_RMW_OPERAND:
+            raise Blocked('p11_window_release_rmw_form_not_modeled',address=hex(address),
+                          operation=kind,operand=None if operand is None else hex(operand&0xffffffff))
+        self.control.apply('or',operand&0xffffffff);self.release_rmw_writes+=1
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled P11 window register')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        if len(entry['values'])>64:entry['values'].pop(0)
+
+    def read(self,address):
+        raise Blocked('p11_window_register_readback_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'q32s_pm_con':{'address':hex(Q32S_PMU_CON),'known_mask':hex(self.control.known),
+                               'known_value':hex(self.control.value),'rmw_writes':self.release_rmw_writes,
+                               'release_effect_simulated':False,
+                               'observed_shape':'power_init 0x60679a8 rmw.or.modimm |=0x1 (sole firmware-wide reference)'},
+                'stores':{hex(address):{'values':[hex(v) for v in entry['values']],'writes':entry['writes']}
+                          for address,entry in self.stores.items()},
+                'sdk_p11_sfr_h':'p11_sfr_base 0xf2a000; P11_CLOCK.SYS_DIV=+0x10 CLK_CON0=+0x14; 0xf2a0c0=q32s PMU_CON (HANDOFF P11 checklist)',
+                'write_only':True,'readback_observed':False,
+                'reset_values_or_bit_semantics_verified':False,
+                'causal_link_to_pwr_con_bit5_response_assumed':False}
 
 
 class MMU:
@@ -993,7 +1076,16 @@ class SoftwareIrqCommands:
 RESET_FLAGS=(0xfd0004,0xf2a400,0xf2c0c0)
 RESET_REASON_INPUTS=(0xfd0000,0xf2a404,0xf2c048,0xf2a60c,
                     0xf2c158,0xf2c15c,0xf2c194,0xf2c198,0xf2c2a0,0xf2d2a0,0xf2d24c)
+# 配置 RMW(unknown-preserving):每个地址只接受固件实际观察到的 and 掩码,清掉的
+# 位变已知 0、保留位保持未知,读回仍须全知才给值。0xf2c05c 不在默认表里——它是
+# app_core power_init(0x6067876)内部的访问,只有推进到该函数的前缀才会出现;按
+# opt-in 经 extra_configuration_masks 提供(见 POWER_INIT_CONFIG_MASKS),默认关,
+# legacy 场景的 reset 配置报告不变。
 RESET_CONFIG_MASKS={0xf2a628:0xffffffef,0xf2c054:0x3fdf,0xf2c128:0xff00}
+# power_init 0x60678f4 `rmw.and.r [r7+16] &= 0x3FD`(r7=0xf2c04c,与 0xf2c054 同一
+# PMU 配置族,掩码清 bit1 与 bits10+):app+ROM 全量扫描的唯一一处引用,固件从不
+# 回读该地址——无复位值证据,只按 0xf2c054 先例记录「配置 RMW 不经读回」。
+POWER_INIT_CONFIG_MASKS={0xf2c05c:0x3fd}
 WAKE_CLEAR_TARGETS={0xf2a608:(0xf2a60c,0xffffffff),0xf2c160:(0xf2c158,0xff),
                     0xf2c164:(0xf2c15c,0xff)}
 RTC_WAKE_CLEAR=0xf2d248
@@ -1005,12 +1097,19 @@ class ResetHistoryProjection:
     Flag-clear commands do not erase the reason snapshot read afterwards.
     Their post-command readback is unknown. No mailbox, IRQ or wake generation.
     """
-    def __init__(self,words=None):
+    def __init__(self,words=None,extra_configuration_masks=None):
         self.initial_words=dict(words or {});self.words=dict(self.initial_words)
         allowed=RESET_FLAGS+RESET_REASON_INPUTS
         if any(a not in allowed or not isinstance(v,int) or not 0<=v<=0xffffffff for a,v in self.words.items()):
             raise ValueError('invalid reset/wake snapshot fixture')
-        self.configuration={a:PartialWord() for a in RESET_CONFIG_MASKS}
+        masks=dict(RESET_CONFIG_MASKS)
+        if extra_configuration_masks:
+            if any(a in masks or not isinstance(m,int) or not 0<=m<=0xffffffff
+                   for a,m in extra_configuration_masks.items()):
+                raise ValueError('invalid extra reset configuration masks')
+            masks.update(extra_configuration_masks)
+        self.config_masks=masks
+        self.configuration={a:PartialWord() for a in masks}
         self.flag_clear_commands=set();self.clear_commands=[]
 
     def handles(self,address):
@@ -1029,7 +1128,7 @@ class ResetHistoryProjection:
         return self.words[address]
 
     def rmw(self,address,kind,operand):
-        if kind!='and' or operand&0xffffffff!=RESET_CONFIG_MASKS[address]:
+        if kind!='and' or operand&0xffffffff!=self.config_masks[address]:
             raise Blocked('reset_configuration_operation_not_modeled',address=hex(address))
         self.configuration[address].apply(kind,operand)
 
@@ -1135,7 +1234,8 @@ class BR28Model:
                  bus_lock_model=False,initial_lock_owner='unknown',gpio_model=False,
                  mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None,
                  p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
-                 p11_heap_info_bytes=None,
+                 p11_heap_info_bytes=None,p11_window_projection=False,
+                 power_init_config_rmw=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
                  gpcnt_cleanup_projection=False,core_tick_configuration=False,
@@ -1191,6 +1291,7 @@ class BR28Model:
         if p11_lpwr_response_projection and not reset_history_projection:
             raise ValueError('P11 low-power response projection requires the reset history snapshot')
         self.p11_lp=P11LowPowerResponse() if p11_lpwr_response_projection else None
+        self.p11_win=P11WindowRegisters() if p11_window_projection else None
         if p11_heap_info_bytes is not None and (not isinstance(p11_heap_info_bytes,(bytes,bytearray))
                                                 or len(p11_heap_info_bytes)!=4):
             raise ValueError('P11 heap info fixture must be exactly 4 bytes')
@@ -1233,7 +1334,10 @@ class BR28Model:
         self.sfc_clock=SfcClockGateProjection() if sfc_clock_gate_projection else None
         self.crc_engine=HardwareCrcEngine() if hardware_crc_projection else None
         self.debug=DebugExecutionProjection(initial_debug_controls) if debug_execution_projection else None
-        self.reset=ResetHistoryProjection(reset_history_words) if reset_history_projection else None
+        if power_init_config_rmw and not reset_history_projection:
+            raise ValueError('power_init config RMW requires the reset history projection')
+        self.reset=(ResetHistoryProjection(reset_history_words,POWER_INIT_CONFIG_MASKS if power_init_config_rmw else None)
+                    if reset_history_projection else None)
         self.mpu=MPUConfigurationProjection(initial_mpu_write_gate) if mpu_configuration_projection else None
         self.port_initialization_projection=port_initialization_projection
         self.port_input_words=dict(port_input_words or {})
@@ -1286,6 +1390,7 @@ class BR28Model:
             (self.efuse is not None and address in (EFUSE_CON0,EFUSE_CON1,EFUSE_RDAT)) or
             (self.watchdog is not None and address in (WDT_CON,WDT_KEY)) or
             (self.p11 is not None and address in (P11_UART_CON2,PMU_STA)) or
+            (self.p11_win is not None and (self.p11_win.handles(address) or self.p11_win.handles_release_rmw(address))) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -1409,6 +1514,15 @@ class BR28Model:
             return value
         if self.debug is not None and self.debug.handles(address):return self.debug.read(address)
         if self.reset is not None and self.reset.handles(address):
+            # 清标志后的 PWR_CON 轮询读回(真实前缀:主 init 清标志→power_init
+            # 请求→死等 bit5):仅 lpwr 投影开启且已观察到真实请求时按
+            # post_flag_clear_read 放行;其余读者/寄存器保持严格停。
+            if (self.p11_lp is not None and address==PWR_CON and self.p11_lp.requests
+                    and address in self.reset.flag_clear_commands):
+                snapshot=self.reset.initial_words.get(address)
+                if snapshot is None:raise Blocked('unknown_reset_or_wake_history',address=hex(address))
+                self.counts['p11_lpwr_post_clear_poll_reads']+=1
+                return self.p11_lp.post_flag_clear_read(address,snapshot)
             value=self.reset.read(address)
             return self.p11_lp.read(address,value) if self.p11_lp is not None else value
         if self.mpu is not None and self.mpu.handles(address):return self.mpu.read(address)
@@ -1440,6 +1554,8 @@ class BR28Model:
         if self.p11 is not None and address in (P11_UART_CON2,PMU_STA):
             if address!=PMU_STA:raise Blocked('unmodeled_p11_register_read',address=hex(address))
             return self.p11.read()
+        if self.p11_win is not None and (self.p11_win.handles(address) or self.p11_win.handles_release_rmw(address)):
+            return self.p11_win.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -1509,6 +1625,11 @@ class BR28Model:
         elif self.p11 is not None and address in (P11_UART_CON2,PMU_STA):
             if address!=P11_UART_CON2:raise Blocked('pmu_status_is_not_a_configuration_latch')
             self.p11.write(value)
+        elif self.p11_win is not None and self.p11_win.handles(address):
+            self.p11_win.write(address,value)
+        elif self.p11_win is not None and self.p11_win.handles_release_rmw(address):
+            # 0xf2a0c0 全 app+ROM 只有 |=1 一种写形状;整字 store 无观测形状,拒绝
+            raise Blocked('p11_window_release_full_store_not_modeled',address=hex(address),value=hex(value))
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -1593,6 +1714,27 @@ class BR28Model:
 
     def handles_p11_lpwr_rmw(self,address):
         return self.p11_lp is not None and address==PWR_CON
+
+    def p11_lp_form_matches(self,insn,op):
+        """dispatch 侧的形式预判:只拦 |=0x20 请求;其他 RMW(如 bit6 清标志
+        |=0x40)落回通用路径,保持既有严格复位标志语义。"""
+        return (insn.id=='rmw.or.modimm' and op.get('m') is not None and
+                op['m']&0xffffffff==LP_PWR_INIT_FLAG)
+
+    def handles_p11_window_rmw(self,address):
+        return self.p11_win is not None and self.p11_win.handles_release_rmw(address)
+
+    def p11_window_rmw(self,address,kind,operand):
+        """q32s PMU_CON(0xf2a0c0)释放 RMW 的 opt-in 拦截(|=1,唯一观测形状)。
+
+        只记录置位(RMW 不经读回);释放效果不模拟——q32s 是否真的开始执行由
+        p11_lpwr_response_projection 单独投影,两者不假定因果。
+        """
+        if not self.handles_p11_window_rmw(address):raise ValueError('not the modeled q32s PMU_CON')
+        self.p11_win.release_rmw(address,kind,operand);self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':'or','operand':hex(P11WindowRegisters.RELEASE_RMW_OPERAND),
+                           'known_value':hex(self.p11_win.control.value),'known_mask':hex(self.p11_win.control.known),
+                           'projection':'write-only bit record; no release or scheduling effect modeled'})
 
     def p11_lpwr_rmw(self,address,instruction_id,operand):
         """主核 PWR_CON |=0x20 请求 RMW 的 opt-in 拦截。
@@ -1734,6 +1876,7 @@ class BR28Model:
         if self.mmu is not None:result['mmu']=self.mmu.report()
         if self.p11 is not None:result['p11_access_counterfactual']=self.p11.report()
         if self.p11_lp is not None:result['p11_low_power_response']=self.p11_lp.report()
+        if self.p11_win is not None:result['p11_window_projection']=self.p11_win.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),

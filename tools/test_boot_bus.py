@@ -135,6 +135,77 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop_pc'],'0x60679b4')  # bne 未跳,走到堆信息装载
         self.assertEqual(result['last_registers']['r'][0],'0x80')  # bit5=0,bit7 保留
 
+    def test_power_init_real_prefix_ordering_flag_clear_request_poll(self):
+        # 真实前缀顺序的最小指令场景:主 init 复位原因处理先发 bit6 清标志命令
+        # (0x6068cf2 rmw.or.modimm [r0]|=0x40,r0=PWR_CON,门控在 0x6068ce4..e8
+        # 的「查 bit7→清」配对),app_core power_init 再 |=0x20 请求(0x60679a0)
+        # 并死等 bit5(0x60679ae/b0)。lpwr 投影下:清标志命令落回严格复位标志
+        # 路径(不被请求投影拦截),请求后轮询经 post_flag_clear_read 第一轮退出
+        # (bit7 按清标志配对推定 0、bit5 按 P11 响应投影 0)。
+        regs=[0]*16;regs[0]=PWR_CON;regs[4]=PWR_CON
+        h=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                    p11_lpwr_response_projection=True)
+        # ①主 init 清标志:rmw 读快照 0x80、写回 0xC0=期望的 bit6 命令
+        result=explore(self.module,self.app,name='lpwr_flag_clear',handoff=self.handoff(),
+            hardware=h,diagnostics={'entry_pc':0x6068cf2,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertIn(PWR_CON,h.reset.flag_clear_commands)
+        # ②清标志后、请求前的读回仍严格停(投影不臆造)
+        with self.assertRaisesRegex(Exception,'reset_flag_post_clear_state_unknown'):h.read(PWR_CON)
+        # ③真实请求(rmw.or.modimm |=0x20)后轮询(0x60679ae)第一轮退出
+        h.p11_lpwr_rmw(PWR_CON,'rmw.or.modimm',0x20)
+        result=explore(self.module,self.app,name='lpwr_cleared_poll',handoff=self.handoff(),
+            hardware=h,diagnostics={'entry_pc':0x60679ae,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=2)
+        self.assertEqual(result['completed_steps'],2)
+        self.assertEqual(result['stop_pc'],'0x60679b4')
+        self.assertEqual(result['last_registers']['r'][0],'0x0')  # bit7/bit5 都 0
+
+    def test_q32s_release_rmw_and_p11_clock_stores_execute_through_the_projection(self):
+        # 实际释放指令 0x60679a8(rmw.or.modimm [r0]|=0x1,r0=0xf2a0c0=q32s
+        # PMU_CON,全 app+ROM 唯一引用)与 P11_CLOCK 整字写 0x606791c
+        # ([r4+20]=r0,r0=1→CLK_CON0)/0x6067920([r4+16]=r0,r0=0→SYS_DIV)。
+        regs=[0]*16;regs[0]=0xf2a0c0;regs[4]=PWR_CON
+        result=explore(self.module,self.app,name='q32s_release_strict',handoff=self.handoff(),
+            hardware=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80}),
+            diagnostics={'entry_pc':0x60679a8,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2a0c0')
+        projected=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                            p11_window_projection=True)
+        result=explore(self.module,self.app,name='q32s_release_projected',handoff=self.handoff(),
+            hardware=projected,diagnostics={'entry_pc':0x60679a8,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(projected.p11_win.control.known,1)
+        self.assertEqual(result['instruction_adapters'].get('p11_window_release_rmw'),1)
+        # CLK_CON0/SYS_DIV 整字写:真实指令 0x606791c([r4+20]=r0,r0=1)/
+        # 0x6067920([r4+16]=r0,r0=0),r4=PWR_CON。
+        clk_regs=[0]*16;clk_regs[0]=1;clk_regs[4]=PWR_CON
+        result=explore(self.module,self.app,name='p11_clk_con0',handoff=self.handoff(),
+            hardware=projected,diagnostics={'entry_pc':0x606791c,'initial_sp':STACK_TOP,'initial_gprs':clk_regs},budget=3)
+        self.assertEqual(result['completed_steps'],3)  # 0x606791c/0x606791e/0x6067920
+        self.assertEqual(projected.p11_win.stores[0xf2a414]['values'],[1])
+        self.assertEqual(projected.p11_win.stores[0xf2a410]['values'],[0])
+
+    def test_power_init_config_rmw_0xf2c05c_executes_only_with_extra_masks(self):
+        # 实际配置指令 0x60678f4(rmw.and.r [r7+16] &= r0,r7=0xf2c04c、r0=0x3FD)
+        # :默认(即使开 reset 投影)不 handles → 严格停;opt-in extra masks 后
+        # 按掩码记录已知位。
+        regs=[0]*16;regs[7]=0xf2c04c;regs[0]=0x3fd
+        base=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80})
+        result=explore(self.module,self.app,name='pmu_config_strict',handoff=self.handoff(),
+            hardware=base,diagnostics={'entry_pc':0x60678f4,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2c05c')
+        h=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                    power_init_config_rmw=True)
+        result=explore(self.module,self.app,name='pmu_config_projected',handoff=self.handoff(),
+            hardware=h,diagnostics={'entry_pc':0x60678f4,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw'),1)
+        self.assertEqual(h.reset.configuration[0xf2c05c].known,0xfffffc02)
+
     def test_power_init_heap_info_byte_loads_need_the_explicit_fixture(self):
         # 实际堆信息装载 0x60679ba(ld.bu.l [r4+1])/0x60679be(ld.bu [r4])。
         regs=[0]*16;regs[4]=P11_HEAP_INFO

@@ -31,10 +31,19 @@ pair store that used to stop there (mov.rr.p with a halfword-store second
 half, an upstream model-internal merge read of uninitialized stack RAM) now
 runs through the extended exact_parallel_stores gate as a byte-granular
 partial write (two target bytes written, same-word neighbours untouched), so
-the chain really enters app_core's power_init and stops honestly at the next
-independent boundary: an unmapped read-back of 0xf2c05c (rmw.and.r with the
-single firmware-wide reference), a main-core register semantics question,
-not a bank-B data question.
+the chain really enters app_core's power_init. The opt-in p11_power_init layer
+then walks the whole P11 dependency list of power_init: the 0xf2c05c
+configuration RMW (sole firmware-wide reference, recorded like the 0xf2c054
+precedent without any read-back), the q32s PMU_CON 0xf2a0c0 release RMW and
+the P11_CLOCK SYS_DIV/CLK_CON0 word stores (write-only records), the real
+"flash/res/p11_code.bin" resolution and its 12112-byte common-segment copy
+into the P11 RAM window 0xf20080 (snapshot cross-checked byte-exact against
+the CRC-valid resource), the PWR_CON bit5 request and its post-flag-clear
+poll exit through the p11_lpwr_response projection (the real-prefix test of
+the P11 request/response hypothesis), and finally stops honestly at the
+first heap-info byte read 0xf27f4b (P2M message area +0xa, value written by
+P11 init and unproven): the explicit p11_heap_info_bytes fixture is the only
+way past this boundary.
 """
 import argparse
 import json
@@ -103,6 +112,16 @@ ERASED_BANKB_VM_RANGE=(0x61d7fe0,0x2000)
 # VM 窗口 0x6060f9a 各自独立)。见 irq_case 的 erased_bankb 注释。
 ERASED_BANKB_RECORD_RANGE=(0x61de1e0,8)
 
+# power_init 的 p11_code.bin 公共段拷贝目的窗:主核把 P11 公共代码段拷进 P11 RAM
+# (0x6067990..0x6067996 字节循环,destination li 0xf20080)。范围由资源自己声明:
+# p11_code.bin(analyze_p11 钉死的 12248 字节真实资源,CRC 全过)BANKCB 头 entry0
+# {address=0x80(p11 本地地址,主核映射 0xf20080), bytes=12112}——即
+# 0xf20080..0xf20080+12112=0xf22FD0。拷贝源是同一资源在 bank A flash 的已知
+# 字节(flash_image 只读区已映射);模型只提供可写目的窗(scoped harness region,
+# 与 CORE1_STACK 同类),P11 RAM 其余部分(含 P2M 消息区 0xf27f4a 堆信息)不映射
+# ——堆信息读仍按 p11_heap_info_bytes 显式 fixture/严格停语义。
+P11_COMMON_CODE_WINDOW=(0xf20080,0xf20080+12112,'p11_common_code_window')
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -123,7 +142,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
-             insert_load_pair=False,halfword_pair=False,flash_image_bytes=None,readonly=()):
+             insert_load_pair=False,halfword_pair=False,p11_power_init=False,
+             flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -185,6 +205,38 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 正常执行),并入主开关会改既有报告的 adapter 计数,故单独 opt-in。
     # 默认关闭,legacy 报告不变。
     if halfword_pair:extra['exact_parallel_halfword_stores']=True
+    # p11_power_init:power_init(0x6067876)内部的 P11 依赖链(opt-in,默认关,legacy
+    # 报告不变)。注意 reset_history_projection 本来就由 platform_case 默认打开
+    # (POR_HISTORY 全量快照,含 PWR_CON 0xf2a400:0x80),这里不得重复设置——
+    # reset_history_words 会被 options.update 整体替换,只给部分字会破坏前缀里
+    # 复位原因初始化(0x6068c80 读 0xfd0004)等已有读回。本开关只加四件:
+    # ①p11_lpwr_response_projection——主核 |=0x20 请求(0x60679a0)后 PWR_CON 读回
+    #   bit5=0(q32s 0xafa bitclr 已证实的最小响应投影,路 E),死等轮询
+    #   (0x60679ae/b0)因此退出。
+    # ②p11_window_projection——q32s PMU_CON 0xf2a0c0 释放 RMW |=1(0x60679a8,
+    #   write-only 位记录)与 P11_CLOCK.SYS_DIV 0xf2a410=0 / CLK_CON0 0xf2a414=1
+    #   整字写(write-only 记录)。
+    # ③P11 RAM 公共段拷贝目的窗(P11_COMMON_CODE_WINDOW):范围=p11_code.bin 资源
+    #   BANKCB 头 entry0 自己声明的 (address=0x80→主核 0xf20080,bytes=12112)
+    #   (analyze_p11 钉死、CRC 校验的真实资源字节);拷贝源是同一资源在 bank A
+    #   flash 的已知字节(flash_image 已映射),模型只提供可写目的窗,不发明内容。
+    # ④power_init_config_rmw——0xf2c05c 配置 RMW(0x60678f4 `rmw.and.r &=0x3FD`,
+    #   app/ROM 全量唯一引用、从不回读)按 0xf2c054 先例进 reset 投影的配置表
+    #   (extra masks,opt-in;默认三地址表与 legacy 报告不变)。
+    p11_regions=()
+    p11_snapshots=()
+    budget=250000
+    if p11_power_init:
+        options['p11_lpwr_response_projection']=True
+        options['p11_window_projection']=True
+        options['power_init_config_rmw']=True
+        p11_regions=(P11_COMMON_CODE_WINDOW,)
+        # 拷贝目的窗的快照:check() 用它与 p11_code.bin 资源 entry0 的真实字节
+        # (analyze_p11 的 CRC/SHA 钉死值)互证拷贝逐字节正确。
+        p11_snapshots=(('p11_common_code',P11_COMMON_CODE_WINDOW[0],12112),)
+        # p11_code.bin 公共段拷贝循环(0x6067990..96,每字节 4 条指令 ×12112 字节
+        # ≈48k 步)超出默认 250k 预算,前沿场景放宽到 320k。
+        budget=320000
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -239,8 +291,9 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['secondary_sfc_read_bus']=True
         options['initial_secondary_sfc_control']=0
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
-                     machine_options=machine_options,options=options,budget=250000,
-                     extra_diagnostics=extra or None)
+                     machine_options=machine_options,options=options,budget=budget,
+                     extra_diagnostics=extra or None,extra_regions=p11_regions,
+                     extra_snapshots=p11_snapshots)
 
 
 def check_delivery(r,*,before_rti=True):
@@ -255,7 +308,7 @@ def check_delivery(r,*,before_rti=True):
     return d
 
 
-def check(report):
+def check(report,firmware):
     rows={r['name']:r for r in report['scenarios']}
     r=rows['irq127_request_strict']
     require(r['completed_steps']==149660 and r['stop_core']==0 and r['stop_pc']=='0x12b608' and
@@ -564,12 +617,12 @@ def check(report):
     crc_base=rows['crc_engine_roundtrip']['peripherals']['hardware_crc_projection']
     require(crc_ff['seed_writes'][:14]==crc_base['seed_writes'] and
             crc_ff['result_reads'][:14]==crc_base['result_reads'] and
-            crc_ff['fed_bytes']==crc_base['fed_bytes']+360,
+            crc_ff['fed_bytes']==crc_base['fed_bytes']+480,
             'the erased fixture must not change the first fourteen CRC round trips')
-    require(crc_ff['result_reads'][14]=='0x75f8' and len(crc_ff['seed_writes'])==26 and
-            crc_ff['fed_bytes']==780 and len(crc_ff['result_reads'])==26,
+    require(crc_ff['result_reads'][14]=='0x75f8' and len(crc_ff['seed_writes'])==30 and
+            crc_ff['fed_bytes']==900 and len(crc_ff['result_reads'])==30,
             'the fifth probe entry must really CRC the 0xFF header bytes and the chain must continue')
-    require(crc_ff['result_reads'][15:]==['0xc190','0xf271','0xb758','0x5ddd',
+    require(crc_ff['result_reads'][15:26]==['0xc190','0xf271','0xb758','0x5ddd',
                                           '0xa1cd','0x9946','0xd1cf','0xc190','0xf271','0xb758','0x5ddd'],
             'the post-probe VM-init CRC usages changed after the fixture took the mismatch branch')
     # 簿记读边界已解决(st.d.sp.l 双字全 8 字节覆盖写,exact_doubleword_stores
@@ -631,7 +684,7 @@ def check(report):
     # 解析 helper 入口把出参半字清零)写虚拟栈 0x400b96(物理 0x19f794,
     # 未初始化)——上游 pair 存储模型的簿记读边界(uninitialized_memory),
     # 与 183,486 的 st.d.sp.l 同类(半字部分写、邻字节真保持旧值,决策归
-    # 下一路),非 bank B 数据可得性问题(236,415,旧前沿)。路 V(本次):
+    # 下一路),非 bank B 数据可得性问题(236,415,旧前沿)。路 V:
     # exact_parallel_stores gate 扩展接受 B 半 st.h(独立子开关
     # exact_parallel_halfword_stores——该形状在 legacy 前缀已出现 2 次,
     # 并入主开关会改既有报告;证据形状 app 0x6011370 mov.rr.p∥st.h
@@ -639,25 +692,61 @@ def check(report):
     # (含 unknown)——不能像 st.d 双字全 8 字节覆盖写那样断言「旧值无关」,
     # 按字节粒度直写(寄存器值全已知写 2 个真实字节;含 unknown 时走
     # write_abstract_byte 按字节来源运输,与 rep_copy_unknown_transport
-    # 同语义)。放行后记录解析 helper 完成、
-    # 平台 init 表走完、app_core 进入 power_init(0x6067876),链继续
-    # 187 步,停在 0x60678f4 `rmw.and.r [r7+16] &= r0`(r7=0xf2c04c,
-    # 与 PWR_CON 0xf2a400=r7-7244 同一基址;掩码 r0=1021=0x3FD)读
-    # 0xf2c05c——app/ROM 全量字节扫描该地址仅此一处引用,未建模的
-    # 主核外设读回(RMW 需要旧值),诚实停 unmapped_memory(236,602,
-    # 新前沿,power_init 内部 P11 窗口寄存器族的下一决策点)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x60678f4' and
-            r['stop']['kind']=='unmapped_memory' and r['stop']['address']=='0xf2c05c',
-            'the halfword pair-store frontier must advance into power_init and stop at the unmapped 0xf2c05c RMW')
-    require(r['completed_steps']==236602,'the erased fixture scenario changed its step count')
+    # 同语义)。放行后记录解析 helper 完成、平台 init 表走完、app_core 进入
+    # power_init(0x6067876)。路 W(本次,p11_power_init opt-in):
+    # ①0xf2c05c 配置 RMW(0x60678f4 `rmw.and.r &=0x3FD`,r7=0xf2c04c 与
+    # PWR_CON 同一基址;app/ROM 全量唯一引用、从不回读)按 0xf2c054 先例进
+    # reset 投影配置表(extra masks,opt-in);②call 0x60674aa 读已初始化
+    # 数据字 [0x12521C] bit1=0(qcy_initialized_data 区真实 flash 字节)→
+    # 非 wake 路径;守卫 b[0x1299F0](bss 清零区)也读 0→首boot 路径;
+    # ③CLK_CON0 0xf2a414=1、SYS_DIV 0xf2a410=0(write-only 记录,p11_window
+    # 投影);④"flash/res/p11_code.bin" 资源解析真实走通(get 0x6007ae8+
+    # fill 0x600ae2e,CRC 再用 4 次 26→30),rep 4 16 拷描述符到 0x1251F8,
+    # [r12+8]==128(BANKCB entry0 address 字段)过,0x6067990 字节循环把
+    # 12112 字节公共段从 bank A flash 拷到 P11 RAM 0xf20080(≈48k 步,快照
+    # SHA256 与 analyze_p11 entry0 真实载荷逐字节互证);⑤PWR_CON |=0x20
+    # 请求(路 E 投影记录)、q32s PMU_CON 0xf2a0c0 |=1 释放(write-only 位
+    # 记录)、csync、PWR_CON 轮询——主 init 早已发过 bit6 清标志命令
+    # (0x6068cf2,复位投影记为 flag-clear),轮询读回按 lpwr 投影的
+    # post_flag_clear_read(快照&~bit7,bit5=0)第一轮就退出:PWR_CON bit5
+    # 请求-响应投影在真实前缀检验通过(requests=1、poll read=1)。
+    # 链停在 0x60679ba `ld.bu.l r8=b[r4+1]` 读 0xf27f4b——堆信息 4 字节
+    # (P2M 消息区 +0xa,P11 init 写入、值未证实)的第一读:heap fixture
+    # (p11_heap_info_bytes)未提供,严格停 unmapped_memory(289,849,
+    # 新前沿——需要显式 heap fixture 参数才能继续的诚实停点)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x60679ba' and
+            r['stop']['kind']=='unmapped_memory' and r['stop']['address']=='0xf27f4b',
+            'the P11 power-init frontier must stop at the first heap-info byte read 0xf27f4b')
+    require(r['completed_steps']==289849,'the erased fixture scenario changed its step count')
+    # P11 公共段拷贝逐字节互证:目的窗快照 SHA256 == p11_code.bin 资源 entry0
+    # 真实载荷(analyze_p11 钉死值,资源 CRC 全过)。
+    from analyze_p11 import analyze as analyze_p11_resource
+    p11_entry0=analyze_p11_resource(firmware)['bankcb_entries'][0]
+    snap=r['memory_snapshots']['p11_common_code']
+    require(snap['initialized_bytes']==snap['size']==12112 and snap['sha256']==p11_entry0['data_sha256'],
+            'the P11 common-code copy did not land the exact p11_code.bin entry0 bytes')
+    # PWR_CON bit5 请求-响应(路 E)真实前缀检验:恰好一次请求 RMW、恰好一次
+    # 清标志后轮询读回、轮询第一轮退出(PC 越过 0x60679b0 到 0x60679b4)。
+    require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
+            r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
+            'the PWR_CON bit5 request/response projection did not pass the real-prefix poll exactly once')
+    window=r['peripherals']['p11_window_projection']
+    require(window['q32s_pm_con']['rmw_writes']==1 and window['q32s_pm_con']['known_mask']=='0x1' and
+            window['stores']['0xf2a410']=={'values':['0x0'],'writes':1} and
+            window['stores']['0xf2a414']=={'values':['0x1'],'writes':1},
+            'the q32s release RMW or the P11 clock register records differ')
+    require(r['peripherals']['reset_history_projection']['configuration']['0xf2c05c']==
+            {'known_mask':'0xfffffc02','known_value':'0x0'},
+            'the 0xf2c05c configuration RMW must record exactly the cleared bit1+bits10+ as known zero')
     require(r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3,
             'the halfword pair-store extension must fire exactly three times in the extended prefix')
-    # compose 对(装载+组装)假设执行:2 轮 rep×2 对=4 次,adapter 名带
-    # _is_assumption 显式标注旧值方向无硬件捕获证据。
-    require(r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==4,
-            'the insert/load parallel pair must execute exactly four times (two REP rounds) '
+    # compose 对(装载+组装)假设执行:legacy 前缀内 2 轮 rep×2 对=4 次;P11
+    # 资源解析后再 +4 次(新的 2 轮),adapter 名带 _is_assumption 显式标注
+    # 旧值方向无硬件捕获证据。
+    require(r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8,
+            'the insert/load parallel pair must execute exactly eight times (four REP rounds) '
             'through the old-register assumption adapter')
-    require(r['instruction_adapters'].get('exact_doubleword_store')==22,
+    require(r['instruction_adapters'].get('exact_doubleword_store')==25,
             'the doubleword stores of the extended prefix must run through the exact gate')
     require(r['peripherals']['software_irq_commands']['commands']==16 and
             r['peripherals']['software_irq_commands']['acknowledgements']==8,
@@ -666,21 +755,20 @@ def check(report):
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7,
             'the extra cross-core delivery after the probe mismatch differs from the repeat projection')
-    # ROM 拷贝族/CPU0-CPU1 同步在 fixture 放行后继续:rep.i 体 80→143(第 5 项
-    # 头拷贝+后续链+walker 后链+compose 放行后的 app 侧链)、零计数跳过 2→3
-    # 不变、寄存器计数 rep 7→21(walker 后链 GET 消费链 +1、VM 空白扫描后的
-    # cfg 链 +5、compose rep 本体 +1 及其后再 +4)。unknown 运输 2/2→9/9:字
-    # 形式 2 轮(boot_info padding/vm_res)不变,字节形式 +7(GET rep 4 16 的
-    # 7 个未知字节,同一 16 字节块内的 padding/vm_res,来源链回 0x122800);
-    # compose 对的源是 app flash 已知字节,不走运输。CRC 19→26 次往返 780
-    # 字节(app 侧对既有窗口数据的重扫描);IRQ commands 16/acks 8 不变(新
-    # 增前缀无新跨核同步)。
-    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==143 and
+    # ROM 拷贝族/CPU0-CPU1 同步在 power_init 放行后不变:rep.i 体 143→165
+    # (+22:P11 资源 get/fill 链的 rep 4 16/rep 4 4 拷贝)、零计数跳过 3 不变、
+    # 寄存器计数 rep 21→26(+5)、双字存储 22→25、unknown 运输 9/9 不变(compose
+    # 对源是 flash 已知字节)。CRC 26→30 次往返 900 字节(+4 次:P11 资源头
+    # 校验,末值 0x239e);IRQ commands 16/acks 8、交付 1+7 全不变——P11 资源
+    # 拷贝不经硬件 CRC 以外的跨核同步,公共段拷贝是纯 CPU0 字节循环。
+    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==165 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
-            r['instruction_adapters'].get('register_rep_multi_block_projection')==21 and
+            r['instruction_adapters'].get('register_rep_multi_block_projection')==26 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9,
             'the fixture-scenario REP projections differ from the observed prefix')
+    require(crc_ff['result_reads'][26:]==['0xa1cd','0x9946','0xd1cf','0x239e'],
+            'the P11 resource resolution must add exactly four CRC rounds ending 0x239e')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -786,13 +874,13 @@ def main():
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
                               dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
-                              halfword_pair=True,flash_image_bytes=image)]}
+                              halfword_pair=True,p11_power_init=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)
         r=irq_case(module,candidate,header,rom,name,entry=True,readonly=readonly);r['ufw_sha256']=digest
         report.setdefault('candidate_prefixes',[]).append(r)
-    check(report);args.report.parent.mkdir(parents=True,exist_ok=True)
+    check(report,args.firmware);args.report.parent.mkdir(parents=True,exist_ok=True)
     args.report.write_text(json.dumps(report,indent=2)+'\n')
 
 
