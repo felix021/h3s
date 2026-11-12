@@ -50,6 +50,14 @@ GPCNT_CON=0xfd1100
 CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
 CPU1_CONTROL=0xffe8c0
 VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
+# P33 模拟控制族里 power_init 的 P33 配置函数(0x60677a4)真实读写的、又不被
+# VOLTAGE_CONFIG 覆盖的两个寄存器:P3_ANA_CON2(0xf2c248=P33_ACCESS(0x92))与
+# P3_ANA_CON5(0xf2c254=P33_ACCESS(0x95))。p33_sfr.h 只是地址宏、无 __RW/__RO/
+# __WO 类型标注(与 p11_sfr.h 的 P11_LPTMR_TypeDef 不同),读回语义本身没有 SDK
+# 证据;但同族 P3_ANA_CON6(0xf2c258)已在 VOLTAGE_CONFIG 里按「显式合成初始字
+# 0 + 读回=当前寄存器值(后写值)」建模(clock_voltage_configuration 变体先例),
+# 这两个寄存器按同一先例、同一显式合成初始字 0 处理,不臆造硅模拟状态。
+P33_ANALOG_CONFIG=(0xf2c248,0xf2c254)
 PLL1_CON3=0xfd470c
 CACHE_STATUS_REGISTERS=(0xff0500,0xffe400,0xffec00)
 ICU_BASES=(0xffe400,0xffec00)
@@ -1493,6 +1501,7 @@ class BR28Model:
                  gpcnt_cleanup_projection=False,core_tick_configuration=False,
                  cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
+                 p33_analog_config_projection=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -1605,6 +1614,7 @@ class BR28Model:
         self.clock_divider_projection=clock_divider_projection
         self.voltage_configuration_projection=voltage_configuration_projection
         self.pll1_configuration_projection=pll1_configuration_projection
+        self.p33_analog_config_projection=p33_analog_config_projection
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -1647,8 +1657,16 @@ class BR28Model:
                                   (clock_divider_projection,(SYS_DIV,)),
                                   (voltage_configuration_projection,VOLTAGE_CONFIG),
                                   (pll1_configuration_projection,(PLL1_CON3,)),
+                                  (p33_analog_config_projection,P33_ANALOG_CONFIG),
                                   (port_initialization_projection,(IOMAP_CON0,)+P11_PORT_DIGITAL)):
             if enabled:self.additional_configuration.update(addresses)
+        # P33 模拟控制族读回投影的显式合成初始字 0:与 VOLTAGE_CONFIG 先例相同,
+        # 「显式合成初始字、非推导的模拟状态」;写后读回=最后写值,写前读回=0。
+        # 直接 seed 进 registers(而非要求调用方传 initial_registers),开关关时
+        # 不 seed、不进 additional_configuration,legacy 场景报告逐字节不变。
+        if p33_analog_config_projection:
+            for address in P33_ANALOG_CONFIG:
+                self.registers[address]=0
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
             if address not in (CLOCK0,CLOCK0+4,CLOCK0+8,PLL0) and address not in self.additional_configuration:
@@ -2235,6 +2253,8 @@ class BR28Model:
         if self.clock_divider_projection:result['assumptions']['sys_div_configuration_projection']=True
         if self.voltage_configuration_projection:
             result['assumptions']['voltage_configuration_projection']='five scoped P33/CMNG configuration registers; analog voltage/ramp/settling and RAM wait-state timing not modeled'
+        if self.p33_analog_config_projection:
+            result['assumptions']['p33_analog_config_projection']='two P33 analog-control configuration registers (P3_ANA_CON2/P3_ANA_CON5); explicit synthetic initial word 0 (not an inferred analog state), readback=current register value; analog/voltage behavior not modeled'
         if self.pll1_configuration_projection:result['assumptions']['pll1_con3_configuration_projection']='RW config only; analog PLL1 not modeled'
         if self.cache_status_probe:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}

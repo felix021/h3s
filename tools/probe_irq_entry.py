@@ -103,8 +103,17 @@ h[0x129D94]=1) and enters the second task creation at 0x6067b12 (entry
 0x6069538); after its create call returns, the else branch (gate byte
 b[r6+98] neither 0 nor 1) calls 0x6067668 with r0=2 and the LP-timer
 configuration RMW on P11_LPTMR0 CON2 (0xf2a908) hits the lp_timer
-write-only boundary at the first read, stopping honestly at 301,540 —
-lp_timer readback semantics is the next independent decision, and
+write-only boundary at the first read, stopping honestly at 301,540; the
+opt-in lp_timer_con_readback_projection (SDK p11_sfr.h marks the CONs __RW)
+returns the last-written value so that RMW runs through. The following
+call 0x60677a4 (the power_init P33 analog-config routine) then reads
+P3_ANA_CON5 (0xf2c254) for its 0x3FC7 clear RMW: the opt-in
+p33_analog_config_projection covers P3_ANA_CON2/P3_ANA_CON5 with the same
+explicit synthetic initial word 0 as the VOLTAGE_CONFIG precedent (the
+p33_sfr.h header is address macros only, no __RW/__RO/__WO annotation),
+and the chain next stops honestly at 301,636 on the P3_RST_CON0 (0xf2c054)
+RMW whose and-mask (0xFF7F) is outside the recorded RESET_CONFIG_MASKS —
+the multi-mask access to 0xf2c054 is the next independent decision, and
 power_init's return still lies beyond. No new scheduler round trips occur.
 The crc_bankb_erased_fixture frontier itself stays pinned at 289,849
 without the fixture.
@@ -270,6 +279,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              insert_load_pair=False,halfword_pair=False,p11_power_init=False,
              heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,lrct_trim_done=False,
              lrct_trim_result=None,timer0_std12m=False,lp_timer_con_readback=False,
+             p33_analog_config=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -447,6 +457,22 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if lp_timer_con_readback:
         require(lp_timer_writes,'the LP-timer CON readback only layers on the LP-timer write records')
         options['lp_timer_con_readback_projection']=True
+    # p33_analog_config:opt-in 的 P33 模拟控制族读回投影(路 AM)。触发点
+    # =power_init 的 P33 配置函数 0x60677a4(0x6067b36 调用)内 0x60677b0
+    # `rmw.and.r [0xf2c254]&=0x3FC7` 读 P3_ANA_CON5(0xf2c254=P33_ACCESS(0x95))
+    # ——p33_sfr.h 只是地址宏、无 __RW/__RO/__WO 类型标注(与 p11_sfr.h 的
+    # P11_LPTMR_TypeDef 不同),读回语义本身无 SDK 证据;但同族 P3_ANA_CON6
+    # (0xf2c258)已在 VOLTAGE_CONFIG(本链 architecture_case 默认开启)按「显式
+    # 合成初始字 0 + 读回=当前寄存器值」建模(clock_voltage_configuration
+    # 变体先例)。故按同一先例把该函数读写的另两个模拟控制族成员 P3_ANA_CON2
+    # (0xf2c248)/P3_ANA_CON5(0xf2c254)纳入 opt-in 的
+    # p33_analog_config_projection(显式合成初始字 0、写后读回=最后写值、
+    # 不臆造硅模拟状态)。独立开关而非并入 VOLTAGE_CONFIG:后者在本链
+    # architecture_case 默认展开,并入会给所有经该链的场景报告加键、破坏
+    # 逐字节不变。默认关:0xf2c254 读保持 unmapped_memory(301,615 前沿形状)。
+    if p33_analog_config:
+        require(p11_power_init,'the P33 analog-config readback only layers on the p11_power_init scenario')
+        options['p33_analog_config_projection']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -1045,25 +1071,35 @@ def check(report,firmware):
     # lp_timer_con_readback_projection:CON 读回=最后写值(SFC 时钟 +8 先例
     # 同族,只在固件已写过至少一次后返回,不臆造复位值)——CON2 读回 0、复合
     # RMW 读回 3,RMW 真实走通,CON2 末态=3(CLK_SEL=3/CLK_DIV=0)。返回后
-    # 0x6067b36 紧接 call 0x60677a4(P33 模拟配置函数):0x60677aa r1=0xF2C248
-    # → **0x60677b0 `rmw.and.r [r1+12]&=r0` 读 0xF2C254**——P33_ACCESS(x)=
-    # 0xf2c000+x*4 的 x=0x95(与 P3_ANA_CON6=0xf2c258/P3_ANA_CON11/12=0xf2c26c
-    # /70 同族、路 AI 已钉死的 P3 模拟配置族),RMW 读回撞 unmapped 诚实停
-    # (P33 模拟配置族是新独立决策点,归下一路)。power_init 返回(0x60120e0)
-    # 仍在停点之后;第一个任务句柄半字 0x6067aec h[0x129D94]=1 已执行(旧记录
-    # 「0x129D90」系地址笔误,实测目标是 0x129D94)。TIMER0 精确计数:443+75
-    # 步 × 3 tick/步 = cnt 1554,con 0x1401,expirations 10 不变(首次到期
-    # 在启动后 40000 步,远未到);无新调度往返(交付 1+7+2、commands 20/
-    # acks 10 不变)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x60677b0' and
-            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf2c254',
-                        'size':4,'reference_sdk_register':None},
-            'the heap-experimental scenario must stop at the P33 analog-config RMW read '
-            '(P3_ANA_CON5, 0xf2c254) after the LP-timer CON2 readback RMW is let through')
-    require(r['completed_steps']==301615,'the heap experimental config changed its step count')
+    # 0x6067b36 紧接 call 0x60677a4(P33 模拟配置函数,body 到 0x6067848)。
+    # 路 AM 按同族先例放行 P3_ANA_CON5 读回:0x60677aa r1=0xF2C248(P3_ANA_CON2
+    # 基址)→ 0x60677b0 `rmw.and.r [r1+12]&=0x3FC7` 读 P3_ANA_CON5(0xf2c254=
+    # P33_ACCESS(0x95))、0x60677b8 再读、0x60677ce 写回;p33_sfr.h 只是地址宏、
+    # 无 __RW/__RO/__WO 类型标注(与 p11_sfr.h 的 P11_LPTMR_TypeDef 不同),但
+    # 同族 P3_ANA_CON6(0xf2c258)已在 VOLTAGE_CONFIG 按「显式合成初始字 0+读回
+    # =当前寄存器值」建模,opt-in p33_analog_config_projection 把该函数读写的
+    # P3_ANA_CON2(0xf2c248)/P3_ANA_CON5(0xf2c254)按同一先例覆盖(合成 0、
+    # 不臆造硅模拟状态)。放行后函数继续:P3_ANA_CON6 三次读改(VOLTAGE_CONFIG)、
+    # 0x60677f4/f8 并行对(A 半 r2=r1-500=0xf2c054、B 半写 P3_ANA_CON6 旧值)后
+    # **0x60677fa `rmw.and.r [r2+0]&=0xFF7F` 读 P3_RST_CON0(0xf2c054=P33_ACCESS
+    # (0x15))撞 reset_configuration_operation_not_modeled 诚实停**——0xf2c054
+    # 在 RESET_CONFIG_MASKS 里记录的 and 掩码是 0x3fdf(主复位初始化路径),而
+    # power_init 的 P33 配置函数用 0xFF7F/0x7FBF 两个**不同**掩码清 bit7/bit6,
+    # 复位投影的严格掩码校验拒绝——0xf2c054 的多掩码访问是新独立决策点,归
+    # 下一路。power_init 返回(0x60120e0)仍在停点之后;第一个任务句柄半字
+    # 0x6067aec h[0x129D94]=1 已执行(旧记录「0x129D90」系地址笔误,实测目标
+    # 是 0x129D94)。TIMER0 精确计数:518+21 步 × 3 tick/步 = cnt 1617(见下方
+    # 断言),con 0x1401,expirations 10 不变(首次到期在启动后 40000 步,远未
+    # 到);无新调度往返(交付 1+7+2、commands 20/acks 10 不变)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x60677fa' and
+            r['stop']=={'kind':'reset_configuration_operation_not_modeled','address':'0xf2c054'},
+            'the heap-experimental scenario must stop at the P3_RST_CON0 (0xf2c054) RMW '
+            'whose and-mask (0xFF7F) is outside the recorded RESET_CONFIG_MASKS after the '
+            'P33 analog-config readback is let through')
+    require(r['completed_steps']==301636,'the heap experimental config changed its step count')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':1554,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 518 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':1617,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 539 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1392,7 +1428,8 @@ def main():
                               halfword_pair=True,p11_power_init=True,
                               heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
                               lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
-                              timer0_std12m=True,lp_timer_con_readback=True,flash_image_bytes=image)]}
+                              timer0_std12m=True,lp_timer_con_readback=True,
+                              p33_analog_config=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

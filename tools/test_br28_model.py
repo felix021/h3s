@@ -5,7 +5,7 @@ from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PIN
 from probe_boot import Blocked
 from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
-from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3
+from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
@@ -783,6 +783,36 @@ class ModelTests(unittest.TestCase):
                          (['0xf2a900','0xf2a904','0xf2a908'],3))
         self.assertTrue(con['readback_semantics'].startswith('last firmware-written value'))
         self.assertIn('0x6067672',con['evidence'])
+
+    def test_p33_analog_config_readback_is_synthetic_zero_or_last_write(self):
+        # 路 AM:opt-in 的 P33 模拟控制族读回投影(P3_ANA_CON2=0xf2c248 / P3_ANA_CON5
+        # =0xf2c254,power_init 的 P33 配置函数 0x60677a4 真实读写)。p33_sfr.h 只是
+        # P33_ACCESS 地址宏、无 __RW/__RO/__WO 类型标注(与 p11_sfr.h 的
+        # P11_LPTMR_TypeDef 不同),读回语义本身无 SDK 证据;同族 P3_ANA_CON6
+        # (0xf2c258)已在 VOLTAGE_CONFIG 按「显式合成初始字 0 + 读回=当前寄存器值」
+        # 建模,本投影按同一先例处理这两个寄存器:合成初始字 0(不臆造硅模拟状态),
+        # 写后读回=最后写值。
+        # 默认关:两个地址都不进 handles、读回严格停。
+        g=BR28Model()
+        self.assertFalse(g.handles(0xf2c254,4) or g.handles(0xf2c248,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):g.read(0xf2c254)
+        self.assertNotIn('p33_analog_config_projection',g.report()['assumptions'])
+        # 电压配置投影(VOLTAGE_CONFIG)只覆盖 P3_ANA_CON6(0xf2c258),不覆盖
+        # P3_ANA_CON5(0xf2c254)——这是 301,615 前沿停点的成因,钉死不并入。
+        v=BR28Model(voltage_configuration_projection=True)
+        self.assertTrue(v.handles(0xf2c258,4))
+        self.assertFalse(v.handles(0xf2c254,4) or v.handles(0xf2c248,4))
+        # opt-in:合成初始字 0,写后读回=最后写值。
+        h=BR28Model(p33_analog_config_projection=True)
+        self.assertEqual(tuple(sorted(P33_ANALOG_CONFIG)),(0xf2c248,0xf2c254))
+        self.assertTrue(h.handles(0xf2c254,4) and h.handles(0xf2c248,4))
+        self.assertEqual(h.read(0xf2c254),0,'first read is the explicit synthetic 0, not an inferred analog state')
+        self.assertEqual(h.read(0xf2c248),0)
+        h.write(0xf2c254,0x3);self.assertEqual(h.read(0xf2c254),3,'readback is the last firmware-written value')
+        h.write(0xf2c254,0x3FC7);self.assertEqual(h.read(0xf2c254),0x3FC7)
+        # P3_ANA_CON6 仍由 VOLTAGE_CONFIG 管辖:只开本投影不覆盖它。
+        self.assertFalse(h.handles(0xf2c258,4))
+        self.assertIn('p33_analog_config_projection',h.report()['assumptions'])
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')
