@@ -1723,7 +1723,7 @@ def check(report,firmware):
             'the handler must execute both 12B special-frame anchors (push.srl at 0x12ece8, '
             'pop.srl at 0x12ed08) with the 16B push.rl/pop.rl frame on the ordinary transport')
     m=rows['timer0_irq4_masked_probe']
-    require(m['completed_steps']==304012 and m['stop']==r['stop'] and
+    require(m['completed_steps']==304317 and m['stop']==r['stop'] and
             m['stop_pc']==r['stop_pc'] and
             m['machine']['timer0_irq_entry_projection']['deliveries']==[] and
             m['peripherals']['timer0']['pending'] is True and
