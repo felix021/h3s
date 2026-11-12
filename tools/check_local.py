@@ -66,6 +66,7 @@ def main():
         run(sys.executable,'tools/probe_icfg_startup.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/icfg-startup.json')
         run(sys.executable,'tools/probe_task_returns.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/task-returns.json')
         run(sys.executable,'tools/probe_irq_entry.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/irq-entry.json')
+        run(sys.executable,'tools/analyze_image_trace.py','--rom',args.rom.resolve(),'--self-check','--report','analysis/local-checks/image-trace-diff.json')
         run(sys.executable,'tools/probe_core_tick.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/core-tick.json')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
