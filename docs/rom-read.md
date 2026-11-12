@@ -58,6 +58,8 @@ python3 tools/probe_rom.py --rom /path/to/QCY_H3S_BR28_ROM_000000-020000.bin --r
 
 [read_rom.py](../tools/usb-recovery/read_rom.py) 是成功会话后整理的独立入口：固定 loader 摘要、顺序和入口；只有确认 loader 后才允许 `FD07`，窗口限 `0..0x20000`，每次最多 128B。Flash 读取、擦写、OTP、任意跳转和重启命令均拒绝。没有扩大原救砖工具的通用命令白名单。
 
+可选 `--p11-heap-probe` 模式（2026-11-13 路 BM，按 [p11-heap-measurement.md](p11-heap-measurement.md) 的扩展轮廓实现）把固定窗口换成五地址白名单读计划（4 个正控制 + 1 个堆描述符目标，各恰好一次 128B 读、两读字节比对、无重试）；期望值比对只报告不强制，`0xf20080` 头 32B 比对需可选 `--p11-code`（SHA1 钉死的公开 p11_code.bin）。该模式只有离线测试，真机会话仍属未授权的备用方案。默认 ROM 窗口模式行为不变。
+
 要求 64 位 Linux／rooted Android、usbfs 权限、USB 数据线及**刚接入的正常 QCY USB**。已有 BR28 ROM／loader 身份会被拒绝，因为 INQUIRY 无法可靠区分两者；每次会话必须重新建立正常 USB 起点。以下是有意操作设备时的命令，不属于本机检查：
 
 ```bash
