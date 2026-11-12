@@ -70,11 +70,20 @@ parallel-pair sub-gate (exact_parallel_byte_stores, same pattern as the
 halfword precedent) and the opt-in lp_timer_init_projection write-only
 records for the LP-timer init tail (P11_LPTMR0 CON0/CON1/CON2 0xf2a900..08
 word stores, the unnamed PMU-family 0xf2c04c/0xf2c050 word stores, and the
-JL_LRCT CON 0xfd3600 bit RMWs, all write-only). The chain then stops
-honestly at 300,236 on the LRC-trim readback: the ld.w of JL_LRCT.CON at
-0x6067514 (enable bit0 / busy bit7 poll) whose read value and completion
-timing have no evidence. The crc_bankb_erased_fixture frontier itself stays
-pinned at 289,849 without the fixture.
+JL_LRCT CON 0xfd3600 bit RMWs, all write-only). The LRC-trim boundary that
+used to stop at 300,236 (the CON readback poll) is now crossed by the opt-in
+lrct_trim_done readback projection (bit7 projected as trim-complete, the
+SFC PLL-lock bit15 pattern): the disassembled poll shape is
+read CON -> beq.and.ri bit0 (not enabled -> skip) -> re-read CON ->
+beq.and.ri bit7 branching BACK while bit7 is clear ("branch if
+(r & (1<<n)) == 0", hardware-confirmed ISA), so the firmware waits for
+bit7 to be SET, and the projection returns the recorded RMW bits
+(bit0 enable=1, bit6=1) with bit7 forced to 1 — the poll really exits on
+its first iteration. The chain then stops honestly at 300,240 on the very
+next instruction: the ld.w of JL_LRCT.NUM at 0x6067520 ([r3+4], the
+trim-result count register, SDK __RW) whose silicon-measured value has no
+derivable evidence at all. The crc_bankb_erased_fixture frontier itself
+stays pinned at 289,849 without the fixture.
 """
 import argparse
 import json
@@ -212,7 +221,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
              insert_load_pair=False,halfword_pair=False,p11_power_init=False,
-             heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,
+             heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,lrct_trim_done=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -343,6 +352,18 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if lp_timer_writes:
         require(p11_power_init,'LP-timer write records only layer on the p11_power_init scenario')
         options['lp_timer_init_projection']=True
+    # lrct_trim_done:opt-in 的 JL_LRCT CON 读回「trim 已完成」条件投影(bit7
+    # 置 1,SFC PLL-lock bit15 先例同模式)。轮询形状(反汇编钉死):0x6067514
+    # 读 CON→0x6067516 beq.and.ri 测 bit0(==0 跳过 trim 直接返回)→0x606751a
+    # 再读→0x606751c beq.and.ri 测 bit7——ISA 语义是「(r&(1<<n))==0 时跳转」、
+    # 目标回 0x606751a,即固件等 bit7 置位(busy/完成标志置 1)才退出,随后
+    # 0x6067520 ld.w [r3+1*4](n 字段 scale=4)读 NUM(0xfd3604,SDK __RW)取
+    # trim 结果计数——硅测量值无任何证据,读回一律严格停(新前沿)。投影只
+    # 约束 CON 读回:已记录 RMW 已知值(bit0=1 使能/bit6=1)+ bit7 强制 1,
+    # mask 外的位不臆造。默认关,legacy 报告不变。
+    if lrct_trim_done:
+        require(lp_timer_writes,'the LRCT trim-done projection only layers on the LP-timer write records')
+        options['lrct_trim_done_projection']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -902,14 +923,22 @@ def check(report,firmware):
     # PMU 配置族 0xf2c04c=0x21/0xf2c050=0x41(SDK 无名)、JL_LRCT CON 0xfd3600
     # 四次位 RMW(SDK br28.h ls_base+map_adr(0x36,0),CON __WO;0x6067aae
     # &=0xFFFFFFC1 清 bits0-5、0x60674fc &=~1、0x6067500 |=0x40、0x6067506 |=1,
-    # 按位记录不经读回)。链停在 0x6067514 `ld.w [r3+0]` 读 0xfd3600——LRC trim
-    # 硬件块的使能/busy 轮询(0x6067516 测 bit0、0x606751c 测 bit7),读回值与
-    # 完成时序无任何证据,诚实停(下一路决策点:LRCT 读回 fixture 或显式投影)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067514' and
-            r['stop']=={'kind':'lp_timer_register_readback_not_modeled','address':'0xfd3600'},
-            'the heap-experimental scenario must stop at the LRC-trim CON readback '
-            '(the JL_LRCT enable/busy poll at 0x6067514)')
-    require(r['completed_steps']==300236,'the heap experimental config changed its step count')
+    # 按位记录不经读回)。路 AC 前沿 300,236 曾停在 0x6067514 读 CON(trim 使能/
+    # busy 轮询读回无证据)。
+    # LRC trim 完成投影(lrct_trim_done,路 AD):0x6067514/0x606751a 两读 CON 都回
+    # 投影字 0xC1(bit7 完成投影置 1 + RMW 已知 bit0=1/bit6=1),0x6067516 bit0=1
+    # 不跳、0x606751c bit7=1 不跳——轮询第一轮真实退出(固件语义:beq.and.ri 在
+    # bit7==0 时回跳 0x606751a,等的是置位不是清零;旧记录「busy 死等清零」按
+    # 编码修正)。+4 步停在 0x6067520 `ld.w [r3+1*4]`(n 字段 scale=4)读 NUM
+    # (0xfd3604,SDK br28.h JL_LRCT_TypeDef {CON __WO;NUM __RW} 第二个字)——
+    # trim 结果计数是硅测量值,无任何推导证据(app 全量恰三处 li 引用 0xfd3600、
+    # 0xfd3604 零字面量只能经 [r3+4] 到达、ROM 整块零引用),读回严格停是新的
+    # 独立边界(数据可得性,与堆信息 4 字节同族)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067520' and
+            r['stop']=={'kind':'lrct_trim_result_not_modeled','address':'0xfd3604'},
+            'the heap-experimental scenario must stop at the LRCT NUM (trim-result) read '
+            'after the trim-done projection lets the poll exit')
+    require(r['completed_steps']==300240,'the heap experimental config changed its step count')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -932,6 +961,14 @@ def check(report,firmware):
             lp['write_only'] and not lp['readback_observed'] and
             not lp['bit_semantics_or_completion_verified'] and not lp['lrc_trim_result_simulated'],
             'the JL_LRCT bit records or the explicit assumption flags differ')
+    trim=lp['lrct_trim_done_projection']
+    require(trim['address']=='0xfd3600' and trim['trim_done_bit']=='0x80' and
+            trim['reads']==2 and trim['projected_word']=='0xc1' and trim['known_mask']=='0x7f' and
+            not trim['completion_timing_modeled'] and
+            trim['trim_result_register']['address']=='0xfd3604' and
+            trim['trim_result_register']['value_evidence'].startswith('none'),
+            'the trim-done readback projection differs from the observed two poll reads '
+            '(0x6067514 and 0x606751a) and the strictly-blocked NUM boundary')
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7+
@@ -983,7 +1020,7 @@ def check(report,firmware):
         'The value is nevertheless DERIVED, NOT MEASURED: whether the q32s core really executes '
         'this init path at boot is unproven (known decode gaps), so every step past 289,849 in '
         'that scenario (including the pmu_task scheduler round trip, the M2P message-area writes '
-        'and the 300,236 LRC-trim readback boundary) '
+        'and the 300,240 LRCT NUM trim-result boundary) '
         'is a CONDITIONAL PASS that must not be reported as verified; without the fixture the '
         'crc_bankb_erased_fixture frontier stays pinned at 289,849 on the unmapped 0xf27f4b read')
     report['p11_m2p_message_window_assumption']=(
@@ -1002,8 +1039,31 @@ def check(report,firmware):
         'prefix writes P2M the window extends with the same RAM semantics. '
         'The lp_timer_init_projection write-only records (P11_LPTMR0 CON0/CON1/CON2 word stores, '
         'the unnamed PMU-family 0xf2c04c/0xf2c050 word stores, JL_LRCT CON 0xfd3600 bit RMWs) '
-        'never fabricate readback: the LRC-trim enable/busy poll at 0x6067514 stays the honest '
-        'stop of the conditional frontier (300,236)')
+        'never fabricate readback by themselves: with only that switch the LRC-trim CON poll at '
+        '0x6067514 stays the honest stop (the recorded 300,236 frontier shape); the conditional '
+        'scenario additionally opts into lrct_trim_done_projection (see '
+        'lrct_trim_done_projection_assumption) to cross it')
+    report['lrct_trim_done_projection_assumption']=(
+        'the p11_heap_experimental_config scenario opts into lrct_trim_done_projection: reads of '
+        'JL_LRCT CON 0xfd3600 return the recorded RMW known bits (bit0 enable=1, bit6=1, mask 0x7f) '
+        'with bit7 FORCED to 1, an explicit "trim complete" condition projection in the SFC '
+        'PLL-lock bit15 pattern (0x12ba38 precedent). Evidence level: the poll SHAPE is disassembled '
+        'and machine-verified (0x6067514 ld.w CON; 0x6067516 beq.and.ri bit0 — clear means not '
+        'enabled, skip the whole trim; 0x606751a re-read; 0x606751c beq.and.ri bit7 whose '
+        'hardware-confirmed semantics "branch if (r & (1<<n)) == 0" sends it BACK to 0x606751a '
+        'while bit7 is clear, i.e. the firmware WAITS FOR bit7 TO BE SET — the earlier "busy, '
+        'wait for clear" note was wrong and is corrected by the encoding), but the bit LAYOUT '
+        'beyond that inference has no evidence: SDK marks CON __WO with no readback definition, '
+        'no silicon value was measured, and the completion timing is not modeled (the projection '
+        'reads back complete immediately, so the poll exits on its first iteration). Bits outside '
+        'the RMW mask are not fabricated (the poll only consumes bit0/bit7). The very next '
+        'instruction reads JL_LRCT.NUM 0xfd3604 (SDK JL_LRCT_TypeDef {CON __WO; NUM __RW}, the '
+        'trim-result count, [r3+4] after the poll; app references the LRCT block only via three '
+        'li sites of 0xfd3600 and the ROM nowhere): that count is a silicon measurement with NO '
+        'derivable candidate (even the firmware divider 0xC9C9C9C0/NUM has no clean target), so '
+        'its read stays strictly blocked (lrct_trim_result_not_modeled) and the conditional '
+        'frontier stops there at 300,240 — the trim-result data boundary is the next independent '
+        'decision (explicit fixture parameter, behavioral model, or pinned)')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -1117,7 +1177,7 @@ def main():
                               dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
                               halfword_pair=True,p11_power_init=True,
                               heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
-                              flash_image_bytes=image)]}
+                              lrct_trim_done=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

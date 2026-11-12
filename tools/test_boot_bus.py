@@ -547,6 +547,66 @@ class BusInstructionTests(unittest.TestCase):
                          'the written period byte must read back as the derived timer bytes')
         self.assertEqual(snap['initialized_bytes'],4)
 
+    # LRC trim 完成投影(lrct_trim_done_projection,需 lp_timer_init_projection,
+    # 默认关)。真实调用链 0x6067aa0 起(power_init 尾部第一轮 LRC 配置):
+    # 0x6067aa6 st.b b[0x129D8E]=1(r5)、0x6067aae &=0xFFFFFFC1、call 0x60674b8
+    # (M2P LRC 周期字节写-回读-推导)、call 0x60674ec(r0=1:b[0x129D84]!=0 门
+    # 下 &=~1/|=0x40/|=1 启动 trim)、call 0x606750c(trim 等待函数)。投影开:
+    # 0x6067514/0x606751a 两读 CON 都回 0xC1(RMW 已知 bit0/bit6=0x41 + bit7
+    # 完成投影置 1),0x6067516 bit0=1 不跳、0x606751c bit7=1 不跳——beq.and.ri
+    # 的 ISA 语义是「(r&(1<<n))==0 时跳转」、目标回 0x606751a,固件等的是
+    # bit7 置位(旧「busy 死等清零」记录按编码修正),轮询第一轮真实退出,
+    # 停在 0x6067520 `ld.w r2=[r3+1*4]`(ld.w 的 n 字段 scale=4)读 NUM
+    # (0xfd3604,SDK __RW trim 结果计数)——硅测量值无证据,严格停。
+    def test_lrct_trim_done_projection_exits_the_poll_and_stops_at_num(self):
+        h=self.handoff()
+        h['regions'].append((0xF27F80,0xF27FE0,'p11_m2p_message_area'))
+        h['regions'].append((0x129D80,0x129DB0,'lrct_config_bss'))
+        h['seeds'].append((0x129D84,bytes.fromhex('01')))
+        regs=[0]*16;regs[5]=1
+        result=explore(self.module,self.app,name='lrct_trim_done',handoff=h,
+            hardware=BR28Model(lp_timer_init_projection=True,lrct_trim_done_projection=True),
+            diagnostics={'entry_pc':0x6067aa0,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_subword_stores':True,'exact_parallel_stores':True,
+                         'exact_parallel_byte_stores':True},budget=48)
+        self.assertEqual(result['completed_steps'],41)
+        self.assertEqual(result['stop_pc'],hex(0x6067520))
+        self.assertEqual(result['stop']['kind'],'lrct_trim_result_not_modeled')
+        self.assertEqual(result['stop']['address'],'0xfd3604')
+        executed=[(row['pc'],row.get('instruction_id')) for row in result['last_instructions']]
+        self.assertEqual(executed[-4:],[('0x6067516','beq.and.ri'),('0x606751a','ld.w'),
+                                        ('0x606751c','beq.and.ri'),('0x6067520','ld.w')],
+                         'the poll must really execute both reads and both bit tests '
+                         '(the window ends on the blocked NUM load)')
+        self.assertEqual(result['instruction_adapters'].get('lp_timer_bit_rmw'),4)
+        lp=result['peripherals']['lp_timer_init_projection']
+        self.assertEqual(lp['lrct_con'],{'address':'0xfd3600','known_mask':'0x7f',
+                                         'known_value':'0x41','rmw_writes':4})
+        trim=lp['lrct_trim_done_projection']
+        self.assertEqual((trim['reads'],trim['projected_word']),(2,'0xc1'))
+
+    def test_lrct_trim_done_projection_defaults_to_the_con_readback_stop(self):
+        # 不开 trim-done 投影(只开 lp_timer_init_projection 写记录):同一链的
+        # RMW 照常按位记录(4 次),0x6067514 读 CON 严格停——300,236 前沿的
+        # 真实停点形状,投影语义是纯叠加。
+        h=self.handoff()
+        h['regions'].append((0xF27F80,0xF27FE0,'p11_m2p_message_area'))
+        h['regions'].append((0x129D80,0x129DB0,'lrct_config_bss'))
+        h['seeds'].append((0x129D84,bytes.fromhex('01')))
+        regs=[0]*16;regs[5]=1
+        result=explore(self.module,self.app,name='lrct_trim_strict',handoff=h,
+            hardware=BR28Model(lp_timer_init_projection=True),
+            diagnostics={'entry_pc':0x6067aa0,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_subword_stores':True,'exact_parallel_stores':True,
+                         'exact_parallel_byte_stores':True},budget=48)
+        self.assertEqual(result['completed_steps'],37)
+        self.assertEqual(result['stop_pc'],hex(0x6067514))
+        self.assertEqual(result['stop']['kind'],'lp_timer_register_readback_not_modeled')
+        self.assertEqual(result['stop']['address'],'0xfd3600')
+        self.assertEqual(result['instruction_adapters'].get('lp_timer_bit_rmw'),4)
+        self.assertNotIn('lrct_trim_done_projection',
+                         result['peripherals']['lp_timer_init_projection'])
+
     def test_parallel_halfword_pair_store_transports_unknown_bytes_by_origin(self):
         # 运输路径:字形状 rep 拷贝体(0x600a352 的真实编码 rep 4 4:
         # ld.w.pin r3=[r2++=4]/st.w.pin [r1++=4]=r3)把含未知字节的字装进

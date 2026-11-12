@@ -35,6 +35,7 @@ P11_LPTMR0_CON2=0xf2a908
 POWER_INIT_PMU_CFG0=0xf2c04c  # power_init 尾部 PMU 配置族整字写(SDK 无名;与 0xf2c048/0xf2c054/0xf2c05c 同族)
 POWER_INIT_PMU_CFG1=0xf2c050
 LRCT_CON=0xfd3600  # SDK br28.h JL_LRCT = ls_base(0xfd0000)+map_adr(0x36,0x00);CON __WO,NUM __RW
+LRCT_NUM=0xfd3604  # SDK br28.h JL_LRCT_TypeDef 第二个字 NUM(__RW);trim 结果计数,固件唯一访问=0x6067520 读
 WDT_CON=0xf2a800
 WDT_KEY=WDT_CON+4
 EFUSE_CON0=0xf2c2c0
@@ -897,7 +898,7 @@ class P11WindowRegisters:
 
 
 class LpTimerInitRegisters:
-    """power_init 尾部低功耗定时器初始化链的写记录(opt-in,读回一律拒绝)。
+    """power_init 尾部低功耗定时器初始化链的写记录 + opt-in 的 LRCT 完成读回投影。
 
     反汇编钉死的三个地址族(全部由基址寄存器算出,字面量搜索必漏):
     - P11_LPTMR0 CON0/CON1/CON2(0xf2a900/04/08,r7(0xf2c04c)-0x174c):
@@ -915,24 +916,44 @@ class LpTimerInitRegisters:
       本前缀;模型对读回一律严格拒绝,真实到达时诚实停。
     - JL_LRCT CON(0xfd3600,SDK br28.h ls_base+map_adr(0x36,0x00),CON 标注
       __WO):0x6067aae `rmw.and.nmodimm &=0xFFFFFFC1`、0x60674fc &=~1、
-      0x6067500/0x6067506 |=0x40/=0x1。RMW 按位记录(PartialWord,清位/置位
-      不经读回,与 gpio RMW、q32s PMU_CON 位记录同语义);0x6067514 `ld.w`
-      读 CON(测 bit0 使能、bit7 busy)是 LRC trim 硬件块的轮询——读回值/
-      完成时序无任何证据,读一律 Blocked(本投影的诚实停止点),LRC 校准
-      效果(频率、busy 清除)不模拟。
+      0x6067500/0x6067506 |=0x40/=0x1(app 全量恰三处 li 引用 0xfd3600、
+      ROM 整块零引用)。RMW 按位记录(PartialWord,清位/置位不经读回,与
+      gpio RMW、q32s PMU_CON 位记录同语义)。
+      trim 等待函数 0x606750c 的轮询形状(反汇编钉死,注意 ld.w 的 n 字段
+      scale=4):0x6067514 `ld.w r0=[r3+0]` 读 CON;0x6067516 `beq.and.ri`
+      测 bit0(bit0==0 → 跳 0x60675e2 直接返回,trim 未使能);0x606751a
+      再读 CON、0x606751c `beq.and.ri` 测 bit7——ISA 语义(硬件 12/12 确认)
+      是「(r&(1<<n))==0 时跳转」,目标回 0x606751a,即**固件等 bit7 置位**
+      (busy/完成标志置 1 才退出;旧记录「死等清零」方向反了,按编码修正);
+      退出后 0x6067520 `ld.w r2=[r3+1*4]` 读 NUM(0xfd3604)取 trim 结果。
+      opt-in trim_done_projection(lrct_trim_done_projection,需本投影开启):
+      CON 读回=已记录 RMW 已知值(bit0=1 使能、bit6=1)但 **bit7 强制置 1**
+      ——「trim 已完成」的条件投影(与 SFC PLL-lock bit15 先例同模式),
+      措辞明示:busy 位布局由轮询行为推断,SDK __WO 无读回定义,非硅测量;
+      RMW mask 外的位不臆造(返回 int 未写位为 0,轮询只消费 bit0/bit7)。
+      未开启时 CON 读回保持 Blocked(300,236 前沿形状)。NUM 读回无论开关
+      一律严格停:trim 计数是硅测量值,无任何推导证据(固件 0xC9C9C9C0/
+      count 的换算也定不出「干净」目标值),LRC 校准效果(频率)不模拟。
     """
 
-    def __init__(self):
+    TRIM_DONE_BIT=0x80
+
+    def __init__(self,*,trim_done_projection=False):
         self.stores={address:{'values':[],'writes':0} for address in
                      (P11_LPTMR0_CON0,P11_LPTMR0_CON1,P11_LPTMR0_CON2,
                       POWER_INIT_PMU_CFG0,POWER_INIT_PMU_CFG1)}
         self.lrct=PartialWord();self.lrct_rmws=0
+        self.trim_done_projection=trim_done_projection;self.lrct_con_reads=0
 
     def handles(self,address):
         return address in self.stores
 
     def handles_lRCT(self,address):
         return address==LRCT_CON
+
+    def handles_lrct_num(self,address):
+        # NUM 只路由读(诚实停);RMW/整字写由 dispatch 层分别拒绝,不经此处
+        return address==LRCT_NUM
 
     def write(self,address,value):
         if address not in self.stores:raise ValueError('not a modeled LP-timer init register')
@@ -946,17 +967,44 @@ class LpTimerInitRegisters:
         self.lrct.apply(kind,operand&0xffffffff);self.lrct_rmws+=1
 
     def read(self,address):
+        if address==LRCT_CON and self.trim_done_projection:
+            # 0x606751a..0x606751c 轮询在 bit7==0 时回跳重读——固件等 bit7
+            # 置位才退出并读 NUM。该位读回为 1 是显式「trim 已完成」条件投影
+            # (SFC PLL-lock bit15 先例同模式),不是测得复位值;其余位沿用已
+            # 记录 RMW 的已知值(bit0 使能=1、bit6=1),mask 外的位不臆造。
+            self.lrct_con_reads+=1
+            return (self.lrct.value|self.TRIM_DONE_BIT)&0xffffffff
+        if address==LRCT_NUM:
+            # trim 结果计数(SDK __RW NUM):硅测量值,无任何证据,不臆造数值
+            raise Blocked('lrct_trim_result_not_modeled',address=hex(address))
         raise Blocked('lp_timer_register_readback_not_modeled',address=hex(address))
 
     def report(self):
-        return {'stores':{hex(address):{'values':[hex(v) for v in entry['values']],'writes':entry['writes']}
+        result={'stores':{hex(address):{'values':[hex(v) for v in entry['values']],'writes':entry['writes']}
                           for address,entry in self.stores.items()},
                 'lrct_con':{'address':hex(LRCT_CON),'known_mask':hex(self.lrct.known),
                             'known_value':hex(self.lrct.value),'rmw_writes':self.lrct_rmws},
-                'sdk_anchors':'p11_sfr.h P11_LPTMR0_BASE=0xf2a000+map_adr(0x09,0); br28.h JL_LRCT=0xfd0000+map_adr(0x36,0) CON __WO; 0xf2c04c family unnamed in SDK headers',
+                'sdk_anchors':'p11_sfr.h P11_LPTMR0_BASE=0xf2a000+map_adr(0x09,0); br28.h JL_LRCT=0xfd0000+map_adr(0x36,0) CON __WO NUM __RW; 0xf2c04c family unnamed in SDK headers',
                 'write_only':True,'readback_observed':False,
                 'bit_semantics_or_completion_verified':False,
                 'lrc_trim_result_simulated':False}
+        if self.trim_done_projection:
+            result['lrct_trim_done_projection']={
+                'address':hex(LRCT_CON),'trim_done_bit':hex(self.TRIM_DONE_BIT),
+                'reads':self.lrct_con_reads,
+                'projected_word':hex((self.lrct.value|self.TRIM_DONE_BIT)&0xffffffff),
+                'known_mask':hex(self.lrct.known),
+                'readback_projection':('bit7 projected as trim-complete; condition projected, '
+                    'not a measured reset value. The poll at 0x606751a..0x606751c (beq.and.ri, '
+                    'hardware-confirmed semantics "branch if (r & (1<<n)) == 0") loops back while '
+                    'bit7 is CLEAR and falls through to read NUM at 0xfd3604 when bit7 is SET, so '
+                    'the firmware waits for bit7 to be set; the busy-bit LAYOUT is inferred from '
+                    'the poll behavior only — SDK marks CON __WO with no readback definition'),
+                'completion_timing_modeled':False,
+                'trim_result_register':{'address':hex(LRCT_NUM),'sdk_name':'JL_LRCT.NUM (__RW)',
+                    'sole_firmware_access':'0x6067520 ld.w [r3+4] read after the poll exits',
+                    'value_evidence':'none (silicon measurement); reads stay strictly blocked'}}
+        return result
 
 
 class MMU:
@@ -1304,7 +1352,7 @@ class BR28Model:
                  mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None,
                  p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
                  p11_heap_info_bytes=None,p11_window_projection=False,
-                 power_init_config_rmw=False,lp_timer_init_projection=False,
+                 power_init_config_rmw=False,lp_timer_init_projection=False,lrct_trim_done_projection=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
                  gpcnt_cleanup_projection=False,core_tick_configuration=False,
@@ -1365,7 +1413,15 @@ class BR28Model:
         # PMU 配置族 0xf2c04c/50 写、JL_LRCT CON 位 RMW)的 write-only 记录。
         # 独立开关而非并入 p11_window_projection:后者的报告键在 crc_bankb 场景
         # 已钉死,并表会加键破坏既有报告字节不变。
-        self.lp_timer=LpTimerInitRegisters() if lp_timer_init_projection else None
+        # lrct_trim_done:LRCT CON 读回的「trim 已完成」条件投影(bit7 置 1,
+        # SFC PLL-lock bit15 先例同模式;证据等级=轮询行为推断,非硅测量)。
+        # 单独开关而非并入 lp_timer_init_projection:后者关着时读回一律 Blocked
+        # 是 300,236 前沿的钉死语义(实验场景的 opt-in 叠加层),合并会让该
+        # 中间前沿形状不可复现。
+        if lrct_trim_done_projection and not lp_timer_init_projection:
+            raise ValueError('the LRCT trim-done readback projection requires the LP-timer init projection')
+        self.lp_timer=(LpTimerInitRegisters(trim_done_projection=True) if lrct_trim_done_projection
+                       else LpTimerInitRegisters()) if lp_timer_init_projection else None
         if p11_heap_info_bytes is not None and (not isinstance(p11_heap_info_bytes,(bytes,bytearray))
                                                 or len(p11_heap_info_bytes)!=4):
             raise ValueError('P11 heap info fixture must be exactly 4 bytes')
@@ -1465,7 +1521,8 @@ class BR28Model:
             (self.watchdog is not None and address in (WDT_CON,WDT_KEY)) or
             (self.p11 is not None and address in (P11_UART_CON2,PMU_STA)) or
             (self.p11_win is not None and (self.p11_win.handles(address) or self.p11_win.handles_release_rmw(address))) or
-            (self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address))) or
+            (self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address)
+                                            or self.lp_timer.handles_lrct_num(address))) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -1631,7 +1688,8 @@ class BR28Model:
             return self.p11.read()
         if self.p11_win is not None and (self.p11_win.handles(address) or self.p11_win.handles_release_rmw(address)):
             return self.p11_win.read(address)
-        if self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address)):
+        if self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address)
+                                          or self.lp_timer.handles_lrct_num(address)):
             return self.lp_timer.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
@@ -1712,6 +1770,10 @@ class BR28Model:
         elif self.lp_timer is not None and self.lp_timer.handles_lRCT(address):
             # 0xfd3600 只有位 RMW 观测;整字 store 无观测形状,拒绝
             raise Blocked('lp_timer_full_store_not_modeled',address=hex(address),value=hex(value))
+        elif self.lp_timer is not None and self.lp_timer.handles_lrct_num(address):
+            # NUM(0xfd3604,trim 结果计数,SDK __RW):固件唯一访问是轮询退出后
+            # 0x6067520 的读;写形状无任何观测,拒绝
+            raise Blocked('lrct_trim_result_write_not_modeled',address=hex(address),value=hex(value))
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
