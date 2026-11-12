@@ -223,6 +223,19 @@ if the session is later authorized:
 This route does not implement any of it; the sketch exists so the extension, if ever
 requested, stays inside the existing guard philosophy.
 
+2026-11-13, route BM (offline tool route): the sketch above is now implemented in
+`tools/usb-recovery/read_rom.py` as the optional `--p11-heap-probe` mode. The fixed plan
+is the four control reads (`0x19fef4`, `0x1265f4`, `0xf20080`, `0xfd3604`) then the target
+`0xf27f40`, each exactly one 128B FD07 read, each read twice with byte comparison and no
+retry; the FD07 phase gate (loader-ready after pinned FB06/FB08/FC0A) and the fresh normal
+QCY USB entry are the existing session sequence, unchanged. The default ROM-window mode of
+`read_rom.py` is untouched. Control-vs-expected comparisons are reported, never enforced;
+the `0xf20080` head comparison needs the optional pinned `--p11-code` reference (public UFW
+resource, SHA1-pinned). Offline tests extend `tools/usb-recovery/test_rom.py` (allowlist
+rejection, 128B pinning, phase gate, two-read consistency, report-only expectations); no
+device session was connected or authorized by this implementation. The session preconditions
+above (including explicit user authorization at session time) are unchanged.
+
 ## Limits of this assessment
 
 - The loader disassembly covers the pinned public blob only; it proves command semantics, not
