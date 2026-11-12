@@ -158,7 +158,8 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - 路 U（sim-win200）：bank B 第四数据窗（window+0x200 记录头）处理完成——window 区消费者全图（cfg_tool/btif 后端 ops 表五类成员，各有界/门控，无系统性枚举）+记录头 8 字节 fixture（同一 `erased_bankb` 开关第四窗，按结构整体声明），旧前沿 236,415（app 0x6011370 `mov.rr.p` 半字存储的簿记读 uninitialized_memory，指令模型边界）。
 - 路 V（sim-hpair）：mov.rr.p∥st.h 半字 pair 存储簿记读处理完成——st.d.sp.l 先例的 gate 形状扩展，但按字节粒度写（半字部分写、邻字节保持）且必须独立子开关 `exact_parallel_halfword_stores`（该形状在 legacy 前缀已执行过、并入主开关会改既有报告），前沿 236,602（app_core 进入 power_init 后 0x60678f4 `rmw.and.r` 读未建模寄存器 0xf2c05c）。
 - 路 W（sim-pwrinit，已合并）：power_init P11 依赖链走通——0xf2c05c 配置 RMW（opt-in extra masks）、q32s PMU_CON 释放/SYS_DIV/CLK_CON0（p11_window_projection）、p11_code.bin 公共段 12112 字节拷贝（可写窗+SHA 互证）、**PWR_CON bit5 请求-响应投影真实前缀检验通过**（post_flag_clear_read + dispatch 顺序修正），前沿 289,849（堆信息第一读 0xf27f4b，需要显式 heap fixture，新决策点）。
-- 路 X（sim-wdt，本次合并）：watchdog 投影接进 p11_ready_response 前缀完成——83,094 停点写值即 wdt.c.o 钉死双 KEY 的第一个（LE 9d158c04=0x048c159d），既有投影已覆盖形状、纯场景接线（probe_mmu `p11_ready_wdt_cases` 组 + probe_p11_status 第三段断言），支线前沿 83,094→83,417（0x6034fba EFUSE_CON0 写，与 watchdog 六场景同停点），见「已实现」P11 投影条目的 watchdog 叠加子条目。
+- 路 X（sim-wdt，已合并）：watchdog 投影接进 p11_ready_response 前缀完成——83,094 停点写值即 wdt.c.o 钉死双 KEY 的第一个（LE 9d158c04=0x048c159d），既有投影已覆盖形状、纯场景接线（probe_mmu `p11_ready_wdt_cases` 组 + probe_p11_status 第三段断言），支线前沿 83,094→83,417（0x6034fba EFUSE_CON0 写，与 watchdog 六场景同停点），见「已实现」P11 投影条目的 watchdog 叠加子条目。
+- 路 Y（sim-eqdiff，本次合并）：三镜像轨迹差分工具完成（`tools/analyze_image_trace.py`，见「三镜像轨迹差分」节）——official↔b79 控制流 236,602 步零分歧（仅资源表头 CRC 字节运输/CRC 计算显形、不改控制流）；b79↔EQ 首分歧 116,148 @ 0x6034e98 fence 立即数、首控制流分歧 169,439 @ 0x6011154（追加 eq_toggle.bin 资源条目多一轮枚举循环，+458 步）、同停点。L2 前置的启动前缀三镜像差分已闭合。
 
 ## 镜像资源级映射（sim-resmap，2026-11-11 完成）
 
@@ -169,6 +170,18 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - **EQ 修复候选（67ba97ef）三镜像 diff 已闭合（2026-11-11 晚，用户提供 artifacts）**：候选 .ufw 实测 SHA256 与钉死值一致，位于仓库外本机目录 `artifacts/eq-fence-repair-offline-20261110/`（含 patch.elf/patch.asm/patch.map/patch.nm/build-report/verification.json 完整证据链，patch.elf 到位使 check_eq_repair 的确定性重建路径可用）。形状校验自动触发并通过：相对 b79 差异严格限于 app_area_head（41B：8B CRC 元数据 + app.bin 内 6 处站点游程，其中 0x34e9a..0x34e9d 正是 fence 上限立即数 06034e98→060e31c5 的 3 字节中段差异）+ config.dat 3B（index 翻转）+ 追加 eq_toggle.bin（337B 载荷，SHA256 f4e9501e…）；`unexpected_diff_found=false`。flash.bin 422B 差异（0x2000 头 CRC + app 内站点 + 0xe5073..0xe51e5 EQ 表区大块 + 边界小改）与钉死的 5+1 站点 + 337B payload 预期一致。
 - L2 三镜像差分的数据基础：除 app_area_head/stream.bin 外全部资源可三镜像共享加载；候选差异全部集中在 app.bin 内容 + 追加 eq_toggle.bin。
 - 对比报告：`analysis/image-resources.json`（本机 analysis/，git 忽略，不含路径/私有信息）。
+
+## 三镜像轨迹差分（sim-eqdiff，2026-11-12 完成）
+
+`tools/analyze_image_trace.py`：对两个/三个命名镜像（official / tested_b79 / eq_fence_repair，各自 UFW+app+plain SHA 钉死；EQ 候选经可选参数传入，报告只记标签+SHA 不含私有路径）在**同一投影栈**下跑真实启动前缀并逐步差分：共享栈直接 import `probe_irq_entry.irq_case` 的 crc_bankb_erased_fixture 全栈 flag 集（不复制逻辑），每次运行先用 official 复现 236,602 前沿停点做配置新鲜度自检；每条执行指令比较双方签名（核、before_pc、next_pc、flags、全部 16 GPR 规范形——含 UnknownWord 逐字节来源与 IcfgValue 掩码——该步全部 guest RAM 写），停点报告（停点/寄存器/适配器计数/外设记录/快照/机器事件）再整体比对。逐步记录由 `TraceMachine`（DualCoreMachine 的纯观察子类，只覆盖 after_step/note_memory_write 委托 super）提供，调度/投影/诚实停全部继承原实现。诚实边界：外设寄存器写不在逐步签名内（无钩子，其分歧经读回进 GPR、停点或最终报告显形）；**轨迹一致≠镜像等价**——一致只说明「该前缀未把镜像差异消费进任何被比较的可观测量」。
+
+**首轮三对结论**（全量跑到共同停点，2026-11-12）：
+
+1. **official ↔ tested_b79**：双方 236,602 步、同停点 0x60678f4、per-core 步数一致（225,436/11,181），**控制流 236,602 步零分歧**（PC 游程序两侧全同）。唯一显形的差异=资源表头 CRC 字节（plain 0x0 首字节 0x28 vs 0x88）：首分歧 step 155,390 @ 0x6010b16（rep 4 32 表头拷贝体首装载 `r2=b[r1++=1]`，r2=0x28 vs 0x88），共 30 个签名分歧段，全部是该 CRC 字节经 rep 拷贝/硬件 CRC 引擎计算显形（CRC result_reads 4 处不同，如 0x7d vs 0xd2），**每次 CRC 比较都选了同一分支**——控制流/步数/停点全部不变。ANC 键表字节（0x609e510=app.bin 0x9e410）与 stream.bin 音量参数区（plain 0xe2344..）在前缀内**零读取**（任何装载都会显形为 GPR/RAM 写分歧）。final report 差异恰好 5 处（4 处 CRC result_reads + 1 处 watch r0）。
+2. **tested_b79 ↔ eq_fence_repair**（official ↔ eq 同构同值）：EQ 候选 **237,060 步（+458）**、同停点 0x60678f4。首分歧 step 116,148 @ **0x6034e98**——debug_init 内 fence 上限 li.u32（b79 `r1=0x060c3338` vs EQ `r1=0x060e31c5`，指令编码 c1ff38330c06 vs c1ffc5310e06，立即数段 0x34e9a..0x34e9d 直接命中钉死的 fence 差异游程）——与已知站点完全对照。该值写入 debug 上限寄存器（外设记录 0xffe218 差异，控制流不变，r1 随后覆盖恢复一致；0x6034ec8 二次装载同值）。**首控制流分歧** step 169,439 @ 0x6011154 `if (r1==0) goto -36`：VM init 内 0x6011132..0x6011154 资源枚举循环（0x6011152 `r1=h[r6+14] (u)` 取下一项 id==0 表尾）——EQ 候选追加的 eq_toggle.bin 使表多一项，b79 在此退出（→0x6011156 call 0x600ae3e 描述符填充）、EQ 再循环一轮（169,431 处 r4=0xc1b0 vs 0x3181 即该轮 CRC wrapper 0x6000f0c/0x6000f52 配对读回对多出表项算出的不同 CRC），+458 步后同达 0x600ae3e 汇合、同停点。
+3. **5+1 站点覆盖（诚实边界）**：fence 立即数站点 0x6034e98 在前缀内**被执行并消费**；其余 5 个钩子站点（0x60059ce/0x6025030/0x602510e/0x6025364 的 EQ 数据路径 + 0x6078846 power_init 内 eq_open_hook，停点 0x60678f4 时尚未到达）与 eq_toggle 载荷区（0x60e3074..）在前缀内**未取指/未读取**（任何执行或装载都会显形为指令编码或 GPR/RAM 写分歧）。「+458 步、同停点」只证明启动前缀内两镜像的差异显形仅此两处（fence 立即数 + 追加资源条目），**不证明事件循环内等价**（L2 目标场景）。
+
+用法：`python3 tools/analyze_image_trace.py --rom ROM --image label=path ...（2-3 个）--report out.json`；自检（已接 check_local `--rom` 段，钉死结论 1 的步数/首分歧/30 段/5 处报告差异）：`--self-check`（只用仓库内 official+tested_b79，无私有 artifacts）。注意：上游前沿推进后工具内两处钉子（freshness 236,602 停点 + check_self 断言）需按新前沿重钉（断言失败信息已注明）。
 
 ## 下一步（按 codex 建议）
 
