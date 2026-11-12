@@ -28,6 +28,15 @@ SDK_PIN='67328f4741c69993c88e504c67377b196c724f97'
 ROM_SHA='7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793'
 ROM_RETURN=0x01c70000  # simulator sentinel, never fetched as real code
 
+# exact_parallel_stores 并行对第二半的整字存储接受形状(运行 gate 与 rep 体
+# 校验共用)。
+EXACT_PARALLEL_WORD_STORE_HALVES=('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx')
+# 半字第二半(st.h 编码形式 h[r+n]=r)是独立子开关 exact_parallel_halfword_
+# stores:该形状在 legacy 前缀里已出现过(走上游通用 pair 模型),并入主开关
+# 会改变既有报告,故单独 opt-in。半字是部分写:只覆盖 2 个目标字节、同字
+# 邻字节保持原状(含 unknown),按字节粒度写入,见 CPU.step_body 的该 gate。
+EXACT_PARALLEL_HALFWORD_STORE_HALVES=('st.h',)
+
 
 def check_rom(rom):
     require(len(rom)==0x20000 and hashlib.sha256(rom).hexdigest()==ROM_SHA,
@@ -205,16 +214,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             origins=[self.unknown_origins.get(physical+i,physical+i) if v is None else None for i,v in enumerate(values)]
             return UnknownWord(values,origins)
 
-        def write_abstract_byte(self,address,value):
+        def write_abstract_byte(self,address,value,index=0):
             # rep 拷贝体字节回存(write_abstract_word 的 1 字节形状):字节存储
             # 只写 UnknownWord 的低字节——已知字节落盘、未知字节带物理来源
             # 保持未知,不臆造数值;高 3 字节(零扩展字节装载的已知 0)不落盘。
+            # index 选择写 UnknownWord 的哪个字节(默认 0=低字节;并行对半字
+            # 存储的 abstract 路径写 bytes 0/1,见 exact_parallel_stores gate)。
             # 与 IcfgValue 部分溢出字重叠的字节写没有观测形状,诚实拒绝。
             require(isinstance(value,UnknownWord),'unsupported abstract memory value')
             physical=self.abstract_write_target(address,1)
             require(not any(base<=physical<base+4 for base in self.icfg_spills),
                     'abstract byte store overlapping a partial icfg spill is unmodeled')
-            byte,origin=value.bytes[0],value.origins[0]
+            byte,origin=value.bytes[index],value.origins[index]
             if byte is None:self.ram.pop(physical,None);self.unknown_origins[physical]=origin
             else:self.ram[physical]=byte;self.unknown_origins.pop(physical,None)
             event({'access':'abstract_write','address':hex(physical),'size':1,'region':self.region(physical,1),
@@ -870,7 +881,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 base=self.tab.by_id(insn.id[:-2])
                 pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
                     diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
-                if pure_alu and pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
+                if pure_alu and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
+                        (diagnostics.get('exact_parallel_halfword_stores') and
+                         pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES)):
                     params=module.table.placeholders(insn.syntax);plain=module.table.placeholders(base.syntax)
                     base_raw=dict(zip(plain,(raw[k] for k in params)))
                     base_raw.update({k:raw[k] for k in base.fields if k not in base_raw and k in raw})
@@ -878,6 +891,28 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # uses old registers, without a host scratch-word merge read.
                     effect,_,_=self.effect(base,base_raw,self.pc,size,self.R)
                     require(set(effect)<= {'regs','flags'},'parallel ALU produced non-ALU effects')
+                    if pair.id=='st.h':
+                        # 半字存储第二半(证据形状 app 0x6011370 mov.rr.p∥
+                        # st.h h[r4+0]=r5,记录解析 helper 0x6011366 的出参清零
+                        # 序列):半字是部分写,只覆盖 2 个目标字节,同字邻字节
+                        # 保持原状(含 unknown)——不能像 st.d 双字那样断言「旧值
+                        # 无关」跳过读,须按字节粒度写。不走上游 pair 存储模型:
+                        # 它写前合并读旧 word,那是模型内部簿记读而非 guest 装载
+                        # (与 st.d.sp.l 先例同类),未初始化 RAM 上会假停。寄存器
+                        # 值全已知时直写 2 个真实字节;含 unknown 时按字节来源
+                        # abstract 写(与 rep_copy_unknown_transport 同语义,不
+                        # 臆造数值,后续数值消费者仍严格停)。
+                        hop=module.check.operands(pair,pair_raw)
+                        address=(self.R[hop['b']]+hop['n'])&0xffffffff;value=self.R[hop['d']]
+                        require(address%2==0,'unaligned exact parallel halfword store')
+                        if isinstance(value,int):
+                            self.mem.write(address,(value&0xffff).to_bytes(2,'little'))
+                        else:
+                            self.mem.write_abstract_byte(address,value,0)
+                            self.mem.write_abstract_byte(address+1,value,1)
+                        self.apply(effect);self.finish_exact(self.pc+size+pair_size)
+                        adapters['parallel_halfword_store_old_registers']+=1
+                        return
                     address,value=self.word_store(pair,pair_raw,abstract=machine is not None and machine.partial_icfg)
                     require(address%4==0,'unaligned exact parallel word store')
                     if isinstance(value,IcfgValue):self.mem.write_abstract_word(address,value)
@@ -1374,8 +1409,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # ROM 编译形状在体后跟 `bnez r计数控,回 rep`:按递减到 0 的模型
                 # 执行完后 bnez 自然不跳(两种硬件解释的可观测结果一致)。
                 # 并行对体(add.rrr.p+st.w):按一条指令计字节,第二半必须是
-                # exact_parallel_stores 已支持的整字存储形状,执行期由该 gate 按
-                # 「B 读 A 之前的旧寄存器」硬件语义精确执行(run3 证据)。
+                # exact_parallel_stores 已支持的存储形状(st.w 族整字;st.h 半字
+                # 需再加子开关 exact_parallel_halfword_stores,与运行 gate 一致),
+                # 执行期由该 gate 按「B 读 A 之前的旧寄存器」硬件语义精确执行
+                # (run3 证据)。
                 op=module.check.operands(insn,raw)
                 if insn.id=='rep.i':
                     body_bytes,count,register=op['b'],op['n'],None
@@ -1401,7 +1438,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
                             diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
                         supported=(diagnostics.get('exact_parallel_stores') and pure_alu and
-                                   pair.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx')) or (
+                                   (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
+                                    diagnostics.get('exact_parallel_halfword_stores') and
+                                    pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES)) or (
                                    diagnostics.get('exact_parallel_insert_load') and
                                    inner.id=='insert.rrii.p' and pair.id=='ld.bu.pin')
                         if not supported:

@@ -26,10 +26,15 @@ move the unmapped stop one byte later. After the blank scan confirms an
 all-erased VM, the chain meets the misaligned-source ROM memcpy variant
 (insert.rrii.p + ld.bu.pin compose pairs), runs it through the opt-in
 exact_parallel_insert_load projection, then the record-header init rejects
-the erased 8-byte header (only its first 4 bytes are read) and the chain
-stops honestly at the next independent boundary: an upstream pair-store
-bookkeeping read of uninitialized stack RAM at 0x6011370 (mov.rr.p with a
-halfword-store second half), not a bank-B data question.
+the erased 8-byte header (only its first 4 bytes are read). The halfword
+pair store that used to stop there (mov.rr.p with a halfword-store second
+half, an upstream model-internal merge read of uninitialized stack RAM) now
+runs through the extended exact_parallel_stores gate as a byte-granular
+partial write (two target bytes written, same-word neighbours untouched), so
+the chain really enters app_core's power_init and stops honestly at the next
+independent boundary: an unmapped read-back of 0xf2c05c (rmw.and.r with the
+single firmware-wide reference), a main-core register semantics question,
+not a bank-B data question.
 """
 import argparse
 import json
@@ -118,7 +123,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              unmaskable=False,sfc_suspend=False,gpio_out_readback=False,kick_wake=False,
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
-             insert_load_pair=False,flash_image_bytes=None,readonly=()):
+             insert_load_pair=False,halfword_pair=False,flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -170,6 +175,16 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # exact_parallel_stores 方向(B 读 A 之前旧值)相反、无硬件捕获证据,按
     # 对称旧值假设执行,adapter 以 _is_assumption 后缀显式标注。默认关闭。
     if insert_load_pair:extra['exact_parallel_insert_load']=True
+    # halfword_pair:opt-in 的并行对半字存储第二半(exact_parallel_stores 的
+    # 独立子开关 exact_parallel_halfword_stores)。证据形状 app 0x6011370
+    # mov.rr.p∥st.h h[r4+0]=r5(记录解析 helper 0x6011366 的出参清零序列):
+    # 上游 pair 存储模型写前合并读旧 word(模型内部簿记读,非 guest 装载),
+    # 未初始化 RAM 上假停;gate 内按字节粒度直写 2 个目标字节,同字邻字节
+    # (含 unknown)保持原状——正确字节语义,非 unknown 传播放松。该形状在
+    # legacy 前缀(149,660 之前)已出现 2 次(走上游模型、内存已初始化、
+    # 正常执行),并入主开关会改既有报告的 adapter 计数,故单独 opt-in。
+    # 默认关闭,legacy 报告不变。
+    if halfword_pair:extra['exact_parallel_halfword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -616,11 +631,27 @@ def check(report):
     # 解析 helper 入口把出参半字清零)写虚拟栈 0x400b96(物理 0x19f794,
     # 未初始化)——上游 pair 存储模型的簿记读边界(uninitialized_memory),
     # 与 183,486 的 st.d.sp.l 同类(半字部分写、邻字节真保持旧值,决策归
-    # 下一路),非 bank B 数据可得性问题(236,415,新前沿)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6011370' and
-            r['stop']['kind']=='uninitialized_memory' and r['stop']['address']=='0x19f794',
-            'the record-header fixture frontier must stop at the pair-store bookkeeping read')
-    require(r['completed_steps']==236415,'the erased fixture scenario changed its step count')
+    # 下一路),非 bank B 数据可得性问题(236,415,旧前沿)。路 V(本次):
+    # exact_parallel_stores gate 扩展接受 B 半 st.h(独立子开关
+    # exact_parallel_halfword_stores——该形状在 legacy 前缀已出现 2 次,
+    # 并入主开关会改既有报告;证据形状 app 0x6011370 mov.rr.p∥st.h
+    # h[r4+0]=r5):半字是部分写,只覆盖 2 个目标字节、同字邻字节保持原状
+    # (含 unknown)——不能像 st.d 双字全 8 字节覆盖写那样断言「旧值无关」,
+    # 按字节粒度直写(寄存器值全已知写 2 个真实字节;含 unknown 时走
+    # write_abstract_byte 按字节来源运输,与 rep_copy_unknown_transport
+    # 同语义)。放行后记录解析 helper 完成、
+    # 平台 init 表走完、app_core 进入 power_init(0x6067876),链继续
+    # 187 步,停在 0x60678f4 `rmw.and.r [r7+16] &= r0`(r7=0xf2c04c,
+    # 与 PWR_CON 0xf2a400=r7-7244 同一基址;掩码 r0=1021=0x3FD)读
+    # 0xf2c05c——app/ROM 全量字节扫描该地址仅此一处引用,未建模的
+    # 主核外设读回(RMW 需要旧值),诚实停 unmapped_memory(236,602,
+    # 新前沿,power_init 内部 P11 窗口寄存器族的下一决策点)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x60678f4' and
+            r['stop']['kind']=='unmapped_memory' and r['stop']['address']=='0xf2c05c',
+            'the halfword pair-store frontier must advance into power_init and stop at the unmapped 0xf2c05c RMW')
+    require(r['completed_steps']==236602,'the erased fixture scenario changed its step count')
+    require(r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3,
+            'the halfword pair-store extension must fire exactly three times in the extended prefix')
     # compose 对(装载+组装)假设执行:2 轮 rep×2 对=4 次,adapter 名带
     # _is_assumption 显式标注旧值方向无硬件捕获证据。
     require(r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==4,
@@ -755,7 +786,7 @@ def main():
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
                               dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
-                              flash_image_bytes=image)]}
+                              halfword_pair=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

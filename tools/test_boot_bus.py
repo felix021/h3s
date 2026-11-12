@@ -384,6 +384,76 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(adapters.get('rep_copy_unknown_transport_load'),2)
         self.assertEqual(adapters.get('rep_copy_unknown_transport_store'),1)
 
+    # 并行对半字存储(exact_parallel_stores 的独立子开关 exact_parallel_
+    # halfword_stores)。真实前沿形状 app 0x6011370 `mov.rr.p r6=r0 ∥
+    # st.h h[r4+0]=r5`(记录解析 helper 0x6011366 的出参清零序列,旧前沿
+    # 236,415 的簿记读停点):上游 pair 存储模型写前合并读旧 word(模型内部
+    # 簿记读,非 guest 装载);半字是部分写、同字邻字节真保持旧值,不能像
+    # st.d 双字全 8 字节覆盖写那样断言「旧值无关」——gate 内按字节粒度
+    # 直写 2 个目标字节。
+    def test_parallel_halfword_pair_store_writes_only_two_target_bytes(self):
+        h=self.handoff();h['snapshots'].append(('halfword_pair_and_neighbours',0x124f00,8))
+        regs=[0]*16;regs[4]=0x124f02;regs[5]=0xabcd;regs[0]=0x11223344
+        result=explore(self.module,self.app,name='halfword_pair',handoff=h,
+            diagnostics={'entry_pc':0x6011370,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_halfword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],hex(0x6011374))
+        self.assertEqual(result['last_registers']['r'][6],hex(0x11223344),
+                         'the pure-ALU half must move the old register')
+        self.assertEqual(result['instruction_adapters'],{'parallel_halfword_store_old_registers':1})
+        self.assertEqual(result['memory_snapshots']['halfword_pair_and_neighbours']['bytes_with_unknowns'],
+                         '????cdab????????','exactly two target bytes land; same-word neighbours stay unknown')
+
+    def test_parallel_halfword_pair_store_defaults_to_strict_bookkeeping_read_stop(self):
+        # 不开子开关:同一指令落回上游通用 pair 模型,未初始化目标字的合并读
+        # (模型簿记,非 guest 装载)诚实停。指令 id 是 mov.rr.p(A 半命名)、
+        # 不以 st. 开头,不落入 upstream_store_bookkeeping_read 改名路径——
+        # kind 保持 uninitialized_memory(legacy 行为不变,即旧前沿 236,415
+        # 的真实停点形状)。
+        regs=[0]*16;regs[4]=0x123702;regs[5]=0xabcd;regs[0]=0x11223344
+        result=explore(self.module,self.app,name='halfword_pair_strict',
+            diagnostics={'entry_pc':0x6011370,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'uninitialized_memory')
+        self.assertNotIn('note',result['stop'],'mov.rr.p must not hit the st. bookkeeping rename')
+        self.assertEqual(result['stop']['address'],hex(0x123700))
+        self.assertEqual(result['stop']['region'],'bootstrap_stack')
+
+    def test_parallel_halfword_pair_store_transports_unknown_bytes_by_origin(self):
+        # 运输路径:字形状 rep 拷贝体(0x600a352 的真实编码 rep 4 4:
+        # ld.w.pin r3=[r2++=4]/st.w.pin [r1++=4]=r3)把含未知字节的字装进
+        # r3,随后真实并行对 0x600784a `add.rr.p r2+=r7 ∥ st.h h[r1+0]=r3`
+        # (字节原样搬到只读区,尾部按上游解码惯例垫 4 字节)——半字
+        # abstract 写:byte0 已知落盘、byte1 未知带物理来源保持未知;
+        # A 半按旧寄存器做加法(r2=循环后 src+16+旧 r7)。任何数值消费者
+        # 仍严格停。
+        pc=0x01c60020;src,dst=0x124f00,0x124f40
+        code=bytes.fromhex('1083' '2305' '9305' '72d8' '9b60' '00000000')
+        h=self.handoff();h['readonly'].append((pc,code))
+        h['seeds'].append((src+12,bytes.fromhex('11')))
+        h['snapshots'].append(('pair_halfword_dst',dst+16,4))
+        regs=[0]*16;regs[1]=dst;regs[2]=src;regs[7]=0x1000
+        result=explore(self.module,self.app,name='halfword_pair_transport',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'rep_copy_unknown_transport':True,
+                         'immediate_rep_projection':True,
+                         'exact_parallel_stores':True,'exact_parallel_halfword_stores':True},budget=10)
+        self.assertEqual(result['completed_steps'],10)
+        self.assertEqual(result['stop_pc'],hex(pc+10))
+        self.assertEqual(result['last_registers']['r'][2],hex(src+16+0x1000),
+                         'the ALU half must add to the post-loop (old) register')
+        self.assertEqual(result['memory_snapshots']['pair_halfword_dst']['bytes_with_unknowns'],'11??????')
+        adapters=result['instruction_adapters']
+        self.assertEqual(adapters.get('parallel_halfword_store_old_registers'),1)
+        self.assertEqual(adapters.get('rep_copy_unknown_transport_load'),4)
+        self.assertEqual(adapters.get('rep_copy_unknown_transport_store'),4)
+        # 半字 abstract 写的两条事件:byte0 已知 '11' 落盘、byte1 '??' 按来源保持。
+        writes=[e for e in result['memory_events'] if e.get('access')=='abstract_write'
+                and int(e['address'],16) in (dst+16,dst+17)]
+        self.assertEqual([e['bytes_with_unknowns'] for e in writes],['11','??'])
+
     def test_ssync_executes_as_the_run4_no_visible_effect_model(self):
         # flushinv_dcache 尾部 0xc714 csync + 0xc716 ssync(ROM 实际编码)。ssync
         # 上游只有 run4 的 runner 上下文 trace 模型;按 FM-1 run4 捕获「flags
