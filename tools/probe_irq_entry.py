@@ -308,6 +308,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              p33_analog_config=False,power_init_rstcon_masks=False,
              power_init_wkup_dly=False,
              mem_pwr_con=False,p33_window=False,p33_port_sel=False,p33_awkup=False,
+             p3_ls=False,p11_syscon1_masks=False,
              subword_stores=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
@@ -623,6 +624,44 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         require(p11_power_init,'the P3_AWKUP projection only layers on the p11_power_init scenario')
         options['p33_awkup_projection']=True
         options['p33_awkup_first_read_words']=dict(P33_AWKUP_P_IE_FIRST_READ_ZERO)
+    # p3_ls:opt-in 的 P3_LS_P11+P3_LS_IO_DLY..PLL 整字写 write-only 记录(路 BD)。
+    # 触发点=304,012 停点:walker 清尾 0x6067d40 li r0=0xF2C290 后并行对
+    # 0x6067d48 `add.s14.rri.p r0+=176 ∥ st.w [r0]=0` 的 store 半(run3 旧值
+    # 方向)写 [0xF2C290]=P3_LS_P11=0(SDK 有名 P33_ACCESS(0xa4),p33_sfr.h 只
+    # 有地址宏、无 __RW/__RO/__WO、无字段位定义)。证据核验(路 BD 反汇编+
+    # 全量引用扫描):①P3_LS 族访问面=P3_LS_P11(0xf2c290)+P3_LS_IO_DLY..
+    # PLL(0xf2c340..354 六字,P33_ACCESS(0xd0..0xd5)),三组写者(walker 清尾
+    # 0x6067d40/变体清零 0x6069cb0/低功耗 0x60c66f8)全部纯写(值 0/0/1、3)、
+    # app+ROM 零读回观测——按 p33_port_sel/lp_timer SYS_DIV 同族整字写
+    # write-only 记录放行(全字覆盖写、旧值无关),读回一律严格停
+    # p3_ls_readback_not_modeled,RMW 无观测形状拒绝。②**0xf2a638 修正**:
+    # 路 AZ/BB 条目记「[0xf2a638]=0 唯一写点 0x6067d62」是顺序语义(用加法后
+    # 新 r0)静态读法;按 run3 旧值方向(BB 的 304,012 停点即其产物)该 store
+    # 半写 [0xF2C350](P3_LS_PLL 第 3 次清零)。全量复核:0xf2a638 的 app
+    # 字面量 0、ROM 0、全部可达基址+offset 访问形状逐点反汇编 0——全 app/
+    # ROM 零访问,无需建模。③并行对 0x6067d5e∥d62(add.s14.rri.p n=8936 的
+    # simm14 负值 -7448 → r0=0xF2A628)由既有 exact_parallel_stores gate 执行
+    # (store 半旧值方向),A 半结果 r0=0xF2A628 交给下一条复合 RMW。
+    if p3_ls:
+        require(p11_power_init,'the P3_LS projection only layers on the p11_power_init scenario')
+        options['p3_ls_projection']=True
+    # p11_syscon1_masks:opt-in 的 P11_SYS_CON1(0xf2a628)多掩码访问放行(路 BD)。
+    # 触发点=walker 清尾 0x6067d64 `rmw.and.nmodimm [0xF2A628] &= 0xFFFFFF7F`
+    # (清 bit7;0x6067d5e 并行对 A 半从 0xF2C340-7448 算出 0xF2A628),与主
+    # 复位初始化 0x6068c88 的 0xFFFFFFEF(清 bit4,RESET_CONFIG_MASKS 既有)
+    # 是两个不同掩码——复位投影严格单掩码校验拒绝。证据核验结论:固件真实
+    # 用这两个掩码清该寄存器不同位(app 变体函数 0x6069cc6 第三处同掩码
+    # 0xFFFFFF7F,不在启动前缀);SDK p11_sfr.h P11_SYS_CON1 标 __RW(宏值==
+    # volatile,R/W 区分只在注释)、无位字段定义,p11_app.h 用法宏
+    # MSYS_IO_LATCH_DISABLE() 即 `P11_SYS_CON1 &= ~BIT(7)`(bit7 含义按宏名
+    # 仅作参考)。选方案 (a) 掩码集扩展(路 AO 先例):extra_configuration_
+    # mask_sets 把 0xFFFFFF7F 追加进 0xf2a628 的接受掩码集,每个掩码仍按位
+    # 清(清掉的位已知 0、保留位未知、读回须全知),默认单掩码校验行为不变。
+    # 默认关:0xf2a628 的 0xFFFFFF7F RMW 保持 reset_configuration_operation_
+    # not_modeled 严格停。
+    if p11_syscon1_masks:
+        require(p11_power_init,'the P11_SYS_CON1 mask-set extension only layers on the p11_power_init scenario')
+        options['p11_syscon1_mask_sets']=True
     if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
@@ -1287,43 +1326,46 @@ def check(report,firmware):
     # 不写 PORT_SEL)。item[0](cfg=0xE2,通道 2)在 0x6067c6e
     # `st.w.idxs [0xF2C200+r0<<2]=r1` 写 [0xF2C208]=P3_AWKUP_FLT2(SDK 有名
     # P3_AWKUP_FLT0..2=P33_ACCESS(0x80..0x82))=w8=4——路 AZ 到此诚实停,
-    # P3_AWKUP 族归路 BB。**路 BB(sim-awkup)按 codex 三选一的 (c) 落地**:
-    # opt-in p33_awkup_projection 写侧「仅记录写访问」(FLT0..2/P_IE 整字记录
-    # + EN/P_IE/N_IE/P_CPND/N_CPND 位 RMW 记录,与 mem_pwr_con 位记录同族)
-    # + P3_AWKUP_P_IE 首次读具名零值 fixture(P33_AWKUP_P_IE_FIRST_READ_ZERO,
-    # 显式 opt-in、合成假设标注、依赖传播 M&~K 分析全文在投影报告)。
-    # 运行态快照钉死第二轮表源 items(RAM 0x124A5C):item[0] cfg=0xE2/w4=0/
-    # w8=4、item[1] cfg=0xE4/w4=2/w8=5、item[2] cfg=0xE5/w4=2/w8=5——items[1]/
-    # [2] 走 w4==2 纯 RMW 分支不读 P_IE,本前缀 P_IE 恰好一次读(0x6067cac,
-    # 从未写过、首次读),fixture 服务这一次:读 0 → 写回 0|0x4=0x4 → 后续
-    # |=0x2/|=0x1。三项次路径全跑(FLT2=4/FLT1=5/FLT0=5、RMW 14 次)、walker
-    # 清尾 4 字节 0xFF(p33_window)、0x6067d3a call 后 P3_LS 清零启动:
-    # **新停点 0x6067d48 并行对 `add.s14.rri.p r0+=176 ∥ st.w [r0]=0`,store
-    # 半携带旧 r0(run3 捕获方向)→ 首个清零落 [0xF2C290]=P3_LS_P11(SDK 有名
-    # P33_ACCESS(0xa4)),其后 8 个 st.w 才是 [0xF2C340..354]**——修正路 AZ
-    # 的静态读法(把 9 个清零全记在 0xf2c340..354);P3_LS_P11+P3_LS_* 族、
-    # 0xf2a638=0、[0xf2a628]&=0xFFFFFF7F 归下一路。TIMER0 精确计数:cnt
-    # 8268+159×3=8745(路 BB 新前缀 159 步均匀 3 tick/步),con 0x1401,
-    # expirations 10 不变;无新调度往返(交付 1+7+2、commands 20/acks 10
-    # 不变;CRC 30 次往返 900 字节不变——新前缀 159 步全在 walker 清尾与
-    # P3_LS 清零内,不经 CRC/跨核同步)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067d48' and
-            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xf2c290',
-                        'size':4,'value_bytes':'00000000'},
-            'the heap-experimental scenario must stop at the P3_LS_P11 (0xf2c290, SDK-named '
-            'P33_ACCESS(0xa4)) clear: the walker-tail P3_LS cleanup opens with the parallel pair '
-            '0x6067d48 add.s14.rri.p r0+=176 || st.w [r0]=0 whose store half carries the OLD r0 '
-            '(FM-1 run3 exact_parallel_stores direction), so the first clear lands on 0xf2c290 '
-            'and only the following eight stores hit 0xf2c340..354 — this corrects route AZ\'s '
-            'static reading that placed all nine clears in 0xf2c340..354; the P3_LS family '
-            'stays for the next route')
-    require(r['completed_steps']==304012,'the heap experimental config changed its step count')
+    # P3_AWKUP 族归路 BB;P3_LS 族+0xf2a628 掩码集归路 BD(sim-plsclear)。
+    # **路 BD 落地**:opt-in p3_ls_projection(P3_LS_P11+P3_LS_IO_DLY..PLL 的
+    # write-only 整字记录,p33_port_sel 同族)+ p11_syscon1_masks(0xf2a628
+    # 掩码集扩展 {0xFFFFFFEF,0xFFFFFF7F},路 AO 先例)。反汇编钉死 walker 清尾
+    # 全序列(0x6067d40..d68):并行对 0x6067d48 store 半旧 r0 → [0xF2C290]=0
+    # (首清零)、8 条独立 st.w → [0xF2C340..354]=0(六 SDK 名+2 重复)、并行对
+    # 0x6067d5e add.s14.rri.p r0+=-7448(字段 8936 的 simm14 负值)∥st.w
+    # [旧r0+16]=0 → **[0xF2C350]=0(P3_LS_PLL 第 3 次,非 0xF2A638——路 AZ
+    # 「[0xf2a638]=0 唯一写点 0x6067d62」是顺序语义静态读法,本路修正:
+    # 0xf2a638 全 app/ROM 零访问,不建模)**、0x6067d64 复合 RMW
+    # [0xF2A628]&=0xFFFFFF7F(清 bit7,p11_app.h MSYS_IO_LATCH_DISABLE() 用法宏
+    # 同形)。放行后 walker 全返回,B3 装回调两小函数(0x6067d6a/d7a,RAM 全局
+    # 写,无停点)如路线梯预期走通,停在 B4 资源 getter 链开头的电源小函数
+    # 0x60115b4:`st.w.modimm [0xfd3100]=0x200`——JL PMU/SFR 段(fd3xxx)电源
+    # 口,SDK 头无名(只在 HANDOFF「下一步」预告过),归下一路证据核验。
+    # TIMER0 精确计数:cnt 8745+24×3=8817(路 BD 新前缀 24 步均匀 3 tick/步),
+    # con 0x1401、expirations 10 不变;无新调度往返(commands 20/acks 10、
+    # 交付 1+7+2 不变;CRC 30 次往返 900 字节不变——新前缀 24 步全在 walker
+    # 清尾/P3_LS 清零/SYS_CON1 RMW/装回调内,不经 CRC/跨核同步)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x60115ba' and
+            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xfd3100',
+                        'size':4,'value_bytes':'00000200'},
+            'the heap-experimental scenario must stop at the B4 power-register write: after the '
+            'walker tail returns through the P3_LS clears (pair store halves on OLD registers: '
+            '[0xF2C290] then [0xF2C350]) and the [0xF2A628]&=0xFFFFFF7F composite RMW, the '
+            'callback-install taillets 0x6067d6a/d7a run without stops and the resource-getter '
+            'chain opens with power helper 0x60115b4 writing [0xfd3100]=0x200 (JL PMU/SFR '
+            'segment, unnamed in the SDK headers; the next route decision)')
+    require(r['completed_steps']==304036,'the heap experimental config changed its step count')
     reset_config=r['peripherals']['reset_history_projection']['configuration']
     require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
-            {'0xf2c054':['0x3fdf','0xff7f','0x7fbf']},
+            {'0xf2a628':['0xffffffef','0xffffff7f'],'0xf2c054':['0x3fdf','0xff7f','0x7fbf']},
             'the P3_RST_CON0 configuration must record the bitwise union of the three observed '
-            'masks (0x3fdf clears bit5, 0xff7f clears bit7, 0x7fbf clears bit6) as the accepted mask set')
+            'masks (0x3fdf clears bit5, 0xff7f clears bit7, 0x7fbf clears bit6) and P11_SYS_CON1 '
+            'the union of its two observed masks (0xffffffef clears bit4 from the reset-init path, '
+            '0xffffff7f clears bit7 from the walker tail) as the accepted mask sets')
+    require(reset_config['0xf2a628']=={'known_mask':'0x90','known_value':'0x0'},
+            'the P11_SYS_CON1 configuration must record exactly bit4|bit7 (0x90) cleared by the '
+            'two observed masks, every other bit stays unknown')
     require(reset_config['0xf2c114']=={'known_mask':'0xfffff807','known_value':'0x0'},
             'the P3_WKUP_DLY configuration must record bits 0-2 and 11-31 cleared by the '
             'observed &=0x7F8 mask (known_mask 0xfffff807; bits 3-10 stay unknown)')
@@ -1383,9 +1425,28 @@ def check(report,firmware):
             'executed values), the P_IE consume write-back 0x4 (fixture 0 | 1<<2), the fourteen '
             'bit RMWs (EN/P_CPND/N_CPND |=1<<ch three times each, item[0] N_IE&=~4, items[1]/[2] '
             'P_IE/N_IE |=1<<ch), and exactly one served first read of P3_AWKUP_P_IE')
+    p3ls=r['peripherals']['p3_ls_projection']
+    require(p3ls['stores']=={'0xf2c290':{'values':['0x0'],'writes':1},
+                             '0xf2c340':{'values':['0x0'],'writes':1},
+                             '0xf2c344':{'values':['0x0','0x0'],'writes':2},
+                             '0xf2c348':{'values':['0x0'],'writes':1},
+                             '0xf2c34c':{'values':['0x0'],'writes':1},
+                             '0xf2c350':{'values':['0x0','0x0'],'writes':2},
+                             '0xf2c354':{'values':['0x0','0x0'],'writes':2}} and
+            p3ls['word_writes']==10 and
+            p3ls['write_only'] and p3ls['readback_not_modeled'] and
+            p3ls['addresses']==[hex(a) for a in (0xf2c290,0xf2c340,0xf2c344,0xf2c348,
+                                                 0xf2c34c,0xf2c350,0xf2c354)] and
+            'NOT 0xF2A638' in p3ls['observed_shapes'],
+            'the P3_LS projection must record exactly the ten executed zero stores of the walker '
+            'tail: the pair-half clear of P3_LS_P11 at 0xf2c290, the eight straight st.w clears '
+            'of P3_LS_IO_DLY..PLL (with the two 0xf2c344/0xf2c354 repeats), and the second pair '
+            'half 0x6067d62 landing on OLD r0 -> [0xf2c350] (third PLL clear, not 0xf2a638 — '
+            'route AZ\'s sequential-semantics reading corrected by route BD: 0xf2a638 has zero '
+            'app+ROM references)')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':8745,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 2915 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':8817,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 2939 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1478,7 +1539,8 @@ def check(report,firmware):
     # 100→101(+1:第二轮 LRC 写 0x60674b8 的 M2P 字节写,LRC 快照值不变)→103(路 AQ
     # 新前缀 +2:0x6067830/34 与 0x60676fa/fe 两处 M2P 字节 pair 存储)、LRCT 位
     # RMW 4→9(+5:trim 函数内 stop-helper 2 + restart-helper 3)、reset 配置 RMW
-    # 6→7(路 AQ +1:0x6067824 的 0xf2c114 &=0x7F8)。
+    # 6→7(路 AQ +1:0x6067824 的 0xf2c114 &=0x7F8)→8(路 BD +1:0x6067d64 的
+    # 0xf2a628 &=0xFFFFFF7F 掩码集扩展)。
     require(r['instruction_adapters'].get('exact_doubleword_store')==26 and
             r['instruction_adapters'].get('immediate_rep_multi_block_projection')==165 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
@@ -1489,7 +1551,7 @@ def check(report,firmware):
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
             r['instruction_adapters'].get('parallel_byte_store_old_registers')==113 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==9 and
-            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==7 and
+            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
             r['instruction_adapters'].get('p33_awkup_bit_rmw')==14 and
             r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1,
@@ -1710,8 +1772,40 @@ def check(report,firmware):
         'carries the OLD r0 (FM-1 run3 captured direction), so the first clear lands on '
         '[0xF2C290]=P3_LS_P11 (SDK-named P33_ACCESS(0xa4)) and only the following eight stores '
         'hit 0xf2c340..354 — a correction to route AZ\'s static reading that placed all nine '
-        'clears in 0xf2c340..354; the P3_LS family, 0xf2a638=0 and [0xf2a628]&=0xFFFFFF7F stay '
-        'for the next route')
+        'clears in 0xf2c340..354; the P3_LS family, 0xf2a638=0 and [0xf2a628]&=0xFFFFFF7F were '
+        'let through by route BD (see p3_ls_projection_assumption / p11_syscon1_mask_set_assumption)')
+    report['p3_ls_projection_assumption']=(
+        'opt-in p3_ls_projection (route BD): write-only word-sequence record of P3_LS_P11 '
+        '(0xf2c290 = P33_ACCESS(0xa4)) and P3_LS_IO_DLY/IO_ROM/ADC/AUDIO/RF/PLL (0xf2c340..354 '
+        '= P33_ACCESS(0xd0..0xd5)) — a simulator capability, NOT a register WO-property claim. '
+        'Evidence: p33_sfr.h carries address macros only (no __RW/__RO/__WO, no bit fields); '
+        'the full app+ROM reference scan finds three writer groups (walker tail 0x6067d40, '
+        'variant clear 0x6069cb0, low-power 0x60c66f8) and ZERO readback observations, so '
+        'stores record real executed values (0/0/1,3) and every read strictly stops '
+        '(p3_ls_readback_not_modeled) while RMW is rejected (p3_ls_rmw_not_modeled, no observed '
+        'shape). The walker tail runs ten zero stores: the pair half 0x6067d48 on OLD r0 -> '
+        '[0xF2C290], eight straight st.w -> [0xF2C340..354] (two repeats), and the second pair '
+        'half 0x6067d62 on OLD r0+16 -> [0xF2C350] (third PLL clear). CORRECTION to route AZ: '
+        '"[0xf2a638]=0, unique write point 0x6067d62" was a sequential-semantics static reading; '
+        'under the run3 old-register direction (which this repo implements and which produced the '
+        '304,012 stop) that store half hits [0xF2C350], and 0xf2a638 has ZERO app+ROM references '
+        '(literal scan + every reachable base+offset shape disassembled) — it is not modeled at '
+        'all (also unnamed: offset 14 sits past the 12-word P11_SYSTEM_TypeDef). No '
+        'level-shifter electrical effect is modeled.')
+    report['p11_syscon1_mask_set_assumption']=(
+        'opt-in p11_syscon1_mask_sets (route BD): the reset-history configuration gate accepts a '
+        'second AND mask for P11_SYS_CON1 (0xf2a628). The walker tail computes r0=0xF2A628 via '
+        'the pair 0x6067d5e add.s14.rri.p r0+=-7448 (simm14 of raw field 8936) and clears bit7 '
+        'with the composite RMW 0x6067d64 rmw.and.nmodimm [r0]&=0xFFFFFF7F; the variant clear '
+        'function uses the same mask at 0x6069cc6 (not in this prefix); the reset-init path '
+        '0x6068c88 clears bit4 with 0xFFFFFFEF (the pre-existing RESET_CONFIG_MASKS entry). '
+        'Firmware really uses two different masks on different bits of this register. SDK '
+        'p11_sfr.h marks P11_SYS_CON1 __RW (macro value == volatile; the R/W split is comments '
+        'only) with no bit-field definitions; the p11_app.h usage macro MSYS_IO_LATCH_DISABLE() '
+        'is `P11_SYS_CON1 &= ~BIT(7)` — the macro NAME is a reference for bit7 only, no silicon '
+        'semantics claimed. Each mask still clears bitwise (cleared bits known 0, kept bits '
+        'unknown, readback requires a fully known word); the default single-mask validation is '
+        'unchanged when the switch is off.')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -1830,7 +1924,8 @@ def main():
                               p33_analog_config=True,power_init_rstcon_masks=True,
                               power_init_wkup_dly=True,
                               mem_pwr_con=True,p33_window=True,p33_port_sel=True,
-                              p33_awkup=True,subword_stores=True,
+                              p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
+                              subword_stores=True,
                               flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue

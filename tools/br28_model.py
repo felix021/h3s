@@ -1521,6 +1521,97 @@ class P33AwkupRegisters:
                               'recorded write-back value depends on it')}
 
 
+class P3LsRegisters:
+    """P3_LS_P11 + P3_LS_IO_DLY..PLL(0xf2c290/0xf2c340..354)的 write-only 整字记录(opt-in,路 BD)。
+
+    证据(2026-11-13 路 BD 反汇编+全量引用扫描钉死;修正路 AZ/BB 条目里
+    「[0xf2a638]=0 唯一写点 0x6067d62」的静态读法,见下):
+    - SDK p33_sfr.h 把 P3_LS_P11 命名为 P33_ACCESS(0xa4)、P3_LS_IO_DLY/
+      IO_ROM/ADC/AUDIO/RF/PLL 命名为 P33_ACCESS(0xd0..0xd5);与整个 p33_sfr.h
+      一样只有地址宏、无 __RW/__RO/__WO 类型标注、无字段位定义——寄存器名与
+      固件真实写形状是全部证据,不声称硅语义。
+    - walker 清尾序列(app 0x6067d40..d68,反汇编钉死):
+      0x6067d40 li.u32 r0=0xF2C290; 0x6067d46 li.u8 r1=0;
+      0x6067d48 并行对 add.s14.rri.p r0+=176 ∥ st.w [r0+0]=r1 —— store 半按
+      FM-1 run3「B 读 A 之前旧寄存器」方向携带旧 r0 → **[0xF2C290]=
+      P3_LS_P11=0**(路 BB 已钉,304,012 停点即它);A 半后 r0=0xF2C340;
+      随后 8 条独立 st.w(0x6067d4e..d5c,n=0..5,1,5 → +0..+0x14,+4,+0x14)
+      写 [0xF2C340],[344],[348],[34C],[350],[354],[344],[354]=0(六地址
+      SDK 有名 + 2 重复);
+      0x6067d5e 并行对 add.s14.rri.p r0+=(-7448)(字段 n=8936 的 simm14 负值,
+      8936-16384=-7448) ∥ st.w [r0+16]=r1 —— store 半按同一 run3 旧值方向
+      携带旧 r0=0xF2C340 → **[0xF2C350]=0(P3_LS_PLL 第 3 次清零,非
+      0xF2A638)**;A 半后 r0=0xF2A628,由下一条复合 RMW 消费。
+    - **0xF2A638 修正**:路 AZ/BB 条目记「[0xf2a638]=0 整字写、全 app 唯一
+      写点 0x6067d62」是顺序执行语义(用加法后的新 r0)的静态读法;按
+      run3 硬件捕获方向(本仓库 exact_parallel_stores 已实现并在 304,012
+      停点实际生效)该 store 半写 [0xF2C350]。全量复核(路 BD):0xF2A638
+      的 app 字面量 0 处、ROM 整块 0 处、全部可达基址(0xF2A600/608/610/
+      618/624/628)+offset 访问形状逐点反汇编后零命中——**0xF2A638 在整个
+      app/ROM 里没有任何访问**,无需建模(SDK 侧它超出 P11_SYSTEM_TypeDef
+      12 字结构体(offset 14),无名)。
+    - P3_LS 族全量引用(app 字面量+基址算术、ROM 整块):三组写者、全部
+      纯写、零读回——①walker 清尾(0x6067d40 基址 0xF2C290,写 0,本前缀);
+      ②变体清零函数 0x6069cb0(基址字面量 0xF2C340:5 条 st.w 写 340..350
+      =0 + 并行对 0x6069cc0/cc4 add.s14.rri.p r0=r1-7448 ∥ st.w [r1+20]=
+      r0 → store 半旧 r1 → [0xF2C354]=0 + 复合 RMW [0xF2A628]&=0xFFFFFF7F,
+      不在启动前缀);③低功耗路径 0x60c66f8(基址字面量 0xF2C340:6 条
+      st.w =1、6 条 st.w =3,纯写)。ROM 零引用。没有任何 P3_LS 读回观测。
+    - 建模选择:与 p33_port_sel(路 AZ)/lp_timer SYS_DIV/CLK_CON0(路 W)
+      同族——全字覆盖写、旧值无关,按字粒度记录写值序列(写值是真实执行
+      结果,从不发明);不为无人消费的读发明值,读回一律严格停
+      (p3_ls_readback_not_modeled,显式 kind 优先于泛 unmapped);RMW 无
+      任何观测形状,一律拒绝(p3_ls_rmw_not_modeled)。
+    """
+    P11=0xf2c290
+    IO_DLY,IO_ROM,ADC,AUDIO,RF,PLL=0xf2c340,0xf2c344,0xf2c348,0xf2c34c,0xf2c350,0xf2c354
+    ADDRESSES=(P11,IO_DLY,IO_ROM,ADC,AUDIO,RF,PLL)
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.ADDRESSES}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled P3_LS register')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('p3_ls_readback_not_modeled',address=hex(address))
+
+    def rmw(self,kind,operand):
+        raise Blocked('p3_ls_rmw_not_modeled',address=hex(self.ADDRESSES[0]),operation=kind)
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes']}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('P3_LS_P11 = P33_ACCESS(0xa4), P3_LS_IO_DLY/IO_ROM/ADC/AUDIO/RF/PLL = '
+                              'P33_ACCESS(0xd0..0xd5) in p33_sfr.h (address macros only, no '
+                              '__RW/__RO/__WO, no bit fields)'),
+                'write_only':True,'readback_not_modeled':True,
+                'observed_shapes':('walker tail 0x6067d40..d68: li r0=0xF2C290, li r1=0, pair '
+                                   '0x6067d48 add.s14.rri.p r0+=176 || st.w [old r0]=0 -> [0xF2C290], '
+                                   'then eight st.w [0xF2C340..354]=0 (six SDK-named words, two '
+                                   'repeats), pair 0x6067d5e add.s14.rri.p r0+=-7448 (simm14 of raw '
+                                   '8936) || st.w [old r0+16]=0 -> [0xF2C350] (third PLL clear, NOT '
+                                   '0xF2A638); variant 0x6069cb0: five st.w [0xF2C340..350]=0 + pair '
+                                   '0x6069cc0||cc4 st.w [old r1+20]=0 -> [0xF2C354]; low-power '
+                                   '0x60c66f8: six st.w [0xF2C340..354]=1 then six st.w =3; '
+                                   'no readback anywhere (app+ROM)'),
+                'assumption':('write-only word-sequence record (a simulator capability, not a WO '
+                              'property claim); stored values are real executed results, never '
+                              'invented; no level-shifter electrical effect modeled; 0xf2a638 has '
+                              'zero app+ROM references (route AZ static reading corrected) and is '
+                              'not modeled at all')}
+
+
 class MMU:
     """Functional SDK page-table projection, no TLB/cache or bus timing model."""
     def __init__(self,initial_con=None):
@@ -1726,6 +1817,18 @@ POWER_INIT_CONFIG_MASKS={0xf2c05c:0x3fd}
 # 位」的观测记录掩码集,不发明未观测位。opt-in 经 extra_configuration_mask_sets
 # 把这两个追加进 0xf2c054 的接受掩码集(默认单掩码校验行为不变,legacy 报告不变)。
 POWER_INIT_RSTCON_MASK_SETS={0xf2c054:(0xff7f,0x7fbf)}
+# walker 清尾 0x6067d64 与变体清零函数 0x6069cc6 两处同掩码复合 RMW
+# `[0xF2A628] &= 0xFFFFFF7F`(清 bit7;0x6067d5e 并行对 A 半 r0=0xF2C340-7448
+# 算出 0xF2A628 后由 rmw.and.nmodimm m=128(invert → 打印掩码 0xFFFFFF7F)消费),
+# 与主复位初始化路径 0x6068c80 @ 0x6068c88 的 0xFFFFFFEF(清 bit4,RESET_CONFIG_
+# MASKS 既有条目)是两个不同掩码——固件真实用两个掩码清 P11_SYS_CON1 的不同位。
+# SDK p11_sfr.h 把 P11_SYS_CON1 标 __RW(宏值==volatile,R/W 区分只在注释);
+# p11_app.h 的用法宏 MSYS_IO_LATCH_DISABLE() 即 `P11_SYS_CON1 &= ~BIT(7)`(SDK
+# 侧存在清 bit7 的用法宏,bit7 字段含义按宏名仅作参考、不声称硅语义)。SDK 头
+# 无位字段定义,只按「固件真实清这些位」的观测记录掩码集、不发明未观测位。
+# opt-in 经 extra_configuration_mask_sets 追加进 0xf2a628 的接受掩码集(默认
+# 单掩码 0xFFFFFFEF 校验行为不变,legacy 报告不变)。
+P11_SYSCON1_MASK_SETS={0xf2a628:(0xffffff7f,)}
 # power_init 0x60677a4(P33 配置函数)内 0x6067824 `rmw.and.nmodimm [0xf2c114]&=0x7F8`
 # (r1 由 0x606781e `r1=r1-308` 从 P3_ANA_CON2 基址 0xf2c248 算出 0xf2c114,即
 # P33_ACCESS(0x45)=P3_WKUP_DLY)。AND 掩码 0x7F8=bits3-10 置位:&=0x7F8 保留
@@ -1941,6 +2044,7 @@ class BR28Model:
                  mem_pwr_con_projection=False,p33_window_projection=False,
                  p33_port_sel_projection=False,
                  p33_awkup_projection=False,p33_awkup_first_read_words=None,
+                 p3_ls_projection=False,p11_syscon1_mask_sets=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -2085,6 +2189,11 @@ class BR28Model:
                 raise ValueError('invalid P3_AWKUP first-read fixture')
         self.p33_awkup=(P33AwkupRegisters(p33_awkup_first_read_words)
                         if p33_awkup_projection else None)
+        # p3_ls(opt-in,路 BD):P3_LS_P11+P3_LS_IO_DLY..PLL 的 write-only 整字
+        # 记录(证据与形状见 P3LsRegisters 类注释;默认关,0xf2c290 写保持
+        # unmapped_or_readonly_write,304,012 前沿形状不变)。0xf2a638 全
+        # app/ROM 零访问(路 AZ 静态读法修正),不建模。
+        self.p3_ls=P3LsRegisters() if p3_ls_projection else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -2116,6 +2225,8 @@ class BR28Model:
             raise ValueError('power_init config RMW requires the reset history projection')
         if power_init_rstcon_mask_sets and not reset_history_projection:
             raise ValueError('power_init RST_CON mask sets require the reset history projection')
+        if p11_syscon1_mask_sets and not reset_history_projection:
+            raise ValueError('P11_SYS_CON1 mask sets require the reset history projection')
         if power_init_wkup_dly_rmw and not reset_history_projection:
             raise ValueError('power_init wakeup-delay config RMW requires the reset history projection')
         extra_config_masks=None
@@ -2124,9 +2235,12 @@ class BR28Model:
         if power_init_wkup_dly_rmw:
             extra_config_masks=dict(extra_config_masks or {})
             extra_config_masks.update(POWER_INIT_WKUP_DLY_MASK)
+        extra_mask_sets={}
+        if power_init_rstcon_mask_sets:extra_mask_sets.update(POWER_INIT_RSTCON_MASK_SETS)
+        if p11_syscon1_mask_sets:extra_mask_sets.update(P11_SYSCON1_MASK_SETS)
         self.reset=(ResetHistoryProjection(reset_history_words,
                     extra_config_masks,
-                    POWER_INIT_RSTCON_MASK_SETS if power_init_rstcon_mask_sets else None)
+                    extra_mask_sets or None)
                     if reset_history_projection else None)
         self.mpu=MPUConfigurationProjection(initial_mpu_write_gate) if mpu_configuration_projection else None
         self.port_initialization_projection=port_initialization_projection
@@ -2196,6 +2310,7 @@ class BR28Model:
             (self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)) or
             (self.p33_port_sel is not None and self.p33_port_sel.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
+            (self.p3_ls is not None and self.p3_ls.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -2383,6 +2498,11 @@ class BR28Model:
         if self.p33_awkup is not None and self.p33_awkup.handles(address):
             self.counts['reads']+=1
             return self.p33_awkup.read(address)
+        # P3_LS 族:整字写 write-only 记录,读回一律严格停(全 app/ROM 零
+        # 读回观测;显式 kind 优先于泛 unmapped,便于诊断)。
+        if self.p3_ls is not None and self.p3_ls.handles(address):
+            self.counts['reads']+=1
+            return self.p3_ls.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -2479,6 +2599,10 @@ class BR28Model:
             # st.w.idxs)与 P_IE(0x6067cb0 消费型写回),其余(EN/N_IE/
             # P_CPND/N_CPND 无整字写观测)由投影拒绝;写后读严格停。
             self.p33_awkup.write(address,value)
+        elif self.p3_ls is not None and self.p3_ls.handles(address):
+            # P3_LS 族(路 BD):st.w/并行对 st.w 半全字覆盖写(旧值无关,
+            # 含 run3 旧值方向 pair),write-only 记录。
+            self.p3_ls.write(address,value)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -2802,6 +2926,7 @@ class BR28Model:
         if self.p33_window is not None:result['p33_window_projection']=self.p33_window.report()
         if self.p33_port_sel is not None:result['p33_port_sel_projection']=self.p33_port_sel.report()
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
+        if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
