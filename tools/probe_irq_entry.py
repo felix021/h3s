@@ -261,6 +261,27 @@ P11_HEAP_INFO_DERIVED=bytes.fromhex('0c3df439')  # begin=0x3d0c size=0x39f4
 #   对硅行为的任何声称;未提供该参数时 NUM 读严格停(300,240 前沿形状)。
 LRCT_TRIM_RESULT_PROBE=38400  # 7,680,000,000/200,000 = 38,400 = 0x9600
 
+# P3_AWKUP_P_IE(0xf2c184)首次读的具名零值 fixture(路 BB;合成假设,非硅测量)。
+# 证据与适用场景(全部 2026-11-13 路 BB 反汇编+运行态快照复核钉死):
+# - 本 boot 前缀对 P3_AWKUP_P_IE 的唯一一次读是 walker 0x6067cb4 第二轮表
+#   item[0](cfg=0xE2,通道 ch=2,w4=0)在 0x6067cac 的显式 ld.w——该寄存器
+#   本次 boot 从未被写过,读的是复位值;读值 R 被消费(0x6067cae or 后
+#   0x6067cb0 写回 W=R|(1<<2))。items[1]/[2](cfg=0xE4/0xE5,快照钉死 w4=2)
+#   走纯 RMW 分支不读 P_IE——本前缀恰好一次读、首次读。
+# - 独立分发函数 0x60691f4(push.srl 中断入口)的 N_IE/P_IE 消费型读
+#   (0x60692a6/0x60692b4)不在本前缀(AWKUP 中断从未交付);N_IE 因此
+#   不需要也不提供 fixture(整字 0 覆盖只给 P_IE 一个寄存器,不扩展到族)。
+# - 零值是**显式探索样例**,不是「复位后 IE 全关」的硅事实声明:SDK
+#   p33_sfr.h 只有地址宏、无类型标注、无位定义,复位值无任何直接证据。
+#   整字 0(而非「IE 位全 0」)覆盖未知位与高位。
+# - 依赖传播(静态位运算 M/K 分析):读值 R 进入 W=(R|0x4)——bit2 被固件
+#   强制置 1(无依赖),bits{0,1,3..31}=M&~K 携带本 fixture 假设;零值下
+#   写回 0x4,后续 items[1]/[2] 固件 RMW |=2/|=1 → 记录末值 0x7,其中
+#   bits3..31 完全由 fixture 携带。fixture 只覆盖「首次读返回字」这一个
+#   初始条件假设:写过之后与首次之后的读一律严格停(不立「普通存储式
+#   读回」假设),未覆盖寄存器(N_IE 等)的读严格停。
+P33_AWKUP_P_IE_FIRST_READ_ZERO={0xf2c184:0}
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -286,7 +307,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              lrct_trim_result=None,timer0_std12m=False,lp_timer_con_readback=False,
              p33_analog_config=False,power_init_rstcon_masks=False,
              power_init_wkup_dly=False,
-             mem_pwr_con=False,p33_window=False,p33_port_sel=False,subword_stores=False,
+             mem_pwr_con=False,p33_window=False,p33_port_sel=False,p33_awkup=False,
+             subword_stores=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -578,6 +600,29 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if p33_port_sel:
         require(p11_power_init,'the P3_PORT_SEL projection only layers on the p11_power_init scenario')
         options['p33_port_sel_projection']=True
+    # p33_awkup:opt-in 的 P3_AWKUP 族「仅记录写访问」+ P3_AWKUP_P_IE 首次读
+    # 具名 fixture(路 BB)。触发点=303,853 停点:walker 第二轮表 item[0]
+    # (cfg=0xE2,ch=2,w4=0)0x6067c6e `st.w.idxs [0xF2C200+2<<2]=4` 写
+    # P3_AWKUP_FLT2(SDK 有名 P3_AWKUP_FLT0..2=P33_ACCESS(0x80..0x82))。
+    # 证据核验(路 BB 复核路 AZ):①SDK p33_sfr.h 把 P3_AWKUP_EN/P_IE/N_IE/
+    # LEVEL/INSEL/P_PND/N_PND/P_CPND/N_CPND(0x60..0x68)与 FLT0..2(0x80..0x82)
+    # 全命名,但只有地址宏、无 __RW/__RO/__WO、无位定义。②全量引用扫描
+    # (app 字面量+基址算术、ROM 整块):FLT0..2 唯一写者是本次路径(整字写,
+    # 值=w8 真实执行结果);EN/P_CPND/N_CPND 只观测到 rmw.or.bitr|=1<<ch
+    # (次路径)与 modimm/nmodimm(清除助手 0x60685ae,不在本前缀);P_IE/N_IE
+    # 除 RMW 外有显式消费型读回(本前缀只有 P_IE 一次:0x6067cac,从未写过,
+    # 首次读;N_IE 的读在中断分发函数 0x60691f4,不在本前缀)。③LEVEL/INSEL
+    # 零引用不建模;P_PND/N_PND 已归复位历史投影,不双重建模。④codex 规则
+    # 落实:不发明默认读值——写侧仅记录(整字记录+位 RMW 记录),读侧只有
+    # 显式具名 fixture(P33_AWKUP_P_IE_FIRST_READ_ZERO,整字 0、标注合成
+    # 假设、只覆盖 P_IE 一个寄存器)覆盖的寄存器的首次读返回具名字;未覆盖
+    # 读/写后读/重复读一律严格停;写回值对 fixture 的依赖(M&~K 位分析)
+    # 在投影报告 writeback_dependency 全文记录。默认关:0xf2c208 写保持
+    # unmapped_or_readonly_write(303,853 前沿形状)。
+    if p33_awkup:
+        require(p11_power_init,'the P3_AWKUP projection only layers on the p11_power_init scenario')
+        options['p33_awkup_projection']=True
+        options['p33_awkup_first_read_words']=dict(P33_AWKUP_P_IE_FIRST_READ_ZERO)
     if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
@@ -1241,24 +1286,38 @@ def check(report,firmware):
     # (查表函数对 0xE2/0xE4/0xE5 返回 2/1/0,作 FLT 下标与通道位;次路径
     # 不写 PORT_SEL)。item[0](cfg=0xE2,通道 2)在 0x6067c6e
     # `st.w.idxs [0xF2C200+r0<<2]=r1` 写 [0xF2C208]=P3_AWKUP_FLT2(SDK 有名
-    # P3_AWKUP_FLT0..2=P33_ACCESS(0x80..0x82))=w8=4 撞 unmapped_or_readonly_
-    # write 诚实停——P3_AWKUP 族(SDK 有名、固件有真实读回需求:cfg=0xE2 的
-    # w4∉{1,2} 分支在 0x6067cac 有对 [0xF2C184]=P3_AWKUP_P_IE 的显式 ld.w
-    # 读回且被消费,读的是从未写过的复位值;p33_sfr.h 无类型标注)整族归
-    # 下一路,本路不并入。P3_LS_*(0xf2c340..354 六清零)、0xf2a638=0、
-    # [0xf2a628]&=0xFFFFFF7F 在该停点之后、本轮不可达(证据已钉死,见
-    # HANDOFF 路 AZ)。TIMER0 精确计数:cnt 4569+1233×3=8268(新前缀 1233 步
-    # 均匀 3 tick/步,见下方断言),con 0x1401,expirations 10 不变;无新调度往返(交付
-    # 1+7+2、commands 20/acks 10 不变;CRC 30 次往返 900 字节不变——新前缀
-    # 1233 步全在 walker 函数内,不经 CRC/跨核同步)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067c6e' and
-            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xf2c208',
-                        'size':4,'value_bytes':'04000000'},
-            'the heap-experimental scenario must stop at the P3_AWKUP_FLT2 (0xf2c208, SDK-named) '
-            'full-word store after the P3_PORT_SEL projection let the four walker-table '
-            'port-select stores through; the P3_AWKUP family (real consumed read-back demand) '
+    # P3_AWKUP_FLT0..2=P33_ACCESS(0x80..0x82))=w8=4——路 AZ 到此诚实停,
+    # P3_AWKUP 族归路 BB。**路 BB(sim-awkup)按 codex 三选一的 (c) 落地**:
+    # opt-in p33_awkup_projection 写侧「仅记录写访问」(FLT0..2/P_IE 整字记录
+    # + EN/P_IE/N_IE/P_CPND/N_CPND 位 RMW 记录,与 mem_pwr_con 位记录同族)
+    # + P3_AWKUP_P_IE 首次读具名零值 fixture(P33_AWKUP_P_IE_FIRST_READ_ZERO,
+    # 显式 opt-in、合成假设标注、依赖传播 M&~K 分析全文在投影报告)。
+    # 运行态快照钉死第二轮表源 items(RAM 0x124A5C):item[0] cfg=0xE2/w4=0/
+    # w8=4、item[1] cfg=0xE4/w4=2/w8=5、item[2] cfg=0xE5/w4=2/w8=5——items[1]/
+    # [2] 走 w4==2 纯 RMW 分支不读 P_IE,本前缀 P_IE 恰好一次读(0x6067cac,
+    # 从未写过、首次读),fixture 服务这一次:读 0 → 写回 0|0x4=0x4 → 后续
+    # |=0x2/|=0x1。三项次路径全跑(FLT2=4/FLT1=5/FLT0=5、RMW 14 次)、walker
+    # 清尾 4 字节 0xFF(p33_window)、0x6067d3a call 后 P3_LS 清零启动:
+    # **新停点 0x6067d48 并行对 `add.s14.rri.p r0+=176 ∥ st.w [r0]=0`,store
+    # 半携带旧 r0(run3 捕获方向)→ 首个清零落 [0xF2C290]=P3_LS_P11(SDK 有名
+    # P33_ACCESS(0xa4)),其后 8 个 st.w 才是 [0xF2C340..354]**——修正路 AZ
+    # 的静态读法(把 9 个清零全记在 0xf2c340..354);P3_LS_P11+P3_LS_* 族、
+    # 0xf2a638=0、[0xf2a628]&=0xFFFFFF7F 归下一路。TIMER0 精确计数:cnt
+    # 8268+159×3=8745(路 BB 新前缀 159 步均匀 3 tick/步),con 0x1401,
+    # expirations 10 不变;无新调度往返(交付 1+7+2、commands 20/acks 10
+    # 不变;CRC 30 次往返 900 字节不变——新前缀 159 步全在 walker 清尾与
+    # P3_LS 清零内,不经 CRC/跨核同步)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067d48' and
+            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xf2c290',
+                        'size':4,'value_bytes':'00000000'},
+            'the heap-experimental scenario must stop at the P3_LS_P11 (0xf2c290, SDK-named '
+            'P33_ACCESS(0xa4)) clear: the walker-tail P3_LS cleanup opens with the parallel pair '
+            '0x6067d48 add.s14.rri.p r0+=176 || st.w [r0]=0 whose store half carries the OLD r0 '
+            '(FM-1 run3 exact_parallel_stores direction), so the first clear lands on 0xf2c290 '
+            'and only the following eight stores hit 0xf2c340..354 — this corrects route AZ\'s '
+            'static reading that placed all nine clears in 0xf2c340..354; the P3_LS family '
             'stays for the next route')
-    require(r['completed_steps']==303853,'the heap experimental config changed its step count')
+    require(r['completed_steps']==304012,'the heap experimental config changed its step count')
     reset_config=r['peripherals']['reset_history_projection']['configuration']
     require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
@@ -1276,23 +1335,25 @@ def check(report,firmware):
             'the MEM_PWR_CON projection must record four OR-RMWs whose operands are all zero '
             '(the argument b[0x129D1C]=0 in this path) and one dead readback')
     p33win=r['peripherals']['p33_window_projection']
-    require(p33win['byte_writes']==24 and
+    require(p33win['byte_writes']==28 and
             p33win['stores']=={'0xf2c548':{'values':['0xf7'],'writes':1},
                                '0xf2c54c':{'values':['0xff'],'writes':1},
                                '0xf2c940':{'values':['0x2','0x4','0x8','0x10'],'writes':4},
                                '0xf2c944':{'values':['0x0','0x0','0x0','0x0'],'writes':4},
                                '0xf2c948':{'values':['0x2','0x4','0x10'],'writes':3},
                                '0xf2c94c':{'values':['0x0','0x0','0x0'],'writes':3},
-                               '0xf2c960':{'values':['0x2','0x4','0x8','0x10'],'writes':4},
-                               '0xf2c964':{'values':['0x0','0x0','0x0','0x0'],'writes':4}} and
+                               '0xf2c960':{'values':['0x2','0x4','0x8','0x10','0xff'],'writes':5},
+                               '0xf2c964':{'values':['0x0','0x0','0x0','0x0','0xff'],'writes':5},
+                               '0xf2c99c':{'values':['0xff'],'writes':1},
+                               '0xf2c9a0':{'values':['0xff'],'writes':1}} and
             p33win['write_only'] and p33win['readback_not_modeled'] and
             p33win['addresses']==[hex(a) for a in (0xf2c540,0xf2c544,0xf2c548,0xf2c54c,
                 0xf2c940,0xf2c944,0xf2c948,0xf2c94c,0xf2c960,0xf2c964,0xf2c99c,0xf2c9a0)],
-            'the P33 unnamed-window projection must record exactly the 24 executed byte '
+            'the P33 unnamed-window projection must record exactly the 28 executed byte '
             'stores (four first-loop items: set paths [0xf2c948]/[0xf2c94c] for indexes '
-            '1/2/4, clear path [0xf2c548]=0xF7/[0xf2c54c]=0xFF for index 3, and the four '
-            'tail stores per item) and the route-AZ corrected address list ends with '
-            '0xf2c99c/0xf2c9a0 (0x6067d32 st.b.l n=64 from r1=0xF2C960)')
+            '1/2/4, clear path [0xf2c548]=0xF7/[0xf2c54c]=0xFF for index 3, the four '
+            'tail stores per item, plus the four walker-tail 0xFF bitmap clears at '
+            '0x6067d2e..d38 into [0xF2C99C]/[0xF2C9A0]/[0xF2C960]/[0xF2C964])')
     port_sel=r['peripherals']['p33_port_sel_projection']
     require(port_sel['word_writes']==4 and
             port_sel['stores']=={'0xf2c304':{'values':['0x12'],'writes':1},
@@ -1304,9 +1365,27 @@ def check(report,firmware):
             'the P3_PORT_SEL projection must record exactly the four first-loop full-word '
             'stores (values are real executed 0x60672C8 lookup results for cfg '
             '0x11/0xE0/0x05/0x15) and stay write-only')
+    awkup=r['peripherals']['p33_awkup_projection']
+    require(awkup['stores']=={'0xf2c184':{'values':['0x4'],'writes':1},
+                              '0xf2c200':{'values':['0x5'],'writes':1},
+                              '0xf2c204':{'values':['0x5'],'writes':1},
+                              '0xf2c208':{'values':['0x4'],'writes':1}} and
+            awkup['rmw_records']=={'0xf2c180':{'known_mask':'0x7','known_value':'0x7','writes':3},
+                                   '0xf2c184':{'known_mask':'0x3','known_value':'0x3','writes':2},
+                                   '0xf2c188':{'known_mask':'0x7','known_value':'0x3','writes':3},
+                                   '0xf2c19c':{'known_mask':'0x7','known_value':'0x7','writes':3},
+                                   '0xf2c1a0':{'known_mask':'0x7','known_value':'0x7','writes':3}} and
+            awkup['first_read_fixture']=={'0xf2c184':{'word':'0x0','reads_served':1}} and
+            awkup['fixture_is_synthetic_assumption'] and
+            awkup['records_write_accesses_only'] and
+            'every recorded P_IE bit except {0,1,2} depends on the fixture' in awkup['writeback_dependency'],
+            'the P3_AWKUP projection must record the three walker FLT stores (w8 4/5/5 are real '
+            'executed values), the P_IE consume write-back 0x4 (fixture 0 | 1<<2), the fourteen '
+            'bit RMWs (EN/P_CPND/N_CPND |=1<<ch three times each, item[0] N_IE&=~4, items[1]/[2] '
+            'P_IE/N_IE |=1<<ch), and exactly one served first read of P3_AWKUP_P_IE')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':8268,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 2761 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':8745,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 2915 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1408,10 +1487,11 @@ def check(report,firmware):
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==111 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==113 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==9 and
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==7 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
+            r['instruction_adapters'].get('p33_awkup_bit_rmw')==14 and
             r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     report['heap_info_value_is_derived_not_measured']=(
@@ -1599,6 +1679,39 @@ def check(report,firmware):
         'UNNAMED in the SDK p33_sfr.h (which names only P33_ACCESS(0x00..0xd5)), so this is the '
         'next independent decision point — a P33-window unnamed register family plus a new pair '
         'shape')
+    report['p33_awkup_first_read_fixture_assumption']=(
+        'the p11_heap_experimental_config scenario opts into p33_awkup_projection: the P3_AWKUP '
+        'family (SDK p33_sfr.h names P3_AWKUP_EN/P_IE/N_IE/LEVEL/INSEL/P_PND/N_PND/P_CPND/N_CPND '
+        '= P33_ACCESS(0x60..0x68) and P3_AWKUP_FLT0..2 = P33_ACCESS(0x80..0x82), address macros '
+        'only, no __RW/__RO/__WO annotations, no bit fields) is modeled as RECORDS-WRITE-ACCESSES '
+        'ONLY: FLT0..2 and P3_AWKUP_P_IE full-word stores are recorded as executed values, and '
+        'EN/P_IE/N_IE/P_CPND/N_CPND bit RMWs are recorded as PartialWord bit operations without '
+        'readback (same family as mem_pwr_con). NO default read value exists for any register: '
+        'the ONLY read semantics is the explicitly opted-in named fixture '
+        'P33_AWKUP_P_IE_FIRST_READ_ZERO = {0xf2c184: 0}, a SYNTHETIC ZERO WORD with NO direct '
+        'reset-value evidence, covering the FIRST read of P3_AWKUP_P_IE alone (never extended to '
+        'N_IE or the rest of the family; the whole word 0 covers unknown bits and high bits and '
+        'is not a claim that reset leaves all IE bits off). The boot prefix reads P3_AWKUP_P_IE '
+        'exactly once: walker second-round item[0] (cfg=0xE2, channel 2, w4=0, source-item '
+        'snapshot at 0x124A5C pins w4/w8 for all three items) executes ld.w r2=[0xF2C184] at '
+        '0x6067cac and consumes it into the write-back W=R|(1<<2) at 0x6067cb0 — bit2 is forced '
+        'by firmware, bits {0,1,3..31} (M&~K) carry the fixture word, so the recorded P_IE '
+        'write-back 0x4 and every later recorded P_IE bit above bit2 DEPEND ON THIS ASSUMPTION. '
+        'A first read is NOT an all-time readback: any repeat read, any post-write read and any '
+        'read of an uncovered register strictly stops (awkup_repeat_read_not_modeled / '
+        'awkup_readback_after_write_not_modeled / awkup_first_read_fixture_absent); no ordinary '
+        'storage-style readback is assumed. LEVEL/INSEL have zero app+ROM references and are not '
+        'modeled; P_PND/N_PND stay in the reset-history projection (POR/no-wake explicit '
+        'synthetic 0). No CPND clear mechanism is inferred from the register name. With the '
+        'family let through, the three walker sub-path items run fully (FLT2=4/FLT1=5/FLT0=5 '
+        'real executed w8 values, 14 bit RMWs, one served fixture read) and the conditional '
+        'frontier advances 159 steps to 304,012 at 0x6067d48: the walker-tail P3_LS cleanup '
+        'opens with the parallel pair add.s14.rri.p r0+=176 || st.w [r0]=0 whose store half '
+        'carries the OLD r0 (FM-1 run3 captured direction), so the first clear lands on '
+        '[0xF2C290]=P3_LS_P11 (SDK-named P33_ACCESS(0xa4)) and only the following eight stores '
+        'hit 0xf2c340..354 — a correction to route AZ\'s static reading that placed all nine '
+        'clears in 0xf2c340..354; the P3_LS family, 0xf2a638=0 and [0xf2a628]&=0xFFFFFF7F stay '
+        'for the next route')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -1717,7 +1830,7 @@ def main():
                               p33_analog_config=True,power_init_rstcon_masks=True,
                               power_init_wkup_dly=True,
                               mem_pwr_con=True,p33_window=True,p33_port_sel=True,
-                              subword_stores=True,
+                              p33_awkup=True,subword_stores=True,
                               flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
