@@ -121,7 +121,16 @@ honestly at 301,651 on the P3_WKUP_DLY (0xf2c114) &=0x7F8 RMW — an
 independent, not-yet-modeled P33 register, the next decision; power_init's
 return still lies beyond. No new scheduler round trips occur.
 The crc_bankb_erased_fixture frontier itself stays pinned at 289,849
-without the fixture.
+without the fixture. Later routes advanced the conditional frontier through
+the WKUP_DLY/PORT_SEL/P3_AWKUP/P3_LS/P11_SYS_CON1 boundaries to 304,036
+(see HANDOFF route AZ..BD entries); route BG adds the opt-in
+fd31_adc_con_projection: the B4-opening "power helper" 0x60115b4 is really
+an ADC control function (0xfd3100 = JL_ADC->CON in the reference br28.h
+that anchored JL_LRCT; first value 0x20000, a rotated modimm, not 0x200),
+its six whole-word writes are recorded write-only, and the chain then
+honestly stops at the first CON readback 0x60116e6 inside the 32-round
+sampling loop's caller 0x60116d0 (CON bit4 gate / bit7 busy poll and the
+analog RES 0xfd3104 have no derivable values) at 304,317.
 """
 import argparse
 import json
@@ -309,6 +318,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              power_init_wkup_dly=False,
              mem_pwr_con=False,p33_window=False,p33_port_sel=False,p33_awkup=False,
              p3_ls=False,p11_syscon1_masks=False,
+             fd31_adc_con=False,
              subword_stores=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
@@ -662,6 +672,34 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if p11_syscon1_masks:
         require(p11_power_init,'the P11_SYS_CON1 mask-set extension only layers on the p11_power_init scenario')
         options['p11_syscon1_mask_sets']=True
+    # fd31_adc_con:opt-in 的 0xfd3100=JL_ADC->CON 整字写 write-only 记录(路 BG)。
+    # 触发点=304,036 停点:app_core 尾段 0x60120f4/0x6012106 两次背靠背调
+    # 「电源小函数」0x60115b4(实为 ADC 控制函数),每次三连整字写
+    # **[0xfd3100]=0x20000 → 0x20040 → 0x40**(首值修正:路 BD 记 0x200,modimm
+    # raw 0xB00 旋转展开是 0x20000,停点 value_bytes '00000200' 小端即 0x00020000)。
+    # 证据核验(路 BG 反汇编+全量引用扫描):①命名修正——0xfd3100 在参考
+    # SDK br28.h(路 AC JL_LRCT 同一命名锚点头)是 **JL_ADC_BASE=ls_base+
+    # map_adr(0x31,0)**,JL_ADC_TypeDef{__RW CON;__RO RES;},+4=0xfd3104=RES
+    # (只读转换结果);路 BD「JL PMU/SFR 段电源口、SDK 头无名」按此修正。
+    # ②0x60115b4 全函数纯三写、零读回/RMW/轮询;全 app 恰 5 个 call 点
+    # (0x60120f4/0x6012106/0x60116ee/0x6011706/0x6034900)。③全量引用面=
+    # app 字面量恰 7 处、ROM 整块 0、0xfd3104 字面量 0:除电源函数外还有
+    # **真实读回消费**——轮询 helper 0x601163a(≤1000 轮读 CON 等 bit7 置位/
+    # bit4 清零)、caller A 0x60116d0(读 CON bit4 门控+读 RES 存软件槽)、
+    # caller C/D 0x60348e8/0x60349xx(bit7/bit4 门控+byte0 消费)、setter
+    # 0x6011666 尾(整字写+|=0x40)。④**读回就在启动链上**:放行 6 写后
+    # app_core 尾段经 0x60115cc+3 组 getter(纯软件)进入 32 次采样循环
+    # 0x6012148..0x601215e(每轮 call caller A,min/max/sum、末尾 /30 平均),
+    # caller A 首个 fd31 访问=0x60116e6 `ld.w` 读 CON。建模:CON 写侧
+    # p33_port_sel/P3_LS 同族 write-only 整字记录(值全真实指令计算);
+    # CON 读回(bit4/bit7 状态位)与 RES(模拟测量)无可推导值,不发明
+    # fixture,读回一律严格停 fd31_adc_con_readback_not_modeled;RMW 拒绝
+    # (fd31_adc_con_rmw_not_modeled,该寄存器有真实读回消费者);RES 零写
+    # 不覆盖(读保持泛 unmapped)。默认关:0xfd3100 写保持
+    # unmapped_or_readonly_write(304,036 前沿形状)。
+    if fd31_adc_con:
+        require(p11_power_init,'the fd31 ADC CON projection only layers on the p11_power_init scenario')
+        options['fd31_adc_con_projection']=True
     if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
@@ -1345,16 +1383,50 @@ def check(report,firmware):
     # con 0x1401、expirations 10 不变;无新调度往返(commands 20/acks 10、
     # 交付 1+7+2 不变;CRC 30 次往返 900 字节不变——新前缀 24 步全在 walker
     # 清尾/P3_LS 清零/SYS_CON1 RMW/装回调内,不经 CRC/跨核同步)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x60115ba' and
-            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xfd3100',
-                        'size':4,'value_bytes':'00000200'},
-            'the heap-experimental scenario must stop at the B4 power-register write: after the '
-            'walker tail returns through the P3_LS clears (pair store halves on OLD registers: '
-            '[0xF2C290] then [0xF2C350]) and the [0xF2A628]&=0xFFFFFF7F composite RMW, the '
-            'callback-install taillets 0x6067d6a/d7a run without stops and the resource-getter '
-            'chain opens with power helper 0x60115b4 writing [0xfd3100]=0x200 (JL PMU/SFR '
-            'segment, unnamed in the SDK headers; the next route decision)')
-    require(r['completed_steps']==304036,'the heap experimental config changed its step count')
+    # (历史:路 BD 前沿 304,036 曾停在这里,「电源口/SDK 无名/0x200」三条记录
+    # 已由路 BG 修正——见下一段。)
+    # **路 BG 落地**:opt-in fd31_adc_con_projection(0xfd3100=JL_ADC->CON 的
+    # write-only 整字记录,p33_port_sel/P3_LS 同族)。证据核验修正路 BD 三条
+    # 记录:①**命名**——参考 SDK br28.h(路 AC JL_LRCT 同一命名锚点头)
+    # `JL_ADC_BASE=ls_base+map_adr(0x31,0)`、`JL_ADC_TypeDef{__RW CON;__RO RES;}`,
+    # 0xfd3100=ADC CON、0xfd3104=ADC RES(只读转换结果)——「JL PMU/SFR 段电源
+    # 口、SDK 头无名」不成立,「电源小函数」实为 ADC 控制函数;②**首写值**——
+    # 0x60115ba `st.w.modimm {m:0xB00}` 的 modimm 旋转展开是 0x20000(304,036
+    # 停点 value_bytes '00000200' 小端即 0x00020000),三连写=0x20000→0x20040
+    # →0x40;③**读回消费就在启动链上**——0x60120f4/0x6012106 两次背靠背调用
+    # (6 条纯写)后,app_core 尾段经 ROM 0x1fd80→0x4226 的 176 字节缓冲
+    # memset、0x60115cc+3 组 getter(0x6001230/0x601160e,纯软件表)进入
+    # **32 次采样循环 0x6012148..0x601215e**(每轮 call 0x60116d0,读 CON 测
+    # bit4 门控、读 [0xfd3104] RES 存软件槽,收集 min/max/sum、末尾
+    # (sum-min-max)/30 平均滤波),caller A 首个 fd31 访问=0x60116e6 `ld.w`
+    # 读 CON。放行 6 写后(+281 步,全真实执行:memset 单指令 rep 体走上游
+    # 原生机制、无新 adapter;不经 CRC/跨核同步)停在 0x60116e6——CON 读回
+    # (bit4 门控/bit7 忙等轮询 0x601163a)与 RES(模拟测量)无可推导值,
+    # 不发明 fixture,读回严格停 fd31_adc_con_readback_not_modeled。
+    # TIMER0 精确计数:cnt 8817+281×3=9660(均匀 3 tick/步),con 0x1401、
+    # expirations 10 不变;commands 20/acks 10、交付 1+7+2、CRC 30 次往返
+    # 900 字节、全部 adapter 计数不变(新前缀是 memset+软件表+6 条 MMIO 写)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x60116e6' and
+            r['stop']=={'kind':'fd31_adc_con_readback_not_modeled','address':'0xfd3100'},
+            'the heap-experimental scenario must stop at the first ADC CON readback: after the '
+            'fd31_adc_con_projection lets the two back-to-back control-function calls '
+            '(0x60120f4/0x6012106, six whole-word writes 0x20000/0x20040/0x40) through and the '
+            'app-core tail runs the 176-byte buffer memset plus the software getters, the '
+            '32-round sampling loop enters caller 0x60116d0 whose first fd31 access is the '
+            'ld.w of [0xfd3100] at 0x60116e6 (JL_ADC->CON per the reference br28.h naming '
+            'anchor, route BD\'s power/PMU reading corrected; CON bit4 gate / bit7 poll and '
+            'RES 0xfd3104 have no derivable values, so the read stops honestly)')
+    require(r['completed_steps']==304317,'the heap experimental config changed its step count')
+    fd31=r['peripherals']['fd31_adc_con_projection']
+    require(fd31['stores']=={'0xfd3100':{'values':['0x20000','0x20040','0x40',
+                                                  '0x20000','0x20040','0x40'],'writes':6}} and
+            fd31['word_writes']==6 and
+            fd31['write_only'] and fd31['readback_not_modeled'] and
+            fd31['addresses']==['0xfd3100'] and
+            'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'],
+            'the fd31 ADC CON projection must record exactly the six executed whole-word '
+            'stores of the two control-function calls (values are real executed results: '
+            '0x20000 is the modimm raw 0xB00 rotation, not 0x200) and stay write-only')
     reset_config=r['peripherals']['reset_history_projection']['configuration']
     require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
@@ -1445,8 +1517,8 @@ def check(report,firmware):
             'route AZ\'s sequential-semantics reading corrected by route BD: 0xf2a638 has zero '
             'app+ROM references)')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':8817,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 2939 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':9660,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 3220 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1806,6 +1878,30 @@ def check(report,firmware):
         'semantics claimed. Each mask still clears bitwise (cleared bits known 0, kept bits '
         'unknown, readback requires a fully known word); the default single-mask validation is '
         'unchanged when the switch is off.')
+    report['fd31_adc_con_projection_assumption']=(
+        'opt-in fd31_adc_con_projection (route BG): write-only word-sequence record of '
+        '0xfd3100 = JL_ADC->CON — a simulator capability, NOT a register WO-property claim '
+        '(the reference br28.h marks CON __RW). NAMING CORRECTION to route BD: 0xfd3100 is '
+        'not an unnamed "JL PMU/SFR power port"; the same reference header that anchored '
+        'JL_LRCT (ls_base+map_adr(0x36,0)) names JL_ADC at ls_base+map_adr(0x31,0) with '
+        '{__RW CON; __RO RES} (RES = 0xfd3104, a read-only conversion result), no bit-field '
+        'definitions. VALUE CORRECTION to route BD: the control function 0x60115b4 writes '
+        '0x20000 -> 0x20040 -> 0x40 (the first st.w.modimm raw 0xB00 is a rotated modimm '
+        'expanding to 0x20000, not 0x200; the 304,036 stop bytes 00000200 are little-endian '
+        '0x00020000). The full app+ROM reference scan finds exactly seven li.u32 0xfd3100 '
+        'literal sites and zero 0xfd3104 literals; besides the pure-write control function '
+        'the family has REAL readback consumers on the boot path: the 32-round sampling '
+        'loop 0x6012148..0x601215e calls 0x60116d0 whose first fd31 access is the CON read '
+        'at 0x60116e6 gating on bit4 (plus the busy poll helper 0x601163a waiting on bit7 '
+        'and the RES read stored into a software slot for a (sum-min-max)/30 average), '
+        'callers 0x60348e8/0x60349xx gate on bit7/bit4, and the setter 0x6011666 tail adds '
+        'rmw.or |=0x40 past the frontier. CON status bits have no SDK definitions and RES '
+        'is an analog measurement, so no readback value is invented: reads strictly stop '
+        '(fd31_adc_con_readback_not_modeled), RMW is rejected (fd31_adc_con_rmw_not_modeled) '
+        'and RES 0xfd3104 (never written by the firmware) stays unmodeled. The conditional '
+        'frontier advances 281 steps to 304,317 at 0x60116e6 with ZERO adapter/CRC/'
+        'cross-core changes (the 176-byte buffer memset runs its single-instruction REP '
+        'bodies through the upstream native mechanism).')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -1925,6 +2021,7 @@ def main():
                               power_init_wkup_dly=True,
                               mem_pwr_con=True,p33_window=True,p33_port_sel=True,
                               p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
+                              fd31_adc_con=True,
                               subword_stores=True,
                               flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
