@@ -205,6 +205,20 @@ class DualCoreMachine:
             horizon=steps if horizon is None else min(horizon,steps)
         return horizon
 
+    def timer0_wake_horizon(self,icfg):
+        """Timer0 对事件时钟的期限贡献(路 BQ/G1,docs/d1-idle-event-clock.md §3.2)。
+
+        委托 BR28Model.timer0_wake_horizon:pending 已置位且未在途=1,在计数=
+        精确闭式 S=ceil((4·(divisor·N−remainder)−source_remainder)/12)
+        (STD12M 3/4×4 参考tick/步、div=1 的真实前缀形状下
+        prd=119999/cnt=9660 给 S=36780),IRQ4 全核确定屏蔽/不在计数=None。
+        资格面在全核 IDLE 期间冻结,预检一次有效;实际到期/交付仍由
+        advance() 逐步触发,闭式只作推进上限。无 Timer0 模型的硬件桩返回
+        None(与 core tick 的 getattr 防御同旨)。
+        """
+        horizon=getattr(self.hardware,'timer0_wake_horizon',None)
+        return None if horizon is None or getattr(self.hardware,'timer',None) is None else horizon(icfg)
+
     def software_pending_probe_needed(self):
         """已置位(或未知)的软件 pending 位是否存在,需要一步探查能否唤醒。
 
@@ -228,30 +242,39 @@ class DualCoreMachine:
         全核 IDLE 时逐模型步调用与运行循环完全相同的 hardware.advance()
         (无批量跳步、无特殊时间路径),直到三者之一:
         - 已建模事件请求交付(IrqDeliveryRequest)——原样抛出,由既有交付投影
-          (deliver_core_tick/deliver_software_irq)唤醒目标核;
+          (deliver_core_tick/deliver_software_irq,路 BE 起 opt-in 还有
+          deliver_timer0_irq)唤醒目标核;
         - advance 的严格停(Blocked)原样传播(诚实边界);
         - 没有任何可唤醒事件:诚实停 all_cores_idle_waiting。
         被屏蔽的溢出/pending 不唤醒:溢出计数器停在溢出态(pending 已置位),
         时间继续走向下一事件。同刻事件顺序=advance 的固定扫描序(先 tick
-        IRQ3 按核号,再软件 pending 按核号/IRQ 号),可复现性优先,非硅时序声称。
+        IRQ3 按核号,再 Timer0 IRQ4,再软件 pending 按核号/IRQ 号),可复现性
+        优先,非硅时序声称。
         """
         self.record_event({'kind':'event_clock_engaged','idle_cores':sorted(self.idle_wait_cores),
                            'clock_source':'modeled timer counters only'})
         probe_pending=self.software_pending_probe_needed()
         while True:
             horizon=self.core_tick_wake_horizon()
+            # 路 BQ/G1:Timer0 并入同一 min()——无 core tick 在计数时「唯一
+            # 事件=Timer0 到期」不再被误判为无事件诚实停;被屏蔽(全核确定
+            # 不合格)的 Timer0 不是事件,闭式只作推进上限。
+            timer0=self.timer0_wake_horizon(cpu.icfg)
+            if timer0 is not None:horizon=timer0 if horizon is None else min(horizon,timer0)
             if horizon is None:
                 if not probe_pending:
                     raise Blocked('all_cores_idle_waiting',idle_cores=sorted(self.idle_wait_cores),
-                                  note='no modeled event can fire: no counting core tick and '
-                                       'no set software pending bit (masked pending never wakes)')
+                                  note='no modeled event can fire: no counting core tick, no '
+                                       'counting/eligible Timer0 and no set software pending bit '
+                                       '(masked pending or IRQ never wakes)')
                 horizon=1;probe_pending=False  # 单步探查:置位 pending 若合格立即请求交付
             for _ in range(horizon):
                 self.event_clock_advances+=1
                 self.hardware.advance(cpu.icfg)  # IrqDeliveryRequest/Blocked 原样传播
-            # 本轮走满仍未交付:期限最近的溢出被屏蔽,计数器已停在溢出态
-            # (unresolved_overflow),下一轮只剩其他在计数的事件;至多两个
-            # 计数器,循环必然终止。
+            # 本轮走满仍未交付:期限最近的溢出被屏蔽,core tick 已停在溢出态
+            # (unresolved_overflow)而 Timer0 周期计数、其 pending 片只抛一次
+            # (delivery_in_flight)——两者下一轮都不再贡献期限;至多两个 tick
+            # 计数器+一个 Timer0,循环必然终止。
 
     def wake_cpu1_control_kick(self):
         """PMU_CON0 kick RMW 唤醒挂起的 CPU1(显式投影,cpu1_control_kick_wake)。
@@ -668,17 +691,27 @@ class DualCoreMachine:
                     'pending_rearmed_only_by_real_firmware_command':True}} if self.repeat_irq_delivery else {}),
                 **({'event_clock_projection':{'enabled':True,
                     'virtual_model_steps_advanced':self.event_clock_advances,
-                    'clock_source':'modeled timer counters only (two per-core core ticks, PRD+1 SDK formula); '
-                                   'no wall-clock or nanosecond conversion claimed',
+                    'clock_source':'modeled timer counters only (two per-core core ticks, PRD+1 SDK formula, '
+                                   'plus the shared Timer0 counter); no wall-clock or nanosecond conversion claimed',
                     'advance_mechanism':'per-model-step hardware.advance(), identical to the run loop; no bulk counter jumps',
-                    'wake_paths':'existing delivery projections only (deliver_core_tick/deliver_software_irq); no new event sources invented',
-                    'same_tick_order':'advance() scan order: core-tick IRQ3 by core number, then software pending by core then IRQ number; '
+                    'wake_paths':'existing delivery projections only (deliver_core_tick/deliver_software_irq'
+                                 +(', deliver_timer0_irq (route BE opt-in)' if self.timer0_irq_entry else '')
+                                 +'); no new event sources invented',
+                    'same_tick_order':'advance() scan order: core-tick IRQ3 by core number, then Timer0 IRQ4, '
+                                      'then software pending by core then IRQ number; '
                                       'reproducibility only, not a silicon timing claim',
                     'masked_pending_or_overflow_wakes':False,
                     'honest_stop_without_events':'all_cores_idle_waiting (note: no modeled event can fire)',
-                    'timer0_irq4_is_not_a_wake_event':('IRQ4 delivery is not implemented; its pending still stops strictly if reached during advancement'
+                    'timer0_wake_horizon':('route BQ: a counting/pending Timer0 with IRQ4 not positively masked on all '
+                        'cores contributes the closed-form horizon '
+                        'S=ceil((4*(divisor*(PRD+1-CNT)-remainder)-source_remainder)/12) (STD12M 3/4 x 4 ref ticks/step; '
+                        'exact for any divisor/source, upper-bound use only) to the same min(); a positively masked '
+                        'Timer0 and a delivery_in_flight pending episode are not events. Actual expiry/delivery is '
+                        'still raised step-by-step by advance()'),
+                    'timer0_irq4_delivery':('IRQ4 delivery is not enabled; a reached qualifying expiry still stops '
+                        'strictly (interrupt_delivery_not_implemented) instead of an honest no-event stop'
                         if not self.timer0_irq_entry else
-                        'Timer0 IRQ4 delivery is opt-in (route BE): a qualifying expiry during advancement raises '
+                        'opt-in (route BE): a qualifying expiry during advancement raises '
                         'IrqDeliveryRequest(core,irq=4) through the same advance() path and the run-loop dispatch '
                         'handles it with the entry/W1C-ack/RTI assumptions stacking on this projection'),
                     'silicon_timing_or_interrupt_latency_modeled':False}} if self.event_clock_projection else {}),

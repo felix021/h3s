@@ -2110,6 +2110,28 @@ class Timer0:
         self.expirations+=periods
         if periods:self.pending=True
 
+    def steps_to_next_expiration(self,source_ticks_per_step):
+        """距下一次到期(periods>=1)的最少模型步数,精确闭式(路 BQ/事件时钟 G1)。
+
+        与 advance() 的两级分数余数计数逐步互逆:溢出需 N=prd+1-cnt 个
+        post-divisor tick,两级累除可整体 telescoping,故需源域累计
+        M=divisor*N-remainder,再解 (source_remainder+num*S)//den>=M 得
+        S=ceil((den*M-source_remainder)/num);num/den=每步源域进账速率
+        (STD12M:每 source_ticks_per_step 个参考 tick 进 3 个 STD12M tick,
+        即 num=3*source_ticks_per_step、den=4,真实前缀形状
+        prd=119999/cnt=9660/div=1 时 S=(120000-9660)/3=36780;其余源无
+        换算级,num=source_ticks_per_step、den=1)。不在计数或未初始化返回
+        None。只作事件时钟的推进上限;实际到期/交付仍由 advance() 逐步触发。
+        """
+        if self.con is None or not self.con&3 or self.cnt is None or self.prd is None:return None
+        if (self.con>>10)&15==self.STD12M_SOURCE:
+            num=source_ticks_per_step*self.STD12M_TICKS_PER_REF_TICK[0]
+            den=self.STD12M_TICKS_PER_REF_TICK[1]
+        else:
+            num,den=source_ticks_per_step,1
+        needed=DIVISORS[(self.con>>4)&15]*(self.prd+1-self.cnt)-self.remainder
+        return -(-(den*needed-self.source_remainder)//num)
+
 
 class IRQController:
     def __init__(self,*,initial_config=None,initial_ipmask=None,unmaskable_irq_projection=False):
@@ -3069,6 +3091,44 @@ class BR28Model:
             if self.lock_owner!=actor:raise Blocked('shared_lock_release_by_nonowner',owner=self.lock_owner)
             self.lock_owner=None
         self.counts['lock_acquire' if acquire else 'lock_release']+=1
+
+    def timer0_irq4_could_fire(self,icfg):
+        """事件时钟资格预检(路 BQ/G1):Timer0 的 pending/到期是否可能在某核
+        抛 IrqDeliveryRequest 或既有严格停。
+
+        与 advance() 的 Timer0 扫描同构(逐核 controller+gate 需求,core1 需
+        已释放),但绝不在这里抛:返回 True=至少一核合格,或资格无法判定
+        (未初始化 config/ipmask、未知 gate 需求、未建模 unmaskable——这些
+        情形下推进中的 advance() 会在到期处以同一严格停显形,按事件处理才
+        不隐藏边界);False=所有可达核都确定不合格(契约 §4:被屏蔽的
+        pending/到期都不唤醒,资格面在全核 IDLE 期间冻结,预检一次有效)。
+        """
+        controllers=(self.irq,self.irq1) if self.multicore_enabled else (self.irq,)
+        for core,irq in enumerate(controllers):
+            if core==1 and not self.cpu1_control&1:continue
+            gate=self.core_icfg.get(core) if self.multicore_enabled else icfg
+            try:
+                if irq.eligible(4,gate if gate is not None else 0x300):return True
+            except Blocked:
+                return True  # 资格无法判定:按事件处理,advance() 到期处显形
+        return False
+
+    def timer0_wake_horizon(self,icfg):
+        """Timer0 对事件时钟的期限贡献(路 BQ/G1,docs/d1-idle-event-clock.md §3.2)。
+
+        返回距下一个 Timer0 唤醒事件的模型步数:pending 已置位且未在途=1
+        (下一个 advance 步即请求交付/严格停);否则在计数=Timer0.steps_to_
+        next_expiration 的精确闭式;其余(不在计数/IRQ4 全核确定屏蔽/pending
+        片已在途等 ACK)=None,不构成事件。delivery_in_flight 的 pending 片
+        已消费过请求、handler ACK 前不会再抛,计入期限会造成无限推进,故
+        与 core tick 的 unresolved_overflow 同旨排除。
+        """
+        timer=self.timer
+        if not self.timer0_irq4_could_fire(icfg):return None
+        if timer.pending:return None if timer.delivery_in_flight else 1
+        if timer.con is None or not timer.con&3:return None
+        rate=self.timer_lsb_ticks_per_step if (timer.con>>10)&15==0 else self.source_ticks_per_step
+        return timer.steps_to_next_expiration(rate)
 
     def advance(self,icfg):
         self.counts['completed_model_steps']+=1

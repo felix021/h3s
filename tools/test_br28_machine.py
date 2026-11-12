@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from br28_machine import DualCoreMachine, CoreStall
 from br28_model import BR28Model, CPU1_CONTROL, IRQ_CONFIG, IPMASK, IcuInitializationProjection, CORE_PMU_CON1
-from br28_model import SoftwareIrqCommands, CORE_TICK_BASES
+from br28_model import SoftwareIrqCommands, CORE_TICK_BASES, TIMER0
 from probe_boot import ENTRY, STACK_TOP, explore, Blocked, IrqDeliveryRequest
 from probe_pi32v2 import upstream
 
@@ -130,6 +130,94 @@ class EventClockTests(unittest.TestCase):
         cpu1=RepeatIrqDeliveryCpu({0x19fe0c:0x60661a4},pc=0x12c5ca,core_id=1)
         m.cores={0:cpu0,1:cpu1};m.hardware=h;m.idle_wait_cores={0}
         return m,cpu0,cpu1
+
+    # 路 BQ/G1(docs/d1-idle-event-clock.md §3.2+A4):Timer0 期限闭式并入事件
+    # 时钟。真实前缀形状:STD12M 源(src5<<10)、div=1、prd=119999、
+    # cnt=9660@304,317 → S=(120000-9660)/3=36,780 模型步,周期 40,000。
+    def timer0_hardware(self,irq4_nibble=3):
+        h=BR28Model(cpu1_held_projection=True,initial_cpu1_control=0,
+                    initial_irq_config=[(irq4_nibble<<16)|(3<<12)]+[0]*31,initial_ipmask=0,
+                    timer0_std12m_source=True,timer0_irq_delivery_requests=True,
+                    core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                    core_tick_progress=(1,1),core_tick_delivery_requests=True,
+                    software_irq_command_projection=True,
+                    initial_software_irq_pending=(0,0),software_irq_delivery_requests=True)
+        h.enable_multicore([0]*32,0,lambda value:None)
+        h.write(CPU1_CONTROL,1)  # 真实释放路径
+        h.core_icfg={0:0x300,1:0x300}
+        return h
+
+    def arm_timer0(self,h,cnt,prd,con=0x1401):
+        h.write(TIMER0,0x4000);h.write(TIMER0+8,prd);h.write(TIMER0+4,cnt);h.write(TIMER0,con)
+
+    def timer0_parked(self,h):
+        m=self.machine(timer0_irq_entry=True)
+        cpu0=RepeatIrqDeliveryCpu({0x19fe10:0x12ece8},pc=0x6066318,core_id=0)
+        cpu1=RepeatIrqDeliveryCpu({0x19fe10:0x12ece8},pc=0x12c5ca,core_id=1)
+        m.cores={0:cpu0,1:cpu1};m.hardware=h;m.idle_wait_cores={0}
+        return m,cpu0,cpu1
+
+    def test_timer0_only_counting_wakes_at_the_closed_form_horizon(self):
+        # A4:仅 Timer0 在计数且 IRQ4 合格、两个 core tick 都不计数(con=0)、
+        # 软件 pending 全零——此前误判「无事件」诚实停,现在按闭式期限唤醒。
+        h=self.timer0_hardware()
+        m,cpu0,cpu1=self.timer0_parked(h)
+        self.arm_timer0(h,9660,119999)  # 真实前缀形状:S=(120000-9660)/3=36780
+        before=h.counts['completed_model_steps']
+        with self.assertRaises(IrqDeliveryRequest) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details,{'core':0,'irq':4})
+        self.assertEqual(m.event_clock_advances,36780)
+        self.assertEqual(h.counts['completed_model_steps']-before,36780)  # 恰好到期,不多走一步
+        m.deliver_timer0_irq(0)
+        self.assertEqual((cpu0.pc,cpu0.active_context),(0x12ece8,'timer0_irq_handler'))
+        self.assertEqual(m.idle_wait_cores,{1})  # 只有被唤醒的核离开 IDLE
+        self.assertTrue(h.timer.pending)  # 交付不清 pending,等真实 W1C
+        # 周期性(A2 的核):真实 handler W1C 后重停泊,第二个周期恰 40,000 步。
+        h.write(TIMER0,0x1401|0x4000)
+        with self.assertRaises(IrqDeliveryRequest) as second:
+            m.enter_idle_wait(cpu0)  # 交付时已摘除,重进即再触发全核停泊判定
+        self.assertEqual(second.exception.details,{'core':0,'irq':4})
+        self.assertEqual(m.event_clock_advances,36780+40000)
+
+    def test_timer0_nearest_horizon_wins_the_min_against_a_later_tick(self):
+        # 闭式与 core tick 期限并入同一 min(): nearer 的 Timer0 先唤醒。
+        h=self.timer0_hardware()
+        m,cpu0,cpu1=self.timer0_parked(h)
+        self.arm_tick(h,0,0,9)  # 合格 tick:10 步后溢出
+        self.arm_timer0(h,119994,119999)  # Timer0:N=6 → S=ceil(4*6/12)=2 步
+        with self.assertRaises(IrqDeliveryRequest) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details,{'core':0,'irq':4})
+        self.assertEqual(m.event_clock_advances,2)
+        self.assertFalse(h.core_ticks[0].pending)  # 未到 tick 期限,请求先于它的计数抛出
+
+    def test_masked_irq4_timer0_is_not_an_event_and_stops_honestly(self):
+        # G1 的资格预检:IRQ4 全核确定屏蔽(nibble=0)时,在计数的 Timer0 不是
+        # 事件(契约 §4 masked 规则)——零推进诚实停,而不是无限走向被屏蔽的到期。
+        h=self.timer0_hardware(irq4_nibble=0)
+        m,cpu0,cpu1=self.timer0_parked(h)
+        self.arm_timer0(h,9660,119999)
+        with self.assertRaises(Blocked) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details['kind'],'all_cores_idle_waiting')
+        self.assertIn('no modeled event',ctx.exception.details['note'])
+        self.assertEqual(m.event_clock_advances,0)
+        self.assertFalse(h.timer.pending)  # 零推进:从未到过期的位置
+
+    def test_timer0_pending_episode_already_in_flight_is_not_an_event(self):
+        # pending 片已抛过请求(handler 尚未 W1C)时不是事件:计入期限会无限
+        # 推进(每个 horizon 步 advance 都不再抛),与 core tick 的
+        # unresolved_overflow 排除同旨;真实世界的该状态在 handler 返回前
+        # 不会全核停泊,此处直接钉模型安全属性。
+        h=self.timer0_hardware()
+        m,cpu0,cpu1=self.timer0_parked(h)
+        self.arm_timer0(h,9660,119999)
+        h.timer.pending=True;h.timer.delivery_in_flight=True
+        with self.assertRaises(Blocked) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details['kind'],'all_cores_idle_waiting')
+        self.assertEqual(m.event_clock_advances,0)
 
     def test_advances_exactly_to_the_nearest_tick_overflow_and_wakes_only_the_eligible_core(self):
         h=self.hardware()  # core0 irq3 合格(nibble3=使能+优先级1),core1 irq3 屏蔽
@@ -327,6 +415,47 @@ class MachineTests(unittest.TestCase):
         self.assertEqual(len(wakes),1)  # kick 计数未再增长时不得重复唤醒
         m.select()
         self.assertEqual(len([e for e in m.events if e['kind']=='core_woken_by_cpu1_control_kick']),1)
+
+    def test_parking_step_delivery_request_is_dispatched_not_escaped(self):
+        # 路 BQ/G2:某核首次执行 idle 的那一步,停泊步(CoreStall)嵌套 advance
+        # 恰撞上 Timer0 交付请求(到期+IRQ4 合格)时,请求必须走与主路径相同的
+        # 交付分发——此前它从嵌套 try 逃出整个分发结构,probe 直接崩溃。
+        # 构造:CPU0 释放 CPU1 后轮转,第 7 个模型步恰为 CPU0 的停泊步
+        # (it1..3=CPU0 写释放+ADV1..3,it4/5/6=CPU1 li、CPU0 li r15、CPU1 goto,
+        # it7=CPU0 idle→停泊);Timer0(source4/div1,每步 4 计数)N=28 →
+        # 恰在第 7 步首次到期(4×6<28≤4×7)。
+        e=self.enc
+        c0=(e('li.u32',r=2,n=CPU1_CONTROL)+e('li.u8',r=0,n=1)+e('st.w',d=0,b=2,n=0)
+            +e('li.u32',r=15,n=LOOP)+e('idle')
+            +e('li.u32',r=15,n=LOOP)+e('goto.r',x=15)+bytes(8))
+        c1=e('li.u32',r=15,n=LOOP)+e('goto.r',x=15)
+        rom=c1+bytes(8)
+        h={'regions':[(STACK_TOP-256,STACK_TOP,'stack'),(0x19fe10,0x19fe14,'vector_slot')],
+           'readonly':[(0,rom),(LOOP,e('goto.r',x=15)+bytes(8))],
+           'seeds':[(0x19fe10,struct.pack('<I',LOOP))],
+           'description':{'phase':'synthetic parking-step delivery test; not H3S boot'},
+           'snapshots':[]}
+        hardware=BR28Model(cpu1_held_projection=True,initial_cpu1_control=0,
+                           initial_irq_config=[0x30000]+[0]*31,initial_ipmask=0,
+                           timer0_irq_delivery_requests=True)
+        hardware.write(TIMER0,0x4000);hardware.write(TIMER0+8,119)
+        hardware.write(TIMER0+4,92);hardware.write(TIMER0,0x1001)
+        machine=DualCoreMachine(cpu1_reset_pc=0,cpu1_icfg=0,irq1_config=[0]*32,ipmask1=0,
+                                software_irq_entry=True,idle_wait_projection=True,
+                                timer0_irq_entry=True)
+        r=explore(self.module,c0,name='synthetic_parking_delivery',handoff=h,
+                  hardware=hardware,machine=machine,
+                  diagnostics={'initial_sp':STACK_TOP,'icfg_initial':0x300},budget=40)
+        self.assertEqual(r['stop']['kind'],'instruction_budget')  # 不崩溃、不逃逸
+        deliveries=r['machine']['timer0_irq_entry_projection']['deliveries']
+        self.assertEqual(len(deliveries),1)
+        self.assertEqual((deliveries[0]['core'],deliveries[0]['irq'],deliveries[0]['handler']),
+                         (0,4,hex(LOOP)))
+        events=r['machine']['events']
+        parked=[ev['pc'] for ev in events if ev['kind']=='core_idle_wait_entered']
+        self.assertEqual(parked,[deliveries[0]['reti_from']])  # 被中断点=停泊的 idle 指令地址
+        self.assertIn('core_woken_by_delivery',[ev['kind'] for ev in events])
+        self.assertEqual(r['machine']['cores']['0']['pc'],hex(LOOP))  # 醒后跑在真实槽读出的 handler
 
     def test_icu_busy_completion_requires_explicit_progress_and_independent_status(self):
         base=0xffec00
