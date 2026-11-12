@@ -93,6 +93,7 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     power_init_wkup_dly=True,
     mem_pwr_con=True, p33_window=True, p33_port_sel=True,
     p33_awkup=True, p3_ls=True, p11_syscon1_masks=True, fd31_adc_con=True,
+    fd31_adc_con_readback=True,
     subword_stores=True)
 
 SCENARIOS = {
@@ -104,7 +105,7 @@ SCENARIOS = {
         # 配置新鲜度钉子:official 必须复现主前沿停点,否则本工具的 flag 集已与
         # 主前沿场景漂移(或上游场景变更),结果不可信。上游前沿推进后按新前沿重钉。
         'freshness': {'completed_steps': 289849, 'stop_pc': '0x60679ba',
-                      'kind': 'unmapped_memory', 'address': '0xf27f4b'},
+                      'stop_fields': {'kind': 'unmapped_memory', 'address': '0xf27f4b'}},
     },
     'p11_heap_experimental': {
         'irq_case_flags': {**BASE_SCENARIO_FLAGS, **CONDITIONAL_EXTRA_FLAGS},
@@ -112,12 +113,19 @@ SCENARIOS = {
                               'conditional flag set (crc_bankb stack plus the derived-not-measured '
                               'opt-ins: every conclusion under this scenario is conditional, not '
                               'a verified boot fact)'),
-        'default_budget': 340000,
+        'default_budget': 480000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。条件前沿随
-        # 上游合并前移后按新前沿重钉(前沿前移后可重跑跟进)。
-        'freshness': {'completed_steps': 304317, 'stop_pc': '0x60116e6',
-                      'kind': 'fd31_adc_con_readback_not_modeled', 'address': '0xfd3100'},
+        # 上游合并前移后按新前沿重钉(前沿前移后可重跑跟进)。路 BN:ADC CON
+        # 读回投影把前沿推进过 1000 轮轮询忙等(~386 步/轮,RAM 延时 0x12e256)
+        # 与三次 STD12M 到期(343,252/383,252/423,252,全部落在延时上下文
+        # 不合格、pending 挂起零交付),停在 CPU0 core tick 首次溢出
+        # (447,490 @ 0x12e284,core_tick_overflow_delivery_unresolved——core
+        # tick 交付接线是路 BF 的域);RES 读(fd31_adc_res_not_modeled)在
+        # 轮询跑完之后(~690k),被 core tick 期限挡在前。
+        'freshness': {'completed_steps': 447490, 'stop_pc': '0x12e284',
+                      'stop_fields': {'kind': 'core_tick_overflow_delivery_unresolved',
+                                      'core': 0, 'irq': 3}},
     },
 }
 
@@ -654,16 +662,18 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-12 路 BK 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 304,036;一切结论条件通过、derived-not-measured):
+    """钉死 2026-11-13 路 BN 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 447,490;一切结论条件通过、derived-not-measured):
 
-    - 双方 304,036 步、同停点 0x60115ba(B4 电源小函数首写 0xfd3100 的
-      unmapped_or_readonly_write,当前条件前沿)、per-core {0:292872,1:11181}
-      一致;stop parity 全同——official↔b79 parity 从 289,849(路 AJ)延长到
-      条件前沿 304,036,控制流零分歧、无 reconvergence;
+    - 双方 447,490 步、同停点 0x12e284(CPU0 core tick 首次溢出的
+      core_tick_overflow_delivery_unresolved,当前条件前沿——路 BN 的 ADC CON
+      读回投影把链推进过 1000 轮轮询忙等与三次 STD12M 到期后撞上 core tick
+      硬期限;core tick 交付接线是路 BF 的域)、per-core {0:436326,1:11181}
+      一致;stop parity 全同——official↔b79 parity 从 304,317(路 BG)延长到
+      条件前沿 447,490,控制流零分歧、无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
       0x88,与 crc_bankb 前沿完全一致);分歧段 30 个不变——条件前缀新增步
-      (289,849..304,036)没有消费任何新的镜像差异;
+      (304,317..447,490,ADC 轮询忙等)没有消费任何新的镜像差异;
     - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -673,16 +683,17 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 304317 and run['stop_pc'] == '0x60116e6' and
-                run['stop']['kind'] == 'fd31_adc_con_readback_not_modeled' and
-                run['per_core_steps'] == {'0': 293153, '1': 11181},
+        require(run['completed_steps'] == 447490 and run['stop_pc'] == '0x12e284' and
+                run['stop']['kind'] == 'core_tick_overflow_delivery_unresolved' and
+                run['stop']['core'] == 0 and run['stop']['irq'] == 3 and
+                run['per_core_steps'] == {'0': 436326, '1': 11181},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (304317 @ 0x60116e6)')
+                'conditional frontier stop (447490 @ 0x12e284, core-tick overflow)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 304317, 'tested_b79': 304317, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x60116e6', 'b': '0x60116e6', 'same': True} and
+    require(parity['steps'] == {'official': 447490, 'tested_b79': 447490, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x12e284', 'b': '0x12e284', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['address'] == '0xfd3100' and
+            parity['stop_record']['a']['kind'] == 'core_tick_overflow_delivery_unresolved' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
             'identical conditional frontier stop')
@@ -778,8 +789,7 @@ def main():
                              scenario=scenario)
         require(check[0]['completed_steps'] == fresh['completed_steps'] and
                 check[0]['stop_pc'] == fresh['stop_pc'] and
-                check[0]['stop']['kind'] == fresh['kind'] and
-                check[0]['stop']['address'] == fresh['address'],
+                all(check[0]['stop'].get(k) == v for k, v in fresh['stop_fields'].items()),
                 f'official frontier stop changed for scenario {scenario!r}: the imported flag set no '
                 f'longer reproduces the pinned frontier stop ({fresh["completed_steps"]} @ '
                 f'{fresh["stop_pc"]}); update this pin after the frontier advances')
