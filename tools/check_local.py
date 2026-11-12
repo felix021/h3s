@@ -19,22 +19,27 @@ def main():
     #   --units      只跑快速单测族（秒-分钟级；每个里程碑的单测已覆盖语义大头）。
     #   --only a,b   单测族 + 指定工具（按文件名匹配，如 probe_p11_status,probe_mmu；
     #                用于定向复核改动域，跳过全部其他 probe/analyze）。
+    # 并发（--jobs N）：各项检查独立写各自 report、互不依赖，可安全并行；有先后
+    #   依赖的下载/构建步骤仍先按序串行跑完；git diff --check 收尾在全部结束后。
+    #   默认 1=串行、遇错即停；-jN 跑完全部再聚合报错（exit 1）。
     parser.add_argument('--units',action='store_true',help='run only the fast unit-test tier')
     parser.add_argument('--only',default='',help='unit tier plus only these named tools (comma-separated file names)')
+    parser.add_argument('--jobs',type=int,default=1,help='run checks with N parallel workers (default 1: serial, stop at first failure)')
     args=parser.parse_args()
     only={name.strip() for name in args.only.split(',') if name.strip()}
 
-    def run(*command,env=None,tool=None):
+    prelude=[]  # 有先后依赖的步骤（输入下载、构建引导），任何模式下都先按序跑完。
+    checks=[]   # 可并行步骤：各项写各自 report，互不依赖。
+    def run(*command,env=None,tool=None,serial=False):
         # 无 tool 标记 = 单测族（compileall/脚本 test/test_*.py/probe_pi32v2）。
         # tool 标记 = probe/analyze；分层模式下按 --units/--only 过滤。
         if args.units and tool is not None:return
         if only and tool is not None and tool not in only:return
-        print('+ '+' '.join(str(part) for part in command),flush=True)
-        subprocess.run(command,cwd=ROOT,env=env,check=True)
+        (prelude if serial else checks).append((command,env))
 
     if args.fetch_inputs:
-        run(sys.executable,'tools/fetch_firmware.py','--variant','both')
-        run(sys.executable,'tools/fetch_boot_reference.py','--hardware')
+        run(sys.executable,'tools/fetch_firmware.py','--variant','both',serial=True)
+        run(sys.executable,'tools/fetch_boot_reference.py','--hardware',serial=True)
     run(sys.executable,'-m','compileall','-q','tools','-x','jl-misctools|build|reference-cache')
     run('bash','tools/android-query/test.sh')
     run('bash','tools/eq-toggle/test.sh')
@@ -83,10 +88,42 @@ def main():
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:
-        run(sys.executable,'tools/bootstrap.py','--android')
+        run(sys.executable,'tools/bootstrap.py','--android',serial=True)
         target_env={**os.environ,'H3S_BLE_ADDRESS':'02:00:00:00:00:01'}
-        run('bash','tools/android-query/build.sh',env=target_env)
-    run('git','diff','--check')
+        run('bash','tools/android-query/build.sh',env=target_env,serial=True)
+
+    def execute(command,env):
+        print('+ '+' '.join(str(part) for part in command),flush=True)
+        subprocess.run(command,cwd=ROOT,env=env,check=True)
+
+    for command,env in prelude:
+        execute(command,env)
+    failures=[]
+    if args.jobs<=1 or len(checks)<2:
+        # 串行：保持原顺序，遇错即停。
+        for command,env in checks:
+            try:
+                execute(command,env)
+            except subprocess.CalledProcessError as error:
+                failures.append((command,error.returncode))
+                break
+    else:
+        # 并发：各项独立 report，跑完全部再聚合报错。
+        from concurrent.futures import ThreadPoolExecutor,as_completed
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures={pool.submit(execute,command,env):command for command,env in checks}
+            for future in as_completed(futures):
+                command=futures[future]
+                try:
+                    future.result()
+                except subprocess.CalledProcessError as error:
+                    failures.append((command,error.returncode))
+    if failures:
+        for command,code in failures:
+            print(f'FAILED ({code}): '+' '.join(str(part) for part in command),file=sys.stderr,flush=True)
+        sys.exit(1)
+    # 收尾屏障：全部检查结束后再看工作区（前缀检查只看已跟踪改动，与 report 输出无竞争）。
+    execute(('git','diff','--check'),None)
     print('Local checks passed. No hardware was accessed.',flush=True)
 
 
