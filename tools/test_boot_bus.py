@@ -1133,5 +1133,52 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(0x12656c-0x12655c,16)
         self.assertEqual(0x126570-0x12655c,20)
 
+    def test_p11_heap_info_derived_bytes_match_the_resource_immediates(self):
+        # 堆信息 4 字节的静态推导钉子(p11_heap_experimental_config 场景的
+        # P11_HEAP_INFO_DERIVED):begin/size 是 p11_code.bin 公共段里的链接期
+        # wide 立即数,不是运行时计算。推导链三方独立:
+        # ①原始字节——公共段(P11 本地 0x80 装载)0xa12 `mov r0,#0x3d0c`
+        #   (c0ff 0c3d0000)、0xa1a `mov r5,#0x7f4a`(c5ff 4a7f0000)、
+        #   0xa26 `mov r0,#0x39f4`(c0ff f4390000),其后 sb/lsr/sb 序列逐字节
+        #   写 0x7f4a..0x7f4d(q32s 静态解码,本仓库不执行 q32s);
+        # ②SDK 消费语义——lp_ipc.h P2M 堆偏移 0x00a..0x00d、p11_app.h
+        #   P11_HEAP_BEGIN=P11_RAM_BASE+(H<<8|L) / P11_HEAP_SIZE=(H<<8|L);
+        # ③SDK 布局互证——heap 末 0xf27700 恰等于 VAD_DVAD_CONFIG_BEGIN。
+        # 值是推导而非测量:本测试只钉「推导与资源字节一致」,不构成硅验证。
+        from analyze_p11 import analyze
+        from probe_irq_entry import P11_HEAP_INFO_DERIVED
+        from verify_eq_candidate import load_image
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        metadata=analyze(firmware)
+        _,_,plain=load_image(firmware)
+        resource=int(metadata['jlfs_header_offset'],16)+32
+        raw=plain[resource:resource+metadata['resource_bytes']]
+        entry=metadata['bankcb_entries'][0]
+        load=int(entry['address_field'],16)
+        data=raw[entry['file_offset']:entry['file_offset']+entry['bytes']]
+        def immediate(pc,register):
+            # q32s wide 立即数 mov:2 字节操作码(低 3 位=目的寄存器)+LE32。
+            self.assertEqual(data[pc-load]&0xf8,0xc0,'wide-immediate mov opcode changed')
+            self.assertEqual(data[pc-load]&7,register,'wide-immediate mov destination changed')
+            return struct.unpack_from('<I',data,pc-load+2)[0]
+        begin=immediate(0xa12,0)
+        p2m_pointer=immediate(0xa1a,5)
+        size=immediate(0xa26,0)
+        self.assertEqual((begin,p2m_pointer,size),(0x3d0c,0x7f4a,0x39f4),
+                         'the heap begin/size link-time immediates moved in p11_code.bin')
+        self.assertEqual(P11_HEAP_INFO_DERIVED,
+                         bytes((begin&0xff,begin>>8&0xff,size&0xff,size>>8&0xff)),
+                         'the experimental heap fixture must stay the derived candidate 0c3df439')
+        # SDK 锚点算术(p11_app.h 布局链,全部常量来自固定 SDK 头):
+        # P2M 消息区=0xF27F40(+0xa=0xF27F4A,与 P11_HEAP_INFO 一致);
+        # heap 末=P11_RAM_BASE|begin+size=0xF27700=VAD_DVAD_CONFIG_BEGIN。
+        p2m=0xF20000+0x8000-0x20-0x60-0x40
+        self.assertEqual(p2m+0xa,P11_HEAP_INFO,'P2M heap offsets disagree with the pinned SDK layout')
+        heap_end=(0xF20000|begin)+size
+        vad_dvad_begin=0xF20000+0x8000-0x20-0x60-0x40-0x20-160*2*6-20*4-20*4
+        self.assertEqual(vad_dvad_begin,0xF27700,'the pinned SDK layout arithmetic changed')
+        self.assertEqual(heap_end,vad_dvad_begin,
+                         'the derived size no longer abuts the SDK VAD config region')
+
 
 if __name__=='__main__':unittest.main()

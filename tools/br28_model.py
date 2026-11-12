@@ -1880,7 +1880,9 @@ class BR28Model:
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
-                'source':'explicit caller fixture; P11 init writes heap begin/size (P11 code references 0xa1c), value unproven'}
+                'source':'explicit caller fixture; P11 init writes heap begin/size '
+                         '(P11 code mov r5,#0x7f4a at 0xa1a with wide immediates 0x3d0c/0x39f4 '
+                         'at 0xa12/0xa26), value derived-not-measured'}
         if self.watchdog is not None:result['watchdog_projection']=self.watchdog.report()
         if self.efuse is not None:result['efuse_read_projection']=self.efuse.report()
         if self.gpcnt is not None:result['gpcnt_cleanup_projection']=self.gpcnt.report()

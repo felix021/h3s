@@ -10,7 +10,7 @@
 
 同一`power_driver.c.o`的`low_power_schedule`则向`P11_WDT.DUMMY=0xf2a808`写同样序列，再轮询同一状态位。这支持“通用域访问同步／硬件握手”的推测，不能据此宣称已经理解UART协议，或由P11应用软件回应。公开[AC701N PMU手册](https://doc.zh-jieli.com/KDocs/master/屏融合应用方案入口汇总/AC701N_PMU_介绍.html)说明P11／P33构成独立于主系统的PMU，但没有给出这一个状态位的名字、复位值、置位／清除机制或延迟。
 
-更晚的`power_init`才设置P11时钟，打开`flash/res/p11_code.bin`，把公共段复制到主核窗口`0xf20080`，设置P11 CLOCK.PWR_CON bit5和q32s PMU_CON bit0，等待PWR_CON bit5清除，再读取堆信息。这是另一阶段，不能把当前早期握手和固件装载启动混为一谈。
+更晚的`power_init`才设置P11时钟，打开`flash/res/p11_code.bin`，把公共段复制到主核窗口`0xf20080`，设置P11 CLOCK.PWR_CON bit5和q32s PMU_CON bit0，等待PWR_CON bit5清除，再读取堆信息。这是另一阶段，不能把当前早期握手和固件装载启动混为一谈。堆信息4字节（P2M消息区`+0xa`，`0xf27f4a..4d`）已从公共段静态推导出候选值：begin=`0x3d0c`、size=`0x39f4`（`0xa12/0xa26`宽立即数`c0ff 0c3d0000`/`c0ff f4390000`逐字节写入`0x7f4a..4d`，SDK `lp_ipc.h`/`p11_app.h`消费宏与`VAD_DVAD_CONFIG_BEGIN`布局算术互证）——推导而非测量（q32s不执行），只作显式实验配置使用。
 
 ## QCY 自己的 P11 固件已经在手
 
