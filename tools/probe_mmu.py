@@ -45,6 +45,25 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         if p11_ready_wdt_cases:
             # EFUSE 页缓存字快照(与 clock 场景同一形状):验证真实页读取器逐字节组装结果。
             h['snapshots'] += [(f'efuse_page{page}',address,4) for page,address in enumerate(OTP_CACHE)]
+            # 物理堆区映射(与 arch_startup `architecture_virtual_inputs` 的 REGIONS
+            # 第二项同款、同「映射为 UNINITIALIZED RAM」语义):allocator(pmalloc
+            # 0x12af74 已真实执行、写入硬件 PTE b3f6/b3f5 到 0x120000 起页表)后,
+            # app 堆管理器在 0x6065616 `[r6+4]=r2` 写 VA 0x49fff4——经 tail PTE
+            # 0xb3f5 翻译到物理 0x19faf4(=((tag&7fff)<<7)+offset 的 CPU RAM backing),
+            # 落在本区的可写 RAM 上。区范围=固件自己声明的堆描述符界
+            # (start=0x134500/end=0x19fb80,与 warm/cold mmu 场景的
+            # physical_heap_descriptor 钉死值一致),非拍定、非扩 RAM 隐藏错误。
+            # 区外(如 0x19fb80..0x19fe00 gap)继续严格 unmapped;只服务本支线,
+            # 默认关 legacy 场景逐字节不变。
+            h['regions'].append((0x134500,0x19fb80,'physical_heap'))
+            # IRQ 向量表区(arch_startup REGIONS 第一项,同「映射为 UNINITIALIZED
+            # RAM」语义):堆区映射+半字存储+rep 投影放行后,链继续到 0x6065d90
+            # `[r1+r0<<2]=r2`(r1=0x19fe00)写 0x19fe10(value_bytes e8ec1200=
+            # 0x0012ece8,即 IRQ 向量槽)——0x19fe00..0x1a0000 是 SDK 声明的 IRQ
+            # 向量表驻留 RAM,与 arch_startup 的 irq_vector_table 区完全一致;
+            # 范围=固件声明,非拍定、非扩 RAM。只服务本支线,默认关 legacy
+            # 场景逐字节不变。
+            h['regions'].append((0x19fe00,0x1a0000,'irq_vector_table'))
         # Actual pmalloc descriptor and V_MEM object: values written by guest,
         # never used as initial seeds to make initialization appear successful.
         h['snapshots'] += [('physical_heap_descriptor',0x12953c,24),('virtual_heap_descriptor',0x126f14,24)]
@@ -160,10 +179,22 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         # 自验指令形状+调用方返回地址 0x060006e2+循环继续 saved_r5+8<R6)。
         # 复用既有诊断、零新 fixture;只服务本支线,其余场景(均停在本读之前)不变。
         if p11_ready_wdt_cases:diag['opaque_pwm_read']=True
+        # 物理堆区映射后,allocator 写堆页(0x6065616)真实落盘,链继续到 0x6066cb4
+        # `h[r4+12]=r0`(普通半字存储 st.h)——上游 store 模型写前合并读旧 word 是
+        # 模型内部簿记读,未初始化 RAM(物理堆区)上会假停 upstream_store_bookkeeping_
+        # read。arch_startup 的 architecture_case 正是用既有诊断 `exact_subword_stores`
+        # (st.h/st.b 族按字节粒度直写、不合并读)越过同形状;按同一先例接进本支线,
+        # 复用既有诊断、零新机制,只服务本支线,默认关 legacy 场景逐字节不变。
+        if p11_ready_wdt_cases:diag['exact_subword_stores']=True
+        # 半字存储放行后,链继续到 0x6066cf4 `rep.i`(多指令体重复)——arch_startup
+        # 用既有诊断 `immediate_rep_projection`(单 store 体投影/兜底 multi-block
+        # gate)放行同形状;按同一先例接进本支线,复用既有诊断、零新机制,只服务
+        # 本支线,默认关 legacy 场景逐字节不变。
+        if p11_ready_wdt_cases:diag['immediate_rep_projection']=True
         r=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
                   diagnostics=diag,hardware=hardware,startup_loops=True,
                   budget=85000 if p11_status_cases or p11_ready_cases else
-                         (110000 if p11_ready_wdt_cases else 120000))
+                         (250000 if p11_ready_wdt_cases else 120000))
         results.append(r)
     h=profile(header,SENTINEL_A)
     regs=[0]*16;regs[0]=37;regs[1]=TIMER0
