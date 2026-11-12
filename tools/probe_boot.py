@@ -326,6 +326,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                          0x06068c8c:('li.s16',{'r':0,'n':16351})}
                 require(diagnostics and diagnostics.get('opaque_pin_read') and
                         allowed.get(self.pc)==(insn.id,raw),'opaque pin0 return would be consumed')
+            elif self.opaque_source=='mem_pwr_con_dead_read':
+                allowed={0x06067846:('ld.bu',{'d':0,'b':4,'n':0}),
+                         0x06067848:('pop.pc_rl',{'l':5})}
+                require(diagnostics and diagnostics.get('mem_pwr_con_projection') and
+                        allowed.get(self.pc)==(insn.id,raw),'opaque MEM_PWR_CON value would be consumed')
             else:
                 require(diagnostics and diagnostics.get('opaque_pin_read') and
                         ((self.pc==0x06067462 and insn.id=='pop.pc_rl' and raw=={'l':8}) or
@@ -1044,6 +1049,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.pc+=size;self.steps+=1
                 adapters['proven_dead_p33_read']+=1
                 return
+            if hardware is not None and diagnostics and diagnostics.get('mem_pwr_con_projection') and self.pc==0x06067844:
+                # power_init 的 P33 配置函数 0x60677a4 在 helper 返回后
+                # 0x606783e li r0=0xf2a62c→0x6067844 `ld.w r0=[r0]` 读回
+                # MEM_PWR_CON。读值被下一指令 0x6067846 `ld.bu r0=b[r4]`
+                # (r4=0xf27f8c M2P 字节)立即覆盖、从不消费——按 PWM/P33
+                # pin0 先例做 opaque 死读放行(证明值从不消费,不臆造读回值)。
+                require(insn.id=='ld.w' and raw=={'d':0,'b':0,'n':0} and self.R[0]==0xf2a62c and
+                        self.after_then is None,'discarded MEM_PWR_CON read shape changed')
+                hardware.observe_dead_mem_pwr_read()
+                self.R[0]=None;self.opaque_source='mem_pwr_con_dead_read';self.pc+=size;self.steps+=1
+                adapters['proven_dead_mem_pwr_con_read']+=1
+                return
             if diagnostics and diagnostics.get('irq_context') and self.pc in (diagnostics['entry_pc'],diagnostics['irq_pop_pc']):
                 push=self.pc!=diagnostics['irq_pop_pc']
                 require(insn.id==('push.srl' if push else 'pop.srl') and raw.get('m',raw.get('n'))==0x29
@@ -1170,6 +1187,19 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         else:raise Blocked('lp_timer_rmw_form_not_modeled',instruction_id=insn.id)
                         hardware.lp_timer_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['lp_timer_bit_rmw']+=1
+                        return
+                    if hardware.handles_mem_pwr_rmw(address):
+                        # P11_SYSTEM.MEM_PWR_CON(0xf2a62c)的位 RMW(opt-in,路 AS):
+                        # helper 0x60676ec 四次 `rmw.or.r |=r0`(置位内存电源位)与
+                        # 独立 power-off 例程 0x6067e82 的 `rmw.and.invr &=~r0`
+                        # (清位)。write-only 位记录(PartialWord,不经读回,与
+                        # cpu1_control kick/q32s PMU_CON/LRCT 位 RMW 同族);唯一
+                        # 读回(0x6067844 ld.w)是死读,由上面的 opaque 死读门放行。
+                        if insn.id=='rmw.or.r':kind='or';operand=self.R[op['s']]
+                        elif insn.id=='rmw.and.invr':kind='and';operand=(~self.R[op['s']])&0xffffffff
+                        else:raise Blocked('mem_pwr_con_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.mem_pwr_rmw(address,kind,operand)
+                        self.finish_exact(self.pc+size);adapters['mem_pwr_con_rmw']+=1
                         return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']

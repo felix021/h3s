@@ -6,7 +6,7 @@ from pathlib import Path
 import struct
 import unittest
 
-from br28_model import BR28Model, SFC_BASE, MMU_BASE, EMU_CON, PWR_CON, P11_HEAP_INFO
+from br28_model import BR28Model, SFC_BASE, MMU_BASE, EMU_CON, PWR_CON, P11_HEAP_INFO, P11_MEM_PWR_CON
 from br28_machine import DualCoreMachine
 from probe_boot import ENTRY, STACK_TOP, application, explore
 from probe_boot_handoff import RAM_CODE, SENTINEL_A, package_header, profile
@@ -1396,6 +1396,37 @@ class BusInstructionTests(unittest.TestCase):
         from br28_model import Timer0
         self.assertEqual(Timer0.STD12M_SOURCE,5)
         self.assertEqual(Timer0.STD12M_TICKS_PER_REF_TICK,(3,4))
+
+
+    def test_mem_pwr_con_rmw_and_dead_read_shapes(self):
+        # 0x606772a li r8=0xf2a62c → 0x6067730 `[r8+0] |= r0`(rmw.or.r)。boot
+        # 路径 b[0x129D1C]=0 → operand=r0=0。strict(无投影)停在 0xf2a62c 未建模
+        # 读;mem_pwr_con_projection 下按位记录、不经读回。
+        regs=[0]*16;regs[8]=P11_MEM_PWR_CON;regs[0]=0
+        strict=BR28Model()
+        result=explore(self.module,self.app,name='mem_pwr_rmw_strict',handoff=self.handoff(),
+            hardware=strict,diagnostics={'entry_pc':0x6067730,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2a62c')
+        projected=BR28Model(mem_pwr_con_projection=True)
+        result=explore(self.module,self.app,name='mem_pwr_rmw_projected',handoff=self.handoff(),
+            hardware=projected,diagnostics={'entry_pc':0x6067730,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['instruction_adapters'].get('mem_pwr_con_rmw'),1)
+        self.assertEqual(projected.report()['mem_pwr_con_projection']['rmw_writes'],1)
+        # 0x606783e li r0=0xf2a62c → 0x6067844 `r0=[r0]` 死读:值被 0x6067846
+        # `ld.bu r0=b[r4]` 立即覆盖、从不消费,按 PWM/P33 pin0 先例 opaque 死读
+        # 放行(不臆造读回值)。budget=1 只执行死读本身。
+        dead=BR28Model(mem_pwr_con_projection=True)
+        regs=[0]*16;regs[0]=P11_MEM_PWR_CON
+        result=explore(self.module,self.app,name='mem_pwr_dead_read',handoff=self.handoff(),
+            hardware=dead,diagnostics={'entry_pc':0x6067844,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                                       'mem_pwr_con_projection':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(result['instruction_adapters'].get('proven_dead_mem_pwr_con_read'),1)
+        self.assertEqual(dead.report()['mem_pwr_con_projection']['dead_reads'],1)
 
 
 if __name__=='__main__':unittest.main()
