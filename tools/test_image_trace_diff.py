@@ -175,8 +175,8 @@ def test_scenario_registry_shapes():
         'completed_steps': 289849, 'stop_pc': '0x60679ba',
         'kind': 'unmapped_memory', 'address': '0xf27f4b'}
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 304036, 'stop_pc': '0x60115ba',
-        'kind': 'unmapped_or_readonly_write', 'address': '0xfd3100'}
+        'completed_steps': 304317, 'stop_pc': '0x60116e6',
+        'kind': 'fd31_adc_con_readback_not_modeled', 'address': '0xfd3100'}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
