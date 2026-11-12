@@ -75,16 +75,26 @@ def main():
     # never the two ICU CON status words) then serves the ROM DcuWaitIdle
     # (0x1fdb8 -> 0xbb20) bit31 poll — no cache maintenance precedes it in this
     # prefix, so idle is the natural no-operation-in-flight read — and the
-    # prefix advances to the very next cache-idle boundary: IcuWaitIdle
-    # (0x1fdb4 -> 0xc792) reading the core0 ICU CON 0xffe400, which this route
-    # deliberately does not fixture and therefore stops on honestly.
+    # independent two-core ICU CON idle fixture (icu_idle_projection, only
+    # 0xffe400/0xffec00 bit31, never bit30 command-busy / enable-bit / region
+    # registers) serves the ROM IcuWaitIdle (0x1fdb4 -> 0xc792) bit31 poll the
+    # same way. After both cache-idle waits return, the RAM SFC suspend /
+    # cache-drop helper 0x12e1cc (= flash 0x60c79a4) resumes with its primary
+    # SFC suspend sequence: r0=0xfe0200 (SFC_BASE) then the CON bit31 poll read
+    # (ifs r1<0 loop, waiting for the SFC busy bit to clear) before the
+    # clear-bit0 / BAUD / RMW / enable sequence — that SFC read is the very
+    # next honest stop (sfc_read_bus is not wired in this branch line), and it
+    # is NOT a cache/ICU access: no bit30 command-busy or CON enable-bit write
+    # is consumed in this continuation, so the ICU idle fixture stays scoped to
+    # the bit31 poll it serves.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==108870 and w['stop_pc']=='0xc7a0' and
-            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xffe400',
+    require(w['completed_steps']==108882 and w['stop_pc']=='0x12e1e2' and
+            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xfe0200',
             'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections did not cross the KEY pair, '
             'page reads, WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/PLL1 '
-            'configuration and the JL_L1P idle poll to the ICU cache-wait boundary')
+            'configuration, the JL_L1P idle poll and the two-core ICU idle poll to the primary SFC '
+            'suspend read boundary')
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
@@ -158,9 +168,7 @@ def main():
     # JL_L1P CON idle-bit independent fixture: the DcuWaitIdle poll really read
     # the explicit synthesized 0x80000000 (bit31=1=idle, the only bit the poll
     # consumes), no other bit is claimed as silicon, and CON writes stay
-    # unmodeled. The two ICU CON status words (0xffe400/0xffec00) are untouched:
-    # this route stops honestly on the first of them (IcuWaitIdle core0 read),
-    # not fabricating ICU idle.
+    # unmodeled.
     l1p=w['peripherals']['l1p_idle_projection']
     require(l1p['idle_word_fixture']=='0x80000000' and
             l1p['idle_is_no_operation_in_flight_not_maintenance_completion'] is True and
@@ -168,6 +176,21 @@ def main():
             l1p['silicon_reset_value_verified'] is False and
             l1p['con_write_modeled'] is False,
             'JL_L1P CON idle fixture labels or synthesized word missing')
+    # Two-core ICU CON idle-bit independent fixture: the IcuWaitIdle poll really
+    # read the same explicit synthesized 0x80000000 on both 0xffe400 and
+    # 0xffec00, bit30 command-busy / enable-bit / region registers stay
+    # unmodeled, no other bit is claimed as silicon, and CON writes stay
+    # blocked. The continuation then stops honestly on the primary SFC suspend
+    # read 0xfe0200 (a different domain, not a cache/ICU access).
+    icu=w['peripherals']['icu_idle_projection']
+    require(icu['idle_word_fixture']=='0x80000000' and
+            icu['bit30_command_busy_not_modeled'] is True and
+            icu['idle_is_no_operation_in_flight_not_maintenance_completion'] is True and
+            icu['other_bits_claimed_as_silicon'] is False and
+            icu['silicon_reset_value_verified'] is False and
+            icu['con_write_modeled'] is False and
+            icu['sdk_bit31_evidence'].startswith('cache.h WAIT_ICACHE_IDLE'),
+            'two-core ICU CON idle fixture labels or synthesized word missing')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
             'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,

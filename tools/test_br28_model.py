@@ -15,6 +15,7 @@ from br28_model import MPUConfigurationProjection, GpioOutValue
 from br28_model import IcuInitializationProjection, ICU_BASES
 from br28_model import DcuCmoProjection, DCU_CMO_FLUSH, DCU_CMO_FLUSHINV
 from br28_model import L1PIdleProjection, L1P_CON
+from br28_model import IcuIdleProjection
 from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON, LRCT_NUM
 
 
@@ -1242,6 +1243,69 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(model.handles(VOLTAGE_CONFIG[0],4))
         self.assertTrue(model.handles(PLL1_CON3,4))
         # l1p 不吞掉这些地址(0xff0500 与它们都不同),读回仍走各自投影
+        self.assertEqual(model.read(SYS_DIV),0)
+
+    def test_icu_idle_fixture_reads_only_bit31_word_on_both_cores(self):
+        # 两核 ICU CON(0xffe400/0xffec00)空闲位读回独立 fixture:只覆盖两核
+        # CON bit31、不碰 bit30 命令忙/使能位/region 寄存器。合成字 0x80000000
+        # (bit31=1=空闲)是 IcuWaitIdle(0x1fdb4->0xc792)轮询消费的唯一位;其余
+        # 31 位不声称硅值;CON 写无观测形状一律拒绝;SDK cache.h 的
+        # WAIT_ICACHE_IDLE 钉死 bit31=icache 空闲位。
+        proj=IcuIdleProjection()
+        self.assertTrue(proj.handles(0xffe400) and proj.handles(0xffec00))
+        self.assertFalse(proj.handles(0xff0500) or proj.handles(0xffe410) or proj.handles(0xffe414))
+        self.assertEqual(proj.read(0xffe400),0x80000000)
+        self.assertEqual(proj.read(0xffec00),0x80000000)
+        with self.assertRaisesRegex(Blocked,'icu_con_write_not_modeled'):proj.write(0xffe400,0)
+        with self.assertRaisesRegex(Blocked,'icu_con_write_not_modeled'):proj.write(0xffec00,1)
+        report=proj.report()
+        self.assertEqual(report['idle_word_fixture'],'0x80000000')
+        self.assertTrue(report['bit30_command_busy_not_modeled'])
+        self.assertTrue(report['idle_is_no_operation_in_flight_not_maintenance_completion'])
+        self.assertFalse(report['other_bits_claimed_as_silicon'])
+        self.assertFalse(report['silicon_reset_value_verified'])
+        self.assertFalse(report['con_write_modeled'])
+        self.assertFalse(report['cache_contents_or_coherence_simulated'])
+        self.assertTrue(report['sdk_bit31_evidence'].startswith('cache.h WAIT_ICACHE_IDLE'))
+        with self.assertRaises(ValueError):IcuIdleProjection(idle_word=-1)
+        with self.assertRaises(ValueError):IcuIdleProjection(idle_word=0x100000000)
+
+    def test_icu_idle_projection_is_opt_in_and_scoped(self):
+        # 默认关:0xffe400/0xffec00 读保持 unmapped 严格停(108,870 前沿形状),
+        # 写是不支持的外设写;打开后只两核 CON 读回合成空闲字,0xffe410(命令口)
+        # /0xffe414(region)读仍严格停(不碰 bit30 命令忙/region)。
+        plain=BR28Model()
+        self.assertFalse(plain.handles(0xffe400,4) or plain.handles(0xffec00,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):plain.write(0xffe400,1)
+        model=BR28Model(icu_idle_projection=True)
+        self.assertTrue(model.handles(0xffe400,4) and model.handles(0xffec00,4))
+        self.assertFalse(model.handles(0xffe410,4) or model.handles(0xffe414,4))
+        self.assertEqual(model.read(0xffe400),0x80000000)
+        self.assertEqual(model.read(0xffec00),0x80000000)
+        with self.assertRaisesRegex(Blocked,'icu_con_write_not_modeled'):model.write(0xffe400,1)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):model.write(0xffe410,1)
+        self.assertEqual(model.report()['icu_idle_projection']['idle_word_fixture'],'0x80000000')
+
+    def test_icu_idle_fixture_does_not_disturb_l1p_and_branch_projections(self):
+        # l1p 空闲 fixture、五投影(core tick/cpu1_held/SYS_DIV/P33/PLL1)与两核 ICU
+        # 空闲 fixture 同模型叠加,各自事务互不扰动:icu_idle 只答 0xffe400/0xffec00
+        # 读,l1p 只答 0xff0500 读,都不影响 core tick CON/PMU_CON0/SYS_DIV/电压/
+        # PLL1 的读写路由。
+        model=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                        cpu1_held_projection=True,initial_cpu1_control=0,
+                        clock_divider_projection=True,voltage_configuration_projection=True,
+                        pll1_configuration_projection=True,
+                        initial_registers={SYS_DIV:0,PLL1_CON3:0,**dict.fromkeys(VOLTAGE_CONFIG,0)},
+                        l1p_idle_projection=True,icu_idle_projection=True)
+        self.assertEqual(model.read(0xffe400),0x80000000)
+        self.assertEqual(model.read(0xffec00),0x80000000)
+        self.assertEqual(model.read(L1P_CON),0x80000000)
+        self.assertTrue(model.handles(CORE_TICK_BASES[1],4))
+        self.assertTrue(model.handles(CPU1_CONTROL,4))
+        self.assertTrue(model.handles(SYS_DIV,4))
+        self.assertTrue(model.handles(VOLTAGE_CONFIG[0],4))
+        self.assertTrue(model.handles(PLL1_CON3,4))
+        # icu_idle 不吞掉这些地址(与 ICU 状态字都不同),读回仍走各自投影
         self.assertEqual(model.read(SYS_DIV),0)
 
     def test_cpu1_release_bit_survives_kick_bit_record(self):

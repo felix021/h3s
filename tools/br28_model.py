@@ -592,6 +592,53 @@ class L1PIdleProjection:
                 'cache_contents_or_coherence_simulated': False}
 
 
+class IcuIdleProjection:
+    """Two-core ICU CON (0xffe400/0xffec00) idle-bit read fixture.
+
+    The only access reached in the p11_ready_watchdog branch line is the ROM
+    IcuWaitIdle (0x1fdb4 -> 0xc792) poll: entry li r0=0 (core), li r1=0x3ff900
+    (=0xffe400>>2), goto the core-advance check, then per core csync,
+    r2 = r0<<11, ld.w.idxs r3=[r2+r1<<2] (address = 0xffe400 + core<<11),
+    bgts.ri r3,-1 (loop back on the same core while bit31==0, advance once
+    bit31==1), rts once both cores read idle. SDK cache.h pins bit31 as the
+    icache-idle bit: WAIT_ICACHE_IDLE = csync; while(!(q32DSP_icu(core_num())
+    ->CON & BIT(31))). bit30 (command busy) is NOT SDK-named; it is inferred
+    from the ROM command wait helper 0xbac0 (if (r2 & 0x40000000)!=0 goto -8)
+    shared by IcuInitial (0xbae0) and sfc_drop_cache (0xc726), and is
+    deliberately NOT modeled here -- this projection only serves the bit31
+    idle poll, leaving command busy / completion timing / enable-bit writes to
+    honest stops. The word is an explicit synthesized fixture: bit31=1 (idle)
+    is the only bit the poll consumes; the other 31 bits are supplied as 0 for
+    the numeric comparison to proceed but are NOT claimed as silicon values
+    (silicon reset value and bit semantics unverified). CON writes are not
+    observed in this prefix and stay blocked.
+    """
+    def __init__(self, idle_word=0x80000000):
+        if not isinstance(idle_word, int) or not 0 <= idle_word <= 0xffffffff:
+            raise ValueError('ICU CON idle fixture must be unsigned32')
+        self.idle_word = idle_word
+
+    def handles(self, address):
+        return address in ICU_BASES
+
+    def read(self, address):
+        return self.idle_word
+
+    def write(self, address, value):
+        raise Blocked('icu_con_write_not_modeled', address=hex(address), value=hex(value))
+
+    def report(self):
+        return {'idle_word_fixture': hex(self.idle_word),
+                'bit31_idle_polled_by': 'ROM IcuWaitIdle 0x1fdb4 -> 0xc792 (both cores)',
+                'sdk_bit31_evidence': 'cache.h WAIT_ICACHE_IDLE: csync; while(!(q32DSP_icu(core_num())->CON & BIT(31)))',
+                'bit30_command_busy_not_modeled': True,
+                'idle_is_no_operation_in_flight_not_maintenance_completion': True,
+                'other_bits_claimed_as_silicon': False,
+                'silicon_reset_value_verified': False,
+                'con_write_modeled': False,
+                'cache_contents_or_coherence_simulated': False}
+
+
 class CoreTickStopped:
     """Optional nominal counter; real IRQ entry and pending readback stay strict."""
     def __init__(self,initial_con=None,progress=None):
@@ -1503,6 +1550,7 @@ class BR28Model:
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,icu_region_projection=False,
                  dcu_cmo_projection=False,l1p_idle_projection=False,l1p_idle_word=0x80000000,
+                 icu_idle_projection=False,icu_idle_word=0x80000000,
                  software_irq_command_projection=False,
                  initial_software_irq_pending=None,software_irq_delivery_requests=False,
                  unmaskable_irq_projection=False,core_tick_delivery_requests=False):
@@ -1620,6 +1668,12 @@ class BR28Model:
         # JL_L1P CON(0xff0500)空闲位读回独立 fixture,只服务 0xff0500、不碰两核 ICU
         # 状态字(0xffe400/0xffec00)——与 cache_status_probe(覆盖三状态字)分离。
         self.l1p=L1PIdleProjection(l1p_idle_word) if l1p_idle_projection else None
+        # 两核 ICU CON(0xffe400/0xffec00)空闲位读回独立 fixture,只服务
+        # IcuWaitIdle 的 bit31 轮询、不碰 bit30 命令忙/使能位/region 寄存器——
+        # 与 icu_initialization_projection(命令+使能机制,bit30)和 cache_status_probe
+        # (覆盖三状态字)分离。合成字 0x80000000(bit31=1=空闲),其余位不声称硅值;
+        # CON 写无观测形状仍拒绝。
+        self.icu_idle=IcuIdleProjection(icu_idle_word) if icu_idle_projection else None
         self.sfc=SFCReadBus(initial_sfc_control) if sfc_read_bus else None
         if secondary_sfc_read_bus and not sfc_read_bus:raise ValueError('secondary SFC requires the primary SFC read bus')
         self.sfc_secondary=SFCReadBus(initial_secondary_sfc_control,SFC_SECONDARY_BASE) if secondary_sfc_read_bus else None
@@ -1662,6 +1716,7 @@ class BR28Model:
             (self.icu is not None and self.icu.handles(address)) or
             (self.dcu is not None and self.dcu.handles(address)) or
             (self.l1p is not None and self.l1p.handles(address)) or
+            (self.icu_idle is not None and self.icu_idle.handles(address)) or
             (self.multicore_enabled and (address==IPMASK+0x800 or IRQ_CONFIG+0x800<=address<IRQ_CONFIG+0x880)) or
             (self.multicore_enabled and address in CORE_PMU_CON1) or
             (self.debug is not None and self.debug.handles(address)) or
@@ -1827,6 +1882,7 @@ class BR28Model:
         if self.port_initialization_projection and address in USB_DISABLE_REGISTERS:
             raise Blocked('usb_controller_status_not_modeled',address=hex(address))
         if self.l1p is not None and self.l1p.handles(address):return self.l1p.read(address)
+        if self.icu_idle is not None and self.icu_idle.handles(address):return self.icu_idle.read(address)
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:
             if address not in self.cache_status_words:raise Blocked('unknown_cache_status_input',address=hex(address))
             return self.cache_status_words[address]
@@ -1893,6 +1949,7 @@ class BR28Model:
             self.record_write({'address':hex(address),'value':hex(value),'projection':'port initialization disable only'})
             return
         if self.l1p is not None and self.l1p.handles(address):self.l1p.write(address,value)
+        if self.icu_idle is not None and self.icu_idle.handles(address):self.icu_idle.write(address,value)
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:raise Blocked('cache_control_write_not_modeled',address=hex(address))
         if self.handles_gpcnt(address):raise Blocked('gpcnt_full_control_store_not_modeled')
         if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
@@ -2246,6 +2303,7 @@ class BR28Model:
         if self.icu is not None:result['icu_initialization_projection']=self.icu.report()
         if self.dcu is not None:result['dcu_cmo_projection']=self.dcu.report()
         if self.l1p is not None:result['l1p_idle_projection']=self.l1p.report()
+        if self.icu_idle is not None:result['icu_idle_projection']=self.icu_idle.report()
         if self.software_irq is not None:result['software_irq_commands']=self.software_irq.report()
         if self.debug is not None:result['debug_execution_projection']=self.debug.report()
         if self.reset is not None:result['reset_history_projection']=self.reset.report()
