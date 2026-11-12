@@ -1310,11 +1310,26 @@ class ResetHistoryProjection:
 
 
 class Timer0:
+    # source 5 的命名与时基(路 AH,三方证据):SDK 钉死参考头 gptimer_hw.h
+    # (sha256 e8e3e1c1…,data/dependencies.json hardware_reference_files)
+    # GPTIMER_CLK_SRC_STD12M=0b0101<<10(source 4=RC16M 与既有 16MHz 参考
+    # 验证互证);SDK 驱动 gptimer_hw_v2.c bitcode IR(lib_gptimer_src_std_clk
+    # ==12 → 寄存器源字段 5、频率 select 12 MHz、CON 组合 src<<10|div<<4);
+    # app 自己的换算表 0x60A2B5C[src]=MHz 只有 src5=12 非零、分频实际值表
+    # 0x60A2B9C 按字段索引与 SDK GPTIMER_CLK_DIV_* 宏序列逐项一致,配置函数
+    # 0x600079A 直接 RMW 原始字段(src<<10/div<<4/bit14=PND_CLR/CNT=0),
+    # PRD=12*10000/1-1=119999 与 0x6000898 wrapper 的 r0*1000us 需求闭环。
+    # 12 MHz 是固件自己的名义换算速率,非逐片硅测量;STD12M 的物理来源
+    # (PLL 分支或其他)未验证。
+    STD12M_SOURCE=5
+    STD12M_TICKS_PER_REF_TICK=(3,4)  # 12MHz 相对 RC16M(16MHz) 参考系 tick 的 p/q
+
     def __init__(self,allowed_sources=(4,)):
         self.allowed_sources=tuple(allowed_sources)
         self.con=self.cnt=self.prd=None
         self.pending=False
         self.remainder=0
+        self.source_remainder=0
         self.expirations=0
 
     def read(self,offset):
@@ -1335,7 +1350,9 @@ class Timer0:
             if value&0x4000:self.pending=False
             self.con=value&~0xc000
         elif offset==4:
-            self.cnt=value;self.remainder=0
+            # CNT 重写=计数器复位,分频相位与源换算相位一并归零(对 legacy
+            # source 4 无影响:source_remainder 恒 0)。
+            self.cnt=value;self.remainder=0;self.source_remainder=0
         elif offset==8:
             self.prd=value
         else:
@@ -1344,6 +1361,12 @@ class Timer0:
     def advance(self,source_ticks):
         if not isinstance(source_ticks,int) or source_ticks<0:raise ValueError('negative/noninteger timer progress')
         if self.con is None or self.con&3==0:return
+        if (self.con>>10)&15==self.STD12M_SOURCE:
+            # source_ticks 语义是 RC16M(16MHz)参考系的 tick;STD12M 计数按
+            # 12/16=3/4 换算,分数余数逐步累积(无每步取整误差)。legacy 下
+            # source 5 写已被 allowed_sources 拒绝,该分支只在 opt-in 后可达。
+            total=self.source_remainder+source_ticks*self.STD12M_TICKS_PER_REF_TICK[0]
+            source_ticks,self.source_remainder=divmod(total,self.STD12M_TICKS_PER_REF_TICK[1])
         divisor=DIVISORS[(self.con>>4)&15]
         ticks,self.remainder=divmod(self.remainder+source_ticks,divisor)
         # SDK GPTIMER_SYS_SET_PRD(x) writes x-1: period is PRD+1 ticks.
@@ -1378,7 +1401,7 @@ class IRQController:
 
 
 class BR28Model:
-    def __init__(self,*,source_ticks_per_step=4,initial_registers=None,
+    def __init__(self,*,source_ticks_per_step=4,timer0_std12m_source=False,initial_registers=None,
                  initial_irq_config=None,initial_ipmask=None,reset_inputs_inactive=False,
                  bus_lock_model=False,initial_lock_owner='unknown',gpio_model=False,
                  mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None,
@@ -1410,7 +1433,13 @@ class BR28Model:
         if oscillator_status_word is not None and (not isinstance(oscillator_status_word,int) or not 0<=oscillator_status_word<=0xffffffff):
             raise ValueError('oscillator status fixture must be unknown or unsigned32')
         self.timer_lsb_ticks_per_step=timer_lsb_ticks_per_step
-        self.timer=Timer0((4,) if timer_lsb_ticks_per_step is None else (0,4))
+        # timer0_std12m_source(opt-in):允许 CON 时钟源字段 5=STD12M(命名与
+        # 3/4 速率换算的证据见 Timer0 类注释)。默认关:source 5 写保持
+        # unsupported_timer_clock_source 严格停(301,097 前沿形状),legacy
+        # 场景报告不变。
+        timer_sources=(4,) if timer_lsb_ticks_per_step is None else (0,4)
+        if timer0_std12m_source:timer_sources=timer_sources+(Timer0.STD12M_SOURCE,)
+        self.timer=Timer0(timer_sources)
         self.irq=IRQController(initial_config=initial_irq_config,initial_ipmask=initial_ipmask,
                                unmaskable_irq_projection=unmaskable_irq_projection)
         self.multicore_enabled=False;self.current_core=0;self.irq1=None;self.core_icfg={}

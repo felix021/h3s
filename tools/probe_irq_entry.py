@@ -93,9 +93,19 @@ the second LRC period write (same M2P bytes 05/0a/28/78 re-derived from the
 (entry 0x606750c = the trim function itself, priority 10); inside the
 task-create path a timer bring-up wrapper (0x6000898 with r0=0xa) configures
 TIMER0 and the start RMW at 0x600087c merges CON to 0x1401 — clock source
-field 5, unmodeled (the timer model has only validated source 4) — so the
-chain stops honestly there at 301,097, before the second task creation
-(0x6067b12) and power_init's return. No new scheduler round trips occur.
+field 5, named STD12M (standard 12 MHz) from the pinned SDK gptimer_hw.h
+macro, the SDK driver IR (src<<10|div<<4, std_clk==12 -> field 5) and the
+app's own conversion/divider tables plus PRD=119999 closing the 10 ms
+period; the opt-in timer0_std12m_source lets it count at 3/4 of the RC16M
+reference tick (12 MHz nominal, not a per-chip measurement). The chain
+then really executes the first task-create return (handle halfword
+h[0x129D94]=1) and enters the second task creation at 0x6067b12 (entry
+0x6069538); after its create call returns, the else branch (gate byte
+b[r6+98] neither 0 nor 1) calls 0x6067668 with r0=2 and the LP-timer
+configuration RMW on P11_LPTMR0 CON2 (0xf2a908) hits the lp_timer
+write-only boundary at the first read, stopping honestly at 301,540 —
+lp_timer readback semantics is the next independent decision, and
+power_init's return still lies beyond. No new scheduler round trips occur.
 The crc_bankb_erased_fixture frontier itself stays pinned at 289,849
 without the fixture.
 """
@@ -259,7 +269,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
              insert_load_pair=False,halfword_pair=False,p11_power_init=False,
              heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,lrct_trim_done=False,
-             lrct_trim_result=None,flash_image_bytes=None,readonly=()):
+             lrct_trim_result=None,timer0_std12m=False,flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -413,6 +423,18 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['lrct_trim_result_value']=lrct_trim_result
         p11_snapshots=tuple(p11_snapshots)+(('lrc_trim_result_head',0x129D88,40),
                                             ('lrc_trim_result_block',0x129D88,0x64))
+    # timer0_std12m(路 AH):TIMER0 时钟源字段 5 的命名+速率放行。三方证据
+    # (SDK gptimer_hw.h 宏 GPTIMER_CLK_SRC_STD12M=0b0101<<10、SDK 驱动
+    # gptimer_hw_v2.c bitcode IR 的 src<<10|div<<4 与 std_clk==12→字段 5/
+    # 12MHz、app 自己的换算表 0x60A2B5C[src5]=12MHz+0x600079A 原始字段 RMW+
+    # PRD=12*10000/1-1=119999=10ms 闭环)见 br28_model.Timer0 类注释;source 5
+    # 是 STD12M(标准 12MHz),不是 LRC(那是字段 3)。计数到期事件从此有
+    # 时基依据:12MHz 相对 RC16M 参考系 3/4 速率,PRD+1=120000 tick=10ms。
+    # 12MHz 是固件名义换算速率,非逐片硅测量;到期后的 IRQ4 交付路径仍未
+    # 实现,pending 可见性(读回 bit15/中断判定)按既有语义显形。默认关:
+    # source 5 写保持 unsupported_timer_clock_source 严格停(301,097 形状)。
+    if timer0_std12m:
+        options['timer0_std12m_source']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -992,19 +1014,36 @@ def check(report,firmware):
     # 10,watch 钉死)——任务创建路径内部调定时器 wrapper 0x6000898(r0=0xa)
     # → 0x60008c0 定时器配置 → 0x60008c6 启动 → 定时器启动函数 0x6000828 内
     # 0x600087c `rmw.or.modimm [r3+0]|=1`:TIMER0 0xfd0400 CON 0x1400|=1 →
-    # 0x1401(mode=1 启动、时钟源字段 bits10-13=5)——模型 Timer0 只验证过
-    # source 4(LSB 配置下另含 0),source 5 无任何语义证据(trim 完成后把
-    # 系统计时器切到(校准后的)LRC 类时钟源是语境推断,非命名证据),诚实
-    # 停是新的独立决策点。**第二个任务创建 0x6067b12(入口 0x6069538)与
-    # power_init 返回(0x60120e0)都在停点之后未执行**(任务句柄半字存储
-    # 0x6067aec 亦未到,0x129D90 保持 bss 0);整个新前缀无新调度往返(交付
-    # 1+7+2、commands 20/acks 10 全部不变——本次任务创建路径先起定时器,
-    # 未走到调度 IPI)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x600087c' and
-            r['stop']=={'kind':'unsupported_timer_clock_source','value':'0x1401'},
-            'the heap-experimental scenario must stop at the TIMER0 start RMW with the '
-            'unmodeled clock source 5 after the trim-result probe value lets the chain cross')
-    require(r['completed_steps']==301097,'the heap experimental config changed its step count')
+    # 0x1401(mode=1 启动、时钟源字段 bits10-13=5)。路 AG 在此诚实停
+    # (unsupported_timer_clock_source)。路 AH 按三方证据命名放行:source 5
+    # =STD12M(标准 12MHz,SDK gptimer_hw.h 宏 GPTIMER_CLK_SRC_STD12M=
+    # 0b0101<<10、SDK 驱动 gptimer_hw_v2.c bitcode IR 的 src<<10|div<<4 与
+    # std_clk==12→字段 5、app 自己的换算表 0x60A2B5C[src5]=12MHz+0x600079A
+    # 原始字段 RMW+PRD=12*10000/1-1=119999=10ms 精确闭环;LRC 是字段 3,
+    # 「trim 后切校准 LRC」的语境推断被否定),opt-in timer0_std12m_source
+    # 起计数:12MHz 相对 RC16M 参考系 3/4 速率、PRD+1=120000 tick 到期。
+    # **第二个任务创建 0x6067b12(入口 0x6069538)已进入**:SDK 调用返回后
+    # 句柄存 0x6067b22 h[0x129D9C]=r0,读 b[r6+98] 门控字节(运行态非 0/1)
+    # 走 else 分支 0x6067b30 `r0=2` → 0x6067b32 call 0x6067668(LP 定时器
+    # 配置函数):0x606766c `r0=0xF2A908`(P11_LPTMR0 CON2)→ **0x6067672
+    # 读 CON2** → 清 bits0-3 → |=3 → 写回 → &=0xFFFFFF0F 的读-改-写序列,
+    # 第一读撞 lp_timer_init_projection 的 write-only 边界 → 诚实停
+    # lp_timer_register_readback_not_modeled(新独立决策点:lp_timer 读回
+    # 语义无证据,0xf2a908 此前只被整字写 0 一次,RMW 读回=「保留未写位」
+    # 需要新证据,三方案择一归下一路)。power_init 返回(0x60120e0)仍在
+    # 停点之后;第一个任务句柄半字 0x6067aec h[0x129D94]=1 已执行(旧记录
+    # 「0x129D90」系地址笔误,实测目标是 0x129D94)。TIMER0 精确计数:443
+    # 步 × 3 tick/步 = cnt 1329,con 0x1401,expirations 10 不变(首次到期
+    # 在启动后 40000 步,远未到);无新调度往返(交付 1+7+2、commands 20/
+    # acks 10 不变)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067672' and
+            r['stop']=={'kind':'lp_timer_register_readback_not_modeled','address':'0xf2a908'},
+            'the heap-experimental scenario must stop at the LP-timer CON2 readback RMW '
+            'inside the second task creation after the TIMER0 STD12M source is let through')
+    require(r['completed_steps']==301540,'the heap experimental config changed its step count')
+    timer=r['peripherals']['timer0']
+    require(timer=={'con':0x1401,'cnt':1329,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 443 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1018,18 +1057,19 @@ def check(report,firmware):
             'the M2P message-window bytes differ from the SDK-anchored LRC derivation and the '
             'executed M2P_RVD2PVDD_EN write')
     # LRC trim 结果块(0x129D88..0x129DEC):平均 [0x129D88]/计数字节(0x129D8C=1、
-    # 0x129D8E=1)/任务句柄半字 0x129D90(保持 bss 0——句柄存储 0x6067aec 在
-    # 停点之后未执行)/0x129D94 bss 零/raw [0x129D98]/20 项历史数组——探路值
-    # 的全部数值侧效应逐字节钉死(200000=0x00030D40),全窗 0x64 字节另以 SHA
-    # 钉死(窗口 >40 字节无逐字节串)。
+    # 0x129D8E=1)/第一个任务句柄半字 [0x129D94]=1(0x6067aec h[0x129D94]=r0
+    # 已执行,任务创建 SDK 调用返回句柄 1;旧记录写成 0x129D90 系地址笔误,
+    # 本路按实际快照修正)/raw [0x129D98]/20 项历史数组——探路值的全部数值
+    # 侧效应逐字节钉死(200000=0x00030D40),全窗 0x64 字节另以 SHA 钉死
+    # (窗口 >40 字节无逐字节串)。
     head=r['memory_snapshots']['lrc_trim_result_head']
-    require(head['bytes_with_unknowns']=='400d0300'+'01000100'+'00000000'*2+'400d0300'*6 and
+    require(head['bytes_with_unknowns']=='400d0300'+'01000100'+'00000000'+'01000000'+'400d0300'*6 and
             head['initialized_bytes']==40,
-            'the trim-result head must pin avg 200000, counter bytes 1/1, the bss-zero '
-            'task-handle halfword, raw 200000 and the seeded history head of 200000')
+            'the trim-result head must pin avg 200000, counter bytes 1/1, the first-task '
+            'handle halfword 1 at 0x129D94, raw 200000 and the seeded history head of 200000')
     block=r['memory_snapshots']['lrc_trim_result_block']
     require(block['initialized_bytes']==0x64 and
-            block['sha256']=='58949283b93bebcc2160c441408dc1b9fffdf2fc5f1a91185a2e15d807f70a97',
+            block['sha256']=='34684ecfe176785c838f443b98e79d99058ae2debd7fadf8af413174032e3adc',
             'the full trim-result block (raw + the twenty-entry history) must match the '
             'probe-value side effects byte-exactly')
     lp=r['peripherals']['lp_timer_init_projection']
@@ -1112,8 +1152,9 @@ def check(report,firmware):
         'The value is nevertheless DERIVED, NOT MEASURED: whether the q32s core really executes '
         'this init path at boot is unproven (known decode gaps), so every step past 289,849 in '
         'that scenario (including the pmu_task scheduler round trip, the M2P message-area writes, '
-        'the 300,240 LRCT NUM boundary, the trim-result probe consumption and the 301,097 '
-        'TIMER0-clock-source stop) '
+        'the 300,240 LRCT NUM boundary, the trim-result probe consumption, the 301,097 '
+        'TIMER0-clock-source stop and the 301,540 STD12M pass-through to the LP-timer '
+        'CON2 readback boundary) '
         'is a CONDITIONAL PASS that must not be reported as verified; without the fixture the '
         'crc_bankb_erased_fixture frontier stays pinned at 289,849 on the unmapped 0xf27f4b read')
     report['p11_m2p_message_window_assumption']=(
@@ -1177,13 +1218,38 @@ def check(report,firmware):
         'numeric side effect lands on the firmware\'s own constants (avg=raw=history=200000, '
         'M2P bytes unchanged). It is DERIVED ARITHMETIC, NOT A SILICON MEASUREMENT: the real NUM '
         'is a per-chip trim measurement, and passing this fixture only walks the disassembled '
-        'consumer chain; the conditional frontier then stops at 301,097 inside the first '
-        'task-creation call (0x6067ae0, entry 0x606750c = the trim function, priority 10): its '
-        'task-create path brings up a timer (wrapper 0x6000898 with r0=0xa -> configure '
-        '0x60008c0 -> start 0x60008c6) whose start RMW at 0x600087c merges TIMER0 CON to '
-        '0x1401 — clock source field 5, unmodeled (the model has only validated source 4, and '
-        '0 in the LSB configuration); the second task creation 0x6067b12 and power_init\'s '
-        'return lie beyond the stop')
+        'consumer chain')
+    report['timer0_std12m_source_assumption']=(
+        'the p11_heap_experimental_config scenario opts into timer0_std12m_source: TIMER0 CON '
+        'clock-source field 5 is NAMED STD12M (standard 12 MHz) on three independent pieces of '
+        'evidence. (1) The pinned SDK header gptimer_hw.h (hardware_reference_files, sha256 '
+        'e8e3e1c1…) defines GPTIMER_CLK_SRC_STD12M=0b0101<<10 alongside LRC=0b0011<<10 and '
+        'RC16M=0b0100<<10 — source 4 matching the already-validated 16 MHz reference cross-'
+        'checks the encoding. (2) The SDK driver gptimer_hw_v2.c (LLVM bitcode in cpu.a, '
+        'disassembled IR) maps lib_gptimer_src_std_clk==12 -> register source field 5 with '
+        'frequency select 12 MHz, assembles CON as src<<10 | div<<4, and its timer_div_table '
+        'is the log2 of the app divider values. (3) The app itself: conversion table '
+        '0x60A2B5C[src]=MHz has ONLY src5=12 nonzero; the divider table 0x60A2B9C matches the '
+        'SDK GPTIMER_CLK_DIV_* macro order item for item; the config function 0x600079A raw-'
+        'field RMWs (clear 0xFFFFC3FF, src<<10, div<<4, bit14 PND clear, CNT=0) and PRD=12*'
+        '10000/1-1=119999 close the 10 ms period against the wrapper 0x6000898 r0*1000us '
+        'demand — so the earlier "switches to the calibrated LRC" guess is REFUTED (LRC is '
+        'field 3). Timing: 12 MHz is the firmware\'s own nominal conversion rate, NOT a '
+        'per-chip silicon measurement; STD12M\'s physical origin is unverified. Counting '
+        'runs at 3/4 of the RC16M(16 MHz) reference tick (fractional remainder accumulated '
+        'per step), PRD+1=120000 ticks per 10 ms expiration, W1C bit14 and pending bit15 '
+        'keep the existing evidence-scoped contracts; the first expiration lies 40000 model '
+        'steps after the start RMW and Timer0 IRQ4 delivery remains unimplemented, so the '
+        'pending visibility surfaces through the existing semantics. The strict stop '
+        '(unsupported_timer_clock_source, the 301,097 frontier shape) stays the default; '
+        'with the source let through, the conditional frontier advances 443 steps to 301,540 '
+        'at 0x6067672: the second task creation 0x6067b12 (entry 0x6069538) has returned from '
+        'its SDK create call (handle stored 0x6067b22 h[0x129D9C]), and its else branch '
+        '(gate byte b[r6+98] neither 0 nor 1) calls 0x6067668 with r0=2, whose LP-timer '
+        'configuration RMW on P11_LPTMR0 CON2 (0xf2a908: read -> clear bits0-3 -> |=3 -> '
+        'write -> &=0xFFFFFF0F) hits the lp_timer_init_projection write-only boundary at '
+        'the first read — lp_timer readback semantics is the NEXT independent decision; '
+        'power_init\'s return (0x60120e0) still lies beyond the stop')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -1298,7 +1364,7 @@ def main():
                               halfword_pair=True,p11_power_init=True,
                               heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
                               lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
-                              flash_image_bytes=image)]}
+                              timer0_std12m=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

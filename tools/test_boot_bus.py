@@ -1348,5 +1348,54 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(heap_end,vad_dvad_begin,
                          'the derived size no longer abuts the SDK VAD config region')
 
+    def test_timer0_std12m_source_evidence_is_pinned_in_app_bytes(self):
+        # 路 AH 证据钉子:TIMER0 时钟源字段 5 的命名(STD12M,12MHz 名义)与
+        # 时基(PRD+1=10ms、3/4 参考速率)全部来自 app 自己的常量与指令,
+        # 逐字节/逐指令钉死,不依赖 SDK 缓存目录(黄金序列以字面常量记录,
+        # 来源=钉死参考 SDK gptimer_hw.h,sha256 e8e3e1c1…)。
+        # ①换算表 0x60A2B5C[src]=MHz:只有 src5=12 非零——固件在此前缀只
+        #   用 source 5,速率取 12MHz(0x60007f2 `r3=[表+r1<<2]` 装载)。
+        freq=0x60A2B5C-ENTRY
+        words=struct.unpack_from('<16I',self.app,freq)
+        self.assertEqual(words,(0,0,0,0,0,12,0,0,0,0,0,0,0,0,0,0),
+                         'the timer source-frequency table no longer pins src5=12MHz only')
+        # ②分频实际值表 0x60A2B9C 按字段值索引:黄金序列与 SDK
+        #   GPTIMER_CLK_DIV_1/4/16/64/2/8/32/128/…/32768 宏序列逐项一致
+        #   (SDK 驱动 gptimer_hw_v2.c 的 timer_div_table 存的是同一序列的
+        #   log2 值,互为 exp/log2 映射)。
+        divs=struct.unpack_from('<16I',self.app,0x60A2B9C-ENTRY)
+        self.assertEqual(divs,(1,4,16,64,2,8,32,128,256,1024,4096,16384,512,2048,8192,32768),
+                         'the timer divider table diverged from the SDK GPTIMER_CLK_DIV order')
+        self.assertEqual(tuple(1<<b for b in (0,2,4,6,1,3,5,7,8,10,12,14,9,11,13,15)),divs,
+                         'the SDK log2 divider encoding and the app linear table disagree')
+        # ③配置函数 0x600079A 的原始字段写入(真实指令解码):src<<10、
+        #   div<<4、bit14 PND_CLR、CNT=0、PRD=freq*prd/div-1——与 SDK 驱动
+        #   IR(src<<10|div<<4)和 gptimer_hw.h 宏三方同构。
+        table=self.module.table.load()
+        def decode(pc):
+            insn,raw,size=self.module.codec.decode(table,self.app[pc-ENTRY:pc-ENTRY+6])
+            return f"{insn.id} {self.module.codec.format(insn,raw)}"
+        self.assertEqual(decode(0x60007d0),'rmw.or.modimm [r5+0] |= 0x4000')
+        self.assertEqual(decode(0x60007d4),'st.w.modimm [r5+4] = 0x0')
+        self.assertEqual(decode(0x60007f2),'mul.rr r3 *= r4')
+        self.assertEqual(decode(0x60007f4),'div.u.rrr r3 = r3 / r6 (u)')
+        self.assertEqual(decode(0x60007f8),'add.ri.neg7 r3 += -1')
+        self.assertEqual(decode(0x60007fa),'st.w [r5+8] = r3')
+        self.assertEqual(decode(0x60007fc),'rmw.and.nmodimm [r5+0] &= 0xFFFFC3FF')
+        self.assertEqual(decode(0x6000808),'lsl.rri r1 = r1 << 10')
+        self.assertEqual(decode(0x600080a),'rmw.or.r [r5+0] |= r1')
+        self.assertEqual(decode(0x600080e),'lsl.rri r1 = r2 << 4')
+        self.assertEqual(decode(0x600081a),'rmw.or.r [r5+0] |= r0')
+        self.assertEqual(decode(0x600087c),'rmw.or.modimm [r3+0] |= 0x1')
+        # wrapper 0x6000898:prd 需求= r0*1000(us)——r0=0xa 时 10000us。
+        self.assertEqual(decode(0x60008b8),'mul.modimm.rri.p r1 = r0 * 0x3E8  #')
+        # ④PRD 算术闭环:12(MHz)*10000(us)/1(div)-1=119999,PRD+1=120000
+        #   tick=10ms;每 RC16M 参考 tick 3/4(STD12M 12MHz 相对 16MHz)。
+        self.assertEqual(12*10000//1-1,119999)
+        self.assertEqual((120000*3)//4,90000)  # 10ms = 90000 参考tick = 30000 模型步(4/步) 的对偶
+        from br28_model import Timer0
+        self.assertEqual(Timer0.STD12M_SOURCE,5)
+        self.assertEqual(Timer0.STD12M_TICKS_PER_REF_TICK,(3,4))
+
 
 if __name__=='__main__':unittest.main()

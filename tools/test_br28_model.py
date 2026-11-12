@@ -848,6 +848,65 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(h.handles(0xdeadbeef,4))
         with self.assertRaises(Blocked):h.write(0xdeadbeef,0)
 
+    def std12m(self):
+        # 真实 301,097 前沿的启动序列形状:配置函数先 PND_CLR/CNT=0/PRD=
+        # 119999(app 0x60007d0/d4/fa,PRD=12MHz*10000us/1-1),0x600087c |=1 启动。
+        t=Timer0((4,5))
+        t.write(0,0x4000);t.write(4,0);t.write(8,119999);t.write(0,0x1401)
+        return t
+
+    def test_std12m_source_requires_opt_in(self):
+        # 默认 allowed_sources=(4,):source 5 启动 RMW 保持 301,097 前沿的
+        # 严格停形状;BR28Model 默认/显式关的 allowed 集都不含 5。
+        t=Timer0();t.write(0,0x4000);t.write(4,0);t.write(8,119999)
+        with self.assertRaises(Blocked) as caught:t.write(0,0x1401)
+        self.assertEqual(caught.exception.details['kind'],'unsupported_timer_clock_source')
+        self.assertEqual(caught.exception.details['value'],'0x1401')
+        self.assertEqual(BR28Model().timer.allowed_sources,(4,))
+        self.assertEqual(BR28Model(timer0_std12m_source=True).timer.allowed_sources,(4,5))
+        self.assertEqual(BR28Model(timer_lsb_ticks_per_step=4,timer0_std12m_source=True)
+                         .timer.allowed_sources,(0,4,5))
+
+    def test_std12m_rate_three_quarters_of_reference(self):
+        # 12MHz 相对 RC16M(16MHz) 参考系 3/4:advance(4)(每模型步 4 个参考
+        # tick)恰 3 个 STD12M tick、无余数;120000 tick(=PRD+1=10ms)在
+        # 40000 步精确到期,差一步不到期。
+        t=self.std12m()
+        t.advance(4);self.assertEqual(t.read(4),3)
+        for _ in range(39998):t.advance(4)
+        self.assertEqual(t.read(4),119997);self.assertFalse(t.pending)
+        t.advance(4)
+        self.assertTrue(t.pending);self.assertEqual(t.read(4),0);self.assertEqual(t.expirations,1)
+        self.assertEqual(t.read(0),0x9401)  # pending bit15 显形,source 字段保留
+
+    def test_std12m_fractional_rate_accumulates(self):
+        # 非整除速率下分数余数逐步累积(参考 tick 数不是 4 的倍数时 3/4 的
+        # 小数部分不丢):advance(1) 三次=3 参考tick=2.25 个 STD12M tick,
+        # 前两次各 floor 后余数累积,第三次后 cnt=2。
+        t=self.std12m();t.prd=100
+        t.advance(1);self.assertEqual(t.read(4),0)  # 3/4 -> 0, source_remainder 3
+        t.advance(1);self.assertEqual(t.read(4),1)  # 6/4 -> 1, remainder 2
+        t.advance(1);self.assertEqual(t.read(4),2)  # 9/4 -> 2, remainder 1
+
+    def test_std12m_w1c_and_reload(self):
+        # bit14 W1C 清 pending(写值不落 CON)、PRD+1 周期重装:第二次到期
+        # 再走 40000 步。既有 source 4 的 W1C/重装契约在 source 5 下保持。
+        t=self.std12m()
+        for _ in range(40000):t.advance(4)
+        t.write(0,t.read(0)|0x4000)
+        self.assertFalse(t.pending);self.assertEqual(t.read(0),0x1401)
+        for _ in range(40000):t.advance(4)
+        self.assertTrue(t.pending);self.assertEqual(t.expirations,2)
+
+    def test_std12m_stop_clears_and_source4_math_unchanged(self):
+        # mode 位清零停表(advance 不再计数),source 4 定时器数学与既有
+        # 测试逐位一致(不受 source 5 扩展影响)。
+        t=self.std12m();t.write(0,t.con&~3)
+        t.advance(40000*4);self.assertEqual(t.read(4),0);self.assertFalse(t.pending)
+        t4=Timer0();t4.write(0,0x4000);t4.write(4,0);t4.write(8,2);t4.write(0,0x1011)
+        t4.advance(11);self.assertEqual(t4.read(4),2)
+        t4.advance(1);self.assertTrue(t4.pending);self.assertEqual(t4.read(4),0)
+
     def test_pin_reset_requires_external_input_assumption(self):
         with self.assertRaises(Blocked):BR28Model().write(PINR1,23)
         h=BR28Model(reset_inputs_inactive=True);h.write(PINR1,0);h.write(PINR1,23)
