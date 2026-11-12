@@ -679,6 +679,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         getattr(self,'active_context',None)=='core_tick_handler' and self.pc==0x60661e6):
                     machine.return_core_tick(self);adapters['conditional_core_tick_rti']+=1
                     return
+                if (insn.id=='rti' and machine.timer0_irq_rti and
+                        getattr(self,'active_context',None)=='timer0_irq_handler' and
+                        self.pc==machine.TIMER0_RTI_TAIL):
+                    # 路 BE:Timer0 IRQ4 handler 的对称一次性 RTI(尾锚 0x12ed0c,
+                    # gpio-irq 域六 handler 反汇编钉死;与软件 IRQ/core tick RTI
+                    # 同款反事实假设:PC=RETI、SP=USP、银行回写/ICFG 未认证)。
+                    machine.return_timer0_irq(self);adapters['conditional_timer0_irq_rti']+=1
+                    return
                 if self.pc==0x06066126:
                     require(insn.id=='pop.srl' and raw.get('m',raw.get('n'))==0x29 and self.task_frame_restore and
                             self.sp==self.task_frame_restore['base'],'first-task special frame lacks its selected stack')
@@ -754,6 +762,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 frames=dict((diagnostics or {}).get('software_irq_frames') or {})
                 core_tick_frames=(diagnostics or {}).get('core_tick_frames') or {}
                 frames.update(core_tick_frames)
+                timer0_frames=(diagnostics or {}).get('timer0_irq_frames') or {}
+                frames.update(timer0_frames)
                 if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and self.pc in frames:
                     shape=frames[self.pc];push=shape.endswith('push')
                     require(shape in ('psr_push','psr_pop','frame12_push','frame12_pop') and
@@ -779,6 +789,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         self.irq_psr=psr;self.flags=psr&15;self.sp+=12
                     self.pc+=size;self.steps+=1
                     if self.pc in core_tick_frames:adapters['core_tick_handler_frame']+=1
+                    elif self.pc-size in timer0_frames:
+                        # 路 BE:Timer0 IRQ4 handler 的 12B 特殊帧锚(与 core_tick
+                        # 的 next-pc 计数形状不同,按本锚计;不改既有计数)。
+                        adapters['timer0_irq_handler_frame']+=1
                     else:adapters['software_irq_handler_psr_frame' if shape.startswith('psr') else
                                  'software_irq_handler_context_frame']+=1
                     return
@@ -1698,6 +1712,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     raise ValueError('core tick delivery request without the opt-in machine entry projection')
                 machine.deliver_core_tick(request.details['core'])
                 row['core_tick_entry']=request.details
+            elif request.details['irq']==4:
+                # 路 BE:Timer0 pending→IRQ4 合格的交付请求(模型侧
+                # timer0_irq_delivery_requests 逐 pending 片至多抛一次)。
+                if not machine.timer0_irq_entry:
+                    raise ValueError('Timer0 IRQ4 delivery request without the opt-in machine entry projection')
+                machine.deliver_timer0_irq(request.details['core'])
+                row['timer0_irq_entry']=request.details
             else:
                 if not machine.software_irq_entry:
                     raise ValueError('delivery request without the opt-in machine entry projection')
