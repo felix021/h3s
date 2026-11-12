@@ -81,20 +81,25 @@ def main():
     # same way. After both cache-idle waits return, the RAM SFC suspend /
     # cache-drop helper 0x12e1cc (= flash 0x60c79a4) resumes with its primary
     # SFC suspend sequence: r0=0xfe0200 (SFC_BASE) then the CON bit31 poll read
-    # (ifs r1<0 loop, waiting for the SFC busy bit to clear) before the
-    # clear-bit0 / BAUD / RMW / enable sequence — that SFC read is the very
-    # next honest stop (sfc_read_bus is not wired in this branch line), and it
-    # is NOT a cache/ICU access: no bit30 command-busy or CON enable-bit write
-    # is consumed in this continuation, so the ICU idle fixture stays scoped to
-    # the bit31 poll it serves.
+    # (ifs r1<0 loop, waiting for the SFC busy bit to clear), then clear-bit0 /
+    # BAUD=r4 / RMW mode field / |=1 enable. This is the same read-back shape
+    # the reused SFCReadBus already models (CON read-back = last written word,
+    # bit31=0 in this synchronous no-queued-transaction model, BAUD while
+    # disabled arbitrary / while enabled only 0), so only scenario wiring is
+    # needed — no new fixture. The SFC part is NOT a cache/ICU access: no bit30
+    # command-busy or ICU CON enable-bit write is consumed, so the ICU idle
+    # fixture stays scoped to the bit31 poll it serves. After the helper
+    # returns, the next honest stop is the first dead PWM read 0xfd2964 (the
+    # arch_startup pwm_value_strict boundary; its opaque-value proof is a
+    # separate future decision, not an SFC-domain gap).
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==108882 and w['stop_pc']=='0x12e1e2' and
-            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xfe0200',
-            'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections did not cross the KEY pair, '
-            'page reads, WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/PLL1 '
-            'configuration, the JL_L1P idle poll and the two-core ICU idle poll to the primary SFC '
-            'suspend read boundary')
+    require(w['completed_steps']==109160 and w['stop_pc']=='0x6034a82' and
+            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xfd2964',
+            'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus did not '
+            'cross the KEY pair, page reads, WLA trim, counter cleanup, core tick store, peer PMU read, '
+            'SYS_DIV/P33/PLL1 configuration, the JL_L1P idle poll, the two-core ICU idle poll and the '
+            'full SFC suspend/reconfiguration sequence to the first dead PWM read boundary')
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
@@ -180,8 +185,9 @@ def main():
     # read the same explicit synthesized 0x80000000 on both 0xffe400 and
     # 0xffec00, bit30 command-busy / enable-bit / region registers stay
     # unmodeled, no other bit is claimed as silicon, and CON writes stay
-    # blocked. The continuation then stops honestly on the primary SFC suspend
-    # read 0xfe0200 (a different domain, not a cache/ICU access).
+    # blocked. The continuation then runs the SFC suspend/reconfiguration
+    # sequence via the reused SFC read bus (a different domain, not a cache/ICU
+    # access), and only then stops honestly on the first dead PWM read.
     icu=w['peripherals']['icu_idle_projection']
     require(icu['idle_word_fixture']=='0x80000000' and
             icu['bit30_command_busy_not_modeled'] is True and
@@ -191,6 +197,19 @@ def main():
             icu['con_write_modeled'] is False and
             icu['sdk_bit31_evidence'].startswith('cache.h WAIT_ICACHE_IDLE'),
             'two-core ICU CON idle fixture labels or synthesized word missing')
+    # The SFC suspend/cache-drop helper 0x12e1cc (= flash 0x60c79a4) runs its
+    # primary SFC sequence through the reused SFCReadBus (the same model the
+    # crc_bankb/arch_startup scenarios validate): CON bit31 poll reads the last
+    # written word (bit31=0 in this synchronous model, so the poll exits at the
+    # first read), then &=~1 disables, BAUD=r4(=1), the CON mode field
+    # bits[20:24]=r5 low nibble(=3) is RMW'd in, and |=1 re-enables — the exact
+    # final state arch_startup pins as (con=0x300001, baud=1, 4 writes).
+    sfc=w['peripherals']['sfc_read_bus']
+    require((sfc['con'],sfc['baud'],sfc['writes'],sfc['initial_control_fixture'])==(0x300001,1,4,1),
+            'the reused SFC read bus did not run the suspend/reconfiguration sequence to the '
+            'arch_startup-pinned final state')
+    require(sfc['busy_projection']=='zero outstanding transactions; synchronous decoded-Flash memory',
+            'SFC busy/read-back semantics label missing')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
             'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,
