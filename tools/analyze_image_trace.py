@@ -21,9 +21,19 @@ Honest comparison basis (what a "no divergence" result does and does not mean):
 - when both step traces are identical the two final reports (stop, registers,
   adapter counters, peripheral records, memory snapshots, machine events) are
   compared as a whole;
-- identical trajectories on this prefix only mean the prefix did not CONSUME
-  the image differences into any compared observable; it is NOT an equivalence
-  proof for the images (unconsumed hook sites stay unconsumed evidence).
+- after a CONTROL-flow divergence the tool searches for a step lag under which
+  the two control sequences realign for the whole remaining suffix up to both
+  stops (reconvergence): the realignment point, the zero-divergence lengths,
+  and every remaining signature-divergent span under that lag (register state
+  and guest RAM writes) are reported; if no lag realigns the traces that fact
+  is reported honestly;
+- every pair also reports stop-point parity (steps, per-core steps, full stop
+  records): reaching the same honest boundary under the shared stack;
+- identical or reconverging trajectories on this prefix only mean the prefix
+  did not CONSUME the image differences into any compared observable (or
+  consumed them into values that died without changing control flow); it is
+  NOT an equivalence proof for the images (unconsumed hook sites stay
+  unconsumed evidence).
 """
 import argparse
 import hashlib
@@ -55,8 +65,12 @@ COMPARISON_BASIS = (
     'peripheral-register writes are NOT in the per-step signature (no hook), so a divergence there only '
     'becomes visible through a later read-back into a GPR, a stop-point difference or the final report '
     'comparison; when both step traces are identical the two final reports are compared as a whole; '
-    'identical trajectories on this prefix only mean the prefix did not consume the image differences '
-    'into any compared observable, it is NOT an image-equivalence proof')
+    'after a control-flow divergence a step-lag search reports reconvergence (the realignment point, '
+    'zero-divergence lengths and every remaining signature-divergent span under the lag) or the honest '
+    'no-realignment fact; every pair reports stop-point parity; identical or reconverging trajectories '
+    'on this prefix only mean the prefix did not consume the image differences into any compared '
+    'observable (or consumed them into values that died without changing control flow), it is NOT an '
+    'image-equivalence proof')
 
 # 展示用已知差异语义对照(来源:verify_eq_candidate.audit 站点 + HANDOFF 镜像
 # 资源节)。只用于把首分歧 PC/差异游程标注成人类可读的语义,不参与判定。
@@ -73,7 +87,8 @@ KNOWN_SITE_LABELS = (
     (0x20, 0x24, 'resource table nested CRC word'),
     (0xE0A2C, 0xE0A30, 'stream.bin entry header CRC'),
     (0xE2344, 0xE23A2, 'stream.bin volume parameter region'),
-    (0xE2ED3, 0xE2ED6, 'config.dat index bytes'),
+    (0xE2ED3, 0xE2ED5, 'config.dat JLFS header CRC (recomputed over the flipped index field)'),
+    (0xE2EE1, 0xE2EE2, 'config.dat JLFS index field (b79 terminator 1, eq candidate 0: enumeration continues to the appended entry)'),
     (0xE3053, 0xE31C5, 'appended eq_toggle.bin (eq candidate only)'),
 )
 
@@ -328,7 +343,7 @@ def compare_pair(module, rom, header, name_a, image_a, name_b, image_b, budget):
             'budget': budget,
             'runs': {label_a: _run_summary(result_a), label_b: _run_summary(result_b)},
             'final_report_diffs': json_diff({k: v for k, v in result_a.items() if k != 'name'},
-                                            {k: v for k, v in result_b.items() if k != 'name'})}
+                                            {k: v for k, v in result_b.items() if k != 'name'}, limit=64)}
     first = None
     first_control = None
     for step, (row_a, row_b) in enumerate(zip(trace_a, trace_b)):
@@ -338,14 +353,17 @@ def compare_pair(module, rom, header, name_a, image_a, name_b, image_b, budget):
             first_control = step
             break
     pair['trace_lengths'] = {label_a: len(trace_a), label_b: len(trace_b)}
+    pair['parity'] = stop_parity(label_a, result_a, label_b, result_b)
     if first_control is not None:
         row_a, row_b = trace_a[first_control], trace_b[first_control]
         pair['first_control_divergence'] = {
             'step': first_control, 'core_a': row_a[0], 'core_b': row_b[0],
             'pc_a': hex(row_a[1]), 'next_pc_a': hex(row_a[2]),
             'pc_b': hex(row_b[1]), 'next_pc_b': hex(row_b[2]),
-            'note': 'after this step the two PC sequences are misaligned; per-step comparison beyond it '
-                    'only reports that the traces differ, not where'}
+            'registers': {str(j): {'a': row_a[4][j], 'b': row_b[4][j]}
+                          for j in range(16) if row_a[4][j] != row_b[4][j]},
+            'note': 'identical previous step, different next fetch PC: the diverged control flow started here'}
+        pair['reconvergence'] = find_reconvergence(trace_a, trace_b, first_control)
         prefix = trace_a[:first_control]
         pair['common_control_prefix'] = {'steps': first_control, 'summary': pc_run_length_summary(prefix)}
     else:
@@ -405,6 +423,108 @@ def _divergent_spans(trace_a, trace_b, limit=100000):
     return spans
 
 
+def _suffix_control_realign_start(trace_a, trace_b, lag, lo):
+    """Smallest s >= lo such that _control(trace_a[i]) == _control(trace_b[i+lag])
+    for EVERY i in [s, len(trace_a)); None when the tails never match or the
+    lag is out of range."""
+    if lo + lag < 0 or len(trace_a) + lag > len(trace_b):
+        return None
+    s = len(trace_a)
+    for i in range(len(trace_a) - 1, lo - 1, -1):
+        if _control(trace_a[i]) == _control(trace_b[i + lag]):
+            s = i
+        else:
+            break
+    return s if s < len(trace_a) else None
+
+
+def find_reconvergence(trace_a, trace_b, first_control):
+    """Reconvergence analysis after a control-flow divergence.
+
+    Tests the exact trace-length lag (len(b) - len(a)) — the only lag under
+    which the comparison covers BOTH traces all the way to their stops — and
+    asks whether the two CONTROL sequences (core, fetch PC, next PC) are
+    identical for the whole remaining suffix from some realignment step on:
+    i.e. the divergence inserted (or removed) a bounded number of steps ONCE
+    and the control flows never diverged again. On success the remaining
+    signature divergences (register state / guest RAM writes) are reported as
+    spans under that lag; on failure (permanent divergence, or more than one
+    insertion, or trailing unmatched steps) the honest no-realignment fact is
+    reported. Pure trace-array logic, no simulator state."""
+    lag = len(trace_b) - len(trace_a)
+    s = _suffix_control_realign_start(trace_a, trace_b, lag, first_control)
+    if s is not None:
+        if lag < 0:
+            # a is the longer run: the earliest suffix match can slide into a
+            # PERIODIC coincidence (e.g. every table-walk round runs the same
+            # code with the same step count, so a's diverged round control-
+            # matches b's previous round). The semantic realignment localizes
+            # the insertion: a's steps from first_control+|lag| on correspond
+            # to b's steps from first_control on. The scan result guarantees
+            # that candidate also suffix-matches whenever it is >= s.
+            semantic = first_control - lag
+            if semantic >= s:
+                s = semantic
+        detail = {'realigned': True, 'lag': lag,
+                  'realign_step_a': s, 'realign_step_b': s + lag,
+                  'immediate': s == first_control,
+                  'control_zero_divergence_steps': len(trace_a) - s,
+                  'aligned_to_common_stop': True,
+                  'method': ('the two PC sequences match step-for-step under the lag from the realignment '
+                             'point to both stops; the diverged run executed the extra steps as one bounded '
+                             'insertion and the control flows never diverged again')}
+        if lag > 0:
+            window = {'run': 'b', 'count': lag, 'steps': [first_control, s + lag]}
+            window['exact_position'] = s == first_control
+        else:
+            window = {'run': 'a', 'count': -lag, 'steps': [first_control, s]}
+            window['exact_position'] = s - first_control == -lag
+        if not window['exact_position']:
+            window['note'] = ('the extra step count is exact but its position inside the bracket is not '
+                              'localized (realignment was not at the divergence step)')
+        detail['extra_window'] = window
+        spans = _divergent_spans(trace_a[s:], [trace_b[i + lag] for i in range(s, len(trace_a))])
+        spans = [(s + lo, s + hi) for lo, hi in spans]
+        signature_realign = spans[-1][1] if spans else s
+        detail['signature_after_realignment'] = {
+            'divergent_span_count': len(spans),
+            'divergent_steps': sum(hi - lo for lo, hi in spans),
+            'spans_with_differing_writes': sum(
+                1 for lo, hi in spans if any(trace_a[i][5] != trace_b[i + lag][5] for i in range(lo, hi))),
+            'first': [{'steps': [lo, hi], 'pc_a': hex(trace_a[lo][1]),
+                       'registers': {str(j): [trace_a[lo][4][j], trace_b[lo + lag][4][j]]
+                                     for j in range(16) if trace_a[lo][4][j] != trace_b[lo + lag][4][j]},
+                       'writes_differ': any(trace_a[i][5] != trace_b[i + lag][5] for i in range(lo, hi))}
+                      for lo, hi in spans[:8]],
+            'full_signature_realign_step_a': signature_realign,
+            'full_signature_realign_step_b': signature_realign + lag,
+            'full_signature_zero_divergence_steps': len(trace_a) - signature_realign}
+        return detail
+    return {'realigned': False,
+            'note': ('no step lag realigns the two control sequences onto each other up to the stops; '
+                     'the traces stay control-diverged to the end and per-step comparison beyond the '
+                     'first control divergence only reports that the traces differ, not where')}
+
+
+def stop_parity(label_a, result_a, label_b, result_b):
+    """Explicit stop-point parity between the two runs of a pair: step counts,
+    per-core steps and the full stop records (kind/PC/address). Same-stop parity
+    under the shared stack is the 'both images reach the same honest boundary'
+    fact; it is NOT a behavioral-equivalence claim."""
+    stop_a, stop_b = result_a['stop'], result_b['stop']
+    cores_a = {k: v['steps'] for k, v in result_a['machine']['cores'].items()}
+    cores_b = {k: v['steps'] for k, v in result_b['machine']['cores'].items()}
+    return {'steps': {label_a: result_a['completed_steps'], label_b: result_b['completed_steps'],
+                      'delta': result_b['completed_steps'] - result_a['completed_steps']},
+            'per_core_steps': {label_a: cores_a, label_b: cores_b,
+                               'delta': {k: cores_b.get(k, 0) - cores_a.get(k, 0)
+                                         for k in sorted(set(cores_a) | set(cores_b))}},
+            'stop_pc': {'a': result_a['stop_pc'], 'b': result_b['stop_pc'],
+                        'same': result_a['stop_pc'] == result_b['stop_pc']},
+            'stop_record': {'a': stop_a, 'b': stop_b, 'identical': stop_a == stop_b},
+            'same_stop': stop_a == stop_b and result_a['stop_pc'] == result_b['stop_pc']}
+
+
 def _run_summary(result):
     return {'completed_steps': result['completed_steps'], 'stop_pc': result['stop_pc'],
             'stop': result['stop'],
@@ -420,8 +540,8 @@ def check_self(report):
     """钉死 2026-11-12 首轮 official vs tested_b79 结论(全量到前沿停点):
 
     - 双方 289,849 步、同停点 0x60679ba(power_init 内堆信息 0xf27f4b unmapped 读)、
-      per-core 步数一致;
-    - 控制流(核调度/PC/next_pc)289,849 步零分歧;
+      per-core 步数一致;stop parity 字段(步数/每核/完整停点记录)全同;
+    - 控制流(核调度/PC/next_pc)289,849 步零分歧,无 reconvergence 字段;
     - 首个签名分歧 step 155,390 @ 0x6010b16(rep 4 32 资源表头拷贝体首装载
       r2=b[r1++]),r2=0x28 vs 0x88——两镜像资源表头 CRC 字节差异(plain 0x0
       首字节)被运输进寄存器;共 30 个分歧段,每段都是表头 CRC 字节经 rep 拷贝
@@ -439,7 +559,15 @@ def check_self(report):
         require(run['completed_steps'] == 289849 and run['stop_pc'] == '0x60679ba' and
                 run['stop']['kind'] == 'unmapped_memory' and run['per_core_steps'] == {'0': 278683, '1': 11181},
                 f'{label} run changed: the shared-stack prefix is no longer the pinned frontier stop')
-    require('first_control_divergence' not in p, 'official vs tested_b79 control flow diverged')
+    parity = p['parity']
+    require(parity['steps'] == {'official': 289849, 'tested_b79': 289849, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x60679ba', 'b': '0x60679ba', 'same': True} and
+            parity['stop_record']['identical'] and parity['same_stop'] and
+            parity['stop_record']['a']['address'] == '0xf27f4b' and
+            parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
+            'the official-vs-b79 stop parity changed: both images must reach the identical frontier stop')
+    require('first_control_divergence' not in p and 'reconvergence' not in p,
+            'official vs tested_b79 control flow diverged')
     first = p['first_divergence']
     require(first and first['step'] == 155390 and first['pc_a'] == '0x6010b16' and
             first['classification'] == 'register_state_divergence' and
