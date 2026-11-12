@@ -1,7 +1,7 @@
 """Offline peripheral contract tests; never opens a device or needs private ROM."""
 import unittest
 
-from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0, PartialWord, MMU, MMU_BASE, P11AccessProbe, PMU_STA, PWR_CON, P11_HEAP_INFO
+from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0, PartialWord, MMU, MMU_BASE, P11AccessProbe, P11_UART_CON2, PMU_STA, PWR_CON, P11_HEAP_INFO
 from probe_boot import Blocked
 from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
@@ -319,6 +319,24 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(Blocked):h.read(WDT_KEY)
         w=WatchdogProjection((1,1))
         with self.assertRaisesRegex(Blocked,'unsupported_watchdog'):self.wdt_command(w,0x32)  # code18 undefined
+
+    def test_p11_ready_and_watchdog_projections_stack_on_one_model(self):
+        # p11_ready_watchdog 场景的模型层形状:两个独立 opt-in 叠加,互不制造对方的效应。
+        # 双 KEY 对里的第一个 KEY 正是 83,094 严格停点写下的字(0x048c159d,wdt.c.o 钉死)。
+        def ready_watchdog_model(progress):
+            return BR28Model(p11_access_probe=True,p11_status=0,p11_pmu_ready_projection=True,
+                             watchdog_projection=True,watchdog_progress=progress)
+        strict=ready_watchdog_model(None)
+        for key in WatchdogProjection.keys:strict.write(WDT_KEY,key)
+        with self.assertRaisesRegex(Blocked,'clock_unknown'):strict.write(WDT_CON,0x2e)  # 漏 progress 仍严格
+        h=ready_watchdog_model((0,1))
+        for value in P11AccessProbe.sequence:h.write(P11_UART_CON2,value)
+        self.assertEqual(h.read(PMU_STA),1)  # 基线0 + 条件 bit0=1,与全字 status=1 场景同读数
+        for key in (0x048c159d,0x26ae37bf):h.write(WDT_KEY,key)  # app 0x600a57c/0x600a582 观测形状
+        h.write(WDT_CON,0x2e)
+        for _ in range(100):h.advance(0)
+        self.assertEqual((h.read(WDT_CON),h.watchdog.elapsed),(0x2e,0))
+        self.assertEqual(h.p11.sequences,1)  # watchdog 命令不干扰 P11 序列状态
 
     def test_p11_access_writes_never_invent_an_acknowledgement(self):
         for status in (None,0,1):

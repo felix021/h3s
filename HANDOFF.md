@@ -76,6 +76,7 @@
   - **PMU_STA bit0 就绪响应**（`p11_pmu_ready_projection`，需 p11_access_probe + 显式基线 fixture 0/1）：复用 P11AccessProbe 的 CON2 序列门控（序列完成后才有意义），在基线 fixture 字之上仅强制 bit0=1；与固定外部状态 fixture（None/0/1）机制并存且独立开关，report 里 `pmu_ready_response_projection` 单独标注「置位机制未证实，证据等级低于 bit5」。不提供基线时读回仍严格 unknown。
   - **堆信息 4 字节显式 fixture**（`p11_heap_info_bytes`，调用方传入 4 字节）：0xf27f4a..4d（P2M 消息区 +0xa，P11 init 写入 heap begin/size，值未证实）按字节粒度读回 fixture；未提供时走普通存储路径严格停（unmapped/uninitialized）。字节粒度经 `BR28Model.read_bytes` 新钩子进 `Memory.read`，不影响字对齐外设分发。
   - 验证：PMU_STA bit0 在真实 p11_init 前缀验证（`p11_ready_response` 场景越过 0x606890c 轮询，83,094 步停在 0x600a57c 0xf2a804，与全字 status=1 场景逐字段一致）；PWR_CON bit5 **尚未在真实前缀观察到**（app_core 路径前沿未到 power_init），以真实指令最小场景（test_boot_bus：0x60679a0 请求 RMW 严格/投影对照、0x60679ae/b0 轮询仅在请求后退出、0x60679ba/be 堆装载 fixture/严格停）+ 模型单测验证。
+  - **watchdog 投影叠加接线（路 W，sim-wdt）**：83,094 停点的写值 value_bytes `9d158c04` 就是 LE 的 0x048c159d = `WatchdogProjection.keys[0]`（wdt.c.o 钉死双 KEY 的第一个）——反汇编 app 0x600a570-0x600a582 证实：`r0=0x048c159d`、`r1=0xf2a804` 后，0x600a57c 是并行对（ALU 半 `r0+=0x22222222` 算出第二 KEY 0x26ae37bf ∥ store 半按旧寄存器写第一 KEY），0x600a582 普通写第二 KEY，随后经 ROM veneer（0x12bd32/0x12b55c/0x12b5b0）走 SDK CON 命令序列。**既有 watchdog 投影已完整覆盖该形状，无需模型改动，仅场景接线**：probe_mmu 新增 `p11_ready_wdt_cases` 组（`p11_ready_watchdog` 场景 = ready 投影 + watchdog 投影 + stopped clock progress (0,1)，watch_pc 0x603518c），probe_p11_status 第三段 run 断言：越过 KEY 对与 5 条 CON 命令（command_values [0,0,0,14,46]，末条 0x2e=时间码 14/16s+enable，elapsed 恒 0）、wdt_init 真实返回（0x603518c 执行）、PMU_STA 读数仍 1 且 ready 投影标注齐全，停在与 watchdog 六场景完全相同的 EFUSE 边界 **83,417 步 @ 0x6034fba**（app 0x6034fb0 起 EFUSE 读函数的并行对 `r8=0 ∥ [0xf2c2c0]=page<<6` 写，page=0；下一停点需既有 opt-in `efuse_read_projection`+显式 fixture 字，AGENTS 明令 EFUSE 页是显式合成 fixture 不得臆造——归下一路决策）。legacy 不变性：p11 三场景 + p11_ready_response + watchdog 六场景报告逐字节不变（stash 基线对照 diff 为空）；单测 test_br28_model 新增组合例（两投影同模型叠加、漏 progress 的 enable 仍严格停 clock_unknown、watchdog 命令不扰动 P11 序列状态）。
 - **可重复中断交付**（sim-redeliver）：暂停点 1 最小闭环。新 opt-in 开关 `repeat_irq_delivery`（默认关，legacy 5 场景字节不变）：打开后同核「无在途 handler（active_context 非 software_irq_handler/core_tick_handler）即可交付」，handler RTI 返回后允许再次交付；在途仍拒绝（不嵌套）；向量槽/银行假设每次完整重走，pending 只能由固件真实重新 pend（0xffe1a0/0xffe9a0 |=，全部 pend 走 0x60644a6 通用 IPI 请求函数）。单测覆盖 交付→RTI→再交付、在途拒绝、默认关一次性。新场景 irq125_repeat_inert 钉住 repeat 惰性。~~真实第二次交付在其当时前沿（154,263）内不可达~~ **已闭合（162,898 前沿）**：SFC 窗口组放行后 CPU0 第二次 pend irq125 到 CPU1（见「已实现」窗口组与释放位修正两条），交付还需要 cpu1_control 释放位 bit0 修正（kick 位记录不再污染交付资格）。
 
 ## codex (gpt-6-astra) 参谋结论（2026-11-11 二次，已核实）
@@ -122,7 +123,7 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 
 开关：`p11_lpwr_response_projection`（需 reset_history 投影提供基线字）、`p11_pmu_ready_projection`（需 p11_access_probe + p11_status 基线）、`p11_heap_info_bytes`。全部默认关闭，legacy 场景字节不变。
 
-**P11 剩余缺口**（推进到 power_init 内部时仍会依次停）：q32s PMU_CON 0xf2a0c0 释放 RMW/bit0（0x60679a4/a8，读回未知）、CLK_CON0 0xf2a414=1、SYS_DIV 0xf2a410=0、P2M_CLK 0xf2a618=8（纯写寄存器，可投影为可写）、p11_code.bin 公共段拷贝到 0xf20080（需 P11 RAM 可写 region）；p11_status_one/ready 前缀的下一停点是 0x600a57c 写 WDT_KEY 0xf2a804（需 watchdog 投影）。这些均未建模，留给下一路。
+**P11 剩余缺口**（推进到 power_init 内部时仍会依次停）：q32s PMU_CON 0xf2a0c0 释放 RMW/bit0（0x60679a4/a8，读回未知）、CLK_CON0 0xf2a414=1、SYS_DIV 0xf2a410=0、P2M_CLK 0xf2a618=8（纯写寄存器，可投影为可写）、p11_code.bin 公共段拷贝到 0xf20080（需 P11 RAM 可写 region）；~~p11_status_one/ready 前缀的下一停点是 0x600a57c 写 WDT_KEY 0xf2a804（需 watchdog 投影）~~ 已闭合（路 W：既有 watchdog 投影按场景接线叠加，见「已实现」p11_ready_watchdog 条目，支线新前沿 83,417 @ 0x6034fba EFUSE_CON0 写）。其余均未建模，留给下一路。
 
 ## 当前并行任务
 
@@ -148,6 +149,7 @@ P11 侧交叉印证：q32s `0xafa` `bitclr r2,0x5` 清 bit5 **已证实且无条
 - 路 T（sim-inspair）：「装载+组装」并行对处理完成——反汇编钉死形状与寄存器交叉（A 半 insert 读 r4、B 半 ld 写 r4，交叉确认存在、方向与 run3 捕获相反无硬件证据），opt-in `exact_parallel_insert_load` 按对称旧值假设执行+unknown 字节运输传播（普通 insert.rrii 一并补齐），前沿 235,942（app 0x6060df4 读 bank B window+0x200 结构区头字节 0x61de1e3 unmapped）。
 - 路 U（sim-win200）：bank B 第四数据窗（window+0x200 记录头）处理完成——window 区消费者全图（cfg_tool/btif 后端 ops 表五类成员，各有界/门控，无系统性枚举）+记录头 8 字节 fixture（同一 `erased_bankb` 开关第四窗，按结构整体声明），旧前沿 236,415（app 0x6011370 `mov.rr.p` 半字存储的簿记读 uninitialized_memory，指令模型边界）。
 - 路 V（sim-hpair，本次）：mov.rr.p∥st.h 半字 pair 存储簿记读处理完成——st.d.sp.l 先例的 gate 形状扩展，但按字节粒度写（半字部分写、邻字节保持）且必须独立子开关 `exact_parallel_halfword_stores`（该形状在 legacy 前缀已执行过、并入主开关会改既有报告），前沿 236,602（app_core 进入 power_init 后 0x60678f4 `rmw.and.r` 读未建模寄存器 0xf2c05c，app/ROM 仅此一处引用，新决策点）。
+- 路 W（sim-wdt，本次）：watchdog 投影接进 p11_ready_response 前缀完成——83,094 停点写值即 wdt.c.o 钉死双 KEY 的第一个（LE 9d158c04=0x048c159d），既有投影已覆盖形状、纯场景接线（probe_mmu `p11_ready_wdt_cases` 组 + probe_p11_status 第三段断言），支线前沿 83,094→83,417（0x6034fba EFUSE_CON0 写，与 watchdog 六场景同停点），见「已实现」P11 投影条目的 watchdog 叠加子条目。
 
 ## 镜像资源级映射（sim-resmap，2026-11-11 完成）
 

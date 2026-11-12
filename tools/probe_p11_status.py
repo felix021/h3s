@@ -41,11 +41,38 @@ def main():
             projection['pmu_ready_response_projection']['bit0_set_mechanism_proven'] is False and
             projection['pmu_ready_response_projection']['causal_link_to_pwr_con_bit5_assumed'] is False,
             'ready response projection labels or trigger evidence missing')
+    # The 83,094 strict boundary writes value_bytes 9d158c04, the little-endian
+    # form of 0x048c159d = keys[0] of the double KEY pair pinned from wdt.c.o
+    # (app 0x600a570-0x600a582: the parallel pair stores the old r0 = first key
+    # while its ALU half computes the second, then a plain store writes it), so
+    # the existing watchdog projection already covers the observed shape and only
+    # scenario wiring is needed to cross it.
+    require(int.from_bytes(bytes.fromhex(one['stop']['value_bytes']),'little')==0x048c159d,
+            'strict boundary word is not the pinned first watchdog key')
+    # Opt-in watchdog projection stacked on the ready response: the same prefix
+    # must cross the KEY pair and the SDK CON command sequence (wdt_init at
+    # 0x6035180 really returns) and stop at the next strict boundary, the
+    # EFUSE CON0 write reached by the watchdog scenarios at the same step count.
+    wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
+    w=wdt[0]
+    require(w['completed_steps']==83417 and w['stop_pc']=='0x6034fba' and
+            w['stop']['kind']=='unmapped_or_readonly_write' and w['stop']['address']=='0xf2c2c0',
+            'watchdog projection did not cross the KEY pair to the EFUSE boundary')
+    wp=w['peripherals']['watchdog_projection']
+    require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
+            list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
+            'watchdog command sequence differs from the SDK projection scenarios')
+    p11w=w['peripherals']['p11_access_counterfactual']
+    require(p11w['fixed_external_status_hypothesis']==0 and p11w['status_polls']==1 and
+            p11w['pmu_ready_response_projection']['bit0_set_mechanism_proven'] is False,
+            'ready response labels missing in the watchdog scenario')
+    require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x603518c' for x in w['milestones']),
+            'wdt_init did not really return to caller')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
             'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,
-            'pmu_ready_response_projection_passed':True,'scenarios':results,
-            'ready_response_scenarios':ready}
+            'pmu_ready_response_projection_passed':True,'p11_ready_watchdog_passed':True,'scenarios':results,
+            'ready_response_scenarios':ready,'ready_watchdog_scenarios':wdt}
     args.report.parent.mkdir(parents=True,exist_ok=True);args.report.write_text(json.dumps(report,indent=2)+'\n')
 
 
