@@ -12,6 +12,7 @@ from probe_boot_boundaries import UPDATE, update_block
 from probe_boot_handoff import HANDOFF, SENTINEL_A, package_header, profile
 from probe_clock_startup import OTP_CACHE, OTP_DEFAULT
 from probe_pi32v2 import PIN, ROOT, require, upstream
+from probe_platform_startup import NO_WAKE, POR_HISTORY
 
 
 def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_ready_cases=False,
@@ -191,7 +192,31 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # this branch line; default-off legacy scenarios are byte-identical.
             port_initialization_projection=p11_ready_wdt_cases,
             port_input_words={SDTAP_CON:0,PSRAM_CON0:0} if p11_ready_wdt_cases else None,
-            initial_usb_io_word=0 if p11_ready_wdt_cases else None)
+            initial_usb_io_word=0 if p11_ready_wdt_cases else None,
+            # Reset/wake history projection per the platform_startup
+            # reset_por_no_wake precedent (same switch + the same explicit
+            # synthetic POR/no-wake full-word fixtures, physical_history_
+            # measured=False): after msys_io_init returns and the P33 pin0
+            # helper's two opaque P3_PORT_SEL0 dead reads, the caller
+            # 0x06035306 calls the main reset/wake init function 0x6068c80,
+            # whose first access is the reset-configuration RMW
+            # `[r2+32] &= 0xFFFFFFEF` on 0xf2a628 (P11_SYSTEM offset 10, SDK
+            # p11_sfr.h P11_SYS_CON1) — a default RESET_CONFIG_MASKS entry.
+            # The whole function (0x6068c80..0x6068e30, disassembly-pinned)
+            # touches only default-table addresses: config RMWs 0xf2a628/
+            # 0xf2c054/0xf2c128, flag cycles + bit6 clear commands on
+            # 0xfd0004/0xf2a400/0xf2c0c0, reason reads 0xfd0000/0xf2a404/
+            # 0xf2c048, wake pending/source reads 0xf2a60c/0xf2c158/
+            # 0xf2c15c/0xf2c194/0xf2c198/0xf2c2a0/0xf2d2a0 and the zero-value
+            # wake-clear no-ops 0xf2c160/0xf2c164/0xf2d248 — the exact access
+            # set platform_startup's reset_por_no_wake scenario already ran
+            # to its 0x06035334 milestone (28 projection accesses) and the
+            # probe_irq_entry chain runs again with the same POR_HISTORY
+            # defaults. No power_init extras are needed (this branch never
+            # reaches power_init's P33 config accesses). Only this branch
+            # line; default-off legacy scenarios are byte-identical.
+            reset_history_projection=p11_ready_wdt_cases,
+            reset_history_words={**POR_HISTORY,**NO_WAKE} if p11_ready_wdt_cases else None)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
@@ -199,6 +224,10 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         if watchdog_cases or p11_ready_wdt_cases:diag['watch_pcs'].append(0x0603518c)
         if p11_ready_wdt_cases:diag['watch_pcs'].append(0x060351cc)  # WLA_CON8 条件读入口(旧支线停点)
         if p11_ready_wdt_cases:diag['watch_pcs'].append(0x06066174)  # CPU1 core tick CON=0 写(旧支线停点)
+        # 主 reset/wake init 函数 0x6068c80 真实返回后的 caller 里程碑
+        # (platform_startup reset_por_no_wake 场景的同一 stop 钉点):证明整个
+        # 复位/唤醒配置链(0x6068c80..0x6068e30)在复位投影下真实执行完毕。
+        if p11_ready_wdt_cases:diag['watch_pcs'].append(0x06035334)
         # 首读 PWM 死读(0x6034a82,arch_startup `pwm_value_strict` 同边界)按
         # arch_startup 的 proven-dead-PWM-read 证明接线:四读(0xfd2964/74/84/94
         # = JL_MCPWM CH0..CH3_CON0)值从不被数值消费(读后 r0 仅被循环头 mov.rr
