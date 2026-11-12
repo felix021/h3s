@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 from br28_machine import DualCoreMachine, CoreStall
 from br28_model import BR28Model, CPU1_CONTROL, IRQ_CONFIG, IPMASK, IcuInitializationProjection, CORE_PMU_CON1
-from br28_model import SoftwareIrqCommands
-from probe_boot import ENTRY, STACK_TOP, explore, Blocked
+from br28_model import SoftwareIrqCommands, CORE_TICK_BASES
+from probe_boot import ENTRY, STACK_TOP, explore, Blocked, IrqDeliveryRequest
 from probe_pi32v2 import upstream
 
 DATA=0x124f00
@@ -25,6 +25,7 @@ class RepeatIrqDeliveryCpu:
         self.last_explicit_ssp=0x123840
         self.bootstrap_context=None;self.after_then=None;self.repeat=None
         self.active_context=None
+        self.icfg=0x300;self.icfg_known=True  # gates8/9 开(sti 后),事件时钟探查用
 
 
 class SlotMem:
@@ -95,6 +96,130 @@ class RepeatIrqDeliveryTests(unittest.TestCase):
     def test_repeat_flag_requires_an_entry_projection(self):
         with self.assertRaisesRegex(ValueError,'entry projection'):
             DualCoreMachine(repeat_irq_delivery=True)
+
+
+class EventClockTests(unittest.TestCase):
+    """暂停点2事件时钟最小契约(docs/event-clock.md):推进条件/同刻顺序/屏蔽与唤醒/无事件诚实停。"""
+
+    def machine(self,**extra):
+        return DualCoreMachine(software_irq_entry=True,core_tick_entry=True,
+                               idle_wait_projection=True,event_clock_projection=True,**extra)
+
+    def hardware(self,core0_irq3_nibble=3,core1_irq3_nibble=0,progress=(1,1)):
+        h=BR28Model(cpu1_held_projection=True,initial_cpu1_control=0,
+                    initial_irq_config=[core0_irq3_nibble<<12]+[0]*31,initial_ipmask=0,
+                    core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                    core_tick_progress=progress,
+                    core_tick_delivery_requests=True,
+                    software_irq_command_projection=True,
+                    initial_software_irq_pending=(0,0),
+                    software_irq_delivery_requests=True)
+        h.enable_multicore([core1_irq3_nibble<<12]+[0]*31,0,lambda value:None)
+        h.write(CPU1_CONTROL,1)  # 真实释放路径;irq125(word15)两核默认屏蔽
+        h.core_icfg={0:0x300,1:0x300}
+        return h
+
+    def arm_tick(self,h,core,cnt,prd):
+        h.write(CORE_TICK_BASES[core]+8,prd)
+        h.write(CORE_TICK_BASES[core]+4,cnt)
+        h.write(CORE_TICK_BASES[core],1)
+
+    def parked_machine(self,h):
+        m=self.machine()
+        cpu0=RepeatIrqDeliveryCpu({0x19fe0c:0x60661a4},pc=0x6066318,core_id=0)
+        cpu1=RepeatIrqDeliveryCpu({0x19fe0c:0x60661a4},pc=0x12c5ca,core_id=1)
+        m.cores={0:cpu0,1:cpu1};m.hardware=h;m.idle_wait_cores={0}
+        return m,cpu0,cpu1
+
+    def test_advances_exactly_to_the_nearest_tick_overflow_and_wakes_only_the_eligible_core(self):
+        h=self.hardware()  # core0 irq3 合格(nibble3=使能+优先级1),core1 irq3 屏蔽
+        m,cpu0,cpu1=self.parked_machine(h)
+        self.arm_tick(h,0,4,5)  # 2 步后溢出
+        self.arm_tick(h,1,2,5)  # 4 步后才溢出(且被屏蔽,不唤醒)
+        before=h.counts['completed_model_steps']
+        with self.assertRaises(IrqDeliveryRequest) as ctx:
+            m.enter_idle_wait(cpu1)  # 最后一个核 IDLE:事件时钟接管
+        self.assertEqual(ctx.exception.details,{'core':0,'irq':3})
+        m.deliver_core_tick(0)  # probe_boot 主循环在 IrqDeliveryRequest 后做的同一步
+        self.assertEqual(h.counts['completed_model_steps']-before,2)  # 时间恰好推进到溢出点
+        self.assertEqual(m.event_clock_advances,2)
+        self.assertEqual((cpu0.pc,cpu0.active_context),(0x60661a4,'core_tick_handler'))
+        self.assertEqual(m.idle_wait_cores,{1})  # 只有被唤醒的核离开 IDLE
+        self.assertEqual(h.core_ticks[1].cnt,3)  # 被屏蔽核照常计数:2+第1步;第2步的交付请求先于它的计数抛出
+        self.assertFalse(h.core_ticks[1].pending)
+
+    def test_same_tick_overflows_wake_in_core_order(self):
+        h=self.hardware(core1_irq3_nibble=3)  # 两核都合格
+        m,cpu0,cpu1=self.parked_machine(h)
+        self.arm_tick(h,0,4,5);self.arm_tick(h,1,4,5)  # 同刻溢出
+        with self.assertRaises(IrqDeliveryRequest) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details,{'core':0,'irq':3})  # 扫描序:低核号先(请求抛出时 core1 计数尚未推进)
+        m.deliver_core_tick(0)
+        with self.assertRaises(IrqDeliveryRequest) as second:
+            h.advance(0x300)  # 下一虚拟步:core1 的溢出按同一扫描序请求交付
+        self.assertEqual(second.exception.details,{'core':1,'irq':3})
+        m.deliver_core_tick(1)
+        self.assertEqual([d['core'] for d in m.core_tick_deliveries],[0,1])
+        self.assertEqual(m.idle_wait_cores,set())
+        self.assertTrue(h.core_ticks[0].pending and h.core_ticks[1].pending)
+
+    def test_masked_pending_never_wakes_and_time_moves_to_the_next_tick_event(self):
+        h=self.hardware()
+        m,cpu0,cpu1=self.parked_machine(h)
+        h.software_irq.command(0xffe9a0,2)  # 固件真实命令路径置位 core1 pending(irq125,两核 word15=0 屏蔽)
+        self.arm_tick(h,0,3,5)  # 3 步后溢出(合格)
+        with self.assertRaises(IrqDeliveryRequest) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details,{'core':0,'irq':3})
+        m.deliver_core_tick(0)
+        self.assertEqual(m.software_irq_deliveries,[])  # 被屏蔽的 pending 从不唤醒
+        self.assertEqual((h.software_irq.pending[1].known,h.software_irq.pending[1].value),(15,2))  # pending 保持置位
+        self.assertEqual(m.event_clock_advances,3)
+
+    def test_masked_pending_alone_is_not_an_event_and_stops_honestly(self):
+        h=self.hardware()  # 不武装任何 tick
+        m,cpu0,cpu1=self.parked_machine(h)
+        h.software_irq.command(0xffe9a0,2)
+        with self.assertRaises(Blocked) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details['kind'],'all_cores_idle_waiting')
+        self.assertIn('no modeled event',ctx.exception.details['note'])
+        self.assertEqual(m.event_clock_advances,1)  # 单步探查确认 pending 被屏蔽,不是事件
+        self.assertEqual(m.software_irq_deliveries,[])
+        self.assertEqual(h.software_irq.pending[1].value,2)
+
+    def test_stops_honestly_with_zero_advances_when_nothing_can_fire(self):
+        h=self.hardware()  # 无 tick 在计数,pending 全 0
+        m,cpu0,cpu1=self.parked_machine(h)
+        with self.assertRaises(Blocked) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details['kind'],'all_cores_idle_waiting')
+        self.assertIn('no modeled event',ctx.exception.details['note'])
+        self.assertEqual(m.event_clock_advances,0)
+        self.assertEqual(m.idle_wait_cores,{0,1})
+
+    def test_default_off_keeps_the_exact_legacy_stop_shape(self):
+        m=DualCoreMachine(software_irq_entry=True,idle_wait_projection=True)  # 事件时钟默认关
+        h=self.hardware()
+        m.hardware=h
+        cpu0=RepeatIrqDeliveryCpu({},pc=0x6066318,core_id=0)
+        cpu1=RepeatIrqDeliveryCpu({},pc=0x12c5ca,core_id=1)
+        m.cores={0:cpu0,1:cpu1};m.idle_wait_cores={0}
+        self.arm_tick(h,0,4,5)  # 即使有未来溢出,默认也立即停(时间停死=legacy 行为)
+        with self.assertRaises(Blocked) as ctx:
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(ctx.exception.details,{'kind':'all_cores_idle_waiting','idle_cores':[0,1]})
+        self.assertEqual(h.counts['completed_model_steps'],0)
+
+    def test_event_clock_flag_requires_the_idle_wait_projection(self):
+        with self.assertRaisesRegex(ValueError,'IDLE wait projection'):
+            DualCoreMachine(event_clock_projection=True)
+
+    def test_report_section_is_opt_in(self):
+        self.assertIn('event_clock_projection',self.machine().report())
+        self.assertNotIn('event_clock_projection',
+                         DualCoreMachine(software_irq_entry=True,idle_wait_projection=True).report())
 
 
 class MachineTests(unittest.TestCase):

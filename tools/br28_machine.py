@@ -2,7 +2,7 @@
 
 CPU1 runs actual ROM/vector code. No ready flag or task selection injection.
 """
-from probe_boot import Blocked
+from probe_boot import Blocked, IrqDeliveryRequest
 from probe_pi32v2 import require
 from br28_unknown import UnknownWord, word
 from br28_icfg import IcfgState, IcfgValue
@@ -46,7 +46,8 @@ class DualCoreMachine:
                  first_task_return_hypothesis=None,defer_core1_first_idle=False,software_irq_entry=False,
                  software_irq_entry_banks=False,idle_wait_projection=False,software_irq_rti=False,
                  core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False,
-                 gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False):
+                 gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False,
+                 event_clock_projection=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -94,6 +95,12 @@ class DualCoreMachine:
         require(isinstance(repeat_irq_delivery,bool),'repeat IRQ delivery projection is opt-in boolean')
         require(not repeat_irq_delivery or software_irq_entry or core_tick_entry,
                 'repeat IRQ delivery requires an enabled IRQ entry projection')
+        # codex 暂停点2最小契约(docs/event-clock.md):全核 IDLE 时虚拟时间推进到
+        # 最近的已建模事件再按 IRQ 资格唤醒;默认关闭,保持立即诚实停。
+        require(isinstance(event_clock_projection,bool),'event clock projection is opt-in boolean')
+        require(not event_clock_projection or idle_wait_projection,
+                'event clock projection requires the IDLE wait projection')
+        self.event_clock_projection=event_clock_projection;self.event_clock_advances=0
         # codex 暂停点1最小闭环:同核 handler RTI 返回后允许再次交付(见
         # deliver_software_irq/deliver_core_tick);默认关闭时保持每核一次性限制。
         self.repeat_irq_delivery=repeat_irq_delivery
@@ -162,7 +169,78 @@ class DualCoreMachine:
         self.idle_wait_cores.add(cpu.core_id)
         self.record_event({'kind':'core_idle_wait_entered','core':cpu.core_id,'pc':hex(cpu.pc)})
         if set(self.cores)<=self.idle_wait_cores:
-            raise Blocked('all_cores_idle_waiting',idle_cores=sorted(self.idle_wait_cores))
+            # 暂停点2事件时钟契约(docs/event-clock.md):默认(关)仍是立即诚实停;
+            # opt-in 后全核 IDLE 时虚拟时间按已建模定时器计数推进到最近的已建模
+            # 事件,再按 IRQ 资格经既有交付投影唤醒,没有可唤醒事件时诚实停。
+            if not self.event_clock_projection:
+                raise Blocked('all_cores_idle_waiting',idle_cores=sorted(self.idle_wait_cores))
+            self.advance_event_clock(cpu)
+
+    def core_tick_wake_horizon(self):
+        """距离最近一次可能唤醒的 core tick 溢出还有多少虚拟模型步。
+
+        只消费已建模计数器的既有状态(con/cnt/prd/progress),不发明事件源。
+        未使能、零速率(progress=0,使能但永不到期)或已停在溢出态等 handler
+        ACK(unresolved_overflow)的计数器不贡献期限。None=没有任何在计数的
+        core tick。溢出步数=ceil((PRD+1-CNT)/progress),与 CoreTickStopped
+        每步 CNT+=progress 的计数语义精确一致。
+        """
+        horizon=None
+        for timer in getattr(self.hardware,'core_ticks',None) or ():
+            if timer.con is None or not timer.con&1:continue
+            if timer.unresolved_overflow:continue
+            if not timer.progress:continue
+            steps=-(-(timer.prd+1-timer.cnt)//timer.progress)
+            horizon=steps if horizon is None else min(horizon,steps)
+        return horizon
+
+    def software_pending_probe_needed(self):
+        """已置位(或未知)的软件 pending 位是否存在,需要一步探查能否唤醒。
+
+        不在机器侧复刻 IRQController.eligible:探查步就是一次普通的
+        hardware.advance(),合格 pending 会在该步立即请求交付,被屏蔽的
+        pending 不唤醒。全核 IDLE 期间只有固件写才能改变屏蔽状态,故每个
+        idle 停留段至多探查一次。
+        """
+        commands=getattr(self.hardware,'software_irq',None)
+        if commands is None:return False
+        for core,word in enumerate(commands.pending):
+            if core not in self.cores:continue
+            for bit in range(4):
+                if word.known&(1<<bit) and not word.value&(1<<bit):continue
+                return True
+        return False
+
+    def advance_event_clock(self,cpu):
+        """事件时钟推进(暂停点2最小契约,全文见 docs/event-clock.md)。
+
+        全核 IDLE 时逐模型步调用与运行循环完全相同的 hardware.advance()
+        (无批量跳步、无特殊时间路径),直到三者之一:
+        - 已建模事件请求交付(IrqDeliveryRequest)——原样抛出,由既有交付投影
+          (deliver_core_tick/deliver_software_irq)唤醒目标核;
+        - advance 的严格停(Blocked)原样传播(诚实边界);
+        - 没有任何可唤醒事件:诚实停 all_cores_idle_waiting。
+        被屏蔽的溢出/pending 不唤醒:溢出计数器停在溢出态(pending 已置位),
+        时间继续走向下一事件。同刻事件顺序=advance 的固定扫描序(先 tick
+        IRQ3 按核号,再软件 pending 按核号/IRQ 号),可复现性优先,非硅时序声称。
+        """
+        self.record_event({'kind':'event_clock_engaged','idle_cores':sorted(self.idle_wait_cores),
+                           'clock_source':'modeled timer counters only'})
+        probe_pending=self.software_pending_probe_needed()
+        while True:
+            horizon=self.core_tick_wake_horizon()
+            if horizon is None:
+                if not probe_pending:
+                    raise Blocked('all_cores_idle_waiting',idle_cores=sorted(self.idle_wait_cores),
+                                  note='no modeled event can fire: no counting core tick and '
+                                       'no set software pending bit (masked pending never wakes)')
+                horizon=1;probe_pending=False  # 单步探查:置位 pending 若合格立即请求交付
+            for _ in range(horizon):
+                self.event_clock_advances+=1
+                self.hardware.advance(cpu.icfg)  # IrqDeliveryRequest/Blocked 原样传播
+            # 本轮走满仍未交付:期限最近的溢出被屏蔽,计数器已停在溢出态
+            # (unresolved_overflow),下一轮只剩其他在计数的事件;至多两个
+            # 计数器,循环必然终止。
 
     def wake_cpu1_control_kick(self):
         """PMU_CON0 kick RMW 唤醒挂起的 CPU1(显式投影,cpu1_control_kick_wake)。
@@ -483,6 +561,18 @@ class DualCoreMachine:
                     'nesting_implemented':False,
                     'full_revalidation_per_delivery':True,
                     'pending_rearmed_only_by_real_firmware_command':True}} if self.repeat_irq_delivery else {}),
+                **({'event_clock_projection':{'enabled':True,
+                    'virtual_model_steps_advanced':self.event_clock_advances,
+                    'clock_source':'modeled timer counters only (two per-core core ticks, PRD+1 SDK formula); '
+                                   'no wall-clock or nanosecond conversion claimed',
+                    'advance_mechanism':'per-model-step hardware.advance(), identical to the run loop; no bulk counter jumps',
+                    'wake_paths':'existing delivery projections only (deliver_core_tick/deliver_software_irq); no new event sources invented',
+                    'same_tick_order':'advance() scan order: core-tick IRQ3 by core number, then software pending by core then IRQ number; '
+                                      'reproducibility only, not a silicon timing claim',
+                    'masked_pending_or_overflow_wakes':False,
+                    'honest_stop_without_events':'all_cores_idle_waiting (note: no modeled event can fire)',
+                    'timer0_irq4_is_not_a_wake_event':'IRQ4 delivery is not implemented; its pending still stops strictly if reached during advancement',
+                    'silicon_timing_or_interrupt_latency_modeled':False}} if self.event_clock_projection else {}),
                 'bootstrap_mode_or_ssp_writeback_certified':False,'launches':self.launches,'stalls':self.stalls,
                 'unknown_task_gprs_preserved':self.unknown_task_gprs,
                 **({'first_task_return_comparison':{'hypothesis':self.first_task_return_hypothesis,

@@ -50,6 +50,7 @@ def main():
     run(sys.executable,'tools/analyze_icfg_status.py','--report','analysis/local-checks/icfg-status.json')
     run(sys.executable,'tools/analyze_image_resources.py','--report','analysis/local-checks/image-resources.json')
     run(sys.executable,'tools/probe_debug_startup.py','--report','analysis/local-checks/debug-startup.json')
+    run(sys.executable,'tools/probe_event_clock.py','--report','analysis/local-checks/event-clock.json')
     if args.rom:
         run(sys.executable,'tools/probe_rom.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/rom-execution.json')
         run(sys.executable,'tools/probe_hardware.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/hardware-execution.json')
