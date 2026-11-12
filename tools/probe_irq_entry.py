@@ -269,7 +269,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
              insert_load_pair=False,halfword_pair=False,p11_power_init=False,
              heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,lrct_trim_done=False,
-             lrct_trim_result=None,timer0_std12m=False,flash_image_bytes=None,readonly=()):
+             lrct_trim_result=None,timer0_std12m=False,lp_timer_con_readback=False,
+             flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -435,6 +436,17 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # source 5 写保持 unsupported_timer_clock_source 严格停(301,097 形状)。
     if timer0_std12m:
         options['timer0_std12m_source']=True
+    # lp_timer_con_readback:opt-in 的 P11_LPTMR0 CON 读回=最后写值投影(路 AL)。
+    # 证据:SDK p11_sfr.h 把 P11_LPTMR_TypeDef 的 CON0/CON1/CON2/PRD/RSC 都标
+    # __RW(仅 CNT __RO)——即这些配置字可读回,读回=最后写值与 SFC 时钟 +8
+    # (0xfd1c08,divider_readback_is_last_write)先例同族;只返回固件已写过的
+    # 最后值,从不臆造复位值。触发点:0x6067668 LP 定时器配置函数(0x6067b32
+    # 以 r0=2 调入)的 0x6067672 ld.w 读 CON2 + 0x606767e rmw.and.nmodimm 复合
+    # RMW 再读,形状反汇编钉死(清 CLK_SEL bits0-3、|=3、写回、清 CLK_DIV
+    # bits4-7)。默认关:CON 读回保持 Blocked(301,540 前沿形状)。
+    if lp_timer_con_readback:
+        require(lp_timer_writes,'the LP-timer CON readback only layers on the LP-timer write records')
+        options['lp_timer_con_readback_projection']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -1025,25 +1037,33 @@ def check(report,firmware):
     # **第二个任务创建 0x6067b12(入口 0x6069538)已进入**:SDK 调用返回后
     # 句柄存 0x6067b22 h[0x129D9C]=r0,读 b[r6+98] 门控字节(运行态非 0/1)
     # 走 else 分支 0x6067b30 `r0=2` → 0x6067b32 call 0x6067668(LP 定时器
-    # 配置函数):0x606766c `r0=0xF2A908`(P11_LPTMR0 CON2)→ **0x6067672
-    # 读 CON2** → 清 bits0-3 → |=3 → 写回 → &=0xFFFFFF0F 的读-改-写序列,
-    # 第一读撞 lp_timer_init_projection 的 write-only 边界 → 诚实停
-    # lp_timer_register_readback_not_modeled(新独立决策点:lp_timer 读回
-    # 语义无证据,0xf2a908 此前只被整字写 0 一次,RMW 读回=「保留未写位」
-    # 需要新证据,三方案择一归下一路)。power_init 返回(0x60120e0)仍在
-    # 停点之后;第一个任务句柄半字 0x6067aec h[0x129D94]=1 已执行(旧记录
-    # 「0x129D90」系地址笔误,实测目标是 0x129D94)。TIMER0 精确计数:443
-    # 步 × 3 tick/步 = cnt 1329,con 0x1401,expirations 10 不变(首次到期
+    # 配置函数,body 0x6067668..0x60676ea):0x606766c `r0=0xF2A908`(P11_LPTMR0
+    # CON2)→ 0x6067672 ld.w 读 CON2 → 0x6067674 `&=~0xF` 清 CLK_SEL bits0-3 →
+    # 0x6067678 `|=3` → 0x606767c st.w 写回 → 0x606767e `rmw.and.nmodimm
+    # [r0]&=~0xF0` 清 CLK_DIV bits4-7。路 AL 按 SDK p11_sfr.h 证据(该结构
+    # CON0/CON1/CON2/PRD/RSC 都标 __RW,仅 CNT __RO)实现 opt-in 的
+    # lp_timer_con_readback_projection:CON 读回=最后写值(SFC 时钟 +8 先例
+    # 同族,只在固件已写过至少一次后返回,不臆造复位值)——CON2 读回 0、复合
+    # RMW 读回 3,RMW 真实走通,CON2 末态=3(CLK_SEL=3/CLK_DIV=0)。返回后
+    # 0x6067b36 紧接 call 0x60677a4(P33 模拟配置函数):0x60677aa r1=0xF2C248
+    # → **0x60677b0 `rmw.and.r [r1+12]&=r0` 读 0xF2C254**——P33_ACCESS(x)=
+    # 0xf2c000+x*4 的 x=0x95(与 P3_ANA_CON6=0xf2c258/P3_ANA_CON11/12=0xf2c26c
+    # /70 同族、路 AI 已钉死的 P3 模拟配置族),RMW 读回撞 unmapped 诚实停
+    # (P33 模拟配置族是新独立决策点,归下一路)。power_init 返回(0x60120e0)
+    # 仍在停点之后;第一个任务句柄半字 0x6067aec h[0x129D94]=1 已执行(旧记录
+    # 「0x129D90」系地址笔误,实测目标是 0x129D94)。TIMER0 精确计数:443+75
+    # 步 × 3 tick/步 = cnt 1554,con 0x1401,expirations 10 不变(首次到期
     # 在启动后 40000 步,远未到);无新调度往返(交付 1+7+2、commands 20/
     # acks 10 不变)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067672' and
-            r['stop']=={'kind':'lp_timer_register_readback_not_modeled','address':'0xf2a908'},
-            'the heap-experimental scenario must stop at the LP-timer CON2 readback RMW '
-            'inside the second task creation after the TIMER0 STD12M source is let through')
-    require(r['completed_steps']==301540,'the heap experimental config changed its step count')
+    require(r['stop_core']==0 and r['stop_pc']=='0x60677b0' and
+            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf2c254',
+                        'size':4,'reference_sdk_register':None},
+            'the heap-experimental scenario must stop at the P33 analog-config RMW read '
+            '(P3_ANA_CON5, 0xf2c254) after the LP-timer CON2 readback RMW is let through')
+    require(r['completed_steps']==301615,'the heap experimental config changed its step count')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':1329,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 443 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':1554,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 518 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1075,10 +1095,12 @@ def check(report,firmware):
     lp=r['peripherals']['lp_timer_init_projection']
     require(lp['stores']=={'0xf2a900':{'values':['0x5c'],'writes':1},
                            '0xf2a904':{'values':['0x53'],'writes':1},
-                           '0xf2a908':{'values':['0x0'],'writes':1},
+                           '0xf2a908':{'values':['0x0','0x3','0x3'],'writes':3},
                            '0xf2c04c':{'values':['0x21'],'writes':1},
                            '0xf2c050':{'values':['0x41'],'writes':1}},
-            'the LP-timer init write-only records differ from the observed power_init tail')
+            'the LP-timer init records differ from the observed power_init tail '
+            '(CON2 gains the two RMW writes of the LP-timer config function: explicit st.w=3 '
+            'and the compound rmw.and.nmodimm writing 3 back)')
     # LRCT CON 位 RMW:初始化 4 次(0x6067aae + helper r0=1 三条)+ trim 函数
     # 内 stop-helper 2 次(&=~1/|=0x40)+ 末尾 restart-helper 3 次(&=~1/|=0x40/
     # |=1)= 9;lrc_trim_result_simulated 因显式探路值翻 True(报告语义如实)。
@@ -1101,6 +1123,12 @@ def check(report,firmware):
             'not a silicon measurement' in fixture['derivation'],
             'the trim-result probe fixture record must pin 38400, one read and the '
             'derived-not-measured derivation chain')
+    con=lp['lp_timer_con_readback_projection']
+    require(con['addresses']==['0xf2a900','0xf2a904','0xf2a908'] and con['reads']==2 and
+            con['readback_semantics'].startswith('last firmware-written value') and
+            '0x6067672' in con['evidence'] and '0x606767e' in con['evidence'],
+            'the LP-timer CON readback projection must cover CON0/CON1/CON2 with two reads '
+            '(0x6067672 ld.w + 0x606767e rmw.and.nmodimm) and pin the SDK __RW evidence')
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7+
@@ -1364,7 +1392,7 @@ def main():
                               halfword_pair=True,p11_power_init=True,
                               heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
                               lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
-                              timer0_std12m=True,flash_image_bytes=image)]}
+                              timer0_std12m=True,lp_timer_con_readback=True,flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

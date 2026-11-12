@@ -32,6 +32,9 @@ P11_HEAP_INFO=0xf27f4a  # P11 RAM P2M message area +0xa: 4B heap begin/size writ
 P11_LPTMR0_CON0=0xf2a900  # SDK p11_sfr.h P11_LPTMR0_BASE = p11_sfr_base(0xf2a000)+map_adr(0x09,0x00)
 P11_LPTMR0_CON1=0xf2a904  # 结构 CON0/CON1/CON2/PRD/RSC/CNT(__RO);CNT 在本前缀无访问观测
 P11_LPTMR0_CON2=0xf2a908
+# P11_LPTMR0 CON 三字在 SDK p11_sfr.h P11_LPTMR_TypeDef 里都是 __RW(可读回),
+# 与 PMU 配置族 0xf2c04c/0xf2c050(SDK 无名)不同族——读回投影只覆盖这三个。
+LPTMR_CON_ADDRESSES=(P11_LPTMR0_CON0,P11_LPTMR0_CON1,P11_LPTMR0_CON2)
 POWER_INIT_PMU_CFG0=0xf2c04c  # power_init 尾部 PMU 配置族整字写(SDK 无名;与 0xf2c048/0xf2c054/0xf2c05c 同族)
 POWER_INIT_PMU_CFG1=0xf2c050
 LRCT_CON=0xfd3600  # SDK br28.h JL_LRCT = ls_base(0xfd0000)+map_adr(0x36,0x00);CON __WO,NUM __RW
@@ -947,13 +950,22 @@ class LpTimerInitRegisters:
 
     TRIM_DONE_BIT=0x80
 
-    def __init__(self,*,trim_done_projection=False,trim_result_value=None):
+    def __init__(self,*,trim_done_projection=False,trim_result_value=None,con_readback_projection=False):
         self.stores={address:{'values':[],'writes':0} for address in
                      (P11_LPTMR0_CON0,P11_LPTMR0_CON1,P11_LPTMR0_CON2,
                       POWER_INIT_PMU_CFG0,POWER_INIT_PMU_CFG1)}
         self.lrct=PartialWord();self.lrct_rmws=0
         self.trim_done_projection=trim_done_projection;self.lrct_con_reads=0
         self.trim_result_value=trim_result_value;self.lrct_num_reads=0
+        # con_readback_projection(opt-in,需 lp_timer_init_projection):P11_LPTMR0
+        # CON0/CON1/CON2 的读回=最后写值投影。SDK p11_sfr.h 把 CON0/CON1/CON2/
+        # PRD/RSC 都标 __RW(只有 CNT 是 __RO),即这些配置字是可回读的——读回
+        # =最后写值与 SFC 时钟 +8(0xfd1c08,divider_readback_is_last_write)
+        # 同族先例一致;只在固件已写过至少一次后返回最后写值,从不臆造复位值。
+        # 默认关:CON 读回保持 Blocked(lp_timer_register_readback_not_modeled,
+        # 301,540 前沿形状)。PMU 配置族 0xf2c04c/0xf2c050 不在投影范围(SDK
+        # 无名,读回语义无证据,pmu_task 后的回读是独立问题)。
+        self.con_readback_projection=con_readback_projection;self.con_reads=0
 
     def handles(self,address):
         return address in self.stores
@@ -977,6 +989,15 @@ class LpTimerInitRegisters:
         self.lrct.apply(kind,operand&0xffffffff);self.lrct_rmws+=1
 
     def read(self,address):
+        if address in LPTMR_CON_ADDRESSES and self.con_readback_projection:
+            # 读回=最后写值(SFC 时钟 +8 先例):P11_LPTMR0 CON 在 SDK p11_sfr.h
+            # 标 __RW,可读回;只在固件已写过至少一次后返回最后写值,从不臆造
+            # 复位值。本前缀唯一触发点=0x6067668 的 LP 定时器配置 RMW
+            # (0x6067672 读 CON2、0x606767e 复合 rmw.and.nmodimm 再读)。
+            entry=self.stores[address]
+            if entry['writes']>0:
+                self.con_reads+=1
+                return entry['values'][-1]
         if address==LRCT_CON and self.trim_done_projection:
             # 0x606751a..0x606751c 轮询在 bit7==0 时回跳重读——固件等 bit7
             # 置位才退出并读 NUM。该位读回为 1 是显式「trim 已完成」条件投影
@@ -1021,6 +1042,22 @@ class LpTimerInitRegisters:
                     'value_evidence':('none (silicon measurement); reads stay strictly blocked'
                         if self.trim_result_value is None else
                         'explicit probe value (derived-not-measured), see trim_result_fixture')}}
+        if self.con_readback_projection:
+            result['lp_timer_con_readback_projection']={
+                'addresses':[hex(a) for a in LPTMR_CON_ADDRESSES],
+                'reads':self.con_reads,
+                'readback_semantics':('last firmware-written value; P11_LPTMR0 CON0/CON1/CON2 are '
+                    '__RW in SDK p11_sfr.h so a read-back is defined, and returning the last write '
+                    'matches the SFC clock +8 (0xfd1c08) divider precedent — only after at least '
+                    'one firmware write, never a fabricated reset value'),
+                'evidence':('0x6067668 LP-timer config function (called from 0x6067b32 with r0=2): '
+                    '0x606766c li.u32 r0=0xF2A908 (P11_LPTMR0 CON2); 0x6067672 ld.w r1=[r0] reads '
+                    'CON2; 0x6067674 and.nmodimm r1&=~0xF (clear CLK_SEL bits0-3); 0x6067678 '
+                    'or.modimm r1|=3; 0x606767c st.w [r0]=r1 (write CON2=3); 0x606767e '
+                    'rmw.and.nmodimm [r0]&=~0xF0 (clear CLK_DIV bits4-7). SDK p11_app.h: '
+                    'LP_TMR0_CLK_SEL=SFR(CON2,0,4) bits0-3, LP_TMR0_CLK_DIV=SFR(CON2,4,4) bits4-7. '
+                    'PMU config 0xf2c04c/0xf2c050 are NOT in this projection (SDK-unnamed, readback '
+                    'semantics unproven; their later pmu_task byte read is a separate decision)')}
         if self.trim_result_value is not None:
             result['lrct_trim_result_fixture']={
                 'address':hex(LRCT_NUM),'value':hex(self.trim_result_value),
@@ -1408,7 +1445,7 @@ class BR28Model:
                  p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
                  p11_heap_info_bytes=None,p11_window_projection=False,
                  power_init_config_rmw=False,lp_timer_init_projection=False,lrct_trim_done_projection=False,
-                 lrct_trim_result_value=None,
+                 lrct_trim_result_value=None,lp_timer_con_readback_projection=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
                  gpcnt_cleanup_projection=False,core_tick_configuration=False,
@@ -1491,9 +1528,17 @@ class BR28Model:
                 raise ValueError('the LRCT trim-result value must be unsigned32')
             if not lrct_trim_done_projection:
                 raise ValueError('the LRCT trim-result value requires the trim-done readback projection')
-        self.lp_timer=(LpTimerInitRegisters(trim_done_projection=True,trim_result_value=lrct_trim_result_value)
+        # lp_timer_con_readback:opt-in 的 P11_LPTMR0 CON 读回=最后写值投影
+        # (SDK p11_sfr.h 标 CON0/CON1/CON2 __RW;SFC 时钟 +8 先例同族)。必须
+        # 叠在 write 记录投影上——没有 stores 就没有「最后写值」可回读。默认关:
+        # CON 读回保持 Blocked(301,540 前沿形状)。
+        if lp_timer_con_readback_projection and not lp_timer_init_projection:
+            raise ValueError('the LP-timer CON readback projection requires the LP-timer init projection')
+        self.lp_timer=(LpTimerInitRegisters(trim_done_projection=True,trim_result_value=lrct_trim_result_value,
+                                            con_readback_projection=lp_timer_con_readback_projection)
                        if lrct_trim_done_projection
-                       else LpTimerInitRegisters()) if lp_timer_init_projection else None
+                       else LpTimerInitRegisters(con_readback_projection=lp_timer_con_readback_projection)) \
+                      if lp_timer_init_projection else None
         if p11_heap_info_bytes is not None and (not isinstance(p11_heap_info_bytes,(bytes,bytearray))
                                                 or len(p11_heap_info_bytes)!=4):
             raise ValueError('P11 heap info fixture must be exactly 4 bytes')

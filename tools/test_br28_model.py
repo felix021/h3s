@@ -753,6 +753,36 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(lpg['lrct_trim_done_projection']['trim_result_register']
                         ['value_evidence'].startswith('none'))
 
+    def test_lp_timer_con_readback_projection_is_last_write_value(self):
+        # 路 AL:opt-in 的 P11_LPTMR0 CON 读回=最后写值投影(需 lp_timer_init_
+        # projection,默认关)。SDK p11_sfr.h 把 P11_LPTMR_TypeDef 的 CON0/CON1/
+        # CON2/PRD/RSC 都标 __RW(仅 CNT __RO),即这些配置字可读回——读回=最后
+        # 写值与 SFC 时钟 +8(0xfd1c08,divider_readback_is_last_write)先例同族;
+        # 只在固件已写过至少一次后返回最后写值,从不臆造复位值。PMU 配置族
+        # 0xf2c04c/0xf2c050(SDK 无名)不在投影范围,读回仍严格停。
+        # 依赖:投影叠在 write 记录上——没有 stores 就没有「最后写值」。
+        with self.assertRaises(ValueError):BR28Model(lp_timer_con_readback_projection=True)
+        # 默认关:只开 write 记录时 CON 读回保持 301,540 前沿的严格停形状。
+        g=BR28Model(lp_timer_init_projection=True)
+        g.write(P11_LPTMR0_CON2,0)
+        with self.assertRaisesRegex(Blocked,'lp_timer_register_readback_not_modeled'):g.read(P11_LPTMR0_CON2)
+        self.assertNotIn('lp_timer_con_readback_projection',g.report()['lp_timer_init_projection'])
+        # opt-in:先写 CON2=0,读回 0;写 3 后读回 3——最后写值,不臆造复位值。
+        h=BR28Model(lp_timer_init_projection=True,lp_timer_con_readback_projection=True)
+        h.write(P11_LPTMR0_CON2,0)
+        self.assertEqual(h.read(P11_LPTMR0_CON2),0)
+        h.write(P11_LPTMR0_CON2,3)
+        self.assertEqual(h.read(P11_LPTMR0_CON2),3)
+        self.assertEqual(h.read(P11_LPTMR0_CON2),3,'readback is the stable last-written value')
+        # 从未写过的 CON 仍严格停(不臆造复位值);PMU 配置族(不在投影范围)读回严格停。
+        with self.assertRaisesRegex(Blocked,'lp_timer_register_readback_not_modeled'):h.read(P11_LPTMR0_CON0)
+        with self.assertRaisesRegex(Blocked,'lp_timer_register_readback_not_modeled'):h.read(POWER_INIT_PMU_CFG0)
+        con=h.report()['lp_timer_init_projection']['lp_timer_con_readback_projection']
+        self.assertEqual((con['addresses'],con['reads']),
+                         (['0xf2a900','0xf2a904','0xf2a908'],3))
+        self.assertTrue(con['readback_semantics'].startswith('last firmware-written value'))
+        self.assertIn('0x6067672',con['evidence'])
+
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')
         self.assertEqual(BR28Model().read_bytes(P11_HEAP_INFO,1),None)  # 无 fixture:严格 unknown
