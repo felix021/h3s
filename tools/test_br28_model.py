@@ -14,7 +14,7 @@ from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection
 from br28_model import MPUConfigurationProjection, GpioOutValue
 from br28_model import IcuInitializationProjection, ICU_BASES
 from br28_model import DcuCmoProjection, DCU_CMO_FLUSH, DCU_CMO_FLUSHINV
-from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON
+from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON, LRCT_NUM
 
 
 class ModelTests(unittest.TestCase):
@@ -580,6 +580,42 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'form_not_modeled'):LpTimerInitRegisters().rmw(LRCT_CON,'xor',1)
         with self.assertRaises(ValueError):LpTimerInitRegisters().rmw(0x1234,'and',1)
         with self.assertRaises(ValueError):LpTimerInitRegisters().write(0x1234,0)
+
+    def test_lrct_trim_done_projection_reads_back_completion_condition(self):
+        # LRC trim 完成读回投影(opt-in lrct_trim_done_projection,需 lp_timer_
+        # init_projection,默认关):CON 读回=RMW 已知位(bit0=1 使能/bit6=1)但
+        # **bit7 强制置 1**——「trim 已完成」条件投影(SFC PLL-lock bit15 先例
+        # 同模式)。轮询形状反汇编钉死:0x606751a..0x606751c 的 beq.and.ri(ISA
+        # 语义「(r&(1<<n))==0 时跳转」,硬件 12/12 确认)在 bit7==0 时回跳重读
+        # ——固件等 bit7 置位才退出并读 NUM,旧「busy 死等清零」记录按编码修正。
+        # 投影只动 bit7:RMW mask 外的位不臆造、每次读回同值(轮询第一轮即退)。
+        # NUM(0xfd3604,SDK br28.h JL_LRCT_TypeDef {CON __WO;NUM __RW} 的 trim
+        # 结果计数)是硅测量值、无任何推导证据,读回/写入一律严格停。
+        h=BR28Model(lp_timer_init_projection=True,lrct_trim_done_projection=True)
+        self.assertTrue(h.handles(LRCT_NUM,4))
+        h.lp_timer_rmw(LRCT_CON,'and',0xffffffc1)
+        h.lp_timer_rmw(LRCT_CON,'or',0x40)
+        h.lp_timer_rmw(LRCT_CON,'or',1)
+        self.assertEqual(h.read(LRCT_CON),0xc1,'projected word = RMW bits 0x41 | trim-done bit7')
+        self.assertEqual(h.read(LRCT_CON),0xc1,'the projection is stable so the poll exits on its first iteration')
+        report=h.report()['lp_timer_init_projection']
+        trim=report['lrct_trim_done_projection']
+        self.assertEqual((trim['address'],trim['trim_done_bit'],trim['reads'],
+                          trim['projected_word'],trim['known_mask']),
+                         ('0xfd3600','0x80',2,'0xc1','0x7f'))
+        self.assertFalse(trim['completion_timing_modeled'])
+        self.assertEqual(trim['trim_result_register']['address'],'0xfd3604')
+        with self.assertRaisesRegex(Blocked,'lrct_trim_result_not_modeled'):h.read(LRCT_NUM)
+        with self.assertRaisesRegex(Blocked,'lrct_trim_result_write_not_modeled'):h.write(LRCT_NUM,1)
+        # 依赖与默认关:trim-done 需要 lp-timer 记录;只开 lp-timer 时 CON 读回
+        # 仍是 300,236 前沿的严格停形状(读回一律拒绝),报告无投影子键。
+        with self.assertRaises(ValueError):BR28Model(lrct_trim_done_projection=True)
+        g=BR28Model(lp_timer_init_projection=True)
+        self.assertTrue(g.handles(LRCT_NUM,4))
+        with self.assertRaisesRegex(Blocked,'readback_not_modeled'):g.read(LRCT_CON)
+        with self.assertRaisesRegex(Blocked,'lrct_trim_result_not_modeled'):g.read(LRCT_NUM)
+        self.assertNotIn('lrct_trim_done_projection',g.report()['lp_timer_init_projection'])
+        self.assertFalse(BR28Model().handles(LRCT_NUM,4))  # 全关:NUM 不路由
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')
