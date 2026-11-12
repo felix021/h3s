@@ -2,6 +2,7 @@
 """Conditional external PMU status exploration plus the opt-in bit0 readiness response."""
 import argparse
 import json
+import struct
 from pathlib import Path
 
 from probe_boot import OFFICIAL_SHA, ROM_SHA, application, check_rom
@@ -98,27 +99,52 @@ def main():
     # (reused, no new fixture) to cross all four without fabricating a value.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==109903 and w['stop_pc']=='0x6065616' and
-            w['stop']['kind']=='unmapped_or_readonly_write' and
-            w['stop']['address']=='0x19faf4' and w['stop']['value_bytes']=='00000000',
-            'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus and the '
-            'opaque PWM dead-read wiring did not cross the KEY pair, page reads, WLA trim, counter '
-            'cleanup, core tick store, peer PMU read, SYS_DIV/P33/PLL1 configuration, the JL_L1P idle '
-            'poll, the two-core ICU idle poll, the full SFC suspend/reconfiguration sequence, the four '
-            'dead PWM reads and the held CPU1 core-tick enable leaf to the allocator PTE boundary')
+    require(w['completed_steps']==110818 and w['stop_pc']=='0x6068926' and
+            w['stop']['kind']=='unmapped_memory' and w['stop']['access']=='read' and
+            w['stop']['address']=='0xff0100' and w['stop']['size']==4,
+            'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus, the '
+            'opaque PWM dead-read wiring, the physical-heap and IRQ-vector-table region mappings and the '
+            'arch_startup exact_subword_stores/immediate_rep_projection diagnostics did not cross the KEY '
+            'pair, page reads, WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/'
+            'PLL1 configuration, the JL_L1P idle poll, the two-core ICU idle poll, the full SFC suspend/'
+            'reconfiguration sequence, the four dead PWM reads, the held CPU1 core-tick enable leaf, the '
+            'allocator heap-page store, the halfword store, the immediate REP bodies and the IRQ vector '
+            'table store to the arch_startup SDTAP boundary')
     require(w['instruction_adapters']['proven_dead_pwm_configuration_read']==4,
             'the four dead PWM configuration reads were not proven opaque')
     require(w['peripherals']['assumptions']['pwm_configuration_reads'].startswith('R0 remains unknown'),
             'the opaque PWM read assumption label is missing')
-    # The next stop is the allocator's hardware-PTE tag store: 0x6065616
-    # `[r6+4] = r2` writes 0x19faf4 (the PTE for VA 0x49fff4 — "actual b3f5
-    # maps VA49fff4->19faf4", CPU RAM backing ((tag&7fff)<<7)+offset), the same
-    # byte-identical boundary arch_startup's heap_mapping_strict case pins. The
-    # held CPU1 core-tick enable leaf (0x606617a) was crossed first: its
-    # CNT=0/PRD=479999999/CON=1 stores all land under the opt-in held-core-tick
-    # policy (core_tick_count_while_held=False + explicit clock progress (4,4)),
-    # but the held CPU1 tick never counts (cnt stays 0, expirations 0 — no
-    # counter/overflow/ACK behaviour invented). CPU1 never executes in this line.
+    # The next stop is the SDTAP CON read at 0x6068926 (r0=0xff0100, unmapped):
+    # after the physical-heap region mapping lets the allocator heap-page store
+    # 0x6065616 `[r6+4]=r2` land (VA 0x49fff4 -> physical 0x19faf4 via the tail
+    # PTE 0xb3f5 — "actual b3f5 maps VA49fff4->19faf4", CPU RAM backing
+    # ((tag&7fff)<<7)+offset), the chain also crosses the plain halfword store
+    # 0x6066cb4 `h[r4+12]=r0` (arch_startup `exact_subword_stores` diagnostic),
+    # the immediate REP bodies 0x6066cf4 (arch_startup `immediate_rep_projection`)
+    # and the IRQ vector-table store 0x6065d90 `[..]=0x0012ece8` to 0x19fe10
+    # (arch_startup `irq_vector_table` region 0x19fe00..0x1a0000), converging
+    # byte-identically with arch_startup's architecture_virtual_inputs frontier
+    # (110,818 @ 0x6068926, mmu walks 67). The held CPU1 core-tick enable leaf
+    # (0x606617a) was crossed first: its CNT=0/PRD=479999999/CON=1 stores all
+    # land under the opt-in held-core-tick policy (core_tick_count_while_held
+    # =False + explicit clock progress (4,4)), but the held CPU1 tick never
+    # counts (cnt stays 0, expirations 0 — no counter/overflow/ACK behaviour
+    # invented). CPU1 never executes in this line.
+    require(w['peripherals']['mmu']['walks']==67,
+            'the real virtual-memory allocation prefix did not converge to the arch_startup walk count')
+    require(w['peripherals']['mmu']['con']==1 and
+            w['peripherals']['mmu']['table_begin']==0x120000 and
+            w['peripherals']['mmu']['table_end_inclusive']==0x1227ff,
+            'MMU configuration differs from the initialized page table')
+    descriptor=struct.unpack_from('<IIIHH',bytes.fromhex(
+            w['memory_snapshots']['physical_heap_descriptor']['bytes_with_unknowns']))
+    start,end,size,first,last=descriptor
+    require((start,end,size)==(0x134500,0x19fb80,0x6b680) and
+            first==((start-0x100000)>>7) and last==((end-0x100000)>>7),
+            'actual QCY allocator relative bitmap indices changed in the watchdog line')
+    require(w['instruction_adapters']['exact_subword_store']>=1 and
+            w['instruction_adapters']['immediate_rep_single_store_projection']>=1,
+            'the arch_startup exact_subword_stores/immediate_rep_projection diagnostics were not applied')
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
