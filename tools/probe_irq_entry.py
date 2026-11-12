@@ -1968,15 +1968,17 @@ def check(report,firmware):
             'the handler must execute both 12B special-frame anchors (push.srl at 0x60661a4, '
             'pop.srl at 0x60661e2) with the 16B push.rl/pop.rl frame on the ordinary transport')
     m=rows['core_tick_irq3_masked_probe']
-    require(m['completed_steps']==304317 and m['stop']==r['stop'] and
-            m['stop_pc']==r['stop_pc'] and
+    require(m['completed_steps']==304317 and
+            m['stop']=={'kind': 'fd31_adc_con_readback_not_modeled', 'address': '0xfd3100'} and
+            m['stop_pc']=='0x60116e6' and
             m['machine']['core_tick_entry_projection']['deliveries']==[] and
             m['peripherals']['core_tick_configuration'][0]['pending'] is True and
             m['peripherals']['core_tick_configuration'][0]['expirations']==1 and
             m['peripherals']['assumptions']['core_tick_irq3_probe']['irq3_nibble_cleared_counterfactual'],
             'the masked counterfactual (IRQ3 nibble cleared) must stay inert: the overflow '
             'only sets pending, nothing is requested or delivered, and the run keeps the '
-            'exact base-scenario honest ADC-readback frontier')
+            'pre-ADC-readback honest frontier (304,317, pinned as a literal because the '
+            'base scenario itself advanced to 447,490 with the ADC readback on)')
     report['core_tick_irq3_delivery_projection']=(
         'route BF: the CPU0 core tick (IRQ3) delivery machinery is wired into the main '
         'conditional scenario stack before the ~447,490-step first-overflow hard deadline '
