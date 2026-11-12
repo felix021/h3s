@@ -1338,6 +1338,43 @@ class ModelTests(unittest.TestCase):
         # icu_idle 不吞掉这些地址(与 ICU 状态字都不同),读回仍走各自投影
         self.assertEqual(model.read(SYS_DIV),0)
 
+    def test_sfc_read_bus_stacks_with_idle_and_branch_projections(self):
+        # sfc_read_bus(复用既有模型,不新建 fixture)与 l1p/icu 空闲 fixture、
+        # 五投影(core tick/cpu1_held/SYS_DIV/P33/PLL1)同模型叠加,各自事务
+        # 互不扰动:SFC 只答 0xfe0200/0xfe0204/窗口组,读回=最后写值(bit31=0
+        # =busy 清零,同步模型无在途事务),与 l1p/icu/cache 状态字都不重叠。
+        model=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                        cpu1_held_projection=True,initial_cpu1_control=0,
+                        clock_divider_projection=True,voltage_configuration_projection=True,
+                        pll1_configuration_projection=True,
+                        initial_registers={SYS_DIV:0,PLL1_CON3:0,**dict.fromkeys(VOLTAGE_CONFIG,0)},
+                        l1p_idle_projection=True,icu_idle_projection=True,
+                        sfc_read_bus=True,initial_sfc_control=1)
+        # CON bit31 轮询读回=最后写值(初始 1,bit31=0)→ ifs r1<0 第一轮退出;
+        # 与空闲 fixture 的读互不吞掉。
+        self.assertEqual(model.read(SFC_BASE),1)
+        self.assertEqual(model.read(L1P_CON),0x80000000)
+        self.assertEqual(model.read(0xffe400),0x80000000)
+        # 使能路径序列(助手 0x12e1cc 尾):&=~1 清使能 → BAUD=1 → RMW 模式字段
+        # (低 4 位=3 → bits[20:24])→ |=1 使能;末态与 arch_startup 钉死的
+        # (0x300001,1,4) 一致。
+        model.write(SFC_BASE,model.read(SFC_BASE)&0xfffffffe)   # 先 disable
+        model.write(SFC_BASE+4,1)                                # 后 baud
+        model.write(SFC_BASE,(model.read(SFC_BASE)&0xff0fffff)|0x300000)
+        model.write(SFC_BASE,model.read(SFC_BASE)|1)
+        self.assertEqual((model.sfc.con,model.sfc.baud,model.sfc.writes),(0x300001,1,4))
+        # SFC 不吞掉这些地址,其余投影读回仍走各自路由
+        self.assertEqual(model.read(SYS_DIV),0)
+        self.assertTrue(model.handles(CORE_TICK_BASES[1],4))
+        self.assertTrue(model.handles(CPU1_CONTROL,4))
+        self.assertTrue(model.handles(VOLTAGE_CONFIG[0],4))
+        self.assertTrue(model.handles(PLL1_CON3,4))
+        # 默认关(不开 sfc_read_bus)0xfe0200 读保持 unmapped、写拒绝——legacy 不变
+        plain=BR28Model()
+        self.assertFalse(plain.handles(SFC_BASE,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(SFC_BASE,1)
+
     def test_cpu1_release_bit_survives_kick_bit_record(self):
         # kick 位(bit3,只写记录)把 cpu1_control 记到 9;CPU1 的交付资格判定必须
         # 看 bit0 释放位,否则 kick 会产生「负调度效应」——第二次 pend(窗口组建模

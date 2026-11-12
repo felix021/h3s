@@ -124,7 +124,18 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # 前置 ICU 命令/使能写,「空闲」=无在途操作的自然读(非维护完成时序
             # 假设);合成字 0x80000000(bit31=1=空闲),其余位不声称硅值;CON 写无
             # 观测形状仍拒绝。只服务本支线,默认关 legacy 场景不变。
-            icu_idle_projection=p11_ready_wdt_cases)
+            icu_idle_projection=p11_ready_wdt_cases,
+            # SFC 主块读回总线(复用主场景 crc_bankb/arch_startup 已验证的既有模型,
+            # 不新建 fixture):IcuWaitIdle 退出后 SFC 挂起/cache-drop 助手 0x12e1cc
+            # (=flash 0x60c79a4)续跑主 SFC 挂起序列——0xfe0200 CON bit31 轮询读
+            # (ifs r1<0 等 busy 清零;同步模型无在途事务,bit31 恒 0,轮询立即退出)、
+            # &=~1 清使能、写 BAUD=r4、RMW CON 模式字段(bits[20:24]=r5 低 4 位)、
+            # |=1 使能。SFCReadBus 已建模:CON 读回=最后写值(允许位 0x f00001)、
+            # BAUD 使能态只接受 0(挂起路径)/禁用态任意值、模式字段允许;末态
+            # 与 arch_startup 钉死的 (con=0x300001,baud=1,4 writes) 同族。只服务
+            # 本支线,默认关 legacy 场景报告逐字节不变。
+            sfc_read_bus=p11_ready_wdt_cases,
+            initial_sfc_control=1 if p11_ready_wdt_cases else None)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
