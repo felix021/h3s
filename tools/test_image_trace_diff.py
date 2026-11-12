@@ -173,10 +173,14 @@ def test_scenario_registry_shapes():
         assert conditional[key] == value
     assert SCENARIOS['crc_bankb']['freshness'] == {
         'completed_steps': 289849, 'stop_pc': '0x60679ba',
-        'kind': 'unmapped_memory', 'address': '0xf27f4b'}
+        'stop_fields': {'kind': 'unmapped_memory', 'address': '0xf27f4b'}}
+    # 路 BN:ADC CON 读回投影把条件前沿推进到 CPU0 core tick 首次溢出
+    # (447,490 @ 0x12e284,轮询忙等跨过三次 STD12M 到期后撞 core tick 硬期限;
+    # core tick 交付接线是路 BF 的域)。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 304317, 'stop_pc': '0x60116e6',
-        'kind': 'fd31_adc_con_readback_not_modeled', 'address': '0xfd3100'}
+        'completed_steps': 447490, 'stop_pc': '0x12e284',
+        'stop_fields': {'kind': 'core_tick_overflow_delivery_unresolved',
+                        'core': 0, 'irq': 3}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000

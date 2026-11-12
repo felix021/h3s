@@ -1712,11 +1712,15 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop'],{'kind':'fd31_adc_con_readback_not_modeled',
                                          'address':'0xfd3100'})
         # ④RMW 拒绝(setter 0x6011666 尾的 |=0x40 在前沿之后;该寄存器有真实
-        # 读回消费者,位记录也不声称合并语义);RES(0xfd3104,固件零写)不在
-        # 投影内,读写都走泛路径。
+        # 读回消费者,位记录也不声称合并语义;路 BN 读回投影关闭时保持拒绝);
+        # RES(0xfd3104,固件零写)自路 BN 起被投影显式拒绝(读写都有显式 kind,
+        # 优先于泛路径;读回投影开关与否一律严格停——RES 是模拟测量值)。
         self.assertRaisesRegex(Blocked,'fd31_adc_con_rmw_not_modeled',
                                adc.fd31_adc_con.rmw,'or',0x40)
-        self.assertFalse(adc.handles(0xfd3104,4))
+        self.assertTrue(adc.handles(0xfd3104,4))
+        self.assertRaisesRegex(Blocked,'fd31_adc_res_not_modeled',adc.read,0xfd3104)
+        self.assertRaisesRegex(Blocked,'fd31_adc_res_write_not_modeled',
+                               adc.write,0xfd3104,0)
         # ⑤与 P3_LS/port_sel 投影叠加互不吞地址。
         stacked=BR28Model(fd31_adc_con_projection=True,p3_ls_projection=True,
                           p33_port_sel_projection=True)

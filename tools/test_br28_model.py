@@ -1759,10 +1759,17 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'unmapped_or_readonly_write|unsupported_peripheral_write'):
             plain.write(0xfd3100,0x20000)
         h=BR28Model(fd31_adc_con_projection=True)
-        # 访问面只有 CON 一个字;RES(0xfd3104)不在投影内
+        # 访问面只有 CON 一个记录字;RES(0xfd3104)自路 BN 起被投影显式拒绝
+        # (读 fd31_adc_res_not_modeled/写 fd31_adc_res_write_not_modeled,
+        # 显式 kind 优先于泛 unmapped 便于诊断);0xfd3108 仍完全不在投影。
         self.assertTrue(h.handles(0xfd3100,4))
         self.assertEqual(Fd31AdcConRegisters.ADDRESSES,(0xfd3100,))
-        self.assertFalse(h.handles(0xfd3104,4) or h.handles(0xfd3108,4))
+        self.assertTrue(h.handles(0xfd3104,4))
+        self.assertFalse(h.handles(0xfd3108,4))
+        with self.assertRaisesRegex(Blocked,'fd31_adc_res_not_modeled'):
+            h.read(0xfd3104)
+        with self.assertRaisesRegex(Blocked,'fd31_adc_res_write_not_modeled'):
+            h.write(0xfd3104,0)
         # 整字写记录(两次控制函数调用的实测分布:值序列 ×2)
         for v in (0x20000,0x20040,0x40,0x20000,0x20040,0x40):
             h.write(0xfd3100,v)
@@ -1775,7 +1782,7 @@ class ModelTests(unittest.TestCase):
         self.assertIn('JL_ADC',r['sdk_naming'])
         self.assertIn('NOT 0x200',r['observed_shapes'])
         self.assertEqual(h.report()['counts']['writes'],6)
-        # 读回严格停(显式 kind 优先于泛 unmapped);RES 不在投影、读走泛路径
+        # 读回严格停(显式 kind 优先于泛 unmapped;路 BN 默认关读回投影)
         with self.assertRaisesRegex(Blocked,'fd31_adc_con_readback_not_modeled'):
             h.read(0xfd3100)
         # RMW 拒绝(该寄存器有真实读回消费者,位记录也不声称合并语义);
@@ -1786,12 +1793,64 @@ class ModelTests(unittest.TestCase):
             h.write(0xfd3100,-1)
         # 字节写不路由(无字节写观测形状)
         self.assertFalse(h.handles_byte_write(0xfd3100))
-        # 与 P3_LS/port_sel 投影叠加互不吞地址
+        # 与 P3_LS/port_sel 投影叠加互不吞地址(RES 自路 BN 起被显式拒绝)
         allon=BR28Model(fd31_adc_con_projection=True,p3_ls_projection=True,
                         p33_port_sel_projection=True)
         self.assertTrue(allon.handles(0xfd3100,4) and allon.handles(0xf2c290,4)
                         and allon.handles(0xf2c304,4))
-        self.assertFalse(allon.handles(0xfd3104,4))
+        self.assertTrue(allon.handles(0xfd3104,4))
+        self.assertFalse(allon.handles(0xfd3108,4))
+
+    def test_fd31_adc_con_readback_projection_is_last_write(self):
+        # 路 BN:opt-in fd31_adc_con_readback(需 fd31_adc_con_projection)——
+        # CON 读回=最后写值投影(lp_timer CON 路 AL/SFC 时钟 +8 同族)。
+        # SDK 证据=br28.h JL_ADC_TypeDef{__RW CON; __RO RES;}(该头 __RW/__WO/
+        # __RO 标注有区分度:JL_LRCT CON __WO vs NUM __RW)。写前读回严格停
+        # (不臆造复位值);RMW or/and 在投影下按「最后写值 op operand→记录」
+        # 合成(与 probe_boot 通用 mmio 路径同语义);RES 无论开关一律显式
+        # 严格停 fd31_adc_res_not_modeled(模拟测量值,绝不发明 fixture);
+        # 0xf2c250(P3_ANA_CON4)只在读回开关开启时联动 seed 合成初始字 0
+        # (路 AM 同族),开关关时保持 unmapped。默认关:fd31_adc_con_readback
+        # 不存在该键,CON 读回保持 fd31_adc_con_readback_not_modeled
+        # (304,317 前沿形状),legacy 报告逐字节不变。
+        with self.assertRaisesRegex(ValueError,'requires the fd31 ADC CON projection'):
+            BR28Model(fd31_adc_con_projection=False,fd31_adc_con_readback=True)
+        base=BR28Model(fd31_adc_con_projection=True)
+        self.assertNotIn('con_readback_projection',
+                         base.report()['fd31_adc_con_projection'])
+        self.assertFalse(base.handles(0xf2c250,4))  # 联动 seed 关闭
+        h=BR28Model(fd31_adc_con_projection=True,fd31_adc_con_readback=True)
+        # 写前读回严格停(lp_timer 同款:从不臆造复位值)
+        with self.assertRaisesRegex(Blocked,'fd31_adc_con_readback_not_modeled'):
+            h.read(0xfd3100)
+        h.write(0xfd3100,0x40)
+        self.assertEqual(h.read(0xfd3100),0x40)
+        h.write(0xfd3100,0x46105d)
+        self.assertEqual(h.read(0xfd3100),0x46105d)
+        # RMW 合成(setter 尾部 |=0x40 形状;bit6 已置时值不变,真实执行观测)
+        h.fd31_adc_con.rmw('or',0x40)
+        self.assertEqual(h.read(0xfd3100),0x46105d)
+        h.fd31_adc_con.rmw('and',0xfffffff7)
+        self.assertEqual(h.read(0xfd3100),0x461055)
+        with self.assertRaisesRegex(Blocked,'fd31_adc_con_rmw_not_modeled'):
+            BR28Model(fd31_adc_con_projection=True).fd31_adc_con.rmw('xor',0x40)
+        # 报告:con_readback_projection 子键(读计数/RES 边界),write_only
+        # 与 readback_not_modeled 翻 False(投影语义如实)。
+        r=h.report()['fd31_adc_con_projection']
+        self.assertEqual(r['con_readback_projection']['address'],'0xfd3100')
+        self.assertEqual(r['con_readback_projection']['reads'],4)
+        self.assertEqual(r['con_readback_projection']['res_boundary']['address'],'0xfd3104')
+        self.assertFalse(r['write_only'] or r['readback_not_modeled'])
+        # RES 无论读回开关一律显式严格停
+        with self.assertRaisesRegex(Blocked,'fd31_adc_res_not_modeled'):
+            h.read(0xfd3104)
+        # 0xf2c250 联动 seed:读回开关开启时合成初始字 0、写后读回=后写值
+        # (路 AM P3_ANA_CON2/CON5 同族语义);实测末值 0xe1 的读改写序列自洽。
+        self.assertTrue(h.handles(0xf2c250,4))
+        self.assertEqual(h.read(0xf2c250),0)
+        h.write(0xf2c250,0x20)
+        self.assertEqual(h.read(0xf2c250),0x20)
+        self.assertEqual(h.report()['registers']['0xf2c250'],'0x20')
 
     def test_p11_syscon1_mask_sets_are_opt_in(self):
         # 0xf2a628(P11_SYS_CON1)固件真实用两个 and 掩码清不同位:主复位

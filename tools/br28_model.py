@@ -1659,16 +1659,85 @@ class Fd31AdcConRegisters:
       RMW(setter 的 |=0x40,在前沿之后)拒绝(fd31_adc_con_rmw_not_modeled,
       p3_ls 先例:该寄存器有真实读回消费者,位记录也不能声称合并语义)。
       RES(0xfd3104)固件零写、投影不覆盖——读保持泛 unmapped 严格停。
+    - **读回投影(路 BN/sim-adc-read,opt-in con_readback_projection,需
+      fd31_adc_con_projection,默认关=304,317 前沿形状不变)**:CON 读回=最后
+      写值(lp_timer CON 路 AL 同族)。SDK 证据:参考 br28.h 的
+      JL_ADC_TypeDef{__RW CON; __RO RES;}——该头的 __RW/__WO/__RO 标注有区分度
+      (JL_LRCT CON __WO vs NUM __RW、ADC CON __RW vs RES __RO),CON 可回读是
+      SDK 参考语义;读回=最后写值与 SFC 时钟 +8/lp_timer CON 同族,只在固件
+      写过至少一次后返回。消费者分支全图(反汇编钉死):
+      - **caller A 0x60116d0**(32 次采样循环 0x6012148 每轮以 r0=0x10000 调入,
+        循环计数 r6=32→0、min r4/max r5/sum r7、末尾 (sum-min-max)/30 平均):
+        [0x127DAC]=通道字 → 读 CON → `(r0&16)==0` 即 **bit4==0 → goto 0x60116f2
+        跳过 helper+控制函数**;bit4==1 → call 0x601163a(helper)+0x60115b4(控制
+        函数,重写 CON 三连)→ 0x60116f2 call RAM veneer 0x12b55c(VM init 前缀
+        已真实走过的 OS post 链)→ 读槽 → call setter 0x6011666(通道字 0x10000:
+        r2'=r0>>16=1,tbb[1]→0x6011698 case1:r0=r0.l(u)=0 后 **call 0x6067d8a**
+        ——对 **0xf2c250=P3_ANA_CON4**(p33_sfr.h:134 有名,P33_ACCESS(0x94),
+        p33_sfr.h 纯地址宏无类型标注)做 6 次读-改-写(读&0x1FE1 写回、置 bit5/
+        bit6/bit7、bit0=1,显式 ld.w 读+st.w 写,与路 AM P3_ANA_CON2/CON5 的
+        消费形状完全同族)→ 汇合尾部 **[0xfd3100]=r4(整字写)+
+        [0xfd3100]|=0x40(复合 RMW)**,r4=(表字节 b[0x124A90]&~7)|0x1058|0x420000
+        → call helper 0x601163a(轮询)→ **读 [r4+4]=0xfd3104 RES**(r2,唯一
+        读点)→ call 控制函数 → h[槽+4]=r2 半字存结果 → [槽]=0xFFFFFFFF →
+        call 0x12b5b0(veneer)→ ld.hu 槽+4 作返回值。caller A 的 bit4 门控在
+        投影下的走向:末写值 0x40 的 bit4=0 → 第一轮就跳过 helper+控制函数,
+        直接 veneer+setter。
+      - **轮询 helper 0x601163a**(do-while,r4=-1000 起):csync → 读 CON →
+        r0.b0 符号扩展 `ifs (r0<0)` 即 **bit7 置位 → 直接返回**(完成);再读
+        CON → `(r0&16)==0` 即 **bit4 清零 → 直接返回**(放弃);否则 call RAM
+        延时 0x12e256、r4+=1、`r4!=0` 回卷——最多 1000 轮。投影世界里 setter
+        写值的 bit7 取决于表字节 b[0x124A90] 的 bit7、bit4=1(0x1058 bit4)——
+        helper 走满 1000 轮超时退出或按写值位直接退出,**投影不发明 ADC 完成
+        事件**(真实硬件转换完成会置 bit7 提前退出;完成时序不建模,报告
+        status_bits_not_modeled 全文标注)。
+      - setter 尾部复合 RMW |=0x40 走 probe_boot 通用 mmio_rmw_always_writes
+        路径(读=投影最后写值→合成→写=记录),与 lp_timer CON2 复合 RMW
+        (0x606767e,路 AL)同一执行语义。
+      - **RES(0xfd3104)=新显式停点 kind fd31_adc_res_not_modeled**(优先于泛
+        unmapped 便于诊断):RES 是模拟测量值、无可推导来源(红线:绝不发明
+        0/满值 fixture);真机 FD07 测量(路 BA 已评估通道可读)或带推导链的
+        具名 fixture 是唯一继续途径。
+      - **0xf2c250(P3_ANA_CON4)的放行**:挂 fd31_adc_con_readback 开关联动
+        seed 进 additional_configuration(合成初始字 0,路 AM p33_analog_config
+        同款语义:写后读回=后写值、写前读回=0)——不并进路 AM 的
+        P33_ANALOG_CONFIG 常量(那会改变「p33_analog_config 开而本开关关」
+        世界的报告形状);开关关时 0xf2c250 保持 unmapped(304,317 形状)。
     """
     CON=0xfd3100
+    RES=0xfd3104
+    # P3_ANA_CON4(p33_sfr.h:134 有名,P33_ACCESS(0x94)):ADC setter case1 的
+    # 0x6067d8a 读改写目标,fd31_adc_con_readback 开关联动 seed(见类注释)。
+    ANA_CON4=0xf2c250
     ADDRESSES=(CON,)
 
-    def __init__(self):
+    def __init__(self,*,con_readback_projection=False):
         self.stores={address:{'values':[],'writes':0} for address in self.ADDRESSES}
         self.word_writes=0
+        # con_readback_projection(opt-in,需 fd31_adc_con_projection,路 BN/sim-adc-read):
+        # CON 读回=最后写值投影。SDK 证据与 lp_timer CON0/1/2(路 AL,p11_sfr.h
+        # __RW)同族——参考 br28.h 把 JL_ADC_TypeDef 标成 {__RW CON; __RO RES;},
+        # 且该头的 __RW/__WO/__RO 是有区分度的标注(JL_LRCT CON __WO vs NUM __RW、
+        # ADC CON __RW vs RES __RO),即 SDK 作者认为 CON 是可回读的配置字。读回
+        # =最后写值与 SFC 时钟 +8(0xfd1c08)/lp_timer CON(0xf2a908,路 AL)同族,
+        # 只在固件已写过至少一次后返回、从不臆造复位值。
+        # 消费者分支(反汇编钉死,见类注释):caller A 0x60116d0 的 0x60116e8
+        # `(r0 & 16)==0` 用投影值判 bit4 门控——末写值 0x40 的 bit4=0 → 跳过
+        # helper+控制函数;轮询 helper 0x601163a 的 bit7 置位退出在投影世界里
+        # 永不触发(setter 写值 bit7=0),固件轮询 1000 轮超时退出是投影的自然
+        # 后果——**投影不发明 ADC 完成事件**(真实硬件上转换完成会置 bit7,轮询
+        # 提前退出;完成时序不建模,报告显式标注)。RES(__RO、模拟测量值)读回
+        # 与 CON 状态位转换语义一样无可推导来源,保持严格停
+        # fd31_adc_res_not_modeled,绝不发明 0/满值 fixture。
+        self.con_readback_projection=con_readback_projection;self.con_reads=0
 
     def handles(self,address):
         return address in self.stores
+
+    def handles_res(self,address):
+        # RES 只路由读(显式 kind 优先于泛 unmapped,便于诊断);写不经 fd31
+        # 投影(handles() 不含 RES),整字写保持泛 unmapped_or_readonly_write。
+        return address==self.RES
 
     def write(self,address,value):
         if address not in self.stores:raise ValueError('not a modeled fd31 ADC CON register')
@@ -1677,13 +1746,36 @@ class Fd31AdcConRegisters:
         self.word_writes+=1
 
     def read(self,address):
+        if address==self.RES:
+            # RES(0xfd3104,SDK __RO)=ADC 转换结果,模拟测量值,无可推导来源
+            # (红线:绝不发明默认 0/满值);固件侧唯一读点=caller A 0x6011704
+            # `ld.w [r4+4]`(r4=0xfd3100,ld.w 的 n 字段 scale=4)。真机测量通道
+            # (FD07,路 BA)或具名 fixture(需推导链)是唯一继续途径。
+            raise Blocked('fd31_adc_res_not_modeled',address=hex(address))
+        if self.con_readback_projection and self.stores[self.CON]['writes']>0:
+            self.con_reads+=1
+            return self.stores[self.CON]['values'][-1]
         raise Blocked('fd31_adc_con_readback_not_modeled',address=hex(address))
 
     def rmw(self,kind,operand):
+        if self.con_readback_projection and kind in ('or','and'):
+            # 复合 RMW(rmw.or.modimm [0xfd3100]|=0x40,setter 0x60116ca)=内部
+            # 读(投影=最后写值)+按位合成+写回记录,与 lp_timer CON2 复合 RMW
+            # (0x606767e,路 AL)同一执行语义;实际执行路径走 probe_boot 的通用
+            # mmio_rmw_always_writes(读投影→合成→写记录),此处提供同语义的
+            # 模型 API(单测/完整性)。形状外(and/or 之外)拒绝。
+            if self.stores[self.CON]['writes']==0:
+                raise Blocked('fd31_adc_con_readback_not_modeled',address=hex(self.CON),operation=kind)
+            operand&=0xffffffff
+            value=self.stores[self.CON]['values'][-1]
+            value=(value|operand) if kind=='or' else (value&operand)
+            self.stores[self.CON]['values'].append(value);self.stores[self.CON]['writes']+=1
+            self.word_writes+=1
+            return
         raise Blocked('fd31_adc_con_rmw_not_modeled',address=hex(self.ADDRESSES[0]),operation=kind)
 
     def report(self):
-        return {'addresses':[hex(a) for a in self.ADDRESSES],
+        result={'addresses':[hex(a) for a in self.ADDRESSES],
                 'word_writes':self.word_writes,
                 'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
                                   'writes':e['writes']}
@@ -1692,7 +1784,8 @@ class Fd31AdcConRegisters:
                               'reference br28.h (ls_base+map_adr(0x31,0); same header family as the '
                               'JL_LRCT naming anchor; struct has NO bit-field definitions; naming '
                               'anchor only, not a silicon claim; route BD\'s power/PMU reading corrected)'),
-                'write_only':True,'readback_not_modeled':True,
+                'write_only':not self.con_readback_projection,
+                'readback_not_modeled':not self.con_readback_projection,
                 'observed_shapes':('control function 0x60115b4: li r0=0xfd3100, st.w.modimm '
                                    '[r0]=0x20000 (modimm raw 0xB00 expands to 0x20000, NOT 0x200 '
                                    'as route BD recorded), li r1=0x20040, st.w [r0]=r1, '
@@ -1709,7 +1802,36 @@ class Fd31AdcConRegisters:
                               'never invented; no ADC conversion, analog input or status-bit '
                               'semantics modeled; CON readback (bit4 gate / bit7 busy poll) and '
                               'RES (an analog measurement) have no derivable values, so reads '
-                              'stop honestly and no fixture is invented')}
+                              'stop honestly and no fixture is invented' +
+                              ('' if not self.con_readback_projection else
+                               '; with the opt-in readback projection CON reads return the last '
+                               'firmware-written value — see con_readback_projection'))}
+        if self.con_readback_projection:
+            result['con_readback_projection']={
+                'address':hex(self.CON),'reads':self.con_reads,
+                'readback_semantics':('last firmware-written value; the reference br28.h marks '
+                    'JL_ADC_TypeDef CON __RW (a meaningful annotation in this header: JL_LRCT '
+                    'CON is __WO while its NUM is __RW, and ADC RES is __RO), so a CON read-back '
+                    'is defined and returning the last write matches the SFC clock +8 '
+                    '(0xfd1c08) and lp_timer CON (route AL, 0xf2a908) precedents — only after '
+                    'at least one firmware write, never a fabricated reset value'),
+                'status_bits_not_modeled':('the projection NEVER invents ADC completion: bit7 '
+                    '(conversion-done, poll helper 0x601163a exits on it) and bit4 (gate at '
+                    '0x60116e8) read back whatever the firmware last WROTE, so in the projected '
+                    'world the poll helper runs its full <=1000-round budget and exits on the '
+                    'counter (r4 from -1000 to 0) instead of an early completion exit; on real '
+                    'hardware the ADC would set bit7 and the poll would exit early — the '
+                    'completion TIMING and status-bit transition semantics are NOT modeled, '
+                    'every step in this projection is conditional pass / derived-not-measured'),
+                'res_boundary':{'address':hex(self.RES),'sdk_name':'JL_ADC.RES (__RO)',
+                    'sole_firmware_access':'0x6011704 ld.w [r4+4] (caller A, n-field scale 4)',
+                    'value_evidence':('none — RES is the live analog conversion result; reads '
+                        'stay strictly blocked (fd31_adc_res_not_modeled) and no 0/full-scale '
+                        'fixture is ever invented; a live-device FD07 measurement session '
+                        '(route BA evaluated the channel readable) or a named fixture with a '
+                        'real derivation chain are the only ways on')}
+            }
+        return result
 
 
 class MMU:
@@ -2152,7 +2274,7 @@ class BR28Model:
                  p33_port_sel_projection=False,
                  p33_awkup_projection=False,p33_awkup_first_read_words=None,
                  p3_ls_projection=False,p11_syscon1_mask_sets=False,
-                 fd31_adc_con_projection=False,
+                 fd31_adc_con_projection=False,fd31_adc_con_readback=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -2333,7 +2455,16 @@ class BR28Model:
         # 「PMU/电源口」实为 ADC CON,参考 br28.h 同 JL_LRCT 锚点头)。默认关:
         # 0xfd3100 写保持 unmapped_or_readonly_write(304,036 前沿形状不变);
         # RES(0xfd3104)固件零写,投影不覆盖、读保持泛 unmapped。
-        self.fd31_adc_con=Fd31AdcConRegisters() if fd31_adc_con_projection else None
+        # fd31_adc_con_readback(路 BN):CON 读回=最后写值投影(lp_timer CON
+        # 路 AL 同族)+ RES 显式停点 kind;0xf2c250(P3_ANA_CON4,setter case1
+        # 调 0x6067d8a 读改写)联动 seed 进 additional_configuration(路 AM
+        # p33_analog_config 同款合成初始字 0)——开关关时 0xf2c250 保持
+        # unmapped、CON 读回保持 fd31_adc_con_readback_not_modeled(304,317
+        # 前沿形状不变)。
+        if fd31_adc_con_readback and not fd31_adc_con_projection:
+            raise ValueError('the fd31 ADC CON readback projection requires the fd31 ADC CON projection')
+        self.fd31_adc_con=Fd31AdcConRegisters(con_readback_projection=fd31_adc_con_readback) \
+                          if fd31_adc_con_projection else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -2409,6 +2540,14 @@ class BR28Model:
         if p33_analog_config_projection:
             for address in P33_ANALOG_CONFIG:
                 self.registers[address]=0
+        # P3_ANA_CON4(0xf2c250,路 BN):ADC setter case1 调 0x6067d8a 对它做 6 次
+        # 读-改-写(显式 ld.w 读+st.w 写,与 P3_ANA_CON2/CON5 消费形状同族)。
+        # 挂 fd31_adc_con_readback 联动 seed(路 AM 同款合成初始字 0),不并进
+        # P33_ANALOG_CONFIG 常量——那会改变「p33_analog_config 开而本开关关」
+        # 世界的报告形状;开关关时 0xf2c250 保持 unmapped(304,317 前沿形状)。
+        if fd31_adc_con_readback:
+            self.additional_configuration.add(Fd31AdcConRegisters.ANA_CON4)
+            self.registers[Fd31AdcConRegisters.ANA_CON4]=0
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
             if address not in (CLOCK0,CLOCK0+4,CLOCK0+8,PLL0) and address not in self.additional_configuration:
@@ -2451,7 +2590,8 @@ class BR28Model:
             (self.p33_port_sel is not None and self.p33_port_sel.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
-            (self.fd31_adc_con is not None and self.fd31_adc_con.handles(address)) or
+            (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
+                                                or self.fd31_adc_con.handles_res(address))) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -2646,8 +2786,11 @@ class BR28Model:
             return self.p3_ls.read(address)
         # fd31 ADC CON(路 BG):整字写 write-only 记录,读回是真实消费(bit4
         # 门控/bit7 忙等/RES 模拟值无可推导来源),一律严格停(显式 kind 优先
-        # 于泛 unmapped,便于诊断)。
-        if self.fd31_adc_con is not None and self.fd31_adc_con.handles(address):
+        # 于泛 unmapped,便于诊断)。路 BN:opt-in 读回投影开启时 CON 返回最后
+        # 写值(lp_timer 同族),RES(0xfd3104)无论投影开关一律显式严格停
+        # fd31_adc_res_not_modeled(模拟测量值无可推导来源)。
+        if self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
+                                              or self.fd31_adc_con.handles_res(address)):
             self.counts['reads']+=1
             return self.fd31_adc_con.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
@@ -2750,6 +2893,10 @@ class BR28Model:
             # P3_LS 族(路 BD):st.w/并行对 st.w 半全字覆盖写(旧值无关,
             # 含 run3 旧值方向 pair),write-only 记录。
             self.p3_ls.write(address,value)
+        elif self.fd31_adc_con is not None and self.fd31_adc_con.handles_res(address):
+            # RES(0xfd3104,SDK __RO):固件零写观测、转换结果是模拟量——任何
+            # 写形状一律显式拒绝(kind 优先于泛 unmapped_or_readonly_write)。
+            raise Blocked('fd31_adc_res_write_not_modeled',address=hex(address),value=hex(value))
         elif self.fd31_adc_con is not None and self.fd31_adc_con.handles(address):
             # fd31 ADC CON(路 BG):st.w.modimm/st.w 全字覆盖写(旧值无关),
             # write-only 记录;值序列 0x20000/0x20040/0x40 全真实指令计算。

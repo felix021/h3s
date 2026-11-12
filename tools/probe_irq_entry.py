@@ -354,7 +354,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              power_init_wkup_dly=False,
              mem_pwr_con=False,p33_window=False,p33_port_sel=False,p33_awkup=False,
              p3_ls=False,p11_syscon1_masks=False,
-             fd31_adc_con=False,
+             fd31_adc_con=False,fd31_adc_con_readback=False,
              subword_stores=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              flash_image_bytes=None,readonly=()):
@@ -465,6 +465,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # p11_code.bin 公共段拷贝循环(0x6067990..96,每字节 4 条指令 ×12112 字节
         # ≈48k 步)超出默认 250k 预算,前沿场景放宽到 320k。
         budget=320000
+        # fd31 ADC CON 读回投影(路 BN)把前沿拉进轮询 helper 0x601163a 的
+        # 1000 轮忙等(投影世界不发明 ADC 完成,bit7 恒不置位;每轮 call RAM
+        # 延时 0x12e256 ≈386 步 → ~400k 步),途中跨过 Timer0 STD12M 首次
+        # 到期(~341,097)及其后 ~11 次到期(每 40,000 步一次,场景必须叠加
+        # 已合并的 timer0_irq4_delivery 机制,否则停在交付边界)——预算放宽
+        # 到 800k 覆盖 RES 读停点(~710k)。
+        if fd31_adc_con_readback:budget=800000
     # heap_info_bytes:显式实验配置(P11_HEAP_INFO_DERIVED 静态推导候选)。只与
     # p11_power_init 叠加使用;报告把 fixture 标注为 derived-not-measured,
     # 场景结论一律条件通过,不算已验证(模型侧 read_bytes 只按字节粒度回放,
@@ -737,6 +744,28 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if fd31_adc_con:
         require(p11_power_init,'the fd31 ADC CON projection only layers on the p11_power_init scenario')
         options['fd31_adc_con_projection']=True
+    # fd31_adc_con_readback:opt-in 的 0xfd3100=JL_ADC->CON 读回=最后写值投影
+    # (路 BN/sim-adc-read,lp_timer_con_readback 路 AL 同族)。SDK 证据:参考
+    # br28.h 的 JL_ADC_TypeDef{__RW CON; __RO RES;}(该头 __RW/__WO/__RO 标注
+    # 有区分度:JL_LRCT CON __WO vs NUM __RW、ADC CON __RW vs RES __RO),CON
+    # 可回读是 SDK 参考语义;读回=最后写值与 SFC 时钟 +8(0xfd1c08)/lp_timer
+    # CON(0xf2a908)同族,只在固件写过至少一次后返回、从不臆造复位值。消费
+    # 分支(反汇编钉死,全文见 br28_model.Fd31AdcConRegisters 类注释):304,317
+    # 停点 0x60116e6 的读由 caller A 0x60116d0 的 bit4 门控 0x60116e8 消费——
+    # 末写值 0x40 的 bit4=0 → 跳过轮询 helper+控制函数,直接 RAM veneer
+    # 0x12b55c+setter 0x6011666;setter(通道字 0x10000,r2'=r0>>16=1)走 tbb
+    # case1 → call 0x6067d8a 对 0xf2c250=P3_ANA_CON4(p33_sfr.h:134 有名)做
+    # 6 次读-改-写(路 AM P3_ANA_CON2/CON5 同族,联动 seed 合成初始字 0)→
+    # 尾部 [0xfd3100]=r4 整字写 + |=0x40 复合 RMW(走通用 mmio 合成路径,
+    # lp_timer CON2 同款)→ 轮询 helper(bit7 置位退出在投影世界取决于写值位,
+    # 不发明 ADC 完成事件)→ 读 [0xfd3104] RES = **新停点 fd31_adc_res_
+    # not_modeled**(RES 是模拟测量值,红线:绝不发明 0/满值 fixture;真机
+    # FD07 测量或带推导链的具名 fixture 是唯一继续途径)。默认关:CON 读回
+    # 保持 fd31_adc_con_readback_not_modeled(304,317 前沿形状不变)、
+    # 0xf2c250 保持 unmapped。
+    if fd31_adc_con_readback:
+        require(fd31_adc_con,'the fd31 ADC CON readback only layers on the fd31 ADC CON projection')
+        options['fd31_adc_con_readback']=True
     # timer0_irq4_*(路 BE,独立成段便于并行路线合并):Timer0 pending→IRQ4 交付
     # 机制就位(在 ~341,097 硬期限前)。机制全部抄 core_tick/软件 IRQ 两先例:
     # 模型 advance() 在资格合格时抛 IrqDeliveryRequest(core,irq=4)(每个
@@ -1470,27 +1499,74 @@ def check(report,firmware):
     # TIMER0 精确计数:cnt 8817+281×3=9660(均匀 3 tick/步),con 0x1401、
     # expirations 10 不变;commands 20/acks 10、交付 1+7+2、CRC 30 次往返
     # 900 字节、全部 adapter 计数不变(新前缀是 memset+软件表+6 条 MMIO 写)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x60116e6' and
-            r['stop']=={'kind':'fd31_adc_con_readback_not_modeled','address':'0xfd3100'},
-            'the heap-experimental scenario must stop at the first ADC CON readback: after the '
-            'fd31_adc_con_projection lets the two back-to-back control-function calls '
-            '(0x60120f4/0x6012106, six whole-word writes 0x20000/0x20040/0x40) through and the '
-            'app-core tail runs the 176-byte buffer memset plus the software getters, the '
-            '32-round sampling loop enters caller 0x60116d0 whose first fd31 access is the '
-            'ld.w of [0xfd3100] at 0x60116e6 (JL_ADC->CON per the reference br28.h naming '
-            'anchor, route BD\'s power/PMU reading corrected; CON bit4 gate / bit7 poll and '
-            'RES 0xfd3104 have no derivable values, so the read stops honestly)')
-    require(r['completed_steps']==304317,'the heap experimental config changed its step count')
+    # (历史:路 BG 前沿 304,317 曾停在这里——CON 读回边界已由路 BN 放行,
+    # 见下一段。)
+    # **路 BN 落地**:opt-in fd31_adc_con_readback(CON 读回=最后写值投影,
+    # lp_timer CON 路 AL 同族;SDK 证据=br28.h JL_ADC_TypeDef{__RW CON;__RO RES;},
+    # 该头 __RW/__WO/__RO 标注有区分度)。逐分支推演(反汇编钉死+实测兑现):
+    # ①0x60116e6 读 CON → 投影返回末写值 0x40;②0x60116e8 bit4 门控=0x40&0x10
+    # =0 → **跳转成立**,跳过轮询 helper+控制函数,直接 RAM veneer 0x12b55c
+    # (VM init 前缀 169,439 已真实走过的 OS post 链);③setter 0x6011666
+    # (通道字 0x10000,r2'=r0>>16=1)走 tbb case1(0x6011698:r0=r0.l(u)=0)→
+    # call 0x6067d8a 对 **0xf2c250=P3_ANA_CON4**(p33_sfr.h:134 有名)做 5 次
+    # 读-改-写(实测末值 0xe1=bit0|bit5|bit6|bit7,与 0x6067d8a 的读&0x1FE1/
+    # 置 bit5/bit6/bit7/bit0=1 序列精确自洽;联动 seed 合成初始字 0,路 AM
+    # P3_ANA_CON2/CON5 同族语义)→ 汇合尾部 [0xfd3100]=0x46105d(=表字节
+    # b[0x124A90] 低 3 位 0x5 | 0x1058 | r0<<2&0x1C0000=0x40000 | 0x420000,
+    # 全真实指令计算)+ 复合 RMW |=0x40(0x46105d bit6 已置,合成值不变——
+    # mmio_rmw_always_writes 通用路径,lp_timer CON2 同款);④轮询 helper
+    # 0x601163a 进入忙等:读 CON=0x46105d → byte0=0x5d 符号扩展非负(bit7=0
+    # 不退出)、bit4=1(0x1058 贡献)不退出 → call RAM 延时 0x12e256(nop/
+    # 递减/bnez 倒数循环,实测 ~386 步/轮)→ r4 从 -1000 递增,**投影不发明
+    # ADC 完成事件**(真实硬件转换完成会置 bit7 提前退出);⑤忙等 ~143k 步
+    # 期间 Timer0 STD12M 三次到期(343,252/383,252/423,252,40,000 步精确
+    # 间隔)——三次全部落在延时函数上下文(模型 core_icfg gate_demand=0,
+    # IRQ4 priority-1 maskable 不合格),pending 挂起零交付(delivery_probe
+    # 场景在等待点上下文的交付成功对照,上下文相关性自洽);⑥**447,490 步
+    # CPU0 core tick(irq3)首次溢出 → core_tick_overflow_delivery_unresolved
+    # 诚实停**(core tick 交付接线是路 BF 的域,本路不碰);RES 读 0x6011704
+    # (fd31_adc_res_not_modeled,反汇编钉死的下一个停点)在轮询 1000 轮
+    # 跑完之后(~690k),被 core tick 期限挡在前——归路 BF 之后到达。
+    require(r['stop_core']==0 and r['stop_pc']=='0x12e284' and
+            r['stop']=={'kind':'core_tick_overflow_delivery_unresolved','core':0,'irq':3,
+                        'note':'internal pending set; no guessed readback bit, wake or interrupt entry'},
+            'the heap-experimental scenario must stop at the CPU0 core-tick first overflow: with the '
+            'fd31 ADC CON readback projection the 0x60116e6 gate reads the last written value 0x40 '
+            '(bit4=0), the sampling-loop caller skips the poll helper and control function, runs the '
+            '0x12b55c OS-post veneer plus the ADC setter (tbb case1 -> 0x6067d8a read-modify-writes '
+            'P3_ANA_CON4 0xf2c250 -> CON=0x46105d + compound |=0x40), then the poll helper busy-waits '
+            'without an invented completion (~386 steps/round through the RAM delay at 0x12e256); the '
+            'three STD12M expirations inside the busy-wait all land in the delay context where IRQ4 '
+            '(priority-1 maskable) is not eligible (gate_demand 0), pending stays set with zero '
+            'deliveries, and the run stops honestly at the core-tick overflow boundary (route BF\'s '
+            'wiring domain) at 0x12e284 inside the delay countdown loop')
+    require(r['completed_steps']==447490,'the heap experimental config changed its step count')
     fd31=r['peripherals']['fd31_adc_con_projection']
     require(fd31['stores']=={'0xfd3100':{'values':['0x20000','0x20040','0x40',
-                                                  '0x20000','0x20040','0x40'],'writes':6}} and
-            fd31['word_writes']==6 and
-            fd31['write_only'] and fd31['readback_not_modeled'] and
+                                                  '0x20000','0x20040','0x40',
+                                                  '0x46105d','0x46105d'],'writes':8}} and
+            fd31['word_writes']==8 and
+            not fd31['write_only'] and not fd31['readback_not_modeled'] and
             fd31['addresses']==['0xfd3100'] and
-            'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'],
-            'the fd31 ADC CON projection must record exactly the six executed whole-word '
-            'stores of the two control-function calls (values are real executed results: '
-            '0x20000 is the modimm raw 0xB00 rotation, not 0x200) and stay write-only')
+            'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'] and
+            fd31['con_readback_projection']['reads']==746 and
+            fd31['con_readback_projection']['address']=='0xfd3100' and
+            fd31['con_readback_projection']['res_boundary']['address']=='0xfd3104',
+            'the fd31 ADC CON projection must record the six control-function whole-word stores '
+            'plus the two setter writes of the first sampling round (the whole-word store of the '
+            'computed 0x46105d and the compound |=0x40 whose synthesized value is unchanged because '
+            'bit6 is already set; 0x46105d = table-byte b[0x124A90] low bits 0x5 | 0x1058 | '
+            '(0x10000<<2 & 0x1C0000)=0x40000 | 0x420000, all real instruction results), with 746 '
+            'projected reads (1 bit4 gate + 372 full poll rounds x 2 + 1 half-round read before the '
+            'core-tick stop) and the RES boundary pinned at 0xfd3104')
+    # P3_ANA_CON4(0xf2c250):setter case1 的 0x6067d8a 五次读-改-写末值 0xe1
+    # (=bit0|bit5|bit6|bit7,与 0x6067d94..dd6 的 读&0x1FE1 写回/(0&0x3FDF)|0x20/
+    # (0x20&0x7FBF)|0x40/(0x60&0xFF7F)|0x80/(0xE0&0x1FE)|1 序列精确自洽;
+    # seed 合成初始字 0,写前读回=0——路 AM P3_ANA_CON2/CON5 同族语义)。
+    require(r['peripherals']['registers']['0xf2c250']=='0xe1',
+            'P3_ANA_CON4 must end at 0xe1 after the five executed read-modify-writes of the ADC '
+            'setter case-1 helper 0x6067d8a (every intermediate value follows from the synthesized '
+            'initial word 0 and the disassembled mask/immediate chain)')
     reset_config=r['peripherals']['reset_history_projection']['configuration']
     require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
@@ -1581,8 +1657,18 @@ def check(report,firmware):
             'route AZ\'s sequential-semantics reading corrected by route BD: 0xf2a638 has zero '
             'app+ROM references)')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':9660,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 3220 steps * 3 ticks counted')
+    # 路 BN 精确计数:9660+(447,490-304,317)×3=439,179 tick,停点那步的 advance
+    # 被 core tick Blocked 打断在 Timer0 段之前(最后 3 tick 未走)→439,176,
+    # 三次 STD12M 到期(343,252/383,252/423,252,40,000 步精确间隔)各扣
+    # 120,000 → cnt=439,176-360,000=79,176;三次到期全部落在轮询延时上下文
+    # (gate_demand=0,IRQ4 priority-1 maskable 不合格)→ pending 挂起 True、
+    # 零交付(delivery_probe 的等待点上下文交付成功对照)。
+    require(timer=={'con':0x1401,'cnt':79176,'prd':119999,'pending':True,'expirations':13},
+            'TIMER0 must be running on source 5 with three STD12M expirations inside the ADC poll '
+            'busy-wait (10 legacy + 3 new at 343252/383252/423252, 40000 steps apart), all three '
+            'ineligible in the delay-loop context (gate_demand 0), pending left set with zero '
+            'deliveries, and the stop-step advance interrupted by the core-tick block before the '
+            'Timer0 tick of that step (439176 = 9660 + 143172*3 - 3*1 already expired periods)')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1690,7 +1776,19 @@ def check(report,firmware):
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
             r['instruction_adapters'].get('p33_awkup_bit_rmw')==14 and
-            r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1,
+            r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1 and
+            # 路 BN 新前缀(~143k 步轮询忙等)计数:精确双字 26 不变;新前缀
+            # =veneer 0x12b55c 的 3 个任务栈帧(abstract_task_stack_transport
+            # 2496→2499)、0x12b55c 内一次共享锁取(338→339)、setter/0x6067d8a
+            # 的 8 个整字存储(3497→3505:0xf2c250×5+0xfd3100×2+…)、复合 RMW
+            # |=0x40(370→371)、轮询循环内 icfg/cnum 可见性(994→996、1599→1601,
+            # 延时/轮询指令的真实执行);其余全部不变。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==2499 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==339 and
+            r['instruction_adapters'].get('exact_full_word_store')==3505 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==371 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==996 and
+            r['instruction_adapters'].get('per_core_visible_cnum')==1601,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -1723,15 +1821,20 @@ def check(report,firmware):
             'the handler must execute both 12B special-frame anchors (push.srl at 0x12ece8, '
             'pop.srl at 0x12ed08) with the 16B push.rl/pop.rl frame on the ordinary transport')
     m=rows['timer0_irq4_masked_probe']
-    require(m['completed_steps']==304317 and m['stop']==r['stop'] and
-            m['stop_pc']==r['stop_pc'] and
+    # 路 BN 注:主场景(p11_heap)已推进到 447,490(core tick 溢出),masked probe
+    # 不开 fd31 读回投影——它保持 304,317 的 CON 读回诚实停(与 delivery_probe
+    # 的 304,857 同族);停点按字面值钉,不再引用主场景。
+    require(m['completed_steps']==304317 and
+            m['stop']=={'kind':'fd31_adc_con_readback_not_modeled','address':'0xfd3100'} and
+            m['stop_pc']=='0x60116e6' and
             m['machine']['timer0_irq_entry_projection']['deliveries']==[] and
             m['peripherals']['timer0']['pending'] is True and
             m['peripherals']['timer0']['expirations']==11 and
             m['peripherals']['assumptions']['timer0_irq4_probe']['irq4_nibble_cleared_counterfactual'],
             'the masked counterfactual (IRQ4 nibble cleared) must stay inert: the expiry only '
             'sets pending, nothing is requested or delivered, and the run keeps the exact '
-            'base-scenario honest P3_LS frontier')
+            'honest fd31-ADC-CON-readback frontier at 304317 (the probe scenarios do not opt '
+            'into the route-BN readback projection)')
     report['timer0_irq4_delivery_projection']=(
         'route BE: the Timer0 IRQ4 delivery machinery is in place before the ~341,097-step '
         'first-expiry hard deadline. The eligibility chain is UNCHANGED (per-core ICFG gates '
@@ -2028,6 +2131,45 @@ def check(report,firmware):
         'frontier advances 281 steps to 304,317 at 0x60116e6 with ZERO adapter/CRC/'
         'cross-core changes (the 176-byte buffer memset runs its single-instruction REP '
         'bodies through the upstream native mechanism).')
+    report['fd31_adc_con_readback_assumption']=(
+        'opt-in fd31_adc_con_readback (route BN, layered on fd31_adc_con_projection): CON reads '
+        'return the LAST FIRMWARE-WRITTEN VALUE, the lp_timer CON (route AL) / SFC clock +8 '
+        '(0xfd1c08) precedent family. SDK evidence: the reference br28.h marks JL_ADC_TypeDef '
+        'CON __RW and RES __RO, and that annotation is meaningful in this header (JL_LRCT CON '
+        'is __WO while its NUM is __RW), so a CON read-back is defined; only after at least one '
+        'firmware write, never a fabricated reset value. Consumer branch walk, disassembled and '
+        'then EXECUTED: the 0x60116e6 gate reads 0x40 whose bit4=0, so the sampling-loop caller '
+        '0x60116d0 skips the poll helper and control function, runs the RAM OS-post veneer '
+        '0x12b55c (the same chain the VM-init prefix executed at 169,439) and the ADC setter '
+        '0x6011666; with the sampling channel word 0x10000 (r0>>16=1) the setter tbb takes '
+        'case 1 (0x6011698: r0=r0.l(u)=0) which CALLS 0x6067d8a — five read-modify-writes of '
+        'P3_ANA_CON4 0xf2c250 (p33_sfr.h:134 named address macro, no type annotations; '
+        'read-ld.w/st.w shape identical to route AM\'s P3_ANA_CON2/CON5) — then writes '
+        '[0xfd3100]=0x46105d (table-byte b[0x124A90] low bits 0x5 | 0x1058 | 0x40000 | '
+        '0x420000, all real instruction results) plus the compound |=0x40 (value unchanged, '
+        'bit6 already set) through the generic mmio RMW path. P3_ANA_CON4 is seeded with the '
+        'synthesized initial word 0 ONLY when this switch is on (route-AM semantics: read '
+        'before write = 0, after = last write; the observed final value 0xe1 follows exactly '
+        'from the disassembled mask chain). The poll helper then BUSY-WAITS: the projected '
+        'CON word 0x46105d has bit7=0 and bit4=1, so neither exit fires and the helper runs '
+        'its full <=1000-round budget (~386 steps/round through the RAM delay 0x12e256) — THE '
+        'PROJECTION NEVER INVENTS AN ADC COMPLETION; on real hardware the conversion sets bit7 '
+        'and the poll exits early, so the completion timing and status-bit transitions are NOT '
+        'modeled and every step past 304,317 stays conditional pass / derived-not-measured. '
+        'Inside the busy-wait Timer0 expires three times on STD12M (343252/383252/423252, '
+        'exactly 40000 steps apart) but all three land in the delay-loop context where IRQ4 '
+        '(priority-1 maskable) is not eligible (core_icfg gate demand 0): pending stays set '
+        'with zero deliveries and zero stops — contrast the delivery-probe scenario whose '
+        'expiry in the scheduler-wait context delivers fine, the context sensitivity is the '
+        'existing eligibility chain, unchanged. The run stops at 447,490 on the CPU0 core-tick '
+        '(irq3) FIRST OVERFLOW — core_tick_overflow_delivery_unresolved at 0x12e284 inside the '
+        'delay countdown loop — which is route BF\'s wiring domain, not crossed here. The RES '
+        'read at 0x6011704 (fd31_adc_res_not_modeled, the disassembled NEXT stop after the '
+        '1000 poll rounds, ~690k) lies beyond that deadline; RES is a live analog measurement '
+        'with no derivable source — NO 0/full-scale fixture is ever invented, a live FD07 '
+        'measurement session (route BA evaluated the channel readable) or a named fixture '
+        'with a real derivation chain are the only ways on. Default off: the CON read keeps '
+        'the honest 304,317 fd31_adc_con_readback_not_modeled stop and 0xf2c250 stays unmapped')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -2147,7 +2289,7 @@ def main():
                               power_init_wkup_dly=True,
                               mem_pwr_con=True,p33_window=True,p33_port_sel=True,
                               p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
-                              fd31_adc_con=True,
+                              fd31_adc_con=True,fd31_adc_con_readback=True,
                               subword_stores=True,
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'timer0_irq4_delivery_probe',
