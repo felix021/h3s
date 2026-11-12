@@ -14,6 +14,7 @@ from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection
 from br28_model import MPUConfigurationProjection, GpioOutValue
 from br28_model import IcuInitializationProjection, ICU_BASES
 from br28_model import DcuCmoProjection, DCU_CMO_FLUSH, DCU_CMO_FLUSHINV
+from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON
 
 
 class ModelTests(unittest.TestCase):
@@ -473,6 +474,44 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(report['write_only'] and not report['readback_observed'])
         self.assertFalse(report['causal_link_to_pwr_con_bit5_response_assumed'])
         self.assertFalse(BR28Model().handles(0xf2a0c0,4))  # 默认关
+
+    def test_lp_timer_init_registers_are_write_only_bit_records(self):
+        # power_init 尾部低功耗定时器链(独立开关 lp_timer_init_projection,默认关):
+        # P11_LPTMR0 CON0/1/2 与 PMU 配置族 0xf2c04c/0xf2c050 整字写记值+次数;
+        # JL_LRCT CON 0xfd3600 只按位记录 RMW(and 清位/或置位不经读回,PartialWord
+        # 与 gpio RMW/q32s PMU_CON 同语义);全部读回严格拒绝(0x6067514 的 LRC
+        # trim 使能/busy 轮询是诚实停止点);0xfd3600 整字 store 无观测形状拒绝。
+        h=BR28Model(lp_timer_init_projection=True)
+        for address in (P11_LPTMR0_CON0,P11_LPTMR0_CON1,P11_LPTMR0_CON2,
+                        POWER_INIT_PMU_CFG0,POWER_INIT_PMU_CFG1,LRCT_CON):
+            self.assertTrue(h.handles(address,4))
+        self.assertFalse(BR28Model().handles(P11_LPTMR0_CON0,4))  # 默认关
+        self.assertFalse(BR28Model().handles(LRCT_CON,4))
+        h.write(P11_LPTMR0_CON0,0x5c);h.write(P11_LPTMR0_CON1,0x53);h.write(P11_LPTMR0_CON2,0)
+        h.write(POWER_INIT_PMU_CFG0,0x21);h.write(POWER_INIT_PMU_CFG1,0x41)
+        h.lp_timer_rmw(LRCT_CON,'and',0xffffffc1)  # 清 bits0-5 → 已知 0
+        h.lp_timer_rmw(LRCT_CON,'or',0x40)         # 置 bit6
+        h.lp_timer_rmw(LRCT_CON,'or',0x1)          # 置 bit0
+        word=h.lp_timer.lrct
+        self.assertEqual((word.known,word.value),(0x7f,0x41))
+        with self.assertRaisesRegex(Blocked,'readback_not_modeled'):h.read(P11_LPTMR0_CON0)
+        with self.assertRaisesRegex(Blocked,'readback_not_modeled'):h.read(LRCT_CON)
+        with self.assertRaisesRegex(Blocked,'full_store_not_modeled'):h.write(LRCT_CON,1)
+        report=h.report()['lp_timer_init_projection']
+        self.assertEqual(report['stores'],{'0xf2a900':{'values':['0x5c'],'writes':1},
+                                           '0xf2a904':{'values':['0x53'],'writes':1},
+                                           '0xf2a908':{'values':['0x0'],'writes':1},
+                                           '0xf2c04c':{'values':['0x21'],'writes':1},
+                                           '0xf2c050':{'values':['0x41'],'writes':1}})
+        self.assertEqual(report['lrct_con']['rmw_writes'],3)
+        self.assertTrue(report['write_only'] and not report['readback_observed'])
+        self.assertFalse(report['bit_semantics_or_completion_verified'])
+        self.assertFalse(report['lrc_trim_result_simulated'])
+        self.assertNotIn('lp_timer_init_projection',BR28Model().report())
+        # 未观测的 RMW 形式(xor 等)与未建模地址拒绝
+        with self.assertRaisesRegex(Blocked,'form_not_modeled'):LpTimerInitRegisters().rmw(LRCT_CON,'xor',1)
+        with self.assertRaises(ValueError):LpTimerInitRegisters().rmw(0x1234,'and',1)
+        with self.assertRaises(ValueError):LpTimerInitRegisters().write(0x1234,0)
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')

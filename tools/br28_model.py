@@ -29,6 +29,12 @@ Q32S_PMU_CON=0xf2a0c0  # P11 侧 q32s 核的 PMU_CON(p11_sfr 窗口;主核 power
 P11_SYS_DIV=0xf2a410    # SDK p11_sfr.h P11_CLOCK.SYS_DIV
 P11_CLK_CON0=0xf2a414   # SDK p11_sfr.h P11_CLOCK.CLK_CON0
 P11_HEAP_INFO=0xf27f4a  # P11 RAM P2M message area +0xa: 4B heap begin/size written by P11 init (value unproven)
+P11_LPTMR0_CON0=0xf2a900  # SDK p11_sfr.h P11_LPTMR0_BASE = p11_sfr_base(0xf2a000)+map_adr(0x09,0x00)
+P11_LPTMR0_CON1=0xf2a904  # 结构 CON0/CON1/CON2/PRD/RSC/CNT(__RO);CNT 在本前缀无访问观测
+P11_LPTMR0_CON2=0xf2a908
+POWER_INIT_PMU_CFG0=0xf2c04c  # power_init 尾部 PMU 配置族整字写(SDK 无名;与 0xf2c048/0xf2c054/0xf2c05c 同族)
+POWER_INIT_PMU_CFG1=0xf2c050
+LRCT_CON=0xfd3600  # SDK br28.h JL_LRCT = ls_base(0xfd0000)+map_adr(0x36,0x00);CON __WO,NUM __RW
 WDT_CON=0xf2a800
 WDT_KEY=WDT_CON+4
 EFUSE_CON0=0xf2c2c0
@@ -890,6 +896,69 @@ class P11WindowRegisters:
                 'causal_link_to_pwr_con_bit5_response_assumed':False}
 
 
+class LpTimerInitRegisters:
+    """power_init 尾部低功耗定时器初始化链的写记录(opt-in,读回一律拒绝)。
+
+    反汇编钉死的三个地址族(全部由基址寄存器算出,字面量搜索必漏):
+    - P11_LPTMR0 CON0/CON1/CON2(0xf2a900/04/08,r7(0xf2c04c)-0x174c):
+      0x6067a7a..a84 整字写 0x5C/0x53/0。SDK p11_sfr.h P11_LPTMR0_BASE=
+      p11_sfr_base+map_adr(0x09,0x00)=0xf2a900,结构 CON0/CON1/CON2/PRD/
+      RSC/CNT;值与 p11_app.h LP_TMR0_* 位宏自洽(0x5C=清 P11 侧 wkup/to
+      标志并开 IE、0x53=清主核侧标志并开 kick-start、CON2=0 时钟源/分频)。
+      本前缀(运行到 0x6067514 为止)写后无人回读;CNT(+0x14,__RO)无访问
+      观测——地址族全部由基址寄存器算出,字面量扫描不能穷举,读回一律
+      严格拒绝兜底(真实到达时诚实停)。
+    - PMU 配置族 0xf2c04c/0xf2c050:0x6067a86/a8a 整字写 0x21/0x41。SDK 头
+      无名(主核 PMU 配置族,与复位快照 0xf2c048、0xf2c054/0xf2c05c 配置族
+      同一块)。0xf2c04c 之后会被 pmu_task 回读(0x6068fa0/fa4 字节读
+      b[r7+0/1] 组装 P11 heap 基址)——那在该任务收到消息的时间片里,不在
+      本前缀;模型对读回一律严格拒绝,真实到达时诚实停。
+    - JL_LRCT CON(0xfd3600,SDK br28.h ls_base+map_adr(0x36,0x00),CON 标注
+      __WO):0x6067aae `rmw.and.nmodimm &=0xFFFFFFC1`、0x60674fc &=~1、
+      0x6067500/0x6067506 |=0x40/=0x1。RMW 按位记录(PartialWord,清位/置位
+      不经读回,与 gpio RMW、q32s PMU_CON 位记录同语义);0x6067514 `ld.w`
+      读 CON(测 bit0 使能、bit7 busy)是 LRC trim 硬件块的轮询——读回值/
+      完成时序无任何证据,读一律 Blocked(本投影的诚实停止点),LRC 校准
+      效果(频率、busy 清除)不模拟。
+    """
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in
+                     (P11_LPTMR0_CON0,P11_LPTMR0_CON1,P11_LPTMR0_CON2,
+                      POWER_INIT_PMU_CFG0,POWER_INIT_PMU_CFG1)}
+        self.lrct=PartialWord();self.lrct_rmws=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def handles_lRCT(self,address):
+        return address==LRCT_CON
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled LP-timer init register')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        if len(entry['values'])>64:entry['values'].pop(0)
+
+    def rmw(self,address,kind,operand):
+        if not self.handles_lRCT(address):raise ValueError('not the modeled LRCT CON')
+        if kind not in ('and','or'):raise Blocked('lp_timer_rmw_form_not_modeled',address=hex(address),
+                                                  operation=kind)
+        self.lrct.apply(kind,operand&0xffffffff);self.lrct_rmws+=1
+
+    def read(self,address):
+        raise Blocked('lp_timer_register_readback_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'stores':{hex(address):{'values':[hex(v) for v in entry['values']],'writes':entry['writes']}
+                          for address,entry in self.stores.items()},
+                'lrct_con':{'address':hex(LRCT_CON),'known_mask':hex(self.lrct.known),
+                            'known_value':hex(self.lrct.value),'rmw_writes':self.lrct_rmws},
+                'sdk_anchors':'p11_sfr.h P11_LPTMR0_BASE=0xf2a000+map_adr(0x09,0); br28.h JL_LRCT=0xfd0000+map_adr(0x36,0) CON __WO; 0xf2c04c family unnamed in SDK headers',
+                'write_only':True,'readback_observed':False,
+                'bit_semantics_or_completion_verified':False,
+                'lrc_trim_result_simulated':False}
+
+
 class MMU:
     """Functional SDK page-table projection, no TLB/cache or bus timing model."""
     def __init__(self,initial_con=None):
@@ -1235,7 +1304,7 @@ class BR28Model:
                  mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None,
                  p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
                  p11_heap_info_bytes=None,p11_window_projection=False,
-                 power_init_config_rmw=False,
+                 power_init_config_rmw=False,lp_timer_init_projection=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
                  gpcnt_cleanup_projection=False,core_tick_configuration=False,
@@ -1292,6 +1361,11 @@ class BR28Model:
             raise ValueError('P11 low-power response projection requires the reset history snapshot')
         self.p11_lp=P11LowPowerResponse() if p11_lpwr_response_projection else None
         self.p11_win=P11WindowRegisters() if p11_window_projection else None
+        # lp_timer_init:power_init 尾部低功耗定时器初始化链(P11_LPTMR0 CON 写、
+        # PMU 配置族 0xf2c04c/50 写、JL_LRCT CON 位 RMW)的 write-only 记录。
+        # 独立开关而非并入 p11_window_projection:后者的报告键在 crc_bankb 场景
+        # 已钉死,并表会加键破坏既有报告字节不变。
+        self.lp_timer=LpTimerInitRegisters() if lp_timer_init_projection else None
         if p11_heap_info_bytes is not None and (not isinstance(p11_heap_info_bytes,(bytes,bytearray))
                                                 or len(p11_heap_info_bytes)!=4):
             raise ValueError('P11 heap info fixture must be exactly 4 bytes')
@@ -1391,6 +1465,7 @@ class BR28Model:
             (self.watchdog is not None and address in (WDT_CON,WDT_KEY)) or
             (self.p11 is not None and address in (P11_UART_CON2,PMU_STA)) or
             (self.p11_win is not None and (self.p11_win.handles(address) or self.p11_win.handles_release_rmw(address))) or
+            (self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address))) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -1556,6 +1631,8 @@ class BR28Model:
             return self.p11.read()
         if self.p11_win is not None and (self.p11_win.handles(address) or self.p11_win.handles_release_rmw(address)):
             return self.p11_win.read(address)
+        if self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address)):
+            return self.lp_timer.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -1630,6 +1707,11 @@ class BR28Model:
         elif self.p11_win is not None and self.p11_win.handles_release_rmw(address):
             # 0xf2a0c0 全 app+ROM 只有 |=1 一种写形状;整字 store 无观测形状,拒绝
             raise Blocked('p11_window_release_full_store_not_modeled',address=hex(address),value=hex(value))
+        elif self.lp_timer is not None and self.lp_timer.handles(address):
+            self.lp_timer.write(address,value)
+        elif self.lp_timer is not None and self.lp_timer.handles_lRCT(address):
+            # 0xfd3600 只有位 RMW 观测;整字 store 无观测形状,拒绝
+            raise Blocked('lp_timer_full_store_not_modeled',address=hex(address),value=hex(value))
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -1735,6 +1817,21 @@ class BR28Model:
         self.record_write({'address':hex(address),'operation':'or','operand':hex(P11WindowRegisters.RELEASE_RMW_OPERAND),
                            'known_value':hex(self.p11_win.control.value),'known_mask':hex(self.p11_win.control.known),
                            'projection':'write-only bit record; no release or scheduling effect modeled'})
+
+    def handles_lp_timer_rmw(self,address):
+        return self.lp_timer is not None and self.lp_timer.handles_lRCT(address)
+
+    def lp_timer_rmw(self,address,kind,operand):
+        """JL_LRCT CON(0xfd3600)位 RMW 的 opt-in 拦截(清位/置位,不经读回)。
+
+        只按位记录(PartialWord),不臆造读回值;LRC trim 的使能/busy 位读回
+        (0x6067514/0x606751c 轮询)与校准效果保持严格停。
+        """
+        if not self.handles_lp_timer_rmw(address):raise ValueError('not the modeled LRCT CON')
+        self.lp_timer.rmw(address,kind,operand);self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
+                           'known_value':hex(self.lp_timer.lrct.value),'known_mask':hex(self.lp_timer.lrct.known),
+                           'projection':'bitwise record only; no readback, trim completion or LRC value modeled'})
 
     def p11_lpwr_rmw(self,address,instruction_id,operand):
         """主核 PWR_CON |=0x20 请求 RMW 的 opt-in 拦截。
@@ -1877,6 +1974,7 @@ class BR28Model:
         if self.p11 is not None:result['p11_access_counterfactual']=self.p11.report()
         if self.p11_lp is not None:result['p11_low_power_response']=self.p11_lp.report()
         if self.p11_win is not None:result['p11_window_projection']=self.p11_win.report()
+        if self.lp_timer is not None:result['lp_timer_init_projection']=self.lp_timer.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
