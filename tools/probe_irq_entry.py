@@ -537,7 +537,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # (r6=0xf2c940)对 [0xf2c948]=P33_ACCESS(0x252)的字节写——上游 pair 存储模型
     # 写前合并读旧 word(模型内部簿记读非 guest 装载)撞 unmapped。证据核验:
     # SDK p33_sfr.h 命名止于 0xd5(P3_LS_PLL),族内 0x150-0x153/0x250-0x253/
-    # 0x258-0x259/0x267/0x280 全无名无类型标注无位定义;app 字面量恰 3 处+
+    # 0x258-0x259/0x267/0x268 全无名无类型标注无位定义(路 AZ 修正:清尾 0x6067d32
+    # 实际写 0xF2C9A0=P33_ACCESS(0x268),AV 误记 0x280);app 字面量恰 3 处+
     # 寄存器算术、ROM 零引用;三个引用函数(0x6067b66/0x6067464/walker 清尾
     # 0x6067d26..38)的访问形状全是单字节写、零读回、零 RMW、零整字写——
     # 故按 lp_timer SYS_DIV/CLK_CON0 整字写记录同族做 write-only 字节序列
@@ -1216,7 +1217,7 @@ def check(report,firmware):
     # 0x6067b6e r8=0xF2C548(=P33_ACCESS(0x152),SDK 无名)、0x6067b74 r6=r8+1016=
     # 0xF2C940(=P33_ACCESS(0x250),SDK 无名)、0x6067b78 r9=r6+32=0xF2C960。路 AV
     # 按「write-only 字节序列记录」放行无名族:p33_window_projection 覆盖 12 个
-    # 字节地址(0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x280,反汇编钉死访问
+    # 字节地址(0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x268,反汇编钉死访问
     # 形状全是单字节写、零读回/零 RMW/零整字写;SDK 命名止于 0xd5),0x6067be4
     # `uextra.rrii.p∥st.b` 走 byte gate(uextra.rrii 是无符号位域提取、效果只有
     # regs+flags,与 ext.b0.u 同族;全 app 12 处该形状站点在既有前缀零执行,故

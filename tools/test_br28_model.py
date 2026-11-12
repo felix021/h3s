@@ -1474,7 +1474,8 @@ class ModelTests(unittest.TestCase):
 
     def test_p33_window_projection_is_write_only_byte_record(self):
         # 路 AV:P33 窗「无名寄存器族」(SDK p33_sfr.h 命名止于 0xd5,族内
-        # 0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x280 全无名)按 write-only
+        # 0x150-0x153/0x250-0x253/0x258-0x259/0x267/0x268 全无名,路 AZ 修正清尾地址
+        # 0xf2ca00→0xf2c9a0)按 write-only
         # 字节序列记录建模——固件访问形状全是单字节写(反汇编钉死:0x6067b66
         # P33 窗配置函数/0x6067464/walker 清尾 0x6067d2e..38,零读回/零 RMW/
         # 零整字写),读回一律严格停、不臆造任何值。
