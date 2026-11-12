@@ -492,6 +492,61 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop']['address'],hex(0x123700))
         self.assertEqual(result['stop']['region'],'bootstrap_stack')
 
+    # 并行对字节存储(exact_parallel_stores 的独立子开关 exact_parallel_byte_
+    # stores)。真实前沿形状 app 0x6067a74 add.s14.rri.p∥st.b b[r0+0]=r4
+    # (power_init 主核对 P11 M2P 消息区的首写,M2P_RVD2PVDD_EN):字节存储
+    # 单字节全覆盖、旧值完全无关,gate 直写 1 个目标字节、A 半按旧寄存器
+    # 计算新基址(0xf2a900)。
+    def test_parallel_byte_pair_store_writes_exactly_one_target_byte(self):
+        h=self.handoff();h['snapshots'].append(('byte_pair_and_neighbours',0x124f00,8))
+        regs=[0]*16;regs[0]=0x124f03;regs[4]=0x5a;regs[7]=0x374c
+        result=explore(self.module,self.app,name='byte_pair',handoff=h,
+            diagnostics={'entry_pc':0x6067a74,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_byte_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],hex(0x6067a7a))
+        self.assertEqual(result['last_registers']['r'][0],hex(0x2000),
+                         'the pure-ALU half must compute the new base from the old register')
+        self.assertEqual(result['instruction_adapters'],{'parallel_byte_store_old_registers':1})
+        self.assertEqual(result['memory_snapshots']['byte_pair_and_neighbours']['bytes_with_unknowns'],
+                         '??????5a????????','exactly one target byte lands; every neighbour stays unknown')
+
+    def test_parallel_byte_pair_store_defaults_to_strict_bookkeeping_read_stop(self):
+        # 不开字节子开关:同一指令落回上游通用 pair 模型,未初始化目标字的
+        # 合并读(模型簿记,非 guest 装载)诚实停——即 300,187→300,236 前沿
+        # 里 M2P 窗已映射、字节 gate 关闭时的真实停点形状(add.s14.rri.p 不以
+        # st. 开头,不落入 upstream_store_bookkeeping_read 改名路径)。
+        regs=[0]*16;regs[0]=0x123703;regs[4]=0x5a;regs[7]=0x374c
+        result=explore(self.module,self.app,name='byte_pair_strict',handoff=self.handoff(),
+            diagnostics={'entry_pc':0x6067a74,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'uninitialized_memory')
+        self.assertNotIn('note',result['stop'],'add.s14.rri.p must not hit the st. bookkeeping rename')
+        self.assertEqual(result['stop']['address'],hex(0x123700))
+        self.assertEqual(result['stop']['region'],'bootstrap_stack')
+
+    def test_m2p_lrc_helper_writes_and_reads_back_the_period_byte(self):
+        # M2P 消息区「写真实生效、读回最后值」的普通 RAM 语义由真实代码钉死:
+        # 0x60674b8(power_init 尾部 call,li 0xF27F80=M2P 基址)写 LRC 周期字节
+        # prd=1000000/200000=5 到 M2P+0,随后三次回读 b[+0] 推导 50/200/600us
+        # 定时器字节(10/40/120)写进 +2/+3/+4。测试把 SDK 声明的 M2P 窗
+        # (0xF27F80..0xF27FE0)挂为 harness region,16 条指令全真实执行。
+        h=self.handoff()
+        h['regions'].append((0xF27F80,0xF27FE0,'p11_m2p_message_area'))
+        h['snapshots'].append(('m2p_head',0xF27F80,8))
+        regs=[0]*16;regs[0]=200000
+        result=explore(self.module,self.app,name='m2p_lrc_bytes',handoff=h,
+            diagnostics={'entry_pc':0x60674b8,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_subword_stores':True,'exact_parallel_stores':True,
+                         'exact_parallel_byte_stores':True},budget=15)
+        self.assertEqual(result['completed_steps'],15)
+        self.assertEqual(result['stop_pc'],hex(0x60674ea))
+        snap=result['memory_snapshots']['m2p_head']
+        self.assertEqual(snap['bytes_with_unknowns'],'05??0a2878??????',
+                         'the written period byte must read back as the derived timer bytes')
+        self.assertEqual(snap['initialized_bytes'],4)
+
     def test_parallel_halfword_pair_store_transports_unknown_bytes_by_origin(self):
         # 运输路径:字形状 rep 拷贝体(0x600a352 的真实编码 rep 4 4:
         # ld.w.pin r3=[r2++=4]/st.w.pin [r1++=4]=r3)把含未知字节的字装进

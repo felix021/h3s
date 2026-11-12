@@ -58,11 +58,23 @@ begin 0x3d0c, r0=0xf20000|begin=0xf23d0c, the region call 0x60114ca
 protects [0xf20000, heap begin), the four bytes are re-read at 0x60679ee..f4,
 then the pmu_task creation 0x6067242 really round-trips the scheduler: CPU0
 takes two more irq127 deliveries and RTIs into the pmu_task entry 0x6068f0c
-before power_init resumes), and stops at the next independent boundary: the
-first main-core write into the P11 M2P message area (st.b [0xf27fd6]=1, SDK
-M2P_RVD2PVDD_EN) whose pair-store word-merge read hits the unmapped P11 RAM
-at 0xf27fd4. The crc_bankb_erased_fixture frontier itself stays pinned at
-289,849 without the fixture.
+before power_init resumes). The next boundary is the first main-core write
+into the P11 M2P message area (the pair at 0x6067a74, SDK lp_ipc.h
+M2P_RVD2PVDD_EN, executed value 0) whose pair-store word-merge read needs the
+M2P window: the scenario maps the SDK-declared M2P area 0xF27F80..0xF27FE0
+(p11_app.h M2P_MESSAGE_RAM_BEGIN..+0x60) as ordinary writable message RAM —
+write real, read back the last value, which the chain itself exercises
+(0x60674b8 writes the LRC period byte at M2P+0 and reads it back three times
+to derive the 50us/200us/600us timer bytes) — plus the opt-in byte-store
+parallel-pair sub-gate (exact_parallel_byte_stores, same pattern as the
+halfword precedent) and the opt-in lp_timer_init_projection write-only
+records for the LP-timer init tail (P11_LPTMR0 CON0/CON1/CON2 0xf2a900..08
+word stores, the unnamed PMU-family 0xf2c04c/0xf2c050 word stores, and the
+JL_LRCT CON 0xfd3600 bit RMWs, all write-only). The chain then stops
+honestly at 300,236 on the LRC-trim readback: the ld.w of JL_LRCT.CON at
+0x6067514 (enable bit0 / busy bit7 poll) whose read value and completion
+timing have no evidence. The crc_bankb_erased_fixture frontier itself stays
+pinned at 289,849 without the fixture.
 """
 import argparse
 import json
@@ -141,6 +153,20 @@ ERASED_BANKB_RECORD_RANGE=(0x61de1e0,8)
 # ——堆信息读仍按 p11_heap_info_bytes 显式 fixture/严格停语义。
 P11_COMMON_CODE_WINDOW=(0xf20080,0xf20080+12112,'p11_common_code_window')
 
+# P11 RAM M2P 消息区(主核→P11 方向)的可写窗。范围由 SDK p11_app.h 自己声明:
+# P11_RAM_END(0xF28000)-P11_POWEROFF_RAM_SIZE(0x14+0xc=0x20)=0xF27FE0(poweroff
+# 区),再减 M2P_MESSAGE_SIZE(0x60)=M2P_MESSAGE_RAM_BEGIN=0xF27F80;lp_ipc.h 逐
+# 字节命名锚点(M2P_LRC_PRD=+0x00、M2P_LRC_TMR_50/200/600us=+0x02..0x04、…
+# M2P_RVD2PVDD_EN=+0x56、M2P_USER_* +0x58..0x5f)。语义=普通共享消息 RAM,不是
+# 外设寄存器:主核写真实生效、读回最后值——power_init 0x6067a74 首写
+# b[0xF27FD6](M2P_RVD2PVDD_EN,实测落盘 0x00:静态看 0x6067a6c `r4=1` 在被
+# icfg 位图跳过的块内,实际路径 r4=0),0x60674b8(写 LRC 周期字节)随后
+# 自己回读 b[0xF27F80] 三次推导定时器分频字节,「写后读回」由真实代码消费。P2M 区
+# (0xF27F40..0xF27F80,P11→主核,含堆信息 4 字节)保持不映射:本前缀固件不写
+# P2M(堆信息仍按 p11_heap_info_bytes 显式 fixture 读);若后续前缀出现 P2M
+# 写,再同语义扩窗。
+P11_M2P_MESSAGE_WINDOW=(0xF27F80,0xF27FE0,'p11_m2p_message_area')
+
 # 堆信息 4 字节的静态推导候选(P2M 消息区 +0xa,0xf27f4a..4d)。推导链(全部
 # 公开工件可复算,本注释只记录结论;「静态推导」不等于「硅测量」):
 # ①p11_code.bin 资源(analyze_p11 钉死、CRC 全过)公共段 entry0 12112 字节里,
@@ -186,7 +212,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              repeat=False,hardware_crc=False,rep_block=False,rep_unknown_transport=False,
              icu_region=False,dcu_cmo=False,zero_rep_skip=False,erased_bankb=False,
              insert_load_pair=False,halfword_pair=False,p11_power_init=False,
-             heap_info_bytes=None,
+             heap_info_bytes=None,byte_pair=False,lp_timer_writes=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -249,6 +275,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 正常执行),并入主开关会改既有报告的 adapter 计数,故单独 opt-in。
     # 默认关闭,legacy 报告不变。
     if halfword_pair:extra['exact_parallel_halfword_stores']=True
+    # byte_pair:opt-in 的并行对字节存储第二半(exact_parallel_stores 的独立
+    # 子开关 exact_parallel_byte_stores,同半字先例单独 opt-in)。证据形状
+    # app 0x6067a74 add.s14.rri.p∥st.b b[r0+0]=r4(power_init 主核对 P11
+    # M2P 消息区的首写):字节存储单字节全覆盖、旧值完全无关,直写 1 个
+    # 目标字节;不走上游 pair 存储模型(其写前合并读旧 word 是模型簿记读,
+    # 未初始化/未映射 RAM 上会假停)。默认关闭,legacy 报告不变。
+    if byte_pair:extra['exact_parallel_byte_stores']=True
     # p11_power_init:power_init(0x6067876)内部的 P11 依赖链(opt-in,默认关,legacy
     # 报告不变)。注意 reset_history_projection 本来就由 platform_case 默认打开
     # (POR_HISTORY 全量快照,含 PWR_CON 0xf2a400:0x80),这里不得重复设置——
@@ -274,7 +307,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['p11_lpwr_response_projection']=True
         options['p11_window_projection']=True
         options['power_init_config_rmw']=True
-        p11_regions=(P11_COMMON_CODE_WINDOW,)
+        # M2P 消息区随 p11_power_init 一起挂为可写 harness region(范围=SDK
+        # p11_app.h 自己声明的 M2P_MESSAGE_RAM_BEGIN..+0x60,普通存储语义,
+        # 见 P11_M2P_MESSAGE_WINDOW 注释)。crc_bankb 前缀(289,849)在首个
+        # M2P 访问之前就停,该场景报告不受影响。
+        p11_regions=(P11_COMMON_CODE_WINDOW,P11_M2P_MESSAGE_WINDOW)
         # 拷贝目的窗的快照:check() 用它与 p11_code.bin 资源 entry0 的真实字节
         # (analyze_p11 的 CRC/SHA 钉死值)互证拷贝逐字节正确。
         p11_snapshots=(('p11_common_code',P11_COMMON_CODE_WINDOW[0],12112),)
@@ -288,6 +325,24 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if heap_info_bytes is not None:
         require(p11_power_init,'heap-info fixture only layers on the p11_power_init scenario')
         options['p11_heap_info_bytes']=bytes(heap_info_bytes)
+        # M2P 消息区两组钉子字节:头 8 字节(LRC 周期/定时器字节,0x60674b8
+        # 写并三次回读 b[+0] 推导:prd=1000000/200000=5、50/5=10、200/5=40、
+        # 600/5=120)与 0xF27FD4..D7(首写 M2P_RVD2PVDD_EN 后的字;实测落盘
+        # 0x00——静态读起来 0x6067a6c `r4=1` 在被 icfg 位图跳过的
+        # 0x6067a38..6c 块内,实际路径的 r4 是 0,写 0=清除)。快照只挂进
+        # 实验配置场景(堆 fixture 放行后链才写 M2P);挂在共享的
+        # p11_snapshots 里会给 crc_bankb 报告加键、破坏其字节不变。
+        p11_snapshots=tuple(p11_snapshots)+(('p11_m2p_lrc',P11_M2P_MESSAGE_WINDOW[0],8),
+                                            ('p11_m2p_rvd2pvdd',0xF27FD4,4))
+    # lp_timer_writes:opt-in 的 power_init 尾部低功耗定时器初始化写记录
+    # (lp_timer_init_projection:0x6067a7a 起 [0xf2a900]=0x5C/[+4]=0x53/[+8]=0
+    # P11_LPTMR0 CON0/CON1/CON2 整字写、[0xf2c04c]=0x21/[0xf2c050]=0x41 PMU
+    # 配置族整字写、0xfd3600 JL_LRCT CON 位 RMW——全部 write-only 记录,读回
+    # 一律严格拒绝)。独立开关而非并入 p11_window_projection(后者报告键在
+    # crc_bankb 场景已钉死);默认关,legacy 报告不变。
+    if lp_timer_writes:
+        require(p11_power_init,'LP-timer write records only layer on the p11_power_init scenario')
+        options['lp_timer_init_projection']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -831,20 +886,52 @@ def check(report,firmware):
     # 真实多任务往返:CPU0 又收两次 irq127 调度交付(reti_from 都是调度等待点
     # 0x12b608),第一次 RTI 进 pmu_task 入口 0x6068f0c(独立栈 sp=0x401ffc,时间片
     # 执行到 sp=0x401f3c 后让出),第二次 RTI 回调度器、切回 app_core,power_init
-    # 从任务创建调用返回处继续。之后停在 0x6067a74:并行对 A 半 r0=r7-5964、
-    # B 半 st.b [0xf27fd6]=1(SDK lp_ipc.h 命名锚点 M2P_RVD2PVDD_EN,M2P 消息区
-    # +0x56)——主核对 P11 RAM M2P 区的首个写,上游 pair 存储模型合并读包含字
-    # 0xf27fd4 时撞 P11 RAM 未映射(模型只映射了公共段拷贝窗)→ unmapped_memory
-    # 诚实停。这是堆 fixture 放行后的下一个独立边界(需要 M2P 区可写的显式
-    # 决策,留给下一路)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067a74' and
-            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf27fd4',
-                        'size':4,'reference_sdk_register':None},
-            'the heap-experimental scenario must stop at the first main-core M2P-area write '
-            '(pair-store merge read of the unmapped P11 RAM word 0xf27fd4)')
-    require(r['completed_steps']==300187,'the heap experimental config changed its step count')
+    # 从任务创建调用返回处继续。其后 0x6067a32 icfg 位图检查(b[r6+846]=0)跳过
+    # 0x6067a38..6c(0xfd5108 RMW 族与 0xf2c278/0xf2c244 都在被跳过的块里,本前缀
+    # 不触及),0x6067a74 并行对(A 半 r0=r7-0x174c=0xf2a900、B 半 st.b
+    # [0xf27fd6]=r4)是主核对 P11 RAM M2P 消息区的首写(SDK lp_ipc.h 命名锚点
+    # M2P_RVD2PVDD_EN,M2P+0x56)——实测落盘 0x00:静态看 0x6067a6c `r4=1` 在被
+    # 跳过的块里,实际路径的 r4 是 0(写 0=清除)。本次(路 AA)三件放行:
+    # ①M2P 区(0xF27F80..0xF27FE0,SDK p11_app.h 自己声明的范围)映射为普通
+    # 可写消息 RAM(写真实生效、读回最后值;0x60674b8 写 M2P+0 的 LRC 周期字节
+    # 后自己回读三次推导 50/200/600us 定时器字节——「写后读回」由真实代码消费,
+    # 快照钉死 prd=5、10、40、120);②exact_parallel_byte_stores 子开关(同半字
+    # 先例):字节存储单字节全覆盖、旧值完全无关,直写 1 字节;③lp_timer_init_
+    # projection(独立开关,write-only 记录):P11_LPTMR0 CON0/1/2=0x5C/0x53/0
+    # (r7-0x174c 算出,SDK p11_sfr.h P11_LPTMR0_BASE=0xf2a000+map_adr(0x09,0))、
+    # PMU 配置族 0xf2c04c=0x21/0xf2c050=0x41(SDK 无名)、JL_LRCT CON 0xfd3600
+    # 四次位 RMW(SDK br28.h ls_base+map_adr(0x36,0),CON __WO;0x6067aae
+    # &=0xFFFFFFC1 清 bits0-5、0x60674fc &=~1、0x6067500 |=0x40、0x6067506 |=1,
+    # 按位记录不经读回)。链停在 0x6067514 `ld.w [r3+0]` 读 0xfd3600——LRC trim
+    # 硬件块的使能/busy 轮询(0x6067516 测 bit0、0x606751c 测 bit7),读回值与
+    # 完成时序无任何证据,诚实停(下一路决策点:LRCT 读回 fixture 或显式投影)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067514' and
+            r['stop']=={'kind':'lp_timer_register_readback_not_modeled','address':'0xfd3600'},
+            'the heap-experimental scenario must stop at the LRC-trim CON readback '
+            '(the JL_LRCT enable/busy poll at 0x6067514)')
+    require(r['completed_steps']==300236,'the heap experimental config changed its step count')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
+    # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
+    # 未写保持 unknown)与 RVD2PVDD_EN 字(实测 0x00)。
+    require(r['memory_snapshots']['p11_m2p_lrc']['bytes_with_unknowns']=='05??0a2878??????' and
+            r['memory_snapshots']['p11_m2p_lrc']['initialized_bytes']==4 and
+            r['memory_snapshots']['p11_m2p_rvd2pvdd']['bytes_with_unknowns']=='????00??' and
+            r['memory_snapshots']['p11_m2p_rvd2pvdd']['initialized_bytes']==1,
+            'the M2P message-window bytes differ from the SDK-anchored LRC derivation and the '
+            'executed M2P_RVD2PVDD_EN write')
+    lp=r['peripherals']['lp_timer_init_projection']
+    require(lp['stores']=={'0xf2a900':{'values':['0x5c'],'writes':1},
+                           '0xf2a904':{'values':['0x53'],'writes':1},
+                           '0xf2a908':{'values':['0x0'],'writes':1},
+                           '0xf2c04c':{'values':['0x21'],'writes':1},
+                           '0xf2c050':{'values':['0x41'],'writes':1}},
+            'the LP-timer init write-only records differ from the observed power_init tail')
+    require(lp['lrct_con']=={'address':'0xfd3600','known_mask':'0x7f','known_value':'0x41',
+                             'rmw_writes':4} and
+            lp['write_only'] and not lp['readback_observed'] and
+            not lp['bit_semantics_or_completion_verified'] and not lp['lrc_trim_result_simulated'],
+            'the JL_LRCT bit records or the explicit assumption flags differ')
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7+
@@ -866,7 +953,11 @@ def check(report,firmware):
     require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')
-    # adapter 计数:双字存储 25→26(新前缀一处),其余投影与 289,849 前沿一致。
+    # adapter 计数:与 300,187 前沿一致的全部投影不变;新增并行对字节存储
+    # 100 次(开关全前缀生效,其中 1 次是 0x6067a74 的 M2P 首写,其余是既有
+    # 前缀里原本走上游通用 pair 模型的 ALU∥st.b 形状,gate 与上游模型同样按
+    # 旧寄存器执行、目标字节相同——CRC/IRQ/交付计数全部不变即等价性证据)与
+    # LRCT 位 RMW 4 次。
     require(r['instruction_adapters'].get('exact_doubleword_store')==26 and
             r['instruction_adapters'].get('immediate_rep_multi_block_projection')==165 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
@@ -874,7 +965,9 @@ def check(report,firmware):
             r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
-            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8,
+            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==100 and
+            r['instruction_adapters'].get('lp_timer_bit_rmw')==4,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     report['heap_info_value_is_derived_not_measured']=(
         'the p11_heap_experimental_config scenario feeds the four heap-info bytes 0c3df439 '
@@ -889,9 +982,28 @@ def check(report,firmware):
         'the SDK-declared VAD_DVAD_CONFIG_BEGIN (0xF28000-0x20-0x60-0x40-0x20-0x780-0x50-0x50). '
         'The value is nevertheless DERIVED, NOT MEASURED: whether the q32s core really executes '
         'this init path at boot is unproven (known decode gaps), so every step past 289,849 in '
-        'that scenario (including the pmu_task scheduler round trip and the 300,187 M2P boundary) '
+        'that scenario (including the pmu_task scheduler round trip, the M2P message-area writes '
+        'and the 300,236 LRC-trim readback boundary) '
         'is a CONDITIONAL PASS that must not be reported as verified; without the fixture the '
         'crc_bankb_erased_fixture frontier stays pinned at 289,849 on the unmapped 0xf27f4b read')
+    report['p11_m2p_message_window_assumption']=(
+        'the p11 scenarios with p11_power_init map the SDK-declared P11 M2P message area '
+        '(p11_app.h M2P_MESSAGE_RAM_BEGIN 0xF27F80 .. +M2P_MESSAGE_SIZE 0x60, i.e. '
+        '0xF27F80..0xF27FE0) as ORDINARY WRITABLE MESSAGE RAM: this is shared SRAM, not a '
+        'peripheral register bank — main-core writes really land and read back the last value, '
+        'which the firmware itself exercises (0x60674b8 writes the LRC period byte M2P_LRC_PRD '
+        'at +0 and reads it back three times to derive the 50/200/600us timer bytes at +2/+3/+4; '
+        'snapshot pins 05/0a/28/78). The first write is the pair at 0x6067a74 whose B half stores '
+        'b[0xF27FD6] (lp_ipc.h M2P_RVD2PVDD_EN, M2P+0x56) with the EXECUTED value 0x00 — the '
+        'statically visible r4=1 at 0x6067a6c sits inside the icfg-bitmap-skipped block '
+        '0x6067a38..6c, so the executed path stores the pre-branch r4=0 (a clear, not an enable). '
+        'The P2M area (0xF27F40..0xF27F80) stays UNMAPPED: nothing writes it in this prefix and '
+        'the heap-info bytes keep the explicit p11_heap_info_bytes fixture semantics; if a later '
+        'prefix writes P2M the window extends with the same RAM semantics. '
+        'The lp_timer_init_projection write-only records (P11_LPTMR0 CON0/CON1/CON2 word stores, '
+        'the unnamed PMU-family 0xf2c04c/0xf2c050 word stores, JL_LRCT CON 0xfd3600 bit RMWs) '
+        'never fabricate readback: the LRC-trim enable/busy poll at 0x6067514 stays the honest '
+        'stop of the conditional frontier (300,236)')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -1004,7 +1116,8 @@ def main():
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
                               dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
                               halfword_pair=True,p11_power_init=True,
-                              heap_info_bytes=P11_HEAP_INFO_DERIVED,flash_image_bytes=image)]}
+                              heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
+                              flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue
         candidate,readonly=candidate_view(path,digest,args.firmware)

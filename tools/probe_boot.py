@@ -36,6 +36,11 @@ EXACT_PARALLEL_WORD_STORE_HALVES=('st.w','st.w.l','st.w.modimm','st.w.idxs','st.
 # 会改变既有报告,故单独 opt-in。半字是部分写:只覆盖 2 个目标字节、同字
 # 邻字节保持原状(含 unknown),按字节粒度写入,见 CPU.step_body 的该 gate。
 EXACT_PARALLEL_HALFWORD_STORE_HALVES=('st.h',)
+# 字节第二半(st.b 编码形式 b[r+n]=r)同半字先例单独 opt-in(exact_parallel_
+# byte_stores):ALU.p∥st.b 候选在 app 静态存在多起,未逐一验证哪些落在既有
+# 前缀(走上游通用 pair 模型),并入主开关有改变既有报告的风险。字节存储
+# 单字节全覆盖,旧值完全无关,直写 1 个真实字节。
+EXACT_PARALLEL_BYTE_STORE_HALVES=('st.b',)
 
 
 def check_rom(rom):
@@ -883,7 +888,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
                 if pure_alu and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                         (diagnostics.get('exact_parallel_halfword_stores') and
-                         pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES)):
+                         pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES) or
+                        (diagnostics.get('exact_parallel_byte_stores') and
+                         pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)):
                     params=module.table.placeholders(insn.syntax);plain=module.table.placeholders(base.syntax)
                     base_raw=dict(zip(plain,(raw[k] for k in params)))
                     base_raw.update({k:raw[k] for k in base.fields if k not in base_raw and k in raw})
@@ -912,6 +919,23 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                             self.mem.write_abstract_byte(address+1,value,1)
                         self.apply(effect);self.finish_exact(self.pc+size+pair_size)
                         adapters['parallel_halfword_store_old_registers']+=1
+                        return
+                    if pair.id=='st.b':
+                        # 字节存储第二半(证据形状 app 0x6067a74 add.s14.rri.p∥
+                        # st.b b[r0+0]=r4,power_init 主核对 P11 M2P 消息区的
+                        # 首写):字节存储只覆盖 1 个目标字节,单字节全覆盖、
+                        # 旧值语义上完全无关,直写 1 个真实字节;含 unknown 时
+                        # 按字节来源 abstract 写(与半字先例同语义)。不走上游
+                        # pair 存储模型:它写前合并读旧 word 是模型内部簿记读
+                        # 而非 guest 装载,未初始化/未映射 RAM 上会假停。
+                        hop=module.check.operands(pair,pair_raw)
+                        address=(self.R[hop['b']]+hop['n'])&0xffffffff;value=self.R[hop['d']]
+                        if isinstance(value,int):
+                            self.mem.write(address,(value&0xff).to_bytes(1,'little'))
+                        else:
+                            self.mem.write_abstract_byte(address,value,0)
+                        self.apply(effect);self.finish_exact(self.pc+size+pair_size)
+                        adapters['parallel_byte_store_old_registers']+=1
                         return
                     address,value=self.word_store(pair,pair_raw,abstract=machine is not None and machine.partial_icfg)
                     require(address%4==0,'unaligned exact parallel word store')
@@ -1133,6 +1157,19 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                             raise Blocked('p11_window_release_rmw_form_not_modeled',instruction_id=insn.id)
                         hardware.p11_window_rmw(address,'or',op['m'])
                         self.finish_exact(self.pc+size);adapters['p11_window_release_rmw']+=1
+                        return
+                    if hardware.handles_lp_timer_rmw(address):
+                        # power_init 尾部 JL_LRCT CON(0xfd3600,SDK br28.h
+                        # ls_base+map_adr(0x36,0),CON 标注 __WO)的位 RMW
+                        # (0x6067aae &=0xFFFFFFC1、0x60674fc &=~1、0x6067500/06
+                        # |=0x40/=0x1):按位记录(and 清位/或置位不经读回,与
+                        # gpio RMW/q32s PMU_CON 位记录同语义);读回(0x6067514
+                        # 测 bit0 使能/bit7 busy 的 LRC trim 轮询)保持严格停。
+                        if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        elif insn.id in ('rmw.and.nmodimm','rmw.and.modimm'):kind='and';operand=op['m']
+                        else:raise Blocked('lp_timer_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.lp_timer_rmw(address,kind,operand)
+                        self.finish_exact(self.pc+size);adapters['lp_timer_bit_rmw']+=1
                         return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
@@ -1450,7 +1487,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         supported=(diagnostics.get('exact_parallel_stores') and pure_alu and
                                    (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                                     diagnostics.get('exact_parallel_halfword_stores') and
-                                    pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES)) or (
+                                    pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES or
+                                    diagnostics.get('exact_parallel_byte_stores') and
+                                    pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)) or (
                                    diagnostics.get('exact_parallel_insert_load') and
                                    inner.id=='insert.rrii.p' and pair.id=='ld.bu.pin')
                         if not supported:
