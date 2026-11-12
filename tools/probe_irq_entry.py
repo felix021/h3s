@@ -1696,11 +1696,11 @@ def check(report,firmware):
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
     # 循环在 ~110,768 步把 IRQ4 以 priority 1 真实使能且此后无清零)。
     d=rows['timer0_irq4_delivery_probe']
-    require(d['completed_steps']==304552 and d['stop_core']==0 and d['stop_pc']=='0x6067d48' and
-            d['stop']=={'kind':'unmapped_or_readonly_write','access':'write','address':'0xf2c290',
-                        'size':4,'value_bytes':'00000000'},
-            'the Timer0 IRQ4 delivery probe must return to the SAME honest P3_LS frontier '
-            'after the full delivery round trip')
+    require(d['completed_steps']==304857 and d['stop_core']==0 and d['stop_pc']=='0x60116e6' and
+            d['stop']=={'kind':'fd31_adc_con_readback_not_modeled','address':'0xfd3100'},
+            'the Timer0 IRQ4 delivery probe must return to the SAME honest fd31-ADC-readback '
+            'frontier after the full delivery round trip (+540 steps of round-trip overhead '
+            'over the 304,317 baseline)')
     deliveries=d['machine']['timer0_irq_entry_projection']['deliveries']
     require(len(deliveries)==1 and
             (deliveries[0]['core'],deliveries[0]['irq'],deliveries[0]['vector_address'],
