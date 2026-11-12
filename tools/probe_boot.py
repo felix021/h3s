@@ -1222,6 +1222,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         hardware.mem_pwr_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['mem_pwr_con_rmw']+=1
                         return
+                    if hardware.handles_p33_awkup_rmw(address):
+                        # P3_AWKUP 族(路 BB):walker 次路径 0x6067c76..c7e 的
+                        # `rmw.or.bitr EN/P_CPND/N_CPND|=1<<ch`、w4 分支的
+                        # `rmw.or.r P_IE/N_IE|=1<<ch`/`rmw.and.invr N_IE&=~(1<<ch)`
+                        # 与清除助手 0x60685ae 的 modimm/nmodimm 形式——按位记录
+                        # (不经读回,mem_pwr_con 同族);FLT 的 RMW 与其他形式由
+                        # 投影拒绝(P33AwkupRegisters.rmw 显式 kind)。
+                        if insn.id=='rmw.or.bitr':kind='or';operand=1<<(self.R[op['s']]&31)
+                        elif insn.id=='rmw.or.r':kind='or';operand=self.R[op['s']]
+                        elif insn.id=='rmw.and.invr':kind='and';operand=(~self.R[op['s']])&0xffffffff
+                        elif insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
+                        else:raise Blocked('p33_awkup_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.p33_awkup_rmw(address,kind,operand)
+                        self.finish_exact(self.pc+size);adapters['p33_awkup_bit_rmw']+=1
+                        return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
                         elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']

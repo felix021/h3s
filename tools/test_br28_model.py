@@ -18,7 +18,7 @@ from br28_model import L1PIdleProjection, L1P_CON
 from br28_model import IcuIdleProjection
 from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON, LRCT_NUM
 from br28_model import P11_MEM_PWR_CON
-from br28_model import P33WindowByteRegisters, P33PortSelRegisters
+from br28_model import P33WindowByteRegisters, P33PortSelRegisters, P33AwkupRegisters
 
 
 class ModelTests(unittest.TestCase):
@@ -1589,6 +1589,105 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(both.handles(0xf2c304,4) and both.handles_byte_write(0xf2c948)
                         and both.handles(P11_MEM_PWR_CON,4))
         self.assertFalse(both.handles(0xf2c948,4) or both.handles_byte_write(0xf2c304))
+
+    def test_p33_awkup_write_records_and_first_read_fixture(self):
+        # 路 BB:P3_AWKUP 族(SDK p33_sfr.h 全命名 P33_ACCESS(0x60..0x68)/
+        # (0x80..0x82),只有地址宏、无类型标注、无位定义)按「仅记录写访问」
+        # + 单寄存器首次读具名 fixture 建模。写侧:FLT0..2(walker st.w.idxs)
+        # 与 P_IE(0x6067cb0 消费型写回)整字记录,EN/P_IE/N_IE/P_CPND/N_CPND
+        # 位 RMW 记录(不经读回);读侧:无 fixture 的读、写后读、重复读一律
+        # 严格停——首次读不等于全时读回,不发明复位值,不扩展到全族。
+        # 默认关:无投影、不 handles、报告无该键——legacy 场景逐字节不变。
+        plain=BR28Model()
+        self.assertFalse(plain.handles(0xf2c208,4))
+        self.assertNotIn('p33_awkup_projection',plain.report())
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xf2c208)
+        # fixture 必须显式 opt-in 投影,且地址/值校验
+        with self.assertRaisesRegex(ValueError,'require the P3_AWKUP projection'):
+            BR28Model(p33_awkup_first_read_words={P33AwkupRegisters.P_IE:0})
+        with self.assertRaisesRegex(ValueError,'invalid P3_AWKUP first-read fixture'):
+            BR28Model(p33_awkup_projection=True,p33_awkup_first_read_words={0xf2c18c:0})
+        with self.assertRaisesRegex(ValueError,'invalid P3_AWKUP first-read fixture'):
+            BR28Model(p33_awkup_projection=True,p33_awkup_first_read_words={P33AwkupRegisters.P_IE:-1})
+        h=BR28Model(p33_awkup_projection=True,
+                    p33_awkup_first_read_words={P33AwkupRegisters.P_IE:0})
+        # 访问面 8 个字(EN/P_IE/N_IE/P_CPND/N_CPND/FLT0..2);LEVEL/INSEL 零引用
+        # 不建模;P_PND/N_PND 归复位历史投影(不双重建模)
+        for a in P33AwkupRegisters.ADDRESSES:
+            self.assertTrue(h.handles(a,4))
+        self.assertEqual(len(P33AwkupRegisters.ADDRESSES),8)
+        self.assertFalse(h.handles(0xf2c18c,4) or h.handles(0xf2c190,4))
+        self.assertFalse(h.handles(0xf2c194,4) or h.handles(0xf2c198,4))
+        with_reset=BR28Model(p33_awkup_projection=True,reset_history_projection=True,
+                             reset_history_words={0xf2c194:0,0xf2c198:0})
+        self.assertTrue(with_reset.handles(0xf2c194,4) and with_reset.handles(0xf2c198,4))
+        # 无 fixture 寄存器的读严格停(N_IE 等:中断分发函数的读不在本前缀)
+        with self.assertRaisesRegex(Blocked,'awkup_first_read_fixture_absent'):
+            h.read(P33AwkupRegisters.N_IE)
+        # 首次读返回具名字(本 boot 前缀 P_IE 恰好一次读:0x6067cac,从未写过)
+        self.assertEqual(h.read(P33AwkupRegisters.P_IE),0)
+        # 首次之后的重复读严格停(首次读不等于全时读回)
+        nofixture=BR28Model(p33_awkup_projection=True,
+                            p33_awkup_first_read_words={P33AwkupRegisters.P_IE:0})
+        self.assertEqual(nofixture.read(P33AwkupRegisters.P_IE),0)
+        with self.assertRaisesRegex(Blocked,'awkup_repeat_read_not_modeled'):
+            nofixture.read(P33AwkupRegisters.P_IE)
+        # 写后读严格停(不立「普通存储式读回」假设)
+        h.write(P33AwkupRegisters.P_IE,0x4)  # 0x6067cb0 消费型写回 R|0x4
+        with self.assertRaisesRegex(Blocked,'awkup_readback_after_write_not_modeled'):
+            h.read(P33AwkupRegisters.P_IE)
+        # 整字写记录:FLT0..2 + P_IE;EN/N_IE/P_CPND/N_CPND 无整字写观测拒绝
+        h.write(P33AwkupRegisters.FLT2,0x4);h.write(P33AwkupRegisters.FLT1,0x5)
+        h.write(P33AwkupRegisters.FLT0,0x5)
+        with self.assertRaisesRegex(Blocked,'awkup_word_store_not_modeled'):
+            h.write(P33AwkupRegisters.EN,0)
+        with self.assertRaisesRegex(Blocked,'awkup_word_store_not_modeled'):
+            h.write(P33AwkupRegisters.N_IE,0)
+        # 位 RMW 记录(不经读回):EN/P_CPND/N_CPND |=1<<ch×3、P_IE|=2/|=1、
+        # N_IE&=~4(bic 形状经 and/~operand 归一化)
+        h.p33_awkup_rmw(P33AwkupRegisters.EN,'or',0x4)
+        h.p33_awkup_rmw(P33AwkupRegisters.EN,'or',0x2)
+        h.p33_awkup_rmw(P33AwkupRegisters.EN,'or',0x1)
+        h.p33_awkup_rmw(P33AwkupRegisters.P_IE,'or',0x2)
+        h.p33_awkup_rmw(P33AwkupRegisters.P_IE,'or',0x1)
+        h.p33_awkup_rmw(P33AwkupRegisters.N_IE,'and',~0x4&0xffffffff)
+        h.p33_awkup_rmw(P33AwkupRegisters.N_IE,'or',0x2)
+        h.p33_awkup_rmw(P33AwkupRegisters.N_IE,'or',0x1)
+        h.p33_awkup_rmw(P33AwkupRegisters.P_CPND,'or',0x7)
+        h.p33_awkup_rmw(P33AwkupRegisters.N_CPND,'or',0x7)
+        # FLT 的 RMW 无观测形状拒绝
+        with self.assertRaisesRegex(Blocked,'awkup_rmw_not_modeled'):
+            h.p33_awkup_rmw(P33AwkupRegisters.FLT2,'or',0x4)
+        # 非法 kind 是编程错误
+        with self.assertRaisesRegex(ValueError,'or.*and'):
+            h.p33_awkup.rmw(P33AwkupRegisters.EN,'xor',1)
+        # 报告:整字/RMW 双通道记录 + 假设标注 + 依赖传播全文
+        r=h.report()['p33_awkup_projection']
+        self.assertEqual(r['word_writes'],4)
+        self.assertEqual(r['stores'],{'0xf2c184':{'values':['0x4'],'writes':1},
+                                      '0xf2c200':{'values':['0x5'],'writes':1},
+                                      '0xf2c204':{'values':['0x5'],'writes':1},
+                                      '0xf2c208':{'values':['0x4'],'writes':1}})
+        self.assertEqual(r['rmw_records']['0xf2c180'],{'known_mask':'0x7','known_value':'0x7','writes':3})
+        self.assertEqual(r['rmw_records']['0xf2c188'],{'known_mask':'0x7','known_value':'0x3','writes':3})
+        self.assertEqual(r['first_read_fixture'],{'0xf2c184':{'word':'0x0','reads_served':1}})
+        self.assertTrue(r['fixture_is_synthetic_assumption'] and r['records_write_accesses_only'])
+        self.assertIn('NO direct reset-value evidence',r['fixture_provenance'])
+        self.assertIn('awkup_repeat_read_not_modeled',r['first_read_semantics'])
+        self.assertIn('0x6067cac',r['writeback_dependency'])
+        self.assertIn('never extended to N_IE',r['fixture_provenance'])
+        # 写簿记:整字 4 + RMW 11 都进 counts['writes']
+        self.assertEqual(h.report()["counts"]["writes"],4+10)
+        # 与 p33_window/p33_port_sel/mem_pwr_con 投影叠加互不吞地址
+        allon=BR28Model(p33_awkup_projection=True,p33_window_projection=True,
+                        p33_port_sel_projection=True,mem_pwr_con_projection=True,
+                        p33_awkup_first_read_words={P33AwkupRegisters.P_IE:0})
+        self.assertTrue(allon.handles(0xf2c184,4) and allon.handles(0xf2c304,4)
+                        and allon.handles_byte_write(0xf2c948) and allon.handles(P11_MEM_PWR_CON,4))
+        self.assertFalse(allon.handles(0xf2c948,4) or allon.handles_byte_write(0xf2c184))
+        # 4 对齐/字大小限制与 handles() 其余部分一致
+        self.assertFalse(allon.handles(0xf2c185,4) or allon.handles(0xf2c184,2))
 
 
 if __name__=='__main__':unittest.main()

@@ -1379,6 +1379,148 @@ class P33PortSelRegisters:
                               'pin-mux electrical effect modeled')}
 
 
+class P33AwkupRegisters:
+    """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
+
+    证据(2026-11-13 路 BB 反汇编+运行态快照复核钉死):
+    - SDK p33_sfr.h 把 P3_AWKUP_EN/P_IE/N_IE/LEVEL/INSEL/P_PND/N_PND/P_CPND/
+      N_CPND=P33_ACCESS(0x60..0x68)、P3_AWKUP_FLT0..2=P33_ACCESS(0x80..0x82)
+      全部命名;与整个 p33_sfr.h 一样只有地址宏、无 __RW/__RO/__WO 类型标注、
+      无字段位定义——寄存器名与固件真实访问形状是全部证据。
+    - app+ROM 全量引用扫描(字面量+基址算术双查)后本族的访问面:
+      * walker 0x6067cb4 第二轮表 3 项(cfg=0xE2/0xE4/0xE5,运行态快照
+        0x124A5C 钉死 w4/w8:0xE2→w4=0/w8=4,0xE4/0xE5→w4=2/w8=5)全部走
+        0x6067b66 的 P3_AWKUP 次路径(0x6067c5a..cb2):FLT0..2 整字写
+        `st.w.idxs [0xF2C200+ch<<2]=w8`(全字覆盖,旧值无关)、
+        EN/P_CPND/N_CPND `rmw.or.bitr |=1<<ch`;w4==2 时 P_IE/N_IE
+        `rmw.or.r |=1<<ch`(不经读);w4==1 时 N_IE |= 后 **P_IE 显式读回
+        0x6067ca0 且消费**(写回 W=R&~(1<<ch):bit ch 强制 0,其余位携带读值);
+        w4∉{1,2} 时 N_IE `rmw.and.invr &=~(1<<ch)` 后 **P_IE 显式读回
+        0x6067cac 且消费**(写回 W=R|(1<<ch):bit ch 强制 1,其余位携带读值)。
+        本 boot 前缀只有 item[0](cfg=0xE2,w4=0)走读回分支——P_IE 全前缀
+        恰好一次读、且从未写过(读的是复位值);items[1]/[2] 走 w4==2 纯 RMW。
+      * 独立清除助手 0x60685ae:P_CPND/N_CPND `rmw.or.modimm |=4`、EN
+        `rmw.and.nmodimm &=0xFFFFFFFB`,纯 RMW 无显式读(不在本前缀)。
+      * 独立分发函数 0x60691f4(`push.srl` 中断入口):0x60692a6/0x60692b4
+        显式读 N_IE/P_IE 并按位循环派发(消费型读;AWKUP 中断从未交付,
+        不在本前缀)。
+      * LEVEL(0xf2c18c)/INSEL(0xf2c190):app+ROM 零引用,不建模。
+      * P_PND/N_PND(0xf2c194/0xf2c198):已归复位历史投影(RESET_REASON_
+        INPUTS,POR/no-wake 显式合成 0),本投影不重复建模。
+    - 读回语义:SDK 无类型证据、无任何复位值证据——不为任何寄存器发明默认
+      读值。每个寄存器单独经显式 fixture(p33_awkup_first_read_words,
+      具名、版本管理、显式 opt-in)覆盖「首次读返回字」这一初始条件假设,
+      未覆盖寄存器的读、写过之后的读、以及首次之后的重复读一律严格停
+      (首次读不等于全时读回;不立「普通存储式读回」假设)。
+    - 建模选择:写侧「仅记录写访问」(仿真器能力描述,不声明寄存器 WO 属性)
+      ——FLT0..2/P_IE 整字写按字粒度记录(写值是真实执行结果,从不发明),
+      EN/P_IE/N_IE/P_CPND/N_CPND 的 or/and 位 RMW 按 PartialWord 位记录
+      (不经读回,与 mem_pwr_con/LRCT 位 RMW 同族);FLT 的 RMW 无观测形状
+      拒绝;EN/N_IE/P_CPND/N_CPND 的整字写无观测形状拒绝。
+    """
+    EN,P_IE,N_IE=0xf2c180,0xf2c184,0xf2c188
+    P_CPND,N_CPND=0xf2c19c,0xf2c1a0
+    FLT0,FLT1,FLT2=0xf2c200,0xf2c204,0xf2c208
+    # 整字写记录面:FLT0..2(walker st.w.idxs)+P_IE(0x6067cb0 消费型写回)。
+    WORD_STORE_ADDRESSES=(FLT0,FLT1,FLT2,P_IE)
+    # 位 RMW 记录面(全部有观测形状):EN/P_IE/N_IE/P_CPND/N_CPND。
+    RMW_ADDRESSES=(EN,P_IE,N_IE,P_CPND,N_CPND)
+    ADDRESSES=tuple(dict.fromkeys(WORD_STORE_ADDRESSES+RMW_ADDRESSES))
+    # 复位历史投影持有的 pending 位地址(不双重建模,报告可追溯)。
+    PENDING_IN_RESET_PROJECTION=(0xf2c194,0xf2c198)
+
+    def __init__(self,first_read_words=None):
+        self.first_read_words=dict(first_read_words or {})
+        self.stores={address:{'values':[],'writes':0} for address in self.WORD_STORE_ADDRESSES}
+        self.bits={address:PartialWord() for address in self.RMW_ADDRESSES}
+        self.rmw_writes={address:0 for address in self.RMW_ADDRESSES}
+        self.read_state={address:{'reads':0,'written':False,'fixture_reads':0}
+                         for address in self.ADDRESSES}
+
+    def handles(self,address):
+        return address in self.read_state
+
+    def write(self,address,value):
+        """整字写记录:只接受有观测形状的 FLT0..2 与 P_IE,其余拒绝。"""
+        if address not in self.stores:
+            raise Blocked('awkup_word_store_not_modeled',address=hex(address),value=hex(value))
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:
+            raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.read_state[address]['written']=True
+
+    def rmw(self,address,kind,operand):
+        """位 RMW 记录(or 置位/and 清位,不经读回);FLT 的 RMW 无观测形状拒绝。"""
+        if kind not in ('or','and'):raise ValueError("RMW kind must be 'or' or 'and'")
+        if address not in self.bits:
+            raise Blocked('awkup_rmw_not_modeled',address=hex(address),operation=kind)
+        self.bits[address].apply(kind,operand&0xffffffff)
+        self.rmw_writes[address]+=1
+        self.read_state[address]['written']=True
+
+    def read(self,address):
+        state=self.read_state[address]
+        if state['written']:
+            raise Blocked('awkup_readback_after_write_not_modeled',address=hex(address))
+        if state['reads']:
+            raise Blocked('awkup_repeat_read_not_modeled',address=hex(address))
+        if address not in self.first_read_words:
+            raise Blocked('awkup_first_read_fixture_absent',address=hex(address))
+        state['reads']+=1;state['fixture_reads']+=1
+        return self.first_read_words[address]
+
+    def report(self):
+        stores={hex(a):{'values':[hex(v) for v in e['values'][-16:]],'writes':e['writes']}
+                for a,e in sorted(self.stores.items()) if e['writes']}
+        rmw={hex(a):{'known_mask':hex(self.bits[a].known),'known_value':hex(self.bits[a].value),
+                     'writes':self.rmw_writes[a]}
+             for a in self.RMW_ADDRESSES if self.rmw_writes[a]}
+        fixture={hex(a):{'word':hex(w),'reads_served':self.read_state[a]['fixture_reads']}
+                 for a,w in sorted(self.first_read_words.items())}
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':sum(e['writes'] for e in self.stores.values()),
+                'stores':stores,'rmw_records':rmw,
+                'sdk_naming':('P3_AWKUP_EN/P_IE/N_IE/LEVEL/INSEL/P_PND/N_PND/P_CPND/N_CPND = '
+                              'P33_ACCESS(0x60..0x68), P3_AWKUP_FLT0..2 = P33_ACCESS(0x80..0x82) '
+                              'in p33_sfr.h (address macros only, no __RW/__RO/__WO, no bit fields)'),
+                'not_modeled':('LEVEL 0xf2c18c / INSEL 0xf2c190 have zero app+ROM references; '
+                               'P_PND 0xf2c194 / N_PND 0xf2c198 stay in the reset-history projection '
+                               '(POR/no-wake explicit synthetic 0) and are not double-modeled here'),
+                'first_read_fixture':fixture or None,
+                'fixture_is_synthetic_assumption':True,
+                'fixture_provenance':('synthetic zero word, NO direct reset-value evidence; named '
+                                      'opt-in fixture (whole word 0 covers unknown bits and high bits; '
+                                      'not a claim that reset leaves all IE bits off); per-register '
+                                      'coverage only, never extended to N_IE or the rest of the family'),
+                'first_read_semantics':('the fixture answers the FIRST read of a register only '
+                                        '(never written, never read before); any repeat read and any '
+                                        'post-write read strictly stops (awkup_repeat_read_not_modeled '
+                                        '/ awkup_readback_after_write_not_modeled); registers without '
+                                        'a fixture entry strictly stop (awkup_first_read_fixture_absent); '
+                                        'no ordinary storage-style readback is assumed'),
+                'writeback_dependency':('walker item[0] (cfg=0xE2, ch=2, w4=0) reads R=P3_AWKUP_P_IE at '
+                                        '0x6067cac and writes back W=R|(1<<2) at 0x6067cb0: bit2 is forced '
+                                        'to 1 by firmware, bits {0,1,3..31} (M&~K) carry the fixture word '
+                                        'into the recorded P_IE value; the later firmware RMWs |=2/|=1 '
+                                        '(items cfg=0xE4/0xE5) set bits1/0 — every recorded P_IE bit '
+                                        'except {0,1,2} depends on the fixture assumption'),
+                'records_write_accesses_only':True,
+                'readback_not_modeled_except_first_read_fixture':True,
+                'observed_shapes':('walker sub-path 0x6067c5a..0x6067cb2: st.w.idxs FLT0..2=w8 (full '
+                                   'word, old value irrelevant); rmw.or.bitr EN/P_CPND/N_CPND|=1<<ch; '
+                                   'w4==2: rmw.or.r P_IE/N_IE|=1<<ch (no read); w4==1: N_IE|= then explicit '
+                                   'P_IE read 0x6067ca0, write-back R&~(1<<ch); w4 not in {1,2}: N_IE&=~ '
+                                   '(rmw.and.invr) then explicit P_IE read 0x6067cac, write-back R|(1<<ch); '
+                                   '0x60685ae helper: rmw.or.modimm P_CPND/N_CPND|=4, rmw.and.nmodimm '
+                                   'EN&=0xFFFFFFFB (pure RMW, not in this prefix); IRQ dispatch 0x60691f4 '
+                                   '(push.srl entry): explicit consumed N_IE/P_IE reads 0x60692a6/0x60692b4 '
+                                   '(no AWKUP IRQ delivered in this prefix)'),
+                'assumption':('write accesses are recorded only (a simulator capability, not a WO property '
+                              'claim); no CPND clear mechanism is inferred from the register name; the '
+                              'single first-read fixture word is an explicit synthetic assumption and the '
+                              'recorded write-back value depends on it')}
+
+
 class MMU:
     """Functional SDK page-table projection, no TLB/cache or bus timing model."""
     def __init__(self,initial_con=None):
@@ -1798,6 +1940,7 @@ class BR28Model:
                  p33_analog_config_projection=False,
                  mem_pwr_con_projection=False,p33_window_projection=False,
                  p33_port_sel_projection=False,
+                 p33_awkup_projection=False,p33_awkup_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -1929,6 +2072,19 @@ class BR28Model:
         # 证据与形状见 P33PortSelRegisters 类注释;默认关,0xf2c304 写保持
         # unmapped_or_readonly_write,302,620 前沿形状不变)。
         self.p33_port_sel=P33PortSelRegisters() if p33_port_sel_projection else None
+        # p33_awkup(opt-in,路 BB):P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」
+        # + 单寄存器首次读具名 fixture。写侧整字/RMW 记录;读侧只有显式
+        # fixture 覆盖的寄存器的首次读返回具名字,其余读(未覆盖/写后/重复)
+        # 一律严格停——首次读不等于全时读回,不发明复位值,不扩展到全族。
+        # 默认关:0xf2c208 写保持 unmapped_or_readonly_write(303,853 前沿形状)。
+        if p33_awkup_first_read_words:
+            if not p33_awkup_projection:
+                raise ValueError('P3_AWKUP first-read fixtures require the P3_AWKUP projection')
+            if any(a not in P33AwkupRegisters.ADDRESSES or not isinstance(v,int)
+                   or not 0<=v<=0xffffffff for a,v in p33_awkup_first_read_words.items()):
+                raise ValueError('invalid P3_AWKUP first-read fixture')
+        self.p33_awkup=(P33AwkupRegisters(p33_awkup_first_read_words)
+                        if p33_awkup_projection else None)
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -2039,6 +2195,7 @@ class BR28Model:
                                             or self.lp_timer.handles_lrct_num(address))) or
             (self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)) or
             (self.p33_port_sel is not None and self.p33_port_sel.handles(address)) or
+            (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -2221,6 +2378,11 @@ class BR28Model:
         if self.p33_port_sel is not None and self.p33_port_sel.handles(address):
             self.counts['reads']+=1
             return self.p33_port_sel.read(address)
+        # P3_AWKUP 族:只有显式 fixture 覆盖的寄存器的首次读返回具名字,
+        # 其余读(未覆盖/写后/重复)一律严格停(路 BB;显式 kind 便于诊断)。
+        if self.p33_awkup is not None and self.p33_awkup.handles(address):
+            self.counts['reads']+=1
+            return self.p33_awkup.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -2312,6 +2474,11 @@ class BR28Model:
         elif self.p33_port_sel is not None and self.p33_port_sel.handles(address):
             # P3_PORT_SEL0..11:st.w.idxs 全字覆盖写(旧值无关),write-only 记录
             self.p33_port_sel.write(address,value)
+        elif self.p33_awkup is not None and self.p33_awkup.handles(address):
+            # P3_AWKUP 族(路 BB):整字写只接受有观测形状的 FLT0..2(walker
+            # st.w.idxs)与 P_IE(0x6067cb0 消费型写回),其余(EN/N_IE/
+            # P_CPND/N_CPND 无整字写观测)由投影拒绝;写后读严格停。
+            self.p33_awkup.write(address,value)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -2471,6 +2638,24 @@ class BR28Model:
         self.mem_pwr_con.observe_dead_read();self.counts['reads']+=1
         self.counts['opaque_mem_pwr_con_reads']+=1
 
+    def handles_p33_awkup_rmw(self,address):
+        return self.p33_awkup is not None and self.p33_awkup.handles(address)
+
+    def p33_awkup_rmw(self,address,kind,operand):
+        """P3_AWKUP 族位 RMW 的 opt-in 拦截(置/清位,不经读回;路 BB)。
+
+        只按位记录(PartialWord,与 mem_pwr_con/LRCT 位 RMW 同族),不臆造读回
+        值;FLT 的 RMW 无观测形状由投影拒绝;CPND 的「写 1 清除 pending」机制
+        不从寄存器名推断,只记录写访问本身。
+        """
+        if not self.handles_p33_awkup_rmw(address):raise ValueError('not a modeled P3_AWKUP register')
+        self.p33_awkup.rmw(address,kind,operand);self.counts['reads']+=1
+        bits=self.p33_awkup.bits[address] if address in self.p33_awkup.bits else None
+        self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
+                           **({} if bits is None else
+                              {'known_value':hex(bits.value),'known_mask':hex(bits.known)}),
+                           'projection':'P3_AWKUP write-access bit record; no readback, no CPND effect modeled'})
+
     def p11_lpwr_rmw(self,address,instruction_id,operand):
         """主核 PWR_CON |=0x20 请求 RMW 的 opt-in 拦截。
 
@@ -2616,6 +2801,7 @@ class BR28Model:
         if self.mem_pwr_con is not None:result['mem_pwr_con_projection']=self.mem_pwr_con.report()
         if self.p33_window is not None:result['p33_window_projection']=self.p33_window.report()
         if self.p33_port_sel is not None:result['p33_port_sel_projection']=self.p33_port_sel.report()
+        if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),

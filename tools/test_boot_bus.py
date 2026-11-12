@@ -8,7 +8,7 @@ import unittest
 
 from br28_model import BR28Model, SFC_BASE, MMU_BASE, EMU_CON, PWR_CON, P11_HEAP_INFO, P11_MEM_PWR_CON
 from br28_machine import DualCoreMachine
-from probe_boot import ENTRY, STACK_TOP, application, explore
+from probe_boot import ENTRY, STACK_TOP, application, explore, Blocked
 from probe_boot_handoff import RAM_CODE, SENTINEL_A, package_header, profile
 from probe_pi32v2 import ROOT, upstream
 
@@ -1499,6 +1499,96 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['completed_steps'],0)
         self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
                                          'address':'0xf2c208','size':4,'value_bytes':'04000000'})
+
+    def test_p33_awkup_subpath_shapes_and_ls_p11_frontier(self):
+        # 路 BB:P3_AWKUP 次路径(0x6067c5a..cb2)逐站点形状。①0x6067c6e
+        # `st.w.idxs [r2+r0<<2]=r1`(r2=0xF2C200,r0=通道,r1=w8)整字写
+        # FLT0..2——投影开启时整字记录。②0x6067c76 `rmw.or.bitr [r1]|=1<<r0`
+        # (r1=0xF2C180 基址,EN/P_CPND/N_CPND 三连)。③w4==2 分支 0x6067c92
+        # `rmw.or.r [r1+4]|=r0`(P_IE|=1<<ch,不经读)。④w4∉{1,2} 分支
+        # 0x6067ca8 `rmw.and.invr [r1+8]&=~r0`(N_IE 清位)。⑤0x6067cac
+        # `ld.w r2=[r1+4]` P_IE 首次读(从未写过):无 fixture 严格停
+        # awkup_first_read_fixture_absent;具名零值 fixture 服务 0。⑥
+        # 0x6067cb0 `st.w [r1+4]=r0` 消费型写回(R|1<<ch)整字记录,写后读
+        # 严格停。⑦新前沿 304,012:walker 清尾后的 P3_LS 清零首对 0x6067d48
+        # `add.s14.rri.p r0+=176 ∥ st.w [r0]=r1`——store 半携带旧 r0(run3
+        # 方向)写 [0xF2C290]=P3_LS_P11(SDK 有名 P33_ACCESS(0xa4)),本投影
+        # 不路由该地址,诚实停(修正路 AZ 静态读法:9 个清零的第一个落
+        # 0xf2c290、其后 8 个才是 0xf2c340..354)。
+        awk=BR28Model(p33_awkup_projection=True,
+                      p33_awkup_first_read_words={0xf2c184:0})
+        # ① FLT2 整字写(ch=2,w8=4)
+        r=[0]*16;r[2]=0xf2c200;r[0]=2;r[1]=4
+        result=explore(self.module,self.app,name='awkup_flt2_store',handoff=self.handoff(),
+            hardware=awk,diagnostics={'entry_pc':0x6067c6e,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(awk.report()['p33_awkup_projection']['stores'],
+                         {'0xf2c208':{'values':['0x4'],'writes':1}})
+        # ② EN |= 1<<ch(rmw.or.bitr,r0=ch=2)
+        awk2=BR28Model(p33_awkup_projection=True)
+        r=[0]*16;r[1]=0xf2c180;r[0]=2
+        result=explore(self.module,self.app,name='awkup_en_bitr',handoff=self.handoff(),
+            hardware=awk2,diagnostics={'entry_pc':0x6067c76,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['instruction_adapters'].get('p33_awkup_bit_rmw'),1)
+        self.assertEqual(awk2.report()['p33_awkup_projection']['rmw_records'],
+                         {'0xf2c180':{'known_mask':'0x4','known_value':'0x4','writes':1}})
+        # ③ w4==2 分支 P_IE |= 1<<ch(rmw.or.r,r0=2)
+        r=[0]*16;r[1]=0xf2c180;r[0]=2
+        result=explore(self.module,self.app,name='awkup_pie_or',handoff=self.handoff(),
+            hardware=awk2,diagnostics={'entry_pc':0x6067c92,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(awk2.report()['p33_awkup_projection']['rmw_records'],
+                         {'0xf2c180':{'known_mask':'0x4','known_value':'0x4','writes':1},
+                          '0xf2c184':{'known_mask':'0x2','known_value':'0x2','writes':1}})
+        # ④ w4∉{1,2} 分支 N_IE &= ~4(rmw.and.invr)
+        r=[0]*16;r[1]=0xf2c180;r[0]=4
+        result=explore(self.module,self.app,name='awkup_nie_bic',handoff=self.handoff(),
+            hardware=awk2,diagnostics={'entry_pc':0x6067ca8,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(awk2.report()['p33_awkup_projection']['rmw_records']['0xf2c188'],
+                         {'known_mask':'0x4','known_value':'0x0','writes':1})
+        # ⑤ P_IE 首次读:无 fixture 严格停
+        nofix=BR28Model(p33_awkup_projection=True)
+        r=[0]*16;r[1]=0xf2c180
+        result=explore(self.module,self.app,name='awkup_pie_read_strict',handoff=self.handoff(),
+            hardware=nofix,diagnostics={'entry_pc':0x6067cac,'initial_sp':STACK_TOP,
+                                        'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'awkup_first_read_fixture_absent')
+        self.assertEqual(result['stop']['address'],'0xf2c184')
+        # 有具名 fixture:首次读返回 0,一步完成
+        result=explore(self.module,self.app,name='awkup_pie_read_fixture',handoff=self.handoff(),
+            hardware=awk,diagnostics={'entry_pc':0x6067cac,'initial_sp':STACK_TOP,
+                                      'initial_gprs':list(r)},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(awk.report()['p33_awkup_projection']['first_read_fixture'],
+                         {'0xf2c184':{'word':'0x0','reads_served':1}})
+        # ⑥ 写回(消费型 R|1<<ch=0x4)整字记录;写后读严格停
+        r=[0]*16;r[1]=0xf2c180;r[0]=0x4
+        result=explore(self.module,self.app,name='awkup_pie_writeback',handoff=self.handoff(),
+            hardware=awk,diagnostics={'entry_pc':0x6067cb0,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(awk.report()['p33_awkup_projection']['stores']['0xf2c184'],
+                         {'values':['0x4'],'writes':1})
+        self.assertRaisesRegex(Blocked,'awkup_readback_after_write_not_modeled',
+                               awk.read,0xf2c184)
+        # ⑦ 新前沿:0x6067d48 并行对 store 半旧 r0 写 P3_LS_P11(0xf2c290),
+        # awkup 投影不路由,诚实停(与真实场景 304,012 停点逐字段一致)。
+        r=[0]*16;r[0]=0xf2c290;r[1]=0
+        result=explore(self.module,self.app,name='ls_p11_frontier',handoff=self.handoff(),
+            hardware=awk,diagnostics={'entry_pc':0x6067d48,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r,'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+                                         'address':'0xf2c290','size':4,'value_bytes':'00000000'})
 
     def test_mem_pwr_con_rmw_and_dead_read_shapes(self):
         # 0x606772a li r8=0xf2a62c → 0x6067730 `[r8+0] |= r0`(rmw.or.r)。boot
