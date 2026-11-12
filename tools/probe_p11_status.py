@@ -70,16 +70,21 @@ def main():
     # enable leaf never runs, so no counter behaviour is invented), the peer
     # PMU_CON0 release-flag read (the real code takes the not-released branch
     # and skips the IPI), the SYS_DIV divider RMW, the P3_PVDD1_AUTO read-RMW
-    # (SDK p33_sfr.h P33_ACCESS(0x44)) and the PLL1 enable RMW, stopping at
-    # exactly the same boundary as the clock_voltage_configuration variant:
-    # the ROM DcuWaitIdle poll on JL_L1P CON 0xff0500.
+    # (SDK p33_sfr.h P33_ACCESS(0x44)) and the PLL1 enable RMW. The independent
+    # JL_L1P CON (0xff0500) idle-bit fixture (l1p_idle_projection, only 0xff0500,
+    # never the two ICU CON status words) then serves the ROM DcuWaitIdle
+    # (0x1fdb8 -> 0xbb20) bit31 poll — no cache maintenance precedes it in this
+    # prefix, so idle is the natural no-operation-in-flight read — and the
+    # prefix advances to the very next cache-idle boundary: IcuWaitIdle
+    # (0x1fdb4 -> 0xc792) reading the core0 ICU CON 0xffe400, which this route
+    # deliberately does not fixture and therefore stops on honestly.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==108859 and w['stop_pc']=='0xbb28' and
-            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xff0500',
+    require(w['completed_steps']==108870 and w['stop_pc']=='0xc7a0' and
+            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xffe400',
             'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections did not cross the KEY pair, '
             'page reads, WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/PLL1 '
-            'configuration to the L1P cache-wait boundary')
+            'configuration and the JL_L1P idle poll to the ICU cache-wait boundary')
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
@@ -150,6 +155,19 @@ def main():
             'voltage_configuration_projection' in assumptions and
             'pll1_con3_configuration_projection' in assumptions,
             'SYS_DIV/P33-voltage/PLL1 configuration projections not labelled')
+    # JL_L1P CON idle-bit independent fixture: the DcuWaitIdle poll really read
+    # the explicit synthesized 0x80000000 (bit31=1=idle, the only bit the poll
+    # consumes), no other bit is claimed as silicon, and CON writes stay
+    # unmodeled. The two ICU CON status words (0xffe400/0xffec00) are untouched:
+    # this route stops honestly on the first of them (IcuWaitIdle core0 read),
+    # not fabricating ICU idle.
+    l1p=w['peripherals']['l1p_idle_projection']
+    require(l1p['idle_word_fixture']=='0x80000000' and
+            l1p['idle_is_no_operation_in_flight_not_maintenance_completion'] is True and
+            l1p['other_bits_claimed_as_silicon'] is False and
+            l1p['silicon_reset_value_verified'] is False and
+            l1p['con_write_modeled'] is False,
+            'JL_L1P CON idle fixture labels or synthesized word missing')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
             'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,

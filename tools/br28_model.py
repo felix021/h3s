@@ -65,6 +65,10 @@ ICU_REGION_COMMANDS=(0xca000020,0xca000040)
 DCU_CMO_FLUSH=0xff05c8
 DCU_CMO_FLUSHINV=0xff05cc
 DCU_CMO_PORTS=(DCU_CMO_FLUSH,DCU_CMO_FLUSHINV)
+# JL_L1P(0xff0500)CON 本身:bit31=空闲,DcuWaitIdle(0x1fdb8->0xbb20)轮询位。
+# 与 CMO 口(+0x80..+0xff)不同,CON 是读侧状态字;DcuInitial(0x1fdc0->0xbb30)
+# 会写 bit0(使能),但 p11_ready_watchdog 支线前缀未调用 DcuInitial。
+L1P_CON=0xff0500
 CORE_PMU_CON1=(0xffe0c4,0xffe8c4)
 SFC_BASE=0xfe0200
 SFC_SECONDARY_BASE=0xfe0100
@@ -548,6 +552,44 @@ class DcuCmoProjection:
                 'line_stride_32_from_loop_body':True,'line_granularity_silicon_verified':False,
                 'write_only':True,'readback_observed':False,
                 'cache_contents_or_coherence_simulated':False}
+
+
+class L1PIdleProjection:
+    """JL_L1P CON (0xff0500, shared L1P cache) idle-bit read fixture.
+
+    The only access reached in the p11_ready_watchdog branch line is the ROM
+    DcuWaitIdle (0x1fdb8 -> 0xbb20) poll: csync, li r0=0xff0500, ld.w r1=[r0],
+    bgts.ri r1,-1 (loop back while bit31==0, exit once bit31==1). No cache
+    maintenance (DCU CMO write) or DcuInitial CON write precedes it in that
+    prefix, so the idle bit is the natural no-operation-in-flight read, NOT a
+    maintenance-completion claim. The word is an explicit synthesized fixture:
+    bit31=1 (idle) is the only bit the poll consumes; the other 31 bits are
+    supplied as 0 for the numeric comparison to proceed but are NOT claimed as
+    silicon values (silicon reset value and bit semantics unverified). Writes
+    to CON are not observed in this prefix and stay blocked.
+    """
+    def __init__(self, idle_word=0x80000000):
+        if not isinstance(idle_word, int) or not 0 <= idle_word <= 0xffffffff:
+            raise ValueError('JL_L1P CON idle fixture must be unsigned32')
+        self.idle_word = idle_word
+
+    def handles(self, address):
+        return address == L1P_CON
+
+    def read(self, address):
+        return self.idle_word
+
+    def write(self, address, value):
+        raise Blocked('l1p_con_write_not_modeled', address=hex(address), value=hex(value))
+
+    def report(self):
+        return {'idle_word_fixture': hex(self.idle_word),
+                'bit31_idle_polled_by': 'ROM DcuWaitIdle 0x1fdb8 -> 0xbb20',
+                'idle_is_no_operation_in_flight_not_maintenance_completion': True,
+                'other_bits_claimed_as_silicon': False,
+                'silicon_reset_value_verified': False,
+                'con_write_modeled': False,
+                'cache_contents_or_coherence_simulated': False}
 
 
 class CoreTickStopped:
@@ -1460,7 +1502,7 @@ class BR28Model:
                  reset_history_projection=False,reset_history_words=None,
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,icu_region_projection=False,
-                 dcu_cmo_projection=False,
+                 dcu_cmo_projection=False,l1p_idle_projection=False,l1p_idle_word=0x80000000,
                  software_irq_command_projection=False,
                  initial_software_irq_pending=None,software_irq_delivery_requests=False,
                  unmaskable_irq_projection=False,core_tick_delivery_requests=False):
@@ -1575,6 +1617,9 @@ class BR28Model:
                                              icu_command_steps,icu_region_projection) if icu_initialization_projection else None
         # DCU CMO 口(0xff05c8/0xff05cc)是独立 write-only 记录,不依赖 ICU/CON 机制。
         self.dcu=DcuCmoProjection() if dcu_cmo_projection else None
+        # JL_L1P CON(0xff0500)空闲位读回独立 fixture,只服务 0xff0500、不碰两核 ICU
+        # 状态字(0xffe400/0xffec00)——与 cache_status_probe(覆盖三状态字)分离。
+        self.l1p=L1PIdleProjection(l1p_idle_word) if l1p_idle_projection else None
         self.sfc=SFCReadBus(initial_sfc_control) if sfc_read_bus else None
         if secondary_sfc_read_bus and not sfc_read_bus:raise ValueError('secondary SFC requires the primary SFC read bus')
         self.sfc_secondary=SFCReadBus(initial_secondary_sfc_control,SFC_SECONDARY_BASE) if secondary_sfc_read_bus else None
@@ -1616,6 +1661,7 @@ class BR28Model:
             (self.software_irq is not None and self.software_irq.handles(address)) or
             (self.icu is not None and self.icu.handles(address)) or
             (self.dcu is not None and self.dcu.handles(address)) or
+            (self.l1p is not None and self.l1p.handles(address)) or
             (self.multicore_enabled and (address==IPMASK+0x800 or IRQ_CONFIG+0x800<=address<IRQ_CONFIG+0x880)) or
             (self.multicore_enabled and address in CORE_PMU_CON1) or
             (self.debug is not None and self.debug.handles(address)) or
@@ -1780,6 +1826,7 @@ class BR28Model:
             return self.port_input_words[address]
         if self.port_initialization_projection and address in USB_DISABLE_REGISTERS:
             raise Blocked('usb_controller_status_not_modeled',address=hex(address))
+        if self.l1p is not None and self.l1p.handles(address):return self.l1p.read(address)
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:
             if address not in self.cache_status_words:raise Blocked('unknown_cache_status_input',address=hex(address))
             return self.cache_status_words[address]
@@ -1845,6 +1892,7 @@ class BR28Model:
             self.usb_disable_writes.append(address)
             self.record_write({'address':hex(address),'value':hex(value),'projection':'port initialization disable only'})
             return
+        if self.l1p is not None and self.l1p.handles(address):self.l1p.write(address,value)
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:raise Blocked('cache_control_write_not_modeled',address=hex(address))
         if self.handles_gpcnt(address):raise Blocked('gpcnt_full_control_store_not_modeled')
         if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
@@ -2197,6 +2245,7 @@ class BR28Model:
         if self.sfc_clock is not None:result['sfc_clock_gate_projection']=self.sfc_clock.report()
         if self.icu is not None:result['icu_initialization_projection']=self.icu.report()
         if self.dcu is not None:result['dcu_cmo_projection']=self.dcu.report()
+        if self.l1p is not None:result['l1p_idle_projection']=self.l1p.report()
         if self.software_irq is not None:result['software_irq_commands']=self.software_irq.report()
         if self.debug is not None:result['debug_execution_projection']=self.debug.report()
         if self.reset is not None:result['reset_history_projection']=self.reset.report()

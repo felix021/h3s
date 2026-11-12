@@ -110,7 +110,14 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # PLL1 CON3 配置投影按同一变体先例接线(同一开关 + 同样的
             # 0xfd470c 初始字 0):链上下一访问 0x60003ce 对 PLL1_CON3 做
             # |=1 enable RMW;模拟 PLL1 锁定/模拟特性不建模;只服务本支线。
-            pll1_configuration_projection=p11_ready_wdt_cases)
+            pll1_configuration_projection=p11_ready_wdt_cases,
+            # JL_L1P CON(0xff0500)空闲位读回独立 fixture(独立开关,只覆盖
+            # 0xff0500、不碰两核 ICU 状态字 0xffe400/0xffec00):ROM
+            # DcuWaitIdle(0x1fdb8->0xbb20)的 bit31 轮询读在本前缀无任何前置
+            # cache 维护写,「空闲」=无在途操作的自然读(非维护完成时序假设);
+            # 合成字 0x80000000(bit31=1),其余位不声称硅值;CON 写无观测形状
+            # 仍拒绝。只服务本支线,默认关 legacy 场景不变。
+            l1p_idle_projection=p11_ready_wdt_cases)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
