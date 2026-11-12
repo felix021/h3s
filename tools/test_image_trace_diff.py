@@ -174,13 +174,14 @@ def test_scenario_registry_shapes():
     assert SCENARIOS['crc_bankb']['freshness'] == {
         'completed_steps': 289849, 'stop_pc': '0x60679ba',
         'stop_fields': {'kind': 'unmapped_memory', 'address': '0xf27f4b'}}
-    # 路 BN:ADC CON 读回投影把条件前沿推进到 CPU0 core tick 首次溢出
-    # (447,490 @ 0x12e284,轮询忙等跨过三次 STD12M 到期后撞 core tick 硬期限;
-    # core tick 交付接线是路 BF 的域)。
+    # 路 BS:core tick 交付接线(core_tick_irq3_delivery)后 447,490 的溢出
+    # 不再停——整个 ADC 采样事务在同一个 OS 临界区内(IPMASK=6),溢出与九次
+    # STD12M 到期全部 masked 挂起,轮询 1000 轮跑完,停在 RES 读
+    # (689,402 @ 0x6011704,__RO 模拟测量值红线)。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 447490, 'stop_pc': '0x12e284',
-        'stop_fields': {'kind': 'core_tick_overflow_delivery_unresolved',
-                        'core': 0, 'irq': 3}}
+        'completed_steps': 689402, 'stop_pc': '0x6011704',
+        'stop_fields': {'kind': 'fd31_adc_res_not_modeled',
+                        'address': '0xfd3104'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000

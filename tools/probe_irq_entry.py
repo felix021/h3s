@@ -131,6 +131,27 @@ its six whole-word writes are recorded write-only, and the chain then
 honestly stops at the first CON readback 0x60116e6 inside the 32-round
 sampling loop's caller 0x60116d0 (CON bit4 gate / bit7 busy poll and the
 analog RES 0xfd3104 have no derivable values) at 304,317.
+Route BN then released the CON read side (opt-in fd31_adc_con_readback:
+last-written-value projection, the lp_timer CON family) and the chain ran
+the full ADC sampling transaction: bit4=0 skip, OS-post veneer, setter
+CON=0x46105d, and the 1000-round busy-wait that crossed three STD12M
+expirations before hitting the CPU0 core-tick first overflow at 447,490.
+Route BS (this change) wires core_tick_irq3_delivery into the scenario so
+that overflow no longer stops the run — and the measured reality is that
+the WHOLE ADC transaction executes inside ONE OS critical section: the
+0x12b55c post veneer's cli + [0xffe1a8]=6 idiom raises IPMASK to 6 before
+the setter writes and no IPMASK store occurs again through the entire poll
+(the write window holds zero stores between the setter's CON writes and
+the stop). The overflow therefore pends under the route-BF per-step
+eligibility recheck (gates 0x300 open, IRQ3 nibble enabled, but priority 1
+< IPMASK 6 — cli masks, never drops), the poll runs its FULL 1000-round
+budget, six more STD12M expirations pile the same way (343252..663252,
+nine total), and the chain stops honestly at the RES read 0x6011704
+(fd31_adc_res_not_modeled, 0xfd3104 = JL_ADC->RES, __RO analog value with
+no derivable source — the red line) at 689,402. Both the core-tick IRQ3
+and the Timer0 IRQ4 pendings stay armed past the boundary: their first
+eligibility moment (the critical-section sti) lies in the not-yet-executed
+suffix, so nothing is delivered in this prefix.
 
 The trailing timer0_irq4_delivery_probe / timer0_irq4_masked_probe scenarios
 (route BE) layer the Timer0 IRQ4 delivery machinery on the full
@@ -1597,24 +1618,36 @@ def check(report,firmware):
     # 间隔)——三次全部落在延时函数上下文(模型 core_icfg gate_demand=0,
     # IRQ4 priority-1 maskable 不合格),pending 挂起零交付(delivery_probe
     # 场景在等待点上下文的交付成功对照,上下文相关性自洽);⑥**447,490 步
-    # CPU0 core tick(irq3)首次溢出 → core_tick_overflow_delivery_unresolved
-    # 诚实停**(core tick 交付接线是路 BF 的域,本路不碰);RES 读 0x6011704
-    # (fd31_adc_res_not_modeled,反汇编钉死的下一个停点)在轮询 1000 轮
-    # 跑完之后(~690k),被 core tick 期限挡在前——归路 BF 之后到达。
-    require(r['stop_core']==0 and r['stop_pc']=='0x12e284' and
-            r['stop']=={'kind':'core_tick_overflow_delivery_unresolved','core':0,'irq':3,
-                        'note':'internal pending set; no guessed readback bit, wake or interrupt entry'},
-            'the heap-experimental scenario must stop at the CPU0 core-tick first overflow: with the '
+    # CPU0 core tick(irq3)首次溢出**:路 BS 把 core_tick_irq3_delivery 接进
+    # 本场景后不再停——实测溢出时 gates 0x300 开、nibble 使能,但 **IPMASK=6**
+    # (priority 1 < 6 被 masked):整个 ADC 采样事务(OS post veneer 0x12b55c
+    # 的 cli+ [0xffe1a8]=6 起,经 setter/1000 轮轮询/RES 读)在**同一个 OS
+    # 临界区**内执行——写窗口证据:447,490..689,402 全程零写入(最后写入是
+    # setter 的 0xfd3100 双写,其前最后一次 IPMASK 写=6,延时循环零 store),
+    # BF 的 pending 期间逐步重检机制恰好把溢出挂起放行(cli 只屏蔽不丢弃);
+    # ⑦轮询 1000 轮全预算跑完(~385 步/轮,途中 STD12M 再到期 6 次:463,252/
+    # 503,252/543,252/583,252/623,252/663,252,全在临界区内不合格,pending
+    # 挂起零交付),helper 返回、caller A 继续到 **0x6011704 读 [0xfd3100+4]
+    # =0xfd3104 RES → fd31_adc_res_not_modeled 诚实停@689,402**(BN 反汇编
+    # 预言的 ~690k 精确兑现;RES=__RO 模拟测量值,红线绝不发明 0/满值);
+    # **IRQ3/IRQ4 双挂起仍武装着**——首个合格时刻(临界区 sti)在 RES 边界
+    # 之后未执行,本前缀内零交付零往返(归 RES 闭合后的下一路)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6011704' and
+            r['stop']=={'kind':'fd31_adc_res_not_modeled','address':'0xfd3104'},
+            'the heap-experimental scenario must stop at the ADC RES read with the core-tick delivery wired: '
             'fd31 ADC CON readback projection the 0x60116e6 gate reads the last written value 0x40 '
             '(bit4=0), the sampling-loop caller skips the poll helper and control function, runs the '
             '0x12b55c OS-post veneer plus the ADC setter (tbb case1 -> 0x6067d8a read-modify-writes '
             'P3_ANA_CON4 0xf2c250 -> CON=0x46105d + compound |=0x40), then the poll helper busy-waits '
-            'without an invented completion (~386 steps/round through the RAM delay at 0x12e256); the '
-            'three STD12M expirations inside the busy-wait all land in the delay context where IRQ4 '
-            '(priority-1 maskable) is not eligible (gate_demand 0), pending stays set with zero '
-            'deliveries, and the run stops honestly at the core-tick overflow boundary (route BF\'s '
-            'wiring domain) at 0x12e284 inside the delay countdown loop')
-    require(r['completed_steps']==447490,'the heap experimental config changed its step count')
+            'its FULL 1000-round budget without an invented completion (~385 steps/round through the '
+            'RAM delay at 0x12e256); the CPU0 core-tick first overflow at 447,490 and all nine STD12M '
+            'expirations inside the busy-wait (343252..663252, six of them after the overflow) land '
+            'in ONE OS critical section '
+            '(IPMASK=6 raised by the 0x12b55c cli idiom, zero IPMASK writes across the whole poll), '
+            'so the route-BF pending recheck holds both masked pendings (cli masks, never drops) and '
+            'the chain proceeds past the poll to the RES read — the honest red-line boundary on the '
+            'analog measurement at 0x6011704')
+    require(r['completed_steps']==689402,'the heap experimental config changed its step count')
     fd31=r['peripherals']['fd31_adc_con_projection']
     require(fd31['stores']=={'0xfd3100':{'values':['0x20000','0x20040','0x40',
                                                   '0x20000','0x20040','0x40',
@@ -1623,16 +1656,16 @@ def check(report,firmware):
             not fd31['write_only'] and not fd31['readback_not_modeled'] and
             fd31['addresses']==['0xfd3100'] and
             'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'] and
-            fd31['con_readback_projection']['reads']==746 and
+            fd31['con_readback_projection']['reads']==2002 and
             fd31['con_readback_projection']['address']=='0xfd3100' and
             fd31['con_readback_projection']['res_boundary']['address']=='0xfd3104',
             'the fd31 ADC CON projection must record the six control-function whole-word stores '
             'plus the two setter writes of the first sampling round (the whole-word store of the '
             'computed 0x46105d and the compound |=0x40 whose synthesized value is unchanged because '
             'bit6 is already set; 0x46105d = table-byte b[0x124A90] low bits 0x5 | 0x1058 | '
-            '(0x10000<<2 & 0x1C0000)=0x40000 | 0x420000, all real instruction results), with 746 '
-            'projected reads (1 bit4 gate + 372 full poll rounds x 2 + 1 half-round read before the '
-            'core-tick stop) and the RES boundary pinned at 0xfd3104')
+            '(0x10000<<2 & 0x1C0000)=0x40000 | 0x420000, all real instruction results), with 2002 '
+            'projected reads (1 bit4 gate + 1 compound-RMW internal read + the full 1000-round poll '
+            'x 2 CON reads per round) and the RES boundary pinned at 0xfd3104')
     # P3_ANA_CON4(0xf2c250):setter case1 的 0x6067d8a 五次读-改-写末值 0xe1
     # (=bit0|bit5|bit6|bit7,与 0x6067d94..dd6 的 读&0x1FE1 写回/(0&0x3FDF)|0x20/
     # (0x20&0x7FBF)|0x40/(0x60&0xFF7F)|0x80/(0xE0&0x1FE)|1 序列精确自洽;
@@ -1731,18 +1764,39 @@ def check(report,firmware):
             'route AZ\'s sequential-semantics reading corrected by route BD: 0xf2a638 has zero '
             'app+ROM references)')
     timer=r['peripherals']['timer0']
-    # 路 BN 精确计数:9660+(447,490-304,317)×3=439,179 tick,停点那步的 advance
-    # 被 core tick Blocked 打断在 Timer0 段之前(最后 3 tick 未走)→439,176,
-    # 三次 STD12M 到期(343,252/383,252/423,252,40,000 步精确间隔)各扣
-    # 120,000 → cnt=439,176-360,000=79,176;三次到期全部落在轮询延时上下文
-    # (gate_demand=0,IRQ4 priority-1 maskable 不合格)→ pending 挂起 True、
-    # 零交付(delivery_probe 的等待点上下文交付成功对照)。
-    require(timer=={'con':0x1401,'cnt':79176,'prd':119999,'pending':True,'expirations':13},
-            'TIMER0 must be running on source 5 with three STD12M expirations inside the ADC poll '
-            'busy-wait (10 legacy + 3 new at 343252/383252/423252, 40000 steps apart), all three '
-            'ineligible in the delay-loop context (gate_demand 0), pending left set with zero '
-            'deliveries, and the stop-step advance interrupted by the core-tick block before the '
-            'Timer0 tick of that step (439176 = 9660 + 143172*3 - 3*1 already expired periods)')
+    # 路 BS 精确计数:447,490 停点 cnt 79,176+3(该步 advance 被 core tick 段
+    # 打断少走的 3 tick,溢出挂起后恢复)=79,179 基线,+(689,402-447,490)×3
+    # =725,736 tick,途中再到期 6 次(463,252/503,252/543,252/583,252/623,252/
+    # 663,252,40,000 步精确间隔)各扣 120,000 → cnt=79,179+725,736-720,000=
+    # 84,915;19 次到期(10 legacy+9 STD12M)全部落在 ADC 临界区内(IPMASK=6,
+    # IRQ4 priority-1 maskable 不合格)→ pending 挂起 True、零交付(delivery_probe
+    # 的等待点上下文交付成功对照);RES 读是指令级停点,该步 advance 完整走完。
+    require(timer=={'con':0x1401,'cnt':84915,'prd':119999,'pending':True,'expirations':19},
+            'TIMER0 must be running on source 5 with nine STD12M expirations inside the ADC '
+            'critical section (10 legacy + 9 new at 343252..663252, 40000 steps apart), all '
+            'ineligible under IPMASK=6 (priority-1 maskable), pending left set with zero '
+            'deliveries (84915 = 79176 + 3 restored ticks + 241912 steps x 3 - 6 already '
+            'expired periods)')
+    # 路 BS 钉死「武装挂起、未交付」的 core tick 状态:溢出发生在 447,490(IPMASK=6
+    # 临界区内),BF 的 pending 逐步重检机制把它挂起放行(cli 只屏蔽不丢弃);整个
+    # 前缀内 IPMASK 再未回落(写窗口证据:447,490..689,402 零写入),首个合格时刻
+    # (临界区 sti)在 RES 读停点之后未执行 → 零交付、零 ACK、计数器保持挂起态;
+    # 交付机制本身已开(machine core_tick_entry_projection enabled、deliveries 空)。
+    tick0=r['peripherals']['core_tick_configuration'][0]
+    require(tick0['pending'] is True and tick0['expirations']==1 and
+            tick0['unresolved_overflow'] is True and tick0['acknowledgements']==0 and
+            not tick0['irq_delivery_simulated'] and
+            r['machine']['core_tick_entry_projection']['enabled'] and
+            r['machine']['core_tick_entry_projection']['deliveries']==[] and
+            r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
+            r['peripherals']['ipmask']==6 and
+            r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300',
+            'the CPU0 core tick must stay ARMED-PENDING through the new frontier: the overflow '
+            '(447,490) lands inside the ADC OS critical section (gates 0x300 open, nibble enabled, '
+            'but priority 1 < IPMASK 6), the route-BF per-step recheck holds it masked (never '
+            'dropped), the matching sti lies beyond the RES boundary, so nothing is delivered or '
+            'acknowledged in this prefix and the counter stays held (CPU1 prd 479999999 never '
+            'overflows)')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1856,8 +1910,11 @@ def check(report,firmware):
             # 2496→2499)、0x12b55c 内一次共享锁取(338→339)、setter/0x6067d8a
             # 的 8 个整字存储(3497→3505:0xf2c250×5+0xfd3100×2+…)、复合 RMW
             # |=0x40(370→371)、轮询循环内 icfg/cnum 可见性(994→996、1599→1601,
-            # 延时/轮询指令的真实执行);其余全部不变。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==2499 and
+            # 延时/轮询指令的真实执行);其余全部不变。路 BS 前缀再 +1:轮询
+            # helper 0x601163a 的出口 pop.pc_rl(0x6011664 {pc,r5,r4}=[sp++]——
+            # 入口 push 在 304,5xx 已计,出口在 1000 轮跑完后才执行)→2499→2500;
+            # 轮询体是 nop/add/bnez+CON 读,无新 adapter,其余不变。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==2500 and
             r['instruction_adapters'].get('cpu0_shared_lock_ownership')==339 and
             r['instruction_adapters'].get('exact_full_word_store')==3505 and
             r['instruction_adapters'].get('mmio_rmw_always_writes')==371 and
@@ -1895,9 +1952,10 @@ def check(report,firmware):
             'the handler must execute both 12B special-frame anchors (push.srl at 0x12ece8, '
             'pop.srl at 0x12ed08) with the 16B push.rl/pop.rl frame on the ordinary transport')
     m=rows['timer0_irq4_masked_probe']
-    # 路 BN 注:主场景(p11_heap)已推进到 447,490(core tick 溢出),masked probe
-    # 不开 fd31 读回投影——它保持 304,317 的 CON 读回诚实停(与 delivery_probe
-    # 的 304,857 同族);停点按字面值钉,不再引用主场景。
+    # 路 BN 注:主场景(p11_heap)已推进过 447,490(core tick 溢出,路 BS 接线后
+    # 到 689,402 RES 读),masked probe 不开 fd31 读回投影——它保持 304,317 的
+    # CON 读回诚实停(与 delivery_probe 的 304,857 同族);停点按字面值钉,不引用
+    # 主场景。
     require(m['completed_steps']==304317 and
             m['stop']=={'kind':'fd31_adc_con_readback_not_modeled','address':'0xfd3100'} and
             m['stop_pc']=='0x60116e6' and
@@ -1978,7 +2036,8 @@ def check(report,firmware):
             'the masked counterfactual (IRQ3 nibble cleared) must stay inert: the overflow '
             'only sets pending, nothing is requested or delivered, and the run keeps the '
             'pre-ADC-readback honest frontier (304,317, pinned as a literal because the '
-            'base scenario itself advanced to 447,490 with the ADC readback on)')
+            'base scenario itself advanced past the overflow to the 689,402 RES boundary '
+            'with the ADC readback and route-BS delivery wiring on)')
     report['core_tick_irq3_delivery_projection']=(
         'route BF: the CPU0 core tick (IRQ3) delivery machinery is wired into the main '
         'conditional scenario stack before the ~447,490-step first-overflow hard deadline '
@@ -2441,7 +2500,7 @@ def main():
                               mem_pwr_con=True,p33_window=True,p33_port_sel=True,
                               p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
                               fd31_adc_con=True,fd31_adc_con_readback=True,
-                              subword_stores=True,
+                              subword_stores=True,core_tick_irq3_delivery=True,
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'timer0_irq4_delivery_probe',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
