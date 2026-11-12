@@ -1590,6 +1590,92 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
                                          'address':'0xf2c290','size':4,'value_bytes':'00000000'})
 
+    def test_p3_ls_projection_and_syscon1_mask_set(self):
+        # 路 BD:P3_LS 清零族 write-only 整字记录 + P11_SYS_CON1 掩码集扩展。
+        # ①walker 清尾首对 0x6067d48 `add.s14.rri.p r0+=176 ∥ st.w [r0]=r1`
+        # (r0=0xF2C290,r1=0):store 半旧 r0 → [0xF2C290]=P3_LS_P11=0——
+        # 投影开启时落记录,关闭时(⑦)诚实停(与真实场景 304,012 停点
+        # 逐字段一致)。
+        ls=BR28Model(p3_ls_projection=True)
+        r=[0]*16;r[0]=0xf2c290;r[1]=0
+        result=explore(self.module,self.app,name='ls_p11_pair_store',handoff=self.handoff(),
+            hardware=ls,diagnostics={'entry_pc':0x6067d48,'initial_sp':STACK_TOP,
+                                     'initial_gprs':r,'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(ls.report()['p3_ls_projection']['stores'],
+                         {'0xf2c290':{'values':['0x0'],'writes':1}})
+        # ②直行 st.w(0x6067d4e n=0 → [0xF2C340]=P3_LS_IO_DLY)同样落记录。
+        ls2=BR28Model(p3_ls_projection=True)
+        r=[0]*16;r[0]=0xf2c340;r[1]=0
+        result=explore(self.module,self.app,name='ls_io_dly_store',handoff=self.handoff(),
+            hardware=ls2,diagnostics={'entry_pc':0x6067d4e,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(ls2.report()['p3_ls_projection']['stores'],
+                         {'0xf2c340':{'values':['0x0'],'writes':1}})
+        # ③第二并行对 0x6067d5e∥d62 `add.s14.rri.p r0+=-7448(字段 8936 的
+        # simm14 负值) ∥ st.w [r0+16]=r1`(旧 r0=0xF2C340):store 半旧值方向
+        # → [0xF2C350]=0(P3_LS_PLL 第 3 次清零)——**不落 0xF2A638**(路 AZ
+        # 「[0xf2a638]=0 唯一写点 0x6067d62」是顺序语义静态读法,路 BD 修正:
+        # 0xf2a638 全 app/ROM 零访问,不建模);A 半后 r0=0xF2A628 供下一条
+        # 复合 RMW 消费。
+        ls3=BR28Model(p3_ls_projection=True)
+        r=[0]*16;r[0]=0xf2c340;r[1]=0
+        result=explore(self.module,self.app,name='ls_pll_pair_store',handoff=self.handoff(),
+            hardware=ls3,diagnostics={'entry_pc':0x6067d5e,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r,'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(ls3.report()['p3_ls_projection']['stores'],
+                         {'0xf2c350':{'values':['0x0'],'writes':1}})
+        # ④读回一律严格停(p3_ls_readback_not_modeled,全 app/ROM 零读回观测);
+        # RMW 无观测形状拒绝(p3_ls_rmw_not_modeled)。
+        self.assertRaisesRegex(Blocked,'p3_ls_readback_not_modeled',ls.p3_ls.read,0xf2c290)
+        self.assertRaisesRegex(Blocked,'p3_ls_rmw_not_modeled',ls.p3_ls.rmw,'and',0xffffffff)
+        # ⑤与 port_sel/awkup/window 投影叠加互不吞:三者全开时 P3_LS 地址
+        # 只路由到 p3_ls(awkup 的 FLT/P_IE 面、port_sel 的 0xf2c300..32c 面、
+        # window 的字节族面互不重叠)。
+        stacked=BR28Model(p33_window_projection=True,p33_port_sel_projection=True,
+                          p33_awkup_projection=True,p3_ls_projection=True)
+        r=[0]*16;r[0]=0xf2c290;r[1]=0
+        result=explore(self.module,self.app,name='ls_stacked',handoff=self.handoff(),
+            hardware=stacked,diagnostics={'entry_pc':0x6067d48,'initial_sp':STACK_TOP,
+                                          'initial_gprs':r,'exact_parallel_stores':True},budget=1)
+        self.assertEqual(stacked.report()['p3_ls_projection']['stores'],
+                         {'0xf2c290':{'values':['0x0'],'writes':1}})
+        self.assertEqual(stacked.report()['p33_awkup_projection']['stores'],{})
+        self.assertEqual(stacked.report()['p33_port_sel_projection']['word_writes'],0)
+        self.assertEqual(stacked.report()['p33_window_projection']['byte_writes'],0)
+        # ⑥0xF2A628=P11_SYS_CON1 掩码集:0x6067d64 `rmw.and.nmodimm [r0]&=
+        # 0xFFFFFF7F`(清 bit7;SDK p11_app.h 用法宏 MSYS_IO_LATCH_DISABLE()
+        # 同形)——默认(仅 reset_history_projection)单掩码校验拒绝
+        # reset_configuration_operation_not_modeled(304,012 之后的原始形状);
+        # p11_syscon1_mask_sets 开启后接受,与既有 0xFFFFFFEF(0x6068c88,
+        # RESET_CONFIG_MASKS 默认条目)共存,其它掩码仍拒绝;按位清后读回
+        # 仍须全知(unknown_reset_configuration_bits)。
+        plain=BR28Model(reset_history_projection=True)
+        self.assertRaisesRegex(Blocked,'reset_configuration_operation_not_modeled',
+                               plain.reset.rmw,0xf2a628,'and',0xffffff7f)
+        ext=BR28Model(reset_history_projection=True,p11_syscon1_mask_sets=True)
+        ext.reset.rmw(0xf2a628,'and',0xffffff7f)
+        ext.reset.rmw(0xf2a628,'and',0xffffffef)
+        self.assertRaisesRegex(Blocked,'reset_configuration_operation_not_modeled',
+                               ext.reset.rmw,0xf2a628,'and',0xffffff00)
+        self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits',
+                               ext.reset.read,0xf2a628)
+        self.assertEqual(ext.report()['reset_history_projection']
+                         ['accepted_configuration_mask_sets']['0xf2a628'],
+                         ['0xffffffef','0xffffff7f'])
+        # ⑦默认关:p3_ls_projection 关闭时 0xf2c290 写不路由,诚实停(与真实
+        # 场景 304,012 前沿形状逐字段一致)。
+        off=BR28Model()
+        r=[0]*16;r[0]=0xf2c290;r[1]=0
+        result=explore(self.module,self.app,name='ls_p11_stop',handoff=self.handoff(),
+            hardware=off,diagnostics={'entry_pc':0x6067d48,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r,'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
+                                         'address':'0xf2c290','size':4,'value_bytes':'00000000'})
+
     def test_mem_pwr_con_rmw_and_dead_read_shapes(self):
         # 0x606772a li r8=0xf2a62c → 0x6067730 `[r8+0] |= r0`(rmw.or.r)。boot
         # 路径 b[0x129D1C]=0 → operand=r0=0。strict(无投影)停在 0xf2a62c 未建模

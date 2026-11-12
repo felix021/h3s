@@ -18,7 +18,7 @@ from br28_model import L1PIdleProjection, L1P_CON
 from br28_model import IcuIdleProjection
 from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON, LRCT_NUM
 from br28_model import P11_MEM_PWR_CON
-from br28_model import P33WindowByteRegisters, P33PortSelRegisters, P33AwkupRegisters
+from br28_model import P33WindowByteRegisters, P33PortSelRegisters, P33AwkupRegisters, P3LsRegisters
 
 
 class ModelTests(unittest.TestCase):
@@ -1688,6 +1688,93 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(allon.handles(0xf2c948,4) or allon.handles_byte_write(0xf2c184))
         # 4 对齐/字大小限制与 handles() 其余部分一致
         self.assertFalse(allon.handles(0xf2c185,4) or allon.handles(0xf2c184,2))
+
+    def test_p3_ls_projection_is_write_only_word_record(self):
+        # 路 BD:P3_LS_P11+P3_LS_IO_DLY..PLL(SDK p33_sfr.h 命名 P33_ACCESS
+        # (0xa4)/(0xd0..0xd5),只有地址宏、无 __RW/__RO/__WO、无位定义)按
+        # write-only 整字序列记录建模——三组写者(walker 清尾 0x6067d40/
+        # 变体清零 0x6069cb0/低功耗 0x60c66f8)全部纯写(值 0/0/1、3)、
+        # app+ROM 零读回观测:读回一律严格停,RMW 无观测形状拒绝。
+        # 0xf2a638 全 app/ROM 零访问(路 AZ「唯一写点 0x6067d62」是顺序语义
+        # 误读:run3 旧值方向该 store 半落 [0xF2C350]),不建模。
+        # 默认关:无投影、不 handles、报告无该键——legacy 场景逐字节不变。
+        plain=BR28Model()
+        self.assertFalse(plain.handles(0xf2c290,4))
+        self.assertNotIn('p3_ls_projection',plain.report())
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xf2c290)
+        h=BR28Model(p3_ls_projection=True)
+        # 访问面 7 个字(P3_LS_P11+IO_DLY..PLL);0xf2a638 不在投影内
+        for a in P3LsRegisters.ADDRESSES:
+            self.assertTrue(h.handles(a,4))
+        self.assertEqual(len(P3LsRegisters.ADDRESSES),7)
+        self.assertFalse(h.handles(0xf2a638,4) or h.handles(0xf2c358,4))
+        # 整字写记录(walker 清尾 10 个清零的实测分布:290×1、340..354 六
+        # 地址,其中 344/350/354 各 2 次,值全 0)
+        h.write(0xf2c290,0)
+        for a in (0xf2c340,0xf2c344,0xf2c348,0xf2c34c,0xf2c350,0xf2c354,
+                  0xf2c344,0xf2c354,0xf2c350):
+            h.write(a,0)
+        r=h.report()['p3_ls_projection']
+        self.assertEqual(r['word_writes'],10)
+        self.assertEqual(r['stores']['0xf2c290'],{'values':['0x0'],'writes':1})
+        self.assertEqual(r['stores']['0xf2c350'],{'values':['0x0','0x0'],'writes':2})
+        self.assertTrue(r['write_only'] and r['readback_not_modeled'])
+        self.assertIn('P3_LS_P11 = P33_ACCESS(0xa4)',r['sdk_naming'])
+        self.assertIn('NOT 0xF2A638',r['observed_shapes'])
+        self.assertEqual(h.report()['counts']['writes'],10)
+        # 读回严格停(显式 kind 优先于泛 unmapped)
+        with self.assertRaisesRegex(Blocked,'p3_ls_readback_not_modeled'):
+            h.read(0xf2c290)
+        # RMW 无观测形状拒绝;非法值在模型 write 入口先被拦
+        with self.assertRaisesRegex(Blocked,'p3_ls_rmw_not_modeled'):
+            h.p3_ls.rmw('or',1)
+        with self.assertRaisesRegex(ValueError,'unsigned32'):
+            h.write(0xf2c290,-1)
+        # 字节写不路由(无字节写观测形状,handles_byte_write 只属于 p33_window)
+        self.assertFalse(h.handles_byte_write(0xf2c290))
+        # 与 awkup/port_sel/window/mem_pwr_con 投影叠加互不吞地址
+        allon=BR28Model(p3_ls_projection=True,p33_awkup_projection=True,
+                        p33_port_sel_projection=True,p33_window_projection=True,
+                        mem_pwr_con_projection=True)
+        self.assertTrue(allon.handles(0xf2c290,4) and allon.handles(0xf2c208,4)
+                        and allon.handles(0xf2c304,4) and allon.handles_byte_write(0xf2c948)
+                        and allon.handles(P11_MEM_PWR_CON,4))
+        self.assertFalse(allon.handles(0xf2c948,4) or allon.handles_byte_write(0xf2c290))
+
+    def test_p11_syscon1_mask_sets_are_opt_in(self):
+        # 0xf2a628(P11_SYS_CON1)固件真实用两个 and 掩码清不同位:主复位
+        # 初始化 0x6068c88 的 0xFFFFFFEF(清 bit4,RESET_CONFIG_MASKS 既有
+        # 条目)与 walker 清尾 0x6067d64/变体 0x6069cc6 的 0xFFFFFF7F(清
+        # bit7;p11_app.h 用法宏 MSYS_IO_LATCH_DISABLE() 同形)。opt-in 的
+        # p11_syscon1_mask_sets 把 0xFFFFFF7F 追加进接受集合;默认单掩码
+        # 校验逐位不变,legacy 报告不带 0xf2a628 的 mask-set 键。
+        default=ResetHistoryProjection()
+        self.assertNotIn('accepted_configuration_mask_sets',default.report())
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):
+            default.rmw(0xf2a628,'and',0xffffff7f)
+        default.rmw(0xf2a628,'and',0xffffffef)  # 默认单掩码仍接受
+        with self.assertRaisesRegex(ValueError,'require the reset history projection'):
+            BR28Model(p11_syscon1_mask_sets=True)
+        m=BR28Model(reset_history_projection=True,p11_syscon1_mask_sets=True)
+        m.reset.rmw(0xf2a628,'and',0xffffff7f)
+        m.reset.rmw(0xf2a628,'and',0xffffffef)
+        word=m.reset.configuration[0xf2a628]
+        self.assertEqual(word.known,0x90)  # bit4|bit7 已知 0,其余未知
+        self.assertEqual(word.value,0)
+        with self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits'):
+            m.reset.read(0xf2a628)
+        with self.assertRaisesRegex(Blocked,'operation_not_modeled'):
+            m.reset.rmw(0xf2a628,'and',0xffffff00)
+        self.assertEqual(m.report()['reset_history_projection']
+                         ['accepted_configuration_mask_sets']['0xf2a628'],
+                         ['0xffffffef','0xffffff7f'])
+        # 与 P3_RST_CON0 掩码集开关独立、可叠加(两个地址各自扩展)
+        both=BR28Model(reset_history_projection=True,power_init_rstcon_mask_sets=True,
+                       p11_syscon1_mask_sets=True)
+        sets=both.report()['reset_history_projection']['accepted_configuration_mask_sets']
+        self.assertEqual(sets,{'0xf2a628':['0xffffffef','0xffffff7f'],
+                               '0xf2c054':['0x3fdf','0xff7f','0x7fbf']})
 
 
 if __name__=='__main__':unittest.main()
