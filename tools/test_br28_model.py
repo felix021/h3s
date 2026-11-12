@@ -14,6 +14,7 @@ from br28_model import DebugExecutionProjection, EMU_CON, ResetHistoryProjection
 from br28_model import MPUConfigurationProjection, GpioOutValue
 from br28_model import IcuInitializationProjection, ICU_BASES
 from br28_model import DcuCmoProjection, DCU_CMO_FLUSH, DCU_CMO_FLUSHINV
+from br28_model import L1PIdleProjection, L1P_CON
 from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON, LRCT_NUM
 
 
@@ -1158,6 +1159,60 @@ class ModelTests(unittest.TestCase):
         dcu=model.report()['dcu_cmo_projection']
         self.assertEqual(dcu['ports']['0xff05cc'],{'values':['0x61d7fe0'],'writes':1})
         self.assertEqual(dcu['ports']['0xff05c8'],{'values':[],'writes':0})
+
+    def test_l1p_con_idle_fixture_reads_only_bit31_word(self):
+        # JL_L1P CON(0xff0500)空闲位读回独立 fixture:只覆盖 0xff0500、不碰两核
+        # ICU 状态字(0xffe400/0xffec00)。合成字 0x80000000(bit31=1=空闲)是
+        # DcuWaitIdle(0x1fdb8->0xbb20)轮询消费的唯一位;其余 31 位不声称硅值;
+        # CON 写无观测形状一律拒绝。
+        proj=L1PIdleProjection()
+        self.assertTrue(proj.handles(L1P_CON))
+        self.assertFalse(proj.handles(0xffe400) or proj.handles(0xffec00) or proj.handles(0xff05c8))
+        self.assertEqual(proj.read(L1P_CON),0x80000000)
+        with self.assertRaisesRegex(Blocked,'l1p_con_write_not_modeled'):proj.write(L1P_CON,0)
+        report=proj.report()
+        self.assertEqual(report['idle_word_fixture'],'0x80000000')
+        self.assertTrue(report['idle_is_no_operation_in_flight_not_maintenance_completion'])
+        self.assertFalse(report['other_bits_claimed_as_silicon'])
+        self.assertFalse(report['silicon_reset_value_verified'])
+        self.assertFalse(report['con_write_modeled'])
+        self.assertFalse(report['cache_contents_or_coherence_simulated'])
+        with self.assertRaises(ValueError):L1PIdleProjection(idle_word=-1)
+        with self.assertRaises(ValueError):L1PIdleProjection(idle_word=0x100000000)
+
+    def test_l1p_idle_projection_is_opt_in_and_scoped(self):
+        # 默认关:0xff0500 读保持 unmapped 严格停(108,859 前沿形状),写是不支持的
+        # 外设写;打开后只 0xff0500 读回合成空闲字,0xffe400/0xffec00 读仍严格停
+        # (不 fixture ICU 状态字)。
+        plain=BR28Model()
+        self.assertFalse(plain.handles(L1P_CON,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):plain.write(L1P_CON,1)
+        model=BR28Model(l1p_idle_projection=True)
+        self.assertTrue(model.handles(L1P_CON,4))
+        self.assertFalse(model.handles(0xffe400,4) or model.handles(0xffec00,4))
+        self.assertEqual(model.read(L1P_CON),0x80000000)
+        with self.assertRaisesRegex(Blocked,'l1p_con_write_not_modeled'):model.write(L1P_CON,1)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):model.write(0xffe400,1)
+        self.assertEqual(model.report()['l1p_idle_projection']['idle_word_fixture'],'0x80000000')
+
+    def test_l1p_idle_fixture_does_not_disturb_five_branch_projections(self):
+        # 五投影(core tick/cpu1_held/SYS_DIV/P33/PLL1)与 l1p fixture 同模型叠加,
+        # 各自事务互不扰动;l1p 只答 0xff0500 读,不影响 core tick CON/PMU_CON0/
+        # SYS_DIV/电压/PLL1 的读写路由。
+        model=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                        cpu1_held_projection=True,initial_cpu1_control=0,
+                        clock_divider_projection=True,voltage_configuration_projection=True,
+                        pll1_configuration_projection=True,
+                        initial_registers={SYS_DIV:0,PLL1_CON3:0,**dict.fromkeys(VOLTAGE_CONFIG,0)},
+                        l1p_idle_projection=True)
+        self.assertEqual(model.read(L1P_CON),0x80000000)
+        self.assertTrue(model.handles(CORE_TICK_BASES[1],4))
+        self.assertTrue(model.handles(CPU1_CONTROL,4))
+        self.assertTrue(model.handles(SYS_DIV,4))
+        self.assertTrue(model.handles(VOLTAGE_CONFIG[0],4))
+        self.assertTrue(model.handles(PLL1_CON3,4))
+        # l1p 不吞掉这些地址(0xff0500 与它们都不同),读回仍走各自投影
+        self.assertEqual(model.read(SYS_DIV),0)
 
     def test_cpu1_release_bit_survives_kick_bit_record(self):
         # kick 位(bit3,只写记录)把 cpu1_control 记到 9;CPU1 的交付资格判定必须
