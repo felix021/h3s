@@ -48,7 +48,14 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
         # Actual pmalloc descriptor and V_MEM object: values written by guest,
         # never used as initial seeds to make initialization appear successful.
         h['snapshots'] += [('physical_heap_descriptor',0x12953c,24),('virtual_heap_descriptor',0x126f14,24)]
-        hardware=BR28Model(initial_registers={CLOCK0:0,CLOCK0+4:0,CLOCK0+8:0,PLL0:0 if cold else 1},
+        initial={CLOCK0:0,CLOCK0+4:0,CLOCK0+8:0,PLL0:0 if cold else 1}
+        if p11_ready_wdt_cases:
+            # Oscillator/WLA configuration per the clock-scenario family: the same
+            # explicit synthetic initial words (WLA_CON8 0=oscillator off,
+            # WLA_CON21 0) plus the OSC_STATUS word fixture and the LSB timer rate
+            # the real delay loops consume. Never an inferred analog state.
+            initial.update({0xfd1920:0,0xfd1954:0})
+        hardware=BR28Model(initial_registers=initial,
             initial_irq_config=[0]*32,initial_ipmask=0,reset_inputs_inactive=True,
             bus_lock_model=True,initial_lock_owner=None,gpio_model=True,mmu_model=True,initial_mmu_con=con,
             p11_access_probe=p11_status_cases or watchdog_cases or p11_ready_cases or p11_ready_wdt_cases,
@@ -61,12 +68,19 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
                                'p11_ready_watchdog':(0,1)}.get(name),
             # EFUSE 读投影按 clock 场景先例接线:显式合成 fixture 字(0xffffffff,)*4,
             # 非推导的设备擦除态;只服务 p11_ready_watchdog 支线。
-            efuse_read_projection=p11_ready_wdt_cases,efuse_words=OTP_DEFAULT if p11_ready_wdt_cases else None)
+            efuse_read_projection=p11_ready_wdt_cases,efuse_words=OTP_DEFAULT if p11_ready_wdt_cases else None,
+            # Oscillator/WLA 配置投影按 clock 场景先例接线(同款开关+fixture:
+            # 五个 WLA RW 配置寄存器 + OSC_STATUS 0xfd1978 只读状态字 16 + LSB
+            # 定时器速率 4 供真实 delay 循环消费);只服务 p11_ready_watchdog 支线。
+            oscillator_configuration_projection=p11_ready_wdt_cases,
+            oscillator_status_word=16 if p11_ready_wdt_cases else None,
+            timer_lsb_ticks_per_step=4 if p11_ready_wdt_cases else None)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,
               'watch_pcs':[0x060350dc,0x06035116]}
         if watchdog_cases or p11_ready_wdt_cases:diag['watch_pcs'].append(0x0603518c)
+        if p11_ready_wdt_cases:diag['watch_pcs'].append(0x060351cc)  # WLA_CON8 条件读入口(旧支线停点)
         r=explore(module,app,name=name,adapt_stack=True,adapt_store=True,r0=HANDOFF,rom=rom,handoff=h,
                   diagnostics=diag,hardware=hardware,startup_loops=True,
                   budget=85000 if p11_status_cases or p11_ready_cases else

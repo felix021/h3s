@@ -55,14 +55,20 @@ def main():
     # watchdog scenarios stop; the explicit synthetic EFUSE fixture (same shape
     # as the clock scenarios, never an inferred erased device) lets the real
     # page reader run to completion (16 data reads assembling the four
-    # page-cache words) and the prefix stops at the next independent strict
-    # boundary: the WLA oscillator configuration read 0xfd1920 at 0x60351d2,
-    # which only the clock-scenario projection family models.
+    # page-cache words). With the oscillator/WLA configuration projection also
+    # wired (the same switches and synthetic fixtures as the clock-scenario
+    # family: WLA_CON8/CON21 initial words, the OSC_STATUS 0xfd1978 read-only
+    # word and the LSB timer rate the real delay loops consume), the prefix
+    # crosses the whole conditional oscillator read at 0x60351d2 and the
+    # XOSC/PLL trim segment behind it, stopping at the next independent strict
+    # boundary: the GPCNT_CON 0xfd1100 counter-cleanup RMW read, a domain only
+    # the clock-scenario gpcnt_cleanup_projection models (their own frontier
+    # continues 240 steps further to the P33 voltage read 0xf2c110).
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==84002 and w['stop_pc']=='0x60351d2' and
-            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xfd1920',
-            'watchdog+EFUSE projections did not cross the KEY pair and page reads to the WLA boundary')
+    require(w['completed_steps']==108381 and w['stop_pc']=='0x606951a' and
+            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xfd1100',
+            'watchdog+EFUSE+oscillator projections did not cross the KEY pair, page reads and WLA trim to the GPCNT boundary')
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
@@ -80,6 +86,22 @@ def main():
             'ready response labels missing in the watchdog scenario')
     require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x603518c' for x in w['milestones']),
             'wdt_init did not really return to caller')
+    # The oscillator projection is the same opt-in the clock-scenario family
+    # uses: the WLA conditional read entry at 0x60351cc (the old 84,002 strict
+    # stop) really executed, the real XOSC/PLL trim branches landed on the same
+    # values as clock_default_trim (OTP_DEFAULT synthetic words), and the
+    # status-word/LSB-rate fixtures stay explicit synthetic inputs.
+    require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x60351cc' for x in w['milestones']),
+            'the conditional WLA_CON8 read at the old boundary did not execute')
+    regs=w['peripherals']['registers']
+    require(regs['0xfd1940']=='0x40000' and regs['0xfd4600']=='0x408929b3' and
+            regs['0xfd1920']=='0x360c4191' and regs['0xfd1954']=='0x0',
+            'real XOSC/PLL trim branches differ from the clock-scenario values')
+    assumptions=w['peripherals']['assumptions']
+    require(assumptions['oscillator_status_word_fixture']==16 and
+            assumptions['timer_lsb_ticks_per_step']==4 and
+            assumptions['initial_registers']['0xfd1920']=='0x0',
+            'oscillator fixtures are not the explicit clock-scenario synthetic inputs')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
             'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,

@@ -370,6 +370,43 @@ class ModelTests(unittest.TestCase):
         self.assertEqual((h.read(WDT_CON),h.watchdog.elapsed),(0x2e,0))  # EFUSE 事务不影响 watchdog
         self.assertEqual(h.p11.sequences,1)  # EFUSE 事务不干扰 P11 序列状态
 
+    def test_p11_ready_watchdog_efuse_and_oscillator_projections_stack_on_one_model(self):
+        # p11_ready_watchdog 场景扩展 oscillator/WLA 配置投影后的模型层形状:四个独立
+        # opt-in 叠加。WLA 段(app 0x60351cc 起观测形状:0xfd1920 条件读判 bit0、
+        # 0xfd1940 XOSC trim 写、0xfd1920/24/28 配置字+读回 RMW)不扰动 P11 序列、
+        # watchdog 与 EFUSE 状态;漏初始字时同读仍严格停(84,002 支线停点形状),
+        # 默认关投影时 WLA 区整体不映射(84,002 的 unmapped_memory 停点形状)。
+        def stacked_model(initial):
+            return BR28Model(p11_access_probe=True,p11_status=0,p11_pmu_ready_projection=True,
+                             watchdog_projection=True,watchdog_progress=(0,1),
+                             efuse_read_projection=True,efuse_words=(0xffffffff,)*4,
+                             oscillator_configuration_projection=True,oscillator_status_word=16,
+                             initial_registers=initial)
+        self.assertFalse(BR28Model().handles(0xfd1920,4))  # 默认关:WLA 区不映射
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            stacked_model({}).read(0xfd1920)  # 漏初始字:同读严格停,不臆造振荡器状态
+        h=stacked_model({0xfd1920:0,0xfd1954:0})
+        for value in P11AccessProbe.sequence:h.write(P11_UART_CON2,value)
+        for key in WatchdogProjection.keys:h.write(WDT_KEY,key)
+        h.write(WDT_CON,0x2e)
+        h.write(EFUSE_CON0,0);h.write(EFUSE_CON1,0x82);h.read(EFUSE_RDAT);h.write(EFUSE_CON1,0)
+        self.assertEqual(h.read(0xfd1920),0)  # 振荡器关(bit0=0):条件禁用分支不取
+        h.write(0xfd1940,0x40000)  # XOSC trim 写(clock_default_trim 同值)
+        h.write(0xfd1920,0x300c4191);h.write(0xfd1924,0x9000);h.write(0xfd1928,0x80)
+        # 读回 RMW 链(app 0x6035232..0x603524c:|=0x6000000/0x4000/0x200 后重写)
+        h.write(0xfd1920,h.read(0xfd1920)|0x6000000)
+        self.assertEqual((h.read(0xfd1920),h.read(0xfd1924),h.read(0xfd1928),h.read(0xfd1940)),
+                         (0x360c4191,0x9000,0x80,0x40000))
+        self.assertEqual(h.read(0xfd1978),16)  # 状态字是独立只读 fixture,配置写不能制造
+        h.write(0xfd1920,0xffffffff);self.assertEqual(h.read(0xfd1978),16)
+        self.assertEqual((h.read(WDT_CON),h.watchdog.elapsed),(0x2e,0))  # WLA 事务不影响 watchdog
+        self.assertEqual((h.p11.sequences,h.efuse.reads),(1,1))  # 不干扰 P11 序列与 EFUSE 状态
+        # 振荡器已在跑的分支(clock_oscillator_already_on 同款):条件禁用 RMW 走读回路径
+        on=stacked_model({0xfd1920:1,0xfd1954:0})
+        self.assertEqual(on.read(0xfd1920),1)
+        on.write(0xfd1920,on.read(0xfd1920)&~1)  # app 0x60351d8 `&= 0xFFFFFFFE` 形状
+        self.assertEqual(on.read(0xfd1920),0)
+
     def test_p11_access_writes_never_invent_an_acknowledgement(self):
         for status in (None,0,1):
             probe=P11AccessProbe(status)
