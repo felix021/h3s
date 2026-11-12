@@ -99,40 +99,72 @@ def main():
     # (reused, no new fixture) to cross all four without fabricating a value.
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==115727 and w['stop_pc']=='0x6068c88' and
-            w['stop']['kind']=='unmapped_memory' and w['stop']['access']=='read' and
-            w['stop']['address']=='0xf2a628' and w['stop']['size']==4,
+    require(w['completed_steps']==116086 and w['stop_pc']=='0x6034e2a' and
+            w['stop']['kind']=='unmapped_or_readonly_write' and w['stop']['access']=='write' and
+            w['stop']['address']=='0xffe200' and w['stop']['size']==4 and
+            w['stop']['value_bytes']=='070000e0',
             'watchdog+EFUSE+oscillator+GPCNT+core-tick-chain projections plus the SFC read bus, the '
             'opaque PWM dead-read wiring, the physical-heap and IRQ-vector-table region mappings, the '
-            'arch_startup exact_subword_stores/immediate_rep_projection diagnostics and the port '
-            'initialization projection did not cross the KEY pair, page reads, WLA trim, counter cleanup, '
-            'core tick store, peer PMU read, SYS_DIV/P33/PLL1 configuration, the JL_L1P idle poll, the '
-            'two-core ICU idle poll, the full SFC suspend/reconfiguration sequence, the four dead PWM '
-            'reads, the held CPU1 core-tick enable leaf, the allocator heap-page store, the halfword '
-            'store, the immediate REP bodies, the IRQ vector table store, the port init function '
-            '(msys_io_init) SDTAP/PSRAM/PINR/P3_PORT_SEL0 reads and the USB-IO/USB-disable/P11-PORT-'
-            'DIGITAL writes to the main reset initialization config RMW boundary')
+            'arch_startup exact_subword_stores/immediate_rep_projection diagnostics, the port '
+            'initialization projection and the reset/wake history projection did not cross the KEY '
+            'pair, page reads, WLA trim, counter cleanup, core tick store, peer PMU read, SYS_DIV/P33/'
+            'PLL1 configuration, the JL_L1P idle poll, the two-core ICU idle poll, the full SFC '
+            'suspend/reconfiguration sequence, the four dead PWM reads, the held CPU1 core-tick enable '
+            'leaf, the allocator heap-page store, the halfword store, the immediate REP bodies, the '
+            'IRQ vector table store, the port init function (msys_io_init) SDTAP/PSRAM/PINR/'
+            'P3_PORT_SEL0 reads, the USB-IO/USB-disable/P11-PORT-DIGITAL writes and the whole main '
+            'reset/wake init function 0x6068c80 to the per-core ICFG initial store boundary')
     require(w['instruction_adapters']['proven_dead_pwm_configuration_read']==4,
             'the four dead PWM configuration reads were not proven opaque')
     require(w['peripherals']['assumptions']['pwm_configuration_reads'].startswith('R0 remains unknown'),
             'the opaque PWM read assumption label is missing')
-    # The next stop is the main reset initialization config RMW at 0x6068c88
-    # (r2=0xf2a608, `[r2+32] &= 0xFFFFFFEF` -> 0xf2a628). This is the port init
-    # function (msys_io_init, call 0x060352ea -> 0x06068914, reference
-    # cpu.a/port.c.o/msys_io_init) having returned, the P33 pin0 reset-config
-    # helper 0x60673d4 having run its two opaque P3_PORT_SEL0 (0xf2c300) dead
-    # reads, and the caller 0x06035306 entering the main reset/wake init function
-    # 0x6068c80. 0xf2a628 = RESET_CONFIG_MASKS[0xf2a628] (P11_SYSTEM offset 10,
-    # &= 0xffffffef clears bit4), handled by the reset-history projection which
-    # this branch does NOT opt into — the reset/wake config chain is the next
-    # route's decision point, not this route. The SDTAP read itself was crossed
-    # by wiring the existing port_initialization_projection (platform_startup
-    # port_default precedent) with the explicit synthetic live-input words
-    # SDTAP_CON=0 (debug port inactive) / PSRAM_CON0=0 (inactive), the USB IO
-    # fixture 0 and IOMAP_CON0=0 (default USB DP/DM channel mapping) — never
-    # measured silicon state; JL_SDTAP.CON bit0 is consumed (when set the code
-    # reads IOMAP.CON0[18:17] to preserve USB DP/DM), so it is a LIVE input not
-    # a dead read.
+    # The reset/wake init chain was crossed by wiring the existing
+    # reset_history_projection (platform_startup reset_por_no_wake precedent,
+    # 0x06035334 milestone pinned there) with the same explicit synthetic
+    # POR/no-wake full-word fixtures — physical_history_measured=False, never
+    # measured silicon state. The main reset/wake init function
+    # 0x6068c80..0x6068e30 (disassembly-pinned) touches only default
+    # RESET_CONFIG_MASKS / RESET_FLAGS / RESET_REASON_INPUTS /
+    # WAKE_CLEAR_TARGETS / RTC_WAKE_CLEAR addresses: config RMWs 0xf2a628
+    # (P11_SYSTEM offset10, SDK p11_sfr.h P11_SYS_CON1, &=0xffffffef),
+    # 0xf2c054 (P3_RST_CON0, &=0x3fdf) and 0xf2c128 (P3_PCNT_SET0, &=0xff00);
+    # the three flag cycles with bit6 clear commands on 0xfd0004/0xf2a400/
+    # 0xf2c0c0 (POR bit7 set -> the clear commands really execute, final
+    # word 0xc0 = 0x80|0x40 matching the projection's expected value); reason
+    # reads 0xfd0000/0xf2a404/0xf2c048; wake pending/source reads 0xf2a60c
+    # (M2P_INT_PND)/0xf2c158/0xf2c15c (P3_WKUP_PND0/1)/0xf2c194/0xf2c198
+    # (P3_AWKUP_P/N_PND)/0xf2c2a0 (P3_WKUP_SRC)/0xf2d2a0; and the zero-value
+    # wake-clear no-ops 0xf2c160/0xf2c164 (P3_WKUP_CPND0/1) plus the RTC
+    # clear 0xf2d248 (the pinned f2d248 != SRC f2d2a0 fact: zero ack is a
+    # no-op, never a source clear). No power_init extras are needed — this
+    # branch never reaches power_init's P33 config accesses (0xf2c05c/extra
+    # 0xf2c054 masks/0xf2c114 stay with the conditional line). The next stop
+    # is the per-core ICFG initial store at 0x6034e2a ([cnum<<11 + 0xffe200]
+    # = 0xe0000007 inside the debug-init chain) — the debug/ICFG domain this
+    # branch does NOT opt into; platform_startup crosses the same write with
+    # debug_execution_projection=True, initial_debug_controls=(0,None). That
+    # wiring (and everything it opens toward the 127,239 CPU1-release
+    # boundary) is the next route's decision point, not this route.
+    reset=w['peripherals']['reset_history_projection']
+    require(reset['initial_full_word_fixtures']=={'0xfd0004':'0x80','0xfd0000':'0x2',
+            '0xf2a400':'0x80','0xf2a404':'0x1','0xf2c0c0':'0x80','0xf2c048':'0x1',
+            '0xf2a60c':'0x0','0xf2c158':'0x0','0xf2c15c':'0x0','0xf2c194':'0x0',
+            '0xf2c198':'0x0','0xf2c2a0':'0x0','0xf2d2a0':'0x0'} and
+            reset['physical_history_measured'] is False and
+            sorted(reset['flags_cleared'])==['0xf2a400','0xf2c0c0','0xfd0004'] and
+            reset['configuration']=={'0xf2a628':{'known_mask':'0x10','known_value':'0x0'},
+                                     '0xf2c054':{'known_mask':'0xffffc020','known_value':'0x0'},
+                                     '0xf2c128':{'known_mask':'0xffff00ff','known_value':'0x0'}} and
+            reset['pending_clear_commands']==[{'address':'0xf2c160','value':'0x0'},
+                                              {'address':'0xf2c164','value':'0x0'},
+                                              {'address':'0xf2d248','value':'0x0'}] and
+            reset['flag_post_clear_readback_modeled'] is False and
+            reset['wake_mailbox_irq_generation_or_latency_simulated'] is False and
+            reset['reason_snapshots_preserved_after_flag_clear'] is True,
+            'the reset/wake history projection did not run the pinned POR/no-wake '
+            'access sequence honestly (fixtures, flag clears, config RMWs, wake no-ops)')
+    require(any(x['kind']=='watched_pc_executed' and x['pc']=='0x6035334' for x in w['milestones']),
+            'the main reset/wake init function did not really return to the caller milestone')
     require(w['peripherals']['mmu']['walks']==67,
             'the real virtual-memory allocation prefix did not converge to the arch_startup walk count')
     port=w['peripherals']['port_initialization_projection']
