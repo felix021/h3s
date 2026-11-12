@@ -74,7 +74,11 @@ def run(module,app,header,rom,*,p11_status_cases=False,watchdog_cases=False,p11_
             # 定时器速率 4 供真实 delay 循环消费);只服务 p11_ready_watchdog 支线。
             oscillator_configuration_projection=p11_ready_wdt_cases,
             oscillator_status_word=16 if p11_ready_wdt_cases else None,
-            timer_lsb_ticks_per_step=4 if p11_ready_wdt_cases else None)
+            timer_lsb_ticks_per_step=4 if p11_ready_wdt_cases else None,
+            # GPCNT 计数器清理投影按 clock 场景先例接线(同一开关:0xfd1100 只接受
+            # 已观测的 disable &=0xFFFFFFFE / clear |=0x40 位 RMW,读回保持严格);
+            # 只服务 p11_ready_watchdog 支线。
+            gpcnt_cleanup_projection=p11_ready_wdt_cases)
         diag={'zero_rep':'skip_hypothesis','adapt_icfg':True,'icfg_initial':0x300,'irq_repeat_return':True,
               'update_repeat':True,'rom_exact_stores':True,'rom_memset_rep':True,'rom_zero_rep_skip':True,
               'visible_cli':True,'opaque_pin_read':True,'exact_parallel_stores':True,

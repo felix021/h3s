@@ -60,15 +60,19 @@ def main():
     # family: WLA_CON8/CON21 initial words, the OSC_STATUS 0xfd1978 read-only
     # word and the LSB timer rate the real delay loops consume), the prefix
     # crosses the whole conditional oscillator read at 0x60351d2 and the
-    # XOSC/PLL trim segment behind it, stopping at the next independent strict
-    # boundary: the GPCNT_CON 0xfd1100 counter-cleanup RMW read, a domain only
-    # the clock-scenario gpcnt_cleanup_projection models (their own frontier
-    # continues 240 steps further to the P33 voltage read 0xf2c110).
+    # XOSC/PLL trim segment behind it. With the GPCNT counter-cleanup
+    # projection wired too (the same switch the clock-scenario family uses),
+    # the real disable+clear RMW pair on GPCNT_CON executes, stopping at the
+    # next independent strict boundary: the CPU1 core-tick CON full-word store
+    # 0xffe8ec = 0, a domain only the clock-scenario core_tick_configuration
+    # models (their own frontier crosses the same access and continues to the
+    # P33 voltage read 0xf2c110).
     wdt=run(upstream(),application(args.firmware),package_header(args.firmware),rom,p11_ready_wdt_cases=True)
     w=wdt[0]
-    require(w['completed_steps']==108381 and w['stop_pc']=='0x606951a' and
-            w['stop']['kind']=='unmapped_memory' and w['stop']['address']=='0xfd1100',
-            'watchdog+EFUSE+oscillator projections did not cross the KEY pair, page reads and WLA trim to the GPCNT boundary')
+    require(w['completed_steps']==108426 and w['stop_pc']=='0x6066174' and
+            w['stop']['kind']=='unmapped_or_readonly_write' and w['stop']['address']=='0xffe8ec',
+            'watchdog+EFUSE+oscillator+GPCNT projections did not cross the KEY pair, page reads, WLA trim '
+            'and the counter cleanup to the core-tick boundary')
     wp=w['peripherals']['watchdog_projection']
     require(wp['con']==0x2e and wp['command_values']==[0,0,0,14,46] and
             list(wp['assumptions']['nominal_units_per_model_step'])==[0,1],
@@ -102,6 +106,16 @@ def main():
             assumptions['timer_lsb_ticks_per_step']==4 and
             assumptions['initial_registers']['0xfd1920']=='0x0',
             'oscillator fixtures are not the explicit clock-scenario synthetic inputs')
+    # The GPCNT cleanup projection is the same opt-in the clock-scenario family
+    # uses: exactly the observed disable+clear RMW pair (0x606951a &=
+    # 0xFFFFFFFE then 0x606951e |= 0x40) executed with write-only bit
+    # bookkeeping, same final partial word as clock_default_trim, unknown
+    # neighbouring bits never fabricated (readback stays strict).
+    gpcnt=w['peripherals']['gpcnt_cleanup_projection']
+    require(gpcnt['known_mask']=='0x81' and gpcnt['known_value']=='0x0' and
+            gpcnt['disable_writes']==gpcnt['clear_writes']==1 and
+            w['instruction_adapters']['gpcnt_unknown_preserving_cleanup_rmw']==2,
+            'GPCNT cleanup did not record exactly the observed disable+clear pair')
     report={'firmware_sha256':OFFICIAL_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
             'device_accessed':False,'whole_h3s_boot_simulated':False,'p11_response_causality_proven':False,
             'suitable_for_flash_approval_alone':False,'conditional_status_regression_passed':True,

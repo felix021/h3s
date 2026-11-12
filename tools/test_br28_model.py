@@ -407,6 +407,38 @@ class ModelTests(unittest.TestCase):
         on.write(0xfd1920,on.read(0xfd1920)&~1)  # app 0x60351d8 `&= 0xFFFFFFFE` 形状
         self.assertEqual(on.read(0xfd1920),0)
 
+    def test_p11_ready_watchdog_efuse_oscillator_and_gpcnt_projections_stack_on_one_model(self):
+        # p11_ready_watchdog 场景扩展 GPCNT 计数器清理投影后的模型层形状:五个独立
+        # opt-in 叠加。GPCNT 段(app 0x606951a/0x606951e 观测形状:disable &=
+        # 0xFFFFFFFE / clear |=0x40 位 RMW 对,write-only 位记录不经读回)不扰动
+        # P11 序列、watchdog、EFUSE 与 WLA 状态;未 disable 先 clear 严格停
+        # (清 pending 的前提是 bit0 已知为 0),漏投影时 GPCNT 区不映射
+        # (108,381 支线停点形状),读回保持严格(邻位未知不臆造)。
+        def stacked_model(initial):
+            return BR28Model(p11_access_probe=True,p11_status=0,p11_pmu_ready_projection=True,
+                             watchdog_projection=True,watchdog_progress=(0,1),
+                             efuse_read_projection=True,efuse_words=(0xffffffff,)*4,
+                             oscillator_configuration_projection=True,oscillator_status_word=16,
+                             initial_registers=initial,gpcnt_cleanup_projection=True)
+        self.assertFalse(BR28Model().handles(GPCNT_CON,4))  # 默认关:GPCNT 区不映射
+        h=stacked_model({0xfd1920:0,0xfd1954:0})
+        for value in P11AccessProbe.sequence:h.write(P11_UART_CON2,value)
+        for key in WatchdogProjection.keys:h.write(WDT_KEY,key)
+        h.write(WDT_CON,0x2e)
+        h.write(EFUSE_CON0,0);h.write(EFUSE_CON1,0x82);h.read(EFUSE_RDAT);h.write(EFUSE_CON1,0)
+        self.assertEqual(h.read(0xfd1920),0);h.write(0xfd1940,0x40000)  # WLA 段同四投影例
+        # 未 disable 先 clear:严格停——清 pending 前提是 bit0 已知为 0
+        with self.assertRaisesRegex(Blocked,'gpcnt_disable_state_unknown'):
+            h.gpcnt_rmw(GPCNT_CON,'or',64)
+        # 观测形状:disable+clear 对(与 clock 族同末态:bits0/7 已知 0,邻位未知)
+        h.gpcnt_rmw(GPCNT_CON,'and',0xfffffffe)
+        h.gpcnt_rmw(GPCNT_CON,'or',64)
+        self.assertEqual((h.gpcnt.bits.value,h.gpcnt.bits.known,h.gpcnt.pending),(0,0x81,False))
+        with self.assertRaisesRegex(Blocked,'unknown_gpcnt_configuration_bits'):h.read(GPCNT_CON)
+        self.assertEqual((h.read(WDT_CON),h.watchdog.elapsed),(0x2e,0))  # GPCNT 不影响 watchdog
+        self.assertEqual((h.p11.sequences,h.efuse.reads),(1,1))  # 不干扰 P11 序列与 EFUSE 状态
+        self.assertEqual(h.read(0xfd1978),16)  # WLA 状态字 fixture 不受 GPCNT 事务影响
+
     def test_p11_access_writes_never_invent_an_acknowledgement(self):
         for status in (None,0,1):
             probe=P11AccessProbe(status)
