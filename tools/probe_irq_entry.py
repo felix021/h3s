@@ -286,6 +286,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              lrct_trim_result=None,timer0_std12m=False,lp_timer_con_readback=False,
              p33_analog_config=False,power_init_rstcon_masks=False,
              power_init_wkup_dly=False,
+             mem_pwr_con=False,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -355,6 +356,9 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 目标字节;不走上游 pair 存储模型(其写前合并读旧 word 是模型簿记读,
     # 未初始化/未映射 RAM 上会假停)。默认关闭,legacy 报告不变。
     if byte_pair:extra['exact_parallel_byte_stores']=True
+    # mem_pwr_con 的死读放行需要 probe_boot 的 opaque 死读门诊断标志
+    # (0x6067844 ld.w 读回 MEM_PWR_CON,值被下一指令覆盖,从不消费)。
+    if mem_pwr_con:extra['mem_pwr_con_projection']=True
     # p11_power_init:power_init(0x6067876)内部的 P11 依赖链(opt-in,默认关,legacy
     # 报告不变)。注意 reset_history_projection 本来就由 platform_case 默认打开
     # (POR_HISTORY 全量快照,含 PWR_CON 0xf2a400:0x80),这里不得重复设置——
@@ -510,6 +514,22 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if power_init_wkup_dly:
         require(p11_power_init,'the P3_WKUP_DLY config RMW only layers on the p11_power_init scenario')
         options['power_init_wkup_dly_rmw']=True
+    # mem_pwr_con:opt-in 的 P11_SYSTEM.MEM_PWR_CON(0xf2a62c)位 RMW 放行(路 AS)。
+    # 触发点=位域配置助手 0x60676ec(0x606783a call 调入)内四次 `rmw.or.r
+    # [0xf2a62c]|=r0`(置位内存电源位,0x6067730/52/74/96)。证据核验结论:
+    # SDK p11_sfr.h 标 __RW(但 __RW 宏值 == __WO == volatile,R/W 区分只在注释)、
+    # p11_app.h 有 bits0-5 字段位定义(MEM_PWR_CPU_CON/RAM0_3/RAM4_5/RAM6_7/
+    # RAM8_9/PERIPH_CON);app 字面量 3 处、ROM 0 处——helper 四次 OR-RMW(置位)、
+    # 调用者 0x60677a4 0x6067844 一次 ld.w 读回(死读,值被下一指令 0x6067846
+    # 覆盖)、独立 power-off 例程 0x6067e82 多次 AND-RMW(清位)。无整字写,读回
+    # 值从不消费——故不选 lp_timer 的「读回=最后写值」(OR/AND 部分字 RMW 没有
+    # 「最后整字写值」可回读),选 write-only 位记录(PartialWord,与 cpu1_control
+    # kick/q32s PMU_CON |=1/LRCT 位 RMW 同族);死读由 opaque 死读门(证明值从不
+    # 消费)单独放行,不臆造读回值。默认关:0xf2a62c 读保持 unmapped_memory
+    # (301,676 前沿形状)。
+    if mem_pwr_con:
+        require(p11_power_init,'the MEM_PWR_CON RMW only layers on the p11_power_init scenario')
+        options['mem_pwr_con_projection']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
     if flash_image_bytes is not None:readonly=((0x06000000,flash_image_bytes),)+tuple(readonly)
@@ -1138,19 +1158,28 @@ def check(report,firmware):
     # `call 0x60676ec` 进入位域配置助手(0x60676ec..0x6067a2):0x60676ee
     # r1=0xF27F8C→0x60676f4 读 b[0xf27f8c]→0x60676f6 `r2&=~r0`→0x60676fa/fe
     # 并行对(r2=r0&1∥b[0xf27f8c]=r2)→… 把 r0(实参=b[0x129D1C])的 bits0-5 按
-    # 位域组装进 r0→0x606772a r8=0xF2A62C(P11_SYSTEM.MEM_PWR_CON)→**0x6067730
-    # `rmw.or.modimm [0xf2a62c]|=r0` 读 P11_SYSTEM.MEM_PWR_CON(0xf2a62c=P11_SYSTEM
-    # _BASE map_adr(0x06,0)+offset 11*4,SDK p11_sfr.h 标 __RW)撞 unmapped_memory
-    # 诚实停**——OR 形状(非 and)、P11 SYSTEM 域(非 P33/PMU 配置族)的新独立地址,
-    # 归下一路。power_init 返回 0x60120e0 仍在停点之后。TIMER0 精确计数:
-    # 518+21+15+25 步 × 3 tick/步 = cnt 1737(见下方断言),con 0x1401,expirations
-    # 10 不变;无新调度往返(交付 1+7+2、commands 20/acks 10 不变)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6067730' and
-            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf2a62c','size':4,
+    # 位域组装进 r0→0x606772a r8=0xF2A62C(P11_SYSTEM.MEM_PWR_CON)→**路 AS 放行
+    # 0x6067730/52/74/96 四次 `rmw.or.r [0xf2a62c]|=r0`(write-only 位记录,
+    # 实参 b[0x129D1C]=0,四个 OR 操作数全 0,known_mask 0x0)+ 0x6067844 `ld.w
+    # r0=[0xf2a62c]` 死读(opaque 放行,值被 0x6067846 ld.bu 覆盖)**——helper 返回、
+    # 0x60677a4 返回、power_init 尾部(0x6067b3a..b64)执行、**power_init 在
+    # 0x6067b64 返回(caller app_core 0x60120dc → 0x60120e2)**,链继续进布局在
+    # power_init 之后的 P33 窗配置函数 0x6067b66(0x6067ce6 处调用,rets=0x6067cea):
+    # 0x6067b6e r8=0xF2C548(=P33_ACCESS(0x152),SDK 无名)、0x6067b74 r6=r8+1016=
+    # 0xF2C940(=P33_ACCESS(0x250),SDK 无名)、0x6067b78 r9=r6+32=0xF2C960。停点
+    # 0x6067be4 `uextra.rrii.p ∥ st.b b[r6+8]=r0`(A 半 uextra.rrii 非纯 ALU,
+    # 落入上游 pair 模型)对 [0xf2c948]=P33_ACCESS(0x252)(SDK 无名)做 4 字节
+    # 合并读撞 unmapped_memory 诚实停——P33 窗「无名寄存器族」(0x150/0x250/0x252)
+    # + 新 pair 形状的独立决策点,归下一路。TIMER0 精确计数:1484 步 × 3 tick/步
+    # = cnt 4452(见下方断言),con 0x1401,expirations 10 不变;无新调度往返
+    # (交付 1+7+2、commands 20/acks 10 不变)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6067be4' and
+            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xf2c948','size':4,
                         'reference_sdk_register':None},
-            'the heap-experimental scenario must stop at the P11_SYSTEM.MEM_PWR_CON '
-            '(0xf2a62c) |= RMW after the P3_WKUP_DLY &=0x7F8 is let through')
-    require(r['completed_steps']==301676,'the heap experimental config changed its step count')
+            'the heap-experimental scenario must stop at the P33-window unnamed register '
+            '(0xf2c948=P33_ACCESS(0x252)) read after MEM_PWR_CON and its dead readback '
+            'are let through and power_init returns')
+    require(r['completed_steps']==302581,'the heap experimental config changed its step count')
     reset_config=r['peripherals']['reset_history_projection']['configuration']
     require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
@@ -1160,9 +1189,16 @@ def check(report,firmware):
     require(reset_config['0xf2c114']=={'known_mask':'0xfffff807','known_value':'0x0'},
             'the P3_WKUP_DLY configuration must record bits 0-2 and 11-31 cleared by the '
             'observed &=0x7F8 mask (known_mask 0xfffff807; bits 3-10 stay unknown)')
+    mem_pwr=r['peripherals']['mem_pwr_con_projection']
+    require(mem_pwr['known_mask']=='0x0' and mem_pwr['known_value']=='0x0' and
+            mem_pwr['rmw_writes']==4 and mem_pwr['dead_reads']==1 and
+            mem_pwr['write_only'] and mem_pwr['readback_observed'] and
+            not mem_pwr['readback_value_consumed'],
+            'the MEM_PWR_CON projection must record four OR-RMWs whose operands are all zero '
+            '(the argument b[0x129D1C]=0 in this path) and one dead readback')
     timer=r['peripherals']['timer0']
-    require(timer=={'con':0x1401,'cnt':1737,'prd':119999,'pending':False,'expirations':10},
-            'TIMER0 must be running on source 5 with exactly 579 steps * 3 ticks counted')
+    require(timer=={'con':0x1401,'cnt':4452,'prd':119999,'pending':False,'expirations':10},
+            'TIMER0 must be running on source 5 with exactly 1484 steps * 3 ticks counted')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1264,9 +1300,11 @@ def check(report,firmware):
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==103 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==104 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==9 and
-            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==7,
+            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==7 and
+            r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
+            r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     report['heap_info_value_is_derived_not_measured']=(
         'the p11_heap_experimental_config scenario feeds the four heap-info bytes 0c3df439 '
@@ -1417,11 +1455,42 @@ def check(report,firmware):
         'with r=(r&0x7F8)|0x7 before writing it back — so that readback is NOT modeled by this '
         'config-RMW projection: if the frontier ever reaches 0x6067f9e it stops honestly on '
         'unknown_reset_configuration_bits (a separate, future decision). With the &=0x7F8 let '
-        'through the conditional frontier advances 25 steps to 301,676 at 0x6067730: the routine '
-        'then calls the bit-field helper 0x60676ec and its rmw.or.modimm [0xf2a62c]|=r0 reads '
-        'P11_SYSTEM.MEM_PWR_CON (0xf2a62c, SDK p11_sfr.h __RW), an independent P11 SYSTEM-domain '
-        'OR-shaped access that stops the chain honestly (unmapped_memory) as the next decision; '
-        'power_init\'s return (0x60120e0) still lies beyond the stop')
+        'through the routine next calls the bit-field helper 0x60676ec, whose rmw.or.r '
+        '[0xf2a62c]|=r0 reads P11_SYSTEM.MEM_PWR_CON (0xf2a62c, SDK p11_sfr.h __RW) — that '
+        'OR-shaped access is a SEPARATE P11 SYSTEM-domain stop, now handled by the '
+        'mem_pwr_con_projection route (see mem_pwr_con_rmw_assumption), not by this WKUP_DLY '
+        'projection')
+    report['mem_pwr_con_rmw_assumption']=(
+        'the p11_heap_experimental_config scenario opts into mem_pwr_con_projection: the '
+        'P11_SYSTEM.MEM_PWR_CON (0xf2a62c = P11_SYSTEM_BASE map_adr(0x06,0) + 11*4) register is '
+        'written by the bit-field helper 0x60676ec (called from 0x606783a) with four compound '
+        'rmw.or.r [0xf2a62c]|=r0 (0x6067730/52/74/96, each followed by a call to the RAM routine '
+        '0x12e29c). SDK p11_sfr.h marks MEM_PWR_CON __RW in P11_SYSTEM_TypeDef, but __RW and __WO '
+        'are the SAME macro (volatile — the R/W distinction is comment-only), and p11_app.h names '
+        'the field bits 0-5 (MEM_PWR_CPU_CON/RAM0_3/RAM4_5/RAM6_7/RAM8_9/PERIPH_CON). The full '
+        'app reference scan (3 literal sites, 0 in the ROM) shows the register is only ever touched '
+        'by OR-RMW (set, helper) and AND-RMW (clear, the separate power-off routine 0x6067e82 '
+        'rmw.and.invr &=~r0) with NO full-word store and no consumed readback — the one readback at '
+        '0x6067844 ld.w r0=[0xf2a62c] (right after the helper returns) is overwritten by the very '
+        'next instruction 0x6067846 ld.bu r0=b[r4], so its value is never consumed. There is '
+        'therefore no "last full-word write" to read back, which is why this route chose '
+        'write-only bit recording (PartialWord, like the cpu1_control kick bit / q32s PMU_CON |=1 / '
+        'JL_LRCT bit RMW precedents) over the lp_timer "readback=last write" projection: readback '
+        'stays strictly blocked (mem_pwr_con_readback_not_modeled) and the dead read is instead '
+        'passed by the probe\'s opaque dead-read gate (R0 stays None until the 0x6067846 overwrite; '
+        'no value is fabricated). In THIS boot path the argument byte b[0x129D1C] is 0, so all four '
+        'OR operands are zero and the recorded known_mask is 0x0 — the write-only record captures '
+        'the four RMWs without inventing any set bit. No memory-power effect is modeled. With the '
+        'RMW and the dead read let through the conditional frontier advances 905 steps to 302,581 '
+        'at 0x6067be4: power_init returns at 0x6067b64 (caller app_core 0x60120dc -> 0x60120e2), '
+        'and a post-power_init P33-window config function 0x6067b66 (called from 0x6067ce6) then '
+        'stores a byte to [0xf2c948] = P33_ACCESS(0x252) via the pair uextra.rrii.p || st.b; the '
+        'A half uextra.rrii is not a "pure ALU" form so the pair falls to the upstream pair model, '
+        'whose 4-byte merge read of 0xf2c948 stops honestly on unmapped_memory. 0xf2c948 '
+        '(and the base 0xf2c548=P33_ACCESS(0x152) / 0xf2c940=P33_ACCESS(0x250) block) are '
+        'UNNAMED in the SDK p33_sfr.h (which names only P33_ACCESS(0x00..0xd5)), so this is the '
+        'next independent decision point — a P33-window unnamed register family plus a new pair '
+        'shape')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -1539,6 +1608,7 @@ def main():
                               timer0_std12m=True,lp_timer_con_readback=True,
                               p33_analog_config=True,power_init_rstcon_masks=True,
                               power_init_wkup_dly=True,
+                              mem_pwr_con=True,
                               flash_image_bytes=image)]}
     for name,path,digest in [('repaired_candidate',args.repaired_candidate,REPAIRED_SHA),('archived_failed_r2',args.failed_r2,FAILED_SHA)]:
         if path is None:continue

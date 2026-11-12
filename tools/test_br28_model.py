@@ -17,6 +17,7 @@ from br28_model import DcuCmoProjection, DCU_CMO_FLUSH, DCU_CMO_FLUSHINV
 from br28_model import L1PIdleProjection, L1P_CON
 from br28_model import IcuIdleProjection
 from br28_model import LpTimerInitRegisters, P11_LPTMR0_CON0, P11_LPTMR0_CON1, P11_LPTMR0_CON2, POWER_INIT_PMU_CFG0, POWER_INIT_PMU_CFG1, LRCT_CON, LRCT_NUM
+from br28_model import P11_MEM_PWR_CON
 
 
 class ModelTests(unittest.TestCase):
@@ -1450,6 +1451,32 @@ class ModelTests(unittest.TestCase):
             h.advance(0x300)  # CPU1 的 pending 检查必须仍然发生
         with self.assertRaisesRegex(Blocked,'cpu1_hold_after_release_not_implemented'):
             h.write(CPU1_CONTROL,0)  # kick 后的 hold 也不能漏过已释放判定
+
+
+    def test_mem_pwr_con_rmw_is_write_only_bit_record_with_strict_readback(self):
+        # 默认关:无投影、不 handles、报告无该键——legacy 场景逐字节不变
+        plain=BR28Model()
+        self.assertFalse(plain.handles(P11_MEM_PWR_CON,4))
+        self.assertNotIn('mem_pwr_con_projection',plain.report())
+        h=BR28Model(mem_pwr_con_projection=True)
+        self.assertTrue(h.handles(P11_MEM_PWR_CON,4))
+        # 四次 |=r0(0x6067730/52/74/96 形状;本 boot 路径 b[0x129D1C]=0 → operand=0)
+        for _ in range(4):h.mem_pwr_rmw(P11_MEM_PWR_CON,'or',0)
+        r=h.report()['mem_pwr_con_projection']
+        self.assertEqual((r['known_mask'],r['known_value'],r['rmw_writes']),('0x0','0x0',4))
+        self.assertEqual(r['dead_reads'],0)
+        # 读回严格停——死读(0x6067844)只经 probe_boot opaque 门放行,不经此读
+        with self.assertRaisesRegex(Blocked,'mem_pwr_con_readback_not_modeled'):
+            h.read(P11_MEM_PWR_CON)
+        # 死读计数(probe_boot 拦截 0x6067844 后调用)
+        h.observe_dead_mem_pwr_read()
+        self.assertEqual(h.report()['mem_pwr_con_projection']['dead_reads'],1)
+        # 整字 store 拒绝(固件无整字写形状)
+        with self.assertRaisesRegex(Blocked,'mem_pwr_con_full_store_not_modeled'):
+            h.write(P11_MEM_PWR_CON,0)
+        # 非 or/and 位 RMW 形式拒绝
+        with self.assertRaisesRegex(Blocked,'mem_pwr_con_rmw_form_not_modeled'):
+            h.mem_pwr_rmw(P11_MEM_PWR_CON,'xor',1)
 
 
 if __name__=='__main__':unittest.main()

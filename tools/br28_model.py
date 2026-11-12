@@ -29,6 +29,7 @@ Q32S_PMU_CON=0xf2a0c0  # P11 侧 q32s 核的 PMU_CON(p11_sfr 窗口;主核 power
 P11_SYS_DIV=0xf2a410    # SDK p11_sfr.h P11_CLOCK.SYS_DIV
 P11_CLK_CON0=0xf2a414   # SDK p11_sfr.h P11_CLOCK.CLK_CON0
 P11_HEAP_INFO=0xf27f4a  # P11 RAM P2M message area +0xa: 4B heap begin/size written by P11 init (value unproven)
+P11_MEM_PWR_CON=0xf2a62c  # SDK p11_sfr.h P11_SYSTEM.MEM_PWR_CON = P11_SYSTEM_BASE(map_adr(0x06,0)=0xf2a600)+11*4
 P11_LPTMR0_CON0=0xf2a900  # SDK p11_sfr.h P11_LPTMR0_BASE = p11_sfr_base(0xf2a000)+map_adr(0x09,0x00)
 P11_LPTMR0_CON1=0xf2a904  # 结构 CON0/CON1/CON2/PRD/RSC/CNT(__RO);CNT 在本前缀无访问观测
 P11_LPTMR0_CON2=0xf2a908
@@ -1173,6 +1174,56 @@ class LpTimerInitRegisters:
         return result
 
 
+class MemPwrConRegisters:
+    """P11_SYSTEM.MEM_PWR_CON(0xf2a62c)位 RMW 的 write-only 位记录(opt-in)。
+
+    SDK p11_sfr.h 把 MEM_PWR_CON 标 __RW(P11_SYSTEM_TypeDef offset 11),但 __RW
+    与 __WO 是同一个宏(都是 volatile)、R/W 区分只在注释;p11_app.h 有字段位定义
+    (bits0-5:MEM_PWR_CPU_CON/RAM0_3/RAM4_5/RAM6_7/RAM8_9/PERIPH_CON,六个内存
+    电源域)。固件访问(app 字面量 3 处、ROM 0 处,字节扫描钉死):
+    - 0x606772c(位域配置助手 0x60676ec):四次 `rmw.or.r [0xf2a62c]|=r0`
+      (置位内存电源位,0x6067730/52/74/96,每次之间 call RAM 0x12e29c)。
+    - 0x6067840(调用者 0x60677a4,紧接 helper call 之后):`li r0=0xf2a62c` 后
+      0x6067844 `ld.w r0=[r0]` 读回,值被下一指令 0x6067846 `ld.bu r0=b[r4]`
+      立即覆盖——死读、从不消费,归 probe_boot 的 opaque 死读门放行,不臆造读回值。
+    - 0x6067e82(独立 power-off 例程):多次 `rmw.and.invr [0xf2a62c]&=~r0`
+      (清位,电源关路径)。
+    无任何整字写。OR/AND 都是部分字 RMW、读回值(死读)从不消费——故按
+    cpu1_control kick 位 / q32s PMU_CON |=1 / LRCT 位 RMW 同族,write-only 位
+    记录(PartialWord,不经读回),读回一律严格停;死读由 probe_boot 的 opaque
+    死读门(证明值从不消费)单独放行,不臆造读回值。
+    """
+    def __init__(self):
+        self.bits=PartialWord()
+        self.rmw_writes=0
+        self.dead_reads=0
+
+    def handles(self,address):
+        return address==P11_MEM_PWR_CON
+
+    def rmw(self,kind,operand):
+        if kind not in ('or','and'):
+            raise Blocked('mem_pwr_con_rmw_form_not_modeled',address=hex(P11_MEM_PWR_CON),operation=kind)
+        self.bits.apply(kind,operand&0xffffffff)
+        self.rmw_writes+=1
+
+    def observe_dead_read(self):
+        self.dead_reads+=1
+
+    def read(self,address):
+        raise Blocked('mem_pwr_con_readback_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'address':hex(P11_MEM_PWR_CON),
+                'known_mask':hex(self.bits.known),'known_value':hex(self.bits.value),
+                'rmw_writes':self.rmw_writes,'dead_reads':self.dead_reads,
+                'sdk_anchors':'p11_sfr.h P11_SYSTEM.MEM_PWR_CON = P11_SYSTEM_BASE+11*4 (__RW macro == __WO == volatile, R/W distinction comment-only); p11_app.h MEM_PWR_CPU_CON/RAM0_3/RAM4_5/RAM6_7/RAM8_9/PERIPH_CON bits0-5',
+                'write_only':True,'readback_observed':True,'readback_value_consumed':False,
+                'observed_shapes':('0x60676ec helper 4x rmw.or.r |=r0 (set memory-power bits); '
+                                   '0x6067e82 power-off routine rmw.and.invr &=~r0 (clear); '
+                                   '0x6067844 ld.w read is dead (overwritten by 0x6067846 ld.bu)')}
+
+
 class MMU:
     """Functional SDK page-table projection, no TLB/cache or bus timing model."""
     def __init__(self,initial_con=None):
@@ -1590,6 +1641,7 @@ class BR28Model:
                  cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  p33_analog_config_projection=False,
+                 mem_pwr_con_projection=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -1704,6 +1756,15 @@ class BR28Model:
         self.voltage_configuration_projection=voltage_configuration_projection
         self.pll1_configuration_projection=pll1_configuration_projection
         self.p33_analog_config_projection=p33_analog_config_projection
+        # mem_pwr_con:opt-in 的 P11_SYSTEM.MEM_PWR_CON(0xf2a62c)位 RMW 的
+        # write-only 位记录(OR 置位/AND 清位,不经读回,与 cpu1_control kick
+        # 位/q32s PMU_CON |=1/LRCT 位 RMW 同族)。SDK p11_sfr.h 标 __RW(宏值
+        # == __WO)、p11_app.h 有 bits0-5 字段位定义;但固件只有 OR/AND 部分字
+        # RMW、唯一读回(0x6067844)是死读(值被下一指令覆盖),没有「最后整字
+        # 写值」可回读——故不选 lp_timer 的读回=最后写值投影,选 write-only。
+        # 死读由 probe_boot 的 opaque 死读门(证明值从不消费)单独放行。默认关:
+        # 0xf2a62c 读保持 unmapped_memory(301,676 前沿形状)。
+        self.mem_pwr_con=MemPwrConRegisters() if mem_pwr_con_projection else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -1812,6 +1873,7 @@ class BR28Model:
             (self.p11_win is not None and (self.p11_win.handles(address) or self.p11_win.handles_release_rmw(address))) or
             (self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address)
                                             or self.lp_timer.handles_lrct_num(address))) or
+            (self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -1982,6 +2044,8 @@ class BR28Model:
         if self.lp_timer is not None and (self.lp_timer.handles(address) or self.lp_timer.handles_lRCT(address)
                                           or self.lp_timer.handles_lrct_num(address)):
             return self.lp_timer.read(address)
+        if self.mem_pwr_con is not None and self.mem_pwr_con.handles(address):
+            return self.mem_pwr_con.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -2067,6 +2131,9 @@ class BR28Model:
             # NUM(0xfd3604,trim 结果计数,SDK __RW):固件唯一访问是轮询退出后
             # 0x6067520 的读;写形状无任何观测,拒绝
             raise Blocked('lrct_trim_result_write_not_modeled',address=hex(address),value=hex(value))
+        elif self.mem_pwr_con is not None and self.mem_pwr_con.handles(address):
+            # 0xf2a62c 只有 OR/AND 位 RMW 观测,无整字 store;整字写拒绝
+            raise Blocked('mem_pwr_con_full_store_not_modeled',address=hex(address),value=hex(value))
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -2187,6 +2254,27 @@ class BR28Model:
         self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
                            'known_value':hex(self.lp_timer.lrct.value),'known_mask':hex(self.lp_timer.lrct.known),
                            'projection':'bitwise record only; no readback, trim completion or LRC value modeled'})
+
+    def handles_mem_pwr_rmw(self,address):
+        return self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)
+
+    def mem_pwr_rmw(self,address,kind,operand):
+        """P11_SYSTEM.MEM_PWR_CON(0xf2a62c)位 RMW 的 opt-in 拦截(置/清位,不经读回)。
+
+        只按位记录(PartialWord),不臆造读回值;唯一读回(0x6067844 ld.w)是死读,
+        由 probe_boot 的 opaque 死读门(证明值从不消费)单独放行。内存电源效果
+        不模拟。
+        """
+        if not self.handles_mem_pwr_rmw(address):raise ValueError('not the modeled MEM_PWR_CON')
+        self.mem_pwr_con.rmw(kind,operand);self.counts['reads']+=1
+        self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
+                           'known_value':hex(self.mem_pwr_con.bits.value),'known_mask':hex(self.mem_pwr_con.bits.known),
+                           'projection':'write-only bit record; no memory-power effect modeled'})
+
+    def observe_dead_mem_pwr_read(self):
+        if self.mem_pwr_con is None:raise ValueError('MEM_PWR_CON projection is not enabled')
+        self.mem_pwr_con.observe_dead_read();self.counts['reads']+=1
+        self.counts['opaque_mem_pwr_con_reads']+=1
 
     def p11_lpwr_rmw(self,address,instruction_id,operand):
         """主核 PWR_CON |=0x20 请求 RMW 的 opt-in 拦截。
@@ -2330,6 +2418,7 @@ class BR28Model:
         if self.p11_lp is not None:result['p11_low_power_response']=self.p11_lp.report()
         if self.p11_win is not None:result['p11_window_projection']=self.p11_win.report()
         if self.lp_timer is not None:result['lp_timer_init_projection']=self.lp_timer.report()
+        if self.mem_pwr_con is not None:result['mem_pwr_con_projection']=self.mem_pwr_con.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
@@ -2391,6 +2480,12 @@ class BR28Model:
                 'iomap_configuration_only':True,'usb_io_unknown_bits_preserved':True}
         if self.counts.get('opaque_pwm_configuration_reads',0):
             result['assumptions']['pwm_configuration_reads']='R0 remains unknown through guarded loop/return until actual overwrite; no value fabricated'
+        if self.counts.get('opaque_mem_pwr_con_reads',0):
+            result['assumptions']['mem_pwr_con_read']=(
+                'the sole firmware readback of MEM_PWR_CON (0x6067844 ld.w, right after the '
+                'bit-field helper returns) is a proven dead read: its value is overwritten by the '
+                'next instruction 0x6067846 ld.bu r0=b[r4] before any consumption, so R0 stays '
+                'opaque until that overwrite and no read value is fabricated')
         if self.oscillator_configuration_projection:
             result['assumptions']['oscillator_configuration']='five scoped WLA RW configuration registers; analog oscillator/lock/settling and clock propagation not modeled'
             result['assumptions']['oscillator_status_word_fixture']=self.oscillator_status_word
