@@ -3,14 +3,22 @@
 
 Loads two or three named UFW images (official / tested_b79 / eq_fence_repair,
 each SHA-pinned), runs the real startup prefix for each under the IDENTICAL
-projection stack — imported straight from probe_irq_entry.irq_case with the
-crc_bankb_erased_fixture frontier flag set — and compares the two executions
-STEP BY STEP: per executed instruction the compared signature is (core,
-before_pc, next_pc, flags, all 16 GPRs in canonical form including
-UnknownWord byte provenance and IcfgValue masks, and every guest RAM write of
-that step). The report states the first divergence (step, PC, classification,
-root cause against the byte-diff runs of the two images) or that no divergence
-was observed up to the shared stop point. No device access, no flash approval.
+projection stack — imported straight from probe_irq_entry.irq_case — and
+compares the two executions STEP BY STEP: per executed instruction the compared
+signature is (core, before_pc, next_pc, flags, all 16 GPRs in canonical form
+including UnknownWord byte provenance and IcfgValue masks, and every guest RAM
+write of that step). The report states the first divergence (step, PC,
+classification, root cause against the byte-diff runs of the two images) or
+that no divergence was observed up to the shared stop point. No device access,
+no flash approval.
+
+Two shared-stack scenarios (--scenario): the default crc_bankb runs the pinned
+crc_bankb_erased_fixture frontier flag set; p11_heap_experimental layers the
+p11_heap_experimental_config conditional opt-ins (derived-not-measured heap
+fixture, Timer0 STD12M, LP timer, P33 family, P3_LS, reset-projection mask
+sets, subword stores) on the same stack up to the current conditional frontier.
+Every conclusion under the conditional scenario is conditional, not a verified
+boot fact; the default scenario's behavior and pins stay byte-identical.
 
 Honest comparison basis (what a "no divergence" result does and does not mean):
 - per-step comparison covers scheduling, fetch PC, control flow, flags, the
@@ -58,6 +66,60 @@ B79_APP_SHA = '8f594d5908f6d4eac9b63e5e4538d3c0dbf0ed1a1e285547fcf2d9c6b0914517'
 EQ_APP_SHA = '3788e3a1e25ed4e14ac3e8167674279e2d9e48e1904684c4aeaa06bc11d579cb'
 PLAIN_LENGTHS = {'official': 0xE3053, 'tested_b79': 0xE3053, 'eq_fence_repair': 0xE31C5}
 OFFICIAL_DEFAULT = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+
+# Shared-stack scenarios. The crc_bankb flag set is the pinned shared-frontier
+# stack (main scenario; default). The p11_heap_experimental flag set layers the
+# conditional opt-ins of probe_irq_entry's p11_heap_experimental_config scenario
+# (derived-not-measured heap fixture, Timer0 STD12M, LP timer, P33 family,
+# P3_LS, reset-projection mask sets, subword stores...) on top of the same
+# stack. The scenario construction (probe_irq_entry.irq_case) is imported, and
+# the two data constants below are imported values, never duplicated here; the
+# boolean switch lists themselves are kept side by side with the upstream
+# scenario calls in probe_irq_entry.main() — tools/test_image_trace_diff.py
+# pins the two lists against that call site by AST so upstream flag drift
+# fails the unit tests instead of silently changing what this tool runs.
+BASE_SCENARIO_FLAGS = dict(entry=True, banks=True, idle_wait=True, rti=True,
+                           unmaskable=True, sfc_suspend=True, gpio_out_readback=True,
+                           kick_wake=True, hardware_crc=True, rep_block=True,
+                           rep_unknown_transport=True, repeat=True, icu_region=True,
+                           dcu_cmo=True, zero_rep_skip=True, erased_bankb=True,
+                           insert_load_pair=True, halfword_pair=True, p11_power_init=True)
+CONDITIONAL_EXTRA_FLAGS = dict(
+    heap_info_bytes=probe_irq_entry.P11_HEAP_INFO_DERIVED,
+    byte_pair=True, lp_timer_writes=True, lrct_trim_done=True,
+    lrct_trim_result=probe_irq_entry.LRCT_TRIM_RESULT_PROBE,
+    timer0_std12m=True, lp_timer_con_readback=True,
+    p33_analog_config=True, power_init_rstcon_masks=True,
+    power_init_wkup_dly=True,
+    mem_pwr_con=True, p33_window=True, p33_port_sel=True,
+    p33_awkup=True, p3_ls=True, p11_syscon1_masks=True,
+    subword_stores=True)
+
+SCENARIOS = {
+    'crc_bankb': {
+        'irq_case_flags': BASE_SCENARIO_FLAGS,
+        'stack_description': ('probe_irq_entry.irq_case with the crc_bankb_erased_fixture '
+                              'frontier flag set (imported)'),
+        'default_budget': 300000,
+        # 配置新鲜度钉子:official 必须复现主前沿停点,否则本工具的 flag 集已与
+        # 主前沿场景漂移(或上游场景变更),结果不可信。上游前沿推进后按新前沿重钉。
+        'freshness': {'completed_steps': 289849, 'stop_pc': '0x60679ba',
+                      'kind': 'unmapped_memory', 'address': '0xf27f4b'},
+    },
+    'p11_heap_experimental': {
+        'irq_case_flags': {**BASE_SCENARIO_FLAGS, **CONDITIONAL_EXTRA_FLAGS},
+        'stack_description': ('probe_irq_entry.irq_case with the p11_heap_experimental_config '
+                              'conditional flag set (crc_bankb stack plus the derived-not-measured '
+                              'opt-ins: every conclusion under this scenario is conditional, not '
+                              'a verified boot fact)'),
+        'default_budget': 340000,
+        # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
+        # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。条件前沿随
+        # 上游合并前移后按新前沿重钉(前沿前移后可重跑跟进)。
+        'freshness': {'completed_steps': 304036, 'stop_pc': '0x60115ba',
+                      'kind': 'unmapped_or_readonly_write', 'address': '0xfd3100'},
+    },
+}
 
 COMPARISON_BASIS = (
     'per-step comparison covers scheduling, fetch PC, control flow, flags, the full 16-GPR register file '
@@ -142,11 +204,17 @@ class TraceMachine(DualCoreMachine):
             self.pending_writes = []
 
 
-def frontier_run(module, app, header, rom, name, *, flash_image_bytes, readonly=(), budget=None):
-    """One run of the crc_bankb_erased_fixture frontier scenario via
-    probe_irq_entry.irq_case (the scenario parameter construction is imported,
-    never duplicated). budget overrides irq_case's default 250000 through a
-    dual_case wrapper. Returns (result, machine_trace)."""
+def frontier_run(module, app, header, rom, name, *, flash_image_bytes, readonly=(),
+                 budget=None, scenario='crc_bankb'):
+    """One run of a shared-stack scenario via probe_irq_entry.irq_case (the
+    scenario parameter construction is imported, never duplicated: the flag
+    set comes from SCENARIOS and is pinned against probe_irq_entry.main()'s
+    scenario calls by unit tests). scenario 'crc_bankb' is the pinned shared
+    frontier (default); 'p11_heap_experimental' layers the conditional
+    derived-not-measured opt-ins on the same stack. budget overrides
+    irq_case's own budget through a dual_case wrapper. Returns
+    (result, machine_trace)."""
+    require(scenario in SCENARIOS, f'unknown scenario {scenario!r}')
     TraceMachine.instances = []
     original_machine = probe_dualcore.DualCoreMachine
     original_dual = probe_irq_entry.dual_case
@@ -159,12 +227,7 @@ def frontier_run(module, app, header, rom, name, *, flash_image_bytes, readonly=
     try:
         result = probe_irq_entry.irq_case(
             module, app, header, rom, name,
-            entry=True, banks=True, idle_wait=True, rti=True, unmaskable=True,
-            sfc_suspend=True, gpio_out_readback=True, kick_wake=True,
-            hardware_crc=True, rep_block=True, rep_unknown_transport=True,
-            repeat=True, icu_region=True, dcu_cmo=True, zero_rep_skip=True,
-            erased_bankb=True, insert_load_pair=True, halfword_pair=True,
-            p11_power_init=True,
+            **SCENARIOS[scenario]['irq_case_flags'],
             flash_image_bytes=flash_image_bytes, readonly=readonly)
     finally:
         probe_dualcore.DualCoreMachine = original_machine
@@ -323,13 +386,15 @@ def _control(row):
     return (row[0], row[1], row[2])
 
 
-def compare_pair(module, rom, header, name_a, image_a, name_b, image_b, budget):
+def compare_pair(module, rom, header, name_a, image_a, name_b, image_b, budget, scenario='crc_bankb'):
     label_a, (app_a, plain_a, readonly_a, sha_a) = image_a
     label_b, (app_b, plain_b, readonly_b, sha_b) = image_b
     result_a, trace_a = frontier_run(module, app_a, header, rom, name_a,
-                                     flash_image_bytes=plain_a, readonly=readonly_a, budget=budget)
+                                     flash_image_bytes=plain_a, readonly=readonly_a,
+                                     budget=budget, scenario=scenario)
     result_b, trace_b = frontier_run(module, app_b, header, rom, name_b,
-                                     flash_image_bytes=plain_b, readonly=readonly_b, budget=budget)
+                                     flash_image_bytes=plain_b, readonly=readonly_b,
+                                     budget=budget, scenario=scenario)
     for label, result, plain in ((label_a, result_a, plain_a), (label_b, result_b, plain_b)):
         print(label, result['completed_steps'], result['stop_pc'], result['stop']['kind'], flush=True)
     diff_runs = byte_diff_runs(plain_a, plain_b)
@@ -339,7 +404,7 @@ def compare_pair(module, rom, header, name_a, image_a, name_b, image_b, budget):
                                  'flash_plain_bytes': len(plain_b)}},
             'image_byte_diff_runs': [{'plain_offset': [hex(lo), hex(hi)], 'known_site': site_label(lo)}
                                       for lo, hi in diff_runs],
-            'shared_stack': 'probe_irq_entry.irq_case with the crc_bankb_erased_fixture frontier flag set (imported)',
+            'shared_stack': SCENARIOS[scenario]['stack_description'],
             'budget': budget,
             'runs': {label_a: _run_summary(result_a), label_b: _run_summary(result_b)},
             'final_report_diffs': json_diff({k: v for k, v in result_a.items() if k != 'name'},
@@ -588,6 +653,62 @@ def check_self(report):
             'the official-vs-b79 final-report differences changed: ' + str(diffs))
 
 
+def check_self_conditional(report):
+    """钉死 2026-11-12 路 BK 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 304,036;一切结论条件通过、derived-not-measured):
+
+    - 双方 304,036 步、同停点 0x60115ba(B4 电源小函数首写 0xfd3100 的
+      unmapped_or_readonly_write,当前条件前沿)、per-core {0:292872,1:11181}
+      一致;stop parity 全同——official↔b79 parity 从 289,849(路 AJ)延长到
+      条件前沿 304,036,控制流零分歧、无 reconvergence;
+    - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
+      0x88,与 crc_bankb 前沿完全一致);分歧段 30 个不变——条件前缀新增步
+      (289,849..304,036)没有消费任何新的镜像差异;
+    - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
+    条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
+    """
+    pairs = {p['name']: p for p in report['pairs']}
+    require(set(pairs) == {'official_vs_tested_b79'},
+            'conditional self-check must run exactly the repository pair')
+    p = pairs['official_vs_tested_b79']
+    for label in ('official', 'tested_b79'):
+        run = p['runs'][label]
+        require(run['completed_steps'] == 304036 and run['stop_pc'] == '0x60115ba' and
+                run['stop']['kind'] == 'unmapped_or_readonly_write' and
+                run['per_core_steps'] == {'0': 292872, '1': 11181},
+                f'{label} run changed: the conditional flag set no longer reaches the pinned '
+                'conditional frontier stop (304036 @ 0x60115ba)')
+    parity = p['parity']
+    require(parity['steps'] == {'official': 304036, 'tested_b79': 304036, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x60115ba', 'b': '0x60115ba', 'same': True} and
+            parity['stop_record']['identical'] and parity['same_stop'] and
+            parity['stop_record']['a']['address'] == '0xfd3100' and
+            parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
+            'the official-vs-b79 conditional stop parity changed: both images must reach the '
+            'identical conditional frontier stop')
+    require('first_control_divergence' not in p and 'reconvergence' not in p,
+            'official vs tested_b79 control flow diverged under the conditional flag set')
+    first = p['first_divergence']
+    require(first and first['step'] == 155390 and first['pc_a'] == '0x6010b16' and
+            first['classification'] == 'register_state_divergence' and
+            first['registers'] == {'2': {'a': '00000028', 'b': '00000088'}} and
+            not first['instruction_bytes_differ_within_instruction'],
+            'the first official-vs-b79 conditional signature divergence is no longer the '
+            'resource-table header CRC byte at 0x6010b16 (it must stay identical to the '
+            'crc_bankb-scenario divergence)')
+    spans = p['divergent_signature_spans']
+    require(spans['count'] == 30 and all(not s['writes_differ'] for s in spans['first']),
+            'the official-vs-b79 conditional divergence-span shape changed (image bytes must '
+            'stay visible only as register values, never as differing stored bytes)')
+    diffs = sorted(d['path'] for d in p['final_report_diffs'])
+    require(diffs == sorted(['$.milestones[23].r0',
+                             '$.peripherals.hardware_crc_projection.result_reads[1]',
+                             '$.peripherals.hardware_crc_projection.result_reads[8]',
+                             '$.peripherals.hardware_crc_projection.result_reads[15]',
+                             '$.peripherals.hardware_crc_projection.result_reads[22]']),
+            'the official-vs-b79 conditional final-report differences changed: ' + str(diffs))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--rom', type=Path, required=True)
@@ -595,17 +716,27 @@ def main():
                         help='label=path with label in {official,tested_b79,eq_fence_repair}; repeat 2-3 times')
     parser.add_argument('--pair', action='append',
                         help='labelA:labelB to compare (default: every combination)')
-    parser.add_argument('--budget', type=int, default=300000)
+    parser.add_argument('--scenario', choices=sorted(SCENARIOS), default='crc_bankb',
+                        help='shared-stack scenario: crc_bankb pins the main frontier (default, '
+                             'unchanged behavior); p11_heap_experimental runs the conditional '
+                             'derived-not-measured flag set up to the current conditional frontier '
+                             '(every conclusion under it is conditional, not a verified boot fact)')
+    parser.add_argument('--budget', type=int, default=None,
+                        help='per-run step budget (default: scenario-specific; crc_bankb 300000, '
+                             'p11_heap_experimental 340000)')
     parser.add_argument('--self-check', action='store_true',
-                        help='pin the first-round official-vs-tested_b79 conclusion with assertions '
-                             '(repository images only, no private artifacts)')
+                        help='pin the official-vs-tested_b79 conclusion of the selected scenario with '
+                             'assertions (repository images only, no private artifacts)')
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
+    scenario = args.scenario
+    budget = args.budget if args.budget is not None else SCENARIOS[scenario]['default_budget']
 
     if args.self_check:
-        # 自检固定跑仓库内两镜像(official vs tested_b79)到前沿停点;断言钉死
-        # 2026-11-12 首轮结论。上游前沿推进(probe_irq_entry 场景变化)后这些
-        # 步数/PC 断言会失败,按新前沿重新钉。
+        # 自检固定跑仓库内两镜像(official vs tested_b79)到所选场景的前沿停点;
+        # 断言钉死已记录结论(crc_bankb=2026-11-12 首轮/路 AJ;p11_heap_experimental=
+        # 路 BK 条件前沿)。上游前沿推进(probe_irq_entry 场景变化)后这些步数/PC
+        # 断言会失败,按新前沿重新钉。
         require(not args.image and not args.pair, '--self-check runs the two repository images')
         args.image = [f'official={OFFICIAL_DEFAULT}',
                       f"tested_b79={ROOT / 'firmware/H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw'}"]
@@ -638,28 +769,38 @@ def main():
     for a, b in pairs:
         require(a in loaded and b in loaded, f'pair {a}:{b} references an unloaded image')
 
-    # 配置新鲜度自检:official 必须复现 HANDOFF 前沿停点,否则本工具的
+    # 配置新鲜度自检:official 必须复现所选场景的前沿停点,否则本工具的
     # flag 集已与主前沿场景漂移(或上游场景变更),结果不可信。
     if 'official' in loaded:
+        fresh = SCENARIOS[scenario]['freshness']
         check = frontier_run(module, loaded['official'][1][0], header, rom, 'frontier_freshness_check',
-                             flash_image_bytes=loaded['official'][1][1])
-        require(check[0]['completed_steps'] == 289849 and check[0]['stop_pc'] == '0x60679ba' and
-                check[0]['stop']['kind'] == 'unmapped_memory' and check[0]['stop']['address'] == '0xf27f4b',
-                'official frontier stop changed: the imported flag set no longer reproduces the '
-                'crc_bankb_erased_fixture frontier (289849 @ 0x60679ba); update this pin after the '
-                'frontier advances')
+                             flash_image_bytes=loaded['official'][1][1], budget=budget,
+                             scenario=scenario)
+        require(check[0]['completed_steps'] == fresh['completed_steps'] and
+                check[0]['stop_pc'] == fresh['stop_pc'] and
+                check[0]['stop']['kind'] == fresh['kind'] and
+                check[0]['stop']['address'] == fresh['address'],
+                f'official frontier stop changed for scenario {scenario!r}: the imported flag set no '
+                f'longer reproduces the pinned frontier stop ({fresh["completed_steps"]} @ '
+                f'{fresh["stop_pc"]}); update this pin after the frontier advances')
 
     report = {'simulator_commit': PIN, 'device_accessed': False, 'whole_h3s_boot_simulated': False,
               'candidate_whole_boot_validated': False, 'suitable_for_flash_approval_alone': False,
               'comparison_basis': COMPARISON_BASIS,
               'pairs': []}
+    if scenario != 'crc_bankb':
+        # 默认场景报告保持逐字节不变;非默认场景才标注场景键。
+        report['scenario'] = scenario
     for a, b in pairs:
-        print(f'== diff {a} vs {b} ==', flush=True)
+        print(f'== diff {a} vs {b} (scenario {scenario}) ==', flush=True)
         report['pairs'].append({'name': f'{a}_vs_{b}',
                                 **compare_pair(module, rom, header, f'trace_{a}', loaded[a],
-                                               f'trace_{b}', loaded[b], args.budget)})
+                                               f'trace_{b}', loaded[b], budget, scenario)})
     if args.self_check:
-        check_self(report)
+        if scenario == 'crc_bankb':
+            check_self(report)
+        else:
+            check_self_conditional(report)
         report['image_trace_self_check_passed'] = True
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + '\n')

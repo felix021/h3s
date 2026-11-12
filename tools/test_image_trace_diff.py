@@ -5,7 +5,12 @@ analyze_image_trace (synthetic traces only; no simulator, no ROM, no images).
 Row shape mirrors TraceMachine: (core, before_pc, next_pc, flags,
 16-tuple of register signatures, tuple of (address, data-hex) writes).
 """
-from analyze_image_trace import find_reconvergence, stop_parity
+import ast
+
+import probe_irq_entry
+from analyze_image_trace import (BASE_SCENARIO_FLAGS, CONDITIONAL_EXTRA_FLAGS,
+                                 SCENARIOS, find_reconvergence, stop_parity)
+from probe_pi32v2 import ROOT
 
 
 def row(pc, nxt, marker=(15, '00000000'), write=()):
@@ -113,6 +118,68 @@ def test_stop_parity_same_stop_and_step_deltas():
     assert other['stop_pc']['same'] is False and other['same_stop'] is False
     moved = stop_parity('a', result(10, 9, 1, '0x60679ba'), 'b', result(10, 9, 1, '0x60679ba', '0xf27f4c'))
     assert moved['stop_pc']['same'] is True and moved['same_stop'] is False
+
+
+def _scenario_call_flags(scenario_call_name):
+    """Extract the irq_case keyword set for ONE scenario call site inside
+    probe_irq_entry.main() by AST (no simulator run). Name-referenced values
+    (P11_HEAP_INFO_DERIVED / LRCT_TRIM_RESULT_PROBE module constants, the
+    local `image` transport) are resolved against the probe_irq_entry module
+    namespace; the `image` name is a local, so callers drop the transported
+    flash_image_bytes/readonly keys before comparing flag sets."""
+    source = (ROOT / 'tools/probe_irq_entry.py').read_text()
+    matches = []
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == 'irq_case' and len(node.args) >= 5
+                and isinstance(node.args[4], ast.Constant)
+                and node.args[4].value == scenario_call_name):
+            matches.append(node)
+    assert len(matches) == 1, f'expected exactly one irq_case call for {scenario_call_name!r}'
+    flags = {}
+    for kw in matches[0].keywords:
+        if kw.arg in ('flash_image_bytes', 'readonly'):
+            continue  # per-run transports (local `image`), not scenario switches
+        if isinstance(kw.value, ast.Constant):
+            flags[kw.arg] = kw.value.value
+        elif isinstance(kw.value, ast.Name):
+            flags[kw.arg] = getattr(probe_irq_entry, kw.value.id)
+        else:
+            flags[kw.arg] = '<unparsed>'
+    return flags
+
+
+def test_flag_sets_match_probe_irq_entry_scenario_calls():
+    # The imported shared stack must be exactly the upstream scenario
+    # construction: if probe_irq_entry gains/renames an opt-in flag for either
+    # scenario, this fails instead of silently diffing under a stale stack.
+    assert _scenario_call_flags('crc_bankb_erased_fixture') == SCENARIOS['crc_bankb']['irq_case_flags']
+    assert _scenario_call_flags('p11_heap_experimental_config') == \
+        SCENARIOS['p11_heap_experimental']['irq_case_flags']
+    # the imported data constants are the real module values, not copies
+    assert SCENARIOS['p11_heap_experimental']['irq_case_flags']['heap_info_bytes'] \
+        is probe_irq_entry.P11_HEAP_INFO_DERIVED
+    assert SCENARIOS['p11_heap_experimental']['irq_case_flags']['lrct_trim_result'] \
+        is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
+
+
+def test_scenario_registry_shapes():
+    # the conditional stack layers strictly on top of the base stack (same
+    # base switches, no removals); the registry pins both freshness frontiers
+    # and keeps the conditional budget above the conditional frontier.
+    conditional = SCENARIOS['p11_heap_experimental']['irq_case_flags']
+    assert conditional == {**BASE_SCENARIO_FLAGS, **CONDITIONAL_EXTRA_FLAGS}
+    for key, value in BASE_SCENARIO_FLAGS.items():
+        assert conditional[key] == value
+    assert SCENARIOS['crc_bankb']['freshness'] == {
+        'completed_steps': 289849, 'stop_pc': '0x60679ba',
+        'kind': 'unmapped_memory', 'address': '0xf27f4b'}
+    assert SCENARIOS['p11_heap_experimental']['freshness'] == {
+        'completed_steps': 304036, 'stop_pc': '0x60115ba',
+        'kind': 'unmapped_or_readonly_write', 'address': '0xfd3100'}
+    assert SCENARIOS['crc_bankb']['default_budget'] == 300000
+    assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
+        SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
 
 
 if __name__ == '__main__':
