@@ -9,6 +9,7 @@ from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAG
 from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
 from br28_model import JL_UART_CON_WORDS, JL_UART_INIT_WORDS, JL_UART_INIT_WORD_OFFSETS
 from br28_model import JL_OMAP_OUT_WORDS, JL_OMAP_USB_WORDS
+from br28_model import JL_IMAP_IN_WORDS
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
@@ -1092,6 +1093,72 @@ class ModelTests(unittest.TestCase):
         # 值域守卫:非 u32 拒绝。
         with self.assertRaises(ValueError):h.write(0xfd58b8,-1)
         with self.assertRaises(ValueError):h.write(0xfd58b8,1<<32)
+
+    def test_jl_imap_write_records_bank_and_strict_readback(self):
+        # 路 V(sim-imapwr):JL_IMAP 外设输入功能选择字的 write-only 整字记录
+        # 白名单。识别三方交叉钉死:①io_imap.h `JL_IMAP_BASE=ls_base+
+        # map_adr(0x5c,0)`=0xfd5c00(SDK 有名,组 0x5c),成员表
+        # FI_GP_ICH0..FI_CHAIN_RST 共 63 个(另有 FI_TOTAL 计数哨兵,非成员),
+        # 输入通道常量 USBDP_IN=47;②布局=csfr.h `#define __u8 unsigned int`
+        # 的显式 4 字编译布局,gpio_hw.c.o 的 PFI_* 枚举(=gpio_hw.h
+        # `((u32)(&(JL_IMAP->FI_*)))`)逐成员 16604160..16604408 连续 4 字
+        # 步进互证,gpio_set_fun_input_port 体 `store i32, align 4`;③SDK
+        # gpio2crossbar_inport(gpio>208 特例 224→47/225→48,通道号表
+        # gpio_in_regs {1,17,29,0,0,38,49})与 QCY 固件 twin 0x60012e8(表
+        # 0x609EAB8 逐字节一致)双侧同值;停点值 0x2f=47=USBDP_IN,写点
+        # 0x6001342 的 pfun 实参=固件分发器 case 体 0x6001522 `r1=16604304`
+        # (=0xfd5c90=PFI_UART0_RX)。访问面:app 全镜像扫描零读回(直接访问
+        # 全部整字 st.w:复用写+disable 清零 0x601968c)。读回/RMW 一律严格
+        # 停;交叉开关布线/输入电平/IRQ 不建模。
+        self.assertEqual(len(JL_IMAP_IN_WORDS),63)
+        self.assertEqual(JL_IMAP_IN_WORDS[0],0xfd5c00)     # FI_GP_ICH0
+        self.assertEqual(JL_IMAP_IN_WORDS[13],0xfd5c34)    # FI_GP_ICH13
+        self.assertEqual(JL_IMAP_IN_WORDS[14],0xfd5c38)    # FI_SPI0_CLK(=基址+14*4,字步进钉死)
+        self.assertEqual(JL_IMAP_IN_WORDS[34],0xfd5c88)    # FI_IIC_SCL
+        self.assertEqual(JL_IMAP_IN_WORDS[35],0xfd5c8c)    # FI_IIC_SDA
+        self.assertEqual(JL_IMAP_IN_WORDS[36],0xfd5c90)    # FI_UART0_RX(路 R 停点成员)
+        self.assertEqual(JL_IMAP_IN_WORDS[37],0xfd5c94)    # FI_UART1_RX
+        self.assertEqual(JL_IMAP_IN_WORDS[39],0xfd5c9c)    # FI_UART2_RX
+        self.assertEqual(JL_IMAP_IN_WORDS[62],0xfd5cf8)    # FI_CHAIN_RST
+        g=BR28Model()
+        for address in JL_IMAP_IN_WORDS:
+            self.assertFalse(g.handles(address,4))
+        self.assertNotIn('jl_imap_write_records',g.report())
+        self.assertNotIn('jl_imap_write_records',g.report()['assumptions'])
+        # opt-in:整字写记录(write-only,core 随记),读回显式 kind 严格停;
+        # 白名单外的邻接地址(FI_CHAIN_RST 之后的 0xfd5cfc/0xfd5d00、组前
+        # 0xfd5bf8、JL_OMAP 组 0xfd58b8、USB_IO 0xfd6000)即使开关开也不
+        # 放行、不补零(FI_TOTAL 是计数哨兵,不占成员字)。
+        h=BR28Model(jl_imap_write_records=True)
+        for address in JL_IMAP_IN_WORDS:
+            self.assertTrue(h.handles(address,4))
+        for outside in (0xfd5cfc,0xfd5d00,0xfd5bf8,0xfd58b8,0xfd6000):
+            self.assertFalse(h.handles(outside,4))
+        h.current_core=0
+        h.write(0xfd5c90,0x2f)  # uart_init RX 复用:0x6001342 [r4+0]=r3(USBDP_IN)
+        h.current_core=1
+        h.write(0xfd5c00,0x11)  # 假想的 GP_ICH0 写(值仅测记录通道,非声称真值)
+        with self.assertRaisesRegex(Blocked,'jl_imap_word_readback_not_modeled'):h.read(0xfd5c90)
+        with self.assertRaisesRegex(Blocked,'jl_imap_word_readback_not_modeled'):h.read(0xfd5cf8)
+        report=h.report()['jl_imap_write_records']
+        self.assertEqual(report['word_writes'],2)
+        self.assertEqual(report['stores']['0xfd5c90'],{'values':['0x2f'],'writes':1,'cores':[0]})
+        self.assertEqual(report['stores']['0xfd5c00'],{'values':['0x11'],'writes':1,'cores':[1]})
+        self.assertEqual(len(report['addresses']),63)
+        self.assertTrue(report['write_only'] and report['readback_not_modeled'])
+        self.assertIn('JL_IMAP',report['sdk_naming'])
+        self.assertIn('PFI_*',report['sdk_naming'])
+        self.assertIn('USBDP_IN',report['sdk_naming'])
+        self.assertIn('NOT covered and stay unmapped',report['whitelisted_words'])
+        assumption=h.report()['assumptions']['jl_imap_write_records']
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verified UART transmission/reception or USB function',assumption)
+        self.assertIn('0x609EAB8',assumption)
+        # 非整字/未对齐访问不经白名单(handles 只认 4 字节对齐整字)。
+        self.assertFalse(h.handles(0xfd5c91,4) or h.handles(0xfd5c90,2) or h.handles(0xfd5c90,1))
+        # 值域守卫:非 u32 拒绝。
+        with self.assertRaises(ValueError):h.write(0xfd5c90,-1)
+        with self.assertRaises(ValueError):h.write(0xfd5c90,1<<32)
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')
