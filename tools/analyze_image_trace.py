@@ -195,6 +195,21 @@ SCENARIOS = {
         # unmapped,诚实停(unmapped_or_readonly_write)——音频/无线域首个
         # 新边界,独立决策点,不套用最后写值。**新前沿 3,079,241 @ 0x602ea72**
         # (写 0xfe2200=1)。
+        # 路 AK:音频 init 写侧分域两开关 `wl_aud_con_writes`(JL_WL_AUD CON0
+        # 0xfe2200 整字写记录+读回=最后写值,uart CON1 路 M→F→AA 最终形态;
+        # 无写时显式合成 0=路 AM 先例,derived-not-measured)与
+        # `audio_dac_init_writes`(DAC_CON 0xfe0500/AUD_CON 0xfe0558/JL_ASS
+        # CLK_CON 0xfe0900 三字写记录+读回,层叠前者;条件族不进白名单)放行
+        # S0 的 entry 写(+1,760 步)后,**实际停点偏离 AG 图预期、如实停住**:
+        # 0x602ea68 头部场景 walker 段(AG 图判「通过」的漏项——审计只覆盖
+        # SFR/RAM 性,未覆盖 st.d×MMU 页交互)0x602ea76→0x60755b2→0x6074234→
+        # 0x6007ae8 查名 helper 函数头 0x6007af2 `st.d.sp.l d[sp+8]` 在
+        # app_core 虚拟栈 sp+8=0x400afc 跨 128B MMU 页界(全 boot 首例,此前
+        # 双字存储全在物理栈/页内)——跨页双字的硬件语义无测量证据,
+        # mmu_cross_page_access_not_split 诚实停,归下一路三选一。S1..S5
+        # (DAC init SFR 簇)本前缀未到达,audio 容器登记但零写零读。
+        # **新前沿 3,081,001 @ 0x6007af2**(mmu_cross_page_access_not_split
+        # 0x400afc size 8)。
         'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
@@ -738,28 +753,30 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-14 路 AA 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 3,079,241;一切结论条件通过、derived-not-measured;历史
+    """钉死 2026-11-14 路 AK 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 3,081,001;一切结论条件通过、derived-not-measured;历史
     世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/3,070,626(路 CG)/
     3,070,786(路 CL)/3,070,955(路 CO)/3,071,380(路 CQ)/3,071,984(路 F)/
-    3,072,236(路 M)/3,073,402(路 R)/3,073,918(路 V)已被后续投影替换,见
-    HANDOFF 对应「步含义」段):
+    3,072,236(路 M)/3,073,402(路 R)/3,073,918(路 V)/3,079,241(路 AA)已被
+    后续投影替换,见 HANDOFF 对应「步含义」段):
 
-    - 双方 3,079,241 步、同停点 0x602ea72(unmapped_or_readonly_write 写
-      0xfe2200=JL_WL_AUD->CON0=1,当前条件前沿——路 AA 的 jl_uart_con1_
-      readback 读回=最后写值投影放行 uart_fifo_reset 复合 RMW 0x60340d8 的
-      内部读(CON1 已被写 0:读 0、写回 0&0xFFFFFFEF=0,平凡零发明,RMW 走
-      完整通用 mmio 路径)后,uart_init 事务全部收尾(BAUD=0x270×2/OTCNT/
-      RX 三连写落地,CON0 |=0x68/|=0x4→0x346f,无新 Timer0 到期),事务后
-      事件域首边界=app_core 尾 0x6011fee 的 init 链 0x60c32a4..0x60c32b8
-      第 4 项 0x602ea68 首指令写 JL_WL_AUD CON0=1)、per-core {0:3068340,
-      1:11216}一致;stop parity 全同——official↔b79 parity 延长到条件前沿
-      3,079,241,控制流零分歧、无 reconvergence;
+    - 双方 3,081,001 步、同停点 0x6007af2(mmu_cross_page_access_not_split,
+      8 字节双字存储 d[sp+8] 跨 128B MMU 页界 0x400afc,当前条件前沿——路 AK
+      的 wl_aud_con_writes+audio_dac_init_writes 放行 0x602ea72 的
+      JL_WL_AUD CON0=1 整字写后,0x602ea68 头部场景 walker 段
+      0x602ea76→0x60755b2→0x6074234→0x6007ae8(配置查名 helper)的函数头
+      st.d.sp.l 在 app_core 虚拟栈 sp+8=0x400afc 上首例跨页,AG 图 §3.1 该段
+      判「通过」是漏项——其审计只覆盖 SFR/RAM 性,未覆盖 st.d×MMU 页交互;
+      跨页双字存储的硬件语义未测量,ISA/MMU 存储模型边界诚实停,归下一路
+      三选一)、per-core {0:3070100,1:11216}一致;stop parity 全同——
+      official↔b79 parity 延长到条件前沿 3,081,001,控制流零分歧、无
+      reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,079,241,
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,081,001,
       超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
       GPIO TX/RX 复用链+Timer0 交付往返+JL_IMAP 输入复用链+fifo_reset+
-      uart_init 收尾+init 链前三项)没有消费任何新的镜像差异;
+      uart_init 收尾+init 链前三项+JL_WL_AUD entry 写+场景 walker 查名链)
+      没有消费任何新的镜像差异;
     - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -775,11 +792,11 @@ def check_self_conditional(report):
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
                 run['stop']['address'] == conditional['stop']['address'] and
-                run['per_core_steps'] == {'0': 3068340, '1': 11216},
+                run['per_core_steps'] == {'0': 3070100, '1': 11216},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3079241 @ 0x602ea72, the JL_WL_AUD CON0=1 word '
-                'store of init-chain entry 0x602ea68 after the route-AA CON1 readback '
-                'projection released the uart_fifo_reset compound RMW)')
+                'conditional frontier stop (3081001 @ 0x6007af2, the first cross-page '
+                'doubleword store of the whole boot — the name-lookup helper reached '
+                'after the route-AK JL_WL_AUD release executes the 0x602ea72 entry store)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
