@@ -65,6 +65,7 @@ public class MainActivity extends Activity {
         button(layout, "准备本次候选升级（不写入）", () -> prepareUpgrade());
         button(layout, "查看并确认本次刷写", () -> confirmUpgrade());
         button(layout, "取消升级准备", () -> startService(new Intent(this,UpgradeService.class).setAction(UpgradeService.CANCEL)));
+        button(layout, "打开 WebView 壳（离线组帧演示）", () -> startActivity(new Intent(this, WebShellActivity.class)));
         output = new TextView(this); output.setTextIsSelectable(true); output.setTextSize(12);
         ScrollView scroll = new ScrollView(this); scroll.addView(output); layout.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(layout);
