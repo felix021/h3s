@@ -5,8 +5,9 @@ import java.util.Map;
 
 /**
  * JVM 单测桩：org.json.JSONObject 的最小子集（Android 内置真类）。
- * 只实现 H3SBridge 与其单测用到的方法；语义对齐 org.json（缺失 optDouble 返回默认值、
- * 语法错误抛 JSONException）。仅供 tools/android-query/test.sh 的纯 JVM 编译。
+ * 只实现 H3SBridge/H3sTransport 与其单测用到的方法；语义对齐 org.json（缺失 optDouble 返回
+ * 默认值、getInt 非数值抛 JSONException、语法错误抛 JSONException）。
+ * 仅供 tools/android-query/test.sh 的纯 JVM 编译。
  */
 public class JSONObject {
     private final LinkedHashMap<String, Object> map = new LinkedHashMap<String, Object>();
@@ -38,6 +39,16 @@ public class JSONObject {
     }
 
     public int optInt(String key, int fallback) { return (int) Math.round(optDouble(key, fallback)); }
+
+    /** 对齐 Android org.json：取 int，不存在/非数值抛 JSONException。 */
+    public int getInt(String key) throws JSONException {
+        Object v = map.get(key);
+        if (v instanceof Number) {
+            double d = ((Number) v).doubleValue();
+            if (!Double.isNaN(d) && !Double.isInfinite(d)) return (int) Math.round(d);
+        }
+        throw new JSONException("字段 " + key + " 不是数值");
+    }
 
     public String getString(String key) throws JSONException {
         Object v = map.get(key);
