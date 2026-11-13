@@ -771,6 +771,389 @@ def run_event_injection(module,app,official,repaired_app,sections):
     return report
 
 
+# ---------------------------------------------------------------------------
+# Route CA (sim-tonescene): opt-in D2-A tone first-scene skeleton scenarios.
+#
+# Explicit opt-in via --tone-scene (requires --rom, the public Release ROM
+# asset QCY_H3S_BR28_ROM_000000-020000.bin; local path, never committed).
+# The legacy scenarios above stay byte-identical without this flag. These
+# runs start the REAL firmware at handler[47] 0x6023a0a (event 0x10000c /
+# payload word 112 / gate b[QCY+4451]) with SYNTHETIC event/state inputs
+# named in TONE_SCENE_FIXTURES; RAM contents come from the image's own
+# startup blobs plus the .data-initialized tone queue sentinel. Every
+# stubbed callee is listed in TONE_SCENE_STUBS. Nothing here is a device
+# measurement, a flash approval, or a claim that the resource-file-system,
+# RTOS or DAC semantics are modeled.
+
+ROM_SHA256='7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793'
+TONE_SCENE_FIXTURES={
+    'version':'ca1',
+    'classification':'synthetic-not-measured',
+    'synthetic_event_payload_word':112,   # handler[47] payload[0] == 112 (0x70) arm
+    'synthetic_gate_byte':1,              # b[QCY+4451] != 0 gate
+    'synthetic_language_word':0,          # QCY+348: !=1 -> en table 0x60a387c; ==1 -> zh 0x60a379c
+    'synthetic_heap_base':0x00131400,     # bump arena for the allocator stubs
+    'synthetic_vfs_thunk_read':0x00131000,# never fetched; intercepted as stub PCs
+    'synthetic_vfs_thunk_seek':0x00131002,
+    'synthetic_vfs_thunk_play':0x00131004,
+    # stream.bin runtime head: 'J','S' are the loader's own compare constants
+    # (0x607428a/0x6074292); byte 3 is stored as the version at buf+2048.
+    # Bytes 2..15 are SYNTHETIC zeros: the on-device head bytes beyond the
+    # magic are not present in any public artifact (honest boundary below).
+    'synthetic_stream_head':'4a530001'+('00'*12),
+}
+TONE_SCENE_STUBS={
+    0x12e16e:'RAM allocator -> synthetic bump block (BW stub precedent)',
+    0x12e160:'locked allocator -> synthetic bump block; the OS lock part is skipped',
+    0x12e190:'RAM free -> no-op (no OS heap; BW stub precedent)',
+    0x6064538:'OS mutex take -> synthetic success 0',
+    0x606474a:'OS mutex give -> synthetic success 0',
+    0x12cb08:'RTOS critical query -> synthetic 1 (rep body has control flow, no hardware capture; 1 keeps the caller 0x60008ca post arm)',
+    0x6064978:'OS event post -> records args+payload, synthetic success 0 (BW post-stub precedent, at the OS API layer)',
+    0x1fd74:'ROM memcpy -> byte copy (register-count REP body; upstream model gap, BW stub precedent)',
+    0x1fd78:'ROM memcpy variant -> byte copy (same body 0x413c)',
+    0x1fd7c:'ROM memcpy variant -> byte copy (body 0x4104, same family)',
+    0x6007ae8:'resource VFS open -> SYNTHETIC handles over REAL public bytes (scene tone_pipeline_skeleton only; the real open runs in tone_entry_chain)',
+    0x131000:'synthetic VFS ops: read(handle,buf,len) serves real file bytes',
+    0x131002:'synthetic VFS ops: seek(handle,pos) sets position',
+    0x131004:'synthetic VFS ops: play(handle) -> synthetic 0 (decoder data flow is D2-C)',
+}
+
+
+def tone_scene_resources(ufw_path):
+    """Real public resource bytes for the tone scene: stream.bin (JLFS) and
+    the TON/TON1 tone containers (outer UFW entries, 32B directory records
+    {hcrc,dcrc,start,pad,size,flags,...,name[16]@+16}), all via the existing
+    CRC-verifying walkers."""
+    import analyze_image_resources as AR
+    raw,flash,plain=AR.load_image(Path(ufw_path))
+    files={}
+    for e in AR.walk_jlfs(plain):
+        if e['name'] in ('stream.bin',):
+            files[e['name']]=plain[e['content_offset']:e['content_offset']+e['content_bytes']]
+    require('stream.bin' in files,'stream.bin not found in the image JLFS area')
+    for e in AR.walk_outer(raw):
+        if e['name'] in ('TON','TON1'):
+            data=e['content'];p=0
+            while p+32<=min(len(data),0x400):
+                _,_,start,_,size=struct.unpack_from('<HHHHH',data,p)
+                name=data[p+16:p+32].split(b'\0')[0]
+                if size and start+size<=len(data) and all(32<=b<127 for b in name):
+                    files[f'{e["name"]}/{name.decode("ascii")}']=data[start:start+size]
+                p+=32
+    return files
+
+
+def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_official):
+    """D2-A first-scene skeleton: inject the power-on tone event at handler
+    0x6023a0a and follow the real firmware as far as it honestly goes.
+
+    Scene 1 (tone_entry_chain) keeps the resource VFS open REAL: the mount
+    table walk and the flash-FS layer execute on real image bytes and
+    gracefully return not-found (boot-initialized FS state is unmodeled
+    here) -> the play fails through the firmware's own failure path.
+
+    Scene 2 (tone_pipeline_skeleton) replaces the VFS open with the named
+    synthetic boundary feeding REAL public bytes (stream.bin behind the
+    named synthetic runtime head; TON/TON1 tone files): resolve, enqueue,
+    idle-start, source selection, stream create and the stream.bin loader
+    all run real, the 'J''S' header check executes on the fixture bytes,
+    the section walk and the firmware's own XOR decrypt run over the real
+    stream.bin bytes, until the section parse aborts inside a deep ROM
+    helper (honest stop; see the report).
+    """
+    import fnmatch
+    fixtures=dict(TONE_SCENE_FIXTURES)
+    SENTINEL=0x00133ff0
+    HANDLER,GETTER,PLAY,RESOLVE,FILL,VFS_OPEN=0x6023a0a,0x600c2aa,0x6017cc0,0x600d95e,0x600d8f0,0x6007ae8
+    ENQUEUE,START,SOURCE_SELECT,STREAM_CREATE,LOADER,PARSER=0x600da64,0x600d9be,0x60057e6,0x6074938,0x6074234,0x60742a8
+    MOUNT_OPEN,FS_A,FS_B=0x6060802,0x6010a64,0x6010a4a
+    QUEUE_HEAD=0x124a24        # .data-initialized empty-list sentinel in the image blob
+    JS_CHECK=0x607428a         # real 'J' compare inside the loader
+    D2A_PCS={'node_create_0x607471e':0x607471e,'decoder_bind_0x6076b7a':0x6076b7a,
+             'open_config_0x60787ac':0x60787ac,'eq_hook_0x6078846':0x6078846,
+             'subcmd2_write_0x6078a2e':0x6078a2e,'framework_post_0x6074192':0x6074192}
+
+    class Memory(_EventMemoryMixin,module.Memory):
+        def __init__(self):
+            super().__init__()
+            self.regions=[]
+        def map(self,address,data,writable=False):
+            self.regions.append((address,address+len(data),writable))
+            super().write(address,data)
+        def _regions(self):
+            return self.regions
+        def read(self,address,length):
+            self.valid(address,length)
+            return super().read(address,length)
+        def write(self,address,data):
+            self.valid(address,len(data),write=True)
+            super().write(address,data)
+
+    class CPU(module.CPU):
+        execution_bounds=None
+        repeat=None
+        def decode(self,pc):
+            if self.execution_bounds and pc>=0x06000000:
+                lo,hi=self.execution_bounds
+                if not lo<=pc<hi:
+                    raise PermissionError(f'Flash execution fence: {pc:#010x} outside {lo:#010x}..{hi:#010x}')
+                insn,raw,size=super().decode(pc)
+                require(pc+size<=hi,'instruction crosses execution boundary')
+                return insn,raw,size
+            return super().decode(pc)
+        def step(self):
+            # immediate-count REP with a straight-line body (probe_boot's
+            # immediate_rep_multi_block precedent: BR28 repeats the body
+            # count times; the upstream model's operand interpretation is
+            # fitted to a different shape and would run the wrong rounds).
+            insn,raw,size=self.decode(self.pc)
+            if insn.id=='rep.i':
+                op=module.check.operands(insn,raw)
+                body_bytes,count=op['b'],op['n']
+                require(1<=count<=64,'tone-scene REP count outside the bounded model')
+                require(self.repeat is None,'nested REP inside the tone scene')
+                walk=self.pc+size;covered=0
+                while covered<body_bytes:
+                    inner,_,inner_size=self.decode(walk)
+                    require(not inner.block and module.branch_field(inner) is None
+                            and not inner.id.startswith(('rep','goto','gotoss','call','callns','pop.pc','rts'))
+                            and inner.id not in ('tbb','tbh')
+                            and self.models.get(inner.id) is not None,
+                            'tone-scene REP body is not straight-line')
+                    covered+=inner_size;walk+=inner_size
+                require(covered==body_bytes,'tone-scene REP body is unaligned')
+                self.repeat={'start':self.pc+size,'end':self.pc+size+body_bytes,'remaining':count}
+                self.pc+=size;self.steps+=1
+            else:
+                super().step()
+            if self.repeat and self.pc==self.repeat['end']:
+                self.repeat['remaining']-=1
+                if self.repeat['remaining']:
+                    self.pc=self.repeat['start']
+                else:
+                    self.repeat=None
+
+    heap={'next':fixtures['synthetic_heap_base']}
+    def bump(n):
+        require(0<n<=0x100000,'allocator stub size out of range')
+        n=(n+15)&~15
+        addr=heap['next'];heap['next']=addr+n+16
+        return addr
+
+    vfs={};res_names=[];res_glob=[];vfs_reads=[];vfs_seeks=[];posts=[];mutex=[]
+
+    def text(c,addr,limit=1<<16):
+        out=b'';k=0
+        while k<limit:
+            byte=c.mem.read(addr+k,1)[0]
+            if not byte:break
+            out+=bytes([byte]);k+=1
+        return out
+
+    def stub_step(c,resources,use_vfs_stub):
+        pc=c.pc
+        if pc in (0x12e16e,0x12e160):
+            c.R[0]=bump(c.R[0]);c.pc=c.rets;return True
+        if pc==0x12e190:
+            c.pc=c.rets;return True
+        if pc in (0x6064538,0x606474a):
+            mutex.append((hex(pc),c.R[0],c.R[1]));c.R[0]=0;c.pc=c.rets;return True
+        if pc==0x12cb08:
+            c.R[0]=1;c.pc=c.rets;return True
+        if pc==0x6064978:
+            payload=[struct.unpack('<I',c.mem.read(c.R[3]+4*k,4))[0] for k in range(min(c.R[2],4))]
+            posts.append({'args':[c.R[0],c.R[1],c.R[2]],'payload':payload})
+            c.R[0]=0;c.pc=c.rets;return True
+        if pc in (0x1fd74,0x1fd78,0x1fd7c):     # ROM memcpy family -> byte copy
+            c.mem.write(c.R[0],c.mem.read(c.R[1],c.R[2]));c.R[0]=c.R[0];c.pc=c.rets;return True
+        if pc==0x6007ae8 and use_vfs_stub:
+            name=text(c,c.R[0]).decode('ascii','replace')
+            res_names.append(name)
+            seg=name.split('/')
+            data=resources.get(name)
+            if data is None and len(seg)>=5 and seg[0]=='flash' and seg[1]=='EXT_RESERVED':
+                container,glob=seg[2],seg[-1]
+                for key,value in resources.items():
+                    if key.startswith(container+'/'):
+                        base=key[len(container)+1:]
+                        if fnmatch.fnmatchcase(base,glob):
+                            data=value;res_glob.append((name,key));break
+            if data is None:
+                c.R[0]=0
+            else:
+                handle=bump(8);ops=bump(32)
+                c.mem.write(handle,struct.pack('<I',ops))
+                c.mem.write(ops+8,struct.pack('<I',fixtures['synthetic_vfs_thunk_read']))
+                c.mem.write(ops+16,struct.pack('<I',fixtures['synthetic_vfs_thunk_seek']))
+                c.mem.write(ops+20,struct.pack('<I',fixtures['synthetic_vfs_thunk_play']))
+                vfs[handle]={'data':data,'pos':0}
+                c.R[0]=handle
+            c.pc=c.rets;return True
+        if pc==fixtures['synthetic_vfs_thunk_read']:
+            state=vfs[c.R[0]]
+            n=min(c.R[2],len(state['data'])-state['pos'])
+            c.mem.write(c.R[1],state['data'][state['pos']:state['pos']+n])
+            state['pos']+=n;vfs_reads.append((c.R[2],n,state['pos']))
+            c.R[0]=n;c.pc=c.rets;return True
+        if pc==fixtures['synthetic_vfs_thunk_seek']:
+            vfs[c.R[0]]['pos']=c.R[1];vfs_seeks.append(c.R[1]);c.R[0]=0;c.pc=c.rets;return True
+        if pc==fixtures['synthetic_vfs_thunk_play']:
+            c.R[0]=0;c.pc=c.rets;return True
+        return False
+
+    def machine(image):
+        c=CPU()
+        c.mem=Memory()
+        c.mem.map(BASE,image)
+        c.mem.map(0x0,rom_bytes)                    # public Release ROM asset, read-only
+        c.mem.map(0x00124000,bytes(0x11000),writable=True)
+        data_src,code_src=STARTUP_DATA_REGION[1],STARTUP_RAM_CODE_REGION[1]
+        c.mem.map(STARTUP_DATA_REGION[0],app[data_src-BASE:data_src-BASE+STARTUP_DATA_REGION[2]],writable=True)
+        c.mem.map(STARTUP_RAM_CODE_REGION[0],app[code_src-BASE:code_src-BASE+STARTUP_RAM_CODE_REGION[2]],writable=True)
+        c.execution_bounds=(BASE,0x060c3338)
+        c.sp=0x00134000
+        from br28_arch_models import architectural_k2
+        c.models,_=architectural_k2(c.models)
+        return c
+
+    def execute(c,resources,*,use_vfs_stub,budget,watch):
+        events=[]
+        c.R[0]=0x130000
+        c.mem.write(0x130000,struct.pack('<I',fixtures['synthetic_event_payload_word']))
+        c.pc=HANDLER;c.rets=SENTINEL
+        seen=set();calls=[]
+        stop=None
+        try:
+            for _ in range(budget):
+                if c.pc==SENTINEL:break
+                if c.pc in watch and c.pc not in seen:
+                    seen.add(c.pc)
+                    events.append({'pc':hex(c.pc),'regs':[c.R[i] for i in range(4)]})
+                if not stub_step(c,resources,use_vfs_stub):
+                    insn,_,size=c.decode(c.pc)
+                    is_call=insn.id.startswith('call')
+                    before=c.pc
+                    c.step()
+                    if is_call:calls.append((hex(before),hex(c.pc)))
+        except (PermissionError,RuntimeError,ValueError,KeyError) as e:
+            stop={'pc':hex(c.pc),'error':f'{type(e).__name__}: {e}'}
+        return events,calls,stop
+
+    def coverage(events,calls):
+        hit=set(int(e['pc'],16) for e in events)
+        for site,target in [(int(a,16),int(t,16)) for a,t in calls]:
+            hit.add(site)
+        return hit
+
+    report={'fixtures':{**fixtures,'synthetic_stream_head':fixtures['synthetic_stream_head']},
+            'stubs':{hex(k):v for k,v in sorted(TONE_SCENE_STUBS.items())},
+            'rom_sha256':sha(rom_bytes),
+            'device_accessed':False,'firmware_created':False,'suitable_for_flash_approval_alone':False}
+    scenarios={}
+    entry_watch=(HANDLER,GETTER,PLAY,RESOLVE,FILL,VFS_OPEN,MOUNT_OPEN,FS_A,FS_B,
+                 ENQUEUE,0x600d984,START,SOURCE_SELECT,STREAM_CREATE,LOADER,PARSER,JS_CHECK)
+
+    # -- scene 1: entry chain with the REAL resource VFS open --
+    for lang,table in ((0,'en'),(1,'zh')):
+        c=machine(app)
+        c.mem.write(QCY+4451,bytes([fixtures['synthetic_gate_byte']]))
+        c.mem.write(QCY+348,struct.pack('<I',lang))
+        events,calls,stop=execute(c,None,use_vfs_stub=False,budget=20000,watch=entry_watch)
+        hit=coverage(events,calls)
+        # the wildcard pattern the getter selected (entry 10 of the language table)
+        table_addr=0x60a387c if lang!=1 else 0x60a379c
+        pattern=struct.unpack('<I',app[table_addr+40-BASE:table_addr+44-BASE])[0]
+        pattern_text=app[pattern-BASE:pattern-BASE+32].split(b'\0')[0]
+        require(all(p in hit for p in (HANDLER,GETTER,PLAY,RESOLVE,FILL,VFS_OPEN,MOUNT_OPEN)),
+                f'tone entry chain did not reach the mount open (lang={lang})')
+        require((lang==0 and pattern_text==b'TON1/tone_en/power_on.*')
+                or (lang==1 and pattern_text==b'TON/tone_zh/power_on.*'),
+                f'unexpected power_on pattern for lang={lang}: {pattern_text!r}')
+        # the resolve must fail through the real FS layer and the play must
+        # run the firmware's own failure path (cb(0,10) at 0x6017cdc)
+        require(any(a==hex(0x6017cdc) for a,_ in calls) or stop,
+                'real-VFS resolve unexpectedly succeeded (FS state modeled?)')
+        scenarios[f'tone_entry_chain_{table}']={
+            'language_word':lang,
+            'pattern_consumed':pattern_text.decode(),
+            'coverage':[hex(p) for p in sorted(hit)],
+            'fs_layer_executed_real':FS_A in hit and FS_B in hit,
+            'resolve_result':'not-found (boot-initialized FS state unmodeled)',
+            'handler_return':c.R[0]&0xFFFFFFFF if c.pc==SENTINEL else None,
+            'stop':stop,
+            'steps':c.steps}
+
+    # -- scene 2: pipeline skeleton with the named synthetic VFS boundary --
+    head=bytes.fromhex(fixtures['synthetic_stream_head'])
+    def with_head(resources):
+        require('stream.bin' in resources,'stream.bin missing from the image resources')
+        served=dict(resources)
+        served['flash/res/stream.bin']=head+resources['stream.bin']
+        return served
+    variants=[('b79',app,with_head(resources_b79))]
+    if official is not None:
+        variants.append(('official',official,with_head(resources_official)))
+    skeleton={}
+    for name,image,resources in variants:
+        c=machine(image)
+        c.mem.write(QCY+4451,bytes([fixtures['synthetic_gate_byte']]))
+        c.mem.write(QCY+348,struct.pack('<I',fixtures['synthetic_language_word']))
+        events,calls,stop=execute(c,resources,use_vfs_stub=True,budget=60000,watch=entry_watch)
+        hit=coverage(events,calls)
+        d2a={k:(pc in hit) for k,pc in D2A_PCS.items()}
+        # honest-stop signature: the real section parse aborted at the deep
+        # ROM helper (0x607438c -> 0x1fe30) and unwound through the
+        # firmware's own cleanup (0x6074454 -> 0x60743ca close+free)
+        aborted=(('0x607438c','0x1fe30') in calls
+                 and ('0x6074454','0x60743ca') in calls
+                 and not d2a['node_create_0x607471e'])
+        for required in (HANDLER,GETTER,PLAY,RESOLVE,ENQUEUE,0x600d984,START,SOURCE_SELECT,
+                         STREAM_CREATE,LOADER,JS_CHECK,PARSER):
+            require(required in hit,f'{name}: pipeline skeleton missed {required:#x}')
+        require(aborted,f'{name}: expected honest stop signature (ROM helper abort) not observed')
+        # resolve succeeded: no cb(0,10) failure call from the play function
+        require(not any(a==hex(0x6017cdc) for a,_ in calls) or stop,
+                f'{name}: resolve unexpectedly failed through the synthetic VFS')
+        # the queue head sentinel is the image's own .data: idle -> start now
+        queue_head_word=struct.unpack('<I',c.mem.read(QUEUE_HEAD,4))[0]
+        # loader cache slot + version byte from the fixture head
+        # honest stop: deep ROM helper abort inside the section parse
+        skeleton[name]={'coverage':[hex(p) for p in sorted(hit)],
+                        'section_parse_aborted_in_rom_helper':aborted,
+                        'resource_opens':list(res_names),'glob_matches':list(res_glob),
+                        'vfs_reads':vfs_reads[:8],'vfs_seeks':vfs_seeks[:8],
+                        'mutex_round_trips':len(mutex),'os_posts':posts,
+                        'queue_head_word':hex(queue_head_word),
+                        'd2a_pc_reached':d2a,
+                        'stop':stop,'steps':c.steps}
+        res_names.clear();res_glob.clear();vfs_reads.clear();vfs_seeks.clear()
+        mutex.clear();posts.clear()
+    if 'official' in skeleton:
+        require(skeleton['official']['coverage']==skeleton['b79']['coverage'],
+                'official and b79 tone pipeline coverage diverged')
+        require(skeleton['official']['vfs_reads']==skeleton['b79']['vfs_reads'],
+                'official and b79 stream.bin parse reads diverged before the honest stop')
+    scenarios['tone_pipeline_skeleton']=skeleton
+
+    report['scenarios']=scenarios
+    report['corrections_vs_route_bx']=[
+        'tone language word: QCY+348 == 1 selects the zh table 0x60a379c, != 1 selects en 0x60a387c (runtime-verified both arms; BX §1.2 had it inverted)',
+        '0x600d95e returns the entry block on success and 0 on failure; 0x6017cc0 calls cb(0,10) only on failure (BX §1.2 success/failure sides were swapped)',
+        'enqueue 0x600da64 starts the tone synchronously when the queue is idle (b[0x124a24] sentinel from .data); the queue append runs only on the busy path, so "0x124a24 非空" is not part of the idle first-tone path',
+        'ROM 0x1fd8c is strlen (body 0x4402), not a strncmp variant; ROM 0x1fd84/0x1fd90 return the signed byte difference (0 == equal)',
+        '0x600c128 is release-or-post: refcount to zero closes/frees and calls cb when set, otherwise posts event 0x10000B {10, seq} to the app_core task',
+    ]
+    report['honest_boundaries']=[
+        'the resource VFS open runs real code over the image mount table, but the flash-FS layer state (VM/partition tables populated at boot, SFC reads) is unmodeled in this function-level harness; scene 1 records the graceful not-found',
+        'the stream.bin runtime head is a named synthetic fixture: only the JS magic comes from the firmware compare constants; bytes 2..15 (and any hash region per the SDK 20-byte head) are device-side values absent from public artifacts',
+        'scene 2 stops honestly inside the section parse: ROM helper 0x1fe30 (deep multi-arg memory API, body 0xbb70) returns -7 after the real section-0 walk and XOR decrypt; attribution between the synthetic head bytes and the synthetic heap state is unresolved and left to the next route',
+        'node creation 0x607471e, decoder bind 0x6076b7a, open-config 0x60787ac and the EQ hook sites 0x6078846/0x6078a2e are NOT reached (see d2a_pc_reached); D2-A stays a skeleton',
+        'queue post/event 0x10000B, mutex take/give and the allocator are SYNTHETIC stubs; RTOS/queue semantics remain unmodeled',
+    ]
+    return report
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--fetch-simulator',action='store_true')
@@ -781,12 +1164,17 @@ def main():
     p.add_argument('--official-ufw',type=Path,help='exact published official UFW for three-image event-injection scenarios')
     p.add_argument('--event-injection',action='store_true',
                    help='opt-in EQ control-plane event-injection scenarios; requires --patch-elf, --repaired-candidate, --patch-asm and --official-ufw')
+    p.add_argument('--tone-scene',action='store_true',
+                   help='opt-in D2-A tone first-scene skeleton scenarios; requires --rom (the public Release ROM asset); --official-ufw adds the official-image variant')
+    p.add_argument('--rom',type=Path,help='public Release ROM asset QCY_H3S_BR28_ROM_000000-020000.bin for --tone-scene')
     p.add_argument('--report',type=Path)
     args=p.parse_args()
     if args.repaired_candidate and (not args.patch_elf or not args.patch_asm):
         p.error('--repaired-candidate requires --patch-elf and --patch-asm')
     if args.event_injection and not (args.patch_elf and args.repaired_candidate and args.patch_asm and args.official_ufw):
         p.error('--event-injection requires --patch-elf, --repaired-candidate, --patch-asm and --official-ufw')
+    if args.tone_scene and not args.rom:
+        p.error('--tone-scene requires --rom (the public Release ROM asset)')
     module=upstream(args.fetch_simulator)
     repaired_app=repaired_payload=None
     if args.repaired_candidate:
@@ -802,6 +1190,13 @@ def main():
         sections=[s for s in exe['sections'] if s['flags']&2 and s.get('data')]
         result['event_injection']=run_event_injection(module,firmware_app(args.firmware),
             official_app(args.official_ufw),repaired_app,sections)
+    if args.tone_scene:
+        rom_bytes=args.rom.read_bytes()
+        require(sha(rom_bytes)==ROM_SHA256,'--rom must be the public Release asset QCY_H3S_BR28_ROM_000000-020000.bin')
+        resources_official=tone_scene_resources(args.official_ufw) if args.official_ufw else None
+        result['tone_scene']=run_tone_scene(module,firmware_app(args.firmware),
+            official_app(args.official_ufw) if args.official_ufw else None,
+            rom_bytes,tone_scene_resources(args.firmware),resources_official)
     text=json.dumps(result,indent=2)+'\n'
     if args.report:
         args.report.parent.mkdir(parents=True,exist_ok=True)
