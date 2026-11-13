@@ -20,8 +20,10 @@ h3s-tools-research 的 jlstream.h。一次性脚本在本地 tmp（~/tmp/hearaid
 
 激活载荷已写好并离线验证：**41 条指令 / 134 字节代码 + 4 字节数据槽，零重定位自包含**，只调
 固件里现成的 7 个 jlstream API 锚点，调用约定由 tone/pc_mic 播放器等 5 组真实激活序列反汇编
-钉死；stream.bin 里 mic_effect(0x9c2d) 描述符存在（激活的硬前提成立）。**这是离线载荷：未在
-真机/完整仿真跑通激活链，不构成「助听器可用」声明**（见 §6 诚实边界）。
+钉死；stream.bin 里 mic_effect(0x9c2d) 描述符存在（激活的硬前提成立）。**路 O 已把载荷放进
+函数级仿真真实执行（§8）：get_pipeline_uuid 真实返回 0x9c2d、pipeline_parse 建出 11 个真实
+节点、add_thread/set_scene 在真实部分流上直调全成、start 入场后停在合成状态边界。仍未在真机
+跑通激活链，不构成「助听器可用」声明**（见 §6/§8 诚实边界）。
 
 ## 1. 阶段 A：激活序列模板反汇编（只读）
 
@@ -233,9 +235,10 @@ set_scene/add_thread/场景值」。本路实做后有两处更新：
 
 ## 6. 诚实边界（必须随载荷一起读）
 
-1. **离线载荷，未激活验证**：未在真机、也未在完整仿真里跑通过激活链。pipeline_parse 是否真为
-   0x9c2d 建出 stream、add_thread/start 的运行时行为、音效链是否出声——全部未验证。本页交付的
-   是「载荷字节与静态证据一致 + 汇编器可信」两件事，**不构成「助听器可用」声明**。
+1. **离线载荷，未激活验证**：未在真机跑通过激活链；函数级仿真验证（§8，路 O）已确认
+   uuid/parse/build/add_thread/set_scene/set_notify/start 各入口的真实行为与停点，但音效链
+   是否出声仍未验证。本页+§8 交付的是「载荷字节与静态证据一致 + 汇编器可信 + 载荷在仿真里
+   可执行到 start 入场」三件事，**不构成「助听器可用」声明**。
 2. **set_scene r1=16 是 SDK 枚举值**：QCY 构建的 STREAM_SCENE 枚举未经固件内证据钉死（固件调用
    点的 r1 要么动态要么传指针，没有一个静态 scene 立即数可对照）。若 QCY 枚举偏移不同，场景
    仲裁（coexist/优先级）会按错误场景处理——失败模式是仲裁行为错，不是崩溃。
@@ -270,3 +273,38 @@ set_scene/add_thread/场景值」。本路实做后有两处更新：
   **pc_mic 0x060339a4**（载荷直接模板）+ 其场景恢复回调 0x06033a78。
 - 载荷：tools/hearing-aid/mic_effect_open.S（41 insns / 134B + 4B slot，0 relocs）；
   验证 tools/test_hearing_aid_payload.py（6 tests OK）。
+
+## 8. 仿真执行验证（路 O / sim-l1sim，2026-11-13）
+
+probe_pi32v2 `--tone-scene` 新场景 **`mic_effect_payload`**（opt-in，不开时 legacy 报告逐字节
+不变）把本页载荷放进函数级仿真 harness 真实执行。载荷在场景运行时从
+`tools/hearing-aid/mic_effect_open.S` 现场汇编（`MIC_EFX_SLOT` .equ 按 §2 改为 基址+134 =
+追加段尾 4B；离线单测已证载荷对其余字节基址无关——「源码→字节→执行」同源），映射到追加段
+0x060e3200（EQ 候选载荷末端 0x060e31c5 之后，无重叠）。执行 fence 按 §3 配套 1 扩到载荷末端
+（**负例断言钉死**：不扩界时载荷取指被 stock fence 0x060c3338 拒绝）。单任务桩/allocator/
+stream-slot 哨兵复用 d2c 场景机制；stream.bin 以 CD 实测运行时基址喂公开字节；新增具名
+synthetic 仅三件——fence 扩界、4B 槽可写、0x124880 时钟链表哨兵（空自环 boot 态，
+0x1264b8/0x1264c8 同 d2c 先例）。
+
+激活链逐环节结论（b79↔official 双镜像全等断言过）：
+
+| 环节 | 结论 | 强度 |
+|---|---|---|
+| 载荷取指 | fence 扩界后 41 条指令从入口真实执行，进入 pipeline_parse 内部停点；错误路径 release 全程未触发 | 实测（仿真） |
+| get_pipeline_uuid(15,"mic_effect") | **真实返回 0x9c2d**（载荷调用点回填处观测 r0=0x9c2d）；内部 clock_alloc("mic_effect",24MHz) 真实跑通（zalloc44+互斥往返+2 次 OS post，RTOS 面桩吸收） | 实测（仿真） |
+| pipeline_parse(0x9c2d, 0xD06D) | 真实执行：§0 扫描在公开 stream.bin **offset 0x2d0** 命中 0x9c2d 记录头、读入 208B 边表（首边 0xd06d/3→0xb7c4/1 与 §1.3 镜像一致），**建出 11 个真实节点**（0xb7c4/1→0x74e3/21→**0x737b/10=Eq1Eff**→0xdefe/6(wdrc)→0x6195/1→0xc482/1→0x7293/1→0xd911/2→0x5101/1→0xbf8e/1→0x1b9d/2）；第 12 边（0x1b9d/2→0x737b/9=Eq5Eff）的节点复用搜索在 0x60746cc 撞非指针读**诚实停** | 实测（仿真） |
+| add_thread(stream, 0x1100, 0x2000D, 0x100) | parse 已建的真实部分 0x9c2d 流上直调（BW/CM/d2c 直调先例，载荷同参）：**返回 0（成功）**，callee-saved/栈不动 | 实测（仿真） |
+| set_scene(stream, 16, 0) | 同上直调：**返回 0**；stream[80]=**16**（场景值的可见消费点=存储）、stream[88]=**0**（无恢复回调，§2 参数决策被真实执行）、RAM-code 助手 0x12b1a2 真实执行回填 stream[84]；16 在停点前无更下游消费者可观察 | 实测（仿真） |
+| set_notify(stream, 10) | 同上直调：b[stream+28]=**10** 真实写入后，0x20006 事件派发停在 0x6074a96（见下） | 实测（仿真） |
+| start(stream) | 入口真实执行、0x20004 派发开始，停在 0x6074a96（与 set_notify 同一停点） | 实测（仿真） |
+
+**停点性质**（两条停点同因）：合成单任务/bump-allocator 状态边界，**不是固件或载荷的判决**——
+同一节点复用搜索在 d2c 音乐场景（`d2c_effect_pipeline`）真实执行 231 次调用不崩；0x6074a96 是
+事件派发对同一棵合成态节点树做适配器分发。0x9c2d 图是 26 边深线性链（比音乐图深），合成堆布局
+让节点的 +44/+48 链读到非指针（uuid/浮点参数当指针）。桩面之外零发明。
+
+诚实边界：这仍是**函数级仿真**——未建真机 boot 状态、RTOS/队列/调度是具名桩、音效链未出声；
+4B 数据槽在 harness 里是可写内存，真实植入还需决定可写落点（flash 编程 vs 保留 RAM）；
+**不构成「助听器可用」声明；EQ 候选 67ba97ef UNTESTED 不变**。
+
+复跑：`python3 tools/probe_pi32v2.py --tone-scene --rom <公开 ROM 资产> --official-ufw <官方 UFW>`。
