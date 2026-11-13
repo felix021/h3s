@@ -772,7 +772,8 @@ def run_event_injection(module,app,official,repaired_app,sections):
 
 
 # ---------------------------------------------------------------------------
-# Route CA (sim-tonescene): opt-in D2-A tone first-scene skeleton scenarios.
+# Route CA (sim-tonescene), scene 2 revised by route CF (sim-d2arevise):
+# opt-in D2-A tone first-scene skeleton scenarios.
 #
 # Explicit opt-in via --tone-scene (requires --rom, the public Release ROM
 # asset QCY_H3S_BR28_ROM_000000-020000.bin; local path, never committed).
@@ -784,10 +785,22 @@ def run_event_injection(module,app,official,repaired_app,sections):
 # stubbed callee is listed in TONE_SCENE_STUBS. Nothing here is a device
 # measurement, a flash approval, or a claim that the resource-file-system,
 # RTOS or DAC semantics are modeled.
+#
+# Route CF revision (docs/resfile-transform.md, route CD live-machine
+# measurement): the resfile layer applies NO byte transform -- the runtime
+# view of flash/res/stream.bin IS the public JLFS content. Scene 2 therefore
+# feeds the public bytes directly (no synthetic head): the loader's JS check
+# executes for real and FAILS non-fatally, the version byte stays 0 and the
+# section accessor takes the passthrough branch, exactly the real-device
+# branch. The synthetic VFS open still constructs the handle the real chain
+# produced on the live machine ({base = 0x06000000 + public content_offset,
+# size = public content_bytes}; CD measured base=0x060E0A4C/size=0x2487 on
+# the official image) and serves the public bytes mapped read-only at that
+# runtime base.
 
 ROM_SHA256='7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793'
 TONE_SCENE_FIXTURES={
-    'version':'ca1',
+    'version':'cf1',
     'classification':'synthetic-not-measured',
     'synthetic_event_payload_word':112,   # handler[47] payload[0] == 112 (0x70) arm
     'synthetic_gate_byte':1,              # b[QCY+4451] != 0 gate
@@ -796,11 +809,12 @@ TONE_SCENE_FIXTURES={
     'synthetic_vfs_thunk_read':0x00131000,# never fetched; intercepted as stub PCs
     'synthetic_vfs_thunk_seek':0x00131002,
     'synthetic_vfs_thunk_play':0x00131004,
-    # stream.bin runtime head: 'J','S' are the loader's own compare constants
-    # (0x607428a/0x6074292); byte 3 is stored as the version at buf+2048.
-    # Bytes 2..15 are SYNTHETIC zeros: the on-device head bytes beyond the
-    # magic are not present in any public artifact (honest boundary below).
-    'synthetic_stream_head':'4a530001'+('00'*12),
+    # No synthetic stream head (route CF removed CA's): route CD live-measured
+    # that the resfile layer serves the public JLFS bytes as-is, so the loader
+    # JS check fails on the real head and the accessor takes the passthrough
+    # branch. The stream.bin handle below mirrors the CD-measured real chain.
+    'stream_handle_note':'base = 0x06000000 + public content_offset, size = public content_bytes (CD live-measured {base=0x060E0A4C, size=0x2487} on official; derived per image, never hardcoded)',
+    'loader_version_slot_offset':2048,    # version byte at buf+2048 inside the loader's 2060B zalloc (BX/CD)
 }
 TONE_SCENE_STUBS={
     0x12e16e:'RAM allocator -> synthetic bump block (BW stub precedent)',
@@ -813,9 +827,9 @@ TONE_SCENE_STUBS={
     0x1fd74:'ROM memcpy -> byte copy (register-count REP body; upstream model gap, BW stub precedent)',
     0x1fd78:'ROM memcpy variant -> byte copy (same body 0x413c)',
     0x1fd7c:'ROM memcpy variant -> byte copy (body 0x4104, same family)',
-    0x6007ae8:'resource VFS open -> SYNTHETIC handles over REAL public bytes (scene tone_pipeline_skeleton only; the real open runs in tone_entry_chain)',
-    0x131000:'synthetic VFS ops: read(handle,buf,len) serves real file bytes',
-    0x131002:'synthetic VFS ops: seek(handle,pos) sets position',
+    0x6007ae8:'resource VFS open -> SYNTHETIC handles over REAL public bytes: stream.bin gets the CD-measured real-chain fields {base,size} with the public bytes mapped at that runtime base; TON/TON1 keep byte-serving handles (scene tone_pipeline_skeleton only; the real open runs in tone_entry_chain)',
+    0x131000:'synthetic VFS ops: read(handle,buf,len) = 0x6060894 semantics (n = min(len, size-cur), byte copy from base+cur or the served file bytes)',
+    0x131002:'synthetic VFS ops: seek(handle,pos) sets the current position',
     0x131004:'synthetic VFS ops: play(handle) -> synthetic 0 (decoder data flow is D2-C)',
 }
 
@@ -824,14 +838,18 @@ def tone_scene_resources(ufw_path):
     """Real public resource bytes for the tone scene: stream.bin (JLFS) and
     the TON/TON1 tone containers (outer UFW entries, 32B directory records
     {hcrc,dcrc,start,pad,size,flags,...,name[16]@+16}), all via the existing
-    CRC-verifying walkers."""
+    CRC-verifying walkers. Returns (files, stream_bin_meta) where the meta
+    carries the public JLFS content_offset/content_bytes used to derive the
+    CD-measured runtime handle fields (base = 0x06000000 + content_offset)."""
     import analyze_image_resources as AR
     raw,flash,plain=AR.load_image(Path(ufw_path))
-    files={}
+    files={};stream_meta=None
     for e in AR.walk_jlfs(plain):
         if e['name'] in ('stream.bin',):
             files[e['name']]=plain[e['content_offset']:e['content_offset']+e['content_bytes']]
-    require('stream.bin' in files,'stream.bin not found in the image JLFS area')
+            stream_meta={'content_offset':e['content_offset'],'content_bytes':e['content_bytes']}
+    require('stream.bin' in files and stream_meta,'stream.bin not found in the image JLFS area')
+    require(stream_meta['content_bytes']==len(files['stream.bin']),'stream.bin content_bytes mismatch')
     for e in AR.walk_outer(raw):
         if e['name'] in ('TON','TON1'):
             data=e['content'];p=0
@@ -841,10 +859,11 @@ def tone_scene_resources(ufw_path):
                 if size and start+size<=len(data) and all(32<=b<127 for b in name):
                     files[f'{e["name"]}/{name.decode("ascii")}']=data[start:start+size]
                 p+=32
-    return files
+    return files,stream_meta
 
 
-def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_official):
+def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_official,
+                   meta_b79=None,meta_official=None):
     """D2-A first-scene skeleton: inject the power-on tone event at handler
     0x6023a0a and follow the real firmware as far as it honestly goes.
 
@@ -853,14 +872,18 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
     gracefully return not-found (boot-initialized FS state is unmodeled
     here) -> the play fails through the firmware's own failure path.
 
-    Scene 2 (tone_pipeline_skeleton) replaces the VFS open with the named
-    synthetic boundary feeding REAL public bytes (stream.bin behind the
-    named synthetic runtime head; TON/TON1 tone files): resolve, enqueue,
+    Scene 2 (tone_pipeline_skeleton, route CF revision per route CD):
+    replaces the VFS open with the named synthetic boundary feeding the
+    REAL public JLFS bytes as-is (no synthetic head -- CD live-measured
+    that the resfile layer applies no byte transform; the stream.bin
+    handle mirrors the CD-measured real chain {base,size} with the public
+    bytes mapped read-only at that runtime base): resolve, enqueue,
     idle-start, source selection, stream create and the stream.bin loader
-    all run real, the 'J''S' header check executes on the fixture bytes,
-    the section walk and the firmware's own XOR decrypt run over the real
-    stream.bin bytes, until the section parse aborts inside a deep ROM
-    helper (honest stop; see the report).
+    all run real, the 'J''S' header check executes for real on the public
+    head bytes and fails non-fatally (version byte stays 0), the section
+    accessor takes the passthrough branch (sequential seek(cur)+read(len),
+    no 20-byte head read, no XOR), until the framework side parks in the
+    ROM pend idle poll (honest stop at the D2-B message-loop boundary).
     """
     import fnmatch
     fixtures=dict(TONE_SCENE_FIXTURES)
@@ -870,6 +893,13 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
     MOUNT_OPEN,FS_A,FS_B=0x6060802,0x6010a64,0x6010a4a
     QUEUE_HEAD=0x124a24        # .data-initialized empty-list sentinel in the image blob
     JS_CHECK=0x607428a         # real 'J' compare inside the loader
+    PASSTHROUGH=0x60743a8      # CD-pinned passthrough branch of the section accessor
+    UUID_SCAN=0x60743f6        # CD observation item: passthrough uuid scan
+    ENC_BRANCH_CALL=0x607438c  # encrypted-branch call into 0x1fe30 (CA stop; must stay unreached)
+    OS_QUEUE_A,OS_QUEUE_B=0x6064162,0x6064f18  # OS queue APIs CD saw on the way to pend
+    PEND=0x12b55c              # ROM os_taskq_pend; parks in the idle poll below
+    PEND_IDLE=0x12b56c         # idle poll inside PEND; first IPMASK (0xffe1a8) read = honest stop
+    LOADER_BUF_SIZE=2060       # loader zalloc size (BX/CD); version byte at buf+2048
     D2A_PCS={'node_create_0x607471e':0x607471e,'decoder_bind_0x6076b7a':0x6076b7a,
              'open_config_0x60787ac':0x60787ac,'eq_hook_0x6078846':0x6078846,
              'subcmd2_write_0x6078a2e':0x6078a2e,'framework_post_0x6074192':0x6074192}
@@ -935,13 +965,17 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
                     self.repeat=None
 
     heap={'next':fixtures['synthetic_heap_base']}
+    allocs=[]
     def bump(n):
         require(0<n<=0x100000,'allocator stub size out of range')
+        requested=n
         n=(n+15)&~15
         addr=heap['next'];heap['next']=addr+n+16
+        allocs.append((addr,requested))
         return addr
 
     vfs={};res_names=[];res_glob=[];vfs_reads=[];vfs_seeks=[];posts=[];mutex=[]
+    stream_reads=[];stream_seeks=[]
 
     def text(c,addr,limit=1<<16):
         out=b'';k=0
@@ -951,7 +985,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             out+=bytes([byte]);k+=1
         return out
 
-    def stub_step(c,resources,use_vfs_stub):
+    def stub_step(c,resources,use_vfs_stub,stream_map=None):
         pc=c.pc
         if pc in (0x12e16e,0x12e160):
             c.R[0]=bump(c.R[0]);c.pc=c.rets;return True
@@ -979,7 +1013,23 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
                         base=key[len(container)+1:]
                         if fnmatch.fnmatchcase(base,glob):
                             data=value;res_glob.append((name,key));break
-            if data is None:
+            if name=='flash/res/stream.bin' and stream_map is not None:
+                # CD-measured real chain: the handle is {cur, ., base, size}
+                # with base = 0x06000000 + public content_offset and the
+                # runtime view equal to the public JLFS bytes (no transform).
+                base,data=stream_map
+                public=resources.get('stream.bin')
+                require(public is not None and data==public,
+                        'stream.bin bytes disagree between the served map and the resources')
+                size=len(data)
+                handle=bump(8);ops=bump(32)
+                c.mem.write(handle,struct.pack('<I',ops))
+                c.mem.write(ops+8,struct.pack('<I',fixtures['synthetic_vfs_thunk_read']))
+                c.mem.write(ops+16,struct.pack('<I',fixtures['synthetic_vfs_thunk_seek']))
+                c.mem.write(ops+20,struct.pack('<I',fixtures['synthetic_vfs_thunk_play']))
+                vfs[handle]={'base':base,'size':size,'cur':0}
+                c.R[0]=handle
+            elif data is None:
                 c.R[0]=0
             else:
                 handle=bump(8);ops=bump(32)
@@ -992,17 +1042,31 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             c.pc=c.rets;return True
         if pc==fixtures['synthetic_vfs_thunk_read']:
             state=vfs[c.R[0]]
-            n=min(c.R[2],len(state['data'])-state['pos'])
-            c.mem.write(c.R[1],state['data'][state['pos']:state['pos']+n])
-            state['pos']+=n;vfs_reads.append((c.R[2],n,state['pos']))
+            if 'base' in state:
+                # 0x6060894 semantics (CD live-measured): n = min(len, size-cur),
+                # plain byte copy from base+cur -- zero transform.
+                n=min(c.R[2],state['size']-state['cur'])
+                data=c.mem.read(state['base']+state['cur'],n)
+                state['cur']+=n
+                stream_reads.append((c.R[2],n,state['cur'],data[:8].hex()))
+            else:
+                n=min(c.R[2],len(state['data'])-state['pos'])
+                data=state['data'][state['pos']:state['pos']+n]
+                state['pos']+=n;vfs_reads.append((c.R[2],n,state['pos']))
+            c.mem.write(c.R[1],data)
             c.R[0]=n;c.pc=c.rets;return True
         if pc==fixtures['synthetic_vfs_thunk_seek']:
-            vfs[c.R[0]]['pos']=c.R[1];vfs_seeks.append(c.R[1]);c.R[0]=0;c.pc=c.rets;return True
+            state=vfs[c.R[0]]
+            if 'base' in state:
+                state['cur']=c.R[1];stream_seeks.append(c.R[1])
+            else:
+                state['pos']=c.R[1];vfs_seeks.append(c.R[1])
+            c.R[0]=0;c.pc=c.rets;return True
         if pc==fixtures['synthetic_vfs_thunk_play']:
             c.R[0]=0;c.pc=c.rets;return True
         return False
 
-    def machine(image):
+    def machine(image,stream_map=None):
         c=CPU()
         c.mem=Memory()
         c.mem.map(BASE,image)
@@ -1011,13 +1075,17 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         data_src,code_src=STARTUP_DATA_REGION[1],STARTUP_RAM_CODE_REGION[1]
         c.mem.map(STARTUP_DATA_REGION[0],app[data_src-BASE:data_src-BASE+STARTUP_DATA_REGION[2]],writable=True)
         c.mem.map(STARTUP_RAM_CODE_REGION[0],app[code_src-BASE:code_src-BASE+STARTUP_RAM_CODE_REGION[2]],writable=True)
+        if stream_map is not None:
+            # public stream.bin bytes mapped read-only at the CD-measured
+            # runtime base (0x06000000 + public content_offset)
+            c.mem.map(stream_map[0],stream_map[1])
         c.execution_bounds=(BASE,0x060c3338)
         c.sp=0x00134000
         from br28_arch_models import architectural_k2
         c.models,_=architectural_k2(c.models)
         return c
 
-    def execute(c,resources,*,use_vfs_stub,budget,watch):
+    def execute(c,resources,*,use_vfs_stub,budget,watch,stream_map=None):
         events=[]
         c.R[0]=0x130000
         c.mem.write(0x130000,struct.pack('<I',fixtures['synthetic_event_payload_word']))
@@ -1030,7 +1098,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
                 if c.pc in watch and c.pc not in seen:
                     seen.add(c.pc)
                     events.append({'pc':hex(c.pc),'regs':[c.R[i] for i in range(4)]})
-                if not stub_step(c,resources,use_vfs_stub):
+                if not stub_step(c,resources,use_vfs_stub,stream_map):
                     insn,_,size=c.decode(c.pc)
                     is_call=insn.id.startswith('call')
                     before=c.pc
@@ -1046,13 +1114,15 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             hit.add(site)
         return hit
 
-    report={'fixtures':{**fixtures,'synthetic_stream_head':fixtures['synthetic_stream_head']},
+    report={'fixtures':dict(fixtures),
             'stubs':{hex(k):v for k,v in sorted(TONE_SCENE_STUBS.items())},
             'rom_sha256':sha(rom_bytes),
             'device_accessed':False,'firmware_created':False,'suitable_for_flash_approval_alone':False}
     scenarios={}
     entry_watch=(HANDLER,GETTER,PLAY,RESOLVE,FILL,VFS_OPEN,MOUNT_OPEN,FS_A,FS_B,
-                 ENQUEUE,0x600d984,START,SOURCE_SELECT,STREAM_CREATE,LOADER,PARSER,JS_CHECK)
+                 ENQUEUE,0x600d984,START,SOURCE_SELECT,STREAM_CREATE,LOADER,PARSER,JS_CHECK,
+                 PASSTHROUGH,UUID_SCAN,ENC_BRANCH_CALL,OS_QUEUE_A,OS_QUEUE_B,PEND,PEND_IDLE,
+                 *D2A_PCS.values())
 
     # -- scene 1: entry chain with the REAL resource VFS open --
     for lang,table in ((0,'en'),(1,'zh')):
@@ -1084,56 +1154,91 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             'stop':stop,
             'steps':c.steps}
 
-    # -- scene 2: pipeline skeleton with the named synthetic VFS boundary --
-    head=bytes.fromhex(fixtures['synthetic_stream_head'])
-    def with_head(resources):
-        require('stream.bin' in resources,'stream.bin missing from the image resources')
-        served=dict(resources)
-        served['flash/res/stream.bin']=head+resources['stream.bin']
-        return served
-    variants=[('b79',app,with_head(resources_b79))]
+    # -- scene 2 (route CF): pipeline skeleton over the REAL public JLFS bytes --
+    # No synthetic head (route CD pinned the resfile layer as transform-free):
+    # the loader JS check executes for real on the public head bytes and fails
+    # non-fatally (version byte stays 0), the section accessor takes the
+    # passthrough branch and the chain advances until the framework side
+    # parks in the ROM pend idle poll (the D2-B message-loop boundary).
+    def stream_map_for(meta,resources,label):
+        require(meta is not None,f'{label}: stream.bin JLFS metadata missing')
+        require('stream.bin' in resources,f'{label}: stream.bin missing from the image resources')
+        if label=='official':
+            # cross-check the derived handle fields against the CD live
+            # measurement on the official image: {base=0x060E0A4C, size=0x2487}
+            require((meta['content_offset'],meta['content_bytes'])==(0xe0a4c,0x2487),
+                    f'{label}: derived stream.bin handle diverges from the CD-measured real chain')
+        return (0x06000000+meta['content_offset'],resources['stream.bin'])
+    variants=[('b79',app,resources_b79,stream_map_for(meta_b79,resources_b79,'b79'))]
     if official is not None:
-        variants.append(('official',official,with_head(resources_official)))
+        variants.append(('official',official,resources_official,
+                         stream_map_for(meta_official,resources_official,'official')))
     skeleton={}
-    for name,image,resources in variants:
-        c=machine(image)
+    for name,image,resources,stream_map in variants:
+        allocs.clear()
+        c=machine(image,stream_map)
         c.mem.write(QCY+4451,bytes([fixtures['synthetic_gate_byte']]))
         c.mem.write(QCY+348,struct.pack('<I',fixtures['synthetic_language_word']))
-        events,calls,stop=execute(c,resources,use_vfs_stub=True,budget=60000,watch=entry_watch)
+        loader_gate_byte=c.mem.read(0x12649D,1)[0]   # CD observation item (zeroed RAM here)
+        events,calls,stop=execute(c,resources,use_vfs_stub=True,budget=60000,
+                                  watch=entry_watch,stream_map=stream_map)
         hit=coverage(events,calls)
         d2a={k:(pc in hit) for k,pc in D2A_PCS.items()}
-        # honest-stop signature: the real section parse aborted at the deep
-        # ROM helper (0x607438c -> 0x1fe30) and unwound through the
-        # firmware's own cleanup (0x6074454 -> 0x60743ca close+free)
-        aborted=(('0x607438c','0x1fe30') in calls
-                 and ('0x6074454','0x60743ca') in calls
-                 and not d2a['node_create_0x607471e'])
         for required in (HANDLER,GETTER,PLAY,RESOLVE,ENQUEUE,0x600d984,START,SOURCE_SELECT,
-                         STREAM_CREATE,LOADER,JS_CHECK,PARSER):
+                         STREAM_CREATE,LOADER,JS_CHECK,PARSER,PASSTHROUGH,PEND):
             require(required in hit,f'{name}: pipeline skeleton missed {required:#x}')
-        require(aborted,f'{name}: expected honest stop signature (ROM helper abort) not observed')
+        # the JS probe ran for real on the public head bytes and FAILED:
+        # first stream read = 4 bytes serving the public head (not 'J''S')
+        require(stream_reads and stream_reads[0][:2]==(4,4),
+                f'{name}: expected the 4-byte JS probe as the first stream.bin read')
+        first_head=bytes.fromhex(stream_reads[0][3])
+        require(first_head==resources['stream.bin'][:4],
+                f'{name}: JS probe did not serve the public stream.bin head')
+        require(not (len(first_head)>=2 and first_head[0]==0x4a and first_head[1]==0x53),
+                f'{name}: public stream.bin head unexpectedly starts with the JS magic')
+        # version byte 0 -> passthrough branch, no encrypted-branch shapes
+        require(ENC_BRANCH_CALL not in hit,f'{name}: encrypted branch executed on the public bytes')
+        require(all(r[0]!=20 for r in stream_reads) and 16 not in stream_seeks,
+                f'{name}: passthrough read sequence shows encrypted-branch shapes '
+                f'(20B head read / seek@16)')
+        loader_bufs=[a for a,s in allocs if s==LOADER_BUF_SIZE]
+        require(loader_bufs,f'{name}: loader {LOADER_BUF_SIZE}B buffer allocation not observed')
+        version_slots=[c.mem.read(a+fixtures['loader_version_slot_offset'],1)[0] for a in loader_bufs]
+        require(all(v==0 for v in version_slots),
+                f'{name}: loader version byte nonzero after the JS failure')
+        # honest stop: the framework side parked in the ROM pend idle poll;
+        # its first IPMASK read (0xffe1a8) is an unmodeled peripheral here
+        require(stop and stop.get('pc')==hex(PEND_IDLE) and '0xffe1a8' in stop.get('error',''),
+                f'{name}: expected the honest pend-idle stop at {PEND_IDLE:#x}, got {stop}')
         # resolve succeeded: no cb(0,10) failure call from the play function
         require(not any(a==hex(0x6017cdc) for a,_ in calls) or stop,
                 f'{name}: resolve unexpectedly failed through the synthetic VFS')
         # the queue head sentinel is the image's own .data: idle -> start now
         queue_head_word=struct.unpack('<I',c.mem.read(QUEUE_HEAD,4))[0]
-        # loader cache slot + version byte from the fixture head
-        # honest stop: deep ROM helper abort inside the section parse
         skeleton[name]={'coverage':[hex(p) for p in sorted(hit)],
-                        'section_parse_aborted_in_rom_helper':aborted,
+                        'stream_bin_handle':{'base':hex(stream_map[0]),'size':len(stream_map[1])},
+                        'js_probe_read':stream_reads[0] if stream_reads else None,
+                        'loader_version_byte':0 if all(v==0 for v in version_slots) else version_slots,
+                        'passthrough_branch_taken':PASSTHROUGH in hit,
+                        'encrypted_branch_taken':ENC_BRANCH_CALL in hit,
                         'resource_opens':list(res_names),'glob_matches':list(res_glob),
                         'vfs_reads':vfs_reads[:8],'vfs_seeks':vfs_seeks[:8],
-                        'mutex_round_trips':len(mutex),'os_posts':posts,
+                        'stream_bin_reads':list(stream_reads),'stream_bin_seeks':list(stream_seeks),
+                        'mutex_round_trips':len(mutex),'os_posts':list(posts),
                         'queue_head_word':hex(queue_head_word),
+                        'loader_gate_byte_0x12649d':loader_gate_byte,
                         'd2a_pc_reached':d2a,
                         'stop':stop,'steps':c.steps}
         res_names.clear();res_glob.clear();vfs_reads.clear();vfs_seeks.clear()
+        stream_reads.clear();stream_seeks.clear()
         mutex.clear();posts.clear()
     if 'official' in skeleton:
         require(skeleton['official']['coverage']==skeleton['b79']['coverage'],
                 'official and b79 tone pipeline coverage diverged')
+        require(skeleton['official']['stream_bin_reads']==skeleton['b79']['stream_bin_reads'],
+                'official and b79 stream.bin passthrough reads diverged before the honest stop')
         require(skeleton['official']['vfs_reads']==skeleton['b79']['vfs_reads'],
-                'official and b79 stream.bin parse reads diverged before the honest stop')
+                'official and b79 tone-file reads diverged before the honest stop')
     scenarios['tone_pipeline_skeleton']=skeleton
 
     report['scenarios']=scenarios
@@ -1143,14 +1248,20 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         'enqueue 0x600da64 starts the tone synchronously when the queue is idle (b[0x124a24] sentinel from .data); the queue append runs only on the busy path, so "0x124a24 非空" is not part of the idle first-tone path',
         'ROM 0x1fd8c is strlen (body 0x4402), not a strncmp variant; ROM 0x1fd84/0x1fd90 return the signed byte difference (0 == equal)',
         '0x600c128 is release-or-post: refcount to zero closes/frees and calls cb when set, otherwise posts event 0x10000B {10, seq} to the app_core task',
+        'route CD/CF: the resfile layer applies NO byte transform -- the stream.bin runtime view IS the public JLFS content; the loader JS check fails non-fatally on the real head (version byte 0), the section accessor takes the passthrough branch 0x60743a8 and the CA-era synthetic head / 0x1fe30 -7 stop was an artifact of that synthetic input (BX/CA §6.5 item 5 superseded)',
     ]
     report['honest_boundaries']=[
         'the resource VFS open runs real code over the image mount table, but the flash-FS layer state (VM/partition tables populated at boot, SFC reads) is unmodeled in this function-level harness; scene 1 records the graceful not-found',
-        'the stream.bin runtime head is a named synthetic fixture: only the JS magic comes from the firmware compare constants; bytes 2..15 (and any hash region per the SDK 20-byte head) are device-side values absent from public artifacts',
-        'scene 2 stops honestly inside the section parse: ROM helper 0x1fe30 (deep multi-arg memory API, body 0xbb70) returns -7 after the real section-0 walk and XOR decrypt; attribution between the synthetic head bytes and the synthetic heap state is unresolved and left to the next route',
-        'node creation 0x607471e, decoder bind 0x6076b7a, open-config 0x60787ac and the EQ hook sites 0x6078846/0x6078a2e are NOT reached (see d2a_pc_reached); D2-A stays a skeleton',
-        'queue post/event 0x10000B, mutex take/give and the allocator are SYNTHETIC stubs; RTOS/queue semantics remain unmodeled',
+        'scene 2 keeps a named synthetic VFS boundary, but the stream.bin handle now mirrors the CD live-measured real chain {base = 0x06000000 + public content_offset, size = public content_bytes} and serves the public JLFS bytes mapped read-only at that runtime base -- zero byte transform, zero synthetic head (route CD)',
+        'scene 2 stops at 0x12b56c inside ROM pend 0x12b55c: the idle IPMASK (0xffe1a8) poll is the framework-task pend context, an unmodeled IRQ-controller read in this single-task harness -- the D2-B message-loop boundary; the live machine (route CD) parks at the same point',
+        'node creation 0x607471e, decoder bind 0x6076b7a, open-config 0x60787ac and the EQ hook sites 0x6078846/0x6078a2e are NOT reached before the pend boundary (see d2a_pc_reached); they fire in the framework-task message consumption, which is D2-B wiring',
+        'queue post/event 0x10000B, mutex take/give and the allocator are SYNTHETIC stubs; RTOS/queue/task-switch semantics remain unmodeled',
     ]
+    report['observations_route_cd']={
+        'loader_gate_b_0x12649d':'recorded per variant (zeroed RAM here; CD live-measured 0 after boot, setter still unidentified)',
+        'uuid_scan_0x60743f6':'executed in-chain inside stream create (coverage) and its read shape recorded via stream_bin_reads: walk {uuid,count} headers, read the body only on a uuid match; no standalone assert on specific uuids',
+        'ext_reserved_open_heap_dependency':'not exercised here: the scene-2 stub intercepts the VFS open before the EXT_RESERVED dispatch (real-open observation stays with scene 1 / later boot-state prefixes)',
+    }
     return report
 
 
@@ -1193,10 +1304,14 @@ def main():
     if args.tone_scene:
         rom_bytes=args.rom.read_bytes()
         require(sha(rom_bytes)==ROM_SHA256,'--rom must be the public Release asset QCY_H3S_BR28_ROM_000000-020000.bin')
-        resources_official=tone_scene_resources(args.official_ufw) if args.official_ufw else None
+        files_b79,meta_b79=tone_scene_resources(args.firmware)
+        if args.official_ufw:
+            files_official,meta_official=tone_scene_resources(args.official_ufw)
+        else:
+            files_official,meta_official=None,None
         result['tone_scene']=run_tone_scene(module,firmware_app(args.firmware),
             official_app(args.official_ufw) if args.official_ufw else None,
-            rom_bytes,tone_scene_resources(args.firmware),resources_official)
+            rom_bytes,files_b79,files_official,meta_b79,meta_official)
     text=json.dumps(result,indent=2)+'\n'
     if args.report:
         args.report.parent.mkdir(parents=True,exist_ok=True)

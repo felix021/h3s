@@ -63,6 +63,10 @@ tone 文件集——TON1 含 `power_on.wts`(2913B)、`power_off.wts`、`pairing.
   0x6007ae8、缓存 [buf+2056]、头 4B 校验 'J''S'+版本@buf+2048）；另有
   'flash/res/scene.bin'（app 层 0x60183f8 加载，全局 0x125368）。两文件都在公开
   JLFS 资源区 [静态：analyze_image_resources 既有 SHA]。
+  **路 CD 修正 [运行]**：resfile 层无字节变换，公开镜像不带 JS 头——加载器的
+  'J''S' 校验在真字节上**失败且非致命**（版本字节保持 0 → 节访问器 0x60742a8 走
+  0x60743a8 透传分支：seek(cur)+read(len) 顺序读，无 XOR/无 20B 头/无 0x1fe30），
+  全图见 [docs/resfile-transform.md](resfile-transform.md)。
 - **stream.bin 结构**（公开字节直接解析，本路全量钉死）[静态]：9 节
   {u16 节type, u16 len}（type=0..8,10；§3 对齐 docs/stream-volume.md 旧表）。
   **§2 = 节点实例名目录**（53 条 21B 记录 {标记0x13, uuid16, subid, name[]}）：
@@ -199,9 +203,11 @@ R/W 形状按站点指令分类 [静态]）：
 
 - **D2-A 流水线构建**：注入 power-on 音事件（或直调 0x6017cc0）后，真实执行链
   完成：tone 入队（0x124a24 非空、互斥往返）→ 框架 open API 至少一次 →
-  stream.bin 资源 get 成功 + 'J''S' 头校验 → 节点创建 0x607471e ≥1 次且
-  decoder(0x1a85) 经 0x6076b7a 绑定 WTS plug（plug create 真实执行）。观测 =
-  上述 PC 执行覆盖 + 0x6074192 post 返回值（BT 口径：入队成功才算）。
+  stream.bin 资源 get 成功 + 'J''S' 头校验（**路 CD 修正：公开字节上真实失败且
+  非致命——断言应为「校验执行且失败→版本字节 0→透传读序列」**）→ 节点创建
+  0x607471e ≥1 次且 decoder(0x1a85) 经 0x6076b7a 绑定 WTS plug（plug create
+  真实执行）。观测 = 上述 PC 执行覆盖 + 0x6074192 post 返回值（BT 口径：入队
+  成功才算）。
 - **D2-B 效果节点状态（EQ 验证的 D2 半场）**：音乐场景（pipeline-a2dp 合成事件）
   下，MusicEqBt 节点创建后框架消费其参数消息：**EQ 关态（0x1265EA bit7=1）→
   0x6078a2e 写 node+35==1（EQ 镜像）vs b79 写文件配置值**；wdrc 组（DRC7/8/9）
@@ -242,7 +248,14 @@ D2-A 首场景骨架已实施（probe_pi32v2 opt-in `--tone-scene`，详见 HAND
 resfile 层（flash/res/ 路径）无任何变换，read 返回公开 JLFS 字节原样；'JS' 校验
 失败在固件里非致命（版本字节 0 → 节访问器走透传读分支，stream create 在真字节上
 成功前进）；0x1fe30 的 -7 归因合成头字节（真机不走加密分支）。全图与 D2-A 继续
-的最小合成集（=空）见 [docs/resfile-transform.md](resfile-transform.md)：
+的最小合成集（=空）见 [docs/resfile-transform.md](resfile-transform.md)。
+**路 CF 已按 CD 结论修订场景 2（v2）**：去合成头、句柄按 CD 实测真实链
+{base=0x060E0A4C, size=0x2487}（逐图像推导、official 交叉核对）、公开字节映射在
+真实运行时地址；断言集改为「JS 真实失败→版本字节 0→透传读序列（无 20B 头读/
+无 seek@16）→OS 队列 0x6064162/0x6064f18→pend 0x12b55c」；诚实停在 0x12b56c
+idle 轮询首读 IPMASK 0xffe1a8（框架任务 pend 语境=D2-B 域），b79↔official
+coverage/读序列 parity 保持；EQ 钩子站点（0x6078846/0x6078a2e）在 pend 边界前
+仍未执行（节点创建属框架任务消费侧，D2-B 接线）。
 
 1. **语言字语义反了**（§1.2）：QCY+348 **== 1 → zh 表 0x60a379c；!= 1 → en 表
    0x60a387c**（getter 0x600c2be `if (r2 != 1) 返回 base+224`，base=zh 表——两臂均
