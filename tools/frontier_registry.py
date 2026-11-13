@@ -147,6 +147,8 @@ FEATURES = (
             '普通子字存储直写(exact_subword_stores,绕过合并读)'),
     Feature('word_store_sp_l', 'conditional', (), False, None,
             '长位移 sp 相对整字存储直写(exact_word_store_sp_l)'),
+    Feature('mmu_cross_page_split', 'conditional', (), False, None,
+            '跨 128B MMU 页界双字存储拆两半各自翻译(derived-not-measured)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
@@ -188,11 +190,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 3081001,
-        'stop_pc': '0x6007af2',
-        'stop': {'kind': 'mmu_cross_page_access_not_split',
-                 'address': '0x400afc', 'size': 8},
-        'freshness_fields': ('kind', 'address', 'size'),
+        'completed_steps': 3137573,
+        'stop_pc': '0x60719c0',
+        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
+                 'address': '0xfe0538', 'size': 4, 'value_bytes': '00000000'},
+        'freshness_fields': ('kind', 'address'),
     },
 }
 

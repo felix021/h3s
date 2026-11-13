@@ -950,6 +950,114 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop']['address'],hex(sp))
         self.assertEqual(result['stop']['region'],'bootstrap_stack')
 
+    # ---- 路 AN(sim-crosspage):跨 128B MMU 页界双字存储拆分(opt-in
+    # mmu_cross_page_split)。离线区分测试:相邻虚拟页(0x400a80/0x400b00)
+    # 映射到**非连续且物理倒序**的两个物理页(0x130000/0x12f000,复刻前沿
+    # 现场的 PTE 0xb3c6/0xb3c5 倒序形状),五位置哨兵区分「第二页独立翻译」
+    # 与「按第一页连续写」。注意(codex 参谋):这些验证的是**实现符合拆分
+    # 假设**,不是「芯片采用该假设」——BR28 跨页语义仍 derived-not-measured
+    # (支撑证据=上游 m2 模型两独立 4 字节事务的总线形状+AC791N 真机三例
+    # 128B 界跨越样本,见 probe_boot 开关注释)。
+    def cross_page_case(self,*,split,valid_second=True):
+        """Run `st.d.sp.l d[sp+8]=r1_r0` (real 0x6007af2 encoding) across the
+        0x400afc/0x400b00 page boundary under a crafted non-contiguous mapping.
+
+        The instruction window programs the real MMU registers first (begin/
+        end/con at 0xff0400..8, the model's own register path) so the split
+        executes against the real translate() — three st.w.l plus the st.d,
+        all real encodings assembled by the pinned pi32v2 codec.
+        """
+        from pi32v2_asm import encode
+        h=self.handoff()
+        page_table=(0x120000,0x122800,'mmu_page_table')
+        page_a=(0x130000,0x130088,'mmu_test_page_a')   # VA page 21 target (higher)
+        page_b=(0x12f000,0x12f008,'mmu_test_page_b')   # VA page 22 target (lower, inverted)
+        h['regions'] += [page_table,page_a,page_b]
+        tag_a=0x8000|(0x130000>>7)                     # 0xa600
+        tag_b=(0x8000|(0x12f000>>7)) if valid_second else (0x12f000>>7)  # 0xa5e0 / invalid
+        h['seeds'] += [(0x12002a,struct.pack('<H',tag_a)),   # PTE of VA page 21
+                       (0x12002c,struct.pack('<H',tag_b)),   # PTE of VA page 22
+                       # five sentinels: adjacent-below / low target / the word a
+                       # contiguous write would hit / page-A head (wrap catcher) /
+                       # high target / adjacent-above
+                       (0x130078,struct.pack('<I',0xaaaaaaaa)),
+                       (0x13007c,struct.pack('<I',0xbbbbbbbb)),
+                       (0x130080,struct.pack('<I',0xcccccccc)),
+                       (0x130000,struct.pack('<I',0xdddddddd)),
+                       (0x12f000,struct.pack('<I',0xeeeeeeee)),
+                       (0x12f004,struct.pack('<I',0xf0f0f0f0))]
+        for label,address in (('sentinel_below_low',0x130078),('low_half_target',0x13007c),
+                              ('contiguous_after_page',0x130080),('page_a_head',0x130000),
+                              ('high_half_target',0x12f000),('sentinel_above_high',0x12f004)):
+            h['snapshots'].append((label,address,4))
+        app=bytearray(self.app)
+        base=ENTRY+len(app)-32
+        window=b''.join((encode('st.w.l',r=4,n=1,s=5),    # [r4+4]=r5  MMU begin
+                         encode('st.w.l',r=4,n=2,s=6),    # [r4+8]=r6  MMU end
+                         encode('st.w.l',r=4,n=0,s=7),    # [r4+0]=r7  MMU con=1
+                         encode('st.d.sp.l',r=0,n=2)))    # d[sp+8]=r1_r0 (real bytes)
+        app[base-ENTRY:base-ENTRY+len(window)]=window
+        regs=[0]*16;regs[0]=0x55667788;regs[1]=0x11223344
+        regs[4]=0xff0400;regs[5]=0x120000;regs[6]=0x1227ff;regs[7]=1
+        diagnostics={'entry_pc':base,'initial_sp':0x400af4,'initial_gprs':regs,
+                     'exact_parallel_stores':True,'exact_doubleword_stores':True}
+        if split:diagnostics['mmu_cross_page_split']=True
+        result=explore(self.module,bytes(app),name=f'cross_page_{"split" if split else "strict"}'
+                                               f'_{"ok" if valid_second else "invalid"}',
+                       handoff=h,hardware=BR28Model(mmu_model=True,initial_mmu_con=0),
+                       diagnostics=diagnostics,budget=4)
+        return result,base
+
+    def test_cross_page_doubleword_store_splits_into_two_translated_halves(self):
+        # The split must land the low half at page 21's translation (0x13007c)
+        # and the high half at page 22's OWN translation (0x12f000) — not at
+        # the contiguous continuation 0x130080 — and touch nothing else.
+        result,base=self.cross_page_case(split=True)
+        self.assertEqual(result['completed_steps'],4)
+        self.assertEqual(result['stop_pc'],hex(base+16))
+        self.assertEqual(result['instruction_adapters'],
+                         {'exact_full_word_store':3,'exact_doubleword_store_cross_page_split':1})
+        snap=result['memory_snapshots']
+        self.assertEqual(snap['low_half_target']['bytes_with_unknowns'],'88776655')
+        self.assertEqual(snap['high_half_target']['bytes_with_unknowns'],'44332211')
+        # the distinguishing sentinels: a contiguous write would put the high
+        # word at 0x130080; a wrap/offset bug would show at the page head
+        self.assertEqual(snap['contiguous_after_page']['bytes_with_unknowns'],'cccccccc')
+        self.assertEqual(snap['page_a_head']['bytes_with_unknowns'],'dddddddd')
+        self.assertEqual(snap['sentinel_below_low']['bytes_with_unknowns'],'aaaaaaaa')
+        self.assertEqual(snap['sentinel_above_high']['bytes_with_unknowns'],'f0f0f0f0')
+
+    def test_cross_page_doubleword_store_split_stays_opt_in(self):
+        # Without the sub-gate the same instruction must keep the legacy
+        # honest stop (single 8-byte request, mmu_cross_page_access_not_split)
+        # — the split never engages implicitly.
+        result,base=self.cross_page_case(split=False)
+        self.assertEqual(result['completed_steps'],3)
+        self.assertEqual(result['stop_pc'],hex(base+12))
+        self.assertEqual(result['stop'],
+                         {'kind':'mmu_cross_page_access_not_split','address':'0x400afc','size':8})
+        self.assertEqual(result['instruction_adapters'],{'exact_full_word_store':3})
+        snap=result['memory_snapshots']
+        self.assertEqual(snap['low_half_target']['bytes_with_unknowns'],'bbbbbbbb')
+        self.assertEqual(snap['high_half_target']['bytes_with_unknowns'],'eeeeeeee')
+
+    def test_cross_page_doubleword_store_split_refuses_invalid_second_page(self):
+        # With the second page's PTE invalid the SECOND half must stop honestly
+        # on mmu_invalid_page; the first half already landed — the literal
+        # semantics of two independent bus transactions (the run stops there,
+        # no guest ever observes the partial store).
+        result,base=self.cross_page_case(split=True,valid_second=False)
+        self.assertEqual(result['completed_steps'],3)
+        self.assertEqual(result['stop_pc'],hex(base+12))
+        self.assertEqual(result['stop']['kind'],'mmu_invalid_page')
+        self.assertEqual(result['stop']['address'],'0x400b00')
+        self.assertEqual(result['stop']['entry'],'0x12002c')
+        self.assertEqual(result['instruction_adapters'],{'exact_full_word_store':3})
+        snap=result['memory_snapshots']
+        self.assertEqual(snap['low_half_target']['bytes_with_unknowns'],'88776655')
+        self.assertEqual(snap['high_half_target']['bytes_with_unknowns'],'eeeeeeee')
+        self.assertEqual(snap['contiguous_after_page']['bytes_with_unknowns'],'cccccccc')
+
     def test_sp_long_word_store_overwrites_unknowns_without_old_word_read(self):
         # 0x6065ccc is the real `st.w.sp.l [sp+8]=r9` of the scheduler
         # interrupt-context helper 0x6065c3a. The store overwrites all four
