@@ -53,6 +53,7 @@ public abstract class SerialBleTransport implements H3sTransport {
     private long generation;                     // 每帧递增，惰性失效旧超时任务
     private int mtu = 23;                        // ATT MTU 默认值；connect 链路里协商更新
     private boolean ready;
+    private boolean disconnectReported;          // 连续 markNotReady 只报一次 onDisconnected；markReady 复位
     /** 每次 schedule 的 delay 记录（片间隔断言用；只增不删，含已失效任务）。测试探针。 */
     public final List<Long> scheduledDelays = new ArrayList<Long>();
     /** 手动调度队列（默认调度器）：schedule 入队，runScheduler() 同步驱动。 */
@@ -71,15 +72,24 @@ public abstract class SerialBleTransport implements H3sTransport {
     protected void markReady(int negotiatedMtu) {
         this.mtu = negotiatedMtu;
         this.ready = true;
+        this.disconnectReported = false;
         if (listener != null) listener.onMtuChanged(negotiatedMtu);
         pump();                                    // connect 前积压的帧此时开闸
     }
 
-    /** 子类在链路断开时调；未完成帧按失败回调、清队列（不重复报 onDisconnected）。 */
+    /**
+     * 子类在链路断开/连接失败时调；未完成帧按失败回调、清队列。
+     * listener 保留（重连后 markReady 仍能报 onMtuChanged——真机适配层会断开重连，
+     * 清 listener 会让 H3SBridge 重连后收不到任何事件）；连续断线只报一次
+     * onDisconnected，由 disconnectReported 去重，markReady 复位。
+     */
     protected void markNotReady(String reason) {
         ready = false;
         failAllPending(reason);
-        if (listener != null) { Listener l = listener; listener = null; l.onDisconnected(reason); }
+        if (!disconnectReported) {
+            disconnectReported = true;
+            if (listener != null) listener.onDisconnected(reason);
+        }
     }
 
     @Override public void write(byte[] frame, FrameCallback callback) {
@@ -191,8 +201,9 @@ public abstract class SerialBleTransport implements H3sTransport {
         pendingTimeouts.add(r);
     }
 
-    /** 驱动手动调度队列直到空（仅默认调度器需要；执行中新入队的任务也会被消费）。 */
-    void runScheduler() {
+    /** 驱动手动调度队列直到空（仅默认调度器需要；执行中新入队的任务也会被消费）。
+     *  public：测试（未注入调度器的适配层/回环）从外部推进定时任务用。 */
+    public void runScheduler() {
         while (!manualQueue.isEmpty()) manualQueue.poll().run();
     }
 
