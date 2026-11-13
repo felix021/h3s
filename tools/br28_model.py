@@ -167,6 +167,31 @@ JL_OMAP_OUT_WORDS=tuple(base+4*pin for base,pins in JL_OMAP_OUT_PIN_TABLE
 #   访问。白名单=63 字(成员数=io_imap.h 成员表=PFI_* 枚举数);
 #   0xfd5cfc 之后不在白名单(不给邻接地址补零)。
 JL_IMAP_IN_WORDS=tuple(0xfd5c00+4*member for member in range(63))
+# 路 AK(sim-audioinit):0x602ea68 boot 期音频框架 init 的两个已审查写域
+# (函数全图/写集枚举/停点序列见 docs/wlaud-init-map.md,路 AG 只读预研;
+# SDK 名字/偏移按钉死参考 br28.h sha 111e29ea… 逐条复核:JL_WL_AUD=
+# hs_base+map_adr(0x22,0)=0xfe2200 单成员 __RW CON0;JL_AUDIO=hs_base+
+# map_adr(0x05,0)=0xfe0500,csfr.h `#define __u16 unsigned int` 显式 32 位
+# 字槽 → 成员序×4 偏移,ADC_CON@+0x38=0xfe0538(路 AE 已钉)、AUD_CON@+0x58
+# =0xfe0558;JL_ASS=hs_base+map_adr(0x09,0)=0xfe0900 三成员之首 CLK_CON)。
+# 默认路径(G6 门字 word@0x127364=0 动态复现钉死→esco 块整段跳过;config
+# 88/92 已占用→缺省分支不走)只有这 4 个寄存器 7 个站点:
+# - JL_WL_AUD CON0 整字写 ×2(0x602ea72 entry st.w.modimm=1 与 0x6071cbe
+#   st.w.l=r10,DAC init 尾);app 全量 li 扫描读仅低功耗快照 0x6069a2e 一处
+#   (不在本 boot 前缀),无 ready 位轮询;
+# - DAC_CON 整字写 0xfe2200(0x6071cbc,值恰等于 WL_AUD 基址——数值巧合,
+#   SDK 无字段名只有位模式 bits{9,13,17..23},整字记录不做语义解读)+
+#   RMW 对 0x6071ce6 &=~0x100/0x6071cee |=0x100(bit8 开/关);
+# - AUD_CON RMW 0x6071cea &=~0x40(本路径无先前写→RMW 内部读合成 0);
+# - JL_ASS CLK_CON 原子 RMW 0x6071cc6 |=1(音频子系统时钟位0,同样无先前写)。
+# 条件族(esco mic 块 0xfe0a40/0xfe0924/0xfe0538、ANC 图门 0xfe0400、缺省
+# 分支 0xfe0a00/0xfe0a0c/DAC_LEN 写族)本世界不可达,不进白名单、保持
+# unmapped 诚实停。
+JL_WL_AUD_CON0=0xfe2200
+JL_AUDIO_DAC_CON=0xfe0500
+JL_AUDIO_AUD_CON=0xfe0558
+JL_ASS_CLK_CON=0xfe0900
+JL_AUDIO_DAC_INIT_WORDS=(JL_AUDIO_DAC_CON,JL_AUDIO_AUD_CON,JL_ASS_CLK_CON)
 CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
 CPU1_CONTROL=0xffe8c0
 VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
@@ -1953,6 +1978,229 @@ class JLImapWriteRecords:
                               'NOT verify UART transmission/reception or USB function')}
 
 
+class JLWlAudWriteRecords:
+    """JL_WL_AUD->CON0(0xfe2200)的整字写记录 + 读回=最后写值(opt-in,路 AK)。
+
+    识别与证据(2026-11-14 路 AG 反汇编预研 docs/wlaud-init-map.md + 本路复核):
+    - **SDK 命名**:br28.h(sha 111e29ea…)`JL_WL_AUD_BASE = hs_base +
+      map_adr(0x22, 0x00)` = 0xfe2200,JL_WL_AUD_TypeDef 单成员 `__RW __u32
+      CON0`——无线音频(wireless-audio)子系统使能字,SDK 头有名、__RW 可回读。
+    - **写形状**:全字覆盖写 ×2(旧值无关)——0x602ea68 函数头 0x602ea72
+      `st.w.modimm [0xfe2200]=1`(WL_AUD 使能,先于一切音频初始化;当前
+      3,079,241 前沿停点)与 DAC init 0x6071bca 内 0x6071cbe `st.w.l
+      [r1]=r10`(SR idx≤5 时 1、否则 0,头尾各一次)。值全为真实指令结果,
+      无一处发明值。
+    - **读面**:app 全量 li 扫描(路 AG)读仅 1 处 0x6069a2e
+      (`r0=[0xfe2200]; [r7+4]=r0`,电源管理快照保存族,同函数还存 [0xfe0900])
+      ——不在本 boot 前缀;无任何 ready 位轮询/循环读。读回语义照 uart CON1
+      最终形态(路 M→F→AA):写过返回最后写值;从未写过显式合成初始字 0
+      (路 AM 先例,derived-not-measured 显式假设,非复位值声明)。本路径
+      0xfe2200 在任何读之前必已写过(函数头即写),合成 0 是未被消费的兜底
+      语义,报告计数分开记录。
+    - **运行效果不建模**:时钟门真开/无线音频活动/IRQ 一律不建模——只记录
+      「WL_AUD 使能配置写已执行」,不扩展为「音频/无线功能已验证」。
+    - RMW 经 probe_boot 通用 mmio 路径完整执行(内部读=投影值、按位合成、
+      写回照常落记录);本路径无 RMW 观测(app 唯一 RMW 0x60552ec |=1 在
+      WL 域上电路径,不在本前缀)。
+    """
+    ADDRESS=JL_WL_AUD_CON0
+
+    def __init__(self):
+        self.stores={JL_WL_AUD_CON0:{'values':[],'writes':0,'cores':[]}}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address==JL_WL_AUD_CON0
+
+    def write(self,address,value,core):
+        if address!=JL_WL_AUD_CON0:raise ValueError('not the modeled JL_WL_AUD CON0')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        if address!=JL_WL_AUD_CON0:raise ValueError('not the modeled JL_WL_AUD CON0')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(路 AM 先例)——derived-not-measured 的
+        # 显式假设,不是复位值声明;本路径该分支无消费者(见类注释「读面」)。
+        self.synthesized_initial_reads+=1
+        return 0
+
+    def report(self):
+        return {'addresses':[hex(JL_WL_AUD_CON0)],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('br28.h JL_WL_AUD = hs_base + map_adr(0x22, 0x00) = 0xfe2200, '
+                              'single-member JL_WL_AUD_TypeDef {__RW __u32 CON0} — the '
+                              'wireless-audio subsystem enable word, SDK-named and __RW'),
+                'whitelisted_words':('exactly the one JL_WL_AUD->CON0 word written twice on '
+                                     'the default path of the boot audio-framework init '
+                                     '0x602ea68 (0x602ea72 entry st.w.modimm=1 and 0x6071cbe '
+                                     'st.w.l=r10 inside the DAC-init cluster 0x6071bca); the '
+                                     'sole app read point is the power-management snapshot '
+                                     'family at 0x6069a2e (not in this boot prefix)'),
+                'observed_shapes':('full-word st.w-family stores (old value irrelevant): '
+                                   '0x602ea72 st.w.modimm [0xfe2200]=1 (the 3,079,241 frontier '
+                                   'store) and 0x6071cbe st.w.l [r1]=r10 (SR-index dependent '
+                                   '0/1); no RMW on this path (the only app RMW 0x60552ec |=1 '
+                                   'is on the WL power-up path, outside this prefix)'),
+                'readback_projection':{
+                    'addresses':[hex(JL_WL_AUD_CON0)],
+                    'reads':self.reads_after_write,
+                    'synthesized_initial_reads':self.synthesized_initial_reads,
+                    'readback_semantics':('last firmware-written value (route-AA uart-CON1 '
+                        'final form); before any firmware write the explicit synthetic '
+                        'initial word 0 (route-AM precedent) is served — derived-not-measured, '
+                        'NOT a reset-value claim; on this path 0xfe2200 is always written at '
+                        'the function head before any possible read, so the synthetic-zero '
+                        'branch has no consumer in this prefix'),
+                    'conditional_assumption':('the __RW annotation proves the SDK believes '
+                        'CON0 reads back, NOT that every bit mirrors software — hardware-'
+                        'updated or self-clearing bits (if any exist) would read back '
+                        'differently on silicon; the sole app reader (0x6069a2e low-power '
+                        'snapshot family) is outside this prefix, so even the last-write '
+                        'branch is a latent semantics here'),
+                    'no_poll_risk':('the full-app literal scan (route AG) found zero ready-'
+                        'bit polls or loop reads of 0xfe2200 — the single read site is the '
+                        'one-shot power-management snapshot store')},
+                'assumption':('write-only word record plus last-write readback of the WL_AUD '
+                              'enable word (derived-not-measured); stored values are real '
+                              'executed instruction results, never invented; the clock-gate '
+                              'hardware side effect of writing CON0 is NOT modeled — this '
+                              'records that the enable configuration write executed, it does '
+                              'NOT verify any audio or wireless-audio function')}
+
+
+class JLAudioDacInitWriteRecords:
+    """音频 DAC init 写域(JL_AUDIO DAC_CON/AUD_CON + JL_ASS CLK_CON)的写记录+读回(opt-in,路 AK)。
+
+    识别与证据(2026-11-14 路 AG 反汇编预研 docs/wlaud-init-map.md §2.4 + 本路复核):
+    - **SDK 命名与布局**:br28.h `JL_AUDIO_BASE = hs_base + map_adr(0x05, 0x00)`
+      = 0xfe0500(JL_AUDIO_TypeDef 全字段 __RW;csfr.h `#define __u16 unsigned
+      int` → 成员序×4 字槽,DAC_CON@+0、AUD_CON@+0x58=0xfe0558,ADC_CON@+0x38
+      =0xfe0538 与路 AE 钉死互证);`JL_ASS_BASE = hs_base + map_adr(0x09, 0x00)`
+      = 0xfe0900(JL_ASS_TypeDef 三成员 CLK_CON/MIC_CTL0/MIC_CTL1 之首, __RW)。
+    - **写形状(0x6071bca DAC init SFR 主簇,按执行序)**:
+      * 0x6071cbc `st.w [0xfe0500]=0xfe2200`(DAC_CON 整字写;值恰等于
+        WL_AUD 基址——**数值巧合**,SDK 无字段名、只有位模式 bits{9,13,17..23},
+        整字记录不做语义解读,「WL_AUD 使能与 DAC 源选择的硬件耦合」保持开放);
+      * 0x6071cc6 `rmw.or.modimm [0xfe0900]|=1`(JL_ASS CLK_CON,音频子系统
+        时钟位 0;无先前写);
+      * 0x6071ce6 `rmw.and.nmodimm [0xfe0500]&=~0x100` 与 0x6071cee
+        `|=0x100`(DAC_CON bit8 开/关 RMW 对;读侧=已记录整字写值可推导);
+      * 0x6071cea `rmw.and.nmodimm [0xfe0558]&=~0x40`(AUD_CON;本路径无
+        先前写,RMW 内部读由显式合成初始字 0 服务,&~0x40 于 0 得 0,平凡)。
+      值全为真实指令结果(probe_boot 通用 mmio 路径完整执行 RMW:内部读=
+      投影值、按位合成、写回照常落记录),无一处发明值。
+    - **读回语义**:照 uart CON1 最终形态(路 M→F→AA)一次做齐——写过返回
+      最后写值;无写时显式合成初始字 0(路 AM 先例)并在报告计数分开标注
+      derived-not-measured(JL_ASS CLK_CON 与 AUD_CON 的 RMW 内部读即此情形,
+      是本投影的必要面:0|1=1、0&~0x40=0)。
+    - **范围边界**:白名单恰三字 {0xfe0500,0xfe0558,0xfe0900};条件族
+      (esco mic 块 0xfe0a40 ADA_CON8/0xfe0924 偏置/0xfe0538 ADC_CON 读、
+      ANC 图门 0xfe0400 JL_ANC 族、缺省分支 0xfe0a00 DAA_CON0/0xfe0a0c/
+      DAC_LEN 写族)本世界默认不可达(G6 门字=0 动态复现钉死;config 88/92
+      已占用),不进白名单、保持 unmapped 诚实停——真到达时按路 AG §3.3
+      条件族表对号入座,不顺带放行。
+    - **运行效果不建模**:DAC 时钟门/模拟通路/DMA/IRQ68 事件一律不建模
+      (IRQ68 注册 0x602ec28 只是向量槽 RAM 写)——只记录「音频 DAC 初始化
+      配置写已执行」,不扩展为「音频输出已验证」。
+    """
+    ADDRESSES=JL_AUDIO_DAC_INIT_WORDS
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.ADDRESSES}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled audio DAC-init word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled audio DAC-init word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 无先前写:显式合成初始字 0(路 AM 先例)。derived-not-measured 显式
+        # 假设、非复位值声明;本路径的消费点=JL_ASS CLK_CON/AUD_CON 的原子
+        # RMW 内部读(S3/S5,rmw 经 probe_boot 通用路径真实读侧)。
+        self.synthesized_initial_reads+=1
+        return 0
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('br28.h JL_AUDIO = hs_base + map_adr(0x05, 0x00) = 0xfe0500 '
+                              '(all-__RW JL_AUDIO_TypeDef; the csfr.h `__u16 -> unsigned int` '
+                              '32-bit slot layout puts DAC_CON at +0 and AUD_CON at +0x58 = '
+                              '0xfe0558, cross-checked by ADC_CON at +0x38 = 0xfe0538 pinned '
+                              'by route AE) and JL_ASS = hs_base + map_adr(0x09, 0x00) = '
+                              '0xfe0900 (JL_ASS_TypeDef CLK_CON, first of three members)'),
+                'whitelisted_words':('exactly the three words of the audited default-path '
+                                     'write set inside the DAC-init cluster 0x6071bca: '
+                                     'JL_AUDIO->DAC_CON (0xfe0500, one whole-word store + the '
+                                     'bit8 clear/set RMW pair), JL_AUDIO->AUD_CON (0xfe0558, '
+                                     'one &=~0x40 RMW) and JL_ASS->CLK_CON (0xfe0900, one '
+                                     '|=1 RMW); the conditional families (esco-mic block '
+                                     '0xfe0a40/0xfe0924/0xfe0538, the ANC gate 0xfe0400, the '
+                                     'missing-config branches 0xfe0a00/0xfe0a0c/DAC_LEN) are '
+                                     'NOT whitelisted and stay unmapped'),
+                'observed_shapes':('whole-word st.w [0xfe0500]=0xfe2200 store plus '
+                                   'atomic RMWs rmw.or.modimm/rmw.and.nmodimm at 0x6071cbc/'
+                                   '0x6071cc6/0x6071ce6/0x6071cea/0x6071cee; the DAC_CON '
+                                   'whole-word value 0xfe2200 equals the WL_AUD base address '
+                                   'by numeric coincidence — the SDK names no field for it '
+                                   '(bit pattern {9,13,17..23} only), the word is recorded '
+                                   'as-is with no semantic interpretation'),
+                'readback_projection':{
+                    'addresses':[hex(a) for a in self.ADDRESSES],
+                    'reads':self.reads_after_write,
+                    'synthesized_initial_reads':self.synthesized_initial_reads,
+                    'readback_semantics':('last firmware-written value (route-AA uart-CON1 '
+                        'final form); before any firmware write the explicit synthetic '
+                        'initial word 0 (route-AM precedent) is served — derived-not-'
+                        'measured, NOT a reset-value claim. The RMWs run the FULL generic '
+                        'MMIO path (probe_boot mem.read -> bit-compose -> mem.write): the '
+                        'write-backs land in the records as real transactions, never '
+                        'short-circuited. Consumers on this path: the JL_ASS CLK_CON |=1 '
+                        'and AUD_CON &=~0x40 internal reads are served by the synthetic 0 '
+                        '(0|1=1, 0&~0x40=0 — trivial), the DAC_CON RMW pair reads the '
+                        'recorded whole-word 0xfe2200 — whose bit8 is already clear, so '
+                        '&~0x100 writes 0xfe2200 back unchanged and the |0x100 tail lands '
+                        '0xfe2300 (fully derivable from the record, zero invention; note '
+                        'the AG map §5.1 narrative "0xfe2200->0xfe2000->0xfe2100" '
+                        'miscomputed the mask — 0x2200 never had bit8 set)'),
+                    'conditional_assumption':('__RW proves the SDK believes these words read '
+                        'back, NOT that every bit mirrors software: hardware-updated or '
+                        'self-clearing bits (if any exist) would read differently on '
+                        'silicon; the synthetic initial 0 is an explicit assumption (reset '
+                        'state unmeasured), consumed only by RMW read sides on this path')},
+                'assumption':('write records plus last-write readback (synthetic initial 0 '
+                              'before the first write) of three audited audio DAC-init '
+                              'configuration words (derived-not-measured); stored values are '
+                              'real executed instruction results, never invented; no DAC '
+                              'clock gating, analog path, DMA or IRQ68 event is modeled '
+                              '(the IRQ68 registration at 0x602ec28 is a plain vector-slot '
+                              'RAM write) — this releases the initialization configuration '
+                              'writes only, it does NOT verify any audio output')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -3162,6 +3410,8 @@ class BR28Model:
                  jl_uart_con1_readback=False,
                  jl_omap_write_records=False,
                  jl_imap_write_records=False,
+                 jl_wl_aud_write_records=False,
+                 jl_audio_dac_init_write_records=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -3462,6 +3712,29 @@ class BR28Model:
             raise ValueError('the JL_UART CON1 readback projection requires the init write records')
         self.jl_uart_init_records=(JLUartInitWriteRecords(con1_readback=jl_uart_con1_readback)
                                    if jl_uart_init_write_records else None)
+        # 路 AK(sim-audioinit):0x602ea68 boot 期音频框架 init 的两个已审查写域
+        # (函数全图/写集枚举见 docs/wlaud-init-map.md,路 AG 预研;写集默认关、
+        # 关着时 4 地址保持 unmapped,3,079,241 @ 0x602ea72 前沿形状与 legacy
+        # 报告逐字节不变):
+        # - jl_wl_aud_write_records:JL_WL_AUD->CON0(0xfe2200,br28.h
+        #   hs_base+map_adr(0x22,0) 单成员 __RW)整字写记录+读回=最后写值
+        #   (uart CON1 路 M→F→AA 最终形态;无写时显式合成 0=路 AM 先例,
+        #   derived-not-measured)。放行 0x602ea72 entry 写(当前停点)与
+        #   0x6071cbe DAC init 尾写。
+        # - jl_audio_dac_init_write_records(需上一开关层叠:执行序上 DAC init
+        #   SFR 簇 0x6071cbc..ee 只在 entry 写放行后到达):JL_AUDIO DAC_CON
+        #   (0xfe0500,整字写 0xfe2200+RMW 对 &=~0x100/|=0x100)/AUD_CON
+        #   (0xfe0558,RMW &=~0x40)/JL_ASS CLK_CON(0xfe0900,原子 RMW|=1)
+        #   三字写记录+读回=最后写值/无写合成 0。RMW 经 probe_boot 通用 mmio
+        #   路径完整执行(内部读=投影值、写回落记录),机器侧零新分发。
+        #   条件族(esco/ANC/缺省分支)不进白名单,保持 unmapped 诚实停。
+        #   运行效果(时钟门/模拟通路/DMA/IRQ68 事件)一律不建模。
+        if jl_audio_dac_init_write_records and not jl_wl_aud_write_records:
+            raise ValueError('the audio DAC-init write records require the JL_WL_AUD write records '
+                             '(the DAC-init SFR cluster is only reached after the entry store)')
+        self.jl_wl_aud_records=JLWlAudWriteRecords() if jl_wl_aud_write_records else None
+        self.jl_audio_dac_init_records=(JLAudioDacInitWriteRecords()
+                                        if jl_audio_dac_init_write_records else None)
         # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字(0xfd58xx)的
         # write-only 整字记录。识别链与 49 字白名单见 JL_OMAP_OUT_WORDS 常量
         # 注释;本前缀首写=uart_init TX 引脚复用 0x60012de 写 0xfd58b8=0x9f
@@ -3657,6 +3930,8 @@ class BR28Model:
             (self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address)) or
             (self.jl_omap_records is not None and self.jl_omap_records.handles(address)) or
             (self.jl_imap_records is not None and self.jl_imap_records.handles(address)) or
+            (self.jl_wl_aud_records is not None and self.jl_wl_aud_records.handles(address)) or
+            (self.jl_audio_dac_init_records is not None and self.jl_audio_dac_init_records.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
@@ -3870,6 +4145,18 @@ class BR28Model:
         if self.jl_imap_records is not None and self.jl_imap_records.handles(address):
             self.counts['reads']+=1
             return self.jl_imap_records.read(address)
+        # JL_WL_AUD CON0(路 AK):读回=最后写值,无写时显式合成 0(路 AM 先例,
+        # derived-not-measured);本路径 0xfe2200 在任何读前必已写过,唯一 app
+        # 读点=低功耗快照 0x6069a2e 不在本前缀——无轮询风险。
+        if self.jl_wl_aud_records is not None and self.jl_wl_aud_records.handles(address):
+            self.counts['reads']+=1
+            return self.jl_wl_aud_records.read(address)
+        # 音频 DAC init 写域(路 AK):JL_AUDIO DAC_CON/AUD_CON + JL_ASS CLK_CON
+        # 读回=最后写值,无写时显式合成 0(消费点=CLK_CON|1/AUD_CON&~0x40 的
+        # RMW 内部读,rmw 经 probe_boot 通用 mmio 路径真实走读侧)。
+        if self.jl_audio_dac_init_records is not None and self.jl_audio_dac_init_records.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_dac_init_records.read(address)
         # P3_AWKUP 族:只有显式 fixture 覆盖的寄存器的首次读返回具名字,
         # 其余读(未覆盖/写后/重复)一律严格停(路 BB;显式 kind 便于诊断)。
         if self.p33_awkup is not None and self.p33_awkup.handles(address):
@@ -4023,6 +4310,16 @@ class BR28Model:
             # 号/PFI_* 常量由 case 体真实装载),交叉开关布线/输入电平/IRQ
             # 一律不建模。
             self.jl_imap_records.write(address,value,self.current_core)
+        elif self.jl_wl_aud_records is not None and self.jl_wl_aud_records.handles(address):
+            # JL_WL_AUD CON0(路 AK):st.w 族全字覆盖写(entry 0x602ea72 与
+            # DAC init 尾 0x6071cbe 各一次),写记录;时钟门副作用/无线音频
+            # 活动一律不建模。
+            self.jl_wl_aud_records.write(address,value,self.current_core)
+        elif self.jl_audio_dac_init_records is not None and self.jl_audio_dac_init_records.handles(address):
+            # 音频 DAC init 写域(路 AK):整字写(DAC_CON 0xfe2200)与原子
+            # RMW 写回(经 probe_boot 通用 mmio 路径的内部读=投影值)都落
+            # 记录;DAC 时钟门/模拟通路/DMA/IRQ68 事件一律不建模。
+            self.jl_audio_dac_init_records.write(address,value,self.current_core)
         elif self.p33_awkup is not None and self.p33_awkup.handles(address):
             # P3_AWKUP 族(路 BB):整字写只接受有观测形状的 FLT0..2(walker
             # st.w.idxs)与 P_IE(0x6067cb0 消费型写回),其余(EN/N_IE/
@@ -4518,6 +4815,31 @@ class BR28Model:
         if self.jl_uart_init_records is not None:result['jl_uart_init_write_records']=self.jl_uart_init_records.report()
         if self.jl_omap_records is not None:result['jl_omap_write_records']=self.jl_omap_records.report()
         if self.jl_imap_records is not None:result['jl_imap_write_records']=self.jl_imap_records.report()
+        if self.jl_wl_aud_records is not None:
+            result['jl_wl_aud_write_records']=self.jl_wl_aud_records.report()
+            result['assumptions']['jl_wl_aud_write_records']=(
+                'JL_WL_AUD->CON0 (0xfe2200, br28.h hs_base+map_adr(0x22,0), single-member '
+                '__RW): whole-word write records (entry 0x602ea72 =1 plus the DAC-init tail '
+                '0x6071cbe =r10) with last-write readback and an explicit synthetic initial 0 '
+                'before the first write (derived-not-measured, route-AM precedent, NOT a '
+                'reset-value claim); the sole app read site (0x6069a2e power-management '
+                'snapshot) is outside this prefix and there is no ready-bit poll anywhere; '
+                'the clock-gate hardware effect is NOT modeled — this does NOT verify any '
+                'audio or wireless-audio function')
+        if self.jl_audio_dac_init_records is not None:
+            result['jl_audio_dac_init_write_records']=self.jl_audio_dac_init_records.report()
+            result['assumptions']['jl_audio_dac_init_write_records']=(
+                'three audited audio DAC-init configuration words (JL_AUDIO->DAC_CON 0xfe0500 '
+                '/ AUD_CON 0xfe0558, JL_ASS->CLK_CON 0xfe0900; all br28.h __RW): write '
+                'records with last-write readback and an explicit synthetic initial 0 before '
+                'the first write (derived-not-measured, route-AM precedent, NOT a '
+                'reset-value claim — consumed by the CLK_CON |=1 / AUD_CON &=~0x40 RMW '
+                'internal reads); RMWs run the full generic MMIO path with the write-backs '
+                'recorded; the DAC_CON whole-word value 0xfe2200 equals the WL_AUD base by '
+                'numeric coincidence and is recorded as-is with no semantic interpretation; '
+                'the conditional families (esco-mic/ANC/missing-config) stay unmapped; no '
+                'DAC clock gating, analog path, DMA or IRQ68 event is modeled — this does '
+                'NOT verify any audio output')
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()
