@@ -5,12 +5,12 @@ analyze_image_trace (synthetic traces only; no simulator, no ROM, no images).
 Row shape mirrors TraceMachine: (core, before_pc, next_pc, flags,
 16-tuple of register signatures, tuple of (address, data-hex) writes).
 """
-import ast
+import inspect
 
+import frontier_registry
 import probe_irq_entry
 from analyze_image_trace import (BASE_SCENARIO_FLAGS, CONDITIONAL_EXTRA_FLAGS,
                                  SCENARIOS, find_reconvergence, stop_parity)
-from probe_pi32v2 import ROOT
 
 
 def row(pc, nxt, marker=(15, '00000000'), write=()):
@@ -120,47 +120,34 @@ def test_stop_parity_same_stop_and_step_deltas():
     assert moved['stop_pc']['same'] is True and moved['same_stop'] is False
 
 
-def _scenario_call_flags(scenario_call_name):
-    """Extract the irq_case keyword set for ONE scenario call site inside
-    probe_irq_entry.main() by AST (no simulator run). Name-referenced values
-    (P11_HEAP_INFO_DERIVED / LRCT_TRIM_RESULT_PROBE module constants, the
-    local `image` transport) are resolved against the probe_irq_entry module
-    namespace; the `image` name is a local, so callers drop the transported
-    flash_image_bytes/readonly keys before comparing flag sets."""
-    source = (ROOT / 'tools/probe_irq_entry.py').read_text()
-    matches = []
-    for node in ast.walk(ast.parse(source)):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == 'irq_case' and len(node.args) >= 5
-                and isinstance(node.args[4], ast.Constant)
-                and node.args[4].value == scenario_call_name):
-            matches.append(node)
-    assert len(matches) == 1, f'expected exactly one irq_case call for {scenario_call_name!r}'
-    flags = {}
-    for kw in matches[0].keywords:
-        if kw.arg in ('flash_image_bytes', 'readonly'):
-            continue  # per-run transports (local `image`), not scenario switches
-        if isinstance(kw.value, ast.Constant):
-            flags[kw.arg] = kw.value.value
-        elif isinstance(kw.value, ast.Name):
-            flags[kw.arg] = getattr(probe_irq_entry, kw.value.id)
-        else:
-            flags[kw.arg] = '<unparsed>'
-    return flags
-
-
-def test_flag_sets_match_probe_irq_entry_scenario_calls():
-    # The imported shared stack must be exactly the upstream scenario
-    # construction: if probe_irq_entry gains/renames an opt-in flag for either
-    # scenario, this fails instead of silently diffing under a stale stack.
-    assert _scenario_call_flags('crc_bankb_erased_fixture') == SCENARIOS['crc_bankb']['irq_case_flags']
-    assert _scenario_call_flags('p11_heap_experimental_config') == \
-        SCENARIOS['p11_heap_experimental']['irq_case_flags']
-    # the imported data constants are the real module values, not copies
-    assert SCENARIOS['p11_heap_experimental']['irq_case_flags']['heap_info_bytes'] \
-        is probe_irq_entry.P11_HEAP_INFO_DERIVED
-    assert SCENARIOS['p11_heap_experimental']['irq_case_flags']['lrct_trim_result'] \
-        is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
+def test_flag_sets_derive_from_the_frontier_registry():
+    # The imported shared stack derives from the single-source registry
+    # (tools/frontier_registry.py) — the same source probe_irq_entry.main()
+    # itself passes to irq_case, so cross-tool drift is impossible by
+    # construction. What still needs pinning here: the registry stays
+    # consistent with the real probe_irq_entry.irq_case signature (no
+    # unregistered switch, no registry entry for a missing parameter) and the
+    # data constants referenced by name are the real module values.
+    assert frontier_registry.validate()
+    signature = inspect.signature(probe_irq_entry.irq_case).parameters
+    transports = {'flash_image_bytes', 'readonly'}  # per-run transports, not switches
+    keyword_switches = {name for name, param in signature.items()
+                        if param.kind == inspect.Parameter.KEYWORD_ONLY and name not in transports}
+    assert keyword_switches == set(frontier_registry.switches(
+        ('base', 'conditional', 'probe_only'))), \
+        'probe_irq_entry.irq_case switches and frontier_registry entries diverged'
+    assert set(BASE_SCENARIO_FLAGS) == set(frontier_registry.base_flags())
+    assert set(CONDITIONAL_EXTRA_FLAGS) == set(frontier_registry.extra_flags(probe_irq_entry))
+    # every base switch is a plain boolean opt-in
+    assert all(value is True for value in BASE_SCENARIO_FLAGS.values())
+    # the non-boolean conditional flags are exactly the three named data
+    # fixtures, resolved to the real probe_irq_entry module constants (no copies)
+    non_boolean = {switch for switch, value in CONDITIONAL_EXTRA_FLAGS.items() if value is not True}
+    assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values'}
+    assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
+    assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
+    assert CONDITIONAL_EXTRA_FLAGS['fd31_adc_res_named_values'] \
+        is probe_irq_entry.FD31_ADC_RES_NAMED_VALUES
 
 
 def test_scenario_registry_shapes():
@@ -171,66 +158,12 @@ def test_scenario_registry_shapes():
     assert conditional == {**BASE_SCENARIO_FLAGS, **CONDITIONAL_EXTRA_FLAGS}
     for key, value in BASE_SCENARIO_FLAGS.items():
         assert conditional[key] == value
-    assert SCENARIOS['crc_bankb']['freshness'] == {
-        'completed_steps': 289849, 'stop_pc': '0x60679ba',
-        'stop_fields': {'kind': 'unmapped_memory', 'address': '0xf27f4b'}}
-    # 路 BY:PND 完成投影折叠 80 次轮询、RES 具名 fixture 放行采样事务,
-    # 前沿 447,383 @ P3_ANA_READ 首读(BV 钉住的红线)。路 CB:p3_ana_read_
-    # ldoin_low 具名常量 fixture(SDK charge_hw.h bit1=LVCMP_DET/bit2=
-    # LDO5V_DET+charge.c 阈值+无外部供电锚)放行首读,L5V/CHG_CON2 计算寻址
-    # 面并入 tail 容器,core tick 首溢出真实交付+14 次交付延期,OS tick 级联
-    # 带进 GPCNT_CON 读,601,880 @ unknown_gpcnt_configuration_bits。路 CG:
-    # gpcnt_con_readback 位粒度读回投影放行该读(bit0=0 真实跳过分支,任务 9
-    # 次调度全空手返回),W1[0] 20 轮超时路径全预算执行,core tick 交付合计 9
-    # 次,超时后进 mode 切换函数 0x6068152——3,070,626 @ 0x606817a 读
-    # JL_CLOCK->DCCK_CON0 0xfd0008 停(路 CC 预研钉死的 JL 时钟族)。路 CL:
-    # jl_clock_dcck 投影放行该读,mode 切换体真实执行,W1[1] call scheduler
-    # 中断上下文 helper 0x6065c3a。路 CO:partial_icfg_masked_branch 处理器放行
-    # 0x6065c4c 的 active-priority 低字节掩码测试 `if ((r0&0xFF)!=0)`(bne.and.
-    # modimm.ri.l i=0xFF;empty-active-priority fixture 下低字节已知 0 → 不跳),
-    # helper 经 0x12cb08(临界查询→1)/0x12b55c(重进临界区 IPMASK 0→6)后停在
-    # 0x6065ccc `st.w.sp.l [sp+8]=r9` 的上游存储模型簿记合并读未初始化局部
-    # 0x19e2d4。路 CQ:exact_word_store_sp_l 独立子开关放行该整字存储,helper
-    # 尾段写两局部并返回 W1[1] walker,停在 0x601d1ac `ld.w r0=[r2+0]` 读
-    # 0xfd2000(0x601d198 读辅助函数 r1==0 分支)。路 F:命名修正——0xfd2000/
-    # 0xfd2100/0xfd2200 = JL_UART0/1/2 基址(br28.h,非「SDK 参考头未命名」),
-    # 读辅助函数 = SDK uart_v1.c uart_is_idle;读侧三选一=方案 (a) 投影
-    # `jl_uart_con_projection`(合成 0=空闲,derived-not-measured)放行后 uart_init
-    # 真实执行 CON0=0x3400,停 0x603446a 写 0xfd2004(路 F 记作 BAUD|BUF)。
-    # 路 M:UART 写侧三选一选方案 (a1) 初始化写白名单 `jl_uart_init_writes`——
-    # 布局钉死(uart_v1.c.o bitcode {i32 x12}+固件写序列互证,修正路 F 命名:
-    # 0xfd2004=CON1 字、真 BAUD 写在 0xfd2008)后放行 CON1/BAUD/OTCNT/RXSADR/
-    # RXEADR/RXCNT/CON2 纯配置整字写(write-only 记录,TXADR/TXCNT/BUF/HRXCNT
-    # 不进白名单),CON1=0/CON2=0 落地后 uart_init 进 TX/RX 引脚复用,停在
-    # 0x60012de 写 0xfd58b8=0x9f(0xfd58xx GPIO 端口组,GPIO_BASES 未覆盖)。
-    # 路 R:识别钉死 0xfd58xx=JL_OMAP(io_omap.h map_adr(0x58,0)=0xfd5800 逐
-    # 引脚输出功能选择字;SDK gpio_out_regs 表与固件表 0x609EA9C 逐字节一致,
-    # gpio 224/225=IO_PORT_DP/DM 特例 0xfd58b8/0xfd58bc,值 0x9f=FO_UART0_TX),
-    # `jl_omap_writes` 49 字白名单 write-only 记录放行后 TX 复用链完成、第 297
-    # 次 Timer0 到期临界区退出后真实交付(287 次),RX 复用链停在 0x6001342 写
-    # 0xfd5c90=0x2f(JL_IMAP->FI_UART0_RX=map_adr(0x5c,0)+成员 36×4;值 47=
-    # USBDP_IN,UART0 RX 与 TX 同用 USB DP 脚)——前沿 3,073,402 @ 0x6001342。
-    # 路 V:识别钉死 0xfd5c00..0xfd5cf8=JL_IMAP(io_imap.h 63 成员
-    # FI_GP_ICH0..FI_CHAIN_RST;csfr.h __u8→unsigned int 显式 4 字编译布局,
-    # gpio_hw.c.o PFI_* 枚举 16604160..16604408 逐成员互证;gpio2crossbar_
-    # inport(224)=47=USBDP_IN 与固件 resolver 0x60012e8 双侧同值,通道号表
-    # 与固件表 0x609EAB8 逐字节一致;全镜像扫描零读回),`jl_imap_writes`
-    # 63 字白名单放行 0xfd5c90 写后链继续 +516 步,停在 0x60340d8 复合 RMW
-    # `[r0+4] &= 0xFFFFFFEF` 内部读 0xfd2004=JL_UART0->CON1(路 V 前沿
-    # 3,073,918)。路 AA:`jl_uart_con1_readback`(CON1 读回=最后写值,
-    # lp_timer CON 路 AL 同族,只在写过之后返回;条件假设 derived-not-
-    # measured;RMW 走完整通用路径、写回落记录)放行该读——读 0、写回 0,
-    # uart_init 事务收尾(BAUD=0x270×2/OTCNT/RX 三连写,CON0→0x346f),
-    # 事件域首边界=app_core 尾 0x6011fee 的 init 链 0x60c32a4..0x60c32b8
-    # 第 4 项 0x602ea68 首指令 `st.w.modimm [0xfe2200]=1`——0xfe2200=
-    # br28.h JL_WL_AUD->CON0(hs_base+map_adr(0x22,0),单成员 __RW),
-    # SDK 头有名、模型 unmapped 诚实停(独立决策点,不套用最后写值)——
-    # 3,079,241 @ 0x602ea72 unmapped_or_readonly_write 写 0xfe2200=1 停。
-    assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3079241, 'stop_pc': '0x602ea72',
-        'stop_fields': {'kind': 'unmapped_or_readonly_write',
-                        'address': '0xfe2200',
-                        'value_bytes': '01000000'}}
+    # freshness 停点字面值单点在 tools/frontier_registry.py(probe 的前沿
+    # require、analyze 的 freshness 钉子同源);前沿推进史叙事见 HANDOFF
+    # 「当前前沿」表与 registry 内注释,不在此复制。
+    assert SCENARIOS['crc_bankb']['freshness'] == frontier_registry.freshness('crc_bankb')
+    assert SCENARIOS['p11_heap_experimental']['freshness'] == \
+        frontier_registry.freshness('p11_heap_experimental')
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000

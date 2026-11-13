@@ -51,6 +51,7 @@ from pathlib import Path
 
 import probe_dualcore
 import probe_irq_entry
+import frontier_registry
 from br28_machine import DualCoreMachine
 from br28_icfg import IcfgValue
 from br28_unknown import UnknownWord
@@ -73,38 +74,15 @@ OFFICIAL_DEFAULT = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.uf
 # (derived-not-measured heap fixture, Timer0 STD12M, LP timer, P33 family,
 # P3_LS, reset-projection mask sets, subword stores...) on top of the same
 # stack. The scenario construction (probe_irq_entry.irq_case) is imported, and
-# the two data constants below are imported values, never duplicated here; the
-# boolean switch lists themselves are kept side by side with the upstream
-# scenario calls in probe_irq_entry.main() — tools/test_image_trace_diff.py
-# pins the two lists against that call site by AST so upstream flag drift
-# fails the unit tests instead of silently changing what this tool runs.
-BASE_SCENARIO_FLAGS = dict(entry=True, banks=True, idle_wait=True, rti=True,
-                           unmaskable=True, sfc_suspend=True, gpio_out_readback=True,
-                           kick_wake=True, hardware_crc=True, rep_block=True,
-                           rep_unknown_transport=True, repeat=True, icu_region=True,
-                           dcu_cmo=True, zero_rep_skip=True, erased_bankb=True,
-                           insert_load_pair=True, halfword_pair=True, p11_power_init=True)
-CONDITIONAL_EXTRA_FLAGS = dict(
-    heap_info_bytes=probe_irq_entry.P11_HEAP_INFO_DERIVED,
-    byte_pair=True, lp_timer_writes=True, lrct_trim_done=True,
-    lrct_trim_result=probe_irq_entry.LRCT_TRIM_RESULT_PROBE,
-    timer0_std12m=True, lp_timer_con_readback=True,
-    p33_analog_config=True, power_init_rstcon_masks=True,
-    power_init_wkup_dly=True,
-    mem_pwr_con=True, p33_window=True, p33_port_sel=True,
-    p33_awkup=True, p3_ls=True, p11_syscon1_masks=True, fd31_adc_con=True,
-    fd31_adc_con_readback=True,
-    fd31_adc_pnd_completion=True,
-    fd31_adc_res_named_values=probe_irq_entry.FD31_ADC_RES_NAMED_VALUES,
-    p33_analog_tail=True, p3_ana_read_ldoin_low=True, gpcnt_con_readback=True,
-    jl_clock_dcck=True,
-    jl_uart_con=True,
-    jl_uart_init_writes=True,
-    jl_uart_con1_readback=True,
-    jl_omap_writes=True,
-    jl_imap_writes=True,
-    subword_stores=True, word_store_sp_l=True,
-    timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
+# both flag lists and the freshness stop pins derive from the single-source
+# tools/frontier_registry.py (same registry probe_irq_entry.main() itself
+# uses); the data constants referenced by name (P11_HEAP_INFO_DERIVED etc.)
+# are the real probe_irq_entry module values, never copies. Adding an opt-in
+# switch or advancing the frontier only touches the registry; registry drift
+# (unregistered irq_case switches, non-closed dependency stacks) fails
+# tools/test_image_trace_diff.py instead of silently changing what runs here.
+BASE_SCENARIO_FLAGS = frontier_registry.base_flags()
+CONDITIONAL_EXTRA_FLAGS = frontier_registry.extra_flags(probe_irq_entry)
 
 SCENARIOS = {
     'crc_bankb': {
@@ -113,9 +91,9 @@ SCENARIOS = {
                               'frontier flag set (imported)'),
         'default_budget': 300000,
         # 配置新鲜度钉子:official 必须复现主前沿停点,否则本工具的 flag 集已与
-        # 主前沿场景漂移(或上游场景变更),结果不可信。上游前沿推进后按新前沿重钉。
-        'freshness': {'completed_steps': 289849, 'stop_pc': '0x60679ba',
-                      'stop_fields': {'kind': 'unmapped_memory', 'address': '0xf27f4b'}},
+        # 主前沿场景漂移(或上游场景变更),结果不可信。停点字面值单点在
+        # tools/frontier_registry.py,前沿推进后只改 registry(本值自动跟随)。
+        'freshness': frontier_registry.freshness('crc_bankb'),
     },
     'p11_heap_experimental': {
         'irq_case_flags': {**BASE_SCENARIO_FLAGS, **CONDITIONAL_EXTRA_FLAGS},
@@ -125,8 +103,9 @@ SCENARIOS = {
                               'a verified boot fact)'),
         'default_budget': 3200000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
-        # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。条件前沿随
-        # 上游合并前移后按新前沿重钉(前沿前移后可重跑跟进)。路 BY:PND 完成
+        # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
+        # 单点在 tools/frontier_registry.py,前沿推进后只改 registry(本值自动
+        # 跟随)。以下为前沿推进史(叙事,HANDOFF 同步维护)。路 BY:PND 完成
         # 投影+RES 具名 fixture 闭合采样事务,前沿 447,383 @ P3_ANA_READ 首读。
         # 路 CB:p3_ana_read_ldoin_low 具名常量 fixture(SDK charge_hw.h bit1=
         # LVCMP_DET/bit2=LDO5V_DET+charge.c 阈值+无外部供电场景锚→两比较器读 0)
@@ -216,10 +195,7 @@ SCENARIOS = {
         # unmapped,诚实停(unmapped_or_readonly_write)——音频/无线域首个
         # 新边界,独立决策点,不套用最后写值。**新前沿 3,079,241 @ 0x602ea72**
         # (写 0xfe2200=1)。
-        'freshness': {'completed_steps': 3079241, 'stop_pc': '0x602ea72',
-                      'stop_fields': {'kind': 'unmapped_or_readonly_write',
-                                      'address': '0xfe2200',
-                                      'value_bytes': '01000000'}},
+        'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
 
@@ -310,8 +286,9 @@ def frontier_run(module, app, header, rom, name, *, flash_image_bytes, readonly=
                  budget=None, scenario='crc_bankb'):
     """One run of a shared-stack scenario via probe_irq_entry.irq_case (the
     scenario parameter construction is imported, never duplicated: the flag
-    set comes from SCENARIOS and is pinned against probe_irq_entry.main()'s
-    scenario calls by unit tests). scenario 'crc_bankb' is the pinned shared
+    set comes from SCENARIOS and derives from the single-source
+    tools/frontier_registry.py — the same registry probe_irq_entry.main()
+    itself uses). scenario 'crc_bankb' is the pinned shared
     frontier (default); 'p11_heap_experimental' layers the conditional
     derived-not-measured opt-ins on the same stack. budget overrides
     irq_case's own budget through a dual_case wrapper. Returns
@@ -721,16 +698,21 @@ def check_self(report):
     pairs = {p['name']: p for p in report['pairs']}
     require(set(pairs) == {'official_vs_tested_b79'}, 'self-check must run exactly the repository pair')
     p = pairs['official_vs_tested_b79']
+    # 前沿停点字面值单点在 frontier_registry(推进前沿只改 registry)。
+    base = frontier_registry.frontier('crc_bankb')
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 289849 and run['stop_pc'] == '0x60679ba' and
-                run['stop']['kind'] == 'unmapped_memory' and run['per_core_steps'] == {'0': 278683, '1': 11181},
+        require(run['completed_steps'] == base['completed_steps'] and
+                run['stop_pc'] == base['stop_pc'] and
+                run['stop']['kind'] == base['stop']['kind'] and
+                run['per_core_steps'] == {'0': 278683, '1': 11181},
                 f'{label} run changed: the shared-stack prefix is no longer the pinned frontier stop')
     parity = p['parity']
-    require(parity['steps'] == {'official': 289849, 'tested_b79': 289849, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x60679ba', 'b': '0x60679ba', 'same': True} and
+    require(parity['steps'] == {'official': base['completed_steps'],
+                                'tested_b79': base['completed_steps'], 'delta': 0} and
+            parity['stop_pc'] == {'a': base['stop_pc'], 'b': base['stop_pc'], 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['address'] == '0xf27f4b' and
+            parity['stop_record']['a']['address'] == base['stop']['address'] and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 stop parity changed: both images must reach the identical frontier stop')
     require('first_control_divergence' not in p and 'reconvergence' not in p,
@@ -785,21 +767,26 @@ def check_self_conditional(report):
     require(set(pairs) == {'official_vs_tested_b79'},
             'conditional self-check must run exactly the repository pair')
     p = pairs['official_vs_tested_b79']
+    # 条件前沿停点字面值单点在 frontier_registry(推进前沿只改 registry)。
+    conditional = frontier_registry.frontier('p11_heap_experimental')
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 3079241 and run['stop_pc'] == '0x602ea72' and
-                run['stop']['kind'] == 'unmapped_or_readonly_write' and
-                run['stop']['address'] == '0xfe2200' and
+        require(run['completed_steps'] == conditional['completed_steps'] and
+                run['stop_pc'] == conditional['stop_pc'] and
+                run['stop']['kind'] == conditional['stop']['kind'] and
+                run['stop']['address'] == conditional['stop']['address'] and
                 run['per_core_steps'] == {'0': 3068340, '1': 11216},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
                 'conditional frontier stop (3079241 @ 0x602ea72, the JL_WL_AUD CON0=1 word '
                 'store of init-chain entry 0x602ea68 after the route-AA CON1 readback '
                 'projection released the uart_fifo_reset compound RMW)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 3079241, 'tested_b79': 3079241, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x602ea72', 'b': '0x602ea72', 'same': True} and
+    require(parity['steps'] == {'official': conditional['completed_steps'],
+                                'tested_b79': conditional['completed_steps'], 'delta': 0} and
+            parity['stop_pc'] == {'a': conditional['stop_pc'], 'b': conditional['stop_pc'],
+                                  'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['kind'] == 'unmapped_or_readonly_write' and
+            parity['stop_record']['a']['kind'] == conditional['stop']['kind'] and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
             'identical conditional frontier stop')
