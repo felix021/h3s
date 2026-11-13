@@ -237,7 +237,12 @@ R/W 形状按站点指令分类 [静态]）：
 ## 6. 路 CA 运行时勘误（2026-11-13，sim-tonescene 场景执行证据）
 
 D2-A 首场景骨架已实施（probe_pi32v2 opt-in `--tone-scene`，详见 HANDOFF 路 CA 条目）。
-执行证据对本页 §1/§2 的勘误：
+执行证据对本页 §1/§2 的勘误。**路 CD 再修正（2026-11-13）**：下述第 5 条的推论
+「运行时视图≠flash 原始字节、resfile 层必提供变换视图」已被活机器实测推翻——
+resfile 层（flash/res/ 路径）无任何变换，read 返回公开 JLFS 字节原样；'JS' 校验
+失败在固件里非致命（版本字节 0 → 节访问器走透传读分支，stream create 在真字节上
+成功前进）；0x1fe30 的 -7 归因合成头字节（真机不走加密分支）。全图与 D2-A 继续
+的最小合成集（=空）见 [docs/resfile-transform.md](resfile-transform.md)：
 
 1. **语言字语义反了**（§1.2）：QCY+348 **== 1 → zh 表 0x60a379c；!= 1 → en 表
    0x60a387c**（getter 0x600c2be `if (r2 != 1) 返回 base+224`，base=zh 表——两臂均
