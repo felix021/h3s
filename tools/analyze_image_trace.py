@@ -96,7 +96,7 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     fd31_adc_con_readback=True,
     fd31_adc_pnd_completion=True,
     fd31_adc_res_named_values=probe_irq_entry.FD31_ADC_RES_NAMED_VALUES,
-    p33_analog_tail=True, p3_ana_read_ldoin_low=True,
+    p33_analog_tail=True, p3_ana_read_ldoin_low=True, gpcnt_con_readback=True,
     subword_stores=True, timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
 
 SCENARIOS = {
@@ -116,7 +116,7 @@ SCENARIOS = {
                               'conditional flag set (crc_bankb stack plus the derived-not-measured '
                               'opt-ins: every conclusion under this scenario is conditional, not '
                               'a verified boot fact)'),
-        'default_budget': 720000,
+        'default_budget': 3200000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。条件前沿随
         # 上游合并前移后按新前沿重钉(前沿前移后可重跑跟进)。路 BY:PND 完成
@@ -125,12 +125,21 @@ SCENARIOS = {
         # LVCMP_DET/bit2=LDO5V_DET+charge.c 阈值+无外部供电场景锚→两比较器读 0)
         # 放行首读;L5V/CHG_CON2 计算寻址面并入 tail 容器;~447,490 core tick
         # 首溢出真实交付,其 handler 在途期间 Timer0 请求被延期机制挂起(14 次,
-        # 挂起不丢弃);OS tick 级联把世界带进 0x6069538 的 GPCNT_CON 读(bit0
-        # 使能+bit7 轮询+计数)——**601,880 @ unknown_gpcnt_configuration_bits**,
-        # GPCNT 读侧三选一归下一路。
-        'freshness': {'completed_steps': 601880, 'stop_pc': '0x6069540',
-                      'stop_fields': {'kind': 'unknown_gpcnt_configuration_bits',
-                                      'known_mask': '0x81'}},
+        # 挂起不丢弃);OS tick 级联把世界带进 0x6069538 的 GPCNT_CON 读,路 CB
+        # 停在 601,880 @ unknown_gpcnt_configuration_bits。
+        # 路 CG:gpcnt_con_readback 位粒度读回投影(br28.h CON __RW+全 app+ROM
+        # 唯一写者=固件自己的 disable+clear 位 RMW 对)放行该读——bit0=0(app
+        # 自己关断)→ 真实跳过分支,任务 0x6069538 九次调度全空手返回;W1[0]
+        # 20 轮超时路径全预算执行(41 次 fixture 读、不创建充电任务);core tick
+        # 溢出交付合计 9 次/延期 138 次/Timer0 交付 286 次;超时后进 mode 切换
+        # 函数 0x6068152(r0==1 分支)——**3,070,626 @ 0x606817a 读
+        # [0xfd0008]=JL_CLOCK->DCCK_CON0 停**(路 CC 预研钉死的 JL 时钟族首访问,
+        # SDK clock.c save/restore 把 DCCK_CON0/1/2 列为可读回;读侧三选一归
+        # 下一路)。
+        'freshness': {'completed_steps': 3070626, 'stop_pc': '0x606817a',
+                      'stop_fields': {'kind': 'unmapped_memory', 'access': 'read',
+                                      'address': '0xfd0008', 'size': 4,
+                                      'reference_sdk_register': None}},
     },
 }
 
@@ -667,23 +676,22 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-13 路 BY 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 447,383;一切结论条件通过、derived-not-measured;689,402
-    的路 BS 世界已被 PND 折叠替换,历史见 HANDOFF「689,402 步含义」段):
+    """钉死 2026-11-13 路 CG 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 3,070,626;一切结论条件通过、derived-not-measured;历史
+    世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)已被后续投影替换,
+    见 HANDOFF 对应「步含义」段):
 
-    - 双方 689,402 步、同停点 0x6011704(ADC RES 读的 fd31_adc_res_not_modeled,
-      当前条件前沿——路 BS 把 core tick 交付接线接进主条件场景后,447,490 的
-      CPU0 core tick 首次溢出不再停:实测整个 ADC 采样事务在同一个 OS 临界区内
-      (IPMASK=6,0x12b55c veneer 的 cli 起、全程零 IPMASK 写回),溢出与九次
-      STD12M 到期(343,252..663,252)全部 masked 挂起(BF 重检机制:cli 只
-      屏蔽不丢弃),轮询 1000 轮全预算跑完,停在 RES 读=__RO 模拟测量值红线;
-      IRQ3/IRQ4 双挂起仍武装着,首个合格时刻(临界区 sti)在 RES 边界之后未
-      执行)、per-core {0:678238,1:11181} 一致;stop parity 全同——
-      official↔b79 parity 从 447,490(路 BN)延长到条件前沿 689,402,控制流
-      零分歧、无 reconvergence;
+    - 双方 3,070,626 步、同停点 0x606817a(JL_CLOCK DCCK_CON0 0xfd0008 读的
+      unmapped_memory,当前条件前沿——路 CG 的 gpcnt_con_readback 位粒度读回
+      投影放行任务 0x6069538 的 bit0 使能判定后:GPCNT 任务 9 次调度全走真实
+      跳过分支,W1[0] 20 轮超时路径全预算执行,core tick 溢出交付合计 9 次,
+      超时后世界进 mode 切换函数 0x6068152 停在路 CC 预研钉死的 JL 时钟族首
+      访问)、per-core {0:3059757,1:11181} 一致;stop parity 全同——
+      official↔b79 parity 延长到条件前沿 3,070,626,控制流零分歧、无
+      reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);分歧段 30 个不变——条件前缀新增步
-      (447,490..689,402,轮询忙等后半程)没有消费任何新的镜像差异;
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,070,626,
+      超时窗口+OS tick 级联)没有消费任何新的镜像差异;
     - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -693,18 +701,19 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 601880 and run['stop_pc'] == '0x6069540' and
-                run['stop']['kind'] == 'unknown_gpcnt_configuration_bits' and
-                run['stop']['known_mask'] == '0x81' and
-                run['per_core_steps'] == {'0': 590748, '1': 11181},
+        require(run['completed_steps'] == 3070626 and run['stop_pc'] == '0x606817a' and
+                run['stop']['kind'] == 'unmapped_memory' and
+                run['stop']['address'] == '0xfd0008' and
+                run['per_core_steps'] == {'0': 3059757, '1': 11181},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (601880 @ 0x6069540, GPCNT_CON read in the OS-tick '
-                'cascade after the route-CB P3_ANA_READ fixture)')
+                'conditional frontier stop (3070626 @ 0x606817a, the JL_CLOCK DCCK_CON0 read '
+                'in the mode-switch function after the route-CG GPCNT readback projection '
+                'released the OS-tick-cascade task read and the W1[0] timeout window ran)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 601880, 'tested_b79': 601880, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x6069540', 'b': '0x6069540', 'same': True} and
+    require(parity['steps'] == {'official': 3070626, 'tested_b79': 3070626, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x606817a', 'b': '0x606817a', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['kind'] == 'unknown_gpcnt_configuration_bits' and
+            parity['stop_record']['a']['kind'] == 'unmapped_memory' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
             'identical conditional frontier stop')

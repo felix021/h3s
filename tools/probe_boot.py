@@ -507,6 +507,24 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     target=self.R[raw['x']]
                     if isinstance(target,UnknownWord):target.consumed()
                     if isinstance(target,IcfgValue):target.concrete()
+                if hardware is not None and hardware.gpcnt is not None and hardware.gpcnt.readback_projection:
+                    # 路 CG:GPCNT_CON 读回投影的装载拦截(gpio_out_readback 同款
+                    # 结构——普通 MMIO 装载走 struct.pack 会把部分值对象 int 化,
+                    # 必须直接落寄存器;RMW 路径 1156 一带不变)。只拦 0xfd1100
+                    # (CON);NUM(+4)不经 handles_gpcnt,维持严格停。
+                    kind=insn.id
+                    if kind in ('ld.w','ld.w.l','ld.w.sp','ld.w.idxs','ld.w.idx'):
+                        op=module.check.operands(insn,raw)
+                        if kind=='ld.w':address=self.R[op['b']]+op['n'];dest=op['d']
+                        elif kind=='ld.w.l':address=self.R[op['s']]+op['n'];dest=op['r']
+                        elif kind=='ld.w.sp':address=self.sp+op['n'];dest=op['r']
+                        elif kind=='ld.w.idxs':address=self.R[op['s']]+(self.R[op['t']]<<2);dest=op['r']
+                        else:address=self.R[op['s']]+self.R[op['t']];dest=op['r']
+                        address&=0xffffffff
+                        if hardware.handles_gpcnt(address):
+                            self.R[dest]=hardware.gpcnt.read()
+                            self.finish_exact(self.pc+size);adapters['gpcnt_con_readback_load']+=1
+                            return
                 if machine.gpio_out_readback:
                     kind=insn.id;op=module.check.operands(insn,raw)
                     if kind in ('ld.w','ld.w.l','ld.w.sp','ld.w.idxs','ld.w.idx'):

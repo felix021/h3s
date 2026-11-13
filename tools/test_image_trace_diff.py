@@ -179,11 +179,16 @@ def test_scenario_registry_shapes():
     # ldoin_low 具名常量 fixture(SDK charge_hw.h bit1=LVCMP_DET/bit2=
     # LDO5V_DET+charge.c 阈值+无外部供电锚)放行首读,L5V/CHG_CON2 计算寻址
     # 面并入 tail 容器,core tick 首溢出真实交付+14 次交付延期,OS tick 级联
-    # 带进 GPCNT_CON 读——601,880 @ unknown_gpcnt_configuration_bits。
+    # 带进 GPCNT_CON 读,601,880 @ unknown_gpcnt_configuration_bits。路 CG:
+    # gpcnt_con_readback 位粒度读回投影放行该读(bit0=0 真实跳过分支,任务 9
+    # 次调度全空手返回),W1[0] 20 轮超时路径全预算执行,core tick 交付合计 9
+    # 次,超时后进 mode 切换函数 0x6068152——3,070,626 @ 0x606817a 读
+    # JL_CLOCK->DCCK_CON0 0xfd0008 停(路 CC 预研钉死的 JL 时钟族)。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 601880, 'stop_pc': '0x6069540',
-        'stop_fields': {'kind': 'unknown_gpcnt_configuration_bits',
-                        'known_mask': '0x81'}}
+        'completed_steps': 3070626, 'stop_pc': '0x606817a',
+        'stop_fields': {'kind': 'unmapped_memory', 'access': 'read',
+                        'address': '0xfd0008', 'size': 4,
+                        'reference_sdk_register': None}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000

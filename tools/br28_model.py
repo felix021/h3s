@@ -773,10 +773,73 @@ class CoreTickStopped:
                 'counter_projection':'PRD+1 from SDK formula; no inferred core-held clock gating or physical phase'}
 
 
+class GpcntConValue:
+    """Partial GPCNT CON word returned by the opt-in read-back projection.
+
+    Only bits the guest's own RMW writes made known are known (GpioOutValue
+    partial-latch family). A bitwise AND with a mask that covers every unknown
+    bit yields a plain int — the AND forces every masked-off bit to a known
+    zero — so single-bit predicates (beq.and.ri / bne.and.ri) decide on known
+    bits alone; any other consumption stops instead of fabricating bits.
+    """
+    __slots__=('value','known')
+
+    def __init__(self,value,known):
+        self.known=known&0xffffffff;self.value=value&self.known
+
+    def __and__(self,mask):
+        mask&=0xffffffff
+        if (self.known|(~mask&0xffffffff))==0xffffffff:return self.value&mask
+        self.consumed()
+
+    def __rand__(self,mask):return self.__and__(mask)
+
+    def consumed(self,*args,**kwargs):
+        raise Blocked('gpcnt_con_readback_consumed',known_mask=hex(self.known),
+                      known_value=hex(self.value))
+
+    def concrete(self):
+        if self.known!=0xffffffff:self.consumed()
+        return self.value
+
+    __int__=__index__=concrete
+    def __float__(self):return float(self.concrete())
+    def __bool__(self):return bool(self.concrete())
+    def __hash__(self):return hash(self.concrete())
+    def __neg__(self):return -self.concrete()
+    def __pos__(self):return self.concrete()
+    def __invert__(self):return ~self.concrete()
+
+    def __repr__(self):return 'GpcntConValue'
+
+
+def _gpcnt_con_binary(operation,reverse=False):
+    def apply(self,other):
+        lhs=self.concrete();rhs=other.concrete() if isinstance(other,GpcntConValue) else other
+        return operation(rhs,lhs) if reverse else operation(lhs,rhs)
+    return apply
+
+
+for _name,_operation in (('eq',operator.eq),('ne',operator.ne),('lt',operator.lt),('le',operator.le),
+        ('gt',operator.gt),('ge',operator.ge),('or',operator.or_),('xor',operator.xor),
+        ('add',operator.add),('sub',operator.sub),('mul',operator.mul),('lshift',operator.lshift),
+        ('rshift',operator.rshift),('truediv',operator.truediv),('floordiv',operator.floordiv),
+        ('mod',operator.mod),('pow',operator.pow)):
+    setattr(GpcntConValue,'__'+_name+'__',_gpcnt_con_binary(_operation))
+    if _name not in ('eq','ne','lt','le','gt','ge'):
+        setattr(GpcntConValue,'__r'+_name+'__',_gpcnt_con_binary(_operation,True))
+
+
 class GPCNTCleanup:
     """Only the observed disable/clear path; unknown neighbouring bits stay so."""
-    def __init__(self):
+    def __init__(self,readback_projection=False):
         self.bits=PartialWord();self.pending=None;self.disable_writes=0;self.clear_writes=0
+        # con_readback_projection(opt-in,需 gpcnt_cleanup_projection,路 CG):
+        # GPCNT_CON(0xfd1100,SDK br28.h JL_GPCNTTypeDef CON __RW/NUM __RO)读回
+        # =固件自己已执行写出的位粒度已知状态(lp_timer/fd31 CON「读回=最后
+        # 写值」先例的位粒度变体——本前缀 CON 只有 disable/clear 两个位 RMW,
+        # 无整字写,故返回部分值对象而非整数)。未知位消费诚实停,绝不臆造。
+        self.readback_projection=readback_projection;self.con_reads=0
 
     def rmw(self,kind,operand):
         if kind=='and' and operand&0xffffffff==0xfffffffe:
@@ -787,13 +850,39 @@ class GPCNTCleanup:
         else:raise Blocked('gpcnt_counting_or_configuration_not_modeled',operation=kind,operand=hex(operand&0xffffffff))
 
     def read(self):
+        if self.readback_projection and self.bits.known:
+            # 读回=固件自己写出的已知位(bit0=0 由 app 的 &=0xFFFFFFFE 强制,
+            # bit7=0 由 |=0x40 后的立即清投影)。本前缀唯一读者=任务 0x6069538
+            # 的 bit0 使能判定(beq.and.ri,AND 掩码把其余位强制为已知 0 → 单
+            # bit 谓词可判);任何未知位消费经 GpcntConValue 诚实停。
+            self.con_reads+=1
+            return GpcntConValue(self.bits.value,self.bits.known)
         raise Blocked('unknown_gpcnt_configuration_bits',known_mask=hex(self.bits.known))
 
     def report(self):
-        return {'known_value':hex(self.bits.value),'known_mask':hex(self.bits.known),'pending':self.pending,
+        result={'known_value':hex(self.bits.value),'known_mask':hex(self.bits.known),'pending':self.pending,
                 'disable_writes':self.disable_writes,'clear_writes':self.clear_writes,
                 'pending_clear_is_immediate_projection':True,
                 'counting_or_prior_bootloader_state_simulated':False,'command_bit6_readback_proven':False}
+        if self.readback_projection:
+            # 仅投影开启时加键:clock 场景族的 gpcnt 子报告字节不变。
+            result['con_readback_projection']={
+                'address':hex(GPCNT_CON),'reads':self.con_reads,
+                'known_mask':hex(self.bits.known),'known_value':hex(self.bits.value),
+                'readback_semantics':('bit-granular last-firmware-write state; br28.h marks '
+                    'JL_GPCNT CON __RW, and the only executed writers in the whole app+ROM are the '
+                    'disable (&=0xFFFFFFFE -> bit0=0) and clear (|=0x40, immediate pending-clear '
+                    'projection -> bit7=0) RMW pair, so the readback returns exactly the bits the '
+                    'guest itself forced; unknown bits are never fabricated — a GpcntConValue only '
+                    'answers bitwise-AND tests whose mask covers every unknown bit (the AND forces '
+                    'masked-off bits to zero), mirroring the GpioOutValue partial-latch transport '
+                    'and the ICFG partial-value doctrine (partial numeric consumers stop)'),
+                'first_consumer':('task 0x6069538 @ 0x6069540: beq.and.ri bit0 enable gate; bit0=0 '
+                    '(disabled by the firmware\'s own early cleanup) takes the real skip branch to '
+                    'the epilogue at 0x60695fa — no NUM read, no bit7 poll, matching the disabled '
+                    'counter the firmware itself left behind'),
+                'count_readback_proven':False,'not_a_timing_model':True}
+        return result
 
 
 class EfuseReadProjection:
@@ -2637,7 +2726,7 @@ class BR28Model:
                  lrct_trim_result_value=None,lp_timer_con_readback_projection=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
-                 gpcnt_cleanup_projection=False,core_tick_configuration=False,
+                 gpcnt_cleanup_projection=False,gpcnt_con_readback=False,core_tick_configuration=False,
                  cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  p33_analog_config_projection=False,
@@ -2749,7 +2838,14 @@ class BR28Model:
         self.efuse=EfuseReadProjection(efuse_words) if efuse_read_projection else None
         self.oscillator_configuration_projection=oscillator_configuration_projection
         self.oscillator_status_word=oscillator_status_word
-        self.gpcnt=GPCNTCleanup() if gpcnt_cleanup_projection else None
+        # gpcnt_con_readback(路 CG,opt-in,需 gpcnt_cleanup_projection):
+        # GPCNT_CON 读回=位粒度「最后固件写」投影(返回部分值对象)。必须叠在
+        # cleanup 投影上——没有 disable/clear RMW 的位记录就没有可回读的已知
+        # 位。默认关:读回保持 Blocked(unknown_gpcnt_configuration_bits,
+        # 601,880 前沿形状)。
+        if gpcnt_con_readback and not gpcnt_cleanup_projection:
+            raise ValueError('the GPCNT CON readback projection requires the cleanup projection')
+        self.gpcnt=GPCNTCleanup(readback_projection=gpcnt_con_readback) if gpcnt_cleanup_projection else None
         if initial_core_tick_controls is not None and len(initial_core_tick_controls)!=2:raise ValueError('need two explicit core tick controls')
         if core_tick_progress is not None and len(core_tick_progress)!=2:raise ValueError('need explicit progress for two core ticks')
         self.core_ticks=[CoreTickStopped(value,rate) for value,rate in zip(initial_core_tick_controls or (None,None),
