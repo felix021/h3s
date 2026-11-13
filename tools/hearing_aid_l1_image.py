@@ -10,6 +10,15 @@ self-contained appended segment (docs/hearing-aid-l1-payload.md §2/§3/§9):
     the real appended-slot address, the only layout-dependent constant);
   - tools/hearing-aid/mic_effect_hook.S  — the two TRANS-branch replay stubs.
 
+Route Y / sim-l1closeimg (2026-11-14) adds the close direction
+(--hearing-aid-l1-close, implies --hearing-aid-l1-patch;
+docs/hearing-aid-l1-payload.md §10/§11):
+
+  - tools/hearing-aid/mic_effect_close.S — the route-X close payload
+    (20 insns / 64B, idempotent: slot==0 -> early return 0 -> stop(0) ->
+    release -> clear slot -> event_notify(11, "mic_effect"));
+  - tools/hearing-aid/mic_effect_close_hook.S — the four ON/OFF leave stubs.
+
 Implant edits, all byte-asserted against the official 0.1.1.8 layout:
   1. append a JLFS file at the same geometry as the EQ payload precedent
      (header at flash 0xE5073, 0xff marker, code at runtime 0x060E3074,
@@ -17,10 +26,15 @@ Implant edits, all byte-asserted against the official 0.1.1.8 layout:
   2. replace the two 8B TRANS windows (0x0600dc7e / 0x0600dca4, each exactly
      `call 0x0600c2aa; r0=[r0+116]`, the only branch landing there is the
      pinned TRANS branch) with `r6=<stub>; goto r6`;
-  3. extend the debug_init LIM_PC0 upper-limit immediate at 0x06034e98 from
+  3. close variant: also replace the four 8B ON/OFF windows (ON-1 0x0600db9a /
+     OFF-1 0x0600dc74 / ON-2 0x0600dbc4 / OFF-2 0x0600dc9a, each exactly
+     `call 0x0600c2aa` + the ON(+112)/OFF(+120) apply-slot load) the same
+     way — leaving transparency (either chain) first closes the hearing
+     aid, then replays the original slot load and returns at window+8;
+  4. extend the debug_init LIM_PC0 upper-limit immediate at 0x06034e98 from
      0x060c3338 to the appended-file end (route O proved the stock fence
      rejects payload fetches);
-  4. the caller then re-runs the JLFS/app-area/boot-info/UFW CRC chain.
+  5. the caller then re-runs the JLFS/app-area/boot-info/UFW CRC chain.
 
 UNTESTED offline candidate. Never flashed; the ANC-key loop where the hooks
 live has not been reached by any simulation frontier.
@@ -55,20 +69,60 @@ WINDOWS = [
     ('A', 0x0600dc7e, bytes.fromhex('bfea14f3d0ec0407'), 0x0600dc8c),
     ('B', 0x0600dca4, bytes.fromhex('bfea01f3d0ec0407'), 0x0600dcd2),
 ]
+ANC_CTX_GET = 0x0600c2aa        # pure-read leaf: writes r0-r2 only
+# Route-Y leave windows (§10.5): (tag, start, original 8B, mode-slot offset,
+# stub label). Entry is the pinned mode branch (OFF) or plain fall-through
+# (ON); the full-app branch-landing scan found no landing inside any window
+# and the pop at 0x0600dc98 (4 live early-exit landings) stays outside.
+CLOSE_WINDOWS = [
+    ('ON-1', 0x0600db9a, bytes.fromhex('bfea86f3d0ec0007'), 112, 'leave_on1'),
+    ('OFF-1', 0x0600dc74, bytes.fromhex('bfea19f3d0ec0807'), 120, 'leave_off1'),
+    ('ON-2', 0x0600dbc4, bytes.fromhex('bfea71f3d0ec0057'), 112, 'leave_on2'),
+    ('OFF-2', 0x0600dc9a, bytes.fromhex('bfea06f3d0ec0807'), 120, 'leave_off2'),
+]
 STUB_INSN_IDS = ['li.u32', 'call.r', 'ld.w.l', 'mov.rr', 'li.u32',
                  'call.r', 'call.s', 'li.u32', 'goto.r']
+LEAVE_INSN_IDS = ['li.u32', 'call.r', 'ld.w.l', 'call.s', 'mov.rr',
+                  'li.u32', 'goto.r']
+LEAVE_ON2_INSN_IDS = ['li.u32', 'call.r', 'ld.w.l', 'call.s', 'li.u32',
+                      'call.r', 'li.u32', 'goto.r']
 PAYLOAD_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open.S'
 HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_hook.S'
+CLOSE_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close.S'
+CLOSE_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close_hook.S'
 
 
-def _compose(slot):
-    """Concatenate payload source (slot-patched) + hook stubs into one text."""
-    text = PAYLOAD_SOURCE.read_text()
+def _patch_slot(text, slot):
     patched = re.sub(r'\.equ MIC_EFX_SLOT, 0x[0-9a-fA-F]+',
                      f'.equ MIC_EFX_SLOT, 0x{slot:x}', text, count=1)
     if patched == text:
         raise ValueError('MIC_EFX_SLOT equ not found for patching')
-    return patched + HOOK_SOURCE.read_text()
+    return patched
+
+
+def _strip_close_section(text):
+    """Drop the close payload's own .section line so it joins the open segment.
+
+    Route X's source stays byte-identical (its standalone test assembles it
+    with its own section); the composed segment must stay ONE section.
+    """
+    m = re.search(r'^[ \t]*\.section[ \t]+\.text\.mic_effect_close.*$\n?',
+                  text, re.M)
+    if m is None:
+        raise ValueError('close payload section directive not found')
+    stripped = text[:m.start()] + text[m.end():]
+    if '.section' in stripped:
+        raise ValueError('unexpected extra .section in close payload')
+    return stripped
+
+
+def _compose(slot, close_hooks=False):
+    """Concatenate payload source (slot-patched) + hook stubs into one text."""
+    text = _patch_slot(PAYLOAD_SOURCE.read_text(), slot)
+    if close_hooks:
+        text += _strip_close_section(_patch_slot(CLOSE_SOURCE.read_text(), slot))
+    return text + HOOK_SOURCE.read_text() + \
+        (CLOSE_HOOK_SOURCE.read_text() if close_hooks else '')
 
 
 def _assemble(text):
@@ -79,31 +133,34 @@ def _assemble(text):
     return obj, sections[0][1]
 
 
-def assemble_segment():
+def assemble_segment(close_hooks=False):
     """Assemble payload+stubs at PAYLOAD_ADDRESS with the real slot address.
 
-    Two passes: the section length is layout-stable (test_hearing_aid_payload
-    proves only the two slot li.u32 immediates depend on the slot value), so
-    pass 1 measures the length and pass 2 bakes slot = base + length. Returns
-    a report dict with bytes, entry offsets and the disassembly.
+    Two passes: the section length is layout-stable (test_hearing_aid_payload /
+    test_hearing_aid_close_payload prove only the slot li.u32 immediates depend
+    on the slot value), so pass 1 measures the length and pass 2 bakes
+    slot = base + length. Returns a report dict with bytes, entry offsets and
+    the disassembly.
     """
-    _, first = _assemble(_compose(PAYLOAD_ADDRESS))
+    _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks))
     slot = PAYLOAD_ADDRESS + len(first)
-    obj, code = _assemble(_compose(slot))
+    obj, code = _assemble(_compose(slot, close_hooks))
     if len(code) != len(first):
         raise ValueError('slot immediate changed the section layout')
     diffs = [i for i, (a, b) in enumerate(zip(first, code)) if a != b]
     if any(code[i] == first[i] for i in diffs) or not diffs:
         raise ValueError('expected slot-only byte differences between passes')
-    symbols = {s.name: s.value for s in obj.symbols
-               if s.name in ('mic_effect_open', 'trans_branch_1', 'trans_branch_2')}
-    stub_offsets = []
-    for name in ('trans_branch_1', 'trans_branch_2'):
-        off = symbols.get(name)
-        if off is None or not 0 < off < len(code):
-            raise ValueError(f'missing section-relative symbol {name}')
-        stub_offsets.append(off)
-    if symbols.get('mic_effect_open') != 0:
+    names = ['mic_effect_open', 'trans_branch_1', 'trans_branch_2']
+    if close_hooks:
+        names += ['mic_effect_close'] + [w[4] for w in CLOSE_WINDOWS]
+    symbols = {s.name: s.value for s in obj.symbols if s.name in names}
+    if len(symbols) != len(names):
+        raise ValueError(f'missing section symbols: {set(names) - set(symbols)}')
+    stub_offsets = [symbols[n] for n in ('trans_branch_1', 'trans_branch_2')]
+    for name, off in symbols.items():
+        if name != 'mic_effect_open' and not 0 < off < len(code):
+            raise ValueError(f'symbol {name} out of segment')
+    if symbols['mic_effect_open'] != 0:
         raise ValueError('mic_effect_open must open the segment')
     listing = []
     for addr, insn_id, text, raw in ASM.disassemble(code, PAYLOAD_ADDRESS):
@@ -114,7 +171,8 @@ def assemble_segment():
         insn, values, length = ASM.decode(code, addr - PAYLOAD_ADDRESS)
         if ASM.encode(insn_id, **values) != raw:
             raise ValueError(f're-encode differs at {addr:#x} ({text})')
-    report = {'payload_bytes': stub_offsets[0], 'stub_bytes': len(code) - stub_offsets[0],
+    report = {'variant': 'open+close' if close_hooks else 'open',
+              'payload_bytes': stub_offsets[0], 'stub_bytes': len(code) - stub_offsets[0],
               'code_bytes': len(code), 'slot_address': f'0x{slot:08x}',
               'segment_start': f'0x{PAYLOAD_ADDRESS:08x}',
               'segment_end_runtime': f'0x{PAYLOAD_ADDRESS + len(code) + 4:08x}',
@@ -122,26 +180,39 @@ def assemble_segment():
               'stub_2_address': f'0x{PAYLOAD_ADDRESS + stub_offsets[1]:08x}',
               'code_sha256': hashlib.sha256(code).hexdigest(),
               'slot_diff_offsets': diffs, 'listing': listing}
-    _verify_semantics(code, stub_offsets, slot, report)
+    if close_hooks:
+        report['close_address'] = f'0x{PAYLOAD_ADDRESS + symbols["mic_effect_close"]:08x}'
+        report['leave_stub_addresses'] = {
+            tag: f'0x{PAYLOAD_ADDRESS + symbols[label]:08x}'
+            for tag, _a, _b, _s, label in CLOSE_WINDOWS}
+    _verify_semantics(code, stub_offsets, slot, report, close_hooks)
     return report, code, slot
 
 
-def _verify_semantics(code, stub_offsets, slot, report):
+def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False):
     """Decode-level assertions: stub shape, every pinned firmware target."""
     insns = list(ASM.disassemble(code, PAYLOAD_ADDRESS))
     by_off = {a - PAYLOAD_ADDRESS: (iid, t, raw) for a, iid, t, raw in insns}
-    # payload part: first 134B == the route-L payload assembled alone
-    standalone_text = re.sub(r'\.equ MIC_EFX_SLOT, 0x[0-9a-fA-F]+',
-                             f'.equ MIC_EFX_SLOT, 0x{slot:x}',
-                             PAYLOAD_SOURCE.read_text(), count=1)
-    _, standalone = _assemble(standalone_text)
-    if code[:len(standalone)] != standalone:
+    # payload part: first bytes == the route-L payload assembled alone, then
+    # (close variant) the route-X close payload assembled alone.
+    standalone_open = _assemble(_patch_slot(PAYLOAD_SOURCE.read_text(), slot))[1]
+    if code[:len(standalone_open)] != standalone_open:
         raise ValueError('composed segment prefix != standalone route-L payload')
     report['payload_prefix_matches_route_L'] = True
+    if close_hooks:
+        standalone_close = _assemble(
+            _patch_slot(CLOSE_SOURCE.read_text(), slot))[1]
+        close_off = len(standalone_open)
+        if code[close_off:close_off + len(standalone_close)] != standalone_close:
+            raise ValueError('composed close payload != standalone route-X payload')
+        report['close_payload_matches_route_X'] = True
     # stubs: exact instruction-shape + absolute firmware targets
     epi = {'A': WINDOWS[0][3], 'B': WINDOWS[1][3]}
+    stub_b_end = len(code)
+    if close_hooks:
+        stub_b_end = int(report['leave_stub_addresses']['ON-1'], 16) - PAYLOAD_ADDRESS
     for tag, stub_off, other in (('A', stub_offsets[0], stub_offsets[1]),
-                                 ('B', stub_offsets[1], len(code))):
+                                 ('B', stub_offsets[1], stub_b_end)):
         end = other
         shape = [by_off[o][0] for o in range(stub_off, end) if o in by_off]
         if shape != STUB_INSN_IDS:
@@ -154,33 +225,95 @@ def _verify_semantics(code, stub_offsets, slot, report):
         if m is None:
             raise ValueError(f'stub {tag} internal call does not decode: {t}')
         target = PAYLOAD_ADDRESS + call_off + len(raw) + int(m.group(1))
-        if (loads[:2] != [0x0600c2aa, 0x0600dae4] or loads[2] != epi[tag]
+        if (loads[:2] != [ANC_CTX_GET, 0x0600dae4] or loads[2] != epi[tag]
                 or iid != 'call.s' or target != PAYLOAD_ADDRESS):
             raise ValueError(f'stub {tag} targets mismatch: loads={loads} call={t} target={target:#x}')
+    if close_hooks:
+        _verify_leave_stubs(code, by_off, report)
     # slot loads/stores in the payload part resolve to the real slot address
+    # (open: guard + record; close: guard + clear — both load r0 = slot)
+    expected_loads = [slot] * (4 if close_hooks else 2)
     slot_loads = [int(t.split('= ')[1]) for o, (iid, t, raw) in sorted(by_off.items())
                   if iid == 'li.u32' and o < stub_offsets[0] and t.startswith('r0 = ')]
-    if slot_loads != [slot, slot]:
+    if slot_loads != expected_loads:
         raise ValueError(f'slot immediates mismatch: {slot_loads}')
 
 
-def apply_l1_patch(flash):
-    """Apply the four implant edits to the decrypted flash image in place.
+def _verify_leave_stubs(code, by_off, report):
+    """The four ON/OFF leave stubs (§10.5): shape + every firmware target."""
+    stubs = sorted(((tag, int(report['leave_stub_addresses'][tag], 16)
+                     - PAYLOAD_ADDRESS, address, mode_slot)
+                    for tag, address, _orig, mode_slot, _label in CLOSE_WINDOWS),
+                   key=lambda t: t[1])
+    close_off = int(report['close_address'], 16) - PAYLOAD_ADDRESS
+    for index, (tag, stub_off, address, mode_slot) in enumerate(stubs):
+        end = stubs[index + 1][1] if index + 1 < len(stubs) else len(code)
+        shape = [by_off[o][0] for o in range(stub_off, end) if o in by_off]
+        expected_shape = LEAVE_ON2_INSN_IDS if tag == 'ON-2' else LEAVE_INSN_IDS
+        if shape != expected_shape:
+            raise ValueError(f'leave stub {tag} shape mismatch: {shape}')
+        loads = [int(by_off[o][1].split('= ')[1])
+                 for o in range(stub_off, end) if o in by_off and by_off[o][0] == 'li.u32']
+        ret = address + 8        # original 2B merge goto / the 0x0600bbba call
+        expected_loads = ([ANC_CTX_GET, ANC_CTX_GET, ret] if tag == 'ON-2'
+                          else [ANC_CTX_GET, ret])
+        if loads != expected_loads:
+            raise ValueError(f'leave stub {tag} loads mismatch: {loads}')
+        # replayed mode-slot load keeps the original displacement
+        ld_text = by_off[stub_off + 6 + 2][1]
+        m = re.search(r'r5 = \[r0\+(\d+)\]', ld_text)
+        if m is None or int(m.group(1)) != mode_slot:
+            raise ValueError(f'leave stub {tag} slot load mismatch: {ld_text}')
+        # internal call reaches the close payload entry
+        call_off = stub_off + 6 + 2 + 4
+        iid, t, raw = by_off[call_off]
+        m = re.search(r'call (-?\d+)$', t)
+        if m is None or iid != 'call.s':
+            raise ValueError(f'leave stub {tag} internal call does not decode: {t}')
+        target = PAYLOAD_ADDRESS + call_off + len(raw) + int(m.group(1))
+        if target != PAYLOAD_ADDRESS + close_off:
+            raise ValueError(f'leave stub {tag} calls {target:#x}, not the close payload')
 
-    Returns the report dict (incl. new_app_end for the caller's SFC/boot-info
-    pass). Per-site byte assertions keep this valid with or without the ANC
-    two-state table change, which edits one unrelated app.bin byte first.
+
+def apply_l1_patch(flash, close_hooks=False):
+    """Apply the implant edits to the decrypted flash image in place.
+
+    close_hooks=True builds the open+close segment (route Y) and additionally
+    replaces the four ON/OFF leave windows. Returns the report dict (incl.
+    new_app_end for the caller's SFC/boot-info pass). Per-site byte assertions
+    keep this valid with or without the ANC two-state table change, which
+    edits one unrelated app.bin byte first.
     """
-    segment, code, slot = assemble_segment()
+    segment, code, slot = assemble_segment(close_hooks)
     end = OLD_APP_END + 32 + 1 + len(code) + 4      # header + 0xff + code + slot
     if end > len(flash) or any(v != 255 for v in flash[OLD_APP_END:end]):
         raise ValueError('non-padding bytes at the L1 append location')
     hooks = []
-    for index, (tag, address, original, _epilogue) in enumerate(WINDOWS, start=1):
+    # one uniform window spec: (tag, address, original 8B, stub address text,
+    # replaced-instruction description, only-incoming-branch note)
+    specs = [
+        ('A', WINDOWS[0][1], WINDOWS[0][2], segment['stub_1_address'],
+         'call 0x0600c2aa; r0=[r0+116] (TRANS apply fetch)',
+         '0x0600db92 (TRANS)'),
+        ('B', WINDOWS[1][1], WINDOWS[1][2], segment['stub_2_address'],
+         'call 0x0600c2aa; r0=[r0+116] (TRANS apply fetch)',
+         '0x0600dbbc (TRANS)'),
+    ]
+    if close_hooks:
+        incoming = {'ON-1': 'none (plain fall-through)',
+                    'ON-2': 'none (plain fall-through)',
+                    'OFF-1': '0x0600db8e (mode==1)', 'OFF-2': '0x0600dbb8 (mode==1)'}
+        for tag, address, original, mode_slot, _label in CLOSE_WINDOWS:
+            reg = 'r5' if tag == 'ON-2' else 'r0'    # original load target
+            specs.append((tag, address, original,
+                          segment['leave_stub_addresses'][tag],
+                          f'call 0x0600c2aa; {reg}=[r0+{mode_slot}] '
+                          f'({"ON" if mode_slot == 112 else "OFF"} apply fetch)',
+                          incoming[tag]))
+    for tag, address, original, stub_text, replaced, incoming_note in specs:
         position = APP_DATA + address - APP_BASE
         if flash[position:position + 8] != original:
             raise ValueError(f'hook window {tag} bytes changed')
-        stub_text = segment[f'stub_{index}_address']
         stub = int(stub_text, 16)
         window = ASM.encode('li.u32', r=6, n=stub) + ASM.encode('goto.r', x=6)
         got = list(ASM.disassemble(window, address))
@@ -188,12 +321,11 @@ def apply_l1_patch(flash):
             raise ValueError(f'hook window {tag} replacement does not decode')
         flash[position:position + 8] = window
         hooks.append({'window': tag, 'runtime_address': f'0x{address:08x}',
+                      'stub_address': stub_text,
                       'before': original.hex(), 'after': window.hex(),
-                      'replaced_instructions':
-                          'call 0x0600c2aa; r0=[r0+116] (TRANS apply fetch)',
+                      'replaced_instructions': replaced,
                       'replacement': f'r6={stub_text}; goto r6',
-                      'only_incoming_branch': '0x0600db92 (TRANS)' if tag == 'A'
-                      else '0x0600dbbc (TRANS)'})
+                      'only_incoming_branch': incoming_note})
     fence_position = APP_DATA + FENCE_SITE - APP_BASE
     if flash[fence_position:fence_position + 6] != FENCE_ORIGINAL:
         raise ValueError('LIM_PC0 upper-limit instruction changed')
@@ -272,8 +404,7 @@ def verify_l1_image(result, source, flash_pos, original_plain, plain, l1):
         position = APP_DATA + address - APP_BASE
         window = plain[position:position + 8]
         decoded = list(ASM.disassemble(window, address))
-        stub_addr = int(l1['stub_1_address'] if hook['window'] == 'A'
-                        else l1['stub_2_address'], 16)
+        stub_addr = int(hook['stub_address'], 16)
         if ([d[1] for d in decoded] != ['li.u32', 'goto.r']
                 or decoded[0][2] != f'r6 = {stub_addr}'
                 or decoded[1][2] != 'goto r6'):

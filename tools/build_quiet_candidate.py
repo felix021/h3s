@@ -229,6 +229,9 @@ def main():
     p.add_argument("--hearing-aid-l1-patch", action="store_true",
                    help="辅听 L1 离线候选：追加 mic_effect 激活载荷 + ANC 通透档接驳 + PC fence 扩界；"
                         "不可与 --eq-toggle-elf 同用（追加区冲突）；候选 UNTESTED 不刷机")
+    p.add_argument("--hearing-aid-l1-close", action="store_true",
+                   help="辅听 L1 双向离线候选：隐含 --hearing-aid-l1-patch，追加 close 载荷并把两条链的"
+                        " ON/OFF 落点窗口接驳为先幂等关辅听再走原 apply（离开通透即收口）；候选 UNTESTED 不刷机")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -237,6 +240,8 @@ def main():
         p.error('--eq-toggle-elf requires --anc-cycle-two-state')
     if args.eq_code_fence_repair and not args.eq_toggle_elf:
         p.error('--eq-code-fence-repair requires --eq-toggle-elf')
+    if args.hearing_aid_l1_close:
+        args.hearing_aid_l1_patch = True      # close 是同一候选族的超集（路 X 建议）
     if args.hearing_aid_l1_patch and args.eq_toggle_elf:
         p.error('--hearing-aid-l1-patch and --eq-toggle-elf append at the same flash offset')
     source = args.source.read_bytes()
@@ -333,7 +338,7 @@ def main():
     hearing_aid_l1 = None
     if args.hearing_aid_l1_patch:
         from hearing_aid_l1_image import apply_l1_patch
-        hearing_aid_l1 = apply_l1_patch(flash_plain)
+        hearing_aid_l1 = apply_l1_patch(flash_plain, close_hooks=args.hearing_aid_l1_close)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -412,7 +417,8 @@ def main():
     if args.hearing_aid_demo:
         suffix += "_HEARING_AID_DEMO"
     if hearing_aid_l1:
-        suffix += "_HEARING_AID_L1_OFFLINE"
+        suffix += "_HEARING_AID_L1_CLOSE_OFFLINE" if args.hearing_aid_l1_close \
+            else "_HEARING_AID_L1_OFFLINE"
     filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB{suffix}_UNTESTED.ufw"
     if eq_toggle:
         filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB_ANC_EQ_TOGGLE_EXPERIMENTAL.ufw"
