@@ -176,6 +176,26 @@ public class H3SBridge {
     /** 当前是否武装。 */
     @JavascriptInterface public boolean isArmed() { return armed; }
 
+    // —— 连接控制（路 AU：转发给注入的 transport；纯组帧形态无传输，返回错误）——
+    // 连接是异步的：结果经事件推送（就绪={"event":"mtu"}，失败/断开={"event":"disconnected"}）。
+
+    /** 触发传输连接（幂等）。成功返回 {"ok":true,"connecting":true}，终态看事件。 */
+    @JavascriptInterface public String connect() {
+        if (transport == null) return err("未注入传输（纯组帧形态无连接）");
+        transport.connect();
+        return put(put(new JSONObject(), "ok", true), "connecting", true).toString();
+    }
+
+    /** 断开传输（未完成帧按失败回调，页面会收到 send_failed/disconnected 事件）。 */
+    @JavascriptInterface public String disconnect() {
+        if (transport == null) return err("未注入传输（纯组帧形态无连接）");
+        transport.disconnect();
+        return put(new JSONObject(), "ok", true).toString();
+    }
+
+    /** 传输是否就绪（discover+CCCD+MTU 全到位；页面状态显示用）。 */
+    @JavascriptInterface public boolean isConnected() { return transport != null && transport.isReady(); }
+
     /**
      * 组 EQ 写命令（FF/0x22）。bandsJson 是段数组，每段 {freq:Hz, q:x100, gain:centidB, iirType}，
      * q 缺省 100（Q=1.0）、iirType 缺省 255（未指定→固件兜底 band_pass）；数值允许小数，×100 后四舍五入。

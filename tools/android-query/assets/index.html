@@ -35,9 +35,21 @@
 </head>
 <body>
 <h1>H3S 独立 App Demo</h1>
-<div class="sub">壳层纯组帧演示：调 <code>h3s.*</code> 只生成 RCSP 命令字节（hex 回显），不连接耳机。</div>
+<div class="sub">壳层组帧 + 传输接线演示：写命令经武装门控与白名单组帧，连接后经 Android BLE
+适配层（路 AU）串行下发；真机联调需授权，未连接时调 <code>h3s.*</code> 只返回组帧错误。</div>
 
 <div id="noBridge" class="warn"></div>
+
+<div class="card" id="connCard">
+  <div class="row">
+    <button id="connBtn">连接耳机</button>
+    <button id="discBtn" class="off">断开</button>
+    <span id="connState" class="state disarmed">未连接</span>
+  </div>
+  <div class="note">连接 = 扫描目标地址 → GATT → 订阅通知(CCCD) → MTU 协商，就绪后这里显示
+  实际 MTU；异步结果（response/断线/发送失败）都经 <code>onH3sEvent</code> 推送。断开后可重连。
+  目标地址由构建注入，不连任意设备。</div>
+</div>
 
 <div class="card">
   <div class="row">
@@ -113,9 +125,38 @@ function callBridge(label, fn) {
   var r;
   try { r = fn(); } catch (e) { show(label, 'bridge 异常: ' + e); return; }
   var o = JSON.parse(r);
-  if (o.ok) show(label, 'ok\nbytesHex: ' + o.bytesHex);
+  if (o.ok && o.sent) show(label, '已排队 seq=' + o.seq + ' sn=' + o.sn + '\nbytesHex: ' + o.bytesHex
+    + '\n（异步：结果见 response/send_failed 事件）');
+  else if (o.ok) show(label, 'ok\nbytesHex: ' + o.bytesHex);
   else show(label, '错误: ' + o.error);
   return o;
+}
+
+// 连接控制 + 传输事件（路 AU）：h3s.connect()/disconnect() 触发，结果全部走 onH3sEvent
+var connBtn = document.getElementById('connBtn'), discBtn = document.getElementById('discBtn');
+var connState = document.getElementById('connState');
+var hasTransport = hasBridge && typeof h3s.connect === 'function';
+function setConn(ok, text) {
+  connState.textContent = text;
+  connState.className = 'state ' + (ok ? 'armed' : 'disarmed');
+}
+if (!hasTransport) {
+  setConn(false, '无传输（旧壳/浏览器预览）');
+} else {
+  setConn(h3s.isConnected(), h3s.isConnected() ? '已连接' : '未连接');
+  connBtn.onclick = function () {
+    show('h3s.connect()', h3s.connect());
+    if (!h3s.isConnected()) setConn(false, '连接中…（结果见事件）');
+  };
+  discBtn.onclick = function () { show('h3s.disconnect()', h3s.disconnect()); };
+  window.onH3sEvent = function (e) {
+    if (e.event === 'mtu') { setConn(true, '已连接 MTU=' + e.mtu); show('event:mtu', 'MTU=' + e.mtu); }
+    else if (e.event === 'disconnected') { setConn(false, '未连接：' + (e.reason || '')); show('event:disconnected', e.reason || ''); }
+    else if (e.event === 'response') { show('response seq=' + e.seq, 'ok=' + e.ok + ' status=' + e.status
+      + ' sn=' + e.sn + '\npayloadHex: ' + (e.payloadHex || '')); }
+    else if (e.event === 'send_failed') { show('send_failed seq=' + e.seq, e.error || ''); }
+    else show('event:' + e.event, JSON.stringify(e));
+  };
 }
 
 // 武装

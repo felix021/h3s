@@ -214,6 +214,28 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 - 写回调超时/写请求被拒/队列过大/状态失效立即终止，不静默丢包/并发写。
 - 接收按 RCSP length+尾字节 `EF` 重组帧（可能跨 notify 分片）。
 
+#### Android 适配层状态（路 AU / sim-bletransport，2026-11-14，未连真机）
+
+传输抽象 `H3sTransport` + 串行通用实现 `SerialBleTransport`（Z 路）之上，真机适配层已实现并离线单测：
+
+- `AndroidBleTransport`（纯 JVM 状态机）：连接五段式（地址过滤扫描 10s 超时转直连 → connectGatt
+  TRANSPORT_LE/autoConnect=false → discover → CCCD 订阅 → requestMtu(517) 以回调实际值为准），
+  就绪=CCCD 成功 ∧ 收到 MTU 实际值（先后任意，Android 会主动回报；协商失败不致命按当前 MTU 就绪）；
+  初始化失败重试 2 次退避 1s，30s 看门狗；READY 后意外断线 markNotReady 不自动重连。写路径全部
+  复用 SerialBleTransport（帧级+片级串行、10ms 片间隔、RcspDeframer 重组），`doWriteChunk` 只粘
+  GATT；片写回调 5s 缺失断链（照 UpgradeService writeTimeout 先例）。写类型按特征属性自适应
+  （含 WRITE→WRITE_TYPE_DEFAULT，只含 WRITE_NO_RESPONSE→NO_RESPONSE，H3S 实测属性 4）。
+- `AndroidGattLink`：R3 传输链唯一接触 android.bluetooth 的文件（照 MainActivity/UpgradeService
+  实测先例；回调统一过主线程；目标地址只认构建注入的 DeviceConfig.ADDRESS，扫描也按地址过滤）。
+- `TransportContractTest`：接口级契约测试，同一套断言跑 LoopbackTransport 与
+  AndroidBleTransport+假 Link（BluetoothGatt 收敛成 Link 最小接口注入 mock）——分片序列
+  =BlePacketizer、通知重组、串行顺序、错误传播、断线重连、定时值（10s/30s/5s/10ms/5s）。
+- **不需要单独的 GATT 操作队列**：Android「一次一个 in-flight GATT 操作」的限制由两层覆盖——
+  写路径的帧级/片级串行（SerialBleTransport，等回调再发下一个）+ 连接期操作天然链式
+  （discover→CCCD→MTU 每步只在前一步回调后发起），再造一个 BleOperationQueue 是重复。
+- **未连真机**（红线）：真机行为（回调时序/栈特异性/setter 响应载荷）待授权联调，顺序照
+  tools/android-query/README.md 清单第 9/10 条。
+
 ### 4.4 待补齐 / 未钉清单（如实标注）
 
 1. **0x22 EQ 载荷精确字节布局**：仓库只钉到「3B 头 + 每段 7B + 字段名」，未钉各字段字节宽/
@@ -245,4 +267,6 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
   无钳、唯一 −90dB 下限、exp_float 上限 +269/+538dB）。
 - 复用面：tools/android-query/README.md（构建/权限/门槛）、docs/ota.md（MTU 247/244B 分片/单写
   串行/10ms 间隔）、AGENTS.md 技术不变量 6（MTU247=GATT244、等写回调、10ms 间隔、522B=3 片）。
+- Android 适配层：tools/android-query/（AndroidBleTransport/AndroidGattLink/TransportContractTest，
+  §4.3「Android 适配层状态」）。
 - 验证：`python3 tools/check_local.py --units` exit 0（本路自验）。
