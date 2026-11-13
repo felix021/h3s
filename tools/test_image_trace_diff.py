@@ -175,14 +175,15 @@ def test_scenario_registry_shapes():
         'completed_steps': 289849, 'stop_pc': '0x60679ba',
         'stop_fields': {'kind': 'unmapped_memory', 'address': '0xf27f4b'}}
     # 路 BY:PND 完成投影折叠 80 次轮询、RES 具名 fixture 放行采样事务,
-    # Timer0 到期重排后首个合格到期经路 BE 交付层 14 次真实 IRQ4 往返,
-    # core tick 未溢出(停点在 447,490 地标前 ~107 步),尾段 W1[0] 跑过
-    # P3_CHG_CON0 RMW(BV 投影)后停在 P3_ANA_READ 模拟量轮询读
-    # (447,383 @ 0x6012f22,BV 钉住的红线——RES 同款)。
+    # 前沿 447,383 @ P3_ANA_READ 首读(BV 钉住的红线)。路 CB:p3_ana_read_
+    # ldoin_low 具名常量 fixture(SDK charge_hw.h bit1=LVCMP_DET/bit2=
+    # LDO5V_DET+charge.c 阈值+无外部供电锚)放行首读,L5V/CHG_CON2 计算寻址
+    # 面并入 tail 容器,core tick 首溢出真实交付+14 次交付延期,OS tick 级联
+    # 带进 GPCNT_CON 读——601,880 @ unknown_gpcnt_configuration_bits。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 447383, 'stop_pc': '0x6012f22',
-        'stop_fields': {'kind': 'p3_ana_read_not_modeled',
-                        'address': '0xf2c064'}}
+        'completed_steps': 601880, 'stop_pc': '0x6069540',
+        'stop_fields': {'kind': 'unknown_gpcnt_configuration_bits',
+                        'known_mask': '0x81'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000

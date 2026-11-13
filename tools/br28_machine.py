@@ -91,6 +91,10 @@ class DualCoreMachine:
         # 投影 + 可选入口银行假设 + 对称一次性 RTI,全部 opt-in 默认关。
         require(isinstance(timer0_irq_entry,bool),'Timer0 IRQ4 entry projection is opt-in boolean')
         self.timer0_irq_entry=timer0_irq_entry;self.timer0_irq_deliveries=[]
+        # 路 CB:在途 handler 期间到达的交付请求延期簿记(挂起不丢弃,handler
+        # RTI 后的下个 advance 以同一 pending 片重新请求交付——与 masked
+        # pending 逐步重检同族语义)。计数+有界事件表,报告可见。
+        self.irq_delivery_deferrals=0;self.irq_delivery_deferral_events=[]
         require(isinstance(timer0_irq_entry_banks,bool),'Timer0 IRQ4 entry banks are an opt-in assumption')
         require(not timer0_irq_entry_banks or timer0_irq_entry,'Timer0 IRQ4 entry bank assumption requires the entry projection')
         self.timer0_irq_entry_banks=timer0_irq_entry_banks
@@ -606,6 +610,19 @@ class DualCoreMachine:
         self.stalls+=1
         self.record_event({'core':cpu.core_id,**details})
 
+    def note_delivery_deferral(self,details,active_context):
+        # 路 CB:交付请求落在目标核在途 handler(software/core-tick/Timer0)
+        # 执行期间——真实 IRQ 控制器语义=挂起等 handler RTI,只挂起不丢弃
+        # (与 masked pending 的逐步重检同族;模型侧 in-flight 簿记由分发层
+        # 清零,handler RTI 后的下个 advance 以同一 pending 片重新请求)。
+        # 这里只记账+事件;不改变任何 handler/中断状态。
+        self.irq_delivery_deferrals+=1
+        event={'kind':'irq_delivery_deferred',**details,'deferred_while':active_context}
+        self.irq_delivery_deferral_events.append(event)
+        if len(self.irq_delivery_deferral_events)>64:
+            self.irq_delivery_deferral_events.pop(0)
+        self.record_event(event)
+
     def note_bank_write(self,cpu,name,value):
         setattr(cpu,'last_explicit_'+name,value)
         if cpu.sp_known and cpu.sp!=value:cpu.sp_known=False
@@ -689,6 +706,15 @@ class DualCoreMachine:
                     'nesting_implemented':False,
                     'full_revalidation_per_delivery':True,
                     'pending_rearmed_only_by_real_firmware_command':True}} if self.repeat_irq_delivery else {}),
+                **({'irq_delivery_deferral_projection':{'enabled':True,
+                    'count':self.irq_delivery_deferrals,
+                    'semantics':'a delivery request landing while the target core is inside an '
+                                'in-flight handler is HELD, not dropped (route CB): the dispatch layer '
+                                'clears the model-side in-flight bookkeeping so the next advance() '
+                                're-requests the same pending episode once the handler RTIs — same '
+                                'held-not-dropped philosophy as the masked-pending re-checks (route BF); '
+                                'IRQ nesting is still NOT modeled',
+                    'events':list(self.irq_delivery_deferral_events)}} if self.irq_delivery_deferrals else {}),
                 **({'event_clock_projection':{'enabled':True,
                     'virtual_model_steps_advanced':self.event_clock_advances,
                     'clock_source':'modeled timer counters only (two per-core core ticks, PRD+1 SDK formula, '
