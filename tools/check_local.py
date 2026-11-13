@@ -58,6 +58,7 @@ def main():
     run(sys.executable,'tools/test_image_trace_diff.py')
     run(sys.executable,'tools/test_core_tick.py')
     run(sys.executable,'tools/test_timer0_irq.py')
+    run(sys.executable,'tools/test_d1_acceptance.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json',tool='probe_boot.py')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json',tool='probe_boot_handoff.py')
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json',tool='probe_boot_boundaries.py')
