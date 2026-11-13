@@ -8,6 +8,7 @@ from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
 from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
 from br28_model import JL_UART_CON_WORDS, JL_UART_INIT_WORDS, JL_UART_INIT_WORD_OFFSETS
+from br28_model import JL_OMAP_OUT_WORDS, JL_OMAP_USB_WORDS
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
@@ -1028,6 +1029,69 @@ class ModelTests(unittest.TestCase):
         self.assertIn('NOT verified UART transmission/reception',assumption)
         # 非整字/未对齐访问不经白名单(handles 只认 4 字节对齐整字)。
         self.assertFalse(h.handles(0xfd2005,4) or h.handles(0xfd2004,2) or h.handles(0xfd2004,1))
+
+    def test_jl_omap_write_records_bank_and_strict_readback(self):
+        # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字的 write-only 整字
+        # 记录白名单。识别三方交叉钉死:①io_omap.h `JL_OMAP_BASE=ls_base+
+        # map_adr(0x58,0)`=0xfd5800(SDK 有名,组 0x58),成员表 PA0..15/
+        # B0..11/C0..8/G0..8/USBDP/USBDM/PP0 共 49 个;②SDK gpio_hw.c.o 的
+        # gpio_out_regs 表 {0xfd5800,0xfd5840,0xfd5870,0,0,0xfd5894,0xfd58c0}
+        # 与 QCY 固件表 0x609EA9C 逐字节一致,gpio 224/225(IO_PORT_DP/DM,
+        # gpio_hw.h)在固件解析 0x600127a 与 SDK gpio2crossbar_outreg 双侧
+        # 同值特例 0xfd58b8/0xfd58bc;③停点值 0x9f=io_omap.h
+        # `FO_UART0_TX=((39<<2)|BIT(1)|BIT(0))`(uart_init TX 引脚复用)。
+        # 布局=4 字步进(驱动表+固件 (gpio&0xF)*4;io_omap.h 的 u8 紧凑偏移
+        # 与驱动表不一致,以编译对象+固件为准)。读回/RMW 一律严格停;交叉
+        # 开关布线/输出电平/IRQ 不建模。
+        self.assertEqual(len(JL_OMAP_OUT_WORDS),49)
+        self.assertEqual(JL_OMAP_OUT_WORDS[0],0xfd5800)      # PA0_OUT
+        self.assertEqual(JL_OMAP_OUT_WORDS[15],0xfd583c)     # PA15_OUT
+        self.assertEqual(JL_OMAP_OUT_WORDS[16],0xfd5840)     # PB0_OUT(=A 基址+16*4,字步进钉死)
+        self.assertEqual(JL_OMAP_OUT_WORDS[27],0xfd586c)     # PB11_OUT
+        self.assertEqual(JL_OMAP_OUT_WORDS[28],0xfd5870)     # PC0_OUT
+        self.assertEqual(JL_OMAP_OUT_WORDS[36],0xfd5890)     # PC8_OUT
+        self.assertEqual(JL_OMAP_OUT_WORDS[37],0xfd5894)     # PG0_OUT
+        self.assertEqual(JL_OMAP_OUT_WORDS[45],0xfd58b4)     # PG8_OUT
+        self.assertEqual(JL_OMAP_USB_WORDS,(0xfd58b8,0xfd58bc))  # USBDP/USBDM(gpio 224/225)
+        self.assertEqual(JL_OMAP_OUT_WORDS[46:49],(0xfd58b8,0xfd58bc,0xfd58c0))
+        g=BR28Model()
+        for address in JL_OMAP_OUT_WORDS:
+            self.assertFalse(g.handles(address,4))
+        self.assertNotIn('jl_omap_write_records',g.report())
+        self.assertNotIn('jl_omap_write_records',g.report()['assumptions'])
+        # opt-in:整字写记录(write-only,core 随记),读回显式 kind 严格停;
+        # 白名单外的邻接地址(PP0 之后的 0xfd58c4/0xfd58c8、未命名组 0xfd5900、
+        # 组前 0xfd57f8、USB_IO 0xfd6000)即使开关开也不放行、不补零。
+        h=BR28Model(jl_omap_write_records=True)
+        for address in JL_OMAP_OUT_WORDS:
+            self.assertTrue(h.handles(address,4))
+        for outside in (0xfd58c4,0xfd58c8,0xfd5900,0xfd57f8,0xfd6000):
+            self.assertFalse(h.handles(outside,4))
+        h.current_core=0
+        h.write(0xfd58b8,0x9f)   # uart_init TX 复用:0x60012de [r3+0]=r4(FO_UART0_TX)
+        h.current_core=1
+        h.write(0xfd58bc,0xa3)   # 假想的 DM 写(值仅测记录通道,非声称真值)
+        with self.assertRaisesRegex(Blocked,'jl_omap_word_readback_not_modeled'):h.read(0xfd58b8)
+        with self.assertRaisesRegex(Blocked,'jl_omap_word_readback_not_modeled'):h.read(0xfd58c0)
+        report=h.report()['jl_omap_write_records']
+        self.assertEqual(report['word_writes'],2)
+        self.assertEqual(report['stores']['0xfd58b8'],{'values':['0x9f'],'writes':1,'cores':[0]})
+        self.assertEqual(report['stores']['0xfd58bc'],{'values':['0xa3'],'writes':1,'cores':[1]})
+        self.assertEqual(len(report['addresses']),49)
+        self.assertTrue(report['write_only'] and report['readback_not_modeled'])
+        self.assertIn('JL_OMAP',report['sdk_naming'])
+        self.assertIn('gpio_out_regs',report['sdk_naming'])
+        self.assertIn('FO_UART0_TX',report['sdk_naming'])
+        self.assertIn('NOT covered and stay unmapped',report['whitelisted_words'])
+        assumption=h.report()['assumptions']['jl_omap_write_records']
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verified UART transmission/reception or USB function',assumption)
+        self.assertIn('0x609EA9C',assumption)
+        # 非整字/未对齐访问不经白名单(handles 只认 4 字节对齐整字)。
+        self.assertFalse(h.handles(0xfd58b9,4) or h.handles(0xfd58b8,2) or h.handles(0xfd58b8,1))
+        # 值域守卫:非 u32 拒绝。
+        with self.assertRaises(ValueError):h.write(0xfd58b8,-1)
+        with self.assertRaises(ValueError):h.write(0xfd58b8,1<<32)
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')

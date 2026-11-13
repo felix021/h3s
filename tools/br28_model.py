@@ -92,6 +92,47 @@ JL_UART_CON_WORDS=(0xfd2000,0xfd2100,0xfd2200)
 JL_UART_INIT_WORD_OFFSETS=(0x4,0x8,0x10,0x1c,0x20,0x24,0x2c)
 JL_UART_INIT_WORDS=tuple(base+off for base in JL_UART_CON_WORDS
                          for off in JL_UART_INIT_WORD_OFFSETS)
+# 路 R(sim-gpioface):0xfd58xx = **JL_OMAP**(SDK io_omap.h `JL_OMAP_BASE =
+# ls_base + map_adr(0x58, 0x00)` = 0xfd5800,组 0x58)——GPIO 交叉开关
+# (crossbar)的**逐引脚输出功能选择寄存器组**。识别链(三方交叉,全部公开
+# 工件+钉定参考 SDK commit 67328f4 可复算):
+# - **SDK 头命名**:io_omap.h 的 JL_OMAP_TypeDef 按成员序声明 PA0..PA15_OUT/
+#   PB0..PB11_OUT/PC0..PC8_OUT/PG0..PG8_OUT/USBDP_OUT/USBDM_OUT/PP0_OUT
+#   (49 个 __RW __u8 成员);io_omap.h 同时定义 FO_* 输出功能常量
+#   (`FO_UART0_TX = ((39<<2)|BIT(1)|BIT(0))` = 159 = 0x9f——正是停点观测值)。
+# - **SDK 驱动表与 QCY 固件表逐字节互证**:gpio_hw.c.o(cpu.a,LLVM bitcode)
+#   的 `gpio_out_regs = {0xfd5800,0xfd5840,0xfd5870,0,0,0xfd5894,0xfd58c0}`
+#   (A/B/C/D/E/G/P 七组,D/E 无交叉开关输出寄存器=0)与 QCY app.bin 表
+#   0x609EA9C 的 7 个字**完全一致**;`gpio_in_regs = {1,17,29,0,0,38,49}`与
+#   0x609EAB8 一致。SDK `gpio2crossbar_outreg` 对 gpio>208 特例 224→
+#   0xfd58b8/225→0xfd58bc,与固件解析函数 0x600127a(`if (r4==224) r0=
+#   16603320` 等)同值。gpio_hw.h:IO_PORT_DP=IO_GROUP_NUM*14+0=224、
+#   IO_PORT_DM=225(PORTUSB=14,gpio 编号=port*16+pin),USB DP/DM 是普通
+#   gpio_set_function 可用的「14 组引脚」。
+# - **布局钉死(4 字步进,非 io_omap.h 的 u8 紧凑偏移)**:SDK 驱动与 QCY
+#   固件都用 `gpio_out_regs[port] + pin*4` 的字寻径(SDK `getelementptr i32`,
+#   固件 0x60012bc `r0=r0<<2`),B 基址 0xfd5840=A 基址+16*4 直接证明字步进;
+#   io_omap.h 的 u8 成员表只在**成员序与个数**(49 个)上与真实布局对应,
+#   其 u8 偏移(PB0 在 A+16 字节处)与驱动表不一致,以编译对象+固件表为准
+#   (与路 M 的 JL_UART 布局分歧同款处理)。白名单=49 个 4 字对齐字:
+#   A 0xfd5800..0xfd583c(16)、B 0xfd5840..0xfd586c(12)、C 0xfd5870..0xfd5890
+#   (9)、G 0xfd5894..0xfd58b4(9)、USBDP 0xfd58b8、USBDM 0xfd58bc、PP0
+#   0xfd58c0(引脚数=io_omap.h 成员数=gpio_hw.h 端口掩码 IO_PA_MASK 0xffff/
+#   IO_PB_MASK 0x0fff/IO_PC_MASK 0x01ff/IO_PG_MASK 0x1ff/IO_PP_MASK 0x0001/
+#   IO_PORT_USB_MASK 0x03,四方一致)。0xfd58c4 之后与各组未用槽一律不在
+#   白名单(不给邻接地址补零)。
+# 停点证据:uart_init(QCY 0x60343e8)TX/RX 引脚配置链 gpio_set_function
+# (0x6001456,fn=1=PORT_FUNC_UART0_TX)的助手 0x60012c2 在 0x60012de
+# `[r3+0]=r4` 整字写 0xfd58b8=0x9f——0x9f 即 FO_UART0_TX(bits[7:2]=功能号
+# 39、bit1/bit0=dir/data 由外设控制的控制位,SDK gpio_func.c.o sw.bb
+# `gpio_set_fun_output_port(add, 159, 1, 1)` 与固件助手 arg3!=0 不清位的
+# 形状互证);值由真实指令装载(tbh case fn=1 体 0x600151e `r1 = 159` 的
+# 编译字面量,SDK 同源常量),非模型硬编码。fn=2(UART0_RX)的 case 体
+# 0x6001522 `r1 = 16604304`(=0xfd5c90=PFI_UART0_RX)同表互证。
+JL_OMAP_OUT_PIN_TABLE=((0xfd5800,16),(0xfd5840,12),(0xfd5870,9),(0xfd5894,9))
+JL_OMAP_USB_WORDS=(0xfd58b8,0xfd58bc)  # USBDP_OUT / USBDM_OUT(gpio 224/225 特例)
+JL_OMAP_OUT_WORDS=tuple(base+4*pin for base,pins in JL_OMAP_OUT_PIN_TABLE
+                        for pin in range(pins))+JL_OMAP_USB_WORDS+(0xfd58c0,)
 CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
 CPU1_CONTROL=0xffe8c0
 VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
@@ -1656,6 +1697,85 @@ class JLUartInitWriteRecords:
                               'NOT verify UART transmission/reception')}
 
 
+class JLOmapWriteRecords:
+    """JL_OMAP 逐引脚输出功能选择字的 write-only 整字记录(opt-in,路 R/sim-gpioface)。
+
+    识别与证据(2026-11-13 路 R 反汇编+钉定参考 SDK 交叉钉死,全文见
+    JL_OMAP_OUT_WORDS 常量注释):
+    - 0xfd5800..0xfd58c0 = SDK io_omap.h 的 JL_OMAP(map_adr(0x58,0)=0xfd5800,
+      **SDK 有名**,非反推):GPIO 交叉开关的逐引脚输出功能选择寄存器组,
+      49 个字(A16/B12/C9/G9/USBDP/USBDM/PP0,成员数与 gpio_hw.h 端口掩码
+      四方一致),4 字步进(SDK gpio_out_regs 表+QCY 固件表 0x609EA9C 逐字节
+      互证;io_omap.h 的 u8 紧凑偏移与驱动表不一致,以编译对象+固件为准)。
+    - 0xfd58b8/0xfd58bc = USBDP_OUT/USBDM_OUT:gpio 224/225(IO_PORT_DP/DM,
+      PORTUSB=14)在固件解析函数 0x600127a 与 SDK gpio2crossbar_outreg 双侧
+      同值特例;本前缀的首写来自 uart_init 的 TX 引脚复用
+      gpio_set_function(PORTUSB,PIN0,PORT_FUNC_UART0_TX) → 写 0x9f=
+      FO_UART0_TX((39<<2)|BIT(1)|BIT(0),io_omap.h 常量+gpio_func.c.o sw.bb
+      `gpio_set_fun_output_port(add,159,1,1)` 双互证)。
+    - **写形状**:st.w 族全字覆盖写(固件助手 0x60012de `[r3+0]=r4`,SDK
+      store i32),值全为真实指令结果(固件 case 体的 FO_* 常量装载/SDK 调用
+      参数),无一处发明值;RMW/半字/字节形状无观测,一律不经本容器。
+    - **读回/RMW 严格停**:本 boot 前缀零读回观测(SDK disable 路径
+      gpio_disable_fun_output_port 的 load+&~3+store 不在本前缀),读回显式
+      kind `jl_omap_word_readback_not_modeled`;RMW 经读侧同样严格停。
+    - **运行效果不建模**:只记录「引脚复用配置写已执行」——不推导交叉开关
+      的信号布线、不模拟 OMAP 输出电平、不发明任何 IRQ;UART 收发/USB 功能
+      一律未验证(与路 M 白名单同措辞)。core 由模型侧 current_core 记录;
+      写 PC/步数由 probe 断言钉死(模型写路径无 PC 上下文,同全部写记录先例)。
+    """
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in JL_OMAP_OUT_WORDS}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled JL_OMAP word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('jl_omap_word_readback_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'addresses':[hex(a) for a in JL_OMAP_OUT_WORDS],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('io_omap.h JL_OMAP = ls_base+map_adr(0x58,0) = 0xfd5800, per-pin '
+                              'output-function select words of the GPIO crossbar: PA0..PA15_OUT/'
+                              'PB0..PB11_OUT/PC0..PC8_OUT/PG0..PG8_OUT/USBDP_OUT/USBDM_OUT/PP0_OUT '
+                              '(49 words, 4-byte stride); the u8-packed member offsets in io_omap.h '
+                              'disagree with the compiled driver table and are NOT used — the SDK '
+                              'gpio_out_regs table {0xfd5800,0xfd5840,0xfd5870,0,0,0xfd5894,'
+                              '0xfd58c0} matches the QCY firmware table at 0x609EA9C byte-for-byte; '
+                              '0xfd58b8/0xfd58bc are the USBDP/USBDM specials of gpio2crossbar_'
+                              'outreg(gpio 224/225), and the observed first value 0x9f is '
+                              'FO_UART0_TX=((39<<2)|BIT(1)|BIT(0)) from io_omap.h'),
+                'write_only':True,'readback_not_modeled':True,
+                'whitelisted_words':('the 49 per-pin OUT-select words the firmware gpio helper '
+                                     '(0x600127a resolver: table base + pin*4, gpio 224/225 '
+                                     'special-cased) can address — exactly the io_omap.h member '
+                                     'list at the driver 4-byte stride; adjacent words beyond the '
+                                     'declared pins (e.g. 0xfd58c4+, unused D/E groups) are NOT '
+                                     'covered and stay unmapped'),
+                'observed_shapes':('full-word st.w-family stores (old value irrelevant): the QCY '
+                                   'helper 0x60012c2 body 0x60012de `[r3+0]=r4` inside the '
+                                   '0x12b746/0x12b772 spinlock critical section (the compiled '
+                                   'gpio_set_fun_output_port), writing FO_* constants computed by '
+                                   'real instructions'),
+                'assumption':('write-only word-sequence record of pin-mux configuration writes '
+                              '(derived-not-measured); stored values are real executed '
+                              'instruction results, never invented; no crossbar signal routing, '
+                              'no output-level effect, no IRQ and no UART/USB traffic is modeled '
+                              '— this releases the pin-mux configuration writes only, it does '
+                              'NOT verify UART transmission/reception or USB function')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -2862,6 +2982,7 @@ class BR28Model:
                  jl_clock_dcck_projection=False,
                  jl_uart_con_projection=False,
                  jl_uart_init_write_records=False,
+                 jl_omap_write_records=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -3147,6 +3268,11 @@ class BR28Model:
         # 配置写已执行」,不扩展为「UART 收发已验证」。默认关:这些字保持
         # unmapped(3,071,984 @ 0x603446a 前沿形状),legacy 报告逐字节不变。
         self.jl_uart_init_records=JLUartInitWriteRecords() if jl_uart_init_write_records else None
+        # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字(0xfd58xx)的
+        # write-only 整字记录。识别链与 49 字白名单见 JL_OMAP_OUT_WORDS 常量
+        # 注释;本前缀首写=uart_init TX 引脚复用 0x60012de 写 0xfd58b8=0x9f
+        # (FO_UART0_TX)。默认关:0xfd58xx 保持 unmapped,legacy 报告不变。
+        self.jl_omap_records=JLOmapWriteRecords() if jl_omap_write_records else None
         # p3_ana_read_ldoin_low_fixture(opt-in,路 CB/sim-anaread,需 tail 投影):
         # P3_ANA_READ(0xf2c064)读侧三选一按证据落地=方案 (c) 具名常量 live-input
         # fixture。证据链(pinned SDK commit 67328f4,全文档见
@@ -3334,6 +3460,7 @@ class BR28Model:
             (self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)) or
             (self.p33_port_sel is not None and self.p33_port_sel.handles(address)) or
             (self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address)) or
+            (self.jl_omap_records is not None and self.jl_omap_records.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
@@ -3534,6 +3661,12 @@ class BR28Model:
         if self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address):
             self.counts['reads']+=1
             return self.jl_uart_init_records.read(address)
+        # JL_OMAP 逐引脚输出功能选择字(路 R):整字写 write-only 记录,读回
+        # 一律严格停(本 boot 前缀零读回观测;SDK disable 路径的 load+store
+        # 不在本前缀,出现即在读侧显形)。
+        if self.jl_omap_records is not None and self.jl_omap_records.handles(address):
+            self.counts['reads']+=1
+            return self.jl_omap_records.read(address)
         # P3_AWKUP 族:只有显式 fixture 覆盖的寄存器的首次读返回具名字,
         # 其余读(未覆盖/写后/重复)一律严格停(路 BB;显式 kind 便于诊断)。
         if self.p33_awkup is not None and self.p33_awkup.handles(address):
@@ -3676,6 +3809,11 @@ class BR28Model:
             # JL_UART 初始化配置字(路 M):st.w 族全字覆盖写(旧值无关),
             # write-only 记录;值=真实指令结果,运行效果不建模。
             self.jl_uart_init_records.write(address,value)
+        elif self.jl_omap_records is not None and self.jl_omap_records.handles(address):
+            # JL_OMAP 逐引脚输出功能选择字(路 R):st.w 族全字覆盖写(旧值
+            # 无关),write-only 记录;值=真实指令结果(FO_* 常量由真实指令
+            # 装载),交叉开关布线/输出电平/IRQ 一律不建模。
+            self.jl_omap_records.write(address,value,self.current_core)
         elif self.p33_awkup is not None and self.p33_awkup.handles(address):
             # P3_AWKUP 族(路 BB):整字写只接受有观测形状的 FLT0..2(walker
             # st.w.idxs)与 P_IE(0x6067cb0 消费型写回),其余(EN/N_IE/
@@ -4169,6 +4307,7 @@ class BR28Model:
         if self.p33_window is not None:result['p33_window_projection']=self.p33_window.report()
         if self.p33_port_sel is not None:result['p33_port_sel_projection']=self.p33_port_sel.report()
         if self.jl_uart_init_records is not None:result['jl_uart_init_write_records']=self.jl_uart_init_records.report()
+        if self.jl_omap_records is not None:result['jl_omap_write_records']=self.jl_omap_records.report()
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()
@@ -4366,6 +4505,27 @@ class BR28Model:
                 'runtime effect, RX/TX DMA data flow or UART IRQ is modeled — this records '
                 '"initialization config writes executed" only, NOT verified UART '
                 'transmission/reception')
+        if self.jl_omap_records is not None:
+            # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字白名单。识别链
+            # 见 JLOmapWriteRecords 文档串;此处把「写记录 derived-not-measured、
+            # 运行效果不建模」写进 assumptions。
+            result['assumptions']['jl_omap_write_records']=(
+                'JL_OMAP per-pin output-function select words (ls_base+map_adr(0x58,0)='
+                '0xfd5800, the SDK io_omap.h crossbar bank: PA0..15/B0..11/C0..8/G0..8/'
+                'USBDP/USBDM/PP0, 49 words at the driver 4-byte stride) released as '
+                'write-only whole-word records (lp_timer SYS_DIV / P3_PORT_SEL / route-M '
+                'jl_uart_init_write_records precedent). IDENTIFICATION PINNED: the SDK driver '
+                'table gpio_out_regs {0xfd5800,0xfd5840,0xfd5870,0,0,0xfd5894,0xfd58c0} '
+                '(gpio_hw.c.o bitcode) matches the QCY firmware table at 0x609EA9C '
+                'byte-for-byte, gpio 224/225 (IO_PORT_DP/DM, gpio_hw.h) special-case to '
+                '0xfd58b8/0xfd58bc on BOTH sides (firmware resolver 0x600127a and SDK '
+                'gpio2crossbar_outreg), and the observed first value 0x9f is FO_UART0_TX='
+                '((39<<2)|BIT(1)|BIT(0)) from io_omap.h (uart_init TX pin mux). All released '
+                'writes are full-word st.w-family stores whose values are real executed '
+                'instruction results (derived-not-measured); readback and RMW of these words '
+                'stay strictly blocked; no crossbar signal routing, output-level effect or IRQ '
+                'is modeled — this records "pin-mux configuration writes executed" only, NOT '
+                'verified UART transmission/reception or USB function')
         if self.pll1_configuration_projection:result['assumptions']['pll1_con3_configuration_projection']='RW config only; analog PLL1 not modeled'
         if self.cache_status_probe:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}

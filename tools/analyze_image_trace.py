@@ -100,6 +100,7 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     jl_clock_dcck=True,
     jl_uart_con=True,
     jl_uart_init_writes=True,
+    jl_omap_writes=True,
     subword_stores=True, word_store_sp_l=True,
     timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
 
@@ -175,9 +176,22 @@ SCENARIOS = {
         # 0x9f(0xfd58xx GPIO 端口组,GPIO_BASES 未覆盖、公开 br28.h 无名)——
         # UART 引脚复用 GPIO 面归下一路。
         # **新前沿 3,072,236 @ 0x60012de**(unmapped_or_readonly_write 写 0xfd58b8)。
-        'freshness': {'completed_steps': 3072236, 'stop_pc': '0x60012de',
+        # 路 R:GPIO 引脚复用写侧三选一选 write-only 整字记录 `jl_omap_writes`
+        # ——**识别钉死:0xfd58xx = JL_OMAP**(SDK io_omap.h `JL_OMAP_BASE=
+        # ls_base+map_adr(0x58,0)`=0xfd5800,组 0x58 逐引脚输出功能选择字;
+        # SDK 驱动表 gpio_out_regs 与固件表 0x609EA9C 逐字节一致,gpio 224/
+        # 225=IO_PORT_DP/DM 双侧特例 0xfd58b8/0xfd58bc,停点值 0x9f=io_omap.h
+        # FO_UART0_TX=((39<<2)|BIT(1)|BIT(0))=uart_init 的 TX 引脚复用)。
+        # 49 字白名单(A16/B12/C9/G9/USBDP/USBDM/PP0)放行后 TX 复用链完成,
+        # 第 297 次 Timer0 到期在临界区退出后真实交付(287 次),RX 复用链
+        # gpio_set_fun_input_port 助手 0x600132e 停在 0x6001342 写 **0xfd5c90=
+        # 0x2f**——JL_IMAP->FI_UART0_RX(io_imap.h map_adr(0x5c,0)=0xfd5c00,
+        # 成员 36、编译布局 4 字步进;值 47=USBDP_IN,UART0 RX 与 TX 同用 USB
+        # DP 脚)——JL_IMAP 写侧归下一路三选一。**新前沿 3,073,402 @
+        # 0x6001342**(unmapped_or_readonly_write 写 0xfd5c90)。
+        'freshness': {'completed_steps': 3073402, 'stop_pc': '0x6001342',
                       'stop_fields': {'kind': 'unmapped_or_readonly_write',
-                                      'address': '0xfd58b8'}},
+                                      'address': '0xfd5c90'}},
     },
 }
 
@@ -720,17 +734,19 @@ def check_self_conditional(report):
     3,070,786(路 CL)/3,070,955(路 CO)/3,071,380(路 CQ)/3,071,984(路 F)
     已被后续投影替换,见 HANDOFF 对应「步含义」段):
 
-    - 双方 3,072,236 步、同停点 0x60012de(unmapped_or_readonly_write,写
-      0xfd58b8,当前条件前沿——路 M 的 jl_uart_init_write_records 初始化写
+    - 双方 3,073,402 步、同停点 0x6001342(unmapped_or_readonly_write,写
+      0xfd5c90,当前条件前沿——路 M 的 jl_uart_init_write_records 初始化写
       白名单放行 uart_init 的 CON1(+4)/CON2(+0x2c)整字写后,uart_init 进入
-      TX/RX 引脚复用,gpio_set_mode/gpio_set_function 助手链停在 0xfd58b8=
-      0xfd58xx GPIO 端口组首写)、per-core {0:3061334,1:11216} 一致;stop
-      parity 全同——official↔b79 parity 延长到条件前沿 3,072,236,控制流
-      零分歧、无 reconvergence;
+      TX/RX 引脚复用;路 R 的 jl_omap_write_records 放行 0xfd58b8(JL_OMAP
+      USBDP_OUT=FO_UART0_TX 0x9f)后 TX 复用链完成、第 297 次 Timer0 到期
+      真实交付,RX 复用链 gpio_set_fun_input_port 助手停在 0xfd5c90=
+      JL_IMAP->FI_UART0_RX 写 0x2f=USBDP_IN)、per-core {0:3062501,1:11216}
+      一致;stop parity 全同——official↔b79 parity 延长到条件前沿 3,073,402,
+      控制流零分歧、无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,072,236,
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,073,402,
       超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
-      GPIO 停点前段)没有消费任何新的镜像差异;
+      GPIO TX/RX 复用链+Timer0 交付往返)没有消费任何新的镜像差异;
     - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -740,17 +756,17 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 3072236 and run['stop_pc'] == '0x60012de' and
+        require(run['completed_steps'] == 3073402 and run['stop_pc'] == '0x6001342' and
                 run['stop']['kind'] == 'unmapped_or_readonly_write' and
-                run['stop']['address'] == '0xfd58b8' and
-                run['per_core_steps'] == {'0': 3061334, '1': 11216},
+                run['stop']['address'] == '0xfd5c90' and
+                run['per_core_steps'] == {'0': 3062501, '1': 11216},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3072236 @ 0x60012de, the unmapped 0xfd58b8 write of '
-                'the UART pin-mux GPIO face after the route-M jl_uart_init_write_records '
-                'whitelist released the uart_init CON1/CON2 config words)')
+                'conditional frontier stop (3073402 @ 0x6001342, the unmapped 0xfd5c90 write '
+                'of JL_IMAP->FI_UART0_RX after the route-R jl_omap_write_records release of '
+                'the JL_OMAP 0xfd58b8 pin-mux word)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 3072236, 'tested_b79': 3072236, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x60012de', 'b': '0x60012de', 'same': True} and
+    require(parity['steps'] == {'official': 3073402, 'tested_b79': 3073402, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x6001342', 'b': '0x6001342', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
             parity['stop_record']['a']['kind'] == 'unmapped_or_readonly_write' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},

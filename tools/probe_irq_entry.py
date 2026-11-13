@@ -528,6 +528,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_clock_dcck=False,
              jl_uart_con=False,
              jl_uart_init_writes=False,
+             jl_omap_writes=False,
              subword_stores=False,
              word_store_sp_l=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
@@ -1082,6 +1083,32 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 报告逐字节不变。
     if jl_uart_init_writes:
         options['jl_uart_init_write_records']=True
+    # jl_omap_writes(路 R/sim-gpioface,GPIO 引脚复用写侧):0xfd58xx =
+    # **JL_OMAP**(SDK io_omap.h `JL_OMAP_BASE=ls_base+map_adr(0x58,0)`=0xfd5800,
+    # **SDK 有名**——修正路 M 的「公开 br28.h 无名」记录:br28.h 确实不名它,
+    # 但 io_omap.h(被 br28.h include)整组命名)——GPIO 交叉开关的逐引脚输出
+    # 功能选择寄存器组。**识别三方交叉钉死**:①SDK 驱动表 gpio_hw.c.o 的
+    # gpio_out_regs={0xfd5800,0xfd5840,0xfd5870,0,0,0xfd5894,0xfd58c0}(A/B/C/
+    # D/E/G/P,D/E 无交叉输出)与 QCY 固件表 0x609EA9C 逐字节一致,gpio_in_regs
+    # {1,17,29,0,0,38,49}与 0x609EAB8 一致;②gpio 224/225 = gpio_hw.h
+    # IO_PORT_DP/DM(PORTUSB=14),固件解析函数 0x600127a(`if(r4==224)r0=
+    # 16603320`)与 SDK gpio2crossbar_outreg 的 224→0xfd58b8/225→0xfd58bc 特例
+    # 双侧同值;③停点值 0x9f = io_omap.h `FO_UART0_TX=((39<<2)|BIT(1)|BIT(0))`
+    # = 159,与 gpio_func.c.o sw.bb `gpio_set_fun_output_port(add,159,1,1)`
+    # (fn=1=PORT_FUNC_UART0_TX)互证——本写就是 uart_init 的 TX 引脚复用
+    # (TX=USB DP 脚)。**布局**:4 字步进(SDK getelementptr i32+固件
+    # (gpio&0xF)*4,B 基址=A+16*4 直接证明);io_omap.h 的 u8 紧凑成员偏移与
+    # 驱动表不一致(同路 M 布局分歧),以编译对象+固件为准。白名单=49 字
+    # (A16/B12/C9/G9/USBDP/USBDM/PP0,成员数=gpio_hw.h 端口掩码),P3_PORT_SEL
+    # 的 write-only 整字记录先例:st.w 全字覆盖写、值=真实指令结果(FO_* 常量
+    # 由 case 体真实装载);读回/RMW 严格停;交叉开关布线/输出电平/IRQ 不建模
+    # ——只记录「引脚复用配置写已执行」,不声称 UART 通信已验证。默认关:
+    # 0xfd58xx 保持 unmapped(3,072,236 @ 0x60012de 前沿形状不变),legacy
+    # 报告不变。
+    if jl_omap_writes:
+        require(jl_uart_init_writes,
+                'the JL_OMAP write records only layer on the UART init whitelist prefix')
+        options['jl_omap_write_records']=True
     # timer0_irq4_*(路 BE,独立成段便于并行路线合并):Timer0 pending→IRQ4 交付
     # 机制就位(在 ~341,097 硬期限前)。机制全部抄 core_tick/软件 IRQ 两先例:
     # 模型 advance() 在资格合格时抛 IrqDeliveryRequest(core,irq=4)(每个
@@ -2006,19 +2033,32 @@ def check(report,firmware):
     # 0x57 未覆盖、公开 br28.h 无名）——UART 引脚复用 GPIO 面，归下一路三选
     # 一。**新前沿 3,072,236 @ 0x60012de**（unmapped_or_readonly_write 写
     # 0xfd58b8）。
-    require(r['stop_core']==0 and r['stop_pc']=='0x60012de' and
+    # 路 R(sim-gpioface):jl_omap_write_records 放行 0x60012de 的 0xfd58b8=
+    # 0x9f(=FO_UART0_TX,识别见 jl_omap 断言)后,uart_init 的 TX 复用链完成,
+    # 第 297 次 Timer0 到期在 GPIO 助手临界区退出后**真实交付**(287 次,见
+    # t0 断言),RX 复用链 gpio_set_function(PORTUSB,PIN0,PORT_FUNC_UART0_RX)
+    # → gpio_set_fun_input_port 的助手 0x600132e 在 0x6001342 `[r4+0]=r3` 整字
+    # 写 **0xfd5c90=0x2f**——0xfd5c90 = JL_IMAP->FI_UART0_RX(io_imap.h
+    # `JL_IMAP_BASE=ls_base+map_adr(0x5c,0)`=0xfd5c00,FI_UART0_RX 是第 36 个
+    # 成员、实际布局 4 字步进=0xfd5c90,PFI_UART0_RX 常量 16604304 互证),值
+    # 0x2f=47=USBDP_IN(DP 脚的输入通道号,gpio2crossbar_inport(224)=47 与
+    # 固件助手 0x60012e8 双侧同值)——UART0 RX 与 TX 同用 USB DP 脚(单线
+    # UART)。JL_IMAP 写侧归下一路三选一。**新前沿 3,073,402 @ 0x6001342**
+    # (unmapped_or_readonly_write 写 0xfd5c90)。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6001342' and
             r['stop']=={'kind':'unmapped_or_readonly_write','access':'write',
-                        'address':'0xfd58b8','size':4,'value_bytes':'9f000000'},
-            'the heap-experimental scenario must stop at 0x60012de writing 0xfd58b8 after the '
-            'route-M jl_uart_init_write_records whitelist releases the 0x603446a/0x6034472 '
-            'uart_init config writes (CON1/+4 and CON2/+0x2c whole-word zeros; compiled '
-            'uart_v1.c.o layout {i32 x12} — the route-F "BAUD|BUF" naming is corrected, the '
-            'real BAUD divider word is +8): uart_init then proceeds to its TX/RX pin-mux and '
-            'gpio_set_mode/gpio_set_function (0x6085126/0x6001456 helpers) reach a whole-word '
-            'write of 0xfd58b8 — a 0xfd58xx GPIO port-group register outside GPIO_BASES '
-            '(0x50..0x55/0x57) and unnamed in the public br28.h — the UART pin-mux GPIO face, '
-            'which is the next three-choice')
-    require(r['completed_steps']==3072236,'the heap experimental config changed its step count')
+                        'address':'0xfd5c90','size':4,'value_bytes':'2f000000'},
+            'the heap-experimental scenario must stop at 0x6001342 writing 0xfd5c90 after the '
+            'route-R jl_omap_write_records release of the 0xfd58b8 JL_OMAP pin-mux write: the '
+            'TX mux chain completes, the in-flight 297th Timer0 expiration is DELIVERED after '
+            'the critical-section exit, and the RX mux chain (gpio_set_function '
+            'PORT_FUNC_UART0_RX -> gpio_set_fun_input_port helper 0x600132e) reaches a '
+            'whole-word write of 0xfd5c90 = JL_IMAP->FI_UART0_RX (io_imap.h '
+            'map_adr(0x5c,0)=0xfd5c00, member 36 at the compiled 4-byte stride, the '
+            'PFI_UART0_RX constant 16604304) with value 0x2f=47=USBDP_IN — the DP-pin input '
+            'channel of gpio2crossbar_inport(224); UART0 RX shares the USB DP pin with TX '
+            '(single-wire UART), and the JL_IMAP write side is the next three-choice')
+    require(r['completed_steps']==3073402,'the heap experimental config changed its step count')
     dcck=r['peripherals']['registers']
     require(dcck['0xfd0008']=='0x46000e0c' and dcck['0xfd000c']=='0xff000100' and
             dcck['0xfd0010']=='0x10000',
@@ -2061,6 +2101,31 @@ def check(report,firmware):
             'the route-M jl_uart_init_write_records assumption must record the {i32 x12} '
             'layout pin-down (0xfd2004 = CON1, route-F naming corrected), the '
             'derived-not-measured write records and the no-UART-traffic scope limit')
+    # 路 R(sim-gpioface):JL_OMAP 白名单的记录断言——本前缀恰一条写:
+    # 0x60012de 的 0xfd58b8=0x9f(core 0)。识别三方交叉(SDK 驱动表 gpio_out_regs
+    # 与固件表 0x609EA9C 逐字节一致、gpio 224/225=IO_PORT_DP/DM 双侧特例
+    # 0xfd58b8/0xfd58bc、值 0x9f=io_omap.h FO_UART0_TX=((39<<2)|BIT(1)|BIT(0)))
+    # 必须进 assumption;49 字白名单(成员数=gpio_hw.h 端口掩码)钉死;
+    # USBDM(0xfd58bc)本前缀零写(RX 与 TX 同用 DP 脚)。
+    omap=r['peripherals']['jl_omap_write_records']
+    require(omap['stores']=={'0xfd58b8':{'values':['0x9f'],'writes':1,'cores':[0]}} and
+            omap['word_writes']==1 and len(omap['addresses'])==49 and
+            omap['write_only'] and omap['readback_not_modeled'] and
+            omap['addresses'][0]=='0xfd5800' and omap['addresses'][-1]=='0xfd58c0',
+            'the route-R jl_omap_write_records must record exactly the one executed JL_OMAP '
+            'pin-mux write (0x60012de, USBDP_OUT 0xfd58b8 = FO_UART0_TX 0x9f, core 0) over '
+            'the declared 49-word bank PA0_OUT..PP0_OUT (0xfd5800..0xfd58c0, driver 4-byte '
+            'stride); USBDM_OUT 0xfd58bc is not written in this prefix (UART0 RX shares the '
+            'DP pin)')
+    omap_assumption=r['peripherals']['assumptions'].get('jl_omap_write_records')
+    require(omap_assumption is not None and 'gpio_out_regs' in omap_assumption and
+            '0x609EA9C' in omap_assumption and 'FO_UART0_TX' in omap_assumption and
+            'derived-not-measured' in omap_assumption and
+            'NOT verified UART transmission/reception or USB function' in omap_assumption,
+            'the route-R jl_omap_write_records assumption must record the three-way '
+            'identification (SDK gpio_out_regs table == firmware table 0x609EA9C, the '
+            'IO_PORT_DP/DM specials, FO_UART0_TX value), the derived-not-measured write '
+            'records and the no-traffic scope limit')
     fd31=r['peripherals']['fd31_adc_con_projection']
     require(fd31['stores']=={'0xfd3100':{'values':['0x40','0x46105d','0x46105d','0x20000',
                                                   '0x20040','0x40','0x46105d','0x46105d',
@@ -2160,22 +2225,29 @@ def check(report,firmware):
     # →W1C ACK;后续 8 次溢出随 OS tick 级联继续交付,GPcnt 任务每次调度
     # 一个来回);期间 Timer0 到期合格的请求被延期机制挂起合计 138 次(全部
     # deferred_while=core_tick_handler),handler RTI 后重新交付。
+    # 路 R(sim-gpioface):第 287 次交付=停点前在途的第 297 次到期(route M 记录
+    # 的 pending=True、ICFG 0x100 首例)——GPIO 助手临界区退出后资格链放行,
+    # reti_from=0x12b7b6(OS veneer 上下文,交付打断的是 TX 复用链里的 OS 调用),
+    # handler 真实 W1C 清 pending(停点 pending=False)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==286 and
+    require(len(t0['deliveries'])==287 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6')
                 for d in t0['deliveries']) and
-            sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==1 and
+            sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
+            t0['deliveries'][-1]['reti_from']=='0x12b7b6' and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==572 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==286,
-            '286 real Timer0 IRQ4 delivery round trips (thirty-one through the route-CB stop '
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==574 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==287,
+            '287 real Timer0 IRQ4 delivery round trips (thirty-one through the route-CB stop '
             'plus the OS 1ms tick of the full W1[0] twenty-round timeout window and the tail '
-            'released by the GPCNT readback, one from the OS veneer context 0x12b7b6), each '
-            'reading the real vector slot 0x19fe10 and clearing pending only via the real '
-            'handler W1C; 286 symmetric RTIs complete')
+            'released by the GPCNT readback, then the route-R delivery of the previously '
+            'in-flight 297th expiration: the GPIO-helper critical section exits, the pending '
+            'episode becomes eligible and interrupts the OS veneer context 0x12b7b6 inside '
+            'the continued TX mux chain), each reading the real vector slot 0x19fe10 and '
+            'clearing pending only via the real handler W1C; 287 symmetric RTIs complete')
     ct=r['machine']['core_tick_entry_projection']
     require(len(ct['deliveries'])==9 and
             (ct['deliveries'][0]['core'],ct['deliveries'][0]['vector_address'],
@@ -2327,15 +2399,20 @@ def check(report,firmware):
     # 边界:**第 297 次到期在停点时刻挂起 pending=True、cnt 重装到 15**(停点在
     # GPIO 写上、交付往返未发生,与 286 次已交付/ACK 的到期不同——首次「到期
     # 在途」状态,下一路放行 GPIO 后由资格链决定交付)。
-    require(timer=={'con':0x1401,'cnt':15,'prd':35999,'pending':True,'expirations':297},
+    # 路 R:放行 0xfd58b8 后 +1,166 步,cnt 15+1,166×3=3,513(<36,000 无新到期,
+    # expirations 仍 297);**在途的第 297 次到期已交付+ACK**(pending False)——
+    # 临界区退出→bit9 恢复→资格链放行,交付只走既有 IRQ 资格判断,GPIO 写不
+    # 参与交付(codex 风险点核验)。
+    require(timer=={'con':0x1401,'cnt':3513,'prd':35999,'pending':False,'expirations':297},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
-            'call reprograms PRD; the last window before the stop is the 3ms one -> PRD 35999), '
-            '297 expirations total (10 legacy + 286 delivered/acked + the route-M in-flight '
-            'one) with pending TRUE at the stop: the route-M +252-step prefix crosses the '
-            '36000 boundary (35259+756=36015) so the 297th expiration arms pending and the '
-            'counter rearms at 15, and the stop lands on the GPIO write before any delivery '
-            'round trip; the route-CL/CO/CQ/F prefixes added 160/170/426/604 model steps x '
-            '3 ticks each, none reprogramming PRD')
+            'call reprograms PRD; the last window is the 3ms one -> PRD 35999), 297 '
+            'expirations total (10 legacy + 287 delivered/acked), pending FALSE at the stop: '
+            'the route-M stop left the 297th expiration pending-in-flight inside the GPIO '
+            'critical section (ICFG 0x100, CLI bit9 clear), and the route-R release lets the '
+            'chain run past the critical-section exit — the unlock restores bit9, the pending '
+            'episode becomes eligible on the next advance() and the real handler W1C acks it '
+            '(delivery #287, reti_from 0x12b7b6); the counter then walks 15+1166*3=3513 '
+            'without reaching 36000, so no new expiration')
     # 路 CG:core tick 溢出交付+ACK 合计 9 次(首溢出~447,490+超时窗口内 8 次,
     # expirations 9/acknowledgements 9,cnt 重装后走到 892,276<prd 1,199,999,零
     # pending);IRQ3 handler 0x60661a4 的 W1C 真实执行,交付列表见上。CPU1
@@ -2347,24 +2424,29 @@ def check(report,firmware):
     # 真实执行 +604 步、cnt 再 +2416(=604×4 tick)到 897,716;IPMASK 仍 0。
     # 路 M:白名单放行 CON1/CON2 两写后 +252 步、cnt 再 +1008(=252×4 tick)到
     # 898,724;IPMASK 仍 0,无新溢出(交付/ACK 仍 9 次)。
+    # 路 R:+1,166 步、cnt 再 +4,664(=1,166×4 tick)到 903,388;IPMASK 仍 0;
+    # CPU0 partial ICFG 在新停点又是 0x100——新停点 0x6001342 同样位于 gpio_
+    # set_fun_input_port 助手的 0x600133c 上锁临界区内(0x100↔0x300 随临界区
+    # 进出翻转;两次停点恰好都停在锁内纯属序列形状,交付已在两锁之间的
+    # 窗口发生)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==9 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==9 and
-            tick0['cnt']==898724 and
+            tick0['cnt']==903388 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
             r['peripherals']['ipmask']==0 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x100',
             'the CPU0 core tick must deliver and ack nine overflows (the ~447,490 landmark '
-            'plus the eight of the timeout window; rearmed counter at 898724 < prd 1199999, '
-            'no pending at the stop); IPMASK=0 at the route-M stop (the scheduler helper '
-            '0x6065c3a completed and the W1[1] walker left the 0x12b55c critical section that '
-            'route-CO had re-entered, so IPMASK dropped back from 6 to 0), the CPU1 core '
-            'tick never overflows, and CPU0 partial ICFG is 0x100 at the stop: the route-M '
-            'GPIO helper chain (0x60012c2 -> spin lock 0x12b746) entered its critical '
-            'section so CLI cleared bit9 (known gates stay 0x300 on CPU1) — the same CLI '
-            'is why the 297th Timer0 expiration sits pending-undelivered instead of firing')
+            'plus the eight of the timeout window; rearmed counter at 903388 < prd 1199999, '
+            'no pending at the stop, +1166 route-R steps x 4 ticks); IPMASK=0 (the mux chain '
+            'never re-enters the OS critical sections), the CPU1 core tick never overflows, '
+            'and CPU0 partial ICFG is 0x100 at the NEW stop too: the 0x6001342 JL_IMAP write '
+            'sits inside the gpio_set_fun_input_port helper lock (0x600133c -> 0x12b746) so '
+            'CLI cleared bit9 again — bit9 flips 0x100<->0x300 with the critical sections '
+            'and the Timer0 delivery already happened in the window between the two locks '
+            '(known gates stay 0x300 on CPU1)')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -2525,13 +2607,20 @@ def check(report,firmware):
             # 3751、cnum 5804→5809(共享锁 1226、mmio RMW 1496、masked 分支 1、
             # 半字 pair 4、字节 pair 143、双字 27 全不变——新前缀无新临界区/
             # MMIO RMW/并行对存储)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==10753 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1226 and
-            r['instruction_adapters'].get('exact_full_word_store')==14202 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==1496 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==3751 and
+            # 路 R(sim-gpioface):jl_omap_write_records 放行 0xfd58b8 写后
+            # +1,166 步(TX 复用链完成+第 297 次到期的交付往返+RX 复用链到
+            # JL_IMAP 停点)——任务栈帧运输 10753→10805、共享锁 1226→1228
+            # (TX/RX 复用各一组 0x12b746/0x12b772)、整字存储 14202→14254、
+            # mmio RMW 1496→1497(RX 复用的 0xfd6000 RMW)、icfg bit9 3751→
+            # 3769(临界区进出+交付往返)、cnum 5809→5832(masked 分支 1、
+            # 半字 pair 4、字节 pair 143、双字 27 全不变)。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==10805 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1228 and
+            r['instruction_adapters'].get('exact_full_word_store')==14254 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==1497 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==3769 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==1 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==5809,
+            r['instruction_adapters'].get('per_core_visible_cnum')==5832,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -3215,6 +3304,7 @@ def main():
                               jl_clock_dcck=True,
                               jl_uart_con=True,
                               jl_uart_init_writes=True,
+                              jl_omap_writes=True,
                               subword_stores=True,word_store_sp_l=True,
                               timer0_irq4_delivery=True,
                               core_tick_irq3_delivery=True,
