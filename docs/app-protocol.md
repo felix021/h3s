@@ -116,6 +116,26 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
   `0x06018b60`。**没有可绑定的隐藏 EQ 开关编号**（动作 9 返回已处理但无 EQ 调用）——要「按键
   切 EQ」必须改固件（这正是 r2 实验做的事），独立 app 不能只靠发命令实现。
 
+**App 侧实现状态**（路 AM/sim-keyremap-ui，`tools/android-query`）：
+
+- 两条 wire 候选**都已实现**（`KeyRemapFrame.java`，单测覆盖往返+边界）：
+  - 候选 A（默认）「ADV 类型 2」：opcode `0xC2` + 4B 大端 type2 mask（`00 00 00 04`）+ 三元组
+    `[key, gesture, action]`。**帧形状为 [假设]**——C1 读（opcode+SN+4B mask）已实测钉死
+    （§2.6），写对偶的 opcode 值（C1+1）与「mask 后跟值」的扩展未钉，真机抓一次
+    setKeyFunction 实包即可定案；
+  - 候选 B「自定义 `0x2b`」：opcode 0xFF cmdid `0x2b`，data=三元组（「gesture/action 组合」
+    的字节序按 eventID 拆解结果直存 [未钉]）。
+- 字段域（两端互证）：key=逻辑键 {3=音量-, 5=音量+, 7=多功能}（eventID 布局 0x{逻辑键}0{连击数}
+  ×固件 BW handler 掩码 0x09050307，docs/d1-acceptance.md §6.1）；gesture=连击数 1..4
+  （面板钉死；固件默认表 [7,2,7] 的 2 与双击 eventID 低字节互证），**5=长按 [假设]**——App
+  面板无长按条目，但固件配置 key 48 是 15 个 3B 三元组映射表（3 键×5 手势恰好 15，
+  docs/config-key-map.md）支持 5 手势槽存在；action=0..7（面板）+11（ANC，固件侧）。
+- bridge：`H3SBridge.setKeyRemap(eventId, action)`（默认 ADV type2）/`setKeyRemapCustom`（0x2b）/
+  `getKeyRemap()`（本地工作副本，初始=面板 defaultFun，非设备读回——type2 查询响应形状未钉）；
+  `EqWritePolicy` 白名单相应扩 0x2b 三元组与 C2 type2 两条 setter 形状（字段域从严校验）。
+  UI 在 `assets/keyremap.html`（三键×五手势网格），`index.html` 有入口。真机下发未验证
+  （红线不变：不连真机；两条 wire 并存放行，抓包定案前默认 ADV type2）。
+
 ### 2.6 只读查询（已实测，[文档：docs/protocol.md]）
 
 | opcode | 用途 |
@@ -173,7 +193,7 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 | --- | --- | --- | --- |
 | EQ 写 | FF/`0x22` | 3B 头 + 每段 7B（EQ 类型/master gain/freq/gain/Q/iir） | 字段字节布局 [未钉]，需重解 0x0602583c |
 | ANC 切 | FF/`0x17` | `17 03 mode scene strength` | 已钉 [文档]；路 P 反汇编核对一致（data=后 3 字节） |
-| 按键重映射 | FF/`0x2b` 或 ADV type2 | gesture/action 组合 或 `[key,gesture,action]` | H3S 用哪个分支 [未钉] |
+| 按键重映射 | FF/`0x2b` 或 ADV type2 | gesture/action 组合 或 `[key,gesture,action]` | H3S 用哪个分支 [未钉]；App 侧两条 wire 组帧已实现（§2.5 实现状态，默认 ADV type2） |
 | 提示音音量 | FF/`0x1d` | data=`value 占位`（len=2，值 3/6/8） | 帧形状已钉 [静态：docs/cmd-0x17-0x1d-layout.md 路P] |
 | 媒体音量 | AVRCP(经典BT) 或 BLE 音量命令 | — | [未钉]，仓库无证据 |
 

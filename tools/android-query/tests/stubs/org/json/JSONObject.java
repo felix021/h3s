@@ -62,6 +62,13 @@ public class JSONObject {
         throw new JSONException("字段 " + key + " 不是布尔");
     }
 
+    /** 对齐 Android org.json：取嵌套对象，不存在/非对象抛 JSONException（getKeyRemap 的 map 用）。 */
+    public JSONObject getJSONObject(String key) throws JSONException {
+        Object v = map.get(key);
+        if (v instanceof JSONObject) return (JSONObject) v;
+        throw new JSONException("字段 " + key + " 不是对象");
+    }
+
     public String optString(String key, String fallback) {
         Object v = map.get(key);
         return v instanceof String ? (String) v : fallback;

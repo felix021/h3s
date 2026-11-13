@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H3S 按键重映射（壳层组帧）</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; font: 14px/1.5 system-ui, sans-serif; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 20px 0 8px; color: #9fc3e8; }
+  .sub { color: #8a919c; font-size: 12px; margin-bottom: 10px; }
+  a { color: #7fb8e8; }
+  .warn { display: none; padding: 8px 10px; border-radius: 8px; background: #4a3b12; color: #ffd479; margin: 8px 0; }
+  .card { background: #1c1f25; border: 1px solid #2a2e36; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+  button { background: #2b4a6b; color: #e8f0fa; border: 1px solid #3d5f85; border-radius: 8px; padding: 6px 12px; font-size: 14px; }
+  button:active { background: #35597f; }
+  button.off { background: #3a3f47; border-color: #4a505a; }
+  button.danger { background: #6b2b2b; border-color: #853d3d; }
+  button.mini { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  select { background: #14161a; color: #d8dce2; border: 1px solid #2a2e36; border-radius: 6px; padding: 3px 6px; font-size: 13px; max-width: 150px; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  th, td { border: 1px solid #2a2e36; padding: 5px 7px; text-align: left; font-size: 13px; }
+  th { color: #9fc3e8; font-weight: 600; background: #191c22; }
+  th.guess, td.guess { color: #ffd479; }
+  .cell { display: flex; gap: 5px; align-items: center; }
+  pre { background: #101216; border: 1px solid #2a2e36; border-radius: 8px; padding: 8px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
+  .note { font-size: 12px; color: #8a919c; }
+  .state { font-size: 12px; padding: 2px 8px; border-radius: 10px; }
+  .armed { background: #1d3a24; color: #7fd18a; }
+  .disarmed { background: #3a2626; color: #ff8a80; }
+  label.wire { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>H3S 按键重映射</h1>
+<div class="sub">三键 × 五手势网格，每格选一个动作 → <code>h3s.setKeyRemap(eventID, action)</code> 组帧。
+eventID 布局 <code>0x{逻辑键}0{连击数}</code>（音量- 0x03 / 音量+ 0x05 / 多功能 0x07）。
+<a href="index.html">← 返回 EQ 演示页</a></div>
+
+<div id="noBridge" class="warn"></div>
+
+<div class="card">
+  <div class="row">
+    <button id="armBtn" class="danger">武装写入</button>
+    <span id="armState" class="state disarmed">未武装：写命令会被 bridge 拒绝</span>
+  </div>
+  <div class="row">
+    <span class="note">wire 候选（H3S 实际走哪条 [未钉]，真机抓包定案）：</span>
+    <label class="wire"><input type="radio" name="wire" value="adv" checked> ADV type2（默认）</label>
+    <label class="wire"><input type="radio" name="wire" value="custom"> 自定义 0x2b</label>
+  </div>
+  <div class="note">门控对应 EqWritePolicy：不武装就不组任何写帧。ADV type2 = opcode 0xC2 + type2 mask + 三元组
+  [key, gesture, action]；0x2b = 自定义命令 FF/0x2b + 三元组。</div>
+</div>
+
+<h2>映射网格（eventID × 动作）</h2>
+<div class="card">
+  <table id="grid">
+    <thead>
+      <tr><th>按键 \ 手势</th><th>单击</th><th>双击</th><th>三击</th><th>四击</th><th class="guess">长按 [未钉]</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <div class="row">
+    <button id="readBtn">读取当前映射</button>
+    <span class="note">读的是壳侧工作副本（<code>h3s.getKeyRemap()</code>，初始=QCY 面板默认，写入成功后更新）；
+    设备真实读回待 ADV type2 查询响应形状钉死后接入。</span>
+  </div>
+  <div class="note">动作编号：0 无作用 / 1 播放/暂停 / 2 上一曲 / 3 下一曲 / 4 语音助手 / 5 音量+ /
+  6 音量- / 7 模式切换（控制面板全集）+ 11 ANC 切换（固件侧动作、面板外）。长按 eventID 低字节按
+  单击~四击 1..4 顺延假设为 5（App 面板无长按条目；固件配置 key 48 是 3 键×5 手势的 15 项映射表）。</div>
+</div>
+
+<h2>调用回显</h2>
+<div class="card"><pre id="out">（尚无调用）</pre></div>
+
+<script>
+'use strict';
+var hasBridge = typeof h3s !== 'undefined';
+
+// 键/手势/动作全集（与 KeyRemapFrame.java、data/controlpanel_qcyh3s_16764.json 一致）
+var KEYS = [
+  { id: 0x03, name: '音量-' },
+  { id: 0x05, name: '音量+' },
+  { id: 0x07, name: '多功能' }
+];
+var GESTURES = ['单击', '双击', '三击', '四击', '长按'];   // 低字节 1..5（5=假设）
+var ACTIONS = [
+  { cmd: -1, name: '未知（未钉）' },
+  { cmd: 0, name: '无作用' },
+  { cmd: 1, name: '播放/暂停' },
+  { cmd: 2, name: '上一曲' },
+  { cmd: 3, name: '下一曲' },
+  { cmd: 4, name: '语音助手' },
+  { cmd: 5, name: '音量+' },
+  { cmd: 6, name: '音量-' },
+  { cmd: 7, name: '模式切换' },
+  { cmd: 11, name: 'ANC 切换（固件侧）' }
+];
+// QCY 面板 defaultFun（长按无条目 → -1 未知）
+var DEFAULTS = { 0x0301: 6, 0x0501: 5, 0x0701: 1, 0x0702: 7, 0x0703: 4, 0x0704: 0 };
+
+if (!hasBridge) {
+  var w = document.getElementById('noBridge');
+  w.style.display = 'block';
+  w.textContent = '当前环境没有 h3s bridge（普通浏览器直接打开本页）。页面可预览，'
+    + '但按钮调用只做本地提示；请在 H3S WebView 壳（tools/android-query 的 WebShellActivity）里打开才能真实组帧。';
+}
+
+function show(label, text) {
+  var out = document.getElementById('out');
+  var t = new Date().toTimeString().slice(0, 8);
+  out.textContent = t + ' ' + label + '\n' + text + '\n\n' + out.textContent;
+}
+function callBridge(label, fn) {
+  if (!hasBridge) { show(label, '无 h3s bridge（普通浏览器预览模式）'); return; }
+  var r;
+  try { r = fn(); } catch (e) { show(label, 'bridge 异常: ' + e); return; }
+  var o = JSON.parse(r);
+  if (o.ok && o.bytesHex) show(label, 'ok\nbytesHex: ' + o.bytesHex);
+  else if (o.ok) show(label, 'ok\n' + JSON.stringify(o.map));
+  else show(label, '错误: ' + o.error);
+  return o;
+}
+
+// 武装
+var armBtn = document.getElementById('armBtn'), armState = document.getElementById('armState');
+var armed = hasBridge ? h3s.isArmed() : false;
+function refreshArm() {
+  armBtn.textContent = armed ? '解除武装' : '武装写入';
+  armBtn.className = armed ? '' : 'danger';
+  armState.textContent = armed ? '已武装：写命令可组帧（仍未连接耳机）' : '未武装：写命令会被 bridge 拒绝';
+  armState.className = 'state ' + (armed ? 'armed' : 'disarmed');
+}
+armBtn.onclick = function () {
+  if (!hasBridge) { show('armWrite', '无 h3s bridge'); return; }
+  armed = !armed; h3s.armWrite(armed); refreshArm();
+  show('armWrite(' + armed + ')', 'isArmed=' + h3s.isArmed());
+};
+refreshArm();
+
+// wire 选择
+function wireIsCustom() {
+  return document.querySelector('input[name=wire]:checked').value === 'custom';
+}
+
+// 网格
+var tbody = document.querySelector('#grid tbody');
+KEYS.forEach(function (k) {
+  var tr = document.createElement('tr');
+  var th = document.createElement('th');
+  th.textContent = k.name + ' (0x' + k.id.toString(16) + ')';
+  tr.appendChild(th);
+  GESTURES.forEach(function (g, gi) {
+    var td = document.createElement('td');
+    if (gi === 4) td.className = 'guess';
+    var eventId = (k.id << 8) | (gi + 1);
+    var wrap = document.createElement('div'); wrap.className = 'cell';
+    var sel = document.createElement('select');
+    sel.id = 'e' + eventId;
+    ACTIONS.forEach(function (a) {
+      var opt = document.createElement('option');
+      opt.value = a.cmd; opt.textContent = a.name;
+      sel.appendChild(opt);
+    });
+    sel.value = (DEFAULTS[eventId] !== undefined) ? DEFAULTS[eventId] : -1;
+    var btn = document.createElement('button');
+    btn.className = 'mini'; btn.textContent = '写';
+    btn.onclick = function () {
+      var action = parseInt(sel.value, 10);
+      if (action < 0) { show('setKeyRemap(0x' + eventId.toString(16) + ')', '长按默认动作未知（-1）：先在 下拉里选一个动作再写'); return; }
+      var label = (wireIsCustom() ? 'setKeyRemapCustom' : 'setKeyRemap') + '(0x'
+        + eventId.toString(16) + ', ' + action + ')  // ' + k.name + GESTURES[gi];
+      callBridge(label, function () {
+        return wireIsCustom() ? h3s.setKeyRemapCustom(eventId, action) : h3s.setKeyRemap(eventId, action);
+      });
+    };
+    wrap.appendChild(sel); wrap.appendChild(btn);
+    td.appendChild(wrap);
+    tr.appendChild(td);
+  });
+  tbody.appendChild(tr);
+});
+
+// 读取当前映射（本地工作副本）
+document.getElementById('readBtn').onclick = function () {
+  var o = callBridge('getKeyRemap()', function () { return h3s.getKeyRemap(); });
+  if (!o || !o.ok) return;
+  Object.keys(o.map).forEach(function (ek) {
+    var sel = document.getElementById('e' + ek);
+    if (sel) sel.value = o.map[ek];
+  });
+  show('getKeyRemap → 已回填网格', JSON.stringify(o.map));
+};
+</script>
+</body>
+</html>

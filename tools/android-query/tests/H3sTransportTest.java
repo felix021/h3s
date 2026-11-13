@@ -2,6 +2,7 @@ import cn.felix021.h3squery.EqFrame;
 import cn.felix021.h3squery.EqFrame.EqBand;
 import cn.felix021.h3squery.H3SBridge;
 import cn.felix021.h3squery.H3sTransport;
+import cn.felix021.h3squery.KeyRemapFrame;
 import cn.felix021.h3squery.LoopbackTransport;
 import cn.felix021.h3squery.SerialBleTransport;
 import java.util.ArrayList;
@@ -66,6 +67,7 @@ public class H3sTransportTest {
 
     public static void main(String[] args) throws Exception {
         endToEndEqWrite();
+        endToEndKeyRemap();
         fragmentationSmallMtu();
         serialTwoFrames();
         notArmedRejected();
@@ -75,8 +77,8 @@ public class H3sTransportTest {
         loopbackNoTransportUnchanged();
         deframerUnits();
         System.out.println("H3sTransportTest passed: 端到端组帧→队列→Loopback 逐字节→SN 匹配回调、"
-            + "跨片重组、串行（第二条等第一条）、未武装/未连接拒绝、SN 回绕、响应超时、"
-            + "未注入 transport 兼容、deframer 单元");
+            + "按键重映射双 wire 端到端（ADV type2 默认/0x2b）、跨片重组、串行（第二条等第一条）、"
+            + "未武装/未连接拒绝、SN 回绕、响应超时、未注入 transport 兼容、deframer 单元");
     }
 
     /** 端到端：writeEq 全链路——Loopback 收到的帧与 EqFrame 直组逐字节一致，响应按 SN 回到 sink。 */
@@ -109,6 +111,42 @@ public class H3sTransportTest {
         // 载荷回显 = cmdid|data_len|data（Loopback 桩形状，setter 响应载荷[未钉]见类注释）
         bytes("响应载荷回显", unhex(resp.getString("payloadHex")),
             unhex("2249" + H3SBridge.hex(EqFrame.buildEqData(2, -400, tenBands()))));
+    }
+
+    /** 端到端：setKeyRemap 两条 wire 全链路——默认 ADV type2（opcode C2，Loopback 亦回响应）与
+     *  候选 B 0x2b；Loopback 收帧与 KeyRemapFrame 直组逐字节一致，响应按 SN 匹配、缓存已更新。 */
+    static void endToEndKeyRemap() throws Exception {
+        LoopbackTransport loopback = new LoopbackTransport();
+        Events events = new Events();
+        H3SBridge b = new H3SBridge(loopback, events);
+        loopback.connect();
+        b.armWrite(true);
+
+        // 默认 wire（ADV type2）：多功能双击→模式切换
+        JSONObject adv = new JSONObject(b.setKeyRemap(1794, 7));
+        expect(adv.getBoolean("ok") && adv.getBoolean("sent"), "setKeyRemap 应发出: " + adv);
+        eq("ADV 设备收帧数", 1, loopback.receivedFrames.size());
+        bytes("ADV type2 逐字节", loopback.receivedFrames.get(0), KeyRemapFrame.buildAdvType2Command(adv.getInt("sn"), 7, 2, 7));
+        JSONObject advResp = events.first("response");
+        expect(advResp.getBoolean("ok"), "ADV type2 响应 status 应为 0: " + advResp);
+        eq("ADV 响应 sn", adv.getInt("sn"), advResp.getInt("sn"));
+        bytes("ADV 响应载荷（mask+三元组回显，桩形状[未钉]）", unhex(advResp.getString("payloadHex")),
+            unhex("00000004" + "070207"));
+
+        // 候选 B wire（FF/0x2b）：音量- 单击→上一曲
+        JSONObject custom = new JSONObject(b.setKeyRemapCustom(769, 2));
+        expect(custom.getBoolean("ok") && custom.getBoolean("sent"), "setKeyRemapCustom 应发出: " + custom);
+        eq("两条后设备收帧数", 2, loopback.receivedFrames.size());
+        bytes("0x2b 逐字节", loopback.receivedFrames.get(1), KeyRemapFrame.buildCustomCommand(custom.getInt("sn"), 3, 1, 2));
+        JSONObject customResp = events.byEvent("response").get(1);
+        expect(customResp.getBoolean("ok"), "0x2b 响应 status 应为 0: " + customResp);
+        eq("0x2b 响应 seq", custom.getInt("seq"), customResp.getInt("seq"));
+        bytes("0x2b 响应载荷（cmdid|n|data 回显）", unhex(customResp.getString("payloadHex")), unhex("2b03" + "030102"));
+
+        // 成功后本地映射缓存更新（getKeyRemap 工作副本）
+        JSONObject map = new JSONObject(b.getKeyRemap()).getJSONObject("map");
+        eq("缓存 多功能双击", 7, map.getInt("1794"));
+        eq("缓存 音量- 单击", 2, map.getInt("769"));
     }
 
     /** 跨片路径：MTU 压到 27（payload 24B），81B 帧 4 片——设备侧重组后仍逐字节正确。 */

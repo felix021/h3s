@@ -9,7 +9,11 @@ import java.util.Arrays;
  *   - 0x22 EQ：data_len%7==3（3B 头 + 每段 7B，docs/eq-cmd-0x22-layout.md 路 H）；
  *   - 0x17 ANC：data_len==3，data=`mode scene strength`，mode 1..3（QCY 线协议降噪/正常/通透）；
  *   - 0x1d 提示音音量：data_len==2，data=`value 占位`，value∈{3,6,8}（固件只读 data[0]，
- *     第二字节忽略；档位 3/6/8 是控制面板层约束，固件接收层不钳）。
+ *     第二字节忽略；档位 3/6/8 是控制面板层约束，固件接收层不钳）；
+ *   - 0x2b 按键重映射（候选 B）：data_len==3，data=[key,gesture,action]，字段域照
+ *     KeyRemapFrame（key∈{3,5,7}、gesture 1..5（5=长按假设）、action 0..7/11）；
+ *   - 0xC2 ADV type2 写（候选 A，[假设] C1 读对偶）：body=SN+mask(00 00 00 04)+3B 三元组，
+ *     字段域同上（docs/app-protocol.md §2.5，两条 wire 真机抓包定案前并存放行）。
  * 不开任意字节写总开关（AGENTS 红线）。未 armed 时退回 QueryPolicy（只读帧），所有写一律拒绝。
  *
  * 纯逻辑判定，不接真机传输层——传输接线需真机联调，本路不做。
@@ -17,6 +21,9 @@ import java.util.Arrays;
 public final class EqWritePolicy {
     public static final int CMD_ANC = 0x17;            // ANC 模式切换 cmdid
     public static final int CMD_PROMPT_VOLUME = 0x1d;  // 提示音音量 cmdid
+    public static final int CMD_KEY_REMAP = KeyRemapFrame.CMD_ID; // 按键重映射 cmdid（候选 B）
+    /** ADV 设备设置写 opcode（候选 A；[假设] C1 读对偶，KeyRemapFrame 详注）。 */
+    public static final int ADV_WRITE_OPCODE = KeyRemapFrame.ADV_WRITE_OPCODE;
     /** 提示音音量合法档位（控制面板 3/6/8=最小/中等/最大；固件接收层不钳，白名单从严）。 */
     public static final int[] PROMPT_VOLUME_LEVELS = {3, 6, 8};
 
@@ -39,9 +46,12 @@ public final class EqWritePolicy {
         return true;
     }
 
-    /** 形状完全匹配的 setter：flags=C0、opcode=0xFF、cmdid∈{0x17,0x1d,0x22} 且各自载荷形状匹配。 */
+    /** 形状完全匹配的 setter：flags=C0、（opcode=0xFF 且 cmdid∈{0x17,0x1d,0x22,0x2b} 且各自
+     *  载荷形状匹配）或（opcode=0xC2 且 body=SN+type2 mask+合法三元组，ADV type2 写候选）。 */
     private static boolean isSetter(byte[] frame, int flags, int op, int n) {
-        if (flags != EqFrame.FLAGS_CMD || op != EqFrame.OPCODE_CUSTOM || n < 5) return false; // body 至少 SN+cmdid+data_len+2B data（0x1d 最小形状）
+        if (flags != EqFrame.FLAGS_CMD) return false;
+        if (op == ADV_WRITE_OPCODE) return isAdvType2Setter(frame, n);
+        if (op != EqFrame.OPCODE_CUSTOM || n < 5) return false; // body 至少 SN+cmdid+data_len+2B data（0x1d 最小形状）
         int cmdId = frame[8] & 255;                              // body[1] = cmdid
         int dataLen = frame[9] & 255;                            // body[2] = data_len
         if (dataLen != n - 3) return false;
@@ -55,8 +65,18 @@ public final class EqWritePolicy {
                 int v = frame[10] & 255;
                 for (int level : PROMPT_VOLUME_LEVELS) if (level == v) return true;
                 return false;
+            case CMD_KEY_REMAP:             // 0x2b：data=[key,gesture,action]，字段域照 KeyRemapFrame
+                return dataLen == 3 && KeyRemapFrame.isValidTriple(frame[10] & 255, frame[11] & 255, frame[12] & 255);
             default:
                 return false;
         }
+    }
+
+    /** ADV type2 写（候选 A）：body=SN+mask(4B 大端=00 00 00 04)+[key,gesture,action]，共 8B。 */
+    private static boolean isAdvType2Setter(byte[] frame, int n) {
+        if (n != 8) return false;
+        int mask = ((frame[8] & 255) << 24) | ((frame[9] & 255) << 16) | ((frame[10] & 255) << 8) | (frame[11] & 255);
+        if (mask != KeyRemapFrame.ADV_TYPE2_MASK) return false;
+        return KeyRemapFrame.isValidTriple(frame[12] & 255, frame[13] & 255, frame[14] & 255);
     }
 }
