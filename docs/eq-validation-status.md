@@ -4,9 +4,10 @@
 差异点 × 每个验证层，逐格标注状态与证据等级，并给出 r2 失败机制的定位结论、「从
 现在到完整验证」的最短路径和用户决策选项。这是**面向决策的阶段性综合材料**，不是
 新的验证执行记录。**只读**：未改 tools/ 任何代码、未跑改报告的 probe；全部结论
-转录自既有文档（docs/eq-payload-semantics.md〔路 BT〕、HANDOFF 路 BW/CA 条目、
+转录自既有文档（docs/eq-payload-semantics.md〔路 BT〕、HANDOFF 路 BW/CA/CP 条目、
 docs/d2-audio-first-scene.md〔路 BX〕、docs/eq-fence-repair.md、docs/eq-toggle.md、
-docs/d1-acceptance.md〔路 BR〕及启动前缀 parity 记录〔路 Y/AJ/BK〕）。
+docs/d1-acceptance.md〔路 BR〕、docs/d2b-framework-task.md〔路 CI/CM/CP〕及启动
+前缀 parity 记录〔路 Y/AJ/BK〕）。
 
 **红线不变**：候选 SHA256
 `67ba97efb83a15ec9df14de574667c6a77126d43ac6d8e5f5e645cb91126f222`
@@ -43,15 +44,15 @@ parity**＝official/b79/候选同前缀同场景逐步差分；**D2 效果节点
 
 | 差异点＼层 | 静态证明 | 函数级回放 | 控制面场景 | 事件注入 | 三镜像 parity | D2 效果节点 |
 |---|---|---|---|---|---|---|
-| **A. 5 钩子站点** | ✅ BT §2.1 站点表（原始/替换 6B、触发条件、目标 codec 核对）+ BR §3.1 十游程 + BW S1 站点字节零差异设计验证 [静态] | ✅ 五入口在修复 fence 下进入真实补丁、旧 fence 下全 BLOCKED 保持 REJECTED（eq-fence-repair.md probe 五受限入口）[回放] | ✅ **4/5 站点**执行：0x6025364/0x60059ce/0x6025030/0x602510e（BW S1-S4）；❌ 0x6078846 归 D2 [场景] | ✅ BW S1 从 handler 0x60252c6 入口注入双击、S3 直调 0x60057e6(r0=18)；CA 证音频入口（handler[47]）注入机制可行 [场景] | ✅ 启动前缀 289,849（严格）/447,490（条件）parity：D1 窗口零钩子消费（BR §3.5 P4-P7 动态）[文档：路 Y/AJ/BK] | ⏳ 0x6078846 执行覆盖+0x60787ac 重开路径＝D2-B；依赖 resfile→D2-A→D2-B（§3） |
-| **B. fence 立即数** | ✅ BT §1.1：r2 值 0x060c3338 对全五入口**必拒**（首目标 0x60e3074 超界 130,364B，不依赖端点策略）；修复值 0x060e31c5 在半开/闭合/整指令跨界三种端点策略下均充分（最小充分界 0x060e31b2，裕量 19B＝载荷外延）；硅端点未认证 caveat [静态] | ✅ probe_debug_startup 隔离 126 步配置回放：旧 r2 拒于 0x60e3092、修复候选执行 0x60e3096；probe 从两条 `li.u32` 实测读取上下限（eq-fence-repair.md/platform-startup.md）[回放] | ✅ BW 场景内 fence 模型（Flash 执行 fence 只约束 ≥0x06000000 取指）下五场景全过 [场景] | ✅ 同 BW——注入链真实执行载荷取指 [场景] | ✅ P1 已显形闭合（116,148 @ debug_init，寄存器值差，路 AJ/BK）；平台回放 127,239 两镜像各核对实际 Flash 上限；条件架构回放 110,818 同前缀 [文档] | ⏳ 间接：载荷执行面在 D2 全程受 fence 约束，节点 open/重开的执行即其动态行使（无独立 D2 断言） |
-| **C. config.dat index/CRC** | ✅ BR §3.1 游程钉死 + eq-fence-repair.md 审计：旧资源内容/位置不变、boot-info reserved 及无关字节不许变、两个 CRC-valid 负向样本（改 reserved / `Eq0Media`→`Xq0Media`）均被独立审计拒绝 [静态] | ➖ 数据面非代码，函数回放不适用（消费显形在启动前缀 trace 层闭合，见 parity 列） | ❌ 未开始：0x6024fe6 深链（配置子系统→文件读）未建模，BW S4 诚实停于站点尾窗 0x6025026..35 重放；**阻塞＝resfile 变换（路 CD 调研中）** | ❌ 同左（预设装载深链不可达） | ✅ P3 已闭合：169,439 控制流分歧→reconverge，+458 步止步/枚举多一轮（路 AJ）[文档] | ⏳ 随 D2-A 的 stream.bin 节点配置读取部分触达；config.dat 消费面完整验证随预设装载深链，依赖 resfile→D2 |
-| **D. 337B 载荷追加** | ✅ BT §1：102 条指令连续无洞解码 [0x60e3074,0x60e31b2)+19B 字符串；访问面分类（载荷外代码引用全 <0x060c3338、RAM 引用仅 0x1265EA/0x127AAC）；sha 三方一致 [静态] | ✅ 15 个编译函数用例（8 source/3 toggle/4 node-open）+ BT instrumented 写集（仅 0x1265EA、ctx+35、自身栈；type10 守卫零写）+ eq_toggle 三态表（§2）；DSP/RTOS 桩显式 [回放] | ✅ BW S1 往返（翻开 SEND(2,1)×2 无 RESTORE 出 0x81；翻回 SEND(2,0)×2+RESTORE(0,10) 同步真实执行、终值 0x01）、S2 type10 零写零 post、S5 未对齐 strncpy 真实执行==桩互证 [场景] | ✅ 同 BW [场景] | ✅ 启动前缀 D1 窗口零取指（P8；b79 侧 LIM 0x060c3338 本身禁执行）+ 追加文件资源/CRC 审计（eq-fence-repair.md）[文档] | ⏳ node+35 翻转+重开＝「EQ 行为差」验证最后一块（D2-B/D2-D，§3） |
+| **A. 5 钩子站点** | ✅ BT §2.1 站点表（原始/替换 6B、触发条件、目标 codec 核对）+ BR §3.1 十游程 + BW S1 站点字节零差异设计验证 [静态] | ✅ 五入口在修复 fence 下进入真实补丁、旧 fence 下全 BLOCKED 保持 REJECTED（eq-fence-repair.md probe 五受限入口）[回放] | ✅ **4/5 站点**执行：0x6025364/0x60059ce/0x6025030/0x602510e（BW S1-S4）；0x6078846 见 D2 列 [场景] | ✅ BW S1 从 handler 0x60252c6 入口注入双击、S3 直调 0x60057e6(r0=18)；CA 证音频入口（handler[47]）注入机制可行 [场景] | ✅ 启动前缀 289,849（严格）/447,490（条件）parity：D1 窗口零钩子消费（BR §3.5 P4-P7 动态）[文档：路 Y/AJ/BK] | ✅ 路 CP/D2-C：descriptor walk（0x6074938, scene 0xd96f）建真节点→cmd-11 命中→bypass=0 重开 0x60787ac→钩子 0x6078846 真实执行覆盖（三镜像；repaired 进 eq_open_config） |
+| **B. fence 立即数** | ✅ BT §1.1：r2 值 0x060c3338 对全五入口**必拒**（首目标 0x60e3074 超界 130,364B，不依赖端点策略）；修复值 0x060e31c5 在半开/闭合/整指令跨界三种端点策略下均充分（最小充分界 0x060e31b2，裕量 19B＝载荷外延）；硅端点未认证 caveat [静态] | ✅ probe_debug_startup 隔离 126 步配置回放：旧 r2 拒于 0x60e3092、修复候选执行 0x60e3096；probe 从两条 `li.u32` 实测读取上下限（eq-fence-repair.md/platform-startup.md）[回放] | ✅ BW 场景内 fence 模型（Flash 执行 fence 只约束 ≥0x06000000 取指）下五场景全过 [场景] | ✅ 同 BW——注入链真实执行载荷取指 [场景] | ✅ P1 已显形闭合（116,148 @ debug_init，寄存器值差，路 AJ/BK）；平台回放 127,239 两镜像各核对实际 Flash 上限；条件架构回放 110,818 同前缀 [文档] | ✅ 路 CP/D2-C：载荷 eq_open_config（0x60e30f6）在 repaired 重开路径真实执行（bypass=0），修复 fence 约束下的节点 open/重开动态行使（无独立 D2 断言，间接闭合） |
+| **C. config.dat index/CRC** | ✅ BR §3.1 游程钉死 + eq-fence-repair.md 审计：旧资源内容/位置不变、boot-info reserved 及无关字节不许变、两个 CRC-valid 负向样本（改 reserved / `Eq0Media`→`Xq0Media`）均被独立审计拒绝 [静态] | ➖ 数据面非代码，函数回放不适用（消费显形在启动前缀 trace 层闭合，见 parity 列） | ❌ 未开始：0x6024fe6 深链（配置子系统→文件读）未建模，BW S4 诚实停于站点尾窗 0x6025026..35 重放；**阻塞＝resfile 变换（路 CD 调研中）** | ❌ 同左（预设装载深链不可达） | ✅ P3 已闭合：169,439 控制流分歧→reconverge，+458 步止步/枚举多一轮（路 AJ）[文档] | ⏳ 部分：stream.bin §5 节点配置读取已真实触达（路 CP/D2-C 的 open-config 0x60750aa→0x60751da 读 file_cfg）；config.dat 消费面仍随预设装载深链阻塞 |
+| **D. 337B 载荷追加** | ✅ BT §1：102 条指令连续无洞解码 [0x60e3074,0x60e31b2)+19B 字符串；访问面分类（载荷外代码引用全 <0x060c3338、RAM 引用仅 0x1265EA/0x127AAC）；sha 三方一致 [静态] | ✅ 15 个编译函数用例（8 source/3 toggle/4 node-open）+ BT instrumented 写集（仅 0x1265EA、ctx+35、自身栈；type10 守卫零写）+ eq_toggle 三态表（§2）；DSP/RTOS 桩显式 [回放] | ✅ BW S1 往返（翻开 SEND(2,1)×2 无 RESTORE 出 0x81；翻回 SEND(2,0)×2+RESTORE(0,10) 同步真实执行、终值 0x01）、S2 type10 零写零 post、S5 未对齐 strncpy 真实执行==桩互证 [场景] | ✅ 同 BW [场景] | ✅ 启动前缀 D1 窗口零取指（P8；b79 侧 LIM 0x060c3338 本身禁执行）+ 追加文件资源/CRC 审计（eq-fence-repair.md）[文档] | ✅ 路 CP/D2-C：node+35 翻转（bypass=1→1、bypass=0→重开）+ 三镜像差异（repaired 关态强制 1 vs b79/official 保持 0）走真实 descriptor-walk 建出的节点——「EQ 行为差」验证最后一块闭合 |
 
-**矩阵汇总**：24 格中 ✅17（A 行控制面为 4/5 站点部分覆盖）、➖1、❌2（均在 C 行，
-阻塞＝resfile 变换）、⏳4（全部依赖 D2 链）。**已绿的四层（静态/函数级/控制面/
-parity）全部是 derived/synthetic-not-measured 等级**；硅片端点策略、真实 DSP/RTOS
-行为未认证。
+**矩阵汇总**：24 格中 ✅20（A 行控制面为 4/5 站点部分覆盖、D2 效果节点列 3 格闭合）、➖1、
+❌2（均在 C 行，阻塞＝resfile 变换/config.dat 预设装载深链）、⏳1（C 行 D2 列：config.dat
+消费面）。**已绿的五层（静态/函数级/控制面/parity/D2 效果节点）全部是
+derived/synthetic-not-measured 等级**；硅片端点策略、真实 DSP/RTOS 行为未认证。
 
 ### 1.1 各层边界（诚实收口，逐层）
 
@@ -70,8 +71,13 @@ parity）全部是 derived/synthetic-not-measured 等级**；硅片端点策略�
   official↔b79 零分歧、EQ +458 同停点 reconverge）；差异点 P1/P2/P3/P10 已显形
   闭合，P4-P8 在 D1 窗口零消费（动态记录支持，非「静态不可达」——BT 对 BR §3.3
   的修正）。
-- **D2 效果节点层**：尚未开始；唯一能把「EQ 行为差」钉到节点状态的验证
-  （BT §4、BX D2-B）。
+- **D2 效果节点层**：**已闭合（路 CP/D2-C，2026-11-13）**——把「EQ 行为差」钉到
+  节点状态的验证（BT §4、BX D2-B/D2-D）：descriptor walk（0x6074938, 音乐场景
+  0xd96f）真实建出 eq 节点 MusicEqBt（uuid 0x737b/subid 1），cmd-11 命中真节点，
+  node+35（ctx[35]）三镜像差异走真实链（bypass=1 全等=1；bypass=0 重开→钩子
+  0x6078846：b79/official 保持 0、repaired 关态强制 1）。证据等级
+  synthetic-not-measured（0x1265EA=0x81 关态 fixture + 单任务桩），见
+  docs/d2b-framework-task.md §11。
 
 ## 2. r2 失败机制定位结论（解释链）
 
@@ -116,38 +122,35 @@ parity）全部是 derived/synthetic-not-measured 等级**；硅片端点策略�
 
 ## 3. 还差什么：从现在到完整验证的最短路径
 
-**缺口**＝D2 效果节点状态对比（BX D2-B 断言集）：
+**D2 效果节点状态对比已闭合（路 CP/D2-C，2026-11-13）**——原「缺口」（BX D2-B
+断言集）三件事全部落地到节点状态：
 
-- EQ 关态（0x1265EA bit7=1）开音频流 → MusicEqBt/Eq0Media 节点 **ctx[35]/node+35
-  ==1**（修复镜像）vs **文件配置值**（b79）；
-- 其他节点不受影响（旁证组：wdrc 的 DRC7/8/9、非目标 eq 实例 EscoDlEq 等的 +35
-  不翻转）；
-- 双击后框架消费两条 subcommand-2 消息 → node+35 翻转 + 0x60787ac 重开路径执行
-  （0x6078846 钩子在此显形——5 站点中唯一未执行的一个）。
+- EQ 关态（0x1265EA bit7=1）→ descriptor walk（0x6074938, 音乐场景 0xd96f）真实
+  建出 MusicEqBt/Eq0Media 节点，node+35/ctx[35] 三镜像差异走真实链：bypass=1 全等
+  =1；bypass=0 重开 0x60787ac → 钩子 0x6078846（b79/official 保持 0、repaired 关态
+  强制 1）——「0x6078846 是 5 站点中唯一未执行」转为真实执行；
+- cmd-11 参数消息真实命中 MusicEqBt（subcmd2 0x6078a2e），不再是合成节点直调；
+- 旁证组（wdrc 的 DRC7/8/9、非目标 eq 实例 EscoDlEq 等的 +35 不翻转）与 D2-A 六 PC
+  到达状态见 docs/d2b-framework-task.md §11。
 
-**依赖链与当前阻塞点**（按序）：
+**剩余缺口**（矩阵 ⏳1 + 框架调度形态）：
 
-1. **resfile 变换**（路 CD 调研中，在途未入 HANDOFF）：CA 发现 stream.bin 运行时
-   视图≠flash 原始字节——加载器 0x6074234 首读 4B 要求 `'J''S'` 头，而公开
-   stream.bin 节表在原始 offset 0（b79/official 全字节扫描证实）；真机头其余字节
-   不在任何公开工件（SDK 参考=20B 头 {flag'JS'+hash u16+16B 哈希区}，QCY 实际
-   布局未证）。resfile 层必提供变换视图——**D2-A 继续推进的第一缺口**。
-2. **ROM 深层多参内存 API 0x1fe30（体 0xbb70）**：具名合成头 fixture 下返回 -7
-   中止，归因未决（疑与合成头字节/合成堆态相关）——resfile 变换钉死后重验。
-3. **音乐场景注入的状态门清单未逐门枚举**（0x60207a2 tbh 31 路、QCY 连接/模式
-   位）——场景设计项，BT/ BX「不承诺一次注入覆盖多站」口径。
-4. **框架任务创建点未静态钉死**（一处运行时观测）+ 'jlstream' 队列消费上下文
-   （D2-D）——toggle 往返的节点面需要框架任务消费 cmd-11 消息。
+1. **config.dat 消费面（C 行 D2 列）**：0x6024fe6 深链（配置子系统→文件读）未建模，
+   阻塞＝resfile 变换（路 CD 调研中，在途未入 HANDOFF）；stream.bin §5 节点配置读取
+   已在 D2-C 真实触达（open-config 0x60750aa→0x60751da 读 file_cfg），config.dat
+   预设装载深链仍停，0x1fe30（ROM 深层多参内存 API，具名合成头 fixture 返回 -7）
+   的归因同为该链前置。
+2. **双击 toggle 往返的框架消息消费形态（D2-D 完整口径）**：D2-C 是单任务直调
+   cmd-11 消费（0x6075e22），框架任务 'jlstream' 真实调度消费两条 subcommand-2 消息
+   的往返未做（CI §6 fixture #2 任务切换/单任务交替已证可行，落地归 D2-D）——节点
+   面已闭合，调度面按 BX 草案 D2-A..D2-D 全套验收仍待 D2-D。
 
-**最短路径结论**：D2-B 的核心断言（open 时强制 bypass 写 ctx[35]）随 **D2-A
-流水线闭环**即可观测——0x60787ac open-config 内部序天然覆盖 0x60059ce+0x6078846
-两站点（BX §1.3），不需要 DAC/PCM 数据流；toggle 往返的节点面（node+35 翻转+重开）
-再需框架消息消费（D2-D 上下文）。**关键路线判断**：BW/CA 已证明 handler 入口
-注入的 opt-in 场景模式可用（不须先走完 D1 全梯），D2-B 核心断言可以骨架场景先行、
-与 D1 主线（CB/CD→…→BJ）并行推进；正式 D2 验收（D2-A..D2-D 全套）仍按 BX 草案
-以 BJ 为前提。**当前关键路径＝路 CD 的 resfile 变换**，其后依次是 0x1fe30 归因、
-D2-A 六 PC（0x607471e/0x6076b7a/0x60787ac/0x6078846/0x6078a2e/0x6074192——CA
-记录全部未到达）、D2-B 音乐场景。
+**最短路径结论**：D2-B 核心断言（open 时强制 bypass 写 ctx[35]）已随 D2-C 真实链
+闭合，不需要 DAC/PCM 数据流；剩余两件（config.dat 消费面、框架调度往返）分别随
+resfile 变换（路 CD）与 D2-D 任务调度收口。**关键路线判断**：BW/CA/CP 已证明
+handler 入口注入 + descriptor walk 直调的 opt-in 场景模式可用（不须先走完 D1 全梯）；
+正式 D2 验收（D2-A..D2-D 全套）仍按 BX 草案以 BJ 为前提。**当前关键路径＝路 CD 的
+resfile 变换**（config.dat 消费面与 0x1fe30 归因的前置），其后是 D2-D 框架调度往返。
 
 ## 4. 决策选项（只列证据状态，不推荐）
 
@@ -155,8 +158,8 @@ D2-A 六 PC（0x607471e/0x6076b7a/0x60787ac/0x6078846/0x6078a2e/0x6074192——C
 
 | 选项 | 内容 | 当前证据状态 | 前提/代价 |
 |---|---|---|---|
-| a | 等 D2 完整验证（D2-A..D2-D）后再考虑真机 | 矩阵 D2 列全 ⏳/❌；关键路径＝resfile 变换（CD 在途）→D2-A→D2-B/D2-D | 时间依赖 CD 调研结论与后续 2-3 路实施；验证完成前候选保持 UNTESTED 不动 |
-| b | 部分验证+控制面全绿的信心下提前评估 | 静态/函数级/控制面/parity 四层已绿（17/24 格）；缺口＝D2 效果节点层（「EQ 行为差」未验证）+ 硅端点策略未认证；全部证据 derived/synthetic-not-measured | 仍需用户显式授权 + UNTESTED 状态变更流程；不改 OTA 固定包门槛、不替换 Release（eq-fence-repair.md 红线）；接受「EQ 行为差未验证」的剩余风险 |
+| a | 等 D2 完整验证（D2-A..D2-D）后再考虑真机 | 矩阵 D2 效果节点列 3 格已闭合、剩 config.dat 消费面（C 行 D2 列 ⏳）；关键路径＝resfile 变换（CD 在途）→config.dat 消费面→D2-D 调度往返 | 时间依赖 CD 调研结论与后续 D2-D 实施；验证完成前候选保持 UNTESTED 不动 |
+| b | 部分验证+控制面全绿的信心下提前评估 | 静态/函数级/控制面/parity/D2 效果节点五层已绿（20/24 格）；剩余＝config.dat 消费面（resfile 变换阻塞）+ 硅端点策略未认证；全部证据 derived/synthetic-not-measured | 仍需用户显式授权 + UNTESTED 状态变更流程；不改 OTA 固定包门槛、不替换 Release（eq-fence-repair.md 红线）；接受「config.dat 消费面未验证」的剩余风险 |
 | c | 维持现状，仿真优先 | 主前沿 D1 梯推进中（当前 447,383 @ p3_ana_read_not_modeled，CB/CD 在途）；EQ 验证链随 D2 依赖自然闭合 | 与 a 的差别仅在节奏；D2 关键路径同样经过 CD |
 
 任一选项下：r2（`c8dae523…`）继续禁止刷入；本仓库任何流程都不构成对真机写入
@@ -166,9 +169,12 @@ D2-A 六 PC（0x607471e/0x6076b7a/0x60787ac/0x6078846/0x6078a2e/0x6074192——C
 
 - 硅片 LIM_PC0 端点包含关系/低位处理未认证（矩阵 B 行全部充分性结论的边界）。
 - §2 第 5 步（违例→症状映射）是相容性推断；无设备异常日志，不能宣称唯一故障点。
-- BW honest_boundaries 五条、CA -7 归因未决、BX §5 六条不确定处（框架任务创建点、
-  音乐场景门清单、eq/wdrc op1 谁消费 0x737b 消息、0xfe04xx/0xfe09xx SDK 名、
-  stream.bin 图节拓扑、IRQ39 对应）全部沿用，本页未消解任何一条。
+- BW honest_boundaries 五条、CA -7 归因未决（0x1fe30）、BX §5 六条不确定处中仍在途
+  的三条（音乐场景门清单逐门枚举、0xfe04xx/0xfe09xx SDK 名、IRQ39 对应）沿用；其余
+  三条已由后续路闭合——框架任务创建点（路 CI：jlstream 于 init walker 创建，非惰性）、
+  eq/wdrc op1 谁消费 0x737b 消息（路 CM 行为结论 + 路 CP 标签订正：eq op1=0x607898e、
+  wdrc=0x6078d0a、vocal_track_separation=0x6078594）、stream.bin 图节拓扑（路 CP/D2-C：
+  §0 图节 42 边、§2 目录 53 条、§5 参数节）。
 - 路 CD（resfile 变换）在途，本页按「调研中」转录自主会话分工，结论以该路落地
   文档为准。
 - L2-a 场景转录/freshness 钉子以 BJ 落地时的 main 为准（BR/BT caveat 原文）。

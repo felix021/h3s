@@ -1560,6 +1560,144 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         require(node35['repaired']['open_config_hook']['eq_state_0x01']['node_plus_35_value']==0,
                 'repaired open-config must keep ctx[35] = file_cfg[4] (0) when EQ on')
 
+    # -- scenario 5 (route CP / D2-C): the music-scene descriptor walk creates the real eq node --
+    # Direct-call 0x6074938(0xd96f, 0xf975) to run the REAL descriptor walk over the music
+    # pipeline (stream.bin §0 graph scene 0xd96f = pipeline-a2dp). The walk reads §0 (graph
+    # edges {src_uuid,src_subid,dst_uuid,dst_subid}) and §2 (the 53-record node directory
+    # {0x13,pad,uuid16,subid,name[16]}) through the real loader passthrough, creates each
+    # node via 0x60746e6 -> 0x607471e (0x607452e uuid->adapter + zalloc44 + op0 bind) and
+    # links it into the stream-slot list. MusicEqBt = eq(0x737b) subid 1. The cmd-11
+    # parameter message is then injected at the consumer 0x6075e22 and the REAL node-find
+    # chain 0x6075d8e -> 0x6075d10 finds the eq node -> 0x6074a72 -> eq op1 0x607898e ->
+    # subcmd2 0x6078a2e writes ctx[35] (the node+35 byte), where ctx = [node+12] (the 80B
+    # private context the eq bind 0x607876a allocates) is reached via node+16 -> subid
+    # entry +16. bypass=1 -> ctx[35]=1 (parity across the three images); bypass=0 ->
+    # ctx[35]=0 then reopen 0x6078b60 -> open-config 0x60787ac -> hook 0x6078846 over the
+    # REAL config read: b79/official write ctx[35]=file_cfg[4] (0), repaired jumps to
+    # eq_open_config and forces ctx[35]=1 when EQ-off (0x1265ea bit7, named synthetic
+    # state fixture) and the node name is MusicEqBt -- the CM-pinned three-image difference
+    # now observed through the real descriptor-walk-built node.
+    D2C_WALK=0x6074938
+    D2C_SCENE_UUID=0xd96f          # pipeline-a2dp scene in stream.bin §0 (42 edges)
+    D2C_PLUG_UUID=0xf975           # a2dp source plug (SBC/AAC decoder, plug table[0])
+    D2C_EQ_UUID=0x737b
+    D2C_EQ_SUBID=1                 # MusicEqBt
+    D2C_EQ_NAME=b'MusicEqBt\x00'
+    D2C_EQ_STATE_OFF=0x81          # 0x1265ea bit7=1: EQ off ("关态"); named synthetic state
+    def d2c_stream_map(meta,resources):
+        return (0x06000000+meta['content_offset'],resources['stream.bin'])
+    d2c_variants=[('b79',app,resources_b79,d2c_stream_map(meta_b79,resources_b79),(BASE,0x060c3338),None)]
+    if official is not None:
+        d2c_variants.append(('official',official,resources_official,
+                             d2c_stream_map(meta_official,resources_official),
+                             (BASE,0x060c3338),None))
+    if repaired_app is not None:
+        d2c_variants.append(('repaired',repaired_app,resources_b79,
+                             d2c_stream_map(meta_b79,resources_b79),
+                             (BASE,0x060e31c5),repaired_payload))
+
+    def run_d2c_walk(c,resources,stream_map,budget):
+        nodes=[];stop=None
+        try:
+            for _ in range(budget):
+                if c.pc==SENTINEL:break
+                if c.pc==0x607471e:                      # node create: r0=uuid, r6=subid
+                    nodes.append({'uuid':c.R[0]&0xFFFF,'subid':c.R[6]&0xFF})
+                if not stub_step(c,resources,True,stream_map,consume=True):
+                    c.step()
+        except (PermissionError,RuntimeError,ValueError,KeyError) as e:
+            stop={'pc':hex(c.pc),'error':f'{type(e).__name__}: {e}'}
+        return nodes,stop
+
+    def run_d2c_cmd11(c,resources,stream_map,msg,budget):
+        rec={'node_find_0x6075d8e_reached':False,'subcmd2_0x6078a2e_reached':False,
+             'open_config_0x60787ac_reached':False,'eq_hook_0x6078846_reached':False,
+             'eq_open_config_0x60e30f6_reached':False,'node_plus_35_value':None,
+             'found_node':None,'found_node_uuid':None,'found_node_subid':None,'stop':None}
+        try:
+            for _ in range(budget):
+                if c.pc==SENTINEL:break
+                if c.pc==0x6075d8e: rec['node_find_0x6075d8e_reached']=True
+                if c.pc==0x6078a2e: rec['subcmd2_0x6078a2e_reached']=True
+                if c.pc==0x60787ac: rec['open_config_0x60787ac_reached']=True
+                if c.pc==0x6078846: rec['eq_hook_0x6078846_reached']=True
+                if c.pc==0x60e30f6: rec['eq_open_config_0x60e30f6_reached']=True
+                if not stub_step(c,resources,True,stream_map,consume=True):
+                    c.step()
+        except (PermissionError,RuntimeError,ValueError,KeyError) as e:
+            rec['stop']={'pc':hex(c.pc),'error':f'{type(e).__name__}: {e}'}
+        found_node=struct.unpack('<I',c.mem.read(msg+40,4))[0]
+        if found_node:
+            ctx=struct.unpack('<I',c.mem.read(found_node+12,4))[0]
+            rec['found_node']=hex(found_node)
+            rec['found_node_uuid']=struct.unpack('<H',c.mem.read(found_node+2,2))[0]
+            rec['found_node_subid']=c.mem.read(found_node,1)[0]
+            rec['node_plus_35_value']=c.mem.read(ctx+35,1)[0]
+        return rec
+
+    effect={}
+    for ename,image,resources,stream_map,bounds,payload in d2c_variants:
+        per={}
+        for bypass in (1,0):
+            allocs.clear();vfs.clear();stream_reads.clear();stream_seeks.clear();pend_events.clear()
+            heap['next']=fixtures['synthetic_heap_base']
+            c=machine(image,stream_map,bounds=bounds,payload=payload)
+            c.mem.write(0x1264b8,struct.pack('<II',0x1264b8,0x1264b8))
+            c.mem.write(0x1264c8,struct.pack('<II',0x1264c8,0x1264c8))
+            c.mem.write(QCY+42,bytes([D2C_EQ_STATE_OFF]))   # EQ off fixture for the open-config branch
+            c.pc=D2C_WALK;c.rets=SENTINEL;c.sp=0x00134000
+            c.R[0]=D2C_SCENE_UUID;c.R[1]=D2C_PLUG_UUID;c.R[2]=3
+            for r in range(3,16):c.R[r]=0
+            nodes,walk_stop=run_d2c_walk(c,resources,stream_map,200000)
+            msg=bump(1068)
+            c.mem.write(msg+2,struct.pack('<H',D2C_EQ_UUID))
+            c.mem.write(msg+4,D2C_EQ_NAME+bytes(6))
+            c.mem.write(msg+44,struct.pack('<II',2,bypass)+bytes(36))
+            c.pc=0x6075e22;c.rets=SENTINEL;c.sp=0x00134000
+            c.R[0]=msg;c.R[1]=0x2000f
+            for r in range(2,16):c.R[r]=0
+            rec=run_d2c_cmd11(c,resources,stream_map,msg,60000)
+            rec['descriptor_walk_nodes']=nodes
+            rec['descriptor_walk_stop']=walk_stop
+            per[f'bypass_{bypass}']=rec
+        effect[ename]=per
+    scenarios['d2c_effect_pipeline']=effect
+    # core D2-C assertions: the eq node (MusicEqBt) is created by the REAL descriptor walk,
+    # cmd-11 finds that real node, and the subcmd2 node+35 write runs through it.
+    for ename in effect:
+        for bypass in (1,0):
+            rec=effect[ename][f'bypass_{bypass}']
+            require(any(n['uuid']==D2C_EQ_UUID and n['subid']==D2C_EQ_SUBID for n in rec['descriptor_walk_nodes']),
+                    f'{ename}: descriptor walk did not create the eq node MusicEqBt (uuid 0x737b subid 1)')
+            require(rec['node_find_0x6075d8e_reached'] and rec['subcmd2_0x6078a2e_reached'],
+                    f'{ename} bypass={bypass}: cmd-11 did not reach the real eq node subcmd2 write')
+            require(rec['found_node_uuid']==D2C_EQ_UUID and rec['found_node_subid']==D2C_EQ_SUBID,
+                    f'{ename} bypass={bypass}: cmd-11 found a node that is not MusicEqBt '
+                    f'(uuid {rec["found_node_uuid"]:#x} subid {rec["found_node_subid"]})')
+    for ename in ('b79','official'):
+        if ename not in effect: continue
+        require(effect[ename]['bypass_1']['node_plus_35_value']==1,
+                f'{ename}: bypass=1 subcmd2 must write node+35 = 1')
+        require(effect[ename]['bypass_0']['node_plus_35_value']==0,
+                f'{ename}: bypass=0 open-config hook must keep node+35 = file_cfg[4] (0)')
+        require(effect[ename]['bypass_0']['eq_hook_0x6078846_reached'],
+                f'{ename}: bypass=0 must reach the real open-config hook 0x6078846')
+    if 'official' in effect:
+        for key in ('bypass_1','bypass_0'):
+            require(effect['official'][key]['descriptor_walk_nodes']==effect['b79'][key]['descriptor_walk_nodes'],
+                    'official and b79 descriptor-walk node creation diverged')
+            require(effect['official'][key]['node_plus_35_value']==effect['b79'][key]['node_plus_35_value'],
+                    'official and b79 node+35 write diverged')
+    if 'repaired' in effect:
+        require(effect['repaired']['bypass_1']['node_plus_35_value']==1,
+                'repaired: bypass=1 subcmd2 must write node+35 = 1 (identical app code)')
+        require(effect['repaired']['bypass_1']['descriptor_walk_nodes']==effect['b79']['bypass_1']['descriptor_walk_nodes'],
+                'repaired descriptor-walk node creation diverged from b79')
+        require(effect['repaired']['bypass_0']['eq_open_config_0x60e30f6_reached'],
+                'repaired: bypass=0 must enter eq_open_config through the real hook')
+        require(effect['repaired']['bypass_0']['node_plus_35_value']==1,
+                'repaired: bypass=0 must force node+35 = 1 when EQ off and name matches')
+
     report['scenarios']=scenarios
     report['corrections_vs_route_bx']=[
         'tone language word: QCY+348 == 1 selects the zh table 0x60a379c, != 1 selects en 0x60a387c (runtime-verified both arms; BX §1.2 had it inverted)',
@@ -1569,6 +1707,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         '0x600c128 is release-or-post: refcount to zero closes/frees and calls cb when set, otherwise posts event 0x10000B {10, seq} to the app_core task',
         'route CD/CF: the resfile layer applies NO byte transform -- the stream.bin runtime view IS the public JLFS content; the loader JS check fails non-fatally on the real head (version byte 0), the section accessor takes the passthrough branch 0x60743a8 and the CA-era synthetic head / 0x1fe30 -7 stop was an artifact of that synthetic input (BX/CA §6.5 item 5 superseded)',
         'route CK: the stream-request post 0x6075414 (inside 0x60753e8) enqueues {cmd=5, obj} (payload[0] is r2=5 from 0x6075406, payload[1] is r3=obj from 0x6075402), so the jlstream task body tbb dispatches cmd5 (timestamp/sys_timer 0x60869f0), NOT cmd4 as CI §5.5 assumed; node creation 0x607471e is reached in the tone entry chain itself (0x6074938 -> 0x60749fe), not via the framework task cmd4 branch',
+        'route CP (D2-C) corrects a route-CM label on the ops table (0x607452e walks 24B records from 0x60a8dec with uuid@+4/op0@+12/op1@+16): 0x607898e IS the eq(0x737b) op1 (record @0x60a8f84 op0=0x607876a/op1=0x607898e/op2=0x6078bb0), NOT the wdrc op1; wdrc(0xdefe) op1 is 0x6078d0a (@0x60a8f9c) and 0x6078594 is vocal_track_separation(0xa724) op1 (@0x60a8f6c). CM behavioral conclusion (eq node cmd-11 -> 0x607898e -> subcmd2 0x6078a2e -> node+35) is unchanged and now empirically confirmed on the real descriptor-walk-built node',
     ]
     report['honest_boundaries']=[
         'the resource VFS open runs real code over the image mount table, but the flash-FS layer state (VM/partition tables populated at boot, SFC reads) is unmodeled in this function-level harness; scene 1 records the graceful not-found',
@@ -1580,6 +1719,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         'scene 3 EQ hook sites 0x6078846/0x6078a2e and open-config 0x60787ac remain unreached: the first consumed message is cmd5 (stream-create request, CI §5.5 correction) which only checks the stream list and loops, and the tone chain close event (cmd9) stops on the unmodeled OS sys_timer read 0xffe0f8 -- the cmd-11 parameter message that drives the EQ node op1 is not produced by this scene',
         'scene 3 Phase D (route CM) injects the cmd-11 parameter message at the consumer 0x6075e22 by direct call (synthetic-not-measured): the message shape {cmd=11, obj=packed-msg{uuid16@+2, name@+4, 44B param@+44}, param3rd=0x2000f} is the exact shape the real producer 0x607538a packs, but the queue itself is not exercised -- the node-find chain 0x6075d8e -> 0x6075d10 runs real and honestly reports the eq node (uuid 0x737b) as not-found, because that node is created and linked by the D2-C pipeline construction (0x6074938 descriptor walk), not by the tone chain this scene runs',
         'eq_hook_node35 (route CM) synthesizes a 44B effect node with a private context [node+16]=ctx (synthetic-not-measured, route BW scenario-3 direct-call precedent): the subcmd2 write 0x6078a2e and the open-config hook 0x6078846 execute REAL app code over that synthetic node; file_cfg[4]=0 is a named synthetic because the real config-file bypass byte (config subsystem -> file reads) is unmodeled, so the observation is the repaired-vs-baseline difference (forced ctx[35]=1 vs kept file value), not the absolute file value',
+        'd2c_effect_pipeline (route CP / D2-C) runs the REAL descriptor walk 0x6074938(0xd96f, 0xf975) over the music pipeline (pipeline-a2dp) with the same synthetic single-task machinery as scene 3 (allocator/mutex/pend stubs, stream-slot sentinels): the walk creates 20 nodes including MusicEqBt (eq 0x737b subid 1) via 0x60746e6 -> 0x607471e, and the injected cmd-11 finds that real node; the 0x1265ea=0x81 EQ-off state is a named synthetic fixture (the walk does not itself reach the state-byte writer); bypass=1 writes node+35=1 (parity), bypass=0 writes 0 then reopen -> open-config 0x60787ac -> hook 0x6078846 over the REAL config read (b79/official ctx[35]=file_cfg[4]=0, then an honest stop at the unmodeled DSP instruction 0x606a900 copex.ppi AFTER the write; repaired jumps to eq_open_config and forces ctx[35]=1)',
     ]
     report['observations_route_cd']={
         'loader_gate_b_0x12649d':'recorded per variant (zeroed RAM here; CD live-measured 0 after boot, setter still unidentified)',
