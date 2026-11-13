@@ -857,6 +857,30 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     address=(self.sp+op['n'])&0xffffffff;source=op['r']
                 require(address%4==0 and source%2==0 and 0<=source<=14,
                         'unsupported unaligned or odd-register doubleword store')
+                if (diagnostics.get('mmu_cross_page_split') and hardware is not None and
+                        hardware.mmu is not None and 0x400000<=address<0x800000 and
+                        (address&127)+8>128):
+                    # 路 AN(opt-in 子开关 mmu_cross_page_split,默认关):跨 128B
+                    # MMU 页界的双字存储按「两个独立 4 字节页内访问」拆分执行,
+                    # 每半各自走一次 MMU 翻译。依据:上游 m2 模型的总线形状本就
+                    # 是两个独立 4 字节事务(st.d 产 {addr,addr+4} 两个独立字写、
+                    # ld.d 是 st.load(addr,4)+st.load(addr+4,4) 两次独立读,模型
+                    # 拟自 AC791N 真机捕获,含 128B 界跨越样本三例均两字正常落盘
+                    # ——fm1-2026-10-24-v2 st.d.sp.l 0x1c220fc/0x1c22100 等);
+                    # 本 gate 此前把两半压成单次 8 字节 mem.write 是模型自己的
+                    # 压缩,把两个独立事务耦合成单请求才撞上 translate 的跨页
+                    # 拒绝。拆分假设本身(BR28 MMU 对两半各自查表)无 BR28 测量
+                    # 证据:现场两页物理倒序非连续(0x400afc→0x19e37c、
+                    # 0x400b00→0x19e280),拆分与「按第一页连续写」在本现场可
+                    # 区分;derived-not-measured。第二页 PTE 无效时第二半照
+                    # mmu_invalid_page 诚实停(第一半已落盘=两次独立访问的字面
+                    # 语义,停点即终态、无后续 guest 观察半执行状态)。
+                    self.mem.write(address,struct.pack('<I',self.R[source]&0xffffffff))
+                    self.mem.write((address+4)&0xffffffff,
+                                   struct.pack('<I',self.R[source+1]&0xffffffff))
+                    self.finish_exact(self.pc+size)
+                    adapters['exact_doubleword_store_cross_page_split']+=1
+                    return
                 self.mem.write(address,struct.pack('<II',self.R[source]&0xffffffff,self.R[source+1]&0xffffffff))
                 self.finish_exact(self.pc+size);adapters['exact_doubleword_store']+=1
                 return

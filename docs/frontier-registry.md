@@ -18,9 +18,9 @@
 
 ## 数据结构
 
-- `FEATURES`：每个 opt-in 开关一条记录（59 条），字段：
+- `FEATURES`：每个 opt-in 开关一条记录（61 条），字段：
   - `switch`＝`probe_irq_entry.irq_case` 的场景参数名（开关名，即 feature id）；
-  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，35 个）/
+  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，36 个）/
     `probe_only`（只出现在 probe 自己的场景变体，5 个：探路 fixture、反事实掩码对照、键链直调）；
   - `requires`＝层叠依赖开关名（36 条依赖边，与 irq_case 内 require 守卫一致）；  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的三个数据 fixture
     （`heap_info_bytes`/`lrct_trim_result`/`fd31_adc_res_named_values`）只存 probe_irq_entry
