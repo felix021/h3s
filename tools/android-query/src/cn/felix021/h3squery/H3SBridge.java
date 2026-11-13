@@ -34,7 +34,9 @@ import org.json.JSONObject;
  * ANC=FF/0x17 data=`mode scene strength`（docs/app-protocol.md §2.3 + docs/cmd-0x17-0x1d-layout.md 核对）；
  * EQ=FF/0x22 走 EqFrame.buildEqCommand（docs/eq-cmd-0x22-layout.md 钉死）；
  * 提示音音量=FF/0x1d 值 3/6/8，data=`value 00`——路 P 反汇编钉死（docs/cmd-0x17-0x1d-layout.md）：
- * 固件 setter 只读 data[0] 当音量值、要求 len>=2、忽略第二字节，值不钳（3/6/8 是面板层档位）。
+ * 固件 setter 只读 data[0] 当音量值、要求 len>=2、忽略第二字节，值不钳（3/6/8 是面板层档位）；
+ * 按键重映射走 KeyRemapFrame（docs/app-protocol.md §2.5 两条 wire 候选：默认 ADV type2
+ * 「C2+mask+三元组」、setKeyRemapCustom 走 FF/0x2b 三元组——真机抓包定案前并存放行）。
  *
  * 线程模型：transport 回调约定在主线程（Android BLE 适配层保证；Loopback 单线程同步），
  * 本类不加锁。真机 BLE 适配层未实现（红线：不连真机），粘合清单见 README「传输接线骨架」。
@@ -45,6 +47,7 @@ import org.json.JSONObject;
 public class H3SBridge {
     public static final int CMD_ANC = EqWritePolicy.CMD_ANC;              // ANC 模式切换 cmdid
     public static final int CMD_PROMPT_VOLUME = EqWritePolicy.CMD_PROMPT_VOLUME; // 提示音音量 cmdid
+    public static final int CMD_KEY_REMAP = EqWritePolicy.CMD_KEY_REMAP;  // 按键重映射 cmdid（0x2b，候选 B）
     /** 提示音音量合法档位（docs/app-protocol.md §2.4：3/6/8=最小/中等/最大；固件接收层不钳）。 */
     public static final int[] PROMPT_VOLUME_LEVELS = EqWritePolicy.PROMPT_VOLUME_LEVELS;
 
@@ -60,8 +63,29 @@ public class H3SBridge {
     private final H3sTransport transport;          // 可空：null=纯组帧（现状）
     private final ResultSink sink;                 // 可空：null 时事件丢弃（transport 非 null 时建议非空）
     private final java.util.HashMap<Integer, Pending> pendingBySn = new java.util.HashMap<Integer, Pending>();
+    private final java.util.HashMap<Integer, Integer> keyRemap = buildDefaultKeyRemap();
     private int nextSn = 1;                        // u8 自增回绕；首条 SN=1（未注入路径恒 0，与旧行为一致）
     private int seqCounter = 0;
+
+    /**
+     * 按键映射的本地工作副本（getKeyRemap 读、setKeyRemap 成功后写）。默认值=控制面板
+     * defaultFun（data/controlpanel_qcyh3s_16764.json：音量- 单击 6/音量+ 单击 5/多功能
+     * 单击 1、双击 7、三击 4、四击 0）；长按条目值 -1=未知（App 面板无长按条目，eventID 与
+     * 默认动作均 [未钉]）。真机读回（ADV type2 查询响应形状）未钉，先不伪造设备值。
+     */
+    private static java.util.HashMap<Integer, Integer> buildDefaultKeyRemap() {
+        java.util.HashMap<Integer, Integer> m = new java.util.HashMap<Integer, Integer>();
+        m.put(0x0301, 6);                          // 音量- 单击：音量-
+        m.put(0x0501, 5);                          // 音量+ 单击：音量+
+        m.put(0x0701, 1);                          // 多功能 单击：播放/暂停
+        m.put(0x0702, 7);                          // 多功能 双击：模式切换（固件默认表 [7,2,7] 互证）
+        m.put(0x0703, 4);                          // 多功能 三击：语音助手
+        m.put(0x0704, 0);                          // 多功能 四击：无作用
+        m.put(0x0305, -1);                         // 长按 [未钉]
+        m.put(0x0505, -1);
+        m.put(0x0705, -1);
+        return m;
+    }
 
     /** 纯组帧形态（现状）：不发送，组帧后返回 hex。 */
     public H3SBridge() { this(null, null); }
@@ -129,7 +153,7 @@ public class H3SBridge {
     private String dispatch(byte[] frame, int sn) {
         if (transport == null) return ok(frame);
         if (!transport.isReady()) return err("transport 未连接（先 connect，等 onMtuChanged 就绪）");
-        if (!EqWritePolicy.permitted(frame, true)) return err("写策略拒绝（帧形状不在 0x22/0x17/0x1d 白名单）");
+        if (!EqWritePolicy.permitted(frame, true)) return err("写策略拒绝（帧形状不在 0x22/0x17/0x1d/0x2b/C2 type2 白名单）");
         final int seq = ++seqCounter;
         pendingBySn.put(sn, new Pending(seq));
         final int fSn = sn;
@@ -196,6 +220,61 @@ public class H3SBridge {
         if (!legal) return err("提示音音量档位非法（仅 3/6/8=最小/中等/最大）: " + level);
         int sn = transport == null ? 0 : allocSn();
         return dispatch(buildCustomCommand(sn, CMD_PROMPT_VOLUME, new byte[]{(byte) level, 0x00}), sn);
+    }
+
+    /**
+     * 组按键重映射命令（默认 wire=候选 A「标准 ADV 类型 2」：opcode C2+mask+三元组，形状
+     * [假设] 见 KeyRemapFrame——真机抓包定案前的默认选择）。eventId 布局 0x{逻辑键}0{连击数}：
+     * 769=音量- 单击/1281=音量+ 单击/1793..1796=多功能 单击~四击；长按=低字节 5 [假设]。
+     * action 0..7（面板动作）或 11（ANC，固件侧）。成功后更新本地映射缓存（getKeyRemap 可读）。
+     */
+    @JavascriptInterface
+    public String setKeyRemap(int eventId, int action) {
+        return setKeyRemapWire(eventId, action, false);
+    }
+
+    /** 组按键重映射命令（候选 B「自定义命令 0x2b」wire：FF/0x2b+3B 三元组，字段域同上）。 */
+    @JavascriptInterface
+    public String setKeyRemapCustom(int eventId, int action) {
+        return setKeyRemapWire(eventId, action, true);
+    }
+
+    private String setKeyRemapWire(int eventId, int action, boolean customWire) {
+        if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
+        try {
+            KeyRemapFrame.validateEventId(eventId);
+        } catch (IllegalArgumentException e) {
+            return err(e.getMessage());
+        }
+        if (!KeyRemapFrame.isLegalAction(action)) return err("action 非法（0..7 面板动作或 11=ANC）: " + action);
+        int key = KeyRemapFrame.keyOf(eventId), gesture = KeyRemapFrame.gestureOf(eventId);
+        try {
+            int sn = transport == null ? 0 : allocSn();
+            byte[] frame = customWire
+                ? KeyRemapFrame.buildCustomCommand(sn, key, gesture, action)
+                : KeyRemapFrame.buildAdvType2Command(sn, key, gesture, action);
+            String result = dispatch(frame, sn);
+            try { if (new JSONObject(result).getBoolean("ok")) keyRemap.put(eventId, action); }
+            catch (JSONException impossible) { throw new RuntimeException(impossible); } // 工作副本随组帧/发送成功更新；设备真实态以响应为准
+            return result;
+        } catch (IllegalArgumentException e) {
+            return err(e.getMessage()); // 组帧校验兜底（validateEventId 已拦大头）
+        }
+    }
+
+    /**
+     * 读当前按键映射（本地工作副本，非设备读回——ADV type2 查询响应形状未钉）：
+     * {"ok":true,"map":{"769":6,...}}，键=eventID 十进制串、值=action（-1=长按未知）。
+     * 初始值=控制面板 defaultFun；setKeyRemap/setKeyRemapCustom 成功后随之更新。
+     */
+    @JavascriptInterface
+    public String getKeyRemap() {
+        JSONObject o = new JSONObject();
+        for (java.util.Map.Entry<Integer, Integer> e : keyRemap.entrySet()) {
+            try { o.put(String.valueOf(e.getKey()), e.getValue().intValue()); } catch (JSONException impossible) { throw new RuntimeException(impossible); }
+        }
+        try { return new JSONObject().put("ok", true).put("map", o).toString(); }
+        catch (JSONException impossible) { return "{\"ok\":true}"; }
     }
 
     /** 解析段数组 JSON → EqBand 列表；JSON 语法错误抛 JSONException，字段问题抛 IllegalArgumentException。 */

@@ -91,12 +91,18 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 | `writeEq(eqType, masterGainCentidB, bandsJson)` | 组 FF/0x22 EQ 写帧 | 内部调 `EqFrame.buildEqCommand`；bandsJson 每段 `{freq(Hz), q(x100), gain(centidB), iirType}`，q 缺省 100（Q1.0）、iirType 缺省 255（未指定） |
 | `setAnc(mode, scene, strength)` | 组 FF/0x17 ANC 帧 | data=`mode scene strength`（降噪 1,1,2 / 正常 2,0,0 / 通透 3,1,4）；mode 只收 1..3 |
 | `setPromptVolume(level)` | 组 FF/0x1d 提示音音量帧 | 值只收 3/6/8；data=`value 00`（路 P 反汇编钉死，固件只读 data[0]、第二字节忽略不钳） |
+| `setKeyRemap(eventId, action)` | 组按键重映射帧（默认 wire=ADV type2） | 走 `KeyRemapFrame.buildAdvType2Command`（opcode C2+type2 mask+三元组，帧形状 [假设]）；eventId 布局 0x{逻辑键}0{连击数}（769/1281/1793..1796，长按低字节 5 [假设]），action 0..7 或 11（ANC） |
+| `setKeyRemapCustom(eventId, action)` | 组按键重映射帧（候选 wire=自定义 0x2b） | 走 `KeyRemapFrame.buildCustomCommand`（FF/0x2b+3B 三元组）；字段域同上，两条 wire 真机抓包定案（docs/app-protocol.md §2.5） |
+| `getKeyRemap()` | 读按键映射（本地工作副本） | `{"ok":true,"map":{"769":6,...}}`，初始=控制面板 defaultFun、set 成功后更新；非设备读回（type2 查询响应形状未钉），长按条目 -1=未知 |
 
 返回统一 JSON：成功 `{"ok":true,"bytesHex":"fedcba..."}`（小写连续 hex）；失败
 `{"ok":false,"error":"..."}`（坏 JSON、字段缺失/非数值、取值越界、未武装等都有独立错误信息）。
 演示页面含 10 段 EQ 滑块（默认频点取 QCY 面板 32..16k，可手改；gain ±12 dB——QCY App 钳
 ±8 是面板层限制，固件接收层不钳，超出范围的听感自负）、master gain、ANC 三态、武装开关与
-hex 回显；在无 bridge 的普通浏览器打开会显示降级提示条。
+hex 回显；在无 bridge 的普通浏览器打开会显示降级提示条。按键重映射独立页 `keyremap.html`
+（index.html 有入口）：三键（音量-/音量+/多功能）× 单击~四击+长按 [未钉] 网格，每格下拉选
+动作（0..7 中文名+11 ANC）、wire 单选（默认 ADV type2 / 0x2b）、`getKeyRemap` 回填与逐格
+写入，hex 回显同款。
 
 诚实标注：
 
@@ -105,7 +111,8 @@ hex 回显；在无 bridge 的普通浏览器打开会显示降级提示条。
   android.jar/WebView 运行时，纯 JVM 无法实例化，且只有「加载 asset + 注入 bridge」两行壳
   逻辑，无业务分支。
 - **真机通信未接**：bridge 不连接耳机；`EqWritePolicy` 已放行 0x22/0x17/0x1d 三条 setter
-  形状（路 P），但传输层在本路（路 Z）之前只到组帧。传输接线骨架见下一节。
+  形状（路 P）+ 按键重映射两条（0x2b 三元组 / C2 type2，路 AM，字段域从严），但传输层在本路
+  （路 Z）之前只到组帧。传输接线骨架见下一节。
 - 页面是 demo 级（内联 CSS/JS、无框架），不是最终产品 UI。
 - 本机无 Android SDK 完整打包条件时，可用
   `javac -cp $ANDROID_HOME/platforms/android-35/android.jar src/.../H3SBridge.java src/.../EqFrame.java src/.../WebShellActivity.java`
@@ -132,9 +139,10 @@ LoopbackTransport（回环桩=「当耳机」：收片重组→逐字节可对�
 ```
 
 单测 `H3sTransportTest`（纯 JVM，进 test.sh）：端到端逐字节对照（Loopback 收到的帧 ==
-`EqFrame` 直组）、跨片重组（MTU 压小到 27）、帧级串行（pause/release 响应，第二条帧
-在第一条响应前零发送）、未武装/未连接拒绝、SN u8 回绕（254→255→0）、响应超时、
-未注入 transport 的向后兼容、deframer 单元（跨片/粘连/垃圾前缀）。
+`EqFrame` 直组）、按键重映射双 wire 端到端（ADV type2 默认/0x2b，Loopback 对 C2 写也回
+status=0 响应——响应载荷回显同属 [未钉] 桩形状）、跨片重组（MTU 压小到 27）、帧级串行
+（pause/release 响应，第二条帧在第一条响应前零发送）、未武装/未连接拒绝、SN u8 回绕
+（254→255→0）、响应超时、未注入 transport 的向后兼容、deframer 单元（跨片/粘连/垃圾前缀）。
 
 JS 侧异步约定（**seq + 事件回调**，不是把 JS 函数传进 Java——`@JavascriptInterface` 拿不到
 可调用的 JS function，页面唯一可靠回推方式是壳 `evaluateJavascript` 调页面全局处理器，

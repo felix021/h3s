@@ -3,6 +3,7 @@ import cn.felix021.h3squery.EqFrame.EqBand;
 import cn.felix021.h3squery.EqFrame.Parsed;
 import cn.felix021.h3squery.EqWritePolicy;
 import cn.felix021.h3squery.H3SBridge;
+import cn.felix021.h3squery.KeyRemapFrame;
 import java.util.ArrayList;
 import java.util.List;
 import org.json.JSONObject;
@@ -37,8 +38,11 @@ public class H3SBridgeTest {
         writeEqBadInput();
         setAncBytes();
         setPromptVolumeBytes();
+        keyRemapBytes();
+        keyRemapGet();
         policyConsistency();
-        System.out.println("H3SBridgeTest passed: 门控、writeEq JSON 解析/组帧对拍/错误路径、setAnc/setPromptVolume 字节对照、EqWritePolicy 一致性");
+        System.out.println("H3SBridgeTest passed: 门控、writeEq JSON 解析/组帧对拍/错误路径、setAnc/setPromptVolume/setKeyRemap 字节对照、"
+            + "getKeyRemap 默认/更新、EqWritePolicy 一致性");
     }
 
     /** 武装门控：未武装一切写方法拒绝，armWrite 翻转后放行。 */
@@ -50,6 +54,9 @@ public class H3SBridgeTest {
         expect(result(r).getString("error").contains("武装"), "错误信息应提到武装: " + r);
         expect(!result(b.setAnc(1, 1, 2)).getBoolean("ok"), "未武装 setAnc 应失败");
         expect(!result(b.setPromptVolume(3)).getBoolean("ok"), "未武装 setPromptVolume 应失败");
+        expect(!result(b.setKeyRemap(1793, 1)).getBoolean("ok"), "未武装 setKeyRemap 应失败");
+        expect(result(b.setKeyRemap(1793, 1)).getString("error").contains("武装"), "未武装错误信息应提到武装");
+        expect(!result(b.setKeyRemapCustom(1793, 1)).getBoolean("ok"), "未武装 setKeyRemapCustom 应失败");
         b.armWrite(true);
         expect(b.isArmed(), "armWrite(true) 后应武装");
         expect(result(b.writeEq(1, 0, "[]")).getBoolean("ok"), "武装后 writeEq 应成功");
@@ -164,7 +171,62 @@ public class H3SBridgeTest {
         expect(!result(b.setPromptVolume(9)).getBoolean("ok"), "档位 9 应拒绝");
     }
 
-    /** bridge 产物与写策略一致性：EQ/ANC/音量帧武装后被 EqWritePolicy 放行（路 P 扩白名单后）；未武装一律拒绝。 */
+    /** setKeyRemap/setKeyRemapCustom 字节对照：默认 wire=ADV type2（C2+mask+三元组）、候选 B=FF/0x2b 三元组；
+     *  eventID 面板全集+长按假设、SN=0（未注入 transport）；非法 eventID/action 拒绝。 */
+    static void keyRemapBytes() throws Exception {
+        H3SBridge b = new H3SBridge();
+        b.armWrite(true);
+        // 默认 wire：多功能双击→模式切换（eventID 1794=0x0702, action 7）
+        JSONObject adv = result(b.setKeyRemap(1794, 7));
+        expect(adv.getBoolean("ok"), "setKeyRemap 应成功: " + adv);
+        bytes("默认 ADV type2 帧", unhex(adv.getString("bytesHex")),
+            unhex("fedcbac0c20008" + "00" + "00000004" + "070207" + "ef"));
+        bytes("与 KeyRemapFrame 直组对拍", unhex(adv.getString("bytesHex")),
+            KeyRemapFrame.buildAdvType2Command(0, 7, 2, 7));
+        // 候选 B wire：音量- 单击→音量-（eventID 769, action 6）
+        JSONObject custom = result(b.setKeyRemapCustom(769, 6));
+        expect(custom.getBoolean("ok"), "setKeyRemapCustom 应成功: " + custom);
+        bytes("0x2b 帧", unhex(custom.getString("bytesHex")),
+            unhex("fedcbac0ff0006" + "00" + "2b03" + "030106" + "ef"));
+        // 长按假设 eventID（低字节 5）+ 固件侧 action 11（ANC）
+        JSONObject hold = result(b.setKeyRemap(0x0705, 11));
+        expect(hold.getBoolean("ok"), "长按 eventID 应成功: " + hold);
+        bytes("长按 ANC 帧", unhex(hold.getString("bytesHex")),
+            KeyRemapFrame.buildAdvType2Command(0, 7, 5, 11));
+        // 非法输入：key/gesture 越界的 eventID、action 8/12/-1
+        int[] badEvents = {0x0901, 0x0300, 0x0306, 0x0311, -1, 0x10000};
+        for (int ev : badEvents)
+            expect(!result(b.setKeyRemap(ev, 1)).getBoolean("ok"), "eventID " + ev + " 应拒绝");
+        int[] badActions = {8, 9, 12, -1};
+        for (int a : badActions)
+            expect(!result(b.setKeyRemap(1793, a)).getBoolean("ok"), "action " + a + " 应拒绝");
+        expect(result(b.setKeyRemap(1793, 8)).getString("error").contains("action"), "action 错误信息应说明取值域");
+    }
+
+    /** getKeyRemap：初始=面板 defaultFun（长按 -1 未知），setKeyRemap 成功后更新、失败不更新。 */
+    static void keyRemapGet() throws Exception {
+        H3SBridge b = new H3SBridge();
+        JSONObject init = result(b.getKeyRemap());
+        expect(init.getBoolean("ok"), "getKeyRemap 应成功");
+        JSONObject map = init.getJSONObject("map");
+        eq("默认 音量- 单击", 6, map.getInt("769"));
+        eq("默认 音量+ 单击", 5, map.getInt("1281"));
+        eq("默认 多功能 单击", 1, map.getInt("1793"));
+        eq("默认 多功能 双击", 7, map.getInt("1794"));
+        eq("默认 多功能 三击", 4, map.getInt("1795"));
+        eq("默认 多功能 四击", 0, map.getInt("1796"));
+        // map 键=eventID 十进制字符串；长按条目 -1=未知（App 面板无长按条目）
+        eq("长按 音量- 未知（0x0305=773）", -1, map.getInt("773"));
+        eq("长按 音量+ 未知（0x0505=1285）", -1, map.getInt("1285"));
+        eq("长按 多功能 未知（0x0705=1797）", -1, map.getInt("1797"));
+        b.armWrite(true);
+        expect(result(b.setKeyRemap(0x0305, 2)).getBoolean("ok"), "长按改上一曲应成功");
+        eq("set 后更新", 2, result(b.getKeyRemap()).getJSONObject("map").getInt("773"));
+        expect(!result(b.setKeyRemap(0x0305, 9)).getBoolean("ok"), "非法 action 应失败");
+        eq("失败不更新", 2, result(b.getKeyRemap()).getJSONObject("map").getInt("773"));
+    }
+
+    /** bridge 产物与写策略一致性：EQ/ANC/音量/按键重映射帧武装后被 EqWritePolicy 放行；未武装一律拒绝。 */
     static void policyConsistency() throws Exception {
         H3SBridge b = new H3SBridge();
         b.armWrite(true);
@@ -177,6 +239,12 @@ public class H3SBridgeTest {
         byte[] vol = unhex(result(b.setPromptVolume(6)).getString("bytesHex"));
         expect(!EqWritePolicy.permitted(vol, false), "提示音帧未武装应被策略拒绝");
         expect(EqWritePolicy.permitted(vol, true), "提示音帧武装后应被 EqWritePolicy 放行（路 P 扩白名单）");
+        byte[] remapAdv = unhex(result(b.setKeyRemap(1794, 7)).getString("bytesHex"));
+        expect(!EqWritePolicy.permitted(remapAdv, false), "按键重映射 ADV 帧未武装应被策略拒绝");
+        expect(EqWritePolicy.permitted(remapAdv, true), "按键重映射 ADV 帧武装后应被 EqWritePolicy 放行");
+        byte[] remapCustom = unhex(result(b.setKeyRemapCustom(769, 6)).getString("bytesHex"));
+        expect(!EqWritePolicy.permitted(remapCustom, false), "按键重映射 0x2b 帧未武装应被策略拒绝");
+        expect(EqWritePolicy.permitted(remapCustom, true), "按键重映射 0x2b 帧武装后应被 EqWritePolicy 放行");
     }
 
     static byte[] unhex(String hex) {

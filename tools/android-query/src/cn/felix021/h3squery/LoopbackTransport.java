@@ -85,16 +85,20 @@ public class LoopbackTransport extends SerialBleTransport {
      * 生成成功响应帧。命令 body=`SN cmdid data_len data`（写形态，docs/cmd-0x17-0x1d-layout.md §1）
      * → 响应 body=`00(status) SN cmdid n data(回显)`——cmdid|n|data 对齐读路径实测的分发器包装
      * （docs/protocol.md：RX `... 00 FF 00 07 | 00 6F | 17 03 01 01 02`，n=载荷字节数）。
+     * 另答 ADV type2 写（opcode C2，KeyRemapFrame 候选 A）：响应 body=`status SN mask 三元组(回显)`，
+     * 写对偶响应形状同属 [未钉]，回显只为打通 SN 匹配链路。
      * setter 响应载荷回显部分 [未钉]（见类注释）；status+SN 位置是实测的。
      */
     public static byte[] buildSuccessResponse(byte[] commandFrame) {
         if (commandFrame == null || commandFrame.length < 11) return null;
         int flags = commandFrame[3] & 0xff;
         int opcode = commandFrame[4] & 0xff;
+        if (flags != EqFrame.FLAGS_CMD) return null;
+        if (opcode == KeyRemapFrame.ADV_WRITE_OPCODE) return buildAdvType2Response(commandFrame);
+        if (opcode != EqFrame.OPCODE_CUSTOM) return null;
         int sn = commandFrame[7] & 0xff;
         int cmdId = commandFrame[8] & 0xff;
         int dataLen = commandFrame[9] & 0xff;
-        if (flags != EqFrame.FLAGS_CMD || opcode != EqFrame.OPCODE_CUSTOM) return null;
         if (cmdId == 0xfe || dataLen != commandFrame.length - 11) return null;  // 只读形态/长度不符不响应
         byte[] body = new byte[4 + dataLen];      // status + SN + cmdid + n + data
         body[0] = 0x00;                            // status=0 成功
@@ -102,10 +106,24 @@ public class LoopbackTransport extends SerialBleTransport {
         body[2] = (byte) cmdId;
         body[3] = (byte) dataLen;                  // n（载荷字节数，分发器包装格式）
         System.arraycopy(commandFrame, 10, body, 4, dataLen);
+        return wrapResponseBody(body, opcode);
+    }
+
+    /** ADV type2 写（body=SN+mask+三元组，共 8B）→ 响应 body=status+SN+mask+三元组回显。 */
+    private static byte[] buildAdvType2Response(byte[] commandFrame) {
+        if (commandFrame.length != 16) return null;                    // 8 头尾 + 8 body
+        byte[] body = new byte[9];                                     // status + SN + mask(4) + 三元组(3)
+        body[0] = 0x00;                                                // status=0 成功
+        body[1] = commandFrame[7];                                     // SN
+        System.arraycopy(commandFrame, 8, body, 2, 7);                 // mask + 三元组回显
+        return wrapResponseBody(body, KeyRemapFrame.ADV_WRITE_OPCODE);
+    }
+
+    private static byte[] wrapResponseBody(byte[] body, int opcode) {
         byte[] frame = new byte[8 + body.length];
         frame[0] = (byte) 0xfe; frame[1] = (byte) 0xdc; frame[2] = (byte) 0xba;
         frame[3] = 0x00;                           // flags=00 响应
-        frame[4] = (byte) EqFrame.OPCODE_CUSTOM;
+        frame[4] = (byte) opcode;
         frame[5] = (byte) (body.length >> 8); frame[6] = (byte) body.length;
         System.arraycopy(body, 0, frame, 7, body.length);
         frame[frame.length - 1] = (byte) 0xef;
