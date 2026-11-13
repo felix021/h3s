@@ -76,6 +76,10 @@ python3 tools/probe_pi32v2.py \
 
 后两组共 7 例与 source 的 8 例合计 15 例。音频发送和恢复 API 是显式桩函数，故意覆盖 caller-saved 寄存器以检查 ABI；没有执行 DSP、RTOS 或真实音频 API。**诊断可以通过，但 r2 结论始终是 `REJECTED`。** 运行返回 0 表示回归符合预期（包括拒绝 r2），不是允许刷机。
 
+## 可选：EQ 控制面事件注入场景（路 BW）
+
+`--event-injection` 是另一个显式 opt-in 开关，需要 `--patch-elf`、`--repaired-candidate`、`--patch-asm` 和 `--official-ufw` 四个本地工件（默认检查不依赖它们，legacy 报告逐字节不变）。它按 [eq-payload-semantics.md](eq-payload-semantics.md) §4 把四个 D1 分发可达的 EQ 钩子站点宿主函数从真实入口执行：合成双击事件注入按键 handler（0x60252c6）、合成节点注入源选择函数（0x60057e6），在官方／b79／修复候选三镜像上对照站点执行覆盖、状态字节 0x01↔0x81 往返、`&0x7F` 掩码等价、type-10 守卫、`eq_toggle` 两条 SEND 在 `0x6074192` post 边界的实际消息内容，以及 `RESTORE(0,10)` 同步调用链。事件／映射表项／节点全部是具名合成 fixture（报告内 `synthetic-not-measured`）；RAM 启动内容取自镜像自身的 `.data`/RAM-code blob；桩 11 个全部显式列出。post 返回值是合成成功、队列消费者与效果节点状态对比明确归 D2——这一层验证不构成刷机建议，修复候选保持 UNTESTED。
+
 ## 下一步需要补什么
 
 最有收益的顺序是：
