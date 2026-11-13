@@ -99,6 +99,7 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     p33_analog_tail=True, p3_ana_read_ldoin_low=True, gpcnt_con_readback=True,
     jl_clock_dcck=True,
     jl_uart_con=True,
+    jl_uart_init_writes=True,
     subword_stores=True, word_store_sp_l=True,
     timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
 
@@ -158,11 +159,25 @@ SCENARIOS = {
         # `uart_is_idle`(bitcode 逐字节同形,return (word&1)^1);读侧三选一=
         # 方案 (a) 投影 `jl_uart_con_projection`(合成 0=空闲,derived-not-measured)
         # 放行后 uart_init 真实执行 CON0=0x3400,停 0x603446a 写 0xfd2004
-        # (JL_UART.BAUD|BUF,BAUD __WO)——UART 写侧归下一路。
-        # **新前沿 3,071,984 @ 0x603446a**(unmapped_or_readonly_write 写 0xfd2004)。
-        'freshness': {'completed_steps': 3071984, 'stop_pc': '0x603446a',
+        # (路 F 记作 JL_UART.BAUD|BUF,BAUD __WO)。路 M:UART 写侧三选一选方案
+        # (a1) 一次性打包初始化写白名单 `jl_uart_init_write_records`——**布局钉死
+        # (修正路 F 命名)**:实际 SDK 构建对象 uart_v1.c.o bitcode 声明
+        # JL_UART_TypeDef={i32 x12}(成员 k 在 +4k),QCY 固件写序列逐点互证
+        # (0x6034466/0x603446c/0x6034472/0x601d286/0x601d1f2/0x6034668..cc)——
+        # 0xfd2004 是 CON1 字、真 BAUD 写在 0xfd2008;公开 br28.h 的 u16/u8
+        # 紧凑布局与该构建对象不一致(BR31 等系列确有紧凑布局,布局分歧非笔误)。
+        # 白名单=初始化序列实际出现的纯配置整字写 CON1/BAUD/OTCNT/RXSADR/
+        # RXEADR/RXCNT/CON2(三基址对称),write-only 记录(lp_timer SYS_DIV/
+        # P3_PORT_SEL 先例);TXADR/TXCNT/BUF/HRXCNT 不进白名单(TX 路径=启动
+        # 硬件活动信号,codex 风险点);读回/RMW 严格停;波特率/收发/UART IRQ
+        # 不建模。放行后 CON1=0/CON2=0 落地,uart_init 进 TX/RX 引脚复用,
+        # gpio_set_mode/gpio_set_function 助手链停在 0x60012de 写 0xfd58b8=
+        # 0x9f(0xfd58xx GPIO 端口组,GPIO_BASES 未覆盖、公开 br28.h 无名)——
+        # UART 引脚复用 GPIO 面归下一路。
+        # **新前沿 3,072,236 @ 0x60012de**(unmapped_or_readonly_write 写 0xfd58b8)。
+        'freshness': {'completed_steps': 3072236, 'stop_pc': '0x60012de',
                       'stop_fields': {'kind': 'unmapped_or_readonly_write',
-                                      'address': '0xfd2004'}},
+                                      'address': '0xfd58b8'}},
     },
 }
 
@@ -700,22 +715,22 @@ def check_self(report):
 
 def check_self_conditional(report):
     """钉死 2026-11-13 路 CQ 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 3,071,380;一切结论条件通过、derived-not-measured;历史
+    到当前条件前沿 3,072,236;一切结论条件通过、derived-not-measured;历史
     世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/3,070,626(路 CG)/
-    3,070,786(路 CL)/3,070,955(路 CO)已被后续投影替换,见 HANDOFF 对应
-    「步含义」段):
+    3,070,786(路 CL)/3,070,955(路 CO)/3,071,380(路 CQ)/3,071,984(路 F)
+    已被后续投影替换,见 HANDOFF 对应「步含义」段):
 
-    - 双方 3,071,380 步、同停点 0x601d1ac(unmapped_memory,address 0xfd2000,
-      当前条件前沿——路 CQ 的 exact_word_store_sp_l 独立子开关放行 0x6065ccc
-      `st.w.sp.l [sp+8]=r9`(全 4 字节覆盖写、旧值无关)后,helper 尾段写两
-      局部并返回 W1[1] walker,最终停在 0x601d198 读辅助函数 r1==0 分支读
-      0xfd2000)、per-core {0:3060478,1:11216} 一致;stop parity 全同——
-      official↔b79 parity 延长到条件前沿 3,071,380,控制流零分歧、无
-      reconvergence;
+    - 双方 3,072,236 步、同停点 0x60012de(unmapped_or_readonly_write,写
+      0xfd58b8,当前条件前沿——路 M 的 jl_uart_init_write_records 初始化写
+      白名单放行 uart_init 的 CON1(+4)/CON2(+0x2c)整字写后,uart_init 进入
+      TX/RX 引脚复用,gpio_set_mode/gpio_set_function 助手链停在 0xfd58b8=
+      0xfd58xx GPIO 端口组首写)、per-core {0:3061334,1:11216} 一致;stop
+      parity 全同——official↔b79 parity 延长到条件前沿 3,072,236,控制流
+      零分歧、无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,071,380,
-      超时窗口+OS tick 级联+mode 切换体+scheduler helper+0xfd2000 读前段)
-      没有消费任何新的镜像差异;
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,072,236,
+      超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
+      GPIO 停点前段)没有消费任何新的镜像差异;
     - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -725,17 +740,17 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 3071984 and run['stop_pc'] == '0x603446a' and
+        require(run['completed_steps'] == 3072236 and run['stop_pc'] == '0x60012de' and
                 run['stop']['kind'] == 'unmapped_or_readonly_write' and
-                run['stop']['address'] == '0xfd2004' and
-                run['per_core_steps'] == {'0': 3061082, '1': 11216},
+                run['stop']['address'] == '0xfd58b8' and
+                run['per_core_steps'] == {'0': 3061334, '1': 11216},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3071984 @ 0x603446a, the unmapped 0xfd2004 write of '
-                'the UART BAUD|BUF word after the route-F jl_uart_con_projection released the '
-                '0x601d1ac uart_is_idle read and uart_init ran for real)')
+                'conditional frontier stop (3072236 @ 0x60012de, the unmapped 0xfd58b8 write of '
+                'the UART pin-mux GPIO face after the route-M jl_uart_init_write_records '
+                'whitelist released the uart_init CON1/CON2 config words)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 3071984, 'tested_b79': 3071984, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x603446a', 'b': '0x603446a', 'same': True} and
+    require(parity['steps'] == {'official': 3072236, 'tested_b79': 3072236, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x60012de', 'b': '0x60012de', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
             parity['stop_record']['a']['kind'] == 'unmapped_or_readonly_write' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
