@@ -96,7 +96,9 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
   独立 app 若需媒体音量建议先按 AVRCP 实现（standard Android），或用 BLE 音量命令做真机对照
   验证。
 - **提示音音量**（设备设置，非媒体音量）：opcode `0xFF` cmdid `0x1d`(29)，值 3/6/8=最小/中等/
-  最大（[静态：controlpanel]）。读取/写入帧形状 [未钉]（本机只确认了面板映射，未实测收发）。
+  最大（[静态：controlpanel]）。写命令帧形状已由路 P 反汇编钉死：data=`value 占位`（第 1 字节是
+  值、第 2 字节固件忽略、len>=2、值不钳），查询响应=`1d 02 value ??`——见
+  [docs/cmd-0x17-0x1d-layout.md](cmd-0x17-0x1d-layout.md)。
 - 固件侧数字音量硬件 = `DAC_VL0`(0xfe051c)（setter 钳位到配置槽上限 `[0x1265c0+1883*4]`）+
   stream.bin volume 节点参数（[文档：docs/appcore-tail-sfr-semantics.md / stream-volume.md]）——
   这些是「改固件参数」域，不是 BLE 命令域。
@@ -170,9 +172,9 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 | 功能 | 通道 | 载荷 | 状态 |
 | --- | --- | --- | --- |
 | EQ 写 | FF/`0x22` | 3B 头 + 每段 7B（EQ 类型/master gain/freq/gain/Q/iir） | 字段字节布局 [未钉]，需重解 0x0602583c |
-| ANC 切 | FF/`0x17` | `17 03 mode scene strength` | 已钉 [文档] |
+| ANC 切 | FF/`0x17` | `17 03 mode scene strength` | 已钉 [文档]；路 P 反汇编核对一致（data=后 3 字节） |
 | 按键重映射 | FF/`0x2b` 或 ADV type2 | gesture/action 组合 或 `[key,gesture,action]` | H3S 用哪个分支 [未钉] |
-| 提示音音量 | FF/`0x1d` | 值 3/6/8 | 帧形状 [未钉] |
+| 提示音音量 | FF/`0x1d` | data=`value 占位`（len=2，值 3/6/8） | 帧形状已钉 [静态：docs/cmd-0x17-0x1d-layout.md 路P] |
 | 媒体音量 | AVRCP(经典BT) 或 BLE 音量命令 | — | [未钉]，仓库无证据 |
 
 只读查询（电量/ANC/设备信息）已实测，照 §2.6 抄即可。
