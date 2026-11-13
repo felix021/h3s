@@ -1677,6 +1677,20 @@ class JLUartInitWriteRecords:
     - **读回/RMW**:白名单字零读回观测(uart_dump 不在本 boot 前缀),读回
       一律严格停(显式 kind 优先泛 unmapped);RMW 无观测形状,经读侧严格停。
       字 0(CON0)不在本容器:CON0 的读/写/RMW 走路 F 的 registers 投影。
+      **路 AA 例外(opt-in con1_readback,需 jl_uart_init_write_records)**:
+      CON1(+4,三基址对称)升级为「写记录+读回=最后写值」——lp_timer CON
+      (路 AL)/fd31 ADC CON(路 BN)同族先例。首个真实消费者=uart_fifo_reset
+      的复合 RMW 0x60340d8 `rmw.and.nmodimm [r0+4]&=0xFFFFFFEF`(SDK uart_v1.c
+      序列:临界区内 CON1|=16(bit4=RX DMA 重启位)→写 RXSADR/RXEADR/RXCNT→
+      CON1&=-17 清 bit4;读回是真实消费,读值参与写回)。RMW 经 probe_boot
+      通用 mmio 路径执行:内部读=投影最后写值、按位合成、**写回照常落记录**
+      (完整 RMW 路径,不只读)。本事务 CON1 已被 uart_init 0x603446c 整字写 0,
+      读 0、写回 0&0xFFFFFFEF=0,平凡零发明。**条件假设(codex 风险点)**:
+      br28.h __RW 只证明 SDK 认为可读回,不能证明无硬件自更新/自清零位——
+      「读回=软件配置值」是 derived-not-measured 的条件假设;若真硬件会在
+      CON1 其它位自更新,投影会失真(如实标注)。只扩 CON1:BAUD/OTCNT/
+      RXSADR/RXEADR/RXCNT/CON2 的读回仍严格停(它们也无读回观测,无消费者,
+      不为无人消费的读发明值);从未写过(如 UART1/2)仍诚实停,不臆造复位值。
     - **运行效果不建模**:白名单只记录「初始化配置写已执行」——不推导波特
       率、不模拟 RX/TX DMA 数据流、不发明 UART IRQ(RX 活动只会在固件读
       HRXCNT/轮询 CON0 状态位时显形,那些读一律严格停)。
@@ -1685,9 +1699,14 @@ class JLUartInitWriteRecords:
       TXADR/TXCNT 后等 CON0 完成位」),出现即诚实停。HRXCNT(+0x28,__RO)
       保持严格。
     """
-    def __init__(self):
+    CON1_ADDRESSES=tuple(base+0x4 for base in JL_UART_CON_WORDS)
+
+    def __init__(self,*,con1_readback=False):
         self.stores={address:{'values':[],'writes':0} for address in JL_UART_INIT_WORDS}
         self.word_writes=0
+        # con1_readback(opt-in,路 AA/sim-con1rb):CON1 读回=最后写值投影,详见
+        # 类注释「路 AA 例外」段;默认关,读回保持 3,073,918 前沿形状。
+        self.con1_readback=con1_readback;self.con1_reads=0
 
     def handles(self,address):
         return address in self.stores
@@ -1699,10 +1718,17 @@ class JLUartInitWriteRecords:
         self.word_writes+=1
 
     def read(self,address):
+        # 路 AA:CON1 读回=最后写值(只在固件已写过至少一次后返回,lp_timer
+        # CON 路 AL 同款「从未写过仍诚实停」);其余白名单字读回一律严格停。
+        if self.con1_readback and address in self.CON1_ADDRESSES:
+            entry=self.stores[address]
+            if entry['writes']>0:
+                self.con1_reads+=1
+                return entry['values'][-1]
         raise Blocked('jl_uart_init_word_readback_not_modeled',address=hex(address))
 
     def report(self):
-        return {'addresses':[hex(a) for a in JL_UART_INIT_WORDS],
+        result={'addresses':[hex(a) for a in JL_UART_INIT_WORDS],
                 'word_writes':self.word_writes,
                 'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
                                   'writes':e['writes']}
@@ -1713,7 +1739,8 @@ class JLUartInitWriteRecords:
                               '(0xfd2000/0xfd2100/0xfd2200); the public br28.h packed u16/u8 '
                               'offsets disagree with this build and are NOT used — 0xfd2004 is '
                               'the CON1 word, not BAUD|BUF (route-F naming corrected here)'),
-                'write_only':True,'readback_not_modeled':True,
+                'write_only':not self.con1_readback,
+                'readback_not_modeled':not self.con1_readback,
                 'whitelisted_words':('CON1 +4 / BAUD +8 / OTCNT +0x10 / RXSADR +0x1c / '
                                      'RXEADR +0x20 / RXCNT +0x24 / CON2 +0x2c (the words the '
                                      'boot uart_init+uart_set_baudrate+uart_dma_init sequence '
@@ -1722,13 +1749,48 @@ class JLUartInitWriteRecords:
                                    '0x603446c [r2+4]=r3 (CON1=0, pair B half), 0x6034472 '
                                    '[r2+44]=r3 (CON2=0), 0x601d286 [r7+8]=r0 (BAUD divider), '
                                    '0x601d1f2 [r2+16]=r3 (OTCNT, gated on CON0 bit6), '
-                                   '0x6034668..cc [r6+28/32/36] (RXSADR/RXEADR/RXCNT)'),
+                                   '0x6034668..cc [r6+28/32/36] (RXSADR/RXEADR/RXCNT); '
+                                   'the first real readback consumer is the uart_fifo_reset '
+                                   'compound RMW 0x60340d8 rmw.and.nmodimm [r0+4]&=0xFFFFFFEF '
+                                   '(bit4 = the RX-DMA restart bit clear; the read value feeds '
+                                   'the write-back, so it is a genuine consumption)'),
                 'assumption':('write-only word-sequence record of pure configuration writes '
                               '(derived-not-measured); stored values are real executed '
                               'instruction results, never invented; no baud-rate runtime '
                               'effect, no RX/TX DMA data flow and no UART IRQ is modeled — '
                               'this releases the initialization config writes only, it does '
-                              'NOT verify UART transmission/reception')}
+                              'NOT verify UART transmission/reception' +
+                              ('' if not self.con1_readback else
+                               '; with the opt-in CON1 readback projection CON1 reads return '
+                               'the last firmware-written value — see con1_readback_projection'))}
+        if self.con1_readback:
+            result['con1_readback_projection']={
+                'addresses':[hex(a) for a in self.CON1_ADDRESSES],
+                'reads':self.con1_reads,
+                'readback_semantics':('last firmware-written value (route AA); the reference '
+                    'br28.h marks JL_UART_TypeDef CON1 __RW, so a read-back is defined, and '
+                    'returning the last write matches the lp_timer CON (route AL, 0xf2a908) '
+                    'and fd31 ADC CON (route BN, 0xfd3100) precedents — only after at least '
+                    'one firmware write, never a fabricated reset value; CON0 keeps its own '
+                    'route-F projection and is deliberately NOT given this semantics here'),
+                'conditional_assumption':('the __RW annotation proves the SDK believes CON1 '
+                    'reads back, NOT that every bit mirrors software: hardware-updated or '
+                    'self-clearing bits outside bit4 (if any exist) would read back '
+                    'differently on silicon. The projection is the explicit hypothesis '
+                    '"readback == the software-configured value" — derived-not-measured, '
+                    'conditional pass; the first consumer is the uart_fifo_reset compound '
+                    'RMW at 0x60340d8, and in this prefix CON1 was whole-word written 0 by '
+                    'uart_init (0x603446c) before the first read, so the projected RMW reads '
+                    '0 and writes back 0&0xFFFFFFEF=0 — a trivially zero-invention release'),
+                'rmw_path':('the uart_fifo_reset compound RMW runs the FULL generic MMIO '
+                    'path (probe_boot mem.read -> bit-AND -> mem.write): the internal read '
+                    'is served by this projection and the write-back lands in the write '
+                    'records as a real transaction (CON1 gains a second recorded write of '
+                    'the computed value); it is never short-circuited'),
+                'other_words_stay_strict':('BAUD/OTCNT/RXSADR/RXEADR/RXCNT/CON2 keep the '
+                    'strict jl_uart_init_word_readback_not_modeled stop (no readback '
+                    'consumer observed, so no read value is invented for them)')}
+        return result
 
 
 class JLOmapWriteRecords:
@@ -3097,6 +3159,7 @@ class BR28Model:
                  jl_clock_dcck_projection=False,
                  jl_uart_con_projection=False,
                  jl_uart_init_write_records=False,
+                 jl_uart_con1_readback=False,
                  jl_omap_write_records=False,
                  jl_imap_write_records=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
@@ -3383,7 +3446,22 @@ class BR28Model:
         # 停);运行效果(波特率/RX/TX DMA/UART IRQ)不建模——只记录「初始化
         # 配置写已执行」,不扩展为「UART 收发已验证」。默认关:这些字保持
         # unmapped(3,071,984 @ 0x603446a 前沿形状),legacy 报告逐字节不变。
-        self.jl_uart_init_records=JLUartInitWriteRecords() if jl_uart_init_write_records else None
+        # jl_uart_con1_readback(opt-in,路 AA/sim-con1rb,需 jl_uart_init_write_
+        # records):把 CON1(+4,三基址对称)从纯写白名单升级为「写记录+读回=
+        # 最后写值」(lp_timer CON 路 AL/fd31 ADC CON 路 BN 同族)。证据与条件
+        # 假设全文见 JLUartInitWriteRecords 文档串「路 AA 例外」段:首个真实
+        # 消费者=uart_fifo_reset 复合 RMW 0x60340d8(bit4=RX DMA 重启位清零,
+        # 读值参与写回);本事务 CON1 已被写 0,读 0、写回 0,平凡零发明;RMW
+        # 走 probe_boot 通用 mmio 路径完整执行(内部读=投影值、写回落记录)。
+        # __RW 不能证明无硬件自更新位——「读回=软件配置值」是 derived-not-
+        # measured 条件假设,报告 con1_readback_projection 子键全文标注。只扩
+        # CON1(BAUD/OTCNT/RXSADR/RXEADR/RXCNT/CON2 读回仍严格停;CON0 读侧
+        # 已有 jl_uart_con_projection,保持不动)。默认关:CON1 读回保持
+        # Blocked(3,073,918 @ 0x60340d8 前沿形状),legacy 报告逐字节不变。
+        if jl_uart_con1_readback and not jl_uart_init_write_records:
+            raise ValueError('the JL_UART CON1 readback projection requires the init write records')
+        self.jl_uart_init_records=(JLUartInitWriteRecords(con1_readback=jl_uart_con1_readback)
+                                   if jl_uart_init_write_records else None)
         # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字(0xfd58xx)的
         # write-only 整字记录。识别链与 49 字白名单见 JL_OMAP_OUT_WORDS 常量
         # 注释;本前缀首写=uart_init TX 引脚复用 0x60012de 写 0xfd58b8=0x9f
@@ -3775,7 +3853,9 @@ class BR28Model:
             self.counts['reads']+=1
             return self.p33_port_sel.read(address)
         # JL_UART 初始化配置字(路 M):整字写 write-only 记录,读回一律严格停
-        # (白名单字零读回观测;字 0 CON0 的读走路 F 投影,不经这里)。
+        # (白名单字零读回观测;字 0 CON0 的读走路 F 投影,不经这里)。路 AA
+        # 例外:opt-in con1_readback 时 CON1 读回=最后写值(只在写过之后,从未
+        # 写过仍诚实停);其余字读回保持严格停。
         if self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address):
             self.counts['reads']+=1
             return self.jl_uart_init_records.read(address)
@@ -4635,6 +4715,31 @@ class BR28Model:
                 'runtime effect, RX/TX DMA data flow or UART IRQ is modeled — this records '
                 '"initialization config writes executed" only, NOT verified UART '
                 'transmission/reception')
+            if self.jl_uart_init_records.con1_readback:
+                # 路 AA(sim-con1rb):CON1 读回=最后写值投影。条件假设(读回=
+                # 软件配置值,derived-not-measured)与 RMW 完整路径写进 assumptions。
+                result['assumptions']['jl_uart_con1_readback']=(
+                    'JL_UART CON1 (+4 per UART base 0xfd2000/0xfd2100/0xfd2200) upgraded from '
+                    'the route-M write-only whitelist to "write records + readback = last '
+                    'firmware-written value" (lp_timer CON route-AL / fd31 ADC CON route-BN '
+                    'precedent). FIRST REAL CONSUMER: the uart_fifo_reset compound RMW at '
+                    '0x60340d8 rmw.and.nmodimm [r0+4]&=0xFFFFFFEF — bit4 is the RX-DMA '
+                    'restart bit (SDK uart_v1.c: |=16 -> RXSADR/RXEADR/RXCNT -> &=-17 inside '
+                    'the OS unmask critical section) and the read value feeds the write-back. '
+                    'CONDITIONAL ASSUMPTION (codex risk point): br28.h __RW only proves the '
+                    'SDK believes CON1 reads back; it cannot prove there are no '
+                    'hardware-updated or self-clearing bits — "readback == the '
+                    'software-configured value" is a derived-not-measured hypothesis, and '
+                    'bits other than bit4 WOULD misread if silicon self-updates them. In this '
+                    'prefix CON1 was whole-word written 0 by uart_init (0x603446c) before the '
+                    'first read: the projected RMW reads 0 and writes back 0&0xFFFFFFEF=0 — '
+                    'a trivially zero-invention release, and the RMW still runs the FULL '
+                    'generic MMIO path (mem.read -> bit-AND -> mem.write, the write-back '
+                    'lands in the records). Scope: ONLY CON1 — BAUD/OTCNT/RXSADR/RXEADR/'
+                    'RXCNT/CON2 readback stays strictly blocked and CON0 keeps its own '
+                    'route-F projection; never-written CON1 words (UART1/2) still stop '
+                    'honestly; no UART IRQ, RX/TX DMA data flow or baud-rate runtime effect '
+                    'is modeled — NOT verified UART transmission/reception')
         if self.jl_omap_records is not None:
             # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字白名单。识别链
             # 见 JLOmapWriteRecords 文档串;此处把「写记录 derived-not-measured、

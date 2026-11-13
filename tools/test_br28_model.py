@@ -8,6 +8,7 @@ from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
 from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
 from br28_model import JL_UART_CON_WORDS, JL_UART_INIT_WORDS, JL_UART_INIT_WORD_OFFSETS
+from br28_model import JLUartInitWriteRecords
 from br28_model import JL_OMAP_OUT_WORDS, JL_OMAP_USB_WORDS
 from br28_model import JL_IMAP_IN_WORDS
 from br28_model import HardwareCrcEngine, CRC_ENGINE
@@ -1030,6 +1031,66 @@ class ModelTests(unittest.TestCase):
         self.assertIn('NOT verified UART transmission/reception',assumption)
         # 非整字/未对齐访问不经白名单(handles 只认 4 字节对齐整字)。
         self.assertFalse(h.handles(0xfd2005,4) or h.handles(0xfd2004,2) or h.handles(0xfd2004,1))
+
+    def test_jl_uart_con1_readback_projection_is_last_write_value(self):
+        # 路 AA(sim-con1rb):CON1(+4,三基址对称)读回=最后写值投影,把路 M
+        # 的纯写白名单升级为「写记录+读回」(lp_timer CON 路 AL/fd31 ADC CON
+        # 路 BN 同族)。首个真实消费者=uart_fifo_reset 复合 RMW 0x60340d8
+        # `rmw.and.nmodimm [r0+4]&=0xFFFFFFEF`(bit4=RX DMA 重启位清零,读值
+        # 参与写回);本事务 CON1 已被 uart_init 0x603446c 整字写 0 → RMW 读 0、
+        # 写回 0,平凡零发明。__RW 不能证明无硬件自更新位:「读回=软件配置值」
+        # 是 derived-not-measured 条件假设(报告 con1_readback_projection 全文
+        # 标注);只扩 CON1——其余白名单字(BAUD/OTCNT/RXSADR/RXEADR/RXCNT/
+        # CON2)读回仍严格停,CON0 读侧走路 F 投影保持不动;从未写过(如
+        # UART1/2 的 CON1)仍诚实停,不臆造复位值。
+        self.assertEqual(JLUartInitWriteRecords.CON1_ADDRESSES,(0xfd2004,0xfd2104,0xfd2204))
+        # 依赖守卫:读回投影叠在写记录容器上——没有 stores 就没有「最后写值」。
+        with self.assertRaises(ValueError):BR28Model(jl_uart_con1_readback=True)
+        # 默认关:只开写记录时 CON1 读回保持 3,073,918 前沿的严格停形状,
+        # 报告不出现 con1_readback_projection 子键。
+        g=BR28Model(jl_uart_init_write_records=True)
+        g.write(0xfd2004,0)
+        with self.assertRaisesRegex(Blocked,'jl_uart_init_word_readback_not_modeled'):g.read(0xfd2004)
+        self.assertNotIn('con1_readback_projection',g.report()['jl_uart_init_write_records'])
+        self.assertTrue(g.report()['jl_uart_init_write_records']['write_only'] and
+                        g.report()['jl_uart_init_write_records']['readback_not_modeled'])
+        # opt-in:写 0 后读回 0(=本前沿 RMW 的真实形状);写 0x10(|=16 的
+        # SDK 源形状)后读回 0x10——最后写值,不臆造复位值。
+        h=BR28Model(jl_uart_init_write_records=True,jl_uart_con1_readback=True)
+        h.write(0xfd2004,0)
+        self.assertEqual(h.read(0xfd2004),0)
+        h.write(0xfd2004,0x10)
+        self.assertEqual(h.read(0xfd2004),0x10)
+        self.assertEqual(h.read(0xfd2004),0x10,'readback is the stable last-written value')
+        # 从未写过的 CON1(UART1/2)仍严格停(不臆造复位值);其余白名单字
+        # (BAUD 等)即使开关开也读回严格停——只为有消费者的 CON1 发明读语义。
+        with self.assertRaisesRegex(Blocked,'jl_uart_init_word_readback_not_modeled'):h.read(0xfd2104)
+        h.write(0xfd2008,0x270)
+        with self.assertRaisesRegex(Blocked,'jl_uart_init_word_readback_not_modeled'):h.read(0xfd2008)
+        with self.assertRaisesRegex(Blocked,'jl_uart_init_word_readback_not_modeled'):h.read(0xfd202c)
+        # CON0(+0)不在本容器:读侧走路 F 投影,需单独开关。
+        self.assertFalse(h.handles(0xfd2000,4))
+        # RMW 完整路径(probe_boot 通用 mmio:内部读=投影值→按位合成→写回
+        # 落记录)在模型 API 上=读+写两个真实事务:模拟 fifo_reset 形状
+        # (bit4 清零:0x10&0xFFFFFFEF=0)。
+        value=h.read(0xfd2004)&0xFFFFFFEF
+        h.write(0xfd2004,value)
+        self.assertEqual(h.read(0xfd2004),0)
+        report=h.report()['jl_uart_init_write_records']
+        con=report['con1_readback_projection']
+        self.assertEqual(con['addresses'],['0xfd2004','0xfd2104','0xfd2204'])
+        self.assertEqual(con['reads'],5)
+        self.assertTrue(con['readback_semantics'].startswith('last firmware-written value'))
+        self.assertIn('uart_fifo_reset',con['conditional_assumption'])
+        self.assertIn('derived-not-measured',con['conditional_assumption'])
+        self.assertIn('FULL generic MMIO path',con['rmw_path'])
+        self.assertFalse(report['write_only'] or report['readback_not_modeled'])
+        self.assertEqual(report['stores']['0xfd2004'],{'values':['0x0','0x10','0x0'],'writes':3})
+        assumption=h.report()['assumptions']['jl_uart_con1_readback']
+        self.assertIn('0x60340d8',assumption)
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verified UART transmission/reception',assumption)
+        self.assertIn('ONLY CON1',assumption)
 
     def test_jl_omap_write_records_bank_and_strict_readback(self):
         # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字的 write-only 整字
