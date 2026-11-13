@@ -399,3 +399,43 @@ IPMASK 域 + #4 出队语义 = 最小可行；#2 任务切换若成本高可先�
    exit 0；legacy（无 --tone-scene）报告与主仓基线逐字节相同；RAM 窗口加宽至真实
    物理范围 [0x124000,0x1a0000)（heap 基址 0x131400 不变、既有地址全不变）。候选
    UNTESTED 状态不变、无任何刷机建议。
+
+## 11. D2-C 管道构建实测回执（路 CP/sim-d2c，2026-11-13）
+
+§10 收口的「eq 节点由 D2-C 管道构建 0x6074938 descriptor walk 创建+挂链」已落地。
+实测基于 probe_pi32v2 `--tone-scene` 新场景 `d2c_effect_pipeline`（opt-in，legacy
+报告逐字节不变）：
+
+1. **descriptor walk 全流程钉死 [静态]**：`0x6074938(scene_uuid, plug_uuid, 第三参忽略)`
+   内部序——0x60743f6 扫 §0 图节（变长 {scene_uuid16,len16,body[len]}，seek 跳过非命中）
+   取 scene 边表体；0x607447a 在边表（8B 边 {src_uuid16,src_subid8,pad,dst_uuid16,
+   dst_subid8,pad}）里找 src==plug_uuid 的边；0x60744b4 建 92B stream 对象；建 stream
+   节点（uuid **0x1100**，ops 表 record9 'jlstream' op0=0x6076b7a——§3.2 记的
+   「decoder bind 0x6076b7a」实际是 jlstream/stream 适配器 op0，decoder(0x1a85) 的 op0
+   是 0x6076e2c）；循环逐边 0x60746e6(dst_uuid,dst_subid)→0x607471e 建节点+0x6074900→
+   0x6074840 挂链。**音乐场景=pipeline-a2dp=scene 0xd96f（42 边），plug 0xf975**（SBC/AAC
+   解码 plug 表[0]）；tone 场景 0x7674（15 边）无 eq 节点——正是 §10 场景 3 node-find
+   not-found 的根因（场景选错，非节点机制缺）。
+2. **真实节点结构 vs §10 合成节点 [运行]**：44B 节点 {b[+0]=subid,h[+2]=uuid,h[+6]=1,
+   h[+8]=1,q[+24],[+40]=adapter}；eq bind 0x607876a zalloc80 ctx 置 **[node+12]=ctx**
+   （ctx[0..15]=名字、ctx[+20]=node）、0x6074768 置 [node+16]=subid 项（36B，其 [+16]=
+   ctx、[+20]=node）；eq op1 0x607898e 读 [r0+16]→[+16]→ctx，subcmd2 0x6078a2e 写
+   **ctx[35]**。§10 合成节点的 [node+16]=ctx 是真实 2 跳链（node+16→subid 项+16→ctx）
+   的捷径，写落点 ctx[35] 一致——§10 的合成观测方向正确。
+3. **三镜像实测 [运行]**：descriptor walk 一次跑通建 **20 节点**（eq 4 例 subid
+   12/14/1/13，MusicEqBt=subid 1；walk 完整返回）；cmd-11 注入（直调 0x6075e22，
+   0x1265EA=0x81 关态具名合成状态 fixture）命中真节点——bypass=1 node+35=1 三镜像全等；
+   bypass=0 node+35=0（b79/official，open-config 0x60787ac→真实配置读→钩子 0x6078846
+   写 ctx[35]=file_cfg[4]=0，随后诚实停在未建模 DSP 指令 0x606a900 copex.ppi）vs 1
+   （repaired，钩子 goto 0x60e30a0→eq_open_config 0x60e30f6 强制 1）——「效果节点状态
+   对比」现走真实 descriptor-walk 建出的节点。
+4. **修正 §10 一处 ops 表标签（行为不变）[静态+运行]**：0x607452e 权威扫描（24B 记录、
+   uuid@+4/op0@+12/op1@+16，基址 0x60a8dec）——**0x607898e 就是 eq(0x737b) op1**
+   （record @0x60a8f84），wdrc(0xdefe) op1=0x6078d0a（@0x60a8f9c）、0x6078594=
+   vocal_track_separation(0xa724) op1（@0x60a8f6c）。§10 记「0x607898e 是 wdrc op1、
+   eq op1=0x6078594」系标签错位；§10 的行为结论（eq 节点 cmd-11→0x607898e→subcmd2
+   node+35）本路在真节点上复核成立。
+5. **验证**：`check_local.py --rom …/QCY_H3S_BR28_ROM_000000-020000.bin --jobs 6` exit 0；
+   legacy（无 --tone-scene）functions.json 与主仓基线逐字节相同、check 生成的 29 份报告
+   全部逐字节对照一致；tone 场景 CLI（b79+official+repaired 三镜像）exit 0（全断言过）。
+   候选 UNTESTED 状态不变、无任何刷机建议。
