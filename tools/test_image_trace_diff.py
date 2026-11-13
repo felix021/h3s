@@ -192,12 +192,16 @@ def test_scenario_registry_shapes():
     # 0x6065ccc `st.w.sp.l [sp+8]=r9` 的上游存储模型簿记合并读未初始化局部
     # 0x19e2d4。路 CQ:exact_word_store_sp_l 独立子开关放行该整字存储,helper
     # 尾段写两局部并返回 W1[1] walker,停在 0x601d1ac `ld.w r0=[r2+0]` 读
-    # 0xfd2000(0x601d198 读辅助函数 r1==0 分支)——3,071,380 @ 0x601d1ac
-    # unmapped_memory 读 0xfd2000 停。
+    # 0xfd2000(0x601d198 读辅助函数 r1==0 分支)。路 F:命名修正——0xfd2000/
+    # 0xfd2100/0xfd2200 = JL_UART0/1/2 基址(br28.h,非「SDK 参考头未命名」),
+    # 读辅助函数 = SDK uart_v1.c uart_is_idle;读侧三选一=方案 (a) 投影
+    # `jl_uart_con_projection`(合成 0=空闲,derived-not-measured)放行后 uart_init
+    # 真实执行 CON0=0x3400,停 0x603446a 写 0xfd2004(JL_UART.BAUD|BUF,BAUD
+    # __WO)——3,071,984 @ 0x603446a unmapped_or_readonly_write 写 0xfd2004 停。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3071380, 'stop_pc': '0x601d1ac',
-        'stop_fields': {'kind': 'unmapped_memory',
-                        'address': '0xfd2000'}}
+        'completed_steps': 3071984, 'stop_pc': '0x603446a',
+        'stop_fields': {'kind': 'unmapped_or_readonly_write',
+                        'address': '0xfd2004'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
