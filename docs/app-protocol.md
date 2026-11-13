@@ -112,6 +112,9 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
      重映射命令注册表只有 cmdid 1 组（读/写/恢复默认三件套，0x60a9b00 族），无 0x2b 组——
      候选 B 实际不可达，定案候选只剩 ADV type2（KeyRemapFrame 的 0x2b 分支保留作对照，
      默认仍 ADV type2，见 docs/key-action-map.md §注册表）。
+     **[2026-11-14 路 AQ 修正]** handler 四件套正确、「cmdid 1」是错位栅格误读，该组实为
+     **批量同步表 cmdid 2**（docs/r4-command-hook.md §1.1）；「无 0x2b 组」不变，App 实发
+     wire 仍 [未钉] 待真机抓包。
 - 控制面板「耳机按键功能自定义」（type 14）：eventID 769(音量-)/1281(音量+)/1793-1796(多功能
   单击/双击/三击/四击)，动作 cmd 0..7（0=无作用 1=播放/暂停 2=上一曲 3=下一曲 4=语音助手
   5=音量+ 6=音量- 7=模式切换）。多功能键双击默认 cmd=7。
@@ -198,6 +201,7 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 | ANC 切 | FF/`0x17` | `17 03 mode scene strength` | 已钉 [文档]；路 P 反汇编核对一致（data=后 3 字节） |
 | 按键重映射 | FF/`0x2b` 或 ADV type2 | gesture/action 组合 或 `[key,gesture,action]` | H3S 用哪个分支 [未钉]；App 侧两条 wire 组帧已实现（§2.5 实现状态，默认 ADV type2） |
 | 提示音音量 | FF/`0x1d` | data=`value 占位`（len=2，值 3/6/8） | 帧形状已钉 [静态：docs/cmd-0x17-0x1d-layout.md 路P] |
+| R4 key-store 写/读 key 30 | FF/`0x30` | data=`1E v0..v7`（len 9，写）/ `1E`（len 1，读，同为写形态帧） | 形状已钉+App 侧已实现（KeyStoreFrame，Loopback 端到端）；**固件侧需 `--r4-keyhook` 离线候选（UNTESTED 不刷机）**，官方固件的 0x30 写路径为 no-op——见 docs/r4-command-hook.md |
 | 媒体音量 | AVRCP(经典BT) 或 BLE 音量命令 | — | [未钉]，仓库无证据 |
 
 只读查询（电量/ANC/设备信息）已实测，照 §2.6 抄即可。

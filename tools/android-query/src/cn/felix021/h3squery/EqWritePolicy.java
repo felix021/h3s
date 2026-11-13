@@ -12,6 +12,9 @@ import java.util.Arrays;
  *     第二字节忽略；档位 3/6/8 是控制面板层约束，固件接收层不钳）；
  *   - 0x2b 按键重映射（候选 B）：data_len==3，data=[key,gesture,action]，字段域照
  *     KeyRemapFrame（key∈{3,5,7}、gesture 1..5（5=长按假设）、action 0..7/11）；
+ *   - 0x30 R4 key-store（docs/r4-command-hook.md）：data=[30,v0..v7]（len 9，写 key 30）或
+ *     data=[30]（len 1，读 key 30）——固件侧 --r4-keyhook 离线候选的 keystore_hook 载荷
+ *     （UNTESTED），值 8 字节对本层不透明，白名单只钉形状；
  *   - 0xC2 ADV type2 写（候选 A，[假设] C1 读对偶）：body=SN+mask(00 00 00 04)+3B 三元组，
  *     字段域同上（docs/app-protocol.md §2.5，两条 wire 真机抓包定案前并存放行）。
  * 不开任意字节写总开关（AGENTS 红线）。未 armed 时退回 QueryPolicy（只读帧），所有写一律拒绝。
@@ -22,6 +25,7 @@ public final class EqWritePolicy {
     public static final int CMD_ANC = 0x17;            // ANC 模式切换 cmdid
     public static final int CMD_PROMPT_VOLUME = 0x1d;  // 提示音音量 cmdid
     public static final int CMD_KEY_REMAP = KeyRemapFrame.CMD_ID; // 按键重映射 cmdid（候选 B）
+    public static final int CMD_KEY_STORE = KeyStoreFrame.CMD_ID; // R4 key-store cmdid（0x30）
     /** ADV 设备设置写 opcode（候选 A；[假设] C1 读对偶，KeyRemapFrame 详注）。 */
     public static final int ADV_WRITE_OPCODE = KeyRemapFrame.ADV_WRITE_OPCODE;
     /** 提示音音量合法档位（控制面板 3/6/8=最小/中等/最大；固件接收层不钳，白名单从严）。 */
@@ -46,12 +50,12 @@ public final class EqWritePolicy {
         return true;
     }
 
-    /** 形状完全匹配的 setter：flags=C0、（opcode=0xFF 且 cmdid∈{0x17,0x1d,0x22,0x2b} 且各自
+    /** 形状完全匹配的 setter：flags=C0、（opcode=0xFF 且 cmdid∈{0x17,0x1d,0x22,0x2b,0x30} 且各自
      *  载荷形状匹配）或（opcode=0xC2 且 body=SN+type2 mask+合法三元组，ADV type2 写候选）。 */
     private static boolean isSetter(byte[] frame, int flags, int op, int n) {
         if (flags != EqFrame.FLAGS_CMD) return false;
         if (op == ADV_WRITE_OPCODE) return isAdvType2Setter(frame, n);
-        if (op != EqFrame.OPCODE_CUSTOM || n < 5) return false; // body 至少 SN+cmdid+data_len+2B data（0x1d 最小形状）
+        if (op != EqFrame.OPCODE_CUSTOM || n < 4) return false; // body 至少 SN+cmdid+data_len+1B data（0x30 读形状最小）
         int cmdId = frame[8] & 255;                              // body[1] = cmdid
         int dataLen = frame[9] & 255;                            // body[2] = data_len
         if (dataLen != n - 3) return false;
@@ -67,6 +71,9 @@ public final class EqWritePolicy {
                 return false;
             case CMD_KEY_REMAP:             // 0x2b：data=[key,gesture,action]，字段域照 KeyRemapFrame
                 return dataLen == 3 && KeyRemapFrame.isValidTriple(frame[10] & 255, frame[11] & 255, frame[12] & 255);
+            case CMD_KEY_STORE:             // 0x30：data=[30,8B 值]（写）或 [30]（读），形状钉死、值不透明
+                return (dataLen == KeyStoreFrame.WRITE_LEN || dataLen == KeyStoreFrame.READ_LEN)
+                        && (frame[10] & 255) == KeyStoreFrame.KEY_ID;
             default:
                 return false;
         }

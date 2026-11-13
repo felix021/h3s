@@ -32,6 +32,8 @@ public class LoopbackTransport extends SerialBleTransport {
     private final ArrayDeque<byte[]> pausedCommands = new ArrayDeque<byte[]>();
     private boolean paused;
     private boolean connected;
+    /** R4 key-store 读回桩值（cmdid 0x30 data_len=1 的回执 8 字节；测试可改写）。 */
+    public byte[] keyStoreValue = new byte[KeyStoreFrame.VALUE_LEN];
 
     /** negotiatedMtu：模拟协商到的 ATT MTU（默认 247=实测值；压小可测跨片路径）。 */
     public LoopbackTransport(int negotiatedMtu) { this.negotiatedMtu = negotiatedMtu; }
@@ -76,7 +78,7 @@ public class LoopbackTransport extends SerialBleTransport {
 
     /** 设备桩处理一条命令帧：生成响应帧、按 MTU 分片走 notify 路径送回。 */
     private void respondTo(byte[] commandFrame) {
-        byte[] response = buildSuccessResponse(commandFrame);
+        byte[] response = buildDeviceResponse(commandFrame);
         if (response == null) return;              // 非 setter 形状（如只读 FE 01 cmdid）不响应——真机联调再补
         for (byte[] piece : BlePacketizer.split(response, mtu())) deviceNotify(piece);
     }
@@ -90,6 +92,15 @@ public class LoopbackTransport extends SerialBleTransport {
      * setter 响应载荷回显部分 [未钉]（见类注释）；status+SN 位置是实测的。
      */
     public static byte[] buildSuccessResponse(byte[] commandFrame) {
+        return buildSuccessResponse(commandFrame, null);
+    }
+
+    /** 带 R4 key-store 桩值的版本（keystore 读回 8 字节；null=全零）。 */
+    public byte[] buildDeviceResponse(byte[] commandFrame) {
+        return buildSuccessResponse(commandFrame, keyStoreValue);
+    }
+
+    static byte[] buildSuccessResponse(byte[] commandFrame, byte[] keyStoreValue) {
         if (commandFrame == null || commandFrame.length < 11) return null;
         int flags = commandFrame[3] & 0xff;
         int opcode = commandFrame[4] & 0xff;
@@ -100,6 +111,27 @@ public class LoopbackTransport extends SerialBleTransport {
         int cmdId = commandFrame[8] & 0xff;
         int dataLen = commandFrame[9] & 0xff;
         if (cmdId == 0xfe || dataLen != commandFrame.length - 11) return null;  // 只读形态/长度不符不响应
+        // R4 key-store（docs/r4-command-hook.md）：按固件 keystore_hook 载荷的设计回执应答
+        // （写→`30 01 00`，读→`30 08 桩值`）——不是回显，也不是实测设备帧。
+        if (cmdId == KeyStoreFrame.CMD_ID
+                && (dataLen == KeyStoreFrame.WRITE_LEN || dataLen == KeyStoreFrame.READ_LEN)
+                && (commandFrame[10] & 0xff) == KeyStoreFrame.KEY_ID) {
+            byte[] payload;
+            if (dataLen == KeyStoreFrame.READ_LEN) {
+                payload = new byte[2 + KeyStoreFrame.VALUE_LEN];
+                payload[0] = (byte) cmdId;
+                payload[1] = (byte) KeyStoreFrame.VALUE_LEN;
+                byte[] value = keyStoreValue == null ? new byte[KeyStoreFrame.VALUE_LEN] : keyStoreValue;
+                System.arraycopy(value, 0, payload, 2, KeyStoreFrame.VALUE_LEN);
+            } else {
+                payload = new byte[]{(byte) cmdId, 0x01, 0x00};
+            }
+            byte[] body = new byte[2 + payload.length];      // status + SN + payload
+            body[0] = 0x00;
+            body[1] = (byte) sn;
+            System.arraycopy(payload, 0, body, 2, payload.length);
+            return wrapResponseBody(body, opcode);
+        }
         byte[] body = new byte[4 + dataLen];      // status + SN + cmdid + n + data
         body[0] = 0x00;                            // status=0 成功
         body[1] = (byte) sn;
