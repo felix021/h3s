@@ -202,12 +202,19 @@ def test_scenario_registry_shapes():
     # 0xfd2004=CON1 字、真 BAUD 写在 0xfd2008)后放行 CON1/BAUD/OTCNT/RXSADR/
     # RXEADR/RXCNT/CON2 纯配置整字写(write-only 记录,TXADR/TXCNT/BUF/HRXCNT
     # 不进白名单),CON1=0/CON2=0 落地后 uart_init 进 TX/RX 引脚复用,停在
-    # 0x60012de 写 0xfd58b8=0x9f(0xfd58xx GPIO 端口组,GPIO_BASES 未覆盖)——
-    # 3,072,236 @ 0x60012de unmapped_or_readonly_write 写 0xfd58b8 停。
+    # 0x60012de 写 0xfd58b8=0x9f(0xfd58xx GPIO 端口组,GPIO_BASES 未覆盖)。
+    # 路 R:识别钉死 0xfd58xx=JL_OMAP(io_omap.h map_adr(0x58,0)=0xfd5800 逐
+    # 引脚输出功能选择字;SDK gpio_out_regs 表与固件表 0x609EA9C 逐字节一致,
+    # gpio 224/225=IO_PORT_DP/DM 特例 0xfd58b8/0xfd58bc,值 0x9f=FO_UART0_TX),
+    # `jl_omap_writes` 49 字白名单 write-only 记录放行后 TX 复用链完成、第 297
+    # 次 Timer0 到期临界区退出后真实交付(287 次),RX 复用链停在 0x6001342 写
+    # 0xfd5c90=0x2f(JL_IMAP->FI_UART0_RX=map_adr(0x5c,0)+成员 36×4;值 47=
+    # USBDP_IN,UART0 RX 与 TX 同用 USB DP 脚)——3,073,402 @ 0x6001342
+    # unmapped_or_readonly_write 写 0xfd5c90 停。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3072236, 'stop_pc': '0x60012de',
+        'completed_steps': 3073402, 'stop_pc': '0x6001342',
         'stop_fields': {'kind': 'unmapped_or_readonly_write',
-                        'address': '0xfd58b8'}}
+                        'address': '0xfd5c90'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
