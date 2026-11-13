@@ -331,3 +331,32 @@ IPMASK 域 + #4 出队语义 = 最小可行；#2 任务切换若成本高可先�
 5. 主前沿 601,880 的停点语境（ADC 轮询后 sys_timer 回调）依 AGENTS/HANDOFF 记录
    推断 app_core 未达 init walker——若主场景后续接线改变停点序列，该结论按新
    trace 复核。
+
+## 9. D2-B 接线实测回执（路 CK/sim-d2bwire，2026-11-13）
+
+§6 的五件 fixture 落地三件半，六条验收断言落地三条；§5.5 的「stream-create
+请求→cmd4」被实测推翻（=cmd5）。实测基于 probe_pi32v2 `--tone-scene` 新场景
+`tone_pipeline_consume`（opt-in，legacy 报告逐字节不变）：
+
+1. **0x6075414 post 载荷= {cmd=5, obj}，不是 cmd=4**：0x60753e8 内 0x6075406
+   `r2=5`、0x6075402 `r3=obj`，0x6064d72 push.rl {r3,r2} 入队 payload 依
+   rlist 语义 = [r2, r3] = [5, obj]（槽位实测 slot[1]=5、slot[2]=obj）。任务体
+   0x60869b6 读 [buf+4]=5（cmd）、[buf+8]=obj，tbb 分发 **cmd5 0x60869f0**
+   （时间戳/sys_timer），不是 cmd4 0x60869d8（槽登记）。§5.5「先见 cmd4」修正
+   为「先见 cmd5」；节点创建 0x607471e 在 tone 链自身（0x6074938→0x60749fe），
+   不在框架任务 cmd4 分支——§4 的「框架任务→0x6074a72→0x60746e6」是第二条
+   节点路径，本场景未走。
+2. **cmd-11 是 EQ 钩子唯一驱动**：0x60787ac（含钩子 0x6078846）仅被 0x607898e
+   （eq op1，经节点 ioctl 计算调用，无线性 caller）调用；0x6078a2e（node+35）
+   是 eq op1 的 subcmd2。两者都需 cmd-11 参数消息（0x6075e22 消费）或等效直调，
+   本场景不产生 → node+35 写集为空，0x6078846/0x6078a2e 诚实 false。
+3. **pend/调度桩的根因**：ROM 0x12b55c/0x12b5b0 内的 cli/sti/lockset/lockclr 走
+   semantics.v4 硬件 batch trace 模型（非通用语义），通用模拟器里跑污染 icfg/寄存器，
+   故按 §6 fixture#2「单任务交替」捷径整体 stub（0x12b55c/0x12b5b0/0x6064340 具名
+   synthetic-not-measured）。
+4. **诚实停点**：任务体首条消费消息=cmd9（close，tone 链框架事件），close 链
+   0x6075bb4 撞未建模 OS sys_timer 读 0xffe0f8（0xffe0f4/0xffe0f8 无既有模型，
+   归 timer 域 BE/BF/BS 在途）。
+5. 落三件半 fixture：①任务存在（直调创建链，0x6065f9e RETI=0x6086980）②pend/调度
+   桩（单任务）③tone 链节点创建三 PC；#4 出队（get-event 真执行）半件；#5 槽哨兵
+   具名合成（0x1264b8/0x1264c8 空双向链表自环）。
