@@ -527,6 +527,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              p33_analog_tail=False,p3_ana_read_ldoin_low=False,gpcnt_con_readback=False,
              jl_clock_dcck=False,
              subword_stores=False,
+             word_store_sp_l=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
              flash_image_bytes=None,readonly=()):
@@ -598,6 +599,15 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 目标字节;不走上游 pair 存储模型(其写前合并读旧 word 是模型簿记读,
     # 未初始化/未映射 RAM 上会假停)。默认关闭,legacy 报告不变。
     if byte_pair:extra['exact_parallel_byte_stores']=True
+    # word_store_sp_l:opt-in 的长位移 sp 相对整字存储 st.w.sp.l(exact_parallel_
+    # stores 独立子开关 exact_word_store_sp_l)。证据形状 app 0x6065ccc
+    # `st.w.sp.l [sp+8]=r9`(scheduler 中断上下文 helper 0x6065c3a 尾部):全 4
+    # 字节覆盖写、旧值无关,上游存储模型写前合并读旧 word(模型内部簿记读、
+    # 非 guest 装载),未初始化局部 0x19e2d4 上假停。该形状在 legacy 前缀
+    # (289,849 之前)已真实执行 3 次(走上游模型、目标内存已初始化、正常完成),
+    # 并入主开关会改 legacy 报告的 adapter 计数,故单独 opt-in。默认关闭,
+    # legacy 报告不变。
+    if word_store_sp_l:extra['exact_word_store_sp_l']=True
     # mem_pwr_con 的死读放行需要 probe_boot 的 opaque 死读门诊断标志
     # (0x6067844 ld.w 读回 MEM_PWR_CON,值被下一指令覆盖,从不消费)。
     if mem_pwr_con:extra['mem_pwr_con_projection']=True
@@ -1909,22 +1919,32 @@ def check(report,firmware):
     # 返 1)→ r8=1 跳过错误路径 → call 0x60659ee→0x12b55c OS post veneer 进临界
     # 区(IPMASK 0→6)→ 停 0x6065ccc `st.w.sp.l [sp+8]=r9` 的 upstream 存储模型
     # 簿记合并读未初始化局部 0x19e2d4(st.d.sp.l/mov.rr.p∥st.h 同族,归下一路)。
-    # **新前沿 3,070,955 @ 0x6065ccc**。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6065ccc' and
-            r['stop']=={'kind':'upstream_store_bookkeeping_read','access':'read',
-                        'address':'0x19e2d4','size':4,'region':'physical_heap',
-                        'first_missing':'0x19e2d4',
-                        'note':'upstream store model reads previous words to merge/drop writes; not a guest load'},
-            'the heap-experimental scenario must stop at the scheduler helper 0x6065c3a '
-            'upstream-store bookkeeping read after the route-CO masked-branch handler releases '
-            'the active-priority low-byte test: the 0x6065c4c `if ((r0 & 0xFF) != 0)` branch '
-            '(bne.and.modimm.ri.l, i=0xFF) evaluates not-taken because the low byte is known 0 '
-            'from the empty-active-priority fixture (mask 0x3ff/value 0x300), 0x12cb08 returns 1 '
-            'so r8 stays 1 and the error path is skipped, and the 0x60659ee->0x12b55c OS-post '
-            'veneer enters the critical section (IPMASK 0->6) before 0x6065ccc `st.w.sp.l '
-            '[sp+8]=r9` hits the upstream store model merge read of the uninitialized local '
-            '0x19e2d4 — the st.d.sp.l / mov.rr.p-parallel-halfword-store family, next three-choice')
-    require(r['completed_steps']==3070955,'the heap experimental config changed its step count')
+    # **新前沿 3,070,955 @ 0x6065ccc**。**路 CQ(本次)**：0x6065ccc
+    # `st.w.sp.l [sp+8]=r9` 是长位移 sp 相对整字存储，全 4 字节覆盖写、旧值
+    # 无关（与 st.w.sp/st.d.sp.l 同论证），三选一选方案 (a) 独立子开关
+    # `exact_word_store_sp_l`（该形状在 legacy 前缀已真实执行 3 次，并入主开关
+    # 会改 legacy 报告 adapter 计数，故照半字先例单独 opt-in）放行——不走上游
+    # 存储模型的写前合并读（模型内部簿记读、非 guest 装载）。放行后 scheduler
+    # helper 0x6065c3a 尾部继续（0x6065cd0 add.r_sp_i/0x6065cd2 call 位域
+    # 配置助手，[sp+4]=1/[sp+8]=r9 两个局部落盘），返回 W1[1] walker（0x6013198）
+    # 后续，最终停在 **0x601d1ac `ld.w r0=[r2+0]` 读 0xfd2000**（r2=li.u32
+    # 16588800=0xfd2000，r1==0 分支；r1==1/2 分别读 0xfd2100/0xfd2200——
+    # 一个 switch 枚举 0/1/2 的读辅助函数 0x601d198，其 r1 来自 0x601d18e
+    # `call.xl -99550550` 的返回值）——ls_base 0xfd0000 + map_adr(0x20,0)，
+    # SDK 参考头未命名的新 SFR 组，归下一路三选一。**新前沿 3,071,380 @
+    # 0x601d1ac**（unmapped_memory 读 0xfd2000）。
+    require(r['stop_core']==0 and r['stop_pc']=='0x601d1ac' and
+            r['stop']=={'kind':'unmapped_memory','access':'read',
+                        'address':'0xfd2000','size':4,'reference_sdk_register':None},
+            'the heap-experimental scenario must stop at 0x601d1ac reading 0xfd2000 after the '
+            'route-CQ exact-word-store sp.l sub-gate releases the 0x6065ccc `st.w.sp.l '
+            '[sp+8]=r9` (full four-byte overwrite, old value irrelevant — the upstream store '
+            'model merge read of the uninitialized local 0x19e2d4 is a model-internal '
+            'bookkeeping read, not a guest load): the scheduler helper 0x6065c3a tail writes '
+            'its two locals and returns to the W1[1] walker, which reaches the 0x601d198 '
+            'switch reader whose r1==0 branch reads 0xfd2000 (r1==1/2 read 0xfd2100/0xfd2200), '
+            'an unnamed ls_base+map_adr(0x20,0) SFR group — next three-choice')
+    require(r['completed_steps']==3071380,'the heap experimental config changed its step count')
     dcck=r['peripherals']['registers']
     require(dcck['0xfd0008']=='0x46000e0c' and dcck['0xfd000c']=='0xff000100' and
             dcck['0xfd0010']=='0x10000',
@@ -2190,35 +2210,40 @@ def check(report,firmware):
     # 清掉)。路 CL:mode 切换函数 0x6068152 体 +160 步真实执行(纯软件倒计数
     # 延时无 SFR、不重编 PRD),cnt 再 +480(=160×3 tick)到 31,659。路 CO:
     # masked 分支放行后 scheduler helper 再 +170 步(=169 模型步+停点步),cnt
-    # 再 +510(=170×3 tick)到 32,169;无新到期(expirations 仍 296)。
-    require(timer=={'con':0x1401,'cnt':32169,'prd':35999,'pending':False,'expirations':296},
+    # 再 +510(=170×3 tick)到 32,169;无新到期(expirations 仍 296)。路 CQ:
+    # st.w.sp.l 放行后 +426 步(helper 尾段+W1[1] walker 后续),cnt 再
+    # +1278(=426×3 tick)到 33,447;仍无新到期。
+    require(timer=={'con':0x1401,'cnt':33447,'prd':35999,'pending':False,'expirations':296},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the last window before the stop is the 3ms one -> PRD 35999), '
             '296 expirations total (10 legacy + 286 delivered/acked) and pending clear at the '
             'stop (the last real handler W1C); the route-CL mode-switch body advances cnt by '
-            '160 model steps x 3 ticks = +480, and the route-CO scheduler-helper prefix adds '
-            '170 more model steps x 3 ticks = +510, both without reprogramming PRD')
+            '160 model steps x 3 ticks = +480, the route-CO scheduler-helper prefix adds '
+            '170 more model steps x 3 ticks = +510, and the route-CQ helper-tail plus W1[1] '
+            'walker continuation adds 426 model steps x 3 ticks = +1278, none reprogramming PRD')
     # 路 CG:core tick 溢出交付+ACK 合计 9 次(首溢出~447,490+超时窗口内 8 次,
     # expirations 9/acknowledgements 9,cnt 重装后走到 892,276<prd 1,199,999,零
     # pending);IRQ3 handler 0x60661a4 的 W1C 真实执行,交付列表见上。CPU1
     # core tick 零溢出。路 CL:+160 步后 cnt 再 +640(=160×4 tick)到 892,916;
     # 路 CO:scheduler helper 再 +170 步(=169+停点步)、cnt 再 +680(=170×4 tick)
     # 到 893,596;停点进入 0x6065c3a 内 OS 临界区(0x60659ee→0x12b55c),IPMASK
-    # 由 0 回到 6。
+    # 由 0 回到 6。路 CQ:st.w.sp.l 放行后 +426 步、cnt 再 +1704(=426×4 tick)
+    # 到 895,300;停点 0x601d1ac 已退出临界区,IPMASK 回 0。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==9 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==9 and
-            tick0['cnt']==893596 and
+            tick0['cnt']==895300 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
-            r['peripherals']['ipmask']==6 and
+            r['peripherals']['ipmask']==0 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300',
             'the CPU0 core tick must deliver and ack nine overflows (the ~447,490 landmark '
-            'plus the eight of the timeout window; rearmed counter at 893596 < prd 1199999, '
-            'no pending at the stop); IPMASK=6 at the route-CO stop (the 0x60659ee->0x12b55c '
-            'OS-post veneer re-enters the critical section inside the scheduler helper, after '
-            'the route-CL stop had observed IPMASK=0) and the CPU1 core tick never overflows')
+            'plus the eight of the timeout window; rearmed counter at 895300 < prd 1199999, '
+            'no pending at the stop); IPMASK=0 at the route-CQ stop (the scheduler helper '
+            '0x6065c3a completed and the W1[1] walker left the 0x12b55c critical section that '
+            'route-CO had re-entered, so IPMASK dropped back from 6 to 0) and the CPU1 core '
+            'tick never overflows')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -2307,13 +2332,18 @@ def check(report,firmware):
     # 往返的尾部事件,中段的 software_irq_rti 事件滑出窗口:改钉不裁剪的
     # 持久记录(交付列表已钉 + RTI 适配器计数 10)与裁剪标志本身。路 CO 的
     # 新增 irq125 是 CPU1 同步 IPI(handler 0x60662c8、repeat 投影),不新增
-    # CPU0 irq127 RTI 往返,conditional_software_irq_rti 仍 10。
+    # CPU0 irq127 RTI 往返,conditional_software_irq_rti 仍 10。路 CQ:st.w.sp.l
+    # 放行后 helper 尾段+W1[1] walker 后续 +426 步,路 CO 停点时 CPU1 最后一次
+    # irq125 交付的 handler RTI 尚未执行完,本路补完——conditional_software_
+    # irq_rti 10→11(交付列表仍 11 次不变,software_irq_commands 22/11 不变)。
     require(r['machine']['events_truncated'] is True and
-            r['instruction_adapters'].get('conditional_software_irq_rti')==10,
-            'the software IRQ RTI count must stay at its verified ten (the pmu_task-entry RTI '
-            'event lies in the byte-identical pre-305k prefix pinned at the 689,402 landmark; '
-            'the trimmed 32+32 events window now holds the fourteen IRQ4 round trips; the '
-            'route-CO CPU1 sync IPI is a repeat_irq_delivery round, not an irq127 RTI)')
+            r['instruction_adapters'].get('conditional_software_irq_rti')==11,
+            'the software IRQ RTI count must reach eleven (the pmu_task-entry RTI event lies '
+            'in the byte-identical pre-305k prefix pinned at the 689,402 landmark; the trimmed '
+            '32+32 events window holds the fourteen IRQ4 round trips; the route-CO CPU1 sync '
+            'IPI is a repeat_irq_delivery round whose handler RTI was still in flight at the '
+            'route-CO stop and completes during the route-CQ helper-tail/W1[1]-walker steps, '
+            'with no new software IRQ command bookkeeping)')
     require(r['peripherals']['software_irq_commands']['commands']==22 and
             r['peripherals']['software_irq_commands']['acknowledgements']==11,
             'the two scheduler IPI round trips plus the route-CO scheduler-helper sync IPI '
@@ -2359,13 +2389,17 @@ def check(report,firmware):
             # 进出 cli/sti、0x60659ee/0x6065ab8 包装)——新增 partial_icfg_masked_
             # branch=1,任务栈帧运输 10703→10706、共享锁 1222→1223、整字存储
             # 14144→14150、icfg bit9 3726→3730、cnum 5772→5781(mmio RMW 1492 不变)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==10706 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1223 and
-            r['instruction_adapters'].get('exact_full_word_store')==14150 and
+            # 路 CQ:+425 步(scheduler helper 0x6065c3a 尾段 + W1[1] walker 后续到
+            # 0x601d1ac)——任务栈帧运输 10706→10721、共享锁 1223→1224、整字存储
+            # 14150→14168(6 个 st.w.sp.l 转 exact +425 步内新整字存储)、icfg bit9
+            # 3730→3734、cnum 5781→5788(mmio RMW 1492 与 masked 分支 1 不变)。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==10721 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1224 and
+            r['instruction_adapters'].get('exact_full_word_store')==14168 and
             r['instruction_adapters'].get('mmio_rmw_always_writes')==1492 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==3730 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==3734 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==1 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==5781,
+            r['instruction_adapters'].get('per_core_visible_cnum')==5788,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -2876,9 +2910,16 @@ def check(report,firmware):
         'The helper then reads low byte 0 (not in IRQ), calls 0x12cb08 (RTOS critical query -> '
         '1), keeps r8=1 (error path skipped), and the 0x60659ee->0x12b55c OS-post veneer '
         're-enters the critical section (IPMASK 0->6) before 0x6065ccc `st.w.sp.l [sp+8]=r9` '
-        'hits the upstream store model merge read of the uninitialized local 0x19e2d4. '
-        'New frontier: 3,070,955 @ 0x6065ccc upstream_store_bookkeeping_read (the st.d.sp.l / '
-        'parallel-halfword-store family, the next three-choice)')
+        'hits the upstream store model merge read of the uninitialized local 0x19e2d4. Route CQ '
+        'closes that with the exact_word_store_sp_l sub-gate (three-choice (a): the long '
+        'sp-relative word store overwrites all four bytes so the old word is irrelevant, '
+        'mirroring st.w.sp/st.d.sp.l; the shape already executes three times in the legacy '
+        'prefix so it is opt-in on its own sub-switch, not folded into exact_parallel_stores): '
+        'the scheduler helper 0x6065c3a writes its two locals ([sp+4]=1, [sp+8]=r9) and returns '
+        'to the W1[1] walker. '
+        'New frontier: 3,071,380 @ 0x601d1ac unmapped_memory read of 0xfd2000 (the 0x601d198 '
+        'switch reader r1==0 branch; r1==1/2 read 0xfd2100/0xfd2200, an unnamed ls_base+'
+        'map_adr(0x20,0) SFR group, the next three-choice)')
     report['fd31_adc_res_pnd_assumption']=(
         'opt-in fd31_adc_pnd_completion + fd31_adc_res_named_values (route BY/sim-adcresfix, '
         'layered on fd31_adc_con_readback; default OFF keeps the route-BS 689,402 '
@@ -3040,7 +3081,8 @@ def main():
                               p3_ana_read_ldoin_low=True,
                               gpcnt_con_readback=True,
                               jl_clock_dcck=True,
-                              subword_stores=True,timer0_irq4_delivery=True,
+                              subword_stores=True,word_store_sp_l=True,
+                              timer0_irq4_delivery=True,
                               core_tick_irq3_delivery=True,
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'timer0_irq4_delivery_probe',

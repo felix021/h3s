@@ -376,7 +376,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             elif insn.id=='st.w.idx':address=self.R[op['r']]+self.R[op['s']];value=self.R[op['t']]
             elif insn.id=='st.w.l':address=self.R[op['r']]+op['n'];value=self.R[op['s']]
             elif insn.id=='st.w':address=self.R[op['b']]+op['n'];value=self.R[op['d']]
-            elif insn.id=='st.w.sp':address=self.sp+op['n'];value=self.R[op['r']]
+            elif insn.id in ('st.w.sp','st.w.sp.l'):address=self.sp+op['n'];value=self.R[op['r']]
             else:raise ValueError('unsupported exact word store')
             return address&0xffffffff,value if abstract and isinstance(value,IcfgValue) else value&0xffffffff
 
@@ -1091,7 +1091,16 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.finish_exact(self.pc+size)
                 adapters['rep_copy_unknown_transport_insert']+=1
                 return
-            if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
+            if diagnostics and diagnostics.get('exact_parallel_stores') and (
+                    insn.id in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx') or
+                    (diagnostics.get('exact_word_store_sp_l') and insn.id=='st.w.sp.l')):
+                # st.w.sp.l(长位移 sp 相对整字存储)是全 4 字节覆盖写、旧值
+                # 无关(与 st.w.sp/st.d.sp.l 同论证)——不走上游存储模型的写前
+                # 合并读(那是模型内部簿记读、非 guest 装载,未初始化 RAM 上
+                # 假停)。该形状在 legacy 前缀(289,849 之前)已真实执行 3 次
+                # (走上游模型、目标内存已初始化、正常完成),并入主开关会改
+                # legacy 报告的 adapter 计数,故独立子开关 exact_word_store_sp_l
+                # 单独 opt-in(路 V 半字先例同款)。默认关,legacy 报告不变。
                 address,value=self.word_store(insn,raw)
                 require(address%4==0,'unaligned exact word store')
                 self.mem.write(address,struct.pack('<I',value));self.finish_exact(self.pc+size)

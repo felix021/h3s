@@ -98,7 +98,8 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     fd31_adc_res_named_values=probe_irq_entry.FD31_ADC_RES_NAMED_VALUES,
     p33_analog_tail=True, p3_ana_read_ldoin_low=True, gpcnt_con_readback=True,
     jl_clock_dcck=True,
-    subword_stores=True, timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
+    subword_stores=True, word_store_sp_l=True,
+    timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
 
 SCENARIOS = {
     'crc_bankb': {
@@ -146,10 +147,16 @@ SCENARIOS = {
         # 随后 call 0x12cb08(RTOS 临界查询→1)跳过错误路径、经 0x60659ee→
         # 0x12b55c 重进临界区(IPMASK 0→6),停在 0x6065ccc `st.w.sp.l
         # [sp+8]=r9` 的 upstream 存储模型簿记合并读未初始化局部 0x19e2d4。
-        # **新前沿 3,070,955 @ 0x6065ccc**(st.d.sp.l/mov.rr.p∥st.h 同族,归下一路)。
-        'freshness': {'completed_steps': 3070955, 'stop_pc': '0x6065ccc',
-                      'stop_fields': {'kind': 'upstream_store_bookkeeping_read',
-                                      'address': '0x19e2d4'}},
+        # 路 CQ:exact_word_store_sp_l 独立子开关放行该整字存储(全 4 字节
+        # 覆盖写、旧值无关,同 st.w.sp/st.d.sp.l 论证;形状在 legacy 前缀已执行
+        # 3 次故单独 opt-in),helper 尾段写两局部并返回 W1[1] walker,最终停在
+        # 0x601d1ac `ld.w r0=[r2+0]` 读 0xfd2000(0x601d198 读辅助函数的 r1==0
+        # 分支;r1==1/2 读 0xfd2100/0xfd2200)——ls_base 0xfd0000+map_adr(0x20,0)
+        # 的 SDK 参考头未命名新 SFR 组。
+        # **新前沿 3,071,380 @ 0x601d1ac**(unmapped_memory 读 0xfd2000,归下一路)。
+        'freshness': {'completed_steps': 3071380, 'stop_pc': '0x601d1ac',
+                      'stop_fields': {'kind': 'unmapped_memory',
+                                      'address': '0xfd2000'}},
     },
 }
 
@@ -686,22 +693,23 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-13 路 CO 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 3,070,955;一切结论条件通过、derived-not-measured;历史
+    """钉死 2026-11-13 路 CQ 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 3,071,380;一切结论条件通过、derived-not-measured;历史
     世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/3,070,626(路 CG)/
-    3,070,786(路 CL)已被后续投影替换,见 HANDOFF 对应「步含义」段):
+    3,070,786(路 CL)/3,070,955(路 CO)已被后续投影替换,见 HANDOFF 对应
+    「步含义」段):
 
-    - 双方 3,070,955 步、同停点 0x6065ccc(upstream_store_bookkeeping_read,
-      address 0x19e2d4,当前条件前沿——路 CO 的 partial_icfg_masked_branch
-      处理器放行 0x6065c4c active-priority 低字节掩码测试后,helper 经
-      0x12cb08/0x12b55c 重进临界区,停在 st.w.sp.l [sp+8]=r9 的上游存储
-      模型簿记合并读)、per-core {0:3060066,1:11202} 一致;stop parity 全同
-      ——official↔b79 parity 延长到条件前沿 3,070,955,控制流零分歧、无
+    - 双方 3,071,380 步、同停点 0x601d1ac(unmapped_memory,address 0xfd2000,
+      当前条件前沿——路 CQ 的 exact_word_store_sp_l 独立子开关放行 0x6065ccc
+      `st.w.sp.l [sp+8]=r9`(全 4 字节覆盖写、旧值无关)后,helper 尾段写两
+      局部并返回 W1[1] walker,最终停在 0x601d198 读辅助函数 r1==0 分支读
+      0xfd2000)、per-core {0:3060478,1:11216} 一致;stop parity 全同——
+      official↔b79 parity 延长到条件前沿 3,071,380,控制流零分歧、无
       reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,070,955,
-      超时窗口+OS tick 级联+mode 切换体+scheduler helper)没有消费任何新的
-      镜像差异;
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,071,380,
+      超时窗口+OS tick 级联+mode 切换体+scheduler helper+0xfd2000 读前段)
+      没有消费任何新的镜像差异;
     - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -711,19 +719,19 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 3070955 and run['stop_pc'] == '0x6065ccc' and
-                run['stop']['kind'] == 'upstream_store_bookkeeping_read' and
-                run['stop']['address'] == '0x19e2d4' and
-                run['per_core_steps'] == {'0': 3060066, '1': 11202},
+        require(run['completed_steps'] == 3071380 and run['stop_pc'] == '0x601d1ac' and
+                run['stop']['kind'] == 'unmapped_memory' and
+                run['stop']['address'] == '0xfd2000' and
+                run['per_core_steps'] == {'0': 3060478, '1': 11216},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3070955 @ 0x6065ccc, the upstream-store bookkeeping '
-                'read inside the scheduler interrupt-context helper 0x6065c3a after the route-CO '
-                'partial_icfg_masked_branch handler released the active-priority low-byte test)')
+                'conditional frontier stop (3071380 @ 0x601d1ac, the unmapped 0xfd2000 read of '
+                'the 0x601d198 switch reader after the route-CQ exact_word_store_sp_l sub-gate '
+                'released the 0x6065ccc `st.w.sp.l [sp+8]=r9` full-word overwrite)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 3070955, 'tested_b79': 3070955, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x6065ccc', 'b': '0x6065ccc', 'same': True} and
+    require(parity['steps'] == {'official': 3071380, 'tested_b79': 3071380, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x601d1ac', 'b': '0x601d1ac', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['kind'] == 'upstream_store_bookkeeping_read' and
+            parity['stop_record']['a']['kind'] == 'unmapped_memory' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
             'identical conditional frontier stop')

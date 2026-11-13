@@ -950,6 +950,56 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop']['address'],hex(sp))
         self.assertEqual(result['stop']['region'],'bootstrap_stack')
 
+    def test_sp_long_word_store_overwrites_unknowns_without_old_word_read(self):
+        # 0x6065ccc is the real `st.w.sp.l [sp+8]=r9` of the scheduler
+        # interrupt-context helper 0x6065c3a. The store overwrites all four
+        # bytes, so the old word cannot matter; through the opt-in
+        # exact_word_store_sp_l sub-gate it must write directly, clearing the
+        # previous unknown stack bytes instead of stopping on the upstream
+        # merge bookkeeping (a model-internal read, not a guest load).
+        h=self.handoff();sp=0x123700
+        h['snapshots'].append(('sp_l_word_and_neighbours',sp+4,12))
+        regs=[0]*16;regs[9]=0x11223344
+        result=explore(self.module,self.app,name='sp_l_word',handoff=h,
+            diagnostics={'entry_pc':0x6065ccc,'initial_sp':sp,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_word_store_sp_l':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],hex(0x6065cd0))
+        self.assertEqual(result['last_registers']['sp'],hex(sp))
+        self.assertEqual(result['instruction_adapters'],{'exact_full_word_store':1})
+        self.assertEqual(result['memory_snapshots']['sp_l_word_and_neighbours']['bytes_with_unknowns'],
+                         '????????'+'44332211'+'????????')
+
+    def test_sp_long_word_store_stays_strict_when_only_the_parent_gate_is_on(self):
+        # The parent exact_parallel_stores gate alone must NOT release the long
+        # sp-relative word store: the independent sub-gate exact_word_store_sp_l
+        # is required (the shape executes 3x in the legacy prefix, so folding it
+        # into the main switch would change legacy adapter counts — the
+        # halfword-store precedent). Without the sub-gate the instruction keeps
+        # stopping on the upstream store model merge read.
+        sp=0x123700
+        regs=[0]*16;regs[9]=0x11223344
+        result=explore(self.module,self.app,name='sp_l_word_parent_only',
+            diagnostics={'entry_pc':0x6065ccc,'initial_sp':sp,'initial_gprs':regs,
+                         'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'upstream_store_bookkeeping_read')
+        self.assertEqual(result['stop']['address'],hex(sp+8))
+        self.assertEqual(result['stop']['region'],'bootstrap_stack')
+
+    def test_sp_long_word_store_defaults_to_strict_bookkeeping_read_stop(self):
+        # Without any opt-in the same instruction must keep stopping on the
+        # upstream store model's merge read of the uninitialized old word
+        # (a model-internal read, not a guest load): legacy behaviour unchanged.
+        sp=0x123700
+        regs=[0]*16;regs[9]=0x11223344
+        result=explore(self.module,self.app,name='sp_l_word_strict',
+            diagnostics={'entry_pc':0x6065ccc,'initial_sp':sp,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'upstream_store_bookkeeping_read')
+        self.assertEqual(result['stop']['address'],hex(sp+8))
+        self.assertEqual(result['stop']['region'],'bootstrap_stack')
+
     def test_parallel_extension_stores_to_uninitialized_stack_without_merge_read(self):
         h=self.handoff();sp=STACK_TOP-128
         h['snapshots'].append(('parallel_stack_word',sp,4))

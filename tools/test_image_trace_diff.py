@@ -190,11 +190,14 @@ def test_scenario_registry_shapes():
     # modimm.ri.l i=0xFF;empty-active-priority fixture 下低字节已知 0 → 不跳),
     # helper 经 0x12cb08(临界查询→1)/0x12b55c(重进临界区 IPMASK 0→6)后停在
     # 0x6065ccc `st.w.sp.l [sp+8]=r9` 的上游存储模型簿记合并读未初始化局部
-    # 0x19e2d4——3,070,955 @ 0x6065ccc upstream_store_bookkeeping_read 停。
+    # 0x19e2d4。路 CQ:exact_word_store_sp_l 独立子开关放行该整字存储,helper
+    # 尾段写两局部并返回 W1[1] walker,停在 0x601d1ac `ld.w r0=[r2+0]` 读
+    # 0xfd2000(0x601d198 读辅助函数 r1==0 分支)——3,071,380 @ 0x601d1ac
+    # unmapped_memory 读 0xfd2000 停。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3070955, 'stop_pc': '0x6065ccc',
-        'stop_fields': {'kind': 'upstream_store_bookkeeping_read',
-                        'address': '0x19e2d4'}}
+        'completed_steps': 3071380, 'stop_pc': '0x601d1ac',
+        'stop_fields': {'kind': 'unmapped_memory',
+                        'address': '0xfd2000'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
