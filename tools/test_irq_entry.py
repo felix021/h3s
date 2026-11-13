@@ -95,5 +95,56 @@ class KeyChainFixtureTests(unittest.TestCase):
                          {0x10000:400,0x10006:500,0x10004:400,0x10001:700})
 
 
+class KeyChainMatrixFixtureTests(unittest.TestCase):
+    """路 AJ/sim-keymatrix:三键矩阵 fixture 布局自洽性(防退化)。
+
+    布局约束=S 路钉死的 read_key 消费面(+0/+4/+10/+50);键 id 分配依据
+    BW handler 掩码 0x09050307(key10..13→逻辑键{7,3,5,9})与 App eventID
+    0x{logical}0{gesture+1} 的对应(推导,全部 synthetic-not-measured)。
+    """
+
+    def test_matrix_sensor_object_layout(self):
+        import probe_irq_entry as pie
+        obj=pie.key_chain_matrix_sensor_object_bytes()
+        self.assertEqual(len(obj),70)
+        self.assertEqual(obj[0],3,'enable/键数=三键矩阵自洽值(非零即过 read_key 旁路门)')
+        self.assertEqual(struct.unpack_from('<I',obj,4)[0],pie.KEY_CHAIN_CHANNEL_WORD,
+                         '三键共用同一 ADC 分压通道(S 路通道字不变)')
+        thresholds=struct.unpack_from('<20H',obj,10)
+        self.assertEqual(thresholds[:4],(500,720,850,1022),
+                         '释放+三键按下共四档分界(升序)')
+        self.assertEqual(thresholds[4:],(1023,)*16,'剩余槽全哨兵(>1022=10 位 ADC 满量程界)')
+        self.assertEqual(list(thresholds),sorted(thresholds),'阈值表必须升序(线性定档前提)')
+        ids=list(obj[50:70])
+        self.assertEqual(ids[:4],[255,10,11,12],
+                         '释放 255/多功能 10/音量- 11/音量+ 12(BW 掩码+App eventID 推导)')
+        self.assertEqual(ids[4:],[0]*16)
+
+    def test_matrix_bands_are_disjoint_and_levels_inside(self):
+        import probe_irq_entry as pie
+        thresholds=[500,720,850,1022]
+        bands=[(0,500,255),(501,720,10),(721,850,11),(851,1022,12)]
+        for (lo,hi,key_id),(name,level) in zip(bands,
+                (('release',pie.KEY_CHAIN_MATRIX_RES_RELEASE),
+                 *pie.KEY_CHAIN_MATRIX_RES_LEVELS.items())):
+            self.assertLessEqual(lo,level)
+            self.assertLessEqual(level,hi,
+                                 f'{name} 代表读数 {level} 必须落在自己的阈值区间 {lo}..{hi}')
+            # 与上下界的距离≫EMA 瞬态幅度(S 路稳态假设同款论证)
+            self.assertGreaterEqual(min(level-lo,hi-level),50,name)
+        self.assertEqual(pie.KEY_CHAIN_MATRIX_RES_RELEASE,pie.KEY_CHAIN_RES_RELEASE,
+                         '释放态与 S 路同一档(三键全松→同一分压)')
+
+    def test_matrix_res_fixture_extends_without_mutating_other_dicts(self):
+        import probe_irq_entry as pie
+        self.assertEqual(pie.FD31_ADC_RES_NAMED_VALUES,{0x10000:400,0x10006:500,0x10004:400})
+        self.assertEqual(pie.KEY_CHAIN_MATRIX_RES_NAMED_VALUES,
+                         {0x10000:400,0x10006:500,0x10004:400,
+                          pie.KEY_CHAIN_CHANNEL_WORD:pie.KEY_CHAIN_MATRIX_RES_LEVELS['multi']})
+        self.assertNotEqual(pie.KEY_CHAIN_MATRIX_RES_NAMED_VALUES[pie.KEY_CHAIN_CHANNEL_WORD],
+                            pie.KEY_CHAIN_RES_NAMED_VALUES[pie.KEY_CHAIN_CHANNEL_WORD],
+                            '矩阵场景键通道缺省档(600)须区别于 S 路(700)——两 dict 独立')
+
+
 if __name__=='__main__':
     unittest.main()

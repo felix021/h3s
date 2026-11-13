@@ -313,6 +313,21 @@ app_core message-loop consumer is outside the stopped world; route BW
 already executed that handler from its entry). Full derivation, per-beat
 debounce states and the honest-boundary list live in
 docs/peripheral-input-simulation.md section 7.
+
+The key_chain_matrix_scan scenario (route AJ/sim-keymatrix) widens the same
+mechanism from the single-key two-band fixture to the real three-key matrix
+layout (multi-function / vol+ / vol- on ONE ADC divider channel, four
+threshold bands + a 20-entry key-id table) and drives the gesture set the
+d1-acceptance D2-a recognition coverage asks for: single clicks on the two
+new key ids (0x10b00/0x10c00), triple and quad clicks (gestures 5/6 — the
+n+2 encoding measured where it was only extrapolated), and a 390-beat hold
+that measures the gesture-2 repeat rhythm (every 15 beats from beat 93), the
+long-press tiers (1000ms -> gesture 10 at beat 183, 3000ms -> gesture 11 at
+beat 378, correcting route Q's inferred 11..14 ladder), the explicit release
+gesture 3 and the no-extra-single-click negative example. Every band value is
+synthetic-not-measured (the real config 523 lives in the bank-B record
+area); docs/peripheral-input-simulation.md section 8 has the full
+derivation and the D2-a coverage table.
 """
 import argparse
 import json
@@ -792,6 +807,228 @@ def make_key_chain_post_stop(app):
         return observations
     return post_stop
 
+
+# ---------------------------------------------------------------------------
+# 路 AJ/sim-keymatrix:S 路单键两档 fixture 扩成三键矩阵(多功能/音量+/音量-)
+# 的多手势场景。布局约束全部沿用 S 路钉死的 read_key 0x6000E94 消费面
+# (+0 enable/键数(b)/+4 键通道字(w)/+10 20 级 u16 阈值表/+50 20 项键 id 表,
+# >1022 哨兵)。三键共用同一 ADC 分压通道(键通道字 0x10001 不变——「电阻
+# 分压矩阵」=不同键在同一分压网络上产生不同电压,§2.1 路 Q 钉死),各键分配
+# 互不重叠的阈值区间,释放态(三键全松)同一档。**键 id 分配自洽依据[推导]**:
+# BW 钉死 handler 0x6025334 位掩码 0x09050307 把 key 字段 10..13 映射逻辑键
+# {7,3,5,9}(key10→7);App eventID=逻辑键<<8|(gesture+1)(app-protocol §2.5:
+# 音量- 769=0x301/音量+ 1281=0x501/多功能 1793..1796=0x701..0x704)→
+# key10=多功能(0x700)/key11=音量-(0x301)/key12=音量+(0x501)。**全部
+# synthetic-not-measured**:真实 config 523(阈值表+键 id 表)与真实分压网络
+# 读数都在 bank B 记录区/公开工件外,本表是显式合成(擦除态世界该链整体
+# 旁路,路 Q 钉死)。
+# ---------------------------------------------------------------------------
+# 阈值表前四档(升序):释放(≤500→无键 255)/多功能(501..720→键 10)/
+# 音量-(721..850→键 11)/音量+(851..1022→键 12),其余 16 槽 1023 哨兵
+# (10 位 ADC 满量程界,S 路同款)。代表读数取各区间中段,与上下界的距离
+# ≥50(实测最小 59)≫EMA 瞬态幅度(S 路稳态假设同款论证,单测钉死)。
+KEY_CHAIN_MATRIX_THRESHOLDS=(500,720,850,1022)
+KEY_CHAIN_MATRIX_KEY_IDS=(255,10,11,12)
+KEY_CHAIN_MATRIX_RES_LEVELS={'multi':600,'vol_down':780,'vol_up':950}
+KEY_CHAIN_MATRIX_RES_RELEASE=KEY_CHAIN_RES_RELEASE      # 400:释放态同一档(≤500→255)
+KEY_CHAIN_MATRIX_KEY_BY_NAME={name:key_id for key_id,name
+                              in ((10,'multi'),(11,'vol_down'),(12,'vol_up'))}
+KEY_CHAIN_MATRIX_PRESS_BEATS=13    # 短按拍数(与 S 路双击/单击同款:有效稳定按压 ~10 拍,
+                                    # 低于 75 拍按下确认阈值→纯点击)
+KEY_CHAIN_MATRIX_GAP_BEATS=11      # 连击间隔拍数(S 路双击同款:低于 20 拍释放稳定终结)
+KEY_CHAIN_MATRIX_TAIL_BEATS=25     # 末次释放稳定拍数(≥20 触发点击计数消费,S 路同款)
+KEY_CHAIN_MATRIX_HOLD_BEATS=390    # 长按保持拍数(210 拍首轮实测:确认@78 拍、持续@93
+                                    # +15k、1000ms 档@183 拍=确认+105;390 拍覆盖下一档
+                                    # 3000ms 的首个重复槽 78+300=378)
+
+def key_chain_matrix_sensor_object_bytes():
+    """三键矩阵分档器对象的显式合成内容(read_key 消费面布局,70 字节)。"""
+    obj=bytearray(70)
+    obj[0]=3   # enable/键数:三键矩阵自洽值(read_key 消费面仅 b[obj+0]==0 旁路门,
+               # S 路单键用 1 同理;iokey init 的逐键记录不在直调场景执行段)
+    struct.pack_into('<I',obj,4,KEY_CHAIN_CHANNEL_WORD)
+    for i,threshold in enumerate(list(KEY_CHAIN_MATRIX_THRESHOLDS)+[1023]*16):
+        struct.pack_into('<H',obj,10+2*i,threshold)      # 20 级 u16 阈值表(升序)
+    obj[50:70]=bytes(list(KEY_CHAIN_MATRIX_KEY_IDS)+[0]*16)  # 20 项键 id 字节表
+    return bytes(obj)
+
+# 矩阵场景的 RES fixture=BY 三通道+键通道(缺省=多功能键按下档);采样切换与
+# S 路同机制(场景内改 hardware.fd31_adc_con.res_named_values 后直调采样事务)。
+KEY_CHAIN_MATRIX_RES_NAMED_VALUES={**FD31_ADC_RES_NAMED_VALUES,
+                                   KEY_CHAIN_CHANNEL_WORD:KEY_CHAIN_MATRIX_RES_LEVELS['multi']}
+
+def make_key_chain_matrix_post_stop(app):
+    """构造三键矩阵多手势直调场景的 post_stop 回调(路 AJ/sim-keymatrix)。
+
+    与 S 路 make_key_chain_post_stop 同机制、独立实现(S 路函数与报告保持逐
+    字节不变):同一 p11_heap_experimental_config 世界停点后,装三键矩阵分档器
+    fixture → 真实注册键通道 → 每键一次「真实采样事务+分档查询」独立断言 →
+    五个手势序列按拍直调扫描回调 0x6001944:
+      ① 音量+ 单击(键 12) ② 音量- 单击(键 11)——动作覆盖的键 id 面;
+      ③ 多功能键三击(手势 5=n+2) ④ 四击(手势 6)——识别覆盖的多击补全;
+      ⑤ 多功能键长按保持 390 拍+释放 25 拍——长按档(1000/3000ms 两档,实测
+        手势码 10/11)、长按持续 2 的重复节奏(93 拍起每 15 拍)、以及「长按
+        释放是否多发一次单击」负例(实测:释放发显式手势 3,零 gesture 0)。
+    post 观测同 S 路在调用点 0x6001b5e(r0=载荷字),另记所在拍号。
+    """
+    ctx_blob=app[0x60C3380-ENTRY:0x60C3380-ENTRY+24]
+    sequence_log=[]
+
+    def read_ram(cpu,address,size):
+        return int.from_bytes(cpu.mem.read(address,size),'little')
+
+    def write_ram(cpu,address,data):
+        cpu.mem.write(address,data)
+
+    def sample(cpu,machine,hardware,res_value,label):
+        hardware.fd31_adc_con.res_named_values[KEY_CHAIN_CHANNEL_WORD]=res_value
+        value,steps,_=key_chain_direct_call(cpu,machine,0x60116D0,[KEY_CHAIN_CHANNEL_WORD])
+        entry={'phase':label,'res_fixture':res_value,'sampled_value':value,'steps':steps}
+        if value!=res_value:
+            raise Blocked('key_chain_matrix_sample_mismatch',**entry)
+        slot=None
+        for idx in range(11):
+            if read_ram(cpu,0x127D08+16*idx+4,4)==KEY_CHAIN_CHANNEL_WORD:
+                slot=idx;break
+        if slot is None:
+            raise Blocked('key_chain_matrix_queue_slot_missing',**entry)
+        write_ram(cpu,KEY_CHAIN_ADC_QUEUE_VALUE_BASE+16*slot,struct.pack('<H',value))
+        entry['queue_slot']=slot
+        sequence_log.append(entry)
+        return value
+
+    beat_states=[]
+    tick_cursor=[None]
+
+    def scan_beat(cpu,machine,tick,seq,beat):
+        write_ram(cpu,KEY_CHAIN_SYS_TICK,struct.pack('<I',tick))
+        _,steps,posts=key_chain_direct_call(cpu,machine,0x6001944,[KEY_CHAIN_REGISTRY_ENTRY],
+                                            watch=(0x6001b5e,0x6001b62))
+        beat_states.append({
+            'seq':seq,'beat':beat,
+            'confirmed_level':read_ram(cpu,0x124888+0,1),
+            'last_level':read_ram(cpu,0x124888+1,1),
+            'change_count':read_ram(cpu,0x124888+2,1),
+            'release_count':read_ram(cpu,0x124888+3,1),
+            'press_count':read_ram(cpu,0x124888+4,1),
+            'hold_timer':read_ram(cpu,0x124888+6,2),
+            'click_count':read_ram(cpu,KEY_CHAIN_CLICK_COUNT,1),
+            'tracked_key':read_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,1),
+            'post_payloads':[p['args'][0] for p in posts if p['pc']==hex(0x6001b5e)]})
+        return steps,[p for p in posts if p['pc']==hex(0x6001b5e)]
+
+    def reset_scan_state(cpu,seq):
+        write_ram(cpu,0x124888,ctx_blob)
+        write_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,bytes([255]))
+        write_ram(cpu,KEY_CHAIN_CLICK_COUNT,bytes([0]))
+        beat_states.append({'sequence_reset':True,'seq':seq})
+
+    def posts_of(seq):
+        # 序列内全部 post(逐拍;一拍多 post 全收,不截断)
+        return [{'beat':b['beat'],'payload':payload}
+                for b in beat_states if b.get('seq')==seq
+                for payload in b.get('post_payloads',[])]
+
+    def click_sequence(cpu,machine,hardware,seq,name,clicks):
+        """clicks 连击:短按 13 拍×clicks、间隔 11 拍、末次释放稳定 25 拍。"""
+        reset_scan_state(cpu,seq)
+        level=KEY_CHAIN_MATRIX_RES_LEVELS[name]
+        beat=0
+        for click in range(clicks):
+            sample(cpu,machine,hardware,level,f'{seq}_press_{click+1}')
+            for _ in range(KEY_CHAIN_MATRIX_PRESS_BEATS):
+                beat+=1;scan_beat(cpu,machine,tick_cursor[0]+beat,seq,beat)
+            sample(cpu,machine,hardware,KEY_CHAIN_MATRIX_RES_RELEASE,f'{seq}_release_{click+1}')
+            tail=KEY_CHAIN_MATRIX_TAIL_BEATS if click==clicks-1 else KEY_CHAIN_MATRIX_GAP_BEATS
+            for _ in range(tail):
+                beat+=1;scan_beat(cpu,machine,tick_cursor[0]+beat,seq,beat)
+        tick_cursor[0]+=beat
+        return {'key_name':name,'key_id':KEY_CHAIN_MATRIX_KEY_BY_NAME[name],'clicks':clicks,
+                'beats':beat,'post_calls':posts_of(seq)}
+
+    def post_stop(machine,hardware,cpu):
+        if machine is None or hardware is None:
+            raise Blocked('key_chain_matrix_requires_dualcore_world')
+        if cpu.core_id!=0:
+            raise Blocked('key_chain_matrix_stopped_on_cpu1')
+        stopped_pc=cpu.pc
+        # ① 三键矩阵分档器 fixture(synthetic-not-measured,布局=S 路钉死消费面)
+        write_ram(cpu,KEY_CHAIN_SENSOR_OBJECT,key_chain_matrix_sensor_object_bytes())
+        write_ram(cpu,KEY_CHAIN_OBJECT_POINTER,struct.pack('<I',KEY_CHAIN_SENSOR_OBJECT))
+        # ② 分档层独立断言:键通道未注册 → 队列未命中返回 1 → 1≤500 → 键 255
+        key_before,_,_=key_chain_direct_call(cpu,machine,0x6000E94,[])
+        # ③ 真实注册(与 S 路同一通道字,队列 slot 3)
+        _,reg_steps,_=key_chain_direct_call(cpu,machine,0x6001230,[KEY_CHAIN_CHANNEL_WORD])
+        # ④ 每键一次真实采样事务+分档查询(识别覆盖的输入面:三键+释放态)
+        classification={}
+        for name,res_value in (('release',KEY_CHAIN_MATRIX_RES_RELEASE),
+                               *KEY_CHAIN_MATRIX_RES_LEVELS.items()):
+            sample(cpu,machine,hardware,res_value,f'classify_{name}')
+            key_id,_,_=key_chain_direct_call(cpu,machine,0x6000E94,[])
+            expected=255 if name=='release' else KEY_CHAIN_MATRIX_KEY_BY_NAME[name]
+            if key_id!=expected:
+                raise Blocked('key_chain_matrix_classification_mismatch',
+                              name=name,res_fixture=res_value,read_key=key_id,expected=expected)
+            classification[name]=key_id
+        tick_cursor[0]=read_ram(cpu,KEY_CHAIN_SYS_TICK,4)
+        # ⑤ 手势序列(拍计数跨序列连续,同 S 路)
+        vol_up_single=click_sequence(cpu,machine,hardware,'vol_up_single','vol_up',1)
+        vol_down_single=click_sequence(cpu,machine,hardware,'vol_down_single','vol_down',1)
+        multi_triple=click_sequence(cpu,machine,hardware,'multi_triple_click','multi',3)
+        multi_quad=click_sequence(cpu,machine,hardware,'multi_quad_click','multi',4)
+        # ⑥ 长按保持+释放:长按档(1000/3000ms→手势 10/11,实测)/长按持续 2
+        #   节奏/释放后多发单击负例(实测:释放发显式手势 3)
+        seq='multi_long_hold'
+        reset_scan_state(cpu,seq)
+        beat=0
+        sample(cpu,machine,hardware,KEY_CHAIN_MATRIX_RES_LEVELS['multi'],f'{seq}_press')
+        for _ in range(KEY_CHAIN_MATRIX_HOLD_BEATS):
+            beat+=1;scan_beat(cpu,machine,tick_cursor[0]+beat,seq,beat)
+        sample(cpu,machine,hardware,KEY_CHAIN_MATRIX_RES_RELEASE,f'{seq}_release')
+        release_beat=beat
+        for _ in range(KEY_CHAIN_MATRIX_TAIL_BEATS):
+            beat+=1;scan_beat(cpu,machine,tick_cursor[0]+beat,seq,beat)
+        tick_cursor[0]+=beat
+        multi_long_hold={'key_name':'multi','key_id':10,'beats':beat,'release_beat':release_beat,
+                         'post_calls':posts_of(seq)}
+        sequences={'vol_up_single':vol_up_single,'vol_down_single':vol_down_single,
+                   'multi_triple_click':multi_triple,'multi_quad_click':multi_quad,
+                   'multi_long_hold':multi_long_hold}
+        beats_total=sum(s['beats'] for s in sequences.values())
+        observations={
+            'key_chain_matrix_scan':{
+                'stopped_world_pc':hex(stopped_pc),
+                'matrix_fixture':{'address':hex(KEY_CHAIN_SENSOR_OBJECT),
+                                  'pointer_slot':hex(KEY_CHAIN_OBJECT_POINTER),
+                                  'channel_word':hex(KEY_CHAIN_CHANNEL_WORD),
+                                  'bands':[{'name':'release','key_id':255,'res_level':KEY_CHAIN_MATRIX_RES_RELEASE,
+                                            'range':'<=500'},
+                                           {'name':'multi','key_id':10,'res_level':KEY_CHAIN_MATRIX_RES_LEVELS['multi'],
+                                            'range':'501..720'},
+                                           {'name':'vol_down','key_id':11,'res_level':KEY_CHAIN_MATRIX_RES_LEVELS['vol_down'],
+                                            'range':'721..850'},
+                                           {'name':'vol_up','key_id':12,'res_level':KEY_CHAIN_MATRIX_RES_LEVELS['vol_up'],
+                                            'range':'851..1022'}],
+                                  'thresholds':list(KEY_CHAIN_MATRIX_THRESHOLDS)+[1023]*16,
+                                  'key_ids':list(KEY_CHAIN_MATRIX_KEY_IDS)+[0]*16,
+                                  'classification':'synthetic-not-measured (real config 523 lives in the '
+                                                  'bank-B record area, outside public artifacts; band values '
+                                                  'and key ids are an explicitly synthetic but self-consistent '
+                                                  'matrix: non-overlapping press bands, one shared release '
+                                                  'band, key ids follow the BW handler mask 0x09050307 '
+                                                  'mapping 10..13->{7,3,5,9} and the App eventID layout '
+                                                  '0x{logical}0{gesture+1})'},
+                'read_key_before_registration':key_before,
+                'adc_add_sample_ch_steps':reg_steps,
+                'read_key_classification':classification,
+                'sequences':sequences,
+                'res_fixture_switches':sequence_log,
+                'beat_states':beat_states,
+                'scan_beats_total':beats_total,
+            }}
+        return observations
+    return post_stop
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -833,6 +1070,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
              key_chain_scan=None,
+             key_chain_matrix=None,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -1580,7 +1818,19 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'the key-chain direct-scan scenario requires the full BY ADC projection stack')
         require(fd31_adc_res_named_values.get(KEY_CHAIN_CHANNEL_WORD) is not None,
                 'the key-chain RES fixture must cover the key channel word')
+        require(key_chain_matrix is None,
+                'key_chain_scan and key_chain_matrix are separate scenarios (one post_stop)')
         post_stop=make_key_chain_post_stop(app)
+    # key_chain_matrix(路 AJ/sim-keymatrix,opt-in 默认关):同一停点世界的三键
+    # 矩阵多手势直调场景(S 路机制的矩阵扩展;S 路场景与报告保持不变)。依赖
+    # 同一 BY ADC 投影栈;RES fixture 用矩阵自己的独立 dict(键通道缺省=多功
+    # 能键按下档,采样切换在场景内)。
+    if key_chain_matrix is not None:
+        require(p11_power_init and fd31_adc_pnd_completion and fd31_adc_res_named_values is not None,
+                'the key-chain matrix scenario requires the full BY ADC projection stack')
+        require(fd31_adc_res_named_values.get(KEY_CHAIN_CHANNEL_WORD) is not None,
+                'the key-chain matrix RES fixture must cover the key channel word')
+        post_stop=make_key_chain_matrix_post_stop(app)
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=budget,
                      extra_diagnostics=extra or None,extra_regions=p11_regions,
@@ -3297,6 +3547,71 @@ def check(report,firmware):
             beats[3]['press_count']==1 and beats[12]['press_count']==10,
             'debounce must advance per beat by real code: change window ctx+9=2, press-edge '
             'beat sets press_count=1, +1 per stable beat')
+    # ——路 AJ/sim-keymatrix:三键矩阵多手势场景断言——
+    mx=rows['key_chain_matrix_scan']
+    require(mx['stop_core']==0 and mx['stop_pc']=='0x60012de' and
+            mx['stop']['kind']=='unmapped_or_readonly_write' and mx['stop'].get('address')=='0xfd58b8',
+            'the key-chain matrix scenario must keep the exact route-M frontier world '
+            '(3,072,236 @ 0x60012de) before the direct calls — same world as route S')
+    mm=mx['key_chain_matrix_scan']
+    require(mm['read_key_before_registration']==255 and
+            mm['read_key_classification']=={'release':255,'multi':10,'vol_down':11,'vol_up':12},
+            'the four-band matrix must classify by REAL code: 255 before registration (queue '
+            'miss), then release 400->255, multi 600->10, vol_down 780->11, vol_up 950->12 '
+            '(one real sampling transaction + one real read_key per band)')
+    require(all(s['sampled_value']==s['res_fixture'] for s in mm['res_fixture_switches']) and
+            len(mm['res_fixture_switches'])==24,
+            'all 24 real sampling transactions (4 classification + 20 sequence phase switches) '
+            'must return exactly the fixture divider level')
+    seq=mm['sequences']
+    matrix_beats=[b for b in mm['beat_states'] if 'sequence_reset' not in b]
+    require(sum(s['beats'] for s in seq.values())==mm['scan_beats_total'] and
+            len(matrix_beats)==mm['scan_beats_total'] and
+            all({'seq','beat','change_count','post_payloads'} <= set(b) for b in matrix_beats),
+            'every matrix scan beat must carry its sequence label, beat index and the real '
+            'debounce state read back from ctx RAM (per-sequence beat/gesture record)')
+    require([(p['beat'],p['payload']) for p in seq['vol_up_single']['post_calls']]==
+            [(37,hex(0x10000|(12<<8)|0))] and
+            [(p['beat'],p['payload']) for p in seq['vol_down_single']['post_calls']]==
+            [(37,hex(0x10000|(11<<8)|0))],
+            'single clicks on the two NEW keys must post gesture 0 with their own key ids at '
+            'the release-stable terminator beat 37: vol_up key 12 -> 0x10c00, vol_down key 11 '
+            '-> 0x10b00 (the key-id field of the producer payload is the matrix key-id table '
+            'byte, different physical keys are distinguishable at the post boundary)')
+    require([(p['beat'],p['payload']) for p in seq['multi_triple_click']['post_calls']]==
+            [(85,hex(0x10000|(10<<8)|5))] and
+            [(p['beat'],p['payload']) for p in seq['multi_quad_click']['post_calls']]==
+            [(109,hex(0x10000|(10<<8)|6))],
+            'triple/quad clicks must post gestures 5/6 at the terminator beats 85/109 (click '
+            'count 3/4 + 2 — the n+2 multi-click encoding route S pinned at 0x6001b08, now '
+            'MEASURED for n=3 and n=4 where d1-acceptance previously only extrapolated it)')
+    hold=seq['multi_long_hold']
+    hold_posts=[(p['beat'],int(p['payload'],16)&0xff) for p in hold['post_calls']]
+    require(hold_posts.count((78,1))==1,
+            'long hold: press-confirm gesture 1 must post exactly once at beat 78 — '
+            'press_count reaches the 75 threshold there (press_count=beat-3: counts start at '
+            'the 4th beat after the 2-beat change window, exactly matching the route-S '
+            'beat_states progression)')
+    require([beat for beat,g in hold_posts if g==10]==[183] and
+            [beat for beat,g in hold_posts if g==11]==[378],
+            'long hold tiers: the 1000ms tier posts gesture 10 (0x10a0a) at beat 183 and the '
+            '3000ms tier gesture 11 (0x10a0b) at beat 378 — CORRECTING route Q section 2.2 '
+            'inferred ladder "1000..10000ms -> gestures 11..14": the measured ladder starts '
+            'at gesture 10, each tier firing on the first 15-beat repeat slot where the '
+            'elapsed time since the beat-78 press CONFIRMATION crosses the threshold '
+            '(78+105=183 -> 1050ms>=1000ms; 78+300=378 -> exactly 3000ms)')
+    require([beat for beat,g in hold_posts if g==2]==
+            [93+15*k for k in range(20) if 93+15*k not in (183,378)],
+            'long hold: gesture-2 HOLD repeats fire every 15 beats from beat 93 (the hold '
+            'counter reaches its 90 tier at beat 93=90+3), the tier beats 183/378 REPLACE '
+            'their repeat slots (no double post) and the rhythm resumes after each tier '
+            '(198=183+15) — the repeat rhythm route S only extrapolated, now measured '
+            'across two tiers')
+    require(hold_posts[-1]==(394,3) and not any(g==0 for _,g in hold_posts),
+            'long-press release: the firmware posts the explicit release gesture 3 (0x10a03) '
+            'at release+4 beats (390+4) and NEVER a single-click gesture 0 — the '
+            'd1-acceptance A-group "extra click on long-press release" trap does not exist, '
+            'and the gesture 3 release-confirmation slot is observed for the first time')
     report['key_chain_direct_scan_projection']=(
         'route S/sim-keychain: opt-in scenario key_chain_scan_direct (default OFF keeps every '
         'legacy report byte-identical). After the route-M frontier world (3,072,236 @ '
@@ -3331,6 +3646,39 @@ def check(report,firmware):
         'ring-buffer bytes; interrupts are FROZEN during the direct calls (no hardware.'
         'advance: the pending Timer0 IRQ4 / core-tick IRQ3 at the stop are held, not '
         'dropped); every conclusion stays conditional pass / derived-not-measured')
+    report['key_chain_matrix_scan_projection']=(
+        'route AJ/sim-keymatrix: opt-in scenario key_chain_matrix_scan (default OFF keeps every '
+        'legacy report byte-identical; the route-S scenario itself is untouched). The single-key '
+        'two-band fixture is widened to the REAL three-key matrix layout on the SAME route-M '
+        'frontier world: a 20-level threshold table (500/720/850/1022 + 16 sentinels) and a '
+        '20-entry key-id table (255/10/11/12 + zeros), all three physical keys sharing ONE ADC '
+        'divider channel (0x10001 — a resistive ladder: different keys produce different '
+        'voltages on the same channel, route-Q section 2.1). Key ids are an explicitly '
+        'synthetic-but-self-consistent assignment following the BW handler mask 0x09050307 '
+        '(key 10..13 -> logical {7,3,5,9}) and the App eventID layout 0x{logical}0{gesture+1}: '
+        'key 10 = multi-function (0x700), key 11 = vol- (0x301), key 12 = vol+ (0x501). The '
+        'real config 523 lives in the bank-B record area outside public artifacts — every band '
+        'value is synthetic-not-measured. MEASURED (all real firmware code, the only synthetic '
+        'input is the RES level): per-band classification by real read_key (release 400->255, '
+        'multi 600->10, vol_down 780->11, vol_up 950->12); vol+ single click posts 0x10c00 and '
+        'vol- single click posts 0x10b00 at the terminator beat 37 (different key ids ARE '
+        'distinguishable at the post boundary — the B-group action-coverage premise); multi '
+        'triple click posts 0x10a05 (beat 85) and quad click 0x10a06 (beat 109) — the n+2 '
+        'encoding measured at n=3 and n=4, previously only extrapolated; the 390-beat hold '
+        'posts gesture 1 at beat 78 (press_count=75=beat-3, matching route-S beat states), '
+        'gesture-2 repeats every 15 beats from beat 93, the 1000ms tier gesture 10 (0x10a0a) '
+        'at beat 183 and the 3000ms tier gesture 11 (0x10a0b) at beat 378 — CORRECTING route '
+        'Q section 2.2 inferred "1000..10000ms -> gestures 11..14" ladder: the measured '
+        'ladder starts at gesture 10, each tier firing on the first 15-beat repeat slot where '
+        'the elapsed time since the beat-78 press CONFIRMATION crosses the threshold '
+        '(78+105=183, 78+300=378), replacing that slot repeat post; and the release posts '
+        'the explicit gesture 3 (0x10a03) at release+4 with NO gesture 0 anywhere (the '
+        'long-press single-click trap negative example holds, and the gesture 3 '
+        'release-confirm slot is observed for the first time). Honest boundaries are the '
+        'route-S ones: '
+        'S19 dispatch and handler 0x60252c6 stay unreached in this world (route BW executed '
+        'them from the handler entry with field-matching payloads); interrupts frozen during '
+        'the direct calls; every conclusion stays conditional pass / derived-not-measured')
     report['core_tick_irq3_delivery_projection']=(
         'route BF: the CPU0 core tick (IRQ3) delivery machinery is wired into the main '
         'conditional scenario stack before the ~447,490-step first-overflow hard deadline '
@@ -3904,6 +4252,33 @@ def main():
                               timer0_irq4_delivery=True,
                               core_tick_irq3_delivery=True,
                               key_chain_scan=True,
+                              flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'key_chain_matrix_scan',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
+                              halfword_pair=True,p11_power_init=True,
+                              heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
+                              lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
+                              timer0_std12m=True,lp_timer_con_readback=True,
+                              p33_analog_config=True,power_init_rstcon_masks=True,
+                              power_init_wkup_dly=True,
+                              mem_pwr_con=True,p33_window=True,p33_port_sel=True,
+                              p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
+                              fd31_adc_con=True,fd31_adc_con_readback=True,
+                              fd31_adc_pnd_completion=True,
+                              fd31_adc_res_named_values=KEY_CHAIN_MATRIX_RES_NAMED_VALUES,
+                              p33_analog_tail=True,
+                              p3_ana_read_ldoin_low=True,
+                              gpcnt_con_readback=True,
+                              jl_clock_dcck=True,
+                              jl_uart_con=True,
+                              jl_uart_init_writes=True,
+                              subword_stores=True,word_store_sp_l=True,
+                              timer0_irq4_delivery=True,
+                              core_tick_irq3_delivery=True,
+                              key_chain_matrix=True,
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'timer0_irq4_delivery_probe',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,

@@ -147,7 +147,7 @@ FEATURES = (
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
             'CPU0 core tick 溢出→IRQ3 交付机制(unresolved_overflow 防重入)'),
-    # ---- probe_only(只在 probe_irq_entry 场景变体出现,5 个开关) ----
+    # ---- probe_only(只在 probe_irq_entry 场景变体出现,6 个开关) ----
     Feature('timer0_irq4_probe_steps', 'probe_only', ('timer0_irq4_delivery',), True, None,
             'Timer0 首次到期拉近探路 fixture(计数 seed,场景传值)'),
     Feature('timer0_irq4_masked', 'probe_only', ('timer0_irq4_probe_steps',), False, None,
@@ -159,6 +159,9 @@ FEATURES = (
     Feature('key_chain_scan', 'probe_only', ('p11_power_init', 'fd31_adc_pnd_completion',
                                              'fd31_adc_res_named_values'), True, None,
             '停点后直调键链场景(键分档查询→扫描回调→手势→post)'),
+    Feature('key_chain_matrix', 'probe_only', ('p11_power_init', 'fd31_adc_pnd_completion',
+                                               'fd31_adc_res_named_values'), True, None,
+            '停点后直调三键矩阵多手势场景(路 AJ:3 键 4 档分档器+单击/三击/四击/长按档)'),
 )
 
 # 两个共享栈场景(analyze_image_trace.SCENARIOS 同名;probe 场景名在
