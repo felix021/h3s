@@ -22,7 +22,7 @@ WATCH=[0x060352d8,0x060352de,0x060352e4,0x060352ea,0x060352f8,0x06035334,
 
 
 def platform_case(module,app,header,rom,name,*,options=None,iomap=0,stop=None,readonly=(),machine=None,diagnostic_options=None,
-                  extra_regions=(),extra_snapshots=(),budget=250000):
+                  extra_regions=(),extra_snapshots=(),budget=250000,post_stop=None):
     parameters={'port_initialization_projection':True,'port_input_words':{SDTAP_CON:0,PSRAM_CON0:0},
         'initial_usb_io_word':0,'reset_history_projection':True,'reset_history_words':{**POR_HISTORY,**NO_WAKE},
         'debug_execution_projection':True,'initial_debug_controls':(0,None),
@@ -34,7 +34,7 @@ def platform_case(module,app,header,rom,name,*,options=None,iomap=0,stop=None,re
     diagnostics.update(diagnostic_options or {})
     return architecture_case(module,app,header,rom,name,options=parameters,registers={IOMAP_CON0:iomap},
         diagnostic_options=diagnostics,snapshots=SNAPSHOTS+tuple(extra_snapshots),readonly=readonly,machine=machine,
-        regions=REGIONS+tuple(extra_regions),budget=budget)
+        regions=REGIONS+tuple(extra_regions),budget=budget,post_stop=post_stop)
 
 
 def run(module,app,header,rom):

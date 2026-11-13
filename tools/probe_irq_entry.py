@@ -290,15 +290,40 @@ IRQ3 nibble: the overflow only sets pending, nothing is requested or
 delivered. The event clock is NOT enabled here (route BI). Every delivery
 conclusion is a counterfactual projection (entry banks/PSR high
 bits/bank writeback uncertified), not a silicon certification.
+
+The trailing key_chain_scan_direct scenario (route S/sim-keychain) sinks
+the key input simulation from the route-BW handler-entry injection down to
+the ADC divider-level injection on the SAME full p11_heap_experimental_
+config stack (the route-M frontier world, 3,072,236 @ 0x60012de). A new
+post_stop hook on explore (default None keeps every legacy run
+byte-identical) lets the scenario direct-call real firmware functions on
+the live stopped machine: a synthetic config-523 sensor object, a REAL
+adc_add_sample_ch registration of the key channel, the REAL sampling
+transaction 0x60116D0 per phase switch (setter mux write + CON write +
+PND-poll projection + the RES named-fixture read), and one 0x6001944 scan
+callback per beat with the registry-entry pointer (its real sys_timer
+arg). Everything from the divider query 0x6000E94 through debounce, the
+gesture state machine and the post call 0x6000cba is real firmware code;
+the ONLY synthetic input is the RES divider level. Observed posts: double
+click 0x10a04 (gesture 4 = click-count 2+2, field-by-field matching the
+route-BW synthetic event word 0x10000|(10<<8)|4), long press 0x10a01
+(gesture 1 at the 75-beat threshold), single click 0x10a00 (gesture 0).
+The S19 dispatch and handler consumption are the honest boundary (the
+app_core message-loop consumer is outside the stopped world; route BW
+already executed that handler from its entry). Full derivation, per-beat
+debounce states and the honest-boundary list live in
+docs/peripheral-input-simulation.md section 7.
 """
 import argparse
 import json
+import struct
 from pathlib import Path
 
+from br28_unknown import word
 from probe_dualcore import dual_case
 from probe_task_returns import EMPTY_PRIORITIES
 from probe_arch_startup import candidate_view, REPAIRED_SHA, FAILED_SHA
-from probe_boot import application, flash_image, check_rom, ROM_SHA, OFFICIAL_SHA, APP_SHA
+from probe_boot import application, flash_image, check_rom, ROM_SHA, OFFICIAL_SHA, APP_SHA, Blocked, ENTRY
 from probe_boot_handoff import package_header
 from probe_pi32v2 import ROOT, PIN, upstream, require
 
@@ -495,6 +520,276 @@ P33_AWKUP_P_IE_FIRST_READ_ZERO={0xf2c184:0}
 #   WBG04 码值升级为 measured 并反解 Vref(会话仍 deferred/需授权)。
 FD31_ADC_RES_NAMED_VALUES={0x10000:400,0x10006:500,0x10004:400}
 
+# ---------------------------------------------------------------------------
+# 路 S/sim-keychain:按键输入全链真实执行(直调扫描回调)的具名 fixture。
+# 全链(路 Q docs/peripheral-input-simulation.md §2 钉死):ADC 队列项 value →
+# 分档查询 0x6000E94(20 级阈值表)→ 扫描回调 0x6001944(去抖+手势状态机:
+# 稳定窗口 ctx+9=2 拍、按下阈值 ctx+10=75 拍、释放稳定 ctx+12=20 拍、
+# 长按重复 ctx+11=90 档)→ post 事件 0x6000cba(载荷 0x10000|(key<<8)|gesture)
+# → app_core 队列。本场景在 p11_heap_experimental_config 世界停点后:
+#   ①安装分档器 fixture ②直调 0x6001230 真实注册键通道队列项
+#   ③直调 0x60116d0 真实跑一次采样事务(setter 复用域写+CON 写+PND 轮询
+#   投影+RES fixture 读+清 PND) ④直调 0x6001944(0x60C0E20 注册表项)按拍
+#   驱动去抖/手势/POST——这些全部固件真实代码;唯一合成输入=RES 档位值。
+# 所有值 derived-not-measured(真实 config 523/键通道字在 bank B 记录区,
+# 公开工件外,擦除态世界整体旁路是路 Q 钉死的现状)。
+# ---------------------------------------------------------------------------
+# 键通道字:0x10001(P3_ANA_CON4[4:1] 复用域值 1,BY 三通道 0/4/6 未占用)。
+# 合成选择(真实键通道的域值在 config 523,公开工件外);通道字形状约束
+# 来自 setter 0x6011666:(通道字>>16)<=5 走 PMU 模拟路径、(通道字&0xFFFF)
+# 即复用域值(0x6067d8a 写 (ch&0xFFFF)<<1 进域)。
+KEY_CHAIN_CHANNEL_WORD=0x10001
+# 分档器阈值表/档位值:两档方案(路 Q §3 fixture 1 的建议形状)。分压档位
+# 值从阈值表反推:阈值[0]=500 是 fixture 自定的无键/按下分界;释放态读数
+# 400(≤500→键 255 无键),按下态读数 700(>500 且 ≤1022→键 id 表[1]=10)。
+# 哨兵 1023(>1022)占满剩余 18 槽(表长 20 由 read_key 循环 `if (r0>19)` 钉死,
+# 阈值取址对象+10+2i、键 id 取址对象+50+i)。键 id=10 对路 BW 已验的
+# handler 0x60252c6 逻辑键映射(key10→7)。全部显式 synthetic,非测量。
+KEY_CHAIN_THRESHOLD_RELEASE=500
+KEY_CHAIN_RES_RELEASE=400     # 释放态分压读数(≤500 → 无键)
+KEY_CHAIN_RES_PRESSED=700     # 按下态分压读数(501..1022 → 键 10)
+KEY_CHAIN_KEY_ID=10
+KEY_CHAIN_SENSOR_OBJECT=0x1274F4   # 分档器对象(解析器 0x60010be r9+3892 钉死)
+KEY_CHAIN_OBJECT_POINTER=0x125320  # 对象指针槽(read_key 0x6000e96 li 1200928 钉死;
+                                   # 路 Q 记 0x125720 是笔误,以指令立即数为准)
+KEY_CHAIN_REGISTRY_ENTRY=0x60C0E20 # sys_timer 注册表项(flash 16B:enable=1/
+                                   # ctx=0x124888/read_fn=0x6000E94/init=0x6001866,
+                                   # init walker 0x60121f4-0x6012202 把它作为回调
+                                   # arg 注册,扫描回调 [r0+4]=ctx/[r0+8]=read_fn)
+KEY_CHAIN_ADC_QUEUE_VALUE_BASE=0x127D10  # 队列 value 字段基址(0x6001230/0x60348e8/
+                                         # 0x6000e74 三处独立钉死,16B 项步进)
+# 0x124C80 结构(0x60669f6/0x6001a2c/0x6034912 的 li 1199232 反汇编钉死;路 Q 记
+# 0x124B30 是十进制换算笔误,以指令立即数为准——1199232=0x124C80):b[+0]=手势
+# 状态机跟踪键、b[+5]=ADC 队列当前采样项索引(IRQ39)、[+36]=tick 计数
+# (0x60669f6 读 ×10=ms,手势时长差的时间源)。
+KEY_CHAIN_GESTURE_STRUCT=0x124C80
+KEY_CHAIN_SYS_TICK=KEY_CHAIN_GESTURE_STRUCT+36
+# r7=0x1265C0(0x6001954 li 1205696):+2 日志门、+3 按键活动计数、+25 组合键
+# 标志、+26 点击计数(0x6001b08 的 n+2 编码源)。
+KEY_CHAIN_CLICK_COUNT=0x1265C0+26
+KEY_CHAIN_TICKS_PER_SCAN=1     # 显式假设:一拍=一个 sys_timer tick(扫描周期
+                               # ctx[+16]=10ms,tick 单位 10ms,故 +1/拍)
+
+def key_chain_sensor_object_bytes():
+    """config 523 分档器对象的显式合成内容(read_key 消费面布局,70 字节)。"""
+    obj=bytearray(70)
+    obj[0]=1                                     # enable/键数(read_key 的 b[obj+0]==0 旁路门)
+    struct.pack_into('<I',obj,4,KEY_CHAIN_CHANNEL_WORD)  # 键通道字(read_key [r5+4]→adc_queue_get)
+    thresholds=[KEY_CHAIN_THRESHOLD_RELEASE,1022]+[1023]*18
+    for i,threshold in enumerate(thresholds):
+        struct.pack_into('<H',obj,10+2*i,threshold)     # 20 级 u16 阈值表(升序,>1022 哨兵)
+    obj[50:70]=bytes([255,KEY_CHAIN_KEY_ID]+[0]*18)     # 20 项键 id 字节表
+    return bytes(obj)
+
+# 键链场景的 RES fixture=BY 三通道(世界前缀的既有采样事务依赖)+键通道两档。
+# BY 场景本身继续用自己的 FD31_ADC_RES_NAMED_VALUES(legacy 报告不变);本表
+# 只服务键链场景,且场景在采样阶段通过 hardware.fd31_adc.res_named_values
+# 切换键通道的按下/释放档值(每次切换显式记录)。
+KEY_CHAIN_RES_NAMED_VALUES={**FD31_ADC_RES_NAMED_VALUES,
+                            KEY_CHAIN_CHANNEL_WORD:KEY_CHAIN_RES_PRESSED}
+
+# 直调返回哨兵:0x100000 落在 ROM(0..0x20000)与 flash(0x06000100..)之间的
+# 未映射空洞,直调循环在 decode 之前检查 pc==哨兵,从不真的取指。
+KEY_CHAIN_DIRECT_SENTINEL=0x00100000
+
+def key_chain_direct_call(cpu,machine,pc,args,*,max_steps=200_000,watch=()):
+    """在停点世界的 CPU0 上直调一个真实固件函数,返回 (r0, steps, watch_hits)。
+
+    受控步进循环=explore 主循环的最小子集:decode→step→after_step(簿记),
+    不调 hardware.advance(外设时间冻结→中断交付冻结,显式假设:直调段在
+    无中断窗口内执行;Timer0/core-tick 的 pending 在前缀停点本就挂着,
+    冻结只是不推进,不发明也不丢弃)。入口/出口保存恢复 pc/sp/rets/flags/
+    R0-R15,世界状态除被调函数自己的存储副作用外逐字段复原。
+    """
+    saved={'pc':cpu.pc,'sp':cpu.sp,'rets':cpu.rets,'flags':cpu.flags,'R':list(cpu.R)}
+    cpu.pc=pc
+    for i,value in enumerate(args):cpu.R[i]=value
+    cpu.rets=KEY_CHAIN_DIRECT_SENTINEL
+    steps=0;watch_hits=[]
+    try:
+        while cpu.pc!=KEY_CHAIN_DIRECT_SENTINEL:
+            if cpu.pc in watch:
+                watch_hits.append({'pc':hex(cpu.pc),'args':[word(cpu.R[i]) for i in range(4)]})
+            insn,raw,size=cpu.decode(cpu.pc)
+            before=cpu.pc
+            cpu.step();steps+=1
+            machine.after_step(cpu,before)
+            if steps>max_steps:
+                raise Blocked('key_chain_direct_call_budget',pc=hex(pc),steps=steps)
+        result=cpu.R[0] if isinstance(cpu.R[0],int) else None
+    finally:
+        cpu.pc=saved['pc'];cpu.sp=saved['sp'];cpu.rets=saved['rets']
+        cpu.flags=saved['flags'];cpu.R=saved['R']
+    return result,steps,watch_hits
+
+
+def make_key_chain_post_stop(app):
+    """构造键链直调场景的 post_stop 回调(路 S/sim-keychain)。
+
+    在 p11_heap_experimental_config 世界的停点后,于活机器 CPU0 上按序执行:
+      ① 分档器 fixture 安装(0x1274F4 对象 + 0x125320 指针,derived-not-measured)
+      ② 直调 read_key 0x6000E94 —— 分档层独立断言(无键项时 adc_queue_get
+         未命中返回 1,1<=500 → 键 255)
+      ③ 直调 adc_add_sample_ch 0x6001230(键通道字) —— 真实代码注册队列项
+      ④ 采样切换 = 直调 0x60116d0(键通道字) —— 完整采样事务(setter 复用域写
+         +CON 写+PND 轮询投影+RES fixture 读+清 PND),返回值即 RES 档位
+      ⑤ 队列项 value ← 采样返回值(显式假设:EMA mode=1 的 0.2/0.8 一阶收敛
+         稳态=RES 常量档位,跳过瞬态;IRQ39 handler 0x60348e8 的 EMA 写回段
+         依赖中断帧上下文,不在任务态直调)
+      ⑥ 按拍直调扫描回调 0x6001944(0x60C0E20) —— 去抖/手势/post 全真实;
+         每拍前 [0x124B54] sys_timer tick +1(一拍=一个 tick=10ms,显式假设)
+    三个手势序列:双击(短按×2 → post 手势 4 = 点击计数 2+2)、长按按下确认
+    (按住 75 拍 → post 手势 1)、单击(短按×1 → post 手势 0)。post 观测在
+    调用点 0x6001b5e(r0/r1 已装载)与返回口 0x6001b62(返回值)各记一次。
+    """
+    ctx_blob=app[0x60C3380-ENTRY:0x60C3380-ENTRY+24]   # ctx 真实初值(flash .data)
+    sequence_log=[]
+
+    def read_ram(cpu,address,size):
+        data=cpu.mem.read(address,size)
+        return int.from_bytes(data,'little')
+
+    def write_ram(cpu,address,data):
+        cpu.mem.write(address,data)
+
+    def sample(cpu,machine,hardware,res_value,label):
+        # 切 RES fixture 档位 → 真实采样事务 → 队列项 value ← 采样返回值
+        hardware.fd31_adc_con.res_named_values[KEY_CHAIN_CHANNEL_WORD]=res_value
+        value,steps,_=key_chain_direct_call(cpu,machine,0x60116D0,[KEY_CHAIN_CHANNEL_WORD])
+        entry={'phase':label,'res_fixture':res_value,'sampled_value':value,'steps':steps}
+        if value!=res_value:
+            raise Blocked('key_chain_sample_mismatch',**entry)
+        # 找键通道队列项(注册后 key 字段==通道字),写 value(EMA 稳态假设)
+        slot=None
+        for idx in range(11):
+            if read_ram(cpu,0x127D08+16*idx+4,4)==KEY_CHAIN_CHANNEL_WORD:
+                slot=idx;break
+        if slot is None:
+            raise Blocked('key_chain_queue_slot_missing',**entry)
+        write_ram(cpu,KEY_CHAIN_ADC_QUEUE_VALUE_BASE+16*slot,struct.pack('<H',value))
+        entry['queue_slot']=slot
+        sequence_log.append(entry)
+        return value
+
+    beat_states=[]
+
+    def scan_beat(cpu,machine,tick):
+        write_ram(cpu,KEY_CHAIN_SYS_TICK,struct.pack('<I',tick))
+        _,steps,posts=key_chain_direct_call(cpu,machine,0x6001944,[KEY_CHAIN_REGISTRY_ENTRY],
+                                            watch=(0x6001b5e,0x6001b62))
+        beat_states.append({
+            'confirmed_level':read_ram(cpu,0x124888+0,1),   # b[ctx+0] 确认电平
+            'last_level':read_ram(cpu,0x124888+1,1),         # b[ctx+1] 上次电平
+            'change_count':read_ram(cpu,0x124888+2,1),       # b[ctx+2] 变化计数
+            'release_count':read_ram(cpu,0x124888+3,1),      # b[ctx+3] 释放计数
+            'press_count':read_ram(cpu,0x124888+4,1),        # b[ctx+4] 按下计数
+            'hold_timer':read_ram(cpu,0x124888+6,2),         # h[ctx+6] 长按计时
+            'click_count':read_ram(cpu,KEY_CHAIN_CLICK_COUNT,1),   # b[0x1265DA] 点击计数
+            'tracked_key':read_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,1),# b[0x124C80] 跟踪键
+            'post_payloads':[p['args'][0] for p in posts if p['pc']==hex(0x6001b5e)]})
+        return steps,posts
+
+    def reset_scan_state(cpu):
+        # 序列间重置:ctx 用 flash 真实初值;跟踪键/点击计数显式设「无跟踪」
+        # 初值(255/0,手势状态机的空档语义;世界停点现值属 sys_timer 域,
+        # 不假设——观测后显式重置,标注 synthetic)。
+        write_ram(cpu,0x124888,ctx_blob)
+        write_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,bytes([255]))
+        write_ram(cpu,KEY_CHAIN_CLICK_COUNT,bytes([0]))
+        beat_states.append({'sequence_reset':True})
+
+    def post_stop(machine,hardware,cpu):
+        if machine is None or hardware is None:
+            raise Blocked('key_chain_requires_dualcore_world')
+        if cpu.core_id!=0:
+            raise Blocked('key_chain_stopped_on_cpu1')
+        stopped_pc=cpu.pc
+        # ① 分档器 fixture(derived-not-measured,布局=0x60010b4 解析器组装面/
+        # 0x6000E94 消费面反汇编钉死)
+        write_ram(cpu,KEY_CHAIN_SENSOR_OBJECT,key_chain_sensor_object_bytes())
+        write_ram(cpu,KEY_CHAIN_OBJECT_POINTER,struct.pack('<I',KEY_CHAIN_SENSOR_OBJECT))
+        # ② 分档层独立断言:键通道未注册 → 队列未命中返回 1 → 1<=500 → 255
+        key_before,_,_=key_chain_direct_call(cpu,machine,0x6000E94,[])
+        # ③ 真实注册(adc_add_sample_ch;队列空槽 key==-1 处落位)
+        _,reg_steps,_=key_chain_direct_call(cpu,machine,0x6001230,[KEY_CHAIN_CHANNEL_WORD])
+        key_idle,_,_=key_chain_direct_call(cpu,machine,0x6000E94,[])
+        # ④⑤⑥ 三序列
+        tick0=read_ram(cpu,KEY_CHAIN_SYS_TICK,4)
+
+        # —— 序列 A:双击(短按 9 拍 ×2,间隔 11 拍,释放稳定 21 拍) ——
+        reset_scan_state(cpu)
+        posts=[]
+        tick=tick0
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_PRESSED,'a_press_1')
+        for _ in range(13):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN;scan_beat(cpu,machine,tick)
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_RELEASE,'a_release_1')
+        for _ in range(11):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN;scan_beat(cpu,machine,tick)
+        clicks_after_first=read_ram(cpu,KEY_CHAIN_CLICK_COUNT,1)
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_PRESSED,'a_press_2')
+        for _ in range(13):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN;scan_beat(cpu,machine,tick)
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_RELEASE,'a_release_2')
+        for _ in range(25):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick)
+            posts.extend(beat_posts)
+        clicks_after_second=read_ram(cpu,KEY_CHAIN_CLICK_COUNT,1)
+        tracked_key=read_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,1)
+
+        # —— 序列 B:长按按下确认(按住 78 拍 → 第 75 拍 post 手势 1) ——
+        reset_scan_state(cpu)
+        posts_b=[]
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_PRESSED,'b_press')
+        for _ in range(80):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick)
+            posts_b.extend(beat_posts)
+
+        # —— 序列 C:单击(短按 9 拍 → post 手势 0) ——
+        reset_scan_state(cpu)
+        posts_c=[]
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_PRESSED,'c_press')
+        for _ in range(13):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN;scan_beat(cpu,machine,tick)
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_RELEASE,'c_release')
+        for _ in range(25):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick)
+            posts_c.extend(beat_posts)
+
+        def call_args(post_rows):
+            # post 调用点 0x6001b5e 的 r0=载荷字 0x10000|(key<<8)|gesture
+            return [{'at':p['pc'],'payload':p['args'][0],'second':p['args'][1]} for p in post_rows if p['pc']==hex(0x6001b5e)]
+
+        observations={
+            'key_chain_direct_scan':{
+                'stopped_world_pc':hex(stopped_pc),
+                'sensor_object_fixture':{'address':hex(KEY_CHAIN_SENSOR_OBJECT),
+                                         'pointer_slot':hex(KEY_CHAIN_OBJECT_POINTER),
+                                         'channel_word':hex(KEY_CHAIN_CHANNEL_WORD),
+                                         'thresholds':[KEY_CHAIN_THRESHOLD_RELEASE,1022]+[1023]*18,
+                                         'key_ids':[255,KEY_CHAIN_KEY_ID]+[0]*18,
+                                         'classification':'synthetic-not-measured (real config 523 lives in '
+                                                         'the bank-B record area, outside public artifacts; erased-state '
+                                                         'world leaves the key chain fully bypassed — route Q)'},
+                'read_key_before_registration':key_before,
+                'adc_add_sample_ch_steps':reg_steps,
+                'read_key_after_registration_idle':key_idle,
+                'double_click':{'click_count_after_first_release':clicks_after_first,
+                                'click_count_after_second_release':clicks_after_second,
+                                'tracked_key_after_sequence':tracked_key,
+                                'post_calls':call_args(posts)},
+                'long_press':{'post_calls':call_args(posts_b)},
+                'single_click':{'post_calls':call_args(posts_c)},
+                'res_fixture_switches':sequence_log,
+                'beat_states':beat_states,
+                'scan_beats_total':13+11+13+25+80+13+25,
+            }}
+        return observations
+    return post_stop
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -532,6 +827,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              word_store_sp_l=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
+             key_chain_scan=None,
              flash_image_bytes=None,readonly=()):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
@@ -1191,10 +1487,22 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['sfc_clock_gate_projection']=True
         options['secondary_sfc_read_bus']=True
         options['initial_secondary_sfc_control']=0
+    # key_chain_scan(路 S/sim-keychain,opt-in 默认关):停点后直调键链
+    # (分档查询→注册→采样事务→扫描回调→手势→post),全链固件真实执行,
+    # 唯一合成输入=RES 档位值。依赖 BY 的 ADC 投影栈(CON 读回+PND 完成
+    # +RES fixture);RES fixture 由场景传入含键通道行的独立 dict
+    # (BY 场景自己的 dict 不变,legacy 报告逐字节不变)。
+    post_stop=None
+    if key_chain_scan is not None:
+        require(p11_power_init and fd31_adc_pnd_completion and fd31_adc_res_named_values is not None,
+                'the key-chain direct-scan scenario requires the full BY ADC projection stack')
+        require(fd31_adc_res_named_values.get(KEY_CHAIN_CHANNEL_WORD) is not None,
+                'the key-chain RES fixture must cover the key channel word')
+        post_stop=make_key_chain_post_stop(app)
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=budget,
                      extra_diagnostics=extra or None,extra_regions=p11_regions,
-                     extra_snapshots=p11_snapshots)
+                     extra_snapshots=p11_snapshots,post_stop=post_stop)
 
 
 def check_delivery(r,*,before_rti=True):
@@ -2650,6 +2958,80 @@ def check(report,firmware):
             'pre-ADC-readback honest frontier (304,317, pinned as a literal because the '
             'base scenario itself advanced past the overflow to the 689,402 RES boundary '
             'with the ADC readback and route-BS delivery wiring on)')
+    # ——路 S/sim-keychain:按键全链直调场景断言——
+    k=rows['key_chain_scan_direct']
+    require(k['stop_core']==0 and k['stop_pc']=='0x60012de' and
+            k['stop']['kind']=='unmapped_or_readonly_write' and k['stop'].get('address')=='0xfd58b8',
+            'the key-chain scenario must keep the exact route-M frontier world '
+            '(3,072,236 @ 0x60012de, UART-pin GPIO face) before the direct calls')
+    kc=k['key_chain_direct_scan']
+    require(kc['read_key_before_registration']==255 and kc['read_key_after_registration_idle']==255,
+            'read_key 0x6000E94 must return 255 (no key) both before registration (queue miss '
+            'returns 1, 1<=500 -> key-id table[0]=255) and after it with the initial value=1')
+    require(all(s['sampled_value']==s['res_fixture'] for s in kc['res_fixture_switches']) and
+            len(kc['res_fixture_switches'])==7,
+            'all seven real sampling transactions (0x60116D0: setter mux-field write + CON '
+            'write + PND poll projection + RES fixture read + clear) must return exactly the '
+            'fixture divider level')
+    dc=kc['double_click']
+    require(dc['click_count_after_first_release']==1 and
+            dc['click_count_after_second_release']==0 and
+            dc['tracked_key_after_sequence']==255 and
+            [p['payload'] for p in dc['post_calls']]==[hex(0x10000|(10<<8)|4)],
+            'double click: click count 1 after the first release edge, consumed+cleared by the '
+            '20-beat release-stable terminator (27 path), tracked key back to 255, and exactly '
+            'one post 0x10a04 = 0x10000|(key 10<<8)|gesture 4 (click count 2+2 — the n+2 '
+            'multi-click encoding, field-by-field cross-verified with the route-BW synthetic '
+            'event word)')
+    require([p['payload'] for p in kc['long_press']['post_calls']]==[hex(0x10000|(10<<8)|1)],
+            'long press: exactly one post with gesture 1 (press confirmed) at the 75-beat '
+            'press threshold (the 15-beat HOLD-repeat tier at 90 needs 90 beats; 78 stay below)')
+    require([p['payload'] for p in kc['single_click']['post_calls']]==[hex(0x10000|(10<<8)|0)],
+            'single short click: exactly one post with gesture 0 (single click n==1 skips the '
+            'n+2 encoding — correcting route Q\'s vague "single=1" note)')
+    beats=[b for b in kc['beat_states'] if 'sequence_reset' not in b]
+    require(len(beats)==kc['scan_beats_total'] and
+            all('change_count' in b for b in beats),
+            'every scan beat must carry the real debounce state read back from ctx RAM')
+    press=[b for b in beats[:13]]
+    require(beats[0]['change_count']==0 and beats[2]['change_count']==2 and
+            beats[3]['press_count']==1 and beats[12]['press_count']==10,
+            'debounce must advance per beat by real code: change window ctx+9=2, press-edge '
+            'beat sets press_count=1, +1 per stable beat')
+    report['key_chain_direct_scan_projection']=(
+        'route S/sim-keychain: opt-in scenario key_chain_scan_direct (default OFF keeps every '
+        'legacy report byte-identical). After the route-M frontier world (3,072,236 @ '
+        '0x60012de) a post_stop callback drives the LIVE machine: a synthetic config-523 '
+        'sensor object (0x1274F4, parser-product layout; pointer slot 0x125320 — route Q\'s '
+        '0x125720 was a decimal-transcription slip corrected here) is installed, the key '
+        'channel 0x10001 (mux field 1, unused by the BY three) is REALLY registered by '
+        'direct-calling adc_add_sample_ch 0x6001230 (slot 3), each press/release phase REALLY '
+        'runs the full sampling transaction 0x60116D0 (setter P3_ANA_CON4 mux write + CON '
+        'write + PND-poll projection + the RES named fixture read + clear; 127 model steps, '
+        'return value exactly the divider level), the queue item value is written to the EMA '
+        'steady state (explicit assumption: the 0.2/0.8 first-order convergence steady state '
+        'equals the constant RES level; the transient lives in the IRQ39 handler whose tail '
+        'rti forbids task-context direct calls), and the scan callback 0x6001944 is direct-'
+        'called once per beat with the registry entry pointer (its sys_timer arg, route-Q '
+        'pinned) after advancing the 0x124C80-struct tick by one per beat (one beat = one '
+        '10ms tick, explicit assumption). EVERYTHING from the divider query through debounce, '
+        'the gesture state machine and the post call is real firmware code; the ONLY '
+        'synthetic input is the RES level. Observed: double click posts 0x10a04 (gesture 4 = '
+        'click-count 2 + 2 — field-by-field matching the route-BW synthetic event word '
+        '0x10000|(10<<8)|4, so BW\'s injected payload now has producer-side runtime '
+        'evidence), long press posts 0x10a01 (gesture 1 at the 75-beat threshold), single '
+        'click posts 0x10a00 (gesture 0 — single click skips the n+2 encoding; correcting '
+        'route Q\'s vague single=1). Two more route-Q address slips corrected by instruction '
+        'immediates: the shared 1199232 base is 0x124C80 (not 0x124B30; tracked key +0, ADC '
+        'scan index +5, tick counter +36) and the 1205696 base is 0x1265C0 (not 0x1265A0; '
+        'click count +26 = 0x1265DA). HONEST BOUNDARIES: the S19 dispatch and handler '
+        '0x60252c6 are NOT reached (the app_core message-loop consumer is outside the stop '
+        'world; that belongs to the D1 event-loop scenarios) — but route BW already executed '
+        'that handler from its entry with the field-matching payload, closing the loop from '
+        'both ends; the post enqueue return/landing is observed at the call site, not the '
+        'ring-buffer bytes; interrupts are FROZEN during the direct calls (no hardware.'
+        'advance: the pending Timer0 IRQ4 / core-tick IRQ3 at the stop are held, not '
+        'dropped); every conclusion stays conditional pass / derived-not-measured')
     report['core_tick_irq3_delivery_projection']=(
         'route BF: the CPU0 core tick (IRQ3) delivery machinery is wired into the main '
         'conditional scenario stack before the ~447,490-step first-overflow hard deadline '
@@ -3218,6 +3600,33 @@ def main():
                               subword_stores=True,word_store_sp_l=True,
                               timer0_irq4_delivery=True,
                               core_tick_irq3_delivery=True,
+                              flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'key_chain_scan_direct',
+                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
+                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
+                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
+                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
+                              halfword_pair=True,p11_power_init=True,
+                              heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
+                              lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
+                              timer0_std12m=True,lp_timer_con_readback=True,
+                              p33_analog_config=True,power_init_rstcon_masks=True,
+                              power_init_wkup_dly=True,
+                              mem_pwr_con=True,p33_window=True,p33_port_sel=True,
+                              p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
+                              fd31_adc_con=True,fd31_adc_con_readback=True,
+                              fd31_adc_pnd_completion=True,
+                              fd31_adc_res_named_values=KEY_CHAIN_RES_NAMED_VALUES,
+                              p33_analog_tail=True,
+                              p3_ana_read_ldoin_low=True,
+                              gpcnt_con_readback=True,
+                              jl_clock_dcck=True,
+                              jl_uart_con=True,
+                              jl_uart_init_writes=True,
+                              subword_stores=True,word_store_sp_l=True,
+                              timer0_irq4_delivery=True,
+                              core_tick_irq3_delivery=True,
+                              key_chain_scan=True,
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'timer0_irq4_delivery_probe',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,

@@ -94,7 +94,13 @@ def flash_image(path):
 
 
 def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
-            handoff=None,startup_loops=False,diagnostics=None,rom=None,hardware=None,machine=None):
+            handoff=None,startup_loops=False,diagnostics=None,rom=None,hardware=None,machine=None,
+            post_stop=None):
+    # post_stop(opt-in,路 S/key-chain):主循环停点后、报告组装前的回调
+    # post_stop(machine,hardware,stopped_cpu)->dict|None。用于在活机器上做
+    # 「停点后直调」类探测(键链扫描直调等);返回的 dict 并进场景报告。
+    # 默认 None:主循环行为与 legacy 逐字节一致。回调里抛 Blocked 的语义由
+    # 调用方约定(键链场景把异常转成显式观察记录,不改 stop 字段)。
     if rom is not None:
         check_rom(rom)
     events=[]
@@ -1843,6 +1849,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             break
     if stop is None:
         stop={'kind':'instruction_budget'}
+    post_stop_observations=None
+    if post_stop is not None:
+        post_stop_observations=post_stop(machine,hardware,c)
     result={'name':name,'entry':hex(diagnostics.get('entry_pc',ENTRY) if diagnostics else ENTRY),'completed_steps':completed,'stop_pc':hex(c.pc),
         'stop':stop,'assumptions':{
             'cpu0_single_thread_no_interrupts':True,
@@ -1899,6 +1908,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         result['assumptions']['rom_rep_model']='strict unless explicitly selected nonzero countdown / zero skip hypothesis'
     if hardware is not None:
         result['peripherals']=hardware.report()
+    if post_stop_observations is not None:
+        result.update(post_stop_observations)
     if diagnostics and diagnostics.get('irq_context'):
         result['last_registers']['reti']=hex(c.reti)
         result['last_registers']['psr_projection']=hex((c.irq_psr&~15)|(c.flags&15))
