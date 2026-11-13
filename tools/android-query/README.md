@@ -90,7 +90,7 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 | `armWrite(boolean)` / `isArmed()` | 写门控 | 对应 `EqWritePolicy` 的 armed；未武装时一切写方法返回错误 JSON |
 | `writeEq(eqType, masterGainCentidB, bandsJson)` | 组 FF/0x22 EQ 写帧 | 内部调 `EqFrame.buildEqCommand`；bandsJson 每段 `{freq(Hz), q(x100), gain(centidB), iirType}`，q 缺省 100（Q1.0）、iirType 缺省 255（未指定） |
 | `setAnc(mode, scene, strength)` | 组 FF/0x17 ANC 帧 | data=`mode scene strength`（降噪 1,1,2 / 正常 2,0,0 / 通透 3,1,4）；mode 只收 1..3 |
-| `setPromptVolume(level)` | 组 FF/0x1d 提示音音量帧 | 值只收 3/6/8；**帧形状未钉**（按 data=`01 值` 假设组帧），联调以真机抓包为准 |
+| `setPromptVolume(level)` | 组 FF/0x1d 提示音音量帧 | 值只收 3/6/8；data=`value 00`（路 P 反汇编钉死，固件只读 data[0]、第二字节忽略不钳） |
 
 返回统一 JSON：成功 `{"ok":true,"bytesHex":"fedcba..."}`（小写连续 hex）；失败
 `{"ok":false,"error":"..."}`（坏 JSON、字段缺失/非数值、取值越界、未武装等都有独立错误信息）。
@@ -104,12 +104,84 @@ hex 回显；在无 bridge 的普通浏览器打开会显示降级提示条。
   错误路径、武装门控、与 `EqWritePolicy` 一致性）。`WebShellActivity` 本身不测：它依赖
   android.jar/WebView 运行时，纯 JVM 无法实例化，且只有「加载 asset + 注入 bridge」两行壳
   逻辑，无业务分支。
-- **真机通信未接**：bridge 不连接耳机；`EqWritePolicy` 当前也只放行 0x22 EQ setter，
-  0x17/0x1d 帧下发前还需扩写策略（测试已钉住该缺口）。
+- **真机通信未接**：bridge 不连接耳机；`EqWritePolicy` 已放行 0x22/0x17/0x1d 三条 setter
+  形状（路 P），但传输层在本路（路 Z）之前只到组帧。传输接线骨架见下一节。
 - 页面是 demo 级（内联 CSS/JS、无框架），不是最终产品 UI。
 - 本机无 Android SDK 完整打包条件时，可用
   `javac -cp $ANDROID_HOME/platforms/android-35/android.jar src/.../H3SBridge.java src/.../EqFrame.java src/.../WebShellActivity.java`
   单独验证新增类的 Android 侧编译（本仓库开发机已验证通过；`test.sh` 只需 JDK+Python）。
+
+## 传输接线骨架（路 Z / sim-h3stransport，离线端到端已单测）
+
+bridge 到 BLE 的传输层骨架。R3 命令面（组帧+白名单+壳）此前全部就绪、唯一缺的就是这段接线；
+本路补齐后整条链「JS 参数 → 组帧 → 写策略 → 串行队列 → 分片 → 收响应 → SN 匹配 → 回调 JS」
+**离线可端到端单测**，真机联调只剩「把回环桩换成真 Android BLE 适配层 + 用户授权」。
+
+```text
+H3SBridge（JS 入口，SN/seq 管理、EqWritePolicy 放行检查）
+   │ write(frame)                       ┌─ 未注入 transport（默认构造）：纯组帧返回 hex（旧行为不变）
+   ▼                                    └─ 已注入：组帧(SN)→策略→排队
+H3sTransport（接口：connect/disconnect/write/onFrame/onMtuChanged）
+   ▼
+SerialBleTransport（通用实现，AGENTS 不变量 6 在这层）
+   - 帧级串行：一次一条帧，等「写完所有片 +（flags=C0 时）响应帧到达或超时」再发下一条
+   - 片级串行：BlePacketizer 按 MTU-3 分片，一次一片，等片写回调、片间隔 >=10ms
+   - 接收：RcspDeframer 按 length+EF 重组（跨 notify 分片/一次多帧），响应帧释放当前帧
+   ▼
+LoopbackTransport（回环桩=「当耳机」：收片重组→逐字节可对照→生成 status=0 响应→走同一 notify 重组路径送回）
+```
+
+单测 `H3sTransportTest`（纯 JVM，进 test.sh）：端到端逐字节对照（Loopback 收到的帧 ==
+`EqFrame` 直组）、跨片重组（MTU 压小到 27）、帧级串行（pause/release 响应，第二条帧
+在第一条响应前零发送）、未武装/未连接拒绝、SN u8 回绕（254→255→0）、响应超时、
+未注入 transport 的向后兼容、deframer 单元（跨片/粘连/垃圾前缀）。
+
+JS 侧异步约定（**seq + 事件回调**，不是把 JS 函数传进 Java——`@JavascriptInterface` 拿不到
+可调用的 JS function，页面唯一可靠回推方式是壳 `evaluateJavascript` 调页面全局处理器，
+这就是 WebView 生态的 promise id 模式）：
+
+```js
+const r = JSON.parse(h3s.writeEq(2, -400, bandsJson));  // {ok,sent,seq,sn,bytesHex}
+window.onH3sEvent = e => {                               // 壳经 ResultSink 推回
+  // {"event":"response","seq":r.seq,"ok":true,"status":0,"sn":1,"payloadHex":"..."}
+  // {"event":"send_failed","seq":..,"error":"响应超时 5000ms"} / {"event":"mtu",...} / {"event":"disconnected",...}
+};
+```
+
+诚实标注：**未连真机、未刷机**。Loopback 的 setter 响应载荷（cmdid|n|data 回显）是桩自定
+形状——status+SN 起始位置是实测钉死的（docs/protocol.md），写路径 setter 响应的载荷部分
+[未钉]，真机联调时以实机帧为准；EQ 候选 UNTESTED 红线不变。
+
+### 真机适配清单（AndroidBleTransport，照单换——联调授权后实现）
+
+实现 `AndroidBleTransport extends SerialBleTransport`，替换的只有「连接假动作」与
+「doWriteChunk」两个点，串行/分片/重组全走既有通用代码：
+
+1. **connect()**：`BluetoothDevice.connectGatt(context, false, callback, TRANSPORT_LE)`
+   （UUID 常量照 `MainActivity.SERVICE/WRITE/NOTIFY/CCCD`：A002/1/2/2902）；`onServicesDiscovered`
+   找 A002/1/2，校验 write 特征属性含 `PROPERTY_WRITE_NO_RESPONSE`；`setCharacteristicNotification(rx, true)`
+   → 写 CCCD `ENABLE_NOTIFICATION_VALUE` → **等 CCCD 回调成功 + `onMtuChanged` 实际值**
+   （`requestMtu(517)`，但以回调为准，不能假定 517/247）→ 全到位才 `markReady(实际MTU)`
+   （连接顺序照 docs/app-protocol.md §1；UpgradeService 是完整先例）。
+2. **doWriteChunk(chunk)**：`tx.setWriteType(WRITE_TYPE_NO_RESPONSE)` + `setValue(chunk)` +
+   `gatt.writeCharacteristic(tx)`；`onCharacteristicWrite(status==0)` → `chunkWritten(true, null)`，
+   失败 → `chunkWritten(false, "GATT status N")`；写回调 5s 缺失直接断链（照 UpgradeService 的
+   writeTimeout 先例，不静默丢片）。
+3. **notify 入口**：`onCharacteristicChanged`（NOTIFY uuid）→ `deviceNotify(bytes.clone())`
+   （后续重组/匹配全在通用层）。
+4. **调度**：覆盖 `schedule(delayMs, r)` 为 main `Handler.postDelayed(r, delayMs)`、
+   `scheduleTimeout(r)` 为 `postDelayed(r, 5000)`（默认手动队列是 JVM 单测用的）。
+5. **主线程**：GATT 调用与回调都过主线程（照 UpgradeService 的 `main.post` 模式）。
+6. **断开**：`onConnectionStateChange` 断开 → `markNotReady(reason)`（未完成帧自动按失败回调）。
+7. **壳接线**：`WebShellActivity` 改为 `new H3SBridge(new AndroidBleTransport(...), json ->
+   web.evaluateJavascript("window.onH3sEvent&&onH3sEvent(" + json + ")", null))`，页面加
+   `onH3sEvent` 处理器与连接状态显示。
+8. **权限与目标**：`BLUETOOTH_CONNECT/SCAN` 运行时权限；目标地址仍走构建注入的
+   `DeviceConfig.ADDRESS` 门槛（照 UpgradeService「禁止连接未确认设备」先例，不开任意设备连接）。
+9. **联调顺序**：先只读查询对拍（SN 匹配 + deframe 与 docs/protocol.md 实测帧对照）→
+   单条 ANC 切换（响应最小）→ 提示音音量 → EQ 整组；EQ 候选 UNTESTED 不变。
+10. **联调时对照项**：真机 setter 响应载荷形状（替换 Loopback 的回显假设）、EQ 写是否需要
+    先发预设装载、非档位音量值的实际行为（docs/cmd-0x17-0x1d-layout.md §6 未钉清单）。
 
 ## 实际升级
 

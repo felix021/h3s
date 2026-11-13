@@ -11,11 +11,24 @@ import org.json.JSONObject;
 /**
  * WebView JS bridge（R3 独立 app 壳层，注入名 "h3s"）：把网页调用变成 RCSP 命令帧。
  *
- * 纯组帧层：只做「校验 + 组帧 + hex 回显」，不接真蓝牙/USB（真机传输留待用户授权联调，
- * 见 README「诚实标注」）。写方法全部走武装门控（对应 EqWritePolicy 的 armed 语义）：
- * 未武装一律返回 {ok:false}，不开任意字节写。
+ * 两种形态（向后兼容）：
+ *   - 未注入 transport（无参构造）：纯组帧层，只做「校验 + 组帧 + hex 回显」，不发送——
+ *     现有测试与离线演示页行为不变。
+ *   - 注入 H3sTransport（路 Z 传输接线）：校验 + 组帧（SN 自管理）→ EqWritePolicy 放行检查
+ *     → transport.write 排队串行发送 → notify 响应按 SN 匹配 → 结果经 ResultSink 推回 JS。
  *
- * 返回统一 JSON：成功 {ok:true, bytesHex:"fedcba..."}（小写连续 hex）；失败 {ok:false, error:"..."}。
+ * 异步出口选「seq + 事件回调」而不是「JS 回调函数入参」：Android WebView 的
+ * @JavascriptInterface 无法把 JS function 传进 Java（跨界后只剩不可调用的对象），
+ * 页面侧唯一可靠的回推方式是壳 evaluateJavascript 调页面注册的全局处理器；
+ * 方法立即返回 {ok,sent,seq,sn,bytesHex}，页面按 seq 匹配 ResultSink 推的
+ * {"event":"response","seq":...} 事件——这就是 WebView 生态的 promise id 模式。
+ *
+ * 写方法全部走武装门控（对应 EqWritePolicy 的 armed 语义）：未武装一律返回 {ok:false}，
+ * 不开任意字节写。SN 为 u8 自增回绕（255→0），发出的命令按 SN 登记 pending，响应
+ * body 以 status+SN 起（docs/protocol.md 实测）据此匹配。
+ *
+ * 返回统一 JSON：成功（未注入）{ok:true, bytesHex:"fedcba..."}（小写连续 hex）；
+ * 成功（已注入）{ok:true, sent:true, seq, sn, bytesHex}；失败 {ok:false, error:"..."}。
  *
  * 帧格式照 docs/app-protocol.md / EqFrame：FE DC BA | C0 | FF | len_BE16 | SN | cmdid | data_len | data | EF。
  * ANC=FF/0x17 data=`mode scene strength`（docs/app-protocol.md §2.3 + docs/cmd-0x17-0x1d-layout.md 核对）；
@@ -23,8 +36,11 @@ import org.json.JSONObject;
  * 提示音音量=FF/0x1d 值 3/6/8，data=`value 00`——路 P 反汇编钉死（docs/cmd-0x17-0x1d-layout.md）：
  * 固件 setter 只读 data[0] 当音量值、要求 len>=2、忽略第二字节，值不钳（3/6/8 是面板层档位）。
  *
- * JVM 单测（H3SBridgeTest）用 tests/stubs/ 下的 android.webkit.JavascriptInterface 与
- * org.json 最小桩编译；Android 构建走 android.jar + 内置 org.json。
+ * 线程模型：transport 回调约定在主线程（Android BLE 适配层保证；Loopback 单线程同步），
+ * 本类不加锁。真机 BLE 适配层未实现（红线：不连真机），粘合清单见 README「传输接线骨架」。
+ *
+ * JVM 单测（H3SBridgeTest/H3sTransportTest）用 tests/stubs/ 下的 android.webkit.JavascriptInterface
+ * 与 org.json 最小桩编译；Android 构建走 android.jar + 内置 org.json。
  */
 public class H3SBridge {
     public static final int CMD_ANC = EqWritePolicy.CMD_ANC;              // ANC 模式切换 cmdid
@@ -32,7 +48,102 @@ public class H3SBridge {
     /** 提示音音量合法档位（docs/app-protocol.md §2.4：3/6/8=最小/中等/最大；固件接收层不钳）。 */
     public static final int[] PROMPT_VOLUME_LEVELS = EqWritePolicy.PROMPT_VOLUME_LEVELS;
 
+    /** JS 事件出口：传输接线后异步结果的唯一出口（壳用 evaluateJavascript 调页面全局处理器）。 */
+    public interface ResultSink { void emit(String json); }
+
+    private static final class Pending {
+        final int seq;
+        Pending(int seq) { this.seq = seq; }
+    }
+
     private boolean armed = false;
+    private final H3sTransport transport;          // 可空：null=纯组帧（现状）
+    private final ResultSink sink;                 // 可空：null 时事件丢弃（transport 非 null 时建议非空）
+    private final java.util.HashMap<Integer, Pending> pendingBySn = new java.util.HashMap<Integer, Pending>();
+    private int nextSn = 1;                        // u8 自增回绕；首条 SN=1（未注入路径恒 0，与旧行为一致）
+    private int seqCounter = 0;
+
+    /** 纯组帧形态（现状）：不发送，组帧后返回 hex。 */
+    public H3SBridge() { this(null, null); }
+
+    /** 传输接线形态：write 类方法组帧后经 transport 串行发送，响应/事件经 sink 推回。 */
+    public H3SBridge(H3sTransport transport, ResultSink sink) {
+        this.transport = transport;
+        this.sink = sink;
+        if (transport != null) transport.setListener(new H3sTransport.Listener() {
+            @Override public void onFrame(byte[] frame) { handleFrame(frame); }
+            @Override public void onMtuChanged(int mtu) { emitEvent(put(eventJson("mtu"), "mtu", mtu)); }
+            @Override public void onDisconnected(String reason) { emitEvent(put(eventJson("disconnected"), "reason", reason)); }
+        });
+    }
+
+    /** 设备响应帧处理：解析 status+SN，匹配 pending 后经 sink 推回；未知 SN 忽略（迟到/主动通知）。 */
+    private void handleFrame(byte[] frame) {
+        if (frame == null || frame.length < 10) return;
+        if ((frame[3] & 0xff) != 0x00) return;                     // 只认响应帧（flags=00）
+        int bodyLen = ((frame[5] & 0xff) << 8) | (frame[6] & 0xff);
+        if (frame.length != 8 + bodyLen || (frame[frame.length - 1] & 0xff) != 0xef) return;
+        int status = frame[7] & 0xff;
+        int sn = frame[8] & 0xff;
+        Pending p = pendingBySn.remove(sn);
+        if (p == null) return;
+        emitEvent(put(put(put(put(put(eventJson("response"), "seq", p.seq), "ok", status == 0),
+            "status", status), "sn", sn),
+            "payloadHex", hex(java.util.Arrays.copyOfRange(frame, 9, frame.length - 1))));
+    }
+
+    private org.json.JSONObject eventJson(String event) { return put(new org.json.JSONObject(), "event", event); }
+
+    private void emitEvent(org.json.JSONObject event) {
+        if (sink != null) sink.emit(event.toString());
+    }
+
+    /** put 助手：Android org.json 的 put 声明受检 JSONException，但基本类型实际不会抛；集中兜底。 */
+    private static JSONObject put(JSONObject o, String key, int value) {
+        try { return o.put(key, value); } catch (JSONException impossible) { throw new RuntimeException(impossible); }
+    }
+
+    private static JSONObject put(JSONObject o, String key, boolean value) {
+        try { return o.put(key, value); } catch (JSONException impossible) { throw new RuntimeException(impossible); }
+    }
+
+    private static JSONObject put(JSONObject o, String key, String value) {
+        try { return o.put(key, value); } catch (JSONException impossible) { throw new RuntimeException(impossible); }
+    }
+
+    /** 取下一个 SN（u8 回绕）。 */
+    private int allocSn() {
+        int sn = nextSn;
+        nextSn = (nextSn + 1) & 0xff;
+        return sn;
+    }
+
+    /** 测试钩子：直接设定下一条命令的 SN（SN 回绕测试用）。 */
+    public void setNextSnForTest(int sn) { nextSn = sn & 0xff; }
+
+    /**
+     * 组帧后的分发：未注入 transport 保持现状（返回 hex 不发送）；已注入则
+     * 「连接检查 → EqWritePolicy 放行 → SN/seq 登记 → transport 排队串行发送」。
+     * policy 检查是纵深防御（组帧源头本身受控、合法帧必过），钉住「发送链路必经策略」。
+     */
+    private String dispatch(byte[] frame, int sn) {
+        if (transport == null) return ok(frame);
+        if (!transport.isReady()) return err("transport 未连接（先 connect，等 onMtuChanged 就绪）");
+        if (!EqWritePolicy.permitted(frame, true)) return err("写策略拒绝（帧形状不在 0x22/0x17/0x1d 白名单）");
+        final int seq = ++seqCounter;
+        pendingBySn.put(sn, new Pending(seq));
+        final int fSn = sn;
+        transport.write(frame, new H3sTransport.FrameCallback() {
+            @Override public void onDone(boolean done, String error) {
+                if (done) return;                                   // 成功结果经 onFrame(SN 匹配) 推送
+                pendingBySn.remove(fSn);
+                emitEvent(put(put(eventJson("send_failed"), "seq", seq), "error", error == null ? "" : error));
+            }
+        });
+        return put(put(put(put(put(new JSONObject(), "ok", true), "sent", true),
+            "seq", seq), "sn", sn), "bytesHex", hex(frame)).toString();
+    }
+
 
     /** 武装/解除写门控（对应 EqWritePolicy 的 armed 参数；页面开关调用）。 */
     @JavascriptInterface public void armWrite(boolean on) { armed = on; }
@@ -57,7 +168,8 @@ public class H3SBridge {
             return err(e.getMessage());
         }
         try {
-            return ok(EqFrame.buildEqCommand(eqType, masterGainCentidB, bands));
+            int sn = transport == null ? 0 : allocSn();
+            return dispatch(EqFrame.buildEqCommand(sn, eqType, masterGainCentidB, bands), sn);
         } catch (IllegalArgumentException e) {
             return err(e.getMessage()); // 段数/取值越界由 EqFrame 统一校验
         }
@@ -70,7 +182,8 @@ public class H3SBridge {
         if (mode < 1 || mode > 3) return err("mode 非法（QCY 线协议 1=降噪/2=正常/3=通透）: " + mode);
         if (scene < 0 || scene > 255) return err("scene 超出 u8 范围: " + scene);
         if (strength < 0 || strength > 255) return err("strength 超出 u8 范围: " + strength);
-        return ok(buildCustomCommand(CMD_ANC, new byte[]{(byte) mode, (byte) scene, (byte) strength}));
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(buildCustomCommand(sn, CMD_ANC, new byte[]{(byte) mode, (byte) scene, (byte) strength}), sn);
     }
 
     /** 组提示音音量命令（FF/0x1d，值 3/6/8）。data=`value 00`（路 P 钉死：固件 setter 只读 data[0] 当值、
@@ -81,7 +194,8 @@ public class H3SBridge {
         boolean legal = false;
         for (int v : PROMPT_VOLUME_LEVELS) if (v == level) { legal = true; break; }
         if (!legal) return err("提示音音量档位非法（仅 3/6/8=最小/中等/最大）: " + level);
-        return ok(buildCustomCommand(CMD_PROMPT_VOLUME, new byte[]{(byte) level, 0x00}));
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(buildCustomCommand(sn, CMD_PROMPT_VOLUME, new byte[]{(byte) level, 0x00}), sn);
     }
 
     /** 解析段数组 JSON → EqBand 列表；JSON 语法错误抛 JSONException，字段问题抛 IllegalArgumentException。 */
@@ -128,7 +242,7 @@ public class H3SBridge {
         return buildCustomCommand(0, cmdId, data);
     }
 
-    static byte[] buildCustomCommand(int sn, int cmdId, byte[] data) {
+    public static byte[] buildCustomCommand(int sn, int cmdId, byte[] data) {
         if (data == null) throw new IllegalArgumentException("data 不能为 null");
         if (cmdId < 0 || cmdId > 255) throw new IllegalArgumentException("cmdid 超出 u8 范围: " + cmdId);
         int dataLen = data.length;                       // u8
