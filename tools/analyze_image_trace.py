@@ -97,6 +97,7 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     fd31_adc_pnd_completion=True,
     fd31_adc_res_named_values=probe_irq_entry.FD31_ADC_RES_NAMED_VALUES,
     p33_analog_tail=True, p3_ana_read_ldoin_low=True, gpcnt_con_readback=True,
+    jl_clock_dcck=True,
     subword_stores=True, timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
 
 SCENARIOS = {
@@ -132,14 +133,20 @@ SCENARIOS = {
         # 自己关断)→ 真实跳过分支,任务 0x6069538 九次调度全空手返回;W1[0]
         # 20 轮超时路径全预算执行(41 次 fixture 读、不创建充电任务);core tick
         # 溢出交付合计 9 次/延期 138 次/Timer0 交付 286 次;超时后进 mode 切换
-        # 函数 0x6068152(r0==1 分支)——**3,070,626 @ 0x606817a 读
-        # [0xfd0008]=JL_CLOCK->DCCK_CON0 停**(路 CC 预研钉死的 JL 时钟族首访问,
-        # SDK clock.c save/restore 把 DCCK_CON0/1/2 列为可读回;读侧三选一归
-        # 下一路)。
-        'freshness': {'completed_steps': 3070626, 'stop_pc': '0x606817a',
-                      'stop_fields': {'kind': 'unmapped_memory', 'access': 'read',
-                                      'address': '0xfd0008', 'size': 4,
-                                      'reference_sdk_register': None}},
+        # 函数 0x6068152(r0==1 分支)——3,070,626 @ 0x606817a 读
+        # [0xfd0008]=JL_CLOCK->DCCK_CON0 停。
+        # 路 CL:jl_clock_dcck 投影(路 AM 容器同款「显式合成初始字 0 + 读回=
+        # 当前寄存器值」;br28.h __RW + SDK power_clock.c save/restore 双证据)
+        # 放行该读——mode 切换函数体真实执行(DCCK_CON0 0x46000e0c/DCCK_CON1
+        # 0xff000100/DCCK_CON2 0x10000 + WLA_CON8/P3_ANA_CON0/7/8/9/10 配置 +
+        # 软件延时),W1[0] 返回,W1[1] walker call scheduler 中断上下文 helper
+        # 0x6065c3a,其 icfg 读(known_mask 0x3ff/value 0x300)被 0x6065c4c
+        # `if ((r0&0xFF)!=0)` 分支消费——部分 ICFG 模型的 IcfgValue.__and__
+        # 要求整字全知、此形状无处理器,诚实停 partial_icfg_value_consumed。
+        # **新前沿 3,070,786 @ 0x6065c4c**(active-priority 低字节测试,归下一路)。
+        'freshness': {'completed_steps': 3070786, 'stop_pc': '0x6065c4c',
+                      'stop_fields': {'kind': 'partial_icfg_value_consumed',
+                                      'known_mask': '0x3ff', 'known_value': '0x300'}},
     },
 }
 
@@ -676,22 +683,21 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-13 路 CG 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 3,070,626;一切结论条件通过、derived-not-measured;历史
-    世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)已被后续投影替换,
-    见 HANDOFF 对应「步含义」段):
+    """钉死 2026-11-13 路 CL 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 3,070,786;一切结论条件通过、derived-not-measured;历史
+    世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/3,070,626(路 CG)
+    已被后续投影替换,见 HANDOFF 对应「步含义」段):
 
-    - 双方 3,070,626 步、同停点 0x606817a(JL_CLOCK DCCK_CON0 0xfd0008 读的
-      unmapped_memory,当前条件前沿——路 CG 的 gpcnt_con_readback 位粒度读回
-      投影放行任务 0x6069538 的 bit0 使能判定后:GPCNT 任务 9 次调度全走真实
-      跳过分支,W1[0] 20 轮超时路径全预算执行,core tick 溢出交付合计 9 次,
-      超时后世界进 mode 切换函数 0x6068152 停在路 CC 预研钉死的 JL 时钟族首
-      访问)、per-core {0:3059757,1:11181} 一致;stop parity 全同——
-      official↔b79 parity 延长到条件前沿 3,070,626,控制流零分歧、无
-      reconvergence;
+    - 双方 3,070,786 步、同停点 0x6065c4c(partial_icfg_value_consumed,
+      known_mask 0x3ff/value 0x300,当前条件前沿——路 CL 的 jl_clock_dcck
+      投影放行 mode 切换函数 0x6068152 的 DCCK_CON0/1/2 读侧后,函数体真实
+      执行,W1[1] walker call scheduler 中断上下文 helper 0x6065c3a 的 icfg
+      读被 `if((r0&0xFF)!=0)` 分支消费)、per-core {0:3059917,1:11181}
+      一致;stop parity 全同——official↔b79 parity 延长到条件前沿
+      3,070,786,控制流零分歧、无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,070,626,
-      超时窗口+OS tick 级联)没有消费任何新的镜像差异;
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,070,786,
+      超时窗口+OS tick 级联+mode 切换体)没有消费任何新的镜像差异;
     - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -701,19 +707,21 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 3070626 and run['stop_pc'] == '0x606817a' and
-                run['stop']['kind'] == 'unmapped_memory' and
-                run['stop']['address'] == '0xfd0008' and
-                run['per_core_steps'] == {'0': 3059757, '1': 11181},
+        require(run['completed_steps'] == 3070786 and run['stop_pc'] == '0x6065c4c' and
+                run['stop']['kind'] == 'partial_icfg_value_consumed' and
+                run['stop']['known_mask'] == '0x3ff' and
+                run['stop']['known_value'] == '0x300' and
+                run['per_core_steps'] == {'0': 3059917, '1': 11181},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3070626 @ 0x606817a, the JL_CLOCK DCCK_CON0 read '
-                'in the mode-switch function after the route-CG GPCNT readback projection '
-                'released the OS-tick-cascade task read and the W1[0] timeout window ran)')
+                'conditional frontier stop (3070786 @ 0x6065c4c, the partial-ICFG consumption '
+                'inside the scheduler interrupt-context helper 0x6065c3a after the route-CL '
+                'jl_clock_dcck projection released the JL clock family and the mode-switch body '
+                'ran)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 3070626, 'tested_b79': 3070626, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x606817a', 'b': '0x606817a', 'same': True} and
+    require(parity['steps'] == {'official': 3070786, 'tested_b79': 3070786, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x6065c4c', 'b': '0x6065c4c', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['kind'] == 'unmapped_memory' and
+            parity['stop_record']['a']['kind'] == 'partial_icfg_value_consumed' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
             'identical conditional frontier stop')

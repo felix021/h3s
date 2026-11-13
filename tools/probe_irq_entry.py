@@ -213,11 +213,13 @@ row across the timeout window. The W1[0] twenty-round timeout path then
 executes for real (41 fixture-served reads, no charge-debounce task), the
 core tick delivers eight more overflows (nine total, 138 deferrals) and
 Timer0 grows to 286 deliveries, until the world enters the mode-switch
-function 0x6068152 (r0==1 branch) and stops honestly at 0x606817a reading
-JL_CLOCK->DCCK_CON0 0xfd0008 (route-CC-pinned JL clock family, SDK
-clock.c save/restore lists DCCK_CON0/1/2 as readable) at 3,070,626 — the
-new conditional frontier (the JL clock family read side is the next
-three-choice).
+function 0x6068152 (r0==1 branch). Route CL releases the JL clock family
+DCCK read side (jl_clock_dcck projection, route-AM container semantics) so
+the mode-switch body runs for real; the W1[1] walker then calls the
+scheduler interrupt-context helper 0x6065c3a whose icfg read (known_mask
+0x3ff/value 0x300) is consumed by `if ((r0 & 0xFF) != 0)` at 0x6065c4c —
+a partial-ICFG consumption the model stops on honestly at 3,070,786 (the
+next three-choice).
 
 The trailing timer0_irq4_delivery_probe / timer0_irq4_masked_probe scenarios
 (route BE) layer the Timer0 IRQ4 delivery machinery on the full
@@ -517,6 +519,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              fd31_adc_con=False,fd31_adc_con_readback=False,
              fd31_adc_pnd_completion=False,fd31_adc_res_named_values=None,
              p33_analog_tail=False,p3_ana_read_ldoin_low=False,gpcnt_con_readback=False,
+             jl_clock_dcck=False,
              subword_stores=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
@@ -1014,6 +1017,18 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 保持 unknown_gpcnt_configuration_bits 严格停(601,880 前沿形状不变)。
     if gpcnt_con_readback:
         options['gpcnt_con_readback']=True
+    # jl_clock_dcck(路 CL/sim-dcck,读侧三选一=方案 (a) 投影):JL_CLOCK->DCCK_CON0/1/2
+    # (0xfd0008/0c/10)按路 AM 容器同款「显式合成初始字 0 + 读回=当前寄存器值」
+    # 建模。证据链:①br28.h JL_CLOCK_TypeDef 全字段 __RW(可读回);②SDK
+    # power_clock.c 的 deep-sleep save/restore 把三字列入可读回/可恢复清单
+    # (真实读回消费者=deep-sleep 域,不在本前缀);③全 app+ROM 0xfd0008 恰 1 处
+    # li(0x6068176,mode 切换函数 0x6068152),0xfd000c/0xfd0010 经 [r0+4]/[r0+8]
+    # 派生;④唯一消费者 0x6068152 的显式 ld 读值全部立即被掩码+OR 消化(seed 0
+    # 下确定性的位域配置序列),无独立状态消费;⑤原子 RMW/显式 ld/st RMW/整字写
+    # 全走既有通用 mmio 路径(机器侧零新分发)。纯数字配置、无模拟量红线。默认
+    # 关:三字保持 unmapped(3,070,626 前沿形状不变),legacy 报告逐字节不变。
+    if jl_clock_dcck:
+        options['jl_clock_dcck_projection']=True
     # timer0_irq4_*(路 BE,独立成段便于并行路线合并):Timer0 pending→IRQ4 交付
     # 机制就位(在 ~341,097 硬期限前)。机制全部抄 core_tick/软件 IRQ 两先例:
     # 模型 advance() 在资格合格时抛 IrqDeliveryRequest(core,irq=4)(每个
@@ -1868,26 +1883,42 @@ def check(report,firmware):
     # fixture 服务全部 41 读(循环1 1+循环2 20×2),两比较器恒 0 → 20 轮
     # 超时路径真实执行(不创建充电去抖任务);③core tick 又溢出交付 8 次
     # (合计 9)、Timer0 OS 1ms tick 交付至 286 次、LRC 周期链推到第 10 帧;
-    # ④超时后世界进 mode 切换函数 0x6068152(r0==1 分支),停在 0x606817a
-    # 原子 RMW `|=0x4` 的读侧——[0xfd0008]=JL_CLOCK->DCCK_CON0(路 CC 预研
-    # 钉死的 JL 时钟族首访问,SDK clock.c 把 DCCK_CON0/1/2 列进 save/restore
-    # 可读回清单;归下一路三选一)。**新前沿 3,070,626 @ 0x606817a
-    # unmapped_memory 读 0xfd0008**,停点在 lockset 临界区内(IPMASK=6)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x606817a' and
-            r['stop']=={'kind':'unmapped_memory','access':'read','address':'0xfd0008',
-                        'size':4,'reference_sdk_register':None},
-            'the heap-experimental scenario must stop at the JL_CLOCK DCCK_CON0 read inside the '
-            'mode-switch function 0x6068152 after the GPCNT readback projection released the '
-            'OS-tick-cascade task read: the route-CB prefix is byte-identical, the partial '
-            'GPCNT CON readback (bit-granular last-firmware-write, GpioOutValue family) answers '
-            'the task 0x6069538 bit0 enable gate with the bit0=0 the firmware itself forced '
-            '(disable+clear pair at ~108k) so the real skip branch runs nine dispatches in a '
-            'row, the W1[0] 20-round timeout path executes for real (41 fixture-served reads, '
-            'no charge-debounce task), eight more core-tick overflows deliver (nine total) with '
-            '255 more Timer0 OS-tick deliveries (286 total), and the world proceeds to the '
-            'route-CC-pinned JL clock family first access 0xfd0008 (SDK clock.c save/restore '
-            'lists DCCK_CON0/1/2 as readable) stopping honestly unmapped')
-    require(r['completed_steps']==3070626,'the heap experimental config changed its step count')
+    # ④超时后世界进 mode 切换函数 0x6068152(r0==1 分支),路 CC 预研钉死的
+    # JL 时钟族首访问 [0xfd0008]=DCCK_CON0。**路 CL 落地(sim-dcck,本前沿)**:
+    # DCCK 读侧三选一=方案 (a) 投影 `jl_clock_dcck_projection`(路 AM 容器同款
+    # 「显式合成初始字 0 + 读回=当前寄存器值」;br28.h JL_CLOCK_TypeDef 全字段
+    # __RW + SDK power_clock.c deep-sleep save/restore 双证据;唯一消费者
+    # 0x6068152 的显式读值全部被掩码+OR 消化,seed 0 下确定性位域配置)。放行
+    # 后 mode 切换函数体全部真实执行:DCCK_CON0 七步位域配置(末值 0x46000e0c)、
+    # DCCK_CON1 两步(末值 0xff000100)、DCCK_CON2 整字写 0x10000、WLA_CON8
+    # |=0x8000000(OSC 族既有)、P3_ANA_CON0/7/8/9/10 配置 RMW(BV 容器)、
+    # call 0x12cd04 软件延时、OS 临界区退出(0x12b5b0)。W1[0] 返回(0x6013196),
+    # W1[1] walker(0x6013198)在 0x60131ca call 0x6065c3a(scheduler 中断上下文
+    # 判定 helper),该函数 0x6065c44 `r0=icfg` 读部分 ICFG(known_mask 0x3ff/
+    # value 0x300)后 0x6065c4c `if ((r0&0xFF)!=0)` 测 active-priority 低字节
+    # ——部分 ICFG 模型的 IcfgValue.__and__ 要求整字全知、此分支形状无处理器,
+    # 诚实停 partial_icfg_value_consumed。**新前沿 3,070,786 @ 0x6065c4c**。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6065c4c' and
+            r['stop']=={'kind':'partial_icfg_value_consumed','known_mask':'0x3ff',
+                        'known_value':'0x300'},
+            'the heap-experimental scenario must stop at the partial-ICFG consumption inside the '
+            'scheduler interrupt-context helper 0x6065c3a after the jl_clock_dcck projection '
+            'released the JL clock family: the route-CG prefix is byte-identical, the mode-switch '
+            'function 0x6068152 body runs for real (DCCK_CON0 0x46000e0c / DCCK_CON1 0xff000100 / '
+            'DCCK_CON2 0x10000 plus the WLA_CON8/P3_ANA_CON0/7/8/9/10 config and the software '
+            'delay), W1[0] returns, and the W1[1] walker calls 0x6065c3a whose icfg read '
+            '(known_mask 0x3ff/value 0x300) is consumed by the branch `if ((r0 & 0xFF) != 0)` '
+            'at 0x6065c4c — the partial-ICFG model only answers whole-word-or-covered-mask '
+            'shapes, so this active-priority byte test stops honestly')
+    require(r['completed_steps']==3070786,'the heap experimental config changed its step count')
+    dcck=r['peripherals']['registers']
+    require(dcck['0xfd0008']=='0x46000e0c' and dcck['0xfd000c']=='0xff000100' and
+            dcck['0xfd0010']=='0x10000',
+            'the jl_clock_dcck projection must leave the three DCCK words at their deterministic '
+            'field-configuration values (DCCK_CON0 0x46000e0c from |=0x4 -> &=0xFFFFFFE7|8 -> '
+            '&=0xFFFFFF3F -> &=0xFFFFF0FF|0xE00 -> &=0xFFFFCFFF -> (old&0xFFFF)|0x46000000 -> '
+            '&=0xFFFFFFFC; DCCK_CON1 0xff000100 from &=0xFFFF0000|0x100 -> (old&0xFFFF)|0xFF000000; '
+            'DCCK_CON2 the sole whole-word write 0x10000)')
     fd31=r['peripherals']['fd31_adc_con_projection']
     require(fd31['stores']=={'0xfd3100':{'values':['0x40','0x46105d','0x46105d','0x20000',
                                                   '0x20040','0x40','0x46105d','0x46105d',
@@ -1929,20 +1960,22 @@ def check(report,firmware):
     # &=0xFF7/条件写回链)、CHG_CON1 末值 0x96(0x6013094..0x601310e 字段写)、
     # CHG_CON2 末值 0x10(0x6013094 pair 尾写回 |=配置字 后续 &=0xFF7 族——
     # CHARGE_DET_EN/VOL 使能链)、L5V_CON0/1 末值 0x1/0x3(0x6012fc0/0x6012fd6
-    # r5+0x220 计算寻址配置 RMW);P3_ANA_CON0/7/8/9/10 仍 seed 0(mode 切换
-    # 函数 0x6068152 在停点之后)。
+    # r5+0x220 计算寻址配置 RMW)。路 CL:DCCK 投影放行后 mode 切换函数
+    # 0x6068152 体真实执行,把 P3_ANA_CON0/7/8/9/10 从 seed 0 写成确定性配置
+    # (CON7=0x49/CON8=0x66/CON9=0x6e/CON10=0x31/CON0=0x8,见 0x60681d4..828a
+    # 反汇编逐位与末值精确互证)。
     tail={k:v for k,v in r['peripherals']['registers'].items()
           if k in ('0xf2c068','0xf2c06c','0xf2c070','0xf2c240','0xf2c25c','0xf2c260',
                    '0xf2c264','0xf2c268','0xf2c284','0xf2c288')}
-    require(tail=={'0xf2c068':'0xc','0xf2c06c':'0x96','0xf2c070':'0x10','0xf2c240':'0x0',
-                   '0xf2c25c':'0x0','0xf2c260':'0x0','0xf2c264':'0x0','0xf2c268':'0x0',
+    require(tail=={'0xf2c068':'0xc','0xf2c06c':'0x96','0xf2c070':'0x10','0xf2c240':'0x8',
+                   '0xf2c25c':'0x49','0xf2c260':'0x66','0xf2c264':'0x6e','0xf2c268':'0x31',
                    '0xf2c284':'0x1','0xf2c288':'0x3'},
-            'the route-BV/CB tail container must seed all ten addresses: the fixture-released '
-            'prefix really executes the W1[0] charger configuration family (CHG_CON0 RMWs to '
-            '0xc, CHG_CON1 field writes to 0x96, CHG_CON2 pair-tail writeback 0x10 = the '
-            'CHARGE_DET_EN/VOL enable word, L5V_CON0/1 to 0x1/0x3 via the r5+0x220 computed '
-            'addressing) while P3_ANA_CON0/7/8/9/10 stay at their synthesized zero seeds '
-            '(the mode-switch function 0x6068152 lies beyond the stop)')
+            'the route-BV/CB/CL tail container must end at the real configuration: the '
+            'fixture-released prefix executes the W1[0] charger family (CHG_CON0 0xc, CHG_CON1 '
+            '0x96, CHG_CON2 0x10, L5V_CON0/1 0x1/0x3 via the r5+0x220 computed addressing) and, '
+            'after the route-CL jl_clock_dcck projection releases the mode-switch function '
+            '0x6068152, the P3_ANA_CON0/7/8/9/10 config RMWs write 0x8/0x49/0x66/0x6e/0x31 '
+            'deterministically from the synthesized zero seeds')
     # 路 CG:P3_ANA_READ fixture 报告——41 次读全部常量服务 0(循环1 首读 1+
     # 循环2 全部 20 轮各 2 读,超时路径全预算跑完),四键分离标注(derived_
     # mask/other_bits/duration/evidence_status)。
@@ -2140,30 +2173,34 @@ def check(report,firmware):
     # 路 CG 精确形状:Timer0 持续在延时函数的 OS tick 上运转(每次 call 重编
     # PRD;停点前最后一段是 3ms 窗 PRD=35999),到期合计 296(10 legacy+286
     # 交付/ACK);停点时刻 cnt=31,179、pending False(最后一次 handler W1C
-    # 清掉)。core tick:溢出交付合计 9 次(expirations 9/acknowledgements 9,
-    # cnt 重装后走到 892,276<prd 1,199,999)。
-    require(timer=={'con':0x1401,'cnt':31179,'prd':35999,'pending':False,'expirations':296},
+    # 清掉)。路 CL:mode 切换函数 0x6068152 体 +160 步真实执行(纯软件倒计数
+    # 延时无 SFR、不重编 PRD),cnt 再 +480(=160×3 tick)到 31,659。
+    require(timer=={'con':0x1401,'cnt':31659,'prd':35999,'pending':False,'expirations':296},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the last window before the stop is the 3ms one -> PRD 35999), '
             '296 expirations total (10 legacy + 286 delivered/acked) and pending clear at the '
-            'stop (the last real handler W1C)')
+            'stop (the last real handler W1C); the route-CL mode-switch body advances cnt by '
+            '160 model steps x 3 ticks = +480 without reprogramming PRD')
     # 路 CG:core tick 溢出交付+ACK 合计 9 次(首溢出~447,490+超时窗口内 8 次,
-    # expirations 9/acknowledgements 9,cnt 重装后 892,276<prd 1,199,999,零
+    # expirations 9/acknowledgements 9,cnt 重装后走到 892,276<prd 1,199,999,零
     # pending);IRQ3 handler 0x60661a4 的 W1C 真实执行,交付列表见上。CPU1
-    # core tick 零溢出。停点在 lockset 临界区内(IPMASK=6)。
+    # core tick 零溢出。路 CL:+160 步后 cnt 再 +640(=160×4 tick)到 892,916;
+    # 停点已出 mode 切换的 OS 临界区(W1[1] 的 scheduler helper 读 ICFG),IPMASK
+    # 回到 0。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==9 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==9 and
-            tick0['cnt']==892276 and
+            tick0['cnt']==892916 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
-            r['peripherals']['ipmask']==6 and
+            r['peripherals']['ipmask']==0 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300',
             'the CPU0 core tick must deliver and ack nine overflows (the ~447,490 landmark '
-            'plus the eight of the timeout window; rearmed counter at 892276 < prd 1199999, '
-            'no pending at the stop); IPMASK=6 at the stop (the mode-switch call sits inside '
-            'an OS critical section, lockset 0x12b5aa) and the CPU1 core tick never overflows')
+            'plus the eight of the timeout window; rearmed counter at 892916 < prd 1199999, '
+            'no pending at the stop); IPMASK=0 at the route-CL stop (the mode-switch critical '
+            'section exited before the W1[1] scheduler helper read the ICFG) and the CPU1 core '
+            'tick never overflows')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -2279,7 +2316,7 @@ def check(report,firmware):
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==3 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==8 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==140 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==141 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==54 and
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
@@ -2289,14 +2326,17 @@ def check(report,firmware):
             # 次 IRQ4 交付+GPCNT 任务 9 次调度往返):任务栈帧运输 3987→10697、
             # 共享锁 580→1221、整字存储 5775→14122、mmio RMW 563→1482、icfg
             # bit9 1600→3724、cnum 2361→5770(OS tick/调度器/中断往返的真实执行);
-            # timer0/core_tick 帧与 RTI 计数、gpcnt_con_readback_load=9 已在
-            # 各自交付/投影钉里。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==10697 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1221 and
-            r['instruction_adapters'].get('exact_full_word_store')==14122 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==1482 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==3724 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==5770,
+            # 路 CL:mode 切换函数 0x6068152 体 +160 步真实执行(DCCK 位域配置+
+            # WLA_CON8/P3_ANA_CON0/7/8/9/10 配置+软件延时+临界区退出)与 W1[1]
+            # scheduler helper 帧——并行字节 140→141、任务栈帧运输 10697→10703、
+            # 共享锁 1221→1222、整字存储 14122→14144、mmio RMW 1482→1492、icfg
+            # bit9 3724→3726、cnum 5770→5772。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==10703 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1222 and
+            r['instruction_adapters'].get('exact_full_word_store')==14144 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==1492 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==3726 and
+            r['instruction_adapters'].get('per_core_visible_cnum')==5772,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -2789,10 +2829,19 @@ def check(report,firmware):
         'bit0 gate reads 0 (the counter the firmware itself disabled) and takes the real skip '
         'branch nine dispatches in a row; the W1[0] 20-round timeout path executes (41 '
         'fixture-served reads, failure branch, no charge task); core tick delivers nine '
-        'overflows total (138 held deferrals) and Timer0 reaches 286 deliveries. New frontier: '
-        '3,070,626 @ 0x606817a unmapped_memory read of JL_CLOCK->DCCK_CON0 0xfd0008 inside the '
-        'mode-switch function 0x6068152 (route-CC-pinned JL clock family; SDK clock.c '
-        'save/restore lists DCCK_CON0/1/2 as readable — the next three-choice)')
+        'overflows total (138 held deferrals) and Timer0 reaches 286 deliveries. Route CL closes '
+        'the JL clock family DCCK read side with the jl_clock_dcck projection (three-choice (a): '
+        'route-AM container "explicit synthetic initial word 0 + readback=current register '
+        'value"; br28.h marks the whole JL_CLOCK_TypeDef __RW and SDK power_clock.c deep-sleep '
+        'save/restore lists all three DCCK words as readable; the sole consumer 0x6068152 masks '
+        'every read immediately so the seeded 0 drives a deterministic field configuration): the '
+        'mode-switch body runs for real (DCCK_CON0 0x46000e0c / DCCK_CON1 0xff000100 / '
+        'DCCK_CON2 0x10000, WLA_CON8 |=0x8000000, P3_ANA_CON0/7/8/9/10 config, software delay), '
+        'W1[0] returns, and the W1[1] walker calls the scheduler interrupt-context helper '
+        '0x6065c3a whose icfg read (known_mask 0x3ff/value 0x300) is consumed by the branch '
+        '`if ((r0 & 0xFF) != 0)` at 0x6065c4c — the partial-ICFG model only answers '
+        'whole-word-or-covered-mask shapes, so this active-priority byte test stops honestly. '
+        'New frontier: 3,070,786 @ 0x6065c4c partial_icfg_value_consumed (the next three-choice)')
     report['fd31_adc_res_pnd_assumption']=(
         'opt-in fd31_adc_pnd_completion + fd31_adc_res_named_values (route BY/sim-adcresfix, '
         'layered on fd31_adc_con_readback; default OFF keeps the route-BS 689,402 '
@@ -2953,6 +3002,7 @@ def main():
                               p33_analog_tail=True,
                               p3_ana_read_ldoin_low=True,
                               gpcnt_con_readback=True,
+                              jl_clock_dcck=True,
                               subword_stores=True,timer0_irq4_delivery=True,
                               core_tick_irq3_delivery=True,
                               flash_image_bytes=image),

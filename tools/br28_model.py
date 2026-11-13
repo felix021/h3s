@@ -12,6 +12,18 @@ TIMER0=0xfd0400
 PLL0=0xfd4600
 CLOCK0=0xfd0018
 SYS_DIV=0xfd0014
+# JL 时钟族(0xfd0004 起 JL_CLOCK_TypeDef,br28.h 全字段 __RW)里唯一未建模的
+# 三个数字时钟配置寄存器:DCCK_CON0/1/2。0xfd0004 PWR_CON=RESET_FLAGS、
+# 0xfd0000 RST_SRC=RESET_REASON_INPUTS(复位历史域);SYS_DIV/CLK_CON0/1/2 是
+# clock_divider_projection 与基模型 registers 槽。全 app+ROM 0xfd0008 恰 1 处
+# li(0x6068176,mode 切换函数 0x6068152),0xfd000c/0xfd0010 经 [r0+4]/[r0+8]
+# 派生;SDK power_clock.c 的 deep-sleep save/restore 把三字列入可读回/可恢复
+# 清单。访问形状=原子 RMW×3 + 显式 ld/st RMW×3 组(DCCK0)、显式 ld/st RMW×2
+# (DCCK1)、整字写 0x10000(DCCK2)——见 docs/tail-clk-boundary.md §1.2。
+DCCK_CON0=0xfd0008
+DCCK_CON1=0xfd000c
+DCCK_CON2=0xfd0010
+JL_CLOCK_DCCK=(DCCK_CON0,DCCK_CON1,DCCK_CON2)
 PINR1=0xf2c11c
 PINR0=0xf2c120
 IRQ_CONFIG=0xffe100
@@ -2737,6 +2749,7 @@ class BR28Model:
                  fd31_adc_con_projection=False,fd31_adc_con_readback=False,
                  fd31_adc_pnd_completion=False,fd31_adc_res_named_values=None,
                  p33_analog_tail_projection=False,p3_ana_read_ldoin_low_fixture=False,
+                 jl_clock_dcck_projection=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -2982,6 +2995,16 @@ class BR28Model:
         # W1[0] 的 RMW 块实为 0xfd5708 PORTP GPIO 面)见 P33_TAIL_ANALOG_CONFIG
         # 常量注释与 docs/appcore-tail-sfr-semantics.md §8。
         self.p33_analog_tail_projection=p33_analog_tail_projection
+        # jl_clock_dcck_projection(opt-in,路 CL/sim-dcck):JL 时钟族 DCCK_CON0/1/2
+        # (0xfd0008/0c/10)按路 AM 容器同款「显式合成初始字 0 + 读回=当前寄存器
+        # 值」建模。br28.h JL_CLOCK_TypeDef 全字段 __RW,SDK power_clock.c 的
+        # deep-sleep save/restore 把三字列入可读回/可恢复清单(双证据);全
+        # app+ROM 唯一消费者=mode 切换函数 0x6068152,其显式 ld 读值全部立即
+        # 被掩码+OR 消化(seed 0 下确定性的位域配置序列),无独立状态消费。
+        # 原子 RMW(rmw.or.modimm/rmw.and.modimm)与显式 ld/st RMW、整字写全走
+        # 既有通用 mmio/registers 路径(机器侧零新分发)。默认关:三字保持
+        # unmapped(3,070,626 @ 0x606817a 前沿形状),legacy 报告逐字节不变。
+        self.jl_clock_dcck_projection=jl_clock_dcck_projection
         # p3_ana_read_ldoin_low_fixture(opt-in,路 CB/sim-anaread,需 tail 投影):
         # P3_ANA_READ(0xf2c064)读侧三选一按证据落地=方案 (c) 具名常量 live-input
         # fixture。证据链(pinned SDK commit 67328f4,全文档见
@@ -3112,6 +3135,14 @@ class BR28Model:
         if p33_analog_tail_projection:
             self.additional_configuration.update(P33_TAIL_ANALOG_CONFIG)
             for address in P33_TAIL_ANALOG_CONFIG:
+                self.registers[address]=0
+        # 路 CL(sim-dcck):DCCK_CON0/1/2 按路 AM 同款「显式合成初始字 0」seed
+        # 进 registers、并入 additional_configuration(原子 RMW/显式 ld/st RMW/
+        # 整字写全走既有通用寄存器路径,机器侧零新分发)。开关关时三字保持
+        # unmapped(3,070,626 前沿形状不变),legacy 报告逐字节不变。
+        if jl_clock_dcck_projection:
+            self.additional_configuration.update(JL_CLOCK_DCCK)
+            for address in JL_CLOCK_DCCK:
                 self.registers[address]=0
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
@@ -4117,6 +4148,22 @@ class BR28Model:
                     'writes_rejected':True,
                     'default_off_behavior':'p3_ana_read_not_modeled strict stop (the 447,383 '
                                            'route-BV frontier shape)'}
+        if self.jl_clock_dcck_projection:
+            # 路 CL(sim-dcck):JL 时钟族 DCCK 三字按路 AM 容器同款「显式合成初始字
+            # 0 + 读回=当前寄存器值」建模;纯数字时钟配置寄存器,非模拟量(无
+            # RES/P3_ANA_READ 式红线)。SDK br28.h __RW + power_clock.c deep-sleep
+            # save/restore 双证据;唯一 app 消费者 0x6068152 的显式读全部被掩码+
+            # OR 消化,seed 0 下是确定性的位域配置序列。
+            result['assumptions']['jl_clock_dcck_projection']=(
+                'three JL_CLOCK digital clock-configuration registers '
+                '(DCCK_CON0/1/2 = 0xfd0008/0xfd000c/0xfd0010); br28.h marks the whole '
+                'JL_CLOCK_TypeDef __RW and the SDK power_clock.c deep-sleep save/restore '
+                'lists all three as readable/restorable; explicit synthetic initial word 0 '
+                '(not an inferred silicon reset value), readback=current register value '
+                '(route-AM container precedent); digital clock enable/divider configuration '
+                'only — clock generation/propagation is not modeled; the sole app consumer '
+                '0x6068152 masks the read value immediately so the seeded 0 drives a '
+                'deterministic field configuration')
         if self.pll1_configuration_projection:result['assumptions']['pll1_con3_configuration_projection']='RW config only; analog PLL1 not modeled'
         if self.cache_status_probe:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}
