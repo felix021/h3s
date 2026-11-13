@@ -108,7 +108,10 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 - App：`setKeyFunction()` 把 eventID 拆成 key+gesture → `JLDeviceImpl.setBtnClickFunction()`。
 - 两种传输实现（[未钉] H3S 实际选哪个分支）：
   1. 标准 ADV 类型 2 三字节 `[key, gesture, action]`；
-  2. 新设备自定义命令 `0x2b`（gesture/action 组合）。
+  2. 新设备自定义命令 `0x2b`（gesture/action 组合）。**[2026-11-14 路 AO 反证] 固件 App
+     重映射命令注册表只有 cmdid 1 组（读/写/恢复默认三件套，0x60a9b00 族），无 0x2b 组——
+     候选 B 实际不可达，定案候选只剩 ADV type2（KeyRemapFrame 的 0x2b 分支保留作对照，
+     默认仍 ADV type2，见 docs/key-action-map.md §注册表）。
 - 控制面板「耳机按键功能自定义」（type 14）：eventID 769(音量-)/1281(音量+)/1793-1796(多功能
   单击/双击/三击/四击)，动作 cmd 0..7（0=无作用 1=播放/暂停 2=上一曲 3=下一曲 4=语音助手
   5=音量+ 6=音量- 7=模式切换）。多功能键双击默认 cmd=7。
