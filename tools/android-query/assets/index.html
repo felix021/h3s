@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H3S 独立 App Demo（壳层组帧）</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; font: 14px/1.5 system-ui, sans-serif; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 20px 0 8px; color: #9fc3e8; }
+  .sub { color: #8a919c; font-size: 12px; margin-bottom: 10px; }
+  .warn { display: none; padding: 8px 10px; border-radius: 8px; background: #4a3b12; color: #ffd479; margin: 8px 0; }
+  .card { background: #1c1f25; border: 1px solid #2a2e36; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+  button { background: #2b4a6b; color: #e8f0fa; border: 1px solid #3d5f85; border-radius: 8px; padding: 6px 12px; font-size: 14px; }
+  button:active { background: #35597f; }
+  button.off { background: #3a3f47; border-color: #4a505a; }
+  button.danger { background: #6b2b2b; border-color: #853d3d; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  input[type=range] { flex: 1; min-width: 90px; }
+  input[type=number] { width: 74px; background: #14161a; color: #d8dce2; border: 1px solid #2a2e36; border-radius: 6px; padding: 3px 6px; }
+  .band { margin: 4px 0; }
+  .band .lab { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #aab2bd; }
+  .val { font-variant-numeric: tabular-nums; color: #7fd18a; min-width: 52px; text-align: right; }
+  .neg .val { color: #7fb8e8; }
+  pre { background: #101216; border: 1px solid #2a2e36; border-radius: 8px; padding: 8px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
+  .ok { color: #7fd18a; } .err { color: #ff8a80; }
+  .hex { color: #ffd479; }
+  .note { font-size: 12px; color: #8a919c; }
+  .state { font-size: 12px; padding: 2px 8px; border-radius: 10px; }
+  .armed { background: #1d3a24; color: #7fd18a; }
+  .disarmed { background: #3a2626; color: #ff8a80; }
+</style>
+</head>
+<body>
+<h1>H3S 独立 App Demo</h1>
+<div class="sub">壳层纯组帧演示：调 <code>h3s.*</code> 只生成 RCSP 命令字节（hex 回显），不连接耳机。</div>
+
+<div id="noBridge" class="warn"></div>
+
+<div class="card">
+  <div class="row">
+    <button id="armBtn" class="danger">武装写入</button>
+    <span id="armState" class="state disarmed">未武装：写命令会被 bridge 拒绝</span>
+  </div>
+  <div class="note">门控对应 EqWritePolicy：不武装就不组任何写帧，避免误发。</div>
+</div>
+
+<h2>EQ（FF/0x22，10 段）</h2>
+<div class="card">
+  <div class="row">master gain <input type="range" id="master" min="-12" max="12" step="0.5" value="0">
+    <span id="masterVal" class="val">0.0 dB</span></div>
+  <div id="bands"></div>
+  <div class="row">
+    <button id="flatBtn">全部归零</button>
+    <button id="eqBtn">生成 EQ 写命令</button>
+  </div>
+  <div class="note">QCY App 滑块钳 ±8 dB（面板层限制）；固件接收层不钳（路 H/CN 证据），本页
+  ±12 dB 可调——超出官方范围的听感/输出限幅自负。每段 Q 固定 1.0、iirType 未指定（255，固件兜底 band_pass）；
+  频点默认取面板 10 段布局 32..16k，可手改任意 Hz。</div>
+</div>
+
+<h2>ANC 三态（FF/0x17）</h2>
+<div class="card">
+  <div class="row">
+    <button data-anc="1,1,2">降噪</button>
+    <button data-anc="2,0,0">正常</button>
+    <button data-anc="3,1,4">通透</button>
+  </div>
+  <div class="note">载荷 <code>17 03 mode scene strength</code>：降噪 01 01 02 / 正常 02 00 00 / 通透 03 01 04。</div>
+</div>
+
+<h2>提示音音量（FF/0x1d）</h2>
+<div class="card">
+  <div class="row">
+    <button data-vol="3">最小</button>
+    <button data-vol="6">中等</button>
+    <button data-vol="8">最大</button>
+  </div>
+  <div class="note">值 3/6/8。帧形状未钉（按 <code>1d 01 值</code> 假设组帧），联调时以真机抓包为准。</div>
+</div>
+
+<h2>调用回显</h2>
+<div class="card"><pre id="out">（尚无调用）</pre></div>
+
+<script>
+'use strict';
+var hasBridge = typeof h3s !== 'undefined';
+var FREQS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]; // QCY 面板 10 段默认频点
+
+if (!hasBridge) {
+  var w = document.getElementById('noBridge');
+  w.style.display = 'block';
+  w.textContent = '当前环境没有 h3s bridge（普通浏览器直接打开本页）。页面可预览，'
+    + '但按钮调用只做本地提示；请在 H3S WebView 壳（tools/android-query 的 WebShellActivity）里打开才能真实组帧。';
+}
+
+function show(label, text) {
+  var out = document.getElementById('out');
+  var t = new Date().toTimeString().slice(0, 8);
+  out.textContent = t + ' ' + label + '\n' + text + '\n\n' + out.textContent;
+}
+function callBridge(label, fn) {
+  if (!hasBridge) { show(label, '无 h3s bridge（普通浏览器预览模式）'); return; }
+  var r;
+  try { r = fn(); } catch (e) { show(label, 'bridge 异常: ' + e); return; }
+  var o = JSON.parse(r);
+  if (o.ok) show(label, 'ok\nbytesHex: ' + o.bytesHex);
+  else show(label, '错误: ' + o.error);
+  return o;
+}
+
+// 武装
+var armBtn = document.getElementById('armBtn'), armState = document.getElementById('armState');
+var armed = hasBridge ? h3s.isArmed() : false;
+function refreshArm() {
+  armBtn.textContent = armed ? '解除武装' : '武装写入';
+  armBtn.className = armed ? '' : 'danger';
+  armState.textContent = armed ? '已武装：写命令可组帧（仍未连接耳机）' : '未武装：写命令会被 bridge 拒绝';
+  armState.className = 'state ' + (armed ? 'armed' : 'disarmed');
+}
+armBtn.onclick = function () {
+  if (!hasBridge) { show('armWrite', '无 h3s bridge'); return; }
+  armed = !armed; h3s.armWrite(armed); refreshArm();
+  show('armWrite(' + armed + ')', 'isArmed=' + h3s.isArmed());
+};
+refreshArm();
+
+// EQ 段滑块
+var bandsEl = document.getElementById('bands');
+FREQS.forEach(function (f, i) {
+  var div = document.createElement('div'); div.className = 'band';
+  div.innerHTML = '<div class="lab"><span>' + (i + 1) + '</span>'
+    + 'freq <input type="number" id="f' + i + '" min="0" max="65535" step="1" value="' + f + '"> Hz'
+    + '<input type="range" id="g' + i + '" min="-12" max="12" step="0.5" value="0">'
+    + '<span class="val" id="v' + i + '">0.0 dB</span></div>';
+  bandsEl.appendChild(div);
+  var g = div.querySelector('#g' + i), v = div.querySelector('#v' + i);
+  g.addEventListener('input', function () { v.textContent = (+g.value).toFixed(1) + ' dB'; });
+});
+var master = document.getElementById('master'), masterVal = document.getElementById('masterVal');
+master.addEventListener('input', function () { masterVal.textContent = (+master.value).toFixed(1) + ' dB'; });
+document.getElementById('flatBtn').onclick = function () {
+  FREQS.forEach(function (_, i) {
+    var g = document.getElementById('g' + i); g.value = 0;
+    document.getElementById('v' + i).textContent = '0.0 dB';
+  });
+  master.value = 0; masterVal.textContent = '0.0 dB';
+};
+
+// 生成 EQ 命令：gain 用 centidB（dB×100 四舍五入），q=100（Q1.0），iirType=255（未指定）
+document.getElementById('eqBtn').onclick = function () {
+  var bands = FREQS.map(function (_, i) {
+    return {
+      freq: parseInt(document.getElementById('f' + i).value, 10),
+      q: 100,
+      gain: Math.round(parseFloat(document.getElementById('g' + i).value) * 100),
+      iirType: 255
+    };
+  });
+  var masterCentidB = Math.round(parseFloat(master.value) * 100);
+  callBridge('writeEq(1, ' + masterCentidB + ', ' + JSON.stringify(bands) + ')',
+    function () { return h3s.writeEq(1, masterCentidB, JSON.stringify(bands)); });
+};
+
+// ANC 三态
+Array.prototype.forEach.call(document.querySelectorAll('[data-anc]'), function (b) {
+  b.onclick = function () {
+    var p = b.getAttribute('data-anc').split(',').map(Number);
+    callBridge('setAnc(' + p.join(', ') + ')', function () { return h3s.setAnc(p[0], p[1], p[2]); });
+  };
+});
+
+// 提示音音量
+Array.prototype.forEach.call(document.querySelectorAll('[data-vol]'), function (b) {
+  b.onclick = function () {
+    var v = parseInt(b.getAttribute('data-vol'), 10);
+    callBridge('setPromptVolume(' + v + ')', function () { return h3s.setPromptVolume(v); });
+  };
+});
+</script>
+</body>
+</html>

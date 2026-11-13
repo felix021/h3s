@@ -73,6 +73,44 @@ EqFrame.Parsed p = EqFrame.parseEqCommand(frame);                        // 反�
 
 诚实标注：组帧已由 `EqFrameTest` 单测覆盖（往返一致 + 路 H 文档字节对照 + 段数/取值校验 + 写策略放行/拒绝），真机下发未验证——不连真机、不刷机，传输层接线留待授权联调。
 
+## WebView 壳 + JS bridge（R3 独立 app 壳层，纯离线）
+
+R3 独立 app 按用户指定架构实现为「HTML5 WebView 页面 + Android 原生壳」：页面（UI）在
+`assets/index.html` 迭代，壳（`WebShellActivity`）封装组帧能力，经 JS bridge（注入名
+`window.h3s`）暴露给页面。**bridge 是纯组帧层**：只做「校验 + 组帧 + hex 回显」，不接真
+蓝牙/USB——所有方法返回字节 hex 字符串用于前端调试，真机下发需要授权联调时再接传输层。
+
+入口：MainActivity 的「打开 WebView 壳（离线组帧演示）」按钮，或
+`adb shell am start -n cn.felix021.h3squery/.WebShellActivity`（不导出，无桌面图标）。
+
+bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
+
+| 方法 | 行为 | 说明 |
+| --- | --- | --- |
+| `armWrite(boolean)` / `isArmed()` | 写门控 | 对应 `EqWritePolicy` 的 armed；未武装时一切写方法返回错误 JSON |
+| `writeEq(eqType, masterGainCentidB, bandsJson)` | 组 FF/0x22 EQ 写帧 | 内部调 `EqFrame.buildEqCommand`；bandsJson 每段 `{freq(Hz), q(x100), gain(centidB), iirType}`，q 缺省 100（Q1.0）、iirType 缺省 255（未指定） |
+| `setAnc(mode, scene, strength)` | 组 FF/0x17 ANC 帧 | data=`mode scene strength`（降噪 1,1,2 / 正常 2,0,0 / 通透 3,1,4）；mode 只收 1..3 |
+| `setPromptVolume(level)` | 组 FF/0x1d 提示音音量帧 | 值只收 3/6/8；**帧形状未钉**（按 data=`01 值` 假设组帧），联调以真机抓包为准 |
+
+返回统一 JSON：成功 `{"ok":true,"bytesHex":"fedcba..."}`（小写连续 hex）；失败
+`{"ok":false,"error":"..."}`（坏 JSON、字段缺失/非数值、取值越界、未武装等都有独立错误信息）。
+演示页面含 10 段 EQ 滑块（默认频点取 QCY 面板 32..16k，可手改；gain ±12 dB——QCY App 钳
+±8 是面板层限制，固件接收层不钳，超出范围的听感自负）、master gain、ANC 三态、武装开关与
+hex 回显；在无 bridge 的普通浏览器打开会显示降级提示条。
+
+诚实标注：
+
+- 组帧/门控已由 `H3SBridgeTest` 单测覆盖（JVM 纯逻辑：JSON 解析、与 `EqFrame` 逐字节对拍、
+  错误路径、武装门控、与 `EqWritePolicy` 一致性）。`WebShellActivity` 本身不测：它依赖
+  android.jar/WebView 运行时，纯 JVM 无法实例化，且只有「加载 asset + 注入 bridge」两行壳
+  逻辑，无业务分支。
+- **真机通信未接**：bridge 不连接耳机；`EqWritePolicy` 当前也只放行 0x22 EQ setter，
+  0x17/0x1d 帧下发前还需扩写策略（测试已钉住该缺口）。
+- 页面是 demo 级（内联 CSS/JS、无框架），不是最终产品 UI。
+- 本机无 Android SDK 完整打包条件时，可用
+  `javac -cp $ANDROID_HOME/platforms/android-35/android.jar src/.../H3SBridge.java src/.../EqFrame.java src/.../WebShellActivity.java`
+  单独验证新增类的 Android 侧编译（本仓库开发机已验证通过；`test.sh` 只需 JDK+Python）。
+
 ## 实际升级
 
 先完整阅读 [OTA实现与边界](../../docs/ota.md)。本例另有 [USB救砖实测](../../docs/usb-recovery.md)，其完整备份与限定恢复流程不由这个Android OTA客户端执行；双备份能力报告本身不能替代恢复步骤。

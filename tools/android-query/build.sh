@@ -20,7 +20,7 @@ unzip -p vendor/jl_bt_ota.aar jni/arm64-v8a/libjl_ota_auth.so > build/lib/arm64-
 javac -encoding UTF-8 -source 8 -target 8 -cp "$android_jar:build/sdk.jar" -d build/classes "$device_config" src/cn/felix021/h3squery/*.java
 jar cf build/app.jar -C build/classes .
 "$bt/d8" --min-api 26 --lib "$android_jar" --output build/dex build/app.jar build/sdk.jar build/androidx-core.jar
-"$bt/aapt" package -f -M AndroidManifest.xml -I "$android_jar" -F build/unsigned.apk
+"$bt/aapt" package -f -M AndroidManifest.xml -A assets -I "$android_jar" -F build/unsigned.apk
 (cd build/dex && zip -q ../unsigned.apk classes.dex)
 (cd build && zip -q unsigned.apk lib/arm64-v8a/libjl_ota_auth.so)
 if [ ! -f build/debug.keystore ]; then

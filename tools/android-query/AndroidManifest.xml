@@ -14,5 +14,7 @@
     <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity>
+    <!-- R3 独立 app WebView 壳：本地 asset 页面 + JS bridge，纯组帧不连真机；仅 app 内/adb 显式启动 -->
+    <activity android:name=".WebShellActivity" android:exported="false" android:label="H3S WebView 壳"/>
   </application>
 </manifest>
