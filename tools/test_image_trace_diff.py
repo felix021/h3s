@@ -216,14 +216,21 @@ def test_scenario_registry_shapes():
     # inport(224)=47=USBDP_IN 与固件 resolver 0x60012e8 双侧同值,通道号表
     # 与固件表 0x609EAB8 逐字节一致;全镜像扫描零读回),`jl_imap_writes`
     # 63 字白名单放行 0xfd5c90 写后链继续 +516 步,停在 0x60340d8 复合 RMW
-    # `[r0+4] &= 0xFFFFFFEF` 内部读 0xfd2004=JL_UART0->CON1(SDK uart_fifo_
-    # reset 的 bit4=RX DMA 重启位清零;读回=真实消费,读回类真决策点诚实
-    # 停归下一路;IPMASK 0→6 OS unmask 临界区)——3,073,918 @ 0x60340d8
-    # jl_uart_init_word_readback_not_modeled 读 0xfd2004 停。
+    # `[r0+4] &= 0xFFFFFFEF` 内部读 0xfd2004=JL_UART0->CON1(路 V 前沿
+    # 3,073,918)。路 AA:`jl_uart_con1_readback`(CON1 读回=最后写值,
+    # lp_timer CON 路 AL 同族,只在写过之后返回;条件假设 derived-not-
+    # measured;RMW 走完整通用路径、写回落记录)放行该读——读 0、写回 0,
+    # uart_init 事务收尾(BAUD=0x270×2/OTCNT/RX 三连写,CON0→0x346f),
+    # 事件域首边界=app_core 尾 0x6011fee 的 init 链 0x60c32a4..0x60c32b8
+    # 第 4 项 0x602ea68 首指令 `st.w.modimm [0xfe2200]=1`——0xfe2200=
+    # br28.h JL_WL_AUD->CON0(hs_base+map_adr(0x22,0),单成员 __RW),
+    # SDK 头有名、模型 unmapped 诚实停(独立决策点,不套用最后写值)——
+    # 3,079,241 @ 0x602ea72 unmapped_or_readonly_write 写 0xfe2200=1 停。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3073918, 'stop_pc': '0x60340d8',
-        'stop_fields': {'kind': 'jl_uart_init_word_readback_not_modeled',
-                        'address': '0xfd2004'}}
+        'completed_steps': 3079241, 'stop_pc': '0x602ea72',
+        'stop_fields': {'kind': 'unmapped_or_readonly_write',
+                        'address': '0xfe2200',
+                        'value_bytes': '01000000'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000

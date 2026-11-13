@@ -100,6 +100,7 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     jl_clock_dcck=True,
     jl_uart_con=True,
     jl_uart_init_writes=True,
+    jl_uart_con1_readback=True,
     jl_omap_writes=True,
     jl_imap_writes=True,
     subword_stores=True, word_store_sp_l=True,
@@ -200,11 +201,25 @@ SCENARIOS = {
         # 0xfd2004=JL_UART0->CON1**(SDK uart_fifo_reset:|=16→RXSADR/RXEADR/
         # RXCNT→&=-17,bit4=RX DMA 重启位;读回=真实消费,读回类真决策点
         # 诚实停,归下一路三选一;停点在 0x60340cc 的 OS unmask 临界区内,
-        # IPMASK 0→6、ICFG 保持 0x300)。**新前沿 3,073,918 @ 0x60340d8**
-        # (jl_uart_init_word_readback_not_modeled 读 0xfd2004)。
-        'freshness': {'completed_steps': 3073918, 'stop_pc': '0x60340d8',
-                      'stop_fields': {'kind': 'jl_uart_init_word_readback_not_modeled',
-                                      'address': '0xfd2004'}},
+        # IPMASK 0→6、ICFG 保持 0x300)。路 V 前沿 3,073,918 @ 0x60340d8。
+        # 路 AA:CON1 读回投影 `jl_uart_con1_readback`(读回=最后写值,lp_timer
+        # CON 路 AL/fd31 路 BN 同族,只在写过之后返回;条件假设「读回=软件
+        # 配置值」derived-not-measured,RMW 走完整通用路径、写回落记录)放行
+        # 该读——CON1 读 0、写回 0&0xFFFFFFEF=0(平凡零发明),uart_init 事务
+        # 全部收尾:BAUD=0x270×2(两次 baudrate)、OTCNT=0x1e834、RX 三连写
+        # RXSADR=0x125bfc/RXEADR=0x125e1c/RXCNT=0x220、CON0 |=0x68/|=0x4→
+        # 0x346f(路 F 容器),无新到期无新交付。事务后世界进入事件域:
+        # app_core 尾 0x6011fee 的 init 调用链 0x60c32a4..0x60c32b8(W1[0]
+        # 0x6012e3e/0x601321e/0x6013246 之后)第 4 项 0x602ea68 的首指令
+        # `st.w.modimm [0xfe2200]=1`——0xfe2200 = br28.h **JL_WL_AUD->CON0**
+        # (hs_base+map_adr(0x22,0),单成员 __RW)整字写,SDK 头有名、模型
+        # unmapped,诚实停(unmapped_or_readonly_write)——音频/无线域首个
+        # 新边界,独立决策点,不套用最后写值。**新前沿 3,079,241 @ 0x602ea72**
+        # (写 0xfe2200=1)。
+        'freshness': {'completed_steps': 3079241, 'stop_pc': '0x602ea72',
+                      'stop_fields': {'kind': 'unmapped_or_readonly_write',
+                                      'address': '0xfe2200',
+                                      'value_bytes': '01000000'}},
     },
 }
 
@@ -741,28 +756,28 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-13 路 V 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 3,073,918;一切结论条件通过、derived-not-measured;历史
+    """钉死 2026-11-14 路 AA 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 3,079,241;一切结论条件通过、derived-not-measured;历史
     世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/3,070,626(路 CG)/
     3,070,786(路 CL)/3,070,955(路 CO)/3,071,380(路 CQ)/3,071,984(路 F)/
-    3,072,236(路 M)/3,073,402(路 R)已被后续投影替换,见 HANDOFF 对应
-    「步含义」段):
+    3,072,236(路 M)/3,073,402(路 R)/3,073,918(路 V)已被后续投影替换,见
+    HANDOFF 对应「步含义」段):
 
-    - 双方 3,073,918 步、同停点 0x60340d8(jl_uart_init_word_readback_
-      not_modeled,读 0xfd2004,当前条件前沿——路 M 的 jl_uart_init_write_
-      records 初始化写白名单放行 uart_init 的 CON1(+4)/CON2(+0x2c)整字写后,
-      uart_init 进入 TX/RX 引脚复用;路 R 的 jl_omap_write_records 放行
-      0xfd58b8(JL_OMAP USBDP_OUT=FO_UART0_TX 0x9f)后 TX 复用链完成、第 297
-      次 Timer0 到期真实交付;路 V 的 jl_imap_write_records 放行 0xfd5c90
-      (JL_IMAP FI_UART0_RX=USBDP_IN 0x2f)后 RX 复用链完成,链继续 +516 步
-      停在 uart_fifo_reset 序列的 CON1 bit4 清零复合 RMW 内部读)、per-core
-      {0:3063017,1:11216}一致;stop parity 全同——official↔b79 parity 延长
-      到条件前沿 3,073,918,控制流零分歧、无 reconvergence;
+    - 双方 3,079,241 步、同停点 0x602ea72(unmapped_or_readonly_write 写
+      0xfe2200=JL_WL_AUD->CON0=1,当前条件前沿——路 AA 的 jl_uart_con1_
+      readback 读回=最后写值投影放行 uart_fifo_reset 复合 RMW 0x60340d8 的
+      内部读(CON1 已被写 0:读 0、写回 0&0xFFFFFFEF=0,平凡零发明,RMW 走
+      完整通用 mmio 路径)后,uart_init 事务全部收尾(BAUD=0x270×2/OTCNT/
+      RX 三连写落地,CON0 |=0x68/|=0x4→0x346f,无新 Timer0 到期),事务后
+      事件域首边界=app_core 尾 0x6011fee 的 init 链 0x60c32a4..0x60c32b8
+      第 4 项 0x602ea68 首指令写 JL_WL_AUD CON0=1)、per-core {0:3068340,
+      1:11216}一致;stop parity 全同——official↔b79 parity 延长到条件前沿
+      3,079,241,控制流零分歧、无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,073,918,
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,079,241,
       超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
-      GPIO TX/RX 复用链+Timer0 交付往返+JL_IMAP 输入复用链+fifo_reset 序列
-      头)没有消费任何新的镜像差异;
+      GPIO TX/RX 复用链+Timer0 交付往返+JL_IMAP 输入复用链+fifo_reset+
+      uart_init 收尾+init 链前三项)没有消费任何新的镜像差异;
     - final report 差异仍恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -772,19 +787,19 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 3073918 and run['stop_pc'] == '0x60340d8' and
-                run['stop']['kind'] == 'jl_uart_init_word_readback_not_modeled' and
-                run['stop']['address'] == '0xfd2004' and
-                run['per_core_steps'] == {'0': 3063017, '1': 11216},
+        require(run['completed_steps'] == 3079241 and run['stop_pc'] == '0x602ea72' and
+                run['stop']['kind'] == 'unmapped_or_readonly_write' and
+                run['stop']['address'] == '0xfe2200' and
+                run['per_core_steps'] == {'0': 3068340, '1': 11216},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3073918 @ 0x60340d8, the CON1 readback of the '
-                'uart_fifo_reset bit4 clear after the route-V jl_imap_write_records release '
-                'of the JL_IMAP 0xfd5c90 input-mux word)')
+                'conditional frontier stop (3079241 @ 0x602ea72, the JL_WL_AUD CON0=1 word '
+                'store of init-chain entry 0x602ea68 after the route-AA CON1 readback '
+                'projection released the uart_fifo_reset compound RMW)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 3073918, 'tested_b79': 3073918, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x60340d8', 'b': '0x60340d8', 'same': True} and
+    require(parity['steps'] == {'official': 3079241, 'tested_b79': 3079241, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x602ea72', 'b': '0x602ea72', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['kind'] == 'jl_uart_init_word_readback_not_modeled' and
+            parity['stop_record']['a']['kind'] == 'unmapped_or_readonly_write' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
             'identical conditional frontier stop')
