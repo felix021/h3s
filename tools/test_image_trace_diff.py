@@ -209,12 +209,21 @@ def test_scenario_registry_shapes():
     # `jl_omap_writes` 49 字白名单 write-only 记录放行后 TX 复用链完成、第 297
     # 次 Timer0 到期临界区退出后真实交付(287 次),RX 复用链停在 0x6001342 写
     # 0xfd5c90=0x2f(JL_IMAP->FI_UART0_RX=map_adr(0x5c,0)+成员 36×4;值 47=
-    # USBDP_IN,UART0 RX 与 TX 同用 USB DP 脚)——3,073,402 @ 0x6001342
-    # unmapped_or_readonly_write 写 0xfd5c90 停。
+    # USBDP_IN,UART0 RX 与 TX 同用 USB DP 脚)——前沿 3,073,402 @ 0x6001342。
+    # 路 V:识别钉死 0xfd5c00..0xfd5cf8=JL_IMAP(io_imap.h 63 成员
+    # FI_GP_ICH0..FI_CHAIN_RST;csfr.h __u8→unsigned int 显式 4 字编译布局,
+    # gpio_hw.c.o PFI_* 枚举 16604160..16604408 逐成员互证;gpio2crossbar_
+    # inport(224)=47=USBDP_IN 与固件 resolver 0x60012e8 双侧同值,通道号表
+    # 与固件表 0x609EAB8 逐字节一致;全镜像扫描零读回),`jl_imap_writes`
+    # 63 字白名单放行 0xfd5c90 写后链继续 +516 步,停在 0x60340d8 复合 RMW
+    # `[r0+4] &= 0xFFFFFFEF` 内部读 0xfd2004=JL_UART0->CON1(SDK uart_fifo_
+    # reset 的 bit4=RX DMA 重启位清零;读回=真实消费,读回类真决策点诚实
+    # 停归下一路;IPMASK 0→6 OS unmask 临界区)——3,073,918 @ 0x60340d8
+    # jl_uart_init_word_readback_not_modeled 读 0xfd2004 停。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3073402, 'stop_pc': '0x6001342',
-        'stop_fields': {'kind': 'unmapped_or_readonly_write',
-                        'address': '0xfd5c90'}}
+        'completed_steps': 3073918, 'stop_pc': '0x60340d8',
+        'stop_fields': {'kind': 'jl_uart_init_word_readback_not_modeled',
+                        'address': '0xfd2004'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
