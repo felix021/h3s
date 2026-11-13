@@ -24,7 +24,10 @@ h3s-tools-research 的 jlstream.h。一次性脚本在本地 tmp（~/tmp/hearaid
 函数级仿真真实执行（§8）：get_pipeline_uuid 真实返回 0x9c2d、pipeline_parse 建出 11 个真实
 节点、add_thread/set_scene 在真实部分流上直调全成、start 入场后停在合成状态边界。路 T 已把
 载荷+接驳做进离线候选镜像（§9：追加段+双窗口替换+fence 扩界+全 CRC 链，UNTESTED 不刷机）。
-仍未在真机跑通激活链，不构成「助听器可用」声明**（见 §6/§8/§9.4 诚实边界）。
+路 X 已补 close 载荷+窗口设计（§10）。路 Y 已把 open+close 双向接驳做进离线候选镜像
+（§11：close 载荷并入组合段 + 4 个 ON/OFF 离开窗口，`--hearing-aid-l1-close`，UNTESTED
+不刷机；App 0x17 直设路径仍未接驳）。
+仍未在真机跑通激活/关闭链，不构成「助听器可用」声明**（见 §6/§8/§9.4/§10.6/§11.5 诚实边界）。
 
 ## 1. 阶段 A：激活序列模板反汇编（只读）
 
@@ -637,3 +640,154 @@ leave_on2（ON-2 专用：fn 载入 r5 且后续 0x0600dbcc 的 call 0x0600bbba 
   0x0600dccc 不变。
 - 载荷：tools/hearing-aid/mic_effect_close.S（20 insns / 64B，0 relocs）；验证
   tools/test_hearing_aid_close_payload.py（6 tests OK）。
+
+## 11. close 接驳镜像实施：离线候选 `--hearing-aid-l1-close`（路 Y / sim-l1closeimg，R2 L1 双向闭环）
+
+2026-11-14。本节把 §10.2 的 close 载荷 + §10.5 的接驳方案做进**离线候选镜像**：
+`tools/build_quiet_candidate.py` 新增 opt-in 开关 `--hearing-aid-l1-close`（**隐含
+`--hearing-aid-l1-patch`**，路 X 的建议；仍与 EQ 修复候选互斥——同一追加点），实施代码在
+`tools/hearing_aid_l1_image.py` 扩展，接驳桩新源 `tools/hearing-aid/mic_effect_close_hook.S`，
+新单测 `tools/test_hearing_aid_close_image.py`（已接 `check_local.py --units`）。§10.2 的
+`mic_effect_close.S` **一字未改**（构建时只 strip 其 `.section` 行并入单段现场汇编，其独立
+单测原样通过）；`mic_effect_open.S` / `mic_effect_hook.S` 同样一字未改。**不刷机、不连真机；
+候选 UNTESTED；EQ 修复候选 67ba97ef 状态不变。**
+
+### 11.1 组合段几何（open+close+桩 单段，两遍定槽）
+
+构建时现场汇编单一代码段：open 134B + close 64B + TRANS 桩×2（64B，路 T 原样）+
+leave 桩×4（24/24/30/24B=102B）= **364B 代码 + 4B 槽**，零重定位。槽 = 段尾 4B
+（0x060E31E0），两遍汇编定槽位（open/close 各 2 处 `r0=<槽>` li.u32 随槽值变化，其余字节
+基址无关——单测+构建时断言都钉死）。
+
+| 项 | 值 |
+|---|---|
+| 追加文件 `mic_effect.bin` | 401B（头 32 + 0xff + 代码 364 + 槽 4×00），flash [0xE5073, 0xE5204) |
+| mic_effect_open | 0x060E3074，134B（=§2 载荷逐字节，构建时断言前缀==独立汇编） |
+| mic_effect_close | 0x060E30FA，64B（=§10.2 载荷逐字节，同上断言） |
+| trans_branch_1 / 2 | 0x060E313A / 0x060E315A（比 §9.1 的 T 候选 +0x40：close 载荷插在前） |
+| leave_on1 / off1 / on2 / off2 | 0x060E317A / 0x060E3192 / 0x060E31AA / 0x060E31C8 |
+| 数据槽 | 0x060E31E0，初始 00 00 00 00（open 写 / close 清，§10.4 方案 D 语义） |
+| 代码段 sha256 | f476d27c32628eb9656772002cc14c26f31669321f296f300e2b8b1efa5d7f15 |
+
+桩形状实作与 §10.5 成文一致，两点实作级补充（均本路反汇编核对）：
+
+- **ON-2 的 ctx 重取是防御性的**：0x0600dbcc 的 call 0x0600bbba 反汇编为**自建参数**
+  （入口即 `r4=QCY; r1=r4+37; r0=15; r2=1`，不读任何传入参数）——ctx 重放并非必需，
+  但照抄 §10.5 形状保守保留（重放无害：0x0600c2aa 是纯读叶子，只写 r0-r2）。
+- **r5 复用安全**：leave 桩把 apply fn 暂存 r5（close 自带 {rets,r6-r4} 保存恢复，r5 跨
+  call 不变）；窗口后原流里 r5 均为死值（链 1 汇合只消费 r4=flag，链 2 后续路径全部覆写
+  r5），复用不破坏任何活性。
+
+### 11.2 接驳窗口与 fence（6 窗口）
+
+四个新窗口按 §10.5 表整窗替换为 `r6=<桩地址>; goto r6`（6B+2B 惯用法，与 T 的 A/B 窗
+同款）；A/B 两窗的**桩地址随段内插入 close 而整体 +0x40**（窗口字节因此与 T 候选不同，
+语义不变）：
+
+| 窗口 | 起点 | 原字节（8B） | 进入方式 | 桩 | 桩行为 |
+|---|---|---|---|---|---|
+| A（T 已接） | 0x0600dc7e | bfea14f3 d0ec0407 | 0x0600db92 分支 | trans_branch_1 | 关 ANC 通透+open，goto 尾声 0x0600dc8c |
+| B（T 已接） | 0x0600dca4 | bfea01f3 d0ec0407 | 0x0600dbbc 分支 | trans_branch_2 | 同上 → 0x0600dcd2 |
+| ON-1 | 0x0600db9a | bfea86f3 d0ec0007 | 顺延（0x0600db96 不跳） | leave_on1 | 重放 ctx+ON 槽 → close → r0=r5 → 回 0x0600dba2（原 2B goto→汇合 0x0600dc86） |
+| OFF-1 | 0x0600dc74 | bfea19f3 d0ec0807 | 0x0600db8e 分支 | leave_off1 | 同形（OFF 槽）→ 回 0x0600dc7c |
+| ON-2 | 0x0600dbc4 | bfea71f3 d0ec0057 | 顺延（0x0600dbc0 不跳） | leave_on2 | 重放 ctx+ON 槽(r5) → close → 重取 ctx(r0) → 回 0x0600dbcc（原 call 0x0600bbba） |
+| OFF-2 | 0x0600dc9a | bfea06f3 d0ec0807 | 0x0600dbb8 分支 | leave_off2 | 同形 → 回 0x0600dca2 |
+
+语义闭环：进通透（A/B）= 先关 ANC 通透再 open；离开通透进 ON/OFF（4 新窗）= 先幂等
+close 再走原 apply。同模式重入被 0x0600db66 `b[r2+5]==r5` 早退过滤（§10.4 D 前提），无效
+模式/无 ctx 的早退（0x0600db4a/db54）在全部窗口之前、不受影响。
+
+**落点扫描复核（路 T 方法重跑，本路实测）**：全 app 线性反汇编（官方字节，加载基址
+0x06000100）收集 **51,701 个分支落点**（T 记录 51,709——同一方法、指令形式集合微差，
+结论一致），对 6 窗口逐一断言：**内部（起点后 1..7B）零落点**；起点落点 ON-1/ON-2=0
+（纯顺延）、OFF-1 恰 1 条=0x0600db8e、OFF-2 恰 1 条=0x0600dbb8、A/B 各 1 条=0x0600db92/
+0x0600dbbc（与 §1.4/§10.5 钉死一致）。**0x0600dc98 的 pop 确认是 4 个早退分支
+（0x0600db4a/db54/db66/db6c）的活落点**，在 OFF-2 窗口外（OFF-2 从 0x0600dc9a 起）。
+寄存器间接 goto/call（goto rN/call rN）无静态目标，不在扫描内——与 T 窗口同一残留限制。
+
+**fence 扩界**：0x06034e98 的 LIM_PC0 上限 32 位立即数 0x060E313E（T 候选值）→
+**0x060E31E4**（=追加文件末端运行地址）；字节差异 1B（`3e`→`e4`，0x060E31 前缀与
+0x06 高位不变）。下限 0x06000100 与使能位不动。
+
+### 11.3 CRC 链与字节级验证（E/T 路框架）
+
+CRC 全链照 §9.3：config.dat 末文件标志+头 CRC → 新文件头/数据 CRC → app.bin 双层 JLFS
+CRC → app_area_head 双层 CRC → boot-info app_size 0xE3053→0xE5204 + 三层 CRC → 追加区
+整段 SFC 重加密（0x3496）→ UFW 条目 CRC + 外层头 CRC。
+
+规范构建（`--attenuation-db 0 --hearing-aid-l1-close`，除 L1 双向外零改动）产物
+`H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_CLOSE_OFFLINE_UNTESTED.ufw`，sha256
+`5a5f2ef7b89194c6f5db9c5f1d8b3c6eab1101fcc4997e1d351753a36ba6c96f`。与官方镜像全文件
+**逐字节差异恰为 476 字节**：
+
+| 区域 | 字节数 |
+|---|---|
+| UFW 外层（头 CRC 2 + 条目表 CRC 2 + flash 条目 CRC 2） | 6 |
+| boot-info 32B 编码区（app_size 2 + 头/明文/密文 CRC） | 8 |
+| app_area_head + app.bin 双层 JLFS CRC | 8 |
+| config.dat 末文件标志 1 + 头 CRC 2 | 3 |
+| 接驳窗口 6×8 | 48 |
+| fence 立即数 | 3 |
+| 追加文件 mic_effect.bin 401B（密文对 0xff 填充；1B 密文碰巧等于原 padding） | 400 |
+
+与「只有 l1-patch 的候选」（§9.3，sha `6c7247a5…` 本路复现一致）**逐字节差异恰为 293
+字节**，构成即「加 close」的增量：4 个新窗 32 + A/B 桩地址迁移 3 + fence 1 + 追加区密文
+236 + CRC 链 21（boot-info 7 + 双层 JLFS 8 + UFW 6）。全部差异逐字节分类断言，无一例外
+字节（一次性脚本在本地 tmp，不进库）。
+
+验证清单（全部通过 [实测]）：①69 条指令（open 41+close 20+桩 8）逐条
+encode(decode)==原字节零 diff（构建时逐条断言 + 单测复跑）；②组合段前 198B == open/close
+独立汇编结果拼接（载荷源未改的机器证明）；③全部桩形状与固件目标（ctx getter
+0x0600c2aa/槽位位移 112/120/内部 call 落 close 入口/返回=窗口+8/两尾声/载荷入口/槽地址）
+从最终镜像字节反解码核对；④构建器 `verify_l1_image` 全镜像精确差异断言（SFC 密文独立
+重算 + boot-info 五字段独立重算 + 窗口反解码 + 差异集合精确相等）；⑤独立校验器
+`verify_ufw_integrity.py` 全过（含新 mic_effect.bin 401B 条目 JLFS CRC 与双备份 CRC）；
+⑥legacy：`--hearing-aid-l1-patch` 产物 sha 仍为 `6c7247a5…`（T 候选逐字节复现）、
+`check_reproduction.py` 过（official/b79 双复现）、`check_local.py --units` exit 0
+（含新单测 7 tests：open 变体段 sha `b0feed11…` 钉死不变）。复跑：
+`python3 tools/build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-close
+--output-dir <空目录>`（构建器要求输出目录不存在）。
+
+### 11.4 App 0x17 直设路径评估（未实施，成文方案）
+
+本路对 0x0600dcee 反汇编（只读）：**另一族 dispatch，不经 0x0600db3c**——`{rets,r7-r4}`
+序言、sp-=12、`r0==3/==2/!=1` 三分支（0x0600dcf8/0x0600dcfc/0x0600dd00）、**tbb 跳转表**
+（0x0600dd2e，r2=r1-1）、查询-再设置惯用法（call 0x0600BBD8 查态 → 分支 →
+0x0600C092/0x0600C294/0x0600dcde 包装族设置），mode apply 点的形状与键循环的
+[ctx+slot] 惯用法不同。接驳它需要：App wire 模式 id→内部模式映射、该链 ANC apply 点钉
+死、新窗口族落点扫描——工作量 ≈ 一条独立静态路（≈ 路 T 的窗口钉死工作量级），本路按
+任务边界**留文档不硬做**。后果：App 直设通透/离开不走 open/close（App 通透与按键语义
+分叉，§3 配套 4 的既有欠账；§10.4 方案 D 的完整性前提因此仍差这一块——App 路径离开通透
+后槽内残留 stale stream，下次按键进 ON/OFF 时 leave 桩的幂等 close 会 stop/release 它，
+但 stop 作用在可能已释放的对象上的安全性未验证）。
+
+### 11.5 诚实边界（必须随候选一起读）
+
+1. **离线候选 UNTESTED，不刷机**。交付=「字节与 §1-10 证据一致 + 四层 CRC/JLFS 结构
+   自洽 + 逐字节差异精确可控」，不是任何形式的运行验证。
+2. **close 全链仍零执行证据**：§10.3 已说明路 O 场景为何验证不了 close；本节接驳后的
+   完整路径（桩+载荷在 ANC 键循环里）同样未在仿真跑——主仿真前沿未推进到 0x0600db3c
+   （§9.4.2 同一欠账）。静态往返+落点扫描+锚点核对是当前最强证据。
+3. **数据槽仍在 flash**（§10.4 方案 A 未实施）：方案 D 的键循环前提（两链 6 窗口全接）
+   本候选已满足；App 0x17 前提未满足（§11.4）。真机验证前建议先做方案 A（槽挪 RAM）。
+4. §10.6 全部既有边界继承：stop/release 同步等的上下文风险（leave 桩在按键 dispatch
+   上下文同步调 close，同一风险面）、release 的 b[stream+17]==3 门、event_notify(11)
+   整链副作用、noisgate 未配对、set_scene 16 是 SDK 枚举值。
+5. 与 EQ 修复候选互斥（开关同时给会报错）；EQ 候选 67ba97ef UNTESTED 不变。
+
+### 11.6 证据锚点表（本路新增钉死）
+
+- 组合段（open+close+6 桩）：364B+4B 槽 @0x060E3074..0x060E31E4，段 sha256
+  f476d27c…；close 入口 0x060E30FA；leave 桩 0x060E317A/0x060E3192/0x060E31AA/
+  0x060E31C8；TRANS 桩迁移后 0x060E313A/0x060E315A。
+- 窗口替换字节（before→after）全表见构建报告 `hearing_aid_l1.hook_windows`（6 窗，
+  build-report.json 随产物落盘）；A/B 窗 after 随桩迁移变化：A `c6ff3a310e06 d600`、
+  B `c6ff5a310e06 d600`。
+- leave 桩固件目标：ctx getter 0x0600c2aa（纯读叶子，只写 r0-r2）；返回点 0x0600dba2/
+  0x0600dc7c/0x0600dbcc/0x0600dca2（=各窗+8）；0x0600bbba **自建参数不读传入 r0-r3**
+  （ON-2 重取 ctx 仅防御性）；0x0600dc98 pop=4 早退分支活落点（0x0600db4a/db54/db66/
+  db6c）。
+- 落点扫描：51,701 落点全 app 复扫，6 窗内部零落点、起点落点与 §1.4/§10.5 全等。
+- 候选：sha256 5a5f2ef7…（476B vs 官方）；与 l1-patch 候选差 293B；单测
+  tools/test_hearing_aid_close_image.py（7 tests OK）；构建器
+  hearing_aid_l1_image.py（apply_l1_patch close_hooks=True + verify_l1_image 泛化）。
