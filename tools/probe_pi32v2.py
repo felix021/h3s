@@ -976,6 +976,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
 
     vfs={};res_names=[];res_glob=[];vfs_reads=[];vfs_seeks=[];posts=[];mutex=[]
     stream_reads=[];stream_seeks=[]
+    pend_events=[]
 
     def text(c,addr,limit=1<<16):
         out=b'';k=0
@@ -985,7 +986,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             out+=bytes([byte]);k+=1
         return out
 
-    def stub_step(c,resources,use_vfs_stub,stream_map=None):
+    def stub_step(c,resources,use_vfs_stub,stream_map=None,consume=False):
         pc=c.pc
         if pc in (0x12e16e,0x12e160):
             c.R[0]=bump(c.R[0]);c.pc=c.rets;return True
@@ -1064,6 +1065,24 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             c.R[0]=0;c.pc=c.rets;return True
         if pc==fixtures['synthetic_vfs_thunk_play']:
             c.R[0]=0;c.pc=c.rets;return True
+        if consume and pc==0x1fd80:               # ROM memset (body 0x4226) -> byte fill
+            c.mem.write(c.R[0],bytes([c.R[1]&0xff])*c.R[2]);c.R[0]=c.R[0];c.pc=c.rets;return True
+        if consume and pc==0x1fd84:               # ROM strcmp (body 0x42f4) -> signed byte diff
+            a,b=c.R[0],c.R[1];k=0
+            while True:
+                x=c.mem.read(a+k,1)[0];y=c.mem.read(b+k,1)[0]
+                if x!=y or x==0:
+                    c.R[0]=(x-y) if x>=y else (x-y+256);break
+                k+=1
+            c.pc=c.rets;return True
+        if consume and pc==0x6065e80:             # OS frame/stack allocator -> synthetic stack block
+            c.R[0]=bump(c.R[0]+0x80);c.pc=c.rets;return True
+        if consume and pc==0x12b55c:              # ROM os_taskq_pend enter: single-task -> return
+            pend_events.append('0x12b55c');c.pc=c.rets;return True
+        if consume and pc==0x12b5b0:              # ROM os_taskq_pend exit pair -> return
+            pend_events.append('0x12b5b0');c.pc=c.rets;return True
+        if consume and pc==0x6064340:             # scheduler trigger: single-task -> no switch
+            pend_events.append('0x6064340');c.R[0]=0;c.pc=c.rets;return True
         return False
 
     def machine(image,stream_map=None):
@@ -1085,7 +1104,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         c.models,_=architectural_k2(c.models)
         return c
 
-    def execute(c,resources,*,use_vfs_stub,budget,watch,stream_map=None):
+    def execute(c,resources,*,use_vfs_stub,budget,watch,stream_map=None,consume=False):
         events=[]
         c.R[0]=0x130000
         c.mem.write(0x130000,struct.pack('<I',fixtures['synthetic_event_payload_word']))
@@ -1098,7 +1117,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
                 if c.pc in watch and c.pc not in seen:
                     seen.add(c.pc)
                     events.append({'pc':hex(c.pc),'regs':[c.R[i] for i in range(4)]})
-                if not stub_step(c,resources,use_vfs_stub,stream_map):
+                if not stub_step(c,resources,use_vfs_stub,stream_map,consume):
                     insn,_,size=c.decode(c.pc)
                     is_call=insn.id.startswith('call')
                     before=c.pc
@@ -1241,6 +1260,143 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
                 'official and b79 tone-file reads diverged before the honest stop')
     scenarios['tone_pipeline_skeleton']=skeleton
 
+    # -- scene 3 (route CK / sim-d2bwire): D2-B framework-task consumption --
+    # Synthesize the 'jlstream' task by directly invoking the real creation
+    # chain 0x60759ee (the CI-pinned initcall leaf), run the tone entry chain
+    # past the stream-create request post 0x6075414 (the pend composite points
+    # 0x12b55c/0x12b5b0 and the scheduler trigger 0x6064340 are stubbed to the
+    # single-task semantics: pend returns, no task switch), then switch to the
+    # task body 0x6086980 and run the message loop to the EQ-hook sites or the
+    # first honest unknown. Every synthetic input is named synthetic-not-measured.
+    D2B_CREATE=0x60759ee
+    D2B_BODY=0x6086980
+    D2B_TASKQ_SLOT=0x126c5c        # [OS 0x1265c0 + 1692 + cnum*4]: current task (synthetic)
+    D2B_PCS={'task_frame_init_0x6065f9e':0x6065f9e,'stream_request_post_0x6075414':0x6075414,
+             'get_event_0x6064c8c':0x6064c8c,'cmd4_0x60869d8':0x60869d8,
+             'payload_read_0x60869b6':0x60869b6,
+             'cmd11_consumer_0x6075e22':0x6075e22,
+             'node_create_0x607471e':0x607471e,'decoder_bind_0x6076b7a':0x6076b7a,
+             'open_config_0x60787ac':0x60787ac,'eq_hook_0x6078846':0x6078846,
+             'subcmd2_write_0x6078a2e':0x6078a2e,'framework_post_0x6074192':0x6074192}
+
+    def run_segment(c,budget,watch):
+        seen=set();events=[];calls=[];stop=None
+        try:
+            for _ in range(budget):
+                if c.pc==SENTINEL:break
+                if c.pc in watch and c.pc not in seen:
+                    seen.add(c.pc)
+                    events.append({'pc':hex(c.pc),'regs':[c.R[i] for i in range(16)]})
+                if not stub_step(c,None,False,None,consume=True):
+                    insn,_,size=c.decode(c.pc)
+                    is_call=insn.id.startswith('call')
+                    before=c.pc
+                    c.step()
+                    if is_call:calls.append((hex(before),hex(c.pc)))
+        except (PermissionError,RuntimeError,ValueError,KeyError) as e:
+            stop={'pc':hex(c.pc),'error':f'{type(e).__name__}: {e}'}
+        return events,calls,stop
+
+    consume={}
+    consume_watch=tuple(D2B_PCS.values())+entry_watch
+    for name,image,resources,stream_map in variants:
+        allocs.clear();pend_events.clear()
+        heap['next']=fixtures['synthetic_heap_base'];vfs.clear()
+        c=machine(image,stream_map)
+        c.mem.write(QCY+4451,bytes([fixtures['synthetic_gate_byte']]))
+        c.mem.write(QCY+348,struct.pack('<I',fixtures['synthetic_language_word']))
+        # Synthetic empty stream-slot list heads (boot-initialized OS state in
+        # BSS, never written by the firmware prefix we run): the slot manager
+        # 0x12649c holds two self-linked doubly-linked sentinels -- the stream
+        # object list at +28 (0x1264b8, inserted by slot alloc 0x6074520, walked
+        # by the task body with its "[r12+0]==r12" check) and the slot list at
+        # +44 (0x1264c8, walked by the close chain 0x6075bb4).
+        c.mem.write(0x1264b8,struct.pack('<II',0x1264b8,0x1264b8))
+        c.mem.write(0x1264c8,struct.pack('<II',0x1264c8,0x1264c8))
+
+        # Phase A: create the jlstream task via the real initcall leaf 0x60759ee.
+        c.pc=D2B_CREATE;c.rets=SENTINEL;c.sp=0x00134000
+        for r in range(16):c.R[r]=0
+        evA,callsA,stopA=run_segment(c,20000,(D2B_PCS['task_frame_init_0x6065f9e'],))
+        tcb=allocs[0][0] if allocs else None
+        frame_r0=[e['regs'][0] for e in evA if e['pc']==hex(D2B_PCS['task_frame_init_0x6065f9e'])]
+        require(stopA is None and frame_r0 and frame_r0[0]==0x6086980,
+                f'{name}: jlstream creation chain did not write RETI=0x6086980 (got {stopA}, frame_r0={frame_r0})')
+        # Synthetic "jlstream is the current scheduled task" pointer (single-task
+        # model): the post/wake helpers read [OS+1692+cnum*4] as the running task.
+        if tcb is not None:
+            c.mem.write(D2B_TASKQ_SLOT,struct.pack('<I',tcb))
+
+        # Phase B: tone entry chain -> cross the pend -> stream-create request post.
+        c.sp=0x00134000
+        evB,callsB,stopB=execute(c,resources,use_vfs_stub=True,budget=60000,
+                                 watch=consume_watch,stream_map=stream_map,consume=True)
+        qcount=(struct.unpack('<H',c.mem.read(tcb+14,2))[0] if tcb is not None else None)
+        post_hit=any(e['pc']==hex(D2B_PCS['stream_request_post_0x6075414']) for e in evB)
+
+        # Phase B2: directly invoke the stream-request entry 0x60753e8 (the
+        # CI-pinned app->framework bridge; its caller 0x6018f0e sits behind a
+        # long state gate that the tone entry chain does not reach). With the
+        # request global [0x1264d4]==0 it runs the slot alloc and posts the
+        # stream-create request to 'jlstream' (0x6075414). Route CK measured
+        # the post payload as {cmd=5, obj}: the tbb dispatches cmd5 (timestamp
+        # / sys_timer branch 0x60869f0), NOT cmd4 as CI §5.5 assumed -- the
+        # cmd value is r2=5 at 0x6075406, carried as payload[0].
+        c.sp=0x00134000;c.pc=0x60753e8;c.rets=SENTINEL
+        for r in range(16):c.R[r]=0
+        evB2,callsB2,stopB2=run_segment(c,20000,(D2B_PCS['stream_request_post_0x6075414'],))
+        qcount2=(struct.unpack('<H',c.mem.read(tcb+14,2))[0] if tcb is not None else None)
+
+        # Phase C: switch to the jlstream task (synthetic current-task pointer)
+        # and run the message loop.
+        c.pc=D2B_BODY;c.rets=SENTINEL
+        if tcb is not None:
+            c.mem.write(D2B_TASKQ_SLOT,struct.pack('<I',tcb))
+            stack_base=struct.unpack('<I',c.mem.read(tcb+68,4))[0]
+            stack_words=struct.unpack('<I',c.mem.read(tcb+64,4))[0]
+            c.sp=(stack_base+(stack_words<<2))&0xFFFFFFFF
+        evC,callsC,stopC=run_segment(c,60000,consume_watch)
+
+        hit=coverage(evA+evB+evB2+evC,callsA+callsB+callsB2+callsC)
+        d2b={k:(pc in hit) for k,pc in D2B_PCS.items()}
+        node35=[]
+        for e in evC:
+            if e['pc']==hex(D2B_PCS['subcmd2_write_0x6078a2e']):
+                node=e['regs'][3]
+                val_src=e['regs'][5]
+                val=c.mem.read(val_src+4,1)[0]
+                node35.append({'node':hex(node),'value':val})
+        # the message payload the task body dispatches on: buf=r10=sp+24, so
+        # [buf+4]=cmd, [buf+8]=object pointer (read at 0x60869b6 before step).
+        consumed=[]
+        for e in evC:
+            if e['pc']==hex(D2B_PCS['payload_read_0x60869b6']):
+                buf=e['regs'][10]
+                cmd=struct.unpack('<I',c.mem.read(buf+4,4))[0]
+                obj=struct.unpack('<I',c.mem.read(buf+8,4))[0]
+                consumed.append({'cmd':cmd,'obj':hex(obj)})
+        consume[name]={
+            'tcb':hex(tcb) if tcb else None,
+            'creation_frame_init_reti':frame_r0[0] if frame_r0 else None,
+            'phase_a_stop':stopA,
+            'stream_request_post_reached':post_hit,
+            'queue_count_after_post':qcount,
+            'phase_b_stop':stopB,
+            'phase_b2_stop':stopB2,
+            'queue_count_after_phase_b2':qcount2,
+            'phase_c_stop':stopC,
+            'consumed_messages':consumed,
+            'pend_composite_events':list(pend_events),
+            'd2b_pc_reached':d2b,
+            'node_plus_35_writes':node35,
+            'steps':{'total':c.steps}}
+    scenarios['tone_pipeline_consume']=consume
+    if 'official' in consume:
+        require(consume['official']['d2b_pc_reached']==consume['b79']['d2b_pc_reached'],
+                'official and b79 D2-B consumption coverage diverged')
+        require(consume['official']['consumed_messages']==consume['b79']['consumed_messages'],
+                'official and b79 consumed message payloads diverged')
+
     report['scenarios']=scenarios
     report['corrections_vs_route_bx']=[
         'tone language word: QCY+348 == 1 selects the zh table 0x60a379c, != 1 selects en 0x60a387c (runtime-verified both arms; BX §1.2 had it inverted)',
@@ -1249,6 +1405,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         'ROM 0x1fd8c is strlen (body 0x4402), not a strncmp variant; ROM 0x1fd84/0x1fd90 return the signed byte difference (0 == equal)',
         '0x600c128 is release-or-post: refcount to zero closes/frees and calls cb when set, otherwise posts event 0x10000B {10, seq} to the app_core task',
         'route CD/CF: the resfile layer applies NO byte transform -- the stream.bin runtime view IS the public JLFS content; the loader JS check fails non-fatally on the real head (version byte 0), the section accessor takes the passthrough branch 0x60743a8 and the CA-era synthetic head / 0x1fe30 -7 stop was an artifact of that synthetic input (BX/CA §6.5 item 5 superseded)',
+        'route CK: the stream-request post 0x6075414 (inside 0x60753e8) enqueues {cmd=5, obj} (payload[0] is r2=5 from 0x6075406, payload[1] is r3=obj from 0x6075402), so the jlstream task body tbb dispatches cmd5 (timestamp/sys_timer 0x60869f0), NOT cmd4 as CI §5.5 assumed; node creation 0x607471e is reached in the tone entry chain itself (0x6074938 -> 0x60749fe), not via the framework task cmd4 branch',
     ]
     report['honest_boundaries']=[
         'the resource VFS open runs real code over the image mount table, but the flash-FS layer state (VM/partition tables populated at boot, SFC reads) is unmodeled in this function-level harness; scene 1 records the graceful not-found',
@@ -1256,6 +1413,8 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         'scene 2 stops at 0x12b56c inside ROM pend 0x12b55c: the idle IPMASK (0xffe1a8) poll is the framework-task pend context, an unmodeled IRQ-controller read in this single-task harness -- the D2-B message-loop boundary; the live machine (route CD) parks at the same point',
         'node creation 0x607471e, decoder bind 0x6076b7a, open-config 0x60787ac and the EQ hook sites 0x6078846/0x6078a2e are NOT reached before the pend boundary (see d2a_pc_reached); they fire in the framework-task message consumption, which is D2-B wiring',
         'queue post/event 0x10000B, mutex take/give and the allocator are SYNTHETIC stubs; RTOS/queue/task-switch semantics remain unmodeled',
+        'scene 3 (tone_pipeline_consume) wires D2-B via synthetic single-task semantics: the jlstream task is created by the REAL initcall chain 0x60759ee (allocator/memset/strcmp/frame-pool stubbed), the ROM pend/exit composite points 0x12b55c/0x12b5b0 and the scheduler trigger 0x6064340 are stubbed to "pend returns / no switch", the current-task pointer [OS+1692+cnum*4]=TCB and the two stream-slot list sentinels 0x1264b8/0x1264c8 are synthetic boot-initialized OS state (named synthetic-not-measured)',
+        'scene 3 EQ hook sites 0x6078846/0x6078a2e and open-config 0x60787ac remain unreached: the first consumed message is cmd5 (stream-create request, CI §5.5 correction) which only checks the stream list and loops, and the tone chain close event (cmd9) stops on the unmodeled OS sys_timer read 0xffe0f8 -- the cmd-11 parameter message that drives the EQ node op1 is not produced by this scene',
     ]
     report['observations_route_cd']={
         'loader_gate_b_0x12649d':'recorded per variant (zeroed RAM here; CD live-measured 0 after boot, setter still unidentified)',
