@@ -13,6 +13,9 @@ board_ac701n_demo_cfg.h。一次性脚本放本地 tmp（~/tmp/ae-audioin），�
 worktree 基线 b3d7e13。**路 AL（sim-anccfg，2026-11-14）增补 §1.6/§2.2b 并勘误 §1.3/§5：
 mic_type 偏移、枚举值、写点、通道映射与 ANC 模式切换链全部静态钉死**（脚本在本地
 ~/tmp/al-anccfg，复用 AE 的 pi32v2-isa 钉死 codec 与同一 app.bin）。
+**路 AP（sim-escocfg，2026-11-14）增补 §1.7 并勘误 §1.3/§5/§6：通话 esco_adc 40B blob
+定位于公开 stream.bin、mult 决策表与通话链全图静态钉死**（脚本在本地 ~/tmp/ap-escocfg，
+同一 codec/app.bin + 公开 stream.bin）。
 
 证据强度：**[静态]** = 指令锚定反汇编/数据表解码（本路，H3S 固件真字节）；**[SDK]** = 参考
 SDK 源/IR 交叉佐证（非 QCY 精确源）；**[镜像]** = 公开资源字节直接解析；**[文档]** = 既有
@@ -77,7 +80,7 @@ mic 全走 JL_ADDA 模拟输入）。→ **并发音频输入上限 = 4 路模�
 | 消费者 | 打开链（函数锚点） | 通道数证据 |
 |---|---|---|
 | **mic_effect / pc_mic（jlstream 输入）** | 源节点 plug create **0x6032924**（plug 表 0x60a917c 条目[1] key=0xD06D）→ 读节点 cfg（ch_map@nodecfg+8）→ 逐 ch_map 位开通道（0x606de62/0x606b4d0/0x606de92/0x606c3aa，0x6032b78..0x6032c7c）→ SR 写 0x606dee0 → set_buffer 0x606dee4 | **stream.bin mic_effect(0x9c2d) 图描述符含 3 个 ADC(0xD06D) 源节点** [镜像，offset 0x2d0：`2d 9c d0 00 | 6d d0 03 00`——uuid 0x9c2d + ADC 节点计数 3，路 I 已钉本路复核]；mic 槽结构 4×9B（节点侧 +17/+26/+35/+44），**config id 89** 供给每槽 1 个配置字节+1 个使能字节（QCY+524..527 值/QCY+528..531 使能，0x602eb2a 读入、0x6032ba0 按 enable 门逐槽填） |
-| **通话 esco/aec 前端** | **0x60200b6**（调用者 0x60212bc，BT esco 域）：4 slot 使能+增益数组驱动，每通道 zalloc 512B（[obj+60..]）+ 交织大缓冲 = 通道数×0x600（[obj+72]），SR=16000、set_buffer(大缓冲,512,3)，output handler 注册 [obj+40]=0x6031D5A | 4 slot 框架 [静态]；另有 esco ADC 变体 0x60142f0..0x6014460（**2 个 9B mic 描述符** @QCY+3469/QCY+3478，b[QCY+3464]==2 门控，调用者 0x60221e2/0x6042384） |
+| **通话 esco/aec 前端** | **0x60200b6**（调用者 0x60212bc，BT esco 域）：4 slot 使能+增益数组驱动，每通道 zalloc 512B（[obj+60..]）+ 交织大缓冲 = 通道数×0x600（[obj+72]），SR=16000、set_buffer(大缓冲,512,3)，output handler 注册 [obj+40]=0x6031D5A | 4 slot 框架 [静态]；另有 esco ADC 变体 0x60142f0..0x6014460（**4×9B mic 描述符** @QCY+3464+9k、mask 硬编码 2 只开 desc1，b[QCY+3464]==2 门控，调用者 0x60221e2/0x6042384）——全链已由路 AP §1.7 钉死（esco_adc 40B blob @stream.bin 0x1BFD、en_map=0xB、mult 决策表、开/关链 0x60200b6/0x601e436） |
 | **ANC（不经 jlstream）** | SDK audio_anc.c：`anc_hdl->param.adc_set_buffs_cb = audio_adc_fixed_digital_set_buffs; audio_anc_adc_ch_set()`（L1068-1070）→ **复用同一 audio_adc_hdl**；ANC 滤波在 JL_ANC 硬件块（0xFE0400..0xFE04C0，anc_core 驱动） | audio_anc_t（[DWARF] 全布局提取）：**mic_type[4]@+104bits=字节+13，角色=LFF/LFB/RFF/RFB**（SDK audio_anc.c L936-939：mic_type[0..3]=ANCL_FF/FB、ANCR_FF/FB_MIC），4 个使能位 lff/lfb/rff/rfb_en@+56..80bits=字节+7..10（AL 勘误：DWARF 偏移为位；H3S 实值见 §1.6） |
 | boot 期 ADC 子系统初始化 | **0x602ea68**（initcall 表区条目 @0x60c32b0，无线性调用者）：从 stream.bin 场景配置读 5 个「mic 需求」标志（场景 0x7674 tone/0xD96F a2dp/0xB9D1/0x9C2D mic_effect/0xDC74 → b[0x12657C..0x126588]，读取器 0x60755b2）→ OR 非零则 audio_adc_init（hdl=**QCY+4596=0x1267BC**，0x60719a6，注册槽 [QCY+308<<2]=[0x126A90]）→ 模拟上电 → **注册 IRQ68** | 5 场景标志 OR 门 [静态]；b[QCY+3460] bit0/bit1 两 mic 组使能、b[QCY+3469]/b[QCY+3478] 组内通道 id |
 
@@ -176,6 +179,187 @@ mic_param[4]）** 调 **0x606ee98**：按 en 门把 mic_param[k].gain（+2，8 �
 insert 进 **ADA_CON8（0xFE0A40）4×5bit PGA 槽**（bit0/5/10/15 起），尾部
 **ADC_CON（0xFE0538）|=0x800**。采样率/位宽：ANC 帧承共享 DMA 交织布局（§2.2），
 ANC 专用 SR/滤波速率在 JL_ANC 块配置（0x606d9c0 param 域）与系数文件内，本轮未钉死。
+（路 AP 补：QCY 构建的 0x606ee98 只收 mic_param 单参——SDK `audio_anc_mic_gain` 的
+mult_gain_en 参数被裁掉，mult_flag 不再门控增益，见 §1.7②。）
+
+## 1.7 通话（esco）采集配置实证：esco_adc 40B blob、mult 决策表与通话链全图（路 AP / sim-escocfg，2026-11-14 静态）
+
+本节关闭 §5.5 的「esco_adc 48B 配置 blob 未定位」与「通话/ANC 复用关系未钉」两条余缺，
+并勘误 §1.3 通话行两处。全部 [静态/镜像]，derived-not-measured；一次性脚本在本地
+~/tmp/ap-escocfg（复用 AE 的 pi32v2-isa 钉死 codec 与同一官方 app.bin sha `18f3d573…`、
+公开 stream.bin 9351B）。
+
+**① esco_adc 配置 blob：就在公开 stream.bin 里，40 字节 [镜像+静态]**
+
+- 查找名 = **"esco_adc"**（app.bin 字符串 @0x609D27E）。解析器 **0x6014162**（boot
+  initcall 0x602eb86、通话开链 0x60143aa、aec 前端 0x602010c/0x602011a、esco 编码侧
+  0x601fe4a 五处调用）先调
+  **0x60750aa(mode=0, name, cfg_index=0, out8B)** 查注册表、成功再 **0x60751da(out8B,
+  QCY+3460)** 整块拷贝。
+- 注册表机制钉死：0x60750aa 内 fopen **"flash/res/stream.bin"**（0x6074234，VFS mount
+  表 0x60C329C，4B 头非 "JS" 魔数即 plain 模式——本文件头 `00 00 a0 03`）；按 4B 节头
+  {u16 type, u16 len} 扫描（b[1]&3 提供长度 18bit 进位），**type=5 即 §5 参数区**（载荷
+  0x0871..0x21C2）；跳 16B 头后逐条比对 32B 记录：flag@+0（255=末尾）、mode@+4、
+  **name_hash=djb2(name)&0xFFFF@+5**、cfg_index@+9；命中输出 (addr=§5 载荷基+off@+10
+  (u32), size@+14 (u16))。§5 载荷基 = 0x871（经 Drc1Eff@0x1038 解出
+  {bypass=0, attack=100, release=200} 与 hearing-aid §7 钉死值一致复核）。
+- **命中记录 [镜像]**：stream.bin §5 记录 @0x0D41（第 38 条）= {flag=3, uuid=**0xD06D**,
+  subid=2, mode=0, cfg=0, name_hash=**0xa996**=djb2("esco_adc")&0xFFFF, **off=0x138C,
+  size=40**} → blob 在 stream.bin 绝对偏移 **0x871+0x138C=0x1BFD**，**40 字节**。
+  §5.5 的「48B blob 公开件内未定位、疑在 flash EXT_RESERVED」就此关闭：AE 说的 48B 是
+  QCY 侧 RAM 接收区（QCY+3460..3507 = en_map(4)+desc(4×9)+计数(1)+pad(3)+缓冲指针(4)，
+  后 8B 由代码写，不来自 blob），blob 本体 40B 就在公开 stream.bin。
+- **blob 内容**（拷到 QCY+3460..3499）：
+
+| 偏移 | 字段 | 值 | 消费点 |
+|---|---|---|---|
+| +0..3 | mic_en_map word | **0x0000000B** | bit k = ADA 通道/组 k 使能（bit0/1/3）；读者见 ② |
+| +4+9k (k=0..3) | desc_k（QCY+3464+9k） | 四份**完全相同** `{01 01 01 01 00 0e 08 00 00}` | 0x60142be 打包打开（③） |
+| desc+0 | 类型/模式字节 | 01 | 三个 ==2 门（⑤）；打包进 hdl 每通道 cfg 低 nibble（0x606b4d0 内 `packed[3]&0xF != 2` 分支） |
+| desc+1 | ADA_CON8 增益档 | 01 | 0x606de92(obj, 1<<k, gain)：ADA_CON8(0xFE0A40) 5bit 槽，**cap 19** |
+| desc+2 | ADA_CON4..7 bit0 | 01 | 0x606c3aa(1<<k, v)：每通道寄存器(0xFE0A30/34/38/3C) bit0 = (v!=0) |
+| desc+3 | cfg 字节 | 01 | 打包 packed[0] → adc_mic_open 存 hdl 每通道 cfg |
+| desc+4 | 处理门 | 00 | 非 0 则跳过 desc+7/+8 的 16bit 处理（0x60142fc） |
+| desc+5 | **mic 偏置档** | **0x0e(14)** | boot 校准回写目标（⑤）；config-89 合并目标（下） |
+| desc+6 | cfg 高 nibble | 08 | packed[3]>>4 → hdl+48+ch（type!=2 时） |
+| desc+7/+8 | u16 | 0 | 非 0 且 desc+4==0 时经 0x6001052→0x6085126(x>>4, 1<<(x&0xF))（语义未解） |
+
+- config-89 合并 [静态]：0x6014162 内 0x60141d6..0x60141fa 把 QCY+524..527（值）按
+  QCY+528..531（使能）逐槽写 **desc_k+5（QCY+3469+9k，偏置档）**——config 89 存在时
+  覆盖 blob 的 0x0e（boot 0x602eb2a 读 config 89，成功则 b[QCY+528]=1）。
+- **同族 40B 模板 {u32 en_map; mic_desc[4]}** [镜像]：uuid 0xD06D 共 3 条记录——
+  "esco_adc"(a996, subid2) 与**未还原名**(a631, subid13) 共享同一 blob（同 off 0x138C）；
+  **"MicEff"**(c6af, subid3, djb2 复核) 独立 blob @abs 0x1DA4：**en_map=0x1（辅听单路，
+  与 D2-b「辅听/VAD 采集」行互证）**、desc+1=0x0a(10) 增益档、desc+4={0x10,0x02,0x04,0x08}
+  位掩码族。第三处复用 = mic_effect 节点侧：0x6032b58/0x6032b64 以节点注册名查同一注册表
+  拷到 nodecfg+8（同构合并 0x6032ba0，AE §1.3 已钉的 config-89 槽位）。
+
+**② mic_en_map 写入者/读者全清单 + mult_flag 决策表 [静态]**
+
+- **写入者**：QCY+3464..3468（desc+0..+4）唯一写入 = 上述 blob 拷贝
+  （0x601419a→0x60751da）；desc+5（偏置）另有 boot 校准回写 0x602ee00/0x602ee10（⑤）与
+  config-89 合并 0x60141f2。en_map 字（QCY+3460..3463）除 blob 拷贝外还有一个**条件恢复
+  点**：0x6016be0（调用点 0x6016c2a/0x601dd96/0x601dda8/0x601ddb0，esco/aec 域）在
+  [QCY+616] 的 28B 缓存对象存在且其 +3 字节为 0 时，把 b[obj+2]（boot 期 0x602f338 由
+  getter 0x6020042 读入的 en_map 缓存）写回 [QCY+3460] 字——运行时只会「复位回 blob 值」
+  形状，不是自由改写 [静态]。
+- 读者（非穷尽）：mic_management 0x601c82e（mult_flag 置位）、ANC adc_ch 0x602f258、
+  boot esco 块 0x602ec5a、aec 前端 getter 0x6020042、config-resolve 循环 0x60141b8
+  （按位 0x606de62 把通道号登进 hdl+44 通道表，hdl+88 计数）、0x600c2c6（模式分发器）、
+  0x602f708 等。
+- **mic_management（0x601c82e）全文**：i=0..3 读 mic_type[i]=b[param+13+i]，值 v∈{0..3}
+  → mic_param[v]（param+292+8v，{en,type,gain,mult_flag,mic_p[4]}，SDK
+  `audio_adc_mic_mana_t` [DWARF]）置 en=1/type=i，且 **en_map bit v=1 时 mult_flag=1**；
+  0x601c7fe(param,v,i) 另填 gain：源 = b[param+{139,140,240,241}[i]]（按**角色 i** 选
+  LFF/LFB→+139/+140、RFF/RFB→+240/+241 的增益配置字节），写 mic_param[v].gain(+2)
+  （param_init 未给这些字节赋值，默认 0 [静态]）。
+- **通道分配决策表**（代入 H3S 实值：mic_type=[A_MIC1,A_MIC2,A_MIC0,A_MIC0]（§1.6）×
+  en_map=0x0B（①））：
+
+| ADA 通道 | ANC 角色（mic_param） | mult_flag | esco 组（en_map bit） | 裁决 |
+|---|---|---|---|---|
+| ch0 (A_MIC0) | mp[0]，type=RFB（i=2/3 先后命中，右耳 FF/FB 共用） | **1** | 组 0 | **通话/ANC 共用** |
+| ch1 (A_MIC1) | mp[1]，type=LFF | **1** | 组 1 | **通话/ANC 共用** |
+| ch2 (A_MIC2) | mp[2]，type=LFB | 0 | — | ANC 专用 |
+| ch3 (A_MIC3) | en=0（不参与 ANC） | — | 组 3 | esco 专用 |
+
+- **mult_flag 的消费面与 SDK 差异** [SDK+静态]：SDK `audio_anc_mic_gain(mic_param,
+  mult_gain_en)`（media.a IR）在 mult_gain_en=1 时只给 mult_flag=1 的 mic 施益；**QCY
+  构建的 0x606ee98 只收单参**（两调用点 0x601c90e/0x6022932），无条件给全部 en=1 的 mic
+  施益 → **增益路径不读 mult_flag（增益不打折）**；但 mult_flag 并非死数据：**关链清位
+  路径读它**——0x606c3e8（调用点 0x600dc24，ANC 模式写入族 0x600db3c 内，以
+  param+292/adc_ch 注册）置 b[QCY+1228]=1 并存 [QCY+310<<2]=[QCY+1240]=mic_param 后，
+  0x606f8b6 尾部（0x606f8f6..0x606f932）读 mic_param[0..3].mult_flag，把 mult 通道位从
+  待清的 hdl 通道使能位中**剔除**再调 0x606f432——即 esco 关闭时 mult 通道的注册位保留
+  （ANC 继续占用），非 mult 通道被清。实际执行复用的是另外两个机制：(a) **ANC adc_ch** 0x602f258——en_map bit0/1/2 任一 → 置 anc_hdl+51（=param+19）
+  位，bit3 再置一位，全零默认 1：ANC 声明「搭便车」的数字通道位集合；(b) **共享
+  audio_adc_hdl（内嵌结构 @QCY+4596=0x1277B4）的每通道引用计数 b[hdl+79]**：
+  0x606b4d0 adc_mic_open 每路 +1、0x606f8b6 adc_mic_close 每路 −1，**归零才 0x606f3c4
+  digital_close**（ADC_CON&=~0x20+ADA 位段清）——esco 开/关决定硬件通道生命周期，ANC
+  只声明不计数。
+- 通话↔ANC 联动点 [静态]：esco 事件分发器（0x6020d14 域，tbh 13 case @0x602126a）内直接
+  调 audio_anc_run(QCY+8164, **1/2**)（0x6020cb0/0x6020cc6）——通话状态机驱动 ANC off/on。
+
+**③ 通话采集链全图（开→采→关）[静态]**
+
+```
+BT esco 事件 → 分发器 0x6020d14 域（case 内 r5 = flags）
+开: 0x60200b6(flags)（调用点 0x60212bc）
+  ├ [QCY+620] 已有 → 0x601e436 先关（重开）
+  ├ zalloc(76) → [QCY+620]；h[obj+12]=flags；flags&0x10 → 0x601f856(str,16000,0)+0x601dab2(3,0)
+  ├ 0x6014162 配置解析（lookup "esco_adc"→blob→QCY+3460；config-89 合并；
+  │   使能位数计数 → b[QCY+3500]；大缓冲 zalloc → [QCY+3504]）
+  ├ en_map=b[QCY+3460]（getter 0x6020042）；chid[k]=b[QCY+3465+9k]=desc_k+1（增益档）
+  ├ slot 使能 = en_map 位（仅 flags 高 nibble 非零时默认填充 0x6020138..156）∪ flags
+  │   bit0/1/2/3 → 0x6020064(idx=1/2/0/3, mask) 强制使能（chid 空 → 取
+  │   b[[QCY+500]anc_hdl+326+8k]=mic_param[k].gain 兜底）
+  ├ 逐使能 slot k：b[[QCY+620]+2] 通道计数++ → 0x60142be(aecobj+32, 1<<k)：
+  │     desc_k 打包（0x6014298）→ adc_mic_open 0x606b4d0(obj,bit,hdl,packed4B，hdl+79++)
+  │     + ADA_CON8 档 0x606de92 + ADA_CON4..7 bit0 0x606c3aa
+  │   → 0x606de92(aecobj+32, 1<<k, chid[k])
+  ├ 每通道 zalloc(512) → [obj+60+4k]；大缓冲 zalloc(count×0x600) → [obj+72]
+  ├ 0x606dee0(obj+32, 16000) → set_buffer 0x606dee4([obj+72], 512, 3) → [obj+28]=hdl
+  │   → 挂 output-handler 链 0x606df3a(obj+16, hdl)（hdl+92 链表）→ 0x606df66 启动；返回 1
+采: IRQ68 → 分发器 0x602f406 → audio_adc_irq_handler 0x6072628 → output handler
+    [obj+40]=0x6031D5A（AE 钉）→ aec；slot 增益另有运行时名二查（0x607550c 取 16B 名 →
+    0x60750aa → 0x60751da 拷 3B 到 QCY+6496，经 0x6020052 log2 → 32/64/128 档）
+关: 0x601e436（调用点 0x60200c8 重开前 / 0x6021144 关闭 case）
+  ├ flags&0x10 → 0x601e24e 子关
+  ├ 0x606f8b6(obj+32)：每使能位 hdl+79−− → **归零才 0x606f3c4 digital_close**；
+  │   0x606f432 清通道位时**剔除 mult_flag 通道位**（b[QCY+1228] 门 +
+  │   [QCY+1240]=mic_param，见②——mult 通道注册位保留给 ANC）
+  ├ 0x606f954(hdl, obj+16) 摘链 → 逐通道 free 512B → 大缓冲仅清 [obj+72] 指针（本函数
+  │   无 free 调用 [静态]）→ free obj → [QCY+620]=0
+```
+停-启形状对照 ANC 三段式（§2.2b：0x606e9e8(0)→0x606ebe0→0x606e9e8(1) 同一 handle
+重配）：通话侧是**对象生命周期式**（建对象→挂链→计数→拆链→计数→归零才断电），两域经
+共享 hdl+79 计数器耦合：通话先开则 ANC 搭通道便车；通话全关且计数归零 → ADC 数字侧整体
+下电（ANC 若在跑将失采——静态可见耦合点，运行表现未测 [推断]）。
+通话「2ch」的构成 [静态形状+推断]：en_map=0x0B 提供组 {0,1,3}；aec 前端 flags bit0/1/2/3
+经 0x6020064 重映射到 **slot {1,2,0,3}**（bit0→slot1、bit1→slot2、bit2→slot0、bit3→
+slot3），且 flags 高 nibble 为 0 时 en_map 默认填充被跳过（0x6020138）——实际开的组集合
+由 flags 运行值决定：flags=0x3 → 组 {1,2}（ch1+ch2）、flags=0x5 → 组 {0,1}（ch0+ch1，
+即与 ANC 共用的两路）；flags 含高 nibble 位（如 &0x10 ENC 位）时 en_map 全集默认使能，
+可开到 3-4 路。flags 各通话 case 的实际取值未逐 case 展开，待 D2-b 运行观测。
+
+**④ esco ADC 变体 0x6014364（§1.3「esco 变体」行的定位修正）[静态]**
+
+一次性 guard **b[QCY+4788]**（只置 1，静态扫描无清零点）→ 0x6013b10(4)/0x606dcd6/
+0x606dd96（QCY+7464）→ zalloc(2128) → [QCY+504] → 0x6014162 → **0x60142be(obj+20,
+mask=2 硬编码)**——只开 **desc1 一个 mic 组**（与 aec 前端按 en_map/flags 多路不同）→
+set_buffer(**obj+76**, 512, **2**)（0x60143ce `add.u6_hi` 编码，与 boot 块 0x602ed1c
+的 `add.u5_hi`(+44) 是两条不同指令，非笔误）→ 0x606df3a/0x606df66（0x6064efc(500) 重试
+环）。调用者
+0x60221e2（BT 通话事件状态机）与 0x6042384（表驱动 dispatcher，门 [QCY+373<<2]）——
+「进入通话」的另一条打开路径；无对应关闭函数（[推断] 开一次即驻留）。
+
+**⑤ b[QCY+3464]（=desc0+0）==2 三门与 boot 校准块 [静态]**
+
+- 三处 ==2 门：0x60122b6（app-init，initcall 表 walker 后）、0x602ec76（boot ADC
+  initcall 的 esco 块入口）、0x601fe5a（esco 编码侧函数，==2 → 0x601e91a(sample_rate)
+  子初始化）。**公开镜像 blob 值 = 1 → 三门全不开**（mode 2 疑为出厂/校准配置档
+  [推断]）。
+- boot 的 mode-2 块（0x602ec7c..0x602ee94）=「开→自校准→关」：zalloc(20)@QCY+508
+  （b[+2]/b[+3] = desc0+5/desc1+5 初值；r11 = h[0x60A180+2300+config91 值×2] 换算表）→
+  开 1068B 对象 @QCY+516（0x60142be(obj+16, en_map) + set_buffer(obj+44,512,2) + 启动）→
+  模拟侧上电（0xFD5008 端口族 5 字 + DAA_CON0(0xFE0A00)|=0x200）→ **偏置自校准环
+  0x602edba..0x602ede8**：按表 b[0x60A180+2876+i] 逐档把偏置值 insert 进 ADA_CON1
+  （0xFE0A24）bit6..12，每档延时 10ms 并经 0x6011dd2 轮询 GPADC 通道 0x20000 电压
+  ≥1500，超 18 档退出 → **回写校准结果 b[QCY+3469]/b[QCY+3478] = 偏置档**（gain=
+  电压×8196/r11 → h[0x124C92/0x124C94]（=h[0x124C80+18/+20]，r9=0x124C80@0x602eb4a））→
+  0x6001f12(89, QCY+3469, 1) 把校准偏置**写回
+  config 89** 持久化 → 关 1068B 对象（0x602ee36..0x602ee5c = 0x606f8b6/0x606f954/free，
+  §2.2b 引用的「通话侧关」即此块，属 boot 校准而非运行时通话关断——运行时关断见 ③
+  0x601e436）。**公开镜像（mode=1）不走此块**：desc+5 偏置保持 blob 值 0x0e，无 boot
+  校准、无 config-89 回写。
+
+**勘误（本路修正 §1.3/§6 既有条目）**：(1) §1.3 通话行「组内通道 id 在描述符内」——
+desc+1 实为 **ADA_CON8 增益档**（0x606de92 消费，cap 19；0x606c3aa 写的是 ADA_CON4..7
+bit0，不是 ADA_CON8——§1.1 该句一并修正），通道号即 en_map 位号本身；(2) §5.5
+「48B blob/EXT_RESERVED」如上关闭；(3) 绝对地址笔误修正：audio_adc_hdl = QCY+4596 =
+**0x1277B4**（§1.3 原文 0x1267BC 差 0x1000）；anc_hdl 指针槽 [QCY+500] = **0x1267B4**
+（§1.6 原文 0x126954 同源笔误，基址实为 0x1265C0=立即数 1205696）；相对偏移与调用点
+锚点两路结论不受影响。
 
 ## 2. 音频数据流路径：mic 硬件 → jlstream 消费（四问之二，每环锚点）
 
@@ -340,16 +524,23 @@ audio_anc_run = 0x601c8de(mode, r1)：
    = config 59（1367B，经 *([QCY+480]+12) 的 +13 数组喂 0x606c8aa），同样在公开工件外。
 4. **DMIC 未用结论的强度**：零 IRQ69/70 注册 + 零 0xFE06xx/0xFE07xx li 引用，但不排除
    变址访问；如后续场景撞上 PLNK 寄存器按本路地址表处理。
-5. esco 2 mic 描述符与 ANC 3 输入的复用关系（mult_flag 是运行时数据，机制锚点
-   mic_management 0x601c82e + b[QCY+3460]）；b[QCY+3464]==2 的模式语义（疑 ANC/dsp 模式）。
-   esco_adc 节点 48B 配置（含 4×9B 描述符的默认通道号/增益）在 stream.bin 注册表内
-   （查找走 djb2 哈希 32B 条目表，0x60750aa/0x60751da），公开 stream.bin 9351B 内未定位到
-   该 blob——疑在 flash EXT_RESERVED 配置区，运行值待 D2-b1 观测。
+5. ~~esco 2 mic 描述符与 ANC 3 输入的复用关系；esco_adc 48B blob 未定位~~ **已由路 AP
+   钉死（§1.7）**：blob 在公开 stream.bin §5 @abs 0x1BFD（40B，查找名 "esco_adc"），
+   en_map=0x0B、desc 4×9B；复用决策表（ch0/ch1 共用、ch2 ANC 专用、ch3 esco 专用）+
+   mult_flag 在 QCY 构建只写不读的结论见 §1.7②。残余未决：①b[QCY+3464]==2 的模式语义
+   仅有三门+boot 校准块的形状（§1.7⑤），「出厂/校准档」是 [推断]；②desc+7/+8 的 16bit
+   字段经 0x6001052→0x6085126(x>>4, 1<<(x&0xF)) 的消费语义未解（blob 值 0，公开镜像
+   不触发）；③subid13 记录的查找名（hash a631）未还原；④aec 前端 flags 参数在各通话
+   case 下的具体取值（0x60212bc 上游 r5 来源链）未逐 case 展开——通话 2ch=flags 0x3 是
+   按位运算形状的 [推断]，运行值待 D2-b 场景观测。
 6. 0x602ea68 所在 initcall 段（0x60c32a4..0x60c32b4）的 walker 边界：CI 钉的三段表不含它，
    该段执行面按 initcall 区属性 [推断]（boot 期）；如需精确触发序号是 D2-b1 场景观测项。
-   路 AL 动态复核接口：ANC init 若已跑，`anc_hdl=*([0x126954])`，mic_type=b[anc_hdl+45..48]
+   路 AL 动态复核接口：ANC init 若已跑，`anc_hdl=*([QCY+500])`（=*(0x1267B4)，§1.7 勘误
+   后的绝对地址），mic_type=b[anc_hdl+45..48]
    应为 {1,2,0,0}——供后续场景在 initcall 完成后的 frontier 快照读取互证（本轮未跑仿真，
-   静态结论 derived-not-measured）。
+   静态结论 derived-not-measured）。路 AP 补充动态复核接口：boot initcall 0x602ea68 完成后
+   b[0x127344..0x127373]（=QCY+3460..3507）应为 {0B 00 00 00 | 01×4 00 0e 08 00 00 ×4}（blob
+   拷贝 + config-89 合并后的形状，mode=1 不校准）；b[0x1265C0+4673]=1（audio_adc 已 init）。
 
 ## 6. 证据锚点索引（复核用）
 
@@ -366,7 +557,7 @@ audio_anc_run = 0x601c8de(mode, r1)：
 | audio_adc_init（hdl=0x1267BC、槽 [0x126A90]） | 0x60719a6..0x60719ee；guard b[0x1265C0+4673] |
 | boot 期 ADC initcall + 5 场景 mic 标志 | 0x602ea68（表项 @0x60c32b0）；标志 b[0x12657C/80/82/84/88]，读取器 0x60755b2 |
 | mic_effect/pc_mic 源节点（0xD06D plug create） | plug 表 0x60a917c[1]；create 0x6032924；节点 cfg→ch_map 0x6032b40..0x6032c7c |
-| esco 前端（16k、每通道 512B、交织 ch×0x600、handler 0x6031D5A） | 0x60200b6..0x6020340（调用者 0x60212bc）；esco 变体 0x60142f0..0x6014460（2×9B 描述符 QCY+3469/3478） |
+| esco 前端（16k、每通道 512B、交织 ch×0x600、handler 0x6031D5A） | 0x60200b6..0x6020340（调用者 0x60212bc）；esco 变体 0x60142f0..0x6014460（4×9B 描述符 QCY+3464+9k，[AP] §1.7 全图） |
 | mic_effect 图 3×ADC 源节点 [镜像] | stream.bin offset 0x2d0（`6d d0 03 00`）；config 89 → QCY+524..531（值/使能各 4 字节，0x602eb2a、0x6032ba0 按 9B 槽步长填 +17/+26/+35/+44） |
 | ANC 复用共享 hdl + mic_type[4] 角色 | SDK audio_anc.c L936-939/L1068-1070/L2481-2517（reference-cache 副本）；audio_anc_t 布局 [DWARF]（mic_type@+104**bits**=字节+13、coeff 指针族 +608..+1024、mic_param@+2464） |
 | **[AL] mic_type 常量写点**（=[A_MIC1,A_MIC2,A_MIC0,A_MIC0]） | 0x602f0d0/d2/d6（[+16] 无存储=zalloc 0）；anc_hdl=zalloc(572)@0x602eeb2→[0x126954]；param 基=anc_hdl+32 |
@@ -375,7 +566,13 @@ audio_anc_run = 0x601c8de(mode, r1)：
 | **[AL] anc_core_mic_sel_io_init**（MIC_CTL1 adc{i}_sel=mic_type[i]） | 0x606c8aa（p:15/21/12/18）；ANC 调用点 0x606ec24（arg=param+13）；平台路径 0x606da50（boot 0x600cd64、esco 0x60204c0，arg=*([QCY+480]+12)） |
 | **[AL] ANC PGA/数字使能** | 0x606ee98(mic_param=B+324)：ADA_CON8 4×5bit insert + ADC_CON\|=0x800 |
 | **[AL] ANC adc_ch（数字通道位）按通话 mic_en_map** | 0x602f258..0x602f2a4（b[QCY+3460] 位测试→B+51=param+19；全零默认 1） |
-| **[AL] anc_task/模式切换链** | 任务 0x602d3a0（pend 0x6064c8c，msg 161..186 tbh@0x602d3de；171/172→0x602d416 子表@0x602d432）；run 0x601c8de；停-重配-启 0x606ee26→0x606e9e8(0)/0x606ebe0/0x606e9e8(1)；系数重读 0x606e7c2（门 b[QCY+1276]） |
+| **[AP] esco_adc blob**（40B @stream.bin abs 0x1BFD，en_map=0x0B、4×同构 desc） | 查找名 "esco_adc"@0x609D27E；§5 记录 @0x0D41（uuid 0xD06D, subid2, hash a996, off 0x138C, size 40）；解析器 0x6014162（调用点 0x602eb86/0x60143aa/0x602010c/0x602011a）；注册表 fopen "flash/res/stream.bin" 0x6074234 + djb2 查找 0x60750aa + 拷贝 0x60751da；§5 载荷基 0x871（Drc1Eff@0x1038 复核）；同族 MicEff blob @0x1DA4（en_map=0x1） |
+| **[AP] mic_en_map/desc 写入面** | desc+0..+4 唯一写 = blob 拷贝 0x601419a；en_map 字另有条件恢复点 0x6016be0（缓存 [QCY+616]+2 → [QCY+3460]，boot 0x602f338 填缓存）；desc+5 = 校准回写 0x602ee00/10 + config-89 合并 0x60141f2；读者（非穷尽）0x601c82e/0x602f258/0x602ec5a/0x6020042/0x60141b8/0x600c2c6/0x602f708 |
+| **[AP] mic_management 多路复用决策** | 0x601c82e（mult_flag=mic_en_map bit v；gain 填充 0x601c7fe）；QCY 0x606ee98 单参化（SDK audio_anc_mic_gain 的 mult_gain_en 被裁，增益路径不读 mult_flag）；mult_flag 真实消费在关链清位 0x606f8f6..0x606f932（mult 通道位从 0x606f432 清位掩码剔除，注册位保留给 ANC；注册 = 0x606c3e8 ← 0x600dc24 ANC 模式写入族）；实际复用=ANC adc_ch 0x602f258 + hdl+79 每通道引用计数（0x606b4d0 +1 / 0x606f8b6 −1 / 归零 0x606f3c4 digital_close） |
+| **[AP] 通话 aec 前端开/关链** | 开 0x60200b6（0x6014162→slot 使能 0x6020064→逐路 0x60142be+0x606de92→512B×ch+ch×0x600→SR16000/set_buffer(,512,3)→挂链 0x606df3a→0x606df66）；关 0x601e436（调用点 0x60200c8/0x6021144）；分发器 0x6020d14 域 tbh@0x602126a（含 audio_anc_run(1/2) 联动 0x6020cb0/0x6020cc6） |
+| **[AP] esco ADC 变体（一次性，mask=2 只开 desc1）** | 0x6014364（guard b[QCY+4788] 无清零；zalloc 2128→[QCY+504]；set_buffer(obj+76,512,2)@0x60143ce）；调用者 0x60221e2/0x6042384 |
+| **[AP] desc0+0==2 三门 + boot 偏置自校准块** | 门 0x60122b6/0x602ec76/0x601fe5a（公开镜像 blob=1 全不开）；校准块 0x602ec7c..0x602ee94（偏置表 0x60A180+2876、ADA_CON1 bit6..12、GPADC 0x20000≥1500、回写 0x602ee00/0x602ee10、config-89 持久化 0x6001f12(89,QCY+3469,1)）；关块 0x602ee36..0x602ee5c |
+| **[AP] QCY 基址勘误** | QCY=0x1265C0（立即数 1205696）；audio_adc_hdl=QCY+4596=**0x1277B4**（原 0x1267BC 差 0x1000）；anc_hdl 槽 [QCY+500]=**0x1267B4**（原 0x126954 同源笔误） |
 | JL_ANC=0xFE0400 / JL_ASS=0xFE0900 / ADC 组=0xFE0538.. | br28.h（sha `111e29ea…` 与 dependencies 钉死值一致）；anc_core.c.o IR 37×0xFE0400 |
 | 3mic_coeff.bin 资源名 + config 默认内嵌 | 字符串 @0x60a2603；默认 blob @0x60a25e0（构造器 0x6004510/0x6004566） |
 | 采样率表/SR 码、帧=ch×(2|4)B、handler 尾部 SRN/PNS/CON|=0x40 | SDK adc_core.c/audio_adc.c IR（media.a pinned SHA，`2d 9c` 场景读取器 0x60755b2 互证） |
