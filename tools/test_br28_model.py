@@ -7,7 +7,7 @@ from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
 from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
-from br28_model import JL_UART_CON_WORDS
+from br28_model import JL_UART_CON_WORDS, JL_UART_INIT_WORDS, JL_UART_INIT_WORD_OFFSETS
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
@@ -972,9 +972,62 @@ class ModelTests(unittest.TestCase):
             self.assertEqual(h.read(address),0,'first read is the explicit synthetic 0 (idle), not an inferred reset value')
         # uart_init 的 CON0=0x3400 整字写 → 读回=最后写值(bit0 仍 0=空闲)。
         h.write(0xfd2000,0x3400);self.assertEqual(h.read(0xfd2000),0x3400)
-        # 相邻 UART 寄存器(BAUD 0xfd2004、OTCNT 0xfd2008)不受本开关管辖。
+        # 相邻 UART 寄存器(路 M 修正命名:0xfd2004=CON1 字、0xfd2008=BAUD 字,
+        # 编译对象 {i32 x12} 布局)不受本开关管辖——归 jl_uart_init_write_records。
         self.assertFalse(h.handles(0xfd2004,4) or h.handles(0xfd2008,4))
         self.assertIn('jl_uart_con_projection',h.report()['assumptions'])
+
+    def test_jl_uart_init_write_records_whitelist_and_strict_readback(self):
+        # 路 M(sim-uartwr):UART 初始化配置字的 write-only 整字记录白名单。
+        # 前置证据(布局钉死,修正路 F「0xfd2004=BAUD|BUF」命名):实际 SDK
+        # 构建对象 uart_v1.c.o bitcode 声明 JL_UART_TypeDef={i32 x12}(成员 k
+        # 在 +4k),QCY 固件写序列逐点互证(CON0/+0=0x6034466、CON1/+4=
+        # 0x603446c、CON2/+0x2c=0x6034472、BAUD/+8=0x601d286、OTCNT/+0x10=
+        # 0x601d1f2、RXSADR/RXEADR/RXCNT/+0x1c..0x24=0x6034668..cc);公开
+        # br28.h 的 u16/u8 紧凑布局与该构建对象不一致——0xfd2004 是 CON1 字。
+        # 白名单=初始化序列实际出现的纯配置整字写(CON1/BAUD/OTCNT/RXSADR/
+        # RXEADR/RXCNT/CON2,三基址对称);TXADR/TXCNT/BUF/HRXCNT 不进白名单
+        # (TX 路径=启动硬件活动信号);读回/RMW 一律严格停;运行效果不建模。
+        self.assertEqual(JL_UART_INIT_WORD_OFFSETS,(0x4,0x8,0x10,0x1c,0x20,0x24,0x2c))
+        self.assertEqual(len(JL_UART_INIT_WORDS),21)  # 7 字 × 3 UART 基址
+        g=BR28Model()
+        for address in JL_UART_INIT_WORDS:
+            self.assertFalse(g.handles(address,4))
+        self.assertNotIn('jl_uart_init_write_records',g.report())
+        self.assertNotIn('jl_uart_init_write_records',g.report()['assumptions'])
+        # opt-in:整字写记录(write-only),读回显式 kind 严格停;CON 字(+0)
+        # 仍不受管辖(走路 F 投影,需单独开关);TXADR/TXCNT/BUF/HRXCNT 与
+        # 未列偏移(如 +0xc/+0x14/+0x18/+0x28)即使开关开也不放行。
+        h=BR28Model(jl_uart_init_write_records=True)
+        for address in JL_UART_INIT_WORDS:
+            self.assertTrue(h.handles(address,4))
+        for base in JL_UART_CON_WORDS:
+            self.assertFalse(h.handles(base,4) or h.handles(base+0xc,4)
+                             or h.handles(base+0x14,4) or h.handles(base+0x18,4)
+                             or h.handles(base+0x28,4))
+        h.write(0xfd2004,0)       # uart_init CON1=0(3,071,984 停点放行形状)
+        h.write(0xfd202c,0)       # uart_init CON2=0(紧随其后)
+        h.write(0xfd2008,0x4f)    # uart_set_baudrate BAUD 分频值(白名单内、静态钉死)
+        h.write(0xfd2010,24000)   # uart_refresh_otcnt OTCNT(CON0 bit6 门控)
+        h.write(0xfd201c,0x125efc);h.write(0xfd2020,0x12611c);h.write(0xfd2024,544)
+        with self.assertRaisesRegex(Blocked,'jl_uart_init_word_readback_not_modeled'):h.read(0xfd2004)
+        with self.assertRaisesRegex(Blocked,'jl_uart_init_word_readback_not_modeled'):h.read(0xfd2024)
+        report=h.report()['jl_uart_init_write_records']
+        self.assertEqual(report['word_writes'],7)
+        self.assertEqual(report['stores']['0xfd2004'],{'values':['0x0'],'writes':1})
+        self.assertEqual(report['stores']['0xfd202c'],{'values':['0x0'],'writes':1})
+        self.assertEqual(report['stores']['0xfd2008'],{'values':['0x4f'],'writes':1})
+        self.assertEqual(report['stores']['0xfd2010'],{'values':['0x5dc0'],'writes':1})
+        self.assertEqual(report['stores']['0xfd201c'],{'values':['0x125efc'],'writes':1})
+        self.assertTrue(report['write_only'] and report['readback_not_modeled'])
+        self.assertIn('CON1 word, not BAUD|BUF',report['sdk_naming'])
+        self.assertIn('TXADR/TXCNT/BUF/HRXCNT NOT whitelisted',report['whitelisted_words'])
+        assumption=h.report()['assumptions']['jl_uart_init_write_records']
+        self.assertIn('CON1 word',assumption)
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verified UART transmission/reception',assumption)
+        # 非整字/未对齐访问不经白名单(handles 只认 4 字节对齐整字)。
+        self.assertFalse(h.handles(0xfd2005,4) or h.handles(0xfd2004,2) or h.handles(0xfd2004,1))
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')

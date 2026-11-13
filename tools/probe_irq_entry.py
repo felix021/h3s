@@ -527,6 +527,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              p33_analog_tail=False,p3_ana_read_ldoin_low=False,gpcnt_con_readback=False,
              jl_clock_dcck=False,
              jl_uart_con=False,
+             jl_uart_init_writes=False,
              subword_stores=False,
              word_store_sp_l=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
@@ -1062,6 +1063,25 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # (3,071,380 @ 0x601d1ac 前沿形状不变),legacy 报告逐字节不变。
     if jl_uart_con:
         options['jl_uart_con_projection']=True
+    # jl_uart_init_writes(路 M/sim-uartwr,UART 写侧三选一=方案 (a1) 一次性打包
+    # 初始化写白名单):JL_UART 初始化配置字(CON1+4/BAUD+8/OTCNT+0x10/RXSADR+0x1c/
+    # RXEADR+0x20/RXCNT+0x24/CON2+0x2c,三基址对称)按 lp_timer SYS_DIV/P3_PORT_SEL
+    # 的 write-only 整字记录先例放行(st.w 族全字覆盖写、旧值无关,记录地址+值+
+    # 宽度;值全为真实指令结果)。**布局钉死(修正路 F 的「0xfd2004=BAUD|BUF」
+    # 命名)**:实际 SDK 构建对象 uart_v1.c.o bitcode 声明 JL_UART_TypeDef={i32 x12}
+    # (成员 k 在 +4k),QCY 固件写序列逐点互证(uart_init 内联 0x6034466/0x603446c/
+    # 0x6034472 写字 0/1/11、uart_set_baudrate 0x601d286 写字 2=BAUD 分频值、
+    # uart_refresh_otcnt 0x601d1f2 写字 4=OTCNT、RX 三连写 0x6034668..cc 写字
+    # 7/8/9);公开 br28.h 的 u16/u8 紧凑布局与该构建对象不一致(BR31 等系列
+    # 公开头确有紧凑布局,是布局分歧非笔误;以编译对象+固件字节为准)——
+    # 0xfd2004 是 CON1 字,真 BAUD 写在 0xfd2008。停止边界(诚实停):白名单字
+    # 读回/RMW 严格停;TXADR/TXCNT/BUF/HRXCNT 不进白名单(TX 路径字段,TXCNT 写
+    # 或写后轮询 CON0 完成位=「写已启动硬件活动」信号,codex 风险点);运行效果
+    # (波特率/RX/TX DMA/UART IRQ)不建模——只记录「初始化配置写已执行」。
+    # 默认关:这些字保持 unmapped(3,071,984 @ 0x603446a 前沿形状不变),legacy
+    # 报告逐字节不变。
+    if jl_uart_init_writes:
+        options['jl_uart_init_write_records']=True
     # timer0_irq4_*(路 BE,独立成段便于并行路线合并):Timer0 pending→IRQ4 交付
     # 机制就位(在 ~341,097 硬期限前)。机制全部抄 core_tick/软件 IRQ 两先例:
     # 模型 advance() 在资格合格时抛 IrqDeliveryRequest(core,irq=4)(每个
@@ -1961,17 +1981,44 @@ def check(report,firmware):
     # 配置写走通用 registers 路径），停 **0x603446a `[r2+4]=r3` 写 0xfd2004**
     # （=JL_UART.BAUD|BUF，BAUD 标 __WO——UART 写侧是下一路三选一）。**新前沿
     # 3,071,984 @ 0x603446a**（unmapped_or_readonly_write 写 0xfd2004）。
-    require(r['stop_core']==0 and r['stop_pc']=='0x603446a' and
+    # **路 M(sim-uartwr，本次)**：UART 写侧三选一按 codex 定调选方案 (a1) 一次性
+    # 打包初始化写白名单 `jl_uart_init_write_records`。**布局钉死（修正路 F 的
+    # 「0xfd2004=BAUD|BUF」命名）**：实际 SDK 构建对象 uart_v1.c.o bitcode 声明
+    # `JL_UART_TypeDef = {i32 x12}`——12 成员各占一个 32 位字（成员 k 在 +4k:
+    # CON0=0/CON1=4/BAUD=8/BUF=0xc/OTCNT=0x10/TXADR=0x14/TXCNT=0x18/RXSADR=0x1c/
+    # RXEADR=0x20/RXCNT=0x24/HRXCNT=0x28/CON2=0x2c），QCY 固件写序列逐点互证
+    # （uart_init 内联体 0x6034466 `[r2+0]=0x3400`/0x603446c `[r2+4]=0`/
+    # 0x6034472 `[r2+44]=0` 写字 0/1/11；uart_set_baudrate 0x601d286 `[r7+8]=r0`
+    # 写字 2=BAUD 分频值；uart_refresh_otcnt 0x601d1f2 `[r2+16]=r3` 写字 4=
+    # OTCNT（CON0 bit6 门控）；RX 三连写 0x6034668..cc `[r6+28/32/36]` 写字
+    # 7/8/9=RXSADR/RXEADR/RXCNT）；公开 br28.h 的 u16/u8 紧凑布局（BAUD u16@+4）
+    # 与该构建对象不一致（BR31 等系列公开头确有紧凑布局，是布局分歧非笔误，
+    # 以编译对象+固件字节为准）——**0xfd2004 是 CON1 字、真 BAUD 写在
+    # 0xfd2008**。白名单=初始化序列实际出现的纯配置整字写 CON1/BAUD/OTCNT/
+    # RXSADR/RXEADR/RXCNT/CON2（三基址对称），lp_timer SYS_DIV/P3_PORT_SEL 的
+    # write-only 记录先例；TXADR/TXCNT/BUF/HRXCNT 不进白名单（TX 路径字段，
+    # TXCNT 写=启动 TX 硬件活动的信号，codex 风险点，出现即诚实停）；读回/
+    # RMW 严格停；运行效果（波特率/RX/TX DMA/UART IRQ）不建模。放行后
+    # CON1=0/CON2=0 两写落地（BAUD/OTCNT/RX 三连写在 GPIO 停点之后、本前缀
+    # 未到达），uart_init 继续 TX/RX 引脚配置，gpio_set_mode(0x6085126)/
+    # gpio_set_function(0x6001456) 的助手链 0x60012c2 在 0x60012de `[r3+0]=r4`
+    # 写 **0xfd58b8=0x9f**——0xfd58xx GPIO 端口组寄存器（GPIO_BASES 0x50..0x55/
+    # 0x57 未覆盖、公开 br28.h 无名）——UART 引脚复用 GPIO 面，归下一路三选
+    # 一。**新前沿 3,072,236 @ 0x60012de**（unmapped_or_readonly_write 写
+    # 0xfd58b8）。
+    require(r['stop_core']==0 and r['stop_pc']=='0x60012de' and
             r['stop']=={'kind':'unmapped_or_readonly_write','access':'write',
-                        'address':'0xfd2004','size':4,'value_bytes':'00000000'},
-            'the heap-experimental scenario must stop at 0x603446a writing 0xfd2004 after the '
-            'route-F jl_uart_con_projection releases the 0x601d1ac uart_is_idle read (0xfd2000 = '
-            'JL_UART0 CON0|CON1, br28.h __RW; the read value is immediately consumed as a bit0 '
-            'idle test and the seeded 0 means idle): uart_init then runs for real and writes '
-            'CON0=0x3400/|=0x3 through the generic __RW register path before hitting the next '
-            'boundary — the 0xfd2004 BAUD|BUF word (BAUD is __WO), the UART write side, which '
-            'is the next three-choice')
-    require(r['completed_steps']==3071984,'the heap experimental config changed its step count')
+                        'address':'0xfd58b8','size':4,'value_bytes':'9f000000'},
+            'the heap-experimental scenario must stop at 0x60012de writing 0xfd58b8 after the '
+            'route-M jl_uart_init_write_records whitelist releases the 0x603446a/0x6034472 '
+            'uart_init config writes (CON1/+4 and CON2/+0x2c whole-word zeros; compiled '
+            'uart_v1.c.o layout {i32 x12} — the route-F "BAUD|BUF" naming is corrected, the '
+            'real BAUD divider word is +8): uart_init then proceeds to its TX/RX pin-mux and '
+            'gpio_set_mode/gpio_set_function (0x6085126/0x6001456 helpers) reach a whole-word '
+            'write of 0xfd58b8 — a 0xfd58xx GPIO port-group register outside GPIO_BASES '
+            '(0x50..0x55/0x57) and unnamed in the public br28.h — the UART pin-mux GPIO face, '
+            'which is the next three-choice')
+    require(r['completed_steps']==3072236,'the heap experimental config changed its step count')
     dcck=r['peripherals']['registers']
     require(dcck['0xfd0008']=='0x46000e0c' and dcck['0xfd000c']=='0xff000100' and
             dcck['0xfd0010']=='0x10000',
@@ -1993,6 +2040,27 @@ def check(report,firmware):
             'the jl_uart_con_projection must leave UART0 CON0|CON1 at the uart_init-written '
             '0x3400 and UART1/UART2 CON words at the untouched synthetic 0 (only UART0 is '
             'initialized in this prefix)')
+    # 路 M(sim-uartwr):初始化写白名单的记录断言——本前缀实际落地的两条写是
+    # uart_init 的 CON1=0(0xfd2004,3,071,984 停点放行)与 CON2=0(0xfd202c,
+    # 紧随其后的 [r2+44]=r3);BAUD/OTCNT/RXSADR/RXEADR/RXCNT 在白名单里但
+    # 位于 GPIO 停点之后、本前缀未执行(静态序列钉死:uart_set_baudrate
+    # 0x601d286/refresh_otcnt 0x601d1f2/RX 三连写 0x6034668..cc)。假设键必须
+    # 记录布局钉死(CON1 命名修正)与 derived-not-measured。
+    jl_init=r['peripherals']['jl_uart_init_write_records']
+    require(jl_init['stores']=={'0xfd2004':{'values':['0x0'],'writes':1},
+                                '0xfd202c':{'values':['0x0'],'writes':1}} and
+            jl_init['word_writes']==2,
+            'the route-M jl_uart_init_write_records must record exactly the two executed '
+            'uart_init config writes (CON1/+4=0 released from the 3,071,984 stop and the '
+            'immediately following CON2/+0x2c=0); the BAUD/OTCNT/RXSADR/RXEADR/RXCNT words '
+            'are whitelisted but sit after the GPIO stop and must not appear yet')
+    jl_init_assumption=r['peripherals']['assumptions'].get('jl_uart_init_write_records')
+    require(jl_init_assumption is not None and 'CON1 word' in jl_init_assumption and
+            'derived-not-measured' in jl_init_assumption and
+            'NOT verified UART transmission/reception' in jl_init_assumption,
+            'the route-M jl_uart_init_write_records assumption must record the {i32 x12} '
+            'layout pin-down (0xfd2004 = CON1, route-F naming corrected), the '
+            'derived-not-measured write records and the no-UART-traffic scope limit')
     fd31=r['peripherals']['fd31_adc_con_projection']
     require(fd31['stores']=={'0xfd3100':{'values':['0x40','0x46105d','0x46105d','0x20000',
                                                   '0x20040','0x40','0x46105d','0x46105d',
@@ -2254,16 +2322,20 @@ def check(report,firmware):
     # st.w.sp.l 放行后 +426 步(helper 尾段+W1[1] walker 后续),cnt 再
     # +1278(=426×3 tick)到 33,447;仍无新到期。路 F:jl_uart_con_projection 放行
     # uart_is_idle(0) 读后 uart_init 真实执行 +604 步,cnt 再 +1812(=604×3 tick)
-    # 到 35,259;仍无新到期(expirations 仍 296)。
-    require(timer=={'con':0x1401,'cnt':35259,'prd':35999,'pending':False,'expirations':296},
+    # 到 35,259;仍无新到期(expirations 仍 296)。路 M:白名单放行 CON1/CON2 两写
+    # 后 +252 步,cnt 再 +756(=252×3 tick)——35,259+756=36,015 越过 36,000 周期
+    # 边界:**第 297 次到期在停点时刻挂起 pending=True、cnt 重装到 15**(停点在
+    # GPIO 写上、交付往返未发生,与 286 次已交付/ACK 的到期不同——首次「到期
+    # 在途」状态,下一路放行 GPIO 后由资格链决定交付)。
+    require(timer=={'con':0x1401,'cnt':15,'prd':35999,'pending':True,'expirations':297},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the last window before the stop is the 3ms one -> PRD 35999), '
-            '296 expirations total (10 legacy + 286 delivered/acked) and pending clear at the '
-            'stop (the last real handler W1C); the route-CL mode-switch body advances cnt by '
-            '160 model steps x 3 ticks = +480, the route-CO scheduler-helper prefix adds '
-            '170 more model steps x 3 ticks = +510, the route-CQ helper-tail plus W1[1] '
-            'walker continuation adds 426 model steps x 3 ticks = +1278, and the route-F '
-            'uart_init execution adds 604 model steps x 3 ticks = +1812, none reprogramming PRD')
+            '297 expirations total (10 legacy + 286 delivered/acked + the route-M in-flight '
+            'one) with pending TRUE at the stop: the route-M +252-step prefix crosses the '
+            '36000 boundary (35259+756=36015) so the 297th expiration arms pending and the '
+            'counter rearms at 15, and the stop lands on the GPIO write before any delivery '
+            'round trip; the route-CL/CO/CQ/F prefixes added 160/170/426/604 model steps x '
+            '3 ticks each, none reprogramming PRD')
     # 路 CG:core tick 溢出交付+ACK 合计 9 次(首溢出~447,490+超时窗口内 8 次,
     # expirations 9/acknowledgements 9,cnt 重装后走到 892,276<prd 1,199,999,零
     # pending);IRQ3 handler 0x60661a4 的 W1C 真实执行,交付列表见上。CPU1
@@ -2273,21 +2345,26 @@ def check(report,firmware):
     # 由 0 回到 6。路 CQ:st.w.sp.l 放行后 +426 步、cnt 再 +1704(=426×4 tick)
     # 到 895,300;停点 0x601d1ac 已退出临界区,IPMASK 回 0。路 F:uart_init
     # 真实执行 +604 步、cnt 再 +2416(=604×4 tick)到 897,716;IPMASK 仍 0。
+    # 路 M:白名单放行 CON1/CON2 两写后 +252 步、cnt 再 +1008(=252×4 tick)到
+    # 898,724;IPMASK 仍 0,无新溢出(交付/ACK 仍 9 次)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==9 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==9 and
-            tick0['cnt']==897716 and
+            tick0['cnt']==898724 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
             r['peripherals']['ipmask']==0 and
-            r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300',
+            r['machine']['cores']['0']['partial_icfg']['known_value']=='0x100',
             'the CPU0 core tick must deliver and ack nine overflows (the ~447,490 landmark '
-            'plus the eight of the timeout window; rearmed counter at 897716 < prd 1199999, '
-            'no pending at the stop); IPMASK=0 at the route-F stop (the scheduler helper '
+            'plus the eight of the timeout window; rearmed counter at 898724 < prd 1199999, '
+            'no pending at the stop); IPMASK=0 at the route-M stop (the scheduler helper '
             '0x6065c3a completed and the W1[1] walker left the 0x12b55c critical section that '
-            'route-CO had re-entered, so IPMASK dropped back from 6 to 0) and the CPU1 core '
-            'tick never overflows')
+            'route-CO had re-entered, so IPMASK dropped back from 6 to 0), the CPU1 core '
+            'tick never overflows, and CPU0 partial ICFG is 0x100 at the stop: the route-M '
+            'GPIO helper chain (0x60012c2 -> spin lock 0x12b746) entered its critical '
+            'section so CLI cleared bit9 (known gates stay 0x300 on CPU1) — the same CLI '
+            'is why the 297th Timer0 expiration sits pending-undelivered instead of firing')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -2442,13 +2519,19 @@ def check(report,firmware):
             # 填充/并行对字节存储等)——任务栈帧运输 10721→10739、共享锁 1224→
             # 1226、整字存储 14168→14192、mmio RMW 1492→1496、icfg bit9 3734→
             # 3746、cnum 5788→5804(半字 pair 3→4、字节 pair 141→143、双字 26→27)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==10739 and
+            # 路 M:jl_uart_init_write_records 放行 CON1/CON2 两写后 uart_init 继续
+            # +252 步(CON2 写、tx/rx 引脚判定、gpio_set_mode 进入引脚复用链)——
+            # 任务栈帧运输 10739→10753、整字存储 14192→14202、icfg bit9 3746→
+            # 3751、cnum 5804→5809(共享锁 1226、mmio RMW 1496、masked 分支 1、
+            # 半字 pair 4、字节 pair 143、双字 27 全不变——新前缀无新临界区/
+            # MMIO RMW/并行对存储)。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==10753 and
             r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1226 and
-            r['instruction_adapters'].get('exact_full_word_store')==14192 and
+            r['instruction_adapters'].get('exact_full_word_store')==14202 and
             r['instruction_adapters'].get('mmio_rmw_always_writes')==1496 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==3746 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==3751 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==1 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==5804,
+            r['instruction_adapters'].get('per_core_visible_cnum')==5809,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -3131,6 +3214,7 @@ def main():
                               gpcnt_con_readback=True,
                               jl_clock_dcck=True,
                               jl_uart_con=True,
+                              jl_uart_init_writes=True,
                               subword_stores=True,word_store_sp_l=True,
                               timer0_irq4_delivery=True,
                               core_tick_irq3_delivery=True,

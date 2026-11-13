@@ -196,12 +196,18 @@ def test_scenario_registry_shapes():
     # 0xfd2100/0xfd2200 = JL_UART0/1/2 基址(br28.h,非「SDK 参考头未命名」),
     # 读辅助函数 = SDK uart_v1.c uart_is_idle;读侧三选一=方案 (a) 投影
     # `jl_uart_con_projection`(合成 0=空闲,derived-not-measured)放行后 uart_init
-    # 真实执行 CON0=0x3400,停 0x603446a 写 0xfd2004(JL_UART.BAUD|BUF,BAUD
-    # __WO)——3,071,984 @ 0x603446a unmapped_or_readonly_write 写 0xfd2004 停。
+    # 真实执行 CON0=0x3400,停 0x603446a 写 0xfd2004(路 F 记作 BAUD|BUF)。
+    # 路 M:UART 写侧三选一选方案 (a1) 初始化写白名单 `jl_uart_init_writes`——
+    # 布局钉死(uart_v1.c.o bitcode {i32 x12}+固件写序列互证,修正路 F 命名:
+    # 0xfd2004=CON1 字、真 BAUD 写在 0xfd2008)后放行 CON1/BAUD/OTCNT/RXSADR/
+    # RXEADR/RXCNT/CON2 纯配置整字写(write-only 记录,TXADR/TXCNT/BUF/HRXCNT
+    # 不进白名单),CON1=0/CON2=0 落地后 uart_init 进 TX/RX 引脚复用,停在
+    # 0x60012de 写 0xfd58b8=0x9f(0xfd58xx GPIO 端口组,GPIO_BASES 未覆盖)——
+    # 3,072,236 @ 0x60012de unmapped_or_readonly_write 写 0xfd58b8 停。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3071984, 'stop_pc': '0x603446a',
+        'completed_steps': 3072236, 'stop_pc': '0x60012de',
         'stop_fields': {'kind': 'unmapped_or_readonly_write',
-                        'address': '0xfd2004'}}
+                        'address': '0xfd58b8'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000

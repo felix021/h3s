@@ -72,6 +72,26 @@ GPCNT_CON=0xfd1100
 # 读回=合成初始字 0 + 当前寄存器值(AM 容器同款先例)。三个地址是整字
 # CON0|CON1 复合字(ld.w 整字读)。
 JL_UART_CON_WORDS=(0xfd2000,0xfd2100,0xfd2200)
+# 路 M(sim-uartwr):UART 初始化写白名单的逐字地址集。**布局钉死(修正路 F 的
+# 「BAUD|BUF」命名)**:实际 SDK 构建对象(cpu.a/uart_v1.c.o 的 LLVM bitcode,
+# 路 F 已证 uart_is_idle 与固件逐字节同形)把 JL_UART_TypeDef 声明为
+# `{i32 x12}`——12 个成员每个占一个 32 位字,成员 k 在偏移 +4k;实际 QCY
+# 固件反汇编逐点互证:uart_init 内联体 0x6034466 `[r2+0]=0x3400`(CON0,字0)、
+# 0x603446c `[r2+4]=0`(CON1,字1)、0x6034472 `[r2+44]=0`(CON2,字11=+0x2C)、
+# uart_set_baudrate 0x601d286 `[r7+8]=r0`(BAUD 分频值,字2)、uart_refresh_otcnt
+# 0x601d1f2 `[r2+16]=r3`(OTCNT,字4)、uart_dma_init/启动包装 0x6034668..cc
+# `[r6+28/32/36]`(RXSADR/RXEADR/RXCNT,字7/8/9)。**公开 br28.h 的 u16/u8
+# 紧凑布局(CON0 u16@0/CON1 u16@2/BAUD u16@4/BUF u8@6/…/CON2 u16@0x22)与
+# 该构建对象/固件的真实访问布局不一致**(BR31 等其它系列公开头确有紧凑布局,
+# 故这不是笔误而是布局分歧;以实际编译对象+固件字节为准),0xfd2004 不是
+# 「BAUD|BUF」而是 **CON1 字**——真正的 BAUD 写在 0xfd2008。白名单只收
+# 本 boot 初始化序列里实际出现的纯配置写:CON1(+4)/BAUD(+8)/OTCNT(+0x10)/
+# RXSADR(+0x1c)/RXEADR(+0x20)/RXCNT(+0x24)/CON2(+0x2c),三个 UART 基址对称;
+# TXADR(+0x14)/TXCNT(+0x18)/BUF(+0xc)不在初始化序列(发送路径字段,TXCNT
+# 写=启动 TX 硬件活动,codex 风险点)不进白名单;HRXCNT(+0x28,__RO)保持严格。
+JL_UART_INIT_WORD_OFFSETS=(0x4,0x8,0x10,0x1c,0x20,0x24,0x2c)
+JL_UART_INIT_WORDS=tuple(base+off for base in JL_UART_CON_WORDS
+                         for off in JL_UART_INIT_WORD_OFFSETS)
 CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
 CPU1_CONTROL=0xffe8c0
 VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
@@ -1558,6 +1578,84 @@ class P33PortSelRegisters:
                               'pin-mux electrical effect modeled')}
 
 
+class JLUartInitWriteRecords:
+    """JL_UART 初始化配置字的 write-only 整字记录(opt-in,路 M/sim-uartwr)。
+
+    证据(2026-11-13 路 M 反汇编+SDK bitcode 交叉钉死):
+    - **布局钉死(修正路 F 的「0xfd2004=JL_UART.BAUD|BUF」命名)**:实际 SDK
+      构建对象 uart_v1.c.o 的 bitcode 声明 `%struct.JL_UART_TypeDef = type
+      {i32 x12}`——12 个成员各占一个 32 位字(成员 k 在 +4k:CON0=0/CON1=4/
+      BAUD=8/BUF=0xc/OTCNT=0x10/TXADR=0x14/TXCNT=0x18/RXSADR=0x1c/RXEADR=0x20/
+      RXCNT=0x24/HRXCNT=0x28/CON2=0x2c);实际 QCY 固件写序列逐点互证
+      (uart_init 内联体 0x6034466/0x603446c/0x6034472 写字 0/1/11、
+      uart_set_baudrate 0x601d286 写字 2=分频值、uart_refresh_otcnt 0x601d1f2
+      写字 4、RX 三连写 0x6034668..cc 写字 7/8/9)。公开 br28.h 的 u16/u8
+      紧凑布局与该构建对象不一致(BR31 等其它系列公开头确有紧凑布局,是
+      布局分歧非笔误;以实际编译对象+固件字节为准):0xfd2004 是 **CON1 字**,
+      不是「BAUD|BUF」;真正的 BAUD 分频写在 0xfd2008。路 F 的读侧投影
+      (jl_uart_con_projection,0xfd2000 合成 0+读回=当前值)不受影响——
+      两种布局在字 0 上一致。
+    - **写形状**:全部是 st.w 族全字覆盖写(旧值无关),值全为真实指令
+      计算结果(CON1=0/CON2=0 来自 uart_init 清零、BAUD=分频除法结果、
+      OTCNT=clk/1e6*阈值、RXSADR/RXEADR/RXCNT=DMA 环形缓冲地址/大小),
+      无一处发明值。
+    - **读回/RMW**:白名单字零读回观测(uart_dump 不在本 boot 前缀),读回
+      一律严格停(显式 kind 优先泛 unmapped);RMW 无观测形状,经读侧严格停。
+      字 0(CON0)不在本容器:CON0 的读/写/RMW 走路 F 的 registers 投影。
+    - **运行效果不建模**:白名单只记录「初始化配置写已执行」——不推导波特
+      率、不模拟 RX/TX DMA 数据流、不发明 UART IRQ(RX 活动只会在固件读
+      HRXCNT/轮询 CON0 状态位时显形,那些读一律严格停)。
+    - TXADR(+0x14)/TXCNT(+0x18)/BUF(+0xc)不进白名单:发送路径字段不在
+      初始化序列;TXCNT 写=启动 TX 硬件活动的信号(JieLi 官方示例「写
+      TXADR/TXCNT 后等 CON0 完成位」),出现即诚实停。HRXCNT(+0x28,__RO)
+      保持严格。
+    """
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in JL_UART_INIT_WORDS}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled JL_UART init word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('jl_uart_init_word_readback_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'addresses':[hex(a) for a in JL_UART_INIT_WORDS],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes']}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('compiled uart_v1.c.o layout {i32 x12}: CON0=+0/CON1=+4/BAUD=+8/'
+                              'BUF=+0xc/OTCNT=+0x10/TXADR=+0x14/TXCNT=+0x18/RXSADR=+0x1c/'
+                              'RXEADR=+0x20/RXCNT=+0x24/HRXCNT=+0x28/CON2=+0x2c per UART '
+                              '(0xfd2000/0xfd2100/0xfd2200); the public br28.h packed u16/u8 '
+                              'offsets disagree with this build and are NOT used — 0xfd2004 is '
+                              'the CON1 word, not BAUD|BUF (route-F naming corrected here)'),
+                'write_only':True,'readback_not_modeled':True,
+                'whitelisted_words':('CON1 +4 / BAUD +8 / OTCNT +0x10 / RXSADR +0x1c / '
+                                     'RXEADR +0x20 / RXCNT +0x24 / CON2 +0x2c (the words the '
+                                     'boot uart_init+uart_set_baudrate+uart_dma_init sequence '
+                                     'actually writes); TXADR/TXCNT/BUF/HRXCNT NOT whitelisted'),
+                'observed_shapes':('all full-word st.w-family stores (old value irrelevant): '
+                                   '0x603446c [r2+4]=r3 (CON1=0, pair B half), 0x6034472 '
+                                   '[r2+44]=r3 (CON2=0), 0x601d286 [r7+8]=r0 (BAUD divider), '
+                                   '0x601d1f2 [r2+16]=r3 (OTCNT, gated on CON0 bit6), '
+                                   '0x6034668..cc [r6+28/32/36] (RXSADR/RXEADR/RXCNT)'),
+                'assumption':('write-only word-sequence record of pure configuration writes '
+                              '(derived-not-measured); stored values are real executed '
+                              'instruction results, never invented; no baud-rate runtime '
+                              'effect, no RX/TX DMA data flow and no UART IRQ is modeled — '
+                              'this releases the initialization config writes only, it does '
+                              'NOT verify UART transmission/reception')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -2763,6 +2861,7 @@ class BR28Model:
                  p33_analog_tail_projection=False,p3_ana_read_ldoin_low_fixture=False,
                  jl_clock_dcck_projection=False,
                  jl_uart_con_projection=False,
+                 jl_uart_init_write_records=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -3032,6 +3131,22 @@ class BR28Model:
         # (last-write 语义),机器侧零新分发。默认关:三字保持 unmapped(3,071,380
         # @ 0x601d1ac 前沿形状),legacy 报告逐字节不变。
         self.jl_uart_con_projection=jl_uart_con_projection
+        # jl_uart_init_write_records(opt-in,路 M/sim-uartwr):JL_UART 初始化配置字
+        # (CON1+4/BAUD+8/OTCNT+0x10/RXSADR+0x1c/RXEADR+0x20/RXCNT+0x24/CON2+0x2c,
+        # 三基址对称)的 write-only 整字记录(p33_port_sel/lp_timer SYS_DIV 同族)。
+        # 前置证据(布局钉死,修正路 F 的「0xfd2004=BAUD|BUF」命名):实际 SDK
+        # 构建对象 uart_v1.c.o bitcode 声明 JL_UART_TypeDef={i32 x12}(成员 k 在
+        # +4k),QCY 固件写序列逐点互证(0x6034466/0x603446c/0x6034472/0x601d286/
+        # 0x601d1f2/0x6034668..cc);公开 br28.h 的 u16/u8 紧凑布局与该构建对象
+        # 不一致(BR31 等系列确有紧凑布局,布局分歧非笔误)——0xfd2004 是 CON1
+        # 字、真 BAUD 写在 0xfd2008。放行范围=boot uart_init+uart_set_baudrate+
+        # uart_dma_init 序列实际出现的纯配置整字写(st.w 族全字覆盖、旧值无关、
+        # 值全为真实指令结果);读回/RMW 一律严格停;TXADR/TXCNT/BUF/HRXCNT 不
+        # 进白名单(TX 路径=「写已启动硬件活动」信号,codex 风险点,出现即诚实
+        # 停);运行效果(波特率/RX/TX DMA/UART IRQ)不建模——只记录「初始化
+        # 配置写已执行」,不扩展为「UART 收发已验证」。默认关:这些字保持
+        # unmapped(3,071,984 @ 0x603446a 前沿形状),legacy 报告逐字节不变。
+        self.jl_uart_init_records=JLUartInitWriteRecords() if jl_uart_init_write_records else None
         # p3_ana_read_ldoin_low_fixture(opt-in,路 CB/sim-anaread,需 tail 投影):
         # P3_ANA_READ(0xf2c064)读侧三选一按证据落地=方案 (c) 具名常量 live-input
         # fixture。证据链(pinned SDK commit 67328f4,全文档见
@@ -3218,6 +3333,7 @@ class BR28Model:
                                             or self.lp_timer.handles_lrct_num(address))) or
             (self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)) or
             (self.p33_port_sel is not None and self.p33_port_sel.handles(address)) or
+            (self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
@@ -3413,6 +3529,11 @@ class BR28Model:
         if self.p33_port_sel is not None and self.p33_port_sel.handles(address):
             self.counts['reads']+=1
             return self.p33_port_sel.read(address)
+        # JL_UART 初始化配置字(路 M):整字写 write-only 记录,读回一律严格停
+        # (白名单字零读回观测;字 0 CON0 的读走路 F 投影,不经这里)。
+        if self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address):
+            self.counts['reads']+=1
+            return self.jl_uart_init_records.read(address)
         # P3_AWKUP 族:只有显式 fixture 覆盖的寄存器的首次读返回具名字,
         # 其余读(未覆盖/写后/重复)一律严格停(路 BB;显式 kind 便于诊断)。
         if self.p33_awkup is not None and self.p33_awkup.handles(address):
@@ -3551,6 +3672,10 @@ class BR28Model:
         elif self.p33_port_sel is not None and self.p33_port_sel.handles(address):
             # P3_PORT_SEL0..11:st.w.idxs 全字覆盖写(旧值无关),write-only 记录
             self.p33_port_sel.write(address,value)
+        elif self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address):
+            # JL_UART 初始化配置字(路 M):st.w 族全字覆盖写(旧值无关),
+            # write-only 记录;值=真实指令结果,运行效果不建模。
+            self.jl_uart_init_records.write(address,value)
         elif self.p33_awkup is not None and self.p33_awkup.handles(address):
             # P3_AWKUP 族(路 BB):整字写只接受有观测形状的 FLT0..2(walker
             # st.w.idxs)与 P_IE(0x6067cb0 消费型写回),其余(EN/N_IE/
@@ -4043,6 +4168,7 @@ class BR28Model:
         if self.mem_pwr_con is not None:result['mem_pwr_con_projection']=self.mem_pwr_con.report()
         if self.p33_window is not None:result['p33_window_projection']=self.p33_window.report()
         if self.p33_port_sel is not None:result['p33_port_sel_projection']=self.p33_port_sel.report()
+        if self.jl_uart_init_records is not None:result['jl_uart_init_write_records']=self.jl_uart_init_records.report()
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()
@@ -4217,6 +4343,29 @@ class BR28Model:
                 'readback=current register value (route-AM/DCCK container precedent) and the '
                 '__RW write side (uart_init CON0=0x3400/|=0x3 ...) is recorded via the generic '
                 'last-write register path')
+        if self.jl_uart_init_records is not None:
+            # 路 M(sim-uartwr):UART 初始化配置写白名单。布局钉死 + 命名修正见
+            # JLUartInitWriteRecords 文档串;此处把「写记录 derived-not-measured、
+            # 运行效果不建模」写进 assumptions。
+            result['assumptions']['jl_uart_init_write_records']=(
+                'JL_UART init config words (CON1 +4 / BAUD +8 / OTCNT +0x10 / RXSADR +0x1c / '
+                'RXEADR +0x20 / RXCNT +0x24 / CON2 +0x2c per UART base 0xfd2000/0xfd2100/'
+                '0xfd2200) released as write-only whole-word records (lp_timer SYS_DIV / '
+                'P3_PORT_SEL precedent). LAYOUT PINNED (route-F naming corrected): the compiled '
+                'SDK object uart_v1.c.o declares JL_UART_TypeDef as {i32 x12} — one 32-bit word '
+                'per named member at +4k — and the actual QCY firmware write sequence matches it '
+                'point-for-point (0x6034466 CON0/+0, 0x603446c CON1/+4, 0x6034472 CON2/+0x2c, '
+                '0x601d286 BAUD/+8, 0x601d1f2 OTCNT/+0x10, 0x6034668..cc RXSADR/RXEADR/RXCNT); '
+                'the public br28.h packed u16/u8 offsets (BAUD u16 at +4) DISAGREE with this '
+                'build and are not used — 0xfd2004 is the CON1 word, not BAUD|BUF, and the real '
+                'BAUD divider write goes to 0xfd2008. All released writes are full-word '
+                'st.w-family stores whose values are real executed instruction results '
+                '(derived-not-measured); readback and RMW of these words stay strictly blocked; '
+                'TXADR/TXCNT/BUF/HRXCNT are NOT whitelisted (a TXCNT write or CON0 status poll '
+                'would be a started-hardware-activity signal and stops honestly); no baud-rate '
+                'runtime effect, RX/TX DMA data flow or UART IRQ is modeled — this records '
+                '"initialization config writes executed" only, NOT verified UART '
+                'transmission/reception')
         if self.pll1_configuration_projection:result['assumptions']['pll1_con3_configuration_projection']='RW config only; analog PLL1 not modeled'
         if self.cache_status_probe:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}
