@@ -107,6 +107,11 @@ pipeline_parse 第一步 0x060743f6 按流水线 uuid 遍历 **flash/res/stream.
 - **0x9c2d 描述符条目在 offset 0x2d0**：`2d 9c d0 00 | 6d d0 03 00 | c4 b7 01 00 | c4 b7 01 01`
   ——uuid 0x9c2d + **NODE_UUID_ADC(0xD06D) 计数 3** + 0xB7C4 节点 ×2（0xB7C4 是 DacEff/输出侧
   效果节点类 uuid [推断]）。ADC 源节点在描述符里存在 = pipeline_parse(0x9c2d, 0xD06D) 有东西可建。
+  **[路 AR 勘误 2026-11-14]**：`2d 9c d0 00` 的 0xD0 是**边表长度 208B**（本页 §8 仿真自己
+  读入的 208B 边表即证；tone 图同位字节 0x78=120 同性质），`6d d0 03 00` 是边表首条目
+  {0xd06d, variant 3, port 0}——**图内 ADC 源节点 = 1 个**（名为 "MicEff"，采集配置 40B
+  blob en_map=0x1）；0xB7C4=(b7c4,1/2)=EchoEff/NoiseGate2，**DacEff=(0xdccd,9)**（图内
+  3 个 0xdccd/9 节点），见 audio-input-paths §1.8②。结论不受影响（parse 仍有 ADC 节点可建）。
 - **coexist 表有条目**：offset 0x1dea `9d d7 2d 9c 01 00`（0xd79d↔0x9c2d 互斥对），0x2223 处
   `2d 9c 01 00 …85 1a`（0x9c2d 条目带 tone id 0x1A85 相邻数据）。mic_effect 在场景仲裁层是
   注册过的 [镜像]。
