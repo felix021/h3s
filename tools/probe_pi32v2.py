@@ -1698,6 +1698,199 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         require(effect['repaired']['bypass_0']['node_plus_35_value']==1,
                 'repaired: bypass=0 must force node+35 = 1 when EQ off and name matches')
 
+    # -- scenario 6 (route O / sim-l1sim): execute the route-L mic_effect payload --
+    # The 138B hearing-aid activation payload (tools/hearing-aid/mic_effect_open.S,
+    # route L) is assembled from source at scenario time (MIC_EFX_SLOT .equ patched
+    # to base+134, the doc §2 "data slot = appended-segment tail 4B" placement; the
+    # offline unit test proves the payload is otherwise base-independent), mapped
+    # into the appended segment past the EQ candidate payload (0x060e3200) and run
+    # from its entry with the d2c single-task machinery (allocator/mutex/pend stubs,
+    # stream-slot sentinels, public stream.bin served at the CD-measured runtime
+    # base). Phase 1 executes the REAL payload instructions; when pipeline_parse
+    # honestly stops (node-reuse search over the synthetic boot state), phase 2
+    # direct-calls the remaining APIs with the payload's exact arguments on the
+    # real partial 0x9c2d stream the walk built (BW/CM/d2c direct-call precedent).
+    import re
+    import pi32v2_asm as ASM
+    L1_SOURCE=ROOT/'tools/hearing-aid/mic_effect_open.S'
+    L1_BASE=0x060e3200                 # route-L §3 example appended-segment base
+    L1_SLOT=L1_BASE+134                # doc §2: data slot = appended-segment tail 4B
+    L1_API={0x060057e6:'get_pipeline_uuid',0x06074938:'pipeline_parse',0x06074ec6:'add_thread',
+            0x06074a5e:'set_scene',0x06074e64:'set_notify',0x06074ffe:'start',0x06074204:'release'}
+    l1_text=L1_SOURCE.read_text()
+    l1_patched=re.sub(r'\.equ MIC_EFX_SLOT, 0x[0-9a-fA-F]+',f'.equ MIC_EFX_SLOT, 0x{L1_SLOT:x}',
+                      l1_text,count=1)
+    require(l1_patched!=l1_text,'MIC_EFX_SLOT equ not found for the L1 scenario patch')
+    l1_obj=ASM.read_object(ASM.assemble_text(l1_patched,str(L1_SOURCE)))
+    l1_sections=ASM.code_sections(l1_obj)
+    require(len(l1_sections)==1 and not l1_sections[0][2],'L1 payload must be one reloc-free section')
+    l1_bytes=l1_sections[0][1]
+    l1_insns=list(ASM.disassemble(l1_bytes))
+    require(len(l1_bytes)==134 and len(l1_insns)==41,'L1 payload shape changed (134B/41 insns expected)')
+    l1_return_sites={}
+    for k,(off,iid,itext,raw) in enumerate(l1_insns):
+        if iid=='call.r':
+            m=re.match(r'r6 = (\d+)$',l1_insns[k-1][2])
+            require(m and l1_insns[k-1][1]=='li.u32' and int(m.group(1)) in L1_API,
+                    'L1 call site is not preceded by a pinned API load')
+            l1_return_sites[L1_BASE+off+len(raw)]=L1_API[int(m.group(1))]
+    require(len(l1_return_sites)==7,'L1 payload must call exactly the seven pinned APIs')
+
+    def run_l1(c,resources,stream_map,entry,args,budget):
+        """Run from entry until the sentinel or an honest stop, recording pinned-API
+        entries (args), payload return sites (the payload instruction after each
+        call, r0 = the API return as the payload itself observes it) and node
+        creations at 0x607471e."""
+        api=[];returns=[];nodes=[];stop=None
+        c.sp=0x00134000;c.pc=entry;c.rets=SENTINEL
+        c.R[:len(args)]=[a&0xFFFFFFFF for a in args]
+        for r in range(len(args),16):c.R[r]=0
+        try:
+            for _ in range(budget):
+                if c.pc==SENTINEL:break
+                pc=c.pc
+                if pc in L1_API:
+                    api.append({'api':L1_API[pc],'args':list(c.R[:4])})
+                if pc in l1_return_sites:
+                    returns.append({'api':l1_return_sites[pc],'r0':c.R[0]&0xFFFFFFFF})
+                if pc==0x607471e:
+                    nodes.append({'uuid':c.R[0]&0xFFFF,'subid':c.R[6]&0xFF})
+                if not stub_step(c,resources,True,stream_map,consume=True):
+                    c.step()
+        except (PermissionError,RuntimeError,ValueError,KeyError) as e:
+            stop={'pc':hex(c.pc),'error':f'{type(e).__name__}: {e}'}
+        returned=c.pc==SENTINEL
+        if returned:
+            require(c.R[4:]==[0]*12 and c.sp==0x00134000,
+                    f'L1 segment {entry:#x} changed callee-saved registers/stack')
+        return {'api':api,'returns':returns,'nodes':nodes,'returned':returned,
+                'r0':c.R[0]&0xFFFFFFFF,'stop':stop,'steps':c.steps}
+
+    l1_variants=[('b79',app,resources_b79,d2c_stream_map(meta_b79,resources_b79))]
+    if official is not None:
+        l1_variants.append(('official',official,resources_official,
+                            d2c_stream_map(meta_official,resources_official)))
+    l1={}
+    for ename,image,resources,stream_map in l1_variants:
+        allocs.clear();vfs.clear();stream_reads.clear();stream_seeks.clear();pend_events.clear()
+        heap['next']=fixtures['synthetic_heap_base'];res_names.clear();posts.clear();mutex.clear()
+        c=machine(image,stream_map,bounds=(BASE,L1_SLOT+4))
+        c.mem.map(L1_BASE,l1_bytes)                # payload code, read-only
+        c.mem.map(L1_SLOT,bytes(4),writable=True)  # data slot (named synthetic writable)
+        c.mem.write(0x1264b8,struct.pack('<II',0x1264b8,0x1264b8))
+        c.mem.write(0x1264c8,struct.pack('<II',0x1264c8,0x1264c8))
+        c.mem.write(0x124880,struct.pack('<II',0x124880,0x124880))  # clock list sentinel (named)
+        if ename=='b79':
+            # negative check: the STOCK fence (0x060c3338) rejects the payload fetch --
+            # the route-L §3 fence-widening precondition is real, not a formality.
+            stock=machine(image,stream_map,bounds=(BASE,0x060c3338))
+            stock.mem.map(L1_BASE,l1_bytes)
+            stock.pc=L1_BASE;stock.rets=SENTINEL;stock.sp=0x00134000
+            for r in range(16):stock.R[r]=0
+            try:
+                stock.step()
+                raise RuntimeError('stock fence unexpectedly allowed the payload fetch')
+            except PermissionError:
+                pass
+
+        # phase 1: the real payload from its entry
+        p1=run_l1(c,resources,stream_map,L1_BASE,[],200000)
+        uuid_hits=[h for h in p1['api'] if h['api']=='get_pipeline_uuid']
+        require(uuid_hits and list(uuid_hits[0]['args'][:2])==[15,0x060a1de2],
+                f'{ename}: payload did not call get_pipeline_uuid(15,"mic_effect")')
+        uuid_ret=[r for r in p1['returns'] if r['api']=='get_pipeline_uuid']
+        require(uuid_ret and uuid_ret[0]['r0']==0x9c2d,
+                f'{ename}: get_pipeline_uuid("mic_effect") did not return 0x9c2d (got '
+                f'{[hex(r["r0"]) for r in uuid_ret]})')
+        parse_hits=[h for h in p1['api'] if h['api']=='pipeline_parse']
+        require(parse_hits and list(parse_hits[0]['args'][:2])==[0x9c2d,0xd06d],
+                f'{ename}: payload did not call pipeline_parse(0x9c2d, NODE_UUID_ADC)')
+        # the §0 scan really served the public descriptor: the 0x9c2d header at the
+        # public offset 0x2d0 and the 26-edge (208B) body whose first edge is the
+        # ADC 0xd06d -> 0xb7c4 record pinned by route L §1.3.
+        require(any(r[3].startswith('2d9cd000') for r in stream_reads),
+                f'{ename}: the walk never read the 0x9c2d descriptor header')
+        require(any(r[0]==208 and r[1]==208 and r[3].startswith('6dd00300c4b70100')
+                    for r in stream_reads),
+                f'{ename}: the walk never read the 208B 0x9c2d edge body')
+        nodes=p1['nodes']
+        require(len(nodes)==11
+                and nodes[0]=={'uuid':0xb7c4,'subid':1}
+                and nodes[2]=={'uuid':0x737b,'subid':10}
+                and nodes[-1]=={'uuid':0x1b9d,'subid':2},
+                f'{ename}: unexpected 0x9c2d node list ({nodes})')
+        require(p1['stop'] and p1['stop']['pc']==hex(0x60746cc) and not p1['returned'],
+                f'{ename}: payload run did not stop at the node-reuse search boundary '
+                f'(got {p1["stop"]})')
+        require(not any(h['api']=='release' for h in p1['api']),
+                f'{ename}: the error-path release must not run before the boundary')
+        stream=next((a for a,s in allocs if s==92),None)
+        require(stream is not None,f'{ename}: the walk did not build the 92B stream object')
+        root=struct.unpack('<I',c.mem.read(stream+40,4))[0]
+        require(struct.unpack('<H',c.mem.read(root+2,2))[0]==0x1100,
+                f'{ename}: stream+40 does not point at the 0x1100 root pipeline')
+
+        # phase 2: the payload's post-parse APIs on the real partial 0x9c2d stream
+        r_add=run_l1(c,resources,stream_map,0x06074ec6,[stream,0x1100,0x2000D,0x100],60000)
+        require(r_add['returned'] and r_add['r0']==0,
+                f'{ename}: add_thread(0x1100) did not succeed on the partial stream '
+                f'(got {r_add["stop"] or hex(r_add["r0"])})')
+        r_scene=run_l1(c,resources,stream_map,0x06074a5e,[stream,16,0],60000)
+        scene80=struct.unpack('<I',c.mem.read(stream+80,4))[0]
+        scene84=struct.unpack('<I',c.mem.read(stream+84,4))[0]
+        scene88=struct.unpack('<I',c.mem.read(stream+88,4))[0]
+        require(r_scene['returned'] and r_scene['r0']==0 and scene80==16 and scene88==0,
+                f'{ename}: set_scene(16,0) did not store scene 16 / callback 0 '
+                f'(returned={r_scene["returned"]} r0={r_scene["r0"]:#x} '
+                f'stream80={scene80} stream88={scene88})')
+        r_notify=run_l1(c,resources,stream_map,0x06074e64,[stream,10],60000)
+        require(c.mem.read(stream+28,1)[0]==10 and r_notify['stop']
+                and '0x6074a96' in r_notify['stop']['error'],
+                f'{ename}: set_notify(10) byte write/dispatch stop mismatch '
+                f'(b[stream+28]={c.mem.read(stream+28,1)[0]}, stop={r_notify["stop"]})')
+        r_start=run_l1(c,resources,stream_map,0x06074ffe,[stream],60000)
+        require(any(h['api']=='start' for h in r_start['api']) and r_start['stop']
+                and '0x6074a96' in r_start['stop']['error'],
+                f'{ename}: start() entry/dispatch stop mismatch ({r_start["stop"]})')
+        l1[ename]={
+            'phase1_payload_run':{
+                'payload_entry_executed':True,
+                'api_entries':[{'api':h['api'],'args':[hex(a) for a in h['args']]} for h in p1['api']],
+                'payload_observed_returns':[{'api':r['api'],'r0':hex(r['r0'])} for r in p1['returns']],
+                'nodes_created':p1['nodes'],'node_create_count':len(p1['nodes']),
+                'stream_bin_reads':[list(r) for r in stream_reads],
+                'clock_alloc_44B_observed':bool(allocs and allocs[0][1]==44),
+                'os_posts_recorded':len(posts),'mutex_round_trips':len(mutex),
+                'payload_returned':False,'stop':p1['stop'],'steps':p1['steps']},
+            'phase2_direct_calls':{
+                'note':'the walk honestly stops before pipeline_parse returns, so the post-parse APIs are direct-called (BW/CM/d2c precedent) with the payload exact arguments on the real partial 0x9c2d stream built in phase 1',
+                'stream_object':hex(stream),'root_pipeline':hex(root),'root_id':'0x1100',
+                'add_thread':{'args':[hex(stream),'0x1100','0x2000d','0x100'],
+                              'returned':True,'r0':0,'steps':r_add['steps']},
+                'set_scene':{'args':[hex(stream),16,0],'returned':True,'r0':0,
+                             'stream80_scene':scene80,'stream84_helper_result':scene84,
+                             'stream88_restore_callback':scene88,'steps':r_scene['steps']},
+                'set_notify':{'args':[hex(stream),10],'stream28_notify':10,
+                              'dispatch_stop':r_notify['stop'],'steps':r_notify['steps']},
+                'start':{'args':[hex(stream)],'dispatch_stop':r_start['stop'],
+                         'steps':r_start['steps']}}}
+    if 'official' in l1:
+        b,o=l1['b79']['phase1_payload_run'],l1['official']['phase1_payload_run']
+        require(o['payload_observed_returns']==b['payload_observed_returns']
+                and o['nodes_created']==b['nodes_created'] and o['stop']==b['stop']
+                and o['stream_bin_reads']==b['stream_bin_reads'],
+                'official and b79 mic_effect payload runs diverged')
+        b2,o2=l1['b79']['phase2_direct_calls'],l1['official']['phase2_direct_calls']
+        require(o2['add_thread']==b2['add_thread'] and o2['set_scene']==b2['set_scene'],
+                'official and b79 post-parse direct calls diverged')
+    scenarios['mic_effect_payload']={
+        'payload':{'source':'tools/hearing-aid/mic_effect_open.S (assembled at scenario time; MIC_EFX_SLOT .equ patched to base+134 per doc §2 "slot = appended-segment tail 4B"; offline test proves base-independence)',
+                   'code_base':hex(L1_BASE),'data_slot':hex(L1_SLOT),'code_bytes':134,
+                   'slot_bytes':4,'insns':41,'relocs':0,
+                   'api_return_sites':{hex(k):v for k,v in sorted(l1_return_sites.items())}},
+        'fixtures_note':'execution fence widened to (BASE, slot+4) exactly as route L §3 requires for a real implant (the stock 0x060c3338 fence rejects the payload fetch -- asserted negatively); the 4B data slot is harness-writable memory (named synthetic: a real implant must decide a writable backing); stream-slot sentinels 0x1264b8/0x1264c8 (d2c precedent) plus the 0x124880 clock list as an empty self-linked boot-initialized OS state (named synthetic)',
+        **l1}
+
     report['scenarios']=scenarios
     report['corrections_vs_route_bx']=[
         'tone language word: QCY+348 == 1 selects the zh table 0x60a379c, != 1 selects en 0x60a387c (runtime-verified both arms; BX §1.2 had it inverted)',
@@ -1720,6 +1913,8 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         'scene 3 Phase D (route CM) injects the cmd-11 parameter message at the consumer 0x6075e22 by direct call (synthetic-not-measured): the message shape {cmd=11, obj=packed-msg{uuid16@+2, name@+4, 44B param@+44}, param3rd=0x2000f} is the exact shape the real producer 0x607538a packs, but the queue itself is not exercised -- the node-find chain 0x6075d8e -> 0x6075d10 runs real and honestly reports the eq node (uuid 0x737b) as not-found, because that node is created and linked by the D2-C pipeline construction (0x6074938 descriptor walk), not by the tone chain this scene runs',
         'eq_hook_node35 (route CM) synthesizes a 44B effect node with a private context [node+16]=ctx (synthetic-not-measured, route BW scenario-3 direct-call precedent): the subcmd2 write 0x6078a2e and the open-config hook 0x6078846 execute REAL app code over that synthetic node; file_cfg[4]=0 is a named synthetic because the real config-file bypass byte (config subsystem -> file reads) is unmodeled, so the observation is the repaired-vs-baseline difference (forced ctx[35]=1 vs kept file value), not the absolute file value',
         'd2c_effect_pipeline (route CP / D2-C) runs the REAL descriptor walk 0x6074938(0xd96f, 0xf975) over the music pipeline (pipeline-a2dp) with the same synthetic single-task machinery as scene 3 (allocator/mutex/pend stubs, stream-slot sentinels): the walk creates 20 nodes including MusicEqBt (eq 0x737b subid 1) via 0x60746e6 -> 0x607471e, and the injected cmd-11 finds that real node; the 0x1265ea=0x81 EQ-off state is a named synthetic fixture (the walk does not itself reach the state-byte writer); bypass=1 writes node+35=1 (parity), bypass=0 writes 0 then reopen -> open-config 0x60787ac -> hook 0x6078846 over the REAL config read (b79/official ctx[35]=file_cfg[4]=0, then an honest stop at the unmodeled DSP instruction 0x606a900 copex.ppi AFTER the write; repaired jumps to eq_open_config and forces ctx[35]=1)',
+        'mic_effect_payload (route O): the payload instructions and the jlstream APIs execute REAL code over the public bytes; pipeline_parse honestly stops at 0x60746cc (node-reuse search dereferencing a non-pointer) after building 11 real 0x9c2d nodes -- a synthetic single-task/bump-allocator state boundary, NOT a firmware or payload verdict (the same search survives 231 invocations on the music graph in d2c_effect_pipeline); set_notify/start then stop at the same synthetic node-tree boundary 0x6074a96 inside the event dispatch; add_thread and set_scene run to completion on the real partial 0x9c2d stream (set_scene stores stream[80]=16, the observable scene-16 consumption point, and stream[88]=0 = no restore callback); scene 16 has no further observed consumer before the boundary stops',
+        'mic_effect_payload fence/slot fixtures: the execution fence is widened to the payload end exactly as route L §3 requires for a real implant (the stock 0x060c3338 fence rejecting the payload fetch is asserted negatively); the 4B data slot is harness-writable memory while a real implant must still decide a writable backing (flash programming vs retained RAM); the payload has never executed on any device and no hearing-aid usability claim is made',
     ]
     report['observations_route_cd']={
         'loader_gate_b_0x12649d':'recorded per variant (zeroed RAM here; CD live-measured 0 after boot, setter still unidentified)',
