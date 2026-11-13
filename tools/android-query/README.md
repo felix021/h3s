@@ -53,6 +53,26 @@ adb -s "$ANDROID_SERIAL" shell am start \
 | E1 | 空参数，升级检查字段 |
 | E2 | 仅00，且需先确认E1 offset/len0 |
 
+## EQ 写命令组帧（纯离线，真机下发未验证）
+
+`EqFrame` 按路 H 钉死的字节布局（[eq-cmd-0x22-layout.md](../../docs/eq-cmd-0x22-layout.md)）把「EQ 类型 + master gain + 段列表」组帧成 RCSP 自定义命令 0x22：
+
+- 帧：`FE DC BA | C0 | FF | len_BE16 | SN | 22 | data_len | data | EF`
+- data = 3B 头 + 每段 7B；头[0]=EQ 类型(u8，1=自定义/10=空间音效)、头[1..2]=master gain(i16 小端 ÷100 得 dB)；每段 = freq(u16 小端，Hz 直存) + q(i16 ÷100) + gain(i16 ÷100 得 dB) + iir_type(u8，0..4，255=默认 band_pass)。段数上限 10。
+- 全部整数入参：master gain/每段 gain 用 centidB(=dB×100)、q 用 ×100、freq 用 Hz，避免浮点误差。
+
+```java
+byte[] frame = EqFrame.buildEqCommand(eqType, masterGainCentidB, bands); // 完整 RCSP 命令帧
+byte[] data  = EqFrame.buildEqData(eqType, masterGainCentidB, bands);    // 仅 data=3B+7N，无 RCSP 包装
+EqFrame.Parsed p = EqFrame.parseEqCommand(frame);                        // 反解析，往返自检
+```
+
+`EqBand(freq, q, gain, iirType)` 是段值类型；越界（段数>10、iir∉{0..4,255}、freq 超 u16、q/gain/master 超 i16）抛 `IllegalArgumentException`。
+
+`EqWritePolicy.permitted(data, armed)` 是写策略骨架：只在 armed 时放行形状完全匹配的 0x22 setter 帧（opcode 0xFF + cmdid 0x22 + data_len%7==3），不开任意字节写总开关；未 armed 退回 QueryPolicy 只读。
+
+诚实标注：组帧已由 `EqFrameTest` 单测覆盖（往返一致 + 路 H 文档字节对照 + 段数/取值校验 + 写策略放行/拒绝），真机下发未验证——不连真机、不刷机，传输层接线留待授权联调。
+
 ## 实际升级
 
 先完整阅读 [OTA实现与边界](../../docs/ota.md)。本例另有 [USB救砖实测](../../docs/usb-recovery.md)，其完整备份与限定恢复流程不由这个Android OTA客户端执行；双备份能力报告本身不能替代恢复步骤。
