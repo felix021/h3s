@@ -48,6 +48,173 @@ def encode_header(data):
     return data
 
 
+def f32(v):
+    """Round a Python float to the exact IEEE754 single the firmware stores."""
+    return struct.unpack("<f", struct.pack("<f", v))[0]
+
+
+# 辅听链（pipeline-mic_effect）三个节点在 stream.bin §5 记录里的 name_hash（djb2 低 16
+# 位）。名字经哈希引用，本路只改参数 blob、不改名字，故哈希/§5 记录 offset/size 全部
+# 保持不变。证据：docs/hearing-aid-eq-feasibility.md §1.2/§2/§7。
+HEARING_AID_NODES = {
+    "Eq1Eff": {"name_hash": 0xdabd, "uuid": 0x737b, "subid": 10,
+               "offset": 0xeac, "size": 168},  # eq_tool，与 Eq4Eff(0x7fe0)/Eq5Eff(0x0c41) 共享
+    "Drc1Eff": {"name_hash": 0x63e0, "uuid": 0xdefe, "subid": 6,
+                "offset": 0x1038, "size": 76},  # wdrc_struct
+    "VolEff": {"name_hash": 0xb6c7, "uuid": 0x74e3, "subid": 21,
+               "offset": 0x14d7, "size": 16},  # volume_cfg <BHiBihH>
+}
+
+
+def stream_param_records(data):
+    """定位 stream.bin 第 5 节参数区并解析 node_cfg_format 记录数组。
+
+    节头 4 字节 = 1 字节 kind + 18 位长度（第 2 字节低 2 位是长度高 2 位 + 2 字节 LE）。
+    §5 = 16 字节头 + 32 字节记录数组 + 参数 blob。记录里 u32 `offset` 是相对 §5 数据
+    起点的绝对偏移，指向该节点的参数 blob。布局参考 docs/hearing-aid-eq-feasibility.md
+    §1.2（node_cfg_format 经参考 SDK IR 复核）。
+    """
+    pos = 0
+    s5_base = None
+    while pos + 4 <= len(data):
+        kind = data[pos]
+        size = ((data[pos + 1] & 3) << 16) | int.from_bytes(data[pos + 2:pos + 4], "little")
+        if kind == 5:
+            s5_base = pos + 4
+            s5_size = size
+            break
+        pos += 4 + size
+    if s5_base is None:
+        raise ValueError("stream 缺少第 5 节参数区")
+    records = []
+    for rec_off in range(s5_base + 16, s5_base + s5_size - 16, 32):
+        rec = data[rec_off:rec_off + 32]
+        if rec[0] not in (1, 2, 3):
+            break  # 记录数组尾（type=4 终结记录）
+        records.append({
+            "type": rec[0],
+            "uuid": struct.unpack_from("<H", rec, 1)[0],
+            "subid": rec[3],
+            "mode": rec[4],
+            "name_hash": struct.unpack_from("<H", rec, 5)[0],
+            "cfg_index": rec[9],
+            "offset": struct.unpack_from("<I", rec, 10)[0],
+            "size": struct.unpack_from("<H", rec, 14)[0],
+        })
+    return s5_base, records
+
+
+def apply_hearing_aid_demo(stream):
+    """离线把辅听链参数改成「1kHz +39dB + 输出限幅」演示值，原地改、尺寸不变。
+
+    - Eq1Eff（eq_tool @0xeac，与 Eq4Eff/Eq5Eff 共享）：seg[5] 1070Hz/0dB → 1000Hz/+39dB。
+    - Drc1Eff（wdrc_struct @0x1038）：threshold[2].out 110.3 → 100.0（数字域上限，非 SPL 标定）。
+    - VolEff（volume_cfg @0x14d7）：定位并校验，不改（输入侧主音量，与本次增益/限幅演示正交）。
+    返回 (changes, s5_base)。
+    """
+    s5_base, records = stream_param_records(stream)
+    by_key = {(r["name_hash"], r["cfg_index"]): r for r in records}
+
+    def locate(spec):
+        rec = by_key.get((spec["name_hash"], 0))
+        if rec is None or rec["uuid"] != spec["uuid"] or rec["subid"] != spec["subid"]:
+            raise ValueError(f"第 5 节未定位到节点 name_hash=0x{spec['name_hash']:04x}")
+        if (rec["offset"], rec["size"]) != (spec["offset"], spec["size"]):
+            raise ValueError(f"节点 {spec} 参数区偏移/尺寸与已核实版本不一致")
+        return rec
+
+    eq = locate(HEARING_AID_NODES["Eq1Eff"])
+    drc = locate(HEARING_AID_NODES["Drc1Eff"])
+    vol = locate(HEARING_AID_NODES["VolEff"])
+
+    # VolEff 只读校验，不改。
+    vol_values = struct.unpack_from("<BHiBihH", stream, s5_base + vol["offset"])
+    if vol_values != (0, 16, -45, 1, 0, 5, 0):
+        raise ValueError("VolEff 初始参数与已核实版本不一致")
+
+    changes = []
+    # eq_tool：{float global_gain, 4B 段数字段, seg[10]{u16 index, u16 iir_type,
+    # i32 freq, float gain, float q}}。段数字段为大端 u16（10 段=00 0a 00 00），
+    # 其余字段小端；seg[i] 位于 +8+i*16。尺寸=8+16*seg_num 与记录 size 自洽。
+    eq_off = s5_base + eq["offset"]
+    seg_num = struct.unpack_from(">H", stream, eq_off + 4)[0]
+    if seg_num != 10 or eq["size"] != 8 + 16 * seg_num:
+        raise ValueError("Eq1Eff 段数/尺寸与已核实版本不一致")
+    target = 5
+    freq_off = eq_off + 8 + target * 16 + 4
+    gain_off = eq_off + 8 + target * 16 + 8
+    old_freq = struct.unpack_from("<i", stream, freq_off)[0]
+    old_gain = struct.unpack_from("<f", stream, gain_off)[0]
+    if old_freq != 1070 or old_gain != 0.0:
+        raise ValueError("Eq1Eff 目标段初始参数与已核实版本不一致")
+    struct.pack_into("<i", stream, freq_off, 1000)
+    struct.pack_into("<f", stream, gain_off, 39.0)
+    changes.append({"node": "Eq1Eff", "stream_off": freq_off, "field": "seg[5].freq",
+                    "before": old_freq, "after": 1000})
+    changes.append({"node": "Eq1Eff", "stream_off": gain_off, "field": "seg[5].gain",
+                    "before": old_gain, "after": 39.0})
+
+    # wdrc_struct：{i32 bypass, u16 attack, u16 release,
+    # threshold[6]{float in, float out}, float inputgain, float outputgain,
+    # float rms_time, u8 threshold_num, ...}。threshold[2].out 在 +8+2*8+4。
+    drc_off = s5_base + drc["offset"]
+    bypass = struct.unpack_from("<i", stream, drc_off)[0]
+    attack, release = struct.unpack_from("<HH", stream, drc_off + 4)
+    tnum = stream[drc_off + 68]
+    if (bypass, attack, release, tnum) != (0, 100, 200, 3):
+        raise ValueError("Drc1Eff 初始参数与已核实版本不一致")
+    out_off = drc_off + 28
+    old_out = struct.unpack_from("<f", stream, out_off)[0]
+    if old_out != f32(110.3):
+        raise ValueError("Drc1Eff 初始限幅阈值与已核实版本不一致")
+    struct.pack_into("<f", stream, out_off, 100.0)
+    changes.append({"node": "Drc1Eff", "stream_off": out_off, "field": "threshold[2].out",
+                    "before": old_out, "after": 100.0, "note": "数字域上限，非 SPL 标定"})
+    changes.append({"node": "VolEff", "stream_off": s5_base + vol["offset"],
+                    "field": "<BHiBihH>", "before": list(vol_values),
+                    "after": list(vol_values), "unchanged": True,
+                    "note": "输入侧主音量，本演示不改"})
+    return changes, s5_base
+
+
+def verify_hearing_aid_roundtrip(stream, s5_base):
+    """把改后的参数区按 §1.2 结构重新解析，确认 1kHz/+39dB/out=100 如预期（往返一致）。"""
+    _, records = stream_param_records(stream)
+    by_key = {(r["name_hash"], r["cfg_index"]): r for r in records}
+    eq = by_key[(HEARING_AID_NODES["Eq1Eff"]["name_hash"], 0)]
+    drc = by_key[(HEARING_AID_NODES["Drc1Eff"]["name_hash"], 0)]
+    eq_off = s5_base + eq["offset"]
+    drc_off = s5_base + drc["offset"]
+    freq = struct.unpack_from("<i", stream, eq_off + 8 + 5 * 16 + 4)[0]
+    gain = struct.unpack_from("<f", stream, eq_off + 8 + 5 * 16 + 8)[0]
+    out = struct.unpack_from("<f", stream, drc_off + 28)[0]
+    if freq != 1000 or gain != f32(39.0) or out != f32(100.0):
+        raise ValueError("改后参数区往返解析不一致："
+                         f"freq={freq} gain={gain} out={out}")
+    return {"freq": freq, "gain": gain, "out_threshold": out}
+
+
+def verify_hearing_aid_diff(result, source, flash_pos, data_pos, ent_pos, boot_pos,
+                            stream_changed_offsets):
+    """断言候选 .ufw 与官方镜像的差异只落在目标参数区 + CRC 字段，其余逐字节不变。
+
+    期望差异 = 改动的 stream 参数字节（相对 stream 起点）映射到 flash，加上 stream 的
+    JLFS 头 CRC、双备份 boot-info 的明文/密文/头 CRC、以及 UFW 外层三处 CRC 字段。
+    逐字节精确比对；任何多余/缺失字节都直接抛错。返回 (diff, expected) 供报告。
+    """
+    expected = {flash_pos + data_pos + i for i in stream_changed_offsets}
+    expected |= {flash_pos + ent_pos + k for k in range(4)}   # stream JLFS 头 CRC（2+2）
+    expected |= {flash_pos + boot_pos + k for k in range(6)}  # boot-info 明文/密文/头 CRC
+    expected |= {0, 1, 2, 3, 68, 69}                          # UFW 外层头 CRC + flash 条目 CRC
+    diff = {i for i in range(len(source)) if result[i] != source[i]}
+    if diff != expected:
+        missing = sorted(expected - diff)
+        unexpected = sorted(diff - expected)
+        raise ValueError("字节差异与预期不符："
+                         f"missing={missing[:24]} unexpected={unexpected[:24]}")
+    return sorted(diff), sorted(expected)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--attenuation-db", type=int, default=10, choices=range(0, 31))
@@ -57,6 +224,8 @@ def main():
                    help="实验性 EQ 双击开关补丁 ELF；必须同时启用 ANC 两态选项")
     p.add_argument('--eq-code-fence-repair',action='store_true',
                    help='离线修复候选：扩展实际Flash PC上界到EQ载荷末尾；不代表启动验证通过')
+    p.add_argument("--hearing-aid-demo", action="store_true",
+                   help="助听器弱化版 EQ L0 演示：辅听链 1kHz +39dB + 输出限幅；仅离线候选")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -96,6 +265,11 @@ def main():
             struct.pack_into("<16f", stream, pos + 16, *table_after)
         changes.append({"node": name, "stream_offset": pos, "before": before,
                         "after": after, "table_before": table_before, "table_after": table_after})
+    hearing_aid = None
+    if args.hearing_aid_demo:
+        demo_changes, s5_base = apply_hearing_aid_demo(stream)
+        hearing_aid = {"changes": demo_changes,
+                       "roundtrip": verify_hearing_aid_roundtrip(stream, s5_base)}
     if stream_flow_identifier(stream) != flow_identifier:
         raise ValueError("不应改变在线调音流程标识")
     # 内层 stream.bin 的 JLFS 目录头与原始数据先做交叉校验。
@@ -201,12 +375,23 @@ def main():
     struct.pack_into("<H", ufw_header, 2, jl_crc16(result[64:64 + count * 80]))
     struct.pack_into("<H", ufw_header, 0, jl_crc16(ufw_header[2:]))
     result[:64] = encode_header(ufw_header)
-    if args.attenuation_db == 0 and not args.anc_cycle_two_state and not eq_toggle and result != source:
+    if args.attenuation_db == 0 and not args.anc_cycle_two_state and not eq_toggle and \
+            not args.hearing_aid_demo and result != source:
         raise ValueError("零改动重打包不一致")
+    if args.hearing_aid_demo:
+        stream_changed_offsets = [i for i in range(len(original_stream))
+                                  if stream[i] != original_stream[i]]
+        diff_positions, allowed_positions = verify_hearing_aid_diff(
+            result, source, flash_pos, data_pos, ent_pos, boot_pos, stream_changed_offsets)
+        hearing_aid["byte_diff"] = {"diff_positions": diff_positions,
+                                    "allowed_positions": allowed_positions,
+                                    "diff_count": len(diff_positions)}
     args.output_dir.mkdir(parents=True)
     suffix = "_anc_on_trans" if args.anc_cycle_two_state else ""
     if eq_toggle:
         suffix += "_eq_toggle_EXPERIMENTAL"
+    if args.hearing_aid_demo:
+        suffix += "_HEARING_AID_DEMO"
     filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB{suffix}_UNTESTED.ufw"
     if eq_toggle:
         filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB_ANC_EQ_TOGGLE_EXPERIMENTAL.ufw"
@@ -221,6 +406,7 @@ def main():
               "changed_flash_offsets": changed_offsets,
               "anc_cycle": anc_cycle,
               **({'eq_toggle': eq_toggle} if eq_toggle else {}),
+              **({'hearing_aid_demo': hearing_aid} if hearing_aid else {}),
               "zero_change_identical": bytes(result) == source,
               "dual_bank_boot_info": {"flash_offset": boot_pos, "app_offset": app_pos,
                                       "app_bytes": app_size, "plain_crc_before": plain_crc,
