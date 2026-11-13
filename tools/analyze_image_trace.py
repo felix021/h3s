@@ -94,7 +94,10 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     mem_pwr_con=True, p33_window=True, p33_port_sel=True,
     p33_awkup=True, p3_ls=True, p11_syscon1_masks=True, fd31_adc_con=True,
     fd31_adc_con_readback=True,
-    subword_stores=True, core_tick_irq3_delivery=True)
+    fd31_adc_pnd_completion=True,
+    fd31_adc_res_named_values=probe_irq_entry.FD31_ADC_RES_NAMED_VALUES,
+    p33_analog_tail=True,
+    subword_stores=True, timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
 
 SCENARIOS = {
     'crc_bankb': {
@@ -116,17 +119,18 @@ SCENARIOS = {
         'default_budget': 720000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。条件前沿随
-        # 上游合并前移后按新前沿重钉(前沿前移后可重跑跟进)。路 BS:core tick
-        # 交付接线(core_tick_irq3_delivery)后 447,490 的溢出不再停——实测整个
-        # ADC 采样事务在同一个 OS 临界区内(IPMASK=6,0x12b55c veneer 的 cli 起,
-        # 全程零 IPMASK 写回),溢出/九次 STD12M 到期(343,252..663,252)全部
-        # masked 挂起(BF 重检机制:cli 只屏蔽不丢弃),轮询 1000 轮全预算跑完,
-        # 停在 RES 读 0x6011704(689,402 @ fd31_adc_res_not_modeled,__RO 模拟
-        # 测量值红线);IRQ3/IRQ4 双挂起仍武装着,首个合格时刻(临界区 sti)在
-        # RES 边界之后未执行。
-        'freshness': {'completed_steps': 689402, 'stop_pc': '0x6011704',
-                      'stop_fields': {'kind': 'fd31_adc_res_not_modeled',
-                                      'address': '0xfd3104'}},
+        # 上游合并前移后按新前沿重钉(前沿前移后可重跑跟进)。路 BY:PND 完成
+        # 投影把 80 次 caller A 轮询折叠为首读退出、RES 具名 fixture
+        # (WBG04=400/VBAT_4=500/VTEMP=400,P3_ANA_CON4[4:1] 复用域识别通道)
+        # 放行采样事务全链——前沿换形状:Timer0 到期重排(延时函数每次 call
+        # 重编 PRD),首个合格到期 336,337 起经路 BE 交付层 14 次真实 IRQ4
+        # 往返;core tick 未溢出(停点在路径无关的 447,490 地标前 ~107 步);
+        # 尾段 W1[0](BV 投影)跑过 AWKUP 清除助手与 P3_CHG_CON0 RMW,停在
+        # P3_ANA_READ 模拟量轮询读(447,383 @ p3_ana_read_not_modeled,BV 钉住
+        # 的红线,RES 同款)。
+        'freshness': {'completed_steps': 447383, 'stop_pc': '0x6012f22',
+                      'stop_fields': {'kind': 'p3_ana_read_not_modeled',
+                                      'address': '0xf2c064'}},
     },
 }
 
@@ -663,8 +667,9 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-13 路 BS 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 689,402;一切结论条件通过、derived-not-measured):
+    """钉死 2026-11-13 路 BY 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 447,383;一切结论条件通过、derived-not-measured;689,402
+    的路 BS 世界已被 PND 折叠替换,历史见 HANDOFF「689,402 步含义」段):
 
     - 双方 689,402 步、同停点 0x6011704(ADC RES 读的 fd31_adc_res_not_modeled,
       当前条件前沿——路 BS 把 core tick 交付接线接进主条件场景后,447,490 的
@@ -688,17 +693,17 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 689402 and run['stop_pc'] == '0x6011704' and
-                run['stop']['kind'] == 'fd31_adc_res_not_modeled' and
-                run['stop']['address'] == '0xfd3104' and
-                run['per_core_steps'] == {'0': 678238, '1': 11181},
+        require(run['completed_steps'] == 447383 and run['stop_pc'] == '0x6012f22' and
+                run['stop']['kind'] == 'p3_ana_read_not_modeled' and
+                run['stop']['address'] == '0xf2c064' and
+                run['per_core_steps'] == {'0': 436233, '1': 11181},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (689402 @ 0x6011704, ADC RES read)')
+                'conditional frontier stop (447383 @ 0x6012f22, P3_ANA_READ poll)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 689402, 'tested_b79': 689402, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x6011704', 'b': '0x6011704', 'same': True} and
+    require(parity['steps'] == {'official': 447383, 'tested_b79': 447383, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x6012f22', 'b': '0x6012f22', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['kind'] == 'fd31_adc_res_not_modeled' and
+            parity['stop_record']['a']['kind'] == 'p3_ana_read_not_modeled' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
             'identical conditional frontier stop')

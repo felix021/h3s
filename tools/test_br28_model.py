@@ -1852,7 +1852,95 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(h.read(0xf2c250),0x20)
         self.assertEqual(h.report()['registers']['0xf2c250'],'0x20')
 
-    def test_p11_syscon1_mask_sets_are_opt_in(self):
+    def test_fd31_adc_pnd_completion_projection(self):
+        # 路 BY:opt-in fd31_adc_pnd_completion(需 fd31_adc_con_readback)——
+        # CON(bit7=PND,gpadc_hw_v10.h GPADC_CON_PND=7)的无状态读时完成投影:
+        # 最后写值 EN(bit4)=1 时 guest ld 读回=最后写值|0x80;EN=0 不强制
+        # (adc_close 的 0x40 写=CPND 清+关使能)。原子复合 RMW 的内部读从裸
+        # 最后写值合成(rmw() API,count_read 才计读);默认关:读回语义与路 BN
+        # 逐字节一致、报告无 pnd_completion_projection 键,legacy 不变。
+        with self.assertRaisesRegex(ValueError,'requires the CON readback projection'):
+            BR28Model(fd31_adc_con_projection=True,fd31_adc_con_readback=False,
+                      fd31_adc_pnd_completion=True)
+        base=BR28Model(fd31_adc_con_projection=True,fd31_adc_con_readback=True)
+        self.assertNotIn('pnd_completion_projection',base.report()['fd31_adc_con_projection'])
+        h=BR28Model(fd31_adc_con_projection=True,fd31_adc_con_readback=True,
+                    fd31_adc_pnd_completion=True)
+        h.write(0xfd3100,0x40)              # adc_close 末值:EN=0 → 不强制
+        self.assertEqual(h.read(0xfd3100),0x40)
+        h.write(0xfd3100,0x46105d)          # setter 启动写:EN=1 → 读回强制 bit7
+        self.assertEqual(h.read(0xfd3100),0x4610dd)
+        # 原子 RMW 内部读不观察投影 bit:合成从裸最后写值出发(bit6 已置,
+        # |=0x40 值不变——与无 PND 世界记录一致);count_read=True 时计读。
+        h.fd31_adc_con.rmw('or',0x40,count_read=True)
+        self.assertEqual(h.report()['fd31_adc_con_projection']['stores']
+                         ['0xfd3100']['values'][-1],'0x46105d')
+        self.assertEqual(h.read(0xfd3100),0x4610dd)   # RMW 写回 EN 仍=1 → 仍强制
+        h.write(0xfd3100,0x20000)            # adc_close 首写:EN=0 → 回裸值
+        self.assertEqual(h.read(0xfd3100),0x20000)
+        r=h.report()['fd31_adc_con_projection']
+        self.assertEqual(r['pnd_completion_projection']['forced_reads'],2)
+        self.assertTrue(r['pnd_completion_projection']['not_a_timing_model'])
+        self.assertEqual(r['pnd_completion_projection']['bit'],'0x80')
+        self.assertIn('RAW last-written word',r['pnd_completion_projection']['compound_rmw_boundary'])
+        # 默认关世界:同一写值序列读回无 bit7(路 BN 语义逐字不变)
+        self.assertEqual(base.write(0xfd3100,0x46105d) or base.read(0xfd3100),0x46105d)
+
+    def test_fd31_adc_res_named_values_fixture(self):
+        # 路 BY:opt-in fd31_adc_res_named_values(需 pnd_completion)——RES
+        # (0xfd3104,__RO)具名档位 fixture(derived-not-measured)。通道识别=
+        # RES 读时刻 P3_ANA_CON4(0xf2c250)[4:1] 复用域(setter case1 →
+        # 0x6067d8a 把 (通道字&0xFFFF)<<1 写进该域):域值 0/4/6 ⇔ 通道字
+        # 0x10000/0x10004/0x10006;一致性门=最后 CON 写 EN=1 + CH_SEL(bits8-11)
+        # =0(PMU 模拟路径)。未覆盖通道/无 EN/CH_SEL≠0/复用字未知 → 显式严格停
+        # fd31_adc_res_channel_not_modeled;RES 写仍拒绝;默认关:RES 读保持
+        # fd31_adc_res_not_modeled(689,402 形状),legacy 不变。
+        with self.assertRaisesRegex(ValueError,'require the PND completion projection'):
+            BR28Model(fd31_adc_con_projection=True,fd31_adc_con_readback=True,
+                      fd31_adc_res_named_values={0x10000:400})
+        with self.assertRaisesRegex(ValueError,'10-bit codes'):
+            BR28Model(fd31_adc_con_projection=True,fd31_adc_con_readback=True,
+                      fd31_adc_pnd_completion=True,fd31_adc_res_named_values={0x10000:1024})
+        kw=dict(fd31_adc_con_projection=True,fd31_adc_con_readback=True,
+                fd31_adc_pnd_completion=True)
+        h=BR28Model(**kw,fd31_adc_res_named_values={0x10000:400,0x10006:500,0x10004:400})
+        # 前置:启动转换(CON EN=1、CH_SEL=0)+ 模拟复用域选通道(WBG04 mux=0,
+        # 0x6067d8a 序列在 seed 0 上的末值 0xE1 = 域外使能位 0xE0|bit0)
+        h.write(0xfd3100,0x46105d)
+        h.write(0xf2c250,0xE1)
+        self.assertEqual(h.read(0xfd3104),400)
+        h.write(0xf2c250,0xE9)              # VTEMP:域=4(0xE9>>1&0xF)
+        self.assertEqual(h.read(0xfd3104),400)
+        h.write(0xf2c250,0xED)              # VBAT_4:域=6
+        self.assertEqual(h.read(0xfd3104),500)
+        # 域值 5(0x10005)不在 fixture 表 → 显式严格停,不猜
+        h.write(0xf2c250,0xEB)
+        with self.assertRaisesRegex(Blocked,'fd31_adc_res_channel_not_modeled'):
+            h.read(0xfd3104)
+        # 一致性门:EN=0(adc_close 末值)→ 无已启动的转换 → 严格停
+        h.write(0xfd3100,0x40)
+        with self.assertRaisesRegex(Blocked,'fd31_adc_res_channel_not_modeled'):
+            h.read(0xfd3104)
+        # CH_SEL≠0(数字通道路径 0x220000 族的 CON)→ 非 PMU 模拟路径 → 严格停
+        h.write(0xfd3100,0x22105d)
+        with self.assertRaisesRegex(Blocked,'fd31_adc_res_channel_not_modeled'):
+            h.read(0xfd3104)
+        # RES 写仍拒绝(__RO 模拟量,fixture 只服务读)
+        with self.assertRaisesRegex(Blocked,'fd31_adc_res_write_not_modeled'):
+            h.write(0xfd3104,0)
+        # 报告:具名 fixture 子键(值/服务计数/三层身份/禁区/推导链)
+        r=h.report()['fd31_adc_con_projection']['res_named_values_fixture']
+        self.assertEqual(r['values'],{'0x10000':400,'0x10004':400,'0x10006':500})
+        self.assertEqual(r['served'],{'0x10000':1,'0x10004':1,'0x10006':1})
+        self.assertTrue(r['derived_not_measured'])
+        self.assertIn('forbidden_region',r)
+        self.assertIn('synthetic fixture',r['value_identity']['raw_codes'])
+        # 默认关:fixture 键不存在,RES 读保持显式严格停
+        plain=BR28Model(**kw)
+        self.assertNotIn('res_named_values_fixture',plain.report()['fd31_adc_con_projection'])
+        with self.assertRaisesRegex(Blocked,'fd31_adc_res_not_modeled'):
+            plain.read(0xfd3104)
+
         # 0xf2a628(P11_SYS_CON1)固件真实用两个 and 掩码清不同位:主复位
         # 初始化 0x6068c88 的 0xFFFFFFEF(清 bit4,RESET_CONFIG_MASKS 既有
         # 条目)与 walker 清尾 0x6067d64/变体 0x6069cc6 的 0xFFFFFF7F(清

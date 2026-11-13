@@ -174,14 +174,15 @@ def test_scenario_registry_shapes():
     assert SCENARIOS['crc_bankb']['freshness'] == {
         'completed_steps': 289849, 'stop_pc': '0x60679ba',
         'stop_fields': {'kind': 'unmapped_memory', 'address': '0xf27f4b'}}
-    # 路 BS:core tick 交付接线(core_tick_irq3_delivery)后 447,490 的溢出
-    # 不再停——整个 ADC 采样事务在同一个 OS 临界区内(IPMASK=6),溢出与九次
-    # STD12M 到期全部 masked 挂起,轮询 1000 轮跑完,停在 RES 读
-    # (689,402 @ 0x6011704,__RO 模拟测量值红线)。
+    # 路 BY:PND 完成投影折叠 80 次轮询、RES 具名 fixture 放行采样事务,
+    # Timer0 到期重排后首个合格到期经路 BE 交付层 14 次真实 IRQ4 往返,
+    # core tick 未溢出(停点在 447,490 地标前 ~107 步),尾段 W1[0] 跑过
+    # P3_CHG_CON0 RMW(BV 投影)后停在 P3_ANA_READ 模拟量轮询读
+    # (447,383 @ 0x6012f22,BV 钉住的红线——RES 同款)。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 689402, 'stop_pc': '0x6011704',
-        'stop_fields': {'kind': 'fd31_adc_res_not_modeled',
-                        'address': '0xfd3104'}}
+        'completed_steps': 447383, 'stop_pc': '0x6012f22',
+        'stop_fields': {'kind': 'p3_ana_read_not_modeled',
+                        'address': '0xf2c064'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
