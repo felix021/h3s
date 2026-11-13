@@ -6,6 +6,7 @@ from probe_boot import Blocked
 from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
+from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
@@ -921,6 +922,32 @@ class ModelTests(unittest.TestCase):
         # P3_ANA_CON6 仍由 VOLTAGE_CONFIG 管辖:只开本投影不覆盖它。
         self.assertFalse(h.handles(0xf2c258,4))
         self.assertIn('p33_analog_config_projection',h.report()['assumptions'])
+
+    def test_jl_clock_dcck_readback_is_synthetic_zero_or_last_write(self):
+        # 路 CL(sim-dcck):JL 时钟族 DCCK_CON0/1/2(0xfd0008/0c/10)按路 AM 容器
+        # 同款「显式合成初始字 0 + 读回=当前寄存器值」建模。br28.h 把
+        # JL_CLOCK_TypeDef 全字段标 __RW,SDK power_clock.c 的 deep-sleep
+        # save/restore 把三字列入可读回/可恢复清单(双证据);唯一 app 消费者
+        # 0x6068152 的显式读值全部被掩码+OR 消化,seed 0 下确定性位域配置。
+        # 默认关:三字都不进 handles、读回严格停。
+        g=BR28Model()
+        self.assertFalse(g.handles(DCCK_CON0,4) or g.handles(DCCK_CON1,4) or g.handles(DCCK_CON2,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):g.read(DCCK_CON0)
+        self.assertNotIn('jl_clock_dcck_projection',g.report()['assumptions'])
+        # opt-in:合成初始字 0,写后读回=最后写值;三字都在 additional_configuration
+        # 与 registers seed 里(整字写/显式 ld/st RMW/复合 RMW 走通用路径)。
+        h=BR28Model(jl_clock_dcck_projection=True)
+        self.assertEqual(tuple(sorted(JL_CLOCK_DCCK)),(0xfd0008,0xfd000c,0xfd0010))
+        for address in JL_CLOCK_DCCK:
+            self.assertTrue(h.handles(address,4))
+            self.assertEqual(h.read(address),0,'first read is the explicit synthetic 0, not an inferred reset value')
+        h.write(DCCK_CON0,0x4);self.assertEqual(h.read(DCCK_CON0),4)
+        h.write(DCCK_CON1,0xff000100);self.assertEqual(h.read(DCCK_CON1),0xff000100)
+        h.write(DCCK_CON2,0x10000);self.assertEqual(h.read(DCCK_CON2),0x10000)
+        # JL 时钟族其余成员不受本开关管辖(0xfd0004=PWR_CON 归复位历史域、
+        # 0xfd0014=SYS_DIV 归 clock_divider、0xfd0018=CLK_CON0 基模型槽)。
+        self.assertFalse(h.handles(0xfd0004,4) or h.handles(0xfd0014,4))
+        self.assertIn('jl_clock_dcck_projection',h.report()['assumptions'])
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')

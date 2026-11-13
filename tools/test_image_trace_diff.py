@@ -183,12 +183,14 @@ def test_scenario_registry_shapes():
     # gpcnt_con_readback 位粒度读回投影放行该读(bit0=0 真实跳过分支,任务 9
     # 次调度全空手返回),W1[0] 20 轮超时路径全预算执行,core tick 交付合计 9
     # 次,超时后进 mode 切换函数 0x6068152——3,070,626 @ 0x606817a 读
-    # JL_CLOCK->DCCK_CON0 0xfd0008 停(路 CC 预研钉死的 JL 时钟族)。
+    # JL_CLOCK->DCCK_CON0 0xfd0008 停(路 CC 预研钉死的 JL 时钟族)。路 CL:
+    # jl_clock_dcck 投影放行该读,mode 切换体真实执行,W1[1] call scheduler
+    # 中断上下文 helper 0x6065c3a 的 icfg 读被 0x6065c4c `if ((r0&0xFF)!=0)`
+    # 消费——3,070,786 @ 0x6065c4c partial_icfg_value_consumed 停。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3070626, 'stop_pc': '0x606817a',
-        'stop_fields': {'kind': 'unmapped_memory', 'access': 'read',
-                        'address': '0xfd0008', 'size': 4,
-                        'reference_sdk_register': None}}
+        'completed_steps': 3070786, 'stop_pc': '0x6065c4c',
+        'stop_fields': {'kind': 'partial_icfg_value_consumed',
+                        'known_mask': '0x3ff', 'known_value': '0x300'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
