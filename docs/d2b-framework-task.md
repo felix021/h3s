@@ -360,3 +360,42 @@ IPMASK 域 + #4 出队语义 = 最小可行；#2 任务切换若成本高可先�
 5. 落三件半 fixture：①任务存在（直调创建链，0x6065f9e RETI=0x6086980）②pend/调度
    桩（单任务）③tone 链节点创建三 PC；#4 出队（get-event 真执行）半件；#5 槽哨兵
    具名合成（0x1264b8/0x1264c8 空双向链表自环）。
+
+## 10. D2-B 收尾实测回执（路 CM/sim-cmd11，2026-11-13）
+
+§9 的「下一步归路」（cmd-11 参数消息注入）已落地。实测基于 probe_pi32v2
+`--tone-scene` 场景 3 新增 Phase D + 新场景 `eq_hook_node35`（opt-in，legacy 报告
+逐字节不变）：
+
+1. **cmd-11 obj/param 结构钉死 [静态]**：真实生产者 0x607538a 打包 1068B 消息
+   {h[msg+2]=uuid16、msg+4=name[16]、msg+44=44B param}，经 0x6074192 post
+   {cmd=11,msg,0x2000f,msg+24}（与 BW S1 post 入参互证）。消费者
+   0x6075e22(msg,0x2000f)→0x6075d8e（stream 槽列表 walk 找节点）→0x6074a72
+   （节点 op 分发；r8=0x1a85 流节点判定）→op1→subcmd2 0x6078a2e 写
+   node+35=param44[4]。44B param 布局=(u32 subcmd=2,u32 bypass)+0×9。**修正 CI
+   §3.2 一处：0x607898e 是 wdrc op1（'wdrc' 记录 @0x60a8f90 ops={0x607876a,
+   0x607898e,0x6078bb0}），eq op1 是 0x6078594（'eq' 记录 @0x60a8f78）；subcmd2
+   分发的 tbh 表 @0x6078a1a 子命令 2→0x6078a2e。open-config 0x60787ac（含钩子
+   0x6078846）由 0x607898e 的 0x40001 分支以 r0=ctx 调起，与 subcmd2 写同一字节
+   ctx[35]（=node+35，ctx=[44B 节点+16]）。
+2. **Phase D cmd-11 注入站**：合成 {cmd=11,msg{uuid=0x737b,name=MusicEqBt,
+   param44=(2,bypass)},0x2000f} 直调 0x6075e22——0x6075e22+0x6075d8e+0x6075d10
+   （递归查找）真实执行；eq 节点（uuid 0x737b）在本场景不存在（由 D2-C 管道构建
+   0x6074938 descriptor walk 创建+挂链，tone 链只建 stream 节点 uuid 0x1a85），
+   node-find 诚实 not-found、subcmd2 不达——「cmd-11 注入到 0x6075e22 消费站」钉死，
+   全链收口归 D2-C。
+3. **eq_hook_node35 场景（BW S3 直调先例，合成 44B 效果节点+私有 ctx[node+16]）**：
+   - subcmd2 0x6078a2e 直调 0x607898e：node+35=ctx[35]=param44[4]（bypass=1→0x01、
+     bypass=0→0x00；值 0 走重开 0x6078b60→0x60787ac 诚实停在配置子系统文件读未建模）。
+   - open-config 钩子 0x6078846 站点尾窗重放（r6=file_cfg[4]=0 合成、r7=ctx+32、
+     0x1265EA 状态字节 0x01/0x81）：b79/official 原字节写 ctx[35]=file_cfg[4]（0）；
+     repaired goto 0x60e30a0→eq_open_config（0x60e30f6，载荷内真实执行）——EQ 关
+     （0x1265EA bit7=1）+ctx 名字∈{MusicEqBt,Eq0Media}（same_name 0x60e30d4 真实
+     比较）→强制 ctx[35]=1、EQ 开→保持 file 值 0。
+4. **三镜像维度**：official↔b79 subcmd2+open-config 两路全等；repaired subcmd2≡b79
+   （app 代码相同），open-config 在 EQ 关态强制 1 vs b79 保持 0——**「效果节点状态
+   对比」（BT §4 唯一留白）现闭合到节点状态**。
+5. **验证**：`check_local.py --rom …/QCY_H3S_BR28_ROM_000000-020000.bin --jobs 6`
+   exit 0；legacy（无 --tone-scene）报告与主仓基线逐字节相同；RAM 窗口加宽至真实
+   物理范围 [0x124000,0x1a0000)（heap 基址 0x131400 不变、既有地址全不变）。候选
+   UNTESTED 状态不变、无任何刷机建议。

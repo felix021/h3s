@@ -863,7 +863,7 @@ def tone_scene_resources(ufw_path):
 
 
 def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_official,
-                   meta_b79=None,meta_official=None):
+                   meta_b79=None,meta_official=None,repaired_app=None,repaired_payload=None):
     """D2-A first-scene skeleton: inject the power-on tone event at handler
     0x6023a0a and follow the real firmware as far as it honestly goes.
 
@@ -884,6 +884,19 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
     accessor takes the passthrough branch (sequential seek(cur)+read(len),
     no 20-byte head read, no XOR), until the framework side parks in the
     ROM pend idle poll (honest stop at the D2-B message-loop boundary).
+
+    Scene 3 (tone_pipeline_consume, route CK + this route CM): D2-B framework
+    task wiring plus the cmd-11 parameter-message injection that drives the
+    EQ node op1 (see docs/d2b-framework-task.md section 9). The cmd-11
+    message shape is {cmd=11, obj=packed-msg{uuid16@+2,name@+4,44B param@+44},
+    param3rd=0x2000f}, pinned by disassembly of the real producer 0x607538a
+    and the consumer 0x6075e22. The scene injects it at the consumer and
+    records the injection station and the node-find chain; the EQ effect node
+    (uuid 0x737b) itself is created by the D2-C pipeline construction (not
+    this scene), so the node-find honestly reports not-found. The node+35
+    write is then observed in the eq_hook_node35 scenario via the named
+    direct-call / site-tail precedents (route BW), across b79 / official /
+    repaired.
     """
     import fnmatch
     fixtures=dict(TONE_SCENE_FIXTURES)
@@ -1085,12 +1098,17 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             pend_events.append('0x6064340');c.R[0]=0;c.pc=c.rets;return True
         return False
 
-    def machine(image,stream_map=None):
+    def machine(image,stream_map=None,bounds=None,payload=None):
         c=CPU()
         c.mem=Memory()
         c.mem.map(BASE,image)
         c.mem.map(0x0,rom_bytes)                    # public Release ROM asset, read-only
-        c.mem.map(0x00124000,bytes(0x11000),writable=True)
+        # route CM: widen the zeroed RAM window to the real physical extent
+        # [0x124000, 0x1a0000) (heap 0x134500..0x19fb80 + IRQ table 0x19fe00,
+        # per AGENTS) so the scene-3 Phase A+B+D+B2+C heap traffic does not
+        # spill past the earlier 0x135000 limit; the heap base is unchanged so
+        # every existing address stays identical.
+        c.mem.map(0x00124000,bytes(0xdc000),writable=True)
         data_src,code_src=STARTUP_DATA_REGION[1],STARTUP_RAM_CODE_REGION[1]
         c.mem.map(STARTUP_DATA_REGION[0],app[data_src-BASE:data_src-BASE+STARTUP_DATA_REGION[2]],writable=True)
         c.mem.map(STARTUP_RAM_CODE_REGION[0],app[code_src-BASE:code_src-BASE+STARTUP_RAM_CODE_REGION[2]],writable=True)
@@ -1098,7 +1116,13 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             # public stream.bin bytes mapped read-only at the CD-measured
             # runtime base (0x06000000 + public content_offset)
             c.mem.map(stream_map[0],stream_map[1])
-        c.execution_bounds=(BASE,0x060c3338)
+        if payload is not None:
+            # route CM: the repaired candidate's appended 337B payload
+            # (0x060e3074..0x060e31c5) sits outside the app slice, mapped here
+            # for the repaired variant; the hook sites themselves are already
+            # rewritten inside the repaired app image.
+            c.mem.map(0x060e3074,payload)
+        c.execution_bounds=bounds or (BASE,0x060c3338)
         c.sp=0x00134000
         from br28_arch_models import architectural_k2
         c.models,_=architectural_k2(c.models)
@@ -1275,6 +1299,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
              'get_event_0x6064c8c':0x6064c8c,'cmd4_0x60869d8':0x60869d8,
              'payload_read_0x60869b6':0x60869b6,
              'cmd11_consumer_0x6075e22':0x6075e22,
+             'node_find_0x6075d8e':0x6075d8e,'node_find_recursive_0x6075d10':0x6075d10,
              'node_create_0x607471e':0x607471e,'decoder_bind_0x6076b7a':0x6076b7a,
              'open_config_0x60787ac':0x60787ac,'eq_hook_0x6078846':0x6078846,
              'subcmd2_write_0x6078a2e':0x6078a2e,'framework_post_0x6074192':0x6074192}
@@ -1333,6 +1358,37 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
                                  watch=consume_watch,stream_map=stream_map,consume=True)
         qcount=(struct.unpack('<H',c.mem.read(tcb+14,2))[0] if tcb is not None else None)
         post_hit=any(e['pc']==hex(D2B_PCS['stream_request_post_0x6075414']) for e in evB)
+        # Phase D (route CM): cmd-11 parameter-message injection. Synthesize
+        # the exact consumer shape pinned by disassembly of the real producer
+        # 0x607538a: a 1068B packed message {h[msg+2]=uuid16, msg+4=name[16],
+        # msg+44=44B param (u32 subcommand=2, u32 bypass) rest zero}, posted as
+        # {cmd=11, obj=msg, param3rd=0x2000f} by 0x6074192. Direct-call the
+        # consumer 0x6075e22(msg, 0x2000f) (route CK/BW direct-call precedent)
+        # and record the injection station plus the node-find chain
+        # 0x6075d8e -> 0x6075d10. The eq node (uuid 0x737b) is created by the
+        # D2-C pipeline construction, not this scene, so the find honestly
+        # reports not-found; the node+35 write is observed in eq_hook_node35.
+        cmd11={}
+        for bypass in (1,0):
+            c.sp=0x00134000
+            msg=bump(1068)
+            c.mem.write(msg+2,struct.pack('<H',0x737b))
+            c.mem.write(msg+4,b'MusicEqBt\x00'+bytes(6))
+            c.mem.write(msg+44,struct.pack('<II',2,bypass)+bytes(36))
+            c.pc=0x6075e22;c.rets=SENTINEL
+            c.R[0]=msg;c.R[1]=0x2000f
+            for r in range(2,16):c.R[r]=0
+            evD,callsD,stopD=run_segment(c,20000,consume_watch)
+            cmd11[f'bypass_{bypass}']={
+                'injected_message':{'cmd':11,'obj':hex(msg),'param3rd':hex(0x2000f),
+                                    'uuid16':hex(0x737b),'name':'MusicEqBt',
+                                    'param44':[2,bypass]+[0]*9},
+                'consumer_0x6075e22_reached':any(e['pc']==hex(D2B_PCS['cmd11_consumer_0x6075e22']) for e in evD),
+                'node_find_0x6075d8e_reached':any(e['pc']==hex(D2B_PCS['node_find_0x6075d8e']) for e in evD),
+                'node_find_recursive_0x6075d10_reached':any(e['pc']==hex(D2B_PCS['node_find_recursive_0x6075d10']) for e in evD),
+                'subcmd2_0x6078a2e_reached':any(e['pc']==hex(D2B_PCS['subcmd2_write_0x6078a2e']) for e in evD),
+                'node_find_result':'not-found (eq node uuid 0x737b is created by the D2-C pipeline construction, not by this scene)',
+                'stop':stopD}
 
         # Phase B2: directly invoke the stream-request entry 0x60753e8 (the
         # CI-pinned app->framework bridge; its caller 0x6018f0e sits behind a
@@ -1389,6 +1445,7 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
             'pend_composite_events':list(pend_events),
             'd2b_pc_reached':d2b,
             'node_plus_35_writes':node35,
+            'cmd11_injection':cmd11,
             'steps':{'total':c.steps}}
     scenarios['tone_pipeline_consume']=consume
     if 'official' in consume:
@@ -1396,6 +1453,112 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
                 'official and b79 D2-B consumption coverage diverged')
         require(consume['official']['consumed_messages']==consume['b79']['consumed_messages'],
                 'official and b79 consumed message payloads diverged')
+        require(consume['official']['cmd11_injection']==consume['b79']['cmd11_injection'],
+                'official and b79 cmd-11 injection records diverged')
+
+    # -- scenario 4 (route CM): EQ hook node+35 write (D2-B/D2-D 会师) --
+    # The cmd-11 message drives 0x6075e22 -> 0x6074a72 -> eq op1 -> subcmd2 ->
+    # 0x6078a2e `b[node+35]=value` (node+35 == ctx[35], the runtime bypass byte
+    # of the effect private context [node+16]). Two write paths are observed on
+    # a synthesized eq node (route BW scenario-3 direct-call precedent), across
+    # the three images:
+    #   (a) subcmd2 0x6078a2e via direct-call 0x607898e(node, 0x2000f, param44):
+    #       ctx[35] = param44[4] (the injected bypass) -- identical code in all
+    #       three images, so this is the parity path;
+    #   (b) open-config hook 0x6078846 site-tail: b79/official write
+    #       ctx[35] = file_cfg[4]; repaired jumps to eq_open_config which forces
+    #       ctx[35] = 1 when the EQ state byte 0x1265ea bit7 is set (EQ off) and
+    #       the node name is MusicEqBt/Eq0Media -- the effect-node-state
+    #       difference that is the D2 tail of the EQ verification.
+    EQ_CTX_NAME=b'MusicEqBt\x00'
+    eq_watch=(0x607898e,0x6078a2e,0x60787ac,0x6078846,0x607895c,0x6078b60,0x60e30a0,0x60e30f6)
+    eq_variants=[('b79',app,(BASE,0x060c3338),None)]
+    if official is not None:
+        eq_variants.append(('official',official,(BASE,0x060c3338),None))
+    if repaired_app is not None:
+        eq_variants.append(('repaired',repaired_app,(BASE,0x060e31c5),repaired_payload))
+    node35={}
+    for ename,image,bounds,payload in eq_variants:
+        # (a) subcmd2 write via direct-call of the wdrc op1 0x607898e.
+        subcmd2={}
+        for bypass in (1,0):
+            heap['next']=fixtures['synthetic_heap_base'];allocs.clear()
+            c=machine(image,bounds=bounds,payload=payload)
+            node=0x130800;ctx=0x130900;param=0x130a00
+            c.mem.write(node,bytes(48))
+            c.mem.write(ctx,bytes(0x100))
+            c.mem.write(node+16,struct.pack('<I',ctx))
+            c.mem.write(param,struct.pack('<II',2,bypass)+bytes(36))
+            c.pc=0x607898e;c.rets=SENTINEL;c.sp=0x00134000
+            c.R[0]=node;c.R[1]=0x2000f;c.R[2]=param
+            for r in range(3,16):c.R[r]=0
+            ev,calls,stop=run_segment(c,20000,eq_watch)
+            subcmd2[f'bypass_{bypass}']={
+                'subcmd2_0x6078a2e_reached':any(e['pc']==hex(0x6078a2e) for e in ev),
+                'open_config_0x60787ac_reached':any(e['pc']==hex(0x60787ac) for e in ev),
+                'eq_hook_0x6078846_reached':any(e['pc']==hex(0x6078846) for e in ev),
+                'node_plus_35_value':c.mem.read(ctx+35,1)[0],
+                'stop':stop}
+
+        # (b) open-config hook site-tail (0x6078846): ctx[35] = file_cfg[4] on
+        # b79/official, or forced 1 on repaired when EQ-off and name matches.
+        # file_cfg[4]=0 is a named synthetic (the real config-file bypass byte
+        # is unmodeled here); the observation is the repaired-vs-baseline
+        # difference, not the absolute file value.
+        opencfg={}
+        for state in (0x01,0x81):
+            heap['next']=fixtures['synthetic_heap_base'];allocs.clear()
+            c=machine(image,bounds=bounds,payload=payload)
+            node=0x130800;ctx=0x130900;filecfg=0x130b00
+            c.mem.write(node,bytes(48))
+            c.mem.write(ctx,bytes(0x100))
+            c.mem.write(node+16,struct.pack('<I',ctx))
+            c.mem.write(ctx,EQ_CTX_NAME+bytes(6))
+            c.mem.write(filecfg,struct.pack('<II',0,0))
+            c.mem.write(QCY+42,bytes([state]))
+            c.pc=0x6078846;c.rets=SENTINEL;c.sp=0x00134000
+            c.R[4]=ctx;c.R[6]=filecfg;c.R[7]=ctx+32
+            for r in list(range(4))+[5]+list(range(8,16)):c.R[r]=0
+            events=[];seen=set();stop=None
+            try:
+                for _ in range(200):
+                    if c.pc==0x607884c or c.pc==SENTINEL:break
+                    if c.pc in eq_watch and c.pc not in seen:
+                        seen.add(c.pc);events.append({'pc':hex(c.pc),'regs':[c.R[i] for i in range(16)]})
+                    c.step()
+            except (PermissionError,RuntimeError,ValueError,KeyError) as e:
+                stop={'pc':hex(c.pc),'error':f'{type(e).__name__}: {e}'}
+            opencfg[f'eq_state_{state:#04x}']={
+                'eq_hook_0x6078846_reached':any(e['pc']==hex(0x6078846) for e in events),
+                'eq_open_config_0x60e30f6_reached':any(e['pc']==hex(0x60e30f6) for e in events),
+                'node_plus_35_value':c.mem.read(ctx+35,1)[0],
+                'file_cfg_bypass_byte':0,
+                'stop':stop}
+        node35[ename]={'subcmd2_write':subcmd2,'open_config_hook':opencfg}
+    scenarios['eq_hook_node35']=node35
+    # parity + repaired-difference assertions
+    if 'official' in node35:
+        for key in ('subcmd2_write','open_config_hook'):
+            require(node35['b79'][key]==node35['official'][key],
+                    f'official and b79 {key} node+35 behavior diverged')
+    require(node35['b79']['subcmd2_write']['bypass_1']['subcmd2_0x6078a2e_reached'],
+            'subcmd2 0x6078a2e must execute on the direct op1 call')
+    require(node35['b79']['subcmd2_write']['bypass_1']['node_plus_35_value']==1
+            and node35['b79']['subcmd2_write']['bypass_0']['node_plus_35_value']==0,
+            'subcmd2 must write ctx[35] = the injected bypass byte')
+    require(node35['b79']['open_config_hook']['eq_state_0x81']['eq_hook_0x6078846_reached'],
+            'open-config hook 0x6078846 must execute on the site-tail replay')
+    require(node35['b79']['open_config_hook']['eq_state_0x81']['node_plus_35_value']==0,
+            'b79 open-config must keep ctx[35] = file_cfg[4] (0) with EQ off')
+    if 'repaired' in node35:
+        require(node35['repaired']['subcmd2_write']==node35['b79']['subcmd2_write'],
+                'repaired subcmd2 write diverged from b79 (identical app code)')
+        require(node35['repaired']['open_config_hook']['eq_state_0x81']['eq_open_config_0x60e30f6_reached'],
+                'repaired open-config hook must enter eq_open_config')
+        require(node35['repaired']['open_config_hook']['eq_state_0x81']['node_plus_35_value']==1,
+                'repaired open-config must force ctx[35] = 1 when EQ off and name matches')
+        require(node35['repaired']['open_config_hook']['eq_state_0x01']['node_plus_35_value']==0,
+                'repaired open-config must keep ctx[35] = file_cfg[4] (0) when EQ on')
 
     report['scenarios']=scenarios
     report['corrections_vs_route_bx']=[
@@ -1415,6 +1578,8 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
         'queue post/event 0x10000B, mutex take/give and the allocator are SYNTHETIC stubs; RTOS/queue/task-switch semantics remain unmodeled',
         'scene 3 (tone_pipeline_consume) wires D2-B via synthetic single-task semantics: the jlstream task is created by the REAL initcall chain 0x60759ee (allocator/memset/strcmp/frame-pool stubbed), the ROM pend/exit composite points 0x12b55c/0x12b5b0 and the scheduler trigger 0x6064340 are stubbed to "pend returns / no switch", the current-task pointer [OS+1692+cnum*4]=TCB and the two stream-slot list sentinels 0x1264b8/0x1264c8 are synthetic boot-initialized OS state (named synthetic-not-measured)',
         'scene 3 EQ hook sites 0x6078846/0x6078a2e and open-config 0x60787ac remain unreached: the first consumed message is cmd5 (stream-create request, CI §5.5 correction) which only checks the stream list and loops, and the tone chain close event (cmd9) stops on the unmodeled OS sys_timer read 0xffe0f8 -- the cmd-11 parameter message that drives the EQ node op1 is not produced by this scene',
+        'scene 3 Phase D (route CM) injects the cmd-11 parameter message at the consumer 0x6075e22 by direct call (synthetic-not-measured): the message shape {cmd=11, obj=packed-msg{uuid16@+2, name@+4, 44B param@+44}, param3rd=0x2000f} is the exact shape the real producer 0x607538a packs, but the queue itself is not exercised -- the node-find chain 0x6075d8e -> 0x6075d10 runs real and honestly reports the eq node (uuid 0x737b) as not-found, because that node is created and linked by the D2-C pipeline construction (0x6074938 descriptor walk), not by the tone chain this scene runs',
+        'eq_hook_node35 (route CM) synthesizes a 44B effect node with a private context [node+16]=ctx (synthetic-not-measured, route BW scenario-3 direct-call precedent): the subcmd2 write 0x6078a2e and the open-config hook 0x6078846 execute REAL app code over that synthetic node; file_cfg[4]=0 is a named synthetic because the real config-file bypass byte (config subsystem -> file reads) is unmodeled, so the observation is the repaired-vs-baseline difference (forced ctx[35]=1 vs kept file value), not the absolute file value',
     ]
     report['observations_route_cd']={
         'loader_gate_b_0x12649d':'recorded per variant (zeroed RAM here; CD live-measured 0 after boot, setter still unidentified)',
@@ -1470,7 +1635,8 @@ def main():
             files_official,meta_official=None,None
         result['tone_scene']=run_tone_scene(module,firmware_app(args.firmware),
             official_app(args.official_ufw) if args.official_ufw else None,
-            rom_bytes,files_b79,files_official,meta_b79,meta_official)
+            rom_bytes,files_b79,files_official,meta_b79,meta_official,
+            repaired_app=repaired_app,repaired_payload=repaired_payload)
     text=json.dumps(result,indent=2)+'\n'
     if args.report:
         args.report.parent.mkdir(parents=True,exist_ok=True)
