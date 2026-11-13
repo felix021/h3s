@@ -19,6 +19,25 @@ docs/hearing-aid-l1-payload.md §10/§11):
     release -> clear slot -> event_notify(11, "mic_effect"));
   - tools/hearing-aid/mic_effect_close_hook.S — the four ON/OFF leave stubs.
 
+Route CT / sim-slotram (2026-11-14) moves the data slot out of the flash
+appended segment into boot-zeroed BSS RAM (--hearing-aid-l1-slotram, implies
+--hearing-aid-l1-close; docs §10.4/§12). The close chain functionally depends
+on the slot holding the stream handle written by open (§10.4 方案 B ruled out
+every framework-side lookup), and a plain st.w cannot program the SFC-mapped
+flash region, so the route-Y flash-tail slot leaves close permanently
+early-exited on real hardware — the RAM slot is what makes the close half of
+the candidate actually functional, not just hardening. The appended segment
+drops the trailing 4B slot entirely (364B code, file 397B, fence top
+0x060E31E0). Slot address evidence (five classes, machine-rechecked by
+tools/analyze_hearing_aid_slot_address.py): inside the really-executed boot
+BSS zero loop [0x125320, 0x12a62c) (docs/boot-handoff.md digests); zero
+li.u32 anchors / provenance-traced accesses / dynamic-index bases within
++-0x400 / aligned-or-unaligned flash pointer-words into the hole, across
+app.bin + RAM-code source + ROM; below the QCY giant struct base 0x1265C0
+(fields proven to reach +0x2CE6). Residual classes that no static scan can
+close (runtime-computed bulk destinations, ROM-resident paths beyond the
+captured window) stay documented in §12.
+
 Implant edits, all byte-asserted against the official 0.1.1.8 layout:
   1. append a JLFS file at the same geometry as the EQ payload precedent
      (header at flash 0xE5073, 0xff marker, code at runtime 0x060E3074,
@@ -90,6 +109,15 @@ PAYLOAD_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open.S'
 HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_hook.S'
 CLOSE_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close.S'
 CLOSE_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close_hook.S'
+# Route CT RAM slot (docs §12): centre word of the statically dead 593B BSS
+# hole [0x12544e, 0x12569f) — 294B/295B margins to the nearest referenced
+# byte on either side. Must stay inside the boot BSS zero loop
+# [0x125320, 0x12a62c) (a non-zeroed byte would make close stop() a garbage
+# pointer on first use) and below the QCY struct base 0x1265C0.
+# tools/analyze_hearing_aid_slot_address.py re-checks every evidence class.
+RAM_SLOT = 0x00125574
+BSS_ZERO_RANGE = (0x125320, 0x12a62c)     # really-executed boot zero loop
+QCY_BASE = 0x1265c0                       # giant device struct base (→ +0x2CE6)
 
 
 def _patch_slot(text, slot):
@@ -125,6 +153,16 @@ def _compose(slot, close_hooks=False):
         (CLOSE_HOOK_SOURCE.read_text() if close_hooks else '')
 
 
+def _slot_checks(slot):
+    """Invariants of the RAM slot address (docs §12; fails loudly if moved
+    outside the boot-zeroed, statically dead hole)."""
+    start, end = BSS_ZERO_RANGE
+    if not (start <= slot < end - 3) or slot % 4:
+        raise ValueError(f'RAM slot {slot:#x} outside aligned BSS zero range')
+    if slot >= QCY_BASE:
+        raise ValueError('RAM slot must stay below the QCY struct base')
+
+
 def _assemble(text):
     obj = ASM.read_object(ASM.assemble_text(text, '<hearing-aid-l1>'))
     sections = ASM.code_sections(obj)
@@ -133,23 +171,35 @@ def _assemble(text):
     return obj, sections[0][1]
 
 
-def assemble_segment(close_hooks=False):
+def assemble_segment(close_hooks=False, slot_ram=False):
     """Assemble payload+stubs at PAYLOAD_ADDRESS with the real slot address.
 
     Two passes: the section length is layout-stable (test_hearing_aid_payload /
     test_hearing_aid_close_payload prove only the slot li.u32 immediates depend
     on the slot value), so pass 1 measures the length and pass 2 bakes
-    slot = base + length. Returns a report dict with bytes, entry offsets and
-    the disassembly.
+    slot = base + length. slot_ram=True (route CT) instead pins the slot to
+    the boot-zeroed BSS address RAM_SLOT — layout-independent, so the two-pass
+    byte-diff assertion does not apply — and the segment carries no trailing
+    slot bytes. Returns a report dict with bytes, entry offsets and the
+    disassembly.
     """
+    if slot_ram:
+        if not close_hooks:
+            raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
+        _slot_checks(RAM_SLOT)
+        slot = RAM_SLOT
     _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks))
-    slot = PAYLOAD_ADDRESS + len(first)
+    if not slot_ram:
+        slot = PAYLOAD_ADDRESS + len(first)
     obj, code = _assemble(_compose(slot, close_hooks))
     if len(code) != len(first):
         raise ValueError('slot immediate changed the section layout')
-    diffs = [i for i, (a, b) in enumerate(zip(first, code)) if a != b]
-    if any(code[i] == first[i] for i in diffs) or not diffs:
-        raise ValueError('expected slot-only byte differences between passes')
+    if slot_ram:
+        diffs = []                   # slot independent of layout: single pass
+    else:
+        diffs = [i for i, (a, b) in enumerate(zip(first, code)) if a != b]
+        if any(code[i] == first[i] for i in diffs) or not diffs:
+            raise ValueError('expected slot-only byte differences between passes')
     names = ['mic_effect_open', 'trans_branch_1', 'trans_branch_2']
     if close_hooks:
         names += ['mic_effect_close'] + [w[4] for w in CLOSE_WINDOWS]
@@ -171,11 +221,17 @@ def assemble_segment(close_hooks=False):
         insn, values, length = ASM.decode(code, addr - PAYLOAD_ADDRESS)
         if ASM.encode(insn_id, **values) != raw:
             raise ValueError(f're-encode differs at {addr:#x} ({text})')
-    report = {'variant': 'open+close' if close_hooks else 'open',
+    slot_tail = 0 if slot_ram else 4
+    report = {'variant': ('open+close+slotram' if slot_ram else
+                          'open+close' if close_hooks else 'open'),
               'payload_bytes': stub_offsets[0], 'stub_bytes': len(code) - stub_offsets[0],
               'code_bytes': len(code), 'slot_address': f'0x{slot:08x}',
+              'slot_location': 'ram-bss' if slot_ram else 'flash-tail',
+              'slot_boot_value': ('boot BSS zero loop [0x125320,0x12a62c) '
+                                  '(docs/boot-handoff.md)' if slot_ram
+                                  else 'image bytes 00 00 00 00'),
               'segment_start': f'0x{PAYLOAD_ADDRESS:08x}',
-              'segment_end_runtime': f'0x{PAYLOAD_ADDRESS + len(code) + 4:08x}',
+              'segment_end_runtime': f'0x{PAYLOAD_ADDRESS + len(code) + slot_tail:08x}',
               'stub_1_address': f'0x{PAYLOAD_ADDRESS + stub_offsets[0]:08x}',
               'stub_2_address': f'0x{PAYLOAD_ADDRESS + stub_offsets[1]:08x}',
               'code_sha256': hashlib.sha256(code).hexdigest(),
@@ -275,17 +331,22 @@ def _verify_leave_stubs(code, by_off, report):
             raise ValueError(f'leave stub {tag} calls {target:#x}, not the close payload')
 
 
-def apply_l1_patch(flash, close_hooks=False):
+def apply_l1_patch(flash, close_hooks=False, slot_ram=False):
     """Apply the implant edits to the decrypted flash image in place.
 
     close_hooks=True builds the open+close segment (route Y) and additionally
-    replaces the four ON/OFF leave windows. Returns the report dict (incl.
-    new_app_end for the caller's SFC/boot-info pass). Per-site byte assertions
-    keep this valid with or without the ANC two-state table change, which
-    edits one unrelated app.bin byte first.
+    replaces the four ON/OFF leave windows. slot_ram=True (route CT) pins the
+    data slot to boot-zeroed BSS instead of the flash segment tail (implies
+    the close variant). Returns the report dict (incl. new_app_end for the
+    caller's SFC/boot-info pass). Per-site byte assertions keep this valid
+    with or without the ANC two-state table change, which edits one unrelated
+    app.bin byte first.
     """
-    segment, code, slot = assemble_segment(close_hooks)
-    end = OLD_APP_END + 32 + 1 + len(code) + 4      # header + 0xff + code + slot
+    if slot_ram and not close_hooks:
+        raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
+    segment, code, slot = assemble_segment(close_hooks, slot_ram=slot_ram)
+    slot_tail = 0 if slot_ram else 4
+    end = OLD_APP_END + 32 + 1 + len(code) + slot_tail   # header + 0xff + code (+ slot)
     if end > len(flash) or any(v != 255 for v in flash[OLD_APP_END:end]):
         raise ValueError('non-padding bytes at the L1 append location')
     hooks = []
@@ -329,7 +390,7 @@ def apply_l1_patch(flash, close_hooks=False):
     fence_position = APP_DATA + FENCE_SITE - APP_BASE
     if flash[fence_position:fence_position + 6] != FENCE_ORIGINAL:
         raise ValueError('LIM_PC0 upper-limit instruction changed')
-    upper = PAYLOAD_ADDRESS + len(code) + 4         # end of the appended file
+    upper = PAYLOAD_ADDRESS + len(code) + slot_tail  # end of the appended file
     flash[fence_position + 2:fence_position + 6] = struct.pack('<I', upper)
     fence = {'site': f'0x{FENCE_SITE:08x}', 'old_upper_limit': '0x60c3338',
              'new_upper_limit': f'0x{upper:08x}',
@@ -345,7 +406,7 @@ def apply_l1_patch(flash, close_hooks=False):
     struct.pack_into('<H', flash, LAST_HEADER + 14, 0)
     struct.pack_into('<H', flash, LAST_HEADER,
                      jl_crc16(flash[LAST_HEADER + 2:LAST_HEADER + 32]))
-    content = b'\xff' + code + b'\x00\x00\x00\x00'
+    content = b'\xff' + code + (b'' if slot_ram else b'\x00\x00\x00\x00')
     block_size = 32 + len(content)
     header = bytearray(struct.pack('<HHIIBBH16s', 0, jl_crc16(content), 32,
                                    block_size, 0x82, 0, 1, HOOK_FILE.encode()))
@@ -363,7 +424,7 @@ def apply_l1_patch(flash, close_hooks=False):
                     'fence_repair': fence, 'extension_file': HOOK_FILE,
                     'old_app_end': OLD_APP_END, 'new_app_end': end,
                     'payload_flash_offset': hex(payload_flash),
-                    'slot_initial_bytes': '00 00 00 00',
+                    'slot_initial_bytes': segment['slot_boot_value'],
                     'device_verified': False})
     return segment
 
@@ -409,11 +470,16 @@ def verify_l1_image(result, source, flash_pos, original_plain, plain, l1):
                 or decoded[0][2] != f'r6 = {stub_addr}'
                 or decoded[1][2] != 'goto r6'):
             raise ValueError(f'接驳窗口 {hook["window"]} 最终字节反解码不符')
-    # 4. appended segment: slot bytes + full listing round-trip.
+    # 4. appended segment: slot bytes (flash-tail variant) or exact file end
+    #    (ram-slot variant carries no slot in the image), full listing
+    #    round-trip.
     code_start = l1['payload_flash_offset'] if isinstance(l1['payload_flash_offset'], int) \
         else int(l1['payload_flash_offset'], 16)
     code_len = l1['code_bytes']
-    if plain[code_start + code_len:code_start + code_len + 4] != b'\x00\x00\x00\x00':
+    if l1.get('slot_location') == 'ram-bss':
+        if new_app_end != code_start + code_len:
+            raise ValueError('ram-slot 变体的追加文件必须在代码段末尾结束（无镜像内槽）')
+    elif plain[code_start + code_len:code_start + code_len + 4] != b'\x00\x00\x00\x00':
         raise ValueError('数据槽初始字节不是 0')
     if plain[code_start:code_start + code_len] != _segment_bytes(l1):
         raise ValueError('追加代码段与汇编产物不一致')

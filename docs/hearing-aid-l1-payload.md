@@ -27,8 +27,11 @@ h3s-tools-research 的 jlstream.h。一次性脚本在本地 tmp（~/tmp/hearaid
 路 X 已补 close 载荷+窗口设计（§10）。路 Y 已把 open+close 双向接驳做进离线候选镜像
 （§11：close 载荷并入组合段 + 4 个 ON/OFF 离开窗口，`--hearing-aid-l1-close`，UNTESTED
 不刷机）。路 AC 已钉死 App 0x17 直设路径（§11.4）：它经 0x0600dcee 以 flag=1 汇入
-0x0600db3c，既有 6 窗口已覆盖，无需新接驳。
-仍未在真机跑通激活/关闭链，不构成「助听器可用」声明**（见 §6/§8/§9.4/§10.6/§11.5 诚实边界）。
+0x0600db3c，既有 6 窗口已覆盖，无需新接驳。路 CT 已把数据槽挪进 boot 清零 BSS
+（§12：`--hearing-aid-l1-slotram`，槽 0x125574；close 链要靠槽里的 stream 句柄才能
+关断，flash 槽写不进则 close 永远早退——RAM 槽是 close 在真机可用的前提而非单纯
+加固；UNTESTED 不刷机）。
+仍未在真机跑通激活/关闭链，不构成「助听器可用」声明**（见 §6/§8/§9.4/§10.6/§11.5/§12.5 诚实边界）。
 
 ## 1. 阶段 A：激活序列模板反汇编（只读）
 
@@ -540,7 +543,7 @@ mic_effect_close():
 单任务桩边界拦住。单独跑 close 只能覆盖「槽==0 早退」平凡路径（ROI 近零）。静态
 往返+锚点核对为准，全链执行验证待接驳进入主仿真前沿（§9.4.2 同一欠账）。
 
-### 10.4 数据槽写回设计（文档级，不实施）
+### 10.4 数据槽写回设计（方案 A 已由路 CT 实施，见 §12）
 
 问题重述（§9.4.3）：槽在追加 mic_effect.bin（flash 映射区）尾 4B；open 的
 `[槽]=stream` st.w 在真机大概率被静默丢弃 → 重入保护永不闭锁 + close 找不到 stream。
@@ -548,13 +551,14 @@ mic_effect_close():
 
 | 方案 | 内容 | 评估 |
 |---|---|---|
-| A. 槽挪 RAM | 候选=BSS 区死字节/大结构保留字段；两载荷 .equ 改值+构建器去镜像内槽初始化 | **推荐（加固项）**。难点=钉地址：需证明候选「全 app 无绝对引用**且**无基址+偏移访问**且**落在 boot 清零范围」。本路已跑全 app 绝对引用扫描（li.u32 指向 0x126000..0x128400 的 154 个地址+空隙表，一次性脚本不进库）——只能排除绝对引用；QCY 大结构（基 0x1265c0，1248 处引用）字段全是基址+偏移访问，需 base-provenance xref（路 L 的 xref 雏形可扩）。工作量：钉地址≈半天，构建器侧 <20 行（fence 不动——数据访问不受 PC fence 约束，§3 配套 1 已钉） |
+| A. 槽挪 RAM | 候选=BSS 区死字节；构建器改槽 .equ 值+去镜像内槽初始化 | **已实施（路 CT，§12）**，且实施时修正了本表的定位：A 不是「加固项」而是 **close 在真机可用的前提**。比本路当时预估更硬的约束：候选字节除「无绝对引用+无基址偏移访问」外还必须**落在 boot 清零范围 [0x125320,0x12a62c) 内**（RAM 上电值无保证，非清零字节会让首次 close 把垃圾指针交给 stop），且必须避开 QCY 巨结构（基 0x1265c0，字段实测达 +0x2CE6=0x1292A6，整个 0x1265c0..0x1299d0 都在其可达域）与全部静态指针表目标。五类证据见 §12.2 |
 | B. 不存指针按框架推导 | close 时遍历框架结构找 stream | **不成立**：jlstream 无公开按 uuid/scene 查流 API（SDK 头穷举）；0x124880 时钟链表只有时钟节点（name@+8）无 stream 指针 |
 | C. flash 写回走 syscfg/VM keyed store（路 CR/K） | open/close 时 syscfg_write 槽值 | **不推荐**：语义错位——槽是运行时指针（重启即失效），持久化反而引入跨重启脏指针新问题（还需 boot 清零钩子），且每次开关一次 flash 编程（磨损+延迟），syscfg_write 锚点也未钉 |
-| D. 构造性消除依赖（改变优先级） | 若离开 TRANS 的**全部**路径都先调幂等 close，且同模式重入被 dispatch 0x0600db66 的 `b[r2+5]==r5` 早退过滤，则 open 永不会在未 close 时重复执行 | **短期正解**：此条件下 flash 槽读 0 时 close 早退无害，「写不进」只损失防御性不损正确性。前提=接驳全链（键循环 ON/OFF 两链 4 窗口 + App 0x17 直设路径——路 AC 钉死后者同样经 0x0600db3c flag=1 汇入，§11.4，已随路 Y 候选满足） |
+| D. 构造性消除依赖（改变优先级） | 若离开 TRANS 的**全部**路径都先调幂等 close，且同模式重入被 dispatch 0x0600db66 的 `b[r2+5]==r5` 早退过滤，则 open 永不会在未 close 时重复执行 | **前提已满足、结论被路 CT 修正**：键循环两链 6 窗口 + App 0x17 直设路径（路 AC 钉死经 0x0600db3c flag=1 汇入，§11.4）路 Y 候选均已接驳——但「flash 槽读 0 时 close 早退无害，『写不进』只损失防御性」这句**不成立**：close 载荷的 stop/release 以槽值为唯一 stream 句柄（方案 B 已排除其他来源），槽在 flash 写不进 ⇒ 槽永远读镜像初值 0 ⇒ close 永远早退 ⇒ 「辅听粘住」在真机原样回归 + 每次进通透重跑激活链泄漏。D 保证的只是「close 先于 open 被调用」的调用序，救不了「close 自己找不到 stream」。D 的接驳覆盖仍是必要条件（保证 RAM 槽语义下 open 不会漏跑 close），与 A 互补而非替代 |
 
-推荐顺序：**先 D 后 A**——接驳完整时 flash 槽已够用；A 作为加固项在候选升级真机
-验证前做（半天的地址钉死 + 构建器小改）。C 除非 RAM 路线彻底堵死否则不碰。
+推荐顺序（路 CT 修正后）：**A 为必要项，D 的接驳覆盖随路 Y/AC 已定**——RAM 槽是
+close 半链的真机前提，不再是「真机验证前再做的加固」；C 除非 RAM 路线彻底堵死
+否则不碰。
 
 ### 10.5 接驳扩展设计：`--hearing-aid-l1-close`（文档级，不实施）
 
@@ -825,8 +829,8 @@ flag=0 的 8 个点位是配置恢复/事件处理族（0x0600de56 持久化应�
    （§9.4.2 同一欠账）。静态往返+落点扫描+锚点核对是当前最强证据。
 3. **数据槽仍在 flash**（§10.4 方案 A 未实施）：方案 D 的键循环前提（两链 6 窗口全接）
    与 App 0x17 前提（直设路径同经 0x0600db3c flag=1，§11.4 路 AC）本候选均已满足；
-   flag=0 sync 调用族（§11.4）不经窗口，属另一族既有边界。真机验证前建议先做
-   方案 A（槽挪 RAM）。
+   flag=0 sync 调用族（§11.4）不经窗口，属另一族既有边界。方案 A（槽挪 RAM）
+   已由路 CT 实施（§12，`--hearing-aid-l1-slotram`）。
 4. §10.6 全部既有边界继承：stop/release 同步等的上下文风险（leave 桩在按键 dispatch
    上下文同步调 close，同一风险面）、release 的 b[stream+17]==3 门、event_notify(11)
    整链副作用、noisgate 未配对、set_scene 16 是 SDK 枚举值。
@@ -866,3 +870,118 @@ flag=0 的 8 个点位是配置恢复/事件处理族（0x0600de56 持久化应�
 - 复核工具：tools/analyze_hearing_aid_app_path.py（check_local 默认层，报告
   analysis/local-checks/hearing-aid-app-path.json）；落点复核 27,695 唯一目标，
   6 窗口断言与 §11.2 全等。
+
+## 12. 数据槽 RAM 化：离线候选 `--hearing-aid-l1-slotram`（路 CT / sim-slotram，R2 L1 真机前提）
+
+2026-11-14。本节先重评 §10.4 的 D vs A（任务前提是「X 路当时推荐先 D 后 A，AC 已补齐 D 的
+App 侧前提」），再据重评结论实施方案 A。**路号说明**：任务卡称「路 AH」，与主仿真 TIMER0
+STD12M 的既有路 AH 重号，本路改记 **CT**。交付：①D vs A 重评（含对 §10.4 原表述的修正）；
+②槽地址五类证据钉死 + 成文复核工具；③构建器新 opt-in 开关 `--hearing-aid-l1-slotram`（隐含
+`--hearing-aid-l1-close`，仍与 EQ 修复候选互斥——同一追加点）+ 新单测
+`tools/test_hearing_aid_slotram_image.py`（已接 `check_local.py --units`）+ 地址复核工具
+`tools/analyze_hearing_aid_slot_address.py`（已接 check_local 默认层，带 `--rom` 时加扫公开
+ROM 资产）。**不刷机、不连真机；候选 UNTESTED；EQ 候选 67ba97ef 状态不变。**
+
+### 12.1 D vs A 重评结论
+
+D 的两个接驳前提现在**都已满足**：键循环两链 6 窗口（路 Y）+ App 0x17 直设路径同经
+0x0600db3c flag=1 汇入窗口（路 AC §11.4）+ 同模式重入被 0x0600db66 早退过滤。但 §10.4
+D 行的结论「flash 槽读 0 时 close 早退无害，『写不进』只损失防御性不损正确性」**不成立**：
+
+- close 载荷（§10.2）第一件事就是 `r4 = [MIC_EFX_SLOT]`，`r4==0` 早退——槽值是 close 找到
+  stream 的**唯一**句柄（§10.4 方案 B 已穷举排除框架侧查找：jlstream 无按 uuid/scene 查流
+  API，时钟链表只有时钟节点）。
+- 槽在追加段（flash 映射区）时 open 的 `[槽]=stream` st.w 大概率被静默丢弃（§9.4.3 既有
+  判断；普通 store 不能编程 SFC 映射 flash）⇒ 槽永远读镜像初值 0 ⇒ close 永远早退 ⇒
+  离开通透时 mic_effect 不停不释放不 clock_free——「辅听粘住」（§6.6 当年要 close 解决的
+  正是这个问题）在真机原样回归，且每次重进通透 open 重跑全链（pipeline+24MHz 时钟泄漏）。
+- D 保证的是「open 之前必有 close 被调用」的**调用序**，救不了「close 自己拿不到 stream」。
+  反过来 A（RAM 槽）之后 D 的接驳覆盖仍是必要的：它保证槽语义（0=未激活）与真实状态一致，
+  open 不会在未 close 时被跳过或重跑。
+
+结论：**A 不是加固项，是 close 半链在真机可用的前提**；D 与 A 互补。§10.4 表已按此改写。
+
+### 12.2 槽地址 0x125574 的五类证据 [静态]
+
+需求（§10.4 修正版）：4 字节、**boot 时读 0**、open 写/close 清、仅载荷访问。boot 读 0 的
+唯一已证来源是真实执行过的 boot BSS 清零循环 **[0x125320, 0x12a62c)**（docs/boot-handoff.md
+16077 步三段初始化、逐字清零有摘要）——RAM 上电值无保证（「unknown RAM does not read as
+zero」是项目钉死不变量），所以落点域=BSS 清零区本身，段间 padding（如 0x12a62c..0x12a640）
+与堆间隙（未清零）全部排除。在清零区内按下述五类证据找「静态死洞」，终选
+**0x125574**（593B 死洞 [0x12544e, 0x12569f) 的中心 4 对齐字，两侧余量 294B/295B）：
+
+| # | 证据类 | 扫描域 | 对 0x125574 的结果 |
+|---|---|---|---|
+| 1 | 绝对锚点（li.u32 物化的地址，含编译器折叠的 base+const 字段地址） | app.bin 全量线性解码 + RAM-code 源（flash 0x60c3e18 起 18644B，按运行基址 0x12a640 解码）+ 公开 ROM 资产 + p11_code.bin（一次性） | 洞内零锚点；±16B 内零锚点 |
+| 2 | 寄存器溯源访问（线性 provenance：立即数/mov/常量加减/寄存器合成 add/乘常量/postinc 游走 + 静态位移/索引/后自增括号访问；动态索引用 0x100B 保守区间标记，寄存器合成基址按 rel 类标记到下一锚点） | 同上（p11 一次性） | 洞内零覆盖；±16B 零覆盖 |
+| 3 | 动态数组基址（rel/index 类基址集合） | 同上 | ±0x400 内零基址 |
+| 4 | flash 指针字（app.bin / RAM-code 源 / ROM 的**任意字节对齐** LE u32 落进洞内——静态指针表类，字段指针可非对齐，实证 0x1253ba） | 三块字节流 | 洞内零指针字 |
+| 5 | 结构可达域排除 | QCY 巨结构 | 槽 < QCY 基 0x1265c0；QCY 字段经 `li.s16 r0=11494; ld.bu.idx b[r1+r0]` 类访问实测达 +0x2CE6=0x1292A6（HANDOFF 0x600a65c 条目），整个 0x1265c0..0x1299d0 视为其可达域全部排除 |
+
+选点过程中被证据否决的候选（保留为方法校准记录）：0x125b2c..0x125b50「36B 洞」实为
+指针传递+`if (r4 > 36)` 界检查的 36B 对象；0x125324 起为 0x44 元素动态数组（0x6007044
+`r0=r0*0x44; r0+=r2`）；0x1265c0..0x1299d0 全域为 QCY 可达域（大洞 0x1282ec..0x1299d0
+内含已知活字节 0x1292A6）；0x129d28..0x129d68 洞紧邻 12 处 0x129d68 基址动态索引。校准集
+（文档钉死的活地址 7 个 + QCY/场景/互斥等）中仅 0x126540（tick 结构基，字段折叠到别处）与
+0x1292A6（QCY+0x2CE6 寄存器索引类）对扫描不可见——正是第 5 类排除规则与「槽必须低于
+QCY 基」约束的由来。复核工具把上述全部断言固化（`tools/analyze_hearing_aid_slot_address.py`，
+check_local 默认层逐次重跑；RAM_SLOT 与构建器常量一致性也断言）。
+
+### 12.3 镜像实施与字节账
+
+- 组合段不变（open 134 + close 64 + 6 桩 166 = 364B，零重定位），**与 close 候选段的全部
+  差异=4 条槽 li.u32 立即数共 16 字节**（0x060E31E0→0x00125574；桩区逐字节不变）；槽不在
+  追加文件里 → 文件 401B→397B（头 32 + 0xff + 代码 364），flash [0xE5073, 0xE5200)，
+  fence 上限 0x060E31E4→**0x060E31E0**（=新文件末端运行地址），boot-info app_size
+  0xE5204→0xE5200，CRC 链照 §9.3 全套重算。
+- 规范构建（`--attenuation-db 0 --hearing-aid-l1-slotram`）产物
+  `H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_SLOTRAM_OFFLINE_UNTESTED.ufw`，sha256
+  `906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914`。与官方镜像全文件
+  **逐字节差异恰为 472 字节**（close 候选为 476：追加文件少 4 槽字节+密文链整体位移）；
+  与 close 候选**逐字节差异 47 字节**（16 立即数 + fence 1 + 追加区密文位移 + CRC 链）。
+  构建器 `verify_l1_image` 对本变体做全镜像精确差异断言（含「追加文件必须在代码段末尾
+  结束、无镜像内槽」新断言）；独立校验器 `verify_ufw_integrity.py` 全过（397B 条目 JLFS
+  CRC+双备份）。
+- legacy 不变：`--hearing-aid-l1-close` 产物 sha 仍为 `5a5f2ef7…`（本路复现一致）、
+  `--hearing-aid-l1-patch` 的 `6c7247a5…` 不变；两载荷源与四桩源**一字未改**（槽值仍由
+  构建器 `_patch_slot` 注入，双基址不敏感性质复用 §4/§10.3 既有单测）。
+
+### 12.4 槽语义在 RAM 落点下的闭环
+
+boot：BSS 清零 ⇒ 槽=0。进通透（窗口 A/B）：open 读槽 0 → 跑激活链 → `[0x125574]=stream`
+（RAM 写，真实生效）。离开通透（4 leave 窗）：close 读槽≠0 → stop/release → 清 0 →
+notify(11) clock_free。重入保护与幂等性两个方向都在 RAM 语义下成立；同模式重入仍由
+0x0600db66 早退+App 查态早退兜在窗口之前。**close 早退路径在 boot 后首次按键即被真实
+走过**（App 直设 OFF/ON 时 close 先于任何 open 执行——读 0 早退，这正是需要 boot 清零
+的原因）。
+
+### 12.5 诚实边界（必须随候选一起读）
+
+1. **离线候选 UNTESTED，不刷机**。交付=「槽地址五类静态证据 + 字节与 §1-11 证据一致 +
+   四层 CRC/JLFS 结构自洽 + 逐字节差异精确可控」。
+2. **槽死性是静态结论（derived-not-measured），残余访问类静态不可闭合**：运行期计算的
+   bulk 目的地址（VM-init rep 拷贝模式：目的来自数据字段）、运行期由数据构造的指针值、
+   DMA 写（音频缓冲假定在堆/非 BSS 区）、p11 CPU（独立地址空间，一次性扫描 0 主 RAM 引用，
+   未入常驻工具）。真机验证前建议在主仿真前沿推进到键循环相位时对 0x125574 加运行期
+   watch（本路未做——主前沿尚未到 0x0600db3c，§9.4.2 同一欠账）。
+3. **若残余风险命中**（槽被意外写入非零垃圾）：close 会把垃圾指针交给 jlstream_stop
+   （h[stream+46] 野写半字 + cmd 队列）——后果从行为异常到崩溃不等，无载荷级防御（range
+   校验会改动被钉死的 §10.2 载荷源，本路不做，见 §12.1 的替代=证据+运行期 watch）。
+4. §6/§10.6/§11.5 全部既有边界继承（set_scene 16 SDK 枚举、noisgate、stop/release 同步
+   上下文、release 的 b[stream+17]==3 门、flag=0 sync 族不经窗口）。
+5. 与 EQ 修复候选互斥（同一追加点）；EQ 候选 67ba97ef UNTESTED 不变。
+
+### 12.6 证据锚点表（本路新增钉死）
+
+- 槽：**0x00125574**（BSS 清零区 [0x125320,0x12a62c) 内，593B 静态死洞
+  [0x12544e,0x12569f) 中心，余量 294/295B）；hearing_aid_l1_image.RAM_SLOT 与
+  analyze_hearing_aid_slot_address.RAM_SLOT 一致性被工具断言。
+- boot 清零证据：docs/boot-handoff.md（BSS 0x00125320..0x0012a62c 21260B 真实逐字清零；
+  data 0x00124840..0x00125320；RAM code 0x0012a640..0x0012ef14，源=flash 0x060c3e18）。
+- 不可见访问类实证：QCY 寄存器常量索引 0x600a65c（`li.s16 11494; li.u32 QCY;
+  ld.bu.idx`→0x1292A6=QCY+0x2CE6）；动态数组 0x6007044（`*0x44` 元素，基 0x125324）；
+  指针传递对象 0x602227a（0x125b2c+36B 界检查）；非对齐字段指针 0x1253ba（flash 指针字类）；
+  运行期 bulk 目的 0x1276a4（VM 配置块 rep 拷贝，HANDOFF 0x600a2aa 条目）。
+- 候选：sha256 `906184b2…`（472B vs 官方；47B vs close 候选）；新单测
+  tools/test_hearing_aid_slotram_image.py（6 tests OK）；复核工具
+  tools/analyze_hearing_aid_slot_address.py（check_local 默认层；--rom 可选加扫公开 ROM）。
