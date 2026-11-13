@@ -423,3 +423,217 @@ exit 0。复跑：`python3 tools/build_quiet_candidate.py --attenuation-db 0
    按键语义会分叉）。
 5. 与 EQ 修复候选共用追加点与 fence 机制但**互斥**（开关同时给会报错）；EQ 候选
    67ba97ef UNTESTED 不变，本候选不影响其状态。
+
+## 10. close 载荷 + 数据槽写回设计（路 X / sim-l1close，R2 L1 收尾）
+
+2026-11-14。本节补 §6.6/§9.4 钉下的两个收尾缺口：**close 载荷未写**（重入保护
+语义=「辅听粘住」）和**数据槽在 flash 的写回未设计**（0x060E313A 槽只在 RAM 假设）。
+交付：①close 链 API 反汇编钉死（关闭层**未被裁**，与激活层命运不同）；②载荷源
+`tools/hearing-aid/mic_effect_close.S` + 离线验证 `tools/test_hearing_aid_close_payload.py`
+（已接 `check_local.py --units`）；③数据槽写回方案（文档级，不实施）；④接驳扩展
+`--hearing-aid-l1-close` 的窗口/桩设计（文档级，不实施）。
+
+**基线** 64a7e6b。反汇编用钉死 codec + 官方 UFW 公开字节（与 §1 同源提取，
+runtime = 0x06000000 + 文件偏移；本路对 §1.1 的 pc_mic 序列逐条复核对上）；
+SDK 参考 = CJ 拉取的 pin 67328f4 mic_effect.c + h3s-tools-research 的 jlstream.h。
+一次性脚本在本地 tmp（~/tmp/hearaid-x），不进库。**不刷机、不连真机；
+候选 UNTESTED 不变；EQ 候选 67ba97ef 状态不变。**
+
+### 10.1 close 链 API：全部在固件里 [静态]
+
+SDK 参考序列（mic_effect.c `hearing_aid_player_close` → `mic_effect_player_delete`）：
+
+```
+jlstream_stop(player->stream, 0);            /* fade_msec = 0 */
+jlstream_release(player->stream);
+mic_effect_ram_code_unload();                /* TCFG_CODE_RUN_RAM 门控，可空 */
+free(player);
+g_mic_effect_player = NULL;
+jlstream_event_notify(STREAM_EVENT_CLOSE_PLAYER, (int)"mic_effect");
+```
+
+与激活层（§1.2 穷举=整段被裁）不同，**这条链的三个框架 API 全部链接在固件里且有
+多个活调用点**——mic_effect 专属的 close 壳（hearing_aid_player_close）虽随激活层
+一起被裁，但它调的每个 API 都有现成锚点：
+
+| API | 入口 | 固件内证据 | 强度 |
+|---|---|---|---|
+| jlstream_stop | **0x060741ee** | **7 个调用点**：tone 0x0600c1a4（fade 50）、0x06005c42/0x06006228、a2dp 族 0x06013a7c（fade 100）、esco/linein 族 0x06016c12/0x06016c58（fade 0）/0x06016cd4（fade 50）。本体=薄壳：`h[stream+46]=fade_msec` 后 post cmd4 给流服务线程（0x06074192 同步等完成） | 静态 |
+| jlstream_release | 0x06074204 | 路 L §1.2 已钉（20 调用点，open 错误路径同款）；post cmd9 同步回收 | 静态+文档 |
+| jlstream_event_notify | **0x060057e6** | **= 激活链 get_pipeline_uuid 的同一入口**：函数按 `r1 = r0 - 11` 建 tbh switch（13 项，覆盖事件 11..23），GET_PIPELINE_UUID(15)=idx4、**CLOSE_PLAYER(11)=idx0**。**case 11 分支存在且有 3 个固件调用点**（0x06005c66 "pc_spk"、0x06013a9e "a2dp"、0x06016c7a） | 静态 |
+
+**三段式 close 惯用法**在固件里逐 call 可见（如 esco/linein close 0x06016c58..0x06016c7a）：
+
+```
+stop(stream, 0) → release(stream) → free(player) → g_player=NULL →
+event_notify(11, "…")
+```
+
+与 SDK `mic_effect_player_delete` 逐 call 同形——载荷照抄这个形状即可。
+
+**CLOSE_PLAYER 的 "mic_effect" 分支**（本路新钉）：case 11 落 0x06005820，是一条对
+6 个 pipeline 名（a2dp@+198 / esco@+213 / linein@+500 / pc_spk@+570 / pc_mic@+577 /
+**mic_effect@+1314**，字符串表基 0x060a18c0）的 strcmp 链；"mic_effect" 命中后调
+**0x0600572C(name)**：锁 0x126E50 互斥 → 遍历 0x124880 时钟链表按 name（节点+8）
+摘链+free 全部同名节点 → 0x060008CA（日志告警类助手，ICFG 上下文检查+带参日志，
+无状态修改 [静态-浅层]）→ 解锁。即 **clock_free("mic_effect")**——与激活分支
+（get_pipeline_uuid 的 clock_alloc("mic_effect",24MHz) @0x06005982）配对。tbh 表解度
+交叉验证：idx4/event15 → 0x060058B4 正是 §1.1 钉死的 uuid 链（含 0x06005982
+clock_alloc），idx0 → 0x06005820 指令边界齐整。附带性质：链表遍历对**全部同名节点**
+摘链（循环不因命中退出），若 open 曾重复执行（重入保护失效场景）造成多个 24MHz
+节点，一次 notify(11) 全部回收 [静态]。
+
+辅助钉死：STREAM_EVENT_CLOSE_PLAYER=11（SDK 枚举 NONE=0…CLOSE_PLAYER=11，与固件
+3 个调用点 r0=11 实证互证）；jlstream.h 声明 `void jlstream_stop(struct jlstream *,
+u16 fade_msec)`（fade 0=立即）。
+
+### 10.2 载荷：`tools/hearing-aid/mic_effect_close.S`
+
+**20 条指令 / 64B 代码，零重定位**（.equ 常量折叠）。与激活载荷共用数据槽
+（MIC_EFX_SLOT 同 .equ 语义），重入保护反向利用——槽==0 直接成功返回（幂等，
+重复 close 无害）：
+
+```
+mic_effect_close():
+    [--sp] = {rets, r6-r4}
+    r4 = [MIC_EFX_SLOT]
+    if (r4 == 0) return 0                    ; 未激活：幂等成功
+    stop(r4, 0)                              ; @0x060741ee，fade 0（0x06016c12 同参）
+    release(r4)                              ; @0x06074204
+    [MIC_EFX_SLOT] = 0                       ; = g_mic_effect_player = NULL（先于 notify）
+    event_notify(11, "mic_effect")           ; @0x060057e6 + 名串 0x060a1de2
+    return 0                                 ; close 无错误语义（固件调用点同样不查返回值）
+```
+
+与 SDK 序列的差异及依据：
+
+| 差异 | 依据 | 强度 |
+|---|---|---|
+| 不做 DAC_NOISEGATE_ON | noisgate 固件锚点未钉死（§1.4/§6.3 既有边界），与 open 不做 OFF 对称 | 文档 |
+| 无 free(player)/player=NULL | open 载荷不 malloc player，槽直接存 stream；清槽即等价 g_player=NULL | 静态+文档 |
+| 无 ram_code_unload | open 从未 ram_code_load（该对调用的门控宏在 QCY 构建未证为真） | SDK |
+| 不查各 API 返回值 | 固件全部 close 调用点（tone/esco/a2dp…）均不查；stop/release 返回 void（SDK 头） | 静态+SDK |
+
+寄存器约定与 open 相同：r4(stream)跨 call 保存，r5 临时，r6=API 地址；callee-saved
+序言/尾声 `{rets, r6-r4}`。
+
+### 10.3 离线验证（可复跑）
+
+`tools/test_hearing_aid_close_payload.py`（unittest，已接 `--units`），6 断言全过
+[实测]：①20 条指令逐条 encode(decode)==原字节零 diff + 数量落在 [14,30] 形状区间；
+②3 个 API 锚点各以 r6 装载恰一次；③常量 11/0x060a1de2 在指令流中存在；④每个
+`call r6` 前一条必是对应 API 地址装载；⑤MIC_EFX_SLOT 双基址（0x060e3200/0x060e4000）
+变体差异字节全部落在槽 li.u32 内（基址不敏感）；⑥调用顺序==固件三段式
+（stop→release→notify），槽恰装载两次（守卫+清零）、清零恰一次、stop 前 r1=0
+（fade）、守卫分支在 stop 之前。复跑：`python3 tools/test_hearing_aid_close_payload.py`
+（0.5s）。
+
+**仿真验证的诚实结论：close 全链在路 O 场景验证不了。**原因：O 的
+`mic_effect_payload` 场景是「跑到合成状态边界即停」的探针（open 在 start 入场的
+0x20004 事件派发 0x6074a96 停机），不是可续跑机器——「open 后跑 close」没有可挂载
+的中间态；而 close 自己的 stop 也走同一 cmd-post→流服务线程→事件派发路径，同一
+单任务桩边界拦住。单独跑 close 只能覆盖「槽==0 早退」平凡路径（ROI 近零）。静态
+往返+锚点核对为准，全链执行验证待接驳进入主仿真前沿（§9.4.2 同一欠账）。
+
+### 10.4 数据槽写回设计（文档级，不实施）
+
+问题重述（§9.4.3）：槽在追加 mic_effect.bin（flash 映射区）尾 4B；open 的
+`[槽]=stream` st.w 在真机大概率被静默丢弃 → 重入保护永不闭锁 + close 找不到 stream。
+需求本质：**一个 4B 运行时变量，boot 时读 0，open 写/close 清，仅载荷访问**。
+
+| 方案 | 内容 | 评估 |
+|---|---|---|
+| A. 槽挪 RAM | 候选=BSS 区死字节/大结构保留字段；两载荷 .equ 改值+构建器去镜像内槽初始化 | **推荐（加固项）**。难点=钉地址：需证明候选「全 app 无绝对引用**且**无基址+偏移访问**且**落在 boot 清零范围」。本路已跑全 app 绝对引用扫描（li.u32 指向 0x126000..0x128400 的 154 个地址+空隙表，一次性脚本不进库）——只能排除绝对引用；QCY 大结构（基 0x1265c0，1248 处引用）字段全是基址+偏移访问，需 base-provenance xref（路 L 的 xref 雏形可扩）。工作量：钉地址≈半天，构建器侧 <20 行（fence 不动——数据访问不受 PC fence 约束，§3 配套 1 已钉） |
+| B. 不存指针按框架推导 | close 时遍历框架结构找 stream | **不成立**：jlstream 无公开按 uuid/scene 查流 API（SDK 头穷举）；0x124880 时钟链表只有时钟节点（name@+8）无 stream 指针 |
+| C. flash 写回走 syscfg/VM keyed store（路 CR/K） | open/close 时 syscfg_write 槽值 | **不推荐**：语义错位——槽是运行时指针（重启即失效），持久化反而引入跨重启脏指针新问题（还需 boot 清零钩子），且每次开关一次 flash 编程（磨损+延迟），syscfg_write 锚点也未钉 |
+| D. 构造性消除依赖（改变优先级） | 若离开 TRANS 的**全部**路径都先调幂等 close，且同模式重入被 dispatch 0x0600db66 的 `b[r2+5]==r5` 早退过滤，则 open 永不会在未 close 时重复执行 | **短期正解**：此条件下 flash 槽读 0 时 close 早退无害，「写不进」只损失防御性不损正确性。前提=接驳全链（键循环 ON/OFF 两链 4 窗口 + **App 0x17 直设路径 0x0600dcee**，后者窗口未钉死） |
+
+推荐顺序：**先 D 后 A**——接驳完整时 flash 槽已够用；A 作为加固项在候选升级真机
+验证前做（半天的地址钉死 + 构建器小改）。C 除非 RAM 路线彻底堵死否则不碰。
+
+### 10.5 接驳扩展设计：`--hearing-aid-l1-close`（文档级，不实施）
+
+路 T 候选只接了两个 TRANS 窗（进通透=关 ANC 通透+开辅听）；离开通透（键循环
+TRANS→ON、App 设 OFF/ON）不触发 close → 辅听残留。扩展=再替换 4 个 8B 窗口，
+ON/OFF 路径先调幂等 mic_effect_close 再走原 apply。全部窗口本路静态钉死 + 全 app
+分支落点扫描复核（同路 T 方法）：
+
+| 窗口 | 起点 | 原字节（8B） | 语义 | 进入方式（唯一） | 落点扫描 |
+|---|---|---|---|---|---|
+| A TRANS-1（路 T 已接） | 0x0600dc7e | bfea14f3 d0ec0407 | call ctx_get; r0=[r0+116] | 0x0600db92 分支 | 内部零落点 [文档:路 T] |
+| B TRANS-2（路 T 已接） | 0x0600dca4 | bfea01f3 d0ec0407 | 同上 | 0x0600dbbc 分支 | 同上 |
+| ON-1 | **0x0600db9a** | bfea86f3 d0ec0007 | call ctx_get; r0=[r0+112] | 顺延（0x0600db96 `if (r5!=2)` 不跳） | **零落点**（纯顺延） [静态] |
+| OFF-1 | **0x0600dc74** | bfea19f3 d0ec0807 | call ctx_get; r0=[r0+120] | 0x0600db8e 分支 | 起点 1 落点（该分支本身）、内部零 [静态] |
+| ON-2 | **0x0600dbc4** | bfea71f3 d0ec0057 | call ctx_get; r5=[r0+112] | 顺延（0x0600dbc0 不跳） | 零落点 [静态] |
+| OFF-2 | **0x0600dc9a** | bfea06f3 d0ec0807 | call ctx_get; r0=[r0+120] | 0x0600dbb8 分支 | 起点 1 落点（该分支本身）、内部零 [静态] |
+
+注意 OFF-2 起点是 **0x0600dc9a 不是 0x0600dc98**（0x0600dc98 是上一函数的
+`{pc,r8-r4}=[sp++]` pop 尾巴，且它自身是 4 个早退分支的活落点——0x0600db4a/db54/
+db66/db6c——窗口若左移 2B 会砍掉活代码；0x0600dbb8 的分支恰好落在 call 起点
+0x0600dc9a）。两链的 ON/OFF 窗后各自 2B `goto`（→汇合点 0x0600dc86/0x0600dccc）
+不在窗口内、保留原样。
+
+桩形状（进入状态同路 T 桩：r4=apply flag；close 只碰 r0-r3/r6，r4/r5 保存）：
+
+```
+leave_r0（ON-1/OFF-1/OFF-2 通用，槽位 112/120，返回地址=窗口+8）:
+    r6 = 0x0600c2aa; call r6       ; 重放取 ANC ctx
+    r5 = [r0+SLOT]                 ; 重放槽位读取，存 r5（close 不碰 r4-r6）
+    call mic_effect_close          ; 幂等关辅听
+    r0 = r5                        ; 恢复 apply fn
+    r6 = <窗口+8>; goto r6         ; 回原流（原 2B goto / 后续指令）
+
+leave_on2（ON-2 专用：fn 载入 r5 且后续 0x0600dbcc 的 call 0x0600bbba 消费 r0=ctx）:
+    r6 = 0x0600c2aa; call r6
+    r5 = [r0+112]
+    call mic_effect_close
+    r6 = 0x0600c2aa; call r6       ; 重取 ctx 到 r0（close 清了 r0-r3；getter 纯读）
+    r6 = 0x0600dbcc; goto r6
+```
+
+段几何：close 载荷 64B 追加进路 T 组合段（open+close+桩 单段现场汇编，两遍定槽
+不变——close 只读/清槽，槽仍在段尾 4B）；fence 上限相应扩到新段末；CRC 链照 §9.3
+全套重算。开关语义建议 `--hearing-aid-l1-close` **隐含** `--hearing-aid-l1-patch`
+（同一候选族超集，仍与 EQ 修复候选互斥）。App 0x17 直设路径（0x0600dcee）的窗口
+族本路未反汇编钉死，接驳实施时补（§10.4 方案 D 的完整性前提包含它）。
+
+### 10.6 诚实边界（必须随载荷一起读）
+
+1. **离线载荷，未执行验证**：close 全链未在真机/仿真跑（§10.3 说明了 O 场景为何
+   验不了）；本节交付「字节与固件惯用法逐 call 同形 + 汇编器可信 + 锚点有固件活
+   调用点先例」三件事，**不构成「辅听可开关」声明**。「辅听粘住」的真正解决以
+   §10.5 接驳实施为前提——本路交的是载荷+全部静态材料。
+2. **同步等待的上下文风险**：stop/release 是 post 命令给流服务线程并同步等完成的
+   形态（0x06074192 族）。固件现有 close 调用点所在任务上下文未逐一核对——按键/
+   模式 dispatch 上下文同步调它们是否与流服务线程有优先级/互斥死锁风险，只有
+   [推断]（固件 tone/esco close 与 dispatch 同为应用层同步风格）。接驳实施前应
+   核对至少一个固件 close 调用点的调用者上下文。
+3. **release 的 b[stream+17]==3 门**：字段/极性未钉死（QCY jlstream 结构与 SDK 头
+   布局有差异，§1.2 已记）。自洽读法=该门拦「运行态直接 release」，固件全部 close
+   都是 stop 先行使流离开运行态、pc_mic 错误路径在 start 失败后直接 release——载荷
+   与固件惯用法同形，风险随固件 [静态+推断]。
+4. **event_notify(11) 的整链副作用**：mic_effect 命中才走 clock_free；但 case 11 的
+   strcmp 链在 mic_effect 之前还比对 5 个名字（strcmp×5 的开销，flash 串只读）。
+   0x060008CA 日志助手每次 notify 都跑（ICFG 检查+日志调用）——与固件 pc_spk/a2dp
+   的 notify 调用同款，无新增风险 [静态-浅层]。
+5. **数据槽写回未实施**（§10.4 方案 A）；**接驳未实施**（§10.5）；App 0x17 路径
+   窗口未钉死。§6 的既有边界（set_scene 16、noisgate、单线程形状）不变。
+
+### 10.7 证据锚点表（本路新增钉死）
+
+- close 链 API：jlstream_stop **0x060741ee**（h[stream+46]=fade + post cmd4；
+  7 调用点 0x0600c1a4/0x06005c42/0x06006228/0x06013a7c/0x06016c12/0x06016c58/
+  0x06016cd4，fade 实值 50/100/0）；jlstream_release 0x06074204（路 L）；jlstream_
+  event_notify **0x060057e6 = get_pipeline_uuid 同入口**（tbh switch @0x06005804，
+  表 13 项起 0x06005806，target=表基+2×条目）。
+- 事件 11 调用点：0x06005c66（r1="pc_spk"@0x060a1afa）、0x06013a9e（"a2dp"@
+  0x060a1986）、0x06016c7a；CLOSE_PLAYER 分支落点 0x06005820（strcmp 链 6 名），
+  mic_effect 命中 → clock_free **0x0600572C**（互斥 0x126E50、时钟链表 0x124880、
+  name@节点+8、循环摘链全部同名、尾随日志 0x060008CA）。
+- 三段式 close 惯用法样本：0x06016c58..0x06016c7a（stop(fade0)→release→free→
+  g=NULL→notify(11)）。
+- 接驳窗口（§10.5 表）：ON-1 0x0600db9a / OFF-1 0x0600dc74 / ON-2 0x0600dbc4 /
+  OFF-2 0x0600dc9a（注意 0x0600dc98 pop 是活落点不可入窗）；汇合点 0x0600dc86 /
+  0x0600dccc 不变。
+- 载荷：tools/hearing-aid/mic_effect_close.S（20 insns / 64B，0 relocs）；验证
+  tools/test_hearing_aid_close_payload.py（6 tests OK）。
