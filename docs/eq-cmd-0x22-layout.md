@@ -59,10 +59,11 @@ RCSP 帧:  FE DC BA | flags | opcode | len_BE16 | body | EF
 | 5 | 1 | gain 高字节 | i8 | **gain = int16 / 100.0，单位 dB** |
 | 6 | 1 | iir_type | u8 | 0=high_pass/1=low_pass/2=band_pass/3=high_shelf/4=low_shelf；**255=未指定→默认 2** |
 
-[静态] 解码点：apply 段循环 `0x6025192..0x60251f0`（段指针 r2 实为「段尾」=data[9+7i]，
-用负偏移读：`b[r2-6]=freq_lo`、`b[r2-5]=freq_hi`、`b[r2-4]=q_lo`、`b[r2-3]=q_hi(s)`、
-`b[r2-2]=gain_lo`、`b[r2-1]=gain_hi(s)`、`b[r2+0]=iir_type`）；编码点 `0x060256be`
-`0x602572a..0x6025756`（同一布局反向写出）。两个方向逐字段一致，字段顺序/字节序**钉死**。
+[静态] 解码点：apply 段循环 `0x6025192..0x60251f0`（段指针 r2 指向第 i 段的末字节
+iir_type 位置 = data[3+7i+6]，freq/q/gain 用负偏移读回段内偏移 0..5：`b[r2-6]=freq_lo`、
+`b[r2-5]=freq_hi`、`b[r2-4]=q_lo`、`b[r2-3]=q_hi(s)`、`b[r2-2]=gain_lo`、
+`b[r2-1]=gain_hi(s)`、`b[r2+0]=iir_type`）；编码点 `0x060256be` `0x602572a..0x6025756`
+（同一布局反向写出）。两个方向逐字段一致，字段顺序/字节序**钉死**。
 
 关键编码细节：
 
