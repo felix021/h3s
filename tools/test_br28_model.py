@@ -173,6 +173,35 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(Blocked):h.gpcnt_rmw(GPCNT_CON,'or',1)
         self.assertFalse(h.handles(GPCNT_CON+4,4))
 
+    def test_gpcnt_con_readback_serves_known_bits_only(self):
+        # 路 CG:读侧三选一=方案 (a) 投影。br28.h 把 JL_GPCNT CON 标 __RW,
+        # 全 app+ROM 唯一执行过的写者=disable &=0xFFFFFFFE(bit0→0)+clear
+        # |=0x40(bit7 立即清投影)——读回返回位粒度部分值(GpioOutValue 同族):
+        # 覆盖全部未知位的 AND 掩码强制掩掉位为已知 0 → 单 bit 谓词可判
+        # (0x6069540/0x6069546 的 beq.and.ri bit0/bit7 测试),其余任何消费
+        # 诚实停。默认关:读回保持 unknown_gpcnt_configuration_bits(601,880
+        # 前沿形状);报告键仅投影开启时出现(clock 场景报告字节不变)。
+        with self.assertRaisesRegex(ValueError,'requires the cleanup projection'):
+            BR28Model(gpcnt_con_readback=True)
+        h=BR28Model(gpcnt_cleanup_projection=True,gpcnt_con_readback=True)
+        with self.assertRaisesRegex(Blocked,'unknown_gpcnt_configuration_bits'):h.read(GPCNT_CON)
+        h.gpcnt_rmw(GPCNT_CON,'and',0xfffffffe);h.gpcnt_rmw(GPCNT_CON,'or',64)
+        value=h.read(GPCNT_CON)
+        self.assertEqual((value.value,value.known),(0,0x81))
+        self.assertEqual((value&1,1&value),(0,0))  # bit0=0:真实跳过分支可判
+        self.assertEqual((value&128,value&0x81),(0,0))  # bit7=0 / 双已知位掩码
+        for consume in (lambda:value&2,lambda:value|1,lambda:value+1,lambda:int(value),
+                        lambda:bool(value),lambda:value==0):
+            with self.assertRaisesRegex(Blocked,'gpcnt_con_readback_consumed'):consume()
+        self.assertEqual(h.gpcnt.con_reads,1)
+        report=h.gpcnt.report()
+        self.assertEqual(report['con_readback_projection']['reads'],1)
+        self.assertEqual(report['known_mask'],'0x81')
+        off=BR28Model(gpcnt_cleanup_projection=True)
+        off.gpcnt_rmw(GPCNT_CON,'and',0xfffffffe);off.gpcnt_rmw(GPCNT_CON,'or',64)
+        with self.assertRaisesRegex(Blocked,'unknown_gpcnt_configuration_bits'):off.read(GPCNT_CON)
+        self.assertNotIn('con_readback_projection',off.gpcnt.report())
+
     def test_core_tick_initial_state_and_enable_remain_explicit(self):
         h=BR28Model(core_tick_configuration=True)
         with self.assertRaises(Blocked):h.read(CORE_TICK_BASES[0])
