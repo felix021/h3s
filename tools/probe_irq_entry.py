@@ -153,6 +153,32 @@ and the Timer0 IRQ4 pendings stay armed past the boundary: their first
 eligibility moment (the critical-section sti) lies in the not-yet-executed
 suffix, so nothing is delivered in this prefix.
 
+Route BY (this change) closes the RES boundary with two more opt-ins and
+reshapes the frontier. fd31_adc_pnd_completion (SDK gpadc_hw_v10.h
+GPADC_CON_PND=7 + the gpadc_v10.c adc_wait_pnd/adc_get_res driver shapes;
+lrct_trim_done precedent) is a STATELESS read-time completion projection:
+guest loads of CON see bit7 set once the last write has EN=1, while the
+atomic compound RMW keeps synthesizing from the raw word (recorded stores
+identical to the no-PND world). fd31_adc_res_named_values
+({0x10000:400,0x10006:500,0x10004:400}, derived-not-measured, the BU
+route's option (a) with the channel identified by the P3_ANA_CON4[4:1]
+analog-mux field instead of the RAM slot — the model never touches guest
+RAM and the mux field IS what the hardware converts) serves the RES reads.
+The 80 caller-A polls fold to first-read exits, the whole sampling
+transaction completes in real arithmetic (item0 mean 400, floats
+945.0/756.0 with runtime K=756, mode halfword 1 — resolving the BU
+mode=0xFFFF doubt: the getter path DOES write mode=1, so the battery gate
+takes the float-direct path 4x945=3780>=3200), and the Timer0 schedule
+resets (the timer-based delay 0x12e256 reprograms PRD per call): the
+first ELIGIBLE expiry at 336,337 (IPMASK=0) triggers the route-BE
+timer0_irq4_delivery layer — fourteen real delivery round trips interrupt
+the delay wait loop, each W1C-acked and RTI'd back. The core tick never
+overflows (the stop sits ~107 steps before the path-independent 447,490
+landmark). With the route-BV p33_analog_tail projection wired, the W1[0]
+sequence runs the AWKUP clear helper and the P3_CHG_CON0 RMWs and stops
+honestly at the P3_ANA_READ analog poll (p3_ana_read_not_modeled,
+0xf2c064) at 447,383 — the new conditional frontier.
+
 The trailing timer0_irq4_delivery_probe / timer0_irq4_masked_probe scenarios
 (route BE) layer the Timer0 IRQ4 delivery machinery on the full
 p11_heap_experimental_config stack before the ~341,097-step first-expiry
@@ -393,6 +419,34 @@ LRCT_TRIM_RESULT_PROBE=38400  # 7,680,000,000/200,000 = 38,400 = 0x9600
 #   读回」假设),未覆盖寄存器(N_IE 等)的读严格停。
 P33_AWKUP_P_IE_FIRST_READ_ZERO={0xf2c184:0}
 
+# JL_ADC->RES(0xfd3104,__RO)的具名档位 fixture(路 BY/sim-adcresfix,
+# derived-not-measured;与 heap_info/trim_result 同族的显式数据 fixture)。
+# 候选值推导链(docs/adc-res-consumer.md §6,路 BU 只读预研全图+三选一):
+# - **值域硬约束[钉]**:RES 消费低 16 位、物理量程 0..1023(10 位;
+#   0x60117a6 r1=1023、0x6000ebc 温度表哨兵 >1022);常量样本下 32/12 轮
+#   截尾均值恰等于常量本身(自洽)。
+# - **WBG04(0x10000)=400**:十位域内非零;32 轮循环(0x6012148)的
+#   (sum-min-max)/30 → h[0x127D10]=400——vbg 基线自洽。
+# - **VBAT_4(0x10006)=500**:物理锚 4×(500×K/400)=4×floor(K×1.25),
+#   K=801±3d(divider 0x601171a 的 VBG trim 标称,SDK ADC_VBG_CENTER=800
+#   互证)→ K=801 时 ≈4004mV=标称 4.0V 锂电池。电池门(0x601232e,阈值
+#   h[0x127734] 编译内置默认 3200mV(0x6011c1a),11 连败→0x601248e 关机)
+#   两条路径都过关:mode==1 float 直读 4004≥3200;静态链实际路径
+#   (VBAT/VTEMP 项 mode 保持 memset 残留 0xFFFF≠1,[疑]点见文档 §5)走
+#   divider 兜底 4×(0x4000×K/400)≥69,304(K∈[756,846] 全域)≫3200。
+# - **VTEMP(0x10004)=400**:条件前沿无消费者(NTC enable=0 旁路),仅
+#   「域内非零」约束——证据最弱的一项,显式标注。
+# - **禁区[钉]**:低值(如全 0)→battery_mv=0→11 连败→关机死循环——任意
+#   值非行为等价,具名常量+门核验是最低成本可辩护选择。
+# - **通道识别**:RES 读时刻 P3_ANA_CON4(0xf2c250)[4:1] 复用域(setter
+#   0x6011666 case1 → 0x6067d8a 把 (通道字&0xFFFF)<<1 写进该域,反汇编
+#   钉死)=硬件实际转换的通道;通道字=0x10000|域值。
+# - **三层身份**(codex 参谋采纳):通道识别有推导链;原始码是显式
+#   synthetic fixture(电压比例不能唯一反推原始码);电压是该 fixture 下
+#   固件自己算出的结果。真机 FD07 一次 RES 读(路 BA:通道可读)可把
+#   WBG04 码值升级为 measured 并反解 Vref(会话仍 deferred/需授权)。
+FD31_ADC_RES_NAMED_VALUES={0x10000:400,0x10006:500,0x10004:400}
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -421,6 +475,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              mem_pwr_con=False,p33_window=False,p33_port_sel=False,p33_awkup=False,
              p3_ls=False,p11_syscon1_masks=False,
              fd31_adc_con=False,fd31_adc_con_readback=False,
+             fd31_adc_pnd_completion=False,fd31_adc_res_named_values=None,
+             p33_analog_tail=False,
              subword_stores=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
@@ -833,6 +889,48 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     if fd31_adc_con_readback:
         require(fd31_adc_con,'the fd31 ADC CON readback only layers on the fd31 ADC CON projection')
         options['fd31_adc_con_readback']=True
+    # fd31_adc_pnd_completion(路 BY/sim-adcresfix):CON(bit7=PND,SDK gpadc_hw_v10.h
+    # GPADC_CON_PND=7)的无状态读时完成投影——最后写值 EN(bit4)=1 时 guest ld
+    # 读回=最后写值|0x80;原子复合 RMW 的内部读从裸最后写值合成(边界抽象只钉
+    # 死到 rmw.* 指令形状,probe_boot 专用分发)。证据链:SDK 驱动 gpadc_v10.c
+    # 的 adc_wait_pnd(轮询 bit7,≤1000×udelay(1) 超时)+adc_get_res(RES 有效性
+    # 钉在 bit7);QCY helper 0x601163a 同形(~386 步/轮×1000);**显式假设=启动写
+    # 后固件首次状态读前转换已完成**(非时序模型)——全预算轮询=80 次×~96ms≈
+    # 7.7s 纯轮询(1 步=250ns 按 Timer0 10ms=40,000 步),与实测 ~1s 级启动
+    # 不相容。先例:lrct_trim_done(bit7)/SFC PLL-lock(bit15)。默认关:读回
+    # 语义与路 BN 逐字节一致(轮询走满预算,前沿 689,402 形状不变)。
+    if fd31_adc_pnd_completion:
+        require(fd31_adc_con_readback,
+                'the fd31 ADC PND completion only layers on the CON readback projection')
+        options['fd31_adc_pnd_completion']=True
+    # fd31_adc_res_named_values(路 BY):RES(0xfd3104,__RO 模拟测量值)的具名
+    # 档位 fixture(derived-not-measured,推导链全文见 FD31_ADC_RES_NAMED_VALUES
+    # 常量注释与 docs/adc-res-consumer.md §6)。通道识别=RES 读时刻
+    # P3_ANA_CON4[4:1] 复用域(setter case1 → 0x6067d8a 反汇编钉死),非 RAM 槽
+    # ——外设模型不接触 guest RAM,且硬件转换的就是复用器选中的通道;一致性
+    # 门=最后 CON 写 EN=1 + CH_SEL=0。fixture 叠在 PND 完成投影上(RES 只在
+    # 转换完成后持有有效样本,SDK adc_get_res 同语义)。默认关:RES 读保持
+    # fd31_adc_res_not_modeled 严格停。
+    if fd31_adc_res_named_values is not None:
+        require(fd31_adc_pnd_completion,
+                'the fd31 ADC RES named values only layer on the PND completion projection')
+        options['fd31_adc_res_named_values']=dict(fd31_adc_res_named_values)
+        # ADC 通道队列快照(项0.value 字 + 项1/项2 的 key/value/mode/period
+        # 12 字节窗):fixture 的下游算术逐字节钉死——项0.value=32 轮 WBG04
+        # 截尾均值(u16=400)、项1/项2.value=12 轮双采 divider 归一化后固件
+        # 自己 utof 的 float 字、mode 半字实测=0x0001(BU §5 [疑]点显形:
+        # getter 存 float 同路径写 mode=1,静态扫描漏看——adc_get_voltage
+        # 走 float 直读分支)。只挂实验配置场景(不进共享 p11_snapshots,
+        # crc_bankb 报告字节不变)。
+        p11_snapshots=tuple(p11_snapshots)+(('adc_item0_value',0x127D10,4),
+                                            ('adc_item1_entry',0x127D1C,12),
+                                            ('adc_item2_entry',0x127D2C,12))
+    # p33_analog_tail(路 BV/sim-tailproj,模型已备、本路接线):W1[0] 边界序列的
+    # P3_ANA_CON0/7/8/9/10 + P3_CHG_CON0/CON1 AM 容器扩展(合成初始字 0+读回=
+    # 当前值);P3_ANA_READ(0xf2c064)读回钉住 p3_ana_read_not_modeled(RES 红线
+    # 同款)——RES 闭合后前沿撞上的第一个真 unknown。默认关,legacy 不变。
+    if p33_analog_tail:
+        options['p33_analog_tail_projection']=True
     # timer0_irq4_*(路 BE,独立成段便于并行路线合并):Timer0 pending→IRQ4 交付
     # 机制就位(在 ~341,097 硬期限前)。机制全部抄 core_tick/软件 IRQ 两先例:
     # 模型 advance() 在资格合格时抛 IrqDeliveryRequest(core,irq=4)(每个
@@ -1627,53 +1725,139 @@ def check(report,firmware):
     # BF 的 pending 期间逐步重检机制恰好把溢出挂起放行(cli 只屏蔽不丢弃);
     # ⑦轮询 1000 轮全预算跑完(~385 步/轮,途中 STD12M 再到期 6 次:463,252/
     # 503,252/543,252/583,252/623,252/663,252,全在临界区内不合格,pending
-    # 挂起零交付),helper 返回、caller A 继续到 **0x6011704 读 [0xfd3100+4]
-    # =0xfd3104 RES → fd31_adc_res_not_modeled 诚实停@689,402**(BN 反汇编
-    # 预言的 ~690k 精确兑现;RES=__RO 模拟测量值,红线绝不发明 0/满值);
-    # **IRQ3/IRQ4 双挂起仍武装着**——首个合格时刻(临界区 sti)在 RES 边界
-    # 之后未执行,本前缀内零交付零往返(归 RES 闭合后的下一路)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6011704' and
-            r['stop']=={'kind':'fd31_adc_res_not_modeled','address':'0xfd3104'},
-            'the heap-experimental scenario must stop at the ADC RES read with the core-tick delivery wired: '
-            'fd31 ADC CON readback projection the 0x60116e6 gate reads the last written value 0x40 '
+    # 挂起零交付),helper 返回、caller A 继续到 0x6011704 读 [0xfd3100+4]
+    # =0xfd3104 RES —— 路 BS 前沿 689,402 曾诚实停在这里(fd31_adc_res_
+    # not_modeled,RES=__RO 模拟测量值,红线绝不发明 0/满值)。
+    # **路 BY 落地(sim-adcresfix,本前沿)**:两个新 opt-in 把 RES 边界闭合——
+    # ①`fd31_adc_pnd_completion`(PND bit7 无状态读时完成投影,证据=SDK
+    # gpadc_hw_v10.h GPADC_CON_PND=7 + gpadc_v10.c 的 adc_wait_pnd/adc_get_res
+    # 把 RES 有效性钉在 bit7;显式假设=启动写后固件首次状态读前转换已完成,
+    # 全预算轮询 80×~96ms≈7.7s 与实测 ~1s 级启动不相容):80 次 caller A
+    # 轮询全部折叠为首读退出——**CON 写记录与无 PND 世界逐值相同**(原子复合
+    # RMW 内部读从裸最后写值合成,|=0x40 记录值不变 0x46105d),con_reads
+    # 2002→240(80 轮×(1 门控+1 RMW+1 helper 首 read)),pnd_forced_reads=80;
+    # ②`fd31_adc_res_named_values`(BU 预研方案 (a):WBG04=400/VBAT_4=500/
+    # VTEMP=400,通道识别=P3_ANA_CON4[4:1] 复用域而非 RAM 槽——外设模型不
+    # 接触 guest RAM 且复用域就是硬件实际转换的通道;一致性门=最后 CON 写
+    # EN=1+CH_SEL=0):served {0x10000:56(32 轮+12×2 getter),0x10004:12,
+    # 0x10006:12}。**采样事务全链真实执行**:项0.value=32 轮截尾均值 u16=400、
+    # 项1/项2 =固件自己 utof 的 float 945.0/756.0(runtime K=756=801−3×15,
+    # divider 真实算术)——**BU §5 [疑]点实测显形:mode 半字=0x0001≠0xFFFF,
+    # 存在静态漏看的 mode=1 写者**(getter 存 float 的同路径),adc_get_voltage
+    # 走 float 直读分支 → battery_mv=4×945=3780≥3200 过电池门(两条路径都过:
+    # 兜底 4×(0x4000×756/400)=124,108)。**前沿换形状**:PND 折叠把 80 次轮询
+    # 的 ~31M 步预算塌缩,Timer0 的到期时刻全部重排(延时函数 0x12e256 实测
+    # 每次 call 重编 TIMER0 PRD:delay(1000µs)→prd=11999)——首个合格到期
+    # (IPMASK=0)落在 336,337 @ 0x12e286,叠路 BE 的 `timer0_irq4_delivery`
+    # 后**14 次真实 IRQ4 交付往返**(reti_from 全在延时等待循环 0x12e282..86、
+    # handler W1C 真实清 pending、RTI 回被中断点);CPU0 core tick cnt 到
+    # 1,199,572(prd 1,199,999)未溢出——停点 447,383 恰在旧 447,490 地标前
+    # ~107 步(计数器位置路径无关,自洽)。尾段 W1[0](BV 投影接线
+    # `p33_analog_tail`):0x60685ae AWKUP 清除助手(RMW 记录 +1×3)→ 0x6012e74/
+    # 0x6012e7c P3_CHG_CON0 &=0x1FE/&=0x3FD(AM 容器,seed 0→末值 0)→ 轮询
+    # 首读 **0x6012f22(pair 基址,装载半在 0x6012f26)读 [0xf2c064]=P3_ANA_READ
+    # → p3_ana_read_not_modeled 诚实停@447,383**(BV 钉住的模拟量红线,RES
+    # 同款——本路声明的新前沿)。0x6012e82 查表(0x6067dda,r0=12)返回非零,
+    # GPIO 面 RMW(0xfd5708 组,五位)真实执行。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6012f22' and
+            r['stop']=={'kind':'p3_ana_read_not_modeled','address':'0xf2c064'},
+            'the heap-experimental scenario must stop at the W1[0] P3_ANA_READ poll with the RES '
+            'boundary closed: fd31 ADC CON readback projection the 0x60116e6 gate reads the last written value 0x40 '
             '(bit4=0), the sampling-loop caller skips the poll helper and control function, runs the '
             '0x12b55c OS-post veneer plus the ADC setter (tbb case1 -> 0x6067d8a read-modify-writes '
-            'P3_ANA_CON4 0xf2c250 -> CON=0x46105d + compound |=0x40), then the poll helper busy-waits '
-            'its FULL 1000-round budget without an invented completion (~385 steps/round through the '
-            'RAM delay at 0x12e256); the CPU0 core-tick first overflow at 447,490 and all nine STD12M '
-            'expirations inside the busy-wait (343252..663252, six of them after the overflow) land '
-            'in ONE OS critical section '
-            '(IPMASK=6 raised by the 0x12b55c cli idiom, zero IPMASK writes across the whole poll), '
-            'so the route-BF pending recheck holds both masked pendings (cli masks, never drops) and '
-            'the chain proceeds past the poll to the RES read — the honest red-line boundary on the '
-            'analog measurement at 0x6011704')
-    require(r['completed_steps']==689402,'the heap experimental config changed its step count')
+            'P3_ANA_CON4 0xf2c250 -> CON=0x46105d + compound |=0x40), then the route-BY PND '
+            'completion projection folds every poll to a first-read exit and the RES named-values '
+            'fixture (0x10000:400/0x10006:500/0x10004:400, channel identified by the '
+            'P3_ANA_CON4[4:1] analog-mux field) carries the 80 caller-A sampling rounds '
+            '(32-round WBG04 mean -> h[0x127D10]=400, then the two 12-round dual-channel '
+            'getters -> firmware-computed floats 945.0/756.0 with runtime K=756, mode halfword '
+            '1 resolving the BU mode=0xFFFF doubt), the battery gate passes (4x945=3780>=3200); '
+            'the first ELIGIBLE Timer0 expiry (336,337 @ 0x12e286, IPMASK=0 — the delay function '
+            '0x12e256 reprograms TIMER0 PRD per call) triggers the route-BE delivery layer: '
+            'fourteen real IRQ4 round trips interrupt the timer-based delay, each W1C-acked by '
+            'the real handler; the CPU0 core tick never overflows (cnt 1199572 at the stop, the '
+            '447,490 landmark ~107 steps away); the W1[0] sequence runs the AWKUP clear helper '
+            'plus the P3_CHG_CON0 RMWs (route-BV tail projection) and stops honestly on the '
+            'P3_ANA_READ analog poll at 0x6012f22 (pair base; the load half is at 0x6012f26)')
+    require(r['completed_steps']==447383,'the heap experimental config changed its step count')
     fd31=r['peripherals']['fd31_adc_con_projection']
-    require(fd31['stores']=={'0xfd3100':{'values':['0x20000','0x20040','0x40',
-                                                  '0x20000','0x20040','0x40',
-                                                  '0x46105d','0x46105d'],'writes':8}} and
-            fd31['word_writes']==8 and
+    require(fd31['stores']=={'0xfd3100':{'values':['0x40','0x46105d','0x46105d','0x20000',
+                                                  '0x20040','0x40','0x46105d','0x46105d',
+                                                  '0x20000','0x20040','0x40','0x46105d',
+                                                  '0x46105d','0x20000','0x20040','0x40'],
+                                  'writes':406}} and
+            fd31['word_writes']==406 and
             not fd31['write_only'] and not fd31['readback_not_modeled'] and
             fd31['addresses']==['0xfd3100'] and
             'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'] and
-            fd31['con_readback_projection']['reads']==2002 and
+            fd31['con_readback_projection']['reads']==240 and
             fd31['con_readback_projection']['address']=='0xfd3100' and
-            fd31['con_readback_projection']['res_boundary']['address']=='0xfd3104',
-            'the fd31 ADC CON projection must record the six control-function whole-word stores '
-            'plus the two setter writes of the first sampling round (the whole-word store of the '
-            'computed 0x46105d and the compound |=0x40 whose synthesized value is unchanged because '
-            'bit6 is already set; 0x46105d = table-byte b[0x124A90] low bits 0x5 | 0x1058 | '
-            '(0x10000<<2 & 0x1C0000)=0x40000 | 0x420000, all real instruction results), with 2002 '
-            'projected reads (1 bit4 gate + 1 compound-RMW internal read + the full 1000-round poll '
-            'x 2 CON reads per round) and the RES boundary pinned at 0xfd3104')
-    # P3_ANA_CON4(0xf2c250):setter case1 的 0x6067d8a 五次读-改-写末值 0xe1
-    # (=bit0|bit5|bit6|bit7,与 0x6067d94..dd6 的 读&0x1FE1 写回/(0&0x3FDF)|0x20/
-    # (0x20&0x7FBF)|0x40/(0x60&0xFF7F)|0x80/(0xE0&0x1FE)|1 序列精确自洽;
-    # seed 合成初始字 0,写前读回=0——路 AM P3_ANA_CON2/CON5 同族语义)。
-    require(r['peripherals']['registers']['0xf2c250']=='0xe1',
-            'P3_ANA_CON4 must end at 0xe1 after the five executed read-modify-writes of the ADC '
-            'setter case-1 helper 0x6067d8a (every intermediate value follows from the synthesized '
-            'initial word 0 and the disassembled mask/immediate chain)')
+            fd31['con_readback_projection']['res_boundary']['address']=='0xfd3104' and
+            fd31['pnd_completion_projection']['forced_reads']==80 and
+            fd31['pnd_completion_projection']['bit']=='0x80' and
+            fd31['pnd_completion_projection']['not_a_timing_model'] and
+            fd31['res_named_values_fixture']['served']=={'0x10000':56,'0x10004':12,'0x10006':12} and
+            fd31['res_named_values_fixture']['values']=={'0x10000':400,'0x10004':400,'0x10006':500} and
+            fd31['res_named_values_fixture']['derived_not_measured'],
+            'the fd31 ADC CON projection must record 406 word writes (six control-function stores '
+            'plus the 80 caller-A rounds x 5: setter 0x46105d, compound |=0x40 whose synthesized '
+            'value is UNCHANGED because the route-BY raw-RMW synthesis does not observe the '
+            'projected bit7, then the control function 0x20000/0x20040/0x40), 240 projected reads '
+            '(80 rounds x (bit4 gate + RMW-internal + first poll read — every poll folded by the '
+            'PND completion projection, forced_reads=80) and the RES fixture serving 56+12+12 '
+            'reads keyed by the analog-mux field')
+    # P3_ANA_CON4(0xf2c250):末值 0xe9=最后 getter(VTEMP)的 mux 域(0xE1|域4;
+    # WBG04 轮=0xE1(bit0|bit5|bit6|bit7)、VBAT_4 轮=0xED(域6)、VTEMP 轮=0xE9
+    # (域 4)——bit5-7 使能位在首轮后保持,域值随通道切换,与 0x6067d8a 的
+    # idx==0(|0x20/0x40/0x80 五连)与 idx!=0((读&0x1FE1)|(idx<<1) 两形状互证)。
+    require(r['peripherals']['registers']['0xf2c250']=='0xe9',
+            'P3_ANA_CON4 must end at 0xe9: the WBG04 rounds settle 0xe1 (mux 0 + enable bits '
+            '0x20/0x40/0x80|1 from the idx==0 helper shape) and the final VTEMP getter round '
+            'writes mux field 4 (0x6067d8a nonzero-index shape: ([reg]&0x1FE1)|(4<<1))')
+    # 路 BY 尾段接线:W1[0] 的 P3_CHG_CON0 双 RMW(0x6012e74 &=0x1FE/0x6012e7c
+    # &=0x3FD,seed 0 → 末值 0)在 p33_analog_tail 容器里真实执行;其余六个
+    # 容器地址(P3_CHG_CON1/P3_ANA_CON0/7/8/9/10)seed 0 未写——mode 切换函数
+    # 0x6068152 在停点之后。
+    tail={k:v for k,v in r['peripherals']['registers'].items()
+          if k in ('0xf2c068','0xf2c06c','0xf2c240','0xf2c25c','0xf2c260','0xf2c264','0xf2c268')}
+    require(tail=={'0xf2c068':'0x0','0xf2c06c':'0x0','0xf2c240':'0x0','0xf2c25c':'0x0',
+                   '0xf2c260':'0x0','0xf2c264':'0x0','0xf2c268':'0x0'},
+            'the route-BV tail container must seed all seven addresses and record only the two '
+            'executed P3_CHG_CON0 compound RMWs of the W1[0] entry (both from the synthesized '
+            'initial word 0: 0&0x1FE&0x3FD=0)')
+    # ADC 队列快照:fixture 下游算术逐字节钉死(项0 32 轮截尾均值 u16=400、
+    # 项1/2 固件自己 utof 的 float 945.0=0x446C4000/756.0=0x443D0000,runtime
+    # K=756;mode 半字=1 —— BU §5 [疑]点实测显形,存在静态漏看的 mode=1 写者,
+    # adc_get_voltage 走 float 直读,battery_mv=4×945=3780≥3200 过门)。
+    snap=r['memory_snapshots']
+    require(snap['adc_item0_value']['bytes_with_unknowns']=='9001ffff' and
+            snap['adc_item0_value']['initialized_bytes']==4 and
+            snap['adc_item1_entry']['bytes_with_unknowns']=='0600010000406c4401003200' and
+            snap['adc_item1_entry']['initialized_bytes']==12 and
+            snap['adc_item2_entry']['bytes_with_unknowns']=='0400010000003d4401003200' and
+            snap['adc_item2_entry']['initialized_bytes']==12,
+            'the ADC queue snapshots must pin item0.value=400 (u16, the 32-round trimmed mean '
+            'of the constant WBG04 fixture sample), item1 (VBAT_4) key/value/mode/period = '
+            '0x10006 / float 945.0 (0x446C4000, firmware-computed 500*756/400) / mode 1 / 50 '
+            'and item2 (VTEMP) = 0x10004 / float 756.0 (0x443D0000, 400*756/400) / 1 / 50 — '
+            'the mode halfword 1 (not the memset residue 0xFFFF) resolves the BU mode doubt by '
+            'execution: a mode=1 writer exists on the getter store path')
+    # 路 BY:Timer0 IRQ4 真实交付往返 ×14(首个合格到期 336,337 落在延时函数
+    # 的等待循环里,IPMASK=0;handler W1C 真实清 pending,RTI 回被中断点;
+    # 延时函数每次 call 重编 PRD:delay(1000µs)→11999)。core tick 未溢出
+    # (cnt 1,199,572<prd 1,199,999,停点在旧 447,490 地标前 ~107 步)。
+    t0=r['machine']['timer0_irq_entry_projection']
+    require(len(t0['deliveries'])==14 and
+            all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
+                for d in t0['deliveries']) and
+            all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286') for d in t0['deliveries']) and
+            all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
+                for d in t0['deliveries']) and
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==28 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==14,
+            'fourteen real Timer0 IRQ4 delivery round trips must interrupt the timer-based delay '
+            'wait loop (0x12e282..0x12e286) at IPMASK=0, each reading the real vector slot '
+            '0x19fe10 and clearing pending only via the real handler W1C')
     reset_config=r['peripherals']['reset_history_projection']['configuration']
     require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
@@ -1727,15 +1911,18 @@ def check(report,firmware):
             'stores (values are real executed 0x60672C8 lookup results for cfg '
             '0x11/0xE0/0x05/0x15) and stay write-only')
     awkup=r['peripherals']['p33_awkup_projection']
+    # 路 BY:W1[0] 入口的独立清除助手 0x60685ae([0xf2c19c](P_CPND)|=4、
+    # [0xf2c1a0](N_CPND)|=4、[0xf2c180](EN)&=~4——BV §8 修正二钉死的形状)
+    # 再添三条位记录;P_IE 首读 fixture 仍只服务一次。
     require(awkup['stores']=={'0xf2c184':{'values':['0x4'],'writes':1},
                               '0xf2c200':{'values':['0x5'],'writes':1},
                               '0xf2c204':{'values':['0x5'],'writes':1},
                               '0xf2c208':{'values':['0x4'],'writes':1}} and
-            awkup['rmw_records']=={'0xf2c180':{'known_mask':'0x7','known_value':'0x7','writes':3},
+            awkup['rmw_records']=={'0xf2c180':{'known_mask':'0x7','known_value':'0x3','writes':4},
                                    '0xf2c184':{'known_mask':'0x3','known_value':'0x3','writes':2},
                                    '0xf2c188':{'known_mask':'0x7','known_value':'0x3','writes':3},
-                                   '0xf2c19c':{'known_mask':'0x7','known_value':'0x7','writes':3},
-                                   '0xf2c1a0':{'known_mask':'0x7','known_value':'0x7','writes':3}} and
+                                   '0xf2c19c':{'known_mask':'0x7','known_value':'0x7','writes':4},
+                                   '0xf2c1a0':{'known_mask':'0x7','known_value':'0x7','writes':4}} and
             awkup['first_read_fixture']=={'0xf2c184':{'word':'0x0','reads_served':1}} and
             awkup['fixture_is_synthetic_assumption'] and
             awkup['records_write_accesses_only'] and
@@ -1743,7 +1930,9 @@ def check(report,firmware):
             'the P3_AWKUP projection must record the three walker FLT stores (w8 4/5/5 are real '
             'executed values), the P_IE consume write-back 0x4 (fixture 0 | 1<<2), the fourteen '
             'bit RMWs (EN/P_CPND/N_CPND |=1<<ch three times each, item[0] N_IE&=~4, items[1]/[2] '
-            'P_IE/N_IE |=1<<ch), and exactly one served first read of P3_AWKUP_P_IE')
+            'P_IE/N_IE |=1<<ch) plus the three W1[0] clear-helper RMWs (0x60685ae: EN&=~4 with '
+            'bit2 already clear keeps known_value 3, P_CPND/N_CPND |=4), and exactly one served '
+            'first read of P3_AWKUP_P_IE')
     p3ls=r['peripherals']['p3_ls_projection']
     require(p3ls['stores']=={'0xf2c290':{'values':['0x0'],'writes':1},
                              '0xf2c340':{'values':['0x0'],'writes':1},
@@ -1764,39 +1953,33 @@ def check(report,firmware):
             'route AZ\'s sequential-semantics reading corrected by route BD: 0xf2a638 has zero '
             'app+ROM references)')
     timer=r['peripherals']['timer0']
-    # 路 BS 精确计数:447,490 停点 cnt 79,176+3(该步 advance 被 core tick 段
-    # 打断少走的 3 tick,溢出挂起后恢复)=79,179 基线,+(689,402-447,490)×3
-    # =725,736 tick,途中再到期 6 次(463,252/503,252/543,252/583,252/623,252/
-    # 663,252,40,000 步精确间隔)各扣 120,000 → cnt=79,179+725,736-720,000=
-    # 84,915;19 次到期(10 legacy+9 STD12M)全部落在 ADC 临界区内(IPMASK=6,
-    # IRQ4 priority-1 maskable 不合格)→ pending 挂起 True、零交付(delivery_probe
-    # 的等待点上下文交付成功对照);RES 读是指令级停点,该步 advance 完整走完。
-    require(timer=={'con':0x1401,'cnt':84915,'prd':119999,'pending':True,'expirations':19},
-            'TIMER0 must be running on source 5 with nine STD12M expirations inside the ADC '
-            'critical section (10 legacy + 9 new at 343252..663252, 40000 steps apart), all '
-            'ineligible under IPMASK=6 (priority-1 maskable), pending left set with zero '
-            'deliveries (84915 = 79176 + 3 restored ticks + 241912 steps x 3 - 6 already '
-            'expired periods)')
-    # 路 BS 钉死「武装挂起、未交付」的 core tick 状态:溢出发生在 447,490(IPMASK=6
-    # 临界区内),BF 的 pending 逐步重检机制把它挂起放行(cli 只屏蔽不丢弃);整个
-    # 前缀内 IPMASK 再未回落(写窗口证据:447,490..689,402 零写入),首个合格时刻
-    # (临界区 sti)在 RES 读停点之后未执行 → 零交付、零 ACK、计数器保持挂起态;
-    # 交付机制本身已开(machine core_tick_entry_projection enabled、deliveries 空)。
+    # 路 BY 精确形状:PND 折叠后 80 次轮询不再各烧 ~386k 步,Timer0 的到期时刻
+    # 全部重排——**延时函数 0x12e256 实测每次 call 重编 TIMER0**(W1[0] 轮询的
+    # delay(1000µs)→PRD=12×1000−1=11999,3 tick/步 → 4,000 步/次),首个合格
+    # 到期 336,337(IPMASK=0)起 14 次到期-交付-ACK 周期;停点时刻 cnt=10,575、
+    # pending False(最后一次 handler W1C 清掉)、到期合计 24(10 legacy+14 交付)。
+    require(timer=={'con':0x1401,'cnt':10575,'prd':11999,'pending':False,'expirations':24},
+            'TIMER0 must be running on source 5 with the delay-driven schedule: the timer-based '
+            'delay reprograms PRD per call (1000us -> 11999), 24 expirations total (10 legacy + '
+            '14 delivered/acked) and pending clear at the stop (the last real handler W1C)')
+    # 路 BY:core tick 从未溢出——PND 折叠把前沿拉回 447,383,恰在旧 447,490
+    # 地标(计数器溢出位置,路径无关)前 ~107 步:cnt 1,199,572<prd 1,199,999,
+    # 零 pending 零交付零 ACK;交付机制开着(machine enabled、deliveries 空)。
     tick0=r['peripherals']['core_tick_configuration'][0]
-    require(tick0['pending'] is True and tick0['expirations']==1 and
-            tick0['unresolved_overflow'] is True and tick0['acknowledgements']==0 and
+    require(tick0['pending'] is False and tick0['expirations']==0 and
+            tick0['unresolved_overflow'] is False and tick0['acknowledgements']==0 and
+            tick0['cnt']==1199572 and
             not tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['machine']['core_tick_entry_projection']['deliveries']==[] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
-            r['peripherals']['ipmask']==6 and
+            r['peripherals']['ipmask']==0 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300',
-            'the CPU0 core tick must stay ARMED-PENDING through the new frontier: the overflow '
-            '(447,490) lands inside the ADC OS critical section (gates 0x300 open, nibble enabled, '
-            'but priority 1 < IPMASK 6), the route-BF per-step recheck holds it masked (never '
-            'dropped), the matching sti lies beyond the RES boundary, so nothing is delivered or '
-            'acknowledged in this prefix and the counter stays held (CPU1 prd 479999999 never '
-            'overflows)')
+            'the CPU0 core tick must NOT have overflowed in the folded world: the PND projection '
+            'pulls the frontier back to 447,383, ~107 steps before the path-independent 447,490 '
+            'overflow landmark (cnt 1199572 < prd 1199999), so zero pendings/deliveries/acks; '
+            'IPMASK=0 at the stop (the W1[0] poll runs outside any critical section) and the '
+            'delivery machinery stays enabled with an empty list')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -1869,9 +2052,17 @@ def check(report,firmware):
             'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
             'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
             'the timer bring-up before any scheduler IPI)')
-    rti=[e for e in r['machine']['events'] if e.get('kind')=='software_irq_rti' and e.get('core')==0]
-    require(any(e['pc_after']=='0x6068f0c' and e['sp_after']=='0x401ffc' for e in rti),
-            'the scheduler must really RTI into the pmu_task entry with its own stack')
+    # 路 BY 注:pmu_task 入口的 RTI 事件(pc_after 0x6068f0c/sp 0x401ffc,
+    # ~300k 步)在路 BY 分歧点(首个 caller A 的轮询退出,~305k)之前——该
+    # 前缀与 689,402 地标世界逐字节相同,证据钉在路 BS 检查里。本场景的
+    # events 窗口(前 32+后 32,防 RAM/代码镜像的裁剪)现在装着 14 次 IRQ4
+    # 往返的尾部事件,中段的 software_irq_rti 事件滑出窗口:改钉不裁剪的
+    # 持久记录(交付列表已钉 + RTI 适配器计数 10)与裁剪标志本身。
+    require(r['machine']['events_truncated'] is True and
+            r['instruction_adapters'].get('conditional_software_irq_rti')==10,
+            'the software IRQ RTI count must stay at its verified ten (the pmu_task-entry RTI '
+            'event lies in the byte-identical pre-305k prefix pinned at the 689,402 landmark; '
+            'the trimmed 32+32 events window now holds the fourteen IRQ4 round trips)')
     require(r['peripherals']['software_irq_commands']['commands']==20 and
             r['peripherals']['software_irq_commands']['acknowledgements']==10,
             'the two scheduler IPI round trips must be the only new software IRQ bookkeeping')
@@ -1903,23 +2094,23 @@ def check(report,firmware):
             r['instruction_adapters'].get('lp_timer_bit_rmw')==9 and
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
-            r['instruction_adapters'].get('p33_awkup_bit_rmw')==14 and
+            r['instruction_adapters'].get('p33_awkup_bit_rmw')==17 and
             r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1 and
-            # 路 BN 新前缀(~143k 步轮询忙等)计数:精确双字 26 不变;新前缀
-            # =veneer 0x12b55c 的 3 个任务栈帧(abstract_task_stack_transport
-            # 2496→2499)、0x12b55c 内一次共享锁取(338→339)、setter/0x6067d8a
-            # 的 8 个整字存储(3497→3505:0xf2c250×5+0xfd3100×2+…)、复合 RMW
-            # |=0x40(370→371)、轮询循环内 icfg/cnum 可见性(994→996、1599→1601,
-            # 延时/轮询指令的真实执行);其余全部不变。路 BS 前缀再 +1:轮询
-            # helper 0x601163a 的出口 pop.pc_rl(0x6011664 {pc,r5,r4}=[sp++]——
-            # 入口 push 在 304,5xx 已计,出口在 1000 轮跑完后才执行)→2499→2500;
-            # 轮询体是 nop/add/bnez+CON 读,无新 adapter,其余不变。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==2500 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==339 and
-            r['instruction_adapters'].get('exact_full_word_store')==3505 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==371 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==996 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==1601,
+            # 路 BY 折叠世界计数(PND 折叠掉 80×~386k 步轮询,前缀变成 80 个
+            # 短 caller A 轮+尾段+14 次 IRQ4 往返):p33_awkup 位 RMW 14→17
+            #(+3:W1[0] 清除助手 0x60685ae 的 EN&=~4/P_CPND|=4/N_CPND|=4);
+            # 其余前 12 项不变。新大头:任务栈帧运输 2500→3534(80×2 个
+            # veneer 出入口帧+尾段/中断帧)、共享锁 339→532(80×2+…)、整字
+            # 存储 3505→5185(80×5 个 CON/P3_ANA_CON4/GPIO 面/CHG 面…)、
+            # mmio RMW 371→506、icfg bit9 996→1440、cnum 1601→2117(延时
+            # 等待循环+中断往返的真实执行);timer0_irq_handler_frame=28 与
+            # conditional_timer0_irq_rti=14 已在交付钉里。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==3534 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==532 and
+            r['instruction_adapters'].get('exact_full_word_store')==5185 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==506 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==1440 and
+            r['instruction_adapters'].get('per_core_visible_cnum')==2117,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -1952,10 +2143,10 @@ def check(report,firmware):
             'the handler must execute both 12B special-frame anchors (push.srl at 0x12ece8, '
             'pop.srl at 0x12ed08) with the 16B push.rl/pop.rl frame on the ordinary transport')
     m=rows['timer0_irq4_masked_probe']
-    # 路 BN 注:主场景(p11_heap)已推进过 447,490(core tick 溢出,路 BS 接线后
-    # 到 689,402 RES 读),masked probe 不开 fd31 读回投影——它保持 304,317 的
-    # CON 读回诚实停(与 delivery_probe 的 304,857 同族);停点按字面值钉,不引用
-    # 主场景。
+    # 路 BY 注:主场景(p11_heap)在路 BY 后停在 447,383(P3_ANA_READ,折叠
+    # 世界);masked probe 不开 fd31 读回/PND/fixture——它保持 304,317 的
+    # CON 读回诚实停(与 delivery_probe 的 304,857 同族);停点按字面值钉,
+    # 不引用主场景。
     require(m['completed_steps']==304317 and
             m['stop']=={'kind':'fd31_adc_con_readback_not_modeled','address':'0xfd3100'} and
             m['stop_pc']=='0x60116e6' and
@@ -2380,6 +2571,41 @@ def check(report,firmware):
         'measurement session (route BA evaluated the channel readable) or a named fixture '
         'with a real derivation chain are the only ways on. Default off: the CON read keeps '
         'the honest 304,317 fd31_adc_con_readback_not_modeled stop and 0xf2c250 stays unmapped')
+    report['fd31_adc_res_pnd_assumption']=(
+        'opt-in fd31_adc_pnd_completion + fd31_adc_res_named_values (route BY/sim-adcresfix, '
+        'layered on fd31_adc_con_readback; default OFF keeps the route-BS 689,402 '
+        'fd31_adc_res_not_modeled world byte-identical). LAYER 1 — PND completion: a STATELESS '
+        'read-time projection; a guest load of CON observes bit7 (GPADC_CON_PND=7, '
+        'gpadc_hw_v10.h) set whenever the last firmware write has EN(bit4)=1. Evidence: the SDK '
+        'driver gpadc_hw_v10.c polls bit7 with a 1000x udelay(1) timeout (adc_wait_pnd) and '
+        'gates RES validity on it (adc_get_res); the QCY helper 0x601163a is the same shape with '
+        'a ~386-step RAM delay, and a full-budget poll per caller round (~96ms) x 80 rounds '
+        'would put ~7.7s of pure polling on a ~1s-class boot — so on real hardware the polls '
+        'exit on PND. THE COMPLETION TIMING IS NOT MODELED: the explicit assumption is only '
+        '"the conversion completes before the firmware first status read after the start write" '
+        '(lrct_trim_done bit7 / SFC PLL-lock bit15 precedent shape). The atomic compound RMW '
+        'shapes synthesize from the RAW last-written word (their internal read does not observe '
+        'the projected bit — a bounded abstraction pinned to the rmw.* instruction shapes; '
+        'explicit guest ld sequences keep normal read semantics), so the recorded CON stores '
+        'are IDENTICAL to the no-PND world. LAYER 2 — RES named values '
+        '{0x10000:400, 0x10006:500, 0x10004:400}: EXPLICIT SYNTHETIC INPUTS, derived-not-'
+        'measured (the voltage ratio does not uniquely determine raw codes). Channel '
+        'identification IS derived: the setter case-1 path writes (channel_word&0xFFFF)<<1 '
+        'into P3_ANA_CON4[4:1] before starting the conversion, so the mux field at RES-read '
+        'time identifies the sampled channel (consistency gates: last CON write EN=1 and '
+        'CH_SEL=0; anything else stops honestly fd31_adc_res_channel_not_modeled). '
+        'Derivation: WBG04=400 (10-bit nonzero, constant-sample self-consistency -> '
+        'h[0x127D10]=400); VBAT_4=500 (4x(500xK/400) ~= 4004mV nominal 4.0V cell, K=801+/-3d; '
+        'BOTH battery-gate paths pass — the executed run takes the float-direct path '
+        '4x945=3780>=3200 with runtime K=756, and the divider fallback 4x(0x4000x756/400) '
+        '=124108 also passes); VTEMP=400 (no consumer on this frontier, in-domain nonzero '
+        'only — weakest chain, labeled). FORBIDDEN REGION: low values trip the 3200mV battery '
+        'gate into the 0x601248e shutdown — values are not behavior-equivalent. Downstream '
+        'effects are FIRMWARE-COMPUTED under this fixture (item0 mean 400 u16, floats '
+        '945.0/756.0, mode halfword 1 — the executed getter path DOES write mode=1, '
+        'resolving the BU mode=0xFFFF doubt) and every conclusion stays conditional pass. '
+        'One live FD07 read of 0xfd3104 (route BA evaluated the channel readable) would '
+        'upgrade the WBG04 code to measured')
     report['irq127_scheduler_loop_entered']=True
     report['app_core_entered_after_irq_rti']=True
     report['dual_core_sync_handshake_executed']=True
@@ -2500,7 +2726,11 @@ def main():
                               mem_pwr_con=True,p33_window=True,p33_port_sel=True,
                               p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
                               fd31_adc_con=True,fd31_adc_con_readback=True,
-                              subword_stores=True,core_tick_irq3_delivery=True,
+                              fd31_adc_pnd_completion=True,
+                              fd31_adc_res_named_values=FD31_ADC_RES_NAMED_VALUES,
+                              p33_analog_tail=True,
+                              subword_stores=True,timer0_irq4_delivery=True,
+                              core_tick_irq3_delivery=True,
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'timer0_irq4_delivery_probe',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,

@@ -1287,6 +1287,27 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                             adapters['gpio_conditional_rmw']+=1
                         adapters['gpio_symbolic_rmw']+=1
                         return
+                    if hardware.handles_fd31_rmw_synthesis(address):
+                        # fd31 ADC CON 的原子复合 RMW(路 BY,PND 完成投影开启时
+                        # 才接管;setter 尾 0x60116ca 的 rmw.or.modimm
+                        # [0xfd3100]|=0x40):内部读从**裸最后写值**合成——不
+                        # 观察投影 bit7(有边界的抽象,只钉死到 rmw.* 指令形状;
+                        # 显式 guest ld 序列走正常读语义),写回照常记录、适配器
+                        # 计数口径与通用 mmio 路径一致(同一计数键)。投影关闭时
+                        # 不进此分支,通用路径行为与 legacy 逐字节一致。
+                        if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        elif insn.id in ('rmw.and.nmodimm','rmw.and.modimm'):kind='and';operand=op['m']
+                        elif insn.id=='rmw.or.r':kind='or';operand=self.R[op['s']]
+                        elif insn.id=='rmw.and.r':kind='and';operand=self.R[op['s']]
+                        elif insn.id=='rmw.and.invr':kind='and';operand=(~self.R[op['s']])&0xffffffff
+                        elif insn.id=='rmw.or.bitr':kind='or';operand=1<<(self.R[op['s']]&31)
+                        elif insn.id=='rmw.and.invbitr':kind='and';operand=~(1<<(self.R[op['s']]&31))
+                        else:raise Blocked('fd31_adc_con_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.fd31_adc_con.rmw(kind,operand,count_read=True)
+                        if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
+                        self.finish_exact(self.pc+size)
+                        adapters['mmio_rmw_always_writes']+=1
+                        return
                     old=int.from_bytes(self.mem.read(address,4),'little')
                     if insn.id=='rmw.or.modimm':value=old|op['m']
                     elif insn.id=='rmw.and.nmodimm':value=old&op['m']

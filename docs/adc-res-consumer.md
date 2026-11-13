@@ -302,3 +302,38 @@ lrct_trim_done 先例：读回=末写值|bit7），可把每轮轮询折叠为�
 gpadc_hw_v10.h 与 gpadc.c.o/gpadc_hw.c.o/gpadc_hw_v10.c.o 取自 pinned SDK commit
 `67328f4`（cpu.a，data/dependencies.json 已钉 archive）；battery_level.c/charge.c 同 commit
 （参考应用，仅形状佐证）。
+
+## 8. 路 BY 实测修正（2026-11-13，sim-adcresfix，fixture 实施后的执行证据）
+
+本节是方案 (a) 落地（`fd31_adc_pnd_completion` + `fd31_adc_res_named_values`，
+probe 场景 `p11_heap_experimental_config`）后的执行侧修正/确认，原文保留、以本节为准：
+
+1. **§5 的 mode=0xFFFF [疑]点已由执行关闭：mode=1 写者存在**。实测项1/项2 的
+   mode 半字 = **0x0001**（快照 `0600010000406c4401003200` /
+   `0400010000003d4401003200`）——getter 存 float 的同路径也写 mode=1，
+   静态扫描漏看了它。因此 `adc_get_voltage(0x10006)` 走 **float 直读分支**
+   （0x6011e0c），battery_mv = 4×945 = **3780 ≥ 3200 过门**（§6 预测的
+   兜底路径在此固件上不触发；两条路径都过门的结论不变）。
+2. **runtime K=756**（=801−3×15，trim 字下端）：固件真实算术算出项1 float
+   = **945.0**（0x446C4000 = 500×756/400）与项2 float = **756.0**
+   （0x443D0000 = 400×756/400）——divider 与 §2.4 的 K 推导链互证。
+3. **通道识别改用 P3_ANA_CON4[4:1] 复用域而非 RAM 槽**（§6 原文「按槽
+   [0x127DAC] 通道字返回」）：外设模型不接触 guest RAM；setter case1 →
+   0x6067d8a 把 (通道字&0xFFFF)<<1 写进复用域（idx=0 走 `|0x20/0x40/0x80|
+   1` 五连、idx≠0 走 `(读&0x1FE1)|(idx<<1)` 两形状，逐指令重解钉死），
+   RES 读时刻的域值=硬件实际转换的通道（WBG04 轮末值 0xE1/VBAT_4 轮
+   0xED/VTEMP 轮 0xE9，bit5-7 使能位首轮后保持）。另加一致性门：最后
+   CON 写须 EN=1 且 CH_SEL(bits8-11)=0（PMU 模拟路径），否则显式严格停
+   `fd31_adc_res_channel_not_modeled`（codex 参谋采纳）。
+4. **PND 完成投影的证据补充**：SDK gpadc_hw_v10.c 的 `adc_wait_pnd`/
+   `adc_get_res` IR（§2 的 SDK 佐证升级为驱动级证据——轮询 bit7、RES 有效性
+   钉在 bit7、`adc_close` 三连写与 QCY 控制函数逐值相同）；投影语义=无状态
+   读时强制（EN=1 才强制 bit7），**原子复合 RMW 的内部读从裸最后写值合成**
+   （边界抽象只钉死到 rmw.* 指令形状）——开启前后 CON 写记录逐值相同。
+5. **前沿换形状**（PND 折叠的后果，非本 fixture 的值假设）：80 次轮询塌缩后
+   Timer0 到期时刻全部重排（延时函数 0x12e256 实测每次 call 重编 TIMER0
+   PRD，delay(1000µs)→11999），首个合格到期 336,337 起产生 **14 次真实
+   IRQ4 交付往返**；CPU0 core tick 未溢出（停点 447,383 在路径无关的
+   447,490 地标前 ~107 步）；新前沿=**447,383 @ 0x6012f22
+   `p3_ana_read_not_modeled`**（W1[0] 的 P3_ANA_READ 轮询读，路 BV 钉住的
+   模拟量红线，RES 同款）。
