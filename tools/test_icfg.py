@@ -88,6 +88,23 @@ class IcfgTests(unittest.TestCase):
         self.assertEqual(r['completed_steps'],1)
         self.assertEqual(r['stop']['kind'],'partial_icfg_value_consumed')
 
+    def test_masked_branch_consumes_only_known_mask_bits(self):
+        e=self.enc
+        # bne.and.modimm.ri.l i=0xFF branches when (r0 & 0xFF) != 0. The mask
+        # only touches the low byte, so a known low byte decides the branch and
+        # an unknown one stops honestly (same mask('and', i).concrete() as the
+        # ext.b0.u handler). taken skips the trailing li.u8, leaving r1=0.
+        bne=e('bne.and.modimm.ri.l',r=0,i=255,n=2);beq=e('beq.and.modimm.ri.l',r=0,i=255,n=2)
+        r,c,_=self.run_code(e('mov.r_sr',r=0,s=11)+bne+e('li.u8',r=1,n=1),3,known=0x3ff,value=0)
+        self.assertEqual(r['completed_steps'],3);self.assertEqual(c.R[1],1)  # low byte 0 -> not taken
+        r,c,_=self.run_code(e('mov.r_sr',r=0,s=11)+bne+e('li.u8',r=1,n=1),2,known=0x3ff,value=0x55)
+        self.assertEqual(r['completed_steps'],2);self.assertEqual(c.R[1],0)  # low byte 0x55 -> taken
+        r,c,_=self.run_code(e('mov.r_sr',r=0,s=11)+bne+e('li.u8',r=1,n=1),2,known=0x300,value=0)
+        self.assertEqual(r['completed_steps'],1)
+        self.assertEqual(r['stop']['kind'],'partial_icfg_value_consumed')  # unknown low byte
+        r,c,_=self.run_code(e('mov.r_sr',r=0,s=11)+beq+e('li.u8',r=1,n=1),2,known=0x3ff,value=0)
+        self.assertEqual(r['completed_steps'],2);self.assertEqual(c.R[1],0)  # beq low byte 0 -> taken
+
     def test_unproven_status_or_stale_cross_core_writes_are_rejected_atomically(self):
         state=IcfgState(0,0x033f0700,0xffffffff)
         stale=state.read();other=IcfgState(1,0,0x3ff).read()

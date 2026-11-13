@@ -185,12 +185,16 @@ def test_scenario_registry_shapes():
     # 次,超时后进 mode 切换函数 0x6068152——3,070,626 @ 0x606817a 读
     # JL_CLOCK->DCCK_CON0 0xfd0008 停(路 CC 预研钉死的 JL 时钟族)。路 CL:
     # jl_clock_dcck 投影放行该读,mode 切换体真实执行,W1[1] call scheduler
-    # 中断上下文 helper 0x6065c3a 的 icfg 读被 0x6065c4c `if ((r0&0xFF)!=0)`
-    # 消费——3,070,786 @ 0x6065c4c partial_icfg_value_consumed 停。
+    # 中断上下文 helper 0x6065c3a。路 CO:partial_icfg_masked_branch 处理器放行
+    # 0x6065c4c 的 active-priority 低字节掩码测试 `if ((r0&0xFF)!=0)`(bne.and.
+    # modimm.ri.l i=0xFF;empty-active-priority fixture 下低字节已知 0 → 不跳),
+    # helper 经 0x12cb08(临界查询→1)/0x12b55c(重进临界区 IPMASK 0→6)后停在
+    # 0x6065ccc `st.w.sp.l [sp+8]=r9` 的上游存储模型簿记合并读未初始化局部
+    # 0x19e2d4——3,070,955 @ 0x6065ccc upstream_store_bookkeeping_read 停。
     assert SCENARIOS['p11_heap_experimental']['freshness'] == {
-        'completed_steps': 3070786, 'stop_pc': '0x6065c4c',
-        'stop_fields': {'kind': 'partial_icfg_value_consumed',
-                        'known_mask': '0x3ff', 'known_value': '0x300'}}
+        'completed_steps': 3070955, 'stop_pc': '0x6065ccc',
+        'stop_fields': {'kind': 'upstream_store_bookkeeping_read',
+                        'address': '0x19e2d4'}}
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000

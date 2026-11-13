@@ -216,10 +216,16 @@ Timer0 grows to 286 deliveries, until the world enters the mode-switch
 function 0x6068152 (r0==1 branch). Route CL releases the JL clock family
 DCCK read side (jl_clock_dcck projection, route-AM container semantics) so
 the mode-switch body runs for real; the W1[1] walker then calls the
-scheduler interrupt-context helper 0x6065c3a whose icfg read (known_mask
-0x3ff/value 0x300) is consumed by `if ((r0 & 0xFF) != 0)` at 0x6065c4c —
-a partial-ICFG consumption the model stops on honestly at 3,070,786 (the
-next three-choice).
+scheduler interrupt-context helper 0x6065c3a. Route CO releases the
+active-priority low-byte test at 0x6065c4c (`if ((r0 & 0xFF) != 0)`,
+bne.and.modimm.ri.l i=0xFF) via the partial_icfg_masked_branch handler: the
+empty-active-priority fixture makes the low byte known 0, so value&0xFF=0
+and the branch is not-taken; the helper then calls 0x12cb08 (RTOS critical
+query -> 1), skips the error path, re-enters the critical section via
+0x60659ee->0x12b55c (IPMASK 0->6), and stops at 3,070,955 @ 0x6065ccc
+`st.w.sp.l [sp+8]=r9` on the upstream store model merge read of the
+uninitialized local 0x19e2d4 (the st.d.sp.l / parallel-halfword-store
+family, next three-choice).
 
 The trailing timer0_irq4_delivery_probe / timer0_irq4_masked_probe scenarios
 (route BE) layer the Timer0 IRQ4 delivery machinery on the full
@@ -1893,24 +1899,32 @@ def check(report,firmware):
     # DCCK_CON1 两步(末值 0xff000100)、DCCK_CON2 整字写 0x10000、WLA_CON8
     # |=0x8000000(OSC 族既有)、P3_ANA_CON0/7/8/9/10 配置 RMW(BV 容器)、
     # call 0x12cd04 软件延时、OS 临界区退出(0x12b5b0)。W1[0] 返回(0x6013196),
-    # W1[1] walker(0x6013198)在 0x60131ca call 0x6065c3a(scheduler 中断上下文
-    # 判定 helper),该函数 0x6065c44 `r0=icfg` 读部分 ICFG(known_mask 0x3ff/
-    # value 0x300)后 0x6065c4c `if ((r0&0xFF)!=0)` 测 active-priority 低字节
-    # ——部分 ICFG 模型的 IcfgValue.__and__ 要求整字全知、此分支形状无处理器,
-    # 诚实停 partial_icfg_value_consumed。**新前沿 3,070,786 @ 0x6065c4c**。
-    require(r['stop_core']==0 and r['stop_pc']=='0x6065c4c' and
-            r['stop']=={'kind':'partial_icfg_value_consumed','known_mask':'0x3ff',
-                        'known_value':'0x300'},
-            'the heap-experimental scenario must stop at the partial-ICFG consumption inside the '
-            'scheduler interrupt-context helper 0x6065c3a after the jl_clock_dcck projection '
-            'released the JL clock family: the route-CG prefix is byte-identical, the mode-switch '
-            'function 0x6068152 body runs for real (DCCK_CON0 0x46000e0c / DCCK_CON1 0xff000100 / '
-            'DCCK_CON2 0x10000 plus the WLA_CON8/P3_ANA_CON0/7/8/9/10 config and the software '
-            'delay), W1[0] returns, and the W1[1] walker calls 0x6065c3a whose icfg read '
-            '(known_mask 0x3ff/value 0x300) is consumed by the branch `if ((r0 & 0xFF) != 0)` '
-            'at 0x6065c4c — the partial-ICFG model only answers whole-word-or-covered-mask '
-            'shapes, so this active-priority byte test stops honestly')
-    require(r['completed_steps']==3070786,'the heap experimental config changed its step count')
+    # 路 CO:0x6065c4c 的 `if ((r0&0xFF)!=0)`(bne.and.modimm.ri.l,i=0xFF)是
+    # active-priority 低字节掩码测试。empty-active-priority fixture(initial
+    # mask 0x3ff/value 0,gates 由 CLI/STI 与 gate 写推到 0x300)下低字节 bits0-7
+    # 已知为 0,`r0&0xFF=0x300&0xFF=0`、分支不跳——与既有 ext.b0.u 处理器同款
+    # 「已知低字节按需消费」,opt-in `partial_icfg_masked_branch` 处理器放行
+    # (低字节未知时仍经 .concrete() 诚实停 partial_icfg_value_consumed)。放行后
+    # 0x6065c3a 判定「非 IRQ 上下文(低字节 0)」→ call 0x12cb08(RTOS 临界查询,
+    # 返 1)→ r8=1 跳过错误路径 → call 0x60659ee→0x12b55c OS post veneer 进临界
+    # 区(IPMASK 0→6)→ 停 0x6065ccc `st.w.sp.l [sp+8]=r9` 的 upstream 存储模型
+    # 簿记合并读未初始化局部 0x19e2d4(st.d.sp.l/mov.rr.p∥st.h 同族,归下一路)。
+    # **新前沿 3,070,955 @ 0x6065ccc**。
+    require(r['stop_core']==0 and r['stop_pc']=='0x6065ccc' and
+            r['stop']=={'kind':'upstream_store_bookkeeping_read','access':'read',
+                        'address':'0x19e2d4','size':4,'region':'physical_heap',
+                        'first_missing':'0x19e2d4',
+                        'note':'upstream store model reads previous words to merge/drop writes; not a guest load'},
+            'the heap-experimental scenario must stop at the scheduler helper 0x6065c3a '
+            'upstream-store bookkeeping read after the route-CO masked-branch handler releases '
+            'the active-priority low-byte test: the 0x6065c4c `if ((r0 & 0xFF) != 0)` branch '
+            '(bne.and.modimm.ri.l, i=0xFF) evaluates not-taken because the low byte is known 0 '
+            'from the empty-active-priority fixture (mask 0x3ff/value 0x300), 0x12cb08 returns 1 '
+            'so r8 stays 1 and the error path is skipped, and the 0x60659ee->0x12b55c OS-post '
+            'veneer enters the critical section (IPMASK 0->6) before 0x6065ccc `st.w.sp.l '
+            '[sp+8]=r9` hits the upstream store model merge read of the uninitialized local '
+            '0x19e2d4 — the st.d.sp.l / mov.rr.p-parallel-halfword-store family, next three-choice')
+    require(r['completed_steps']==3070955,'the heap experimental config changed its step count')
     dcck=r['peripherals']['registers']
     require(dcck['0xfd0008']=='0x46000e0c' and dcck['0xfd000c']=='0xff000100' and
             dcck['0xfd0010']=='0x10000',
@@ -2174,33 +2188,37 @@ def check(report,firmware):
     # PRD;停点前最后一段是 3ms 窗 PRD=35999),到期合计 296(10 legacy+286
     # 交付/ACK);停点时刻 cnt=31,179、pending False(最后一次 handler W1C
     # 清掉)。路 CL:mode 切换函数 0x6068152 体 +160 步真实执行(纯软件倒计数
-    # 延时无 SFR、不重编 PRD),cnt 再 +480(=160×3 tick)到 31,659。
-    require(timer=={'con':0x1401,'cnt':31659,'prd':35999,'pending':False,'expirations':296},
+    # 延时无 SFR、不重编 PRD),cnt 再 +480(=160×3 tick)到 31,659。路 CO:
+    # masked 分支放行后 scheduler helper 再 +170 步(=169 模型步+停点步),cnt
+    # 再 +510(=170×3 tick)到 32,169;无新到期(expirations 仍 296)。
+    require(timer=={'con':0x1401,'cnt':32169,'prd':35999,'pending':False,'expirations':296},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the last window before the stop is the 3ms one -> PRD 35999), '
             '296 expirations total (10 legacy + 286 delivered/acked) and pending clear at the '
             'stop (the last real handler W1C); the route-CL mode-switch body advances cnt by '
-            '160 model steps x 3 ticks = +480 without reprogramming PRD')
+            '160 model steps x 3 ticks = +480, and the route-CO scheduler-helper prefix adds '
+            '170 more model steps x 3 ticks = +510, both without reprogramming PRD')
     # 路 CG:core tick 溢出交付+ACK 合计 9 次(首溢出~447,490+超时窗口内 8 次,
     # expirations 9/acknowledgements 9,cnt 重装后走到 892,276<prd 1,199,999,零
     # pending);IRQ3 handler 0x60661a4 的 W1C 真实执行,交付列表见上。CPU1
     # core tick 零溢出。路 CL:+160 步后 cnt 再 +640(=160×4 tick)到 892,916;
-    # 停点已出 mode 切换的 OS 临界区(W1[1] 的 scheduler helper 读 ICFG),IPMASK
-    # 回到 0。
+    # 路 CO:scheduler helper 再 +170 步(=169+停点步)、cnt 再 +680(=170×4 tick)
+    # 到 893,596;停点进入 0x6065c3a 内 OS 临界区(0x60659ee→0x12b55c),IPMASK
+    # 由 0 回到 6。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==9 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==9 and
-            tick0['cnt']==892916 and
+            tick0['cnt']==893596 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
-            r['peripherals']['ipmask']==0 and
+            r['peripherals']['ipmask']==6 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300',
             'the CPU0 core tick must deliver and ack nine overflows (the ~447,490 landmark '
-            'plus the eight of the timeout window; rearmed counter at 892916 < prd 1199999, '
-            'no pending at the stop); IPMASK=0 at the route-CL stop (the mode-switch critical '
-            'section exited before the W1[1] scheduler helper read the ICFG) and the CPU1 core '
-            'tick never overflows')
+            'plus the eight of the timeout window; rearmed counter at 893596 < prd 1199999, '
+            'no pending at the stop); IPMASK=6 at the route-CO stop (the 0x60659ee->0x12b55c '
+            'OS-post veneer re-enters the critical section inside the scheduler helper, after '
+            'the route-CL stop had observed IPMASK=0) and the CPU1 core tick never overflows')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余
@@ -2276,24 +2294,30 @@ def check(report,firmware):
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7+
-            [(0,127,'0x12ad2a','0x12b608')]*2,
+            [(0,127,'0x12ad2a','0x12b608')]*2+
+            [(1,125,'0x60662c8','0x12c5ca')],
             'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
             'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
-            'the timer bring-up before any scheduler IPI)')
+            'the timer bring-up before any scheduler IPI); the route-CO scheduler helper prefix '
+            'adds one more CPU1 irq125 sync-IPI delivery at the tail')
     # 路 BY 注:pmu_task 入口的 RTI 事件(pc_after 0x6068f0c/sp 0x401ffc,
     # ~300k 步)在路 BY 分歧点(首个 caller A 的轮询退出,~305k)之前——该
     # 前缀与 689,402 地标世界逐字节相同,证据钉在路 BS 检查里。本场景的
     # events 窗口(前 32+后 32,防 RAM/代码镜像的裁剪)现在装着 14 次 IRQ4
     # 往返的尾部事件,中段的 software_irq_rti 事件滑出窗口:改钉不裁剪的
-    # 持久记录(交付列表已钉 + RTI 适配器计数 10)与裁剪标志本身。
+    # 持久记录(交付列表已钉 + RTI 适配器计数 10)与裁剪标志本身。路 CO 的
+    # 新增 irq125 是 CPU1 同步 IPI(handler 0x60662c8、repeat 投影),不新增
+    # CPU0 irq127 RTI 往返,conditional_software_irq_rti 仍 10。
     require(r['machine']['events_truncated'] is True and
             r['instruction_adapters'].get('conditional_software_irq_rti')==10,
             'the software IRQ RTI count must stay at its verified ten (the pmu_task-entry RTI '
             'event lies in the byte-identical pre-305k prefix pinned at the 689,402 landmark; '
-            'the trimmed 32+32 events window now holds the fourteen IRQ4 round trips)')
-    require(r['peripherals']['software_irq_commands']['commands']==20 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==10,
-            'the two scheduler IPI round trips must be the only new software IRQ bookkeeping')
+            'the trimmed 32+32 events window now holds the fourteen IRQ4 round trips; the '
+            'route-CO CPU1 sync IPI is a repeat_irq_delivery round, not an irq127 RTI)')
+    require(r['peripherals']['software_irq_commands']['commands']==22 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==11,
+            'the two scheduler IPI round trips plus the route-CO scheduler-helper sync IPI '
+            'must be the only new software IRQ bookkeeping')
     # 新前缀不经硬件 CRC 引擎、不动 P11 资源链:CRC 30 次往返 900 字节与
     # crc_bankb_erased_fixture 完全一致。
     crc_heap=r['peripherals']['hardware_crc_projection']
@@ -2330,13 +2354,18 @@ def check(report,firmware):
             # WLA_CON8/P3_ANA_CON0/7/8/9/10 配置+软件延时+临界区退出)与 W1[1]
             # scheduler helper 帧——并行字节 140→141、任务栈帧运输 10697→10703、
             # 共享锁 1221→1222、整字存储 14122→14144、mmio RMW 1482→1492、icfg
-            # bit9 3724→3726、cnum 5770→5772。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==10703 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1222 and
-            r['instruction_adapters'].get('exact_full_word_store')==14144 and
+            # bit9 3724→3726、cnum 5770→5772。路 CO:scheduler helper 判定前置
+            # 段真实执行(masked 分支 1 次、0x12cb08 临界查询、0x12b55c 临界区
+            # 进出 cli/sti、0x60659ee/0x6065ab8 包装)——新增 partial_icfg_masked_
+            # branch=1,任务栈帧运输 10703→10706、共享锁 1222→1223、整字存储
+            # 14144→14150、icfg bit9 3726→3730、cnum 5772→5781(mmio RMW 1492 不变)。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==10706 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1223 and
+            r['instruction_adapters'].get('exact_full_word_store')==14150 and
             r['instruction_adapters'].get('mmio_rmw_always_writes')==1492 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==3726 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==5772,
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==3730 and
+            r['instruction_adapters'].get('partial_icfg_masked_branch')==1 and
+            r['instruction_adapters'].get('per_core_visible_cnum')==5781,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -2838,10 +2867,18 @@ def check(report,firmware):
         'mode-switch body runs for real (DCCK_CON0 0x46000e0c / DCCK_CON1 0xff000100 / '
         'DCCK_CON2 0x10000, WLA_CON8 |=0x8000000, P3_ANA_CON0/7/8/9/10 config, software delay), '
         'W1[0] returns, and the W1[1] walker calls the scheduler interrupt-context helper '
-        '0x6065c3a whose icfg read (known_mask 0x3ff/value 0x300) is consumed by the branch '
-        '`if ((r0 & 0xFF) != 0)` at 0x6065c4c — the partial-ICFG model only answers '
-        'whole-word-or-covered-mask shapes, so this active-priority byte test stops honestly. '
-        'New frontier: 3,070,786 @ 0x6065c4c partial_icfg_value_consumed (the next three-choice)')
+        '0x6065c3a. Route CO closes the active-priority low-byte test at 0x6065c4c with a '
+        'partial_icfg_masked_branch handler (three-choice (a): bne.and.modimm.ri.l/'
+        'beq.and.modimm.ri.l with i=0xFF is the low-byte mask test; the empty-active-priority '
+        'fixture makes bits 0-7 known 0, so value&0xFF=0 is fully determined and the branch is '
+        'taken/not-taken mechanically, mirroring the existing ext.b0.u partial_icfg_known_lowbyte '
+        'handler; an unknown low byte still stops honestly through mask("and",i).concrete()). '
+        'The helper then reads low byte 0 (not in IRQ), calls 0x12cb08 (RTOS critical query -> '
+        '1), keeps r8=1 (error path skipped), and the 0x60659ee->0x12b55c OS-post veneer '
+        're-enters the critical section (IPMASK 0->6) before 0x6065ccc `st.w.sp.l [sp+8]=r9` '
+        'hits the upstream store model merge read of the uninitialized local 0x19e2d4. '
+        'New frontier: 3,070,955 @ 0x6065ccc upstream_store_bookkeeping_read (the st.d.sp.l / '
+        'parallel-halfword-store family, the next three-choice)')
     report['fd31_adc_res_pnd_assumption']=(
         'opt-in fd31_adc_pnd_completion + fd31_adc_res_named_values (route BY/sim-adcresfix, '
         'layered on fd31_adc_con_readback; default OFF keeps the route-BS 689,402 '

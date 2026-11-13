@@ -604,6 +604,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         self.R[raw['d']]=source.mask('and',255).concrete()
                         self.finish_exact(self.pc+size);adapters['partial_icfg_known_lowbyte']+=1
                         return
+                    if kind in ('bne.and.modimm.ri.l','beq.and.modimm.ri.l') and isinstance(self.R[raw['r']],IcfgValue):
+                        # Masked compare-and-branch on a partial ICFG value, e.g.
+                        # 0x6065c4c `if ((r0 & 0xFF) != 0) goto ...` (active-priority
+                        # low byte). The AND only touches the bits the immediate
+                        # selects; when those bits are covered by the known mask the
+                        # test is fully determined (value & mask). Uncovered bits
+                        # stay unknown and the .concrete() below stops honestly.
+                        op=module.check.operands(insn,raw)
+                        masked=self.R[op['r']].mask('and',op['i']).concrete()
+                        taken=(masked!=0) if kind.startswith('bne') else (masked==0)
+                        end=self.pc+size
+                        self.seq=end;self.pc=(end+op['n']) if taken else end;self.steps+=1
+                        if self.after_then is not None:
+                            self.after_then[0]-=1;self.check_then()
+                        adapters['partial_icfg_masked_branch']+=1
+                        return
                     if kind in ('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'):
                         address,value=self.word_store(insn,raw,abstract=True)
                         if isinstance(value,IcfgValue):
