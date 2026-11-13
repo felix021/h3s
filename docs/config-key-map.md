@@ -173,3 +173,9 @@ App 侧要做的：
 | 其余已占用 key 语义 | 待命名（有长度 + RAM 落点，不硬猜） |
 | 声道平衡无专用 key | [静态] 面板无 cmdid + 固件无 2 元素 L/R key；key 6 是 3×float32 但语义未钉 |
 | 新 key 无需注册长度/默认值 | [静态] VM match `key-1<256` + set 仅校验 len≤4095，默认值在开机 init 写 |
+
+---
+
+## 8. key 30 读写演示（路 AB/sim-keydemo，函数级仿真）
+
+「空 key 只需约定 key 号+字节格式」的结论已在函数级仿真里落地验证（2026-11-14，基线 main `1975ff8`）：opt-in 场景 `--vm-key-scene`（probe_pi32v2）直调真实 get_config/set_config 分派器，在空白 VM 区上 **set_config(30, 8B) 全链真实执行（CRC/窗口写/偏移表/位图/key-255 头提交）→ 同机与「重启世界」（真实 vm_init 重扫记录链）读回均逐字节一致**；对照组已占用 key 16（降噪 3B）在重启世界原样读回 `01 01 02`；flash 写侧（SFC 擦写）在半区写满触发磨损均衡换区时真实推进到 0x12cc40 并诚实停在未建模 MMIO 读。VM 记录格式 `{u8 crc, u8 key, u16le len<<4}+data`、半区头 magic、key→偏移表 0x129088 等结构细节一并钉死。详见 [docs/vm-key-roundtrip.md](vm-key-roundtrip.md)（含 App 侧「写 key 30」最小对接路径与诚实边界）。

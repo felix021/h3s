@@ -1924,6 +1924,427 @@ def run_tone_scene(module,app,official,rom_bytes,resources_b79,resources_officia
     return report
 
 
+# opt-in VM key read/write round-trip scenario (route AB / sim-keydemo).
+#
+# Explicit opt-in via --vm-key-scene; needs no extra inputs beyond the default
+# --firmware image (optional --official-ufw adds the official-image variant).
+# The legacy scenarios above stay byte-identical without this flag. The runs
+# direct-call the REAL get_config/set_config dispatchers (0x06000f88/0x06001f12)
+# on the REAL VM backend (match/get/set at 0x06061304/0x06060ea0/0x06060efe)
+# over a named erased-VM-area fixture; every stubbed callee is listed in
+# VM_KEY_SCENE_STUBS. Nothing here is a device measurement, a flash approval,
+# or a claim that the SFC flash erase/program hardware path is modeled.
+
+VM_KEY_SCENE_FIXTURES={
+    'version':'ab1',
+    'classification':'synthetic-not-measured (fixtures) / conditional pass (results)',
+    # 16B VM config block at 0x1276a4 (QCY device struct +0x10E4). The real boot
+    # copies it from the qcy_boot_info head (writer 0x601111c, route S watch);
+    # only [0]=align, [4]=saddr, [12]=size are consumed (0x6060f9a reader).
+    # Values measured in the conditional line (route S HANDOFF): align 0x10,
+    # saddr 0x1da000, size 0x4000. Padding bytes zeroed (never consumed).
+    'vm_config_block':{'address':0x1276a4,
+        'bytes':'10 00 00 00 | 00 a0 1d 00 | 00 00 00 00 | 00 40 00 00',
+        'source':'route-S-measured boot-info VM fields; pre-placed boot state'},
+    # SFC window bound words (write path 0x6007cf4 range check). The boot SFC
+    # window SET paths (0x600a3e0/0x600a312) compute pow2(window byte - 16)<<16
+    # (helper 0x600a298); for the 2MiB flash this is 0x200000. Left zero, every
+    # window write fails silently with code 66 (observed) while the caller
+    # still reports success -- a phantom-write trap this scenario pins.
+    'sfc_window_bounds':{'address':0x127694,'value':0x200000,
+        'source':'derived from the 2MiB flash size via the firmware pow2 formula; boot-initialized state'},
+    # VM area window: 0x2000 bytes of 0xFF at the physical flash address 0x1da000.
+    # The window translate globals [0x1276b4]/[0x1276b8] stay zero -> identity
+    # translation (0x12bd56), so the VM area is mapped at its physical address.
+    # No public artifact contains device VM bytes (bank B VM area); the erased
+    # state follows the route-S erased_bankb precedent.
+    'vm_area_erased':{'address':0x1da000,'length':0x2000,'fill':0xff,
+        'source':'erased-state convention; no public artifact carries device VM bytes'},
+    'sfc_direct_map_globals':{'flash_base_word':0x1276b4,'cpu_base_word':0x1276b8,
+        'values':[0,0x06000000],
+        'source':'boot SFC direct-map window state (route S: firmware reads flash head bytes at 0x06000000); makes the real translate 0x12bd56 map flash 0x1da000..0x1dc000 to 0x061da000..0x061dc000'},
+    'sfc_flash_head':{'address':0x06000000,'bytes':'first 4 bytes of the public flash section',
+        'source':'public UFW flash bytes; vm_init cleanup compares them against the cached window version (route S)'},
+    # world B maps the exact window bytes world A's real execution produced
+    # (magic + key-255 header + key-16 + key-30 records) and re-runs the REAL
+    # vm_init record-chain parse on them: derived-by-real-firmware-execution.
+    'world_b_window':'dumped from the world-A machine after set_config(16)/set_config(30)',
+    # world C fills half 0 exactly (0xFCC-byte key-31 record) so the NEXT set
+    # runs the real wear-leveling half switch and reaches the flash sync.
+    'world_c_fill_key':31,'world_c_fill_len':0xfcc,
+}
+VM_KEY_SCENE_STUBS={
+    0x12e160:'locked RAM allocator -> synthetic bump block (BW stub precedent)',
+    0x12e16e:'RAM allocator -> synthetic bump block',
+    0x12e190:'RAM free -> no-op',
+    0x6064538:'OS mutex take -> synthetic success 0',
+    0x606474a:'OS mutex give -> synthetic success 0',
+    0x12b55c:'ROM pend enter / VM OS lock take -> single-task immediate return (tone-scene consume stub)',
+    0x12b5b0:'ROM pend exit pair / VM OS lock give -> immediate return',
+    0x12cb08:'RTOS critical query -> synthetic 1 (also keeps the CRC helper 0x6000f0c on its pure-software path 0x6000ed6, so the record CRC is real computed code)',
+    0x1fd74:'ROM memcpy -> byte copy (BW stub precedent)',
+    0x1fd78:'ROM memcpy variant -> byte copy',
+    0x1fd7c:'ROM memcpy variant -> byte copy (the write-core same-value compare path is not exercised: key 30 is absent before the write)',
+    0x1fd80:'ROM memset -> byte fill',
+    0x12be48:'RAM byte-port window write (reads local bytes b[r7+r5], pushes to the window through the ICU critical section 0x12b916->0x12b60a which reads 0xffe8c0, unmodeled here) -> plain byte copy local -> 0x06000000+window (direct-map translate applied, ABI disasm-pinned)',
+}
+
+
+def run_vm_key_scene(module,firmware_path,official_path):
+    """R4 VM key round trip (route AB): direct-call the real config dispatchers
+    over the real VM backend and check write->read consistency, a reboot-world
+    rescan, and the honest SFC flash-write boundary.
+
+    World A (erased VM area): real vm_init 0x06060f9a formats the blank half
+    (magic 5a 5a 5a ff) and commits the 40-byte key-255 VM header; get on the
+    absent occupied key 16 returns -252; set_config(16,[1,1,2],3) and
+    set_config(30,8B) run the full write chain (allocator read-compare, real
+    software CRC 0x6000ed6, 4-byte record header + data through the window
+    write port, key->offset array update, bitmap maintenance, key-255 header
+    recommit) and read back identical bytes on the same machine.
+
+    World B (reboot): a fresh machine maps the exact window bytes world A
+    produced and re-runs the REAL vm_init, which parses the record chain
+    (key-255 header CRC, key-16, key-30 records), rebuilds the key->offset
+    array and restores the VM header; get_config(16)/get_config(30) then
+    return the world-A values with no prior write in this machine -- the
+    occupied-key control group and the persistence round trip.
+
+    World C (SFC boundary): fill half 0 exactly with one 0xFCC-byte key-31
+    record; the next set_config runs the real wear-leveling half switch (live
+    records copied to half 1, magic/selector byte writes) and reaches the
+    flash sync 0x0600a70a -> RAM 0x12cc40, whose real code honestly stops on
+    its first unmodeled SFC/PMU register read. Flash erase/program effects
+    are NOT modeled; the window is harness RAM.
+    """
+    import struct
+    FLASH_BASE=0x06000000            # SFC direct-map window (route S: firmware reads flash head bytes here)
+    VM_WIN=0x1da000                  # VM area FLASH address (entries/append carry flash addresses)
+    CPU_WIN=FLASH_BASE+VM_WIN        # where the VM area is visible through the direct map
+    VM_CONFIG=0x1276a4
+    SENTINEL=0x00133ff0
+    GET,SET,VM_INIT=0x06000f88,0x06001f12,0x06060f9a
+    CRC=0x06000f0c
+    PAYLOAD16=bytes([1,1,2])            # key 16 = ANC mode/scene/strength (pinned semantics)
+    PAYLOAD30=bytes([0x57,0x30,0xde,0xad,0xbe,0xef,0x21,0x00])  # custom key-30 demo value, 8B
+    BUF=0x131000
+    app=firmware_app(firmware_path)
+    official=official_app(official_path) if official_path else None
+    # first bytes of the public flash section: the real vm_init cleanup reads
+    # exactly these through the direct map (route S) and compares against the
+    # cached window version; the public bytes make the comparison real.
+    def flash_head(path):
+        raw=path.read_bytes()
+        row=decode(raw[64:144])
+        offset,length=struct.unpack_from('<II',row,8)
+        return raw[offset:offset+4]
+    heads={firmware_path:flash_head(firmware_path)}
+    if official_path:
+        heads[official_path]=flash_head(official_path)
+
+    class Memory(_EventMemoryMixin,module.Memory):
+        def __init__(self):
+            super().__init__()
+            self.regions=[]
+        def map(self,address,data,writable=False):
+            self.regions.append((address,address+len(data),writable))
+            super().write(address,data)
+        def _regions(self):
+            return self.regions
+        def read(self,address,length):
+            self.valid(address,length)
+            return super().read(address,length)
+        def write(self,address,data):
+            self.valid(address,len(data),write=True)
+            super().write(address,data)
+
+    class CPU(module.CPU):
+        execution_bounds=None
+        repeat=None
+        def decode(self,pc):
+            if self.execution_bounds and pc>=0x06000000:
+                lo,hi=self.execution_bounds
+                if not lo<=pc<hi:
+                    raise PermissionError(f'Flash execution fence: {pc:#010x} outside {lo:#x}..{hi:#x}')
+                insn,raw,size=super().decode(pc)
+                require(pc+size<=hi,'instruction crosses execution boundary')
+                return insn,raw,size
+            return super().decode(pc)
+        def step(self):
+            # immediate-count straight-line REP (tone-scene bounded model)
+            insn,raw,size=self.decode(self.pc)
+            if insn.id=='rep.i':
+                op=module.check.operands(insn,raw)
+                body_bytes,count=op['b'],op['n']
+                require(1<=count<=64,'vm-key-scene REP count outside the bounded model')
+                require(self.repeat is None,'nested REP inside the vm-key scene')
+                walk=self.pc+size;covered=0
+                while covered<body_bytes:
+                    inner,_,inner_size=self.decode(walk)
+                    require(not inner.block and module.branch_field(inner) is None
+                            and not inner.id.startswith(('rep','goto','gotoss','call','callns','pop.pc','rts'))
+                            and inner.id not in ('tbb','tbh')
+                            and self.models.get(inner.id) is not None,
+                            'vm-key-scene REP body is not straight-line')
+                    covered+=inner_size;walk+=inner_size
+                require(covered==body_bytes,'vm-key-scene REP body is unaligned')
+                self.repeat={'start':self.pc+size,'end':self.pc+size+body_bytes,'remaining':count}
+                self.pc+=size;self.steps+=1
+            else:
+                super().step()
+            if self.repeat and self.pc==self.repeat['end']:
+                self.repeat['remaining']-=1
+                if self.repeat['remaining']:
+                    self.pc=self.repeat['start']
+                else:
+                    self.repeat=None
+
+    heap={'next':0x00131400}
+    def bump(n):
+        require(0<n<=0x100000,'allocator stub size out of range')
+        addr=heap['next'];heap['next']=addr+((n+15)&~15)+16
+        return addr
+
+    copies=[]   # (dst_window, len) record of window-write port entries
+    def stub_step(c):
+        pc=c.pc
+        if pc in (0x12e16e,0x12e160):
+            c.R[0]=bump(c.R[0]);c.pc=c.rets;return True
+        if pc==0x12e190:
+            c.pc=c.rets;return True
+        if pc in (0x6064538,0x606474a):
+            c.R[0]=0;c.pc=c.rets;return True
+        if pc in (0x12b55c,0x12b5b0):
+            c.pc=c.rets;return True
+        if pc==0x12cb08:
+            c.R[0]=1;c.pc=c.rets;return True
+        if pc in (0x1fd74,0x1fd78,0x1fd7c):
+            c.mem.write(c.R[0],c.mem.read(c.R[1],c.R[2]));c.R[0]=c.R[0];c.pc=c.rets;return True
+        if pc==0x1fd80:
+            c.mem.write(c.R[0],bytes([c.R[1]&0xff])*c.R[2]);c.R[0]=c.R[0];c.pc=c.rets;return True
+        if pc==0x12be48:
+            copies.append((c.R[1],c.R[2]))
+            c.mem.write(FLASH_BASE+c.R[1],c.mem.read(c.R[0],c.R[2]));c.R[0]=c.R[0];c.pc=c.rets;return True
+        return False
+
+    WATCH={0x6060f9a:'vm_init',0x6060ea0:'vm_get',0x6060efe:'vm_set',
+           0x6010534:'vm_write_core',0x601045a:'vm_read_rec',0x600a70a:'flash_sync',
+           0x12cc40:'sfc_flush_body',0x6000f0c:'crc',0x6007cf4:'window_copy',
+           0x600a78a:'blank_scan'}
+
+    def machine(image,vm_bytes,head_bytes):
+        c=CPU()
+        c.mem=Memory()
+        c.mem.map(BASE,image)
+        c.mem.map(0x00124000,bytes(0xdc000),writable=True)
+        data_src,code_src=STARTUP_DATA_REGION[1],STARTUP_RAM_CODE_REGION[1]
+        c.mem.map(STARTUP_DATA_REGION[0],app[data_src-BASE:data_src-BASE+STARTUP_DATA_REGION[2]],writable=True)
+        c.mem.map(STARTUP_RAM_CODE_REGION[0],app[code_src-BASE:code_src-BASE+STARTUP_RAM_CODE_REGION[2]],writable=True)
+        c.mem.map(FLASH_BASE,head_bytes)          # public flash-section head (read-only)
+        c.mem.map(CPU_WIN,vm_bytes,writable=True)  # VM area through the direct map
+        # named fixtures (VM_KEY_SCENE_FIXTURES)
+        c.mem.write(VM_CONFIG,bytes([0x10,0,0,0])+struct.pack('<I',0x1da000)+bytes(4)+struct.pack('<I',0x4000))
+        c.mem.write(0x127694,struct.pack('<I',0x200000))
+        c.mem.write(0x127698,struct.pack('<I',0x200000))
+        # SFC direct-map window translate globals (0x12bd56: cpu = flash - 0 + 0x06000000)
+        c.mem.write(0x1276b4,struct.pack('<I',0))
+        c.mem.write(0x1276b8,struct.pack('<I',FLASH_BASE))
+        c.execution_bounds=(BASE,0x060c3338)
+        c.sp=0x00134000
+        from br28_arch_models import architectural_k2
+        c.models,_=architectural_k2(c.models)
+        return c
+
+    def call(c,entry,args,budget=400000):
+        c.sp=0x00134000;c.pc=entry;c.rets=SENTINEL
+        c.R[:len(args)]=[a&0xFFFFFFFF for a in args]
+        for r in range(len(args),16):c.R[r]=0
+        trace=[];stop=None
+        try:
+            for _ in range(budget):
+                if c.pc==SENTINEL:break
+                pc=c.pc
+                if pc in WATCH and (not trace or trace[-1][0]!=pc):
+                    trace.append((hex(pc),WATCH[pc],[hex(x) for x in c.R[:4]]))
+                if not stub_step(c):
+                    c.step()
+        except (PermissionError,RuntimeError,ValueError,KeyError) as e:
+            stop={'pc':hex(c.pc),'error':f'{type(e).__name__}: {e}'}
+        if c.pc==SENTINEL:
+            require(c.R[4:]==[0]*12 and c.sp==0x00134000,
+                    f'vm-key-scene segment {entry:#x} changed callee-saved registers/stack')
+        return {'returned':c.pc==SENTINEL,'r0':c.R[0]&0xFFFFFFFF,
+                'trace':trace,'stop':stop,'steps':c.steps}
+
+    def rd32(c,a):
+        return struct.unpack('<I',c.mem.read(a,4))[0]
+
+    variants=[('b79',app)]
+    if official is not None:
+        variants.append(('official',official))
+    worlds={}
+    for ename,image in variants:
+        # ---- world A: erased VM area ----
+        heap['next']=0x00131400;copies.clear()
+        cA=machine(image,b'\xff'*0x2000,heads[firmware_path])
+        r_init=call(cA,VM_INIT,[])
+        require(r_init['returned'] and r_init['r0']==0,
+                f'{ename}: vm_init did not return 0 on the erased window ({r_init["stop"]})')
+        require(cA.mem.read(CPU_WIN,4)==bytes.fromhex('5a5a5aff'),
+                f'{ename}: vm_init did not format the blank half with the 0xFF5A5A5A magic')
+        require((rd32(cA,0x129070),rd32(cA,0x129074))==(0x1da000,0x1000)
+                and (rd32(cA,0x12907c),rd32(cA,0x129080))==(0x1db000,0x1000),
+                f'{ename}: vm_init left wrong half descriptors '
+                f'({rd32(cA,0x129070):#x},{rd32(cA,0x129074):#x}/{rd32(cA,0x12907c):#x},{rd32(cA,0x129080):#x})')
+        require(rd32(cA,0x1292a0)==0x1da030,
+                f'{ename}: append position after blank init is {rd32(cA,0x1292a0):#x}, expected 0x1da030')
+        require(cA.mem.read(CPU_WIN+4,4)==bytes.fromhex('6fff8002'),
+                f'{ename}: the key-255 VM header record at window+4 is not 6f ff 80 02 '
+                f'(crc,255,len 40) with the flash-head version bytes')
+        r_absent=call(cA,GET,[16,BUF,3])
+        require(r_absent['returned'] and r_absent['r0']==0xffffff04,
+                f'{ename}: get_config(16) on the blank VM must return -252 (got {r_absent["r0"]:#x})')
+        cA.mem.write(BUF,PAYLOAD16)
+        r_set16=call(cA,SET,[16,BUF,3])
+        require(r_set16['returned'] and r_set16['r0']==3,
+                f'{ename}: set_config(16,3) did not return 3 ({r_set16["stop"] or r_set16["r0"]})')
+        cA.mem.write(BUF,PAYLOAD30)
+        r_set30=call(cA,SET,[30,BUF,8])
+        require(r_set30['returned'] and r_set30['r0']==8,
+                f'{ename}: set_config(30,8) did not return 8 ({r_set30["stop"] or r_set30["r0"]})')
+        r_get30=call(cA,GET,[30,BUF+32,8])
+        require(r_get30['returned'] and r_get30['r0']==8
+                and bytes(cA.mem.read(BUF+32,8))==PAYLOAD30,
+                f'{ename}: same-world get_config(30) did not read back the written bytes')
+        r_get16=call(cA,GET,[16,BUF+16,3])
+        require(r_get16['returned'] and r_get16['r0']==3
+                and bytes(cA.mem.read(BUF+16,3))==PAYLOAD16,
+                f'{ename}: same-world get_config(16) did not read back the written bytes')
+        # record layout: {u8 crc, u8 key, u16le (len<<4|flags)} + data; the crc
+        # byte is the real software CRC 0x6000ed6 of the DATA field (recomputed
+        # here through the firmware's own CRC entry for self-consistency).
+        rec16=cA.mem.read(CPU_WIN+0x30,7);rec30=cA.mem.read(CPU_WIN+0x37,12)
+        require(rec16[1]==16 and struct.unpack_from('<H',rec16,2)[0]>>4==3 and rec16[4:]==PAYLOAD16,
+                f'{ename}: key-16 record layout mismatch ({rec16.hex()})')
+        require(rec30[1]==30 and struct.unpack_from('<H',rec30,2)[0]>>4==8 and rec30[4:]==PAYLOAD30,
+                f'{ename}: key-30 record layout mismatch ({rec30.hex()})')
+        cA.mem.write(BUF,PAYLOAD30)
+        r_crc=call(cA,CRC,[BUF,8])
+        require(r_crc['returned'] and (r_crc['r0']&0xff)==rec30[0],
+                f'{ename}: stored record crc {rec30[0]:#x} != firmware CRC of the payload ({r_crc["r0"]&0xff:#x})')
+        require(struct.unpack_from('<H',cA.mem.read(0x129088+2*16,2))[0]==0x30
+                and struct.unpack_from('<H',cA.mem.read(0x129088+2*30,2))[0]==0x37,
+                f'{ename}: key->offset array not updated for keys 16/30')
+        # CRC guard negative: corrupt one payload byte in the window -> -252
+        cA.mem.write(CPU_WIN+0x3b,bytes([PAYLOAD30[0]^0xff]))
+        r_guard=call(cA,GET,[30,BUF+40,8])
+        require(r_guard['returned'] and r_guard['r0']==0xffffff04,
+                f'{ename}: corrupted record must fail the CRC check with -252 (got {r_guard["r0"]:#x})')
+        cA.mem.write(CPU_WIN+0x3b,PAYLOAD30[0:1])
+        # length guard negative: len > 4095 rejected by the real vm_set
+        cA.mem.write(BUF+64,bytes(4096))
+        r_len=call(cA,SET,[31,BUF+64,4096])
+        require(r_len['returned'] and r_len['r0']==0xffffff02,
+                f'{ename}: set_config(31,len=4096) must return -254 (got {r_len["r0"]:#x})')
+        window_a=bytes(cA.mem.read(CPU_WIN,0x2000))
+
+        # ---- world B: reboot on the world-A window ----
+        heap['next']=0x00131400;copies.clear()
+        cB=machine(image,window_a,heads[firmware_path])
+        r_init_b=call(cB,VM_INIT,[])
+        require(r_init_b['returned'] and r_init_b['r0']==0,
+                f'{ename}: reboot vm_init did not return 0 ({r_init_b["stop"]})')
+        r_b16=call(cB,GET,[16,BUF,3])
+        require(r_b16['returned'] and r_b16['r0']==3 and bytes(cB.mem.read(BUF,3))==PAYLOAD16,
+                f'{ename}: reboot get_config(16) must read the pre-existing record '
+                f'(got r0={r_b16["r0"]:#x} bytes={bytes(cB.mem.read(BUF,3)).hex()})')
+        r_b30=call(cB,GET,[30,BUF+32,8])
+        require(r_b30['returned'] and r_b30['r0']==8 and bytes(cB.mem.read(BUF+32,8))==PAYLOAD30,
+                f'{ename}: reboot get_config(30) must read back the world-A payload')
+        require(r_init_b['trace'] and any(t[1]=='crc' for t in r_init_b['trace']),
+                f'{ename}: reboot vm_init did not verify record CRCs')
+
+        # ---- world C: fill half 0 -> next set runs the half switch + flash sync ----
+        heap['next']=0x00131400;copies.clear()
+        cC=machine(image,b'\xff'*0x2000,heads[firmware_path])
+        r_init_c=call(cC,VM_INIT,[])
+        require(r_init_c['returned'] and r_init_c['r0']==0,
+                f'{ename}: world-C vm_init failed ({r_init_c["stop"]})')
+        fill_len=0x1000-(rd32(cC,0x1292a0)-VM_WIN)-4
+        require(fill_len==VM_KEY_SCENE_FIXTURES['world_c_fill_len'],
+                f'{ename}: world-C fill length drifted ({fill_len:#x})')
+        cC.mem.write(BUF,b'\xa5'*fill_len)
+        r_fill=call(cC,SET,[VM_KEY_SCENE_FIXTURES['world_c_fill_key'],BUF,fill_len])
+        require(r_fill['returned'] and r_fill['r0']==fill_len and rd32(cC,0x1292a0)==VM_WIN+0x1000,
+                f'{ename}: the exact-fill set did not complete with append at the half end')
+        cC.mem.write(BUF,b'\x99')
+        r_over=call(cC,SET,[30,BUF,1])
+        require(not r_over['returned'] and r_over['stop'] is not None,
+                f'{ename}: the post-fill set must stop inside the flash sync (got {r_over})')
+        require(any(t[1]=='flash_sync' for t in r_over['trace'])
+                and any(t[1]=='sfc_flush_body' for t in r_over['trace']),
+                f'{ename}: the post-fill set did not reach 0x600a70a/0x12cc40')
+        # the real wear-leveling switch copied the live record chain into half 1
+        # first (256-byte chunks through the byte port) and relocated the 44-byte
+        # key-255 header, then flipped the half magic/selector bytes
+        half1=[(a,l) for a,l in copies if VM_WIN+0x1000 <= a < VM_WIN+0x2000]
+        copied=sum(l for _,l in half1)
+        require(copied>=0xfd0 and any(a==VM_WIN+0x1fd4 and l==44 for a,l in copies),
+                f'{ename}: the half-switch live-record copy into half 1 did not run '
+                f'(copied={copied:#x}, copies={[(hex(a),l) for a,l in copies[-12:]]})')
+        require(sum(1 for a,l in copies if l==1 and VM_WIN <= a < VM_WIN+0x2000) >= 2,
+                f'{ename}: the half-switch magic/selector byte writes did not run')
+        require('0xf2c128' in r_over['stop']['error'],
+                f'{ename}: the flash sync did not stop on the expected unmodeled SFC/PMU read ({r_over["stop"]})')
+
+        worlds[ename]={
+            'world_a_erased_vm':{
+                'vm_init':'returned 0; blank half formatted (magic 5a 5a 5a ff), 40B key-255 header committed at window+4, append 0x1da030, halves {0x1da000,0x1000}/{0x1db000,0x1000}',
+                'get_config(16)_absent':'-252',
+                'set_config(16,[1,1,2],3)':'3; record {crc,0x10,len<<4,01 01 02} at window+0x30',
+                'set_config(30,8B)':'8; record {crc,0x1e,len<<4,payload} at window+0x37',
+                'get_config(30)/get_config(16)':'byte-identical read-back (same machine)',
+                'record_layout':'{u8 crc(software CRC of data), u8 key, u16le len<<4} + data; key->offset array 0x129088 updated (16->0x30, 30->0x37)',
+                'crc_guard_negative':'corrupting one payload byte -> get returns -252',
+                'length_guard_negative':'set_config(31,len=4096) -> -254',
+                'window_head':window_a[:0x60].hex()},
+            'world_b_reboot':{
+                'vm_init':'returned 0 over the world-A window: record-chain parse with real CRC checks, key->offset array rebuild, key-255 header restore',
+                'get_config(16)':'3 bytes 010102 (occupied-key control group: pre-existing record, no prior write in this machine)',
+                'get_config(30)':'8 bytes 5730deadbeef2100 (persistence round trip)'},
+            'world_c_sfc_boundary':{
+                'fill':f'set_config(31,{fill_len:#x}B) fills half 0 exactly (append 0x1db000)',
+                'post_fill_set':'the next set_config(30,1) runs the real wear-leveling half switch (live records copied 0xfd0B to window+0x1004, magic/selector byte writes) then reaches flash sync 0x600a70a -> RAM 0x12cc40',
+                'stop':r_over['stop'],
+                'boundary':'the real 0x12cc40 body stops on its first unmodeled SFC/PMU register read (0xf2c128+4); flash erase/program effects are NOT modeled -- the VM window is harness RAM, so "persists" means the record chain survives a vm_init rescan, not a power cycle'},
+        }
+    if 'official' in worlds:
+        for w in ('world_a_erased_vm','world_b_reboot'):
+            a,b=worlds['b79'][w],worlds['official'][w]
+            require(a['window_head']==b['window_head'] if 'window_head' in a else True,
+                    'official and b79 vm-key worlds diverged')
+        require(worlds['b79']['world_c_sfc_boundary']['stop']['pc']
+                ==worlds['official']['world_c_sfc_boundary']['stop']['pc'],
+                'official and b79 SFC-boundary stop diverged')
+    return {
+        'fixtures':{k:(v if not isinstance(v,dict) else {**v,'address':hex(v['address'])} if 'address' in v else v)
+                    for k,v in VM_KEY_SCENE_FIXTURES.items()},
+        'stubs':{hex(k):v for k,v in sorted(VM_KEY_SCENE_STUBS.items())},
+        'entries':{'get_config':hex(GET),'set_config':hex(SET),'vm_init':hex(VM_INIT),
+                   'vm_match':hex(0x06061304),'vm_get':hex(0x06060ea0),'vm_set':hex(0x06060efe),
+                   'vm_write_core':hex(0x06010534),'flash_sync':hex(0x0600a70a),'sfc_body':hex(0x12cc40)},
+        'device_accessed':False,'firmware_created':False,'suitable_for_flash_approval_alone':False,
+        **worlds,
+        'honest_boundaries':[
+            'the VM area window is harness RAM mapped at the physical flash address (identity translation, window translate globals zero); no public artifact contains device VM bytes, so world A starts from the erased 0xFF state (route-S erased_bankb precedent) and world B from bytes the real firmware itself wrote',
+            'the flash persistence side is NOT simulated: on the space-exhaustion path the real flash sync 0x0600a70a -> RAM 0x12cc40 executes and honestly stops at its first unmodeled SFC/PMU register read (0xf2c128+4); SFC erase/program hardware effects, power-loss windows and wear-level timing stay unmodeled',
+            '"reboot" means a fresh machine whose REAL vm_init rescans the window record chain (parse + CRC + array rebuild + header restore); it is not a power-cycle simulation',
+            'the OS is single-task stubbed (allocator/mutex/pend); the record CRC is the real software implementation 0x6000ed6 (0x12cb08 stub keeps the helper off the hardware CRC engine path); ROM memcpy/memset and the RAM byte-port window write are byte-copy stubs (listed in stubs)',
+            'the SFC window bound fixture 0x200000 is derived from the 2MiB flash size via the firmware pow2 formula (0x600a298); left zero, window writes fail silently with code 66 while callers still report success -- the phantom-write trap this scenario pins',
+        ],
+    }
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--fetch-simulator',action='store_true')
@@ -1937,6 +2358,8 @@ def main():
     p.add_argument('--tone-scene',action='store_true',
                    help='opt-in D2-A tone first-scene skeleton scenarios; requires --rom (the public Release ROM asset); --official-ufw adds the official-image variant')
     p.add_argument('--rom',type=Path,help='public Release ROM asset QCY_H3S_BR28_ROM_000000-020000.bin for --tone-scene')
+    p.add_argument('--vm-key-scene',action='store_true',
+                   help='opt-in VM key read/write round-trip scenario (route AB); uses --firmware, --official-ufw adds the official variant')
     p.add_argument('--report',type=Path)
     args=p.parse_args()
     if args.repaired_candidate and (not args.patch_elf or not args.patch_asm):
@@ -1972,6 +2395,8 @@ def main():
             official_app(args.official_ufw) if args.official_ufw else None,
             rom_bytes,files_b79,files_official,meta_b79,meta_official,
             repaired_app=repaired_app,repaired_payload=repaired_payload)
+    if args.vm_key_scene:
+        result['vm_key_scene']=run_vm_key_scene(module,args.firmware,args.official_ufw)
     text=json.dumps(result,indent=2)+'\n'
     if args.report:
         args.report.parent.mkdir(parents=True,exist_ok=True)
