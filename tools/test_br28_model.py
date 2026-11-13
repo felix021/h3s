@@ -7,6 +7,7 @@ from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
 from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
+from br28_model import JL_UART_CON_WORDS
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
@@ -948,6 +949,32 @@ class ModelTests(unittest.TestCase):
         # 0xfd0014=SYS_DIV 归 clock_divider、0xfd0018=CLK_CON0 基模型槽)。
         self.assertFalse(h.handles(0xfd0004,4) or h.handles(0xfd0014,4))
         self.assertIn('jl_clock_dcck_projection',h.report()['assumptions'])
+
+    def test_jl_uart_con_readback_is_synthetic_zero_or_last_write(self):
+        # 路 F(sim-fd2000):JL_UART0/1/2 的 CON0|CON1 整字(0xfd2000/0xfd2100/
+        # 0xfd2200)按路 AM/DCCK 同款「显式合成初始字 0 + 读回=当前寄存器值」
+        # 建模。证据:br28.h `JL_UART0_BASE=ls_base+map_adr(0x20,0)` 命名、
+        # CON0/CON1 标 __RW;读辅助函数 0x601d198 = SDK uart_v1.c uart_is_idle
+        # (return (word&1)^1)——读值立即被 bit0 掩码测试消化;bit0 是硬件
+        # busy/空闲状态位、固件从不写(合成 0=空闲,derived-not-measured)。
+        # 默认关:三字都不进 handles、读回严格停。
+        g=BR28Model()
+        for address in JL_UART_CON_WORDS:
+            self.assertFalse(g.handles(address,4))
+            with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):g.read(address)
+        self.assertNotIn('jl_uart_con_projection',g.report()['assumptions'])
+        # opt-in:合成初始字 0,写后读回=最后写值;三字都在 additional_configuration
+        # 与 registers seed 里(整字写/显式 ld 读/复合 RMW 走通用路径)。
+        h=BR28Model(jl_uart_con_projection=True)
+        self.assertEqual(tuple(JL_UART_CON_WORDS),(0xfd2000,0xfd2100,0xfd2200))
+        for address in JL_UART_CON_WORDS:
+            self.assertTrue(h.handles(address,4))
+            self.assertEqual(h.read(address),0,'first read is the explicit synthetic 0 (idle), not an inferred reset value')
+        # uart_init 的 CON0=0x3400 整字写 → 读回=最后写值(bit0 仍 0=空闲)。
+        h.write(0xfd2000,0x3400);self.assertEqual(h.read(0xfd2000),0x3400)
+        # 相邻 UART 寄存器(BAUD 0xfd2004、OTCNT 0xfd2008)不受本开关管辖。
+        self.assertFalse(h.handles(0xfd2004,4) or h.handles(0xfd2008,4))
+        self.assertIn('jl_uart_con_projection',h.report()['assumptions'])
 
     def test_p11_heap_info_fixture_is_explicit_or_strictly_unknown(self):
         with self.assertRaises(ValueError):BR28Model(p11_heap_info_bytes=b'\x01\x02')

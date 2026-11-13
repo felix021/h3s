@@ -60,6 +60,18 @@ EFUSE_RDAT=EFUSE_CON0+8
 OSC_CONFIG=(0xfd1920,0xfd1924,0xfd1928,0xfd1940,0xfd1954)  # WLA_CON8/9/10/16/21
 OSC_STATUS=0xfd1978  # WLA_CON30, RO; sampled by actual QCY calibration
 GPCNT_CON=0xfd1100
+# 路 F(sim-fd2000):0xfd2000/0xfd2100/0xfd2200 = JL_UART0/1/2 基址
+# (br28.h `JL_UART0_BASE = ls_base(0xfd0000) + map_adr(0x20,0x00)` = 0xfd2000
+# =16588800,与 0x601d198 读辅助函数的 li 字面量逐位一致;JL_UART1_BASE/
+# JL_UART2_BASE = map_adr(0x21,0)/(0x22,0) = 0xfd2100/0xfd2200)。读辅助函数
+# 0x601d198 = SDK uart_v1.c 的 `uart_is_idle(uart_num)`(cpu.a/uart_v1.c.o
+# LLVM bitcode 逐字节同形):switch{0:*(0xfd2000),1:*(0xfd2100),2:*(0xfd2200)}
+# ;return (word&1)^1 —— 即 bit0 位测试(bit0=0→空闲)。JL_UART_TypeDef 里
+# CON0/CON1 都标 __RW;bit0 是硬件「busy/空闲」状态位(固件从不写 bit0:
+# SDK 全部 CON0 写=init 0x3400/putbyte |=0x2000/各 RMW,无一处置位 bit0),
+# 读回=合成初始字 0 + 当前寄存器值(AM 容器同款先例)。三个地址是整字
+# CON0|CON1 复合字(ld.w 整字读)。
+JL_UART_CON_WORDS=(0xfd2000,0xfd2100,0xfd2200)
 CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
 CPU1_CONTROL=0xffe8c0
 VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
@@ -2750,6 +2762,7 @@ class BR28Model:
                  fd31_adc_pnd_completion=False,fd31_adc_res_named_values=None,
                  p33_analog_tail_projection=False,p3_ana_read_ldoin_low_fixture=False,
                  jl_clock_dcck_projection=False,
+                 jl_uart_con_projection=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -3005,6 +3018,20 @@ class BR28Model:
         # 既有通用 mmio/registers 路径(机器侧零新分发)。默认关:三字保持
         # unmapped(3,070,626 @ 0x606817a 前沿形状),legacy 报告逐字节不变。
         self.jl_clock_dcck_projection=jl_clock_dcck_projection
+        # jl_uart_con_projection(opt-in,路 F/sim-fd2000):JL_UART0/1/2 的 CON0|CON1
+        # 整字(0xfd2000/0xfd2100/0xfd2200)按路 AM/DCCK 同款「显式合成初始字 0 +
+        # 读回=当前寄存器值」建模。证据链:①br28.h `JL_UART0_BASE=ls_base+
+        # map_adr(0x20,0)` 命名、JL_UART_TypeDef CON0/CON1 标 __RW;②读辅助函数
+        # 0x601d198 = SDK uart_v1.c `uart_is_idle`(cpu.a/uart_v1.c.o bitcode 逐字节
+        # 同形,return (word&1)^1)——读值立即被 bit0 掩码测试消化(空闲判定);③
+        # bit0 是硬件「busy/空闲」状态位,固件从不写 bit0(SDK 全部 CON0 写
+        # =init 0x3400/putbyte |=0x2000/各 RMW 无一处置位)——合成 0 表示「空闲」
+        # (本前缀未发起任何 UART 发送,SDK 驱动自己 init 写 0x3400 也保持 bit0
+        # 清零),是 derived-not-measured 的显式假设,非硅测量/非复位值声明;④写侧
+        # (uart_init 的 CON0=0x3400/|=0x3 等)是 __RW 配置写,走通用 registers 路径
+        # (last-write 语义),机器侧零新分发。默认关:三字保持 unmapped(3,071,380
+        # @ 0x601d1ac 前沿形状),legacy 报告逐字节不变。
+        self.jl_uart_con_projection=jl_uart_con_projection
         # p3_ana_read_ldoin_low_fixture(opt-in,路 CB/sim-anaread,需 tail 投影):
         # P3_ANA_READ(0xf2c064)读侧三选一按证据落地=方案 (c) 具名常量 live-input
         # fixture。证据链(pinned SDK commit 67328f4,全文档见
@@ -3143,6 +3170,13 @@ class BR28Model:
         if jl_clock_dcck_projection:
             self.additional_configuration.update(JL_CLOCK_DCCK)
             for address in JL_CLOCK_DCCK:
+                self.registers[address]=0
+        # 路 F(sim-fd2000):JL_UART0/1/2 的 CON0|CON1 整字按 DCCK 同款 seed 0 进
+        # registers、并入 additional_configuration(显式 ld 读回=当前值、整字写/
+        # RMW 走通用 registers 路径)。开关关时三字保持 unmapped,legacy 不变。
+        if jl_uart_con_projection:
+            self.additional_configuration.update(JL_UART_CON_WORDS)
+            for address in JL_UART_CON_WORDS:
                 self.registers[address]=0
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
@@ -4164,6 +4198,25 @@ class BR28Model:
                 'only — clock generation/propagation is not modeled; the sole app consumer '
                 '0x6068152 masks the read value immediately so the seeded 0 drives a '
                 'deterministic field configuration')
+        if self.jl_uart_con_projection:
+            # 路 F(sim-fd2000):JL_UART CON0|CON1 整字读回=合成初始字 0(空闲)的
+            # 读侧投影;bit0 是硬件 busy/空闲状态位(derived-not-measured 显式
+            # 假设,非硅测量/非复位值声明)。
+            result['assumptions']['jl_uart_con_projection']=(
+                'three JL_UART CON0|CON1 words (UART0/1/2 = 0xfd2000/0xfd2100/'
+                '0xfd2200); br28.h names JL_UART0_BASE=ls_base+map_adr(0x20,0) and '
+                'marks CON0/CON1 __RW; the read helper 0x601d198 is the SDK uart_v1.c '
+                'uart_is_idle() (cpu.a/uart_v1.c.o LLVM bitcode matches byte-for-byte: '
+                'switch{0:*(0xfd2000),1:*(0xfd2100),2:*(0xfd2200)}; return (word&1)^1) '
+                'so the read value is immediately consumed as a bit0 idle test; bit0 is a '
+                'hardware busy/idle status bit the firmware never writes (the SDK never sets '
+                'bit0: init writes CON0=0x3400, putbyte |=0x2000, other RMW forms all keep '
+                'bit0 clear), so the seeded 0 means "idle" — an explicit synthetic initial '
+                'word, derived-not-measured (no UART transmission has been initiated in this '
+                'prefix), NOT an inferred silicon reset value and NOT a measured idle status; '
+                'readback=current register value (route-AM/DCCK container precedent) and the '
+                '__RW write side (uart_init CON0=0x3400/|=0x3 ...) is recorded via the generic '
+                'last-write register path')
         if self.pll1_configuration_projection:result['assumptions']['pll1_con3_configuration_projection']='RW config only; analog PLL1 not modeled'
         if self.cache_status_probe:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}

@@ -98,6 +98,7 @@ CONDITIONAL_EXTRA_FLAGS = dict(
     fd31_adc_res_named_values=probe_irq_entry.FD31_ADC_RES_NAMED_VALUES,
     p33_analog_tail=True, p3_ana_read_ldoin_low=True, gpcnt_con_readback=True,
     jl_clock_dcck=True,
+    jl_uart_con=True,
     subword_stores=True, word_store_sp_l=True,
     timer0_irq4_delivery=True, core_tick_irq3_delivery=True)
 
@@ -151,12 +152,17 @@ SCENARIOS = {
         # 覆盖写、旧值无关,同 st.w.sp/st.d.sp.l 论证;形状在 legacy 前缀已执行
         # 3 次故单独 opt-in),helper 尾段写两局部并返回 W1[1] walker,最终停在
         # 0x601d1ac `ld.w r0=[r2+0]` 读 0xfd2000(0x601d198 读辅助函数的 r1==0
-        # 分支;r1==1/2 读 0xfd2100/0xfd2200)——ls_base 0xfd0000+map_adr(0x20,0)
-        # 的 SDK 参考头未命名新 SFR 组。
-        # **新前沿 3,071,380 @ 0x601d1ac**(unmapped_memory 读 0xfd2000,归下一路)。
-        'freshness': {'completed_steps': 3071380, 'stop_pc': '0x601d1ac',
-                      'stop_fields': {'kind': 'unmapped_memory',
-                                      'address': '0xfd2000'}},
+        # 分支;r1==1/2 读 0xfd2100/0xfd2200)。路 F:命名修正——0xfd2000/0xfd2100/
+        # 0xfd2200 = JL_UART0/1/2 基址(br28.h `JL_UART0_BASE=ls_base+
+        # map_adr(0x20,0)`,非「SDK 参考头未命名」),读辅助函数 = SDK uart_v1.c
+        # `uart_is_idle`(bitcode 逐字节同形,return (word&1)^1);读侧三选一=
+        # 方案 (a) 投影 `jl_uart_con_projection`(合成 0=空闲,derived-not-measured)
+        # 放行后 uart_init 真实执行 CON0=0x3400,停 0x603446a 写 0xfd2004
+        # (JL_UART.BAUD|BUF,BAUD __WO)——UART 写侧归下一路。
+        # **新前沿 3,071,984 @ 0x603446a**(unmapped_or_readonly_write 写 0xfd2004)。
+        'freshness': {'completed_steps': 3071984, 'stop_pc': '0x603446a',
+                      'stop_fields': {'kind': 'unmapped_or_readonly_write',
+                                      'address': '0xfd2004'}},
     },
 }
 
@@ -719,19 +725,19 @@ def check_self_conditional(report):
     p = pairs['official_vs_tested_b79']
     for label in ('official', 'tested_b79'):
         run = p['runs'][label]
-        require(run['completed_steps'] == 3071380 and run['stop_pc'] == '0x601d1ac' and
-                run['stop']['kind'] == 'unmapped_memory' and
-                run['stop']['address'] == '0xfd2000' and
-                run['per_core_steps'] == {'0': 3060478, '1': 11216},
+        require(run['completed_steps'] == 3071984 and run['stop_pc'] == '0x603446a' and
+                run['stop']['kind'] == 'unmapped_or_readonly_write' and
+                run['stop']['address'] == '0xfd2004' and
+                run['per_core_steps'] == {'0': 3061082, '1': 11216},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3071380 @ 0x601d1ac, the unmapped 0xfd2000 read of '
-                'the 0x601d198 switch reader after the route-CQ exact_word_store_sp_l sub-gate '
-                'released the 0x6065ccc `st.w.sp.l [sp+8]=r9` full-word overwrite)')
+                'conditional frontier stop (3071984 @ 0x603446a, the unmapped 0xfd2004 write of '
+                'the UART BAUD|BUF word after the route-F jl_uart_con_projection released the '
+                '0x601d1ac uart_is_idle read and uart_init ran for real)')
     parity = p['parity']
-    require(parity['steps'] == {'official': 3071380, 'tested_b79': 3071380, 'delta': 0} and
-            parity['stop_pc'] == {'a': '0x601d1ac', 'b': '0x601d1ac', 'same': True} and
+    require(parity['steps'] == {'official': 3071984, 'tested_b79': 3071984, 'delta': 0} and
+            parity['stop_pc'] == {'a': '0x603446a', 'b': '0x603446a', 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['kind'] == 'unmapped_memory' and
+            parity['stop_record']['a']['kind'] == 'unmapped_or_readonly_write' and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
             'identical conditional frontier stop')
