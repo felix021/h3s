@@ -72,6 +72,7 @@ def main():
     run(sys.executable,'tools/analyze_cpu_context.py','--report','analysis/local-checks/cpu-context.json',tool='analyze_cpu_context.py')
     run(sys.executable,'tools/analyze_icfg_status.py','--report','analysis/local-checks/icfg-status.json',tool='analyze_icfg_status.py')
     run(sys.executable,'tools/analyze_image_resources.py','--report','analysis/local-checks/image-resources.json',tool='analyze_image_resources.py')
+    run(sys.executable,'tools/analyze_hearing_aid_app_path.py','--report','analysis/local-checks/hearing-aid-app-path.json',tool='analyze_hearing_aid_app_path.py')
     run(sys.executable,'tools/probe_debug_startup.py','--report','analysis/local-checks/debug-startup.json',tool='probe_debug_startup.py')
     run(sys.executable,'tools/probe_event_clock.py','--report','analysis/local-checks/event-clock.json',tool='probe_event_clock.py')
     if args.rom:
