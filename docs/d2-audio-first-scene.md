@@ -227,6 +227,15 @@ R/W 形状按站点指令分类 [静态]）：
 1. **框架任务创建点未静态钉死**（init walker 惰性 vs 首开创建）：一处运行时观测
    （D2-A 顺带记录）。0x6086980 第二消息循环的角色（音频事件管理）是 [SDK] 对位
    [推断]。
+   **路 CI 闭合（2026-11-13，[docs/d2b-framework-task.md](d2b-framework-task.md)）**：
+   创建点=**app_core 任务体 init walker**（0x6012216..0x6012228 逐条 call initcall 表
+   [0x60C3250,0x60C327C)，0x60759ee 为表项 @0x60c3274，创建 'jlstream' 任务体
+   **0x6086980**、配置表 0x609d780[4] prio3/栈 0x300 字）；**0x6086980 就是 'jlstream'
+   框架主任务体**（创建名字+任务体自持队列名 0x609d3bb 双证，[推断] 升 [静态]，
+   §1.3 的「audio_event_manager 对位」不再采用）；jlstream_0..7 子任务与 dac 任务
+   惰性（stream create 内 0x6074d9c walker / 设备事件 0x6013fcc）。消息消费链
+   （tbb cmd4..12、cmd-11→0x6075e22、stream-create 请求 post 0x6075414）与 D2-B
+   fixture 清单见该文档。
 2. **音乐场景注入的精确 payload 与状态门清单未逐门枚举**（0x60207a2 tbh 31 路、
    QCY 连接/模式位）：场景设计项，本路只钉了入口候选；BT 对 P9 的「不承诺一次
    覆盖」口径沿用。
