@@ -48,6 +48,7 @@ public class H3SBridge {
     public static final int CMD_ANC = EqWritePolicy.CMD_ANC;              // ANC 模式切换 cmdid
     public static final int CMD_PROMPT_VOLUME = EqWritePolicy.CMD_PROMPT_VOLUME; // 提示音音量 cmdid
     public static final int CMD_KEY_REMAP = EqWritePolicy.CMD_KEY_REMAP;  // 按键重映射 cmdid（0x2b，候选 B）
+    public static final int CMD_KEY_STORE = EqWritePolicy.CMD_KEY_STORE;  // R4 key-store cmdid（0x30）
     /** 提示音音量合法档位（docs/app-protocol.md §2.4：3/6/8=最小/中等/最大；固件接收层不钳）。 */
     public static final int[] PROMPT_VOLUME_LEVELS = EqWritePolicy.PROMPT_VOLUME_LEVELS;
 
@@ -267,6 +268,56 @@ public class H3SBridge {
      * {"ok":true,"map":{"769":6,...}}，键=eventID 十进制串、值=action（-1=长按未知）。
      * 初始值=控制面板 defaultFun；setKeyRemap/setKeyRemapCustom 成功后随之更新。
      */
+    /**
+     * 组 R4 key-store 写命令（FF/0x30，docs/r4-command-hook.md）：valueHex=16 个 hex 字符
+     * （8 字节值，对本层不透明）。固件侧 keystore_hook 载荷把 data[1..9] 原样 set_config(30,…)
+     * 持久化；回执经 response 事件返回，载荷 `30 01 status`（KeyStoreFrame.parseWriteAck 解析）。
+     * 固件候选 UNTESTED 不刷机——真机生效前提 = --r4-keyhook 候选刷入（本 app 不做）。
+     */
+    @JavascriptInterface
+    public String setHearingCfg(String valueHex) {
+        if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
+        byte[] value;
+        try {
+            value = unhex(valueHex);
+        } catch (IllegalArgumentException e) {
+            return err(e.getMessage());
+        }
+        try {
+            KeyStoreFrame.validateValue(value);
+        } catch (IllegalArgumentException e) {
+            return err(e.getMessage());
+        }
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(KeyStoreFrame.buildWriteCommand(sn, value), sn);
+    }
+
+    /**
+     * 组 R4 key-store 读命令（FF/0x30，data=[30]）：固件 get_config(30, resp+2, 8) 把存的
+     * 8 字节放进回执，response 事件 payloadHex=`3008`+值（KeyStoreFrame.parseReadPayload
+     * 解析）；key 无记录时固件静默不回（无 response 事件=未配置）。
+     */
+    @JavascriptInterface
+    public String getHearingCfg() {
+        if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(KeyStoreFrame.buildReadCommand(sn), sn);
+    }
+
+    /** hex 串 → 字节数组（长度须为偶数；只认 0-9a-fA-F）。 */
+    static byte[] unhex(String hex) {
+        if (hex == null) throw new IllegalArgumentException("valueHex 不能为 null");
+        if (hex.length() % 2 != 0) throw new IllegalArgumentException("hex 长度须为偶数: " + hex.length());
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int hi = Character.digit(hex.charAt(i * 2), 16);
+            int lo = Character.digit(hex.charAt(i * 2 + 1), 16);
+            if (hi < 0 || lo < 0) throw new IllegalArgumentException("hex 字符非法: " + hex);
+            out[i] = (byte) ((hi << 4) | lo);
+        }
+        return out;
+    }
+
     @JavascriptInterface
     public String getKeyRemap() {
         JSONObject o = new JSONObject();

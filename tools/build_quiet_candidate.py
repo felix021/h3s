@@ -236,6 +236,11 @@ def main():
                    help="辅听 L1 数据槽 RAM 化离线候选：隐含 --hearing-aid-l1-close，数据槽从追加段尾"
                         "（flash 映射区，普通 store 写不进）挪到 boot 清零 BSS 0x125574——close 链依赖槽里的"
                         " stream 句柄，这是 close 在真机能真正关断的前提；候选 UNTESTED 不刷机")
+    p.add_argument("--r4-keyhook", action="store_true",
+                   help="R4 App 命令接驳离线候选：隐含 --hearing-aid-l1-slotram，追加 keystore_hook 载荷"
+                        "（App 自定义命令 → VM get/set_config key 30）并把命令注册表 cmdid 0x30 项的空"
+                        " setter 字（0x060a9c7c，原值 0）填为载荷地址——写路径今日为 no-op，属纯增量；"
+                        "候选 UNTESTED 不刷机")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -248,6 +253,10 @@ def main():
         args.hearing_aid_l1_patch = True      # close 是同一候选族的超集（路 X 建议）
     if args.hearing_aid_l1_slotram:
         args.hearing_aid_l1_close = True      # slotram 是 close 的进一步超集（路 CT）
+        args.hearing_aid_l1_patch = True
+    if args.r4_keyhook:
+        args.hearing_aid_l1_slotram = True    # R4 接驳是 slotram 候选族的超集（路 AQ）
+        args.hearing_aid_l1_close = True
         args.hearing_aid_l1_patch = True
     if args.hearing_aid_l1_patch and args.eq_toggle_elf:
         p.error('--hearing-aid-l1-patch and --eq-toggle-elf append at the same flash offset')
@@ -347,7 +356,8 @@ def main():
         from hearing_aid_l1_image import apply_l1_patch
         hearing_aid_l1 = apply_l1_patch(flash_plain,
                                         close_hooks=args.hearing_aid_l1_close,
-                                        slot_ram=args.hearing_aid_l1_slotram)
+                                        slot_ram=args.hearing_aid_l1_slotram,
+                                        r4_keyhook=args.r4_keyhook)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -426,7 +436,8 @@ def main():
     if args.hearing_aid_demo:
         suffix += "_HEARING_AID_DEMO"
     if hearing_aid_l1:
-        suffix += ("_HEARING_AID_L1_SLOTRAM_OFFLINE" if args.hearing_aid_l1_slotram
+        suffix += ("_R4_KEYHOOK_OFFLINE" if args.r4_keyhook
+                   else "_HEARING_AID_L1_SLOTRAM_OFFLINE" if args.hearing_aid_l1_slotram
                    else "_HEARING_AID_L1_CLOSE_OFFLINE" if args.hearing_aid_l1_close
                    else "_HEARING_AID_L1_OFFLINE")
     filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB{suffix}_UNTESTED.ufw"

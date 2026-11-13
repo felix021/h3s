@@ -19,6 +19,13 @@ docs/hearing-aid-l1-payload.md §10/§11):
     release -> clear slot -> event_notify(11, "mic_effect"));
   - tools/hearing-aid/mic_effect_close_hook.S — the four ON/OFF leave stubs.
 
+Route AQ / sim-r4hook (2026-11-14) adds the R4 App-command hook
+(--r4-keyhook, implies --hearing-aid-l1-slotram; docs/r4-command-hook.md):
+a minimal RCSP custom-command setter payload (tools/r4cmd/keystore_hook.S,
+27 insns / 78B, zero relocations) appended after the L1 stubs, wired into
+the command registry by filling the cmdid 0x30 entry's null setter word —
+the only edit inside the stock data area beyond the L1 fence/window edits.
+
 Route CT / sim-slotram (2026-11-14) moves the data slot out of the flash
 appended segment into boot-zeroed BSS RAM (--hearing-aid-l1-slotram, implies
 --hearing-aid-l1-close; docs §10.4/§12). The close chain functionally depends
@@ -109,6 +116,24 @@ PAYLOAD_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open.S'
 HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_hook.S'
 CLOSE_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close.S'
 CLOSE_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close_hook.S'
+# Route AQ (docs/r4-command-hook.md): the R4 key-store command payload + the
+# registry slot it is wired into. The RCSP custom-command dispatch table
+# [0x060a9b78, 0x060a9d1c) has 15 entries x 28B {+0 init, +4 getter, +8 setter,
+# +20 restore, +24 cmdid} and NO cmdid-free entry; the dispatcher write path
+# (0x0600f8b4/0x0600f932, route P) null-checks the setter word and silently
+# exits when it is 0. cmdid 0x30's entry at 0x060a9c74 is a live read-only
+# command (getter 0x06026060, not in the control panel or protocol notes)
+# whose setter word 0x060a9c7c is exactly zero — filling it is strictly
+# additive (a write to 0x30 is a no-op today). No static reference targets
+# the entry (li.u32 + raw LE32 scans over app.bin, route AQ); the only
+# consumers are the table-base walkers (dispatch 0x0600f85e / restore
+# 0x0600f836 / boot-init 0x06024df4), which read +4/+20/+0 respectively and
+# leave +8 to the write path alone.
+R4_KEYHOOK_SOURCE = ROOT / 'tools/r4cmd/keystore_hook.S'
+R4_REG_ENTRY = 0x060a9c74             # cmdid 0x30 entry base
+R4_REG_SLOT = 0x060a9c7c              # entry+8, the null setter word
+R4_REG_SLOT_ORIGINAL = b'\x00\x00\x00\x00'
+R4_CMDID = 0x30
 # Route CT RAM slot (docs §12): centre word of the statically dead 593B BSS
 # hole [0x12544e, 0x12569f) — 294B/295B margins to the nearest referenced
 # byte on either side. Must stay inside the boot BSS zero loop
@@ -144,13 +169,32 @@ def _strip_close_section(text):
     return stripped
 
 
-def _compose(slot, close_hooks=False):
+def _strip_r4_section(text):
+    """Drop the R4 payload's own .section line so it joins the L1 segment.
+
+    Route AQ's source stays byte-identical (its standalone test assembles it
+    with its own section); the composed segment must stay ONE section.
+    """
+    m = re.search(r'^[ \t]*\.section[ \t]+\.text\.r4_keystore_hook.*$\n?',
+                  text, re.M)
+    if m is None:
+        raise ValueError('R4 payload section directive not found')
+    stripped = text[:m.start()] + text[m.end():]
+    if '.section' in stripped:
+        raise ValueError('unexpected extra .section in R4 payload')
+    return stripped
+
+
+def _compose(slot, close_hooks=False, r4_keyhook=False):
     """Concatenate payload source (slot-patched) + hook stubs into one text."""
     text = _patch_slot(PAYLOAD_SOURCE.read_text(), slot)
     if close_hooks:
         text += _strip_close_section(_patch_slot(CLOSE_SOURCE.read_text(), slot))
-    return text + HOOK_SOURCE.read_text() + \
+    text += HOOK_SOURCE.read_text() + \
         (CLOSE_HOOK_SOURCE.read_text() if close_hooks else '')
+    if r4_keyhook:
+        text += _strip_r4_section(R4_KEYHOOK_SOURCE.read_text())
+    return text
 
 
 def _slot_checks(slot):
@@ -171,7 +215,7 @@ def _assemble(text):
     return obj, sections[0][1]
 
 
-def assemble_segment(close_hooks=False, slot_ram=False):
+def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False):
     """Assemble payload+stubs at PAYLOAD_ADDRESS with the real slot address.
 
     Two passes: the section length is layout-stable (test_hearing_aid_payload /
@@ -180,18 +224,23 @@ def assemble_segment(close_hooks=False, slot_ram=False):
     slot = base + length. slot_ram=True (route CT) instead pins the slot to
     the boot-zeroed BSS address RAM_SLOT — layout-independent, so the two-pass
     byte-diff assertion does not apply — and the segment carries no trailing
-    slot bytes. Returns a report dict with bytes, entry offsets and the
-    disassembly.
+    slot bytes. r4_keyhook=True (route AQ) additionally appends the R4
+    key-store command payload after the stubs (implies the slotram variant —
+    the R4 hook rides the same candidate family and append point). Returns a
+    report dict with bytes, entry offsets and the disassembly.
     """
+    if r4_keyhook and not (close_hooks and slot_ram):
+        raise ValueError('r4_keyhook requires close_hooks+slot_ram '
+                         '(route AQ is a slotram superset)')
     if slot_ram:
         if not close_hooks:
             raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
         _slot_checks(RAM_SLOT)
         slot = RAM_SLOT
-    _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks))
+    _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks, r4_keyhook))
     if not slot_ram:
         slot = PAYLOAD_ADDRESS + len(first)
-    obj, code = _assemble(_compose(slot, close_hooks))
+    obj, code = _assemble(_compose(slot, close_hooks, r4_keyhook))
     if len(code) != len(first):
         raise ValueError('slot immediate changed the section layout')
     if slot_ram:
@@ -203,6 +252,8 @@ def assemble_segment(close_hooks=False, slot_ram=False):
     names = ['mic_effect_open', 'trans_branch_1', 'trans_branch_2']
     if close_hooks:
         names += ['mic_effect_close'] + [w[4] for w in CLOSE_WINDOWS]
+    if r4_keyhook:
+        names += ['r4_keystore_hook']
     symbols = {s.name: s.value for s in obj.symbols if s.name in names}
     if len(symbols) != len(names):
         raise ValueError(f'missing section symbols: {set(names) - set(symbols)}')
@@ -222,8 +273,10 @@ def assemble_segment(close_hooks=False, slot_ram=False):
         if ASM.encode(insn_id, **values) != raw:
             raise ValueError(f're-encode differs at {addr:#x} ({text})')
     slot_tail = 0 if slot_ram else 4
-    report = {'variant': ('open+close+slotram' if slot_ram else
-                          'open+close' if close_hooks else 'open'),
+    variant = ('open+close+slotram+r4keyhook' if r4_keyhook else
+               'open+close+slotram' if slot_ram else
+               'open+close' if close_hooks else 'open')
+    report = {'variant': variant,
               'payload_bytes': stub_offsets[0], 'stub_bytes': len(code) - stub_offsets[0],
               'code_bytes': len(code), 'slot_address': f'0x{slot:08x}',
               'slot_location': 'ram-bss' if slot_ram else 'flash-tail',
@@ -241,11 +294,15 @@ def assemble_segment(close_hooks=False, slot_ram=False):
         report['leave_stub_addresses'] = {
             tag: f'0x{PAYLOAD_ADDRESS + symbols[label]:08x}'
             for tag, _a, _b, _s, label in CLOSE_WINDOWS}
-    _verify_semantics(code, stub_offsets, slot, report, close_hooks)
+    if r4_keyhook:
+        report['r4_keyhook_address'] = f'0x{PAYLOAD_ADDRESS + symbols["r4_keystore_hook"]:08x}'
+    _verify_semantics(code, stub_offsets, slot, report, close_hooks,
+                      r4_keyhook=r4_keyhook)
     return report, code, slot
 
 
-def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False):
+def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
+                      r4_keyhook=False):
     """Decode-level assertions: stub shape, every pinned firmware target."""
     insns = list(ASM.disassemble(code, PAYLOAD_ADDRESS))
     by_off = {a - PAYLOAD_ADDRESS: (iid, t, raw) for a, iid, t, raw in insns}
@@ -284,8 +341,15 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False):
         if (loads[:2] != [ANC_CTX_GET, 0x0600dae4] or loads[2] != epi[tag]
                 or iid != 'call.s' or target != PAYLOAD_ADDRESS):
             raise ValueError(f'stub {tag} targets mismatch: loads={loads} call={t} target={target:#x}')
+    # the last leave stub must end where the R4 payload begins (when present),
+    # so its shape check cannot bleed into the appended keyhook
+    leave_end = len(code)
+    if r4_keyhook:
+        leave_end = int(report['r4_keyhook_address'], 16) - PAYLOAD_ADDRESS
     if close_hooks:
-        _verify_leave_stubs(code, by_off, report)
+        _verify_leave_stubs(code, by_off, report, seg_end=leave_end)
+    if r4_keyhook:
+        _verify_r4_keyhook(code, by_off, report)
     # slot loads/stores in the payload part resolve to the real slot address
     # (open: guard + record; close: guard + clear — both load r0 = slot)
     expected_loads = [slot] * (4 if close_hooks else 2)
@@ -295,7 +359,7 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False):
         raise ValueError(f'slot immediates mismatch: {slot_loads}')
 
 
-def _verify_leave_stubs(code, by_off, report):
+def _verify_leave_stubs(code, by_off, report, seg_end=None):
     """The four ON/OFF leave stubs (§10.5): shape + every firmware target."""
     stubs = sorted(((tag, int(report['leave_stub_addresses'][tag], 16)
                      - PAYLOAD_ADDRESS, address, mode_slot)
@@ -303,7 +367,8 @@ def _verify_leave_stubs(code, by_off, report):
                    key=lambda t: t[1])
     close_off = int(report['close_address'], 16) - PAYLOAD_ADDRESS
     for index, (tag, stub_off, address, mode_slot) in enumerate(stubs):
-        end = stubs[index + 1][1] if index + 1 < len(stubs) else len(code)
+        end = stubs[index + 1][1] if index + 1 < len(stubs) else \
+            (seg_end if seg_end is not None else len(code))
         shape = [by_off[o][0] for o in range(stub_off, end) if o in by_off]
         expected_shape = LEAVE_ON2_INSN_IDS if tag == 'ON-2' else LEAVE_INSN_IDS
         if shape != expected_shape:
@@ -331,20 +396,75 @@ def _verify_leave_stubs(code, by_off, report):
             raise ValueError(f'leave stub {tag} calls {target:#x}, not the close payload')
 
 
-def apply_l1_patch(flash, close_hooks=False, slot_ram=False):
+# Route AQ: the R4 keyhook payload's exact instruction shape, from the
+# assembled keystore_hook.S (prologue, len dispatch, write branch with the
+# set_config arg setup + status word store, read branch with the get_config
+# arg setup + length check, silent/epilogue).
+R4_INSN_IDS = ['push.rets_rl', 'mov.rr', 'beq.ri', 'beq.ri', 'goto.s',
+               'ld.bu', 'bne.ri', 'li.u32', 'li.u8', 'add.rri', 'li.u8',
+               'call.r', 'li.u8', 'beqz', 'li.u8', 'st.w', 'li.u8',
+               'goto.s', 'ld.bu', 'bne.ri', 'li.u32', 'li.u8', 'add.rri',
+               'li.u8', 'call.r', 'bne.ri', 'li.u8', 'goto.s', 'li.u8',
+               'pop.pc_rl']
+R4_SET_CONFIG = 0x06001f12        # VM set_config dispatcher (route AB)
+R4_GET_CONFIG = 0x06000f88        # VM get_config dispatcher (route AB)
+R4_VALUE_LEN = 8
+
+
+def _verify_r4_keyhook(code, by_off, report):
+    """The R4 keyhook tail: standalone-equal bytes, exact shape, both API
+    anchors loaded into r6 exactly once and each immediately called, the
+    write branch's status word store, and the read branch's resp+2 buffer."""
+    standalone = _assemble(R4_KEYHOOK_SOURCE.read_text())[1]
+    hook_off = int(report['r4_keyhook_address'], 16) - PAYLOAD_ADDRESS
+    if code[hook_off:hook_off + len(standalone)] != standalone:
+        raise ValueError('composed R4 keyhook != standalone route-AQ payload')
+    if hook_off + len(standalone) != len(code):
+        raise ValueError('R4 keyhook must close the segment')
+    report['r4_payload_matches_route_AQ'] = True
+    shape = [by_off[o][0] for o in range(hook_off, len(code)) if o in by_off]
+    if shape != R4_INSN_IDS:
+        raise ValueError(f'R4 keyhook instruction shape mismatch: {shape}')
+    loads = [int(by_off[o][1].split('= ')[1]) for o in range(hook_off, len(code))
+             if o in by_off and by_off[o][0] == 'li.u32']
+    if sorted(loads) != sorted([R4_SET_CONFIG, R4_GET_CONFIG]):
+        raise ValueError(f'R4 keyhook API anchors mismatch: {loads}')
+    # every call r6 is preceded (three 2B arg setups earlier) by its API load
+    offsets = sorted(o for o in by_off if o >= hook_off)
+    for o in offsets:
+        if by_off[o][0] == 'call.r':
+            prev = by_off.get(o - 12)
+            if prev is None or prev[0] != 'li.u32' or not prev[1].startswith('r6 = '):
+                raise ValueError(f'R4 call at +{o} not preceded by its API load')
+    # write branch stores the status word through the saved resp pointer r4;
+    # read branch builds the destination as r4+2 before get_config
+    texts = [by_off[o][1] for o in offsets]
+    if '[r4+0] = r5' not in texts or 'r1 = r4 + 2' not in texts \
+            or 'r1 = r2 + 1' not in texts:
+        raise ValueError('R4 keyhook resp/value addressing mismatch')
+    report['r4_keyhook_bytes'] = len(standalone)
+
+
+def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False):
     """Apply the implant edits to the decrypted flash image in place.
 
     close_hooks=True builds the open+close segment (route Y) and additionally
     replaces the four ON/OFF leave windows. slot_ram=True (route CT) pins the
     data slot to boot-zeroed BSS instead of the flash segment tail (implies
-    the close variant). Returns the report dict (incl. new_app_end for the
-    caller's SFC/boot-info pass). Per-site byte assertions keep this valid
-    with or without the ANC two-state table change, which edits one unrelated
-    app.bin byte first.
+    the close variant). r4_keyhook=True (route AQ) additionally appends the
+    R4 key-store command payload and wires it into the cmdid 0x30 registry
+    entry's null setter word (implies the slotram variant). Returns the
+    report dict (incl. new_app_end for the caller's SFC/boot-info pass).
+    Per-site byte assertions keep this valid with or without the ANC
+    two-state table change, which edits one unrelated app.bin byte first.
     """
+    if r4_keyhook and not (close_hooks and slot_ram):
+        raise ValueError('r4_keyhook requires close_hooks+slot_ram '
+                         '(route AQ is a slotram superset)')
     if slot_ram and not close_hooks:
         raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
-    segment, code, slot = assemble_segment(close_hooks, slot_ram=slot_ram)
+    segment, code, slot = assemble_segment(close_hooks, slot_ram=slot_ram,
+                                           r4_keyhook=r4_keyhook)
     slot_tail = 0 if slot_ram else 4
     end = OLD_APP_END + 32 + 1 + len(code) + slot_tail   # header + 0xff + code (+ slot)
     if end > len(flash) or any(v != 255 for v in flash[OLD_APP_END:end]):
@@ -396,6 +516,31 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False):
              'new_upper_limit': f'0x{upper:08x}',
              'lower_bound_and_enable_preserved': True,
              'evidence': 'route O negative test: stock fence rejects payload fetch'}
+    r4_registry = None
+    if r4_keyhook:
+        # data window, not an instruction window: the cmdid 0x30 entry's null
+        # setter word (verified zero + reference-free against official bytes)
+        # becomes a pointer to the appended R4 payload
+        reg_position = APP_DATA + R4_REG_SLOT - APP_BASE
+        if flash[reg_position:reg_position + 4] != R4_REG_SLOT_ORIGINAL:
+            raise ValueError('R4 registry setter word is not the expected null')
+        hook_address = int(segment['r4_keyhook_address'], 16)
+        struct.pack_into('<I', flash, reg_position, hook_address)
+        r4_registry = {
+            'kind': 'data-pointer (registry setter slot, not code)',
+            'registry_entry': f'0x{R4_REG_ENTRY:08x}',
+            'slot_address': f'0x{R4_REG_SLOT:08x}',
+            'cmdid': R4_CMDID,
+            'before': R4_REG_SLOT_ORIGINAL.hex(),
+            'after': struct.pack('<I', hook_address).hex(),
+            'handler': segment['r4_keyhook_address'],
+            'write_path_evidence': 'dispatcher 0x0600f8b4 null-checks [entry+8], '
+                                   '0x0600f932-0x0600f93e calls setter(buf,128,data,len); '
+                                   'async trampoline 0x060256aa same ABI',
+            'read_path_unchanged': 'getter 0x06026060 (entry+4) untouched',
+            'reference_scan': 'no li.u32 / raw LE32 reference targets the entry '
+                              '(full app.bin scan, route AQ)'}
+        segment['r4_registry_window'] = r4_registry
     if flash[LAST_HEADER + 14:LAST_HEADER + 16] != b'\x01\x00':
         raise ValueError('expected final config.dat entry')
     if flash[LAST_HEADER + 16:LAST_HEADER + 32].split(b'\0')[0] != b'config.dat':
@@ -470,6 +615,16 @@ def verify_l1_image(result, source, flash_pos, original_plain, plain, l1):
                 or decoded[0][2] != f'r6 = {stub_addr}'
                 or decoded[1][2] != 'goto r6'):
             raise ValueError(f'接驳窗口 {hook["window"]} 最终字节反解码不符')
+    # 3b. the R4 registry setter word decodes back to the handler pointer.
+    if 'r4_registry_window' in l1:
+        reg = l1['r4_registry_window']
+        reg_position = APP_DATA + int(reg['slot_address'], 16) - APP_BASE
+        if struct.unpack_from('<I', plain, reg_position)[0] != \
+                int(reg['handler'], 16):
+            raise ValueError('R4 注册表 setter 字与 handler 地址不一致')
+        if struct.unpack_from('<I', plain, APP_DATA + R4_REG_ENTRY - APP_BASE
+                              + 24)[0] & 0xff != R4_CMDID:
+            raise ValueError('R4 注册表项 cmdid 不是 0x30')
     # 4. appended segment: slot bytes (flash-tail variant) or exact file end
     #    (ram-slot variant carries no slot in the image), full listing
     #    round-trip.
