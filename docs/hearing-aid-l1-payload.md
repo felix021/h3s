@@ -22,8 +22,9 @@ h3s-tools-research 的 jlstream.h。一次性脚本在本地 tmp（~/tmp/hearaid
 固件里现成的 7 个 jlstream API 锚点，调用约定由 tone/pc_mic 播放器等 5 组真实激活序列反汇编
 钉死；stream.bin 里 mic_effect(0x9c2d) 描述符存在（激活的硬前提成立）。**路 O 已把载荷放进
 函数级仿真真实执行（§8）：get_pipeline_uuid 真实返回 0x9c2d、pipeline_parse 建出 11 个真实
-节点、add_thread/set_scene 在真实部分流上直调全成、start 入场后停在合成状态边界。仍未在真机
-跑通激活链，不构成「助听器可用」声明**（见 §6/§8 诚实边界）。
+节点、add_thread/set_scene 在真实部分流上直调全成、start 入场后停在合成状态边界。路 T 已把
+载荷+接驳做进离线候选镜像（§9：追加段+双窗口替换+fence 扩界+全 CRC 链，UNTESTED 不刷机）。
+仍未在真机跑通激活链，不构成「助听器可用」声明**（见 §6/§8/§9.4 诚实边界）。
 
 ## 1. 阶段 A：激活序列模板反汇编（只读）
 
@@ -249,8 +250,10 @@ set_scene/add_thread/场景值」。本路实做后有两处更新：
 4. **单线程形状**：SDK 的 mic_effect1/2 双线程被简化为单根线程。若 QCY 的 mic_effect pipeline
    在 stream.bin 里声明了双线程结构，单 add_thread(0x1100) 是否充分未验证；pc_mic 的第二个
    add_thread 返回 -2（容忍）暗示 sub 线程可以缺。
-5. **接驳是文档级**：窗口 A/B 替换、fence 扩界、CRC 链、close 路径、App 0x17 同步——全部未
-   实施进任何镜像；EQ 修复候选 67ba97ef UNTESTED 状态不变。
+5. **接驳已做进离线候选（§9，路 T）但未运行验证**：窗口 A/B 替换、fence 扩界、CRC 链已
+   实施为 `--hearing-aid-l1-patch` 离线候选镜像（UNTESTED 不刷机）；close 路径、App 0x17
+   同步仍未实施；接驳后的完整路径未在仿真跑（§9.4）。EQ 修复候选 67ba97ef UNTESTED 状态
+   不变。
 6. **数据槽是追加段内新全局**（示例 0x060e3200）：不在 QCY 配置区，不与 [0x126584] 等既有全局
    冲突；但 close 载荷未写，重入保护只防重复 open，不处理「通透→OFF 再回通透」的辅听残留
    （数据槽非零 → 直接返回 0，旧 stream 不重建也不关——语义是「辅听粘住」，需 close 载荷收口）。
@@ -308,3 +311,115 @@ synthetic 仅三件——fence 扩界、4B 槽可写、0x124880 时钟链表哨�
 **不构成「助听器可用」声明；EQ 候选 67ba97ef UNTESTED 不变**。
 
 复跑：`python3 tools/probe_pi32v2.py --tone-scene --rom <公开 ROM 资产> --official-ufw <官方 UFW>`。
+
+## 9. 镜像实施：离线候选 `--hearing-aid-l1-patch`（路 T / sim-l1image，R2 固件侧）
+
+2026-11-13。本节把 §1-6 的载荷 + §3 的接驳方案做进**离线候选镜像**：
+`tools/build_quiet_candidate.py` 新增 opt-in 开关 `--hearing-aid-l1-patch`（默认关，
+legacy 行为逐字节不变——`--attenuation-db 10 --anc-cycle-two-state` 仍复现已测镜像
+sha `b79cb3a6…`）；实施代码在 `tools/hearing_aid_l1_image.py`（构建器专用模块，
+独立校验器不导入），接驳桩源码 `tools/hearing-aid/mic_effect_hook.S`。§2 的
+`mic_effect_open.S` **一字未改**（其单测原样通过）。**不刷机、不连真机；候选
+UNTESTED；EQ 修复候选 67ba97ef 状态不变**（两开关互斥——同一追加点）。
+
+### 9.1 追加段（「源码→字节→镜像」同源）
+
+构建时用 `tools/pi32v2_asm.py` 现场汇编「载荷 + 接驳桩」单一代码段（41+2×9=59
+条指令 / 198B，零重定位），两遍汇编定槽位：第一遍量长度，第二遍把
+`MIC_EFX_SLOT` .equ 改为 实际段尾 4B（0x060E313A）——离线单测（§4 第 5 条）+ 构建
+时断言都证明除两个槽位 li.u32 立即数外字节不变。追加几何照抄 EQ 载荷先例
+（apply_eq_patch）：新 JLFS 文件头 @flash 0xE5073、0xff 对齐标记、代码起
+0x060E3074（4 对齐）、槽在段尾；与 §8 仿真示例基址 0x060e3200 不同是**因为本候选
+独立于 EQ 载荷**（第一个空闲追加点即 EQ 先例点；§2/§8 的示例值本来就注明随布局
+变化，载荷对基址不敏感）。
+
+| 项 | 值 |
+|---|---|
+| 追加文件 | `mic_effect.bin` 235B（头 32 + 0xff + 代码 198 + 槽 4×00），flash [0xE5073, 0xE515E) |
+| mic_effect_open | 0x060E3074，134B（=§2 载荷逐字节，构建时断言前缀==单汇编结果） |
+| trans_branch_1（窗口 A 落点） | 0x060E30FA（32B） |
+| trans_branch_2（窗口 B 落点） | 0x060E311A（32B） |
+| 数据槽 | 0x060E313A，初始 00 00 00 00（读 0=未激活，重入保护放行；见 9.4 边界 3） |
+| 代码段 sha256 | b0feed11b7d3c896423faf876b5300232e5277f2ad9e7b3b6b78e43f84ea4a7d |
+
+桩指令形状（与 §3 示意一致，两点差异见 9.2）：`r6=0x0600c2aa; call r6`（重放原窗口
+取 ANC ctx）→ `r0=[r0+120]`（改取 OFF 槽）→ `r1=r4`（apply flag）→
+`r6=0x0600dae4; call r6`（先关 ANC 通透）→ `call mic_effect_open` →
+`r6=<对应尾声>; goto r6`。进入状态 r4=flag、r7=QCY 基址；桩与载荷都只写 r0-r3/r6，
+两条尾声（0x0600dc8c / 0x0600dcd2）都从 [r7+500] 重载、函数出口 `pop {pc,r8-r4}`
+整体恢复，r6 死值无害（已反汇编核对）。
+
+### 9.2 接驳窗口与 fence
+
+两处 8B 窗口整窗替换（§3 方案的两点实施差异，均有明确理由）：
+
+| 窗口 | 原字节 | 新字节 | 语义 |
+|---|---|---|---|
+| A @0x0600dc7e | `bfea14f3 d0ec0407`（call 0x0600c2aa; r0=[r0+116]） | `c6fffa300e06 d600`（r6=0x060E30FA; goto r6） | TRANS 落点改道桩 1 → 尾声 0x0600dc8c |
+| B @0x0600dca4 | `bfea01f3 d0ec0407` | `c6ff1a310e06 d600`（r6=0x060E311A; goto r6） | 同上 → 尾声 0x0600dcd2 |
+
+- **跳转编码差异**：§3 写的「goto.l（6B）+2B pad」在钉死 ISA 表里不存在 6 字节
+  无条件 goto（goto.l 是 4B，6B 的 gotoss.xl 语义未钉死不能用）；实作
+  `li.u32 r6=<桩地址> + goto r6`（6B+2B）恰好整窗填满、零死字节、且与载荷本体
+  `r6=API; call r6` 同一位置无关惯用法。
+- **安全性前提（本路新钉）**：全 app 线性反汇编收集 51,709 个分支落点，两窗口
+  **内部**（起点后任意字节）零落点；落在窗口起点的各只有一条=§1.4 钉死的 TRANS
+  分支（0x0600db92→A、0x0600dbbc→B）；两窗口后的原汇合点（0x0600dc86/0x0600dccc）
+  是 OFF/ON 路径仍在用的活代码，不在窗口内、不受影响。
+
+**fence 扩界**（硬前提，§8 负例钉死 stock fence 0x060c3338 拒载荷取指）：
+0x06034e98 的 LIM_PC0 上限 32 位立即数 0x060C3338 → **0x060E313E**（=追加文件
+末端运行地址，代码末指令 0x060E3138 之后含 4B 槽裕量；EQ 修复候选同款「执行
+许可以镜像为限」语义，下限 0x06000100 与使能位不动）。字节差异仅 3B
+（`38 33 0c`→`3e 31 0e`，高位字节 06 不变）。
+
+### 9.3 CRC 链与字节级验证（E 路先例）
+
+CRC 全链照抄既有链路：config.dat 末文件标志清零+其头 CRC → 新文件头/数据 CRC →
+app.bin 双层 JLFS CRC（窗口在其数据区）→ app_area_head 双层 CRC → boot-info
+app_size 0xE3053→0xE313E + 明文/密文/头三层 CRC（32B 区独立于 SFC）→ 追加区整段
+SFC 重加密（0x3496）→ UFW 条目 CRC + 外层头 CRC。
+
+规范构建（`--attenuation-db 0 --hearing-aid-l1-patch`，除 L1 外零改动）产物
+`H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_OFFLINE_UNTESTED.ufw`，sha256
+`6c7247a5833213ffee847a2e7a009a868d55242d1f8492076ab5a6bba056d7eb`。与官方镜像
+**全文件逐字节差异恰为 279 字节**，构成：
+
+| 区域 | 字节数 |
+|---|---|
+| UFW 外层（头 CRC 2 + 条目表 CRC 2 + flash 条目 CRC 2） | 6 |
+| boot-info 32B 编码区（头/明文/密文 CRC 6 + app_size 2） | 8 |
+| app_area_head + app.bin 各双层 JLFS CRC | 8 |
+| config.dat 末文件标志 1 + 头 CRC 2 | 3 |
+| 接驳窗口 2×8 | 16 |
+| fence 立即数 | 3 |
+| 追加文件 mic_effect.bin 全部 235（密文对 0xff 填充） | 235 |
+
+验证清单（全部通过 [实测]）：①59 条指令逐条 encode(decode)==原字节零 diff，桩
+指令形状与全部固件目标（0x0600c2aa/0x0600dae4/两尾声/载荷入口/槽地址）从最终
+镜像字节反解码核对；②组合段前 134B==§2 载荷单独汇编结果；③SFC 应用区密文从
+明文独立重算一致；④boot-info 五字段独立重算一致；⑤全文件差异集合==上表并集
+（多一字节少一字节都抛错；组合 attenuation/ANC/demo 等开关时同样成立，其字节
+并入同一断言）；⑥独立校验器 `verify_ufw_integrity.py` 全过（含新 mic_effect.bin
+条目 JLFS CRC 与双备份 CRC）；⑦legacy 复现 sha 不变 + `check_local.py --units`
+exit 0。复跑：`python3 tools/build_quiet_candidate.py --attenuation-db 0
+--hearing-aid-l1-patch --output-dir <空目录>`（构建器要求输出目录不存在）。
+
+### 9.4 诚实边界（必须随候选一起读）
+
+1. **离线候选 UNTESTED，不刷机**。本节交付的是「字节与 §1-6/§8 证据一致 + 四层
+   CRC/JLFS 结构自洽 + 逐字节差异精确可控」三件事，不是任何形式的运行验证。
+2. **接驳后的完整路径未在仿真跑**：§8（路 O）只验证了载荷本体的激活链；接驳
+   涉及的 ANC 键循环（0x0600db3c 两条 TRANS 链、ctx getter 0x0600c2aa、apply
+   0x0600dae4、两条尾声）**主仿真前沿还没推进到那**，桩的跳转正确性目前只有静态
+   反汇编证据（指令边界/落点/寄存器活性，9.1/9.2），没有执行证据。
+3. **数据槽在 flash 里**：真机上 `[槽]=stream` 的 st.w 大概率写不进 flash 映射区
+   （普通 store 不能编程 flash）——若写被静默丢弃，重入保护永不闭锁，每次进通透
+   档都会重跑激活链（重复建 pipeline + clock_alloc 泄漏风险）。§8 已标注「可写
+   落点待定（flash 编程 vs 保留 RAM）」，本候选选择先按 §2/§8 布局镜像内落槽，
+   真机验证前需要 close 载荷 + 可写落点一并解决。
+4. §6 的全部既有边界不变：set_scene 16 是 SDK 枚举值、noisgate 未配对、close 载荷
+   未写（「辅听粘住」语义）、App 0x17 直设路径（0x0600dcee）未接驳（App 通透与
+   按键语义会分叉）。
+5. 与 EQ 修复候选共用追加点与 fence 机制但**互斥**（开关同时给会报错）；EQ 候选
+   67ba97ef UNTESTED 不变，本候选不影响其状态。

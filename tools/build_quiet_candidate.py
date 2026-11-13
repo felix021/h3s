@@ -226,6 +226,9 @@ def main():
                    help='离线修复候选：扩展实际Flash PC上界到EQ载荷末尾；不代表启动验证通过')
     p.add_argument("--hearing-aid-demo", action="store_true",
                    help="助听器弱化版 EQ L0 演示：辅听链 1kHz +39dB + 输出限幅；仅离线候选")
+    p.add_argument("--hearing-aid-l1-patch", action="store_true",
+                   help="辅听 L1 离线候选：追加 mic_effect 激活载荷 + ANC 通透档接驳 + PC fence 扩界；"
+                        "不可与 --eq-toggle-elf 同用（追加区冲突）；候选 UNTESTED 不刷机")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -234,6 +237,8 @@ def main():
         p.error('--eq-toggle-elf requires --anc-cycle-two-state')
     if args.eq_code_fence_repair and not args.eq_toggle_elf:
         p.error('--eq-code-fence-repair requires --eq-toggle-elf')
+    if args.hearing_aid_l1_patch and args.eq_toggle_elf:
+        p.error('--hearing-aid-l1-patch and --eq-toggle-elf append at the same flash offset')
     source = args.source.read_bytes()
     if hashlib.sha256(source).hexdigest() != SOURCE_SHA:
         raise ValueError("原包摘要不匹配")
@@ -325,6 +330,10 @@ def main():
     if args.eq_toggle_elf:
         from eq_toggle_image import apply_eq_patch
         eq_toggle = apply_eq_patch(flash_plain, args.eq_toggle_elf,repair_code_fence=args.eq_code_fence_repair)
+    hearing_aid_l1 = None
+    if args.hearing_aid_l1_patch:
+        from hearing_aid_l1_image import apply_l1_patch
+        hearing_aid_l1 = apply_l1_patch(flash_plain)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -338,11 +347,12 @@ def main():
         if old != new:
             result[flash_pos + offset] ^= old ^ new
             changed_offsets.append(offset)
-    if eq_toggle:
+    extended = eq_toggle or hearing_aid_l1
+    if extended:
         # Unpacked bytes beyond the old JLFS end are raw padding, not decoded
         # SFC plaintext. Encode the extended region explicitly, including its
         # partial original last cipher block, using the original app-area base.
-        extended_end = eq_toggle['new_app_end']
+        extended_end = extended['new_app_end']
         encrypted_app = bytearray(flash_plain[0x2020:extended_end])
         jl_sfc_cipher(encrypted_app, 0, len(encrypted_app), 0, 0x3496)
         result[flash_pos + 0x2020:flash_pos + extended_end] = encrypted_app
@@ -360,8 +370,8 @@ def main():
         raise ValueError("原始双备份明文总体 CRC 不匹配")
     if jl_crc16(source[flash_pos + app_pos:flash_pos + app_end]) != cipher_crc:
         raise ValueError("原始双备份密文总体 CRC 不匹配")
-    if eq_toggle:
-        app_end = eq_toggle['new_app_end']
+    if extended:
+        app_end = extended['new_app_end']
         app_size = app_end - app_pos
         struct.pack_into('<I', boot, 8, app_size)
     new_plain_crc = jl_crc16(flash_plain[app_pos:app_end])
@@ -376,9 +386,11 @@ def main():
     struct.pack_into("<H", ufw_header, 0, jl_crc16(ufw_header[2:]))
     result[:64] = encode_header(ufw_header)
     if args.attenuation_db == 0 and not args.anc_cycle_two_state and not eq_toggle and \
-            not args.hearing_aid_demo and result != source:
+            not args.hearing_aid_demo and not hearing_aid_l1 and result != source:
         raise ValueError("零改动重打包不一致")
-    if args.hearing_aid_demo:
+    if args.hearing_aid_demo and not hearing_aid_l1:
+        # L1 启用时由 verify_l1_image 做覆盖更广的全镜像精确差异断言（含本演示的
+        # stream 明文差异），旧断言的期望集不包含 L1 的字节，此处让位。
         stream_changed_offsets = [i for i in range(len(original_stream))
                                   if stream[i] != original_stream[i]]
         diff_positions, allowed_positions = verify_hearing_aid_diff(
@@ -386,12 +398,21 @@ def main():
         hearing_aid["byte_diff"] = {"diff_positions": diff_positions,
                                     "allowed_positions": allowed_positions,
                                     "diff_count": len(diff_positions)}
+    if hearing_aid_l1:
+        from hearing_aid_l1_image import verify_l1_image
+        l1_diff, l1_expected = verify_l1_image(
+            result, source, flash_pos, original_flash_plain, flash_plain, hearing_aid_l1)
+        hearing_aid_l1["byte_diff"] = {"diff_positions": l1_diff,
+                                       "expected_positions": l1_expected,
+                                       "diff_count": len(l1_diff)}
     args.output_dir.mkdir(parents=True)
     suffix = "_anc_on_trans" if args.anc_cycle_two_state else ""
     if eq_toggle:
         suffix += "_eq_toggle_EXPERIMENTAL"
     if args.hearing_aid_demo:
         suffix += "_HEARING_AID_DEMO"
+    if hearing_aid_l1:
+        suffix += "_HEARING_AID_L1_OFFLINE"
     filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB{suffix}_UNTESTED.ufw"
     if eq_toggle:
         filename = f"H3S_0.1.1.8_tones_minus{args.attenuation_db}dB_ANC_EQ_TOGGLE_EXPERIMENTAL.ufw"
@@ -407,6 +428,7 @@ def main():
               "anc_cycle": anc_cycle,
               **({'eq_toggle': eq_toggle} if eq_toggle else {}),
               **({'hearing_aid_demo': hearing_aid} if hearing_aid else {}),
+              **({'hearing_aid_l1': hearing_aid_l1} if hearing_aid_l1 else {}),
               "zero_change_identical": bytes(result) == source,
               "dual_bank_boot_info": {"flash_offset": boot_pos, "app_offset": app_pos,
                                       "app_bytes": app_size, "plain_crc_before": plain_crc,
