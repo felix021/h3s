@@ -234,7 +234,33 @@ R/W 形状按站点指令分类 [静态]）：
 6. 步数/触达预测沿用 tail-map 限制（CON/PRD 再写会移动期限）不变；音频 IRQ39 的
    中断号-设备对应是 [推断]（S7 安装锚+位置，未逐寄存器证明）。
 
-## 6. 证据锚点
+## 6. 路 CA 运行时勘误（2026-11-13，sim-tonescene 场景执行证据）
+
+D2-A 首场景骨架已实施（probe_pi32v2 opt-in `--tone-scene`，详见 HANDOFF 路 CA 条目）。
+执行证据对本页 §1/§2 的勘误：
+
+1. **语言字语义反了**（§1.2）：QCY+348 **== 1 → zh 表 0x60a379c；!= 1 → en 表
+   0x60a387c**（getter 0x600c2be `if (r2 != 1) 返回 base+224`，base=zh 表——两臂均
+   运行时验证）。
+2. **resolve 成败反了**（§1.2）：0x600d95e **返回 entry block = 成功、0 = 失败**；
+   0x6017cc0 的 cb(0,10)+return -12 是**失败**路径（成功侧写 [+120]/[+124] 后入队）。
+3. **空闲首 tone 不入队**（§4 D2-A）：enqueue 0x600da64 在空闲态（[0x124a24] ==
+   0x124a24，.data 自带哨兵、非 BSS 零）**同步直启** 0x600d9be；append 只在 busy
+   路径。「0x124a24 非空」不成立为空闲路径断言。
+4. **ROM libc 身份修正**：0x1fd8c = strlen（体 0x4402）；0x1fd84/0x1fd90 返回
+   带符号字节差（0==相等）；memcpy 族（0x1fd74/78/7c）体 0x413c/0x4104 用寄存器
+   计数 rep（上游模型会跑错轮数，必须 stub）；strcmp/strcat/strlen/strchr/strncmp
+   真跑无碍。
+5. **stream.bin 运行时视图 ≠ flash 原始字节**：加载器 0x6074234 首读 4 字节要求
+   'J''S'（0x607428a/0x6074292），而公开 stream.bin 节表在原始 offset 0（无 JS 头，
+   b79/official 全字节扫描证实）——resfile 层必提供变换视图。具名合成头 fixture
+   （'J','S'+合成零，16 字节）下节遍历/928B 节 0 读取/XOR 解密真实执行，最终在
+   ROM 0x1fe30（体 0xbb70）-7 中止——真机头的其余字节（SDK 参考=20 字节头
+   {flag'JS'+hash u16+16B 哈希区}）不在公开工件里，是 D2-A 继续推进的第一缺口。
+6. 0x600c128 = release-or-post：引用计数归零→close+free+cb；否则 post 事件
+   0x10000B {10, seq} 到 'app_core' 任务（0x6064978）。
+
+## 7. 证据锚点
 
 - 分发表/ops 表/plug 表/tone 表全量解码：本路一次性脚本（codec pi32v2-isa @3608ed1，
   主仓 reference-cache 经软链复用；脚本在本地 tmp，不进库）。关键新锚：
