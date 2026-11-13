@@ -1744,6 +1744,213 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop'],{'kind':'unmapped_or_readonly_write','access':'write',
                                          'address':'0xfd3100','size':4,'value_bytes':'00000200'})
 
+    def test_p33_analog_tail_projection_shapes(self):
+        # 路 BV(sim-tailproj):W1[0]/mode 切换函数 0x6068152 的 P33 模拟配置族
+        # AM 容器一次扩展(P3_ANA_CON0/7/8/9/10 + P3_CHG_CON0/CON1,合成初始字
+        # 0+读回=当前值)+ P3_ANA_READ(0xf2c064)显式钉住。证据复核修正路 BO
+        # 两处基址误记:W1[0] 的 RMW 块实为 0xfd5708 PORTP GPIO 面(GPIO 投影
+        # 既有域),0xfd5f 无名块全 app/ROM 零引用不建模;金丝雀树修正另见
+        # test_p33_canary_projection_shapes。
+        # ①mode 切换函数 0x60681d4..e0 对 P3_ANA_CON7(0xf2c25c)的显式
+        # ld/st 配置 RMW(读值参与写回):seed 0 → &0xFF1F|0x40 = 0x40。
+        tail=BR28Model(p33_analog_tail_projection=True)
+        r=[0]*16;r[2]=0xf2c240
+        result=explore(self.module,self.app,name='ana_con7_ldst_rmw',handoff=self.handoff(),
+            hardware=tail,diagnostics={'entry_pc':0x60681d4,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=5)
+        self.assertEqual(result['completed_steps'],5)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(tail.report()['registers']['0xf2c25c'],'0x40')
+        # ②P3_CHG_CON0(0xf2c068)的复合 and RMW(0x6012e74 &=0x1FE,r5=0xf2c064):
+        # 预写 0xFFF 后走通用 mmio RMW 路径(读=投影值→合成→写记录)→ 0x1FE。
+        chg=BR28Model(p33_analog_tail_projection=True)
+        chg.write(0xf2c068,0xfff)
+        r=[0]*16;r[5]=0xf2c064
+        result=explore(self.module,self.app,name='chg_con0_compound_rmw',handoff=self.handoff(),
+            hardware=chg,diagnostics={'entry_pc':0x6012e74,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['instruction_adapters'].get('mmio_rmw_always_writes'),1)
+        self.assertEqual(chg.report()['registers']['0xf2c068'],'0x1fe')
+        # ③P3_ANA_CON10(0xf2c268)的复合 and.r RMW(0x6068254 &=r0,r2=0xf2c240):
+        # 预写 0xFFFF → &0xFF7F = 0xFF7F。
+        con10=BR28Model(p33_analog_tail_projection=True)
+        con10.write(0xf2c268,0xffff)
+        r=[0]*16;r[2]=0xf2c240;r[0]=0xff7f
+        result=explore(self.module,self.app,name='ana_con10_compound_rmw',handoff=self.handoff(),
+            hardware=con10,diagnostics={'entry_pc':0x6068254,'initial_sp':STACK_TOP,
+                                        'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(con10.report()['registers']['0xf2c268'],'0xff7f')
+        # ④P3_ANA_CON0(0xf2c240)的 pair 尾写回(0x606827e..8a:ld → &r4+4 →
+        # |=8 → li.s16.p ∥ st.w [r2]=旧 r0):预写 0xFFFF → 0x3FDB。
+        con0=BR28Model(p33_analog_tail_projection=True)
+        con0.write(0xf2c240,0xffff)
+        r=[0]*16;r[2]=0xf2c240;r[4]=0x3fcf
+        result=explore(self.module,self.app,name='ana_con0_pair_writeback',handoff=self.handoff(),
+            hardware=con0,diagnostics={'entry_pc':0x606827e,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r,'exact_parallel_stores':True},budget=5)
+        self.assertEqual(result['completed_steps'],5)
+        self.assertEqual(con0.report()['registers']['0xf2c240'],'0x3fdb')
+        self.assertEqual(con0.report()['registers']['0xf2c240'],hex(0xffff&0x3fd3|8))
+        # ⑤P3_ANA_READ(0xf2c064)是模拟量读(W1[0] 轮询 0x6012f26+位测试
+        # 0x60131c/0x6013122 消费):投影开启也显式钉住 p3_ana_read_not_modeled
+        # (RES 红线同款,绝不发明 0/满值 fixture);写一律拒绝。
+        pin=BR28Model(p33_analog_tail_projection=True)
+        r=[0]*16;r[5]=0xf2c064
+        result=explore(self.module,self.app,name='ana_read_pinned',handoff=self.handoff(),
+            hardware=pin,diagnostics={'entry_pc':0x6012f26,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'p3_ana_read_not_modeled','address':'0xf2c064'})
+        self.assertRaisesRegex(Blocked,'p3_ana_read_write_not_modeled',pin.write,0xf2c064,0)
+        # ⑥与 awkup/p3_ls/canary 投影叠加互不吞地址。
+        stacked=BR28Model(p33_analog_tail_projection=True,p33_awkup_projection=True,
+                          p3_ls_projection=True,p33_canary_projection=True)
+        r=[0]*16;r[2]=0xf2c240
+        result=explore(self.module,self.app,name='ana_tail_stacked',handoff=self.handoff(),
+            hardware=stacked,diagnostics={'entry_pc':0x60681d4,'initial_sp':STACK_TOP,
+                                          'initial_gprs':r},budget=5)
+        self.assertEqual(stacked.report()['registers']['0xf2c25c'],'0x40')
+        self.assertEqual(stacked.report()['p33_awkup_projection']['word_writes'],0)
+        self.assertEqual(stacked.report()['p3_ls_projection']['word_writes'],0)
+        self.assertEqual(stacked.report()['p33_canary_projection']['word_writes'],0)
+        # ⑦默认关:p33_analog_tail_projection 关闭时 0xf2c068 的复合 RMW 读侧
+        # 诚实停 unmapped_memory(0xfd5708 PORTP GPIO 面不经此开关,走既有
+        # gpio 投影域)。「旧投影全开、新投影关」的世界同样不受影响:七个新
+        # 地址保持 unmapped,报告不出现新 assumption 键。
+        off=BR28Model()
+        r=[0]*16;r[5]=0xf2c064
+        result=explore(self.module,self.app,name='ana_tail_off_stop',handoff=self.handoff(),
+            hardware=off,diagnostics={'entry_pc':0x6012e74,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2c068')
+        oldstack=BR28Model(p33_analog_config_projection=True,fd31_adc_con_projection=True,
+                           fd31_adc_con_readback=True)
+        self.assertFalse(oldstack.handles(0xf2c240,4) or oldstack.handles(0xf2c068,4))
+        self.assertNotIn('p33_analog_tail_projection',oldstack.report()['assumptions'])
+        r=[0]*16;r[2]=0xf2c240
+        result=explore(self.module,self.app,name='ana_tail_oldstack_stop',handoff=self.handoff(),
+            hardware=oldstack,diagnostics={'entry_pc':0x60681d4,'initial_sp':STACK_TOP,
+                                           'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'unmapped_memory','access':'read',
+                                         'address':'0xf2c25c','size':4,
+                                         'reference_sdk_register':None})
+
+    def test_p33_canary_projection_shapes(self):
+        # 路 BV:金丝雀树/低功耗域 P3_VLVD_CON(0xf2c044)+ P3_PCNT_CON
+        # (0xf2c124)的「仅记录写访问」+ 首次读具名 fixture(BB 的 P3_AWKUP
+        # 先例同模式)。**修正路 BO §N4**:0x12cc56/0x12ced4/da 实读
+        # 0xf2c044/0xf2c124(BO 把基址 0xf2c128/0xf2c124 各误记 +0x120 为
+        # 0xf2c248/0xf2c244),tail-map 的原记录成立。
+        # ①0x12cc40(flash 母本 0x60c6418)在 0x60c642e `ld.w r3=[r2]` 读
+        # P3_VLVD_CON(bit2<<5&0x80 折进 P3_PCNT_SET0 写值,真实消费;整条
+        # 消费链还涉及 0xf2c128 的复位配置读,归该族严格停,不在本测试):
+        # 显式 fixture 下首次读返回具名字;无 fixture 严格停。
+        canary=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c044:0x4})
+        r=[0]*16;r[2]=0xf2c044
+        result=explore(self.module,self.app,name='vlvd_first_read_served',handoff=self.handoff(),
+            hardware=canary,diagnostics={'entry_pc':0x60c642e,'initial_sp':STACK_TOP,
+                                         'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(canary.report()['p33_canary_projection']['first_read_fixture']
+                         ['0xf2c044']['reads_served'],1)
+        nofix=BR28Model(p33_canary_projection=True)
+        r=[0]*16;r[2]=0xf2c044
+        result=explore(self.module,self.app,name='vlvd_no_fixture_stop',handoff=self.handoff(),
+            hardware=nofix,diagnostics={'entry_pc':0x60c642e,'initial_sp':STACK_TOP,
+                                        'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'canary_first_read_fixture_absent',
+                                         'address':'0xf2c044'})
+        # ②P3_PCNT_CON 的复合置位(AWKUP 分发 0x6069238 `rmw.or.modimm
+        # [0xf2c124]|=0x40`):按位记录,不经读回。
+        pcnt=BR28Model(p33_canary_projection=True)
+        r=[0]*16;r[1]=0xf2c124
+        result=explore(self.module,self.app,name='pcnt_con_or_bit',handoff=self.handoff(),
+            hardware=pcnt,diagnostics={'entry_pc':0x6069238,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['instruction_adapters'].get('p33_canary_bit_rmw'),1)
+        self.assertEqual(pcnt.report()['p33_canary_projection']['rmw_records'],
+                         {'0xf2c124':{'known_mask':'0x40','known_value':'0x40','writes':1}})
+        # ③0x12ceda(flash 母本 0x60c66b4..ba)对 P3_PCNT_CON 的 ld/st RMW
+        # (&0x7FBF|0x40):首次读 fixture 参与写回值(fixture 0xFFFF → 0x7FFF)。
+        wb=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c124:0xffff})
+        r=[0]*16;r[1]=0xf2c124;r[3]=0x7fbf
+        result=explore(self.module,self.app,name='pcnt_con_ldst_rmw',handoff=self.handoff(),
+            hardware=wb,diagnostics={'entry_pc':0x60c66b4,'initial_sp':STACK_TOP,
+                                     'initial_gprs':r},budget=4)
+        self.assertEqual(result['completed_steps'],4)
+        self.assertEqual(wb.report()['p33_canary_projection']['stores'],
+                         {'0xf2c124':{'values':['0x7fff'],'writes':1}})
+        # ④DVFS 域 0x60c5958 `st.w.modimm [0xf2c044]=0` 整字关断:值记录。
+        dvfs=BR28Model(p33_canary_projection=True)
+        r=[0]*16;r[1]=0xf2c044
+        result=explore(self.module,self.app,name='vlvd_dvfs_off_store',handoff=self.handoff(),
+            hardware=dvfs,diagnostics={'entry_pc':0x60c5958,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(dvfs.report()['p33_canary_projection']['stores'],
+                         {'0xf2c044':{'values':['0x0'],'writes':1}})
+        # ⑤首次读之外的一切读回严格停(写后/重复/未覆盖),fixture 校验拒绝
+        # 非法地址与「投影关却带 fixture」;RMW 之后同样视作「写过」。
+        strict=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c044:0})
+        self.assertEqual(strict.read(0xf2c044),0)
+        self.assertRaisesRegex(Blocked,'canary_repeat_read_not_modeled',strict.read,0xf2c044)
+        strict.write(0xf2c044,0)
+        self.assertRaisesRegex(Blocked,'canary_readback_after_write_not_modeled',
+                               strict.p33_canary.read,0xf2c044)
+        strict2=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c124:0})
+        strict2.p33_canary.rmw(0xf2c124,'or',0x40)
+        self.assertRaisesRegex(Blocked,'canary_readback_after_write_not_modeled',
+                               strict2.p33_canary.read,0xf2c124)
+        # 整字覆盖写使旧位记录失效:rmw |=0x40 → st.w 0 → 再 rmw |=1 的
+        # 位知识从全字覆盖后重新累计(known_mask/value 只含后一次 RMW),
+        # 不把跨覆盖的位当成有效累计状态;writes 是历史访问计数(RMW 共 2 次)。
+        mixed=BR28Model(p33_canary_projection=True)
+        mixed.p33_canary.rmw(0xf2c044,'or',0x40)
+        mixed.write(0xf2c044,0)
+        mixed.p33_canary.rmw(0xf2c044,'or',0x1)
+        self.assertEqual(mixed.report()['p33_canary_projection']['rmw_records'],
+                         {'0xf2c044':{'known_mask':'0x1','known_value':'0x1','writes':2}})
+        with self.assertRaisesRegex(ValueError,'require the canary projection'):
+            BR28Model(p33_canary_first_read_words={0xf2c044:0})
+        with self.assertRaisesRegex(ValueError,'invalid P33 canary first-read fixture'):
+            BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c244:0})
+        # ⑤b 其余两个观测形状的真实分发:0x60c643e `rmw.and.r [0xf2c044]&=
+        # r0(0x7FB)`(0x12cc56 后沿)与 0x60c6766 `rmw.and.modimm [r8]&=0x1FE`
+        #(DVFS 0x60c6750 族)——and.r/and.modimm 都落位记录。
+        andr=BR28Model(p33_canary_projection=True)
+        r=[0]*16;r[2]=0xf2c044;r[0]=0x7fb
+        result=explore(self.module,self.app,name='vlvd_and_r_dispatch',handoff=self.handoff(),
+            hardware=andr,diagnostics={'entry_pc':0x60c643e,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(andr.report()['p33_canary_projection']['rmw_records'],
+                         {'0xf2c044':{'known_mask':'0xfffff804','known_value':'0x0','writes':1}})
+        andm=BR28Model(p33_canary_projection=True)
+        r=[0]*16;r[8]=0xf2c044
+        result=explore(self.module,self.app,name='vlvd_and_modimm_dispatch',handoff=self.handoff(),
+            hardware=andm,diagnostics={'entry_pc':0x60c6766,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(andm.report()['p33_canary_projection']['rmw_records'],
+                         {'0xf2c044':{'known_mask':'0xfffffe01','known_value':'0x0','writes':1}})
+        # ⑥默认关:0xf2c124 的复合 RMW 读侧诚实停 unmapped_memory。
+        off=BR28Model()
+        r=[0]*16;r[1]=0xf2c124
+        result=explore(self.module,self.app,name='canary_off_stop',handoff=self.handoff(),
+            hardware=off,diagnostics={'entry_pc':0x6069238,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2c124')
+
     def test_mem_pwr_con_rmw_and_dead_read_shapes(self):
         # 0x606772a li r8=0xf2a62c → 0x6067730 `[r8+0] |= r0`(rmw.or.r)。boot
         # 路径 b[0x129D1C]=0 → operand=r0=0。strict(无投影)停在 0xf2a62c 未建模
