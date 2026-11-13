@@ -59,6 +59,41 @@ VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
 # 0 + 读回=当前寄存器值(后写值)」建模(clock_voltage_configuration 变体先例),
 # 这两个寄存器按同一先例、同一显式合成初始字 0 处理,不臆造硅模拟状态。
 P33_ANALOG_CONFIG=(0xf2c248,0xf2c254)
+# 路 BV(sim-tailproj,2026-11-13):app_core 尾段 W1[0](S10 第一个函数
+# 0x6012e3e..0x6013196)与 mode 切换函数 0x6068152 的 P33 模拟配置族,按
+# AM 容器(P33_ANALOG_CONFIG/P3_ANA_CON4 联动 seed)同一先例一次打包的
+# opt-in 扩展面。逐地址证据(指令锚定反汇编+全 app/ROM 字面量扫描,复核
+# 修正路 BO 证据包 docs/appcore-tail-sfr-semantics.md 的两处基址误记,见
+# 各类注释与该文档 §8 修正清单):
+# - P3_ANA_CON0/7/8/9/10(=P33_ACCESS(0x90)/(0x97..0x9a),p33_sfr.h L130/
+#   L137-140 有名、纯地址宏):mode 切换函数 0x6068152 内 r2=0xf2c240
+#   (0x60681ce li)对 [r2+0x1c/0x20/0x24/0x28/0x0] 做显式 ld.w 读→掩码→
+#   st.w 写回的配置 RMW(0x60681d4..0x606828a,读值真实参与写回值,与
+#   P3_ANA_CON2/CON5/CON4 消费形状同族)+ 复合 and RMW(0x60681f2/0x60681fa
+#   [r2+0x1c]&=0x7FB/&=0x3FD、0x6068254/0x6068270 [r2+0x28]&=0xFF7F/&=r4);
+#   0x606827e..0x606828a 对 CON0 的 &0x3FD3|8(pair 尾 st.w)。条件侧
+#   0x6067e16/0x6067e34 同族(ld/st &0x7FB|4 + rmw.and.r &=0xFF7)。BO 的
+#   CON0/7/8/9/10 归属核对成立。
+# - P3_CHG_CON0/CON1(=P33_ACCESS(0x1a)/(0x1b),p33_sfr.h L39/L40 有名):
+#   **修正 BO「W1[0] 对 0xfd5f08/0C/10/14/20 五个主路径 RMW」**——0x6012e9c
+#   的 li 字面量是 **0xfd5708**(0x57 组 PORTP,GPIO_BASES 已覆盖,固件
+#   一位 RMW 走既有 gpio 投影),0xfd5f00 族全 app/ROM 字面量 0 处、基址
+#   算术亦无命中,不建模。W1[0] 的 P33 面是 r5=0xf2c064(0x6012e6e li):
+#   [r5+4]=P3_CHG_CON0 的复合 and RMW 0x6012e74(&=0x1FE)/0x6012e7c
+#   (&=0x3FD)+ 0x60130b0/0x60130b8 显式 ld/st RMW + 0x60130fc 等整字写,
+#   [r5+8]=P3_CHG_CON1 的 0x6013094/0x601309e/0x60130ea..0x601310e 显式
+#   ld/st RMW;独立充电函数 0x6004298 同族(0x600429e [0xf2c068]&=0x1FE +
+#   0x60042b2 [r5+8]|=0x8)。
+# - P3_ANA_READ(=P33_ACCESS(0x19),p33_sfr.h L38):W1[0] 轮询读 0x6012f26
+#   (≤1000 轮延时循环)与位测试 0x60131c/0x6013122(bit1/bit2 门控任务创建
+#   参数);app 另有 4 处 li(0x601201a/0x6012b58/0x6033f38/0x6035f54)。
+#   模拟量读(live analog input),无可推导来源——读回显式钉住
+#   (p3_ana_read_not_modeled,RES 红线同款),绝不发明 0/满值 fixture。
+P33_ANA_CON_TAIL=(0xf2c240,0xf2c25c,0xf2c260,0xf2c264,0xf2c268)
+P3_ANA_READ=0xf2c064
+P3_CHG_CON0=0xf2c068
+P3_CHG_CON1=0xf2c06c
+P33_TAIL_ANALOG_CONFIG=P33_ANA_CON_TAIL+(P3_CHG_CON0,P3_CHG_CON1)
 PLL1_CON3=0xfd470c
 CACHE_STATUS_REGISTERS=(0xff0500,0xffe400,0xffec00)
 ICU_BASES=(0xffe400,0xffec00)
@@ -1617,6 +1652,155 @@ class P3LsRegisters:
                               'not modeled at all')}
 
 
+class P33CanaryWatchRegisters:
+    """金丝雀树/低功耗域 P3_VLVD_CON + P3_PCNT_CON 的「仅记录写访问」+ 首次读具名 fixture
+    (opt-in,路 BV/sim-tailproj;BB 的 P3_AWKUP 先例同模式)。
+
+    证据(2026-11-13 路 BV 指令锚定反汇编钉死;**修正路 BO 证据包 §N4 的地址
+    归属**——BO 把 0x12cc56/0x12ced4/da 记成 P3_WKUP_CPND1/P3_ANA_CON1,实际
+    基址是 0xf2c128/0xf2c124,BO 两侧各 +0x120 误记;tail-map 的原记录
+    「0x12cc56 读 0xf2c044」反而成立,详见 docs/appcore-tail-sfr-semantics.md §8):
+    - RAM 代码 flash 母本 0x60c6418(=运行态 0x12cc40,S11 条件任务创建失败分支)
+      内 0x60c641a `li r0=0xf2c128`、0x60c6420 pair `r2=r0-0xE4` → **r2=0xf2c044**:
+      0x60c6424 `ld.w r1=[r0]`(读 P3_PCNT_SET0 0xf2c128,已归复位配置掩码族)、
+      r1&=0xFF7F、0x60c642e `ld.w r3=[r2]`(**读 P3_VLVD_CON,消费**:r3=r3<<5&0x80
+      即 bit2→bit7 折进 PCNT_SET0 写值)、pair 尾 0x60c643c st.w [0xf2c128]=r1、
+      0x60c643e `rmw.and.r [r2]&=0x7FB`(复合清位)。
+    - RAM 代码 flash 母本 0x60c6690(=运行态 0x12ceb8,K1/K2 cleanup 邻域):
+      0x60c6692 `li r1=0xf2c124`、0x60c6698 pair `r2=r1+0x40`=0xf2c164:
+      st.w 0xFF → [0xf2c160]/[0xf2c164](P3_WKUP_CPND0/1,已归复位历史投影
+      WAKE_CLEAR_TARGETS)与 [0xf2c19c]/[0xf2c1a0](P3_AWKUP P/N_CPND,路 BB
+      面);0x60c66a2 pair `r0=r1-0xE0`=**0xf2c044**:0x60c66ac ld.w 读→&0x7FBF
+      |0x40→st.w 写回(**显式 ld/st 配置 RMW,读值参与写回**);0x60c66b4 对
+      **[r1]=0xf2c124=P3_PCNT_CON** 同形 ld/st RMW(&0x7FBF|0x40)。
+    - 低功耗 DVFS RAM 母本:0x60c5952 `li r1=0xf2c044` + 0x60c5958
+      `st.w.modimm [r1]=0`(VLVD 整字关断);0x60c6750 `li r8=0xf2c044` +
+      0x60c6766 `rmw.and.modimm &=0x1FE`(同函数 [r8+0x14]=0xf2c058 P3_ANA_KEEP
+      &=0xFF00 等,不在本投影面)。
+    - P3_PCNT_CON 另一写者:AWKUP 中断分发函数 0x60691f4 内 0x6069232
+      `li r1=0xf2c124` + 0x6069238 `rmw.or.modimm [r1]|=0x40`(纯复合置位,
+      不经显式读;本前缀 AWKUP IRQ 从未交付,不在启动前缀)。
+    - cleanup 0x60682a4 内 0x60682c4 **读回消费**(`li r1=0xf2c044; r1=[r1];
+      r1<<3&8` 折进 [0xf2c0e0]=P3_SFLAG0 写值;另一源 [0xfd6014]=IOMAP_CON0
+      >>14&4 已由 port 投影给已知 0——**修正 BO「[0xfd5f34]>>14&4」**:0x60682bc
+      li r4=0xfd6000 → 0x60682c2 读 [r4+0x14]=0xfd6014,0xfd5f34 全 app/ROM
+      零引用)。
+    - SDK p33_sfr.h L30/L78 有名(P3_VLVD_CON=P33_ACCESS(0x11)、P3_PCNT_CON=
+      P33_ACCESS(0x49)),纯地址宏、无 __RW/__RO/__WO 标注、无字段位定义。
+    - 健康主路径不可达(S11 ret==0 条件 / K1/K2 金丝雀 / 低功耗 DVFS 域),
+      维持 watch-only:投影只为「真到达时按形状处理」预置,不改变任何既有
+      前沿(默认关)。
+    - 读回语义:P3_VLVD_CON 的读是**真实消费**(bit0/bit2 折进其他寄存器写值),
+      复位值无任何证据——按 BB 的 P3_AWKUP_P_IE 先例,每寄存器单独经显式
+      fixture(p33_canary_first_read_words)覆盖「首次读返回字」,未覆盖/
+      写过后/重复读一律严格停;P3_PCNT_CON 的 0x60c66b4 ld/st RMW 读值参与
+      写回,同一首次读 fixture 语义服务。写侧「仅记录写访问」:整字写按值
+      记录(st.w.modimm/st.w 写回形状),复合 RMW(or.modimm 置位/and.r/
+      and.modimm 清位,全部有观测形状)按 PartialWord 位记录(不经读回)。
+    """
+
+    VLVD_CON=0xf2c044
+    PCNT_CON=0xf2c124
+    ADDRESSES=(VLVD_CON,PCNT_CON)
+
+    def __init__(self,first_read_words=None):
+        self.first_read_words=dict(first_read_words or {})
+        self.stores={address:{'values':[],'writes':0} for address in self.ADDRESSES}
+        self.bits={address:PartialWord() for address in self.ADDRESSES}
+        self.rmw_writes={address:0 for address in self.ADDRESSES}
+        self.read_state={address:{'reads':0,'written':False,'fixture_reads':0}
+                         for address in self.ADDRESSES}
+
+    def handles(self,address):
+        return address in self.read_state
+
+    def write(self,address,value):
+        """整字写记录(DVFS st.w.modimm 关断 + 消费型写回 st.w 形状)。
+
+        整字覆盖写使此前该地址的全部位记录失效(旧 PartialWord 的部分知识
+        已被全字覆盖取代),位记录归零重新累计;stores 序列本身保留完整历史。
+        """
+        if address not in self.stores:
+            raise Blocked('canary_word_store_not_modeled',address=hex(address),value=hex(value))
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:
+            raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.bits[address]=PartialWord()
+        self.read_state[address]['written']=True
+
+    def rmw(self,address,kind,operand):
+        """复合 RMW 位记录(置/清位,不经读回;仅接受有观测形状的
+        or.modimm / and.r / and.modimm 形式,由 probe_boot 分发;
+        无 and.nmodimm 观测,不在白名单)。"""
+        if kind not in ('or','and'):raise ValueError("RMW kind must be 'or' or 'and'")
+        if address not in self.bits:
+            raise Blocked('canary_rmw_not_modeled',address=hex(address),operation=kind)
+        self.bits[address].apply(kind,operand&0xffffffff)
+        self.rmw_writes[address]+=1
+        self.read_state[address]['written']=True
+
+    def read(self,address):
+        state=self.read_state[address]
+        if state['written']:
+            raise Blocked('canary_readback_after_write_not_modeled',address=hex(address))
+        if state['reads']:
+            raise Blocked('canary_repeat_read_not_modeled',address=hex(address))
+        if address not in self.first_read_words:
+            raise Blocked('canary_first_read_fixture_absent',address=hex(address))
+        state['reads']+=1;state['fixture_reads']+=1
+        return self.first_read_words[address]
+
+    def report(self):
+        stores={hex(a):{'values':[hex(v) for v in e['values'][-16:]],'writes':e['writes']}
+                for a,e in sorted(self.stores.items()) if e['writes']}
+        rmw={hex(a):{'known_mask':hex(self.bits[a].known),'known_value':hex(self.bits[a].value),
+                     'writes':self.rmw_writes[a]}
+             for a in self.ADDRESSES if self.rmw_writes[a]}
+        fixture={hex(a):{'word':hex(w),'reads_served':self.read_state[a]['fixture_reads']}
+                 for a,w in sorted(self.first_read_words.items())}
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':sum(e['writes'] for e in self.stores.values()),
+                'stores':stores,'rmw_records':rmw,
+                'sdk_naming':('P3_VLVD_CON = P33_ACCESS(0x11) (p33_sfr.h L30), P3_PCNT_CON = '
+                              'P33_ACCESS(0x49) (p33_sfr.h L78); address macros only, no '
+                              '__RW/__RO/__WO, no bit fields'),
+                'route_bo_correction':('BO §N4 recorded 0x12cc56/0x12ced4/da against '
+                                       'P3_WKUP_CPND1/P3_ANA_CON1 by misreading the base '
+                                       'registers as 0xf2c248/0xf2c244; the actual li '
+                                       'literals are 0xf2c128 (P3_PCNT_SET0) and 0xf2c124 '
+                                       '(P3_PCNT_CON), and the folded bit source is '
+                                       'P3_VLVD_CON 0xf2c044 — the tail-map original '
+                                       'reading stands (see docs/appcore-tail-sfr-semantics.md §8)'),
+                'first_read_fixture':fixture or None,
+                'fixture_is_synthetic_assumption':True,
+                'fixture_provenance':('named opt-in fixture per register; NO reset-value '
+                                      'evidence (the canary tree is unreachable on the healthy '
+                                      'path, so no runtime observation exists); first read only, '
+                                      'never extended to repeat/post-write reads'),
+                'first_read_semantics':('the fixture answers the FIRST read of a register only '
+                                        '(never written, never read before); any repeat read and '
+                                        'any post-write read strictly stops; registers without a '
+                                        'fixture entry strictly stop; no ordinary storage-style '
+                                        'readback is assumed'),
+                'records_write_accesses_only':True,
+                'readback_not_modeled_except_first_read_fixture':True,
+                'observed_shapes':('0x60c6418 (=runtime 0x12cc40): ld.w [0xf2c044] at 0x60c642e '
+                                   'consumed (bit2<<5&0x80 folded into the P3_PCNT_SET0 write '
+                                   'value), rmw.and.r [0xf2c044]&=0x7FB at 0x60c643e; '
+                                   '0x60c6690 (=runtime 0x12ceb8): ld/st RMW &0x7FBF|0x40 on '
+                                   '0xf2c044 (0x60c66ac..b2) and 0xf2c124 (0x60c66b4..ba), '
+                                   'st.w 0xFF wake clears to 0xf2c160/0xf2c164 (reset-history '
+                                   'projection) and 0xf2c19c/0xf2c1a0 (P3_AWKUP projection); '
+                                   'DVFS 0x60c5958 st.w.modimm [0xf2c044]=0 and 0x60c6766 '
+                                   'rmw.and.modimm [0xf2c044]&=0x1FE; AWKUP dispatch 0x6069238 '
+                                   'rmw.or.modimm [0xf2c124]|=0x40; cleanup 0x60682c4 consumes '
+                                   'ld.w [0xf2c044] bit0<<3&8 into the P3_SFLAG0 write value'),
+                'assumption':('write accesses are recorded only (a simulator capability, not a '
+                              'WO property claim); the canary tree stays watch-only — healthy-path '
+                              'unreachability is the standing judgement (tail-map §4), and reaching '
+                              '0x601249c/0x60124ae remains a wrong-direction signal')}
+
+
 class Fd31AdcConRegisters:
     """0xfd3100 = JL_ADC->CON 的 write-only 整字记录(opt-in,路 BG/sim-pwrdomain)。
 
@@ -2302,6 +2486,8 @@ class BR28Model:
                  p33_awkup_projection=False,p33_awkup_first_read_words=None,
                  p3_ls_projection=False,p11_syscon1_mask_sets=False,
                  fd31_adc_con_projection=False,fd31_adc_con_readback=False,
+                 p33_analog_tail_projection=False,
+                 p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -2513,6 +2699,30 @@ class BR28Model:
             raise ValueError('the fd31 ADC CON readback projection requires the fd31 ADC CON projection')
         self.fd31_adc_con=Fd31AdcConRegisters(con_readback_projection=fd31_adc_con_readback) \
                           if fd31_adc_con_projection else None
+        # p33_analog_tail(opt-in,路 BV/sim-tailproj):W1[0]/mode 切换函数的
+        # P33 模拟配置族 AM 容器一次扩展——P3_ANA_CON0/7/8/9/10(0xf2c240/
+        # 0xf2c25c..268)+ P3_CHG_CON0/CON1(0xf2c068/0xf2c06c)按路 AM
+        # P33_ANALOG_CONFIG 同款语义(显式合成初始字 0 + 读回=当前寄存器值;
+        # 整字写/显式 ld/st 配置 RMW/复合 RMW 全走既有通用寄存器路径,机器侧
+        # 零新分发)。P3_ANA_READ(0xf2c064)是模拟量读(live input,轮询+位
+        # 测试消费),读回显式钉住(p3_ana_read_not_modeled,RES 红线同款)、
+        # 写显式拒绝——不并进容器 seed、不发明 0/满值。默认关:全部地址保持
+        # unmapped,legacy 报告逐字节不变。证据与 BO 修正(0xfd5f 族不可复现、
+        # W1[0] 的 RMW 块实为 0xfd5708 PORTP GPIO 面)见 P33_TAIL_ANALOG_CONFIG
+        # 常量注释与 docs/appcore-tail-sfr-semantics.md §8。
+        self.p33_analog_tail_projection=p33_analog_tail_projection
+        # p33_canary(opt-in,路 BV):金丝雀树/低功耗域 P3_VLVD_CON(0xf2c044)+
+        # P3_PCNT_CON(0xf2c124)的「仅记录写访问」+ 单寄存器首次读具名 fixture
+        # (BB 的 P3_AWKUP 先例同模式;修正 BO §N4 的 +0x120 基址误记)。健康
+        # 主路径不可达,维持 watch-only;默认关,legacy 不变。
+        if p33_canary_first_read_words:
+            if not p33_canary_projection:
+                raise ValueError('P33 canary first-read fixtures require the canary projection')
+            if any(a not in P33CanaryWatchRegisters.ADDRESSES or not isinstance(v,int)
+                   or not 0<=v<=0xffffffff for a,v in p33_canary_first_read_words.items()):
+                raise ValueError('invalid P33 canary first-read fixture')
+        self.p33_canary=(P33CanaryWatchRegisters(p33_canary_first_read_words)
+                         if p33_canary_projection else None)
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -2596,6 +2806,17 @@ class BR28Model:
         if fd31_adc_con_readback:
             self.additional_configuration.add(Fd31AdcConRegisters.ANA_CON4)
             self.registers[Fd31AdcConRegisters.ANA_CON4]=0
+        # 路 BV(sim-tailproj):P33 模拟配置族尾段扩展(P3_ANA_CON0/7/8/9/10 +
+        # P3_CHG_CON0/CON1)按路 AM 同款「显式合成初始字 0」seed 进 registers,
+        # 并入 additional_configuration(整字写/显式 ld/st RMW/复合 RMW 全走既有
+        # 通用路径,机器侧零新分发)。P3_ANA_READ(0xf2c064)不 seed——它不进
+        # 容器而是显式钉住(见 read()/write());不并进 P33_ANALOG_CONFIG 常量,
+        # 那会改变「p33_analog_config 开而本开关关」世界的报告形状(路 BN 先例)。
+        # 开关关时七个地址保持 unmapped(W1[0] 前沿形状不变),legacy 报告不变。
+        if p33_analog_tail_projection:
+            self.additional_configuration.update(P33_TAIL_ANALOG_CONFIG)
+            for address in P33_TAIL_ANALOG_CONFIG:
+                self.registers[address]=0
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
             if address not in (CLOCK0,CLOCK0+4,CLOCK0+8,PLL0) and address not in self.additional_configuration:
@@ -2640,6 +2861,8 @@ class BR28Model:
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
                                                 or self.fd31_adc_con.handles_res(address))) or
+            (self.p33_analog_tail_projection and address==P3_ANA_READ) or
+            (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -2841,6 +3064,19 @@ class BR28Model:
                                               or self.fd31_adc_con.handles_res(address)):
             self.counts['reads']+=1
             return self.fd31_adc_con.read(address)
+        # P3_ANA_READ(0xf2c064,路 BV):W1[0] 轮询(0x6012f26 ≤1000 轮)与位
+        # 测试(0x60131c/0x6013122 bit1/bit2 门控任务创建参数)的真实读回消费,
+        # 模拟量无可推导来源——显式钉住(RES 红线同款;显式 kind 优先于泛
+        # unmapped,便于诊断),绝不发明 0/满值 fixture。其余七个容器地址走
+        # 下面的通用 registers 路径(AM 语义:合成初始字 0/最后写值)。
+        if self.p33_analog_tail_projection and address==P3_ANA_READ:
+            raise Blocked('p3_ana_read_not_modeled',address=hex(address))
+        # 金丝雀树/低功耗域(路 BV):P3_VLVD_CON/P3_PCNT_CON 只有显式 fixture
+        # 覆盖的首次读返回具名字,其余读(未覆盖/写后/重复)一律严格停
+        # (路 BB 同款;显式 kind 便于诊断)。
+        if self.p33_canary is not None and self.p33_canary.handles(address):
+            self.counts['reads']+=1
+            return self.p33_canary.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -2951,6 +3187,15 @@ class BR28Model:
             # fd31 ADC CON(路 BG):st.w.modimm/st.w 全字覆盖写(旧值无关),
             # write-only 记录;值序列 0x20000/0x20040/0x40 全真实指令计算。
             self.fd31_adc_con.write(address,value)
+        elif self.p33_analog_tail_projection and address==P3_ANA_READ:
+            # P3_ANA_READ(0xf2c064,路 BV):固件零写观测(全部 5 处 li 都是读
+            # 基址),模拟量读值——任何写形状一律显式拒绝(RES 写拒绝同款,
+            # kind 优先于泛路径)。
+            raise Blocked('p3_ana_read_write_not_modeled',address=hex(address),value=hex(value))
+        elif self.p33_canary is not None and self.p33_canary.handles(address):
+            # 金丝雀树/低功耗域(路 BV):DVFS st.w.modimm 关断与消费型写回
+            # st.w 的整字记录(P_IE 写回先例同款);其余形状由投影拒绝。
+            self.p33_canary.write(address,value)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -3185,6 +3430,26 @@ class BR28Model:
                               {'known_value':hex(bits.value),'known_mask':hex(bits.known)}),
                            'projection':'P3_AWKUP write-access bit record; no readback, no CPND effect modeled'})
 
+    def handles_p33_canary_rmw(self,address):
+        return self.p33_canary is not None and self.p33_canary.handles(address)
+
+    def p33_canary_rmw(self,address,kind,operand):
+        """金丝雀树/低功耗域 P3_VLVD_CON/P3_PCNT_CON 位 RMW 的 opt-in 拦截
+        (置/清位,不经读回;路 BV,P3_AWKUP 位记录同族)。
+
+        只按位记录(PartialWord),不臆造读回值(读回只认首次读具名 fixture,
+        经 read() 路径);观测形状=rmw.and.r(0x60c643e &=0x7FB)、
+        rmw.and.modimm(0x60c6766 &=0x1FE)、rmw.or.modimm(0x6069238 |=0x40),
+        形状外由 probe_boot 分发拒绝(canary_rmw_form_not_modeled)。
+        """
+        if not self.handles_p33_canary_rmw(address):raise ValueError('not a modeled P33 canary register')
+        self.p33_canary.rmw(address,kind,operand);self.counts['reads']+=1
+        bits=self.p33_canary.bits[address]
+        self.record_write({'address':hex(address),'operation':kind,'operand':hex(operand&0xffffffff),
+                           'known_value':hex(bits.value),'known_mask':hex(bits.known),
+                           'projection':'P33 canary write-access bit record; no readback, '
+                                       'no VLVD/PCNT electrical effect modeled'})
+
     def p11_lpwr_rmw(self,address,instruction_id,operand):
         """主核 PWR_CON |=0x20 请求 RMW 的 opt-in 拦截。
 
@@ -3400,6 +3665,7 @@ class BR28Model:
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()
+        if self.p33_canary is not None:result['p33_canary_projection']=self.p33_canary.report()
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
@@ -3471,6 +3737,23 @@ class BR28Model:
             result['assumptions']['voltage_configuration_projection']='five scoped P33/CMNG configuration registers; analog voltage/ramp/settling and RAM wait-state timing not modeled'
         if self.p33_analog_config_projection:
             result['assumptions']['p33_analog_config_projection']='two P33 analog-control configuration registers (P3_ANA_CON2/P3_ANA_CON5); explicit synthetic initial word 0 (not an inferred analog state), readback=current register value; analog/voltage behavior not modeled'
+        if self.p33_analog_tail_projection:
+            # 路 BV:W1[0]/mode 切换 P33 模拟配置族尾段扩展(P3_ANA_CON0/7/8/9/10
+            # + P3_CHG_CON0/CON1,AM 容器同款语义)+ P3_ANA_READ 显式钉住。
+            result['assumptions']['p33_analog_tail_projection']=(
+                'seven P33 analog/charger configuration registers on the app-core tail '
+                '(P3_ANA_CON0/7/8/9/10 = 0xf2c240/0xf2c25c..268 and P3_CHG_CON0/CON1 = '
+                '0xf2c068/0xf2c06c); explicit synthetic initial word 0 (not an inferred '
+                'analog state), readback=current register value (route-AM container '
+                'precedent); the whole family is read-modify-written by the real '
+                'mode-switch function 0x6068152 and the W1[0] function 0x6012e3e '
+                'with reads participating in '
+                'the written-back values; P3_ANA_READ 0xf2c064 is a live analog input '
+                'polled/bit-tested by W1[0] and stays strictly blocked '
+                '(p3_ana_read_not_modeled) — no 0/full-scale fixture is ever invented; '
+                'route-BO corrections: the W1[0] RMW block is the 0xfd5708 PORTP GPIO '
+                'face (already modeled by the GPIO projection), the 0xfd5f word block '
+                'has zero app+ROM references and is NOT modeled')
         if self.pll1_configuration_projection:result['assumptions']['pll1_con3_configuration_projection']='RW config only; analog PLL1 not modeled'
         if self.cache_status_probe:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}

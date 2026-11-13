@@ -1255,6 +1255,21 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         hardware.p33_awkup_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['p33_awkup_bit_rmw']+=1
                         return
+                    if hardware.handles_p33_canary_rmw(address):
+                        # 金丝雀树/低功耗域 P3_VLVD_CON/P3_PCNT_CON(路 BV):
+                        # 0x60c643e `rmw.and.r [0xf2c044]&=0x7FB`、0x60c6766
+                        # `rmw.and.modimm [0xf2c044]&=0x1FE` 与 AWKUP 分发
+                        # 0x6069238 `rmw.or.modimm [0xf2c124]|=0x40`——按位记录
+                        # (不经读回,mem_pwr_con/P3_AWKUP 位记录同族);显式读回
+                        # 只认首次读具名 fixture(read() 路径),其他形式由分发
+                        # 拒绝(canary_rmw_form_not_modeled)。
+                        if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        elif insn.id=='rmw.and.r':kind='and';operand=self.R[op['s']]
+                        elif insn.id=='rmw.and.modimm':kind='and';operand=op['m']
+                        else:raise Blocked('canary_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.p33_canary_rmw(address,kind,operand)
+                        self.finish_exact(self.pc+size);adapters['p33_canary_bit_rmw']+=1
+                        return
                     if hardware.handles_gpio(address):
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
                         elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']

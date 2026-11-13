@@ -262,3 +262,53 @@ tail-map §5 说音频簇「SDK 无名」——**可修正**：0xfe051c=JL_AUDIO
 - br28.h 是参考 SDK 头（路 AC/BG 同一来源），非精确 QCY 固件源；`__WO CHIP_ID`
   与实读的矛盾以实读为准，头标注仅参考。
 - 步数/触达预测沿 tail-map 限制（CON/PRD 再写会移动硬期限）不变。
+
+## 8. 路 BV 复核修正（2026-11-13，sim-tailproj，逐条指令锚定重解）
+
+本节是路 BV 实施前对本文（路 BO 证据包）的逐地址复核结果。方法：与探针同 commit 的
+钉死 pi32v2 codec 对每个引用点从 li 基址正向重解（含并行对旧值方向），外加全 app+ROM
+字面量扫描。**本文三处基址/归属记录有误，修正如下（原文保留，以本节为准）**：
+
+1. **§2-N2 的「W1[0] 主路径 0xfd5f08/0C/10/14/20 五个 RMW」不存在**。0x6012e9c 的
+   li 字面量是 **0xfd5708**（0x57 组 PORTP，`GPIO_BASES` 已含 0xfd5700 基址）：
+   五个 RMW 实为 `[0xfd5710]&=~1`、`[0xfd5714]|=1`、`[0xfd5708]|=1`、`[0xfd570c]|=1`、
+   `[0xfd5720]|=1`（相对偏移 +8/+12/+0/+4/+24 与原文一致，基址差 0x800）——全部落在
+   既有 GPIO 投影域（一位 RMW 位记录），**无需新投影**。0xfd5f00 族全 app/ROM 字面量
+   0 处、原文所记两个站点（W1[0] 与条件树 0x6068042..56）正向重解均不落 0xfd5fxx：
+   **不建模**。条件侧原文记的 0x6068042..56 两访问实为
+   **0xfd0018**（|=1）与 **0xfd001c**（bits8-9|=3，ld/st RMW）——JL 时钟族（CLOCK0
+   邻域），归路 BH 证据先行，不在路 BV 打包内。
+2. **§2-N3 的「W1[0] 首个新边界 0x60685ae WKUP_SRC 族（0xf2c2a0 &=~4 + 无名
+   0xf2c2bc/c0 |=4）」误记**。0x60685b6 的 li 字面量是 **0xf2c180**（P3_AWKUP_EN）：
+   `[0xf2c19c]（P_CPND）|=4`、`[0xf2c1a0]（N_CPND）|=4`、`[0xf2c180]（EN）&=~4`——
+   就是路 BB `P33AwkupRegisters` 注释里已钉死的「独立清除助手 0x60685ae」，投影已
+   覆盖。0xf2c2bc 全 app/ROM 零引用；0xf2c2c0=P3_EFUSE_CON0（既有 EFUSE 投影）仅
+   0x6034fb6 一处字面量（debug/emu 域）。**WKUP_SRC 新面不存在，不建模**。
+   W1[0] 真正的首个新边界是 **0x6012e6e `li r5=0xf2c064` 之后的
+   0x6012e74 `rmw.and.modimm [0xf2c068]（P3_CHG_CON0）&=0x1FE`**
+   （+0x6012e7c `&=0x3FD`）；同函数 0x60130b0..0x601310e 还有 CHG_CON0/CON1
+   （0xf2c068/0xf2c06c）的显式 ld/st RMW 与整字写。P3_ANA_READ（0xf2c064）被
+   0x6012f26 轮询（≤1000 轮延时循环）与 0x60131c/0x6013122 位测试（bit1/bit2 门控
+   任务创建参数）真实消费——模拟量读，读回钉住（`p3_ana_read_not_modeled`，
+   RES 红线同款），不发明 fixture。
+3. **§2-N4 的金丝雀树「P3_WKUP_CPND1/P3_ANA_CON1」归属是本包自己的 +0x120 误记**
+   （0x60c641a 的 li 是 **0xf2c128**（P3_PCNT_SET0）而非 0xf2c248；0x60c6692 的 li
+   是 **0xf2c124**（P3_PCNT_CON）而非 0xf2c244）。tail-map 的原记录反而成立：
+   0x12cc56（flash 0x60c642e）读 **P3_VLVD_CON（0xf2c044）**（bit2<<5&0x80 折进
+   P3_PCNT_SET0 写值）+ 0x60c643e `[0xf2c044]&=0x7FB`；0x12ced4/da（flash
+   0x60c66ac/b4）对 **0xf2c044 与 0xf2c124** 做 `&0x7FBF|0x40` ld/st RMW；cleanup
+   0x60682c4 读 [0xf2c044] bit0<<3&8 折进 P3_SFLAG0（另一源是
+   **[0xfd6014]=IOMAP_CON0**>>14&4——修正本文「[0xfd5f34]>>14&4」，0xfd5f34 全
+   app/ROM 零引用）。P3_PCNT_CON 另有一处复合置位：AWKUP 中断分发 0x6069238
+   `rmw.or.modimm [0xf2c124]|=0x40`。P3_ANA_CON1（0xf2c244）字面量真实存在但唯一
+   （0x6068676，PVDD/idle-trim 域 0x6068662 内，off-path），本轮不建模。
+4. §5 表按上述修正后的落地决策：**AM 容器扩展 = P3_ANA_CON0/7/8/9/10 +
+   P3_CHG_CON0/CON1 一次打包**（opt-in `p33_analog_tail_projection`，路 AM 同款
+   「合成初始字 0+读回=当前值」；CON7..10/CON0 的访问形状——显式 ld/st RMW+复合
+   and RMW+pair 尾写回——本文 §2-N3 的记录经重解全部成立）；**金丝雀树两地址 =
+   P3_VLVD_CON+P3_PCNT_CON**（opt-in `p33_canary_projection` + 首次读具名 fixture
+   `p33_canary_first_read_words`，BB 的 P3_AWKUP 先例同模式；写侧整字/RMW 位记录，
+   watch-only 不变）；**0xfd5f 块/WKUP_SRC 新面/0xfd7504 维持不建模**（零引用）。
+   mode 切换函数 0x6068152 头部另有 0xfd0008/0c/10（JL 时钟族，tail-map 的
+   family-adjacent 桶）与 0xfd1920（WLA_CON8，OSC 族既有投影）——前者归下一路
+   （RES 闭合后场景推进时撞上），不在本包。
