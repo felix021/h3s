@@ -312,3 +312,118 @@ tail-map §5 说音频簇「SDK 无名」——**可修正**：0xfe051c=JL_AUDIO
    mode 切换函数 0x6068152 头部另有 0xfd0008/0c/10（JL 时钟族，tail-map 的
    family-adjacent 桶）与 0xfd1920（WLA_CON8，OSC 族既有投影）——前者归下一路
    （RES 闭合后场景推进时撞上），不在本包。
+
+## 9. 路 CB 复核（2026-11-13，sim-anaread，P3_ANA_READ 读侧三选一证据包）
+
+本节是路 CB（447,383 停点的三选一决策）的证据包。方法与前路同：钉死 pi32v2 codec
+逐指令重解（W1[0] 函数 0x6012e3e..0x6013196 全函数）、全 app+ROM 字面量扫描（私有
+ROM 本地、不进库）、pinned SDK commit `67328f4` 的头文件/驱动源/静态库 IR 交叉佐证
+（`SDK/cpu/br28/liba` 92 个 bitcode 对象全量抽取 llvm-dis 后常量扫描——0xf2c064 在
+全部驱动对象中零引用；charge 域源文件按 gitlab pinned commit 逐个拉取）。
+
+### 9.1 P3_ANA_READ 的 SDK 逐位语义（本路最强新证据）
+
+`SDK/interface/driver/cpu/br28/asm/power/p33/charge_hw.h`（charge 驱动头，pinned
+commit 67328f4）给出 P3_ANA_READ 的完整逐位定义：
+
+```c
+/************************P3_ANA_READ*****************************/
+#define CHARGE_FULL_FLAG_GET()  ((P33_CON_GET(P3_ANA_READ) & BIT(0)) ? 1: 0 )
+#define LVCMP_DET_GET()         ((P33_CON_GET(P3_ANA_READ) & BIT(1)) ? 1: 0 )
+#define LDO5V_DET_GET()         ((P33_CON_GET(P3_ANA_READ) & BIT(2)) ? 1: 0 )
+```
+
+`SDK/cpu/br28/charge/charge.c`（同一 commit）的注释钉死两个检测位的物理阈值：
+`if (LVCMP_DET_GET()) {  //ldoin > vbat`（L285）与
+`} else if (LDO5V_DET_GET() == 0) { //ldoin<拔出电压（0.6）`（L316）。即
+**bit1=1 ⟺ ldoin>vbat（充电输入电压超过电池电压的比较器）、bit2=1 ⟺ ldoin>0.6V
+（≈充电线/USB 在位检测）**——不是模拟量数值,是两位数字化比较器状态。
+
+另一处驱动级佐证:system.a `otg.c.o` 的 `fusb_detect`（USB 插入检测去抖）读
+P3_ANA_READ &4（LDO5V_DET 参与从机检测判定）——全 92 个驱动 bitcode 对象中唯一
+其他引用,live input 位用法,无「完成位」语义。
+
+### 9.2 QCY 消费者全图（反汇编逐指令钉死）
+
+全 app+ROM 对 0xf2c064 的 32 位字面量恰 **5 处**（ROM 零引用）,全部只消费
+bit1/bit2（单 bit 测试或 seextra 单位提取,绝无算术、绝无多 bit 字段）：
+
+| 站点 | 形状 | 语义 |
+|---|---|---|
+| 0x601201a | `ld;uextra(p:2,l:1);rts` | getter:返回 LDO5V_DET（=SDK `get_ldo5v_online_hw` 同形,charge.c L125） |
+| 0x6012b58 | `ld;uextra(p:1,l:1);rts` | getter:返回 LVCMP_DET（=SDK `get_lvcmp_det` 同形,charge.c L131） |
+| 0x6012e6e（W1[0]） | 两处轮询（下详） | 充电检测主路径 |
+| 0x6033f38（函数 0x6033F36 入口） | `ld;&2/&4` 采样计数 | **充电去抖任务**（W1[0] 检测成功时创建,见下）,对 bit1/bit2 分别累计 h[dev+124/126/128] 计数器,阈值取自 0x124BF0 配置区 |
+| 0x6035f54 | `ld;&4` | 事件域 handler 的 LDO5V_DET 单测 |
+
+bit0（CHARGE_FULL_FLAG）QCY app 零消费。P3_ANA_READ **零写者**（5 处 li 全是读
+基址;模型写拒绝保持）。
+
+### 9.3 W1[0] 的两个轮询循环（循环结构逐指令+分支目标核验）
+
+- **循环1（0x6012f14..0x6012f30）**：`r4=10; goto test; test: if(r4) { delay(1000µs);
+  r1=--r4; r0=P3_ANA_READ; r0=seextra(bit2); r4=r0&r1; goto test }`。执行语义=**首读
+  LDO5V_DET(bit2)=0 → 1 次 delay(1ms) 退出;=1 → 2 次 delay 退出**（AND 形状使计数在
+  第二轮归零,与源码 `do { udelay(1000); } while (LDO5V_DET_GET() & --cnt)` 一致）。
+  BV 轮记录的「≤1000 轮延时循环」是误读——1000 是 delay 的微秒参数,轮询预算是
+  r4=10 且实际至多 2 轮。
+- **循环2（0x601311c..0x6013136）**：`r6=0; do { if (P3_ANA_READ&2) goto 成功;
+  if (P3_ANA_READ&4) goto 成功; delay(1000µs); r6++ } while (r6<=19)`——20 轮、
+  每轮先测 LVCMP_DET(bit1)再测 LDO5V_DET(bit2)、任一置位即成功、全 0 则 1ms 延时。
+  **与 SDK `check_charge_state()`（charge.c L95-107）逐行同形**（20 轮、
+  `LVCMP_DET_GET() || LDO5V_DET_GET()`、`udelay(1000)`）——QCY 内联了同一驱动模板。
+  - 成功路径（0x6013150）：b[dev+628]=1;若 h[0x125BF8]==0 则
+    `0x6066C26(0, 0x6033F36, 2, 1)` 创建充电去抖任务并把句柄存 h[0x125BF8]。
+  - 超时路径（0x6013144）：b[0x125BF4]=2（失败码）,不创建任务。
+  - 公共尾（0x6013178）：b[dev+640]=1; call 0x601BB0; call 0x6068092(!r)。
+
+### 9.4 三选一决策：方案 (c) 具名常量 live-input fixture（codex 参谋 gpt-6-astra 只读评审采纳）
+
+- **(a) 投影不适用**：P3_ANA_READ 零写者,无 readback=末值可能;bit1/bit2 是 live
+  input 比较器状态,无「写后完成」语义（对照 BY 的 PND:SDK 驱动轮询 bit7+RES 有效性
+  钉死在 bit7;此处 SDK 驱动把它当外输入位消费）。
+- **(c) 成立**:消费者分支真实存在且可达（任务创建/失败码/计数器）;值域被 SDK 位语义
+  +物理阈值+场景锚约束。**场景锚=电池启动+无外部供电（ldoin≈0V）**——与路 BY 的
+  RES fixture 同一物理世界（电池在位供电 3780mV/标称 4.0V,充电输入引脚无输入;
+  两者相容且互补）。注意:**充电窗门 config 99 缺失被前置跳过与 ldoin 无关,不作为
+  证据**（codex 修正:那是软件执行路径,不是输入来源）。
+- **fixture 形状=常量**（codex 采纳）:轮询语义要求 41 次读（循环1 1 读+循环2 每轮
+  2 读×20）,首读 fixture 只会把边界挪到第二读;duration=本场景内持续不变的外部输入,
+  不建模插拔/去抖时序。
+- **三层标注**（codex 采纳）:derived_mask=0b110（只有 bit1/bit2 有推导链:
+  charge_hw.h 位语义+charge.c 阈值+无外部供电锚→两比较器读 0）;其余位（含 bit0
+  CHARGE_FULL_FLAG,app 零消费）显式填零非推导,非复位值声明;evidence_status=
+  derived-not-measured,真机 FD07 一次 0xf2c064 读可升级为 measured。
+- **检测器有效且稳定是显式假设**:W1[0] 在轮询前真实执行 L5V_CON0/1+CHG_CON0/1/
+  CHG_CON2 配置（含 CHARGE_DET_EN 使能位,0x103 写值）,但比较器输出时序/迟滞不建模。
+
+### 9.5 fixture 放行后的连锁发现（本路实施时显形）
+
+1. **计算寻址新面**（字面量扫描不可见,fixture 放行后运行态撞上）:
+   - **P3_L5V_CON0/CON1（0xf2c284/0xf2c288）**:W1[0] 以 `r0=r5+544`（0x6012fb8）
+     计算寻址,0x6012fc0/0x6012fd6 显式 ld/st 配置 RMW（值=配置表字节真实计算）;
+     449,751 @ 0x6012fbc 撞上。p33_sfr.h L149/L150 有名,charge_hw.h 位宏
+     L5V_LOAD_EN/L5V_IO_MODE/L5V_RES_DET_S_SEL。字面量唯一另处=0x606928c
+     （AWKUP 中断分发 0x60691f4 域,D1 后才可达——BB 轮记的 0x60692a6/0x60692b4
+     「N_IE/P_IE 消费型读」实为这对 L5V 寄存器,基址记录顺带修正）。
+   - **P3_CHG_CON2（0xf2c070）**:`[r5+12]` 计算寻址,0x6013094 ld→&0x7FFF→|r2→
+     pair 尾写回（0x601309a `r1=259 ∥ [r5+12]=旧 r1` 并行对）;449,799 @ 0x6013090
+     撞上。charge_hw.h 位宏 CHARGE_DET_VOL（bits1-2 检测阈值）/CHARGE_DET_EN
+     （bit0）——正是「使能充电检测比较器」的配置,与紧随其后的 bit1/bit2 轮询自洽。
+   三者并入 `p33_analog_tail_projection` AM 容器（合成初始字 0+读回=当前值,
+   BV 轮同族证据类）。
+2. **交付延期机制（共享机器层新投影）**:fixture 放行后世界推进到 ~447,490 core tick
+   首溢出,IRQ3 handler（OS tick,执行中会经 0x12b608 软件中断命令请求调度）执行期间
+   Timer0 到期合格——交付请求落在在途 handler 上,机器侧「不嵌套」守卫的 ValueError
+   从 except 块逃出（probe 崩溃而非诚实停）。落地 **irq_delivery_deferral**:请求挂起
+   不丢弃（与 BF 的 masked-pending 逐步重检同族语义）,分发层清模型侧 in-flight
+   簿记,handler RTI 后下个 advance 以同一 pending 片重新请求;IRQ 嵌套仍不建模。
+   默认行为不变（legacy 世界从未有请求落在在途 handler 上）。
+3. **新前沿=601,880 @ 0x6069540 `unknown_gpcnt_configuration_bits`（known_mask
+   0x81）**:W1[0] 循环2 第 2-3 次 delay 期间,OS tick 级联（core tick 溢出→软件
+   IRQ127→调度器切换任务）把世界带进 0x6069538 函数——`r0=[0xfd1100](GPCNT_CON)`
+   读:bit0 使能判定+bit7 轮询+随后 [r4+4] 计数读,上游 0x6069514..0x6069522 是
+   `&=~1;|=0x40` 关断/清除对（gpcnt_cleanup 投影已建模的形状）。**GPCNT 读侧是
+   新的三选一**（gptimer/gpcnt SDK 头的位语义证据先行）,归下一路;W1[0] 循环2 的
+   20 轮超时路径（b[0x125BF4]=2、不创建充电任务、失败码消费链）在新前沿之后,
+   随 GPCNT 闭合显形。

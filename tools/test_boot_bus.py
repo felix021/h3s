@@ -1840,6 +1840,104 @@ class BusInstructionTests(unittest.TestCase):
                                          'address':'0xf2c25c','size':4,
                                          'reference_sdk_register':None})
 
+    def test_p3_ana_read_ldoin_low_fixture(self):
+        # 路 CB:P3_ANA_READ(0xf2c064)读侧三选一=方案 (c) 具名常量 live-input
+        # fixture(derived-not-measured)。证据链:SDK charge_hw.h 逐位语义
+        # (bit1=LVCMP_DET ldoin>vbat 比较器/bit2=LDO5V_DET ldoin>0.6V 检测/
+        # bit0=CHARGE_FULL_FLAG)+ charge.c 阈值注释 + QCY W1[0] 循环2 与 SDK
+        # check_charge_state() 逐行同形(20 轮、LVCMP||LDO5V、udelay(1000))+
+        # 场景锚=电池启动无外部供电(ldoin≈0V,与 BY 的 RES fixture 同一
+        # 物理世界)→两比较器读 0。①循环1 首读(0x6012f26 ld [r5])常量服务
+        # 0,后续 sextra/AND 位测试真实执行;②循环2 的双读形状(0x601311c
+        # ld+&2 测 bit1、0x6013122 ld+&4 测 bit2)同样常量服务——**重复读
+        # 同字,非首读限制**(轮询语义,codex 参谋采纳);③fixture 需要 tail
+        # 投影门控;④写仍显式拒绝;⑤报告四键分离(derived_mask=0x6/其余位
+        # 显式填零非推导/duration=常量/evidence_status=derived-not-measured)。
+        served=BR28Model(p33_analog_tail_projection=True,p3_ana_read_ldoin_low_fixture=True)
+        r=[0]*16;r[5]=0xf2c064
+        result=explore(self.module,self.app,name='ana_read_ldoin_low_loop1',handoff=self.handoff(),
+            hardware=served,diagnostics={'entry_pc':0x6012f26,'initial_sp':STACK_TOP,
+                                         'initial_gprs':r},budget=3)
+        self.assertEqual(result['completed_steps'],3)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        # 循环2 双读:0x601311c ld → 0x601311e &(2) 不跳 → 0x6013122 ld →
+        # 0x6013124 &(4) 不跳 → 0x6013128 li(共 5 条,两次 MMIO 读)。
+        result=explore(self.module,self.app,name='ana_read_ldoin_low_loop2',handoff=self.handoff(),
+            hardware=served,diagnostics={'entry_pc':0x601311c,'initial_sp':STACK_TOP,
+                                         'initial_gprs':r},budget=5)
+        self.assertEqual(result['completed_steps'],5)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        fixture=served.report()['p3_ana_read_ldoin_low_fixture']
+        self.assertEqual(fixture['reads_served'],3)
+        self.assertEqual((fixture['kind'],fixture['value'],fixture['derived_mask'],
+                          fixture['evidence_status']),
+                         ('constant_external_input_fixture','0x0','0x6',
+                          'derived-not-measured'))
+        self.assertTrue(fixture['duration'].startswith('constant_for_this_scenario'))
+        self.assertIn('explicitly_zero_filled_not_derived',fixture['other_bits'])
+        self.assertTrue(fixture['writes_rejected'])
+        # ③门控:fixture 需要 tail 投影。
+        self.assertRaisesRegex(ValueError,'requires the p33 analog tail projection',
+                               BR28Model,p3_ana_read_ldoin_low_fixture=True)
+        # ④写拒绝(fixture 开启也一样)。
+        self.assertRaisesRegex(Blocked,'p3_ana_read_write_not_modeled',served.write,0xf2c064,0)
+        # ⑤默认关(tail 开、fixture 关)仍钉住——BY 前沿形状不变。
+        pinned=BR28Model(p33_analog_tail_projection=True)
+        result=explore(self.module,self.app,name='ana_read_default_pinned',handoff=self.handoff(),
+            hardware=pinned,diagnostics={'entry_pc':0x6012f26,'initial_sp':STACK_TOP,
+                                         'initial_gprs':r},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'p3_ana_read_not_modeled','address':'0xf2c064'})
+        self.assertNotIn('p3_ana_read_ldoin_low_fixture',pinned.report())
+
+    def test_p33_tail_computed_addressing_family(self):
+        # 路 CB:fixture 放行后 W1[0] 以基址算术(r5+0xC/r5+0x220)触达的三个
+        # 新容器地址(字面量扫描不可见):P3_CHG_CON2(0xf2c070,充电检测比较器
+        # 使能/阈值,charge_hw.h CHARGE_DET_EN/CHARGE_DET_VOL)与 P3_L5V_CON0/
+        # CON1(0xf2c284/0xf2c288,LDO5V 负载/IO 模式/检测电阻选择,L5V_LOAD_EN/
+        # L5V_IO_MODE/L5V_RES_DET_S_SEL)——全部显式 ld/st 配置 RMW(值=配置表
+        # 字节真实计算,旧值真实参与写回),AM 容器同族(seed 0+读回=当前值)。
+        # ①CHG_CON2 RMW:0x6013094 ld → 0x6013096 &=r3(0x7FFF)→ 0x6013098 |=r2
+        # → 0x601309a pair(`r1=259 ∥ [r5+12]=旧 r1`,exact_parallel_stores)。
+        chg2=BR28Model(p33_analog_tail_projection=True)
+        r=[0]*16;r[5]=0xf2c064;r[3]=0x7fff;r[2]=0x103
+        result=explore(self.module,self.app,name='chg_con2_rmw',handoff=self.handoff(),
+            hardware=chg2,diagnostics={'entry_pc':0x6013094,'initial_sp':STACK_TOP,
+                                       'initial_gprs':r,'exact_parallel_stores':True},budget=5)
+        # 并行对(r1=259 ∥ [r5+12]=旧 r1)按一条模型步执行:4 步=ld/and/or/pair。
+        self.assertEqual(result['completed_steps'],4)
+        # seed 0 → 0&0x7FFF|0x103 = 0x103(pair 存储半写的是 RMW 结果 0x103,
+        # r1 随后变为 259=0x103)。
+        self.assertEqual(chg2.report()['registers']['0xf2c070'],'0x103')
+        # ②L5V_CON1 RMW:0x6012fc0 ld [r0+4] → 0x6012fc2 b[r2+5](配置字节,r2
+        # 指向已播种 RAM code 窗)→ 0x6012fc4 &0xFFFFFF03 → 0x6012fc8 r1&=0x3FC
+        # → 0x6012fcc |= → 0x6012fce 写回:预写 0x3FF → 0x3FF&0x3FC=0x3FC,
+        # 配置字节只贡献 bits0-1。
+        l5v=BR28Model(p33_analog_tail_projection=True)
+        l5v.write(0xf2c288,0x3ff)
+        dst,src,length=RAM_CODE
+        seed=self.app[src-ENTRY:src-ENTRY+length]
+        r=[0]*16;r[0]=0xf2c284;r[2]=dst-5
+        result=explore(self.module,self.app,name='l5v_con1_rmw',handoff=self.handoff(),
+            hardware=l5v,diagnostics={'entry_pc':0x6012fc0,'initial_sp':STACK_TOP,
+                                      'initial_gprs':r},budget=6)
+        self.assertEqual(result['completed_steps'],6)
+        expected=0x3fc|(seed[0]&0x03)  # r2=dst-5 → b[r2+5]=seed[0]
+        self.assertEqual(l5v.report()['registers']['0xf2c288'],hex(expected))
+        # ③默认关:三个计算寻址地址保持 unmapped(legacy 形状)。
+        off=BR28Model()
+        r=[0]*16;r[4]=0xfd1100
+        result=explore(self.module,self.app,name='tail_computed_off',handoff=self.handoff(),
+            hardware=off,diagnostics={'entry_pc':0x6012fc0,'initial_sp':STACK_TOP,
+                                      'initial_gprs':[0xf2c284]+[0]*15},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'unmapped_memory')
+        self.assertEqual(result['stop']['address'],'0xf2c288')
+        # ④「旧投影全开、tail 关」的世界三个新地址同样 unmapped 且无新键。
+        oldstack=BR28Model(p33_analog_config_projection=True,fd31_adc_con_projection=True)
+        self.assertNotIn('p33_analog_tail_projection',oldstack.report()['assumptions'])
+        self.assertEqual(oldstack.report()['registers'].get('0xf2c070'),None)
+
     def test_p33_canary_projection_shapes(self):
         # 路 BV:金丝雀树/低功耗域 P3_VLVD_CON(0xf2c044)+ P3_PCNT_CON
         # (0xf2c124)的「仅记录写访问」+ 首次读具名 fixture(BB 的 P3_AWKUP

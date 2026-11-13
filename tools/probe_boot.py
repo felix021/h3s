@@ -1708,6 +1708,24 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # 从嵌套 try 逃出整个分发结构、probe 崩溃而非诚实报告。
         if machine is None:
             raise ValueError('delivery request without the opt-in machine entry projection')
+        # 路 CB:请求落在目标核在途 handler(software/core-tick/Timer0)执行
+        # 期间——挂起不丢弃:模型侧 in-flight 簿记清零(core tick/Timer0 各自
+        # 的 delivery_in_flight;软件 IRQ 的 pending 字天然保持),handler RTI
+        # 后的下个 advance 以同一 pending 片重新请求交付。与 masked pending
+        # 逐步重检(BF)同族语义;IRQ 嵌套仍不建模(机器侧守卫保持)。
+        target_cpu=machine.cores.get(request.details['core'])
+        if (target_cpu is not None and
+                getattr(target_cpu,'active_context',None) in
+                ('software_irq_handler','core_tick_handler','timer0_irq_handler')):
+            if hardware is not None:
+                if request.details['irq']==3:
+                    hardware.core_ticks[request.details['core']].delivery_in_flight=False
+                elif request.details['irq']==4:
+                    hardware.timer.delivery_in_flight=False
+            machine.note_delivery_deferral(request.details,
+                                           getattr(target_cpu,'active_context',None))
+            row['deferred_delivery']=request.details
+            return
         # The requesting advance may fire for the peer core; deliver to
         # the target core, whose current PC is the interrupted context.
         if request.details['irq']==3:

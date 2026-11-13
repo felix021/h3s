@@ -85,15 +85,41 @@ P33_ANALOG_CONFIG=(0xf2c248,0xf2c254)
 #   ld/st RMW;独立充电函数 0x6004298 同族(0x600429e [0xf2c068]&=0x1FE +
 #   0x60042b2 [r5+8]|=0x8)。
 # - P3_ANA_READ(=P33_ACCESS(0x19),p33_sfr.h L38):W1[0] 轮询读 0x6012f26
-#   (≤1000 轮延时循环)与位测试 0x60131c/0x6013122(bit1/bit2 门控任务创建
-#   参数);app 另有 4 处 li(0x601201a/0x6012b58/0x6033f38/0x6035f54)。
-#   模拟量读(live analog input),无可推导来源——读回显式钉住
-#   (p3_ana_read_not_modeled,RES 红线同款),绝不发明 0/满值 fixture。
+#   (循环1 首读 bit2 定 1/2 轮 delay)与位测试 0x60131c/0x6013122(bit1/
+#   bit2 门控 20 轮充电检测循环的成败路径——成功创建充电去抖任务 0x6033F36,
+#   超时写失败码 b[0x125BF4]=2);app 全量恰 5 处 li(0x601201a/0x6012b58/
+#   0x6012e6e/0x6033f38/0x6035f54),全部只单 bit 消费 bit1/bit2,零写者。
+#   路 CB 证据(pinned SDK commit 67328f4):charge_hw.h 给出逐位语义——
+#   bit1=LVCMP_DET(ldoin vs vbat 比较器)、bit2=LDO5V_DET(ldoin 检测)、
+#   bit0=CHARGE_FULL_FLAG;charge.c 注释钉阈值(bit1=1⟺ldoin>vbat、
+#   bit2=1⟺ldoin>0.6V)。默认(无 fixture)读回显式钉住
+#   p3_ana_read_not_modeled(RES 红线同款);opt-in
+#   p3_ana_read_ldoin_low_fixture(路 CB)在「无外部供电(ldoin≈0V,电池
+#   启动)」场景锚下常量服务 0(derived mask=0b110,其余位显式填零非推导,
+#   详见 report 子键)。
 P33_ANA_CON_TAIL=(0xf2c240,0xf2c25c,0xf2c260,0xf2c264,0xf2c268)
 P3_ANA_READ=0xf2c064
 P3_CHG_CON0=0xf2c068
 P3_CHG_CON1=0xf2c06c
-P33_TAIL_ANALOG_CONFIG=P33_ANA_CON_TAIL+(P3_CHG_CON0,P3_CHG_CON1)
+# 路 CB:P3_L5V_CON0/CON1(=P33_ACCESS(0xa1)/(0xa2),p33_sfr.h L149/L150 有名,
+# charge_hw.h 位宏 L5V_LOAD_EN/L5V_IO_MODE/L5V_RES_DET_S_SEL)。W1[0] 以
+# r5(0xf2c064)+0x220 计算寻址访问(0x6012fb8 add.s14.rri r0=r5+544 →
+# 0x6012fc0 ld [r0+4]/0x6012fd6 ld [r0+0] 显式 ld/st 配置 RMW,值=配置表
+# 字节真实计算,旧值真实参与写回)——字面量扫描只有 0x606928c 一处
+# (AWKUP 中断分发 0x60691f4 域,D1 后才可达),主路径全靠基址算术,故
+# BV 轮的字面量扫描没看见这对。AM 容器同族语义(合成初始字 0+读回=
+# 当前值)。fixture 放行 P3_ANA_READ 首读后 449,751 @ 0x6012fbc 撞上。
+P3_L5V_CON0=0xf2c284
+P3_L5V_CON1=0xf2c288
+# 路 CB:P3_CHG_CON2(=P33_ACCESS(0x1c),p33_sfr.h L41 有名;charge_hw.h 位宏
+# CHARGE_DET_VOL(bits1-2 充电检测阈值选择)/CHARGE_DET_EN(bit0)/
+# CHARGE_FULL_mA_SEL(bits4-6))。W1[0] 以 [r5+12] 计算寻址做显式 ld/st 配置
+# RMW(0x6013094 ld [r5+12] → 0x6013096 &=0x7FFF → 0x6013098 |=r2 →
+# 0x601309a 写回;正好是「使能充电检测比较器」的配置,与紧随其后的
+# P3_ANA_READ bit1/bit2 轮询自洽)。449,799 @ 0x6013090 撞上,AM 容器同族。
+P3_CHG_CON2=0xf2c070
+P33_TAIL_ANALOG_CONFIG=P33_ANA_CON_TAIL+(P3_CHG_CON0,P3_CHG_CON1,P3_CHG_CON2,
+                                         P3_L5V_CON0,P3_L5V_CON1)
 PLL1_CON3=0xfd470c
 CACHE_STATUS_REGISTERS=(0xff0500,0xffe400,0xffec00)
 ICU_BASES=(0xffe400,0xffec00)
@@ -2621,7 +2647,7 @@ class BR28Model:
                  p3_ls_projection=False,p11_syscon1_mask_sets=False,
                  fd31_adc_con_projection=False,fd31_adc_con_readback=False,
                  fd31_adc_pnd_completion=False,fd31_adc_res_named_values=None,
-                 p33_analog_tail_projection=False,
+                 p33_analog_tail_projection=False,p3_ana_read_ldoin_low_fixture=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -2845,9 +2871,12 @@ class BR28Model:
                                               pnd_completion=fd31_adc_pnd_completion,
                                               res_named_values=fd31_adc_res_named_values) \
                           if fd31_adc_con_projection else None
-        # p33_analog_tail(opt-in,路 BV/sim-tailproj):W1[0]/mode 切换函数的
-        # P33 模拟配置族 AM 容器一次扩展——P3_ANA_CON0/7/8/9/10(0xf2c240/
-        # 0xf2c25c..268)+ P3_CHG_CON0/CON1(0xf2c068/0xf2c06c)按路 AM
+        # p33_analog_tail(opt-in,路 BV/sim-tailproj;路 CB 扩 L5V 对):W1[0]/
+        # mode 切换函数的 P33 模拟配置族 AM 容器一次扩展——P3_ANA_CON0/7/8/9/10
+        # (0xf2c240/0xf2c25c..268)+ P3_CHG_CON0/CON1(0xf2c068/0xf2c06c)+
+        # P3_L5V_CON0/CON1(0xf2c284/0xf2c288,W1[0] 的 r5+0x220 计算寻址)+
+        # P3_CHG_CON2(0xf2c070,[r5+12] 计算寻址,充电检测比较器使能/阈值)
+        # 都是路 CB 加进来的计算寻址面(字面量扫描不可见)按路 AM
         # P33_ANALOG_CONFIG 同款语义(显式合成初始字 0 + 读回=当前寄存器值;
         # 整字写/显式 ld/st 配置 RMW/复合 RMW 全走既有通用寄存器路径,机器侧
         # 零新分发)。P3_ANA_READ(0xf2c064)是模拟量读(live input,轮询+位
@@ -2857,6 +2886,31 @@ class BR28Model:
         # W1[0] 的 RMW 块实为 0xfd5708 PORTP GPIO 面)见 P33_TAIL_ANALOG_CONFIG
         # 常量注释与 docs/appcore-tail-sfr-semantics.md §8。
         self.p33_analog_tail_projection=p33_analog_tail_projection
+        # p3_ana_read_ldoin_low_fixture(opt-in,路 CB/sim-anaread,需 tail 投影):
+        # P3_ANA_READ(0xf2c064)读侧三选一按证据落地=方案 (c) 具名常量 live-input
+        # fixture。证据链(pinned SDK commit 67328f4,全文档见
+        # docs/appcore-tail-sfr-semantics.md §9):①charge_hw.h 逐位语义——
+        # bit1=LVCMP_DET(ldoin vs vbat 比较器)、bit2=LDO5V_DET(ldoin 检测)、
+        # bit0=CHARGE_FULL_FLAG;②charge.c 驱动注释钉阈值:bit1=1⟺ldoin>vbat、
+        # bit2=1⟺ldoin>0.6V(≈充电线/USB 在位),QCY W1[0]=0x6012e3e 的 20 轮
+        # 检测循环与 SDK check_charge_state() 逐行同形(20 轮、LVCMP||LDO5V、
+        # udelay(1000));③QCY app 全量 5 处 li 读者只单 bit 消费 bit1/bit2,
+        # 零写者——无完成位语义、无 readback=末值可能(方案 (a) 不适用);
+        # ④场景锚=电池启动+无外部供电(ldoin≈0V)→ 两比较器读 0(与路 BY 的
+        # RES fixture 同一物理场景:电池在位供电 3780mV,充电输入引脚无输入;
+        # 充电窗门 config 99 缺失被前置跳过,与 ldoin 无关、不作为证据)。
+        # **形状=常量**(codex 参谋采纳):轮询语义要求 21+ 次重复读,首读
+        # fixture 只会把边界挪到第二读;duration=本场景内持续不变的外部输入,
+        # 不建模插拔/去抖时序。**三层标注**:derived_mask=0b110(只有 bit1/
+        # bit2 有推导链),其余位显式填零非推导(当前已核验消费者不使用),
+        # evidence_status=derived-not-measured;检测器有效且稳定是显式假设
+        # (W1[0] 在轮询前刚配置 L5V_CON0/1 与 CHG_CON0/1,使能/阈值配置真实
+        # 执行,但比较器输出时序不建模)。默认关:读回保持 p3_ana_read_
+        # not_modeled 严格停(447,383 前沿形状不变),legacy 报告逐字节不变。
+        if p3_ana_read_ldoin_low_fixture and not p33_analog_tail_projection:
+            raise ValueError('the P3_ANA_READ ldoin-low fixture requires the p33 analog tail projection')
+        self.p3_ana_read_ldoin_low_fixture=p3_ana_read_ldoin_low_fixture
+        self.p3_ana_read_served=0
         # p33_canary(opt-in,路 BV):金丝雀树/低功耗域 P3_VLVD_CON(0xf2c044)+
         # P3_PCNT_CON(0xf2c124)的「仅记录写访问」+ 单寄存器首次读具名 fixture
         # (BB 的 P3_AWKUP 先例同模式;修正 BO §N4 的 +0x120 基址误记)。健康
@@ -3220,12 +3274,22 @@ class BR28Model:
             # 通道(联动 seed 只在 con_readback 开启时存在);CON 读忽略该参。
             return self.fd31_adc_con.read(address,
                                           ana_con4=self.registers.get(Fd31AdcConRegisters.ANA_CON4))
-        # P3_ANA_READ(0xf2c064,路 BV):W1[0] 轮询(0x6012f26 ≤1000 轮)与位
-        # 测试(0x60131c/0x6013122 bit1/bit2 门控任务创建参数)的真实读回消费,
-        # 模拟量无可推导来源——显式钉住(RES 红线同款;显式 kind 优先于泛
-        # unmapped,便于诊断),绝不发明 0/满值 fixture。其余七个容器地址走
-        # 下面的通用 registers 路径(AM 语义:合成初始字 0/最后写值)。
+        # P3_ANA_READ(0xf2c064,路 BV/CB):W1[0] 两个轮询(循环1 首读 bit2 定
+        # 1/2 轮 delay;循环2 20 轮 bit1|bit2 充电检测,成功创建充电去抖任务
+        # 0x6033F36/超时写失败码 b[0x125BF4]=2)与三个 getter/handler 读者的
+        # 真实读回消费。默认:模拟量无可推导来源——显式钉住(RES 红线同款;
+        # 显式 kind 优先于泛 unmapped,便于诊断)。opt-in
+        # p3_ana_read_ldoin_low_fixture(路 CB):「无外部供电(ldoin≈0V,电池
+        # 启动)」场景锚下常量服务 0(bit1=LVCMP/bit2=LDO5V 按 charge_hw.h+
+        # charge.c 阈值推导为 0;其余位显式填零非推导)——**常量 live input**
+        # (轮询 21+ 次重复读都服务同一字,非首读限制;不建模插拔/去抖时序)。
+        # 其余十个容器地址走下面的通用 registers 路径(AM 语义:合成初始字
+        # 0/最后写值)。
         if self.p33_analog_tail_projection and address==P3_ANA_READ:
+            if self.p3_ana_read_ldoin_low_fixture:
+                self.counts['reads']+=1
+                self.p3_ana_read_served+=1
+                return 0
             raise Blocked('p3_ana_read_not_modeled',address=hex(address))
         # 金丝雀树/低功耗域(路 BV):P3_VLVD_CON/P3_PCNT_CON 只有显式 fixture
         # 覆盖的首次读返回具名字,其余读(未覆盖/写后/重复)一律严格停
@@ -3895,21 +3959,68 @@ class BR28Model:
             result['assumptions']['p33_analog_config_projection']='two P33 analog-control configuration registers (P3_ANA_CON2/P3_ANA_CON5); explicit synthetic initial word 0 (not an inferred analog state), readback=current register value; analog/voltage behavior not modeled'
         if self.p33_analog_tail_projection:
             # 路 BV:W1[0]/mode 切换 P33 模拟配置族尾段扩展(P3_ANA_CON0/7/8/9/10
-            # + P3_CHG_CON0/CON1,AM 容器同款语义)+ P3_ANA_READ 显式钉住。
+            # + P3_CHG_CON0/CON1,AM 容器同款语义)+ P3_ANA_READ 显式钉住
+            # (默认;路 CB opt-in fixture 例外,见 p3_ana_read_ldoin_low_fixture)。
             result['assumptions']['p33_analog_tail_projection']=(
-                'seven P33 analog/charger configuration registers on the app-core tail '
-                '(P3_ANA_CON0/7/8/9/10 = 0xf2c240/0xf2c25c..268 and P3_CHG_CON0/CON1 = '
-                '0xf2c068/0xf2c06c); explicit synthetic initial word 0 (not an inferred '
+                'ten P33 analog/charger configuration registers on the app-core tail '
+                '(P3_ANA_CON0/7/8/9/10 = 0xf2c240/0xf2c25c..268, P3_CHG_CON0/CON1/CON2 = '
+                '0xf2c068/0xf2c06c/0xf2c070 and P3_L5V_CON0/CON1 = 0xf2c284/0xf2c288 — the '
+                'CHG_CON2/L5V trio is reached by the W1[0] base arithmetic r5+0xC/+0x220, so '
+                'literal scans miss them, route CB); explicit synthetic initial word 0 (not an inferred '
                 'analog state), readback=current register value (route-AM container '
                 'precedent); the whole family is read-modify-written by the real '
                 'mode-switch function 0x6068152 and the W1[0] function 0x6012e3e '
                 'with reads participating in '
                 'the written-back values; P3_ANA_READ 0xf2c064 is a live analog input '
-                'polled/bit-tested by W1[0] and stays strictly blocked '
-                '(p3_ana_read_not_modeled) — no 0/full-scale fixture is ever invented; '
+                'polled/bit-tested by W1[0] and by default stays strictly blocked '
+                '(p3_ana_read_not_modeled) — no 0/full-scale fixture is invented '
+                'outside the explicit opt-in ldoin-low fixture; '
                 'route-BO corrections: the W1[0] RMW block is the 0xfd5708 PORTP GPIO '
                 'face (already modeled by the GPIO projection), the 0xfd5f word block '
                 'has zero app+ROM references and is NOT modeled')
+            if self.p3_ana_read_ldoin_low_fixture:
+                # 路 CB(codex 参谋 gpt-6-astra 只读采纳):常量 live-input 具名
+                # fixture,derived_mask/other_bits/duration/evidence_status 四键
+                # 显式分离;场景假设与消费者覆盖面全文标注。
+                result['p3_ana_read_ldoin_low_fixture']={
+                    'address':'0xf2c064',
+                    'kind':'constant_external_input_fixture',
+                    'value':'0x0',
+                    'derived_mask':'0x6',
+                    'derived_bits':{'bit1':'LVCMP_DET (ldoin vs vbat comparator; '
+                                            'charge.c: ldoin>vbat sets it) — 0 because '
+                                            'ldoin ~0V < vbat in the battery-boot scenario',
+                                    'bit2':'LDO5V_DET (ldoin detect; charge.c comment: '
+                                           'ldoin < 0.6V unplug level clears it) — 0 because '
+                                           'no external supply is attached'},
+                    'other_bits':'explicitly_zero_filled_not_derived — the five known app '
+                                 'readers (0x601201a/0x6012b58/0x6012e6e/0x6033f38/0x6035f54) '
+                                 'only ever consume bit1/bit2; bit0 (CHARGE_FULL_FLAG) has zero '
+                                 'app consumers; this is NOT a reset-value claim',
+                    'duration':'constant_for_this_scenario — every read (the W1[0] polls read '
+                               'it 41 times) serves the same word; plug/unplug events and '
+                               'debounce dynamics are NOT modeled',
+                    'evidence_status':'derived-not-measured',
+                    'evidence_provenance':'SDK charge_hw.h bit macros + charge.c threshold '
+                                          'comments (pinned commit 67328f4); the QCY W1[0] '
+                                          '20-round detect loop matches SDK check_charge_state '
+                                          'line by line; one live FD07 read of 0xf2c064 could '
+                                          'upgrade bit values to measured',
+                    'scenario_assumption':'battery boot with no external supply (ldoin ~0V), '
+                                          'consistent with the route-BY RES fixture world '
+                                          '(battery present at 3780mV, charge input pin '
+                                          'unpowered); the detectors are assumed valid and '
+                                          'stable at read time (W1[0] really configures '
+                                          'L5V_CON0/1 and CHG_CON0/1 right before polling; '
+                                          'comparator timing/hysteresis is not modeled)',
+                    'consumer_coverage_note':'the five literal-reference readers are the only '
+                                             'known consumers; indirect base+offset paths were '
+                                             'not exhaustively excluded, any future consumer of '
+                                             'bits outside 0x6 must re-review this fixture',
+                    'reads_served':self.p3_ana_read_served,
+                    'writes_rejected':True,
+                    'default_off_behavior':'p3_ana_read_not_modeled strict stop (the 447,383 '
+                                           'route-BV frontier shape)'}
         if self.pll1_configuration_projection:result['assumptions']['pll1_con3_configuration_projection']='RW config only; analog PLL1 not modeled'
         if self.cache_status_probe:
             result['assumptions']['cache_status_words_fixture']={hex(a):hex(v) for a,v in sorted(self.cache_status_words.items())}
