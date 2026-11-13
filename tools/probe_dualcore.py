@@ -22,7 +22,7 @@ SNAPSHOTS=(('os_running',0x1265f4,1),('cache_lock',0x19fd78,1),('current_tcbs',0
 
 def dual_case(module,app,header,rom,name,*,reset_pc=0,icfg=0,bootstrap=True,stack=True,
               options=None,budget=250000,readonly=(),abstract=False,machine_options=None,watch_pcs=(),
-              extra_diagnostics=None,extra_regions=(),extra_snapshots=()):
+              extra_diagnostics=None,extra_regions=(),extra_snapshots=(),post_stop=None):
     machine=DualCoreMachine(cpu1_reset_pc=reset_pc,cpu1_icfg=icfg,irq1_config=[0]*32,ipmask1=0,
                             bootstrap_rti=bootstrap,unknown_task_gprs=abstract,**(machine_options or {}))
     params={'initial_debug_controls':(0,0),'icu_initialization_projection':True,'icu_command_steps':64,
@@ -33,7 +33,7 @@ def dual_case(module,app,header,rom,name,*,reset_pc=0,icfg=0,bootstrap=True,stac
     diagnostics.update(extra_diagnostics or {})
     return platform_case(module,app,header,rom,name,machine=machine,options=params,
         diagnostic_options=diagnostics,extra_regions=(CORE1_STACK if stack else ())+tuple(extra_regions),
-        extra_snapshots=SNAPSHOTS+tuple(extra_snapshots),readonly=readonly,budget=budget)
+        extra_snapshots=SNAPSHOTS+tuple(extra_snapshots),readonly=readonly,budget=budget,post_stop=post_stop)
 
 
 def run(module,app,header,rom):
