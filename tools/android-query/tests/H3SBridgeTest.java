@@ -148,7 +148,7 @@ public class H3SBridgeTest {
         expect(!result(b.setAnc(1, 1, 256)).getBoolean("ok"), "strength=256 应拒绝");
     }
 
-    /** setPromptVolume：3/6/8 三档字节（形状假设 1d 01 值）；其他值拒绝。 */
+    /** setPromptVolume：3/6/8 三档字节（路 P 钉死 data=`value 00`，固件只读 data[0]）；其他值拒绝。 */
     static void setPromptVolumeBytes() throws Exception {
         H3SBridge b = new H3SBridge();
         b.armWrite(true);
@@ -157,14 +157,14 @@ public class H3SBridgeTest {
             JSONObject o = result(b.setPromptVolume(v));
             expect(o.getBoolean("ok"), "档位 " + v + " 应成功: " + o);
             bytes("音量 " + v, unhex(o.getString("bytesHex")),
-                unhex("fedcbac0ff0005" + "00" + "1d02" + String.format("01%02x", v) + "ef"));
+                unhex("fedcbac0ff0005" + "00" + "1d02" + String.format("%02x00", v) + "ef"));
         }
         expect(!result(b.setPromptVolume(5)).getBoolean("ok"), "档位 5 应拒绝");
         expect(!result(b.setPromptVolume(0)).getBoolean("ok"), "档位 0 应拒绝");
         expect(!result(b.setPromptVolume(9)).getBoolean("ok"), "档位 9 应拒绝");
     }
 
-    /** bridge 产物与写策略一致性：EQ 帧武装后被 EqWritePolicy 放行；ANC/音量帧当前策略不放行（联调缺口钉住）。 */
+    /** bridge 产物与写策略一致性：EQ/ANC/音量帧武装后被 EqWritePolicy 放行（路 P 扩白名单后）；未武装一律拒绝。 */
     static void policyConsistency() throws Exception {
         H3SBridge b = new H3SBridge();
         b.armWrite(true);
@@ -172,9 +172,11 @@ public class H3SBridgeTest {
         expect(!EqWritePolicy.permitted(eq, false), "EQ 帧未武装应被策略拒绝");
         expect(EqWritePolicy.permitted(eq, true), "EQ 帧武装后应被 EqWritePolicy 放行");
         byte[] anc = unhex(result(b.setAnc(1, 1, 2)).getString("bytesHex"));
-        expect(!EqWritePolicy.permitted(anc, true), "ANC 帧当前不在 EqWritePolicy 白名单（真机下发前需扩策略，本测试钉住该事实）");
+        expect(!EqWritePolicy.permitted(anc, false), "ANC 帧未武装应被策略拒绝");
+        expect(EqWritePolicy.permitted(anc, true), "ANC 帧武装后应被 EqWritePolicy 放行（路 P 扩白名单）");
         byte[] vol = unhex(result(b.setPromptVolume(6)).getString("bytesHex"));
-        expect(!EqWritePolicy.permitted(vol, true), "提示音帧当前不在 EqWritePolicy 白名单（同上）");
+        expect(!EqWritePolicy.permitted(vol, false), "提示音帧未武装应被策略拒绝");
+        expect(EqWritePolicy.permitted(vol, true), "提示音帧武装后应被 EqWritePolicy 放行（路 P 扩白名单）");
     }
 
     static byte[] unhex(String hex) {

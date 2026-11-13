@@ -134,9 +134,21 @@ public class EqFrameTest {
         expect(EqWritePolicy.permitted(info, true), "armed 应保留只读查询");
         expect(EqWritePolicy.permitted(info, false), "未 armed 应保留只读查询");
 
-        // 形状不匹配的写一律拒绝（不开任意字节写总开关）
+        // 0x17 ANC setter：形状匹配（data_len=3、mode 1..3）放行；畸形拒绝
         byte[] anc = QueryPolicyTest.frame(255, (byte) 0x17, (byte) 3, (byte) 1, (byte) 1, (byte) 2);
-        expect(!EqWritePolicy.permitted(anc, true), "ANC setter(0x17) 应拒绝");
+        expect(EqWritePolicy.permitted(anc, true), "armed 应放行形状匹配的 0x17 setter（data=mode scene strength）");
+        expect(!EqWritePolicy.permitted(anc, false), "未 armed 应拒绝 0x17 setter");
+        expect(!EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x17, (byte) 3, (byte) 0, (byte) 1, (byte) 2), true), "0x17 mode=0 应拒绝");
+        expect(!EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x17, (byte) 3, (byte) 4, (byte) 1, (byte) 2), true), "0x17 mode=4 应拒绝");
+        expect(!EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x17, (byte) 2, (byte) 1, (byte) 1), true), "0x17 data_len=2 应拒绝");
+        expect(!EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x17, (byte) 4, (byte) 1, (byte) 1, (byte) 2, (byte) 0), true), "0x17 data_len=4 应拒绝");
+
+        // 0x1d 提示音音量 setter：形状匹配（data_len=2、data[0]∈{3,6,8}）放行；畸形拒绝
+        expect(EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x1d, (byte) 2, (byte) 6, (byte) 0), true), "armed 应放行形状匹配的 0x1d setter（data=value 占位）");
+        expect(!EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x1d, (byte) 2, (byte) 6, (byte) 0), false), "未 armed 应拒绝 0x1d setter");
+        expect(!EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x1d, (byte) 1, (byte) 6), true), "0x1d 单字节 data 应拒绝（固件要求 len>=2）");
+        expect(!EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x1d, (byte) 2, (byte) 5, (byte) 0), true), "0x1d 值=5 应拒绝（白名单只收 3/6/8）");
+        expect(!EqWritePolicy.permitted(QueryPolicyTest.frame(255, (byte) 0x1d, (byte) 3, (byte) 6, (byte) 0, (byte) 0), true), "0x1d data_len=3 应拒绝");
         // 0x22 但 data_len%7 != 3：body=SN,0x22,data_len=4,4 字节 data
         byte[] badLen = rcspFrame(0xC0, 0xFF, new byte[]{0, 0x22, 4, 1, 2, 3, 4});
         expect(!EqWritePolicy.permitted(badLen, true), "0x22 data_len%7!=3 应拒绝");

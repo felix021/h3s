@@ -18,19 +18,19 @@ import org.json.JSONObject;
  * 返回统一 JSON：成功 {ok:true, bytesHex:"fedcba..."}（小写连续 hex）；失败 {ok:false, error:"..."}。
  *
  * 帧格式照 docs/app-protocol.md / EqFrame：FE DC BA | C0 | FF | len_BE16 | SN | cmdid | data_len | data | EF。
- * ANC=FF/0x17 data=`mode scene strength`（docs/app-protocol.md §2.3 钉死）；
+ * ANC=FF/0x17 data=`mode scene strength`（docs/app-protocol.md §2.3 + docs/cmd-0x17-0x1d-layout.md 核对）；
  * EQ=FF/0x22 走 EqFrame.buildEqCommand（docs/eq-cmd-0x22-layout.md 钉死）；
- * 提示音音量=FF/0x1d 值 3/6/8——帧形状 [未钉]，本类按 data=`01 value` 假设组帧，
- * 联调时需对照真机抓包修正（README 已标注）。
+ * 提示音音量=FF/0x1d 值 3/6/8，data=`value 00`——路 P 反汇编钉死（docs/cmd-0x17-0x1d-layout.md）：
+ * 固件 setter 只读 data[0] 当音量值、要求 len>=2、忽略第二字节，值不钳（3/6/8 是面板层档位）。
  *
  * JVM 单测（H3SBridgeTest）用 tests/stubs/ 下的 android.webkit.JavascriptInterface 与
  * org.json 最小桩编译；Android 构建走 android.jar + 内置 org.json。
  */
 public class H3SBridge {
-    public static final int CMD_ANC = 0x17;        // ANC 模式切换 cmdid
-    public static final int CMD_PROMPT_VOLUME = 0x1d; // 提示音音量 cmdid
-    /** 提示音音量合法档位（docs/app-protocol.md §2.4：3/6/8=最小/中等/最大）。 */
-    public static final int[] PROMPT_VOLUME_LEVELS = {3, 6, 8};
+    public static final int CMD_ANC = EqWritePolicy.CMD_ANC;              // ANC 模式切换 cmdid
+    public static final int CMD_PROMPT_VOLUME = EqWritePolicy.CMD_PROMPT_VOLUME; // 提示音音量 cmdid
+    /** 提示音音量合法档位（docs/app-protocol.md §2.4：3/6/8=最小/中等/最大；固件接收层不钳）。 */
+    public static final int[] PROMPT_VOLUME_LEVELS = EqWritePolicy.PROMPT_VOLUME_LEVELS;
 
     private boolean armed = false;
 
@@ -73,14 +73,15 @@ public class H3SBridge {
         return ok(buildCustomCommand(CMD_ANC, new byte[]{(byte) mode, (byte) scene, (byte) strength}));
     }
 
-    /** 组提示音音量命令（FF/0x1d，值 3/6/8）。帧形状未钉：按 data=`01 value` 假设组帧，联调需对照。 */
+    /** 组提示音音量命令（FF/0x1d，值 3/6/8）。data=`value 00`（路 P 钉死：固件 setter 只读 data[0] 当值、
+     *  要求 len>=2、忽略第二字节；值不钳，3/6/8 是面板层档位）。 */
     @JavascriptInterface
     public String setPromptVolume(int level) {
         if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
         boolean legal = false;
         for (int v : PROMPT_VOLUME_LEVELS) if (v == level) { legal = true; break; }
         if (!legal) return err("提示音音量档位非法（仅 3/6/8=最小/中等/最大）: " + level);
-        return ok(buildCustomCommand(CMD_PROMPT_VOLUME, new byte[]{0x01, (byte) level}));
+        return ok(buildCustomCommand(CMD_PROMPT_VOLUME, new byte[]{(byte) level, 0x00}));
     }
 
     /** 解析段数组 JSON → EqBand 列表；JSON 语法错误抛 JSONException，字段问题抛 IllegalArgumentException。 */
