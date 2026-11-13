@@ -26,7 +26,8 @@ h3s-tools-research 的 jlstream.h。一次性脚本在本地 tmp（~/tmp/hearaid
 载荷+接驳做进离线候选镜像（§9：追加段+双窗口替换+fence 扩界+全 CRC 链，UNTESTED 不刷机）。
 路 X 已补 close 载荷+窗口设计（§10）。路 Y 已把 open+close 双向接驳做进离线候选镜像
 （§11：close 载荷并入组合段 + 4 个 ON/OFF 离开窗口，`--hearing-aid-l1-close`，UNTESTED
-不刷机；App 0x17 直设路径仍未接驳）。
+不刷机）。路 AC 已钉死 App 0x17 直设路径（§11.4）：它经 0x0600dcee 以 flag=1 汇入
+0x0600db3c，既有 6 窗口已覆盖，无需新接驳。
 仍未在真机跑通激活/关闭链，不构成「助听器可用」声明**（见 §6/§8/§9.4/§10.6/§11.5 诚实边界）。
 
 ## 1. 阶段 A：激活序列模板反汇编（只读）
@@ -204,7 +205,8 @@ trans_branch_N:            ; 进入时 r4=apply flag（上游 0x0600c2a0 结果�
    替换后 app 明文区 CRC 相应更新。
 3. **关闭路径**：通透档再次离开（OFF/ON）时应先关辅听（jlstream_stop+release+清数据槽）再进新
    模式；本路载荷只有 open，close 载荷是下一步工作。
-4. **App 0x17 路径**（0x0600dcee）同步接驳，否则 App 通透与按键语义分叉。
+4. **App 0x17 路径**（0x0600dcee）：路 AC（§11.4）钉死其 mode apply 经 0x0600db3c
+   flag=1 汇入——本配套随路 T/Y 窗口自然满足，无需单独接驳。
 5. **noisgate 配对**：见 §6 第 3 条——拿到 audio_dac.h 宏体或反汇编 DAC 配置函数后补
    DAC_NOISEGATE_OFF/ON 配对调用。
 
@@ -422,8 +424,8 @@ exit 0。复跑：`python3 tools/build_quiet_candidate.py --attenuation-db 0
    落点待定（flash 编程 vs 保留 RAM）」，本候选选择先按 §2/§8 布局镜像内落槽，
    真机验证前需要 close 载荷 + 可写落点一并解决。
 4. §6 的全部既有边界不变：set_scene 16 是 SDK 枚举值、noisgate 未配对、close 载荷
-   未写（「辅听粘住」语义）、App 0x17 直设路径（0x0600dcee）未接驳（App 通透与
-   按键语义会分叉）。
+   未写（「辅听粘住」语义——路 X/Y 已补，见 §10/§11）、App 0x17 直设路径（路 AC
+   §11.4 钉死：经 0x0600db3c flag=1，已随 6 窗口覆盖）。
 5. 与 EQ 修复候选共用追加点与 fence 机制但**互斥**（开关同时给会报错）；EQ 候选
    67ba97ef UNTESTED 不变，本候选不影响其状态。
 
@@ -549,7 +551,7 @@ mic_effect_close():
 | A. 槽挪 RAM | 候选=BSS 区死字节/大结构保留字段；两载荷 .equ 改值+构建器去镜像内槽初始化 | **推荐（加固项）**。难点=钉地址：需证明候选「全 app 无绝对引用**且**无基址+偏移访问**且**落在 boot 清零范围」。本路已跑全 app 绝对引用扫描（li.u32 指向 0x126000..0x128400 的 154 个地址+空隙表，一次性脚本不进库）——只能排除绝对引用；QCY 大结构（基 0x1265c0，1248 处引用）字段全是基址+偏移访问，需 base-provenance xref（路 L 的 xref 雏形可扩）。工作量：钉地址≈半天，构建器侧 <20 行（fence 不动——数据访问不受 PC fence 约束，§3 配套 1 已钉） |
 | B. 不存指针按框架推导 | close 时遍历框架结构找 stream | **不成立**：jlstream 无公开按 uuid/scene 查流 API（SDK 头穷举）；0x124880 时钟链表只有时钟节点（name@+8）无 stream 指针 |
 | C. flash 写回走 syscfg/VM keyed store（路 CR/K） | open/close 时 syscfg_write 槽值 | **不推荐**：语义错位——槽是运行时指针（重启即失效），持久化反而引入跨重启脏指针新问题（还需 boot 清零钩子），且每次开关一次 flash 编程（磨损+延迟），syscfg_write 锚点也未钉 |
-| D. 构造性消除依赖（改变优先级） | 若离开 TRANS 的**全部**路径都先调幂等 close，且同模式重入被 dispatch 0x0600db66 的 `b[r2+5]==r5` 早退过滤，则 open 永不会在未 close 时重复执行 | **短期正解**：此条件下 flash 槽读 0 时 close 早退无害，「写不进」只损失防御性不损正确性。前提=接驳全链（键循环 ON/OFF 两链 4 窗口 + **App 0x17 直设路径 0x0600dcee**，后者窗口未钉死） |
+| D. 构造性消除依赖（改变优先级） | 若离开 TRANS 的**全部**路径都先调幂等 close，且同模式重入被 dispatch 0x0600db66 的 `b[r2+5]==r5` 早退过滤，则 open 永不会在未 close 时重复执行 | **短期正解**：此条件下 flash 槽读 0 时 close 早退无害，「写不进」只损失防御性不损正确性。前提=接驳全链（键循环 ON/OFF 两链 4 窗口 + App 0x17 直设路径——路 AC 钉死后者同样经 0x0600db3c flag=1 汇入，§11.4，已随路 Y 候选满足） |
 
 推荐顺序：**先 D 后 A**——接驳完整时 flash 槽已够用；A 作为加固项在候选升级真机
 验证前做（半天的地址钉死 + 构建器小改）。C 除非 RAM 路线彻底堵死否则不碰。
@@ -597,8 +599,8 @@ leave_on2（ON-2 专用：fn 载入 r5 且后续 0x0600dbcc 的 call 0x0600bbba 
 段几何：close 载荷 64B 追加进路 T 组合段（open+close+桩 单段现场汇编，两遍定槽
 不变——close 只读/清槽，槽仍在段尾 4B）；fence 上限相应扩到新段末；CRC 链照 §9.3
 全套重算。开关语义建议 `--hearing-aid-l1-close` **隐含** `--hearing-aid-l1-patch`
-（同一候选族超集，仍与 EQ 修复候选互斥）。App 0x17 直设路径（0x0600dcee）的窗口
-族本路未反汇编钉死，接驳实施时补（§10.4 方案 D 的完整性前提包含它）。
+（同一候选族超集，仍与 EQ 修复候选互斥）。App 0x17 直设路径（0x0600dcee）本路未钉死；路 AC
+（§11.4）后证：其 mode apply 经 0x0600db3c flag=1，已被本候选 6 窗口覆盖，无需另接。
 
 ### 10.6 诚实边界（必须随载荷一起读）
 
@@ -748,18 +750,71 @@ encode(decode)==原字节零 diff（构建时逐条断言 + 单测复跑）；�
 `python3 tools/build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-close
 --output-dir <空目录>`（构建器要求输出目录不存在）。
 
-### 11.4 App 0x17 直设路径评估（未实施，成文方案）
+### 11.4 App 0x17 直设路径钉死（路 AC / sim-app0x17，2026-11-14）：无需新窗口，既有 6 窗口已覆盖
 
-本路对 0x0600dcee 反汇编（只读）：**另一族 dispatch，不经 0x0600db3c**——`{rets,r7-r4}`
-序言、sp-=12、`r0==3/==2/!=1` 三分支（0x0600dcf8/0x0600dcfc/0x0600dd00）、**tbb 跳转表**
-（0x0600dd2e，r2=r1-1）、查询-再设置惯用法（call 0x0600BBD8 查态 → 分支 →
-0x0600C092/0x0600C294/0x0600dcde 包装族设置），mode apply 点的形状与键循环的
-[ctx+slot] 惯用法不同。接驳它需要：App wire 模式 id→内部模式映射、该链 ANC apply 点钉
-死、新窗口族落点扫描——工作量 ≈ 一条独立静态路（≈ 路 T 的窗口钉死工作量级），本路按
-任务边界**留文档不硬做**。后果：App 直设通透/离开不走 open/close（App 通透与按键语义
-分叉，§3 配套 4 的既有欠账；§10.4 方案 D 的完整性前提因此仍差这一块——App 路径离开通透
-后槽内残留 stale stream，下次按键进 ON/OFF 时 leave 桩的幂等 close 会 stop/release 它，
-但 stop 作用在可能已释放的对象上的安全性未验证）。
+本路把 0x0600dcee 族**全图反汇编钉死**（新工具 `tools/analyze_hearing_aid_app_path.py`
+全锚点断言，已接 check_local 默认层），**修正本节上一版（路 Y 快评）的核心前提**：
+「另一族 dispatch，不经 0x0600db3c」是**误读**——快评读到查询-包装族就停了，漏掉了
+后面汇入键循环 dispatch 的两个 call。真实结构：包装族只是引擎/场景管线，**mode apply
+全部经 0x0600db3c（键循环同一函数）**，因此 §11 的 `--hearing-aid-l1-close` 候选
+**已经**拦截 App 直设的进通透/离开通透——App 通透与按键语义在既有候选内不分叉，
+无需新窗口/新桩/新开关。
+
+全图（全部 [静态]，工具逐锚点断言）：
+
+```
+0x17 setter 0x06025ca4（路 P）：data[0..2]=mode/scene/strength 存 b[0x1265EB..ED]，
+  post 0x06064978（名 0x060A1D11,0x300000,3,&[回调 0x06025d6a,1,0]）
+回调 0x06025d6a：0x06012be2(mode,scene,strength)=重存+写配置 key16 →
+  0x0600dcee(mode, scene, strength, flag=1)   ← App 直设唯一入口，flag 恒 1
+
+0x0600dcee(wire_mode, scene, strength, flag)：{rets,r7-r4} 序言、sp-=12、
+  r4=flag / r6=strength / r7=scene；三分支 0x0600dcf8(==3)/0x0600dcfc(==2)/0x0600dd00(!=1)：
+  wire 3 (TRANS) → 查态 0x0600bbd8()==b[[QCY+500]+33]；==3 早退（已在通透=无操作）
+      → 0x0600dcde(0)={0x0600c092(0)→0x0600bef2(0,0)：引擎关 b[[[QCY+480]+12]+34]=0；
+        0x0600c266() 条件日志} → 0x0600c294(1)={0x0600c1fe(1)：h[[QCY+500]+10]=1+
+        QCY[464] 回调链表按 h[节点+8]==1 摘发；0x0600c266()}
+      → **call 0x0600db3c(3, flag)** @0x0600dd62 → 窗口 A/B（已接驳）✓
+  wire 2 (OFF)  → 查态同上；==1 早退 → **call 0x0600db3c(1, flag)**（共用 0x0600dd5e-62）
+      → 窗口 OFF-1/OFF-2（已接驳）✓
+  wire 1 (ON)   → r5=查态；引擎查 0x0600bbee()！=0 时先 0x0600c092(0) 关引擎；
+      0x0600c09c()（b[QCY+37]=0+ROM 0x06001f12(15,1)）；scene-1 tbb @0x0600dd2e
+      （表 03 1c 26 30 46 @0x0600dd30，target=表基+2×字节，5 案全落干净指令边界）：
+        scene 1-3 → [QCY+468] = [0x060A21AC + strength*4]（强度表，非函数指针——
+          scene 4 存立即数 0xC2C60000=-99.0f 证明该槽是 float 参数槽）
+        scene 4   → [QCY+468] = -99.0f
+        scene 1-4 → 0x0600c294(1|2|3) 场景包装 → r5!=2（当前非 ON）时
+          **call 0x0600db3c(2, flag)** @0x0600ddac → 窗口 ON-1/ON-2（已接驳）✓
+          + 0x06064efc(40) 事件；r5==2（已 ON 重配场景）跳过——无模式迁移 ✓
+        scene 5   → post 0x06064978（与 setter 注册同一 API 族）→ 直接尾声，
+          不调 0x0600db3c、不碰引擎/模式 —— 无通透进出 ✓
+```
+
+**App wire 模式→内部模式映射**（帧内 data[0]，QCY 线协议 1=ON/2=OFF/3=TRANS）：
+wire 1→db3c r0=**2**、wire 2→db3c r0=**1**、wire 3→db3c r0=**3**（与 AGENTS 不变量 1
+互证）；db3c 的 r1（flag）= dcee 的 r4 = 回调传入的 1。
+
+**flag 语义（本路新钉）**：db3c 第二参 r1 选 apply 机制——`if (r1==0) goto 0x0600dba4`
+（0x0600db80）→ 0x0600dc94 call **0x0600daf6**：只做 b[S+28] 子状态簿记
+（==2 call 0x06003ef4 / ==1 查 b[S+33] / 其他清 b[S+29]），**不经窗口族**；r1!=0 才走
+链 1/链 2 的 [ctx+slot] 窗口路径。全 app 17 个 db3c 静态调用点逐一钉 flag：
+**键循环邻域三入口（0x06018c8e/ca4/caa = db3c(2/1/3, 1)）与 App 链（flag=1）等全部交互路径走窗口**；
+flag=0 的 8 个点位是配置恢复/事件处理族（0x0600de56 持久化应用、0x06025d64/daa 0x17
+恢复默认/初始化侧、0x0601be3a(OFF)/0x06021212(TRANS)/0x06021e54(TRANS)/0x060232f8(OFF)/
+0x0602d4f0 事件处理，触发上下文未钉死）——它们**不是** App 直设路径，其 sync 分支
+不触窗口是既有状态（路 Y 也从未声明覆盖它们），列为后续静态路候选而非本路缺口。
+
+**窗口落点复核**：无新窗口故无新扫描；工具重跑路 T 方法全 app 分支落点扫描
+（27,695 个唯一定位目标/分支位点集合与路 T/Y 同法），对既有 6 窗口逐一断言：内部零落点、
+起点落点 A/B=0x0600db92/dbbc、OFF-1/2=0x0600db8e/dbb8、ON-1/2 纯顺延——与 §1.4/§10.5/§11.2
+全等；0x0600dc98 pop 仍为 4 早退分支（0x0600db4a/db54/db66/db6c）活落点。
+
+诚实边界（继承 §11.5 并追加）：①本节全部为**静态反汇编**（derived-not-measured），
+工具断言的是「字节与锚点一致」，不是运行验证；②寄存器间接 call/goto 无静态目标，
+17+5 调用点集合只含直接调用（与路 T/Y 同一残留限制）；③flag=0 sync 族的触发场景、
+0x06064978 post 族内部语义、scene-5 的下游处理未钉死；④**App 直设路径无需任何镜像改动**，
+本路零字节差异（`--hearing-aid-l1-close` 候选 sha 5a5f2ef7… 不变）——「实施」=
+证据钉死+工具化复核，不是新开关。
 
 ### 11.5 诚实边界（必须随候选一起读）
 
@@ -769,7 +824,9 @@ encode(decode)==原字节零 diff（构建时逐条断言 + 单测复跑）；�
    完整路径（桩+载荷在 ANC 键循环里）同样未在仿真跑——主仿真前沿未推进到 0x0600db3c
    （§9.4.2 同一欠账）。静态往返+落点扫描+锚点核对是当前最强证据。
 3. **数据槽仍在 flash**（§10.4 方案 A 未实施）：方案 D 的键循环前提（两链 6 窗口全接）
-   本候选已满足；App 0x17 前提未满足（§11.4）。真机验证前建议先做方案 A（槽挪 RAM）。
+   与 App 0x17 前提（直设路径同经 0x0600db3c flag=1，§11.4 路 AC）本候选均已满足；
+   flag=0 sync 调用族（§11.4）不经窗口，属另一族既有边界。真机验证前建议先做
+   方案 A（槽挪 RAM）。
 4. §10.6 全部既有边界继承：stop/release 同步等的上下文风险（leave 桩在按键 dispatch
    上下文同步调 close，同一风险面）、release 的 b[stream+17]==3 门、event_notify(11)
    整链副作用、noisgate 未配对、set_scene 16 是 SDK 枚举值。
@@ -791,3 +848,21 @@ encode(decode)==原字节零 diff（构建时逐条断言 + 单测复跑）；�
 - 候选：sha256 5a5f2ef7…（476B vs 官方）；与 l1-patch 候选差 293B；单测
   tools/test_hearing_aid_close_image.py（7 tests OK）；构建器
   hearing_aid_l1_image.py（apply_l1_patch close_hooks=True + verify_l1_image 泛化）。
+
+### 11.7 路锚点补充（路 AC / sim-app0x17，§11.4 的证据锚点）
+
+- App 链：setter 0x06025ca4 → post 0x06064978(0x060A1D11,0x300000,3,&[0x06025d6a,1,0])
+  → 回调 0x06025d6a = 0x06012be2（重存 + 配置 key16 写 0x06002152）→ 0x0600dcee(flag=1)。
+- dcee 族：查态 0x0600bbd8（b[[QCY+500]+33]）/ 引擎查 0x0600bbee（b[[[QCY+480]+12]+34]）；
+  包装 0x0600c092→0x0600bef2（引擎开关，写 +34）/ 0x0600c09c（b[QCY+37]=0+ROM 0x06001f12）/
+  0x0600c294={0x0600c1fe（h[S+10]+QCY[464] 链表）, 0x0600c266（条件日志）} /
+  0x0600dcde={0x0600c092, 0x0600c266}；db3c 汇入点 0x0600dd62（wire 3/2）/0x0600ddac（wire 1）。
+- scene 机制：tbb 表 5 字节 03 1c 26 30 46 @0x0600dd30；强度表 0x060A21AC（=0x060A1D11+1179，
+  [r6<<2] 索引=strength）；[QCY+468] 是 float 参数槽（scene 4 立即数 -99.0f）；
+  scene 5 → post 0x06064978 不调 db3c。
+- flag 语义：db3c r1==0 → 0x0600dba4→0x0600dc94→0x0600daf6（b[S+28] 簿记，不经窗口）；
+  键循环邻域三入口 0x06018c8e/ca4/caa = db3c(2/1/3, **1**)；db3c 全 17 调用点 flag 清单见
+  tools/analyze_hearing_aid_app_path.py 的 DB3C_CALLS 表（工具从官方字节逐一复核）。
+- 复核工具：tools/analyze_hearing_aid_app_path.py（check_local 默认层，报告
+  analysis/local-checks/hearing-aid-app-path.json）；落点复核 27,695 唯一目标，
+  6 窗口断言与 §11.2 全等。
