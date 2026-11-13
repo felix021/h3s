@@ -317,9 +317,11 @@ docs/peripheral-input-simulation.md section 7.
 import argparse
 import json
 import struct
+import sys
 from pathlib import Path
 
 from br28_unknown import word
+from frontier_registry import PROBE_SCENARIO_NAMES, scenario_flags, frontier
 from probe_dualcore import dual_case
 from probe_task_returns import EMPTY_PRIORITIES
 from probe_arch_startup import candidate_view, REPAIRED_SHA, FAILED_SHA
@@ -2003,10 +2005,15 @@ def check(report,firmware):
     # (P2M 消息区 +0xa,P11 init 写入、值未证实)的第一读:heap fixture
     # (p11_heap_info_bytes)未提供,严格停 unmapped_memory(289,849,
     # 新前沿——需要显式 heap fixture 参数才能继续的诚实停点)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x60679ba' and
-            r['stop']['kind']=='unmapped_memory' and r['stop']['address']=='0xf27f4b',
+    # 前沿契约单点:停点/步数字面值从 frontier_registry 派生(推进前沿只改
+    # registry,本处断言叙事保持手写)。
+    crc_bankb_frontier=frontier('crc_bankb')
+    require(r['stop_core']==0 and r['stop_pc']==crc_bankb_frontier['stop_pc'] and
+            r['stop']['kind']==crc_bankb_frontier['stop']['kind'] and
+            r['stop']['address']==crc_bankb_frontier['stop']['address'],
             'the P11 power-init frontier must stop at the first heap-info byte read 0xf27f4b')
-    require(r['completed_steps']==289849,'the erased fixture scenario changed its step count')
+    require(r['completed_steps']==crc_bankb_frontier['completed_steps'],
+            'the erased fixture scenario changed its step count')
     # P11 公共段拷贝逐字节互证:目的窗快照 SHA256 == p11_code.bin 资源 entry0
     # 真实载荷(analyze_p11 钉死值,资源 CRC 全过)。
     from analyze_p11 import analyze as analyze_p11_resource
@@ -2451,9 +2458,11 @@ def check(report,firmware):
     # 域首个新边界:整字写投影(记录/读回/钉住三选一)是下一路独立决策点,
     # 不顺带套用最后写值(codex 红线)。**新前沿 3,079,241 @ 0x602ea72**
     # (unmapped_or_readonly_write 写 0xfe2200=1)。
-    require(r['stop_core']==0 and r['stop_pc']=='0x602ea72' and
-            r['stop']=={'kind':'unmapped_or_readonly_write','access':'write',
-                        'address':'0xfe2200','size':4,'value_bytes':'01000000'},
+    # 条件前沿契约单点:停点完整记录与步数从 frontier_registry 派生(推进
+    # 前沿只改 registry,断言叙事保持手写)。
+    conditional_frontier=frontier('p11_heap_experimental')
+    require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
+            r['stop']==conditional_frontier['stop'],
             'the heap-experimental scenario must stop at 0x602ea72 storing 0x1 into '
             '0xfe2200 after the route-AA CON1 readback projection releases the '
             'uart_fifo_reset compound RMW: the RMW reads the last-written 0, writes back '
@@ -2464,7 +2473,8 @@ def check(report,firmware):
             '0x60c32a4..0x60c32b8 starts by writing JL_WL_AUD->CON0=1 (br28.h '
             'hs_base+map_adr(0x22,0)), an SDK-named but unmodeled audio-domain word: an '
             'independent decision point for the next route, honestly stopped')
-    require(r['completed_steps']==3079241,'the heap experimental config changed its step count')
+    require(r['completed_steps']==conditional_frontier['completed_steps'],
+            'the heap experimental config changed its step count')
     dcck=r['peripherals']['registers']
     require(dcck['0xfd0008']=='0x46000e0c' and dcck['0xfd000c']=='0xff000100' and
             dcck['0xfd0010']=='0x10000',
@@ -3838,6 +3848,12 @@ def main():
     p.add_argument('--report',type=Path,required=True);args=p.parse_args()
     rom=args.rom.read_bytes();check_rom(rom);module=upstream();app=application(args.firmware);header=package_header(args.firmware)
     image=flash_image(args.firmware)
+    # 两个共享栈场景的开关集从 frontier_registry 单点派生(开关/依赖/前沿
+    # 契约的单一数据源;analyze_image_trace 的 flag 字典与 freshness 钉子、
+    # test_image_trace_diff 的期望值同源派生)。其余场景(legacy 八场景的
+    # 嵌套前缀与 probe 专用探路变体)保持手写,不进共享栈。
+    crc_bankb_flags=scenario_flags('crc_bankb')
+    conditional_frontier_flags=scenario_flags('p11_heap_experimental',sys.modules[__name__])
     report={'firmware_sha256':OFFICIAL_SHA,'application_sha256':APP_SHA,'rom_sha256':ROM_SHA,'simulator_commit':PIN,
         'device_accessed':False,'whole_h3s_boot_simulated':False,'candidate_whole_boot_validated':False,
         'suitable_for_flash_approval_alone':False,
@@ -3858,41 +3874,10 @@ def main():
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
                               rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
                               dcu_cmo=True,zero_rep_skip=True,flash_image_bytes=image),
-                     irq_case(module,app,header,rom,'crc_bankb_erased_fixture',
-                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
-                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
-                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
-                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
-                              halfword_pair=True,p11_power_init=True,flash_image_bytes=image),
-                     irq_case(module,app,header,rom,'p11_heap_experimental_config',
-                              entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
-                              sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
-                              rep_block=True,rep_unknown_transport=True,repeat=True,icu_region=True,
-                              dcu_cmo=True,zero_rep_skip=True,erased_bankb=True,insert_load_pair=True,
-                              halfword_pair=True,p11_power_init=True,
-                              heap_info_bytes=P11_HEAP_INFO_DERIVED,byte_pair=True,lp_timer_writes=True,
-                              lrct_trim_done=True,lrct_trim_result=LRCT_TRIM_RESULT_PROBE,
-                              timer0_std12m=True,lp_timer_con_readback=True,
-                              p33_analog_config=True,power_init_rstcon_masks=True,
-                              power_init_wkup_dly=True,
-                              mem_pwr_con=True,p33_window=True,p33_port_sel=True,
-                              p33_awkup=True,p3_ls=True,p11_syscon1_masks=True,
-                              fd31_adc_con=True,fd31_adc_con_readback=True,
-                              fd31_adc_pnd_completion=True,
-                              fd31_adc_res_named_values=FD31_ADC_RES_NAMED_VALUES,
-                              p33_analog_tail=True,
-                              p3_ana_read_ldoin_low=True,
-                              gpcnt_con_readback=True,
-                              jl_clock_dcck=True,
-                              jl_uart_con=True,
-                              jl_uart_init_writes=True,
-                              jl_uart_con1_readback=True,
-                              jl_omap_writes=True,
-                              jl_imap_writes=True,
-                              subword_stores=True,word_store_sp_l=True,
-                              timer0_irq4_delivery=True,
-                              core_tick_irq3_delivery=True,
-                              flash_image_bytes=image),
+                     irq_case(module,app,header,rom,PROBE_SCENARIO_NAMES['crc_bankb'],
+                              **crc_bankb_flags,flash_image_bytes=image),
+                     irq_case(module,app,header,rom,PROBE_SCENARIO_NAMES['p11_heap_experimental'],
+                              **conditional_frontier_flags,flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,
