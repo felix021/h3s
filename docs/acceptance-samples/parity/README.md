@@ -20,4 +20,5 @@ A1 的目的就是把 BK 欠的 +3.44M 步重跑补上、让前沿推进后的�
 分歧」判据在机制上不可用。
 
 - 复核合法性：`python3 tools/acceptance_record.py --validate docs/acceptance-samples/parity`
+- 全局汇总：[../acceptance-dashboard.md](../acceptance-dashboard.md)（六目录一页面板；记录改动后 `python3 tools/acceptance_dashboard.py` 再生成，`check_local --units` 校验一致性）
 - 运行报告：忽略区 `analysis/local-checks/`（不进 git）

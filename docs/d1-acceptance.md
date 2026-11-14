@@ -584,3 +584,11 @@ D3 在本页只立框架：比较面的观测手段清单、容差声明格式�
   [docs/d3-preparation.md](d3-preparation.md)。
 - **测试**：`tools/test_acceptance_record.py`（32 例：往返/校验拒绝路径/BLOCKED 语义/
   示例合法性/CLI）已接入 `check_local --units`。
+- **全局面板（路 PANEL/sim-panel，2026-11-15）**：`tools/acceptance_dashboard.py` 扫描
+  六目录（d2a/r234/d2b/cot/d3/parity）+上级散置的全部记录 → 一页
+  [docs/acceptance-dashboard.md](acceptance-dashboard.md)——总览分布（含 PASS-conditional
+  列）/待授权与依赖聚组（刷机、BLE 联调、只读观测会话、前沿推进、观测手段五组；分组
+  映射取 r234 README「全局待授权项清单」与 d3 README「等待项地图」先例，逐组注明出处）/
+  关键 FAIL·BLOCKED 归因（取自记录自带字段）/逐条索引链接。数字全部来自记录文件；
+  输出无时钟、字节级可再生——`--check` 与 `tools/test_acceptance_dashboard.py`（16 例，
+  入 `--units`）守卫「记录改动而面板未再生成」，分组映射引用不存在的 id 即拒生成。

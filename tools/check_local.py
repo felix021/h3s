@@ -68,6 +68,7 @@ def main():
     run(sys.executable,'tools/test_r4_keyhook_image.py')
     run(sys.executable,'tools/test_candidate_world_checks.py')
     run(sys.executable,'tools/test_acceptance_record.py')
+    run(sys.executable,'tools/test_acceptance_dashboard.py')
     run(sys.executable,'tools/test_falsification.py')
     run(sys.executable,'tools/test_world_snapshot.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json',tool='probe_boot.py')
