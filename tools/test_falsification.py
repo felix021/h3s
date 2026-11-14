@@ -10,7 +10,8 @@ docs/falsification-checks.md。每个反例测试的通过条件本身就是「�
 两层:
 - 快速单测层(本文件直接运行,已接进 check_local.py --units):接线守卫、
   Timer0 计数守恒/停止纪律、跨页拆分哨兵、键链常量前置守卫、post_stop
-  外设时钟冻结。不需要私有 ROM;除 bus/post_stop 两组外也不需要模拟器。
+  外设时钟冻结、事件时钟 post_stop 冻结不变式(盲区 B-1 收口)、闭式
+  换算常量(盲区 B-2 收口)。除 bus/post_stop 两组外不需要私有 ROM。
 - 慢场景层(opt-in `--scenario-evidence --rom ROM`,不在 check_local 内):
   用被破坏的开关复跑大场景,证明前沿通过 genuinely 依赖该投影。
   见 docs/falsification-checks.md 的运行记录。
@@ -458,6 +459,373 @@ class PostStopFreezeTests(unittest.TestCase):
         self.assertEqual(hardware.timer.cnt,state_before+3+3,
                          'exactly two explicit advances may move the counter: the single explore '
                          'main-loop step (+3) and the resolution probe (+3); the direct call adds 0')
+
+
+# ---------------------------------------------------------------------------
+# B-2 闭式换算常量(盲区 B-2 收口;路 BK §3.2 钉死,docs/timer2-eventclock-
+# design.md §3.1/§3.2):「1 毫秒 = 恰 4000 模型步」有两条**独立**换算链,
+# 必须在同一全局模型步轴上汇合——散落字面值改一处就漂,这里提为命名常量,
+# AZ-7 用断言把推导链钉死(改任何原子,常量与模型行为一起红)。
+#   LRC/TIMER2 链: 1ms = 200 LRC tick(固件 PRD 写值,TIMER2 0x12cd26 helper
+#     的 1ms 调用形状)× 80 RC16M 参考 tick/LRC tick(LRC_HZ_NOMINAL=200000,
+#     AL 恒等式 7.68e9/38400;16MHz 参考系)÷ 4 RC16M 参考 tick/模型步
+#     (BR28Model.source_ticks_per_step 默认) = 200×80÷4 = 恰 4000 步。
+#   STD12M/Timer0 链: prd=119999(固件写值 12*10000/1-1)→ PRD+1=120000
+#     STD12M tick/10ms ÷ 3 STD12M tick/步(12/16×4,Timer0.
+#     STD12M_TICKS_PER_REF_TICK=(3,4))= 40000 步/10ms = 4000 步/ms。
+# 只提这两条已被闭式证明的普适换算;观测形状的瞬态推导值(如 horizon
+# 36,780 步,依赖 cnt)不提常量。常量用**字面原子**推导而非 import 实现
+# 侧常量:import 顺序不同时,「from br28_model import 常量」的快照会让本
+# 常量与实现原子同步漂移(断言恒真、漂移漏检);原子与实现侧的绑定由
+# AZ-7 的 atoms 测试单独钉死,链条=改实现原子 → atoms 红 + 模型互证红。
+STEPS_PER_MS=200*80//4                               # 200 LRC tick × 80 ÷ 4 = 4000
+TIMER0_STEPS_PER_10MS=120000//3                      # (PRD+1)@10ms ÷ 3 tick/步 = 40000
+
+
+# ---------------------------------------------------------------------------
+# AZ-6 事件时钟 post_stop 冻结不变式(盲区 B-1 收口;前置=CW 落地 event_clock
+# /docs/event-clock.md 契约)。AZ-5 已钉「post_stop 直调段不推进外设时间」
+# (Timer0/直调循环),AZ-2 已钉「模型 advance 停止非幂等」;本组把「stop 后
+# 事件时钟不再前进」升级为机器层不变式,常态覆盖事件时钟的全部可观测计数
+# 面:任何 stop 形状(交付请求逃逸/无事件诚实停/严格停传播/TIMER2 唤醒正常
+# 返回)之后、下一次显式推进调用之前,反复观察(计数快照+完整 report() 生成)
+# 必须逐项不变。合成双核(probe_event_clock 的 ParkedCpu 桩,如实标注非真实
+# 固件上下文)不需要 ROM/模拟器,进 units;任何「观察/查询路径隐式走表」的
+# 改动在这里红(反例自证钉分辨力)。
+class EventClockPostStopFreezeTests(unittest.TestCase):
+    @staticmethod
+    def _reportable_parked_cpu(pc,core_id):
+        """probe_event_clock.ParkedCpu + report() 需要的最小字段(R/rets)。
+
+        probe_event_clock 的场景从不调 machine.report(),故 ParkedCpu 缺这
+        两个字段;冻结观察轮要生成完整报告,这里补占位(R 全 0 与机器
+        launch 的「placeholders, not measured」同措辞),不是新硬件状态。"""
+        from probe_event_clock import ParkedCpu
+        cpu=ParkedCpu(pc,core_id)
+        cpu.R=[0]*16;cpu.rets=0
+        return cpu
+
+    @staticmethod
+    def _clock_state(machine,hardware):
+        """事件时钟全部可观测计数面的快照(纯读;任何一项推进都会显形)。"""
+        timer=hardware.timer
+        return {'event_clock_advances':machine.event_clock_advances,
+                'completed_model_steps':hardware.counts['completed_model_steps'],
+                'events_recorded':machine.event_count,
+                'core_ticks':[t.report() for t in hardware.core_ticks or ()],
+                'timer0':None if timer is None else
+                    (timer.con,timer.cnt,timer.prd,timer.pending,timer.expirations,
+                     timer.remainder,timer.source_remainder,timer.delivery_in_flight),
+                'timer2':None if hardware.timer2 is None else hardware.timer2.report(),
+                'software_pending':[(w.known,w.value) for w in
+                    (hardware.software_irq.pending if hardware.software_irq is not None else ())]}
+
+    def _assert_frozen(self,machine,hardware,rounds=3):
+        """反复观察(快照+完整报告生成+事件计数)必须逐项等于停点快照。"""
+        before=self._clock_state(machine,hardware)
+        for attempt in range(rounds):
+            report=machine.report()      # 完整 report() 生成也是观察路径
+            self.assertEqual(self._clock_state(machine,hardware),before,
+                             f'observation round {attempt} must not move the event clock')
+            projection=report.get('event_clock_projection')
+            if projection is not None:
+                self.assertEqual(projection['virtual_model_steps_advanced'],
+                                 before['event_clock_advances'])
+            self.assertEqual(machine.event_count,before['events_recorded'])
+        return before
+
+    def _assert_resolution(self,machine,hardware,before):
+        # 非空真证明:显式 advance 一步(运行循环同款参数)必须动计数——
+        # 「怎么查都不动」若成立,冻结断言就没有分辨力。
+        hardware.advance(0x300)
+        self.assertNotEqual(self._clock_state(machine,hardware),before,
+                            'an explicit advance must move the counters '
+                            '(otherwise the freeze assertion is vacuous)')
+
+    def _parked_machine(self,hardware):
+        """probe_event_clock.parked_machine 的可报告变体(cpu 带占位 R/rets)。"""
+        from br28_machine import DualCoreMachine
+        m=DualCoreMachine(software_irq_entry=True,core_tick_entry=True,
+                          idle_wait_projection=True,event_clock_projection=True)
+        cpu0=self._reportable_parked_cpu(0x6066318,0)
+        cpu1=self._reportable_parked_cpu(0x12c5ca,1)
+        m.cores={0:cpu0,1:cpu1};m.hardware=hardware;m.idle_wait_cores={0}
+        return m,cpu0,cpu1
+
+    def test_delivery_request_stop_freezes_the_event_clock(self):
+        # S1 交付请求逃逸:事件时钟推进到最近 core tick 溢出,IrqDeliveryRequest
+        # 逃出 enter_idle_wait(控制权回到 harness,不交付)——停点后冻结。
+        from probe_event_clock import hardware as event_hardware,arm_tick
+        from probe_boot import IrqDeliveryRequest
+        h=event_hardware(core0_irq3_nibble=3,core1_irq3_nibble=0)
+        m,cpu0,cpu1=self._parked_machine(h)
+        arm_tick(h,0,4,5)             # 2 步后溢出,合格
+        with self.assertRaises(IrqDeliveryRequest) as caught:
+            m.enter_idle_wait(cpu1)   # 全核 IDLE → 事件时钟 → 2 步 → 请求
+        self.assertEqual((caught.exception.details['core'],caught.exception.details['irq']),(0,3))
+        self.assertEqual(m.event_clock_advances,2)
+        before=self._assert_frozen(m,h)
+        self._assert_resolution(m,h,before)
+
+    def test_honest_stop_freezes_the_event_clock(self):
+        # S2 无事件诚实停:零推进 Blocked(all_cores_idle_waiting)——停点后冻结。
+        from probe_event_clock import hardware as event_hardware
+        from probe_boot import Blocked
+        h=event_hardware(core0_irq3_nibble=3,core1_irq3_nibble=0)
+        m,cpu0,cpu1=self._parked_machine(h)  # 不武装任何 tick
+        with self.assertRaisesRegex(Blocked,'all_cores_idle_waiting'):
+            m.enter_idle_wait(cpu1)
+        self.assertEqual(m.event_clock_advances,0)
+        before=self._assert_frozen(m,h)
+        self._assert_resolution(m,h,before)
+
+    def test_strict_blocked_stop_freezes_the_event_clock(self):
+        # S3 严格停传播:Timer0 合格到期而交付投影关——事件时钟推进途中
+        # Blocked(interrupt_delivery_not_implemented) 原样传播,停点后冻结。
+        from probe_boot import Blocked
+        from br28_machine import DualCoreMachine
+        h=BR28Model(initial_irq_config=[0]*32,initial_ipmask=0,
+                    timer0_std12m_source=True)
+        h.write(IRQ_CONFIG,0)
+        for address,value in ((TIMER0,0x4000),(TIMER0+4,0),(TIMER0+8,3),(TIMER0,0x1400)):
+            h.write(address,value)
+        h.write(IRQ_CONFIG,0x30000)    # IRQ4 使能+优先级1(真实运行态 nibble)
+        h.write(TIMER0,0x1401)         # STD12M 启动;每步 3 计数,prd+1=4
+        m=DualCoreMachine(software_irq_entry=True,idle_wait_projection=True,
+                          event_clock_projection=True)
+        cpu0=self._reportable_parked_cpu(0x6066318,0)
+        m.cores={0:cpu0};m.hardware=h;m.idle_wait_cores=set()
+        with self.assertRaisesRegex(Blocked,'interrupt_delivery_not_implemented'):
+            m.enter_idle_wait(cpu0)    # 单核全 IDLE → 事件时钟 → 到期 → 严格停
+        self.assertEqual(m.event_clock_advances,2)   # 闭式 horizon=ceil(16/12)=2
+        before=self._assert_frozen(m,h)
+        # 分辨力:停后再调 advance 会再次抛同一个严格停(AZ-2 的模型层
+        # 非幂等在 Timer0 上的形状)且计数已动——两件事一起断言。
+        with self.assertRaisesRegex(Blocked,'interrupt_delivery_not_implemented'):
+            self._assert_resolution(m,h,before)
+
+    def test_timer2_wakeup_return_freezes_and_matches_the_closed_form(self):
+        # S4 TIMER2 完成唤醒正常返回:事件时钟按 BK 闭式推进恰 STEPS_PER_MS
+        # 步,pending 置位、锚点停泊核被唤醒——返回后冻结。B-1(停后冻结)与
+        # B-2(1ms=4000 步闭式)在这个形状上汇合:推进量就是命名常量本身。
+        from br28_machine import DualCoreMachine,TIMER2_POLL_ANCHOR
+        from br28_model import TIMER2
+
+        class _IdleDecodeCpu:
+            """TIMER2 锚点停泊桩:与 probe_event_clock.ParkedCpu 同级的
+            合成件(非真实固件上下文),另在 0x12cd76 提供 idle 解码
+            (wake_timer2_poll 的 require 需要)与 report() 占位字段。"""
+            def __init__(self,pc,core_id):
+                self.mem=None;self.pc=pc;self.reti=0;self.steps=0
+                self.core_id=core_id;self.flags=0
+                self.sp_known=True;self.sp=0x4013f0;self.usp=None;self.ssp=0x123840
+                self.last_explicit_ssp=0x123840
+                self.bootstrap_context=None;self.after_then=None;self.repeat=None
+                self.active_context=None
+                self.icfg=0x300;self.icfg_known=True
+                self.R=[0]*16;self.rets=0   # 占位,not measured
+            def decode(self,pc):
+                class _Insn:id='idle'
+                return _Insn(),b'\x00\x00',2
+
+        h=BR28Model(initial_irq_config=[0]*32,initial_ipmask=0,
+                    timer2_delay_projection=True)
+        for address,value in ((TIMER2,0x4000),(TIMER2+4,1),(TIMER2+8,200),(TIMER2,0xC01)):
+            h.write(address,value)     # 1ms 形状:CNT=1/PRD=200/LRC 源/div1
+        m=DualCoreMachine(software_irq_entry=True,idle_wait_projection=True,
+                          event_clock_projection=True,timer2_delay_projection=True)
+        cpu0=_IdleDecodeCpu(TIMER2_POLL_ANCHOR,0)
+        m.cores={0:cpu0};m.hardware=h;m.idle_wait_cores=set()
+        m.enter_idle_wait(cpu0)        # 全核 IDLE → 事件时钟 → 4000 步 → 唤醒返回
+        self.assertEqual(m.event_clock_advances,STEPS_PER_MS,
+                         'the event clock must advance exactly the closed-form 1ms horizon')
+        self.assertEqual((cpu0.pc,cpu0.steps),(TIMER2_POLL_ANCHOR+2,1))
+        self.assertTrue(h.timer2.pending)
+        self.assertEqual(h.timer2.transactions[-1]['expiry_model_step'],STEPS_PER_MS)
+        before=self._assert_frozen(m,h)
+        self._assert_resolution(m,h,before)
+
+    def test_parked_entry_retry_after_stop_does_not_advance(self):
+        # 机器层入口幂等:停后对每个泊着的核重试 enter_idle_wait——「已泊」
+        # 短路立即 return,零推进。烧表只发生在直调 advance/事件时钟入口
+        # (AZ-2 与下一测试分别钉死),不在泊核入口。
+        from probe_event_clock import hardware as event_hardware,arm_tick
+        from probe_boot import IrqDeliveryRequest,Blocked
+        h=event_hardware(core0_irq3_nibble=3,core1_irq3_nibble=0)
+        m,cpu0,cpu1=self._parked_machine(h)
+        arm_tick(h,0,4,5)
+        with self.assertRaises(IrqDeliveryRequest):
+            m.enter_idle_wait(cpu1)
+        before=self._clock_state(m,h)
+        for cpu in (cpu0,cpu1):
+            m.enter_idle_wait(cpu)     # 已泊核:立即返回
+        self.assertEqual(self._clock_state(m,h),before)
+        # 诚实停形状同样入口幂等。
+        h2=event_hardware(core0_irq3_nibble=3,core1_irq3_nibble=0)
+        m2,c0,c1=self._parked_machine(h2)
+        with self.assertRaisesRegex(Blocked,'all_cores_idle_waiting'):
+            m2.enter_idle_wait(c1)
+        before2=self._clock_state(m2,h2)
+        for cpu in (c0,c1):
+            m2.enter_idle_wait(cpu)
+        self.assertEqual(self._clock_state(m2,h2),before2)
+
+    def test_event_clock_entry_retry_after_stop_does_not_burn_counters(self):
+        # B-1 盲区在事件时钟入口的裁决(实测性质,钉死为正面不变式):
+        # AZ-2 已钉「模型层直调 hardware.advance 停止非幂等——重试烧表」;
+        # 机器层 advance_event_clock 入口的 horizon 家族则显式排除
+        # unresolved_overflow 的 core tick(溢出即停在溢出态)与已在途的
+        # Timer0 pending 片(handler ACK 前不会再抛),重入时无事件 →
+        # 诚实停零推进。两个捕获形状都钉:core-tick 交付请求与 Timer0
+        # in-flight 请求;唯一新增簿记是 event_clock_engaged 事件计数 +1。
+        from probe_event_clock import hardware as event_hardware,arm_tick
+        from probe_boot import IrqDeliveryRequest,Blocked
+
+        def clock_domain(state):      # 事件簿记(event_count)不算时钟计数
+            return {k:v for k,v in state.items() if k!='events_recorded'}
+
+        # 形状一:core-tick 交付请求捕获(溢出即 unresolved_overflow,停表)。
+        h=event_hardware(core0_irq3_nibble=3,core1_irq3_nibble=0)
+        m,cpu0,cpu1=self._parked_machine(h)
+        arm_tick(h,0,4,5)              # 只武装 core0(core1 保持停表,horizon 单源)
+        with self.assertRaises(IrqDeliveryRequest):
+            m.enter_idle_wait(cpu1)
+        before=self._clock_state(m,h)
+        with self.assertRaisesRegex(Blocked,'all_cores_idle_waiting'):
+            m.advance_event_clock(cpu1)   # 重入:horizon 排除溢出态计数器
+        after=self._clock_state(m,h)
+        self.assertEqual(clock_domain(after),clock_domain(before),
+                         'the event-clock entry retry must not burn any timer counter')
+        self.assertEqual(after['events_recorded'],before['events_recorded']+1,
+                         'the retry only adds the event_clock_engaged bookkeeping event')
+
+        # 形状二:Timer0 in-flight 交付请求捕获(周期计数器,但 in-flight
+        # pending 片被 horizon 排除——不推进就不会走表)。
+        from br28_machine import DualCoreMachine
+        h2=BR28Model(initial_irq_config=[0]*32,initial_ipmask=0,
+                     timer0_std12m_source=True,timer0_irq_delivery_requests=True)
+        h2.write(IRQ_CONFIG,0)
+        for address,value in ((TIMER0,0x4000),(TIMER0+4,0),(TIMER0+8,3),(TIMER0,0x1400)):
+            h2.write(address,value)
+        h2.write(IRQ_CONFIG,0x30000)
+        h2.write(TIMER0,0x1401)
+        m2=DualCoreMachine(software_irq_entry=True,idle_wait_projection=True,
+                           event_clock_projection=True,timer0_irq_entry=True)
+        cpu0b=self._reportable_parked_cpu(0x6066318,0)
+        m2.cores={0:cpu0b};m2.hardware=h2;m2.idle_wait_cores=set()
+        with self.assertRaises(IrqDeliveryRequest) as caught:
+            m2.enter_idle_wait(cpu0b)
+        self.assertEqual((caught.exception.details['core'],caught.exception.details['irq']),(0,4))
+        before2=self._clock_state(m2,h2)
+        with self.assertRaisesRegex(Blocked,'all_cores_idle_waiting'):
+            m2.advance_event_clock(cpu0b)  # 重入:in-flight pending 片不是事件
+        after2=self._clock_state(m2,h2)
+        self.assertEqual(clock_domain(after2),clock_domain(before2))
+        self.assertEqual(after2['events_recorded'],before2['events_recorded']+1)
+
+    def test_sabotaged_observation_path_is_caught(self):
+        # 反例自证(破坏→红):若观察路径被改成隐式走表(比如 report() 生成时
+        # 「顺手把时间推进到最新」),冻结断言必须检出。给实例 report 打补丁
+        # 插入一次 advance,断言快照变化被抓住——证明冻结断言有分辨力,不是
+        # 「怎么查都不动」的空真。
+        from probe_event_clock import hardware as event_hardware
+        from probe_boot import Blocked
+        from br28_machine import DualCoreMachine
+        h=event_hardware(core0_irq3_nibble=3,core1_irq3_nibble=0)
+        m,cpu0,cpu1=self._parked_machine(h)
+        with self.assertRaisesRegex(Blocked,'all_cores_idle_waiting'):
+            m.enter_idle_wait(cpu1)
+        before=self._clock_state(m,h)
+        original=DualCoreMachine.report
+        try:
+            m.report=lambda:(h.advance(0x300),original(m))[1]   # 隐式推进的观察路径
+            m.report()
+            self.assertNotEqual(self._clock_state(m,h),before,
+                                'a query path that implicitly advances must be caught')
+        finally:
+            del m.report               # 撤除实例遮蔽,恢复类实现
+
+
+# ---------------------------------------------------------------------------
+# AZ-7 闭式换算常量断言(盲区 B-2 收口):STEPS_PER_MS/TIMER0_STEPS_PER_10MS
+# 的推导链逐原子钉死,并与模型行为互证——两条独立换算链在同一全局模型步轴
+# 上必须汇合;改实现侧任何原子(LRC 频率、参考 tick 比、每步源 tick),常量
+# 断言与模型互证一起红,漂移不会静默。
+class ClosedFormStepConstantsTests(unittest.TestCase):
+    def test_reference_step_axis_atoms_are_pinned(self):
+        # 原子常量与实现侧绑定:这些是推导链的全部输入,改任何一处,
+        # 下面的汇合/互证断言一起红。
+        from br28_model import LRC_HZ_NOMINAL,LRC_REF_TICKS_PER_LRC_TICK,Timer0
+        self.assertEqual((LRC_HZ_NOMINAL,LRC_REF_TICKS_PER_LRC_TICK),(200000,80),
+                         'AL identity 7.68e9/38400=200kHz and its 16MHz-reference quotient')
+        self.assertEqual(Timer0.STD12M_TICKS_PER_REF_TICK,(3,4),
+                         '12MHz STD12M vs the 16MHz RC16M reference axis')
+        h=BR28Model(initial_irq_config=[0]*32,initial_ipmask=0)
+        self.assertEqual(h.source_ticks_per_step,4,
+                         'RC16M reference ticks per model step (the shared run-loop axis)')
+        self.assertEqual(h.source_ticks_per_step*Timer0.STD12M_TICKS_PER_REF_TICK[0]
+                         //Timer0.STD12M_TICKS_PER_REF_TICK[1],3,
+                         'STD12M ticks per model step')
+
+    def test_two_independent_chains_meet_on_the_same_step_axis(self):
+        # LRC/TIMER2 链与 STD12M/Timer0 链独立推导,同一全局模型步轴上
+        # 必须给出同一个「每毫秒步数」——任一条链的原子漂移都打破汇合。
+        self.assertEqual(STEPS_PER_MS,200*80//4)
+        self.assertEqual(TIMER0_STEPS_PER_10MS,120000//3)
+        self.assertEqual(TIMER0_STEPS_PER_10MS,10*STEPS_PER_MS,
+                         'the Timer0 10ms period and the TIMER2 1ms delay must agree '
+                         'on the shared model-step axis')
+
+    def test_timer2_one_ms_delay_is_exactly_the_constant(self):
+        # 模型互证(TIMER2 链):1ms 形状(CNT=1/PRD=200/LRC 源/div1)的闭式
+        # horizon=常量,且逐 advance(4) 第 STEPS_PER_MS 步恰首次 pending。
+        from br28_model import Timer2Delay,TIMER2
+        t=Timer2Delay()
+        for address,value in ((TIMER2,0x4000),(TIMER2+4,1),(TIMER2+8,200)):
+            t.write(address,value)
+        t.write(TIMER2,0xC01)
+        self.assertEqual(t.steps_to_next_expiration(4),STEPS_PER_MS)
+        self.assertEqual(t.transactions[-1]['closed_form_steps'],STEPS_PER_MS)
+        for _ in range(STEPS_PER_MS-1):
+            t.advance(4)
+            self.assertFalse(t.pending)
+        t.advance(4)
+        self.assertTrue(t.pending)
+        self.assertEqual(t.transactions[-1]['expiry_model_step'],STEPS_PER_MS)
+
+    def test_timer0_ten_ms_period_is_exactly_ten_constants(self):
+        # 模型互证(STD12M/Timer0 链):前沿形状 prd=119999 的整周期恰
+        # TIMER0_STEPS_PER_10MS 步一次到期;回绕位置=整周期 3 tick/步
+        # 与 120000 tick 的守恒(每步恰 3 计数的 AZ-2 纪律在此形状特化)。
+        from br28_model import Timer0
+        t=Timer0((4,5))
+        t.write(0,0x4000);t.write(4,0);t.write(8,119999);t.write(0,0x1401)
+        for _ in range(TIMER0_STEPS_PER_10MS-1):
+            t.advance(4)
+            self.assertEqual(t.expirations,0)
+        t.advance(4)
+        self.assertEqual(t.expirations,1)
+        self.assertEqual(t.cnt,3*TIMER0_STEPS_PER_10MS-120000)
+
+    def test_sabotaged_conversion_atom_is_caught(self):
+        # 反例自证(破坏→红):改换算链一个原子(LRC 参考 tick 比 80→40,
+        # 即「LRC 频率漂一倍」),闭式与常量立刻不再一致——漂移被检出,
+        # 不会静默通过。
+        import br28_model
+        from br28_model import Timer2Delay,TIMER2
+        t=Timer2Delay()
+        for address,value in ((TIMER2,0x4000),(TIMER2+4,1),(TIMER2+8,200)):
+            t.write(address,value)
+        t.write(TIMER2,0xC01)
+        original=br28_model.LRC_REF_TICKS_PER_LRC_TICK
+        try:
+            br28_model.LRC_REF_TICKS_PER_LRC_TICK=40
+            self.assertNotEqual(t.steps_to_next_expiration(4),STEPS_PER_MS,
+                                'a doubled LRC frequency must drift the closed form '
+                                'off the named constant')
+        finally:
+            br28_model.LRC_REF_TICKS_PER_LRC_TICK=original
+        self.assertEqual(t.steps_to_next_expiration(4),STEPS_PER_MS,'atom restored')
 
 
 # ---------------------------------------------------------------------------
