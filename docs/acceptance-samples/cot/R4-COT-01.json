@@ -1,0 +1,28 @@
+{
+  "case_id": "R4-COT-01",
+  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=r4-keyhook 候选（--r4-keyhook 隐含 --hearing-aid-l1-slotram），sha256 8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d，与官方逐字节差异恰 554 字节、与 slotram 候选恰 111 字节（r4-command-hook §3.3）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段逐步 parity（analyze_image_trace compare_pair 机制），注入段事件对齐终态比对；场景两档同 R2-COT-01；差异面=l1 差异 ∪ {cmdid 0x30 setter 槽 4B（plain 0xA9C7C）+keyhook 代码 78B+链式 CRC}（r4-command-hook §3.3：vs slotram 恰 111 字节）",
+  "inputs_schedule": "无注入（boot 前缀全量重放）；观察窗=场景全前缀",
+  "observation_boundary": "§1.4 四条口径同 R2-COT-01；增量断言：注册表槽 0x060a9c7c（数据，零执行）与 keyhook 载荷区 [0x060E31E0,0x060E322E) 在前缀内零取指（keyhook 仅 0x30 写路径触达）；注册表消费面（三 walker 表基遍历：开机 init walker 0x06024df4 调 [+0]——init 槽 0x30 项为 0，walker 零值跳过/静默行为两侧同形）运行观测归档",
+  "assertions": [
+    "candidate-image-cotest §2.2 R4-COT-01：公共前缀 parity 的 r4 对——fence 0x060E322E/config.dat index（slotram 同族）+注册表槽与 keyhook 零消费；白名单源仅 A，A 之外任何差=回归",
+    "§1.2：loader 前置断言（sha 8e9a47d0/PLAIN_LENGTHS 0xE524E/差异分类账==r4 §3.3 逐区域账：vs 官方 554=slotram 472+注册表槽 4+keyhook 密文 78）",
+    "r4-command-hook §1.2 等价安全检查承接：槽原字节 00000000+全 app 引用扫描零命中+消费面钉死（本用例动态面=前缀零消费的旁证）"
+  ],
+  "timeout_budget": "同 R2-COT-01（2×289,849 + 2×3,747,585）；超时=FAIL",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机；回归检测语义非功能验证",
+    "A/B 全前缀重放非快照",
+    "开机 init walker 对 0x30 项（init=0）的行为=运行观测项（预期零值静默两侧同形）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "RCSP 分发链执行段（R4-COT-02..05）",
+    "候选真机行为（刷机授权缺失）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:40:00"
+}

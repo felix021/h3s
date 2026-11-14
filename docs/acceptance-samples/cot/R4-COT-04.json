@@ -1,0 +1,29 @@
+{
+  "case_id": "R4-COT-04",
+  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=r4-keyhook 候选（--r4-keyhook 隐含 --hearing-aid-l1-slotram），sha256 8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d，与官方逐字节差异恰 554 字节、与 slotram 候选恰 111 字节（r4-command-hook §3.3）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段逐步 parity（analyze_image_trace compare_pair 机制），注入段事件对齐终态比对；前置同 R4-COT-02（分发器可调）",
+  "inputs_schedule": "L0 对照注入：同世界直调分发器走 cmdid 0x17（setter 0x06025ca4）/0x22（EQ 写，R3-APP-01 组帧资产可复用）/0x1d（提示音音量 3/6/8）三条既有命令路径",
+  "observation_boundary": "三条路径的 handler 入口/写面/回执与官方世界逐项同（注册表其余 14 项未动：除 0x30 槽 4B 外注册表区零差异，r4 §3.3 字节账）；0x17 路径走 0x06025ca4→b[0x1265EB..ED] 三字节存储（R2-COT-06 的静态锚点同源）；0x22 走 0x0602583c memcpy src=r2 同步读；A/B 三层报告",
+  "assertions": [
+    "candidate-image-cotest §2.2 R4-COT-04：其他 cmdid 回归负例——候选只动 0x30 槽，既有命令族行为必须与官方全同；预期差异集=空，任何差=回归（「候选不碰无关功能线」的 R4 侧负例，与 R2-COT-04 对偶）",
+    "r4-command-hook §1.1 表 A 十五项占用：0x17/0x22/0x1d 的 setter 槽未被改动（字节账无注册表区差异除 0x30 项）；分发器走表逻辑（body[0]=cmdid 匹配 +24）对全部 cmdid 同形",
+    "§2.3：本用例白名单仅源 A（boot 派生族），注入段零行为差"
+  ],
+  "timeout_budget": "全前缀重放 2×+三条命令分发预算（10⁴-10⁵ 模型步级）；超时=FAIL",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机；L0 直调层语义",
+    "0x22 EQ 帧的完整语义验收归 R3 线档案（本用例只对照「行为与官方同」）",
+    "A/B 全前缀重放非快照"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "表 C 批量同步域（cmdid 1/2/12——非本候选触面，r4 §1.1）",
+    "RCSP 相位完整链（R4-COT-05）",
+    "候选真机行为（刷机授权缺失）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:40:00"
+}

@@ -1,0 +1,30 @@
+{
+  "case_id": "R2-COT-05",
+  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=l1_slotram 候选 H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_SLOTRAM_OFFLINE_UNTESTED.ufw，sha256 906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914（build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-slotram，与官方全文件逐字节差异恰 472 字节，hearing-aid-l1-payload §12.3）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段逐步 parity（analyze_image_trace compare_pair 机制），注入段事件对齐终态比对；起点同 R2-COT-02；前置=前沿过 0x0600db3c+D1 过线（L1 post 注入）",
+  "inputs_schedule": "L0 先 db3c(3,1) 激活辅听（世界 B；世界 A 官方同样注入 db3c(3,1)——但官方无桩，走原 TRANS apply，辅听不激活）→ L1 post 0x10b00（音量-单击，AJ 实测）",
+  "observation_boundary": "世界 B（候选）：0x06017b22 首层 [QCY+592]（0x126810）≠0 门命中→音量动作早退（QCY+4434 不变、0x10000/0x20000 事件族零 post、无提示音链）；世界 A（官方）：门读 0（无播放器对象）→正常媒体音量链（级别变化+事件族 post）；A/B 三层报告的二级差预登记=QCY+4434 级别变化仅官方侧发生",
+  "assertions": [
+    "candidate-image-cotest §2.1 R2-COT-05：音量键交汇=key-action-map §4.4 第二交汇点——0x06017a58/0x06017b22 的 0x0603370c 门读 [QCY+592]（pc_mic/mic_effect 播放器对象槽），辅听活动时音量键在本路径被吞（返回不执行媒体音量）；这是动作覆盖×辅听接驳的可测交汇",
+    "§2.3：预期差异集=源 D（门读值差→行为差：官方 post 事件族/候选不 post——候选的功能预期差，不是回归）+源 B（辅听激活写集）+源 A/C；二级差预登记=QCY+4434 与事件族",
+    "辅听激活后的音量接管路径未定位（key-action-map §4.1 标注）——本用例只断「媒体音量链不走」，不断言接管路径正确性"
+  ],
+  "timeout_budget": "全前缀重放 2×+激活+音量事件分发预算（10⁴-10⁵ 模型步级）；超时=FAIL",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机；L0+L1 混合注入（激活半边直调、音量半边 post——两层语义分别标注）",
+    "前置=前沿过 0x0600db3c+D1 过线",
+    "辅听自身音量接管路径（未定位，不在断言面）",
+    "A/B 全前缀重放非快照"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "音量接管路径（未定位）",
+    "完整 ADC 识别层（L2）",
+    "候选真机行为（刷机授权缺失）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:40:00"
+}

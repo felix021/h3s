@@ -1,0 +1,31 @@
+{
+  "case_id": "R4-COT-02",
+  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=r4-keyhook 候选（--r4-keyhook 隐含 --hearing-aid-l1-slotram），sha256 8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d，与官方逐字节差异恰 554 字节、与 slotram 候选恰 111 字节（r4-command-hook §3.3）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段逐步 parity（analyze_image_trace compare_pair 机制），注入段事件对齐终态比对；前置=分发器可调性观测（0x0600f85e 同步分支 0x0600f932 不依赖任务投递——首选同步路径；若入口前置读到未建模对象按 d2b 蓝图 §2.5.1 world_prep 补齐并记录，不放宽停点）",
+  "inputs_schedule": "L0 直调：构造命令体 data=[30, v0..v7]（9B 写形状，v=路 AB 记录用值 de ad be ef 21 00 …8B），直调分发器 0x0600f85e 的 0xFF 写路径（body[0]=0x30 匹配表 A +24→0x0600f8b4 取 +8 setter）",
+  "observation_boundary": "世界 B（候选）：setter 槽非零→同步 call 0x0600f932-93e（ABI (resp,128,data,len)→n）→载荷 r4_keystore_hook 0x060E31E0 执行：len==9∧data[0]==30→set_config(30,data+1,8)@0x06001f12→VM key 30 记录写入（路 AB 记录形状 57 30 <8B>，vm-key-roundtrip）→回执 resp[0..2]=30 01 00（status=0，字存储落在 resp[2]）经 0x0600f946 包装（resp[0]=cmdid/resp[1]=n 覆写）；世界 A（官方）：0x30 槽=0→0x0600f8b6 静默退出零回执零写（空槽官方行为，r4 §1.2）；A/B 三层报告",
+  "assertions": [
+    "candidate-image-cotest §2.2 R4-COT-02：分发器写路径半程——预期差异集=源 B（载荷写集：VM 记录区+resp 缓冲）+源 D（官方静默退出 vs 候选执行=功能预期差）+源 A/C",
+    "r4-command-hook §2 载荷依据表：set_config 入口 0x06001f12 由路 AB 函数级仿真直调全链实证（写→同机读回→重启重扫仍在）；key 30 无需注册（VM match key-1<256 全命中）；静默不回 n=0=分发器 0x0600f942 ifs(n<1) 既有行为",
+    "§2.3 判定器反例自检：故意改坏载荷字节/回执形状→必须 FAIL",
+    "本用例解锁 r234 R4-VM-05（BLOCKED：命令分发链执行）的半程半边——RCSP 相位到达后 R4-COT-05 补全程"
+  ],
+  "timeout_budget": "全前缀重放 2×+分发器+载荷+VM 写预算（10⁴-10⁵ 模型步级）；超时=FAIL",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机；L0 直调=分发器半程，不冒充 RCSP 命令层闭环（R4-COT-05 承接）",
+    "分发器可调性=运行观测项（同步分支首选；异步 trampoline 0x060256aa 需命名任务 0x060A1D11 存在，归 R4-COT-05）",
+    "帧缓冲在同步调用期间有效是既有命令族共用契约（r4 §5.3 [推断] 承接）",
+    "A/B 全前缀重放非快照"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "异步投递路径（trampoline，R4-COT-05）",
+    "RCSP 相位完整链（R4-COT-05）",
+    "候选真机行为（刷机授权缺失）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:40:00"
+}
