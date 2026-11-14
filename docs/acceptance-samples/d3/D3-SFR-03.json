@@ -1,0 +1,30 @@
+{
+  "case_id": "D3-SFR-03",
+  "firmware_identity": "观测对象=真机 P3_ANA_READ（0xf2c064，SDK charge_hw.h 逐位语义寄存器）；对照模型值=路 CB 具名常量 live-input fixture（derived_mask=0b110、电池场景值 0b000，docs/appcore-tail-sfr-semantics.md §9）",
+  "initial_state": "真机正常启动完成后进入 USB ROM loader 会话（复位态世界+USB VBUS≈5V 在位，与 CB 电池启动场景为两个不同场景锚）；模型侧=CB 场景锚世界（电池启动无外部供电 ldoin≈0V→bit1/bit2=0，41 次轮询常量）",
+  "inputs_schedule": "一次 128B FD07 读 0xf2c064 起×双读比对；与 D3-PRB-01/02 同会话打包（docs/d3-session-pack.md §1 读点 62–63）",
+  "observation_boundary": "低字节 bit1/bit2（掩码 0b110 判读）+整字其余位（含 bit0 CHARGE_FULL_FLAG，只记录不判读）；窗口=单次读回",
+  "assertions": [
+    "d3-session-pack §2.3：掩码位=0b110（bit1=1 且 bit2=1）→USB 在位场景下充电检测位语义获真机对照，与 CB 电池场景 fixture 0b000 互补成对——两个场景锚一起约束 charge_hw.h 位语义+charge.c 阈值推导链",
+    "掩码位≠0b110→位语义/阈值/复位态检测器行为推导链复审（如实记录字节，不拟合；域内其他形状=新输入）",
+    "双读不一致或 FD07 失败→会话即停记录（通用纪律，无重试）；0xffe/0xfd3 窗首读挂起同样即停（无窗探测重试）"
+  ],
+  "timeout_budget": "单次读（与 PRB-01 打包时+1 读点）；失败即停",
+  "model_assumptions": [
+    "USB 会话场景推导：读时 VBUS≈5V 在位→ldoin>0.6V（bit2 置位）且 ldoin>vbat≈3.7-4.2V（bit1 置位）——由 SDK charge_hw.h 位语义+charge.c 阈值（路 CB 逐行钉死）+物理场景推出，待真机对照",
+    "其余位（含 bit0）无推导链，CB derived_mask=0b110 把其余位显式标非推导——本记录只判 bit1/bit2",
+    "复位态世界检测器有效性与位保持性：live 输入位语义（读取时刻物理状态）在 loader 会话是否成立离线不可证，首会话观测"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "只读会话授权（与 D3-PRB-01/02 打包）",
+    "电池场景半边（无外部供电时 bit1/bit2=0 的 CB fixture 对照）——本会话 USB 必然在位，答不了电池场景，两个场景锚需分别观测",
+    "bit0 CHARGE_FULL_FLAG 及其余位的判读（无推导链，记录型）",
+    "P3_ANA_READ 写侧/去抖任务的动态行为（运行时语义，§2.3 复位态世界不可答）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T23:27:38"
+}

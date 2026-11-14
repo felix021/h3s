@@ -6,6 +6,10 @@ Raw images may contain vendor material: keep the output private/ignored.
 The optional --p11-heap-probe mode replaces the ROM window with the fixed
 five-address plan from docs/p11-heap-measurement.md; that page (not this tool)
 governs the still-deferred device session.
+The optional --session-pack mode merges the four D3 read-only probes
+(C1 heap descriptor / C2 ADC RES / C3 P3_ANA_READ / C5 core-tick CNT-PRD)
+into one fixed eight-address plan from docs/d3-session-pack.md; --dry-run
+prints the exact command plan without touching any device.
 """
 import argparse
 import errno
@@ -35,6 +39,31 @@ P11_HEAP_PROBE_PLAN=(
     ('p11_heap_descriptor',0xf27f40,'target'),
 )
 P11_HEAP_PROBE_ADDRESSES={entry[1] for entry in P11_HEAP_PROBE_PLAN}
+
+# Optional --session-pack plan (docs/d3-session-pack.md): the C1 five-address
+# P11-heap plan unchanged (four controls + target), plus one 128B read each for
+# C2 (JL_ADC CON+RES at 0xfd3100/0xfd3104), C3 (P3_ANA_READ at 0xf2c064) and
+# C5 (core-tick CNT/PRD at 0xffe0f0/0xffe0f4). Every entry is exactly one 128B
+# FD07 read through the pinned RAM loader, read twice, no retries.
+SESSION_PACK_PLAN=(
+    ('cpu1_entry_snapshot',0x19fef4,'control','C1'),
+    ('cpu1_ready_snapshot',0x1265f4,'control','C1'),
+    ('p11_code_head',0xf20080,'control','C1'),
+    ('lrct_num',0xfd3604,'control','C1'),
+    ('p11_heap_descriptor',0xf27f40,'target','C1'),
+    ('adc_con_res',0xfd3100,'target','C2'),
+    ('p3_ana_read',0xf2c064,'target','C3'),
+    ('core_tick_cnt_prd',0xffe0f0,'target','C5'),
+)
+SESSION_PACK_ADDRESSES={entry[1] for entry in SESSION_PACK_PLAN}
+# Retention positive controls whose match gates the C1 target verdict
+# (docs/p11-heap-measurement.md decision criteria: all controls match, else
+# the heap read is inconclusive - data recorded, never refitted).
+SESSION_RETENTION_CONTROLS=('cpu1_entry_snapshot','cpu1_ready_snapshot','p11_code_head')
+# Opcodes that would write/erase/program/jump/reset beyond the pinned entry
+# sequence; a session-pack plan must contain none of them (zero-write rule).
+FORBIDDEN_OPCODES=(0xfb00,0xfb01,0xfb02,0xfb04,0xfc0c,0xfc12,0xfd05)
+FORBIDDEN_COMMAND_NAMES=('FB00','FB01','FB02','FB04','FC0C','FC12','FD05')
 
 
 class ROMReadTransport(LinuxTransport):
@@ -256,19 +285,302 @@ def p11_heap_capture(loader_path,work,p11_code_path=None):
     print('Probe complete. Unplug USB and manually restart the headset; check playback and ANC key.',flush=True)
 
 
+def session_pack_expectations(p11_head):
+    """Offline-pinned checks per session-pack read; every expectation carries
+    its derivation-chain source. Policies: 'exact' byte match, 'masked'
+    single-byte mask match, 'domain' numeric range with named candidates,
+    'record' = record-only read point (no derivation chain -> no verdict).
+
+    Verdicts are reported, never enforced: a mismatch is data recorded as-is
+    (three-branch decision criteria in docs/d3-session-pack.md, following
+    docs/p11-heap-measurement.md).
+    """
+    p11_head_check=(None if p11_head is None else
+        {'label':'p11_code_head_32B','offset':0,'width':32,'policy':'exact',
+         'expected':p11_head.hex(),
+         'source':'p11_code.bin head 32B (pinned public UFW resource, SHA1 '+P11_CODE_SHA1+')'})
+    if p11_head_check is None:
+        p11_head_check={'label':'p11_code_head_32B','offset':0,'width':32,'policy':'record',
+            'expected':None,'source':'p11_code.bin reference not provided; '
+            'P11 RAM retention control not checked (pass --p11-code to enable)'}
+    return {
+        'cpu1_entry_snapshot':[{'label':'cpu1_entry_word','offset':4,'width':4,'policy':'exact',
+            'expected':'f4ca1200',
+            'source':'0x19fef8 CPU1 entry word 0x12caf4 (three-way simulation evidence; '
+                     'docs/p11-heap-measurement.md)'}],
+        'cpu1_ready_snapshot':[{'label':'cpu1_ready_flag','offset':1,'width':1,'policy':'exact',
+            'expected':'01',
+            'source':'0x1265f5 CPU1 ready flag 1 (stale post-boot value if RAM retains)'}],
+        'p11_code_head':[p11_head_check],
+        'lrct_num':[{'label':'lrct_num_word','offset':0,'width':4,'policy':'record','expected':None,
+            'source':'JL_LRCT NUM SFR-window observation point (app trim never ran in a loader '
+                     'session, reset-state data expected; low diagnostic value, recorded only)'}],
+        'p11_heap_descriptor':[{'label':'heap_begin_size','offset':0xa,'width':4,'policy':'exact',
+            'expected':'0c3df439',
+            'source':'derived begin=0x3d0c size=0x39f4 (route X three-way derivation; '
+                     'derived, not measured)'}],
+        'adc_con_res':[
+            {'label':'adc_res_halfword','offset':4,'width':2,'policy':'domain','domain':(1,1023),
+             'candidates':{400:'WBG04 (BU section 6 candidate)',
+                           500:'VBAT_4 (BU section 6; battery gate 4*(500*K/400)>=3200mV '
+                               'holds for K in [756,846])'},
+             'source':'RES holds the last conversion, ~WBG04 at the boot-chain end (BU section 6 '
+                      'assessment); 10-bit domain 1..1023; candidates 400/500 from the '
+                      'BU section 6 table (docs/adc-res-consumer.md section 6)'},
+            {'label':'adc_con_halfword','offset':0,'width':2,'policy':'record','expected':None,
+             'source':'JL_ADC CON reset-state observation (the 0x46105d-family projection is a '
+                      'running-world last-write value; loader session = reset world, recorded only)'}],
+        'p3_ana_read':[
+            {'label':'charge_detector_bits','offset':0,'width':1,'policy':'masked','mask':0x06,
+             'expected':'06',
+             'source':'bit1=LVCMP_DET (ldoin>vbat), bit2=LDO5V_DET (ldoin>0.6V = charging cable '
+                      'present) per SDK charge_hw.h bit semantics + charge.c thresholds (route CB); '
+                      'a USB session has VBUS ~5V present, so both bits are expected set - '
+                      'complementary to the CB battery-only fixture 0b000'},
+            {'label':'other_bits','offset':0,'width':4,'policy':'record','expected':None,
+             'source':'remaining P3_ANA_READ bits incl. bit0 CHARGE_FULL_FLAG: no derivation chain, '
+                      'recorded only (CB derived_mask=0b110 keeps the others explicitly non-derived)'}],
+        'core_tick_cnt_prd':[
+            {'label':'core_tick_cnt','offset':0,'width':4,'policy':'record','expected':None,
+             'source':'core-tick CNT reset-value anchor (model starts con/cnt/prd=None -> strict '
+                      'stop; no derivation chain exists for the reset word, recorded only)'},
+            {'label':'core_tick_prd','offset':4,'width':4,'policy':'record','expected':None,
+             'source':'core-tick PRD reset-value anchor (1199999 is the firmware-written running '
+                      'value; reset and running values accounted separately - D3-SFR-02)'}],
+    }
+
+
+def session_pack_controls_status(blocks,expectations):
+    """Retention-control gate for the C1 heap target (all-controls-match rule)."""
+    statuses={}
+    for name in SESSION_RETENTION_CONTROLS:
+        check=expectations[name][0]
+        if check['policy']=='record':
+            statuses[name]='not_checked'
+            continue
+        block=blocks[name]
+        actual=block[check['offset']:check['offset']+check['width']]
+        statuses[name]='match' if actual==bytes.fromhex(check['expected']) else 'mismatch'
+    if 'mismatch' in statuses.values():
+        return 'failed',statuses
+    if 'not_checked' in statuses.values():
+        return 'incomplete',statuses
+    return 'ok',statuses
+
+
+def session_pack_verdict(check,block):
+    """Three-branch suggestion for one check against its 128B block."""
+    policy=check['policy']
+    if policy=='record':
+        return 'recorded_no_verdict'
+    actual=block[check['offset']:check['offset']+check['width']]
+    if policy=='domain':
+        value=int.from_bytes(actual,'little')
+        if not check['domain'][0]<=value<=check['domain'][1]:
+            return 'inconclusive_not_retained_or_out_of_domain'
+        if value in check.get('candidates',{}):
+            return 'match_upgrade_measured'
+        return 'in_domain_no_candidate_recorded_review'
+    expected=bytes.fromhex(check['expected'])
+    if policy=='exact':
+        matched=actual==expected
+    else:
+        matched=(actual[0]&check['mask'])==(expected[0]&check['mask'])
+    return 'match_upgrade_measured' if matched else 'mismatch_review_no_refit'
+
+
+def session_pack_command_plan(loader):
+    """The exact command sequence a --session-pack run would execute:
+    entry sequence (INQUIRY, pinned FB06 upload x46, FB08, FC0A) then, per
+    planned address, two FD07 128B reads. loader=None keeps FB06 CRCs as
+    placeholders (dry-run without the private loader file)."""
+    plan=[]
+    def add(opcode,detail,phase):
+        plan.append({'step':len(plan)+1,'opcode':opcode,'phase':phase,**detail})
+    add('INQUIRY',{'cdb_hex':bytes([0x12,0,0,0,36,0]).hex(),'size':36},'fresh-rom')
+    if loader is None:
+        for block in range(46):
+            add('FB06',{'address':0x120000+block*512,'length':512,'crc16':None,
+                        'loader_block':block},'fresh-rom')
+    else:
+        for offset in range(0,len(loader),512):
+            data=loader[offset:offset+512]
+            add('FB06',{'address':0x120000+offset,'length':512,'crc16':crc(data),
+                        'loader_block':offset//512},'fresh-rom')
+    add('FB08',{'address':0x120000,'argument':1,'size':16},'fresh-rom')
+    add('FC0A',{'size':16},'loader-started')
+    for pass_id in (1,2):
+        for name,address,role,probe in SESSION_PACK_PLAN:
+            add('FD07',{'address':address,'length':READ_BLOCK,'size':READ_BLOCK,
+                        'read':name,'role':role,'probe':probe,'pass':pass_id},'loader-ready')
+    return plan
+
+
+def session_pack_zero_write_assertions(plan):
+    """Zero-write rule, checked against the plan itself: after the pinned
+    entry sequence every command is an FD07 memory READ; no write/erase/
+    program/OTP/jump/reset opcode appears anywhere."""
+    totals={}
+    for command in plan:
+        totals[command['opcode']]=totals.get(command['opcode'],0)+1
+    post_entry=[c for c in plan if c['phase']=='loader-ready']
+    return {
+        'command_total':len(plan),
+        'opcode_counts':dict(sorted(totals.items())),
+        'post_entry_all_fd07_reads':bool(post_entry) and all(c['opcode']=='FD07' for c in post_entry),
+        'forbidden_opcode_count':sum(totals.get(name,0) for name in FORBIDDEN_COMMAND_NAMES),
+        'flash_erase_or_program_commands':0,
+        'otp_write_commands':0,
+        'fd07_read_commands':totals.get('FD07',0),
+    }
+
+
+def session_pack_execute(t,work,expectations):
+    """Run the fixed plan; write each raw block 0600 and build report entries
+    with two-pass comparison and three-branch verdict suggestions."""
+    blocks={}
+    entries=[]
+    for name,address,role,probe in SESSION_PACK_PLAN:
+        block=probe_read_two(t,address)
+        fd=os.open(work/f'session-pack-{address:08x}-{name}.bin',
+                   os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'wb') as out:
+            out.write(block);out.flush();os.fsync(out.fileno())
+        blocks[name]=block
+        entries.append({'name':name,'address':address,'role':role,'probe':probe,
+            'bytes':len(block),'sha256':hashlib.sha256(block).hexdigest(),
+            'two_pass_match':True,'checks':[]})
+    heap_status,control_detail=session_pack_controls_status(blocks,expectations)
+    for entry in entries:
+        block=blocks[entry['name']]
+        for check in expectations[entry['name']]:
+            verdict=session_pack_verdict(check,block)
+            actual=block[check['offset']:check['offset']+check['width']]
+            note=None
+            if entry['name']=='p11_heap_descriptor' and check['policy']!='record':
+                if heap_status=='failed':
+                    verdict,note='inconclusive_control_failed',(
+                        'retention control mismatch - cannot distinguish wrong derivation '
+                        'from a cleared window (docs/p11-heap-measurement.md decision criteria)')
+                elif heap_status=='incomplete':
+                    note=('retention controls incomplete (p11_code reference missing); '
+                          'verdict is review-only')
+            if check['policy']=='domain' and verdict=='match_upgrade_measured':
+                note='candidate: '+check['candidates'][int.from_bytes(actual,'little')]
+            entry['checks'].append({'label':check['label'],'offset':check['offset'],
+                'width':check['width'],'policy':check['policy'],
+                'expected':check.get('expected'),'mask':check.get('mask'),
+                'domain':list(check['domain']) if check.get('domain') else None,
+                'candidates':{str(k):v for k,v in check.get('candidates',{}).items()} or None,
+                'source':check['source'],'actual_hex':actual.hex(),
+                'verdict':verdict,'enforced':False,'note':note})
+    return entries,heap_status,control_detail
+
+
+def session_pack_report_base(loader_provided):
+    loader_status=('pinned sha256 '+LOADER_SHA if loader_provided else
+                   'not provided; FB06 crc16 are placeholders, live run requires the pinned loader')
+    return {'plan':'--session-pack','memory_read_block':READ_BLOCK,
+            'ram_loader_sha256':LOADER_SHA,'loader':loader_status,
+            'retry_policy':'none; first failure or two-read mismatch ends the session',
+            'three_branch_verdicts':'reported, never enforced (mismatch is data, not an error)',
+            'session_not_authorized':True,
+            'raw_files_must_remain_private':True}
+
+
+def session_pack_capture(loader_path,work,p11_code_path=None):
+    loader=loader_path.read_bytes()
+    require(len(loader)==23552 and hashlib.sha256(loader).hexdigest()==LOADER_SHA,
+            'pinned BR28 RAM loader required')
+    require(not work.exists(),'use a NEW private output directory')
+    p11_head=None if p11_code_path is None else pinned_p11_head(p11_code_path)
+    t=open_session(lambda:ROMReadTransport(loader,probe_addresses=SESSION_PACK_ADDRESSES))
+    work.mkdir(parents=True,mode=0o700)
+    try:
+        load_ram(t,loader_path)
+        reads,heap_status,control_detail=session_pack_execute(
+            t,work,session_pack_expectations(p11_head))
+        report=session_pack_report_base(True)
+        report.update({'status':'SESSION_PACK_READS_COMPLETE','dry_run':False,
+            'device_accessed':True,'reads':reads,
+            'heap_retention_controls':{'status':heap_status,'detail':control_detail},
+            'command_plan':session_pack_command_plan(loader),
+            'zero_write_assertions':session_pack_zero_write_assertions(
+                session_pack_command_plan(loader))})
+        save_json(work/'report.json',report)
+        print(json.dumps(report),flush=True)
+    finally:
+        try:t.close()
+        except OSError as e:
+            if e.errno not in (errno.ENODEV,errno.ESHUTDOWN):
+                raise
+    print('Session pack complete. Unplug USB and manually restart the headset; '
+          'check playback and ANC key.',flush=True)
+
+
+def session_pack_dry_run(loader_path=None,p11_code_path=None):
+    """Offline rehearsal deliverable: the exact command plan plus the pinned
+    expectation table, without opening USB. No device is touched."""
+    loader=None
+    if loader_path is not None:
+        blob=loader_path.read_bytes()
+        require(len(blob)==23552 and hashlib.sha256(blob).hexdigest()==LOADER_SHA,
+                'pinned BR28 RAM loader required')
+        loader=blob
+    p11_head=None if p11_code_path is None else pinned_p11_head(p11_code_path)
+    expectations=session_pack_expectations(p11_head)
+    plan=session_pack_command_plan(loader)
+    reads=[]
+    for name,address,role,probe in SESSION_PACK_PLAN:
+        reads.append({'name':name,'address':address,'role':role,'probe':probe,
+            'passes':2,'length':READ_BLOCK,
+            'checks':[{**{k:c[k] for k in ('label','offset','width','policy','source')
+                          if k in c},
+                        'expected':c.get('expected'),
+                        'mask':c.get('mask'),
+                        'domain':list(c['domain']) if c.get('domain') else None,
+                        'candidates':({str(k):v for k,v in c['candidates'].items()}
+                                      if c.get('candidates') else None),
+                        'verdict':'branch_pending_session'}
+                       for c in expectations[name]]})
+    report=session_pack_report_base(loader is not None)
+    report.update({'status':'SESSION_PACK_DRY_RUN','dry_run':True,'device_accessed':False,
+        'entry_sequence':{'inquiry':1,'fb06_blocks':46,'fb08':1,'fc0a':1},
+        'reads':reads,'command_plan':plan,
+        'zero_write_assertions':session_pack_zero_write_assertions(plan)})
+    return report
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--loader',type=Path,required=True)
-    p.add_argument('--workdir',type=Path,required=True)
+    p.add_argument('--loader',type=Path)
+    p.add_argument('--workdir',type=Path)
     p.add_argument('--p11-heap-probe',action='store_true',
         help='read the fixed five-address P11 heap plan (docs/p11-heap-measurement.md) instead of the ROM window')
+    p.add_argument('--session-pack',action='store_true',
+        help='read the fixed eight-address D3 session pack (C1+C2+C3+C5, docs/d3-session-pack.md) instead of the ROM window')
+    p.add_argument('--dry-run',action='store_true',
+        help='with --session-pack: print the exact command plan and expectation table without touching any device')
     p.add_argument('--p11-code',type=Path,
         help='optional pinned p11_code.bin reference enabling the 0xf20080 head comparison')
     args=p.parse_args()
-    require(args.p11_heap_probe or args.p11_code is None,'--p11-code requires --p11-heap-probe')
-    if args.p11_heap_probe:
+    require(not args.dry_run or args.session_pack,'--dry-run requires --session-pack')
+    require(args.p11_heap_probe or args.session_pack or args.p11_code is None,
+            '--p11-code requires --p11-heap-probe or --session-pack')
+    if args.session_pack:
+        if args.dry_run:
+            print(json.dumps(session_pack_dry_run(args.loader,args.p11_code),indent=2))
+        else:
+            require(args.loader is not None and args.workdir is not None,
+                    '--loader and --workdir are required (omit only with --dry-run)')
+            session_pack_capture(args.loader,args.workdir,args.p11_code)
+    elif args.p11_heap_probe:
+        require(args.loader is not None and args.workdir is not None,
+                '--loader and --workdir are required')
         p11_heap_capture(args.loader,args.workdir,args.p11_code)
     else:
+        require(args.loader is not None and args.workdir is not None,
+                '--loader and --workdir are required')
         capture(args.loader,args.workdir)
 
 

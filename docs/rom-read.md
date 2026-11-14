@@ -60,6 +60,8 @@ python3 tools/probe_rom.py --rom /path/to/QCY_H3S_BR28_ROM_000000-020000.bin --r
 
 可选 `--p11-heap-probe` 模式（2026-11-13 路 BM，按 [p11-heap-measurement.md](p11-heap-measurement.md) 的扩展轮廓实现）把固定窗口换成五地址白名单读计划（4 个正控制 + 1 个堆描述符目标，各恰好一次 128B 读、两读字节比对、无重试）；期望值比对只报告不强制，`0xf20080` 头 32B 比对需可选 `--p11-code`（SHA1 钉死的公开 p11_code.bin）。该模式只有离线测试，真机会话仍属未授权的备用方案。默认 ROM 窗口模式行为不变。
 
+可选 `--session-pack` 模式（2026-11-14 路 SESS，计划单=[d3-session-pack.md](d3-session-pack.md)）把 D3 真机对照最小集（C1 五读点+C2 ADC RES 0xfd3100+C3 P3_ANA_READ 0xf2c064+C5 core-tick CNT/PRD 0xffe0f0）并成一个八读点固定计划，机制全部复用 BM 实现；`--dry-run` 不碰设备，输出 65 条命令逐步清单+期望值推导链表+零写断言（进入序列后全 FD07 读、写/擦/OTP/跳转类命令零计数），作为授权前的人工/机器审查交付物。判读三分支（匹配=升 measured/不符=复审不拟合/控制组失败=inconclusive）为建议性标注，报告不强制。同属未授权备用方案。
+
 要求 64 位 Linux／rooted Android、usbfs 权限、USB 数据线及**刚接入的正常 QCY USB**。已有 BR28 ROM／loader 身份会被拒绝，因为 INQUIRY 无法可靠区分两者；每次会话必须重新建立正常 USB 起点。以下是有意操作设备时的命令，不属于本机检查：
 
 ```bash
