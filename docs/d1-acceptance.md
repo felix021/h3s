@@ -575,5 +575,12 @@ D3 在本页只立框架：比较面的观测手段清单、容差声明格式�
   d2b-injection-blueprint §3/§4 观察点；全 NOT_RUN——等 BF 前沿释放+蓝图实施，依赖逐条挂
   「未覆盖项」）+ `README.md` 面板含注入面共同依赖地图（BF 前沿释放/蓝图实施/步 0 静态
   钉死/R1-R9 观测项四类）；运行态副本同上。
+- **D3 记录底稿（路 BS/sim-d3prep，2026-11-14 预填）**：`docs/acceptance-samples/d3/`——
+  真机一致性（§7）的案头就绪底稿 6 条（`D3-PRB-01` FD07 观测会话/`D3-SFR-01..02` 寄存器
+  读回/`D3-EVT-01` App wire 对照/`D3-TIM-01` 时窗/`D3-AUD-01` 音频「有声音」面），全
+  NOT_RUN（执行半边在仓库外：等真机授权或观测手段——事件日志面/校准手段现不存在，
+  时窗与音频两面据此诚实收口）；每条固化「身份/证据/失败判据」与 inconclusive 分支
+  （控制组失败≠重试理由）；候选实验三档清单/真机观测手段盘点/授权请求模板见
+  [docs/d3-preparation.md](d3-preparation.md)。
 - **测试**：`tools/test_acceptance_record.py`（32 例：往返/校验拒绝路径/BLOCKED 语义/
   示例合法性/CLI）已接入 `check_local --units`。

@@ -1,0 +1,29 @@
+{
+  "case_id": "D3-EVT-01",
+  "firmware_identity": "对照两侧：模型侧=b79/official 镜像仿真（R4 候选镜像含 r4-keyhook 8e9a47d0 时另行标注）；真机侧=QCY App↔H3S BLE 链路（RCSP 帧，FE DC BA|C0|FF|len_BE16|SN|cmd|…|EF）",
+  "initial_state": "真机蓝牙已配对连接 QCY App（正常应用态，非 loader 会话——本记录属 BLE 联调授权域，与 FD07 只读会话是两类授权）；模型侧=App 协议层纯 JVM 组帧（R3-APP-01..04 离线验证）+固件侧分发链静态锚点",
+  "inputs_schedule": "App 下发各一条并抓真机回执：setKeyFunction 实包（wire 定案用：ADV type2 0xC2 vs 0x2b 三元组 vs 批量同步 cmdid 2——三选一实测定案）+EQ 0x22 写与回执+key store 0x30 读/写回执（30 01 status/30 08 v0..v7）+0x17 三字节；抓包侧=App 与耳机间 BLE notify/write 明文帧",
+  "observation_boundary": "观察面=帧字节（wire 形状）+回执载荷+「设备已应用」侧证据（模式字节 0x124a04/ANC 模式字节 b[[QCY+500]+33]/key 30 VM 持久化的间接面：断连重连后再读）；窗口=单轮命令-回执往返×命令族",
+  "assertions": [
+    "d1-acceptance §7 事件流比较面（限定输入下事件与最终模式一致）：真机回执形状与模型/R3 组帧族逐字节对照（app-protocol §4.4 两处 [未钉] 定案）",
+    "R4-VM-04/05 的真机半边：0x30 回执 30 01 status/30 08 v0..v7 形状与 Loopback 桩对照；R4 候选刷入时（另行刷机授权）0x30 冲突面监控",
+    "「设备已应用」边界钉死（app-protocol §4.4：App 侧有时间过滤，响应≠应用）——以重连后读回为准，不以回执时序为准"
+  ],
+  "timeout_budget": "单联调会话内每命令族一轮往返（连接五段式+CCCD+MTU 协商按 android-query README 清单第 1 条）；回执缺失 5s=该条 FAIL（写路径超时先例），不重发凑数",
+  "model_assumptions": [
+    "R3 传输骨架的契约层（串行化/分片/SN）已离线验证（R3-APP-02/03 PASS/conditional）——真机侧只验 BLE 实际行为差异（回调时序/MTU/栈特异性）",
+    "App 抓包=用户侧操作（授权域=联调授权，AGENTS 不连真机红线）",
+    "固件侧分发链（0x0600db3c 键循环/RCSP 相位）在主仿真前沿尚未到达——本记录真机半边可先行（先对先销），模型半边对照归 B4 候选联动"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "BLE 联调授权（R3-APP-05/R4-VM-04/05 挂账同一授权）",
+    "抓包工具链与明文帧获取方式（hci 日志不进公开库，AGENTS 发布红线）",
+    "模型侧分发链执行证据（前沿 0x0600db3c/RCSP 相位——B4 前置）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:18:45"
+}

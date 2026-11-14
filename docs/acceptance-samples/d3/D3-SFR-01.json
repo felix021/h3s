@@ -1,0 +1,30 @@
+{
+  "case_id": "D3-SFR-01",
+  "firmware_identity": "观测对象=真机 JL_ADC->RES（0xfd3104，br28.h __RO 10 位转换结果寄存器）；对照模型值=b79/official 镜像仿真侧 FD31_ADC_RES_NAMED_VALUES 的 WBG04=400 候选（docs/adc-res-consumer.md §6，derived-not-measured）",
+  "initial_state": "真机正常启动完成（启动链最后一次转换≈WBG04 基准通道，BU §6 评估）后进入 USB ROM loader 会话（进入序列同 D3-PRB-01）；模型侧=条件前沿世界（p11_heap_experimental_config 投影栈）32 轮采样循环对 WBG04 的 fixture 值 400",
+  "inputs_schedule": "一次 128B FD07 读 0xfd3100 起（覆盖 CON/RES 两字）×双读比对；建议与 D3-PRB-01 同会话打包（同相位列、同只读纪律）",
+  "observation_boundary": "观察面=RES 半字（10 位域 0..1023）+CON 当前值（顺带对照 0x46105d 族投影读回值）；窗口=单次读回",
+  "assertions": [
+    "d3-preparation §1.3 C2：RES 读值即 WBG04 码值→升 measured 并反解 Vref（K=801±3d 除法链，BU §2）",
+    "读值须使电池门两条 mode 路径（float 直读与 divider 兜底，BU §5 疑点）都过 3200mV 门——若任一不过=模型世界与真机矛盾，重审 fixture 而非记录通过",
+    "门方向核验（BU §6）：读值 R 应满足 4×(R×K/400)≥3200（K∈[756,846] 全域）——4004mV≈标称 4.0V 锂电池物理锚"
+  ],
+  "timeout_budget": "单次读（与 PRB-01 打包时+1 读点）；失败即停",
+  "model_assumptions": [
+    "USB 会话里 RES 保持最后一次转换值（BU §6 评估：进入下载模式后 loader 不触碰 JL_ADC）——复位保持性离线不可证，首会话观测",
+    "WBG04=400/VBAT_4=500/VTEMP=400 候选为待验推导值（10 位域+常量样本自洽+4.0V 物理锚），非既成事实",
+    "ADC RES 是模拟测量值——模型红线「绝不发明 0/满值」维持；本记录只采真值不建模转换时序（PND 完成时序另属 BN 投影边界）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "只读会话授权（可与 D3-PRB-01 打包）",
+    "RES 复位保持性（若读回全 0/全 FF=inconclusive，与 P11 RAM 保持性同挂账）",
+    "VBAT_4/VTEMP 通道码值（本记录只读当前 RES 一字=末次转换 WBG04；他通道需运行态触发不在 loader 会话能力内）",
+    "ADC PND/bit7 完成时序（运行时动态语义，§2.3 复位态世界不可答）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:18:45"
+}
