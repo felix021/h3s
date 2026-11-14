@@ -106,11 +106,11 @@ codex 复盘口径（本页的三条总纲）：
 
 | # | 实验 | 比较面 | 手段就绪度 | 一次会话预期产出 |
 |---|---|---|---|---|
-| C1 | P11 heap 描述符 0xf27f4a..4d 四字节读回 | 寄存器/存储配置 | **工具就绪**（read_rom.py `--p11-heap-probe`，离线单测过，docs/p11-heap-measurement.md §会话计划） | begin/size 从 derived 升 measured；三控制组（0x19fef8 CPU1 入口字/0x1265f5 ready/0xf20080 p11_code 头）先验证 P11 RAM 保持性 |
-| C2 | ADC RES 0xfd3104 读回（WBG04 码值） | 寄存器配置 | 通道可读已评估（路 BA：loader FD07 纯 memcpy 无地址检查；RES 保持末次转换值≈WBG04，BU §6） | WBG04 码值升 measured+反解 Vref；电池链（BU §5 疑点 mode 双路径）获真值锚 |
-| C3 | P3_ANA_READ 0xf2c064 一读 | 寄存器配置 | 同上（0xf2xxxx 窗 loader 自用已实证） | 充电检测位（bit1/bit2）实测→CB 的 derived_mask=0b110 常量 fixture 获对照（当前=「无外部供电全 0」假设） |
-| C4 | cfg523 记录区窗（flash 0x1e0200/CPU 0x61de1e0）读回 | 输入域配置 | FD05 flash 读通道 2026-11-10 会话已实证；**另注**：2026-11-10 私有整片 2MiB 备份物理上已含 bank B 记录区字节，是否作为 fixture 输入=独立决策（单台设备私有数据，AGENTS 发布红线） | 三键阈值/键 id/通道字真值→REC 识别覆盖的合成矩阵从 synthetic 升 measured（临界值「未决」项可解） |
-| C5 | core-tick CNT 0xffe0f0/PRD 0xffe0f4 复位值 | 寄存器配置 | 通道可读；**能力边界**：loader 会话=复位态世界，只能答复位值，**答不了「unresolved overflow 期间 CNT 是否冻结」的动态语义**（当前模型 CoreTickStopped 通用 guard 严格停的根据） | 复位值锚（模型 now: con/cnt/prd None→严格停）；动态冻结语义维持「模型不发明、真机不可达」诚实标注（§2.3） |
+| C1 | P11 heap 描述符 0xf27f4a..4d 四字节读回 | 寄存器/存储配置 | **会话打包就绪**（2026-11-14 路 SESS：并入 `--session-pack` 八读点计划，docs/d3-session-pack.md；read_rom.py `--p11-heap-probe` 离线单测先例不变） | begin/size 从 derived 升 measured；三控制组（0x19fef8 CPU1 入口字/0x1265f5 ready/0xf20080 p11_code 头）先验证 P11 RAM 保持性 |
+| C2 | ADC RES 0xfd3104 读回（WBG04 码值） | 寄存器配置 | **会话打包就绪**（同上，读点 0xfd3100 起覆盖 CON/RES；期望域+候选 400/500 推导链已挂 d3-session-pack §2.2） | WBG04 码值升 measured+反解 Vref；电池链（BU §5 疑点 mode 双路径）获真值锚 |
+| C3 | P3_ANA_READ 0xf2c064 一读 | 寄存器配置 | **会话打包就绪**（同上；USB 在位场景期望 bit1/bit2=0b110 推导链+记录 D3-SFR-03 已补，d3-session-pack §2.3） | 充电检测位（bit1/bit2）实测→CB 的 derived_mask=0b110 常量 fixture 获对照（USB 在位场景与电池场景 0b000 成对锚定） |
+| C4 | cfg523 记录区窗（flash 0x1e0200/CPU 0x61de1e0）读回 | 输入域配置 | FD05 flash 读通道 2026-11-10 会话已实证；**另注**：2026-11-10 私有整片 2MiB 备份物理上已含 bank B 记录区字节，是否作为 fixture 输入=独立决策（单台设备私有数据，AGENTS 发布红线）；不在 SESS 打包内（FD05 另走独立授权捎带） | 三键阈值/键 id/通道字真值→REC 识别覆盖的合成矩阵从 synthetic 升 measured（临界值「未决」项可解） |
+| C5 | core-tick CNT 0xffe0f0/PRD 0xffe0f4 复位值 | 寄存器配置 | **会话打包就绪**（同上，读点 0xffe0f0 起一次覆盖 CNT/PRD；无推导链→记录型读点=复位值锚，d3-session-pack §2.4）；**能力边界**：loader 会话=复位态世界，只能答复位值，**答不了「unresolved overflow 期间 CNT 是否冻结」的动态语义**（当前模型 CoreTickStopped 通用 guard 严格停的根据） | 复位值锚（模型 now: con/cnt/prd None→严格停）；动态冻结语义维持「模型不发明、真机不可达」诚实标注（§2.3） |
 | C6 | App wire 真机抓包（setKeyFunction 实包/EQ 0x22 写与回执/0x17/0x30 回执形状） | 事件流 | 需 BLE 联调授权（R3/R4 挂账：app-protocol §4.4 两处 [未钉]、r4-command-hook wire 定案、R3-APP-05 blocked_missing） | 按键重映射 wire 定案（ADV type2 vs 0x2b vs 批量 cmdid 2）；「设备已应用」边界（响应≠应用） |
 | C7 | 按键时窗/事件日志对照 | 时窗 | **前置缺口**：真机侧无事件日志面（无 UART trace/JTAG/埋点）；§7 时窗行「真机侧观测手段先落实」未满足 | 本轮 NOT_RUN 收口（D3-TIM-01 底稿）；任何时窗断言须先解决观测手段，不得以「手感/录屏」凑数 |
 
@@ -164,6 +164,11 @@ C 档统一失败判据（各记录再具体化）：读回值与模型/推导**
 
 C1-C5 全部只读、零擦写、零 OTA——与「刷机授权」（写入类）是**两类不同授权**，请求时
 分开（§3 模板区分读会话/刷机/联调三型）。
+
+**打包已落地（2026-11-14 路 SESS）**：本节建议的 C1+C2+C3+C5 单会话已成离线可验证
+交付物——[docs/d3-session-pack.md](d3-session-pack.md)（会话计划单+三分支判读+授权
+件预填）与 `read_rom.py --session-pack [--dry-run]`（65 条命令计划/零写断言/29 单测，
+dry-run 记录 D3-PRB-02 PASS）。真机会话仍待 A 型授权。
 
 ---
 

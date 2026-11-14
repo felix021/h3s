@@ -1,0 +1,28 @@
+{
+  "case_id": "D3-PRB-02",
+  "firmware_identity": "观测对象=会话打包工具本身（tools/usb-recovery/read_rom.py --session-pack/--dry-run，本路 SESS 新增）；不涉及镜像字节——A 型只读会话的预演交付物（计划单+命令清单+期望表+零写断言）",
+  "initial_state": "纯离线：main fe41d68 工具态，零真机操作（AGENTS 设备授权边界原样引用：文档与离线验证不授权任何设备动作）",
+  "inputs_schedule": "一次 --session-pack --dry-run（无 loader 文件，FB06 CRC 占位）+ tools/usb-recovery/test_rom.py 全量单测（29 用例）",
+  "observation_boundary": "dry-run JSON：65 条命令逐步清单/8 读点期望检查表/零写断言四项/device_accessed=false；不观察任何设备或模型行为",
+  "assertions": [
+    "命令计划=65 条（INQUIRY 1+FB06 46+FB08 1+FC0A 1+FD07 16=8 读点×双读），步骤连续、读地址与 SESSION_PACK_PLAN 逐项一致（§1 命令总表）",
+    "零写断言：进入序列后全部命令为 FD07 读；FB00/FB01/FB02/FB04/FC0C/FC12/FD05 等写/擦/OTP/跳转/复位类命令计数=0；注入 FD05/FB01 的污染计划被断言抓住",
+    "双读不一致终止纪律：probe_read_two 两读逐字节比对，不一致抛错结束会话（无重试）；transport 白名单拒绝计划外地址与非 128B 长度",
+    "三分支判读占位：每检查带推导链 source 与 branch_pending_session 占位；控制组失败仅门控 C1 目标（C2/C3/C5 判读独立）；verdict 全部 enforced=false（报告不强制）"
+  ],
+  "timeout_budget": "秒级（本地进程）；无设备超时面",
+  "model_assumptions": [
+    "无模型行为假设——本记录只验收离线工具面（命令构造/断言/判读器）；期望值的推导链假设挂在 D3-PRB-01/SFR-01/SFR-02/SFR-03 各记录内，不在本记录升级"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "真机会话执行（等待只读会话授权；本记录的 PASS 不构成授权，dry-run 输出中的 session_not_authorized=true 固定声明）",
+    "带真实 FB06 CRC 的 dry-run（需 fetch-loader 取得 pinned loader；占位 CRC 的计划形状与真实版一致，仅 crc16 字段为 null）",
+    "0xfd3/0xffe 窗的 loader 自用可读性先例（0xf2c 窗有实证，这两个窗只有命令层无地址检查的静态结论，首读失败即停）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T23:27:10"
+}
