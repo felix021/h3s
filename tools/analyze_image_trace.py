@@ -236,8 +236,14 @@ SCENARIOS = {
         # →写回,经 veneer 0x606db6c 调入)——**音频尾段首个非掩码平凡 RMW
         # 读**:读值实质参与写回且本世界该字零写,= 首个真实硬件反馈依赖
         # (已知音频 init 写序列已全部执行完,验收达成)。非轮询,归下一路
-        # 三选一。**新前沿 3,170,362 @ 0x606b426**(unmapped_memory 读
-        # 0xfe0a04)。
+        # 三选一。新前沿 3,170,362 @ 0x606b426(unmapped_memory 读
+        # 0xfe0a04)。**路 CV(sim-adda)再放行**(+17 步):DAA_CON1 两开关
+        # 分立(显式初值探针 fixture 0x0+配置位读回;敏感性对照 {0x0,
+        # 0xfffffff8} 同步数同停点=观察路径对初值不敏感)后 RMW 全链真实执行
+        # (表址勘误 0x060A8608;写回 0x0),经真调用 veneer 返回,下一 call=
+        # setter 0x606db36,停在 0x606db4c 读 0xfe051c=JL_AUDIO->DAC_VL0
+        # (数字音量配置 RMW,分类=配置归下一路)。**新前沿 3,170,379 @
+        # 0x606db4c**(unmapped_memory 读 0xfe051c)。
         'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
@@ -781,38 +787,40 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-14 路 AS 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 3,170,362;一切结论条件通过、derived-not-measured;历史
+    """钉死 2026-11-14 路 CV 条件场景结论(official vs tested_b79,条件 flag 集
+    到当前条件前沿 3,170,379;一切结论条件通过、derived-not-measured;历史
     世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/3,070,626(路 CG)/
     3,070,786(路 CL)/3,070,955(路 CO)/3,071,380(路 CQ)/3,071,984(路 F)/
     3,072,236(路 M)/3,073,402(路 R)/3,073,918(路 V)/3,079,241(路 AA)/
-    3,081,001(路 AK)/3,137,573(路 AN)已被后续投影替换,见 HANDOFF 对应
-    「步含义」段):
+    3,081,001(路 AK)/3,137,573(路 AN)/3,170,362(路 AS)已被后续投影替换,
+    见 HANDOFF 对应「步含义」段):
 
-    - 双方 3,170,362 步、同停点 0x606b426(unmapped_memory 读 0xfe0a04=
-      JL_ADDA->DAA_CON1,当前条件前沿——路 AS 的 jl_audio_adc_reset_writes
-      放行 ADC reset 写 [0xfe0538]=0(0x60719c0 并行对旧 r3 半,FM-1 run3
-      旧寄存器语义首个 SFR 站点)后 +32,789 步全真实执行:ADC 节点 reset
-      完成(guard b[0x127801] 置 1/hdl/槽动态互证)、S1..S5 DAC 簇全落地
-      (S1 值勘误:并行对旧 r1 半实测 0x0,AG 图「0xfe2200 数值巧合」是
-      并行对误读)、initcall 尾块全过(一次 Timer0 到期落 ROM rep 体内、
-      交付分发的指令中途延期先例新设、块尾 0x4196 交付),停在 0x606b40e
-      配置 RMW insert 函数(经 veneer 0x606db6c)首读 DAA_CON1——**音频尾段
-      首个非掩码平凡 RMW 读:读值实质参与写回且该字本世界零写=首个真实
-      硬件反馈依赖,验收达成**,诚实停归下一路三选一)、per-core
-      {0:3159474,1:11216}一致;stop parity 全同——official↔b79 parity
-      延长到条件前沿 3,170,362,控制流零分歧、无 reconvergence;
+    - 双方 3,170,379 步、同停点 0x606db4c(unmapped_memory 读 0xfe051c=
+      JL_AUDIO->DAC_VL0,当前条件前沿——路 CV 的 DAA_CON1 两开关分立放行
+      (显式初值探针 fixture 0x0+配置位读回;敏感性对照 {0x0,0xfffffff8}
+      同步数同停点=观察路径对初值不敏感,证据表 docs/adda-daa-con1.md)
+      后 +17 步:0x606b40e RMW 全链真实执行(表 0x060a8608={0,4,6,7};
+      **勘误:AS 叙事表址 0x060A8548 是转写笔误**;写回 0x0 在两个通道选择
+      块之外)、经真调用 veneer 0x606db6c(fixer rts 回 0x606db72 再弹原始
+      调用者)返回 0x6071b74、call setter 0x606db36(DAC_VL0 数字音量,
+      r0=0xFF/r1=0,上限 [0x1272AC]=0x3a98),停在并行对第二半 `r3=[r2+0]`
+      的 DAC_VL0 首读——**分类=配置**(数字音量 RMW,读值经 umin 钳制+半字
+      insert 组装进写回,同族;对照 DAA_CON2 bit1=状态位、CHIP_ID=身份),
+      归下一路同法处理)、per-core {0:3159491,1:11216}一致;stop parity
+      全同——official↔b79 parity 延长到条件前沿 3,170,379,控制流零分歧、
+      无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,170,362,
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,170,379,
       超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
       GPIO TX/RX 复用链+Timer0 交付往返+JL_IMAP 输入复用链+fifo_reset+
       uart_init 收尾+init 链前三项+JL_WL_AUD entry 写+场景 walker 查名链
-      +跨页拆分后的完整 5×walker 链+ADC reset/S1..S5/音频 init 尾块)没有
-      消费任何新的镜像差异;
+      +跨页拆分后的完整 5×walker 链+ADC reset/S1..S5/音频 init 尾块+
+      DAA_CON1 RMW→DAC_VL0 setter 入口)没有消费任何新的镜像差异;
     - final report 差异仍恰好 12 处(11 处 CRC result_reads + 1 处 watch r0;
       路 AN 的 5 处=walker 链新 CRC 轮序号 37/43/49/55/61,路 AS 再加 2 处
       =尾块新 CRC 轮序号 67/73——每六值循环组一处镜像相关差异,镜像字节
-      仍只以寄存器值/CRC 结果显形,存储字节零差异)。
+      仍只以寄存器值/CRC 结果显形,存储字节零差异;路 CV 的 +17 步对两镜像
+      完全同构,DAA_CON1 容器报告两侧逐字节相同,不新增差异)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
     pairs = {p['name']: p for p in report['pairs']}
@@ -827,12 +835,12 @@ def check_self_conditional(report):
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
                 run['stop']['address'] == conditional['stop']['address'] and
-                run['per_core_steps'] == {'0': 3159474, '1': 11216},
+                run['per_core_steps'] == {'0': 3159491, '1': 11216},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3170362 @ 0x606b426, the first read of '
-                '0xfe0a04 JL_ADDA->DAA_CON1 — the non-mask-trivial config RMW of the '
-                'route-AS-released audio-init tail, the first real hardware-feedback '
-                'dependency after the known audio-init write sequence completes)')
+                'conditional frontier stop (3170379 @ 0x606db4c, the read of '
+                '0xfe051c JL_AUDIO->DAC_VL0 — the digital-volume config RMW entered right '
+                'after the route-CV DAA_CON1 release ran its full RMW chain through the '
+                'real-call veneer)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

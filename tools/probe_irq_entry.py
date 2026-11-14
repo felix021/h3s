@@ -537,6 +537,25 @@ P33_AWKUP_P_IE_FIRST_READ_ZERO={0xf2c184:0}
 #   WBG04 码值升级为 measured 并反解 Vref(会话仍 deferred/需授权)。
 FD31_ADC_RES_NAMED_VALUES={0x10000:400,0x10006:500,0x10004:400}
 
+# JL_ADDA->DAA_CON1(0xfe0a04)首读的显式初始字探针值(路 CV/sim-adda,
+# derived-not-measured;**sensitivity-probe-not-plausible-state——是探针,
+# 不是合理状态**)。背景:3,170,362 停点 0x606b426 是配置 RMW insert 函数
+# 0x606b40e(经真调用 veneer 0x606db6c 调入,唯一到达调用点=DAC init 驱动
+# 0x6071b70,r0=0xFF/r1=0 运行态实测)对 DAA_CON1 的首读——**音频尾段首个
+# 非掩码平凡 RMW 读**(读值实质参与写回:bits3..31 原样保留、bits0..2 与
+# bits4..6 换 4 档增益码表 0x060A8608={0,4,6,7} 的码),且本世界该字零写
+# ——读的是「DAC 模拟块寄存器内容」硬件域状态,投影世界无从推导(**首个
+# 真实硬件反馈依赖**)。措辞红线:**「首次读取时的未知状态」**——ROM/
+# 他核/模拟域复位仍可能影响该字,不称「零写历史」。
+# 探针对(codex 敏感性对照定调):{0x0, 0xfffffff8}=保留位(bits3,7..31)
+# 全零/全一两个极端。选择依据(见 docs/adda-daa-con1.md 敏感性表):两探针
+# 分叉跑出**同一步数/同一写回形状/同一下一停点**——观察路径对初值不敏感
+# (RMW 只把 bits0..6 写成表码 0,写回值差异 0x0 vs 0xffffff88 不进任何
+# 分支);取 0x0(保留位全零侧)作为前沿 fixture 值。**「仿真顺利返回不能
+# 证明初值正确」**——本 fixture 只让链继续,不构成对硅复位值的任何声称;
+# 未提供该参数时首读按原边界停(unmapped_memory 读 0xfe0a04)。
+JL_ADDA_DAA_CON1_INITIAL_PROBE=0x0
+
 # ---------------------------------------------------------------------------
 # 路 S/sim-keychain:按键输入全链真实执行(直调扫描回调)的具名 fixture。
 # 全链(路 Q docs/peripheral-input-simulation.md §2 钉死):ADC 队列项 value →
@@ -1068,6 +1087,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              wl_aud_con_writes=False,
              audio_dac_init_writes=False,
              jl_audio_adc_reset_writes=False,
+             jl_adda_daa_con1_initial_fixture=None,
+             jl_adda_daa_con1_config_readback=False,
              subword_stores=False,
              word_store_sp_l=False,
              mmu_cross_page_split=False,
@@ -1781,6 +1802,45 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'the JL_AUDIO ADC-reset write records only layer on the JL_WL_AUD entry-store '
                 'prefix (the ADC-node reset 0x60719a6 is called after the 0x602ea72 store)')
         options['jl_audio_adc_reset_write_records']=True
+    # jl_adda_daa_con1 两开关(路 CV/sim-adda,DAA_CON1=0xfe0a04 首个硬件反馈
+    # 依赖的处理,codex 四点定调落地):**分立**——
+    # ①`jl_adda_daa_con1_initial_fixture`=显式输入初始 word(值=
+    # JL_ADDA_DAA_CON1_INITIAL_PROBE 探针对 {0x0,0xfffffff8} 之一,
+    # sensitivity-probe-not-plausible-state,fixture 记录名称/来源/适用场景,
+    # **无隐式零默认**;写前读一律返回该字)。
+    # ②`jl_adda_daa_con1_config_readback`=已核定配置位维护当前值(真实写入
+    # 后更新、后续读用当前状态=最后写值;__RW 先例=uart CON1 路 AA/lp_timer
+    # CON 路 AL 同族,但**容器无「合成初始 0」分支**——与 AK/AS 容器的分野,
+    # 初值只来自显式 fixture)。
+    # 停原边界契约:只开②无①未写入、或开①关②写后读,均按 3,170,362 原边界
+    # 停(unmapped_memory 读 0xfe0a04 逐字段一致)。
+    # 静态核对(路 CV 反汇编钉死,全文见 br28_model.JLAddaDaaCon1Registers
+    # 类注释与 docs/adda-daa-con1.md):RMW 0x606b40e=钳档位(r1>=3→3)→
+    # r3=b[0x060A8608+r1](4 档增益码表 {0,4,6,7};勘误:旧叙事 0x060A8548
+    # 是笔误)→ 0x606b426 首读 → r0 bit0 块 bits0..2 换表码(bits3..31 保留
+    # 旧值)→ r0 bit1 块 bits4..6 换表码 → **0x606b43c 写回在两条件块之外**
+    # (未选通道=旧值原样回写,总线写仍发生)→ 返回(不改 r0/r1)。
+    # **veneer 0x606db6c 是真调用不是跳转**:[--sp]=rets;call 0x606b40e;
+    # pc=[sp++]——fixer 的 rts 回 0x606db72(运行态实测 rets=0x606db72),再
+    # 弹出原始调用者返回地址(在 fixer 帧下方栈上,不能把 0x606db72 当返回
+    # 地址)。本前缀唯一调用点=0x6071b70(r0=0xFF 双通道、档位 0;另一调用
+    # 点=音量同步 walker 0x606db74 的纠偏分支 0x606dc00,r0=单通道位,不在
+    # 本前缀;0x606b45c/0x6071d92 两处直调同样不在)。
+    # **不一次放行整个 ADDA 读族**(codex 第 2 点):白名单恰一字 0xfe0a04;
+    # DAA_CON0 0xfe0a00/DAA_CON2 0xfe0a0c/ADA_CON 族 0xfe0a20../DAC_VL0
+    # 0xfe051c 保持 unmapped,后续读逐个分类(配置/状态/测量)。放行后下一
+    # 停点=0x606db4c setter 0x606db36 读 DAC_VL0 0xfe051c(配置 RMW,数字
+    # 音量,同法归下一路;状态/测量类将停住报告)。运行效果(DAC 模拟通路/
+    # 偏置/音量)不建模。默认关:0xfe0a04 保持 unmapped(3,170,362 前沿形状),
+    # legacy 报告逐字节不变。
+    if jl_adda_daa_con1_initial_fixture is not None or jl_adda_daa_con1_config_readback:
+        require(jl_audio_adc_reset_writes,
+                'the JL_ADDA DAA_CON1 fixture/readback only layers on the ADC-reset release '
+                '(the DAA_CON1 first read 0x606b426 sits in the initcall tail after 0x60719a6)')
+        if jl_adda_daa_con1_initial_fixture is not None:
+            options['jl_adda_daa_con1_initial_fixture']=jl_adda_daa_con1_initial_fixture
+        if jl_adda_daa_con1_config_readback:
+            options['jl_adda_daa_con1_config_readback']=True
     # jl_uart_con1_readback(路 AA/sim-con1rb,CON1 读回真决策点三选一=方案 (a)
     # 读回=最后写值投影):把 JL_UART CON1(+4,三基址对称)从路 M 的纯写白名单
     # 升级为「写记录+读回=最后写值」——lp_timer CON(路 AL)/fd31 ADC CON(路 BN)
@@ -2878,31 +2938,63 @@ def check(report,firmware):
     # 硬件反馈依赖**(本轮验收达成:已知音频初始化写序列 S0/ADC reset/
     # S1..S5 已全部执行完,前沿如约停在写序列之外的首个硬件内容依赖点)。
     # 非轮询(无循环读);三选一(具名 fixture/读回容器合成 0/钉住)归下一
-    # 路,本路如实停。**新前沿 3,170,362 @ 0x606b426**(unmapped_memory 读
+    # 路,本路如实停。新前沿 3,170,362 @ 0x606b426(unmapped_memory 读
     # 0xfe0a04)。
+    # **路 CV 落地(sim-adda,本前沿)**:DAA_CON1 首个硬件反馈依赖按 codex
+    # 四点定调处理——**①两开关分立**(显式初值 fixture `jl_adda_daa_con1_
+    # initial_fixture`〔值=JL_ADDA_DAA_CON1_INITIAL_PROBE 探针对 {0x0,
+    # 0xfffffff8} 之一,无隐式零默认,报告 fixture 子键记名称/来源/适用场景
+    # +label=sensitivity-probe-not-plausible-state〕+配置位读回
+    # `jl_adda_daa_con1_config_readback`〔真实写入后更新、后续读用当前状态
+    # =最后写值;无「合成初始 0」分支〕;只开读回无初值未写入、或初值开
+    # 读回关写后读,均停原边界)。**②不一次放行整个 ADDA 读族**:白名单恰
+    # 一字 0xfe0a04,DAA_CON0/2、ADA_CON 族、DAC_VL0 保持 unmapped,后续读
+    # 逐个分类。**③静态核对**(全文见 docs/adda-daa-con1.md+容器类注释):
+    # RMW 0x606b40e 完整链=钳档位→表 r3=b[**0x060A8608**+r1]({0,4,6,7};
+    # **勘误:AS 叙事 0x060A8548 是转写笔误,指令编码+表字节实测互证**)→
+    # 首读→bit0 块 bits0..2 换表码(bits3..31 保留)→bit1 块 bits4..6 换表码
+    # →**写回在两条件块之外**(未选通道=旧值原样回写)→返回;**veneer
+    # 0x606db6c 是真调用不是跳转**([--sp]=rets;call 0x606b40e;pc=[sp++]——
+    # fixer rts 回 0x606db72 运行态实测,原始调用者返回地址在 fixer 帧下方
+    # 栈上);本前缀唯一调用点=0x6071b70(r0=0xFF/r1=0,运行态 r0/r3/rets
+    # 三方互证;walker 0x606dc00/直调 0x606b45c、0x6071d92 不在)。**④敏感
+    # 性对照**:同停点分叉探针 0x0 与 0xfffffff8——首写回 0x0 vs
+    # 0xffffff88(bits4..6 清位路径真实执行)、写回差异不进任何分支/消费,
+    # 两侧同 +17 步同停点 0x606db4c=**观察路径对初值不敏感**(保留位 bits3,
+    # 7..31 被写持久携带但无消费者);「仿真顺利返回不能证明初值正确」。
+    # **放行推进(+17 步)**:fixture=0x0+读回开,RMW 写回落记录(恰一条
+    # 0x0),fixer 经 veneer 返回 0x6071b74,0x6071b76 call setter 0x606db36
+    # (DAC_VL0 数字音量,r0=0xFF/r1=0,体积上限 [0x1272AC]=0x3a98),停在
+    # **0x606db4c 读 0xfe051c=JL_AUDIO->DAC_VL0**——并行对第二半 `r3=[r2+0]`
+    # 的 RMW 内部读(读值经 umin 钳制+半字 insert 组装进写回)。**下一停点
+    # 分类=配置**(数字音量配置字,br28.h __RW;BO 消费者全图:getter/
+    # setter/同步 walker/静音判零门控,全配置面消费——对照 DAA_CON2 bit1=
+    # 状态位、CHIP_ID=身份,分类依据在 docs/adda-daa-con1.md §4):归下一路
+    # 同法处理,本路如实停。**新前沿 3,170,379 @ 0x606db4c**(unmapped_memory
+    # 读 0xfe051c)。
     # 条件前沿契约单点:停点完整记录与步数从 frontier_registry 派生(推进
     # 前沿只改 registry,断言叙事保持手写)。
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x606b426 on the first read of '
-            '0xfe0a04, JL_ADDA->DAA_CON1 per the br28.h naming (+0x04 __RW, the DAC-side '
-            'analog config word; the ADA_CON family route AE pinned starts at +0x20): with '
-            'the route-AS ADC-reset release finishing 0x60719a6 (guard byte 0x127801 set, '
-            'handle 0x1277B4 initialized, slot 0x126A90 filled — dynamically cross-checked; '
-            'the route-AN gate address 0x1267E1 was a hand-arithmetic slip, the instruction '
-            'encoding pins 0x1265C0+0x1241), the S1..S5 DAC-init cluster lands in the '
-            'route-AK container (five writes; the 0x6071cbc store writes the parallel-pair '
-            'OLD r1 = the SR-walk 0x0, correcting the AG-map 0xfe2200 numeric-coincidence '
-            'misread) and the initcall tail runs on to the DAA_CON1 config-RMW insert '
-            'function 0x606b40e (old>>3 into bits3..31 plus flash-table bitfield inserts; '
-            'reached through the tail-call veneer 0x606db6c) — the first NON-mask-trivial '
-            'RMW read of the audio tail: the read value materially composes the write-back '
-            'and no firmware write to 0xfe0a04 exists in this world, so the boot now '
-            'depends on hardware-domain register content the simulation cannot derive — '
-            'the first real hardware-feedback dependency, with the known audio-init write '
-            'sequence fully executed; not a poll (no loop), left honestly for the next '
-            'route')
+            'the heap-experimental scenario must stop at 0x606db4c on the read of '
+            '0xfe051c, JL_AUDIO->DAC_VL0 (br28.h +0x1c __RW, the digital-volume word): '
+            'with the route-CV DAA_CON1 release answering the first read 0x606b426 with '
+            'the explicit sensitivity-probe fixture 0x0 (no implicit zero default; the '
+            'two-switch separation keeps the readback alone at the original boundary), '
+            'the config RMW 0x606b40e runs its full chain (table byte from 0x060a8608 '
+            '{0,4,6,7} — the AS-narrative 0x060A8548 was a transcription slip — inserting '
+            'the code into bits0..2 and bits4..6 while carrying bits3,7..31 from the '
+            'initial word; the write-back sits OUTSIDE both selector blocks) and lands '
+            'exactly one store 0x0, the fixer returns through the REAL-CALL veneer '
+            '0x606db6c (push rets; call; pop pc — runtime rets 0x606db72) to the DAC-init '
+            'driver 0x6071b74, and the next call 0x6071b76 enters the DAC_VL0 setter '
+            '0x606db36 (r0=0xFF, r1=0, cap 0x3a98 from [0x1272AC]) whose parallel-pair '
+            'old-value load of 0xfe051c is the next boundary — classified CONFIG '
+            '(digital-volume RMW with the read materially composing the write-back, same '
+            'family as DAA_CON1; the sensitivity fork 0xfffffff8 wrote 0xffffff88 and '
+            'stopped identically, so the observation path is initial-word-insensitive '
+            'this prefix), left honestly for the next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 AK/AS:JL_WL_AUD 写域记录断言——本前缀恰两条写:S0 的 0x602ea72
@@ -2952,6 +3044,37 @@ def check(report,firmware):
             'NOT verify any audio input' in adc_reset_assumption,
             'the route-AS jl_audio_adc_reset_write_records assumption must record the '
             'ADC_CON naming, the derived-not-measured semantics and the no-audio-input limit')
+    # 路 CV:JL_ADDA DAA_CON1 两开关容器断言——恰一条写回(fixture=0x0 探针下
+    # RMW 合成值 0x0:bits0..2/bits4..6←表[0]=0,保留位全零侧),fixture 读恰
+    # 一次(0x606b426 首读),写后零读(下一停点 0x606db4c 在任何 DAA_CON1
+    # 回读之前)。敏感性对照(ones 探针 0xfffffff8:同 +17 步同停点、写回
+    # 0xffffff88、同 fixture/回读计数)=观察路径对初值不敏感,证据表在
+    # docs/adda-daa-con1.md §3。
+    daa_con1=r['peripherals']['jl_adda_daa_con1_registers']
+    require(daa_con1['stores']=={'0xfe0a04':{'values':['0x0'],'writes':1,'cores':[0]}} and
+            daa_con1['word_writes']==1 and
+            daa_con1['addresses']==['0xfe0a04'] and
+            daa_con1['fixture']['initial_word']=='0x0' and
+            daa_con1['fixture']['label']=='sensitivity-probe-not-plausible-state' and
+            daa_con1['readback_projection']['fixture_reads']==1 and
+            daa_con1['readback_projection']['reads_after_write']==0 and
+            'NOT a reset-value claim' in daa_con1['readback_projection']['readback_semantics'] and
+            'no implicit zero default' in daa_con1['readback_projection']['readback_semantics'] and
+            'persists in the register state' in daa_con1['readback_projection']['preserved_bits_note'] and
+            '0x060a8608' in daa_con1['sdk_naming'] and
+            'NOT released wholesale' in daa_con1['whitelisted_words'],
+            'the route-CV jl_adda_daa_con1_registers must record exactly the one executed '
+            'write-back 0x0 (the probe-0 RMW composition: table code 0 into bits0..2 and '
+            'bits4..6, reserved bits all-zero side), one fixture read (the 0x606b426 first '
+            'read) and zero post-write reads (the 0x606db4c DAC_VL0 stop precedes any '
+            'DAA_CON1 re-read); the fixture must carry the sensitivity-probe label and the '
+            'report the preserved-bits persistence note')
+    daa_con1_assumption=r['peripherals']['assumptions'].get('jl_adda_daa_con1_registers')
+    require(daa_con1_assumption is not None and 'DAA_CON1' in daa_con1_assumption and
+            'sensitivity-probe-not-plausible-state' in daa_con1_assumption and
+            'NOT verify any audio output' in daa_con1_assumption,
+            'the route-CV jl_adda_daa_con1_registers assumption must record the DAA_CON1 '
+            'naming, the sensitivity-probe label and the no-audio-output limit')
     # 路 AK/AS:音频 DAC init 写域——S1..S5 已在路 AS 放行后全部落地:
     # DAC_CON×3(S1 整字 0x0=并行对旧 r1 的 SR walk 值,S4 &=~0x100 写回
     # 0x0,尾 |=0x100 → 0x100)、AUD_CON×1(0x0)、CLK_CON×1(0x1);RMW 内部
@@ -3448,7 +3571,10 @@ def check(report,firmware):
     # 尾块 delay 窗继续越过 36,000 边界)、交付/ACK 295→299(+4,其中第 5 次
     # 新到期落在 ROM 0x4180 rep 体内在块尾 0x4196 交付——指令中途延期先例,
     # 见交付断言)、PRD 被尾块最新的 delay 重编到 5ms 窗 59,999、cnt 走到 57,666、pending False。
-    require(timer=={'con':0x1401,'cnt':57666,'prd':59999,'pending':False,
+    # 路 CV:+17 步、cnt 再 +51(=17×3 tick)到 57,717(距 59,999 尚差 2,282,
+    # **无第 310 次到期**、交付/ACK 299 不变;新停点在 setter 装载对,无 delay
+    # 重编,PRD 保持 59,999)、pending False。
+    require(timer=={'con':0x1401,'cnt':57717,'prd':59999,'pending':False,
             'expirations':309},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the last window is the 1ms one -> PRD 11999), 305 '
@@ -3466,7 +3592,7 @@ def check(report,firmware):
             'and acked, the fifth landing inside the ROM 0x4180 rep copy body and delivered '
             'at the block exit 0x4196 via the mid-instruction deferral), PRD reprogrammed by '
             'the newest delay call (a 5ms window, PRD 59999) with the counter walked down to '
-            '57666')
+            '57717 by the route-CV +17 steps, no new expiry')
     # 路 CG:core tick 溢出交付+ACK 合计 9 次(首溢出~447,490+超时窗口内 8 次,
     # expirations 9/acknowledgements 9,cnt 重装后走到 892,276<prd 1,199,999,零
     # pending);IRQ3 handler 0x60661a4 的 W1C 真实执行,交付列表见上。CPU1
@@ -3497,13 +3623,16 @@ def check(report,firmware):
     # 仍 9);新停点 0x60719c0 是 ADC 节点 reset 函数体内普通并行对、无临界
     # 区,IPMASK 保持 0、ICFG 保持 0x300。
     # 路 AS:+32,789 步、**第 10 次溢出发生并交付/ACK(9→10)**——音频
-    # init 尾块的 OS tick 级联把计数器带过 1,199,999;新停点 0x606b426 是
+    # init 尾块的 OS tick 级联把计数器带过 1,199,999;停点 0x606b426 是
     # DAA_CON1 配置 RMW insert 函数体内普通装载、无临界区,IPMASK 保持 0、
     # ICFG 保持 0x300;CPU1 core tick 零溢出不变。
+    # 路 CV:+17 步、cnt 再 +68(=17×4 tick)到 91,276(无第 11 次溢出,
+    # 交付/ACK 10 不变);新停点 0x606db4c 是 DAC_VL0 setter 体内并行对
+    # 装载、无临界区,IPMASK 保持 0、ICFG 保持 0x300。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==10 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==10 and
-            tick0['cnt']==91208 and
+            tick0['cnt']==91276 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -3511,7 +3640,7 @@ def check(report,firmware):
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300',
             'the CPU0 core tick must deliver and ack ten overflows (the ~447,490 landmark '
             'plus the eight of the timeout window plus the one the route-AS audio-init tail '
-            'crosses; rearmed counter at 91208 < prd 1199999, '
+            'crosses; rearmed counter at 91276 < prd 1199999, '
             'no pending at the stop); IPMASK back to 0 (the '
             'route-V stop sat INSIDE the '
             'uart_fifo_reset OS unmask critical section entered at 0x60340cc, and the '
@@ -3750,9 +3879,13 @@ def check(report,firmware):
             # 字节 pair 223→283、半字 pair 13→15、insert 装载 28→688(配置
             # 表位段组装对频现);masked 分支 2、rep unknown 运输 9/9、LRCT
             # 位 RMW 54、reset RMW 8、mem_pwr 4、awkup 17、死读 1 不变。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==13475 and
+            # 路 CV 再 +17 步(DAA_CON1 RMW 放行→setter 首读停):任务栈帧
+            # 运输 13475→13477(fixer {rets,r4} 与 setter {rets,r4} 各一对
+            # push/pop)、整字存储 18369→18370(0x606b43c DAA_CON1 写回);
+            # mmio RMW/cnum/icfg/共享锁全不变(17 步内无 RMW 指令、无交付)。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==13477 and
             r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1556 and
-            r['instruction_adapters'].get('exact_full_word_store')==18369 and
+            r['instruction_adapters'].get('exact_full_word_store')==18370 and
             r['instruction_adapters'].get('mmio_rmw_always_writes')==2046 and
             r['instruction_adapters'].get('partial_icfg_bit9_only')==4544 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==2 and

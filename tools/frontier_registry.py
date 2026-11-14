@@ -145,6 +145,12 @@ FEATURES = (
             '音频 DAC init 三字(DAC_CON/AUD_CON/JL_ASS CLK_CON)写记录+读回(域二)'),
     Feature('jl_audio_adc_reset_writes', 'conditional', ('wl_aud_con_writes',), False, None,
             'JL_AUDIO ADC_CON(0xfe0538) reset 写记录+读回=最后写值(域三,0x60719c0 并行对旧 r3 形状)'),
+    Feature('jl_adda_daa_con1_initial_fixture', 'conditional', ('jl_audio_adc_reset_writes',), True,
+            'JL_ADDA_DAA_CON1_INITIAL_PROBE',
+            'JL_ADDA DAA_CON1(0xfe0a04)显式初始字探针 fixture(敏感性探针对 {0,0xfffffff8} 之一,'
+            'sensitivity-probe-not-plausible-state,无隐式零默认)'),
+    Feature('jl_adda_daa_con1_config_readback', 'conditional', ('jl_audio_adc_reset_writes',), False, None,
+            'JL_ADDA DAA_CON1 配置位读回=最后写值(两开关分立;无初值未写入时仍停原边界)'),
     Feature('subword_stores', 'conditional', (), False, None,
             '普通子字存储直写(exact_subword_stores,绕过合并读)'),
     Feature('word_store_sp_l', 'conditional', (), False, None,
@@ -192,10 +198,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 3170362,
-        'stop_pc': '0x606b426',
+        'completed_steps': 3170379,
+        'stop_pc': '0x606db4c',
         'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfe0a04', 'size': 4, 'reference_sdk_register': None},
+                 'address': '0xfe051c', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }
