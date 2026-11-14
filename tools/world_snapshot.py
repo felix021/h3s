@@ -8,15 +8,17 @@ manifest, type-tagged body, RAM run-length section), the drift double gate
 round-trip reflexivity check used by the fast tier.
 
 Scope of this module half (route BJ, sim-snapmod; M4 families added by route
-BL, sim-snapm4): the codec, the fingerprint and manifest gates, and a
-per-module capture/restore ADAPTER REGISTRY with minimal small-world
-implementations for M1 (flat CPU stub), M2 (three-dict memory), M3
+BL, sim-snapm4; the full M1 CPU inventory by route BN, sim-snapm1): the codec,
+the fingerprint and manifest gates, and a per-module capture/restore ADAPTER
+REGISTRY with implementations for M1 (the full CPU field inventory: general
+and special registers, execution context, bank/frame bookkeeping, the
+partial-ICFG sub-object), M2 (three-dict memory), M3
 (timer/IRQ/software-IRQ/scalar bookkeeping on BR28Model), M4 (all peripheral
 projection object families on BR28Model), M5 (delivery bookkeeping on
 DualCoreMachine), M6 (MMU) and M7 (loop ledger). The capture WIRING
-(probe_boot explore-loop capture point, the full M1 CPU field inventory, and
-the equivalence comparison against a full replay) is the follow-up route's
-work after BF merges; nothing here edits the running loop. Snapshots from
+(probe_boot explore-loop capture point and the equivalence comparison against
+a full replay) is the follow-up route's work after BF merges; nothing here
+edits the running loop. Snapshots from
 this module are valid for small worlds only — capture refuses any world
 containing state kinds outside the wired adapters instead of silently
 dropping them (the codex missing-state trap).
@@ -39,7 +41,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from br28_unknown import UnknownWord
-from br28_icfg import IcfgValue
+from br28_icfg import IcfgState, IcfgValue
 from br28_model import GpcntConValue, GpioOutValue, PartialWord
 from probe_pi32v2 import PIN
 
@@ -251,8 +253,10 @@ def assert_equal(actual, expected, path='value'):
     """Field-by-field equality for restored vs original state.
 
     Compares the five abstract value classes by their fields (their own __eq__
-    deliberately raises Blocked), treats list/tuple as equivalent containers
-    (tuples decode as lists), and names the first differing path.
+    deliberately raises Blocked), the IcfgState sub-object by its captured
+    field list (restore rebuilds the instance, so identity is meaningless),
+    treats list/tuple as equivalent containers (tuples decode as lists), and
+    names the first differing path.
     """
     for cls in _ABSTRACT_FIELDS:
         if isinstance(expected, cls) or isinstance(actual, cls):
@@ -262,6 +266,14 @@ def assert_equal(actual, expected, path='value'):
             for field in _ABSTRACT_FIELDS[cls]:
                 assert_equal(getattr(actual, field), getattr(expected, field), f'{path}.{field}')
             return
+    if isinstance(expected, IcfgState) or isinstance(actual, IcfgState):
+        if type(actual) is not type(expected):
+            raise AssertionError(f'{path}: type {type(actual).__name__} != '
+                                 f'{type(expected).__name__}')
+        for field in M1_ICFG_STATE_FIELDS:
+            assert_equal(getattr(actual, field), getattr(expected, field),
+                         f'{path}.{field}')
+        return
     if isinstance(expected, (list, tuple)) or isinstance(actual, (list, tuple)):
         if not (isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple))):
             raise AssertionError(f'{path}: container type mismatch '
@@ -701,27 +713,109 @@ def _capture_scalar(value):
     return encode_value(value)
 
 
-# --- M1: CPU objects (minimal small-world field list) ------------------------
+# --- M1: CPU objects (full field inventory; design §1 M1 + §M9 exclusions) ----
+#
+# Source-verified inventory (route BN): upstream sim.py CPU.__init__ + the
+# probe_boot CPU subclass (class defaults) + every dynamic attribute the run
+# loop, DualCoreMachine and probe_irq_entry assign to a CPU (AST extraction
+# over the design-§2.3 source set, then per-field source reads). Groups:
+# - general/special registers: R (16 slots, each int/None or one of the five
+#   abstract value classes), flags, pc/seq/steps, sp/sp_known/usp/ssp,
+#   reti/rets/irq_psr, icfg/icfg_known/icfg_unknown_mask;
+# - execution context: bootstrap_context, bootstrap_icfg_pending (one-shot
+#   gate-mask consumption, set at probe_boot 0x...1489 — a design-§M1 table
+#   omission, added here from source), active_context, opaque_source, repeat
+#   (REP body dict incl. optional multi_block/allow_helper_return), after_then
+#   (parallel-pair second half in flight);
+# - bank/frame bookkeeping: last_explicit_ssp/last_explicit_usp (dynamic,
+#   note_bank_write), unresolved_ssp_candidates, task_frame_load,
+#   task_frame_restore, task_gpr_frame, first_task_return_frame (nested
+#   'gprs' tuple carries abstract values);
+# - partial ICFG sub-object: icfg_state (IcfgState; status_generation is
+#   state — IcfgValue.identity validates against it, losing it breaks
+#   post-restore ICFG writes).
+# Dynamic attributes are read with getattr(..., None): every reader already
+# treats missing as None, so capture records None and restore always setattr's
+# (None == absent is equivalence, not approximation).
+#
+# Skipped by design on every CPU object (kept OUT of the per-object guard):
+# - cache + mutable_decode_bytes: the design §M9 memo pair. decode re-reads
+#   the backing bytes through the current mapping before reusing a cached
+#   decode and mutable_decode_bytes only feeds that check, so an empty
+#   restore re-decodes identically. Excluded as a pair, never alone.
+# - tab, models: static configuration (upstream PIN + architectural_k2 are
+#   code-fingerprint inputs; the construction chain rebuilds both).
+# - mem: the world-level M2 memory — a reference, not per-CPU state; the
+#   identity guard below pins every CPU to the single captured memory.
 
 M1_CPU_FIELDS = ('core_id', 'pc', 'steps', 'seq', 'R', 'flags', 'sp', 'sp_known',
                  'usp', 'ssp', 'reti', 'rets', 'irq_psr', 'icfg', 'icfg_known',
-                 'icfg_unknown_mask')
+                 'icfg_unknown_mask', 'icfg_state', 'bootstrap_context',
+                 'bootstrap_icfg_pending', 'active_context', 'opaque_source',
+                 'repeat', 'after_then', 'last_explicit_ssp', 'last_explicit_usp',
+                 'unresolved_ssp_candidates', 'task_frame_load', 'task_frame_restore',
+                 'task_gpr_frame', 'first_task_return_frame')
+M1_ICFG_STATE_FIELDS = ('core', 'value', 'known', 'status_generation', 'writes',
+                        'bit9_updates', 'task_return_projections')
+M1_SKIP = ('cache', 'mutable_decode_bytes', 'tab', 'models', 'mem')
+
+
+def _check_m1_mem_ownership(world):
+    """M1/M2 ownership guard: every CPU that references a memory object must
+    reference THE captured/restored M2 memory. A per-CPU memory (or capturing
+    CPUs without mem=) would silently drop RAM state — refuse instead."""
+    for key, cpu in (world.cpus or {}).items():
+        if not hasattr(cpu, 'mem'):
+            continue  # small-world carrier without a memory reference
+        if world.mem is None:
+            raise SnapshotError(f'M1.{key}: the CPU references a memory object but no mem= '
+                                'was provided — CPU.mem is M2 world state, capture both '
+                                'modules together')
+        if cpu.mem is not world.mem:
+            raise SnapshotError(f'M1.{key}: cpu.mem is not the mem= target — the world '
+                                'shares one M2 memory; per-CPU memories are not modeled')
+
+
+def _capture_icfg_state(state, module, key):
+    if type(state).__name__ != 'IcfgState':
+        raise SnapshotError(f'{module}.{key}: icfg_state holds '
+                            f'{type(state).__name__}, not br28_icfg.IcfgState')
+    return capture_object(state, M1_ICFG_STATE_FIELDS, module, key)
+
+
+def _restore_icfg_state(record, module, key):
+    if (not isinstance(record, dict) or record.get('class') != 'IcfgState'
+            or set(record.get('fields', {})) != set(M1_ICFG_STATE_FIELDS)):
+        raise SnapshotError(f'{module}.{key}: malformed IcfgState record — regenerate the '
+                            'snapshot')
+    values = {name: decode_value(encoded) for name, encoded in record['fields'].items()}
+    if not all(isinstance(values[name], int) for name in M1_ICFG_STATE_FIELDS):
+        raise SnapshotError(f'{module}.{key}: IcfgState fields must be ints')
+    state = IcfgState(values['core'], values['value'], values['known'])
+    for name in ('status_generation', 'writes', 'bit9_updates',
+                 'task_return_projections'):
+        setattr(state, name, values[name])
+    return state
 
 
 def _capture_m1(world):
     if world.cpus is None:
         return None
+    _check_m1_mem_ownership(world)
     objects = {}
     for key, cpu in world.cpus.items():
-        extra = sorted(set(vars(cpu)) - set(M1_CPU_FIELDS))
-        missing = sorted(set(M1_CPU_FIELDS) - set(vars(cpu)))
-        if extra or missing:
-            raise SnapshotError('M1: CPU objects with a non-minimal attribute set cannot be '
-                                f'captured yet ({key}: extra={extra} missing={missing}); the '
-                                'full M1 inventory (execution context, repeat/after_then, bank '
-                                'bookkeeping, task frames, IcfgState) is the capture-wiring '
-                                "route's work")
-        objects[key] = capture_object(cpu, M1_CPU_FIELDS, 'M1', key)
+        extra = sorted(set(vars(cpu)) - set(M1_CPU_FIELDS) - set(M1_SKIP))
+        if extra:
+            raise SnapshotError(f'M1: CPU object {key!r} carries attributes outside the '
+                                f'captured inventory: {extra} — extend the M1 adapter before '
+                                'capturing this world (missing-state guard)')
+        record = {'class': type(cpu).__name__, 'fields': {}}
+        for field in M1_CPU_FIELDS:
+            value = getattr(cpu, field, None)
+            if field == 'icfg_state' and value is not None:
+                value = _capture_icfg_state(value, 'M1', key)
+            record['fields'][field] = encode_value(value)
+        objects[key] = record
     return {'objects': objects, 'scalars': {}, 'static': {}}
 
 
@@ -731,8 +825,17 @@ def _restore_m1(payload, world):
     if set(payload['objects']) != set(world.cpus):
         raise SnapshotError(f'M1: snapshot CPU keys {sorted(payload["objects"])} differ from '
                             f'the restore targets {sorted(world.cpus)}')
+    _check_m1_mem_ownership(world)
     for key, cpu in world.cpus.items():
-        restore_object(payload['objects'][key], cpu, 'M1', key)
+        record = payload['objects'][key]
+        if record['class'] != type(cpu).__name__:
+            raise SnapshotError(f'M1.{key}: snapshot holds {record["class"]} state but the '
+                                f'restore target is {type(cpu).__name__}')
+        for field, encoded in record['fields'].items():
+            value = decode_value(encoded)
+            if field == 'icfg_state':
+                value = None if value is None else _restore_icfg_state(value, 'M1', key)
+            setattr(cpu, field, value)
 
 
 # --- M2: shared memory (three-dict shape) ------------------------------------
@@ -1032,10 +1135,16 @@ def _restore_m7(payload, world):
 # --- registry setup ------------------------------------------------------------
 
 register_module('M1', 'cpus', capture=_capture_m1, restore=_restore_m1,
-                fields={'CPU': M1_CPU_FIELDS},
-                description='CPU objects; minimal flat field list. The full M1 inventory '
-                            '(execution context, repeat/after_then, bank bookkeeping, task '
-                            'frames, IcfgState) is the capture-wiring route.')
+                fields={'CPU': M1_CPU_FIELDS, 'IcfgState': M1_ICFG_STATE_FIELDS},
+                description='CPU objects; the full field inventory (30 fields per core: '
+                            'general/special registers incl. abstract GPR slots, execution '
+                            'context, repeat/after_then, bank/frame bookkeeping, the '
+                            'IcfgState sub-object whose status_generation backs IcfgValue '
+                            'identity). cache+mutable_decode_bytes are the design §M9 memo '
+                            'pair (excluded together), tab/models are fingerprint-rebuilt '
+                            'statics and mem is the M2 world object, identity-checked: '
+                            'CPUs are captured/restored together with their shared memory. '
+                            'Core EXISTENCE is M5 core_ids, not M1.')
 register_module('M2', 'mem', capture=_capture_m2, restore=_restore_m2,
                 fields={'Memory': ('ram', 'unknown_origins', 'icfg_spills')},
                 description='Shared memory as three dicts; byte content lives in the RAM '
