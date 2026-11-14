@@ -1,14 +1,14 @@
 {
   "case_id": "R2-COT-04",
   "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=l1_slotram 候选 H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_SLOTRAM_OFFLINE_UNTESTED.ufw，sha256 906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914（build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-slotram，与官方全文件逐字节差异恰 472 字节，hearing-aid-l1-payload §12.3）",
-  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段逐步 parity（analyze_image_trace compare_pair 机制），注入段事件对齐终态比对；起点=官方镜像 D2-a ACT 用例（cmd 7 等价类，d2a 档案 D2-a-ACT-07）通过的观察窗起点；前置=D1 事件循环过线+S19 生产分发接线（d2a ACT-10 的 BLOCKED 依赖同源）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段 [0, C0) 逐步 parity（analyze_image_trace compare_pair 机制；C0=首次 core-tick 溢出交付 own-step ≈447k，A1 钉死其后零控制流分歧判据机制性必破）+[C0, 注入点) 等 own-step 三层清单（l2a-differential-criteria §2-§3；基线差集归档于 R2/R4-COT-01），注入段事件对齐终态比对；起点=官方镜像 D2-a ACT 用例（cmd 7 等价类，d2a 档案 D2-a-ACT-07）通过的观察窗起点；前置=D1 事件循环过线+S19 生产分发接线（d2a ACT-10 的 BLOCKED 依赖同源）",
   "inputs_schedule": "L1 注入：post 手势事件 0x10a04（多功能键双击，AJ 实测载荷字，d1-acceptance §6.1 表）→S19 分发表记录[5]（event id 0x10000c）→handler 0x060252c6→映射表 [7,2,7] 命中 cmd 7",
   "observation_boundary": "cmd 7 分支全链：0x06025404→get_config(22)→0x060251fc(3 或 1, 1)→0x0600dab6（[ctx+120]/[ctx+124] 挂音乐模式恢复回调 0x602619a）→set_config(22) 持久化+0x124a04 模式字节翻转+BLE 0x2E 回执（key-action-map §4.1）；**核心断言：0x0600db3c 族 6 窗口零命中**（cmd 7 不触 ANC/mic_effect dispatch——0x060251fc→0x0600dab6 与 0x0600db3c 调用边分开，key-action-map §4.4）；A/B 三层报告",
   "assertions": [
-    "candidate-image-cotest §2.1 R2-COT-04：cmd 7 等价负例=「候选不碰无关功能线」的最强负例——双击链路（任务卡原文「多功能键双击=模式切换 cmd 7→ANC 链」）经 key-action-map §4.4 钉死**不达 R2 窗口**（cmd 7 走另一台 dispatch 0x0600dab6）；A/B 两世界此用例应零行为差，任何差=回归",
+    "candidate-image-cotest §2.1 R2-COT-04：cmd 7 等价负例=「候选不碰无关功能线」的最强负例——双击链路（任务卡原文「多功能键双击=模式切换 cmd 7→ANC 链」）经 key-action-map §4.4 钉死**不达 R2 窗口**（cmd 7 走另一台 dispatch 0x0600dab6）；A/B 两世界此用例应零增量差（观察窗终点事件面差集 ⊆ 注入起点已归档的 C0 后三层清单基线——+458 偏移对在 C0 后本就存在基线差，逐字节全同不可达；新增任何差类=回归）",
     "key-action-map §4.1 cmd 7 全链（0x124a04 取值族 {1,3,4}、1↔3 往复、失配只发 BLE 0x2E）+§5 对照表 cmd 7 行观察点",
     "BW 双击注入先例（0x60252c6 入口消费链实测，等价类证据）；L1 注入只算分发/动作层测试（d1-acceptance §6.1 codex 反例承接——每类代表动作的完整 ADC 闭环归 D2-a A 组，不在本用例）",
-    "§2.3：本用例预期差异集=空（源 A 的 boot 派生族在注入点前已归档于 R2-COT-01；注入段零行为差）"
+    "§2.3：本用例预期增量差异集=空（源 A 与 C0 后三层清单基线已归档于 R2-COT-01；注入段零增量差）"
   ],
   "timeout_budget": "全前缀重放 2×+双击事件分发+cmd 7 链预算（10⁴-10⁵ 模型步级）；超时=FAIL",
   "model_assumptions": [
@@ -27,5 +27,5 @@
   "evidence_conditions": [],
   "evidence_refs": [],
   "blocked_missing": null,
-  "recorded_at": "2026-11-14T21:40:00"
+  "recorded_at": "2026-11-15T00:58:00"
 }

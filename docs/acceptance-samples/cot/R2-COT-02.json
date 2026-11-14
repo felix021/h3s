@@ -1,7 +1,7 @@
 {
   "case_id": "R2-COT-02",
   "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=l1_slotram 候选 H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_SLOTRAM_OFFLINE_UNTESTED.ufw，sha256 906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914（build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-slotram，与官方全文件逐字节差异恰 472 字节，hearing-aid-l1-payload §12.3）",
-  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段逐步 parity（analyze_image_trace compare_pair 机制），注入段事件对齐终态比对；起点=官方镜像 D2-a 同名用例通过的观察窗起点（§3：官方侧 D2 记录是 A/B 里官方世界行为断言的既有依据，本用例不重复验收官方侧行为，只做 A/B diff）；前置=条件前沿推进过 0x0600db3c 键循环相位（R2-HEA-06 同一缺口）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段 [0, C0) 逐步 parity（analyze_image_trace compare_pair 机制；C0=首次 core-tick 溢出交付 own-step ≈447k，A1 钉死其后零控制流分歧判据机制性必破）+[C0, 注入点) 等 own-step 三层清单（l2a-differential-criteria §2-§3；基线差集归档于 R2/R4-COT-01），注入段事件对齐终态比对；起点=官方镜像 D2-a 同名用例通过的观察窗起点（§3：官方侧 D2 记录是 A/B 里官方世界行为断言的既有依据，本用例不重复验收官方侧行为，只做 A/B diff）；前置=条件前沿推进过 0x0600db3c 键循环相位（R2-HEA-06 同一缺口）",
   "inputs_schedule": "L0 直调：post_stop 直调 0x0600db3c(3,1)（wire TRANS，flag=1 走链 1）→观察 TRANS 窗口 A 0x0600dc7e 全链；链 2 变体（内部状态路径）按运行观测补（§2.1 表注）",
   "observation_boundary": "candidate-image-cotest §2.1 通用观察点：W-窗口（窗口 A 命中记录，官方侧同 PC 执行原指令 call ctx_get+[r0+116]）、W-载荷（trans_branch_1 桩 0x060E313A→ctx getter 0x0600c2aa→OFF apply 槽 [ctx+120]→apply 0x0600dae4→mic_effect_open 0x060E3074 全链（get_pipeline_uuid 真实返回 0x9c2d/pipeline_parse 11 节点/add_thread 0/set_scene stream[80]=16/set_notify b[stream+28]=10/start 入场——路 O §8 已实证各环节）→goto 尾声 0x0600dc8c）、W-槽（0x125574：0→stream）、W-簿记（clock_alloc \"mic_effect\" 24MHz 节点入 0x124880 链表）；A/B 终态三层报告（§2.3）",
   "assertions": [
@@ -28,5 +28,5 @@
   "evidence_conditions": [],
   "evidence_refs": [],
   "blocked_missing": null,
-  "recorded_at": "2026-11-14T21:40:00"
+  "recorded_at": "2026-11-15T00:58:00"
 }
