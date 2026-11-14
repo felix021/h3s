@@ -185,7 +185,7 @@ class RealRepoTests(unittest.TestCase):
 
     def test_key_records_visible_on_dashboard(self):
         markdown, _ = ad.generate()
-        for needle in ('[A1-PAR-01]', 'FAIL', '[D2-a-ACT-10]', 'BLOCKED(4 条',
+        for needle in ('[A1-PAR-01]', 'FAIL', '[D2-a-ACT-10]', '### BLOCKED(',
                        '刷机授权', '真机 BLE 联调授权', '只读观测会话授权'):
             self.assertIn(needle, markdown)
         # 唯一 FAIL 与全部 BLOCKED 都在关键表里有归因行
@@ -223,8 +223,8 @@ class CliTests(unittest.TestCase):
         # 用 --output 生成一份旧面板到库内路径,再 --check 必须红(记录「改动」=面板落后)
         original = DASHBOARD.read_text(encoding='utf-8')
         try:
-            DASHBOARD.write_text(original.replace('共 70 条', '共 69 条'),
-                                 encoding='utf-8')
+            # 陈旧=文件内容≠generate() 输出,与任何计数无关(截尾一字符即可)
+            DASHBOARD.write_text(original[:-1], encoding='utf-8')
             done = self.run_tool('--check')
             self.assertEqual(done.returncode, 1)
             self.assertIn('再生成', done.stderr)
