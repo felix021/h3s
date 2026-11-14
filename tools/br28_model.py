@@ -908,7 +908,7 @@ class IcuIdleProjection:
 
 class CoreTickStopped:
     """Optional nominal counter; real IRQ entry and pending readback stay strict."""
-    def __init__(self,initial_con=None,progress=None,prd_readback=False):
+    def __init__(self,initial_con=None,progress=None,prd_readback=False,cnt_held_snapshot=False):
         if initial_con not in (None,0):raise ValueError('only unknown or explicitly disabled core tick supported')
         if progress is not None and (not isinstance(progress,int) or not 0<=progress<=256):raise ValueError('invalid explicit core tick progress')
         self.initial_con=initial_con
@@ -925,6 +925,20 @@ class CoreTickStopped:
         # prd_write 与 prd 恒等(单测钉死)。缺失(None)时读侧继续严格停,
         # 不给默认值;整字写不存在部分未知形状(显式声明,非放松)。
         self.prd_readback=prd_readback;self.prd_write=None
+        # 路 B3(S19 批 2 续一案 core_tick_cnt_held_snapshot):held 快照开关。
+        # 模型现状:溢出后 advance() 不再推进(unresolved 期间重检资格而非
+        # 计数),cnt 停在溢出时刻 divmod 的余数(本场景对齐恰 0)——「溢出后
+        # CNT 冻结」是模型的显式假设(assumed-not-measured),不是硬件声明;
+        # 硬件倾向「溢出自动回绕继续计数」但无 BR28 证据,codex 定调维持模型
+        # 现状+显式标注。开关只把 unresolved 窗内 offset 4(CNT)读放行为
+        # 「返回模型实际存储的溢出后快照」——不是 PRD-1、不是周期末值、不是
+        # 合成 0:值就是 self.cnt(冻结的余数)。读无副作用(不清 pending、
+        # 不重装载、不动在途/ACK/jiffies);CON(offset 0)同窗保持原严格停。
+        self.cnt_held_snapshot=cnt_held_snapshot
+        # 敏感性探针值(probe_only,CV 双探针先例):非 None 时 unresolved 窗内
+        # CNT 读返回该探针值(0 vs 周期末值 PRD-1 两分叉对照用),主开关世界
+        # 恒 None。只影响读值,不动任何状态。
+        self.cnt_snapshot_probe_value=None
 
     def read(self,offset):
         # 路 BQ(三查之二):异常由 read() 头部的通用 overflow guard 抛出
@@ -932,8 +946,18 @@ class CoreTickStopped:
         # offset 8(PRD)且 prd_write 有值的一格放行为「回放最近真实写入」,
         # 其余(CON/CNT)在 unresolved 窗内保持原严格停,语义与停点名逐字
         # 不变;读无副作用(不清 pending、不重装载 CNT、不动在途/ACK/相位)。
-        if self.unresolved_overflow and not (self.prd_readback and offset==8 and self.prd_write is not None):
+        # 路 B3 续:cnt_held_snapshot 把 offset 4(CNT)在 unresolved 窗内放行
+        # 为「返回实际存储快照」(同一 guard 的第二格放行,假设文本见
+        # report() 的 cnt_held_snapshot_projection 键)。
+        if self.unresolved_overflow and not (
+                (self.prd_readback and offset==8 and self.prd_write is not None) or
+                (self.cnt_held_snapshot and offset==4 and self.cnt is not None)):
             raise Blocked('core_tick_overflow_requires_resolution')
+        if self.unresolved_overflow and self.cnt_held_snapshot and offset==4:
+            # 敏感性探针(probe_only)优先返回探针值;正常世界返回冻结快照。
+            if self.cnt_snapshot_probe_value is not None:
+                return self.cnt_snapshot_probe_value
+            return self.cnt
         if offset==8 and self.unresolved_overflow and self.prd_readback:
             return self.prd_write
         value={0:self.con,4:self.cnt,8:self.prd}[offset]
@@ -991,6 +1015,28 @@ class CoreTickStopped:
                 'con_cnt_reads_and_counter_phase_unchanged':True,
                 'prd_write_equals_live_prd':self.prd_write==self.prd,
                 'silicon_readback_behavior_measured':False}
+        # 路 B3(S19 批 2 续):held 快照键只在开关开启时出现;假设文本按 codex
+        # 原文措辞——「在显式『溢出后 CNT 冻结』假设下读取模型保存的溢出后
+        # 快照 0」conditional/assumed-not-measured;不是 PRD-1、不代硬件声明
+        # 回绕行为。
+        if self.cnt_held_snapshot:
+            row['cnt_held_snapshot_projection']={'enabled':True,
+                'stored_snapshot':self.cnt,
+                'returns':'the stored post-overflow snapshot under the explicit '
+                          '"CNT frozen after overflow" assumption (conditional, '
+                          'assumed-not-measured) — NOT PRD-1, not a period-end value, '
+                          'not a synthesized default; the freeze is a model artefact '
+                          '(advance stops re-counting while the overflow waits out the '
+                          'IPMASK mask), not a silicon claim',
+                'covers_reads_during':'unresolved_overflow only (offset 4/CNT alone)',
+                'con_prd_reads_unchanged_prd_via_bq_case':True,
+                'read_side_effects':'none — reading neither ACKs, clears pending, '
+                                    'reloads CNT, resets the timing phase, nor touches '
+                                    'jiffies/delivery_in_flight (unit-pinned)',
+                'silicon_wraparound_behavior_measured':False,
+                'held_window_progress_lost_if_frozen':True}
+            if self.cnt_snapshot_probe_value is not None:
+                row['cnt_held_snapshot_projection']['sensitivity_probe_value']=self.cnt_snapshot_probe_value
         return row
 
 
@@ -2524,9 +2570,12 @@ class JLAddaDaaCon1Registers:
                               'the instruction encoding pins 0x060A8608)'),
                 'whitelisted_words':('exactly the one JL_ADDA->DAA_CON1 word; the rest of the '
                                      'JL_ADDA block (DAA_CON0 0xfe0a00 / DAA_CON2 0xfe0a0c / '
-                                     'the ADA_CON family 0xfe0a20..) stays unmapped — the ADDA '
-                                     'read family is NOT released wholesale, later reads get '
-                                     'classified per address (config/status/measurement)'),
+                                     'the ADA_CON family 0xfe0a20..) stays outside THIS '
+                                     'container — the ADDA read family is NOT released '
+                                     'wholesale, later reads get classified per address '
+                                     '(config/status/measurement); the route-B3 sibling '
+                                     'switch jl_adda_analog_family serves five OTHER family '
+                                     'words with a mutually exclusive address set'),
                 'observed_shapes':('plain ld.w read at 0x606b426 plus plain st.w write-back at '
                                    '0x606b43c inside the config-RMW insert function 0x606b40e '
                                    '(the write-back sits OUTSIDE both selector blocks — with '
@@ -2585,6 +2634,112 @@ class JLAddaDaaCon1Registers:
                               'path, bias or audio output is modeled — this records that the '
                               'gain configuration RMW executed, it does NOT verify any audio '
                               'output')}
+
+
+class JLAddaAnalogFamilyRegisters:
+    """JL_ADDA 模拟族五字容器(合成初始 0+读回=当前值,opt-in,路 B3/S19 批 2 续)。
+
+    背景:4,521,083 停点 0x606ac42——音频 DAC 模拟 init 函数 0x606abf0..0x606b20e
+    (对象驱动,r13=配置对象,内部两次 delay(10) 经 0x606abe6 veneer 调 RAM 延时
+    0x12e290 族)首条 `[0xfe0a00] &= 0xFFFFDFFF`(DAA_CON0 bit13 清位 RMW)的
+    内部读撞 unmapped。函数全量反汇编钉死触址恰五字(r7=0xfe0a00 基址,off 按
+    br28.h JL_ADDA_TypeDef 全 __u32 布局命名):
+      +0x00 0xfe0a00 DAA_CON0 (__RW):68 处 RMW + 多处 ld→mask/or→st 纯配置组装
+      +0x08 0xfe0a08 DAA_CON2 (__RW):132 处 RMW
+      +0x0c 0xfe0a0c DAA_CON3 (__RW):35 处 RMW
+      +0x48 0xfe0a48 ADDA_CON1(__RW):34 处 RMW
+      +0x4c 0xfe0a4c (结构外,SDK 无名):10 处 RMW
+    (+0x04 DAA_CON1 不进本容器——路 CV 两开关分立容器已覆盖,白名单互斥。)
+    分类判定(路 BO §5 三选一倾向行「DAA_CON0/2:写侧整字/RMW 记录」+本路
+    消费面复核):读值只进写回组装(load→mask/or→store 或 RMW),函数内零
+    分支消费读值(分支全部测试配置输入 r0/r4/r6/r12)——AM 容器族语义
+    (合成初始字 0+读回=当前值),derived-not-measured 非复位值声明;
+    敏感性分叉(ones 字)照 CW DAC_VL0 先例。
+    已知限制(如实标注):0x606b352 读 DAA_CON2 &2 与期望比较是状态位读回
+    消费者(路 BO 家族面),在本前缀之外的音频任务域——本容器的读回=当前值
+    语义届时对它服务的是合成配置位而非硅状态位,bit1 硅语义仍未证(推迟,
+    BO 既定结论不变)。
+    """
+
+    # 白名单恰五字(r7 基址 0xfe0a00 的静态全函数枚举,见类注释)。
+    WORDS=(0xfe0a00,0xfe0a08,0xfe0a0c,0xfe0a48,0xfe0a4c)
+    SDK_NAMES={0xfe0a00:'JL_ADDA->DAA_CON0',0xfe0a08:'JL_ADDA->DAA_CON2',
+               0xfe0a0c:'JL_ADDA->DAA_CON3',0xfe0a48:'JL_ADDA->ADDA_CON1',
+               0xfe0a4c:'JL_ADDA+0x4c (past struct, unnamed)'}
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled JL_ADDA analog family word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL_ADDA analog family word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(AM 容器族先例;读值只进写回组装不进
+        # 分支=初值不参与观察路径,敏感性分叉 ones 字互证)。
+        self.synthesized_initial_reads+=1
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.WORDS],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-8:]],
+                                  'writes':e['writes']}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('br28.h JL_ADDA = hs_base + map_adr(0x0a,0x00) = 0xfe0a00, '
+                              'JL_ADDA_TypeDef all-__u32 words (DAA_CON0/1/2/3/4, '
+                              'RESERVED5/6 __RO, DAA_CON7 __RO, ADA_CON0..9, ADDA_CON0/1); '
+                              'route-B0 §3 family face lists 8 li users of the block; '
+                              'this container whitelists exactly the five words the '
+                              'analog-init function 0x606abf0..0x606b20e touches'),
+                'whitelisted_words':('exactly {0xfe0a00 DAA_CON0, 0xfe0a08 DAA_CON2, '
+                                     '0xfe0a0c DAA_CON3, 0xfe0a48 ADDA_CON1, 0xfe0a4c '
+                                     'unnamed}; +0x04 DAA_CON1 stays with the route-CV '
+                                     'two-switch container (mutually exclusive whitelist); '
+                                     'the rest of the JL_ADDA block stays unmapped'),
+                'observed_shapes':('function-granularity config RMW chains inside the '
+                                   'analog init 0x606abf0 (rmw.and/rmw.or immediate and '
+                                   'register-operand forms, plus ld.w→mask/or→st.w '
+                                   'compositions); every read value only composes a '
+                                   'write-back, no branch inside the function consumes a '
+                                   'loaded value (branch inputs are the config object '
+                                   'bytes r0/r4/r6/r12); first stop was the DAA_CON0 '
+                                   'bit13 clear at 0x606ac42 after a delay(10) veneer'),
+                'readback_projection':{
+                    'addresses':[hex(a) for a in self.WORDS],
+                    'reads':self.reads_after_write,
+                    'synthesized_initial_reads':self.synthesized_initial_reads,
+                    'readback_semantics':('last firmware-written value (route-AA/AL family); '
+                        'before any firmware write the explicit synthetic initial word 0 '
+                        '(route-AM precedent) — derived-not-measured, NOT a reset-value '
+                        'claim; no separate initial-fixture switch (the read values only '
+                        'compose write-backs, no branch — the route-CW classification)'),
+                    'known_limitation':('0x606b352 reads DAA_CON2 &2 and compares with an '
+                        'expected value (route-B0 family face) — a status-bit readback '
+                        'consumer in the audio-task domain OUTSIDE this prefix; when that '
+                        'domain arrives this container would serve its synthesized config '
+                        'word, the silicon bit1 semantics stay unverified (route-B0 '
+                        'deferral unchanged)')},
+                'assumption':('write record plus last-write readback with an explicit '
+                              'synthetic initial 0 for the five JL_ADDA analog-family '
+                              'words (derived-not-measured); stored values are real '
+                              'executed instruction results, never invented; no DAC '
+                              'analog path, bias or audio output is modeled — this '
+                              'records that the analog configuration RMWs executed, it '
+                              'does NOT verify any audio output')}
 
 
 class JLAudioDacVl0Registers:
@@ -4276,6 +4431,9 @@ class BR28Model:
                  initial_software_irq_pending=None,software_irq_delivery_requests=False,
                  unmaskable_irq_projection=False,core_tick_delivery_requests=False,
                  core_tick_prd_readback=False,
+                 core_tick_cnt_held_snapshot=False,
+                 core_tick_cnt_snapshot_probe_value=None,
+                 jl_adda_analog_family=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
@@ -4377,8 +4535,31 @@ class BR28Model:
         # 相位全不动;prd_write 缺失时读侧继续严格停(不给默认值)。
         if core_tick_prd_readback and not core_tick_configuration:
             raise ValueError('the core-tick PRD readback projection requires the core tick configuration')
-        self.core_ticks=[CoreTickStopped(value,rate,prd_readback=core_tick_prd_readback) for value,rate in zip(initial_core_tick_controls or (None,None),
+        # core_tick_cnt_held_snapshot(路 B3/S19 批 2 续,opt-in,默认关):
+        # unresolved 溢出窗内放行 CNT(offset 4)读=返回模型实际存储的溢出后
+        # 快照(冻结余数;显式「溢出后 CNT 冻结」假设 assumed-not-measured,
+        # 非 PRD-1/非周期末值)。同样必须叠在 core tick 配置上;读无副作用,
+        # CON 读/pending/ACK/计时相位全不动。
+        if core_tick_cnt_held_snapshot and not core_tick_configuration:
+            raise ValueError('the core-tick CNT held-snapshot projection requires the core tick configuration')
+        # 敏感性探针值(probe_only,CV 双探针先例):非 None 时 unresolved 窗内
+        # CNT 读返回该值(0 vs 周期末值 PRD-1 两分叉记录首次分叉),必须叠在
+        # held 快照开关上(探针是快照读的替换值,不是独立投影)。
+        if core_tick_cnt_snapshot_probe_value is not None:
+            if not (isinstance(core_tick_cnt_snapshot_probe_value,int)
+                    and 0<=core_tick_cnt_snapshot_probe_value<=0xffffffff):
+                raise ValueError('the core-tick CNT snapshot probe value must be unsigned32')
+            if not core_tick_cnt_held_snapshot:
+                raise ValueError('the core-tick CNT snapshot probe value requires the held-snapshot projection')
+        self.core_ticks=[CoreTickStopped(value,rate,prd_readback=core_tick_prd_readback,
+                                         cnt_held_snapshot=core_tick_cnt_held_snapshot) for value,rate in zip(initial_core_tick_controls or (None,None),
                        core_tick_progress or (None,None))] if core_tick_configuration else None
+        if core_tick_configuration and core_tick_cnt_snapshot_probe_value is not None:
+            self.core_ticks[0].cnt_snapshot_probe_value=core_tick_cnt_snapshot_probe_value
+        # jl_adda_analog_family(路 B3/S19 批 2 续):JL_ADDA 模拟族五字容器
+        # (0xfe0a00/08/0c/48/4c,函数 0x606abf0 静态全枚举白名单;+4 DAA_CON1
+        # 不在白名单——路 CV 两开关分立容器独占,地址集互斥)。
+        self.jl_adda_family=JLAddaAnalogFamilyRegisters() if jl_adda_analog_family else None
         if core_tick_delivery_requests and not core_tick_configuration:
             raise ValueError('core tick delivery requests require the core tick configuration')
         self.core_tick_delivery_requests=core_tick_delivery_requests
@@ -4888,6 +5069,7 @@ class BR28Model:
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
                                                 or self.fd31_adc_con.handles_res(address))) or
             (self.p33_analog_tail_projection and address==P3_ANA_READ) or
+            (self.jl_adda_family is not None and self.jl_adda_family.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
                                           or self.timer2.handles_iwkup(address))) or
@@ -5171,6 +5353,10 @@ class BR28Model:
                 self.p3_ana_read_served+=1
                 return 0
             raise Blocked('p3_ana_read_not_modeled',address=hex(address))
+        # JL_ADDA 模拟族五字(路 B3):读回=当前值(最后写值/无写时合成初始 0)。
+        if self.jl_adda_family is not None and self.jl_adda_family.handles(address):
+            self.counts['reads']+=1
+            return self.jl_adda_family.read(address)
         # 金丝雀树/低功耗域(路 BV):P3_VLVD_CON/P3_PCNT_CON 只有显式 fixture
         # 覆盖的首次读返回具名字,其余读(未覆盖/写后/重复)一律严格停
         # (路 BB 同款;显式 kind 便于诊断)。
@@ -5323,6 +5509,11 @@ class BR28Model:
             # 未选通道时旧值原样回写、总线写仍发生)整字写记录;值=真实指令
             # 结果;DAC 模拟通路/偏置/音量运行效果不建模。
             self.jl_adda_daa_con1.write(address,value,self.current_core)
+        elif self.jl_adda_family is not None and self.jl_adda_family.handles(address):
+            # JL_ADDA 模拟族五字(路 B3/S19 批 2 续):模拟 init 函数 0x606abf0
+            # 的 RMW 写回/整字写记录(经通用 mmio 路径的内部读=容器当前值);
+            # 模拟通路/偏置/音频输出不建模。
+            self.jl_adda_family.write(address,value)
         elif self.jl_audio_dac_vl0 is not None and self.jl_audio_dac_vl0.handles(address):
             # JL_AUDIO DAC_VL0(路 CW/S19 批 0b):0x606db68 写回(在两个通道
             # 选择块之外,未选通道=组装值原样写回)整字写记录;值=真实指令
@@ -5925,6 +6116,24 @@ class BR28Model:
                 'rest of the ADDA read family stays unmapped and later reads get classified '
                 'per address; no DAC analog path or audio output is modeled — this does NOT '
                 'verify any audio output')
+        if self.jl_adda_family is not None:
+            result['jl_adda_analog_family_registers']=self.jl_adda_family.report()
+            result['assumptions']['jl_adda_analog_family_registers']=(
+                'JL_ADDA analog family, five words (0xfe0a00 DAA_CON0 / 0xfe0a08 DAA_CON2 / '
+                '0xfe0a0c DAA_CON3 / 0xfe0a48 ADDA_CON1 / 0xfe0a4c unnamed-past-struct; '
+                'br28.h JL_ADDA_TypeDef all-__u32): write record plus last-write readback '
+                'with an explicit synthetic initial 0 before the first write '
+                '(derived-not-measured, route-AM/CW precedent, NOT a reset-value claim); '
+                'whitelist = the exact static enumeration of the analog-init function '
+                '0x606abf0..0x606b20e (68/132/35/34/10 RMW sites plus ld→mask/or→st '
+                'compositions, first stop the DAA_CON0 bit13 clear at 0x606ac42); every '
+                'read value only composes a write-back — no branch inside the function '
+                'consumes a loaded value; +0x04 DAA_CON1 stays with the route-CV two-switch '
+                'container (mutually exclusive address sets); the known status-bit consumer '
+                '0x606b352 (DAA_CON2 &2 compare) lives in the audio-task domain outside this '
+                'prefix — the container would serve its synthesized config word there, the '
+                'silicon bit1 semantics stay unverified; no DAC analog path, bias or audio '
+                'output is modeled — this does NOT verify any audio output')
         if self.jl_audio_dac_vl0 is not None:
             result['jl_audio_dac_vl0_registers']=self.jl_audio_dac_vl0.report()
             result['assumptions']['jl_audio_dac_vl0_registers']=(

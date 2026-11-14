@@ -1,0 +1,41 @@
+{
+ "case_id": "A1-PAR-01",
+ "firmware_identity": "双镜像对跑（d3-preparation §1.1 A1 规格）：tested_b79=H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw（UFW SHA256 b79cb3a6…42fa1b，已刷机验证的 ANC 两态版）；eq_fence_repair=H3S_0.1.1.8_tones_minus10dB_ANC_EQ_TOGGLE_FENCE_REPAIR_OFFLINE_UNTESTED.ufw（UFW SHA256 67ba97ef…6f222，UNTESTED 离线候选）；ROM=Release 资产 QCY_H3S_BR28_ROM_000000-020000.bin（7cae0a02…f793）；flag 集 import 自 frontier_registry 单源（场景 p11_heap_experimental），预算 5,000,000/镜像",
+ "initial_state": "基线 main 11e0e74（worktree sim-a1parity，零 tools/ 改动）；条件前沿钉点 3,747,585 @ 0x12b0e8 core_tick_overflow_requires_resolution（registry 单源）；b79 侧停点与钉点逐字段一致（freshness 自证，flag 集无漂移）；同一停点三次独立复现（首轮/deep-compare 轮/站点扫描轮）",
+ "inputs_schedule": "analyze_image_trace --scenario p11_heap_experimental --pair tested_b79:eq_fence_repair 全量对跑（b79 3,747,585 步+EQ 4,521,554 步）；附加独立分析（不改 tools）：+458 lag 重合破坏点定位（全控制序列扫描）、core-tick IRQ3 handler 入口 0x60661a4 交付步号全扫、差异站点（5 钩子/载荷区/eq_toggle 尾/fence 站点）取指全扫、调度器族 0x12b0e8/0x12b1fc 读数 lag-458 对齐恒差核对",
+ "observation_boundary": "观察面=逐步签名（核/前后 PC/flags/16 GPR/该步全部 guest RAM 写）+reconvergence+停点 parity+final report（工具既有机制）；破坏点后工具不再报告逐段差异（realigned=false），附加分析以独立脚本 import 工具公共接口补 lag 破坏定位/交付步号/取指扫描；无任何真机面",
+ "assertions": [
+  "d3-preparation §1.1 失败判据①：两镜像停点 parity——实测 b79 3,747,585 @ 0x12b0e8 core_tick_overflow_requires_resolution vs EQ 4,521,554 @ 0x606ac42 unmapped_memory(0xfe0a00 DAA_CON0)，步数/PC/停因三不同，delta +773,969 全在 CPU0（CPU1 两侧同 11,251）——判据①命中",
+  "失败判据②：新分歧段归因四族（fence 立即数/表头 CRC/+458 派生族/CRC 轮次）之外——实测破坏点=b79 步 447,032 ⟷ EQ 步 447,490：core-tick 首次溢出的 IRQ3 交付（EQ 447,490 注入 handler 0x60661a4 vs b79 447,512，交付错位 22 步≠执行流错位 458 步），此后周期 300,005 步的交付序列在两镜像执行相位上永久错位（EQ 14 次全部正常交付 vs b79 首次晚 22 步、第 12 次 held 未交付=其停点），控制流再无固定 lag 重合（工具 realigned=false）——派生相位差被 IRQ 交付时序消费，§3.4 预测 2 升级条款（差值影响 IRQ 资格/事件顺序）实锤，判据②命中",
+  "失败判据③：差异区域被取指——EQ 全程 4,521,554 步（含分叉后独自多跑的 773,969 步）5 钩子站点（0x60059ce/0x6025030/0x602510e/0x6025364/0x6078846）、载荷区 0x60e3074..0x60e31c5、eq_toggle 尾全部零取指；fence 站点 0x6034e98 两侧各 2 次（116,148 首分歧，预期内）——判据③未命中",
+  "破坏点之前 BK 四族形状原样保持：首签名分歧 116,148 @ 0x6034e98（fence 立即数）；首控制流分歧 169,439 @ 0x6011154（config.dat index）；+458 lag 控制重合保持到 447,032（BK 钉到 304,036，本路延长 +143k）；期间全部 78 个 lag-458 对齐调度器读数对 r1 恒差 +1832=0x728（BK 8 段派生族延长）——破坏点前零预期外差异"
+ ],
+ "timeout_budget": "双镜像对跑约 10 分钟级（BK 先例外推吻合）+两轮附加分析复跑（合计约 30 分钟机时）；报告与扫描 JSON 落忽略区 analysis/local-checks/（eq-parity-rerun/deep-compare/scan-b79/scan-eq）；一次性证据路跑不进 units（d3-preparation §5.4）",
+ "model_assumptions": [
+  "条件 flag 集全部结论 derived-not-measured（p11_heap_experimental 场景口径）；本记录为模型轨迹差分，非镜像行为等价证明",
+  "core-tick CNT 按全模型步计数+溢出后每步重检仲裁交付=路线 BF 钉死语义；22 步首交付延迟的指令级微观轨迹未逐指令展开（工具 realigned=false 后不报告逐段差异，本路不改工具），不影响破坏点性质钉死（两侧步号+PC 上下文+ISR 帧锚完整）",
+  "FAIL 语义=parity 证据链在 447k 处到达机制边界（458 步真实派生差×中断交付时序敏感性），不是 EQ 镜像逻辑错误、不是模型 bug；EQ 分叉后路径穿过未建模 ADDA 域（DAA_CON0 路 CV 白名单外 unmapped 停=已知边界），其 4.52M 前缀对 EQ 镜像的可用前沿实际=447,490（此后无 b79 对照）",
+  "DAA_CON0 读值不发明：unmapped 严格停，未对 0xfe0a00 做任何投影"
+ ],
+ "result": "FAIL",
+ "uncovered_items": [
+  "22 步首交付延迟的指令级仲裁轨迹（b79 447,490..447,512 的 IPMASK/重检路径逐指令展开）——需工具增报告能力或下一路接手",
+  "EQ 分叉点 447,490 之后的轨迹定性（多跑 773,969 步穿过哪些功能域、与 b79 世界的事件对应关系）——A1 规格外，归 B1/L2-a 设计输入",
+  "B1（L2-a 三镜像差分）窗口重设计：447k 后零控制流分歧判据不可用（本路钉死的机制边界），需卡窗或改事件计数等价判据（docs/eq-parity-rerun.md §6）"
+ ],
+ "evidence_level": "conditional",
+ "evidence_conditions": [
+  "条件 flag 集（p11_heap_experimental，一切结论 conditional/derived-not-measured）",
+  "模型轨迹差分口径：不构成镜像行为等价证明，也不构成 EQ 镜像错误证明",
+  "core-tick 交付语义按路线 BF 模型（CNT 绝对轴+每步重检）；硅片交付时序未测量"
+ ],
+ "evidence_refs": [
+  "docs/eq-parity-rerun.md",
+  "analysis/local-checks/eq-parity-rerun.json",
+  "analysis/local-checks/deep-compare.json",
+  "analysis/local-checks/scan-b79.json",
+  "analysis/local-checks/scan-eq.json"
+ ],
+ "blocked_missing": null,
+ "recorded_at": "2026-11-14T22:23:21"
+}
