@@ -1,0 +1,31 @@
+{
+  "case_id": "R2-COT-01",
+  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=l1_slotram 候选 H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_SLOTRAM_OFFLINE_UNTESTED.ufw，sha256 906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914（build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-slotram，与官方全文件逐字节差异恰 472 字节，hearing-aid-l1-payload §12.3）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段逐步 parity（analyze_image_trace compare_pair 机制），注入段事件对齐终态比对；两档场景各跑：crc_bankb（289,849 前沿）冒烟 + p11_heap_experimental（条件前沿 3,747,585）全量；两前沿均在 0x0600db3c 键循环相位之前（主前沿停 0x60679ba power_init、条件前沿停 0x12b0e8 core-tick CNT 读）——本用例不依赖 D1 过线",
+  "inputs_schedule": "无注入（boot 前缀全量重放）；观察窗=场景全前缀",
+  "observation_boundary": "candidate-image-cotest §1.4 四条口径：①候选独有取指（6 接驳窗口替换字节+载荷区 [0x060E3074,0x060E31E0)）前缀内执行次数=0（common_control_prefix 段 watch 断言）；②控制流分歧段全部∈已知族{config.dat JLFS index 1→0 多枚举一轮（+458 步族，VM init 0x6011132 枚举 @169,439，b79↔EQ 同款机制先例）}且每段 reconverge；fence 立即数差（plain 0x34E98，0x060C3338→0x060E31E0）只显形为 debug_init ~116,148 的 0xffe218 寄存器值差（P1 先例），控制流不变；③停点 parity（两镜像停同 kind 停点）；④表尾跨 4KiB 对齐桶的新观测项归档：l1 表尾 0xE5200 对齐 0xE5000≠official 0xE3053→0xE3000，EQ 案「立即重合」机制（同桶对齐后地址相同）不可移植——签名残余段集合与重合点实测记录，若对齐后地址差 0x2000 流入基址计算产生控制流差=新形状如实报告",
+  "assertions": [
+    "candidate-image-cotest §1.4：首差异指令≠接驳窗口（任务卡假设修正）——fence 立即数与 config.dat index 两族在 boot 期即被消费（P1/P3 先例，HANDOFF 三镜像节）；公共前缀判定口径=窗口/载荷零消费+分歧段∈已知族+reconverge+停点 parity",
+    "§1.2：loader 前置断言五件（UFW sha 906184b2/独立校验器 CRC 全过/bootloader[:0x2000]==official/PLAIN_LENGTHS 0xE5200/差异分类账==hearing-aid-l1-payload §12.3 逐区域 472 字节账）——分类账不等即拒载",
+    "§2.3 层 3 判定：本用例无注入，白名单源仅 A（构造差）；A 之外任何差=unexplained=回归",
+    "COMPARISON_BASIS 承接（analyze_image_trace）：逐步签名=核/前后 PC/flags/16 GPR/该步全部 guest RAM 写；外设寄存器写不在逐步签名内；轨迹一致≠镜像等价，只证明本前缀未消费差异"
+  ],
+  "timeout_budget": "全前缀重放 2×289,849（crc_bankb，~35s）与 2×3,747,585（条件前沿，~7 分钟）@~17k 步/s（snapshot-design §0.1 速度先例）；超时=FAIL 不是重跑理由",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机（hearing-aid-l1-payload §12.5.1）；本用例是回归检测不是候选功能验证（§5.3）",
+    "A/B 双世界全前缀重放而非快照恢复（§2.3 裁定：快照静态配置按镜像 digest 重建会拒载候选；snapshot-design §2.1 镜像变体快照首期不做的挂账承接）",
+    "official 侧新鲜度自检内建（analyze_image_trace :93-108）；候选侧停点 parity 是输出断言",
+    "逐步签名不含外设寄存器写（COMPARISON_BASIS 既有边界）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "D1 过线后的窗口执行段（R2-COT-02/03 承接，前沿过 0x0600db3c 前窗口/载荷零执行）",
+    "表尾跨桶派生族的重合步数（运行观测项，不预估）",
+    "候选真机行为（刷机授权缺失）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:40:00"
+}

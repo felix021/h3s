@@ -1,0 +1,32 @@
+{
+  "case_id": "R2-COT-02",
+  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=l1_slotram 候选 H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_SLOTRAM_OFFLINE_UNTESTED.ufw，sha256 906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914（build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-slotram，与官方全文件逐字节差异恰 472 字节，hearing-aid-l1-payload §12.3）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段逐步 parity（analyze_image_trace compare_pair 机制），注入段事件对齐终态比对；起点=官方镜像 D2-a 同名用例通过的观察窗起点（§3：官方侧 D2 记录是 A/B 里官方世界行为断言的既有依据，本用例不重复验收官方侧行为，只做 A/B diff）；前置=条件前沿推进过 0x0600db3c 键循环相位（R2-HEA-06 同一缺口）",
+  "inputs_schedule": "L0 直调：post_stop 直调 0x0600db3c(3,1)（wire TRANS，flag=1 走链 1）→观察 TRANS 窗口 A 0x0600dc7e 全链；链 2 变体（内部状态路径）按运行观测补（§2.1 表注）",
+  "observation_boundary": "candidate-image-cotest §2.1 通用观察点：W-窗口（窗口 A 命中记录，官方侧同 PC 执行原指令 call ctx_get+[r0+116]）、W-载荷（trans_branch_1 桩 0x060E313A→ctx getter 0x0600c2aa→OFF apply 槽 [ctx+120]→apply 0x0600dae4→mic_effect_open 0x060E3074 全链（get_pipeline_uuid 真实返回 0x9c2d/pipeline_parse 11 节点/add_thread 0/set_scene stream[80]=16/set_notify b[stream+28]=10/start 入场——路 O §8 已实证各环节）→goto 尾声 0x0600dc8c）、W-槽（0x125574：0→stream）、W-簿记（clock_alloc \"mic_effect\" 24MHz 节点入 0x124880 链表）；A/B 终态三层报告（§2.3）",
+  "assertions": [
+    "candidate-image-cotest §2.1 R2-COT-02：窗口半程=桩→载荷→API 全链+固件原生改道路径（L0 层，S 路键链直调先例）；观察点逐条=W-窗口/W-载荷/W-槽/W-簿记",
+    "§2.3 白名单四源闭包：预期差异集=源 B（载荷+桩写集：槽 0x125574、stream 对象/11 节点堆区、时钟链表节点）+源 D（官方走 TRANS apply fn vs 候选走 OFF apply fn+open 的 ANC 引擎配置路径差——桩语义=原分支改走另一条固件原生路径）+源 A/C；unexplained==0 才 PASS（多一字节=回归）",
+    "hearing-aid-l1-payload §11.2 桩形状：进入状态 r4=apply flag/r7=QCY 基址；重放 ctx getter→改取 OFF 槽 [ctx+120]→apply→open→goto 尾声；§9.4.2 的「接驳后完整路径未在仿真跑」欠账由本用例解锁",
+    "§2.3 判定器反例自检（实施路）：故意破坏窗口桩地址 1B 重建镜像→A/B 必须 FAIL（分辨力证明）"
+  ],
+  "timeout_budget": "全前缀重放到注入点 2×（前沿步数）+注入段直调链预算（open 链实测 231 次调用不崩的 d2c 先例量级，给 10⁵ 模型步级预算）；超时=FAIL",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机；L0 直调只算接驳桩层验证，不冒充 S19 分发层（§2.0 层级语义；S 路先例 §7.4 的分发边界诚实标注承接）",
+    "前置=前沿过 0x0600db3c（R2-HEA-06 blocked_missing 第 1/2 条；非授权类缺口，D1 事件循环梯队下游）",
+    "RAM 槽 0x125574 已被 slotram 候选选址五类静态证据钉死+boot BSS 清零覆盖（hearing-aid §12.2/§12.4）；运行期 watch（§12.5.2 建议项）随本用例补上",
+    "A/B 全前缀重放非快照（§2.3 裁定）",
+    "open 链 start 入场后的流服务线程行为（路 O 场景停在 0x6074a96 合成状态边界的先例）——本用例观察窗截至 start 入场+槽写入，流运行面归 R2-COT-03 生命周期与 D2-b 场景"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "S19 分发层与完整 ADC 识别层（R2-COT-04/§2.1 待钉项）",
+    "流服务线程内的 start 后续（R2-COT-03 边界同）",
+    "候选真机行为（刷机授权缺失）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:40:00"
+}

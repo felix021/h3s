@@ -1,0 +1,29 @@
+{
+  "case_id": "R4-COT-03",
+  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=r4-keyhook 候选（--r4-keyhook 隐含 --hearing-aid-l1-slotram），sha256 8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d，与官方逐字节差异恰 554 字节、与 slotram 候选恰 111 字节（r4-command-hook §3.3）",
+  "initial_state": "世界 B（候选）续 R4-COT-02 同一世界（VM 已写入 key 30）；世界 A 无对应状态（官方无写路径）——读回断言在候选世界内部，A/B diff 只覆盖读形状差",
+  "inputs_schedule": "L0 续注入：data=[30]（1B 读形状，同为写形态帧）→分发器 0xFF 路径→载荷 read 分支；负例形状：len∉{1,9} 或 data[0]≠30（如 data=[31]）→n=0 静默",
+  "observation_boundary": "read 分支：b[data+0]==30→get_config(30,resp+2,8)@0x06000f88→**读回 8 字节逐字节==R4-COT-02 写入值**→回执 30 08 v0..v7；负例：分发器 0x0600f942 ifs(n<1) 跳过响应（零回执）；FE 01 30 真·只读查询走原 getter 0x06026060 不经载荷（本用例附带断言：候选不改读路径——getter 行为与官方全同）",
+  "assertions": [
+    "candidate-image-cotest §2.2 R4-COT-03：读回闭环——路 AB 已实证「直调 set/get_config 分派器的读写往返」，本用例增量=经分发器+载荷到达 get_config（R4-VM-05 缺口的「handler 到达」半边）",
+    "r4-command-hook §2：读形状（len 1）与写形状（len 9）同帧族按长度分路；FE 01 30 原路径保留断言=候选只写 +8 setter 槽、读路径零改动（§1.2 消费面钉死）",
+    "预期差异集=源 B（resp 缓冲写）+源 D（官方无此回执）+源 A/C"
+  ],
+  "timeout_budget": "同世界续跑+读/负例分发预算（10⁴ 模型步级）；超时=FAIL",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机；读回值断言在候选世界内（官方世界无对照态）",
+    "VM 记录区读写为路 AB 已实证模型面（vm-key-roundtrip 函数级仿真）",
+    "A/B 全前缀重放非快照"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "跨重启持久（路 AB 直调层已实证重启重扫仍在；经分发器路径的同形验证 ROI 低，可选扩展不预填）",
+    "异步路径（R4-COT-05）",
+    "候选真机行为（刷机授权缺失）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:40:00"
+}
