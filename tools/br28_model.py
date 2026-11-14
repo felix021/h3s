@@ -908,7 +908,7 @@ class IcuIdleProjection:
 
 class CoreTickStopped:
     """Optional nominal counter; real IRQ entry and pending readback stay strict."""
-    def __init__(self,initial_con=None,progress=None):
+    def __init__(self,initial_con=None,progress=None,prd_readback=False):
         if initial_con not in (None,0):raise ValueError('only unknown or explicitly disabled core tick supported')
         if progress is not None and (not isinstance(progress,int) or not 0<=progress<=256):raise ValueError('invalid explicit core tick progress')
         self.initial_con=initial_con
@@ -919,9 +919,23 @@ class CoreTickStopped:
         # 不重复抛;Timer0.delivery_in_flight 同旨)。ACK(rmw |=0x40)清 pending
         # 时一并解除,计数器随之恢复推进。
         self.delivery_in_flight=False
+        # 路 BQ(一案 core_tick_prd_readback):PRD 最近真实写入记录——读回
+        # 投影的证据链。prd_write 只在 write(offset==8) 更新;运行中重编程
+        # 本就被 active_core_tick_reconfiguration_unverified 挡住,故本模型里
+        # prd_write 与 prd 恒等(单测钉死)。缺失(None)时读侧继续严格停,
+        # 不给默认值;整字写不存在部分未知形状(显式声明,非放松)。
+        self.prd_readback=prd_readback;self.prd_write=None
 
     def read(self,offset):
-        if self.unresolved_overflow:raise Blocked('core_tick_overflow_requires_resolution')
+        # 路 BQ(三查之二):异常由 read() 头部的通用 overflow guard 抛出
+        # (覆盖 CON/CNT/PRD 三个 offset,先于 offset 分派)——开关只把
+        # offset 8(PRD)且 prd_write 有值的一格放行为「回放最近真实写入」,
+        # 其余(CON/CNT)在 unresolved 窗内保持原严格停,语义与停点名逐字
+        # 不变;读无副作用(不清 pending、不重装载 CNT、不动在途/ACK/相位)。
+        if self.unresolved_overflow and not (self.prd_readback and offset==8 and self.prd_write is not None):
+            raise Blocked('core_tick_overflow_requires_resolution')
+        if offset==8 and self.unresolved_overflow and self.prd_readback:
+            return self.prd_write
         value={0:self.con,4:self.cnt,8:self.prd}[offset]
         if value is None or (offset==0 and self.pending is None):raise Blocked('unknown_core_tick_state')
         if offset==0 and self.pending:raise Blocked('core_tick_pending_readback_unverified')
@@ -941,7 +955,7 @@ class CoreTickStopped:
         elif offset in (4,8):
             if self.con is not None and self.con&1:raise Blocked('active_core_tick_reconfiguration_unverified')
             if offset==4:self.cnt=value
-            else:self.prd=value
+            else:self.prd=value;self.prd_write=value
         else:raise ValueError('invalid core tick offset')
         self.writes+=1
 
@@ -962,12 +976,22 @@ class CoreTickStopped:
         self.delivery_in_flight=False
 
     def report(self):
-        return {'con':self.con,'cnt':self.cnt,'prd':self.prd,'pending':self.pending,'writes':self.writes,
-                'virtual_source_ticks_per_step':self.progress,'expirations':self.expirations,
-                'counter_projection_enabled':self.progress is not None,'irq_delivery_simulated':self.acknowledgements>0,'initial_control_fixture':self.initial_con,
-                'acknowledgements':self.acknowledgements,'physical_initial_state_measured':False,'pending_bit7_readback_proven':False,
-                'unresolved_overflow':self.unresolved_overflow,
-                'counter_projection':'PRD+1 from SDK formula; no inferred core-held clock gating or physical phase'}
+        row={'con':self.con,'cnt':self.cnt,'prd':self.prd,'pending':self.pending,'writes':self.writes,
+             'virtual_source_ticks_per_step':self.progress,'expirations':self.expirations,
+             'counter_projection_enabled':self.progress is not None,'irq_delivery_simulated':self.acknowledgements>0,'initial_control_fixture':self.initial_con,
+             'acknowledgements':self.acknowledgements,'physical_initial_state_measured':False,'pending_bit7_readback_proven':False,
+             'unresolved_overflow':self.unresolved_overflow,
+             'counter_projection':'PRD+1 from SDK formula; no inferred core-held clock gating or physical phase'}
+        # 路 BQ:读回投影键只在开关开启时出现(legacy 报告逐字节不变)。
+        if self.prd_readback:
+            row['prd_readback_projection']={'enabled':True,
+                'prd_last_write':self.prd_write,
+                'returns':'the last real firmware PRD store (tick_timer_init); no synthesized default',
+                'covers_reads_during':'unresolved_overflow only (offset 8/PRD alone)',
+                'con_cnt_reads_and_counter_phase_unchanged':True,
+                'prd_write_equals_live_prd':self.prd_write==self.prd,
+                'silicon_readback_behavior_measured':False}
+        return row
 
 
 class GpcntConValue:
@@ -4251,6 +4275,7 @@ class BR28Model:
                  software_irq_command_projection=False,
                  initial_software_irq_pending=None,software_irq_delivery_requests=False,
                  unmaskable_irq_projection=False,core_tick_delivery_requests=False,
+                 core_tick_prd_readback=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
@@ -4346,7 +4371,13 @@ class BR28Model:
         self.gpcnt=GPCNTCleanup(readback_projection=gpcnt_con_readback) if gpcnt_cleanup_projection else None
         if initial_core_tick_controls is not None and len(initial_core_tick_controls)!=2:raise ValueError('need two explicit core tick controls')
         if core_tick_progress is not None and len(core_tick_progress)!=2:raise ValueError('need explicit progress for two core ticks')
-        self.core_ticks=[CoreTickStopped(value,rate) for value,rate in zip(initial_core_tick_controls or (None,None),
+        # core_tick_prd_readback(路 BQ 一案,opt-in,默认关):unresolved 溢出
+        # 窗内放行 PRD(offset 8)读=回放最近真实写入;必须叠在 core tick
+        # 配置上(无配置无该停点形状)。CON/CNT 读与 CNT/pending/ACK/计时
+        # 相位全不动;prd_write 缺失时读侧继续严格停(不给默认值)。
+        if core_tick_prd_readback and not core_tick_configuration:
+            raise ValueError('the core-tick PRD readback projection requires the core tick configuration')
+        self.core_ticks=[CoreTickStopped(value,rate,prd_readback=core_tick_prd_readback) for value,rate in zip(initial_core_tick_controls or (None,None),
                        core_tick_progress or (None,None))] if core_tick_configuration else None
         if core_tick_delivery_requests and not core_tick_configuration:
             raise ValueError('core tick delivery requests require the core tick configuration')

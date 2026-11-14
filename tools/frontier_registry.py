@@ -169,6 +169,10 @@ FEATURES = (
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
             'CPU0 core tick 溢出→IRQ3 交付机制(unresolved_overflow 防重入)'),
+    Feature('core_tick_prd_readback', 'conditional', ('core_tick_irq3_delivery',), False, None,
+            'core-tick PRD 读回=最近真实写入投影(BQ 一案:unresolved 溢出窗内只放行 offset 8,'
+            '回放 tick_timer_init 的 PRD store 1199999;缺失继续严格停;CON/CNT 读与 CNT/pending/'
+            'ACK/计时相位全不动;不给默认值;第二案 held 重新仲裁仅在放行后复现漏仲裁才加)'),
     # ---- S19 冲刺批 1(W4[4] 簇,路 BM 总装;四件同 PR) ----
     Feature('jl_audio_dac_cop_writes', 'conditional', ('jl_audio_dac_vl0_readback',), False, None,
             'JL_AUDIO DAC_COP(0xfe0534,+0x34 成员 13 __WO)写侧 write-only 整字记录'
@@ -233,8 +237,8 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 3747578,
-        'stop_pc': '0x12b0c2',
+        'completed_steps': 3747585,
+        'stop_pc': '0x12b0e8',
         'stop': {'kind': 'core_tick_overflow_requires_resolution'},
         'freshness_fields': ('kind',),
     },
