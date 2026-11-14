@@ -19,7 +19,7 @@
     "official 默认表无 cmd 11 槽——触发途径=合成表项或真实写表（二者都未执行）；b79 镜像的 ANC 键两态（ANC_ON_TRANSPARENT 镜像名即证据）是识别半边实机证据",
     "ANC ctx（0x0602eeb2 zalloc 572B，[QCY+500]=0x1267B4）与 0x0600db3c 六窗口的世界前置=anc 域已初始化——当前前沿世界未达，需构造或等前沿"
   ],
-  "result": "NOT_RUN",
+  "result": "BLOCKED",
   "uncovered_items": [
     "cmd 11 分支从未在仿真执行",
     "ANC 模式最终提交点未定位（b[ctx+33] 权威写点在 anc_task 0x602d3a0 族内哪条，key-action-map §6.2——观察点退而求其次选 0x0600bbd8 读值+镜像写回）",
@@ -29,6 +29,12 @@
   "evidence_level": "none",
   "evidence_conditions": [],
   "evidence_refs": [],
-  "blocked_missing": null,
+  "blocked_missing": [
+    "键绑定缺口（d2a-loop-taskbook §3 缺口 1）：默认表 15 槽无 cmd 11 绑定（物理 ANC 键→cmd 11 的映射来源未定位，key13/逻辑键 9 槽不在默认表）——触发需合成表项（BW 先例）或真实写表 0x06025564（后者本身又是新动作面：三元组改写+set_config(48) 持久化）",
+    "ANC ctx 存在性（§3 缺口 2）：[QCY+500]=0x1267B4（anc_hdl zalloc 572B@0x0602eeb2）在 D1 世界是否已创建未验证——ANC 初始化链（anc_task 创建/系数文件读取）在启动序列的音频数字域之后，S19/park 世界里大概率未到",
+    "提交点定位（§3 缺口 3）：ANC 模式最终提交点（b[ctx+33] 权威写点在 anc_task 内，key-action-map §6.2）未定位——段 5 观察点只能退到 set_config(16)+BLE 回执帧构造等次级面；成功判据三件事区分（到达 dispatch/请求投递/权威提交）中 ①② 不能替代 ③",
+    "挂起路断言设计（§3 缺口 4）：当前==ANC ON 时走 0x6066a8a(0,0x6023a70,2000) 延迟投递+状态机续行 helper 0x0601ec8 的两段式路径——闭环第二拍在延迟回调里，断言复杂度陡增，须按 d1-acceptance §6.4 准入规则独立覆盖，不能被普通直切路径顺带覆盖",
+    "第三闭环前置汇总（d2a-loop-taskbook §6 PR-D 前置条件式闸门）：P11 四缺口全收口+P12 前沿过 0x0600db3c，两者齐备才开跑——本条由单一「归 D1 事件循环」扩为以上四件清单（路 PRD0 对齐任务书 §5.2）"
+  ],
   "recorded_at": "2026-11-14T09:30:00"
 }
