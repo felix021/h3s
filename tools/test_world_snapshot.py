@@ -6,9 +6,11 @@ re-capture byte-identical), the AZ-method counterexamples (a deleted state
 field and an injected deviation must both turn the comparison red — proving
 the check has discriminative power, not vacuous green), the drift double gate
 (code fingerprint + manifest tamper both refuse loading), the RAM run-length
-codec boundaries (hole semantics: absence stays absence) and the M4
+codec boundaries (hole semantics: absence stays absence), the M4
 projection-family adapters (all slots round-trip; one-shot event bits stay
-consumed; carry state resumes exactly; switch/static mismatches refuse).
+consumed; carry state resumes exactly; switch/static mismatches refuse) and
+the full M1 CPU inventory (route BN: dual-core 30-field round trip, abstract
+GPR/IcfgState precision, memory-ownership guards, M1+M3+M4+M7 mid world).
 """
 import json
 import struct
@@ -24,7 +26,7 @@ import world_snapshot as ws
 from world_snapshot import (SnapshotError, WorldSnapshot, assert_equal, capture_world,
                             decode_ram_runs, decode_value, encode_ram_runs, encode_value,
                             pairs_of, restore_world)
-from br28_icfg import IcfgValue
+from br28_icfg import IcfgState, IcfgValue
 from br28_machine import DualCoreMachine
 from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT,
                         ICU_BASES, IRQController, P33AwkupRegisters, P33CanaryWatchRegisters,
@@ -110,17 +112,42 @@ def build_machine():
     return machine
 
 
-def build_cpu():
+def build_cpu(core_id=0):
+    """Full M1 inventory carrier in a stop-point shape: abstract GPR slots,
+    partial ICFG sub-object, in-flight execution context on both cores, bank
+    and first-task frame bookkeeping (route BN design §M1 groups)."""
     registers = [0,
                  UnknownWord((None, 5, None, 255), (0x19f640, None, 0x19f641, None)),
-                 IcfgValue(0x300, 0x3ff, (0, 2), 0x300),
+                 IcfgValue(0x300, 0x3ff, (core_id, 2), 0x300),
                  GpioOutValue(0xfd0504, 0x5, 0xf),
                  GpcntConValue(0, 1)]
     registers += list(range(100, 111))
-    return SimpleNamespace(core_id=0, pc=0x60679ba, steps=289849, seq=0x60679bc,
-                           R=registers, flags=0, sp=0x123456, sp_known=True, usp=0x124000,
-                           ssp=None, reti=0x12c57e, rets=0, irq_psr=None, icfg=0x300,
-                           icfg_known=False, icfg_unknown_mask=0x300)
+    icfg_state = IcfgState(core_id, 0x300, 0x3ff)
+    icfg_state.status_generation, icfg_state.writes = 2, 5
+    icfg_state.bit9_updates, icfg_state.task_return_projections = 1, 0
+    return SimpleNamespace(
+        core_id=core_id, pc=0x60679ba + 2 * core_id, steps=289849 + core_id,
+        seq=0x60679bc + 2 * core_id, R=registers, flags=core_id, sp=0x123456,
+        sp_known=True, usp=0x124000, ssp=None if core_id == 0 else 0x124840,
+        reti=0x12c57e, rets=0, irq_psr=None if core_id == 0 else 3,
+        icfg=0x300, icfg_known=False, icfg_unknown_mask=0x300,
+        icfg_state=icfg_state,
+        bootstrap_context=core_id == 1, bootstrap_icfg_pending=core_id == 1,
+        active_context=None if core_id == 0 else 'core_tick_handler',
+        opaque_source=None,
+        repeat=None if core_id == 0 else
+        {'start': 0x4180, 'end': 0x4182, 'register': None, 'remaining': 5,
+         'multi_block': True},
+        after_then=[1, 2] if core_id == 0 else None,
+        last_explicit_ssp=0x124840, last_explicit_usp=None,
+        unresolved_ssp_candidates=(0x124840, 0x123840) if core_id == 1 else None,
+        task_frame_load=None, task_frame_restore=None,
+        task_gpr_frame={'tcb': 0x127e10, 'base': 0x19f630} if core_id == 1 else None,
+        first_task_return_frame=None if core_id == 1 else
+        {'tcb': 0x127db8, 'base': 0x19f7b0, 'next_pc': 0x606612c,
+         'setup_pcs': ['0x6066106', '0x6066108'], 'gprs': (
+             0, UnknownWord((None, 5, None, 255), (0x19f640, None, 0x19f641, None)),
+             IcfgValue(0x300, 0x3ff, (core_id, 2), 0x300)) + tuple(range(100, 113))})
 
 
 def build_mem():
@@ -388,17 +415,178 @@ class UncapturedStateRefuses(unittest.TestCase):
         with self.assertRaisesRegex(SnapshotError, 'unmodelled_new_state'):
             capture_world(hardware=hardware)
 
-    def test_full_world_cpu_refuses_minimal_m1(self):
+    def test_full_cpu_captures_and_unknown_attribute_refuses(self):
+        """M1 is the full inventory now; the missing-state guard moved one
+        level down: the §M9 memo pair (cache/mutable_decode_bytes), the
+        fingerprint-rebuilt statics (tab/models) and the M2 mem reference are
+        skipped by design on a full CPU, while any attribute outside inventory
+        + skip refuses, named."""
+        mem = build_mem()
         cpu = build_cpu()
-        cpu.cache = {}  # decode memo: excluded by design, but marks a full CPU
-        with self.assertRaisesRegex(SnapshotError, 'capture-wiring'):
-            capture_world(cpus={'cpu0': cpu})
+        cpu.cache = {}
+        cpu.mutable_decode_bytes = {0x60679ba: b'\x12\x34'}
+        cpu.tab, cpu.models = object(), {}
+        cpu.mem = mem
+        snapshot = capture_world(cpus={'cpu0': cpu}, mem=mem)
+        record = snapshot.body['M1']['objects']['cpu0']
+        self.assertEqual(sorted(record['fields']), sorted(ws.M1_CPU_FIELDS))
+        self.assertIsInstance(record['fields']['icfg_state'], dict)  # IcfgState record
+        cpu.new_irq_shadow = object()  # a future CPU state kind the adapter knows not
+        with self.assertRaisesRegex(SnapshotError, 'new_irq_shadow'):
+            capture_world(cpus={'cpu0': cpu}, mem=mem)
 
     def test_extra_memory_attribute_refuses_capture(self):
         mem = build_mem()
         mem.regions = ()
         with self.assertRaisesRegex(SnapshotError, 'unexpected attributes'):
             capture_world(mem=mem)
+
+
+class M1FullCPUInventory(unittest.TestCase):
+    """Route BN: the full 30-field CPU inventory on both cores — dual-core
+    round trip + byte identity, Blocked-semantics abstract precision
+    (UnknownWord origins, IcfgValue identity vs status_generation), the
+    ownership guards (M2 mem identity, core existence stays M5) and the
+    combined M1+M3+M4+M7 mid-world round trip."""
+
+    def dual_world(self):
+        return {'cpu0': build_cpu(0), 'cpu1': build_cpu(1)}
+
+    def fresh_cpus(self):
+        return {key: SimpleNamespace(**{name: None for name in ws.M1_CPU_FIELDS})
+                for key in ('cpu0', 'cpu1')}
+
+    def assert_cpu_equal(self, actual, expected, key):
+        for field in ws.M1_CPU_FIELDS:
+            assert_equal(getattr(actual, field), getattr(expected, field),
+                         f'M1.{key}.{field}')
+        if getattr(expected, 'icfg_state', None) is not None:
+            for field in ws.M1_ICFG_STATE_FIELDS:
+                assert_equal(getattr(actual.icfg_state, field),
+                             getattr(expected.icfg_state, field),
+                             f'M1.{key}.icfg_state.{field}')
+
+    def test_dual_core_full_field_round_trip_and_byte_identity(self):
+        world = self.dual_world()
+        snapshot = capture_world(cpus=world, context={'scenario': 'm1_full'})
+        for key in ('cpu0', 'cpu1'):
+            record = snapshot.body['M1']['objects'][key]
+            self.assertEqual(record['class'], type(world[key]).__name__)
+            self.assertEqual(sorted(record['fields']), sorted(ws.M1_CPU_FIELDS))
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        fresh = self.fresh_cpus()
+        restore_world(loaded, cpus=fresh, expected_context={'scenario': 'm1_full'})
+        for key, original in world.items():
+            self.assert_cpu_equal(fresh[key], original, key)
+        # The restored icfg_state is a live IcfgState, not a namespace shell.
+        self.assertIsInstance(fresh['cpu0'].icfg_state, IcfgState)
+        self.assertEqual(fresh['cpu1'].repeat['remaining'], 5)
+        self.assertEqual(fresh['cpu0'].first_task_return_frame['next_pc'], 0x606612c)
+        # Strong reflexivity: re-capturing the restored dual-core world (same
+        # capture context) is byte-identical.
+        self.assertEqual(capture_world(cpus=fresh, context={'scenario': 'm1_full'}).encode(),
+                         snapshot.encode())
+
+    def test_abstract_precision_blocked_semantics_and_icfg_identity(self):
+        world = self.dual_world()
+        loaded = WorldSnapshot.from_bytes(
+            capture_world(cpus=world, context={'scenario': 'm1_abstract'}).encode())
+        fresh = self.fresh_cpus()
+        restore_world(loaded, cpus=fresh)
+        original, restored = world['cpu0'], fresh['cpu0']
+        # UnknownWord GPR slot: unknown bytes AND physical origins survive exactly.
+        assert_equal(restored.R[1], original.R[1], 'R[1]')
+        self.assertEqual(restored.R[1].origins[2], 0x19f641)
+        # IcfgValue keeps value/known/origin/identity; its Blocked __eq__ never
+        # runs — the comparison is field-by-field.
+        assert_equal(restored.R[2], original.R[2], 'R[2]')
+        # Nested frame transport: gprs tuple carries UnknownWord+IcfgValue through
+        # an ordinary dict field.
+        assert_equal(restored.first_task_return_frame['gprs'],
+                     original.first_task_return_frame['gprs'], 'frame.gprs')
+        # status_generation is state: the restored IcfgState mints reads whose
+        # identity still validates against the restored generation.
+        assert_equal(restored.icfg_state.read(), original.icfg_state.read(),
+                     'icfg_state.read()')
+        self.assertEqual(restored.icfg_state.read().origin, (0, 2))
+        # Cross-field drift is red: a restored generation off by one breaks the
+        # read identity against the snapshot's IcfgValue origins.
+        restored.icfg_state.status_generation += 1
+        self.assertNotEqual(restored.icfg_state.read().origin, original.icfg_state.read().origin)
+
+    def test_missing_or_wrong_field_must_turn_comparison_red(self):
+        world = self.dual_world()
+        loaded = WorldSnapshot.from_bytes(
+            capture_world(cpus=world, context={'scenario': 'm1_red'}).encode())
+        fresh = self.fresh_cpus()
+        restore_world(loaded, cpus=fresh)
+        fresh['cpu1'].repeat = None  # as if the REP-body context was never restored
+        with self.assertRaises(AssertionError) as caught:
+            self.assert_cpu_equal(fresh['cpu1'], world['cpu1'], 'cpu1')
+        self.assertIn('repeat', str(caught.exception))
+        fresh['cpu1'].repeat = world['cpu1'].repeat
+        fresh['cpu0'].icfg_state.status_generation = 0  # sub-object field drift
+        with self.assertRaises(AssertionError) as caught:
+            self.assert_cpu_equal(fresh['cpu0'], world['cpu0'], 'cpu0')
+        self.assertIn('status_generation', str(caught.exception))
+
+    def test_memory_ownership_guards_capture_and_restore(self):
+        # Capture: a CPU referencing memory without mem= drops RAM state — refuse.
+        cpu = build_cpu()
+        cpu.mem = build_mem()
+        with self.assertRaisesRegex(SnapshotError, 'M2'):
+            capture_world(cpus={'cpu0': cpu})
+        # Capture: a per-CPU memory distinct from the M2 target — refuse.
+        with self.assertRaisesRegex(SnapshotError, 'shares one M2 memory'):
+            capture_world(cpus={'cpu0': cpu}, mem=build_mem())
+        # Restore: the same identity guard runs on the restore targets.
+        snapshot = capture_world(cpus=self.dual_world())
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        fresh = self.fresh_cpus()
+        mem = build_mem()
+        fresh['cpu0'].mem = build_mem()  # not the mem= restore target
+        fresh['cpu1'].mem = mem
+        with self.assertRaisesRegex(SnapshotError, 'shares one M2 memory'):
+            restore_world(loaded, cpus=fresh, mem=mem)
+        fresh['cpu0'].mem = mem
+        restore_world(loaded, cpus=fresh, mem=mem)  # identical reference passes
+
+    def test_mid_world_round_trip_with_m4(self):
+        """M1+M3+M4+M7 together (design §5.4 item ④ preview at field level):
+        full CPUs over an all-families M4 hardware + the loop ledger round
+        trip and re-capture byte-identically in one snapshot."""
+        families = M4ProjectionFamilies('test_round_trip_every_family_field_exact_and_byte_identical')
+        hardware = families.poke(families.build_world())
+        cpus = self.dual_world()
+        ledger = build_ledger()
+        snapshot = capture_world(cpus=cpus, mem=build_mem(), hardware=hardware,
+                                 ledger=ledger, context={'scenario': 'm1_mid_world'})
+        self.assertEqual(snapshot.captured_modules, ['M1', 'M2', 'M3', 'M4', 'M7'])
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        fresh_hardware = BR28Model(**M4ProjectionFamilies.M4_SWITCHES)
+        fresh_cpus = self.fresh_cpus()
+        fresh_mem = SimpleNamespace(ram={}, unknown_origins={}, icfg_spills={})
+        fresh_ledger = SimpleNamespace(adapters=Counter(), rom_steps=Counter(),
+                                       event_counts=Counter(), milestones=[], trace=[],
+                                       completed=0, stop=None)
+        restore_world(loaded, cpus=fresh_cpus, mem=fresh_mem,
+                      hardware=fresh_hardware, ledger=fresh_ledger,
+                      expected_context={'scenario': 'm1_mid_world'})
+        for key, original in cpus.items():
+            self.assert_cpu_equal(fresh_cpus[key], original, key)
+        families.assert_m4_equal(fresh_hardware, hardware)
+        for field in ws.M3_TIMER_FIELDS:
+            assert_equal(getattr(fresh_hardware.timer, field),
+                         getattr(hardware.timer, field), f'M3.timer.{field}')
+        for name in ws.M3_STATE:
+            assert_equal(getattr(fresh_hardware, name), getattr(hardware, name), f'M3.{name}')
+        for name in ws.M7_STATE:
+            assert_equal(getattr(fresh_ledger, name), getattr(ledger, name), f'M7.{name}')
+        # Byte identity over the whole combined world (same capture context).
+        self.assertEqual(capture_world(cpus=fresh_cpus, mem=fresh_mem,
+                                       hardware=fresh_hardware, ledger=fresh_ledger,
+                                       context={'scenario': 'm1_mid_world'}).encode(),
+                         snapshot.encode())
 
 
 class M4ProjectionFamilies(unittest.TestCase):

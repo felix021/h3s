@@ -54,7 +54,7 @@ B-3）：条件前沿世界构建一次 = 3,137,573 步 ≈ 3 分钟（~17k 步/
 | 通用寄存器 | `R[0..15]`：每槽是 int **或** 抽象值对象 | 存（含类型标签） | 抽象值四种：`UnknownWord`（bytes[4] 各 None/0-255 + origins[4] 各 None/物理地址）、`IcfgValue`（value/known/identity=(core,status_generation)）、`GpioOutValue`（address/value/known）、`GpcntConValue`（value/known）——origins/identity 是「未知位状态」的一部分，必须逐字段 round-trip [代码 br28_unknown/br28_icfg/br28_model] |
 | 标志/栈 | `flags`、`sp`、`sp_known`、`ssp`、`usp`、`rets`、`reti`、`irq_psr` | 存 | usp/ssp 可为 None=未知，None 本身是状态 |
 | ICFG | `icfg`、`icfg_known`、`icfg_unknown_mask`、`icfg_state`（IcfgState：core/value/known/**status_generation**/writes/bit9_updates/task_return_projections） | 存 | status_generation 参与 IcfgValue.identity 校验，错一代价是恢复后 ICFG 写入被拒 |
-| 执行上下文 | `bootstrap_context`、`active_context`（None/'software_irq_handler'/'core_tick_handler'/'timer0_irq_handler'/first_task 投影名）、`opaque_source`、`repeat`（REP 体投影 dict：start/end/register/remaining/multi_block）、`after_then` | 存 | 在途中断/REP 状态=「事件队列」的 CPU 侧投影 |
+| 执行上下文 | `bootstrap_context`、`bootstrap_icfg_pending`（一次性 gate-mask 消费位，probe_boot 0x...1489 置/0x...649 清——BN 源码核对补入）、`active_context`（None/'software_irq_handler'/'core_tick_handler'/'timer0_irq_handler'/first_task 投影名）、`opaque_source`、`repeat`（REP 体投影 dict：start/end/register/remaining/multi_block）、`after_then` | 存 | 在途中断/REP 状态=「事件队列」的 CPU 侧投影 |
 | 银行/帧簿记 | `last_explicit_ssp`、`last_explicit_usp`、`unresolved_ssp_candidates`、`task_frame_load`、`task_frame_restore`、`task_gpr_frame`、`first_task_return_frame` | 存 | 缺任一=恢复后银行假设/首任务对照断裂 |
 | 解码 memo | `cache`（pc→(insn,raw,size)）、`mutable_decode_bytes` | **排除（可推导）** | 语义透明论证 [代码 decode]：ROM/flash 区 `super().decode` 纯 memo；可变区每次 decode 先按当前映射重读字节校验、失配即弃缓存——空缓存恢复后首次 decode 重读重解码，结果必然相同；`mutable_decode_bytes` 只被缓存命中路径消费。排除两者必须**成对**（只排一个会改变校验路径） |
 | 模型表 | `models`（k2 修正后的指令模型 dict）、`tab`（上游指令表） | 静态配置 | 由 upstream PIN + architectural_k2 重建；跨快照 diff 上游语义=指纹职责 |
@@ -367,8 +367,9 @@ probe_boot/probe_irq_entry/br28_model/br28_machine 等既有文件）；**捕获
 **捕获接线半剩什么**（BF 合并后的下一路）：
 1. probe_boot explore 循环的捕获点（post_stop 式钩子，§2.5；账本句柄暴露，M7 的
    「向后兼容第四可选参数」方案）；
-2. M1 完整字段清单（执行上下文/repeat/after_then/银行簿记/任务帧/IcfgState——最小
-   15 字段清单已在注册表，扩展即改 M1_CPU_FIELDS，旧快照自然被双闸拒绝再生成）；
+2. ~~M1 完整字段清单~~ **已完成**（路 BN/sim-snapm1，2026-11-14：30 字段/核全量
+   （含源码核对补上的 bootstrap_icfg_pending）+IcfgState 子对象+M2 mem 归属守卫+
+   §M9 memo 对成对排除；见 §5.6）；
 3. ~~M4 约 25 个投影族类的适配器~~ **已完成**（路 BL/sim-snapm4，2026-11-14：
    31 槽位/30 类/121 状态字段全覆盖，含一次性事件位与进位状态；见 §5.5）；
 4. 小世界往返升级为「快照于中点、恢复到终点、对照完整直跑」的 fast tier 全量形态
@@ -392,9 +393,29 @@ probe_boot/probe_irq_entry/br28_model/br28_machine 等既有文件）；**捕获
 | 顺手修复 BJ encode_static_value $pairs 分支丢弃值的潜伏 bug（M3 静态从未踩中，M4 的 int 键 fixture 首次触发） | 就绪 | world_snapshot.encode_static_value |
 | fast tier 新增 6 例（全族往返+字节同一/一次性位/进位/开关双向拒/漏字段必须红+漏恢复必须红/静态 fixture 拒）+1 例改写（M4 拒载测试改为「投影对象上适配器外新状态显形拒载」） | 就绪 | tools/test_world_snapshot.py（28 例，进 --units） |
 
-剩余接线路清单：①explore 捕获点、②M1 完整清单、④小世界中点往返全量形态、
+剩余接线路清单：①explore 捕获点、④小世界中点往返全量形态、
 ⑤canonical 快照+artifact tier（等价对照仍是恢复合法性的唯一证明，M4 适配器本身
 只承诺字段级往返与行为语义保持）。
+
+## 5.6 M1 完整字段适配器完成状态（2026-11-14 路 BN/sim-snapm1，基线 336c1d9）
+
+BJ 接线路清单 ②：**M1 从平面 15 字段桩升级为真实 CPU 类全字段适配器**（纯改
+world_snapshot.py 的 M1 节，照 BL 模式；不改 probe_boot/probe_irq_entry/br28_model/
+br28_machine）。字段清单=AST 全量提取（上游 sim.py CPU.__init__ + probe_boot 子类
+类属性 + 运行循环/DualCoreMachine/probe_irq_entry 的全部动态赋值）+逐字段源码核对，
+再拿真实上游 CPU 实例（probe_pi32v2.upstream()）实测 vars() 布局/往返/重捕获。
+
+| 能力 | 状态 | 锚点 |
+|---|---|---|
+| 每核 30 状态字段：通用 R[0..15]（槽可为 int/None/五种抽象值）/flags + 特殊 pc/seq/steps/sp/sp_known/usp/ssp/reti/rets/irq_psr/icfg/icfg_known/icfg_unknown_mask + 执行上下文 bootstrap_context/**bootstrap_icfg_pending**（源码核对补上，设计 §1 表原漏）/active_context/opaque_source/repeat（含 multi_block/allow_helper_return 可选键）/after_then + 银行/帧簿记 last_explicit_ssp/last_explicit_usp（note_bank_write 动态属性）/unresolved_ssp_candidates/task_frame_load/task_frame_restore/task_gpr_frame/first_task_return_frame（gprs 元组携带抽象值） | 就绪 | world_snapshot.M1_CPU_FIELDS/_capture_m1/_restore_m1 |
+| IcfgState 子对象 7 字段（core/value/known/**status_generation**/writes/bit9_updates/task_return_projections）按对象记录往返；status_generation 是 IcfgValue.identity 的校验源，恢复后 icfg_state.read() 的 origin 精确一致 | 就绪 | M1_ICFG_STATE_FIELDS/_capture_icfg_state/_restore_icfg_state |
+| 归属核对：CPU.mem=M2 世界级（引用，逐 CPU identity 守卫——cpus 与 mem 必须同捕同恢、单共享实例）；cache+mutable_decode_bytes=§M9 memo 对（成对排除）；tab/models=指纹重建静态；核存在性=M5 core_ids（M1 不重复表达）；M6 在 hardware.mmu、CPU 侧无 M6 归属字段 | 就绪 | _check_m1_mem_ownership/M1_SKIP |
+| 动态属性语义：irq_psr/active_context/icfg_state/last_explicit_*/unresolved_ssp_candidates/icfg_known 等捕获用 getattr(...,None)（读取方本就以 None 为缺席语义），恢复一律 setattr——None≡缺席是等价不是近似 | 就绪 | _capture_m1 注释 |
+| per-object 守卫（BL 同款）：CPU 对象上清单+skip 之外的属性捕获即拒并报名（未来新状态种类显形；实测上游 CPU 实例 vars() 全部落位、未知属性拒载）；`li.sr_u32 retx/rete,0` 这类边角写入会以属性名显形拒载，留待有真实观测再扩 | 就绪 | _capture_m1 extra 守卫 |
+| assert_equal 扩 IcfgState 分支（重建实例身份无意义，按捕获字段逐项比较） | 就绪 | world_snapshot.assert_equal |
+| fast tier 新增 5 例（双核全字段往返+字节同一/抽象值+IcfgState 精确+identity 漂移红/漏恢复字段必须红+子对象字段红/归属守卫双向/M1+M3+M4+M7 中世界组合往返+字节同一）+1 例改写（M1 拒载测试改为「全 CPU 捕获通过、清单外属性显形拒载」） | 就绪 | tools/test_world_snapshot.py（33 例，进 --units） |
+
+无需新增值类型标签（BJ 白名单足够）。旧快照被双闸自然拒绝（适配器形状变了），再生成即可。
 
 ## 5.3 与既有机制的关系（不重复造轮子）
 
@@ -406,6 +427,17 @@ probe_boot/probe_irq_entry/br28_model/br28_machine 等既有文件）；**捕获
 
 # 6. HANDOFF 条目（同步落档）
 
+- 路 BN（sim-snapm1，2026-11-14，基线 336c1d9）：**M1 完整 CPU 字段适配器**完成（BJ
+  接线路清单 ②，照 BL 模式）——每核 30 状态字段（通用 R/特殊寄存器逐字段、执行上下文
+  repeat/after_then/bootstrap_icfg_pending（源码核对补上，§1 表原漏）、银行/任务帧簿记
+  last_explicit_*/task_frame_*/first_task_return_frame）+IcfgState 子对象 7 字段
+  （status_generation 支持 IcfgValue.identity 精确往返）；CPU.mem=M2 归属 identity 守卫
+  （cpus 与 mem 同捕同恢、单共享实例），cache+mutable_decode_bytes=§M9 memo 成对排除，
+  tab/models=指纹重建静态，核存在性留 M5；per-object 守卫（清单+skip 外属性捕获即拒
+  并报名，真实上游 CPU 实例实测通过）；assert_equal 增 IcfgState 分支。fast tier 33 例
+  （+5 新：双核全字段往返+字节同一/抽象值+identity 精确/漏字段红/归属守卫/M1+M3+M4+M7
+  中世界组合往返；1 改写：M1 拒载测试下沉一级），--units 绿。清单剩余：①explore
+  捕获点、④小世界中点往返全量、⑤canonical+artifact tier。前沿不变。
 - 路 BL（sim-snapm4，2026-11-14，基线 5b0f59d）：**M4 投影族适配器全量**完成（BJ
   接线路清单 ③ 前半，纯新增）——主交付 tools/world_snapshot.py 的 M4_FAMILIES 表
   （31 槽位/30 类/121 状态字段：写记录 12、位记录 3、一次性事件 5、进位状态 3、
