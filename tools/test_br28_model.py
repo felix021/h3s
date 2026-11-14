@@ -2594,5 +2594,201 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(sets,{'0xf2a628':['0xffffffef','0xffffff7f'],
                                '0xf2c054':['0x3fdf','0xff7f','0x7fbf']})
 
+    def test_timer2_delay_projection_write_validation_and_records(self):
+        # 路 BK §5.4-1(S19 批 1):0x12cd26 全 26 指令的写序列被接受并记录;
+        # 非 LRC 源拒绝(RC16M src4=0x1001)、捕获/PWM mode 拒绝;0xCC01 复合
+        # 字写清 pending 且存储 con=0xC01(bit15 写忽略)。默认关:0xfd0600
+        # 族不被 handles(0x12cd36 停点形状),报告无 timer2 键。
+        from br28_model import TIMER2,Timer2Delay
+        plain=BR28Model()
+        self.assertFalse(plain.handles(TIMER2,4) or plain.handles(TIMER2+4,4))
+        self.assertNotIn('timer2_delay_projection',plain.report())
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(TIMER2,0x4000)
+        t=Timer2Delay()
+        t.write(TIMER2,0x4000,4);t.write(TIMER2+4,1,4);t.write(TIMER2+8,200,4)
+        self.assertEqual((t.con,t.cnt,t.prd,t.writes),(0,1,200,3))
+        t.write(TIMER2,0xC01,4)  # 启动:LRC src3/div0/mode1
+        self.assertEqual(t.con,0xC01)
+        self.assertEqual(t.transactions[0]['closed_form_steps'],4000)
+        t.pending=True
+        t.write(TIMER2,0xCC01,4)  # 退出 W1C 复合字:bit14 清 pending,存储 0xC01
+        self.assertEqual((t.con,t.pending),(0xC01,False))
+        t.write(TIMER2,0,4)  # 停表
+        self.assertEqual(t.con,0)
+        reject=Timer2Delay();reject.write(TIMER2+4,1,4);reject.write(TIMER2+8,200,4)
+        with self.assertRaisesRegex(Blocked,'unsupported_timer_clock_source'):
+            reject.write(TIMER2,0x1001,4)  # src4=RC16M:非 LRC 拒绝
+        with self.assertRaisesRegex(Blocked,'unsupported_timer_mode'):
+            reject.write(TIMER2,2,4)  # 捕获 mode 拒绝
+        early=Timer2Delay();early.write(TIMER2+8,200,4)
+        with self.assertRaisesRegex(Blocked,'uninitialized_timer_count_or_period'):
+            early.write(TIMER2,0xC01,4)  # CNT 未写不启动
+        with self.assertRaisesRegex(Blocked,'unsupported_timer_register'):
+            Timer2Delay().write(TIMER2+12,0,4)
+        with self.assertRaisesRegex(ValueError,'unsigned32'):
+            Timer2Delay().write(TIMER2,-1,4)
+        h=BR28Model(timer2_delay_projection=True)
+        self.assertTrue(h.handles(TIMER2,4) and h.handles(TIMER2+8,4))
+        h.write(TIMER2,0x4000);h.write(TIMER2+4,1);h.write(TIMER2+8,200);h.write(TIMER2,0xC01)
+        self.assertIn('timer2_delay_projection',h.report())
+        self.assertEqual(h.report()['timer2_delay_projection']['transactions'][0]
+                         ['closed_form_steps'],4000)
+
+    def test_timer2_delay_lrc_fractional_counting_is_exact(self):
+        # 路 BK §5.4-2:两级分数(参考 tick→LRC 1/80→divisor)逐步累积——恰
+        # 20 步/LRC tick、第 4000 步 pending 置位;闭式与逐步(含 lrc_remainder
+        # ≠0 的中途状态)互证;div≠1 形状一组(src3|div1=0x4C01:div 索引 1=÷4)。
+        from br28_model import TIMER2,Timer2Delay
+        t=Timer2Delay()
+        t.write(TIMER2,0x4000,4);t.write(TIMER2+4,1,4);t.write(TIMER2+8,200,4)
+        t.write(TIMER2,0xC01,4)
+        for i in range(3999):
+            t.advance(4)
+            self.assertFalse(t.pending,(i,t.cnt,t.lrc_remainder))
+            if i%20==19:self.assertEqual(t.lrc_remainder,0)
+        t.advance(4)
+        self.assertTrue(t.pending and t.expirations==1)
+        self.assertEqual(t.transactions[-1]['expiry_model_step'],4000)
+        # 中途状态闭式互证:走 1001 步(50 个 LRC tick+1 参考 tick)后闭式
+        # 与逐步一致(lrc_remainder=4≠0)。
+        u=Timer2Delay()
+        u.write(TIMER2,0x4000,4);u.write(TIMER2+4,1,4);u.write(TIMER2+8,200,4)
+        u.write(TIMER2,0xC01,4)
+        for _ in range(1001):u.advance(4)
+        self.assertEqual(u.lrc_remainder,4)
+        self.assertEqual(u.cnt,51)  # CNT 从 1 起数:4004 参考 tick=50 个 LRC tick
+        remaining=u.steps_to_next_expiration(4)
+        self.assertEqual(remaining,4000-1001)
+        for _ in range(remaining-1):u.advance(4)
+        self.assertFalse(u.pending)
+        u.advance(4);self.assertTrue(u.pending)
+        # div=4(src3|div1<<4|mode1=0xC11):PRD 200 需 200×4=800 个 LRC tick
+        # =64000 参考 tick=16000 模型步。
+        d=Timer2Delay()
+        d.write(TIMER2,0x4000,4);d.write(TIMER2+4,1,4);d.write(TIMER2+8,200,4)
+        d.write(TIMER2,0xC01|0x10,4)
+        self.assertEqual(d.steps_to_next_expiration(4),16000)
+        for _ in range(15999):d.advance(4)
+        self.assertFalse(d.pending)
+        d.advance(4);self.assertTrue(d.pending)
+        # 停表+清 pending(0x4000 写回 mode=0)后不再计数也不再是事件;纯停表
+        # 写 0 不清 pending——pending 置位后仍可唤醒(退出序列自己 W1C)。
+        d.write(TIMER2,0x4000,4)
+        self.assertIsNone(d.steps_to_next_expiration(4))
+        before=d.expirations
+        for _ in range(100):d.advance(4)
+        self.assertEqual(d.expirations,before)
+
+    def test_timer2_readback_pending_bit15_and_wake_horizon(self):
+        # 路 BK §5.4-3:pending 前 CON 读=0xC01、pending 后=0x8C01;CNT/PRD
+        # 读回;timer2_wake_horizon(模型侧):pending=1/在计数=闭式/不在计数
+        # =None(无 icfg 资格面——完成唤醒不是交付,锚点条件在机器侧)。
+        from br28_model import TIMER2
+        h=BR28Model(timer2_delay_projection=True)
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            h.read(TIMER2)
+        h.write(TIMER2,0x4000);h.write(TIMER2+4,1);h.write(TIMER2+8,200);h.write(TIMER2,0xC01)
+        self.assertEqual(h.read(TIMER2),0xC01)
+        self.assertEqual((h.read(TIMER2+4),h.read(TIMER2+8)),(1,200))
+        self.assertEqual(h.report()['timer2_delay_projection']['con_reads'],1)
+        self.assertEqual(h.timer2_wake_horizon(),4000)
+        for _ in range(4000):h.advance(0x300)
+        self.assertEqual(h.read(TIMER2),0x8C01)
+        self.assertEqual(h.timer2_wake_horizon(),1)
+        h.write(TIMER2,0);self.assertEqual(h.timer2_wake_horizon(),1)  # pending 保持:停表不清位
+        h.write(TIMER2,0x4000);self.assertIsNone(h.timer2_wake_horizon())  # W1C+停表
+        # 投影关:模型侧 horizon 包装不存在(机器侧 getattr 防御)
+        self.assertIsNone(BR28Model().timer2_wake_horizon())
+
+    def test_timer2_iwkup_write_record_and_strict_readback(self):
+        # 路 BK §5.4-7:IWKUP_NUM((cnum<<11)+0xFFE1B0)值 6/核号记录;读回
+        # 严格停(不发明);非白名单地址不路由。
+        from br28_model import IWKUP_NUM_BASE
+        h=BR28Model(timer2_delay_projection=True)
+        self.assertTrue(h.handles(IWKUP_NUM_BASE,4) and h.handles(IWKUP_NUM_BASE+0x800,4))
+        self.assertFalse(h.handles(IWKUP_NUM_BASE+4,4))
+        h.write(IWKUP_NUM_BASE,6)
+        h.write(IWKUP_NUM_BASE+0x800,6)
+        record=h.report()['timer2_delay_projection']['iwkup_writes']
+        self.assertEqual([w['value'] for w in record],[6,6])
+        self.assertEqual([w['address'] for w in record],['0xffe1b0','0xffe9b0'])
+        with self.assertRaisesRegex(Blocked,'iwkup_num_readback_not_modeled'):
+            h.read(IWKUP_NUM_BASE)
+
+    def test_jl_pvdd_trim_writes_container_seeds_and_default_off(self):
+        # 路 BM §1(S19 批 1 ①):三地址合成初始字 0 seed 进 registers(读回=
+        # 当前值,AM 容器族);默认关不 seed、不 handles(W4[4] 停点① 0x60686fc
+        # 形状)。不并进 P33_ANALOG_CONFIG/P33_TAIL_ANALOG_CONFIG 常量——那会
+        # 改「旧容器开而本开关关」世界的报告形状(BV/BN 纪律)。
+        from br28_model import JL_PVDD_TRIM_CONFIG,P33_ANALOG_CONFIG
+        plain=BR28Model()
+        for address in JL_PVDD_TRIM_CONFIG:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xf2c274,0)
+        self.assertNotIn('jl_pvdd_trim_writes',plain.report()['assumptions'])
+        h=BR28Model(jl_pvdd_trim_writes=True)
+        for address in JL_PVDD_TRIM_CONFIG:
+            self.assertTrue(h.handles(address,4))
+            self.assertEqual(h.read(address),0)  # 合成初始字 0
+            h.write(address,0x123)
+            self.assertEqual(h.read(address),0x123)  # 读回=当前值
+        self.assertNotIn(set(JL_PVDD_TRIM_CONFIG),set(P33_ANALOG_CONFIG))
+        self.assertIn('jl_pvdd_trim_writes',h.report()['assumptions'])
+        # 与 tail 容器叠加互不吞地址
+        both=BR28Model(jl_pvdd_trim_writes=True,p33_analog_tail_projection=True)
+        self.assertTrue(both.handles(0xf2c240,4) and both.handles(0xf2c274,4))
+
+    def test_jl_audio_dac_cop_write_record_and_strict_readback(self):
+        # 路 BM/S19 批 1 ④:全 app 恰两处纯写 0x7F、零读回(__WO 裁剪操作字,
+        # D2 场景的读面属 D1 后)→write-only 整字记录;读回显式严格停;默认关
+        # 0xfe0534 保持 unmapped(3,202,148 前沿形状)。
+        from br28_model import JL_AUDIO_DAC_COP
+        plain=BR28Model()
+        self.assertFalse(plain.handles(JL_AUDIO_DAC_COP,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(JL_AUDIO_DAC_COP,0x7f)
+        self.assertNotIn('jl_audio_dac_cop_write_records',plain.report())
+        h=BR28Model(jl_audio_dac_cop_writes=True)
+        self.assertTrue(h.handles(JL_AUDIO_DAC_COP,4))
+        h.write(JL_AUDIO_DAC_COP,0x7f)
+        r=h.report()['jl_audio_dac_cop_write_records']
+        self.assertEqual(r['stores']['0xfe0534'],
+                         {'values':['0x7f'],'writes':1,'cores':[0]})
+        self.assertTrue(r['write_only'] and r['readback_not_modeled'])
+        self.assertIn('member 13',r['sdk_naming'])
+        with self.assertRaisesRegex(Blocked,'jl_audio_dac_cop_read_not_modeled'):
+            h.read(JL_AUDIO_DAC_COP)
+        self.assertIn('jl_audio_dac_cop_write_records',h.report()['assumptions'])
+
+    def test_jl_audio_dac_dma_write_records_and_strict_readback(self):
+        # 路 BM §4.3 行 0b 勘误之二/S19 批 1 ④续:DAC_COP 放行后 +35 步的
+        # 0x6071e92 起 four-word DAC DMA 写——恰四写零读回(探路实证)→
+        # write-only 记录;读回显式严格停;默认关保持 unmapped。
+        from br28_model import JL_AUDIO_DAC_DMA_WORDS
+        plain=BR28Model()
+        for address in JL_AUDIO_DAC_DMA_WORDS:
+            self.assertFalse(plain.handles(address,4))
+        self.assertNotIn('jl_audio_dac_dma_write_records',plain.report())
+        h=BR28Model(jl_audio_dac_dma_writes=True)
+        for address in JL_AUDIO_DAC_DMA_WORDS:
+            self.assertTrue(h.handles(address,4))
+        h.write(0xfe0508,1);h.write(0xfe0504,0x18e180);h.write(0xfe0514,0);h.write(0xfe0510,0)
+        r=h.report()['jl_audio_dac_dma_write_records']
+        self.assertEqual(r['word_writes'],4)
+        self.assertEqual(r['stores']['0xfe0504'],
+                         {'values':['0x18e180'],'writes':1,'cores':[0]})
+        self.assertEqual(r['stores']['0xfe0508'],{'values':['0x1'],'writes':1,'cores':[0]})
+        self.assertTrue(r['write_only'] and r['readback_not_modeled'])
+        self.assertIn('route-AG',r['sdk_naming'])
+        with self.assertRaisesRegex(Blocked,'jl_audio_dac_dma_read_not_modeled'):
+            h.read(0xfe0504)
+        # 与 DAC_COP/邻域容器叠加互不吞地址(DAC_CON AK 域不受影响)
+        both=BR28Model(jl_audio_dac_dma_writes=True,jl_audio_dac_cop_writes=True,
+                       jl_audio_dac_init_write_records=True,jl_wl_aud_write_records=True)
+        self.assertTrue(both.handles(0xfe0500,4) and both.handles(0xfe0534,4)
+                        and both.handles(0xfe0508,4))
+
 
 if __name__=='__main__':unittest.main()

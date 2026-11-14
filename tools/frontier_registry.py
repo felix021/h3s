@@ -80,7 +80,7 @@ FEATURES = (
             '并行对半字存储第二半(exact_parallel_halfword_stores 子开关)'),
     Feature('p11_power_init', 'base', (), False, None,
             'power_init 的 P11 依赖链(lpwr 响应/窗口/公共段拷贝/配置 RMW)'),
-    # ---- conditional 栈(p11_heap_experimental_config 场景增量,33 个开关) ----
+    # ---- conditional 栈(p11_heap_experimental_config 场景增量,39 个开关) ----
     Feature('heap_info_bytes', 'conditional', ('p11_power_init',), True, 'P11_HEAP_INFO_DERIVED',
             'P11 堆信息 4 字节显式 fixture(静态推导候选,derived-not-measured)'),
     Feature('byte_pair', 'conditional', (), False, None,
@@ -119,8 +119,10 @@ FEATURES = (
             'JL_ADC CON 读回=最后写值投影(br28.h __RW)'),
     Feature('fd31_adc_pnd_completion', 'conditional', ('fd31_adc_con_readback',), False, None,
             'JL_ADC CON bit7 PND 无状态读时完成投影(EN=1 后 guest 读见 bit7)'),
-    Feature('fd31_adc_res_named_values', 'conditional', ('fd31_adc_pnd_completion',), True, 'FD31_ADC_RES_NAMED_VALUES',
-            'JL_ADC RES 具名档位 fixture(derived-not-measured,按模拟复用通道)'),
+    Feature('fd31_adc_res_named_values', 'conditional', ('fd31_adc_pnd_completion',), True, 'FD31_ADC_RES_S19_VALUES',
+            'JL_ADC RES 具名档位 fixture(derived-not-measured,按模拟复用通道;路 BM/S19 批 1 勘误'
+            '——0x10005 trim 环采样缺行,场景改传 FD31_ADC_RES_S19_VALUES={旧表'
+            '+0x10005:400+0x10001:4},BY/键链场景继续用旧表 FD31_ADC_RES_NAMED_VALUES)'),
     Feature('p33_analog_tail', 'conditional', (), False, None,
             'W1[0] 尾段 P3_ANA_CON0/7/8/9/10+P3_CHG_CON0/CON1 容器扩展'),
     Feature('p3_ana_read_ldoin_low', 'conditional', ('p33_analog_tail',), False, None,
@@ -167,6 +169,33 @@ FEATURES = (
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
             'CPU0 core tick 溢出→IRQ3 交付机制(unresolved_overflow 防重入)'),
+    # ---- S19 冲刺批 1(W4[4] 簇,路 BM 总装;四件同 PR) ----
+    Feature('jl_audio_dac_cop_writes', 'conditional', ('jl_audio_dac_vl0_readback',), False, None,
+            'JL_AUDIO DAC_COP(0xfe0534,+0x34 成员 13 __WO)写侧 write-only 整字记录'
+            '(全 app 恰两处纯写 0x7F:W1[3] 尾 0x606ab2c+音频域 0x606e038,零读回;'
+            'D2 场景的 RMW/读面属 D1 后另立证据包;路 BM §4.3 行 0b 勘误的写侧三选一)'),
+    Feature('jl_audio_dac_dma_writes', 'conditional', ('jl_audio_dac_cop_writes',), False, None,
+            'JL_AUDIO DAC DMA 四字(0xfe0504/08/10/14,ADR/LEN/HRP/PNS)写侧 write-only 整字记录'
+            '(W1[3] 尾 DAC 启动 0x6071e92..ea8 四写恰 0x18e180 缓冲址+1+0+0,探路实证零读回'
+            '零 RMW;D2 的 DMA 指针/计数读属 tone/PCM 推送域 D1 后;路 BM 行 0b 勘误之二)'),
+    Feature('jl_pvdd_trim_writes', 'conditional', ('p11_power_init',), False, None,
+            'W4[4] PVDD/trim 域容器:P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/'
+            'P3_PVDD0_AUTO(0xf2c10c) 合成初始字 0+读回=当前值(VOLTAGE_CONFIG/'
+            'P33_ANALOG_CONFIG 同族,p33_sfr.h 纯地址宏无类型标注不臆造模拟态);'
+            '路 BM 设计'),
+    Feature('timer2_delay_projection', 'conditional', ('idle_wait', 'event_clock'), False, None,
+            'JL_TIMER2 延时域投影(W4[4] 0x60685fe→0x12cd26 忙等):0xfd0600 族写记录'
+            '+LRC 源名义 200kHz 计数器(PRD 跨越置 pending)+CON 读回 bit15+完成唤醒'
+            '(kick 先例,锚 0x12cd76,无 IRQ6 交付——ICU 使能无证据)+IWKUP_NUM '
+            '0xFFE1B0 写记录;1ms=200 LRC tick=4000 模型步闭式;路 BK 设计'),
+    Feature('p33_canary', 'conditional', ('p11_power_init',), False, None,
+            'P3_VLVD_CON(0xf2c044)/P3_PCNT_CON(0xf2c124) 金丝雀写记录+首读具名 fixture'
+            '(BV 备而未接线;W4[4] 0x12c29a 量测分支首读 0xf2c044——BA §2.2 修正后健康'
+            '路径必经;触发即停=未覆盖/写后/重复读/越形写全严格停;路 BM 接线)'),
+    Feature('p33_canary_first_read_words', 'conditional', ('p33_canary',), True,
+            'P33_CANARY_FIRST_READ_WORDS',
+            '金丝雀首读具名字 fixture({0xf2c044:0}=VLVD 未使能 boot 初态,'
+            'synthetic-not-measured)'),
     # ---- probe_only(只在 probe_irq_entry 场景变体出现,6 个开关) ----
     Feature('timer0_irq4_probe_steps', 'probe_only', ('timer0_irq4_delivery',), True, None,
             'Timer0 首次到期拉近探路 fixture(计数 seed,场景传值)'),
@@ -204,11 +233,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 3202148,
-        'stop_pc': '0x606ab2c',
-        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
-                 'address': '0xfe0534', 'size': 4, 'value_bytes': '7f000000'},
-        'freshness_fields': ('kind', 'address'),
+        'completed_steps': 3747578,
+        'stop_pc': '0x12b0c2',
+        'stop': {'kind': 'core_tick_overflow_requires_resolution'},
+        'freshness_fields': ('kind',),
     },
 }
 

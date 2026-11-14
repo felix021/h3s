@@ -98,6 +98,16 @@ class RepeatIrqDeliveryTests(unittest.TestCase):
             DualCoreMachine(repeat_irq_delivery=True)
 
 
+class Timer2PollCpu(RepeatIrqDeliveryCpu):
+    """TIMER2 轮询停泊核桩:锚点 idle 可解码(wake_timer2_poll 的 decode 校验)。"""
+
+    def __init__(self,slots,pc=0x12cd76,core_id=0):
+        super().__init__(slots,pc=pc,core_id=core_id)
+        self.R=[0]*16  # report() 的 cores 快照需要
+        self.rets=0
+        self.decode=lambda pc:(SimpleNamespace(id='idle' if pc==0x12cd76 else 'nop'),{},2)
+
+
 class EventClockTests(unittest.TestCase):
     """暂停点2事件时钟最小契约(docs/event-clock.md):推进条件/同刻顺序/屏蔽与唤醒/无事件诚实停。"""
 
@@ -299,6 +309,108 @@ class EventClockTests(unittest.TestCase):
             m.enter_idle_wait(cpu1)
         self.assertEqual(ctx.exception.details,{'kind':'all_cores_idle_waiting','idle_cores':[0,1]})
         self.assertEqual(h.counts['completed_model_steps'],0)
+
+    # ---- 路 BK §5.4-4..6(S19 批 1):TIMER2 完成唤醒三例 ----
+
+    def timer2_hardware(self):
+        # 无 core tick 在计数(con=0)、无 Timer0 在计数、软件 pending 全零、
+        # TIMER2 武装(观测形状 PRD=200/CNT=1/div=1→恰 4000 步)——「仅
+        # TIMER2 在计数」的极小世界。
+        h=BR28Model(cpu1_held_projection=True,initial_cpu1_control=0,
+                    initial_irq_config=[0]*32,initial_ipmask=0,
+                    core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                    core_tick_progress=(1,1),core_tick_delivery_requests=True,
+                    software_irq_command_projection=True,
+                    initial_software_irq_pending=(0,0),software_irq_delivery_requests=True,
+                    timer2_delay_projection=True)
+        h.enable_multicore([0]*32,0,lambda value:None)
+        h.write(CPU1_CONTROL,1)
+        h.core_icfg={0:0x300,1:0x300}
+        return h
+
+    def arm_timer2(self,h,prd=200,cnt=1):
+        from br28_model import TIMER2
+        h.write(TIMER2,0x4000);h.write(TIMER2+4,cnt);h.write(TIMER2+8,prd);h.write(TIMER2,0xC01)
+
+    def test_timer2_only_counting_wakes_the_anchored_core_at_exactly_4000_steps(self):
+        # 路 BK §5.4-4(W1 核心):锚点停泊+TIMER2 计数、无 core tick 无
+        # Timer0 → event_clock_engaged 后恰 +4000 步完成唤醒,核 pc==0x12cd78,
+        # 无 IrqDeliveryRequest(唤醒不是交付),event_clock 退出。
+        h=self.timer2_hardware()
+        m=self.machine(timer2_delay_projection=True)
+        cpu0=Timer2PollCpu({})  # 停泊在锚点 0x12cd76
+        cpu1=Timer2PollCpu({},pc=0x12c5ca,core_id=1)
+        m.cores={0:cpu0,1:cpu1};m.hardware=h;m.idle_wait_cores=set()
+        self.arm_timer2(h)
+        before=h.counts['completed_model_steps']
+        m.enter_idle_wait(cpu0)  # 锚点停泊(非全核)
+        self.assertEqual(m.idle_wait_cores,{0})
+        m.enter_idle_wait(cpu1)  # 全核 IDLE → 事件时钟接管
+        self.assertEqual(m.idle_wait_cores,{1})  # 只有锚点核被唤醒
+        self.assertEqual((cpu0.pc,cpu0.steps),(0x12cd78,8))  # idle 按完成计步,前进 2 字节
+        self.assertEqual(m.event_clock_advances,4000)
+        self.assertEqual(h.counts['completed_model_steps']-before,4000)
+        wakes=[e for e in m.events if e['kind']=='core_woken_by_timer2_completion']
+        self.assertEqual(len(wakes),1)
+        self.assertTrue(wakes[0]['wake_source_unverified'] and wakes[0]['idle_completion_is_assumption'])
+        self.assertEqual(m.timer2_poll_wakes,[{'core':0,'pc_after':'0x12cd78','anchor':'0x12cd76'}])
+        t=h.report()['timer2_delay_projection']
+        self.assertEqual(t['pending'] and t['expirations'],1)
+        self.assertEqual(t['transactions'][0]['expiry_model_step'],4000)
+        self.assertEqual(t['transactions'][0]['closed_form_steps'],4000)
+        self.assertIn('timer2_poll_wake_projection',m.report())
+        self.assertIn('timer2_wake_horizon',m.report()['event_clock_projection'])
+
+    def test_timer2_expiry_crossed_during_a_timer0_delivery_wakes_on_repark_zero_steps(self):
+        # 路 BK §5.4-5(交错反例):Timer0 到期早于 TIMER2 → 先 IRQ4 交付 →
+        # handler → RTI 回 0x12cd76 再停泊 → TIMER2 到期(handler 执行期间
+        # 跨过)→ 停泊即查 0 步唤醒 → 环退出;交付恰 1 次、唤醒恰 1 次。
+        from br28_model import TIMER0
+        h=self.timer0_hardware()  # IRQ4 nibble 合格;core tick 不计数
+        h.timer2=BR28Model(timer2_delay_projection=True).timer2  # 叠 TIMER2
+        m=self.machine(timer0_irq_entry=True,timer2_delay_projection=True)
+        cpu0=Timer2PollCpu({0x19fe10:0x12ece8})  # 锚点停泊+向量槽就绪
+        cpu1=Timer2PollCpu({},pc=0x12c5ca,core_id=1)
+        m.cores={0:cpu0,1:cpu1};m.hardware=h;m.idle_wait_cores=set()
+        self.arm_timer0(h,117000,119999)       # Timer0:N=3000 STD12M tick→S=ceil(4*3000/12)=1000 步
+        self.arm_timer2(h,prd=50,cnt=1)        # TIMER2:S=20*50=1000 步(同刻,扫描序 Timer0 先)
+        m.enter_idle_wait(cpu0);m.idle_wait_cores={0}
+        with self.assertRaises(IrqDeliveryRequest) as ctx:
+            m.enter_idle_wait(cpu1)  # 同刻:advance 内 Timer0 到期与 TIMER2 计数同步,交付请求先退出
+        self.assertEqual(ctx.exception.details,{'core':0,'irq':4})
+        self.assertEqual(m.event_clock_advances,1000)
+        # 同刻序:TIMER2 计数在 Timer0 的 pending 检查之前推进(同一次 advance
+        # 调用内),故 TIMER2 已置位;交付请求先于唤醒检查退出(交付事件优先),
+        # pending 保持到 handler RTI 后的重新停泊——停泊即查 0 步唤醒。
+        self.assertTrue(h.timer2.pending)
+        m.deliver_timer0_irq(0)              # handler 进入(锚点核被交付唤醒)
+        cpu0.pc=0x12cd76                      # handler RTI 回被中断点=锚点(交付时 reti_from 即锚点)
+        m.enter_idle_wait(cpu0)               # 重新停泊:停泊即查 0 步唤醒
+        self.assertEqual(m.idle_wait_cores,{1})  # 只有锚点核被唤醒(cpu1 保持停泊)
+        self.assertEqual((cpu0.pc,cpu0.steps),(0x12cd78,9))
+        self.assertEqual([d['irq'] for d in m.timer0_irq_deliveries],[4])  # 交付恰 1 次
+        self.assertEqual(len([e for e in m.events if e['kind']=='core_woken_by_timer2_completion']),1)  # 唤醒恰 1 次
+        self.assertEqual(m.event_clock_advances,1000)  # 0 步唤醒不消耗虚拟步
+
+    def test_timer2_without_an_anchored_parked_core_is_not_an_event(self):
+        # 路 BK §5.4-6:TIMER2 在计数但无锚点停泊核(核停在别处)→ 不是事件
+        # ——all_cores_idle_waiting 诚实停,note 含 TIMER2 说明;pending 置位
+        # 本身不唤醒任何人。timer2 投影 flag 前置校验照 BK §3.3。
+        with self.assertRaisesRegex(ValueError,'IDLE wait and event clock'):
+            DualCoreMachine(software_irq_entry=True,timer2_delay_projection=True)
+        h=self.timer2_hardware()
+        m=self.machine(timer2_delay_projection=True)
+        cpu0=Timer2PollCpu({},pc=0x6066318)  # 停在别处(非锚点)
+        cpu1=Timer2PollCpu({},pc=0x12c5ca,core_id=1)
+        m.cores={0:cpu0,1:cpu1};m.hardware=h;m.idle_wait_cores=set()
+        self.arm_timer2(h)
+        m.enter_idle_wait(cpu0)  # 非锚点停泊:不触发 TIMER2 唤醒
+        with self.assertRaises(Blocked) as ctx:
+            m.enter_idle_wait(cpu1)  # cpu0 已停泊,全核 IDLE
+        self.assertEqual(ctx.exception.details['kind'],'all_cores_idle_waiting')
+        self.assertIn('no anchored TIMER2 poll',ctx.exception.details['note'])
+        self.assertEqual(m.event_clock_advances,0)
+        self.assertFalse(h.timer2.pending)  # 零推进:从未到过期的位置
 
     def test_event_clock_flag_requires_the_idle_wait_projection(self):
         with self.assertRaisesRegex(ValueError,'IDLE wait projection'):

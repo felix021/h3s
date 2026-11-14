@@ -33,6 +33,12 @@ class CoreStall(Exception):
     def __init__(self,reason,**details):self.details={'kind':reason,**details}
 
 
+# 路 BK §1.3/S19 批 1:0x12cd26 TIMER2 延时 helper 的忙等环头(RAM-code,
+# flash 母本 0x060c64fe):0x12cd74 goto→0x12cd76 idle→0x12cd78 读 CON→
+# 0x12cd7c ifs(r2>=0) 测 bit15 回跳——环头 idle 指令锚定 PC,全 app 唯一。
+TIMER2_POLL_ANCHOR=0x12cd76
+
+
 class DualCoreMachine:
     # 对称 RTI 投影认定的 software-IRQ handler 尾部锚点（均为「弹出真实特殊帧后的 rti」）：
     # 0x12ade8 调度 IPI handler（0x12ad2a，两核同一份 ROM 拷贝）尾；
@@ -48,7 +54,7 @@ class DualCoreMachine:
                  core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False,
                  timer0_irq_entry=False,timer0_irq_entry_banks=False,timer0_irq_rti=False,
                  gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False,
-                 event_clock_projection=False):
+                 event_clock_projection=False,timer2_delay_projection=False):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -116,6 +122,13 @@ class DualCoreMachine:
         require(not event_clock_projection or idle_wait_projection,
                 'event clock projection requires the IDLE wait projection')
         self.event_clock_projection=event_clock_projection;self.event_clock_advances=0
+        # 路 BK §3.3/S19 批 1:TIMER2 完成唤醒件(锚定轮询唤醒,kick 先例)。
+        # requires idle_wait(停泊/唤醒机制)+event_clock(全核 IDLE 期间唯一
+        # 推进路径——不开则忙等环停泊即 all_cores_idle_waiting 合法停)。
+        require(isinstance(timer2_delay_projection,bool),'TIMER2 delay projection is opt-in boolean')
+        require(not timer2_delay_projection or (idle_wait_projection and event_clock_projection),
+                'the TIMER2 delay projection requires the IDLE wait and event clock projections')
+        self.timer2_delay_projection=timer2_delay_projection;self.timer2_poll_wakes=[]
         # codex 暂停点1最小闭环:同核 handler RTI 返回后允许再次交付(见
         # deliver_software_irq/deliver_core_tick);默认关闭时保持每核一次性限制。
         self.repeat_irq_delivery=repeat_irq_delivery
@@ -162,6 +175,12 @@ class DualCoreMachine:
         if self.cpu1_control_kick_wake and kicks is not None and kicks!=self.seen_cpu1_control_kicks:
             self.seen_cpu1_control_kicks=kicks
             self.wake_cpu1_control_kick()
+        # 路 BK §5.2/S19 批 1:TIMER2 完成唤醒的通用触发点(与 kick 同位)——
+        # pending 已置位且有锚点停泊核即唤醒,覆盖「另一核运行期间跨过到期点」
+        # 的窗口(事件时钟路径/停泊路径各有自己的检查,这里是兜底通用件)。
+        if self.timer2_delay_projection and self.timer2_poll_due():
+            for core in self.timer2_anchored_parked_cores():
+                self.wake_timer2_poll(core)
         core=1-self.last_core
         if core not in self.cores:core=0
         if core in self.idle_wait_cores:
@@ -183,6 +202,13 @@ class DualCoreMachine:
         if cpu.core_id in self.idle_wait_cores:return
         self.idle_wait_cores.add(cpu.core_id)
         self.record_event({'kind':'core_idle_wait_entered','core':cpu.core_id,'pc':hex(cpu.pc)})
+        # 路 BK §5.2/S19 批 1:停泊即查——pending 已置位且本核恰停在锚点
+        # (handler 执行期间跨过到期点的窗口)时 0 步立即唤醒,不进推进循环
+        # (防「已到期死等」;唤醒按完成计步消费 idle 指令)。
+        if self.timer2_delay_projection and self.timer2_poll_due():
+            for core in self.timer2_anchored_parked_cores():
+                self.wake_timer2_poll(core)
+            return
         if set(self.cores)<=self.idle_wait_cores:
             # 暂停点2事件时钟契约(docs/event-clock.md):默认(关)仍是立即诚实停;
             # opt-in 后全核 IDLE 时虚拟时间按已建模定时器计数推进到最近的已建模
@@ -223,6 +249,61 @@ class DualCoreMachine:
         horizon=getattr(self.hardware,'timer0_wake_horizon',None)
         return None if horizon is None or getattr(self.hardware,'timer',None) is None else horizon(icfg)
 
+    def timer2_anchored_parked_cores(self):
+        """停泊且 PC 恰在 TIMER2 忙等环头 idle 指令(0x12cd76)的核(升序)。
+
+        只有锚点停泊核消费 TIMER2 完成事件——pending 置位本身不唤醒任何人
+        (BK §3.2:TIMER2 在计数但无锚点停泊核=不是事件,正确诚实停)。
+        """
+        timer=getattr(self.hardware,'timer2',None)
+        if timer is None:return []
+        return sorted(core for core in self.idle_wait_cores
+                      if core in self.cores and self.cores[core].pc==TIMER2_POLL_ANCHOR)
+
+    def timer2_poll_due(self):
+        """TIMER2 完成唤醒到期判定:pending 置位且存在锚点停泊核。"""
+        timer=getattr(self.hardware,'timer2',None)
+        return timer is not None and timer.pending and bool(self.timer2_anchored_parked_cores())
+
+    def timer2_wake_horizon(self):
+        """TIMER2 完成唤醒对事件时钟的期限贡献(路 BK §3.2/G1 第三族)。
+
+        有锚点停泊核才委托 BR28Model.timer2_wake_horizon(pending=1/在计数=
+        闭式 4000 步观测形状);无锚点停泊核=None(不是事件)。与 Timer0 的
+        分野:无 IRQ 资格面、无在途排除(唤醒即消费 pending 片的退出序列
+        由真实代码的 W1C 写执行)。闭式只作推进上限,实际置位由 advance()
+        逐步触发——「仅 TIMER2 在计数的世界」不再被误判无事件(BQ 修 G1
+        时对 Timer0 犯过的同一类错,不再犯第三次)。
+        """
+        if not self.timer2_delay_projection or not self.timer2_anchored_parked_cores():
+            return None
+        return self.hardware.timer2_wake_horizon()
+
+    def wake_timer2_poll(self,core):
+        """TIMER2 完成唤醒(kick 先例逐句对齐,路 BK W1/§5.2,显式假设)。
+
+        停泊核 PC==0x12cd76(锚字面量)且 TIMER2 pending 置位时:摘除
+        idle_wait_cores、pc+=2(消费 idle 指令)、steps+=1、记录事件
+        core_woken_by_timer2_completion(idle_completion_is_assumption/
+        wake_source_unverified 旗标照 kick 事件)。不发明中断向量、不改
+        RETI/ICFG/held 位、不建 IRQ6 交付——硅机制大概率是 IRQ6+IWKUP_NUM
+        (BK §1.2 的 SDK 具名链),未测量,故 wake_source_unverified。
+        """
+        require(self.timer2_delay_projection,'TIMER2 poll wake requires the TIMER2 delay projection')
+        cpu=self.cores[core]
+        insn,_,size=cpu.decode(cpu.pc)
+        require(insn.id=='idle' and cpu.pc==TIMER2_POLL_ANCHOR,
+                'TIMER2 poll wake requires the anchored parked IDLE at 0x12cd76')
+        self.idle_wait_cores.discard(core)
+        cpu.pc+=size;cpu.steps+=1
+        wake={'core':core,'pc_after':hex(cpu.pc),'anchor':hex(TIMER2_POLL_ANCHOR)}
+        self.timer2_poll_wakes.append(wake)
+        if len(self.timer2_poll_wakes)>16:self.timer2_poll_wakes.pop(0)
+        self.record_event({'kind':'core_woken_by_timer2_completion',**wake,
+                           'idle_completion_is_assumption':True,'wake_source_unverified':True,
+                           'assumed_mechanism':'timer2 pending breaks idle; kick precedent; '
+                                              'no vector/RETI/ICFG change'})
+
     def software_pending_probe_needed(self):
         """已置位(或未知)的软件 pending 位是否存在,需要一步探查能否唤醒。
 
@@ -259,22 +340,41 @@ class DualCoreMachine:
                            'clock_source':'modeled timer counters only'})
         probe_pending=self.software_pending_probe_needed()
         while True:
+            # 路 BK §5.2/S19 批 1:推进前先查 TIMER2 完成唤醒(0 步语义——
+            # pending 已置位的停泊即醒场景不消耗虚拟步);唤醒后核在跑,
+            # 事件时钟按交付同款出口纪律退出。
+            if self.timer2_delay_projection and self.timer2_poll_due():
+                for core in self.timer2_anchored_parked_cores():
+                    self.wake_timer2_poll(core)
+                return
             horizon=self.core_tick_wake_horizon()
             # 路 BQ/G1:Timer0 并入同一 min()——无 core tick 在计数时「唯一
             # 事件=Timer0 到期」不再被误判为无事件诚实停;被屏蔽(全核确定
             # 不合格)的 Timer0 不是事件,闭式只作推进上限。
             timer0=self.timer0_wake_horizon(cpu.icfg)
             if timer0 is not None:horizon=timer0 if horizon is None else min(horizon,timer0)
+            # 路 BK §3.2/G1 第三族:TIMER2 完成唤醒并入同一 min()——「无 core
+            # tick、无 Timer0、仅 TIMER2 在计数且有锚点停泊核」的世界不再被
+            # 误判无事件;闭式(观测形状 4000 步精确)只作推进上限,实际置位
+            # 仍由逐步 advance() 触发。
+            timer2=self.timer2_wake_horizon()
+            if timer2 is not None:horizon=timer2 if horizon is None else min(horizon,timer2)
             if horizon is None:
                 if not probe_pending:
                     raise Blocked('all_cores_idle_waiting',idle_cores=sorted(self.idle_wait_cores),
                                   note='no modeled event can fire: no counting core tick, no '
-                                       'counting/eligible Timer0 and no set software pending bit '
+                                       'counting/eligible Timer0, no anchored TIMER2 poll and '
+                                       'no set software pending bit '
                                        '(masked pending or IRQ never wakes)')
                 horizon=1;probe_pending=False  # 单步探查:置位 pending 若合格立即请求交付
             for _ in range(horizon):
                 self.event_clock_advances+=1
                 self.hardware.advance(cpu.icfg)  # IrqDeliveryRequest/Blocked 原样传播
+                if self.timer2_delay_projection and self.timer2_poll_due():
+                    # 到期点落在推进中:唤醒并退出推进循环(与交付同一出口纪律)。
+                    for core in self.timer2_anchored_parked_cores():
+                        self.wake_timer2_poll(core)
+                    return
             # 本轮走满仍未交付:期限最近的溢出被屏蔽,core tick 已停在溢出态
             # (unresolved_overflow)而 Timer0 周期计数、其 pending 片只抛一次
             # (delivery_in_flight)——两者下一轮都不再贡献期限;至多两个 tick
@@ -701,6 +801,17 @@ class DualCoreMachine:
                     'rti_tail':'0x12ed0c (exact handler tail; symmetric one-shot RTI projection)'
                                if self.timer0_irq_rti else 'not enabled',
                     'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.timer0_irq_entry else {}),
+                **({'timer2_poll_wake_projection':{'enabled':True,
+                    'anchor':'0x12cd76 (TIMER2 poll loop head, route BK §1.3; the only anchored site in the app)',
+                    'wakes':list(self.timer2_poll_wakes),
+                    'wake_shape':'remove from idle_wait_cores, pc+=2 (consume the IDLE instruction), steps+=1 — '
+                                 'kick-precedent (wake_cpu1_control_kick) line by line; no vector, no RETI, '
+                                 'no ICFG change',
+                    'wake_source_unverified':True,
+                    'assumed_mechanism':'timer2 pending breaks idle; the silicon mechanism is most likely '
+                                        'IRQ6 + IWKUP_NUM (csfr.h naming, value 6 = IRQ_TIME2_IDX) but the '
+                                        'ICU enable state has zero evidence, so no IRQ6 delivery is modeled',
+                    'no_irq6_delivery':True}} if self.timer2_delay_projection else {}),
                 **({'repeat_irq_delivery_projection':{'enabled':True,
                     'gate':'no in-flight IRQ handler on the target core (previous handler must have RTI returned)',
                     'nesting_implemented':False,
@@ -724,8 +835,12 @@ class DualCoreMachine:
                                  +(', deliver_timer0_irq (route BE opt-in)' if self.timer0_irq_entry else '')
                                  +'); no new event sources invented',
                     'same_tick_order':'advance() scan order: core-tick IRQ3 by core number, then Timer0 IRQ4, '
-                                      'then software pending by core then IRQ number; '
-                                      'reproducibility only, not a silicon timing claim',
+                                      'then software pending by core then IRQ number'
+                                      +('; the TIMER2 completion wake is checked after each advance step '
+                                        '(route BK: delivery events first, non-delivery wakes after — '
+                                        'reproducibility only, not a silicon timing claim)'
+                                        if self.timer2_delay_projection else
+                                        '; reproducibility only, not a silicon timing claim'),
                     'masked_pending_or_overflow_wakes':False,
                     'honest_stop_without_events':'all_cores_idle_waiting (note: no modeled event can fire)',
                     'timer0_wake_horizon':('route BQ: a counting/pending Timer0 with IRQ4 not positively masked on all '
@@ -734,6 +849,13 @@ class DualCoreMachine:
                         'exact for any divisor/source, upper-bound use only) to the same min(); a positively masked '
                         'Timer0 and a delivery_in_flight pending episode are not events. Actual expiry/delivery is '
                         'still raised step-by-step by advance()'),
+                    **({'timer2_wake_horizon':('route BK: a counting TIMER2 with an anchored parked poll core '
+                        '(PC==0x12cd76) contributes the closed-form horizon S=ceil((80*(divisor*(PRD+1-CNT)'
+                        '-remainder)-lrc_remainder)/4) (LRC 1/80 x 4 ref ticks/step; the observed 1ms shape '
+                        'PRD=200/CNT=1/div=1 gives exactly 4000 model steps) to the same min(); a pending flag '
+                        'with no anchored parked core is not an event; no IRQ-eligibility face (the wake is '
+                        'kick-precedent, not a delivery). Actual pending is still raised step-by-step by '
+                        'advance()')} if self.timer2_delay_projection else {}),
                     'timer0_irq4_delivery':('IRQ4 delivery is not enabled; a reached qualifying expiry still stops '
                         'strictly (interrupt_delivery_not_implemented) instead of an honest no-event stop'
                         if not self.timer0_irq_entry else
