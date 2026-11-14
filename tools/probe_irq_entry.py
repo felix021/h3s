@@ -1089,11 +1089,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_adc_reset_writes=False,
              jl_adda_daa_con1_initial_fixture=None,
              jl_adda_daa_con1_config_readback=False,
+             jl_audio_dac_vl0_readback=False,
              subword_stores=False,
              word_store_sp_l=False,
              mmu_cross_page_split=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
+             event_clock=False,
              key_chain_scan=None,
              key_chain_matrix=None,
              flash_image_bytes=None,readonly=()):
@@ -1841,6 +1843,32 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
             options['jl_adda_daa_con1_initial_fixture']=jl_adda_daa_con1_initial_fixture
         if jl_adda_daa_con1_config_readback:
             options['jl_adda_daa_con1_config_readback']=True
+    # jl_audio_dac_vl0_readback(路 CW/S19 批 0b/sim-s19b0):3,170,379 停点
+    # 0x606db4c(setter 0x606db36 并行对第二半 `r3=[r2+0]` 对 0xfe051c 的首读)
+    # 按 CV 裁定的「配置」分类放行——**读值参与度判定(本路核心)**:读值只进
+    # 两个通道块的半字 insert 组装,不进任何分支(分支只测 r0 通道位);且本
+    # 前缀唯一调用点 0x6071b76 实参 r0=0xFF(双通道全选)/r1=0——第二块的
+    # `r3=r3.l(u)` 把第一块从读值携带的全部位清零,**写回恒 0x0 与初值逐位
+    # 无关**(读值只存在于两块之间的瞬态 r3)。按批 0b 判据「只影响数值不
+    # 影响分支→合成 0+敏感性探针」:容器=AK 域一/二/三同族(写记录+读回=
+    # 最后写值+无写时显式合成初始字 0,路 AM 先例,derived-not-measured),
+    # **不立 CV 式显式 fixture 开关**(DAA_CON1 需要fixture 是其保留位被写
+    # 持久携带);敏感性探针=一次性 ones 字 0xffffffff 分叉(首块瞬态
+    # 0xffff0000 仍被 r3=r3.l(u) 清零、写回同 0x0、同停点同步数=观察路径对
+    # 初值不敏感,结果钉进路叙事与单测)。**cap 槽勘误**:上限装载
+    # [0x1265C0+1883*4]=**0x12832C**(运行态 r4=0x3a98;CV/BO 叙事 0x1272AC
+    # 是算术笔误——0x1272AC 需下标 827,li.s16 n=1883 钉死 1883*4=0x1D6C)。
+    # 白名单恰一字 0xfe051c;JL_AUDIO 数字域(15 个 li 站点:DAC_LEN/almk/
+    # DMA)保持 unmapped(路 BO §5:D1 后另立证据包)。运行效果(数字音量/
+    # 模拟通路/输出)不建模。默认关:0xfe051c 保持 unmapped(3,170,379 前沿
+    # 形状),legacy 报告逐字节不变。
+    if jl_audio_dac_vl0_readback:
+        require(jl_adda_daa_con1_initial_fixture is not None,
+                'the JL_AUDIO DAC_VL0 readback only layers on the DAA_CON1 initial-fixture '
+                'release (the setter call 0x6071b76 sits immediately after the DAA_CON1 '
+                'fixer call 0x6071b70 — without the fixture the world still stops at '
+                '0x606b426)')
+        options['jl_audio_dac_vl0_readback']=True
     # jl_uart_con1_readback(路 AA/sim-con1rb,CON1 读回真决策点三选一=方案 (a)
     # 读回=最后写值投影):把 JL_UART CON1(+4,三基址对称)从路 M 的纯写白名单
     # 升级为「写记录+读回=最后写值」——lp_timer CON(路 AL)/fd31 ADC CON(路 BN)
@@ -1918,6 +1946,25 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         require(core_tick_irq3_probe_steps is not None,
                 'the core tick IRQ3 masked probe requires the expiry probe (it arms at the same start write)')
         options['core_tick_irq3_masked_probe']=True
+    # event_clock(路 CW/S19 批 0b/sim-s19b0,BG §4.2 草案落地):把机器侧
+    # 事件时钟投影(docs/event-clock.md 最小契约,BQ 的 G1 min() 框架)接进
+    # 条件栈——机器/模型零新代码,本参数只是 machine_options 接线。层属
+    # conditional 的依据(BK §3.3/BM 总装图):条件路径上第一个事件时钟
+    # 消费者是 W2[0] 的 3×os_time_dly(2)=6 tick 等待(BA #2 行「6 tick 事件
+    # 时钟」),不开则批 0b 放行 DAC_VL0 后前沿停在 W2[0] 首次全核 IDLE
+    # (all_cores_idle_waiting,合法停但 W1[3] 尾段/W1[4]/S9/W2/W3/W4[0..3]
+    # 过不去)。TIMER2 本体投影(wake horizon 第三族)属批 1 的 BK 件,本
+    # 批不做——现 min() 只有 core tick+Timer0 两族,W2[0] 的 tick 等待恰由
+    # Timer0 交付推进。BI 首验(A1-A5 硬断言)属批 3;本批对 os_time_dly
+    # 的形状**只观察不硬断言**(check() 记录 event_clock 报告键)。
+    # 需 idle_wait(base 栈成员,机器侧守卫同款)。默认关:全核 IDLE 立即
+    # 诚实停(legacy 形状逐字节不变)。**本前缀实测惰性**(virtual_model_
+    # steps_advanced=0,新前沿 3,202,148 之前 CPU0 从未停泊、无全核 IDLE 点
+    # ——首个消费者 W2[0] 在停点之后;批 1 放行 DAC_COP 后才可能有消费者,
+    # 届时不开本开关的世界将停在首次全核 IDLE)。
+    if event_clock:
+        require(idle_wait,'the event clock projection requires the IDLE wait projection')
+        machine_options['event_clock_projection']=True
     if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
@@ -2964,7 +3011,9 @@ def check(report,firmware):
     # 7..31 被写持久携带但无消费者);「仿真顺利返回不能证明初值正确」。
     # **放行推进(+17 步)**:fixture=0x0+读回开,RMW 写回落记录(恰一条
     # 0x0),fixer 经 veneer 返回 0x6071b74,0x6071b76 call setter 0x606db36
-    # (DAC_VL0 数字音量,r0=0xFF/r1=0,体积上限 [0x1272AC]=0x3a98),停在
+    # (DAC_VL0 数字音量,r0=0xFF/r1=0,体积上限 [0x1265C0+1883*4]=0x12832C
+    # 运行态 0x3a98;**勘误:原记 [0x1272AC] 是算术笔误,路 CW 按指令编码
+    # li.s16 n=1883 修正**),停在
     # **0x606db4c 读 0xfe051c=JL_AUDIO->DAC_VL0**——并行对第二半 `r3=[r2+0]`
     # 的 RMW 内部读(读值经 umin 钳制+半字 insert 组装进写回)。**下一停点
     # 分类=配置**(数字音量配置字,br28.h __RW;BO 消费者全图:getter/
@@ -2972,31 +3021,97 @@ def check(report,firmware):
     # 状态位、CHIP_ID=身份,分类依据在 docs/adda-daa-con1.md §4):归下一路
     # 同法处理,本路如实停。**新前沿 3,170,379 @ 0x606db4c**(unmapped_memory
     # 读 0xfe051c)。
+    # **路 CW 落地(S19 批 0b/sim-s19b0,本前沿)**:DAC_VL0 配置读按批 0b
+    # 判据放行(读值只进 insert 不进分支、双通道调用写回恒 0x0→合成 0+
+    # 敏感性探针,全文见 jl_audio_dac_vl0_readback 接线注释与容器类注释),
+    # event_clock 进条件栈(BG §4.2 草案,机器件 BQ 已备,本路只接线)。
+    # **放行推进(+31,769 步)**:setter 0x606db36 全链真实执行(合成 0 首读
+    # ×1+写回 0x0×1+写后零读)→0x6071b7a call 0x6064162 dev 层全 RAM→DAC-init
+    # 驱动继续:0x6071d16..d4e 从配置字算 DMA 缓冲长(rep 30 r7 体)、
+    # **0x6071d50 call ROM memset(0x18e180,0,0xf000)**——ROM 0x4242 memset
+    # 适配器的 count≤10000 护栏被首个大缓冲清零(0x3c00 字)撞上,护栏非
+    # 硬件声称按观测形状抬到 100000(适配器三项语义假设零变化,legacy 前
+    # 缔从未到达该调用点),15360 次 rep 字存储(exact_postincrement_store
+    # +15,360)把 60KB 堆缓冲真实清零→rets=0x6071e8c 的调用者继续→
+    # **0x606ab0a 函数**:AUD_CON(0xfe0558)|=0x100+DAC_CON(0xfe0500)五连
+    # RMW(AK 容器服务内部读)后,**0x606ab2c `st.w.modimm [r5+52]=0x7F`
+    # 写 0xfe0534=JL_AUDIO->DAC_COP(br28.h +0x34 成员 13 __WO,DAC chopper/
+    # 泵配置字)撞 unmapped_or_readonly_write 诚实停**。这是 W1[3] 尾段
+    # DAC 簇里 AK 白名单({DAC_CON,AUD_CON,CLK_CON}+AS 的 ADC_CON+CV 的
+    # DAA_CON1+本路 DAC_VL0)之外的下一个成员——**写侧整字写、__WO 标注**,
+    # 三选一(write-only 记录/钉住/fixture)归下一路,本路如实停。
+    # **event_clock 观察(BI 首验观察项,只观察不硬断言)**:本前缀
+    # virtual_model_steps_advanced=0——CPU0 全程运行从未停泊(事件窗口只有
+    # CPU1 的停泊),**W2[0] 的首次全核 IDLE(os_time_dly)在新停点之后未
+    # 到达**,开关对旧前缀惰性(接线就位,批 1 放行 DAC_COP 后才可能有
+    # 消费者);敏感性探针 ones 字 0xffffffff 一次性分叉:同 +31,769 步、
+    # 同停点 0x606ab2c 逐字段一致、DAC_VL0 写回同 0x0=观察路径对初值不
+    # 敏感(第二块 r3=r3.l(u) 清掉第一块携带的全部读值位,静态预测兑现)。
+    # 计数:CRC 32 轮 3041 字节不变;IRQ commands/acks 22/11→24/12(新前缀
+    # 一次跨核同步);Timer0 到期 309→311/交付 rti 299→301(PRD 尾段重编
+    # 59999→47999=12ms 窗);core tick 无新溢出。**新前沿 3,202,148 @
+    # 0x606ab2c**(unmapped_or_readonly_write 0xfe0534,值 0x7f)。
     # 条件前沿契约单点:停点完整记录与步数从 frontier_registry 派生(推进
     # 前沿只改 registry,断言叙事保持手写)。
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x606db4c on the read of '
-            '0xfe051c, JL_AUDIO->DAC_VL0 (br28.h +0x1c __RW, the digital-volume word): '
-            'with the route-CV DAA_CON1 release answering the first read 0x606b426 with '
-            'the explicit sensitivity-probe fixture 0x0 (no implicit zero default; the '
-            'two-switch separation keeps the readback alone at the original boundary), '
-            'the config RMW 0x606b40e runs its full chain (table byte from 0x060a8608 '
-            '{0,4,6,7} — the AS-narrative 0x060A8548 was a transcription slip — inserting '
-            'the code into bits0..2 and bits4..6 while carrying bits3,7..31 from the '
-            'initial word; the write-back sits OUTSIDE both selector blocks) and lands '
-            'exactly one store 0x0, the fixer returns through the REAL-CALL veneer '
-            '0x606db6c (push rets; call; pop pc — runtime rets 0x606db72) to the DAC-init '
-            'driver 0x6071b74, and the next call 0x6071b76 enters the DAC_VL0 setter '
-            '0x606db36 (r0=0xFF, r1=0, cap 0x3a98 from [0x1272AC]) whose parallel-pair '
-            'old-value load of 0xfe051c is the next boundary — classified CONFIG '
-            '(digital-volume RMW with the read materially composing the write-back, same '
-            'family as DAA_CON1; the sensitivity fork 0xfffffff8 wrote 0xffffff88 and '
-            'stopped identically, so the observation path is initial-word-insensitive '
-            'this prefix), left honestly for the next route')
+            'the heap-experimental scenario must stop at 0x606ab2c on the whole-word '
+            'store of 0x7f to 0xfe0534 = JL_AUDIO->DAC_COP (br28.h +0x34, member 13, '
+            '__WO): with the route-CW DAC_VL0 release answering the setter pair load '
+            '0x606db4c with the synthetic initial 0 (the read only composes the insert '
+            'write-back and the both-channels call 0x6071b76 overwrites every carried '
+            'bit — the write-back is 0x0 regardless), the setter completes, the DAC-init '
+            'driver continues through the dev-layer call 0x6064162, computes its 60KB '
+            'DMA buffer length from the config words (rep-30 loop 0x6071d16..d4e) and '
+            'clears it through the ROM memset (0x6071d50 → 0x4242, count 0x3c00 words — '
+            'the adapter sanity bound was raised to 100000 for this first large-clear '
+            'shape, its three semantic assumptions unchanged), then the caller at '
+            'rets 0x6071e8c enters 0x606ab0a which gates the DAC output stage through '
+            'AUD_CON|=0x100 and five DAC_CON RMWs (both served by the route-AK '
+            'container) before storing 0x7f to DAC_COP — the next JL_AUDIO member '
+            'outside every existing whitelist, honestly left for the next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
+    # 路 CW:JL_AUDIO DAC_VL0 容器断言——恰一次合成 0 首读(0x606db4c 并行对
+    # 第二半)+恰一条写回 0x0(0x606db68,umin(0x3a98,0)=0 双通道 insert 后
+    # 读值位全被 r3=r3.l(u) 清零)+写后零读(getter/walker/静音都在音频任务
+    # 域,D1 后)。敏感性探针(ones 字 0xffffffff 一次性分叉):同步数同停点、
+    # 写回同 0x0、计数同构=观察路径对初值不敏感(结果钉进路叙事)。
+    vl0=r['peripherals']['jl_audio_dac_vl0_registers']
+    require(vl0['stores']=={'0xfe051c':{'values':['0x0'],'writes':1,'cores':[0]}} and
+            vl0['word_writes']==1 and
+            vl0['addresses']==['0xfe051c'] and
+            vl0['readback_projection']['reads']==0 and
+            vl0['readback_projection']['synthesized_initial_reads']==1 and
+            'synthetic initial word 0' in vl0['readback_projection']['readback_semantics'] and
+            'NOT a reset-value claim' in vl0['readback_projection']['readback_semantics'] and
+            'initial-word-insensitive' in vl0['readback_projection']['sensitivity_probe'] and
+            'NOT released wholesale' in vl0['whitelisted_words'] and
+            '0x12832C' in vl0['sdk_naming'],
+            'the route-CW jl_audio_dac_vl0_registers must record exactly the one executed '
+            'write-back 0x0 (the both-channels call composes clamped 0 into both '
+            'halfwords; every bit carried from the synthetic initial read is erased by '
+            'the second block r3=r3.l(u)), one synthesized initial read (the pair load '
+            'at 0x606db4c) and zero post-write reads (the getter/sync-walker/mute '
+            'consumers live in the audio-task domain after D1); the report must carry '
+            'the synthetic-initial semantics, the sensitivity-probe result and the '
+            'cap-slot erratum 0x12832C')
+    vl0_assumption=r['peripherals']['assumptions'].get('jl_audio_dac_vl0_registers')
+    require(vl0_assumption is not None and 'DAC_VL0' in vl0_assumption and
+            'derived-not-measured' in vl0_assumption and
+            'NOT verify any audio output' in vl0_assumption,
+            'the route-CW jl_audio_dac_vl0_registers assumption must record the DAC_VL0 '
+            'naming, the derived-not-measured semantics and the no-audio-output limit')
+    # 路 CW/S19 批 0b:event_clock 接线观察(BI 首验观察项,只观察不硬断言)——
+    # 开关开启、本前缀零推进(CPU0 从未停泊,首个全核 IDLE=W2[0] os_time_dly
+    # 在新停点之后未到达;批 1 放行 DAC_COP 后才可能有消费者)。
+    eclock=r['machine']['event_clock_projection']
+    require(eclock['enabled'] and eclock['virtual_model_steps_advanced']==0,
+            'the route-CW event-clock wiring must be enabled yet inert on this prefix '
+            '(CPU0 never parks before the DAC_COP stop — the first all-core IDLE, the '
+            'W2[0] os_time_dly wait, sits beyond the new frontier; the BI A1-A5 hard '
+            'assertions belong to batch 3 and are deliberately NOT asserted here)')
     # 路 AK/AS:JL_WL_AUD 写域记录断言——本前缀恰两条写:S0 的 0x602ea72
     # 整字 1(entry 使能)与 S2 的 0x6071cbe 整字 1(DAC init 尾,r10=1 形状;
     # 路 AS 放行 ADC reset 后到达)。读回计数 0(唯一 app 读点 0x6069a2e
@@ -3081,25 +3196,35 @@ def check(report,firmware):
     # 读 4 次(写后 2:DAC_CON RMW 对;合成 0 两次:CLK_CON/AUD_CON 首读)。
     # (S1 值勘误:AG 图「=0xfe2200 数值巧合」是并行对误读,0xfe2200 是 S2
     # 的写基址——假设文本保留该措辞但已改为「误读勘误」叙述。)
+    # 路 CW(S19 批 0b)新前缀再 +6 写/6 读:0x606ab0a 输出级门控函数的
+    # AUD_CON|=0x100(0x100|0x100=0x100 写回)+DAC_CON 五连 RMW
+    # (|=0x100→0x100;clear-bit31→0x100 不变;|=0x8000000→0x8000100;
+    # 清 bit26/bit25/bit24 三连→0x8000100 不变)——全部经 AK 容器(内部读
+    # =已记录末值,写回落记录)。
     audio_init=r['peripherals']['jl_audio_dac_init_write_records']
-    require(audio_init['stores']=={'0xfe0500':{'values':['0x0','0x0','0x100'],'writes':3,
-                                                'cores':[0,0,0]},
-                                   '0xfe0558':{'values':['0x0'],'writes':1,'cores':[0]},
+    require(audio_init['stores']=={'0xfe0500':{'values':['0x0','0x0','0x100','0x100',
+                                                        '0x8000100','0x8000100','0x8000100',
+                                                        '0x8000100'],'writes':8,
+                                                'cores':[0]*8},
+                                   '0xfe0558':{'values':['0x0','0x100'],'writes':2,'cores':[0,0]},
                                    '0xfe0900':{'values':['0x1'],'writes':1,'cores':[0]}} and
-            audio_init['word_writes']==5 and
+            audio_init['word_writes']==11 and
             audio_init['addresses']==['0xfe0500','0xfe0558','0xfe0900'] and
-            audio_init['readback_projection']['reads']==2 and
+            audio_init['readback_projection']['reads']==8 and
             audio_init['readback_projection']['synthesized_initial_reads']==2 and
             'synthetic initial word 0' in audio_init['readback_projection']['readback_semantics'] and
             'derived-not-measured' in audio_init['readback_projection']['readback_semantics'],
             'the route-AK jl_audio_dac_init_write_records must hold the five executed '
-            'DAC-init writes of the route-AS-reached S1..S5 cluster: DAC_CON three stores '
-            '(the 0x6071cbc whole-word = the parallel-pair OLD r1, the SR-walk value 0x0 — '
+            'DAC-init writes of the route-AS-reached S1..S5 cluster (DAC_CON three stores: '
+            'the 0x6071cbc whole-word = the parallel-pair OLD r1, the SR-walk value 0x0 — '
             'route-AS correction of the AG-map 0xfe2200 misread; then the &=~0x100 '
-            'write-back 0x0 and the |=0x100 tail 0x100), AUD_CON one (&~0x40 on the '
-            'synthetic 0 -> 0x0) and JL_ASS CLK_CON one (|=1 on the synthetic 0 -> 0x1), '
-            'with the four RMW internal reads split 2 after-write (the DAC_CON pair) and '
-            '2 synthetic-zero (CLK_CON/AUD_CON first touch)')
+            'write-back 0x0 and the |=0x100 tail 0x100; AUD_CON one, &~0x40 on the '
+            'synthetic 0 -> 0x0; JL_ASS CLK_CON one, |=1 on the synthetic 0 -> 0x1) '
+            'PLUS the six route-CW writes of the DAC-output gate function 0x606ab0a '
+            '(AUD_CON |=0x100 -> 0x100 and the five DAC_CON RMW write-backs '
+            '0x100/0x8000100x4: set bit27, clear bit31/26/25/24 — all served by the '
+            'container readback of the recorded last word), with the RMW internal reads '
+            'split 8 after-write and 2 synthetic-zero (CLK_CON/AUD_CON first touch)')
     audio_init_assumption=r['peripherals']['assumptions'].get('jl_audio_dac_init_write_records')
     require(audio_init_assumption is not None and 'DAC_CON 0xfe0500' in audio_init_assumption and
             'numeric coincidence' in audio_init_assumption and
@@ -3352,23 +3477,24 @@ def check(report,firmware):
     # (reti_from=块出口,延期-交付往返实证;机器守卫本身保持拒绝))。core
     # tick 交付 9→10(+1 次溢出,OS tick 级联继续)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==299 and
+    require(len(t0['deliveries'])==301 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6','0x12b608',
                                    '0x4372','0x4196','0x6000f4a','0x6000f4c','0x6007b7e',
-                                   '0x6010a4e','0x6010a5c')
+                                   '0x6010a4e','0x6010a5c','0x600a66e')
                 for d in t0['deliveries']) and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
-            t0['deliveries'][-1]['reti_from']=='0x4196' and
+            t0['deliveries'][-1]['reti_from']=='0x600a66e' and
             [d['reti_from'] for d in t0['deliveries'][287:]]==
             ['0x6010a4e','0x12b608','0x6010a5c','0x12b608','0x6007b7e','0x4372',
-             '0x6000f4a','0x6007b7e','0x12b608','0x6000f4c','0x6000f4a','0x4196'] and
+             '0x6000f4a','0x6007b7e','0x12b608','0x6000f4c','0x6000f4a','0x4196',
+             '0x12b608','0x600a66e'] and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==598 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==299,
-            '299 real Timer0 IRQ4 delivery round trips (287 through the route-AK stop '
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==602 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==301,
+            '301 real Timer0 IRQ4 delivery round trips (287 through the route-AK stop '
             'plus the OS 1ms tick of the full W1[0] twenty-round timeout window and the tail '
             'released by the GPCNT readback, then the route-R delivery of the previously '
             'in-flight 297th expiration: the GPIO-helper critical section exits, the pending '
@@ -3384,7 +3510,7 @@ def check(report,firmware):
             'at the block-end instruction boundary after the route-AS mid-instruction '
             'deferral held it), each reading '
             'the real vector slot 0x19fe10 and '
-            'clearing pending only via the real handler W1C; 299 symmetric RTIs complete')
+            'clearing pending only via the real handler W1C; 301 symmetric RTIs complete')
     ct=r['machine']['core_tick_entry_projection']
     require(len(ct['deliveries'])==10 and
             (ct['deliveries'][0]['core'],ct['deliveries'][0]['vector_address'],
@@ -3574,11 +3700,14 @@ def check(report,firmware):
     # 路 CV:+17 步、cnt 再 +51(=17×3 tick)到 57,717(距 59,999 尚差 2,282,
     # **无第 310 次到期**、交付/ACK 299 不变;新停点在 setter 装载对,无 delay
     # 重编,PRD 保持 59,999)、pending False。
-    require(timer=={'con':0x1401,'cnt':57717,'prd':59999,'pending':False,
-            'expirations':309},
+    # 路 CW(S19 批 0b):+31,769 步,到期 309→311(+2:新前缀的 delay 窗再越
+    # 边界两次)、交付/ACK 299→301;PRD 被尾段 delay 重编到 12ms 窗 47,999、
+    # cnt 停点时 2,322、pending False。
+    require(timer=={'con':0x1401,'cnt':2322,'prd':47999,'pending':False,
+            'expirations':311},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
-            'call reprograms PRD; the last window is the 1ms one -> PRD 11999), 305 '
-            'expirations total (10 legacy + 295 delivered/acked), pending FALSE at the stop: '
+            'call reprograms PRD; the last window is the 12ms one -> PRD 47999), 311 '
+            'expirations total (10 legacy + 301 delivered/acked), pending FALSE at the stop: '
             'the route-M stop left the 297th expiration pending-in-flight inside the GPIO '
             'critical section (ICFG 0x100, CLI bit9 clear), and the route-R release lets the '
             'chain run past the critical-section exit — the unlock restores bit9, the pending '
@@ -3590,9 +3719,11 @@ def check(report,firmware):
             'inside the walker-chain delay windows (297->305 expirations, all eight delivered '
             'and acked) and the route-AS release adds four more (305->309, all delivered '
             'and acked, the fifth landing inside the ROM 0x4180 rep copy body and delivered '
-            'at the block exit 0x4196 via the mid-instruction deferral), PRD reprogrammed by '
-            'the newest delay call (a 5ms window, PRD 59999) with the counter walked down to '
-            '57717 by the route-CV +17 steps, no new expiry')
+            'at the block exit 0x4196 via the mid-instruction deferral); the route-CV +17 '
+            'steps walk cnt to 57717 with no new expiry, and the route-CW +31769 steps add '
+            'two more expirations through the DAC-init tail delay windows (309->311, both '
+            'delivered and acked), PRD reprogrammed by the newest delay call (a 12ms window, '
+            'PRD 47999) with the counter walked down to 2322')
     # 路 CG:core tick 溢出交付+ACK 合计 9 次(首溢出~447,490+超时窗口内 8 次,
     # expirations 9/acknowledgements 9,cnt 重装后走到 892,276<prd 1,199,999,零
     # pending);IRQ3 handler 0x60661a4 的 W1C 真实执行,交付列表见上。CPU1
@@ -3629,10 +3760,14 @@ def check(report,firmware):
     # 路 CV:+17 步、cnt 再 +68(=17×4 tick)到 91,276(无第 11 次溢出,
     # 交付/ACK 10 不变);新停点 0x606db4c 是 DAC_VL0 setter 体内并行对
     # 装载、无临界区,IPMASK 保持 0、ICFG 保持 0x300。
+    # 路 CW(S19 批 0b):+31,769 步、cnt 再 +127,084(≈4 tick/步,含两次
+    # 新 Timer0 交付往返的延期簿记差)到 218,360(**仍 <prd 1,199,999,
+    # 无第 11 次溢出**,交付/ACK 10 不变);新停点 0x606ab2c 是 DAC 输出级
+    # 门控函数体内普通整字写、无临界区,IPMASK 保持 0、ICFG 保持 0x300。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==10 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==10 and
-            tick0['cnt']==91276 and
+            tick0['cnt']==218360 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -3724,11 +3859,12 @@ def check(report,firmware):
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7+
             [(0,127,'0x12ad2a','0x12b608')]*2+
-            [(1,125,'0x60662c8','0x12c5ca')],
+            [(1,125,'0x60662c8','0x12c5ca')]*2,
             'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
             'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
             'the timer bring-up before any scheduler IPI); the route-CO scheduler helper prefix '
-            'adds one more CPU1 irq125 sync-IPI delivery at the tail')
+            'adds one more CPU1 irq125 sync-IPI delivery at the tail, and the route-CW '
+            'DAC-init tail adds one more CPU1 sync round')
     # 路 BY 注:pmu_task 入口的 RTI 事件(pc_after 0x6068f0c/sp 0x401ffc,
     # ~300k 步)在路 BY 分歧点(首个 caller A 的轮询退出,~305k)之前——该
     # 前缀与 689,402 地标世界逐字节相同,证据钉在路 BS 检查里。本场景的
@@ -3740,18 +3876,22 @@ def check(report,firmware):
     # 放行后 helper 尾段+W1[1] walker 后续 +426 步,路 CO 停点时 CPU1 最后一次
     # irq125 交付的 handler RTI 尚未执行完,本路补完——conditional_software_
     # irq_rti 10→11(交付列表仍 11 次不变,software_irq_commands 22/11 不变)。
+    # 路 CW(S19 批 0b):新前缀(60KB 缓冲 memset+DAC-init 尾段)有一次新的
+    # CPU1 同步 IPI 往返——交付列表 11→12(尾项仍是 (1,125,'0x12c5ca')),
+    # conditional_software_irq_rti 11→12、commands/acks 22/11→24/12。
     require(r['machine']['events_truncated'] is True and
-            r['instruction_adapters'].get('conditional_software_irq_rti')==11,
-            'the software IRQ RTI count must reach eleven (the pmu_task-entry RTI event lies '
+            r['instruction_adapters'].get('conditional_software_irq_rti')==12,
+            'the software IRQ RTI count must reach twelve (the pmu_task-entry RTI event lies '
             'in the byte-identical pre-305k prefix pinned at the 689,402 landmark; the trimmed '
-            '32+32 events window holds the fourteen IRQ4 round trips; the route-CO CPU1 sync '
+            '32+32 events window holds the IRQ4 round trips; the route-CO CPU1 sync '
             'IPI is a repeat_irq_delivery round whose handler RTI was still in flight at the '
             'route-CO stop and completes during the route-CQ helper-tail/W1[1]-walker steps, '
-            'with no new software IRQ command bookkeeping)')
-    require(r['peripherals']['software_irq_commands']['commands']==22 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==11,
+            'and the route-CW DAC-init tail adds one more CPU1 sync-IPI round)')
+    require(r['peripherals']['software_irq_commands']['commands']==24 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==12,
             'the two scheduler IPI round trips plus the route-CO scheduler-helper sync IPI '
-            'must be the only new software IRQ bookkeeping')
+            'and the route-CW DAC-init tail sync IPI must be the only new software IRQ '
+            'bookkeeping')
     # 路 V 及之前的新前缀不经硬件 CRC 引擎:CRC 30 次往返 900 字节与
     # crc_bankb_erased_fixture 完全一致。路 AA:CON1 读回放行后 uart_init 收尾+
     # init 链前三项经硬件 CRC 引擎 **+2 轮**(种子 0、结果 0x62eb/0x9c78、
@@ -3783,7 +3923,11 @@ def check(report,firmware):
     # 100→103(路 AQ +2)→116(路 CB +3:L5V/CHG 配置表的字节装载 pair)→140
     # (路 CG +24:超时窗口 20 轮 delay 的 L5V/CHG 配置字节 pair 与 W1[0] 循环
     # 簿记)、LRCT 位 RMW 14→54(路 CG:LRC 周期链 9 轮)、reset 配置 RMW 8 不变。
-    require(r['instruction_adapters'].get('exact_doubleword_store')==43 and
+    # 路 CW(S19 批 0b)新前缀(+31,769 步):页内双字 43→47(DAC-init 尾段
+    # 函数帧的四对 st.d)、其余(rep 族/运输/半字/insert 装载/字节 pair/
+    # lp_timer/reset/mem_pwr/awkup/死读)全部不变——新前缀无 rep.i 体、
+    # 无 unknown 运输、无 LP/复位域访问。
+    require(r['instruction_adapters'].get('exact_doubleword_store')==47 and
             r['instruction_adapters'].get('exact_doubleword_store_cross_page_split')==6 and
             r['instruction_adapters'].get('immediate_rep_multi_block_projection')==383 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==44 and
@@ -3883,13 +4027,20 @@ def check(report,firmware):
             # 运输 13475→13477(fixer {rets,r4} 与 setter {rets,r4} 各一对
             # push/pop)、整字存储 18369→18370(0x606b43c DAA_CON1 写回);
             # mmio RMW/cnum/icfg/共享锁全不变(17 步内无 RMW 指令、无交付)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==13477 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1556 and
-            r['instruction_adapters'].get('exact_full_word_store')==18370 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==2046 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==4544 and
-            r['instruction_adapters'].get('partial_icfg_masked_branch')==2 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==7399,
+            # 路 CW(S19 批 0b)再 +31,769 步(DAC_VL0 放行→DAC_COP 写停):
+            # 任务栈帧运输 13477→13594、共享锁 1556→1574、整字存储 18370→
+            # 18964(含 60KB 缓冲 memset 的字存储族与 DAC_VL0 写回)、mmio
+            # RMW 2046→2062(0x606ab0a 的 AUD_CON/DAC_CON 六连)、icfg bit9
+            # 4544→4592(新交付 2 次往返)、cnum 7399→7469;**后增存储
+            # 33069→48429(+15,360=memset 0x3c00 字恰一存储/字)**;ROM memset
+            # 适配器非零倒数 27→28/零跳过 25→26(大缓冲清零一对)。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==13594 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==1574 and
+            r['instruction_adapters'].get('exact_full_word_store')==18964 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==2062 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==4592 and
+            r['instruction_adapters'].get('partial_icfg_masked_branch')==3 and
+            r['instruction_adapters'].get('per_core_visible_cnum')==7469,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装

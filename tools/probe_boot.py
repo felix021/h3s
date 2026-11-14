@@ -1429,7 +1429,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 require(insn.id=='rep' and raw=={'n':0,'r':register} and self.repeat is None,
                         'ROM memset REP form changed')
                 count=self.R[register]
-                require(0<=count<=10000,'unexpected ROM memset count')
+                # 路 CW/S19 批 0b:count 上限是护栏不是硬件声称(原 10000 取自
+                # probe_rom 时代的隔离小样);DAC-init 驱动尾段 0x6071d50 真实
+                # call memset(0x18e180,0,0xf000)(rets=0x6071d56,len 由
+                # 0x6071d16..d4e 的真实指令从配置字宽×缓冲长算出)给 r4=
+                # 0xf000>>2=0x3c00——按观测形状抬到 100000(垃圾计数护栏
+                # 仍远低于 0xffffffff;适配器的 rep 形状/倒数假设/exact store
+                # 三项语义假设零变化;legacy 前缀从未到达该调用点,报告不变)。
+                require(0<=count<=100000,'unexpected ROM memset count')
                 if count==0:
                     if not diagnostics.get('rom_zero_rep_skip'):
                         raise Blocked('unverified_zero_count_rep',instruction_id=insn.id,
