@@ -197,6 +197,10 @@ JL_AUDIO_DAC_INIT_WORDS=(JL_AUDIO_DAC_CON,JL_AUDIO_AUD_CON,JL_ASS_CLK_CON)
 # JL_ADDA->DAA_CON1(br28.h `JL_ADDA_BASE=hs_base+map_adr(0x0a,0)`=0xfe0a00,
 # +0x04 __RW,DAC 侧模拟增益字;+0x20 起才是路 AE 钉的 ADA_CON 族,布局互证)。
 JL_ADDA_DAA_CON1=0xfe0a04
+# JL_AUDIO->DAC_VL0(br28.h JL_AUDIO_TypeDef 全字段 __RW,csfr.h `#define __u16
+# unsigned int`→32 位字槽,DAC_VL0@+0x1c=成员 7;路 BO 钉死四个消费者
+# getter/setter/同步 walker/静音判零,全配置面消费=「配置类」分类依据)。
+JL_AUDIO_DAC_VL0=0xfe051c
 CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
 CPU1_CONTROL=0xffe8c0
 VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
@@ -2515,6 +2519,149 @@ class JLAddaDaaCon1Registers:
                               'output')}
 
 
+class JLAudioDacVl0Registers:
+    """JL_AUDIO->DAC_VL0(0xfe051c)数字音量字的「写记录+读回」容器(opt-in,路 CW/S19 批 0b;任务卡称「路 BO」与既有 BO/sim-audiosfr 撞号,照 CT/CV 先例顺延记 CW)。
+
+    背景:3,170,379 停点 0x606db4c 是 DAC_VL0 setter 0x606db36 内并行对
+    `umin.rrr.p r1=umin(r4,r1) ∥ r3=[r2+0]` 第二半对 0xfe051c 的首读(本世界
+    该字零写)。**下一停点分类=配置**(路 CV 裁定):br28.h __RW+路 BO 消费者
+    全图(getter/setter/同步 walker/静音判零门控)全是配置面消费——对照
+    DAA_CON2 bit1=状态位、CHIP_ID=身份。
+
+    识别与证据(路 BO docs/appcore-tail-sfr-semantics.md §3 消费者全图 +
+    本路反汇编复核,repo codec pin 3608ed1):
+    - **setter 0x606db36 全函数**(运行态实测互证:r0=0xFF/r1=0/r2=0xfe051c/
+      r3=0x1265C0/r4=0x3a98):`[--sp]={rets,r4}` → `r2=1883;r3=0x1265C0;
+      r4=[r3+r2<<2]`(音量上限=设备结构槽 **[0x1265C0+1883*4]=[0x12832C]**,
+      运行态值 0x3a98;**勘误:CV/BO 叙事记 [0x1272AC] 是算术笔误**——
+      0x1265C0+0xCEC=0x1272AC 需下标 827,指令编码 li.s16 n=1883 钉死
+      1883*4=0x1D6C→0x12832C)→ `r2=0xfe051c` → **0x606db4c 并行对
+      `r1=umin(上限,新值) ∥ r3=[r2+0]` 首读** → 0x606db52 `if((r0&1)!=0)`
+      t=2(t 钉死:无条件体恰 {r4=r3>>16;r3=r1},0x606db5a insert 是谓词尾)
+      → 谓词 insert `r3<=insert(r4,p:16,l:16)`(低半字=钳后新值,高半字=
+      读值保留)→ 0x606db5e `if((r0&2)!=0)` t=1 → `r3=r3.l(u)` + 谓词
+      insert `r3<=insert(r1,p:16,l:16)`(高半字=钳后新值,低半字携带)→
+      **0x606db68 `[r2+0]=r3` 写回在两个选择块之外**(未选通道=组装值原样
+      写回,总线写仍发生)→ pop 返回。半字布局=低 16 位通道 0/高 16 位通道 1
+      (getter 0x606daf0 按参数位选半字读回,互证)。
+    - **读值参与度(本路核心判定,决定初值处理)**:读值 r3 只进两个 insert
+      组装,**不进任何分支**(分支只测 r0 通道位);且本前缀唯一调用点
+      0x6071b76 实参 r0=0xFF(双通道全选)/r1=0——两块都走时 `r3=r3.l(u)`
+      把第一块的读值携带清零,**写回恒 0x0 与初值逐位无关**(读值只存在于
+      两块之间的瞬态 r3)。按批 0b 任务判据「只影响数值不影响分支→合成 0+
+      敏感性探针」:无写时的首读由**显式合成初始字 0**服务(路 AM 先例,
+      AK 域一/二/三容器同族分支,derived-not-measured,非复位值声明),
+      不立 CV 式显式 fixture 开关(DAA_CON1 用 fixture 是因为其保留位
+      bits3,7..31 被写持久携带、读值实质进寄存器态)。
+    - **敏感性探针(一次性分叉,ones 字 0xffffffff)**:与合成 0 对照——
+      首读 0xffffffff 时第一块瞬态 r3=0xffff0000 仍被 `r3=r3.l(u)` 清零,
+      写回同为 0x0、同步数与后续停点逐字段一致=观察路径对初值不敏感
+      (结果钉进路 CW 叙事与单测)。「仿真顺利返回不能证明初值正确」。
+    - **读回语义**:真实写入后读回=最后写值(uart CON1 路 AA/lp_timer CON
+      路 AL/AK 域容器同族);本前缀 setter 之后无 0xfe051c 读(同步 walker
+      0x606db74/静音 0x606dd16/getter 0x606daf0 都在音频任务域,D1 后)。
+    - **范围边界**:白名单恰一字 0xfe051c;JL_AUDIO 块其余(DAC_LEN/almk/
+      DMA 域 15 个 li 站点)保持 unmapped,不一次放行音频数字域(路 BO
+      §5「D1 后另立证据包」)。运行效果(DAC 数字音量/模拟通路/输出)不
+      建模——只记录「音量配置 RMW 已执行」。
+    """
+
+    ADDRESS=JL_AUDIO_DAC_VL0
+    # 合成初始字(显式常量,报告分开计数;敏感性分叉一次性改类属性跑 ones 臂)。
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self):
+        self.stores={JL_AUDIO_DAC_VL0:{'values':[],'writes':0,'cores':[]}}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address==JL_AUDIO_DAC_VL0
+
+    def write(self,address,value,core):
+        if address!=JL_AUDIO_DAC_VL0:raise ValueError('not the modeled JL_AUDIO DAC_VL0')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        if address!=JL_AUDIO_DAC_VL0:raise ValueError('not the modeled JL_AUDIO DAC_VL0')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(路 AM 先例;读值只进 insert 不进分支、
+        # 双通道写回恒 0x0=初值不参与观察路径,敏感性分叉 ones 字互证)——
+        # derived-not-measured 显式假设,不是复位值声明。
+        self.synthesized_initial_reads+=1
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def report(self):
+        return {'addresses':[hex(JL_AUDIO_DAC_VL0)],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('br28.h JL_AUDIO = hs_base + map_adr(0x05, 0x00) = 0xfe0500, '
+                              'all-__RW JL_AUDIO_TypeDef with 32-bit word slots (csfr.h '
+                              '__u16 widening), DAC_VL0 at +0x1c = member 7; route BO pinned '
+                              'the four consumers (getter 0x606daf0 / setter 0x606db36 / '
+                              'volume-sync walker 0x606db74 / mute zero-gate 0x606dd16) — '
+                              'all config-plane consumption, the CONFIG classification; the '
+                              'volume cap comes from device-struct slot [0x1265C0+1883*4] = '
+                              '0x12832C (runtime 0x3a98; the route-CV/BO narrative 0x1272AC '
+                              'was an arithmetic slip — li.s16 pins index 1883)'),
+                'whitelisted_words':('exactly the one JL_AUDIO->DAC_VL0 word; the rest of the '
+                                     'JL_AUDIO digital block (DAC_LEN/almk/DMA — the 15 li '
+                                     'sites of route BO) stays unmapped, the audio digital '
+                                     'domain is NOT released wholesale (route BO §5: a '
+                                     'separate evidence package after D1)'),
+                'observed_shapes':('function-granularity RMW inside the setter 0x606db36: the '
+                                   'second slot of the parallel pair at 0x606db4c '
+                                   '(`umin.rrr.p r1=umin(r4,r1) ∥ ld.w r3=[r2+0]`) is the '
+                                   'old-value load; two channel-select blocks (if t=2: '
+                                   '{r4=r3>>16; r3=r1} + predicated insert bits16..31; '
+                                   'if t=1: {r3=r3.l(u)} + predicated insert bits16..31) '
+                                   'compose the write-back which sits OUTSIDE both blocks '
+                                   'at 0x606db68; with r0=0xFF (both channels, the only '
+                                   'call site 0x6071b76 on this prefix, r1=0) the '
+                                   'r3=r3.l(u) of the second block erases every bit the '
+                                   'first block carried from the READ — the written word '
+                                   'is 0x0 regardless of the initial state, the read value '
+                                   'lives only in the transient r3 between the blocks and '
+                                   'never reaches a branch'),
+                'readback_projection':{
+                    'addresses':[hex(JL_AUDIO_DAC_VL0)],
+                    'reads':self.reads_after_write,
+                    'synthesized_initial_reads':self.synthesized_initial_reads,
+                    'readback_semantics':('last firmware-written value (route-AA uart-CON1 '
+                        'final form); before any firmware write the explicit synthetic '
+                        'initial word 0 (route-AM precedent, the route-AK domain-one/two/'
+                        'three container family) is served — derived-not-measured, NOT a '
+                        'reset-value claim; unlike route-CV DAA_CON1 there is NO separate '
+                        'initial-fixture switch: the read value only composes the insert '
+                        'write-back (no branch), and on this prefix the both-channels call '
+                        'overwrites it entirely, so the synthetic-zero branch carries no '
+                        'observation weight'),
+                    'sensitivity_probe':('one-shot fork with the all-ones word 0xffffffff: '
+                        'first-block transient r3=0xffff0000 is still cleared by '
+                        'r3=r3.l(u), the write-back stays 0x0 and the stop/step shape is '
+                        'identical — the observation path is initial-word-insensitive '
+                        '(route-CW fork, results pinned in the route narrative and the '
+                        'unit test); a clean return does NOT prove the initial word right'),
+                    'no_poll_risk':('the setter is not a poll (single read, single '
+                        'write-back, no loop); the sync walker 0x606db74 does '
+                        'read-compare-correct on DAC_VL0 halfwords but lives in the '
+                        'audio-task domain outside this prefix')},
+                'assumption':('write record plus last-write readback with an explicit '
+                              'synthetic initial 0 before the first write of JL_AUDIO->'
+                              'DAC_VL0 (derived-not-measured); stored values are real '
+                              'executed instruction results, never invented; no DAC digital '
+                              'volume effect, analog path or audio output is modeled — this '
+                              'records that the volume configuration RMW executed, it does '
+                              'NOT verify any audio output')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -3729,6 +3876,7 @@ class BR28Model:
                  jl_audio_adc_reset_write_records=False,
                  jl_adda_daa_con1_initial_fixture=None,
                  jl_adda_daa_con1_config_readback=False,
+                 jl_audio_dac_vl0_readback=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -4091,6 +4239,23 @@ class BR28Model:
                                                       config_readback=jl_adda_daa_con1_config_readback)
                                if (jl_adda_daa_con1_initial_fixture is not None
                                    or jl_adda_daa_con1_config_readback) else None)
+        # 路 CW(S19 批 0b/sim-s19b0):JL_AUDIO->DAC_VL0(0xfe051c)数字音量字
+        # 「写记录+读回」容器——3,170,379 停点 0x606db4c(setter 0x606db36 并行对
+        # 第二半的首读)按 CV 裁定的「配置」分类放行:读值只进 insert 组装不进
+        # 分支,且本前缀唯一调用点 r0=0xFF 双通道下写回恒 0x0 与初值逐位无关
+        # →无写时首读由显式合成初始字 0 服务(路 AM/AK 容器族,derived-not-
+        # measured),不立 CV 式显式 fixture 开关(DAA_CON1 的保留位被写持久
+        # 携带才需要 fixture);敏感性探针 ones 字一次性分叉钉死观察路径对
+        # 初值不敏感(类注释全文)。执行序上 0x606db4c 只在 CV 放行 DAA_CON1
+        # 首读(显式 fixture)后的同一 DAC-init 驱动内到达——依赖边挂 adda 域。
+        # 白名单恰一字,JL_AUDIO 数字域其余(15 个 li 站点)保持 unmapped。
+        if jl_audio_dac_vl0_readback and self.jl_adda_daa_con1 is None:
+            raise ValueError('the JL_AUDIO DAC_VL0 readback requires the JL_ADDA DAA_CON1 '
+                             'release (the DAC_VL0 setter call 0x6071b76 sits immediately '
+                             'after the DAA_CON1 fixer call 0x6071b70 in the same DAC-init '
+                             'driver)')
+        self.jl_audio_dac_vl0=(JLAudioDacVl0Registers()
+                               if jl_audio_dac_vl0_readback else None)
         # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字(0xfd58xx)的
         # write-only 整字记录。识别链与 49 字白名单见 JL_OMAP_OUT_WORDS 常量
         # 注释;本前缀首写=uart_init TX 引脚复用 0x60012de 写 0xfd58b8=0x9f
@@ -4290,6 +4455,7 @@ class BR28Model:
             (self.jl_audio_dac_init_records is not None and self.jl_audio_dac_init_records.handles(address)) or
             (self.jl_audio_adc_reset_records is not None and self.jl_audio_adc_reset_records.handles(address)) or
             (self.jl_adda_daa_con1 is not None and self.jl_adda_daa_con1.handles(address)) or
+            (self.jl_audio_dac_vl0 is not None and self.jl_audio_dac_vl0.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
@@ -4529,6 +4695,12 @@ class BR28Model:
         if self.jl_adda_daa_con1 is not None and self.jl_adda_daa_con1.handles(address):
             self.counts['reads']+=1
             return self.jl_adda_daa_con1.read(address)
+        # JL_AUDIO DAC_VL0(路 CW/S19 批 0b):读回=最后写值,无写时显式合成初始
+        # 字 0(路 AM 先例;读值只进 insert 不进分支、双通道调用下写回恒 0x0=
+        # 初值不参与观察路径,敏感性分叉 ones 字互证——类注释全文)。
+        if self.jl_audio_dac_vl0 is not None and self.jl_audio_dac_vl0.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_dac_vl0.read(address)
         # P3_AWKUP 族:只有显式 fixture 覆盖的寄存器的首次读返回具名字,
         # 其余读(未覆盖/写后/重复)一律严格停(路 BB;显式 kind 便于诊断)。
         if self.p33_awkup is not None and self.p33_awkup.handles(address):
@@ -4703,6 +4875,11 @@ class BR28Model:
             # 未选通道时旧值原样回写、总线写仍发生)整字写记录;值=真实指令
             # 结果;DAC 模拟通路/偏置/音量运行效果不建模。
             self.jl_adda_daa_con1.write(address,value,self.current_core)
+        elif self.jl_audio_dac_vl0 is not None and self.jl_audio_dac_vl0.handles(address):
+            # JL_AUDIO DAC_VL0(路 CW/S19 批 0b):0x606db68 写回(在两个通道
+            # 选择块之外,未选通道=组装值原样写回)整字写记录;值=真实指令
+            # 结果(umin 钳制+半字 insert 的组装字);数字音量运行效果不建模。
+            self.jl_audio_dac_vl0.write(address,value,self.current_core)
         elif self.p33_awkup is not None and self.p33_awkup.handles(address):
             # P3_AWKUP 族(路 BB):整字写只接受有观测形状的 FLT0..2(walker
             # st.w.idxs)与 P_IE(0x6067cb0 消费型写回),其余(EN/N_IE/
@@ -5260,6 +5437,24 @@ class BR28Model:
                 'rest of the ADDA read family stays unmapped and later reads get classified '
                 'per address; no DAC analog path or audio output is modeled — this does NOT '
                 'verify any audio output')
+        if self.jl_audio_dac_vl0 is not None:
+            result['jl_audio_dac_vl0_registers']=self.jl_audio_dac_vl0.report()
+            result['assumptions']['jl_audio_dac_vl0_registers']=(
+                'JL_AUDIO->DAC_VL0 (0xfe051c = JL_AUDIO base +0x1c, br28.h all-__RW, the '
+                'digital-volume word, route-BO CONFIG classification — released by route CW): write record plus '
+                'last-write readback; before the first firmware write the explicit '
+                'synthetic initial word 0 (route-AM precedent) is served — '
+                'derived-not-measured, NOT a reset-value claim; no separate initial-fixture '
+                'switch (unlike route-CV DAA_CON1) because the read value only composes the '
+                'insert write-back (no branch consumes it) and the only call site on this '
+                'prefix (0x6071b76, r0=0xFF both channels, r1=0) overwrites every carried '
+                'bit — the written word is 0x0 regardless of the initial state (the '
+                'all-ones sensitivity fork stopped identically); the volume cap comes from '
+                'the device-struct slot [0x1265C0+1883*4]=0x12832C (runtime 0x3a98; the '
+                'route-CV/BO narrative 0x1272AC was an arithmetic slip); exactly the one '
+                'word is whitelisted, the rest of the JL_AUDIO digital block stays '
+                'unmapped; no digital-volume effect or audio output is modeled — this does '
+                'NOT verify any audio output')
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()

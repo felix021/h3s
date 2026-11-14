@@ -101,7 +101,7 @@ SCENARIOS = {
                               'conditional flag set (crc_bankb stack plus the derived-not-measured '
                               'opt-ins: every conclusion under this scenario is conditional, not '
                               'a verified boot fact)'),
-        'default_budget': 3200000,
+        'default_budget': 3500000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
         # 单点在 tools/frontier_registry.py,前沿推进后只改 registry(本值自动
@@ -244,6 +244,16 @@ SCENARIOS = {
         # setter 0x606db36,停在 0x606db4c 读 0xfe051c=JL_AUDIO->DAC_VL0
         # (数字音量配置 RMW,分类=配置归下一路)。**新前沿 3,170,379 @
         # 0x606db4c**(unmapped_memory 读 0xfe051c)。
+        # 路 CW(S19 批 0b/sim-s19b0)再放行(+31,769 步):DAC_VL0 配置读
+        # (合成初始字 0 首读+读回;读值只进 insert 不进分支、双通道调用写回
+        # 恒 0x0;ones 探针分叉同停点=观察路径对初值不敏感;**cap 槽勘误
+        # [0x1265C0+1883*4]=0x12832C,原记 0x1272AC 系算术笔误**)+event_clock
+        # 进条件栈(本前缀惰性零推进,首个全核 IDLE=W2[0] os_time_dly 在停点
+        # 后未到达)后:setter 全链→dev 层→60KB DMA 缓冲 memset(0x4242 适配
+        # 器 count 护栏按首个大清零形状 0x3c00 抬到 100000,语义假设零变化)→
+        # 0x606ab0a 的 AUD_CON/DAC_CON RMW 链(AK 容器)后写 DAC_COP=0x7f 撞
+        # unmapped。**新前沿 3,202,148 @ 0x606ab2c**(unmapped_or_readonly_write
+        # 0xfe0534=JL_AUDIO->DAC_COP,+0x34 成员 13 __WO,归下一路三选一)。
         'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
@@ -787,27 +797,28 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-14 路 CV 条件场景结论(official vs tested_b79,条件 flag 集
-    到当前条件前沿 3,170,379;一切结论条件通过、derived-not-measured;历史
-    世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/3,070,626(路 CG)/
-    3,070,786(路 CL)/3,070,955(路 CO)/3,071,380(路 CQ)/3,071,984(路 F)/
-    3,072,236(路 M)/3,073,402(路 R)/3,073,918(路 V)/3,079,241(路 AA)/
-    3,081,001(路 AK)/3,137,573(路 AN)/3,170,362(路 AS)已被后续投影替换,
-    见 HANDOFF 对应「步含义」段):
+    """钉死 2026-11-14 路 CW(S19 批 0b)条件场景结论(official vs tested_b79,
+    条件 flag 集到当前条件前沿 3,202,148;一切结论条件通过、derived-not-
+    measured;历史世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/
+    3,070,626(路 CG)/3,070,786(路 CL)/3,070,955(路 CO)/3,071,380(路 CQ)/
+    3,071,984(路 F)/3,072,236(路 M)/3,073,402(路 R)/3,073,918(路 V)/
+    3,079,241(路 AA)/3,081,001(路 AK)/3,137,573(路 AN)/3,170,362(路 AS)/
+    3,170,379(路 CV)已被后续投影替换,见 HANDOFF 对应「步含义」段):
 
-    - 双方 3,170,379 步、同停点 0x606db4c(unmapped_memory 读 0xfe051c=
-      JL_AUDIO->DAC_VL0,当前条件前沿——路 CV 的 DAA_CON1 两开关分立放行
-      (显式初值探针 fixture 0x0+配置位读回;敏感性对照 {0x0,0xfffffff8}
-      同步数同停点=观察路径对初值不敏感,证据表 docs/adda-daa-con1.md)
-      后 +17 步:0x606b40e RMW 全链真实执行(表 0x060a8608={0,4,6,7};
-      **勘误:AS 叙事表址 0x060A8548 是转写笔误**;写回 0x0 在两个通道选择
-      块之外)、经真调用 veneer 0x606db6c(fixer rts 回 0x606db72 再弹原始
-      调用者)返回 0x6071b74、call setter 0x606db36(DAC_VL0 数字音量,
-      r0=0xFF/r1=0,上限 [0x1272AC]=0x3a98),停在并行对第二半 `r3=[r2+0]`
-      的 DAC_VL0 首读——**分类=配置**(数字音量 RMW,读值经 umin 钳制+半字
-      insert 组装进写回,同族;对照 DAA_CON2 bit1=状态位、CHIP_ID=身份),
-      归下一路同法处理)、per-core {0:3159491,1:11216}一致;stop parity
-      全同——official↔b79 parity 延长到条件前沿 3,170,379,控制流零分歧、
+    - 双方 3,202,148 步、同停点 0x606ab2c(unmapped_or_readonly_write 写
+      0xfe0534=JL_AUDIO->DAC_COP 值 0x7f,当前条件前沿——路 CW 的 DAC_VL0
+      配置读放行(合成初始字 0 首读+读回=最后写值;读值只进 insert 不进
+      分支、双通道调用 0x6071b76 写回恒 0x0,ones 探针 0xffffffff 一次性
+      分叉同停点同步数=观察路径对初值不敏感)+event_clock 进条件栈(本
+      前缀惰性,virtual_model_steps_advanced=0——首个全核 IDLE=W2[0]
+      os_time_dly 在停点后未到达)后 +31,769 步:setter 全链→dev 层
+      0x6064162→DMA 缓冲长计算(rep 30 体)→ROM memset(0x18e180,0,
+      0xf000)(0x4242 适配器 count 护栏按首个大缓冲清零形状抬到 100000,
+      三项语义假设零变化)→0x606ab0a 的 AUD_CON|=0x100+DAC_CON 五连 RMW
+      (AK 容器服务)后写 DAC_COP=0x7f 撞 unmapped——W1[3] 尾段 DAC 簇里
+      既有白名单外的下一成员(br28.h +0x34 成员 13 __WO),归下一路三选
+      一)、per-core {0:3191229,1:11251}一致;stop parity 全同——
+      official↔b79 parity 延长到条件前沿 3,202,148,控制流零分歧、
       无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
       0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,170,379,
@@ -835,12 +846,12 @@ def check_self_conditional(report):
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
                 run['stop']['address'] == conditional['stop']['address'] and
-                run['per_core_steps'] == {'0': 3159491, '1': 11216},
+                run['per_core_steps'] == {'0': 3191229, '1': 11251},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3170379 @ 0x606db4c, the read of '
-                '0xfe051c JL_AUDIO->DAC_VL0 — the digital-volume config RMW entered right '
-                'after the route-CV DAA_CON1 release ran its full RMW chain through the '
-                'real-call veneer)')
+                'conditional frontier stop (3202148 @ 0x606ab2c, the whole-word store of '
+                '0x7f to 0xfe0534 JL_AUDIO->DAC_COP — the DAC-output gate function '
+                '0x606ab0a entered right after the route-CW DAC_VL0 release completed '
+                'the setter and the 60KB DMA-buffer clear)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

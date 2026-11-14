@@ -446,6 +446,7 @@ p11_heap_experimental_config 条件栈（现状 = base 19 + conditional 32）
 | BA §2.4 | trim 环「全环 ≈10⁵ 步量级」 | 修订 ≈4-6×10⁵（0x601174c=12×2 真采样事务×24 次/轮×15 轮，~10³ 步/事务，BY 实测单价） |
 | BA §2.1 W4[4] 尾 | 「pend 0x12b55c+…+post 0x12b5b0…纯 RAM」 | pend/post 写 canonical IPMASK `(cnum<<11)+0xFFE1A8`（cli/sti/lockset 族）——**非纯 RAM**，但是 CPU1 停泊路径既有执行面，非新边界（本路全 26 指令钉死） |
 | BA #9 行 | S12 归「通过（RAM+IPI）」 | S12 含喂狗调用 0x6011d64，**门 h[QCY+344]==0x5A22**（产品字）才执行——运行观测项；0x5A22 侧会提前触 P6 |
+| 本表 §4.3 行 0b（实施路 CW/sim-s19b0 勘误） | 行 0b「W1[3] 尾段…W4[0..3] 通过」 | 实测批 0b 放行 DAC_VL0（+31,769 步）后**停在 W1[3] 尾段内部**：0x606ab0a 输出级门控函数写 **0xfe0534=JL_AUDIO->DAC_COP**（br28.h +0x34 成员 13 __WO，值 0x7f）——AK 白名单外的 DAC 簇下一成员，写侧三选一插在 0b 与批 1 之间；「DAC 簇 AK✓」按 AK 实际白名单 ({DAC_CON,AUD_CON,CLK_CON}+AS ADC_CON+CV DAA_CON1+CW DAC_VL0) 修正。另：event_clock 本前缀惰性（首个全核 IDLE=W2[0] 在停点后未到达），BM 对 W2[0]「6 tick 事件时钟」的预期消费者在批 1 之后才到达 |
 
 （BA §8 已修的 0xf2c244=P3_ANA_CON1/0x12cd26 健康路径必经/S17 直跳 S18 等不再重复；
 BK §8 对 BA 的 0xFFF130→0xFFE1B0、0xFF1F 掩码、慢 2/快 1 三修正维持。）

@@ -151,6 +151,12 @@ FEATURES = (
             'sensitivity-probe-not-plausible-state,无隐式零默认)'),
     Feature('jl_adda_daa_con1_config_readback', 'conditional', ('jl_audio_adc_reset_writes',), False, None,
             'JL_ADDA DAA_CON1 配置位读回=最后写值(两开关分立;无初值未写入时仍停原边界)'),
+    Feature('jl_audio_dac_vl0_readback', 'conditional', ('jl_adda_daa_con1_initial_fixture',), False, None,
+            'JL_AUDIO DAC_VL0(0xfe051c)数字音量字写记录+读回=最后写值+无写时合成初始字 0'
+            '(读值只进 insert 不进分支,双通道调用下写回恒 0x0;路 CW/S19 批 0b 配置类放行)'),
+    Feature('event_clock', 'conditional', ('idle_wait',), False, None,
+            '全核 IDLE 事件时钟推进(advance_event_clock;W2[0] os_time_dly 等 tick 等待的首个'
+            '消费者,不开则停在首次全核 IDLE;TIMER2 投影本体属批 1)'),
     Feature('subword_stores', 'conditional', (), False, None,
             '普通子字存储直写(exact_subword_stores,绕过合并读)'),
     Feature('word_store_sp_l', 'conditional', (), False, None,
@@ -198,10 +204,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 3170379,
-        'stop_pc': '0x606db4c',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfe051c', 'size': 4, 'reference_sdk_register': None},
+        'completed_steps': 3202148,
+        'stop_pc': '0x606ab2c',
+        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
+                 'address': '0xfe0534', 'size': 4, 'value_bytes': '7f000000'},
         'freshness_fields': ('kind', 'address'),
     },
 }
