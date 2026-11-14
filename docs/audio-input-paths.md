@@ -585,6 +585,9 @@ handler 0x6032e80（§1.8③ 全图）。
 入口（三源）：
   按键: anc_next 0x6018b60（循环表 0x609e510=[1,3,2] off→trans→on；键 handler 0x6018bf0/0x6018ce8）
   BT 命令: 0x60235de / 0x602548c 调 anc_next；ANC 工具链 0x606e576
+  （路 ANCHOR 2026-11-15 精确复算维持：全 app call 反查 anc_next 共 5 引用
+   0x06018bf0/0x06018ce8/0x60235de/0x0602548c/0x606e576；审计报告 §2.6 的 0x06018b40 改判系
+   十六进制换算错误——call -51504 的 51504=0xC930 非 0xC950，详见 key-action-map.md 锚点复核节）
     ↓ os_taskq_post_msg("anc", msg)（0x6064d72；键/tone 侧封装 0x600db3c，msg 161..186 见下）
 anc_task = 0x602d3a0（task_create 于 0x602f30a，名 "anc" 0x60a1906）：
   pend 0x6064c8c（16 字节 msg）→ 取 [msg+4]，tbh 跳表 @0x602d3de 分发 msg 161..186
