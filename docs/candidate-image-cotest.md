@@ -54,7 +54,7 @@ candidate_view 的 readonly 视图，直接 load_image 解密即可）：
 ```python
 L1_SLOTRAM_SHA  = '906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914'  # §12.3
 R4_KEYHOOK_SHA  = '8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d'  # r4 §3.3
-PLAIN_LENGTHS += {'l1_slotram': 0xE5200, 'r4_keyhook': 0xE524E}
+PLAIN_LENGTHS += {'l1_slotram': 0xE31E0, 'r4_keyhook': 0xE322E}  # = flash 末端 0xE5200/0xE524E − 0x2020（2026-11-14 路 BU 实测修正，见 §1.2 末「工具就绪」）
 
 def load_l1_slotram(path, official_path):        # 与 load_r4_keyhook 同形
     raw, flash, plain = load_image(path)
@@ -82,6 +82,24 @@ def load_l1_slotram(path, official_path):        # 与 load_r4_keyhook 同形
   钉子=改历史」[设计]。
 - **freshness 跟随**：两 loader 跑在 SCENARIOS 既有场景上，official 侧新鲜度自检已内建；
   候选侧停点 parity 是输出断言（§1.4），不是前置。
+- **工具就绪（2026-11-14 路 BU/sim-cotcheck，基线 5f632ad）**：本节四重前置断言已按规格
+  **独立实现**为 `tools/candidate_world_checks.py`——CLI `--candidate {l1_slotram,r4_keyhook}
+  --candidate-path <ufw> --official <ufw> [--build-report <json>]` 输出 JSON 断言报告；
+  ①UFW sha（候选+官方双侧钉死）②独立 CRC（import 复用 `verify_ufw_integrity.verify`）
+  ③共享 bootloader `flash[:0x2000]` 逐字节 ④plain byte_diff_runs 白名单区域分类（6 窗口/
+  fence 立即数/注册表槽 0xA9C7C（仅 r4）/config.dat CRC+index/追加段/两处 app 区 CRC 对）
+  **等式语义**（白名单区域全命中+零白名单外 run+窗口全 8B 覆盖）+ 全文件 diff 数==构建器
+  字节账 472/554B + build-report.json 对账（output_sha256/diff_count/diff_positions）。
+  白名单几何从本文档与 r4/slotram 文档钉死、**不 import 构建器模块**（构建器回归无法
+  自我洗白）。单测 `tools/test_candidate_world_checks.py`（已接 check_local --units，14
+  tests：逻辑层钉常量/分类器分辨力；工件层现场构建两候选全绿+反例——篡改 boot 段 1B
+  四断言全红、伪造字节账恰红 byte_account、白名单外 plain 1B（ANC 键表族）shared_boot
+  仍绿而分类器报 unexplained）。**loader 接线（BR 路）剩**：analyze_image_trace 增两
+  loader 时调用 `run_checks`（或照其常量）、KNOWN_SITE_LABELS 展示增补（§1.3）、独立
+  self-check 函数与 app 切片 sha 实测钉死。**规格修正一处**：原稿 PLAIN_LENGTHS 的
+  0xE5200/0xE524E 是 flash 末端宽记法；load_image 语义下 plain 长度=boot-info
+  app_size=flash 末端−0x2020，实测 0xE31E0/0xE322E（与 fence 上限运行地址
+  0x060E31E0/0x060E322E 互证），上文代码块已按实测值改注。
 
 ### 1.3 已知差异语义表增补（KNOWN_SITE_LABELS 展示层）[设计]
 
