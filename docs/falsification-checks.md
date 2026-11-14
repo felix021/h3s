@@ -10,7 +10,10 @@ codex 全局 ROI 复盘第 3 路「独立反例验证」的落地：**故意破�
 - **快速单测层**（`python3 tools/test_falsification.py`，秒级，进 `--units`）：
   接线守卫反例、Timer0 计数守恒/停止纪律、跨页拆分哨兵、键链常量前置守卫、
   post_stop 外设时钟冻结、事件时钟 post_stop 冻结不变式（AZ-6，盲区 B-1
-  收口）、闭式换算常量断言（AZ-7，盲区 B-2 收口）。不需要私有 ROM。
+  收口）、闭式换算常量断言（AZ-7，盲区 B-2 收口）、场景级快照反例（AZ-8，
+  盲区 B-3 收口：快照恢复世界→值级破坏→短程 resume，断言面必须红）。除
+  AZ-8 需要公开固件/模拟器缓存（`--fetch-inputs`/`--fetch-simulator` 一次
+  下载，无私有 ROM）外不需要资产。
 - **慢场景层**（`python3 tools/test_falsification.py --scenario-evidence --rom <ROM>`，
   分钟级，**不进** check_local）：用被破坏的开关复跑大场景，证明前沿通过
   genuinely 依赖该投影。基线 3a86487 的实测结果在 §3。
@@ -29,6 +32,7 @@ codex 全局 ROI 复盘第 3 路「独立反例验证」的落地：**故意破�
 | AZ-5 | post_stop 外设时钟冻结（S 直调机制） | 直调前后计数快照 | 「停止后事件不增长」的直调版：直调循环若推了外设时间，键链拍数与时序断言失真 |
 | AZ-6 | 事件时钟 post_stop 冻结不变式（盲区 B-1 收口；前置=CW 落地 event_clock） | 合成双核四种 stop 形状（交付请求逃逸/诚实停/严格停传播/TIMER2 唤醒返回）后反复观察+完整 report() 生成 | 事件时钟落地后，「stop 后事件时钟不再前进」从 AZ-5 的 Timer0 直调版升级为机器层不变式；观察/查询路径若隐式走表会静默失真全部时序断言 |
 | AZ-7 | 闭式换算常量断言（盲区 B-2 收口；BK 闭式） | 命名常量推导链逐原子钉死 + 模型行为互证 + 双链汇合 | 「1ms=恰 4000 模型步」的两条独立换算链（LRC/TIMER2、STD12M/Timer0）散落字面值改一处就漂；常量化后任何原子漂移在 units 层直接红 |
+| AZ-8 | 场景级快照反例（盲区 B-3 收口；SNAP 快照恢复） | 从捕获点恢复世界→对快照做**值级**篡改（形状闸自洽重 derive 通过）→短程 resume：Timer0 pending 位翻转/cnt 偏置、counts 簿记、寄存器容器记录值、软件 IRQ pending 位移除、M7 账本记录、CPU sp_known、静态 fixture 值（守卫面） | 「快照恢复路径不能洗掉破坏」：若恢复用静态重建覆盖状态、或报告不从恢复世界读，值级破坏会静默消失——SNAP 等价测试就成空真。B-3 挂账的「场景级反例 3 分钟」由此降到秒级进 units |
 | R1 | RES fixture 撤掉（BY，场景级） | 条件前沿开关集去掉 `fd31_adc_res_named_values` | 前沿 3.1M 与键链采样都压在 RES 具名值上；撤掉后仍前进 = 假阳性 |
 | R2 | Timer0 IRQ4 交付撤掉（BE，场景级） | 条件前沿开关集去掉 `timer0_irq4_delivery` | 「屏蔽必要 IRQ 是否仍然前进」原型直接场景版 |
 | R3 | 键链手势输入破坏（S，场景级） | 阈值 500→750，按下档 700 改出分档带 | 「改一个手势拍数断言应抓住」：等价的输入侧破坏（拍数字面量在闭包内，见盲区 B-2） |
@@ -39,7 +43,7 @@ codex 全局 ROI 复盘第 3 路「独立反例验证」的落地：**故意破�
 AZ-1 补接线守卫反例，不重复。IRQ68（音频 DMA 完成，D2-b 蓝图）尚未实现，
 无从反证——列入盲区 B-4。
 
-## 2. 快速层结果（全部进 `check_local --units`，2026-11-14 全绿，26 例 = AZ 时 14 例 + B-1/B-2 收口 12 例）
+## 2. 快速层结果（全部进 `check_local --units`，2026-11-14 全绿 26 例 + B-3 收口 9 例 = 35 例；AZ-8 为 2026-11-15 路 B3R）
 
 **AZ-1 接线守卫反例族（10 反例 + 1 对照）——被抓住。**
 对每个撤掉依赖的开关组合（fd31 CON 读回/PND 完成/RES 具名值三层、键链场景
@@ -110,7 +114,41 @@ source_ticks_per_step=4 与实现侧逐项绑定）；②两条独立链在同�
 实现原子同步漂移（断言恒真、漏检；自证实测发现后修正）。只提这两条已被
 闭式证明的普适换算；瞬态推导值（horizon 36,780 步，依赖 cnt）不提常量。
 
-## 3. 慢场景层结果（基线 3a86487，2026-11-14 09:08-09:11 实测，全部被抓住）
+**AZ-8 场景级快照反例——值级破坏全被抓住 + 守卫面拒载 + 对照组等价绿
+（盲区 B-3 收口，路 B3R/sim-b3r，2026-11-15；前置=SNAP 快照捕获/恢复
+全链路 + advance tier 等价）。**
+世界=公开资产 typed_memory_replay 16,077 步（SNAP fast tier 同款）挂带
+Timer0 走表（con=0x1001 source4/div1 每步恰 4 参考计数、prd=0xFFFFFFF
+全程不回绕）+软件 IRQ pending（word0 bit3）的外设模型——外设域访问只有
+PLL0.CON0 读，`initial_registers={PLL0:1}` 与 `explore(pll=1)` 假设同值，
+前缀与原世界同停点（unverified_zero_count_rep@16,077）。中点 8,000 捕获，
+对快照做**值级**篡改（形状闸/manifest 对 body 形状重 derive 全部自洽——
+测的是恢复链路携带的值，不是格式闸，那是 test_world_snapshot DriftGates
+的域），短程 resume 后断言面：①等价对照（纯 json.dumps，插入序可见，无
+diff 白名单）②报告键精确红点（peripherals.timer0 即 check_d1_acceptance
+的 `_timer0_state` 数据源）③恢复侧静态守卫。八类破坏+对照组（units 9 例）结果：
+
+| # | 破坏（值级，形状自洽） | 红点（实测） | 被抓住 |
+|---|----------------------|-------------|--------|
+| ① | Timer0 pending 位翻转 False→True | peripherals.timer0.pending（=D1-2 断言数据源 `_timer0_state`）；icfg gates8/9 未开故 resume 照常到终点，破坏存活到报告 | 是 |
+| ② | Timer0 cnt +4（一个模型步的参考计数量） | peripherals.timer0.cnt 终点恰偏 4——恢复世界继续走表、篡改按步传播（BQ 闭式换算/事件时钟 horizon 全压在 cnt 上） | 是 |
+| ③ | counts 簿记一条（completed_model_steps +1，虚拟时间轴） | peripherals.counts.completed_model_steps 偏 1 | 是 |
+| ④ | 通用寄存器投影容器一条记录值（PLL0 读回记录 1→2） | peripherals.registers['0xfd4600'] | 是 |
+| ⑤ | 软件 IRQ pending 位移除（word0 value 0x8→0x0，known 掩码不动） | peripherals.software_irq_commands.pending['0'].known_value | 是 |
+| ⑥ | M7 循环账本一条记录值（memory events 首条 bytes 翻一位） | memory_events[0].bytes | 是 |
+| ⑦ | M1 CPU 状态位 sp_known True→False | last_registers.sp 变 unknown（hex/unknown 由该位分派） | 是 |
+| ⑧ | 静态 fixture 值篡改（initial_registers PLL 假设 1→2） | 恢复侧 check_static 拒载：SnapshotError 'static configuration mismatch on [initial_registers]'（守卫面，不是报告面） | 是 |
+| 对照 | 未破坏恢复续跑 vs 完整直跑 | 逐字节相等（AZ-1 先例：证明「抓住」不是「任何恢复都红」的空真） | — |
+
+诚实边界（如实记录）：typed_memory_replay 是单核无 machine 世界（explore
+的 CPU 形状没有 machine.select() 需要的 icfg_known 属性），**M5 机器交付
+簿记（timer0_irq_deliveries）在该世界不可承载**——该类破坏在慢层 R4
+（ROM 门控 irq_case 世界）覆盖；M3.timer.delivery_in_flight 不在报告键里，
+值级篡改对其不可观测，同在 R4 用 M5 形态覆盖。「前缀分歧」型反例
+（R1/R2/R3 撤开关）快照不适用（快照世界 ≡ 原开关集的原前缀，
+docs/snapshot-design.md §4.1），慢层保留。
+
+## 3. 慢场景层结果（基线 3a86487，2026-11-14 09:08-09:11 实测 R1-R3；R4 为 2026-11-15 路 B3R 补，全部被抓住）
 
 复现：`python3 tools/test_falsification.py --scenario-evidence --rom <private ROM>`
 （输出 JSON 落 `analysis/local-checks/falsification-scenarios.json`；对照组=同一
@@ -121,6 +159,7 @@ source_ticks_per_step=4 与实现侧逐项绑定）；②两条独立链在同�
 | R1 | 条件前沿撤 `fd31_adc_res_named_values` | **304,406 @ 0x6011704**，`fd31_adc_res_not_modeled` 读 0xfd3104（caller A 0x60116d0 的首个 RES 读） | 3,137,573 | **被抓住**：撤掉 RES 具名值，前沿退回 30 万级的 RES 诚实停；3.1M 的通过真的依赖该 fixture |
 | R2 | 条件前沿撤 `timer0_irq4_delivery` | **336,337 @ 0x12e286**（RAM 延时环内），`interrupt_delivery_not_implemented`（core0, irq4） | 3,137,573 | **被抓住**：屏蔽 Timer0 交付，首次合格 pending（延时上下文里）即严格停，场景不前进 |
 | R3 | 键链场景阈值 500→750（按下档 700 改出带） | 世界照常到 3,072,236 @ 0x60012de；采样事务 7 次全过（sampled==fixture，传输层完好）；**observed posts = ∅** | 期望 posts {0x10a00, 0x10a01, 0x10a04} | **被抓住**：断言链对输入敏感——输入侧破坏使三个手势 post 全灭，probe 的 require 会失败 |
+| R4 | 条件前沿 flag 全栈 N=400,000 预算停点快照（completed 397,845，timer0_irq_deliveries 5 条非空）篡改首条交付簿记 reti_from 0x12e286→0x12e280（形状自洽），恢复续跑 X=200 | resume 398,045 @ 0x12e286（budget 停）；报告 machine.timer0_irq_entry_projection.deliveries[0].reti_from=0x12e280 | 对照组未篡改 resume vs full（预算=捕获预算+X）逐字节相等 | **被抓住**（2026-11-15 实测）：交付簿记（one-shot 投影「已交付」判定源）的值级破坏存活恢复链路并出现在 machine 报告键——恢复路径不能洗掉/重建它 |
 
 R2 附注：BN 时代「STD12M 到期在延时上下文惰性」的记录是在**交付探针开启**的
 世界里（交付真实发生所以无停点）；本反例证明交付机制撤掉后同一到期点就是
@@ -145,23 +184,35 @@ R2 附注：BN 时代「STD12M 到期在延时上下文惰性」的记录是在*
   原子漂移（LRC 频率、参考 tick 比、每步源 tick）在 units 层直接红。
   键链拍数（13/11/25/80）本身仍是闭包字面量——R3 的输入侧等价破坏演示
   继续有效；拍数属固件行为参数非闭式换算，不强行常量化（ROI 裁决）。
-- **B-3 场景级反例不进 --units**：单次世界构建 ~3 分钟（3M 步 @ ~17k 步/s），
-  R1/R2/R3 只能按需手跑。补法：机器状态快照/恢复若将来实现（BI 路事件时钟
-  需要停点续跑），场景级反例可降到秒级进回归。
+- **B-3（已收口为场景级快照反例，2026-11-15 路 B3R）场景级反例不进 --units**：
+  原挂账原因=单次世界构建 ~3 分钟（3M 步 @ ~17k 步/s），R1/R2/R3 只能按需
+  手跑。SNAP 落地 probe_boot.explore(snapshot=) 捕获/恢复（+advance tier
+  逐字节等价）后，「停点后破坏」类反例降到秒级：AZ-8 在公开资产 16,077 步
+  真世界（快照中点 8,000→恢复→短程 resume）上以**值级**篡改八类
+  （Timer0 pending/cnt、counts 簿记、寄存器容器记录值、软件 IRQ pending 位、
+  M7 账本、CPU 状态位、静态 fixture）+对照组进 `--units`（+9 例，~5s），
+  证明「快照恢复路径不能洗掉破坏」；M5 机器交付簿记破坏在慢层 R4
+  （ROM 门控）覆盖。「前缀分歧」型反例（R1/R2/R3 撤开关）快照**不适用**
+  （快照世界 ≡ 原开关集的原前缀，SNAP 设计 §4.1），慢层保留——这是定义
+  边界不是缺陷。
 - **B-4 IRQ68（音频 DMA 完成）无从反证**：D2-b 蓝图未实现。实现时按本路模板
   补「不发完成事件 → 音频场景停」反例（AZ-1 的守卫族 + R1 场景式各一条）。
 - **B-5 世界级「停后事件不增长」A/B 对照未做**：AZ-5 覆盖直调段冻结（机制级），
   但「同一世界开/关 post_stop 的计数 A/B 对照」（证明报告里的到期/交付计数
   在 post_stop 段零增长）没跑（需两次 3M 世界，~6 分钟，ROI 低——直调冻结
-  已由 AZ-5 机制级证明，B-3 解决后可顺手补）。
+  已由 AZ-5 机制级证明）。快照落地后成本降为一次 3M 捕获+两次恢复段，
+  ROI 边际改善但仍非零成本，保持挂账。
 
 ## 5. 结论
 
 8 个反例（5 快 + 3 慢）**全部被抓住**：当前投影族的负例/接线守卫/断言链没有
-发现假阳性。两条当年钉死的已知边界中，**B-1/B-2 已分别收口为 AZ-6/AZ-7
+发现假阳性。三条当年钉死的已知边界中，**B-1/B-2 已分别收口为 AZ-6/AZ-7
 常态不变式**（2026-11-14 路 INV，前置=CW 落地 event_clock + BK 钉死闭式）：
 事件时钟 post_stop 冻结（四种 stop 形状 + 入口裁决 + 破坏自证）与闭式换算
-常量（双链汇合 + 模型互证 + 漂移自证）；B-3/B-4/B-5 保持挂账（快照机制
-落地/IRQ68 实现/世界级 A/B 对照，见上）。这组反例进 `check_local --units`
-后成为常驻回归——未来任何让「破坏仍通过」的改动（守卫弱化、断言放宽、
-投影偷读、观察路径隐式走表、换算原子漂移）会直接红灯。
+常量（双链汇合 + 模型互证 + 漂移自证）；**B-3 已收口为 AZ-8 场景级快照反例**
+（2026-11-15 路 B3R，前置=SNAP 快照捕获/恢复+advance tier 等价）：快照恢复
+世界的值级破坏（八类+守卫面+对照组）进 `--units`（35 例），M5 交付簿记
+破坏在慢层 R4；B-4/B-5 保持挂账（IRQ68 实现/世界级 A/B 对照，见上）。
+这组反例进 `check_local --units` 后成为常驻回归——未来任何让「破坏仍通过」
+的改动（守卫弱化、断言放宽、投影偷读、观察路径隐式走表、换算原子漂移、
+快照恢复洗掉状态）会直接红灯。
