@@ -140,14 +140,17 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert set(CONDITIONAL_EXTRA_FLAGS) == set(frontier_registry.extra_flags(probe_irq_entry))
     # every base switch is a plain boolean opt-in
     assert all(value is True for value in BASE_SCENARIO_FLAGS.values())
-    # the non-boolean conditional flags are exactly the three named data
+    # the non-boolean conditional flags are exactly the four named data
     # fixtures, resolved to the real probe_irq_entry module constants (no copies)
     non_boolean = {switch for switch, value in CONDITIONAL_EXTRA_FLAGS.items() if value is not True}
-    assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values'}
+    assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values',
+                           'jl_adda_daa_con1_initial_fixture'}
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
     assert CONDITIONAL_EXTRA_FLAGS['fd31_adc_res_named_values'] \
         is probe_irq_entry.FD31_ADC_RES_NAMED_VALUES
+    assert CONDITIONAL_EXTRA_FLAGS['jl_adda_daa_con1_initial_fixture'] \
+        is probe_irq_entry.JL_ADDA_DAA_CON1_INITIAL_PROBE
 
 
 def test_scenario_registry_shapes():

@@ -11,7 +11,7 @@ from br28_model import JL_UART_CON_WORDS, JL_UART_INIT_WORDS, JL_UART_INIT_WORD_
 from br28_model import JLUartInitWriteRecords
 from br28_model import JL_OMAP_OUT_WORDS, JL_OMAP_USB_WORDS
 from br28_model import JL_IMAP_IN_WORDS
-from br28_model import JL_WL_AUD_CON0, JL_AUDIO_DAC_CON, JL_AUDIO_AUD_CON, JL_AUDIO_ADC_CON, JL_ASS_CLK_CON, JL_AUDIO_DAC_INIT_WORDS
+from br28_model import JL_WL_AUD_CON0, JL_AUDIO_DAC_CON, JL_AUDIO_AUD_CON, JL_AUDIO_ADC_CON, JL_ASS_CLK_CON, JL_AUDIO_DAC_INIT_WORDS, JL_ADDA_DAA_CON1
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
@@ -1247,6 +1247,77 @@ class ModelTests(unittest.TestCase):
                          ['synthesized_initial_reads'],1)
         # 非整字/未对齐访问不经容器。
         self.assertFalse(h.handles(0xfe0539,4) or h.handles(0xfe0538,2) or h.handles(0xfe0538,1))
+
+    def test_jl_adda_daa_con1_fixture_and_config_readback(self):
+        # 路 CV(sim-adda):JL_ADDA->DAA_CON1(0xfe0a04,br28.h +0x04 __RW,
+        # DAC 侧模拟增益字)的**两开关分立**容器(codex 四点定调):
+        # ①显式初值 fixture(无隐式零默认——与 AK/AS 容器「合成初始 0」
+        # 分支的分野);②配置位读回=写后最后写值。**停原边界契约**:只开
+        # 读回无初值未写入、或初值开读回关写后读,一律按 3,170,362 原边界
+        # 停(unmapped_memory 读 0xfe0a04,kind/字段逐项一致)。白名单恰一
+        # 字,不放行整个 ADDA 读族(DAC_VL0/DAA_CON0/2/ADA_CON 族保持
+        # unmapped)。静态核对:RMW 0x606b40e 写回在两个通道选择块之外
+        # (未选通道=旧值原样回写),veneer 0x606db6c 是真调用(fixer rts 回
+        # 0x606db72 再弹原始调用者);敏感性探针对 {0x0,0xfffffff8} 同停点
+        # 同步数(写回 0x0 vs 0xffffff88)=观察路径对初值不敏感。
+        self.assertEqual(JL_ADDA_DAA_CON1,0xfe0a04)
+        # 依赖守卫:DAA_CON1 首读只在 AS 放行后的 initcall 尾块到达。
+        with self.assertRaisesRegex(ValueError,'requires the ADC-reset'):
+            BR28Model(jl_wl_aud_write_records=True,jl_adda_daa_con1_config_readback=True)
+        # fixture 值类型守卫(显式 unsigned32)。
+        with self.assertRaises(ValueError):
+            BR28Model(jl_wl_aud_write_records=True,jl_audio_adc_reset_write_records=True,
+                      jl_adda_daa_con1_initial_fixture=-1)
+        # 默认关:无容器、无报告键(legacy 逐字节不变)。
+        g=BR28Model()
+        self.assertFalse(g.handles(0xfe0a04,4))
+        self.assertNotIn('jl_adda_daa_con1_registers',g.report())
+        # 只开读回、无初值、未写入:停原边界(与 3,170,362 停点字段一致)。
+        rbo=BR28Model(jl_wl_aud_write_records=True,jl_audio_adc_reset_write_records=True,
+                      jl_adda_daa_con1_config_readback=True)
+        self.assertTrue(rbo.handles(0xfe0a04,4))
+        with self.assertRaises(Blocked) as ctx:
+            rbo.read(0xfe0a04)
+        self.assertEqual(ctx.exception.details,
+                         {'kind':'unmapped_memory','access':'read','address':'0xfe0a04',
+                          'size':4,'reference_sdk_register':None})
+        # 初值开、读回关:写前读=fixture 字;写后读停原边界(不立读回假设)。
+        fx=BR28Model(jl_wl_aud_write_records=True,jl_audio_adc_reset_write_records=True,
+                     jl_adda_daa_con1_initial_fixture=0xfffffff8)
+        self.assertEqual(fx.read(0xfe0a04),0xfffffff8)
+        fx.write(0xfe0a04,0xffffff88)
+        with self.assertRaises(Blocked):
+            fx.read(0xfe0a04)
+        # 两者全开:写前读=fixture;写后读=最后写值(探针 0 臂形状:首写 0x0)。
+        h=BR28Model(jl_wl_aud_write_records=True,jl_audio_adc_reset_write_records=True,
+                    jl_adda_daa_con1_initial_fixture=0x0,jl_adda_daa_con1_config_readback=True)
+        self.assertEqual(h.read(0xfe0a04),0x0)
+        h.write(0xfe0a04,0x0)
+        self.assertEqual(h.read(0xfe0a04),0x0)
+        report=h.report()['jl_adda_daa_con1_registers']
+        self.assertEqual(report['stores']['0xfe0a04'],{'values':['0x0'],'writes':1,'cores':[0]})
+        self.assertEqual(report['word_writes'],1)
+        self.assertEqual((report['readback_projection']['fixture_reads'],
+                          report['readback_projection']['reads_after_write']),(1,1))
+        self.assertEqual(report['fixture']['initial_word'],'0x0')
+        self.assertEqual(report['fixture']['label'],'sensitivity-probe-not-plausible-state')
+        self.assertIn('no implicit zero default',report['readback_projection']['readback_semantics'])
+        self.assertIn('NOT a reset-value claim',report['readback_projection']['readback_semantics'])
+        self.assertIn('persists in the register state',report['readback_projection']['preserved_bits_note'])
+        self.assertIn('0x060a8608',report['sdk_naming'])
+        self.assertIn('NOT released wholesale',report['whitelisted_words'])
+        self.assertIn('REAL-CALL veneer',report['observed_shapes'])
+        assumption=h.report()['assumptions']['jl_adda_daa_con1_registers']
+        self.assertIn('DAA_CON1',assumption)
+        self.assertIn('sensitivity-probe-not-plausible-state',assumption)
+        self.assertIn('NOT verify any audio output',assumption)
+        # 无初值(fixture=None)时报告 fixture 子键=None(显式区分「未提供」)。
+        self.assertIsNone(rbo.report()['jl_adda_daa_con1_registers']['fixture'])
+        # 白名单恰一字:ADDA 读族其余与 DAC_VL0 一律不放行。
+        for address in (0xfe0a00,0xfe0a08,0xfe0a0c,0xfe0a20,0xfe051c,0xfe0518,0xfe0520):
+            self.assertFalse(h.handles(address,4))
+        # 非整字/未对齐访问不经容器。
+        self.assertFalse(h.handles(0xfe0a05,4) or h.handles(0xfe0a04,2) or h.handles(0xfe0a04,1))
 
     def test_jl_omap_write_records_bank_and_strict_readback(self):
         # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字的 write-only 整字

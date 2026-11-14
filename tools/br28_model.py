@@ -194,6 +194,9 @@ JL_AUDIO_AUD_CON=0xfe0558
 JL_AUDIO_ADC_CON=0xfe0538
 JL_ASS_CLK_CON=0xfe0900
 JL_AUDIO_DAC_INIT_WORDS=(JL_AUDIO_DAC_CON,JL_AUDIO_AUD_CON,JL_ASS_CLK_CON)
+# JL_ADDA->DAA_CON1(br28.h `JL_ADDA_BASE=hs_base+map_adr(0x0a,0)`=0xfe0a00,
+# +0x04 __RW,DAC 侧模拟增益字;+0x20 起才是路 AE 钉的 ADA_CON 族,布局互证)。
+JL_ADDA_DAA_CON1=0xfe0a04
 CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
 CPU1_CONTROL=0xffe8c0
 VOLTAGE_CONFIG=(0xf2c110,0xf2c258,0xf2c26c,0xf2c270,0xff0000)
@@ -2340,6 +2343,178 @@ class JLAudioAdcResetWriteRecords:
                               'input')}
 
 
+class JLAddaDaaCon1Registers:
+    """JL_ADDA->DAA_CON1(0xfe0a04)的「显式初值 fixture + 配置位读回」两开关分立容器(opt-in,路 CV)。
+
+    背景:3,170,362 停点 0x606b426 是 0x606b40e 配置 RMW insert 函数对
+    DAA_CON1 的首读——音频 init 尾段第一个非掩码平凡 RMW 读(读值实质参与
+    写回),且本世界该字零写=读的是「DAC 模拟块寄存器内容」这个硬件域
+    状态,投影世界无从推导(**首个真实硬件反馈依赖**)。按「首次读取时的
+    未知状态」处理(措辞红线:不称「零写历史」——ROM/他核/模拟域复位仍
+    可能影响该字)。
+
+    识别与证据(2026-11-14 路 CV 反汇编钉死,repo codec pin 3608ed1;
+    消费者先例=路 BO docs/appcore-tail-sfr-semantics.md §3):
+    - **RMW 函数 0x606b40e 全链**:`[--sp]={rets,r4}` → `if (r1>=3) r1=3`
+      (增益档位钳 3)→ r3=b[0x060A8608+r1](**4 档增益码表实测字节
+      {0x00,0x04,0x06,0x07}**;勘误:probe 叙事曾记 0x060A8548,指令编码
+      实为 0x060A8608,与路 BO 一致)→ 0x606b426 `r2=[0xfe0a04]` 首读 →
+      r0 bit0 块:`r4=r2>>3; r2=r3; r2<=insert(r4,p:3,l:29)`(bits3..31
+      保留旧值、bits0..2 换表码)→ r0 bit1 块:`r2<=insert(r3,p:4,l:3)`
+      (bits4..6 换表码)→ **0x606b43c `[r1+0]=r2 写回在两个条件块之外**
+      (未选通道时写回=旧值原样回写,总线写仍发生)→ `{pc,r4}=[sp++]` 返回。
+      函数不改 r0/r1(返回后 caller 可复用)。
+    - **veneer 0x606db6c 返回链**(反汇编钉死):`[--sp]=rets; call 0x606b40e;
+      pc=[sp++]`——是**真调用**不是跳转:0x606b40e 的 rts 回到 0x606db72
+      (运行态实测 rets=0x606db72),再由 `pc=[sp++]` 弹出**原始调用者的**
+      返回地址(该地址躺在 fixer 帧下方的栈上,不能把 0x606db72 当返回地址)。
+    - **本前缀唯一到达的调用点=0x6071b70**(DAC init 驱动内,与 S1..S5 同
+      函数域):`r0=0xFF(r1=0)`(双通道全选、档位 0)经 veneer 直调 fixer
+      ——运行态实测 r0=0xFF、r3=table[0]=0x0。另一调用点 0x606dc00(音量
+      同步 walker 0x606db74 的纠偏分支,r0=单通道位)与 0x606b45c/0x6071d92
+      两处直调不在本前缀。
+    - **两开关分立**(codex 定调):
+      * `jl_adda_daa_con1_initial_fixture`——**显式输入初始 word,无隐式零
+        默认**。fixture 记录名称/来源/适用场景(报告 fixture 子键);本前缀
+        用敏感性探针对 {0x0, 0xfffffff8}(保留位全零/全一,标
+        sensitivity-probe-not-plausible-state,**是探针不是合理状态**)。
+        写前读一律返回该字(它就是假设的初始状态,一次性供给)。
+      * `jl_adda_daa_con1_config_readback`——已核定配置位维护当前值:
+        真实写入后更新、后续读用当前状态(最后写值;__RW 先例=uart CON1
+        路 AA/lp_timer CON 路 AL/ADC_CON 路 AS 同族,但**本容器无「合成
+        初始 0」分支**——初值只来自显式 fixture,这正是与域一/二/三容器的
+        分野)。
+    - **停原边界契约**:只开读回、无初值、未写入时的读仍按原边界停
+      (unmapped_memory 读 0xfe0a04,kind/字段与 3,170,362 停点逐字段一致);
+      初值开、读回关时写过之后的读同样停原边界(未立读回假设)。
+    - **范围边界**:白名单恰一字 0xfe0a04;JL_ADDA 块其余
+      (DAA_CON0 0xfe0a00/DAA_CON2 0xfe0a0c/ADA_CON 族 0xfe0a20..)与
+      DAC_VL0 0xfe051c 保持 unmapped——**不一次放行整个 ADDA 读族**,后续
+      读逐个分类(配置/状态/测量)另立证据。运行效果(DAC 模拟通路/偏置/
+      音量)不建模——只记录「增益配置 RMW 已执行」,不扩展为「音频输出
+      已验证」。
+    """
+
+    ADDRESS=JL_ADDA_DAA_CON1
+    # 原边界停记录字段(停原边界契约用;与 probe_boot unmapped_memory 形状一致)。
+    BOUNDARY_DETAILS={'access':'read','address':hex(JL_ADDA_DAA_CON1),
+                      'size':4,'reference_sdk_register':None}
+
+    def __init__(self,initial_word=None,config_readback=False):
+        self.initial_word=initial_word
+        self.config_readback=config_readback
+        self.stores={JL_ADDA_DAA_CON1:{'values':[],'writes':0,'cores':[]}}
+        self.word_writes=0
+        self.fixture_reads=0;self.reads_after_write=0
+
+    def handles(self,address):
+        return address==JL_ADDA_DAA_CON1
+
+    def _boundary_stop(self):
+        # 停原边界:kind/字段与默认世界的 unmapped_memory 停点逐字段一致
+        #(「只开读回无初值未写入仍停原边界」的契约形状)。
+        raise Blocked('unmapped_memory',**dict(self.BOUNDARY_DETAILS))
+
+    def write(self,address,value,core):
+        if address!=JL_ADDA_DAA_CON1:raise ValueError('not the modeled JL_ADDA DAA_CON1')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        if address!=JL_ADDA_DAA_CON1:raise ValueError('not the modeled JL_ADDA DAA_CON1')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            if not self.config_readback:
+                # 写后读但读回开关未开:不立「普通存储式读回」假设,停原边界。
+                self._boundary_stop()
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        if self.initial_word is None:
+            # 无初值 fixture:首次读取时的未知状态不可推导,停原边界
+            #(codex:只开读回无初值未写入时仍停原边界)。
+            self._boundary_stop()
+        self.fixture_reads+=1
+        return self.initial_word
+
+    def report(self):
+        return {'addresses':[hex(JL_ADDA_DAA_CON1)],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('br28.h JL_ADDA = hs_base + map_adr(0x0a, 0x00) = 0xfe0a00, '
+                              'DAA_CON1 at +0x04 (__RW, the DAC-side analog gain word; the '
+                              'ADA_CON family pinned by route AE starts at +0x20 — layout '
+                              'cross-checked); route BO pinned the consumer map: RMW 0x606b40e '
+                              'inserts the 3-bit gain codes {0,4,6,7} from flash table '
+                              '0x060a8608 (probe narrative previously wrote 0x060A8548 — '
+                              'the instruction encoding pins 0x060A8608)'),
+                'whitelisted_words':('exactly the one JL_ADDA->DAA_CON1 word; the rest of the '
+                                     'JL_ADDA block (DAA_CON0 0xfe0a00 / DAA_CON2 0xfe0a0c / '
+                                     'the ADA_CON family 0xfe0a20..) stays unmapped — the ADDA '
+                                     'read family is NOT released wholesale, later reads get '
+                                     'classified per address (config/status/measurement)'),
+                'observed_shapes':('plain ld.w read at 0x606b426 plus plain st.w write-back at '
+                                   '0x606b43c inside the config-RMW insert function 0x606b40e '
+                                   '(the write-back sits OUTSIDE both selector blocks — with '
+                                   'no channel selected the OLD value is written back verbatim, '
+                                   'the bus write still happens); reached through the REAL-CALL '
+                                   'veneer 0x606db6c ([--sp]=rets; call 0x606b40e; pc=[sp++]) — '
+                                   'the fixer returns to 0x606db72 and the veneer then returns '
+                                   'to the original caller, whose return address lives on the '
+                                   'stack below the fixer frame (runtime-verified rets='
+                                   '0x606db72); the only call site on this prefix is the '
+                                   'DAC-init driver 0x6071b70 (r0=0xFF both channels, gain '
+                                   'step 0), runtime-verified'),
+                'fixture':(None if self.initial_word is None else {
+                    'address':hex(JL_ADDA_DAA_CON1),
+                    'initial_word':hex(self.initial_word),
+                    'label':'sensitivity-probe-not-plausible-state',
+                    'name':('sensitivity probe pair member {0x0, 0xfffffff8} '
+                            '(reserved bits all-zero / all-one)'),
+                    'source':('route-CV initial-word sensitivity probes forked from the same '
+                              '3,170,362 stop; NOT a plausible hardware state, NOT a '
+                              'reset-value claim — the first-read unknown state has no '
+                              'derivable source (ROM/other-core/analog-domain reset may all '
+                              'still influence the word)'),
+                    'scenario':('p11_heap_experimental_config conditional frontier advance; '
+                                'the one-shot route-CV sensitivity fork ran the same stack '
+                                'with the all-ones probe word (results pinned in '
+                                'docs/adda-daa-con1.md §3)')}),
+                'readback_projection':{
+                    'addresses':[hex(JL_ADDA_DAA_CON1)],
+                    'fixture_reads':self.fixture_reads,
+                    'reads_after_write':self.reads_after_write,
+                    'readback_semantics':('two-switch separation (codex): the initial-fixture '
+                        'switch supplies an EXPLICIT initial word (no implicit zero default); '
+                        'the config-readback switch serves reads AFTER real firmware writes '
+                        'with the last written word (config bits keep their current value). '
+                        'With readback alone, a never-written read still stops at the ORIGINAL '
+                        'boundary (unmapped_memory read 0xfe0a04, identical fields); with the '
+                        'fixture alone, a read after a write also stops at the original '
+                        'boundary (no readback assumption); unlike the route-AK/AS containers '
+                        'there is NO synthetic-initial-zero branch — derived-not-measured, '
+                        'NOT a reset-value claim'),
+                    'no_poll_risk':('the RMW at 0x606b40e is not a poll (single read, single '
+                        'write-back, no loop); the volume-sync walker 0x606db74 does '
+                        'read-compare-correct DAA_CON1 fields but is outside this prefix '
+                        '(audio-task domain)'),
+                    'preserved_bits_note':('bits 3 and 7..31 of the written-back word are '
+                        'carried from the INITIAL state (the RMW only replaces bits0..2 and '
+                        'bits4..6 with the table code) — the initial-word dependency is NOT '
+                        'erased by the write; it persists in the register state and only '
+                        'disappears from observations if no consumer reads those bits '
+                        '(see the route-CV sensitivity table)')},
+                'assumption':('explicit initial-word fixture plus config-bit last-write readback '
+                              'of JL_ADDA->DAA_CON1 (derived-not-measured, '
+                              'sensitivity-probe-not-plausible-state); stored values are real '
+                              'executed instruction results, never invented; no DAC analog '
+                              'path, bias or audio output is modeled — this records that the '
+                              'gain configuration RMW executed, it does NOT verify any audio '
+                              'output')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -3552,6 +3727,8 @@ class BR28Model:
                  jl_wl_aud_write_records=False,
                  jl_audio_dac_init_write_records=False,
                  jl_audio_adc_reset_write_records=False,
+                 jl_adda_daa_con1_initial_fixture=None,
+                 jl_adda_daa_con1_config_readback=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -3892,6 +4069,28 @@ class BR28Model:
                              '(the ADC node reset is only reached after the entry store)')
         self.jl_audio_adc_reset_records=(JLAudioAdcResetWriteRecords()
                                          if jl_audio_adc_reset_write_records else None)
+        # 路 CV(sim-adda):JL_ADDA->DAA_CON1(0xfe0a04)两开关分立容器——
+        # 显式初值 fixture(无隐式零默认,fixture 记录名称/来源/适用场景)+
+        # 配置位读回(真实写入后更新、后续读用当前状态;无「合成初始 0」
+        # 分支,这是与域一/二/三容器的分野)。停原边界契约:只开读回无初值
+        # 未写入、或初值开读回关写后读,一律按 3,170,362 原边界停
+        # (unmapped_memory 读 0xfe0a04 逐字段一致)。白名单恰一字,不放行
+        # 整个 ADDA 读族(DAA_CON0/2、ADA_CON 族、DAC_VL0 保持 unmapped,
+        # 后续读逐个分类)。执行序上 0x606b426 首读只在 AS 放行后的 initcall
+        # 尾块到达,依赖边挂 ADC reset 写域;fixture 值=敏感性探针对
+        # {0x0,0xfffffff8} 之一(sensitivity-probe-not-plausible-state)。
+        if (jl_adda_daa_con1_initial_fixture is not None or jl_adda_daa_con1_config_readback) \
+                and not jl_audio_adc_reset_write_records:
+            raise ValueError('the JL_ADDA DAA_CON1 fixture/readback requires the ADC-reset '
+                             'write records (the DAA_CON1 first read is only reached in the '
+                             'initcall tail after the ADC-node reset release)')
+        if jl_adda_daa_con1_initial_fixture is not None and (not isinstance(jl_adda_daa_con1_initial_fixture,int)
+                                                             or not 0<=jl_adda_daa_con1_initial_fixture<=0xffffffff):
+            raise ValueError('the JL_ADDA DAA_CON1 initial fixture must be an explicit unsigned32 word')
+        self.jl_adda_daa_con1=(JLAddaDaaCon1Registers(initial_word=jl_adda_daa_con1_initial_fixture,
+                                                      config_readback=jl_adda_daa_con1_config_readback)
+                               if (jl_adda_daa_con1_initial_fixture is not None
+                                   or jl_adda_daa_con1_config_readback) else None)
         # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字(0xfd58xx)的
         # write-only 整字记录。识别链与 49 字白名单见 JL_OMAP_OUT_WORDS 常量
         # 注释;本前缀首写=uart_init TX 引脚复用 0x60012de 写 0xfd58b8=0x9f
@@ -4090,6 +4289,7 @@ class BR28Model:
             (self.jl_wl_aud_records is not None and self.jl_wl_aud_records.handles(address)) or
             (self.jl_audio_dac_init_records is not None and self.jl_audio_dac_init_records.handles(address)) or
             (self.jl_audio_adc_reset_records is not None and self.jl_audio_adc_reset_records.handles(address)) or
+            (self.jl_adda_daa_con1 is not None and self.jl_adda_daa_con1.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
@@ -4321,6 +4521,14 @@ class BR28Model:
         if self.jl_audio_adc_reset_records is not None and self.jl_audio_adc_reset_records.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_adc_reset_records.read(address)
+        # JL_ADDA DAA_CON1(路 CV):两开关分立——写前读=显式 fixture(无隐式
+        # 零默认);写后读=配置位读回(最后写值,需读回开关)。只开读回无初值
+        # 未写入、或初值开读回关写后读:停原边界(unmapped_memory 读
+        # 0xfe0a04,与 3,170,362 停点逐字段一致——「首次读取时的未知状态」
+        # 不可推导,不发明)。
+        if self.jl_adda_daa_con1 is not None and self.jl_adda_daa_con1.handles(address):
+            self.counts['reads']+=1
+            return self.jl_adda_daa_con1.read(address)
         # P3_AWKUP 族:只有显式 fixture 覆盖的寄存器的首次读返回具名字,
         # 其余读(未覆盖/写后/重复)一律严格停(路 BB;显式 kind 便于诊断)。
         if self.p33_awkup is not None and self.p33_awkup.handles(address):
@@ -4490,6 +4698,11 @@ class BR28Model:
             # 侧 exact_parallel 机制保真),写记录;ADC 时钟/模拟前端/DMA/
             # IRQ68 事件一律不建模。
             self.jl_audio_adc_reset_records.write(address,value,self.current_core)
+        elif self.jl_adda_daa_con1 is not None and self.jl_adda_daa_con1.handles(address):
+            # JL_ADDA DAA_CON1(路 CV):0x606b43c 写回(在两个通道选择块之外,
+            # 未选通道时旧值原样回写、总线写仍发生)整字写记录;值=真实指令
+            # 结果;DAC 模拟通路/偏置/音量运行效果不建模。
+            self.jl_adda_daa_con1.write(address,value,self.current_core)
         elif self.p33_awkup is not None and self.p33_awkup.handles(address):
             # P3_AWKUP 族(路 BB):整字写只接受有观测形状的 FLT0..2(walker
             # st.w.idxs)与 P_IE(0x6067cb0 消费型写回),其余(EN/N_IE/
@@ -5029,6 +5242,24 @@ class BR28Model:
                 'no-ADC-activity manifestation, never an invented completion; the rest of '
                 'the ADC register family stays unmapped; no ADC clock gating, analog front '
                 'end, DMA or IRQ68 event is modeled — this does NOT verify any audio input')
+        if self.jl_adda_daa_con1 is not None:
+            result['jl_adda_daa_con1_registers']=self.jl_adda_daa_con1.report()
+            result['assumptions']['jl_adda_daa_con1_registers']=(
+                'JL_ADDA->DAA_CON1 (0xfe0a04, br28.h hs_base+map_adr(0x0a,0) +0x04 __RW, the '
+                'DAC-side analog gain word): TWO SEPARATE switches — an explicit initial-word '
+                'fixture (no implicit zero default; the served fixture word is labeled '
+                'sensitivity-probe-not-plausible-state, derived-not-measured, NOT a '
+                'reset-value claim — the first-read unknown state has no derivable source) '
+                'plus config-bit last-write readback after real firmware writes; with '
+                'readback alone a never-written read still stops at the ORIGINAL boundary '
+                '(unmapped_memory read 0xfe0a04) and with the fixture alone a post-write read '
+                'does too; the RMW at 0x606b40e preserves bits 3 and 7..31 from the initial '
+                'state (only bits0..2 and bits4..6 take the table code), reached through the '
+                'real-call veneer 0x606db6c from the DAC-init driver 0x6071b70 (r0=0xFF, '
+                'gain step 0, runtime-verified); exactly the one word is whitelisted — the '
+                'rest of the ADDA read family stays unmapped and later reads get classified '
+                'per address; no DAC analog path or audio output is modeled — this does NOT '
+                'verify any audio output')
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()
