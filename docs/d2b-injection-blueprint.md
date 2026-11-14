@@ -22,7 +22,7 @@
 | audio_adc_irq_handler | 0x6072628：data=ADR+SRP×ch×ssize（0x6072656..0x60726e6）→ 遍历 output-handler 链（hdl+92）→ 尾部 SRN=PNS、PNS 重装、CON\|=0x40 | AE §2.2 [静态+SDK] |
 | set_buffer 五写 | 0x606dee4..0x606df38（ADR/LEN/PNS/HWP=0/SRP；bit4 查重读 CON） | AE §2.1/§6 [静态] |
 | 共享 audio_adc_hdl | QCY+4596=0x1277B4（AP 勘误后基址；+78 通道使能位、+79[ch] 每通道引用计数、+92 output-handler 链头=0x127810、hdl 建立者 audio_adc_init 0x60719a6..ee、guard b[QCY+4673]） | AE §1.3/§6 + AP 勘误 [静态] |
-| 当前条件前沿 | **3,137,573 步停 0x60719c0，unmapped_or_readonly_write 写 0xfe0538=0**——世界停在 boot ADC initcall（0x602ea68→audio_adc_init）内部、ADC 寄存器族第一写（路 AK 白名单明确留下的条件族首位） | frontier_registry.FRONTIERS + HANDOFF [文档] |
+| 条件前沿（路 AW 基线 336e848 时点快照，当前钉点以 frontier_registry 为准） | **3,137,573 步停 0x60719c0，unmapped_or_readonly_write 写 0xfe0538=0**——世界停在 boot ADC initcall（0x602ea68→audio_adc_init）内部、ADC 寄存器族第一写（路 AK 白名单明确留下的条件族首位） | frontier_registry.FRONTIERS + HANDOFF [文档] |
 | 三场景开链锚 | 辅听=mic_effect 图 0x9c2d/源节点 0xD06D（plug 表 0x60a917c 行 2：create 0x6032924/ioctl 0x603293e/close 0x6032d74；START cmd 0x40001 开采集）；通话=0x60200b6(flags)（关 0x601e436）；ANC=audio_anc_run 0x601c8de（停-重配-启 0x606e9e8(0)→0x606ebe0→0x606e9e8(1)，系数重读 0x606e7c2） | AR §1.8③/AP §1.7③/AL §2.2b [静态] |
 | 三 blob | esco_adc 40B @stream.bin 0x1BFD（en_map=0x0B）；MicEff 40B @0x1DA4（en_map=0x1，增益档 0x0a）；ADC13 共享 esco blob；名字表 53×21B @0x3A8 | AP §1.7①/AR §1.8①② [镜像+静态] |
 | 三方通道占用 | ch0=A_MIC0 三方共用（ANC RFF/RFB+通话组0+辅听）；ch1=A_MIC1 ANC LFF+通话组1；ch2=A_MIC2 ANC LFB 专用（**已知 en_map=0x0B 不含 bit2——见 §5-R4 张力**）；ch3=A_MIC3 esco 专用 | AR §1.8④ [静态] |

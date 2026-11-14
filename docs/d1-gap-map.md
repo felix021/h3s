@@ -30,7 +30,7 @@
 
 ## 2. 127,239→D1 缺口清单
 
-### 2.1 当前前沿机器状态（303,853 @ 0x6067c6e，p11_heap_experimental_config 报告实测）
+### 2.1 前沿机器状态（路 BC 调研时点 2026-11-13：303,853 @ 0x6067c6e，p11_heap_experimental_config 报告实测；当前钉点见 frontier_registry）
 
 - CPU0：292,689 步，PC 0x6067c6e（app_core 0x60120e2 call 0x6067cb4 的 P33 窗 walker 内、第二轮表 item[0] 的 P3_AWKUP 次路径），SP 0x400b74；CPU1：11,181 步，PC 0x12c5ca（idle 边界，defer 4096 耗尽、尚未执行 idle 指令）。stalls 2,155、launches 1、kick_rmw_writes 21、软件 IRQ commands 20/acks 10、交付 1+7+2。
 - **Timer0**：con 0x1401（STD12M 计数中）、cnt 8,268、prd 119,999 → **首次到期 ≈ 341,097 步**（+37,244；与路 AH「启动后 40,000 步」推算一致：301,097+40,000）。
