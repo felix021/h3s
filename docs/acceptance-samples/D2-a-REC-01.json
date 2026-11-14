@@ -1,0 +1,36 @@
+{
+  "case_id": "D2-a-REC-01",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe_irq_entry 默认镜像）；场景基线 main b24f967",
+  "initial_state": "函数级直调 harness（与路 S 同款，make_key_chain_matrix_post_stop 独立实现），从可追溯前沿快照进入：同一路 M 前沿世界（p11_heap_experimental_config 投影栈，3,072,236 模型步 @ PC 0x60012de 停点）后驱动；非手工构造最终 OS 状态",
+  "inputs_schedule": "合成三键矩阵 fixture（probe_irq_entry opt-in 场景 key_chain_matrix_scan，开关 key_chain_matrix）：20 级阈值表 500/720/850/1022+16 哨兵、20 项键 id 表 255/10/11/12，三键共用 ADC 分压通道 0x10001；唯一合成输入=RES 档位值逐拍注入（每拍一次真实采样事务，127 模型步/次）。时间表=模型拍轴：音量+/音量- 单击 post@37 拍、三击@85 拍、四击@109 拍；长按序列 390 拍保持+25 拍释放（确认 0x10a01@78、持续 0x10a02@93 起每 15 拍、1000ms 档 0x10a0a@183、3000ms 档 0x10a0b@378、释放确认 0x10a03@释放+4 拍）",
+  "observation_boundary": "观察面=post 调用边界载荷字（0x10a00 族：音量+ 0x10c00/音量- 0x10b00/多功能三击 0x10a05/四击 0x10a06）+逐拍 beat_states（seq/beat 标签+post 载荷+拍号）+read_key 分类返回（400→255/600→10/780→11/950→12，24 次采样事务）；窗口=五条注入序列各自首拍至末次 post 后一拍；S19 分发与动作执行不在本记录窗口（前沿未达）",
+  "assertions": [
+    "d1-acceptance §6.1 A 组·识别覆盖（部分）：单击~四击+长按 1000/3000ms 档在 post 边界可区分（键 id×手势载荷实测）",
+    "§6.1 长按时序结构：长按档手势码=10+档序、档计时起点=按下确认拍、档 post 替换该槽持续 post",
+    "§6.1 负例：长按释放不发单击（显式手势 3，全序列零 gesture 0）"
+  ],
+  "timeout_budget": "长按序列 390+25 拍；单击/三击/四击序列各 ≤109 拍（末次 post 拍号）；每拍一次采样事务=127 模型步作执行预算（不用指令步数冒充毫秒，§1 时间口径）；超时=FAIL，不是重跑的理由",
+  "model_assumptions": [
+    "合成三键矩阵 fixture（阈值表 500/720/850/1022/键 id 表 255/10/11/12/通道 0x10001）synthetic-not-measured——真实 ADC 档位值在 config 523（bank B 记录区，公开工件外）",
+    "识别面在真实固件代码上执行，唯一合成输入=RES 档位值（真实采样事务+真实 read_key 分类）",
+    "停点世界=p11_heap_experimental_config 前沿投影栈（M 路全栈 opt-in 投影，含 fd31 ADC CON 读回/RES 具名值等）",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "路 S §7.4 诚实边界沿用：中断冻结、EMA 稳态、post 入队落盘在调用点观测"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "5000/8000/10000ms 长按档（手势码 12/13/14 仍为推断）",
+    "去抖阈值两侧、单击/双击等待窗两侧、长按阈值两侧的临界值（真实 config 523 真值未知，精确临界点未决）",
+    "组合键并联分压未建模",
+    "S19 分发→动作执行链（B 组动作覆盖，另立记录）",
+    "真实 ADC 档位值/键 id 的运行时互证（config 523 在公开工件外）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "合成三键矩阵 fixture（阈值表 500/720/850/1022/键 id 表 255/10/11/12/通道 0x10001）synthetic-not-measured——真实 ADC 档位值在 config 523（bank B 记录区，公开工件外）",
+    "识别面在真实固件代码上执行，唯一合成输入=RES 档位值（真实采样事务+真实 read_key 分类）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T08:30:00"
+}
