@@ -1,0 +1,29 @@
+{
+  "case_id": "D3-PRB-01",
+  "firmware_identity": "不适用（观测手段会话，无镜像执行）：目标=真机 QCY H3S（BR28）经 USB ROM 模式 pinned RAM loader（23552B，SHA256 ab1b77eb…，tools/usb-recovery/h3s_usb.py LOADER_SHA 钉死）；会话计划钉死于 tools/usb-recovery/read_rom.py P11_HEAP_PROBE_PLAN 五读点",
+  "initial_state": "真机正常启动完成（P11 已写 heap 描述符）→插 USB→普通身份 3654:4a55→EP0 进入请求切 ROM 模式→BR28/UBOOT1.00 校验→FB06 上传 pinned loader→FB08 运行→FC0A 确认（既有会话进入序列，docs/p11-heap-measurement.md §会话计划）",
+  "inputs_schedule": "固定五读点各一次 128B FD07、每点双读逐字节比对、零重试：控制组 0x19fef4（CPU1 入口快照，期望字 0x12caf4）/0x1265f4（CPU1 ready）/0xf20080（p11_code.bin 头 32B，公开 UFW 资源 SHA 钉死）+低诊断对照 0xfd3604（LRCT NUM）+目标 0xf27f40（P2M 消息区，heap 描述符在 +0xa）；期望值只报告不强制（不匹配是数据不是重试理由）",
+  "observation_boundary": "观察面=五读点 128B 原始字节（0600 私有工作目录落盘）+期望对照表（matched/mismatched/inconclusive 三分支）；窗口=单会话，任一失败或双读不一致即终止",
+  "assertions": [
+    "d3-preparation §1.3 C1：控制组三读全匹配且 0xf27f4a..4d == 0c 3d f4 39（LE u16 begin=0x3d0c/size=0x39f4，路 X 三方推导）→四字节升 measured，p11_heap_info_bytes 由 derived 转实测 fixture",
+    "控制组匹配但描述符不符→如实记录字节、推导链复审（不拟合）；P11 RAM 控制组（0xf20080）全 0/全 FF→保持性未证=inconclusive 挂账",
+    "安全边界：只读命令；FD07 仅经 loader 路径（ROM 原生 FD07 原地变换严禁指向 P11 窗）；128B 实测分块；零擦写/零 OTP/零跳转"
+  ],
+  "timeout_budget": "单会话；五读点×2 次 FD07=10 次命令+进入序列（FB06 46 次/FB08 1 次/FC0A 1 次，rom-read.md 先例量级）；任一命令失败或双读不一致=会话终止记录，不是重跑理由",
+  "model_assumptions": [
+    "P11 RAM 在进入 USB 下载模式的复位后保持 boot 态内容——离线不可证（p11-heap-measurement flagged unknown），本会话控制组即为其检验",
+    "loader FD07=纯 memcpy 只读（路 BA 反汇编钉死：无地址检查、≤0x100 无状态破坏）",
+    "堆描述符推导值 begin=0x3d0c/size=0x39f4（路 X：p11_code.bin 链接期立即数+SDK 宏+布局算术三方互证）为待验期望，非既成事实"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "会话授权（本记录=案头就绪底稿，tools/usb-recovery/read_rom.py --p11-heap-probe 已离线单测）",
+    "P11 RAM 保持性（控制组首会话裁决）",
+    "其他 P2M/M2P 消息区字节（计划只读 0xf27f40 起 128B）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T21:18:45"
+}
