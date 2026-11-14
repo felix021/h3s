@@ -7,18 +7,19 @@ manifest, type-tagged body, RAM run-length section), the drift double gate
 (code fingerprint + manifest, both refuse loading with a clear error) and the
 round-trip reflexivity check used by the fast tier.
 
-Scope of this module half (route BJ, sim-snapmod): the codec, the fingerprint
-and manifest gates, and a per-module capture/restore ADAPTER REGISTRY with
-minimal small-world implementations for M1 (flat CPU stub), M2 (three-dict
-memory), M3 (timer/IRQ/software-IRQ/scalar bookkeeping on BR28Model), M5
-(delivery bookkeeping on DualCoreMachine), M6 (MMU) and M7 (loop ledger).
-The capture WIRING (probe_boot explore-loop capture point, the full M1 CPU
-field inventory, the M4 projection families, and the equivalence comparison
-against a full replay) is the follow-up route's work after BF merges; nothing
-here edits the running loop. Snapshots from this module are valid for small
-worlds only — capture refuses any world containing state kinds outside the
-wired adapters instead of silently dropping them (the codex missing-state
-trap).
+Scope of this module half (route BJ, sim-snapmod; M4 families added by route
+BL, sim-snapm4): the codec, the fingerprint and manifest gates, and a
+per-module capture/restore ADAPTER REGISTRY with minimal small-world
+implementations for M1 (flat CPU stub), M2 (three-dict memory), M3
+(timer/IRQ/software-IRQ/scalar bookkeeping on BR28Model), M4 (all peripheral
+projection object families on BR28Model), M5 (delivery bookkeeping on
+DualCoreMachine), M6 (MMU) and M7 (loop ledger). The capture WIRING
+(probe_boot explore-loop capture point, the full M1 CPU field inventory, and
+the equivalence comparison against a full replay) is the follow-up route's
+work after BF merges; nothing here edits the running loop. Snapshots from
+this module are valid for small worlds only — capture refuses any world
+containing state kinds outside the wired adapters instead of silently
+dropping them (the codex missing-state trap).
 
 Notable format decisions (documented deviations/extensions vs the blueprint):
 - Collection tags ($pairs/$set/$counter) extend the scalar whitelist so sets,
@@ -181,6 +182,28 @@ def pairs_of(mapping):
     return {'$pairs': [[key, encode_value(item)] for key, item in _sorted_items(mapping.items())]}
 
 
+def encode_value_pairs(value):
+    """encode_value with automatic $pairs lifting at any dict depth (M4).
+
+    M4 projection state is dict-shaped at the top (address -> record) and
+    sometimes nested (ICU region: base -> offset -> word). Plain encode_value
+    deliberately refuses int-keyed dicts so adapters declare collection state
+    explicitly; this helper is that explicit declaration for a whole subtree.
+    Same whitelist otherwise (scalars/bytes/sets/Counters/abstract values go
+    through encode_value unchanged), so a new state kind still fails loudly.
+    """
+    if isinstance(value, dict) and not isinstance(value, Counter):
+        if any(not isinstance(key, str) for key in value):
+            return {'$pairs': [[key, encode_value_pairs(item)]
+                               for key, item in _sorted_items(value.items())]}
+        return {key: encode_value_pairs(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [encode_value_pairs(item) for item in value]
+    if isinstance(value, tuple):
+        return {'$tuple': [encode_value_pairs(item) for item in value]}
+    return encode_value(value)
+
+
 def encode_static_value(name, value, module):
     """Encode a static-configuration attribute (M8 rebuild guard).
 
@@ -210,7 +233,7 @@ def encode_static_value(name, value, module):
         return list(value)
     if isinstance(value, dict):
         if value and all(isinstance(key, (int, bool)) for key in value):
-            return {'$pairs': [[key, encode_static_value(name, item, module)] for key, _ in
+            return {'$pairs': [[key, encode_static_value(name, item, module)] for key, item in
                                _sorted_items(value.items())]}
         if all(isinstance(key, str) for key in value):
             return {key: encode_static_value(name, item, module) for key, item in value.items()}
@@ -632,14 +655,14 @@ def code_fingerprint(extra_sources=()):
 
 # --- generic object-record helpers -----------------------------------------
 
-def capture_object(obj, fields, module, key):
+def capture_object(obj, fields, module, key, encode=encode_value):
     record = {'class': type(obj).__name__, 'fields': {}}
     for field in fields:
         if not hasattr(obj, field):
             raise SnapshotError(f'{module}.{key}: attribute {field!r} missing on '
                                 f'{type(obj).__name__} — state shape differs from the capture '
                                 'field list')
-        record['fields'][field] = encode_value(getattr(obj, field))
+        record['fields'][field] = encode(getattr(obj, field))
     return record
 
 
@@ -784,14 +807,14 @@ def _capture_m3(world):
     }
     scalars = {name: _capture_scalar(getattr(hardware, name)) for name in M3_STATE}
     return {'objects': objects, 'scalars': scalars,
-            'static': capture_static(hardware, 'M3', skip=M3_SKIP)}
+            'static': capture_static(hardware, 'M3', skip=M3_SKIP + M4_SLOTS)}
 
 
 def _restore_m3(payload, world):
     if world.hardware is None:
         raise SnapshotError('M3 state present but no hardware= restore target was provided')
     hardware = world.hardware
-    check_static(payload['static'], hardware, 'M3', skip=M3_SKIP)  # switches first...
+    check_static(payload['static'], hardware, 'M3', skip=M3_SKIP + M4_SLOTS)  # switches first...
     objects = payload['objects']
     restore_object(objects['timer'], hardware.timer, 'M3', 'timer')
     restore_object(objects['irq'], hardware.irq, 'M3', 'irq')
@@ -813,6 +836,120 @@ def _restore_m3(payload, world):
         restore_object(objects['software_irq'], hardware.software_irq, 'M3', 'software_irq')
     for name, encoded in payload['scalars'].items():
         setattr(hardware, name, decode_value(encoded))
+
+
+# --- M4: peripheral projection object families ---------------------------------
+#
+# Every family is a BR28Model attribute slot; a switch-off world leaves the
+# slot None. Per slot: the listed state fields are captured/restored; every
+# OTHER instance attribute is a constructor fixture/switch recorded as static
+# and cross-checked on restore (the M3 hardware guard, per object). The two
+# idle fixtures carry no state by design (M9) but keep their slot entry so a
+# switch mismatch between captured and target worlds still refuses.
+# One-shot event bits (lpwr requests, awkup/canary first-read consumed state,
+# efuse transaction progress) and carry state (CRC accumulator, ICU command
+# countdown) are ordinary fields here — losing them would change projection
+# behavior after restore, which is exactly what the field list pins down.
+# Fd31AdcConRegisters.res_named_values is captured as STATE (not static): the
+# key-chain scenarios mutate it during sampling (design §M3/M4 note).
+
+M4_FAMILIES = (
+    # (hardware slot, class name, state field tuple)
+    ('debug', 'DebugExecutionProjection', ('registers', 'checks', 'violation')),
+    ('mpu', 'MPUConfigurationProjection', ('wren', 'registers', 'key_writes')),
+    ('sfc', 'SFCReadBus',
+     ('con', 'baud', 'writes', 'window_control', 'window_control_operations',
+      'window_limit', 'window_limit_writes', 'window_base', 'window_base_writes')),
+    ('sfc_secondary', 'SFCReadBus',
+     ('con', 'baud', 'writes', 'window_control', 'window_control_operations',
+      'window_limit', 'window_limit_writes', 'window_base', 'window_base_writes')),
+    ('sfc_clock', 'SfcClockGateProjection',
+     ('bits', 'operations', 'select', 'select_writes', 'divider', 'divider_writes',
+      'reads')),
+    ('crc_engine', 'HardwareCrcEngine', ('crc', 'seed_writes', 'feeds', 'result_reads')),
+    ('icu', 'IcuInitializationProjection',
+     ('control', 'region', 'region_writes', 'pending', 'commands', 'completed',
+      'busy_reads')),
+    ('dcu', 'DcuCmoProjection', ('values', 'writes')),
+    ('l1p', 'L1PIdleProjection', ()),        # M9: stateless constant-read fixture
+    ('icu_idle', 'IcuIdleProjection', ()),   # M9: stateless constant-read fixture
+    ('gpcnt', 'GPCNTCleanup',
+     ('bits', 'pending', 'disable_writes', 'clear_writes', 'con_reads')),
+    ('efuse', 'EfuseReadProjection',
+     ('page', 'byte', 'active', 'read_done', 'reads')),
+    ('watchdog', 'WatchdogProjection',
+     ('con', 'key_phase', 'elapsed', 'remainder', 'commands', 'feeds', 'expired',
+      'command_values')),
+    ('p11', 'P11AccessProbe', ('phase', 'sequences', 'polls')),
+    ('p11_lp', 'P11LowPowerResponse', ('requests',)),
+    ('p11_win', 'P11WindowRegisters', ('control', 'release_rmw_writes', 'stores')),
+    ('lp_timer', 'LpTimerInitRegisters',
+     ('stores', 'lrct', 'lrct_rmws', 'lrct_con_reads', 'lrct_num_reads', 'con_reads')),
+    ('mem_pwr_con', 'MemPwrConRegisters', ('bits', 'rmw_writes', 'dead_reads')),
+    ('p33_window', 'P33WindowByteRegisters', ('stores', 'byte_writes')),
+    ('p33_port_sel', 'P33PortSelRegisters', ('stores', 'word_writes')),
+    ('jl_uart_init_records', 'JLUartInitWriteRecords',
+     ('stores', 'word_writes', 'con1_reads')),
+    ('jl_omap_records', 'JLOmapWriteRecords', ('stores', 'word_writes')),
+    ('jl_imap_records', 'JLImapWriteRecords', ('stores', 'word_writes')),
+    ('jl_wl_aud_records', 'JLWlAudWriteRecords',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('jl_audio_dac_init_records', 'JLAudioDacInitWriteRecords',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('jl_audio_adc_reset_records', 'JLAudioAdcResetWriteRecords',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('p33_awkup', 'P33AwkupRegisters', ('stores', 'bits', 'rmw_writes', 'read_state')),
+    ('p3_ls', 'P3LsRegisters', ('stores', 'word_writes')),
+    ('p33_canary', 'P33CanaryWatchRegisters', ('stores', 'bits', 'rmw_writes', 'read_state')),
+    ('fd31_adc_con', 'Fd31AdcConRegisters',
+     ('stores', 'word_writes', 'pnd_forced_reads', 'res_served', 'res_named_values',
+      'con_reads')),
+    ('reset', 'ResetHistoryProjection',
+     ('words', 'configuration', 'flag_clear_commands', 'clear_commands')),
+)
+M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
+
+
+def _capture_m4(world):
+    if world.hardware is None:
+        return None
+    objects = {}
+    for slot, cls_name, fields in M4_FAMILIES:
+        obj = getattr(world.hardware, slot, None)
+        if obj is None:
+            objects[slot] = None  # switch off: recorded so restore can refuse mismatches
+            continue
+        if type(obj).__name__ != cls_name:
+            raise SnapshotError(f'M4.{slot}: projection slot holds {type(obj).__name__} '
+                                f'but the adapter family table says {cls_name} — the model '
+                                'shape drifted; update the M4 families table')
+        record = capture_object(obj, fields, 'M4', slot, encode=encode_value_pairs)
+        record['static'] = capture_static(obj, f'M4.{slot}', skip=fields)
+        objects[slot] = record
+    return {'objects': objects, 'scalars': {}, 'static': {}}
+
+
+def _restore_m4(payload, world):
+    if world.hardware is None:
+        raise SnapshotError('M4 state present but no hardware= restore target was provided')
+    objects = payload['objects']
+    for slot, cls_name, fields in M4_FAMILIES:
+        if slot not in objects:
+            raise SnapshotError(f'M4.{slot}: the snapshot body is missing the projection '
+                                'slot — regenerate the snapshot')
+        record = objects[slot]
+        obj = getattr(world.hardware, slot, None)
+        if record is None:
+            if obj is not None:
+                raise SnapshotError(f'M4.{slot}: the snapshot was captured with this '
+                                    'projection off but the restore target has it on — '
+                                    'rebuild the target with the same scenario switches')
+            continue
+        if obj is None:
+            raise SnapshotError(f'M4.{slot}: the snapshot holds {cls_name} state but the '
+                                'restore target has the projection off (switch mismatch)')
+        check_static(record['static'], obj, f'M4.{slot}', skip=fields)  # switches first...
+        restore_object(record, obj, 'M4', slot)
 
 
 # --- M6: MMU ------------------------------------------------------------------
@@ -909,13 +1046,17 @@ register_module('M3', 'hardware', capture=_capture_m3, restore=_restore_m3,
                         'SoftwareIrqCommands': M3_SOFTWARE_IRQ_FIELDS},
                 scalars=M3_STATE,
                 description='Peripheral model top level (timers, IRQ controllers, software '
-                            'IRQ, register/GPIO projections, counters). M4 projection '
-                            'families are NOT captured: a world with any of them enabled is '
-                            'refused by the static-kind guard until their adapters land.')
-register_module('M4', None, fields={},
-                description='Peripheral projection object families (~25 classes). Refused '
-                            'implicitly by the M3 state-kind guard; adapters are the wiring '
-                            "route's work.")
+                            'IRQ, register/GPIO projections, counters). The M4 projection '
+                            'object slots are skipped here and captured by the M4 adapter.')
+register_module('M4', 'hardware', capture=_capture_m4, restore=_restore_m4,
+                fields={cls: fields for _, cls, fields in M4_FAMILIES},
+                description='Peripheral projection object families: 31 BR28Model slots '
+                            'covering all 30 projection classes (28 stateful + the two '
+                            'stateless idle fixtures; SFCReadBus is two slots — design §M4 '
+                            'six families). One-shot event bits and carry state (CRC '
+                            'accumulator, ICU countdown) round-trip as ordinary fields; '
+                            'constructor fixtures/switches are per-object static checks; '
+                            'switch-off slots record None so mismatches refuse.')
 register_module('M5', 'machine', capture=_capture_m5, restore=_restore_m5,
                 scalars=M5_STATE,
                 description='DualCoreMachine scheduling/delivery bookkeeping; core presence '

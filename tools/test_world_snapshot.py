@@ -5,8 +5,10 @@ Small-world round trip (reflexivity check #0: restore, compare zero steps,
 re-capture byte-identical), the AZ-method counterexamples (a deleted state
 field and an injected deviation must both turn the comparison red — proving
 the check has discriminative power, not vacuous green), the drift double gate
-(code fingerprint + manifest tamper both refuse loading) and the RAM
-run-length codec boundaries (hole semantics: absence stays absence).
+(code fingerprint + manifest tamper both refuse loading), the RAM run-length
+codec boundaries (hole semantics: absence stays absence) and the M4
+projection-family adapters (all slots round-trip; one-shot event bits stay
+consumed; carry state resumes exactly; switch/static mismatches refuse).
 """
 import json
 import struct
@@ -24,9 +26,12 @@ from world_snapshot import (SnapshotError, WorldSnapshot, assert_equal, capture_
                             pairs_of, restore_world)
 from br28_icfg import IcfgValue
 from br28_machine import DualCoreMachine
-from br28_model import BR28Model, IRQController, PartialWord
+from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT,
+                        ICU_BASES, IRQController, P33AwkupRegisters, P33CanaryWatchRegisters,
+                        PartialWord)
 from br28_unknown import UnknownWord
 from br28_model import GpcntConValue, GpioOutValue
+from probe_boot import Blocked
 
 
 def attach_irq1(hardware):
@@ -197,7 +202,10 @@ class SmallWorldRoundTrip(unittest.TestCase):
         snapshot = captured(world)
         data = snapshot.encode()
         loaded = WorldSnapshot.from_bytes(data)
-        self.assertEqual(loaded.captured_modules, ['M1', 'M2', 'M3', 'M5', 'M6', 'M7'])
+        self.assertEqual(loaded.captured_modules, ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7'])
+        # All M4 slots exist and are None (no projection switch on in this world).
+        self.assertEqual(loaded.body['M4']['objects'],
+                         {slot: None for slot in ws.M4_SLOTS})
         fresh = fresh_world()
         result = restore_world(loaded, cpus=fresh['cpus'], mem=fresh['mem'],
                                hardware=fresh['hardware'], machine=fresh['machine'],
@@ -370,9 +378,14 @@ class DriftGates(unittest.TestCase):
 
 
 class UncapturedStateRefuses(unittest.TestCase):
-    def test_m4_projection_family_refuses_capture(self):
+    def test_m4_projection_extra_state_attribute_refuses_capture(self):
+        """M4 families are wired now; the missing-state guard moves one level
+        down: an attribute on a projection object that is neither in the state
+        field list nor a static fixture (e.g. a new runtime field the adapter
+        does not know) must refuse with the attribute named."""
         hardware = BR28Model(watchdog_projection=True)
-        with self.assertRaisesRegex(SnapshotError, 'watchdog'):
+        hardware.watchdog.unmodelled_new_state = 1.5  # float: not encodable as static
+        with self.assertRaisesRegex(SnapshotError, 'unmodelled_new_state'):
             capture_world(hardware=hardware)
 
     def test_full_world_cpu_refuses_minimal_m1(self):
@@ -387,6 +400,257 @@ class UncapturedStateRefuses(unittest.TestCase):
         with self.assertRaisesRegex(SnapshotError, 'unexpected attributes'):
             capture_world(mem=mem)
 
+
+class M4ProjectionFamilies(unittest.TestCase):
+    """All ~30 M4 projection slots (28 stateful classes + the two stateless
+    idle fixtures): full-family round trip, one-shot event-bit semantics,
+    carry-state (CRC/ICU) resumption and the AZ counterexamples."""
+
+    M4_SWITCHES = dict(
+        watchdog_projection=True, watchdog_progress=(1, 4),
+        efuse_read_projection=True, efuse_words=(1, 2, 3, 4),
+        debug_execution_projection=True, initial_debug_controls=(0, 0),
+        mpu_configuration_projection=True, initial_mpu_write_gate=1,
+        icu_initialization_projection=True, icu_command_steps=64,
+        icu_region_projection=True,
+        dcu_cmo_projection=True, l1p_idle_projection=True, icu_idle_projection=True,
+        sfc_read_bus=True, initial_sfc_control=0x100001,
+        secondary_sfc_read_bus=True, sfc_clock_gate_projection=True,
+        hardware_crc_projection=True,
+        gpcnt_cleanup_projection=True, gpcnt_con_readback=True,
+        p11_access_probe=True, p11_status=0, p11_pmu_ready_projection=True,
+        reset_history_projection=True, p11_lpwr_response_projection=True,
+        p11_window_projection=True,
+        lp_timer_init_projection=True, lrct_trim_done_projection=True,
+        lrct_trim_result_value=38400, lp_timer_con_readback_projection=True,
+        mem_pwr_con_projection=True, p33_window_projection=True,
+        p33_port_sel_projection=True,
+        p33_awkup_projection=True,
+        p33_awkup_first_read_words={P33AwkupRegisters.P_IE: 0x10},
+        p3_ls_projection=True,
+        fd31_adc_con_projection=True, fd31_adc_con_readback=True,
+        fd31_adc_pnd_completion=True, fd31_adc_res_named_values={0x10002: 400},
+        p33_canary_projection=True,
+        p33_canary_first_read_words={P33CanaryWatchRegisters.VLVD_CON: 0x180},
+        jl_uart_init_write_records=True, jl_uart_con1_readback=True,
+        jl_omap_write_records=True, jl_imap_write_records=True,
+        jl_wl_aud_write_records=True, jl_audio_dac_init_write_records=True,
+        jl_audio_adc_reset_write_records=True,
+    )
+
+    def build_world(self):
+        return BR28Model(**self.M4_SWITCHES)
+
+    def poke(self, hardware):
+        """Stop-point-shaped state on every family, including the one-shot
+        event bits and the carry state the design calls out."""
+        hw = hardware
+        # Model-stub family.
+        hw.debug.registers[0xffe200] = 0xe0000007
+        hw.debug.checks = 42
+        hw.debug.violation = {'core': 0, 'pc': '0x123', 'size': 4,
+                              'ranges': [['0x0', '0x100']]}
+        hw.mpu.wren = 1
+        hw.mpu.registers[0xff0300] = 0x60607
+        hw.mpu.key_writes = 2
+        # Bit-record family (SFC read bus x2, clock gate).
+        hw.sfc.con, hw.sfc.baud, hw.sfc.writes = 0xf00001, 3, 4
+        hw.sfc.window_control.apply('or', 2)
+        hw.sfc.window_control_operations.append(('or', 2))
+        hw.sfc.window_limit, hw.sfc.window_limit_writes = 0x7ffffff, 1
+        hw.sfc.window_base, hw.sfc.window_base_writes = 0x061d7fe0, 1
+        hw.sfc_secondary.con, hw.sfc_secondary.baud = 0xf00001, 1
+        hw.sfc_secondary.writes = 2
+        hw.sfc_clock.bits.apply('or', 9)
+        hw.sfc_clock.operations.append(('or', 9))
+        hw.sfc_clock.operations.append(('and', 0xfffff7ff))
+        hw.sfc_clock.select, hw.sfc_clock.select_writes = 3, 1
+        hw.sfc_clock.divider, hw.sfc_clock.divider_writes = 4, 1
+        hw.sfc_clock.reads = 5
+        # Carry-state family: CRC accumulator mid-transaction, ICU countdown.
+        hw.crc_engine.crc = 0x1234
+        hw.crc_engine.seed_writes = [0, 0x1234]
+        hw.crc_engine.feeds = 3
+        hw.crc_engine.result_reads = [0x1234, 0x8ac8]
+        hw.icu.control = {ICU_BASES[0]: 1, ICU_BASES[1]: None}
+        hw.icu.pending = {ICU_BASES[1]: 5}          # in-flight command countdown
+        hw.icu.commands = [{'address': hex(ICU_BASES[1] + 16), 'value': '0xca000010'}]
+        hw.icu.completed, hw.icu.busy_reads = 1, 2
+        hw.icu.region[ICU_BASES[0]][0x14] = 0x6000000   # nested int-keyed map
+        hw.icu.region[ICU_BASES[0]][0x18] = 0x7ffffff
+        hw.icu.region_writes[ICU_BASES[0]][0x14] = 1
+        hw.dcu.write(0xff05c8, 0x19f000)
+        hw.dcu.write(0xff05c8, 0x19f020)
+        # Stateless idle fixtures: nothing to poke, slots must round-trip on/off.
+        hw.gpcnt.rmw('and', 0xfffffffe)
+        hw.gpcnt.pending = False
+        hw.gpcnt.con_reads = 2
+        # One-shot family: efuse transaction in progress (page/byte consumed),
+        # awkup/canary first-read consumed, lpwr request observed.
+        hw.efuse.write(EFUSE_CON0, 0x40)            # page=1, byte=0
+        hw.efuse.write(EFUSE_CON1, 0x82)            # active=True
+        hw.efuse.read(EFUSE_RDAT)                   # read_done=True, reads=1
+        hw.p11.phase, hw.p11.sequences, hw.p11.polls = 2, 1, 3
+        hw.p11_lp.request()
+        hw.p11_lp.request()
+        hw.p33_awkup.read(P33AwkupRegisters.P_IE)   # first-read fixture consumed
+        hw.p33_awkup.write(P33AwkupRegisters.FLT0, 0x5c)
+        hw.p33_awkup.rmw(P33AwkupRegisters.EN, 'or', 4)
+        hw.p33_canary.read(P33CanaryWatchRegisters.VLVD_CON)
+        # Write-record family.
+        hw.p11_win.release_rmw(0xf2a0c0, 'or', 1)
+        address = next(iter(hw.p11_win.stores))
+        hw.p11_win.write(address, 0)
+        hw.p11_win.write(address, 1)
+        for slot in ('lp_timer', 'p33_port_sel', 'p3_ls', 'jl_uart_init_records'):
+            getattr(hw, slot).write(next(iter(getattr(hw, slot).stores)), 0x5c)
+        hw.p33_window.write_byte(next(iter(hw.p33_window.stores)), 0x5c)
+        for slot in ('jl_wl_aud_records', 'jl_audio_dac_init_records',
+                     'jl_audio_adc_reset_records'):
+            getattr(hw, slot).write(next(iter(getattr(hw, slot).stores)), 1, 0)
+        hw.lp_timer.rmw(0xfd3600, 'or', 0x41)
+        hw.lp_timer.lrct_con_reads, hw.lp_timer.lrct_num_reads = 2, 1
+        hw.lp_timer.con_reads = 1
+        hw.mem_pwr_con.rmw('or', 3)
+        hw.mem_pwr_con.observe_dead_read()
+        for slot in ('jl_wl_aud_records', 'jl_audio_dac_init_records',
+                     'jl_audio_adc_reset_records'):
+            getattr(hw, slot).reads_after_write = 1
+            getattr(hw, slot).synthesized_initial_reads = 2
+        hw.jl_uart_init_records.con1_reads = 1
+        # jl_omap/jl_imap cores lists ride along in their stores records.
+        address = next(iter(hw.jl_omap_records.stores))
+        hw.jl_omap_records.write(address, 0x9f, 0)
+        address = next(iter(hw.jl_imap_records.stores))
+        hw.jl_imap_records.write(address, 0x1, 1)
+        # fd31: runtime-mutable named-value fixture is STATE, not static.
+        hw.fd31_adc_con.res_named_values[0x10004] = 500
+        hw.fd31_adc_con.res_served = {0x10002: 1}
+        hw.fd31_adc_con.pnd_forced_reads = 2
+        hw.fd31_adc_con.con_reads = 3
+        hw.fd31_adc_con.write(0xfd3100, 0x46105d)
+        # Reset-history family.
+        hw.reset.words[0xf2c0c0] = 0x80
+        hw.reset.flag_clear_commands.add(0xf2c0c0)
+        hw.reset.clear_commands.append({'address': '0xf2d248', 'value': '0x0'})
+        address = next(iter(hw.reset.config_masks))
+        hw.reset.configuration[address].apply('and', hw.reset.config_masks[address])
+        return hardware
+
+    def captured_m4(self, world):
+        return capture_world(hardware=world,
+                             context={'scenario': 'm4_all_families'})
+
+    def world_and_snapshot(self):
+        original = self.poke(self.build_world())
+        return original, self.captured_m4(original)
+
+    def restored_m4(self, snapshot, switches=None):
+        hardware = BR28Model(**(switches if switches is not None else self.M4_SWITCHES))
+        restore_world(snapshot, hardware=hardware,
+                      expected_context={'scenario': 'm4_all_families'})
+        return hardware
+
+    def assert_m4_equal(self, actual, expected):
+        for slot, cls_name, fields in ws.M4_FAMILIES:
+            original, restored = getattr(expected, slot), getattr(actual, slot)
+            self.assertIsNotNone(original, slot)  # this world has every switch on
+            self.assertIsNotNone(restored, slot)
+            for field in fields:
+                assert_equal(getattr(restored, field), getattr(original, field),
+                             f'M4.{slot}.{field}')
+            # Per-object static fixtures/switches survive too (already checked
+            # by check_static; the equality pass re-proves it on the payload).
+
+    def test_round_trip_every_family_field_exact_and_byte_identical(self):
+        original, snapshot = self.world_and_snapshot()
+        self.assertIn('M4', snapshot.captured_modules)
+        self.assertEqual(len(snapshot.body['M4']['objects']), len(ws.M4_SLOTS))
+        self.assertEqual([slot for slot, record in snapshot.body['M4']['objects'].items()
+                          if record is not None], list(ws.M4_SLOTS))
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        restored = self.restored_m4(loaded)
+        self.assert_m4_equal(restored, original)
+        # Strong reflexivity: re-capturing the restored world is byte-identical.
+        self.assertEqual(self.captured_m4(restored).encode(), snapshot.encode())
+
+    def test_one_shot_event_bits_stay_consumed_after_restore(self):
+        original, snapshot = self.world_and_snapshot()
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        # Awkup first-read fixture: consumed before the snapshot; the restored
+        # projection must NOT re-serve it (same strict stop, same kind).
+        for world in (original, restored):
+            with self.assertRaisesRegex(Blocked, 'awkup_repeat_read_not_modeled'):
+                world.p33_awkup.read(P33AwkupRegisters.P_IE)
+            with self.assertRaises(Blocked):
+                world.p33_awkup.read(P33AwkupRegisters.EN)  # never had a fixture
+        # Efuse transaction mid-state: active/read_done carried, so a second
+        # data read is refused exactly like the original (byte pointer kept).
+        for world in (original, restored):
+            with self.assertRaisesRegex(Blocked, 'efuse_read_outside_selected_byte'):
+                world.efuse.read(EFUSE_RDAT)
+            world.efuse.write(EFUSE_CON1, 0)  # deassert completes the byte
+            self.assertEqual(world.efuse.byte, 1)
+        # lpwr request-armed bit: restored world keeps bit5 cleared on readback.
+        self.assertEqual(restored.p11_lp.read(0xf2a400, 0xa7),
+                         original.p11_lp.read(0xf2a400, 0xa7))
+        self.assertEqual(original.p11_lp.read(0xf2a400, 0xa7), 0x87)
+
+    def test_carry_state_resumes_exactly(self):
+        original, snapshot = self.world_and_snapshot()
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        # CRC accumulator: both worlds continue feeding the same bytes.
+        for world in (original, restored):
+            world.crc_engine.write(CRC_ENGINE + 4, 0x1d0f)  # reseed mid-transaction
+        for byte in (0x55, 0xaa, 0x30):
+            original.crc_engine.write(CRC_ENGINE, byte)
+            restored.crc_engine.write(CRC_ENGINE, byte)
+        self.assertEqual(restored.crc_engine.crc, original.crc_engine.crc)
+        self.assertNotEqual(restored.crc_engine.crc, 0x1d0f)
+        # ICU command countdown: advance decrements both identically.
+        for _ in range(3):
+            original.icu.advance()
+            restored.icu.advance()
+        self.assertEqual(restored.icu.pending, original.icu.pending)
+        self.assertEqual(restored.icu.pending, {ICU_BASES[1]: 2})
+
+    def test_switch_mismatch_refuses_both_directions(self):
+        _, snapshot = self.world_and_snapshot()
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        without_watchdog = dict(self.M4_SWITCHES)
+        del without_watchdog['watchdog_projection']
+        with self.assertRaisesRegex(SnapshotError, 'M4.watchdog'):
+            self.restored_m4(loaded, without_watchdog)            # snap on, target off
+        _, other = self.world_and_snapshot()
+        other = WorldSnapshot.from_bytes(other.encode())
+        other.body['M4']['objects']['sfc'] = None                 # snap off, target on
+        with self.assertRaisesRegex(SnapshotError, 'M4.sfc'):
+            self.restored_m4(other)
+
+    def test_missing_family_field_must_refuse_or_turn_red(self):
+        """AZ counterexample: dropping a captured field (the ICU countdown)
+        must not pass silently — the restore-side manifest gate names the
+        class; a restore that skipped one field turns the comparison red."""
+        original, snapshot = self.world_and_snapshot()
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        del loaded.body['M4']['objects']['icu']['fields']['pending']
+        reloaded = WorldSnapshot.from_bytes(loaded.encode())  # manifest re-derives
+        with self.assertRaisesRegex(SnapshotError, 'IcuInitializationProjection'):
+            self.restored_m4(reloaded)
+        # Simulated adapter bug: restore everything, then skip applying one
+        # family's carry state — the field comparison must be red.
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        restored.crc_engine.crc = None  # as if 'crc' was never restored
+        with self.assertRaises(AssertionError) as caught:
+            self.assert_m4_equal(restored, original)
+        self.assertIn('crc', str(caught.exception))
+
+    def test_static_fixture_mismatch_refuses(self):
+        _, snapshot = self.world_and_snapshot()
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        wrong_progress = dict(self.M4_SWITCHES, watchdog_progress=(2, 5))
+        with self.assertRaisesRegex(SnapshotError, 'static configuration mismatch'):
+            self.restored_m4(loaded, wrong_progress)
 
 class ValueCodec(unittest.TestCase):
     def test_abstract_values_round_trip(self):
