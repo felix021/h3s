@@ -1,0 +1,56 @@
+[
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "frontier_stop",
+    "capture_steps": 19139239,
+    "stop_pc": "0x606abbe",
+    "snapshot": "canonical-p11-heap-experimental.bin",
+    "snapshot_sha256": "e2bcb9cbdf2e7f7e9b6584d299937889ea781d80ca07b9c989ebc2aeb770441e",
+    "snapshot_bytes": 2358608,
+    "code_fingerprint": "2984f26fae6eddc0b0a68749397caf0ede0f33741d6e90d9287c36c86fe455c7",
+    "self_check_zero_report_equal": true
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 297845,
+    "snapshot": "frontier-n300000.bin",
+    "snapshot_sha256": "a100b2d80379ef36794de330addcb849a75a9987708f514baf00f0ffe4ffacf7",
+    "snapshot_bytes": 146703,
+    "code_fingerprint": "2984f26fae6eddc0b0a68749397caf0ede0f33741d6e90d9287c36c86fe455c7",
+    "self_check_zero_report_equal": true
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 297845,
+    "advance_steps": 1,
+    "snapshot": "frontier-n300000.bin",
+    "full_steps": 297846,
+    "resumed_steps": 297846,
+    "report_byte_equal": true,
+    "stop_kind": "instruction_budget"
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 297845,
+    "advance_steps": 10000,
+    "snapshot": "frontier-n300000.bin",
+    "full_steps": 307845,
+    "resumed_steps": 307845,
+    "report_byte_equal": true,
+    "stop_kind": "instruction_budget"
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 297845,
+    "advance_steps": 100000,
+    "snapshot": "frontier-n300000.bin",
+    "full_steps": 397845,
+    "resumed_steps": 397845,
+    "report_byte_equal": true,
+    "stop_kind": "instruction_budget"
+  }
+]

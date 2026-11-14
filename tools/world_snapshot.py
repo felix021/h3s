@@ -7,21 +7,22 @@ manifest, type-tagged body, RAM run-length section), the drift double gate
 (code fingerprint + manifest, both refuse loading with a clear error) and the
 round-trip reflexivity check used by the fast tier.
 
-Scope of this module half (route BJ, sim-snapmod; M4 families added by route
-BL, sim-snapm4; the full M1 CPU inventory by route BN, sim-snapm1): the codec,
-the fingerprint and manifest gates, and a per-module capture/restore ADAPTER
-REGISTRY with implementations for M1 (the full CPU field inventory: general
-and special registers, execution context, bank/frame bookkeeping, the
-partial-ICFG sub-object), M2 (three-dict memory), M3
-(timer/IRQ/software-IRQ/scalar bookkeeping on BR28Model), M4 (all peripheral
-projection object families on BR28Model), M5 (delivery bookkeeping on
-DualCoreMachine), M6 (MMU) and M7 (loop ledger). The capture WIRING
-(probe_boot explore-loop capture point and the equivalence comparison against
-a full replay) is the follow-up route's work after BF merges; nothing here
-edits the running loop. Snapshots from
-this module are valid for small worlds only — capture refuses any world
-containing state kinds outside the wired adapters instead of silently
-dropping them (the codex missing-state trap).
+Scope (route BJ, sim-snapmod; M4 families added by route BL, sim-snapm4; the
+full M1 CPU inventory by route BN, sim-snapm1; the explore-loop capture
+point, resume entry and post-BL adapter completions by the wiring route
+sim-snapwire): the codec, the fingerprint and manifest gates, and a
+per-module capture/restore ADAPTER REGISTRY with implementations for M1 (the
+full CPU field inventory: general and special registers, execution context,
+bank/frame bookkeeping, the partial-ICFG sub-object), M2 (three-dict memory),
+M3 (timer/IRQ/software-IRQ/scalar bookkeeping on BR28Model), M4 (all
+peripheral projection object families on BR28Model), M5 (delivery bookkeeping
+on DualCoreMachine), M6 (MMU) and M7 (loop ledger incl. the bounded
+memory-event list). probe_boot.explore wires the capture point (stop
+boundary, before post_stop) and the restore entry (after the construction
+chain rebuilds the static world, before the run loop); nothing here edits the
+running loop. Capture refuses any world containing state kinds outside the
+wired adapters instead of silently dropping them (the codex missing-state
+trap).
 
 Notable format decisions (documented deviations/extensions vs the blueprint):
 - Collection tags ($pairs/$set/$counter) extend the scalar whitelist so sets,
@@ -50,8 +51,10 @@ FORMAT_VERSION = 1
 MAGIC = b'H3S-SNAP'
 
 # Drift gate 1 inputs (design §2.3): simulation semantics sources + this file.
-# The wiring route extends the hashed inputs with scenario-flag serialization
-# when the capture point lands.
+# Scenario flags deliberately stay OUT of the fingerprint (route BJ's recorded
+# decision): a load must recompute the fingerprint without capture-time
+# knowledge; the capture context rides in the header and restore-side static
+# checks refuse differently-switched rebuilds.
 FINGERPRINT_FILES = ('probe_boot.py', 'br28_model.py', 'br28_machine.py', 'br28_icfg.py',
                      'br28_unknown.py', 'probe_irq_entry.py', 'probe_dualcore.py',
                      'probe_platform_startup.py', 'probe_arch_startup.py',
@@ -86,15 +89,25 @@ _ABSTRACT_CONSTRUCTORS = {
 }
 
 
-def _sorted_items(items):
-    """Deterministically sort (key, value) items; refuse mixed-type keys."""
+def _checked_items(items):
+    """Validate (key, value) items; refuse mixed-type keys.
+
+    Iteration order is PRESERVED: dict/Counter insertion order is part of the
+    reader-visible state (reports render counts, first_task_returns and the
+    core-power words via plain dict iteration), so sorting here would silently
+    reorder resumed-world reports away from the full replay."""
     items = list(items)
     kinds = {type(key).__name__ for key, _ in items}
     if not kinds <= {'int', 'str', 'bool'}:
         raise SnapshotError('collection keys must be int/str/bool, got ' + ','.join(sorted(kinds)))
     if len(kinds - {'bool'}) > 1:
         raise SnapshotError('mixed str/int collection keys are not supported')
-    return sorted(items, key=lambda item: (isinstance(item[0], str), item[0]))
+    return items
+
+
+def _sorted_items(items):
+    """Canonical (sorted) items for the RAM section's digest contract only."""
+    return sorted(_checked_items(items), key=lambda item: (isinstance(item[0], str), item[0]))
 
 
 def _sorted_elements(elements):
@@ -125,7 +138,7 @@ def encode_value(value):
         return {'$tuple': [encode_value(item) for item in value]}
     if isinstance(value, Counter):  # Counter is a dict subclass: check it before dict
         return {'$counter': [[key, encode_value(value[key])] for key, _ in
-                             _sorted_items(value.items())]}
+                             _checked_items(value.items())]}
     if isinstance(value, dict):
         if any(not isinstance(key, str) for key in value):
             raise SnapshotError('plain dict values need str keys; capture int-keyed '
@@ -181,7 +194,7 @@ def decode_value(encoded):
 
 def pairs_of(mapping):
     """Capture an int-keyed (or str-keyed) mapping as a $pairs tag."""
-    return {'$pairs': [[key, encode_value(item)] for key, item in _sorted_items(mapping.items())]}
+    return {'$pairs': [[key, encode_value(item)] for key, item in _checked_items(mapping.items())]}
 
 
 def encode_value_pairs(value):
@@ -197,7 +210,7 @@ def encode_value_pairs(value):
     if isinstance(value, dict) and not isinstance(value, Counter):
         if any(not isinstance(key, str) for key in value):
             return {'$pairs': [[key, encode_value_pairs(item)]
-                               for key, item in _sorted_items(value.items())]}
+                               for key, item in _checked_items(value.items())]}
         return {key: encode_value_pairs(item) for key, item in value.items()}
     if isinstance(value, list):
         return [encode_value_pairs(item) for item in value]
@@ -236,7 +249,7 @@ def encode_static_value(name, value, module):
     if isinstance(value, dict):
         if value and all(isinstance(key, (int, bool)) for key in value):
             return {'$pairs': [[key, encode_static_value(name, item, module)] for key, item in
-                               _sorted_items(value.items())]}
+                               _checked_items(value.items())]}
         if all(isinstance(key, str) for key in value):
             return {key: encode_static_value(name, item, module) for key, item in value.items()}
         raise SnapshotError(f'{module}: static attribute {name} has unsupported dict keys')
@@ -476,7 +489,13 @@ class WorldSnapshot:
         return hashlib.sha256(self.encode()).hexdigest()
 
     def encode(self):
-        """Deterministic bytes: canonical JSON (sorted keys) + sorted RAM runs."""
+        """Deterministic bytes: insertion-order JSON + canonical RAM section.
+
+        The header/body blobs keep their dict insertion order (a same-state
+        world produces the same orders, so the bytes stay deterministic; the
+        manifests sort internally). Sorting these sections would alphabetize
+        nested report-shaped dicts (event rows, counts) and reorder every
+        resumed-world report away from the captured world's."""
         self.manifest = derive_manifest(self.body)
         header = dict(self.header)
         header['captured_modules'] = sorted(self.body)
@@ -484,7 +503,7 @@ class WorldSnapshot:
         self.header = header
         parts = [MAGIC, struct.pack('<I', FORMAT_VERSION)]
         for blob in (header, self.manifest, self.body):
-            encoded = json.dumps(blob, sort_keys=True, separators=(',', ':')).encode()
+            encoded = json.dumps(blob, separators=(',', ':')).encode()
             parts.append(struct.pack('<I', len(encoded)))
             parts.append(encoded)
         parts.append(self._encode_ram(self.ram))
@@ -705,7 +724,7 @@ def _capture_scalar(value):
     """Typed collection capture for scalar attributes (dict/Counter/set -> tags)."""
     if isinstance(value, Counter):  # Counter is a dict subclass: check it before dict
         return {'$counter': [[key, encode_value(value[key])] for key, _ in
-                             _sorted_items(value.items())]}
+                             _checked_items(value.items())]}
     if isinstance(value, dict):
         return pairs_of(value)
     if isinstance(value, set):
@@ -721,7 +740,10 @@ def _capture_scalar(value):
 # over the design-§2.3 source set, then per-field source reads). Groups:
 # - general/special registers: R (16 slots, each int/None or one of the five
 #   abstract value classes), flags, pc/seq/steps, sp/sp_known/usp/ssp,
-#   reti/rets/irq_psr, icfg/icfg_known/icfg_unknown_mask;
+#   reti/rets/irq_psr, icfg/icfg_known/icfg_unknown_mask; retx/rete joined
+#   when the wiring route's first real frontier capture observed CPU1 carrying
+#   them (probe_boot's li.sr_u32/mov.sr_r sr=1/2 paths setattr them at zero —
+#   the BN note predicted exactly this refusal);
 # - execution context: bootstrap_context, bootstrap_icfg_pending (one-shot
 #   gate-mask consumption, set at probe_boot 0x...1489 — a design-§M1 table
 #   omission, added here from source), active_context, opaque_source, repeat
@@ -749,8 +771,8 @@ def _capture_scalar(value):
 #   identity guard below pins every CPU to the single captured memory.
 
 M1_CPU_FIELDS = ('core_id', 'pc', 'steps', 'seq', 'R', 'flags', 'sp', 'sp_known',
-                 'usp', 'ssp', 'reti', 'rets', 'irq_psr', 'icfg', 'icfg_known',
-                 'icfg_unknown_mask', 'icfg_state', 'bootstrap_context',
+                 'usp', 'ssp', 'reti', 'rets', 'retx', 'rete', 'irq_psr', 'icfg',
+                 'icfg_known', 'icfg_unknown_mask', 'icfg_state', 'bootstrap_context',
                  'bootstrap_icfg_pending', 'active_context', 'opaque_source',
                  'repeat', 'after_then', 'last_explicit_ssp', 'last_explicit_usp',
                  'unresolved_ssp_candidates', 'task_frame_load', 'task_frame_restore',
@@ -819,6 +841,27 @@ def _capture_m1(world):
     return {'objects': objects, 'scalars': {}, 'static': {}}
 
 
+# Fields whose readers distinguish ABSENCE from None: getattr(cpu, field,
+# default) with a non-None default (machine.report iterates
+# unresolved_ssp_candidates with ()). A capture records None for both an
+# explicit None and an absent attribute; for these fields restore reproduces
+# ABSENCE (the machine only ever assigns tuples there, never None). Every
+# other M1 field is guaranteed present by the upstream __init__/class layout
+# (after_then/seq/... or the explore subclass defaults) or None-tolerant, so
+# setattr(None) is the faithful shape.
+M1_ABSENCE_SHAPE_FIELDS = ('unresolved_ssp_candidates',)
+
+
+def _restore_m1_field(cpu, field, value):
+    if value is None and field in M1_ABSENCE_SHAPE_FIELDS:
+        try:
+            delattr(cpu, field)
+        except AttributeError:
+            pass
+        return
+    setattr(cpu, field, value)
+
+
 def _restore_m1(payload, world):
     if world.cpus is None:
         raise SnapshotError('M1 state present but no cpus= restore target was provided')
@@ -835,18 +878,33 @@ def _restore_m1(payload, world):
             value = decode_value(encoded)
             if field == 'icfg_state':
                 value = None if value is None else _restore_icfg_state(value, 'M1', key)
-            setattr(cpu, field, value)
+            _restore_m1_field(cpu, field, value)
 
 
 # --- M2: shared memory (three-dict shape) ------------------------------------
 
+# The memory's single-step access marker: the fetch path shadows it with an
+# instance attribute after the first decode. At clean stop boundaries it always
+# holds the reset value 'read' (design §1 M2 "瞬态"), so it is skipped with a
+# capture-time value check instead of being stored.
+M2_TRANSIENT = ('operation',)
+
+
+def _check_m2_shape(mem, side):
+    extra = sorted(set(vars(mem)) - {'ram', 'unknown_origins', 'icfg_spills'} - set(M2_TRANSIENT))
+    if extra:
+        raise SnapshotError(f'M2: the {side} memory object carries unexpected attributes '
+                            f'{extra} — extend the memory adapter before capturing this world')
+    if getattr(mem, 'operation', 'read') != 'read':
+        raise SnapshotError("M2: memory.operation is not 'read' — the world is not at a "
+                            'clean stop boundary; capture only at stop points '
+                            '(design §1 M2 transient marker)')
+
+
 def _capture_m2(world):
     if world.mem is None:
         return None
-    extra = sorted(set(vars(world.mem)) - {'ram', 'unknown_origins', 'icfg_spills'})
-    if extra:
-        raise SnapshotError(f'M2: the memory object carries unexpected attributes {extra} — '
-                            'extend the memory adapter before capturing this world')
+    _check_m2_shape(world.mem, 'captured')
     section = encode_ram_section(world.mem.ram, world.mem.unknown_origins,
                                  world.mem.icfg_spills)
     world.ram_section = section
@@ -861,9 +919,7 @@ def _restore_m2(payload, world):
         raise SnapshotError('M2 state present but no mem= restore target was provided')
     if world.ram_section is None:
         raise SnapshotError('M2 state present but the snapshot has no RAM section')
-    extra = sorted(set(vars(world.mem)) - {'ram', 'unknown_origins', 'icfg_spills'})
-    if extra:
-        raise SnapshotError(f'M2: the restore-target memory carries unexpected attributes {extra}')
+    _check_m2_shape(world.mem, 'restore-target')
     decoded = apply_ram_section(world.mem, world.ram_section)
     fields = payload['objects']['memory']['fields']
     if (fields.get('ram') != len(decoded.ram)
@@ -876,17 +932,46 @@ def _restore_m2(payload, world):
 
 M3_TIMER_FIELDS = ('con', 'cnt', 'prd', 'pending', 'remainder', 'source_remainder',
                    'expirations', 'delivery_in_flight')
+# prd_write (route BQ) joined the tick state after BJ pinned the original list:
+# the PRD-readback projection answers from it, so a restore without it changes
+# behavior inside the unresolved-overflow window.
 M3_CORE_TICK_FIELDS = ('con', 'cnt', 'prd', 'pending', 'writes', 'expirations',
-                       'unresolved_overflow', 'acknowledgements', 'delivery_in_flight')
+                       'unresolved_overflow', 'acknowledgements', 'delivery_in_flight',
+                       'prd_write')
 M3_IRQ_FIELDS = ('config', 'ipmask')
 M3_SOFTWARE_IRQ_FIELDS = ('pending', 'source_enable', 'commands', 'acknowledgements',
                           'source_commands')
 M3_STATE = ('lock_owner', 'current_core', 'core_icfg', 'multicore_enabled',
             'secondary_cpu_executed', 'cpu1_control', 'cpu1_control_kick_writes',
             'usb_disable_writes', 'p3_ana_read_served', 'counts', 'writes', 'registers',
-            'gpio', 'timer0_irq4_probe_armed', 'core_tick_irq3_probe_armed')
+            'gpio', 'core_power', 'timer0_irq4_probe_armed', 'core_tick_irq3_probe_armed')
 M3_OBJECT_SLOTS = ('timer', 'core_ticks', 'irq', 'irq1', 'software_irq', 'mmu')
-M3_SKIP = M3_OBJECT_SLOTS + M3_STATE
+# Chain-rebuilt wiring references on the hardware object (enable_multicore wires
+# machine.launch into cpu1_release_handler during attach, exactly like M5's
+# factory/hardware skips): not state, not scenario switches.
+M3_WIRING_SKIP = ('cpu1_release_handler',)
+M3_SKIP = M3_OBJECT_SLOTS + M3_STATE + M3_WIRING_SKIP
+
+
+def _capture_m3_object(obj, fields, module, key):
+    """capture_object + the per-object static guard (route BL's M4 pattern).
+
+    Sub-object constructor switches (timer allowed_sources, IRQ unmaskable
+    projection, software-IRQ initial pending words, core-tick readback/held
+    switches) are not hardware attributes, so the hardware-level static check
+    cannot see them; recording them per object refuses a differently-switched
+    restore target the same way M4 slot fixtures do."""
+    record = capture_object(obj, fields, module, key)
+    record['static'] = capture_static(obj, f'{module}.{key}', skip=fields)
+    return record
+
+
+def _restore_m3_object(record, obj, fields, module, key):
+    if 'static' not in record:
+        raise SnapshotError(f'{module}.{key}: M3 object record carries no static section — '
+                            'regenerate the snapshot with the current adapter')
+    check_static(record['static'], obj, f'{module}.{key}', skip=fields)  # switches first
+    restore_object(record, obj, module, key)
 
 
 def _capture_m3(world):
@@ -894,21 +979,27 @@ def _capture_m3(world):
         return None
     hardware = world.hardware
     for name in M3_STATE:
+        if name == 'core_power':
+            # enable_multicore creates this dict; presence == multicore_enabled.
+            if hasattr(hardware, name) != bool(hardware.multicore_enabled):
+                raise SnapshotError('M3: core_power presence does not match multicore_enabled '
+                                    '(enable_multicore creates it) — the model shape drifted')
+            continue
         if not hasattr(hardware, name):
             raise SnapshotError(f'M3: hardware attribute {name!r} missing — the peripheral '
                                 'state list no longer matches the model shape')
     objects = {
-        'timer': capture_object(hardware.timer, M3_TIMER_FIELDS, 'M3', 'timer'),
+        'timer': _capture_m3_object(hardware.timer, M3_TIMER_FIELDS, 'M3', 'timer'),
         'core_ticks': None if hardware.core_ticks is None else [
-            capture_object(tick, M3_CORE_TICK_FIELDS, 'M3', f'core_ticks[{index}]')
+            _capture_m3_object(tick, M3_CORE_TICK_FIELDS, 'M3', f'core_ticks[{index}]')
             for index, tick in enumerate(hardware.core_ticks)],
-        'irq': capture_object(hardware.irq, M3_IRQ_FIELDS, 'M3', 'irq'),
+        'irq': _capture_m3_object(hardware.irq, M3_IRQ_FIELDS, 'M3', 'irq'),
         'irq1': None if hardware.irq1 is None else
-        capture_object(hardware.irq1, M3_IRQ_FIELDS, 'M3', 'irq1'),
+        _capture_m3_object(hardware.irq1, M3_IRQ_FIELDS, 'M3', 'irq1'),
         'software_irq': None if hardware.software_irq is None else
-        capture_object(hardware.software_irq, M3_SOFTWARE_IRQ_FIELDS, 'M3', 'software_irq'),
+        _capture_m3_object(hardware.software_irq, M3_SOFTWARE_IRQ_FIELDS, 'M3', 'software_irq'),
     }
-    scalars = {name: _capture_scalar(getattr(hardware, name)) for name in M3_STATE}
+    scalars = {name: _capture_scalar(getattr(hardware, name, None)) for name in M3_STATE}
     return {'objects': objects, 'scalars': scalars,
             'static': capture_static(hardware, 'M3', skip=M3_SKIP + M4_SLOTS)}
 
@@ -919,26 +1010,33 @@ def _restore_m3(payload, world):
     hardware = world.hardware
     check_static(payload['static'], hardware, 'M3', skip=M3_SKIP + M4_SLOTS)  # switches first...
     objects = payload['objects']
-    restore_object(objects['timer'], hardware.timer, 'M3', 'timer')
-    restore_object(objects['irq'], hardware.irq, 'M3', 'irq')
+    _restore_m3_object(objects['timer'], hardware.timer, M3_TIMER_FIELDS, 'M3', 'timer')
+    _restore_m3_object(objects['irq'], hardware.irq, M3_IRQ_FIELDS, 'M3', 'irq')
     if objects['core_ticks'] is not None:
         if hardware.core_ticks is None or len(hardware.core_ticks) != len(objects['core_ticks']):
             raise SnapshotError('M3.core_ticks: the restore target was not built with the same '
                                 'core_tick_configuration switches')
         for index, record in enumerate(objects['core_ticks']):
-            restore_object(record, hardware.core_ticks[index], 'M3', f'core_ticks[{index}]')
+            _restore_m3_object(record, hardware.core_ticks[index], M3_CORE_TICK_FIELDS,
+                               'M3', f'core_ticks[{index}]')
     if objects['irq1'] is not None:
         if hardware.irq1 is None:
             raise SnapshotError('M3.irq1: the snapshot holds CPU1 IRQ controller state but the '
                                 'restore target has none (multicore switches differ)')
-        restore_object(objects['irq1'], hardware.irq1, 'M3', 'irq1')
+        _restore_m3_object(objects['irq1'], hardware.irq1, M3_IRQ_FIELDS, 'M3', 'irq1')
     if objects['software_irq'] is not None:
         if hardware.software_irq is None:
             raise SnapshotError('M3.software_irq: the restore target lacks the software IRQ '
                                 'command projection')
-        restore_object(objects['software_irq'], hardware.software_irq, 'M3', 'software_irq')
+        _restore_m3_object(objects['software_irq'], hardware.software_irq,
+                           M3_SOFTWARE_IRQ_FIELDS, 'M3', 'software_irq')
     for name, encoded in payload['scalars'].items():
-        setattr(hardware, name, decode_value(encoded))
+        value = decode_value(encoded)
+        if name == 'core_power' and value is None:
+            if hasattr(hardware, name):
+                delattr(hardware, name)  # absence on single-core worlds is the shape
+            continue
+        setattr(hardware, name, value)
 
 
 # --- M4: peripheral projection object families ---------------------------------
@@ -1009,6 +1107,24 @@ M4_FAMILIES = (
       'con_reads')),
     ('reset', 'ResetHistoryProjection',
      ('words', 'configuration', 'flag_clear_commands', 'clear_commands')),
+    # Post-BL families (wiring route sim-snapwire): these six projection classes
+    # merged AFTER route BL froze the table (CV daa_con1, CW dac_vl0, S19 batch 1
+    # cop/dma/timer2, B3 adda_analog_family) and are all ON in the conditional
+    # frontier flag set, so capture would refuse without them. Field lists are
+    # the classes' real instance inventories (same source-verified method as BL);
+    # jl_adda_daa_con1's initial_word/config_readback fixtures ride the per-object
+    # static guard like every other M4 fixture.
+    ('jl_adda_daa_con1', 'JLAddaDaaCon1Registers',
+     ('stores', 'word_writes', 'fixture_reads', 'reads_after_write')),
+    ('jl_audio_dac_vl0', 'JLAudioDacVl0Registers',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('jl_audio_dac_cop', 'JLAudioDacCopRegisters', ('stores', 'word_writes')),
+    ('jl_audio_dac_dma', 'JLAudioDacDmaWriteRecords', ('stores', 'word_writes')),
+    ('jl_adda_family', 'JLAddaAnalogFamilyRegisters',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('timer2', 'Timer2Delay',
+     ('con', 'cnt', 'prd', 'pending', 'lrc_remainder', 'remainder', 'expirations',
+      'writes', 'con_reads', 'advance_calls', 'iwkup_writes', 'transactions')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 
@@ -1113,7 +1229,12 @@ def _restore_m5(payload, world):
 
 # --- M7: loop ledger -----------------------------------------------------------
 
-M7_STATE = ('adapters', 'rom_steps', 'event_counts', 'milestones', 'trace', 'completed', 'stop')
+# events = the bounded memory-event list the report publishes as
+# result['memory_events'] (design §M7 lists it beside event_counts); without it
+# a resumed world reports a truncated event tail and the report comparison
+# goes red on the first handoff scenario.
+M7_STATE = ('events', 'adapters', 'rom_steps', 'event_counts', 'milestones', 'trace',
+            'completed', 'stop')
 
 
 def _capture_m7(world):
@@ -1174,9 +1295,10 @@ register_module('M6', 'hardware', capture=_capture_m6, restore=_restore_m6,
                 fields={'MMU': M6_MMU_FIELDS}, description='MMU functional projection.')
 register_module('M7', 'ledger', capture=_capture_m7, restore=_restore_m7,
                 scalars=M7_STATE,
-                description='explore loop ledger (adapter counters, milestones, bounded '
-                            'trace, stop record); the capture point that fills it is the '
-                            'wiring route.')
+                description='explore loop ledger (bounded memory-event list, adapter '
+                            'counters, milestones, bounded trace, stop record); filled by '
+                            'the probe_boot explore capture point (snapshot= config, '
+                            'opt-in, default off).')
 register_module('M8', None, fields={},
                 description='Static scenario configuration: rebuilt by re-running the '
                             'construction chain, guarded by the code fingerprint + capture '

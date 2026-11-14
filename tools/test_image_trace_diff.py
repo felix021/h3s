@@ -130,7 +130,7 @@ def test_flag_sets_derive_from_the_frontier_registry():
     # data constants referenced by name are the real module values.
     assert frontier_registry.validate()
     signature = inspect.signature(probe_irq_entry.irq_case).parameters
-    transports = {'flash_image_bytes', 'readonly'}  # per-run transports, not switches
+    transports = {'flash_image_bytes', 'readonly', 'snapshot'}  # per-run transports, not switches (snapshot = capture/restore config, sim-snapwire)
     keyword_switches = {name for name, param in signature.items()
                         if param.kind == inspect.Parameter.KEYWORD_ONLY and name not in transports}
     assert keyword_switches == set(frontier_registry.switches(
