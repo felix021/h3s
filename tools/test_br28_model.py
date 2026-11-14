@@ -2790,5 +2790,125 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(both.handles(0xfe0500,4) and both.handles(0xfe0534,4)
                         and both.handles(0xfe0508,4))
 
+    def test_jl_adda_analog_family_container(self):
+        # 路 B3/S19 批 2 续:4,521,083 停点 0x606ac42(模拟 init 0x606abf0 首条
+        # DAA_CON0 bit13 清位 RMW 内部读)——AM 容器族:白名单恰五字
+        # (0xfe0a00/08/0c/48/4c),合成初始 0+读回=当前值;+4 DAA_CON1 由
+        # CV 容器独占(地址集互斥);默认关保持 unmapped。
+        words=(0xfe0a00,0xfe0a08,0xfe0a0c,0xfe0a48,0xfe0a4c)
+        plain=BR28Model()
+        for address in words:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe0a00,0xffffdfff)
+        self.assertNotIn('jl_adda_analog_family_registers',plain.report())
+        h=BR28Model(jl_adda_analog_family=True)
+        for address in words:
+            self.assertTrue(h.handles(address,4))
+        # +4 DAA_CON1 不进本容器(与 CV 容器互斥;CV 关着时仍 unmapped)。
+        self.assertFalse(h.handles(0xfe0a04,4))
+        # 写前读=合成初始 0(计数分开);RMW 语义:读 0→AND→写回落记录;
+        # 写后读=最后写值。
+        self.assertEqual(h.read(0xfe0a00),0)
+        h.write(0xfe0a00,0 & 0xffffdfff)
+        self.assertEqual(h.read(0xfe0a00),0)
+        h.write(0xfe0a08,0x80001000)
+        self.assertEqual(h.read(0xfe0a08),0x80001000)
+        h.write(0xfe0a0c,0x1f)
+        h.write(0xfe0a48,0x302000)
+        h.write(0xfe0a4c,0x80)
+        r=h.report()['jl_adda_analog_family_registers']
+        self.assertEqual(r['word_writes'],5)
+        self.assertEqual(sorted(r['stores']),['0xfe0a00','0xfe0a08','0xfe0a0c','0xfe0a48','0xfe0a4c'])
+        self.assertEqual((r['readback_projection']['reads'],
+                          r['readback_projection']['synthesized_initial_reads']),(2,1))
+        self.assertIn('synthetic initial word 0',r['readback_projection']['readback_semantics'])
+        self.assertIn('NOT a reset-value claim',r['readback_projection']['readback_semantics'])
+        self.assertIn('0x606b352',r['readback_projection']['known_limitation'])
+        self.assertIn('0x606abf0',r['observed_shapes'])
+        self.assertIn('mutually exclusive',r['whitelisted_words'])
+        assumption=h.report()['assumptions']['jl_adda_analog_family_registers']
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verify any audio output',assumption)
+        # 敏感性探针(ones 字一次性分叉,静态预测:读值只进写回组装零分支):
+        # 类属性改 ones 臂内复原。
+        from br28_model import JLAddaAnalogFamilyRegisters
+        JLAddaAnalogFamilyRegisters.SYNTHETIC_INITIAL_WORD=0xffffffff
+        try:
+            fork=BR28Model(jl_adda_analog_family=True)
+            self.assertEqual(fork.read(0xfe0a00),0xffffffff)
+            fork.write(0xfe0a00,0xffffffff & 0xffffdfff)
+            self.assertEqual(fork.read(0xfe0a00),0xffffdfff)
+        finally:
+            JLAddaAnalogFamilyRegisters.SYNTHETIC_INITIAL_WORD=0
+        # 与 CV DAA_CON1 容器叠加:两白名单互不吞地址。
+        stacked=BR28Model(jl_adda_analog_family=True,
+                          jl_wl_aud_write_records=True,jl_audio_adc_reset_write_records=True,
+                          jl_adda_daa_con1_initial_fixture=0x0,jl_adda_daa_con1_config_readback=True)
+        self.assertTrue(stacked.handles(0xfe0a04,4) and stacked.handles(0xfe0a00,4))
+
+    def test_p2m_mailbox_ack_projection(self):
+        # 路 B3/S19 批 2 续(BM §3):喂狗 0x12cc7e 事务序列的状态机——
+        # 清槽(解除回声)→消息字节镜像→kick 0x400(武装)→PND 读=0x1000→
+        # 回声读=消息值→CLR 0x1000(清位+闭合事务);未武装 PND 读=Blocked;
+        # 非 0x400 kick 只记录;必须叠在 p11 窗口投影上。
+        from br28_model import P2mMailboxAck
+        with self.assertRaisesRegex(ValueError,'requires the P11 window projection'):
+            BR28Model(p2m_mailbox_ack=True)
+        h=BR28Model(p11_window_projection=True,p2m_mailbox_ack=True)
+        m=h.p2m_mailbox
+        # 字路由:kick/CLR/PND 三字 + 回声槽字节读写;M2P+7 消息字节经机器侧
+        # note_memory_write 镜像(模型只收 note)。
+        for address in (0xF2A618,0xF2A60C,0xF2A608):
+            self.assertTrue(h.handles(address,4))
+        self.assertTrue(h.handles_byte_write(0xF27F43))
+        self.assertFalse(h.handles_byte_write(0xF27F87))  # 消息字节不拦截,普通 RAM
+        # 完整事务(喂狗 arg=8)。
+        h.write_byte(0xF27F43,0xFF)                 # 清回声槽
+        m.note_message_byte(8)                      # 机器侧镜像 M2P+7 写
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_pnd_read_without_kick'):
+            h.read(0xF2A60C)                        # 未武装 PND 读=世界错即停
+        h.write(0xF2A618,0x400)                     # kick
+        self.assertEqual(h.read(0xF2A60C),0x1000)   # PND bit12 置位(即时无延迟)
+        self.assertEqual(h.read_bytes(0xF27F43,1),b'\x08')   # 回声=消息字节
+        h.write(0xF2A608,0x1000)                    # CLR:清位+闭合事务
+        self.assertEqual(m.kicks,1)
+        self.assertEqual(m.transactions,
+                         [{'arg':8,'poll_reads':1,'echo_byte':8,'clr_writes':1}])
+        # CLR 后 PND 读=Blocked(下一个事务前的世界错即停);回声保持到下次
+        # 清槽(固件每事务先清槽,无越窗读)。
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_pnd_read_without_kick'):
+            h.read(0xF2A60C)
+        # 非 0x400 kick 值(0x800/0x80 域)只记录不武装。
+        h.write(0xF2A618,0x800)
+        self.assertEqual(m.other_kick_values,{'0x800':1})
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_pnd_read_without_kick'):
+            h.read(0xF2A60C)
+        # CLR 形状守卫:非 0x1000 值拒绝。
+        h.write(0xF2A618,0x400)
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_clr_form_not_modeled'):
+            h.write(0xF2A608,0x2000)
+        r=h.report()['p2m_mailbox']
+        self.assertEqual(r['kicks'],2)  # 0x400×2(0x800 记 other 不计数)
+        self.assertIn('latency not',r['assumption'])
+        self.assertIn('0x12cc7e',r['disassembly_anchor'])
+        self.assertFalse(r['latency_modeled'])
+
+    def test_cfg523_object_bytes_shape(self):
+        # 路 B3/S19 批 2 续(BH §5.1):70B 对象字节级形状钉死。
+        from probe_irq_entry import CFG523_OBJECT_BYTES,CFG523_KEY_CHANNEL_RES_IDLE
+        from br28_model import BR28Model
+        import struct
+        blob=bytes(CFG523_OBJECT_BYTES)
+        self.assertEqual(len(blob),70)
+        self.assertEqual(blob[0],1)                       # enable
+        self.assertEqual(blob[1:4],b'\x00\x00\x00')       # io 描述(port=0 早退)
+        self.assertEqual(struct.unpack_from('<I',blob,4)[0],0x00100001)  # 通道字 mux 1
+        self.assertEqual(blob[8:10],b'\x00\x00')          # 第三段门=0
+        thresholds=struct.unpack_from('<20H',blob,10)
+        self.assertEqual(thresholds,(500,720,850,1022)+(1022,)*16)      # AJ 表原样
+        self.assertEqual(tuple(blob[50:70]),(255,10,11,12)+(0,)*16)     # 键 id 表
+        self.assertEqual(CFG523_KEY_CHANNEL_RES_IDLE,4)   # 释放态 ≤9 修正配套行
+
 
 if __name__=='__main__':unittest.main()

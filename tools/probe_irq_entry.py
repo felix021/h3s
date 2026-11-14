@@ -568,6 +568,35 @@ FD31_ADC_RES_S19_VALUES={**FD31_ADC_RES_NAMED_VALUES,0x10005:400,0x10001:4}
 # 写后/重复读/未覆盖地址一律严格停(BV 的 canary 语义原样)。
 P33_CANARY_FIRST_READ_WORDS={0xf2c044:0}
 
+# 路 B3/S19 批 2 续(BH §5.1 字节级草案):config-523 分档器产物对象具名
+# fixture(70B @ 0x1274F4,PC 锚定首装——解析器 0x60010b4 首次执行前写入,
+# 幂等早退路径让解析器自己消费这次填充)。全部 synthetic-not-measured
+# (真实 config 523 在 bank B 记录区 0x1e0200,公开工件外):
+# +0x00 enable=1(解析器成功路径写的值;S17 门 b[+0]!=0 不取 K2);
+# +0x01..03 io 描述全 0(+1 高半字节 port=0→DIE 调用早退);
+# +0x04 通道字 w=0x00100001(mux 1:boot 侧已占用 mux 0/4/5/6——BY 三通道
+#       +W4[4] trim 的 0x10005——1 空闲,S/AJ 同选);
+# +0x08..09 第三段门=0(iokey init 第三段跳过);
+# +0x0A 阈值表 20×u16=500/720/850/1022/1022×16(升序,AJ §8.1 原样);
+# +0x32 键 id 表 20×B=255/10/11/12/0×16(BW 掩码×App 表推导对应)。
+# 释放态 ≤9 修正(BH §3.3):through-boot 世界(D1/D2 窗口)键通道原始读数
+# 必须 ≤9(S17 键线稳定门),配套 RES 行 0x10001=4 已并入
+# FD31_ADC_RES_S19_VALUES(BM 批 1);S/AJ 停点后场景的释放代表值 400 维持
+# 不变(其世界不跑 S17)——两个世界的 bin 0 语义相同(≤500→255 无键),
+# 代表值按世界分岔。电池相关字段:无(S15 低电门阈值 h[0x127734] 属电池
+# 配置域 config 20,与本 fixture 无交集)。
+CFG523_OBJECT_BYTES=(
+    bytes((0x01,0x00,0x00,0x00))                          # +0x00 enable, io 描述
+    +(0x00100001).to_bytes(4,'little')                    # +0x04 通道字 mux 1
+    +bytes((0x00,0x00))                                    # +0x08 第三段门/参数
+    +b''.join(struct.pack('<H',v) for v in (500,720,850,1022)+(1022,)*16)   # +0x0A 阈值表
+    +bytes((255,10,11,12))+bytes(16)                       # +0x32 键 id 表
+)
+assert len(CFG523_OBJECT_BYTES)==70
+# 键通道 RES 释放态档(接地分压代表值,0..9 区间中段;S17 判定读队列存储值
+# 不依赖它——仅消 adc_scan 轮选启动转换的 fd31 诚实停;BM 批 1 已并入 S19 值表)。
+CFG523_KEY_CHANNEL_RES_IDLE=4
+
 # JL_ADDA->DAA_CON1(0xfe0a04)首读的显式初始字探针值(路 CV/sim-adda,
 # derived-not-measured;**sensitivity-probe-not-plausible-state——是探针,
 # 不是合理状态**)。背景:3,170,362 停点 0x606b426 是配置 RMW insert 函数
@@ -1127,6 +1156,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
              core_tick_prd_readback=False,
+             core_tick_cnt_held_snapshot=False,
+             core_tick_cnt_snapshot_probe_value=None,
+             jl_adda_analog_family=False,
+             p2m_mailbox_ack=False,
+             cfg523_named_fixture=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
              jl_audio_dac_dma_writes=False,
@@ -1288,6 +1322,10 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 6 tick+W1[4]/S9/W2..W4[0..3]+TIMER2 2×4000+尾段到 S15 邮箱首停
         # 0x12CC94,预算放宽到 5M(新前沿 ≈3.8M 量级,留事件时钟段余量)。
         if jl_pvdd_trim_writes:budget=5000000
+        # 路 B3/S19 批 2 续:JL_ADDA 模拟族放行后链滑过 W1[3] 尾段剩余
+        # init+尾段→S 段;BM §4.3 全程预算 ~1.2×10⁷ 模型步(S16+S17 事件
+        # 时钟 ~8×10⁶ 占 2/3),预算放宽到 16M 留余量。
+        if jl_adda_analog_family:budget=16000000
     # heap_info_bytes:显式实验配置(P11_HEAP_INFO_DERIVED 静态推导候选)。只与
     # p11_power_init 叠加使用;报告把 fixture 标注为 derived-not-measured,
     # 场景结论一律条件通过,不算已验证(模型侧 read_bytes 只按字节粒度回放,
@@ -2012,6 +2050,51 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 '(the unresolved-overflow read window exists only while a held overflow '
                 'waits out the IPMASK mask)')
         options['core_tick_prd_readback']=True
+    # core_tick_cnt_held_snapshot(路 B3/S19 批 2 续一案,opt-in 默认关):3,747,585
+    # 停点 0x12b0e8 的 CNT 读按 codex 定调落地——①同核同宽:helper 0x12b0ba 的
+    # retry 环在核 0 上 ld.w 读 0xffe0f0=CORE_TICK_BASES[0]+4=CNT(宽 4);
+    # ②明确 held 状态:第 12 次溢出 unresolved(屏蔽窗内 BF 每步重检,窗口
+    # 从未结束);③模型现状=溢出后 advance 不再推进,cnt 冻结在溢出时刻
+    # divmod 余数(该场景对齐恰 0)——「溢出后 CNT 冻结」是模型 artefact 的
+    # 显式假设(assumed-not-measured;硬件倾向回绕继续计数但无 BR28 证据),
+    # 开关只放行该一格读=返回实际存储快照,非 PRD-1/非周期末值/非合成默认;
+    # ④读无副作用(不清 pending、不重装载、不动在途/ACK/jiffies,单测钉死),
+    # CON(offset 0)同窗保持原严格停。依赖边挂 core_tick_prd_readback(无
+    # PRD 放行的世界停在 0x12b0c2,CNT 停点不存在)。
+    if core_tick_cnt_held_snapshot:
+        require(core_tick_prd_readback,
+                'the core-tick CNT held-snapshot projection only layers on the PRD '
+                'readback release (the CNT read stop 0x12b0e8 exists only inside the '
+                'retry loop the PRD release at 0x12b0c2 admits)')
+        options['core_tick_cnt_held_snapshot']=True
+    # 敏感性探针值(probe_only,CV 双探针先例):0 vs 周期末值 PRD-1 两分叉,
+    # 记录观察路径首次分叉;非 None 时 unresolved 窗内 CNT 读返回该值。
+    if core_tick_cnt_snapshot_probe_value is not None:
+        require(core_tick_cnt_held_snapshot,
+                'the core-tick CNT snapshot sensitivity probe rides on the held-snapshot '
+                'projection (it substitutes the snapshot value, it is not a standalone release)')
+        options['core_tick_cnt_snapshot_probe_value']=core_tick_cnt_snapshot_probe_value
+    # jl_adda_analog_family(路 B3/S19 批 2 续,opt-in 默认关):4,521,083 停点
+    # 0x606ac42(音频 DAC 模拟 init 函数 0x606abf0 首条 DAA_CON0 bit13 清位
+    # RMW 的内部读)按消费面判定=AM 容器族——静态全函数枚举白名单恰五字
+    # (0xfe0a00/08/0c/48/4c,+4 DAA_CON1 由路 CV 容器独占),读值只进写回
+    # 组装零分支消费,合成初始 0+读回=当前值,derived-not-measured。
+    if jl_adda_analog_family:
+        options['jl_adda_analog_family']=True
+    # p2m_mailbox_ack(BM §3 规格,路 B3/S19 批 2 续,opt-in 默认关):S15/S17
+    # 喂狗 0x12cc7e 的 P11 邮箱事务(kick [0xF2A618]=0x400→P2M_INT_PND
+    # bit12 置位+P2M+3 回声=M2P+7 值;CLR 0x1000 清位)。依赖 p11_power_init
+    # (M2P 消息窗是其 harness 区)。
+    if p2m_mailbox_ack:
+        require(p11_power_init,
+                'the P2M mailbox ack projection only layers on the p11_power_init scenario '
+                '(the M2P message window is its harness region)')
+        options['p2m_mailbox_ack']=True
+    # cfg523_named_fixture(BH §4.2,路 B3/S19 批 2 续,opt-in 默认关):70B
+    # 具名对象 PC 锚定首装(机器侧 after_step 钩子,解析器 0x60010b4 首次
+    # 执行前写入 0x1274F4;BSS 初始化会清零故不能预填)。
+    if cfg523_named_fixture:
+        machine_options['cfg523_object_bytes']=CFG523_OBJECT_BYTES
     # event_clock(路 CW/S19 批 0b/sim-s19b0,BG §4.2 草案落地):把机器侧
     # 事件时钟投影(docs/event-clock.md 最小契约,BQ 的 G1 min() 框架)接进
     # 条件栈——机器/模型零新代码,本参数只是 machine_options 接线。层属

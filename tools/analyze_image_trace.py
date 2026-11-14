@@ -104,7 +104,7 @@ SCENARIOS = {
         # 路 BM §1.3/S19 批 1:W4[4] 簇放行后条件前沿滑过 trim 环(≈4-6×10⁵)
         # +W2[0] 事件时钟 6 tick+TIMER2 2×4000+尾段,预算 3.5M→5M(新前沿
         # ≈3.7-3.8M 量级,留事件时钟段余量)。
-        'default_budget': 5000000,
+        'default_budget': 16000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
         # 单点在 tools/frontier_registry.py,前沿推进后只改 registry(本值自动
