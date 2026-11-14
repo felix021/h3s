@@ -1,11 +1,14 @@
 # S19 批 3 任务书：D1 场景接线（probe_only 三参数 + H1-H7 机检 + 五断言首验）
 
-2026-11-14 路 D1PREP/sim-d1prep（纯准备路，基线 main `217858a`）。本页是 S19 冲刺
-批 3（=路线梯 BJ「D1 验收」的场景接线批）的任务书：把 [d1-scene-blueprint.md](d1-scene-blueprint.md)
-（路 BG 蓝图 + §11 前置刷新）落成实施路拿到即可开工的分解单。**开工闸门**：
-①批 2 后续路（任务卡称 BR；本机分支 sim-s19b3 `0b875ed` 预览：CNT held 快照 +
-JL_ADDA 模拟族 + 电池段两案）合并；②其收尾前沿到达 S19/park 形态（蓝图 §1 的前提）。
-两闸门任一未过时，本任务书中标「等 BR 校准」的空位不得填、probe 侧改动不得开工
+2026-11-14 路 D1PREP/sim-d1prep（纯准备路，初版基线 main `217858a`，22:33 按 main
+`48a49d0` 校准——路 B3「CNT held 快照+ACK 四查+JL_ADDA 模拟族」与路 A1「b79↔EQ
+parity 重跑 FAIL」已合并）。本页是 S19 冲刺批 3（=路线梯 BJ「D1 验收」的场景接线批）
+的任务书：把 [d1-scene-blueprint.md](d1-scene-blueprint.md)（路 BG 蓝图 + §11 前置
+刷新）落成实施路拿到即可开工的分解单。**开工闸门**：①~~批 2 后续路（任务卡称
+BR=路 B3）合并~~**已过**（48a49d0）；②DAC_TM0（0xfe0524，前沿 19,139,239 @
+0x606abbe 的新停点，三选一归下一路）放行后前沿到达 S19/park 形态（蓝图 §1 的前提
+——注意**途中停泊已真实发生≠S19 终态 park**，B3 实测的停泊是音频 init 的 OS 等待
+族形态）。闸门②未过时，本任务书中标「等前沿」的空位不得填、probe 侧改动不得开工
 （§2 红线）；**check_d1_acceptance.py 侧的 H1-H7 机检与单测不受闸门限制，可先行**
 （§1.0b）。
 
@@ -14,10 +17,14 @@ JL_ADDA 模拟族 + 电池段两案）合并；②其收尾前沿到达 S19/park
 ### 0.1 冲刺脉络（批 0b→3）
 
 批 0b（CW，已合并）：event_clock 进条件栈 + DAC_VL0。批 1（B1，已合并）：W4[4]
-四件 + DAC DMA 尾段勘误，前沿到 3,747,578。批 2（BQ PRD 一案✅ + BR 在途）：
-PRD 读回 +7 步到 3,747,585（CNT 读停点）；BR 解 CNT held 快照并推电池段
-（分支预览 budget 16M，BM §4.3 全程 ~1.2×10⁷ 模型步，S16+S17 事件时钟占 ~8×10⁶）。
-**批 3 = 本任务书**：前沿到 park 后，把 D1 验收观察窗场景接成可跑、可机检、可落档。
+四件 + DAC DMA 尾段勘误，前沿到 3,747,578。批 2（BQ PRD 一案✅ + B3 两案✅，均
+已合并 48a49d0）：PRD 读回 +7 步到 3,747,585；B3 放 CNT held 快照
+（`core_tick_cnt_held_snapshot`）+JL_ADDA 模拟族（4,521,083），前沿冲到
+**19,139,239 @ 0x606abbe（DAC_TM0 读）**——事件时钟首次真实推进 13,429,113 虚拟步、
+core tick 溢出/ACK 12→108、jiffies 终值 118；电池段两案（P2M 邮箱/cfg523）已实现
+但零消费者**撤回**（实现保留 sim-s19b3 历史 0b875ed，音频域过界后按到达顺序落地）。
+**批 3 = 本任务书**：前沿过 DAC_TM0 及音频数字域整块、到 S19/park 后，把 D1 验收
+观察窗场景接成可跑、可机检、可落档。
 
 ### 0.2 弹药盘点（已在 main 217858a 的，批 3 直接用）
 
@@ -30,13 +37,15 @@ PRD 读回 +7 步到 3,747,585（CNT 读停点）；BR 解 CNT held 快照并推
 | TIMER2 投影 + 闭式 horizon 并入 min() | ✅（B1；4000 步闭式单测钉死） | HANDOFF 路 B1 |
 | 事件时钟闭式/资格预检/停泊步共用分发（G1/G2） | ✅（BQ/sim-evclockfix） | d1-idle-event-clock §3.2 |
 | 闭式常量 `STEPS_PER_MS=4000` / `TIMER0_STEPS_PER_10MS=40000` | ✅ 命名常量+四层断言 | 路 INV（falsification-checks §4） |
+| core-tick CNT held 快照 `core_tick_cnt_held_snapshot`（+敏感性探针 probe_only） | ✅（B3，48a49d0；敏感性对照已测=0 vs PRD-1 全同，仅停 PC 漂移/sub-tick 差≤9ms） | HANDOFF 路 B3 |
+| 事件时钟真实推进+停泊-唤醒往返+108 次 core tick 交付/ACK 实测 | ✅ 运行数据已在（B3 前缀报告） | HANDOFF 路 B3 条目⑥ |
 | D1-1..D1-4 + BI A1-A5 断言函数 | ✅ `tools/check_d1_acceptance.py`（`ASSERTIONS` 注册表挂全；`--report` CLI 形态） | 路 CH |
 | `test_d1_acceptance.py` 单测 | ✅ 已进 `check_local --units` | 路 CH |
 | 验收记录器 `tools/acceptance_record.py`（九栏+证据等级） | ✅ | 路 AX |
 | 快照框架 `world_snapshot.py` + M1/M4 适配器 | ✅（可选加速件，非必要） | 路 BJ/BN + sim-snapm4 分支（M4；路号待主协调定夺） |
 | **D1-5 / H1-H7 机检** | ❌ **无**——check_d1_acceptance.py 无 `d1_5_health` | 本任务书 §1.0b 新写 |
-| **probe 三参数 `d1_acceptance`/`d1_window_steps`/`d1_post_inject`** | ❌ 无（grep 零命中） | 本任务书 §1.2，等 BR |
-| **场景行 `d1_acceptance_window` + `d1_window.*` 报告键** | ❌ 无 | 本任务书 §1.2，等 BR |
+| **probe 三参数 `d1_acceptance`/`d1_window_steps`/`d1_post_inject`** | ❌ 无（grep 零命中） | 本任务书 §1.2，等前沿 |
+| **场景行 `d1_acceptance_window` + `d1_window.*` 报告键** | ❌ 无 | 本任务书 §1.2，等前沿 |
 
 ### 0.3 与蓝图 §8 工作量表的差量（现状修订，实施路以本表为准）
 
@@ -48,23 +57,24 @@ PRD 读回 +7 步到 3,747,585（CNT 读停点）；BR 解 CNT held 快照并推
 
 ### 1.0 步骤 0：开工闸门核对 + BR 校准空位表（合并后第一件事）
 
-BR 合并后逐项填这张空位表（**填完才动 probe 侧**；本任务书正文凡「等 BR」处都指向
-这张表）：
+B3 已合并（48a49d0），本表 CNT/ADDA/电池段三组已转正；剩余空位=前沿/park 形态组
+（**闸门②过后再动 probe 侧**；本任务书正文凡「等前沿」处都指向这张表）：
 
-| 空位 | 预览值（sim-s19b3 分支所见，**以合并为准**） | 校准动作 |
+| 空位 | 值（48a49d0 已合并转正 / 待前沿） | 校准动作 |
 |---|---|---|
-| CNT 读开关名 | `core_tick_cnt_held_snapshot`（conditional，依赖 `core_tick_prd_readback`） | 任务书 §1.4 引用名与描述以合并后 registry 为准 |
-| CNT 假设原文 | 「显式『溢出后 CNT 冻结』假设 assumed-not-measured，非 PRD-1/非周期末值/非合成默认；该场景快照=0；读无副作用；硬件回绕行为无 BR28 证据不声明」 | D1-3 假设标注（§1.4）的 model_assumptions 文案照抄合并版 |
-| CNT 敏感性探针 | `core_tick_cnt_snapshot_probe_value`（probe_only，0 vs 周期末值两分叉） | 若保留，D1-3 断言在两分叉下的行为差异如实记录（期限断言只依赖 PRD/闭式，CNT 只进 sub-tick 换算——BQ 条目③已证 PRD→r3 用途=时间换算分母） |
-| ADDA 族开关名 | `jl_adda_analog_family`（五字容器） | 场景行 `scenario_flags('p11_heap_experimental')` 的实际 flag 集以 BR 合并后的条件栈为准重取 |
-| 电池段开关名 | `p2m_mailbox_ack` / `cfg523_named_fixture` | 同上；S15/S17 是否真被消费按 BR 收尾报告核 |
-| 前沿/park 形态 | BR 分支在途未收尾；预算 16M | **核对收尾停点**：若到 park（两核 idle_wait + `event_clock_engaged`）→闸门②过；若停更早边界→P-11/P-12 后移前沿推进路，批 3 只做不受影响的 §1.0b（H1-H7）并挂起其余 |
-| BI 首验观察口径 | — | CW 落地时定的「BI A1-A5 硬断言属批 3 只观察」→本任务书 §1.1 执行升级 |
+| CNT 读开关名 | `core_tick_cnt_held_snapshot`（conditional，依赖 `core_tick_prd_readback`）——**已合并转正** | §1.4 引用名即此（48a49d0 registry） |
+| CNT 假设原文 | 「显式『溢出后 CNT 冻结』假设 assumed-not-measured（模型 artefact：溢出后 advance 不再推进、cnt 停在 divmod 余数；硬件倾向回绕继续计数但无 BR28 证据不声明）；非 PRD-1/非周期末值/非合成默认；读无副作用」——B3 报告措辞含英文原文 "under the explicit 'CNT frozen after overflow' assumption (conditional, assumed-not-measured) — NOT PRD-1" | D1-3 假设标注（§1.4）的 model_assumptions 文案照抄 B3 registry/报告版 |
+| CNT 敏感性探针 | `core_tick_cnt_snapshot_probe_value`（probe_only）——**已合并**且对照已测：0 vs 周期末值 PRD-1 两分叉全同（core tick 52/52 交付/ACK、Timer0 1663、同 budget 停点 kind），仅停 PC 同 helper 族内漂移+sub-tick 相位差 624（≤9ms）只进 OS 时间换算 | D1-3 断言在两分叉下行为差异已实测（HANDOFF B3 条目③）——任务书不再留「若保留」分支，标注义务=如实引用该对照 |
+| ADDA 族开关名 | `jl_adda_analog_family`（五字容器）——**已合并转正**（94 写全服务） | 场景行 `scenario_flags('p11_heap_experimental')` 的 flag 集=48a49d0 条件栈实取（B3 后含 ADDA 族、不含电池段两撤回开关） |
+| 电池段开关名 | ~~`p2m_mailbox_ack` / `cfg523_named_fixture`~~ **撤回**（已实现+单测但零消费者，按 BQ 先例不进条件栈；实现保留 0b875ed） | 音频域过界、S15/S17 真实到达时按到达顺序重新落地（届时开关名/地址以落地路为准）；批 3 场景行 flag 集**不含**这两个开关 |
+| 前沿/park 形态 | 前沿 19,139,239 @ 0x606abbe（DAC_TM0 读，音频数字域运行态首读）；途中停泊已真实发生但 S19 终态 park 未到 | **闸门②=DAC_TM0 三选一放行（具名 fixture/钉住/真机测量，已有路接手）+音频数字域整块过完+前沿到 S19/park**；到达前批 3 只做不受影响的 §1.0b（H1-H7）与 §1.1 的数据整理，probe 侧挂起 |
+| BI 首验观察口径 | B3 已实测「BI 的 A1 形状部分显形」（事件时钟 13,429,113 虚拟步/停泊-唤醒/108 次溢出交付 ACK/jiffies 118） | CW 的「A1-A5 硬断言属批 3 只观察」→PR-BI 执行升级；A1/A2 的窗口形态判据仍需 S19 后 park 样本 |
 
 ### 1.0b 步骤 0b（PR-1，不受闸门限制，可立即开工）：D1-5 / H1-H7 机检
 
 **放 `tools/check_d1_acceptance.py` + `tools/test_d1_acceptance.py`**（两文件不在
-BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`）：
+前沿路占用文件清单（B3 已合并，但 DAC_TM0 接手路同样占用这五文件；check_local
+units 层已挂 `test_d1_acceptance.py`）：
 
 1. 新函数 `d1_5_health(scenario)`，挂进 `ASSERTIONS` 为 `('D1-5', d1_5_health)`
    （注册表现在止于 BI-A5，行 1156）。
@@ -102,13 +112,18 @@ BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`�
    引用任务 id（若观察到 TCB 复用再加实例代次）；`wake_reasons` 存计数+关联 id
    不存全列表。
 
-### 1.1 步骤 1（PR-BI，等 BR）：BI 首验（真实前缀首跑 A1-A5，先观察后硬断言）
+### 1.1 步骤 1（PR-BI，等前沿=闸门②）：BI 首验（真实前缀首跑 A1-A5，先观察后硬断言）
 
 **定位（参谋结论③）**：独立 PR，观察性质——**观察失败不阻塞场景骨架（§1.2）的
 开发与合并，但阻塞依赖该性质的 D1 验收**；已有证据支撑的 A1-A5 不因观察阶段统一
 降级（观察≠放松，是记录充分再升硬）。
 
-1. 场景=BR 合并后的条件栈 flag 集 + `event_clock=True`，budget 覆盖首个全核 IDLE
+0. **数据基础（48a49d0 已备）**：B3 前缀已实测事件时钟推进 13,429,113 虚拟步、
+   停泊-唤醒往返、core tick 溢出 12..108 全交付/ACK、jiffies 终值 118、Timer0 到期
+   372→3401（HANDOFF B3 条目⑥）——A1 的「停泊-唤醒往返」形状与 A2 的「周期计数」
+   原料已有；PR-BI 先整理这批现有报告数据，窗口形态判据（A1 闭式精确到期/A2 周期
+   守恒的窗口版）再等 S19 后 park 样本。
+1. 场景=48a49d0 条件栈 flag 集 + `event_clock=True`，budget 覆盖首个全核 IDLE
    点 + ≥80,000 模型步（两个 Timer0 周期；BP §3.2 G3 原规格，CW 已备接线）。
 2. 跑真实前缀到 park，`check_d1_acceptance.py --report … --scenario <首验场景>` 出
    A1-A5 结果；**首轮全部只观察**（CW 口径「硬断言属批 3 只观察」）——把 A1（闭式
@@ -121,7 +136,7 @@ BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`�
    `virtual_model_steps_advanced` 应首次非零；若仍为零，说明 park 判定或停泊形状
    与预期不符，停下归因（这是 A1 的前置观察）。
 
-### 1.2 步骤 2（PR-2，等 BR）：D1 场景骨架（probe_only 三参数 + 场景行 + 报告键 + 正式验收入口）
+### 1.2 步骤 2（PR-2，等前沿=闸门②）：D1 场景骨架（probe_only 三参数 + 场景行 + 报告键 + 正式验收入口）
 
 接线方式（蓝图 §4.1/§4.2/§4.5 的落地细节）：
 
@@ -137,8 +152,9 @@ BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`�
    `d1_post_inject` 各 requires=('d1_acceptance',)。
 3. **场景行**：`irq_case(..., name='d1_acceptance_window', **scenario_flags(
    'p11_heap_experimental'), event_clock=True, d1_acceptance=True, budget=<park
-   指令步+窗口执行预算>)`（`key_chain_scan_direct` 行先例）。flag 集=BR 合并后的
-   p11_heap 条件栈全量（§1.0 空位表「ADDA 族/电池段」两行），经 `scenario_flags()` 构造器+
+   指令步+窗口执行预算>)`（`key_chain_scan_direct` 行先例）。flag 集=48a49d0 起的
+   p11_heap 条件栈全量（§1.0 空位表「ADDA 族」行；**不含**电池段两撤回开关），经
+   `scenario_flags()` 构造器+
    覆盖生成，不手抄开关表、不改公共条件栈字典（参谋结论①）。**场景行加在场景表
    末尾**（15 行现有场景之后；参谋结论①(a)：无语义理由提前，若顺序影响正确性
    说明有共享可变状态要修的是那个）。
@@ -186,8 +202,13 @@ BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`�
    的 self-check 无需变更（新场景默认关+不加进其场景集）；若 crc_bankb/
    p11_heap 两场景报告有任何字段级变化，先解释差异再动钉子。「逐字节不变」的
    对照对象=旧场景各自的报告记录（整份汇总 JSON 因新增场景行必然不同）。
+   **镜像判据口径（48a49d0 路 A1 结论）**：b79↔EQ 的 +458 lag 重合在 447k（首
+   core-tick 溢出交付轴）后被交付相位差永久破坏——**跨 447k 的「零控制流分歧」
+   判据机制性不可用，须卡窗或改事件计数等价判据；EQ 镜像可用前沿=447,490**
+   （HANDOFF 路 A1 条目）。D1 场景单镜像运行不受影响；L2-a（过线后独立步）设计
+   必须按事件计数等价判据，禁用零分歧判据。
 
-### 1.3 步骤 3：观察窗 N 的公式与 P_park 实读的实施点 [等 BR]
+### 1.3 步骤 3：观察窗 N 的公式与 P_park 实读的实施点 [等前沿]
 
 - **N 的默认公式**（蓝图 §1.3）：`N = S_tick(W_park) + 160,000`，下限 200,000。
   S_tick=从 park 态 core tick 的 CNT/PRD 推出的首溢出闭式期限
@@ -201,11 +222,16 @@ BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`�
   报告（蓝图 §1.3 口径；BI A2「配置不变时」条款照抄）。
 - **H2 上界同步**：`⌈N/P_i⌉+1` 的 P_i 用同一实读源（§1.0b 第 3 条）。
 
-### 1.4 步骤 4：D1-3 时间断言的 CNT 假设标注（硬性要求，**标注机制随 PR-2 落地、PR-3 确认贯穿落档**——参谋结论③）[等 BR]
+### 1.4 步骤 4：D1-3 时间断言的 CNT 假设标注（硬性要求，**标注机制随 PR-2 落地、PR-3 确认贯穿落档**——参谋结论③）[开关已转正，标注实施等前沿]
 
-**codex CNT 定调**（BR 分支开关描述原话，合并后以 registry 文案为准）：「显式
-『溢出后 CNT 冻结』假设 **assumed-not-measured**，非 PRD-1/非周期末值/非合成默认；
-该场景快照=0；读无副作用；硬件回绕行为无 BR28 证据不声明」。
+**codex CNT 定调**（已随路 B3 合并转正，48a49d0 registry/报告措辞）：「显式
+『溢出后 CNT 冻结』假设 **assumed-not-measured**（模型 artefact：溢出后 advance 不再
+推进、cnt 停在 divmod 余数；硬件倾向回绕继续计数但无 BR28 证据不声明），非 PRD-1/
+非周期末值/非合成默认；该场景快照=0（第 12 次溢出对齐余数恰 0）；读无副作用」——
+报告英文原文 "under the explicit 'CNT frozen after overflow' assumption
+(conditional, assumed-not-measured) — NOT PRD-1"（HANDOFF 路 B3 条目）。B3 已为
+D1-3 定锚：check_d1_acceptance 的闭式 `ceil((prd+1-cnt)/progress)` 从 park 快照取
+cnt，**携带该冻结假设**（只记录不代写）。
 
 执行要求：
 
@@ -216,17 +242,16 @@ BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`�
 2. **不能因「进入循环/窗口运转」解除**：窗口内 core tick 溢出-交付-ACK 的行为
    由 BF 每步重检机制保证（measured 路径），但 **park 态快照的 CNT 起点永远继承
    冻结假设**——时间断言的假设标注是断言的组成部分，不是场景的阶段性状态。
-   实现为：`d1_window.core_tick_state.assumption='cnt_held_snapshot:'
-   '<BR 开关名>:assumed-not-measured'`（开关名=§1.0 空位表第 1 行），且
-   check_d1_acceptance 的 d1_3 fail/pass 判定输出里带该字段；缺失=断言形状不完整
-   （pending 非 pass）。
+   实现为：`d1_window.core_tick_state.assumption='core_tick_cnt_held_snapshot:'
+   'assumed-not-measured (NOT PRD-1)'`（开关名已转正），且 check_d1_acceptance 的
+   d1_3 fail/pass 判定输出里带该字段；缺失=断言形状不完整（pending 非 pass）。
 3. **验收记录**：D1-TCK-03 的 `model_assumptions` 栏必含该假设原文（acceptance_record
    的 conditional 校验会要求 PASS 条件出现在模型假设栏——§1.6 步骤 6 落档时核）。
 4. **区分两代读回**：PRD 读回（BQ，`core_tick_prd_readback`）=回放最近真实写入
    1199999，恒等证据链，**不承载冻结假设**；CNT 读回（BR）=冻结快照，承载。两者
    在报告键与假设标注里不得混写。
 
-### 1.5 步骤 5：D1-4 主样本与注入变体（主样本进 PR-3；注入变体=PR-4 单独）[等 BR]
+### 1.5 步骤 5：D1-4 主样本与注入变体（主样本进 PR-3；注入变体=PR-4 单独）[等前沿]
 
 - 主样本=固件自然产生的 (18,0)，全链站点表=蓝图 §2.4（post 实参→入队→get-event
   13→id→特路→表 2/过滤链/表 1 walk→handler 0x6023962→返回→回 pend）。
@@ -254,9 +279,9 @@ BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`�
 
 | PR | 内容 | 闸门 | 完成标准 |
 |---|---|---|---|
-| **PR-1**（=§1.0b） | check_d1_acceptance.py 侧 d1_5_health（H1-H7）+FAIL 证据契约+单测 | **无**（立即可开工，BR 在途不阻塞） | 每条规则独立 PASS/FAIL 判定正确；缺字段/截断/边界样本非零退出；总闸红一例；`--units` 绿 |
-| **PR-BI**（=§1.1） | 真实启动 BI 首验（A1-A5 先观察后升级硬断言） | BR 合并 | A1-A5 实测记录+升级依据落 HANDOFF；观察失败不阻塞 PR-2 合并但阻塞 D1 验收 |
-| **PR-2**（=§1.2+§1.3+§1.4 标注机制+§1.5 主样本接线） | 三参数+registry+场景行+观察件+报告键+窗口机制+**正式验收入口**+D1-1..4 断言适配 `d1_window` 键+CNT 假设标注机制+D1-4 主样本的观察面 | BR 合并 | 生产者与 checker 契约对上；旧场景逐字节不变；parity 钉子零变更（或有解释的差异）；CNT 假设字段贯穿报告键+断言输出 |
+| **PR-1**（=§1.0b） | check_d1_acceptance.py 侧 d1_5_health（H1-H7）+FAIL 证据契约+单测 | **无**（立即可开工，不碰 probe/模型文件） | 每条规则独立 PASS/FAIL 判定正确；缺字段/截断/边界样本非零退出；总闸红一例；`--units` 绿 |
+| **PR-BI**（=§1.1） | 真实启动 BI 首验（A1-A5 先观察后升级硬断言；B3 已备大半数据） | 闸门②（DAC_TM0 放行+前沿到 park；数据整理部分可先行） | A1-A5 实测记录+升级依据落 HANDOFF；观察失败不阻塞 PR-2 合并但阻塞 D1 验收 |
+| **PR-2**（=§1.2+§1.3+§1.4 标注机制+§1.5 主样本接线） | 三参数+registry+场景行+观察件+报告键+窗口机制+**正式验收入口**+D1-1..4 断言适配 `d1_window` 键+CNT 假设标注机制+D1-4 主样本的观察面 | 闸门②（DAC_TM0 放行+前沿到 park） | 生产者与 checker 契约对上；旧场景逐字节不变；parity 钉子零变更（或有解释的差异）；CNT 假设字段贯穿报告键+断言输出 |
 | **PR-3**（=§1.6） | 完整主样本验收跑满窗口+五断言 verdict+验收记录落档+HANDOFF | PR-1/BI/2 全绿 | 五断言全 PASS（或诚实 FAIL 归因）；`acceptance_record --validate` 绿；CNT 假设确认贯穿落档 |
 | **PR-4**（可选，=§1.5 注入变体） | `d1_post_inject='s18_18'` 变体实现+BLOCKED/PASS 裁决记录 | PR-3 后 | 默认关；显式合成假设全文标注；不进过线必要条件 |
 
@@ -267,11 +292,12 @@ BR 在途五文件清单，check_local units 层已挂 `test_d1_acceptance.py`�
 
 ## 2. 红线
 
-1. **BR 在途五文件禁改到 BR 合并为止**：`tools/analyze_image_trace.py`、
-   `tools/br28_model.py`、`tools/probe_boot.py`、`tools/probe_irq_entry.py`、
-   `tools/frontier_registry.py`。批 3 的 probe/registry 改动（§1.2）在闸门后开工；
-   `check_d1_acceptance.py`/`test_d1_acceptance.py`/`acceptance_record.py`/
-   新测试文件不受限（§1.0b 可先行）。
+1. **前沿路五文件批 3 实施期禁改**（B3 已合并，但 DAC_TM0 三选一及其后音频数字域
+   推进路持续占用）：`tools/analyze_image_trace.py`、`tools/br28_model.py`、
+   `tools/probe_boot.py`、`tools/probe_irq_entry.py`、`tools/frontier_registry.py`。
+   批 3 的 probe/registry 改动（§1.2）在闸门②（前沿到 S19/park）后、且与当期前沿
+   路协调占用后开工；`check_d1_acceptance.py`/`test_d1_acceptance.py`/
+   `acceptance_record.py`/新测试文件不受限（§1.0b 可先行）。
 2. **蓝图原文不删改**：d1-scene-blueprint.md 只增补（§11 已按此办）；本任务书与
    蓝图冲突处以蓝图为准并回报主协调。
 3. **不发明硬件状态**：P_park、CNT 快照值、门控值 b[0x125B54]/b[0x127184]、
