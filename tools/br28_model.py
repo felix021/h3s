@@ -1420,107 +1420,6 @@ class P11WindowRegisters:
                 'causal_link_to_pwr_con_bit5_response_assumed':False}
 
 
-class P2mMailboxAck:
-    """P11 邮箱 ack 完成投影(BM §3 规格,路 B3/S19 批 2 续实施)。
-
-    喂狗函数 0x12cc7e(全 16 指令反汇编钉死,flash 母本 0x060c6456)的事务序列:
-      清回声槽 b[P2M+3]=0xFF → 写消息字节 b[M2P+7]=arg → kick [M2P_INT_SET]
-      =0x400(bit10) → 无界轮询 [P2M_INT_PND] bit12 → 读回声槽 b[P2M+3] 比对
-      → [P2M_INT_CLR]=0x1000 清 ack。
-    地址勘误(BM §3.1 三勘误):P2M+3=0xF27F43/M2P+7=0xF27F87(BA/AG 的
-    0xF27F03/47 系 +0x40 转写滑移);PND=0xF2A60C(非 0xF2A61C);
-    **0xF2A618=M2P_INT_SET**(p11_sfr.h P11_SYSTEM_TypeDef +0x18;旧注释
-    「P2M_CLK」系误名,P2M_CLK_CON0=0xf2a610)。
-    投影语义(lpwr 请求-响应同款,即时无延迟,synthetic-not-measured):
-      - kick 恰 0x400 → 武装:PND 读回 0x1000(bit12)、回声字节=M2P+7 当前
-        存储值(P11 把消息写回 P2M 槽的显式假设;消息字节由机器侧对 harness
-        RAM 写的被动镜像提供,不拦截真实存储);
-      - 清槽写(任意字节值,观测 0xFF)→ 回声解除(读回=槽内存储值);
-      - CLR 恰 0x1000 → PND 清位(回声保持到下次清槽——固件每事务先清槽);
-      - 未武装的 PND 读=Blocked(世界错即停,不兜底自旋);非 0x400 的 kick
-        值(0x800/0x80 域,pmu 框架/IRQ68 handler,不在健康 boot 前缀)只
-        记录不武装。
-    P11 真实消费/延迟/其余 PND 位不发明(SDK 自己对 PND 行标 //?)。
-    """
-
-    ECHO_SLOT=0xF27F43       # P2M+3 回声槽(字节读写双收口)
-    MESSAGE_BYTE=0xF27F87    # M2P+7 消息字节(harness RAM,被动镜像)
-    INT_SET=0xF2A618         # M2P_INT_SET(kick 整字写)
-    INT_PND=0xF2A60C         # P2M_INT_PND(ack pending 整字读)
-    INT_CLR=0xF2A608         # P2M_INT_CLR(清 ack 整字写)
-    KICK_VALUE=0x400
-    ACK_BIT=0x1000
-    CLR_VALUE=0x1000
-
-    def __init__(self):
-        self.pnd_armed=False       # kick 置位、CLR 清位:PND 读的服务门
-        self.echo_armed=False      # kick 置位、清槽写解除:回声读的服务门
-        self.kicks=0;self.other_kick_values={}
-        self.clr_writes=0;self.clear_slot_writes=0
-        self.pnd_reads=0;self.echo_reads=0
-        self.message_mirror=None   # M2P+7 最近值(机器侧被动镜像)
-        self.stored_slot=None      # 清槽写落进槽里的字节(观测 0xFF)
-        self.transactions=[];self.current=None
-
-    def note_message_byte(self,value):
-        """机器侧对 M2P+7 harness RAM 写的被动通知(值照常落 RAM,不拦截)。"""
-        self.message_mirror=value
-
-    def kick(self,value):
-        if value==self.KICK_VALUE:
-            self.kicks+=1;self.pnd_armed=True;self.echo_armed=True
-            self.current={'arg':self.message_mirror,'poll_reads':0,
-                          'echo_byte':None,'clr_writes':0}
-        else:
-            self.other_kick_values[hex(value)]=self.other_kick_values.get(hex(value),0)+1
-
-    def clear_slot(self,value):
-        self.clear_slot_writes+=1;self.stored_slot=value;self.echo_armed=False
-
-    def clear_ack(self,value):
-        self.clr_writes+=1
-        if value==self.CLR_VALUE:
-            self.pnd_armed=False
-            if self.current is not None:
-                self.current['clr_writes']+=1
-                self.transactions.append(self.current);self.current=None
-        else:
-            raise Blocked('p2m_mailbox_clr_form_not_modeled',value=hex(value))
-
-    def pnd_read(self):
-        if not self.pnd_armed:
-            raise Blocked('p2m_mailbox_pnd_read_without_kick',address=hex(self.INT_PND))
-        self.pnd_reads+=1
-        if self.current is not None:self.current['poll_reads']+=1
-        return self.ACK_BIT
-
-    def echo_read(self):
-        """字节粒度回声读(read_bytes 路由):武装态=M2P+7 镜像,否则=槽存储值。"""
-        self.echo_reads+=1
-        if self.echo_armed and self.message_mirror is not None:
-            if self.current is not None:self.current['echo_byte']=self.message_mirror
-            return self.message_mirror
-        if self.stored_slot is not None:
-            return self.stored_slot
-        raise Blocked('p2m_mailbox_echo_slot_never_written',address=hex(self.ECHO_SLOT))
-
-    def report(self):
-        return {'kicks':self.kicks,
-                'transactions':list(self.transactions),
-                'other_kick_values':dict(self.other_kick_values),
-                'clear_slot_writes':self.clear_slot_writes,
-                'pnd_reads':self.pnd_reads,'echo_reads':self.echo_reads,
-                'addresses':{'echo_slot':hex(self.ECHO_SLOT),'message_byte':hex(self.MESSAGE_BYTE),
-                             'int_set':hex(self.INT_SET),'int_pnd':hex(self.INT_PND),
-                             'int_clr':hex(self.INT_CLR)},
-                'disassembly_anchor':'feed-dog 0x12cc7e (flash master 0x060c6456); kick [0xF2A618]=0x400, '
-                                     'poll [0xF2A60C] bit12, echo b[0xF27F43], clr [0xF2A608]=0x1000',
-                'assumption':'P11 consumed the message and wrote it back to the P2M slot '
-                             '(explicit named assumption, synthetic-not-measured); latency not '
-                             'modeled (first poll read sees bit12); no other P2M_INT_PND bits invented',
-                'latency_modeled':False,'silicon_ack_semantics_measured':False}
-
-
 class LpTimerInitRegisters:
     """power_init 尾部低功耗定时器初始化链的写记录 + opt-in 的 LRCT 完成读回投影。
 
@@ -2671,9 +2570,12 @@ class JLAddaDaaCon1Registers:
                               'the instruction encoding pins 0x060A8608)'),
                 'whitelisted_words':('exactly the one JL_ADDA->DAA_CON1 word; the rest of the '
                                      'JL_ADDA block (DAA_CON0 0xfe0a00 / DAA_CON2 0xfe0a0c / '
-                                     'the ADA_CON family 0xfe0a20..) stays unmapped — the ADDA '
-                                     'read family is NOT released wholesale, later reads get '
-                                     'classified per address (config/status/measurement)'),
+                                     'the ADA_CON family 0xfe0a20..) stays outside THIS '
+                                     'container — the ADDA read family is NOT released '
+                                     'wholesale, later reads get classified per address '
+                                     '(config/status/measurement); the route-B3 sibling '
+                                     'switch jl_adda_analog_family serves five OTHER family '
+                                     'words with a mutually exclusive address set'),
                 'observed_shapes':('plain ld.w read at 0x606b426 plus plain st.w write-back at '
                                    '0x606b43c inside the config-RMW insert function 0x606b40e '
                                    '(the write-back sits OUTSIDE both selector blocks — with '
@@ -4531,7 +4433,6 @@ class BR28Model:
                  core_tick_prd_readback=False,
                  core_tick_cnt_held_snapshot=False,
                  core_tick_cnt_snapshot_probe_value=None,
-                 p2m_mailbox_ack=False,
                  jl_adda_analog_family=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
@@ -4655,12 +4556,6 @@ class BR28Model:
                        core_tick_progress or (None,None))] if core_tick_configuration else None
         if core_tick_configuration and core_tick_cnt_snapshot_probe_value is not None:
             self.core_ticks[0].cnt_snapshot_probe_value=core_tick_cnt_snapshot_probe_value
-        # p2m_mailbox_ack(BM §3 规格,路 B3/S19 批 2 续):P11 邮箱 ack 完成投影,
-        # 必须叠在 p11 窗口投影上(M2P 消息窗是 p11_power_init 的 harness 区,
-        # 邮箱事务的消息字节从那里镜像)。
-        if p2m_mailbox_ack and not p11_window_projection:
-            raise ValueError('the P2M mailbox ack projection requires the P11 window projection')
-        self.p2m_mailbox=P2mMailboxAck() if p2m_mailbox_ack else None
         # jl_adda_analog_family(路 B3/S19 批 2 续):JL_ADDA 模拟族五字容器
         # (0xfe0a00/08/0c/48/4c,函数 0x606abf0 静态全枚举白名单;+4 DAA_CON1
         # 不在白名单——路 CV 两开关分立容器独占,地址集互斥)。
@@ -5174,8 +5069,6 @@ class BR28Model:
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
                                                 or self.fd31_adc_con.handles_res(address))) or
             (self.p33_analog_tail_projection and address==P3_ANA_READ) or
-            (self.p2m_mailbox is not None and address in (P2mMailboxAck.INT_SET,P2mMailboxAck.INT_PND,
-                                                           P2mMailboxAck.INT_CLR)) or
             (self.jl_adda_family is not None and self.jl_adda_family.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
@@ -5460,11 +5353,6 @@ class BR28Model:
                 self.p3_ana_read_served+=1
                 return 0
             raise Blocked('p3_ana_read_not_modeled',address=hex(address))
-        # P2M_INT_PND(0xF2A60C,BM §3/路 B3):kick 武装后的 ack pending 读回
-        # (bit12);未武装读=Blocked(世界错即停,不兜底自旋)。
-        if self.p2m_mailbox is not None and address==P2mMailboxAck.INT_PND:
-            self.counts['reads']+=1
-            return self.p2m_mailbox.pnd_read()
         # JL_ADDA 模拟族五字(路 B3):读回=当前值(最后写值/无写时合成初始 0)。
         if self.jl_adda_family is not None and self.jl_adda_family.handles(address):
             self.counts['reads']+=1
@@ -5626,16 +5514,6 @@ class BR28Model:
             # 的 RMW 写回/整字写记录(经通用 mmio 路径的内部读=容器当前值);
             # 模拟通路/偏置/音频输出不建模。
             self.jl_adda_family.write(address,value)
-        elif self.p2m_mailbox is not None and address==P2mMailboxAck.INT_SET:
-            # M2P_INT_SET kick(BM §3):恰 0x400 武装,其他 kick 值只记录。
-            self.p2m_mailbox.kick(value)
-            self.record_write({'address':hex(address),'value':hex(value),
-                               'projection':'P11 mailbox M2P_INT_SET kick record'})
-        elif self.p2m_mailbox is not None and address==P2mMailboxAck.INT_CLR:
-            # P2M_INT_CLR(BM §3):恰 0x1000 清 ack 位并闭合事务。
-            self.p2m_mailbox.clear_ack(value)
-            self.record_write({'address':hex(address),'value':hex(value),
-                               'projection':'P11 mailbox P2M_INT_CLR ack clear'})
         elif self.jl_audio_dac_vl0 is not None and self.jl_audio_dac_vl0.handles(address):
             # JL_AUDIO DAC_VL0(路 CW/S19 批 0b):0x606db68 写回(在两个通道
             # 选择块之外,未选通道=组装值原样写回)整字写记录;值=真实指令
@@ -5867,20 +5745,13 @@ class BR28Model:
 
         现有 hardware.handles(address,size) 只接受 size==4 且 4 对齐的字访问;
         P33 窗无名寄存器族的固件访问形状全是单字节写(st.b/st.b.l/pair 的
-        st.b 半),需要独立的字节粒度入口——只路由到 p33_window 投影与
-        P2M 邮箱回声槽(路 B3),其他地址一律 False(字节写到未建模地址
-        继续走普通路径诚实停)。
+        st.b 半),需要独立的字节粒度入口——只路由到 p33_window 投影,其他
+        地址一律 False(字节写到未建模地址继续走普通路径诚实停)。
         """
-        return ((self.p33_window is not None and self.p33_window.handles(address)) or
-                (self.p2m_mailbox is not None and address==P2mMailboxAck.ECHO_SLOT))
+        return self.p33_window is not None and self.p33_window.handles(address)
 
     def write_byte(self,address,value):
-        """字节写:P33 窗 write-only 记录 / P2M 邮箱回声槽清槽(BM §3)。"""
-        if self.p2m_mailbox is not None and address==P2mMailboxAck.ECHO_SLOT:
-            self.p2m_mailbox.clear_slot(value)
-            self.record_write({'address':hex(address),'value':hex(value),
-                               'projection':'P11 mailbox P2M+3 echo-slot clear'})
-            return
+        """字节写落进 P33 窗无名寄存器族的 write-only 记录(不经读回)。"""
         if not self.handles_byte_write(address):raise ValueError('not a modeled P33 window byte register')
         self.p33_window.write_byte(address,value)
         self.record_write({'address':hex(address),'value':hex(value),
@@ -5966,11 +5837,7 @@ class BR28Model:
 
         power_init 读取 0xf27f4a..4d(P11 init 写入的 heap begin/size,值未证实)。
         fixture 由调用方显式提供;未提供时返回 None,普通存储路径继续严格停。
-        路 B3 增:P2M 邮箱回声槽(0xF27F43)的字节读按武装态服务(BM §3)。
         """
-        if (self.p2m_mailbox is not None and size==1 and address==P2mMailboxAck.ECHO_SLOT):
-            self.counts['reads']+=1
-            return bytes((self.p2m_mailbox.echo_read(),))
         if (self.p11_heap_info_bytes is None or not isinstance(size,int) or size<1 or
                 not P11_HEAP_INFO<=address or address+size>P11_HEAP_INFO+4):return None
         self.counts['reads']+=1
@@ -6267,8 +6134,6 @@ class BR28Model:
                 'prefix — the container would serve its synthesized config word there, the '
                 'silicon bit1 semantics stay unverified; no DAC analog path, bias or audio '
                 'output is modeled — this does NOT verify any audio output')
-        if self.p2m_mailbox is not None:
-            result['p2m_mailbox']=self.p2m_mailbox.report()
         if self.jl_audio_dac_vl0 is not None:
             result['jl_audio_dac_vl0_registers']=self.jl_audio_dac_vl0.report()
             result['assumptions']['jl_audio_dac_vl0_registers']=(

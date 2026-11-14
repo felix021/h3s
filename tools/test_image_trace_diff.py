@@ -6,7 +6,6 @@ Row shape mirrors TraceMachine: (core, before_pc, next_pc, flags,
 16-tuple of register signatures, tuple of (address, data-hex) writes).
 """
 import inspect
-import struct
 
 import frontier_registry
 import probe_irq_entry
@@ -141,12 +140,11 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert set(CONDITIONAL_EXTRA_FLAGS) == set(frontier_registry.extra_flags(probe_irq_entry))
     # every base switch is a plain boolean opt-in
     assert all(value is True for value in BASE_SCENARIO_FLAGS.values())
-    # the non-boolean conditional flags are exactly the six named data
+    # the non-boolean conditional flags are exactly the five named data
     # fixtures, resolved to the real probe_irq_entry module constants (no copies)
     non_boolean = {switch for switch, value in CONDITIONAL_EXTRA_FLAGS.items() if value is not True}
     assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values',
-                           'jl_adda_daa_con1_initial_fixture', 'p33_canary_first_read_words',
-                           'cfg523_named_fixture'}
+                           'jl_adda_daa_con1_initial_fixture', 'p33_canary_first_read_words'}
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
     # 路 BM/S19 批 1:条件场景改传扩展表(勘误 BA「trim 环采样 fd31✓」——
@@ -159,13 +157,6 @@ def test_flag_sets_derive_from_the_frontier_registry():
         is probe_irq_entry.JL_ADDA_DAA_CON1_INITIAL_PROBE
     assert CONDITIONAL_EXTRA_FLAGS['p33_canary_first_read_words'] \
         is probe_irq_entry.P33_CANARY_FIRST_READ_WORDS
-    # 路 B3/S19 批 2 续:cfg523 具名对象(BH §5.1 字节级草案)。
-    assert CONDITIONAL_EXTRA_FLAGS['cfg523_named_fixture'] \
-        is probe_irq_entry.CFG523_OBJECT_BYTES
-    assert bytes(probe_irq_entry.CFG523_OBJECT_BYTES) == (
-        bytes((1, 0, 0, 0)) + (0x00100001).to_bytes(4, 'little') + bytes(2)
-        + b''.join(struct.pack('<H', v) for v in (500, 720, 850, 1022) + (1022,) * 16)
-        + bytes((255, 10, 11, 12)) + bytes(16))
 
 
 def test_scenario_registry_shapes():
