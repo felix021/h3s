@@ -2790,5 +2790,62 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(both.handles(0xfe0500,4) and both.handles(0xfe0534,4)
                         and both.handles(0xfe0508,4))
 
+    def test_jl_adda_analog_family_container(self):
+        # 路 B3/S19 批 2 续:4,521,083 停点 0x606ac42(模拟 init 0x606abf0 首条
+        # DAA_CON0 bit13 清位 RMW 内部读)——AM 容器族:白名单恰五字
+        # (0xfe0a00/08/0c/48/4c),合成初始 0+读回=当前值;+4 DAA_CON1 由
+        # CV 容器独占(地址集互斥);默认关保持 unmapped。
+        words=(0xfe0a00,0xfe0a08,0xfe0a0c,0xfe0a48,0xfe0a4c)
+        plain=BR28Model()
+        for address in words:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe0a00,0xffffdfff)
+        self.assertNotIn('jl_adda_analog_family_registers',plain.report())
+        h=BR28Model(jl_adda_analog_family=True)
+        for address in words:
+            self.assertTrue(h.handles(address,4))
+        # +4 DAA_CON1 不进本容器(与 CV 容器互斥;CV 关着时仍 unmapped)。
+        self.assertFalse(h.handles(0xfe0a04,4))
+        # 写前读=合成初始 0(计数分开);RMW 语义:读 0→AND→写回落记录;
+        # 写后读=最后写值。
+        self.assertEqual(h.read(0xfe0a00),0)
+        h.write(0xfe0a00,0 & 0xffffdfff)
+        self.assertEqual(h.read(0xfe0a00),0)
+        h.write(0xfe0a08,0x80001000)
+        self.assertEqual(h.read(0xfe0a08),0x80001000)
+        h.write(0xfe0a0c,0x1f)
+        h.write(0xfe0a48,0x302000)
+        h.write(0xfe0a4c,0x80)
+        r=h.report()['jl_adda_analog_family_registers']
+        self.assertEqual(r['word_writes'],5)
+        self.assertEqual(sorted(r['stores']),['0xfe0a00','0xfe0a08','0xfe0a0c','0xfe0a48','0xfe0a4c'])
+        self.assertEqual((r['readback_projection']['reads'],
+                          r['readback_projection']['synthesized_initial_reads']),(2,1))
+        self.assertIn('synthetic initial word 0',r['readback_projection']['readback_semantics'])
+        self.assertIn('NOT a reset-value claim',r['readback_projection']['readback_semantics'])
+        self.assertIn('0x606b352',r['readback_projection']['known_limitation'])
+        self.assertIn('0x606abf0',r['observed_shapes'])
+        self.assertIn('mutually exclusive',r['whitelisted_words'])
+        assumption=h.report()['assumptions']['jl_adda_analog_family_registers']
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verify any audio output',assumption)
+        # 敏感性探针(ones 字一次性分叉,静态预测:读值只进写回组装零分支):
+        # 类属性改 ones 臂内复原。
+        from br28_model import JLAddaAnalogFamilyRegisters
+        JLAddaAnalogFamilyRegisters.SYNTHETIC_INITIAL_WORD=0xffffffff
+        try:
+            fork=BR28Model(jl_adda_analog_family=True)
+            self.assertEqual(fork.read(0xfe0a00),0xffffffff)
+            fork.write(0xfe0a00,0xffffffff & 0xffffdfff)
+            self.assertEqual(fork.read(0xfe0a00),0xffffdfff)
+        finally:
+            JLAddaAnalogFamilyRegisters.SYNTHETIC_INITIAL_WORD=0
+        # 与 CV DAA_CON1 容器叠加:两白名单互不吞地址。
+        stacked=BR28Model(jl_adda_analog_family=True,
+                          jl_wl_aud_write_records=True,jl_audio_adc_reset_write_records=True,
+                          jl_adda_daa_con1_initial_fixture=0x0,jl_adda_daa_con1_config_readback=True)
+        self.assertTrue(stacked.handles(0xfe0a04,4) and stacked.handles(0xfe0a00,4))
+
 
 if __name__=='__main__':unittest.main()

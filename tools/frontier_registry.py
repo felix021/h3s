@@ -173,6 +173,11 @@ FEATURES = (
             'core-tick PRD 读回=最近真实写入投影(BQ 一案:unresolved 溢出窗内只放行 offset 8,'
             '回放 tick_timer_init 的 PRD store 1199999;缺失继续严格停;CON/CNT 读与 CNT/pending/'
             'ACK/计时相位全不动;不给默认值;第二案 held 重新仲裁仅在放行后复现漏仲裁才加)'),
+    Feature('core_tick_cnt_held_snapshot', 'conditional', ('core_tick_prd_readback',), False, None,
+            'core-tick CNT held 快照读(B3 续一案:unresolved 溢出窗内只放行 offset 4,返回模型'
+            '实际存储的溢出后冻结快照——显式「溢出后 CNT 冻结」假设 assumed-not-measured,'
+            '非 PRD-1/非周期末值/非合成默认;该场景快照=0;读无副作用,CON 读与 pending/ACK/'
+            '计时相位全不动;硬件回绕行为无 BR28 证据不声明)'),
     # ---- S19 冲刺批 1(W4[4] 簇,路 BM 总装;四件同 PR) ----
     Feature('jl_audio_dac_cop_writes', 'conditional', ('jl_audio_dac_vl0_readback',), False, None,
             'JL_AUDIO DAC_COP(0xfe0534,+0x34 成员 13 __WO)写侧 write-only 整字记录'
@@ -200,6 +205,16 @@ FEATURES = (
             'P33_CANARY_FIRST_READ_WORDS',
             '金丝雀首读具名字 fixture({0xf2c044:0}=VLVD 未使能 boot 初态,'
             'synthetic-not-measured)'),
+    # ---- S19 冲刺批 2 续(路 B3/sim-s19b3:CNT held 快照+JL_ADDA 族+电池段两案) ----
+    Feature('jl_adda_analog_family', 'conditional', ('jl_adda_daa_con1_config_readback',), False, None,
+            'JL_ADDA 模拟族五字容器(DAA_CON0/DAA_CON2/DAA_CON3/ADDA_CON1/+0x4c 无名;4,521,083 '
+            '停点 0x606ac42=模拟 init 函数 0x606abf0 静态全枚举白名单;合成初始 0+读回=当前值,'
+            '读值只进写回组装零分支;+4 DAA_CON1 由路 CV 容器独占;DAA_CON2 bit1 状态位消费者'
+            '0x606b352 在音频任务域,硅语义推迟未证)'),
+    # (p2m_mailbox_ack / cfg523_named_fixture 已实现并单测,但 19,139,239 停点
+    # (JL_AUDIO->DAC_TM0 运行态读)证实两者的全部运行态消费者仍在音频数字域整块
+    # 之后——按 BQ 先例(零消费者不落地)从条件栈撤回,实现保留在本分支历史
+    # 0b875ed,待音频域过界后按到达顺序落地。)
     # ---- probe_only(只在 probe_irq_entry 场景变体出现,6 个开关) ----
     Feature('timer0_irq4_probe_steps', 'probe_only', ('timer0_irq4_delivery',), True, None,
             'Timer0 首次到期拉近探路 fixture(计数 seed,场景传值)'),
@@ -209,6 +224,10 @@ FEATURES = (
             'core tick 首溢出拉近探路 fixture(计数 seed,场景传值)'),
     Feature('core_tick_irq3_masked', 'probe_only', ('core_tick_irq3_probe_steps',), False, None,
             'core tick IRQ3 反事实掩码对照(清 IRQ3 nibble)'),
+    Feature('core_tick_cnt_snapshot_probe_value', 'probe_only', ('core_tick_cnt_held_snapshot',), True, None,
+            'core tick CNT held 快照敏感性探针值(unresolved 窗内 CNT 读改返探针值'
+            '——0 vs 周期末值 PRD-1=1199998 两分叉对照,CV 双探针先例;sensitivity-'
+            'probe-not-plausible-state,记录观察路径首次分叉)'),
     Feature('key_chain_scan', 'probe_only', ('p11_power_init', 'fd31_adc_pnd_completion',
                                              'fd31_adc_res_named_values'), True, None,
             '停点后直调键链场景(键分档查询→扫描回调→手势→post)'),
@@ -237,10 +256,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 3747585,
-        'stop_pc': '0x12b0e8',
-        'stop': {'kind': 'core_tick_overflow_requires_resolution'},
-        'freshness_fields': ('kind',),
+        'completed_steps': 19139239,
+        'stop_pc': '0x606abbe',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                 'address': '0xfe0524', 'size': 4, 'reference_sdk_register': None},
+        'freshness_fields': ('kind', 'address'),
     },
 }
 

@@ -326,6 +326,169 @@ class CoreTickPrdReadbackTests(unittest.TestCase):
         self.assertNotIn('prd_readback_projection',h2.report()['core_tick_configuration'][0])
 
 
+class CoreTickCntHeldSnapshotTests(unittest.TestCase):
+    """路 B3 续一案(core_tick_cnt_held_snapshot)的单测面(含 ACK 四查可单测项)。
+
+    背景(2026-11-14 前沿 3,747,585 @ 0x12b0e8):内核定时器编程助手 0x12b0ba
+    retry 环第一半 ld.w 读 CNT(0xffe0f0=BASES[0]+4),第 12 次溢出 held 未决。
+    codex 定调:模型现状=溢出后 advance 不再推进,cnt 冻结在溢出时刻 divmod
+    余数(该场景对齐恰 0)——「溢出后 CNT 冻结」是模型 artefact 的显式假设
+    (assumed-not-measured,硬件倾向回绕继续计数但无 BR28 证据);开关只放行
+    offset 4 读=返回实际存储快照,非 PRD-1/非周期末值/非合成默认。
+    ACK 四查(本类钉可单测的 ②③④;①=handler 反汇编静态证据,见 HANDOFF):
+      ②重装载时机:advance() 在溢出时刻重装载(divmod 余数保存),ACK 不
+        重置相位——「reload-at-overflow-with-remainder; ACK is pending-clear
+        only」是显式命名假设;
+      ③周期端点:周期=PRD+1(SDK 公式/firmware 换算 PRD=ticks-1),一步
+        越界余数保存(divmod 余数落回 cnt,不丢弃);
+      ④读完全无副作用:连续两读同值,不增交付/ACK/jiffies 语义面。
+    """
+    def configured(self,*,snapshot=True,cnt=0,ipmask=6):
+        h=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                    core_tick_progress=(4,4),core_tick_delivery_requests=True,
+                    core_tick_prd_readback=True,core_tick_cnt_held_snapshot=snapshot,
+                    initial_irq_config=[0x3000]+[0]*31,initial_ipmask=ipmask)
+        base=CORE_TICK_BASES[0]
+        h.write(base,0);h.write(base+4,cnt);h.write(base+8,1199999);h.write(base,1)
+        return h,base
+
+    def _overflow_held(self,h):
+        timer=h.core_ticks[0]
+        while not timer.unresolved_overflow:h.advance(0x300)
+        self.assertTrue(timer.pending and timer.unresolved_overflow and not timer.delivery_in_flight)
+        return timer
+
+    def test_switch_off_keeps_the_cnt_strict_stop(self):
+        # 前缀一致:PRD 案放行、CNT 案关闭时,unresolved 窗内 CNT 读逐字保持
+        # 原停点形状(同 kind)。
+        h,base=self.configured(snapshot=False)
+        timer=self._overflow_held(h)
+        self.assertEqual(h.read(base+8),1199999)  # the BQ release still works
+        with self.assertRaisesRegex(Blocked,'core_tick_overflow_requires_resolution'):
+            h.read(base+4)
+        with self.assertRaisesRegex(Blocked,'core_tick_overflow_requires_resolution'):
+            h.read(base)
+
+    def test_returns_the_actual_stored_snapshot_zero_case(self):
+        # 该场景断言为 0:对齐溢出(cnt+progress 恰=prd+1)余数 0,快照=0。
+        h,base=self.configured()
+        timer=self._overflow_held(h)
+        self.assertEqual(timer.cnt,0)  # aligned crossing: remainder exactly 0
+        self.assertEqual(h.read(base+4),0)
+
+    def test_returns_the_actual_stored_remainder_not_prd_minus_one(self):
+        # 「实际存储快照」而非 PRD-1/周期末值:非对齐溢出(CNT=1199997+4
+        # =1200001>prd+1,一步越界)余数 1 落回 cnt,读回 1——不是 0(无对齐
+        # 偏置)、不是 1199998(PRD-1)、不是 1199999(周期末)。
+        h,base=self.configured(cnt=1199997)
+        timer=self._overflow_held(h)
+        self.assertEqual(timer.cnt,1)  # one-step overshoot remainder preserved (四查③)
+        self.assertEqual(h.read(base+4),1)
+        self.assertNotEqual(h.read(base+4),1199998)
+
+    def test_read_has_no_side_effects_two_consecutive_reads(self):
+        # 四查④:连续两读同值;pending/cnt/expirations/acks/in_flight/未决
+        # 标志全不动(读不 ACK、不清 pending、不重装载、不重置相位)。
+        h,base=self.configured()
+        timer=self._overflow_held(h)
+        before=(timer.pending,timer.cnt,timer.expirations,timer.acknowledgements,
+                timer.delivery_in_flight,timer.unresolved_overflow,timer.prd)
+        first=h.read(base+4)
+        second=h.read(base+4)
+        after=(timer.pending,timer.cnt,timer.expirations,timer.acknowledgements,
+               timer.delivery_in_flight,timer.unresolved_overflow,timer.prd)
+        self.assertEqual(first,second)
+        self.assertEqual(before,after)
+
+    def test_ack_does_not_reset_phase_counter_resumes_from_remainder(self):
+        # 四查②:ACK(rmw |=0x40)只清 pending/未决/在途——不写 CNT、不重使能
+        # CON、不重置相位;ACK 后计数从保存的余数继续(reload-at-overflow-
+        # with-remainder; ACK is pending-clear only)。
+        h,base=self.configured(cnt=1199997)
+        timer=self._overflow_held(h)
+        h.write(IPMASK,0)
+        with self.assertRaises(IrqDeliveryRequest):h.advance(0x300)
+        h.core_tick_rmw(base,'or',0x40)
+        self.assertEqual(timer.acknowledgements,1)
+        self.assertFalse(timer.pending or timer.unresolved_overflow or timer.delivery_in_flight)
+        self.assertEqual(timer.cnt,1)      # ACK did not touch the stored remainder
+        self.assertEqual(timer.con,1)      # ACK did not re-enable (bit0 untouched)
+        h.advance(0x300)                    # resumes counting from the remainder
+        self.assertEqual(timer.cnt,5)
+        self.assertFalse(timer.pending)     # no second overflow from the resumed step
+
+    def test_ack_instruction_shape_is_the_only_accepted_form(self):
+        # 四查①(模型侧形状):ACK 只接受 |=0x40(bit6 W1C 清 pending)精确
+        # 形状;其他 RMW 形状一律拒(不臆造「ACK 写 CNT/重使能」)。
+        h,base=self.configured()
+        timer=self._overflow_held(h)
+        h.write(IPMASK,0)
+        with self.assertRaises(IrqDeliveryRequest):h.advance(0x300)
+        with self.assertRaisesRegex(Blocked,'core_tick_rmw_not_modeled'):
+            h.core_tick_rmw(base,'or',0x04)
+        with self.assertRaisesRegex(Blocked,'core_tick_rmw_not_modeled'):
+            h.core_tick_rmw(base,'and',0xffffffbf)
+        h.core_tick_rmw(base,'or',0x40)
+        self.assertEqual(timer.acknowledgements,1)
+
+    def test_long_held_window_snapshot_stays_frozen(self):
+        # 长 held 窗口:冻结假设的显形——held 期间快照逐次同值(不随步推进),
+        # 不产生第二次到期/第二个 pending 片。
+        h,base=self.configured()
+        timer=self._overflow_held(h)
+        for _ in range(200):
+            h.advance(0x300)
+            self.assertTrue(timer.unresolved_overflow and timer.pending)
+        self.assertEqual(h.read(base+4),0)
+        self.assertEqual(timer.expirations,1)
+
+    def test_sensitivity_probe_value_substitutes_without_touching_state(self):
+        # CV 双探针先例的模型面:probe 值只替换读值,不动任何状态(0 vs
+        # 周期末值 PRD-1 的两分叉由场景级对照记录,不在单测伪造整个世界)。
+        h,base=self.configured()
+        timer=self._overflow_held(h)
+        timer.cnt_snapshot_probe_value=1199998  # PRD-1, period-end probe
+        before=(timer.cnt,timer.pending,timer.expirations,timer.acknowledgements)
+        self.assertEqual(h.read(base+4),1199998)
+        self.assertEqual((timer.cnt,timer.pending,timer.expirations,timer.acknowledgements),before)
+        timer.cnt_snapshot_probe_value=None
+        self.assertEqual(h.read(base+4),0)
+
+    def test_report_key_is_gated_with_the_freeze_assumption(self):
+        # legacy 报告逐字节不变:cnt_held_snapshot_projection 键只在开关开启时
+        # 出现;假设文本显式含「CNT frozen after overflow」/assumed-not-measured/
+        # NOT PRD-1/快照值=实际存储值。
+        h,base=self.configured()
+        self._overflow_held(h)
+        row=h.report()['core_tick_configuration'][0]
+        projection=row['cnt_held_snapshot_projection']
+        self.assertEqual(projection['enabled'],True)
+        self.assertEqual(projection['stored_snapshot'],0)
+        self.assertIn('"CNT frozen after overflow"',projection['returns'])
+        self.assertIn('assumed-not-measured',projection['returns'])
+        self.assertIn('NOT PRD-1',projection['returns'])
+        self.assertFalse(projection['silicon_wraparound_behavior_measured'])
+        self.assertTrue(projection['held_window_progress_lost_if_frozen'])
+        h2,_=self.configured(snapshot=False)
+        self.assertNotIn('cnt_held_snapshot_projection',h2.report()['core_tick_configuration'][0])
+        # probe 值进入报告(sensitivity_probe_value 键)。
+        h3=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                     core_tick_progress=(4,4),core_tick_delivery_requests=True,
+                     core_tick_prd_readback=True,core_tick_cnt_held_snapshot=True,
+                     core_tick_cnt_snapshot_probe_value=1199998,
+                     initial_irq_config=[0x3000]+[0]*31,initial_ipmask=6)
+        self.assertEqual(h3.report()['core_tick_configuration'][0]
+                         ['cnt_held_snapshot_projection']['sensitivity_probe_value'],1199998)
+
+    def test_switch_requires_the_core_tick_configuration(self):
+        with self.assertRaises(ValueError):
+            BR28Model(core_tick_configuration=False,core_tick_cnt_held_snapshot=True)
+        with self.assertRaises(ValueError):
+            BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                      core_tick_progress=(4,4),core_tick_prd_readback=True,
+                      core_tick_cnt_snapshot_probe_value=1199998)
+
+
 
     def test_entry_is_opt_in(self):
         m=machine(entry=False);m.cores={0:FakeCpu(VectorMem())}
