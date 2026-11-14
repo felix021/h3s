@@ -341,6 +341,39 @@ P1-b 保持为快照落地前的回退路径；§2 落地后在蓝图修订里�
 合计 ≈ 3–4 个工作日（不含 D2-b/D1 本体的既有工作量）。先只读快照+对照（S1/S2），
 恢复（S2）与消费者（S3）分层推进——S1 单独就有价值（快照即世界全景审计文件）。
 
+## 5.4 S1 模块半完成状态（2026-11-14 11:21 路 BJ/sim-snapmod，基线 dbfcc16）
+
+S1 拆成两半推进（与 BF 前沿路并行不冲突）：**模块半已完成**（序列化框架+fast tier
+自反，纯新增 `tools/world_snapshot.py` + `tools/test_world_snapshot.py`，不碰
+probe_boot/probe_irq_entry/br28_model/br28_machine 等既有文件）；**捕获接线半未动**
+（见下）。模块半能力清单：
+
+| 能力 | 状态 | 锚点 |
+|---|---|---|
+| 分层格式编解码（magic+版本+header/manifest/body JSON + RAM 字节段二进制框架） | 就绪 | world_snapshot.WorldSnapshot.encode/from_bytes/save/load |
+| 类型标签值编码（五种抽象值显式标签 + $pairs/$set/$counter 集合标签；白名单外类型抛错） | 就绪 | encode_value/decode_value；集合标签是对 §2.4 白名单的记录在案的扩展（M5/M7 的 set/Counter/int 键映射需类型精确往返） |
+| RAM run-length 编解码（已知段合并排序、段间洞=未知字节、unknown_origins/icfg_spills 小节） | 就绪 | encode_ram_runs/decode_ram_runs/encode_ram_section |
+| 漂移双闸：①代码指纹（§2.3 源文件 sha + upstream PIN + 格式版本 + 适配器形状）②manifest（从 body 派生的形状校验和 + restore 侧与当前适配器字段表对照），不匹配拒载并报类名 | 就绪 | code_fingerprint / derive_manifest / from_bytes / restore_world |
+| 适配器注册表（M1–M9 各一个 capture_fn/restore_fn 注册点；M4/M8/M9 显式登记为「设计性缺席/接线半」） | 就绪 | register_module / MODULES |
+| 小世界最小实现：M1 平面 CPU 桩（15 字段）、M2 三字典 Memory、M3 Timer0/双 core tick/双 IRQ 控制器/软件 IRQ/寄存器与 GPIO 投影/标量簿记、M5 机器交付簿记（20 标量+core 存在性）、M6 MMU、M7 循环账本 | 就绪 | tools/world_snapshot.py 各 _capture_m*/_restore_m* |
+| 静态开关守卫（捕获时对未被捕获、非 fixture 的属性种类拒绝并报名字；恢复时静态视图不一致拒绝——「另一套启动条件」的机制化防漏） | 就绪 | encode_static_value/check_static；M4 投影族非 None 即拒载（missing-state guard） |
+| round-trip 自反（检查 #0 的模块半形态：恢复零步逐字段相等 + 重捕获字节同一） | 就绪 | assert_equal + test_world_snapshot.SmallWorldRoundTrip |
+| fast tier 测试（22 例：小世界往返+逐字段比对+字节同一；反例两条——漏应用字段/注偏差必须红；指纹闸/manifest 闸/篡改拒载；run-length 边界含洞语义；白名单拒绝） | 就绪 | tools/test_world_snapshot.py，进 `check_local --units`（check_local 一行接线） |
+
+已记录的格式决策偏离（模块 docstring 同步）：捕获时场景开关进 header.capture_context
+而非指纹（load 侧重算指纹拿不到捕获时上下文），消费者经 restore_world(expected_context=)
+拿到场景闸。
+
+**捕获接线半剩什么**（BF 合并后的下一路）：
+1. probe_boot explore 循环的捕获点（post_stop 式钩子，§2.5；账本句柄暴露，M7 的
+   「向后兼容第四可选参数」方案）；
+2. M1 完整字段清单（执行上下文/repeat/after_then/银行簿记/任务帧/IcfgState——最小
+   15 字段清单已在注册表，扩展即改 M1_CPU_FIELDS，旧快照自然被双闸拒绝再生成）；
+3. M4 约 25 个投影族类的适配器（当前非 None 即拒载）；
+4. 小世界往返升级为「快照于中点、恢复到终点、对照完整直跑」的 fast tier 全量形态
+   （§3.2；等价对照=恢复合法性证明仍是接线半的验收，本路不声称）；
+5. canonical 快照生成 + artifact tier 三档 X 对照（§3.1/§3.2）。
+
 ## 5.3 与既有机制的关系（不重复造轮子）
 
 - post_stop 直调（S 路）/dispatch_delivery（BE）/事件时钟 advance 同循环（AB/BI）——
@@ -351,6 +384,12 @@ P1-b 保持为快照落地前的回退路径；§2 落地后在蓝图修订里�
 
 # 6. HANDOFF 条目（同步落档）
 
+- 路 BJ（sim-snapmod，2026-11-14 11:21，基线 dbfcc16）：**S1 模块半**完成——序列化
+  框架+适配器注册表+漂移双闸+fast tier 自反，主交付 tools/world_snapshot.py（新）+
+  tools/test_world_snapshot.py（22 例，进 --units）+check_local 一行接线+本文件 §5.4
+  状态清单。不碰 probe_boot/probe_irq_entry/br28_model/br28_machine；捕获接线（explore
+  捕获点/M1 完整清单/M4 投影族/等价对照）留给 BF 合并后的下一路（§5.4 尾清单）。
+  前沿不变。
 - 路 BD（sim-snapshot，本次合并，设计路不改 tools/）：**快照/恢复机制设计蓝图**完成，
   主交付 [docs/snapshot-design.md](docs/snapshot-design.md)。动机=codex 复盘+AZ B-3
   （场景级实验 3 分钟/次进不了反馈环）。蓝图内容：①世界状态全清单 9 模块（双核 CPU
