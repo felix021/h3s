@@ -11,7 +11,7 @@ from br28_model import JL_UART_CON_WORDS, JL_UART_INIT_WORDS, JL_UART_INIT_WORD_
 from br28_model import JLUartInitWriteRecords
 from br28_model import JL_OMAP_OUT_WORDS, JL_OMAP_USB_WORDS
 from br28_model import JL_IMAP_IN_WORDS
-from br28_model import JL_WL_AUD_CON0, JL_AUDIO_DAC_CON, JL_AUDIO_AUD_CON, JL_ASS_CLK_CON, JL_AUDIO_DAC_INIT_WORDS
+from br28_model import JL_WL_AUD_CON0, JL_AUDIO_DAC_CON, JL_AUDIO_AUD_CON, JL_AUDIO_ADC_CON, JL_ASS_CLK_CON, JL_AUDIO_DAC_INIT_WORDS
 from br28_model import HardwareCrcEngine, CRC_ENGINE
 from br28_model import SfcClockGateProjection, SFC_CLOCK_GATE
 from br28_model import SFCReadBus, SFC_BASE, SFC_SECONDARY_BASE
@@ -1140,8 +1140,10 @@ class ModelTests(unittest.TestCase):
         # 写记录+读回=最后写值;无写时显式合成 0(消费点=CLK_CON|=1/
         # AUD_CON&=~0x40 的 RMW 内部读:0|1=1、0&~0x40=0,平凡零发明);
         # RMW 经 probe_boot 通用 mmio 路径=模型 API 上读+写两个真实事务。
-        # DAC_CON 整字写值 0xfe2200 恰等于 WL_AUD 基址=数值巧合,整字记录
-        # 不做语义解读。条件族(esco/ANC/缺省分支)不进白名单。
+        # 路 AS 勘误:0x6071cbc 存储是并行对(0x6071cb8 `r1=r0+0x1D00` ∥
+        # `[r0+0]=r1`)的旧 r1 半,实测落盘 0x0(SR walk 值);AG 图
+        # 「=0xfe2200 数值巧合」是并行对误读(0xfe2200 是 S2 写基址)。
+        # 条件族(esco/ANC/缺省分支)不进白名单。
         self.assertEqual(JL_AUDIO_DAC_INIT_WORDS,(0xfe0500,0xfe0558,0xfe0900))
         # 依赖守卫:DAC init 写域层叠在 WL_AUD 写域上(执行序:S0 在前)。
         with self.assertRaises(ValueError):BR28Model(jl_audio_dac_init_write_records=True)
@@ -1152,30 +1154,33 @@ class ModelTests(unittest.TestCase):
         h=BR28Model(jl_wl_aud_write_records=True,jl_audio_dac_init_write_records=True)
         for address in JL_AUDIO_DAC_INIT_WORDS:
             self.assertTrue(h.handles(address,4))
-        # 条件族地址不进白名单(0xfe0538 ADC_CON/0xfe0400 JL_ANC/0xfe0a00
-        # DAA_CON0/0xfe0a40 ADA_CON8)。
+        # 条件族地址不进白名单(0xfe0538 ADC_CON 由路 AS 域三容器管,本容器
+        # 不含;0xfe0400 JL_ANC/0xfe0a00 DAA_CON0/0xfe0a40 ADA_CON8 不放)。
+        self.assertFalse(h.jl_audio_dac_init_records.handles(0xfe0538))
         for address in (0xfe0538,0xfe0400,0xfe0a00,0xfe0a40):
             self.assertFalse(h.handles(address,4))
-        # S1 整字写 0xfe2200(数值巧合如实记录)→ S4 RMW &=~0x100 读侧=
-        # 已记录值可推导(0xfe2200 bit8 本为 0,写回不变)→ 尾 RMW |=0x100
-        # → 0xfe2300;S3 CLK_CON |=1 与 S5 AUD_CON &=~0x40 的内部读=合成 0。
-        h.write(0xfe0500,0xfe2200)
-        self.assertEqual(h.read(0xfe0500)&0xFFFFFEFF,0xfe2200)
+        # 路 AS 实测执行形状:S1 整字写 0x0(并行对旧 r1=SR walk 值)→
+        # S4 RMW &=~0x100 读侧=已记录值可推导(bit8 本为 0,写回不变)→
+        # 尾 RMW |=0x100 → 0x100;S3 CLK_CON |=1 与 S5 AUD_CON &=~0x40 的
+        # 内部读=合成 0。
+        h.write(0xfe0500,0x0)
+        self.assertEqual(h.read(0xfe0500)&0xFFFFFEFF,0x0)
         h.write(0xfe0500,h.read(0xfe0500)&0xFFFFFEFF)
         h.write(0xfe0900,h.read(0xfe0900)|1)
         h.write(0xfe0558,h.read(0xfe0558)&0xFFFFFFBF)
         h.write(0xfe0500,h.read(0xfe0500)|0x100)
         self.assertEqual((h.read(0xfe0500),h.read(0xfe0558),h.read(0xfe0900)),
-                         (0xfe2300,0,1))
+                         (0x100,0,1))
         report=h.report()['jl_audio_dac_init_write_records']
         self.assertEqual(report['stores']['0xfe0500'],
-                         {'values':['0xfe2200','0xfe2200','0xfe2300'],'writes':3,'cores':[0,0,0]})
+                         {'values':['0x0','0x0','0x100'],'writes':3,'cores':[0,0,0]})
         self.assertEqual(report['stores']['0xfe0558'],{'values':['0x0'],'writes':1,'cores':[0]})
         self.assertEqual(report['stores']['0xfe0900'],{'values':['0x1'],'writes':1,'cores':[0]})
         self.assertEqual(report['word_writes'],5)
         projection=report['readback_projection']
         self.assertEqual((projection['reads'],projection['synthesized_initial_reads']),(6,2))
         self.assertIn('numeric coincidence',report['observed_shapes'])
+        self.assertIn('parallel-pair misread',report['observed_shapes'])
         self.assertIn('synthetic initial word 0',projection['readback_semantics'])
         self.assertIn('derived-not-measured',projection['readback_semantics'])
         assumption=h.report()['assumptions']['jl_audio_dac_init_write_records']
@@ -1184,6 +1189,64 @@ class ModelTests(unittest.TestCase):
         self.assertIn('NOT verify any audio output',assumption)
         # 非整字/未对齐访问不经容器。
         self.assertFalse(h.handles(0xfe0502,4) or h.handles(0xfe0558,2))
+
+    def test_jl_audio_adc_reset_write_records_and_readback(self):
+        # 路 AS(sim-adcreset):JL_AUDIO->ADC_CON(0xfe0538=+0x38,路 AE 钉死
+        # 命名+位语义:bit7 IRQ pending 硬件按 DMA 样本置位/bit6 清+重启/
+        # bit5 数字使能/bit4 使能门/bits0-3 SR 码)reset 写 [ADC_CON]=0 的
+        # 单字写记录+读回=最后写值(uart CON1 最终形态);无写时显式合成 0
+        # (路 AM 先例)。写形状=0x60719a6 ADC 节点 reset 函数体内并行对
+        # 0x60719c0 `add.s14.rri.p r3=r1+4596` ∥ `st.w [r3+0]=r4` 第二半以
+        # 旧 r3(0xfe0538,li.u32 0x60719b8 装载)写旧 r4=0(li.u8 0x60719be)
+        # ——旧寄存器并行语义=FM-1 run3/exact_parallel_stores 既有机制的
+        # 首个 SFR 站点;第一半同步把 r3 更新为 hdl 指针(0x1265C0+4596=
+        # 0x1277B4)供随后 RAM init,尾部 0x60719d6 guard 字节 b[0x127801]
+        # (0x1265C0+0x1241;路 AN 叙事 b[0x1267E1] 是手算笔误)置 1。本前缀
+        # 零读(AE 消费者全在 IRQ68/esco 链上);投影下 bit7 恒 0=无 ADC
+        # 硬件活动的诚实显形,不发明完成(路 BN 先例)。
+        self.assertEqual(JL_AUDIO_ADC_CON,0xfe0538)
+        # 依赖守卫:ADC reset 写域层叠在 WL_AUD 域一上(执行序:0x60719a6
+        # 在 0x602ea72 之后被调)。
+        with self.assertRaises(ValueError):BR28Model(jl_audio_adc_reset_write_records=True)
+        g=BR28Model()
+        self.assertFalse(g.handles(0xfe0538,4))
+        self.assertNotIn('jl_audio_adc_reset_write_records',g.report())
+        h=BR28Model(jl_wl_aud_write_records=True,jl_audio_adc_reset_write_records=True)
+        self.assertTrue(h.handles(0xfe0538,4))
+        # 白名单恰一字:ADC 域其余寄存器与 fe0 相邻字一律不放进(0xfe2200
+        # 由 wl_aud 域一容器合法处理、0xfe0500 需 AK 域二,均非本容器)。
+        for address in (0xfe0534,0xfe053c,0xfe0554,0xfe055c,0xfe0904,0xfe0908,
+                        0xfe0a40,0xfe0500):
+            self.assertFalse(h.handles(address,4))
+        # 与 AK 域二叠加时 DAC 容器本身仍不含 0xfe0538(分域边界互斥)。
+        h2=BR28Model(jl_wl_aud_write_records=True,jl_audio_dac_init_write_records=True,
+                     jl_audio_adc_reset_write_records=True)
+        self.assertFalse(h2.jl_audio_dac_init_records.handles(0xfe0538))
+        self.assertTrue(h2.jl_audio_adc_reset_records.handles(0xfe0538))
+        # 3,137,573 停点放行形状:并行对第二半以旧 r3 写 0。
+        h.write(0xfe0538,0)
+        self.assertEqual(h.read(0xfe0538),0)
+        report=h.report()['jl_audio_adc_reset_write_records']
+        self.assertEqual(report['stores']['0xfe0538'],{'values':['0x0'],'writes':1,'cores':[0]})
+        self.assertEqual(report['word_writes'],1)
+        self.assertEqual((report['readback_projection']['reads'],
+                          report['readback_projection']['synthesized_initial_reads']),(1,0))
+        self.assertIn('derived-not-measured',report['readback_projection']['readback_semantics'])
+        self.assertIn('NOT a reset-value claim',report['readback_projection']['readback_semantics'])
+        self.assertIn('parallel pair',report['observed_shapes'])
+        self.assertIn('0x127801',report['whitelisted_words'])
+        assumption=h.report()['assumptions']['jl_audio_adc_reset_write_records']
+        self.assertIn('ADC_CON',assumption)
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verify any audio input',assumption)
+        # 从未写过的显式合成 0 分支(路 AM 先例):独立实例首读=0 且计数分离;
+        # 投影下 bit7 恒 0(无 ADC 硬件活动的诚实显形,非发明完成)。
+        k=BR28Model(jl_wl_aud_write_records=True,jl_audio_adc_reset_write_records=True)
+        self.assertEqual(k.read(0xfe0538),0)
+        self.assertEqual(k.report()['jl_audio_adc_reset_write_records']['readback_projection']
+                         ['synthesized_initial_reads'],1)
+        # 非整字/未对齐访问不经容器。
+        self.assertFalse(h.handles(0xfe0539,4) or h.handles(0xfe0538,2) or h.handles(0xfe0538,1))
 
     def test_jl_omap_write_records_bank_and_strict_readback(self):
         # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字的 write-only 整字

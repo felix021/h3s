@@ -1786,17 +1786,33 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # 的 delivery_in_flight;软件 IRQ 的 pending 字天然保持),handler RTI
         # 后的下个 advance 以同一 pending 片重新请求交付。与 masked pending
         # 逐步重检(BF)同族语义;IRQ 嵌套仍不建模(机器侧守卫保持)。
+        # 路 AS 扩展:请求落在目标核**指令中途**(after_then 并行对第二半在途
+        # /repeat rep 体迭代在途)——同款挂起不丢弃。依据:模型把并行对与
+        # rep 块拆成多个步(step)只是适配器形状,硅上两者都是**单条指令**
+        # (FM-1 run3 并行对证据/rep 硬件循环证据),IRQ 在指令边界识别——
+        # 延期到块尾交付比撞守卫崩溃或块中交付都更贴硅语义。实测首例=路 AS
+        # 放行 ADC reset 写后 +1,567 步,第 5 次 Timer0 到期(3,139,140)落在
+        # ROM 0x4180 寄存器计数 rep 拷贝体内(remaining=5);此前 4 次交付
+        # 全在干净边界,该路径在 3.1M 步前缀里首次触达(此前=未捕 ValueError
+        # 硬崩)。块有界(rep 迭代数/对的第二半各有限),下个 advance 以同一
+        # pending 片重新请求,不会无限延期。
         target_cpu=machine.cores.get(request.details['core'])
-        if (target_cpu is not None and
-                getattr(target_cpu,'active_context',None) in
-                ('software_irq_handler','core_tick_handler','timer0_irq_handler')):
+        mid_instruction=(target_cpu is not None and
+                         (getattr(target_cpu,'after_then',None) is not None or
+                          getattr(target_cpu,'repeat',None) is not None))
+        in_flight_handler=(target_cpu is not None and
+                           getattr(target_cpu,'active_context',None) in
+                           ('software_irq_handler','core_tick_handler','timer0_irq_handler'))
+        if mid_instruction or in_flight_handler:
+            deferred_while=('mid_instruction (after_then/repeat in flight)'
+                            if mid_instruction and not in_flight_handler
+                            else getattr(target_cpu,'active_context',None))
             if hardware is not None:
                 if request.details['irq']==3:
                     hardware.core_ticks[request.details['core']].delivery_in_flight=False
                 elif request.details['irq']==4:
                     hardware.timer.delivery_in_flight=False
-            machine.note_delivery_deferral(request.details,
-                                           getattr(target_cpu,'active_context',None))
+            machine.note_delivery_deferral(request.details,deferred_while)
             row['deferred_delivery']=request.details
             return
         # The requesting advance may fire for the peer core; deliver to

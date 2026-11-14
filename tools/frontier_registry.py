@@ -143,6 +143,8 @@ FEATURES = (
             'JL_WL_AUD CON0(0xfe2200)整字写记录+读回=最后写值(音频 init 域一)'),
     Feature('audio_dac_init_writes', 'conditional', ('wl_aud_con_writes',), False, None,
             '音频 DAC init 三字(DAC_CON/AUD_CON/JL_ASS CLK_CON)写记录+读回(域二)'),
+    Feature('jl_audio_adc_reset_writes', 'conditional', ('wl_aud_con_writes',), False, None,
+            'JL_AUDIO ADC_CON(0xfe0538) reset 写记录+读回=最后写值(域三,0x60719c0 并行对旧 r3 形状)'),
     Feature('subword_stores', 'conditional', (), False, None,
             '普通子字存储直写(exact_subword_stores,绕过合并读)'),
     Feature('word_store_sp_l', 'conditional', (), False, None,
@@ -190,10 +192,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 3137573,
-        'stop_pc': '0x60719c0',
-        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
-                 'address': '0xfe0538', 'size': 4, 'value_bytes': '00000000'},
+        'completed_steps': 3170362,
+        'stop_pc': '0x606b426',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                 'address': '0xfe0a04', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }

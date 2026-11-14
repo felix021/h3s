@@ -179,9 +179,10 @@ JL_IMAP_IN_WORDS=tuple(0xfd5c00+4*member for member in range(63))
 # - JL_WL_AUD CON0 整字写 ×2(0x602ea72 entry st.w.modimm=1 与 0x6071cbe
 #   st.w.l=r10,DAC init 尾);app 全量 li 扫描读仅低功耗快照 0x6069a2e 一处
 #   (不在本 boot 前缀),无 ready 位轮询;
-# - DAC_CON 整字写 0xfe2200(0x6071cbc,值恰等于 WL_AUD 基址——数值巧合,
-#   SDK 无字段名只有位模式 bits{9,13,17..23},整字记录不做语义解读)+
-#   RMW 对 0x6071ce6 &=~0x100/0x6071cee |=0x100(bit8 开/关);
+# - DAC_CON 整字写(0x6071cbc,路 AS 勘误:并行对 0x6071cb8 `r1=r0+0x1D00`
+#   ∥ `[r0+0]=r1` 的存储半,落盘=旧 r1=SR walk 值,实测 0x0;路 AG 的
+#   「=0xfe2200 数值巧合」是并行对旧寄存器误读——0xfe2200 是 S2 写基址)
+#   + RMW 对 0x6071ce6 &=~0x100/0x6071cee |=0x100(bit8 开/关);
 # - AUD_CON RMW 0x6071cea &=~0x40(本路径无先前写→RMW 内部读合成 0);
 # - JL_ASS CLK_CON 原子 RMW 0x6071cc6 |=1(音频子系统时钟位0,同样无先前写)。
 # 条件族(esco mic 块 0xfe0a40/0xfe0924/0xfe0538、ANC 图门 0xfe0400、缺省
@@ -190,6 +191,7 @@ JL_IMAP_IN_WORDS=tuple(0xfd5c00+4*member for member in range(63))
 JL_WL_AUD_CON0=0xfe2200
 JL_AUDIO_DAC_CON=0xfe0500
 JL_AUDIO_AUD_CON=0xfe0558
+JL_AUDIO_ADC_CON=0xfe0538
 JL_ASS_CLK_CON=0xfe0900
 JL_AUDIO_DAC_INIT_WORDS=(JL_AUDIO_DAC_CON,JL_AUDIO_AUD_CON,JL_ASS_CLK_CON)
 CORE_TICK_BASES=(0xffe0ec,0xffe8ec)
@@ -2087,9 +2089,12 @@ class JLAudioDacInitWriteRecords:
       =0xfe0538 与路 AE 钉死互证);`JL_ASS_BASE = hs_base + map_adr(0x09, 0x00)`
       = 0xfe0900(JL_ASS_TypeDef 三成员 CLK_CON/MIC_CTL0/MIC_CTL1 之首, __RW)。
     - **写形状(0x6071bca DAC init SFR 主簇,按执行序)**:
-      * 0x6071cbc `st.w [0xfe0500]=0xfe2200`(DAC_CON 整字写;值恰等于
-        WL_AUD 基址——**数值巧合**,SDK 无字段名、只有位模式 bits{9,13,17..23},
-        整字记录不做语义解读,「WL_AUD 使能与 DAC 源选择的硬件耦合」保持开放);
+      * 0x6071cbc `st.w [0xfe0500]=…`——**路 AS 勘误**:0x6071cb8
+        `add.s14.rri.p r1=r0+0x1D00` ∥ 0x6071cbc `st.w [r0+0]=r1` 是并行对,
+        存储半读**旧 r1**(SR 表 walk 留下的值;路 AS 实测执行值 0x0);路 AG
+        「[0xfe0500]=0xfe2200 数值巧合」是并行对旧寄存器误读(与 0x60719a6
+        死 li 误判同族盲区)——0xfe2200 是并行对首半算出的 **S2 写基址**
+        (0x6071cbe `[0xfe2200]=r10` 才用它),从不是 DAC_CON 的落盘值;
       * 0x6071cc6 `rmw.or.modimm [0xfe0900]|=1`(JL_ASS CLK_CON,音频子系统
         时钟位 0;无先前写);
       * 0x6071ce6 `rmw.and.nmodimm [0xfe0500]&=~0x100` 与 0x6071cee
@@ -2161,13 +2166,15 @@ class JLAudioDacInitWriteRecords:
                                      '0xfe0a40/0xfe0924/0xfe0538, the ANC gate 0xfe0400, the '
                                      'missing-config branches 0xfe0a00/0xfe0a0c/DAC_LEN) are '
                                      'NOT whitelisted and stay unmapped'),
-                'observed_shapes':('whole-word st.w [0xfe0500]=0xfe2200 store plus '
-                                   'atomic RMWs rmw.or.modimm/rmw.and.nmodimm at 0x6071cbc/'
-                                   '0x6071cc6/0x6071ce6/0x6071cea/0x6071cee; the DAC_CON '
-                                   'whole-word value 0xfe2200 equals the WL_AUD base address '
-                                   'by numeric coincidence — the SDK names no field for it '
-                                   '(bit pattern {9,13,17..23} only), the word is recorded '
-                                   'as-is with no semantic interpretation'),
+                'observed_shapes':('whole-word st.w [r0+0] store at 0x6071cbc — the SECOND '
+                                   'slot of the parallel pair 0x6071cb8 `add.s14.rri.p '
+                                   'r1=r0+0x1D00` ∥ `st.w [r0+0]=r1`, reading the OLD r1 '
+                                   '(the SR-table walk value; executed 0x0 on this path — '
+                                   'route-AS correction of the AG-map "0xfe2200 numeric '
+                                   'coincidence" parallel-pair misread: 0xfe2200 is the '
+                                   'computed S2 store BASE, never the DAC_CON value) — plus '
+                                   'atomic RMWs rmw.or.modimm/rmw.and.nmodimm at 0x6071cc6/'
+                                   '0x6071ce6/0x6071cea/0x6071cee'),
                 'readback_projection':{
                     'addresses':[hex(a) for a in self.ADDRESSES],
                     'reads':self.reads_after_write,
@@ -2181,11 +2188,12 @@ class JLAudioDacInitWriteRecords:
                         'short-circuited. Consumers on this path: the JL_ASS CLK_CON |=1 '
                         'and AUD_CON &=~0x40 internal reads are served by the synthetic 0 '
                         '(0|1=1, 0&~0x40=0 — trivial), the DAC_CON RMW pair reads the '
-                        'recorded whole-word 0xfe2200 — whose bit8 is already clear, so '
-                        '&~0x100 writes 0xfe2200 back unchanged and the |0x100 tail lands '
-                        '0xfe2300 (fully derivable from the record, zero invention; note '
-                        'the AG map §5.1 narrative "0xfe2200->0xfe2000->0xfe2100" '
-                        'miscomputed the mask — 0x2200 never had bit8 set)'),
+                        'recorded whole-word (route-AS executed shape: the SR-walk 0x0) — '
+                        'bit8 already clear, so &~0x100 writes it back unchanged and the '
+                        '|0x100 tail lands 0x100 (fully derivable from the record, zero '
+                        'invention; the AG-map "0xfe2200 numeric coincidence" and its '
+                        '0xfe2200->0xfe2300 RMW chain were parallel-pair misreads, '
+                        'corrected by the route-AS dynamic record)'),
                     'conditional_assumption':('__RW proves the SDK believes these words read '
                         'back, NOT that every bit mirrors software: hardware-updated or '
                         'self-clearing bits (if any exist) would read differently on '
@@ -2199,6 +2207,137 @@ class JLAudioDacInitWriteRecords:
                               '(the IRQ68 registration at 0x602ec28 is a plain vector-slot '
                               'RAM write) — this releases the initialization configuration '
                               'writes only, it does NOT verify any audio output')}
+
+
+class JLAudioAdcResetWriteRecords:
+    """JL_AUDIO->ADC_CON(0xfe0538)reset 写记录 + 读回=最后写值(opt-in,路 AS)。
+
+    识别与证据(2026-11-14 路 AS 反汇编钉死,repo codec pin 3608ed1 与 vendor
+    线性反汇编逐指令互证):
+    - **SDK 命名与位语义**:br28.h `JL_AUDIO_BASE+0x38`=0xfe0538=ADC_CON
+      (__RW,csfr.h `__u16→unsigned int` 32 位字槽;与路 AE 钉死的
+      DAC_CON@+0/AUD_CON@+0x58 同一布局互证)。位语义路 AE 全 app 锚定:
+      bit7=IRQ pending(每 PNS 样本硬件置位;分发器 0x602f430 读、仅 IRQ68
+      交付后进入)、bit6=清 pending/重启(handler 尾)、bit5=数字使能
+      (0x606f3e4 关)、bit4=使能门(set_buffer 0x606def0 查重+分发器 0x602f440
+      双检)、bits0-3=SR 码。**写 0 = 把整个配置面清零的 reset 写**。
+    - **写形状(唯一站点,0x60719a6 函数内并行对)**:0x60719a6(boot 音频
+      initcall 0x602ea68 于 0x602eb80 调入的 ADC 节点 reset;设备结构基址
+      0x1265C0 由 li.u32 装载)——guard 字节 b[0x1265C0+4673]=b[0x127801]
+      读(0x60719b2,本世界=0)→ 0x60719b8 `li.u32 r3=0xfe0538` →
+      0x60719be `li.u8 r4=0` → **0x60719c0 并行对 `add.s14.rri.p r3=r1+4596`
+      ∥ 0x60719c4 `st.w [r3+0]=r4`**:第二半用**旧 r3**(0xfe0538)执行
+      存储、值=旧 r4=0——即 [ADC_CON]=0 的 reset 写;第一半同步把 r3 更新
+      为 hdl 指针(0x1265C0+4596=0x1277B4)供随后的 RAM 初始化(rep 24×
+      st.w.pin 清 96B、[hdl+44]=0xFFFFFFFF、链表头 [hdl]=hdl/[hdl+4]=hdl、
+      [hdl+8]=调用者实参、槽 [0x1265C0+308<<2]=hdl、call 0x6064162 dev 层),
+      尾部 0x60719d6 把 guard 字节置 1。**旧寄存器并行语义=FM-1 run3 硬件
+      证据/exact_parallel_stores 机器适配器既有机制**(「B 读 A 之前旧寄存器」
+      ——本写就是该形状的首个 SFR 站点;3,137,573 停点即此对首写)。
+      (注:路 AN 叙事里的门地址 b[0x1267E1] 是手算笔误,指令编码钉死
+      0x1265C0+0x1241=0x127801,本路勘误。)
+    - **读面(本前缀零读)**:路 AE 全 app ADC_CON 消费者——bit7 分发器
+      0x602f430/bit4 set_buffer 0x606def0 都在 IRQ68 交付/esco 打开链上
+      (本世界 G6 门字=0 动态钉死,esco 块不执行;IRQ68 零交付),SR 写
+      0x606dee0 的读也在 esco 族——**默认路径无任何读回/轮询**。
+    - **读回语义**:照 uart CON1 最终形态(路 M→F→AA)——写过返回最后
+      写值;无写时显式合成初始字 0(路 AM 先例)。本前缀无消费者,读回是
+      与域一/域二一致的容器完整面。**条件假设(derived-not-measured)**:
+      __RW 不能证明位镜像软件——硅上 bit7 由硬件按 DMA 样本置位,投影返回
+      软件值(bit7=0=无帧就绪)是「无 ADC 硬件活动」的诚实显形:固件若轮询
+      bit7 会如实永远读 0(路 BN fd31 CON 轮询同款先例),不发明完成。
+    - **范围边界**:白名单恰一字 0xfe0538;ADC 域其余寄存器(ADC_CON1
+      0xfe055c/MBG_CON 0xfe0554/MIC_CTL0/1 0xfe0904/08/ADA_CON* 0xfe0a20..)
+      与 AK 域二条件族保持 unmapped 诚实停。**运行效果不建模**(ADC 时钟/
+      模拟通路/DMA/IRQ68 事件)——只记录「ADC 节点 reset 配置写已执行」,
+      不扩展为「音频输入已验证」。
+    """
+    ADDRESS=JL_AUDIO_ADC_CON
+
+    def __init__(self):
+        self.stores={JL_AUDIO_ADC_CON:{'values':[],'writes':0,'cores':[]}}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address==JL_AUDIO_ADC_CON
+
+    def write(self,address,value,core):
+        if address!=JL_AUDIO_ADC_CON:raise ValueError('not the modeled JL_AUDIO ADC_CON')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        if address!=JL_AUDIO_ADC_CON:raise ValueError('not the modeled JL_AUDIO ADC_CON')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(路 AM 先例)——derived-not-measured 的
+        # 显式假设,不是复位值声明;本前缀该分支无消费者(类注释「读面」)。
+        self.synthesized_initial_reads+=1
+        return 0
+
+    def report(self):
+        return {'addresses':[hex(JL_AUDIO_ADC_CON)],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('br28.h JL_AUDIO = hs_base + map_adr(0x05, 0x00) = 0xfe0500, '
+                              'ADC_CON at +0x38 = 0xfe0538 (all-__RW JL_AUDIO_TypeDef, the '
+                              'csfr.h `__u16 -> unsigned int` 32-bit slot layout cross-checked '
+                              'by route AE: DAC_CON@+0, AUD_CON@+0x58); AE pinned the bit '
+                              'semantics — bit7 IRQ pending (hardware-set per PNS sample), '
+                              'bit6 clear/restart, bit5 digital enable, bit4 enable gate, '
+                              'bits0-3 sample-rate code — writing 0 resets the whole config face'),
+                'whitelisted_words':('exactly the one JL_AUDIO->ADC_CON word written by the ADC-node '
+                                     'reset function 0x60719a6 (called from the boot audio initcall '
+                                     '0x602ea68 at 0x602eb80 on the config-gate b[0x127801]==0 '
+                                     'branch; the gate byte is device-struct 0x1265C0+4673, set to '
+                                     '1 at 0x60719d6 after the node init completes)'),
+                'observed_shapes':('one whole-word store, executed as the SECOND slot of the '
+                                   'parallel pair at 0x60719c0: `add.s14.rri.p r3 = r1+4596` ∥ '
+                                   '`st.w [r3+0] = r4` — the store reads the OLD r3 (0xfe0538 '
+                                   'loaded by li.u32 at 0x60719b8) with old r4 = 0 (li.u8 at '
+                                   '0x60719be), i.e. the pair writes [ADC_CON]=0 while its first '
+                                   'slot computes the device-struct handle pointer; the '
+                                   'old-register parallel semantics is the FM-1 run3 hardware '
+                                   'evidence already implemented by the exact_parallel_stores '
+                                   'machine adapter (this is its first SFR site). The route-AN '
+                                   'narrative address b[0x1267E1] for the gate was a hand-'
+                                   'arithmetic slip — the instruction encoding pins '
+                                   '0x1265C0+0x1241 = 0x127801'),
+                'readback_projection':{
+                    'addresses':[hex(JL_AUDIO_ADC_CON)],
+                    'reads':self.reads_after_write,
+                    'synthesized_initial_reads':self.synthesized_initial_reads,
+                    'readback_semantics':('last firmware-written value (route-AA uart-CON1 '
+                        'final form); before any firmware write the explicit synthetic '
+                        'initial word 0 (route-AM precedent) is served — derived-not-measured, '
+                        'NOT a reset-value claim; this prefix has ZERO reads (every app '
+                        'ADC_CON consumer per route AE — the bit7 dispatcher 0x602f430, the '
+                        'bit4 set_buffer double-check 0x606def0, the SR-write read 0x606dee0 — '
+                        'lives on the IRQ68-delivery/esco-open paths, both outside this '
+                        'world), so both branches are latent semantics here'),
+                    'conditional_assumption':('__RW proves the SDK believes ADC_CON reads back, '
+                        'NOT that every bit mirrors software: on silicon bit7 (IRQ pending) is '
+                        'SET BY HARDWARE per DMA sample — the projection returning the software '
+                        'value (bit7=0, no frame ready) is the honest manifestation of no ADC '
+                        'hardware activity: a firmware poll of bit7 would spin its full budget '
+                        'rather than be handed an invented completion (route-BN fd31 CON '
+                        'poll-budget precedent), never a fabricated pending'),
+                    'no_poll_risk':('no ready-bit poll or loop read of 0xfe0538 exists on the '
+                        'default boot path (route-AE consumer inventory); the reset write is '
+                        'unconditional inside the guarded body')},
+                'assumption':('write-only word record plus last-write readback of the JL_AUDIO '
+                              'ADC_CON reset word (derived-not-measured); the stored 0 is the '
+                              'real executed instruction result (old r4 of the parallel pair), '
+                              'never invented; no ADC clock gating, analog front end, DMA or '
+                              'IRQ68 event is modeled — this records that the ADC-node reset '
+                              'configuration write executed, it does NOT verify any audio '
+                              'input')}
 
 
 class P33AwkupRegisters:
@@ -3412,6 +3551,7 @@ class BR28Model:
                  jl_imap_write_records=False,
                  jl_wl_aud_write_records=False,
                  jl_audio_dac_init_write_records=False,
+                 jl_audio_adc_reset_write_records=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -3735,6 +3875,23 @@ class BR28Model:
         self.jl_wl_aud_records=JLWlAudWriteRecords() if jl_wl_aud_write_records else None
         self.jl_audio_dac_init_records=(JLAudioDacInitWriteRecords()
                                         if jl_audio_dac_init_write_records else None)
+        # 路 AS(sim-adcreset):ADC 节点 reset 写域(域三,独立子开关而非并入
+        # audio_dac_init_writes——AK 域二的边界文本/断言钉死「恰三字+条件族
+        # 不进白名单」,且 ADC(输入侧)与 DAC(输出侧)分域命名;执行序上
+        # 0x60719c0 reset 写在 S1..S5 DAC 簇之前,依赖边只挂 wl_aud 域一):
+        # JL_AUDIO->ADC_CON(0xfe0538=+0x38,路 AE 钉死命名/bit7 pending 语义)
+        # 单字写记录+读回=最后写值/无写合成 0。写形状=0x60719a6 ADC 节点
+        # reset 函数体内并行对 0x60719c0 `r3=r1+4596 ∥ [r3+0]=r4` 第二半以
+        # 旧 r3(0xfe0538)写 0(旧寄存器并行语义=FM-1 run3/exact_parallel_
+        # stores 既有机制,本写是其首个 SFR 站点;3,137,573 停点即此)。
+        # 本前缀零读(AE 全 app 消费者都在 IRQ68/esco 打开链上);读回投影是
+        # 容器完整面,bit7 pending 在投影下恒 0=「无 ADC 硬件活动」的诚实
+        # 显形,不发明完成(路 BN 轮询先例)。ADC 域其余寄存器保持 unmapped。
+        if jl_audio_adc_reset_write_records and not jl_wl_aud_write_records:
+            raise ValueError('the ADC-reset write records require the JL_WL_AUD write records '
+                             '(the ADC node reset is only reached after the entry store)')
+        self.jl_audio_adc_reset_records=(JLAudioAdcResetWriteRecords()
+                                         if jl_audio_adc_reset_write_records else None)
         # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字(0xfd58xx)的
         # write-only 整字记录。识别链与 49 字白名单见 JL_OMAP_OUT_WORDS 常量
         # 注释;本前缀首写=uart_init TX 引脚复用 0x60012de 写 0xfd58b8=0x9f
@@ -3932,6 +4089,7 @@ class BR28Model:
             (self.jl_imap_records is not None and self.jl_imap_records.handles(address)) or
             (self.jl_wl_aud_records is not None and self.jl_wl_aud_records.handles(address)) or
             (self.jl_audio_dac_init_records is not None and self.jl_audio_dac_init_records.handles(address)) or
+            (self.jl_audio_adc_reset_records is not None and self.jl_audio_adc_reset_records.handles(address)) or
             (self.p33_awkup is not None and self.p33_awkup.handles(address)) or
             (self.p3_ls is not None and self.p3_ls.handles(address)) or
             (self.fd31_adc_con is not None and (self.fd31_adc_con.handles(address)
@@ -4157,6 +4315,12 @@ class BR28Model:
         if self.jl_audio_dac_init_records is not None and self.jl_audio_dac_init_records.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_dac_init_records.read(address)
+        # ADC 节点 reset 写域(路 AS):ADC_CON 读回=最后写值,无写时显式合成 0
+        # (路 AM 先例);本前缀零读(AE 消费者全在 IRQ68/esco 链上)——bit7
+        # pending 恒 0=无 ADC 硬件活动的诚实显形,不发明完成。
+        if self.jl_audio_adc_reset_records is not None and self.jl_audio_adc_reset_records.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_adc_reset_records.read(address)
         # P3_AWKUP 族:只有显式 fixture 覆盖的寄存器的首次读返回具名字,
         # 其余读(未覆盖/写后/重复)一律严格停(路 BB;显式 kind 便于诊断)。
         if self.p33_awkup is not None and self.p33_awkup.handles(address):
@@ -4320,6 +4484,12 @@ class BR28Model:
             # RMW 写回(经 probe_boot 通用 mmio 路径的内部读=投影值)都落
             # 记录;DAC 时钟门/模拟通路/DMA/IRQ68 事件一律不建模。
             self.jl_audio_dac_init_records.write(address,value,self.current_core)
+        elif self.jl_audio_adc_reset_records is not None and self.jl_audio_adc_reset_records.handles(address):
+            # ADC 节点 reset 写域(路 AS):0x60719c0 并行对第二半以旧 r3 执行
+            # 的 [ADC_CON]=0 整字写(全字覆盖、旧值无关,旧寄存器形状由机器
+            # 侧 exact_parallel 机制保真),写记录;ADC 时钟/模拟前端/DMA/
+            # IRQ68 事件一律不建模。
+            self.jl_audio_adc_reset_records.write(address,value,self.current_core)
         elif self.p33_awkup is not None and self.p33_awkup.handles(address):
             # P3_AWKUP 族(路 BB):整字写只接受有观测形状的 FLT0..2(walker
             # st.w.idxs)与 P_IE(0x6067cb0 消费型写回),其余(EN/N_IE/
@@ -4835,11 +5005,30 @@ class BR28Model:
                 'the first write (derived-not-measured, route-AM precedent, NOT a '
                 'reset-value claim — consumed by the CLK_CON |=1 / AUD_CON &=~0x40 RMW '
                 'internal reads); RMWs run the full generic MMIO path with the write-backs '
-                'recorded; the DAC_CON whole-word value 0xfe2200 equals the WL_AUD base by '
-                'numeric coincidence and is recorded as-is with no semantic interpretation; '
+                'recorded; the route-AS dynamic record corrects the AG-map parallel-pair '
+                'misread of the 0x6071cbc store (the "0xfe2200 numeric coincidence" value '
+                'was never the DAC_CON content — the pair stores the OLD r1, the SR-walk '
+                'value 0x0; 0xfe2200 is the S2 base); '
                 'the conditional families (esco-mic/ANC/missing-config) stay unmapped; no '
                 'DAC clock gating, analog path, DMA or IRQ68 event is modeled — this does '
                 'NOT verify any audio output')
+        if self.jl_audio_adc_reset_records is not None:
+            result['jl_audio_adc_reset_write_records']=self.jl_audio_adc_reset_records.report()
+            result['assumptions']['jl_audio_adc_reset_write_records']=(
+                'JL_AUDIO->ADC_CON (0xfe0538 = JL_AUDIO base +0x38, br28.h all-__RW, route-AE '
+                'naming and bit semantics): whole-word write record of the ADC-node reset '
+                '[ADC_CON]=0 plus last-write readback and an explicit synthetic initial 0 '
+                'before the first write (derived-not-measured, route-AM precedent, NOT a '
+                'reset-value claim); the one store on this path is the second slot of the '
+                'parallel pair at 0x60719c0 (`add.s14.rri.p r3=r1+4596` ∥ `st.w [r3+0]=r4`) '
+                'reading the OLD r3 = 0xfe0538 with r4 = 0 — the FM-1 run3 old-register '
+                'parallel semantics already implemented by exact_parallel_stores (its first '
+                'SFR site); zero reads on this prefix (every route-AE consumer lives on the '
+                'IRQ68-delivery/esco-open paths); on silicon bit7 pending is hardware-set '
+                'per DMA sample, the projection returning the software value is the honest '
+                'no-ADC-activity manifestation, never an invented completion; the rest of '
+                'the ADC register family stays unmapped; no ADC clock gating, analog front '
+                'end, DMA or IRQ68 event is modeled — this does NOT verify any audio input')
         if self.p33_awkup is not None:result['p33_awkup_projection']=self.p33_awkup.report()
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()
