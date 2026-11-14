@@ -1,0 +1,35 @@
+{
+  "case_id": "R2-HEA-04",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）（构建输入）；产物=H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_SLOTRAM_OFFLINE_UNTESTED.ufw，sha256 906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914（--attenuation-db 0 --hearing-aid-l1-slotram，隐含 --hearing-aid-l1-close）；boot 清零证据=docs/boot-handoff.md（BSS [0x125320,0x12a62c) 21260B 真实逐字清零）",
+  "initial_state": "离线字节级验证（无执行）：组合段与 close 候选段的全部差异=4 条槽 li.u32 立即数共 16 字节（0x060E31E0→0x00125574，槽值由构建器 _patch_slot 注入、载荷/桩源一字未改）；槽不在追加文件（401B→397B，flash [0xE5073,0xE5200)）；fence 上限→0x060E31E0（新文件末端运行地址）",
+  "inputs_schedule": "构建输入=official UFW+槽地址 0x125574（593B 静态死洞 [0x12544e,0x12569f) 中心 4 对齐字，两侧余量 294B/295B）；无运行输入（候选 UNTESTED 不刷机）",
+  "observation_boundary": "观察面=槽地址五类证据扫描（绝对锚点/寄存器溯源访问/动态数组基址/flash 指针字/QCY 巨结构可达域，扫描域=app.bin 全量+RAM-code 源+公开 ROM 资产+p11_code.bin）+镜像字节差异（vs 官方 472B/vs close 候选恰 47B 逐字节分类）+RAM_SLOT 常量与构建器一致性断言；复核工具 tools/analyze_hearing_aid_slot_address.py（check_local 默认层逐次重跑）",
+  "assertions": [
+    "hearing-aid-l1-payload §12.2 槽地址 0x125574 五类证据：洞内零绝对锚点（±16B 亦零）、零寄存器溯源覆盖（±16B 零）、±0x400 内零动态数组基址、零 flash 指针字（任意字节对齐 LE32）、低于 QCY 基 0x1265c0（QCY 可达域 0x1265c0..0x1299d0 全排除，字段实测达 +0x2CE6）；被否决候选（0x125b2c 36B 对象/0x125324 动态数组/QCY 域内大洞）保留为方法校准记录",
+    "§12.3 字节账：与 close 候选逐字节差异恰 47B（16 立即数+fence 1+追加区密文位移+CRC 链）；「追加文件必须在代码段末尾结束、无镜像内槽」新断言；独立校验器全过（397B 条目 JLFS CRC+双备份）；三 legacy 候选 sha（6c7247a5/5a5f2ef7/…）逐字节复现",
+    "§12.1 D vs A 重评：A（槽挪 RAM）不是加固项而是 close 半链真机可用的前提——close 的 stop/release 以槽值为唯一 stream 句柄（方案 B 已穷举排除框架侧查找：jlstream 无按 uuid/scene 查流 API），flash 槽写不进⇒「辅听粘住」原样回归+每次重进通透泄漏；D（接驳覆盖）已由路 Y/AC 满足但救不了 close 自己找不到 stream，A 与 D 互补",
+    "§12.4 槽语义闭环：boot BSS 清零⇒槽=0→open 写 RAM 真实生效→close 读≠0 停止/清 0/notify(11)——close 早退路径在 boot 后首次按键即被真实走过（App 直设 OFF/ON 时 close 先于任何 open，这正是需要 boot 清零的原因）"
+  ],
+  "timeout_budget": "离线扫描/构建/校验场景，无模型步预算（复跑 build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-slotram --output-dir <空目录> + analyze_hearing_aid_slot_address.py）",
+  "model_assumptions": [
+    "槽死性是静态结论（derived-not-measured）：运行期计算的 bulk 目的地址（VM-init rep 拷贝模式）/运行期由数据构造的指针值/DMA 写/p11 CPU（独立地址空间，一次性扫描 0 主 RAM 引用未入常驻工具）不在扫描域（§12.5.2）",
+    "候选 UNTESTED 不刷机：交付=「槽地址五类静态证据+字节与 §1-11 证据一致+CRC/JLFS 自洽+差异精确可控」（§12.5.1）",
+    "槽必须落在 boot 清零范围 [0x125320,0x12a62c)（RAM 上电值无保证=项目钉死不变量「unknown RAM does not read as zero」）；段间 padding 与堆间隙全部排除",
+    "若残余风险命中（槽被意外写入非零垃圾）：close 把垃圾指针交给 jlstream_stop（h[stream+46] 野写半字+cmd 队列），无载荷级防御（§12.5.3；替代=证据+主仿真前沿到键循环相位时加运行期 watch）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "0x125574 运行期 watch（主仿真前沿推进到键循环相位时补，本路未做）",
+    "真机刷入验证（刷机授权缺失）",
+    "p11 CPU 地址空间扫描常驻化（当前一次性）",
+    "DMA 写通道排除（音频缓冲假定在堆/非 BSS 区）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "槽死性是静态结论（derived-not-measured）：运行期计算的 bulk 目的地址（VM-init rep 拷贝模式）/运行期由数据构造的指针值/DMA 写/p11 CPU（独立地址空间，一次性扫描 0 主 RAM 引用未入常驻工具）不在扫描域（§12.5.2）",
+    "候选 UNTESTED 不刷机：交付=「槽地址五类静态证据+字节与 §1-11 证据一致+CRC/JLFS 自洽+差异精确可控」（§12.5.1）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

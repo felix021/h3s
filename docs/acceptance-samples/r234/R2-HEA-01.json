@@ -1,0 +1,38 @@
+{
+  "case_id": "R2-HEA-01",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af） 与 tested b79（H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw，SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b）双镜像全等断言过（docs/hearing-aid-l1-payload.md §8）；载荷源 tools/hearing-aid/mic_effect_open.S 现场汇编（41 insns/134B+4B 数据槽，0 relocs），映射追加段 0x060e3200",
+  "initial_state": "函数级仿真 harness（probe_pi32v2 --tone-scene 的 mic_effect_payload opt-in 场景，不开时 legacy 报告逐字节不变）；RAM 启动内容=镜像自身 blob，执行 fence 扩到载荷末端（负例断言钉死：不扩界时 stock fence 0x060c3338 拒绝载荷取指）；单任务桩/bump allocator/stream-slot 哨兵复用 d2c 场景机制；stream.bin（官方基线 sha 6c1f1950…，9351B）以 CD 实测运行时基址喂公开字节",
+  "inputs_schedule": "载荷入口直调 0x060e3200，激活链顺序 get_pipeline_uuid(15,\"mic_effect\")→pipeline_parse(uuid,0xD06D)→add_thread(0x1100)→set_scene(16,0)→set_notify(10)→start；其中 add_thread/set_scene/set_notify 三 API 在 parse 已建的真实部分流上直调（BW/CM/d2c 直调先例）；函数级场景无模型时间轴注入",
+  "observation_boundary": "观察面=载荷调用点回填寄存器（get_pipeline_uuid 后 r0=0x9c2d）、stream 对象字段（[80]/[88]/b[+28]）、pipeline_parse 内部（stream.bin offset 0x2d0 命中/208B 边表/节点链）；诚实停点两处=0x60746cc（第 12 边节点复用搜索非指针读）与 0x6074a96（set_notify 的 0x20006 与 start 的 0x20004 事件派发，同一合成态边界）",
+  "assertions": [
+    "hearing-aid-l1-payload §8：get_pipeline_uuid(15,\"mic_effect\") 真实返回 0x9c2d（内部 clock_alloc(\"mic_effect\",24MHz) 真实跑通：zalloc44+互斥往返+2 次 OS post）——激活硬前提（stream.bin 0x9c2d 描述符 @offset 0x2d0）在真实执行上闭合",
+    "§8：pipeline_parse(0x9c2d,0xD06D) 建出 11 个真实节点（0xb7c4/1→0x74e3/21→0x737b/10=Eq1Eff→0xdefe/6(wdrc)→…→0x1b9d/2），首边 0xd06d/3→0xb7c4/1 与 §1.3 镜像扫描一致；add_thread(stream,0x1100,0x2000D,0x100) 返回 0、set_scene 后 stream[80]=16/stream[88]=0（§2 参数决策被真实执行消费）、set_notify 真实写 b[stream+28]=10",
+    "§8：start 入口真实执行、0x20004 派发开始，停在 0x6074a96——停点性质=合成单任务/bump-allocator 状态边界，不是固件或载荷的判决（同一节点复用搜索在 d2c 音乐场景 231 次调用不崩）",
+    "§4 离线单测 6 断言（往返零 diff/API 锚点各恰一次/常量核对/call 配对/槽参数化/激活顺序==pc_mic 模板）与本条执行证据互证——「源码→字节→执行」同源"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以 0x60746cc/0x6074a96 两个诚实停点为界（超时=FAIL）；复跑 python3 tools/probe_pi32v2.py --tone-scene --rom <公开 ROM 资产> --official-ufw <官方 UFW>",
+  "model_assumptions": [
+    "函数级仿真非整机 boot：RTOS/队列/调度是具名桩、合成单任务/bump-allocator；音效链未出声（hearing-aid-l1-payload §8 诚实边界）",
+    "具名 synthetic 仅三件（fence 扩界/4B 槽可写/0x124880 时钟链表哨兵空自环 boot 态）；stream.bin 以 CD 实测运行时基址喂公开字节",
+    "set_scene r1=16 是 SDK 枚举值（STREAM_SCENE_HEARING_AID），QCY 构建枚举未证——16 在停点前无更下游消费者可观察（§8）",
+    "0x9c2d 图是 26 边深线性链，第 12 边起的节点树后半未建完——0x60746cc 非指针读诚实停",
+    "b79↔official 双镜像全等断言（窗口字节/停点全等）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "音效链是否出声（无声学观察面；不构成「助听器可用」声明）",
+    "0x9c2d 图第 12 边起（0x1b9d/2→0x737b/9 边）的建图后半与真实音效拓扑",
+    "set_scene 16 的场景仲裁下游（coexist 0xd79d↔0x9c2d/优先级）运行行为",
+    "接驳后的 ANC 键循环完整路径（另立 R2-HEA-06）",
+    "真机刷入与激活验证（刷机授权缺失，见 README 全局待授权清单）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "函数级仿真非整机 boot：RTOS/队列/调度是具名桩、合成单任务/bump-allocator；音效链未出声（hearing-aid-l1-payload §8 诚实边界）",
+    "具名 synthetic 仅三件（fence 扩界/4B 槽可写/0x124880 时钟链表哨兵空自环 boot 态）；stream.bin 以 CD 实测运行时基址喂公开字节",
+    "0x9c2d 图是 26 边深线性链，第 12 边起的节点树后半未建完——0x60746cc 非指针读诚实停"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

@@ -1,0 +1,38 @@
+{
+  "case_id": "R2-HEA-02",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）（构建输入）；产物=离线候选 H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_OFFLINE_UNTESTED.ufw，sha256 6c7247a5833213ffee847a2e7a009a868d55242d1f8492076ab5a6bba056d7eb（build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-patch）；静态锚点源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100）",
+  "initial_state": "离线字节级验证（无执行）：构建时现场汇编「载荷+接驳桩」单一代码段（59 条指令/198B+4B 槽，零重定位），两遍汇编定槽位（MIC_EFX_SLOT=段尾 0x060E313A）；追加 JLFS 文件 mic_effect.bin 235B @flash [0xE5073,0xE515E)，代码起 0x060E3074；先过 legacy 复现断言（--attenuation-db 10 --anc-cycle-two-state 复现 b79cb3a6…）",
+  "inputs_schedule": "构建输入=official UFW+mic_effect_open.S（§2 一字未改，构建时断言组合段前 134B==独立汇编结果）+接驳桩源 mic_effect_hook.S（trans_branch_1/2）；无运行输入（候选 UNTESTED 不刷机）",
+  "observation_boundary": "观察面=镜像字节差异集合（vs 官方全文件逐字节差异恰 279 字节）+两窗口替换前后字节+fence 立即数+四层 CRC/JLFS 链；断言工具=构建器 verify_l1_image 全镜像精确差异断言+独立校验器 verify_ufw_integrity.py+全 app 51,709 分支落点扫描",
+  "assertions": [
+    "hearing-aid-l1-payload §9.2：窗口 A 0x0600dc7e/B 0x0600dca4 各 8B 整窗替换（li.u32 r6=<桩地址>+goto r6，6B+2B 惯用法，恰好两条完整指令无半指令切割）；51,709 分支落点扫描两窗口内部零落点、起点落点各恰 1 条=§1.4 钉死的 TRANS 分支（0x0600db92→A、0x0600dbbc→B）；窗口后原汇合点（0x0600dc86/0x0600dccc）是 OFF/ON 活代码不在窗口内",
+    "§9.2：fence 扩界 0x060c3338→0x060E313E（=追加文件末端运行地址；§8 负例钉死 stock fence 拒载荷取指），下限 0x06000100 与使能位不动，字节差异仅 3B",
+    "§9.3：CRC 全链（config.dat 末文件标志+头 CRC→新文件头/数据 CRC→app.bin 双层 JLFS CRC→app_area_head→boot-info app_size 0xE3053→0xE313E+三层 CRC→追加区 SFC 重加密→UFW 条目+外层头 CRC）；279B 差异逐区域分类账（UFW 6/boot-info 8/JLFS 8/config 3/窗口 16/fence 3/追加文件 235）精确相等，多一字节少一字节都抛错",
+    "§9.3 验证清单 7 项全过：59 指令逐条 encode(decode)==原字节零 diff+桩形状从最终镜像字节反解码核对、组合段前 134B==§2 载荷单独汇编、SFC 密文独立重算、boot-info 五字段独立重算、独立校验器全过（含新 mic_effect.bin 条目 JLFS CRC 与双备份 CRC）、legacy sha 复现+check_local --units exit 0"
+  ],
+  "timeout_budget": "离线构建/校验场景，无模型步预算；全部断言在构建器+校验器一次运行内完成（复跑 python3 tools/build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-patch --output-dir <空目录>）",
+  "model_assumptions": [
+    "候选 UNTESTED：本条交付=「字节与 §1-6/§8 证据一致+四层 CRC/JLFS 结构自洽+逐字节差异精确可控」，不是任何形式的运行验证（§9.4.1）",
+    "接驳后的完整路径未在仿真跑：主仿真前沿未推进到 0x0600db3c 键循环相位，桩的跳转正确性目前只有静态反汇编证据（指令边界/落点/寄存器活性）（§9.4.2）",
+    "数据槽在追加段 flash 映射区（0x060E313A）：真机上 open 的 st.w 大概率被静默丢弃→重入保护永不闭锁、每次进通透重跑激活链（§9.4.3；RAM 化另立 R2-HEA-04）",
+    "§6 既有边界继承：set_scene 16=SDK 枚举值、noisgate 未配对、单 add_thread 形状充分性未验证",
+    "静态锚点源=官方 app.bin（钉死 codec pi32v2-isa @3608ed1 反汇编，derived-not-measured）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "真机刷入与接驳后行为（刷机授权缺失；候选 UNTESTED 不刷机）",
+    "接驳窗口在真实执行里的跳转正确性（另立 R2-HEA-06 BLOCKED）",
+    "flash 数据槽写回（slotram 候选解决，R2-HEA-04）",
+    "noisgate 配对（DAC_NOISEGATE_OFF/ON 宏体与固件锚点未钉死）",
+    "close 路径（本候选只有 open；见 R2-HEA-03）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "候选 UNTESTED：本条交付=「字节与 §1-6/§8 证据一致+四层 CRC/JLFS 结构自洽+逐字节差异精确可控」，不是任何形式的运行验证（§9.4.1）",
+    "接驳后的完整路径未在仿真跑：主仿真前沿未推进到 0x0600db3c 键循环相位，桩的跳转正确性目前只有静态反汇编证据（指令边界/落点/寄存器活性）（§9.4.2）",
+    "静态锚点源=官方 app.bin（钉死 codec pi32v2-isa @3608ed1 反汇编，derived-not-measured）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

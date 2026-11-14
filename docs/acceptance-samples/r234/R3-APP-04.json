@@ -1,0 +1,33 @@
+{
+  "case_id": "R3-APP-04",
+  "firmware_identity": "App 侧（WebShellActivity+H3SBridge+assets/index.html/keyremap.html）；协议面锚点同 R3-APP-01（无固件执行面）；R3 架构=HTML5 WebView 页面+Android 原生壳+JS bridge（注入名 window.h3s，R3 独立 app 壳层）",
+  "initial_state": "壳=WebShellActivity（「加载 asset+注入 bridge」两行壳逻辑，不导出无桌面图标）+H3SBridge（@JavascriptInterface 方法族：armWrite/isArmed/writeEq/setAnc/setPromptVolume/setKeyRemap/setKeyRemapCustom/getKeyRemap/setHearingCfg/getHearingCfg）；未注入 transport（无参构造）退化为纯组帧「校验+组帧+hex 回显」——旧测试与离线演示行为不变；注入后=校验+组帧（SN 自管理）+EqWritePolicy 放行+串行发送+事件回推（真机下发由页面显式 h3s.connect() 触发，不自动连接）",
+  "inputs_schedule": "单测输入（H3SBridgeTest）：writeEq 的 bandsJson（q 缺省 100=Q1.0/iirType 缺省 255）、setAnc 三态（降噪 1,1,2/正常 2,0,0/通透 3,1,4，mode 只收 1..3）、setPromptVolume（值只收 3/6/8，data=value 00）、setKeyRemap eventID×action、错误路径（坏 JSON/字段缺失/非数值/越界/未武装）",
+  "observation_boundary": "观察面=bridge 返回 JSON（成功 {\"ok\":true,\"bytesHex\":…} 小写连续 hex；失败 {\"ok\":false,\"error\":…} 独立错误信息）×EqFrame/KeyRemapFrame 直组逐字节对拍×与 EqWritePolicy 一致性；JS 侧异步约定=seq+事件回调（写方法返回 {ok,sent,seq,sn,bytesHex}，壳经 evaluateJavascript 推 window.onH3sEvent：response/send_failed/mtu/disconnected——promise id 模式）；WebShellActivity 本身不测",
+  "assertions": [
+    "bridge 门控：armWrite armed 门——未武装时一切写方法返回错误 JSON；与 EqWritePolicy 一致性（H3SBridgeTest 对拍）",
+    "组帧字节：writeEq/setAnc/setPromptVolume/setKeyRemap(/Custom) 各方法输出与对应 Frame 类直组逐字节一致；错误路径独立错误信息（坏 JSON/字段缺失/非数值/取值越界/未武装）",
+    "JS 异步约定：@JavascriptInterface 拿不到 JS function，页面唯一可靠回推方式=壳 evaluateJavascript 调页面全局处理器（window.onH3sEvent）——seq+事件回调而非传函数回 Java",
+    "降级兼容：无 bridge 的普通浏览器打开显示降级提示条；未注入 transport 时纯组帧 hex 回显（旧行为不变）；页面含 10 段 EQ 滑块（默认频点 32..16k 取 QCY 面板、gain ±12 dB——QCY App 钳 ±8 是面板层限制固件不钳）与按键重映射独立页（三键×单击~四击+长按 [未钉] 网格）"
+  ],
+  "timeout_budget": "JVM 单测毫秒级；复跑 bash tools/android-query/test.sh H3SBridgeTest（本路 2026-11-14 复跑 9 套全过）；Android 侧编译用 javac -cp android.jar 单独验证（本仓库开发机已验证通过）",
+  "model_assumptions": [
+    "WebShellActivity 本身不测：它依赖 android.jar/WebView 运行时，纯 JVM 无法实例化，且只有「加载 asset+注入 bridge」两行壳逻辑，无业务分支",
+    "页面是 demo 级（内联 CSS/JS、无框架），不是最终产品 UI",
+    "组帧形状假设继承 R3-APP-01（ADV type2 写帧 [假设]/KeyStore 回执设计形状）；真机下发未验证"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "WebView 运行时行为（真机页面加载/bridge 注入/evaluateJavascript 回推时序）",
+    "真机端到端（页面→bridge→transport→BLE→耳机，另立 R3-APP-05 BLOCKED）",
+    "最终产品 UI（demo 级页面）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "WebShellActivity 本身不测：它依赖 android.jar/WebView 运行时，纯 JVM 无法实例化，且只有「加载 asset+注入 bridge」两行壳逻辑，无业务分支",
+    "组帧形状假设继承 R3-APP-01（ADV type2 写帧 [假设]/KeyStore 回执设计形状）；真机下发未验证"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

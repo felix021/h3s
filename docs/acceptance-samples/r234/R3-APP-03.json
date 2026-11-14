@@ -1,0 +1,34 @@
+{
+  "case_id": "R3-APP-03",
+  "firmware_identity": "App 侧（AndroidBleTransport 纯 JVM 状态机+AndroidGattLink android.bluetooth 薄粘合）；GATT 对接面取材实测先例——Service 0000a002…/Write 00000001（实测属性 4=WRITE_NO_RESPONSE）/Notify 00000002/CCCD 00002902/MTU247（docs/protocol.md 实测+tools/android-query MainActivity）；目标固件=tested b79 b79cb3a6…（真机当前镜像，未连接）",
+  "initial_state": "AndroidBleTransport extends SerialBleTransport（替换的只有「连接生命周期」与 doWriteChunk，串行/分片/重组全走既有通用代码）；android.bluetooth 接触面收敛在 AndroidGattLink（R3 传输链唯一接触 android.bluetooth 的文件）；目标地址只认构建注入的 DeviceConfig.ADDRESS（扫描按地址过滤，不开任意设备连接）；回调统一过主线程",
+  "inputs_schedule": "契约测试输入（TransportContractTest：同一套断言跑 LoopbackTransport 与 AndroidBleTransport+假 Link）：EQ 写/串行顺序/跨片重组/未连接拒绝/断线重连/错误传播+Android 状态机（连接五段式/MTU 三变体/扫描三变体/重试/失败路径/意外断线/写看门狗）+调度定时值（10s/30s/5s/10ms/5s）+bridge connect/disconnect 控制",
+  "observation_boundary": "观察面=FakeLink 上的 GATT 操作序列（connectGatt(TRANSPORT_LE,autoConnect=false)/discover/setCharacteristicNotification+CCCD/requestMtu/writeCharacteristic 的时序与状态转换）+错误传播（status!=0 片失败/写回调 5s 缺失断链/初始化失败重试退避）；无真实射频观察",
+  "assertions": [
+    "tools/android-query/README.md 路真机适配清单第 1 条（连接五段式）：地址过滤扫描（10s 超时转直连）→connectGatt→discoverServices→校验 A002/1/2 与写特征属性→CCCD 订阅→requestMtu(517) 以回调实际值为准；就绪=CCCD 成功∧收到 MTU 实际值双标志（先后任意；协商失败不致命按当前 MTU 就绪）；初始化失败重试 2 次退避 1s、30s 整体看门狗",
+    "清单第 2 条（写路径）：doWriteChunk 只粘 GATT（写类型按特征属性自适应：属性含 WRITE 用 WRITE_TYPE_DEFAULT、只含 WRITE_NO_RESPONSE 用 NO_RESPONSE——H3S 实测属性 4）；status==0→chunkWritten(true)、status!=0→片失败、写回调 5s 缺失断链（照 UpgradeService writeTimeout 先例不静默丢片）",
+    "清单第 6 条（断线）：READY 后意外断线 markNotReady 不自动重连（未完成帧按失败回调，页面可再 connect）+SerialBleTransport.markNotReady 不再清 listener（修复后断线重连链路完整，契约测试钉死）",
+    "契约同构：同一套断言 Loopback 与 AndroidBleTransport+FakeLink 双跑通过——分片序列=BlePacketizer、通知重组、串行顺序、错误传播全等（接口级契约测试的价值所在）"
+  ],
+  "timeout_budget": "JVM 单测毫秒级（Scheduler 注入：假调度器/手动队列，所有定时任务带相位/世代自检）；复跑 bash tools/android-query/test.sh TransportContractTest（本路 2026-11-14 复跑 9 套全过）",
+  "model_assumptions": [
+    "AndroidBleTransport 状态机为纯 JVM 推导，android.bluetooth 真实栈行为（回调时序/栈特异性）待授权联调——AndroidGattLink 只照 MainActivity/UpgradeService 实测先例粘合，本机按 android.jar 编译检查过，真机行为待联调",
+    "未连真机（红线）；真机适配清单 9/10 两项（联调顺序与对照项）待授权",
+    "写类型自适应规则基于 H3S 实测属性 4 与 GATT 规范推导，其他属性组合未测"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "真机联调清单第 9 条（只读对拍→单条 ANC→提示音音量→EQ 整组的顺序验证）",
+    "真机联调清单第 10 条（真机 setter 响应载荷/EQ 写是否需先发预设装载/非档位音量值行为）",
+    "真实蓝牙栈回调时序与并发（FakeLink 无法覆盖）",
+    "扫描转直连分支的真机行为（10s 超时场景）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "AndroidBleTransport 状态机为纯 JVM 推导，android.bluetooth 真实栈行为（回调时序/栈特异性）待授权联调——AndroidGattLink 只照 MainActivity/UpgradeService 实测先例粘合，本机按 android.jar 编译检查过，真机行为待联调",
+    "未连真机（红线）；真机适配清单 9/10 两项（联调顺序与对照项）待授权"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

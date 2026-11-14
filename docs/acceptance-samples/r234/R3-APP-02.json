@@ -1,0 +1,33 @@
+{
+  "case_id": "R3-APP-02",
+  "firmware_identity": "App 侧纯 JVM（无固件执行面）；串行化约束取材 AGENTS 技术不变量 6（MTU247=GATT244B/等写回调/片间隔≥10ms/522B=3 片）+docs/ota.md 实测+docs/protocol.md 帧格式（RCSP length+尾字节 EF 重组）",
+  "initial_state": "tools/android-query 传输骨架（路 Z/sim-h3stransport）：H3sTransport 接口（connect/disconnect/write/onFrame/onMtuChanged）+SerialBleTransport 通用实现（帧级+片级串行）+BlePacketizer（MTU-3 分片）+RcspDeframer（length+EF 重组，跨 notify 分片/一次多帧）+LoopbackTransport 回环桩（收片重组→逐字节可对照→生成 status=0 响应→走同一 notify 重组路径送回）；bridge 未注入 transport 时退化为纯组帧 hex 回显（旧行为不变）",
+  "inputs_schedule": "单测输入（H3sTransportTest）：EQ 写帧端到端、按键重映射双 wire 端到端（ADV type2 默认/0x2b，Loopback 对 C2 写也回 status=0）、MTU 压小到 27 的跨片重组、两帧连发（第二条须等第一条响应）、SN 254→255→0 回绕、响应超时、未武装/未连接拒绝、deframer 单元（跨片/粘连/垃圾前缀）、未注入 transport 向后兼容",
+  "observation_boundary": "观察面=Loopback 收到的帧字节（==EqFrame 直组逐字节对照）、串行队列顺序（第二条帧在第一条响应前零发送）、回调事件（response/send_failed/mtu/disconnected）；无 GATT/射频观察",
+  "assertions": [
+    "AGENTS 不变量 6 串行化：帧级串行（一次一条帧，等「写完所有片+（flags=C0 时）响应帧到达或超时」再发下一条）+片级串行（BlePacketizer 按 MTU-3 分片，一次一片，等片写回调、片间隔≥10ms）——串行断言（pause/release 响应，第二条零发送）",
+    "分片/重组：BlePacketizer 按 MTU-3 分片（247→244B；522B 帧分 3 片先例在 BlePacketizerTest）+RcspDeframer 按 length+尾字节 EF 重组（跨 notify 分片/一次多帧/垃圾前缀容错）——跨片重组测试把 MTU 压小到 27",
+    "SN 管理：写命令 body 首字节 SN 自管理（bridge/Frame 层）+u8 回绕（254→255→0）；响应按 SN 匹配回推（ResultSink 事件）",
+    "拒绝面：未武装（EqWritePolicy armed 门）与未连接的写请求零发送，错误路径独立回调"
+  ],
+  "timeout_budget": "JVM 单测毫秒级（假调度器/手动队列注入，无真实定时依赖）；复跑 bash tools/android-query/test.sh H3sTransportTest（本路 2026-11-14 复跑 9 套全过）",
+  "model_assumptions": [
+    "Loopback 的 setter 响应载荷（cmdid|n|data 回显）是桩自定形状——status+SN 起始位置是实测钉死的（docs/protocol.md），写路径 setter 响应的载荷部分 [未钉]，真机联调以实机帧为准",
+    "10ms 片间隔/5s 响应超时是实测服务要求（docs/ota.md），JVM 测试经注入调度器验证逻辑不验证真实时序",
+    "未连真机、未刷机（红线）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "真机 BLE 传输（授权联调缺失，另立 R3-APP-05 BLOCKED）",
+    "真实 Android 蓝牙栈回调时序（经 FakeLink/契约测试覆盖逻辑面，R3-APP-03）",
+    "setter 响应载荷真机形状"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "Loopback 的 setter 响应载荷（cmdid|n|data 回显）是桩自定形状——status+SN 起始位置是实测钉死的（docs/protocol.md），写路径 setter 响应的载荷部分 [未钉]，真机联调以实机帧为准",
+    "10ms 片间隔/5s 响应超时是实测服务要求（docs/ota.md），JVM 测试经注入调度器验证逻辑不验证真实时序"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

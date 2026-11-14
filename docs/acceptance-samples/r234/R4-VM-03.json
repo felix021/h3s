@@ -1,0 +1,34 @@
+{
+  "case_id": "R4-VM-03",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；静态扫描源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100）（解出的 decrypted flash 全量 li.u32+裸 LE32 扫描）；候选镜像同 R4-VM-02（8e9a47d0…）",
+  "initial_state": "纯静态+镜像字节断言（无执行）：两张表全案重扫——表 A RCSP 自定义命令分发表 [0x060a9b78,0x060a9d1c) 15 项×28B {+0 init,+4 getter,+8 setter,+20 恢复默认,+24 cmdid}；表 C 批量同步表 [0x060a9b24,0x060a9b78) 3 项×28B {+0 cmdid,+4 装载,+8 读,+12 写,+24 恢复默认}（cmdid 位置两表相反）；消费者三处全部只按表基/表尾走表（分发器 0x0600f85e/恢复 walker 0x0600f836/开机 walker 0x06024df4）",
+  "inputs_schedule": "无运行输入；扫描域=全 app li.u32 立即数+整个 decrypted flash 的裸 LE32 指针字（任意字节对齐）+三个 walker 机器走表复核",
+  "observation_boundary": "观察面=表项字节（0x060a9c74 项 cmdid 0x30/setter 槽原值 0）+引用扫描命中集（对 0x060a9c74 项内零命中）+最终镜像明文反解 LE32(0x060E31E0)；非执行观察",
+  "assertions": [
+    "docs/r4-command-hook.md §1.2 表 A 十五项占用全案：没有任何 cmdid 空项（15 项全部有 cmdid）；表尾 0x060a9d1c 之后紧跟活数据（指令样式的数据）扩表不可行（需改 3 处表尾立即数还要吃掉后续数据）；空的是四个函数指针槽——0x2f/0x30 的 setter、0x01/0x03 的 getter",
+    "§1.2 选 0x30 setter 槽理由：0x2f=电量查询在用（protocol.md §2.6 实测，动槽风险高）；0x30 面板无条目/协议笔记无记录、写路径从未存在（填 setter 纯增量，读路径原样保留）；0x01/0x03 的 getter ABI（getter(buf+2,126)）拿不到命令帧 data 做不了写的对称面",
+    "§1.2 数据窗口等价安全检查（注册表项是数据不是代码，T/Y 的 8B 指令窗+落点扫描不适用）：①槽原字节恰 00000000 [镜像]；②全 app li.u32+decrypted flash 裸 LE32 扫描对 0x060a9c74 项内零引用（唯一到达方式=三 walker 的表基遍历）；③消费面钉死（读 +4/写 +8/恢复 +20/开机 +0——本候选只写 +8）",
+    "§1.1 对路 AO cmdid 归属修正（三 walker 机器走表+分发器位图匹配反汇编）：按键重映射四件套 {0x060254ce/0x060254f2/0x06025564/0x0602556c} 在表 C 首项 cmdid=2（批量同步域），「cmdid 1」是错位栅格误读（+24 实际是恢复默认函数指针）；表 A/表 C 全部 cmdid 无 0x2b——AO 负面结论不受影响，App 实发 wire 仍 [未钉] 待真机抓包"
+  ],
+  "timeout_budget": "静态扫描/构建断言场景，无模型步预算（复跑构建器 verify_l1_image 注册表断言+单测 test_r4_keyhook_image.py + tools/analyze_hearing_aid_app_path.py 同族的落点复核）",
+  "model_assumptions": [
+    "表结构结论为静态反汇编（derived-not-measured）：walker 走表+分发器反汇编钉死，非运行验证",
+    "寄存器间接引用不在 li.u32/裸 LE32 扫描域（与路 T/Y 同一残留限制）",
+    "0x30 getter 语义（0x06007f0a 族查询=充电/无线参数类）为 [推断]，浅层反汇编"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "注册表窗口的运行验证（0x0600f85e 分发器对填入 setter 的实际调用，另立 R4-VM-05）",
+    "真机刷入（授权缺失）",
+    "QCY App 未来版本 0x30 写冲突监控",
+    "表 C 批量同步族（cmdid 2 按键重映射）的 App 侧 wire 定案（真机抓包）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "表结构结论为静态反汇编（derived-not-measured）：walker 走表+分发器反汇编钉死，非运行验证",
+    "寄存器间接引用不在 li.u32/裸 LE32 扫描域（与路 T/Y 同一残留限制）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

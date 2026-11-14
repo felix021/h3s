@@ -1,0 +1,30 @@
+{
+  "case_id": "R4-VM-05",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100）（分发器/表锚点源）；执行载体计划=--r4-keyhook 候选（8e9a47d0…，UNTESTED）",
+  "initial_state": "计划起点=主仿真前沿推进到 RCSP/任务派发相位后的条件世界（BLE 协议栈→RCSP 命令体→0x0600f85e 分发器可达）；当前已合并前沿=条件线 3,137,573 步 @ 0x60719c0（HANDOFF 当前前沿表），RCSP/命令分发世界不可达",
+  "inputs_schedule": "计划输入（未执行）：RCSP 帧 FE DC BA|C0|FF|cmdid 0x30|len_BE16|body（写 body=1E v0..v7/读 body=1E）经分发器 0x0600f85e 写路径（body[0]=cmdid 匹配 +24）→取 +8 setter（=载荷 0x060E31E0）→异步投递（trampoline 0x060256aa 以 (resp,128,data,len) 四参调起）或同步 0x0600f932-0x0600f93e call",
+  "observation_boundary": "计划观察点（未执行）：setter 调用四参、set/get_config 分派器（0x06001f12/0x06000f88）调用与返回、VM 后端行为（R4-VM-01 已证直调面）、响应包装 0x0600f946（resp[0]=cmdid/resp[1]=n）",
+  "assertions": [
+    "docs/r4-command-hook.md §5.2：载荷到分发器的完整路径未在任何仿真/真机跑过——主仿真前沿未推进到 RCSP/任务派发相位；路 AB 只实证「直调 set/get_config 分派器的读写往返」，没实证「命令帧到达这个 handler」",
+    "§1.1 分发器写路径 ABI（静态）：0x0600f8b4 取 +8 setter 零值静默退出（0x0600f8b6）、异步投递 0x0600f8b8..0x0600f92e（trampoline 0x060256aa=call r5([r2],[r2+4],[r2+8],[r2+12])）、同步 0x0600f932-0x0600f93e setter(resp,128,data,len)、响应包装 0x0600f946"
+  ],
+  "timeout_budget": "未定（BLOCKED：无可用执行载体，无模型步预算可声明）",
+  "model_assumptions": [
+    "静态 ABI+路 AB 直调实证是当前最强证据，不构成分发链执行证据",
+    "候选 UNTESTED（8e9a47d0… 不刷机）；EQ 修复候选 67ba97ef UNTESTED 不变"
+  ],
+  "result": "BLOCKED",
+  "uncovered_items": [
+    "异步 trampoline 路径执行验证（0x060256aa 延迟调起）",
+    "同步 call 路径执行验证（0x0600f932）",
+    "帧缓冲延迟调用期间生命期的独立证据（既有命令族共用契约）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": [
+    "主仿真前沿未推进到 RCSP/任务派发相位——BLE 协议栈与命名任务 0x060A1D11 的命令投递世界不可达，分发器 0x0600f85e 对载荷（0x060E31E0）的实际调用没有执行载体（docs/r4-command-hook.md §5.2）",
+    "真机侧另缺双授权：--r4-keyhook 候选刷机授权（UNTESTED 不刷机）+真机 BLE 联调授权（红线不连真机）"
+  ],
+  "recorded_at": "2026-11-14T09:55:00"
+}

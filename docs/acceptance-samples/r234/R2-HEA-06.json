@@ -1,0 +1,32 @@
+{
+  "case_id": "R2-HEA-06",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100）（窗口/桩静态锚点源）；执行载体计划=最新超集候选 --hearing-aid-l1-slotram（906184b2…，含 open/close/6 窗口/RAM 槽 0x125574 全链）",
+  "initial_state": "计划起点=主仿真前沿推进到 0x0600db3c（ANC 键循环 dispatch）相位后的条件世界（当前已合并前沿=条件线 p11_heap_experimental_config 3,137,573 步 @ 0x60719c0，HANDOFF 当前前沿表；尚未到达）；当前无任何可挂载的执行载体",
+  "inputs_schedule": "计划输入（未执行）：键循环进通透（TRANS 分支 0x0600db92/0x0600dbbc）驱动窗口 A/B 桩→mic_effect_open；离开通透（ON/OFF 四窗）驱动 leave 桩→mic_effect_close；App 0x17 直设同链（flag=1，路 AC）",
+  "observation_boundary": "计划观察点（未执行）：窗口桩入口与载荷各 API 调用点回填、数据槽 0x125574 读写、close 的 stop(0x060741ee)/release(0x06074204)/notify(0x060057e6) 链、ANC ctx 模式字节（b[ctx+33] 权威读点 0x0600bbd8）",
+  "assertions": [
+    "hearing-aid-l1-payload §9.4.2/§11.5.2：接驳后的完整路径（桩+载荷在 ANC 键循环里）未在仿真跑——主仿真前沿未推进到 0x0600db3c；静态往返+落点扫描+锚点核对是当前最强证据",
+    "§10.3：close 全链在路 O 场景验证不了——O 的 mic_effect_payload 场景是「跑到合成状态边界即停」的探针非可续跑机器，close 的 stop 走同一 cmd-post→流服务线程路径被同一单任务桩边界拦住；单独跑 close 只能覆盖槽==0 早退平凡路径",
+    "§12.5.2：槽 0x125574 运行期 watch 待主前沿到键循环相位时补"
+  ],
+  "timeout_budget": "未定（BLOCKED：无可用执行载体，无模型步预算可声明）",
+  "model_assumptions": [
+    "静态证据（6 窗口落点扫描/桩形状反解码/69 指令往返）钉死的是字节一致性，不构成执行证据",
+    "候选镜像族 UNTESTED（patch/close/slotram 三 sha 不变，EQ 修复候选 67ba97ef UNTESTED 不变）"
+  ],
+  "result": "BLOCKED",
+  "uncovered_items": [
+    "桩跳转正确性的执行验证（6 窗口+2 TRANS 桩+4 leave 桩）",
+    "open/close 载荷在键循环真实上下文的执行（含 stop/release 同步等行为）",
+    "槽 0x125574 运行期 watch（残余写入风险观测）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": [
+    "主仿真前沿未推进到 0x0600db3c（ANC 键循环 dispatch）相位——键循环两链/ctx getter 0x0600c2aa/apply 0x0600dae4/两条尾声的世界不可达，桩+载荷没有可挂载的执行载体（docs/hearing-aid-l1-payload.md §9.4.2）",
+    "路 O mic_effect_payload 场景为探针型（合成状态边界停机）非可续跑机器——close 的 stop/release 是 cmd-post→流服务线程同步等形态，同一单任务桩边界拦住（§10.3）",
+    "真机验证另缺刷机授权（候选族 UNTESTED 不刷机，AGENTS 红线「No new device action is authorized」）"
+  ],
+  "recorded_at": "2026-11-14T09:55:00"
+}

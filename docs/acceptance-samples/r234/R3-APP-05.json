@@ -1,0 +1,32 @@
+{
+  "case_id": "R3-APP-05",
+  "firmware_identity": "App 侧壳+传输全链（tools/android-query，R3-APP-01..04 已离线全过，本路 2026-11-14 复跑 test.sh 9 套全过）；目标固件=tested b79（b79cb3a6…，真机当前镜像，未连接）；写面生效前提（EQ 修复候选 67ba97ef…）UNTESTED 不变",
+  "initial_state": "计划起点=授权联调会话：手机（此前实测 0.4/code6 客户端或新构建 h3s-query.apk，构建注入目标 DeviceConfig.ADDRESS）+H3S 耳机（b79）BLE 连接；当前无授权会话（红线：不连真机、不刷机）",
+  "inputs_schedule": "计划输入（README 联调清单第 9 条顺序）：只读查询对拍（SN 匹配+deframe 与 docs/protocol.md 实测帧对照）→单条 ANC 切换（响应最小）→提示音音量→EQ 整组；对照项（第 10 条）：真机 setter 响应载荷形状（替换 Loopback 回显假设）、EQ 写是否需先发预设装载、非档位音量值的实际行为",
+  "observation_boundary": "计划观察面（未执行）：真机 BLE notify 帧（RCSP 重组后与文档实测帧逐字节对照）、setter 响应载荷、连接/MTU 协商实际值、断线重连行为",
+  "assertions": [
+    "tools/android-query/README.md 真机适配清单 9/10 两项：真机行为（回调时序/栈特异性/setter 响应载荷）待授权联调——离线交付（组帧/串行化/适配层/壳）不能替代",
+    "docs/app-protocol.md §4.4：按键重映射 wire 定案（ADV type2 vs 0x2b vs 批量同步 cmdid 2）需真机抓一次 setKeyFunction 实包（H3S 实际选哪个分支 [未钉]）",
+    "docs/app-protocol.md §4.4：EQ/ANC 写的响应与「设备已应用」边界未钉（App 侧有距上次设置时间的过滤，不直接等于设备已应用）"
+  ],
+  "timeout_budget": "未定（BLOCKED：无授权会话，无预算可声明）",
+  "model_assumptions": [
+    "离线全链（R3-APP-01..04）+Loopback 契约测试钉死的是逻辑面；真机帧形状/时序以实机为准",
+    "EQ 修复候选 67ba97ef UNTESTED 不变（写面真机生效前提另行授权）"
+  ],
+  "result": "BLOCKED",
+  "uncovered_items": [
+    "只读查询真机对拍（SN/deframe 与实测帧）",
+    "ANC/提示音/EQ setter 真机响应",
+    "MTU 协商与连接时序真机值",
+    "按键重映射 wire 真机抓包定案"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": [
+    "真机 BLE 联调授权缺失——需用户当场显式授权的设备连接会话（红线：不连真机、不刷机），tools/android-query/README.md 真机适配清单第 9/10 条无法执行",
+    "真机 setter 响应载荷形状未钉（Loopback 桩形状待替换源）+按键重映射 wire 三候选待真机抓包定案（docs/app-protocol.md §4.4）"
+  ],
+  "recorded_at": "2026-11-14T09:55:00"
+}
