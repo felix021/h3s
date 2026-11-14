@@ -509,7 +509,7 @@ P-7=BA#11；P-8=BA#12；P-9=BA#13；P-10=BA#13b；P-11=BA#14；P-12=BA#15；P-13
 
 | P# | 原行 | 刷新状态 | 证据（main 217858a） | 备注/缺什么 |
 |---|---|---|---|---|
-| P-1 | §5 P-1（DAA_CON1 0xfe0a0c 读） | **已绿** | 路 CV 两开关（`jl_adda_daa_con1_initial_fixture`/`config_readback` 族，HANDOFF 路 CV 条目）；前沿已远越 3,170,362（现为 3,747,585） | — |
+| P-1 | §5 P-1（DAA_CON1 0xfe0a0c 读） | **已绿** | 路 CV 两开关（`jl_adda_daa_con1_initial_fixture`/`jl_adda_daa_con1_config_readback`，HANDOFF 路 CV 条目）；前沿已远越 3,170,362/3,747,585（现为 19,139,239） | — |
 | P-2 | BA#0（W1[3] 尾段+DAC 簇+IRQ68/anc） | **在途**（挡路者换防） | 已绿四件：CW `jl_audio_dac_vl0_readback`（3,202,148）、B1 `jl_audio_dac_cop_writes`+`jl_audio_dac_dma_writes`（3,747,578）、B3 `jl_adda_analog_family`（4,521,083 @ 0x606ac42 五字容器，94 写全服务） | 新挡路者=**DAC_TM0 读**：19,139,239 @ 0x606abbe（DAC 启动函数 0x6071e74 尾段 getter 0x606ab92 首读 0xfe0524，`+0x24 __RW` 硬件维护 DAC 时间标记/缓冲状态，值无从推导）——三选一（具名 fixture/钉住/真机测量）归下一路，已有路接手 |
 | P-3 | BA#1-3（W1[4]→S9→W2/W3/W4[0..3]） | **已绿**（48a49d0 校准） | 3.2M→19.1M 段推进仅遇 JL_ADDA/DAC_TM0 两个音频域停点，其余纯 RAM 的 BA 判定获支持；**停泊 os_time_dly 真实发生**——事件时钟首次真实推进 13,429,113 虚拟步（B3 实测，`virtual_model_steps_advanced` 首次非零），Timer0 到期 372→3401 | 停泊形态=OS 等待族途中停泊（音频 init 的延时），**非 S19 后终态 park**（那个仍在 DAC_TM0 之后） |
 | P-4 | BA#4-8（W4[4] PVDD/VLVD 簇五停点） | **已绿**（双保险：预案全覆盖+真实前缀零触达） | B1 四开关：`jl_pvdd_trim_writes`（覆盖停点①②④）+`timer2_delay_projection`（③，闭式 4000 步已入 min()）+`p33_canary`/`p33_canary_first_read_words`（⑤）；B1 条目④实测「TIMER2 助手 0x12cd26 零写、canary 树零访问、PVDD 三字零写」——**五预测停点全部未出现**（见观察 B） | 前沿进 S 段时若真实前缀触达这些域，开关已在（兜底语义不变） |

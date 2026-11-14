@@ -39,7 +39,7 @@ RCSP 帧），每条给出观察点/预期差异集；A/B 白名单=四源闭包
 | loader 注册表 | `LOADERS = {'official', 'tested_b79', 'eq_fence_repair'}` | :759-761 |
 | 身份钉死 | 每 loader require UFW sha256（`B79_SHA`/`REPAIRED_SHA`）+ plain 长度（`PLAIN_LENGTHS` per label：official/b79=0xE3053、eq=0xE31C5）+ app 切片 sha（`B79_APP_SHA`/`EQ_APP_SHA`） | load_b79/load_eq_candidate :405-422 |
 | 共享 handoff 断言 | `flash[:0x2000] == official_flash[:0x2000]`——bootloader/头区逐字节同，共享 handoff 假设不破 | load_b79 :410 |
-| 场景单源 | `frontier_run` 直接 import `probe_irq_entry.irq_case` 的 SCENARIOS flag 集（frontier_registry 单源），支持 `crc_bankb`（289,849）与 `p11_heap_experimental`（条件前沿 3,747,585）两档 | :87-99/:366-396 |
+| 场景单源 | `frontier_run` 直接 import `probe_irq_entry.irq_case` 的 SCENARIOS flag 集（frontier_registry 单源），支持 `crc_bankb`（289,849）与 `p11_heap_experimental`（条件前沿 19,139,239，当前钉点以 frontier_registry 为准）两档 | :87-99/:366-396 |
 | 新鲜度钉子 | official 必须先复现主前沿/条件前沿停点，配置漂移即拒 | :93-108 |
 | 逐步签名 | TraceMachine（DualCoreMachine 纯观察子类）：核/before_pc/next_pc/flags/16 GPR 规范形/该步全部 guest RAM 写 | COMPARISON_BASIS :283-294 |
 | 差分机制 | first signature divergence（classify_divergence 关联 image_diff_runs 根因）/first_control_divergence/reconvergence（步滞后搜索）/common_control_prefix/stop parity/final_report_diffs | compare_pair :549-600 |

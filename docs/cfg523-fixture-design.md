@@ -7,6 +7,12 @@ fixture」从 BA 的一行预案落成实施路拿到即可开工的设计——
 条目草案、与 D1 蓝图（P-13）与 S/AJ 键矩阵 fixture 的统一。**本路是设计文档，不是
 实施**：未改 tools/ 任何代码、未跑任何改动场景（本文件为 docs/ 新增，git 状态可查）。
 
+> **状态注记（2026-11-15 路 AUDIT 补）**：本设计的开关 `cfg523_named_fixture` 已由路 B3
+> 实现并单测，但 19,139,239 停点证实其全部消费者仍在音频数字域整块之后（键通道 RES 行
+> 零服务），按 BQ 零消费者先例**从条件栈撤回、当前不在 frontier_registry 中**——实现保留
+> 在分支历史 `0b875ed`，音频域过界后按到达顺序重新落地（HANDOFF 路 B3 条目⑦）。本文的
+> registry 草案与场景规格仍适用，但「拿到即可开工」的前提（前沿已到消费点）尚未成立。
+
 方法与证据强度：反汇编用仓库钉死的 pi32v2-isa codec（`probe_pi32v2.upstream()` +
 `probe_boot.application()`，official app.bin sha `65cafc7f…`/app sha `18f3d573…`，
 load base 0x06000100），一次性脚本在 `~/tmp`（不进仓）。**[静态·本路]** = 本路指令
