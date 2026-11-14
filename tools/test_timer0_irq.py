@@ -198,6 +198,28 @@ class Timer0MachineTests(unittest.TestCase):
         m2.deliver_timer0_irq(0)
         with self.assertRaises(ValueError):m2.deliver_timer0_irq(0)  # in-flight handler
 
+    def test_entry_rejects_mid_instruction_states(self):
+        # 路 AS:交付入口的指令边界守卫——目标核在并行对第二半在途
+        # (after_then)或 rep 体迭代在途(repeat)时拒绝进入。动机=实测
+        # 首例:路 AS 放行 ADC reset 写后第 5 次 Timer0 到期(3,139,140 步)
+        # 落在 ROM 0x4180 寄存器计数 rep 拷贝体内(remaining=5);模型把
+        # 并行对/rep 拆成多个步只是适配器形状,硅上都是单条指令、IRQ 在
+        # 指令边界识别——分发层(probe_boot.dispatch_delivery 路 AS 扩展)
+        # 据此把这类请求延期到块尾(挂起不丢弃,路 CB 在途 handler 延期
+        # 同族),机器守卫本身保持拒绝。两侧状态各自钉一例。
+        m=machine(entry=True)
+        cpu=FakeCpu(VectorMem(),pc=0x4180);cpu.repeat={'start':0x4180,'end':0x4196,
+                                                       'register':5,'remaining':5}
+        m.cores={0:cpu}
+        with self.assertRaises(ValueError):m.deliver_timer0_irq(0)
+        self.assertEqual((cpu.pc,cpu.reti,cpu.steps),(0x4180,0,7),
+                         'rejected mid-repeat entry mutated CPU state')
+        cpu2=FakeCpu(VectorMem(),pc=0x60719c4);cpu2.after_then=[1,0x60719c4]
+        m.cores={0:cpu2}
+        with self.assertRaises(ValueError):m.deliver_timer0_irq(0)
+        self.assertEqual((cpu2.pc,cpu2.reti,cpu2.steps),(0x60719c4,0,7),
+                         'rejected mid-pair entry mutated CPU state')
+
     def test_rti_returns_to_the_interrupted_task(self):
         m=machine(entry=True,banks=True,rti=True)
         cpu=FakeCpu(VectorMem(),pc=0x6067d30,core_id=0);m.cores={0:cpu}
