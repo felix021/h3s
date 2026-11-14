@@ -13,8 +13,10 @@ the full M1 CPU inventory (route BN: dual-core 30-field round trip, abstract
 GPR/IcfgState precision, memory-ownership guards, M1+M3+M4+M7 mid world).
 """
 import json
+import os
 import struct
 import sys
+import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -41,6 +43,8 @@ def attach_irq1(hardware):
     the full enable_multicore path (which would add M4-family state)."""
     hardware.irq1 = IRQController(initial_config=[None] * 32, initial_ipmask=None)
     hardware.multicore_enabled = True
+    from br28_model import CORE_PMU_CON1, PartialWord as _PW
+    hardware.core_power = {address: _PW() for address in CORE_PMU_CON1}
 
 
 def build_hardware():
@@ -166,7 +170,9 @@ def build_mem():
 
 
 def build_ledger():
-    return SimpleNamespace(adapters=Counter({'parallel_byte_store_old_registers': 104,
+    return SimpleNamespace(events=[{'access': 'write', 'address': '0x123000',
+                                    'bytes': '00', 'region': 'bootstrap_stack'}],
+                           adapters=Counter({'parallel_byte_store_old_registers': 104,
                                              'gpcnt_con_readback_load': 1}),
                            rom_steps=Counter({'completed_model_steps_in_rom': 9}),
                            event_counts=Counter({'write': 50, 'read': 30}),
@@ -193,7 +199,7 @@ def fresh_world():
                                         core_tick_rti=True, timer0_irq_entry=True,
                                         timer0_irq_rti=True, idle_wait_projection=True,
                                         software_irq_rti=True, event_clock_projection=True),
-                ledger=SimpleNamespace(adapters=Counter(), rom_steps=Counter(),
+                ledger=SimpleNamespace(events=[], adapters=Counter(), rom_steps=Counter(),
                                        event_counts=Counter(), milestones=[], trace=[],
                                        completed=0, stop=None))
 
@@ -238,9 +244,13 @@ class SmallWorldRoundTrip(unittest.TestCase):
                                hardware=fresh['hardware'], machine=fresh['machine'],
                                ledger=fresh['ledger'], expected_context={'scenario': 'small_world_test'})
         # Reflexivity check #0: restored state equals the original field by field.
+        # M1 fields compare by the reader-visible getattr(..., None) convention
+        # (the restore preserves absence-vs-None; namespace carriers have no
+        # class defaults to fall back to).
         for key, original in world['cpus'].items():
             for field in ws.M1_CPU_FIELDS:
-                assert_equal(getattr(fresh['cpus'][key], field), getattr(original, field),
+                assert_equal(getattr(fresh['cpus'][key], field, None),
+                             getattr(original, field, None),
                              f'M1.{key}.{field}')
         assert_equal(fresh['mem'].ram, world['mem'].ram, 'M2.ram')
         assert_equal(fresh['mem'].unknown_origins, world['mem'].unknown_origins, 'M2.unknown_origins')
@@ -458,7 +468,7 @@ class M1FullCPUInventory(unittest.TestCase):
 
     def assert_cpu_equal(self, actual, expected, key):
         for field in ws.M1_CPU_FIELDS:
-            assert_equal(getattr(actual, field), getattr(expected, field),
+            assert_equal(getattr(actual, field, None), getattr(expected, field, None),
                          f'M1.{key}.{field}')
         if getattr(expected, 'icfg_state', None) is not None:
             for field in ws.M1_ICFG_STATE_FIELDS:
@@ -579,7 +589,8 @@ class M1FullCPUInventory(unittest.TestCase):
             assert_equal(getattr(fresh_hardware.timer, field),
                          getattr(hardware.timer, field), f'M3.timer.{field}')
         for name in ws.M3_STATE:
-            assert_equal(getattr(fresh_hardware, name), getattr(hardware, name), f'M3.{name}')
+            assert_equal(getattr(fresh_hardware, name, None), getattr(hardware, name, None),
+                         f'M3.{name}')
         for name in ws.M7_STATE:
             assert_equal(getattr(fresh_ledger, name), getattr(ledger, name), f'M7.{name}')
         # Byte identity over the whole combined world (same capture context).
@@ -624,6 +635,12 @@ class M4ProjectionFamilies(unittest.TestCase):
         jl_omap_write_records=True, jl_imap_write_records=True,
         jl_wl_aud_write_records=True, jl_audio_dac_init_write_records=True,
         jl_audio_adc_reset_write_records=True,
+        # Post-BL families (wiring route sim-snapwire): daa_con1/vl0/cop/dma/
+        # adda_analog_family/timer2, all ON in the conditional frontier flag set.
+        jl_adda_daa_con1_initial_fixture=0x0, jl_adda_daa_con1_config_readback=True,
+        jl_audio_dac_vl0_readback=True,
+        jl_audio_dac_cop_writes=True, jl_audio_dac_dma_writes=True,
+        jl_adda_analog_family=True, timer2_delay_projection=True,
     )
 
     def build_world(self):
@@ -723,6 +740,21 @@ class M4ProjectionFamilies(unittest.TestCase):
         hw.reset.clear_commands.append({'address': '0xf2d248', 'value': '0x0'})
         address = next(iter(hw.reset.config_masks))
         hw.reset.configuration[address].apply('and', hw.reset.config_masks[address])
+        # Post-BL families (sim-snapwire): one write+read each, then mid-flight
+        # timer2 state (running transaction, fractional remainders, iwkup log).
+        hw.jl_adda_daa_con1.write(0xfe0a04, 0xfffffff8, 0)
+        hw.jl_adda_daa_con1.read(0xfe0a04)      # reads_after_write += 1
+        hw.jl_audio_dac_vl0.write(0xfe051c, 0x0, 0)
+        hw.jl_audio_dac_vl0.read(0xfe051c)      # synthesized initial read
+        hw.jl_audio_dac_cop.write(0xfe0534, 0x7f, 0)
+        hw.jl_audio_dac_dma.write(0xfe0508, 1, 0)
+        hw.jl_adda_family.write(0xfe0a08, 0x12)
+        hw.jl_adda_family.read(0xfe0a08)
+        hw.timer2.write(0xfd0604, 100)          # CNT (fractional phase reset)
+        hw.timer2.write(0xfd0608, 199)          # PRD
+        hw.timer2.write(0xfd0600, 0xc01)        # start: opens a transaction
+        hw.timer2.con_reads = 1
+        hw.timer2.write_iwkup(0xffe1b0, 6, 0)   # bounded write-only log
         return hardware
 
     def captured_m4(self, world):
@@ -922,6 +954,225 @@ class RamRunLength(unittest.TestCase):
             decode_ram_runs([[0x100, 0, b'']])                            # empty run
         with self.assertRaises(SnapshotError):
             decode_ram_runs(['not a segment'])
+
+
+# ---------------------------------------------------------------------------
+# Wiring-route fast tier (design §3.2 item 2, full shape): a REAL explore
+# world from public assets — probe_boot_handoff's typed_memory_replay
+# (16,077 model steps) — snapshot at a midpoint budget stop, restore onto a
+# freshly constructed world, resume to the endpoint, compare against the full
+# direct run. No diff whitelist (§3.1): any differing report key is a failure.
+# ---------------------------------------------------------------------------
+
+def _explore_assets_ready():
+    from probe_pi32v2 import ROOT
+    firmware = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+    simulator = ROOT / 'tools/reference-cache/pi32v2-isa/tools/llvm/sim.py'
+    return firmware.exists() and simulator.exists()
+
+
+@unittest.skipUnless(_explore_assets_ready(),
+                     'official firmware / pinned pi32v2-isa not present in this checkout')
+class AdvanceTierExploreWorld(unittest.TestCase):
+    MIDPOINT = 8000
+
+    @classmethod
+    def setUpClass(cls):
+        from probe_pi32v2 import ROOT, upstream
+        from probe_boot import application
+        from probe_boot_handoff import profile, package_header
+        from probe_boot_handoff import SENTINEL_A
+        firmware = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.module = upstream()
+        cls.app = application(firmware)
+        cls.handoff = profile(package_header(firmware), SENTINEL_A)  # 16,077-step world
+        cls.temp = tempfile.TemporaryDirectory(prefix='h3s-snapwire-')
+        cls.addClassCleanup(cls.temp.cleanup)
+
+    def run_world(self, budget, **snapshot):
+        from probe_boot import explore
+        from probe_boot_handoff import HANDOFF
+        config = {key: value for key, value in snapshot.items()
+                  if key in ('capture', 'restore', 'expected_context')}
+        return explore(self.module, self.app, name='typed_memory_replay',
+                       adapt_stack=True, pll=1, r0=HANDOFF,
+                       handoff=self.handoff, startup_loops=True, budget=budget,
+                       snapshot=config or None)
+
+    def test_midpoint_resume_matches_full_replay_byte_for_byte(self):
+        snap = Path(self.temp.name) / 'midpoint.bin'
+        full = self.run_world(budget=100_000)
+        self.assertEqual(full['stop']['kind'], 'unverified_zero_count_rep')  # real Blocked
+        captured = self.run_world(budget=self.MIDPOINT, capture=snap)
+        self.assertEqual(captured['stop'], {'kind': 'instruction_budget'})
+        self.assertEqual(captured['completed_steps'], self.MIDPOINT)
+        # +1: the full replay's final Blocked instruction must be re-attempted
+        # (resume budget counts steps to ATTEMPT from the restored state).
+        resumed = self.run_world(budget=full['completed_steps'] - self.MIDPOINT + 1,
+                                 restore=snap,
+                                 expected_context={'scenario': 'typed_memory_replay',
+                                                   'completed_steps': self.MIDPOINT})
+        self.assertEqual(resumed['stop'], full['stop'])
+        self.assertEqual(resumed['completed_steps'], full['completed_steps'])
+        comparison = dict(resumed)
+        comparison.pop('snapshot_restore')
+        self.assertEqual(json.dumps(comparison),
+                         json.dumps(full),
+                         'resumed report differs from the full replay (no diff whitelist; '
+                         'plain dumps keeps dict insertion order visible)')
+
+    def test_zero_step_self_check_reproduces_the_capture_report(self):
+        snap = Path(self.temp.name) / 'selfcheck.bin'
+        captured = self.run_world(budget=self.MIDPOINT, capture=snap)
+        zero = self.run_world(budget=0, restore=snap)
+        left, right = dict(captured), dict(zero)
+        left.pop('snapshot_capture')
+        right.pop('snapshot_restore')
+        self.assertEqual(json.dumps(left), json.dumps(right))
+
+    def test_tampered_ram_byte_must_turn_the_report_red(self):
+        """AZ counterexample on the real world: one flipped RAM byte inside a
+        captured segment survives both gates (lengths unchanged) — the resumed
+        report must diverge from the full replay, proving the byte-for-byte
+        comparison has discriminative power."""
+        snap = Path(self.temp.name) / 'tampered.bin'
+        full = self.run_world(budget=100_000)
+        self.run_world(budget=self.MIDPOINT, capture=snap)
+        loaded = WorldSnapshot.load(snap)
+        target = next((index for index, (start, length, _data) in enumerate(loaded.ram.segments)
+                       if length >= 16 and 0x120000 <= start < 0x130000), None)
+        self.assertIsNotNone(target, 'no RAM window segment to tamper')
+        start, length, data = loaded.ram.segments[target]
+        data = bytearray(data)
+        data[8] ^= 0x01
+        loaded.ram.segments[target] = [start, length, bytes(data)]
+        loaded.save(snap)  # manifest re-derives; RAM byte counts are unchanged
+        resumed = self.run_world(budget=full['completed_steps'] - self.MIDPOINT + 1,
+                                 restore=snap)
+        comparison = dict(resumed)
+        comparison.pop('snapshot_restore')
+        self.assertNotEqual(json.dumps(comparison), json.dumps(full))
+
+    def test_capture_context_gate_refuses_a_wrong_endpoint(self):
+        snap = Path(self.temp.name) / 'context.bin'
+        self.run_world(budget=self.MIDPOINT, capture=snap)
+        with self.assertRaisesRegex(SnapshotError, 'capture context mismatch'):
+            self.run_world(budget=10, restore=snap,
+                           expected_context={'scenario': 'typed_memory_replay',
+                                             'completed_steps': self.MIDPOINT + 1})
+
+
+# ---------------------------------------------------------------------------
+# Artifact tier (design §3.2): manual, ROM-gated. The conditional-frontier
+# flag stack (frontier_registry scenario_flags('p11_heap_experimental'))
+# rebuilt through the full irq_case construction chain; capture at a budget
+# stop, resume X in {+1, +10k, +100k}, byte-compare against the full replay.
+# Snapshot files stay in analysis/ (gitignored); only the summary digest row
+# is written to evidence/snapshot-artifact.json (no RAM bytes).
+# Env: H3S_SNAPSHOT_ROM=<captured ROM release asset> (required),
+#      H3S_SNAPSHOT_CAPTURE_N=<budget stop> (default 300000),
+#      H3S_SNAPSHOT_WORK=<dir> (default analysis/snapshot),
+#      H3S_SNAPSHOT_CANONICAL=1 also captures the 19M-step canonical stop.
+# ---------------------------------------------------------------------------
+
+ARTIFACT_ROM = os.environ.get('H3S_SNAPSHOT_ROM')
+ARTIFACT_CAPTURE_N = int(os.environ.get('H3S_SNAPSHOT_CAPTURE_N', '300000'))
+ARTIFACT_CANONICAL = bool(os.environ.get('H3S_SNAPSHOT_CANONICAL'))
+
+
+@unittest.skipUnless(ARTIFACT_ROM, 'manual artifact tier: set H3S_SNAPSHOT_ROM '
+                     'to the authorized captured-ROM release asset')
+class ArtifactTierFrontierWorld(unittest.TestCase):
+    X_TIERS = (1, 10_000, 100_000)
+
+    @classmethod
+    def setUpClass(cls):
+        from probe_pi32v2 import ROOT, upstream
+        from probe_boot import application
+        from probe_irq_entry import package_header, flash_image
+        import probe_irq_entry
+        from frontier_registry import scenario_flags
+        firmware = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.ROOT = ROOT
+        cls.rom = Path(ARTIFACT_ROM).read_bytes()
+        cls.app = application(firmware)
+        cls.header = package_header(firmware)
+        cls.image = flash_image(firmware)
+        cls.module = upstream()
+        cls.flags = scenario_flags('p11_heap_experimental', probe_irq_entry)
+        cls.work = Path(os.environ.get('H3S_SNAPSHOT_WORK') or (ROOT / 'analysis/snapshot'))
+        cls.work.mkdir(parents=True, exist_ok=True)
+
+    def run_frontier(self, **snapshot):
+        from probe_irq_entry import irq_case
+        return irq_case(self.module, self.app, self.header, self.rom,
+                        'p11_heap_experimental_config', **self.flags,
+                        flash_image_bytes=self.image, snapshot=snapshot or None)
+
+    def summary_rows(self):
+        path = self.ROOT / 'evidence/snapshot-artifact.json'
+        return json.loads(path.read_text()) if path.exists() else []
+
+    def write_summary(self, rows):
+        (self.ROOT / 'evidence/snapshot-artifact.json').write_text(
+            json.dumps(rows, indent=2) + '\n')
+
+    def test_advance_tier_three_x_on_conditional_frontier_flags(self):
+        snap = self.work / f'frontier-n{ARTIFACT_CAPTURE_N}.bin'
+        captured = self.run_frontier(budget=ARTIFACT_CAPTURE_N, capture=snap)
+        endpoint = captured['completed_steps']
+        digest = captured['snapshot_capture']['sha256']
+        zero = self.run_frontier(budget=0, restore=snap)  # self-check #0
+        rows = [row for row in self.summary_rows() if row.get('snapshot') != snap.name]
+        rows.append({'scenario': 'p11_heap_experimental_config',
+                     'capture_kind': 'instruction_budget', 'capture_steps': endpoint,
+                     'snapshot': snap.name, 'snapshot_sha256': digest,
+                     'snapshot_bytes': captured['snapshot_capture']['bytes'],
+                     'code_fingerprint': captured['snapshot_capture']['code_fingerprint'],
+                     'self_check_zero_report_equal':
+                         json.dumps({k: v for k, v in captured.items()
+                                     if k != 'snapshot_capture'})
+                         == json.dumps({k: v for k, v in zero.items()
+                                        if k != 'snapshot_restore'})})
+        for steps in self.X_TIERS:
+            with self.subTest(x=steps):
+                full = self.run_frontier(budget=ARTIFACT_CAPTURE_N + steps)
+                resumed = self.run_frontier(budget=steps, restore=snap)
+                comparison = dict(resumed)
+                comparison.pop('snapshot_restore')
+                equal = (json.dumps(comparison) == json.dumps(full))
+                rows.append({'scenario': 'p11_heap_experimental_config',
+                             'capture_kind': 'instruction_budget',
+                             'capture_steps': endpoint, 'advance_steps': steps,
+                             'snapshot': snap.name,
+                             'full_steps': full['completed_steps'],
+                             'resumed_steps': resumed['completed_steps'],
+                             'report_byte_equal': equal,
+                             'stop_kind': full['stop']['kind']})
+                self.assertTrue(equal, f'advance tier X=+{steps} diverged from the '
+                                'full replay (no diff whitelist)')
+        self.write_summary(rows)
+
+    def test_canonical_frontier_capture_and_self_check(self):
+        if not ARTIFACT_CANONICAL:
+            self.skipTest('canonical capture is a ~19-minute run; set H3S_SNAPSHOT_CANONICAL=1')
+        snap = self.work / 'canonical-p11-heap-experimental.bin'
+        captured = self.run_frontier(capture=snap)  # flag-derived 20M budget
+        zero = self.run_frontier(budget=0, restore=snap)
+        left = {k: v for k, v in captured.items() if k != 'snapshot_capture'}
+        right = {k: v for k, v in zero.items() if k != 'snapshot_restore'}
+        self.assertEqual(captured['stop']['kind'], 'unmapped_memory')
+        self.assertEqual(json.dumps(left), json.dumps(right))
+        rows = [row for row in self.summary_rows()
+                if row.get('snapshot') != snap.name]
+        rows.append({'scenario': 'p11_heap_experimental_config', 'capture_kind': 'frontier_stop',
+                     'capture_steps': captured['completed_steps'],
+                     'stop_pc': captured['stop_pc'], 'snapshot': snap.name,
+                     'snapshot_sha256': captured['snapshot_capture']['sha256'],
+                     'snapshot_bytes': captured['snapshot_capture']['bytes'],
+                     'code_fingerprint': captured['snapshot_capture']['code_fingerprint'],
+                     'self_check_zero_report_equal': True})
+        self.write_summary(rows)
 
 
 if __name__ == '__main__':

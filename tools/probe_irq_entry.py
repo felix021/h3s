@@ -1139,7 +1139,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              p33_canary=False,p33_canary_first_read_words=None,
              key_chain_scan=None,
              key_chain_matrix=None,
-             flash_image_bytes=None,readonly=()):
+             flash_image_bytes=None,readonly=(),
+             snapshot=None):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
                      'defer_core1_first_idle':True}
     if entry:machine_options['software_irq_entry']=True
@@ -1296,6 +1297,15 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 模拟 init(4.5M)+OS 等待族(事件时钟首次真实推进 13.4M 虚拟步)到
         # 19,139,239 @ 0x606abbe,预算放宽到 20M 留余量。
         if jl_adda_analog_family:budget=20000000
+    # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
+    # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
+    # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
+    # explore 消费。
+    if snapshot is not None and snapshot.get('budget') is not None:
+        require(isinstance(snapshot['budget'],int) and snapshot['budget']>=0,
+                'snapshot budget override must be a non-negative step count (0 = pure '
+                'restore for the zero-step self-check)')
+        budget=snapshot['budget']
     # heap_info_bytes:显式实验配置(P11_HEAP_INFO_DERIVED 静态推导候选)。只与
     # p11_power_init 叠加使用;报告把 fixture 标注为 derived-not-measured,
     # 场景结论一律条件通过,不算已验证(模型侧 read_bytes 只按字节粒度回放,
@@ -2227,7 +2237,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=budget,
                      extra_diagnostics=extra or None,extra_regions=p11_regions,
-                     extra_snapshots=p11_snapshots,post_stop=post_stop)
+                     extra_snapshots=p11_snapshots,post_stop=post_stop,snapshot=snapshot)
 
 
 def check_delivery(r,*,before_rti=True):

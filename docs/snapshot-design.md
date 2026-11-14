@@ -365,16 +365,17 @@ probe_boot/probe_irq_entry/br28_model/br28_machine 等既有文件）；**捕获
 拿到场景闸。
 
 **捕获接线半剩什么**（BF 合并后的下一路）：
-1. probe_boot explore 循环的捕获点（post_stop 式钩子，§2.5；账本句柄暴露，M7 的
-   「向后兼容第四可选参数」方案）；
+1. ~~probe_boot explore 循环的捕获点~~ **已完成**（接线路 sim-snapwire，见 §5.7）；
 2. ~~M1 完整字段清单~~ **已完成**（路 BN/sim-snapm1，2026-11-14：30 字段/核全量
    （含源码核对补上的 bootstrap_icfg_pending）+IcfgState 子对象+M2 mem 归属守卫+
    §M9 memo 对成对排除；见 §5.6）；
 3. ~~M4 约 25 个投影族类的适配器~~ **已完成**（路 BL/sim-snapm4，2026-11-14：
-   31 槽位/30 类/121 状态字段全覆盖，含一次性事件位与进位状态；见 §5.5）；
-4. 小世界往返升级为「快照于中点、恢复到终点、对照完整直跑」的 fast tier 全量形态
-   （§3.2；等价对照=恢复合法性证明仍是接线半的验收，本路不声称）；
-5. canonical 快照生成 + artifact tier 三档 X 对照（§3.1/§3.2）。
+   31 槽位/30 类/121 状态字段全覆盖，含一次性事件位与进位状态；见 §5.5；
+   接线路补 BL 之后合并的六槽位，见 §5.7）；
+4. ~~小世界往返升级为「快照于中点、恢复到终点、对照完整直跑」~~ **已完成**
+   （接线路 fast tier，公开资产 16,077 步真世界，见 §5.7）；
+5. ~~canonical 快照生成 + artifact tier 三档 X 对照~~ **已完成**（接线路，
+   见 §5.7 与 evidence/snapshot-artifact.json）。
 
 ## 5.5 M4 投影族适配器完成状态（2026-11-14 路 BL/sim-snapm4，基线 5b0f59d）
 
@@ -417,6 +418,46 @@ br28_machine）。字段清单=AST 全量提取（上游 sim.py CPU.__init__ + p
 
 无需新增值类型标签（BJ 白名单足够）。旧快照被双闸自然拒绝（适配器形状变了），再生成即可。
 
+## 5.7 接线路完成状态（2026-11-14 路 SNAP/sim-snapwire，基线 48a49d0）
+
+BJ 接线路清单 ①④⑤ 全部落地：**捕获点+恢复入口+advance/artifact tier 等价对照**。
+BD 蓝图 §2.5 的接入形状逐条兑现：
+
+| 能力 | 状态 | 锚点 |
+|---|---|---|
+| 捕获点：explore 主循环停点后、post_stop 之前（干净边界，直调段未触碰世界）；`snapshot={'capture': path}` opt-in，摘要（sha256/bytes/步数/停点/指纹）进报告 `snapshot_capture` 键 | 就绪 | probe_boot.explore 捕获块 |
+| 恢复入口：构造链完整重走（M8 静态重建）→ 进主循环前 restore_world 覆盖五元组+账本；CPU1 若快照世界已发射而重建世界尚未，走与原始 launch 相同的 factory 路径构造；budget>0 从循环头重新开始（预算停点 stop 记录不是世界状态，B-1）；budget=0=自反检查 #0（保留原 stop，报告逐字节重现捕获时报告） | 就绪 | probe_boot.explore 恢复块 |
+| 可配置步数停点：`snapshot['budget']` 覆盖 flag 推导预算=instruction_budget 快照点（0=纯恢复） | 就绪 | probe_irq_entry.irq_case |
+| 链路穿线：irq_case→dual_case→platform_case→architecture_case→startup→explore 单参数 `snapshot=None` 下传（默认 None=legacy 逐字节不变，已实测：legacy 场景 153,430 步报告 main↔本分支逐字节相同） | 就绪 | 五文件各 ±2 行 |
+| fast tier 全量形态（设计 §3.2 ②）：公开资产真世界（probe_boot_handoff typed_memory_replay 16,077 步）中点 8,000 捕获→恢复续跑到终点 vs 完整直跑，报告逐字节相等（纯 json.dumps 对照，无 sort_keys——dict 插入序可见，无 diff 白名单）；+自反 #0+篡改 1 RAM 字节必红+上下文闸 | 就绪，进 --units | test_world_snapshot.AdvanceTierExploreWorld（4 例） |
+| artifact tier（设计 §3.2）：条件前沿 flag 全栈（frontier_registry scenario_flags('p11_heap_experimental')）真世界，N=300,000 预算停点捕获（快照 146,703B，全 7 模块），X∈{+1,+10k,+100k} 三档 resume vs full replay **全部逐字节相等**（82s）；摘要落 evidence/snapshot-artifact.json（无 RAM 字节）；快照文件在 analysis/snapshot/（gitignored） | 就绪（手动层，env 门控 H3S_SNAPSHOT_ROM） | test_world_snapshot.ArtifactTierFrontierWorld |
+| canonical 快照（设计 §2.1）：条件前沿停点 19,139,239 @ 0x606abbe（JL_AUDIO->DAC_TM0 读）捕获+自反 #0 报告逐字节重现（H3S_SNAPSHOT_CANONICAL=1，935s）；实测 2,358,608B（M5 的 timer0_irq_deliveries 3,391 条交付记录占 2.2MB——真实无界簿记状态，§2.2 的 <0.5MB 估算按 3.1M 步时代得出、19M 步前沿失准；快照只落 analysis/ 不进 git，无预算冲突） | 就绪 | analysis/snapshot/canonical-*.bin + evidence 摘要行 |
+| advance tier 并入前沿 checklist 第五步 | 挂账（下一条前沿路执行时按 frontier_registry 注释走） | frontier_registry 模块注释已含四步 checklist |
+
+**首次真实捕获逼出的适配器补全**（缺状态守卫逐个显形，全部是 BL/BN 基线之后
+合并的真实模型状态，按 BL 同款「类实例属性清单」方法补，无发明字段）：
+
+| 补全 | 来源 |
+|---|---|
+| M1 +retx/rete | BN 注释预言的边角写入首次真实观测（CPU1 在前沿前缀执行 li.sr_u32 sr=1/2，probe_boot 0x…668/676 映射 setattr）；getattr None 缺席语义 |
+| M3 core_ticks +prd_write（BQ 后合并）+每对象静态守卫（timer allowed_sources/irq unmaskable/software_irq initial_*/tick 的 prd_readback/cnt_held_snapshot/probe 开关——原先无守卫的静默洞） | CoreTickStopped 源码 |
+| M3 +core_power（enable_multicore 创建的 {地址:PartialWord}，存在性≡multicore_enabled 对称守卫）+cpu1_release_handler 记链重建引用跳过（M5 factory/hardware 同款） | br28_model.enable_multicore |
+| M4 +六槽位：timer2（Timer2Delay 12 字段）/jl_adda_family/jl_audio_dac_cop/jl_audio_dac_dma/jl_audio_dac_vl0/jl_adda_daa_con1（initial_word/config_readback 进每对象静态）——CW/B1/B3/CV 在 BL 冻结表之后合并的条件栈投影 | 各类实例属性 |
+| M7 +events（有界 memory-events 列表=报告 memory_events 直引源；BJ 小世界漏、设计 §M7 本就列出） | explore 账本 |
+| M2 operation 瞬态跳过（fetch 路径在实例上落 'read' 影子；停点时刻恒复位值，捕获时非 'read' 拒=非干净边界） | 设计 §M2 表「瞬态」行 |
+
+**两个恢复语义修正**（等价对照逼出，均为报告逐字节相等所必需）：
+1. **dict/Counter 插入序保持**：报告对 counts（dict(counts)）、first_task_returns
+   （list(values())）、core_power（items()）按插入序渲染；$pairs/$counter 编码与
+   快照 JSON 段原按 sort_keys 规范化会把恢复世界的这些 dict 重排成键序→resume 报告
+   必然偏离。修正=值编码与 header/body 序列化保插入序（同世界同序→字节仍确定；
+   RAM 段维持规范排序摘要契约）。等价对照必须用**纯 json.dumps（无 sort_keys）**——
+   sort_keys 会把 dict 键序差异整体掩掉（本路实测教训：对照方法本身是分辨力的一部分）。
+2. **M1 缺席 vs None**：machine.report 对 unresolved_ssp_candidates 用
+   getattr(…,()) 迭代——显式 None 不可迭代；恢复侧对「读者以非 None 默认值区分
+   缺席」的字段（M1_ABSENCE_SHAPE_FIELDS）重现缺席（delattr），其余 setattr
+   （上游 __init__/类布局保证在场或 None 容忍）。
+
 ## 5.3 与既有机制的关系（不重复造轮子）
 
 - post_stop 直调（S 路）/dispatch_delivery（BE）/事件时钟 advance 同循环（AB/BI）——
@@ -426,6 +467,17 @@ br28_machine）。字段清单=AST 全量提取（上游 sim.py CPU.__init__ + p
 - frontier_registry 四步 checklist——advance-tier 等价作为第五步并入，不另立流程。
 
 # 6. HANDOFF 条目（同步落档）
+
+- 路 SNAP（sim-snapwire，2026-11-14，基线 48a49d0）：**接线路完成**——BJ 清单
+  ①捕获点④中点往返全量⑤canonical+artifact tier 全落地，主交付
+  probe_boot.explore 的 snapshot= 配置（capture/restore/expected_context/budget，
+  opt-in 默认 None，legacy 逐字节不变已实测）+五文件单参数穿线+world_snapshot
+  适配器补全（M1 retx/rete、M3 prd_write/core_power/每对象静态守卫、M4 六个
+  BL 后槽位、M7 events、M2 operation 瞬态）+两个恢复语义修正（插入序保持、
+  缺席 vs None）。fast tier 41 例进 --units（公开资产 16,077 步真世界中点等价+
+  自反+篡改红+上下文闸）；artifact tier 条件前沿 flag 全栈 N=300k 三档 X
+  （+1/+10k/+100k）全部逐字节相等；canonical 快照落 analysis/snapshot/。详见
+  §5.7 与 evidence/snapshot-artifact.json。
 
 - 路 BN（sim-snapm1，2026-11-14，基线 336c1d9）：**M1 完整 CPU 字段适配器**完成（BJ
   接线路清单 ②，照 BL 模式）——每核 30 状态字段（通用 R/特殊寄存器逐字段、执行上下文

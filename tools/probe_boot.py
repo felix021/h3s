@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import struct
+from types import SimpleNamespace
 
 from probe_pi32v2 import ROOT, PIN, require, upstream
 from verify_ufw_integrity import decode, sfc
@@ -95,12 +96,23 @@ def flash_image(path):
 
 def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
             handoff=None,startup_loops=False,diagnostics=None,rom=None,hardware=None,machine=None,
-            post_stop=None):
+            post_stop=None,snapshot=None):
     # post_stop(opt-in,路 S/key-chain):主循环停点后、报告组装前的回调
     # post_stop(machine,hardware,stopped_cpu)->dict|None。用于在活机器上做
     # 「停点后直调」类探测(键链扫描直调等);返回的 dict 并进场景报告。
     # 默认 None:主循环行为与 legacy 逐字节一致。回调里抛 Blocked 的语义由
     # 调用方约定(键链场景把异常转成显式观察记录,不改 stop 字段)。
+    # snapshot(opt-in,快照接线路 sim-snapwire,默认 None=legacy 逐字节不变;
+    # docs/snapshot-design.md §2.5):dict 形状
+    #   {'capture': path}           停点后(在 post_stop 之前,世界未被直调段
+    #                                改动)把五元组+循环账本全量捕获落盘,摘要
+    #                                (digest/指纹/步数/停点)进报告 snapshot_capture 键;
+    #   {'restore': path,           完整走构造链重建世界(M8)后、进主循环前,
+    #    'expected_context': {...}}  用快照覆盖五元组+账本再继续跑 budget 步。
+    #                                expected_context 对照捕获时 header.capture_context;
+    #   {'budget': N}               只在 irq_case 层消费:覆盖 flag 推导的预算,
+    #                                「可配置步数停点」=instruction_budget 快照点。
+    # 预算停点是干净边界(B-1:恢复不补调 advance,从循环头重新 decode)。
     if rom is not None:
         check_rom(rom)
     events=[]
@@ -1780,6 +1792,42 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             cpu=CPU();cpu.mem=cpu0.mem
             return cpu
         machine.attach(c,factory,hardware)
+    snapshot_restore_summary=None
+    if snapshot is not None and snapshot.get('restore') is not None:
+        # 快照恢复入口(docs/snapshot-design.md §2.5):到此为止构造链已经用
+        # 相同静态开关重建了世界(M8);这里在进主循环前用快照把五元组+循环
+        # 账本覆盖回去(world_snapshot 恢复侧静态守卫+双闸先校验)。CPU1 若
+        # 快照世界已发射而重建世界尚未,走与原始 launch 相同的 factory 路径
+        # 构造(M8 重建,其 launch 计数/事件副作用随后被 M5 恢复覆盖)。
+        from world_snapshot import WorldSnapshot,restore_world
+        loaded=WorldSnapshot.load(snapshot['restore'])
+        ledger_namespace=SimpleNamespace(events=events,adapters=adapters,rom_steps=rom_steps,
+                                         event_counts=event_counts,milestones=milestones,
+                                         trace=trace,completed=completed,stop=stop)
+        core_ids=[]
+        if loaded.body.get('M5') is not None:
+            core_ids=list(loaded.body['M5']['scalars']['core_ids'])  # plain int list
+        if machine is not None:
+            for core_id in core_ids:
+                if core_id not in machine.cores:
+                    machine.launch(core_id)
+        cpus={str(core_id):cpu for core_id,cpu in
+              ((machine.cores.items() if machine is not None else [(0,c)]))}
+        applied=restore_world(loaded,cpus=cpus,mem=c.mem,hardware=hardware,machine=machine,
+                              ledger=ledger_namespace,
+                              expected_context=snapshot.get('expected_context'))
+        # 账本被恢复成新容器对象;重绑 explore 局部量(event 等闭包按变量引用
+        # 捕获,重绑后同一 cell 看到新容器)。
+        events=ledger_namespace.events;adapters=ledger_namespace.adapters
+        rom_steps=ledger_namespace.rom_steps;event_counts=ledger_namespace.event_counts
+        milestones=ledger_namespace.milestones;trace=ledger_namespace.trace
+        completed=ledger_namespace.completed
+        # budget>0 的续跑从循环头重新开始:预算停点的 stop 记录不是世界状态
+        # (B-1 非幂等 advance 论证),清掉再跑;budget=0 的自反检查 #0 保留
+        # 原 stop,报告应逐字节重现捕获时报告。
+        stop=None if budget>0 else ledger_namespace.stop
+        snapshot_restore_summary={'path':str(snapshot['restore']),'digest':applied.digest,
+            'modules':applied.modules,'completed_steps':completed,'resume_budget':budget}
 
     def dispatch_delivery(request,row):
         # 路 BQ/G2:主路径与停泊步(CoreStall)嵌套 advance 共用同一条交付分发。
@@ -1896,6 +1944,28 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             break
     if stop is None:
         stop={'kind':'instruction_budget'}
+    snapshot_capture_summary=None
+    if snapshot is not None and snapshot.get('capture') is not None:
+        # 捕获点(docs/snapshot-design.md §2.1/§2.5):停点处的干净边界——
+        # 主循环已停、post_stop 直调段尚未触碰世界。捕获=全量适配器跑一遍
+        # (缺状态种类由 world_snapshot 守卫显形拒载,不静默)。快照文件只落
+        # 调用方指定路径(红线:RAM 镜像不进 git);报告只并摘要。
+        from world_snapshot import capture_world
+        ledger_namespace=SimpleNamespace(events=events,adapters=adapters,rom_steps=rom_steps,
+                                         event_counts=event_counts,milestones=milestones,
+                                         trace=trace,completed=completed,stop=stop)
+        cpus={str(core_id):cpu for core_id,cpu in
+              (machine.cores.items() if machine is not None else [(0,c)])}
+        captured_snapshot=capture_world(cpus=cpus,mem=c.mem,hardware=hardware,
+                                        machine=machine,ledger=ledger_namespace,
+                                        context={'scenario':name,'completed_steps':completed,
+                                                 'stop_pc':hex(c.pc),'stop':stop})
+        data=captured_snapshot.save(snapshot['capture'])
+        snapshot_capture_summary={'path':str(snapshot['capture']),
+            'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data),
+            'completed_steps':completed,'stop':stop,
+            'captured_modules':captured_snapshot.captured_modules,
+            'code_fingerprint':captured_snapshot.header['code_fingerprint']}
     post_stop_observations=None
     if post_stop is not None:
         post_stop_observations=post_stop(machine,hardware,c)
@@ -1955,6 +2025,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         result['assumptions']['rom_rep_model']='strict unless explicitly selected nonzero countdown / zero skip hypothesis'
     if hardware is not None:
         result['peripherals']=hardware.report()
+    if snapshot_capture_summary is not None:
+        result['snapshot_capture']=snapshot_capture_summary
+    if snapshot_restore_summary is not None:
+        result['snapshot_restore']=snapshot_restore_summary
     if post_stop_observations is not None:
         result.update(post_stop_observations)
     if diagnostics and diagnostics.get('irq_context'):
