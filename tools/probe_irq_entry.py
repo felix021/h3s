@@ -1126,6 +1126,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              mmu_cross_page_split=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
+             core_tick_prd_readback=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
              jl_audio_dac_dma_writes=False,
@@ -1988,6 +1989,29 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         require(core_tick_irq3_probe_steps is not None,
                 'the core tick IRQ3 masked probe requires the expiry probe (it arms at the same start write)')
         options['core_tick_irq3_masked_probe']=True
+    # core_tick_prd_readback(路 BQ/S19 冲刺批 2 一案,opt-in 默认关):3,747,578
+    # 停点 0x12b0c2 的三查分类——①有效地址:r5=0xffe0f0(0x12b0bc li 立即数
+    # 16769264)+4=0xffe0f4=CORE_TICK_BASES[0]+8=PRD,核 0(停点 stop_core=0,
+    # helper 硬编码无 cnum 偏移),宽度 4(ld.w);②异常位置:CoreTickStopped
+    # .read() 头部通用 overflow guard(先于 offset 分派,CON/CNT/PRD 同拦)
+    # ——判定表第一行「guard 挡 PRD」;③PRD 最近真实写入=tick_timer_init
+    # 0x60661e8 的 PRD store(0x606622a `[r5+8]=r0`,换算 [0x126900](=0x126640+704
+    # 输入时钟全局)/1000*r4-1,值
+    # 1199999),运行中重编程被 active_core_tick_reconfiguration_unverified
+    # 挡住(3.75M 步零发生),prd 恒等最近写入。「恢复后自然交付」由既有
+    # BF 机制+单测钉死(pending 期间每步重检,IPMASK 回落即抛请求——
+    # test_pending_rechecks_eligibility_after_critical_section 与
+    # core_tick_irq3_delivery_probe 探针场景)=只有读侧问题,故按 codex 定调
+    # 一案先行:unresolved 窗内只放行 PRD 读=回放最近真实写入,缺失继续停,
+    # 不改 CNT/pending/ACK/计时相位,不给默认值;第二案 held 重新仲裁仅在
+    # 放行后复现「IPMASK 恢复后漏仲裁」才加。依赖边挂 core_tick_irq3_delivery
+    # (无交付层的世界上首溢出即终态停,读侧 unresolved 窗不存在)。
+    if core_tick_prd_readback:
+        require(core_tick_irq3_delivery,
+                'the core-tick PRD readback only layers on the IRQ3 delivery projection '
+                '(the unresolved-overflow read window exists only while a held overflow '
+                'waits out the IPMASK mask)')
+        options['core_tick_prd_readback']=True
     # event_clock(路 CW/S19 批 0b/sim-s19b0,BG §4.2 草案落地):把机器侧
     # 事件时钟投影(docs/event-clock.md 最小契约,BQ 的 G1 min() 框架)接进
     # 条件栈——机器/模型零新代码,本参数只是 machine_options 接线。层属
@@ -3204,26 +3228,45 @@ def check(report,firmware):
     # 到达、eclock 仍零推进(CPU0 全程未停泊,锚点停泊核从未出现)——批 1
     # 四件全部落地并由单测验证,但本前缀的真实执行没有到达它们的任何运行
     # 态消费者;世界在 BF core-tick 边界诚实停,归批 2 前置处理。
+    # **路 BQ 落地(S19 冲刺批 2 一案,本前沿)**:3,747,578 的 core-tick PRD
+    # 读边界按 codex 定调三查分类+一案先行——①r5+4=0xffe0f4=BASES[0]+8=
+    # PRD/核 0/ld.w 宽 4;②异常由 CoreTickStopped.read() 头部通用 overflow
+    # guard 抛(先于 offset 分派,判定表第一行「guard 挡 PRD」);③PRD 最近
+    # 真实写入=tick_timer_init 0x606622c 的 [r5+8]=1199999(模型步 149,644,
+    # 写日志钉死),此后零重编程(运行中 PRD 写被 active_core_tick_
+    # reconfiguration_unverified 挡住,3.75M 步零发生)。「恢复后自然交付」
+    # 由既有 BF 每步重检机制承担(溢出 1-11 全交付+屏蔽窗探针场景回归)
+    # =只有读侧问题 → core_tick_prd_readback 落地:unresolved 窗内只放行
+    # offset 8 读=回放 prd_write,缺失继续停,CON/CNT/pending/ACK/计时相位
+    # 全不动;第二案 held 重新仲裁未加(放行后未复现「IPMASK 恢复后漏仲裁」
+    # ——新停点仍在屏蔽窗内,窗口从未结束)。**放行推进 +7 步**:0x12b0c2
+    # 并行对完整提交(A 半 r10=旧 r2=0、B 半 r3=1199999——并行对一致锚点
+    # 运行态实证)→ 0x12b0d0 PRD>9 分支真走 → 0x12b0de r2==0 跳过 cli veneer
+    # (arg2=0:调用者已在临界区内)→ 0x12b0e6 jiffies 缓存读 [0x125004] →
+    # **0x12b0e8 `ld.w r1=[r5+0]` 读 CNT(0xffe0f0)撞同一通用 overflow
+    # guard 严格停**——CNT 读回不在一案范围(codex:「不改 CNT」),归下
+    # 一轮三选一;第 12 次溢出仍 held 未决未 ACK(expirations 12/acks 11、
+    # pending True、cnt 0、IPMASK 6、ICFG 0x300 全不变)。
     # 条件前沿契约单点:停点完整记录与步数从 frontier_registry 派生(推进
     # 前沿只改 registry,断言叙事保持手写)。
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x12b0c2 on the parallel-pair '
-            'second-slot load of the core-tick PRD (mov.rr.p r10=r2 # ld.w r3=[r5+4], '
-            'r5=0xffe0f0 -> 0xffe0f4) inside the kernel timer-program helper 0x12b0ba '
-            '(called from the time wrapper 0x12b14c at 0x12b160, the OS time-update path '
-            'of Timer0 handler #362): with the route-B1 write-only releases letting the '
-            'W1[3]-tail DAC start function complete its four DAC DMA configuration '
-            'stores and eight AK-served DAC_CON write-backs, the code settles into the '
-            'OS delay family — sixty-one more Timer0 windows (311->372 expirations, all '
-            'delivered/acked at the delay-loop reti_from trio 0x12e282/84/86, PRD back '
-            'to the 1ms window 11999), the LP-timer/LRC chain walking two more frames '
-            'and the GPCNT task dispatching twice — until core-tick overflow #12 lands '
-            'INSIDE the OS critical section (IPMASK 6 masks IRQ3 prio 1: delivery held, '
-            'never acked, expirations 12/acks 11) and the firmware time update reads '
-            'the PRD while the overflow is unresolved — the strict route-BF core-tick '
-            'boundary, honestly left for the batch-2 prerequisite')
+            'the heap-experimental scenario must stop at 0x12b0e8 on the CNT load '
+            '(ld.w r1=[r5+0], r5=0xffe0f0 -> 0xffe0f0=CNT, offset 4) inside the kernel '
+            'timer-program helper 0x12b0ba retry loop: after the route-BQ PRD-readback '
+            'release lets the parallel pair at 0x12b0c2 commit whole (A half r10=old '
+            'r2=0, B half r3=PRD 1199999 — the released read replays the tick_timer_init '
+            'store, never a default), the code takes the PRD>9 branch at 0x12b0d0, skips '
+            'the cli veneer at 0x12b0de (arg2=0, the caller already holds the critical '
+            'section), reads the jiffies cache [0x125004] at 0x12b0e6 and then hits the '
+            'CNT read at 0x12b0e8 — the SAME generic unresolved-overflow guard of '
+            'CoreTickStopped.read that blocked the PRD read; CNT readback is outside the '
+            'one-case scope (codex: CNT/pending/ACK/timing phase untouched) and stays '
+            'the honest next boundary; overflow #12 remains held in the masked window '
+            '(IPMASK 6, ICFG 0x300, expirations 12/acks 11, pending True, cnt 0), the '
+            'window never ended in this prefix so no missed arbitration was observed '
+            'and the second case (held re-arbitration) is not added')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 CW:JL_AUDIO DAC_VL0 容器断言——恰一次合成 0 首读(0x606db4c 并行对
@@ -3986,8 +4029,10 @@ def check(report,firmware):
     # cnt 停点时 2,322、pending False。
     # 路 B1(S19 批 1):+545,430 步,到期 311→372(+61:延时等待族反复越
     # 边界)、交付/ACK 301→362;PRD 被最新 delay 重编回 1ms 窗 11,999、cnt
-    # 停点时 1,194、pending False。
-    require(timer=={'con':0x1401,'cnt':1194,'prd':11999,'pending':False,
+    # 停点时 1,194、pending False。路 BQ(S19 批 2):+7 步(Timer0 handler
+    # #362 的 OS 时间更新路径,PRD 不再重编),cnt 再 +21(=7×3 tick)到
+    # 1,215,到期/交付/pending 全不变。
+    require(timer=={'con':0x1401,'cnt':1215,'prd':11999,'pending':False,
             'expirations':372},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the last window is the 1ms one -> PRD 11999), 372 '
@@ -4054,8 +4099,11 @@ def check(report,firmware):
     # **第 12 次溢出在 IPMASK=6 屏蔽窗内到期(OS 临界区屏蔽 IRQ3 prio1)——
     # held 未交付未 ACK**(expirations 12/acknowledgements 11,pending True、
     # unresolved True、cnt 回绕后走到 0);固件随即在屏蔽窗内读 core-tick PRD
-    # (0x12b0c2 并行对第二半)撞严格停——**停点本身位于屏蔽窗内,IPMASK=6、
-    # ICFG 仍 0x300**(bit9 全程未动)。
+    # (0x12b0c2 并行对第二半)——路 BQ 的 core_tick_prd_readback 放行该读
+    # (回放 tick_timer_init 的 1199999,并行对完整提交:r10=旧 r2=0、
+    # r3=1199999),+7 步后 retry 环第一半 **0x12b0e8 读 CNT** 撞同一通用
+    # overflow guard 严格停(新停点,仍位于屏蔽窗内,IPMASK=6、ICFG 仍
+    # 0x300,bit9 全程未动;读回投影只覆盖 offset 8,CNT 不在一案范围)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is True and tick0['expirations']==12 and
             tick0['unresolved_overflow'] is True and tick0['acknowledgements']==11 and
@@ -4070,11 +4118,29 @@ def check(report,firmware):
             'overflow #12 sits UNRESOLVED at the stop: it expires while the mask holds '
             '(IPMASK 6 blocks IRQ3 prio 1 — the route-BF held-not-dropped philosophy keeps '
             'it pending, never delivered, never acked, the counter walked on to 0), and the '
-            'firmware time-update path inside the masked window then reads the core-tick '
-            'PRD in the parallel-pair second slot at 0x12b0c2 — the strict route-BF '
-            'boundary that ends this prefix honestly; the stop therefore sits inside the '
-            'masked window (IPMASK 6), the CPU1 core tick never overflows, and CPU0 '
-            'partial ICFG stays 0x300 (bit9 untouched throughout)')
+            'firmware time-update path inside the masked window reads the core-tick PRD '
+            'at 0x12b0c2 — the route-BQ readback release replays the tick_timer_init '
+            'store 1199999 with zero side effects (the pair commits whole: r10 keeps the '
+            'old r2, r3 gets the PRD), the code then walks the PRD>9 branch, skips the '
+            'cli veneer (arg2=0, already inside the critical section), reads the jiffies '
+            'cache and stops at the CNT load 0x12b0e8 on the SAME generic overflow guard '
+            '(CNT readback is outside the one-case scope — the honest next boundary); the '
+            'stop therefore still sits inside the masked window (IPMASK 6), the window '
+            'never ended so no missed arbitration was observed (no second case), the '
+            'CPU1 core tick never overflows, and CPU0 partial ICFG stays 0x300 (bit9 '
+            'untouched throughout)')
+    # 路 BQ 读回投影面:报告键只在开关开启的世界出现(legacy 逐字节不变),
+    # 证据链字段钉死(最近写入=1199999、只覆盖 unresolved 窗的 offset 8、
+    # 硅读回行为未测量)。
+    require(tick0['prd_readback_projection']=={
+            'enabled':True,'prd_last_write':1199999,
+            'returns':'the last real firmware PRD store (tick_timer_init); no synthesized default',
+            'covers_reads_during':'unresolved_overflow only (offset 8/PRD alone)',
+            'con_cnt_reads_and_counter_phase_unchanged':True,
+            'prd_write_equals_live_prd':True,
+            'silicon_readback_behavior_measured':False},
+            'the core-tick PRD readback projection report differs from the pinned evidence '
+            'chain (last real write replay only, no default, CON/CNT/counter phase untouched)')
     require(r['peripherals']['p11_heap_info_fixture']['bytes']=='0c3df439',
             'the heap fixture must carry the derived candidate bytes 0c3df439')
     # M2P 消息区钉子字节:LRC 周期/定时器字节(05/0a/28/78=5/10/40/120,其余

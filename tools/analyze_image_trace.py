@@ -262,10 +262,20 @@ SCENARIOS = {
         # 二次勘误件(DAC DMA 四字 write-only 记录)落地后,DAC 启动尾段+延时
         # 等待族真实执行,core-tick 第 12 次溢出在 IPMASK 屏蔽窗内 held 未决,
         # 固件 OS 时间更新路径在 0x12b0c2 并行对第二半读 core-tick PRD 撞 BF
-        # 域严格边界。**新前沿 3,747,578 @ 0x12b0c2**(
+        # 域严格边界。旧前沿 3,747,578 @ 0x12b0c2(
         # core_tick_overflow_requires_resolution;批 1 四件全部落地但零运行态
         # 消费者,BM 预期的 trim 环/TIMER2/canary/邮箱分支未到达,归批 2
         # 前置处理)。
+        # 路 BQ(S19 冲刺批 2 一案)再放行(+7 步):core_tick_prd_readback
+        # (三查分类:通用 overflow guard 挡 PRD+恢复后自然交付=只有读侧;
+        # PRD 最近真实写入=tick_timer_init 0x606622c 的 1199999,模型步
+        # 149,644 后零重编程)放行 0x12b0c2 并行对第二半的 PRD 读=回放
+        # 最近真实写入,并行对完整提交(r10=旧 r2=0、r3=1199999)→PRD>9
+        # 分支→跳过 cli veneer(arg2=0)→jiffies 缓存读 [0x125004](停点
+        # 实测 21=基值+11 次 ACK 递增)→**新前沿 3,747,585 @ 0x12b0e8**:
+        # retry 环读 CNT(0xffe0f0)撞同一通用 overflow guard——CNT 读回不
+        # 在一案范围(codex「不改 CNT」),归下一轮三选一;第 12 次溢出仍
+        # held 未决(IPMASK 6 窗口未结束,无漏仲裁,第二案不加)。
         'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
@@ -815,26 +825,29 @@ def check_self_conditional(report):
     (路 CB)/3,070,626(路 CG)/3,070,786(路 CL)/3,070,955(路 CO)/
     3,071,380(路 CQ)/3,071,984(路 F)/3,072,236(路 M)/3,073,402(路 R)/
     3,073,918(路 V)/3,079,241(路 AA)/3,081,001(路 AK)/3,137,573(路 AN)/
-    3,170,362(路 AS)/3,170,379(路 CV)/3,202,148(路 CW)已被后续投影替换,
-    见 HANDOFF 对应「步含义」段):
+    3,170,362(路 AS)/3,170,379(路 CV)/3,202,148(路 CW)/3,747,578(路 B1)
+    已被后续投影替换,见 HANDOFF 对应「步含义」段):
 
-    - 双方 3,747,578 步、同停点 0x12b0c2(core_tick_overflow_requires_
-      resolution,当前条件前沿——路 B1 的 W4[4] 簇四件+DAC DMA 尾段二次
-      勘误件落地(DAC_COP/DMA write-only 记录+PVDD 容器+TIMER2 W1 投影+
-      VLVD canary+FD31 RES S19 值表)后 +545,430 步:DAC 启动尾段八条
-      DAC_CON 写回+四条 DAC DMA 配置写(AK 容器/新 write-only 记录服务)→
-      延时等待族 61 个 Timer0 窗口(到期 311→372 全交付/ACK,reti_from 全
-      在 0x12e282/84/86 延时循环三址)→core-tick 第 11 次溢出交付/ACK、
-      **第 12 次溢出在 IPMASK 屏蔽窗内 held 未决**,固件 OS 时间更新路径
-      (Timer0 handler 的 tick 处理→包装 0x12b14c→内核定时器助手 0x12b0ba)
-      在并行对第二半读 core-tick PRD 撞 BF 域严格停——**批 1 四件全部
-      落地但零运行态消费者**(TIMER2 零写/canary 零访问/PVDD 零写/RES
-      新行零消费/邮箱 0x12CC94 未到达),BM 预期分支未执行,归批 2 前置
-      处理)、per-core {0:3736721,1:11251}一致;stop parity 全同——
-      official↔b79 parity 延长到条件前沿 3,747,578,控制流零分歧、
+    - 双方 3,747,585 步、同停点 0x12b0e8(core_tick_overflow_requires_
+      resolution,当前条件前沿——路 BQ 的 core_tick_prd_readback 一案放行
+      3,747,578 的 PRD 读边界后 +7 步:三查分类(①r5+4=0xffe0f4=PRD/
+      核 0/ld.w;②异常=read() 头部通用 overflow guard,先于 offset 分派;
+      ③PRD 最近真实写入=tick_timer_init 0x606622c 的 1199999@模型步
+      149,644,此后零重编程)+「恢复后自然交付」由既有 BF 每步重检承担
+      (溢出 1-11 全交付)=只有读侧问题;放行后 0x12b0c2 并行对完整提交
+      (r10=旧 r2=0、r3=1199999——回放最近真实写入非默认值)→PRD>9 分支
+      →跳过 cli veneer(arg2=0,调用者已在临界区内)→jiffies 缓存读
+      [0x125004](实测 21=基值+11 次 IRQ3 handler ACK 的 rmw.add.s12 递增,
+      PC 0x60661d4,ISR 帧锚 push.srl@0x60661a4/rti@0x60661e6)→retry 环
+      第一半读 CNT 撞同一通用 guard 严格停——CNT 读回不在一案范围
+      (codex「不改 CNT/pending/ACK/计时相位」),归下一轮;第 12 次溢出
+      仍 held 未决未 ACK(窗口未结束,无漏仲裁复现,第二案 held 重新仲裁
+      不加);批 1 四件的运行态消费者仍在停点后未到达)、per-core
+      {0:3736728,1:11251}一致;stop parity 全同——
+      official↔b79 parity 延长到条件前沿 3,747,585,控制流零分歧、
       无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,747,578,
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,747,585,
       超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
       GPIO TX/RX 复用链+Timer0 交付往返+JL_IMAP 输入复用链+fifo_reset+
       uart_init 收尾+init 链前三项+JL_WL_AUD entry 写+场景 walker 查名链
@@ -860,13 +873,16 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 3736721, '1': 11251},
+                run['per_core_steps'] == {'0': 3736728, '1': 11251},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3747578 @ 0x12b0c2, the core-tick PRD read in '
-                'the parallel-pair second slot inside the kernel timer-program helper '
-                '0x12b0ba — overflow #12 held unresolved in the IPMASK-masked window, the '
-                'route-BF strict boundary reached after the route-B1 W4[4] releases walk '
-                'the DAC start tail and the sixty-one-window delay family)')
+                'conditional frontier stop (3747585 @ 0x12b0e8, the core-tick CNT read in '
+                'the kernel timer-program helper 0x12b0ba retry loop — after the route-BQ '
+                'PRD-readback release replays the tick_timer_init store 1199999 at '
+                '0x12b0c2 (the pair commits whole, r10 keeps old r2), the code walks the '
+                'PRD>9 branch, skips the cli veneer (arg2=0) and reads the jiffies cache '
+                '[0x125004] before hitting the SAME generic unresolved-overflow guard on '
+                'the CNT load; CNT readback is outside the one-case scope, overflow #12 '
+                'stays held in the IPMASK-masked window with no missed arbitration)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
