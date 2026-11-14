@@ -1,0 +1,35 @@
+{
+  "case_id": "R4-VM-01",
+  "firmware_identity": "tested b79（H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw，SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1c，probe_pi32v2 默认镜像）；--official-ufw 双镜像对照全过（窗口字节/停点全等）；场景基线 main 1975ff8",
+  "initial_state": "函数级直调 harness（tone-scene/d2c 先例），直调真实 get_config/set_config 分派器 0x06000f88/0x06001f12，VM 后端 match/get/set 0x06061304/0x6060ea0/0x6060efe 跑完整链路；世界 A=擦除态 VM 区 fixture 起步（无公开工件携带设备 VM 字节）；世界 B=重启世界（新机器+窗口=世界 A 真实产出字节）；世界 C=世界 B 后续写入",
+  "inputs_schedule": "世界 A：vm_init 后 set(16,[1,1,2],3) 与 set(30,8B) 各一次、同机 get(16)/get(30) 各一次；世界 B：vm_init 真实重扫记录链后 get(16)/get(30)，本机零写入；世界 C：set(31,0xFCC) 恰填满半区 0 后再 set 一次触发磨损均衡换区。函数级直调场景，无模型时间轴注入（不属连续启动窗口）",
+  "observation_boundary": "观察面=VM 记录链字节（{u8 crc,u8 key,u16le len<<4}+data、半区头 4B magic 0x5a5a5aff）、偏移表 0x129088、半区描述字 0x129070/0x12907c、位图 0x1272BC、窗口界字 [0x127694]/[0x127698]；世界 C 终点=第一个未建模 SFC/PMU MMIO 读（0x12cc48, 0xf2c128+4）诚实停",
+  "assertions": [
+    "R4 运行时持久化（HANDOFF『R4 运行时持久化存储调研』；docs/vm-key-roundtrip.md 世界 A/B）：key 30 写入→同机读回、重启世界（vm_init 重扫）读回逐字节一致；key 16 占用键对照组读回 3B 010102",
+    "docs/vm-key-roundtrip.md 世界 C：半区写满后磨损均衡换区真实执行（活记录 256B 分块拷入半区 1、44B key-255 头搬移、magic/选择字节写、flash_sync 0x0600a70a→RAM 0x12cc40）至 SFC 边界诚实停——换区执行为观测事实，SFC 后续不冒充通过"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；三世界以各自断言点/诚实停点为界（超时=FAIL）。世界 C 的合法终点就是 0x12cc48 诚实停，越过此点继续跑=违反观察边界",
+  "model_assumptions": [
+    "VM 配置块 0x1276a4{align=0x10,saddr=0x1da000,size=0x4000}（路 S 实测）",
+    "窗口界字 [0x127694]/[0x127698]=pow2(描述字-16)<<16（2MiB→0x200000）与直映换算全局量 [0x1276B4]=0/[0x1276B8]=0x06000000",
+    "公开镜像 flash 头 4 字节+擦除态 VM 区 fixture",
+    "桩=分配器/OS 锁/RTOS 查询（返回 1 恰使 CRC 走纯软件实现 0x6000ed6）/ROM memcpy 族/RAM 字节端口写 0x12be48（ABI 反汇编钉死）",
+    "VM 窗口为 harness RAM（真实直映换算映到 0x061da000）；SFC 擦写不建模；「重启」=vm_init 重扫非掉电周期"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "SFC/PMU 擦写与 MMIO 读侧（世界 C 停在 0x12cc48 第一个未建模读）",
+    "掉电周期（「重启」=vm_init 重扫，非真断电）",
+    "App 对接路径（仿 0x17/0x22 注册自定义命令+EqWritePolicy 放行，只设计未实施）",
+    "key 30 的固件消费面（R4 接驳载荷候选 8e9a47d0… UNTESTED 不刷机，命令分发链零执行证据）",
+    "真机对照（无设备观测会话背书，证据等级=conditional）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "VM 窗口为 harness RAM（真实直映换算映到 0x061da000）；SFC 擦写不建模；「重启」=vm_init 重扫非掉电周期",
+    "桩=分配器/OS 锁/RTOS 查询（返回 1 恰使 CRC 走纯软件实现 0x6000ed6）/ROM memcpy 族/RAM 字节端口写 0x12be48（ABI 反汇编钉死）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T08:30:00"
+}

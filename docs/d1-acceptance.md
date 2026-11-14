@@ -520,3 +520,29 @@ D3 在本页只立框架：比较面的观测手段清单、容差声明格式�
 
 测试框架（probe 场景/report）须区分**外设仿真执行**与**真机执行**两类结果来源
 （Zephyr emulator/twister 的分层实践可参考，但不能替代本项目的 BR28 行为证据）。
+
+### 8.1 工具用法（路 AX/sim-accrecord 落地，2026-11-14）
+
+九栏格式的机器可读落地=`tools/acceptance_record.py`（纯新增，不依赖 probe/模型代码）：
+
+- **记录文件**：每用例一个 JSON，默认写 `analysis/local-checks/acceptance/<用例id>.json`
+  （目录 git 忽略；`--dir` 可指定）。字段=九栏（`firmware_identity`…`uncovered_items`）
+  +证据等级（`evidence_level`：`conditional`/`device_supported`，另列于结果之外）
+  +条件列表（`evidence_conditions`）+真机引用（`evidence_refs`）+BLOCKED 依赖说明
+  （`blocked_missing`）+记录时间戳（`recorded_at`，`%Y-%m-%dT%H:%M:%S`）。
+- **用例 id**：路线-分组-覆盖面-序号（`D2-a-REC-01`/`D2-b-SCO-01`/`D1-TC-01`/`R4-VM-01`），
+  正则校验；D2 用例按 §6 的 a/b/c 分组，覆盖面缩写自定义（REC=识别覆盖、SCO=通话场景……）。
+- **CLI**：`--add record.json`（或 `-` 读 stdin；校验通过才落盘）；
+  `--summary [--dir DIR…] [--output FILE]`（markdown 汇总表，结果四值分开计数）；
+  `--validate [DIR…]`（目录内全部记录校验，默认验收目录）。
+- **校验器**（§8 规则的机器可读版，拒绝即不落盘）：九栏非空（「未覆盖项」允许空但必须
+  显式 `null`，空列表拒绝）；结果四值枚举；`BLOCKED` 必须附 `blocked_missing`（缺失依赖
+  说明，§6.4 归因语义；非 BLOCKED 不许带该字段）；`conditional` 必须附显式条件列表、
+  `device_supported` 必须附观测会话/证据文件引用；**PASS+条件性通过的条件必须逐条出现
+  在「模型假设」栏**（交叉校验，防「通过条件」与「声明假设」两套口径）。
+- **示例**：`docs/acceptance-samples/` 存两条真实内容示例供参考——`D2-a-REC-01`（路 AJ
+  三键矩阵识别覆盖实测，official 镜像）与 `R4-VM-01`（路 AB key 30 读写演示，b79 镜像，
+  条件性通过样本）；`python3 tools/acceptance_record.py --validate docs/acceptance-samples`
+  可随时复核其合法性。
+- **测试**：`tools/test_acceptance_record.py`（32 例：往返/校验拒绝路径/BLOCKED 语义/
+  示例合法性/CLI）已接入 `check_local --units`。
