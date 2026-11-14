@@ -1,0 +1,33 @@
+{
+  "case_id": "D2-b-CFG-07",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；静态源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041+公开工件 stream.bin/config.dat 镜像字节（路 AT/sim-wiredgame 已合并，docs/wired-game-mode.md）",
+  "initial_state": "纯静态断言（无执行）：游戏模式的范围裁决与配置变化链全图（路 AT 只读静态反汇编——d1-acceptance §6.4 范围表游戏模式行的实证落档）",
+  "inputs_schedule": "无运行输入；推导域=App 命令注册表（0x60a9b78 起 28B/条，EQ 0x22/ANC 0x17 两锚点校准栅格）+按键 handler 0x6025404+应用器 0x60251fc 全链+stream.bin 场景名表（0x1df2 起）",
+  "observation_boundary": "观察面=模式字节 b[0x124a04]（config key 22 的 1B 镜像）+标志对 b[QCY+27/45]+场景字节 [0x124A10]+EQ 预设键+效果 ctx 挂起队列（链表 0x124A64）；非执行观察",
+  "assertions": [
+    "wired-game-mode §2.1：游戏模式=音频模式字节 0x124a04 取值 3（取值族 {1=音乐,3=游戏,4=电影}）——面板 cmdid 46 subItem index {1,3,4} 与固件循环表（0x60a18c0+18 三字节 {1,3,4}）两端互证；入口=App cmdid 46 setter 0x6026134（b[0x124a04]=载荷字节→500 单位延迟工作项→0x60261de→0x60251fc(模式,1)+清 [0x125F80] 句柄）+按键 cmd 7（0x6025404：发布动作名后 get_config(22) 循环 {1,3,4}→0x60251fc(下一模式,1)）——注入面单一（一条 cmd 46 帧或直调 setter）",
+    "§2.2 配置变化三件套（「开关→真实配置变化」的实体，d1-acceptance §6.4 游戏模式行「只修改标志位不够」的回应）：①低延迟标志对——0x600efd0(1|0,0) 写 b[QCY+27]（0x1261BB InLowLatency 活动）/b[QCY+45]（0x1261CB 镜像）；②场景字节+延迟场景切换——0x6024f02(0|1)→0x6024e6a(场景)：场景落 [0x124A10]+定时器→0x602f576/0x602f592→0x6013cd4(0,\"MusicEqBt\") 效果装配族（stream.bin 场景名表 default/spatial_on/gam_eff/movie @0x1df2——游戏模式=效果场景表切换的载体钉死）；③EQ 预设族——0x6024fe6(\"MusicEqBt\",idx)，idx={音乐1,游戏2,电影3}，成功后 b[QCY+43]=idx/b[QCY+42]=2，应用例程 0x6025118",
+    "§2.3 挂起-重建-恢复生命周期：flag!=0 路径走名字键控效果 ctx 挂起队列——0x600dab6(键,0x602619a)→0x600d95e（128 槽名注册表查 ctx）→b[ctx+13]=1 挂起→[ctx+124]=恢复回调→0x600da64 挂工作链表 0x124A64（异步任务稍后重建效果链，完成后以 (0,10) 调回调）；恢复回调 0x602619a 按当前模式重装 EQ 预设——与 ANC 域「停-重配-启」同步直切（0x606e9e8/0x606ebe0）是两种机制（播放侧异步重建 vs 采集侧硬件重配），b4 断言（无旧帧误用/停止后不再消费）两者通用",
+    "§2.5 范围裁决：全链（含传递 callee）零命中编解码参数/SBC-AAC 选择/缓冲长度/时钟——「低延迟」由 DSP 效果图切换实现，端到端延迟降低维持 d1-acceptance §6.4「放 D3/专项性能验收」裁定；尾部 set_config(22) 持久化+BLE 回执 46——进 D2 作「播放侧效果管线重配」代表用例，复用 §6.2 配置切换断言框架，模式取值 1/3/4 同链等价类只跑一个代表（§6.4 准入规则）"
+  ],
+  "timeout_budget": "静态断言，无模型步预算（复跑=wired-game-mode §2 锚点核对）",
+  "model_assumptions": [
+    "全部静态（derived-not-measured，路 AT 口径：官方 app.bin+公开工件镜像字节，无运行观测）",
+    "模式字节→stream.bin 场景名（default/spatial_on/gam_eff/movie）的精确映射未定位（框架内部按 id 查表，wired-game-mode §4）",
+    "0x60319d6 内 b[QCY+45] 分支改哪些节点参数未定位（低延迟状态影响流节点 setup 的分支所在，§4）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "注入执行（游戏模式代表用例本身，NOT_RUN 排队——本条只落配置面准入与静态锚点；执行载体=直调 setter 0x6026134 或 cmd 46 帧，归注入实施路）",
+    "模式字节→场景名映射（运行观测，随注入场景）",
+    "b[QCY+38]（cmd 16 组）的面板语义未定位（与游戏模式主链无控制流耦合，如实标注）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "全部静态（derived-not-measured，路 AT 口径：官方 app.bin+公开工件镜像字节，无运行观测）",
+    "模式字节→stream.bin 场景名（default/spatial_on/gam_eff/movie）的精确映射未定位（框架内部按 id 查表，wired-game-mode §4）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

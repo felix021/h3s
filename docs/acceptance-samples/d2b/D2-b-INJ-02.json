@@ -1,0 +1,31 @@
+{
+  "case_id": "D2-b-INJ-02",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；执行载体计划=br28_machine/probe_boot 的 IRQ68 向量交付机制（Timer0 交付先例镜像；分发器字节=app.bin sha 18f3d573… 0x602f406..0x602f452）",
+  "initial_state": "预填用例（未执行）。计划起点=同 INJ-01 条件世界（IRQ68 注册 0x602ec28 prio2/向量槽 0x19FF10 在 boot ADC initcall 0x602ea68 内——AS 推进后 initcall 尾块已过，向量槽有效性与否=world_prep 运行读回项）；本条=机器交付件实施（蓝图 §2.3/§2.4 规格）",
+  "inputs_schedule": "计划输入（未执行）：INJ-01 模型 produce_block 置 pending 后 advance() 抛 IrqDeliveryRequest(core=0, irq=68)→probe_boot.dispatch_delivery 的 irq==68 分支触发交付",
+  "observation_boundary": "计划观察点（未执行）：deliveries 报告键（蓝图 §4.1：vector=0x19ff10/handler=0x602f406/reti_from/dispatcher_pcs 每站）+事件 audio_dma_irq_entry/audio_dma_irq_rti+在途拒绝嵌套簿记；帧锚匹配（AUDIO_IRQ_FRAMES）",
+  "assertions": [
+    "d2b-injection-blueprint §2.3：deliver_audio_dma_irq（镜像 deliver_timer0_irq）守卫三件（opt-in 开关 audio_irq_entry/指令边界/在途 handler 拒绝嵌套）→向量槽 0x19FE00+68×4=0x19FF10 读 handler——真实 request_irq 已写 0x602f406（audio-input-paths §1.2：IRQ68 注册 0x602ec28、唯一音频 DMA 中断）；向量槽未注册则 Blocked('vector_slot_uninitialized') 诚实停（不许合成向量）→RETI=被中断 PC/irq_psr=低 4 位 flags/active_context='audio_dma_irq_handler'/事件 audio_dma_irq_entry（delivery_clears_pending=False——pending 由真实 |=0x40 清）",
+    "§2.4：帧锚 AUDIO_IRQ_FRAMES——分发器 0x602f406 真实中断入口=push {psr,rets,reti}+r4-r0（audio-input-paths §2.2）：特殊帧=push.srl（12B {reti,rets,psr}，TIMER0_IRQ_FRAMES 同形）、r4-r0 走通用抽象栈运输；pop 锚与 RTI 尾锚 0x602f452（AE §6）按 0x602f406..0x602f452 区间反汇编钉死（实施步 0 前置）；经 diagnostics audio_irq_frames 并入 probe_boot frames 合并（timer0_frames 同款三行）",
+    "§2.3：return_audio_dma_irq（RTI 尾+active_context 清零+事件 audio_dma_irq_rti）；machine 选项三件 audio_irq_entry/audio_irq_entry_banks/audio_irq_rti（镜像 timer0 三件，banks=显式银行假设）；probe_boot.dispatch_delivery 加 irq==68 分支（与 irq==3/4 分支同形，含在途 handler 挂起语义——挂起时清模型侧 delivery_in_flight 让 RTI 后重新请求）",
+    "§4.1/§4.2 断言锚：每块 delivery 记录 dispatcher_pcs=['0x602f412','0x602f42e','0x602f430','0x602f434','0x602f440','0x6072628']——分发器序逐站（读 [0xFE0500] DAC 侧→读 [0xFE0538]→bit7 判→|=0x40 清→bit5+bit4 门→call audio_adc_irq_handler 0x6072628，AE §2.2）；check 骨架 require delivery must run the real dispatcher and irq handler bytes（蓝图 §4.2 b2 段）"
+  ],
+  "timeout_budget": "实施路场景（Timer0 式最小交付冒烟：手工 produce_block→delivery 记录往返），无固定模型步预算；以断言点/诚实停点为界",
+  "model_assumptions": [
+    "本记录=预填（蓝图已设计、机器件未实施）：断言锚点全部出自蓝图 §2.3/§2.4+AE §1.2/§2.2（静态），非执行证据",
+    "入口银行/PSR 高位假设按 BE/BF 先例口径：counterfactual（hardware_mode_certified=false 不升级），但 handler 字节、W1C、RTI 尾锚全部真实执行（peripheral-input-simulation 交付机制行）",
+    "DMA 完成行为投影（同 INJ-01）：b2 一切通过结论带投影前缀"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 1（机器交付三件+dispatch 分支与 INJ-01 模型件同批）",
+    "前置静态钉死：分发器 pop 锚（蓝图 §2.4 空格——实施第一步反汇编钉死）",
+    "AZ 盲区 B-4：IRQ68 实现时按 Timer0 模板补反例（HANDOFF 路 AZ 条目挂账，实施路承接）",
+    "直调段 IRQ68 交付的新组合（S 路受控循环+advance 捕获）首跑若撞 active_context/icfg 未初始化类严格停，按 Timer0 场景当年同类问题对位处理（守卫报错即诚实停不放宽，蓝图工程风险第 2 条）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

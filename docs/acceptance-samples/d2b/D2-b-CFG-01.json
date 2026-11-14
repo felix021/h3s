@@ -1,0 +1,33 @@
+{
+  "case_id": "D2-b-CFG-01",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；静态源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100，AL/AP/AR 三路静态基线）+公开 stream.bin 9351B（blob 字节源，AE §0 钉死）",
+  "initial_state": "纯静态推导（无执行）：三路已合并静态实证代入求值——AL mic_type=[A_MIC1,A_MIC2,A_MIC0,A_MIC0]（audio-input-paths §1.6②）×AP esco en_map=0x0B+aec flags→slot 重映射 {bit0→1,bit1→2,bit2→0,bit3→3}（§1.7③）×AR MicEff en_map=0x1（§1.8①）",
+  "inputs_schedule": "无运行输入；代入值=上述三路静态钉死常量（blob 镜像字节+反汇编写点），决策表求值见 audio-input-paths §1.8④",
+  "observation_boundary": "观察面=stream.bin blob 字节（esco_adc @abs 0x1BFD/MicEff @abs 0x1DA4）+反汇编锚点（mic_management 0x601c82e/anc adc_ch 0x602f258/MIC_CTL1 0x606c8aa/adc_mic_open 0x606b4d0）；非执行观察",
+  "assertions": [
+    "audio-input-paths §1.8④ 三方占用表定稿（AR）：ch0=A_MIC0 三方共用（ANC mp[0] 被 i=2(RFF)/i=3(RFB) 先后命中 type 终值 RFB 右耳共用+通话组 0（aec flags bit2→slot0，flags=0x5 时启用）+辅听 MicEff bit0 唯一使能通道）；ch1=A_MIC1=ANC LFF+通话组 1（mult_flag=1）；ch2=A_MIC2=ANC LFB 专用（en_map bit2=0，通话/辅听都不占）；ch3=A_MIC3=esco 专用（组 3，ANC mp[3] en=0 不参与）",
+    "「7 麦≠7 路并发」裁决：硬件并发上限=4 路模拟 ADA 通道（IRQ69/70 零注册+0xFE06xx/07xx 全 app 零 li 引用，§1.2）；辅听不开新通道（落 ch0）；7 元件对账=3(ANC)+2(通话)+1(辅听)=6 与 JD「7 麦」差距维持 §1.5 口径（营销计数或含未建模元件，不因 AR 改变）",
+    "d1-acceptance §6.2 场景配置表 ANC/通话/辅听三行的「ADC 槽位/通道数」列全部以本表为据——「场景候选需固件配置实证才成为验收输入」的准入在本面板闭合（本条=该实证的验收侧落档；注入用例 INJ-03/04/05 的通道预期引用本条）",
+    "R4 ch2 张力如实挂账（d2b-injection-blueprint §5-R4）：已知 en_map=0x0B 不含 bit2——A_MIC2（LFB 左耳反馈）在已知所有 opener 形状下无开启者（esco flags 任一取值都不开组 2、辅听只开 ch0）；两假设（LFB 由 JL_ANC 块自有 DMA 采/存在未钉的 opener 取值）归 ANC 注入场景 C1/C5 运行观测裁决，不臆造"
+  ],
+  "timeout_budget": "静态推导断言，无模型步预算（复跑=文档条目出处核对：§1.8④ 表+§1.6/§1.7/§1.8 三节代入值）",
+  "model_assumptions": [
+    "全部静态（derived-not-measured）：blob 镜像字节+反汇编代入求值，无运行观测（audio-input-paths §1.8④ 口径）",
+    "aec flags 各通话 case 运行值未逐 case 展开（通话实际开组=flags 运行值决定；2ch 是按位运算形状推断，AP §5.5④）",
+    "MIC_CTL1 通道 i 承载角色 i 数据按 SDK 语义（JL_ANC 块内部接线 0x606cc36/0x606d9c0 未逐位解，§1.6④）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "hdl+78/+79 运行实读位形（共享 audio_adc_hdl 0x1277B4 的动态复核，归 INJ-03/05 world_prep 读回）",
+    "aec flags 真值（R6，注入场景 fixture 只合成不冒充回答）",
+    "ch2 无开启者两假设的运行裁决（R4，归 INJ-05 C1/C5）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "全部静态（derived-not-measured）：blob 镜像字节+反汇编代入求值，无运行观测（audio-input-paths §1.8④ 口径）",
+    "aec flags 各通话 case 运行值未逐 case 展开（通话实际开组=flags 运行值决定；2ch 是按位运算形状推断，AP §5.5④）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

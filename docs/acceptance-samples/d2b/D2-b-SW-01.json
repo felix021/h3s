@@ -1,0 +1,31 @@
+{
+  "case_id": "D2-b-SW-01",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；切换链静态源=app.bin sha 18f3d573…（ANC 域切换链全钉死 AL §2.2b，d1-acceptance §6.2 场景配置表配置切换行实证）",
+  "initial_state": "预填用例（未执行）。计划起点=场景 C（INJ-05）世界上：先注入数块（布局 L1，通道集/帧长按当时寄存器读回）；随后触发重配——anc_next 0x6018b60（循环表 0x609e510=[1,3,2] off→trans→on）或 os_taskq_post \"anc\" msg 171（post 0x6064d72 真实 API）；但 anc_task 0x602d3a0 是任务体，直调需合成任务上下文——回退：直调 audio_anc_run 链本身（跳过 anc_task 分发面=设计取舍，显式标注，蓝图 §3.4）",
+  "inputs_schedule": "计划注入（未执行）：重配前 L1 数块→重配触发→重配后 L2 块（布局按重配后寄存器读回，**L1/L2 用不同 k 基**——块号字段不同，蓝图 §3.4 第 2 小项）",
+  "observation_boundary": "计划观察点（未执行）：重配序列 0x606e9e8(0)→0x606ebe0→0x606e9e8(1) 真实重跑（JL_ANC CON bit1 清/IRQ67 重注册/MIC_CTL1 重 mux/滤波重配/64KB buf 重分配/bit1 置）+set_buffer 五写+系数重读 0x606e7c2；L2 窗口内的块号字段（旧帧负例）；模式字节（b[anc_hdl+170] 增益→0x606b440→非 off 播模式提示音 0x600bcbe）",
+  "assertions": [
+    "d1-acceptance §6.2 配置切换行通过条件：「旧配置停止、新配置生效，无旧帧按新布局解释」——L2 窗口内出现 L1 块号字段即 FAIL（蓝图 §3.4 第 2 小项断言形式）；「选一个实际存在的通道重配过程」=ANC on→off→trans 重配（d1-acceptance 表「任一实际存在的重配」，§6.2 场景配置表配置切换行实证状态[静态，路 AL]）",
+    "重配链静态依据（audio-input-paths §2.2b）：入口三源（按键 anc_next 0x6018b60/BT 命令 0x60235de、0x602548c/ANC 工具链 0x606e576）→os_taskq_post_msg(\"anc\", msg 161..186)（0x6064d72；键/tone 侧封装 0x600db3c）→anc_task 0x602d3a0（task_create @0x602f30a，pend 0x6064c8c，tbh 跳表 @0x602d3de；msg 171/172 模式切换子跳表 @0x602d432）→audio_anc_run 0x601c8de→停-重配-启序列——本场景直调链本身，anc_task 分发面归 D1 过线后回归（P4 回归位）",
+    "采集侧重配可观测点（§2.2b 尾段）：0x606e9e8(0)→0x606ebe0→0x606e9e8(1) 序列+set_buffer 五写（AE §2.1）+IRQ67 重注册——D2-b「配置切换」断言的观测面即此（配合 INJ-06 的 L1/L2 块号负例）",
+    "d1-acceptance §6.3 第 5 条（模式切换期间输入）的代表用例：至少一个「输入发生在模式切换期间」（重配序列执行中到达的注入块）按既定顺序完成，无死锁、悬空回调或跨模式旧事件误用；§6.3 其余四条共同断言随执行补验（本记录预填未执行）"
+  ],
+  "timeout_budget": "场景步进以断言点/诚实停点为界（重配直调+L1/L2 受控交付，无固定步预算）",
+  "model_assumptions": [
+    "本记录=预填：断言锚点全部出自蓝图 §3.4+audio-input-paths §2.2b（静态），非执行证据",
+    "跳过 anc_task 分发面（直调 audio_anc_run）是设计取舍——上游按键/BT 命令→post→任务分派面不在覆盖（归 D1 过线后自然回归，同 INJ-03 P4 口径）",
+    "DMA 完成行为投影（同 INJ-01）",
+    "前置=INJ-05 场景 C 世界（co-opener+audio_anc_run 直调已定义）；本条依赖 jl_anc_writes 模型族（同 INJ-05）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 5（配置切换变体与 b4 同批，蓝图 §6）",
+    "anc_task 任务体分发面执行（需任务上下文合成或 D1 过线，P4 回归位）",
+    "通话侧重配变体（esco 开 0x60200b6→关 0x601e436 的通道重配——对象生命周期式与 ANC 三段式对照 §1.7③，另立 SW-02 让位变体覆盖其关半边）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

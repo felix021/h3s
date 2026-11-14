@@ -1,0 +1,37 @@
+{
+  "case_id": "D2-b-CFG-06",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；静态源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（路 AL 反汇编；原始字节核对 0x602f0c4..0x602f0ec）+3mic_coeff.bin 资源名/内嵌默认 blob（0x60a2603/0x60a25e0）+media.a DWARF（枚举）",
+  "initial_state": "纯静态断言（无执行）：ANC 采集配置=mic_type 常量写点/枚举/mic_management 求值/MIC_CTL1 映射四件（路 AL/sim-anccfg 已合并，audio-input-paths §1.6）",
+  "inputs_schedule": "无运行输入；推导域=0x602ea68 initcall 尾部 param_init 内联段（0x602f092..0x602f1f8）+mic_management 0x601c82e 全文+anc_core_mic_sel_io_init 0x606c8aa 对 SDK IR 逐位对齐",
+  "observation_boundary": "观察面=常量存储指令（0x602f0d0/d2/d6；[+16] 无存储=原始字节核对）+anc_hdl 槽（zalloc(572)@0x602eeb2→[QCY+500]=0x1267B4，AP 勘误后绝对地址）+mic_param 表（param+292+8k）+MIC_CTL1 0xFE0908 位段；非执行观察",
+  "assertions": [
+    "audio-input-paths §1.6②：mic_type[4] 常量写点钉死——param+13..16（=anc_hdl+45..48）常量存储在 0x602f0d0/0x602f0d2/0x602f0d6：[+13]=1、[+14]=2、[+15]=0，[+16] 无存储指令（保持 zalloc 默认 0）——即 mic_type=[A_MIC1,A_MIC2,A_MIC0,A_MIC0]：LFF←输入1、LFB←输入2、RFF/RFB←输入0（右耳 FF/FB 共用一个模拟输入；rff/rfb_en 均=1，ch=L|R=3）",
+    "枚举互证（§1.6①）：A_MIC0..3=0..3、D_MIC0..3=4..7、MIC_NULL=255（media.a anc_core.c.o DWARF，earphone_sdk asm/anc.h:112）+固件 0x606c8aa 的 v!=255?v:0 转换——255=未用语义在 QCY 构建同样成立；勘误随行：DWARF mic_type 偏移 104 是位非字节（实为字节 +13，§5.1 扫描零命中的原因）",
+    "mic_management 求值（§1.6③）：0x601c82e 按 mic_type [1,2,0,0] 循环命中 mic_param[0..3]（param+292+8k {en,type,gain,mult_flag,mic_p[4]}）→mp[1]={en=1,type=0(LFF)}、mp[2]={en=1,type=1(LFB)}、mp[0] 被 i=2(RFF) 与 i=3(RFB) 先后命中→type 终值 3(RFB)、mp[3](A_MIC3) en=0；mult_flag 在 b[QCY+3460]（esco en_map）位 v=1 时置位→ch0/ch1 mult=1（三方占用表的输入）",
+    "通道映射（§1.6④）：0x606c8aa=anc_core_mic_sel_io_init（MIC_CTL1 0xFE0908：adc0_sel=mic_type[0]&7@bit15-17/adc1_sel@bit21-23/adc2_sel@bit12-14/adc3_sel@bit18-20）→ADC 通道 i 的模拟 mux 选择 mic_type[i] 号物理输入：ch0 mux=输入1（LFF 的 mic）/ch1 mux=输入2（LFB 的）/ch2+ch3 mux=输入0（R 侧共用）；ANC 重配链 0x606ebe0 以 param+13 调它（0x606ec24）",
+    "「3mic」裁决（§1.6⑤）：模拟输入只用 A_MIC0/1/2 三个（A_MIC3 全程未用+D_MIC 无引用承 §1.2），4 个滤波角色（LFF/LFB/RFF/RFB 全开）落在 3 个物理 mic 上；3mic_coeff.bin 资源名+config 默认内嵌与代码互证——「3mic」=ANC 物理 mic 数=3；§1.5「ANC 前馈/反馈每耳 1=4」推断就此否定，7 麦对账修正为 3(ANC)+2(通话)+其余",
+    "ANC 不独立使能 ADA 数字通道（§1.6⑤）：audio_anc_adc_ch_set 同形代码 0x602f258（写 param+19=adc_ch）按 b[QCY+3460]（通话 mic_en_map）置位、全零才默认 1——ANC 采样搭 esco/共享 hdl 已开通道的便车（INJ-05 co-opener 设计的依据）"
+  ],
+  "timeout_budget": "静态断言，无模型步预算（复跑=§1.6 锚点+原始字节段核对）",
+  "model_assumptions": [
+    "全部静态（derived-not-measured，路 AL 口径：官方 app.bin 真字节反汇编，无运行观测）",
+    "mic_type[3] 的 0 是「源码即省略第 4 赋值」还是「赋了 A_MIC0 被优化」无法从字节区分（运行效果等同：RFF/RFB 同输入，§5.1）",
+    "角色↔ADC 通道的最终对应还经 JL_ANC 块内部接线（0x606cc36/0x606d9c0 未逐位解，按 SDK 语义通道 i 承载角色 i，§1.6④）",
+    "ANC 专用采样率/滤波速率在 JL_ANC 块配置（0x606d9c0 param 域）与系数文件内，未钉死（§1.6⑥）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "动态复核接口未跑（AL §5.6：initcall 完成后 anc_hdl=*([QCY+500])、mic_type=b[anc_hdl+45..48] 应为 {1,2,0,0}——供前沿快照读取互证，本轮未跑仿真）",
+    "ANC 专用采样率（随 INJ-05 C3 读回观测）",
+    "mult_flag 运行值（en_map 实际位形代入后的逐通道值，归注入场景）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "全部静态（derived-not-measured，路 AL 口径：官方 app.bin 真字节反汇编，无运行观测）",
+    "角色↔ADC 通道的最终对应还经 JL_ANC 块内部接线（0x606cc36/0x606d9c0 未逐位解，按 SDK 语义通道 i 承载角色 i，§1.6④）",
+    "ANC 专用采样率/滤波速率在 JL_ANC 块配置（0x606d9c0 param 域）与系数文件内，未钉死（§1.6⑥）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

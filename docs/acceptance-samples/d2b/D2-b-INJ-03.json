@@ -1,0 +1,32 @@
+{
+  "case_id": "D2-b-INJ-03",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；开链/消费链静态源=app.bin sha 18f3d573…（通话链全图 AP §1.7③）+公开 stream.bin（esco_adc blob @0x1BFD，CFG-02）",
+  "initial_state": "预填用例（未执行）。计划起点=INJ-01/02 模型件就位后的条件世界 post_stop 直调（蓝图 §1.1 P1：停点后直调开链，S 路先例；上游「谁触发开链」的 BT esco 事件面不在覆盖内，诚实标注同 S 路 §7.4 边界）——建议首场景（开链最短：单次直调 0x60200b6，蓝图 §3.1）",
+  "inputs_schedule": "计划注入（未执行）：A1 直调 0x60200b6(flags)——flags 首选 0x5（bit0+bit2→slot{1,0}→组{0,1}=ch0+ch1，三方占用表的 ch0 共用在断言里可见，CFG-02 重映射表）；候选 0x3（组{1,2}）；flags 各通话 case 真值未钉死（AP §5.5④/蓝图 R6），两值都合法、取值显式记录为场景 fixture；A4 起注入 N 块 2ch 交织序 sample(0,k,n)/sample(1,k,n)（蓝图 §3 数据公式：((ch+1)<<8)|((k&0xF)<<4)|(n&0xF)——低幅值/通道可区分/随块变化/样本序可追踪）",
+  "observation_boundary": "计划观察点（未执行）：A3 五寄存器读回（ADR/LEN/PNS/HWP=0/SRP 记录非空+CON bit5+bit4）+hdl 面（+78 含组位/+79[ch]≥1）+A5 消费面（0x6072628 data=ADR+SRP×2×ssize 落环形内；0x6031D5A 调用计数与入口 data 指针处字节；aec 对象内部读指针/处理计数）+deliveries 键逐站 PC（蓝图 §4.1）",
+  "assertions": [
+    "d1-acceptance §6.2 b1（数据与布局/场景前置=打开链真实执行）+蓝图 §3.1 A0-A3：world_prep 前置三查（hdl guard=1/向量槽 0x19FF10=0x602f406/IRQ68 ICFG nibble 有效——不许合成向量）；开链真实执行=0x6014162 解析 \"esco_adc\"→blob 拷 QCY+3460→逐 slot 0x60142be→0x606b4d0（hdl+79++/ADA_CON8 档 1/ADA_CON4..7 bit0 写记录非空）→每通道 512B+大缓冲 ch×0x600→SR=16000→set_buffer 0x606dee4 五写（ADR/LEN/PNS/HWP=0/SRP=0）→挂 [obj+40]=0x6031D5A 进 hdl+92 链→0x606df66 启动；通道数=位计数（期望 2）非预设",
+    "b2（DMA 与 IRQ）+蓝图 §1.2/§4.2：每注入块=produce_block 填当前窗口→pending bit7→真实 IRQ68 交付（INJ-02 机制）→分发器 |=0x40 清位→bit5+bit4 门→0x6072628→尾部 SRN=PNS 重装+CON|=0x40——逐块四查 pending_set/delivered/acked 恰各一次，无漏失无重复（「直接调用 handler 或无视使能状态强送 IRQ不算过」codex 反例对照）",
+    "b3（消费结果）+蓝图 §3.1 A5：output-handler 链逐个回调——0x6031D5A 调用次数=N、入口 (priv,data,irq_pns×ssize) 的 data 指针处读回字节=注入交织序（DSP 前精确样本，d1-acceptance §6.2 数据设计）；aec 对象内部读指针/处理计数前进（字段偏移实施时从 0x6031D5A 反汇编钉，观测不预设）——b3 终点=帧抵达 aec 前端入口+其簿记前进（「到达 AEC 的 mic 输入」通过条件）；aec 下游（编码/回声参考信号）不在本场景，「参考信号来源另行说明」照 d1-acceptance §6.2 表",
+    "d1-acceptance §6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填未执行）——负例：链上无其他 handler 被调（未启用消费者不被调）；三消费者核对按订阅关系非简单帧数相等（§6.2 三消费者核对原则）"
+  ],
+  "timeout_budget": "场景步进以断言点/诚实停点为界（直调开链+每块一次交付的受控循环，无固定步预算；超时=FAIL 不是重跑理由）",
+  "model_assumptions": [
+    "本记录=预填：断言锚点全部出自蓝图 §3.1/§4+audio-input-paths §1.7③+CFG-02（静态），非执行证据",
+    "DMA 完成行为投影（同 INJ-01）：b2/b4 通过结论带「DMA 完成行为投影下通过」前缀",
+    "flags=场景 fixture 显式合成，非真实通话 case 值（R6：场景不冒充回答真值，蓝图 §5 开放项）",
+    "aec 前端 flags 高 nibble（&0x10 ENC 位）路径不在本场景（flags 0x5/0x3 均低 nibble）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 1-2（模型件+本场景骨架，蓝图 §6 估骨架+单场景 1-1.5 天）",
+    "R6 flags 真值（各通话 case 的 0x60212bc 上游 r5 来源链未逐 case 展开）",
+    "aec 下游（编码器/回声参考信号）——另立场景",
+    "上游触发面（BT esco 事件→0x60212bc）不在覆盖——归 D1 过线后自然回归（蓝图 §1.1 P4 回归位）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}
