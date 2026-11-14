@@ -1,0 +1,33 @@
+{
+  "case_id": "D2-a-ACT-10",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "计划起点=路 AJ 同款三键矩阵 ADC 注入世界（p11_heap_experimental_config 前沿停点0x60012de 后直调）；串联缺件=post 入队后的 S19 生产消费段（app_core 消息循环 get-event→第二分发表→handler 0x060252c6）不在停点世界可达段（见 blocked_missing）",
+  "inputs_schedule": "计划注入：多功能键单击 ADC 序列（路 AJ 同款拍法：短按 13 拍+释放稳定 25 拍，每拍一次真实采样事务，识别段已实测到 post 入队调用点 0x6001b5e→0x6000cba→0x6064978→0x606487C）——串联目标=cmd 1（查表 (7,1,1)）",
+  "observation_boundary": "计划观察面（串联全链）：ADC 档位注入→read_key→去抖→手势→post 0x10a00 入队落盘（0x606487C 环形缓冲写入成功——路 S 只在调用点观测，落盘断言归本条）→S19 第二分发表记录[5] 分发→handler 0x060252c6→查表 (7,1,1)→cmd 1→[QCY+416] 环写入 'music_pp'+提示音 66（动作观察点同 ACT-01）",
+  "assertions": [
+    "d1-acceptance §6.1 B 组（codex 反例原样保留）：每类代表动作至少保留一条完整 ADC 闭环（识别+动作串联）——直接注入 post 手势码只能算分发/动作层测试，不能冒充识别覆盖；本条=多功能键单击→cmd 1 的串联代表",
+    "串联断言强调生产路径：post 入队落盘成功（队列侧）+真实 S19 消费分发送达 handler（非 handler 入口直调）——两半各自有证据（AJ 识别段实测/BW 消费链实测）且载荷逐字段互证，但中段 S19 从未执行，本条是把三段接成一条证据链的验收用例",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "识别段=单击序列 ≤37 拍（路 AJ 同款，每拍一次真实采样事务=127 模型步执行预算）；分发/动作段以断言点为界，无固定步预算（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "合成三键矩阵 fixture（20 级阈值表 500/720/850/1022+16 哨兵、20 项键 id 表 255/10/11/12、键通道字 0x10001）synthetic-not-measured——真实 ADC 档位值在 config 523（bank B 记录区，公开工件外）",
+    "识别面在真实固件代码上执行，唯一合成输入=RES 档位值（每拍一次真实采样事务+真实 read_key 分类）",
+    "停点世界=p11_heap_experimental_config 前沿投影栈（路 M 全栈 opt-in 投影）",
+    "路 S §7.4 诚实边界沿用：直调段中断冻结（外设时间不推进）、EMA 稳态假设、post 入队落盘在调用点观测（0x6001b5e 载荷字+返回口）"
+  ],
+  "result": "BLOCKED",
+  "uncovered_items": [
+    "S19 生产分发段的动作执行（cmd 1 环写入+提示音）——待缺件补齐后整条重跑",
+    "其他手势的串联代表（每类代表动作一条——本条阻塞期间全部同因阻塞，不逐条立 BLOCKED）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": "post→S19 分发→handler 0x060252c6 的生产路径未接线：app_core 消息循环 get-event 消费不在停点世界可达段，直调分发函数需构造队列消费者任务上下文（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环场景 BI/BJ——前沿依赖表 docs/frontier-dependency-table.md 已列 S19 函数级路障清单）",
+  "recorded_at": "2026-11-14T09:30:00"
+}

@@ -544,5 +544,11 @@ D3 在本页只立框架：比较面的观测手段清单、容差声明格式�
   三键矩阵识别覆盖实测，official 镜像）与 `R4-VM-01`（路 AB key 30 读写演示，b79 镜像，
   条件性通过样本）；`python3 tools/acceptance_record.py --validate docs/acceptance-samples`
   可随时复核其合法性。
+- **D2-a 全量验收档案（路 BB/sim-d2arecords，2026-11-14 预填）**：
+  `docs/acceptance-samples/d2a/`——A 组识别覆盖细分 REC-02..08（路 AJ/S 实测）+ B 组
+  动作覆盖预填 ACT-01..10（§6.1 等价类逐条，断言=key-action-map 执行链锚点+观察点；
+  NOT_RUN 8 / PASS 条件性 1（cmd 9，路 BW 实测）/ BLOCKED 1（完整 ADC 闭环串联，
+  S19 生产分发未接线归 D1 事件循环））+ `README.md` 汇总面板；运行态副本在
+  `analysis/local-checks/acceptance/`（git 忽略）。
 - **测试**：`tools/test_acceptance_record.py`（32 例：往返/校验拒绝路径/BLOCKED 语义/
   示例合法性/CLI）已接入 `check_local --units`。

@@ -1,0 +1,33 @@
+{
+  "case_id": "D2-a-ACT-09",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "预填用例（未执行），计划起点=函数级直调 harness（路 BW --event-injection 先例：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），从 S19 第二分发表记录[5] 的 handler 0x060252c6 入口注入载荷字）；S19 生产分发路径（post→队列→任务消费）不在当前停点世界可达段（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环 BI/BJ，接线后升格重跑）",
+  "inputs_schedule": "计划注入（预填未执行）：音量- 长按 0x10b01（key11 按下确认，子类型 1→类别 5）命中默认表 (3,5,2)→cmd 2 上一曲；音量+ 长按 0x10c01 命中 (5,5,3)→cmd 3 下一曲（面板不可见的长按槽默认绑定，key-action-map §3.2）",
+  "observation_boundary": "计划观察点：同 ACT-01 的 cmd 2/3 观察点（环写入 'music_prev'/'music_next'+r6 门后提示音 70/69）——动作半边与单击槽同一查表同一跳表；触发时机断言=类别 5 的唯一来源是按下确认 0x10a01（非持续/档位/释放）",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §3.3/§5：长按槽（gesture 5）与单击槽走同一查表，动作半边无新分支（§6.4 准入：识别半边差异在子类型→类别折叠）——长按动作在「按住超窗确认」时刻触发一次",
+    "不发双发断言：AJ 实测单击序列只 post 0x10a00（无 0x10a01）——长按槽不会被单击误触发；其后持续（2）/档位（10..14）/释放确认（3）折入类别 6 不再触发（REC-08 负例的静态解释，key-action-map §1.2/§3.3）",
+    "§6.1 事件表对照：App 侧无长按 eventID（面板只有单击~四击）——长按槽是固件侧独有默认绑定，eventID 待钉死项（d1-acceptance §6.1 待钉②）",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "key11/key12 的按下确认载荷（0x10b01/0x10c01）识别半边未实测——AJ 长按序列是 key10（0x10a01@78 拍实测）；类别折叠按子类型不按键 id（tbb 表只看低字节），跨键迁移是推导性假设"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "长按槽动作分支从未在仿真执行",
+    "key11/12 长按识别半边（0x10b01/0x10c01 的 75 拍阈值确认）未实测（推导假设见上）",
+    "App 长按 eventID 与面板不可见绑定的产品语义（为什么面板不暴露）不在固件窗口"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:30:00"
+}

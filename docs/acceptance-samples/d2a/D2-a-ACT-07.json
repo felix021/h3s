@@ -1,0 +1,38 @@
+{
+  "case_id": "D2-a-ACT-07",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "函数级直调 harness（路 BW --event-injection 场景 S1 key_double_click_round_trip 的 official/b79 臂，2026-11-14 已执行）：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），非全启动世界、非 S19 生产分发",
+  "inputs_schedule": "从 handler 0x060252c6 入口注入双击载荷字 0x10000|(10<<8)|4=0x10a04（合成表项 (7,2,9)@QCY+3404 命中 cmd 9）；识别半边同载荷已由路 S 实测（REC-04）",
+  "observation_boundary": "已观察面（BW 报告）：watch 事件+API 调用序列恰 [0x6017958,0x60140fc]（表命中后的两个按键上下文 API）+零 post+QCY[42] 不变+handler 返回 1；official↔b79 逐事件零差异（三镜像 parity）",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §1.5：cmd 9 分支=goto 0x0602530c 返回已处理（r4=1）零副作用（表字节 06；eq-toggle「无 EQ 调用」在此钉死：分支体就是一条 goto）——BW S1 official/b79 臂实测行为与该静态预测逐项一致",
+    "分发机制覆盖（等价类证据）：入口 bit16 门→tbb 折叠（子类型 4→类别 2）→模式查询=5（0x80 位不加）→键掩码 key10→7→映射表命中→跳表按 r1=8 分发——0x060252c6 入口消费链在真实固件代码上完整执行（路 BW；官方 app.bin 静态全图的运行时佐证）",
+    "§6.3 共同断言在本场景的最小体现：零副作用=未启用消费者不被调（无环写入/无 post/配置不动）——队列规则/流生命周期两条因零事件不产生观察面，随串联用例（ACT-10）补验"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "BW fixture 合成映射表项 (7,2,9)@QCY+3404（BSS 表运行时填充，非默认表——official 默认表无 action 9 槽位）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "从 handler 0x060252c6 入口直调注入（非 S19 生产分发；RAM 启动内容=镜像自身 blob）",
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "BW S1 的 repaired 臂走 EQ 钩子链（0x01→0x81/SEND(2,1)×2 等），official/b79 臂才是本记录引用的 cmd 9 无动作分支证据"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "official 默认表无 action 9 槽位——App 改表（cmdid 2 组 0x06025564/0x0602550e）到达 9 的真实路径未跑（本记录证据用合成表项）",
+    "S19 生产分发未接线（handler 入口直调先例；串联归 ACT-10）",
+    "cmd 9 的真实业务来源（哪张面板配置会映射到 9）未钉死——静态=保留/EQ 空"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "BW fixture 合成映射表项 (7,2,9)@QCY+3404（BSS 表运行时填充，非默认表——official 默认表无 action 9 槽位）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "从 handler 0x060252c6 入口直调注入（非 S19 生产分发；RAM 启动内容=镜像自身 blob）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:30:00"
+}

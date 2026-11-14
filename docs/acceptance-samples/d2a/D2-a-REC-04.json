@@ -1,0 +1,33 @@
+{
+  "case_id": "D2-a-REC-04",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe_irq_entry 默认镜像）；场景基线 main b24f967",
+  "initial_state": "函数级直调 harness（与路 S 同款），从可追溯前沿快照进入：p11_heap_experimental_config 前沿世界（3,072,236 模型步 @ PC 0x60012de 停点）后驱动；非手工构造最终 OS 状态",
+  "inputs_schedule": "双击（路 S 实测，单键两档 fixture，key10）：短按 9 拍×2（间隔 11 拍，窗口=释放稳定 20 拍内）+释放稳定 21 拍——post 实测 0x10a04",
+  "observation_boundary": "观察面=post 调用点载荷字+逐拍 beat_states（180 拍全记录）；窗口=首拍至末次 post 后一拍",
+  "assertions": [
+    "d1-acceptance §6.1 A 组：双击手势码 4=点击计数 2+2（n+2 编码在 n=2，0x6001b08 族），路 S §7.2 双击序列 post 0x10a04",
+    "生产者/消费者两端互证：路 S post 载荷 0x10a04 与路 BW handler 注入字 0x10000|(10<<8)|4 逐字段一致（§7.2/§8）——注入载荷形状获生产者侧运行时证据"
+  ],
+  "timeout_budget": "双击序列 ≤41 拍；每拍一次采样事务=127 模型步执行预算",
+  "model_assumptions": [
+    "路 S 单键两档 fixture（阈值 500/1022+18 哨兵、键 id 表 [255,10]、RES 档位值 400/700）synthetic-not-measured（docs/peripheral-input-simulation.md §7.1）",
+    "识别面在真实固件代码上执行，唯一合成输入=RES 档位值（每拍一次真实采样事务+真实 read_key 分类）",
+    "停点世界=p11_heap_experimental_config 前沿投影栈（路 M 全栈 opt-in 投影）",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "路 S §7.4 诚实边界沿用：直调段中断冻结（外设时间不推进）、EMA 稳态假设、post 入队落盘在调用点观测（0x6001b5e 载荷字+返回口）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "三键矩阵（路 AJ fixture）上未重跑双击——key11/key12 双击未实测（识别机制按键 id 独立同形，未逐一重跑）",
+    "双击等待窗两侧临界值（真实阈值真值未知，未决）",
+    "真实 ADC 档位值/键 id 运行时互证（config 523 在公开工件外）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "路 S 单键两档 fixture（阈值 500/1022+18 哨兵、键 id 表 [255,10]、RES 档位值 400/700）synthetic-not-measured（docs/peripheral-input-simulation.md §7.1）",
+    "识别面在真实固件代码上执行，唯一合成输入=RES 档位值（每拍一次真实采样事务+真实 read_key 分类）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:30:00"
+}
