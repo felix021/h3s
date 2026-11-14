@@ -47,6 +47,7 @@ import argparse
 import hashlib
 import itertools
 import json
+import sys
 from pathlib import Path
 
 import probe_dualcore
@@ -104,8 +105,11 @@ SCENARIOS = {
         # 路 B3/S19 批 2 续:两案(快照+模拟族)放行后前沿滑过 retry 环+第
         # 12 次溢出窗+ADDA 模拟 init(4.5M)+OS 等待族(事件时钟首次真实推进
         # 13.4M 虚拟步)到 19,139,239 @ 0x606abbe,预算 16M→20M(留停点后余量,
-        # 单测钉 default_budget>=前沿+1000)。
-        'default_budget': 20000000,
+        # 单测钉 default_budget>=前沿+1000)。路 DT/S19 批 2 续二:DAC_TM0/TM1
+        # setter 容器放行后链越过两次 -600 半字写(DAC 启动尾段+分配对象+
+        # OS 等待族再走 2.66M 步)到 21,798,206 @ 0x606b5ee 读 0xfe0a20
+        # (JL_ADDA ADA_CON0),预算 20M→40M(20M 实测在 19,996,266 耗尽)。
+        'default_budget': 40000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
         # 单点在 tools/frontier_registry.py,前沿推进后只改 registry(本值自动
@@ -282,6 +286,9 @@ SCENARIOS = {
         # core_tick_cnt_held_snapshot(CNT 读=溢出后冻结快照,显式假设
         # assumed-not-measured 非 PRD-1)+jl_adda_analog_family(模拟 init
         # 0x606abf0 五字容器)——全文见 check_self_conditional 叙事。
+        # 路 DT(S19 批 2 续二)jl_audio_dac_tm_readback 放行到 21,798,206 @
+        # 0x606b5ee(读 0xfe0a20=JL_ADDA->ADA_CON0 bit5 清位 RMW 内部读,
+        # 音频 ADC init 簇配置 RMW 族,归下一路)。
         'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
@@ -362,9 +369,13 @@ class TraceMachine(DualCoreMachine):
         super().after_step(cpu, before_pc)
         if cpu is not None:
             flags = getattr(cpu, 'flags', None)
+            # 内存形状(路 DT):条件前沿推进到 ~22M 步后双镜像全量 trace
+            # 常驻 ~30GB 触发 OOM kill(19.1M 时代恰可容纳)。寄存器签名/
+            # flags 字符串每步全新分配但取值高度重复——intern 去重后唯一
+            # 集极小(值语义/行形状/相等比较/报告零变化,trace 本就不序列化)。
             self.trace.append((cpu.core_id, before_pc, cpu.pc,
-                               f'{flags:02x}' if isinstance(flags, int) else repr(flags),
-                               tuple(_register_signature(v) for v in cpu.R),
+                               sys.intern(f'{flags:02x}') if isinstance(flags, int) else repr(flags),
+                               tuple(sys.intern(s) for s in map(_register_signature, cpu.R)),
                                tuple(self.pending_writes)))
             self.pending_writes = []
 
@@ -826,47 +837,49 @@ def check_self(report):
 
 def check_self_conditional(report):
     """钉死 2026-11-14 路 B3(S19 冲刺批 2 续)条件场景结论(official vs
-    tested_b79,条件 flag 集到当前条件前沿 19,139,239;一切结论条件通过、
+    tested_b79,条件 flag 集到当前条件前沿 21,798,206;一切结论条件通过、
     derived-not-measured;历史世界 689,402(路 BS)/447,383(路 BY)/601,880
     (路 CB)/3,070,626(路 CG)/3,070,786(路 CL)/3,070,955(路 CO)/
     3,071,380(路 CQ)/3,071,984(路 F)/3,072,236(路 M)/3,073,402(路 R)/
     3,073,918(路 V)/3,079,241(路 AA)/3,081,001(路 AK)/3,137,573(路 AN)/
     3,170,362(路 AS)/3,170,379(路 CV)/3,202,148(路 CW)/3,747,578(路 B1)/
-    3,747,585(路 BQ)已被后续投影替换,见 HANDOFF 对应「步含义」段):
+    3,747,585(路 BQ)/19,139,239(路 B3)已被后续投影替换,见 HANDOFF 对应
+    「步含义」段):
 
-    - 双方 19,139,239 步、同停点 0x606abbe(unmapped_memory 读 0xfe0524,
-      当前条件前沿——路 B3 两案放行后的新边界:①core_tick_cnt_held_
-      snapshot 放行 3,747,585 的 CNT 读(0x12b0e8)——unresolved 窗内返回
-      模型实际存储的溢出后冻结快照(该场景对齐溢出余数恰 0;显式「溢出后
-      CNT 冻结」假设 assumed-not-measured,非 PRD-1/非周期末值,读无副
-      作用;retry 环 0x12b0e6..0x12b0f6 快照一致性首次全通过→*arg1=
-      CNT*1000/(PRD/10) sub-tick→包装 0x12b14c 组合 ms;第 12 次溢出屏蔽窗
-      随后结束,溢出 12..108 全交付/ACK),②jl_adda_analog_family 放行
-      4,521,083 的 DAA_CON0 RMW 内部读(0x606ac42,模拟 init 函数
-      0x606abf0 静态全枚举五字白名单 0xfe0a00/08/0c/48/4c,合成初始 0+
-      读回=当前值,94 写全服务)后,链滑过模拟 init 尾段+OS 等待族(忙等
-      µs 延时+停泊 os_time_dly——事件时钟实测推进 13,429,113 虚拟步),
-      停在 DAC 启动函数 0x6071e74 尾段 0x60720ca 调 getter 0x606ab92
-      (tbb selector 0..11)首读 **0xfe0524=JL_AUDIO->DAC_TM0**(硬件维护
-      的 DAC 时间标记/缓冲状态,音频数字域运行态首读——路 BO「0xfe05xx
-      全块 D1 后另立证据包」分类的运行时显形,读值无从推导,诚实停)、
-      per-core {0:19131510,1:11251}一致;stop parity 全同——
-      official↔b79 parity 延长到条件前沿 19,139,239,控制流零分歧、
-      无 reconvergence;
+    - 双方 21,798,206 步、同停点 0x606b5ee(unmapped_memory 读 0xfe0a20,
+      当前条件前沿——路 DT 放行后的新边界:全量反汇编证实 19,139,239 停点
+      的 0x606ab92 是 **DAC_TM0/TM1 半字 field SETTER(RMW)非运行态
+      getter**(12 路 tbb:0/2→TM0 低半、1/3→TM1 低半、4..7→裸 rts、
+      8/10→TM0 高半、9/11→TM1 高半;读值只进写回组装零分支,全 app 逐
+      2 字节位置扫描无 setter 外读者——0xfe0524 唯一 li 在 setter 内部、
+      10 个调用点全在音频驱动层)→B3 交接「getter/硬件维护时间标记被读」
+      预判撤销,jl_audio_dac_tm_readback 容器放行(合成初始 0+读回=当前值,
+      初值来源 synthetic_zero 具名登记,codex 四点定调;本轮不做 derived
+      不预埋时间标记推导语义;恰白名单 setter 静态地址集 {0xfe0524,
+      0xfe0528} 只服务对齐 32 位字,新读者须重审);放行后两次 -600 半字写
+      实测 TM0=TM1=0xFDA80000(第二次 selector∈{9,11} 写 TM1 高半=静态
+      预测兑现),链继续 DAC 启动尾段+OS 等待族再 +2,658,967 步(预算
+      20M 实测 19,996,266 耗尽→40M)停在 0x606b5ee `[r6+0]&=0xFFFFFFDF`
+      读 **0xfe0a20=JL_ADDA->ADA_CON0**(br28.h +0x20)——音频 ADC init 簇
+      (0x606b4xx..b6xx,邻字 +0x48/+0x4c 已由 B3 容器服务)配置 RMW 族
+      首读,归下一路)、per-core {0:21790764,1:11251}一致;stop parity
+      全同——official↔b79 parity 延长到条件前沿 21,798,206,控制流零
+      分歧、无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..19,139,239,
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..21,798,206,
       超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
       GPIO TX/RX 复用链+Timer0 交付往返+JL_IMAP 输入复用链+fifo_reset+
       uart_init 收尾+init 链前三项+JL_WL_AUD entry 写+场景 walker 查名链
       +跨页拆分后的完整 5×walker 链+ADC reset/S1..S5/音频 init 尾块+
       DAA_CON1 RMW→DAC_VL0 setter 入口→DAC_COP/DMA 写域→延时等待族+
-      CNT held 快照+JL_ADDA 模拟族 RMW 群+模拟 init 尾段 OS 等待族)没有
+      CNT held 快照+JL_ADDA 模拟族 RMW 群+模拟 init 尾段 OS 等待族+
+      DAC_TM 两次 -600 半字写+DAC 启动尾段分配与 OS 等待族续段)没有
       消费任何新的镜像差异(CRC 轮数 32/结果 74/3041 字节全不变——等待段
       零新 CRC 轮);
     - final report 差异仍恰好 12 处(11 处 CRC result_reads + 1 处 watch r0;
       路 AN 的 5 处=walker 链新 CRC 轮序号 37/43/49/55/61,路 AS 再加 2 处
       =尾块新 CRC 轮序号 67/73——每六值循环组一处镜像相关差异,镜像字节
-      仍只以寄存器值/CRC 结果显形,存储字节零差异;路 B1/B3 的新增步
+      仍只以寄存器值/CRC 结果显形,存储字节零差异;路 B1/B3/DT 的新增步
       对两镜像完全同构,新容器报告两侧逐字节相同,不新增差异)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
@@ -881,18 +894,19 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 19131510, '1': 11251},
+                run['per_core_steps'] == {'0': 21790764, '1': 11251},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (19139239 @ 0x606abbe, the first read of '
-                '0xfe0524 = JL_AUDIO->DAC_TM0 inside the getter dispatch 0x606ab92 '
-                'called at 0x60720ca from the DAC-start tail — after the route-B3 '
-                'releases let the CNT read at 0x12b0e8 return the stored frozen '
-                'snapshot (explicit assumed-not-measured freeze, not PRD-1) and the '
-                'JL_ADDA analog family container serve the analog-init RMW block '
-                '(0x606abf0, five words), the chain runs the OS wait family '
-                '(13,429,113 event-clock virtual steps) and stops on the '
-                'hardware-maintained DAC time-marker read; the audio DIGITAL '
-                'runtime domain read is the honest next boundary)')
+                'conditional frontier stop (21798206 @ 0x606b5ee, the first read of '
+                '0xfe0a20 = JL_ADDA->ADA_CON0, a bit5-clear config RMW in the audio '
+                'ADC init cluster — after the route-DT release lets the half-word '
+                'field setter 0x606ab92 (statically a 12-way tbb RMW setter, NOT a '
+                'runtime getter; the app never reads DAC_TM0/TM1 outside the setter '
+                'RMW) execute its two -600 half-word calls at 0x60720ca/0x60720d6 '
+                '(TM0 = TM1 = 0xFDA80000, the second selector writing the TM1 high '
+                'half as the static map predicts), the chain runs the DAC start tail '
+                'and another OS wait family segment (+2,658,967 steps) and stops on '
+                'the ADA_CON0 config-RMW internal read; the JL_ADDA config-RMW '
+                'family boundary is the honest next boundary for the route after DT)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

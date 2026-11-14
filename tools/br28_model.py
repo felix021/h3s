@@ -2742,6 +2742,161 @@ class JLAddaAnalogFamilyRegisters:
                               'does NOT verify any audio output')}
 
 
+class JLAudioDacTmRegisters:
+    """JL_AUDIO DAC_TM0/TM1(0xfe0524/0xfe0528)半字 field setter 容器(合成初始 0
+    +读回=当前值,opt-in,路 DT/S19 冲刺批 2 续二;codex 定调四点全落)。
+
+    背景:19,139,239 停点 0x606abbe——DAC 启动函数 0x6071e74 尾段(两次 delay
+    经 0x606abe6 veneer 后)0x60720c2 `r1=b[0x1265C0+69]`、0x60720c6 r0=-600、
+    0x60720ca call 0x606ab92——该函数(B3 交接暂称 getter)全量反汇编是
+    **DAC_TM0/TM1 的半字 field SETTER(RMW)**:入口 `if(r1>11) goto rts`+
+    `r2=0xFE0524`+`tbb [r1]`(表 06 08 06 08 1a 1a 1a 1a 10 12 10 12)12 路——
+    selector 0/2→0x606abaa 写 TM0 低半字(读[r2+0]&0xFFFF0000 保高半,
+    r0 低 16 位进低半)、1/3→0x606abae 写 TM1 低半字、4..7→0x606abd2 裸 rts
+    (无读无写)、8/10→0x606abbe 写 TM0 高半字(读[r2+0] 取 .l(u) 保低半,
+    (r0&0xFFFF)<<16 进高半)、9/11→0x606abc2 写 TM1 高半字。停点即
+    selector 8/10 handler 的 RMW 内部读。**读值数据流:只进写回组装
+    (保留的旧半字与新半字 OR 后写回同地址),函数内零分支消费读值**
+    (分支只测入口 selector r1>11)。
+
+    访问面(全 app 逐 2 字节位置独立解码扫描+15 个 li 0xfe0500 基址站点
+    ±80 指令偏移核查):0xfe0524 唯一 li 在 setter 内部 0x606ab96,0xfe0528
+    无 li;setter 全 app 恰 10 个调用点全在音频驱动层(0x606b30e/b318 配置
+    半字、0x606b322/b32c 固定 -600、0x6071e08 2048+0x6071e52 31 次递减
+    ramp、0x60720ca/20d6 本前缀固定 -600 两条、0x6072212/2256 缓冲长度/2
+    派生)——**固件从不「读」TM0/TM1 当运行态,唯一读形态就是 setter 的
+    RMW 内部读**,B3 交接里「getter/硬件维护时间标记被读」的预判撤销。
+
+    分类(codex gpt-6-astra 定调,四点采纳):①确认 setter/RMW,撤销「运行态
+    getter」分类;DAC_TM 命名保留原名,硬件语义(time mark?单位?有符号?)
+    不展开不解释——软件写 -600 不证明硬件按有符号数解释。②容器族语义
+    (合成初始 0+读回=当前值),但**初值来源具名登记**:本例保留半字持久
+    携带进写回字=CV 性质的初值依赖,与 CW(旧值位被清)不同;因全 app 无
+    setter 外读者(CW 判据:读值不进观察路径),不单设 fixture 开关,
+    synthetic_zero 初值假设随容器开关绑定、报告明示。③恰白名单 setter
+    静态地址集 {0xfe0524,0xfe0528}(报告分列 modeled/touched);只服务对齐
+    32 位字访问(setter 本身 ld.w/st.w);其余 0xfe05xx 严格 unmapped
+    (BO 全块 D1 后另立证据包不变)。**新读者重审边界**:同一地址出现
+    setter 外读者必须重新分类,否则容器会悄悄放过新语义。④敏感性探针
+    (probe_only):TM0 初值一次性 0 vs 0xffffffff 分叉(只注初值,后续读回
+    真实写回值),断言两臂写回 0xFDA8_0000/0xFDA8_FFFF(异或 0xFFFF)+执行
+    轨迹全同。
+    """
+
+    # 白名单恰两字(setter 0x606ab92 静态全函数地址集;selector 4..7 空操作
+    # 不触寄存器,>11 早退同)。
+    WORDS=(0xfe0524,0xfe0528)
+    SDK_NAMES={0xfe0524:'JL_AUDIO->DAC_TM0',0xfe0528:'JL_AUDIO->DAC_TM1'}
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self,tm0_probe_initial=None):
+        self.stores={address:{'values':[],'writes':0} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+        # probe_only 敏感性探针:只替换 TM0(0xfe0524)的初值一次(后续读回
+        # 真实写回值,非每读强制返回探针常数);TM1 不扰动保归因干净。
+        self.tm0_probe_initial=tm0_probe_initial
+
+    def handles(self,address):
+        return address in self.stores
+
+    def _initial_word(self,address):
+        if address==0xfe0524 and self.tm0_probe_initial is not None:
+            return self.tm0_probe_initial
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled JL_AUDIO DAC_TM word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL_AUDIO DAC_TM word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(初值来源具名 synthetic_zero——本例保留
+        # 半字持久携带进写回=CV 性质初值依赖,全 app 无 setter 外读者,故不
+        # 单设 fixture 开关;derived-not-measured 非复位值声明)。
+        self.synthesized_initial_reads+=1
+        return self._initial_word(address)
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-8:]],
+                         'writes':e['writes']}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        proj={
+            'addresses':[hex(a) for a in self.WORDS],
+            'modeled_vs_touched':('modeled exactly {0xfe0524 DAC_TM0, 0xfe0528 '
+                                  'DAC_TM1} (the setter 0x606ab92 static address '
+                                  'set); touched this prefix: '
+                                  +((', '.join(sorted(touched)) or 'none'))),
+            'word_writes':self.word_writes,
+            'stores':touched,
+            'sdk_naming':('br28.h JL_AUDIO_TypeDef +0x24 DAC_TM0 / +0x28 DAC_TM1, '
+                          'both __RW __u32 (reference SDK header, not exact QCY '
+                          'source); the TM ("time mark"?) hardware semantics, units '
+                          'and signedness stay UNVERIFIED — the container models '
+                          'only the observed software half-word field-setter shape'),
+            'whitelisted_words':('exactly {0xfe0524, 0xfe0528} — the full static '
+                                 'address set of the half-word field setter '
+                                 '0x606ab92 (12-way tbb: 0/2 TM0.low, 1/3 TM1.low, '
+                                 '8/10 TM0.high, 9/11 TM1.high, 4..7 no-op rts); '
+                                 'only aligned 32-bit word accesses are served '
+                                 '(the setter itself uses ld.w/st.w); the rest of '
+                                 'the JL_AUDIO block stays unmapped (route-BO '
+                                 'whole-block D1-later evidence package unchanged)'),
+            'observed_shapes':('RMW chains inside the setter 0x606ab92 (read word, '
+                               'mask-keep the other half, insert (r0&0xFFFF)<<shift, '
+                               'store back to the same word); every read value only '
+                               'composes a write-back, the sole branch tests the '
+                               'entry selector r1>11; all 10 app call sites feed '
+                               'config halfwords, fixed -600 values, a 31-step '
+                               'ramp and buffer-length-derived halves; the app '
+                               'never reads DAC_TM0/TM1 as live hardware state — '
+                               'the only read form is the setter RMW internal read'),
+            'readback_projection':{
+                'addresses':[hex(a) for a in self.WORDS],
+                'reads':self.reads_after_write,
+                'synthesized_initial_reads':self.synthesized_initial_reads,
+                'initial_value_origin':('synthetic_zero — an explicit experimental '
+                    'assumption registered with this container switch (codex note: '
+                    'the preserved half-word persists into the write-back, which is '
+                    'CV-like initial-value dependence; the app has no reader outside '
+                    'the setter RMW, so the route-CW observed-path classification '
+                    'applies and no separate initial-fixture switch is created)'),
+                'readback_semantics':('last firmware-written value; before any '
+                    'firmware write the explicit synthetic initial word 0 — '
+                    'derived-not-measured, NOT a reset-value claim; no hardware '
+                    'self-update, time-mark counting or DAC DMA evolution is '
+                    'modeled (an explicitly enabled software register-storage '
+                    'projection; the zero initial word is an experimental '
+                    'assumption, readback comes from the most recent write inside '
+                    'the projection; it does not claim to reproduce the silicon '
+                    'reset value or any hardware-autonomous update)'),
+                'known_limitation':('any future reader of 0xfe0524/0xfe0528 outside '
+                    'the setter 0x606ab92 (audio-task domain, D2) must be '
+                    're-audited before this container may serve it — the container '
+                    'would then answer with synthesized config bits, not silicon '
+                    'state; DAC_DB0/DB1 (+0x2c/0x30) and the rest of the JL_AUDIO '
+                    'block stay unmapped and get their own per-access '
+                    'classification when reached'),
+            },
+        }
+        if self.tm0_probe_initial is not None:
+            proj['sensitivity_probe']={
+                'tm0_probe_initial':hex(self.tm0_probe_initial),
+                'label':'sensitivity-probe-not-plausible-state',
+                'shape':('one-shot initial-word substitution for DAC_TM0 only '
+                         '(subsequent reads return the real written value); TM1 '
+                         'stays at synthetic 0 in both arms to keep attribution '
+                         'clean'),
+            }
+        return proj
+
+
 class JLAudioDacVl0Registers:
     """JL_AUDIO->DAC_VL0(0xfe051c)数字音量字的「写记录+读回」容器(opt-in,路 CW/S19 批 0b;任务卡称「路 BO」与既有 BO/sim-audiosfr 撞号,照 CT/CV 先例顺延记 CW)。
 
@@ -4434,6 +4589,7 @@ class BR28Model:
                  core_tick_cnt_held_snapshot=False,
                  core_tick_cnt_snapshot_probe_value=None,
                  jl_adda_analog_family=False,
+                 jl_audio_dac_tm_readback=False,jl_audio_dac_tm_probe_value=None,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
@@ -4560,6 +4716,18 @@ class BR28Model:
         # (0xfe0a00/08/0c/48/4c,函数 0x606abf0 静态全枚举白名单;+4 DAA_CON1
         # 不在白名单——路 CV 两开关分立容器独占,地址集互斥)。
         self.jl_adda_family=JLAddaAnalogFamilyRegisters() if jl_adda_analog_family else None
+        # jl_audio_dac_tm_readback(路 DT/S19 批 2 续二):JL_AUDIO DAC_TM0/TM1
+        # (0xfe0524/0xfe0528)半字 field setter 0x606ab92 容器——合成初始 0
+        # +读回=当前值,初值来源 synthetic_zero 具名登记(类注释 codex 定调
+        # 四点);probe_value 仅 probe 场景用(TM0 初值一次性替换,TM1 不扰动)。
+        if jl_audio_dac_tm_readback:
+            if jl_audio_dac_tm_probe_value is not None and (not isinstance(jl_audio_dac_tm_probe_value,int)
+                    or not 0<=jl_audio_dac_tm_probe_value<=0xffffffff):
+                raise ValueError('invalid JL_AUDIO DAC_TM probe initial word')
+        elif jl_audio_dac_tm_probe_value is not None:
+            raise ValueError('the JL_AUDIO DAC_TM probe value rides on the DAC_TM readback container')
+        self.jl_audio_dac_tm=(JLAudioDacTmRegisters(tm0_probe_initial=jl_audio_dac_tm_probe_value)
+                              if jl_audio_dac_tm_readback else None)
         if core_tick_delivery_requests and not core_tick_configuration:
             raise ValueError('core tick delivery requests require the core tick configuration')
         self.core_tick_delivery_requests=core_tick_delivery_requests
@@ -5070,6 +5238,7 @@ class BR28Model:
                                                 or self.fd31_adc_con.handles_res(address))) or
             (self.p33_analog_tail_projection and address==P3_ANA_READ) or
             (self.jl_adda_family is not None and self.jl_adda_family.handles(address)) or
+            (self.jl_audio_dac_tm is not None and self.jl_audio_dac_tm.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
                                           or self.timer2.handles_iwkup(address))) or
@@ -5357,6 +5526,12 @@ class BR28Model:
         if self.jl_adda_family is not None and self.jl_adda_family.handles(address):
             self.counts['reads']+=1
             return self.jl_adda_family.read(address)
+        # JL_AUDIO DAC_TM0/TM1(路 DT):读回=当前值(最后写值/无写时合成初始 0,
+        # 初值来源 synthetic_zero 具名登记);只服务对齐 32 位字,其余形状落
+        # 严格 unmapped。
+        if self.jl_audio_dac_tm is not None and self.jl_audio_dac_tm.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_dac_tm.read(address)
         # 金丝雀树/低功耗域(路 BV):P3_VLVD_CON/P3_PCNT_CON 只有显式 fixture
         # 覆盖的首次读返回具名字,其余读(未覆盖/写后/重复)一律严格停
         # (路 BB 同款;显式 kind 便于诊断)。
@@ -5514,6 +5689,11 @@ class BR28Model:
             # 的 RMW 写回/整字写记录(经通用 mmio 路径的内部读=容器当前值);
             # 模拟通路/偏置/音频输出不建模。
             self.jl_adda_family.write(address,value)
+        elif self.jl_audio_dac_tm is not None and self.jl_audio_dac_tm.handles(address):
+            # JL_AUDIO DAC_TM0/TM1(路 DT/S19 批 2 续二):setter 0x606ab92 的
+            # RMW 写回整字记录(经通用 mmio 路径的内部读=容器当前值);DAC
+            # time-mark/DMA 运行效果不建模。
+            self.jl_audio_dac_tm.write(address,value)
         elif self.jl_audio_dac_vl0 is not None and self.jl_audio_dac_vl0.handles(address):
             # JL_AUDIO DAC_VL0(路 CW/S19 批 0b):0x606db68 写回(在两个通道
             # 选择块之外,未选通道=组装值原样写回)整字写记录;值=真实指令
@@ -6134,6 +6314,29 @@ class BR28Model:
                 'prefix — the container would serve its synthesized config word there, the '
                 'silicon bit1 semantics stay unverified; no DAC analog path, bias or audio '
                 'output is modeled — this does NOT verify any audio output')
+        if self.jl_audio_dac_tm is not None:
+            result['jl_audio_dac_tm_registers']=self.jl_audio_dac_tm.report()
+            result['assumptions']['jl_audio_dac_tm_registers']=(
+                'JL_AUDIO DAC_TM0/TM1 (0xfe0524/0xfe0528 = JL_AUDIO base +0x24/+0x28, '
+                'br28.h both __RW __u32, route DT): write record plus last-write readback '
+                'with an explicit synthetic initial 0 before the first write '
+                '(derived-not-measured, route-AM/CW family); initial-value origin is the '
+                'named synthetic_zero assumption registered with this switch — the '
+                'preserved half-word persists into the write-back (CV-like initial-value '
+                'dependence) but the app has no reader outside the setter RMW, so no '
+                'separate initial-fixture switch (codex decision); whitelist = the exact '
+                'static address set of the half-word field setter 0x606ab92 (12-way tbb, '
+                'selectors 0/2 TM0.low 1/3 TM1.low 8/10 TM0.high 9/11 TM1.high, 4..7 '
+                'no-op; all 10 app call sites in the audio driver layer feed config '
+                'halfwords, fixed -600 values, a 31-step ramp and buffer-length-derived '
+                'halves); the app never reads DAC_TM0/TM1 as live hardware state — the '
+                'only read form is the setter RMW internal read composing the write-back, '
+                'so the B3 handoff "getter / hardware-maintained time-mark read" '
+                'classification is withdrawn; the TM hardware semantics/units stay '
+                'UNVERIFIED and are not interpreted; any future reader outside the setter '
+                'must be re-audited before this container may serve it; no DAC time-mark '
+                'counting, DMA evolution or audio output is modeled — this does NOT '
+                'verify any audio output')
         if self.jl_audio_dac_vl0 is not None:
             result['jl_audio_dac_vl0_registers']=self.jl_audio_dac_vl0.report()
             result['assumptions']['jl_audio_dac_vl0_registers']=(

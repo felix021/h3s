@@ -176,8 +176,8 @@ R/W 形状按站点指令分类 [静态]）：
 
 | 族 | 地址（新增，未在 BO 音频簇清单内） | 站点 | 形状 | 建议先例 |
 |---|---|---|---|---|
-| **JL_AUDIO DAC/DMA** 0xfe0500 | 0xfe0504(DMA 指针/计数读×6)、0xfe0508、0xfe0524、0xfe0534、**0xfe0538(bit4 完成轮询×4)** | 15(基址)+15 | RMW+读回消费 | 0xfe051c DAC_VL0 按 BO「读回=最后写值」；**0xfe0538 轮询需完成投影**（lrct_trim_done 先例）或 IRQ 驱动 |
-| **JL_ADDA** 0xfe0a00 | 0xfe0a0c(3 位 RMW)、0xfe0a20/24/30/40、**0xfe0a48/4c** | 8(基址)+11 | RMW 为主 | 同族扩展 BO 容器；**0xfe0a48/4c 出现在主路径 ADC 采样 setter tbb case（0x60116b0：[0xfe0a4c]\|=2、[0xfe0a48]&=0xFFFFF000）**——不纯是 D2 面，BG 后 ADC 通道切换可能先碰 [静态] |
+| **JL_AUDIO DAC/DMA** 0xfe0500 | 0xfe0504(DMA 指针/计数读×6)、0xfe0508、0xfe0524、0xfe0534、**0xfe0538(bit4 完成轮询×4)** | 15(基址)+15 | RMW+读回消费 | 0xfe051c DAC_VL0 按 BO「读回=最后写值」；**0xfe0538 轮询需完成投影**（lrct_trim_done 先例）或 IRQ 驱动；0xfe0524/28 已由路 DT 放行（半字 field setter 0x606ab92 容器，合成初始 0+读回=当前值——19,139,239 停点「getter/时间标记被读」预判撤销，本表「RMW+读回消费」形状与之相容） |
+| **JL_ADDA** 0xfe0a00 | 0xfe0a0c(3 位 RMW)、0xfe0a20/24/30/40、**0xfe0a48/4c** | 8(基址)+11 | RMW 为主 | 同族扩展 BO 容器；**0xfe0a48/4c 出现在主路径 ADC 采样 setter tbb case（0x60116b0：[0xfe0a4c]\|=2、[0xfe0a48]&=0xFFFFF000）**——不纯是 D2 面，BG 后 ADC 通道切换可能先碰 [静态]；**0xfe0a20（ADA_CON0，br28.h +0x20）已是路 DT 后的条件前沿停点 21,798,206 @ 0x606b5ee（音频 ADC init 簇 bit5 清位 RMW 内部读）——本行「同族扩展 BO 容器」的预测与运行态显形互证，归下一路** |
 | **0xfe0400 族**（SDK 头未缓存，疑音频时钟/gate 域） | 0xfe0400/04/0c/20/28/44c/460/46c/4a8/4b0/4d4/4ec | 27 | 位 RMW+状态位读 | 配置 RMW 记录（0xf2c054 先例）+ 读回位语义逐个钉 |
 | **0xfe0900 族** | 0xfe0900/0xfe0908 | 5 | 读+RMW | 同上，先证据后放行 |
 | **音频时钟 0xfd19xx** | 0xfd1900/04/0c/20/28/50（0xfd1924=LRCT 已建模；0xfd1928 被 DAC 域 0x606b670 引用；0xfd1920 被 decoder plug 域 0x60351cc 引用） | 16 | 未逐个分类 | [SDK] aud_clock_manager.c 对位；到达时逐地址三选一 |

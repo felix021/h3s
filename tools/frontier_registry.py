@@ -211,6 +211,19 @@ FEATURES = (
             '停点 0x606ac42=模拟 init 函数 0x606abf0 静态全枚举白名单;合成初始 0+读回=当前值,'
             '读值只进写回组装零分支;+4 DAA_CON1 由路 CV 容器独占;DAA_CON2 bit1 状态位消费者'
             '0x606b352 在音频任务域,硅语义推迟未证)'),
+    # ---- S19 冲刺批 2 续二(路 DT/sim-dac-tm0:DAC_TM0/TM1 半字 setter 容器) ----
+    Feature('jl_audio_dac_tm_readback', 'conditional', ('jl_adda_analog_family',), False, None,
+            'JL_AUDIO DAC_TM0/TM1(0xfe0524/0xfe0528)半字 field setter 0x606ab92 容器'
+            '(19,139,239 停点 0x606abbe=selector 8/10 handler 的 RMW 内部读;12 路 tbb '
+            '0/2→TM0低 1/3→TM1低 8/10→TM0高 9/11→TM1高 4..7→裸rts;读值只进写回组装零分支,'
+            '全 app 无 setter 外读者→「getter/硬件时间标记被读」预判撤销;合成初始 0+读回='
+            '当前值,初值来源 synthetic_zero 具名登记(codex:保留半字持久携带=CV 性质,无'
+            '读者故不单设 fixture 开关;本轮不做 derived 不预埋);恰白名单 setter 静态地址集,'
+            '只服务对齐 32 位字,新读者须重审;TM 语义不解释保留原名)'),
+    Feature('jl_audio_dac_tm_probe_value', 'probe_only', ('jl_audio_dac_tm_readback',), True, None,
+            'DAC_TM0 初值敏感性探针(TM0 初值一次性 0xffffffff 替换,TM1 不扰动保归因干净;'
+            '两臂写回断言 0xFDA8_0000/0xFDA8_FFFF 异或 0xFFFF+轨迹全同,CV 双探针先例;'
+            'sensitivity-probe-not-plausible-state)'),
     # (p2m_mailbox_ack / cfg523_named_fixture 已实现并单测,但 19,139,239 停点
     # (JL_AUDIO->DAC_TM0 运行态读)证实两者的全部运行态消费者仍在音频数字域整块
     # 之后——按 BQ 先例(零消费者不落地)从条件栈撤回,实现保留在本分支历史
@@ -256,10 +269,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 19139239,
-        'stop_pc': '0x606abbe',
+        'completed_steps': 21798206,
+        'stop_pc': '0x606b5ee',
         'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfe0524', 'size': 4, 'reference_sdk_register': None},
+                 'address': '0xfe0a20', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }
