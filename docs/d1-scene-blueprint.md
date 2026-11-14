@@ -488,3 +488,52 @@ python3 tools/acceptance_record.py --validate                  # 校验（condit
   不够」「旧 kind 再阻塞也不通过」「终态不要求两核同形」）；
 - 提交不含 Co-Authored-By、不含私有路径/私有工件名；`check_local.py --units` 绿
   （文档路 trivially，已跑）。
+
+## 11. 前置刷新 2026-11-14（路 D1PREP/sim-d1prep；§5 表原样保留为历史快照）
+
+基线 main `217858a`（=路 INV 合并点），条件前沿 **3,747,585 @ 0x12b0e8**
+（`core_tick_overflow_requires_resolution`，CNT 读——路 BQ 的 PRD 一案放行 +7 步后的
+新停点）。蓝图写于 10:33（前沿 ~3.2M 之前）；此后批 0b（路 CW）/批 1（路 B1）/批 2
+一案（路 BQ）/路 INV 已合并，**§5 表的不少「待 P-n」行已自动变绿或改变形态**。本节把
+§5 表 15 行逐条刷新为三态：**已绿**（证据=开关名/路号/前沿停点）/ **BR 在途**（批 2
+后续路=「CNT held 快照 + JL_ADDA 模拟族 + 电池段两案」，本机分支 sim-s19b3 `0b875ed`
+预览所见、**以合并后实际开关名/停点为准**）/ **仍缺**（没有任何路在解决的硬缺口）。
+§5 原文的 BA #n 行号在「原行」列保留对照。
+
+编号映射：P-1=§5 P-1；P-2=BA#0；P-3=BA#1-3；P-4=BA#4-8；P-5=BA#9；P-6=BA#10；
+P-7=BA#11；P-8=BA#12；P-9=BA#13；P-10=BA#13b；P-11=BA#14；P-12=BA#15；P-13=BI
+前置；P-14=D1 前置（本蓝图→实施路）；P-15=执行加速（BD 快照，可选）。
+
+| P# | 原行 | 刷新状态 | 证据（main 217858a） | 备注/缺什么 |
+|---|---|---|---|---|
+| P-1 | §5 P-1（DAA_CON1 0xfe0a0c 读） | **已绿** | 路 CV 两开关（`jl_adda_daa_con1_initial_fixture`/`config_readback` 族，HANDOFF 路 CV 条目）；前沿已远越 3,170,362（现为 3,747,585） | — |
+| P-2 | BA#0（W1[3] 尾段+DAC 簇+IRQ68/anc） | **BR 在途**（大半已绿） | DAC 簇已绿三件：CW `jl_audio_dac_vl0_readback`（3,202,148）、B1 `jl_audio_dac_cop_writes`+`jl_audio_dac_dma_writes`（3,747,578）；前沿已过 DAC 写族 | 尾巴=**JL_ADDA 模拟族**：BR 分支预览 `jl_adda_analog_family`（五字容器，停点 4,521,083 @ 0x606ac42=模拟 init 函数 0x606abf0）——BA 预测「纯 RAM+已放行域」在音频域不成立（见下方观察 A） |
+| P-3 | BA#1-3（W1[4]→S9→W2/W3/W4[0..3]） | **BR 在途** | 3.2M→3.7M 段推进只遇 core-tick 边界一个停点（B1 +545,430），该段大体纯 RAM 的 BA 判定获支持 | W2[0] `3×os_time_dly(2)` 的**首个全核 IDLE**（事件时钟第一个消费者）在 BR 世界才到达（CW 实测本前缀 `virtual_model_steps_advanced=0`，CPU0 从未停泊） |
+| P-4 | BA#4-8（W4[4] PVDD/VLVD 簇五停点） | **已绿**（双保险：预案全覆盖+真实前缀零触达） | B1 四开关：`jl_pvdd_trim_writes`（覆盖停点①②④）+`timer2_delay_projection`（③，闭式 4000 步已入 min()）+`p33_canary`/`p33_canary_first_read_words`（⑤）；B1 条目④实测「TIMER2 助手 0x12cd26 零写、canary 树零访问、PVDD 三字零写」——**五预测停点全部未出现**（见观察 B） | BR 合并后链滑进 S 段，若真实前缀触达这些域，开关已在（兜底语义不变） |
+| P-5 | BA#9（W4[5]/S11/S12） | **BR 在途** | BA 预测「通过」；前沿未到该段，无反证 | — |
+| P-6 | BA#10（S13/S14 门，零 SFR） | **BR 在途** | BA 预测「通过」（实测双 0→电池路径）；前沿未到 | — |
+| P-7 | BA#11（S15 喂狗 P2M_CLK ack） | **BR 在途** | 预案④已备：BR 分支预览 `p2m_mailbox_ack`（BM §3 规格，三勘误地址 0xF2A618 族）；B1 实测「邮箱轮询 0x12cc7e/0x12CC94 未到达」=停点在 BR 世界 | — |
+| P-8 | BA#12（S16 5×os_time_dly(10)） | **已绿**（前置件）+穿越在途 | event_clock 已进条件栈（CW：probe 参数+registry conditional 行 159 均在 main）；TIMER2 投影（B1）；闭式常量 `STEPS_PER_MS=4000` 已钉（INV AZ-7）；BI 观察项 `event_clock` 报告键已在 check() | 实际穿越=BR 世界（BR 注释：S16+S17 事件时钟 ~8×10⁶ 模型步，预算 16M——比 BA 预测 2×10⁶ 大，BM §4.3 口径） |
+| P-9 | BA#13（S17→K2 config-523） | **BR 在途** | 预案⑤已备：BR 分支预览 `cfg523_named_fixture`（BH §5.1 字节级 70B 草案：enable=1/mux1 通道字 0x00100001/AJ 阈值表/键 id 表，PC 锚定首装 0x1274F4） | — |
+| P-10 | BA#13b（S17 健康环 ~6×10⁶ 步 budget） | **BR 在途** | BR 场景 budget=16,000,000（BM §4.3 全程 ~1.2×10⁷）覆盖 | — |
+| P-11 | BA#14（S18 两次 post+S18→S19 潜在停点） | **BR 在途** | BZ 定性不变：(20,2) 特路 id=2 节点存在性=运行观测项（缺失=独立边界归前沿推进路，非 D1 断言面）；(18,0) 深层 0x601a5xx 域属 D2+ | **BR 收尾时按实测复核**（见观察 B 的适用性） |
+| P-12 | BA#15（S19 循环+park） | **BR 在途** | 目标态；BR 分支未收尾（无 HANDOFF 条目），前沿是否真到 park 未证实 | **批 3 开工闸门**：BR 合并且前沿到达 S19/park 形态（本蓝图 §1 的前提）；若 BR 收尾停在更早边界，P-11/P-12 后移前沿推进路 |
+| P-13 | BI 前置（G3 场景接线+真实前缀首验 A1-A5） | **已绿**（接线+断言件）/首验=批 3 第一步 | G1/G2 已落（BQ/sim-evclockfix）；`event_clock` probe 参数+registry 条目已在 main（CW）；A1-A5 断言函数已在 `tools/check_d1_acceptance.py`（CH：`bi_a1..a5`，`ASSERTIONS` 注册表挂全）；单测 `test_d1_acceptance.py` 已进 `--units` | 真实前缀首验需 park 样本（P-12 之后）；CW 落地时的口径「BI A1-A5 硬断言属批 3 只观察」→批 3 第一步先观察后升级硬断言 |
+| P-14 | D1 前置（本蓝图→实施路 BJ） | **设计就绪/实施=批 3 本体** | 本蓝图（BG 合并 7a45e67）+本节刷新+[s19-batch3-taskbook.md](s19-batch3-taskbook.md)（路 D1PREP 任务书） | — |
+| P-15 | 执行加速（BD 快照，可选非必要） | **部分绿**（框架+适配器在 main；快照点待 park） | BD 设计（adb996e）；`world_snapshot.py` 框架+漂移双闸（BJ/sim-snapmod）；M1 全字段（BN/sim-snapm1）；M4 投影族 31 槽（sim-snapm4 分支 697f18d，已进 main；其 commit 自称路 BL 但 HANDOFF 的 BL=sim-agentsdoc，路号以主协调定夺为准，本文记分支名）；接线路清单剩 explore 捕获点/canonical 快照+artifact tier | 非过线必要条件（§1.1 Q2）；park 快照只能在前沿到 park 后生成 |
+
+**统计：已绿 3 项**（P-1、P-4、P-8 前置件；P-13 接线+断言件）/ **BR 在途 10 项**
+（P-2、P-3、P-5..P-12）/ **仍缺 0 项硬缺口**（P-14=批 3 本体已备任务书；P-15 可选件
+非必要）。批 3 开工闸门收敛为两条：①BR 合并；②其收尾前沿到达 S19/park 形态。
+
+### 11.1 两条系统性观察（BA 静态预测 vs 动态演进，批 3 实施时要带着）
+
+- **观察 A（预测偏乐观）：W1[3] 尾段连续吐出预测外停点。** BA#0 行判定「P-1 放行后
+  通过（纯 RAM+已放行域）」——实际放行后依次撞出 DAC_VL0（CW）、DAC_COP+DAC DMA
+  （B1 二次勘误件）、JL_ADDA 模拟族（BR 预览 4,521,083），四批逐个消化。音频域的
+  SFR 面比 BA 静态枚举宽。**含义**：P-11/P-12（S18→S19）的 BA 预测也可能漏停点——
+  批 3 遇到时按「三选一归前沿推进/如实停」处理，不算蓝图失效。
+- **观察 B（预测偏保守）：W4[4] 五预测停点零触达。** B1 把五停点预案全部落地后实测
+  零消费者（TIMER2/PVDD/canary 全零访问）——预测的执行分支没有发生。**含义**：BA 表
+  的停点是静态推断的候选，不是实测清单；D1 场景的运行观测项（R1-R7，§7）同样以实读
+  为准，不因预测未出现而提前下结论。
