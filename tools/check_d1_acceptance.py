@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Machine-readable D1 acceptance (D1-1..D1-4) + BI first-verification (A1-A5)
-assertion skeleton (route CH / sim-d1assert).
+"""Machine-readable D1 acceptance (D1-1..D1-5) + BI first-verification (A1-A5)
+assertion skeleton (route CH / sim-d1assert; D1-5 health by route PR-1/sim-pr1).
 
-每条断言忠实转录三份断言文档的自然语言语义,逐条注明 docs 出处行:
+每条断言忠实转录断言文档的自然语言语义,逐条注明 docs 出处行:
 
   D1-1..D1-4  docs/d1-acceptance.md §1(路 BR)+ docs/d1-s18-consumption.md §3(路 BZ 修正口径)
+  D1-5        docs/d1-acceptance.md §1 D1-5 + docs/d1-scene-blueprint.md §3(H1-H7 表)
+              + docs/s19-batch3-taskbook.md §1.0b(H5 两级受检/H6 逻辑序号勘误/
+              FAIL 证据契约);数据面=d1_window.health.* 键形状(契约冻结于
+              docs/d1-health-checks.md,生产者=PR-2 probe 侧,本文件只用合成样本自证)
   A1..A5      docs/d1-idle-event-clock.md §4(路 BP)
 
 输入 = probe_irq_entry 场景报告 dict(scenario 行,含 'machine'/'peripherals' 键),
@@ -59,9 +63,24 @@ TIMER0_TICK_PRD=119999             # tick_timer_init 的 10ms PRD(BZ §2.1)
 # Timer0 闭式(BQ G1):STD12M 每模型步 3 计数(num=3*4,den=4),div=1、prd=119999
 # 时周期=(120000)/3=40,000 模型步——40,000 是推导值不是魔数(D1-2/A2)。
 
+# ── D1-5 H1-H7 常量(蓝图 §3 表+任务书 §1.0b 修正;契约全文 docs/d1-health-checks.md)
+APP_CORE_ENTRY='0x6012028'          # H5 断言面任务=app_core 消费链(路 BE RTI 钉死)
+PERIODIC_SOURCES=('timer0','core_tick')  # H2 周期源(period 实读取上界);其余源=预期 0
+HEALTH_POST_BOUND_NATURAL=2         # H3 上界:S18 静态每子码恰 post 一次,2 含一次容差
+HEALTH_POST_BOUND_INJECTED=3        # H3 注入变体显式 +1(蓝图 §3 H3 行括号注)
+HEALTH_TIMELINE_KINDS=('entered_idle_wait','woken','running')
+# H7 转移合法性(状态转换流,非逐指令):park 后只能被唤醒;唤醒→处理或直接回等待;
+# running→woken=嵌套 IRQ(任务书 §1.0b 第 8 条嵌套层级)。连续同 kind=转换流断裂。
+HEALTH_TIMELINE_NEXT={'entered_idle_wait':('woken',),
+                      'woken':('running','entered_idle_wait'),
+                      'running':('entered_idle_wait','woken')}
+
 SOURCE_D1='docs/d1-acceptance.md'
 SOURCE_BP='docs/d1-idle-event-clock.md'
 SOURCE_BZ='docs/d1-s18-consumption.md'
+SOURCE_BG='docs/d1-scene-blueprint.md'      # D1-5 规则表出处(路 BE 蓝图 §3)
+SOURCE_TB='docs/s19-batch3-taskbook.md'     # D1-5 修正口径出处(批 3 任务书 §1.0b)
+SOURCE_HL='docs/d1-health-checks.md'        # d1_window.health.* 冻结契约(本路 PR-1)
 
 
 def _hex(value):
@@ -169,15 +188,18 @@ def _timer0_expected_period_steps(timer0):
     return counts//per_step if counts%per_step==0 else None
 
 
-def _check(name,status='pass',window='park-window',detail='',missing=None,fail=None):
+def _check(name,status='pass',window='park-window',detail='',missing=None,fail=None,
+           evidence=None):
     """子项三态构造器:fail= 显式判 fail;missing 非空 → pending(观测未到≠通过);
-    其余按显式 status(默认 pass)。"""
+    其余按显式 status(默认 pass)。evidence(可选)=FAIL 证据契约结构(D1-5,任务书
+    §1.0b 第 8 条):{rule,expected,observed,first_violation,source_or_task,window_end}。"""
     if fail is not None:
         status='fail' if fail else 'pass'
     elif missing is not None:
         status='pending'
     return {'name':name,'status':status,'window':window,'detail':detail,
-            **({'missing':missing} if missing else {})}
+            **({'missing':missing} if missing else {}),
+            **({'evidence':evidence} if evidence is not None else {})}
 
 
 def _finalize(result,checks):
@@ -260,6 +282,26 @@ REQUIRED_OBSERVATIONS={
   'BI-A4':['模型级形状已由 test_br28_machine EventClockTests(路 BQ)钉死;场景级样本需 '
            'event_clock_projection + Timer0-only 世界报告键(既有键判定适用性)'],
   'BI-A5':['复用 BI-A1/BI-A2 的观测;machine.task_switch_observations(路 CH 需求:观察项)'],
+  'D1-5':['d1_window.health.timer0_expiries + timer0_expiry_steps(PR-2 需求:H1 到期次数'
+          '与步号序列,间隔漂移判据)',
+          'd1_window.health.per_source[]{source,core,period,expirations,deliveries,'
+          'completions,first_deadline,pending_at_window_start}(PR-2 需求:H2 上界'
+          '⌈N/P⌉+1 的实读 period 与到期/交付/完成三分计数;软件 IRQ 预期 0)',
+          'd1_window.health.event_reposts[]{event_id,subcode,origin,posts,consumed,'
+          'producer_pc,first_post_step,pending_at_window_end} + queue_balance{enqueued,'
+          'dequeued}(PR-2 需求:H3 同事件重发与队列平衡,两键同窗口口径)',
+          "d1_window.health.per_core['0'/'1'].{wake_count,rewait_count,wake_reasons,"
+          'timeline[{model_step,kind,pc,irq,nesting}],last_open_wake{last_pc,'
+          'in_flight_irq,nesting_level}}(PR-2 需求:H4 判据面=CPU0;H7 两核状态转换流)',
+          'd1_window.health.ready_tasks[]{tcb,entry,assertion_face,schedulings,'
+          'ready_since_step,longest_wait,first_scheduled_step}(PR-2 需求:H5 两级受检;'
+          '[]=扫描过且空=vacuous pass;scheduled 布尔由 schedulings 推导不单独存)',
+          'd1_window.health.queue.{count_final,qlimit,capacity,cursor_trace[{step,op,'
+          'seq,physical}],cursor_monotonic}(PR-2 需求:H6;勘误口径=逻辑序号单调+'
+          '物理指针=序号 mod 容量,物理回绕合法;cursor_monotonic 可选互证键)',
+          'd1_window.health.window.{model_step_start,model_step_end,steps,complete}'
+          '(PR-2 需求:窗口长度 N(上界公式)与右边界条款(末尾刚唤醒/ready 标'
+          "「尚未到期」,不默认 PASS))"],
 }
 
 
@@ -1153,8 +1195,662 @@ def bi_a5_c2_exit_two_levels(scenario):
     return _finalize(result,checks)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# D1-5 观察窗口健康度 H1-H7(docs/d1-acceptance.md §1 D1-5;蓝图 §3 表;
+# 任务书 §1.0b 修正:H5 固定优先级两级受检/H6 环形游标=逻辑序号单调/FAIL 证据契约)
+# 数据面=d1_window.health.* 报告键形状(蓝图 §4.3;PR-1 冻结契约,
+# docs/d1-health-checks.md;生产者=PR-2 probe 侧,键缺=pending 不猜)。
+# ════════════════════════════════════════════════════════════════════════════
+def _pc_eq(reported,anchor):
+    """PC 等值比较(报告可能 '0x…' 字符串或 int;按 16 进制数值比较)。"""
+    if isinstance(reported,int):return reported==int(anchor,16)
+    if isinstance(reported,str):
+        try:return int(reported,16)==int(anchor,16)
+        except ValueError:return False
+    return False
+
+
+def _d1_window(scenario):
+    window=scenario.get('d1_window')
+    return window if isinstance(window,dict) else None
+
+
+def _health_window(health):
+    w=health.get('window')
+    return w if isinstance(w,dict) else {}
+
+
+def _health_window_steps(health):
+    """窗口长度 N(上界公式 ⌈N/P⌉+1):优先 window.steps,缺则 end−start,都缺 None。"""
+    w=_health_window(health)
+    if isinstance(w.get('steps'),int):return w['steps']
+    if isinstance(w.get('model_step_end'),int) and isinstance(w.get('model_step_start'),int):
+        return w['model_step_end']-w['model_step_start']
+    return None
+
+
+def _window_end_evidence(health):
+    """FAIL 证据契约的「窗口末尾状态+证据完整性」共用片段(任务书 §1.0b 第 8 条)。"""
+    w=_health_window(health)
+    return {'complete':w.get('complete'),
+            'model_step_start':w.get('model_step_start'),
+            'model_step_end':w.get('model_step_end'),
+            'evidence_complete':isinstance(w.get('complete'),bool)}
+
+
+def _violation(rule,expected,observed,first_violation=None,subject=None,
+               around=None,worst=None,extra=None,window_end=None):
+    """FAIL 证据契约七规则共用结构:{rule,expected,observed,first_violation{模型步,
+    core,PC},相关 source/task,违反前后状态转换片段(around=首次违规,worst=最严重),
+    窗口末尾状态+证据完整性}。计数/峰值在线累计在原始观测键里,此处只存片段。"""
+    ev={'rule':rule,'expected':expected,'observed':observed,
+        'first_violation':first_violation or
+            {'model_step':None,'core':None,'pc':None,
+             'note':'no step-tagged record available for the first violating entry'},
+        'source_or_task':subject}
+    if around is not None:ev['around']=around
+    if worst is not None:ev['worst']=worst
+    if extra:ev.update(extra)
+    ev['window_end']=window_end if window_end is not None else {}
+    return ev
+
+
+def _timeline_violation(timeline,index):
+    """timeline[index] 的 first_violation + 前后片段(仅存首违,任务书 §1.0b 第 9 条)。"""
+    entry=timeline[index]
+    first={'model_step':entry.get('model_step'),'core':entry.get('core'),
+           'pc':entry.get('pc')}
+    around=timeline[max(0,index-1):index+2]
+    return first,around
+
+
+# ── H1 定时事件确实发生(蓝图 §3 H1:窗口内 Timer0 到期 ≥3 次,与 D1-2 同数互证;
+#     FAIL=到期 <3 或周期漂移) ────────────────────────────────────────────────
+def _h1_timer0_events(health,window):
+    name='h1_timer0_expiries_min3'
+    exp=health.get('timer0_expiries')
+    if not isinstance(exp,int):
+        return [_check(name,missing='d1_window.health.timer0_expiries(窗口内 Timer0 '
+                                '到期次数;H1 与 D1-2 同数互证)')]
+    checks=[]
+    if exp<3:
+        checks.append(_check(name,fail=True,
+            detail=f'{exp} in-window Timer0 expiries (<3): the scheduled timer events '
+                   'did not really happen',
+            evidence=_violation('H1','>=3 in-window Timer0 expiries',
+                f'{exp} expiries',subject='timer0@core0',
+                window_end=_window_end_evidence(health))))
+        return checks
+    checks.append(_check(name,detail=f'{exp} in-window Timer0 expiries (>=3)'))
+    # 周期漂移(间隔互不一致/倒流,或 !=per_source 实读 period;蓝图 §3 H1 FAIL 信号)
+    period=None
+    ps=health.get('per_source')
+    if isinstance(ps,list):
+        for entry in ps:
+            if isinstance(entry,dict) and entry.get('source')=='timer0' \
+                    and isinstance(entry.get('period'),int):
+                period=entry['period'];break
+    steps=health.get('timer0_expiry_steps')
+    if not isinstance(steps,list) or len([s for s in steps if isinstance(s,int)])<2:
+        checks.append(_check('h1_expiry_interval_stable',
+            missing='d1_window.health.timer0_expiry_steps(≥2 个到期步号才可验间隔漂移;'
+                    'D1-2 的 expiry_interval 子项以 peripherals.expiration_model_steps '
+                    '为数据面,两处互补)'))
+    else:
+        intsteps=[s for s in steps if isinstance(s,int)]
+        gaps=[b-a for a,b in zip(intsteps,intsteps[1:])]
+        drift=[(i,g) for i,g in enumerate(gaps)
+               if g<=0 or (period is not None and g!=period)]
+        if drift:
+            i,g=drift[0]
+            checks.append(_check('h1_expiry_interval_stable',fail=True,
+                detail=f'expiry gaps {gaps} drift (period={period} from per_source; '
+                       f'first drift gap[{i}]={g})',
+                evidence=_violation('H1',
+                    'adjacent expiry gaps all equal (and == per_source timer0 period '
+                    f'{period})' if period is not None
+                    else 'adjacent expiry gaps all equal (no per_source period to anchor)',
+                    f'gaps {gaps}',
+                    first_violation={'model_step':intsteps[i+1],'core':0,'pc':None},
+                    subject='timer0@core0',
+                    window_end=_window_end_evidence(health))))
+        else:
+            checks.append(_check('h1_expiry_interval_stable',
+                detail=f'adjacent expiry gaps {gaps} stable'
+                       +(f' == per_source period {period}' if period is not None
+                         else ' (no per_source period to anchor; stability only)')))
+    # 与 D1-2 同数互证(timer0_cycles 是 D1-2 数据面;两者都在而不等=证据矛盾)
+    cycles=window.get('timer0_cycles') if window else None
+    if isinstance(cycles,list):
+        if len(cycles)!=exp:
+            checks.append(_check('h1_d1_2_cross_check',fail=True,
+                detail=f'health.timer0_expiries={exp} != len(d1_window.timer0_cycles)='
+                       f'{len(cycles)} (H1/D1-2 cross-check contradiction)',
+                evidence=_violation('H1','health.timer0_expiries == len(timer0_cycles)',
+                    f'{exp} vs {len(cycles)}',subject='timer0@core0',
+                    window_end=_window_end_evidence(health))))
+        else:
+            checks.append(_check('h1_d1_2_cross_check',
+                detail=f'health.timer0_expiries == len(timer0_cycles) == {exp} (H1/D1-2 '
+                       'cross-check)'))
+    return checks
+
+
+# ── H2 同源重发有界(蓝图 §3 H2:每源交付 ≤⌈N/P_i⌉+1,P 从 per_source.period 实读,
+#     不预锁 40,000/300,000;软件 IRQ124-127 预期 0;FAIL=超上界=风暴/无限重发) ─────
+def _h2_source_bounds(health,window):
+    per_source=health.get('per_source')
+    if not isinstance(per_source,list) or not per_source:
+        return [_check('h2_sources_recorded',
+            missing='d1_window.health.per_source[](每源 {source,core,period,expirations,'
+                    'deliveries,completions,first_deadline,pending_at_window_start};'
+                    f'契约 {SOURCE_HL})')]
+    n=_health_window_steps(health)
+    window_end=_window_end_evidence(health)
+    checks=[]
+    for entry in per_source:
+        if not isinstance(entry,dict) or not isinstance(entry.get('source'),str):
+            checks.append(_check('h2_source_bounded',
+                missing='per_source[].source(源名;条目形状不符)'));continue
+        source=entry['source']
+        name=f'h2_{source}_bounded'
+        deliveries=entry.get('deliveries')
+        if not isinstance(deliveries,int) or deliveries<0:
+            checks.append(_check(name,missing=f'per_source[{source!r}].deliveries'
+                    '(非负整数交付计数)'));continue
+        period=entry.get('period')
+        if source in PERIODIC_SOURCES:
+            if not isinstance(period,int) or period<=0:
+                checks.append(_check(name,missing=f'per_source[{source!r}].period'
+                        '(park 态实读周期;蓝图 §3「不预锁 40,000/300,000」,缺=无法算上界)'))
+                continue
+            if not isinstance(n,int) or n<0:
+                checks.append(_check(name,missing='health.window.steps(或 model_step_end−'
+                        'model_step_start;上界公式 ⌈N/P⌉+1 的窗口长度)'));continue
+            bound=-(-n//period)+1
+            expected=f'deliveries <= ceil({n}/{period})+1 = {bound}'
+        else:
+            # 非周期源(软件 IRQ124-127 等):D1 世界事件源封闭(S18 预置+Timer0 回调+
+            # 时间片唤醒,蓝图 §2.4),窗口内预期 0 交付(蓝图 §3 H2 原文)
+            bound=0
+            expected='deliveries == 0 (no periodic source in the closed D1 world)'
+        # 到期/交付/完成三分计数一致性(任务书 §1.0b 第 8 条:风暴证据含三分计数;
+        # 交付不得多于到期+窗口起点 pending 相位容差,完成不得多于交付)
+        expirations=entry.get('expirations');completions=entry.get('completions')
+        phase=1 if entry.get('pending_at_window_start') is True else 0
+        inconsistent=((isinstance(expirations,int) and deliveries>expirations+phase)
+                      or (isinstance(completions,int) and completions>deliveries))
+        reported=entry.get('upper_bound')
+        reported_bad=isinstance(reported,int) and reported!=bound
+        if deliveries>bound or inconsistent or reported_bad:
+            checks.append(_check(name,fail=True,
+                detail=f'{source}@core{entry.get("core")}: expirations={expirations} '
+                       f'deliveries={deliveries} completions={completions} '
+                       +(f'exceeds bound {bound} (interrupt-storm shape)'
+                         if deliveries>bound else '')
+                       +(f'; counts inconsistent' if inconsistent else '')
+                       +(f'; reported upper_bound={reported} != derived {bound}'
+                         if reported_bad else ''),
+                evidence=_violation('H2',expected,
+                    f'expirations={expirations} deliveries={deliveries} '
+                    f'completions={completions}',
+                    subject=f'{source}@core{entry.get("core")}',
+                    extra={'counts':{'expirations':expirations,'deliveries':deliveries,
+                                     'completions':completions},
+                           'derived_upper_bound':bound,
+                           'first_deadline':entry.get('first_deadline'),
+                           'pending_at_window_start':entry.get('pending_at_window_start')},
+                    window_end=window_end)))
+            continue
+        # core tick 周期上界承载 CNT 冻结假设(§1.4 第 1 条末项/第 4 条:PRD 读回=
+        # 恒等证据链不承载,快照承载;assumption 缺=断言形状不完整 → pending 非 pass)。
+        # 键位:任务书 §1.4 写 d1_window.core_tick_state.assumption(顶层),蓝图 §4.3
+        # 示例树放 park.core_tick_state 下——PR-2 落地前两处兼容(顶层优先)。
+        if source=='core_tick':
+            state=window.get('core_tick_state') if window else None
+            if not isinstance(state,dict):
+                park=window.get('park') if window else None
+                state=park.get('core_tick_state') if isinstance(park,dict) else None
+            assumption=state.get('assumption') if isinstance(state,dict) else None
+            if not isinstance(assumption,str) or 'assumed-not-measured' not in assumption:
+                checks.append(_check(name,missing='d1_window.core_tick_state.assumption'
+                        '(core tick 周期上界的 CNT 冻结假设标注;§1.4:缺失=断言形状'
+                        '不完整,pending 非 pass)'))
+                continue
+            checks.append(_check(name,
+                detail=f'{source}@core{entry.get("core")}: {deliveries} deliveries <= '
+                       f'bound {bound} (period {period} read back; assumption: {assumption})'))
+        else:
+            checks.append(_check(name,
+                detail=f'{source}@core{entry.get("core")}: {deliveries} deliveries '
+                       +(f'<= bound {bound} (period {period} from per_source)'
+                         if source in PERIODIC_SOURCES
+                         else '== 0 expected in the closed D1 world')))
+    return checks
+
+
+# ── H3 无同事件无限重发(蓝图 §3 H3:同 (id,子码) 入队 ≤上界(S18 预置=2,注入=+1);
+#     消费=入队(无重复消费);FAIL=消费>入队(重复分发)或入队无界增长) ─────────────
+def _h3_reposts(health):
+    reposts=health.get('event_reposts')
+    if not isinstance(reposts,list):
+        return [_check('h3_repost_bounded',
+            missing='d1_window.health.event_reposts[](每 (event_id,subcode) 一条;'
+                    f'契约 {SOURCE_HL})')]
+    window_end=_window_end_evidence(health)
+    checks=[]
+    if not reposts:
+        checks.append(_check('h3_repost_bounded',
+            detail='no (event_id,subcode) repost recorded in-window (vacuous pass)'))
+    for entry in reposts:
+        if not isinstance(entry,dict):
+            checks.append(_check('h3_repost_bounded',
+                missing='event_reposts[] 条目形状(需要 event_id/subcode/posts/consumed)'))
+            continue
+        key=f"({entry.get('event_id')},{entry.get('subcode')})"
+        name=f"h3_repost_{entry.get('event_id')}_{entry.get('subcode')}"
+        posts,consumed=entry.get('posts'),entry.get('consumed')
+        if not isinstance(posts,int) or not isinstance(consumed,int):
+            checks.append(_check(name,missing=f'event_reposts[{key}].posts/consumed'
+                    '(入队/消费计数)'));continue
+        bound=(HEALTH_POST_BOUND_INJECTED if entry.get('origin')=='injected'
+               else HEALTH_POST_BOUND_NATURAL)
+        first={'model_step':entry.get('first_post_step'),'core':None,
+               'pc':entry.get('producer_pc')}
+        if posts>bound:
+            checks.append(_check(name,fail=True,
+                detail=f'{key}: posts={posts} > bound {bound} (unbounded repost shape; '
+                       f'origin={entry.get("origin")})',
+                evidence=_violation('H3',f'posts <= {bound} (origin {entry.get("origin")})',
+                    f'posts={posts} consumed={consumed}',first_violation=first,
+                    subject=key,extra={'origin':entry.get('origin'),'posts':posts,
+                                       'consumed':consumed},
+                    window_end=window_end)))
+        elif consumed>posts:
+            checks.append(_check(name,fail=True,
+                detail=f'{key}: consumed={consumed} > posts={posts} (duplicate dispatch)',
+                evidence=_violation('H3','consumed == posts (no duplicate consumption)',
+                    f'posts={posts} consumed={consumed}',first_violation=first,
+                    subject=key,extra={'posts':posts,'consumed':consumed},
+                    window_end=window_end)))
+        elif consumed<posts:
+            # 右边界条款(任务书 §1.0b 第 8 条):窗口末刚 post 未消费标「尚未到期」,
+            # 未闭合样本 → pending(需要完整样本的验收项不默认 PASS)
+            note=('post not yet consumed at the window edge (pending_at_window_end set)'
+                  if entry.get('pending_at_window_end') is True
+                  else 'post not consumed and not marked pending_at_window_end')
+            checks.append(_check(name,missing=f'{key}: consumed={consumed} < posts={posts} '
+                    f'({note}; H3 needs complete samples)'))
+        else:
+            checks.append(_check(name,
+                detail=f'{key}: posts={posts} consumed={consumed} <= bound {bound} '
+                       f'(origin={entry.get("origin")}, producer {entry.get("producer_pc")})'))
+    # queue_balance(同窗口口径):总入队/出队与 reposts 汇总互证;出队不得超入队
+    qb=health.get('queue_balance')
+    if isinstance(qb,dict) and isinstance(qb.get('enqueued'),int) \
+            and isinstance(qb.get('dequeued'),int):
+        totals=[e for e in reposts if isinstance(e,dict)]
+        posts_sum=sum(e['posts'] for e in totals if isinstance(e.get('posts'),int))
+        consumed_sum=sum(e['consumed'] for e in totals
+                         if isinstance(e.get('consumed'),int))
+        if qb['dequeued']>qb['enqueued'] or qb['enqueued']!=posts_sum \
+                or qb['dequeued']!=consumed_sum:
+            checks.append(_check('h3_queue_balance_consistent',fail=True,
+                detail=f'queue_balance enqueued={qb["enqueued"]} dequeued={qb["dequeued"]} '
+                       f'vs repost sums posts={posts_sum} consumed={consumed_sum}',
+                evidence=_violation('H3',
+                    'dequeued <= enqueued and both == the repost sums (same window scope)',
+                    f'enqueued={qb["enqueued"]} dequeued={qb["dequeued"]} '
+                    f'posts_sum={posts_sum} consumed_sum={consumed_sum}',
+                    subject='queue_balance',window_end=window_end)))
+        else:
+            checks.append(_check('h3_queue_balance_consistent',
+                detail=f'queue_balance enqueued={qb["enqueued"]} dequeued={qb["dequeued"]} '
+                       'match the repost sums'))
+    elif qb is not None:
+        checks.append(_check('h3_queue_balance_consistent',
+            missing='queue_balance.{enqueued,dequeued}(整数总入队/出队计数)'))
+    return checks
+
+
+# ── H4 必要任务可唤醒(蓝图 §3 H4:窗口内 CPU0 被 Timer0/core tick 唤醒 ≥1 次且
+#     每次唤醒处理后重新 core_idle_wait_entered;FAIL=唤醒后不回等待/零唤醒) ──────
+def _h4_wake_rewait(health):
+    per_core=health.get('per_core')
+    if not isinstance(per_core,dict):
+        return [_check('h4_core0_wake_and_rewait',
+            missing="d1_window.health.per_core{}(每核 wake/rewait/wake_reasons/timeline;"
+                    f"判据面=CPU0;契约 {SOURCE_HL})")]
+    core0=per_core.get('0')
+    if not isinstance(core0,dict):
+        return [_check('h4_core0_wake_and_rewait',
+            missing="per_core['0'](CPU0 判据面:蓝图 §3 H4 只对 CPU0 判定,CPU1 为记录面)")]
+    name='h4_core0_wake_and_rewait'
+    wake,rewait=core0.get('wake_count'),core0.get('rewait_count')
+    if not isinstance(wake,int) or not isinstance(rewait,int):
+        return [_check(name,missing='per_core[\'0\'].{wake_count,rewait_count}'
+                '(唤醒/回等待计数)')]
+    window_end=_window_end_evidence(health)
+    reasons=core0.get('wake_reasons')
+    if wake==0:
+        return [_check(name,fail=True,
+            detail='zero in-window wakes of CPU0: the necessary task was never wakeable',
+            evidence=_violation('H4','wake_count >= 1 (Timer0/core tick must wake CPU0)',
+                'wake_count=0',subject='core0',
+                extra={'rewait_count':rewait,'wake_reasons':reasons},
+                window_end=window_end))]
+    if isinstance(reasons,dict):
+        reason_sum=sum(v for v in reasons.values() if isinstance(v,int))
+        if reason_sum!=wake:
+            return [_check(name,fail=True,
+                detail=f'wake_reasons sum {reason_sum} != wake_count {wake} '
+                       '(counting contradiction)',
+                evidence=_violation('H4','sum(wake_reasons) == wake_count',
+                    f'{reason_sum} vs {wake}',subject='core0',extra={'wake_reasons':reasons},
+                    window_end=window_end))]
+    if rewait>wake:
+        return [_check(name,fail=True,
+            detail=f'rewait_count {rewait} > wake_count {wake} (counting contradiction)',
+            evidence=_violation('H4','rewait_count <= wake_count',
+                f'{rewait} vs {wake}',subject='core0',window_end=window_end))]
+    timeline=core0.get('timeline')
+    last=(timeline[-1].get('kind') if isinstance(timeline,list) and timeline
+          and isinstance(timeline[-1],dict) else None)
+    complete=_health_window(health).get('complete')
+    if last=='entered_idle_wait':
+        # 末次唤醒已闭合(rewait<wake 合法:嵌套唤醒共享一次回等待,任务书 §1.0b
+        # 第 8 条嵌套层级;计数如实记录)
+        return [_check(name,
+            detail=f'CPU0 woken {wake}x, re-waited {rewait}x, final state re-parked '
+                   f'(nested wakes may share one re-wait); reasons {reasons}')]
+    if last in ('woken','running'):
+        open_wake=core0.get('last_open_wake')
+        # 未闭合唤醒区间证据:最后 PC/在途 IRQ/嵌套层级(任务书 §1.0b 第 8 条 H4 专条)
+        if complete is True:
+            idx=len(timeline)-1
+            first,around=_timeline_violation(timeline,idx)
+            return [_check(name,fail=True,
+                detail=f'CPU0 woken {wake}x but only {rewait} re-waits with the window '
+                       f'complete and final state {last!r}: stuck running, not re-parked',
+                evidence=_violation('H4',
+                    'every wake is followed by core_idle_wait_entered before the window ends',
+                    f'wake_count={wake} rewait_count={rewait} final={last!r}',
+                    first_violation=first,subject='core0',around=around,
+                    extra={'open_wake':open_wake},window_end=window_end))]
+        return [_check(name,
+            missing=f'CPU0 woken {wake}x, re-waited {rewait}x, final state {last!r} with '
+                    'the window truncated: the open wake interval is not closed yet '
+                    '(right-edge clause: not yet due, not a pass); open wake '
+                    f'{json.dumps(open_wake) if isinstance(open_wake,dict) else open_wake}')]
+    # timeline 缺/空:计数面兜底(rewait==wake 互证;rewait<wake 无时间线分不清嵌套与未闭合)
+    if rewait==wake:
+        return [_check(name,
+            detail=f'CPU0 woken {wake}x and re-waited {rewait}x (counts agree; no '
+                   'timeline to anchor the final state)')]
+    return [_check(name,
+        missing=f'CPU0 woken {wake}x but re-waited {rewait}x with no timeline: cannot '
+                'distinguish nested wakes sharing one re-wait from an unclosed interval')]
+
+
+# ── H5 无任务饿死(蓝图 §3 H5+任务书 §1.0b 第 7 条两级受检:固定优先级调度器无
+#     公平性保证,「所有 ready 必获调度」过强;断言面任务必须调度=FAIL 级,其余
+#     未调度=如实记录=观察级;等待时长字段保留) ──────────────────────────────────
+def _h5_ready_tasks(health):
+    name='h5_no_starvation'
+    if not isinstance(health.get('ready_tasks'),list):
+        return [_check(name,
+            missing='d1_window.health.ready_tasks[](停点 TCB 扫描 state==ready 的任务集;'
+                    '[]=扫描过且空=vacuous pass;键缺=未扫描)')]
+    tasks=health['ready_tasks']
+    window_end=_window_end_evidence(health)
+    if not tasks:
+        return [_check(name,
+            detail='ready set empty at the stop scan (vacuous pass, recorded; '
+                   'blueprint §3 H5)')]
+    checks=[]
+    for task in tasks:
+        if not isinstance(task,dict):
+            checks.append(_check(name,missing='ready_tasks[] 条目形状'
+                    '({tcb,entry,assertion_face,schedulings,…})'));continue
+        tcb=task.get('tcb');entry=task.get('entry')
+        face=task.get('assertion_face')
+        if face is None and entry is not None:
+            face=_pc_eq(entry,APP_CORE_ENTRY)
+        sched=task.get('schedulings')
+        wait=(f"ready_since={task.get('ready_since_step')} "
+              f"longest_wait={task.get('longest_wait')} "
+              f"first_scheduled={task.get('first_scheduled_step')}")
+        if face is None:
+            checks.append(_check(name,missing=f'ready_tasks[tcb={tcb}].assertion_face/'
+                    f'entry(两级受检分级依据:断言面=app_core 消费链(常量 '
+                    f'{APP_CORE_ENTRY}),缺=无法分级)'));continue
+        if not isinstance(sched,int):
+            checks.append(_check(name,missing=f'ready_tasks[tcb={tcb}].schedulings'
+                    '(调度次数;scheduled 布尔由此推导,不单独存——任务书 §1.0b 第 9 条)'))
+            continue
+        if face and sched==0:
+            checks.append(_check(name,fail=True,
+                detail=f'assertion-face task tcb={tcb} entry={entry} ready since '
+                       f'{task.get("ready_since_step")} but never scheduled in-window '
+                       f'(starved; {wait})',
+                evidence=_violation('H5',
+                    'assertion-face (app_core consumption-chain) task scheduled >=1 '
+                    'in-window',
+                    f'tcb={tcb} entry={entry} schedulings=0',
+                    first_violation={'model_step':task.get('ready_since_step'),
+                                     'core':None,'pc':entry},
+                    subject=f'tcb {tcb} entry {entry}',extra={'wait_fields':wait},
+                    window_end=window_end)))
+        elif face:
+            checks.append(_check(name,
+                detail=f'assertion-face task tcb={tcb} scheduled {sched}x in-window'))
+        elif sched==0:
+            checks.append(_check(name,
+                detail=f'non-assertion-face task tcb={tcb} entry={entry} unscheduled '
+                       '(observation-level, recorded not failed: fixed-priority scheduler '
+                       f'carries no fairness guarantee; {wait})'))
+        else:
+            checks.append(_check(name,
+                detail=f'non-assertion-face task tcb={tcb} scheduled {sched}x'))
+    return checks
+
+
+# ── H6 队列积压有界+消费指针前进(蓝图 §3 H6+任务书 §1.0b 第 6 条勘误:环形队列
+#     指针正常按容量取模回绕,cursor_monotonic 检查的是逻辑入队/出队序号单调+
+#     物理指针=序号 mod 容量的一致式;FAIL=积压超限/序号回退/取模不一致) ─────────
+def _h6_queue(health):
+    queue=health.get('queue')
+    if not isinstance(queue,dict):
+        return [_check('h6_backlog_bounded',
+                missing=f'd1_window.health.queue{{count_final,qlimit,capacity,'
+                        f'cursor_trace}}(契约 {SOURCE_HL})'),
+               _check('h6_cursor_seq_monotonic',missing='d1_window.health.queue'
+                       '(同上;键缺两子项皆 pending)')]
+    checks=[]
+    count=queue.get('count_final')
+    if not isinstance(count,int):
+        checks.append(_check('h6_backlog_bounded',
+            missing='queue.count_final(窗口末队列计数 h[TCB+6])'))
+    elif count==0:
+        checks.append(_check('h6_backlog_bounded',
+            detail='queue fully consumed at the window end (count_final == 0)'))
+    elif isinstance(queue.get('qlimit'),int):
+        checks.append(_check('h6_backlog_bounded',fail=count>queue['qlimit'],
+            detail=f'count_final={count} <= qlimit={queue["qlimit"]} (bounded backlog)'
+                   if count<=queue['qlimit'] else
+                   f'count_final={count} > qlimit={queue["qlimit"]} (unbounded growth)',
+            evidence=None if count<=queue['qlimit'] else _violation(
+                'H6',f'count_final == 0 or <= qlimit ({queue["qlimit"]})',
+                f'count_final={count}',subject='queue',
+                window_end=_window_end_evidence(health))))
+    else:
+        checks.append(_check('h6_backlog_bounded',
+            missing=f'queue.qlimit(队列上限;count_final={count}>0 时必须有界判据才可判)'))
+    trace=queue.get('cursor_trace')
+    if not isinstance(trace,list):
+        checks.append(_check('h6_cursor_seq_monotonic',
+            missing='queue.cursor_trace(游标轨迹;勘误口径=逻辑序号单调+取模一致式)'))
+        return checks
+    if not trace:
+        if isinstance(count,int) and count>0:
+            checks.append(_check('h6_cursor_seq_monotonic',fail=True,
+                detail=f'empty cursor trace but count_final={count}>0: entries must have '
+                       'moved the cursor (contradiction)',
+                evidence=_violation('H6','cursor trace consistent with count_final',
+                    f'empty trace, count_final={count}',subject='queue',
+                    window_end=_window_end_evidence(health))))
+        else:
+            checks.append(_check('h6_cursor_seq_monotonic',
+                detail='no cursor movement recorded in-window (vacuous; queue drained '
+                       'before the window)'))
+        return checks
+    capacity=queue.get('capacity')
+    window_end=_window_end_evidence(health)
+    bad_shape=[i for i,t in enumerate(trace)
+               if not isinstance(t,dict) or t.get('op') not in ('enqueue','dequeue')
+               or not isinstance(t.get('seq'),int)]
+    seq_back=[]
+    for op in ('enqueue','dequeue'):
+        seqs=[t['seq'] for t in trace if isinstance(t,dict) and t.get('op')==op
+              and isinstance(t.get('seq'),int)]
+        seq_back+=[(op,a,b) for a,b in zip(seqs,seqs[1:]) if b<=a]
+    modulo_bad=[t for t in trace if isinstance(capacity,int) and capacity>0
+                and isinstance(t,dict) and isinstance(t.get('physical'),int)
+                and isinstance(t.get('seq'),int)
+                and t['physical']!=t['seq']%capacity]
+    reported=queue.get('cursor_monotonic')
+    derived_ok=not bad_shape and not seq_back and not modulo_bad
+    reported_bad=isinstance(reported,bool) and reported!=derived_ok
+    if bad_shape or seq_back or modulo_bad or reported_bad:
+        index=bad_shape[0] if bad_shape else 0
+        first={'model_step':trace[index].get('step') if isinstance(trace[index],dict)
+               else None,'core':None,'pc':None}
+        around=trace[max(0,index-1):index+2]
+        checks.append(_check('h6_cursor_seq_monotonic',fail=True,
+            detail=f'cursor violations: shape {len(bad_shape)}, seq regressions {seq_back}'
+                   f', modulo mismatches {len(modulo_bad)}'
+                   +(f', reported cursor_monotonic={reported} != derived {derived_ok}'
+                     if reported_bad else ''),
+            evidence=_violation('H6',
+                'logical enqueue/dequeue sequence numbers strictly increase and '
+                'physical == seq mod capacity'
+                +(f' (capacity={capacity})' if isinstance(capacity,int) else ''),
+                f'{len(seq_back)} seq regression(s), {len(modulo_bad)} modulo mismatch(es)',
+                first_violation=first,subject='queue',around=around,
+                extra={'seq_regressions':seq_back[:4],
+                       'modulo_mismatches':modulo_bad[:4],'capacity':capacity},
+                window_end=window_end)))
+    else:
+        checks.append(_check('h6_cursor_seq_monotonic',
+            detail='logical cursor sequence numbers strictly increase; physical == seq mod '
+                   f'capacity ({capacity}) on every recorded move (physical wraparound is '
+                   'legal; blueprint §3 H6 as corrected by taskbook §1.0b item 6)'
+                   +(f'; reported cursor_monotonic={reported} agrees' if isinstance(
+                     reported,bool) else '')))
+    return checks
+
+
+# ── H7 状态变迁可追溯(蓝图 §3 H7:每核状态时间线完整记录于报告,机器可复查非仅
+#     终态快照;FAIL=时间线断链/矛盾——步号倒流/非法 kind/非法相邻转移) ───────────
+def _h7_timelines(health):
+    per_core=health.get('per_core')
+    if not isinstance(per_core,dict):
+        return [_check('h7_state_timeline_traceable',
+            missing='d1_window.health.per_core[].timeline(每核状态转换流)')]
+    checks=[]
+    for core in sorted(per_core,key=str):
+        entry=per_core[core]
+        name=f'h7_core{core}_timeline'
+        if not isinstance(entry,dict) or not isinstance(entry.get('timeline'),list):
+            checks.append(_check(name,
+                missing=f"per_core['{core}'].timeline(entered_idle_wait/woken/running "
+                        '状态转换流;键缺=断链)'));continue
+        timeline=entry['timeline']
+        if not timeline:
+            wake=entry.get('wake_count')
+            if str(core)=='1':
+                checks.append(_check(name,
+                    detail='core1 recorded no state transition in-window (silent core, '
+                           'vacuous; its wake data stays in the H4 record face)'))
+            elif isinstance(wake,int) and wake>0:
+                checks.append(_check(name,fail=True,
+                    detail=f'core0 wake_count={wake} but an empty timeline: transitions '
+                           'exist but were not recorded (broken trace)',
+                    evidence=_violation('H7','per-core timeline records every transition',
+                        f'wake_count={wake}, empty timeline',subject=f'core{core}',
+                        window_end=_window_end_evidence(health))))
+            else:
+                checks.append(_check(name,
+                    missing='core0 timeline empty (the zero-wake failure is H4\'s face; '
+                            'the trace itself is missing here)'))
+            continue
+        window_end=_window_end_evidence(health)
+        violations=[]
+        for i,item in enumerate(timeline):
+            if not isinstance(item,dict) or item.get('kind') not in HEALTH_TIMELINE_KINDS:
+                violations.append((i,'kind'));break
+            if i and (not isinstance(item.get('model_step'),int)
+                      or not isinstance(timeline[i-1].get('model_step'),int)
+                      or item['model_step']<=timeline[i-1]['model_step']):
+                violations.append((i,'step'));break
+            if i and item['kind'] not in \
+                    HEALTH_TIMELINE_NEXT.get(timeline[i-1].get('kind'),()):
+                violations.append((i,'transition'));break
+        if violations:
+            index,why=violations[0]
+            first,around=_timeline_violation(timeline,index)
+            checks.append(_check(name,fail=True,
+                detail=f'timeline violation at entry {index} ({why}): broken/contradictory '
+                       'transition stream',
+                evidence=_violation('H7',
+                    'steps strictly increase; kinds in '
+                    f'{HEALTH_TIMELINE_KINDS}; transitions follow {HEALTH_TIMELINE_NEXT}',
+                f'entry {index} violates {why}',first_violation=first,
+                subject=f'core{core}',around=around,extra={'violation':why},
+                window_end=window_end)))
+        else:
+            checks.append(_check(name,
+                detail=f'{len(timeline)} transitions, steps '
+                       f'{timeline[0].get("model_step")}..{timeline[-1].get("model_step")}, '
+                       'machine-recheckable stream (not a terminal snapshot)'))
+    return checks
+
+
+def d1_5_health(scenario):
+    result=_base('D1-5','窗口健康度 H1-H7:定时事件真实发生/同源重发有界/无同事件无限'
+                 '重发/必要任务可唤醒/无断言面饿死/队列积压有界/状态变迁可追溯'
+                 '(否定式总闸:D1-1..4 全过而 H 任一 FAIL 则 D1 仍 FAIL)',
+                 f'{SOURCE_D1} §1 D1-5;{SOURCE_BG} §3;{SOURCE_TB} §1.0b;'
+                 f'{SOURCE_HL}(键契约)')
+    window=_d1_window(scenario)
+    why='d1_window report present (D1 acceptance-window scenario shape)'
+    if not isinstance(window,dict):
+        opened,reason=park_window(scenario)
+        why=reason+'; H1-H7 stay pending'
+    else:
+        opened=True
+    checks=[_check('park_window',status='pass' if opened else 'pending',detail=why)]
+    if not opened:return _finalize(result,checks)
+    health=window.get('health') if window else None
+    if not isinstance(health,dict):
+        checks.append(_check('health_report_keys',
+            missing='d1_window.health.*(H1-H7 数据面:timer0_expiries/per_source/'
+                    'event_reposts/queue_balance/per_core/ready_tasks/queue/window;'
+                    f'冻结契约 {SOURCE_HL};生产者=probe 侧 PR-2)'))
+        return _finalize(result,checks)
+    checks+=_h1_timer0_events(health,window)
+    checks+=_h2_source_bounds(health,window)
+    checks+=_h3_reposts(health)
+    checks+=_h4_wake_rewait(health)
+    checks+=_h5_ready_tasks(health)
+    checks+=_h6_queue(health)
+    checks+=_h7_timelines(health)
+    return _finalize(result,checks)
+
+
 ASSERTIONS=(('D1-1',d1_1_park),('D1-2',d1_2_timer0_cycles),('D1-3',d1_3_core_tick),
-            ('D1-4',d1_4_message_chain),('BI-A1',bi_a1_first_timer0_wake),
+            ('D1-4',d1_4_message_chain),('D1-5',d1_5_health),
+            ('BI-A1',bi_a1_first_timer0_wake),
             ('BI-A2',bi_a2_period_conservation),('BI-A3',bi_a3_no_event_honest_stop),
             ('BI-A4',bi_a4_timer0_only_horizon),('BI-A5',bi_a5_c2_exit_two_levels))
 
@@ -1162,7 +1858,15 @@ ASSERTIONS=(('D1-1',d1_1_park),('D1-2',d1_2_timer0_cycles),('D1-3',d1_3_core_tic
 def run_all(scenario):
     results=[fn(scenario) for _,fn in ASSERTIONS]
     summary={state:sum(1 for r in results if r['status']==state) for state in ('pass','pending','fail')}
-    return {'scenario':scenario.get('name','?'),'assertions':results,'summary':summary}
+    # 否定式总闸(蓝图 §3/任务书 §1.0b 第 4 条):D1-1..4 全 PASS 而 H1-H7 任一 FAIL
+    # → D1 仍 FAIL——实现为 d1_5 的 fail 态在此不抵消;BI-A* 不进 D1 gate(BI 首验
+    # 独立于 D1 五断言)。
+    d1={r['id']:r['status'] for r in results if r['id'].startswith('D1-')}
+    gate=('fail' if 'fail' in d1.values()
+          else 'pass' if d1 and all(v=='pass' for v in d1.values())
+          else 'pending')
+    return {'scenario':scenario.get('name','?'),'assertions':results,'summary':summary,
+            'd1_gate':gate}
 
 
 def main():
@@ -1191,6 +1895,7 @@ def main():
     print(f"scenario {result['scenario']}: "
           f"{result['summary']['pass']} pass / {result['summary']['pending']} pending / "
           f"{result['summary']['fail']} fail  (pending != pass)")
+    print(f"D1 gate (D1-1..D1-5, negation gate): {result['d1_gate']}")
     for assertion in result['assertions']:
         print(f"\n[{assertion['status'].upper():7s}] {assertion['id']} {assertion['title']}")
         print(f"          source: {assertion['source']}")
