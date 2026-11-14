@@ -1,0 +1,38 @@
+{
+  "case_id": "R2-HEA-03",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）（构建输入）；产物=H3S_0.1.1.8_tones_minus0dB_HEARING_AID_L1_CLOSE_OFFLINE_UNTESTED.ufw，sha256 5a5f2ef7b89194c6f5db9c5f1d8b3c6eab1101fcc4997e1d351753a36ba6c96f（--attenuation-db 0 --hearing-aid-l1-close，隐含 --hearing-aid-l1-patch）；close 载荷源 tools/hearing-aid/mic_effect_close.S（20 insns/64B，0 relocs）",
+  "initial_state": "离线字节级验证（无执行）：组合段=open 134B+close 64B+TRANS 桩×2（64B）+leave 桩×4（24/24/30/24B）=364B 代码+4B 槽 @0x060E3074..0x060E31E4，两遍定槽；open/hook 源一字未改（构建时断言组合段前 198B==open/close 独立汇编拼接——载荷源未改的机器证明）；legacy（patch 候选 6c7247a5…）复现先过",
+  "inputs_schedule": "构建输入=official UFW+mic_effect_close.S+mic_effect_close_hook.S 四 leave 桩（leave_on1/off1/on2/off2）；无运行输入（候选 UNTESTED 不刷机）",
+  "observation_boundary": "观察面=镜像字节差异（vs 官方逐字节恰 476B/vs patch 候选恰 293B，逐字节分类账无一例外字节）+6 窗口替换字节+fence 0x060c3338→0x060E31E4+51,701 落点复扫；工具=构建器 verify_l1_image 全镜像精确差异断言+独立校验器 verify_ufw_integrity.py（401B 条目 JLFS CRC+双备份）",
+  "assertions": [
+    "hearing-aid-l1-payload §10.1 close 链 API 钉死：jlstream_stop 0x060741ee（7 个活调用点）/jlstream_release 0x06074204/jlstream_event_notify 0x060057e6=get_pipeline_uuid 同入口（tbh switch 13 项，事件 11=CLOSE_PLAYER 分支存在且 3 个固件调用点；\"mic_effect\" 命中→clock_free 0x0600572C 与激活分支 clock_alloc 配对）——关闭层未被裁（与激活层命运不同）",
+    "§10.3 载荷离线验证 6 断言全过：20 指令逐条往返零 diff、3 API 锚点各恰一次、调用顺序==固件三段式（stop→release→notify）、槽恰装载两次清零恰一次、stop 前 r1=0（fade）、守卫分支在 stop 之前、双基址不敏感",
+    "§11.2 6 窗口接驳（A/B+ON-1 0x0600db9a/OFF-1 0x0600dc74/ON-2 0x0600dbc4/OFF-2 0x0600dc9a）语义闭环：进通透=先关 ANC 通透再 open、离开通透=先幂等 close 再走原 apply；51,701 落点复扫 6 窗内部零落点、起点落点与 §1.4/§10.5 全等（A/B=0x0600db92/dbbc、OFF-1/2=0x0600db8e/dbb8、ON 纯顺延）；0x0600dc98 pop=4 早退分支活落点在 OFF-2 窗外",
+    "§11.3 验证清单全过：69 指令逐条零 diff、组合段前 198B==独立汇编拼接、全部桩形状与固件目标（ctx getter 0x0600c2aa/槽位 112/120/返回=窗口+8/两尾声）从最终镜像反解码核对、476B vs 官方+293B vs patch 逐字节分类账、独立校验器全过、legacy sha 复现+check_local --units exit 0（含新单测 test_hearing_aid_close_image.py 7 tests）"
+  ],
+  "timeout_budget": "离线构建/校验+载荷单测场景，无模型步预算（复跑 build_quiet_candidate.py --attenuation-db 0 --hearing-aid-l1-close --output-dir <空目录> + test_hearing_aid_close_payload.py）",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机：交付=「字节与 §1-10 证据一致+四层 CRC/JLFS 结构自洽+逐字节差异精确可控」，不是任何形式的运行验证（§11.5.1）",
+    "close 全链零执行证据：路 O 场景是探针（open 在 start 入场 0x20004 派发 0x6074a96 停机）非可续跑机器，close 的 stop 走同一 cmd-post→流服务线程路径被同一单任务桩边界拦住（§10.3）；单独跑 close 只能覆盖槽==0 早退平凡路径（ROI 近零）",
+    "stop/release 同步等的上下文风险：leave 桩在按键 dispatch 上下文同步调 close，与流服务线程的优先级/互斥死锁风险只有推断（固件 close 调用点同为应用层同步风格）（§10.6.2）",
+    "release 的 b[stream+17]==3 门字段/极性未钉死；载荷与固件惯用法同形（stop 先行使流离开运行态）（§10.6.3）",
+    "数据槽仍在 flash（0x060E31E0）：close 找 stream 的唯一句柄是槽值，flash 写不进⇒close 永远早退（RAM 化=R2-HEA-04 是 close 真机可用的前提）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "close 全链执行验证（另立 R2-HEA-06 BLOCKED）",
+    "真机刷入与双向开关行为（刷机授权缺失）",
+    "flash 数据槽写回（R2-HEA-04 slotram 候选解决）",
+    "event_notify(11) 整链副作用运行验证（strcmp 链×5/0x060008CA 日志助手）",
+    "noisgate 配对与 set_scene 16 枚举（§6 既有边界继承）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "候选 UNTESTED 不刷机：交付=「字节与 §1-10 证据一致+四层 CRC/JLFS 结构自洽+逐字节差异精确可控」，不是任何形式的运行验证（§11.5.1）",
+    "close 全链零执行证据：路 O 场景是探针（open 在 start 入场 0x20004 派发 0x6074a96 停机）非可续跑机器，close 的 stop 走同一 cmd-post→流服务线程路径被同一单任务桩边界拦住（§10.3）；单独跑 close 只能覆盖槽==0 早退平凡路径（ROI 近零）",
+    "stop/release 同步等的上下文风险：leave 桩在按键 dispatch 上下文同步调 close，与流服务线程的优先级/互斥死锁风险只有推断（固件 close 调用点同为应用层同步风格）（§10.6.2）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

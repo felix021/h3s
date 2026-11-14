@@ -1,0 +1,33 @@
+{
+  "case_id": "R2-HEA-05",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；静态反汇编源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100）；零字节差异（--hearing-aid-l1-close 候选 sha 5a5f2ef7… 不变——「实施」=证据钉死+工具化复核，不是新开关/新窗口）",
+  "initial_state": "纯静态全图反汇编（工具 tools/analyze_hearing_aid_app_path.py 全锚点断言，已接 check_local 默认层）：从 0x17 setter 0x06025ca4 起 post 0x06064978（名 0x060A1D11）→回调 0x06025d6a（0x06012be2 重存+写配置 key16）→0x0600dcee(mode,scene,strength,flag=1)→call 0x0600db3c 全链；修正路 Y 快评「另一族 dispatch 不经 0x0600db3c」的误读（快评读到查询-包装族就停了，漏掉汇入键循环 dispatch 的两个 call）",
+  "inputs_schedule": "无运行输入；静态覆盖=0x0600dcee 三分支（wire 3/2/1）+scene tbb 5 案（表 03 1c 26 30 46 @0x0600dd30）+17 个 db3c 静态调用点逐一钉 flag+27,695 唯一分支目标落点复扫",
+  "observation_boundary": "观察面=反汇编指令流锚点（工具逐锚点断言「字节与锚点一致」）+scene 强度表 0x060A21AC+[QCY+468] float 参数槽（scene 4 立即数 -99.0f 证明）+6 窗口落点复核；非执行观察",
+  "assertions": [
+    "hearing-aid-l1-payload §11.4：App 0x17 mode apply 全部经 0x0600db3c（键循环同一函数）——wire 3(TRANS)→db3c(3,flag) 走窗口 A/B、wire 2(OFF)→db3c(1,flag) 走 OFF-1/OFF-2、wire 1(ON) scene 1-4 且当前非 ON→db3c(2,flag) 走 ON-1/ON-2——既有 6 窗口候选已拦截 App 直设的进/离通透，App 通透与按键语义在候选内不分叉，无需新窗口/桩/开关",
+    "§11.4 flag 语义：db3c r1==0→0x0600daf6 只做 b[S+28] 簿记不经窗口族；全 app 17 个 db3c 静态调用点逐一钉 flag——键循环邻域三入口 0x06018c8e/ca4/caa=db3c(2/1/3,1) 与 App 链（flag 恒 1）全部走窗口；flag=0 的 8 个点位是配置恢复/事件处理族，不是 App 直设路径，列为后续静态路候选",
+    "§11.4 wire→内部模式映射（帧内 data[0]，QCY 线协议 1=ON/2=OFF/3=TRANS）：wire 1→db3c r0=2、wire 2→r0=1、wire 3→r0=3（与 AGENTS 不变量 1 互证）；scene 5→post 0x06064978 不调 db3c、不碰引擎/模式（无通透进出）；同模式重入被 0x0600db66 b[r2+5]==r5 早退+App 查态早退兜在窗口之前",
+    "§11.4 窗口落点复核：27,695 唯一目标复扫对既有 6 窗口断言与 §1.4/§10.5/§11.2 全等（内部零落点、起点落点 A/B=0x0600db92/dbbc、OFF-1/2=0x0600db8e/dbb8、ON 纯顺延）"
+  ],
+  "timeout_budget": "静态工具断言场景，无模型步预算（复跑 python3 tools/analyze_hearing_aid_app_path.py；check_local 默认层，报告 analysis/local-checks/hearing-aid-app-path.json）",
+  "model_assumptions": [
+    "本条全部为静态反汇编（derived-not-measured）：工具断言的是「字节与锚点一致」，不是运行验证（§11.4 诚实边界①）",
+    "寄存器间接 call/goto 无静态目标：17+5 调用点集合只含直接调用（与路 T/Y 同一残留限制）（§11.4 诚实边界②）",
+    "flag=0 sync 族的触发上下文、0x06064978 post 族内部语义、scene-5 的下游处理未钉死（§11.4 诚实边界③）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "App 直设路径的运行验证（setter→post→回调→dcee→db3c 整链零执行证据）",
+    "flag=0 sync 族的触发上下文（不经窗口，另一族既有边界）",
+    "真机 App 通透/按键语义一致性对照（真机 BLE+刷机双授权缺失）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "本条全部为静态反汇编（derived-not-measured）：工具断言的是「字节与锚点一致」，不是运行验证（§11.4 诚实边界①）",
+    "寄存器间接 call/goto 无静态目标：17+5 调用点集合只含直接调用（与路 T/Y 同一残留限制）（§11.4 诚实边界②）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

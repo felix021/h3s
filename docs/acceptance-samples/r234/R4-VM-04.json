@@ -1,0 +1,33 @@
+{
+  "case_id": "R4-VM-04",
+  "firmware_identity": "App 侧纯 JVM（无固件执行面）；帧契约=docs/r4-command-hook.md §1.2/§2 与固件载荷的设计约定（写 FF/0x30 len9 读 FF/0x30 len1、回执 30 01 status/30 08 v0..v7）；固件生效前提=--r4-keyhook 候选（8e9a47d0…，UNTESTED）",
+  "initial_state": "KeyStoreFrame.java（照 KeyRemapFrame 模式：buildWriteCommand(sn,byte[8])/buildReadCommand(sn)+严格反解析 parseWriteCommand/parseReadCommand/parseWriteAck/parseReadPayload）+EqWritePolicy 白名单加 cmdid 0x30 两形状（len==9&&data[0]==30/len==1&&data[0]==30；值 8 字节不透明只钉形状；最小 body 门槛 n≥5→n≥4）+H3SBridge.setHearingCfg(valueHex16)/getHearingCfg()（armed 门控+SN 自管理+响应经 ResultSink 事件按 SN 匹配回推）+LoopbackTransport 设备桩（keyStoreValue 可设+buildDeviceResponse 按固件载荷设计回执应答）",
+  "inputs_schedule": "单测输入（KeyStoreFrameTest）：组帧/反解析往返、文档字节对照、边界拒绝、回执解析、EqWritePolicy 放行/拒绝（含 0x17 回归）、Loopback 端到端（armed 写→设备桩逐字节收帧→30 01 00 回执 SN 匹配；读→30 08 桩值解出 8 字节；未武装/非 hex/长度错拒绝）",
+  "observation_boundary": "观察面=Loopback 设备桩收帧字节×KeyStoreFrame 反解析结果×EqWritePolicy 放行面×bridge JSON 返回；无 BLE/固件观察",
+  "assertions": [
+    "docs/r4-command-hook.md §4：KeyStoreFrame 组帧/反解析严格往返+文档字节对照+边界拒绝（未知形状/长度错）",
+    "§4：EqWritePolicy 0x30 两形状放行+0x17 回归不破（armed 门控不变，不开任意字节写——值 8 字节不透明只钉形状）",
+    "§4：Loopback 端到端读写闭环——armed 写→桩逐字节收帧→30 01 00 回执 SN 匹配；读→30 08 桩值解出 8 字节；未武装/非 hex/长度错全拒绝",
+    "§4：H3SBridge.setHearingCfg/getHearingCfg 接入 seq+事件回推约定（payloadHex 由 KeyStoreFrame 解析）——与 R3-APP-04 壳层同一异步模型"
+  ],
+  "timeout_budget": "JVM 单测毫秒级；复跑 bash tools/android-query/test.sh（KeyStoreFrameTest 含 Loopback 端到端；本路 2026-11-14 复跑 9 套全过）",
+  "model_assumptions": [
+    "Loopback 设备桩按固件载荷的设计回执应答——不是回显、也不是实测设备帧（写路径回执形状路 P 已标 [未钉]，真机联调以实机为准）",
+    "App 侧生效前提=--r4-keyhook 候选真机刷入并验证（本仓库不做；官方固件 0x30 写路径 no-op）",
+    "值 8 字节不透明——只钉形状不开任意写"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "真机端到端（授权缺失：刷机+真机 BLE 联调，另立 R3-APP-05/R4-VM-05）",
+    "真机 0x30 回执形状对照（桩形状替换源）",
+    "key 30 值的固件消费面（R4 下游功能待接）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "Loopback 设备桩按固件载荷的设计回执应答——不是回显、也不是实测设备帧（写路径回执形状路 P 已标 [未钉]，真机联调以实机为准）",
+    "App 侧生效前提=--r4-keyhook 候选真机刷入并验证（本仓库不做；官方固件 0x30 写路径 no-op）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

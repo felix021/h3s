@@ -1,0 +1,37 @@
+{
+  "case_id": "R4-VM-02",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）（构建输入）；产物=--r4-keyhook 离线候选（隐含 --hearing-aid-l1-slotram 全链，与 EQ 修复候选互斥——同一追加点），sha256 8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d；载荷源 tools/r4cmd/keystore_hook.S（27 insns/78B，0 relocs）",
+  "initial_state": "离线字节级验证（无执行）：组合段 442B=slotram 段 364B（逐字节不变，构建时断言）+keyhook 78B；r4_keystore_hook 入口 0x060E31E0（=slotram 段末）；追加文件 mic_effect.bin 475B @flash [0xE5073,0xE524E)，boot-info app_size 0xE524E；fence 上限 0x060E31E0→0x060E322E；前置=docs/vm-key-roundtrip.md（路 AB key 30 读写往返全链离线实证）",
+  "inputs_schedule": "构建输入=official UFW+keystore_hook.S（单独可汇编）；无运行输入（候选 UNTESTED 不刷机）；载荷单测输入=27 条指令流×R4_INSN_IDS 表逐条 pin",
+  "observation_boundary": "观察面=载荷指令形状（R4_INSN_IDS 逐条 pin+两 API 锚点各恰一次+call r6 前三条指令必是对应装载）+镜像字节差异（vs 官方 554B/vs slotram 候选恰 111B 逐字节分类账）+注册表窗口 0x060a9c7c 00000000→e0310e06 最终镜像明文反解+cmdid 字节 0x30 构建时断言",
+  "assertions": [
+    "docs/r4-command-hook.md §2：setter ABI (resp_buf,128,data,len)→r0=n——data_len==9&&data[0]==30 走 set_config(30,data+1,8)（0x06001f12）、data_len==1&&data[0]==30 走 get_config(30,resp+2,8)（0x06000f88）、其它形状静默 n=0（分发器 0x0600f942 ifs(n<1) 跳过响应，与 0x1d setter 对 len<2 同一行为）；回执 30 01 status（status=错误码归一 0/1，字存储把 status 落在 resp[2] 因分发器覆写 resp[0..1]）/30 08 v0..v7",
+    "§2 依据表：set/get_config 入口由路 AB 函数级仿真直调全链实证（写→同机读回→重启重扫仍在）；key 30 无需注册（VM match key-1<256 全命中、set 仅校验 len≤4095）；值长 8B=路 AB 往返实证长度（记录 a4 1e 80 00|57 30 de ad be ef 21 00）；resp 写在 +2/源缓冲 data+1 直接传/静默不回均有静态锚点",
+    "§3.2 验证清单 8 项全过：27 指令逐条 encode(decode)==原字节零 diff、组合段前 364B==slotram 候选段逐字节（L1 部分零改动的机器证明）、keyhook 尾==独立汇编、载荷指令形状逐条 pin、注册表槽原字节断言+明文反解、CRC 链全套重算+独立校验器全过（475B 条目 JLFS CRC+双备份）、legacy 三候选（6c7247a5/5a5f2ef7/906184b2）重建逐字节一致、check_local --units exit 0（含新单测 11 tests）+android-query test.sh 全过（含 KeyStoreFrameTest）",
+    "§3.3 字节账：vs 官方 554B（slotram 472+82：注册表槽 4+keyhook 密文 78）、vs slotram 恰 111B 分类（UFW 外层 6/boot-info 8/JLFS 8/config 头 CRC 2/注册表槽 4/追加文件头 5/keyhook 密文 78）——全部差异逐字节分类断言，无一例外字节"
+  ],
+  "timeout_budget": "离线构建/校验+单测场景，无模型步预算（复跑 build_quiet_candidate.py --attenuation-db 0 --r4-keyhook --output-dir <空目录> + test_r4_keyhook_payload.py + test_r4_keyhook_image.py）",
+  "model_assumptions": [
+    "候选 UNTESTED 不刷机：交付=「载荷字节与 §1/§2 证据一致+四层 CRC/JLFS 结构自洽+逐字节差异精确可控+App 侧组帧/白名单/回环链路可跑」（§5.1）",
+    "命令分发链零执行证据：载荷到分发器的完整路径（BLE→RCSP→0x0600f85e→异步 trampoline/同步 call→set/get_config→VM 后端）未在任何仿真/真机跑过——主仿真前沿未推进到 RCSP/任务派发相位；路 AB 只实证「直调 set/get_config 分派器的读写往返」（§5.2）",
+    "异步路径的缓冲生命期：分发器先把 setter 投递给命名任务（0x060A1D11）延迟调起；帧缓冲在延迟调用期间有效是既有命令族（0x17/0x22/0x1d）共用契约，无新增风险面但无独立证据 [推断]（§5.3）",
+    "cmdid 0x30 占用残余风险：QCY App 今日不发 0x30 写（面板无条目/协议笔记无记录 [静态]），未来 QCY App 若给 0x30 加写功能会冲突（§5.4）",
+    "App 侧生效前提=--r4-keyhook 候选真机刷入并验证（本仓库不做）；官方固件 0x30 写路径为 no-op"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "命令分发链执行验证（另立 R4-VM-05 BLOCKED）",
+    "真机刷入+App 写读 key 30 端到端（刷机授权+真机 BLE 授权缺失）",
+    "0x30 getter（0x06007f0a 族查询）深层语义（浅层反汇编 [推断]）",
+    "未来 QCY App 版本 0x30 写冲突面"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "候选 UNTESTED 不刷机：交付=「载荷字节与 §1/§2 证据一致+四层 CRC/JLFS 结构自洽+逐字节差异精确可控+App 侧组帧/白名单/回环链路可跑」（§5.1）",
+    "命令分发链零执行证据：载荷到分发器的完整路径（BLE→RCSP→0x0600f85e→异步 trampoline/同步 call→set/get_config→VM 后端）未在任何仿真/真机跑过——主仿真前沿未推进到 RCSP/任务派发相位；路 AB 只实证「直调 set/get_config 分派器的读写往返」（§5.2）",
+    "异步路径的缓冲生命期：分发器先把 setter 投递给命名任务（0x060A1D11）延迟调起；帧缓冲在延迟调用期间有效是既有命令族（0x17/0x22/0x1d）共用契约，无新增风险面但无独立证据 [推断]（§5.3）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:55:00"
+}

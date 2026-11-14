@@ -550,5 +550,13 @@ D3 在本页只立框架：比较面的观测手段清单、容差声明格式�
   NOT_RUN 8 / PASS 条件性 1（cmd 9，路 BW 实测）/ BLOCKED 1（完整 ADC 闭环串联，
   S19 生产分发未接线归 D1 事件循环））+ `README.md` 汇总面板；运行态副本在
   `analysis/local-checks/acceptance/`（git 忽略）。
+- **R2/R3/R4 三线验收档案（路 CU/sim-r234records，2026-11-14 预填）**：
+  `docs/acceptance-samples/r234/`——R2 辅听 L1 六条（R2-HEA-01 激活载荷仿真/02 open 接驳镜像/
+  03 close 双向镜像/04 数据槽 RAM/05 App 0x17 汇入静态钉死全 PASS/conditional；06 接驳后完整
+  路径执行 BLOCKED 归前沿 0x0600db3c）+ R3 独立 app 五条（组帧三族/传输骨架/BLE 适配层+契约
+  测试/WebView 壳 PASS/conditional；05 真机联调 BLOCKED 归授权）+ R4 App 命令接驳四条
+  （setter 载荷候选/注册表窗口/App 帧 Loopback PASS/conditional；05 命令分发链执行 BLOCKED 归
+  RCSP 相位）——PASS/conditional 12 / BLOCKED 3 + `README.md` 三线面板含全局待授权项清单
+  （刷机授权/真机 BLE 联调/前沿推进三类逐条挂记录）；运行态副本同上。
 - **测试**：`tools/test_acceptance_record.py`（32 例：往返/校验拒绝路径/BLOCKED 语义/
   示例合法性/CLI）已接入 `check_local --units`。
