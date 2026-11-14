@@ -1,0 +1,48 @@
+{
+ "case_id": "E1-PAR-01",
+ "firmware_identity": "双镜像对跑+事件面刻画（路线 EQDIV=sim-eqdiv，记录 id 按面板编号规则 E1-PAR-01；A1 uncovered_items 第二项）：tested_b79=H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw（UFW SHA256 b79cb3a6…42fa1b）；eq_fence_repair=H3S_0.1.1.8_tones_minus10dB_ANC_EQ_TOGGLE_FENCE_REPAIR_OFFLINE_UNTESTED.ufw（UFW SHA256 67ba97ef…6f222，UNTESTED 离线候选）；ROM=Release 资产 QCY_H3S_BR28_ROM_000000-020000.bin（7cae0a02…f793）；运行平台=worktree sim-a1parity @ ac1f120（tools/ 与 A1 基线 11e0e74 逐字相同）；flag 集 import 自 frontier_registry 单源（场景 p11_heap_experimental），预算 5,000,000/镜像",
+ "initial_state": "本路 worktree sim-eqdiv 基线 main dbae194（纯运行+分析，零 tools/ 改动）；A1 钉点复现：b79 3,747,585 @ 0x12b0e8 core_tick_overflow_requires_resolution（与 registry 钉点逐字段一致，两轮独立复跑 scan1/scan2）+ EQ 4,521,554 @ 0x606ac42 unmapped 0xfe0a00（与 A1 逐字同）——重放身份 freshness 自证",
+ "inputs_schedule": "analyze_image_trace 公共接口 frontier_run 双镜像全前缀对跑（b79 3,747,585 步+EQ 4,521,554 步）×两轮；附加独立分析（不改 tools）：IRQ3/Timer0 handler 入口（0x60661a4/0x12ece8=路 BE 钉死向量 0x19fe10 的 handler）交付步号全扫、调度器族 0x12b090..0x12b180 寄存器全录（jiffies 演进）、等 own-step 3,747,585 双侧 16 GPR+trace 可见 RAM 终值差集、停点机器 RAM dump（data 区 0x124840..0x125320+lrc 块 0x129D88..0x129DEC 字节级差）、分叉后功能域分桶+RLE 相位时间线、报告键全量对比（instruction_adapters 72 键/memory_snapshots/machine projections/peripherals.timer0/hardware_crc_projection）",
+ "observation_boundary": "观察面=工具既有报告键全量+trace 扫描（核/前后 PC/16 GPR/该步全部 guest RAM 写）+停点机器 RAM dump；无任何真机面；事件计数等价的「等 own-step」对齐=两镜像各自步数轴同一位置（计数器时钟挂在自身步进上的模型语义），非世界位置对齐",
+ "assertions": [
+  "停点复现：b79 3,747,585 @ 0x12b0e8 core_tick_overflow_requires_resolution（=registry 钉点逐字段，两轮）+ EQ 4,521,554 @ 0x606ac42 unmapped_memory read 0xfe0a00（=A1 逐字，两轮）——重放平台身份与 A1 完全一致",
+  "等 own-step 3,747,585 事件面守恒项：一次性功能域页计数逐页相等（0x4000=21,255、0x6010000=20,950、0x12a000=12,517、0x6071000=222 等 15 页）、CPU1 per-core 11,251=11,251、写集地址集 42,123=42,123（终态与等 own-step 累计均零差）、CRC 轮次 32=32、启动域 adapter 45 键全等（cpu1_control_rmw 28=28、sfc 401=401、software_irq_rti 12=12 等）、boot_info/ram_code(18,644B)/efuse 4 页/MMU PTE 锚/TCB 帧/CPU1 入口/os_running/cache_lock/current_tcbs/p11 各格/ADC 条目逐字节相同",
+  "字节级世界状态差=恰两个计数格：data 区（2,784B）唯一差 0x124ca4=21 vs 24（jiffies 主计数=基值 10+ACK 数，b79/EQ 双侧字节级+寄存器级双证——调度器读族 0x12b0e8 处 r0 演进 b79 0x10..0x15/EQ 0x10..0x18，b79 停点 r0=0x15=21 与路 BQ 停点实测一致）；lrc_trim_result 块（0x64B）唯一差 0x129D8C=12 vs 15（LRC 周期历史帧计数，EQ 多累积 3 个延时族帧，等 own-step 时两侧同为 12）；trace 可见 RAM 终值差等 own-step 31 格/各自停点 41 格（全部时间派生计数器/簿记/栈，无结构性新地址）",
+  "交付层（相位彩票管辖）：core-tick 交付/ACK 11+第 12 次 held vs 12/12/14（等 own-step 差=pending 数 1；跨停点差 3=停点间溢出数闭式：EQ 12/13/14 三次）；Timer0 交付 362 vs 361（等 own-step 差 1=−22 相位在 4,000 步节奏下的余数：b79 末次 3,747,180 / EQ 对应窗 3,747,638>对齐点）；deferral 计数 168 vs 10,077（EQ 等待域在飞窗 held 重请求）；b79 core-tick 交付恒晚 22 步不累积，Timer0 相位分叉前逐次 +458→分叉后 k=14..285 恒 −22（延时窗重锚各自 core-tick 交付相位）→~3.06M 窗口重排混合期→尾段恢复 4,000 步节奏",
+  "等待域（步数线性伸缩）：EQ 多跑 773,969 步=约 39 个 Timer0 调度延时窗（每窗 ~18.7k..19.9k 步，>5,000 步段 45 个 vs b79 同窗口期 195 个），分桶延时环 704,708（91.1%）/调度器 37,906/app 其他 23,416/RAM 码 4,510/Timer0 handler 1,539/walker 1,856/core-tick handler 32/音频模拟 init 2——音频模拟 init 仅 2 步（0x606abee→0x606ac3c）即停 DAA_CON0 门口，无新功能域；存储 adapter 随步数线性（exact_full_word_store +2,701 等）",
+  "停泊/唤醒=0=0：machine.event_clock_projection.virtual_model_steps_advanced 双侧 0（首个停泊 W2[0] os_time_dly 在 DAA_CON0 之后的 OS 等待族内，A1 flag 集下两世界均未到达）——直接报告键证据非推断；EQ 特有键：CRC result_reads 75 vs 74、fed_bytes 3,071 vs 3,041（+30=多枚举的 config.dat 追加条目消费，169,439 派生分歧的数据面残留）；eq_toggle 状态格零写（钩子零执行，A1 判据③重申）"
+ ],
+ "timeout_budget": "双镜像全前缀对跑两轮（scan1/scan2，每轮约 15 分钟机时，含 trace 扫描/快照 dump/时间线）；报告落忽略区 analysis/local-checks/eqdiv/（8 文件）；一次性证据路跑不进 units",
+ "model_assumptions": [
+  "条件 flag 集（p11_heap_experimental，一切结论 conditional/derived-not-measured）",
+  "模型轨迹差分口径：不构成镜像行为等价证明，也不构成 EQ 镜像错误证明",
+  "core-tick/Timer0 交付语义按路线 BF 模型（计数器挂自身步进+每步重检仲裁）；硅片交付时序未测量",
+  "条件 flag 集全部结论 derived-not-measured（p11_heap_experimental 场景口径）；本记录为模型轨迹差分，非镜像行为等价证明",
+  "等 own-step 对齐的语义前提：core-tick/Timer0 计数器时钟挂在自身模型步进上（路线 BF 钉死语义）；「事件计数差 ≤⌈相位差/周期⌉」的界在本窗口实测全落 {0,1}，不排除更长窗口/更密事件线下界增大",
+  "运行平台=ac1f120 tools（=11e0e74=A1 基线）：主 main 已前进（B3 的 core_tick_cnt_held_snapshot/jl_adda_analog_family 不在本 flag 集），故 b79 停点复现的是 A1 时点前沿钉点 3,747,585 而非当前 19,139,239——这是任务规格（A1 uncovered 第二项的对照窗口），非 flag 漂移",
+  "jiffies 主计数格钉为 0x124ca4（字节级 21/24 与 ACK 数吻合）；路 BQ 叙述中的 [0x125004] 缓存读记法在本路 RAM dump 中该址双侧同值 203，缓存镜像的具体格位不在本路裁决范围",
+  "b79 侧 Timer0 入口 362 vs RTI 适配器计数 361 的差 1 属两条计数路径的记账差（EQ 侧 442=442 干净），非行为差异"
+ ],
+ "result": "PASS",
+ "uncovered_items": [
+  "等 own-step 的 Timer0 到期数（timer0.expirations 只在终态报告出现，需在 3,747,585 处停机观测）——L2-a 实施路可选增项",
+  "跨线（IRQ3×IRQ4）交错序在 22 步相位差下可能局部翻转，本路未逐项核对——L2-a 实施路若用作弱判据需逐检查点核对",
+  "三镜像方向（official↔b79↔EQ）的同法刻画与判据落地——B1/L2-a 实施路（本路产出为其设计输入）"
+ ],
+ "evidence_level": "conditional",
+ "evidence_conditions": [
+  "条件 flag 集（p11_heap_experimental，一切结论 conditional/derived-not-measured）",
+  "模型轨迹差分口径：不构成镜像行为等价证明，也不构成 EQ 镜像错误证明",
+  "core-tick/Timer0 交付语义按路线 BF 模型（计数器挂自身步进+每步重检仲裁）；硅片交付时序未测量"
+ ],
+ "evidence_refs": [
+  "docs/eq-divergence-profile.md",
+  "analysis/local-checks/eqdiv/result-b79.json",
+  "analysis/local-checks/eqdiv/result-eq.json",
+  "analysis/local-checks/eqdiv/event-scan.json",
+  "analysis/local-checks/eqdiv/scan2.json",
+  "analysis/local-checks/eqdiv/scan2-b79.ram.json",
+  "analysis/local-checks/eqdiv/scan2-eq.ram.json"
+ ],
+ "recorded_at": "2026-11-15T00:36:00"
+}
