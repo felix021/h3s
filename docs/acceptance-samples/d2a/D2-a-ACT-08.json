@@ -1,0 +1,30 @@
+{
+  "case_id": "D2-a-ACT-08",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "预填用例（未执行），计划起点=函数级直调 harness（路 BW --event-injection 先例：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），从 S19 第二分发表记录[5] 的 handler 0x060252c6 入口注入载荷字）；S19 生产分发路径（post→队列→任务消费）不在当前停点世界可达段（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环 BI/BJ，接线后升格重跑）",
+  "inputs_schedule": "计划注入（预填未执行）：合成表项 (7,1,127)@QCY+3404（默认表无 127 值，BW 先例）后注入 0x10a00（多功能键单击复用）",
+  "observation_boundary": "计划观察点：0x060253a4 检查（r1=126>10 跳表外）→r5==127→0x0602530c 返回已处理（无动作）；「零副作用」同 ACT-06 口径",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §1.5/§5：cmd 127=r5==127 早退返回已处理无动作——与 eq-toggle「127 无动作」静态结论复核一致，本记录补运行验证",
+    "cmd 127 与 cmd 0 共享 0x060253a4 门但分叉（127→已处理 / 0→未处理）——返回值区分是断言点",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "cmd 127 早退从未在仿真执行",
+    "127 作为表项 action 的真实写入来源（App 面板是否有「无动作」选项映射 127）未钉"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:30:00"
+}

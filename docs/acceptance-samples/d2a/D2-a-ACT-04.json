@@ -1,0 +1,34 @@
+{
+  "case_id": "D2-a-ACT-04",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "预填用例（未执行），计划起点=函数级直调 harness（路 BW --event-injection 先例：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），从 S19 第二分发表记录[5] 的 handler 0x060252c6 入口注入载荷字）；S19 生产分发路径（post→队列→任务消费）不在当前停点世界可达段（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环 BI/BJ，接线后升格重跑）",
+  "inputs_schedule": "计划注入（预填未执行）：handler 入口载荷字 0x10a04（多功能键双击，子类型 4→类别 2）——默认表 (7,2,7) 命中 cmd 7 模式切换（App「模式切换」=双击默认）；识别半边该载荷已由路 S 实测（REC-04）",
+  "observation_boundary": "计划观察点：首锚点 0x06025404：0x06018bf4('InLowLatency')→get_config(22,0x124a04,1)→0x60a18c0+18 三字节表 {1,3,4} 找当前值→0x060251fc(下一模式,1)；「动作执行」=0x124a04 模式字节翻转（1↔3 往复、4 也进 3）+尾部 set_config(22,0x124a04,1)持久化+flag!=0 路径 [ctx+120]/[ctx+124] 挂音乐模式恢复回调 0x602619a；失配读数（不属 {1,3,4}）→仅 BLE 回执 0x06025652(46,0x124a04,1)（cmd 0x2E 帧经 [QCY+1004] RCSP 对象 0x06009f6a 发送）",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §4.1/§5：cmd 7=音频模式循环切换（key 22 状态机）——1↔3 往复、4 也进 3；前置门 0x0601662a 返回 &4 且 b[0x125f7e]==0 直接返回、模式>4 返回",
+    "cmd 7 不触 ANC/mic_effect dispatch：模式应用走 0x0600dab6（音频效果 ctx 槽族），与 0x0600db3c（ANC dispatch）无调用边（key-action-map §4.1/§4.4）",
+    "证据边界（如实）：路 BW 双击载荷 0x10a04 的 handler 入口消费链已实测，但走的是合成表项 (7,2,9)（EQ 路线），cmd 7 分支体（0x06025404 及其下游）纯静态——本记录按真实默认表 (7,2,7) 预填（ACT-07 记录 BW 实测的那一支）",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "BW 双击实测证据的表项差异：BW fixture=(7,2,9)，默认表=(7,2,7)——入口消费链形状可迁移，cmd 7 分支体不可迁移（未执行）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "cmd 7 分支体从未在仿真执行（本记录=静态锚点预填）",
+    "模式应用器 0x060251fc 的场景切换（0x06024f02/MusicEqBt 预设装载 0x06024fe6）深链——BW S4 仅站点尾窗字节重放，非全链执行",
+    "BLE 0x2E 回执的无线侧（RCSP 发送后的空口）不建模",
+    "0x06008170 模式查询返回 5 的确切语义（普通基线 vs 通话占用）是 [推断]（key-action-map §4.3/§6.3）——非基线模式下按键映射动作被抑制（0x80 位）的行为依赖此假设"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:30:00"
+}

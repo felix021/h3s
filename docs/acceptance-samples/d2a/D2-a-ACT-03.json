@@ -1,0 +1,34 @@
+{
+  "case_id": "D2-a-ACT-03",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "预填用例（未执行），计划起点=函数级直调 harness（路 BW --event-injection 先例：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），从 S19 第二分发表记录[5] 的 handler 0x060252c6 入口注入载荷字）；S19 生产分发路径（post→队列→任务消费）不在当前停点世界可达段（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环 BI/BJ，接线后升格重跑）",
+  "inputs_schedule": "计划注入（预填未执行）：音量+ 单击 0x10c00（类别 1）命中默认表 (5,1,5)→cmd 5；音量- 单击 0x10b00 命中 (3,1,6)→cmd 6——对偶等价类：跑 cmd 5+cmd 6 方向断言（key-action-map §5：cmd 5/6 同形对偶方向）；识别半边两载荷已由路 AJ 实测（REC-03）",
+  "observation_boundary": "计划观察点：cmd 5 首锚点 0x060253e8→[r9,r6 门]→0x06017a58；cmd 6=0x060253f6→0x06017b22；「动作执行」=QCY+4434 u16 音量级别变化（上限读同槽，0x06012770 取）+0x0601267a(类型,级别) 写回+0x10000/0x20000 位标志事件族 post（0x06012572/0x060125bc）+提示音 0x060075c6(…,106)/0x06003d46 按档",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §2/§5：cmd 5/6=链路门后调音量±——r9==0（无活动链路）直接返回已处理不执行、r6==0（非全局活动链路）无提示音不执行",
+    "方向断言：cmd 5 使 QCY+4434 级别 +1（不越上限）、cmd 6 -1（不越下限），两方向 post 的事件族标志位互补",
+    "[QCY+592]（0x126810）辅听活动门（R2 交汇点）：pc_mic/mic_effect 播放器对象簇活动时音量键在本路径直接返回（不调媒体音量）——辅听未激活基线=音量链正常走；辅听激活变体的「动作已处理但媒体音量链不走」行为是动作覆盖×辅听接驳可测交汇点（key-action-map §4.4）",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "辅听基线假设：[QCY+592] 槽=0（pc_mic/mic_effect 未激活）——辅听激活变体另行构造"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "cmd 5/6 分支从未在仿真执行",
+    "音量应用消费者（0x10000/0x20000 事件族下游）未追（key-action-map §2）",
+    "辅听活动时音量接管路径（[QCY+592]!=0 之后谁消费音量意图）未追（§6.6）",
+    "提示音按档分档（0x06003d46(261,1,'A')/(34/122)）的档值运行态未观测"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:30:00"
+}

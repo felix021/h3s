@@ -1,0 +1,31 @@
+{
+  "case_id": "D2-a-ACT-06",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "预填用例（未执行），计划起点=函数级直调 harness（路 BW --event-injection 先例：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），从 S19 第二分发表记录[5] 的 handler 0x060252c6 入口注入载荷字）；S19 生产分发路径（post→队列→任务消费）不在当前停点世界可达段（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环 BI/BJ，接线后升格重跑）",
+  "inputs_schedule": "计划注入（预填未执行）三条：①cmd 0=多功能键四击 0x10a06（类别 4）命中默认表 (7,4,0)（默认表可达——四击/长按槽与音量键 2/3/4 击槽默认皆 0）；②cmd 8=合成表项 (7,3,8) 后注入 0x10a05；③cmd 10=合成表项 (7,3,10) 后注入 0x10a05（8/10 默认表无槽，BW 先例合成表项）",
+  "observation_boundary": "计划观察点：cmd 0=跳表外早退 0x060253a4（r1=-1 无符号>10）→r5≠127→0x06025392 重置 r4=0 返回未处理；cmd 8/10=tbb 目标 0x06025392（表字节 07/07）返回未处理；「零副作用」=无环写入/无 post/无 set_config",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §1.5/§5：cmd 0/8/10 各自独立分支必须各跑一次——三者返回值同形（未处理 r4=0）但落点机制不同（cmd 0=跳表外早退 vs 8/10=跳表内目标），下游零副作用",
+    "未处理语义断言：handler 返回 0（未处理）时上层不应观察到任何动作面变化（环/音量/模式字节/set_config 全不动）",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "cmd 0/8/10 分支从未在仿真执行",
+    "未处理返回值在 S19 上层的真实去向（谁消费 handler 返回值）未追",
+    "App 改表把 8/10 写进真实槽位的 wire 路径未跑（cmdid 2 组静态钉死）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T09:30:00"
+}
