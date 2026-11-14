@@ -1,0 +1,33 @@
+{
+  "case_id": "D2-b-INJ-05",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；重配链静态源=app.bin sha 18f3d573…（AL §1.6/§2.2b）+3mic_coeff.bin 公开资源（CRC 过的资源读取，内容不解）",
+  "initial_state": "预填用例（未执行）。计划起点=同 INJ-03 世界+扩展 world_prep（[QCY+500] anc_hdl 非零——P1-a 下 boot initcall 已建，否则回退直调整段 0x602ea68，蓝图 §3.3 C0）；**co-opener 设计**：先直调 0x60200b6(0x5) 开 ch0+ch1——ANC 不独立开 ADA 数字通道（CFG-06 第 6 条：adc_ch 0x602f258 只声明搭便车、hdl+79 计数只由 adc_mic_open 增）——ANC 场景的通道集=运行时实读 hdl+78（不臆造；已知形状下=ch0+ch1）",
+  "inputs_schedule": "计划注入（未执行）：C1 co-opener 直调 0x60200b6(0x5)；C2 直调 audio_anc_run 0x601c8de(mode=on,…)（实参两形记录 AL §2.2b/AP §1.7③，实施步 0 钉死后统一）；C4 注入 N 块（通道集=hdl+78 实读位期望 {0,1}；交织序按实读通道号升序，公式按 ch）",
+  "observation_boundary": "计划观察点（未执行）：C3 读回（JL_ANC/ADA/JL_ASS 写记录非空+MIC_CTL1 位段=mic_type 映射 insert 形状 adc0_sel=1/adc1_sel=2/adc2_sel=0/adc3_sel=0+IRQ67 向量槽有效+hdl 面）+C5 消费两候选记账（0x6072628 链表遍历逐 handler 记账 vs 64KB buf [param+64]/0xFE0400 域 DMA 地址寄存器指向）",
+  "assertions": [
+    "d1-acceptance §6.2 b1+蓝图 §3.3 C2/C3：audio_anc_run 链内真实执行——mic_management 0x601c82e（mic_type [1,2,0,0]→mic_param en/type/mult_flag，CFG-06 求值）→ANC PGA 0x606ee98（ADA_CON8 4×5bit insert+ADC_CON|=0x800）→非 off 时播模式提示音 0x600bcbe→**停-重配-启**：0x606e9e8(0)（JL_ANC CON 0xFE0400 bit1 清）→0x606ebe0 重配主体（重注册 IRQ67 0x606ec02 prio0 handler 0x6073d7e+JL_ASS 时钟 0x606c844+MIC_CTL1 重 mux 0x606c8aa(param+13)+JL_ANC 滤波 0x606cc36/0x606ce02/0x606d9c0（按 ch=3 的 L/R 位、lff/lfb_en、mode 分支配滤波器）+64KB DMA 缓冲 zalloc [param+64]）→0x606e9e8(1)（bit1 置）→系数文件重读 0x606e7c2（\"flash/res/3mic_coeff.bin\" 公开资源 CRC 过）",
+    "b2：同 INJ-03 时序（通道集按 C1 实读位；每块 pending→IRQ68→清→重装四查）",
+    "b3+蓝图 §3.3 C5——ANC 输入边界两候选运行观测裁决（R5）：①共享 hdl+92 链上出现 ANC 侧 handler（0x6072628 链表遍历记录逐 handler 记账）②JL_ANC 块自有 DMA（64KB buf/[param+64] 或 0xFE0400 域 DMA 地址寄存器）指向共享环形或自采——断言形式=记录两候选的实际状态，「抵达实开通道对应的已确认 ANC 输入边界」即过（d1-acceptance §6.2 最小测试表原文：槽位/顺序/帧长正确+各路抵达已确认的 ANC 输入边界），未抵达的候选如实记 NOT_RUN",
+    "诚实边界（d1-acceptance §6.2 codex 原话场景适配）：JL_ANC 滤波是硬件块——软件只配置寄存器；本场景证明「数据抵达 ANC 输入边界+配置链真实执行」，不宣称降噪效果/滤波正确（「若 ANC 某段由硬件处理…不能借软件 handler 被调用宣称音频闭环」）；IRQ67 handler 0x6073d7e 的服务是附加观测非断言",
+    "R4 ch2 张力=本场景首个要回答的问题（蓝图 §5-R4）：已知 en_map=0x0B 不含 bit2——A_MIC2（LFB 左耳反馈）在已知所有 opener 形状下无开启者；两假设（LFB 由 JL_ANC 块自有 DMA 采/存在未钉的 opener 取值）由 C1 hdl+78 实读+C5 两候选记账裁决（CFG-01 第 4 条的运行对偶）"
+  ],
+  "timeout_budget": "场景步进以断言点/诚实停点为界（co-opener 直调+重配链+受控交付，无固定步预算）",
+  "model_assumptions": [
+    "本记录=预填：断言锚点全部出自蓝图 §3.3/§4+audio-input-paths §1.6/§2.2b+CFG-06（静态），非执行证据",
+    "jl_anc_writes 模型族（蓝图 §2.6 条件栈新开关：JL_ANC 族 0xFE0400+JL_ASS MIC_CTL0/1 写记录，ANC 重配链条件族 AG §3.3b）是本场景额外模型件（先按 conditional 草案；若推进后新前沿在到达 ANC 图门 0x601bd3a 前停住可降 probe_only——registry validate 依赖闭包两向都过）",
+    "DMA 完成行为投影（同 INJ-01）",
+    "C5 消费路径不预设（两候选记账，按实际状态裁决）——「不臆造」承接蓝图 C1 原则"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 4（ANC 场景因新模型族 +1 天内，蓝图 §6）",
+    "R4 ch2 张力裁决+R5 ANC 消费路径裁决（本场景观测项）",
+    "ANC 专用采样率（JL_ANC 块配置+系数文件内，CFG-06 残余）",
+    "ANC 声学效果/滤波正确性（永不进 D2 断言——D3 比较面另立，d1-acceptance §7）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

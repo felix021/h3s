@@ -1,0 +1,31 @@
+{
+  "case_id": "D2-b-SW-02",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；关链让位静态源=app.bin sha 18f3d573…（AP §1.7②/③：关链 0x601e436+mult 剔除 0x606f8f6..f932+引用计数 0x606b4d0/0x606f8b6）",
+  "initial_state": "预填用例（未执行）。计划起点=通话+辅听共开世界（INJ-03 开链后再执行 INJ-04 开链，或场景 C 世界 co-opener 后加辅听）——ch0 上 hdl+79 计数≥2（通话组 0+辅听 bit0），ch1 计数≥1（通话组 1）",
+  "inputs_schedule": "计划注入（未执行）：直调关链 0x601e436（调用点形态照 0x6021144 关闭 case）→关链后继续注入若干块（观测辅听侧消费是否继续+被清通道是否不再交付）",
+  "observation_boundary": "计划观察点（未执行）：hdl+79 引用计数轨迹（逐通道递减值与终值）+0x606f432 清位掩码与 mult 剔除的实际参数（0x606f8f6..0x606f932 读 mic_param[0..3].mult_flag）+关链后 deliveries/consumer_calls（辅听 0x6032e80 继续被调、ch3 若开则不再交付）+b[QCY+1228]/[QCY+1240] 门与 mic_param 注册",
+  "assertions": [
+    "蓝图 §3.4 第 3 小项（esco 关链让位变体）+CFG-05 第 2 条的运行对偶：0x601e436 关链真实执行→mult 通道位剔除逻辑（0x606f8f6..0x606f932 读 mic_param[0..3].mult_flag 把 mult 通道位从待清的 hdl 通道使能位中剔除再调 0x606f432）真实执行→断言=引用计数轨迹（hdl+79[ch0] 递减但不归零、mult 位保留——「关闭有让位」的运行验证）",
+    "共存行为断言（audio-input-paths §1.8④ 静态结论的执行验证）：辅听开着 ch0 时 esco 关闭不会断掉辅听的采集中断源——关链后注入块继续经 IRQ68→0x6072628→0x6032e80 交付（辅听消费继续）；ANC adc_ch 声明位保留（若 ANC 在场）",
+    "负例（d1-acceptance §6.3 第 4 条）：非 mult 通道（如 ch3 esco 专用）被清——关链后该通道 hdl 位清除、再注入不产生该通道交付（「停止之后不再消费旧缓冲」）；通话对象拆链（0x606f954 摘链→逐通道 free 512B→free obj→[QCY+620]=0）后 0x6031D5A 不再被调",
+    "正例边界（CFG-05 第 5 条）：通话全关且计数归零→0x606f3c4 digital_close 才发生（ADC_CON&=~0x20+ADA 位段清）——本场景 ch0 计数不归零故 digital_close 不触发；该正例边界作为对照断言（digital_close 写记录为空）"
+  ],
+  "timeout_budget": "场景步进以断言点/诚实停点为界（关链直调+前后注入对照，无固定步预算）",
+  "model_assumptions": [
+    "本记录=预填：断言锚点全部出自蓝图 §3.4+audio-input-paths §1.7②/③/§1.8④（静态），非执行证据",
+    "蓝图标注本变体为可选（§3.4「可选」）——优先级低于三主场景+b4（INJ-03..06）与 SW-01；记录预填保证断言框架冻结（d1-acceptance §6.4 范围表预冻结+改动明示规则）",
+    "通话+辅听共开的多 handler 链遍历按「注册了谁谁被调」记账（蓝图工程风险第 3 条；三消费者核对按订阅关系非帧数相等，d1-acceptance §6.2）",
+    "DMA 完成行为投影（同 INJ-01）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施（本变体排在步 5 之后，可选优先级）",
+    "通话全关→ANC 失采耦合点的运行复现（需 ANC 在场的三方共开世界+全关序列，CFG-05 第 5 条静态推断的运行验证——另立组合场景或 D1 回归）",
+    "boot mode-2 校准块的开→自校准→关序列（公开镜像 mode=1 不跑，CFG-02 未覆盖项同源）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

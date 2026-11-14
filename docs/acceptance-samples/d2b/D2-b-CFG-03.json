@@ -1,0 +1,34 @@
+{
+  "case_id": "D2-b-CFG-03",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；静态源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041+公开 stream.bin 9351B（§5 记录 @0x0F61/blob @abs 0x1DA4）+两份 stream.bin 变体（sha 19c9deeb…/6c1f1950…，parity 对照）",
+  "initial_state": "纯静态+镜像字节断言（无执行）：辅听（mic_effect 场景 0x9c2d）采集配置=公开 stream.bin §5 \"MicEff\" 40B blob 全解+采集链反汇编（路 AR/sim-miceffcfg 已合并，audio-input-paths §1.8）",
+  "inputs_schedule": "无运行输入；解码域=§5 记录字段+40B blob 逐字段+START 打开链反汇编（0x603293e cmd 0x40001 全链）+两变体 blob parity",
+  "observation_boundary": "观察面=stream.bin 字节（记录 @0x0F61、blob @0x871+0x1533=0x1DA4）+nodecfg 布局（+8 blob 区/+17..44 偏置槽）+plug 表 0x60a917c 0xD06D 行（create 0x6032924/ioctl 0x603293e/close 0x6032d74）；非执行观察",
+  "assertions": [
+    "audio-input-paths §1.8①：MicEff 40B blob @stream.bin abs 0x1DA4（§5 记录 @0x0F61 第 56 条：flag=3/uuid=0xD06D/subid=3/mode=0/cfg=0/name_hash=0xc6af=djb2(\"MicEff\")&0xFFFF/off=0x1533/size=40）；en_map word=0x00000001→只开 ADA ch0——辅听单路钉死（=A_MIC0=ANC 右耳 RFF/RFB 共用输入+通话组 0，三方占用表 §1.8④/C2b-CFG-01）",
+    "blob 字段全解（§1.8① 对照表）：desc 4×9B 全同构 {00 0a 01 01 G 0e 08 00 00}，G={0x10,0x02,0x04,0x08} 每槽一位全非零——desc+0 类型=0（≠2 正常分支，与 esco 的 1 都走 0x606b4d0 内 packed[3]&0xF!=2）、desc+1 增益档=0x0a(10)（cap 19，对照 esco 档 1）、desc+4 非 0→desc+7/+8 的 16bit 处理全跳过（0x6032c22 门，与 esco 的 0 值+u16=0 等效）、desc+5 偏置档 0x0e（config-89 合并目标 nodecfg+17/26/35/44）",
+    "镜像 parity（§1.8①）：两份公开 stream.bin 变体（差异区 0x18F8..0x1954=tone 音量 blob，b79 改机只动 tone）中 MicEff/esco_adc blob 逐字节相同——采集配置在改机镜像不变",
+    "采集打开者=jlstream_start 节点 START（§1.8③）：R2 L1 激活载荷 41 条零采集调用是设计非遗漏——采集由 ADC plug 命令处理 0x603293e 的 cmd 0x40001 START 打开（模式字节==1→nodecfg=静态 QCY+3452 与 app 侧 esco 解析器共享 blob 区/否则 zalloc(48) 挂 [priv+84]；0x6075686(0xD06D,variant,nodecfg+8,priv) 取名+blob→开环 0x6014298 打包→0x606b4d0/0x606de92(0x0a)/0x606c3aa→SR 0x606dee0→set_buffer 0x606dee4(buf,512,buf_num=2)→挂 [priv+76]=0x6032e80→0x606df66）——INJ-04 的开链直调序列以此为准"
+  ],
+  "timeout_budget": "静态解码断言，无模型步预算（复跑=§5 记录/blob 字节+START 链锚点核对）",
+  "model_assumptions": [
+    "全部静态/镜像（derived-not-measured，路 AR 口径：官方 app.bin+公开 stream.bin 真字节，无运行观测）",
+    "ADC 节点模式字节（cmd 0x20006 写入）运行值未测——决定 SR 默认三态（1→16000/10→全局 h[0x124CB0]/其余 44100，0x603297e..96）与是否用共享静态 nodecfg QCY+3452（AR §1.8⑤(b)，蓝图 R1 观测项）",
+    "MicEff desc+4 位掩码族 {0x10,0x02,0x04,0x08} 除「≠0 跳过 u16 处理」外的正值语义未解（0x606b4d0 内 packed[1] 未见二次消费，可能纯占位，AR §1.8⑤(a)）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "模式字节运行值+SR 三态裁决（R1，归 INJ-04 B2 读回）",
+    "event 18（0x60057e6(18,name)）注册者与返回值——决定主路径/兜底块哪条执行（R2，归 INJ-04 B1 coverage）",
+    "0x6032da6 模式 1 解交织布局（R3，条件性：模式字节≠1 则本场景不回答）",
+    "nodecfg 运行形状复核（AR §5.7 动态复核接口：b[nodecfg+0]=1、h[nodecfg+8]=0x1、b[hdl+79](ch0)≥1）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "全部静态/镜像（derived-not-measured，路 AR 口径：官方 app.bin+公开 stream.bin 真字节，无运行观测）",
+    "ADC 节点模式字节（cmd 0x20006 写入）运行值未测——决定 SR 默认三态（1→16000/10→全局 h[0x124CB0]/其余 44100，0x603297e..96）与是否用共享静态 nodecfg QCY+3452（AR §1.8⑤(b)，蓝图 R1 观测项）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

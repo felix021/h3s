@@ -1,0 +1,31 @@
+{
+  "case_id": "D2-b-INJ-01",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；执行载体计划=probe_irq_entry p11_heap_experimental_config 条件世界（七字语义静态源=app.bin sha 18f3d573…，AE §2.1；SDK adc_core/audio_adc IR 交叉佐证）",
+  "initial_state": "预填用例（未执行）。计划起点=当前条件前沿世界 p11_heap_experimental_config 3,170,362 步 @ 0x606b426（读 0xfe0a04 DAA_CON1——HANDOFF 当前前沿表；路 BF/sim-adda 在途实施 DAA_CON1 两开关+敏感对照，释放后前沿自然推进=蓝图 P1-a 的 world_prep 前提）；本条本身=模型件实施（蓝图 §2.1 规格，实施路拿到即可开工）",
+  "inputs_schedule": "计划输入（未执行）：模型面 API produce_block(samples_bytes)——样本由场景按蓝图 §3 数据公式生成传入，窗口/换算由模型按固件已配置的 ADR/LEN/PNS/HWP 自算（场景不手写地址，防场景与固件配置漂移）",
+  "observation_boundary": "计划观察点（未执行）：七字写记录+读回投影值（report() 的 writes/values/cores+pending/in_flight 现值+produced_blocks+假设叙事）；advance() 扫描块的 IrqDeliveryRequest 抛出；legacy 报告逐字节不变（新开关默认 False）",
+  "assertions": [
+    "d2b-injection-blueprint §2.1：新类 JlAudioAdcDma（conditional 层，建议放 JLAudioDacInitWriteRecords 类旁）——七字（CON 0xFE0538/ADR 0xFE053C/LEN 0xFE0540/PNS 0xFE0544/HWP 0xFE0548/SRP 0xFE054C/SRN 0xFE0550，audio-input-paths §2.1 语义表）写记录+读回投影：CON=last|(0x80 if pending)、其余六字=最后写值、无写显式合成 0 并计数（路 AM 先例）；RMW（SR 写 0x606dee0/|=0x40 清 0x602f434 与 handler 尾/|=0x800 ANC）走通用 MMIO 读侧=投影值；|=0x40=W1C 语义（清 bit7+清 delivery_in_flight——分发器与 handler 尾两处真实清两次无害）",
+    "§2.1：produce_block 两步=①按记录的 ADR/LEN/PNS/HWP 计算当前窗口把 block k 交织样本写进该窗口（「每次完成事件前填当前窗口，不一次性预填全部内存」，d1-acceptance §6.2 原约定）②HWP 推进过块边界+置 ADC_CON bit7 pending；hwp 软件写 0 复位（0x606df2e [静态]）",
+    "§2.1：advance() 扫描块（BR28Model.advance 内 Timer0 块后同位）——pending 且 IRQController.eligible(68)（真实 ICFG nibble+IPMASK）且非 in-flight→delivery_in_flight=True+raise IrqDeliveryRequest(core=0, irq=68)；核选择按运行观测复核（IRQ68 注册于 CPU0 语境，若固件配到 CPU1 按真实 ICFG 改）",
+    "§2.6+§6 步 1：registry 条目 jl_audio_adc_dma（conditional 层，依赖 audio_dac_init_writes；Feature 五元组照草案）+开启即推进共享条件前沿重钉（新停点=运行观测项，首次开启跑批后按 registry checklist 四步钉；probe require/analyze freshness/test 期望自动跟随）；三镜像 parity 沿用 L2-a 机制（本路域无镜像差异点，预期零分歧）"
+  ],
+  "timeout_budget": "实施路场景（模型件单测+最小交付冒烟：手工 produce_block→delivery 记录），无固定模型步预算；以断言点/诚实停点为界（超时=FAIL 不是重跑理由）",
+  "model_assumptions": [
+    "本记录=预填（蓝图已设计、模型件未实施）：断言锚点全部出自蓝图 §2.1+audio-input-paths §2.1 七字语义（静态），非执行证据",
+    "DMA 总线行为/缓存一致性/真实完成时序不建模——一切 b2/b4 通过结论带「DMA 完成行为投影下通过」前缀（d1-acceptance §6.2 措辞承接，蓝图 §1.2）",
+    "0xFE0538 当前条件族执行面由路 AS jl_audio_adc_reset_writes 已放行单字 reset 写（HANDOFF 路 AS 条目）——本条开关与 AS 域三分域不并入（AK 白名单边界钉死「恰三字+条件族不进」）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "等路 BF（sim-adda）DAA_CON1 释放文件落地后前沿自然推进（蓝图 P1-a：boot 级打开走建模放行+前沿自然推进，world_prep 面最小化的前提）",
+    "等 AW 蓝图实施步 1（本条+INJ-02 的模型件是全部注入场景的执行载体；蓝图 §6 估 1-1.5 天）",
+    "前沿重钉跑批（新停点未知；若停在场景不需要的深处可按蓝图 §2.6 回退 P1-b 并显式记录选择）",
+    "前置静态钉死四件（蓝图 §6 步 0：分发器帧锚/RTI 尾、ioctl 0x603293e 与 jlstream_start 实参、audio_anc_run 实参约定、request_irq 0x602ec1c..28 实参表）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

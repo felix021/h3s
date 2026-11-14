@@ -1,0 +1,29 @@
+{
+  "case_id": "D2-b-CFG-04",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；静态源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（取名 API 反汇编）+公开 stream.bin 9351B（名字表 @0x3A8+§5 记录区+图描述符边表）",
+  "initial_state": "纯镜像+静态断言（无执行）：0xD06D 三 blob 的名字互证——stream.bin 名字表全量解码（53 条×21B）对 §5 记录 (uuid,subid)/name_hash 三方核对+三张图 0xD06D 源节点 (uuid,variant) 对照（路 AR 已合并，audio-input-paths §1.8②）",
+  "inputs_schedule": "无运行输入；解码域=名字表 53 条全量（逐条 djb2 复核）+全部具名 §5 记录 57 条+三图边表首条目",
+  "observation_boundary": "观察面=名字表字节（0x3A8 起）+§5 记录 hash 字段+图描述符（0x220/0x274/0x2d4）+取名 API 锚点（0x607550c/0x6074590/0x60750aa 内 djb2）；非执行观察",
+  "assertions": [
+    "audio-input-paths §1.8②：名字表 53 条×21B @0x3A8（{u16 len=0x13, u16 节点类 uuid, u8 variant, name[16]}）——57/57 全部具名 §5 记录的 (uuid,subid)≡名字表 (uuid,variant) 且 djb2(名字表名)==记录 name_hash：名字表就是 §5 记录的权威名目录（逐条核对非抽样）",
+    "0xD06D 三兄弟：(0xd06d,2)=\"esco_adc\"、(0xd06d,3)=\"MicEff\"、(0xd06d,13)=\"ADC13\"——三者 (uuid,subid) 恰逐一等于三张图 0xD06D 源节点的 (uuid,variant)（{0xd06d,2}@0x220 esco/CVP 图、{0xd06d,13}@0x274 第三图、{0xd06d,3}@0x2d4 mic_effect 图）互证「§5 记录元数据=意向消费节点」；ADC13 与 esco_adc 共享 blob（同 off 0x138C）——AP 残余③（hash a631 未还原名）就此关闭",
+    "取名 API 链（§1.8②）：0x607550c(uuid,variant,out16B)→0x6074590(2,uuid,variant,out)（按 uuid+variant 匹配、variant=255 通配；返回名字长度 len-3=16）；djb2 在 0x60750aa 内（ROM strlen 0x1fd8c+5381 初值×33 循环）——与 §5 记录查找共用同一注册表机制，名/hash 两端闭合",
+    "图描述符勘误随行（§1.8③）：0x9c2d 图头 @0x2d0 的 0xD0=边表长 208B 非「ADC 节点计数 3」；全图唯一 ADC 源节点=边表首条 {0xd06d,3,0}；图中另 3 个 {0xdccd,9}=\"DacEff\" 输出侧节点（非采集源）——INJ-04 辅听场景的图预期（1 个 ADC 源节点）以此为准；hearing-aid-l1-payload §1.3「3 个 ADC 源节点」读法一并修正"
+  ],
+  "timeout_budget": "静态解码断言，无模型步预算（复跑=名字表/§5 记录/图边表三方字节核对）",
+  "model_assumptions": [
+    "全部镜像+静态（derived-not-measured，路 AR 口径：公开 stream.bin 真字节，无运行观测）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "取名 API 在激活场景中的实际调用序列（主路径 0x607565c vs 兜底 0x6032b40——归 INJ-04 B1 coverage 观测 R2）",
+    "ADC13 名（第三张图）对应场景的运行激活路径未调研（已知共享 esco blob，en_map=0x0B）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "全部镜像+静态（derived-not-measured，路 AR 口径：公开 stream.bin 真字节，无运行观测）"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

@@ -558,5 +558,13 @@ D3 在本页只立框架：比较面的观测手段清单、容差声明格式�
   （setter 载荷候选/注册表窗口/App 帧 Loopback PASS/conditional；05 命令分发链执行 BLOCKED 归
   RCSP 相位）——PASS/conditional 12 / BLOCKED 3 + `README.md` 三线面板含全局待授权项清单
   （刷机授权/真机 BLE 联调/前沿推进三类逐条挂记录）；运行态副本同上。
+- **D2-b 验收档案（路 BI/sim-d2brecords，2026-11-14 预填）**：
+  `docs/acceptance-samples/d2b/`——配置面实证 `D2-b-CFG-01..07`（通道占用表定稿/esco_adc
+  与 MicEff 双 blob 全解/ADC13+名字表互证/三方开关节奏/ANC 3 mic 裁决/游戏模式=效果重配，
+  取材 audio-input-paths §1.6/§1.7/§1.8/§2.2b+wired-game-mode，全 PASS/conditional）+ 注入
+  预填 `D2-b-INJ-01..06`+`D2-b-SW-01..02`（断言=§6.2 b1-b4 机读锚点+§6.3 共同断言，
+  d2b-injection-blueprint §3/§4 观察点；全 NOT_RUN——等 BF 前沿释放+蓝图实施，依赖逐条挂
+  「未覆盖项」）+ `README.md` 面板含注入面共同依赖地图（BF 前沿释放/蓝图实施/步 0 静态
+  钉死/R1-R9 观测项四类）；运行态副本同上。
 - **测试**：`tools/test_acceptance_record.py`（32 例：往返/校验拒绝路径/BLOCKED 语义/
   示例合法性/CLI）已接入 `check_local --units`。

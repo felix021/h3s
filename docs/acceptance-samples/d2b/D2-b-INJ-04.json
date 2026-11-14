@@ -1,0 +1,32 @@
+{
+  "case_id": "D2-b-INJ-04",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；开链静态源=app.bin sha 18f3d573…（采集链全图 AR §1.8③）+公开 stream.bin（MicEff blob @0x1DA4+0x9c2d 图描述符，CFG-03/04）",
+  "initial_state": "预填用例（未执行）。计划起点=同 INJ-03 世界（post_stop 直调）；开链两步=直调 0x6074938(0x9c2d, 0xD06D)（descriptor walk 建管道，CP d2c_effect_pipeline 先例换 (scene,plug) 参）→直调源节点 ioctl 0x603293e(node, 0x40001, …)（=jlstream_start 0x6074ffe 内部对流激活发的 START 命令；绕过的 jlstream_start 外围状态面显式标注，蓝图 §3.2 B1）",
+  "inputs_schedule": "计划注入（未执行）：B3 注入 N≥12 块 1ch（N=max(12, 2×⌈环形总长/PNS⌋+2)——12 保住前 10 帧丢弃门后仍有消费样本，蓝图 §3 交付块数约定）；样本 sample(0,k,n) 单通道公式",
+  "observation_boundary": "计划观察点（未执行）：B2 五写读回（buf_num=2 与 esco 的 3 不同——布局差异本身是断言点）+SR 码记录（三态裁决 R1）+nodecfg 面（b[nodecfg+0]=1、h[nodecfg+8]=0x1——AR §5.7 动态复核接口）+hdl 面（+78 bit0/+79[0]≥1）+B4 消费面（0x6032e80 调用计数+前 10 帧门行为+第 11 块起 frame+32 字节+下游水位/时间戳字段）",
+  "assertions": [
+    "d1-acceptance §6.2 b1+蓝图 §3.2 B1/B2：START 开链真实执行（CFG-03 第 4 条全链）——nodecfg（模式字节 1→静态 QCY+3452 与 esco 共享 blob 区/否则 zalloc(48)——模式字节运行值观测）→0x6075686 取名 \"MicEff\"+blob（event 18 主路径 0x607565c vs 兜底 0x6032b40——注册者观测 R2）→en_map=0x1 只开 ch0（0x606b4d0/0x606de92 档 0x0a/0x606c3aa）→SR 0x606dee0（GET_FMT 三态 16000/全局/44100，0x603297e..96——R1 观测）→set_buffer 0x606dee4(buf,256<<1=512,buf_num=2)→挂 [priv+76]=0x6032e80 进 hdl+92 链→0x606df66 启动→0x6072712(ch_map)",
+    "b2：同 INJ-03 时序（每块 pending→真实 IRQ68→|=0x40 清→SRN/PNS 重装逐块四查）——1ch 布局下帧长=1×ssize",
+    "b3+蓝图 §3.2 B4：0x6032e80 调用次数=N；前 10 次入口即返（b[priv+27]++≤9 丢弃门实测——穿透断言从第 11 次交付起算，AE §4 D2-b4 草案已钉）；第 11 块起 0x6074080 帧分配→（模式字节==1 时 0x602f5fa()==1 门+0x6032da6 解交织——布局观测 R3，条件性：模式字节≠1 则不执行维持开放）→memcpy 交织帧进 frame+32 的字节=注入序（DSP 前精确样本）→投递节点后的下游提交面=jlstream 帧/水位（cmd5 时间戳族，CI/CK 钉的形状；具体提交 PC 实施时按 coverage 钉，断言以「帧对象+32 字节+水位/时间戳字段变化」为观察面）——「到达对应消费者」通过条件；辅听检测/算法结果不在验收（「有足够证据时再验收检测结果」照 d1-acceptance §6.2 表）",
+    "d1-acceptance §6.3 共同断言五条随执行补验（本记录预填未执行）——含「未启用消费者不被调」：本场景世界若 esco/ANC 未开则其 handler（0x6031D5A/ANC 侧）不被调"
+  ],
+  "timeout_budget": "场景步进以断言点/诚实停点为界（直调开链+N 块受控交付，无固定步预算）",
+  "model_assumptions": [
+    "本记录=预填：断言锚点全部出自蓝图 §3.2/§4+audio-input-paths §1.8③+CFG-03/04（静态），非执行证据",
+    "DMA 完成行为投影（同 INJ-01）",
+    "模式字节/SR 三态/event18 注册者/解交织布局四项是本场景要回答的运行观测项（R1/R2/R3+AR §1.8⑤(d)），断言不预设取值",
+    "图预期=1 个 ADC 源节点（CFG-04 勘误口径：0x9c2d 图头 0xD0=边表长非节点计数）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 4（mic_effect 场景，蓝图 §6 估 +0.5-1 天）",
+    "R1 SR 三态/R2 event18 注册者/R3 解交织布局（本场景观测项；R3 条件性——模式字节≠1 则本场景不回答）",
+    "辅听检测结果/算法效果（不在验收，「有足够证据时再验收」）",
+    "与 esco 共开的多 handler 链遍历场景（蓝图工程风险第 3 条——按「注册了谁谁被调」记账，另立组合场景或并入 SW-02）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

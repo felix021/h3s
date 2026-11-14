@@ -1,0 +1,33 @@
+{
+  "case_id": "D2-b-CFG-05",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；静态源=app.bin sha 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（AP/AR 开关链+关链清位路径反汇编；共享 hdl 基址按 AP 勘误=QCY+4596=0x1277B4）",
+  "initial_state": "纯静态断言（无执行）：ANC×通话×辅听三方在共享 audio_adc_hdl 上的共存机制——开链/关链/增益/联动四面的反汇编钉死（路 AP §1.7②+路 AR §1.8④ 已合并）",
+  "inputs_schedule": "无运行输入；推导域=adc_mic_open 0x606b4d0/adc_mic_close 0x606f8b6/digital_close 0x606f3c4/清位 0x606f432/mult 剔除 0x606f8f6..f932/ANC adc_ch 0x602f258/PGA 0x606ee98/联动 0x6020cb0..cc6 的静态执行序",
+  "observation_boundary": "观察面=共享 hdl 字段（+78 使能位/+79[ch] 引用计数/+92 output-handler 链头=0x127810）+ADA_CON8 4×5bit 槽+mult_flag 消费点；非执行观察",
+  "assertions": [
+    "打开无互斥（audio-input-paths §1.8④）：三方各自经 0x606b4d0 adc_mic_open 把自己的 en_map 位登进共享 hdl（+78 使能位、+79[ch] 每通道引用计数）；ch0 会被 ANC（adc_ch 声明 0x602f258）、通话（组 0）、辅听（bit0）三方先后打开，互不拒绝——「开无互斥」",
+    "关闭有让位（§1.8④+§1.7②）：esco 关链 0x606f8b6 递减 hdl+79、归零才 0x606f3c4 digital_close（ADC_CON&=~0x20+ADA 位段清）；且 mult 通道位（ch0/ch1）经 0x606f8f6..0x606f932 从 0x606f432 清位掩码剔除（b[QCY+1228] 门+[QCY+1240]=mic_param，注册=0x606c3e8←0x600dc24 ANC 模式写入族）——esco 先关也把注册位留给 ANC；辅听开着 ch0 时计数同样不归零，esco 关闭不会断掉辅听的采集中断源",
+    "mult_flag 消费面定稿（§1.7② 勘误）：增益路径不读 mult_flag（QCY 构建把 SDK audio_anc_mic_gain 的 mult_gain_en 参数裁掉，0x606ee98 单参化——增益不打折）；mult_flag 并非死数据：真实消费在关链清位（上条）；实际复用走两个机制——ANC adc_ch 0x602f258（按通话 mic_en_map 置 param+19 位、全零默认 1=「搭便车」声明）+hdl+79 每通道引用计数（0x606b4d0 +1/0x606f8b6 −1）",
+    "增益无仲裁（后写者胜，§1.8④）：ADA_CON8 4×5bit PGA 每通道一个槽位——esco 写档 1、辅听写档 0x0a(10)、ANC 写 mic_param[k].gain（param_init 默认 0）——三方共存通道的最终增益由最后执行者决定，静态无任何协调代码",
+    "通话↔ANC 联动点+边界耦合（§1.7②）：esco 事件分发器（0x6020d14 域 tbh 13 case @0x602126a）内直接调 audio_anc_run(QCY+8164, 1/2)（0x6020cb0/0x6020cc6）——通话状态机驱动 ANC off/on；通话全关且计数归零→ADC 数字侧整体下电（ANC 若在跑将失采——静态可见耦合点，运行表现未测）"
+  ],
+  "timeout_budget": "静态断言，无模型步预算（复跑=§1.7②/§1.8④ 锚点核对）",
+  "model_assumptions": [
+    "全部静态（derived-not-measured，AP/AR 口径）：共存机制值未测——「打开无互斥/关闭有让位/增益后写者胜」是代码形状结论，非运行观测（§1.8④「运行表现未测」原文）",
+    "通话全关→ANC 失采是静态形状推断（hdl+79 归零触发 digital_close 的下游效果），运行表现未测"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "开/关顺序的运行验证与引用计数轨迹实测（归 SW-02 让位变体）",
+    "三方共存时 ADA_CON8 实际终值（后写者胜的运行确认，归注入场景）",
+    "通话↔ANC 联动（audio_anc_run 1/2）的触发序（归 D1 事件循环过线后回归）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "全部静态（derived-not-measured，AP/AR 口径）：共存机制值未测——「打开无互斥/关闭有让位/增益后写者胜」是代码形状结论，非运行观测（§1.8④「运行表现未测」原文）",
+    "通话全关→ANC 失采是静态形状推断（hdl+79 归零触发 digital_close 的下游效果），运行表现未测"
+  ],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}

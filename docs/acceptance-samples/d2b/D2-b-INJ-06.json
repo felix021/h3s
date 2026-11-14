@@ -1,0 +1,30 @@
+{
+  "case_id": "D2-b-INJ-06",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；断言源=d1-acceptance §6.2 b4 行+蓝图 §4.1 wraparound 键+§6 步 5",
+  "initial_state": "预填用例（未执行）。计划起点=三场景（INJ-03/04/05）各自 b1-b3 已过的世界（本条=b4 维度：在三场景上延长注入，不另建世界）",
+  "inputs_schedule": "计划注入（未执行）：三场景各注入 N=max(12, 2×⌈环形总长/PNS⌋+2) 块（两整圈+2；12 保辅听前 10 帧丢弃门后仍有消费样本，蓝图 §3 交付块数约定）——块参数 PNS/LEN/ADR 全部从开链后的寄存器记录读回不预设；数据公式块号字段 k 保证同通道跨块取不同值",
+  "observation_boundary": "计划观察点（未执行）：wraparound 键（蓝图 §4.1：hwp_wraps/blocks_total/stale_frame_negative）+每块 window/first_bytes/formula_tag 与 consumer_calls 的 first_bytes 逐块比对+块号字段 k 单调性（消费侧 DSP 前样本）",
+  "assertions": [
+    "d1-acceptance §6.2 b4：连续运行跨过至少两次完整环回（ADC_HWP 绕 [ADC_ADR,+ADC_LEN) 两圈）——wraparound.hwp_wraps≥2；「单帧通过就声称持续流正常」不算过（codex 反例原样保留）",
+    "停止、重开或一次重配后无越界、旧帧误用、重复消费——数据设计三锚：通道间可区分（高字节 01/02/03）、随块变化（bits7-4 块号字段——检「旧帧重复消费」）、样本序可追踪（bits3-0）；块号字段 k 单调（消费侧出现旧 k 即 FAIL）；停止后再注入不产生交付（「停止之后不再消费旧缓冲」，d1-acceptance §6.3 第 4 条）",
+    "d1-acceptance §6.3 高收益边界两类优先覆盖：IRQ 到达缓冲切换前后（环回点附近的交付序）、停止时尚有待处理帧（stop 时刻 in-flight 块的归宿）——不穷举双核交错",
+    "投影措辞：b2/b4 的一切通过结论=「DMA 完成行为投影下通过」（DMA 总线行为/缓存一致性/真实完成时序不建模，d1-acceptance §6.2 DMA 预填方案段+b4 行承接）"
+  ],
+  "timeout_budget": "三场景延长注入的受控步进（无固定步预算；以断言点/诚实停点为界）",
+  "model_assumptions": [
+    "本记录=预填：断言锚点出自 d1-acceptance §6.2 b4+§6.3+蓝图 §3/§4.1（静态规格），非执行证据",
+    "DMA 完成行为投影（同 INJ-01——b4 是投影敏感度最高的断言类：环回推进由模型维护的 hwp 完成）",
+    "前置=三场景 b1-b3 各自 PASS（蓝图 §6 步 5 排在步 2-4 之后；本条 NOT_RUN 含该排队语义）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 5（b4 三场景+配置切换变体，蓝图 §6 估 1 天）",
+    "重配变体（L1/L2 不同 k 基）随 SW-01 联跑",
+    "停止/重开全生命周期变体（b4 行「停止、重开」三分支中重开一支需另一次开链——视 SW-02 让位变体覆盖度）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-14T10:40:00"
+}
