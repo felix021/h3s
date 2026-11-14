@@ -101,7 +101,10 @@ SCENARIOS = {
                               'conditional flag set (crc_bankb stack plus the derived-not-measured '
                               'opt-ins: every conclusion under this scenario is conditional, not '
                               'a verified boot fact)'),
-        'default_budget': 3500000,
+        # 路 BM §1.3/S19 批 1:W4[4] 簇放行后条件前沿滑过 trim 环(≈4-6×10⁵)
+        # +W2[0] 事件时钟 6 tick+TIMER2 2×4000+尾段,预算 3.5M→5M(新前沿
+        # ≈3.7-3.8M 量级,留事件时钟段余量)。
+        'default_budget': 5000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
         # 单点在 tools/frontier_registry.py,前沿推进后只改 registry(本值自动
@@ -252,8 +255,17 @@ SCENARIOS = {
         # 后未到达)后:setter 全链→dev 层→60KB DMA 缓冲 memset(0x4242 适配
         # 器 count 护栏按首个大清零形状 0x3c00 抬到 100000,语义假设零变化)→
         # 0x606ab0a 的 AUD_CON/DAC_CON RMW 链(AK 容器)后写 DAC_COP=0x7f 撞
-        # unmapped。**新前沿 3,202,148 @ 0x606ab2c**(unmapped_or_readonly_write
+        # unmapped。**旧前沿 3,202,148 @ 0x606ab2c**(unmapped_or_readonly_write
         # 0xfe0534=JL_AUDIO->DAC_COP,+0x34 成员 13 __WO,归下一路三选一)。
+        # 路 B1(S19 冲刺批 1/sim-s19b1)再放行(+545,430 步):W4[4] 簇四件
+        # (PVDD 容器/TIMER2 W1 投影/VLVD canary/DAC_COP write-only 记录)+尾段
+        # 二次勘误件(DAC DMA 四字 write-only 记录)落地后,DAC 启动尾段+延时
+        # 等待族真实执行,core-tick 第 12 次溢出在 IPMASK 屏蔽窗内 held 未决,
+        # 固件 OS 时间更新路径在 0x12b0c2 并行对第二半读 core-tick PRD 撞 BF
+        # 域严格边界。**新前沿 3,747,578 @ 0x12b0c2**(
+        # core_tick_overflow_requires_resolution;批 1 四件全部落地但零运行态
+        # 消费者,BM 预期的 trim 环/TIMER2/canary/邮箱分支未到达,归批 2
+        # 前置处理)。
         'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
@@ -797,41 +809,44 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-14 路 CW(S19 批 0b)条件场景结论(official vs tested_b79,
-    条件 flag 集到当前条件前沿 3,202,148;一切结论条件通过、derived-not-
-    measured;历史世界 689,402(路 BS)/447,383(路 BY)/601,880(路 CB)/
-    3,070,626(路 CG)/3,070,786(路 CL)/3,070,955(路 CO)/3,071,380(路 CQ)/
-    3,071,984(路 F)/3,072,236(路 M)/3,073,402(路 R)/3,073,918(路 V)/
-    3,079,241(路 AA)/3,081,001(路 AK)/3,137,573(路 AN)/3,170,362(路 AS)/
-    3,170,379(路 CV)已被后续投影替换,见 HANDOFF 对应「步含义」段):
+    """钉死 2026-11-14 路 B1(S19 冲刺批 1)条件场景结论(official vs
+    tested_b79,条件 flag 集到当前条件前沿 3,747,578;一切结论条件通过、
+    derived-not-measured;历史世界 689,402(路 BS)/447,383(路 BY)/601,880
+    (路 CB)/3,070,626(路 CG)/3,070,786(路 CL)/3,070,955(路 CO)/
+    3,071,380(路 CQ)/3,071,984(路 F)/3,072,236(路 M)/3,073,402(路 R)/
+    3,073,918(路 V)/3,079,241(路 AA)/3,081,001(路 AK)/3,137,573(路 AN)/
+    3,170,362(路 AS)/3,170,379(路 CV)/3,202,148(路 CW)已被后续投影替换,
+    见 HANDOFF 对应「步含义」段):
 
-    - 双方 3,202,148 步、同停点 0x606ab2c(unmapped_or_readonly_write 写
-      0xfe0534=JL_AUDIO->DAC_COP 值 0x7f,当前条件前沿——路 CW 的 DAC_VL0
-      配置读放行(合成初始字 0 首读+读回=最后写值;读值只进 insert 不进
-      分支、双通道调用 0x6071b76 写回恒 0x0,ones 探针 0xffffffff 一次性
-      分叉同停点同步数=观察路径对初值不敏感)+event_clock 进条件栈(本
-      前缀惰性,virtual_model_steps_advanced=0——首个全核 IDLE=W2[0]
-      os_time_dly 在停点后未到达)后 +31,769 步:setter 全链→dev 层
-      0x6064162→DMA 缓冲长计算(rep 30 体)→ROM memset(0x18e180,0,
-      0xf000)(0x4242 适配器 count 护栏按首个大缓冲清零形状抬到 100000,
-      三项语义假设零变化)→0x606ab0a 的 AUD_CON|=0x100+DAC_CON 五连 RMW
-      (AK 容器服务)后写 DAC_COP=0x7f 撞 unmapped——W1[3] 尾段 DAC 簇里
-      既有白名单外的下一成员(br28.h +0x34 成员 13 __WO),归下一路三选
-      一)、per-core {0:3191229,1:11251}一致;stop parity 全同——
-      official↔b79 parity 延长到条件前沿 3,202,148,控制流零分歧、
+    - 双方 3,747,578 步、同停点 0x12b0c2(core_tick_overflow_requires_
+      resolution,当前条件前沿——路 B1 的 W4[4] 簇四件+DAC DMA 尾段二次
+      勘误件落地(DAC_COP/DMA write-only 记录+PVDD 容器+TIMER2 W1 投影+
+      VLVD canary+FD31 RES S19 值表)后 +545,430 步:DAC 启动尾段八条
+      DAC_CON 写回+四条 DAC DMA 配置写(AK 容器/新 write-only 记录服务)→
+      延时等待族 61 个 Timer0 窗口(到期 311→372 全交付/ACK,reti_from 全
+      在 0x12e282/84/86 延时循环三址)→core-tick 第 11 次溢出交付/ACK、
+      **第 12 次溢出在 IPMASK 屏蔽窗内 held 未决**,固件 OS 时间更新路径
+      (Timer0 handler 的 tick 处理→包装 0x12b14c→内核定时器助手 0x12b0ba)
+      在并行对第二半读 core-tick PRD 撞 BF 域严格停——**批 1 四件全部
+      落地但零运行态消费者**(TIMER2 零写/canary 零访问/PVDD 零写/RES
+      新行零消费/邮箱 0x12CC94 未到达),BM 预期分支未执行,归批 2 前置
+      处理)、per-core {0:3736721,1:11251}一致;stop parity 全同——
+      official↔b79 parity 延长到条件前沿 3,747,578,控制流零分歧、
       无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,170,379,
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..3,747,578,
       超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
       GPIO TX/RX 复用链+Timer0 交付往返+JL_IMAP 输入复用链+fifo_reset+
       uart_init 收尾+init 链前三项+JL_WL_AUD entry 写+场景 walker 查名链
       +跨页拆分后的完整 5×walker 链+ADC reset/S1..S5/音频 init 尾块+
-      DAA_CON1 RMW→DAC_VL0 setter 入口)没有消费任何新的镜像差异;
+      DAA_CON1 RMW→DAC_VL0 setter 入口→DAC_COP/DMA 写域→延时等待族)没有
+      消费任何新的镜像差异(CRC 轮数 32/结果 74/3041 字节全不变——延时
+      等待段零新 CRC 轮);
     - final report 差异仍恰好 12 处(11 处 CRC result_reads + 1 处 watch r0;
       路 AN 的 5 处=walker 链新 CRC 轮序号 37/43/49/55/61,路 AS 再加 2 处
       =尾块新 CRC 轮序号 67/73——每六值循环组一处镜像相关差异,镜像字节
-      仍只以寄存器值/CRC 结果显形,存储字节零差异;路 CV 的 +17 步对两镜像
-      完全同构,DAA_CON1 容器报告两侧逐字节相同,不新增差异)。
+      仍只以寄存器值/CRC 结果显形,存储字节零差异;路 B1 的 +545,430 步
+      对两镜像完全同构,新容器报告两侧逐字节相同,不新增差异)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
     pairs = {p['name']: p for p in report['pairs']}
@@ -845,13 +860,13 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['stop']['address'] == conditional['stop']['address'] and
-                run['per_core_steps'] == {'0': 3191229, '1': 11251},
+                run['per_core_steps'] == {'0': 3736721, '1': 11251},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (3202148 @ 0x606ab2c, the whole-word store of '
-                '0x7f to 0xfe0534 JL_AUDIO->DAC_COP — the DAC-output gate function '
-                '0x606ab0a entered right after the route-CW DAC_VL0 release completed '
-                'the setter and the 60KB DMA-buffer clear)')
+                'conditional frontier stop (3747578 @ 0x12b0c2, the core-tick PRD read in '
+                'the parallel-pair second slot inside the kernel timer-program helper '
+                '0x12b0ba — overflow #12 held unresolved in the IPMASK-masked window, the '
+                'route-BF strict boundary reached after the route-B1 W4[4] releases walk '
+                'the DAC start tail and the sixty-one-window delay family)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
@@ -906,7 +921,7 @@ def main():
                              '(every conclusion under it is conditional, not a verified boot fact)')
     parser.add_argument('--budget', type=int, default=None,
                         help='per-run step budget (default: scenario-specific; crc_bankb 300000, '
-                             'p11_heap_experimental 720000)')
+                             'p11_heap_experimental 5000000)')
     parser.add_argument('--self-check', action='store_true',
                         help='pin the official-vs-tested_b79 conclusion of the selected scenario with '
                              'assertions (repository images only, no private artifacts)')

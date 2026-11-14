@@ -9,6 +9,50 @@ import operator
 from probe_boot import Blocked, IrqDeliveryRequest
 
 TIMER0=0xfd0400
+# 路 BK/S19 批 1:JL_TIMER2(br28.h ls_base+map_adr(0x06,0),CON/CNT/PRD 与
+# Timer0 同族 JL_TIMER_TypeDef)。W4[4] 0x60685fe→0x12cd26 延时 helper 的
+# 忙等域:整字写 0x4000(清 pending 停表态)/CNT=1/PRD=[0x129D88]×us/1e6
+# (us=1000→200 LRC tick)/CON=0xC01(LRC 源 src3、div=1、mode1)启动,退出
+# 写 0xCC01(bit14 W1C)与 0(停表)——全 26 指令反汇编见 docs/timer2-
+# eventclock-design.md §1.3。
+TIMER2=0xfd0600
+# 特殊写 (cnum<<11)+0xFFE1B0(raw 立即数 0x3FF86C<<2;路 BK §1.2 修正 BA 的
+# 0xFFF130 笔误):SDK csfr.h JL_TypeDef_q32DSP index 0x6c=IWKUP_NUM(IPMASK+8,
+# GIEMASK 后一槽),写值 6=hwi.h IRQ_TIME2_IDX,写时机在 idle 前——「本核
+# idle 唤醒中断号设为 TIMER2」读法多点互证,硅效果未测量,建模 write-only
+# 位记录。canonical IPMASK=0xffe1a8+0x8 与 banked 0xffe168 视图同槽。
+IWKUP_NUM_BASE=0xFFE1B0
+IWKUP_NUM_ADDRESSES=(IWKUP_NUM_BASE,IWKUP_NUM_BASE+0x800)  # per-core +cnum*0x800
+# LRC 名义频率(derived-not-measured):AL 恒等式 7.68e9/38400=200000,即固件
+# 自己的名义常数([0x129D88] 均值,trim 结果未测量)。16MHz RC16M 参考系下
+# 1 LRC tick=80 参考 tick;每模型步 4 参考 tick → 1 LRC tick=20 模型步、
+# 1ms(200 LRC tick)=恰 4000 模型步(闭式,docs/timer2-eventclock-design.md §3.1)。
+LRC_HZ_NOMINAL=200000
+LRC_REF_TICKS_PER_LRC_TICK=16_000_000//LRC_HZ_NOMINAL  # =80
+# 路 BM §1(S19 批 1):W4[4] PVDD/trim 域容器三地址(p33_sfr.h 纯地址宏,
+# 无 __RW/__RO/__WO 标注——读回语义取 VOLTAGE_CONFIG/P33_ANALOG_CONFIG/
+# p33_analog_tail 一脉的既有先例,不臆造硅模拟状态)。P3_ANA_CON13/
+# P3_ANA_CON1/P3_PVDD0_AUTO;P3_PVDD1_AUTO(0xf2c110)已由 VOLTAGE_CONFIG
+# 建模、P3_ANA_CON5(0xf2c254)已由 p33_analog_config 建模,不并入本常量
+# (BV/BN 两次先例的同一纪律:并入会改「旧容器开而本开关关」世界的报告形状)。
+JL_PVDD_TRIM_CONFIG=(0xf2c274,0xf2c244,0xf2c10c)
+# 路 BM §4.3 行 0b 勘误/S19 批 1 ④:JL_AUDIO->DAC_COP(0xfe0534=JL_AUDIO
+# 基址 0xfe0500+0x34,br28.h 成员 13 __WO,DAC chopper/泵配置字)。全 app
+# 恰两处访问、全部纯写 0x7F:W1[3] 尾段输出级门控 0x606ab2c([r5+52],
+# r5=0xfe0500)与音频域 0x606e038(li 0xfe0534 直存,esco/ANC 邻域函数);
+# 零读回观测(D2 场景表的 0xfe0534 行属 D1 后音频任务域)——按消费面判定
+# =write-only 整字记录(路 CV 分类先例:__WO 裁剪操作字,无读侧不立容器)。
+JL_AUDIO_DAC_COP=0xfe0534
+# 路 BM §4.3 行 0b 勘误之二/S19 批 1 ④续:W1[3] 尾段 DAC 启动函数 0x6071e74
+# 在 call 0x606ab0a(输出级门控)返回后的四个 DAC DMA 配置整字写(0x6071e92
+# 起,[r10+k],r10=0xfe0500):[+8]=1、[+4]=0x18e180(60KB DMA 缓冲首址,与
+# 0x6071d50 memset 目的同址互证)、[+0x14]=0、[+0x10]=0——成员名按路 AG
+# wlaud-init-map「DAC_LEN/ADR/HRP/PNS 整字写」的布局链([SDK推断]级命名,
+# br28.h JL_AUDIO_TypeDef 全 __RW 家族);探路运行实证**恰四写、零读回、
+# 零 RMW**(RMW 面 0x6071eb8 的 [r10+0]|=0x110 是 DAC_CON,AK 容器服务)。
+# D2 场景表对 0xfe0504/08 的「DMA 指针/计数读×6」消费面属 tone/PCM 推送域
+# (0x607236c caller 0x607249c/0x6073258,D1 后)。
+JL_AUDIO_DAC_DMA_WORDS=(0xfe0504,0xfe0508,0xfe0510,0xfe0514)
 PLL0=0xfd4600
 CLOCK0=0xfd0018
 SYS_DIV=0xfd0014
@@ -2662,6 +2706,149 @@ class JLAudioDacVl0Registers:
                               'NOT verify any audio output')}
 
 
+class JLAudioDacCopRegisters:
+    """JL_AUDIO->DAC_COP(0xfe0534)写侧 write-only 整字记录(opt-in,路 BM/S19 批 1 ④)。
+
+    背景:3,202,148 停点 0x606ab2c(S19 批 0b/路 CW 放行 DAC_VL0 +31,769 步后的
+    下一停点)是 W1[3] 尾段输出级门控函数 0x606ab0a 的 `st.w.modimm [r5+52]=0x7F`
+    (r5=JL_AUDIO 基址 0xfe0500,+0x34=成员 13 **DAC_COP**,br28.h 标 **__WO**,
+    DAC chopper/泵配置字)。写侧三选一按消费面判定(路 CV 分类先例):
+    - **全 app 恰两处访问、全部纯写 0x7F、零读回**:①本停点 0x606ab2c(AK 容器
+      服务 [r5+88] AUD_CON|=0x100 与 [r5+0] DAC_CON 五连 RMW 之后的尾写,
+      本路 codec 复核:0x606ab0e li r5=0xfe0500→0x606ab14..28 六条原子 RMW→
+      0x606ab2c st.w.modimm {n:13,m:127});②0x606e032 `li r5=0xfe0534` 直存
+      +0x606e038 st.w.modimm=0x7F(esco/ANC 邻域函数,音频任务域、本前缀
+      不可达)。D2 场景表(docs/d2-audio-first-scene.md §3)把 0xfe0534 列进
+      「RMW+读回消费」族——那是 D1 后音频任务域的消费面,到达时再逐地址
+      分类(路 BO §5「D1 后另立证据包」同一纪律)。
+    - **裁决**:__WO 裁剪操作寄存器+本前缀无读侧 → write-only 整字记录
+      (p3_ls/jl_uart_init_writes 同族:全字覆盖写、旧值无关、值=真实指令
+      结果);读回/RMW 一律显式严格停(显式 kind 优先于泛 unmapped 便于
+      诊断)。运行效果(chopper/泵电路)不建模。
+    - 白名单恰一字 0xfe0534;JL_AUDIO 数字域其余成员维持 unmapped(路 CW
+      DAC_VL0 白名单边界不变)。
+    """
+
+    ADDRESS=JL_AUDIO_DAC_COP
+
+    def __init__(self):
+        self.stores={JL_AUDIO_DAC_COP:{'values':[],'writes':0,'cores':[]}}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address==JL_AUDIO_DAC_COP
+
+    def write(self,address,value,core):
+        if address!=JL_AUDIO_DAC_COP:raise ValueError('not the modeled JL_AUDIO DAC_COP')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('jl_audio_dac_cop_read_not_modeled',address=hex(JL_AUDIO_DAC_COP))
+
+    def report(self):
+        return {'addresses':[hex(JL_AUDIO_DAC_COP)],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('JL_AUDIO = hs_base + map_adr(0x05, 0x00) = 0xfe0500 (br28.h all-__RW '
+                              'JL_AUDIO_TypeDef), DAC_COP at +0x34 = member 13 marked __WO (the DAC '
+                              'chopper/pump configuration word)'),
+                'whitelisted_words':('exactly the one JL_AUDIO->DAC_COP word; the rest of the JL_AUDIO '
+                                     'block keeps its route-CW boundaries (the digital domain stays '
+                                     'unmapped, a separate evidence package after D1)'),
+                'observed_shapes':('whole-word stores of 0x7F only: 0x606ab2c st.w.modimm [r5+52] '
+                                   '(the W1[3]-tail DAC-output gate function 0x606ab0a, r5=0xfe0500, '
+                                   'right after the AUD_CON|=0x100 and five DAC_CON RMWs served by the '
+                                   'route-AK container) and 0x606e038 st.w.modimm [r5+0] (li '
+                                   '0xfe0534 direct store, the esco/ANC-adjacent audio-domain '
+                                   'function outside this prefix); zero readback sites in the whole '
+                                   'app (the D2-scene RMW/read classification of 0xfe0534 belongs to '
+                                   'the post-D1 audio-task domain)'),
+                'write_only':True,'readback_not_modeled':True,
+                'assumption':('write-only word record (a simulator capability; the br28.h __WO mark '
+                              'plus the all-write/no-read consumption face motivate it, not a '
+                              'measured WO property claim); stored values are real executed results '
+                              '(0x7F), never invented; no chopper/pump circuit or audio output is '
+                              'modeled — this records that the DAC output-stage gate store executed')}
+
+
+class JLAudioDacDmaWriteRecords:
+    """JL_AUDIO DAC DMA 配置四字(0xfe0504/08/10/14)写侧 write-only 整字记录
+    (opt-in,路 BM §4.3 行 0b 勘误之二/S19 批 1 ④续)。
+
+    背景:批 1 放行 DAC_COP(3,202,148 停点)后 +35 步撞 0x6071e92 写
+    0xfe0508=1——W1[3] 尾段 DAC 启动函数 0x6071e74 在 call 0x606ab0a(输出级
+    门控,路 CW 停点所在函数)返回后的四个整字写(BM §4.3 行 0b「W1[3] 尾段
+    …通过」的第二次勘误:AK/CV/CW 白名单之外该尾段还有 DMA 配置四字)。
+
+    证据(本路 codec 复核 + 一次性探路运行实证,探路脚本不进仓):
+    - 写序列 0x6071e92..0x6071ea8:`[r10+8]=r4(1)`、`[r10+4]=r0`([r11+48+52]
+      装载的 DMA 缓冲首址 0x18e180——与 0x6071d50 ROM memset 目的 0x18e180
+      同址互证,CW 路 60KB 缓冲清零的消费者)、`[r10+20]=0`、`[r10+16]=0`,
+      随后 `[r10+0]|=0x110`(DAC_CON,AK 容器服务)。
+    - 探路运行(bl整个 hs 音频域写放行的分叉世界)实证该前缀上这四字
+      **恰四写、零读回、零 RMW**——D2 场景表(docs/d2-audio-first-scene.md
+      §3)的「0xfe0504 DMA 指针/计数读×6」消费面属 tone/PCM 推送域
+      (0x607236c,caller 0x607249c/0x6073258,D1 后),到达时再逐地址分类
+      (路 BO §5「D1 后另立证据包」同一纪律)。
+    - 裁决:纯配置整字写(全字覆盖、旧值无关、值=真实指令结果)→
+      write-only 记录(p3_ls/DAC_COP 同族);读回显式严格停(显式 kind
+      优先于泛 unmapped);DMA 传输/IRQ39/音频数据流一律不建模。
+    """
+
+    ADDRESSES=JL_AUDIO_DAC_DMA_WORDS
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.ADDRESSES}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled JL_AUDIO DAC DMA word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('jl_audio_dac_dma_read_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('JL_AUDIO = hs_base + map_adr(0x05, 0x00) = 0xfe0500 (br28.h all-__RW '
+                              'JL_AUDIO_TypeDef); the four words at +0x04/+0x08/+0x10/+0x14 are the '
+                              'DAC DMA configuration block — member names per the route-AG '
+                              'wlaud-init-map layout chain (ADR/LEN/HRP/PNS whole-word writes, '
+                              '[SDK-inferred] naming level)'),
+                'whitelisted_words':('exactly the four DAC DMA words of the W1[3]-tail start '
+                                     'function 0x6071e74; the D2-scene DMA pointer/count reads of '
+                                     '0xfe0504/08 belong to the post-D1 tone/PCM push domain and '
+                                     'stay strictly stopped'),
+                'observed_shapes':('whole-word stores only, right after the output-stage gate call '
+                                   'returns: 0x6071e92 [r10+8]=1, 0x6071e9e [r10+4]=0x18e180 (the '
+                                   '60KB DMA buffer base, same address as the 0x6071d50 ROM memset '
+                                   'destination — the route-CW buffer-clear consumer), 0x6071ea4 '
+                                   '[r10+20]=0, 0x6071ea8 [r10+16]=0; the following [r10+0]|=0x110 '
+                                   'is DAC_CON served by the route-AK container; a pathfinding run '
+                                   'with the whole hs audio write family released proved exactly '
+                                   'four writes, ZERO reads and ZERO RMWs on these words before '
+                                   'the next boundary'),
+                'write_only':True,'readback_not_modeled':True,
+                'assumption':('write-only word records (values are real executed results, never '
+                              'invented; the zero-read consumption face on this prefix motivates '
+                              'the record, not a measured WO property claim); no DMA transfer, '
+                              'no IRQ39 event and no audio data flow is modeled — this does NOT '
+                              'verify any audio output')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -3816,6 +4003,175 @@ class Timer0:
         return -(-(den*needed-self.source_remainder)//num)
 
 
+class Timer2Delay:
+    """JL_TIMER2(0xfd0600 族)延时域投影(opt-in,路 BK 全设计/S19 批 1 落地)。
+
+    W4[4] PVDD/trim 域的 0x60685fe→0x12cd26(us) 延时 helper(慢路恰 2 事务、
+    快路恰 1,BK §1.4 call 偏移验算):CON=0x4000 清 pending 停表态→CNT=1→
+    PRD=[0x129D88]×us/1e6(下限 2)→CON=0xC01 启动(LRC 源 src=3<<10、div=0<<4、
+    mode=1)→[(cnum<<11)+0xFFE1B0]=6(IWKUP_NUM,write-only 记录)→忙等环
+    0x12cd76 idle→0x12cd78 读 CON→0x12cd7a ext.l.s+ifs(r2>=0) 测 bit15 符号位
+    (置位退出、无界)→退出 r0|=1<<14(W1C)写回→CON=0 停表→pop。全 26 指令
+    与 BA §2.3/BK §1.3 互证(本路用仓库 codec 从 flash 母本 0x060c64fe 复核)。
+
+    设计裁决(路 BK §2.1,三选一):W1=真计数器+窄域完成唤醒。计数语义与
+    Timer0 同构(mode/src/div 字段位图、W1C bit14、PND bit15、PRD+1 SDK 公式、
+    分数余量累积——差别只有两级分数的第一级是 LRC 1/80 而非 STD12M 3/4);
+    唤醒件=kick 先例的「锚定 PC 完成唤醒」(机器侧 wake_timer2_poll,锚
+    0x12cd76),不建 IRQ6 交付(ICU 使能零证据,W2 否决)、不读时合成 bit15
+    (W3 否决:丢 4000 步语义且解决不了 idle 不可达——BK §2.1 的核心发现:
+    idle_wait 投影的交付→RTI 回被中断 PC=idle 地址→再停泊闭环使忙等环的
+    读指令在无唤醒件时永不可达)。「完成时刻」由模型计数器按事件时钟推进
+    真实到达(N=PRD×20 步是推导结果不是预设延时),投影只声明「计数跨越
+    PRD 时 pending 置位」。
+
+    - 不读 RAM [0x129D88]:固件已把频率信念编进 PRD 写值,模型按写下的 PRD
+      计数(自洽性:BK §3.1——若真实 trim 率≠名义率,PRD 与真实 tick 率同比
+      缩放,模型步数随 PRD 变,不需要知道真实率)。
+    - LRC 名义 200000Hz(derived-not-measured,AL 恒等式);「步数=物理时间」
+      换算永远标 derived。
+    - 退出序列零干预:bit15=1 读回后的 W1C 写(0xCC01)、停表写(CON=0)、pop
+      返回全部真实代码执行。
+    - 不建模清单(BK §2.2-6):TIMER2 IRQ6 交付与 IWKUP_NUM 写的硬件效果
+      (记录 only)、硅 idle 指令语义、LRC 真实频率与抖动、同刻仲裁。
+    """
+
+    LRC_SOURCE=3  # bits10-13 字段值 3=LRC(gptimer_hw.h GPTIMER_CLK_SRC 家族,路 AH「LRC 是字段 3」互证)
+
+    def __init__(self):
+        self.con=self.cnt=self.prd=None
+        self.pending=False
+        # 两级分数余量:第一级 RC16M 参考 tick→LRC tick(1/80),第二级
+        # LRC tick→post-divisor tick(DIVISORS[div],本路径恒 ÷1)。
+        self.lrc_remainder=0
+        self.remainder=0
+        self.expirations=0
+        self.writes=0
+        self.con_reads=0
+        self.advance_calls=0  # advance() 调用计数=模型步(与 counts['completed_model_steps'] 同轴)
+        self.iwkup_writes=[]  # [{'core':c,'address':hex,'value':v}] 有界列表
+        # 事务簿记:CON 启动写(mode 0→1)开一条,advance 到期填 expiry;
+        # poll_wakes 在机器侧事件里(machine.core_woken_by_timer2_completion)。
+        self.transactions=[]
+
+    def handles(self,address):
+        return TIMER2<=address<=TIMER2+8
+
+    def handles_iwkup(self,address):
+        return address in IWKUP_NUM_ADDRESSES
+
+    def write(self,address,value,source_ticks_per_step=4):
+        offset=address-TIMER2
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:
+            raise ValueError('unsigned32 word expected')
+        self.writes+=1
+        if offset==0:
+            # 字段位图校验照 Timer0.write 纪律(BK §2.2-1):mode∈{0,1}(捕获/PWM
+            # 拒绝)、src==3(本路径唯一观测值 0xC01 的 LRC 源;非 LRC 拒绝——
+            # 换算链只建了 LRC)、div 任意(DIVISORS 查表)、bit14 写 1 清 pending
+            # (含复合字 0xCC01:存储 value&~0xC000)、bit15 写忽略。
+            mode=value&3
+            if value&~0xfcf3 or mode not in (0,1):
+                raise Blocked('unsupported_timer_mode',value=hex(value),timer='timer2')
+            if mode and (value>>10)&15!=self.LRC_SOURCE:
+                raise Blocked('unsupported_timer_clock_source',value=hex(value),timer='timer2')
+            if mode and (self.cnt is None or self.prd is None):
+                raise Blocked('uninitialized_timer_count_or_period',timer='timer2')
+            was_counting=self.con is not None and bool(self.con&3)
+            if value&0x4000:self.pending=False
+            self.con=value&~0xc000
+            if mode and not was_counting:
+                # 启动写=新事务(闭式在启动时刻按当前状态计算,BK §3.4)。
+                self.transactions.append({'prd':self.prd,'cnt_start':self.cnt,
+                                          'start_model_step':self.advance_calls,
+                                          'expiry_model_step':None,
+                                          'closed_form_steps':self.steps_to_next_expiration(source_ticks_per_step)})
+        elif offset==4:
+            # CNT 重写=计数器复位,两级分数相位一并归零(Timer0.write 同款)。
+            self.cnt=value;self.lrc_remainder=0;self.remainder=0
+        elif offset==8:
+            self.prd=value
+        else:
+            raise Blocked('unsupported_timer_register',address=hex(TIMER2+offset))
+
+    def write_iwkup(self,address,value,core):
+        """IWKUP_NUM write-only 位记录(值+计数,无读回、无行为效果)。"""
+        if address not in IWKUP_NUM_ADDRESSES:raise ValueError('not a modeled IWKUP_NUM word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:
+            raise ValueError('unsigned32 word expected')
+        self.iwkup_writes.append({'core':core,'address':hex(address),'value':value})
+        if len(self.iwkup_writes)>16:self.iwkup_writes.pop(0)
+
+    def read(self,address):
+        offset=address-TIMER2
+        value={0:self.con,4:self.cnt,8:self.prd}.get(offset)
+        if value is None:
+            raise Blocked('uninitialized_peripheral',address=hex(TIMER2+offset))
+        if offset==0:
+            self.con_reads+=1
+            return value|(0x8000 if self.pending else 0)
+        return value
+
+    def advance(self,source_ticks):
+        if not isinstance(source_ticks,int) or source_ticks<0:
+            raise ValueError('negative/noninteger timer progress')
+        self.advance_calls+=1
+        if self.con is None or self.con&3==0:return
+        # 第一级分数:source_ticks 语义是 RC16M(16MHz)参考系 tick,LRC 计数按
+        # 200k/16M=1/80 换算,分数余量逐步累积(Timer0 STD12M 的 3/4 换算同构)。
+        total=self.lrc_remainder+source_ticks
+        lrc_ticks,self.lrc_remainder=divmod(total,LRC_REF_TICKS_PER_LRC_TICK)
+        divisor=DIVISORS[(self.con>>4)&15]
+        ticks,self.remainder=divmod(self.remainder+lrc_ticks,divisor)
+        # SDK GPTIMER_SYS_SET_PRD(x) writes x-1: period is PRD+1 ticks(Timer0 同式)。
+        periods,self.cnt=divmod(self.cnt+ticks,self.prd+1)
+        self.expirations+=periods
+        if periods:
+            self.pending=True
+            if self.transactions and self.transactions[-1]['expiry_model_step'] is None:
+                self.transactions[-1]['expiry_model_step']=self.advance_calls
+
+    def steps_to_next_expiration(self,source_ticks_per_step):
+        """距下一次到期(periods>=1)的最少模型步数,精确闭式(路 BK §3.2)。
+
+        与 advance() 的两级分数计数逐步互逆:需 post-divisor 域 N=prd+1-cnt 个
+        tick,即 LRC 域累计 M=divisor*N-remainder;再解 (lrc_remainder+4*S)/80>=M
+        得 S=ceil((80*M-lrc_remainder)/4(每步源域进账))。观测形状 div=1/
+        CNT=1/PRD=200 → S=(80×200-0)/4=4000 精确。不在计数或未初始化返回
+        None。只作事件时钟的推进上限;实际置位仍由 advance() 逐步触发。
+        """
+        if self.con is None or not self.con&3 or self.cnt is None or self.prd is None:
+            return None
+        needed=DIVISORS[(self.con>>4)&15]*(self.prd+1-self.cnt)-self.remainder
+        return -(-(LRC_REF_TICKS_PER_LRC_TICK*needed-self.lrc_remainder)//source_ticks_per_step)
+
+    def report(self):
+        return {'con':self.con,'cnt':self.cnt,'prd':self.prd,'pending':self.pending,
+                'expirations':self.expirations,'lrc_nominal_hz':LRC_HZ_NOMINAL,
+                'writes':self.writes,'con_reads':self.con_reads,
+                'transactions':[{**t,'closed_form_steps':t['closed_form_steps']}
+                                for t in self.transactions[-16:]],
+                'iwkup_writes':list(self.iwkup_writes),
+                'sdk_naming':('JL_TIMER2 = ls_base + map_adr(0x06, 0) = 0xfd0600 (br28.h L651-665, '
+                              'CON/CNT/PRD of the JL_TIMER_TypeDef family — same bit layout as '
+                              'Timer0: mode bits0-1, div bits4-7, src bits10-13, PND_CLR bit14 '
+                              'W1C, PND bit15); IWKUP_NUM = (cnum<<11)+0xFFE1B0 (csfr.h '
+                              'JL_TypeDef_q32DSP index 0x6c, IPMASK+8), value 6 = IRQ_TIME2_IDX'),
+                'readback_semantics':('CON bit15 = modeled-pending projection (PND family, '
+                                      'Timer0-precedent: con|(pending<<15)); completion timing = '
+                                      'event-clock counted (1 LRC tick = 80 RC16M ref ticks = 20 '
+                                      'model steps at 4 ref ticks/step; 1ms = PRD 200 = exactly '
+                                      '4000 model steps, closed form), not measured; the wake is '
+                                      'kick-precedent (machine-side anchored poll wake at '
+                                      '0x12cd76), wake_source_unverified'),
+                'assumption':('real counter semantics on the Timer0 family shape (no invented '
+                              'peripheral behavior); LRC nominal 200000 Hz is derived-not-measured '
+                              '(the model counts the written PRD, never reads RAM [0x129D88]); no '
+                              'TIMER2 IRQ6 delivery and no IWKUP_NUM hardware effect is modeled '
+                              '(write-only records) — the ICU enable state has zero evidence '
+                              '(route BK R1); no silicon idle semantics claimed')}
+
+
 class IRQController:
     def __init__(self,*,initial_config=None,initial_ipmask=None,unmaskable_irq_projection=False):
         self.config=[None]*32 if initial_config is None else list(initial_config)
@@ -3878,6 +4234,8 @@ class BR28Model:
                  jl_adda_daa_con1_config_readback=False,
                  jl_audio_dac_vl0_readback=False,
                  p33_canary_projection=False,p33_canary_first_read_words=None,
+                 jl_pvdd_trim_writes=False,timer2_delay_projection=False,
+                 jl_audio_dac_cop_writes=False,jl_audio_dac_dma_writes=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -4299,6 +4657,36 @@ class BR28Model:
                 raise ValueError('invalid P33 canary first-read fixture')
         self.p33_canary=(P33CanaryWatchRegisters(p33_canary_first_read_words)
                          if p33_canary_projection else None)
+        # 路 BM §1(S19 批 1 ①):W4[4] PVDD/trim 域容器——P3_ANA_CON13(0xf2c274)/
+        # P3_ANA_CON1(0xf2c244)/P3_PVDD0_AUTO(0xf2c10c)按路 AM 容器同款「显式
+        # 合成初始字 0+读回=当前寄存器值」seed(seed 语句在 additional_
+        # configuration 初始化后的 seed 段,见下)。不并进 P33_ANALOG_CONFIG/
+        # P33_TAIL_ANALOG_CONFIG 常量(那会改「旧容器开而本开关关」世界的报告
+        # 形状,BV/BN 先例纪律)。p33_sfr.h 纯地址宏、无类型标注——读回语义取
+        # VOLTAGE_CONFIG/P33_ANALOG_CONFIG 一脉先例,不臆造硅模拟状态;P3_PVDD1_
+        # AUTO(0xf2c110,VOLTAGE_CONFIG 已建模)与 P3_ANA_CON5(0xf2c254,AM 已
+        # 建模)是邻域既有面,不在本容器。默认关:三地址保持 unmapped
+        # (3,202,148 后 W4[4] 停点① 0x60686fc 形状),legacy 逐字节不变。
+        self.jl_pvdd_trim_enabled=jl_pvdd_trim_writes
+        # 路 BK(S19 批 1 ②):JL_TIMER2 延时域投影——Timer2Delay 计数器类
+        # (写记录+LRC 源名义 200kHz 分数累积+PRD 跨越置 pending+CON 读回
+        # bit15+IWKUP_NUM 0xFFE1B0 write-only 记录;完成唤醒件在机器侧
+        # wake_timer2_poll,事件时钟期限并入同一 min())。默认 None=关闭
+        # (0x12cd36 unmapped 写停点形状,fd31 系列同款惯例)。
+        self.timer2=Timer2Delay() if timer2_delay_projection else None
+        # 路 BM §4.3 行 0b 勘误(S19 批 1 ④):JL_AUDIO DAC_COP(0xfe0534,
+        # br28.h 成员 13 __WO)写侧 write-only 整字记录——全 app 恰两处纯写
+        # 0x7F(W1[3] 尾 0x606ab2c+音频域 0x606e038)、零读回,按消费面判定
+        # (路 CV 分类先例);D2 场景的 RMW/读面属 D1 后另立证据包。默认关:
+        # 0xfe0534 保持 unmapped(3,202,148 前沿形状),legacy 逐字节不变。
+        self.jl_audio_dac_cop=JLAudioDacCopRegisters() if jl_audio_dac_cop_writes else None
+        # 路 BM §4.3 行 0b 勘误之二(S19 批 1 ④续):W1[3] 尾段 DAC 启动函数
+        # 0x6071e74 的四个 DAC DMA 配置整字写(DAC_COP 放行后 +35 步的
+        # 0x6071e92 写 0xfe0508=1 首)——恰四写零读回(探路实证),write-only
+        # 记录(DAC_COP 同族);DMA 传输/IRQ39/数据流不建模。依赖边挂
+        # jl_audio_dac_cop_writes(执行序 0x6071e92 在 0x606ab2c 之后)。
+        # 默认关:四字保持 unmapped,legacy 逐字节不变。
+        self.jl_audio_dac_dma=(JLAudioDacDmaWriteRecords() if jl_audio_dac_dma_writes else None)
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -4408,6 +4796,14 @@ class BR28Model:
             self.additional_configuration.update(JL_UART_CON_WORDS)
             for address in JL_UART_CON_WORDS:
                 self.registers[address]=0
+        # 路 BM §1(S19 批 1 ①):W4[4] PVDD/trim 域容器三地址 seed(语义全文见
+        # 构造器 jl_pvdd_trim_writes 注释;复合 RMW/显式 ld/st RMW 全走既有通用
+        # 路径,机器侧零新分发)。开关关时不 seed、不进 additional_configuration,
+        # legacy 场景报告逐字节不变。
+        if jl_pvdd_trim_writes:
+            self.additional_configuration.update(JL_PVDD_TRIM_CONFIG)
+            for address in JL_PVDD_TRIM_CONFIG:
+                self.registers[address]=0
         self.counts=Counter();self.writes=[]
         for address,value in (initial_registers or {}).items():
             if address not in (CLOCK0,CLOCK0+4,CLOCK0+8,PLL0) and address not in self.additional_configuration:
@@ -4462,6 +4858,10 @@ class BR28Model:
                                                 or self.fd31_adc_con.handles_res(address))) or
             (self.p33_analog_tail_projection and address==P3_ANA_READ) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
+            (self.timer2 is not None and (self.timer2.handles(address)
+                                          or self.timer2.handles_iwkup(address))) or
+            (self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address)) or
+            (self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -4746,6 +5146,23 @@ class BR28Model:
         if self.p33_canary is not None and self.p33_canary.handles(address):
             self.counts['reads']+=1
             return self.p33_canary.read(address)
+        # JL_TIMER2(路 BK/S19 批 1):CON/CNT/PRD 读回=存储值|pending bit15
+        # (Timer0.read 同式);IWKUP_NUM(0xFFE1B0)write-only,读回一律严格停
+        # (显式 kind 优先于泛 unmapped,便于诊断)。
+        if self.timer2 is not None and self.timer2.handles(address):
+            self.counts['reads']+=1
+            return self.timer2.read(address)
+        if self.timer2 is not None and self.timer2.handles_iwkup(address):
+            raise Blocked('iwkup_num_readback_not_modeled',address=hex(address))
+        # JL_AUDIO DAC_COP(路 BM/S19 批 1 ④):write-only 记录,读回显式严格停。
+        if self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_dac_cop.read(address)
+        # JL_AUDIO DAC DMA 四字(路 BM/S19 批 1 ④续):write-only 记录,读回
+        # 显式严格停(D2 场景的 DMA 指针/计数读属 tone/PCM 推送域,D1 后)。
+        if self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_dac_dma.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -4906,6 +5323,23 @@ class BR28Model:
             # 金丝雀树/低功耗域(路 BV):DVFS st.w.modimm 关断与消费型写回
             # st.w 的整字记录(P_IE 写回先例同款);其余形状由投影拒绝。
             self.p33_canary.write(address,value)
+        elif self.timer2 is not None and self.timer2.handles(address):
+            # JL_TIMER2(路 BK/S19 批 1):CON/CNT/PRD 整字写(0x4000/1/200/
+            # 0xC01 启动/0xCC01 W1C/0 停表,全 26 指令钉死),字段位图校验在
+            # Timer2Delay.write;退出序列零干预(W1C/停表/pop 全真实执行)。
+            self.timer2.write(address,value,self.source_ticks_per_step)
+        elif self.timer2 is not None and self.timer2.handles_iwkup(address):
+            # IWKUP_NUM(0xFFE1B0,[(cnum<<11)+base]=6):write-only 位记录,
+            # 无读回、无行为效果(硅 idle 唤醒选择器语义未测量,路 BK §1.2)。
+            self.timer2.write_iwkup(address,value,self.current_core)
+        elif self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address):
+            # JL_AUDIO DAC_COP(路 BM/S19 批 1 ④):st.w.modimm 0x7F 整字写
+            # 记录(全字覆盖、旧值无关);chopper/泵电路效果不建模。
+            self.jl_audio_dac_cop.write(address,value,self.current_core)
+        elif self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address):
+            # JL_AUDIO DAC DMA 四字(路 BM/S19 批 1 ④续):0x6071e92..ea8 四条
+            # 整字写(LEN/ADR/HRP/PNS),write-only 记录;DMA 传输不建模。
+            self.jl_audio_dac_dma.write(address,value,self.current_core)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -5252,6 +5686,24 @@ class BR28Model:
         rate=self.timer_lsb_ticks_per_step if (timer.con>>10)&15==0 else self.source_ticks_per_step
         return timer.steps_to_next_expiration(rate)
 
+    def timer2_wake_horizon(self):
+        """TIMER2 完成唤醒对事件时钟的期限贡献(路 BK §3.2/G1 第三族)。
+
+        返回距 TIMER2 完成唤醒的模型步数:pending 已置位=1(下一步即唤醒);
+        在计数=Timer2Delay.steps_to_next_expiration 的精确闭式(观测形状
+        div=1/CNT=1/PRD=200 → 恰 4000 步);不在计数/未初始化=None。与
+        timer0_wake_horizon 的分野:无 icfg 资格面(完成唤醒不是 IRQ 交付,
+        只需机器侧有锚点停泊核——该条件由机器侧包装检查),无在途排除
+        (pending 置位后每一步都可唤醒,唤醒即消费)。闭式只作推进上限,
+        实际置位仍由 advance() 逐步触发。
+        """
+        timer=self.timer2
+        if timer is None:return None
+        if timer.pending:return 1
+        if timer.con is None or not timer.con&3 or timer.cnt is None or timer.prd is None:
+            return None
+        return timer.steps_to_next_expiration(self.source_ticks_per_step)
+
     def advance(self,icfg):
         self.counts['completed_model_steps']+=1
         if self.icu is not None:self.icu.advance()
@@ -5300,6 +5752,11 @@ class BR28Model:
         if self.timer.con is None or not self.timer.con&3:self.timer.advance(0)
         elif ((self.timer.con>>10)&15)==0:self.timer.advance(self.timer_lsb_ticks_per_step)
         else:self.timer.advance(self.source_ticks_per_step)
+        # 路 BK/S19 批 1:TIMER2 与 Timer0 同一条推进路(每模型步 advance,事件
+        # 时钟段逐虚拟步——advance_event_clock 调的就是本方法),LRC 1/80 分数
+        # 累积在 Timer2Delay.advance 内部;置位 pending 不抛交付(IRQ6 无 ICU
+        # 证据),唤醒由机器侧锚定轮询件消费。
+        if self.timer2 is not None:self.timer2.advance(self.source_ticks_per_step)
         if self.timer.pending:
             if self.multicore_enabled:
                 for core,irq in enumerate((self.irq,self.irq1)):
@@ -5459,6 +5916,62 @@ class BR28Model:
         if self.p3_ls is not None:result['p3_ls_projection']=self.p3_ls.report()
         if self.fd31_adc_con is not None:result['fd31_adc_con_projection']=self.fd31_adc_con.report()
         if self.p33_canary is not None:result['p33_canary_projection']=self.p33_canary.report()
+        # 路 BM §1(S19 批 1 ①):PVDD/trim 域容器报告——三地址合成初始字 0
+        # seed+读回=当前值(AM 容器族),终值见 registers 键;运行效果(PVDD
+        # 电压/trim 结果)不建模。
+        if self.jl_pvdd_trim_enabled:
+            result['assumptions']['jl_pvdd_trim_writes']=(
+                'W4[4] PVDD/trim-domain container: P3_ANA_CON13 (0xf2c274 = P33_ACCESS(0x9d), '
+                'p33_sfr.h L143), P3_ANA_CON1 (0xf2c244 = P33_ACCESS(0x91), L131) and '
+                'P3_PVDD0_AUTO (0xf2c10c = P33_ACCESS(0x43), L78) seeded with the explicit '
+                'synthetic initial word 0 and read back as the current register value '
+                '(route-AM/VOLTAGE_CONFIG/P33_ANALOG_CONFIG precedent — p33_sfr.h has address '
+                'macros only, no __RW/__RO/__WO, so this is the standing container semantics, '
+                'NOT a reset-value or analog-state claim); all accesses on this path are '
+                'composite RMWs (rmw.and.nmodimm [r8+48]&=0xFF0 family) and explicit ld/st '
+                'read-modify-writes whose read values genuinely participate in the write-backs, '
+                'served by the generic MMIO paths with zero new dispatch; the neighboring '
+                'P3_PVDD1_AUTO (0xf2c110, VOLTAGE_CONFIG) and P3_ANA_CON5 (0xf2c254, route-AM) '
+                'stay under their own switches; no PVDD voltage level, trim result or analog '
+                'behavior is modeled — this releases the register face only')
+        if self.timer2 is not None:
+            result['timer2_delay_projection']=self.timer2.report()
+            result['assumptions']['timer2_delay_projection']=(
+                'JL_TIMER2 delay-domain projection (route-BK design): real counter on the '
+                'Timer0 family shape (mode/src/div bitmap validation, W1C bit14, PND bit15 '
+                'readback, PRD+1 formula, LRC fractional accumulation at the nominal '
+                '200000 Hz — derived-not-measured, the model counts the written PRD and never '
+                'reads RAM [0x129D88]); completion timing is event-clock counted (1 LRC tick '
+                '= 80 RC16M reference ticks = 20 model steps at 4 reference ticks/step, so '
+                'the observed 1ms shape PRD=200 expires after exactly 4000 model steps, '
+                'closed form), never a preset delay; the machine-side anchored poll wake '
+                '(0x12cd76, kick precedent) carries wake_source_unverified; no TIMER2 IRQ6 '
+                'delivery is modeled (ICU enable state has zero evidence, route-BK R1) and '
+                'the IWKUP_NUM (0xFFE1B0, value 6 = IRQ_TIME2_IDX) store is a write-only '
+                'record with no hardware effect claimed')
+        if self.jl_audio_dac_cop is not None:
+            result['jl_audio_dac_cop_write_records']=self.jl_audio_dac_cop.report()
+            result['assumptions']['jl_audio_dac_cop_write_records']=(
+                'JL_AUDIO->DAC_COP (0xfe0534 = JL_AUDIO base +0x34, br28.h member 13 __WO): '
+                'write-only whole-word record (exactly two all-write/no-read sites in the '
+                'whole app: 0x606ab2c in the W1[3]-tail output-stage gate and 0x606e038 in '
+                'the audio-domain function outside this prefix); reads and RMWs strictly '
+                'stop — the D2-scene read/RMW classification of this word belongs to the '
+                'post-D1 audio-task domain; no chopper/pump circuit or audio output is '
+                'modeled — this does NOT verify any audio output')
+        if self.jl_audio_dac_dma is not None:
+            result['jl_audio_dac_dma_write_records']=self.jl_audio_dac_dma.report()
+            result['assumptions']['jl_audio_dac_dma_write_records']=(
+                'JL_AUDIO DAC DMA words (0xfe0504/0xfe0508/0xfe0510/0xfe0514 = base '
+                '+0x04/+0x08/+0x10/+0x14, the ADR/LEN/HRP/PNS block per the route-AG '
+                'wlaud-init-map layout chain): write-only whole-word records of the four '
+                'stores in the W1[3]-tail DAC start function 0x6071e74 (0x6071e92..0x6071ea8, '
+                'right after the output-stage gate call; ADR=0x18e180 is the 60KB DMA buffer '
+                'cleared by the 0x6071d50 ROM memset, route-CW); a pathfinding run proved '
+                'exactly four writes with ZERO reads/RMWs on this prefix — the D2-scene DMA '
+                'pointer/count reads belong to the post-D1 tone/PCM push domain and stay '
+                'strictly stopped; no DMA transfer, IRQ39 event or audio data flow is '
+                'modeled — this does NOT verify any audio output')
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),

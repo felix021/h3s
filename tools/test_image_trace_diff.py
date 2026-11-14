@@ -140,17 +140,23 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert set(CONDITIONAL_EXTRA_FLAGS) == set(frontier_registry.extra_flags(probe_irq_entry))
     # every base switch is a plain boolean opt-in
     assert all(value is True for value in BASE_SCENARIO_FLAGS.values())
-    # the non-boolean conditional flags are exactly the four named data
+    # the non-boolean conditional flags are exactly the five named data
     # fixtures, resolved to the real probe_irq_entry module constants (no copies)
     non_boolean = {switch for switch, value in CONDITIONAL_EXTRA_FLAGS.items() if value is not True}
     assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values',
-                           'jl_adda_daa_con1_initial_fixture'}
+                           'jl_adda_daa_con1_initial_fixture', 'p33_canary_first_read_words'}
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
+    # 路 BM/S19 批 1:条件场景改传扩展表(勘误 BA「trim 环采样 fd31✓」——
+    # 0x10005 缺行,+0x10005:400+0x10001:4);BY/键链场景继续用旧表。
     assert CONDITIONAL_EXTRA_FLAGS['fd31_adc_res_named_values'] \
-        is probe_irq_entry.FD31_ADC_RES_NAMED_VALUES
+        is probe_irq_entry.FD31_ADC_RES_S19_VALUES
+    assert dict(probe_irq_entry.FD31_ADC_RES_S19_VALUES) == {
+        **probe_irq_entry.FD31_ADC_RES_NAMED_VALUES, 0x10005: 400, 0x10001: 4}
     assert CONDITIONAL_EXTRA_FLAGS['jl_adda_daa_con1_initial_fixture'] \
         is probe_irq_entry.JL_ADDA_DAA_CON1_INITIAL_PROBE
+    assert CONDITIONAL_EXTRA_FLAGS['p33_canary_first_read_words'] \
+        is probe_irq_entry.P33_CANARY_FIRST_READ_WORDS
 
 
 def test_scenario_registry_shapes():
