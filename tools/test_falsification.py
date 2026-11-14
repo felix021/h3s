@@ -20,6 +20,7 @@ import argparse
 import json
 import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -27,8 +28,9 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 
 from br28_model import BR28Model, Blocked, TIMER0, IRQ_CONFIG  # noqa: E402
 from probe_boot import ENTRY, IrqDeliveryRequest, application, explore  # noqa: E402
-from probe_boot_handoff import SENTINEL_A, package_header, profile  # noqa: E402
+from probe_boot_handoff import HANDOFF, SENTINEL_A, package_header, profile  # noqa: E402
 from probe_pi32v2 import ROOT, upstream  # noqa: E402
+from world_snapshot import SnapshotError, WorldSnapshot  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +831,195 @@ class ClosedFormStepConstantsTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# AZ-8 场景级快照反例(盲区 B-3 收口,路 B3R/sim-b3r,2026-11-15)。
+#
+# B-3 挂账原文:场景级反例单次世界构建 ~3 分钟,进不了 --units;SNAP 落地
+# probe_boot.explore(snapshot=) 捕获/恢复后,「停点后破坏」类反例降到秒级
+# (docs/snapshot-design.md §4.1 消费者①;「前缀分歧」类仍走慢层 R1/R2/R3)。
+#
+# 世界=公开资产 typed_memory_replay 16,077 步(SNAP fast tier 同款)挂一个
+# 带 Timer0 走表+软件 IRQ pending 的外设模型:外设域访问只有 PLL0.CON0 读,
+# initial_registers={PLL0:1} 与 explore(pll=1) 假设同值,前缀与原世界同停点
+# (unverified_zero_count_rep@16,077);Timer0 con=0x1001(source4/div1)每模型步
+# 恰 4 参考计数、prd=0xFFFFFFF 全程不回绕(pending 恒 False,不触交付路径)。
+# 中点 8,000 捕获后对快照做**值级**篡改——形状闸(manifest/白名单)全部自洽
+# 重 derive 通过,测的是恢复链路携带的值;SNAP 已证的 RAM 字节篡改之外,
+# 本路把破坏类别扩到状态位/计数簿记/容器记录值/pending 位/账本/CPU 状态位
+# 与静态 fixture 八类。每类断言面=①等价对照(纯 json.dumps,插入序可见,
+# 无 diff 白名单)②报告键精确红点(含 check_d1_acceptance 的 _timer0_state
+# 数据源)③恢复侧静态守卫。红=破坏被抓住;「仍绿」=快照恢复路径把破坏
+# 洗掉了(报告从静态重建而非恢复世界读)=假阳性,正是 B-3 要堵的洞。
+#
+# 边界(如实记录):typed_memory_replay 是单核无 machine 世界(explore 的 CPU
+# 形状没有 machine.select() 需要的 icfg_known 属性),M5 机器交付簿记
+# (timer0_irq_deliveries)在该世界不可承载——其破坏反例在慢层 R4(ROM 门控,
+# irq_case 世界,300k+ 步捕获)。M3.timer.delivery_in_flight 不在报告键里,
+# 值级篡改对该字段不可观测,同在 R4 用 M5 形态覆盖。
+def _snapshot_assets_ready():
+    firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+    simulator=ROOT/'tools/reference-cache/pi32v2-isa/tools/llvm/sim.py'
+    return firmware.exists() and simulator.exists()
+
+
+@unittest.skipUnless(_snapshot_assets_ready(),
+                     'official firmware / pinned pi32v2-isa not present in this checkout')
+class SnapshotScenarioFalsificationTests(unittest.TestCase):
+    """B-3 场景级反例:恢复世界→注入一类破坏→短程 resume→既有断言面红。"""
+    MIDPOINT=8000
+
+    @classmethod
+    def make_hardware(cls):
+        from br28_model import BR28Model,PLL0
+        hardware=BR28Model(initial_registers={PLL0:1},          # =explore(pll=1) 假设值
+                           software_irq_command_projection=True,
+                           initial_software_irq_pending=(0x8,0))  # pending word0 bit3
+        hardware.timer.con,hardware.timer.cnt,hardware.timer.prd=0x1001,1000,0xFFFFFFF
+        return hardware
+
+    @classmethod
+    def run_world(cls,budget=None,**snapshot):
+        return explore(cls.module,cls.app,name='typed_memory_replay',adapt_stack=True,
+                       pll=1,r0=HANDOFF,handoff=cls.handoff,
+                       startup_loops=True,budget=budget,hardware=cls.make_hardware(),
+                       snapshot=snapshot or None)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory(prefix='h3s-b3r-')
+        cls.addClassCleanup(cls.temp.cleanup)
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.module=upstream();cls.app=application(firmware)
+        cls.handoff=profile(package_header(firmware),SENTINEL_A)
+        cls.full=cls.run_world(budget=100_000)
+        assert cls.full['stop']['kind']=='unverified_zero_count_rep'   # 前缀与原世界同停点
+        cls.full_dump=json.dumps(cls.full)
+        cls.resume_budget=cls.full['completed_steps']-cls.MIDPOINT+1   # +1=终态 Blocked 重试
+        cls.snapshot=Path(cls.temp.name)/'midpoint.bin'
+        captured=cls.run_world(budget=cls.MIDPOINT,capture=cls.snapshot)
+        assert captured['stop']=={'kind':'instruction_budget'}
+
+    def resume_tampered(self,name,mutate):
+        """载入共享捕获快照→值级篡改→重存(manifest 对 body 形状重 derive,
+        形状闸保持绿——测的是值,不是格式)→恢复续跑到原终点。"""
+        loaded=WorldSnapshot.load(self.snapshot)
+        mutate(loaded)
+        path=Path(self.temp.name)/f'{name}.bin'
+        loaded.save(path)
+        resumed=self.run_world(budget=self.resume_budget,restore=path,
+                               expected_context={'scenario':'typed_memory_replay',
+                                                 'completed_steps':self.MIDPOINT})
+        report=dict(resumed);report.pop('snapshot_restore')
+        return resumed,report
+
+    def assert_caught(self,resumed,report):
+        # 红点一:等价对照(无 diff 白名单)必须红;诚实停形状不变(破坏如实
+        # 呈现在报告键里,既不被恢复洗掉、也没有把世界改成另一种崩溃)。
+        self.assertNotEqual(json.dumps(report),self.full_dump,
+                            'tampered resume still matches the full replay: '
+                            'the restore path washed the corruption out (false positive)')
+        self.assertEqual(resumed['stop']['kind'],self.full['stop']['kind'])
+        self.assertEqual(resumed['completed_steps'],self.full['completed_steps'])
+
+    def test_control_untampered_resume_matches_full_replay(self):
+        # 对照组(AZ-1 先例):未破坏的恢复续跑与完整直跑逐字节相等——
+        # 证明反例组的「抓住」不是「任何恢复都红」的空真。
+        resumed,report=self.resume_tampered('control',lambda loaded:None)
+        self.assertEqual(json.dumps(report),self.full_dump)
+
+    def test_timer0_pending_bit_flip_is_caught(self):
+        # 破坏:翻转 Timer0 pending 状态位(False→True)。icfg gates8/9 未开
+        # (eligible 立即 False,无交付路径),resume 照常到终点——破坏必须
+        # 存活到报告键 peripherals.timer0.pending(check_d1_acceptance 的
+        # _timer0_state 数据源,D1-2 读的就是它)。
+        resumed,report=self.resume_tampered(
+            'timer_pending',lambda loaded:
+            loaded.body['M3']['objects']['timer']['fields'].update(pending=True))
+        self.assert_caught(resumed,report)
+        from check_d1_acceptance import _timer0_state
+        self.assertEqual(_timer0_state(resumed)['pending'],True)
+        self.assertEqual(_timer0_state(self.full)['pending'],False)
+
+    def test_timer0_counter_bias_is_caught(self):
+        # 破坏:Timer0 cnt +4(一个模型步的参考计数量)。恢复世界继续
+        # 走表,篡改按步传播——终点 cnt 恰偏 4。BQ 闭式换算/事件时钟的
+        # horizon 全压在 cnt/两级分数余数上,这类时钟核心状态被恢复洗掉
+        # =所有时序断言失真。
+        resumed,report=self.resume_tampered(
+            'timer_cnt',lambda loaded:
+            loaded.body['M3']['objects']['timer']['fields'].update(cnt=33004))
+        self.assert_caught(resumed,report)
+        from check_d1_acceptance import _timer0_state
+        self.assertEqual(_timer0_state(resumed)['cnt'],
+                         _timer0_state(self.full)['cnt']+4)
+
+    def test_completed_step_counter_bias_is_caught(self):
+        # 破坏:counts 簿记一条(completed_model_steps +1,虚拟时间轴)。
+        # 报告键 peripherals.counts 必须从恢复世界读出偏差。
+        def bias(loaded):
+            counter=loaded.body['M3']['scalars']['counts']['$counter']
+            counter[0][1]+=1
+        resumed,report=self.resume_tampered('counter_bias',bias)
+        self.assert_caught(resumed,report)
+        self.assertEqual(report['peripherals']['counts']['completed_model_steps'],
+                         self.full['peripherals']['counts']['completed_model_steps']+1)
+
+    def test_register_projection_value_bias_is_caught(self):
+        # 破坏:通用寄存器投影容器(写记录值)一条——PLL0 读回记录 1→2。
+        def bias(loaded):
+            loaded.body['M3']['scalars']['registers']['$pairs'][0][1]=2
+        resumed,report=self.resume_tampered('register_bias',bias)
+        self.assert_caught(resumed,report)
+        self.assertEqual(report['peripherals']['registers']['0xfd4600'],'0x2')
+        self.assertEqual(self.full['peripherals']['registers']['0xfd4600'],'0x1')
+
+    def test_software_irq_pending_bit_drop_is_caught(self):
+        # 破坏:移除软件 IRQ pending word0 的 pending 位(value 0x8→0x0,
+        # known 掩码不动)。报告键 peripherals.software_irq_commands.pending
+        # 的 known_value 必须跟着变——「移除一个 pending 位」不能被恢复
+        # 路径静默补回。
+        def drop(loaded):
+            pending=loaded.body['M3']['objects']['software_irq']['fields']['pending']
+            pending[0]['$partial_word']['value']=0
+        resumed,report=self.resume_tampered('sw_irq_drop',drop)
+        self.assert_caught(resumed,report)
+        self.assertEqual(report['peripherals']['software_irq_commands']['pending']['0']['known_value'],'0x0')
+        self.assertEqual(self.full['peripherals']['software_irq_commands']['pending']['0']['known_value'],'0x8')
+
+    def test_memory_event_ledger_bias_is_caught(self):
+        # 破坏:M7 循环账本一条记录值(memory events 首条 bytes 翻一位)。
+        # 账本跨恢复点连续是报告等价的前提(docs/snapshot-design.md §M7)。
+        def bias(loaded):
+            loaded.body['M7']['scalars']['events'][0]['bytes']='01fd1900'
+        resumed,report=self.resume_tampered('ledger_bias',bias)
+        self.assert_caught(resumed,report)
+        self.assertEqual(report['memory_events'][0]['bytes'],'01fd1900')
+        self.assertEqual(self.full['memory_events'][0]['bytes'],'00fd1900')
+
+    def test_cpu_state_bit_flip_is_caught(self):
+        # 破坏:M1 CPU 状态位 sp_known True→False。报告键 last_registers.sp
+        # 由它分派(hex/unknown)——恢复世界必须如实呈现「栈指针未知」。
+        def flip(loaded):
+            loaded.body['M1']['objects']['0']['fields']['sp_known']=False
+        resumed,report=self.resume_tampered('sp_known',flip)
+        self.assert_caught(resumed,report)
+        self.assertEqual(report['last_registers']['sp'],'unknown')
+        self.assertNotEqual(self.full['last_registers']['sp'],'unknown')
+
+    def test_static_fixture_bias_refused_by_restore_guard(self):
+        # 破坏(守卫面):静态 fixture 值篡改(initial_registers 的 PLL 假设
+        # 1→2,形状自洽)。恢复侧 check_static 对照构造链重建的静态视图,
+        # 值不一致必须拒载——「重建世界」不能用另一套静态配置偷换快照世界。
+        loaded=WorldSnapshot.load(self.snapshot)
+        loaded.body['M3']['static']['initial_registers']['$pairs'][0][1]=2
+        path=Path(self.temp.name)/'static_bias.bin'
+        loaded.save(path)
+        with self.assertRaisesRegex(SnapshotError,'static configuration mismatch'):
+            self.run_world(budget=10,restore=path,
+                           expected_context={'scenario':'typed_memory_replay',
+                                             'completed_steps':self.MIDPOINT})
+
+
+# ---------------------------------------------------------------------------
 # 慢场景层(一次性取证,不在 check_local):
 #   R1 条件前沿撤掉 RES fixture → 应停 689,402 fd31_adc_res_not_modeled;
 #   R2 条件前沿撤掉 Timer0 IRQ4 交付 → 应在首次合格 pending 处诚实停
@@ -906,6 +1097,52 @@ def scenario_evidence(rom_path,firmware_path,out_path):
                                          for s in kc['res_fixture_switches'])),
         'observed_posts':sorted(observed),'expected_posts':sorted(expected),
         'caught':observed!=expected}
+    # R4:机器交付簿记值级破坏(B-3 收口的 M5 形态,路 B3R;units 层不可承载
+    # ——typed_memory_replay 单核无 machine,见 AZ-8 注释的边界说明)。条件
+    # 前沿 flag 全栈 N=400,000 预算停点捕获,跨过首次 Timer0 STD12M 到期
+    # (343,252)故 timer0_irq_deliveries 非空;对照组=未篡改恢复续跑 vs 完整
+    # 直跑逐字节相等;破坏=首条交付簿记的 reti_from 改一字符(形状闸自洽
+    # 重 derive)——machine 报告键 timer0_irq_entry_projection.deliveries[0]
+    # 必须偏离。交付簿记是 one-shot 投影的「已交付」判定源,恢复路径若
+    # 洗掉/重建它=假账本。预算口径(实测):instruction_budget 的预算计
+    # **尝试步数**,completed 与预算的差=泊核/未完成尝试(本世界 397,845
+    # completed@budget 400,000);对照的 full 预算必须=捕获预算+X(SNAP
+    # artifact tier 同款),capture_steps+X 会在捕获点前耗尽预算。
+    flags4=dict(scenario_flags('p11_heap_experimental',pie))
+    # 四次调用共享一个场景名:capture_context 的 scenario 记录场景名参数,
+    # expected_context 必须与捕获时一致(名字不同=上下文闸拒载)。
+    with tempfile.TemporaryDirectory(prefix='h3s-b3r-slow-') as work4:
+        snap4=Path(work4)/'m5-deliveries.snapshot'
+        pie.irq_case(module,app,header,rom,'az_falsify_m5_delivery_bias',**flags4,
+                     flash_image_bytes=image,
+                     snapshot={'budget':400_000,'capture':str(snap4)})
+        loaded4=WorldSnapshot.load(snap4)
+        capture4=loaded4.header['capture_context']['completed_steps']
+        context4={'scenario':'az_falsify_m5_delivery_bias','completed_steps':capture4}
+        deliveries4=loaded4.body['M5']['scalars']['timer0_irq_deliveries']
+        full4=pie.irq_case(module,app,header,rom,'az_falsify_m5_delivery_bias',**flags4,
+                           flash_image_bytes=image,snapshot={'budget':400_000+200})
+        ctrl4=pie.irq_case(module,app,header,rom,'az_falsify_m5_delivery_bias',**flags4,
+                           flash_image_bytes=image,
+                           snapshot={'budget':200,'restore':str(snap4),
+                                     'expected_context':context4})
+        ctrl4=dict(ctrl4);ctrl4.pop('snapshot_restore')
+        deliveries4[0]['reti_from']=deliveries4[0]['reti_from'][:-1]+'0'
+        loaded4.save(snap4)
+        r4=pie.irq_case(module,app,header,rom,'az_falsify_m5_delivery_bias',**flags4,
+                        flash_image_bytes=image,
+                        snapshot={'budget':200,'restore':str(snap4),
+                                  'expected_context':context4})
+    r4_report=dict(r4);r4_report.pop('snapshot_restore')
+    full_d=full4['machine']['timer0_irq_entry_projection']['deliveries']
+    r4_d=r4_report['machine']['timer0_irq_entry_projection']['deliveries']
+    findings['R4_m5_delivery_bookkeeping_bias']={
+        'capture_steps':capture4,'deliveries_at_capture':len(deliveries4),
+        'control_resume_equals_full':json.dumps(ctrl4)==json.dumps(full4),
+        'full_first_delivery_reti_from':full_d[0]['reti_from'],
+        'biased_first_delivery_reti_from':r4_d[0]['reti_from'] if r4_d else None,
+        'caught':(json.dumps(r4_report)!=json.dumps(full4) and bool(r4_d)
+                  and r4_d[0]['reti_from']!=full_d[0]['reti_from'])}
     out_path.parent.mkdir(parents=True,exist_ok=True)
     out_path.write_text(json.dumps(findings,indent=1,sort_keys=True,default=str))
     print(json.dumps(findings,indent=1,sort_keys=True,default=str))
