@@ -9,6 +9,7 @@ cmd 9 一支有路 BW 实测=PASS/conditional，完整 ADC 闭环串联=BLOCKED 
 面板=全部 `D2-a-*` 行。
 
 - 复核合法性：`python3 tools/acceptance_record.py --validate docs/acceptance-samples/d2a`
+- 全局汇总：[../acceptance-dashboard.md](../acceptance-dashboard.md)（六目录一页面板；记录改动后 `python3 tools/acceptance_dashboard.py` 再生成，`check_local --units` 校验一致性）
 - 再生成本页表格（会整页覆写本文件，头部需手工补回）：
   `python3 tools/acceptance_record.py --summary --dir docs/acceptance-samples --dir docs/acceptance-samples/d2a --output docs/acceptance-samples/d2a/README.md`
 - 记录格式与校验规则：docs/d1-acceptance.md §8/§8.1。

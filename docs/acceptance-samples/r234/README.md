@@ -20,6 +20,7 @@ docs/app-protocol.md+docs/eq-cmd-0x22-layout.md+docs/cmd-0x17-0x1d-layout.md+too
 | 主仿真前沿推进（非授权类，模型件缺失） | 0x0600db3c 键循环相位（R2 接驳执行）与 RCSP/任务派发相位（R4 分发链执行）未达——已合并前沿=条件线 3,137,573 步 @ 0x60719c0 | R2-HEA-06（blocked_missing 第 1/2 条）、R4-VM-05（blocked_missing 第 1 条）——非授权缺口，属 D1 事件循环梯队的下游 |
 
 - 复核合法性：`python3 tools/acceptance_record.py --validate docs/acceptance-samples/r234`
+- 全局汇总：[../acceptance-dashboard.md](../acceptance-dashboard.md)（六目录一页面板；记录改动后 `python3 tools/acceptance_dashboard.py` 再生成，`check_local --units` 校验一致性）
 - 再生成本页表格（会整页覆写本文件，头部需手工补回）：
   `python3 tools/acceptance_record.py --summary --dir docs/acceptance-samples/r234 --output docs/acceptance-samples/r234/README.md`
 - 记录格式与校验规则：docs/d1-acceptance.md §8/§8.1。
