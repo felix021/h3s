@@ -3,7 +3,7 @@
 数据=`docs/acceptance-samples/` 全部记录的只读汇总(不改记录;每条链接直达 JSON)。
 记录改动后须再生成:`python3 tools/acceptance_dashboard.py`;
 `check_local --units` 会校验本页与记录一致(test_acceptance_dashboard.py)。
-数据截至(记录 recorded_at 最大值)=2026-11-15T00:36:00 ｜ 共 70 条(六目录 68+上级散置 2)。
+数据截至(记录 recorded_at 最大值)=2026-11-15T00:58:00 ｜ 共 70 条(六目录 68+上级散置 2)。
 
 ## 1. 总览
 
@@ -181,17 +181,17 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [D2-b-INJ-06](acceptance-samples/d2b/D2-b-INJ-06.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |
 | [D2-b-SW-01](acceptance-samples/d2b/D2-b-SW-01.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |
 | [D2-b-SW-02](acceptance-samples/d2b/D2-b-SW-02.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |
-| [R2-COT-01](acceptance-samples/cot/R2-COT-01.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R2-COT-02](acceptance-samples/cot/R2-COT-02.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R2-COT-03](acceptance-samples/cot/R2-COT-03.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R2-COT-04](acceptance-samples/cot/R2-COT-04.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R2-COT-05](acceptance-samples/cot/R2-COT-05.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R2-COT-06](acceptance-samples/cot/R2-COT-06.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R4-COT-01](acceptance-samples/cot/R4-COT-01.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R4-COT-02](acceptance-samples/cot/R4-COT-02.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
+| [R2-COT-01](acceptance-samples/cot/R2-COT-01.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
+| [R2-COT-02](acceptance-samples/cot/R2-COT-02.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
+| [R2-COT-03](acceptance-samples/cot/R2-COT-03.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
+| [R2-COT-04](acceptance-samples/cot/R2-COT-04.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
+| [R2-COT-05](acceptance-samples/cot/R2-COT-05.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
+| [R2-COT-06](acceptance-samples/cot/R2-COT-06.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
+| [R4-COT-01](acceptance-samples/cot/R4-COT-01.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
+| [R4-COT-02](acceptance-samples/cot/R4-COT-02.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
 | [R4-COT-03](acceptance-samples/cot/R4-COT-03.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R4-COT-04](acceptance-samples/cot/R4-COT-04.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
-| [R4-COT-05](acceptance-samples/cot/R4-COT-05.json) | cot | NOT_RUN | none | 2026-11-14T21:40:00 |
+| [R4-COT-04](acceptance-samples/cot/R4-COT-04.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
+| [R4-COT-05](acceptance-samples/cot/R4-COT-05.json) | cot | NOT_RUN | none | 2026-11-15T00:58:00 |
 | [D3-AUD-01](acceptance-samples/d3/D3-AUD-01.json) | d3 | NOT_RUN | none | 2026-11-14T21:18:45 |
 | [D3-EVT-01](acceptance-samples/d3/D3-EVT-01.json) | d3 | NOT_RUN | none | 2026-11-14T21:18:45 |
 | [D3-PRB-01](acceptance-samples/d3/D3-PRB-01.json) | d3 | NOT_RUN | none | 2026-11-14T21:18:45 |
