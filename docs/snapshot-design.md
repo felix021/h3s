@@ -356,7 +356,7 @@ probe_boot/probe_irq_entry/br28_model/br28_machine 等既有文件）；**捕获
 | 漂移双闸：①代码指纹（§2.3 源文件 sha + upstream PIN + 格式版本 + 适配器形状）②manifest（从 body 派生的形状校验和 + restore 侧与当前适配器字段表对照），不匹配拒载并报类名 | 就绪 | code_fingerprint / derive_manifest / from_bytes / restore_world |
 | 适配器注册表（M1–M9 各一个 capture_fn/restore_fn 注册点；M4/M8/M9 显式登记为「设计性缺席/接线半」） | 就绪 | register_module / MODULES |
 | 小世界最小实现：M1 平面 CPU 桩（15 字段）、M2 三字典 Memory、M3 Timer0/双 core tick/双 IRQ 控制器/软件 IRQ/寄存器与 GPIO 投影/标量簿记、M5 机器交付簿记（20 标量+core 存在性）、M6 MMU、M7 循环账本 | 就绪 | tools/world_snapshot.py 各 _capture_m*/_restore_m* |
-| 静态开关守卫（捕获时对未被捕获、非 fixture 的属性种类拒绝并报名字；恢复时静态视图不一致拒绝——「另一套启动条件」的机制化防漏） | 就绪 | encode_static_value/check_static；M4 投影族非 None 即拒载（missing-state guard） |
+| 静态开关守卫（捕获时对未被捕获、非 fixture 的属性种类拒绝并报名字；恢复时静态视图不一致拒绝——「另一套启动条件」的机制化防漏） | 就绪 | encode_static_value/check_static；M4 投影族适配器落地（§5.5）后，守卫下沉到每投影对象一级（适配器外的属性种类仍显形拒载） |
 | round-trip 自反（检查 #0 的模块半形态：恢复零步逐字段相等 + 重捕获字节同一） | 就绪 | assert_equal + test_world_snapshot.SmallWorldRoundTrip |
 | fast tier 测试（22 例：小世界往返+逐字段比对+字节同一；反例两条——漏应用字段/注偏差必须红；指纹闸/manifest 闸/篡改拒载；run-length 边界含洞语义；白名单拒绝） | 就绪 | tools/test_world_snapshot.py，进 `check_local --units`（check_local 一行接线） |
 
@@ -369,10 +369,32 @@ probe_boot/probe_irq_entry/br28_model/br28_machine 等既有文件）；**捕获
    「向后兼容第四可选参数」方案）；
 2. M1 完整字段清单（执行上下文/repeat/after_then/银行簿记/任务帧/IcfgState——最小
    15 字段清单已在注册表，扩展即改 M1_CPU_FIELDS，旧快照自然被双闸拒绝再生成）；
-3. M4 约 25 个投影族类的适配器（当前非 None 即拒载）；
+3. ~~M4 约 25 个投影族类的适配器~~ **已完成**（路 BL/sim-snapm4，2026-11-14：
+   31 槽位/30 类/121 状态字段全覆盖，含一次性事件位与进位状态；见 §5.5）；
 4. 小世界往返升级为「快照于中点、恢复到终点、对照完整直跑」的 fast tier 全量形态
    （§3.2；等价对照=恢复合法性证明仍是接线半的验收，本路不声称）；
 5. canonical 快照生成 + artifact tier 三档 X 对照（§3.1/§3.2）。
+
+## 5.5 M4 投影族适配器完成状态（2026-11-14 路 BL/sim-snapm4，基线 5b0f59d）
+
+路 BJ 留下的接线路清单 ③ 前半：**M4 投影族适配器全量落地**（纯新增 world_snapshot
+侧，不改 br28_model/probe_*）。真实世界的 M4 投影对象不再触发 M3 static guard 拒载。
+
+| 能力 | 状态 | 锚点 |
+|---|---|---|
+| 31 个 BR28Model 槽位（30 类：写记录 12 + 位记录 3 + 一次性事件 5 + 进位状态 3 + 复位历史 1 + 模型桩 4 + 无状态 idle fixture 2；SFCReadBus 双槽）×121 个状态字段，逐槽 capture/restore | 就绪 | world_snapshot.M4_FAMILIES/_capture_m4/_restore_m4 |
+| 每对象静态守卫：构造 fixture/开关（initial_*、投影开关布尔、first_read_words、ICU initial/command_steps、trim/RES fixture、config_masks…）记为 static、恢复时逐对象比对（M3 hardware 守卫的每对象版） | 就绪 | capture_static/check_static（M4 每槽位调用） |
+| 开关一致性：槽位 None/非 None 双向拒载（快照有态而目标关、或反向） | 就绪 | _restore_m4 |
+| 一次性事件位语义保持（lpwr requests armed、awkup/canary 首读 fixture 已消费、efuse 事务 page/byte/active/read_done） | 就绪，进 fast tier | test_world_snapshot.M4ProjectionFamilies.test_one_shot_event_bits_stay_consumed_after_restore |
+| 进位状态精确恢复（CRC 累加值续算一致、ICU 命令倒计时 advance 同步） | 就绪，进 fast tier | …test_carry_state_resumes_exactly |
+| 类型标签：无需新标签——全部状态值落在 BJ 白名单（五种抽象值 + $pairs/$set/$counter/$tuple）内；新增 encode_value_pairs（任意深度 int 键 dict 自动 $pairs 化，ICU region 嵌套映射用），capture_object 增加 encode= 注入点 | 就绪 | world_snapshot.encode_value_pairs |
+| fd31 res_named_values 按设计归状态（键链场景运行时可变）而非 static | 就绪 | M4_FAMILIES fd31_adc_con 行 |
+| 顺手修复 BJ encode_static_value $pairs 分支丢弃值的潜伏 bug（M3 静态从未踩中，M4 的 int 键 fixture 首次触发） | 就绪 | world_snapshot.encode_static_value |
+| fast tier 新增 6 例（全族往返+字节同一/一次性位/进位/开关双向拒/漏字段必须红+漏恢复必须红/静态 fixture 拒）+1 例改写（M4 拒载测试改为「投影对象上适配器外新状态显形拒载」） | 就绪 | tools/test_world_snapshot.py（28 例，进 --units） |
+
+剩余接线路清单：①explore 捕获点、②M1 完整清单、④小世界中点往返全量形态、
+⑤canonical 快照+artifact tier（等价对照仍是恢复合法性的唯一证明，M4 适配器本身
+只承诺字段级往返与行为语义保持）。
 
 ## 5.3 与既有机制的关系（不重复造轮子）
 
@@ -384,6 +406,17 @@ probe_boot/probe_irq_entry/br28_model/br28_machine 等既有文件）；**捕获
 
 # 6. HANDOFF 条目（同步落档）
 
+- 路 BL（sim-snapm4，2026-11-14，基线 5b0f59d）：**M4 投影族适配器全量**完成（BJ
+  接线路清单 ③ 前半，纯新增）——主交付 tools/world_snapshot.py 的 M4_FAMILIES 表
+  （31 槽位/30 类/121 状态字段：写记录 12、位记录 3、一次性事件 5、进位状态 3、
+  复位历史 1、模型桩 4、无状态 idle fixture 2）+_capture_m4/_restore_m4+encode_value_pairs
+  （任意深度 int 键 dict 自动 $pairs 化；无新增值类型标签）；每对象静态 fixture/开关
+  守卫与槽位开关双向拒载；fd31 res_named_values 按设计归状态。顺手修 BJ
+  encode_static_value $pairs 分支丢值潜伏 bug。fast tier 28 例（+6 新、1 改写：
+  M4 拒载测试改为投影对象上适配器外新状态显形拒载），--units 绿。真实世界的 M4
+  投影对象不再触发拒载；等价对照（恢复合法性）仍是接线半 ④⑤ 的验收。清单剩余：
+  ①explore 捕获点、②M1 完整清单、④小世界中点往返全量、⑤canonical+artifact tier。
+  前沿不变。
 - 路 BJ（sim-snapmod，2026-11-14 11:21，基线 dbfcc16）：**S1 模块半**完成——序列化
   框架+适配器注册表+漂移双闸+fast tier 自反，主交付 tools/world_snapshot.py（新）+
   tools/test_world_snapshot.py（22 例，进 --units）+check_local 一行接线+本文件 §5.4
