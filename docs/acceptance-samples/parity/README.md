@@ -9,6 +9,7 @@
 
 | id | 结果 | 一句话 |
 |---|---|---|
+| E1-PAR-01 | PASS | EQ 分叉后世界事件剖面（A1 uncovered 第二项，L2-a 设计输入）：等 own-step 事件面高度守恒（字节级世界差仅 jiffies 0x124ca4=21/24 与 LRC 帧计数 0x129D8C=12/15 两格），交付层归相位彩票（差=pending 数/相位余数，|ΔN|≤⌈相位/周期⌉），等待域随步数线性——事件计数等价判据可用，须按等 own-step 检查点对齐；详 [docs/eq-divergence-profile.md](../../eq-divergence-profile.md) |
 | A1-PAR-01 | FAIL | b79↔EQ 条件前沿 parity 重跑（BK 304,494→3.75M 前沿补齐）：+458 lag 重合保持到 b79 447,032 ⟷ EQ 447,490 后被 core-tick 首溢出交付相位差（22 步 vs 458 步错位）永久打断——判据①②命中（停点 parity 破坏+派生相位差被 IRQ 交付消费）、③未命中（差异区零取指）；详 [docs/eq-parity-rerun.md](../../eq-parity-rerun.md) |
 
 ## FAIL 的读法
