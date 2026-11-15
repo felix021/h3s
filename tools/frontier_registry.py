@@ -239,6 +239,18 @@ FEATURES = (
             '不扰动保归因干净;断言非零合成初值经停点 RMW 只清 bit5——codex 钉子:'
             '仅测初值零会漏掉 RMW 读写不同容器状态的实现错误;sensitivity-probe-'
             'not-plausible-state)'),
+    # ---- 路 LPV/sim-lpvad:P11_SFR LPVAD VAD_ACON0 单字容器 ----
+    Feature('p11_lpvad_config', 'conditional', ('jl_adda_ada_family',), False, None,
+            'P11_SFR LPVAD VAD_ACON0(0xf2b404=p11_sfr_base+map_adr(0x14,0x01))单字容器'
+            '(21,798,257 停点 0x606b68e=ADA 配置函数 0x606b4d0 顺序段尾 bit28 置位 RMW '
+            '内部读;静态访问面:0xf2b400..0xf2b434 窗全 app 唯一 li 站点 0x606b688、'
+            '唯一访问即停点本条,内部读零 GPR/零分支/零 call 参数,窗内无 ld.w 显式读;'
+            '数据区无字面值、邻组 0xf2b21c 不触达;RAM 指针/跨函数传参未穷尽如实报);'
+            '合成初始 0+读回=当前值(两项均为显式模型假设,非复位值;codex:零消费者'
+            '只限已识别主核软件消费者,RMW 自身消费旧值);白名单恰一字,其余 12 字零'
+            '触达留 unmapped,同址新读者(新 ld/新 PC/新掩码/其他核)须重审;新开关'
+            '分立不扩 p11_window(契约+族冲突,codex 定调);跨域限制:不模拟 q32s 访问/'
+            'LPVAD 检测/跨域可见性/副作用;依赖边=执行序前置非硬件依赖'),
     # (p2m_mailbox_ack / cfg523_named_fixture 已实现并单测,但 19,139,239 停点
     # (JL_AUDIO->DAC_TM0 运行态读)证实两者的全部运行态消费者仍在音频数字域整块
     # 之后——按 BQ 先例(零消费者不落地)从条件栈撤回,实现保留在本分支历史
@@ -284,10 +296,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 21798257,
-        'stop_pc': '0x606b68e',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xf2b404', 'size': 4, 'reference_sdk_register': None},
+        'completed_steps': 21800325,
+        'stop_pc': '0x606df1e',
+        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
+                 'address': '0xfe053c', 'size': 4,
+                 'value_bytes': '64924100'},
         'freshness_fields': ('kind', 'address'),
     },
 }

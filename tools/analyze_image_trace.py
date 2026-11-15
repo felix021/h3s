@@ -1070,48 +1070,43 @@ def check_self(report):
 
 
 def check_self_conditional(report):
-    """钉死 2026-11-15 路 ADA(S19 冲刺批 2 续三)条件场景结论(official vs
-    tested_b79,条件 flag 集到当前条件前沿 21,798,257;一切结论条件通过、
+    """钉死 2026-11-15 路 LPV 条件场景结论(official vs
+    tested_b79,条件 flag 集到当前条件前沿 21,800,325;一切结论条件通过、
     derived-not-measured;历史世界 689,402(路 BS)/447,383(路 BY)/601,880
     (路 CB)/3,070,626(路 CG)/3,070,786(路 CL)/3,070,955(路 CO)/
     3,071,380(路 CQ)/3,071,984(路 F)/3,072,236(路 M)/3,073,402(路 R)/
     3,073,918(路 V)/3,079,241(路 AA)/3,081,001(路 AK)/3,137,573(路 AN)/
     3,170,362(路 AS)/3,170,379(路 CV)/3,202,148(路 CW)/3,747,578(路 B1)/
-    3,747,585(路 BQ)/19,139,239(路 B3)/21,798,206(路 DT)已被后续投影替换,见 HANDOFF 对应
+    3,747,585(路 BQ)/19,139,239(路 B3)/21,798,206(路 DT)/21,798,257
+    (路 ADA)已被后续投影替换,见 HANDOFF 对应
     「步含义」段):
 
-    - 双方 21,798,257 步、同停点 0x606b68e(unmapped_memory 读 0xf2b404,
-      当前条件前沿——路 ADA 放行后的新边界:静态全图(逐 2 字节位置独立
-      解码枚举 li 常量+站点窗口数据流核查)证实 ADA 子族窗 0xfe0a20..0xfe0a44
-      的全部触达=7 个直接 li 基址站点(9 实例)——停点函数 0x606b4d0..0x606c3a8
-      (309 原子 RMW+51 ld 读值全部只进写回组装零分支)、close 族纯清位、
-      field setter 通道掩码门控组装;0xfe0a44 ADA_CON9 零触达——按 B3/DT
-      判据归 AM 容器族放行 jl_adda_ada_family(合成初始 0+读回=当前值,恰
-      九字白名单;codex 定调:完备性措辞=已识别直接 li 站点、新开关分立
-      不扩 B3 WORDS、同址新读者亦须重审、close 清位服务合成配置字;布局
-      勘误 0xfe0a48/4c=ADDA_CON0/ADDA_CON1 在 ADA 容器报告登记);放行后
-      链再 +51 步(顺序段 0x606b5f2..0x606b68c,12 容器写回;DT 段的
-      delay(20) 忙等已在旧停点之前)停在 0x606b68e `[0xf2b404]|=0x10000000`
-      读 **0xf2b404=P11_SFR LPVAD 组 map_adr(0x14,0x01) VAD_ACON0**
-      (p11_sfr.h __RW __u32;0xf2b400 块全 app 唯一 li 站点即 0x606b688
-      本处)——P11 域配置 RMW 族首读,归下一路三选一。历史停点 21,798,206
-      (路 DT 放行 DAC_TM setter 后的 ADA_CON0 首读:全量反汇编证实 19,139,239 停点
-      的 0x606ab92 是 **DAC_TM0/TM1 半字 field SETTER(RMW)非运行态
-      getter**(12 路 tbb:0/2→TM0 低半、1/3→TM1 低半、4..7→裸 rts、
-      8/10→TM0 高半、9/11→TM1 高半;读值只进写回组装零分支,全 app 逐
-      2 字节位置扫描无 setter 外读者——0xfe0524 唯一 li 在 setter 内部、
-      10 个调用点全在音频驱动层)→B3 交接「getter/硬件维护时间标记被读」
-      预判撤销,jl_audio_dac_tm_readback 容器放行(合成初始 0+读回=当前值,
-      初值来源 synthetic_zero 具名登记,codex 四点定调;本轮不做 derived
-      不预埋时间标记推导语义;恰白名单 setter 静态地址集 {0xfe0524,
-      0xfe0528} 只服务对齐 32 位字,新读者须重审);放行后两次 -600 半字写
-      实测 TM0=TM1=0xFDA80000(第二次 selector∈{9,11} 写 TM1 高半=静态
-      预测兑现),链继续 DAC 启动尾段+OS 等待族再 +2,658,967 步(预算
-      20M 实测 19,996,266 耗尽→40M)停在 0x606b5ee `[r6+0]&=0xFFFFFFDF`
-      读 **0xfe0a20=JL_ADDA->ADA_CON0**(br28.h +0x20)——音频 ADC init 簇
-      (0x606b4xx..b6xx,邻字 +0x48/+0x4c 已由 B3 容器服务)配置 RMW 族
-      首读,归下一路)、per-core {0:21790815,1:11251}一致;stop parity
-      全同——official↔b79 parity 延长到条件前沿 21,798,257,控制流零
+    - 双方 21,800,325 步、同停点 0x606df1e(unmapped_or_readonly_write 写
+      0xfe053c,当前条件前沿——路 LPV 放行后的新边界:静态访问面(全 app
+      逐 2 字节独立解码枚举 li 常量+数据区字面值扫描+邻组站点数据流核查)
+      证实 0xf2b400..0xf2b434 LPVAD 窗唯一 li 站点=0x606b688、唯一访问即
+      停点 RMW(内部读零 GPR/零分支/零 call 参数;窗内无 ld.w 显式读;
+      数据区无字面值、邻组 0xf2b21c 两写即返回不触达;RAM 指针/跨函数传参
+      未穷尽如实报)——按 B3/DT/ADA 判据+codex 定调归 AM 式合成配置族放行
+      p11_lpvad_config(合成初始 0+读回=当前值,两项均显式模型假设,恰一
+      字白名单;codex 定调:零消费者只限已识别主核软件消费者、同址新读者
+      〔新 ld/新 PC/新掩码/其他核〕须重审、新开关分立不扩 p11_window、
+      跨域限制措辞〔不模拟 q32s 访问/LPVAD 检测/跨域可见性/副作用〕、
+      完备性措辞不覆盖 ROM/q32s、弱替代案〔只记 bit28 其余位未知〕未采纳
+      假设强度区别登记);放行后链再 +2,068 步(ADA 窗尾段+二级 tbh case
+      体+RAM 对象链+缓冲配置 walk)停在 0x606df1e 并行对 mul.rr.p 第二半
+      store 写 **0xfe053c=JL_AUDIO+0x3c ADC 通道缓冲 ADR 字**(路 AE 钉的
+      ADC_CON +0x38 邻字;D2-b 注入蓝图 set_buffer 五写 {+0x3c ADR/+0x40
+      LEN/+0x44 PNS/+0x48 HWP/+0x4c SRP} 之首;值 0x00419264 真实指令结果)
+      ——JL_AUDIO 数字域写族白名单外下一成员,归下一路三选一。历史停点
+      21,798,257(路 ADA 放行九字容器后的 P11 域配置 RMW 族首读:静态全图
+      证实 ADA 子族窗 0xfe0a20..0xfe0a44 全部触达=7 个直接 li 基址站点
+      (9 实例)——停点函数 0x606b4d0..0x606c3a8(309 原子 RMW+51 ld 读值
+      全部只进写回组装零分支)、close 族纯清位、field setter 通道掩码门控
+      组装;0xfe0a44 ADA_CON9 零触达;放行后 +51 步停在 0x606b68e 读
+      0xf2b404=P11_LPVAD VAD_ACON0,0xf2b400 块全 app 唯一 li 站点即
+      0x606b688 本处)、per-core {0:21792884,1:11251}一致;stop parity
+      全同——official↔b79 parity 延长到条件前沿 21,800,325,控制流零
       分歧、无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
       0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..21,798,257,
@@ -1122,7 +1117,8 @@ def check_self_conditional(report):
       DAA_CON1 RMW→DAC_VL0 setter 入口→DAC_COP/DMA 写域→延时等待族+
       CNT held 快照+JL_ADDA 模拟族 RMW 群+模拟 init 尾段 OS 等待族+
       DAC_TM 两次 -600 半字写+DAC 启动尾段分配与 OS 等待族续段+ADA 九字
-      配置段+51 步)没有
+      配置段+51 步+LPVAD 单字 RMW+ADA 窗尾段/tbh case 体/缓冲配置 walk
+      2,068 步)没有
       消费任何新的镜像差异(CRC 轮数 32/结果 74/3041 字节全不变——等待段
       零新 CRC 轮);
     - final report 差异仍恰好 12 处(11 处 CRC result_reads + 1 处 watch r0;
@@ -1143,18 +1139,18 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 21790815, '1': 11251},
+                run['per_core_steps'] == {'0': 21792884, '1': 11251},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (21798257 @ 0x606b68e, the read of '
-                '0xf2b404 = P11_LPVAD->VAD_ACON0, a bit28-set config RMW internal '
-                'read inside the ADA config function 0x606b4d0 — after the route-ADA '
-                'nine-word container releases the 21,798,206 ADA_CON0 bit5-clear '
-                'stop, the chain runs the sequential ADA segment 0x606b5f2..0x606b68c '
-                '(12 container write-backs, the route-DT delay(20) busy-wait already '
-                'inside the previous segment) and stops 51 steps later on the first '
-                'P11-domain LPVAD read, the only 0xf2b4xx li site in the app being '
-                '0x606b688 itself; the P11-domain config-RMW boundary is the honest '
-                'next boundary for the route after ADA)')
+                'conditional frontier stop (21800325 @ 0x606df1e, the write of '
+                '0xfe053c = JL_AUDIO+0x3c, the ADC channel-buffer ADR word — after '
+                'the route-LPV single-word container releases the 21,798,257 '
+                'P11_LPVAD VAD_ACON0 stop RMW, the chain runs the ADA-window tail, '
+                'the second-level tbh case bodies, RAM object chains and the '
+                'buffer-config walk for 2,068 steps and stops on a full-word store '
+                'in the store half of the parallel pair mul.rr.p (the same '
+                'parallel-store shape as 0x60719c0 recorded by routes AS/AN); the '
+                'JL_AUDIO digital-domain write-family boundary is the honest next '
+                'boundary for the route after LPV)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
