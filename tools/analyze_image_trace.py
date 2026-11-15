@@ -587,6 +587,48 @@ def frontier_run(module, app, header, rom, name, *, flash_image_bytes, readonly=
     return result, TraceMachine.instances[0].trace
 
 
+class RunPool:
+    """Per-label run cache (route REUSE): every DISTINCT image executes exactly
+    ONCE per (scenario, budget) and the resulting (result, trace) pair serves
+    every consumer — the freshness check plus every pair the image participates
+    in (three images, all combinations: 6 pair arms + 1 freshness arm used to
+    be 7 full simulations; now 3). Re-execution becomes spool RE-READS: each
+    consumer iterates the TraceSpool from chunk 0 again, so a second consumer
+    costs disk bandwidth, never RAM (two-chunk cache per spool) and nothing is
+    ever materialized. That the replaced re-executions were value-identical is
+    not a new assumption: the self-checks already pin in-process re-execution
+    determinism (the freshness require and check_self both demand the very
+    same registry stop literals from two independently executed official runs
+    in one process). Spools are closed once, by close(), after the LAST
+    consumer finishes (route O6 release discipline, ownership moved from the
+    pair comparator to the pool)."""
+
+    def __init__(self, module, rom, header, budget, scenario, loaded):
+        self._module = module
+        self._rom = rom
+        self._header = header
+        self._budget = budget
+        self._scenario = scenario
+        self._loaded = loaded
+        self.runs = {}
+
+    def run(self, label):
+        """Execute label once (first call) and return its (result, trace);
+        every later call returns the SAME pair — the reuse itself."""
+        if label not in self.runs:
+            app, plain, readonly, _sha = self._loaded[label][1]
+            self.runs[label] = frontier_run(
+                self._module, app, self._header, self._rom, f'trace_{label}',
+                flash_image_bytes=plain, readonly=readonly,
+                budget=self._budget, scenario=self._scenario)
+        return self.runs[label]
+
+    def close(self):
+        for _result, trace in self.runs.values():
+            trace.close()
+        self.runs.clear()
+
+
 def load_official(path, _official=None):
     app = application(path)
     image = flash_image(path)
@@ -785,15 +827,17 @@ def _control(row):
     return (row[0], row[1], row[2])
 
 
-def compare_pair(module, rom, header, name_a, image_a, name_b, image_b, budget, scenario='crc_bankb'):
-    label_a, (app_a, plain_a, readonly_a, sha_a) = image_a
-    label_b, (app_b, plain_b, readonly_b, sha_b) = image_b
-    result_a, trace_a = frontier_run(module, app_a, header, rom, name_a,
-                                     flash_image_bytes=plain_a, readonly=readonly_a,
-                                     budget=budget, scenario=scenario)
-    result_b, trace_b = frontier_run(module, app_b, header, rom, name_b,
-                                     flash_image_bytes=plain_b, readonly=readonly_b,
-                                     budget=budget, scenario=scenario)
+def compare_pair(image_a, run_a, image_b, run_b, budget, scenario='crc_bankb'):
+    """Compare one image pair over PRE-EXECUTED runs (route REUSE). Each arm's
+    (result, trace) comes from the caller's RunPool: the same run object may
+    already have served — or will later serve — other pairs and the freshness
+    check. This function is a PURE consumer (read-only over the spools, no
+    simulator state) and never closes them: the pool releases every spool
+    after the last consumer (route O6 discipline, ownership at the pool)."""
+    label_a, (_app_a, plain_a, _readonly_a, sha_a) = image_a
+    label_b, (_app_b, plain_b, _readonly_b, sha_b) = image_b
+    result_a, trace_a = run_a
+    result_b, trace_b = run_b
     for label, result, plain in ((label_a, result_a, plain_a), (label_b, result_b, plain_b)):
         print(label, result['completed_steps'], result['stop_pc'], result['stop']['kind'], flush=True)
     diff_runs = byte_diff_runs(plain_a, plain_b)
@@ -867,11 +911,9 @@ def compare_pair(module, rom, header, name_a, image_a, name_b, image_b, budget, 
             pair['note'] = ('identical per-step signatures; the two final reports still differ (stop point, '
                             'peripheral records, counters or snapshots) — a divergence invisible to the '
                             'per-step comparison surfaced only in the report')
-    # 路 O6 清理纪律:报告只携带从行里提取的值,消费完毕即释放两臂落盘
-    # (临时文件本就无名,close 后由 OS 立即回收;显式 close 让释放与报告
-    # 生成同步,不依赖 GC)。
-    trace_a.close()
-    trace_b.close()
+    # 路 O6 清理纪律(路 REUSE 更新):报告只携带从行里提取的值;两臂 spool
+    # 的释放权在 RunPool——本函数只是纯消费者,close 移到全部消费者(本对+
+    # 同臂其他对+freshness)结束之后,由 pool.close() 统一执行。
     return pair
 
 
@@ -1374,43 +1416,50 @@ def main():
 
     # 配置新鲜度自检:official 必须复现所选场景的前沿停点,否则本工具的
     # flag 集已与主前沿场景漂移(或上游场景变更),结果不可信。
-    if 'official' in loaded:
-        fresh = SCENARIOS[scenario]['freshness']
-        check = frontier_run(module, loaded['official'][1][0], header, rom, 'frontier_freshness_check',
-                             flash_image_bytes=loaded['official'][1][1], budget=budget,
-                             scenario=scenario)
-        try:
-            require(check[0]['completed_steps'] == fresh['completed_steps'] and
-                    check[0]['stop_pc'] == fresh['stop_pc'] and
-                    all(check[0]['stop'].get(k) == v for k, v in fresh['stop_fields'].items()),
+    # 路 REUSE:臂=每个不同镜像恰好执行一次。freshness 检查复用 official 的
+    # pair 臂那一次运行(不再单独跑 frontier_freshness_check);每个 pair 的
+    # 两臂从 RunPool 取同一次生成的 (result, spool),多对比较共享 spool 的
+    # 顺序多遍读(TraceSpool 每消费者从头重读块,零物化、RAM 不随遍数涨)。
+    # 复用替代的重复执行本就被 self-check 钉死为同值(freshness require 与
+    # check_self 对同进程两次独立执行的 official 运行要求同一 registry 停点
+    # 字面值),故报告逐字节不变;执行次数见各 trace_<label> 打印行计数。
+    pool = RunPool(module, rom, header, budget, scenario, loaded)
+    try:
+        if 'official' in loaded:
+            fresh = SCENARIOS[scenario]['freshness']
+            check = pool.run('official')[0]
+            require(check['completed_steps'] == fresh['completed_steps'] and
+                    check['stop_pc'] == fresh['stop_pc'] and
+                    all(check['stop'].get(k) == v for k, v in fresh['stop_fields'].items()),
                     f'official frontier stop changed for scenario {scenario!r}: the imported flag set no '
                     f'longer reproduces the pinned frontier stop ({fresh["completed_steps"]} @ '
                     f'{fresh["stop_pc"]}); update this pin after the frontier advances')
-        finally:
-            # 路 O6:新鲜度 run 的落盘 trace 无消费者,立即释放(无名临时文件,
-            # close 即回收;不留给 GC)。
-            check[1].close()
 
-    report = {'simulator_commit': PIN, 'device_accessed': False, 'whole_h3s_boot_simulated': False,
-              'candidate_whole_boot_validated': False, 'suitable_for_flash_approval_alone': False,
-              'comparison_basis': COMPARISON_BASIS,
-              'pairs': []}
-    if scenario != 'crc_bankb':
-        # 默认场景报告保持逐字节不变;非默认场景才标注场景键。
-        report['scenario'] = scenario
-    for a, b in pairs:
-        print(f'== diff {a} vs {b} (scenario {scenario}) ==', flush=True)
-        report['pairs'].append({'name': f'{a}_vs_{b}',
-                                **compare_pair(module, rom, header, f'trace_{a}', loaded[a],
-                                               f'trace_{b}', loaded[b], budget, scenario)})
-    if args.self_check:
-        if scenario == 'crc_bankb':
-            check_self(report)
-        else:
-            check_self_conditional(report)
-        report['image_trace_self_check_passed'] = True
-    if candidate_self_check:
-        check_self_candidate(report, candidate_self_check, scenario)
+        report = {'simulator_commit': PIN, 'device_accessed': False, 'whole_h3s_boot_simulated': False,
+                  'candidate_whole_boot_validated': False, 'suitable_for_flash_approval_alone': False,
+                  'comparison_basis': COMPARISON_BASIS,
+                  'pairs': []}
+        if scenario != 'crc_bankb':
+            # 默认场景报告保持逐字节不变;非默认场景才标注场景键。
+            report['scenario'] = scenario
+        for a, b in pairs:
+            print(f'== diff {a} vs {b} (scenario {scenario}) ==', flush=True)
+            report['pairs'].append({'name': f'{a}_vs_{b}',
+                                    **compare_pair(loaded[a], pool.run(a),
+                                                   loaded[b], pool.run(b), budget, scenario)})
+        if args.self_check:
+            if scenario == 'crc_bankb':
+                check_self(report)
+            else:
+                check_self_conditional(report)
+            report['image_trace_self_check_passed'] = True
+        if candidate_self_check:
+            check_self_candidate(report, candidate_self_check, scenario)
+    finally:
+        # 路 O6 清理纪律(路 REUSE 更新):spool 生命周期=全部消费者(freshness+
+        # 所属各 pair)结束;最后一位消费者完成后由 pool 统一释放(无名临时
+        # 文件,close 即回收;require 抛错路径同样走这里,不留给 GC)。
+        pool.close()
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + '\n')
     print('wrote', args.report, flush=True)
