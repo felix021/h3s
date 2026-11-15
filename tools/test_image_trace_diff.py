@@ -207,6 +207,63 @@ def test_trace_spool_truncated_file_raises_not_eof():
         pass
 
 
+def test_trace_spool_chunk_format_is_row_pickle_concatenation():
+    # 路 W3-1 钉子:flush 批量化(BytesIO 中转+单次 write)只改写盘路径,
+    # 盘上块格式逐字节不变——每块=一个新建 Pickler(protocol 4)对块内
+    # 各行逐行 dump 的 pickle 流按序拼接(一块一个 memo 界限,路 O6)。
+    # 任何 framing 改动(整块 list dump/帧头/长度前缀)在这里第一时间炸。
+    backing = io.BytesIO()
+    spool = TraceSpool(file=backing, chunk=8)
+    rows = [row(0x2000 + i * 4, 0x2004 + i * 4, marker=(3, f'{i * 258:08x}'),
+                write=() if i % 2 else ((0x6000 + i, 'deadbeef'),))
+            for i in range(19)]  # 2 full chunks + partial 3-row tail chunk
+    for r in rows:
+        spool.append(r)
+    spool.flush()
+    chunk_streams = []
+    for start in (0, 8, 16):
+        sink = io.BytesIO()
+        pickler = pickle.Pickler(sink, protocol=4)  # fresh Pickler per chunk
+        for r in rows[start:start + 8]:
+            pickler.dump(r)
+        chunk_streams.append(sink.getvalue())
+    assert backing.getvalue() == b''.join(chunk_streams)
+    assert spool._counts == [8, 8, 3]
+    assert spool._offsets == [0, len(chunk_streams[0]),
+                              len(chunk_streams[0]) + len(chunk_streams[1])]
+    assert list(spool) == rows  # 读侧(逐行 load)对同一形状照常工作
+
+
+def test_trace_spool_batched_write_truncation_matrix_raises_not_silent():
+    # 路 W3-1 验收:批量化写盘后,截断仍必须报错不静默——块界前后 1 字节
+    # 与块中部各种切点下,受损块读必须抛(UnpicklingError/EOFError),
+    # 未受损的前缀块照常可读且逐字段正确。
+    backing = io.BytesIO()
+    spool = TraceSpool(file=backing, chunk=4)
+    rows = [row(0x3000 + i * 2, 0x3002 + i * 2) for i in range(10)]  # 3 chunks
+    for r in rows:
+        spool.append(r)
+    spool.flush()
+    full = backing.getvalue()
+    starts = list(spool._offsets)
+    ends = starts[1:] + [len(full)]
+    cuts = sorted({1, starts[1] - 1, starts[1], starts[1] + 1, len(full) - 1})
+    for cut in cuts:
+        spool._file = io.BytesIO(full[:cut])
+        for chunk in range(3):
+            spool._cache.clear()
+            if cut < ends[chunk]:
+                try:
+                    spool[chunk * 4]
+                    raise AssertionError(f'cut {cut} chunk {chunk} must raise')
+                except (pickle.UnpicklingError, EOFError):
+                    pass
+            else:
+                assert spool[chunk * 4] == rows[chunk * 4]
+
+
+
+
 def test_reconvergence_and_spans_over_spools_equal_list_results():
     # 比较器全链路(list 与 spool 同输入产出完全相同的 detail):覆盖
     # find_reconvergence 的后向扫描/切片视图/物化消除点与 _divergent_spans。

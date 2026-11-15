@@ -46,6 +46,7 @@ Honest comparison basis (what a "no divergence" result does and does not mean):
 import argparse
 import bisect
 import hashlib
+import io
 import itertools
 import json
 import pickle
@@ -413,6 +414,7 @@ class TraceSpool:
         self._flushed = 0    # total rows handed to the file
         self._tail = []      # appended rows not yet flushed (the final chunk)
         self._cache = OrderedDict()  # chunk index -> decoded rows, <= 2 kept
+        self._staging = io.BytesIO()  # per-flush pickle staging buffer (W3-1)
         self._closed = False
 
     def append(self, row):
@@ -428,9 +430,19 @@ class TraceSpool:
             return
         self._file.seek(0, 2)  # appends always land at the tail, even if a
         offset = self._file.tell()  # read moved the shared file position
-        pickler = pickle.Pickler(self._file, protocol=4)
+        # 路 W3-1:逐行 pickle 先落内存 BytesIO,拼完整块再一次写盘。本机
+        # BufferedWriter.write 每次调用 ~6.1µs(释放 GIL 的 C 调用异常,
+        # docs/perf-budget-analysis.md §11.5),逐行直写=每行踩一次=spool
+        # flush 25.7% 自耗时的本体;BytesIO.write 是不释放 GIL 的 C 内联
+        # (~0.1µs)。盘上字节形状不变:仍一块一个新建 Pickler(memo 界限
+        # 语义,路 O6)、块内逐行 dump 的 pickle 流按序拼接,读侧照旧。
+        staging = self._staging
+        staging.seek(0)
+        staging.truncate()
+        pickler = pickle.Pickler(staging, protocol=4)
         for row in self._tail:
             pickler.dump(row)
+        self._file.write(staging.getvalue())
         self._starts.append(self._flushed)
         self._offsets.append(offset)
         self._counts.append(len(self._tail))
