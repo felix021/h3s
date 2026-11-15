@@ -11,7 +11,7 @@
   <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
   <!-- USB host（OTG）可选：无 OTG 的设备也能装，USB tab 显示「不支持/未检测到」 -->
   <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
-  <application android:label="H3S 工具" android:debuggable="true" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false">
+  <application android:label="H3S 工具" android:icon="@mipmap/ic_launcher" android:debuggable="true" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false">
     <service android:name=".UpgradeService" android:exported="false" android:foregroundServiceType="connectedDevice"/>
     <!-- R3 独立 app launcher=WebView 壳（耳机/USB 双 tab，原生零 UI）；暗色主题贴页面底色 -->
     <activity android:name=".WebShellActivity" android:exported="true" android:launchMode="singleTop"
