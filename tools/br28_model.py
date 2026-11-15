@@ -53,6 +53,18 @@ JL_AUDIO_DAC_COP=0xfe0534
 # D2 场景表对 0xfe0504/08 的「DMA 指针/计数读×6」消费面属 tone/PCM 推送域
 # (0x607236c caller 0x607249c/0x6073258,D1 后)。
 JL_AUDIO_DAC_DMA_WORDS=(0xfe0504,0xfe0508,0xfe0510,0xfe0514)
+# 路 JLA:JL_AUDIO ADC 通道缓冲配置五字(set_buffer 0x606dee4 五写,
+# [r4+k] r4=0xfe0538=ADC_CON):[+4]=ADR(缓冲首址)、[+8]=LEN(buf_num*len>>1
+# 的 uextra 16 位)、[+0xc]=PNS(len>>1)、[+0x10]=HWP=0、[+0x14]=SRP=0
+# (docs/d2b-injection-blueprint.md 预案的五写;成员名 SDK 推断级,br28.h
+# JL_AUDIO_TypeDef 全 __RW 家族、csfr.h __u16→32 位字槽,布局只定位字)。
+# 全 app 访问面(逐 2 字节独立解码 li 枚举+站点线性窗数据流解析,codex 复跑
+# 互证):五字恰 9 条已识别访问=set_buffer 五条连续整字写(纯写、旧值无关、
+# 值=真实指令结果)+audio_adc_irq_handler [0x6072628,0x6072700)(IRQ68 分发
+# 器 0x602f444 直调)读 ADR/PNS/SRP 三条+写 PNS 一条——后者当前前缀不可达
+# (IRQ68 交付未建模),读的是运行期 DMA 指针状态,属 D2-b 后域留严格停。
+# 0xfe0550(handler 尾写的 +0x18 SRN 读通知字)零当前前缀触达,不进白名单。
+JL_AUDIO_ADC_DMA_WORDS=(0xfe053c,0xfe0540,0xfe0544,0xfe0548,0xfe054c)
 PLL0=0xfd4600
 CLOCK0=0xfd0018
 SYS_DIV=0xfd0014
@@ -3452,8 +3464,9 @@ class JLAudioDacCopRegisters:
                                    '(the W1[3]-tail DAC-output gate function 0x606ab0a, r5=0xfe0500, '
                                    'right after the AUD_CON|=0x100 and five DAC_CON RMWs served by the '
                                    'route-AK container) and 0x606e038 st.w.modimm [r5+0] (li '
-                                   '0xfe0534 direct store, the esco/ANC-adjacent audio-domain '
-                                   'function outside this prefix); zero readback sites in the whole '
+                                   '0xfe0534 direct store in the ADC start function 0x606df66, '
+                                   'reached by the route-JLA segment right after the set_buffer '
+                                   'five writes); zero readback sites in the whole '
                                    'app (the D2-scene RMW/read classification of 0xfe0534 belongs to '
                                    'the post-D1 audio-task domain)'),
                 'write_only':True,'readback_not_modeled':True,
@@ -3536,6 +3549,125 @@ class JLAudioDacDmaWriteRecords:
                               'the record, not a measured WO property claim); no DMA transfer, '
                               'no IRQ39 event and no audio data flow is modeled — this does NOT '
                               'verify any audio output')}
+
+
+class JLAudioAdcDmaWriteRecords:
+    """JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c)写侧 write-only
+    整字记录(opt-in,路 JLA)。
+
+    背景:21,800,325 停点 0x606df1e——set_buffer 0x606dee4(函数
+    [0x606dee4,0x606df3a),call-xref 边界)并行对 mul.rr.p 的第二半
+    store `[r4+4]=r0`(r4=0xfe0538)写 0xfe053c=ADR(值=真实指令结果),
+    是 D2-b 注入蓝图预案的 set_buffer 五写 {+0x3c ADR/+0x40 LEN/
+    +0x44 PNS/+0x48 HWP=0/+0x4c SRP=0} 之首。五写同基本块连续
+    (0x606df20/26/2a/2e/30,中间只有 uextra/lsr 算术),写完一条 RAM
+    写(缓冲指针槽 [0x1265c0+1170*4])即返回——AK 先例(wl_aud/audio_dac_init
+    纯写集一次打包)的「整族一次打包」候选直接成立;放行后仍由真实指令
+    逐条执行,不合成原子事务。
+
+    静态访问面(全 app 逐 2 字节独立解码枚举 li 常量+每站点线性窗数据流
+    解析+数据区 4 字节字面值扫描,方法照 ADA/DT/LPV;codex 独立复跑互证):
+      * 0xfe0500..0xfe0560 窗全 app li 基址站点 33 个(全部装载
+        0xfe0500/04/08/1c/24/34/38,无直接装载五字地址的站点);五字访问
+        解析(寄存器存活跟踪)恰 9 条——set_buffer 五写 + audio_adc_
+        irq_handler [0x6072628,0x6072700) 的 PNS/ADR/SRP 三读与 PNS 一写
+        (唯一直接调用者=IRQ68 分发器 0x602f444;读的是运行期 DMA 指针
+        状态,算缓冲位置后 call r3 挂 handler 链、写 SRN 0xfe0550 与 PNS、
+        ADC_CON|=0x40 清完成)。
+      * 数据区 4 字节字面值:窗内值 33 命中全部=li.u32 站点 [site+2,site+6)
+        立即数字段,零独立常量池字面值(路内脚本首版分类坐标混用误标,
+        codex 复核后以精确立即数字段判定为准)。
+      * handler 的三读一写当前前缀不可达:IRQ68 交付未建模,分发器从未
+        被调用;「当前未到达」不升级为「所有未来路径不可达」(codex 措辞)。
+      * 间接来源(RAM 指针装载/跨函数传参/运算构造地址)未穷尽;覆盖限
+        本次扫描的主核 app,不覆盖 ROM/q32s/其他访问主体。
+
+    裁决(codex 定调,gpt-6-astra):(a) write-only 记录恰五字——与 BM 路
+    DAC DMA 四字先例完全同构(同 struct 相邻成员、同 set_buffer 形状、
+    同「读属后域留严格停」);拒绝 (b) 合成读回容器的最充分理由=当前推进
+    不需要任何读回,而增加读回会提前承诺尚未建立的消费语义(handler 读
+    PNS/ADR/SRP,HWP 是硬件写指针、SRP 推进机制不能凭名断定,「读回=最后
+    写值」对运行期 DMA 语义不足);0xfe0550(handler 尾的 SRN 读通知字)
+    属另一段消费事务不收。动态证据等级:停点报告证明首写到达并被拒,
+    后四写与返回是静态顺序流证据,放行重跑后才报告五写完成与实际值。
+    """
+
+    ADDRESSES=JL_AUDIO_ADC_DMA_WORDS
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.ADDRESSES}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled JL_AUDIO ADC DMA word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('jl_audio_adc_dma_read_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('JL_AUDIO = hs_base + map_adr(0x05, 0x00) = 0xfe0500 (br28.h all-__RW '
+                              'JL_AUDIO_TypeDef, csfr.h __u16 -> 32-bit word slots); the five words '
+                              'at +0x3c/+0x40/+0x44/+0x48/+0x4c are the ADC channel-buffer DMA '
+                              'configuration block written by set_buffer 0x606dee4 — member names '
+                              '(ADR/LEN/PNS/HWP/SRP) follow the D2-b injection blueprint and the '
+                              'route-AG wlaud-init-map layout chain ([SDK-inferred] naming level; '
+                              'the __RW labels locate the words, they are NOT silicon WO evidence '
+                              'and NOT a claim that these words ignore reads on silicon)'),
+                'whitelisted_words':('exactly the five set_buffer words {0xfe053c ADR, 0xfe0540 '
+                                     'LEN, 0xfe0544 PNS, 0xfe0548 HWP, 0xfe054c SRP}; ADC_CON '
+                                     '+0x38 stays with the route-AS container and the handler-'
+                                     'tail SRN word 0xfe0550 (a different consumption '
+                                     'transaction) is NOT included; only aligned 32-bit whole-'
+                                     'word overwrite stores are served — sub-word, misaligned '
+                                     'and cross-word accesses stay unmapped; a NEW consumer of '
+                                     'any of these addresses (a new read PC, a new write PC, a '
+                                     'new access shape, another core) must be re-audited before '
+                                     'this container may serve it — the address whitelist only '
+                                     'gates addresses, it does not stop a same-address new '
+                                     'writer at runtime (codex wording)'),
+                'observed_shapes':('five consecutive whole-word stores in one basic block of '
+                                   'set_buffer 0x606dee4: 0x606df20 [r4+4]=r0 (ADR, the stop '
+                                   'word, the store half of the parallel pair mul.rr.p at '
+                                   '0x606df1e — the same parallel-store shape as 0x60719c0 '
+                                   'recorded by routes AS/AN), 0x606df26 [r4+8]=r2 (LEN, '
+                                   'uextra(buf_num*len,1,16)), 0x606df2a [r4+12]=r1 (PNS, '
+                                   'len>>1), 0x606df2e [r4+16]=r3 and 0x606df30 [r4+20]=r3 '
+                                   '(HWP=0, SRP=0); every value is a real instruction result, '
+                                   'never invented; dynamic evidence at the stop = the FIRST '
+                                   'write arrived and was refused, the remaining four plus the '
+                                   'return path are static sequential-flow evidence — this '
+                                   'release rerun reports the completed writes and their '
+                                   'actual values; the words are executed one by one, NOT '
+                                   'composed into one atomic transaction'),
+                'write_only':True,'readback_not_modeled':True,
+                'consumption_face':('the only other identified in-window accesses are the '
+                                    'audio_adc_irq_handler [0x6072628,0x6072700) reads of '
+                                    'PNS/ADR/SRP (three reads computing buffer positions before '
+                                    'the output-handler chain call) plus its PNS/SRN 0xfe0550 '
+                                    'writes — reached only through the IRQ68 dispatcher '
+                                    '0x602f444, NOT reached on this prefix (IRQ68 delivery is '
+                                    'not modeled); "not reached now" does NOT mean unreachable '
+                                    'on all future paths (codex); those reads stay strictly '
+                                    'stopped under the explicit kind and belong to the D2-b '
+                                    'completion-projection domain'),
+                'assumption':('write-only word records (values are real executed results, never '
+                              'invented; the zero-read face on THIS prefix motivates the record, '
+                              'it is NOT a measured hardware WO property claim); no DMA '
+                              'transfer, no pointer advance, no SRN side effect, no pending '
+                              'bit, no IRQ68 delivery and no cache coherency is modeled — this '
+                              'does NOT verify any audio input, ADC capture or D2-b acceptance '
+                              'scenario')}
 
 
 class P33AwkupRegisters:
@@ -4925,6 +5057,7 @@ class BR28Model:
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  jl_pvdd_trim_writes=False,timer2_delay_projection=False,
                  jl_audio_dac_cop_writes=False,jl_audio_dac_dma_writes=False,
+                 jl_audio_adc_dma_writes=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -5442,6 +5575,12 @@ class BR28Model:
         # jl_audio_dac_cop_writes(执行序 0x6071e92 在 0x606ab2c 之后)。
         # 默认关:四字保持 unmapped,legacy 逐字节不变。
         self.jl_audio_dac_dma=(JLAudioDacDmaWriteRecords() if jl_audio_dac_dma_writes else None)
+        # 路 JLA:JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c,set_buffer
+        # 0x606dee4 五写)写侧 write-only 整字记录——恰五写零读(本前缀),与
+        # BM DAC DMA 四字同族;audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b
+        # 后域留严格停(显式 kind)。默认关:五字保持 unmapped
+        # (21,800,325 前沿形状),legacy 逐字节不变。
+        self.jl_audio_adc_dma=(JLAudioAdcDmaWriteRecords() if jl_audio_adc_dma_writes else None)
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -5621,6 +5760,7 @@ class BR28Model:
                                           or self.timer2.handles_iwkup(address))) or
             (self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address)) or
             (self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address)) or
+            (self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -5944,6 +6084,11 @@ class BR28Model:
         if self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_dac_dma.read(address)
+        # JL_AUDIO ADC DMA 五字(路 JLA):write-only 记录,读回显式严格停
+        # (audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b 完成投影后域)。
+        if self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_adc_dma.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -6141,6 +6286,11 @@ class BR28Model:
             # JL_AUDIO DAC DMA 四字(路 BM/S19 批 1 ④续):0x6071e92..ea8 四条
             # 整字写(LEN/ADR/HRP/PNS),write-only 记录;DMA 传输不建模。
             self.jl_audio_dac_dma.write(address,value,self.current_core)
+        elif self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address):
+            # JL_AUDIO ADC DMA 五字(路 JLA):set_buffer 0x606dee4 的五条
+            # 连续整字写(ADR/LEN/PNS/HWP/SRP,首写=停点并行对 store 半),
+            # write-only 记录;DMA 搬运/指针推进/IRQ68 不建模。
+            self.jl_audio_adc_dma.write(address,value,self.current_core)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -6870,6 +7020,28 @@ class BR28Model:
                 'pointer/count reads belong to the post-D1 tone/PCM push domain and stay '
                 'strictly stopped; no DMA transfer, IRQ39 event or audio data flow is '
                 'modeled — this does NOT verify any audio output')
+        if self.jl_audio_adc_dma is not None:
+            result['jl_audio_adc_dma_write_records']=self.jl_audio_adc_dma.report()
+            result['assumptions']['jl_audio_adc_dma_write_records']=(
+                'JL_AUDIO ADC channel-buffer DMA words (0xfe053c/0xfe0540/0xfe0544/'
+                '0xfe0548/0xfe054c = base +0x3c/+0x40/+0x44/+0x48/+0x4c, the ADR/LEN/'
+                'PNS/HWP/SRP block written by set_buffer 0x606dee4, D2-b blueprint '
+                'word 15 of the csfr.h 32-bit word slots): write-only whole-word '
+                'records of the five consecutive stores in one basic block '
+                '(0x606df20..0x606df30, the first being the store half of the '
+                'parallel pair mul.rr.p at the 21,800,325 stop); values are real '
+                'instruction results, never invented; the whole-app direct-li '
+                'access sweep resolved exactly nine accesses — the five set_buffer '
+                'writes plus the audio_adc_irq_handler [0x6072628,0x6072700) reads '
+                'of PNS/ADR/SRP and its PNS write, reachable only through the IRQ68 '
+                'dispatcher 0x602f444 and NOT reached on this prefix (IRQ68 delivery '
+                'not modeled) — those reads stay strictly stopped and belong to the '
+                'D2-b completion-projection domain; the handler-tail SRN word '
+                '0xfe0550 is NOT whitelisted; the zero-read face on THIS prefix '
+                'motivates the record, it is NOT a measured hardware WO property '
+                'claim; no DMA transfer, pointer advance, SRN side effect, pending '
+                'bit, IRQ68 delivery or cache coherency is modeled — this does NOT '
+                'verify any audio input, ADC capture or D2-b acceptance scenario')
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),

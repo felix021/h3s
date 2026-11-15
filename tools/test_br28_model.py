@@ -2790,6 +2790,55 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(both.handles(0xfe0500,4) and both.handles(0xfe0534,4)
                         and both.handles(0xfe0508,4))
 
+    def test_jl_audio_adc_dma_write_records_and_strict_readback(self):
+        # 路 JLA:21,800,325 停点 0x606df1e(set_buffer 0x606dee4 五写之首,
+        # 并行对 store 半)——恰五写零读(本前缀)→write-only 记录;读回
+        # 显式严格停;默认关保持 unmapped;邻字不吞(ADC_CON 归 AS 容器、
+        # handler 尾 SRN 0xfe0550 不收、子字不服务)。
+        from br28_model import JL_AUDIO_ADC_DMA_WORDS
+        plain=BR28Model()
+        for address in JL_AUDIO_ADC_DMA_WORDS:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe053c,0x419264)
+        self.assertNotIn('jl_audio_adc_dma_write_records',plain.report())
+        h=BR28Model(jl_audio_adc_dma_writes=True)
+        for address in JL_AUDIO_ADC_DMA_WORDS:
+            self.assertTrue(h.handles(address,4))
+        # 邻字不吞:ADC_CON(AS 域)、SRN 0xfe0550、DAC DMA 域、子字错位。
+        self.assertFalse(h.handles(0xfe0538,4))
+        self.assertFalse(h.handles(0xfe0550,4))
+        self.assertFalse(h.handles(0xfe0504,4))
+        self.assertFalse(h.handles(0xfe053d,4) or h.handles(0xfe053c,2))
+        # set_buffer 五写形状(值=真实指令结果形状:ADR=缓冲址、LEN=
+        # buf_num*len>>1、PNS=len>>1、HWP=SRP=0)。
+        h.write(0xfe053c,0x00419264);h.write(0xfe0540,0x200)
+        h.write(0xfe0544,0x100);h.write(0xfe0548,0);h.write(0xfe054c,0)
+        r=h.report()['jl_audio_adc_dma_write_records']
+        self.assertEqual(r['addresses'],['0xfe053c','0xfe0540','0xfe0544','0xfe0548','0xfe054c'])
+        self.assertEqual(r['word_writes'],5)
+        self.assertEqual(r['stores']['0xfe053c'],
+                         {'values':['0x419264'],'writes':1,'cores':[0]})
+        self.assertTrue(r['write_only'] and r['readback_not_modeled'])
+        self.assertIn('set_buffer 0x606dee4',r['sdk_naming'])
+        self.assertIn('NOT included',r['whitelisted_words'])
+        self.assertIn('same-address new writer',r['whitelisted_words'])
+        self.assertIn('0x606df20',r['observed_shapes'])
+        self.assertIn('audio_adc_irq_handler',r['consumption_face'])
+        with self.assertRaisesRegex(Blocked,'jl_audio_adc_dma_read_not_modeled'):
+            h.read(0xfe053c)
+        with self.assertRaisesRegex(Blocked,'jl_audio_adc_dma_read_not_modeled'):
+            h.read(0xfe0544)
+        self.assertIn('jl_audio_adc_dma_write_records',h.report()['assumptions'])
+        # 与 AS/DAC DMA/DAC_COP/AK 域叠加互不吞地址。
+        both=BR28Model(jl_audio_adc_dma_writes=True,jl_audio_adc_reset_write_records=True,
+                       jl_audio_dac_dma_writes=True,jl_audio_dac_cop_writes=True,
+                       jl_audio_dac_init_write_records=True,jl_wl_aud_write_records=True)
+        self.assertTrue(both.handles(0xfe053c,4) and both.handles(0xfe0538,4)
+                        and both.handles(0xfe0504,4) and both.handles(0xfe0534,4)
+                        and both.handles(0xfe0500,4))
+        self.assertFalse(both.handles(0xfe0550,4))
+
     def test_jl_adda_analog_family_container(self):
         # 路 B3/S19 批 2 续:4,521,083 停点 0x606ac42(模拟 init 0x606abf0 首条
         # DAA_CON0 bit13 清位 RMW 内部读)——AM 容器族:白名单恰五字
