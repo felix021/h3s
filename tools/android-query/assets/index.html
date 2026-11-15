@@ -1,890 +1,2367 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
+<meta name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'>
 <title>H3S 工具</title>
+
+<script>
+(function () {
+  var choice = 'auto';
+  var storage = true;
+  try {
+    var saved = localStorage.getItem('h3s.theme');
+    if (['auto', 'light', 'dark'].indexOf(saved) !== -1) choice = saved;
+    localStorage.setItem('h3s.theme', choice);
+  } catch (e) {
+    storage = false;
+  }
+
+  var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  var theme = choice === 'auto' ? (dark ? 'dark' : 'light') : choice;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  window.H3S_THEME_BOOT = { choice: choice, storage: storage };
+})();
+</script>
+
 <style>
-  :root {
-    --bg: #0b0e13; --card: #151a23; --card2: #1a212d; --line: #232c3b; --line2: #2c3648;
-    --text: #e9edf4; --muted: #8b95a8; --dim: #5c6678;
-    --accent: #4cc2ff; --accent-dim: #2a6d96; --ok: #6ee7a0; --warn: #ffc857; --danger: #ff7070;
-    --radius: 16px;
+:root {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --soft: #e8edf3;
+  --text: #18212f;
+  --muted: #475569;
+  --line: #64748b;
+  --accent: #164e9b;
+  --hover: #123f80;
+  --active: #0f3366;
+  --on-accent: #ffffff;
+  --ok: #166534;
+  --warn: #854d0e;
+  --danger: #991b1b;
+  --radius: 18px;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e141d;
+  --surface: #17212f;
+  --soft: #223044;
+  --text: #f1f5f9;
+  --muted: #bdc9d8;
+  --line: #94a3b8;
+  --accent: #93c5fd;
+  --hover: #bfdbfe;
+  --active: #60a5fa;
+  --on-accent: #102238;
+  --ok: #86efac;
+  --warn: #fde047;
+  --danger: #fca5a5;
+}
+* {
+  box-sizing: border-box;
+}
+html {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  margin: 0;
+  width: 100%;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.6 system-ui, -apple-system, "Noto Sans SC",
+        "Microsoft YaHei", sans-serif;
+  overflow-wrap: anywhere;
+}
+[hidden] {
+  display: none !important;
+}
+button, input, select {
+  font: inherit;
+}
+button, select, input {
+  max-width: 100%;
+}
+button {
+  min-height: 44px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+button.primary,
+button[aria-pressed="true"],
+button[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+@media (hover: hover) {
+  button:not(:disabled):hover {
+    background: var(--soft);
   }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; padding: 0; }
-  body {
-    background: var(--bg); color: var(--text);
-    font: 15px/1.6 -apple-system, "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei", sans-serif;
-    padding-bottom: 40px;
+  button.primary:not(:disabled):hover,
+  button[aria-pressed="true"]:not(:disabled):hover,
+  button[aria-selected="true"]:not(:disabled):hover {
+    border-color: var(--hover);
+    background: var(--hover);
+    color: var(--on-accent);
   }
-  /* ---------- 顶栏 + tab ---------- */
-  header {
-    position: sticky; top: 0; z-index: 20;
-    background: rgba(11,14,19,.92); backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--line);
-    padding: calc(10px + env(safe-area-inset-top)) 16px 0;
+}
+button:not(:disabled):active {
+  border-color: var(--accent);
+  background: var(--soft);
+}
+button.primary:not(:disabled):active,
+button[aria-pressed="true"]:not(:disabled):active,
+button[aria-selected="true"]:not(:disabled):active {
+  border-color: var(--active);
+  background: var(--active);
+  color: var(--on-accent);
+}
+button:disabled,
+select:disabled {
+  opacity: 1;
+  border-color: var(--line);
+  border-style: dashed;
+  background: var(--soft);
+  color: var(--muted);
+  cursor: not-allowed;
+  -webkit-text-fill-color: var(--muted);
+}
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+summary:focus-visible,
+[role="slider"]:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+select {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+h1, h2, h3, p, figure {
+  margin: 0;
+}
+h1 {
+  font-size: 20px;
+  line-height: 1.3;
+}
+h2 {
+  font-size: 17px;
+  line-height: 1.4;
+}
+h3 {
+  font-size: 15px;
+}
+p + p {
+  margin-top: 8px;
+}
+small, .small {
+  font-size: 13px;
+}
+.muted, .note {
+  color: var(--muted);
+}
+.note {
+  margin-top: 10px;
+  font-size: 13px;
+}
+.good {
+  color: var(--ok);
+}
+.warning {
+  color: var(--warn);
+}
+.bad {
+  color: var(--danger);
+}
+.numeric {
+  font-variant-numeric: tabular-nums;
+}
+.shell {
+  width: 100%;
+  max-width: 744px;
+  margin-inline: auto;
+  padding-inline:
+    max(12px, env(safe-area-inset-left))
+    max(12px, env(safe-area-inset-right));
+}
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  padding-bottom: 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.brand svg {
+  display: block;
+  width: 32px;
+  height: 32px;
+  color: var(--accent);
+}
+.brand p {
+  color: var(--muted);
+  font-size: 12px;
+}
+.theme-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.theme-row > span {
+  font-size: 13px;
+  color: var(--muted);
+}
+.segment {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.segment.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.segment button {
+  padding-inline: 6px;
+}
+.tabs button {
+  min-height: 48px;
+}
+main {
+  padding-top: 14px;
+  padding-bottom: calc(32px + env(safe-area-inset-bottom));
+}
+.card {
+  min-width: 0;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.badge.good { color: var(--ok); }
+.badge.warning { color: var(--warn); }
+.badge.bad { color: var(--danger); }
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.actions > * {
+  min-width: 0;
+  flex: 1 1 120px;
+}
+.kv {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 7px;
+}
+.kv > :first-child {
+  color: var(--muted);
+}
+.batteries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.batteries span {
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: var(--soft);
+  font-size: 13px;
+}
+.switch-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-height: 48px;
+  cursor: pointer;
+}
+.switch-row > span {
+  min-width: 0;
+}
+.toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 28px;
+  margin: 0;
+  border: 2px solid var(--line);
+  border-radius: 20px;
+  background: var(--soft);
+  cursor: pointer;
+}
+.toggle::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.toggle:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.toggle:checked::before {
+  left: 23px;
+  background: var(--on-accent);
+}
+.toggle:disabled {
+  cursor: not-allowed;
+}
+.notice {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 13px;
+}
+.notice[data-kind="error"] {
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+.feedback {
+  min-height: 22px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.chips {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.chips button {
+  font-size: 13px;
+  padding-inline: 4px;
+}
+.chart {
+  margin: 12px 0;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--soft);
+}
+.chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.chart text {
+  fill: var(--muted);
+  font: 12px system-ui, sans-serif;
+}
+.chart .grid-line {
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.chart .curve-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.chart circle {
+  fill: var(--accent);
+}
+figcaption {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.band-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px 6px;
+  margin: 12px 0;
+}
+.band {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  text-align: center;
+}
+.band output {
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.band .frequency {
+  color: var(--muted);
+  font-size: 12px;
+}
+.slider {
+  position: relative;
+  width: 100%;
+  height: 164px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: ns-resize;
+}
+.slider .rail {
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: calc(50% - 2px);
+  width: 4px;
+  border-radius: 4px;
+  background: var(--line);
+}
+.slider .zero {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: var(--line);
+}
+.slider .thumb {
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  top: calc(16px + (100% - 32px) * var(--position));
+  height: 26px;
+  transform: translateY(-50%);
+  border: 2px solid var(--on-accent);
+  border-radius: 9px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.slider:active .thumb {
+  background: var(--active);
+}
+.master-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 80px;
+  gap: 12px;
+  align-items: center;
+  margin-top: 8px;
+}
+.master-row output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--line);
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 28px;
+  height: 28px;
+  margin-top: -12px;
+  border: 2px solid var(--on-accent);
+  border-radius: 50%;
+  background: var(--accent);
+}
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: var(--line);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--on-accent);
+  border-radius: 50%;
+  background: var(--accent);
+}
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  padding: 7px 4px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+th {
+  color: var(--muted);
+}
+details {
+  margin-top: 10px;
+}
+summary {
+  min-height: 44px;
+  padding: 10px 0;
+  color: var(--muted);
+  cursor: pointer;
+}
+.key-row {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+.key-row label {
+  font-weight: 600;
+}
+.key-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+.key-row.dirty select {
+  border: 2px solid var(--warn);
+}
+.key-row.dirty small {
+  color: var(--warn);
+}
+.placeholder-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.placeholder {
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+  color: var(--muted);
+}
+.placeholder small {
+  display: block;
+  margin-top: 4px;
+}
+.device {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+}
+.device button {
+  max-width: 100px;
+}
+.empty {
+  padding: 20px 12px;
+  margin-top: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.progress {
+  height: 10px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+  overflow: hidden;
+}
+.progress > div {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
+.result {
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font: 13px/1.7 ui-monospace, monospace;
+}
+.flash-card {
+  border-color: var(--danger);
+}
+.flash-card h2 {
+  color: var(--danger);
+}
+#logPanel {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 30;
+  max-height: 60vh;
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 2px solid var(--line);
+  background: var(--surface);
+}
+#logPanel .log-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 12px;
+}
+#logPanel .log-head strong {
+  flex: 1 1 130px;
+}
+#logBody {
+  max-height: 42vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 12px 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--muted);
+  font: 12px/1.7 ui-monospace, monospace;
+}
+@media (min-width: 600px) {
+  .band-grid {
+    grid-template-columns: repeat(10, minmax(0, 1fr));
   }
-  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 0 10px; }
-  .brand svg { flex: none; }
-  .brand .name { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
-  .brand .sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
-  .pill {
-    margin-left: auto; font-size: 11px; padding: 3px 10px; border-radius: 999px;
-    background: #34222a; color: #ff9c9c; white-space: nowrap;
+}
+@media (max-width: 339px) {
+  .band-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .pill.ok { background: #16321f; color: var(--ok); }
-  .pill.mid { background: #383010; color: var(--warn); }
-  .tabs { display: flex; gap: 4px; background: var(--card); border-radius: 12px; padding: 4px; margin-bottom: 10px; }
-  .tabs button {
-    flex: 1; border: 0; border-radius: 9px; padding: 8px 0; font-size: 15px; font-weight: 600;
-    background: transparent; color: var(--muted);
+  .chips {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .tabs button.on { background: var(--accent-dim); color: #eaf6ff; }
-  .logbtn {
-    border: 1px solid var(--line2); background: var(--card); color: var(--muted);
-    border-radius: 9px; padding: 4px 10px; font-size: 12px;
+  .theme-row {
+    grid-template-columns: minmax(0, 1fr);
   }
-  /* ---------- 布局 ---------- */
-  main { padding: 14px 14px 0; max-width: 560px; margin: 0 auto; }
-  section { display: none; }
-  section.on { display: block; }
-  .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 14px 16px; margin-bottom: 14px;
-  }
-  .card > .head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .card > .head .t { font-size: 16px; font-weight: 700; }
-  .card > .head .tag {
-    margin-left: auto; font-size: 10px; color: var(--muted); border: 1px solid var(--line2);
-    border-radius: 6px; padding: 1px 6px; white-space: nowrap;
-  }
-  .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.7; }
-  .note b { color: var(--warn); font-weight: 600; }
-  .hint { font-size: 12px; color: var(--dim); }
-  /* ---------- 控件 ---------- */
-  button.act {
-    border: 0; border-radius: 12px; padding: 10px 18px; font-size: 14px; font-weight: 600;
-    background: var(--accent-dim); color: #eaf6ff;
-  }
-  button.act:active { filter: brightness(1.2); }
-  button.act.ghost { background: var(--card2); color: var(--text); border: 1px solid var(--line2); }
-  button.act.small { padding: 6px 12px; font-size: 13px; border-radius: 9px; }
-  button.act.danger { background: #6e2739; color: #ffd9e0; }
-  button.act:disabled { opacity: .4; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
-  .seg { display: flex; gap: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 5px; }
-  .seg button {
-    flex: 1; border: 0; border-radius: 8px; padding: 9px 4px; font-size: 14px; font-weight: 600;
-    background: transparent; color: var(--muted); line-height: 1.3;
-  }
-  .seg button small { display: block; font-size: 10px; font-weight: 400; color: inherit; opacity: .7; }
-  .seg button.on { background: var(--accent-dim); color: #eaf6ff; }
-  .seg button.on.anc-on { background: #1d4d3a; color: #d7ffe9; }
-  .seg button.on.anc-off { background: #33405a; color: #dfe8ff; }
-  .seg button.on.anc-tr { background: #4d3a1d; color: #ffedd2; }
-  select {
-    background: var(--bg); color: var(--text); border: 1px solid var(--line2);
-    border-radius: 8px; padding: 6px 8px; font-size: 13px; max-width: 100%;
-  }
-  /* 开关 */
-  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
-  .switch .knob {
-    width: 44px; height: 26px; border-radius: 999px; background: var(--card2);
-    border: 1px solid var(--line2); position: relative; transition: background .18s;
-  }
-  .switch .knob::after {
-    content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
-    border-radius: 50%; background: var(--muted); transition: left .18s, background .18s;
-  }
-  .switch input { display: none; }
-  .switch input:checked + .knob { background: #6e2739; border-color: #8d3d54; }
-  .switch input:checked + .knob::after { left: 20px; background: #ff9cb1; }
-  .switch.green input:checked + .knob { background: #1d4d3a; border-color: #2f6b52; }
-  .switch.green input:checked + .knob::after { background: #8affc4; }
-  /* 状态行 */
-  .kv { display: flex; gap: 10px; align-items: baseline; margin: 4px 0; font-size: 13px; }
-  .kv .k { color: var(--muted); flex: none; width: 64px; }
-  .kv .v { font-variant-numeric: tabular-nums; word-break: break-all; }
-  .kv .v.dim { color: var(--dim); }
-  .batt { display: flex; gap: 6px; flex-wrap: wrap; }
-  .batt span {
-    background: var(--card2); border: 1px solid var(--line2); border-radius: 8px;
-    padding: 2px 8px; font-size: 12px; font-variant-numeric: tabular-nums;
-  }
-  .batt span i { font-style: normal; color: var(--muted); margin-right: 3px; }
-  /* EQ */
-  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
-  .chips button {
-    border: 1px solid var(--line2); background: var(--card2); color: var(--muted);
-    border-radius: 999px; padding: 5px 13px; font-size: 13px;
-  }
-  .chips button.on { background: var(--accent-dim); border-color: var(--accent-dim); color: #eaf6ff; }
-  #eqCurve { width: 100%; height: 96px; display: block; background: var(--bg); border-radius: 10px; border: 1px solid var(--line); }
-  .bank { display: flex; gap: 2px; margin-top: 10px; }
-  .band { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-  .band .bv {
-    font-size: 10px; color: var(--ok); font-variant-numeric: tabular-nums; height: 14px;
-    white-space: nowrap;
-  }
-  .band .bv.neg { color: var(--accent); }
-  .vs { height: 132px; width: 100%; display: flex; align-items: center; justify-content: center; }
-  .vs input {
-    width: 132px; transform: rotate(-90deg); margin: 0;
-    -webkit-appearance: slider-vertical; /* Chromium 旧竖滑语法兜底 */
-  }
-  .band .bf { font-size: 10px; color: var(--muted); height: 14px; white-space: nowrap; }
-  input[type=range] { accent-color: var(--accent); }
-  /* 按键矩阵 */
-  .km { display: grid; grid-template-columns: 64px repeat(5, 1fr); gap: 5px; align-items: center; }
-  .km .h { font-size: 11px; color: var(--muted); text-align: center; }
-  .km .kn { font-size: 12px; font-weight: 600; }
-  .km select { width: 100%; font-size: 11px; padding: 5px 2px; border-radius: 7px; }
-  .km .cell { position: relative; }
-  .km .cell.dirty::after {
-    content: ""; position: absolute; top: -3px; right: -1px; width: 8px; height: 8px;
-    border-radius: 50%; background: var(--warn);
-  }
-  .km .cell.g { outline: 1px dashed #4a4232; outline-offset: 1px; border-radius: 7px; }
-  /* 占位卡 */
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .ph {
-    background: var(--card2); border: 1px dashed var(--line2); border-radius: 12px;
-    padding: 12px; text-align: center;
-  }
-  .ph .n { font-size: 14px; color: var(--muted); font-weight: 600; }
-  .ph .d { font-size: 11px; color: var(--dim); margin-top: 3px; }
-  /* USB */
-  .dev {
-    display: flex; align-items: center; gap: 8px; background: var(--card2);
-    border: 1px solid var(--line2); border-radius: 12px; padding: 10px 12px; margin: 8px 0;
-  }
-  .dev .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
-  .dev.rom .dot { background: var(--warn); }
-  .dev.qcy .dot { background: var(--accent); }
-  .dev .nm { font-size: 13px; font-weight: 600; }
-  .dev .id { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .dev .ops { margin-left: auto; display: flex; gap: 6px; }
-  .empty {
-    text-align: center; color: var(--dim); font-size: 13px; padding: 22px 10px;
-    border: 1px dashed var(--line2); border-radius: 12px; margin: 8px 0;
-  }
-  .progress { height: 8px; background: var(--card2); border-radius: 999px; overflow: hidden; margin: 8px 0; display: none; }
-  .progress .bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
-  .result {
-    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
-    padding: 8px 10px; font-size: 12px; font-variant-numeric: tabular-nums;
-    word-break: break-all; margin-top: 8px; display: none; color: var(--muted); line-height: 1.8;
-  }
-  .result .hl { color: var(--ok); }
-  .result .bad { color: var(--danger); }
-  .flashzone { border-color: #55232e; background: #1a1218; }
-  .flashzone .t { color: #ff9cb1; }
-  .redline {
-    font-size: 12px; color: #ffb4c2; background: #2a141c; border-radius: 10px;
-    padding: 8px 12px; margin-top: 8px; line-height: 1.8;
-  }
-  /* 日志抽屉 */
-  #logPanel {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; max-height: 55vh;
-    background: #0d1017; border-top: 1px solid var(--line2); display: none; flex-direction: column;
-  }
-  #logPanel.on { display: flex; }
-  #logPanel .bar {
-    display: flex; align-items: center; padding: 8px 16px; gap: 8px; border-bottom: 1px solid var(--line);
-    font-size: 13px; color: var(--muted);
-  }
-  #logPanel pre {
-    margin: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
-    overflow-y: auto; font-size: 11px; line-height: 1.7; color: #9fb0c8;
-    white-space: pre-wrap; word-break: break-all;
-  }
-  #logPanel .c { color: var(--ok); } #logPanel .e { color: var(--danger); } #logPanel .t { color: var(--dim); }
+}
 </style>
 </head>
-<body>
 
+<body>
 <header>
-  <div class="brand">
-    <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
-      <path d="M5 17v-2a10 10 0 0 1 20 0v2" stroke="#4cc2ff" stroke-width="2.4" stroke-linecap="round"/>
-      <rect x="3" y="15" width="5" height="10" rx="2.4" fill="#4cc2ff"/>
-      <rect x="22" y="15" width="5" height="10" rx="2.4" fill="#4cc2ff"/>
-      <path d="M11 25h8" stroke="#6ee7a0" stroke-width="2.4" stroke-linecap="round"/>
-    </svg>
-    <div>
-      <div class="name">H3S 工具</div>
-      <div class="sub">QCY H3S · 独立客户端</div>
+  <div class="shell">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <path d="M6 18v-3a10 10 0 0 1 20 0v3"
+              stroke="currentColor" stroke-width="2.5"
+              stroke-linecap="round"/>
+        <rect x="3" y="16" width="6" height="11" rx="3"
+              fill="currentColor"/>
+        <rect x="23" y="16" width="6" height="11" rx="3"
+              fill="currentColor"/>
+        <path d="M12 27h8" stroke="currentColor"
+              stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <h1>H3S 工具</h1>
+        <p>QCY H3S · 本地控制</p>
+      </div>
+      <button id="logToggle" aria-controls="logPanel"
+              aria-expanded="false">日志</button>
     </div>
-    <span id="statusPill" class="pill">未连接</span>
-    <button id="logToggle" class="logbtn">日志</button>
-  </div>
-  <div class="tabs">
-    <button id="tabBtnHs" class="on">耳机</button>
-    <button id="tabBtnUsb">USB</button>
+
+    <div class="theme-row">
+      <span id="themeLabel">外观</span>
+      <div class="segment" role="group" aria-labelledby="themeLabel">
+        <button data-theme-choice="light" aria-pressed="false">亮色</button>
+        <button data-theme-choice="dark" aria-pressed="false">暗色</button>
+        <button data-theme-choice="auto" aria-pressed="true">自动</button>
+      </div>
+    </div>
+
+    <div class="segment two tabs" role="tablist" aria-label="工具分类">
+      <button id="tabBtnHs" role="tab" aria-selected="true"
+              aria-controls="tabHs" tabindex="0">耳机控制</button>
+      <button id="tabBtnUsb" role="tab" aria-selected="false"
+              aria-controls="tabUsb" tabindex="-1">USB 工具</button>
+    </div>
   </div>
 </header>
 
-<main>
-
-<!-- ============================ 耳机 tab ============================ -->
-<section id="tabHs" class="on">
-
-  <div class="card">
-    <div class="head"><div class="t">连接</div><span class="tag" id="mtuTag">MTU —</span></div>
-    <div class="kv"><span class="k">目标地址</span><span class="v" id="bleAddr">—</span></div>
-    <div class="kv"><span class="k">状态</span><span class="v" id="connText">未连接</span></div>
-    <div class="kv"><span class="k">电量</span><span class="v"><span class="batt" id="batt"><span style="border:0;padding:0;color:var(--dim);font-size:12px">连接后可查询（只读 0x2f）</span></span></span></div>
-    <div class="row">
-      <button id="connBtn" class="act">连接耳机</button>
-      <button id="discBtn" class="act ghost">断开</button>
-      <button id="battBtn" class="act ghost small">查电量</button>
-    </div>
-    <div class="note">连接 = 地址过滤扫描 → GATT → 订阅通知 → MTU 协商；目标地址由构建注入，不连任意设备。
-      异步结果经 <b>onH3sEvent</b> 事件推送。</div>
+<main class="shell">
+  <p id="storageNote" class="notice warning" hidden>
+    当前壳未开放本地存储，外观选择只能保留到本页关闭。
+  </p>
+  <div id="notice" class="notice" role="status" aria-live="polite">
+    连接耳机后可查询状态；修改参数需要开启写入开关。
   </div>
 
-  <div class="card">
-    <div class="head"><div class="t">写入门控</div><span class="tag">EqWritePolicy</span></div>
-    <div class="row">
-      <label class="switch green"><input type="checkbox" id="armSw"><span class="knob"></span></label>
-      <span id="armText" class="hint">未武装：所有写命令都会被 bridge 拒绝</span>
-    </div>
-    <div class="note">武装后 EQ / ANC / 模式 / 按键 / 提示音等写命令才会组帧发送；帧形状仍受白名单约束，
-      不存在任意字节写入口。只读查询不受此开关影响。</div>
-  </div>
+  <section id="tabHs" role="tabpanel" aria-labelledby="tabBtnHs">
+    <article class="card">
+      <div class="card-head">
+        <h2>连接耳机</h2>
+        <span id="statusPill" class="badge">未连接</span>
+      </div>
+      <div class="kv">
+        <span>地址</span>
+        <span id="bleAddr">由原生壳指定</span>
+      </div>
+      <div class="kv">
+        <span>状态</span>
+        <span id="connText">尚未连接</span>
+      </div>
+      <div class="kv">
+        <span>电量</span>
+        <div id="batt" class="batteries">
+          <span>连接后查询</span>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="connBtn" class="primary">连接耳机</button>
+        <button id="discBtn" disabled>断开</button>
+        <button id="battBtn" disabled>查询电量</button>
+      </div>
+      <p id="mtuText" class="note">仅连接构建时指定的耳机。</p>
+    </article>
 
-  <div class="card">
-    <div class="head"><div class="t">降噪模式</div><span class="tag">FF/0x17</span></div>
-    <div class="seg" id="ancSeg">
-      <button data-anc="1,1,2">降噪<small>01 01 02</small></button>
-      <button data-anc="2,0,0">正常<small>02 00 00</small></button>
-      <button data-anc="3,1,4">通透<small>03 01 04</small></button>
-    </div>
-    <div class="note">三态载荷 <code>17 03 mode scene strength</code> 实测钉死；更深档位（scene/strength 其余取值）
-      协议未钉，不臆造。</div>
-  </div>
+    <article class="card">
+      <div class="card-head">
+        <h2>允许写入</h2>
+        <span id="armBadge" class="badge">未武装</span>
+      </div>
+      <label class="switch-row" for="armSw">
+        <input id="armSw" class="toggle" type="checkbox"
+               role="switch" aria-describedby="armText">
+        <span>允许发送耳机设置</span>
+      </label>
+      <p id="armText" class="note">
+        已关闭。可编辑本地参数；写命令不会发送。查询不受影响。
+      </p>
+    </article>
 
-  <div class="card">
-    <div class="head"><div class="t">音频模式 · 低延迟</div><span class="tag">FF/0x2E · 帧长未钉</span></div>
-    <div class="seg" id="modeSeg">
-      <button data-mode="1">音乐<small>模式 1</small></button>
-      <button data-mode="3">游戏 · 低延迟<small>模式 3</small></button>
-      <button data-mode="4">电影<small>模式 4</small></button>
-    </div>
-    <div class="note">「游戏模式 = 低延迟」由 <b>效果重配</b> 实现（EQ 预设 MusicEqBt + 场景切换 + 低延迟标志对），
-      不改编解码/缓冲/时钟。固件侧 cmd 46 setter 只读载荷首字节（1/3/4）；data 长度按 1 字节假设组帧，
-      真机联调对照。</div>
-  </div>
+    <article class="card">
+      <div class="card-head">
+        <h2>降噪模式</h2>
+        <span class="badge">ANC</span>
+      </div>
+      <div id="ancSeg" class="segment" role="group" aria-label="降噪模式">
+        <button data-write data-anc="1,1,2" aria-pressed="false" disabled>
+          降噪
+        </button>
+        <button data-write data-anc="3,1,4" aria-pressed="false" disabled>
+          通透
+        </button>
+        <button data-write data-anc="2,0,0" aria-pressed="false" disabled>
+          关闭
+        </button>
+      </div>
+      <p id="ancFeedback" class="feedback" aria-live="polite">
+        尚未取得设备状态。
+      </p>
+    </article>
 
-  <div class="card">
-    <div class="head"><div class="t">均衡器</div><span class="tag">FF/0x22 · 最多 10 段</span></div>
-    <div class="chips" id="eqChips"></div>
-    <canvas id="eqCurve"></canvas>
-    <div class="row" style="margin-top:10px">
-      <span class="hint">总增益</span>
-      <input type="range" id="master" min="-18" max="12" step="0.5" value="0" style="flex:1">
-      <span class="hint" id="masterVal" style="width:56px;text-align:right">0.0 dB</span>
-    </div>
-    <div class="bank" id="bank"></div>
-    <div class="row">
-      <button id="eqSend" class="act">下发当前 EQ</button>
-      <button id="eqFlat" class="act ghost small">全部归零</button>
-    </div>
-    <div class="note">预设取自 QCY 面板原始数据（含 −17dB 等 <b>超出 ±8 面板钳位</b> 的调音值；固件接收层不钳，
-      输出端限幅自负）。频点/Q/IIR 跟随预设，滑块只调各段增益；总增益 −18..+12 dB。</div>
-  </div>
+    <article class="card">
+      <div class="card-head">
+        <h2>均衡器</h2>
+        <span id="eqBadge" class="badge">自定义 · 10 段</span>
+      </div>
 
-  <div class="card">
-    <div class="head"><div class="t">按键自定义</div><span class="tag">3 键 × 5 手势</span></div>
-    <div class="row">
-      <span class="hint">wire：</span>
-      <label class="hint"><input type="radio" name="wire" value="adv" checked> ADV type2（默认）</label>
-      <label class="hint"><input type="radio" name="wire" value="custom"> 自定义 0x2b</label>
-    </div>
-    <div class="km" id="kmatrix"></div>
-    <div class="row">
-      <button id="kmWrite" class="act small">写入待同步项</button>
-      <button id="kmRead" class="act ghost small">读取映射</button>
-    </div>
-    <div class="note">eventID 布局 0x{键}0{连击}（音量− 03 / 音量+ 05 / 多功能 07）；<b>长按低字节 5 为假设</b>（虚线格）。
-      「读取」是壳侧工作副本（初始=QCY 面板默认），设备真实读回待查询响应形状钉死。修改后需武装才会下发。</div>
-  </div>
+      <div id="eqChips" class="chips" role="group"
+           aria-label="均衡器预设"></div>
 
-  <div class="card">
-    <div class="head"><div class="t">提示音音量</div><span class="tag">FF/0x1d</span></div>
-    <div class="seg" id="volSeg">
-      <button data-vol="3">最小<small>3</small></button>
-      <button data-vol="6">中等<small>6</small></button>
-      <button data-vol="8">最大<small>8</small></button>
-    </div>
-    <div class="note">固件 setter 只读 data[0]，值不钳；3/6/8 是面板层档位。</div>
-  </div>
+      <figure class="chart">
+        <svg id="eqCurve" viewBox="0 0 300 120"
+             role="img" aria-labelledby="curveTitle curveDescription">
+          <title id="curveTitle">各频段增益</title>
+          <desc id="curveDescription">自定义均衡器的十段增益。</desc>
+          <g id="curveGrid"></g>
+          <polyline id="curveLine" class="curve-line"></polyline>
+          <g id="curveDots"></g>
+        </svg>
+        <figcaption>
+          横轴为频率，纵轴为各段增益；连线仅辅助查看，不代表实际滤波响应。
+        </figcaption>
+      </figure>
 
-  <div class="card">
-    <div class="head"><div class="t">固件升级</div><span class="tag">UpgradeGate 门控</span></div>
-    <div class="kv"><span class="k">当前版本</span><span class="v dim">0.1.1.8 (280) · 版本查询待联调</span></div>
-    <div class="kv"><span class="k">固定候选</span><span class="v dim">已验证 ANC 镜像 b79…fa1b</span></div>
-    <div class="row"><button id="openUpgrade" class="act ghost">打开升级工具（原生页）</button></div>
-    <div class="note">升级走原生 UpgradeService：设备身份/版本/电量/新鲜读全部复检 + 两分钟确认窗，
-      只接受固定摘要候选。<b>EQ 修复候选 67ba… 仍 UNTESTED，不刷机。</b></div>
-  </div>
+      <p id="eqDescription" class="note"></p>
 
-  <div class="card">
-    <div class="head"><div class="t">更多功能</div><span class="tag">协议未调研</span></div>
-    <div class="grid2">
-      <div class="ph"><div class="n">查找耳机</div><div class="d">协议未调研</div></div>
-      <div class="ph"><div class="n">双设备连接</div><div class="d">协议未调研</div></div>
-      <div class="ph"><div class="n">佩戴检测</div><div class="d">协议未调研</div></div>
-      <div class="ph"><div class="n">恢复默认设置</div><div class="d">协议未调研</div></div>
-    </div>
-  </div>
+      <div id="customEditor">
+        <div id="bandGrid" class="band-grid"></div>
+        <p class="note">
+          上下拖动调节，双击滑块归零。支持方向键、Home / End；
+          按键盘数字 0 也可复位。单位 dB。
+        </p>
+        <label for="master">总增益</label>
+        <div class="master-row">
+          <input id="master" type="range" min="-18" max="12"
+                 step="0.5" value="0">
+          <output id="masterValue" for="master">0.0 dB</output>
+        </div>
+      </div>
 
-</section>
+      <div id="presetView" hidden>
+        <p id="presetMaster" class="note"></p>
+        <details>
+          <summary>查看原始预设参数</summary>
+          <table>
+            <thead>
+              <tr><th>频率 Hz</th><th>增益 dB</th><th>Q / 类型</th></tr>
+            </thead>
+            <tbody id="presetRows"></tbody>
+          </table>
+        </details>
+      </div>
 
-<!-- ============================ USB tab ============================ -->
-<section id="tabUsb">
+      <div class="actions">
+        <button id="eqSend" class="primary" data-write disabled>
+          发送当前 EQ
+        </button>
+        <button id="eqFlat">自定义全部归零</button>
+      </div>
+      <p id="eqFeedback" class="feedback" aria-live="polite">
+        本地预览，尚未发送。
+      </p>
+    </article>
 
-  <div class="card">
-    <div class="head"><div class="t">USB 设备</div><span class="tag" id="usbVerifiedTag">OTG 链路未验证</span></div>
-    <div class="row">
-      <button id="usbScan" class="act">扫描设备</button>
-      <span class="hint" id="usbLinkState">未打开设备</span>
-    </div>
-    <div id="devList"><div class="empty">未检测到设备——用 OTG 线连接耳机后点「扫描」</div></div>
-    <div class="note">识别身份：QCY 普通 <code>3654:4a55</code> / BR28 ROM <code>4c4a:3442</code>。
-      手机需支持 USB host（OTG）；部分手机需要「反向供电」转接头。本工具在手机上的物理链路
-      <b>未实测</b>，失败信息如实展示。</div>
-  </div>
+    <article class="card">
+      <div class="card-head">
+        <h2>提示音音量</h2>
+        <span class="badge">三档</span>
+      </div>
+      <div id="volSeg" class="segment" role="group" aria-label="提示音音量">
+        <button data-write data-vol="3" aria-pressed="false" disabled>低</button>
+        <button data-write data-vol="6" aria-pressed="false" disabled>中</button>
+        <button data-write data-vol="8" aria-pressed="false" disabled>高</button>
+      </div>
+      <p id="volFeedback" class="feedback" aria-live="polite">
+        尚未设置。
+      </p>
+    </article>
 
-  <div class="card">
-    <div class="head"><div class="t">进入 ROM 模式</div><span class="tag">vendor GET_STATUS</span></div>
-    <div class="kv"><span class="k">请求</span><span class="v dim">83 00 fc fe · len8 能力读 → len0 一次性进入</span></div>
-    <div class="row"><button id="usbEnterRom" class="act ghost" disabled>发送进入 ROM 请求</button></div>
-    <div class="note">对普通 QCY USB 身份：先能力读（须返回 8×FF），确认后<b>只发一次</b>进入请求——设备随即重启
-      重枚举，请求本身可能报协议错（-71），<b>以重新扫描出现 BR28 UBOOT 身份为准，不重发</b>。
-      若耳机应用还活着但你想主动进 ROM：保持 USB 连接状态下发送即可；完全无响应的设备只能走桌面工具流程。</div>
-  </div>
+    <article class="card">
+      <div class="card-head">
+        <h2>按键自定义</h2>
+        <span id="keyDirtyCount" class="badge">无待发送修改</span>
+      </div>
 
-  <div class="card">
-    <div class="head"><div class="t">只读操作</div><span class="tag">INQUIRY · FB06 · FD07 · FD05</span></div>
-    <div class="row">
-      <button id="usbInquiry" class="act small" disabled>INQUIRY</button>
-      <button id="usbLoader" class="act small" disabled>装载 RAM loader</button>
-    </div>
-    <div class="row">
-      <button id="usbRomWin" class="act ghost small" disabled>读 ROM 窗（128 KiB）</button>
-      <button id="usbBackup" class="act ghost small" disabled>全片备份（2 MiB）</button>
-    </div>
-    <div class="progress" id="usbProg"><div class="bar"></div></div>
-    <div class="result" id="usbResult"></div>
-    <div class="note">loader = 摘要固定的 br28loader.bin（FB06 装载 0x120000 → FB08 跳转 → FC0A 校验 SPI NOR）。
-      ROM 窗读用 FD07 128B 分块、全片备份用 FD05 512B 扇区，均<b>双读一致才落盘</b>（app 私有目录）；
-      不一致即放弃，不自动重试。<b>这里没有任何 Flash 写命令。</b></div>
-  </div>
+      <div id="keyChooser" class="segment" role="group" aria-label="物理按键">
+        <button data-key="7" aria-pressed="true">多功能</button>
+        <button data-key="5" aria-pressed="false">音量＋</button>
+        <button data-key="3" aria-pressed="false">音量－</button>
+      </div>
 
-  <div class="card flashzone">
-    <div class="head"><div class="t">刷机区（锁定）</div><span class="tag">无写路径</span></div>
-    <div class="row">
-      <label class="switch"><input type="checkbox" id="flashUnlock"><span class="knob"></span></label>
-      <span class="hint">我已了解风险，解锁本区域</span>
-    </div>
-    <div id="flashBody" style="display:none">
-      <div class="redline">红线：<b>候选镜像 UNTESTED，不刷机。</b><br>
-        本 app 的 USB 层没有实现擦除/编程命令（FB01/FB04 不存在编码入口）——解锁也不会出现刷机按钮。
-        固件恢复走桌面工具 tools/usb-recovery 的固定档案流程。</div>
-      <div class="kv" style="margin-top:8px"><span class="k">候选镜像</span><span class="v dim">（空：未内置 .ufw 候选；升级走耳机 tab 的 OTA 工具）</span></div>
-    </div>
-  </div>
+      <div id="keyRows"></div>
 
-</section>
+      <details>
+        <summary>通信方式与已知限制</summary>
+        <label for="keyWire">按键写入方式</label>
+        <select id="keyWire">
+          <option value="adv">ADV type2（原默认方式）</option>
+          <option value="custom">自定义命令 0x2b</option>
+        </select>
+        <p class="note">
+          长按的事件编号仍是假设，页面明确标记为“待验证”。
+          “读取工作副本”只读取原生壳缓存，不代表设备实际映射。
+          两种写入方式均保留现有接口。
+        </p>
+      </details>
+
+      <div class="actions">
+        <button id="kmWrite" class="primary" data-write disabled>
+          发送修改
+        </button>
+        <button id="kmRead">读取工作副本</button>
+      </div>
+      <p id="kmFeedback" class="feedback" aria-live="polite">
+        初始值来自旧页面默认配置。
+      </p>
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <h2>音频模式</h2>
+        <span class="badge">音乐与影音</span>
+      </div>
+      <div id="modeSeg" class="segment" role="group" aria-label="音频模式">
+        <button data-write data-mode="1" aria-pressed="false" disabled>音乐</button>
+        <button data-write data-mode="3" aria-pressed="false" disabled>
+          游戏<br><span class="small">低延迟</span>
+        </button>
+        <button data-write data-mode="4" aria-pressed="false" disabled>电影</button>
+      </div>
+      <p id="modeFeedback" class="feedback" aria-live="polite">
+        此接口的报文长度仍待真机验证。
+      </p>
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <h2>固件升级</h2>
+        <span class="badge">原生工具</span>
+      </div>
+      <p class="muted">当前版本尚未查询；本页不直接执行升级。</p>
+      <div class="actions">
+        <button id="openUpgrade">打开原生升级工具</button>
+      </div>
+      <p class="note">
+        升级继续使用原生身份、电量与固定候选检查。
+        EQ 修复候选仍未验证，不提供刷入入口。
+      </p>
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <h2>更多功能</h2>
+        <span class="badge">尚未支持</span>
+      </div>
+      <div class="placeholder-grid">
+        <div class="placeholder">查找耳机<small>协议未调研</small></div>
+        <div class="placeholder">双设备连接<small>协议未调研</small></div>
+        <div class="placeholder">佩戴检测<small>协议未调研</small></div>
+        <div class="placeholder">恢复默认设置<small>协议未调研</small></div>
+      </div>
+    </article>
+  </section>
+
+  <section id="tabUsb" role="tabpanel" aria-labelledby="tabBtnUsb" hidden>
+    <article class="card">
+      <div class="card-head">
+        <h2>USB 设备</h2>
+        <span id="usbVerifiedTag" class="badge warning">OTG 链路未验证</span>
+      </div>
+      <p id="usbLinkState" class="muted">未打开设备</p>
+      <div class="actions">
+        <button id="usbScan" class="primary">扫描设备</button>
+      </div>
+      <div id="devList">
+        <div class="empty">用 OTG 线连接耳机后，点击“扫描设备”。</div>
+      </div>
+      <p class="note">
+        手机需支持 USB Host。普通 QCY 身份为 3654:4a55，
+        ROM 身份为 4c4a:3442。手机物理链路尚未实测。
+      </p>
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <h2>进入 ROM 模式</h2>
+        <span class="badge">一次性请求</span>
+      </div>
+      <p class="muted">
+        对已打开的普通 QCY 设备，先读取能力，再发送一次进入请求。
+        设备随后会重启并重新枚举。
+      </p>
+      <div class="actions">
+        <button id="usbEnterRom" disabled>发送进入 ROM 请求</button>
+      </div>
+      <p class="note warning">
+        请求可能因设备重启报错。请重新扫描，以出现 BR28 ROM 身份为准，
+        不要重复发送进入请求。
+      </p>
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <h2>ROM 会话与读取</h2>
+        <span class="badge">不写 Flash</span>
+      </div>
+      <div class="actions">
+        <button id="usbInquiry" disabled>INQUIRY</button>
+        <button id="usbLoader" disabled>装载 RAM loader</button>
+      </div>
+      <div class="actions">
+        <button id="usbRomWin" disabled>读 ROM 窗 · 128 KiB</button>
+        <button id="usbBackup" disabled>全片备份 · 2 MiB</button>
+      </div>
+
+      <div id="usbProgress" class="progress" role="progressbar"
+           aria-label="USB 读取进度" aria-valuemin="0"
+           aria-valuemax="100" aria-valuenow="0" hidden>
+        <div id="usbBar"></div>
+      </div>
+      <p id="usbProgressText" class="feedback" aria-live="polite"></p>
+      <pre id="usbResult" class="result" hidden></pre>
+
+      <details>
+        <summary>操作说明</summary>
+        <p class="note">
+          RAM loader 使用原生桥固定摘要校验，通过 FB06 装载、FB08 启动，
+          再以 FC0A 确认 SPI NOR。此步骤会写 RAM 并执行 loader。
+        </p>
+        <p class="note">
+          ROM 窗使用 FD07，Flash 备份使用 FD05。两项均保留双读一致检查，
+          成功后保存到应用私有目录；失败不自动重试。
+          此页没有 Flash 擦除或编程入口。
+        </p>
+      </details>
+    </article>
+
+    <article class="card flash-card">
+      <div class="card-head">
+        <h2>刷机区</h2>
+        <span class="badge bad">无写入路径</span>
+      </div>
+      <label class="switch-row" for="flashUnlock">
+        <input id="flashUnlock" class="toggle" type="checkbox"
+               role="switch" aria-controls="flashBody" aria-expanded="false">
+        <span>展开刷机限制说明</span>
+      </label>
+      <div id="flashBody" hidden>
+        <p class="note bad">
+          候选镜像 UNTESTED，不刷机。
+          USB 层未实现 FB01 / FB04 擦除与编程入口，
+          展开本区域不会出现刷机按钮。
+        </p>
+        <p class="note">
+          固件恢复沿用桌面 tools/usb-recovery 的固定档案流程。
+          此页未内置 UFW 候选，OTA 入口位于“耳机控制”。
+        </p>
+      </div>
+    </article>
+  </section>
 </main>
 
-<div id="logPanel">
-  <div class="bar"><span>调用与事件日志（最近 60 条）</span>
-    <button class="logbtn" id="logClear" style="margin-left:auto">清空</button>
-    <button class="logbtn" id="logClose">收起</button></div>
-  <pre id="logBody">（尚无调用）</pre>
-</div>
+<aside id="logPanel" aria-label="调用与事件日志" hidden>
+  <div class="log-head">
+    <strong>日志 · 最近 60 条</strong>
+    <button id="logClear">清空</button>
+    <button id="logClose">收起</button>
+  </div>
+  <pre id="logBody" tabindex="0">尚无日志</pre>
+</aside>
 
 <script>
 'use strict';
-/* ================= 通用：日志 / 桥调用 ================= */
-var hasH3s = typeof h3s !== 'undefined';
-var hasUsb = typeof h3susb !== 'undefined';
-var hasShell = typeof h3sshell !== 'undefined';
-var logBody = document.getElementById('logBody');
-function log(tag, text) {
-  var t = new Date().toTimeString().slice(0, 8);
-  var cur = logBody.textContent;
-  if (cur === '（尚无调用）' || cur === '（已清空）') cur = '';
-  var lines = cur ? cur.split('\n') : [];
-  lines.unshift(t + ' [' + tag + '] ' + text);
-  if (lines.length > 60) lines.length = 60;
-  logBody.textContent = lines.join('\n');
-}
-function callH3s(label, fn) {
-  if (!hasH3s) { log(label, '无 h3s bridge（浏览器预览）', 'e'); return null; }
-  var r; try { r = fn(); } catch (e) { log(label, 'bridge 异常: ' + e, 'e'); return null; }
-  var o = JSON.parse(r);
-  if (o.ok && o.sent) log(label, '已排队 seq=' + o.seq + ' sn=' + o.sn + ' ' + o.bytesHex, 'c');
-  else if (o.ok && o.bytesHex) log(label, '组帧 ok ' + o.bytesHex, 'c');
-  else if (o.ok) log(label, 'ok', 'c');
-  else log(label, '错误: ' + o.error, 'e');
-  return o;
-}
-function callUsb(label, fn) {
-  if (!hasUsb) { log(label, '无 h3susb bridge（浏览器预览）', 'e'); return null; }
-  var r; try { r = fn(); } catch (e) { log(label, 'bridge 异常: ' + e, 'e'); return null; }
-  var o = JSON.parse(r);
-  log(label, o.ok ? '已受理（结果见事件）' : '错误: ' + o.error, o.ok ? 'c' : 'e');
-  return o;
-}
-document.getElementById('logToggle').onclick = function () {
-  document.getElementById('logPanel').classList.toggle('on');
-};
-document.getElementById('logClose').onclick = function () { document.getElementById('logPanel').classList.remove('on'); };
-document.getElementById('logClear').onclick = function () { logBody.textContent = '（已清空）'; };
 
-/* ================= tab 切换 ================= */
-var tabHs = document.getElementById('tabHs'), tabUsb = document.getElementById('tabUsb');
-document.getElementById('tabBtnHs').onclick = function () {
-  this.classList.add('on'); document.getElementById('tabBtnUsb').classList.remove('on');
-  tabHs.classList.add('on'); tabUsb.classList.remove('on');
-};
-document.getElementById('tabBtnUsb').onclick = function () {
-  this.classList.add('on'); document.getElementById('tabBtnHs').classList.remove('on');
-  tabUsb.classList.add('on'); tabHs.classList.remove('on'); usbRefresh();
-};
+const $ = id => document.getElementById(id);
+const all = selector => Array.from(document.querySelectorAll(selector));
+const H = window.h3s || null;
+const U = window.h3susb || null;
+const S = window.h3sshell || null;
 
-/* ================= 耳机：连接 ================= */
-var statusPill = document.getElementById('statusPill'), connText = document.getElementById('connText');
-var mtuTag = document.getElementById('mtuTag');
-function setConn(state, text) {
-  statusPill.textContent = text;
-  statusPill.className = 'pill' + (state === 1 ? ' ok' : state === 2 ? ' mid' : '');
-  connText.textContent = state === 1 ? '已连接（MTU ' + mtuTag.textContent.replace('MTU ', '') + '）'
-    : state === 2 ? text : '未连接';
+function element(tag, text, className) {
+  const el = document.createElement(tag);
+  if (text !== undefined) el.textContent = text;
+  if (className) el.className = className;
+  return el;
 }
-if (hasH3s && typeof h3s.connect === 'function') {
-  document.getElementById('bleAddr').textContent = '构建注入（见日志）';
-  document.getElementById('connBtn').onclick = function () {
-    log('h3s.connect()', h3s.connect());
-    setConn(2, '连接中…');
-  };
-  document.getElementById('discBtn').onclick = function () { log('h3s.disconnect()', h3s.disconnect()); };
-  document.getElementById('battBtn').onclick = function () { callH3s('readStatus(0x2f)', function () { return h3s.readStatus(47); }); };
-  var battQueried = false;
-  window.onH3sEvent = function (e) {
-    if (e.event === 'mtu') {
-      mtuTag.textContent = 'MTU ' + e.mtu; setConn(1, '已连接');
-      if (!battQueried) { battQueried = true; h3s.readStatus(47); log('auto', '连接就绪，自动查询电量（只读）'); }
+function svgElement(tag, attributes) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  Object.keys(attributes).forEach(k => el.setAttribute(k, attributes[k]));
+  return el;
+}
+function signed(value) {
+  return (value > 0 ? '+' : '') + value;
+}
+function hz(value) {
+  return value >= 1000 ? (value / 1000) + 'k' : String(value);
+}
+function notify(message, error) {
+  $('notice').textContent = message;
+  $('notice').dataset.kind = error ? 'error' : 'info';
+}
+const logs = [];
+function log(tag, value) {
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  logs.unshift(time + ' [' + tag + '] ' + text);
+  if (logs.length > 60) logs.length = 60;
+  $('logBody').textContent = logs.join('\n');
+}
+function rpc(bridge, method, args) {
+  try {
+    if (!bridge || typeof bridge[method] !== 'function') {
+      throw new Error('当前环境没有 ' + method + ' 接口');
     }
-    else if (e.event === 'disconnected') { setConn(0, '未连接'); battQueried = false; mtuTag.textContent = 'MTU —'; log('event:disconnected', e.reason || ''); }
-    else if (e.event === 'response') {
-      log('response seq=' + e.seq, 'ok=' + e.ok + ' status=' + e.status + ' payload=' + (e.payloadHex || ''));
-      parseDeviceMessage(e.payloadHex || '');
+    const raw = bridge[method].apply(bridge, args || []);
+    const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!result || typeof result.ok !== 'boolean') {
+      throw new Error('接口返回格式不正确');
     }
-    else if (e.event === 'send_failed') log('send_failed seq=' + e.seq, e.error || '', 'e');
-    else if (e.event === 'device_message') { log('device_message', 'payload=' + e.payloadHex); parseDeviceMessage(e.payloadHex || ''); }
-    else log('event:' + e.event, JSON.stringify(e));
+    log(method, result);
+    if (!result.ok) notify(result.error || '操作被拒绝', true);
+    return result;
+  } catch (e) {
+    const result = { ok: false, error: String(e.message || e) };
+    log(method, result);
+    notify(result.error, true);
+    return result;
+  }
+}
+
+/* ---------- 外观 ---------- */
+const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+let themeChoice = window.H3S_THEME_BOOT.choice;
+let storageAvailable = window.H3S_THEME_BOOT.storage;
+
+function applyTheme() {
+  const actual = themeChoice === 'auto'
+    ? (themeMedia.matches ? 'dark' : 'light')
+    : themeChoice;
+  document.documentElement.dataset.theme = actual;
+  document.documentElement.style.colorScheme = actual;
+  all('[data-theme-choice]').forEach(button => {
+    button.setAttribute(
+      'aria-pressed',
+      String(button.dataset.themeChoice === themeChoice)
+    );
+  });
+  $('storageNote').hidden = storageAvailable;
+}
+all('[data-theme-choice]').forEach(button => {
+  button.onclick = () => {
+    themeChoice = button.dataset.themeChoice;
+    try {
+      localStorage.setItem('h3s.theme', themeChoice);
+      storageAvailable = localStorage.getItem('h3s.theme') === themeChoice;
+    } catch (e) {
+      storageAvailable = false;
+    }
+    applyTheme();
   };
-  if (h3s.isConnected()) setConn(1, '已连接');
+});
+if (themeMedia.addEventListener) {
+  themeMedia.addEventListener('change', applyTheme);
 } else {
-  setConn(0, '无传输（浏览器预览）');
-  document.getElementById('bleAddr').textContent = '（浏览器预览，无 bridge）';
+  themeMedia.addListener(applyTheme);
 }
+window.addEventListener('storage', event => {
+  if (event.key !== 'h3s.theme') return;
+  if (!['auto', 'light', 'dark'].includes(event.newValue)) return;
+  themeChoice = event.newValue;
+  applyTheme();
+});
+applyTheme();
 
-/* device_message 启发式解析：电量 2f 03 s0 s1 s2 / ANC 17 03 m s st */
-function parseDeviceMessage(hexstr) {
-  var at = hexstr.indexOf('2f03');
-  if (at === 0 || at === 4) {
-    var body = hexstr.slice(at + 4);
-    var slots = [];
-    for (var i = 0; i < 6 && i + 2 <= body.length; i += 2) {
-      var b = parseInt(body.substr(i, 2), 16);
-      if (isNaN(b)) break;
-      slots.push('<span><i>' + (i / 2) + '</i>' + (b & 127) + '%' + ((b & 128) ? ' ⚡' : '') + '</span>');
+/* ---------- 主 tab 与日志 ---------- */
+function selectTab(name, focus) {
+  const headset = name === 'hs';
+  $('tabHs').hidden = !headset;
+  $('tabUsb').hidden = headset;
+  [
+    [$('tabBtnHs'), headset],
+    [$('tabBtnUsb'), !headset]
+  ].forEach(([button, selected]) => {
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    if (selected && focus) button.focus();
+  });
+  if (!headset) {
+    if (!usbBusy) usbScan();
+  }
+}
+$('tabBtnHs').onclick = () => selectTab('hs', false);
+$('tabBtnUsb').onclick = () => selectTab('usb', false);
+all('[role="tab"]').forEach(button => {
+  button.onkeydown = event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const name = event.key === 'Home' ? 'hs'
+      : event.key === 'End' ? 'usb'
+      : button.id === 'tabBtnHs' ? 'usb' : 'hs';
+    selectTab(name, true);
+  };
+});
+function setLogOpen(open) {
+  $('logPanel').hidden = !open;
+  $('logToggle').setAttribute('aria-expanded', String(open));
+  if (open) $('logClose').focus();
+  else $('logToggle').focus();
+}
+$('logToggle').onclick = () => setLogOpen($('logPanel').hidden);
+$('logClose').onclick = () => setLogOpen(false);
+$('logClear').onclick = () => {
+  logs.length = 0;
+  $('logBody').textContent = '日志已清空';
+};
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !$('logPanel').hidden) setLogOpen(false);
+});
+
+/* ---------- BLE 状态与命令生命周期 ---------- */
+let connected = false;
+let connecting = false;
+let armed = false;
+let mtu = null;
+let connectionNote = '';
+let keyBusy = false;
+const pending = new Map();
+
+function boolFromBridge(method) {
+  try {
+    return !!(H && typeof H[method] === 'function' && H[method]());
+  } catch (e) {
+    log(method, String(e));
+    return false;
+  }
+}
+function updateGates() {
+  $('connBtn').disabled = !H || connected || connecting;
+  $('discBtn').disabled = !H || (!connected && !connecting);
+  $('battBtn').disabled = !H || !connected;
+  $('armSw').disabled = !H;
+  $('armSw').checked = armed;
+  $('armBadge').textContent = armed ? '已武装' : '未武装';
+  $('armBadge').className = 'badge' + (armed ? ' warning' : '');
+  $('armText').textContent = armed
+    ? (connected
+      ? '已开启。点击发送才会写入；拖动滑块和选择动作只修改本地草稿。'
+      : '已开启，但耳机尚未连接，写入按钮暂不可用。')
+    : '已关闭。可编辑本地参数；写命令不会发送。查询不受影响。';
+
+  all('[data-write]').forEach(button => {
+    button.disabled = !connected || !armed || button.dataset.busy === '1';
+  });
+  $('kmWrite').disabled = !connected || !armed || keyBusy || dirtyKeys.size === 0;
+  $('kmRead').disabled = !H || keyBusy;
+  $('keyWire').disabled = keyBusy;
+}
+function renderConnection() {
+  const pill = $('statusPill');
+  pill.className = 'badge';
+  if (!H) {
+    pill.textContent = '离线预览';
+    $('connText').textContent = '浏览器环境，仅预览界面';
+  } else if (connected) {
+    pill.textContent = '已连接';
+    pill.classList.add('good');
+    $('connText').textContent = '已就绪，可以查询或发送设置';
+  } else if (connecting) {
+    pill.textContent = '连接中';
+    pill.classList.add('warning');
+    $('connText').textContent = '正在查找指定耳机并建立连接';
+  } else {
+    pill.textContent = '未连接';
+    $('connText').textContent = connectionNote || '尚未连接';
+  }
+  $('mtuText').textContent = mtu
+    ? '连接就绪 · MTU ' + mtu
+    : '仅连接构建时指定的耳机；占位地址需在构建时配置。';
+  updateGates();
+}
+function completeCommand(seq, success, message) {
+  const item = pending.get(Number(seq));
+  if (!item) return;
+  pending.delete(Number(seq));
+  clearTimeout(item.timer);
+  if (item.callback) item.callback(success, message);
+}
+function failPending(message) {
+  Array.from(pending.keys()).forEach(seq => {
+    completeCommand(seq, false, message);
+  });
+}
+function issue(method, args, callback) {
+  const result = rpc(H, method, args);
+  if (!result.ok) {
+    if (callback) callback(false, result.error || '操作被拒绝');
+    return result;
+  }
+  if (result.sent === true && Number.isFinite(Number(result.seq))) {
+    const seq = Number(result.seq);
+    const timer = setTimeout(() => {
+      if (!pending.has(seq)) return;
+      const message = '暂未收到设备应答，结果未知；未自动重发。';
+      log(method, message);
+      completeCommand(seq, false, message);
+      notify(message, true);
+    }, 15000);
+    pending.set(seq, { callback, timer, method });
+    notify('命令已排队，等待设备应答。');
+  } else {
+    const message = '仅生成了命令，当前桥未实际发送。';
+    notify(message);
+    if (callback) callback(false, message);
+  }
+  return result;
+}
+function writeCommand(method, args, callback) {
+  connected = boolFromBridge('isConnected');
+  armed = boolFromBridge('isArmed');
+  renderConnection();
+  if (!connected || !armed) {
+    const message = !connected ? '请先连接耳机。' : '请先开启“允许写入”。';
+    notify(message, true);
+    if (callback) callback(false, message);
+    return { ok: false, error: message };
+  }
+  return issue(method, args, callback);
+}
+$('armSw').onchange = () => {
+  const desired = $('armSw').checked;
+  try {
+    if (!H) throw new Error('当前没有原生桥');
+    H.armWrite(desired);
+    armed = H.isArmed() === true;
+    log('armWrite', { requested: desired, armed });
+  } catch (e) {
+    armed = false;
+    notify('无法更新写入开关：' + e, true);
+  }
+  updateGates();
+};
+$('connBtn').onclick = () => {
+  const result = rpc(H, 'connect', []);
+  if (result.ok) {
+    connecting = true;
+    connectionNote = '';
+  } else {
+    connecting = false;
+    connectionNote = result.error || '连接请求失败';
+  }
+  renderConnection();
+};
+$('discBtn').onclick = () => {
+  const result = rpc(H, 'disconnect', []);
+  if (!result.ok) return;
+  connected = false;
+  connecting = false;
+  connectionNote = '已请求断开';
+  mtu = null;
+  failPending('连接已断开，未确认的命令结果未知。');
+  clearDeviceDisplays();
+  renderConnection();
+};
+$('battBtn').onclick = () => {
+  issue('readStatus', [47], (ok, message) => {
+    if (!ok) notify(message, true);
+  });
+};
+function clearDeviceDisplays() {
+  $('batt').replaceChildren(element('span', '未连接，电量未知'));
+  ['ancSeg', 'modeSeg', 'volSeg'].forEach(id => {
+    Array.from($(id).children).forEach(button => {
+      button.setAttribute('aria-pressed', 'false');
+    });
+  });
+  $('ancFeedback').textContent = '连接已断开，当前设备状态未知。';
+  $('volFeedback').textContent = '连接已断开，当前设备状态未知。';
+  $('modeFeedback').textContent = '连接已断开，当前设备状态未知。';
+}
+function markSegment(id, predicate) {
+  Array.from($(id).children).forEach(button => {
+    button.setAttribute('aria-pressed', String(predicate(button)));
+  });
+}
+function bindSegment(id, attribute, method, feedbackId) {
+  const buttons = Array.from($(id).children);
+  buttons.forEach(button => {
+    button.onclick = () => {
+      const args = button.getAttribute(attribute).split(',').map(Number);
+      buttons.forEach(b => b.dataset.busy = '1');
+      $(feedbackId).textContent = '等待设备应答…';
+      updateGates();
+      writeCommand(method, args, (ok, message) => {
+        buttons.forEach(b => delete b.dataset.busy);
+        if (ok) markSegment(id, b => b === button);
+        $(feedbackId).textContent = ok
+          ? '设备已应答：' + button.textContent.trim().replace(/\s+/g, ' ')
+          : message;
+        updateGates();
+      });
+    };
+  });
+}
+bindSegment('ancSeg', 'data-anc', 'setAnc', 'ancFeedback');
+bindSegment('volSeg', 'data-vol', 'setPromptVolume', 'volFeedback');
+bindSegment('modeSeg', 'data-mode', 'setAudioMode', 'modeFeedback');
+
+/*
+ * 保留旧页面的载荷识别范围：
+ * 电量 2f03 可位于起始或前置两个字节之后；ANC 1703 位于起始。
+ * 只展示已识别字段，其余载荷完整进入日志。
+ */
+function parseDeviceMessage(payloadHex) {
+  const hex = String(payloadHex || '').replace(/\s+/g, '').toLowerCase();
+  if (!/^(?:[0-9a-f]{2})+$/.test(hex)) return;
+
+  const batteryAt = hex.startsWith('2f03') ? 0
+    : hex.slice(4, 8) === '2f03' ? 4 : -1;
+  if (batteryAt >= 0 && hex.length >= batteryAt + 10) {
+    const slots = [];
+    for (let i = 0; i < 3; i++) {
+      const byte = parseInt(hex.slice(batteryAt + 4 + i * 2,
+                                      batteryAt + 6 + i * 2), 16);
+      const percent = byte & 127;
+      const value = percent <= 100 ? percent + '%' : '未知';
+      slots.push(element(
+        'span',
+        '槽位 ' + i + '：' + value + ((byte & 128) ? ' · 充电' : '')
+      ));
     }
-    if (slots.length) document.getElementById('batt').innerHTML = slots.join('');
+    $('batt').replaceChildren(...slots);
     return;
   }
-  if (hexstr.indexOf('1703') === 0) {
-    var m = parseInt(hexstr.substr(4, 2), 16);
-    var name = { 1: '降噪', 2: '正常', 3: '通透' }[m];
-    if (name) markSeg('ancSeg', '[data-anc]', function (b) { return b.getAttribute('data-anc').split(',')[0] === String(m); });
-    log('anc 回读', '模式=' + m + (name ? '（' + name + '）' : '') + ' [载荷形状联调钉死]');
+
+  if (hex.startsWith('1703') && hex.length >= 10) {
+    const mode = parseInt(hex.slice(4, 6), 16);
+    const names = { 1: '降噪', 2: '关闭', 3: '通透' };
+    if (names[mode]) {
+      markSegment('ancSeg', b => Number(b.dataset.anc.split(',')[0]) === mode);
+      $('ancFeedback').textContent = '设备回报：' + names[mode];
+    }
   }
 }
-function markSeg(id, sel, match) {
-  var seg = document.getElementById(id);
-  Array.prototype.forEach.call(seg.querySelectorAll('button'), function (b) {
-    b.classList.toggle('on', !!match(b));
-  });
-}
+window.onH3sEvent = raw => {
+  try {
+    const event = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!event || !event.event) return;
+    log('BLE ' + event.event, event);
 
-/* ================= 耳机：武装 ================= */
-var armSw = document.getElementById('armSw'), armText = document.getElementById('armText');
-function refreshArm() {
-  armText.textContent = armSw.checked ? '已武装：写命令可组帧下发' : '未武装：所有写命令都会被 bridge 拒绝';
-  if (hasH3s) h3s.armWrite(armSw.checked);
-}
-armSw.onchange = refreshArm;
-refreshArm();
+    if (event.event === 'mtu') {
+      const firstReady = !connected;
+      connected = true;
+      connecting = false;
+      mtu = event.mtu;
+      connectionNote = '';
+      renderConnection();
+      if (firstReady) issue('readStatus', [47]);
+      return;
+    }
 
-/* ================= 耳机：ANC / 音频模式 / 提示音 ================= */
-Array.prototype.forEach.call(document.querySelectorAll('#ancSeg [data-anc]'), function (b) {
-  b.onclick = function () {
-    markSeg('ancSeg', '[data-anc]', function (x) { return x === b; });
-    var p = b.getAttribute('data-anc').split(',').map(Number);
-    callH3s('setAnc(' + p.join(', ') + ')', function () { return h3s.setAnc(p[0], p[1], p[2]); });
-  };
-});
-Array.prototype.forEach.call(document.querySelectorAll('#modeSeg [data-mode]'), function (b) {
-  b.onclick = function () {
-    markSeg('modeSeg', '[data-mode]', function (x) { return x === b; });
-    var m = +b.getAttribute('data-mode');
-    callH3s('setAudioMode(' + m + ')', function () { return h3s.setAudioMode(m); });
-  };
-});
-Array.prototype.forEach.call(document.querySelectorAll('#volSeg [data-vol]'), function (b) {
-  b.onclick = function () {
-    markSeg('volSeg', '[data-vol]', function (x) { return x === b; });
-    var v = +b.getAttribute('data-vol');
-    callH3s('setPromptVolume(' + v + ')', function () { return h3s.setPromptVolume(v); });
-  };
-});
+    if (event.event === 'disconnected') {
+      connected = false;
+      connecting = false;
+      mtu = null;
+      connectionNote = event.reason || '连接已断开';
+      failPending('连接已断开，未确认的命令结果未知。');
+      clearDeviceDisplays();
+      renderConnection();
+      return;
+    }
 
-/* ================= 耳机：EQ ================= */
-/* 数据源：data/controlpanel_qcyh3s_16764.json 音乐均衡器面板（q/eqs = QCY 原始调音值） */
-var EQ_PRESETS = [
-  { name: '自定义', type: 1, master: 0, freq: [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
-    q: [0.4, 1.2, 1.5, 1.5, 1.2, 0.8, 1.2, 1.2, 1.2, 1.2], iir: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
-    gain: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-  { name: '默认', type: 1, master: -4, freq: [30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
-    q: [0.8, 0.6, 2, 1, 2, 1, 2, 3, 2], iir: [0, 2, 2, 2, 2, 2, 2, 2, 3],
-    gain: [0, -17, -2, 2, -2.5, 3, -3, -6, 2] },
-  { name: '流行', type: 1, master: -4, freq: [30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
-    q: [0.5, 0.4, 2, 1, 2, 1, 2, 3, 2], iir: [0, 2, 2, 2, 2, 2, 2, 2, 3],
-    gain: [0, -17, -2, 2, -2.5, 4, 0, -6, 2] },
-  { name: '重低音', type: 1, master: -4, freq: [70, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
-    q: [0.6, 0.6, 2, 1, 2, 1, 1, 3, 0.7], iir: [2, 2, 2, 2, 2, 2, 2, 2, 2],
-    gain: [5, -17, -2, 2, -2.5, 0, -6, -6, 0] },
-  { name: '摇滚', type: 1, master: -4, freq: [70, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
-    q: [0.5, 0.6, 2, 1, 2, 1, 2, 3, 2], iir: [2, 2, 2, 2, 2, 2, 2, 2, 3],
-    gain: [3, -17, -2, 0, -2.5, 4, 0, -3, 2] },
-  { name: '柔和', type: 1, master: -4, freq: [30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
-    q: [0.5, 0.6, 2, 1, 2, 1, 2, 3, 2], iir: [0, 2, 2, 2, 2, 2, 2, 2, 2],
-    gain: [0, -17, -2, 2, -2.5, 0, -5, -6, 0] },
-  { name: '古典', type: 1, master: -4, freq: [30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
-    q: [1, 0.6, 2, 1, 2, 1, 2, 3, 2], iir: [0, 2, 2, 2, 2, 2, 2, 2, 3],
-    gain: [0, -14, -2, 2, -2.5, 3, -3, -6, 2] },
-  { name: '空间音效', type: 10, master: -4, freq: [30, 45, 120, 220, 900, 1300, 2800, 6000, 7500, 11000],
-    q: [0.7, 0.7, 1, 0.7, 1.5, 2, 1.8, 2, 3, 2.5], iir: [0, 2, 2, 2, 2, 2, 2, 2, 2, 2],
-    gain: [0, -3, -7, -13, 2, -5, 3, 2, -15, -4] }
+    if (event.event === 'response') {
+      const success = event.ok === true;
+      completeCommand(
+        event.seq,
+        success,
+        success ? '设备已应答' : '设备返回失败，状态码：' + event.status
+      );
+      if (success) parseDeviceMessage(event.payloadHex);
+      else notify('设备返回失败，状态码：' + event.status, true);
+      return;
+    }
+
+    if (event.event === 'send_failed') {
+      const message = event.error || '命令发送失败';
+      completeCommand(event.seq, false, message);
+      notify(message, true);
+      return;
+    }
+
+    if (event.event === 'device_message') {
+      parseDeviceMessage(event.payloadHex);
+    }
+  } catch (e) {
+    log('BLE 事件解析失败', String(e));
+    notify('收到无法解析的设备事件，详情见日志。', true);
+  }
+};
+
+/* ---------- EQ：七个原始预设，数据不转换 ---------- */
+const EQ_PRESETS = [
+  {
+    name: '默认', type: 1, master: -4,
+    freq: [30,170,300,700,1200,2800,5000,10000,11000],
+    q: [.8,.6,2,1,2,1,2,3,2],
+    iir: [0,2,2,2,2,2,2,2,3],
+    gain: [0,-17,-2,2,-2.5,3,-3,-6,2]
+  },
+  {
+    name: '流行', type: 1, master: -4,
+    freq: [30,170,300,700,1200,2800,5000,10000,11000],
+    q: [.5,.4,2,1,2,1,2,3,2],
+    iir: [0,2,2,2,2,2,2,2,3],
+    gain: [0,-17,-2,2,-2.5,4,0,-6,2]
+  },
+  {
+    name: '重低音', type: 1, master: -4,
+    freq: [70,170,300,700,1200,2800,5000,10000,11000],
+    q: [.6,.6,2,1,2,1,1,3,.7],
+    iir: [2,2,2,2,2,2,2,2,2],
+    gain: [5,-17,-2,2,-2.5,0,-6,-6,0]
+  },
+  {
+    name: '摇滚', type: 1, master: -4,
+    freq: [70,170,300,700,1200,2800,5000,10000,11000],
+    q: [.5,.6,2,1,2,1,2,3,2],
+    iir: [2,2,2,2,2,2,2,2,3],
+    gain: [3,-17,-2,0,-2.5,4,0,-3,2]
+  },
+  {
+    name: '柔和', type: 1, master: -4,
+    freq: [30,170,300,700,1200,2800,5000,10000,11000],
+    q: [.5,.6,2,1,2,1,2,3,2],
+    iir: [0,2,2,2,2,2,2,2,2],
+    gain: [0,-17,-2,2,-2.5,0,-5,-6,0]
+  },
+  {
+    name: '古典', type: 1, master: -4,
+    freq: [30,170,300,700,1200,2800,5000,10000,11000],
+    q: [1,.6,2,1,2,1,2,3,2],
+    iir: [0,2,2,2,2,2,2,2,3],
+    gain: [0,-14,-2,2,-2.5,3,-3,-6,2]
+  },
+  {
+    name: '空间音效', type: 10, master: -4,
+    freq: [30,45,120,220,900,1300,2800,6000,7500,11000],
+    q: [.7,.7,1,.7,1.5,2,1.8,2,3,2.5],
+    iir: [0,2,2,2,2,2,2,2,2,2],
+    gain: [0,-3,-7,-13,2,-5,3,2,-15,-4]
+  }
 ];
-var eqState = { preset: 0, bands: EQ_PRESETS[0].freq.map(function (f, i) { return { freq: f, gain: 0 }; }) };
-var masterEl = document.getElementById('master'), masterVal = document.getElementById('masterVal');
-var freqLabel = function (f) { return f >= 1000 ? (f / 1000) + 'k' : String(f); };
+const customEq = {
+  name: '自定义',
+  type: 1,
+  master: 0,
+  freq: [31,62,125,250,500,1000,2000,4000,8000,16000],
+  q: [.4,1.2,1.5,1.5,1.2,.8,1.2,1.2,1.2,1.2],
+  iir: [2,2,2,2,2,2,2,2,2,2],
+  gain: [0,0,0,0,0,0,0,0,0,0]
+};
+let selectedPreset = -1;
+let eqRevision = 0;
+let curveFrame = 0;
+const sliderItems = [];
 
-var chipsEl = document.getElementById('eqChips');
-EQ_PRESETS.forEach(function (p, i) {
-  var b = document.createElement('button');
-  b.textContent = p.name;
-  b.onclick = function () { loadPreset(i); };
-  chipsEl.appendChild(b);
-});
-function markChip() {
-  Array.prototype.forEach.call(chipsEl.children, function (b, i) { b.classList.toggle('on', i === eqState.preset); });
+function currentEq() {
+  return selectedPreset === -1 ? customEq : EQ_PRESETS[selectedPreset];
 }
-function loadPreset(i) {
-  eqState.preset = i;
-  var p = EQ_PRESETS[i];
-  eqState.bands = p.freq.map(function (f, j) { return { freq: f, gain: p.gain[j] }; });
-  masterEl.value = p.master;
-  masterVal.textContent = (+p.master).toFixed(1) + ' dB';
-  buildBank(); markChip(); drawCurve();
+function localEqChanged() {
+  eqRevision++;
+  $('eqFeedback').textContent = '本地参数已修改，尚未发送。';
+  scheduleCurve();
 }
-var bankEl = document.getElementById('bank');
-function buildBank() {
-  bankEl.innerHTML = '';
-  eqState.bands.forEach(function (band, i) {
-    var d = document.createElement('div'); d.className = 'band';
-    var v = document.createElement('div'); v.className = 'bv'; v.id = 'bv' + i;
-    var wrap = document.createElement('div'); wrap.className = 'vs';
-    var r = document.createElement('input');
-    r.type = 'range'; r.min = -18; r.max = 12; r.step = 0.5; r.value = band.gain; r.id = 'bg' + i;
-    var f = document.createElement('div'); f.className = 'bf'; f.textContent = freqLabel(band.freq);
-    r.addEventListener('input', function () {
-      band.gain = +r.value; eqState.preset = -1; markChip();
-      refreshVal(i); drawCurve();
-    });
-    wrap.appendChild(r); d.appendChild(v); d.appendChild(wrap); d.appendChild(f);
-    bankEl.appendChild(d);
-    refreshVal(i);
+function scheduleCurve() {
+  if (curveFrame) return;
+  curveFrame = requestAnimationFrame(() => {
+    curveFrame = 0;
+    drawCurve();
   });
 }
-function refreshVal(i) {
-  var el = document.getElementById('bv' + i), g = eqState.bands[i].gain;
-  el.textContent = (g > 0 ? '+' : '') + g.toFixed(1);
-  el.className = 'bv' + (g < 0 ? ' neg' : '');
-}
-var curve = document.getElementById('eqCurve');
 function drawCurve() {
-  var ctx = curve.getContext('2d');
-  var w = curve.width = curve.clientWidth * (window.devicePixelRatio || 1) * .5;
-  var h = curve.height = 96 * (window.devicePixelRatio || 1) * .5;
-  ctx.clearRect(0, 0, w, h);
-  var range = 20; // ±20 dB 画布
-  var y0 = h / 2;
-  ctx.strokeStyle = 'rgba(140,160,190,.18)'; ctx.lineWidth = 1;
-  [ -10, -5, 0, 5, 10 ].forEach(function (db) {
-    var y = y0 - db / range * h;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-  });
-  var bands = eqState.bands;
-  var pts = bands.map(function (b, i) {
-    return [ 8 + i * (w - 16) / (bands.length - 1), y0 - Math.max(-range / 2, Math.min(10, b.gain)) / range * h ];
-  });
-  var grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, 'rgba(76,194,255,.35)'); grad.addColorStop(1, 'rgba(76,194,255,0)');
-  ctx.beginPath(); ctx.moveTo(pts[0][0], y0);
-  pts.forEach(function (p) { ctx.lineTo(p[0], p[1]); });
-  ctx.lineTo(pts[pts.length - 1][0], y0); ctx.closePath();
-  ctx.fillStyle = grad; ctx.fill();
-  ctx.beginPath();
-  pts.forEach(function (p, i) { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
-  ctx.strokeStyle = '#4cc2ff'; ctx.lineWidth = 2; ctx.stroke();
-  pts.forEach(function (p) {
-    ctx.beginPath(); ctx.arc(p[0], p[1], 2.6, 0, Math.PI * 2);
-    ctx.fillStyle = '#9adfff'; ctx.fill();
-  });
-}
-masterEl.addEventListener('input', function () {
-  masterVal.textContent = (+masterEl.value).toFixed(1) + ' dB';
-  eqState.preset = -1; markChip();
-});
-document.getElementById('eqFlat').onclick = function () {
-  eqState.bands.forEach(function (b) { b.gain = 0; });
-  buildBank(); drawCurve();
-};
-document.getElementById('eqSend').onclick = function () {
-  var p = eqState.preset >= 0 ? EQ_PRESETS[eqState.preset] : null;
-  var freqs = eqState.bands.map(function (b) { return b.freq; });
-  /* q/iir 跟随预设（自定义=面板 10 段原始 q/iir；手改增益后仍沿用当前预设的频点与 q） */
-  var qp = p ? p.q : EQ_PRESETS[0].q, ip = p ? p.iir : EQ_PRESETS[0].iir;
-  var type = p ? p.type : 1;
-  var bands = eqState.bands.map(function (b, i) {
-    return { freq: b.freq, q: Math.round((qp[i] || 1) * 100), gain: Math.round(b.gain * 100), iirType: (ip[i] === undefined ? 255 : ip[i]) };
-  });
-  var masterCentidB = Math.round(parseFloat(masterEl.value) * 100);
-  callH3s('writeEq(type=' + type + ', master=' + masterCentidB + ')',
-    function () { return h3s.writeEq(type, masterCentidB, JSON.stringify(bands)); });
-};
-window.addEventListener('resize', drawCurve);
-loadPreset(0);
+  const eq = currentEq();
+  const low = Math.min(-12, ...eq.gain);
+  const high = 12;
+  const x = f => 31 + Math.log(f / 30) / Math.log(16000 / 30) * 257;
+  const y = gain => 12 + (high - gain) / (high - low) * 94;
 
-/* ================= 耳机：按键矩阵 ================= */
-var KEYS = [ { id: 0x03, name: '音量−' }, { id: 0x05, name: '音量+' }, { id: 0x07, name: '多功能' } ];
-var GESTURES = [ '单击', '双击', '三击', '四击', '长按' ];
-var ACTIONS = [
-  { cmd: -1, name: '未知' }, { cmd: 0, name: '无作用' }, { cmd: 1, name: '播放/暂停' },
-  { cmd: 2, name: '上一曲' }, { cmd: 3, name: '下一曲' }, { cmd: 4, name: '语音助手' },
-  { cmd: 5, name: '音量+' }, { cmd: 6, name: '音量−' }, { cmd: 7, name: '模式切换' },
+  $('curveGrid').replaceChildren();
+  [high, 0, low].forEach(value => {
+    $('curveGrid').appendChild(svgElement('line', {
+      x1: 31, x2: 288, y1: y(value), y2: y(value),
+      class: 'grid-line'
+    }));
+    const label = svgElement('text', { x: 0, y: y(value) + 4 });
+    label.textContent = signed(value);
+    $('curveGrid').appendChild(label);
+  });
+
+  const points = eq.freq.map((frequency, index) => [x(frequency), y(eq.gain[index])]);
+  $('curveLine').setAttribute('points', points.map(p => p.join(',')).join(' '));
+  $('curveDots').replaceChildren(...points.map(p => svgElement('circle', {
+    cx: p[0], cy: p[1], r: 3
+  })));
+  $('curveDescription').textContent = eq.name + '：' +
+    eq.freq.map((f, i) => f + ' Hz ' + signed(eq.gain[i]) + ' dB').join('，');
+}
+function updateSlider(index) {
+  const gain = customEq.gain[index];
+  const item = sliderItems[index];
+  item.output.textContent = signed(gain);
+  item.slider.setAttribute('aria-valuenow', String(gain));
+  item.slider.setAttribute('aria-valuetext', signed(gain) + ' dB');
+  item.slider.style.setProperty('--position', String((12 - gain) / 24));
+}
+function setBand(index, value) {
+  const gain = Math.max(-12, Math.min(12, Math.round(value)));
+  if (customEq.gain[index] === gain) return;
+  customEq.gain[index] = gain;
+  updateSlider(index);
+  localEqChanged();
+}
+customEq.freq.forEach((frequency, index) => {
+  const band = element('div', undefined, 'band');
+  const output = element('output', '0');
+  const slider = element('div', undefined, 'slider');
+  const label = element('span', hz(frequency) + ' Hz', 'frequency');
+  slider.id = 'band-' + index;
+  slider.tabIndex = 0;
+  slider.setAttribute('role', 'slider');
+  slider.setAttribute('aria-orientation', 'vertical');
+  slider.setAttribute('aria-label', frequency + ' Hz 增益');
+  slider.setAttribute('aria-valuemin', '-12');
+  slider.setAttribute('aria-valuemax', '12');
+  output.setAttribute('for', slider.id);
+
+  ['rail', 'zero', 'thumb'].forEach(className => {
+    const part = element('span', undefined, className);
+    part.setAttribute('aria-hidden', 'true');
+    slider.appendChild(part);
+  });
+
+  let pointer = null;
+  let startX = 0;
+  let startY = 0;
+  let downAt = 0;
+  let lastTap = null;
+  let moved = false;
+
+  function updateFromPointer(event) {
+    const rect = slider.getBoundingClientRect();
+    const top = rect.top + 16;
+    const height = Math.max(1, rect.height - 32);
+    const ratio = Math.max(0, Math.min(1, (event.clientY - top) / height));
+    setBand(index, 12 - ratio * 24);
+  }
+  slider.addEventListener('pointerdown', event => {
+    if (pointer !== null || !event.isPrimary) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    slider.focus({ preventScroll: true });
+    pointer = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    downAt = performance.now();
+    moved = false;
+    slider.setPointerCapture(pointer);
+    updateFromPointer(event);
+  });
+  slider.addEventListener('pointermove', event => {
+    if (event.pointerId !== pointer) return;
+    event.preventDefault();
+    if (Math.hypot(event.clientX - startX, event.clientY - startY) > 8) moved = true;
+    updateFromPointer(event);
+  });
+  slider.addEventListener('pointerup', event => {
+    if (event.pointerId !== pointer) return;
+    const now = performance.now();
+    const tap = !moved && now - downAt < 280;
+    if (tap && lastTap &&
+        now - lastTap.time < 350 &&
+        Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 24) {
+      setBand(index, 0);
+      lastTap = null;
+    } else {
+      lastTap = tap ? { time: now, x: event.clientX, y: event.clientY } : null;
+    }
+    const captured = pointer;
+    pointer = null;
+    if (slider.hasPointerCapture(captured)) slider.releasePointerCapture(captured);
+  });
+  function cancelPointer() {
+    pointer = null;
+    lastTap = null;
+  }
+  slider.addEventListener('pointercancel', cancelPointer);
+  slider.addEventListener('lostpointercapture', () => {
+    pointer = null;
+  });
+  slider.addEventListener('dblclick', event => {
+    event.preventDefault();
+    setBand(index, 0);
+  });
+  slider.addEventListener('keydown', event => {
+    const current = customEq.gain[index];
+    let next;
+    if (event.key === 'ArrowUp' || event.key === 'ArrowRight') next = current + 1;
+    else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') next = current - 1;
+    else if (event.key === 'PageUp') next = current + 3;
+    else if (event.key === 'PageDown') next = current - 3;
+    else if (event.key === 'Home') next = -12;
+    else if (event.key === 'End') next = 12;
+    else if (event.key === '0') next = 0;
+    else return;
+    event.preventDefault();
+    setBand(index, next);
+  });
+
+  band.append(output, slider, label);
+  $('bandGrid').appendChild(band);
+  sliderItems.push({ output, slider });
+  updateSlider(index);
+});
+
+function selectPreset(index) {
+  selectedPreset = index;
+  eqRevision++;
+  const eq = currentEq();
+  const custom = index === -1;
+  $('customEditor').hidden = !custom;
+  $('presetView').hidden = custom;
+  $('eqBadge').textContent = eq.name + ' · ' + eq.freq.length + ' 段';
+  $('eqDescription').textContent = custom
+    ? '固定十段，−12 至 +12 dB，步进 1 dB。切换预设不会覆盖自定义草稿。'
+    : '保留原始调音参数，不做频率换算或增益截断。若需逐段编辑，请选择“自定义”。';
+  $('presetMaster').textContent = '原始总增益：' + signed(eq.master) + ' dB';
+  Array.from($('eqChips').children).forEach((button, i) => {
+    button.setAttribute('aria-pressed', String(i - 1 === index));
+  });
+  $('presetRows').replaceChildren();
+  if (!custom) {
+    eq.freq.forEach((frequency, i) => {
+      const row = element('tr');
+      row.append(
+        element('td', String(frequency)),
+        element('td', signed(eq.gain[i])),
+        element('td', eq.q[i] + ' / ' + eq.iir[i])
+      );
+      $('presetRows').appendChild(row);
+    });
+  }
+  $('eqFeedback').textContent = '本地预览：' + eq.name + '，尚未发送。';
+  scheduleCurve();
+}
+['自定义', ...EQ_PRESETS.map(p => p.name)].forEach((name, i) => {
+  const button = element('button', name);
+  button.setAttribute('aria-pressed', String(i === 0));
+  button.onclick = () => selectPreset(i - 1);
+  $('eqChips').appendChild(button);
+});
+$('master').oninput = () => {
+  customEq.master = Number($('master').value);
+  $('masterValue').textContent = customEq.master.toFixed(1) + ' dB';
+  localEqChanged();
+};
+$('eqFlat').onclick = () => {
+  customEq.gain.fill(0);
+  customEq.master = 0;
+  sliderItems.forEach((item, i) => updateSlider(i));
+  $('master').value = '0';
+  $('masterValue').textContent = '0.0 dB';
+  selectPreset(-1);
+};
+$('eqSend').onclick = () => {
+  const eq = currentEq();
+  const revision = eqRevision;
+  const name = eq.name;
+  const bands = eq.freq.map((frequency, i) => ({
+    freq: frequency,
+    q: Math.round(eq.q[i] * 100),
+    gain: Math.round(eq.gain[i] * 100),
+    iirType: eq.iir[i]
+  }));
+
+  $('eqSend').dataset.busy = '1';
+  $('eqFeedback').textContent = '等待设备应答：' + name;
+  updateGates();
+  writeCommand(
+    'writeEq',
+    [eq.type, Math.round(eq.master * 100), JSON.stringify(bands)],
+    (ok, message) => {
+      delete $('eqSend').dataset.busy;
+      $('eqFeedback').textContent = ok
+        ? (revision === eqRevision
+          ? '设备已应答：' + name
+          : '设备已应答刚才的 EQ；当前页面另有未发送修改。')
+        : message;
+      updateGates();
+    }
+  );
+};
+selectPreset(-1);
+
+/* ---------- 按键：选择物理键后编辑五种手势 ---------- */
+const KEYS = [
+  { id: 7, name: '多功能' },
+  { id: 5, name: '音量＋' },
+  { id: 3, name: '音量－' }
+];
+const GESTURES = ['单击', '双击', '三击', '四击', '长按'];
+const ACTIONS = [
+  { cmd: -1, name: '未知' },
+  { cmd: 0, name: '无作用' },
+  { cmd: 1, name: '播放 / 暂停' },
+  { cmd: 2, name: '上一曲' },
+  { cmd: 3, name: '下一曲' },
+  { cmd: 4, name: '语音助手' },
+  { cmd: 5, name: '音量＋' },
+  { cmd: 6, name: '音量－' },
+  { cmd: 7, name: '模式切换' },
   { cmd: 11, name: 'ANC 切换' }
 ];
-var KM_DEFAULT = { 0x0301: 6, 0x0501: 5, 0x0701: 1, 0x0702: 7, 0x0703: 4, 0x0704: 0 };
-var kmEl = document.getElementById('kmatrix');
-(function buildKm() {
-  var corner = document.createElement('div'); corner.className = 'h'; corner.textContent = '键 \\ 手势';
-  kmEl.appendChild(corner);
-  GESTURES.forEach(function (g) {
-    var h = document.createElement('div'); h.className = 'h'; h.textContent = g;
-    if (g === '长按') h.style.color = 'var(--warn)';
-    kmEl.appendChild(h);
-  });
-  KEYS.forEach(function (k) {
-    var n = document.createElement('div'); n.className = 'kn'; n.textContent = k.name; kmEl.appendChild(n);
-    GESTURES.forEach(function (g, gi) {
-      var eventId = (k.id << 8) | (gi + 1);
-      var cell = document.createElement('div'); cell.className = 'cell' + (gi === 4 ? ' g' : '');
-      var sel = document.createElement('select'); sel.id = 'km' + eventId;
-      ACTIONS.forEach(function (a) {
-        var o = document.createElement('option'); o.value = a.cmd; o.textContent = a.name; sel.appendChild(o);
-      });
-      sel.value = (KM_DEFAULT[eventId] !== undefined) ? KM_DEFAULT[eventId] : -1;
-      sel.onchange = function () { cell.classList.add('dirty'); };
-      cell.appendChild(sel); kmEl.appendChild(cell);
-    });
-  });
-})();
-function wireIsCustom() { return document.querySelector('input[name=wire]:checked').value === 'custom'; }
-function kmWriteCell(eventId, action, label) {
-  var r = callH3s(label, function () {
-    return wireIsCustom() ? h3s.setKeyRemapCustom(eventId, action) : h3s.setKeyRemap(eventId, action);
-  });
-  return r && r.ok;
-}
-document.getElementById('kmWrite').onclick = function () {
-  var dirty = 0, sent = 0;
-  KEYS.forEach(function (k) {
-    GESTURES.forEach(function (g, gi) {
-      var eventId = (k.id << 8) | (gi + 1);
-      var cell = document.querySelector('#km' + eventId).parentElement;
-      if (!cell.classList.contains('dirty')) return;
-      dirty++;
-      var action = parseInt(document.getElementById('km' + eventId).value, 10);
-      if (action < 0) return;
-      if (kmWriteCell(eventId, action, (wireIsCustom() ? 'setKeyRemapCustom' : 'setKeyRemap') + '(0x' + eventId.toString(16) + ',' + action + ') ' + k.name + g)) {
-        sent++; cell.classList.remove('dirty');
-      }
-    });
-  });
-  log('按键批量', dirty + ' 项待同步，' + sent + ' 项已受理' + (dirty - sent ? '（未武装/未知值/失败项保留标记）' : ''));
+const KM_DEFAULT = {
+  0x0301: 6,
+  0x0501: 5,
+  0x0701: 1,
+  0x0702: 7,
+  0x0703: 4,
+  0x0704: 0
 };
-document.getElementById('kmRead').onclick = function () {
-  if (!hasH3s) return;
-  var o = JSON.parse(h3s.getKeyRemap());
-  if (!o.ok) { log('getKeyRemap', '错误: ' + o.error, 'e'); return; }
-  Object.keys(o.map).forEach(function (ek) {
-    var sel = document.getElementById('km' + ek);
-    if (sel) { sel.value = o.map[ek]; sel.parentElement.classList.remove('dirty'); }
+const keyValues = {};
+const keyBase = {};
+const dirtyKeys = new Set();
+let selectedKey = 7;
+
+KEYS.forEach(key => {
+  GESTURES.forEach((gesture, i) => {
+    const id = (key.id << 8) | (i + 1);
+    const value = KM_DEFAULT[id] === undefined ? -1 : KM_DEFAULT[id];
+    keyValues[id] = value;
+    keyBase[id] = value;
   });
-  log('getKeyRemap', '工作副本已回填 ' + JSON.stringify(o.map));
+});
+function recalcDirty(id) {
+  if (keyValues[id] !== keyBase[id]) dirtyKeys.add(id);
+  else dirtyKeys.delete(id);
+}
+function updateKeyCount() {
+  $('keyDirtyCount').textContent = dirtyKeys.size
+    ? dirtyKeys.size + ' 项待发送'
+    : '无待发送修改';
+  $('keyDirtyCount').className = 'badge' + (dirtyKeys.size ? ' warning' : '');
+  updateGates();
+}
+function renderKeyRows() {
+  $('keyRows').replaceChildren();
+  const keyName = KEYS.find(key => key.id === selectedKey).name;
+  GESTURES.forEach((gesture, i) => {
+    const id = (selectedKey << 8) | (i + 1);
+    const row = element('div', undefined, 'key-row');
+    const label = element('label', gesture);
+    const state = element('small', '');
+    const select = element('select');
+    select.id = 'key-' + id;
+    label.htmlFor = select.id;
+    select.setAttribute('aria-label', keyName + ' · ' + gesture);
+    ACTIONS.forEach(action => {
+      const option = element('option', action.name);
+      option.value = String(action.cmd);
+      select.appendChild(option);
+    });
+    select.value = String(keyValues[id]);
+    function refreshRow() {
+      const dirty = dirtyKeys.has(id);
+      row.classList.toggle('dirty', dirty);
+      state.textContent = [
+        i === 4 ? '待验证' : '',
+        dirty ? '未发送' : ''
+      ].filter(Boolean).join(' · ');
+    }
+    select.onchange = () => {
+      keyValues[id] = Number(select.value);
+      recalcDirty(id);
+      refreshRow();
+      updateKeyCount();
+    };
+    label.appendChild(state);
+    row.append(label, select);
+    refreshRow();
+    $('keyRows').appendChild(row);
+  });
+}
+all('[data-key]').forEach(button => {
+  button.onclick = () => {
+    selectedKey = Number(button.dataset.key);
+    all('[data-key]').forEach(b => {
+      b.setAttribute('aria-pressed', String(b === button));
+    });
+    renderKeyRows();
+  };
+});
+$('kmRead').onclick = () => {
+  const result = rpc(H, 'getKeyRemap', []);
+  if (!result.ok || !result.map || typeof result.map !== 'object') return;
+  let preserved = 0;
+  Object.keys(keyValues).forEach(id => {
+    if (!Object.prototype.hasOwnProperty.call(result.map, id)) return;
+    const value = Number(result.map[id]);
+    if (!ACTIONS.some(action => action.cmd === value)) return;
+    if (dirtyKeys.has(Number(id))) {
+      preserved++;
+      return;
+    }
+    keyValues[id] = value;
+    keyBase[id] = value;
+  });
+  renderKeyRows();
+  updateKeyCount();
+  $('kmFeedback').textContent =
+    '已读取壳侧工作副本，不代表设备实际状态。' +
+    (preserved ? '保留了 ' + preserved + ' 项本地修改。' : '');
 };
-
-/* ================= 耳机：升级入口 ================= */
-if (hasShell) document.getElementById('openUpgrade').onclick = function () { h3sshell.openUpgradeTool(); };
-else document.getElementById('openUpgrade').onclick = function () { log('升级工具', '无壳接口（浏览器预览）', 'e'); };
-
-/* ================= USB tab ================= */
-var usbOpened = false, usbRom = false, usbLoaderReady = false, usbKey = null;
-var usbProg = document.getElementById('usbProg'), usbBar = usbProg.querySelector('.bar');
-var usbResult = document.getElementById('usbResult');
-function usbShowResult(lines) {
-  usbResult.style.display = 'block';
-  usbResult.innerHTML = lines.join('<br>');
-}
-function usbRefreshButtons() {
-  document.getElementById('usbEnterRom').disabled = !(hasUsb && usbOpened && !usbRom);
-  document.getElementById('usbInquiry').disabled = !usbOpened;
-  document.getElementById('usbLoader').disabled = !(hasUsb && usbOpened && usbRom);
-  document.getElementById('usbRomWin').disabled = !(hasUsb && usbOpened && usbLoaderReady);
-  document.getElementById('usbBackup').disabled = !(hasUsb && usbOpened && usbLoaderReady);
-  var st = [];
-  if (!hasUsb) st.push('无 h3susb bridge（浏览器预览）');
-  else {
-    if (usbOpened) { st.push('已打开' + (usbRom ? '（BR28 ROM）' : '（非 ROM 身份）')); if (usbLoaderReady) st.push('loader 就绪'); }
-    else st.push('未打开设备');
-  }
-  document.getElementById('usbLinkState').textContent = st.join(' · ');
-  if (hasUsb) {
-    var info = JSON.parse(h3susb.info());
-    document.getElementById('usbVerifiedTag').textContent = info.physicalLinkVerified ? '链路已验证' : 'OTG 链路未验证';
-  }
-}
-function usbRefresh() {
-  usbRefreshButtons();
-  if (!hasUsb) { return; }
-  var o = JSON.parse(h3susb.scan());
-  if (!o.ok) { log('usb.scan', o.error, 'e'); return; }
-  var list = document.getElementById('devList');
-  list.innerHTML = '';
-  if (!o.devices.length) {
-    list.innerHTML = '<div class="empty">未检测到设备——用 OTG 线连接耳机后点「扫描」</div>';
+$('kmWrite').onclick = () => {
+  if (keyBusy) return;
+  const queue = Array.from(dirtyKeys)
+    .filter(id => keyValues[id] >= 0)
+    .map(id => ({ id, action: keyValues[id] }));
+  if (!queue.length) {
+    $('kmFeedback').textContent = '“未知”不是可发送动作，请先选择具体动作。';
     return;
   }
-  o.devices.forEach(function (d) {
-    var row = document.createElement('div');
-    row.className = 'dev' + (d.rom ? ' rom' : d.qcy ? ' qcy' : '');
-    var dot = document.createElement('div'); dot.className = 'dot';
-    var info = document.createElement('div');
-    info.innerHTML = '<div class="nm">' + (d.rom ? 'BR28 ROM 下载模式' : d.qcy ? 'QCY 耳机（普通 USB）' : (d.name || 'USB 设备')) + '</div>'
-      + '<div class="id">' + hex4(d.vid) + ':' + hex4(d.pid) + (d.name && !d.rom && !d.qcy ? ' · ' + d.name : '') + '</div>';
-    var ops = document.createElement('div'); ops.className = 'ops';
-    if (!h3susb.hasPermission(d.key)) {
-      var pb = document.createElement('button'); pb.className = 'act small ghost'; pb.textContent = '授权';
-      pb.onclick = function () { callUsb('usb.requestPermission', function () { return h3susb.requestPermission(d.key); }); };
-      ops.appendChild(pb);
-    } else {
-      var ob = document.createElement('button'); ob.className = 'act small'; ob.textContent = usbKey === d.key && usbOpened ? '已打开' : '打开';
-      ob.disabled = usbKey === d.key && usbOpened;
-      ob.onclick = function () { callUsb('usb.open', function () { return h3susb.open(d.key); }); };
-      ops.appendChild(ob);
+
+  keyBusy = true;
+  const method = $('keyWire').value === 'custom'
+    ? 'setKeyRemapCustom' : 'setKeyRemap';
+  let accepted = 0;
+  let failed = 0;
+  updateGates();
+
+  function finishBatch() {
+    keyBusy = false;
+    renderKeyRows();
+    updateKeyCount();
+    $('kmFeedback').textContent =
+      accepted + ' 项收到成功应答，' + failed + ' 项失败或未确认；' +
+      dirtyKeys.size + ' 项本地修改仍待处理。';
+  }
+  function next() {
+    if (!queue.length) {
+      finishBatch();
+      return;
     }
-    row.appendChild(dot); row.appendChild(info); row.appendChild(ops);
-    list.appendChild(row);
-  });
-  log('usb.scan', o.devices.length + ' 个设备');
-}
-function hex4(v) { return ('000' + v.toString(16)).slice(-4); }
-document.getElementById('usbScan').onclick = usbRefresh;
-if (hasUsb) {
-  document.getElementById('usbInquiry').onclick = function () { callUsb('usb.inquiry', function () { return h3susb.inquiry(); }); };
-  document.getElementById('usbEnterRom').onclick = function () { callUsb('usb.enterRom', function () { return h3susb.enterRom(); }); };
-  document.getElementById('usbLoader').onclick = function () { callUsb('usb.loadLoader', function () { return h3susb.loadLoader(); }); };
-  document.getElementById('usbRomWin').onclick = function () {
-    usbProg.style.display = 'block'; usbBar.style.width = '0%';
-    callUsb('usb.readRomWindow', function () { return h3susb.readRomWindow(); });
-  };
-  document.getElementById('usbBackup').onclick = function () {
-    usbProg.style.display = 'block'; usbBar.style.width = '0%';
-    callUsb('usb.backupFlash', function () { return h3susb.backupFlash(); });
-  };
-  window.onH3sUsbEvent = function (e) {
-    if (e.event === 'usb_permission') { log('usb_permission', e.key + ' granted=' + e.granted); if (e.granted) usbRefresh(); return; }
-    if (e.event === 'usb_open') {
-      if (e.ok) { usbOpened = true; usbKey = e.key; usbRom = !!e.rom; usbLoaderReady = false; log('usb_open', e.key + (e.rom ? '（ROM）' : '')); }
-      else { usbOpened = false; log('usb_open 失败', e.error, 'e'); }
-      usbRefresh(); return;
+    const item = queue.shift();
+    if (keyValues[item.id] !== item.action) {
+      next();
+      return;
     }
-    if (e.event === 'usb_detached') { usbOpened = false; usbLoaderReady = false; log('usb_detached', e.key || ''); usbRefresh(); return; }
-    if (e.event === 'usb_closed') { usbOpened = false; usbLoaderReady = false; usbRefresh(); return; }
-    if (e.event === 'usb_progress') { usbBar.style.width = Math.round(e.done / e.total * 100) + '%'; return; }
-    if (e.event === 'usb_inquiry') {
-      usbShowResult([
-        e.ok ? '<span class="hl">INQUIRY：' + e.vendor + ' / ' + e.product + ' rev ' + e.revision + (e.br28 ? '（BR28 UBOOT 身份确认）' : '') + '</span>'
-             : '<span class="bad">INQUIRY 失败：' + e.error + '</span>',
-        'raw: ' + (e.rawHex || '')
-      ]);
-      log('usb_inquiry', e.ok ? e.vendor + '/' + e.product : e.error, e.ok ? 'c' : 'e'); return;
-    }
-    if (e.event === 'usb_loader') {
-      if (e.ok) { usbLoaderReady = true; usbShowResult(['<span class="hl">loader 就绪（SPI NOR 确认）</span>']); }
-      else usbShowResult(['<span class="bad">loader 装载失败：' + e.error + '</span>']);
-      usbRefreshButtons(); log('usb_loader', e.ok ? 'ok' : e.error, e.ok ? 'c' : 'e'); return;
-    }
-    if (e.event === 'usb_enter_rom') {
-      usbShowResult([e.ok ? '<span class="hl">' + e.note + '</span>' : '<span class="bad">' + e.error + '</span>']);
-      usbOpened = false; usbRefresh(); log('usb_enter_rom', e.ok ? e.note : e.error, e.ok ? 'c' : 'e'); return;
-    }
-    if (e.event === 'usb_rom_window' || e.event === 'usb_backup') {
-      usbProg.style.display = 'none';
-      if (e.ok) usbShowResult([
-        '<span class="hl">' + (e.event === 'usb_backup' ? '全片备份' : 'ROM 窗读') + '完成（双读一致）</span>',
-        '大小 ' + e.bytes + ' B · SHA256 <span class="hl">' + e.sha256 + '</span>',
-        '保存于 ' + e.path,
-        e.headHex ? '首 64B：' + e.headHex : ''
-      ]);
-      else usbShowResult(['<span class="bad">失败：' + e.error + '</span>']);
-      log(e.event, e.ok ? e.sha256 : e.error, e.ok ? 'c' : 'e'); return;
-    }
-    log('usb event:' + e.event, JSON.stringify(e));
-  };
-  var finfo = JSON.parse(h3susb.info());
-  if (!finfo.loaderBundled) log('usb', '提示：构建未内置 br28loader.bin——ROM 窗读/备份不可用', 'e');
-} else {
-  document.getElementById('usbLinkState').textContent = '无 h3susb bridge（浏览器预览）';
-}
-document.getElementById('flashUnlock').onchange = function () {
-  document.getElementById('flashBody').style.display = this.checked ? 'block' : 'none';
-  if (this.checked) log('刷机区', '已解锁展示——无写路径，红线文案已显示');
+    $('kmFeedback').textContent = '正在发送，剩余 ' + (queue.length + 1) + ' 项…';
+    writeCommand(method, [item.id, item.action], (ok, message) => {
+      if (ok) {
+        accepted++;
+        keyBase[item.id] = item.action;
+      } else {
+        failed++;
+        log('按键映射未确认', message);
+      }
+      recalcDirty(item.id);
+      renderKeyRows();
+      updateKeyCount();
+      if (!ok) {
+        finishBatch();
+        return;
+      }
+      next();
+    });
+  }
+  next();
+};
+renderKeyRows();
+
+/* ---------- 原生升级入口 ---------- */
+$('openUpgrade').disabled = !(S && typeof S.openUpgradeTool === 'function');
+$('openUpgrade').onclick = () => {
+  try {
+    S.openUpgradeTool();
+  } catch (e) {
+    notify('无法打开原生升级工具：' + e, true);
+  }
 };
 
-/* 浏览器预览提示 */
-if (!hasH3s) log('预览', '无 h3s/h3susb bridge：普通浏览器打开仅可预览 UI，请在 H3S WebView 壳内使用');
-usbRefreshButtons();
+/* ---------- USB：沿用现有桥方法与事件 ---------- */
+let usbOpened = false;
+let usbRom = false;
+let usbLoaderReady = false;
+let usbLoaderBundled = false;
+let usbKey = null;
+let usbBusy = false;
+let usbExpectedEvent = null;
+let usbDevices = [];
+
+function usbInfo() {
+  if (!U) return;
+  const result = rpc(U, 'info', []);
+  if (!result.ok) return;
+  usbOpened = !!result.opened;
+  usbRom = !!result.romDevice;
+  usbLoaderReady = !!result.loaderReady;
+  usbLoaderBundled = !!result.loaderBundled;
+  usbKey = result.openedKey || null;
+  $('usbVerifiedTag').textContent = result.physicalLinkVerified
+    ? '链路已验证' : 'OTG 链路未验证';
+  $('usbVerifiedTag').className = 'badge ' +
+    (result.physicalLinkVerified ? 'good' : 'warning');
+}
+function usbUpdateButtons() {
+  $('usbScan').disabled = !U || usbBusy;
+  $('usbEnterRom').disabled = !U || usbBusy || !usbOpened || usbRom;
+  $('usbInquiry').disabled = !U || usbBusy || !usbOpened;
+  $('usbLoader').disabled =
+    !U || usbBusy || !usbOpened || !usbRom || !usbLoaderBundled || usbLoaderReady;
+  $('usbRomWin').disabled = !U || usbBusy || !usbOpened || !usbLoaderReady;
+  $('usbBackup').disabled = !U || usbBusy || !usbOpened || !usbLoaderReady;
+
+  $('usbLinkState').textContent = !U
+    ? '离线预览，未接入 USB 原生桥'
+    : usbBusy
+      ? '操作进行中，请等待结果'
+      : usbOpened
+        ? '已打开' + (usbRom ? ' · BR28 ROM' : ' · 普通 USB') +
+          (usbLoaderReady ? ' · loader 就绪' : '')
+        : '未打开设备';
+
+  all('#devList button').forEach(button => {
+    button.disabled = usbBusy || button.dataset.opened === 'true';
+  });
+}
+function usbResult(text, error) {
+  $('usbResult').hidden = false;
+  $('usbResult').textContent = text;
+  $('usbResult').style.color = error ? 'var(--danger)' : 'var(--text)';
+}
+function usbClearSession() {
+  usbOpened = false;
+  usbRom = false;
+  usbLoaderReady = false;
+  usbKey = null;
+}
+function usbFinishOperation() {
+  usbBusy = false;
+  usbExpectedEvent = null;
+  $('usbProgress').hidden = true;
+  usbUpdateButtons();
+}
+function usbRun(method, args, expectedEvent, withProgress) {
+  if (usbBusy) return;
+  usbBusy = true;
+  usbExpectedEvent = expectedEvent;
+  if (withProgress) {
+    $('usbProgress').hidden = false;
+    $('usbProgress').setAttribute('aria-valuenow', '0');
+    $('usbBar').style.width = '0%';
+    $('usbProgressText').textContent = '正在读取…';
+  } else {
+    $('usbProgressText').textContent = '操作已提交，等待结果…';
+  }
+  usbUpdateButtons();
+  const result = rpc(U, method, args);
+  if (!result.ok) {
+    usbFinishOperation();
+    $('usbProgressText').textContent = result.error || '操作被拒绝';
+    usbResult(result.error || '操作被拒绝', true);
+  }
+}
+function hex4(value) {
+  return Number(value).toString(16).padStart(4, '0');
+}
+function renderUsbDevices() {
+  $('devList').replaceChildren();
+  if (!usbDevices.length) {
+    $('devList').appendChild(element(
+      'div',
+      U ? '未检测到设备，请检查 OTG 连接后重新扫描。' : '浏览器预览不枚举设备。',
+      'empty'
+    ));
+    return;
+  }
+  usbDevices.forEach(device => {
+    const row = element('div', undefined, 'device');
+    const info = element('div');
+    const title = device.rom ? 'BR28 ROM 下载模式'
+      : device.qcy ? 'QCY 耳机 · 普通 USB'
+      : device.name || 'USB 设备';
+    info.append(
+      element('strong', title),
+      element('p', hex4(device.vid) + ':' + hex4(device.pid), 'small muted numeric')
+    );
+
+    let permitted = false;
+    try {
+      permitted = U.hasPermission(device.key) === true;
+    } catch (e) {
+      log('USB 权限查询失败', String(e));
+    }
+
+    const opened = usbOpened && usbKey === device.key;
+    const button = element('button', permitted ? (opened ? '已打开' : '打开') : '授权');
+    button.dataset.opened = String(opened);
+    button.disabled = opened || usbBusy;
+    button.onclick = () => {
+      if (permitted) {
+        usbRun('open', [device.key], 'usb_open', false);
+      } else {
+        usbRun('requestPermission', [device.key], 'usb_permission', false);
+      }
+    };
+    row.append(info, button);
+    $('devList').appendChild(row);
+  });
+}
+function usbScan() {
+  if (usbBusy) return;
+  if (!U) {
+    usbUpdateButtons();
+    renderUsbDevices();
+    return;
+  }
+  usbInfo();
+  const result = rpc(U, 'scan', []);
+  if (result.ok && Array.isArray(result.devices)) {
+    usbDevices = result.devices;
+    renderUsbDevices();
+  }
+  usbUpdateButtons();
+}
+$('usbScan').onclick = usbScan;
+$('usbInquiry').onclick = () => usbRun('inquiry', [], 'usb_inquiry', false);
+$('usbEnterRom').onclick = () => usbRun('enterRom', [], 'usb_enter_rom', false);
+$('usbLoader').onclick = () => {
+  usbLoaderReady = false;
+  usbRun('loadLoader', [], 'usb_loader', false);
+};
+$('usbRomWin').onclick = () => usbRun('readRomWindow', [], 'usb_rom_window', true);
+$('usbBackup').onclick = () => usbRun('backupFlash', [], 'usb_backup', true);
+
+window.onH3sUsbEvent = raw => {
+  try {
+    const event = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!event || !event.event) return;
+
+    if (event.event === 'usb_progress') {
+      const total = Number(event.total);
+      const done = Number(event.done);
+      const percent = total > 0 && Number.isFinite(done)
+        ? Math.max(0, Math.min(100, Math.round(done / total * 100)))
+        : 0;
+      $('usbProgress').hidden = false;
+      $('usbBar').style.width = percent + '%';
+      $('usbProgress').setAttribute('aria-valuenow', String(percent));
+      $('usbProgressText').textContent =
+        (event.op || '读取') + ' · ' + percent + '%';
+      return;
+    }
+
+    log('USB ' + event.event, event);
+    if (event.event === usbExpectedEvent) usbFinishOperation();
+
+    if (event.event === 'usb_permission') {
+      $('usbProgressText').textContent = event.granted ? 'USB 权限已授予' : 'USB 权限未授予';
+      if (!usbBusy) usbScan();
+      return;
+    }
+
+    if (event.event === 'usb_open') {
+      if (event.ok) {
+        usbOpened = true;
+        usbKey = event.key;
+        usbRom = !!event.rom;
+        usbLoaderReady = false;
+        $('usbProgressText').textContent = '设备已打开';
+      } else {
+        usbClearSession();
+        usbResult('打开失败：' + event.error, true);
+        $('usbProgressText').textContent = '打开失败';
+      }
+      renderUsbDevices();
+      usbUpdateButtons();
+      return;
+    }
+
+    if (event.event === 'usb_detached') {
+      if (!event.key || event.key === usbKey) {
+        usbClearSession();
+        usbFinishOperation();
+        $('usbProgressText').textContent = '设备已断开';
+      }
+      if (!usbBusy) usbScan();
+      return;
+    }
+
+    if (event.event === 'usb_closed') {
+      usbClearSession();
+      usbFinishOperation();
+      renderUsbDevices();
+      return;
+    }
+
+    if (event.event === 'usb_inquiry') {
+      usbResult(event.ok
+        ? 'INQUIRY：' + event.vendor + ' / ' + event.product +
+          ' rev ' + event.revision +
+          (event.br28 ? '\nBR28 UBOOT 身份已确认' : '') +
+          '\nraw: ' + (event.rawHex || '')
+        : 'INQUIRY 失败：' + event.error,
+        !event.ok);
+      $('usbProgressText').textContent = event.ok ? '查询完成' : '查询失败';
+      return;
+    }
+
+    if (event.event === 'usb_loader') {
+      usbLoaderReady = !!event.ok;
+      usbResult(event.ok
+        ? 'loader 就绪，SPI NOR 已确认。'
+        : 'loader 装载失败：' + event.error,
+        !event.ok);
+      $('usbProgressText').textContent = event.ok ? 'loader 就绪' : '装载失败';
+      usbUpdateButtons();
+      return;
+    }
+
+    if (event.event === 'usb_enter_rom') {
+      usbClearSession();
+      usbFinishOperation();
+      usbResult(
+        (event.ok ? event.note : event.error) +
+        '\n请重新扫描，以重新枚举的身份为准，不重发进入请求。',
+        !event.ok
+      );
+      $('usbProgressText').textContent = 'ROM 请求已结束，请重新扫描';
+      usbDevices = [];
+      renderUsbDevices();
+      return;
+    }
+
+    if (event.event === 'usb_rom_window' || event.event === 'usb_backup') {
+      usbFinishOperation();
+      if (event.ok) {
+        const lines = [
+          (event.event === 'usb_backup' ? '全片备份' : 'ROM 窗读取') + '完成，双读一致。',
+          '大小：' + event.bytes + ' B',
+          'SHA256：' + event.sha256,
+          event.path ? '保存于：' + event.path : '未返回保存路径，请检查原生日志。'
+        ];
+        if (event.headHex) lines.push('首 64B：' + event.headHex);
+        usbResult(lines.join('\n'), !event.path);
+      } else {
+        usbResult('读取失败：' + event.error, true);
+      }
+      $('usbProgressText').textContent = event.ok ? '读取结束' : '读取失败';
+    }
+  } catch (e) {
+    log('USB 事件解析失败', String(e));
+    notify('收到无法解析的 USB 事件，详情见日志。', true);
+  }
+};
+$('flashUnlock').onchange = () => {
+  const expanded = $('flashUnlock').checked;
+  $('flashBody').hidden = !expanded;
+  $('flashUnlock').setAttribute('aria-expanded', String(expanded));
+};
+
+/* ---------- 启动：不自动连接、不自动发写命令 ---------- */
+if (H) {
+  $('bleAddr').textContent = '构建时指定；原生桥未提供地址读取接口';
+  try {
+    H.armWrite(false);
+    armed = H.isArmed() === true;
+    connected = H.isConnected() === true;
+  } catch (e) {
+    log('初始化原生桥失败', String(e));
+    notify('原生桥初始化失败，详情见日志。', true);
+  }
+} else {
+  $('bleAddr').textContent = '离线预览，无原生连接';
+  notify('当前为离线预览：可编辑 EQ 与按键草稿，不会连接或发送命令。');
+}
+renderConnection();
+updateKeyCount();
+usbInfo();
+usbUpdateButtons();
+
+/*
+ * 可在 WebView 调试控制台执行：
+ *   window.h3sUiLayoutAudit()
+ *
+ * 同时检查 scrollWidth 和可见元素边界，不用裁切掩盖溢出。
+ * 这是供实际运行后使用的检查入口，不代表已做真机验证。
+ */
+window.h3sUiLayoutAudit = function () {
+  const width = document.documentElement.clientWidth;
+  const offenders = [];
+  document.querySelectorAll('body *').forEach(el => {
+    if (!el.getClientRects().length) return;
+    if (el instanceof SVGElement) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.left < -1 || rect.right > width + 1) {
+      offenders.push({
+        tag: el.tagName,
+        id: el.id,
+        className: el.className,
+        left: Math.round(rect.left),
+        right: Math.round(rect.right)
+      });
+    }
+  });
+  return {
+    viewportWidth: width,
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+    noHorizontalOverflow:
+      document.documentElement.scrollWidth <= width &&
+      document.body.scrollWidth <= width &&
+      offenders.length === 0,
+    offenders
+  };
+};
 </script>
 </body>
 </html>
+```
+
+**3. 自查清单**
+
+| 问题 | 实现与检查结论 |
+|---|---|
+| 横向滑动 | 旧 viewport 本身正确。移除 `132px + rotate(-90deg)` 滑块；移除五列窄下拉框矩阵；Grid 使用 `minmax(0,1fr)`，Flex 允许换行，长地址与日志可断行。未用整页 `overflow:hidden` 掩盖问题。 |
+| 360dp 自适应 | 页面左右各 12px，卡片内边距各 14px，扣除边框后 EQ 内容宽 306px；五列扣除四个 6px 间距后，每列约 56.4px。 |
+| 亮／暗／自动 | 首次绘制前恢复主题；监听 `prefers-color-scheme`；手动选择写入 localStorage。当前原生壳的两项限制见下方。 |
+| 均衡器 | 固定十段自定义、±12dB 整数、Pointer Capture 连续拖动、双击归零、键盘操作、SVG 整体曲线；原始七预设完整保留。 |
+| 按键自定义 | 三个物理键分别展示五行手势；保留单击／双击／三击／四击／长按、完整动作清单、两种写接口及工作副本读取。失败保留修改，长按明确标注待验证。 |
+| 对比度 | 已计算上述颜色配对。禁用状态不降低透明度；图标使用同一套颜色变量。 |
+| USB | 保留枚举、授权、打开、ROM 请求、INQUIRY、RAM loader、双读 ROM／Flash 备份和只展示限制的刷机区。没有新增 Flash 写入接口。 |
+| 离线 | CSS、JS、SVG 全部内联；没有外部资源请求；CSP 禁止网络连接。 |
+| 验证范围 | 完成源码核对、对比度计算和静态检查；**未运行这份新页面的浏览器测试或真机测试**，不把设计保证表述成实测结果。 |
+
+要完整满足主题要求，原生壳还需这两处配套调整；本次没有修改它们：

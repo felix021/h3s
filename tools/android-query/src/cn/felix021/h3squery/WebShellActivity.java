@@ -51,10 +51,17 @@ public class WebShellActivity extends Activity {
 
     @SuppressLint("SetJavaScriptEnabled") // 本地 asset 页面 + 显式 bridge，JS 必须开
     @Override protected void onCreate(Bundle savedInstanceState) {
+        // Activity 主题随系统亮暗切换，WebView 的 prefers-color-scheme 才能反映系统主题
+        int night = getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        setTheme(night == android.content.res.Configuration.UI_MODE_NIGHT_YES
+                ? android.R.style.Theme_Material_NoActionBar
+                : android.R.style.Theme_Material_Light_NoActionBar);
         super.onCreate(savedInstanceState);
         web = new WebView(this);
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true); // 页面主题选择等 localStorage 持久化
         AndroidGattLink link = new AndroidGattLink(this, DeviceConfig.ADDRESS);
         transport = new AndroidBleTransport(link, AndroidGattLink.mainScheduler(),
             new AndroidBleTransport.Logger() {
