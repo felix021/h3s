@@ -46,6 +46,7 @@ Honest comparison basis (what a "no divergence" result does and does not mean):
 import argparse
 import bisect
 import hashlib
+import io
 import itertools
 import json
 import pickle
@@ -362,11 +363,28 @@ def site_label(offset):
     return None
 
 
+# 路 W3-2:int 路径签名串 memo(纯函数:同一 int 值的签名字符串恒定,
+# 无失效义务;只防无界增长——条目上限照 O3I 闭包 memo 先例超限全清,
+# 上限取 1<<16,20M 世界唯一串实测 33,364,docs/perf-budget-analysis.md
+# §11.6 W3-2)。20M 世界命中率即寄存器取值重复率,收益=每步 16 寄存器
+# 的重复 f'{value:08x}' 格式化。
+_SIGNATURE_MEMO_CAP = 1 << 16
+_signature_memo = {}
+
+
 def _register_signature(value):
     if isinstance(value, bool):
         return repr(value)
     if isinstance(value, int):
-        return f'{value:08x}'
+        memo = _signature_memo
+        cached = memo.get(value)
+        if cached is not None:
+            return cached
+        cached = sys.intern(f'{value:08x}')  # intern 后同值命中同对象,
+        if len(memo) >= _SIGNATURE_MEMO_CAP:  # 与 after_step 原有 intern
+            memo.clear()  # 语义一致(值/相等比较零变化)
+        memo[value] = cached
+        return cached
     if isinstance(value, UnknownWord):
         data = ''.join(f'{b:02x}' if b is not None else '??' for b in value.bytes)
         origins = ','.join(hex(o) if o is not None else '-' for o in value.origins)
@@ -413,6 +431,7 @@ class TraceSpool:
         self._flushed = 0    # total rows handed to the file
         self._tail = []      # appended rows not yet flushed (the final chunk)
         self._cache = OrderedDict()  # chunk index -> decoded rows, <= 2 kept
+        self._staging = io.BytesIO()  # per-flush pickle staging buffer (W3-1)
         self._closed = False
 
     def append(self, row):
@@ -428,9 +447,19 @@ class TraceSpool:
             return
         self._file.seek(0, 2)  # appends always land at the tail, even if a
         offset = self._file.tell()  # read moved the shared file position
-        pickler = pickle.Pickler(self._file, protocol=4)
+        # 路 W3-1:逐行 pickle 先落内存 BytesIO,拼完整块再一次写盘。本机
+        # BufferedWriter.write 每次调用 ~6.1µs(释放 GIL 的 C 调用异常,
+        # docs/perf-budget-analysis.md §11.5),逐行直写=每行踩一次=spool
+        # flush 25.7% 自耗时的本体;BytesIO.write 是不释放 GIL 的 C 内联
+        # (~0.1µs)。盘上字节形状不变:仍一块一个新建 Pickler(memo 界限
+        # 语义,路 O6)、块内逐行 dump 的 pickle 流按序拼接,读侧照旧。
+        staging = self._staging
+        staging.seek(0)
+        staging.truncate()
+        pickler = pickle.Pickler(staging, protocol=4)
         for row in self._tail:
             pickler.dump(row)
+        self._file.write(staging.getvalue())
         self._starts.append(self._flushed)
         self._offsets.append(offset)
         self._counts.append(len(self._tail))

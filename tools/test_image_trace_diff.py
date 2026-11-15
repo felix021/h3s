@@ -207,6 +207,113 @@ def test_trace_spool_truncated_file_raises_not_eof():
         pass
 
 
+def test_trace_spool_chunk_format_is_row_pickle_concatenation():
+    # 路 W3-1 钉子:flush 批量化(BytesIO 中转+单次 write)只改写盘路径,
+    # 盘上块格式逐字节不变——每块=一个新建 Pickler(protocol 4)对块内
+    # 各行逐行 dump 的 pickle 流按序拼接(一块一个 memo 界限,路 O6)。
+    # 任何 framing 改动(整块 list dump/帧头/长度前缀)在这里第一时间炸。
+    backing = io.BytesIO()
+    spool = TraceSpool(file=backing, chunk=8)
+    rows = [row(0x2000 + i * 4, 0x2004 + i * 4, marker=(3, f'{i * 258:08x}'),
+                write=() if i % 2 else ((0x6000 + i, 'deadbeef'),))
+            for i in range(19)]  # 2 full chunks + partial 3-row tail chunk
+    for r in rows:
+        spool.append(r)
+    spool.flush()
+    chunk_streams = []
+    for start in (0, 8, 16):
+        sink = io.BytesIO()
+        pickler = pickle.Pickler(sink, protocol=4)  # fresh Pickler per chunk
+        for r in rows[start:start + 8]:
+            pickler.dump(r)
+        chunk_streams.append(sink.getvalue())
+    assert backing.getvalue() == b''.join(chunk_streams)
+    assert spool._counts == [8, 8, 3]
+    assert spool._offsets == [0, len(chunk_streams[0]),
+                              len(chunk_streams[0]) + len(chunk_streams[1])]
+    assert list(spool) == rows  # 读侧(逐行 load)对同一形状照常工作
+
+
+def test_trace_spool_batched_write_truncation_matrix_raises_not_silent():
+    # 路 W3-1 验收:批量化写盘后,截断仍必须报错不静默——块界前后 1 字节
+    # 与块中部各种切点下,受损块读必须抛(UnpicklingError/EOFError),
+    # 未受损的前缀块照常可读且逐字段正确。
+    backing = io.BytesIO()
+    spool = TraceSpool(file=backing, chunk=4)
+    rows = [row(0x3000 + i * 2, 0x3002 + i * 2) for i in range(10)]  # 3 chunks
+    for r in rows:
+        spool.append(r)
+    spool.flush()
+    full = backing.getvalue()
+    starts = list(spool._offsets)
+    ends = starts[1:] + [len(full)]
+    cuts = sorted({1, starts[1] - 1, starts[1], starts[1] + 1, len(full) - 1})
+    for cut in cuts:
+        spool._file = io.BytesIO(full[:cut])
+        for chunk in range(3):
+            spool._cache.clear()
+            if cut < ends[chunk]:
+                try:
+                    spool[chunk * 4]
+                    raise AssertionError(f'cut {cut} chunk {chunk} must raise')
+                except (pickle.UnpicklingError, EOFError):
+                    pass
+            else:
+                assert spool[chunk * 4] == rows[chunk * 4]
+
+
+def test_register_signature_int_memo_matrix():
+    # 路 W3-2 验收矩阵:int 路径按值 memo——同值命中同一 intern 串对象,
+    # 不同值各自正确(0/负数/32 位满宽/超 32 位都与原 f'{value:08x}' 恒等);
+    # bool(bool 是 int 子类)仍走 repr 分支不进 memo;UnknownWord/IcfgValue
+    # 路径输出与 memo 引入前逐字节相同。
+    import sys as _sys
+
+    import analyze_image_trace as ait
+    from br28_icfg import IcfgValue
+    from br28_unknown import UnknownWord
+
+    ait._signature_memo.clear()
+    first = ait._register_signature(0x1a2b3c4d)
+    assert first == '1a2b3c4d'
+    assert ait._register_signature(0x1a2b3c4d) is first  # 命中同对象(intern)
+    assert 0x1a2b3c4d in ait._signature_memo
+    assert ait._register_signature(0) == f'{0:08x}' == '00000000'
+    assert ait._register_signature(-1) == f'{-1:08x}'
+    assert ait._register_signature(0xffffffff) == 'ffffffff'
+    assert ait._register_signature(1 << 40) == f'{1 << 40:08x}'
+    assert first is _sys.intern('1a2b3c4d')  # DT intern 语义保持
+    before = len(ait._signature_memo)
+    assert ait._register_signature(True) == 'True'   # bool 分支在前
+    assert ait._register_signature(False) == 'False'
+    assert len(ait._signature_memo) == before        # bool 不进 memo
+    word = UnknownWord((0x12, None, 0x34, None), (None, 0x6000, None, 0x6001))
+    assert ait._register_signature(word) == 'u12??34??|-,0x6000,-,0x6001'
+    assert ait._register_signature(IcfgValue(0xa5a5a5a5, 0xff00ff00, 0)) \
+        == 'iff00ff00.a500a500'
+    assert ait._register_signature('not-a-value') == '?'  # 兜底分支不变
+
+
+def test_register_signature_memo_cap_evicts_and_rebuilds_correctly():
+    # 路 W3-2 上限纪律(照 O3I 闭包 memo 先例):条目达 cap 后先全清再插入,
+    # 防无界增长;清后重建的键值照常正确(纯函数,无失效义务)。
+    import analyze_image_trace as ait
+
+    ait._signature_memo.clear()
+    cap = ait._SIGNATURE_MEMO_CAP
+    anchor = ait._register_signature(0x5eed)
+    assert anchor == '00005eed'
+    for i in range(cap):  # 第 cap 次插入触发全清,清后仅存最后 1 键
+        ait._register_signature(0x1000000 + i)
+    assert len(ait._signature_memo) == 1
+    assert 0x5eed not in ait._signature_memo           # 超限全清:老键被清
+    assert 0x1000000 not in ait._signature_memo
+    assert 0x1000000 + cap - 1 in ait._signature_memo  # 清后重建的新键在
+    again = ait._register_signature(0x5eed)
+    assert again == '00005eed'  # 清后重算同值(纯函数无失效义务)
+    ait._signature_memo.clear()  # 不给后续用例留全局状态
+
+
 def test_reconvergence_and_spans_over_spools_equal_list_results():
     # 比较器全链路(list 与 spool 同输入产出完全相同的 detail):覆盖
     # find_reconvergence 的后向扫描/切片视图/物化消除点与 _divergent_spans。
