@@ -1,0 +1,36 @@
+{
+  "case_id": "D1-TMR-02",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；D1 场景世界=p11_heap 条件栈官方单臂；三镜像差分 L2-a 系过线后独立步另记，不进本批）",
+  "initial_state": "预填用例（未执行），计划起点=真实启动全程（Q1，d1-acceptance §7/§8 唯一合法首次过线形态）：p11_heap 条件栈自然推进到 S19/park 再进观察窗，单次运行从 boot 起跑、budget 一次给足，不设「从中间热启动」参数（s19-batch3-taskbook §2.1 第 1 条）；窗口起点 W_park=两核均 idle_wait（event_clock_engaged 首次）的全局模型步时刻（双轴并记）；前置=批 3 闸门②（前沿过 DAC_TM0〔DT 已放行，21,798,206 @ 0x606b5ee ADA_CON0 读在途〕+音频数字域整块+S19 终态 park）+PR-BI 首验+PR-2 场景骨架，前置未备前本条保持 NOT_RUN",
+  "inputs_schedule": "无外部输入（D1 排除面=P33/WKUP/USB/按键）；时间表=观察窗模型步轴 [W_park, W_park+N)（窗口步数只按全局模型步计、含事件时钟快进段；窗口内执行指令数另列 d1_window_instruction_steps，不冒充时间——d1-acceptance §1 时间口径）；注入变体不进本条",
+  "observation_boundary": "[W_park, W_park+N) 内 ≥3 次完整 Timer0 周期，逐周期四查（观察点表=d1-scene-blueprint §2.2）：到期 timer0_cycles[i].expiry_model_step/交付 IrqDeliveryRequest(0,4)→timer0_irq_entry→handler 0x12ece8 真实字节/ACK=W1C bit14（|=0x4000）恰一次+delivery_in_flight 复位/RTI=尾锚 0x12ed0c→实际保存的 RETI→重新 core_idle_wait_entered（re_parked）；tick 回调真实效果 0x603622C：[0x1268CC]+1、[0x1268D0]+10ms、sys_timer 轮询 0x6066de0（BZ §2.2/2.3）；窗口零 Blocked（window_blocked_events 期望空）；报告键=timer0_cycles[i].{gap_from_previous,delivered,handler_entry_pc,frames,acked,w1c_count,rti_pc,reti_value,re_parked,tick_count_delta,tick_ms_delta,sys_timer_polled,delivery_delay_steps}（蓝图 §4.3）",
+  "assertions": [
+    "d1-acceptance §1 D1-2（观察点表=d1-scene-blueprint §2.2）：≥3 周期逐周期四查（到期/交付/ACK/返回）全过——无漏失（=少一次完整往返）、无重复（=同周期双交付）；相邻到期模型步差恒=P_park（park 态 timer0_state.{con,cnt,prd} 经 period_closed_form 用 INV 常量链现算——不预锁 40,000；BY 实测 delay 函数按调用重编 PRD 59999→47999→11999 三态都出现过，park 末态实际配置=运行观测项 R1；P_park≠40,000 时按实际周期核对「间隔恒定」并如实报告，BI A2「配置不变时」条款照抄）；tick 回调每周期真实推进计数（tick_count_delta=1/tick_ms_delta=10 按实读核对）；窗口内零 Blocked（「无未知停点」=没有未处理的未知边界、跳过或补值，旧 kind 再次阻塞也不通过——codex 条款）",
+    "交付延迟另记不判 FAIL（delivery_delay_steps）：溢落 IPMASK 临界区时经 BF pending 重检机制延后交付=既有建模语义，不要求交付间隔=P_park（codex 条款）",
+    "窗口内若发生消息分发（D1-3 后调度的事件/注入变体），其后须再覆盖 ≥1 完整周期（post_dispatch_cycle_covered）——分发代码可能动 IPMASK/临界区（d1-acceptance §1 D1-2「分发之后」条款）",
+    "观察窗相容性自检（路 REVIEW 采纳盲区①，docs/phase-review-d1-readiness）：PR-2 窗口公式 N=max(S_tick(W_park)+160,000, 200,000) 按 park 实读 P_park 复核可覆盖周期数——可覆盖周期数<3=观察窗不足（补窗口重跑仍是全程 Q1），不判过也不冒充 FAIL 归因；BY 实测 PRD 三态重编使蓝图 160k 余量假设可被打破"
+  ],
+  "timeout_budget": "N（蓝图 §1.3：N=S_tick(W_park)+160,000，下限 200,000——3×Timer0 周期（≥120,000）+core tick 首溢出闭式期限 S_tick+其交付执行+交付后再覆盖 ≥1 完整 Timer0 周期）；超时=FAIL 非重跑；NOT_RUN 语义只给 D1-4 无样本的诚实收口，本条超时=FAIL（蓝图 §1.3）",
+  "model_assumptions": [
+    "idle_wait_projection（IDLE 停泊语义；硅 IDLE 语义未证）",
+    "event_clock_projection（全核 IDLE 事件时钟推进；Timer0 期限闭式 S=ceil((4·M−source_remainder)/12)、M=divisor·(PRD+1-CNT)−remainder，event-clock §2 条 3）",
+    "timer0_irq4_delivery(entry/banks/rti) 三件套（HANDOFF 路 BE：pending→IRQ4 合格→IrqDeliveryRequest(0,4)→handler 0x12ece8 真实字节→W1C bit14 清 pending→RTI 尾锚 0x12ed0c 回实际 RETI）",
+    "repeat_irq_delivery（base 栈，第二次 Timer0 交付必需）",
+    "core_tick_irq3_delivery（HANDOFF 路 BF）",
+    "TIMER2 投影+闭式 horizon 并入 min()（B1，4000 步闭式单测钉死）+闭式常量 STEPS_PER_MS=4000/TIMER0_STEPS_PER_10MS=40000（INV 四层断言）——P_park 计算的常量链",
+    "p11_heap 条件栈 flag 集经 scenario_flags('p11_heap_experimental') 构造器实取（含音频域容器族 jl_adda_analog_family〔B3〕/jl_audio_dac_tm_readback〔DT〕等；不含已撤回的电池段两开关）；场景行=event_clock=True+d1_acceptance=True（任务书 §1.2 第 3 条）",
+    "交付假设叠加适用（event-clock §5）：入口银行/PSR 高位/RTI 装载等——全部结论投影等级（hardware_mode_certified=false 不升级）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "本条=预填底稿未执行（NOT_RUN=未跑，不占 BLOCKED 语义）；等闸门②（前沿到 S19 终态 park）+PR-BI 首验（A2 周期守恒窗口版判据需 S19 后 park 样本）+PR-2 场景骨架，PR-3 正式落档时以实测 verdict 替换本预填",
+    "R1 运行观测项：park 时 Timer0 实际配置（PRD 被 delay 函数重编后的末态；周期=40,000 还是别的）——由 park.timer0_state.period_closed_form 回答，本条预填不预锁数值",
+    "硅时序/同刻仲裁；IDLE 指令硅语义（idle_wait 措辞）；外部输入域（P33/WKUP/USB/按键）；模拟前端/DMA 总线/声学面（蓝图 §6 底稿公共未覆盖项）",
+    "窗口内 D1-3 时间片调度把执行带进未建模域（任务体跑新 SFR）时=FAIL+记录归因（归 D2+ 域新边界），修复后重跑，不允许为过线缩短窗口（蓝图 §7 工程风险条款照抄）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-15T13:36:00"
+}
