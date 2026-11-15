@@ -15,6 +15,9 @@ import java.util.Arrays;
  *   - 0x30 R4 key-store（docs/r4-command-hook.md）：data=[30,v0..v7]（len 9，写 key 30）或
  *     data=[30]（len 1，读 key 30）——固件侧 --r4-keyhook 离线候选的 keystore_hook 载荷
  *     （UNTESTED），值 8 字节对本层不透明，白名单只钉形状；
+ *   - 0x2E 音频模式（docs/wired-game-mode.md §2.1，音乐 1/游戏 3/电影 4）：固件 setter
+ *     0x6026134 只读载荷首字节写 0x124a04；data_len=1 是本仓假设（0x1d 先例固件要求
+ *     len>=2，0x2E 的 len 要求未钉），真机联调对照；
  *   - 0xC2 ADV type2 写（候选 A，[假设] C1 读对偶）：body=SN+mask(00 00 00 04)+3B 三元组，
  *     字段域同上（docs/app-protocol.md §2.5，两条 wire 真机抓包定案前并存放行）。
  * 不开任意字节写总开关（AGENTS 红线）。未 armed 时退回 QueryPolicy（只读帧），所有写一律拒绝。
@@ -26,6 +29,7 @@ public final class EqWritePolicy {
     public static final int CMD_PROMPT_VOLUME = 0x1d;  // 提示音音量 cmdid
     public static final int CMD_KEY_REMAP = KeyRemapFrame.CMD_ID; // 按键重映射 cmdid（候选 B）
     public static final int CMD_KEY_STORE = KeyStoreFrame.CMD_ID; // R4 key-store cmdid（0x30）
+    public static final int CMD_AUDIO_MODE = 0x2e;       // 音频模式 cmdid（46；音乐 1/游戏 3/电影 4）
     /** ADV 设备设置写 opcode（候选 A；[假设] C1 读对偶，KeyRemapFrame 详注）。 */
     public static final int ADV_WRITE_OPCODE = KeyRemapFrame.ADV_WRITE_OPCODE;
     /** 提示音音量合法档位（控制面板 3/6/8=最小/中等/最大；固件接收层不钳，白名单从严）。 */
@@ -74,6 +78,9 @@ public final class EqWritePolicy {
             case CMD_KEY_STORE:             // 0x30：data=[30,8B 值]（写）或 [30]（读），形状钉死、值不透明
                 return (dataLen == KeyStoreFrame.WRITE_LEN || dataLen == KeyStoreFrame.READ_LEN)
                         && (frame[10] & 255) == KeyStoreFrame.KEY_ID;
+            case CMD_AUDIO_MODE:            // 0x2E：data=[模式]（len 1 [假设]），模式∈{1,3,4}
+                int mode = frame[10] & 255;
+                return dataLen == 1 && (mode == 1 || mode == 3 || mode == 4);
             default:
                 return false;
         }

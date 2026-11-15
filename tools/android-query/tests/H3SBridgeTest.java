@@ -41,8 +41,77 @@ public class H3SBridgeTest {
         keyRemapBytes();
         keyRemapGet();
         policyConsistency();
+        audioModeAndReadStatus();
+        deviceMessageEvent();
         System.out.println("H3SBridgeTest passed: 门控、writeEq JSON 解析/组帧对拍/错误路径、setAnc/setPromptVolume/setKeyRemap 字节对照、"
-            + "getKeyRemap 默认/更新、EqWritePolicy 一致性");
+            + "getKeyRemap 默认/更新、EqWritePolicy 一致性、setAudioMode(0x2E)/readStatus 字节对照、device_message 事件");
+    }
+
+    /** setAudioMode（FF/0x2E，音乐 1/游戏 3/电影 4）与 readStatus（只读四点）字节对照。 */
+    static void audioModeAndReadStatus() throws Exception {
+        H3SBridge b = new H3SBridge();
+        expect(!result(b.setAudioMode(3)).getBoolean("ok"), "未武装 setAudioMode 应失败");
+        b.armWrite(true);
+        expect(!result(b.setAudioMode(2)).getBoolean("ok"), "mode=2（电影/游戏之间无此值）应拒绝");
+        bytes("setAudioMode(3) 帧", H3SBridge.unhex(result(b.setAudioMode(3)).getString("bytesHex")),
+            H3SBridge.buildCustomCommand(0, 0x2e, new byte[]{3}));
+        bytes("setAudioMode(1) 帧", H3SBridge.unhex(result(b.setAudioMode(1)).getString("bytesHex")),
+            H3SBridge.buildCustomCommand(0, 0x2e, new byte[]{1}));
+        expect(EqWritePolicy.permitted(H3SBridge.buildCustomCommand(0, 0x2e, new byte[]{4}), true),
+            "0x2E 帧（模式 4）应过写策略");
+        expect(!EqWritePolicy.permitted(H3SBridge.buildCustomCommand(0, 0x2e, new byte[]{2}), true),
+            "0x2E 帧（模式 2）应被写策略拒绝");
+        expect(!EqWritePolicy.permitted(H3SBridge.buildCustomCommand(0, 0x2e, new byte[]{3, 0}), true),
+            "0x2E 帧（len 2 假设外）应被写策略拒绝");
+        // readStatus：只读、不要求武装；帧形状=QueryPolicy §battery 白名单（body=SN+FE 01 cmd）
+        expect(!result(b.readStatus(5)).getBoolean("ok"), "readStatus 非法 cmd 应拒绝");
+        JSONObject r = result(b.readStatus(0x2f));
+        expect(r.getBoolean("ok"), "readStatus(0x2f) 应成功（只读不需武装）: " + r);
+        bytes("readStatus(0x2f) 帧", H3SBridge.unhex(r.getString("bytesHex")),
+            new byte[]{(byte)0xfe,(byte)0xdc,(byte)0xba,(byte)0xc0,(byte)0xff,0,4,0,(byte)0xfe,0x01,0x2f,(byte)0xef});
+        expect(cn.felix021.h3squery.QueryPolicy.permitted(H3SBridge.unhex(r.getString("bytesHex"))),
+            "readStatus 帧应过 QueryPolicy");
+        bytes("readStatus(0x17) 帧", H3SBridge.unhex(result(b.readStatus(0x17)).getString("bytesHex")),
+            H3SBridge.buildReadStatusFrame(0, 0x17));
+    }
+
+    /** device_message 事件：未登记 SN 的响应帧透出给页面（只读查询回包的收口）。 */
+    static void deviceMessageEvent() throws Exception {
+        final List<String> events = new ArrayList<String>();
+        final List<H3sTransportFake.Listener> listeners = new ArrayList<H3sTransportFake.Listener>();
+        H3sTransportFake t = new H3sTransportFake(listeners);
+        H3SBridge b = new H3SBridge(t, new H3SBridge.ResultSink() {
+            public void emit(String json) { events.add(json); }
+        });
+        expect(t.isReady(), "假传输就绪");
+        JSONObject r = result(b.readStatus(0x2f));
+        expect(r.getBoolean("ok") && r.getBoolean("sent"), "readStatus 经 transport 排队: " + r);
+        // 设备回包（SN 未登记）：fe dc ba | 00 | 00 | 00 07 | status=00 sn=00 | 2f 03 50 c0 00 | ef
+        byte[] resp = H3SBridge.unhex("fedcba" + "00" + "00" + "0007" + "00" + "00" + "2f0350c000" + "ef");
+        listeners.get(0).onFrame(resp);
+        expect(events.size() == 1, "应恰好一条事件: " + events);
+        JSONObject e = new JSONObject(events.get(0));
+        expect("device_message".equals(e.getString("event")), "事件名 device_message: " + events);
+        expect("2f0350c000".equals(e.getString("payloadHex")), "payload 透传: " + e);
+        expect(e.getInt("status") == 0 && e.getInt("sn") == 0, "status/sn 解析");
+    }
+
+    /** 最小假传输：就绪、write 即回调成功、listener 可被测试捕获。 */
+    static class H3sTransportFake implements cn.felix021.h3squery.H3sTransport {
+        interface Listener { void onFrame(byte[] frame); }
+        final List<Listener> captured;
+        cn.felix021.h3squery.H3sTransport.Listener real;
+        H3sTransportFake(List<Listener> captured) { this.captured = captured; }
+        public void setListener(cn.felix021.h3squery.H3sTransport.Listener l) {
+            real = l;
+            final List<Listener> cap = captured;
+            cap.add(new Listener() { public void onFrame(byte[] frame) { l.onFrame(frame); } });
+        }
+        public void connect() { }
+        public void disconnect() { }
+        public boolean isReady() { return true; }
+        public int mtu() { return 247; }
+        public void write(byte[] frame, FrameCallback cb) { cb.onDone(true, null); }
     }
 
     /** 武装门控：未武装一切写方法拒绝，armWrite 翻转后放行。 */

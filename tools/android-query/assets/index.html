@@ -2,231 +2,889 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>H3S 独立 App Demo（壳层组帧）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>H3S 工具</title>
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 12px; font: 14px/1.5 system-ui, sans-serif; background: #14161a; color: #d8dce2; }
-  h1 { font-size: 18px; margin: 0 0 4px; }
-  h2 { font-size: 15px; margin: 20px 0 8px; color: #9fc3e8; }
-  .sub { color: #8a919c; font-size: 12px; margin-bottom: 10px; }
-  .warn { display: none; padding: 8px 10px; border-radius: 8px; background: #4a3b12; color: #ffd479; margin: 8px 0; }
-  .card { background: #1c1f25; border: 1px solid #2a2e36; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
-  button { background: #2b4a6b; color: #e8f0fa; border: 1px solid #3d5f85; border-radius: 8px; padding: 6px 12px; font-size: 14px; }
-  button:active { background: #35597f; }
-  button.off { background: #3a3f47; border-color: #4a505a; }
-  button.danger { background: #6b2b2b; border-color: #853d3d; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
-  input[type=range] { flex: 1; min-width: 90px; }
-  input[type=number] { width: 74px; background: #14161a; color: #d8dce2; border: 1px solid #2a2e36; border-radius: 6px; padding: 3px 6px; }
-  .band { margin: 4px 0; }
-  .band .lab { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #aab2bd; }
-  .val { font-variant-numeric: tabular-nums; color: #7fd18a; min-width: 52px; text-align: right; }
-  .neg .val { color: #7fb8e8; }
-  pre { background: #101216; border: 1px solid #2a2e36; border-radius: 8px; padding: 8px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
-  .ok { color: #7fd18a; } .err { color: #ff8a80; }
-  .hex { color: #ffd479; }
-  .note { font-size: 12px; color: #8a919c; }
-  .state { font-size: 12px; padding: 2px 8px; border-radius: 10px; }
-  .armed { background: #1d3a24; color: #7fd18a; }
-  .disarmed { background: #3a2626; color: #ff8a80; }
+  :root {
+    --bg: #0b0e13; --card: #151a23; --card2: #1a212d; --line: #232c3b; --line2: #2c3648;
+    --text: #e9edf4; --muted: #8b95a8; --dim: #5c6678;
+    --accent: #4cc2ff; --accent-dim: #2a6d96; --ok: #6ee7a0; --warn: #ffc857; --danger: #ff7070;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.6 -apple-system, "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    padding-bottom: 40px;
+  }
+  /* ---------- 顶栏 + tab ---------- */
+  header {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(11,14,19,.92); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+    padding: calc(10px + env(safe-area-inset-top)) 16px 0;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 0 10px; }
+  .brand svg { flex: none; }
+  .brand .name { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+  .brand .sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .pill {
+    margin-left: auto; font-size: 11px; padding: 3px 10px; border-radius: 999px;
+    background: #34222a; color: #ff9c9c; white-space: nowrap;
+  }
+  .pill.ok { background: #16321f; color: var(--ok); }
+  .pill.mid { background: #383010; color: var(--warn); }
+  .tabs { display: flex; gap: 4px; background: var(--card); border-radius: 12px; padding: 4px; margin-bottom: 10px; }
+  .tabs button {
+    flex: 1; border: 0; border-radius: 9px; padding: 8px 0; font-size: 15px; font-weight: 600;
+    background: transparent; color: var(--muted);
+  }
+  .tabs button.on { background: var(--accent-dim); color: #eaf6ff; }
+  .logbtn {
+    border: 1px solid var(--line2); background: var(--card); color: var(--muted);
+    border-radius: 9px; padding: 4px 10px; font-size: 12px;
+  }
+  /* ---------- 布局 ---------- */
+  main { padding: 14px 14px 0; max-width: 560px; margin: 0 auto; }
+  section { display: none; }
+  section.on { display: block; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card > .head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .card > .head .t { font-size: 16px; font-weight: 700; }
+  .card > .head .tag {
+    margin-left: auto; font-size: 10px; color: var(--muted); border: 1px solid var(--line2);
+    border-radius: 6px; padding: 1px 6px; white-space: nowrap;
+  }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.7; }
+  .note b { color: var(--warn); font-weight: 600; }
+  .hint { font-size: 12px; color: var(--dim); }
+  /* ---------- 控件 ---------- */
+  button.act {
+    border: 0; border-radius: 12px; padding: 10px 18px; font-size: 14px; font-weight: 600;
+    background: var(--accent-dim); color: #eaf6ff;
+  }
+  button.act:active { filter: brightness(1.2); }
+  button.act.ghost { background: var(--card2); color: var(--text); border: 1px solid var(--line2); }
+  button.act.small { padding: 6px 12px; font-size: 13px; border-radius: 9px; }
+  button.act.danger { background: #6e2739; color: #ffd9e0; }
+  button.act:disabled { opacity: .4; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  .seg { display: flex; gap: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 5px; }
+  .seg button {
+    flex: 1; border: 0; border-radius: 8px; padding: 9px 4px; font-size: 14px; font-weight: 600;
+    background: transparent; color: var(--muted); line-height: 1.3;
+  }
+  .seg button small { display: block; font-size: 10px; font-weight: 400; color: inherit; opacity: .7; }
+  .seg button.on { background: var(--accent-dim); color: #eaf6ff; }
+  .seg button.on.anc-on { background: #1d4d3a; color: #d7ffe9; }
+  .seg button.on.anc-off { background: #33405a; color: #dfe8ff; }
+  .seg button.on.anc-tr { background: #4d3a1d; color: #ffedd2; }
+  select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line2);
+    border-radius: 8px; padding: 6px 8px; font-size: 13px; max-width: 100%;
+  }
+  /* 开关 */
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .switch .knob {
+    width: 44px; height: 26px; border-radius: 999px; background: var(--card2);
+    border: 1px solid var(--line2); position: relative; transition: background .18s;
+  }
+  .switch .knob::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--muted); transition: left .18s, background .18s;
+  }
+  .switch input { display: none; }
+  .switch input:checked + .knob { background: #6e2739; border-color: #8d3d54; }
+  .switch input:checked + .knob::after { left: 20px; background: #ff9cb1; }
+  .switch.green input:checked + .knob { background: #1d4d3a; border-color: #2f6b52; }
+  .switch.green input:checked + .knob::after { background: #8affc4; }
+  /* 状态行 */
+  .kv { display: flex; gap: 10px; align-items: baseline; margin: 4px 0; font-size: 13px; }
+  .kv .k { color: var(--muted); flex: none; width: 64px; }
+  .kv .v { font-variant-numeric: tabular-nums; word-break: break-all; }
+  .kv .v.dim { color: var(--dim); }
+  .batt { display: flex; gap: 6px; flex-wrap: wrap; }
+  .batt span {
+    background: var(--card2); border: 1px solid var(--line2); border-radius: 8px;
+    padding: 2px 8px; font-size: 12px; font-variant-numeric: tabular-nums;
+  }
+  .batt span i { font-style: normal; color: var(--muted); margin-right: 3px; }
+  /* EQ */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
+  .chips button {
+    border: 1px solid var(--line2); background: var(--card2); color: var(--muted);
+    border-radius: 999px; padding: 5px 13px; font-size: 13px;
+  }
+  .chips button.on { background: var(--accent-dim); border-color: var(--accent-dim); color: #eaf6ff; }
+  #eqCurve { width: 100%; height: 96px; display: block; background: var(--bg); border-radius: 10px; border: 1px solid var(--line); }
+  .bank { display: flex; gap: 2px; margin-top: 10px; }
+  .band { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .band .bv {
+    font-size: 10px; color: var(--ok); font-variant-numeric: tabular-nums; height: 14px;
+    white-space: nowrap;
+  }
+  .band .bv.neg { color: var(--accent); }
+  .vs { height: 132px; width: 100%; display: flex; align-items: center; justify-content: center; }
+  .vs input {
+    width: 132px; transform: rotate(-90deg); margin: 0;
+    -webkit-appearance: slider-vertical; /* Chromium 旧竖滑语法兜底 */
+  }
+  .band .bf { font-size: 10px; color: var(--muted); height: 14px; white-space: nowrap; }
+  input[type=range] { accent-color: var(--accent); }
+  /* 按键矩阵 */
+  .km { display: grid; grid-template-columns: 64px repeat(5, 1fr); gap: 5px; align-items: center; }
+  .km .h { font-size: 11px; color: var(--muted); text-align: center; }
+  .km .kn { font-size: 12px; font-weight: 600; }
+  .km select { width: 100%; font-size: 11px; padding: 5px 2px; border-radius: 7px; }
+  .km .cell { position: relative; }
+  .km .cell.dirty::after {
+    content: ""; position: absolute; top: -3px; right: -1px; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--warn);
+  }
+  .km .cell.g { outline: 1px dashed #4a4232; outline-offset: 1px; border-radius: 7px; }
+  /* 占位卡 */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .ph {
+    background: var(--card2); border: 1px dashed var(--line2); border-radius: 12px;
+    padding: 12px; text-align: center;
+  }
+  .ph .n { font-size: 14px; color: var(--muted); font-weight: 600; }
+  .ph .d { font-size: 11px; color: var(--dim); margin-top: 3px; }
+  /* USB */
+  .dev {
+    display: flex; align-items: center; gap: 8px; background: var(--card2);
+    border: 1px solid var(--line2); border-radius: 12px; padding: 10px 12px; margin: 8px 0;
+  }
+  .dev .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dev.rom .dot { background: var(--warn); }
+  .dev.qcy .dot { background: var(--accent); }
+  .dev .nm { font-size: 13px; font-weight: 600; }
+  .dev .id { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dev .ops { margin-left: auto; display: flex; gap: 6px; }
+  .empty {
+    text-align: center; color: var(--dim); font-size: 13px; padding: 22px 10px;
+    border: 1px dashed var(--line2); border-radius: 12px; margin: 8px 0;
+  }
+  .progress { height: 8px; background: var(--card2); border-radius: 999px; overflow: hidden; margin: 8px 0; display: none; }
+  .progress .bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .result {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 10px; font-size: 12px; font-variant-numeric: tabular-nums;
+    word-break: break-all; margin-top: 8px; display: none; color: var(--muted); line-height: 1.8;
+  }
+  .result .hl { color: var(--ok); }
+  .result .bad { color: var(--danger); }
+  .flashzone { border-color: #55232e; background: #1a1218; }
+  .flashzone .t { color: #ff9cb1; }
+  .redline {
+    font-size: 12px; color: #ffb4c2; background: #2a141c; border-radius: 10px;
+    padding: 8px 12px; margin-top: 8px; line-height: 1.8;
+  }
+  /* 日志抽屉 */
+  #logPanel {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; max-height: 55vh;
+    background: #0d1017; border-top: 1px solid var(--line2); display: none; flex-direction: column;
+  }
+  #logPanel.on { display: flex; }
+  #logPanel .bar {
+    display: flex; align-items: center; padding: 8px 16px; gap: 8px; border-bottom: 1px solid var(--line);
+    font-size: 13px; color: var(--muted);
+  }
+  #logPanel pre {
+    margin: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    overflow-y: auto; font-size: 11px; line-height: 1.7; color: #9fb0c8;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  #logPanel .c { color: var(--ok); } #logPanel .e { color: var(--danger); } #logPanel .t { color: var(--dim); }
 </style>
 </head>
 <body>
-<h1>H3S 独立 App Demo</h1>
-<div class="sub">壳层组帧 + 传输接线演示：写命令经武装门控与白名单组帧，连接后经 Android BLE
-适配层（路 AU）串行下发；真机联调需授权，未连接时调 <code>h3s.*</code> 只返回组帧错误。</div>
 
-<div id="noBridge" class="warn"></div>
-
-<div class="card" id="connCard">
-  <div class="row">
-    <button id="connBtn">连接耳机</button>
-    <button id="discBtn" class="off">断开</button>
-    <span id="connState" class="state disarmed">未连接</span>
+<header>
+  <div class="brand">
+    <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+      <path d="M5 17v-2a10 10 0 0 1 20 0v2" stroke="#4cc2ff" stroke-width="2.4" stroke-linecap="round"/>
+      <rect x="3" y="15" width="5" height="10" rx="2.4" fill="#4cc2ff"/>
+      <rect x="22" y="15" width="5" height="10" rx="2.4" fill="#4cc2ff"/>
+      <path d="M11 25h8" stroke="#6ee7a0" stroke-width="2.4" stroke-linecap="round"/>
+    </svg>
+    <div>
+      <div class="name">H3S 工具</div>
+      <div class="sub">QCY H3S · 独立客户端</div>
+    </div>
+    <span id="statusPill" class="pill">未连接</span>
+    <button id="logToggle" class="logbtn">日志</button>
   </div>
-  <div class="note">连接 = 扫描目标地址 → GATT → 订阅通知(CCCD) → MTU 协商，就绪后这里显示
-  实际 MTU；异步结果（response/断线/发送失败）都经 <code>onH3sEvent</code> 推送。断开后可重连。
-  目标地址由构建注入，不连任意设备。</div>
-</div>
-
-<div class="card">
-  <div class="row">
-    <button id="armBtn" class="danger">武装写入</button>
-    <span id="armState" class="state disarmed">未武装：写命令会被 bridge 拒绝</span>
+  <div class="tabs">
+    <button id="tabBtnHs" class="on">耳机</button>
+    <button id="tabBtnUsb">USB</button>
   </div>
-  <div class="note">门控对应 EqWritePolicy：不武装就不组任何写帧，避免误发。</div>
-</div>
+</header>
 
-<h2>EQ（FF/0x22，10 段）</h2>
-<div class="card">
-  <div class="row">master gain <input type="range" id="master" min="-12" max="12" step="0.5" value="0">
-    <span id="masterVal" class="val">0.0 dB</span></div>
-  <div id="bands"></div>
-  <div class="row">
-    <button id="flatBtn">全部归零</button>
-    <button id="eqBtn">生成 EQ 写命令</button>
+<main>
+
+<!-- ============================ 耳机 tab ============================ -->
+<section id="tabHs" class="on">
+
+  <div class="card">
+    <div class="head"><div class="t">连接</div><span class="tag" id="mtuTag">MTU —</span></div>
+    <div class="kv"><span class="k">目标地址</span><span class="v" id="bleAddr">—</span></div>
+    <div class="kv"><span class="k">状态</span><span class="v" id="connText">未连接</span></div>
+    <div class="kv"><span class="k">电量</span><span class="v"><span class="batt" id="batt"><span style="border:0;padding:0;color:var(--dim);font-size:12px">连接后可查询（只读 0x2f）</span></span></span></div>
+    <div class="row">
+      <button id="connBtn" class="act">连接耳机</button>
+      <button id="discBtn" class="act ghost">断开</button>
+      <button id="battBtn" class="act ghost small">查电量</button>
+    </div>
+    <div class="note">连接 = 地址过滤扫描 → GATT → 订阅通知 → MTU 协商；目标地址由构建注入，不连任意设备。
+      异步结果经 <b>onH3sEvent</b> 事件推送。</div>
   </div>
-  <div class="note">QCY App 滑块钳 ±8 dB（面板层限制）；固件接收层不钳（路 H/CN 证据），本页
-  ±12 dB 可调——超出官方范围的听感/输出限幅自负。每段 Q 固定 1.0、iirType 未指定（255，固件兜底 band_pass）；
-  频点默认取面板 10 段布局 32..16k，可手改任意 Hz。</div>
-</div>
 
-<h2>ANC 三态（FF/0x17）</h2>
-<div class="card">
-  <div class="row">
-    <button data-anc="1,1,2">降噪</button>
-    <button data-anc="2,0,0">正常</button>
-    <button data-anc="3,1,4">通透</button>
+  <div class="card">
+    <div class="head"><div class="t">写入门控</div><span class="tag">EqWritePolicy</span></div>
+    <div class="row">
+      <label class="switch green"><input type="checkbox" id="armSw"><span class="knob"></span></label>
+      <span id="armText" class="hint">未武装：所有写命令都会被 bridge 拒绝</span>
+    </div>
+    <div class="note">武装后 EQ / ANC / 模式 / 按键 / 提示音等写命令才会组帧发送；帧形状仍受白名单约束，
+      不存在任意字节写入口。只读查询不受此开关影响。</div>
   </div>
-  <div class="note">载荷 <code>17 03 mode scene strength</code>：降噪 01 01 02 / 正常 02 00 00 / 通透 03 01 04。</div>
-</div>
 
-<h2>提示音音量（FF/0x1d）</h2>
-<div class="card">
-  <div class="row">
-    <button data-vol="3">最小</button>
-    <button data-vol="6">中等</button>
-    <button data-vol="8">最大</button>
+  <div class="card">
+    <div class="head"><div class="t">降噪模式</div><span class="tag">FF/0x17</span></div>
+    <div class="seg" id="ancSeg">
+      <button data-anc="1,1,2">降噪<small>01 01 02</small></button>
+      <button data-anc="2,0,0">正常<small>02 00 00</small></button>
+      <button data-anc="3,1,4">通透<small>03 01 04</small></button>
+    </div>
+    <div class="note">三态载荷 <code>17 03 mode scene strength</code> 实测钉死；更深档位（scene/strength 其余取值）
+      协议未钉，不臆造。</div>
   </div>
-  <div class="note">值 3/6/8。帧形状未钉（按 <code>1d 01 值</code> 假设组帧），联调时以真机抓包为准。</div>
-</div>
 
-<h2>按键重映射</h2>
-<div class="card">
-  <div class="row"><a href="keyremap.html"><button>打开按键重映射页面</button></a></div>
-  <div class="note">三键 × 单击~四击+长按网格，动作 0..7+11；两条 wire 候选（默认 ADV type2 /
-  自定义 0x2b，真机抓包定案）见 <code>keyremap.html</code>。</div>
-</div>
+  <div class="card">
+    <div class="head"><div class="t">音频模式 · 低延迟</div><span class="tag">FF/0x2E · 帧长未钉</span></div>
+    <div class="seg" id="modeSeg">
+      <button data-mode="1">音乐<small>模式 1</small></button>
+      <button data-mode="3">游戏 · 低延迟<small>模式 3</small></button>
+      <button data-mode="4">电影<small>模式 4</small></button>
+    </div>
+    <div class="note">「游戏模式 = 低延迟」由 <b>效果重配</b> 实现（EQ 预设 MusicEqBt + 场景切换 + 低延迟标志对），
+      不改编解码/缓冲/时钟。固件侧 cmd 46 setter 只读载荷首字节（1/3/4）；data 长度按 1 字节假设组帧，
+      真机联调对照。</div>
+  </div>
 
-<h2>调用回显</h2>
-<div class="card"><pre id="out">（尚无调用）</pre></div>
+  <div class="card">
+    <div class="head"><div class="t">均衡器</div><span class="tag">FF/0x22 · 最多 10 段</span></div>
+    <div class="chips" id="eqChips"></div>
+    <canvas id="eqCurve"></canvas>
+    <div class="row" style="margin-top:10px">
+      <span class="hint">总增益</span>
+      <input type="range" id="master" min="-18" max="12" step="0.5" value="0" style="flex:1">
+      <span class="hint" id="masterVal" style="width:56px;text-align:right">0.0 dB</span>
+    </div>
+    <div class="bank" id="bank"></div>
+    <div class="row">
+      <button id="eqSend" class="act">下发当前 EQ</button>
+      <button id="eqFlat" class="act ghost small">全部归零</button>
+    </div>
+    <div class="note">预设取自 QCY 面板原始数据（含 −17dB 等 <b>超出 ±8 面板钳位</b> 的调音值；固件接收层不钳，
+      输出端限幅自负）。频点/Q/IIR 跟随预设，滑块只调各段增益；总增益 −18..+12 dB。</div>
+  </div>
+
+  <div class="card">
+    <div class="head"><div class="t">按键自定义</div><span class="tag">3 键 × 5 手势</span></div>
+    <div class="row">
+      <span class="hint">wire：</span>
+      <label class="hint"><input type="radio" name="wire" value="adv" checked> ADV type2（默认）</label>
+      <label class="hint"><input type="radio" name="wire" value="custom"> 自定义 0x2b</label>
+    </div>
+    <div class="km" id="kmatrix"></div>
+    <div class="row">
+      <button id="kmWrite" class="act small">写入待同步项</button>
+      <button id="kmRead" class="act ghost small">读取映射</button>
+    </div>
+    <div class="note">eventID 布局 0x{键}0{连击}（音量− 03 / 音量+ 05 / 多功能 07）；<b>长按低字节 5 为假设</b>（虚线格）。
+      「读取」是壳侧工作副本（初始=QCY 面板默认），设备真实读回待查询响应形状钉死。修改后需武装才会下发。</div>
+  </div>
+
+  <div class="card">
+    <div class="head"><div class="t">提示音音量</div><span class="tag">FF/0x1d</span></div>
+    <div class="seg" id="volSeg">
+      <button data-vol="3">最小<small>3</small></button>
+      <button data-vol="6">中等<small>6</small></button>
+      <button data-vol="8">最大<small>8</small></button>
+    </div>
+    <div class="note">固件 setter 只读 data[0]，值不钳；3/6/8 是面板层档位。</div>
+  </div>
+
+  <div class="card">
+    <div class="head"><div class="t">固件升级</div><span class="tag">UpgradeGate 门控</span></div>
+    <div class="kv"><span class="k">当前版本</span><span class="v dim">0.1.1.8 (280) · 版本查询待联调</span></div>
+    <div class="kv"><span class="k">固定候选</span><span class="v dim">已验证 ANC 镜像 b79…fa1b</span></div>
+    <div class="row"><button id="openUpgrade" class="act ghost">打开升级工具（原生页）</button></div>
+    <div class="note">升级走原生 UpgradeService：设备身份/版本/电量/新鲜读全部复检 + 两分钟确认窗，
+      只接受固定摘要候选。<b>EQ 修复候选 67ba… 仍 UNTESTED，不刷机。</b></div>
+  </div>
+
+  <div class="card">
+    <div class="head"><div class="t">更多功能</div><span class="tag">协议未调研</span></div>
+    <div class="grid2">
+      <div class="ph"><div class="n">查找耳机</div><div class="d">协议未调研</div></div>
+      <div class="ph"><div class="n">双设备连接</div><div class="d">协议未调研</div></div>
+      <div class="ph"><div class="n">佩戴检测</div><div class="d">协议未调研</div></div>
+      <div class="ph"><div class="n">恢复默认设置</div><div class="d">协议未调研</div></div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ============================ USB tab ============================ -->
+<section id="tabUsb">
+
+  <div class="card">
+    <div class="head"><div class="t">USB 设备</div><span class="tag" id="usbVerifiedTag">OTG 链路未验证</span></div>
+    <div class="row">
+      <button id="usbScan" class="act">扫描设备</button>
+      <span class="hint" id="usbLinkState">未打开设备</span>
+    </div>
+    <div id="devList"><div class="empty">未检测到设备——用 OTG 线连接耳机后点「扫描」</div></div>
+    <div class="note">识别身份：QCY 普通 <code>3654:4a55</code> / BR28 ROM <code>4c4a:3442</code>。
+      手机需支持 USB host（OTG）；部分手机需要「反向供电」转接头。本工具在手机上的物理链路
+      <b>未实测</b>，失败信息如实展示。</div>
+  </div>
+
+  <div class="card">
+    <div class="head"><div class="t">进入 ROM 模式</div><span class="tag">vendor GET_STATUS</span></div>
+    <div class="kv"><span class="k">请求</span><span class="v dim">83 00 fc fe · len8 能力读 → len0 一次性进入</span></div>
+    <div class="row"><button id="usbEnterRom" class="act ghost" disabled>发送进入 ROM 请求</button></div>
+    <div class="note">对普通 QCY USB 身份：先能力读（须返回 8×FF），确认后<b>只发一次</b>进入请求——设备随即重启
+      重枚举，请求本身可能报协议错（-71），<b>以重新扫描出现 BR28 UBOOT 身份为准，不重发</b>。
+      若耳机应用还活着但你想主动进 ROM：保持 USB 连接状态下发送即可；完全无响应的设备只能走桌面工具流程。</div>
+  </div>
+
+  <div class="card">
+    <div class="head"><div class="t">只读操作</div><span class="tag">INQUIRY · FB06 · FD07 · FD05</span></div>
+    <div class="row">
+      <button id="usbInquiry" class="act small" disabled>INQUIRY</button>
+      <button id="usbLoader" class="act small" disabled>装载 RAM loader</button>
+    </div>
+    <div class="row">
+      <button id="usbRomWin" class="act ghost small" disabled>读 ROM 窗（128 KiB）</button>
+      <button id="usbBackup" class="act ghost small" disabled>全片备份（2 MiB）</button>
+    </div>
+    <div class="progress" id="usbProg"><div class="bar"></div></div>
+    <div class="result" id="usbResult"></div>
+    <div class="note">loader = 摘要固定的 br28loader.bin（FB06 装载 0x120000 → FB08 跳转 → FC0A 校验 SPI NOR）。
+      ROM 窗读用 FD07 128B 分块、全片备份用 FD05 512B 扇区，均<b>双读一致才落盘</b>（app 私有目录）；
+      不一致即放弃，不自动重试。<b>这里没有任何 Flash 写命令。</b></div>
+  </div>
+
+  <div class="card flashzone">
+    <div class="head"><div class="t">刷机区（锁定）</div><span class="tag">无写路径</span></div>
+    <div class="row">
+      <label class="switch"><input type="checkbox" id="flashUnlock"><span class="knob"></span></label>
+      <span class="hint">我已了解风险，解锁本区域</span>
+    </div>
+    <div id="flashBody" style="display:none">
+      <div class="redline">红线：<b>候选镜像 UNTESTED，不刷机。</b><br>
+        本 app 的 USB 层没有实现擦除/编程命令（FB01/FB04 不存在编码入口）——解锁也不会出现刷机按钮。
+        固件恢复走桌面工具 tools/usb-recovery 的固定档案流程。</div>
+      <div class="kv" style="margin-top:8px"><span class="k">候选镜像</span><span class="v dim">（空：未内置 .ufw 候选；升级走耳机 tab 的 OTA 工具）</span></div>
+    </div>
+  </div>
+
+</section>
+</main>
+
+<div id="logPanel">
+  <div class="bar"><span>调用与事件日志（最近 60 条）</span>
+    <button class="logbtn" id="logClear" style="margin-left:auto">清空</button>
+    <button class="logbtn" id="logClose">收起</button></div>
+  <pre id="logBody">（尚无调用）</pre>
+</div>
 
 <script>
 'use strict';
-var hasBridge = typeof h3s !== 'undefined';
-var FREQS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]; // QCY 面板 10 段默认频点
-
-if (!hasBridge) {
-  var w = document.getElementById('noBridge');
-  w.style.display = 'block';
-  w.textContent = '当前环境没有 h3s bridge（普通浏览器直接打开本页）。页面可预览，'
-    + '但按钮调用只做本地提示；请在 H3S WebView 壳（tools/android-query 的 WebShellActivity）里打开才能真实组帧。';
-}
-
-function show(label, text) {
-  var out = document.getElementById('out');
+/* ================= 通用：日志 / 桥调用 ================= */
+var hasH3s = typeof h3s !== 'undefined';
+var hasUsb = typeof h3susb !== 'undefined';
+var hasShell = typeof h3sshell !== 'undefined';
+var logBody = document.getElementById('logBody');
+function log(tag, text) {
   var t = new Date().toTimeString().slice(0, 8);
-  out.textContent = t + ' ' + label + '\n' + text + '\n\n' + out.textContent;
+  var cur = logBody.textContent;
+  if (cur === '（尚无调用）' || cur === '（已清空）') cur = '';
+  var lines = cur ? cur.split('\n') : [];
+  lines.unshift(t + ' [' + tag + '] ' + text);
+  if (lines.length > 60) lines.length = 60;
+  logBody.textContent = lines.join('\n');
 }
-function callBridge(label, fn) {
-  if (!hasBridge) { show(label, '无 h3s bridge（普通浏览器预览模式）'); return; }
-  var r;
-  try { r = fn(); } catch (e) { show(label, 'bridge 异常: ' + e); return; }
+function callH3s(label, fn) {
+  if (!hasH3s) { log(label, '无 h3s bridge（浏览器预览）', 'e'); return null; }
+  var r; try { r = fn(); } catch (e) { log(label, 'bridge 异常: ' + e, 'e'); return null; }
   var o = JSON.parse(r);
-  if (o.ok && o.sent) show(label, '已排队 seq=' + o.seq + ' sn=' + o.sn + '\nbytesHex: ' + o.bytesHex
-    + '\n（异步：结果见 response/send_failed 事件）');
-  else if (o.ok) show(label, 'ok\nbytesHex: ' + o.bytesHex);
-  else show(label, '错误: ' + o.error);
+  if (o.ok && o.sent) log(label, '已排队 seq=' + o.seq + ' sn=' + o.sn + ' ' + o.bytesHex, 'c');
+  else if (o.ok && o.bytesHex) log(label, '组帧 ok ' + o.bytesHex, 'c');
+  else if (o.ok) log(label, 'ok', 'c');
+  else log(label, '错误: ' + o.error, 'e');
   return o;
 }
-
-// 连接控制 + 传输事件（路 AU）：h3s.connect()/disconnect() 触发，结果全部走 onH3sEvent
-var connBtn = document.getElementById('connBtn'), discBtn = document.getElementById('discBtn');
-var connState = document.getElementById('connState');
-var hasTransport = hasBridge && typeof h3s.connect === 'function';
-function setConn(ok, text) {
-  connState.textContent = text;
-  connState.className = 'state ' + (ok ? 'armed' : 'disarmed');
+function callUsb(label, fn) {
+  if (!hasUsb) { log(label, '无 h3susb bridge（浏览器预览）', 'e'); return null; }
+  var r; try { r = fn(); } catch (e) { log(label, 'bridge 异常: ' + e, 'e'); return null; }
+  var o = JSON.parse(r);
+  log(label, o.ok ? '已受理（结果见事件）' : '错误: ' + o.error, o.ok ? 'c' : 'e');
+  return o;
 }
-if (!hasTransport) {
-  setConn(false, '无传输（旧壳/浏览器预览）');
-} else {
-  setConn(h3s.isConnected(), h3s.isConnected() ? '已连接' : '未连接');
-  connBtn.onclick = function () {
-    show('h3s.connect()', h3s.connect());
-    if (!h3s.isConnected()) setConn(false, '连接中…（结果见事件）');
-  };
-  discBtn.onclick = function () { show('h3s.disconnect()', h3s.disconnect()); };
-  window.onH3sEvent = function (e) {
-    if (e.event === 'mtu') { setConn(true, '已连接 MTU=' + e.mtu); show('event:mtu', 'MTU=' + e.mtu); }
-    else if (e.event === 'disconnected') { setConn(false, '未连接：' + (e.reason || '')); show('event:disconnected', e.reason || ''); }
-    else if (e.event === 'response') { show('response seq=' + e.seq, 'ok=' + e.ok + ' status=' + e.status
-      + ' sn=' + e.sn + '\npayloadHex: ' + (e.payloadHex || '')); }
-    else if (e.event === 'send_failed') { show('send_failed seq=' + e.seq, e.error || ''); }
-    else show('event:' + e.event, JSON.stringify(e));
-  };
-}
-
-// 武装
-var armBtn = document.getElementById('armBtn'), armState = document.getElementById('armState');
-var armed = hasBridge ? h3s.isArmed() : false;
-function refreshArm() {
-  armBtn.textContent = armed ? '解除武装' : '武装写入';
-  armBtn.className = armed ? '' : 'danger';
-  armState.textContent = armed ? '已武装：写命令可组帧（仍未连接耳机）' : '未武装：写命令会被 bridge 拒绝';
-  armState.className = 'state ' + (armed ? 'armed' : 'disarmed');
-}
-armBtn.onclick = function () {
-  if (!hasBridge) { show('armWrite', '无 h3s bridge'); return; }
-  armed = !armed; h3s.armWrite(armed); refreshArm();
-  show('armWrite(' + armed + ')', 'isArmed=' + h3s.isArmed());
+document.getElementById('logToggle').onclick = function () {
+  document.getElementById('logPanel').classList.toggle('on');
 };
+document.getElementById('logClose').onclick = function () { document.getElementById('logPanel').classList.remove('on'); };
+document.getElementById('logClear').onclick = function () { logBody.textContent = '（已清空）'; };
+
+/* ================= tab 切换 ================= */
+var tabHs = document.getElementById('tabHs'), tabUsb = document.getElementById('tabUsb');
+document.getElementById('tabBtnHs').onclick = function () {
+  this.classList.add('on'); document.getElementById('tabBtnUsb').classList.remove('on');
+  tabHs.classList.add('on'); tabUsb.classList.remove('on');
+};
+document.getElementById('tabBtnUsb').onclick = function () {
+  this.classList.add('on'); document.getElementById('tabBtnHs').classList.remove('on');
+  tabUsb.classList.add('on'); tabHs.classList.remove('on'); usbRefresh();
+};
+
+/* ================= 耳机：连接 ================= */
+var statusPill = document.getElementById('statusPill'), connText = document.getElementById('connText');
+var mtuTag = document.getElementById('mtuTag');
+function setConn(state, text) {
+  statusPill.textContent = text;
+  statusPill.className = 'pill' + (state === 1 ? ' ok' : state === 2 ? ' mid' : '');
+  connText.textContent = state === 1 ? '已连接（MTU ' + mtuTag.textContent.replace('MTU ', '') + '）'
+    : state === 2 ? text : '未连接';
+}
+if (hasH3s && typeof h3s.connect === 'function') {
+  document.getElementById('bleAddr').textContent = '构建注入（见日志）';
+  document.getElementById('connBtn').onclick = function () {
+    log('h3s.connect()', h3s.connect());
+    setConn(2, '连接中…');
+  };
+  document.getElementById('discBtn').onclick = function () { log('h3s.disconnect()', h3s.disconnect()); };
+  document.getElementById('battBtn').onclick = function () { callH3s('readStatus(0x2f)', function () { return h3s.readStatus(47); }); };
+  var battQueried = false;
+  window.onH3sEvent = function (e) {
+    if (e.event === 'mtu') {
+      mtuTag.textContent = 'MTU ' + e.mtu; setConn(1, '已连接');
+      if (!battQueried) { battQueried = true; h3s.readStatus(47); log('auto', '连接就绪，自动查询电量（只读）'); }
+    }
+    else if (e.event === 'disconnected') { setConn(0, '未连接'); battQueried = false; mtuTag.textContent = 'MTU —'; log('event:disconnected', e.reason || ''); }
+    else if (e.event === 'response') {
+      log('response seq=' + e.seq, 'ok=' + e.ok + ' status=' + e.status + ' payload=' + (e.payloadHex || ''));
+      parseDeviceMessage(e.payloadHex || '');
+    }
+    else if (e.event === 'send_failed') log('send_failed seq=' + e.seq, e.error || '', 'e');
+    else if (e.event === 'device_message') { log('device_message', 'payload=' + e.payloadHex); parseDeviceMessage(e.payloadHex || ''); }
+    else log('event:' + e.event, JSON.stringify(e));
+  };
+  if (h3s.isConnected()) setConn(1, '已连接');
+} else {
+  setConn(0, '无传输（浏览器预览）');
+  document.getElementById('bleAddr').textContent = '（浏览器预览，无 bridge）';
+}
+
+/* device_message 启发式解析：电量 2f 03 s0 s1 s2 / ANC 17 03 m s st */
+function parseDeviceMessage(hexstr) {
+  var at = hexstr.indexOf('2f03');
+  if (at === 0 || at === 4) {
+    var body = hexstr.slice(at + 4);
+    var slots = [];
+    for (var i = 0; i < 6 && i + 2 <= body.length; i += 2) {
+      var b = parseInt(body.substr(i, 2), 16);
+      if (isNaN(b)) break;
+      slots.push('<span><i>' + (i / 2) + '</i>' + (b & 127) + '%' + ((b & 128) ? ' ⚡' : '') + '</span>');
+    }
+    if (slots.length) document.getElementById('batt').innerHTML = slots.join('');
+    return;
+  }
+  if (hexstr.indexOf('1703') === 0) {
+    var m = parseInt(hexstr.substr(4, 2), 16);
+    var name = { 1: '降噪', 2: '正常', 3: '通透' }[m];
+    if (name) markSeg('ancSeg', '[data-anc]', function (b) { return b.getAttribute('data-anc').split(',')[0] === String(m); });
+    log('anc 回读', '模式=' + m + (name ? '（' + name + '）' : '') + ' [载荷形状联调钉死]');
+  }
+}
+function markSeg(id, sel, match) {
+  var seg = document.getElementById(id);
+  Array.prototype.forEach.call(seg.querySelectorAll('button'), function (b) {
+    b.classList.toggle('on', !!match(b));
+  });
+}
+
+/* ================= 耳机：武装 ================= */
+var armSw = document.getElementById('armSw'), armText = document.getElementById('armText');
+function refreshArm() {
+  armText.textContent = armSw.checked ? '已武装：写命令可组帧下发' : '未武装：所有写命令都会被 bridge 拒绝';
+  if (hasH3s) h3s.armWrite(armSw.checked);
+}
+armSw.onchange = refreshArm;
 refreshArm();
 
-// EQ 段滑块
-var bandsEl = document.getElementById('bands');
-FREQS.forEach(function (f, i) {
-  var div = document.createElement('div'); div.className = 'band';
-  div.innerHTML = '<div class="lab"><span>' + (i + 1) + '</span>'
-    + 'freq <input type="number" id="f' + i + '" min="0" max="65535" step="1" value="' + f + '"> Hz'
-    + '<input type="range" id="g' + i + '" min="-12" max="12" step="0.5" value="0">'
-    + '<span class="val" id="v' + i + '">0.0 dB</span></div>';
-  bandsEl.appendChild(div);
-  var g = div.querySelector('#g' + i), v = div.querySelector('#v' + i);
-  g.addEventListener('input', function () { v.textContent = (+g.value).toFixed(1) + ' dB'; });
-});
-var master = document.getElementById('master'), masterVal = document.getElementById('masterVal');
-master.addEventListener('input', function () { masterVal.textContent = (+master.value).toFixed(1) + ' dB'; });
-document.getElementById('flatBtn').onclick = function () {
-  FREQS.forEach(function (_, i) {
-    var g = document.getElementById('g' + i); g.value = 0;
-    document.getElementById('v' + i).textContent = '0.0 dB';
-  });
-  master.value = 0; masterVal.textContent = '0.0 dB';
-};
-
-// 生成 EQ 命令：gain 用 centidB（dB×100 四舍五入），q=100（Q1.0），iirType=255（未指定）
-document.getElementById('eqBtn').onclick = function () {
-  var bands = FREQS.map(function (_, i) {
-    return {
-      freq: parseInt(document.getElementById('f' + i).value, 10),
-      q: 100,
-      gain: Math.round(parseFloat(document.getElementById('g' + i).value) * 100),
-      iirType: 255
-    };
-  });
-  var masterCentidB = Math.round(parseFloat(master.value) * 100);
-  callBridge('writeEq(1, ' + masterCentidB + ', ' + JSON.stringify(bands) + ')',
-    function () { return h3s.writeEq(1, masterCentidB, JSON.stringify(bands)); });
-};
-
-// ANC 三态
-Array.prototype.forEach.call(document.querySelectorAll('[data-anc]'), function (b) {
+/* ================= 耳机：ANC / 音频模式 / 提示音 ================= */
+Array.prototype.forEach.call(document.querySelectorAll('#ancSeg [data-anc]'), function (b) {
   b.onclick = function () {
+    markSeg('ancSeg', '[data-anc]', function (x) { return x === b; });
     var p = b.getAttribute('data-anc').split(',').map(Number);
-    callBridge('setAnc(' + p.join(', ') + ')', function () { return h3s.setAnc(p[0], p[1], p[2]); });
+    callH3s('setAnc(' + p.join(', ') + ')', function () { return h3s.setAnc(p[0], p[1], p[2]); });
+  };
+});
+Array.prototype.forEach.call(document.querySelectorAll('#modeSeg [data-mode]'), function (b) {
+  b.onclick = function () {
+    markSeg('modeSeg', '[data-mode]', function (x) { return x === b; });
+    var m = +b.getAttribute('data-mode');
+    callH3s('setAudioMode(' + m + ')', function () { return h3s.setAudioMode(m); });
+  };
+});
+Array.prototype.forEach.call(document.querySelectorAll('#volSeg [data-vol]'), function (b) {
+  b.onclick = function () {
+    markSeg('volSeg', '[data-vol]', function (x) { return x === b; });
+    var v = +b.getAttribute('data-vol');
+    callH3s('setPromptVolume(' + v + ')', function () { return h3s.setPromptVolume(v); });
   };
 });
 
-// 提示音音量
-Array.prototype.forEach.call(document.querySelectorAll('[data-vol]'), function (b) {
-  b.onclick = function () {
-    var v = parseInt(b.getAttribute('data-vol'), 10);
-    callBridge('setPromptVolume(' + v + ')', function () { return h3s.setPromptVolume(v); });
-  };
+/* ================= 耳机：EQ ================= */
+/* 数据源：data/controlpanel_qcyh3s_16764.json 音乐均衡器面板（q/eqs = QCY 原始调音值） */
+var EQ_PRESETS = [
+  { name: '自定义', type: 1, master: 0, freq: [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
+    q: [0.4, 1.2, 1.5, 1.5, 1.2, 0.8, 1.2, 1.2, 1.2, 1.2], iir: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+    gain: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+  { name: '默认', type: 1, master: -4, freq: [30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
+    q: [0.8, 0.6, 2, 1, 2, 1, 2, 3, 2], iir: [0, 2, 2, 2, 2, 2, 2, 2, 3],
+    gain: [0, -17, -2, 2, -2.5, 3, -3, -6, 2] },
+  { name: '流行', type: 1, master: -4, freq: [30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
+    q: [0.5, 0.4, 2, 1, 2, 1, 2, 3, 2], iir: [0, 2, 2, 2, 2, 2, 2, 2, 3],
+    gain: [0, -17, -2, 2, -2.5, 4, 0, -6, 2] },
+  { name: '重低音', type: 1, master: -4, freq: [70, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
+    q: [0.6, 0.6, 2, 1, 2, 1, 1, 3, 0.7], iir: [2, 2, 2, 2, 2, 2, 2, 2, 2],
+    gain: [5, -17, -2, 2, -2.5, 0, -6, -6, 0] },
+  { name: '摇滚', type: 1, master: -4, freq: [70, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
+    q: [0.5, 0.6, 2, 1, 2, 1, 2, 3, 2], iir: [2, 2, 2, 2, 2, 2, 2, 2, 3],
+    gain: [3, -17, -2, 0, -2.5, 4, 0, -3, 2] },
+  { name: '柔和', type: 1, master: -4, freq: [30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
+    q: [0.5, 0.6, 2, 1, 2, 1, 2, 3, 2], iir: [0, 2, 2, 2, 2, 2, 2, 2, 2],
+    gain: [0, -17, -2, 2, -2.5, 0, -5, -6, 0] },
+  { name: '古典', type: 1, master: -4, freq: [30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000],
+    q: [1, 0.6, 2, 1, 2, 1, 2, 3, 2], iir: [0, 2, 2, 2, 2, 2, 2, 2, 3],
+    gain: [0, -14, -2, 2, -2.5, 3, -3, -6, 2] },
+  { name: '空间音效', type: 10, master: -4, freq: [30, 45, 120, 220, 900, 1300, 2800, 6000, 7500, 11000],
+    q: [0.7, 0.7, 1, 0.7, 1.5, 2, 1.8, 2, 3, 2.5], iir: [0, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+    gain: [0, -3, -7, -13, 2, -5, 3, 2, -15, -4] }
+];
+var eqState = { preset: 0, bands: EQ_PRESETS[0].freq.map(function (f, i) { return { freq: f, gain: 0 }; }) };
+var masterEl = document.getElementById('master'), masterVal = document.getElementById('masterVal');
+var freqLabel = function (f) { return f >= 1000 ? (f / 1000) + 'k' : String(f); };
+
+var chipsEl = document.getElementById('eqChips');
+EQ_PRESETS.forEach(function (p, i) {
+  var b = document.createElement('button');
+  b.textContent = p.name;
+  b.onclick = function () { loadPreset(i); };
+  chipsEl.appendChild(b);
 });
+function markChip() {
+  Array.prototype.forEach.call(chipsEl.children, function (b, i) { b.classList.toggle('on', i === eqState.preset); });
+}
+function loadPreset(i) {
+  eqState.preset = i;
+  var p = EQ_PRESETS[i];
+  eqState.bands = p.freq.map(function (f, j) { return { freq: f, gain: p.gain[j] }; });
+  masterEl.value = p.master;
+  masterVal.textContent = (+p.master).toFixed(1) + ' dB';
+  buildBank(); markChip(); drawCurve();
+}
+var bankEl = document.getElementById('bank');
+function buildBank() {
+  bankEl.innerHTML = '';
+  eqState.bands.forEach(function (band, i) {
+    var d = document.createElement('div'); d.className = 'band';
+    var v = document.createElement('div'); v.className = 'bv'; v.id = 'bv' + i;
+    var wrap = document.createElement('div'); wrap.className = 'vs';
+    var r = document.createElement('input');
+    r.type = 'range'; r.min = -18; r.max = 12; r.step = 0.5; r.value = band.gain; r.id = 'bg' + i;
+    var f = document.createElement('div'); f.className = 'bf'; f.textContent = freqLabel(band.freq);
+    r.addEventListener('input', function () {
+      band.gain = +r.value; eqState.preset = -1; markChip();
+      refreshVal(i); drawCurve();
+    });
+    wrap.appendChild(r); d.appendChild(v); d.appendChild(wrap); d.appendChild(f);
+    bankEl.appendChild(d);
+    refreshVal(i);
+  });
+}
+function refreshVal(i) {
+  var el = document.getElementById('bv' + i), g = eqState.bands[i].gain;
+  el.textContent = (g > 0 ? '+' : '') + g.toFixed(1);
+  el.className = 'bv' + (g < 0 ? ' neg' : '');
+}
+var curve = document.getElementById('eqCurve');
+function drawCurve() {
+  var ctx = curve.getContext('2d');
+  var w = curve.width = curve.clientWidth * (window.devicePixelRatio || 1) * .5;
+  var h = curve.height = 96 * (window.devicePixelRatio || 1) * .5;
+  ctx.clearRect(0, 0, w, h);
+  var range = 20; // ±20 dB 画布
+  var y0 = h / 2;
+  ctx.strokeStyle = 'rgba(140,160,190,.18)'; ctx.lineWidth = 1;
+  [ -10, -5, 0, 5, 10 ].forEach(function (db) {
+    var y = y0 - db / range * h;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  });
+  var bands = eqState.bands;
+  var pts = bands.map(function (b, i) {
+    return [ 8 + i * (w - 16) / (bands.length - 1), y0 - Math.max(-range / 2, Math.min(10, b.gain)) / range * h ];
+  });
+  var grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(76,194,255,.35)'); grad.addColorStop(1, 'rgba(76,194,255,0)');
+  ctx.beginPath(); ctx.moveTo(pts[0][0], y0);
+  pts.forEach(function (p) { ctx.lineTo(p[0], p[1]); });
+  ctx.lineTo(pts[pts.length - 1][0], y0); ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.beginPath();
+  pts.forEach(function (p, i) { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
+  ctx.strokeStyle = '#4cc2ff'; ctx.lineWidth = 2; ctx.stroke();
+  pts.forEach(function (p) {
+    ctx.beginPath(); ctx.arc(p[0], p[1], 2.6, 0, Math.PI * 2);
+    ctx.fillStyle = '#9adfff'; ctx.fill();
+  });
+}
+masterEl.addEventListener('input', function () {
+  masterVal.textContent = (+masterEl.value).toFixed(1) + ' dB';
+  eqState.preset = -1; markChip();
+});
+document.getElementById('eqFlat').onclick = function () {
+  eqState.bands.forEach(function (b) { b.gain = 0; });
+  buildBank(); drawCurve();
+};
+document.getElementById('eqSend').onclick = function () {
+  var p = eqState.preset >= 0 ? EQ_PRESETS[eqState.preset] : null;
+  var freqs = eqState.bands.map(function (b) { return b.freq; });
+  /* q/iir 跟随预设（自定义=面板 10 段原始 q/iir；手改增益后仍沿用当前预设的频点与 q） */
+  var qp = p ? p.q : EQ_PRESETS[0].q, ip = p ? p.iir : EQ_PRESETS[0].iir;
+  var type = p ? p.type : 1;
+  var bands = eqState.bands.map(function (b, i) {
+    return { freq: b.freq, q: Math.round((qp[i] || 1) * 100), gain: Math.round(b.gain * 100), iirType: (ip[i] === undefined ? 255 : ip[i]) };
+  });
+  var masterCentidB = Math.round(parseFloat(masterEl.value) * 100);
+  callH3s('writeEq(type=' + type + ', master=' + masterCentidB + ')',
+    function () { return h3s.writeEq(type, masterCentidB, JSON.stringify(bands)); });
+};
+window.addEventListener('resize', drawCurve);
+loadPreset(0);
+
+/* ================= 耳机：按键矩阵 ================= */
+var KEYS = [ { id: 0x03, name: '音量−' }, { id: 0x05, name: '音量+' }, { id: 0x07, name: '多功能' } ];
+var GESTURES = [ '单击', '双击', '三击', '四击', '长按' ];
+var ACTIONS = [
+  { cmd: -1, name: '未知' }, { cmd: 0, name: '无作用' }, { cmd: 1, name: '播放/暂停' },
+  { cmd: 2, name: '上一曲' }, { cmd: 3, name: '下一曲' }, { cmd: 4, name: '语音助手' },
+  { cmd: 5, name: '音量+' }, { cmd: 6, name: '音量−' }, { cmd: 7, name: '模式切换' },
+  { cmd: 11, name: 'ANC 切换' }
+];
+var KM_DEFAULT = { 0x0301: 6, 0x0501: 5, 0x0701: 1, 0x0702: 7, 0x0703: 4, 0x0704: 0 };
+var kmEl = document.getElementById('kmatrix');
+(function buildKm() {
+  var corner = document.createElement('div'); corner.className = 'h'; corner.textContent = '键 \\ 手势';
+  kmEl.appendChild(corner);
+  GESTURES.forEach(function (g) {
+    var h = document.createElement('div'); h.className = 'h'; h.textContent = g;
+    if (g === '长按') h.style.color = 'var(--warn)';
+    kmEl.appendChild(h);
+  });
+  KEYS.forEach(function (k) {
+    var n = document.createElement('div'); n.className = 'kn'; n.textContent = k.name; kmEl.appendChild(n);
+    GESTURES.forEach(function (g, gi) {
+      var eventId = (k.id << 8) | (gi + 1);
+      var cell = document.createElement('div'); cell.className = 'cell' + (gi === 4 ? ' g' : '');
+      var sel = document.createElement('select'); sel.id = 'km' + eventId;
+      ACTIONS.forEach(function (a) {
+        var o = document.createElement('option'); o.value = a.cmd; o.textContent = a.name; sel.appendChild(o);
+      });
+      sel.value = (KM_DEFAULT[eventId] !== undefined) ? KM_DEFAULT[eventId] : -1;
+      sel.onchange = function () { cell.classList.add('dirty'); };
+      cell.appendChild(sel); kmEl.appendChild(cell);
+    });
+  });
+})();
+function wireIsCustom() { return document.querySelector('input[name=wire]:checked').value === 'custom'; }
+function kmWriteCell(eventId, action, label) {
+  var r = callH3s(label, function () {
+    return wireIsCustom() ? h3s.setKeyRemapCustom(eventId, action) : h3s.setKeyRemap(eventId, action);
+  });
+  return r && r.ok;
+}
+document.getElementById('kmWrite').onclick = function () {
+  var dirty = 0, sent = 0;
+  KEYS.forEach(function (k) {
+    GESTURES.forEach(function (g, gi) {
+      var eventId = (k.id << 8) | (gi + 1);
+      var cell = document.querySelector('#km' + eventId).parentElement;
+      if (!cell.classList.contains('dirty')) return;
+      dirty++;
+      var action = parseInt(document.getElementById('km' + eventId).value, 10);
+      if (action < 0) return;
+      if (kmWriteCell(eventId, action, (wireIsCustom() ? 'setKeyRemapCustom' : 'setKeyRemap') + '(0x' + eventId.toString(16) + ',' + action + ') ' + k.name + g)) {
+        sent++; cell.classList.remove('dirty');
+      }
+    });
+  });
+  log('按键批量', dirty + ' 项待同步，' + sent + ' 项已受理' + (dirty - sent ? '（未武装/未知值/失败项保留标记）' : ''));
+};
+document.getElementById('kmRead').onclick = function () {
+  if (!hasH3s) return;
+  var o = JSON.parse(h3s.getKeyRemap());
+  if (!o.ok) { log('getKeyRemap', '错误: ' + o.error, 'e'); return; }
+  Object.keys(o.map).forEach(function (ek) {
+    var sel = document.getElementById('km' + ek);
+    if (sel) { sel.value = o.map[ek]; sel.parentElement.classList.remove('dirty'); }
+  });
+  log('getKeyRemap', '工作副本已回填 ' + JSON.stringify(o.map));
+};
+
+/* ================= 耳机：升级入口 ================= */
+if (hasShell) document.getElementById('openUpgrade').onclick = function () { h3sshell.openUpgradeTool(); };
+else document.getElementById('openUpgrade').onclick = function () { log('升级工具', '无壳接口（浏览器预览）', 'e'); };
+
+/* ================= USB tab ================= */
+var usbOpened = false, usbRom = false, usbLoaderReady = false, usbKey = null;
+var usbProg = document.getElementById('usbProg'), usbBar = usbProg.querySelector('.bar');
+var usbResult = document.getElementById('usbResult');
+function usbShowResult(lines) {
+  usbResult.style.display = 'block';
+  usbResult.innerHTML = lines.join('<br>');
+}
+function usbRefreshButtons() {
+  document.getElementById('usbEnterRom').disabled = !(hasUsb && usbOpened && !usbRom);
+  document.getElementById('usbInquiry').disabled = !usbOpened;
+  document.getElementById('usbLoader').disabled = !(hasUsb && usbOpened && usbRom);
+  document.getElementById('usbRomWin').disabled = !(hasUsb && usbOpened && usbLoaderReady);
+  document.getElementById('usbBackup').disabled = !(hasUsb && usbOpened && usbLoaderReady);
+  var st = [];
+  if (!hasUsb) st.push('无 h3susb bridge（浏览器预览）');
+  else {
+    if (usbOpened) { st.push('已打开' + (usbRom ? '（BR28 ROM）' : '（非 ROM 身份）')); if (usbLoaderReady) st.push('loader 就绪'); }
+    else st.push('未打开设备');
+  }
+  document.getElementById('usbLinkState').textContent = st.join(' · ');
+  if (hasUsb) {
+    var info = JSON.parse(h3susb.info());
+    document.getElementById('usbVerifiedTag').textContent = info.physicalLinkVerified ? '链路已验证' : 'OTG 链路未验证';
+  }
+}
+function usbRefresh() {
+  usbRefreshButtons();
+  if (!hasUsb) { return; }
+  var o = JSON.parse(h3susb.scan());
+  if (!o.ok) { log('usb.scan', o.error, 'e'); return; }
+  var list = document.getElementById('devList');
+  list.innerHTML = '';
+  if (!o.devices.length) {
+    list.innerHTML = '<div class="empty">未检测到设备——用 OTG 线连接耳机后点「扫描」</div>';
+    return;
+  }
+  o.devices.forEach(function (d) {
+    var row = document.createElement('div');
+    row.className = 'dev' + (d.rom ? ' rom' : d.qcy ? ' qcy' : '');
+    var dot = document.createElement('div'); dot.className = 'dot';
+    var info = document.createElement('div');
+    info.innerHTML = '<div class="nm">' + (d.rom ? 'BR28 ROM 下载模式' : d.qcy ? 'QCY 耳机（普通 USB）' : (d.name || 'USB 设备')) + '</div>'
+      + '<div class="id">' + hex4(d.vid) + ':' + hex4(d.pid) + (d.name && !d.rom && !d.qcy ? ' · ' + d.name : '') + '</div>';
+    var ops = document.createElement('div'); ops.className = 'ops';
+    if (!h3susb.hasPermission(d.key)) {
+      var pb = document.createElement('button'); pb.className = 'act small ghost'; pb.textContent = '授权';
+      pb.onclick = function () { callUsb('usb.requestPermission', function () { return h3susb.requestPermission(d.key); }); };
+      ops.appendChild(pb);
+    } else {
+      var ob = document.createElement('button'); ob.className = 'act small'; ob.textContent = usbKey === d.key && usbOpened ? '已打开' : '打开';
+      ob.disabled = usbKey === d.key && usbOpened;
+      ob.onclick = function () { callUsb('usb.open', function () { return h3susb.open(d.key); }); };
+      ops.appendChild(ob);
+    }
+    row.appendChild(dot); row.appendChild(info); row.appendChild(ops);
+    list.appendChild(row);
+  });
+  log('usb.scan', o.devices.length + ' 个设备');
+}
+function hex4(v) { return ('000' + v.toString(16)).slice(-4); }
+document.getElementById('usbScan').onclick = usbRefresh;
+if (hasUsb) {
+  document.getElementById('usbInquiry').onclick = function () { callUsb('usb.inquiry', function () { return h3susb.inquiry(); }); };
+  document.getElementById('usbEnterRom').onclick = function () { callUsb('usb.enterRom', function () { return h3susb.enterRom(); }); };
+  document.getElementById('usbLoader').onclick = function () { callUsb('usb.loadLoader', function () { return h3susb.loadLoader(); }); };
+  document.getElementById('usbRomWin').onclick = function () {
+    usbProg.style.display = 'block'; usbBar.style.width = '0%';
+    callUsb('usb.readRomWindow', function () { return h3susb.readRomWindow(); });
+  };
+  document.getElementById('usbBackup').onclick = function () {
+    usbProg.style.display = 'block'; usbBar.style.width = '0%';
+    callUsb('usb.backupFlash', function () { return h3susb.backupFlash(); });
+  };
+  window.onH3sUsbEvent = function (e) {
+    if (e.event === 'usb_permission') { log('usb_permission', e.key + ' granted=' + e.granted); if (e.granted) usbRefresh(); return; }
+    if (e.event === 'usb_open') {
+      if (e.ok) { usbOpened = true; usbKey = e.key; usbRom = !!e.rom; usbLoaderReady = false; log('usb_open', e.key + (e.rom ? '（ROM）' : '')); }
+      else { usbOpened = false; log('usb_open 失败', e.error, 'e'); }
+      usbRefresh(); return;
+    }
+    if (e.event === 'usb_detached') { usbOpened = false; usbLoaderReady = false; log('usb_detached', e.key || ''); usbRefresh(); return; }
+    if (e.event === 'usb_closed') { usbOpened = false; usbLoaderReady = false; usbRefresh(); return; }
+    if (e.event === 'usb_progress') { usbBar.style.width = Math.round(e.done / e.total * 100) + '%'; return; }
+    if (e.event === 'usb_inquiry') {
+      usbShowResult([
+        e.ok ? '<span class="hl">INQUIRY：' + e.vendor + ' / ' + e.product + ' rev ' + e.revision + (e.br28 ? '（BR28 UBOOT 身份确认）' : '') + '</span>'
+             : '<span class="bad">INQUIRY 失败：' + e.error + '</span>',
+        'raw: ' + (e.rawHex || '')
+      ]);
+      log('usb_inquiry', e.ok ? e.vendor + '/' + e.product : e.error, e.ok ? 'c' : 'e'); return;
+    }
+    if (e.event === 'usb_loader') {
+      if (e.ok) { usbLoaderReady = true; usbShowResult(['<span class="hl">loader 就绪（SPI NOR 确认）</span>']); }
+      else usbShowResult(['<span class="bad">loader 装载失败：' + e.error + '</span>']);
+      usbRefreshButtons(); log('usb_loader', e.ok ? 'ok' : e.error, e.ok ? 'c' : 'e'); return;
+    }
+    if (e.event === 'usb_enter_rom') {
+      usbShowResult([e.ok ? '<span class="hl">' + e.note + '</span>' : '<span class="bad">' + e.error + '</span>']);
+      usbOpened = false; usbRefresh(); log('usb_enter_rom', e.ok ? e.note : e.error, e.ok ? 'c' : 'e'); return;
+    }
+    if (e.event === 'usb_rom_window' || e.event === 'usb_backup') {
+      usbProg.style.display = 'none';
+      if (e.ok) usbShowResult([
+        '<span class="hl">' + (e.event === 'usb_backup' ? '全片备份' : 'ROM 窗读') + '完成（双读一致）</span>',
+        '大小 ' + e.bytes + ' B · SHA256 <span class="hl">' + e.sha256 + '</span>',
+        '保存于 ' + e.path,
+        e.headHex ? '首 64B：' + e.headHex : ''
+      ]);
+      else usbShowResult(['<span class="bad">失败：' + e.error + '</span>']);
+      log(e.event, e.ok ? e.sha256 : e.error, e.ok ? 'c' : 'e'); return;
+    }
+    log('usb event:' + e.event, JSON.stringify(e));
+  };
+  var finfo = JSON.parse(h3susb.info());
+  if (!finfo.loaderBundled) log('usb', '提示：构建未内置 br28loader.bin——ROM 窗读/备份不可用', 'e');
+} else {
+  document.getElementById('usbLinkState').textContent = '无 h3susb bridge（浏览器预览）';
+}
+document.getElementById('flashUnlock').onchange = function () {
+  document.getElementById('flashBody').style.display = this.checked ? 'block' : 'none';
+  if (this.checked) log('刷机区', '已解锁展示——无写路径，红线文案已显示');
+};
+
+/* 浏览器预览提示 */
+if (!hasH3s) log('预览', '无 h3s/h3susb bridge：普通浏览器打开仅可预览 UI，请在 H3S WebView 壳内使用');
+usbRefreshButtons();
 </script>
 </body>
 </html>

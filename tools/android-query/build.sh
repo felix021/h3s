@@ -8,6 +8,18 @@ bt="$sdk_root/build-tools/35.0.0"
 android_jar="$sdk_root/platforms/android-35/android.jar"
 test -f "$android_jar" || { echo 'Android SDK platform 35 is required' >&2; exit 1; }
 bash test.sh
+# BR28 RAM loader（tools/usb-recovery/h3s_usb.py 同源钉死；MIT 上游 kagaimiq/jl-uboot-tool）。
+# 下载一次按摘要缓存到 assets/loader/（git 忽略），随 APK 打包；缺网构建允许缺失——
+# 届时 USB tab 的 loader 装载/窗读/备份返回明确错误，其余功能不受影响。
+loader_file=assets/loader/br28loader.bin
+loader_sha=ab1b77eb73385aaa78ab769253b2af7ef63d0ade46f391bd7424cc598a40267c
+mkdir -p assets/loader
+if ! echo "$loader_sha  $loader_file" | sha256sum -c - >/dev/null 2>&1; then
+  curl -fsSL --retry 3 -o "$loader_file" \
+    'https://raw.githubusercontent.com/kagaimiq/jl-uboot-tool/adb3f18889e88ac512ce0a3c4d8cc3d3cb30696a/data/loaderblobs/usb/br28loader.bin' \
+    || echo 'WARN: loader 下载失败（继续构建，USB 读操作将在运行时报 loader 未打包）' >&2
+  [ -f "$loader_file" ] && echo "$loader_sha  $loader_file" | sha256sum -c -
+fi
 device_config=build/generated/cn/felix021/h3squery/DeviceConfig.java
 python3 generate_device_config.py --output "$device_config"
 rm -rf build/classes build/dex
