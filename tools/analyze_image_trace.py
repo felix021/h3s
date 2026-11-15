@@ -363,11 +363,28 @@ def site_label(offset):
     return None
 
 
+# 路 W3-2:int 路径签名串 memo(纯函数:同一 int 值的签名字符串恒定,
+# 无失效义务;只防无界增长——条目上限照 O3I 闭包 memo 先例超限全清,
+# 上限取 1<<16,20M 世界唯一串实测 33,364,docs/perf-budget-analysis.md
+# §11.6 W3-2)。20M 世界命中率即寄存器取值重复率,收益=每步 16 寄存器
+# 的重复 f'{value:08x}' 格式化。
+_SIGNATURE_MEMO_CAP = 1 << 16
+_signature_memo = {}
+
+
 def _register_signature(value):
     if isinstance(value, bool):
         return repr(value)
     if isinstance(value, int):
-        return f'{value:08x}'
+        memo = _signature_memo
+        cached = memo.get(value)
+        if cached is not None:
+            return cached
+        cached = sys.intern(f'{value:08x}')  # intern 后同值命中同对象,
+        if len(memo) >= _SIGNATURE_MEMO_CAP:  # 与 after_step 原有 intern
+            memo.clear()  # 语义一致(值/相等比较零变化)
+        memo[value] = cached
+        return cached
     if isinstance(value, UnknownWord):
         data = ''.join(f'{b:02x}' if b is not None else '??' for b in value.bytes)
         origins = ','.join(hex(o) if o is not None else '-' for o in value.origins)

@@ -262,6 +262,56 @@ def test_trace_spool_batched_write_truncation_matrix_raises_not_silent():
                 assert spool[chunk * 4] == rows[chunk * 4]
 
 
+def test_register_signature_int_memo_matrix():
+    # 路 W3-2 验收矩阵:int 路径按值 memo——同值命中同一 intern 串对象,
+    # 不同值各自正确(0/负数/32 位满宽/超 32 位都与原 f'{value:08x}' 恒等);
+    # bool(bool 是 int 子类)仍走 repr 分支不进 memo;UnknownWord/IcfgValue
+    # 路径输出与 memo 引入前逐字节相同。
+    import sys as _sys
+
+    import analyze_image_trace as ait
+    from br28_icfg import IcfgValue
+    from br28_unknown import UnknownWord
+
+    ait._signature_memo.clear()
+    first = ait._register_signature(0x1a2b3c4d)
+    assert first == '1a2b3c4d'
+    assert ait._register_signature(0x1a2b3c4d) is first  # 命中同对象(intern)
+    assert 0x1a2b3c4d in ait._signature_memo
+    assert ait._register_signature(0) == f'{0:08x}' == '00000000'
+    assert ait._register_signature(-1) == f'{-1:08x}'
+    assert ait._register_signature(0xffffffff) == 'ffffffff'
+    assert ait._register_signature(1 << 40) == f'{1 << 40:08x}'
+    assert first is _sys.intern('1a2b3c4d')  # DT intern 语义保持
+    before = len(ait._signature_memo)
+    assert ait._register_signature(True) == 'True'   # bool 分支在前
+    assert ait._register_signature(False) == 'False'
+    assert len(ait._signature_memo) == before        # bool 不进 memo
+    word = UnknownWord((0x12, None, 0x34, None), (None, 0x6000, None, 0x6001))
+    assert ait._register_signature(word) == 'u12??34??|-,0x6000,-,0x6001'
+    assert ait._register_signature(IcfgValue(0xa5a5a5a5, 0xff00ff00, 0)) \
+        == 'iff00ff00.a500a500'
+    assert ait._register_signature('not-a-value') == '?'  # 兜底分支不变
+
+
+def test_register_signature_memo_cap_evicts_and_rebuilds_correctly():
+    # 路 W3-2 上限纪律(照 O3I 闭包 memo 先例):条目达 cap 后先全清再插入,
+    # 防无界增长;清后重建的键值照常正确(纯函数,无失效义务)。
+    import analyze_image_trace as ait
+
+    ait._signature_memo.clear()
+    cap = ait._SIGNATURE_MEMO_CAP
+    anchor = ait._register_signature(0x5eed)
+    assert anchor == '00005eed'
+    for i in range(cap):  # 第 cap 次插入触发全清,清后仅存最后 1 键
+        ait._register_signature(0x1000000 + i)
+    assert len(ait._signature_memo) == 1
+    assert 0x5eed not in ait._signature_memo           # 超限全清:老键被清
+    assert 0x1000000 not in ait._signature_memo
+    assert 0x1000000 + cap - 1 in ait._signature_memo  # 清后重建的新键在
+    again = ait._register_signature(0x5eed)
+    assert again == '00005eed'  # 清后重算同值(纯函数无失效义务)
+    ait._signature_memo.clear()  # 不给后续用例留全局状态
 
 
 def test_reconvergence_and_spans_over_spools_equal_list_results():
