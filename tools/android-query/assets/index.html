@@ -286,7 +286,7 @@ header {
   border-color: var(--accent);
   color: var(--accent);
 }
-article.card { scroll-margin-top: 132px; }
+/* 跳转锚点让开 sticky header：高度由 JS 按实测 header 高度动态写入 */
 .brand svg {
   display: block;
   width: 32px;
@@ -798,19 +798,18 @@ summary {
               aria-expanded="false">日志</button>
       <button id="themeCycle" aria-label="切换外观主题" title="外观：循环切换 亮色/暗色/自动">
         <svg data-theme-icon="light" viewBox="0 0 32 32" aria-hidden="true">
-          <circle cx="16" cy="16" r="6" fill="currentColor"/>
+          <circle cx="16" cy="16" r="5.5" fill="currentColor"/>
           <g stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <path d="M16 3v4M16 25v4M3 16h4M25 16h4M6.8 6.8l2.8 2.8M22.4 22.4l2.8 2.8M25.2 6.8l-2.8 2.8M9.6 22.4l-2.8 2.8"/>
+            <path d="M16 2.5v4M16 25.5v4M2.5 16h4M25.5 16h4M6.4 6.4l2.8 2.8M22.8 22.8l2.8 2.8M25.6 6.4l-2.8 2.8M9.2 22.8l-2.8 2.8"/>
           </g>
         </svg>
         <svg data-theme-icon="dark" viewBox="0 0 32 32" aria-hidden="true">
-          <path d="M20.5 4.5A12 12 0 1 0 27.5 20 9.5 9.5 0 0 1 20.5 4.5Z"
-                fill="currentColor"/>
+          <circle cx="16" cy="16" r="9" fill="currentColor"/>
         </svg>
         <svg data-theme-icon="auto" viewBox="0 0 32 32" aria-hidden="true">
-          <circle cx="16" cy="16" r="11" fill="none"
+          <circle cx="16" cy="16" r="9" fill="none"
                   stroke="currentColor" stroke-width="2.5"/>
-          <path d="M16 5a11 11 0 0 1 0 22Z" fill="currentColor"/>
+          <circle cx="16" cy="16" r="3.5" fill="currentColor"/>
         </svg>
       </button>
     </div>
@@ -1320,21 +1319,63 @@ const TOC = {
 function renderToc(name) {
   const toc = $('toc');
   toc.textContent = '';
+  let tocLinks = [];
   TOC[name].forEach(([id, label], index) => {
     const link = document.createElement('a');
     link.href = '#' + id;
     link.textContent = label;
     link.onclick = event => {
       event.preventDefault();
-      toc.querySelectorAll('a').forEach(a => a.classList.remove('active'));
-      link.classList.add('active');
+      setTocActive(link);
       const target = $(id);
       if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
     if (index === 0) link.classList.add('active');
     toc.appendChild(link);
+    tocLinks.push(link);
+  });
+  toc._links = tocLinks;
+  toc._ids = TOC[name].map(([id]) => id);
+}
+function setTocActive(link) {
+  const toc = $('toc');
+  if (link && link.classList.contains('active')) return;
+  (toc._links || []).forEach(a => a.classList.remove('active'));
+  if (link) {
+    link.classList.add('active');
+    // 把 active chip 滚进目录条视野（横滑条跟随）
+    const left = link.offsetLeft - (toc.clientWidth - link.offsetWidth) / 2;
+    toc.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+  }
+}
+/* 滚动跟随：当前可视 section 对应的 chip 高亮（sticky header 底线为基准） */
+let tocScrollTick = false;
+function tocFollowScroll() {
+  if (tocScrollTick) return;
+  tocScrollTick = true;
+  requestAnimationFrame(() => {
+    tocScrollTick = false;
+    const toc = $('toc');
+    const ids = toc._ids || [];
+    if (!ids.length || document.hidden) return;
+    const headerBottom = document.querySelector('header').getBoundingClientRect().bottom;
+    let current = ids[0];
+    ids.forEach(id => {
+      const el = $(id);
+      if (el && el.getBoundingClientRect().top <= headerBottom + 24) current = id;
+    });
+    const index = ids.indexOf(current);
+    if (index >= 0) setTocActive(toc._links[index]);
   });
 }
+window.addEventListener('scroll', tocFollowScroll, { passive: true });
+/* sticky header 实测高度 → 锚点跳转 scroll-padding-top，防 chip 遮内容 */
+function syncHeaderOffset() {
+  const header = document.querySelector('header');
+  document.documentElement.style.scrollPaddingTop = (header.offsetHeight + 8) + 'px';
+}
+window.addEventListener('resize', syncHeaderOffset);
+if (window.ResizeObserver) new ResizeObserver(syncHeaderOffset).observe(document.querySelector('header'));
 function selectTab(name, focus) {
   const headset = name === 'hs';
   $('tabHs').hidden = !headset;
@@ -1356,6 +1397,7 @@ function selectTab(name, focus) {
 $('tabBtnHs').onclick = () => selectTab('hs', false);
 $('tabBtnUsb').onclick = () => selectTab('usb', false);
 renderToc('hs');
+syncHeaderOffset();
 all('[role="tab"]').forEach(button => {
   button.onkeydown = event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
