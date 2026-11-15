@@ -71,6 +71,14 @@ probe 的前沿 require、analyze 的 freshness 与 `check_self_conditional`、t
 条件前沿步数超过 `SCENARIOS['p11_heap_experimental']['default_budget']` 时另调
 budget（该值留在 analyze，属运行配置）。
 
+推进类改动的预检纪律（路 CHK，2026-11-15）：改完断言面后**先离线预检再上全量**——
+
+    python3 tools/assert_preflight.py analysis/local-checks/irq-entry.json \
+        analysis/local-checks/image-trace-selfcheck-conditional.json
+
+把既有报告重放给 check() 断言面（零仿真、秒级、逐断言出期望/实际值），全绿再跑
+全量 verify（LPV 路教训：跳过预检烧了 4 轮 ×35 分钟）。
+
 ## 守卫（drift 怎么被拦住）
 
 - `frontier_registry.validate()`（模块 import 时即执行 + 单测调用）：开关名唯一、
