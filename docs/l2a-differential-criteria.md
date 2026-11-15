@@ -229,6 +229,11 @@ abstract 键=COEF 按存档 json 数据（基侧计数/步数+δ 读数）同式
 - 判定序实跑结果（COEF 复算）：16 键保守筛 11 键即过（E⁰=4；irq_repeat 恰界）、
   5 键超筛切主判据全过（E=718/564/262/66/6）、主判据超界 0——判定序「筛过即 PASS、
   筛超界必切主判据」全 16 键机器执行无歧义。
+- R2 侧独立复核（R2CHK 2026-11-16，镜像 COEF 手法）：按 DIF 档基侧步数
+  （official@21,798,206）以精确分数 ρ_L 重算 16 键三口径 E 值与本表逐键同值（与 R4C
+  基侧 51 步差→ρ 第 6-7 位差被 ceil 吸收），15 白名单键对 difline-coeffs.json
+  存档 E 值复现零差、abstract_task_stack_transport 同式补算同值（E=564）——
+  R2-COT-01 断言面按新判定序复核（PASS/conditional 维持）直接引用本表。
 - 前 5 行中 4 键（exact_full_word_store/exact_postincrement_store/exact_subword_store/
   partial_icfg_known_lowbyte）保守筛与 δ_max 端到端口径**双超界=误报案例**（机制=
   deferral 重排差 9,923 把等待变重执行，见上「何时必须切」），主判据全过——双口径修订
