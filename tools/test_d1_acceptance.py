@@ -9,11 +9,16 @@ fail(有数据但违反条款)。覆盖:
   - 合成 park 世界(BQ 闭式数值:首段 36,780、周期 40,000、core tick 143,173)
     → D1-1..D1-4/BI-A1/A2/A5 pass,A3/A4 pending(不适用非 fail);
   - 合成 D1 健康世界(d1_window.health 键契约 PASS 形状,批 3 任务书 §1.0b)
-    → D1-5 H1-H7 pass + run_all d1_gate=pass;逐规则 FAIL 变体(到期不足/间隔漂移/
+    → D1-5 H1-H8 pass + run_all d1_gate=pass;逐规则 FAIL 变体(到期不足/间隔漂移/
     交付风暴/软件 IRQ 交付/同事件重发/重复消费/零唤醒/卡运行态/断言面饿死/
     积压超限/序号回退/取模不一致/步号倒流/转换流断链)+ pending 语义(键缺≠零事件
     ≠PASS、core tick 假设缺=形状不完整、右边界未闭合)+ 否定式总闸红 +
     FAIL 证据契约形状(H2 三分计数/H4 未闭合唤醒区间);
+  - H8 观察窗相容性自检(REVIEW 盲区#5 裁决,路 PR-2 半前移):三态 PRD
+    (59999/47999/11999)各造覆盖恰 3=pass/恰 2=拒绝边界例;余量破(P=70,000>
+    200k/3)→ insufficient_window_coverage 拒绝给结论且 H1 不误判 FAIL;
+    P_park 未实读=pending 不猜;覆盖足额时 H1 缺口照旧 FAIL(拦截不放宽);
+    H1-H7 全 PASS+H8 不足 → d1_gate≠pass(总闸不抵消);证据=七规则契约形状;
   - 逐条款 fail 变体(金丝雀执行/间隔偏离/ACK 不符/jiffies 非 +1/消息链缺环节/
     窗口内未知停点/窗口外交付锚错);
   - 真实 analysis/local-checks/irq-entry.json(存在时):三态合法+窗口未开必 pending
@@ -202,6 +207,47 @@ def d1_health_scenario():
       'window_blocked_events':[],
       'd1_model_steps_total':park+200000,
       'd1_window_instruction_steps':60000}
+    return scenario
+
+
+def _rewindow(scenario,period,n_steps=None,expiries=3,first_phase=None):
+    """H8 测试辅助:按新 P_park(PRD 重编后的 park 态实读折算值,步)重铺
+    d1_window 健康树,保持 H1/H2/H4/H7 全部交叉一致(到期步号/窗口长度/每源三分
+    计数/唤醒计数与时间线同调);n_steps 缺省=恰 expiries 个完整周期。"""
+    window=scenario['d1_window'];health=window['health']
+    park=window['park']['model_step']
+    n=n_steps if n_steps is not None else expiries*period
+    phase=first_phase if first_phase is not None else max(1,period-3220)  # 首周期非整相位
+    steps=[park+phase+i*period for i in range(expiries)]
+    health['window']['steps']=n
+    health['window']['model_step_end']=park+n
+    health['timer0_expiries']=expiries
+    health['timer0_expiry_steps']=steps
+    source=health['per_source'][0]
+    source['period']=period;source['expirations']=expiries
+    source['deliveries']=expiries;source['completions']=expiries
+    source['first_deadline']=steps[0]
+    window['timer0_cycles']=[{'index':i,'expiry_model_step':step,'gap_from_previous':period,
+                              'delivered':True,'acked':True,'w1c_count':1,'re_parked':True}
+                             for i,step in enumerate(steps)]
+    core0=health['per_core']['0']
+    core0['wake_count']=expiries+1;core0['rewait_count']=expiries+1   # timer0 + 1 次 core tick
+    core0['wake_reasons']={'timer0':expiries,'core_tick':1}
+    timeline=[];step=park+phase+1
+    for _ in range(expiries):
+        timeline+=[{'model_step':step,'kind':'woken','pc':'0x12c5ca','irq':4,'nesting':0},
+                   {'model_step':step+50,'kind':'running','pc':'0x12ece8','irq':4,
+                    'nesting':0},
+                   {'model_step':step+200,'kind':'entered_idle_wait','pc':'0x12c5ca',
+                    'irq':None,'nesting':0}]
+        step+=period
+    timeline+=[{'model_step':park+143173,'kind':'woken','pc':'0x12c5ca','irq':3,
+                'nesting':0},
+               {'model_step':park+143223,'kind':'running','pc':'0x60661a4','irq':3,
+                'nesting':0},
+               {'model_step':park+143423,'kind':'entered_idle_wait','pc':'0x12c5ca',
+                'irq':None,'nesting':0}]
+    core0['timeline']=timeline
     return scenario
 
 
@@ -818,6 +864,134 @@ class D1_5EvidenceTests(unittest.TestCase):
         self.assertEqual(len(evidence['around']),3)
         self.assertEqual(evidence['first_violation']['model_step'],
                          evidence['around'][1]['model_step'])
+
+
+class D1_5H8WindowCoverageTests(unittest.TestCase):
+    """H8 观察窗相容性自检(REVIEW docs/phase-review-d1-readiness.md §3.1 盲区#5
+    裁决,路 PR-2 半前移:checker+单测先行,真机/仿真数据等 D1 场景跑时自然消费)。
+    窗口公式 N=max(S_tick+160k,200k) 的 160k 余量按 P=40,000 形状值预留 3 周期;
+    BY 实测 delay 函数会按场景重编 PRD(59999/47999/11999 三态),任意实读 P_park
+    下余量可破——折算 N//P_park<3 输出 insufficient_window_coverage 拒绝给结论
+    (pending),不判过也不把窗口伪证误判成 H1 FAIL。"""
+
+    # BY 实测三态(prd → STD12M/div1 折算周期 P,模型步)
+    PRD_STATES=((59999,20000),(47999,16000),(11999,4000))
+
+    def test_three_prd_states_coverage_exactly_three_passes(self):
+        # 覆盖恰 3(N=3×P_park,最坏相位口径的下界)=pass 边界
+        for prd,period in self.PRD_STATES:
+            with self.subTest(prd=prd):
+                result=_d15(_rewindow(d1_health_scenario(),period,n_steps=3*period))
+                self.assertEqual(result['status'],'pass',
+                                 f'prd={prd}: {json.dumps(result["failures"]+result["missing"])}')
+                h8=[c for c in result['checks']
+                    if c['name']=='h8_window_cycle_coverage'][0]
+                self.assertEqual(h8['status'],'pass')
+                self.assertIn(f'covers 3 full',h8['detail'])
+
+    def test_three_prd_states_coverage_two_refuses_conclusion(self):
+        # 覆盖恰 2(N=3×P−1)=拒绝给结论:H8 pending(insufficient_window_coverage),
+        # H1 的「到期<3」同窗转 pending 不再误判 FAIL
+        for prd,period in self.PRD_STATES:
+            with self.subTest(prd=prd):
+                result=_d15(_rewindow(d1_health_scenario(),period,
+                                      n_steps=3*period-1,expiries=2))
+                self.assertEqual(result['status'],'pending')
+                self.assertFalse(_failed_checks(result,'h1_'))
+                h1=[c for c in result['checks']
+                    if c['name']=='h1_timer0_expiries_min3'][0]
+                self.assertEqual(h1['status'],'pending')
+                self.assertIn('insufficient_window_coverage',h1.get('missing'))
+                h8=[c for c in result['checks']
+                    if c['name']=='h8_window_cycle_coverage'][0]
+                self.assertEqual(h8['status'],'pending')
+                self.assertIn('insufficient_window_coverage',h8.get('missing'))
+
+    def test_margin_broken_window_refuses_instead_of_falsely_failing(self):
+        # REVIEW 盲区本体:PRD 被重编出更大周期(P=70,000,prd=209999 同源折算),
+        # N 停在公式下限 200,000——3×P=210,000>N,160k 余量破。到期 2 次是窗口
+        # 伪证:D1-5 无任何 FAIL,H1 拒绝指控「定时事件没真发生」,gate=pending
+        # (insufficient)而非 fail(pass 也不可得)。
+        scenario=_rewindow(d1_health_scenario(),70000,n_steps=200000,expiries=2)
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'pending')
+        self.assertFalse(result['failures'],json.dumps(result['failures']))
+        self.assertEqual(run_all(scenario)['d1_gate'],'pending')
+
+    def test_h8_blocks_gate_even_when_h1_h7_all_pass(self):
+        # 总闸不抵消(任务书 §1.0b 第 4 条同旨):折算<3 时即使 H1-H7 全 PASS
+        # (幸运相位凑满 3 次到期),d1_gate 仍非 pass——窗口没保证样本下限,
+        # 不能据此给 D1 过线结论。
+        scenario=_rewindow(d1_health_scenario(),70000,n_steps=200000,expiries=3,
+                           first_phase=10)
+        result=run_all(scenario)
+        by_id={a['id']:a for a in result['assertions']}
+        for aid in ('D1-1','D1-2','D1-3','D1-4'):
+            self.assertEqual(by_id[aid]['status'],'pass',
+                             f'{aid}: {json.dumps(by_id[aid]["failures"])}')
+        d15=by_id['D1-5']
+        prefixes=tuple(f'h{i}_' for i in range(1,8))
+        h_faces=[c for c in d15['checks'] if c['name'].startswith(prefixes)]
+        self.assertTrue(h_faces,sorted(c['name'] for c in d15['checks']))
+        self.assertTrue(all(c['status']=='pass' for c in h_faces),
+                        json.dumps([c for c in h_faces if c['status']!='pass']))
+        h8=[c for c in d15['checks'] if c['name']=='h8_window_cycle_coverage'][0]
+        self.assertEqual(h8['status'],'pending')
+        self.assertIn('insufficient_window_coverage',h8.get('missing'))
+        self.assertEqual(d15['status'],'pending')
+        self.assertNotEqual(result['d1_gate'],'pass')
+
+    def test_p_park_not_read_is_pending_no_fallback(self):
+        # 键缺=pending 不猜红线(H2 CNT 假设先例):P_park 未实读不得回退 40,000
+        # 形状值折算——BY 已证 PRD 会被重编,回退=拿假设冒充实测
+        scenario=d1_health_scenario()
+        scenario['d1_window']['health']['per_source'][0]['period']=None
+        result=_d15(scenario)
+        h8=[c for c in result['checks']
+            if c['name']=='h8_window_cycle_coverage'][0]
+        self.assertEqual(h8['status'],'pending')
+        self.assertIn('P_park',h8.get('missing'))
+        self.assertNotIn('insufficient_window_coverage',h8.get('missing'))
+
+    def test_h1_shortfall_inside_sufficient_window_still_fails(self):
+        # 拦截不放宽(PR1 冻结语义):覆盖足额(恰 3)时观测缺口就是真实缺口,
+        # H1 照旧 FAIL——「不猜」是双向的,只有折算可证 <3 才转 pending
+        scenario=_rewindow(d1_health_scenario(),40000,n_steps=120000,expiries=2)
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'fail')
+        self.assertTrue(_failed_checks(result,'h1_timer0_expiries'))
+
+    def test_window_steps_missing_is_pending(self):
+        # 窗口 N 键缺(steps 与 end−start 两路都断)=pending 不猜
+        scenario=d1_health_scenario()
+        window=scenario['d1_window']['health']['window']
+        del window['steps'];del window['model_step_end']
+        result=_d15(scenario)
+        h8=[c for c in result['checks']
+            if c['name']=='h8_window_cycle_coverage'][0]
+        self.assertEqual(h8['status'],'pending')
+        self.assertIn('window.steps',h8.get('missing'))
+
+    def test_insufficiency_evidence_uses_fail_evidence_contract(self):
+        # FAIL 证据契约共用(七规则结构):H8 拒绝结论也带 {rule,expected,observed,
+        # first_violation,source_or_task,window_end};first_violation 锚窗口配置点
+        # (W_park,core/pc 如实 None——配置级条件无故障指令)
+        scenario=_rewindow(d1_health_scenario(),70000,n_steps=200000,expiries=2)
+        h8=[c for c in _d15(scenario)['checks']
+            if c['name']=='h8_window_cycle_coverage'][0]
+        evidence=h8.get('evidence')
+        self.assertTrue(evidence,json.dumps(h8))
+        self.assertEqual(evidence['rule'],'H8')
+        self.assertIn('expected',evidence);self.assertIn('observed',evidence)
+        self.assertTrue({'model_step','core','pc'} <= set(evidence['first_violation']))
+        self.assertEqual(evidence['first_violation']['model_step'],100)  # W_park
+        self.assertIsNone(evidence['first_violation']['pc'])
+        self.assertIn('source_or_task',evidence)
+        self.assertIn('window_end',evidence)
+        self.assertIn('evidence_complete',evidence['window_end'])
+        self.assertEqual(evidence['coverage'],2)
+        self.assertEqual(evidence['p_park'],70000)
+        self.assertEqual(evidence['required_n_min'],210000)
 
 
 class RealReportTests(unittest.TestCase):

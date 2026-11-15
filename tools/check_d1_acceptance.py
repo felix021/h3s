@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Machine-readable D1 acceptance (D1-1..D1-5) + BI first-verification (A1-A5)
-assertion skeleton (route CH / sim-d1assert; D1-5 health by route PR-1/sim-pr1).
+assertion skeleton (route CH / sim-d1assert; D1-5 health by route PR-1/sim-pr1;
+H8 window-coverage self-check by route PR-2/sim-pr2).
 
 每条断言忠实转录断言文档的自然语言语义,逐条注明 docs 出处行:
 
   D1-1..D1-4  docs/d1-acceptance.md §1(路 BR)+ docs/d1-s18-consumption.md §3(路 BZ 修正口径)
   D1-5        docs/d1-acceptance.md §1 D1-5 + docs/d1-scene-blueprint.md §3(H1-H7 表)
               + docs/s19-batch3-taskbook.md §1.0b(H5 两级受检/H6 逻辑序号勘误/
-              FAIL 证据契约);数据面=d1_window.health.* 键形状(契约冻结于
+              FAIL 证据契约)+ docs/phase-review-d1-readiness.md §3.1 盲区#5(H8
+              观察窗相容性自检,路 PR-2);数据面=d1_window.health.* 键形状(契约冻结于
               docs/d1-health-checks.md,生产者=PR-2 probe 侧,本文件只用合成样本自证)
   A1..A5      docs/d1-idle-event-clock.md §4(路 BP)
 
@@ -63,7 +65,8 @@ TIMER0_TICK_PRD=119999             # tick_timer_init 的 10ms PRD(BZ §2.1)
 # Timer0 闭式(BQ G1):STD12M 每模型步 3 计数(num=3*4,den=4),div=1、prd=119999
 # 时周期=(120000)/3=40,000 模型步——40,000 是推导值不是魔数(D1-2/A2)。
 
-# ── D1-5 H1-H7 常量(蓝图 §3 表+任务书 §1.0b 修正;契约全文 docs/d1-health-checks.md)
+# ── D1-5 H1-H8 常量(蓝图 §3 表+任务书 §1.0b 修正+REVIEW 盲区#5 裁决;
+#    契约全文 docs/d1-health-checks.md)
 APP_CORE_ENTRY='0x6012028'          # H5 断言面任务=app_core 消费链(路 BE RTI 钉死)
 PERIODIC_SOURCES=('timer0','core_tick')  # H2 周期源(period 实读取上界);其余源=预期 0
 HEALTH_POST_BOUND_NATURAL=2         # H3 上界:S18 静态每子码恰 post 一次,2 含一次容差
@@ -74,6 +77,9 @@ HEALTH_TIMELINE_KINDS=('entered_idle_wait','woken','running')
 HEALTH_TIMELINE_NEXT={'entered_idle_wait':('woken',),
                       'woken':('running','entered_idle_wait'),
                       'running':('entered_idle_wait','woken')}
+MIN_HEALTH_CYCLES=3                 # H1/D1-2 的三周期样本下限;H8 覆盖折算同值引用
+                                     # (REVIEW 盲区#5:窗口公式 160k 余量按 P=40,000
+                                     #  形状值恰预留 3 周期,P_park 实读后须重验)
 
 SOURCE_D1='docs/d1-acceptance.md'
 SOURCE_BP='docs/d1-idle-event-clock.md'
@@ -81,6 +87,7 @@ SOURCE_BZ='docs/d1-s18-consumption.md'
 SOURCE_BG='docs/d1-scene-blueprint.md'      # D1-5 规则表出处(路 BE 蓝图 §3)
 SOURCE_TB='docs/s19-batch3-taskbook.md'     # D1-5 修正口径出处(批 3 任务书 §1.0b)
 SOURCE_HL='docs/d1-health-checks.md'        # d1_window.health.* 冻结契约(本路 PR-1)
+SOURCE_RV='docs/phase-review-d1-readiness.md'  # REVIEW 盲区#5=H8 裁决出处(路 PR-2)
 
 
 def _hex(value):
@@ -286,7 +293,8 @@ REQUIRED_OBSERVATIONS={
           '与步号序列,间隔漂移判据)',
           'd1_window.health.per_source[]{source,core,period,expirations,deliveries,'
           'completions,first_deadline,pending_at_window_start}(PR-2 需求:H2 上界'
-          '⌈N/P⌉+1 的实读 period 与到期/交付/完成三分计数;软件 IRQ 预期 0)',
+          '⌈N/P⌉+1 的实读 period 与到期/交付/完成三分计数;软件 IRQ 预期 0;'
+          'period 同时是 H8 的实读 P_park 输入,复用无新增)',
           'd1_window.health.event_reposts[]{event_id,subcode,origin,posts,consumed,'
           'producer_pc,first_post_step,pending_at_window_end} + queue_balance{enqueued,'
           'dequeued}(PR-2 需求:H3 同事件重发与队列平衡,两键同窗口口径)',
@@ -301,7 +309,7 @@ REQUIRED_OBSERVATIONS={
           '物理指针=序号 mod 容量,物理回绕合法;cursor_monotonic 可选互证键)',
           'd1_window.health.window.{model_step_start,model_step_end,steps,complete}'
           '(PR-2 需求:窗口长度 N(上界公式)与右边界条款(末尾刚唤醒/ready 标'
-          "「尚未到期」,不默认 PASS))"],
+          "「尚未到期」,不默认 PASS);steps 同时是 H8 覆盖折算的 N 输入,复用无新增)"],
 }
 
 
@@ -1196,8 +1204,9 @@ def bi_a5_c2_exit_two_levels(scenario):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# D1-5 观察窗口健康度 H1-H7(docs/d1-acceptance.md §1 D1-5;蓝图 §3 表;
-# 任务书 §1.0b 修正:H5 固定优先级两级受检/H6 环形游标=逻辑序号单调/FAIL 证据契约)
+# D1-5 观察窗口健康度 H1-H8(docs/d1-acceptance.md §1 D1-5;蓝图 §3 表;
+# 任务书 §1.0b 修正:H5 固定优先级两级受检/H6 环形游标=逻辑序号单调/FAIL 证据契约;
+# REVIEW 盲区#5 裁决:H8 观察窗相容性自检,路 PR-2)
 # 数据面=d1_window.health.* 报告键形状(蓝图 §4.3;PR-1 冻结契约,
 # docs/d1-health-checks.md;生产者=PR-2 probe 侧,键缺=pending 不猜)。
 # ════════════════════════════════════════════════════════════════════════════
@@ -1238,6 +1247,30 @@ def _window_end_evidence(health):
             'evidence_complete':isinstance(w.get('complete'),bool)}
 
 
+def _window_cycle_coverage(health):
+    """H8 折算:窗口 N 按实读 P_park 可覆盖的完整 Timer0 周期数(最坏相位口径)。
+
+    P_park=per_source[timer0].period(park 态实读;BY 实测 delay 函数会按场景重编
+    PRD 为 59999/47999/11999 三态,故不预锁 40,000 形状值兜底);N=health.window.steps
+    (缺则 model_step_end−model_step_start,与 H2 上界公式同源)。折算=向下取整
+    N//P_park:与窗口公式「160k 余量≥3×40,000」的预留口径一致,相位运气不折算在内。
+    任一输入缺 → 覆盖 None(不猜;REVIEW 盲区#5:覆盖可证 <3 时正确动作=拒绝给结论
+    而非误判)。返回 (coverage, n, period)。
+    """
+    n=_health_window_steps(health)
+    period=None
+    per_source=health.get('per_source')
+    if isinstance(per_source,list):
+        for entry in per_source:
+            if isinstance(entry,dict) and entry.get('source')=='timer0':
+                p=entry.get('period')
+                if isinstance(p,int) and p>0:period=p
+                break
+    if period is None or not isinstance(n,int) or n<0:
+        return None,n,period
+    return n//period,n,period
+
+
 def _violation(rule,expected,observed,first_violation=None,subject=None,
                around=None,worst=None,extra=None,window_end=None):
     """FAIL 证据契约七规则共用结构:{rule,expected,observed,first_violation{模型步,
@@ -1274,6 +1307,18 @@ def _h1_timer0_events(health,window):
                                 '到期次数;H1 与 D1-2 同数互证)')]
     checks=[]
     if exp<3:
+        # H8 相容性拦截(REVIEW 盲区#5 裁决):窗口按实读 P_park 折算覆盖可证 <3 时,
+        # 「到期 <3」是窗口伪证而非定时器行为违约——拒绝给结论(pending)不误判 FAIL;
+        # 覆盖足额(≥3)或无法折算(键缺不猜)时维持 PR1 冻结语义:观测缺口=真实缺口 FAIL。
+        coverage,n,period=_window_cycle_coverage(health)
+        if coverage is not None and coverage<MIN_HEALTH_CYCLES:
+            checks.append(_check(name,
+                missing=f'insufficient_window_coverage: {exp} expiries observed inside a '
+                        f'window of N={n} steps that covers only {coverage} full cycles at '
+                        f'the measured P_park={period} (<{MIN_HEALTH_CYCLES}) — the sample '
+                        'floor is unreachable inside this window; refusing to judge the '
+                        'cycle-count face (window config, not timer behavior; H8 face)'))
+            return checks
         checks.append(_check(name,fail=True,
             detail=f'{exp} in-window Timer0 expiries (<3): the scheduled timer events '
                    'did not really happen',
@@ -1816,17 +1861,57 @@ def _h7_timelines(health):
     return checks
 
 
+# ── H8 观察窗相容性自检(REVIEW 盲区#5 裁决,路 PR-2;契约 docs/d1-health-checks.md)
+#     窗口公式 N=max(S_tick+160k,200k) 的 160k 余量按 P=40,000 形状值预留 3 周期,
+#     BY 实测 delay 函数会按场景重编 PRD(59999/47999/11999 三态),任意实读 P_park
+#     下余量可破——折算 N//P_park<3 时输出 insufficient_window_coverage 拒绝给结论
+#     (pending):窗口配置问题不是 DUT 行为违约,既不判过也不误判成 H1 FAIL;
+#     证据复用 FAIL 证据契约七规则结构(rule='H8',first_violation 锚窗口配置点)。 ──
+def _h8_window_coverage(health):
+    name='h8_window_cycle_coverage'
+    coverage,n,period=_window_cycle_coverage(health)
+    if period is None:
+        return [_check(name,missing='per_source[timer0].period(park 态实读 P_park;'
+                'BY 实测 PRD 会被重编三态,不预锁 40,000 兜底——未实读=不猜)')]
+    if not isinstance(n,int) or n<0:
+        return [_check(name,missing='health.window.steps(或 model_step_end−'
+                'model_step_start;H8 覆盖折算的窗口长度 N)')]
+    if coverage>=MIN_HEALTH_CYCLES:
+        return [_check(name,
+            detail=f'window N={n} covers {coverage} full Timer0 cycles at the measured '
+                   f'P_park={period} (>= {MIN_HEALTH_CYCLES}; margin N-3*P_park='
+                   f'{n-MIN_HEALTH_CYCLES*period})')]
+    return [_check(name,
+        missing=f'insufficient_window_coverage: window N={n} at the measured '
+                f'P_park={period} covers only {coverage} full cycles (<{MIN_HEALTH_CYCLES}; '
+                'the health-check sample floor cannot be met inside this window — refuse '
+                'to conclude rather than misjudge; window config, not DUT behavior)',
+        evidence=_violation('H8',
+            f'window N covers >= {MIN_HEALTH_CYCLES} full cycles at the measured P_park '
+            f'(N >= {MIN_HEALTH_CYCLES}*P_park = {MIN_HEALTH_CYCLES*period})',
+            f'N={n}, P_park={period}, coverage={coverage}',
+            first_violation={'model_step':_health_window(health).get('model_step_start'),
+                             'core':None,'pc':None,
+                             'note':'window-config-level condition: no faulting '
+                                    'instruction; anchored at W_park (window start)'},
+            subject='window(timer0@core0)',
+            extra={'coverage':coverage,'p_park':period,'n':n,
+                   'required_n_min':MIN_HEALTH_CYCLES*period},
+            window_end=_window_end_evidence(health)))]
+
+
 def d1_5_health(scenario):
-    result=_base('D1-5','窗口健康度 H1-H7:定时事件真实发生/同源重发有界/无同事件无限'
-                 '重发/必要任务可唤醒/无断言面饿死/队列积压有界/状态变迁可追溯'
-                 '(否定式总闸:D1-1..4 全过而 H 任一 FAIL 则 D1 仍 FAIL)',
+    result=_base('D1-5','窗口健康度 H1-H8:定时事件真实发生/同源重发有界/无同事件无限'
+                 '重发/必要任务可唤醒/无断言面饿死/队列积压有界/状态变迁可追溯/'
+                 '观察窗相容(否定式总闸:D1-1..4 全过而 H 任一 FAIL 则 D1 仍 FAIL;'
+                 'H8 覆盖不足=insufficient 拒绝给结论,不判过也不误判)',
                  f'{SOURCE_D1} §1 D1-5;{SOURCE_BG} §3;{SOURCE_TB} §1.0b;'
-                 f'{SOURCE_HL}(键契约)')
+                 f'{SOURCE_HL}(键契约);{SOURCE_RV} §3.1 盲区#5(H8)')
     window=_d1_window(scenario)
     why='d1_window report present (D1 acceptance-window scenario shape)'
     if not isinstance(window,dict):
         opened,reason=park_window(scenario)
-        why=reason+'; H1-H7 stay pending'
+        why=reason+'; H1-H8 stay pending'
     else:
         opened=True
     checks=[_check('park_window',status='pass' if opened else 'pending',detail=why)]
@@ -1834,7 +1919,7 @@ def d1_5_health(scenario):
     health=window.get('health') if window else None
     if not isinstance(health,dict):
         checks.append(_check('health_report_keys',
-            missing='d1_window.health.*(H1-H7 数据面:timer0_expiries/per_source/'
+            missing='d1_window.health.*(H1-H8 数据面:timer0_expiries/per_source/'
                     'event_reposts/queue_balance/per_core/ready_tasks/queue/window;'
                     f'冻结契约 {SOURCE_HL};生产者=probe 侧 PR-2)'))
         return _finalize(result,checks)
@@ -1845,6 +1930,7 @@ def d1_5_health(scenario):
     checks+=_h5_ready_tasks(health)
     checks+=_h6_queue(health)
     checks+=_h7_timelines(health)
+    checks+=_h8_window_coverage(health)
     return _finalize(result,checks)
 
 
@@ -1858,9 +1944,10 @@ ASSERTIONS=(('D1-1',d1_1_park),('D1-2',d1_2_timer0_cycles),('D1-3',d1_3_core_tic
 def run_all(scenario):
     results=[fn(scenario) for _,fn in ASSERTIONS]
     summary={state:sum(1 for r in results if r['status']==state) for state in ('pass','pending','fail')}
-    # 否定式总闸(蓝图 §3/任务书 §1.0b 第 4 条):D1-1..4 全 PASS 而 H1-H7 任一 FAIL
-    # → D1 仍 FAIL——实现为 d1_5 的 fail 态在此不抵消;BI-A* 不进 D1 gate(BI 首验
-    # 独立于 D1 五断言)。
+    # 否定式总闸(蓝图 §3/任务书 §1.0b 第 4 条):D1-1..4 全 PASS 而 H1-H8 任一 FAIL
+    # → D1 仍 FAIL——实现为 d1_5 的 fail 态在此不抵消;H8 覆盖不足(insufficient,
+    # pending 面)同样使 gate 非 pass——H1-H7 全 PASS 不抵消窗口覆盖缺口(REVIEW
+    # 盲区#5);BI-A* 不进 D1 gate(BI 首验独立于 D1 五断言)。
     d1={r['id']:r['status'] for r in results if r['id'].startswith('D1-')}
     gate=('fail' if 'fail' in d1.values()
           else 'pass' if d1 and all(v=='pass' for v in d1.values())
