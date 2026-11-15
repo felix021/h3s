@@ -1969,6 +1969,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             machine.deliver_software_irq(target,request.details['irq'])
             row['software_irq_entry']=request.details
 
+    def materialize_trace_text():
+        # 路 WIND:诊断行物化点(幂等——已物化/恢复自快照的行不带
+        # _pending_text,跳过)。键序逐键复刻原逐步构造顺序
+        # pc,[core,]instruction_id,text,bytes,[next_pc/stall/交付键…]:
+        # json.dumps 无 sort_keys,报告逐字节不变依赖此序。
+        for row in trace:
+            pending=row.pop('_pending_text',None)
+            if pending is None:continue
+            insn,raw=pending
+            rebuilt={}
+            for key,value in row.items():
+                rebuilt[key]=value
+                if key=='instruction_id':
+                    rebuilt['text']=module.codec.format(insn,raw)
+            row.clear();row.update(rebuilt)
+
     for _ in range(budget):
         if machine is not None:c=machine.select()
         if hardware is not None and diagnostics and c.pc==diagnostics.get('stop_before_pc'):
@@ -1986,8 +2002,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 extent=size
                 if insn.id.endswith('.p'):extent+=c.decode(c.pc+size)[2]
                 hardware.debug.check_fetch(c.pc,extent,c.core_id)
-            row.update(instruction_id=insn.id,text=module.codec.format(insn,raw),
-                       bytes=c.mem.read(c.pc,size).hex())
+            # 路 WIND:诊断 text 窗口化——逐步只挂 (insn,raw) 材料,不再调
+            # codec.format(OPT1 memo 覆盖的是重复调用的开销;这里消掉调用
+            # 结构本身):行滑出 64 行窗口即被丢弃,永不格式化;物化只发生在
+            # 消费点(快照捕获前/报告组装前,materialize_trace_text),每 run
+            # 至多末 64 行×消费点数次。行为零变化:raw 是 decode 缓存元组里
+            # 的字段值 dict,全程只读(上游 effect/pair 与仓库层均不写;OPT1
+            # format memo 以其值集为 key 共享结果且 31/31 报告逐字节一致
+            # 亦即证),format 是纯函数,停点物化=逐步格式化。bytes 仍取步内
+            # 实读并即刻 hex(自改写场景下延迟读会变值,不窗口化)。
+            row.update(instruction_id=insn.id,bytes=c.mem.read(c.pc,size).hex())
+            row['_pending_text']=(insn,raw)
             if machine is not None and insn.id=='idle' and machine.idle_wait_projection:
                 # IDLE semantics unmeasured: the core stops issuing until a
                 # real delivery wakes it. No wake injection, no held-bit edit.
@@ -2029,6 +2054,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # (缺状态种类由 world_snapshot 守卫显形拒载,不静默)。快照文件只落
         # 调用方指定路径(红线:RAM 镜像不进 git);报告只并摘要。
         from world_snapshot import capture_world
+        # 路 WIND:M7 捕获把 trace 行按 encode_value 白名单编码,_pending_text
+        # 的 (insn,raw) 对象不在白名单(会显式拒载)——捕获前先物化,快照
+        # 内容与逐步格式化时代逐字节相同。
+        materialize_trace_text()
         ledger_namespace=SimpleNamespace(events=events,adapters=adapters,rom_steps=rom_steps,
                                          event_counts=event_counts,milestones=milestones,
                                          trace=trace,completed=completed,stop=stop)
@@ -2047,6 +2076,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     post_stop_observations=None
     if post_stop is not None:
         post_stop_observations=post_stop(machine,hardware,c)
+    materialize_trace_text()  # 路 WIND:last_instructions 消费点物化(幂等)
     result={'name':name,'entry':hex(diagnostics.get('entry_pc',ENTRY) if diagnostics else ENTRY),'completed_steps':completed,'stop_pc':hex(c.pc),
         'stop':stop,'assumptions':{
             'cpu0_single_thread_no_interrupts':True,
