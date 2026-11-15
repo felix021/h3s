@@ -332,3 +332,57 @@ run 数≈0.97×行数，物化版在 21.8M 世界瞬时 ~2.7GB、50M 外推 ~6G
 
 回归：`check_local.py --units` exit 0（39 tests OK 含 git diff --check）；
 全量 `--rom` exit 0（Local checks passed，跨前缀计数断言零重钉）。
+
+## 10. 三镜像轨迹复用实施记录（路 REUSE / sim-reuse，2026-11-15，一案一提交，基线 main 450542e）
+
+§7 实施顺序第 4 项「三镜像轨迹复用（六臂→三臂）」落地在
+`tools/analyze_image_trace.py`：新增 `RunPool`——同一 (镜像, 场景, 预算)
+**只执行一次**，产出的 (result, spool) 喂它参与的全部消费者（freshness
+检查 + 所属于的每个 pair）；`compare_pair` 改为纯消费者签名（接收预执行
+的两臂 run，不再自己调 `frontier_run`、不再 close——释放权移到
+`pool.close()`，在最后一个消费者结束后统一执行，require 抛错路径同走
+finally）。
+
+**臂矩阵（p11_heap_experimental 全前沿，三镜像全组合）**：
+
+| | 旧（450542e 原样） | 新（REUSE） |
+|---|---|---|
+| 执行次数 | **7 臂** = freshness(official)×1 + pair 臂×6（official×2、tested_b79×2、eq_fence_repair×2，即三镜像×两用途 + official 再多一次 freshness） | **3 臂** = 每镜像恰好一次（official 的同一次运行同时充当 freshness 检查与它的两个 pair 臂） |
+| 多消费者方式 | 同臂重复执行完整仿真（21.8M 步/臂） | 同臂其余消费者顺序重读同一 TraceSpool（每遍从 chunk 0 重读，2 块缓存常驻，零物化） |
+| stdout 差异 | 7 行运行打印（1 行 `frontier_freshness_check` + 6 行 `trace_*`） | 3 行 `trace_*`（freshness 不再单独起跑；报告文件不受影响，逐字节验收） |
+
+零物化取舍：比较器对每对的消费本就是顺序扫描+有界窗口，TraceSpool 多遍
+顺序读 + 随机索引天然支持，无需把 21.8M 行物化回内存（≈6GB，被否决），
+也无需重排比较顺序。复用不引入新假设：被替代的重复执行其同值性本就被
+self-check 钉死（freshness require 与 check_self 对同进程两次独立执行的
+official 运行要求同一 registry 停点字面值）；跨臂 memo（OPT1/O3I）按值
+键、纯函数 memoization，冷暖执行同值（test_exec_memo 钉死）。最终仲裁
+= 与旧侧原样 main 实跑报告逐字节 cmp。
+
+对照验收（全绿；旧侧=450542e 原样在本机实跑，新侧=本路代码，同一 ROM
+与镜像路径，`/usr/bin/time -v` 量墙钟/峰值 RSS，运行期均有 1-2 个其他
+CPU 重载作业，两侧负载条件相当）：
+
+| 场景 | 旧墙钟 | 新墙钟 | 提速 | 旧 RSS | 新 RSS | 旧执行 | 新执行 | 报告 cmp |
+|---|---|---|---|---|---|---|---|---|
+| p11 全前沿三镜像全组合（21.8M 步/臂） | 1:57:06 | **50:10** | **2.35x**（臂比 7/3=2.33，正比） | 128.5MB | **130.1MB** | 7 | **3** | **逐字节相等**（sha256 dfc217cb… 两侧同） |
+| crc_bankb self-check（official:b79） | 41.1s | **28.7s** | 1.43x（臂比 3/2=1.5） | 98.6MB | 98.1MB | 3 | **2** | **逐字节相等** |
+| crc_bankb 三镜像全组合（附加验证） | 1:33.9 | **43.2s** | 2.17x | 104.9MB | 107.1MB | 7 | **3** | **逐字节相等** |
+| crc_bankb 无 official 对（附加验证，b79:eq） | 28.9s | 27.9s | 1.0x（臂本就 2→2） | 100.6MB | 100.7MB | 2 | 2 | **逐字节相等** |
+
+- 同停点逐位一致：三镜像 p11 全部停 **21,798,257/21,798,155 @ 0x606b68e**
+  （official=b79=21,798,257，eq_fence_repair=21,798,155），与 registry 钉值
+  及旧侧逐位相同；首个控制流分歧/签名分歧等 pair 事实全钉（eq 对：
+  签名 116,148/控制流 169,439；official:b79：签名 155,390、控制流零分歧）。
+- RSS 包络：新侧三镜像峰值 130.1MB vs O6 包络 ~125MB 级——增量 +1.6MB =
+  第三个常驻 spool 的 2 块读缓存 + 一份常驻 result，有界不随行数/遍数
+  增长；盘占用峰值 3×1.62GB（三 spool 并存）vs 旧侧并发 2×1.62GB，总
+  写入量反而 4.9GB vs 11.3GB。
+- 单测（`tools/test_image_trace_diff.py` 17 项，本路 +3）：①`RunPool`
+  三镜像全组合消费矩阵下执行次数=标签数、同臂返回同一对象、参数/命名
+  原样传递、close 后 spool 全部不可读；②同一对 (result, spool) 连续两次
+  `compare_pair` 报告完全相等且与全新 list 执行版逐字段相等（复用=不复用
+  的等价钉子，覆盖纯签名分歧与插入步+reconvergence 两条比较路径）；
+  ③spool 第二遍整读/随机索引/视图与第一遍全同（多消费者顺序正确性）。
+- 回归：`check_local.py --units` exit 0；全量 `--rom` exit 0（含
+  analyze_image_trace self-check 走新复用路径）。

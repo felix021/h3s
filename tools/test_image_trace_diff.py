@@ -7,14 +7,15 @@ Row shape mirrors TraceMachine: (core, before_pc, next_pc, flags,
 """
 import inspect
 import io
+import itertools
 import pickle
 
 import frontier_registry
 import probe_irq_entry
 from analyze_image_trace import (BASE_SCENARIO_FLAGS, CONDITIONAL_EXTRA_FLAGS,
                                  SCENARIOS, TraceSpool, _divergent_spans,
-                                 find_reconvergence, pc_run_length_summary,
-                                 stop_parity)
+                                 compare_pair, find_reconvergence,
+                                 pc_run_length_summary, stop_parity)
 
 
 def row(pc, nxt, marker=(15, '00000000'), write=()):
@@ -272,6 +273,138 @@ def test_pc_run_length_summary_streaming_matches_materialized():
     rows, spool = _spool_rows()
     assert pc_run_length_summary(spool) == materialized(rows)
     assert pc_run_length_summary(spool[10:-3]) == materialized(rows[10:-3])
+
+
+def test_trace_spool_second_consumer_pass_is_identical():
+    # 路 REUSE 核心不变量:同一 spool 被多个消费者先后整遍消费(六臂→三臂后,
+    # 同一臂的轨迹喂它参与的所有 pair),每一遍的行序列、随机索引、惰性视图
+    # 都与第一遍完全一致——spool 是纯数据源,消费不留状态。
+    rows, spool = _spool_rows()
+    first = list(spool)
+    # a consumer doing random access in between two full passes
+    probes = [spool[i] for i in (3, 30, 30, 11, 0)]
+    assert probes == [rows[i] for i in (3, 30, 30, 11, 0)]
+    second = list(spool)
+    assert first == second == rows
+    assert list(spool[7:20]) == rows[7:20]      # views read the same after reuse
+    assert spool[-1] == rows[-1] and len(spool) == len(rows)
+    spool.close()
+
+
+def test_run_pool_executes_each_label_once_and_shares_runs():
+    # 路 REUSE:同 (镜像, 场景, 预算) 只执行一次——freshness 与每个 pair 都取
+    # 同一个 (result, trace) 对象;三镜像全组合(6 pair 臂)+freshness 臂的
+    # 消费矩阵下执行次数=不同标签数(六臂→三臂的池化形态),名字/预算/场景
+    # 按臂原样传递;close 后所有 spool 不可读且不再持有 run。
+    import analyze_image_trace as ait
+
+    calls = []
+
+    def fake_frontier_run(module, app, header, rom, name, *, flash_image_bytes,
+                          readonly=(), budget=None, scenario='crc_bankb'):
+        calls.append({'name': name, 'app': app, 'plain': flash_image_bytes,
+                      'budget': budget, 'scenario': scenario})
+        spool = TraceSpool()
+        for i in range(3):
+            spool.append(row(0x100 + i * 2, 0x102 + i * 2))
+        result = {'name': name, 'completed_steps': 3, 'stop_pc': '0x104',
+                  'stop': {'kind': 'unmapped_memory'}, 'machine': {'cores': {'0': {'steps': 3}}},
+                  'app': app}
+        return result, spool
+
+    labels = ('eq_fence_repair', 'official', 'tested_b79')  # sorted, as main() walks them
+    loaded = {label: (label, (f'app-{label}'.encode(), f'plain-{label}'.encode(), (), f'sha-{label}'))
+              for label in labels}
+    original = ait.frontier_run
+    ait.frontier_run = fake_frontier_run
+    try:
+        pool = ait.RunPool(object(), b'rom', 'header', 300000, 'crc_bankb', loaded)
+        # the full three-image consumption matrix: freshness(official) + all pairs
+        seen = {'official': pool.run('official')}
+        for a, b in itertools.combinations(labels, 2):
+            seen[a] = pool.run(a)
+            seen[b] = pool.run(b)
+        assert len(calls) == 3, 'each distinct image must execute exactly once'
+        assert sorted(c['name'] for c in calls) == sorted(f'trace_{label}' for label in labels)
+        for call in calls:
+            label = call['name'][len('trace_'):]
+            assert call['app'] == f'app-{label}'.encode()
+            assert call['plain'] == f'plain-{label}'.encode()
+            assert call['budget'] == 300000 and call['scenario'] == 'crc_bankb'
+        for label in labels:
+            # every consumer of the same arm gets the SAME run objects back
+            assert seen[label] is pool.run(label)
+        runs = dict(pool.runs)
+        pool.close()
+        assert not pool.runs
+        for _result, trace in runs.values():
+            try:
+                len(trace)
+                raise AssertionError('closed pool spool must be unreadable')
+            except ValueError:
+                pass
+    finally:
+        ait.frontier_run = original
+
+
+def _pair_runs(shape):
+    """Two synthetic arms (results + traces) for compare_pair under reuse:
+    shape 'signature' = identical control flow, register/write divergences only;
+    shape 'insertion' = b executes 3 extra steps once (control divergence with
+    immediate realignment, lag 3). Traces come back as REAL spools (the reuse
+    data source) and as plain lists (a fresh non-reused execution), so pair
+    reports can be compared across both."""
+    if shape == 'signature':
+        a = common(6) + tail(12, 0x1000, markers={i: '00000001' for i in range(4)},
+                            writes={1: (('0x2000', 'ff'),)})
+        b = common(6) + tail(12, 0x1000, markers={i: '00000002' for i in range(4)},
+                            writes={1: (('0x2000', 'ee'),)})
+        steps_a = steps_b = len(a)
+    else:
+        a = common(6) + tail(12, 0x1000)
+        b = common(6) + tail(3, 0x2000) + tail(12, 0x1000)
+        steps_a, steps_b = len(a), len(b)
+    def result(steps, stop_address):
+        return {'name': 'x', 'completed_steps': steps, 'stop_pc': '0x1000',
+                'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                         'address': stop_address, 'size': 1},
+                'machine': {'cores': {'0': {'steps': steps}}}}
+    results = (result(steps_a, '0xf000'), result(steps_b, '0xf004'))
+    spools, lists = [], []
+    for rows in (a, b):
+        spool = TraceSpool(chunk=5)
+        for r in rows:
+            spool.append(r)
+        spool.flush()
+        spools.append(spool)
+        lists.append(list(rows))
+    image = lambda label, plain: (label, (b'app', plain, (), 'sha'))  # noqa: E731
+    return image, results, spools, lists
+
+
+def test_compare_pair_reuse_reports_identical_across_consumers():
+    # 路 REUSE 等价钉子:同一对 (result, spool) 连续喂两次 compare_pair(第二个
+    # pair 重读同一 spool),两份 pair 报告完全相等;compare_pair 是纯消费者,
+    # 消费完 spool 仍可读(释放权在 RunPool);spool 版报告与「不复用」的
+    # 全新 list 执行版也逐字段相等。
+    for shape in ('signature', 'insertion'):
+        image, results, spools, lists = _pair_runs(shape)
+        image_a, image_b = image('arm_a', b'plain-a'), image('arm_b', b'plain-b')
+        run_spools = ((results[0], spools[0]), (results[1], spools[1]))
+        first = compare_pair(image_a, run_spools[0], image_b, run_spools[1], 300000)
+        second = compare_pair(image_a, run_spools[0], image_b, run_spools[1], 300000)
+        assert first == second, f'reused second consumer diverged ({shape})'
+        fresh = compare_pair(image_a, (results[0], lists[0]),
+                             image_b, (results[1], lists[1]), 300000)
+        assert first == fresh, f'spool reuse report must equal the fresh-execution report ({shape})'
+        # the comparison paths were actually exercised, not trivially equal
+        if shape == 'signature':
+            assert first['first_divergence'] and first['divergent_signature_spans']['count'] >= 1
+        else:
+            assert first['first_control_divergence'] and first['reconvergence']['realigned']
+        for spool in spools:  # pure consumer: still readable, then released by hand
+            assert len(spool) > 0
+            spool.close()
 
 
 def test_stop_parity_same_stop_and_step_deltas():
