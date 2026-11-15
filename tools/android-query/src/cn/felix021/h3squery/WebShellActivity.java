@@ -48,6 +48,7 @@ public class WebShellActivity extends Activity {
     private AndroidUsbLink usbLink;
     private BroadcastReceiver usbDetachReceiver;
     private java.util.concurrent.ExecutorService usbIo;
+    private OtaWebBridge otaBridge;
 
     @SuppressLint("SetJavaScriptEnabled") // 本地 asset 页面 + 显式 bridge，JS 必须开
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -81,7 +82,12 @@ public class WebShellActivity extends Activity {
         }, usbIo, fileSaver(), loadBundledLoader());
         web.addJavascriptInterface(bridge, "h3s");
         web.addJavascriptInterface(usbBridge, "h3susb");
-        web.addJavascriptInterface(shellInterface(), "h3sshell");
+        otaBridge = new OtaWebBridge(this, new OtaWebBridge.ResultSink() {
+            @Override public void emit(final String json) {
+                web.post(new Runnable() { public void run() { web.evaluateJavascript("window.onH3sOtaEvent&&onH3sOtaEvent(" + json + ")", null); } });
+            }
+        });
+        web.addJavascriptInterface(otaBridge, "h3sota");
         web.setWebChromeClient(new WebChromeClient() {
             @Override public boolean onConsoleMessage(ConsoleMessage m) {
                 Log.d(TAG, m.lineNumber() + ": " + m.message());
@@ -152,14 +158,13 @@ public class WebShellActivity extends Activity {
             && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
     }
 
-    /** 壳自身的 JS 接口（注入名 "h3sshell"）：页面按钮跳原生升级工具页（UpgradeGate 门控流程）。 */
-    private Object shellInterface() {
-        return new Object() {
-            @android.webkit.JavascriptInterface
-            public void openUpgradeTool() {
-                startActivity(new Intent(WebShellActivity.this, MainActivity.class));
-            }
-        };
+    /** SAF 文件选择结果转给 h3sota 桥（升级页在 WebView 内，不再跳原生工具页）。 */
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == 42 && result == RESULT_OK && data != null && data.getData() != null
+                && otaBridge != null) {
+            otaBridge.onFilePicked(data.getData());
+        }
     }
 
     @Override public void onBackPressed() {

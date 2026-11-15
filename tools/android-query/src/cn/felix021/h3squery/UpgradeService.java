@@ -113,7 +113,8 @@ public class UpgradeService extends Service {
         try {
             JSONObject j=new JSONObject().put("state",gate.state().name()).put("message",text).put("log",logFile.getName())
                 .put("nonce",nonce==null?JSONObject.NULL:nonce).put("sha256",sha==null?JSONObject.NULL:sha)
-                .put("file_bytes",firmware==null?0:firmware.length).put("armed",gate.armed()).put("time_ms",System.currentTimeMillis());
+                .put("file_bytes",firmware==null?0:firmware.length).put("armed",gate.armed()).put("time_ms",System.currentTimeMillis())
+                .put("sent_bytes",sentBytes); // WebView 升级页进度字段
             j.put("att_mtu",attMtu).put("gatt_payload",attMtu-3);
             if (snapshot!=null) j.put("device",new JSONObject().put("pid",snapshot.pid).put("vid",snapshot.vid).put("uid",snapshot.uid).put("version",snapshot.version).put("battery",snapshot.battery).put("double_backup",snapshot.doubleBackup).put("eligibility",snapshot.eligibility));
             AtomicFile file=new AtomicFile(new File(getFilesDir(),STATE_FILE));
@@ -190,6 +191,7 @@ public class UpgradeService extends Service {
             byte[] bytes=queue.poll(); if(bytes!=null) {
                 queuedBytes-=bytes.length; sentBytes+=bytes.length; chunks++;
                 log("gatt_chunk_completed","chunk="+chunks+" bytes="+bytes.length+" queued="+queuedBytes);
+                if (chunks%32==0) state("写入中 "+sentBytes+"/"+(firmware==null?0:firmware.length)+" 字节"); // WebView 升级页轮询 state 文件显示进度
             }
             busy=false; nextWriteAt=SystemClock.elapsedRealtime()+10; pump();
         }); }

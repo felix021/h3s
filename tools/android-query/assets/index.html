@@ -135,6 +135,41 @@ button[aria-selected="true"]:not(:disabled):active {
   background: var(--active);
   color: var(--on-accent);
 }
+/* 升级流程：步骤列表 / 危险按钮 / 进度条 */
+button.danger:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+button.danger:not(:disabled):active {
+  background: var(--danger);
+  color: var(--bg);
+}
+.ota-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 14px;
+}
+.ota-steps li {
+  display: grid;
+  gap: 8px;
+}
+.ota-steps strong {
+  font-size: 14px;
+}
+.progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--soft);
+  overflow: hidden;
+}
+.progress > div {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
 button:disabled,
 select:disabled {
   opacity: 1;
@@ -221,11 +256,37 @@ header {
 }
 .brand {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-columns: 32px minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   margin-bottom: 12px;
 }
+/* 目录：横滑 chip 快速跳转，内容跟随当前 tab */
+.toc {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin-top: 10px;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+.toc::-webkit-scrollbar { display: none; }
+.toc a {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--text);
+  text-decoration: none;
+  background: var(--card);
+}
+.toc a.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+article.card { scroll-margin-top: 132px; }
 .brand svg {
   display: block;
   width: 32px;
@@ -236,16 +297,26 @@ header {
   color: var(--muted);
   font-size: 12px;
 }
-.theme-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
+#themeCycle {
+  display: inline-flex;
   align-items: center;
-  margin-bottom: 10px;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
 }
-.theme-row > span {
-  font-size: 13px;
-  color: var(--muted);
+#themeCycle svg {
+  display: none;
+  width: 20px;
+  height: 20px;
+}
+/* icon 反映用户所选模式（非实际生效色），由 html[data-theme-choice] 控制 */
+html[data-theme-choice='light'] #themeCycle svg[data-theme-icon='light'],
+html[data-theme-choice='dark'] #themeCycle svg[data-theme-icon='dark'],
+html[data-theme-choice='auto'] #themeCycle svg[data-theme-icon='auto'],
+html:not([data-theme-choice]) #themeCycle svg[data-theme-icon='auto'] {
+  display: block;
 }
 .segment {
   display: grid;
@@ -700,9 +771,6 @@ summary {
   .chips {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .theme-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 </style>
 </head>
@@ -728,15 +796,23 @@ summary {
       </div>
       <button id="logToggle" aria-controls="logPanel"
               aria-expanded="false">日志</button>
-    </div>
-
-    <div class="theme-row">
-      <span id="themeLabel">外观</span>
-      <div class="segment" role="group" aria-labelledby="themeLabel">
-        <button data-theme-choice="light" aria-pressed="false">亮色</button>
-        <button data-theme-choice="dark" aria-pressed="false">暗色</button>
-        <button data-theme-choice="auto" aria-pressed="true">自动</button>
-      </div>
+      <button id="themeCycle" aria-label="切换外观主题" title="外观：循环切换 亮色/暗色/自动">
+        <svg data-theme-icon="light" viewBox="0 0 32 32" aria-hidden="true">
+          <circle cx="16" cy="16" r="6" fill="currentColor"/>
+          <g stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <path d="M16 3v4M16 25v4M3 16h4M25 16h4M6.8 6.8l2.8 2.8M22.4 22.4l2.8 2.8M25.2 6.8l-2.8 2.8M9.6 22.4l-2.8 2.8"/>
+          </g>
+        </svg>
+        <svg data-theme-icon="dark" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M20.5 4.5A12 12 0 1 0 27.5 20 9.5 9.5 0 0 1 20.5 4.5Z"
+                fill="currentColor"/>
+        </svg>
+        <svg data-theme-icon="auto" viewBox="0 0 32 32" aria-hidden="true">
+          <circle cx="16" cy="16" r="11" fill="none"
+                  stroke="currentColor" stroke-width="2.5"/>
+          <path d="M16 5a11 11 0 0 1 0 22Z" fill="currentColor"/>
+        </svg>
+      </button>
     </div>
 
     <div class="segment two tabs" role="tablist" aria-label="工具分类">
@@ -745,6 +821,7 @@ summary {
       <button id="tabBtnUsb" role="tab" aria-selected="false"
               aria-controls="tabUsb" tabindex="-1">USB 工具</button>
     </div>
+    <nav id="toc" class="toc" aria-label="页面目录"></nav>
   </div>
 </header>
 
@@ -757,7 +834,7 @@ summary {
   </div>
 
   <section id="tabHs" role="tabpanel" aria-labelledby="tabBtnHs">
-    <article class="card">
+    <article class="card" id="sec-connect">
       <div class="card-head">
         <h2>连接耳机</h2>
         <span id="statusPill" class="badge">未连接</span>
@@ -784,7 +861,7 @@ summary {
       <p id="mtuText" class="note">仅连接构建时指定的耳机。</p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-write">
       <div class="card-head">
         <h2>允许写入</h2>
         <span id="armBadge" class="badge">未武装</span>
@@ -799,7 +876,7 @@ summary {
       </p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-anc">
       <div class="card-head">
         <h2>降噪模式</h2>
         <span class="badge">ANC</span>
@@ -820,7 +897,7 @@ summary {
       </p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-eq">
       <div class="card-head">
         <h2>均衡器</h2>
         <span id="eqBadge" class="badge">自定义 · 10 段</span>
@@ -883,7 +960,7 @@ summary {
       </p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-prompt">
       <div class="card-head">
         <h2>提示音音量</h2>
         <span class="badge">三档</span>
@@ -898,7 +975,7 @@ summary {
       </p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-keys">
       <div class="card-head">
         <h2>按键自定义</h2>
         <span id="keyDirtyCount" class="badge">无待发送修改</span>
@@ -937,7 +1014,7 @@ summary {
       </p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-audio">
       <div class="card-head">
         <h2>音频模式</h2>
         <span class="badge">音乐与影音</span>
@@ -954,22 +1031,58 @@ summary {
       </p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-upgrade">
       <div class="card-head">
         <h2>固件升级</h2>
-        <span class="badge">原生工具</span>
+        <span class="badge warning">写入操作</span>
       </div>
-      <p class="muted">当前版本尚未查询；本页不直接执行升级。</p>
-      <div class="actions">
-        <button id="openUpgrade">打开原生升级工具</button>
-      </div>
-      <p class="note">
-        升级继续使用原生身份、电量与固定候选检查。
-        EQ 修复候选仍未验证，不提供刷入入口。
+      <p class="muted">
+        仅支持刷入<b>已实测的 ANC 两态恢复镜像</b>（0.1.1.8，此前已通过实际
+        OTA 与按键验收）。EQ 实验镜像已停用，不提供刷入入口；未识别文件
+        不能作为候选。确认刷写后服务会重新即时读取设备准入条件，通过后
+        才开始写入。
       </p>
+      <ol class="ota-steps">
+        <li>
+          <strong>检查升级文件</strong>
+          <div class="actions">
+            <button id="otaPick">选择 uFW 文件</button>
+          </div>
+          <p id="otaFileInfo" class="note" hidden></p>
+        </li>
+        <li>
+          <strong>设为本次候选</strong>
+          <div class="actions">
+            <button id="otaInstall" disabled>复制为候选（不写入耳机）</button>
+          </div>
+          <p id="otaCandidateInfo" class="note" hidden></p>
+        </li>
+        <li>
+          <strong>准备：核对文件并读取设备准入</strong>
+          <div class="actions">
+            <button id="otaPrepare" disabled>开始准备（连接耳机）</button>
+          </div>
+        </li>
+        <li>
+          <strong>确认并刷写</strong>
+          <div id="otaPlan" class="note" hidden></div>
+          <div class="actions">
+            <button id="otaConfirm" class="danger" disabled>确认刷入</button>
+            <button id="otaCancel" disabled>取消准备</button>
+          </div>
+        </li>
+        <li>
+          <strong>进度与结果</strong>
+          <div id="otaProgressWrap" hidden>
+            <div class="progress"><div id="otaProgressBar"></div></div>
+            <p id="otaProgressText" class="note"></p>
+          </div>
+          <p id="otaStateLine" class="note">尚未开始。</p>
+        </li>
+      </ol>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-more">
       <div class="card-head">
         <h2>更多功能</h2>
         <span class="badge">尚未支持</span>
@@ -984,7 +1097,7 @@ summary {
   </section>
 
   <section id="tabUsb" role="tabpanel" aria-labelledby="tabBtnUsb" hidden>
-    <article class="card">
+    <article class="card" id="sec-usb-dev">
       <div class="card-head">
         <h2>USB 设备</h2>
         <span id="usbVerifiedTag" class="badge warning">OTG 链路未验证</span>
@@ -1002,7 +1115,7 @@ summary {
       </p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-usb-rom">
       <div class="card-head">
         <h2>进入 ROM 模式</h2>
         <span class="badge">一次性请求</span>
@@ -1020,7 +1133,7 @@ summary {
       </p>
     </article>
 
-    <article class="card">
+    <article class="card" id="sec-usb-read">
       <div class="card-head">
         <h2>ROM 会话与读取</h2>
         <span class="badge">不写 Flash</span>
@@ -1056,7 +1169,7 @@ summary {
       </details>
     </article>
 
-    <article class="card flash-card">
+    <article class="card flash-card" id="sec-usb-flash">
       <div class="card-head">
         <h2>刷机区</h2>
         <span class="badge bad">无写入路径</span>
@@ -1159,27 +1272,25 @@ function applyTheme() {
     ? (themeMedia.matches ? 'dark' : 'light')
     : themeChoice;
   document.documentElement.dataset.theme = actual;
+  document.documentElement.dataset.themeChoice = themeChoice;
   document.documentElement.style.colorScheme = actual;
-  all('[data-theme-choice]').forEach(button => {
-    button.setAttribute(
-      'aria-pressed',
-      String(button.dataset.themeChoice === themeChoice)
-    );
-  });
+  const cycle = $('themeCycle');
+  const labels = { light: '亮色', dark: '暗色', auto: '自动（跟随系统）' };
+  cycle.setAttribute('aria-label', '当前外观：' + labels[themeChoice] + '，点击切换');
+  cycle.title = '外观：' + labels[themeChoice] + '（点击循环 亮色/暗色/自动）';
   $('storageNote').hidden = storageAvailable;
 }
-all('[data-theme-choice]').forEach(button => {
-  button.onclick = () => {
-    themeChoice = button.dataset.themeChoice;
-    try {
-      localStorage.setItem('h3s.theme', themeChoice);
-      storageAvailable = localStorage.getItem('h3s.theme') === themeChoice;
-    } catch (e) {
-      storageAvailable = false;
-    }
-    applyTheme();
-  };
-});
+$('themeCycle').onclick = () => {
+  const order = ['light', 'dark', 'auto'];
+  themeChoice = order[(order.indexOf(themeChoice) + 1) % order.length];
+  try {
+    localStorage.setItem('h3s.theme', themeChoice);
+    storageAvailable = localStorage.getItem('h3s.theme') === themeChoice;
+  } catch (e) {
+    storageAvailable = false;
+  }
+  applyTheme();
+};
 if (themeMedia.addEventListener) {
   themeMedia.addEventListener('change', applyTheme);
 } else {
@@ -1194,6 +1305,36 @@ window.addEventListener('storage', event => {
 applyTheme();
 
 /* ---------- 主 tab 与日志 ---------- */
+/* 目录条：跟随当前 tab 的锚点 chip，点击平滑滚动 */
+const TOC = {
+  hs: [
+    ['sec-connect', '连接'], ['sec-anc', '降噪'], ['sec-eq', '均衡器'],
+    ['sec-prompt', '提示音'], ['sec-keys', '按键'], ['sec-audio', '音频模式'],
+    ['sec-upgrade', '固件升级'], ['sec-more', '更多']
+  ],
+  usb: [
+    ['sec-usb-dev', '设备'], ['sec-usb-rom', 'ROM 模式'],
+    ['sec-usb-read', '读取/备份'], ['sec-usb-flash', '刷机区']
+  ]
+};
+function renderToc(name) {
+  const toc = $('toc');
+  toc.textContent = '';
+  TOC[name].forEach(([id, label], index) => {
+    const link = document.createElement('a');
+    link.href = '#' + id;
+    link.textContent = label;
+    link.onclick = event => {
+      event.preventDefault();
+      toc.querySelectorAll('a').forEach(a => a.classList.remove('active'));
+      link.classList.add('active');
+      const target = $(id);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    if (index === 0) link.classList.add('active');
+    toc.appendChild(link);
+  });
+}
 function selectTab(name, focus) {
   const headset = name === 'hs';
   $('tabHs').hidden = !headset;
@@ -1206,12 +1347,15 @@ function selectTab(name, focus) {
     button.tabIndex = selected ? 0 : -1;
     if (selected && focus) button.focus();
   });
+  renderToc(name);
+  window.scrollTo({ top: 0 });
   if (!headset) {
     if (!usbBusy) usbScan();
   }
 }
 $('tabBtnHs').onclick = () => selectTab('hs', false);
 $('tabBtnUsb').onclick = () => selectTab('usb', false);
+renderToc('hs');
 all('[role="tab"]').forEach(button => {
   button.onkeydown = event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -1998,15 +2142,107 @@ $('kmWrite').onclick = () => {
 };
 renderKeyRows();
 
-/* ---------- 原生升级入口 ---------- */
-$('openUpgrade').disabled = !(S && typeof S.openUpgradeTool === 'function');
-$('openUpgrade').onclick = () => {
-  try {
-    S.openUpgradeTool();
-  } catch (e) {
-    notify('无法打开原生升级工具：' + e, true);
+/* ---------- 固件升级（h3sota 桥：文件→候选→准备→确认→进度） ---------- */
+const OTA = window.h3sota || null;
+let otaCandidateReady = false;
+let otaPollTimer = null;
+
+function otaNotify(text, bad) {
+  notify(text, bad);
+}
+window.onH3sOtaEvent = payload => {
+  if (!payload || !payload.event) return;
+  if (payload.event === 'ota_file') {
+    const info = $('otaFileInfo');
+    info.hidden = false;
+    info.textContent = '文件：' + (payload.bytes / 1024 / 1024).toFixed(2) + ' MiB · '
+      + 'SHA-256 ' + String(payload.sha256).slice(0, 16) + '… · ' + payload.note;
+    $('otaInstall').disabled = !payload.is_candidate;
+    otaCandidateReady = false;
+    $('otaPrepare').disabled = true;
+  } else if (payload.event === 'ota_candidate') {
+    otaCandidateReady = true;
+    $('otaPrepare').disabled = false;
+    const info = $('otaCandidateInfo');
+    info.hidden = false;
+    info.textContent = '候选已就绪：' + (payload.bytes / 1024 / 1024).toFixed(2)
+      + ' MiB（candidate.ufw，回读校验一致）。下一步将连接耳机做即时准入检查。';
+    otaNotify('候选文件已就绪，尚未写入耳机。');
+  } else if (payload.event === 'ota_error') {
+    otaNotify('升级操作失败（' + payload.where + '）：' + payload.error, true);
   }
 };
+function otaRenderState(plan) {
+  const line = $('otaStateLine');
+  const wrap = $('otaProgressWrap');
+  const bar = $('otaProgressBar');
+  const text = $('otaProgressText');
+  const confirmBtn = $('otaConfirm');
+  const cancelBtn = $('otaCancel');
+  const stateName = plan && plan.state || 'NONE';
+  if (!plan || stateName === 'NONE') {
+    line.textContent = '尚未开始。';
+    wrap.hidden = true;
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = !OTA;
+    return;
+  }
+  line.textContent = '状态：' + stateName + ' · ' + (plan.message || '');
+  cancelBtn.disabled = !OTA;
+  if (stateName === 'PREPARED') {
+    const device = plan.device || {};
+    const detail = $('otaPlan');
+    detail.hidden = false;
+    detail.textContent = '本次计划——电量：' + (device.battery == null ? '未知' : device.battery + '%')
+      + ' · 版本：' + (device.version == null ? '未知' : device.version)
+      + ' · 候选 SHA-256：' + (plan.sha256 ? String(plan.sha256).slice(0, 16) + '…' : '未记录')
+      + '。确认后立即复查设备并开始实际写入。';
+    confirmBtn.disabled = false;
+    confirmBtn.onclick = () => {
+      const result = JSON.parse(OTA.confirm(plan.nonce));
+      if (!result.ok) {
+        otaNotify('确认被拒绝：' + result.error, true);
+      } else {
+        confirmBtn.disabled = true;
+        otaNotify('已确认，服务将复查设备后开始写入。');
+      }
+    };
+  } else {
+    $('otaPlan').hidden = true;
+    confirmBtn.disabled = stateName !== 'PREPARED';
+  }
+  if (typeof plan.sent_bytes === 'number' && plan.file_bytes > 0) {
+    wrap.hidden = false;
+    const percent = Math.min(100, Math.round(plan.sent_bytes * 100 / plan.file_bytes));
+    bar.style.width = percent + '%';
+    text.textContent = '写入 ' + plan.sent_bytes.toLocaleString() + ' / '
+      + plan.file_bytes.toLocaleString() + ' 字节（' + percent + '%）';
+  } else {
+    wrap.hidden = true;
+  }
+  if (stateName === 'SUCCEEDED') otaNotify('升级完成。');
+  if (stateName === 'FAILED') otaNotify('升级失败：' + (plan.message || ''), true);
+}
+function otaPoll() {
+  if (!OTA) return;
+  try {
+    otaRenderState(JSON.parse(OTA.readState()));
+  } catch (e) { /* 状态文件缺失或未就绪时静默，下轮再试 */ }
+}
+if (OTA) {
+  $('otaPick').onclick = () => { try { OTA.pickUfw(); } catch (e) { otaNotify('无法打开文件选择：' + e, true); } };
+  $('otaInstall').onclick = () => { try { OTA.installCandidate(); } catch (e) { otaNotify('候选落盘失败：' + e, true); } };
+  $('otaPrepare').onclick = () => {
+    if (!otaCandidateReady) { otaNotify('请先完成候选文件落盘。', true); return; }
+    try { OTA.prepare(); otaPollTimer = setInterval(otaPoll, 2000); } catch (e) { otaNotify('准备失败：' + e, true); }
+  };
+  $('otaCancel').onclick = () => { try { OTA.cancel(); } catch (e) { otaNotify('取消失败：' + e, true); } };
+  otaPoll(); // 已有会话（如上次准备未收尾）时立即呈现
+  otaPollTimer = setInterval(otaPoll, 2000);
+} else {
+  $('otaPick').disabled = true;
+  $('otaStateLine').textContent = '离线预览：升级功能需要原生壳（h3sota 桥）。';
+}
 
 /* ---------- USB：沿用现有桥方法与事件 ---------- */
 let usbOpened = false;
@@ -2346,20 +2582,3 @@ window.h3sUiLayoutAudit = function () {
 </script>
 </body>
 </html>
-```
-
-**3. 自查清单**
-
-| 问题 | 实现与检查结论 |
-|---|---|
-| 横向滑动 | 旧 viewport 本身正确。移除 `132px + rotate(-90deg)` 滑块；移除五列窄下拉框矩阵；Grid 使用 `minmax(0,1fr)`，Flex 允许换行，长地址与日志可断行。未用整页 `overflow:hidden` 掩盖问题。 |
-| 360dp 自适应 | 页面左右各 12px，卡片内边距各 14px，扣除边框后 EQ 内容宽 306px；五列扣除四个 6px 间距后，每列约 56.4px。 |
-| 亮／暗／自动 | 首次绘制前恢复主题；监听 `prefers-color-scheme`；手动选择写入 localStorage。当前原生壳的两项限制见下方。 |
-| 均衡器 | 固定十段自定义、±12dB 整数、Pointer Capture 连续拖动、双击归零、键盘操作、SVG 整体曲线；原始七预设完整保留。 |
-| 按键自定义 | 三个物理键分别展示五行手势；保留单击／双击／三击／四击／长按、完整动作清单、两种写接口及工作副本读取。失败保留修改，长按明确标注待验证。 |
-| 对比度 | 已计算上述颜色配对。禁用状态不降低透明度；图标使用同一套颜色变量。 |
-| USB | 保留枚举、授权、打开、ROM 请求、INQUIRY、RAM loader、双读 ROM／Flash 备份和只展示限制的刷机区。没有新增 Flash 写入接口。 |
-| 离线 | CSS、JS、SVG 全部内联；没有外部资源请求；CSP 禁止网络连接。 |
-| 验证范围 | 完成源码核对、对比度计算和静态检查；**未运行这份新页面的浏览器测试或真机测试**，不把设计保证表述成实测结果。 |
-
-要完整满足主题要求，原生壳还需这两处配套调整；本次没有修改它们：
