@@ -6,6 +6,7 @@ fetches stop; two diagnostic PLL values and one R0 pointer are hypotheses only.
 This is application handoff exploration, not architectural reset or boot proof.
 """
 import argparse
+from bisect import bisect_right
 from collections import Counter
 import hashlib
 import json
@@ -115,6 +116,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     # 预算停点是干净边界(B-1:恢复不补调 advance,从循环头重新 decode)。
     if rom is not None:
         check_rom(rom)
+    # O3-A3b(docs/o3-memory-design.md §4.1):RAM 读结果 memo。挂 explore
+    # 闭包局部(不进 vars(mem),SNAP M2 属性集守卫整体绕开,world_snapshot
+    # 零改动)。只替代 Memory.read region 分支的缺失检查+装配;键=(translate
+    # 后的最终物理地址,size),值恒为 bytes;缺失(Blocked)不缓存;条目上限
+    # 1<<16 超限全清。失效=规范式契约:RAM 已知字节的内容或存在性的任何
+    # 变更都先于下一次可能命中——实现为写路径全清(Memory.write 的 ram
+    # 变更点/write_abstract_byte/write_abstract_word 两个直改分支)+restore
+    # 后显式清空(apply_ram_section 在 world_snapshot 侧无法触达闭包,
+    # restore 分支的清空是其等价实现点;不依赖「主循环前 memo 必空」的
+    # 时序论证)。装载期 seeds 直写 ram 在任何 read 之前,无失效义务。
+    ram_read_memo={}
     events=[]
     adapters=Counter()
     rom_steps=Counter()
@@ -143,6 +155,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         regions=((0x00123000,STACK_TOP,'bootstrap_stack'),
                  (BOOT_ARGS,BOOT_ARGS+24,'hypothesized_boot_argument_object'))+tuple(handoff['regions'] if handoff else ())
         operation='read'
+        # O3-A2(docs/o3-memory-design.md §4.1):region 查找快路径的类级状态
+        # (类属性,不进 vars(mem)——SNAP M2 属性集守卫 world_snapshot
+        # _check_m2_shape)。_region_sorted=排序 (lo,hi,kind) 数组,仅在
+        # regions 两两不重叠时构建;None=检测到重叠,回退原线性扫(重叠时
+        # 排序会改「先声明先赢」的匹配结果,回退而非拒绝)。_region_hint=
+        # 上次命中的完整 (lo,hi,kind):先行试一次完整判定,命中即真命中
+        # (该 region 完全包含请求),无需不重叠前提;未命中走索引/线性扫。
+        _region_sorted=None
+        _region_hint=None
 
         def __init__(self):
             self.ram={}
@@ -150,8 +171,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             self.icfg_spills={}
 
         def region(self,address,size):
+            hint=Memory._region_hint
+            if hint is not None and hint[0]<=address and address+size<=hint[1]:
+                return hint[2]
+            lookup=Memory._region_sorted
+            if lookup is not None:
+                # Non-overlapping regions: the only region that can fully
+                # contain the request, if any, has the greatest lo<=address.
+                los,his,kinds=lookup
+                i=bisect_right(los,address)-1
+                if i>=0 and address+size<=his[i]:
+                    Memory._region_hint=(los[i],his[i],kinds[i])
+                    return kinds[i]
+                return None
             for low,high,kind in self.regions:
                 if low<=address and address+size<=high:
+                    Memory._region_hint=(low,high,kind)
                     return kind
             return None
 
@@ -168,7 +203,6 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             for base,data in handoff['readonly'] if handoff else ():
                 if base<=address and address+size<=base+len(data):
                     return data[address-base:address-base+size]
-            detail={'access':self.operation,'address':hex(address),'size':size}
             if hardware is not None and self.operation!='fetch' and hardware.handles(address,size):
                 return struct.pack('<I',hardware.read(address))
             if hardware is not None and self.operation!='fetch':
@@ -176,15 +210,37 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # fixture this returns None and the ordinary strict path applies.
                 data=hardware.read_bytes(address,size)
                 if data is not None:return data
+            # O3-A1(docs/o3-memory-design.md §4.1):detail 只被 PLL event 与
+            # 下方 Blocked 分支消费;构造点从 handles 之前移到这里,MMIO/字节
+            # fixture 命中的读不再白构造(dict 字面量与 operation/hex 读取均
+            # 无副作用,纯等价)。
+            detail={'access':self.operation,'address':hex(address),'size':size}
             if self.operation!='fetch' and address==PLL and size==4 and pll is not None:
                 event({**detail,'hypothesis':'PLL0_CON0','value':hex(pll)})
                 return struct.pack('<I',pll)
             region=self.region(address,size)
             if region:
-                missing=next((a for a in range(address,address+size) if a not in self.ram),None)
-                if missing is not None:
-                    raise Blocked('uninitialized_memory',**detail,region=region,first_missing=hex(missing))
-                return bytes(self.ram[a] for a in range(address,address+size))
+                memo_key=(address,size)
+                memo_hit=ram_read_memo.get(memo_key)
+                if memo_hit is not None:return memo_hit
+                # O3-A3a:缺失检查与装配合并为一次逐字节遍历——首次遇
+                # None 即按原语义抛(first_missing=该地址;检查的字节集合、
+                # 异常内容与先后顺序与原「先检查后装配」两遍实现恒等:原
+                # 实现缺失即抛、后续字节不查,缺失字的装配产物本来就被
+                # 丢弃)。O3-A3b:装配结果进 memo(miss 率低;见上方声明处
+                # 的失效契约)。
+                get=self.ram.get
+                out=[]
+                append=out.append
+                for a in range(address,address+size):
+                    byte=get(a)
+                    if byte is None:
+                        raise Blocked('uninitialized_memory',**detail,region=region,first_missing=hex(a))
+                    append(byte)
+                data=bytes(out)
+                if len(ram_read_memo)>=1<<16:ram_read_memo.clear()
+                ram_read_memo[memo_key]=data
+                return data
             if self.operation=='fetch':
                 raise Blocked('unmapped_instruction_fetch',**detail,
                               reference_sdk_symbol='_pll_init' if address==0x1fe14 else None)
@@ -213,6 +269,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if not region:
                 details={'value_bytes':data.hex()} if diagnostics else {}
                 raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data),**details)
+            ram_read_memo.clear()  # O3-A3b 失效:下方的 icfg_spills overlay 与 ram.update 变更 RAM 已知字节
             for base,value in list(self.icfg_spills.items()):
                 low,high=max(base,address),min(base+4,address+len(data))
                 if low<high:
@@ -258,6 +315,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             physical=self.abstract_write_target(address,1)
             require(not any(base<=physical<base+4 for base in self.icfg_spills),
                     'abstract byte store overlapping a partial icfg spill is unmodeled')
+            ram_read_memo.clear()  # O3-A3b 失效:下方的字节直改(known→known / known→unknown)
             byte,origin=value.bytes[index],value.origins[index]
             if byte is None:self.ram.pop(physical,None);self.unknown_origins[physical]=origin
             else:self.ram[physical]=byte;self.unknown_origins.pop(physical,None)
@@ -270,6 +328,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             physical=self.preflight_abstract_word(address,value);region=self.region(physical,4)
             if isinstance(value,IcfgValue):
                 self.icfg_spills[physical]=value
+                ram_read_memo.clear()  # O3-A3b 失效:下方的溢出字 overlay 逐字节写 ram
                 for i in range(4):
                     a=physical+i;mask=255<<(8*i)
                     if value.known&mask==mask:self.ram[a]=(value.value>>(8*i))&255
@@ -279,6 +338,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                        'known_mask':hex(value.known),'known_value':hex(value.value)})
                 return
             self.icfg_spills.pop(physical,None)
+            ram_read_memo.clear()  # O3-A3b 失效:下方的逐字节直改(含 known→unknown)
             for i,v in enumerate(value.bytes):
                 a=physical+i
                 if v is None:self.ram.pop(a,None);self.unknown_origins[a]=value.origins[i]
@@ -305,6 +365,21 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if protected:raise Blocked('abstract_store_requires_ram',address=hex(physical),size=size)
             if not self.region(physical,size):raise Blocked('abstract_store_requires_ram',address=hex(physical),size=size)
             return physical
+
+    # O3-A2:装载期一次性检测 regions 两两是否重叠(O(n^2),n<=~20)并构建
+    # 排序索引。无重叠→bisect 查找;重叠→_region_sorted=None,region() 回退
+    # 原线性扫(先声明先赢语义原样保留;断言不拒绝任何原本可运行的配置,
+    # 零行为变化)。
+    _o3i_rgns=Memory.regions
+    if any(_o3i_rgns[i][0]<_o3i_rgns[j][1] and _o3i_rgns[j][0]<_o3i_rgns[i][1]
+           for i in range(len(_o3i_rgns)) for j in range(i+1,len(_o3i_rgns))):
+        Memory._region_sorted=None
+    else:
+        _o3i_srt=sorted(_o3i_rgns)
+        Memory._region_sorted=([r[0] for r in _o3i_srt],
+                               [r[1] for r in _o3i_srt],
+                               [r[2] for r in _o3i_srt])
+    Memory._region_hint=None
 
     class CPU(module.CPU):
         core_id=0
@@ -1816,6 +1891,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         applied=restore_world(loaded,cpus=cpus,mem=c.mem,hardware=hardware,machine=machine,
                               ledger=ledger_namespace,
                               expected_context=snapshot.get('expected_context'))
+        ram_read_memo.clear()  # O3-A3b 失效:restore(apply_ram_section)直写三 dict;
+        # 显式清空不依赖「restore 前 memo 必空」的时序论证(当前构造链确实
+        # 不在主循环前调 read,但契约自足)。
         # 账本被恢复成新容器对象;重绑 explore 局部量(event 等闭包按变量引用
         # 捕获,重绑后同一 cell 看到新容器)。
         events=ledger_namespace.events;adapters=ledger_namespace.adapters
