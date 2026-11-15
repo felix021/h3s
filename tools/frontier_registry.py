@@ -224,6 +224,21 @@ FEATURES = (
             'DAC_TM0 初值敏感性探针(TM0 初值一次性 0xffffffff 替换,TM1 不扰动保归因干净;'
             '两臂写回断言 0xFDA8_0000/0xFDA8_FFFF 异或 0xFFFF+轨迹全同,CV 双探针先例;'
             'sensitivity-probe-not-plausible-state)'),
+    # ---- S19 冲刺批 2 续三(路 ADA/sim-adacon0:JL_ADDA ADA 子族九字容器) ----
+    Feature('jl_adda_ada_family', 'conditional', ('jl_audio_dac_tm_readback',), False, None,
+            'JL_ADDA ADA 子族九字容器(0xfe0a20..0xfe0a40 ADA_CON0..8;21,798,206 停点 '
+            '0x606b5ee=ADA 配置函数 0x606b4d0..0x606c3a8 的 ADA_CON0 bit5 清位 RMW '
+            '内部读;静态全图 7 个直接 li 基址站点(9 实例)全部配置 RMW/组装形状、'
+            '读值零分支消费(309 RMW+51 ld 逐一核查);合成初始 0+读回=当前值;'
+            '0xfe0a44 零触达不进白名单;新开关分立不扩 B3 五字 WORDS(legacy 逐字节'
+            '不变红线);依赖边=当前执行路径先后关系(TM 放行后链才到达),非硬件'
+            '依赖;codex 定调:九字精确归属、同址新读者须重审、close 族清位服务合成'
+            '配置字非硅状态)'),
+    Feature('jl_adda_ada_probe_value', 'probe_only', ('jl_adda_ada_family',), True, None,
+            'ADA_CON0 初值敏感性探针(初值一次性 0xffffffff 替换只注 0xfe0a20,其余八字'
+            '不扰动保归因干净;断言非零合成初值经停点 RMW 只清 bit5——codex 钉子:'
+            '仅测初值零会漏掉 RMW 读写不同容器状态的实现错误;sensitivity-probe-'
+            'not-plausible-state)'),
     # (p2m_mailbox_ack / cfg523_named_fixture 已实现并单测,但 19,139,239 停点
     # (JL_AUDIO->DAC_TM0 运行态读)证实两者的全部运行态消费者仍在音频数字域整块
     # 之后——按 BQ 先例(零消费者不落地)从条件栈撤回,实现保留在本分支历史
@@ -269,10 +284,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 21798206,
-        'stop_pc': '0x606b5ee',
+        'completed_steps': 21798257,
+        'stop_pc': '0x606b68e',
         'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfe0a20', 'size': 4, 'reference_sdk_register': None},
+                 'address': '0xf2b404', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }
