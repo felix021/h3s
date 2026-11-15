@@ -24,6 +24,7 @@ def main():
     #   默认 1=串行、遇错即停；-jN 跑完全部再聚合报错（exit 1）。
     parser.add_argument('--units',action='store_true',help='run only the fast unit-test tier')
     parser.add_argument('--only',default='',help='unit tier plus only these named tools (comma-separated file names)')
+    parser.add_argument('--preflight',action='store_true',help='additionally run the offline assertion preflight (tools/assert_preflight.py) over the standard local-checks reports; missing reports are skipped')
     parser.add_argument('--jobs',type=int,default=1,help='run checks with N parallel workers (default 1: serial, stop at first failure)')
     args=parser.parse_args()
     only={name.strip() for name in args.only.split(',') if name.strip()}
@@ -57,6 +58,7 @@ def main():
     run(sys.executable,'tools/test_task_unknown.py')
     run(sys.executable,'tools/test_icfg.py')
     run(sys.executable,'tools/test_irq_entry.py')
+    run(sys.executable,'tools/test_assert_preflight.py')
     run(sys.executable,'tools/test_image_trace_diff.py')
     run(sys.executable,'tools/test_core_tick.py')
     run(sys.executable,'tools/test_timer0_irq.py')
@@ -105,6 +107,14 @@ def main():
         run(sys.executable,'tools/probe_irq_entry.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/irq-entry.json',tool='probe_irq_entry.py')
         run(sys.executable,'tools/analyze_image_trace.py','--rom',args.rom.resolve(),'--self-check','--report','analysis/local-checks/image-trace-diff.json',tool='analyze_image_trace.py')
         run(sys.executable,'tools/probe_core_tick.py','--rom',args.rom.resolve(),'--report','analysis/local-checks/core-tick.json',tool='probe_core_tick.py')
+    if args.preflight:
+        # 断言离线预检（路 CHK）：对标准 local-checks 报告集重放 check() 断言面，
+        # 零仿真、秒级；报告缺失记 skipped 不算失败（--rom 档/手工产物未必在）。
+        run(sys.executable,'tools/assert_preflight.py','--allow-missing',
+            'analysis/local-checks/boot-prefix.json','analysis/local-checks/irq-entry.json',
+            'analysis/local-checks/image-trace-diff.json',
+            'analysis/local-checks/image-trace-selfcheck-conditional.json',
+            tool='assert_preflight.py')
     if args.reproduce:
         run(sys.executable,'tools/check_reproduction.py','--output','analysis/local-checks/reproduction.json')
     if args.android_build:
