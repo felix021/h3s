@@ -116,6 +116,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     # 预算停点是干净边界(B-1:恢复不补调 advance,从循环头重新 decode)。
     if rom is not None:
         check_rom(rom)
+    # O3-A3b(docs/o3-memory-design.md §4.1):RAM 读结果 memo。挂 explore
+    # 闭包局部(不进 vars(mem),SNAP M2 属性集守卫整体绕开,world_snapshot
+    # 零改动)。只替代 Memory.read region 分支的缺失检查+装配;键=(translate
+    # 后的最终物理地址,size),值恒为 bytes;缺失(Blocked)不缓存;条目上限
+    # 1<<16 超限全清。失效=规范式契约:RAM 已知字节的内容或存在性的任何
+    # 变更都先于下一次可能命中——实现为写路径全清(Memory.write 的 ram
+    # 变更点/write_abstract_byte/write_abstract_word 两个直改分支)+restore
+    # 后显式清空(apply_ram_section 在 world_snapshot 侧无法触达闭包,
+    # restore 分支的清空是其等价实现点;不依赖「主循环前 memo 必空」的
+    # 时序论证)。装载期 seeds 直写 ram 在任何 read 之前,无失效义务。
+    ram_read_memo={}
     events=[]
     adapters=Counter()
     rom_steps=Counter()
@@ -209,10 +220,27 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 return struct.pack('<I',pll)
             region=self.region(address,size)
             if region:
-                missing=next((a for a in range(address,address+size) if a not in self.ram),None)
-                if missing is not None:
-                    raise Blocked('uninitialized_memory',**detail,region=region,first_missing=hex(missing))
-                return bytes(self.ram[a] for a in range(address,address+size))
+                memo_key=(address,size)
+                memo_hit=ram_read_memo.get(memo_key)
+                if memo_hit is not None:return memo_hit
+                # O3-A3a:缺失检查与装配合并为一次逐字节遍历——首次遇
+                # None 即按原语义抛(first_missing=该地址;检查的字节集合、
+                # 异常内容与先后顺序与原「先检查后装配」两遍实现恒等:原
+                # 实现缺失即抛、后续字节不查,缺失字的装配产物本来就被
+                # 丢弃)。O3-A3b:装配结果进 memo(miss 率低;见上方声明处
+                # 的失效契约)。
+                get=self.ram.get
+                out=[]
+                append=out.append
+                for a in range(address,address+size):
+                    byte=get(a)
+                    if byte is None:
+                        raise Blocked('uninitialized_memory',**detail,region=region,first_missing=hex(a))
+                    append(byte)
+                data=bytes(out)
+                if len(ram_read_memo)>=1<<16:ram_read_memo.clear()
+                ram_read_memo[memo_key]=data
+                return data
             if self.operation=='fetch':
                 raise Blocked('unmapped_instruction_fetch',**detail,
                               reference_sdk_symbol='_pll_init' if address==0x1fe14 else None)
@@ -241,6 +269,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if not region:
                 details={'value_bytes':data.hex()} if diagnostics else {}
                 raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data),**details)
+            ram_read_memo.clear()  # O3-A3b 失效:下方的 icfg_spills overlay 与 ram.update 变更 RAM 已知字节
             for base,value in list(self.icfg_spills.items()):
                 low,high=max(base,address),min(base+4,address+len(data))
                 if low<high:
@@ -286,6 +315,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             physical=self.abstract_write_target(address,1)
             require(not any(base<=physical<base+4 for base in self.icfg_spills),
                     'abstract byte store overlapping a partial icfg spill is unmodeled')
+            ram_read_memo.clear()  # O3-A3b 失效:下方的字节直改(known→known / known→unknown)
             byte,origin=value.bytes[index],value.origins[index]
             if byte is None:self.ram.pop(physical,None);self.unknown_origins[physical]=origin
             else:self.ram[physical]=byte;self.unknown_origins.pop(physical,None)
@@ -298,6 +328,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             physical=self.preflight_abstract_word(address,value);region=self.region(physical,4)
             if isinstance(value,IcfgValue):
                 self.icfg_spills[physical]=value
+                ram_read_memo.clear()  # O3-A3b 失效:下方的溢出字 overlay 逐字节写 ram
                 for i in range(4):
                     a=physical+i;mask=255<<(8*i)
                     if value.known&mask==mask:self.ram[a]=(value.value>>(8*i))&255
@@ -307,6 +338,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                        'known_mask':hex(value.known),'known_value':hex(value.value)})
                 return
             self.icfg_spills.pop(physical,None)
+            ram_read_memo.clear()  # O3-A3b 失效:下方的逐字节直改(含 known→unknown)
             for i,v in enumerate(value.bytes):
                 a=physical+i
                 if v is None:self.ram.pop(a,None);self.unknown_origins[a]=value.origins[i]
@@ -1859,6 +1891,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         applied=restore_world(loaded,cpus=cpus,mem=c.mem,hardware=hardware,machine=machine,
                               ledger=ledger_namespace,
                               expected_context=snapshot.get('expected_context'))
+        ram_read_memo.clear()  # O3-A3b 失效:restore(apply_ram_section)直写三 dict;
+        # 显式清空不依赖「restore 前 memo 必空」的时序论证(当前构造链确实
+        # 不在主循环前调 read,但契约自足)。
         # 账本被恢复成新容器对象;重绑 explore 局部量(event 等闭包按变量引用
         # 捕获,重绑后同一 cell 看到新容器)。
         events=ledger_namespace.events;adapters=ledger_namespace.adapters
