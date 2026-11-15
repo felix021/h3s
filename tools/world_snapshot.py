@@ -562,8 +562,8 @@ class WorldSnapshot:
             raise SnapshotError('code fingerprint mismatch: the snapshot was captured under '
                                 'different simulation sources (snapshot '
                                 + str(header.get('code_fingerprint'))[:16] + '... vs current '
-                                + current[:16] + '...) — regenerate the snapshot (~3 minutes '
-                                'for the canonical frontier point)')
+                                + current[:16] + '...) — regenerate the snapshot (one full '
+                                'replay to the capture point)')
         # Drift gate 2: stored manifest must match the state shape in the body.
         derived = derive_manifest(body)
         if manifest != derived:
@@ -1125,6 +1125,22 @@ M4_FAMILIES = (
     ('timer2', 'Timer2Delay',
      ('con', 'cnt', 'prd', 'pending', 'lrc_remainder', 'remainder', 'expirations',
       'writes', 'con_reads', 'advance_calls', 'iwkup_writes', 'transactions')),
+    # Post-wiring families (route SNAPX/sim-snapx): four containers that merged
+    # after the sim-snapwire canonical capture (19,139,239) and are all ON in the
+    # current conditional frontier flag set — DT jl_audio_dac_tm (21.8M era),
+    # ADA jl_adda_ada nine-word, LPV p11_lpvad single-word, JLA
+    # jl_audio_adc_dma five-word write-only. Same BL source-verified inventory
+    # method: the four-field write/read-record shape (stores/word_writes/
+    # reads_after_write/synthesized_initial_reads; the ADC DMA record has no
+    # readback); the DT/ADA probe-only initial-word substitutions ride the
+    # per-object static guard like every other M4 fixture.
+    ('jl_audio_dac_tm', 'JLAudioDacTmRegisters',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('jl_adda_ada', 'JLAddaAdaFamilyRegisters',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('p11_lpvad', 'P11LPVADConfigRegisters',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('jl_audio_adc_dma', 'JLAudioAdcDmaWriteRecords', ('stores', 'word_writes')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 
@@ -1197,7 +1213,13 @@ M5_STATE = ('last_core', 'idle_wait_cores', 'stalls', 'launches', 'deferred_core
             'timer0_irq_deliveries', 'irq_delivery_deferrals', 'irq_delivery_deferral_events',
             'events', 'event_count', 'boot_anchors', 'boot_anchor_count', 'first_task_calls',
             'first_task_returns', 'first_task_setup', 'event_clock_advances', 'core_ids')
-M5_SKIP = M5_STATE + ('cores', 'factory', 'hardware')
+# Observation-layer attributes of analyze_image_trace.TraceMachine (route O6):
+# the per-run signature spool and its pending-writes buffer record what THIS
+# comparator run executed, not simulated world state — a restored world starts a
+# fresh spool. Skipping (not capturing) is the honest shape: they never hold
+# state the run loop reads back. Plain DualCoreMachine carries neither attribute.
+M5_OBSERVATION_SKIP = ('trace', 'pending_writes')
+M5_SKIP = M5_STATE + ('cores', 'factory', 'hardware') + M5_OBSERVATION_SKIP
 
 
 def _capture_m5(world):
@@ -1280,8 +1302,8 @@ register_module('M3', 'hardware', capture=_capture_m3, restore=_restore_m3,
                             'object slots are skipped here and captured by the M4 adapter.')
 register_module('M4', 'hardware', capture=_capture_m4, restore=_restore_m4,
                 fields={cls: fields for _, cls, fields in M4_FAMILIES},
-                description='Peripheral projection object families: 31 BR28Model slots '
-                            'covering all 30 projection classes (28 stateful + the two '
+                description='Peripheral projection object families: 35 BR28Model slots '
+                            'covering all 34 projection classes (32 stateful + the two '
                             'stateless idle fixtures; SFCReadBus is two slots — design §M4 '
                             'six families). One-shot event bits and carry state (CRC '
                             'accumulator, ICU countdown) round-trip as ordinary fields; '

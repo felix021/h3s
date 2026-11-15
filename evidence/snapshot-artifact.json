@@ -1,17 +1,6 @@
 [
   {
     "scenario": "p11_heap_experimental_config",
-    "capture_kind": "frontier_stop",
-    "capture_steps": 19139239,
-    "stop_pc": "0x606abbe",
-    "snapshot": "canonical-p11-heap-experimental.bin",
-    "snapshot_sha256": "e2bcb9cbdf2e7f7e9b6584d299937889ea781d80ca07b9c989ebc2aeb770441e",
-    "snapshot_bytes": 2358608,
-    "code_fingerprint": "2984f26fae6eddc0b0a68749397caf0ede0f33741d6e90d9287c36c86fe455c7",
-    "self_check_zero_report_equal": true
-  },
-  {
-    "scenario": "p11_heap_experimental_config",
     "capture_kind": "instruction_budget",
     "capture_steps": 297845,
     "snapshot": "frontier-n300000.bin",
@@ -50,6 +39,60 @@
     "snapshot": "frontier-n300000.bin",
     "full_steps": 397845,
     "resumed_steps": 397845,
+    "report_byte_equal": true,
+    "stop_kind": "instruction_budget"
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "frontier_stop",
+    "capture_steps": 21800455,
+    "stop_pc": "0x606e044",
+    "snapshot": "canonical-p11-heap-experimental.bin",
+    "snapshot_sha256": "f9ba98e0725e10a06029ae141e42d22d50057b741aa363a255e01c29961e2971",
+    "snapshot_bytes": 2539009,
+    "code_fingerprint": "9b64ce142ced6df1bb774c7e15c706a0ea7145537ec5fe91312da63e9f482dd3",
+    "self_check_zero_report_equal": true
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 21696721,
+    "snapshot": "frontier-n21700455.bin",
+    "snapshot_sha256": "d8a8313d1f0d4514dc58f3f1a60b926ad42683064c9ee98f953416d82a6330bb",
+    "snapshot_bytes": 2534365,
+    "code_fingerprint": "9b64ce142ced6df1bb774c7e15c706a0ea7145537ec5fe91312da63e9f482dd3",
+    "self_check_zero_report_equal": true
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 21696721,
+    "advance_steps": 1,
+    "snapshot": "frontier-n21700455.bin",
+    "full_steps": 21696722,
+    "resumed_steps": 21696722,
+    "report_byte_equal": true,
+    "stop_kind": "instruction_budget"
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 21696721,
+    "advance_steps": 10000,
+    "snapshot": "frontier-n21700455.bin",
+    "full_steps": 21706721,
+    "resumed_steps": 21706721,
+    "report_byte_equal": true,
+    "stop_kind": "instruction_budget"
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 21696721,
+    "advance_steps": 100000,
+    "snapshot": "frontier-n21700455.bin",
+    "full_steps": 21796721,
+    "resumed_steps": 21796721,
     "report_byte_equal": true,
     "stop_kind": "instruction_budget"
   }

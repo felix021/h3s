@@ -301,7 +301,8 @@ def test_run_pool_executes_each_label_once_and_shares_runs():
     calls = []
 
     def fake_frontier_run(module, app, header, rom, name, *, flash_image_bytes,
-                          readonly=(), budget=None, scenario='crc_bankb'):
+                          readonly=(), budget=None, scenario='crc_bankb', snapshot=None):
+        assert snapshot is None, 'plain (non-snapshot-round) pool runs pass no snapshot'
         calls.append({'name': name, 'app': app, 'plain': flash_image_bytes,
                       'budget': budget, 'scenario': scenario})
         spool = TraceSpool()
@@ -480,6 +481,76 @@ def test_scenario_registry_shapes():
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
+
+def test_snapshot_round_entry_naming_and_resume_budget_math():
+    """Route SNAPX resume-round entry: per-(scenario, label) snapshot naming,
+    the all-or-none resume budget conversion max(1, effective - captured) and
+    the label-pinning expected_context (an official snapshot may not serve a
+    tested_b79 arm)."""
+    import tempfile
+    from types import SimpleNamespace
+    from collections import Counter
+    from pathlib import Path
+    from world_snapshot import capture_world
+    from analyze_image_trace import resume_snapshot_config, snapshot_path
+
+    directory = Path(tempfile.mkdtemp(prefix='h3s-snapx-entry-'))
+    label_path = snapshot_path(directory, 'p11_heap_experimental', 'official')
+    assert label_path.name == 'p11_heap_experimental-official.bin'
+    assert snapshot_path(directory, 'crc_bankb', 'tested_b79').name == \
+        'crc_bankb-tested_b79.bin'
+
+    def write_snapshot(label, completed):
+        ledger = SimpleNamespace(events=[], adapters=Counter(), rom_steps=Counter(),
+                                 event_counts=Counter(), milestones=[], trace=[],
+                                 completed=completed, stop={'kind': 'instruction_budget'})
+        snapshot = capture_world(ledger=ledger,
+                                 context={'scenario': f'trace_{label}',
+                                          'completed_steps': completed})
+        snapshot.save(snapshot_path(directory, 'p11_heap_experimental', label))
+
+    # Frontier-stop shape: the cap is huge but never binds (the restored world
+    # re-attempts its blocked instruction on the first resumed step).
+    write_snapshot('official', 21800455)
+    config, cap = resume_snapshot_config(directory, 'p11_heap_experimental',
+                                         'official', 40000000)
+    assert config['restore'] == snapshot_path(directory, 'p11_heap_experimental', 'official')
+    assert config['expected_context'] == {'scenario': 'trace_official'}
+    assert cap == 40000000 - 21800455
+    # Budget-stop shape: the cap lands the resumed run on the same endpoint a
+    # full effective-budget replay reaches; a captured 0-step world keeps a cap.
+    write_snapshot('tested_b79', 21700455)
+    _config, cap = resume_snapshot_config(directory, 'p11_heap_experimental',
+                                          'tested_b79', 21710455)
+    assert cap == 10000
+    _config, cap = resume_snapshot_config(directory, 'p11_heap_experimental',
+                                          'tested_b79', 21700455)
+    assert cap == 1
+    # A snapshot header without a step count refuses (not silently 0).
+    ledger = SimpleNamespace(events=[], adapters=Counter(), rom_steps=Counter(),
+                             event_counts=Counter(), milestones=[], trace=[],
+                             completed=0, stop=None)
+    capture_world(ledger=ledger, context={'scenario': 'trace_l1_slotram'}) \
+        .save(snapshot_path(directory, 'p11_heap_experimental', 'l1_slotram'))
+    try:
+        resume_snapshot_config(directory, 'p11_heap_experimental', 'l1_slotram', 40000000)
+    except ValueError as error:
+        assert 'completed_steps' in str(error)
+    else:
+        raise AssertionError('resume config accepted a snapshot without completed_steps')
+
+
+def test_report_for_diff_strips_transport_keys_only():
+    """Route SNAPX: the final-report comparison strips the run name and the
+    snapshot-round transport keys (per-run provenance, both arms carry them in
+    a round) but keeps every world observation."""
+    from analyze_image_trace import _report_for_diff
+    report = {'name': 'trace_official', 'completed_steps': 21800455,
+              'stop': {'kind': 'unmapped_memory'},
+              'snapshot_capture': {'sha256': 'a', 'bytes': 1},
+              'snapshot_restore': {'digest': 'b', 'completed_steps': 21800455}}
+    assert _report_for_diff(report) == {'completed_steps': 21800455,
+                                        'stop': {'kind': 'unmapped_memory'}}
 
 
 if __name__ == '__main__':
