@@ -3,7 +3,7 @@
 数据=`docs/acceptance-samples/` 全部记录的只读汇总(不改记录;每条链接直达 JSON)。
 记录改动后须再生成:`python3 tools/acceptance_dashboard.py`;
 `check_local --units` 会校验本页与记录一致(test_acceptance_dashboard.py)。
-数据截至(记录 recorded_at 最大值)=2026-11-15T01:06:46 ｜ 共 71 条(六目录 69+上级散置 2)。
+数据截至(记录 recorded_at 最大值)=2026-11-15T13:36:00 ｜ 共 76 条(六目录 74+上级散置 2)。
 
 ## 1. 总览
 
@@ -15,8 +15,9 @@
 | [cot](acceptance-samples/cot/README.md) | 候选镜像联动用例(路 BT/sim-coimg,d1-acceptance §6.5) | 0 | 0 | 0 | 0 | 11 | 11 |
 | [d3](acceptance-samples/d3/README.md) | D3 真机一致性:案头就绪底稿(路 BS/sim-d3prep) | 1 | 0 | 0 | 0 | 7 | 8 |
 | [parity](acceptance-samples/parity/README.md) | 镜像间轨迹差分(路 A1/EQDIV,L2 系证据) | 1 | 1 | 1 | 0 | 0 | 2 |
+| [d1](acceptance-samples/d1/README.md) | D1 稳定调度验收(路 PR3P 预填,等闸门②) | 0 | 0 | 0 | 0 | 5 | 5 |
 | (上级散置) | 上级目录示例:D2-a-REC-01(属 d2a)/R4-VM-01(属 r234),§8.1 | 2 | 2 | 0 | 0 | 0 | 2 |
-| **合计** |  | **31** | **30** | **1** | **5** | **34** | **71** |
+| **合计** |  | **31** | **30** | **1** | **5** | **39** | **76** |
 
 BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证据等级 conditional(断言在显式投影/fixture 下成立,§8)。
 
@@ -102,7 +103,7 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [D3-TIM-01](acceptance-samples/d3/D3-TIM-01.json) | d3 | NOT_RUN | none |
 | [D3-AUD-01](acceptance-samples/d3/D3-AUD-01.json) | d3 | NOT_RUN | none |
 
-未入组等待项 11 条(依赖见各记录「未覆盖项」): [D2-a-ACT-01](acceptance-samples/d2a/D2-a-ACT-01.json), [D2-a-ACT-02](acceptance-samples/d2a/D2-a-ACT-02.json), [D2-a-ACT-03](acceptance-samples/d2a/D2-a-ACT-03.json), [D2-a-ACT-04](acceptance-samples/d2a/D2-a-ACT-04.json), [D2-a-ACT-05](acceptance-samples/d2a/D2-a-ACT-05.json), [D2-a-ACT-06](acceptance-samples/d2a/D2-a-ACT-06.json), [D2-a-ACT-08](acceptance-samples/d2a/D2-a-ACT-08.json), [D2-a-ACT-09](acceptance-samples/d2a/D2-a-ACT-09.json), [D2-a-SEC-01](acceptance-samples/d2a/D2-a-SEC-01.json), [R2-COT-01](acceptance-samples/cot/R2-COT-01.json), [R4-COT-01](acceptance-samples/cot/R4-COT-01.json).
+未入组等待项 16 条(依赖见各记录「未覆盖项」): [D1-DSP-04](acceptance-samples/d1/D1-DSP-04.json), [D1-HLT-05](acceptance-samples/d1/D1-HLT-05.json), [D1-LOOP-01](acceptance-samples/d1/D1-LOOP-01.json), [D1-TCK-03](acceptance-samples/d1/D1-TCK-03.json), [D1-TMR-02](acceptance-samples/d1/D1-TMR-02.json), [D2-a-ACT-01](acceptance-samples/d2a/D2-a-ACT-01.json), [D2-a-ACT-02](acceptance-samples/d2a/D2-a-ACT-02.json), [D2-a-ACT-03](acceptance-samples/d2a/D2-a-ACT-03.json), [D2-a-ACT-04](acceptance-samples/d2a/D2-a-ACT-04.json), [D2-a-ACT-05](acceptance-samples/d2a/D2-a-ACT-05.json), [D2-a-ACT-06](acceptance-samples/d2a/D2-a-ACT-06.json), [D2-a-ACT-08](acceptance-samples/d2a/D2-a-ACT-08.json), [D2-a-ACT-09](acceptance-samples/d2a/D2-a-ACT-09.json), [D2-a-SEC-01](acceptance-samples/d2a/D2-a-SEC-01.json), [R2-COT-01](acceptance-samples/cot/R2-COT-01.json), [R4-COT-01](acceptance-samples/cot/R4-COT-01.json).
 
 ## 3. 关键 FAIL/BLOCKED(归因取自记录本身)
 
@@ -122,7 +123,7 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [R3-APP-05](acceptance-samples/r234/R3-APP-05.json) | r234 | 真机 BLE 联调授权缺失——需用户当场显式授权的设备连接会话（红线：不连真机、不刷机），tools/android-query/README.md 真机适配清单第 9/10 条无法执行 |
 | [R4-VM-05](acceptance-samples/r234/R4-VM-05.json) | r234 | 主仿真前沿未推进到 RCSP/任务派发相位——BLE 协议栈与命名任务 0x060A1D11 的命令投递世界不可达，分发器 0x0600f85e 对载荷（0x060E31E0）的实际调用没有执行载体（… |
 
-### NOT_RUN(34 条,按目录聚合;等待说明=面板 README 指针)
+### NOT_RUN(39 条,按目录聚合;等待说明=面板 README 指针)
 
 | 目录 | NOT_RUN | 其中入组挂账 | 组外(依赖见记录「未覆盖项」) |
 |---|---|---|---|
@@ -130,6 +131,7 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | d2b | 8 | 8 | 0 | 等 BF 前沿释放+AW 蓝图实施——d2b README「注入面共同依赖地图」 |
 | cot | 11 | 9 | 2 | 按 L0-L3 前置链(COT-01 两条不依赖 D1 可立即跑)——cot README |
 | d3 | 7 | 7 | 0 | 等授权或观测手段——d3 README「等待项地图」 |
+| d1 | 5 | 0 | 5 | 见该面板 README |
 
 ## 4. 记录索引(逐条链接)
 
@@ -204,8 +206,13 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [D3-TIM-01](acceptance-samples/d3/D3-TIM-01.json) | d3 | NOT_RUN | none | 2026-11-14T21:18:45 |
 | [A1-PAR-01](acceptance-samples/parity/A1-PAR-01.json) | parity | FAIL | conditional(3) | 2026-11-14T22:23:21 |
 | [E1-PAR-01](acceptance-samples/parity/E1-PAR-01.json) | parity | PASS | conditional(3) | 2026-11-15T00:36:00 |
+| [D1-DSP-04](acceptance-samples/d1/D1-DSP-04.json) | d1 | NOT_RUN | none | 2026-11-15T13:36:00 |
+| [D1-HLT-05](acceptance-samples/d1/D1-HLT-05.json) | d1 | NOT_RUN | none | 2026-11-15T13:36:00 |
+| [D1-LOOP-01](acceptance-samples/d1/D1-LOOP-01.json) | d1 | NOT_RUN | none | 2026-11-15T13:36:00 |
+| [D1-TCK-03](acceptance-samples/d1/D1-TCK-03.json) | d1 | NOT_RUN | none | 2026-11-15T13:36:00 |
+| [D1-TMR-02](acceptance-samples/d1/D1-TMR-02.json) | d1 | NOT_RUN | none | 2026-11-15T13:36:00 |
 | [D2-a-REC-01](acceptance-samples/D2-a-REC-01.json) | (上级散置) | PASS | conditional(2) | 2026-11-14T08:30:00 |
 | [R4-VM-01](acceptance-samples/R4-VM-01.json) | (上级散置) | PASS | conditional(2) | 2026-11-14T08:30:00 |
 
-- 记录格式与校验规则:docs/d1-acceptance.md §8/§8.1;各目录面板(含依赖地图):[d2a](acceptance-samples/d2a/README.md) [r234](acceptance-samples/r234/README.md) [d2b](acceptance-samples/d2b/README.md) [cot](acceptance-samples/cot/README.md) [d3](acceptance-samples/d3/README.md) [parity](acceptance-samples/parity/README.md)。
+- 记录格式与校验规则:docs/d1-acceptance.md §8/§8.1;各目录面板(含依赖地图):[d2a](acceptance-samples/d2a/README.md) [r234](acceptance-samples/r234/README.md) [d2b](acceptance-samples/d2b/README.md) [cot](acceptance-samples/cot/README.md) [d3](acceptance-samples/d3/README.md) [parity](acceptance-samples/parity/README.md) [d1](acceptance-samples/d1/README.md)。
 - 本页由 tools/acceptance_dashboard.py 生成(只读汇总,不手改;数字全部来自记录文件)。
