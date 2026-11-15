@@ -288,3 +288,47 @@ O3D 预研（[o3-memory-design.md](o3-memory-design.md)）方案 A 三 PR 已落
 - 注：§5 O3 行的「字节数组段+位图」（方案 D）按 O3D 裁决仍不排期；本节为其「查找
   路径+读 memo」阶段一（方案 A）的完整交付。Insn getter 项在 O3D §5 立项，随本波
   一并落地。
+## 9. O6 实施结果（路 O6 / sim-o6，2026-11-15，一案一提交）
+
+实施起于 c7d25d9；在途 main 推进至 ec1d70e（DIF/R4C 落地，条件前沿
+21,798,206 @ 0x606b5ee → 21,798,257 @ 0x606b68e）后本路变基并在两基线上
+分别完成对照（analyze_image_trace.py 自动合并零冲突——O6 的签名链/比对区
+与 DIF 的 loader/场景注册区确实不重叠；唯一手工解决=HANDOFF 条目排序）。
+
+签名链原表示落盘已在 `tools/analyze_image_trace.py` 落地：`TraceSpool`
+把 `TraceMachine.after_step` 的每行 6 元组（core/before_pc/pc/flags/16
+签名元组/writes 元组）**按原值** pickle 进一个无名临时文件
+（`tempfile.TemporaryFile`：任何文件系统上都没有目录项，close 或进程被杀
+都由 OS 立即回收，永不进仓、无需清理脚本；位置随 TMPDIR），2048 行一块，
+每块新建 Pickler（实测单 Pickler 连续 dump 的 memo 跨行持久——持有所有
+行元组引用，会把线性内存增长带回来——分块才既限界又让块记录自包含，读侧
+每块新 Unpickler）。比较器零改动兼容：序列协议（len/索引含负/切片/迭代/
+zip）与真 list 逐一对齐，切片返回惰性视图永不物化；行为相邻的两处等价
+改写：①`find_reconvergence` 把对齐后缀的物化 list 推导换成等价切片（护栏
+`len(trace_a)+lag <= len(trace_b)` 下二者逐一相等），消除 reconvergence
+路径的第二个内存炸弹；②`pc_run_length_summary` 改单遍流式聚合（实测
+run 数≈0.97×行数，物化版在 21.8M 世界瞬时 ~2.7GB、50M 外推 ~6GB——旧
+代码同样物化、叠加在 15.4GB 常驻之上；聚合是纯函数，输出与「先建表再
+裁剪」逐字段恒等，单测 9 形态+真实数据 crc 对照钉死）。单臂非 pair 场景
+同路径生效（报告消费本就顺序）；无回退开关——行为零变化即验收。
+
+对照验收（三件+codex 边界）：
+
+| 验收件 | 结果 |
+|---|---|
+| 落盘读回逐字段相等（含顺序/类型/负索引/zip/切片/切片的切片） | 单测 `test_trace_spool_round_trip_is_field_exact`/`..._views_match_list_slices` 钉死；截断报错不静默短读（`..._truncated_file_raises_not_eof`）；list 与 spool 同输入下 `find_reconvergence`/`_divergent_spans` 输出完全相等 |
+| 新旧比较器报告逐字节相等（strict 场景实跑） | crc_bankb official:b79 self-check（前沿 289,849 @ 0x60679ba，含首分歧 155,390/30 分歧段/5 报告差异）：`cmp` **逐字节相等 ×3**（c7d25d9 基 spool 落地后一次、流式 summary 落地后一次；ec1d70e 变基后第三次——DIF/R4C 对 loader/常量/check_self 的相邻改动与 O6 合并后仍逐字节相等），self-check 断言两侧全过；工具进程 RSS 434-435MB→95-99MB |
+| 新旧比较器报告逐字节相等（p11 pair 场景实跑，双基线） | c7d25d9 档全前沿（21,798,206 @ 0x606b5ee）：新侧三臂停点全部与 registry 逐位一致，流式 summary 落地前后两版报告**逐字节相同**；ec1d70e 档（实施在途 main 推进：DIF+R4C 落地、条件前沿 21,798,257 @ 0x606b68e，本路变基后重跑）——**旧侧原样 main 与新侧报告 sha256 相同、逐字节相等**（6b4f02d6…；双侧 self-check True，spans 65/首分歧 155,390/12 报告差异/per_core {0:21790815,1:11251} 全钉） |
+| RSS 斜率（单臂 p11 栈 driver，与 PERF §3 同法同停点） | 2M 档：旧 756MB/200.0s → 新 84MB/220.7s；20M 档：新 **97MB**（19,996,266 行，停点与 PERF 逐位一致；旧侧 6.64GB 为 PERF §3 实测基线）→ **行数 ×10 RSS 仅 +13MB（≈0.7B/行，来自世界/簿记类①②）**，签名链斜率 353B/行 → 实质为零；20M 档峰值 **6,961MB→100MB（~69x）** |
+| pair 全管线 RSS | p11 全前沿工具进程（3 臂：freshness+pair×2，最终码含流式 summary）：c7d25d9 档新侧 **112.6MB**/77 分钟（OPT1 前）；ec1d70e 档（OPT1 已进 main）新侧 **124.7MB**/54:43 vs 旧侧原样 main **23.6GB**/45:31（freshness 臂 trace 被 main() 持到结束=3 臂常驻+compare runs 瞬态；PERF §3 的 16GB 只算 pair 两臂）——**整工具实测 ~190x** |
+| CPU 开销 | 同负载 2M 单臂对照 +10.3%（pickle 摊销；大负载并发下 20M 单臂 1,771.8s，与 §2 的 1,288.6s 差额主要是并发干扰） |
+
+落盘形态与理由：**未压缩 pickle 分块二进制**——往返精确性由构造保证
+（类型/值/顺序零转换），append 摊销 ~µs 级，无压缩复杂度；实测盘占用
+**74.2 B/行**（21,798,206 行 = 1.62GB/臂，块内 memo 去重后远小于 353B 的
+内存行宽；50M 外推 ~3.7GB/臂），磁盘不是瓶颈（O4 打包属后续独立一案）。
+50M 外推：双镜像 RAM 35.4GB → ~0.5GB 级 + 盘 ~2×3.7GB，优于 §4.1 表
+「回收③」列的 tuple-repr 估算。
+
+回归：`check_local.py --units` exit 0（39 tests OK 含 git diff --check）；
+全量 `--rom` exit 0（Local checks passed，跨前缀计数断言零重钉）。

@@ -6,11 +6,15 @@ Row shape mirrors TraceMachine: (core, before_pc, next_pc, flags,
 16-tuple of register signatures, tuple of (address, data-hex) writes).
 """
 import inspect
+import io
+import pickle
 
 import frontier_registry
 import probe_irq_entry
 from analyze_image_trace import (BASE_SCENARIO_FLAGS, CONDITIONAL_EXTRA_FLAGS,
-                                 SCENARIOS, find_reconvergence, stop_parity)
+                                 SCENARIOS, TraceSpool, _divergent_spans,
+                                 find_reconvergence, pc_run_length_summary,
+                                 stop_parity)
 
 
 def row(pc, nxt, marker=(15, '00000000'), write=()):
@@ -101,6 +105,173 @@ def test_reconvergence_rejects_lag_that_leaves_trailing_steps_uncovered():
     a = common(4) + tail(8, 0x1000)
     b = common(4) + tail(2, 0x2000) + tail(8, 0x1000) + tail(2, 0x4000)
     assert find_reconvergence(a, b, 4)['realigned'] is False
+
+
+def _spool_rows(count=57, chunk=8):
+    """Synthetic rows covering the real signature shapes: int/None flags,
+    repeated register strings, empty and multi-entry writes, unknown-word
+    style signatures; loaded into a small-chunk spool so reads cross many
+    chunk boundaries with a partial tail chunk."""
+    rows = []
+    for i in range(count):
+        regs = ['00000000'] * 16
+        regs[i % 16] = 'u??01|-,16-' if i % 5 == 0 else f'{i * 7:08x}'
+        flags = '00' if i % 3 else 'None'
+        writes = () if i % 4 else ((0x125bfc + i, 'aabbccdd'), (0x400afc, 'ff'))
+        rows.append((i % 2, 0x6010000 + i * 2, 0x6010002 + i * 2, flags,
+                     tuple(regs), writes))
+    spool = TraceSpool(chunk=chunk)
+    for r in rows:
+        spool.append(r)
+    spool.flush()  # partial final chunk (57 % 8 != 0)
+    return rows, spool
+
+
+def test_trace_spool_round_trip_is_field_exact():
+    # 路 O6 验收件 1:落盘读回逐字段相等(含顺序、类型、负索引、zip、迭代),
+    # 空轨迹与 close 后访问也钉死。
+    rows, spool = _spool_rows()
+    assert len(spool) == len(rows)
+    assert list(spool) == rows
+    for i in (0, 1, 7, 8, 9, 56):
+        got = spool[i]
+        assert got == rows[i] and type(got) is tuple and type(got[4]) is tuple \
+            and type(got[5]) is tuple, f'row {i} lost shape'
+    assert spool[-1] == rows[-1] and spool[-57] == rows[0]
+    assert [r for r in spool] == rows  # iteration order is append order
+    assert list(zip(spool, rows)) == list(zip(rows, rows))
+    try:
+        spool[len(rows)]
+        raise AssertionError('expected IndexError past the end')
+    except IndexError:
+        pass
+    empty = TraceSpool()
+    assert len(empty) == 0 and list(empty) == []
+    # append interleaved with reads (read moves the file position; the next
+    # flush must still land at the tail, never at the read position)
+    interleave = TraceSpool(chunk=4)
+    for i in range(6):
+        interleave.append(rows[i])
+    assert interleave[0] == rows[0]
+    for i in range(6, 12):
+        interleave.append(rows[i])
+    interleave.flush()
+    assert [r for r in interleave] == rows[:12]
+    interleave.close()
+    spool.close()
+    for op in (lambda: len(spool), lambda: spool[0], lambda: list(spool)):
+        try:
+            op()
+            raise AssertionError('closed spool must be unreadable')
+        except ValueError:
+            pass
+
+
+def test_trace_spool_views_match_list_slices():
+    # 惰性视图与真 list 切片逐一等价:普通/负/步进切片、切片的切片、
+    # len/索引/迭代(比较器用到的全部形态)。
+    rows, spool = _spool_rows()
+    for a, b, c in [(0, 10, 1), (5, -3, 1), (-6, None, 1), (None, None, 1),
+                    (3, 40, 7), (-20, -2, 3), (10, 2, -2), (0, 0, 1)]:
+        view = spool[a:b:c]
+        expect = rows[a:b:c]
+        assert len(view) == len(expect), (a, b, c)
+        assert list(view) == expect, (a, b, c)
+        if expect:
+            assert view[0] == expect[0] and view[-1] == expect[-1]
+    # slice-of-slice (compare_pair 的 prefix[-6:] 与 step:step+6 形态)
+    prefix = spool[:20]
+    assert list(prefix[-6:]) == rows[:20][-6:]
+    assert list(prefix[3:9]) == rows[3:9]
+    stepped = spool[::4]
+    assert list(stepped[:5]) == rows[::4][:5]
+    assert list(stepped[::-1]) == rows[::4][::-1]
+
+
+def test_trace_spool_truncated_file_raises_not_eof():
+    # 路 O6 验收边界(codex 定调):文件截断必须报错,不得解释成 EOF/短读。
+    backing = io.BytesIO()
+    spool = TraceSpool(file=backing, chunk=4)
+    for i in range(10):
+        spool.append(row(0x1000 + i * 2, 0x1002 + i * 2))
+    spool.flush()
+    assert spool[0] == spool[0]  # cache stability across repeated reads
+    mid_chunk3 = backing.seek(0, io.SEEK_END)  # truncate inside the last chunk
+    backing.truncate(mid_chunk3 - 3)
+    spool._cache.clear()
+    try:
+        spool[8]
+        raise AssertionError('truncated spill must raise, not read short')
+    except (pickle.UnpicklingError, EOFError):
+        pass
+
+
+def test_reconvergence_and_spans_over_spools_equal_list_results():
+    # 比较器全链路(list 与 spool 同输入产出完全相同的 detail):覆盖
+    # find_reconvergence 的后向扫描/切片视图/物化消除点与 _divergent_spans。
+    a = common(10) + tail(20, 0x1000)
+    b = common(10) + tail(3, 0x2000) + tail(20, 0x1000)
+    sa = TraceSpool(chunk=8)
+    sb = TraceSpool(chunk=8)
+    for r in a:
+        sa.append(r)
+    for r in b:
+        sb.append(r)
+    sa.flush(); sb.flush()
+    assert find_reconvergence(sa, sb, 10) == find_reconvergence(a, b, 10)
+
+    a2 = common(4) + tail(12, 0x1000, markers={i: '00000001' for i in range(5)},
+                         writes={2: ((0x2000, 'ff'),)})
+    b2 = common(4) + tail(2, 0x2000) + tail(12, 0x1000, markers={i: '00000002' for i in range(5)})
+    sa2, sb2 = TraceSpool(chunk=5), TraceSpool(chunk=5)
+    for r in a2:
+        sa2.append(r)
+    for r in b2:
+        sb2.append(r)
+    sa2.flush(); sb2.flush()
+    assert find_reconvergence(sa2, sb2, 4) == find_reconvergence(a2, b2, 4)
+    assert _divergent_spans(sa2, sb2) == _divergent_spans(a2, b2)
+    assert find_reconvergence(sa, TraceSpool(), 10) == find_reconvergence(a, [], 10)
+
+
+def test_pc_run_length_summary_streaming_matches_materialized():
+    # 路 O6:流式聚合与原「先物化再裁剪」逐字段恒等——参考实现按原算法
+    # 内联重建,覆盖 run 数 < head、恰等于 head+tail、超出后尾窗滚动、
+    # 重复 PC 延长当前 run、跨核切换开新 run、spool 视图输入等形态。
+    def materialized(trace, head=12, tail=12):
+        runs = []
+        for core, before_pc, _next, _flags, _regs, _writes in trace:
+            if runs and runs[-1][0] == before_pc and runs[-1][2] == core:
+                runs[-1][1] += 1
+            else:
+                runs.append([before_pc, 1, core])
+        keep_head = runs[:head]
+        keep_tail = runs[-tail:] if len(runs) > head + tail else []
+        return {'run_count': len(runs), 'head': [[hex(pc), c, k] for pc, c, k in keep_head],
+                'tail': [[hex(pc), c, k] for pc, c, k in keep_tail],
+                'omitted_middle_runs': max(0, len(runs) - len(keep_head) - len(keep_tail))}
+
+    def from_pcs(pcs, cores=None):
+        cores = cores or [0] * len(pcs)
+        return [(core, pc, 0, '00', ('00000000',) * 16, ()) for pc, core in zip(pcs, cores)]
+
+    cases = [
+        [],                                             # empty
+        from_pcs([i * 2 for i in range(5)]),            # fewer runs than head
+        from_pcs([i * 2 for i in range(24)]),           # exactly head+tail runs
+        from_pcs([i * 2 for i in range(25)]),           # one past the boundary
+        from_pcs([i * 2 for i in range(80)]),           # tail window slides
+        from_pcs([1, 1, 1, 2, 3, 3, 4] * 4),            # repeats extend runs
+        from_pcs([i % 3 for i in range(40)],            # core switch opens runs
+                 cores=[i % 2 for i in range(40)]),
+    ]
+    for trace in cases:
+        assert pc_run_length_summary(trace) == materialized(trace), \
+            f'streaming summary diverged for a {len(trace)}-row trace'
+    # same input through a spool view (head/tail windows across chunk seams)
+    rows, spool = _spool_rows()
+    assert pc_run_length_summary(spool) == materialized(rows)
+    assert pc_run_length_summary(spool[10:-3]) == materialized(rows[10:-3])
 
 
 def test_stop_parity_same_stop_and_step_deltas():
