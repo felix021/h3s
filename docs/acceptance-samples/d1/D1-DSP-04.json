@@ -1,0 +1,36 @@
+{
+  "case_id": "D1-DSP-04",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；D1 场景世界=p11_heap 条件栈官方单臂；三镜像差分 L2-a 系过线后独立步另记，不进本批）",
+  "initial_state": "预填用例（未执行），计划起点=真实启动全程（Q1，d1-acceptance §7/§8 唯一合法首次过线形态）：p11_heap 条件栈自然推进到 S19/park 再进观察窗；主样本=固件自然产生的 (18,0)（BZ §3 建议 1 原样承接——发生在 park 前首批迭代，D1-1 允许），不依赖任何注入路径；前置=批 3 闸门②（前沿过 DAC_TM0〔DT 已放行，21,798,206 @ 0x606b5ee ADA_CON0 读在途〕+音频数字域整块+S16/S17/S18→S19；BA #14 两个 S18→S19 段潜在停点〔(20,2) 特路 0x6010946 与 (18,0) 深层 0x601a5xx〕归前沿推进路三选一，非本条断言面）+PR-BI 首验+PR-2 场景骨架（D1-4 主样本观察面），前置未备前本条保持 NOT_RUN",
+  "inputs_schedule": "无外部输入（D1 排除面=P33/WKUP/USB/按键，d1-acceptance §1 D1-4 codex 条款——外部输入产生的事件明确不在 D1 范围）；时间表=观察窗模型步轴；事件源=模型内封闭三候选（S18 预置/sys_timer 回调/RTOS tick 时间片唤醒的任务 post，d1-acceptance §1 D1-4）；注入变体 d1_post_inject='s18_18' 默认关、仅可选 DSP-04b 单独记录，不进本条断言面",
+  "observation_boundary": "(18,0) 全链九站点（观察点表=d1-scene-blueprint §2.4，全链站点表=每站点执行证据）：post 实参 0x60123a6→0x6000cba(0x60a1d11, 0x10000C, {18,0})（无 id 变换：0x6000cba 硬编码 0x10000C，18/20=载荷子码，BZ §1.1/§1.2）→入队表示 0x6064978→0x606487c（环 slot 头字 0x10000C03，队列计数 h[TCB+6] 0→1）→get-event 返回 13（0x6064c8c→0x60649b0 解包）→[sp] 实际 id buf[0]=0x10000C→bit20 检查 0x60123f6→特路 0x60123fa→0x60108fe 子码 18 直通→按真实查找顺序命中：表 2 walk（0x600434a/0x60252c6 不认领 18，返回 0）→[0x126f4c] 动态过滤链（期望 0=跳过）→表 1 walk→表 1[39] 命中 0x6023962（12 字节记录 {filter,id,handler}）→handler 真实字节执行（0x6023972 子码门→0x6023976/0x60239b2→call 0x60237d8→门控 b[0x125B54]/b[0x127184]，关=短闭合返回 0）→返回 0 续走→回循环头→空队列 pend 写面再执行；报告键=d1_window.d1_4.*（蓝图 §4.3：post.{call_pc,args}/enqueue.{slot_header_word,queue_count_before/after}/get_event.return_code/event_id_read/special_path.{taken,subcode}/walk.{table2_hits,filter_ptr,table1_hit_record}/handler.{entry_pc,executed_steps,gates}/handler.return_value/re_pend_after_consume/verdict/no_sample_reason）",
+  "assertions": [
+    "d1-acceptance §1 D1-4（观察点表=d1-scene-blueprint §2.4）：主样本=固件自然产生的 (18,0)；全链每站点有执行证据+回 pend——不能只以「handler PC 出现过」算通过（codex 原话原样保留）",
+    "诚实收口（d1-accept §1 D1-4 codex 条款照抄）：D1-1..3 过+D1-4 无样本=「未覆盖，D1 完整验收未完成」（NOT_RUN=未完成，不冒充）；区分两种失败：回调表为空（链路通但无事件源——本世界已静态排除：[0x126F6C] 恒非空，~110.5k 起=0x603622C，tick_timer_init 0x6066d86 写，BZ §2）与链路不通（post 成功却在变换/入队/接收处丢失——须定位，FAIL）",
+    "(20,2)=第二样本观测项非必经（特路 sys_timer 路径 0x126F3C 链表 id=2 调节点回调）；id=2 节点存在性=运行观测项 R3——缺失时 0x6010946 b[0] 读撞 unmapped 诚实停=独立边界归前沿推进路处理（BZ 定性），非 D1-4 FAIL",
+    "两级门控 b[0x125B54]/b[0x127184] 运行值=运行观测项 R4（关=短闭合返回 0 是本条主样本预期形态；开=深层 0x601a5xx 域进窗——该域属 BT/提示域 D2+ 非本条断言面，REVIEW 结论②边界表）；d1_4.handler.gates 键如实记录两门运行值",
+    "注入变体 d1_post_inject='s18_18' 默认关（PR-4 单独实施，蓝图 §2.4 设计）：key_chain_direct_call 先例直调 0x6000cba(18,0)+哨兵 0x100000+保存/恢复 pc/sp/rets/flags/R0-R15+不调 advance+显式合成假设全文标注；idle 循环（0x12c5c6 call 0x12b5b0→0x12c5ca idle→0x12c5cc call−160→0x12c5ce 判）是否查询就绪队列未钉死（运行观测项 R6）——直调后调度器不切回=记录 BLOCKED（调度机制缺件）而非 FAIL；此变体不进默认场景、不进 D1 过线必要条件；本条（DSP-04）断言面=固件自然主样本，不依赖注入路径（任务书 §1.7 切分原则）"
+  ],
+  "timeout_budget": "消费段+回 pend（蓝图 §6 表；主样本在 park 前首批迭代自然发生，观察面覆盖至回 pend 写面再执行）；超时=FAIL 非重跑；本条结果枚举含 NOT_RUN（无样本诚实收口，蓝图 §6 表），预填状态即 NOT_RUN",
+  "model_assumptions": [
+    "idle_wait_projection（IDLE 停泊语义；硅 IDLE 语义未证）",
+    "event_clock_projection（全核 IDLE 事件时钟推进）",
+    "timer0_irq4_delivery(entry/banks/rti) 三件套（HANDOFF 路 BE）+repeat_irq_delivery（base 栈）",
+    "core_tick_irq3_delivery（HANDOFF 路 BF）",
+    "p11_heap 条件栈 flag 集经 scenario_flags('p11_heap_experimental') 构造器实取（含音频域容器族 jl_adda_analog_family〔B3〕/jl_audio_dac_tm_readback〔DT〕等；不含已撤回的电池段两开关）；场景行=event_clock=True+d1_acceptance=True（任务书 §1.2 第 3 条）",
+    "注入变体仅可选 D1-DSP-04b 且默认关（蓝图 §6 底稿原文；显式合成假设全文标注，不进过线必要条件）",
+    "交付假设叠加适用（event-clock §5）：入口银行/PSR 高位/RTI 装载等——全部结论投影等级（hardware_mode_certified=false 不升级）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "本条=预填底稿未执行（NOT_RUN=无样本诚实收口语义——D1-1..3 过而本条无样本时同样措辞，不冒充 PASS；不占 BLOCKED 语义）；等闸门②（前沿到 S19 终态 park）+PR-BI 首验+PR-2 场景骨架（D1-4 主样本观察面=PR-2 第 8 条），PR-3 正式落档时以实测 verdict（PASS/NOT_RUN/FAIL 三值）替换本预填",
+    "R3 运行观测项：(20,2) 特路 0x126F3C 链表 id=2 节点存在性——s18_first_pass[1].observed 键回答，非本条 FAIL 面",
+    "R4 运行观测项：(18,0) 两级门控 b[0x125B54]/b[0x127184] 运行值——d1_4.handler.gates 键回答；门控开时深层 0x601a5xx 域属 BT/提示域 D2+（REVIEW 结论②：全链=分发链到 handler 返回 0；深层域非 D1 断言面，两边界不矛盾）",
+    "硅时序/同刻仲裁；IDLE 指令硅语义（idle_wait 措辞）；外部输入域（P33/WKUP/USB/按键）；模拟前端/DMA 总线/声学面（蓝图 §6 底稿公共未覆盖项）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-15T13:36:00"
+}

@@ -1,0 +1,42 @@
+{
+  "case_id": "D1-HLT-05",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；D1 场景世界=p11_heap 条件栈官方单臂；三镜像差分 L2-a 系过线后独立步另记，不进本批）",
+  "initial_state": "预填用例（未执行），计划起点=真实启动全程（Q1，d1-acceptance §7/§8 唯一合法首次过线形态）：p11_heap 条件栈自然推进到 S19/park 再进观察窗；观察面=整个观察窗 [W_park, W_park+N)；前置=批 3 闸门②（前沿过 DAC_TM0〔DT 已放行，21,798,206 @ 0x606b5ee ADA_CON0 读在途〕+音频数字域整块+S19 终态 park）+PR-BI 首验+PR-2 场景骨架（health.* 报告键按 d1-health-checks §2 契约生产），前置未备前本条保持 NOT_RUN",
+  "inputs_schedule": "无外部输入（D1 排除面=P33/WKUP/USB/按键）；时间表=观察窗模型步轴；health 子树全部计数/轨迹限定 [W_park, W_park+N) 窗口内（event_reposts 与 queue_balance 同口径以便互证，d1-health-checks §2）；注入变体不进本条（若 DSP-04b 单独跑，其 health 面随该条另记）",
+  "observation_boundary": "整个观察窗 [W_park, W_park+N)；数据面=d1_window.health.* 报告键全契约（d1-health-checks.md §2，路 PR-1 冻结——键名/语义变更须先改该文再改代码）：window.{model_step_start,model_step_end,steps,complete}/timer0_expiries+timer0_expiry_steps/per_source[]{source,core,period,expirations,deliveries,completions,upper_bound,first_deadline,pending_at_window_start}/event_reposts[]{event_id,subcode,origin,posts,consumed,producer_pc,first_post_step,pending_at_window_end}/queue_balance{enqueued,dequeued}/per_core{'0'/'1':{wake_count,rewait_count,wake_reasons,timeline[{model_step,kind,pc,irq,nesting}],last_open_wake}}/ready_tasks[]{tcb,entry,assertion_face,schedulings,ready_since_step,longest_wait,first_scheduled_step}/queue.{count_final,qlimit,capacity,cursor_trace[{step,op,seq,physical}],cursor_monotonic}；所有键=观察件输出，checker 不信任何预判定（唯一例外=cursor_monotonic/upper_bound 可选互证键，与 checker 自算不符=证据矛盾 FAIL）",
+  "assertions": [
+    "H1 定时事件确实发生（d1-acceptance §1 D1-5；判据=d1-health-checks §1 表，PR-1 冻结口径）：窗口内 Timer0 到期 ≥3；到期步号相邻间隔恒定且=per_source 实读 period；与 d1_window.timer0_cycles 同数互证；FAIL=到期 <3/间隔漂移倒流/互证矛盾",
+    "H2 同源重发有界：每周期源交付 ≤⌈N/P⌉+1（P=per_source.period 实读，不预锁 40,000/300,000；N=window.steps）；非周期源（软件 IRQ124-127）交付=0；三分计数一致（交付≤到期+起点 pending 容差、完成≤交付）；FAIL=超上界风暴/计数矛盾（证据含 per source+core 三分计数+首次超界状态快照）；**core_tick 的 CNT 冻结假设标注缺=断言形状不完整（pending 非 pass）**——键位以 PR1 实现为准：d1_window.core_tick_state.assumption 顶层优先、d1_window.park.core_tick_state 形状兼容（两处任一存在即可；蓝图 §4.3 示例树把 core_tick_state 画在 park 下，与 PR1 契约的键位差异以此注明，PR-2 落地建议顶层）",
+    "H3 无同事件无限重发：每 (event_id,子码) 入队 ≤2（S18 静态每子码恰 post 一次，上界含一次容差；注入条目 origin='injected' 上界=3——PR1 口径，比蓝图 §3 H3 行「S18 预置=2；注入变体=+1」更精确，以 PR1 为准）；消费=入队（无重复消费）；queue_balance 与 reposts 汇总一致、出队≤入队；消费<入队=未闭合样本（右边界条款：pending_at_window_end 标注与否都 pending，不默认 PASS）",
+    "H4 必要任务可唤醒：判据面=CPU0（CPU1=记录面）；窗口内唤醒 ≥1 且末态重新 entered_idle_wait（嵌套唤醒共享一次回等待合法：rewait<wake 不违约——PR1 口径）；wake_reasons 求和=wake_count；FAIL=零唤醒/唤醒后卡运行态（窗口 complete 且末态 woken/running）/计数矛盾（证据含未闭合唤醒区间：最后 PC/在途 IRQ/嵌套层级）；窗口截断+末态非等待=未闭合区间（「尚未到期」不误 FAIL）",
+    "H5 无任务饿死（两级受检——PR1 对蓝图 §3 H5 行的实现修正，以 PR1 为准）：固定优先级调度器无公平性保证，「所有 ready 任务窗口内必获调度」过强；受检集两级=断言面任务（assertion_face 字段或 entry==0x6012028 兜底匹配）就绪零调度=FAIL 级（app_core 消费链相关必须跑）；其余就绪任务未调度=如实记录不 FAIL（观察级）；ready_tasks[]=扫描过且空=vacuous PASS 并记录；等待时长字段（ready_since_step/longest_wait/first_scheduled_step）保留在记录里",
+    "H6 队列积压有界+消费指针前进（PR1 对蓝图 §3 H6 行的勘误，以 PR1 为准）：逻辑入队/出队序号严格递增+物理指针=序号 mod 容量的一致式——物理指针正常按容量取模回绕合法，不检查物理指针单调；窗口末 count_final=0（全消费）或 ≤qlimit；FAIL=超限/序号回退/取模不一致/空轨迹+count_final>0/预判定矛盾",
+    "H7 状态变迁可追溯：每核状态转换流（entered_idle_wait/woken/running）机器可复查：步号严格递增/kind 合法/相邻转移合法（park→只能 woken；woken→running 或直接回等待；running→回等待或嵌套唤醒；连续同 kind=转换流断裂）；FAIL=步号倒流/非法 kind/非法转移/CPU0 计数有唤醒而时间线空=断链（证据含首违前后片段）；CPU1 空时间线=静默核 vacuous pass（不 pending）",
+    "否定式总闸（d1-acceptance §1 D1-5 原文）：D1-1..4 逐项形状达标但 H1-H7 任一 FAIL → D1 仍失败（「稳定调度」的否定式总闸：无中断风暴/无同一事件无限重发/无任务永久饿死——「仅 PC 稳定或两核 IDLE 不够」codex 条款）；实现=两处：d1_5 断言自身 fail 态+run_all 的 d1_gate 键（fail/pass/pending，只聚合 D1-1..D1-5，BI-A* 不进 gate）不抵消；probe 侧正式验收入口（PR-2 §1.2 第 7 条）调 run_all 后传播 d1_gate（非 pass 即非零退出码）",
+    "pending 语义与证据边界（PR1 契约）：键缺≠零事件≠PASS（event_reposts 删除不得 vacuous pass；core tick period 缺不预锁 300,000；CNT 假设字段删除→pending）；窗口未开（无 d1_window 且 park 判据不成立）时整体 pending early-return；合成样本单测只证明 checker 有分辨力，不计入 D1 首次过线证据（d1-health-checks 证据边界，任务书 §1.0b 第 2 条）——实跑数据由 PR-2 观察件产出",
+    "FAIL 证据契约（七规则共用结构，d1-health-checks §3）：{rule,expected,observed,first_violation{model_step,core,PC},source_or_task,around 首违前后片段,worst 最严重违规,window_end{complete,model_step_start,model_step_end,evidence_complete}}+规则特化字段（H2 三分计数/derived_upper_bound/first_deadline/pending_at_window_start；H4 open_wake{last_pc,in_flight_irq,nesting_level}；H5 wait_fields；H6 seq_regressions/modulo_mismatches/capacity；H7 violation 类别）；计数/峰值/最长等待在线累计，片段只存首违+最严重"
+  ],
+  "timeout_budget": "N（整个观察窗；N=max(S_tick(W_park)+160,000, 200,000)）；超时=FAIL 非重跑；窗口 complete=False→右边界条款生效（窗口末尾刚唤醒/刚 ready 的对象标「尚未到期」，需要完整样本的验收项要求足量完整样本，不默认 PASS）；H2 上界的 N=window.steps 同源",
+  "model_assumptions": [
+    "idle_wait_projection（IDLE 停泊语义；硅 IDLE 语义未证）",
+    "event_clock_projection（全核 IDLE 事件时钟推进）",
+    "timer0_irq4_delivery(entry/banks/rti) 三件套（HANDOFF 路 BE）+repeat_irq_delivery（base 栈）",
+    "core_tick_irq3_delivery（HANDOFF 路 BF）",
+    "core_tick_cnt_held_snapshot（B3，conditional，依赖 core_tick_prd_readback）——H2 的 core tick 周期上界承载「溢出后 CNT 冻结」假设 assumed-not-measured（NOT PRD-1，任务书 §1.4）；core_tick_prd_readback（BQ，1199999 恒等最近真实写入）不承载，两代读回不混写",
+    "p11_heap 条件栈 flag 集经 scenario_flags('p11_heap_experimental') 构造器实取（含音频域容器族 jl_adda_analog_family〔B3〕/jl_audio_dac_tm_readback〔DT〕等；不含已撤回的电池段两开关）；场景行=event_clock=True+d1_acceptance=True（任务书 §1.2 第 3 条）",
+    "H1-H7 判定规则与 health 键契约=d1-health-checks.md（路 PR-1 冻结版）：与蓝图 §3 的三处实现口径差异（H5 两级受检修正/H6 物理指针勘误/CNT 假设键位两处兼容）均以 PR1 实现为准，蓝图 §3 原文不改动（任务书 §1.0b 第 6/7 条）",
+    "交付假设叠加适用（event-clock §5）：入口银行/PSR 高位/RTI 装载等——全部结论投影等级（hardware_mode_certified=false 不升级）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "本条=预填底稿未执行（NOT_RUN=未跑，不占 BLOCKED 语义）；等闸门②（前沿到 S19 终态 park）+PR-BI 首验+PR-2 场景骨架（health.* 观察件生产者），PR-3 正式落档时以实测 verdict+H1-H7 逐条 rules 表替换本预填（否定式总闸=五条全 PASS 的必要条件）",
+    "R7 运行观测项：快轮 sys_timer 两节点（trim/GPCNT，tick=115）在 park 后窗口是否到期、回调动作——需窗口拉长变体，health.* 键回答，不进本条 FAIL 面",
+    "H2/H3 上界公式的 P 值按 park 态实读口径同步替换（不预锁 40,000，蓝图 §3 尾注+任务书 §1.3）——预填不写死数值",
+    "硅时序/同刻仲裁；IDLE 指令硅语义（idle_wait 措辞）；外部输入域（P33/WKUP/USB/按键）；模拟前端/DMA 总线/声学面（蓝图 §6 底稿公共未覆盖项）"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-15T13:36:00"
+}

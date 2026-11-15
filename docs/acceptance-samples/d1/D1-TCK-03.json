@@ -1,0 +1,39 @@
+{
+  "case_id": "D1-TCK-03",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；D1 场景世界=p11_heap 条件栈官方单臂；三镜像差分 L2-a 系过线后独立步另记，不进本批）",
+  "initial_state": "预填用例（未执行），计划起点=真实启动全程（Q1，d1-acceptance §7/§8 唯一合法首次过线形态）：p11_heap 条件栈自然推进到 S19/park 再进观察窗，单次运行从 boot 起跑、budget 一次给足，不设「从中间热启动」参数（s19-batch3-taskbook §2.1 第 1 条）；park 态 core tick CNT/PRD 快照为闭式期限起点（继承 CNT 冻结假设，见断言②）；前置=批 3 闸门②（前沿过 DAC_TM0〔DT 已放行，21,798,206 @ 0x606b5ee ADA_CON0 读在途〕+音频数字域整块+S19 终态 park）+PR-BI 首验+PR-2 场景骨架（CNT 假设标注机制随 PR-2 落地），前置未备前本条保持 NOT_RUN",
+  "inputs_schedule": "无外部输入（D1 排除面=P33/WKUP/USB/按键）；时间表=观察窗模型步轴（park→core tick 首交付+时间片调用返回，≤S_tick+80,000 段内）；注入变体不进本条",
+  "observation_boundary": "park→core tick 首次溢出+首次交付+时间片调用返回，观察点表=d1-scene-blueprint §2.3：首溢出期限（从 park 态闭式 S=ceil 公式，event-clock §2 条 3「不预锁常数」）/交付资格（按当时 IRQ 资格与优先级，pending 期间逐步重检=BF；park 时 IPMASK=0 合格，BP §1.2）/handler 0x60661a4 帧真实执行/ACK（|=0x40 恰一次）/jiffies [0x125004] mod 2³² 恰 +1（路 BF 反汇编钉死）/时间片调度 call 0x60653AE 真实执行并返回/任务切换=观察项（若触发按实际恢复上下文记录 TCB/帧）；报告键=core_tick.{deadline_closed_form,actual_overflow_model_step,eligible_at_overflow,delivery_delay_steps,handler_entry_pc,ack_count,jiffies_before,jiffies_after,timeslice_call.{executed,returned},task_switch.{occurred,from_tcb,to_tcb}}（蓝图 §4.3）+core_tick_state.assumption 键（断言②）",
+  "assertions": [
+    "d1-acceptance §1 D1-3（观察点表=d1-scene-blueprint §2.3）：期限=闭式（差 0，允许 ±1 步取整差并如实记——BP §6 口径）、交付/handler/ACK 恰一次/jiffies 恰 +1/时间片调用真实执行并返回全过；FAIL=期限偏离闭式（配置已冻结无解释）、ACK≠1、jiffies 增量≠1、0x60653AE 未返回",
+    "CNT 假设标注（任务书 §1.4 硬性要求，B3/codex 定调原文照抄）：闭式期限的 CNT 起点继承「显式『溢出后 CNT 冻结』假设 assumed-not-measured（模型 artefact：溢出后 advance 不再推进、cnt 停在 divmod 余数；硬件倾向回绕继续计数但无 BR28 证据不声明）；非 PRD-1/非周期末值/非合成默认；读无副作用」——报告英文原文 \"under the explicit 'CNT frozen after overflow' assumption (conditional, assumed-not-measured) — NOT PRD-1\"（HANDOFF 路 B3 条目）；标注三处齐全=报告键（d1_window.core_tick_state.assumption='core_tick_cnt_held_snapshot:assumed-not-measured (NOT PRD-1)'——键位以 PR1 契约为准：顶层优先、park 下形状兼容两处任一，d1-health-checks §2）+check_d1_acceptance d1_3 判定输出+本验收记录，缺失=断言形状不完整（pending 非 pass）；窗口内溢出-交付-ACK 行为由 BF 每步重检机制保证（measured 路径），但 park 态快照的 CNT 起点永远继承冻结假设——时间断言的假设标注是断言的组成部分，不能因进入循环解除",
+    "区分两代读回（任务书 §1.4 第 4 条）：PRD 读回（core_tick_prd_readback，BQ，1199999=恒等最近真实写入）不承载冻结假设；CNT 读回（core_tick_cnt_held_snapshot，B3，依赖 core_tick_prd_readback）承载——两者在报告键与假设标注里不得混写",
+    "敏感性对照如实引用（任务书 §1.0 空位表/B3 条目③）：core_tick_cnt_snapshot_probe_value（probe_only）0 vs 周期末值 PRD-1 两分叉已实测全同（core tick 52/52 交付/ACK、Timer0 1663、同 budget 停点 kind），仅停 PC 同 helper 族内漂移+sub-tick 相位差 624（≤9ms）只进 OS 时间换算——D1-3 断言在两分叉下行为差异已实测，标注义务=如实引用该对照",
+    "任务切换=观察项非硬断言（d1-acceptance §1 D1-3 codex 条款：BP A5(b)「任务恢复」全证升级为观察项而非硬断言；若触发切换按实际恢复上下文记录，不强求回原任务）；R5 观测项由 core_tick.task_switch 键回答"
+  ],
+  "timeout_budget": "≤S_tick+80,000（蓝图 §6 表；S_tick=从 park 态 core tick 的 CNT/PRD 推出的首溢出闭式期限，event-clock §2 条 3 的 S=ceil 公式）；超时=FAIL 非重跑",
+  "model_assumptions": [
+    "显式『溢出后 CNT 冻结』假设 assumed-not-measured（模型 artefact：溢出后 advance 不再推进、cnt 停在 divmod 余数；硬件倾向回绕继续计数但无 BR28 证据不声明）；非 PRD-1/非周期末值/非合成默认；读无副作用——\"under the explicit 'CNT frozen after overflow' assumption (conditional, assumed-not-measured) — NOT PRD-1\"（任务书 §1.4：D1-TCK-03 的 model_assumptions 栏必含该假设原文；PR-3 落档时 acceptance_record 的 conditional 校验要求 PASS 条件出现在模型假设栏）",
+    "core_tick_prd_readback（BQ，1199999 恒等最近真实写入）——PRD 侧证据链，不承载冻结假设（两代读回不得混写）",
+    "core_tick_cnt_held_snapshot（B3，conditional，依赖 core_tick_prd_readback）——CNT 侧冻结快照，承载冻结假设",
+    "idle_wait_projection（IDLE 停泊语义；硅 IDLE 语义未证）",
+    "event_clock_projection（全核 IDLE 事件时钟推进；S=ceil 闭式公式=event-clock §2 条 3）",
+    "core_tick_irq3_delivery+机器三件（HANDOFF 路 BF：handler 0x60661a4 帧；ACK |=0x40；软件 jiffies [0x125004] mod 2³² 恰 +1；时间片调度 call 0x60653AE 真实执行并返回）",
+    "timer0_irq4_delivery(entry/banks/rti) 三件套（HANDOFF 路 BE）+repeat_irq_delivery（base 栈）",
+    "p11_heap 条件栈 flag 集经 scenario_flags('p11_heap_experimental') 构造器实取（含音频域容器族 jl_adda_analog_family〔B3〕/jl_audio_dac_tm_readback〔DT〕等；不含已撤回的电池段两开关）；场景行=event_clock=True+d1_acceptance=True（任务书 §1.2 第 3 条）",
+    "交付假设叠加适用（event-clock §5）：入口银行/PSR 高位/RTI 装载等——全部结论投影等级（hardware_mode_certified=false 不升级）"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "本条=预填底稿未执行（NOT_RUN=未跑，不占 BLOCKED 语义）；等闸门②（前沿到 S19 终态 park）+PR-BI 首验+PR-2 场景骨架（CNT 假设标注机制=报告键 core_tick_state.assumption 随 PR-2 落地），PR-3 正式落档时以实测 verdict 替换本预填并核「CNT 假设字段在报告键+断言输出+验收记录三处齐全」（任务书 §3 步骤 4 自验行）",
+    "R2 运行观测项：park 时 core tick 剩余期限（boot 期间多次溢出/交付后的末态）——由 park.core_tick_state.deadline_closed_form 回答；B3 实测口径=溢出/ACK 12→108 全配对、jiffies 终值 118（途中停泊段），park 末态另读",
+    "R5 运行观测项：D1-3 时间片调度是否触发任务切换、切到谁——core_tick.task_switch 键，观察项不进 FAIL 面",
+    "硅时序/同刻仲裁；IDLE 指令硅语义（idle_wait 措辞）；外部输入域（P33/WKUP/USB/按键）；模拟前端/DMA 总线/声学面（蓝图 §6 底稿公共未覆盖项）",
+    "CNT 冻结假设的硅真值（硬件是否回绕继续计数）无 BR28 证据不声明——假设不因窗口运转解除，只在证据到位后重审"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-15T13:36:00"
+}
