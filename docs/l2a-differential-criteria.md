@@ -17,6 +17,12 @@ tools/ 改动）。任务：把 [eq-divergence-profile.md](eq-divergence-profile
 回填 + 适用线清单补 `abstract_task_stack_transport`（消 R2/R4-COT-01 两笔挂账，改动处
 随行标注）。
 
+**补算修订 2026-11-15（同日深夜），路 COEF（sim-coef，基线 main `0bffaa0`，纯文档+记录
+复核零 tools/ 改动）**：§3.3 DIF/R4C 校准表升级为 16 差键全清单正式预算（15 白名单键
+coeffs 工具存档值经重算脚本全量复现零差；`abstract_task_stack_transport` 按存档 json 数据
+同式机器重算补正式预算，[设计代入] 消账）+ R4-COT-01 断言面按新判定序复核（L2AR 遗留
+实施账前两笔清账，改动处随行标注）。
+
 ## 0. 一句话结论
 
 判据按窗口分两段：**C0（首次 core-tick 溢出交付，own-step ≈447k）之前**零控制流分歧
@@ -191,30 +197,51 @@ handler 帧、core-tick handler 帧、**任务栈帧运输 `abstract_task_stack_
 EQDIV 各行按 |Δstep| 代入（当时单口径）；Σ|δ| ≥ |Δstep| ⇒ 主判据界只宽不紧，故该表
 结论在双口径下原样成立（L2AR 注）。
 
-**DIF/R4C 首跑重测代入校准表（L2AR 回填；当前 flag 集，条件档 official↔r4_keyhook，
-停点 21,798,257/21,798,155 @ 0x606b68e，基线 main `364d5bd`；与 R2-COT-01
-（official↔l1_slotram，DIF 档 21,798,206）16 差键同集合同差值（2 键绝对值随前沿 +51
-整体平移、差值不变——R4C 记录），b79↔EQ 对同构。口径输入：Σ|δ_k|
-=58,354、δ_max=1,446、净停点差=102；预算数字=coeffs 工具机器算
-（`analysis/local-checks/r4c/r4c-coeffs.json`+`difline/difline-coeffs.json`，gitignored
-运行产物，数字以 R4-COT-01/R2-COT-01 记录与 HANDOFF 承载）**：
+**DIF/R4C 首跑重测代入校准表——16 差键全清单正式预算（L2AR 回填、COEF 2026-11-15
+正式化；当前 flag 集，条件档 official↔r4_keyhook，停点 21,798,257/21,798,155 @
+0x606b68e，基线 main `364d5bd`；与 R2-COT-01（official↔l1_slotram，DIF 档
+21,798,206）16 差键同集合同差值（2 键绝对值随前沿 +51 整体平移、差值不变——R4C
+记录），b79↔EQ 对同构。口径输入：Σ|δ_k|=58,354、δ_max=1,446、净停点差=102、相位项
+⌈δ_max/T_min⌉=⌈1,446/300,005⌉=1（core-tick 族 T_min）；ρ_L=基侧计数/基侧步数。
+数字来源：15 白名单键=coeffs 工具存档值（`analysis/local-checks/r4c/r4c-coeffs.json`）；
+abstract 键=COEF 按存档 json 数据（基侧计数/步数+δ 读数）同式机器重算的正式值
+（gitignored 运行产物，数字以 R4-COT-01/R2-COT-01 记录与 HANDOFF 承载）**：
 
 | 线 | 实测差 | 保守筛 E⁰（\|Δstep\|=102） | δ_max 代入（1,446） | 主判据 E（Σ\|δ\|=58,354） | 结果 |
 |---|---|---|---|---|---|
-| exact_full_word_store | 34 | 4 ✗ | 20 ✗ | 718 ✓ | 主判据过 |
-| exact_postincrement_store | 32 | 4 ✗ | 10 ✗ | 262 ✓ | 主判据过 |
-| exact_subword_store | 6 | 4 ✗ | 4 ✗ | 66 ✓ | 主判据过 |
-| partial_icfg_known_lowbyte | 5 | 4 ✗ | 4 ✗ | 6 ✓（余 1，最紧） | 主判据过 |
-| abstract_task_stack_transport | 10（104,965 vs 104,955） | [设计代入] 4 ✗ | [设计代入] 16 ✓ | [设计代入] ≈564 ✓（>50 倍余量） | 主判据过 |
-| 其余 11 条白名单线 | 1..4 | 4 ✓（irq_repeat 恰界过） | 4..10 ✓ | 6..292 ✓ | 保守筛即过 |
+| exact_full_word_store | 34 | 4 ✗ | 20 ✗ | 718 ✓ | 主判据过（切主判据） |
+| abstract_task_stack_transport | 10（104,965 vs 104,955） | 4 ✗ | 16 ✓ | 564 ✓（56 倍余量） | 主判据过（切主判据） |
+| exact_postincrement_store | 32 | 4 ✗ | 10 ✗ | 262 ✓ | 主判据过（切主判据） |
+| exact_subword_store | 6 | 4 ✗ | 4 ✗ | 66 ✓ | 主判据过（切主判据） |
+| partial_icfg_known_lowbyte | 5 | 4 ✗ | 4 ✗ | 6 ✓（余 1，最紧） | 主判据过（切主判据） |
+| per_core_visible_cnum | 2 | 4 ✓ | 10 ✓ | 292 ✓ | 保守筛即过 |
+| irq_repeat_return_hypothesis | 4 | 4 ✓（恰界） | 8 ✓ | 222 ✓ | 保守筛即过（恰界） |
+| partial_icfg_bit9_only | 2 | 4 ✓ | 8 ✓ | 176 ✓ | 保守筛即过 |
+| partial_icfg_read_or_gate_write | 3 | 4 ✓ | 6 ✓ | 114 ✓ | 保守筛即过 |
+| partial_icfg_pure_bit_mask | 2 | 4 ✓ | 6 ✓ | 112 ✓ | 保守筛即过 |
+| mmio_rmw_always_writes | 1 | 4 ✓ | 4 ✓ | 80 ✓ | 保守筛即过 |
+| cpu0_shared_lock_ownership | 2 | 4 ✓ | 4 ✓ | 56 ✓ | 保守筛即过 |
+| timer0_irq_handler_frame | 2 | 4 ✓ | 4 ✓ | 42 ✓ | 保守筛即过 |
+| conditional_timer0_irq_rti | 1 | 4 ✓ | 4 ✓ | 22 ✓ | 保守筛即过 |
+| immediate_rep_multi_block_projection | 1 | 4 ✓ | 4 ✓ | 6 ✓（余 5） | 保守筛即过 |
+| parallel_byte_store_old_registers | 1 | 4 ✓ | 4 ✓ | 6 ✓（余 5） | 保守筛即过 |
 
-- 前 4 行 ✗✗=保守筛/δ_max 端到端口径的**误报案例**（机制=deferral 重排差 9,923 把等待
-  变重执行，见上「何时必须切」），主判据全过——双口径修订的直接校准证据（先例：EQDIV
-  实测数字代回校准全过）。
-- abstract_task_stack_transport 行 [设计代入]（L2AR）：DIF/R4C 跑时该键未入清单、
-  coeffs 工具未出预算（r4c-coeffs `adapter_keys_off_whitelist` 如实记录该键），本行按
-  ρ_L=104,965/21,798,257≈4.82e-3 代入同式估算；正式数字由实施路 coeffs 工具按入列后
-  键集补算。
+- 判定序实跑结果（COEF 复算）：16 键保守筛 11 键即过（E⁰=4；irq_repeat 恰界）、
+  5 键超筛切主判据全过（E=718/564/262/66/6）、主判据超界 0——判定序「筛过即 PASS、
+  筛超界必切主判据」全 16 键机器执行无歧义。
+- 前 5 行中 4 键（exact_full_word_store/exact_postincrement_store/exact_subword_store/
+  partial_icfg_known_lowbyte）保守筛与 δ_max 端到端口径**双超界=误报案例**（机制=
+  deferral 重排差 9,923 把等待变重执行，见上「何时必须切」），主判据全过——双口径修订
+  的直接校准证据（先例：EQDIV 实测数字代回校准全过）；abstract_task_stack_transport
+  保守筛超（10>4）而 δ_max 代入即过（16≥10），同切主判据过。
+- abstract_task_stack_transport 行=入列后正式预算（COEF 补算，消 L2AR [设计代入]
+  挂账）：DIF/R4C 跑时 coeffs 工具白名单未含该键（r4c-coeffs
+  `adapter_keys_off_whitelist` 如实记录），正式数字按存档 json 的基侧计数
+  104,965/步数 21,798,257+δ 读数以同式机器重算——E⁰=4/E_dmax=16/E=564，与 L2AR
+  [设计代入] 估算（4/16/≈564，ρ_L≈4.82e-3 同式）逐位一致；重算脚本对 15 白名单键
+  存档 E 值（三口径×3 偏移对）全量复现零差、difline-coeffs.json 双源交叉 E 值逐键
+  相同（ρ 第 6-7 位差被 ceil 吸收）——场景无需重跑（预算全部输入已存档 json）；coeffs
+  工具白名单同步属 tools 路未动。
 - 16 差键清单全文钉死（三偏移对同集合；L2AR）：abstract_task_stack_transport、
   conditional_timer0_irq_rti、cpu0_shared_lock_ownership、exact_full_word_store、
   exact_postincrement_store、exact_subword_store、immediate_rep_multi_block_projection、
@@ -316,7 +343,8 @@ EQDIV 各行按 |Δstep| 代入（当时单口径）；Σ|δ| ≥ |Δstep| ⇒ �
   等值键/差键/计数格全套）；[A1-PAR-01](acceptance-samples/parity/A1-PAR-01.json)（FAIL
   记录，判据①②命中证据）；[R4-COT-01](acceptance-samples/cot/R4-COT-01.json)/
   [R2-COT-01](acceptance-samples/cot/R2-COT-01.json)（DIF/R4C 首跑，§3.3 双口径校准
-  例与 16 差键清单的数字承载，L2AR）。
+  例与 16 差键清单的数字承载，L2AR；R4-COT-01 断言面已按双口径判定序复核、16 键
+  正式预算表回填本节，COEF）。
 - 宿主与衔接：[d1-acceptance.md](d1-acceptance.md) §3.4（L2-a 原始规格——其预测 2 升级
   条款已被 A1 命中、预测 3 停点 parity 已破，本规格是其 447k 后段的可执行替代）；
   [candidate-image-cotest.md](candidate-image-cotest.md) §1.4/§2.3（四源白名单，归层见
