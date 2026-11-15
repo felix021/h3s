@@ -293,6 +293,28 @@ class ArtifactGateTest(unittest.TestCase):
         self.assertEqual(red.returncode, 1)
         self.assertIn('FAILED', red.stderr.decode())
 
+    def test_06_analyze_image_trace_loaders_gate_on_the_checks(self):
+        """Route-DIF loader wiring: analyze_image_trace's l1_slotram /
+        r4_keyhook loaders reuse run_checks as their pre-load gate and add the
+        measured app-slice sha pin. A green candidate loads through the loader;
+        the same candidate with one tampered bootloader byte is REFUSED by the
+        loader (the four-fold gate bites inside analyze_image_trace too)."""
+        import analyze_image_trace as AIT
+        for name in ('l1_slotram', 'r4_keyhook'):
+            art = self.artifacts[name]
+            app, plain, readonly, sha = AIT.LOADERS[name](art['ufw'], OFFICIAL)
+            self.assertEqual(sha, CWC.CANDIDATES[name]['sha256'])
+            self.assertEqual(len(plain), CWC.CANDIDATES[name]['plain_length'])
+            self.assertEqual(readonly, ())
+            self.assertEqual(AIT.PLAIN_LENGTHS[name], len(plain))
+        art = self.artifacts['l1_slotram']
+        tampered = bytearray(art['ufw'].read_bytes())
+        tampered[0x600 + 0x1000] ^= 0xA5
+        path = Path(self.temp.name) / 'loader-refused.ufw'
+        path.write_bytes(tampered)
+        with self.assertRaises(ValueError):
+            AIT.LOADERS['l1_slotram'](path, OFFICIAL)
+
 
 if __name__ == '__main__':
     unittest.main()

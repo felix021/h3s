@@ -100,9 +100,16 @@ def load_l1_slotram(path, official_path):        # 与 load_r4_keyhook 同形
   自我洗白）。单测 `tools/test_candidate_world_checks.py`（已接 check_local --units，14
   tests：逻辑层钉常量/分类器分辨力；工件层现场构建两候选全绿+反例——篡改 boot 段 1B
   四断言全红、伪造字节账恰红 byte_account、白名单外 plain 1B（ANC 键表族）shared_boot
-  仍绿而分类器报 unexplained）。**loader 接线（BR 路）剩**：analyze_image_trace 增两
-  loader 时调用 `run_checks`（或照其常量）、KNOWN_SITE_LABELS 展示增补（§1.3）、独立
-  self-check 函数与 app 切片 sha 实测钉死。**规格修正一处**：原稿 PLAIN_LENGTHS 的
+  仍绿而分类器报 unexplained）。**loader 接线已落地（2026-11-15 路 DIF/sim-difline）**：
+  analyze_image_trace 增 `load_l1_slotram`/`load_r4_keyhook`（`_load_candidate_world`
+  共用——前置断言单源复用 `candidate_world_checks.run_checks`，任一红即拒载），
+  KNOWN_SITE_LABELS 按 §1.3 增补（6 窗口/注册表槽条目+fence 与追加段标签扩展），独立
+  候选 self-check `--candidate-self-check l1_slotram=<ufw>`（钉 2026-11-15 首轮差分
+  基线，不动 2026-11-12 official↔b79 钉子），app 切片 sha 实测钉死：l1
+  `0536a9c72cd062c86aff01f3b1e8571f7dd8235e3b9d48362cdded19dc32d411`、r4
+  `e4ee706f106713ab34aa3bb7088171540586acdffa67b6c961cf41c852fbd272`（构建产物
+  复跑实测，非假设值）；两 loader 默认不进任何既有场景/self-check 钉子。
+  **规格修正一处**：原稿 PLAIN_LENGTHS 的
   0xE5200/0xE524E 是 flash 末端宽记法；load_image 语义下 plain 长度=boot-info
   app_size=flash 末端−0x2020，实测 0xE31E0/0xE322E（与 fence 上限运行地址
   0x060E31E0/0x060E322E 互证），上文代码块已按实测值改注。
