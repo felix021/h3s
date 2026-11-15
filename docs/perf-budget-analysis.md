@@ -519,3 +519,85 @@ write）0.36µs/行（22x）**、逐行 dump→BytesIO 0.47µs/行。
 **时间线当前达标、且第三波 W3-1/2 还有 ~20% 余量**；内存线已稳定达标。
 本路（PROF3）到此为止：纯测量与裁决，零 tools/ 改动；W3-1/W3-2 归后续
 实施路一案一 PR。
+
+## 12. 第三波实施记录（路 W3 / sim-w3，2026-11-15，一案一提交，基线 main 0bffaa0）
+
+§11.6 裁决的「做」两案落地在 `tools/analyze_image_trace.py`（+单测
+`tools/test_image_trace_diff.py` 17→21 项）。行为零变化红线 = 报告逐字节
+相等：基线侧=原样 main 0bffaa0 detach worktree 实跑，新侧=本路代码，
+同一 ROM 与镜像路径，全部 `cmp` 退出码 0。
+
+### 12.1 W3-1 spool flush 批量化
+
+`TraceSpool.flush` 的逐行 `pickler.dump(row)` 直写临时文件（每行一次
+`BufferedWriter.write`=本机释放 GIL 的 C 调用 ~6.1µs，§11.5 根因）改为：
+块内逐行 pickle 进**复用的内存 `BytesIO` staging**（`BytesIO.write` 是
+不释放 GIL 的 C 内联 ~0.1µs），拼完整块后**单次 `file.write`**（一次
+6.1µs 摊到 2048 行≈0.003µs/行）。**盘上字节形状不变**：仍一块一个新建
+Pickler（O6 memo 界限语义）、块内逐行 dump 的 pickle 流按序拼接、读侧
+逐行 `load()` 照旧——新单测 `test_trace_spool_chunk_format_is_row_pickle_
+concatenation` 把「每块=逐行 pickle 流拼接」钉到**逐字节**（任何 framing
+改动——整块 list dump/帧头/长度前缀——第一时间炸）；`test_trace_spool_
+batched_write_truncation_matrix_raises_not_silent` 钉批量化后块界 ±1 与
+块中部各切点下受损块必抛（UnpicklingError/EOFError）、未受损前缀块照常
+可读。
+
+### 12.2 W3-2 签名行 value→str memo
+
+`_register_signature` 的 int 路径（每步 16 寄存器的 `f'{value:08x}'`）
+加按值 memo：模块级 dict，值为 `sys.intern` 过的签名串（与 after_step
+原有 intern 语义一致，同值命中**同一对象**，DT 快速相等路径不变）；bool
+分支在前不受影响（bool 是 int 子类），UnknownWord/IcfgValue/兜底路径原样。
+**纯函数无失效义务**（同一 int 的签名字符串恒定），只防无界增长：条目
+上限 1<<16 超限全清（照 O3I 闭包 memo 先例，§8；20M 世界唯一串实测
+33,364 ≪ 65,536）。单测两例：命中/矩阵（同值同对象、0/负数/满宽/超宽
+格式化恒等、bool 不进 memo、Unknown/Icfg 输出逐字节不变）+ 上限淘汰
+（cap 触发全清、清后重建键值照常正确）。
+
+### 12.3 验收数字（全部同机同时段；基线=0bffaa0 原样，新=本路）
+
+| 场景 | 基线 | 新 | 报告 cmp |
+|---|---|---|---|
+| crc_bankb self-check（289,849 前沿） | 28.5s / RSS 97.5MB | **22.6s / 101.8MB** | **逐字节相等**（新侧复跑亦逐字节相同=确定性自证） |
+| p11 三镜像全组合（3 臂 × ~21.8M 步） | CPU 3,055s（u2700+s355）/ RSS 128.7MB | **CPU 2,568s（u2527+s41）= +19.0% / RSS 151.2MB** | **逐字节相等**（sha256 846c92a4… 两侧同） |
+
+- p11 管线墙钟两侧接近（55:59 vs 55:44）是新侧全程与另一会话的并发
+  p11 运行+全量 --rom 抢核（CPU 占用 90% vs 76%），CPU 时间口径才是
+  诚实对比；**系统时间 354.6s→40.5s（−89%）**=批量化后逐行
+  BufferedWriter.write 触发的缓冲满真写 syscall 大减的直达效应。
+
+- 停点逐位：p11 三臂 official=21,800,325、eq_fence_repair=21,800,223、
+  b79=21,800,325 全部 @ 0x606df1e，与 registry 钉值及基线侧一致；crc
+  289,849 @ 0x60679ba 同。
+- **速率（1M CPU 时间口径，A/B 背靠背交替 3 轮中位，p11 单臂 official）**：
+  基线 21,199 步/s（47.0s CPU）→ 新 **26,317 步/s（38.0s CPU）=
+  +24.1%**（W3-1 预期 +15~20% + W3-2 预期 ~4% 的叠加兑现；两侧同窗
+  并发负载，交替消漂移；PROF3 §11.4 记录的 22,834 是轻载下的基线值，
+  本路基线侧同法复测 21.2k 为重载窗口，比值口径不受影响）。新侧轻载
+  单跑 27.6k。
+- **py-spy（200Hz×45s，2M 预算中段窗，同协议双侧对照）**：flush 自耗时
+  基线侧 18.0% → 新侧 **1.3%**（§11.6 目标 <5% 达成；PROF3 记录的
+  24.4%@2M/25.7%@20M 与本路基线侧 18.0% 的差异=采样窗相位与负载，
+  同窗对照的 18.0→1.3 即本路效果）。新侧第一热点回到 step_body 13.4%。
+- 内存：crc self-check 新侧 +4.3MB、1M 单臂 +5MB（memo 未达上限 +
+  staging 缓冲）；p11 三镜像管线峰值 **151.2MB vs 基线 128.7MB（+22.5MB）**
+  ——三臂共用一个 memo，长程触到 1<<16 上限后常驻满 dict（~7MB）；
+  intern 串集合不新增（after_step 本就逐串 intern，同值同串），增量还有
+  staging 缓冲与每块 getvalue() 瞬态拷贝的分配器保留；有界（不随行数
+  增长，memo 封顶），
+  预算线 ≤1GiB 不受影响，50M 外推按 0.7B/行的世界/簿记斜率照旧。
+- 回归：`check_local.py --units` EXIT=0（21 项）；全量 `--rom`
+  EXIT=0（规定姿势 `> log 2>&1; echo EXIT=$?`，「Local checks passed」）。
+
+### 12.4 预算线复核（§11.8 同法，按 +24.1% 比例外推）
+
+| 项 | PROF3 外推 | W3 后外推 | 结论 |
+|---|---|---|---|
+| 单臂 50M 时间 | 36.9min | **~29.7min**（1M CPU 口径 +24.1% 比例外推；p11 管线实测 CPU +19.0%） | 达标（≤45min，余量扩大） |
+| 三镜像三臂 | 110.7min | **~89min** | 达标（≤2.5h） |
+| 单臂/三镜像内存 | ~130MB / ~130MB | 同级 +5MB/+22.5MB（memo 封顶有界，不随行数增长） | 达标（≤0.5GiB / ≤1GiB） |
+
+与 §11.7 结构地板的对照：26,317 步/s @1M 重载窗 = 38.0µs/步，轻载
+27.6k = 36.2µs/步——距结构地板 34-35.5µs/步 <5-7%，与 PROF3 预估
+（43.7−7.7−1.8≈34.2µs≈29k/s）方向一致；第三波到此收口，下一级是
+O7/O9（等/不立项，§11.6 裁决维持）。
