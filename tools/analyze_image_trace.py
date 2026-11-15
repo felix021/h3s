@@ -44,10 +44,14 @@ Honest comparison basis (what a "no divergence" result does and does not mean):
   unconsumed evidence).
 """
 import argparse
+import bisect
 import hashlib
 import itertools
 import json
+import pickle
 import sys
+import tempfile
+from collections import OrderedDict, deque
 from pathlib import Path
 
 import probe_dualcore
@@ -372,6 +376,149 @@ def _register_signature(value):
     return '?'
 
 
+class TraceSpool:
+    """Spill-backed trace sequence with plain-list semantics (route O6).
+
+    Each appended row keeps its ORIGINAL in-memory representation — the
+    6-tuple (core, before_pc, pc, flags str, 16-tuple of register signature
+    strs, writes tuple of (address, hex-str)) built by TraceMachine.after_step.
+    Rows are pickled into ONE unnamed temporary file (tempfile.TemporaryFile:
+    no directory entry anywhere on any filesystem, reclaimed by the OS on
+    close or crash, so nothing ever lands inside the repository and there is
+    nothing to clean up after a kill; location honors TMPDIR) in fixed-size
+    chunks. A FRESH Pickler per chunk keeps the pickle memo bounded (a single
+    long-lived Pickler memoizes every row tuple it ever wrote, which would
+    reintroduce linear memory growth) and makes each chunk's records
+    self-contained, so reads use a fresh Unpickler per chunk.
+
+    Resident cost is one append buffer plus a two-chunk read cache (~1-2 MB):
+    the pre-O6 resident Python list cost ~353 B/row and was >99.9% of the
+    dual-image RAM peak (docs/perf-budget-analysis.md §3).
+
+    Sequence semantics match a plain list of rows exactly: len, integer
+    indexing (negative included), slicing (returning a LAZY view — never a
+    materialization, so reconvergence suffix scans cannot bring the blow-up
+    back), iteration and zip. Field-exact round-trip, view equivalence
+    against real list slices and truncation-raises-not-EOF are pinned by
+    unit tests in tools/test_image_trace_diff.py."""
+
+    DEFAULT_CHUNK = 2048
+
+    def __init__(self, file=None, chunk=None):
+        self._file = tempfile.TemporaryFile() if file is None else file
+        self._chunk = self.DEFAULT_CHUNK if chunk is None else chunk
+        self._offsets = []   # file offset where each flushed chunk starts
+        self._counts = []    # row count of each flushed chunk
+        self._starts = []    # first global row index of each flushed chunk
+        self._flushed = 0    # total rows handed to the file
+        self._tail = []      # appended rows not yet flushed (the final chunk)
+        self._cache = OrderedDict()  # chunk index -> decoded rows, <= 2 kept
+        self._closed = False
+
+    def append(self, row):
+        if self._closed:
+            raise ValueError('append to a closed TraceSpool')
+        self._tail.append(row)
+        if len(self._tail) >= self._chunk:
+            self.flush()
+
+    def flush(self):
+        """Write the pending tail rows as one self-contained chunk."""
+        if self._closed or not self._tail:
+            return
+        self._file.seek(0, 2)  # appends always land at the tail, even if a
+        offset = self._file.tell()  # read moved the shared file position
+        pickler = pickle.Pickler(self._file, protocol=4)
+        for row in self._tail:
+            pickler.dump(row)
+        self._starts.append(self._flushed)
+        self._offsets.append(offset)
+        self._counts.append(len(self._tail))
+        self._flushed += len(self._tail)
+        self._tail = []
+
+    def _rows_of_chunk(self, chunk):
+        rows = self._cache.get(chunk)
+        if rows is None:
+            self._file.seek(self._offsets[chunk])
+            unpickler = pickle.Unpickler(self._file)
+            rows = [unpickler.load() for _ in range(self._counts[chunk])]
+            self._cache[chunk] = rows
+            while len(self._cache) > 2:  # two chunks suffice: every comparator
+                self._cache.popitem(last=False)  # scan is monotone per spool
+        else:
+            self._cache.move_to_end(chunk)
+        return rows
+
+    def _check_open(self):
+        if self._closed:
+            raise ValueError('TraceSpool is closed')
+
+    def __len__(self):
+        self._check_open()
+        return self._flushed + len(self._tail)
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            return _SpoolView(self, *key.indices(len(self)))
+        self._check_open()
+        i = key + len(self) if key < 0 else key
+        if not 0 <= i < len(self):
+            raise IndexError('TraceSpool index out of range')
+        if i >= self._flushed:
+            return self._tail[i - self._flushed]
+        chunk = bisect.bisect_right(self._starts, i) - 1
+        return self._rows_of_chunk(chunk)[i - self._starts[chunk]]
+
+    def __iter__(self):
+        self._check_open()
+        for chunk in range(len(self._counts)):
+            yield from self._rows_of_chunk(chunk)
+        yield from self._tail
+
+    def close(self):
+        """Drop the spill file for good (rows already consumed into the pair
+        report are unaffected). The sequence becomes unreadable afterwards."""
+        self._cache.clear()
+        self._tail = []
+        self._file.close()
+        self._closed = True
+
+
+class _SpoolView:
+    """Lazy slice view over a TraceSpool (or another view). Indexing,
+    iteration and len resolve straight through the parent; nothing is ever
+    materialized, for any slice size."""
+
+    __slots__ = ('_parent', '_start', '_stop', '_step')
+
+    def __init__(self, parent, start, stop, step):
+        self._parent = parent
+        self._start = start
+        self._stop = stop
+        self._step = step
+
+    def __len__(self):
+        if self._step > 0:
+            return max(0, (self._stop - self._start + self._step - 1) // self._step)
+        return max(0, (self._start - self._stop - self._step - 1) // (-self._step))
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            start, stop, step = key.indices(len(self))
+            return _SpoolView(self._parent,
+                              self._start + start * self._step,
+                              self._start + stop * self._step,
+                              self._step * step)
+        i = key + len(self) if key < 0 else key
+        if not 0 <= i < len(self):
+            raise IndexError('trace view index out of range')
+        return self._parent[self._start + i * self._step]
+
+    def __iter__(self):
+        return (self._parent[i] for i in range(self._start, self._stop, self._step))
+
+
 class TraceMachine(DualCoreMachine):
     """Observation-only DualCoreMachine: records one compact signature per
     executed instruction. Inherited scheduling, projections and honesty stops
@@ -380,7 +527,11 @@ class TraceMachine(DualCoreMachine):
     instances = []
 
     def __init__(self, *args, **kwargs):
-        self.trace = []
+        # 内存形态(路 O6):签名链不再常驻——行按原表示(6 元组)pickle 进
+        # TraceSpool 的无名临时文件,比较器经惰性视图顺序/随机读,常驻内存
+        # 不随行数增长(读回逐字段相等/报告逐字节相等由单测+对照实跑钉死;
+        # 行形状/值语义/相等比较零变化,见 TraceSpool docstring)。
+        self.trace = TraceSpool()
         self.pending_writes = []
         TraceMachine.instances.append(self)
         super().__init__(*args, **kwargs)
@@ -393,10 +544,9 @@ class TraceMachine(DualCoreMachine):
         super().after_step(cpu, before_pc)
         if cpu is not None:
             flags = getattr(cpu, 'flags', None)
-            # 内存形状(路 DT):条件前沿推进到 ~22M 步后双镜像全量 trace
-            # 常驻 ~30GB 触发 OOM kill(19.1M 时代恰可容纳)。寄存器签名/
-            # flags 字符串每步全新分配但取值高度重复——intern 去重后唯一
-            # 集极小(值语义/行形状/相等比较/报告零变化,trace 本就不序列化)。
+            # 串池形状(路 DT):寄存器签名/flags 字符串每步全新分配但取值
+            # 高度重复——intern 去重后唯一集极小(值语义/行形状/相等比较/
+            # 报告零变化,trace 本就不序列化;O6 落盘按值序列化同样受益)。
             self.trace.append((cpu.core_id, before_pc, cpu.pc,
                                sys.intern(f'{flags:02x}') if isinstance(flags, int) else repr(flags),
                                tuple(sys.intern(s) for s in map(_register_signature, cpu.R)),
@@ -518,17 +668,31 @@ def byte_diff_runs(a, b):
 
 
 def pc_run_length_summary(trace, head=12, tail=12):
-    runs = []
+    """Run-length summary of the fetch-PC sequence. 路 O6:单遍流式聚合
+    (计数+前 head 个 run+滚动尾 tail 个 run)——原实现先物化完整 runs
+    列表(实测 run 数≈0.97×行数,21.8M 世界 ≈2.7GB 瞬时、50M 外推 ≈6GB,
+    叠加在已回收的签名链之上会击穿 <1GB 目标);聚合是纯函数,输出与
+    「先建表再裁剪」逐字段恒等(单测钉死)。"""
+    run_count = 0
+    head_runs = []
+    tail_runs = deque()
     for core, before_pc, _next_pc, _flags, _regs, _writes in trace:
-        if runs and runs[-1][0] == before_pc and runs[-1][2] == core:
-            runs[-1][1] += 1
+        current = tail_runs[-1] if tail_runs else (head_runs[-1] if head_runs else None)
+        if current is not None and current[0] == before_pc and current[2] == core:
+            current[1] += 1
+            continue
+        run_count += 1
+        run = [before_pc, 1, core]
+        if len(head_runs) < head:
+            head_runs.append(run)
         else:
-            runs.append([before_pc, 1, core])
-    keep_head = runs[:head]
-    keep_tail = runs[-tail:] if len(runs) > head + tail else []
-    return {'run_count': len(runs), 'head': [[hex(pc), count, core] for pc, count, core in keep_head],
+            tail_runs.append(run)
+            if len(tail_runs) > tail:
+                tail_runs.popleft()
+    keep_tail = list(tail_runs) if run_count > head + tail else []
+    return {'run_count': run_count, 'head': [[hex(pc), count, core] for pc, count, core in head_runs],
             'tail': [[hex(pc), count, core] for pc, count, core in keep_tail],
-            'omitted_middle_runs': max(0, len(runs) - len(keep_head) - len(keep_tail))}
+            'omitted_middle_runs': max(0, run_count - len(head_runs) - len(keep_tail))}
 
 
 def classify_divergence(step, row_a, row_b, diff_runs, plain_a, plain_b):
@@ -703,6 +867,11 @@ def compare_pair(module, rom, header, name_a, image_a, name_b, image_b, budget, 
             pair['note'] = ('identical per-step signatures; the two final reports still differ (stop point, '
                             'peripheral records, counters or snapshots) — a divergence invisible to the '
                             'per-step comparison surfaced only in the report')
+    # 路 O6 清理纪律:报告只携带从行里提取的值,消费完毕即释放两臂落盘
+    # (临时文件本就无名,close 后由 OS 立即回收;显式 close 让释放与报告
+    # 生成同步,不依赖 GC)。
+    trace_a.close()
+    trace_b.close()
     return pair
 
 
@@ -783,7 +952,12 @@ def find_reconvergence(trace_a, trace_b, first_control):
             window['note'] = ('the extra step count is exact but its position inside the bracket is not '
                               'localized (realignment was not at the divergence step)')
         detail['extra_window'] = window
-        spans = _divergent_spans(trace_a[s:], [trace_b[i + lag] for i in range(s, len(trace_a))])
+        # 路 O6:原实现把 trace_b 的对齐后缀物化成 list(逐行取索引);在
+        # _suffix_control_realign_start 的护栏 len(trace_a)+lag <= len(trace_b)
+        # 下,该 list 恰等于切片 trace_b[s+lag:](元素逐一对应、长度相同),
+        # 改成惰性切片表示不变、内存不再随分歧后缀长度物化(对真 list 同样
+        # 语义等价——切片就是那个 list)。
+        spans = _divergent_spans(trace_a[s:], trace_b[s + lag:])
         spans = [(s + lo, s + hi) for lo, hi in spans]
         signature_realign = spans[-1][1] if spans else s
         detail['signature_after_realignment'] = {
@@ -1209,12 +1383,17 @@ def main():
         check = frontier_run(module, loaded['official'][1][0], header, rom, 'frontier_freshness_check',
                              flash_image_bytes=loaded['official'][1][1], budget=budget,
                              scenario=scenario)
-        require(check[0]['completed_steps'] == fresh['completed_steps'] and
-                check[0]['stop_pc'] == fresh['stop_pc'] and
-                all(check[0]['stop'].get(k) == v for k, v in fresh['stop_fields'].items()),
-                f'official frontier stop changed for scenario {scenario!r}: the imported flag set no '
-                f'longer reproduces the pinned frontier stop ({fresh["completed_steps"]} @ '
-                f'{fresh["stop_pc"]}); update this pin after the frontier advances')
+        try:
+            require(check[0]['completed_steps'] == fresh['completed_steps'] and
+                    check[0]['stop_pc'] == fresh['stop_pc'] and
+                    all(check[0]['stop'].get(k) == v for k, v in fresh['stop_fields'].items()),
+                    f'official frontier stop changed for scenario {scenario!r}: the imported flag set no '
+                    f'longer reproduces the pinned frontier stop ({fresh["completed_steps"]} @ '
+                    f'{fresh["stop_pc"]}); update this pin after the frontier advances')
+        finally:
+            # 路 O6:新鲜度 run 的落盘 trace 无消费者,立即释放(无名临时文件,
+            # close 即回收;不留给 GC)。
+            check[1].close()
 
     report = {'simulator_commit': PIN, 'device_accessed': False, 'whole_h3s_boot_simulated': False,
               'candidate_whole_boot_validated': False, 'suitable_for_flash_approval_alone': False,
