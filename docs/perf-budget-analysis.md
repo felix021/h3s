@@ -264,3 +264,27 @@ ROI 排序 = 收益/（风险×工作量）。CPU 收益按步进段自耗时占
    O7 只做 advance() 内部瘦身，闭式批量留实验阶段。
 
 本路（PERF）到此为止：以上全部为测量与分级，零 tools/ 改动；每项实施属后续实施路。
+
+## 8. O3 实施记录（路 O3I / sim-o3i，2026-11-15，基线 main 2a3e426）
+
+O3D 预研（[o3-memory-design.md](o3-memory-design.md)）方案 A 三 PR 已落地，验收全绿
+（实施细节与诊断计数见该文档 §7 与各 commit message）：
+
+| PR | commit | 内容 | 分项提速（1M 步 CPU 时间 A/B 交替，3 轮中位） |
+|---|---|---|---|
+| PR-1 | `f9723f7` | A1 detail 延迟构造+A2 region last-hit/重叠检测回退 bisect | ~1.03x（23.7→24.4k/s） |
+| PR-2 | `66b99c4` | A3a 合并双重遍历+A3b 闭包读 memo（写三入口全清+restore 显式清空+上限 1<<16） | ~1.02-1.03x（24.4→24.9k/s） |
+| PR-3 | (本 commit) | Insn.mask/value getter 首调缓存（non-data 描述符+实例私有键，上游 decode 循环零复制） | ~1.10-1.12x（24.9→27.8k/s，超出 §5.2 的 4-5% 估计——当前 flag 集 decode miss 更重） |
+| 合计 | — | — | **~1.15-1.18x**（23.7→27.8k/s @1M；200k 口径受固定开销+噪声影响显著偏小，长程为准） |
+
+- 实施前三项诊断计数（A3b 待测假设，200k 条件前沿，脚本在 ~/tmp 不进仓）：请求命中
+  81.2%/字节加权 80.6%/唯一键峰值 131/失效间隔中位 7 次读——70-85% 假设区间成立。
+- 行为零变化验收：每 PR `check_local --units` EXIT=0（PR-1 起新增 test_o3_readopt.py
+  11 例：region 语义钉子+memo 失效矩阵；PR-3 起 test_exec_memo 14 例含全表 1165 条
+  mask/value 等价向量）；条件前沿停点逐位一致（200k=197,845@0x600a78c、
+  1M=997,845@0x12b56c）；每 PR `--rom` 全量 31 份报告与基线 stash 对照**逐字节相等**
+  （含 key_chain post_stop 与 SNAP 场景）；RSS 同形（单 run VmHWM 149.3 vs 149.2MB，
+  memo 增量可忽略）。
+- 注：§5 O3 行的「字节数组段+位图」（方案 D）按 O3D 裁决仍不排期；本节为其「查找
+  路径+读 memo」阶段一（方案 A）的完整交付。Insn getter 项在 O3D §5 立项，随本波
+  一并落地。

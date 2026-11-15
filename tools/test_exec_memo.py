@@ -121,6 +121,59 @@ class OperandFormatTests(unittest.TestCase):
                              self.format_original(insn, raw, insn.syntax))
 
 
+class InsnMaskValueTests(unittest.TestCase):
+    """Route O3 (docs/o3-memory-design.md §5.2): the first-call-cached
+    Insn.mask/Insn.value descriptors must be exact for the WHOLE pinned table,
+    must never observe a mutated words tuple, and must restore the original
+    properties on uninstall."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cpu = _cpu()
+        # Pre-install ground truth from the ORIGINAL properties.
+        cls.expected = [(insn.mask, insn.value) for insn in cls.cpu.tab.insns]
+        cls.words_before = [tuple(insn.words) for insn in cls.cpu.tab.insns]
+        require(install(cls.cpu), 'installation failed')
+        cls.namespace = _sim_namespace(cls.cpu)
+        cls.Insn = cls.namespace['table'].Insn
+
+    def tearDown(self):
+        uninstall()
+
+    def test_full_table_mask_value_equality_vector(self):
+        for insn, (mask, value) in zip(self.cpu.tab.insns, self.expected):
+            self.assertEqual(insn.mask, mask)
+            self.assertEqual(insn.value, value)
+
+    def test_cache_lives_in_a_private_instance_key(self):
+        insn = self.cpu.tab.insns[0]
+        mask, value = self.expected[0]
+        self.assertEqual(insn.mask, mask)
+        self.assertEqual(insn.__dict__['_h3s_mask_cached'], mask)
+        self.assertEqual(insn.value, value)
+        self.assertEqual(insn.__dict__['_h3s_value_cached'], value)
+        self.assertNotIn('mask', insn.__dict__)   # private key only, no shadowing
+        self.assertNotIn('value', insn.__dict__)
+
+    def test_words_are_unchanged_after_cached_access(self):
+        # Upstream drift tripwire: the getters are pure functions of words;
+        # if anything ever mutated words at runtime the cache would diverge.
+        for insn in self.cpu.tab.insns:
+            insn.mask; insn.value
+        for insn, words in zip(self.cpu.tab.insns, self.words_before):
+            self.assertEqual(tuple(insn.words), words)
+
+    def test_uninstall_restores_the_original_properties(self):
+        uninstall()
+        self.assertIsInstance(self.Insn.mask, property)
+        self.assertIsInstance(self.Insn.value, property)
+        # The restored property takes precedence over leftover private keys
+        # and recomputes the exact same values.
+        for insn, (mask, value) in zip(self.cpu.tab.insns, self.expected):
+            self.assertEqual(insn.mask, mask)
+            self.assertEqual(insn.value, value)
+
+
 class InstallTests(unittest.TestCase):
     def setUp(self):
         uninstall()

@@ -35,6 +35,17 @@ module attributes with exact memoizing versions:
 - format: per-insn dict keyed by (sorted values, syntax). ``codec.format``
   is a pure function of its arguments; the returned text is shared
   (Python strings are immutable).
+- ``Insn.mask``/``Insn.value`` (route O3, docs/o3-memory-design.md §5.2):
+  the upstream properties rebuild the encoding join + per-char scan + int
+  parse on EVERY access; ``codec.decode``'s scan loop touches them twice per
+  candidate (~89 candidates per real decode miss). They are pure functions
+  of ``insn.words``, the table is pinned and ``words`` is never mutated at
+  runtime (grep-verified upstream-wide; tools/test_exec_memo.py re-pins it),
+  so the class attributes are replaced by first-call-cached descriptors that
+  memo the original property's result into each instance's ``__dict__`` under
+  PRIVATE new keys (never shadowing anything: the property is replaced at the
+  class level; instance dicts could not shadow the old data descriptor
+  anyway). The upstream decode loop itself is untouched.
 
 Behavior contract: same inputs return the exact object the original call
 would have produced (the first call always runs the original function), so
@@ -45,9 +56,34 @@ revalidation in the probe layer are untouched.
 
 _OPERANDS_MEMO = '_h3s_operands_memo'
 _FORMAT_MEMO = '_h3s_format_memo'
+_MASK_MEMO = '_h3s_mask_cached'
+_VALUE_MEMO = '_h3s_value_cached'
 _WRAPPER_MARK = '_h3s_exec_memo'
+_CACHED_MARK = '_h3s_first_call_cached'
 
 _installed = {}  # (module object, attribute name) -> original function
+
+
+class _FirstCallCachedAttr:
+    """Non-data descriptor: first access runs the original property getter
+    and stores the result in the instance ``__dict__`` under a private key;
+    later accesses are a dict lookup inside ``__get__`` (non-data descriptors
+    let instance attributes win, and the private key never collides with a
+    real attribute). ``uninstall`` restores the original property (a data
+    descriptor, which takes precedence over any leftover private keys)."""
+
+    def __init__(self, fget, key):
+        self.fget = fget
+        self.key = key
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        d = obj.__dict__
+        v = d.get(self.key)
+        if v is None:
+            v = d[self.key] = self.fget(obj)
+        return v
 
 
 def _sim_namespace(cpu):
@@ -142,6 +178,22 @@ def install(cpu):
         setattr(format, _WRAPPER_MARK, True)
         _installed[(id(codec), 'format')] = (codec, 'format', original)
         codec.format = format
+    # Route O3 (docs/o3-memory-design.md §5.2): first-call-cached
+    # Insn.mask/Insn.value. Shape-guarded: only plain upstream properties are
+    # replaced (the tree itself is pinned by probe_pi32v2.upstream's revision
+    # check, which refuses a changed tree before anything here runs).
+    insn_cls = getattr(namespace.get('table'), 'Insn', None)
+    if (insn_cls is not None
+            and isinstance(getattr(insn_cls, 'mask', None), property)
+            and isinstance(getattr(insn_cls, 'value', None), property)
+            and not any(getattr(getattr(insn_cls, name), _CACHED_MARK, False)
+                        for name in ('mask', 'value'))):
+        for name, key in (('mask', _MASK_MEMO), ('value', _VALUE_MEMO)):
+            original_property = getattr(insn_cls, name)
+            cached = _FirstCallCachedAttr(original_property.fget, key)
+            setattr(cached, _CACHED_MARK, True)
+            _installed[(id(insn_cls), name)] = (insn_cls, name, original_property)
+            setattr(insn_cls, name, cached)
     return True
 
 
