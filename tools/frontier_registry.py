@@ -260,6 +260,33 @@ FEATURES = (
             '留严格停;数据区零独立字面值;codex 定调:恰五字、不收 SRN 0xfe0550、'
             '拒绝合成读回=不提前承诺消费语义、同址新写者须重审;依赖边=当前场景'
             '推进顺序非硬件依赖,模型类独立可用)'),
+    # ---- 路 ASS/sim-ass:ADC 启动函数配置块四字合成读回容器 ----
+    Feature('jl_adc_start_config', 'conditional', ('jl_audio_adc_dma_writes',), False, None,
+            'ADC 启动函数 0x606df66 配置块四字(JL_ASS MIC_CTL0 0xfe0904/MIC_CTL1 '
+            '0xfe0908+JL_AUDIO MBG_CON 0xfe0554/ADC_CON1 0xfe055c)(21,800,455 停点 '
+            '0x606e044=[r0+0]|=0x2 内部读 0xfe0904,r0=r5+976 构造自 0xfe0534 基址'
+            '——间接构造地址的首个停点,li 枚举法免疫,基址+偏移传播解析法〔356 li '
+            '锚点全 GPR 常量跟踪+寄存器间传播〕扫描)合成配置读回容器:合成初始 0+'
+            '读回=当前值(两项显式模型假设 synthetic-not-measured);四字访问面'
+            '(按指令站点计 29 个:MIC_CTL0 2/MIC_CTL1 16/MBG_CON 5/ADC_CON1 6)'
+            '全部配置 RMW/insert 写回组装形状、读值零分支消费(B3/DT/ADA/LPV 判据;'
+            'MIC_CTL1 另有前缀不可达直接 li 族 0x606c8ca=D2-b C2 链 MIC_CTL1 重 '
+            'mux,同形状 NOT_RUN,其入册依据=自身静态消费审查〔codex 另核两个直接'
+            '调用点 0x606da8e/0x606ec26 无残值消费〕而非 JLA 先例外推);'
+            '0xfe0900/0xfe0558 留 AK 容器、SRN 0xfe0550 留 unmapped(JLA 边界)、'
+            '0xfe090c/0xfe0910/0xfe0560 零触达不进;数据区零独立字面值(不排除'
+            '运行时算出存 RAM 的指针来源,如实报);同址新读者(新 ld/新 RMW 掩码/'
+            '新 PC/其他核)须重审——地址白名单只拦地址非运行时阻断,属维护约束;'
+            '依赖边=当前场景推进顺序(JLA 放行后链才到达停点)非硬件依赖,模型类'
+            '独立可用;codex 定调 gpt-6-astra:选 (a) 恰四字,缩 (b) 不解决额外'
+            '语义疑问只重复停,敏感性探针见 jl_adc_start_probe_value)'),
+    Feature('jl_adc_start_probe_value', 'probe_only', ('jl_adc_start_config',), True, None,
+            'MIC_CTL0(0xfe0904)初值敏感性探针(初值一次性 0xffffffff 替换,其余三字'
+            '不扰动保归因干净;零臂写回 0x2/ones 臂写回 0xfffffffe 异或保留位;'
+            'codex 钉子:「只进写回」≠初值无影响,未覆盖位保留进写事务,仅测初值'
+            '零会漏掉 RMW 读写不同容器状态的实现错误;探针过只支持所测软件路径'
+            '稳定,不证明硬件初值无关;CV/ADA 双探针先例;sensitivity-probe-not-'
+            'plausible-state)'),
     # (p2m_mailbox_ack / cfg523_named_fixture 已实现并单测,但 19,139,239 停点
     # (JL_AUDIO->DAC_TM0 运行态读)证实两者的全部运行态消费者仍在音频数字域整块
     # 之后——按 BQ 先例(零消费者不落地)从条件栈撤回,实现保留在本分支历史
@@ -305,10 +332,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 21800455,
-        'stop_pc': '0x606e044',
+        'completed_steps': 28764184,
+        'stop_pc': '0x606c5ba',
         'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfe0904', 'size': 4, 'reference_sdk_register': None},
+                 'address': '0x61fbfe0', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }

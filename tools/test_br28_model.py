@@ -3120,5 +3120,95 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(all4.handles(0xf2b400,4) or all4.handles(0xf2b408,4)
                          or all4.handles(0xfe0a44,4))
 
+    def test_jl_adc_start_config_registers(self):
+        # 路 ASS:21,800,455 停点 0x606e044(ADC 启动函数 0x606df66 的
+        # MIC_CTL0 |=0x2 RMW 内部读,地址 r0=r5+976 间接构造,li 枚举法
+        # 免疫)——四字合成配置读回容器:合成初始 0+读回=当前值;默认关
+        # 保持 unmapped;邻字不吞(0xfe0900/0xfe0558 归 AK、SRN 0xfe0550
+        # 留 unmapped、零触达 0xfe090c/0xfe0910/0xfe0560 不进)。
+        from br28_model import JL_ADC_START_CONFIG_WORDS
+        plain=BR28Model()
+        for address in JL_ADC_START_CONFIG_WORDS:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe0904,0x2)
+        self.assertNotIn('jl_adc_start_config_registers',plain.report())
+        h=BR28Model(jl_adc_start_config=True)
+        for address in JL_ADC_START_CONFIG_WORDS:
+            self.assertTrue(h.handles(address,4))
+        # 邻字不吞:AK 域 0xfe0900/0xfe0558、JLA 边界 0xfe0550、AS 域
+        # 0xfe0538、零触达 0xfe090c/0xfe0910/0xfe0560、子字错位。
+        self.assertFalse(h.handles(0xfe0900,4))
+        self.assertFalse(h.handles(0xfe0558,4))
+        self.assertFalse(h.handles(0xfe0550,4))
+        self.assertFalse(h.handles(0xfe0538,4))
+        self.assertFalse(h.handles(0xfe090c,4) or h.handles(0xfe0910,4)
+                        or h.handles(0xfe0560,4))
+        self.assertFalse(h.handles(0xfe0905,4) or h.handles(0xfe0904,2))
+        # 停点形状:|=0x2 首读(合成初始 0)→写回 0x2;&=~0x1 → 0x2;
+        # 0xfe0908 insert 族(读回当前值参与组装)。
+        self.assertEqual(h.read(0xfe0904),0)
+        h.write(0xfe0904,0x2)
+        self.assertEqual(h.read(0xfe0904),0x2)
+        h.write(0xfe0904,0x2&0xfffffffe)
+        r=h.report()['jl_adc_start_config_registers']
+        self.assertEqual(r['addresses'],['0xfe0904','0xfe0908','0xfe0554','0xfe055c'])
+        self.assertEqual(r['sdk_names'],{'0xfe0904':'JL_ASS->MIC_CTL0',
+                                         '0xfe0908':'JL_ASS->MIC_CTL1',
+                                         '0xfe0554':'JL_AUDIO->MBG_CON',
+                                         '0xfe055c':'JL_AUDIO->ADC_CON1'})
+        self.assertEqual(r['word_writes'],2)
+        self.assertEqual(r['stores']['0xfe0904'],
+                         {'values':['0x2','0x2'],'writes':2,'cores':[0,0]})
+        self.assertEqual(r['readback_projection']['reads'],1)
+        self.assertEqual(r['readback_projection']['synthesized_initial_reads'],1)
+        # 0xfe0908 首读也是合成初始 0(insert 族写回 param 位段)。
+        self.assertEqual(h.read(0xfe0908),0)
+        h.write(0xfe0908,(0&0xfffff1ff)|(1<<9))
+        self.assertEqual(h.read(0xfe0908),0x200)
+        # 报告面:八面文本(白名单恰四字+AK/SRN 边界+同址新读者重审、
+        # 间接构造叙事、完备性措辞、模型假设、跨域限制、命名级、known
+        # limitation)。
+        r=h.report()['jl_adc_start_config_registers']
+        self.assertIn('stay with the route-AK container',r['whitelisted_words'])
+        self.assertIn('0xfe0550',r['whitelisted_words'])
+        self.assertIn('same-address new consumer',r['whitelisted_words'])
+        self.assertIn('r0=r5+976',r['observed_shapes'])
+        self.assertIn('0x606c8ca',r['observed_shapes'])
+        self.assertIn('NOT covered',r['access_face_completeness'])
+        self.assertIn('synthetic-not-measured',r['model_assumptions'])
+        self.assertIn('does NOT mean the real',r['cross_domain_limitations'])
+        self.assertIn('[SDK-inferred]',r['sdk_naming'])
+        self.assertIn('synthetic config words',r['known_limitation'])
+        self.assertIn('jl_adc_start_config_registers',h.report()['assumptions'])
+        # 敏感性探针(probe_only,codex 建议,CV/ADA 先例):MIC_CTL0 初值
+        # 一次性 0xffffffff——「只进写回」≠初值无影响:|=0x2 后 &=~0x1,
+        # 零臂写回 0x2/ones 臂写回 0xfffffffe(未覆盖位保留进写事务);
+        # 后续读回真实写回值(非每读强制常数);其余三字不扰动。
+        probe=BR28Model(jl_adc_start_config=True,jl_adc_start_probe_value=0xffffffff)
+        old=probe.read(0xfe0904)
+        self.assertEqual(old,0xffffffff)
+        probe.write(0xfe0904,old|0x2)                       # 0x606e044 形状
+        probe.write(0xfe0904,probe.read(0xfe0904)&0xfffffffe)  # 0x606e048 形状
+        self.assertEqual(probe.read(0xfe0904),0xfffffffe)
+        self.assertEqual(probe.read(0xfe0908),0)  # 其余三字不扰动
+        r=probe.report()['jl_adc_start_config_registers']
+        self.assertEqual(r['stores']['0xfe0904'],
+                         {'values':['0xffffffff','0xfffffffe'],'writes':2,'cores':[0,0]})
+        self.assertEqual(r['readback_projection']['synthesized_initial_reads'],2)
+        # 与 AK/AS/JLA/ADA/LPV/B3 叠加:地址集互斥互不吞。
+        allf=BR28Model(jl_adc_start_config=True,jl_audio_adc_dma_writes=True,
+                       jl_adda_ada_family=True,p11_lpvad_config=True,
+                       jl_audio_adc_reset_write_records=True,jl_audio_dac_init_write_records=True,
+                       jl_wl_aud_write_records=True,jl_audio_dac_cop_writes=True,
+                       jl_adda_analog_family=True)
+        self.assertTrue(allf.handles(0xfe0904,4) and allf.handles(0xfe0908,4)
+                        and allf.handles(0xfe0554,4) and allf.handles(0xfe055c,4)
+                        and allf.handles(0xfe053c,4) and allf.handles(0xfe0a20,4)
+                        and allf.handles(0xf2b404,4) and allf.handles(0xfe0538,4)
+                        and allf.handles(0xfe0534,4) and allf.handles(0xfe0500,4)
+                        and allf.handles(0xfe0558,4) and allf.handles(0xfe0900,4))
+        self.assertFalse(allf.handles(0xfe0550,4) or allf.handles(0xfe090c,4))
+
 
 if __name__=='__main__':unittest.main()

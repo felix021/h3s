@@ -65,6 +65,18 @@ JL_AUDIO_DAC_DMA_WORDS=(0xfe0504,0xfe0508,0xfe0510,0xfe0514)
 # (IRQ68 交付未建模),读的是运行期 DMA 指针状态,属 D2-b 后域留严格停。
 # 0xfe0550(handler 尾写的 +0x18 SRN 读通知字)零当前前缀触达,不进白名单。
 JL_AUDIO_ADC_DMA_WORDS=(0xfe053c,0xfe0540,0xfe0544,0xfe0548,0xfe054c)
+# 路 ASS:ADC 启动函数 0x606df66 的未建模配置块四字——JL_ASS->MIC_CTL0
+# (0xfe0904=JL_ASS 基址 0xfe0900+4,br28.h JL_ASS_TypeDef 三成员 CLK_CON/
+# MIC_CTL0/MIC_CTL1 之二)、JL_ASS->MIC_CTL1(0xfe0908,之三)、JL_AUDIO->
+# MBG_CON(0xfe0554=JL_AUDIO+0x54)、JL_AUDIO->ADC_CON1(0xfe055c=+0x5c;
+# 路容器注释钉的成员名,[SDK 推断]级,csfr.h __u16→32 位字槽,全 __RW
+# 标注非硅读回证据)。21,800,455 停点 0x606e044 `[r0+0]|=0x2` 内部读
+# 0xfe0904——地址 r0=r5+976 构造自 r5=0xfe0534(li @0x606e032),全 app
+# 无直接 li 站点(间接构造地址的首个停点);基址+偏移传播解析法扫描
+# (~/tmp/ass-resolve.py,356 li 锚点全 GPR 常量跟踪)证实四字访问面
+# 全部为配置 RMW/insert 写回组装形状,读值零分支消费(B3/DT/ADA/LPV
+# 判据),0xfe090c/0xfe0910/0xfe0560 零触达,0xfe0550 SRN 归 JLA 边界。
+JL_ADC_START_CONFIG_WORDS=(0xfe0904,0xfe0908,0xfe0554,0xfe055c)
 PLL0=0xfd4600
 CLOCK0=0xfd0018
 SYS_DIV=0xfd0014
@@ -3670,6 +3682,198 @@ class JLAudioAdcDmaWriteRecords:
                               'scenario')}
 
 
+class JLAdcStartConfigRegisters:
+    """ADC 启动函数配置块四字容器(合成初始 0+读回=当前值,opt-in,路 ASS)。
+
+    背景:21,800,455 停点 0x606e044——ADC 启动函数 [0x606df66,0x606e106)
+    (采样率查表 0x609FBDC×11 → 配置 JL_AUDIO/JL_ASS 配置块)的
+    `rmw.or.modimm [r0+0] |= 0x2` 内部读 0xfe0904=JL_ASS->MIC_CTL0 撞
+    unmapped。停点地址 r0=r5+976 构造自 r5=0xfe0534(li @0x606e032,与
+    DAC_COP 第二写点/邻窗同基址)——**间接构造地址的首个停点**,li 枚举
+    法免疫(全 app 无 li 直接装载 0xfe0904);本路以基址+偏移传播解析法
+    (~/tmp/ass-resolve.py:356 个 li 锚点装载 [0xfd0000,0xfe0a00) 常量,
+    每锚点线性窗 500 条抽象解释跟踪全部 GPR 常量并做寄存器间传播,任何
+    非恒等写杀值;[reg±imm] 基址已知即解析为绝对地址,含 b/h/d 子字与
+    [rA+rB<<k] 变址形状)完成两窗(JL_ASS 0xfe0900..0xfe0910、JL_AUDIO
+    尾 0xfe0550..0xfe0560)全 app 访问面扫描(存档 ~/tmp/ass-resolve.out)。
+
+    静态访问面(两窗 46 个访问指令站点中归本容器的 29 个〔codex 口径:
+    原子 RMW 一站点兼读写,ld 与 st 各计一站〕,其余为 AK/JLA/AS 既有
+    容器字或零触达字;数据区 4 字节字面值扫描零独立命中——值域落在
+    0xfe0500..0xfe0a00 的仅两处跨 call 指令编码的字节重叠,已人工排除,
+    codex 独立逐 byte 复扫互证;「零独立字面值」不排除运行时算出后存入
+    RAM 的指针来源,如实进完备性措辞):
+      * 0xfe0904(MIC_CTL0):恰 2 个站点,全在本函数——0x606e044 |=0x2
+        (停点,原子 RMW 内部读只进写回)、0x606e048 &=~0x1(同)。
+      * 0xfe0908(MIC_CTL1):16 个站点(8 组 ld/st 对)两族——本函数
+        0x606e050..0x606e07a 四组([r0+4] 源选择位段:前两组 ld→mask→
+        insert(p:9/6,l:3)→st,后两组 ld→直接 insert(p:3/0,l:3)→st,
+        值=param 字节);直接 li 0xFE0908 @0x606c8ca(函数
+        [0x606c8aa,0x606c924),D2-b 蓝图 C2 链「MIC_CTL1 重 mux」,当前
+        前缀不可达 NOT_RUN)四组 ld→mask→insert(p:15/21/12/18,l:3)→st。
+        两族读值全部只进写回组装,分支只测 param 字节/配置输入;codex 另核
+        家族 A 两个直接调用点 0x606da8e/0x606ec26——末次读值残留 r1 随即
+        被 0x606c776(0) 路径在 0x606c804 清零,无残值消费。
+      * 0xfe0554(MBG_CON):恰 5 条访问站点全在本函数——三条原子清位 RMW
+        (0x606e0da/0de/0e2 &=~0x300/~0x40/~0x30)+ ld→&0xFFFFFFF0→|0x3→st
+        (0x606e0e6..f0,保留高 28 位再置 bits0-1;门控 [sp]≠0=param 驱动,
+        两支均零 SFR 读值分支消费)。
+      * 0xfe055c(ADC_CON1):恰 6 个站点(3 组 ld/st 对)全在本函数——
+        三组 ld→insert(p:0/4/8,l:4)→st。
+      (本函数内 [r5+4]=0xfe0538 ADC_CON 的 insert/RMW 串含尾部 0x606e0f2/
+      f6/fa |=0x20/0x10/0x100,全归 AS 容器已服务,不进本容器。)
+      同窗其余:0xfe0900/0xfe0558 归 AK 容器(0xfe0900 共 13 站点:3 ld
+        +1 st+9 RMW)(本容器不含,地址集互斥;
+        解析另见 0xfe0900 的 11 条访问,含 3 处 ld.w 读者——0x606a70e
+        就绪检查(读值进分支,`r0&0x380 != 0x380` 返布尔)、0x6069a38
+        电源快照存 RAM、0x606c852 写回组装——到达时按 AK 读回语义服务,
+        不属本路);0xfe0550 SRN 归 JLA 边界不收;0xfe090c/0xfe0910/
+        0xfe0560 零触达不进白名单。
+    完备性措辞(照 LPV/ADA 收紧):覆盖限本次扫描的主核 app 线性窗锚点
+    法,不覆盖跨函数寄存器传递/RAM 指针装载(数据区字面值扫描零命中
+    已证该来源为空)/ROM/q32s/其他访问主体;「未找到其他站点」≠「全
+    系统唯一访问」。全部访问对齐 32 位字,窗内无子字/错位形状。
+
+    分类(照 B3/DT/ADA/LPV 判据,读值只进写回组装零分支):AM 容器族——
+    合成初始 0+读回=当前值,两项均为显式模型假设(synthetic-not-measured,
+    非复位值非静态推导);RMW/insert 自身消费旧值(new=old|bit),潜在
+    消费者含外设与 q32s,不能判死读(codex 钉子沿用)。开关分立
+    jl_adc_start_config,依赖边挂 jl_audio_adc_dma_writes=当前条件场景
+    推进顺序(JLA 放行后链才到达停点),非硬件依赖,模型类独立可用。
+    known_limitation:容器存储的是合成配置字(非硅状态位),硅复位值/
+    运行态语义未证;跨域限制照 LPV:只记录主核侧合成配置字更新,不模拟
+    q32s 访问/ADC 捕获/跨域可见性/读写副作用——主核越过停点不表示真实
+    MIC_CTL/MBG_CON/ADC_CON1 已生效或音频输入可用。
+    """
+
+    WORDS=JL_ADC_START_CONFIG_WORDS
+    SDK_NAMES={0xfe0904:'JL_ASS->MIC_CTL0',0xfe0908:'JL_ASS->MIC_CTL1',
+               0xfe0554:'JL_AUDIO->MBG_CON',0xfe055c:'JL_AUDIO->ADC_CON1'}
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self,probe_initial=None):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+        # probe_only 敏感性探针(codex 建议,CV/ADA 先例):只替换 MIC_CTL0
+        # (0xfe0904,停点字)的初值一次(后续读回真实写回值,非每读强制
+        # 常数);其余三字不扰动保归因干净。零臂写回 0x2/ones 臂写回
+        # 0xfffffffe——「只进写回」不等于初值无影响,未覆盖位会保留进
+        # 写事务(codex 静态算术:四字在初值 0/0xffffffff 下写回终点分别
+        # 为 0x2|0xfffffffe、0xff8|0xfffffff8、0|0xfffff000、0x3|0xfffffc03)。
+        self.probe_initial=probe_initial
+
+    def handles(self,address):
+        return address in self.stores
+
+    def _initial_word(self,address):
+        if address==0xfe0904 and self.probe_initial is not None:
+            return self.probe_initial
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled JL ADC-start config word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL ADC-start config word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(AM 容器族先例;读值只进写回组装
+        # 不进分支=初值不参与观察路径——但 RMW/insert 的未覆盖位会保留
+        # 初值进写事务,单测 ones 探针互证(codex 钉子:仅测初值零会漏掉
+        # RMW 读写不同容器状态的实现错误)。
+        self.synthesized_initial_reads+=1
+        return self._initial_word(address)
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                         'writes':e['writes'],'cores':e['cores'][-16:]}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        return {'addresses':[hex(a) for a in self.WORDS],
+                'sdk_names':{hex(a):name for a,name in sorted(self.SDK_NAMES.items())},
+                'word_writes':self.word_writes,
+                'stores':touched,
+                'readback_projection':{'reads':self.reads_after_write,
+                                       'synthesized_initial_reads':self.synthesized_initial_reads,
+                                       'readback':'last written value; a never-written word reads '
+                                                  'back the explicit synthetic initial word 0 '
+                                                  '(synthetic-not-measured, NOT a silicon reset '
+                                                  'value and NOT statically derived)'},
+                'modeled_vs_touched':('modeled exactly the four statically-verified ADC-start '
+                                      'config words (0xfe0904 MIC_CTL0 / 0xfe0908 MIC_CTL1 in '
+                                      'JL_ASS, 0xfe0554 MBG_CON / 0xfe055c ADC_CON1 in the '
+                                      'JL_AUDIO tail); the zero-access words 0xfe090c/0xfe0910/'
+                                      '0xfe0560 stay unmapped'),
+                'whitelisted_words':('exactly the four words above; JL_ASS->CLK_CON 0xfe0900 and '
+                                     'JL_AUDIO->AUD_CON 0xfe0558 stay with the route-AK container '
+                                     'and the handler-tail SRN word 0xfe0550 stays unmapped '
+                                     '(route-JLA boundary); only aligned 32-bit whole-word '
+                                     'accesses are served — sub-word, misaligned and cross-word '
+                                     'accesses stay unmapped; a NEW consumer of any of these '
+                                     'addresses (a new read PC, a new write PC, a new RMW mask, '
+                                     'another core) must be re-audited before this container may '
+                                     'serve it — the address whitelist only gates addresses, it '
+                                     'does not stop a same-address new consumer at runtime '
+                                     '(codex wording)'),
+                'observed_shapes':('the stop-shape family in the ADC start function 0x606df66: '
+                                   '0x606e044 [r0+0]|=0x2 (the 21,800,455 stop itself, r0=r5+976 '
+                                   'constructed from the 0xfe0534 base — the first stop point '
+                                   'with an indirectly constructed address, immune to the li '
+                                   'enumeration method), 0x606e048 [r0+0]&=~0x1, four '
+                                   'ld→mask→insert(p:9/6/3/0,l:3)→st groups on [r0+4]=0xfe0908, '
+                                   'three ld→insert(p:0/4/8,l:4)→st groups on 0xfe055c, three '
+                                   'atomic bit-clear RMWs plus one ld→&0xF0→|0x3→st on 0xfe0554 '
+                                   '(param-gated); plus the prefix-unreachable direct-li family '
+                                   '0x606c8ca (D2-b C2-chain MIC_CTL1 re-mux, four ld→mask→'
+                                   'insert(p:15/21/12/18,l:3)→st groups); every stored value is '
+                                   'a real instruction result, never invented'),
+                'access_face_completeness':('base+offset propagation scan (356 li anchor sites '
+                                           'loading [0xfd0000,0xfe0a00) constants, per-anchor '
+                                           '500-instruction linear-window abstract interpretation '
+                                           'tracking ALL GPRs with register-to-register constant '
+                                           'folding) + data-region 4-byte literal scan (zero '
+                                           'independent literals reaching the windows); covers '
+                                           'the main-core app linear windows only — cross-function '
+                                           'register passing, ROM, q32s and other cores are NOT '
+                                           'covered; "no other site found" does NOT mean "the '
+                                           'only access in the system" (LPV/ADA wording)'),
+                'model_assumptions':('synthetic initial word 0 and read-back=current-value are '
+                                     'both explicit model assumptions (synthetic-not-measured, '
+                                     'NOT silicon reset values, NOT statically derived); the '
+                                     'RMW/insert instructions consume the old value themselves '
+                                     '(new=old|bit / masked insert), so the reads are NOT dead '
+                                     'even though no branch consumes them on the audited face — '
+                                     'potential consumers include peripherals and q32s (codex '
+                                     'nail, LPV precedent)'),
+                'cross_domain_limitations':('the projection only records main-core-side synthetic '
+                                            'config-word updates; it does NOT model q32s access, '
+                                            'ADC capture, cross-domain visibility, handshakes or '
+                                            'read/write side effects — the main core passing the '
+                                            'stop does NOT mean the real MIC_CTL0/1, MBG_CON or '
+                                            'ADC_CON1 are configured or that any audio input '
+                                            'works (LPV codex wording)'),
+                'sdk_naming':('JL_ASS = hs_base + map_adr(0x09, 0x00) = 0xfe0900 with the '
+                              'all-__RW JL_ASS_TypeDef members CLK_CON/MIC_CTL0/MIC_CTL1 at '
+                              '+0/+4/+8 (route-AK naming chain); JL_AUDIO tail members MBG_CON '
+                              'at +0x54 = 0xfe0554 and ADC_CON1 at +0x5c = 0xfe055c follow the '
+                              'route-AS container comment (br28.h all-__RW JL_AUDIO_TypeDef, '
+                              'csfr.h __u16 -> 32-bit word slots; [SDK-inferred] naming level — '
+                              'the __RW labels locate the words, they are NOT silicon read-back '
+                              'evidence)'),
+                'known_limitation':('the container stores synthetic config words, NOT silicon '
+                                    'state; silicon reset values and runtime semantics of '
+                                    'MIC_CTL0/1, MBG_CON and ADC_CON1 remain unverified'),
+                'assumption':('config read-back container of the AM family (B3/DT/ADA/LPV/AK '
+                              'precedents): reads return the last written value or the explicit '
+                              'synthetic initial word 0; this does NOT verify any audio input, '
+                              'ADC capture, clock enable or D2-b acceptance scenario')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -5058,6 +5262,7 @@ class BR28Model:
                  jl_pvdd_trim_writes=False,timer2_delay_projection=False,
                  jl_audio_dac_cop_writes=False,jl_audio_dac_dma_writes=False,
                  jl_audio_adc_dma_writes=False,
+                 jl_adc_start_config=False,jl_adc_start_probe_value=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -5581,6 +5786,14 @@ class BR28Model:
         # 后域留严格停(显式 kind)。默认关:五字保持 unmapped
         # (21,800,325 前沿形状),legacy 逐字节不变。
         self.jl_audio_adc_dma=(JLAudioAdcDmaWriteRecords() if jl_audio_adc_dma_writes else None)
+        # 路 ASS:ADC 启动函数配置块四字(JL_ASS MIC_CTL0/1+JL_AUDIO MBG_CON/
+        # ADC_CON1)合成配置读回容器——21,800,455 停点 0x606e044(间接构造
+        # 地址首停点,r0=r5+976)放行;读值只进写回组装(B3/DT/ADA/LPV 判据);
+        # 0xfe0900/0xfe0558 留 AK、0xfe0550 留 unmapped(JLA 边界)、
+        # 0xfe090c/0xfe0910/0xfe0560 零触达不进。默认关:四字保持 unmapped
+        # (21,800,455 前沿形状),legacy 逐字节不变。
+        self.jl_adc_start=(JLAdcStartConfigRegisters(probe_initial=jl_adc_start_probe_value)
+                           if jl_adc_start_config else None)
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -5761,6 +5974,7 @@ class BR28Model:
             (self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address)) or
             (self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address)) or
             (self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address)) or
+            (self.jl_adc_start is not None and self.jl_adc_start.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -6089,6 +6303,11 @@ class BR28Model:
         if self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_adc_dma.read(address)
+        # ADC 启动配置块四字(路 ASS):合成配置读回(读回=当前值/显式合成
+        # 初始 0,AM 容器族);停点 RMW 内部读与 insert 族显式 ld 均经此路径。
+        if self.jl_adc_start is not None and self.jl_adc_start.handles(address):
+            self.counts['reads']+=1
+            return self.jl_adc_start.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -6291,6 +6510,11 @@ class BR28Model:
             # 连续整字写(ADR/LEN/PNS/HWP/SRP,首写=停点并行对 store 半),
             # write-only 记录;DMA 搬运/指针推进/IRQ68 不建模。
             self.jl_audio_adc_dma.write(address,value,self.current_core)
+        elif self.jl_adc_start is not None and self.jl_adc_start.handles(address):
+            # ADC 启动配置块四字(路 ASS):MIC_CTL0 RMW 写回/MIC_CTL1·
+            # MBG_CON·ADC_CON1 insert 族写回与整字写;配置生效/音频输入
+            # 不建模。
+            self.jl_adc_start.write(address,value,self.current_core)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -7042,6 +7266,25 @@ class BR28Model:
                 'claim; no DMA transfer, pointer advance, SRN side effect, pending '
                 'bit, IRQ68 delivery or cache coherency is modeled — this does NOT '
                 'verify any audio input, ADC capture or D2-b acceptance scenario')
+        if self.jl_adc_start is not None:
+            result['jl_adc_start_config_registers']=self.jl_adc_start.report()
+            result['assumptions']['jl_adc_start_config_registers']=(
+                'ADC start-function config block (JL_ASS->MIC_CTL0 0xfe0904 / MIC_CTL1 '
+                '0xfe0908 and JL_AUDIO->MBG_CON 0xfe0554 / ADC_CON1 0xfe055c, the '
+                'unmodeled words of the ADC start function 0x606df66): synthetic-config '
+                'read-back container — a never-written word reads back the explicit '
+                'synthetic initial word 0, a written word reads back its current value '
+                '(both synthetic-not-measured, NOT silicon reset values); the base+'
+                'offset propagation sweep (356 li anchors, all-GPR constant tracking, '
+                'register-to-register propagation — built for the 21,800,455 stop whose '
+                'address r0=r5+976 has NO direct li site) resolved every in-window '
+                'access to config RMW / insert write-back shapes with zero branch '
+                'consumption; JL_ASS->CLK_CON 0xfe0900 and AUD_CON 0xfe0558 stay with '
+                'the route-AK container and SRN 0xfe0550 stays unmapped; a new consumer '
+                'of any whitelisted address (new PC, new RMW mask, another core) must '
+                'be re-audited; no q32s access, ADC capture, clock enable or audio '
+                'input is modeled — this does NOT verify any audio input or D2-b '
+                'acceptance scenario')
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
