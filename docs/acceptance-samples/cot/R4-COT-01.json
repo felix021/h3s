@@ -29,7 +29,7 @@
     "RCSP 分发链执行段（R4-COT-02..05：分发器写/读半程、cmdid 负例、RCSP 全程——依赖前沿过 0x0600f85e 相位）",
     "候选真机行为（刷机授权缺失）",
     "开机 init walker 相位与注册表消费面动态观测（walker 在 21,798,257 前沿之前未执行，入口计数 0；前沿推进后按 §2.2 预填口径补）",
-    "层 3 预算式 |Δstep| 口径修订与 abstract_task_stack_transport 字面清单缺口（L2AC 规格修订承接，R2-COT-01 同款挂账——修订后本记录断言面按新口径复核）",
+    "层 3 预算式口径与 abstract_task_stack_transport 字面清单缺口的规格修订已落地（2026-11-15 路 L2AR：双口径+入列，见 l2a-differential-criteria §3.3）；遗留=本记录断言面按新口径复核+coeffs 工具补算 abstract_task_stack_transport 正式预算（挂实施路）",
     "r4 侧 candidate-self-check 钉值（check_self_candidate 需 r4 独立钉值，零 tools/ 改动红线内未接，挂后续路）"
   ],
   "evidence_level": "conditional",
