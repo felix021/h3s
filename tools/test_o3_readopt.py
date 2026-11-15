@@ -7,6 +7,7 @@ last-hit hint / sorted-index fast path and A3a's merged traversal must
 preserve, on both the non-overlapping (index) and overlapping (linear
 fallback) paths. No private ROM, device access or firmware output.
 """
+import json
 import unittest
 
 from probe_boot import ENTRY, STACK_TOP, application, explore
@@ -195,6 +196,79 @@ class ReadMemoInvalidationTests(unittest.TestCase):
         self.assertEqual(p['r_first'],'000102')
         self.assertTrue(p['sum1_ok'])
         self.assertTrue(p['rebuilt'])
+
+
+class TraceWindowTests(unittest.TestCase):
+    """Route WIND: the explore diagnostic buffer is windowed, not stepwise-formatted.
+
+    The main loop no longer calls codec.format per step (PERF measured
+    1.013 calls/step; OPT1's memo only removed the recomputation, not the
+    call structure). Rows now carry the (insn, raw) material and are
+    materialized only at the consumption points (report assembly, snapshot
+    capture), so evicted rows are never formatted. These tests pin the
+    zero-change contract on the public-asset typed_memory_replay world
+    (16,077 steps, no machine, no private ROM): the eager code formatted
+    16,078 times here, the windowed code exactly 64, and the serialized
+    last_instructions is byte-identical (sha256 pinned; old code produced
+    the same digest).
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.module=upstream()
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.app=application(firmware);cls.header=package_header(firmware)
+
+    def _replay(self):
+        from probe_boot_handoff import HANDOFF,SENTINEL_A,profile
+        return explore(self.module,self.app,name='typed_memory_replay',adapt_stack=True,
+                       pll=1,r0=HANDOFF,handoff=profile(self.header,SENTINEL_A),
+                       startup_loops=True)
+
+    def test_window_rows_are_byte_identical_and_bounded(self):
+        result=self._replay()
+        self.assertEqual(result['completed_steps'],16077)
+        self.assertEqual(result['stop']['kind'],'unverified_zero_count_rep')
+        rows=result['last_instructions']
+        self.assertEqual(len(rows),64)  # budget 16,077 >> 64: eviction ran
+        # Key order is the eager construction order (json.dumps has no
+        # sort_keys; report bytes depend on this): 63 executed rows plus the
+        # blocked stop row without next_pc.
+        shapes={tuple(row.keys()) for row in rows}
+        self.assertEqual(shapes,{('pc','instruction_id','text','bytes','next_pc'),
+                                 ('pc','instruction_id','text','bytes')})
+        self.assertEqual(rows[-1].get('next_pc',None),None)
+        import hashlib
+        self.assertEqual(hashlib.sha256(json.dumps(rows).encode()).hexdigest(),
+                         '5e447a12502aa5421656212632a9c2b4fa318eba0ab3be3fb15d1143f2bf51ef')
+
+    def test_loop_makes_no_stepwise_format_calls(self):
+        counts={'n':0}
+        codec=self.module.codec
+        original=codec.format
+        def counting(insn,values,syntax=None):
+            counts['n']+=1
+            return original(insn,values,syntax)
+        codec.format=counting
+        try:
+            result=self._replay()
+        finally:
+            codec.format=original
+        # No machine in this world, so no OPT1 memo layer sits above the
+        # counter: every codec.format invocation of the run is counted. The
+        # eager code counted 16,078 here; the windowed loop counts only the
+        # 64 materialized rows (this prefix executes no parallel pairs).
+        self.assertEqual(counts['n'],64)
+        self.assertEqual(result['completed_steps'],16077)
+
+    def test_materialized_text_equals_independent_formatting(self):
+        # Deferred materialization must produce the eager string: re-decode
+        # each row from its own step-time bytes and re-format from scratch.
+        rows=self._replay()['last_instructions']
+        table=self.module.table.load()
+        for row in rows:
+            insn,raw,_size=self.module.codec.decode(table,bytes.fromhex(row['bytes']))
+            self.assertEqual(insn.id,row['instruction_id'])
+            self.assertEqual(self.module.codec.format(insn,raw),row['text'])
 
 
 if __name__=='__main__':
