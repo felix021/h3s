@@ -66,7 +66,17 @@ from verify_ufw_integrity import verify
 B79_SHA = 'b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b'
 B79_APP_SHA = '8f594d5908f6d4eac9b63e5e4538d3c0dbf0ed1a1e285547fcf2d9c6b0914517'
 EQ_APP_SHA = '3788e3a1e25ed4e14ac3e8167674279e2d9e48e1904684c4aeaa06bc11d579cb'
-PLAIN_LENGTHS = {'official': 0xE3053, 'tested_b79': 0xE3053, 'eq_fence_repair': 0xE31C5}
+# 候选镜像(d1-acceptance §6.5 / candidate-image-cotest §1.2;UNTESTED 不刷机):
+# sha/plain 长度钉死值来自 candidate_world_checks.CANDIDATES(单源,勿复制);
+# app 切片 sha 为 2026-11-15 路 DIF 从规范构建产物实测钉死(build_quiet_candidate
+# --attenuation-db 0 --hearing-aid-l1-slotram / --r4-keyhook)。
+L1_SLOTRAM_SHA = '906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914'
+L1_APP_SHA = '0536a9c72cd062c86aff01f3b1e8571f7dd8235e3b9d48362cdded19dc32d411'
+R4_KEYHOOK_SHA = '8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d'
+R4_APP_SHA = 'e4ee706f106713ab34aa3bb7088171540586acdffa67b6c961cf41c852fbd272'
+CANDIDATE_APP_SHAS = {'l1_slotram': L1_APP_SHA, 'r4_keyhook': R4_APP_SHA}
+PLAIN_LENGTHS = {'official': 0xE3053, 'tested_b79': 0xE3053, 'eq_fence_repair': 0xE31C5,
+                 'l1_slotram': 0xE31E0, 'r4_keyhook': 0xE322E}
 OFFICIAL_DEFAULT = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
 
 # Shared-stack scenarios. The crc_bankb flag set is the pinned shared-frontier
@@ -317,7 +327,14 @@ COMPARISON_BASIS = (
 # 资源节)。只用于把首分歧 PC/差异游程标注成人类可读的语义,不参与判定。
 KNOWN_SITE_LABELS = (
     (0x34E92, 0x34E98, 'debug_init lower PC limit load 0x06000100 (shared)'),
-    (0x34E98, 0x34E9E, 'debug_init fence upper PC limit immediate (b79 0x060c3338, eq candidate 0x060e31c5)'),
+    (0x34E98, 0x34E9E, 'debug_init fence upper PC limit immediate (b79 0x060c3338, eq candidate 0x060e31c5, l1_slotram 0x060e31e0, r4_keyhook 0x060e322e)'),
+    (0xDB9A, 0xDBA2, 'hearing-aid hook window ON-1 (whole-8B replacement, l1/r4 candidates)'),
+    (0xDBC4, 0xDBCC, 'hearing-aid hook window ON-2 (whole-8B replacement, l1/r4 candidates)'),
+    (0xDC74, 0xDC7C, 'hearing-aid hook window OFF-1 (whole-8B replacement, l1/r4 candidates)'),
+    (0xDC7E, 0xDC86, 'hearing-aid hook window TRANS-A (whole-8B replacement, l1/r4 candidates)'),
+    (0xDC9A, 0xDCA2, 'hearing-aid hook window OFF-2 (whole-8B replacement, l1/r4 candidates)'),
+    (0xDCA4, 0xDCAC, 'hearing-aid hook window TRANS-B (whole-8B replacement, l1/r4 candidates)'),
+    (0xA9C7C, 0xA9C80, 'cmdid 0x30 registry setter slot 0 -> 0x060e31e0 (r4_keyhook only)'),
     (0x59CE, 0x59D4, 'eq hook site eq_source_read_hook'),
     (0x25030, 0x25036, 'eq hook site eq_record_preset_source'),
     (0x2510E, 0x25114, 'eq hook site eq_record_custom_source'),
@@ -329,8 +346,8 @@ KNOWN_SITE_LABELS = (
     (0xE0A2C, 0xE0A30, 'stream.bin entry header CRC'),
     (0xE2344, 0xE23A2, 'stream.bin volume parameter region'),
     (0xE2ED3, 0xE2ED5, 'config.dat JLFS header CRC (recomputed over the flipped index field)'),
-    (0xE2EE1, 0xE2EE2, 'config.dat JLFS index field (b79 terminator 1, eq candidate 0: enumeration continues to the appended entry)'),
-    (0xE3053, 0xE31C5, 'appended eq_toggle.bin (eq candidate only)'),
+    (0xE2EE1, 0xE2EE2, 'config.dat JLFS index field (b79 terminator 1, eq/l1/r4 candidates 0: enumeration continues to the appended entry)'),
+    (0xE3053, 0xE322E, 'appended payload segment (eq eq_toggle.bin / l1 mic_effect.bin / r4 mic_effect.bin + keystore_hook)'),
 )
 
 
@@ -444,6 +461,40 @@ def load_eq_candidate(path, official_path):
     require(len(plain) == PLAIN_LENGTHS['eq_fence_repair'], 'eq_fence_repair plaintext length changed')
     require(hashlib.sha256(app).hexdigest() == EQ_APP_SHA, 'eq_fence_repair application bytes changed')
     return app, plain, readonly, REPAIRED_SHA
+
+
+def _load_candidate_world(name, path, official_path):
+    """l1_slotram / r4_keyhook 候选镜像世界入口(candidate-image-cotest
+    §1.2)。与 b79/eq 不同,候选不改 app.bin 既有资源逻辑、是完整合法 UFW,
+    直接 load_image 解密即可(无需 candidate_view 的 readonly 视图)。
+
+    前置断言单源复用 tools/candidate_world_checks.run_checks(路 BU):
+    ①UFW sha 双侧钉死 ②独立校验器 CRC ③共享 bootloader flash[:0x2000]
+    逐字节同官方 ④plain 长度+byte-diff 白名单区域分类等式语义(6 窗口/
+    fence 立即数/注册表槽 r4/config.dat CRC+index/追加段/两处 app 区 CRC
+    对)+构建器字节账 472/554B 对账——任一断言红即拒载,候选世界不开门。
+    本 loader 只增量钉 app 切片 sha(实测值,见 CANDIDATE_APP_SHAS 注释)。
+    候选镜像保持 UNTESTED;本入口不构成任何刷机或行为验证声明。
+    """
+    import candidate_world_checks
+    report = candidate_world_checks.run_checks(name, path, official_path)
+    failed = [a['assertion'] for a in report['assertions'] if not a['passed']]
+    require(not failed, f'{name} candidate-world pre-load assertions failed: {failed}')
+    raw, flash, plain = load_image(path)
+    require(len(plain) == PLAIN_LENGTHS[name], f'{name} plaintext length changed')
+    app = plain[0x100:0x100 + 842654]
+    require(hashlib.sha256(app).hexdigest() == CANDIDATE_APP_SHAS[name],
+            f'{name} application bytes changed')
+    sha = {'l1_slotram': L1_SLOTRAM_SHA, 'r4_keyhook': R4_KEYHOOK_SHA}[name]
+    return app, plain, (), sha
+
+
+def load_l1_slotram(path, official_path):
+    return _load_candidate_world('l1_slotram', path, official_path)
+
+
+def load_r4_keyhook(path, official_path):
+    return _load_candidate_world('r4_keyhook', path, official_path)
 
 
 def byte_diff_runs(a, b):
@@ -782,7 +833,9 @@ def _run_summary(result):
 
 LOADERS = {'official': load_official,
            'tested_b79': lambda path, official: load_b79(path, official),
-           'eq_fence_repair': lambda path, official: load_eq_candidate(path, official)}
+           'eq_fence_repair': lambda path, official: load_eq_candidate(path, official),
+           'l1_slotram': load_l1_slotram,
+           'r4_keyhook': load_r4_keyhook}
 
 
 def check_self(report):
@@ -968,11 +1021,112 @@ def check_self_conditional(report):
             'the official-vs-b79 conditional final-report differences changed: ' + str(diffs))
 
 
+def check_self_candidate(report, label, scenario):
+    """钉死 2026-11-15 路 DIF 首轮 official↔candidate 差分基线结论(独立于
+    2026-11-12 的 official↔b79 钉子,candidate-image-cotest §1.2「新镜像对
+    走独立 self-check」)。UNTESTED 候选的差分回归基线,不构成行为验证:
+
+    crc_bankb 档(official vs l1_slotram,全量到前沿停点):
+    - official 289,849 @ 0x60679ba(前沿钉点,frontier_registry 单源),
+      l1_slotram 290,307 @ 0x60679ba(+458 步轴差,config.dat 多枚举一轮
+      的 +458 族);停点记录逐字段相同(same_stop,同 kind 同 PC);
+    - 首个签名分歧 step 116,148 @ 0x6034e98:r1=0x060c3338 vs 0x060e31e0
+      (fence 上限立即数差,指令编码内差,P1/EQ 同款);
+    - 首个控制流分歧 step 169,439 @ 0x6011154(config.dat JLFS 枚举段),
+      reconvergence realigned lag=+458 immediate(一步重合,EQ 同款);
+    - 表尾跨 4KiB 对齐桶派生族(l1 表尾 0xE31E0 对齐 0xE5000,与 official
+      表尾 0xE3053 的 0xE3000 桶差 0x2000,BT §1.4 新观测项):实测形状
+      与 EQ 同构——残余签名差持续 63,290 步,全签名重合于 step 232,729,
+      无流入基址计算的控制流差(新形状未出现);
+    - 差异游程 12 条全部命中已知区(白名单分类账在 loader 前置断言把关)。
+    条件档(p11_heap_experimental,2026-11-15 路 DIF 首轮同日钉):
+    - official 21,798,206 @ 0x606b5ee(条件前沿钉点)、l1 21,798,104 @
+      0x606b5ee(-102 步轴差——C0(core-tick 首溢出交付,official 447,512/
+      l1 447,490,δ₁=22)后交付相位彩票把等待域伸缩为 -102 尾段重锁),
+      停点记录逐字段相同;前两个分歧锚(116,148 fence/169,439 config.dat)
+      与 crc_bankb 档逐字段一致;reconvergence realigned lag=-102 于
+      19,123,794 重锁,其后控制流零分歧 2,674,412 步到双停点(偏移对的
+      彩票预期形状,非回归;三层清单判定见 docs/acceptance-samples/cot/
+      R2-COT-01.json 与 analysis/local-checks/difline/)。
+    上游前沿推进后按新结论重钉。
+    """
+    pairs = {p['name']: p for p in report['pairs']}
+    require(set(pairs) == {f'official_vs_{label}'},
+            f'candidate self-check must run exactly the official:{label} pair')
+    p = pairs[f'official_vs_{label}']
+    base = frontier_registry.frontier('crc_bankb' if scenario == 'crc_bankb'
+                                      else 'p11_heap_experimental')
+    run = p['runs'][label]
+    require(p['runs']['official']['completed_steps'] == base['completed_steps'] and
+            p['runs']['official']['stop_pc'] == base['stop_pc'],
+            'official run changed: the shared-stack prefix is no longer the pinned frontier stop')
+    if scenario == 'crc_bankb':
+        _check_self_candidate_crc(p, label, base)
+    else:
+        _check_self_candidate_conditional(p, label, base)
+    report['candidate_self_check_passed'] = True
+
+
+def _check_self_candidate_crc(p, label, base):
+    require(p['parity']['steps'] == {'official': base['completed_steps'],
+                                     label: 290307, 'delta': 458} and
+            p['parity']['same_stop'] and p['parity']['stop_record']['identical'] and
+            p['parity']['stop_pc'] == {'a': base['stop_pc'], 'b': base['stop_pc'], 'same': True},
+            'the official-vs-l1_slotram crc_bankb stop parity changed (+458 same-stop expected)')
+    first = p['first_divergence']
+    require(first and first['step'] == 116148 and first['pc_a'] == '0x6034e98' and
+            first['classification'] == 'register_state_divergence' and
+            first['registers'] == {'1': {'a': '060c3338', 'b': '060e31e0'}} and
+            first['instruction_bytes_differ_within_instruction'],
+            'the first official-vs-l1 signature divergence is no longer the fence immediate at 0x6034e98')
+    control = p['first_control_divergence']
+    require(control and control['step'] == 169439 and
+            control['pc_a'] == '0x6011154' and control['pc_b'] == '0x6011154',
+            'the first official-vs-l1 control divergence is no longer the config.dat enumeration at 0x6011154')
+    rec = p['reconvergence']
+    require(rec and rec['realigned'] and rec['lag'] == 458 and rec['immediate'],
+            'the official-vs-l1 reconvergence is no longer the immediate +458 realignment')
+    require(rec['signature_after_realignment']['full_signature_realign_step_a'] == 232729,
+            'the table-tail derived-family survival changed (expected full signature realignment '
+            'at step 232729, the EQ-shaped 63,290-step span; a cross-alignment-bucket new shape '
+            'must be re-adjudicated, not silently accepted)')
+
+
+def _check_self_candidate_conditional(p, label, base):
+    """条件档钉死(2026-11-15 路 DIF 首轮):+458 偏移对过 C0 后被 core-tick
+    交付相位彩票消费(相位重排),尾段重锁到恒定错位 -102(等待域伸缩把
+    +458 磨成 -102),控制流在 19,123,794 重锁后零分歧到双停点;停点记录
+    逐字段相同(同 0x606b5ee 读 0xfe0a20);C0=official 447,512/l1 447,490
+    (δ₁=22,A1 b79↔EQ 同值——+458 偏移族 C0 相位差同构)。"""
+    require(p['parity']['steps']['delta'] == -102 and
+            p['parity']['steps'][label] == base['completed_steps'] - 102 and
+            p['parity']['same_stop'] and p['parity']['stop_record']['identical'] and
+            p['parity']['per_core_steps']['delta'] == {'0': -103, '1': 0},
+            'the official-vs-l1_slotram conditional stop parity changed (-102 same-stop, '
+            'CPU1 unchanged, expected)')
+    first = p['first_divergence']
+    require(first and first['step'] == 116148 and first['pc_a'] == '0x6034e98' and
+            first['registers'] == {'1': {'a': '060c3338', 'b': '060e31e0'}},
+            'the conditional first divergence is no longer the fence immediate at 0x6034e98')
+    control = p['first_control_divergence']
+    require(control and control['step'] == 169439 and control['pc_a'] == '0x6011154',
+            'the conditional first control divergence is no longer the config.dat enumeration')
+    rec = p['reconvergence']
+    require(rec and rec['realigned'] and rec['lag'] == -102 and not rec['immediate'] and
+            rec['realign_step_a'] == 19123794 and
+            rec['control_zero_divergence_steps'] == 2674412,
+            'the conditional reconvergence changed (expected the lottery-reshaped -102 '
+            'realignment locking at step 19123794 with zero control divergence to the stops)')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--rom', type=Path, required=True)
     parser.add_argument('--image', action='append',
-                        help='label=path with label in {official,tested_b79,eq_fence_repair}; repeat 2-3 times')
+                        help='label=path with label in {official,tested_b79,eq_fence_repair,'
+                             'l1_slotram,r4_keyhook}; repeat 2-3 times; the candidate labels '
+                             'gate on the candidate_world_checks four-fold assertions '
+                             '(UNTESTED candidates, no flash approval implied)')
     parser.add_argument('--pair', action='append',
                         help='labelA:labelB to compare (default: every combination)')
     parser.add_argument('--scenario', choices=sorted(SCENARIOS), default='crc_bankb',
@@ -986,6 +1140,11 @@ def main():
     parser.add_argument('--self-check', action='store_true',
                         help='pin the official-vs-tested_b79 conclusion of the selected scenario with '
                              'assertions (repository images only, no private artifacts)')
+    parser.add_argument('--candidate-self-check', metavar='LABEL=PATH',
+                        help='pin the official-vs-<label> candidate differential baseline of the '
+                             'selected scenario (label in {l1_slotram,r4_keyhook}, path = the '
+                             'candidate .ufw built by build_quiet_candidate; independent from the '
+                             '2026-11-12 official-vs-b79 pin; UNTESTED candidate, no flash approval)')
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
     scenario = args.scenario
@@ -1000,6 +1159,21 @@ def main():
         args.image = [f'official={OFFICIAL_DEFAULT}',
                       f"tested_b79={ROOT / 'firmware/H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw'}"]
         args.pair = ['official:tested_b79']
+
+    candidate_self_check = None
+    if args.candidate_self_check:
+        # 候选差分基线自检(路 DIF):official vs 候选(l1_slotram/r4_keyhook),
+        # 独立于上方 2026-11-12 钉子(candidate-image-cotest §1.2「新镜像对走
+        # 独立 self-check」)。候选 ufw 是 gitignored 构建产物,须显式给路径;
+        # loader 的四重前置断言(candidate_world_checks)在此路径上照常把关。
+        require(not args.image and not args.pair,
+                '--candidate-self-check runs official plus the named candidate')
+        clabel, _, cpath = args.candidate_self_check.partition('=')
+        require(clabel in ('l1_slotram', 'r4_keyhook'),
+                f'unknown candidate label {clabel!r} for the candidate self-check')
+        candidate_self_check = clabel
+        args.image = [f'official={OFFICIAL_DEFAULT}', f'{clabel}={cpath}']
+        args.pair = [f'official:{clabel}']
 
     images = {}
     for item in args.image:
@@ -1060,6 +1234,8 @@ def main():
         else:
             check_self_conditional(report)
         report['image_trace_self_check_passed'] = True
+    if candidate_self_check:
+        check_self_candidate(report, candidate_self_check, scenario)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + '\n')
     print('wrote', args.report, flush=True)
