@@ -2847,5 +2847,75 @@ class ModelTests(unittest.TestCase):
                           jl_adda_daa_con1_initial_fixture=0x0,jl_adda_daa_con1_config_readback=True)
         self.assertTrue(stacked.handles(0xfe0a04,4) and stacked.handles(0xfe0a00,4))
 
+    def test_jl_audio_dac_tm_container(self):
+        # 路 DT/S19 批 2 续二:19,139,239 停点 0x606abbe——半字 field setter
+        # 0x606ab92(12 路 tbb)selector 8/10 handler 的 RMW 内部读。容器白名单
+        # 恰两字 {0xfe0524 DAC_TM0,0xfe0528 DAC_TM1}=setter 静态地址集;合成
+        # 初始 0+读回=当前值;初值来源 synthetic_zero 具名登记(codex 定调:
+        # 保留半字持久携带=CV 性质初值依赖,全 app 无 setter 外读者故不单设
+        # fixture 开关);默认关保持 unmapped。
+        words=(0xfe0524,0xfe0528)
+        plain=BR28Model()
+        for address in words:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xfe0524)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe0524,0xfda80000)
+        self.assertNotIn('jl_audio_dac_tm_registers',plain.report())
+        h=BR28Model(jl_audio_dac_tm_readback=True)
+        for address in words:
+            self.assertTrue(h.handles(address,4))
+        # 邻字不进容器(+0x2c DAC_DB0/+0x20 RESERVED8/+0x1c DAC_VL0 保持
+        # 严格 unmapped——BO 全块 D1 后另立证据包不变)。
+        self.assertFalse(h.handles(0xfe052c,4) or h.handles(0xfe0520,4)
+                         or h.handles(0xfe051c,4) or h.handles(0xfe0525,1))
+        # handler C 形状(selector 8/10,停点路径):初读=合成 0,写回=
+        # ((r0&0xFFFF)<<16)|旧低半 → 0xFDA80000;写后读=最后写值。
+        self.assertEqual(h.read(0xfe0524),0)
+        h.write(0xfe0524,((-600)&0xffff)<<16|0)
+        self.assertEqual(h.read(0xfe0524),0xfda80000)
+        # TM1 同容器独立计(第二次调用若触 TM1)。
+        self.assertEqual(h.read(0xfe0528),0)
+        h.write(0xfe0528,0xfda8fda8)
+        self.assertEqual(h.read(0xfe0528),0xfda8fda8)
+        r=h.report()['jl_audio_dac_tm_registers']
+        self.assertEqual(r['word_writes'],2)
+        self.assertEqual(sorted(r['stores']),['0xfe0524','0xfe0528'])
+        self.assertEqual((r['readback_projection']['reads'],
+                          r['readback_projection']['synthesized_initial_reads']),(2,2))
+        self.assertIn('synthetic_zero',r['readback_projection']['initial_value_origin'])
+        self.assertIn('CV-like initial-value dependence',
+                      r['readback_projection']['initial_value_origin'])
+        self.assertIn('NOT a reset-value claim',r['readback_projection']['readback_semantics'])
+        self.assertIn('re-audited',r['readback_projection']['known_limitation'])
+        self.assertIn('modeled exactly',r['modeled_vs_touched'])
+        self.assertIn('0x606ab92',r['whitelisted_words'])
+        self.assertIn('12-way tbb',r['whitelisted_words'])
+        assumption=h.report()['assumptions']['jl_audio_dac_tm_registers']
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verify any audio output',assumption)
+        self.assertIn('withdrawn',assumption)
+        self.assertIn('synthetic_zero',assumption)
+        # 敏感性探针(probe_only):TM0 初值一次性 ones 替换,TM1 不扰动;
+        # 两臂写回 0xFDA8_0000/0xFDA8_FFFF(异或 0xFFFF)。
+        probe=BR28Model(jl_audio_dac_tm_readback=True,
+                        jl_audio_dac_tm_probe_value=0xffffffff)
+        self.assertEqual(probe.read(0xfe0524),0xffffffff)
+        self.assertEqual(probe.read(0xfe0528),0)
+        probe.write(0xfe0524,((-600)&0xffff)<<16|0xffffffff&0xffff)
+        self.assertEqual(probe.read(0xfe0524),0xfda8ffff)
+        pr=probe.report()['jl_audio_dac_tm_registers']
+        self.assertEqual(pr['sensitivity_probe']['label'],
+                         'sensitivity-probe-not-plausible-state')
+        self.assertEqual(pr['sensitivity_probe']['tm0_probe_initial'],'0xffffffff')
+        # 探针值不叠容器直接拒绝(守卫)。
+        with self.assertRaisesRegex(ValueError,'rides on the DAC_TM readback'):
+            BR28Model(jl_audio_dac_tm_probe_value=1)
+        # 与 ADDA 族容器叠加:地址集互斥互不吞。
+        both=BR28Model(jl_adda_analog_family=True,jl_audio_dac_tm_readback=True)
+        self.assertTrue(both.handles(0xfe0a00,4) and both.handles(0xfe0524,4))
+        self.assertFalse(both.handles(0xfe0a24,4) or both.handles(0xfe0528+4,4))
+
 
 if __name__=='__main__':unittest.main()
