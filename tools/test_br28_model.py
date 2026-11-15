@@ -2917,5 +2917,87 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(both.handles(0xfe0a00,4) and both.handles(0xfe0524,4))
         self.assertFalse(both.handles(0xfe0a24,4) or both.handles(0xfe0528+4,4))
 
+    def test_jl_adda_ada_family_container(self):
+        # 路 ADA/S19 冲刺批 2 续三:21,798,206 停点 0x606b5ee——ADA 配置函数
+        # 0x606b4d0..0x606c3a8 的 ADA_CON0 bit5 清位 RMW 内部读。容器白名单
+        # 恰九字 {0xfe0a20..0xfe0a40 ADA_CON0..8}=已证实触达的静态地址集
+        # (0xfe0a44 ADA_CON9 零触达不进);合成初始 0+读回=当前值;新开关
+        # 分立不扩 B3 五字 WORDS(legacy 逐字节不变红线,codex 定调第三点)。
+        words=(0xfe0a20,0xfe0a24,0xfe0a28,0xfe0a2c,0xfe0a30,
+               0xfe0a34,0xfe0a38,0xfe0a3c,0xfe0a40)
+        plain=BR28Model()
+        for address in words:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xfe0a20)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe0a20,0xffffffdf)
+        self.assertNotIn('jl_adda_ada_family_registers',plain.report())
+        h=BR28Model(jl_adda_ada_family=True)
+        for address in words:
+            self.assertTrue(h.handles(address,4))
+        # 邻字不进容器:0xfe0a44 ADA_CON9(零触达)、0xfe0a48/0xfe0a4c(B3
+        # 五字域)、0xfe0a04 DAA_CON1(CV 域)、0xfe0a1c DAA_CON7、子字
+        # 0xfe0a21(错位)全部保持原语义(B3/CV 容器未开时 unmapped)。
+        self.assertFalse(h.handles(0xfe0a44,4) or h.handles(0xfe0a48,4)
+                         or h.handles(0xfe0a4c,4) or h.handles(0xfe0a04,4)
+                         or h.handles(0xfe0a1c,4) or h.handles(0xfe0a21,1))
+        # 停点 RMW 形状([r6+0] &= 0xFFFFFFDF):初读=合成 0,清位写回,
+        # 写后读=最后写值;读与 RMW 内部读共享同一容器状态(不重置零)。
+        self.assertEqual(h.read(0xfe0a20),0)
+        h.write(0xfe0a20,0 & 0xffffffdf)
+        self.assertEqual(h.read(0xfe0a20),0)
+        h.write(0xfe0a20,0x00000020 | 0)   # 后续 |=0x20 置位形状(0x606b606 族)
+        self.assertEqual(h.read(0xfe0a20),0x20)
+        h.write(0xfe0a20,0x20 & 0xffffffdf)  # 再清 bit5
+        self.assertEqual(h.read(0xfe0a20),0)
+        # 其余八字独立计(close 族/field setter 形状抽查)。
+        self.assertEqual(h.read(0xfe0a40),0)
+        h.write(0xfe0a40,(0x1f<<5)|0xa)      # 增益 field insert 形状
+        self.assertEqual(h.read(0xfe0a40),0x3ea)
+        r=h.report()['jl_adda_ada_family_registers']
+        self.assertEqual(r['word_writes'],4)
+        self.assertEqual(len(r['addresses']),9)
+        self.assertEqual((r['readback_projection']['reads'],
+                          r['readback_projection']['synthesized_initial_reads']),(4,2))
+        self.assertIn('synthetic_zero',r['readback_projection']['initial_value_origin'])
+        self.assertIn('NOT a reset-value claim',r['readback_projection']['readback_semantics'])
+        self.assertIn('ONE',r['readback_projection']['readback_semantics'])
+        self.assertIn('real analog channel is off',
+                      r['readback_projection']['close_semantics'])
+        self.assertIn('status consumers',r['readback_projection']['known_limitation'])
+        self.assertIn('0xfe0a44',r['whitelisted_words'])
+        self.assertIn('NEW READ CONSUMER',r['whitelisted_words'])
+        self.assertIn('INDIRECT sources',r['access_face_completeness'])
+        self.assertIn('modeled exactly',r['modeled_vs_touched'])
+        self.assertIn('0x606b4d0',r['observed_shapes'])
+        assumption=h.report()['assumptions']['jl_adda_ada_family_registers']
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verify any audio input',assumption)
+        self.assertIn('ADDA_CON0',assumption)   # 勘误登记(audio_anc.c 互证)
+        self.assertIn('not exhausted',assumption)
+        # codex 钉子:非零合成初值经停点 RMW 只清 bit5——仅测初值零会漏掉
+        # RMW 内部读/写不同容器状态的实现错误。ones 初值 0xffffffff &
+        # 0xFFFFFFDF = 0xFFFFFFDF,其余 27 位原样保留。
+        probe=BR28Model(jl_adda_ada_family=True,jl_adda_ada_probe_value=0xffffffff)
+        self.assertEqual(probe.read(0xfe0a20),0xffffffff)
+        probe.write(0xfe0a20,0xffffffff & 0xffffffdf)
+        self.assertEqual(probe.read(0xfe0a20),0xffffffdf)
+        self.assertEqual(probe.read(0xfe0a24),0)   # 其余八字不扰动
+        pr=probe.report()['jl_adda_ada_family_registers']
+        self.assertEqual(pr['sensitivity_probe']['label'],
+                         'sensitivity-probe-not-plausible-state')
+        self.assertEqual(pr['sensitivity_probe']['ada_con0_probe_initial'],'0xffffffff')
+        # 探针值不叠容器直接拒绝(守卫)。
+        with self.assertRaisesRegex(ValueError,'rides on the ADA family'):
+            BR28Model(jl_adda_ada_probe_value=1)
+        # 三容器叠加(B3 五字+DT 两字+ADA 九字):地址集互斥互不吞。
+        all3=BR28Model(jl_adda_analog_family=True,jl_audio_dac_tm_readback=True,
+                       jl_adda_ada_family=True)
+        self.assertTrue(all3.handles(0xfe0a00,4) and all3.handles(0xfe0524,4)
+                        and all3.handles(0xfe0a20,4))
+        self.assertFalse(all3.handles(0xfe0a44,4) or all3.handles(0xfe0528+4,4)
+                         or all3.handles(0xfe0a04,4))
+
 
 if __name__=='__main__':unittest.main()

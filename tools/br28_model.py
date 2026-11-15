@@ -2897,6 +2897,195 @@ class JLAudioDacTmRegisters:
         return proj
 
 
+class JLAddaAdaFamilyRegisters:
+    """JL_ADDA ADA 子族九字容器(合成初始 0+读回=当前值,opt-in,路 ADA/S19
+    冲刺批 2 续三)。
+
+    背景:21,798,206 停点 0x606b5ee——ADA 配置函数 0x606b4d0..0x606c3a8
+    (8 路 tbb selector:入口 r1∈1..8(r10=r1-1,>7 早退,2/4/5/6 直接 pop),
+    公共体先做 RAM 对象初始化,然后 if(dev_ptr!=0){li r6=0xFE0A20;ADA 大串
+    配置},尾部二级 tbh 8 路分发 0xfd2018/0xfd2518 块——本前缀外)内部
+    `[r6+0] &= 0xFFFFFFDF`(ADA_CON0 bit5 清位 RMW)的内部读撞 unmapped。
+    函数内 r6 唯一真赋值即 0x606b5b0 li(tbb 表区 0x606b4ec..f0 的"写 r6"
+    是表字节伪解码)。
+
+    静态全图(全 app 逐 2 字节位置独立解码扫描枚举 li 常量+每站点线性窗口
+    数据流核查,方法照 DT):ADA 子族窗 0xfe0a20..0xfe0a44 的全部触达 =
+    7 个基址站点(9 站点实例),全部配置 RMW/组装形状、读值零分支消费:
+      * li r6=0xFE0A20 @0x606b5b0(上述函数):+0/+4/+8/+12/+16/+20/+24/
+        +28/+32 → 九字;309 处原子 RMW(rmw.and.nmodimm/rmw.or.modimm)
+        +51 处 ld.w,51 条读值消费链逐一核查全部 and/or/insert/lsl/lsr
+        →st.w 写回组装,零分支零 call 参数消费(分支全部测试配置输入);
+        另 +40/+44=0xfe0a48/4c 是路 B3 容器白名单字(DT 段 +11 RMW 即本
+        函数写,由 B3 容器服务,与本容器地址集互斥)。
+      * li r0=0xFE0A20 @0x606f4fc(close 族 0x606f4c0..0x606f598):纯清位
+        rmw.and 序列(0xfe0a20/24/30/34/38/3c),零装载。
+      * li r2=0xFE0A24 @0x606f438(上一 close 函数):纯清位 RMW
+        (0xfe0a24/30/34/38/3c),零装载。
+      * li r1=0xFE0A30 @0x606c3b0(4 通道 field setter 0x606c3b0..e6):
+        if((chan&N)!=0){ld→and.invbit→or→st},分支只测通道掩码。
+      * li r9=0xFE0A40 @0x606c448(调度层 0x606c3e8 函数内,call 上述
+        配置函数后):ld→insert→st 读回组装。
+      * li r3=0xFE0A40 @0x606de9c(增益 field setter):if((chan&N)!=0)
+        {ld→lsr>>5/insert→st}。
+      * li r1=0xFE0A40 @0x606ee9a(配置对象 setter):beqz(配置字节)
+        门控 {ld→mask→insert→st}×4。
+    0xfe0a44(ADA_CON9)全 app 零触达(li 无、任何基址偏移无)→不进白名单,
+    留 unmapped,新读者重审。0xfe0a00 基址 8 站点(B0 族面)无一触
+    +0x20..+0x44(B3 五字域访问与 B3 记录一致)。全部对齐 32 位字访问,
+    无子字/错位形状。
+
+    分类(照 B3/DT 判据,读值只进写回组装零分支):AM 容器族——合成初始
+    0+读回=当前值,derived-not-measured 非复位值声明。开关分立而非扩展
+    jl_adda_analog_family 的 WORDS:直接扩五字容器会静默改变已开场景的
+    服务面,违反「新开关默认关 legacy 逐字节不变」红线;两容器分治同一
+    JL_ADDA 块不同字域(B3 五字+本九字+CV 一字),地址集互斥由白名单
+    天然保证。known_limitation 照 B3 复刻:close 族纯清位届时服务的是容器
+    存储的合成配置字(非硅状态位),硅复位/运行态语义未证。
+    """
+
+    # 白名单恰九字(已证实触达的静态地址集;0xfe0a44 零触达不进)。
+    WORDS=(0xfe0a20,0xfe0a24,0xfe0a28,0xfe0a2c,0xfe0a30,
+           0xfe0a34,0xfe0a38,0xfe0a3c,0xfe0a40)
+    SDK_NAMES={0xfe0a20:'JL_ADDA->ADA_CON0',0xfe0a24:'JL_ADDA->ADA_CON1',
+               0xfe0a28:'JL_ADDA->ADA_CON2',0xfe0a2c:'JL_ADDA->ADA_CON3',
+               0xfe0a30:'JL_ADDA->ADA_CON4',0xfe0a34:'JL_ADDA->ADA_CON5',
+               0xfe0a38:'JL_ADDA->ADA_CON6',0xfe0a3c:'JL_ADDA->ADA_CON7',
+               0xfe0a40:'JL_ADDA->ADA_CON8'}
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self,ada_probe_initial=None):
+        self.stores={address:{'values':[],'writes':0} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+        # probe_only 敏感性探针:只替换 ADA_CON0(0xfe0a20)的初值一次
+        # (后续读回真实写回值,非每读强制常数);其余八字不扰动保归因干净。
+        self.ada_probe_initial=ada_probe_initial
+
+    def handles(self,address):
+        return address in self.stores
+
+    def _initial_word(self,address):
+        if address==0xfe0a20 and self.ada_probe_initial is not None:
+            return self.ada_probe_initial
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled JL_ADDA ADA-family word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL_ADDA ADA-family word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(AM 容器族先例;读值只进写回组装不进
+        # 分支=初值不参与观察路径,敏感性探针 ones 分叉互证)。
+        self.synthesized_initial_reads+=1
+        return self._initial_word(address)
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-8:]],
+                         'writes':e['writes']}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        proj={
+            'addresses':[hex(a) for a in self.WORDS],
+            'modeled_vs_touched':('modeled exactly the nine statically-verified ADA '
+                                  'family words 0xfe0a20..0xfe0a40 (0xfe0a44 ADA_CON9 '
+                                  'has zero app access sites and stays unmapped); '
+                                  'touched this prefix: '
+                                  +((', '.join(sorted(touched)) or 'none'))),
+            'word_writes':self.word_writes,
+            'stores':touched,
+            'sdk_naming':('br28.h JL_ADDA_TypeDef +0x20..+0x40 = ADA_CON0..ADA_CON8 '
+                          '(all-__u32 per the reference SDK header, not exact QCY '
+                          'source — the type layout locates the words, it is NOT '
+                          'evidence of plain-RW/reset-zero/side-effect-free silicon); '
+                          'cross-check: reference audio_anc.c reads JL_ADDA->ADA_CON8 '
+                          'as four 5-bit mic gains (bits 0/5/10/15), matching the '
+                          '0x606de9c/0x606ee9a gain field setters on 0xfe0a40. '
+                          'Erratum registered here (codex note): the route-B3 report '
+                          'text labels 0xfe0a48 "ADDA_CON1" and 0xfe0a4c "unnamed"; '
+                          'per the same type layout they are ADDA_CON0/ADDA_CON1 — '
+                          'the B3 text stays byte-pinned for legacy reports and its '
+                          'served address set is unchanged'),
+            'whitelisted_words':('exactly the nine words with proven app access '
+                                 '{0xfe0a20 ADA_CON0, 0xfe0a24 ADA_CON1, 0xfe0a28 '
+                                 'ADA_CON2, 0xfe0a2c ADA_CON3, 0xfe0a30 ADA_CON4, '
+                                 '0xfe0a34 ADA_CON5, 0xfe0a38 ADA_CON6, 0xfe0a3c '
+                                 'ADA_CON7, 0xfe0a40 ADA_CON8}; only aligned 32-bit '
+                                 'word accesses are served (sub-word/misaligned '
+                                 'strictly unmapped); 0xfe0a44 ADA_CON9 has zero '
+                                 'identified access sites and stays unmapped; '
+                                 '0xfe0a48/0xfe0a4c stay with the route-B3 five-word '
+                                 'container and 0xfe0a04 with the route-CV container '
+                                 '(mutually exclusive whitelists). Re-audit boundary: '
+                                 'the address whitelist only blocks NEW addresses — '
+                                 'a NEW READ CONSUMER of an already-whitelisted word '
+                                 '(status polling, branch, call argument) must be '
+                                 're-classified before this container may serve it'),
+            'access_face_completeness':('the face below is "the seven identified '
+                                 'direct-li base-register sites (nine site '
+                                 'instances) plus their offset accesses" — a '
+                                 'constant-by-constant independent decode sweep; '
+                                 'INDIRECT sources (constant-pool loads, computed '
+                                 'addresses, pointers stored in RAM, cross-function '
+                                 'argument passing) are NOT exhausted by this scan '
+                                 'and remain an explicit boundary (codex note)'),
+            'observed_shapes':('atomic config RMW chains (rmw.and.nmodimm/rmw.or.modimm) '
+                               'plus ld.w→mask/insert→st.w compositions inside the '
+                               'ADA config function 0x606b4d0..0x606c3a8 (309 RMW + 51 '
+                               'loads, every load\'s value only composes a write-back), '
+                               'pure clear-bit RMW sequences in the close family '
+                               '(0x606f4c0/0x606f438), and channel-masked field '
+                               'setters (0x606c3b0/0x606de9c/0x606ee9a) whose branches '
+                               'test only config inputs (channel mask, config object '
+                               'bytes); first stop was the ADA_CON0 bit5 clear at '
+                               '0x606b5ee'),
+            'readback_projection':{
+                'addresses':[hex(a) for a in self.WORDS],
+                'reads':self.reads_after_write,
+                'synthesized_initial_reads':self.synthesized_initial_reads,
+                'initial_value_origin':('synthetic_zero — an explicit experimental '
+                    'assumption registered with this container switch (route-AM/CW '
+                    'precedent; every read value only composes a write-back, no branch '
+                    'consumes a loaded value, so the initial word does not enter any '
+                    'observed path)'),
+                'readback_semantics':('last firmware-written value; before any '
+                    'firmware write the explicit synthetic initial word 0 — '
+                    'derived-not-measured, NOT a reset-value claim; no hardware '
+                    'self-update (ADC analog state, bias, calibration or audio '
+                    'input path) is modeled — an explicitly enabled software '
+                    'register-storage projection; it records that the ADA config '
+                    'RMWs executed, it does NOT verify any audio input; read and '
+                    'write (including the atomic RMW internal read) share ONE '
+                    'container state — no re-zeroing on function entry'),
+                'close_semantics':('the close/channel-off paths (0x606f4c0/0x606f438) '
+                    'clear bits in the container\'s synthesized config word; that '
+                    'does NOT mean a real analog channel is off, that hardware state '
+                    'was cleared, or that any timing completed (codex wording)'),
+                'known_limitation':('the audited sites\' read values only compose '
+                    'config write-backs; the real registers\' reset values, writable '
+                    'masks and read/write side effects are unverified, and the scan '
+                    'does not prove the absence of other status consumers on these '
+                    'words'),
+            },
+        }
+        if self.ada_probe_initial is not None:
+            proj['sensitivity_probe']={
+                'ada_con0_probe_initial':hex(self.ada_probe_initial),
+                'label':'sensitivity-probe-not-plausible-state',
+                'shape':('one-shot initial-word substitution for ADA_CON0 only '
+                         '(subsequent reads return the real written value); the '
+                         'other eight words stay at synthetic 0 in both arms to '
+                         'keep attribution clean'),
+            }
+        return proj
+
+
 class JLAudioDacVl0Registers:
     """JL_AUDIO->DAC_VL0(0xfe051c)数字音量字的「写记录+读回」容器(opt-in,路 CW/S19 批 0b;任务卡称「路 BO」与既有 BO/sim-audiosfr 撞号,照 CT/CV 先例顺延记 CW)。
 
@@ -4590,6 +4779,7 @@ class BR28Model:
                  core_tick_cnt_snapshot_probe_value=None,
                  jl_adda_analog_family=False,
                  jl_audio_dac_tm_readback=False,jl_audio_dac_tm_probe_value=None,
+                 jl_adda_ada_family=False,jl_adda_ada_probe_value=None,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
@@ -4728,6 +4918,19 @@ class BR28Model:
             raise ValueError('the JL_AUDIO DAC_TM probe value rides on the DAC_TM readback container')
         self.jl_audio_dac_tm=(JLAudioDacTmRegisters(tm0_probe_initial=jl_audio_dac_tm_probe_value)
                               if jl_audio_dac_tm_readback else None)
+        # jl_adda_ada_family(路 ADA/S19 冲刺批 2 续三):JL_ADDA ADA 子族九字容器
+        # (0xfe0a20..0xfe0a40 ADA_CON0..8;0xfe0a44 零触达不进白名单)——新开关
+        # 分立而非扩展 B3 五字容器 WORDS(直接扩会静默改变已开场景服务面,
+        # 违反「新开关默认关 legacy 逐字节不变」红线);probe_value 仅 probe
+        # 场景用(ADA_CON0 初值一次性替换,其余八字不扰动保归因干净)。
+        if jl_adda_ada_family:
+            if jl_adda_ada_probe_value is not None and (not isinstance(jl_adda_ada_probe_value,int)
+                    or not 0<=jl_adda_ada_probe_value<=0xffffffff):
+                raise ValueError('invalid JL_ADDA ADA_CON0 probe initial word')
+        elif jl_adda_ada_probe_value is not None:
+            raise ValueError('the JL_ADDA ADA probe value rides on the ADA family container')
+        self.jl_adda_ada=(JLAddaAdaFamilyRegisters(ada_probe_initial=jl_adda_ada_probe_value)
+                          if jl_adda_ada_family else None)
         if core_tick_delivery_requests and not core_tick_configuration:
             raise ValueError('core tick delivery requests require the core tick configuration')
         self.core_tick_delivery_requests=core_tick_delivery_requests
@@ -5239,6 +5442,7 @@ class BR28Model:
             (self.p33_analog_tail_projection and address==P3_ANA_READ) or
             (self.jl_adda_family is not None and self.jl_adda_family.handles(address)) or
             (self.jl_audio_dac_tm is not None and self.jl_audio_dac_tm.handles(address)) or
+            (self.jl_adda_ada is not None and self.jl_adda_ada.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
                                           or self.timer2.handles_iwkup(address))) or
@@ -5532,6 +5736,12 @@ class BR28Model:
         if self.jl_audio_dac_tm is not None and self.jl_audio_dac_tm.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_dac_tm.read(address)
+        # JL_ADDA ADA 子族九字(路 ADA):读回=当前值(最后写值/无写时合成初始 0);
+        # 只服务对齐 32 位字,子字/错位落严格 unmapped;读与原子 RMW 内部读共享
+        # 同一份容器状态(不重置零)。
+        if self.jl_adda_ada is not None and self.jl_adda_ada.handles(address):
+            self.counts['reads']+=1
+            return self.jl_adda_ada.read(address)
         # 金丝雀树/低功耗域(路 BV):P3_VLVD_CON/P3_PCNT_CON 只有显式 fixture
         # 覆盖的首次读返回具名字,其余读(未覆盖/写后/重复)一律严格停
         # (路 BB 同款;显式 kind 便于诊断)。
@@ -5694,6 +5904,11 @@ class BR28Model:
             # RMW 写回整字记录(经通用 mmio 路径的内部读=容器当前值);DAC
             # time-mark/DMA 运行效果不建模。
             self.jl_audio_dac_tm.write(address,value)
+        elif self.jl_adda_ada is not None and self.jl_adda_ada.handles(address):
+            # JL_ADDA ADA 子族九字(路 ADA/S19 冲刺批 2 续三):ADA 配置函数
+            # 0x606b4d0/close 族/field setter 的 RMW 写回与整字写记录(经通用
+            # mmio 路径的内部读=容器当前值);ADC 模拟通路/偏置/音频输入不建模。
+            self.jl_adda_ada.write(address,value)
         elif self.jl_audio_dac_vl0 is not None and self.jl_audio_dac_vl0.handles(address):
             # JL_AUDIO DAC_VL0(路 CW/S19 批 0b):0x606db68 写回(在两个通道
             # 选择块之外,未选通道=组装值原样写回)整字写记录;值=真实指令
@@ -6337,6 +6552,35 @@ class BR28Model:
                 'must be re-audited before this container may serve it; no DAC time-mark '
                 'counting, DMA evolution or audio output is modeled — this does NOT '
                 'verify any audio output')
+        if self.jl_adda_ada is not None:
+            result['jl_adda_ada_family_registers']=self.jl_adda_ada.report()
+            result['assumptions']['jl_adda_ada_family_registers']=(
+                'JL_ADDA ADA family, nine words (0xfe0a20..0xfe0a40 = ADA_CON0..ADA_CON8, '
+                'br28.h JL_ADDA_TypeDef all-__u32; cross-check audio_anc.c reads ADA_CON8 '
+                'as four 5-bit mic gains, route ADA): write record plus last-write readback '
+                'with an explicit synthetic initial 0 before the first write '
+                '(derived-not-measured, route-AM/CW family); every audited read value only '
+                'composes a write-back (309 atomic RMW + 51 load→mask/insert→st sites in '
+                'the ADA config function 0x606b4d0..0x606c3a8, pure clear-bit close '
+                'sequences 0x606f4c0/0x606f438, channel-masked field setters '
+                '0x606c3b0/0x606de9c/0x606ee9a — branches test only config inputs); the '
+                'face is "seven identified direct-li base sites (nine instances)" from a '
+                'constant-by-constant independent decode sweep — indirect sources '
+                '(constant pools, computed addresses, RAM pointers, cross-function '
+                'arguments) are not exhausted and stay an explicit boundary (codex note); '
+                'whitelist = exactly the nine proven-access words; 0xfe0a44 ADA_CON9 has '
+                'zero identified sites and stays unmapped; the address whitelist only '
+                'blocks new addresses — a new READ consumer of a whitelisted word must be '
+                're-classified before this container may serve it; read and the atomic '
+                'RMW internal read share one container state (never re-zeroed); the '
+                'close paths clear bits in the synthesized config word, which does NOT '
+                'mean a real analog channel is off or any hardware state was cleared; '
+                'the type layout is NOT evidence of plain-RW/reset-zero/side-effect-free '
+                'silicon; erratum: the route-B3 report text labels 0xfe0a48 "ADDA_CON1" '
+                'and 0xfe0a4c "unnamed" — per the same layout they are ADDA_CON0/'
+                'ADDA_CON1, the B3 text stays byte-pinned and its served addresses are '
+                'unchanged; no ADC analog path, bias, calibration or audio input is '
+                'modeled — this does NOT verify any audio input')
         if self.jl_audio_dac_vl0 is not None:
             result['jl_audio_dac_vl0_registers']=self.jl_audio_dac_vl0.report()
             result['assumptions']['jl_audio_dac_vl0_registers']=(

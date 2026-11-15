@@ -1132,6 +1132,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              core_tick_cnt_snapshot_probe_value=None,
              jl_adda_analog_family=False,
              jl_audio_dac_tm_readback=False,jl_audio_dac_tm_probe_value=None,
+             jl_adda_ada_family=False,jl_adda_ada_probe_value=None,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
              jl_audio_dac_dma_writes=False,
@@ -1305,6 +1306,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 0x12e286(忙等 µs 延时 helper)耗尽,预算放宽到 40M 让链走到下一个
         # 诚实边界。
         if jl_audio_dac_tm_readback:budget=40000000
+        # 路 ADA/S19 冲刺批 2 续三:ADA 子族九字容器放行后链走过停点函数
+        # 0x606b4d0 的 ADA 配置段(12 写)再 +51 步停在 0x606b68e 读
+        # 0xf2b404(P11_LPVAD->VAD_ACON0 bit28 置位 RMW 内部读)——新前沿
+        # 21,798,257,预算 40M 已充分(与 TM 层同值,余量 >18M)。
+        if jl_adda_ada_family:budget=40000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -2100,6 +2106,44 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'container (it substitutes the TM0 initial word once, it is not a '
                 'standalone release)')
         options['jl_audio_dac_tm_probe_value']=jl_audio_dac_tm_probe_value
+    # jl_adda_ada_family(路 ADA/S19 冲刺批 2 续三,opt-in 默认关):21,798,206
+    # 停点 0x606b5ee——ADA 配置函数 0x606b4d0..0x606c3a8(8 路 tbb selector+
+    # 二级 tbh)首条 ADA_CON0 bit5 清位 RMW 的内部读。静态全图(逐 2 字节
+    # 独立解码枚举 li 常量+站点窗口数据流核查):ADA 子族窗 0xfe0a20..0xfe0a44
+    # 全部触达=7 个直接 li 基址站点(9 实例)——配置函数 309 原子 RMW+51 ld
+    # (读值全部 and/or/insert→st 组装零分支)、close 族 0x606f4c0/0x606f438
+    # 纯清位零装载、field setter 0x606c3b0/0x606de9c/0x606ee9a 通道掩码门控
+    # 组装——按 B3/DT 判据归 AM 容器族:合成初始 0+读回=当前值(读值只进
+    # 写回组装,初值不进观察路径)。白名单恰九字(已证实触达;0xfe0a44
+    # ADA_CON9 零触达留 unmapped,新读者重审——同址新读者亦须重审:地址白名
+    # 单只拦新地址)。**新开关分立而非扩 jl_adda_analog_family 的 WORDS**:
+    # 直接扩五字容器会静默改变已开场景服务面,违反「新开关默认关 legacy
+    # 逐字节不变」红线(codex 定调第三点)。依赖边挂 jl_audio_dac_tm_readback
+    # =当前执行路径先后关系(TM 放行后链才到达 0x606b5ee),非 ADA 在硬件
+    # 上依赖 TM、亦非其他调用路径的必要条件(codex 措辞)。close 族清位届时
+    # 服务容器存储的合成配置字——不表示真实模拟通道已关闭/硬件状态已清除/
+    # 任何时序已完成。布局勘误(audio_anc.c 读 ADA_CON8 四通道 5 位 mic 增益
+    # 与 0x606de9c/0x606ee9a 增益 setter 互证):0xfe0a48/0xfe0a4c 按类型布局
+    # 是 ADDA_CON0/ADDA_CON1,B3 报告文本旧标注不动(legacy 字节钉死),勘误
+    # 在本容器报告登记。
+    if jl_adda_ada_family:
+        require(jl_audio_dac_tm_readback,
+                'the JL_ADDA ADA-family container only layers on the JL_AUDIO DAC_TM '
+                'release (the ADA config function 0x606b4d0 call site 0x6072144 is '
+                'reached in the DAC start tail after the TM writes — without the TM '
+                'container the world still stops at 0x606abbe; the dependency encodes '
+                'THIS execution order, not a hardware dependency)')
+        options['jl_adda_ada_family']=True
+    # 敏感性探针值(probe_only):ADA_CON0(0xfe0a20)初值一次性 0xffffffff
+    # 替换(只注初值,后续读回真实写回值;其余八字不扰动保归因干净)。
+    # codex 钉子:断言非零合成初值经停点 RMW 只清 bit5——仅测初值零会漏掉
+    # RMW 内部读/写不同容器状态的实现错误。
+    if jl_adda_ada_probe_value is not None:
+        require(jl_adda_ada_family,
+                'the JL_ADDA ADA sensitivity probe rides on the ADA family container '
+                '(it substitutes the ADA_CON0 initial word once, it is not a '
+                'standalone release)')
+        options['jl_adda_ada_probe_value']=jl_adda_ada_probe_value
     # event_clock(路 CW/S19 批 0b/sim-s19b0,BG §4.2 草案落地):把机器侧
     # 事件时钟投影(docs/event-clock.md 最小契约,BQ 的 G1 min() 框架)接进
     # 条件栈——机器/模型零新代码,本参数只是 machine_options 接线。层属
@@ -3367,19 +3411,40 @@ def check(report,firmware):
     # bit5 清位 RMW 内部读——音频 ADC init 簇(0x606b4xx..b6xx,邻字 +0x48
     # ADDA_CON1/+0x4c 无名已由 B3 容器服务)配置 RMW 族,归下一路(照 B3
     # 先例候选=容器白名单扩展,记录即停)。
+    # 路 ADA(S19 批 2 续三)jl_adda_ada_family 放行:静态全图(逐 2 字节
+    # 独立解码枚举 li 常量+站点窗口数据流核查)证实 ADA 子族窗
+    # 0xfe0a20..0xfe0a44 的全部触达=7 个直接 li 基址站点(9 实例),全部
+    # 配置 RMW/组装形状、读值零分支消费(停点函数 0x606b4d0..0x606c3a8
+    # 内 309 原子 RMW+51 ld 逐一核查;close 族 0x606f4c0/0x606f438 纯清位
+    # 零装载;field setter 0x606c3b0/0x606de9c/0x606ee9a 通道掩码门控组装;
+    # 0xfe0a44 ADA_CON9 全 app 零触达;0xfe0a00 基址 8 站点无一触 ADA 窗)
+    # →按 B3/DT 判据归 AM 容器族放行(合成初始 0+读回=当前值,恰九字
+    # 白名单;codex 定调四点:分类成立但「全 app 完备性」措辞=已识别直接
+    # li 站点而非穷尽间接来源;新开关分立不扩 B3 WORDS——直接扩会静默改
+    # 变已开场景服务面;同址新读者须重审——地址白名单只拦新地址;
+    # close 族清位服务合成配置字非硅状态;布局勘误 0xfe0a48/4c=ADDA_CON0/
+    # ADDA_CON1〔audio_anc.c 读 ADA_CON8 四通道 5 位 mic 增益与 0x606de9c/
+    # 0x606ee9a 增益 setter 互证〕,B3 文本 legacy 钉死不动、勘误在 ADA
+    # 容器报告登记)。放行后停点 RMW 执行,链再 +51 步(DT 段的 0x606b5b6..
+    # 5ea 已含 delay(20) 忙等;本段从 0x606b5f2 起)停在 **21,798,257 @
+    # 0x606b68e**:`[0xf2b404] |= 0x10000000` RMW 内部读——**0xf2b404 =
+    # P11_SFR LPVAD 组 map_adr(0x14,0x01) VAD_ACON0**(p11_sfr.h
+    # __RW __u32,低功耗语音活动检测;0xf2b400 块全 app 唯一 li 站点即
+    # 0x606b688 本处)——P11 域配置 RMW 族首读,bit28 置位形状与
+    # p11_window 0xf2a0c0 `|=1` 同形,候选=lp_timer_con_readback 式配置
+    # 读回投影或 p11_window write-only 位记录扩展(0xf2b404 不在现有
+    # p11_window 白名单),归下一路三选一(记录即停)。
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x606b5ee on the first read of '
-            '0xfe0a20 = JL_ADDA->ADA_CON0 ([r6+0] &= 0xFFFFFFDF, a bit5-clear config RMW '
-            'internal read in the audio ADC init cluster 0x606b4xx..0x606b6xx whose '
-            'neighbour words +0x48 ADDA_CON1 and +0x4c are already served by the '
-            'route-B3 JL_ADDA container) — reached after the route-DT DAC_TM release '
-            'lets the two -600 half-word setter calls at 0x60720ca/0x60720d6 execute '
-            '(TM0 = TM1 = 0xFDA80000, the second selector in {9,11} writing the TM1 '
-            'high half as the static map predicts) and the chain runs the DAC start '
-            'tail plus another OS wait family segment (+2,658,967 steps); the read is '
-            'the honest config-RMW-family boundary for the next route')
+            'the heap-experimental scenario must stop at 0x606b68e on the read of '
+            '0xf2b404 = P11_LPVAD->VAD_ACON0 ([r1+0] |= 0x10000000, a bit28-set '
+            'config RMW internal read inside the ADA config function 0x606b4d0 whose '
+            'ADA segment 0x606b5f2..0x606b68c was just released by the route-ADA '
+            'nine-word container — the only 0xf2b4xx li site in the whole app is '
+            '0x606b688 itself) — reached 51 steps after the route-DT stop, with the '
+            'DT-segment delay(20) busy-wait already inside the previous +2,658,967; '
+            'the read is the honest P11-domain config-RMW boundary for the next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 B3:CNT held 快照报告断言——键在场、假设文本按 codex 原文措辞、
@@ -3395,26 +3460,29 @@ def check(report,firmware):
             'the core-tick CNT held-snapshot projection must carry the explicit '
             '"CNT frozen after overflow" assumption (conditional/assumed-not-measured, '
             'NOT PRD-1) and the no-side-effect contract verbatim')
-    # 路 B3:JL_ADDA 模拟族容器断言——恰五字白名单、105 写(23/32/16/29/5;
-    # 路 B3 停点时 94 写(23/32/16/18/5),路 DT 段的音频 ADC init 簇再对
-    # 0xfe0a48 ADDA_CON1 做 +11 RMW,其余四字不变)、读回计数(100 写后读
-    # +5 合成初始读)、互斥与已知限制如实标注。
+    # 路 B3:JL_ADDA 模拟族容器断言——恰五字白名单、112 写(23/32/16/30/11;
+    # 路 B3 停点时 94 写(23/32/16/18/5),路 DT 段 0x606b5b6..0x606b5ea(DT
+    # 停点 0x606b5ee 之前,含 delay(20) 忙等)再对 0xfe0a48 做 +11 RMW,
+    # 路 ADA 段 0x606b5f2..0x606b68c 再 +1(0x606b5f2 [r6+40]&=0xFFFFFE1F)
+    # 并对 0xfe0a4c 再 +6(0x606b5f6/5fa/5fe/602/626/62a 六处 RMW))、读回
+    # 计数(107 写后读+5 合成初始读)、互斥与已知限制如实标注。
     adda=r['peripherals'].get('jl_adda_analog_family_registers')
     require(adda is not None and
             adda['addresses']==['0xfe0a00','0xfe0a08','0xfe0a0c','0xfe0a48','0xfe0a4c'] and
-            adda['word_writes']==105 and
+            adda['word_writes']==112 and
             {a:e['writes'] for a,e in adda['stores'].items()}==
-            {'0xfe0a00':23,'0xfe0a08':32,'0xfe0a0c':16,'0xfe0a48':29,'0xfe0a4c':5} and
-            adda['readback_projection']['reads']==100 and
+            {'0xfe0a00':23,'0xfe0a08':32,'0xfe0a0c':16,'0xfe0a48':30,'0xfe0a4c':11} and
+            adda['readback_projection']['reads']==107 and
             adda['readback_projection']['synthesized_initial_reads']==5 and
             '0x606b352' in adda['readback_projection']['known_limitation'] and
             'mutually exclusive' in adda['whitelisted_words'],
             'the JL_ADDA analog family container must record exactly the five whitelisted '
-            'words, the 105 executed write-backs (23/32/16/29/5 per word — the route-DT '
-            'audio-ADC-init segment adds +11 ADDA_CON1 RMW on 0xfe0a48 to the route-B3 94), '
-            'the 100 post-write reads plus 5 synthesized initial reads, the route-CV '
-            'DAA_CON1 whitelist mutual exclusion and the deferred DAA_CON2 bit1 '
-            'status-consumer limitation (0x606b352)')
+            'words, the 112 executed write-backs (23/32/16/30/11 per word — the route-DT '
+            'audio-ADC-init segment adds +11 on 0xfe0a48, the route-ADA segment adds one '
+            'more 0xfe0a48 RMW at 0x606b5f2 plus six 0xfe0a4c RMW), the 107 post-write '
+            'reads plus 5 synthesized initial reads, the route-CV DAA_CON1 whitelist '
+            'mutual exclusion and the deferred DAA_CON2 bit1 status-consumer '
+            'limitation (0x606b352)')
     # 路 DT:JL_AUDIO DAC_TM0/TM1 容器断言——恰两字白名单、两次 -600 半字
     # 写各触一字(实测 TM0=TM1=0xFDA80000,第二次 selector∈{9,11} 写 TM1
     # 高半=静态预测兑现)、零写后读(全 app 无 setter 外读者)、初值来源
@@ -3443,6 +3511,40 @@ def check(report,firmware):
             'predicts), zero post-write reads plus 2 synthesized initial reads, the named '
             'synthetic_zero initial-value origin, the no-reset-value claim and the '
             'new-reader re-audit limitation')
+    # 路 ADA:JL_ADDA ADA 子族九字容器断言——恰九字白名单(0xfe0a20..0xfe0a40
+    # ADA_CON0..8;0xfe0a44 ADA_CON9 零触达留 unmapped)、本前缀 12 写
+    # (0xfe0a20×7/0xfe0a24×4/0xfe0a28×1——0x606b5f2..0x606b68c 段:tbb/tbh
+    # 分支体未进入,二级 tbh 0x606b774 在停点之后)、9 写后读+3 合成初始
+    # 读、末值 0xfe0a20=0x2a0203/0xfe0a24=0x2e/0xfe0a28=0x4、synthetic_zero
+    # 初值+同址新读者重审+close 语义+完备性措辞(已识别直接 li 站点,间接
+    # 来源未穷尽)如实标注。
+    ada=r['peripherals'].get('jl_adda_ada_family_registers')
+    require(ada is not None and
+            ada['word_writes']==12 and
+            {a:e['writes'] for a,e in ada['stores'].items()}==
+            {'0xfe0a20':7,'0xfe0a24':4,'0xfe0a28':1} and
+            ada['stores']['0xfe0a20']['values'][-1]=='0x2a0203' and
+            ada['stores']['0xfe0a24']['values'][-1]=='0x2e' and
+            ada['stores']['0xfe0a28']['values']==['0x4'] and
+            ada['readback_projection']['reads']==9 and
+            ada['readback_projection']['synthesized_initial_reads']==3 and
+            'synthetic_zero' in ada['readback_projection']['initial_value_origin'] and
+            'NOT a reset-value claim' in ada['readback_projection']['readback_semantics'] and
+            'ONE' in ada['readback_projection']['readback_semantics'] and
+            'real analog channel is off' in ada['readback_projection']['close_semantics'] and
+            '0xfe0a44' in ada['whitelisted_words'] and
+            'NEW READ CONSUMER' in ada['whitelisted_words'] and
+            'INDIRECT sources' in ada['access_face_completeness'],
+            'the route-ADA jl_adda_ada_family_registers must record exactly the nine '
+            'whitelisted ADA words, the 12 executed write-backs of this prefix '
+            '(7/4/1 on ADA_CON0/1/2 — the sequential segment 0x606b5f2..0x606b68c of '
+            'the ADA config function; the tbb/tbh branch bodies were not entered, the '
+            'second-level tbh 0x606b774 sits past the stop), the 9 post-write reads plus '
+            '3 synthesized initial reads, the final values 0x2a0203/0x2e/0x4, the named '
+            'synthetic_zero origin, the shared-one-container-state RMW contract, the '
+            'close-semantics caveat, the 0xfe0a44 unmapped boundary with the new-address '
+            'AND new-consumer re-audit rule, and the direct-li-sites completeness wording '
+            '(indirect sources not exhausted)')
     require(r['peripherals']['core_tick_configuration'][0]['acknowledgements']==116 and
             r['peripherals']['core_tick_configuration'][0]['expirations']==116,
             'the CNT release must let overflows 12..108 (route B3) plus the eight '
@@ -4247,7 +4349,9 @@ def check(report,firmware):
     # 其 OS 等待族的延时三连反复越边界,恰 +279=新增交付数,全部交付/
     # ACK)、交付/ACK 3391→3670;PRD 被最新 delay 重编到 2ms 窗 23,999、
     # cnt 停点时 20,220、pending False。
-    require(timer=={'con':0x1401,'cnt':20220,'prd':23999,'pending':False,
+    # 路 ADA(S19 批 2 续三):+51 步顺序配置段零新到期零新交付,cnt
+    # 20,220→20,373(恰 +153=51 步×3 STD12M tick 精确走表)。
+    require(timer=={'con':0x1401,'cnt':20373,'prd':23999,'pending':False,
             'expirations':3680},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-B3 OS-wait prefix reprograms the window to the '
@@ -4324,7 +4428,7 @@ def check(report,firmware):
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==116 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==116 and
-            tick0['cnt']==1059884 and
+            tick0['cnt']==1060088 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -4341,7 +4445,8 @@ def check(report,firmware):
             'per-step eligibility recheck delivers it and every later overflow rides the '
             'same recheck (108 expirations = 108 acknowledgements through the route-B3 '
             'stop, the route-DT segment adds eight more for 116/116, nothing pending, no '
-            'unresolved overflow at the stop, the counter walked on to cnt 1059884); the '
+            'unresolved overflow at the stop, the counter walked on to cnt 1060088 — the '
+            'route-ADA segment adds exactly 51 steps x 4 ticks = 204); the '
             'CPU1 core tick never overflows and CPU0 partial ICFG stays 0x300 (bit9 '
             'untouched throughout)')
     # 路 BQ 读回投影面:报告键只在开关开启的世界出现(legacy 逐字节不变),
@@ -4642,12 +4747,15 @@ def check(report,firmware):
             # 运输 97170→104965、共享锁 9160→9838、整字存储 123648→
             # 133628、mmio RMW 13215→14200(音频 ADC init 簇的已建模域
             # 配置 RMW)、icfg bit9 29896→32162、cnum 50045→53995;
+            # 路 ADA(S19 批 2 续三)再 +51 步:整字存储 133628→133636
+            # (+8,ADA 组装 st)、mmio RMW 14200→14214(+14,B3/ADA 容器
+            # 域 RMW);其余四键与 masked 分支 3 不变。
             # masked 分支 3 与其余族不变(LRC 帧零新增,与 trim 块计数
             # 冻结互证)。
             r['instruction_adapters'].get('abstract_task_stack_transport')==104965 and
             r['instruction_adapters'].get('cpu0_shared_lock_ownership')==9838 and
-            r['instruction_adapters'].get('exact_full_word_store')==133628 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==14200 and
+            r['instruction_adapters'].get('exact_full_word_store')==133636 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==14214 and
             r['instruction_adapters'].get('partial_icfg_bit9_only')==32162 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==3 and
             r['instruction_adapters'].get('per_core_visible_cnum')==53995,
