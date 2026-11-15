@@ -301,8 +301,11 @@ header {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  box-sizing: border-box; /* 全局 button min-height:44px 会把 36px 高撑成长方形→border-radius:50% 显椭圆，这里锁正方形 */
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  max-width: 44px;
   padding: 0;
   border-radius: 50%;
 }
@@ -804,12 +807,13 @@ summary {
           </g>
         </svg>
         <svg data-theme-icon="dark" viewBox="0 0 32 32" aria-hidden="true">
-          <circle cx="16" cy="16" r="9" fill="currentColor"/>
+          <path d="M20.5 4.5A12 12 0 1 0 27.5 20 9.5 9.5 0 0 1 20.5 4.5Z"
+                fill="currentColor"/>
         </svg>
         <svg data-theme-icon="auto" viewBox="0 0 32 32" aria-hidden="true">
-          <circle cx="16" cy="16" r="9" fill="none"
+          <circle cx="16" cy="16" r="11" fill="none"
                   stroke="currentColor" stroke-width="2.5"/>
-          <circle cx="16" cy="16" r="3.5" fill="currentColor"/>
+          <path d="M16 5a11 11 0 0 1 0 22Z" fill="currentColor"/>
         </svg>
       </button>
     </div>
