@@ -6,6 +6,7 @@ fetches stop; two diagnostic PLL values and one R0 pointer are hypotheses only.
 This is application handoff exploration, not architectural reset or boot proof.
 """
 import argparse
+from bisect import bisect_right
 from collections import Counter
 import hashlib
 import json
@@ -143,6 +144,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         regions=((0x00123000,STACK_TOP,'bootstrap_stack'),
                  (BOOT_ARGS,BOOT_ARGS+24,'hypothesized_boot_argument_object'))+tuple(handoff['regions'] if handoff else ())
         operation='read'
+        # O3-A2(docs/o3-memory-design.md §4.1):region 查找快路径的类级状态
+        # (类属性,不进 vars(mem)——SNAP M2 属性集守卫 world_snapshot
+        # _check_m2_shape)。_region_sorted=排序 (lo,hi,kind) 数组,仅在
+        # regions 两两不重叠时构建;None=检测到重叠,回退原线性扫(重叠时
+        # 排序会改「先声明先赢」的匹配结果,回退而非拒绝)。_region_hint=
+        # 上次命中的完整 (lo,hi,kind):先行试一次完整判定,命中即真命中
+        # (该 region 完全包含请求),无需不重叠前提;未命中走索引/线性扫。
+        _region_sorted=None
+        _region_hint=None
 
         def __init__(self):
             self.ram={}
@@ -150,8 +160,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             self.icfg_spills={}
 
         def region(self,address,size):
+            hint=Memory._region_hint
+            if hint is not None and hint[0]<=address and address+size<=hint[1]:
+                return hint[2]
+            lookup=Memory._region_sorted
+            if lookup is not None:
+                # Non-overlapping regions: the only region that can fully
+                # contain the request, if any, has the greatest lo<=address.
+                los,his,kinds=lookup
+                i=bisect_right(los,address)-1
+                if i>=0 and address+size<=his[i]:
+                    Memory._region_hint=(los[i],his[i],kinds[i])
+                    return kinds[i]
+                return None
             for low,high,kind in self.regions:
                 if low<=address and address+size<=high:
+                    Memory._region_hint=(low,high,kind)
                     return kind
             return None
 
@@ -168,7 +192,6 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             for base,data in handoff['readonly'] if handoff else ():
                 if base<=address and address+size<=base+len(data):
                     return data[address-base:address-base+size]
-            detail={'access':self.operation,'address':hex(address),'size':size}
             if hardware is not None and self.operation!='fetch' and hardware.handles(address,size):
                 return struct.pack('<I',hardware.read(address))
             if hardware is not None and self.operation!='fetch':
@@ -176,6 +199,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # fixture this returns None and the ordinary strict path applies.
                 data=hardware.read_bytes(address,size)
                 if data is not None:return data
+            # O3-A1(docs/o3-memory-design.md §4.1):detail 只被 PLL event 与
+            # 下方 Blocked 分支消费;构造点从 handles 之前移到这里,MMIO/字节
+            # fixture 命中的读不再白构造(dict 字面量与 operation/hex 读取均
+            # 无副作用,纯等价)。
+            detail={'access':self.operation,'address':hex(address),'size':size}
             if self.operation!='fetch' and address==PLL and size==4 and pll is not None:
                 event({**detail,'hypothesis':'PLL0_CON0','value':hex(pll)})
                 return struct.pack('<I',pll)
@@ -305,6 +333,21 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if protected:raise Blocked('abstract_store_requires_ram',address=hex(physical),size=size)
             if not self.region(physical,size):raise Blocked('abstract_store_requires_ram',address=hex(physical),size=size)
             return physical
+
+    # O3-A2:装载期一次性检测 regions 两两是否重叠(O(n^2),n<=~20)并构建
+    # 排序索引。无重叠→bisect 查找;重叠→_region_sorted=None,region() 回退
+    # 原线性扫(先声明先赢语义原样保留;断言不拒绝任何原本可运行的配置,
+    # 零行为变化)。
+    _o3i_rgns=Memory.regions
+    if any(_o3i_rgns[i][0]<_o3i_rgns[j][1] and _o3i_rgns[j][0]<_o3i_rgns[i][1]
+           for i in range(len(_o3i_rgns)) for j in range(i+1,len(_o3i_rgns))):
+        Memory._region_sorted=None
+    else:
+        _o3i_srt=sorted(_o3i_rgns)
+        Memory._region_sorted=([r[0] for r in _o3i_srt],
+                               [r[1] for r in _o3i_srt],
+                               [r[2] for r in _o3i_srt])
+    Memory._region_hint=None
 
     class CPU(module.CPU):
         core_id=0
