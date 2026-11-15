@@ -553,6 +553,59 @@ def test_report_for_diff_strips_transport_keys_only():
                                         'stop': {'kind': 'unmapped_memory'}}
 
 
+def test_parallel_arms_match_serial_values_via_fork_handoff():
+    """Route PAR3: run_parallel forks one worker per label, each running the
+    SAME frontier_run and handing (result, spool) to the parent through a
+    scratch directory; the reattached read-only spool must read back the exact
+    rows the arm produced, and the pool registration must equal the serial
+    path's (same fake arms, same values). Simulator-free: frontier_run is
+    stubbed per-arm; the fork/handoff/reattach machinery is the real one."""
+    import analyze_image_trace as ait
+
+    def fake_frontier_run(module, app, header, rom, name, *, flash_image_bytes,
+                          readonly=(), budget=None, scenario='crc_bankb', snapshot=None):
+        label = name[len('trace_'):]
+        spool = TraceSpool()
+        for i in range(5):
+            spool.append(row(0x100 + i * 2, 0x102 + i * 2,
+                             marker=(15, f'{label}-{i}')))
+        result = {'name': name, 'label': label, 'budget': budget,
+                  'snapshot': snapshot, 'completed_steps': 5, 'stop_pc': '0x10a',
+                  'stop': {'kind': 'unmapped_memory'}, 'machine': {'cores': {'0': {'steps': 5}}}}
+        return result, spool
+
+    labels = ('official', 'tested_b79', 'eq_fence_repair')
+    loaded = {label: (label, (f'app-{label}'.encode(), f'plain-{label}'.encode(), (), f'sha-{label}'))
+              for label in labels}
+    original = ait.frontier_run
+    ait.frontier_run = fake_frontier_run
+    try:
+        serial_pool = ait.RunPool(object(), b'rom', 'header', 300000, 'crc_bankb', loaded)
+        serial_runs = {label: serial_pool.run(label) for label in labels}
+        parallel_pool = ait.RunPool(object(), b'rom', 'header', 300000, 'crc_bankb', loaded)
+        parallel_pool.run_parallel(list(labels), jobs=3)
+        assert sorted(parallel_pool.runs) == sorted(labels)
+        for label in labels:
+            serial_result, serial_trace = serial_runs[label]
+            result, trace = parallel_pool.runs[label]
+            assert result == serial_result, f'{label}: parallel result drifted'
+            assert len(trace) == len(serial_trace) == 5
+            assert list(trace) == list(serial_trace), f'{label}: spool rows drifted'
+            assert trace[2] == serial_trace[2]  # mid-chunk random access
+        # read-only handoff: mutating operations on a reattached spool fail
+        # loudly instead of silently editing a compared artifact
+        spool = parallel_pool.runs['official'][1]
+        try:
+            spool.append(row(0, 2))
+        except (io.UnsupportedOperation, OSError, ValueError):
+            pass
+        else:
+            raise AssertionError('reattached spool accepted an append')
+        serial_pool.close(); parallel_pool.close()
+    finally:
+        ait.frontier_run = original
+
+
 if __name__ == '__main__':
     for name, case in sorted(globals().items()):
         if name.startswith('test_'):

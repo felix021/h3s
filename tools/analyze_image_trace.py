@@ -633,6 +633,39 @@ def resume_snapshot_config(snapshot_dir, scenario, label, effective_budget):
             'expected_context': {'scenario': f'trace_{label}'}}, max(1, effective_budget - completed)
 
 
+class _ReadOnlySpool(TraceSpool):
+    """Route PAR3: the parent-side view over a finished arm's handed-off
+    spool. Everything read-side is inherited unchanged; the two mutating
+    entry points refuse so a compared artifact cannot be edited in place
+    after the handoff."""
+
+    def append(self, row):
+        raise ValueError('append to a reattached (parallel-arm) spool')
+
+    def flush(self):
+        raise ValueError('flush on a reattached (parallel-arm) spool')
+
+
+def _reattach_spool(spool_path, index_path):
+    """Route PAR3: rebuild a READ-ONLY spool view over the bytes + chunk index
+    a parallel arm worker wrote. Same chunk semantics (a fresh Unpickler per
+    chunk, the two-chunk cache); the backing file is opened 'rb' on top of the
+    class-level refusal. Parent and child run one code version — the sidecar
+    index is a run-local handoff, not a persisted format."""
+    index = json.loads(index_path.read_text())
+    spool = _ReadOnlySpool.__new__(_ReadOnlySpool)  # skip __init__ (temp file)
+    spool._file = open(spool_path, 'rb')
+    spool._chunk = TraceSpool.DEFAULT_CHUNK
+    spool._offsets = list(index['offsets'])
+    spool._counts = list(index['counts'])
+    spool._starts = list(index['starts'])
+    spool._flushed = index['flushed']
+    spool._tail = list(index['tail'])
+    spool._cache = OrderedDict()
+    spool._closed = False
+    return spool
+
+
 class RunPool:
     """Per-label run cache (route REUSE): every DISTINCT image executes exactly
     ONCE per (scenario, budget) and the resulting (result, trace) pair serves
@@ -675,7 +708,8 @@ class RunPool:
 
     def arm_config(self, label):
         """(app, plain, readonly, budget, snapshot) for one arm — the single
-        source shared by the serial path and the snapshot-round modes."""
+        source shared by the serial path, the parallel arm workers (route
+        PAR3) and the snapshot-round modes."""
         app, plain, readonly, _sha = self._loaded[label][1]
         budget, snapshot = self._budget, None
         if self._snapshot_mode == 'capture':
@@ -697,6 +731,68 @@ class RunPool:
                 flash_image_bytes=plain, readonly=readonly,
                 budget=budget, scenario=self._scenario, snapshot=snapshot)
         return self.runs[label]
+
+    def run_parallel(self, labels, jobs):
+        """Route PAR3: execute the given labels in forked worker processes (up
+        to `jobs` concurrently) and register each (result, spool) pair in
+        self.runs — the three-image conditional round is three INDEPENDENT
+        simulations, so its wall clock is the arm count times the per-arm time
+        when serialized. Values are unchanged by construction: each worker
+        runs the very same frontier_run in a forked copy of this process
+        (module state, scenario flags and simulator PIN already imported and
+        pinned); the parent only relays the finished artifacts. The worker
+        flushes its TraceSpool and writes the spool bytes plus the chunk index
+        and the result dict into a scratch directory; the parent re-attaches a
+        read-only spool view (same class, same chunk semantics — parent and
+        child run one code version, no on-disk format contract). Comparisons
+        stay single-process in the parent, exactly as before."""
+        import multiprocessing
+        context = multiprocessing.get_context('fork')
+        scratch = Path(tempfile.mkdtemp(prefix='h3s-par3-'))
+        try:
+            pending = list(labels)
+            running = []  # (process, label, result_path, spool_path, index_path)
+            while pending or running:
+                while pending and len(running) < jobs:
+                    label = pending.pop(0)
+                    work = scratch / label
+                    work.mkdir()
+                    process = context.Process(
+                        target=self._arm_worker, args=(label, work),
+                        name=f'h3s-arm-{label}')
+                    process.start()
+                    running.append((process, label, work / 'result.pkl',
+                                    work / 'spool.bin', work / 'spool.json'))
+                process, label, result_path, spool_path, index_path = running.pop(0)
+                process.join()
+                require(process.exitcode == 0,
+                        f'parallel arm {label!r} failed with exit code '
+                        f'{process.exitcode}; its traceback is above')
+                result = pickle.loads(result_path.read_bytes())
+                self.runs[label] = (result, _reattach_spool(spool_path, index_path))
+        finally:
+            import shutil
+            shutil.rmtree(scratch, ignore_errors=True)
+
+    def _arm_worker(self, label, work):
+        # Child process: run one arm exactly like the serial path, then hand
+        # the artifacts to the parent. Any exception exits non-zero (the
+        # parent requires exitcode 0); stderr is inherited so the traceback
+        # surfaces in place.
+        app, plain, readonly, budget, snapshot = self.arm_config(label)
+        result, trace = frontier_run(
+            self._module, app, self._header, self._rom, f'trace_{label}',
+            flash_image_bytes=plain, readonly=readonly,
+            budget=budget, scenario=self._scenario, snapshot=snapshot)
+        trace.flush()
+        trace._file.seek(0)
+        (work / 'spool.bin').write_bytes(trace._file.read())
+        (work / 'spool.json').write_text(json.dumps(
+            {'offsets': trace._offsets, 'counts': trace._counts,
+             'starts': trace._starts, 'flushed': trace._flushed,
+             'tail': trace._tail}))
+        with open(work / 'result.pkl', 'wb') as handle:
+            pickle.dump(result, handle, protocol=4)
 
     def close(self):
         for _result, trace in self.runs.values():
@@ -1453,6 +1549,13 @@ def main():
                              'label; stop/report parity is re-verified, per-step comparison only '
                              'covers post-restore steps — pinned full-prefix trace facts are NOT '
                              're-executed, see the doc; refuses --self-check/--candidate-self-check)')
+    parser.add_argument('--jobs', type=int, default=1, metavar='N',
+                        help='(route PAR3) run the per-image simulation arms in N parallel '
+                             'worker processes (fork; comparisons stay single-process in the '
+                             'parent). Default 1 = the legacy serial order. Values are '
+                             'unchanged either way — each arm is an independent simulation; '
+                             'the wall clock of a three-image round drops from 3x arm time '
+                             'to ~1x')
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
     scenario = args.scenario
@@ -1546,6 +1649,10 @@ def main():
     pool = RunPool(module, rom, header, budget, scenario, loaded,
                    snapshot_mode=snapshot_mode, snapshot_dir=snapshot_dir)
     try:
+        if args.jobs > 1:
+            # 路 PAR3:镜像臂=独立仿真,并行分叉执行后在父进程汇合;报告值与
+            # 串行版逐字节相同(同一 frontier_run,每次分叉副本各跑一臂)。
+            pool.run_parallel(sorted(loaded), jobs=args.jobs)
         if 'official' in loaded:
             fresh = SCENARIOS[scenario]['freshness']
             check = pool.run('official')[0]
