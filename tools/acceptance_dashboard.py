@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """验收记录全局面板生成器(路 PANEL/sim-panel,d1-acceptance §8 档案的全局视察面)。
 
-扫描 docs/acceptance-samples/ 六目录+上级散置的全部记录 JSON(只读汇总,不改记录),
+扫描 docs/acceptance-samples/ 七目录+上级散置的全部记录 JSON(只读汇总,不改记录),
 产出一页 markdown:docs/acceptance-dashboard.md。
   1. 总览:各目录 PASS/FAIL/BLOCKED/NOT_RUN 分布+PASS(条件性)列;
   2. 待授权/依赖项汇总:记录按类别聚组(刷机/BLE 联调/只读观测会话/前沿推进/观测手段)
@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / 'docs' / 'acceptance-samples'
 DASHBOARD = ROOT / 'docs' / 'acceptance-dashboard.md'
 
-# 六目录面板(顺序=总览表行序);新增目录=在此加一行。
+# 目录面板(顺序=总览表行序,当前七个);新增目录=在此加一行。
 PANELS = (
     ('d2a', 'D2-a 按键输入响应:识别×动作覆盖(路 BB/sim-d2arecords)'),
     ('r234', 'R2 辅听/R3 独立 app/R4 命令接驳(路 CU/sim-r234records)'),
@@ -171,12 +171,12 @@ def generate(samples: Path = SAMPLES, panels=PANELS, root_panel=ROOT_PANEL,
     data_as_of = max((r.recorded_at for r in all_records), default='—')
     panel_total = sum(len(entries[key]) for key, _ in panels)
     lines: list[str] = []
-    lines += ['# 验收记录全局面板(六目录一页汇总,路 PANEL/sim-panel)', '',
+    lines += ['# 验收记录全局面板(七目录一页汇总,路 PANEL/sim-panel)', '',
               '数据=`docs/acceptance-samples/` 全部记录的只读汇总(不改记录;每条链接直达 JSON)。',
               '记录改动后须再生成:`python3 tools/acceptance_dashboard.py`;',
               '`check_local --units` 会校验本页与记录一致(test_acceptance_dashboard.py)。',
               f'数据截至(记录 recorded_at 最大值)={data_as_of} ｜ '
-              f'共 {len(all_records)} 条(六目录 {panel_total}+上级散置 '
+              f'共 {len(all_records)} 条(七目录 {panel_total}+上级散置 '
               f'{len(entries[root_panel[0]])})。', '',
               '## 1. 总览', '',
               '| 目录 | 内容 | PASS | 其中条件性 | FAIL | BLOCKED | NOT_RUN | 共计 |',

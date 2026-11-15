@@ -1,9 +1,9 @@
-# 验收记录全局面板(六目录一页汇总,路 PANEL/sim-panel)
+# 验收记录全局面板(七目录一页汇总,路 PANEL/sim-panel)
 
 数据=`docs/acceptance-samples/` 全部记录的只读汇总(不改记录;每条链接直达 JSON)。
 记录改动后须再生成:`python3 tools/acceptance_dashboard.py`;
 `check_local --units` 会校验本页与记录一致(test_acceptance_dashboard.py)。
-数据截至(记录 recorded_at 最大值)=2026-11-15T16:45:00 ｜ 共 76 条(六目录 74+上级散置 2)。
+数据截至(记录 recorded_at 最大值)=2026-11-15T16:45:00 ｜ 共 76 条(七目录 74+上级散置 2)。
 
 ## 1. 总览
 

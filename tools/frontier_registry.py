@@ -80,7 +80,7 @@ FEATURES = (
             '并行对半字存储第二半(exact_parallel_halfword_stores 子开关)'),
     Feature('p11_power_init', 'base', (), False, None,
             'power_init 的 P11 依赖链(lpwr 响应/窗口/公共段拷贝/配置 RMW)'),
-    # ---- conditional 栈(p11_heap_experimental_config 场景增量,39 个开关) ----
+    # ---- conditional 栈(p11_heap_experimental_config 场景增量,54 个开关) ----
     Feature('heap_info_bytes', 'conditional', ('p11_power_init',), True, 'P11_HEAP_INFO_DERIVED',
             'P11 堆信息 4 字节显式 fixture(静态推导候选,derived-not-measured)'),
     Feature('byte_pair', 'conditional', (), False, None,
@@ -264,7 +264,7 @@ FEATURES = (
     # (JL_AUDIO->DAC_TM0 运行态读)证实两者的全部运行态消费者仍在音频数字域整块
     # 之后——按 BQ 先例(零消费者不落地)从条件栈撤回,实现保留在本分支历史
     # 0b875ed,待音频域过界后按到达顺序落地。)
-    # ---- probe_only(只在 probe_irq_entry 场景变体出现,6 个开关) ----
+    # ---- probe_only(只在 probe_irq_entry 场景变体出现,9 个开关) ----
     Feature('timer0_irq4_probe_steps', 'probe_only', ('timer0_irq4_delivery',), True, None,
             'Timer0 首次到期拉近探路 fixture(计数 seed,场景传值)'),
     Feature('timer0_irq4_masked', 'probe_only', ('timer0_irq4_probe_steps',), False, None,
