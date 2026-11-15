@@ -1,11 +1,17 @@
-# D1-5 窗口健康度机检：H1-H7 判定规则与 d1_window.health 键契约（冻结）
+# D1-5 窗口健康度机检：H1-H8 判定规则与 d1_window.health 键契约（冻结）
 
 2026-11-14 路 PR-1（sim-pr1，批 3 任务书 §1.0b；基线 main `ed241a4`）。本文冻结
-两样东西：①`tools/check_d1_acceptance.py` 的 `d1_5_health`（H1-H7）判定规则口径；
+两样东西：①`tools/check_d1_acceptance.py` 的 `d1_5_health`（H1-H8）判定规则口径；
 ②其数据面 `d1_window.health.*` 报告键的最小契约——**PR-2（probe 侧场景骨架，等
 闸门②）按本文对齐生产；键名/语义变更须先改本文再改代码**。判据语义照
 [d1-scene-blueprint.md](d1-scene-blueprint.md) §3 表 + [s19-batch3-taskbook.md](s19-batch3-taskbook.md)
 §1.0b 修正项（H5 两级受检/H6 逻辑序号勘误/FAIL 证据契约），不放宽。
+
+2026-11-16 路 PR-2（sim-pr2，半前移；基线 main `82ba8d6`）按 REVIEW 裁决
+（[phase-review-d1-readiness.md](phase-review-d1-readiness.md) §3.1 盲区 #5）增补
+**H8 观察窗相容性自检**：只新增判定规则（§1 表 H8 行 + H1 联动），**无新增生产键**
+（折算输入全部复用 §2 既有键）；checker+单测先行落地，实跑数据等 D1 场景推进后
+自然消费。
 
 **证据边界（参谋结论③，任务书 §1.0b 第 2 条）**：当前 H1-H7 的单测全部用合成
 scenario 样本（`tools/test_d1_acceptance.py` 的 `d1_health_scenario()`），只证明
@@ -21,7 +27,7 @@ S19/park 后由 PR-2 的观察件产出。
 
 | # | 规则 | 输入键（health.*） | PASS 判据 | FAIL 信号（级别） | pending 语义 |
 |---|---|---|---|---|---|
-| H1 | 定时事件确实发生 | `timer0_expiries`(+`timer0_expiry_steps`) | 窗口内 Timer0 到期 ≥3；到期步号相邻间隔恒定且=per_source 实读 period；与 `d1_window.timer0_cycles` 同数互证 | 到期 <3；间隔漂移/倒流；互证矛盾（全 FAIL 级） | expiry_steps <2 个=间隔面证据不足；timer0_cycles 缺=不互证（不阻塞） |
+| H1 | 定时事件确实发生 | `timer0_expiries`(+`timer0_expiry_steps`) | 窗口内 Timer0 到期 ≥3；到期步号相邻间隔恒定且=per_source 实读 period；与 `d1_window.timer0_cycles` 同数互证 | 到期 <3；间隔漂移/倒流；互证矛盾（全 FAIL 级） | expiry_steps <2 个=间隔面证据不足；timer0_cycles 缺=不互证（不阻塞）；**到期 <3 且 H8 折算覆盖可证 <3=insufficient（pending）非 FAIL**——窗口伪证≠定时器违约（REVIEW §3.1 盲区 #5，2026-11-16 增） |
 | H2 | 同源重发有界 | `per_source[]`+`window.steps` | 每周期源交付 ≤ ⌈N/P⌉+1（P=per_source.period **实读**，不预锁 40,000/300,000）；非周期源（软件 IRQ124-127）交付=0；三分计数一致（交付≤到期+起点 pending 容差、完成≤交付）；报告 `upper_bound`（可选）与 checker 自算一致 | 超上界=风暴；交付>到期（+容差）；完成>交付；upper_bound 不符（全 FAIL 级，证据含三分计数） | 周期源 period 缺=无法算上界；window.steps 缺；**core_tick 的 CNT 冻结假设标注缺=断言形状不完整**（§1.4） |
 | H3 | 无同事件无限重发 | `event_reposts[]`(+`queue_balance`) | 每 (event_id,子码) 入队 ≤2（S18 静态每子码恰 post 一次，上界含一次容差；注入条目 origin='injected' 上界=3）；消费=入队；queue_balance 与 reposts 汇总一致、出队≤入队 | 入队超上界；消费>入队（重复分发）；queue_balance 矛盾（FAIL 级） | 消费<入队=未闭合样本（右边界条款：`pending_at_window_end` 标注与否都 pending，需要完整样本不默认 PASS）；键缺≠零事件≠vacuous pass |
 | H4 | 必要任务可唤醒 | `per_core['0']`（判据面=CPU0；CPU1 记录面） | 窗口内 CPU0 唤醒 ≥1 且末态重新 entered_idle_wait（嵌套唤醒共享一次回等待合法：rewait<wake 不违约）；wake_reasons 求和=wake_count | 零唤醒；唤醒后卡运行态（窗口 complete 且末态 woken/running）；计数矛盾（rewait>wake / reasons 求和≠wake）（FAIL 级，证据含未闭合唤醒区间：最后 PC/在途 IRQ/嵌套层级） | 窗口截断+末态非等待=未闭合区间（「尚未到期」不误 FAIL）；timeline 缺且 rewait<wake（嵌套/未闭合不可分） |
@@ -29,11 +35,15 @@ S19/park 后由 PR-2 的观察件产出。
 | — | 观察级（同 H5 键） | 同上 | 非断言面就绪任务未调度=**如实记录不 FAIL**（等待时长字段 ready_since_step/longest_wait/first_scheduled_step 保留在记录里） | — | — |
 | H6 | 队列积压有界+游标前进 | `queue.{count_final,qlimit,capacity,cursor_trace}` | 窗口末 count_final=0（全消费）或 ≤qlimit；**逻辑**入队/出队**序号**严格递增；物理指针=序号 mod 容量（物理回绕合法——勘误：不检查物理指针单调）；`cursor_monotonic`（可选）与 checker 判定一致 | 超限；序号回退；取模不一致；空轨迹+count_final>0；预判定矛盾（FAIL 级） | qlimit 缺且 count_final>0；cursor_trace 缺=游标面证据不足 |
 | H7 | 状态变迁可追溯 | `per_core[].timeline` | 每核状态转换流（entered_idle_wait/woken/running）机器可复查：步号严格递增、kind 合法、相邻转移合法（park→只能 woken；woken→running 或直接回等待；running→回等待或嵌套唤醒；连续同 kind=转换流断裂） | 步号倒流；非法 kind；非法转移；CPU0 计数有唤醒而时间线空=断链（FAIL 级，证据含首违前后片段） | timeline 键缺；CPU1 空时间线=静默核 vacuous pass（不 pending） |
+| H8 | 观察窗相容性自检（REVIEW §3.1 盲区 #5 裁决；2026-11-16 增） | `window.steps` + `per_source[timer0].period`（**复用 H1/H2 既有键，无新增生产键**） | 按实读 P_park 折算窗口可覆盖完整周期数 `N // P_park >= 3`（最坏相位口径，等价 `N >= 3×P_park`；窗口公式 N=max(S_tick+160k,200k) 的 160k 余量按 P=40,000 形状值预留 3 周期，BY 实测 delay 会按场景重编 PRD 为 59999/47999/11999 三态，任意实读值下须重验） | —（**无 FAIL 级**：覆盖不足是窗口配置问题，不是 DUT 行为违约） | **insufficient_window_coverage**：折算 <3 → pending 拒绝给结论（不判过也不误判 FAIL）；同窗口 H1 的「到期 <3」联动转 pending；P_park/窗口 N 缺=pending 不猜（不预锁 40,000 兜底） |
 
-**否定式总闸**（蓝图 §3 原文）：D1-1..4 全 PASS 而 H1-H7 任一 FAIL → D1 仍 FAIL。
+**否定式总闸**（蓝图 §3 原文）：D1-1..4 全 PASS 而 H1-H8 任一 FAIL → D1 仍 FAIL。
 实现=两处：①D1-5 断言自身的 fail 态；②`run_all` 新增 `d1_gate` 键（fail/pass/
 pending，只聚合 D1-1..D1-5，BI-A* 不进 gate——BI 首验独立）。probe 侧正式验收
-入口（PR-2 §1.2 第 7 条）调 `run_all` 时传播 `d1_gate`。
+入口（PR-2 §1.2 第 7 条）调 `run_all` 时传播 `d1_gate`。**H8 的 insufficient 属
+pending 面（拒绝给结论）**：H1-H7 全 PASS 而折算覆盖 <3 时 D1-5=pending →
+`d1_gate`=pending（insufficient）非 pass——总闸不抵消（2026-11-16 增）；验收
+入口「非 pass 即非零退出码」语义照旧，窗口配置问题修 N 重跑，不是 DUT 失败。
 
 ## 2. `d1_window.health` 最小契约（PR-2 生产者对齐）
 
@@ -109,6 +119,13 @@ pending，只聚合 D1-1..D1-5，BI-A* 不进 gate——BI 首验独立）。pro
 调度次数推导；`entry` 只进任务元数据表（TCB 复用再加实例代次）；`wake_reasons`
 只存计数+关联 id。
 
+**H8 无新增生产键（2026-11-16 增）**：折算输入=`health.window.steps`（缺则
+`model_step_end−model_step_start`）+`health.per_source[timer0].period`（park 态
+实读，§2 既有键）——键缺=pending 不猜，与全表红线同款。窗口公式本身
+（N=max(S_tick+160k,200k)）与 park 落定时的生产者侧自检（覆盖 <3 时延长 N 或报
+「观察窗不足」不判过）归 PR-2 probe 侧正式落地，与本表 checker 判定同一公式
+`N // P_park >= 3`。
+
 ## 3. FAIL 证据契约（七规则共用结构）
 
 每条 FAIL 的 check 附 `evidence` 字段（任务书 §1.0b 第 8 条）：
@@ -131,6 +148,9 @@ pending，只聚合 D1-1..D1-5，BI-A* 不进 gate——BI 首验独立）。pro
 ```
 
 计数/峰值/最长等待在线累计在原始观测键里，证据片段只存首次违规+最严重违规。
+H8 复用同一结构（`rule='H8'`，2026-11-16 增）：`first_violation` 锚窗口配置点
+（model_step=W_park，core/pc=None+note——配置级条件无故障指令，如实降级）；
+rule 特化键=`{coverage, p_park, n, required_n_min}`。
 
 ## 4. 反例自证（AZ 假阳性框架；单测钉死）
 
@@ -153,6 +173,24 @@ pending，只聚合 D1-1..D1-5，BI-A* 不进 gate——BI 首验独立）。pro
   upper_bound+first_deadline+pending_at_window_start；H4 卡运行态证据含 open_wake
   {last_pc,in_flight_irq,nesting_level}；H7 证据含首违前后片段。
 
+**H8 反例自证**（2026-11-16 路 PR-2 增，`tools/test_d1_acceptance.py` 新增 8 例，
+`D1_5H8WindowCoverageTests` 一类；REVIEW §3.1 盲区 #5 裁决的机检面）：
+
+- 三态 PRD 各造窗口边界例：BY 实测三态（59999/47999/11999 → P=20,000/16,000/
+  4,000）逐一验证「覆盖恰 3（N=3×P）=pass／恰 2（N=3×P−1）=拒绝给结论」。
+- 余量破（盲区本体）：PRD 被重编出更大周期（P=70,000）而 N 停在公式下限
+  200,000（3×P=210,000>N）→ insufficient_window_coverage、D1-5 零 FAIL、
+  `d1_gate`=pending——到期 2 次是窗口伪证，H1 不再误判「定时事件没真发生」。
+- P_park 未实读=pending 不猜：period 键缺不得回退 40,000 形状值折算（不猜
+  红线照抄 H2 CNT 假设先例）；窗口 N 键缺（steps 与 end−start 两路都断）同款。
+- 拦截不放宽（双向不猜）：覆盖足额（恰 3）时观测缺口就是真实缺口，H1 照旧
+  FAIL——PR1 冻结语义只在「折算可证 <3」时让位。
+- 总闸不抵消：H1-H7 全 PASS（幸运相位凑满 3 次到期）而折算 <3 → D1-5=pending、
+  `d1_gate`≠pass。
+- 证据契约形状：H8 拒绝结论的证据=七规则结构（rule/expected/observed/
+  first_violation 锚 W_park 且 pc=None/source_or_task/window_end.evidence_
+  complete/coverage+p_park+required_n_min 特化键）。
+
 ## 5. 与 PR-2 的对接面（等闸门②，本路不实施）
 
 - 生产者按 §2 契约实现观察件（probe_irq_entry 场景 `d1_acceptance_window` 的
@@ -162,3 +200,6 @@ pending，只聚合 D1-1..D1-5，BI-A* 不进 gate——BI 首验独立）。pro
   退出码）；「字段缺失/截断=证据不足」即本文 pending 语义，probe 侧不得当零事件。
 - CNT 假设标注的键位决策（顶层 vs park 下）由 PR-2 定夺后可在本文 §2 更新——
   checker 已两处兼容，无需再改代码。
+- H8（2026-11-16 增）：checker 侧已上线（半前移，本路 PR-2）；PR-2 窗口机制侧
+  在 park 落定后按实读 P_park 自检覆盖（<3 延长 N 或报「观察窗不足」不判过），
+  与本表 checker 判定同一公式 `N // P_park >= 3`；生产者无需为此新增任何键。
