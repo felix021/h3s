@@ -52,6 +52,7 @@ def main():
     run(sys.executable,'tools/test_architectural_models.py')
     run(sys.executable,'tools/test_task_returns.py')
     run(sys.executable,'tools/test_br28_machine.py')
+    run(sys.executable,'tools/test_exec_memo.py')
     run(sys.executable,'tools/test_task_unknown.py')
     run(sys.executable,'tools/test_icfg.py')
     run(sys.executable,'tools/test_irq_entry.py')

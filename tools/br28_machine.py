@@ -141,6 +141,11 @@ class DualCoreMachine:
 
     def attach(self,cpu0,factory,hardware):
         require(not self.cores,'machine cannot be reused across execution sessions')
+        # 执行层记忆化(路 OPT1):对上游钉死文件的三个纯函数做首调缓存,
+        # 语义零变化(见 br28_exec_memo 模块头)。装配点是全执行会话的
+        # 唯一入口,幂等且不可装入时静默保持原行为。
+        from br28_exec_memo import install
+        install(cpu0)
         self.cores[0]=cpu0;self.factory=factory;self.hardware=hardware
         if self.partial_icfg:self.init_icfg(cpu0)
         hardware.enable_multicore(self.irq1_config,self.ipmask1,self.launch)
