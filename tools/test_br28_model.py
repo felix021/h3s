@@ -2999,5 +2999,77 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(all3.handles(0xfe0a44,4) or all3.handles(0xfe0528+4,4)
                          or all3.handles(0xfe0a04,4))
 
+    def test_p11_lpvad_config_container(self):
+        # 路 LPV:21,798,257 停点 0x606b68e——ADA 配置函数 0x606b4d0 顺序段
+        # 尾 `li r1=0xF2B404`(0x606b688,全 app 唯一站点)之后首条
+        # `rmw.or.modimm [r1+0] |= 0x10000000`(bit28 置位 RMW)的内部读撞
+        # unmapped。容器白名单恰一字 {0xf2b404 VAD_ACON0}=已证实触达的静态
+        # 地址集(其余 12 字零触达不进);合成初始 0+读回=当前值(两项均
+        # 显式模型假设,codex);新开关分立不扩 p11_window 白名单(契约+
+        # 族冲突,codex 定调);跨域限制措辞(q32s/LPVAD 检测/可见性/副作用
+        # 不模拟)照 codex 推荐文本登记。
+        plain=BR28Model()
+        for address in (0xf2b400,0xf2b404,0xf2b408,0xf2b430):
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xf2b404)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xf2b404,0x10000000)
+        self.assertNotIn('p11_lpvad_config_registers',plain.report())
+        # p11_window 契约不变:已开 p11_window 时 0xf2b404 不属于其白名单
+        # {0xf2a0c0,0xf2a410,0xf2a414},p11_window 开关自身行为不受新容器
+        # 影响(分立开关;两开关可叠加,地址集互斥)。
+        pw=BR28Model(p11_window_projection=True)
+        self.assertFalse(pw.handles(0xf2b404,4))
+        h=BR28Model(p11_lpvad_config=True)
+        self.assertTrue(h.handles(0xf2b404,4))
+        # 邻字不进容器:同组 12 字(VAD_CON 0xf2b400/VAD_ACON1 0xf2b408/
+        # DMA 尾字 0xf2b430)、邻组 0xf2b21c、子字 0xf2b405(错位)、
+        # p11_window 白名单字 0xf2a0c0 全部保持原语义。
+        self.assertFalse(h.handles(0xf2b400,4) or h.handles(0xf2b408,4)
+                         or h.handles(0xf2b430,4) or h.handles(0xf2b21c,4)
+                         or h.handles(0xf2b405,1) or h.handles(0xf2a0c0,4))
+        # 停点 RMW 形状([r1+0] |= 0x10000000):初读=合成 0,置位写回
+        # 0|0x10000000=0x10000000,写后读=最后写值;读与 RMW 内部读共享
+        # 同一份容器状态(codex:RMW 自身消费旧值,不能判死读)。
+        self.assertEqual(h.read(0xf2b404),0)
+        h.write(0xf2b404,0 | 0x10000000)
+        self.assertEqual(h.read(0xf2b404),0x10000000)
+        r=h.report()['p11_lpvad_config_registers']
+        self.assertEqual(r['word_writes'],1)
+        self.assertEqual(r['addresses'],['0xf2b404'])
+        self.assertEqual((r['reads_after_write'],
+                          r['synthesized_initial_reads']),(1,1))
+        self.assertEqual(r['stores']['0xf2b404']['values'],['0x10000000'])
+        # 报告八面:单字白名单/同址新读者重审/跨域限制/完备性措辞/
+        # 模型假设(含弱替代案区别)/known_limitation/__RW 非硅证据/
+        # modeled_vs_touched——codex 定调全部落文本。
+        self.assertIn('modeled exactly the one',r['modeled_vs_touched'])
+        self.assertIn('NEW READ CONSUMER',r['whitelisted_words'])
+        self.assertIn('new RMW mask',r['whitelisted_words'])
+        self.assertIn('does NOT model q32s access',
+                      r['cross_domain_limitations'])
+        self.assertIn('does NOT mean the real LPVAD',
+                      r['cross_domain_limitations'])
+        self.assertIn('NOT exhausted',r['access_face_completeness'])
+        self.assertIn('does NOT cover ROM, q32s',
+                      r['access_face_completeness'])
+        self.assertIn('explicit model assumptions',r['model_assumptions'])
+        self.assertIn('WEAKER alternative',r['model_assumptions'])
+        self.assertIn('comment-only',r['sdk_naming'])
+        self.assertIn('other consumers',r['known_limitation'])
+        assumption=h.report()['assumptions']['p11_lpvad_config_registers']
+        self.assertIn('NOT a reset value',assumption)
+        self.assertIn('NOT a p11_window_projection extension',assumption)
+        self.assertIn('limited to identified main-core software consumers',
+                      assumption)
+        # 四容器叠加(B3+DT+ADA+LPV):地址集互斥互不吞,各自 handles 不变。
+        all4=BR28Model(jl_adda_analog_family=True,jl_audio_dac_tm_readback=True,
+                       jl_adda_ada_family=True,p11_lpvad_config=True)
+        self.assertTrue(all4.handles(0xfe0a00,4) and all4.handles(0xfe0524,4)
+                        and all4.handles(0xfe0a20,4) and all4.handles(0xf2b404,4))
+        self.assertFalse(all4.handles(0xf2b400,4) or all4.handles(0xf2b408,4)
+                         or all4.handles(0xfe0a44,4))
+
 
 if __name__=='__main__':unittest.main()

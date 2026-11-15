@@ -3086,6 +3086,172 @@ class JLAddaAdaFamilyRegisters:
         return proj
 
 
+class P11LPVADConfigRegisters:
+    """P11_SFR LPVAD VAD_ACON0 单字容器(合成初始 0+读回=当前值,opt-in,路 LPV)。
+
+    背景:21,798,257 停点 0x606b68e——ADA 配置函数 0x606b4d0..0x606c3a8 顺序段
+    0x606b5f2..0x606b68c 走完后,`li.u32 r1=0xF2B404`(0x606b688,全 app 唯一
+    站点)之后首条 `rmw.or.modimm [r1+0] |= 0x10000000`(bit28 置位原子 RMW)
+    的内部读撞 unmapped。0xf2b404 = P11_SFR LPVAD 组 p11_sfr_base+
+    map_adr(0x14,0x01) 的 VAD_ACON0(参考 SDK p11_sfr.h P11_LPVAD_TypeDef
+    第二字,低功耗语音活动检测;组基址 0xf2b400,13 字布局见下)。
+
+    静态访问面(全 app 逐 2 字节位置独立解码扫描枚举 li 常量+数据区 4 字节
+    字面值扫描+邻组站点数据流核查,方法照 ADA/DT):
+      * 0xf2b400..0xf2b434 窗(每字枚举)唯一 li 站点 = 0x606b688
+        `li.u32 r1=0xF2B404`,其后唯一访问即停点 RMW 本身(r1 随后被写覆盖,
+        停点后顺序流 0x606b692 起全部是 ADA 窗/RAM,再无 0xf2b4xx 触达)。
+      * 数据区无独立常量池字面值(全 app 扫描唯一命中=li 指令自身立即数字
+        节 0x606b68a);0xf2b000..0xf2b5ff 整块 li 家族恰 2 站点,另一站点
+        0x6068c20(li r1=0xF2B21C,他组)仅 st.w 两写即返回,差 0x1e4 不触达。
+      * 读值数据流:窗内全 app 触达只有停点这一条原子 RMW——内部读进零
+        GPR、零分支、零 call 参数;窗内无任何 ld.w 显式读(比 lp_timer 的
+        ld→组装→st 消费链更弱,连显式读链都没有)。注意(codex 钉子):
+        「零消费者」只限定为已识别的主核软件消费者——RMW 本身消费旧值
+        (new=old|0x10000000),合成初始 0 下容器结果 0x10000000,真实执行
+        则保留其余 31 位并进入写事务,潜在消费者含外设与 q32s,不能判死读。
+
+    P11_LPVAD_TypeDef 布局(参考 SDK p11_sfr.h,sha256 与 data/dependencies.json
+    一致):13 字全标 __RW __u32(VAD_CON +0/VAD_ACON0 +4 停点字/VAD_ACON1 +8/
+    AVAD_CON +c/AVAD_DATA +10/DVAD_CON0 +14/DVAD_CON1 +18/DMA_BADR +1c/
+    DMA_LEN +20/DMA_HPTR +24/DMA_SPTR +28/DMA_SPN +2c/DMA_SHN +30)——但
+    __RW 宏值==__WO==volatile,R/W 区分只在注释,头标注不是硅读回证据
+    (路 AL lp_timer 同款措辞);布局只定位字,不授权整组行为。
+
+    分类(照 B3/DT/ADA 判据+codex 定调):AM 式合成配置族单字容器——
+    合成初始 0+读回=当前值,「初始 0」与「读回=容器当前值」均为显式模型
+    假设(synthetic-not-measured,非硅复位值/非静态推导结果)。白名单恰
+    一字(已证实触达);其余 12 字零触达不进、留 unmapped 新读者重审;
+    同址新读者(新 ld.w/新访问 PC/新 RMW 掩码/子字错位/其他核)亦须重审
+    ——地址白名单只拦新地址,拦不住同址新增消费者。**新开关分立而非扩
+    p11_window_projection 的白名单**:直接扩已开开关服务面=改契约(ADA
+    codex 钉子同构),且 p11_window 是「纯写记录,读回一律 Blocked」族,
+    配置读回语义与之族冲突;lp_timer_con_readback 的「未写过严格停」在
+    首访即读的停点形状下无解(停点自身就是首次访问)。依赖边挂
+    jl_adda_ada_family=当前执行路径先后关系(ADA 放行后链才到达停点),
+    非 LPVAD 在硬件上依赖 ADDA(codex 措辞)。
+
+    codex 备案的更弱替代(不采纳,记录假设强度区别):只记录「bit28 被置
+    位」、其余 31 位保留未知、普通读继续阻断——假设强度更弱,但需要新
+    的抽象传播机制(容器返回 UnknownWord 而非 int),违反最小改动原则;
+    本容器沿用全字合成 0 的 AM 家族形态,两者假设强度差异在此明文保留。
+    """
+
+    # 白名单恰一字(已证实触达的静态地址集;其余 12 字零触达不进)。
+    WORDS=(0xf2b404,)
+    SDK_NAMES={0xf2b404:'P11_LPVAD->VAD_ACON0'}
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled P11 LPVAD config word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled P11 LPVAD config word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(AM 容器族先例;读值只进 RMW 写回不进
+        # 分支=初值不参与观察路径)。
+        self.synthesized_initial_reads+=1
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-8:]],
+                         'writes':e['writes']}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        proj={
+            'addresses':[hex(a) for a in self.WORDS],
+            'modeled_vs_touched':('modeled exactly the one statically-verified LPVAD '
+                                  'word 0xf2b404 (VAD_ACON0); the other twelve '
+                                  'P11_LPVAD struct words have zero identified app '
+                                  'access sites and stay unmapped); touched this '
+                                  'prefix: '+((', '.join(sorted(touched)) or 'none'))),
+            'word_writes':self.word_writes,
+            'reads_after_write':self.reads_after_write,
+            'synthesized_initial_reads':self.synthesized_initial_reads,
+            'stores':touched,
+            'sdk_naming':('reference SDK p11_sfr.h P11_LPVAD_TypeDef, group base '
+                          'p11_sfr_base+map_adr(0x14,0x00)=0xf2b400; 13 all-__u32 '
+                          'members VAD_CON/VAD_ACON0(stop word,+4)/VAD_ACON1/'
+                          'AVAD_CON/AVAD_DATA/DVAD_CON0/DVAD_CON1/DMA_BADR/'
+                          'DMA_LEN/DMA_HPTR/DMA_SPTR/DMA_SPN/DMA_SHN — the __RW '
+                          'macro value equals __WO (volatile), the R/W distinction '
+                          'is comment-only, so the header labels are NOT silicon '
+                          'readback evidence; the type layout locates the word, it '
+                          'is NOT evidence of plain-RW/reset-zero/side-effect-free '
+                          'silicon'),
+            'whitelisted_words':('exactly the one word with proven app access '
+                                 '{0xf2b404 VAD_ACON0}; only aligned 32-bit word '
+                                 'accesses are served (sub-word/misaligned stay '
+                                 'unmapped); a NEW READ CONSUMER of this same '
+                                 'address (a new ld.w, a new access PC, a new RMW '
+                                 'mask, another core) must be re-audited before '
+                                 'this container may serve it — the address '
+                                 'whitelist only gates new addresses (codex)'),
+            'cross_domain_limitations':('this projection only records the main '
+                                 'core\'s synthesized config-word update of '
+                                 'VAD_ACON0 at the identified atomic-RMW site; '
+                                 'the synthetic initial 0 and the '
+                                 'current-container-value readback are explicit '
+                                 'model assumptions, not the silicon reset value '
+                                 'or the actual readback behavior; the projection '
+                                 'does NOT model q32s access to this word, LPVAD '
+                                 'detection, cross-domain visibility/handshake, '
+                                 'or read/write side effects; the main core '
+                                 'passing this stop does NOT mean the real LPVAD '
+                                 'is configured or running (codex wording). '
+                                 'Known gaps kept open: another core may read/'
+                                 'write the same word; bit28\'s actual role is '
+                                 'unknown (config/trigger/other); atomicity and '
+                                 'visibility ordering across main core/q32s/'
+                                 'peripherals are unknown; the write may itself '
+                                 'have effects — absence of an identified '
+                                 'main-core reader does not prove the omission '
+                                 'harmless'),
+            'access_face_completeness':('the sweep covered direct immediate '
+                                 'sites in the specified window, word-literal '
+                                 'scans of the specified form, and dataflow '
+                                 'checks of the identified neighbor-group '
+                                 'sites; RAM-pointer loads, cross-function '
+                                 'argument passing and arithmetic address '
+                                 'construction are NOT exhausted; coverage is '
+                                 'limited to the scanned main-core app and does '
+                                 'NOT cover ROM, q32s or other access agents; '
+                                 'finding no other direct site does NOT elevate '
+                                 'to "the only access in the system" (codex '
+                                 'wording)'),
+            'model_assumptions':('synthetic_initial_word=0 and readback=current '
+                                 'container value are explicit model assumptions '
+                                 '(AM-family form, minimal-change choice); a '
+                                 'WEAKER alternative — record only "bit28 set", '
+                                 'keep the other 31 bits unknown, keep plain '
+                                 'reads blocked — was considered and NOT taken '
+                                 '(it would need a new unknown-word propagation '
+                                 'path through the container); the assumption-'
+                                 'strength difference is registered here '
+                                 '(codex)'),
+            'known_limitation':('the single audited access composes the RMW '
+                                'write-back only; the real register\'s reset '
+                                'value, writable mask and side effects are '
+                                'unverified, and the scan does not prove the '
+                                'absence of other consumers (peripherals, q32s) '
+                                'of the written word'),
+        }
+        return proj
+
+
 class JLAudioDacVl0Registers:
     """JL_AUDIO->DAC_VL0(0xfe051c)数字音量字的「写记录+读回」容器(opt-in,路 CW/S19 批 0b;任务卡称「路 BO」与既有 BO/sim-audiosfr 撞号,照 CT/CV 先例顺延记 CW)。
 
@@ -4780,6 +4946,7 @@ class BR28Model:
                  jl_adda_analog_family=False,
                  jl_audio_dac_tm_readback=False,jl_audio_dac_tm_probe_value=None,
                  jl_adda_ada_family=False,jl_adda_ada_probe_value=None,
+                 p11_lpvad_config=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
@@ -4931,6 +5098,11 @@ class BR28Model:
             raise ValueError('the JL_ADDA ADA probe value rides on the ADA family container')
         self.jl_adda_ada=(JLAddaAdaFamilyRegisters(ada_probe_initial=jl_adda_ada_probe_value)
                           if jl_adda_ada_family else None)
+        # p11_lpvad_config(路 LPV):P11_SFR LPVAD VAD_ACON0(0xf2b404)单字容器
+        # ——新开关分立而非扩 p11_window 白名单(改已开开关服务面=改契约,且
+        # 「纯写记录读回 Blocked」族与配置读回语义冲突;codex 定调)。
+        self.p11_lpvad=(P11LPVADConfigRegisters()
+                        if p11_lpvad_config else None)
         if core_tick_delivery_requests and not core_tick_configuration:
             raise ValueError('core tick delivery requests require the core tick configuration')
         self.core_tick_delivery_requests=core_tick_delivery_requests
@@ -5443,6 +5615,7 @@ class BR28Model:
             (self.jl_adda_family is not None and self.jl_adda_family.handles(address)) or
             (self.jl_audio_dac_tm is not None and self.jl_audio_dac_tm.handles(address)) or
             (self.jl_adda_ada is not None and self.jl_adda_ada.handles(address)) or
+            (self.p11_lpvad is not None and self.p11_lpvad.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
                                           or self.timer2.handles_iwkup(address))) or
@@ -5742,6 +5915,12 @@ class BR28Model:
         if self.jl_adda_ada is not None and self.jl_adda_ada.handles(address):
             self.counts['reads']+=1
             return self.jl_adda_ada.read(address)
+        # P11_SFR LPVAD VAD_ACON0(路 LPV):读回=当前值(最后写值/无写时合成
+        # 初始 0);只服务对齐 32 位字,子字/错位落严格 unmapped;读与原子 RMW
+        # 内部读共享同一份容器状态。
+        if self.p11_lpvad is not None and self.p11_lpvad.handles(address):
+            self.counts['reads']+=1
+            return self.p11_lpvad.read(address)
         # 金丝雀树/低功耗域(路 BV):P3_VLVD_CON/P3_PCNT_CON 只有显式 fixture
         # 覆盖的首次读返回具名字,其余读(未覆盖/写后/重复)一律严格停
         # (路 BB 同款;显式 kind 便于诊断)。
@@ -5909,6 +6088,11 @@ class BR28Model:
             # 0x606b4d0/close 族/field setter 的 RMW 写回与整字写记录(经通用
             # mmio 路径的内部读=容器当前值);ADC 模拟通路/偏置/音频输入不建模。
             self.jl_adda_ada.write(address,value)
+        elif self.p11_lpvad is not None and self.p11_lpvad.handles(address):
+            # P11_SFR LPVAD VAD_ACON0(路 LPV):停点 0x606b68e 的 bit28 置位
+            # RMW 写回与整字写记录(经通用 mmio 路径的内部读=容器当前值);
+            # q32s 侧访问/LPVAD 检测/跨域副作用不建模(codex 跨域措辞)。
+            self.p11_lpvad.write(address,value)
         elif self.jl_audio_dac_vl0 is not None and self.jl_audio_dac_vl0.handles(address):
             # JL_AUDIO DAC_VL0(路 CW/S19 批 0b):0x606db68 写回(在两个通道
             # 选择块之外,未选通道=组装值原样写回)整字写记录;值=真实指令
@@ -6581,6 +6765,33 @@ class BR28Model:
                 'ADDA_CON1, the B3 text stays byte-pinned and its served addresses are '
                 'unchanged; no ADC analog path, bias, calibration or audio input is '
                 'modeled — this does NOT verify any audio input')
+        if self.p11_lpvad is not None:
+            result['p11_lpvad_config_registers']=self.p11_lpvad.report()
+            result['assumptions']['p11_lpvad_config_registers']=(
+                'P11_SFR LPVAD VAD_ACON0 (0xf2b404 = p11_sfr_base+map_adr(0x14,0x01), '
+                'reference p11_sfr.h P11_LPVAD_TypeDef second word, route LPV): write '
+                'record plus current-value readback with an explicit synthetic initial 0 '
+                'before the first write (AM-family form; both the initial 0 and the '
+                'readback semantics are explicit model assumptions, NOT a reset value '
+                'and NOT a static derivation — codex); the whole identified face is ONE '
+                'atomic RMW (0x606b68e |= 0x10000000 via the single direct-li site '
+                '0x606b688) whose internal read never reaches a GPR/branch/call '
+                'argument — "zero consumers" is limited to identified main-core '
+                'software consumers (the RMW itself consumes old, the other 31 bits '
+                'enter the write transaction, peripherals/q32s may consume them); '
+                'whitelist = exactly the one proven-access word, the other twelve '
+                'struct words stay unmapped; the address whitelist only blocks new '
+                'addresses — a new READ consumer of 0xf2b404 itself (new ld.w, new '
+                'PC, new RMW mask, another core) must be re-audited (codex); '
+                'independent switch, NOT a p11_window_projection extension (contract '
+                'and family boundary, codex); the projection does NOT model q32s '
+                'access to this word, LPVAD detection, cross-domain visibility or '
+                'side effects — the main core passing the stop does NOT mean the '
+                'real LPVAD is configured or running; the __RW header label is '
+                'comment-only (==__WO==volatile) and is NOT silicon readback '
+                'evidence; a weaker bit28-only record with unknown other bits was '
+                'considered and not taken (assumption-strength difference '
+                'registered in the container report)')
         if self.jl_audio_dac_vl0 is not None:
             result['jl_audio_dac_vl0_registers']=self.jl_audio_dac_vl0.report()
             result['assumptions']['jl_audio_dac_vl0_registers']=(
