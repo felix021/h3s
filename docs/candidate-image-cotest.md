@@ -114,6 +114,20 @@ def load_l1_slotram(path, official_path):        # 与 load_r4_keyhook 同形
   app_size=flash 末端−0x2020，实测 0xE31E0/0xE322E（与 fence 上限运行地址
   0x060E31E0/0x060E322E 互证），上文代码块已按实测值改注。
 
+  **R4-COT-01 首跑已消 NOT_RUN（2026-11-15 路 R4C/sim-r4c，基线 main 364d5bd）**：
+  official↔r4_keyhook 两档实跑 PASS/conditional（记录与判定细节
+  `docs/acceptance-samples/cot/R4-COT-01.json`）。r4 对与 l1 对（R2-COT-01）逐档
+  同构：crc 档首签名分歧同为 116,148 fence 立即数（r4 侧 r1=0x060E322E）/唯一控制流
+  分歧 169,439 config.dat/+458 immediate realigned/停点 289,849 vs 290,307
+  same_stop/表尾派生族 57 段 1,471 步全签名重合 232,729（r4 表尾 0xE524E 与 l1
+  0xE5200 同落 0xE5000 对齐桶）；条件档（前沿已随 ADA 路推进到 21,798,257 @
+  0x606b68e）停点差 -102 same_stop、realign 同为 19,123,794。r4 专属差面=注册表槽
+  0xA9C7C（数据槽 4B）+keyhook 载荷 [0x060E31E0,0x060E322E)——两档两镜像独立扫描
+  全前缀零取指（含 6 窗口 PC）；loader 分类账 13 条游程全命中已知区（比 l1 多的
+  1 条即注册表槽）。**r4 侧 self-check 钉值未接**：`check_self_candidate` 现钉
+  l1 首轮值（fence 寄存器 060e31e0 等），r4 需独立钉值——挂后续路（本路红线零
+  tools/ 改动）；差分结论已由归档报告承载，不依赖该钉子。
+
 ### 1.3 已知差异语义表增补（KNOWN_SITE_LABELS 展示层）[设计]
 
 把候选的字节差区（plain 偏移=运行地址−0x06000000）增补进展示表（只标注、不判定，判定走

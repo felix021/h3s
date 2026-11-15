@@ -1,30 +1,51 @@
 {
   "case_id": "R4-COT-01",
-  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=r4-keyhook 候选（--r4-keyhook 隐含 --hearing-aid-l1-slotram），sha256 8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d，与官方逐字节差异恰 554 字节、与 slotram 候选恰 111 字节（r4-command-hook §3.3）",
-  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与候选两世界到注入点，前缀段 [0, C0) 逐步 parity（analyze_image_trace compare_pair 机制；C0=首次 core-tick 溢出交付 own-step ≈447k，A1 钉死其后零控制流分歧判据机制性必破）+[C0, 注入点) 等 own-step 三层清单（l2a-differential-criteria §2-§3；基线差集归档于 R2/R4-COT-01），注入段事件对齐终态比对；场景两档同 R2-COT-01；差异面=l1 差异 ∪ {cmdid 0x30 setter 槽 4B（plain 0xA9C7C）+keyhook 代码 78B+链式 CRC}（r4-command-hook §3.3：vs slotram 恰 111 字节）",
-  "inputs_schedule": "无注入（boot 前缀全量重放）；观察窗=场景全前缀",
-  "observation_boundary": "§1.4 修订后两窗口径同 R2-COT-01（[0, C0) 四条+[C0, 停点] 等 own-step 三层清单，l2a-differential-criteria）；增量断言：注册表槽 0x060a9c7c（数据，零执行）与 keyhook 载荷区 [0x060E31E0,0x060E322E) 在全前缀零取指（keyhook 仅 0x30 写路径触达）；注册表消费面（三 walker 表基遍历：开机 init walker 0x06024df4 调 [+0]——init 槽 0x30 项为 0，walker 零值跳过/静默行为两侧同形）运行观测归档",
+  "firmware_identity": "official UFW（QCY_H3S_701N_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；对照镜像=r4_keyhook 候选 H3S_0.1.1.8_tones_minus0dB_R4_KEYHOOK_OFFLINE_UNTESTED.ufw，sha256 8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d（--r4-keyhook 隐含 --hearing-aid-l1-slotram 构建链），与官方逐字节差异恰 554 字节、与 slotram 候选恰 111 字节（r4-command-hook §3.3；app 切片 sha 实测钉死 e4ee706f…bd272）；ROM=Release 资产 QCY_H3S_BR28_ROM_000000-020000.bin（7cae0a02…f793）；运行平台=worktree sim-r4c @ 364d5bd（loader/跑法=DIF 路接线与先例原样复用，本路零 tools/ 改动）",
+  "initial_state": "A/B 双世界全前缀重放（candidate-image-cotest §2.3：首期不用快照——快照静态配置层按镜像 digest 重建会拒载候选，L2 全前缀重放纪律承接）：同 flag 集（probe_irq_entry.irq_case 场景单源）同 budget 跑 official 与 r4_keyhook 两世界（analyze_image_trace compare_pair 机制；loader 四重前置断言经 candidate_world_checks.run_checks 在加载链把关），两档场景各跑：crc_bankb（289,849 前沿，冒烟档）+ p11_heap_experimental（条件前沿 21,798,257 @ 0x606b68e 读 0xf2b404=P11_LPVAD VAD_ACON0，main 364d5bd 条件栈=ADA 路后继前沿，已跨过 C0，判定进两窗模式）全量；两前沿均在 0x0600db3c 键循环相位之前——本用例不依赖 D1 过线。official 侧新鲜度自检内建且两档均复现前沿钉点（289,849 @ 0x60679ba / 21,798,257 @ 0x606b68e）；差异面=l1 差异 ∪ {cmdid 0x30 setter 槽 4B（plain 0xA9C7C）+keyhook 代码 78B+链式 CRC}（r4-command-hook §3.3：vs slotram 恰 111 字节）",
+  "inputs_schedule": "无注入（boot 前缀全量重放）；观察窗=场景全前缀；附加独立观察跑（r4c-observe 系列，DIF difline-observe 同法：core-tick/Timer0 handler 入口交付步号全扫+窗口/载荷/注册表槽取指 watch+init walker 入口 watch+jiffies 演进+写集页直方图+adapter 全键计数+停点机器报告键）",
+  "observation_boundary": "candidate-image-cotest §1.4 修订后两窗口径（2026-11-15 路 L2AC 按 A1/EQDIV 修订，可执行判定式全集=l2a-differential-criteria §1-§3）。[0, C0) 段四条：①候选独有取指（6 接驳窗口替换字节+载荷区 [0x060E3074,0x060E322E)——含 keyhook 段 [0x060E31E0,0x060E322E)——与注册表槽 0x060a9c7c..0x060a9c80（数据槽按取指口径watch）执行次数=0；②控制流分歧段全部∈已知族{config.dat JLFS index 1→0 多枚举一轮（+458 步族，VM init 0x6011132 枚举 @169,439）}且每段 reconverge；fence 立即数差（plain 0x34E98，0x060C3338→0x060E322E）只显形为 debug_init ~116,148 的寄存器值差（P1/l1 先例），控制流不变；③停点 parity（同 kind 停点，本窗段内判定）；④表尾跨 4KiB 对齐桶观测（r4 表尾 0xE524E 与 l1 0xE5200 同落 0xE5000 桶，≠official 0xE3053→0xE3000）。[C0, 停点] 段（official↔r4 为 +458 偏移对）：等 own-step 检查点+三层清单（l2a-differential-criteria §2-§3）——第一层守恒类必须相等；第二层相位彩票有界吸收；第三层等待域预算；停点判据=各自诚实停+停点差按跨停点闭式核账；r4 增量观测项=注册表消费面（开机 init walker 0x06024df4 先表 C 后表 A 调 [+0]；0x30 项 init 字段=0 两侧同形）运行归档",
   "assertions": [
-    "candidate-image-cotest §2.2 R4-COT-01：公共前缀 parity 的 r4 对——fence 0x060E322E/config.dat index（slotram 同族）+注册表槽与 keyhook 零消费；白名单源=A+C0 后三层清单基线（同 R2-COT-01 修订），两者之外任何差=回归",
-    "§1.2：loader 前置断言（sha 8e9a47d0/PLAIN_LENGTHS 0xE322E（BU 实测修正：plain 长度=flash 末端−0x2020）/差异分类账==r4 §3.3 逐区域账：vs 官方 554=slotram 472+注册表槽 4+keyhook 密文 78）",
-    "r4-command-hook §1.2 等价安全检查承接：槽原字节 00000000+全 app 引用扫描零命中+消费面钉死（本用例动态面=前缀零消费的旁证）"
+    "两档停点复现与 parity：crc_bankb official 289,849 @ 0x60679ba vs r4 290,307 @ 0x60679ba（+458 步轴差，stop 记录逐字段相同 same_stop，per-core CPU0 +458/CPU1 11,181=11,181）；p11_heap official 21,798,257 @ 0x606b68e vs r4 21,798,155 @ 0x606b68e（-102 步轴差——C0 后等待域相位伸缩把 +458 磨成 -102，与 l1 对同族同值；stop 记录逐字段相同，per-core {0:-103,1:0}）；停点差跨停点闭式核账：core-tick 交付 116=116 差 0 ≤ ⌈102/300,005⌉+|pending 差|=0（双侧停点 pending 全 False，expirations/acknowledgements 116=116，cnt 1,060,088=1,060,088）✅、jiffies 差 0==ACK 差 0（终值同 0x7e=126=基值 10+116 ACK，写入步号 21,533,237 vs 21,533,135 差 102）✅",
+    "判据①窗口/载荷/注册表槽零消费（两档两镜像 watch 全扫）：6 窗口 PC（0x0600db9a/0x0600dbc4/0x0600dc74/0x0600dc7e/0x0600dc9a/0x0600dca4）、载荷区 [0x060E3074,0x060E322E)（含 keyhook 段）、注册表槽 0x060a9c7c..0x060a9c80 取指次数全部为 0 ✅（crc_bankb 档与条件档独立扫描各证一遍）；r4 增量观测项=开机 init walker 0x06024df4 入口计数两档两镜像全为 0——walker 在当前前沿（289,849/21,798,257）之前未执行，注册表消费面在前缀完全未被触达（与零控制流分歧互证：0x30 槽 init 字段=0 两侧同形的静态预期无动态检验面，前沿推进过 walker 相位后按 §2.2 预填口径补观测）",
+    "判据②分歧段∈已知族+reconverge（两档同形）：首签名分歧 step 116,148 @ 0x6034e98 r1=0x060c3338 vs 0x060e322e（fence 上限立即数差，指令编码内差，无控制流差；r4 立即数=0x060E322E，与 l1 对同消费点不同值——r4 专属 fence 上限）；首个也是唯一控制流分歧 step 169,439 @ 0x6011154（config.dat JLFS 枚举段），reconvergence realigned lag=+458 immediate=True（EQ/l1 同款一步重合）✅；判据④表尾跨桶观测：r4 表尾 0xE524E 与 l1 同落 0xE5000 对齐桶，残余签名差 57 段/1,471 步全为表尾派生族，全签名重合于 step 232,729（=169,439+63,290，与 l1 对精确同值——首派生段寄存器差 r0=0x060e3053 vs 0x060e322e 即 r4 表尾指针，对齐桶差 0x2000 未产生流入基址计算的新形状）；loader 分类账 image_byte_diff_runs 13 条全部命中已知区（比 l1 对多的 1 条=注册表槽 0xA9C7C..0xA9C80 的 r4 专属条目，KNOWN_SITE_LABELS 已标注）✅",
+    "判据[C0,停点] 三层清单（条件档，与 R2-COT-01 l1 对基线逐档同构）：C0=official 447,512/r4 447,490（δ₁=22，+458 族同值）✅；第一层 CPU1 per-core 11,251=11,251 ✅、CRC 轮次 32=32 ✅、data 区/lrc 块终值逐字节同（差集空）✅、写集累计地址数 42,160=42,160 ✅、停泊/唤醒 event_clock 推进 13,429,113 vs 13,427,597（差 1,516=等待域伸缩，层三管辖，与 l1 对同值）✅、交付自洽核账 116+0==116 ∧ ACK==交付 ∧ jiffies==10+116 ✅；第二层 Timer0 T2-3 机器算全过（Timer0 自身 δ_max=23,322/T_min=774→界 31，实测交付差 1≤31；official 侧 Timer0 序列为本路新鲜观察跑直采——DIF 时点的 b79 传递替代不再需要）✅、deferral 2,458 vs 12,381 如实报（差 9,923，与 l1 对同值；下游交付计数界把关过：core-tick 交付差 0/Timer0 交付差 1 全在界内）✅、core-tick 首交付 reti_from 0x12b7b6 vs 0x12e284=相位彩票预期产物 ✅、CRC 结果读 74 vs 75=源 A 特有键（追加 mic_effect.bin 枚举多一次结果读，l1/EQ 候选同款同值）✅；第三层 16 adapter 差键与 R2-COT-01 l1 基线同集合、逐键差值相同（14 键值完全相同，2 键绝对值因前沿 +51 步整体平移但差值不变：exact_full_word_store 34、mmio_rmw_always_writes -1）✅，其中 15 键名列 l2a-differential-criteria §3.3 预登记线清单；**4 键（exact_full_word_store 34/exact_postincrement_store 32/exact_subword_store 6/partial_icfg_known_lowbyte 5）按字面口径（|Δstep|=净停点差 102）超预算（E=4）——与 l1 对同键同值同机制（deferral 重排差 9,923 把等待变重执行，与步数比例伸缩解耦）；换执行轴累计错位口径 Σ|δ_k|=58,354 后 16 键全过**（三口径全数据 r4c-coeffs.json）——|Δstep| 口径修订建议挂 L2AC 规格修订（R2-COT-01 同款承接），本路不静默放宽也不误报回归（无控制流回归信号：realigned 后控制流零分歧、写集差页仅 0x12/0x19 栈 TCB 域、data/lrc 终值零差）",
+    "层 3 口径注记（如实归档）：16 差键中 abstract_task_stack_transport（104,965 vs 104,955，差 -10）未名列 l2a §3.3 封闭线清单——但与 l1 对/EQ 对同键同值同形状（DIF R2-COT-01 断言④按 16 键同族归档），任务栈帧运输属 DT 条目同族 adapter 计数（等待域重排族），按「同构于已归档基线」处理不另发明判据；字面清单缺口与 |Δstep| 口径一并挂 L2AC 修订账",
+    "条件档 reconvergence 形状（偏移对彩票预期）：realigned=True lag=-102（非 immediate，realign step 19,123,794 与 l1 对同值，此后控制流零分歧 2,674,463 步到双停点——l1 对为 2,674,412，差 51=前沿后移的自然延伸）；C0 后 +458 执行轴差被 core-tick 交付相位彩票消费后尾段重锁 102——与 A1/l1 对同机制，方向/幅度与 l1 对同值（新实测于 364d5bd 前沿）；final_report_diffs 64 条全落同族（completed_steps/16 adapter 键/CRC 结果读/milestones）",
+    "COMPARISON_BASIS 承接（analyze_image_trace）：逐步签名=核/前后 PC/flags/16 GPR/该步全部 guest RAM 写；外设寄存器写不在逐步签名内；轨迹一致≠镜像等价，只证明本前缀未消费差异；r4 侧 candidate-self-check 钉值未接（check_self_candidate 现钉 l1 首轮值，fence 寄存器 060e31e0 等——r4 需独立钉值挂后续路，零 tools/ 改动红线；差分结论由本记录 evidence_refs 归档报告承载，不依赖该钉子）"
   ],
-  "timeout_budget": "同 R2-COT-01（2×289,849 + 2×19,139,239）；超时=FAIL",
+  "timeout_budget": "全前缀重放 2×289,849（crc_bankb，实测 freshness+双镜像共 45s）与 2×21,798,257（条件档，实测 freshness+双镜像 compare 共 58 分钟；观察跑 21 分钟/镜像×2）@OPT1 后 ~19k 步/s；双镜像 compare 峰值 ~21GB（swapfile 兜底下无 OOM）；超时=FAIL 不是重跑理由",
   "model_assumptions": [
-    "候选 UNTESTED 不刷机；回归检测语义非功能验证",
-    "A/B 全前缀重放非快照",
-    "开机 init walker 对 0x30 项（init=0）的行为=运行观测项（预期零值静默两侧同形）",
-    "C0 后三层清单判定=模型轨迹差分回归口径（conditional/derived-not-measured）；r4 对的 δ₁ 预期与 b79↔EQ 同族（+458 偏移），实测归档（l2a-differential-criteria §1）"
+    "候选 UNTESTED 不刷机（r4-command-hook 红线）；本用例是回归检测不是候选功能验证（§5.3）",
+    "A/B 双世界全前缀重放而非快照恢复（§2.3 裁定：快照静态配置按镜像 digest 重建会拒载候选；snapshot-design §2.1 镜像变体快照首期不做的挂账承接）",
+    "条件 flag 集（p11_heap_experimental，一切结论 conditional/derived-not-measured）",
+    "模型轨迹差分口径：不构成镜像行为等价证明，也不构成 r4 候选错误证明",
+    "core-tick/Timer0 交付语义按路线 BF 模型（计数器挂自身步进+每步重检仲裁）；硅片交付时序未测量",
+    "C0 后三层清单判定=模型轨迹差分回归口径；δ₁/δ_max/ρ_L 在 364d5bd 前沿实测（r4 对 δ₁=22/δ_max=1,446/Σ|δ|=58,354——与 DIF 时点 l1 对同值，前沿 +51 步未改变彩票形状）",
+    "开机 init walker 对 0x30 项的行为在前缀无动态检验面（walker 未达前沿，入口计数 0）——「零值静默两侧同形」仍是静态预期非运行实证，walker 相位到达后补观测",
+    "逐步签名不含外设寄存器写（COMPARISON_BASIS 既有边界）；official 侧新鲜度自检内建，候选侧停点 parity 是输出断言"
   ],
-  "result": "NOT_RUN",
+  "result": "PASS",
   "uncovered_items": [
-    "RCSP 分发链执行段（R4-COT-02..05）",
+    "RCSP 分发链执行段（R4-COT-02..05：分发器写/读半程、cmdid 负例、RCSP 全程——依赖前沿过 0x0600f85e 相位）",
     "候选真机行为（刷机授权缺失）",
-    "C0 后 own-step 基线首跑归档（同 R2-COT-01 修订新增项）"
+    "开机 init walker 相位与注册表消费面动态观测（walker 在 21,798,257 前沿之前未执行，入口计数 0；前沿推进后按 §2.2 预填口径补）",
+    "层 3 预算式 |Δstep| 口径修订与 abstract_task_stack_transport 字面清单缺口（L2AC 规格修订承接，R2-COT-01 同款挂账——修订后本记录断言面按新口径复核）",
+    "r4 侧 candidate-self-check 钉值（check_self_candidate 需 r4 独立钉值，零 tools/ 改动红线内未接，挂后续路）"
   ],
-  "evidence_level": "none",
-  "evidence_conditions": [],
-  "evidence_refs": [],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "条件 flag 集（p11_heap_experimental，一切结论 conditional/derived-not-measured）",
+    "模型轨迹差分口径：不构成镜像行为等价证明，也不构成 r4 候选错误证明",
+    "core-tick/Timer0 交付语义按路线 BF 模型（计数器挂自身步进+每步重检仲裁）；硅片交付时序未测量"
+  ],
+  "evidence_refs": [
+    "analysis/local-checks/r4c/cot01-r4-crc.json",
+    "analysis/local-checks/r4c/cot01-r4-p11heap.json",
+    "analysis/local-checks/r4c/r4c-obs-official.json",
+    "analysis/local-checks/r4c/r4c-obs-r4_keyhook.json",
+    "analysis/local-checks/r4c/r4c-coeffs.json",
+    "analysis/local-checks/r4c/r4c-watch-crc.json"
+  ],
   "blocked_missing": null,
-  "recorded_at": "2026-11-15T00:58:00"
+  "recorded_at": "2026-11-15T16:45:00"
 }
