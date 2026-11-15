@@ -49,6 +49,7 @@ public class H3SBridge {
     public static final int CMD_PROMPT_VOLUME = EqWritePolicy.CMD_PROMPT_VOLUME; // 提示音音量 cmdid
     public static final int CMD_KEY_REMAP = EqWritePolicy.CMD_KEY_REMAP;  // 按键重映射 cmdid（0x2b，候选 B）
     public static final int CMD_KEY_STORE = EqWritePolicy.CMD_KEY_STORE;  // R4 key-store cmdid（0x30）
+    public static final int CMD_AUDIO_MODE = EqWritePolicy.CMD_AUDIO_MODE; // 音频模式 cmdid（0x2E=46，音乐/游戏/电影）
     /** 提示音音量合法档位（docs/app-protocol.md §2.4：3/6/8=最小/中等/最大；固件接收层不钳）。 */
     public static final int[] PROMPT_VOLUME_LEVELS = EqWritePolicy.PROMPT_VOLUME_LEVELS;
 
@@ -102,7 +103,9 @@ public class H3SBridge {
         });
     }
 
-    /** 设备响应帧处理：解析 status+SN，匹配 pending 后经 sink 推回；未知 SN 忽略（迟到/主动通知）。 */
+    /** 设备响应帧处理：解析 status+SN，匹配 pending 后经 sink 推回；未匹配 SN 的响应帧
+     *  以 device_message 事件透出（迟到响应/只读查询回包——readStatus 类查询无 SN 登记页，
+     *  靠它收电量/ANC 只读回包；载荷形状待真机联调钉死，页面按前缀启发式解析）。 */
     private void handleFrame(byte[] frame) {
         if (frame == null || frame.length < 10) return;
         if ((frame[3] & 0xff) != 0x00) return;                     // 只认响应帧（flags=00）
@@ -111,7 +114,11 @@ public class H3SBridge {
         int status = frame[7] & 0xff;
         int sn = frame[8] & 0xff;
         Pending p = pendingBySn.remove(sn);
-        if (p == null) return;
+        if (p == null) {
+            emitEvent(put(put(put(eventJson("device_message"), "status", status), "sn", sn),
+                "payloadHex", hex(java.util.Arrays.copyOfRange(frame, 9, frame.length - 1))));
+            return;
+        }
         emitEvent(put(put(put(put(put(eventJson("response"), "seq", p.seq), "ok", status == 0),
             "status", status), "sn", sn),
             "payloadHex", hex(java.util.Arrays.copyOfRange(frame, 9, frame.length - 1))));
@@ -249,6 +256,42 @@ public class H3SBridge {
      * 769=音量- 单击/1281=音量+ 单击/1793..1796=多功能 单击~四击；长按=低字节 5 [假设]。
      * action 0..7（面板动作）或 11（ANC，固件侧）。成功后更新本地映射缓存（getKeyRemap 可读）。
      */
+    /**
+     * 组音频模式命令（FF/0x2E=46，docs/wired-game-mode.md §2.1）：mode 1=音乐/3=游戏(低延迟)/
+     * 4=电影。固件侧已钉：App 命令注册表 cmd 46，setter 0x6026134 只读载荷首字节写模式字节
+     * 0x124a04，随后效果重配（EQ 预设 MusicEqBt idx 1/2/3 + 场景字节 + 低延迟标志对），全程
+     * 不动编解码参数——「低延迟」由 DSP 效果图切换实现。data_len=1 是本仓假设（0x1d 先例
+     * 固件要求 len>=2，0x2E 的 len 要求未钉），真机联调对照。
+     */
+    @JavascriptInterface
+    public String setAudioMode(int mode) {
+        if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
+        if (mode != 1 && mode != 3 && mode != 4) return err("mode 非法（1=音乐/3=游戏/4=电影）: " + mode);
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(buildCustomCommand(sn, CMD_AUDIO_MODE, new byte[]{(byte) mode}), sn);
+    }
+
+    /**
+     * 只读状态查询（opcode FF，body=`SN FE 01 <cmd>`，QueryPolicy §battery 白名单形状——
+     * SDK 实发 4 字节 body 含 SN 在前）：cmdId∈{0x2f 电量, 0x17 ANC, 0x14 电源, 0x10 睡眠}
+     * （docs/app-protocol.md §2.6）。回包按 SN 匹配走普通 response 事件；电量载荷实测形状
+     * `2f 03 s0 s1 s2`（槽位 percent|0x80充电位，MainActivity 先例）。只读不需武装。
+     */
+    @JavascriptInterface
+    public String readStatus(int cmdId) {
+        boolean legal = cmdId == 0x2f || cmdId == 0x17 || cmdId == 0x14 || cmdId == 0x10;
+        if (!legal) return err("cmdId 非法（只收 0x2f 电量/0x17 ANC/0x14 电源/0x10 睡眠）: " + cmdId);
+        if (!QueryPolicy.permitted(buildReadStatusFrame(0, cmdId))) return err("内部错误：读帧未过 QueryPolicy");
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(buildReadStatusFrame(sn, cmdId), sn);
+    }
+
+    /** 组只读状态查询帧：FE DC BA | C0 | FF | 00 04 | SN | FE 01 <cmd> | EF（QueryPolicy §battery 形状）。 */
+    public static byte[] buildReadStatusFrame(int sn, int cmdId) {
+        return new byte[]{(byte) 0xfe, (byte) 0xdc, (byte) 0xba, (byte) EqFrame.FLAGS_CMD,
+            (byte) EqFrame.OPCODE_CUSTOM, 0x00, 0x04, (byte) sn, (byte) 0xfe, 0x01, (byte) cmdId, (byte) 0xef};
+    }
+
     @JavascriptInterface
     public String setKeyRemap(int eventId, int action) {
         return setKeyRemapWire(eventId, action, false);
@@ -325,7 +368,7 @@ public class H3SBridge {
     }
 
     /** hex 串 → 字节数组（长度须为偶数；只认 0-9a-fA-F）。 */
-    static byte[] unhex(String hex) {
+    public static byte[] unhex(String hex) {
         if (hex == null) throw new IllegalArgumentException("valueHex 不能为 null");
         if (hex.length() % 2 != 0) throw new IllegalArgumentException("hex 长度须为偶数: " + hex.length());
         byte[] out = new byte[hex.length() / 2];

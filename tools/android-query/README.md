@@ -1,6 +1,6 @@
 # H3S Android 查询与固定候选OTA工具
 
-独立调试客户端，包名 `cn.felix021.h3squery`。通过QCY BLE服务调用官方JL OTA SDK；查询和实际升级分层。当前源码版本0.5.1-restore-anc，保留已实测的协议、传输和固定候选门槛，目标地址由构建生成。
+独立调试客户端，包名 `cn.felix021.h3squery`。通过QCY BLE服务调用官方JL OTA SDK；查询和实际升级分层。当前源码版本0.6.0-r3-webview（launcher=WebView 壳双 tab，原生查询页降级为工具入口），保留已实测的协议、传输和固定候选门槛，目标地址由构建生成。
 
 当前只接受已验证的 ANC 固件 SHA256 `b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b`、长度1326848，输入H3S版本280。EQ r2 实机出现运行异常，r1/r2均拒绝。记录见 [EQ 实验故障](../../docs/eq-toggle.md)。当前恢复还依赖可用设备连接；不能把工具准备完毕当作已恢复。
 
@@ -30,13 +30,17 @@ bash tools/android-query/build.sh
 AndroidX Core是SDK权限检查的实际依赖，不能省略。地址只写入 `build/generated/.../DeviceConfig.java`；APK含所配目标地址，公开分享自己的APK前要考虑这一点。本仓库不附带原测试APK和签名私钥。
 
 构建运行 tests/ 下全部 JVM 测试（QueryPolicy/UpgradeGate/BlePacketizer/EqFrame/KeyRemapFrame/
-KeyStore/H3SBridge/H3sTransport/TransportContract），再编译、打包、签名和检查APK。开始构建即移除旧APK，避免失败后误用旧产物。调试签名在 `build/debug.keystore` 创建；同一设备覆盖安装需要保留自己的签名，不要把它提交Git。输出 `build/h3s-query.apk`。
+KeyStore/H3SBridge/H3sTransport/TransportContract/UsbScsi/H3sUsbBridge），再编译、打包、签名和检查APK。开始构建即移除旧APK，避免失败后误用旧产物。调试签名在 `build/debug.keystore` 创建；同一设备覆盖安装需要保留自己的签名，不要把它提交Git。输出 `build/h3s-query.apk`。
 
 ## 安装和只读检查
 
 ```bash
 export ANDROID_SERIAL=YOUR_ADB_SERIAL
 adb -s "$ANDROID_SERIAL" install -r tools/android-query/build/h3s-query.apk
+# 桌面图标 / launcher 直接打开 WebView 壳（耳机 + USB 双 tab）
+adb -s "$ANDROID_SERIAL" shell monkey -p cn.felix021.h3squery \
+  -c android.intent.category.LAUNCHER 1
+# 原生查询/升级工具页（非导出，adb 显式启动照旧）
 adb -s "$ANDROID_SERIAL" shell am start \
   -n cn.felix021.h3squery/.MainActivity
 ```
@@ -82,8 +86,8 @@ R3 独立 app 按用户指定架构实现为「HTML5 WebView 页面 + Android �
 放行 + 串行发送 + 事件回推」；未注入（无参构造）退化为纯组帧「校验 + 组帧 + hex 回显」——
 旧测试与离线演示行为不变。真机下发需授权联调（路 AU 已把传输层接到壳，连接由页面显式触发）。
 
-入口：MainActivity 的「打开 WebView 壳（离线组帧演示）」按钮，或
-`adb shell am start -n cn.felix021.h3squery/.WebShellActivity`（不导出，无桌面图标）。
+入口：**launcher=WebShellActivity**（桌面图标直达，耳机/USB 双 tab 全 WebView，原生零 UI）；
+MainActivity 原生查询页降级为非导出工具入口（升级卡按钮 / adb 显式 am start / PROBE 流程不变）。
 
 bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 
@@ -92,33 +96,74 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 | `armWrite(boolean)` / `isArmed()` | 写门控 | 对应 `EqWritePolicy` 的 armed；未武装时一切写方法返回错误 JSON |
 | `writeEq(eqType, masterGainCentidB, bandsJson)` | 组 FF/0x22 EQ 写帧 | 内部调 `EqFrame.buildEqCommand`；bandsJson 每段 `{freq(Hz), q(x100), gain(centidB), iirType}`，q 缺省 100（Q1.0）、iirType 缺省 255（未指定） |
 | `setAnc(mode, scene, strength)` | 组 FF/0x17 ANC 帧 | data=`mode scene strength`（降噪 1,1,2 / 正常 2,0,0 / 通透 3,1,4）；mode 只收 1..3 |
+| `setAudioMode(mode)` | 组 FF/0x2E 音频模式帧 | mode 1=音乐/3=游戏(低延迟)/4=电影（docs/wired-game-mode.md §2.1：固件 cmd 46 setter 只读载荷首字节；data_len=1 [假设] 联调对照）；EqWritePolicy 白名单同域收紧 {1,3,4} |
 | `setPromptVolume(level)` | 组 FF/0x1d 提示音音量帧 | 值只收 3/6/8；data=`value 00`（路 P 反汇编钉死，固件只读 data[0]、第二字节忽略不钳） |
+| `readStatus(cmdId)` | 组只读状态查询帧 | cmdId∈{0x2f 电量, 0x17 ANC, 0x14 电源, 0x10 睡眠}；帧=QueryPolicy §battery 形状（body=`SN FE 01 cmd`），回包按 SN 匹配走 response 事件；只读不需武装 |
 | `setKeyRemap(eventId, action)` | 组按键重映射帧（默认 wire=ADV type2） | 走 `KeyRemapFrame.buildAdvType2Command`（opcode C2+type2 mask+三元组，帧形状 [假设]）；eventId 布局 0x{逻辑键}0{连击数}（769/1281/1793..1796，长按低字节 5 [假设]），action 0..7 或 11（ANC） |
 | `setKeyRemapCustom(eventId, action)` | 组按键重映射帧（候选 wire=自定义 0x2b） | 走 `KeyRemapFrame.buildCustomCommand`（FF/0x2b+3B 三元组）；字段域同上，两条 wire 真机抓包定案（docs/app-protocol.md §2.5） |
 | `getKeyRemap()` | 读按键映射（本地工作副本） | `{"ok":true,"map":{"769":6,...}}`，初始=控制面板 defaultFun、set 成功后更新；非设备读回（type2 查询响应形状未钉），长按条目 -1=未知 |
 
 返回统一 JSON：成功 `{"ok":true,"bytesHex":"fedcba..."}`（小写连续 hex）；失败
 `{"ok":false,"error":"..."}`（坏 JSON、字段缺失/非数值、取值越界、未武装等都有独立错误信息）。
-演示页面含 10 段 EQ 滑块（默认频点取 QCY 面板 32..16k，可手改；gain ±12 dB——QCY App 钳
-±8 是面板层限制，固件接收层不钳，超出范围的听感自负）、master gain、ANC 三态、武装开关与
-hex 回显；在无 bridge 的普通浏览器打开会显示降级提示条。按键重映射独立页 `keyremap.html`
-（index.html 有入口）：三键（音量-/音量+/多功能）× 单击~四击+长按 [未钉] 网格，每格下拉选
-动作（0..7 中文名+11 ANC）、wire 单选（默认 ADV type2 / 0x2b）、`getKeyRemap` 回填与逐格
-写入，hex 回显同款。
+未匹配 SN 的响应帧以 `device_message` 事件透出（迟到响应/主动通知，页面按前缀启发式解析）。
+
+**页面（`assets/index.html`，单文件内联 CSS/JS、无外部 CDN）**：暗色主题、卡片式、双 tab——
+
+- **耳机 tab**：连接卡（状态/MTU/电量槽位——连接就绪自动查电量，只读 0x2f）、写入门控开关、
+  ANC 三态、音频模式（音乐/游戏·低延迟/电影，标注「低延迟=效果重配，帧长未钉」）、EQ 卡
+  （预设 chips=QCY 面板原始 7 预设+自定义，含 −17dB 等 ±8 外调音值；canvas 曲线+10 竖滑块
+  +master gain）、按键自定义（3 键×5 手势矩阵，长按列虚线标注 [假设]；wire 单选默认 ADV
+  type2）、提示音音量三档、固件升级卡（跳 MainActivity 升级工具+固定候选说明）、未调研功能
+  占位卡（查找耳机/双设备/佩戴检测/恢复默认，灰态「协议未调研」）。
+- **USB tab**：见下节。在无 bridge 的普通浏览器打开会显示降级提示；调用与事件日志抽屉
+  常驻（最近 60 条）。
 
 诚实标注：
 
 - 组帧/门控已由 `H3SBridgeTest` 单测覆盖（JVM 纯逻辑：JSON 解析、与 `EqFrame` 逐字节对拍、
-  错误路径、武装门控、与 `EqWritePolicy` 一致性）。`WebShellActivity` 本身不测：它依赖
-  android.jar/WebView 运行时，纯 JVM 无法实例化，且只有「加载 asset + 注入 bridge」两行壳
-  逻辑，无业务分支。
-- **真机通信未接**：bridge 不连接耳机；`EqWritePolicy` 已放行 0x22/0x17/0x1d 三条 setter
-  形状（路 P）+ 按键重映射两条（0x2b 三元组 / C2 type2，路 AM，字段域从严），但传输层在本路
-  （路 Z）之前只到组帧。传输接线骨架见下一节。
-- 页面是 demo 级（内联 CSS/JS、无框架），不是最终产品 UI。
+  错误路径、武装门控、与 `EqWritePolicy` 一致性、setAudioMode/readStatus 字节对照、
+  device_message 事件）。`WebShellActivity` 本身不测：它依赖 android.jar/WebView 运行时，
+  纯 JVM 无法实例化，且只有「加载 asset + 注入 bridge」的壳逻辑，无业务分支。
+- 真机通信：BLE 传输接线见下一节（路 Z/AU，联调待授权）；EQ 候选 UNTESTED 红线不变。
 - 本机无 Android SDK 完整打包条件时，可用
   `javac -cp $ANDROID_HOME/platforms/android-35/android.jar src/.../H3SBridge.java src/.../EqFrame.java src/.../WebShellActivity.java`
   单独验证新增类的 Android 侧编译（本仓库开发机已验证通过；`test.sh` 只需 JDK+Python）。
+
+## USB tab（R3 USB 侧骨架，链路未验证）
+
+WebView 壳的第二 tab，注入第二个 bridge `h3susb`（`H3sUsbBridge.java`）+ 原生 USB 层
+（`AndroidUsbLink.java`，唯一接触 android.hardware.usb 的文件）。分层与 BLE 侧同构：
+
+```text
+页面（USB tab）
+   ▼ h3susb.*（@JavascriptInterface）
+H3sUsbBridge（枚举/授权/开盒/相位门/事件回推；结果经 window.onH3sUsbEvent）
+   ▼ Link 接口（JVM 可桩测）
+AndroidUsbLink（UsbManager 枚举+requestPermission+claimInterface+bulkTransfer；
+               进入 ROM 的厂商控制传输 83/00/fc/fe len8→len0）
+   ▼ UsbScsi.Channel（bulk OUT 0x01 / IN 0x81，实际以描述符为准）
+UsbScsi（CBW/CSW 交换 + 最小命令集，与 tools/usb-recovery/protocol.py 逐字节同形）
+```
+
+- **命令白名单**（UsbScsi 编码入口即查）：INQUIRY / FB06（ROM 写 RAM）/ FB08（loader 跳转）/
+  FC0A（在线查询）/ FD05（Flash 扇区读）/ FD07（内存窗读，≤128B）。**擦除/编程/复位命令
+  不存在编码入口**——刷机路径在代码层就没有，不是 UI 挡一挡。
+- **相位门**（照 read_rom.py）：FD07/FD05 只在 loader 就绪（FB06×46 + FB08 + FC0A 报 SPI NOR
+  全过）后放行；loader 摘要钉死 `ab1b77eb…`（构建时从上游 MIT 仓库按摘要下载进
+  `assets/loader/`，git 忽略；缺网构建允许缺失，届时读操作明确报错）。
+- **只读操作**：INQUIRY 身份确认（BR28/UBOOT1.00）、读 ROM 窗（128 KiB FD07×1024 双读一致）、
+  全片备份（2 MiB FD05×4096 双读一致）；结果落 app 私有 `files/usb/`，双读不一致即放弃不重试。
+- **进入 ROM 模式**：对普通 QCY USB（3654:4a55）先能力读（须 8×FF）再一次性 wLength=0 请求
+  （docs/usb-recovery.md：以重扫出现 4c4a:3442 身份为准，不重发）。
+- **刷机区**：UI 存在但硬门控——解锁开关+红线文案（候选镜像 UNTESTED 不刷机）+ 候选列表
+  空态；解锁后也不出现刷机按钮（无写命令）。
+- 单测：`UsbScsiTest`（CBW/CDB/CSW 与 Python 逐字节对拍、CRC-16/XMODEM 向量、FB06 OUT
+  相位、坏 CSW/短读/白名单拒绝）+ `H3sUsbBridgeTest`（桩 ROM 设备全流程：open/INQUIRY、
+  loader 摘要门+相位门、双读落盘、enterRom 一次性+能力门、拔出复位）。
+
+**诚实标注**：手机 OTG 连耳机进 ROM 模式的物理链路**未验证**——`info()` 恒报
+`physicalLinkVerified:false`，页面常驻「OTG 链路未验证」标签；真机枚举/claim/端点/时序
+待联调（页面上的枚举本身已在真机验证可用：能列出 USB 设备并标记身份）。
 
 ## 传输接线骨架（路 Z / sim-h3stransport，离线端到端已单测）
 
@@ -199,7 +244,8 @@ MainActivity/UpgradeService 先例，本机按 android.jar 编译检查过，真
    listener——原来断一次线 H3SBridge 就永久收不到事件，重连后链路才完整（契约测试钉死）。
 7. ✅ **壳接线**：`WebShellActivity` 构造 `AndroidGattLink(DeviceConfig.ADDRESS)` +
    `AndroidBleTransport`（日志接 Log.i）注入 `H3SBridge`，事件经 `evaluateJavascript` 推
-   `window.onH3sEvent`；页面加连接卡片（连接/断开/MTU 状态）与事件回显（index/keyremap 两页）。
+   `window.onH3sEvent`；页面加连接卡片（连接/断开/MTU 状态）与事件回显（旧 index/keyremap
+   两页已并为单页双 tab）。
    连接由页面显式 `h3s.connect()` 触发，不自动连接。
 8. ✅ **权限与目标**：`WebShellActivity` 进入即请求 `BLUETOOTH_SCAN/CONNECT`（照 MainActivity
    先例）；目标地址只认构建注入的 `DeviceConfig.ADDRESS`（扫描也按地址过滤，不开任意设备连接）。

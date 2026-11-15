@@ -8,6 +8,7 @@ __pycache__/
 /firmware/*.part
 /tools/android-query/build/
 /tools/android-query/vendor/*.aar
+/tools/android-query/assets/loader/
 /tools/reference-cache/
 /tools/toolchain-cache/
 /private/

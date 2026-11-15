@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="cn.felix021.h3squery" android:versionCode="9" android:versionName="0.5.1-restore-anc">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="cn.felix021.h3squery" android:versionCode="10" android:versionName="0.6.0-r3-webview">
   <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35"/>
   <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
   <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
@@ -9,12 +9,16 @@
   <uses-permission android:name="android.permission.WAKE_LOCK"/>
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
   <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
-  <application android:label="H3S 查询" android:debuggable="true" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false">
+  <!-- USB host（OTG）可选：无 OTG 的设备也能装，USB tab 显示「不支持/未检测到」 -->
+  <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
+  <application android:label="H3S 工具" android:debuggable="true" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false">
     <service android:name=".UpgradeService" android:exported="false" android:foregroundServiceType="connectedDevice"/>
-    <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">
+    <!-- R3 独立 app launcher=WebView 壳（耳机/USB 双 tab，原生零 UI）；暗色主题贴页面底色 -->
+    <activity android:name=".WebShellActivity" android:exported="true" android:launchMode="singleTop"
+              android:label="H3S 工具" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="orientation|screenSize|keyboardHidden">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity>
-    <!-- R3 独立 app WebView 壳：本地 asset 页面 + JS bridge，纯组帧不连真机；仅 app 内/adb 显式启动 -->
-    <activity android:name=".WebShellActivity" android:exported="false" android:label="H3S WebView 壳"/>
+    <!-- 原生查询/OTA 工具页降级为非导出入口（adb am start / WebShell 升级卡按钮进入；PROBE 流程不变） -->
+    <activity android:name=".MainActivity" android:exported="false" android:launchMode="singleTop" android:label="H3S 升级工具"/>
   </application>
 </manifest>
