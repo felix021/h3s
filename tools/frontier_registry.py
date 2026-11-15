@@ -251,6 +251,15 @@ FEATURES = (
             '触达留 unmapped,同址新读者(新 ld/新 PC/新掩码/其他核)须重审;新开关'
             '分立不扩 p11_window(契约+族冲突,codex 定调);跨域限制:不模拟 q32s 访问/'
             'LPVAD 检测/跨域可见性/副作用;依赖边=执行序前置非硬件依赖'),
+    # ---- 路 JLA/sim-jla:JL_AUDIO ADC 通道缓冲配置五字 write-only 记录 ----
+    Feature('jl_audio_adc_dma_writes', 'conditional', ('p11_lpvad_config',), False, None,
+            'JL_AUDIO ADC DMA 五字(0xfe053c/40/44/48/4c,ADR/LEN/PNS/HWP/SRP)'
+            '(21,800,325 停点 0x606df1e=set_buffer 0x606dee4 并行对 store 半写 ADR,'
+            'D2-b 蓝图五写之首)写侧 write-only 整字记录(全 app li 枚举+数据流解析'
+            '恰 9 条访问=set_buffer 五写+IRQ68 handler 三读一写,后者当前前缀不可达'
+            '留严格停;数据区零独立字面值;codex 定调:恰五字、不收 SRN 0xfe0550、'
+            '拒绝合成读回=不提前承诺消费语义、同址新写者须重审;依赖边=当前场景'
+            '推进顺序非硬件依赖,模型类独立可用)'),
     # (p2m_mailbox_ack / cfg523_named_fixture 已实现并单测,但 19,139,239 停点
     # (JL_AUDIO->DAC_TM0 运行态读)证实两者的全部运行态消费者仍在音频数字域整块
     # 之后——按 BQ 先例(零消费者不落地)从条件栈撤回,实现保留在本分支历史
@@ -296,11 +305,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 21800325,
-        'stop_pc': '0x606df1e',
-        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
-                 'address': '0xfe053c', 'size': 4,
-                 'value_bytes': '64924100'},
+        'completed_steps': 21800455,
+        'stop_pc': '0x606e044',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                 'address': '0xfe0904', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }

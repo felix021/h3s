@@ -1137,6 +1137,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              event_clock=False,
              jl_audio_dac_cop_writes=False,
              jl_audio_dac_dma_writes=False,
+             jl_audio_adc_dma_writes=False,
              jl_pvdd_trim_writes=False,
              timer2_delay_projection=False,
              p33_canary=False,p33_canary_first_read_words=None,
@@ -1316,6 +1317,10 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 停点函数尾段(ADA 窗+RAM+二级 tbh 分发后的 case 体)——预算沿用
         # 40M(与 ADA 层同值;新停点由实跑取得后再核余量)。
         if p11_lpvad_config:budget=40000000
+        # 路 JLA:ADC DMA 五字 write-only 记录放行后 set_buffer 五写完成,链
+        # 继续走挂 handler+启动段与后续音频/OS 域——预算沿用 40M(与 LPV 层
+        # 同值;新停点由实跑取得后再核余量)。
+        if jl_audio_adc_dma_writes:budget=40000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -2178,6 +2183,36 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 '— without the ADA release the world still stops at 0x606b5ee; the '
                 'dependency encodes THIS execution order, not a hardware dependency)')
         options['p11_lpvad_config']=True
+    # jl_audio_adc_dma_writes(路 JLA,opt-in 默认关):21,800,325 停点
+    # 0x606df1e——set_buffer 0x606dee4 并行对 mul.rr.p 第二半 store
+    # `[r4+4]=r0`(r4=0xfe0538)写 0xfe053c=ADR,是 D2-b 注入蓝图预案五写
+    # {+0x3c ADR/+0x40 LEN/+0x44 PNS/+0x48 HWP=0/+0x4c SRP=0} 之首;五写同
+    # 基本块连续(0x606df20..30,中间只有 uextra/lsr 算术),写完一条 RAM 写
+    # (缓冲指针槽)即返回——纯写集一次打包(AK 先例)。静态访问面(全 app
+    # 逐 2 字节独立解码 li 枚举+站点线性窗数据流解析+数据区字面值扫描,codex
+    # 独立复跑互证):0xfe0500..0xfe0560 窗 33 个 li 基址站点、五字访问解析恰
+    # 9 条=set_buffer 五写+audio_adc_irq_handler [0x6072628,0x6072700)(IRQ68
+    # 分发器 0x602f444 直调)读 ADR/PNS/SRP 三条+写 PNS 一条;数据区零独立
+    # 字面值(33 命中全=li.u32 立即数字段);handler 当前前缀不可达(IRQ68
+    # 交付未建模),读的是运行期 DMA 指针状态,属 D2-b 后域。codex 定调选
+    # (a) write-only 记录恰五字(BM DAC DMA 四字同族先例);拒绝 (b) 合成读
+    # 回的理由=当前推进不需要任何读回,加读回会提前承诺尚未建立的消费语义;
+    # 0xfe0550(handler 尾 SRN 读通知字)属另一段消费事务不收;同址新写者/
+    # 新读 PC/新形状/其他核须重审(地址白名单只拦地址);子字/错位不服务;
+    # DMA 搬运/指针推进/SRN 副作用/pending/IRQ68/缓存一致性一律不建模。
+    # 依赖边挂 p11_lpvad_config=当前条件场景在 LPV 放行后才到达 ADC 缓冲
+    # 配置首写(codex 措辞:记录场景推进顺序,不表示 ADC DMA 硬件、寄存器
+    # 写记录或所有 set_buffer 调用依赖 LPVAD;模型类独立可用)。默认关:
+    # 五字保持 unmapped(21,800,325 前沿形状),legacy 逐字节不变。
+    if jl_audio_adc_dma_writes:
+        require(p11_lpvad_config,
+                'the JL_AUDIO ADC DMA write records only layer on the P11 LPVAD release '
+                '(the current conditional scenario reaches the first ADC buffer-config '
+                'store only after the LPVAD container releases the 21,798,257 stop — '
+                'without it the world still stops at 0x606b68e; the dependency records '
+                'THIS scenario advance order, not a hardware dependency of the ADC DMA '
+                'registers or of every set_buffer call on LPVAD (codex wording))')
+        options['jl_audio_adc_dma_writes']=True
     # event_clock(路 CW/S19 批 0b/sim-s19b0,BG §4.2 草案落地):把机器侧
     # 事件时钟投影(docs/event-clock.md 最小契约,BQ 的 G1 min() 框架)接进
     # 条件栈——机器/模型零新代码,本参数只是 machine_options 接线。层属
@@ -3479,17 +3514,30 @@ def check(report,firmware):
     # (AK 三字+AS ADC_CON+CV DAA_CON1+CW DAC_VL0+批 1 DAC_COP/DMA 族)白
     # 名单外下一成员,写侧整字写,三选一(write-only 记录/整族容器/钉住)归
     # 下一路(记录即停)。
+    # 路 JLA:ADC DMA 五字 write-only 记录(jl_audio_adc_dma_writes)放行后
+    # set_buffer 五写完成(ADR=0x419264 大缓冲址/LEN=0x100/PNS=0x80/HWP=
+    # SRP=0,值全真实指令结果;首写=停点并行对 store 半本尊),链再 **+130
+    # 步**(挂 handler 段+DAC_COP 第二写点 0x606e038 到达+ADC_CON 邻字
+    # AUD_CON 0xfe0558 查重 bit4 清位 RMW——AS/AK 容器服务)停在
+    # **21,800,455 @ 0x606e044**:启动函数 0x606df66 的 `rmw.or.modimm
+    # [r0+0] |= 0x2` 内部读 **0xfe0904 = JL_ASS+4**(r0=r5+976 构造自
+    # 0xfe0534 基址,**无直接 li 站点**——间接构造地址的首个停点实证);
+    # 后续 0x606e048 &=~0x1 与 0x606e050 起 [r0+4]=0xfe0908 字段 insert 族
+    # (bits0..2/3..5/6..8/9..11)同窗——JL_ASS 时钟/源选择 RMW 族首读,
+    # 初分类=配置 RMW 读族候选(读值只进写回组装),三选一归下一路。
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x606df1e on the write of '
-            '0xfe053c = JL_AUDIO+0x3c (the ADC channel-buffer ADR word, the first '
-            'of the D2-b set_buffer five writes; neighbor of route-AE ADC_CON '
-            '+0x38) — a full-word store in the store half of the parallel pair '
-            'mul.rr.p (the same parallel-store shape as 0x60719c0 recorded by '
-            'routes AS/AN), reached 2,068 steps after the route-LPV release of '
-            'the P11_LPVAD VAD_ACON0 stop RMW — the honest JL_AUDIO digital-'
-            'domain write-family boundary for the next route')
+            'the heap-experimental scenario must stop at 0x606e044 on the RMW '
+            'internal read of 0xfe0904 = JL_ASS+4 (the |=0x2 clock-select family '
+            'in the ADC start function 0x606df66, with the address CONSTRUCTED as '
+            'r5+976 from the 0xfe0534 base — no direct li site loads it, the first '
+            'stop on an indirectly-built address) — reached 130 steps after the '
+            'route-JLA release completes the D2-b set_buffer five writes (the '
+            'parallel-pair store-half ADR word, then LEN/PNS/HWP/SRP), past the '
+            'second DAC_COP write site 0x606e038 and the AUD_CON bit4-clear '
+            'double-check RMW — the honest JL_ASS read-family boundary for the '
+            'next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 B3:CNT held 快照报告断言——键在场、假设文本按 codex 原文措辞、
@@ -3625,6 +3673,38 @@ def check(report,firmware):
             'the real LPVAD is configured), the tightened completeness wording '
             '(ROM/q32s not covered), and the registered weaker-alternative '
             'assumption-strength difference')
+    # 路 JLA:JL_AUDIO ADC DMA 五字容器断言——恰五写(set_buffer 五写全集:
+    # ADR=0x419264 停点本尊/LEN=0x100/PNS=0x80/HWP=0/SRP=0,值全真实指令
+    # 结果)、零读(本前缀;IRQ68 handler 的 ADR/PNS/SRP 读属 D2-b 后域)、
+    # 报告面(sdk_naming 含 set_buffer/白名单恰五字含 0xfe0550 NOT included
+    # 与同址新写者重审/observed_shapes 含 0x606df20/consumption_face 含
+    # audio_adc_irq_handler/写侧 write_only)。
+    adc_dma=r['peripherals'].get('jl_audio_adc_dma_write_records')
+    require(adc_dma is not None and
+            adc_dma['addresses']==['0xfe053c','0xfe0540','0xfe0544','0xfe0548','0xfe054c'] and
+            adc_dma['word_writes']==5 and
+            adc_dma['stores']=={'0xfe053c':{'values':['0x419264'],'writes':1,'cores':[0]},
+                                '0xfe0540':{'values':['0x100'],'writes':1,'cores':[0]},
+                                '0xfe0544':{'values':['0x80'],'writes':1,'cores':[0]},
+                                '0xfe0548':{'values':['0x0'],'writes':1,'cores':[0]},
+                                '0xfe054c':{'values':['0x0'],'writes':1,'cores':[0]}} and
+            adc_dma['write_only'] and adc_dma['readback_not_modeled'] and
+            'set_buffer 0x606dee4' in adc_dma['sdk_naming'] and
+            '0xfe0550' in adc_dma['whitelisted_words'] and
+            'NOT included' in adc_dma['whitelisted_words'] and
+            'same-address new writer' in adc_dma['whitelisted_words'] and
+            '0x606df20' in adc_dma['observed_shapes'] and
+            'audio_adc_irq_handler' in adc_dma['consumption_face'] and
+            'NOT verify any audio input' in
+            r['peripherals']['assumptions']['jl_audio_adc_dma_write_records'],
+            'the route-JLA jl_audio_adc_dma_write_records must record exactly the five '
+            'executed set_buffer stores (ADR 0x419264 — the very parallel-pair '
+            'store-half word of the 21,800,325 stop — LEN 0x100, PNS 0x80, HWP 0, '
+            'SRP 0, every value a real instruction result), zero reads on this '
+            'prefix (the IRQ68-handler ADR/PNS/SRP reads belong to the D2-b '
+            'completion domain and stay strictly stopped), the five-word whitelist '
+            'with the SRN 0xfe0550 exclusion and the same-address new-writer '
+            're-audit rule, and the no-audio-input limit')
     require(r['peripherals']['core_tick_configuration'][0]['acknowledgements']==116 and
             r['peripherals']['core_tick_configuration'][0]['expirations']==116,
             'the CNT release must let overflows 12..108 (route B3) plus the eight '
@@ -3738,21 +3818,22 @@ def check(report,firmware):
             'words at the seeded synthetic initial 0 with zero consumers on this prefix '
             '(the BM-expected trim loop never runs: no composite RMW, no readback '
             'write-back), and the assumption must keep the NOT-a-reset-value limit')
-    # ④DAC_COP write-only 记录:恰一条写 0x7f(路 CW 停点那条指令本尊),
-    # 第二写点 0x606e038 不在本前缀,零读零 RMW。
+    # ④DAC_COP write-only 记录:恰两条写 0x7f(路 CW 停点那条指令本尊
+    # 0x606ab2c+路 JLA 段到达的第二写点 0x606e038——ADC 启动函数 0x606df66
+    # 的 st.w.modimm),零读零 RMW。
     dac_cop=r['peripherals']['jl_audio_dac_cop_write_records']
-    require(dac_cop['stores']=={'0xfe0534':{'values':['0x7f'],'writes':1,'cores':[0]}} and
-            dac_cop['word_writes']==1 and
+    require(dac_cop['stores']=={'0xfe0534':{'values':['0x7f','0x7f'],'writes':2,'cores':[0,0]}} and
+            dac_cop['word_writes']==2 and
             dac_cop['addresses']==['0xfe0534'] and
             dac_cop['write_only'] and dac_cop['readback_not_modeled'] and
             '0x606ab2c' in dac_cop['observed_shapes'] and
             '0x606e038' in dac_cop['observed_shapes'] and
             'NOT verify any audio output' in
             r['peripherals']['assumptions']['jl_audio_dac_cop_write_records'],
-            'the route-B1 jl_audio_dac_cop_write_records must record exactly the one '
-            'executed whole-word store 0x7f (the former route-CW stop instruction '
-            '0x606ab2c itself, now released as a write-only record); the second '
-            'all-write site 0x606e038 stays outside this prefix and every read/RMW '
+            'the route-B1 jl_audio_dac_cop_write_records must record exactly the two '
+            'executed whole-word stores 0x7f (the former route-CW stop instruction '
+            '0x606ab2c itself plus the route-JLA-reached second all-write site '
+            '0x606e038 in the ADC start function 0x606df66); every read/RMW '
             'stays strictly stopped')
     # ⑤DAC DMA 四字 write-only 记录(尾段二次勘误件):恰四写,ADR=0x18e180
     # 与路 CW 的 60KB memset 目的地同址互证。
@@ -3881,11 +3962,11 @@ def check(report,firmware):
                                                         '0x8350100','0x835e100','0x835e110'],
                                                 'writes':16,
                                                 'cores':[0]*16},
-                                   '0xfe0558':{'values':['0x0','0x100'],'writes':2,'cores':[0,0]},
+                                   '0xfe0558':{'values':['0x0','0x100','0x100'],'writes':3,'cores':[0,0,0]},
                                    '0xfe0900':{'values':['0x1'],'writes':1,'cores':[0]}} and
-            audio_init['word_writes']==19 and
+            audio_init['word_writes']==20 and
             audio_init['addresses']==['0xfe0500','0xfe0558','0xfe0900'] and
-            audio_init['readback_projection']['reads']==16 and
+            audio_init['readback_projection']['reads']==17 and
             audio_init['readback_projection']['synthesized_initial_reads']==2 and
             'synthetic initial word 0' in audio_init['readback_projection']['readback_semantics'] and
             'derived-not-measured' in audio_init['readback_projection']['readback_semantics'],
@@ -3902,7 +3983,11 @@ def check(report,firmware):
             'DAC_CON write-backs of the released DAC start tail 0x6071e74 (from the '
             '0x6071eb8 [r10+0] AK-service store onward, the bit-field configuration '
             'RMWs walking the recorded container value on to the final 0x835e110), '
-            'with the RMW internal reads split 16 after-write and 2 synthetic-zero '
+            'PLUS the route-JLA AUD_CON bit4-clear double-check RMW write-back '
+            '0x100 (0x606e03c, &=~0x10 on the recorded 0x100 right after the '
+            'set_buffer five writes complete — the same double-check family the '
+            'set_buffer entry read of ADC_CON performs), '
+            'with the RMW internal reads split 17 after-write and 2 synthetic-zero '
             '(CLK_CON/AUD_CON first touch)')
     audio_init_assumption=r['peripherals']['assumptions'].get('jl_audio_dac_init_write_records')
     require(audio_init_assumption is not None and 'DAC_CON 0xfe0500' in audio_init_assumption and
@@ -4214,11 +4299,13 @@ def check(report,firmware):
             '0x606abf0..0x606b20e); the route-DT segment adds 279 more, ALL inside the '
             'delay trio (no new interrupt context, the parked-wake count stays 1557); '
             'the route-LPV tail segment adds ONE more delivery interrupting the ROM '
-            'memset tail 0x4246 (the buffer-config walk of the new 2,068-step segment) '
+            'memset tail 0x4246 (the buffer-config walk of the new 2,068-step segment); '
+            'the route-JLA segment (set_buffer five writes + handler-hang + start '
+            'prologue, +130 steps) adds ZERO deliveries (no new Timer0 expiry window) '
             '— '
             'every delivery reads the real vector slot 0x19fe10 '
             'and clears pending only via the real handler W1C; 3671 symmetric RTIs '
-            'complete (frame 7342 = 2x3671, nothing in flight at the 21,800,325 stop, '
+            'complete (frame 7342 = 2x3671, nothing in flight at the 21,800,455 stop, '
             'the last delivery having interrupted the ROM memset tail 0x4246)')
     ct=r['machine']['core_tick_entry_projection']
     require(len(ct['deliveries'])==116 and
@@ -4251,7 +4338,7 @@ def check(report,firmware):
             sum(1 for e in dfr['events'] if e['deferred_while']=='core_tick_handler')>0 and
             sum(1 for e in dfr['events']
                 if e['deferred_while']=='mid_instruction (after_then/repeat in flight)')>0,
-            '2520 delivery requests must be HELD (not dropped) through the 21,800,325 stop. '
+            '2520 delivery requests must be HELD (not dropped) through the 21,800,455 stop. '
             'The retained 64-event window now shows the route-AS mid-instruction family '
             'BACK IN the window (62 members): the route-LPV tail segment calls the ROM '
             'memset rep bodies again, so Timer0 IRQ4 requests deferred to the '
@@ -4438,7 +4525,9 @@ def check(report,firmware):
     # cnt 停点时 20,220、pending False。
     # 路 ADA(S19 批 2 续三):+51 步顺序配置段零新到期零新交付,cnt
     # 20,220→20,373(恰 +153=51 步×3 STD12M tick 精确走表)。
-    require(timer=={'con':0x1401,'cnt':2577,'prd':23999,'pending':False,
+    # 路 JLA:+130 步(set_buffer 五写+挂 handler+启动段序章)零新到期零新
+    # 交付,cnt 2,577→2,967(恰 +390=130 步×3 STD12M tick 精确走表)。
+    require(timer=={'con':0x1401,'cnt':2967,'prd':23999,'pending':False,
             'expirations':3681},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-B3 OS-wait prefix reprograms the window to the '
@@ -4515,7 +4604,7 @@ def check(report,firmware):
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==116 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==116 and
-            tick0['cnt']==1068360 and
+            tick0['cnt']==1068880 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -4532,8 +4621,9 @@ def check(report,firmware):
             'per-step eligibility recheck delivers it and every later overflow rides the '
             'same recheck (108 expirations = 108 acknowledgements through the route-B3 '
             'stop, the route-DT segment adds eight more for 116/116, nothing pending, no '
-            'unresolved overflow at the stop, the counter walked on to cnt 1060088 — the '
-            'route-ADA segment adds exactly 51 steps x 4 ticks = 204); the '
+            'unresolved overflow at the stop, the counter walked on to cnt 1068360 at '
+            'the route-LPV stop — the route-ADA segment added 51 steps x 4 ticks = 204 '
+            'and the route-JLA segment adds exactly 130 steps x 4 ticks = 520 more); the '
             'CPU1 core tick never overflows and CPU0 partial ICFG stays 0x300 (bit9 '
             'untouched throughout)')
     # 路 BQ 读回投影面:报告键只在开关开启的世界出现(legacy 逐字节不变),
@@ -4840,15 +4930,23 @@ def check(report,firmware):
             # 路 ADA(S19 批 2 续三)再 +51 步:整字存储 133628→133636
             # (+8,ADA 组装 st)、mmio RMW 14200→14214(+14,B3/ADA 容器
             # 域 RMW);其余四键与 masked 分支 3 不变。
+            # 路 LPV 再 +2,068 步:任务栈帧运输 104965→105021、共享锁
+            # 9838→9844、整字存储 133636→133722、mmio RMW 14214→14256、
+            # icfg bit9 32162→32190、cnum 53995→54039。
+            # 路 JLA 再 +130 步(set_buffer 五写+挂 handler+启动段序章):
+            # 任务栈帧运输 105021→105027(+6)、共享锁 9844→9846(+2)、整字
+            # 存储 133722→133738(+16:set_buffer 四条 st.w+RAM 槽写+启动段
+            # 已服务域写)、mmio RMW 14256→14257(+1:AUD_CON bit4 清位)、
+            # icfg bit9 32190→32194(+4)、cnum 54039→54043(+4)。
             # masked 分支 3 与其余族不变(LRC 帧零新增,与 trim 块计数
             # 冻结互证)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==105021 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==9844 and
-            r['instruction_adapters'].get('exact_full_word_store')==133722 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==14256 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==32190 and
+            r['instruction_adapters'].get('abstract_task_stack_transport')==105027 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==9846 and
+            r['instruction_adapters'].get('exact_full_word_store')==133738 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==14257 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==32194 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==3 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==54039,
+            r['instruction_adapters'].get('per_core_visible_cnum')==54043,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
