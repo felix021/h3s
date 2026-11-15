@@ -12,13 +12,18 @@ tools/ 改动）。任务：把 [eq-divergence-profile.md](eq-divergence-profile
 证据强度沿用：**[实测]** = A1/EQDIV/BT 等已合并文档与报告的实测数字（锚点随行）；
 **[设计]** = 本规格新增工程决策（判定式系数/检查点密度等），实施路首跑校准。
 
+**修订 2026-11-15（同日晚），路 L2AR（sim-l2ar，基线 main `52c4965`，纯文档零 tools/
+改动）**：§3.3 预算式双口径化（Σ|δ| 主判据+|Δstep| 保守筛）+ DIF/R4C 首跑实测校准例
+回填 + 适用线清单补 `abstract_task_stack_transport`（消 R2/R4-COT-01 两笔挂账，改动处
+随行标注）。
+
 ## 0. 一句话结论
 
 判据按窗口分两段：**C0（首次 core-tick 溢出交付，own-step ≈447k）之前**零控制流分歧
 判据原样适用；**C0 之后**（对有步轴偏移的镜像对）切换为「**等 own-step 检查点 + 三层
 清单**」：第一层守恒类必须逐项相等（12 项，含封闭世界式的 adapter 闭包）、第二层相位
-彩票白名单按闭式/有界吸收（6 项判定式）、第三层等待域按预算式吸收（超预算即
-unexplained=回归）。BT 四源白名单的归层：A=彩票成因+特有键吸收、B=守恒类预登记例外表、
+彩票白名单按闭式/有界吸收（6 项判定式）、第三层等待域按预算式吸收（双口径：Σ|δ|
+主判据+|Δstep| 保守筛，L2AR 修订；超主判据预算即 unexplained=回归）。BT 四源白名单的归层：A=彩票成因+特有键吸收、B=守恒类预登记例外表、
 C=第二/三层、D=正交的改道预声明层。
 
 ## 1. 适用范围与两窗切换判据
@@ -85,7 +90,7 @@ C = {C0(R)} ∪ {O_k(R) : k ∈ G} ∪ {S_min}
 | per-core 步数 {CPU0, CPU1} | T1-1 |
 | `instruction_adapters` 全键计数 | T1-6（封闭世界闭包） |
 | 写集累计地址集（双向 only-集） | T1-4 |
-| core-tick：溢出/交付/ACK/held-pending/deferral 计数 + 逐次交付步号序列 | T1-2/T2-1/T2-2/T2-4/T3 |
+| core-tick：溢出/交付/ACK/held-pending/deferral 计数 + 逐次交付步号序列（δ 序列=Σ\|δ_k\|/δ_max 输入，L2AR） | T1-2/T2-1/T2-2/T2-4/T3 |
 | Timer0：交付计数 + 逐次交付步号序列 + PRD 窗记录 | T2-3/T3 |
 | jiffies（RAM 0x124ca4）值 | T2-2 |
 | 停点 RAM dump：data 区 0x124840..0x125320 + lrc_trim_result 块 0x129D88..0x129DEC + §2.5 快照锚区 | T1-7/8/9、T2-6 |
@@ -131,24 +136,48 @@ C = {C0(R)} ∪ {O_k(R) : k ∈ G} ∪ {S_min}
 
 **适用线（预登记清单，封闭）**：调度器读族、存储适配器族（exact_full_word_store 等）、
 `cpu0_shared_lock_ownership`、`irq_repeat_return_hypothesis`、ICFG 可见性族、Timer0
-handler 帧、core-tick handler 帧。出处 [实测：EQDIV §2.3 的 27 差键全部落此清单或 §3.2；
-§3 结论 3「步数线性伸缩」]。
+handler 帧、core-tick handler 帧、**任务栈帧运输 `abstract_task_stack_transport`
+（L2AR 补录）**。出处 [实测：EQDIV §2.3 的 27 差键全部落此清单或 §3.2；§3 结论 3
+「步数线性伸缩」]；补录键出处 [实测：DIF/R4C 首跑重测 16 差键（本节数字见下）——
+`abstract_task_stack_transport` 为 unknown_task_gprs 窗内任务帧 push/pop 寄存器列表
+族的栈搬运计数（调度器任务帧 GPR 存取，含 UnknownWord 搬运），当前 flag 集下三偏移对
+差 −10（104,965 vs 104,955）而 EQDIV 27 差键未含之（A1 时点 flag 集下两侧相等），
+属等待域重排族（任务帧 push/pop 随重排次数消耗）；原清单未名列=DIF/R4C 字面缺口挂账，
+按 T1-6「默认相等，白名单吸收」的字面口径该键曾是层 1 违规、两路按「同构于已归档
+基线」处理，本修订显式入列消账]。
 
-**预算式（每线 L）**：
+**预算式（每线 L，双口径并列；L2AR 2026-11-15 按 DIF/R4C 首跑实测修订——原单口径
+|Δstep| 分母在跨停点比较下把 4 键误报超界，两路挂账承接）**：
 
 ```
-|Δcount_L| ≤ E_L = 2·⌈|Δstep| × ρ_L⌉ + ⌈δ_max/T_min⌉ + 1
+主判据（Σ|δ| 口径）：      |Δcount_L| ≤ E_L  = 2·⌈Σ|δ_k| × ρ_L⌉ + ⌈δ_max/T_min⌉ + 1
+快速保守筛（|Δstep| 口径）：|Δcount_L| ≤ E_L⁰ = 2·⌈|Δstep| × ρ_L⌉ + ⌈δ_max/T_min⌉ + 1
 ```
 
-- **|Δstep|**：检查点模式=δ_max（等 own-step 下相位错位是唯一步轴差）；跨停点模式=
-  停点步数差 |S_A − S_B|。
+- **Σ|δ_k|（主判据分母）**：区间 [c_prev, c] 内**同序号**交付步号差 δ_k 的绝对值之和
+  （配对同 §3.2 T2-3，即 δ 序列的分段幅度和）；检查点模式与跨停点模式同式。语义=等待
+  域预算按**逐窗消耗累计**的真实度量——每个等待窗的重排不论方向都真实消耗一次预算。
+- **|Δstep|（保守筛分母）**：端到端步轴差——检查点模式=δ_max（等 own-step 下相位错位
+  是唯一步轴差）；跨停点模式=净停点差 |S_A − S_B|（原单口径定义，原样保留）。语义=
+  端到端相位差的粗上界：方向相反的段在端到端差里正负抵消，系统性低估等待消耗。
+- **判定序（机器可执行）**：先算保守筛 E_L⁰——过即 PASS（三角不等式 |Δstep| ≤ Σ|δ_k|
+  ⇒ E_L⁰ ≤ E_L，筛过蕴含主判据过，免算 Σ|δ|）；**保守筛超界 ≠ FAIL**，必须切主判据
+  E_L 复判，超 E_L 才 unexplained=FAIL。
+- **何时必须切 Σ|δ|**：保守筛超界时必切；机制上「等待消耗≈净步轴差线性伸缩」的假设在
+  deferral 重排族活跃时失效（T2-4 的 held 重请求把等待变重执行、重执行含配置写序列，
+  与步数比例伸缩解耦——DIF/R4C 实测 deferral 差 9,923（2,458 vs 12,381）下
+  exact_full_word_store 34/102 与 EQDIV 同族 2,701/773,969 比例差 100 倍即实证），故
+  跨停点比较推荐直接算 Σ|δ|。
 - **ρ_L**：基准镜像 [0, c] 区间该线密度（计数/步数），**比较前**从基准轨迹导出（先声
   明后比较，非事后拟合——d1-acceptance §7 白名单先声明原则的承接）。
 - **T_min**：该线关联交付线的区间最小交付间隔（core-tick 300,005 族/Timer0 按 §3.2
-  T2-3 同源值）。
+  T2-3 同源值）。相位项 ⌈δ_max/T_min⌉ 两口径同用 δ_max，不随分母切换。
 - **系数 2 与 +1** [设计]：量级预算语义（EQDIV §3.3「可作量级换算，不是精确闭式」）；
   校准依据=EQDIV 实测残差/纯预算=402/377≈1.07（调度器读跨停点），×2 留窗口间突发方差，
   +1 为单事件仲裁余项。超 E_L=unexplained=FAIL。
+- **弃选方案（L2AR 如实归档）**：DIF 首跑注记的另一条修订路「deferral 下游配置写划归
+  T2-4 交付界把关延伸」不采纳——T2-4 的下游把关语义=交付计数界（T2-3），配置写重执行
+  不是交付事件，划入会稀释 T2-4 判定式语义；双口径已闭环。
 
 **EQDIV 实测代入校准表**（实施路首跑后按新 flag 集重算补全）：
 
@@ -158,6 +187,41 @@ handler 帧、core-tick handler 帧。出处 [实测：EQDIV §2.3 的 27 差键
 | 调度器读 | 跨停点 | +402 | 2·⌈773,969×4.870e-4⌉+1+1 = 754+2 = **756** | 过 |
 | Timer0 handler 帧 | 跨停点 | +161（723→884） | 2·⌈773,969×1.929e-4⌉+1+1 = 300+2 = **302** | 过 |
 | 存储适配器/锁/irq_repeat/ICFG 族 | 跨停点 | +2,701/+213/+808/+690 等 | EQDIV 未归档基准绝对值，ρ_L 实施路首跑补 | 待补 |
+
+EQDIV 各行按 |Δstep| 代入（当时单口径）；Σ|δ| ≥ |Δstep| ⇒ 主判据界只宽不紧，故该表
+结论在双口径下原样成立（L2AR 注）。
+
+**DIF/R4C 首跑重测代入校准表（L2AR 回填；当前 flag 集，条件档 official↔r4_keyhook，
+停点 21,798,257/21,798,155 @ 0x606b68e，基线 main `364d5bd`；与 R2-COT-01
+（official↔l1_slotram，DIF 档 21,798,206）16 差键同集合同差值（2 键绝对值随前沿 +51
+整体平移、差值不变——R4C 记录），b79↔EQ 对同构。口径输入：Σ|δ_k|
+=58,354、δ_max=1,446、净停点差=102；预算数字=coeffs 工具机器算
+（`analysis/local-checks/r4c/r4c-coeffs.json`+`difline/difline-coeffs.json`，gitignored
+运行产物，数字以 R4-COT-01/R2-COT-01 记录与 HANDOFF 承载）**：
+
+| 线 | 实测差 | 保守筛 E⁰（\|Δstep\|=102） | δ_max 代入（1,446） | 主判据 E（Σ\|δ\|=58,354） | 结果 |
+|---|---|---|---|---|---|
+| exact_full_word_store | 34 | 4 ✗ | 20 ✗ | 718 ✓ | 主判据过 |
+| exact_postincrement_store | 32 | 4 ✗ | 10 ✗ | 262 ✓ | 主判据过 |
+| exact_subword_store | 6 | 4 ✗ | 4 ✗ | 66 ✓ | 主判据过 |
+| partial_icfg_known_lowbyte | 5 | 4 ✗ | 4 ✗ | 6 ✓（余 1，最紧） | 主判据过 |
+| abstract_task_stack_transport | 10（104,965 vs 104,955） | [设计代入] 4 ✗ | [设计代入] 16 ✓ | [设计代入] ≈564 ✓（>50 倍余量） | 主判据过 |
+| 其余 11 条白名单线 | 1..4 | 4 ✓（irq_repeat 恰界过） | 4..10 ✓ | 6..292 ✓ | 保守筛即过 |
+
+- 前 4 行 ✗✗=保守筛/δ_max 端到端口径的**误报案例**（机制=deferral 重排差 9,923 把等待
+  变重执行，见上「何时必须切」），主判据全过——双口径修订的直接校准证据（先例：EQDIV
+  实测数字代回校准全过）。
+- abstract_task_stack_transport 行 [设计代入]（L2AR）：DIF/R4C 跑时该键未入清单、
+  coeffs 工具未出预算（r4c-coeffs `adapter_keys_off_whitelist` 如实记录该键），本行按
+  ρ_L=104,965/21,798,257≈4.82e-3 代入同式估算；正式数字由实施路 coeffs 工具按入列后
+  键集补算。
+- 16 差键清单全文钉死（三偏移对同集合；L2AR）：abstract_task_stack_transport、
+  conditional_timer0_irq_rti、cpu0_shared_lock_ownership、exact_full_word_store、
+  exact_postincrement_store、exact_subword_store、immediate_rep_multi_block_projection、
+  irq_repeat_return_hypothesis、mmio_rmw_always_writes、parallel_byte_store_old_registers、
+  partial_icfg_bit9_only、partial_icfg_known_lowbyte、partial_icfg_pure_bit_mask、
+  partial_icfg_read_or_gate_write、per_core_visible_cnum、timer0_irq_handler_frame——
+  全部落入本节适用线清单或 §3.2（R4-COT-01 字面缺口挂账消账）。
 
 **首跑重测（2026-11-15 路 DIF/sim-difline，条件栈 21,798,206 @ 0x606b5ee，基线 main b592ecc）**
 ——§6.2 预告的重测已执行，三镜像+候选各一次全前缀观察跑（全数据
@@ -175,8 +239,9 @@ handler 帧、core-tick handler 帧。出处 [实测：EQDIV §2.3 的 27 差键
   partial_icfg_known_lowbyte 5>4）——机制=deferral 重排差 9,923 次（2,458 vs 12,381）把等待
   变成重执行（重执行含配置写序列），与步数比例伸缩解耦（EQDIV 同族 2,701/773,969 与本窗口
   34/102 比例差 100 倍即实证）；δ_max 口径（1,446）同 4 键超；**Σ|δ_k| 口径（58,354）16 键全过**。
-  修订建议：跨停点模式 |Δstep| 改路径累计执行轴错位 Σ|δ_k|，或把 deferral 下游配置写划归
-  T2-4 交付界把关延伸——L2AC 规格修订承接，判定式形式不变、数值重钉（§6.1 条款启用）。
+  修订已执行（L2AR 2026-11-15）：本节预算式双口径化（Σ|δ| 主判据+|Δstep| 保守筛，见上），
+  本条 4 键超界按主判据复判全过（DIF/R4C 代入校准表在上）；「deferral 下游配置写划 T2-4」
+  备选弃选（理由见 §3.3 弃选方案）。
 - 层 1 守恒（三对全过）：CPU1 11,251=11,251、CRC 轮次 32=32、data 区/lrc 块终值差集空、
   写集页直方图差仅 0x12/0x19 栈/TCB 域页（层 3 管辖）、交付自洽核账 116+0==116 ∧
   jiffies==10+116（终值 126 双侧同值，写入步号差 102）；层 2 全过（**Timer0 T2-3 机器算**：
@@ -191,7 +256,8 @@ handler 帧、core-tick handler 帧。出处 [实测：EQDIV §2.3 的 27 差键
   闭式）。[实测：EQDIV §3 结论 2——差 3=EQ 多跑 774k≈2.58 个周期内交付的第 12/13/14 次]
 - **jiffies**：`Δjiffies == ΔN_ack == ΔN_del`（闭式链）。[实测：21 vs 24 差 3]
 - **写集地址集**：仍必须相等（T1-4 不受停点差影响——脚印守恒）。[实测：终态 42,123=42,123]
-- 其余项按 §3.1-§3.3 同式，|Δstep|=停点差。
+- 其余项按 §3.1-§3.3 同式（§3.3 双口径，L2AR：保守筛 |Δstep|=净停点差，主判据 Σ|δ_k|
+  同式；跨停点比较推荐直接算主判据）。
 
 ## 4. 与 BT 四源白名单的衔接（candidate-image-cotest §2.3 的归层）
 
@@ -222,7 +288,9 @@ handler 帧、core-tick handler 帧。出处 [实测：EQDIV §2.3 的 27 差键
 ## 6. 诚实边界
 
 1. **判定式系数（×2/+1）与检查点抽样密度 G 是工程决策 [设计]**，校准自 EQDIV 实测
-   （§3.3 代入表）；非硅语义，实施路首跑后按新 flag 集重钉数值、形式不变。
+   （§3.3 代入表）；非硅语义，实施路首跑后按新 flag 集重钉数值。首跑（DIF/R4C）已按
+   新 flag 集重钉并触发 §3.3 预算式双口径修订（L2AR）——「形式不变」承诺按「原式
+   原样保留为保守筛、主判据同构换分母」兑现；系数本身（×2/+1）未动。
 2. **EQDIV 数字=A1 时点 flag 集**（b79 停 3,747,585；当前条件栈已到 19,139,239，
    `core_tick_cnt_held_snapshot`/`jl_adda_analog_family` 后置）——实施路在当前栈上
    首跑须重测 δ₁/δ_max/ρ_L/K 系；EQ 侧新停点未知（旧 4,521,554 的 DAA_CON0 已被
@@ -246,7 +314,9 @@ handler 帧、core-tick handler 帧。出处 [实测：EQDIV §2.3 的 27 差键
   部实测数字）/§3（三类结构定性）/§4（差集白名单候选）/§5（判据建议原文）。
 - 验收记录：[E1-PAR-01](acceptance-samples/parity/E1-PAR-01.json)（PASS/conditional，
   等值键/差键/计数格全套）；[A1-PAR-01](acceptance-samples/parity/A1-PAR-01.json)（FAIL
-  记录，判据①②命中证据）。
+  记录，判据①②命中证据）；[R4-COT-01](acceptance-samples/cot/R4-COT-01.json)/
+  [R2-COT-01](acceptance-samples/cot/R2-COT-01.json)（DIF/R4C 首跑，§3.3 双口径校准
+  例与 16 差键清单的数字承载，L2AR）。
 - 宿主与衔接：[d1-acceptance.md](d1-acceptance.md) §3.4（L2-a 原始规格——其预测 2 升级
   条款已被 A1 命中、预测 3 停点 parity 已破，本规格是其 447k 后段的可执行替代）；
   [candidate-image-cotest.md](candidate-image-cotest.md) §1.4/§2.3（四源白名单，归层见
