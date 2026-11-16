@@ -578,11 +578,14 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
     # 路 BM/S19 批 1:条件场景改传扩展表(勘误 BA「trim 环采样 fd31✓」——
-    # 0x10005 缺行,+0x10005:400+0x10001:4);BY/键链场景继续用旧表。
+    # 0x10005 缺行,+0x10005:400+0x10001:4);路 JLEQ 续三再扩两行
+    # (0x1000d TWVD=350 恒走满环/0x1000e PVDD=550 良构数据路径,
+    # 29,258,205 停点放行);BY/键链场景继续用旧表。
     assert CONDITIONAL_EXTRA_FLAGS['fd31_adc_res_named_values'] \
         is probe_irq_entry.FD31_ADC_RES_S19_VALUES
     assert dict(probe_irq_entry.FD31_ADC_RES_S19_VALUES) == {
-        **probe_irq_entry.FD31_ADC_RES_NAMED_VALUES, 0x10005: 400, 0x10001: 4}
+        **probe_irq_entry.FD31_ADC_RES_NAMED_VALUES, 0x10005: 400, 0x10001: 4,
+        0x1000d: 350, 0x1000e: 550}
     assert CONDITIONAL_EXTRA_FLAGS['jl_adda_daa_con1_initial_fixture'] \
         is probe_irq_entry.JL_ADDA_DAA_CON1_INITIAL_PROBE
     assert CONDITIONAL_EXTRA_FLAGS['p33_canary_first_read_words'] \

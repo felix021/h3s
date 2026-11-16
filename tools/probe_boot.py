@@ -1077,8 +1077,21 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # 静态扫描+动态 watch 钉死)。证据形状 0x6067be4
                 # `uextra.rrii.p r0=uextra(1<<index,p:8,l:8) ∥ st.b b[r6+8]=r0`
                 # (P33 窗配置函数,B 半按 run3 旧寄存器读源 r0)。
+                # 路 JLEQ 续六:insert.rrii(位域插入,dst=s 字段插进 r 的
+                # 立即数位置/长度——纯寄存器+立即数运算,效果只有 regs+flags,
+                # 下面的 effect 纯度守卫在运行时兜底)与 uextra.rrii 同族,
+                # 同样仅当 byte 子开关开启且第二半是 st.b 时接受。证据形状
+                # app 0x6011f20 `insert.rrii.p r3<=insert(r2,p:8,l:24) ∥ st.b
+                # b[r4+0]=r5`(配置键表压缩循环 0x6011f18..0x6011f2c,每轮把
+                # 4 字节源词去掉 03 标签字节压成 3 字节目的词,B 半按旧寄存器
+                # 直写 1 字节)。全 app 327 个 insert.rrii.p 站点中 st.b 第二半
+                # 恰 8 处(0x6011bc4/0x6011bde/0x6011f20/0x6043284/0x60447c0/
+                # 0x60666a4/0x606a968/0x60c4760,钉死 codec 静态扫描),st.h×3/
+                # st.w×3/rmw×1 不在本次扩展(到达时诚实停,归后续路);该形状
+                # 在既有前缀零执行(路 JLEQ 推进跑 29,562,465 首次到达即本
+                # 形状,扩展不改任何已钉报告)。
                 byte_extract=(diagnostics.get('exact_parallel_byte_stores') and
-                              base.id=='uextra.rrii' and
+                              base.id in ('uextra.rrii','insert.rrii') and
                               pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)
                 if (pure_alu or byte_extract) and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                         (diagnostics.get('exact_parallel_halfword_stores') and
@@ -1422,10 +1435,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         # 0x6069238 `rmw.or.modimm [0xf2c124]|=0x40`——按位记录
                         # (不经读回,mem_pwr_con/P3_AWKUP 位记录同族);显式读回
                         # 只认首次读具名 fixture(read() 路径),其他形式由分发
-                        # 拒绝(canary_rmw_form_not_modeled)。
+                        # 拒绝(canary_rmw_form_not_modeled)。路 JLEQ 续四:补
+                        # rmw.and.nmodimm(AND-NOT 立即,清位形式)——29,486,212
+                        # 停点 0x12c2da(量测分支 RAM 代码)首触;operands() 对
+                        # modimm invert 字段已给真保持掩码,gpcnt/AWKUP/software_
+                        # irq_source 同款分发。
                         if insn.id=='rmw.or.modimm':kind='or';operand=op['m']
                         elif insn.id=='rmw.and.r':kind='and';operand=self.R[op['s']]
                         elif insn.id=='rmw.and.modimm':kind='and';operand=op['m']
+                        elif insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
                         else:raise Blocked('canary_rmw_form_not_modeled',instruction_id=insn.id)
                         hardware.p33_canary_rmw(address,kind,operand)
                         self.finish_exact(self.pc+size);adapters['p33_canary_bit_rmw']+=1
@@ -1771,10 +1789,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         base=self.tab.by_id(inner.id[:-2])
                         pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
                             diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
-                        # 与主 gate 同步:uextra.rrii A 半仅在 byte 子开关+st.b
-                        # 第二半时接受(既有前缀零执行,判据见主 gate 注释)。
+                        # 与主 gate 同步:uextra.rrii/insert.rrii A 半仅在 byte
+                        # 子开关+st.b 第二半时接受(既有前缀零执行,判据见主
+                        # gate 注释;insert.rrii 证据形状 0x6011f20,路 JLEQ 续六)。
                         byte_extract=(diagnostics.get('exact_parallel_byte_stores') and
-                                      base.id=='uextra.rrii' and
+                                      base.id in ('uextra.rrii','insert.rrii') and
                                       pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)
                         supported=(diagnostics.get('exact_parallel_stores') and (pure_alu or byte_extract) and
                                    (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or

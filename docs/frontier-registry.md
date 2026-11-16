@@ -20,11 +20,13 @@
 
 - `FEATURES`：每个 opt-in 开关一条记录（总数与分层计数不在此维护——以 `FEATURES`
   遍历为准；演进：FLS ancif_official_resources + B2R 两案重落地并入条件栈 + RAND
-  熵源种子 fixture，2026-11-16 路 RAND 加 jl_rand_seed），字段：
+  熵源种子 fixture + JLEQ 批量放行 jl_eq_init_writes/core_tick_freerun_edge_period/
+  gpcnt_con_config/gpcnt_con_completion 等），字段：
   - `switch`＝`probe_irq_entry.irq_case` 的场景参数名（开关名，即 feature id）；
   - `stack`＝`base`（crc_bankb 共享栈）/`conditional`（p11_heap 条件栈增量——含路 B2G
-    从 probe_only 提层的 p2m_mailbox_ack/cfg523_named_fixture 与路 RAND 的 jl_rand_seed，FLS
-    合并后两案消费者仍在当前前沿停点之后，提层实测停点/步数不变）/
+    从 probe_only 提层的 p2m_mailbox_ack/cfg523_named_fixture、路 RAND 的 jl_rand_seed
+    与路 JLEQ 的 jl_eq_init_writes 等，FLS 合并后部分消费者仍在当前前沿停点之后，
+    提层实测停点/步数不变）/
     `probe_only`（只出现在 probe 自己的场景变体：探路 fixture、反事实掩码对照、键链直调×2、
     DT/ADA 敏感性探针×2 等）；
   - `requires`＝层叠依赖开关名（依赖边数以 `requires` 字段合计为准，与 irq_case 内 require

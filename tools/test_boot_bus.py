@@ -1556,6 +1556,44 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(Timer0.STD12M_TICKS_PER_REF_TICK,(3,4))
 
 
+    def test_insert_pair_byte_store_writes_without_merge_read(self):
+        # 路 JLEQ 续六:0x6011f20 `insert.rrii.p r3<=insert(r2,p:8,l:24) ∥
+        # st.b b[r4+0]=r5`(配置键表压缩循环 0x6011f18..0x6011f2c 体,每轮把
+        # 4 字节源词去掉 tag 字节压成 3 字节目的词)——insert.rrii A 半与
+        # uextra.rrii 同族(纯位域运算,gate 的 effect 纯度守卫运行时兜底),
+        # byte 子开关开启时 B 半按旧寄存器直写 1 字节;strict(无 byte gate)
+        # 走上游 pair 存储模型的写前合并读(模型内部簿记读非 guest 装载),
+        # 未初始化 RAM 上假停——29,562,465 前沿形状(read 0x18c6c8 size 4,
+        # VA 0x41a7c8 经 MMU 翻译)。
+        regs=[0]*16;regs[2]=0x5e;regs[3]=0x21;regs[4]=0x123800;regs[5]=0xa7
+        strict=BR28Model()
+        result=explore(self.module,self.app,name='insert_pair_strict',handoff=self.handoff(),
+            hardware=strict,diagnostics={'entry_pc':0x6011f20,'initial_sp':STACK_TOP,
+                                         'initial_gprs':list(regs)},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'uninitialized_memory')
+        self.assertEqual(result['stop']['address'],'0x123800')
+        self.assertEqual(result['stop']['size'],4)
+        # byte gate(A 半 insert.rrii,挂既有 byte_pair 子开关):1 步真实执行,
+        # B 半旧值 r5&0xFF=0xa7 直写 [r4+0](单字节全覆盖,邻 3 字节不动),
+        # A 半新值 insert(r2=0x5e,p:8,l:24) 保留 dst 低位 → r3=0x5e21。
+        projected=BR28Model()
+        result=explore(self.module,self.app,name='insert_pair_projected',handoff=self.handoff(),
+            hardware=projected,
+            post_stop=lambda machine,hardware,cpu:{
+                'probe_byte':cpu.mem.read(0x123800,1).hex(),
+                'probe_neighbour':cpu.mem.ram.get(0x123801),
+                'probe_r3':hex(cpu.R[3])},
+            diagnostics={'entry_pc':0x6011f20,'initial_sp':STACK_TOP,
+                         'initial_gprs':list(regs),
+                         'exact_parallel_stores':True,'exact_parallel_byte_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(result['instruction_adapters'].get('parallel_byte_store_old_registers'),1)
+        self.assertEqual(result['probe_byte'],'a7')
+        self.assertIsNone(result['probe_neighbour'])
+        self.assertEqual(result['probe_r3'],'0x5e21')
+
     def test_p33_window_pair_and_plain_byte_stores(self):
         # 路 AV:0x6067be0 `li r0=1`→0x6067be2 `r0 <<= r5`→**0x6067be4 并行对
         # `uextra.rrii.p r0=uextra(r0,p:8,l:8) ∥ st.b b[r6+8]=r0`**(A 半位域

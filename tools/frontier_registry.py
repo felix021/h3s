@@ -122,13 +122,27 @@ FEATURES = (
     Feature('fd31_adc_res_named_values', 'conditional', ('fd31_adc_pnd_completion',), True, 'FD31_ADC_RES_S19_VALUES',
             'JL_ADC RES 具名档位 fixture(derived-not-measured,按模拟复用通道;路 BM/S19 批 1 勘误'
             '——0x10005 trim 环采样缺行,场景改传 FD31_ADC_RES_S19_VALUES={旧表'
-            '+0x10005:400+0x10001:4},BY/键链场景继续用旧表 FD31_ADC_RES_NAMED_VALUES)'),
+            '+0x10005:400+0x10001:4},BY/键链场景继续用旧表 FD31_ADC_RES_NAMED_VALUES;路 JLEQ 续三'
+            '再扩两行 0x1000d TWVD=350(环恒走满端点)/0x1000e PVDD=550(良构数据路径),'
+            'W4[4] trim 域第二函数 0x6068662 两处新通道)'),
     Feature('p33_analog_tail', 'conditional', (), False, None,
             'W1[0] 尾段 P3_ANA_CON0/7/8/9/10+P3_CHG_CON0/CON1 容器扩展'),
     Feature('p3_ana_read_ldoin_low', 'conditional', ('p33_analog_tail',), False, None,
             'P3_ANA_READ 比较器常量 0 fixture(电池启动无外部供电锚)'),
     Feature('gpcnt_con_readback', 'conditional', (), False, None,
             'GPCNT_CON 位粒度读回=固件已写位投影(bit0=0 走跳过分支)'),
+    # ---- 路 JLEQ 续五:GPCNT 配置字放行。29,544,781 停点 0x60688b6(W4[4]
+    # VLVD 域 GPCNT 重配置链消费未知配置位)——读回全字(未知位显式合成
+    # 初始 0,AM synthetic-zero 先例)+整字写记录+|=0x1 使能形状;NUM
+    # (0xfd1104 __RO)仍严格停;依赖边挂 gpcnt_con_readback=ld.w 拦截语义
+    # 前置,执行序在 JL_EQ 族放行之后(推进顺序非硬件依赖)。 ----
+    Feature('gpcnt_con_config', 'conditional', ('gpcnt_con_readback',), False, None,
+            'GPCNT_CON 配置字放行(29,544,781 停点 0x60688b6;全字读回合成'
+            '初始 0+整字写记录+|=0x1 使能形状;计数语义不建模;NUM 严格停)'),
+    Feature('gpcnt_con_completion', 'conditional', ('gpcnt_con_config',), False, None,
+            'GPCNT_CON bit7 完成位投影(50M 预算耗尽 49,996,010 @ 0x6069546 '
+            '稳态测量任务轮询;读侧 OR 0x80=lrct_trim_done/SFC PLL-lock 同模式;'
+            '延迟不建模;NUM 读保持严格停=下一前沿测量值决策)'),
     Feature('jl_clock_dcck', 'conditional', (), False, None,
             'JL_CLOCK DCCK_CON0/1/2 容器投影(合成初始字 0+读回=当前值)'),
     Feature('jl_uart_con', 'conditional', (), False, None,
@@ -330,6 +344,33 @@ FEATURES = (
             'JL_RAND->R64L(0xfd3b00)熵源种子 fixture(readonly 单字,每次读同一冻结常量'
             '=constant_on_every_read;synthetic-not-measured,非设备实测;熵机制无文档、'
             '值不可推导;R64H 0xfd3b04 零触达不进容器)'),
+    # ---- 路 JLEQ/sim-jleq:EQ 初始化两字 write-only 记录。codex gpt-6-astra
+    # 三选一定调选 (c) 恰两字 write-only(拒绝全族八字读回容器:当前推进零读,
+    # 读回+合成初值会提前承诺未建立的消费语义;六字 0xfe1504..0xfe1518 零
+    # 访问证据不得凭 __RW 推成可读回);两写无条件整字 st.w(codex 勘误
+    # 0x6072b68 bnez 目标=0x6072b90 只跳分配+首次 memset,PARKPRE 观察项的
+    # 「CON0 写臂被跳」表述撤销);敏感性定调=无 ones 臂(纯 st.w 不读旧值),
+    # 主臂断言 read_attempts=0+负例关停停 29,215,313;JL_EQ 是数据驱动地址族
+    # (基址仅 .data 0x60c3748 一处、零 li 常量、经 [0x12727C]+16 间接装载,
+    # S19MAP #7 漏判根因);依赖边挂 jl_rand_seed=场景推进顺序非硬件依赖。 ----
+    Feature('jl_eq_init_writes', 'conditional', ('jl_rand_seed',), False, None,
+            'EQ 初始化函数 0x6072b24 两字(JL_EQ->CON0 0xfe1500/FLT_ADR 0xfe151c)'
+            'write-only 整字记录(29,215,313 停点 0x6072b92 写 CON0=0 放行;boot '
+            '路径只写不读,两写无条件整字 st.w 无 RMW;读侧显式严格停,六字 '
+            '0xfe1504..0xfe1518 与 0xfe1520 起零触达留 unmapped;JLA/ADC-DMA '
+            'write-only 先例,codex 定调;数据驱动地址族,li 枚举法免疫)'),
+    # ---- 路 JLEQ 续二:core tick freerun 边沿周期使能放行。29,229,183 停点
+    # 0x6065834=tick 重启函数 0x6065806 尾(固件形状 CON=0→CNT=0→PRD=
+    # 0xFFFFFFFF→CON=1,收割 µs 存 [0x1265C8] 后切自由运行 µs 计数器);
+    # 恰放行 prd==0xFFFFFFFF 一格(prd==0 恒拒),计数公式 period=prd+1=2^32
+    # 不变、任何受建模视界内零到期;读回/ACK/pending 语义全不动;硅上最大
+    # 周期行为未测量 assumed-not-measured;依赖边挂 jl_eq_init_writes=场景
+    # 推进顺序非硬件依赖。 ----
+    Feature('core_tick_freerun_edge_period', 'conditional', ('jl_eq_init_writes',), False, None,
+            'core tick PRD=0xFFFFFFFF 边沿周期使能放行(tick 重启函数 0x6065806 尾'
+            '0x6065834 停点;恰放行 prd==0xffffffff 一格,prd==0 恒拒;模型公式 '
+            'period=prd+1=2^32 不变零到期;assumed-not-measured;依赖边=推进顺序'
+            '非硬件依赖)'),
     Feature('jl_adc_start_probe_value', 'probe_only', ('jl_adc_start_config',), True, None,
             'MIC_CTL0(0xfe0904)初值敏感性探针(初值一次性 0xffffffff 替换,其余三字'
             '不扰动保归因干净;零臂写回 0x2/ones 臂写回 0xfffffffe 异或保留位;'
@@ -383,10 +424,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 29215313,
-        'stop_pc': '0x6072b92',
-        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
-                 'address': '0xfe1500', 'size': 4, 'value_bytes': '00000000'},
+        'completed_steps': 29601125,
+        'stop_pc': '0x606955c',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                 'address': '0xfd1104', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }
