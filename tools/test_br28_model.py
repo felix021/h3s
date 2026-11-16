@@ -3269,5 +3269,24 @@ class ModelTests(unittest.TestCase):
         h.write_byte(0xF27F43,0xFF)
         self.assertEqual(h.read_bytes(0xF27F43,1),b'\xff')
 
+    def test_cfg523_object_bytes_shape(self):
+        # 路 B2R/S19 批 2 重落地(0b875ed 原案,BH §5.1):70B 对象字节级
+        # 形状钉死。消费时序:解析器 0x60010b4 在 W1[4]/S9 域,当前 flash 顶
+        # 窗口停点(0x606c5ba,FLS 在途)之后——开关默认关,放行跑归批 2
+        # 之后的推进路(本测试只钉 fixture 数据面)。
+        from probe_irq_entry import CFG523_OBJECT_BYTES,CFG523_KEY_CHANNEL_RES_IDLE
+        from br28_model import BR28Model
+        import struct
+        blob=bytes(CFG523_OBJECT_BYTES)
+        self.assertEqual(len(blob),70)
+        self.assertEqual(blob[0],1)                       # enable
+        self.assertEqual(blob[1:4],b'\x00\x00\x00')       # io 描述(port=0 早退)
+        self.assertEqual(struct.unpack_from('<I',blob,4)[0],0x00100001)  # 通道字 mux 1
+        self.assertEqual(blob[8:10],b'\x00\x00')          # 第三段门=0
+        thresholds=struct.unpack_from('<20H',blob,10)
+        self.assertEqual(thresholds,(500,720,850,1022)+(1022,)*16)      # AJ 表原样
+        self.assertEqual(tuple(blob[50:70]),(255,10,11,12)+(0,)*16)     # 键 id 表
+        self.assertEqual(CFG523_KEY_CHANNEL_RES_IDLE,4)   # 释放态 ≤9 修正配套行
+
 
 if __name__=='__main__':unittest.main()

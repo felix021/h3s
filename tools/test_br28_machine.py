@@ -642,4 +642,62 @@ class P2mMailboxMirrorTests(unittest.TestCase):
         self.assertEqual(m.events,[])
 
 
+class _Cfg523Mem:
+    def __init__(self):self.writes=[]
+    def write(self,address,data):self.writes.append((address,bytes(data)))
+
+
+class Cfg523InstallTests(unittest.TestCase):
+    """路 B2R/S19 批 2 重落地(0b875ed 原案,BH §2.1/§4.2):cfg523 70B 对象
+    的 PC 锚定首装——解析器 0x60010b4 首条指令执行前(此刻 cpu.pc==入口、
+    该指令尚未执行,after_step 在每步后调用正是唯一时机)恰一次写入
+    0x1274F4;core1 不触发;默认 None 零行为;长度守卫恰 70B。
+    """
+
+    def _cpu(self,pc,core_id=0):
+        cpu=SimpleNamespace(core_id=core_id,pc=pc)
+        cpu.mem=_Cfg523Mem()
+        return cpu
+
+    def _machine(self,**extra):
+        from probe_irq_entry import CFG523_OBJECT_BYTES
+        m=DualCoreMachine(cfg523_object_bytes=CFG523_OBJECT_BYTES,**extra)
+        m.hardware=SimpleNamespace()      # after_step 尾部 icfg_demands 需要
+        return m
+
+    def test_install_at_parser_entry_once(self):
+        from br28_machine import CFG523_PARSER_ENTRY,CFG523_OBJECT_ADDRESS
+        from probe_irq_entry import CFG523_OBJECT_BYTES
+        m=self._machine()
+        cpu=self._cpu(0x60010b0)
+        m.after_step(cpu,before_pc=0x60010b0)      # pc 未到入口:不装
+        self.assertEqual(cpu.mem.writes,[])
+        cpu.pc=CFG523_PARSER_ENTRY
+        m.after_step(cpu,before_pc=0x60010b0)      # pc==入口、首指令未执行:装
+        self.assertEqual(cpu.mem.writes,
+                         [(CFG523_OBJECT_ADDRESS,bytes(CFG523_OBJECT_BYTES))])
+        self.assertEqual(m.cfg523_installed_at,{'pc':'0x60010b0','object_bytes':70})
+        self.assertEqual(m.events,[{'kind':'cfg523_fixture_installed','core':0,
+                                    'pc':'0x60010b0','next_pc':'0x60010b4',
+                                    'address':hex(CFG523_OBJECT_ADDRESS)}])
+        m.after_step(cpu,before_pc=CFG523_PARSER_ENTRY)  # 幂等:重复到达不再装
+        self.assertEqual(len(cpu.mem.writes),1)
+        # core1 到达入口不触发(config-523 消费域在主核)。
+        cpu1=self._cpu(CFG523_PARSER_ENTRY,core_id=1)
+        m.after_step(cpu1,before_pc=0x60010b0)
+        self.assertEqual(cpu1.mem.writes,[])
+
+    def test_default_off_and_shape_guard(self):
+        from br28_machine import CFG523_PARSER_ENTRY
+        m=DualCoreMachine()
+        m.hardware=SimpleNamespace()
+        cpu=self._cpu(CFG523_PARSER_ENTRY)
+        m.after_step(cpu,before_pc=0x60010b0)      # 默认 None:零行为
+        self.assertEqual(cpu.mem.writes,[])
+        self.assertIsNone(m.cfg523_installed_at)
+        for bad in (b'',b'\x01'*69,b'\x01'*71,'x'*70):
+            with self.assertRaisesRegex(ValueError,'exactly 70 bytes'):
+                DualCoreMachine(cfg523_object_bytes=bad)
+
+
 if __name__=='__main__':unittest.main()

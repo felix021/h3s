@@ -287,12 +287,12 @@ FEATURES = (
             '零会漏掉 RMW 读写不同容器状态的实现错误;探针过只支持所测软件路径'
             '稳定,不证明硬件初值无关;CV/ADA 双探针先例;sensitivity-probe-not-'
             'plausible-state)'),
-    # (cfg523_named_fixture 已实现并单测,但 19,139,239 停点(JL_AUDIO->DAC_TM0
-    # 运行态读)证实其全部运行态消费者仍在音频数字域整块之后——按 BQ 先例
-    # (零消费者不落地)从条件栈撤回,实现保留在本分支历史 0b875ed,待音频域
-    # 过界后按到达顺序落地。p2m_mailbox_ack 已由路 B2R 重落地到 probe_only 层,
-    # 见下。)
-    # ---- probe_only(只在 probe_irq_entry 场景变体出现,11 个开关) ----
+    # (p2m_mailbox_ack / cfg523_named_fixture 曾按 BQ 零消费者先例于 1103fa8
+    # 从条件栈撤回(19,139,239 停点证实消费时序在音频数字域之后);音频域
+    # 过界后由路 B2R 从 0b875ed 重落地到下列 probe_only 层——消费时序仍在
+    # flash 顶窗口停点(0x606c5ba,FLS 路在途)之后,批 2 放行跑再按到达
+    # 顺序提层到 conditional。)
+    # ---- probe_only(只在 probe_irq_entry 场景变体出现,12 个开关) ----
     Feature('timer0_irq4_probe_steps', 'probe_only', ('timer0_irq4_delivery',), True, None,
             'Timer0 首次到期拉近探路 fixture(计数 seed,场景传值)'),
     Feature('timer0_irq4_masked', 'probe_only', ('timer0_irq4_probe_steps',), False, None,
@@ -321,6 +321,13 @@ FEATURES = (
             '0x400→P2M_INT_PND bit12 置位+P2M+3 回声=M2P+7 值;P2M_INT_CLR 0x1000 清位;lpwr '
             '请求-响应同款,即时无延迟,synthetic-not-measured;三勘误后的正确地址 '
             '0xF27F43/0xF27F87/0xF2A618/0xF2A60C/0xF2A608;首版 0b875ed,B2R 重落地)'),
+    Feature('cfg523_named_fixture', 'probe_only', (), False, None,
+            'config-523 分档器产物对象具名 fixture(70B=CFG523_OBJECT_BYTES PC 锚定首装 '
+            '0x1274F4,解析器 0x60010b4 首次执行前写入→幂等早退返回对象;S9 注册/S17 '
+            '健康门/S19 后键扫三读者共用;通道字 0x10001 mux1;释放态 ≤9 修正的配套 '
+            'RES 行 0x10001=4 已在 BM 批 1 S19 值表;synthetic-not-measured——真实 '
+            'config 523 在 bank B 记录区,公开工件外;BH §4.2 设计;首版 0b875ed,'
+            'B2R 重落地)'),
 )
 
 # 两个共享栈场景(analyze_image_trace.SCENARIOS 同名;probe 场景名在
