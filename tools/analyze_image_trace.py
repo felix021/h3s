@@ -1481,7 +1481,8 @@ def check_self_candidate(report, label, scenario):
       19,123,794 重锁,其后控制流零分歧 2,674,412 步到双停点(偏移对的
       彩票预期形状,非回归;三层清单判定见 docs/acceptance-samples/cot/
       R2-COT-01.json 与 analysis/local-checks/difline/)。
-    上游前沿推进后按新结论重钉。
+    上游前沿推进后按新结论重钉。r4_keyhook 走独立钉值函数(路 R4SNAP,
+    R4-COT-01 归档报告实测值;见 _check_self_candidate_r4_* docstring)。
     """
     pairs = {p['name']: p for p in report['pairs']}
     require(set(pairs) == {f'official_vs_{label}'},
@@ -1493,10 +1494,14 @@ def check_self_candidate(report, label, scenario):
     require(p['runs']['official']['completed_steps'] == base['completed_steps'] and
             p['runs']['official']['stop_pc'] == base['stop_pc'],
             'official run changed: the shared-stack prefix is no longer the pinned frontier stop')
-    if scenario == 'crc_bankb':
-        _check_self_candidate_crc(p, label, base)
+    if label == 'r4_keyhook':
+        tier = (_check_self_candidate_r4_crc if scenario == 'crc_bankb'
+                else _check_self_candidate_r4_conditional)
+    elif scenario == 'crc_bankb':
+        tier = _check_self_candidate_crc
     else:
-        _check_self_candidate_conditional(p, label, base)
+        tier = _check_self_candidate_conditional
+    tier(p, label, base)
     report['candidate_self_check_passed'] = True
 
 
@@ -1548,6 +1553,90 @@ def _check_self_candidate_conditional(p, label, base):
     require(rec and rec['realigned'] and rec['lag'] == -102 and not rec['immediate'] and
             rec['realign_step_a'] == 19123794 and
             rec['control_zero_divergence_steps'] == 2674412,
+            'the conditional reconvergence changed (expected the lottery-reshaped -102 '
+            'realignment locking at step 19123794 with zero control divergence to the stops)')
+
+
+def _check_self_candidate_r4_crc(p, label, base):
+    """r4 侧 crc 档钉值(路 R4SNAP,2026-11-15 路 R4C 首轮实测,数字源=
+    R4-COT-01 evidence_refs 归档报告 analysis/local-checks/r4c/
+    cot01-r4-crc.json;R4C 挂账「r4 侧 candidate-self-check 钉值未接」消账):
+
+    - official↔r4_keyhook 与 l1 对逐锚同形,镜像差仅在值:fence 上限立即数
+      r4=0x060e322e(r4 专属,与 l1 0x060e31e0 同消费点不同值)、表尾指针
+      r4 尾 0xE524E(与 l1 0xE5200 同落 0xE5000 对齐桶);
+    - 停点 +458 same_stop(289,849 vs 290,307 @ 0x60679ba,per-core CPU0
+      +458/CPU1 不变);唯一控制流分歧 169,439 config.dat 枚举,
+      reconvergence realigned +458 immediate;
+    - 表尾派生族 57 段/1,471 步,全签名重合于 step 232,729(=169,439+
+      63,290,与 l1 对精确同值);
+    - 差异面分类账 13 条游程(l1 对 12 条 + r4 专属注册表槽
+      0xA9C7C..0xA9C80 = cmdid 0x30 setter 槽)全部命中已知区。
+    上游前沿推进后按新结论重钉。"""
+    require(p['parity']['steps'] == {'official': base['completed_steps'],
+                                     label: 290307, 'delta': 458} and
+            p['parity']['same_stop'] and p['parity']['stop_record']['identical'] and
+            p['parity']['stop_pc'] == {'a': base['stop_pc'], 'b': base['stop_pc'], 'same': True} and
+            p['parity']['per_core_steps']['delta'] == {'0': 458, '1': 0},
+            'the official-vs-r4_keyhook crc_bankb stop parity changed (+458 same-stop expected)')
+    first = p['first_divergence']
+    require(first and first['step'] == 116148 and first['pc_a'] == '0x6034e98' and
+            first['classification'] == 'register_state_divergence' and
+            first['registers'] == {'1': {'a': '060c3338', 'b': '060e322e'}} and
+            first['instruction_bytes_differ_within_instruction'],
+            'the first official-vs-r4 signature divergence is no longer the r4 fence immediate '
+            'at 0x6034e98 (r4 upper PC limit 0x060e322e)')
+    control = p['first_control_divergence']
+    require(control and control['step'] == 169439 and
+            control['pc_a'] == '0x6011154' and control['pc_b'] == '0x6011154',
+            'the first official-vs-r4 control divergence is no longer the config.dat enumeration at 0x6011154')
+    rec = p['reconvergence']
+    require(rec and rec['realigned'] and rec['lag'] == 458 and rec['immediate'],
+            'the official-vs-r4 reconvergence is no longer the immediate +458 realignment')
+    sig = rec['signature_after_realignment']
+    require(sig['full_signature_realign_step_a'] == 232729 and
+            sig['divergent_span_count'] == 57 and sig['divergent_steps'] == 1471,
+            'the r4 table-tail derived-family survival changed (expected the l1-shaped '
+            '57 spans / 1,471 divergent steps fully realigning at step 232729; a new shape '
+            'must be re-adjudicated, not silently accepted)')
+    diff_runs = p['image_byte_diff_runs']
+    require(len(diff_runs) == 13 and all(run['known_site'] for run in diff_runs) and
+            ['0xa9c7c', '0xa9c80'] in [run['plain_offset'] for run in diff_runs],
+            'the official-vs-r4 image byte-diff ledger changed (13 runs all hitting known '
+            'sites, the r4-only cmdid 0x30 registry setter slot 0xa9c7c..0xa9c80 present)')
+
+
+def _check_self_candidate_r4_conditional(p, label, base):
+    """r4 侧条件档钉值(路 R4SNAP,2026-11-15 路 R4C 首轮实测,数字源=
+    R4-COT-01 evidence_refs 归档报告 analysis/local-checks/r4c/
+    cot01-r4-p11heap.json;一切结论条件通过、derived-not-measured):
+
+    - 停点轴差 -102 same_stop、per-core {0:-103,1:0}、重锁锚 19,123,794——
+      与 l1 对同机制同值(+458 偏移对过 C0 δ₁=22 后被 core-tick 交付相位
+      彩票消费,等待域伸缩把 +458 磨成 -102);R4C 首跑时点条件前沿
+      21,798,257 @ 0x606b68e(路 ADA),停点步数不写死字面值、跟
+      frontier_registry 条件前沿单源(路 ASS 放行到 28,764,184 后自动跟随,
+      realign 之后控制流零分歧步数同式跟随前沿);
+    - 首签名分歧 116,148 fence 立即数(r4=0x060e322e)、唯一控制流分歧
+      169,439 config.dat 枚举——两锚与 crc 档逐字段一致。
+    上游前沿推进后按新结论重钉(前沿前移后可重跑跟进)。"""
+    require(p['parity']['steps']['delta'] == -102 and
+            p['parity']['steps'][label] == base['completed_steps'] - 102 and
+            p['parity']['same_stop'] and p['parity']['stop_record']['identical'] and
+            p['parity']['per_core_steps']['delta'] == {'0': -103, '1': 0},
+            'the official-vs-r4_keyhook conditional stop parity changed (-102 same-stop, '
+            'CPU1 unchanged, expected)')
+    first = p['first_divergence']
+    require(first and first['step'] == 116148 and first['pc_a'] == '0x6034e98' and
+            first['registers'] == {'1': {'a': '060c3338', 'b': '060e322e'}},
+            'the conditional first divergence is no longer the r4 fence immediate at 0x6034e98')
+    control = p['first_control_divergence']
+    require(control and control['step'] == 169439 and control['pc_a'] == '0x6011154',
+            'the conditional first control divergence is no longer the config.dat enumeration')
+    rec = p['reconvergence']
+    require(rec and rec['realigned'] and rec['lag'] == -102 and not rec['immediate'] and
+            rec['realign_step_a'] == 19123794 and
+            rec['control_zero_divergence_steps'] == base['completed_steps'] - 19123794,
             'the conditional reconvergence changed (expected the lottery-reshaped -102 '
             'realignment locking at step 19123794 with zero control divergence to the stops)')
 

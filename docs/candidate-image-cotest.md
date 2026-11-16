@@ -124,9 +124,11 @@ def load_l1_slotram(path, official_path):        # 与 load_r4_keyhook 同形
   0x606b68e）停点差 -102 same_stop、realign 同为 19,123,794。r4 专属差面=注册表槽
   0xA9C7C（数据槽 4B）+keyhook 载荷 [0x060E31E0,0x060E322E)——两档两镜像独立扫描
   全前缀零取指（含 6 窗口 PC）；loader 分类账 13 条游程全命中已知区（比 l1 多的
-  1 条即注册表槽）。**r4 侧 self-check 钉值未接**：`check_self_candidate` 现钉
-  l1 首轮值（fence 寄存器 060e31e0 等），r4 需独立钉值——挂后续路（本路红线零
-  tools/ 改动）；差分结论已由归档报告承载，不依赖该钉子。
+  1 条即注册表槽）。**r4 侧 self-check 钉值已接（2026-11-16 路 R4SNAP/sim-r4snap
+  消 R4C 挂账）**：`check_self_candidate` 按 label 分派 r4 独立钉值函数
+  `_check_self_candidate_r4_crc`/`_check_self_candidate_r4_conditional`（钉 R4C 归档
+  报告实测值；条件档停点步数跟 frontier_registry 单源、随前沿自动前移，crc 档复跑
+  报告与归档逐字段一致）；l1 两钉值函数与 2026-11-12 official↔b79 钉子不动。
 
 ### 1.3 已知差异语义表增补（KNOWN_SITE_LABELS 展示层）[设计]
 
