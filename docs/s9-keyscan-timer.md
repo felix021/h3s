@@ -145,7 +145,7 @@ derived 标记）判别字段 ③checker `PERIODIC_SOURCES` 同步。均属"先�
    Timer0 衍生周期源"这一类；BZ §2.3 在 689,402 采样点只见两个 tick=115 节点（trim/GPCNT，
    D1 窗口外到期），adc_scan 当时不在快轮采样里——是否/何时挂轮、是否窗口内周期触发，
    归 **PR-BI 首验按 park 态快轮链表实读** 定（per_source 生产按实取自适应，不预写
-   "必有 adc_scan/键扫"）。本文结论（timer0 衍生帧形态）对 adc_scan 同样成立。
+   "必有 adc_scan/键扫"；勘误注记：对 adc_scan 不成立——S8 注册段 0x60121a2..0x60121ae 直线零分支，adc_scan 无条件必注册必 emit，仅 keyscan 挂 cfg523 条件，路 S8ERR 复算确认）。本文结论（timer0 衍生帧形态）对 adc_scan 同样成立。
 3. **衍生源的计数采集点**：键扫"到期/调用/返回"的观测锚=sys_timer 轮询 0x6066de0 的
    火回调点（0x6066e32/0x6066e7c）+ 回调 0x6001944 入口/返回；这些是 Timer0 交付帧内
    的观察件，PR-2 生产者实现时复用 §1.2 观察件（只读旁路）纪律，不动计步/交付顺序。
