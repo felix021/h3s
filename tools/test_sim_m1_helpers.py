@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""tools/test_sim_m1_verdicts.py 纯函数面的单测（路 SIMB1C；世界相关断言由执行器实跑覆盖）。"""
+"""tools/test_sim_m1_verdicts.py 纯函数面的单测（路 SIMB1C；世界相关断言由执行器实跑覆盖）。
+
+SIMB1F 增补：Verdict 四态机（codex P1——必需断言的 note 不得混进全绿）。"""
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_sim_m1_verdicts import eq_curve, parse_notify, read_frame, write_frame
+from test_sim_m1_verdicts import Verdict, eq_curve, parse_notify, read_frame, write_frame
 
 
 class FrameTest(unittest.TestCase):
@@ -45,6 +47,50 @@ class EqCurveTest(unittest.TestCase):
     def test_len_mod7_is_3_for_all_segment_counts(self):
         for segments in range(1, 11):
             self.assertEqual(len(eq_curve(segments)) % 7, 3, segments)
+
+
+class VerdictFourStateTest(unittest.TestCase):
+    """codex P1（2026-11-17）：PASS/FAIL/BLOCKED/PARTIAL——必需断言被世界状态
+    挡住（note_required）不得混进全绿；可选诊断（note）不影响 verdict。"""
+
+    def _verdict(self):
+        return Verdict({})
+
+    def test_all_pass_is_pass(self):
+        verdict = self._verdict()
+        verdict.check('a', True)
+        verdict.check('b', True)
+        self.assertEqual((verdict.failures, verdict.incomplete), (0, 0))
+
+    def test_required_note_makes_partial(self):
+        verdict = self._verdict()
+        verdict.check('a', True)
+        verdict.note_required('w4', {'queue_face': None})
+        self.assertEqual(verdict.incomplete, 1)              # 必需项未完成被计数
+        self.assertEqual(verdict.failures, 0)
+        self.assertIsNone(verdict.blocked)
+
+    def test_optional_note_does_not_degrade(self):
+        verdict = self._verdict()
+        verdict.check('a', True)
+        verdict.note('c4_optional', {})
+        self.assertEqual((verdict.failures, verdict.incomplete, verdict.notes), (0, 0, 1))
+
+    def test_first_blocked_reason_is_kept(self):
+        verdict = self._verdict()
+        verdict.fail_blocked('B1_world_dead', {'x': 1})
+        verdict.fail_blocked('C0_resume_stopped', {'y': 2})
+        self.assertEqual(verdict.blocked['reason'], 'B1_world_dead')
+        self.assertEqual(verdict.blocked['subsequent'][0]['reason'], 'C0_resume_stopped')
+
+    def test_check_rows_recorded(self):
+        verdict = self._verdict()
+        verdict.check('a', False, {'detail': 1})
+        verdict.note_required('b', {'detail': 2})
+        rows = verdict.record['checks']
+        self.assertEqual([row['id'] for row in rows], ['a', 'b'])
+        self.assertEqual(rows[0]['ok'], False)
+        self.assertEqual(rows[1]['state'], 'incomplete')
 
 
 if __name__ == '__main__':

@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-"""SIMB1C 世界引导：explore 停点世界的构造链（docs/sim-m1-direct-spec.md §3.2）。
+"""SIMB1F 世界引导：explore 停点世界的构造链（docs/sim-m1-direct-spec.md §3.2）。
 
-回退案（不等 JLEQ）：irq_case 没有 post_stop 透传参（probe 五文件禁区，等 §5.2
-合并后加），但 dual_case 有——本模块用 analyze_image_trace.frontier_run 的同一条
-缝合线（monkeypatch probe_irq_entry.dual_case 注入 kwarg，先例=budget 注入）把
-serve_loop 塞进构造链尾部：
+JLEQ 已合并、probe 禁区解禁：irq_case 有了 post_stop 透传参（本路最小改，
+规格 §5.2 第一行），SIMB1C 时代的 dual_case monkeypatch 缝合线退役——现在
+构造链就是一次直连调用：
 
     probe_irq_entry.irq_case(module, app, header, rom, name, **flags,
-                             flash_image_bytes=image, snapshot=snapshot_cfg)
-        └ dual_case(..., post_stop=serve_loop)      ← shim 注入
+                             flash_image_bytes=image, snapshot=snapshot_cfg,
+                             post_stop=serve_loop)
 
 开关集零复刻：scenario_flags('p11_heap_experimental', probe_irq_entry) 单源
-import（frontier_registry），fixture/预算推导全走 irq_case 原体——「复刻段腐化」
-风险（R16/D8）降到一条 kwarg 注入。世界停点=实施时点最新已过线前沿（当前
-29,215,313 @ 0x6072b92 写 0xfe1500，FRONTIERS 单点）；JLEQ 合并后重钉
-（规格 §5.3 第一刀），本模块零改动（前沿变了它跟着 registry 走）。
+import（frontier_registry），fixture/预算推导全走 irq_case 原体。世界停点=
+实施时点最新已过线前沿（JLEQ 后 29,601,125 @ 0x606955c 读 0xfd1104，park
+稳态前沿，FRONTIERS 单点）；前沿再变时本模块零改动（跟着 registry 走）。
 
 快照生命周期：首轮 capture（全量重放到停点后捕获，~27min 量级）→ 之后 restore
 （~8s）+budget=1 首步即重撞停点 → post_stop 进入 serve_loop。world_dead 后外层
-循环 restore 重建复役。
+循环 restore 重建复役。注意 world_snapshot.FINGERPRINT_FILES 含 probe_irq_entry
+等仿真源文件——改这些文件必须重新 capture，旧快照必拒载（漂移闸）。
 """
 from __future__ import annotations
 
@@ -63,17 +62,6 @@ def build_world(serve_loop, *, rom_path, firmware_path, snapshot_dir,
         snapshot_cfg = {'restore': target, 'expected_context': {'scenario': world_name},
                         'budget': 1}
 
-    original_dual = probe_irq_entry.dual_case
-
-    def shim(*args, **kwargs):
-        kwargs['post_stop'] = serve_loop
-        return original_dual(*args, **kwargs)
-
-    probe_irq_entry.dual_case = shim
-    try:
-        result = probe_irq_entry.irq_case(module, app, header, rom, world_name,
-                                          **flags, flash_image_bytes=image,
-                                          snapshot=snapshot_cfg)
-    finally:
-        probe_irq_entry.dual_case = original_dual
-    return result
+    return probe_irq_entry.irq_case(module, app, header, rom, world_name,
+                                    **flags, flash_image_bytes=image,
+                                    snapshot=snapshot_cfg, post_stop=serve_loop)

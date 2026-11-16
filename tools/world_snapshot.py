@@ -1075,7 +1075,12 @@ M4_FAMILIES = (
     ('l1p', 'L1PIdleProjection', ()),        # M9: stateless constant-read fixture
     ('icu_idle', 'IcuIdleProjection', ()),   # M9: stateless constant-read fixture
     ('gpcnt', 'GPCNTCleanup',
-     ('bits', 'pending', 'disable_writes', 'clear_writes', 'con_reads')),
+     ('bits', 'pending', 'disable_writes', 'clear_writes', 'con_reads',
+      # Route JLEQ 续五/续七: the config-word release added three counters and
+      # the completion-bit projection one more — they are runtime state (a
+      # restore without them changes behavior inside the config-read dispatch),
+      # not static fixtures.
+      'config_reads', 'whole_writes', 'enable_writes', 'completion_reads')),
     ('efuse', 'EfuseReadProjection',
      ('page', 'byte', 'active', 'read_done', 'reads')),
     ('watchdog', 'WatchdogProjection',
@@ -1159,6 +1164,14 @@ M4_FAMILIES = (
      ('pnd_armed', 'echo_armed', 'kicks', 'other_kick_values', 'clr_writes',
       'clear_slot_writes', 'pnd_reads', 'echo_reads', 'message_mirror',
       'stored_slot', 'transactions', 'current')),
+    # Post-B2G family (route JLEQ/sim-jleq): the JL_EQ init two-word
+    # write-only record merged after the B2G capture and is ON in the current
+    # conditional frontier flag set, so a capture refuses without it (the M3
+    # hardware static guard surfaces it first). Same four-field write-record
+    # shape minus the readback pair: reads raise Blocked unconditionally (the
+    # container serves exactly two words and models no readback), only the
+    # attempt counter is state.
+    ('jl_eq_init', 'JlEqInitWriteRecords', ('stores', 'word_writes', 'read_attempts')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 
@@ -1231,6 +1244,12 @@ M5_STATE = ('last_core', 'idle_wait_cores', 'stalls', 'launches', 'deferred_core
             'timer0_irq_deliveries', 'irq_delivery_deferrals', 'irq_delivery_deferral_events',
             'events', 'event_count', 'boot_anchors', 'boot_anchor_count', 'first_task_calls',
             'first_task_returns', 'first_task_setup', 'event_clock_advances', 'core_ids',
+            # Route BK/S19 batch 1: the bounded (16-entry) TIMER2 anchored-poll
+            # wake log is machine bookkeeping STATE (a restore without it would
+            # re-wake anchored parked cores on already-served polls); it joined
+            # after the last M5 canonical and surfaced as a capture-time static
+            # list-of-dicts refusal on the park-frontier world (route SIMB1F).
+            'timer2_poll_wakes',
             # Route M3FIX: the cfg523 parser-entry install is a ONE-SHOT event
             # bit (after_step flips it None -> {'pc','object_bytes'} when the
             # parser entry PC is first reached; B2G landed it after the SNAPX

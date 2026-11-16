@@ -661,6 +661,12 @@ class M4ProjectionFamilies(unittest.TestCase):
         # both ON in the current conditional frontier flag set.
         jl_adc_start_config=True,
         p2m_mailbox_ack=True,
+        # Post-B2G families (route JLEQ): the GPCNT config/completion counters
+        # and the JL_EQ init two-word write-only record, all ON in the current
+        # conditional frontier flag set (park frontier).
+        gpcnt_con_config=True,
+        gpcnt_con_completion=True,
+        jl_eq_init_writes=True,
     )
 
     def build_world(self):
@@ -806,6 +812,18 @@ class M4ProjectionFamilies(unittest.TestCase):
         hw.p2m_mailbox.clear_slot(0x5c)
         hw.p2m_mailbox.note_message_byte(0x3c)
         hw.p2m_mailbox.kick(P2mMailboxAck.KICK_VALUE)  # in-flight current
+        # Route JLEQ: GPCNT config-word counters mid-measurement (enable bit
+        # set, config re-read after the reconfiguration write, completion-bit
+        # poll consumed) and the JL_EQ init two-word write-only record with
+        # both words written and one refused read attempt.
+        hw.gpcnt.rmw('or', 1)
+        hw.gpcnt.whole_writes = 1
+        hw.gpcnt.config_reads = 2
+        hw.gpcnt.completion_reads = 1
+        hw.jl_eq_init.write(0xfe1500, 0, 0)
+        hw.jl_eq_init.write(0xfe151c, 0x18cb80, 0)
+        with self.assertRaises(Blocked):
+            hw.jl_eq_init.read(0xfe1500)
         return hardware
 
     def captured_m4(self, world):
