@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""tools/handoff_lint.py 单测（路 AUDITFIX/sim-auditfix，AUDIT3 §5 落地）。
+"""tools/handoff_lint.py 单测（路 AUDITFIX/sim-auditfix，AUDIT3 §5 落地；
+ARCHIVE 路补跨文件两向）。
 
 绿向（防误伤）：
-  - 当前真 HANDOFF「已实现」区 217 条零发现（含无 token 旧条目、同路号复用、
-    同分支复用、正文交叉引用他人路 token 四类合法形态）；
+  - 当前真 HANDOFF「已实现」区+归档文件合计 225 条零发现（含无 token 旧条目、
+    同路号复用、同分支复用、正文交叉引用他人路 token 四类合法形态）；
   - 合成最小 section 的四类合法形态逐一直接验证不红；
-  - 归一化后不足 MIN_FUZZY_LEN 的短条目不进相似度层。
+  - 归一化后不足 MIN_FUZZY_LEN 的短条目不进相似度层；
+  - 两文件各一条不同条目（跨文件互异）不红。
 红向（篡改必红，仓库惯例）：
   - 整行原样重复；
   - AUDIT3 抓到的历史 AO 形态复刻（仅差「本次，」3 字符，条目原文摘自
     f9e17ad~1）→ 路由身份层；
   - 改路号+改分支的近似重复（路由身份/首部均不命中）→ 正文相似度层；
-  - 首部 40 字符全同、正文分叉（无路 token 旧式条目）→ 首部层。
+  - 首部 40 字符全同、正文分叉（无路 token 旧式条目）→ 首部层；
+  - 同一条目 HANDOFF 一份+归档文件一份（跨文件重复，ARCHIVE 路新增形状）
+    → 路由身份层，报文含两文件标签。
 """
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from handoff_lint import (HANDOFF,HEAD_LEN,MIN_FUZZY_LEN,find_duplicates,
-                          implemented_entries)
+from handoff_lint import (HANDOFF,HEAD_LEN,MIN_FUZZY_LEN,SOURCES,check,
+                          find_duplicates,implemented_entries)
 
 # AUDIT3 删掉的历史重复对（git show f9e17ad~1:HANDOFF.md L190/L193 条目前缀
 # 摘录；第二份仅多「本次，」——用 replace 精确复刻该差异点）。
@@ -55,9 +60,13 @@ def lint(*entries):
 
 class HandoffLintGreen(unittest.TestCase):
     def test_real_handoff_is_clean(self):
-        entries=implemented_entries(HANDOFF.read_text(encoding='utf-8'))
-        self.assertGreater(len(entries),100)  # 解析到真实规模，而非空跑
-        self.assertEqual(find_duplicates(entries),[])
+        # 两文件各自解析到真实规模（HANDOFF 近段+归档早段，均非空跑），合并零发现。
+        counts={label:len(implemented_entries(path.read_text(encoding='utf-8')))
+                for label,path in SOURCES}
+        self.assertGreaterEqual(counts['HANDOFF.md'],50)
+        self.assertGreaterEqual(counts['docs/handoff-archive.md'],50)
+        self.assertGreaterEqual(sum(counts.values()),100)
+        self.assertEqual(check(),[])
 
     def test_route_letter_reuse_not_flagged(self):
         self.assertEqual(lint(AO_LINE,RSTCON_LINE),[])
@@ -71,6 +80,19 @@ class HandoffLintGreen(unittest.TestCase):
     def test_short_entries_skip_fuzzy_layer(self):
         # 归一化后 <MIN_FUZZY_LEN 的短条目不进相似度层（由精确层负责）。
         self.assertEqual(lint('- **甲：短条目**','- **乙：短条目**'),[])
+
+    def test_cross_file_distinct_entries_not_flagged(self):
+        # 跨文件互异：HANDOFF 一条+归档一条（不同路由），合并查重不红。
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            handoff=root/'HANDOFF.md'
+            archive=root/'handoff-archive.md'
+            handoff.write_text('## 已实现\n'+AO_LINE+'\n',encoding='utf-8')
+            archive.write_text('# 归档\n\n## 已实现（归档区）\n'+RSTCON_LINE+'\n',
+                               encoding='utf-8')
+            findings=check((('HANDOFF.md',handoff),
+                            ('docs/handoff-archive.md',archive)))
+        self.assertEqual(findings,[])
 
 
 class HandoffLintRed(unittest.TestCase):
@@ -106,6 +128,23 @@ class HandoffLintRed(unittest.TestCase):
         findings=lint(left,right)
         self.assertEqual(len(findings),1)
         self.assertIn(f'首部 {HEAD_LEN} 字符全同',findings[0])
+
+    def test_cross_file_duplicate_caught(self):
+        # ARCHIVE 路新增红向形状：同一条目 HANDOFF 一份+归档一份 → 必红，
+        # 报文同时带两文件位置标签（可定位到文件）。
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            handoff=root/'HANDOFF.md'
+            archive=root/'handoff-archive.md'
+            handoff.write_text('## 已实现\n'+AO_LINE+'\n',encoding='utf-8')
+            archive.write_text('# 归档\n\n## 已实现（归档区）\n'+AO_LINE+'\n',
+                               encoding='utf-8')
+            findings=check((('HANDOFF.md',handoff),
+                            ('docs/handoff-archive.md',archive)))
+        self.assertEqual(len(findings),1)
+        self.assertIn('HANDOFF.md:L2',findings[0])
+        self.assertIn('docs/handoff-archive.md:L4',findings[0])
+        self.assertIn('路由身份同为 路 AO/sim-keyaction',findings[0])
 
 
 if __name__=='__main__':

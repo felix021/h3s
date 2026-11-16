@@ -82,7 +82,7 @@
 
 ## 5. 证据锚点
 
-- 衔接互证：HANDOFF「已实现」路 AY 条目；tools/probe_dualcore.py:23-48（dual_case→platform_case+DualCoreMachine）；tools/probe_irq_entry.py:635（irq_case→dual_case）；tools/probe_platform_startup.py:57（cpu1_release_boundary）；docs/dualcore-startup.md 未验证条件表。
+- 衔接互证：HANDOFF「已实现」路 AY 条目（已归档至 [docs/handoff-archive.md](handoff-archive.md)）；tools/probe_dualcore.py:23-48（dual_case→platform_case+DualCoreMachine）；tools/probe_irq_entry.py:635（irq_case→dual_case）；tools/probe_platform_startup.py:57（cpu1_release_boundary）；docs/dualcore-startup.md 未验证条件表。
 - 机器状态@303,853：analysis/local-checks/irq-entry.json（p11_heap_experimental_config 场景；timer0 cnt 8268/prd 119999、cpu0 tick cnt 625452/prd 1199999、cpu1 tick cnt 640960/prd 479999999、kick_rmw_writes 21）。
 - Timer0/IRQ4：br28_model.Timer0（pending 读回 bit15、W1C 0x4000）；advance() 的 `interrupt_delivery_not_implemented`（br28_model.py 顶层层）；向量槽 0x19fe10=0x12ece8（路 AU 快照+analyze_startup_chain anchors）；handler 28B 软件帧（AGENTS/现前沿条目、docs/gpio-irq.md）。
 - core tick 交付机制：tools/probe_core_tick.py（CORE_TICK_FRAMES、core_tick_entry/banks/rti、「first overflow ~450k unreachable」自述）。

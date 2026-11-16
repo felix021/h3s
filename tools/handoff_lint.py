@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""HANDOFF「## 已实现」区条目查重 lint（AUDIT3 §5 流程建议落地，路 AUDITFIX）。
+"""HANDOFF「## 已实现」区条目查重 lint（AUDIT3 §5 流程建议落地，路 AUDITFIX；
+ARCHIVE 路 2026-11-16 起范围扩为 HANDOFF+handoff-archive 两文件合并查重）。
 
 背景：AUDIT2 抓到三路条目整段重复、AUDIT3 又抓到 AO/sim-keyaction 条目两份（仅差
 「本次，」3 字符，md5 全等/首部前缀口径均漏网）——均为 subagent/主协调合并时与既有
@@ -17,9 +18,11 @@
      其下），阈值余量充足；历史 AO 对（仅差「本次，」）实测≈0.999 必红。归一化后
      不足 MIN_FUZZY_LEN 字符的短条目不进本层（信号不足，由 1/2 层负责）。
 
-范围：仅「## 已实现」区顶格 `- ` 条目行（缩进子弹行归属其父条目，不单算）。已知
-未覆盖：顶格 `*` 形态的坏前缀条目——2026-11-16 实存 `*COEF：…` 一对逐字节重复
-（L135/L137，两轮审计口径均漏网）；HANDOFF 对本路只读，登记主协调合并时修。
+范围：HANDOFF.md 与 docs/handoff-archive.md 两文件的「## 已实现」区顶格 `- ` 条目行
+（缩进子弹行归属其父条目，不单算），合并成一个条目序列查重——防跨文件重复（ARCHIVE
+路 2026-11-16 起早期条目归档后，同一 entry 在两文件各存一份的形状）。仅顶格 `- `
+条目行。已知未覆盖：顶格 `*` 形态的坏前缀条目——2026-11-16 实存 `*COEF：…` 一对
+逐字节重复（L135/L137，两轮审计口径均漏网）；HANDOFF 对本路只读，登记主协调合并时修。
 """
 import re
 import sys
@@ -28,6 +31,8 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 HANDOFF=ROOT/'HANDOFF.md'
+ARCHIVE=ROOT/'docs'/'handoff-archive.md'
+SOURCES=(('HANDOFF.md',HANDOFF),('docs/handoff-archive.md',ARCHIVE))
 ROUTE_TOKEN=re.compile(r'路\s*[A-Za-z0-9]+/sim-[a-z0-9-]+')
 HEAD_LEN=40
 RATIO_THRESHOLD=0.90
@@ -51,7 +56,7 @@ def _normalized(text):
 
 
 def find_duplicates(entries):
-    """entries=[(行号,文本)] → 重复发现（字符串列表；空=绿）。"""
+    """entries=[(位置标签,文本)] → 重复发现（字符串列表；空=绿）。"""
     findings=[]
     normalized=[_normalized(text) for _,text in entries]
     tokens=[ROUTE_TOKEN.search(text) for _,text in entries]
@@ -74,15 +79,22 @@ def find_duplicates(entries):
                         if ratio>=RATIO_THRESHOLD:
                             why=f'正文相似度 {ratio:.3f}'
             if why:
-                findings.append(f'L{line_i} 与 L{line_j} 重复（{why}）：'
+                findings.append(f'{line_i} 与 {line_j} 重复（{why}）：'
                                 f'{text_i.lstrip("- *")[:50]}…')
     return findings
 
 
-def check(path=HANDOFF):
-    """对仓库 HANDOFF.md 跑查重 → 发现列表（空=绿）。"""
-    return find_duplicates(implemented_entries(
-        path.read_text(encoding='utf-8')))
+def check(sources=SOURCES):
+    """对 HANDOFF.md+docs/handoff-archive.md 合并跑查重 → 发现列表（空=绿）。
+
+    sources=[(标签,Path)]，可注入临时文件（单测跨文件红向负例用）。
+    """
+    entries=[]
+    for label,path in sources:
+        entries.extend((f'{label}:L{line}',text)
+                       for line,text in implemented_entries(
+                           path.read_text(encoding='utf-8')))
+    return find_duplicates(entries)
 
 
 def main(argv=None):

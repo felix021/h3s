@@ -3,7 +3,8 @@
 2026-11-14 路 BE（sim-d1scene，worktree 基线 `93e3659`=路 BA 合并点；前沿现状引用主仓
 main `adb996e`：条件前沿 **3,170,362 步 @ 0x606b426 读 0xfe0a0c（DAA_CON1，首个硬件反馈
 依赖，AS 放行 ADC reset 写族后的新停点，codex 参谋中）**。**字母说明**：任务文指定「路
-BE」与早期 sim-timer0irq 的 BE（Timer0 IRQ4 交付，HANDOFF「已实现」）重名——照 CT 先例
+BE」与早期 sim-timer0irq 的 BE（Timer0 IRQ4 交付，HANDOFF「已实现」，已归档至
+[docs/handoff-archive.md](handoff-archive.md)）重名——照 CT 先例
 （任务文标 AV 与仓内冲突→合并时顺延），合并时由主会话定夺是否顺延字母，本文以 BE 自称）。
 
 本页把 [d1-acceptance.md](d1-acceptance.md) §1 的 D1-1..D5 五断言 + BA 的 S19 触达点预标
