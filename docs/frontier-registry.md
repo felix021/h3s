@@ -18,15 +18,16 @@
 
 ## 数据结构
 
-- `FEATURES`：每个 opt-in 开关一条记录（84 条，2026-11-16 路 ASS 合并后：AUDIT2 对账 82 + jl_adc_start_config/jl_adc_start_probe_value），字段：
+- `FEATURES`：每个 opt-in 开关一条记录（85 条，2026-11-16 路 FLS 合并后：ASS 84 + ancif_official_resources），字段：
   - `switch`＝`probe_irq_entry.irq_case` 的场景参数名（开关名，即 feature id）；
-  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，54 个）/
-    `probe_only`（只出现在 probe 自己的场景变体，9 个：探路 fixture、反事实掩码对照、键链直调×2、
+  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，56 个）/
+    `probe_only`（只出现在 probe 自己的场景变体，10 个：探路 fixture、反事实掩码对照、键链直调×2、
     DT/ADA 敏感性探针×2 等）；
-  - `requires`＝层叠依赖开关名（58 条依赖边，与 irq_case 内 require 守卫一致）；  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的五个数据 fixture
+  - `requires`＝层叠依赖开关名（61 条依赖边，与 irq_case 内 require 守卫一致）；  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的六个数据 fixture
     （`heap_info_bytes`/`lrct_trim_result`/`fd31_adc_res_named_values`/
-    `jl_adda_daa_con1_initial_fixture`/`p33_canary_first_read_words`）只存 probe_irq_entry
-    模块常量**名**，由调用方传命名空间解析——数值绝不复制进 registry；
+    `jl_adda_daa_con1_initial_fixture`/`p33_canary_first_read_words`/
+    `ancif_official_resources`——官方 UFW 外层 ANCIF/ANCIF1 内容二元组）只存
+    probe_irq_entry 模块常量**名**，由调用方传命名空间解析——数值绝不复制进 registry；
   - `summary`＝一句话描述（证据全文在 probe_irq_entry 注释与 HANDOFF）。
 - `FRONTIERS`：两个前沿契约单点——`crc_bankb`（289,849 @ 0x60679ba 读 0xf27f4b）与
   `p11_heap_experimental`（当前条件前沿，完整 stop 记录 + 步数 + freshness 检查字段子集）。

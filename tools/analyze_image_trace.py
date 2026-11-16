@@ -322,6 +322,11 @@ SCENARIOS = {
 # 路 ADA(S19 冲刺批 2 续三)jl_adda_ada_family 九字容器放行到
         # 21,798,257 @ 0x606b68e(读 0xf2b404=P11_LPVAD->VAD_ACON0 bit28
         # 置位 RMW 内部读,P11 域配置 RMW 族,归下一路)。
+        # 路 FLS ancif_official_resources 放行到 28,890,702 @ 0x6011976
+        # (读 0xfd3b00=JL_RAND 族硬件熵源 ls_base+0x3b*0x100,随机种子
+        # 函数 [0x601196a,0x60119ca) Lehmer MINSTD LCG 的种子首读,
+        # sdfile ANCIF/ANCIF1 两文件 parse 真实走通后 ANC 系数装载段的
+        # 下一边界,归下一路)。
         'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
@@ -1342,8 +1347,19 @@ def check_self_conditional(report):
     (路 ADA)/21,800,325(路 LPV)已被后续投影替换,见 HANDOFF 对应
     「步含义」段):
 
-    - 双方 28,764,184 步、同停点 0x606c5ba(unmapped_memory 读
-      0x61fbfe0,当前条件前沿——路 ASS 放行后的新边界;历史 21,800,455
+    - 双方 28,890,702 步、同停点 0x6011976(unmapped_memory 读
+      0xfd3b00,当前条件前沿——路 FLS ancif_official_resources 放行后的
+      新边界:sdfile flash 顶 ANCIF/ANCIF1 文件头=官方 UFW 外层资源内容
+      具名 fixture(显式假设=目标分区携带官方资源内容,非设备实测),
+      两文件 parse 真实走通(魔数/头内名/内层 CRC 全过、free 路径零执行,
+      硬件 CRC 引擎新校验值恰=两文件存储 CRC 0x583d/0x4dcd)后 ANC 系数
+      装载 +126,518 步,停在随机种子函数的 JL_RAND 族 0xfd3b00 首读
+      (Lehmer MINSTD LCG 种子,硬件熵源——值不可推导,任何值都是合法
+      随机抽取,三选一按 lrct_trim_result 探路值先例归下一路);
+      历史 28,764,184(路 ASS 放行后的 flash 顶指针首读,值来源归 FLS
+      已解:app 分区表 0x06000080 项 virt 经 0x6010c20 换算对
+      [0x127290]=0x2020/[0x127294]=0x06000000 的文件头地址,内容=UFW
+      外层 type50 资源)、21,800,455
       (路 JLA 放行 set_buffer 五写后的 JL_ASS MIC_CTL0 RMW 内部读停点,
       r0=r5+976 间接构造、li 枚举法免疫——间接构造地址的首个停点实证,
       基址+偏移传播解析法〔356 li 锚点全 GPR 常量跟踪+寄存器间传播,
@@ -1406,20 +1422,18 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 28757497, '1': 11251},
+                run['per_core_steps'] == {'0': 28884031, '1': 11251},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (28764184 @ 0x606c5ba, the unmapped read '
-                'of 0x61fbfe0 — a flash-top pointer read: the resource-lookup chain '
-                'of [0x606c54e,0x606c628) loads r7 from the stack-record +8 slot '
-                'written by the 0x600B15C-family constructor, the pointer being '
-                '0x61fbfe0 = 2MB flash top minus 0x4020, OUTSIDE the 0xe6000 SFC '
-                'plaintext window — after the route-ASS four-word read-back '
-                'container releases the 21,800,455 stop (the ADC start function '
-                '0x606df66 config block: MIC_CTL0 RMWs, MIC_CTL1 inserts ending '
-                '0xff8, ADC_CON1 zero write-backs, MBG_CON param-gated untouched) '
-                'the audio pipeline re-init rounds run for 6,963,729 more steps '
-                'and stop on the flash-top pointer boundary; the honest next '
-                'boundary for the route after ASS)')
+                'conditional frontier stop (28890702 @ 0x6011976, the unmapped read '
+                'of 0xfd3b00 — a hardware-entropy seed read: the random-seed function '
+                '[0x601196a,0x60119ca) loads its Lehmer MINSTD LCG seed (x*16807 mod '
+                '0x7fffffff) from JL_RAND-family 0xfd3b00 = ls_base+0x3b*0x100 — after '
+                'the route-FLS official ANCIF/ANCIF1 content fixture releases the '
+                '28,764,184 stop (both flash-top sdfile file parses run for real: '
+                'magic 0x9881/0x98c1 and embedded names verified, free path never '
+                'taken) the ANC coefficient loading runs for 126,518 more steps and '
+                'stops on the entropy boundary; the honest next boundary for the '
+                'route after FLS)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
@@ -1441,7 +1455,7 @@ def check_self_conditional(report):
             'resource-table header CRC byte at 0x6010b16 (it must stay identical to the '
             'crc_bankb-scenario divergence)')
     spans = p['divergent_signature_spans']
-    require(spans['count'] == 65 and all(not s['writes_differ'] for s in spans['first']),
+    require(spans['count'] == 109 and all(not s['writes_differ'] for s in spans['first']),
             'the official-vs-b79 conditional divergence-span shape changed (image bytes must '
             'stay visible only as register values, never as differing stored bytes)')
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
@@ -1456,7 +1470,15 @@ def check_self_conditional(report):
                              '$.peripherals.hardware_crc_projection.result_reads[55]',
                              '$.peripherals.hardware_crc_projection.result_reads[61]',
                              '$.peripherals.hardware_crc_projection.result_reads[67]',
-                             '$.peripherals.hardware_crc_projection.result_reads[73]']),
+                             '$.peripherals.hardware_crc_projection.result_reads[73]',
+                             '$.peripherals.hardware_crc_projection.result_reads[77]',
+                             '$.peripherals.hardware_crc_projection.result_reads[83]',
+                             '$.peripherals.hardware_crc_projection.result_reads[97]',
+                             '$.peripherals.hardware_crc_projection.result_reads[103]',
+                             '$.peripherals.hardware_crc_projection.result_reads[109]',
+                             '$.peripherals.hardware_crc_projection.result_reads[115]',
+                             '$.peripherals.hardware_crc_projection.result_reads[121]',
+                             '$.peripherals.hardware_crc_projection.result_reads[127]']),
             'the official-vs-b79 conditional final-report differences changed: ' + str(diffs))
 
 
