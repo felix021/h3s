@@ -65,7 +65,7 @@ frontier P3_LS clear shape at `0x6067d48..0x6067d64`, the cleanup walker's
 | S5 | `0x601213e..0x601215e` | 32×`0x60116d0` free-memory loop (reads `0xfd3100`+`0xfd3104`), result `(sum−min−max)/30` → `h[0x126160+5968]` | N1 readback |
 | S6 | `0x6012176/0x6012186` | `0x601174c` ×2 → float stores | N1 transitive |
 | S7 | `0x601219c` | vector install `0x6065d86` (irq 39, arg `0x60348e8`) → RAM pend/post `0x12b55c`/`0x12b5b0` | RAM/OS only; both RAM fns touch BSS only |
-| S8 | `0x60121ae` | task create `0x6066c26` (name `0x60349d2`) → `0x6066a7e`→`0x606689a` | RAM only; scheduler IPI round-trip (existing mechanism) |
+| S8 | `0x60121ae` | task create `0x6066c26` (name `0x60349d2`) → `0x6066a7e`→`0x606689a`（勘误注记：add 体挂轮 helper 实为 0x60667b6/0x6066a5c，0x606689a 是 sys_timeout 族不在 S8 路径，路 S8ERR 复算确认） | RAM only; scheduler IPI round-trip (existing mechanism) |
 | S9 | `0x60121ce..0x6012212` | struct walker: `0x6001866` init + task create fn `0x6000e94` pdata `0x124888` prio `[0x124898]=10` | RAM only |
 | S10 | `0x60121b4..0x6012254` | pointer-table walkers W1(5)+W2(11)+W3(1)+W4(6) = 23 functions, all flash code, called unconditionally | W1[0] `0x6012e3e`→`0x6068152` P33/clock RMWs = **N3** |
 | S11 | `0x6012258..0x6012294` | buffer init `0x6064162`, `0x6064f18`, task create `0x6067242` (fn `0x6000d6c`, name `0x60a1aad`); if ret==0 → RAM `0x12cc40` (reads `0xf2c044`, `0xf2c128`, `0xf2c280`) | `0xf2c044` = **N4** (conditional-main) |
