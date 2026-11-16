@@ -153,7 +153,7 @@ W1[0] 停点后的完整序列 [静态]（★=新边界，✓=已备投影，～
 | 5 | 0x601305a..0x601310e | P3_CHG_CON1（0xf2c06c）ld/st RMW | ✓ BV 容器 |
 | 6 | **★ 0x6013094 ld.w [0xf2c070]** | **P3_CHG_CON2**（P33_ACCESS(0x1c)，[r5+12]）显式 ld/st RMW——BV 模型注释误记为 [r5+8]（CHG_CON1），实为 CHG_CON2，容器未含 | 待做（§3.1） |
 | 7 | 0x601311c/0x6013122 再读 0xf2c064 | P3_ANA_READ **bit1/bit2** 测试（bit1=充电在位门控任务创建参数；bit2 复测） | CB 语义顺带覆盖 |
-| 8 | 0x6013170 call 0x6066c26(0x6033f36,0,2,1) | **sys_timer_add thunk**（BZ 口径修正：0x6066c26 是 0x6066ba6 的软件定时器注册非 OS 任务创建；仅 bit1/bit2 命中臂）＋ h[0x125BF8]=ret；两臂都有 0x6013182 `0x6001cb0()` RAM getter | ～ 定时器机制 |
+| 8 | 0x6013170 call 0x6066c26(0x6033f36,0,2,1) | **sys_timer_add thunk**（BZ 口径修正：0x6066c26 是 0x6066ba6 的软件定时器注册非 OS 任务创建；勘误注记：thunk 0x6066c26 call 目标实为 0x6066a7e、0x6066ba6 为邻族函数，路 BZERR 复算确认；仅 bit1/bit2 命中臂）＋ h[0x125BF8]=ret；两臂都有 0x6013182 `0x6001cb0()` RAM getter | ～ 定时器机制 |
 | 9 | **★ 0x606817a rmw.or [0xfd0008]** | **DCCK_CON0** 首访问 = 0x6068152 mode 体入口（**仅 mode∈{0,1} 且 ≠b[0x129A30] 时到达**，见 §4） | 待做（§1.4） |
 | 10 | 0x60681a6/0x60681be | DCCK_CON1（ld/st×2）/DCCK_CON2（整字 0x10000） | 待做（同开关） |
 | 11 | 0x60681c6 `\|=0x8000000` | WLA_CON8 OSC 族 | ✓ OSC 投影 |

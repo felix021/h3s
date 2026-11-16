@@ -48,6 +48,7 @@ docs/HANDOFF 钉死条目；**[推断]** = 上述链推出。
 - **BZ 修正互证**：pmu_task 创建（HANDOFF 路 AF/X）即本栈——milestones
   `0x6065f9e r0=0x6068f0c`；「AF/AG 的任务创建实为 sys_timer_add thunk
   （0x6066c26→0x6066ba6）」与本栈无关，两口径并存不冲突。[文档+静态]
+  （勘误注记：thunk 0x6066c26 call 目标实为 0x6066a7e，0x6066ba6 为邻族函数，路 BZERR 复算确认）
 
 ### 1.2 12B 任务配置注册表 @0x609d780（38 条，本路全量解码）[静态]
 
@@ -177,7 +178,7 @@ flags=0 的默认任务族）、0x6015a10、0x60162de、0x6016346、0x601ffbe、
   cmd4  → 0x60869d8  st[r0+44]=r4（stream 槽登记）; b[obj+9]==3 检查;
                         0x6075a08(obj, 4)
   cmd5  → 0x60869f0  0x12b55c(pend/调度); h[obj+16] 时间戳; 无之则
-                        sys_timer_add 0x6066ba6(…,50)
+                        sys_timer_add 0x6066ba6(…,50)  ; 勘误注记：thunk 0x6066c26 call 目标实为 0x6066a7e，0x6066ba6 为邻族函数，路 BZERR 复算确认
   cmd6/7→ 0x6086b06  循环尾（忽略——两表项同偏移 0x9c）
   cmd8  → 0x6086a24  b[obj+10]==16 状态迁移→b[obj+9]=1;
                         0x6064d72('jlstream',1,0)（0x6086aaa，自队列 post）
