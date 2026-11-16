@@ -97,9 +97,9 @@ data[1..]     → 完全不读（忽略）
 恢复默认 `0x06025d32`、cmdid `0x17`。
 
 - setter `0x06025ca4` [静态]：`data_len>=3`；**data[0]=mode、data[1]=scene、data[2]=strength**，
-  三字节存 `b[0x1265EB..ED]`。无 mode 枚举校验（1..3 是 QCY 线协议层值 [文档]）；应用链里
+  三字节存 `b[0x12666B（勘误注记：原记 0x1265EB，路 SIMBRIDGE asm 核实+codex 复核更正）..ED]`。无 mode 枚举校验（1..3 是 QCY 线协议层值 [文档]）；应用链里
   mode=1 时要求 scene∈1..5（scene=5 映射内部 1/2）。前置检查链含一个「返回值==5」的能力查询
-  （`call 0x6007fb0` 结果需为 5，推测=支持的降噪场景数 [推断]）。
+  （`call 0x6008170（勘误注记：原记 0x6007fb0，同上）` 结果需为 5，推测=支持的降噪场景数 [推断]）。
 - getter `0x06025c84` [静态]：返回 3 字节 `mode scene strength` → 查询响应
   `17 03 mode scene strength` ✓ 与路 CS/protocol.md 实测响应吻合。
 - 恢复默认 `0x06025d32` [静态]：置 `01 01 02`（默认降噪）✓ 与 CS「默认降噪 17 03 01 01 02」的
@@ -128,7 +128,7 @@ data[1..]     → 完全不读（忽略）
   状态 `b[0x124f3e]`、配置 key17（1B）、音量槽 2219=`h[0x127696]`；音量引擎消费者 `0x0601b10`/
   `0x0601c40` 族（槽族 2217/2218/2219）。
 - 0x17：setter `0x06025ca4` / getter `0x06025c84` / 恢复默认 `0x06025d32`；参数存
-  `b[0x1265EB..ED]`。
+  `b[0x12666B（勘误注记：原记 0x1265EB，路 SIMBRIDGE asm 核实+codex 复核更正）..ED]`。
 - 既有：docs/app-protocol.md §2.3/§2.4（路 CS 原始记录）、docs/eq-cmd-0x22-layout.md（路 H
   方法与 0x22 ABI）、docs/protocol.md（实测帧格式/查询响应）。
 - 自验：`bash tools/android-query/test.sh` 5 套全过；`python3 tools/check_local.py --units` exit 0。
