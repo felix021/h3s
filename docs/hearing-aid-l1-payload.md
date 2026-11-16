@@ -83,7 +83,7 @@ pc_mic 完整序列 [静态]：
 | get_pipeline_uuid | 0x060057e6 | r0=15(STREAM_EVENT_GET_PIPELINE_UUID), r1=pipeline 名串 → r0=uuid | "mic_effect" 分支在 0x06005982 clock_alloc(24MHz)+0x9c2d [文档:路 I] |
 | jlstream_pipeline_parse | 0x06074938 | r0=pipeline uuid, r1=节点 uuid → r0=stream（0=失败） | 先调 0x060743f6 查 flash/res/stream.bin 描述符表；自建根 pipeline 对象（malloc 48B，id=**0x1100**） |
 | jlstream_add_thread | 0x06074ec6 | r0=stream, r1=线程/pipeline id, r2=flags, r3=extra → r0=err | 薄壳：r0=[stream+40]（根 pipeline）后调 0x06074e7e（按 id 匹配 pipeline 树；0x1100=根，特殊分支 @0x06074e92） |
-| jlstream_set_scene | 0x06074a5e | r0=stream, r1=scene 值, r2=场景恢复回调（0=无） | stream[80]=r1, stream[88]=r2, ROM 0x12b1a2 → stream[84] |
+| jlstream_set_scene | 0x06074a5e | r0=stream, r1=scene 值, r2=场景恢复回调（0=无） | stream[80]=r1, stream[88]=r2, RAM-code 0x12b1a2 → stream[84] |
 | set_notify | 0x06074e64 | r0=stream, r1=val | stream[28]=r1（字节）+ 调 0x06074d5e(stream, 0x20006) 事件派发 |
 | jlstream_start | 0x06074ffe | r0=stream → r0=err | — |
 | jlstream_release | 0x06074204 | r0=stream | 失败路径回收 |

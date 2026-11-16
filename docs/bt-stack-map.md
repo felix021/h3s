@@ -490,3 +490,52 @@ walker 是 **app_core 任务 init 的 initcall**，先于一切 app 事件无条
 | IRQ82/76 | flash 0x60C85D6（0xF000B8/BC/C0、0x12A468 ctx 表 [ctx+680]、0x124F14 链表 b[+8]==i→[+20]([+16])、bit12 门 [0xF000A4]&1）；flash 0x60C7FAC（0xF000A8/AC/B0、0x127A24 {arg,fn}×16、禁源再调）；拷贝映射 0x6000158 |
 | LE→rcsp | 0x60097FE 主循环（0x600980E-0x6009822 槽 fn 拼装 b<<24|..）；0x600EBB6（读同一槽表+[r0+9] 通道记录组参调用）；0x600B712 同构消费 |
 | tbh 14 案 | 0x60593AA r1=event+r12(-0x400001)/0x60593B6 tbh/表 0x60593B8..0x60593D2；案身：0x60593D4(7-10)/0x60593EA(0)/0x6059422(1)/0x605948A(2)/0x60594F6(5)/0x6059500(11)/0x605950E(12)/0x6059642(13)/0x6059650(1/0x405 三级 tbh 18 案 表 0x6059674)；0x6059EB2 环尾 |
+
+### 8.9 RAM-code 勘误回流清单（路 RAMFIX，2026-11-16 22:3x-23:0x，纯文档勘误——零 tools/ 改动）
+
+把 §8.0(a) 地基勘误（0x12xxxx=RAM-code 拷贝映射，非 mask ROM）回流到全库既有文档：
+扫描口径=「ROM」与 0x12xxxx 同行/邻近（±60 字符）+ 表头上下文 + 点名地址
+（0x12edfe/0x12e7d4/0x12b55c/0x12c5ca/0x12cc7e/0x12cc48/0x12e29c/0x12e160/0x12e16e/
+0x12b1a2 等）全量复核。**命中 29 处 = 就地更正 11 + 注记 1 + 本页原文不动 2 +
+HANDOFF 暂缓 2 + 确认不动（真 ROM/无标注误命中）13**。
+
+**A. 就地更正 11 处**（改词「ROM」→「RAM-code」，RAM-code 区=0x12A640..0x12EF14
+拷贝映射，§8.0(a)）：
+
+| # | 文件:行 | 原文片段 | 改法 |
+|---|---|---|---|
+| 1 | d1-gap-map.md:46 | 任务创建 …+ROM 0x12cc40 | ROM→RAM-code 0x12cc40 |
+| 2 | d1-gap-map.md:48 | ROM pend/post 0x12b55c/0x12b5b0 消息循环 | →RAM-code OS pend/post |
+| 3 | d2b-framework-task.md:25 | →ROM pend 0x12b55c | →RAM-code pend 0x12b55c |
+| 4 | d2b-framework-task.md:41 | TCB 88B 经 ROM 0x12e160 zalloc | →RAM-code 0x12e160 zalloc |
+| 5 | d2b-framework-task.md:237 | → ROM 0x12e16e zalloc(44) 建节点 | →RAM-code 0x12e16e zalloc(44) |
+| 6 | d2b-framework-task.md:268 | ROM 0x12e16e(92) ; zalloc stream | →RAM-code 0x12e16e(92) |
+| 7 | d2b-framework-task.md:358-359 | 0x12b55c 的完整 ROM 语义（ROM 域已有…钉子） | →完整 RAM-code 语义（该域已有…钉子；第二处为同句联动指代） |
+| 8 | d2b-framework-task.md:389 | ROM 0x12b55c/0x12b5b0 内的 cli/sti | →RAM-code 0x12b55c/0x12b5b0 |
+| 9 | resfile-transform.md:118 | → ROM pend 0x12b55c，停在 0x12b56c | →RAM-code pend 0x12b55c |
+| 10 | hearing-aid-l1-payload.md:86 | ROM 0x12b1a2 → stream[84] | →RAM-code 0x12b1a2（同文件 :313 本已正确口径） |
+| 11 | frontier-dependency-table.md:79 | GPIO 上电时序（…+ROM delay） | →+RAM-code delay（delay helper 在案唯一地址 0x12e29c 属 RAM-code 区，即本页 §2/§8.0(a) 点名处） |
+
+**B. 注记 1 处**（地址未在案，不硬改）：snapshot-design.md:77「ROM memset 全
+10240B」→ 加 dated 注记：memset 执行体地址未在案；真 ROM memset 0x1fd80 在案
+（appcore-tail-map S3），若实为 0x12xxxx 则属 RAM-code OS。
+
+**C. 本页原文不动 2 处**（本节规则=原文不删改，§8.0(a) 已覆盖）：bt-stack-map.md:94
+「ROM delay 0x12e29c(240)」、:169「0x12e29c ROM delay（ROM 可执行）」。
+
+**D. HANDOFF.md 暂缓 2 处**（HANDOFF 冲突敏感不动，待主协调统一处理）：:349
+「ROM veneer（0x12bd32/0x12b55c/0x12b5b0）」、:290「ROM 0x12af88 的
+insert.rrii.p∥ld.bu」——两处 0x12xxxx 均在拷贝映射区内。
+
+**E. 确认不动 13 处**（真 ROM 0x0-0x20000 内标注或「ROM」不修饰 0x12xxxx）：
+bt-stack-map.md:44（ROM memcpy 0x1FD80）、adc-res-consumer.md:21（call ROM 0x1fd80
+memset）、key-action-map.md:117（ROM 0x1fd7c）、runtime-persistence.md:82（ROM
+0x1fd7c）、s19-endgame-map.md:63/87/211（ROM memcpy 0x1fd74）、key-action-map.md:152、
+d2a-loop-taskbook.md:142（ROM memcpy 0x1fd74）、appcore-tail-map.md:63（ROM memset
+0x1fd80）、frontier-dependency-table.md:77/89（ROM memset——调用域同 appcore-tail-map
+S3，指向 0x1fd80 真 ROM）、vm-key-roundtrip.md:37（ROM memcpy/memset 族=0x1fd7c/
+0x1fd80；0x12be48 原文已正确称「RAM 字节端口写」）、d1-gap-map.md:18/46 前半
+（CPU1 25 条 ROM 指令 0xa120 起/ROM 0x1fd80）。另：p11-heap-measurement.md/
+usb-rom-dispatch.md/clock-rtos-startup.md:89/dualcore-startup.md:17/d1-s18-consumption.md:147/
+o3-memory-design.md:138/hearing-aid-l1-payload.md:920-923/acceptance-samples 各 JSON——
+「ROM」均指真 ROM dump/资产或与 0x12xxxx 无修饰关系，维持原文。
