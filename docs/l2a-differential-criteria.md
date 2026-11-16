@@ -246,7 +246,11 @@ abstract 键=COEF 按存档 json 数据（基侧计数/步数+δ 读数）同式
   [设计代入] 估算（4/16/≈564，ρ_L≈4.82e-3 同式）逐位一致；重算脚本对 15 白名单键
   存档 E 值（三口径×3 偏移对）全量复现零差、difline-coeffs.json 双源交叉 E 值逐键
   相同（ρ 第 6-7 位差被 ceil 吸收）——场景无需重跑（预算全部输入已存档 json）；coeffs
-  工具白名单同步属 tools 路未动。
+  工具白名单同步属 tools 路未动（TAIL 2026-11-16 裁决关闭：coeffs 生成器无仓内对应物
+  ——layer3_budget/adapter_values 组装代码不在任何分支任何提交（全史 `git log -S`
+  零命中），存档 json 属 gitignored 运行产物、COEF/R2CHK 重算脚本明示 ~/tmp 不进仓，
+  白名单同步无 tools 落点；重算口径钉死在本表：**重算脚本键清单含 abstract**=16 差键
+  全清单（两份重算脚本同清单遍历），后续重算一律按本表 16 键执行）。
 - 16 差键清单全文钉死（三偏移对同集合；L2AR）：abstract_task_stack_transport、
   conditional_timer0_irq_rti、cpu0_shared_lock_ownership、exact_full_word_store、
   exact_postincrement_store、exact_subword_store、immediate_rep_multi_block_projection、
