@@ -80,6 +80,7 @@ def main():
     run(sys.executable,'tools/test_sim_usb_device.py')      # SIMBRIDGE M2：USB MSC BOT 设备端（字节级红绿双向）
     run(sys.executable,'tools/test_sim_flash_fixture.py')   # SIMBRIDGE M2：2MiB raw fixture 构造（真实产档缺资产 skip）
     run(sys.executable,'tools/test_sim_restore_planner.py') # SIMBRIDGE M3：刷机扇区计划器（diff→sectors/写完模拟/CLI）
+    run(sys.executable,'tools/test_sim_m3_verdicts.py','--record','analysis/local-checks/sim-m3-verdicts.json')  # SIMB3V M3：P1-P7/N1-N5 socket 级机检（自管真 server 子进程；缺 UFW 资产回退合成 fixture，约 10s）
     run(sys.executable,'tools/test_sim_world_driver.py')      # SIMB1C：直调驱动器（合成 machine 形状）
     run(sys.executable,'tools/test_sim_world_boot.py')        # SIMB1C：世界引导缝合线（dual_case post_stop 注入）
     run(sys.executable,'tools/test_sim_m1_helpers.py')       # SIMB1C：验收执行器纯函数面（帧形/EQ 曲线编码）

@@ -1,0 +1,43 @@
+{
+  "route": "SIMB3V/sim-simb3v（分支 sim-simb3v，SIMB3A 遗留项补齐：M3 验收从「一次 E2E 实录」变「可重跑机检」）",
+  "recorded_at": "2026-11-17T07:05:12",
+  "task": "M3 机检验收执行器（docs/sim-m3-flash-spec.md §5 P1-P7/N1-N5）。执行器=tools/test_sim_m3_verdicts.py：socket 级全环、对真 server 子进程（sim_bridge_server.py --flash-image，非 mock）；四态纪律照 test_sim_m1_verdicts（0=PASS/3=FAIL/4=BLOCKED/5=PARTIAL）。本卡=2026-11-17 实跑结果摘要，全量记录留本地（见 raw_local）。",
+  "fixture": {
+    "provenance": "h3s-sim-usb-flash-fixture-v1（官方 UFW flash.bin 逐字节 [0,0xe6000) + [0xe6000,2MiB) 0xff 合成填充；缺资产时执行器回退合成全非 ff 模式并如实记录）",
+    "base_sha256": "27fe1fe6f589821689cfdaafb7ea372579f15020569bfa1c68435fac7d4453a9",
+    "target_sha256_main": "2f0b8380e623485c19f03fbe0eeead39f3271b2954c569c4599a83a7aa36d065",
+    "target_sha256_n2": "b90d663a6166b8b0a63ad1656851f4c844732bec0012a00686dec3a2b9d95ab7",
+    "plans": "主环三扇区 0x0/0x1000/0x1f8000（与 E2E 同形）+ N2 六扇区 0x3000/0x21000/0x52000/0x87000/0xb1000/0xe5000（基线全非 ff）+ N4/N5 两扇区 0x1000/0x2000；目标镜像=执行器确定性 LCG 独立构造（sim_restore_planner.plan_restore 产计划，SHA 本层 hashlib 复算——server 不自评）",
+    "asset_ironclad": "全程多时点 describe.flash_sha256==S0 + 每场景后磁盘 fixture SHA==S0（copy-on-armed：写只落进程内副本）"
+  },
+  "sections": {
+    "P1_plan_independent": "PASS：计划形状（非空/全 4KiB 对齐/扇区集一致）+ planner 报告 SHA vs 本层 hashlib 逐项相等；目标切片≠基线且非全 ff；主环 0x1f8000 基线在 0xff 合成区=擦除验证弱断言（与 E2E 同形，如实标注）",
+    "P2_m2_regression": "PASS：未 armed 全序列 enterRom→loader→FD05 全片双读 2×4096×512B==base 逐字节（双读一致；banner flash_sha256==S0）",
+    "P3_arm": "PASS：usb_arm ok / describe armed+work_sha256==S0+plan_sectors / 重复 arm（同异 nonce）=busy 拒不断链",
+    "P4_sector_chain": "PASS×3：每扇区 核验==基线→FB01（16B 回显 fb01+尾段 0 填充）→FD05×8==ff→FB04×8→FD05×8==target 切片；journal_len 逐扇区 9/18/27、work_sha256==独立构造渐进镜像 SHA（不以 server 内部状态自证）",
+    "P5_preserved": "PASS：计划外保留区 5 点抽查（0x2000/0x8000/0xe5000/0x1f9000/0x1ff800）==base 切片",
+    "P6_full_readback": "PASS：全片复读==target 逐字节 + describe.work_sha256/sim_sha256==S_target 两面互证",
+    "P7_reboot_verify": "PASS×5：reboot ok 即断连→rescan=normal(3654:4a55)+旧 rom key 过期→再进 ROM 全片复读==S_target→journal_len=28/armed=false→磁盘 fixture==S0",
+    "N1_not_armed": "PASS：未 armed FB01/FB04 裸发 CSW status=1×2+rejected 计数、work_sha256 无、read_only=true、FD05 读芯片内容不变",
+    "N2_interrupt": "PASS×6：擦 3/6 断链→armed 保持+work_sha256==独立构造半态 SHA（base+3 扇区 ff）+journal_len=3→FD05 已擦==ff/未擦==原始/计划外==原始→磁盘==S0→disarm 显式回滚（FD05 回基线）→新 nonce 重 arm 副本重置 S0→六扇区完整重刷全片==target（可恢复闭环）",
+    "N3_nonce_restart": "PASS×4+1 note：三态=armed 期间 busy/disarm 后已消费/reboot 后已消费；kill -9 重启=armed false+work_sha256 无+sim_sha256==S0+FD05 回基线（§3.5-A 进程级回滚）；note=重启后同 nonce 字符串再 arm 是全新会话（基线 S0，旧授权构造性无效，spec §3.1）",
+    "N4_out_of_plan": "PASS：FB01 对齐计划外/非对齐/越界 + FB04 计划外 → CSW status=1×4+计数、副本==S0、FD05 抽查==base；app 外层守卫（构造参数抛/FakeDev 零字节）归 JVM 单测与 E2E guard_negatives（note 如实分工）",
+    "N5_shape": "PASS：FB04 CRC 错/len=256/未擦先写 + FB01 非 16B IN（CBW size=0）/截短 CDB 8B + FB04 截短 CDB 9B（缺 CRC）+ 两 opcode 尾段非 0xff 补齐 → 8/8 status=1；work_sha256==独立构造预期（仅一次绿擦生效）、rejected 计数吻合"
+  },
+  "overall_verdict": "PASS",
+  "counts": {"executed": 30, "failures": 0, "incomplete": 0, "optional_notes": 3, "scenario_elapsed_s": {"main_P2_P7_N1": 5.79, "N2_interrupt": 1.51, "N3_nonce_restart": 0.32, "N4_N5_gates": 0.15}},
+  "e2e_cross_check": {
+    "accounting": "主环收尾账目 fb01=3 / fb04=24 / journal_len=28 / rejected=0 —— 与 E2E 实录（evidence/sim-routes/m3-avd-e2e.json server_accounting）逐项相等（P7d 硬断言）；sim_sha256==S_target、flash_sha256==S0 两面同构",
+    "fixture": "同一构造器+同一官方 UFW → base_sha256 与 E2E 相同（27fe1fe6…）；目标镜像为执行器独立构造（S_target=2f0b8380… ≠ E2E 05ec4242…）——符合「预期独立构造、server 不自评」纪律：对拍基准是行为与账目形状，不是复刻 E2E 的目标字节",
+    "coverage_split": "app/AVD 侧半边（恢复卡 UI、CDP 全序、guard_negatives 四负例、JVM 单测）=E2E 实录 PASS + units；执行器只管 server 侧机检面（四态纪律：note 如实分工，不冒充 NOT_RUN）"
+  },
+  "reproduce": [
+    "python3 tools/test_sim_m3_verdicts.py --record analysis/local-checks/sim-m3-verdicts.json（退出码即四态；fixture 首跑经 manifest 拉取官方 UFW，缺资产自动回退合成模式）",
+    "python3 tools/check_local.py --units（含本执行器注册项，与既有 sim 族回归同层）"
+  ],
+  "raw_local": {
+    "verdicts": "~/worktrees/h3s/sim-simb3v/analysis/local-checks/sim-m3-verdicts.json（gitignored，30 项 checks 全量明细+SHAs+账目）",
+    "server_logs": "~/worktrees/h3s/sim-simb3v/analysis/local-checks/m3v-server-*.log（gitignored，5 个 server 子进程 stderr）",
+    "fixture": "~/worktrees/h3s/sim-simb3v/analysis/local-checks/m3v-flash-2mib.bin（gitignored，每轮重写的被测 fixture）"
+  }
+}
