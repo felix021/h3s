@@ -113,7 +113,8 @@ public class WebShellActivity extends Activity {
         setContentView(web);
         web.loadUrl("file:///android_asset/index.html");
         registerUsbDetach();
-        registerDrive();
+        if (sim) registerDrive();   // P0（codex 审查 2026-11-17）：仅仿真模式注册——exported 广播
+                                   // 含 armWrite/setAnc/writeEq 真机写入口，真机构建不得暴露
         if (!sim && !permissionsGranted())   // 仿真模式不触 BT 权限面（AVD 上弹窗无意义，设计 §4.3）
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT}, 1);
     }
@@ -134,6 +135,8 @@ public class WebShellActivity extends Activity {
      * action=cn.felix021.h3squery.DRIVE，extras：method=connect/disconnect/arm/readStatus/
      * setAnc/writeEq（writeEq 另带 eq_type/master_centid/bands_json；arm 带 on；readStatus
      * 带 cmd；setAnc 带 mode）。仅 E2E 用：RECEIVER_EXPORTED + 不含任何写死的私有信息。
+     * P0 门（codex 审查 2026-11-17）：只在 sim 模式注册——接收器 exported 且含 armWrite 等
+     * 真机写入口，任何第三方 app 都能发广播，真机构建绝不注册。
      */
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private void registerDrive() {
