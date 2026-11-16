@@ -251,7 +251,8 @@ multiband_drc_node.c），但 QCY ops 表 28 条里**无 multiband_drc 节点**�
 - 既有钉子：docs/eq-payload-semantics.md（BT，ops 表/uuid/0x60059ce 源字节/0x607898e
   subcommand-2）、docs/d2-audio-first-scene.md（BX，六具名场景/§5 流水线名）、
   docs/stream-volume.md（volume_cfg 布局/§3 0x6c94）、docs/anc-cycle.md（键循环 first-
-  match + 内部 ON2/TRANS3 编号）、HANDOFF 路 BT/BX/BO/BN 条目。
+  match + 内部 ON2/TRANS3 编号）、HANDOFF 路 BT/BX/BO/BN 条目（已归档至
+  [docs/handoff-archive.md](handoff-archive.md)）。
 
 ## 8. 对后续路的建议（建议≠决定）
 

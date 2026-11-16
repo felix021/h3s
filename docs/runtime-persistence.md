@@ -19,7 +19,7 @@
 | get_config 分派器 | `0x06000f88` | `get_config(key, buf, len)`，按 key 区间选后端 | 反汇编（下同） |
 | set_config 分派器 | `0x06001f12` | `set_config(key, buf, len)` | 反汇编 |
 | 条目 get/set 助手 | `0x06000f5e` | 调后端 record 的 match/get/set 函数指针 | 反汇编 |
-| 后端注册表 | `0x060c32c8..0x060c3338` | 4 条 28 字节 record，每条 `[+0]init [+4]match [+8]get [+12]set` | app.bin 数据 + HANDOFF.md:395 |
+| 后端注册表 | `0x060c32c8..0x060c3338` | 4 条 28 字节 record，每条 `[+0]init [+4]match [+8]get [+12]set` | app.bin 数据 + HANDOFF.md:210 |
 
 key 区间与后端对应（两个分派器一致）：
 
@@ -64,22 +64,22 @@ record `0x60c3300`（VM 后端）的三个函数指针：
 ### 2.1 VM 区（主配置区，key 1..99）
 
 - **Flash 物理区间**：`0x1da000` 起，固件 `boot_info.vm_size=0x4000`（16KB 保留）。实测 USB 恢复时配置变化发生在 `0x1db000`（第二半）。见 docs/usb-recovery.md:92「VM `1da000..1ddfff`… 本次变化发生于 `1db000`」。
-- **运行时组织**：VM init 把 `vm_saddr=0x1da000` 写进结构，按 `span=0x2000`（8KB）两半各 `0x1000`（4KB）组织（HANDOFF.md:396）。即「双半区轮换」的磨损均衡。
-- **格式**：VM 头 magic `0xFF5A5A5A`（HANDOFF.md:396 的 magic 判定分支）；记录按 key 组织。VM 区空白/格式化判定在 `0x0600a7b6`（空白扫描）与 `0x06060f9a`（VM 窗口 init）。
-- **RAM 缓存**：VM 有效标志 `b[0x1272dc]`；VM 位图（哪些 key 已写）`0x1272ac` 起 4094×u16，每 bit 一个 key（HANDOFF.md:396「重建 VM 位图」+ get 函数 `0x06060ea0` 的位测试 `r4&(1<<(key&0x1F))`）。
+- **运行时组织**：VM init 把 `vm_saddr=0x1da000` 写进结构，按 `span=0x2000`（8KB）两半各 `0x1000`（4KB）组织（HANDOFF.md:211）。即「双半区轮换」的磨损均衡。
+- **格式**：VM 头 magic `0xFF5A5A5A`（HANDOFF.md:211 的 magic 判定分支）；记录按 key 组织。VM 区空白/格式化判定在 `0x0600a7b6`（空白扫描）与 `0x06060f9a`（VM 窗口 init）。
+- **RAM 缓存**：VM 有效标志 `b[0x1272dc]`；VM 位图（哪些 key 已写）`0x1272ac` 起 4094×u16，每 bit 一个 key（HANDOFF.md:211「重建 VM 位图」+ get 函数 `0x06060ea0` 的位测试 `r4&(1<<(key&0x1F))`）。
 
 ### 2.2 其它配置后端
 
 | 后端 | Flash 位置 | 内容 | 证据 |
 | --- | --- | --- | --- |
 | cfg_tool 记录区 | cfg_tool.bin（flash 0xDF454 资源块） | 工具/调音参数（key 100+ 一部分） | firmware-layout.md:53 |
-| btif 窗口 | flash 0x1e0000..0x1e1000（bank B，公开 UFW 无此字节） | 蓝牙信息类记录 | HANDOFF.md:395 |
+| btif 窗口 | flash 0x1e0000..0x1e1000（bank B，公开 UFW 无此字节） | 蓝牙信息类记录 | HANDOFF.md:210 |
 | 记录区（只读 key 512..700） | VM 之外的记录区 | 系统值（chip/MAC 类） | 分派器 `[0x60c331c+12]=0` |
 
 ### 2.3 写配置的 API（固件侧）
 
 - **高层**：`set_config(key, buf, len)`（`0x06001f12`）→ 分派到 VM set `0x06060efe`。
-- **VM 写核心**：`0x06010534`（`vm_write` 角色）——内部拿 OS 互斥锁（`0x12b55c`/`0x12b5b0`，HANDOFF.md:394 的 pend/post 对），分配缓冲（`0x12e160`）、拷贝（ROM `0x1fd7c`）、算 CRC（`0x6000f0c`），空间不足时调 `0x600a70a` 同步到 Flash。
+- **VM 写核心**：`0x06010534`（`vm_write` 角色）——内部拿 OS 互斥锁（`0x12b55c`/`0x12b5b0`，HANDOFF.md:209 的 pend/post 对），分配缓冲（`0x12e160`）、拷贝（ROM `0x1fd7c`）、算 CRC（`0x6000f0c`），空间不足时调 `0x600a70a` 同步到 Flash。
 - **VM 同步到 Flash**：`0x0600a70a` 是 2 指令 wrapper，`call 0x12cc40`（RAM 驻留函数，实际 SFC 擦/写 VM 区）。真正的 Flash 擦写指令在 RAM 0x12cc40 内，本调研未逐条追入（见 §6）。
 - **VM 头提交**：set 完成后递归 `set_config(255, buf, 40)`（`0x06060f94`），key 255 = VM 头（40 字节）。
 
@@ -95,7 +95,7 @@ record `0x60c3300`（VM 后端）的三个函数指针：
 
 ### 3.1 开机总流程
 
-1. **平台 init** 尾（`0x0601206c` 遍历后端表 `0x60c32c8..0x60c3338`）依次调 4 个后端 init（HANDOFF.md:395）：
+1. **平台 init** 尾（`0x0601206c` 遍历后端表 `0x60c32c8..0x60c3338`）依次调 4 个后端 init（HANDOFF.md:210）：
    - btif 表 walker init `0x06060a4a`
    - index<768 校验 `0x06060c3c`
    - **VM 窗口 init `0x06060f9a`**（判定 VM magic、空白扫描、重建 VM 位图）

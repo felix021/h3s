@@ -185,8 +185,9 @@ resfile 变换**（config.dat 消费面与 0x1fe30 归因的前置），其后�
   [evidence/eq-fence-repair.json](../evidence/eq-fence-repair.json)。
 - 载荷/钩子语义、fence 静态证明、状态字节、验证分层：
   [docs/eq-payload-semantics.md](eq-payload-semantics.md)（路 BT）。
-- 控制面五场景三镜像：HANDOFF「已实现」路 BW（sim-eqctrl）条目；
-  tone 场景骨架与 BX 勘误：HANDOFF 路 CA（sim-tonescene）条目 +
+- 控制面五场景三镜像：HANDOFF 路 BW（sim-eqctrl）条目（已归档至
+  [docs/handoff-archive.md](handoff-archive.md)）；
+  tone 场景骨架与 BX 勘误：HANDOFF 路 CA（sim-tonescene）条目（同上归档） +
   [docs/d2-audio-first-scene.md](d2-audio-first-scene.md) §6。
 - D2 断言草案 D2-A..D2-D、SFR 缺口、离线可喂性：
   [docs/d2-audio-first-scene.md](d2-audio-first-scene.md)（路 BX）。
