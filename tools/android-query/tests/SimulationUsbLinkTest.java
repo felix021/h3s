@@ -53,10 +53,13 @@ public class SimulationUsbLinkTest {
      *  - hello(sim-usb) → hello_ok；usb_scan → 一台 rom 身份设备；usb_open → ok。
      *  - usb_bulk_out 收 CBW（31B 'USBC'）→ 按应答策略回 usb_bulk_in：
      *      INQUIRY → 真 36B BR28/UBOOT1.00；FD05 → 512B 确定性数据；其后各回 13B CSW（tag 回显）。
-     *  - usb_ctl len8 → 8×ff；len0 → 回空结果后 close（重枚举）。 */
+     *  - usb_ctl len8 → 8×ff；len0 → 回空结果后 close（重枚举）。
+     *  - M3：usb_arm → ok（armReject=true 时 ok=false）；usb_reboot → ok 后 close（重枚举拔出）。 */
     static final class FakeUsbServer {
         final ServerSocket server;
         final List<String> log = new CopyOnWriteArrayList<String>();
+        final List<JSONObject> armRequests = new CopyOnWriteArrayList<JSONObject>();
+        volatile boolean armReject = false;
         final AtomicInteger connections = new AtomicInteger();
         final CountDownLatch dropped = new CountDownLatch(1);
         private volatile Socket client;
@@ -116,6 +119,16 @@ public class SimulationUsbLinkTest {
                             dropped.countDown();
                             return;
                         }
+                    } else if ("usb_arm".equals(type)) {                // M3 armed 协商（ok/false 两态）
+                        armRequests.add(m);
+                        send(out, new JSONObject().put("t", "usb_arm_result")
+                            .put("ok", !armReject).put("detail", ""));
+                    } else if ("usb_reboot".equals(type)) {             // M3 重启：回执后断连重枚举
+                        send(out, new JSONObject().put("t", "usb_reboot_result")
+                            .put("ok", true).put("detail", ""));
+                        s.close();
+                        dropped.countDown();
+                        return;
                     } else if ("usb_bulk_out".equals(type)) {
                         byte[] data = Base64.getDecoder().decode(m.getString("data"));
                         if (data.length == 31 && data[0] == 'U' && data[1] == 'S' && data[2] == 'B' && data[3] == 'C') {
@@ -192,9 +205,43 @@ public class SimulationUsbLinkTest {
         recoveryAndEnterRomDetached();
         serverDropFailsVisibly();
         closeIdempotent();
+        armFlashAndReboot();
         System.out.println("SimulationUsbLinkTest passed: 枚举（短连接/会话内复用）+ 授权即时授予 + "
             + "open/channel 的 BOT 精确长度往返（真 UsbScsi INQUIRY/FD05）+ EP0 控制往返与重枚举拔出 + "
-            + "断连可见失败 + close 幂等。未触 android.hardware.usb。");
+            + "断连可见失败 + close 幂等 + M3 usb_arm/usb_reboot 往返（ok/false 两态、回执后断连拔出）。"
+            + "未触 android.hardware.usb。");
+    }
+
+    /** M3：armFlash roundtrip（计划 JSON 透传+回执分发）与 rebootDevice（ok 回执后断连拔出）。 */
+    static void armFlashAndReboot() throws Exception {
+        FakeUsbServer server = new FakeUsbServer();
+        server.start();
+        try {
+            SimulationUsbLink link = new SimulationUsbLink("127.0.0.1", server.port(), DIRECT);
+            Recorder rec = new Recorder();
+            link.setCallbacks(rec);
+            expect(link.open("sim:usb:4c4a:3442"), "open");
+            String sha = new String(new char[64]).replace('\0', 'a');   // 64 位 hex 占位
+            String planJson = "{\"sectors\":[4096," + (0x200000 - 0x1000) + "],\"target_sha256\":\"" + sha
+                + "\",\"nonce\":\"n-1\"}";
+            expect(link.armFlash(planJson), "armFlash 应成功");
+            expect(server.armRequests.size() == 1, "server 应收到一次 usb_arm");
+            JSONObject sent = server.armRequests.get(0);
+            expect(sent.optJSONArray("sectors") != null && sent.optJSONArray("sectors").length() == 2
+                && sent.optJSONArray("sectors").toString().equals("[4096," + (0x200000 - 0x1000) + "]"),
+                "计划 sectors 透传");
+            expect(sha.equals(sent.optString("target_sha256")), "target_sha256 透传");
+            expect("n-1".equals(sent.optString("nonce")), "nonce 透传");
+            server.armReject = true;                                    // 拒绝路径：ok=false → false
+            expect(!link.armFlash(planJson), "server 拒绝时 armFlash 应 false");
+            server.armReject = false;
+            expect(link.rebootDevice(), "reboot 应送达");
+            await(server.dropped, "server 断开");
+            await(rec.detached, "重枚举拔出回调");
+            expect("sim:usb:4c4a:3442".equals(rec.detachedKey), "onDetached(key)");
+            expect(!link.socketConnected(), "会话应清理");
+            link.close();
+        } finally { server.close(); }
     }
 
     /** 短连接枚举 + 授权即时授予（无设备会话时 scanJson 自建短连接问一次）。 */

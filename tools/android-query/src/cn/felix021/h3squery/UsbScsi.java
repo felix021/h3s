@@ -15,8 +15,12 @@ package cn.felix021.h3squery;
  *   - 0xFC0A 在线查询（响应须以 fc0a03 起 = SPI NOR）
  *   - 0xFD05 读 Flash 扇区（512B，仅已装载 loader 后）
  *   - 0xFD07 读内存窗（≤128B，仅已装载 loader 后；512B 实测会断链，docs/rom-read.md）
- * 擦除/编程/复位命令（FB00/FB01/FB02/FB04/FC0C/FC12…）一律不存在编码入口——
- * 本类不提供任何 Flash 写路径（红线：候选镜像 UNTESTED 不刷机）。
+ * M3 写路径（FB01 擦除/FB04 编程，tools/usb-recovery/h3s_usb.py:167/171-172 实测形状）只在
+ * **显式写能力位 writable=true** 时编入，且发送前必须挂「计划感知守卫」（RestoreGuard——
+ * 地址∈armed 计划扇区+当前活动扇区+数据==已确认目标，h3s_usb.py:86-101 RestoreTransport 同款）：
+ * 默认构造 writable=false，FB01/FB04 在两道白名单（vendorCdb/exchange）都不存在——生产
+ * （真机）形态逐字保持 M2 红线「无 Flash 写路径」；仅仿真刷机链路（WebShell sim 模式）经
+ * 构造参开启。复位命令（FB00/FB02/FC0C/FC12…）仍然不存在编码入口。
  *
  * CRC = CRC-16/XMODEM（binascii.crc_hqx，poly 0x1021、初值 0、无反射）。
  *
@@ -40,20 +44,47 @@ public class UsbScsi {
     public static final int OP_ONLINE_QUERY = 0xfc0a;
     public static final int OP_FLASH_READ = 0xfd05;
     public static final int OP_MEM_READ = 0xfd07;
+    /** FB01：擦 4KiB NOR 扇区（[实测] usb-recovery.md:74 / h3s_usb.py:167；仅 writable 形态）。 */
+    public static final int OP_SECTOR_ERASE = 0xfb01;
+    /** FB04：512B 编程（[实测] usb-recovery.md:75 / h3s_usb.py:171-172；仅 writable 形态）。 */
+    public static final int OP_SECTOR_PROGRAM = 0xfb04;
     /** FD07 单次最大 128B（实测 512B 读取会把 USB 读挂掉，docs/rom-read.md）。 */
     public static final int MEM_READ_MAX = 128;
-    /** Flash 扇区大小（FD05 固定按 512B 扇区读）。 */
+    /** Flash 扇区大小（FD05 固定按 512B 扇区读；FB04 编程块长）。 */
     public static final int SECTOR = 512;
+    /** NOR 擦除块（4KiB，tools/usb-recovery/image.py SECTOR=4096；FB01 地址对齐单位）。 */
+    public static final int FLASH_SECTOR_4K = 4096;
     /** RAM loader 装载地址（br28loader.bin，tools/usb-recovery 钉死）。 */
     public static final int LOADER_ADDRESS = 0x120000;
 
+    /** 计划感知写守卫（P1-4：写命令发送前的最后一道门，h3s_usb.py:86-101 同款）。
+     *  由持有 armed 计划的业务层（H3sUsbBridge.restoreFlash）安装/卸除。 */
+    public interface RestoreGuard {
+        /** FB01 发送前：地址必须等于当前活动扇区且活动扇区∈计划。 */
+        void checkErase(int address);
+        /** FB04 发送前：块须落在当前活动扇区内、512 对齐，且 data==已确认目标的对应切片。 */
+        void checkProgram(int address, byte[] data);
+    }
+
     private final Channel ch;
+    private final boolean writable;                 // 写能力位：默认 false=M2 只读形态
+    private RestoreGuard guard;                     // 写守卫：FB01/FB04 发送前必须非空
     private int tag = 0;
 
-    public UsbScsi(Channel ch) {
+    public UsbScsi(Channel ch) { this(ch, false); }
+
+    /** 写能力构造（仅仿真刷机链路/测试用；真机构建一律走单参构造或显式 false）。 */
+    public UsbScsi(Channel ch, boolean writable) {
         if (ch == null) throw new IllegalArgumentException("channel 不能为 null");
         this.ch = ch;
+        this.writable = writable;
     }
+
+    /** 写能力探针（测试/事件展示用）。 */
+    public boolean writable() { return writable; }
+
+    /** 安装/卸除计划感知写守卫（restoreFlash 执行器进出时成对调用；null=卸除）。 */
+    public void installRestoreGuard(RestoreGuard g) { this.guard = g; }
 
     /** 测试钩子：当前 CBW tag（每个 exchange 自增，从 1 起）。 */
     public int tag() { return tag; }
@@ -71,9 +102,12 @@ public class UsbScsi {
     }
 
     /** 组 16B vendor CDB：opcode(2B BE) + args + 0xff 填充（protocol.py cmd() 同形）。
-     *  编码入口即查白名单——擦除/编程/复位命令在这里就不存在。 */
-    public static byte[] vendorCdb(int opcode, byte[] args) {
-        if (!opcodeAllowed(opcode)) throw new IllegalArgumentException("opcode 不在只读/装载白名单: " + Integer.toHexString(opcode));
+     *  公共静态入口恒为只读口径——FB01/FB04 在这里就不存在（M2 契约，UsbScsiTest 直接依赖）；
+     *  写命令只能经 writable 实例的 eraseSector/programSector 进入（cmd→vendorCdb(_,_,writable)）。 */
+    public static byte[] vendorCdb(int opcode, byte[] args) { return vendorCdb(opcode, args, false); }
+
+    static byte[] vendorCdb(int opcode, byte[] args, boolean writable) {
+        if (!opcodeAllowed(opcode, writable)) throw new IllegalArgumentException("opcode 不在白名单（" + (writable ? "可写" : "只读") + "形态）: " + Integer.toHexString(opcode));
         if (args == null || args.length > 14) throw new IllegalArgumentException("args 长度非法: " + (args == null ? -1 : args.length));
         byte[] cdb = new byte[16];
         cdb[0] = (byte) (opcode >> 8);
@@ -97,23 +131,30 @@ public class UsbScsi {
         return out;
     }
 
-    /** opcode 白名单（只读/装载；Flash 擦写/复位不在内，见类注）。 */
-    static boolean opcodeAllowed(int opcode) {
+    /** opcode 白名单（只读/装载口径——公共静态面沿用，M2 契约）。 */
+    static boolean opcodeAllowed(int opcode) { return opcodeAllowed(opcode, false); }
+
+    /** 白名单第二口径：writable=true 时 FB01/FB04 编入（擦写/复位其余仍不存在）。 */
+    static boolean opcodeAllowed(int opcode, boolean writable) {
         switch (opcode) {
             case OP_INQUIRY: case OP_RAM_WRITE: case OP_LOADER_START:
             case OP_ONLINE_QUERY: case OP_FLASH_READ: case OP_MEM_READ:
                 return true;
+            case OP_SECTOR_ERASE: case OP_SECTOR_PROGRAM:
+                return writable;
             default:
                 return false;
         }
     }
 
-    /** 一次命令交换：CBW →（数据相位）→ CSW 校验；返回数据相位字节（无数据相位返回空）。 */
+    /** 一次命令交换：CBW →（数据相位）→ CSW 校验；返回数据相位字节（无数据相位返回空）。
+     *  写命令（FB01/FB04）无论从哪个入口进来，发送前都要过计划感知守卫（P1-4）。 */
     public byte[] exchange(byte[] cdb, int size, byte[] data) {
         if (cdb == null || cdb.length < 1 || cdb.length > 16) throw new IllegalArgumentException("CDB 长度非法");
         int opcode = ((cdb[0] & 0xff) << 8) | (cdb[1] & 0xff);
-        if (cdb[0] != OP_INQUIRY && !opcodeAllowed(opcode))
-            throw new IllegalArgumentException("opcode 不在只读/装载白名单: " + Integer.toHexString(opcode));
+        if (cdb[0] != OP_INQUIRY && !opcodeAllowed(opcode, writable))
+            throw new IllegalArgumentException("opcode 不在白名单（" + (writable ? "可写" : "只读") + "形态）: " + Integer.toHexString(opcode));
+        if (opcode == OP_SECTOR_ERASE || opcode == OP_SECTOR_PROGRAM) checkWriteGuard(opcode, cdb, data);
         if (data != null && size != 0 && size != data.length) throw new IllegalArgumentException("OUT 数据长度不一致");
         int dataSize = data != null ? data.length : size;
         tag += 1;
@@ -142,14 +183,50 @@ public class UsbScsi {
         return result;
     }
 
-    /** vendor 命令：opcode(2B BE)+args → 16B CDB（0xff 填充）→ exchange。 */
+    /** vendor 命令：opcode(2B BE)+args → 16B CDB（0xff 填充）→ exchange。
+     *  实例路径带写能力位（writable=false 时 FB01/FB04 在组帧即被拒）。 */
     public byte[] cmd(int opcode, byte[] args, int size, byte[] data) {
-        return exchange(vendorCdb(opcode, args), size, data);
+        return exchange(vendorCdb(opcode, args, writable), size, data);
+    }
+
+    /** 写命令守卫（exchange 内统一收口：typed 方法/cmd/直发 cdb 三条路都过这里，
+     *  h3s_usb.py:86-101 RestoreTransport.execute 的 Java 同位层）。 */
+    private void checkWriteGuard(int opcode, byte[] cdb, byte[] data) {
+        if (!writable) throw new IllegalStateException("写能力未开（只读形态，FB01/FB04 不存在）");
+        if (guard == null) throw new IllegalStateException("无恢复计划守卫（先经 armed 计划安装 RestoreGuard）");
+        if (cdb.length < 6) throw new IllegalArgumentException("写命令 CDB 缺地址");
+        int address = ((cdb[2] & 0xff) << 24) | ((cdb[3] & 0xff) << 16) | ((cdb[4] & 0xff) << 8) | (cdb[5] & 0xff);
+        if (opcode == OP_SECTOR_ERASE) guard.checkErase(address);
+        else guard.checkProgram(address, data);
     }
 
     private static byte[] addrLen(int address, int length) {
         return new byte[]{(byte) (address >> 24), (byte) (address >> 16), (byte) (address >> 8), (byte) address,
             (byte) (length >> 8), (byte) length};
+    }
+
+    private static byte[] addr4(int address) {
+        return new byte[]{(byte) (address >> 24), (byte) (address >> 16), (byte) (address >> 8), (byte) address};
+    }
+
+    /** FB01：擦 4KiB NOR 扇区（addr4 BE，16B IN 回显 opcode；h3s_usb.py:167 同形）。
+     *  仅 writable 形态；发送前过计划守卫（对齐+计划成员+活动扇区）。 */
+    public byte[] eraseSector(int address) {
+        if (!writable) throw new IllegalStateException("写能力未开（只读形态，FB01 不存在）");
+        if (address < 0 || address % FLASH_SECTOR_4K != 0) throw new IllegalArgumentException("FB01 地址须 4KiB 对齐: 0x" + Integer.toHexString(address));
+        return cmd(OP_SECTOR_ERASE, addr4(address), 16, null);
+    }
+
+    /** FB04：512B 编程（args=addr4+len2+00+crc16LE，照 ramWrite/h3s_usb.py:171-172 形状；
+     *  OUT 数据相位、无 IN 响应）。仅 writable 形态；发送前过计划守卫（数据==已确认目标）。 */
+    public void programSector(int address, byte[] chunk) {
+        if (!writable) throw new IllegalStateException("写能力未开（只读形态，FB04 不存在）");
+        if (chunk == null || chunk.length != SECTOR) throw new IllegalArgumentException("FB04 编程块须恰 512B: " + (chunk == null ? -1 : chunk.length));
+        if (address < 0 || address % SECTOR != 0) throw new IllegalArgumentException("FB04 地址须 512 对齐: 0x" + Integer.toHexString(address));
+        int crc = crc16(chunk);
+        byte[] args = new byte[]{(byte) (address >> 24), (byte) (address >> 16), (byte) (address >> 8), (byte) address,
+            (byte) (chunk.length >> 8), (byte) chunk.length, 0, (byte) crc, (byte) (crc >> 8)};
+        cmd(OP_SECTOR_PROGRAM, args, 0, chunk);
     }
 
     /** 标准 SCSI INQUIRY（36B）。CBW 记 cdb_len=6、CDB 区 0 填充到 16（protocol.py 同形）。 */
