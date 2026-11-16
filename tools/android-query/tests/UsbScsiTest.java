@@ -32,6 +32,26 @@ public class UsbScsiTest {
         return new byte[]{'U','S','B','S', (byte)tag, (byte)(tag>>8), (byte)(tag>>16), (byte)(tag>>24), 0,0,0,0, 0};
     }
 
+    /** 计划守卫桩（P1-4 负例用）：单活动扇区+固定目标切片口径。 */
+    static class PlanGuardStub implements UsbScsi.RestoreGuard {
+        final int sector;
+        final byte[] target;
+        int active = -1;
+        PlanGuardStub(int sector, byte[] target) { this.sector = sector; this.target = target; }
+        public void checkErase(int address) {
+            if (active != sector) throw new IllegalStateException("无计划内活动扇区");
+            if (address != active) throw new IllegalStateException("FB01 计划外擦除: 0x" + Integer.toHexString(address));
+        }
+        public void checkProgram(int address, byte[] data) {
+            if (active != sector) throw new IllegalStateException("无计划内活动扇区");
+            if (address / 4096 * 4096 != active || address % 512 != 0)
+                throw new IllegalStateException("FB04 计划外编程: 0x" + Integer.toHexString(address));
+            if (data == null || !java.util.Arrays.equals(data,
+                    java.util.Arrays.copyOfRange(target, address, address + 512)))
+                throw new IllegalStateException("FB04 数据与已确认目标不符");
+        }
+    }
+
     public static void main(String[] args) {
         // CRC-16/XMODEM：标准测试向量 + 与 crc_hqx 现算的 FB06 分块
         eq("crc16 向量 123456789", "31c3", String.format("%04x", UsbScsi.crc16("123456789".getBytes())));
@@ -125,8 +145,79 @@ public class UsbScsiTest {
         try { new UsbScsi(new FakeDev()).readFlashSector(3); failures++; System.out.println("FAIL FD05 未对齐未拒"); }
         catch (IllegalArgumentException e) { System.out.println("ok   FD05 未对齐拒绝"); }
 
+        // —— M3 写路径（P1-7 能力位三处闭合 + P1-4 计划守卫）——
+        // 默认构造 writable=false：eraseSector/programSector 直接拒绝，零字节上链
+        dev = new FakeDev();
+        scsi = new UsbScsi(dev);
+        try { scsi.eraseSector(0x1F8000); failures++; System.out.println("FAIL 默认形态 eraseSector 未拒"); }
+        catch (IllegalStateException e) { System.out.println("ok   默认形态 eraseSector 拒绝"); }
+        try { scsi.programSector(0x1F8000, new byte[512]); failures++; System.out.println("FAIL 默认形态 programSector 未拒"); }
+        catch (IllegalStateException e) { System.out.println("ok   默认形态 programSector 拒绝"); }
+        eq("默认形态零写命令", 0, dev.out.size());
+        // 第二道白名单（exchange）：手组 FB01 CDB 直发也被拒（writable=false）
+        byte[] fb01cdb = UsbScsi.vendorCdb(0xfd05, new byte[4]);   // 借白名单 opcode 组 16B 骨架
+        fb01cdb[0] = (byte) 0xfb; fb01cdb[1] = 0x01;
+        try { scsi.exchange(fb01cdb, 16, null); failures++; System.out.println("FAIL exchange 层 FB01 未拒"); }
+        catch (IllegalArgumentException e) { System.out.println("ok   exchange 层 FB01 拒绝（writable=false）"); }
+        eq("exchange 拒绝零字节", 0, dev.out.size());
+        // vendorCdb 静态面：writable 之外无重载可用，FB01 组帧仍拒（M2 契约不破）
+        try { UsbScsi.vendorCdb(0xfb04, new byte[9]); failures++; System.out.println("FAIL FB04 静态组帧未拒"); }
+        catch (IllegalArgumentException e) { System.out.println("ok   FB04 静态组帧拒绝"); }
+
+        // writable=true：FB01 字节级（cdb=fb01+addr4+0xff×10；16B IN 回显；CBW flags=0x80 IN）
+        byte[] target2m = new byte[2 * 1024 * 1024];
+        for (int i = 0; i < target2m.length; i++) target2m[i] = (byte) ((i * 11 + 5) & 0xff);
+        PlanGuardStub guard = new PlanGuardStub(0x1F8000, target2m);
+        guard.active = 0x1F8000;
+        dev = new FakeDev();
+        byte[] echoFb01 = new byte[16]; echoFb01[0] = (byte) 0xfb; echoFb01[1] = 0x01;
+        dev.expect(echoFb01); dev.expect(csw(1));
+        scsi = new UsbScsi(dev, true);
+        scsi.installRestoreGuard(guard);
+        byte[] erased = scsi.eraseSector(0x1F8000);
+        eq("FB01 响应 16B 回显", "fb01", UsbScsi.hex(java.util.Arrays.copyOf(erased, 2)));
+        byte[] cbw1 = dev.out.get(0);
+        eq("FB01 CBW size LE(16)", "10000000", UsbScsi.hex(new byte[]{cbw1[8],cbw1[9],cbw1[10],cbw1[11]}));
+        eq("FB01 CBW flags IN=0x80", 0x80, cbw1[12] & 0xff);
+        eq("FB01 CDB", "fb01001f8000" + "ffffffffffffffffffff",
+            UsbScsi.hex(java.util.Arrays.copyOfRange(cbw1, 15, 31)));
+
+        // writable=true：FB04 字节级（args=addr4+len2+00+crc16LE；OUT 数据相位；无 IN 响应）
+        byte[] chunkT = java.util.Arrays.copyOfRange(target2m, 0x1F8200, 0x1F8200 + 512);
+        dev = new FakeDev();
+        dev.expect(csw(1));
+        scsi = new UsbScsi(dev, true);
+        scsi.installRestoreGuard(guard);
+        scsi.programSector(0x1F8200, chunkT);
+        byte[] cbw2 = dev.out.get(0);
+        int crcT = UsbScsi.crc16(chunkT);
+        eq("FB04 CDB", "fb04001f8200020000" + String.format("%02x%02x", crcT & 0xff, (crcT >> 8) & 0xff)
+                + "ffffffffff",
+            UsbScsi.hex(java.util.Arrays.copyOfRange(cbw2, 15, 31)));
+        eq("FB04 CBW size LE(512)", "00020000", UsbScsi.hex(new byte[]{cbw2[8],cbw2[9],cbw2[10],cbw2[11]}));
+        eq("FB04 CBW flags OUT=0", 0, cbw2[12] & 0xff);
+        eq("FB04 数据相位==chunk", java.util.Arrays.hashCode(chunkT), java.util.Arrays.hashCode(dev.out.get(1)));
+
+        // P1-4 负例：对齐但计划外/数据不符/无活动扇区/无守卫 → 全部发送前拒绝，Channel 零字节
+        dev = new FakeDev();
+        scsi = new UsbScsi(dev, true);
+        scsi.installRestoreGuard(guard);
+        try { scsi.eraseSector(0x1F9000); failures++; System.out.println("FAIL 对齐但计划外擦除未拒"); }
+        catch (IllegalStateException e) { System.out.println("ok   计划外擦除拒绝（对齐也拒）"); }
+        try { scsi.programSector(0x1F8200, new byte[512]); failures++; System.out.println("FAIL 数据不符未拒"); }
+        catch (IllegalStateException e) { System.out.println("ok   数据与目标不符拒绝"); }
+        PlanGuardStub cold = new PlanGuardStub(0x1F8000, target2m);   // 未 beginSector
+        scsi.installRestoreGuard(cold);
+        try { scsi.eraseSector(0x1F8000); failures++; System.out.println("FAIL 无活动扇区未拒"); }
+        catch (IllegalStateException e) { System.out.println("ok   无活动扇区拒绝"); }
+        scsi.installRestoreGuard(null);                               // 未安装守卫
+        try { scsi.eraseSector(0x1F8000); failures++; System.out.println("FAIL 无守卫未拒"); }
+        catch (IllegalStateException e) { System.out.println("ok   无守卫拒绝（writable 也不放行）"); }
+        eq("P1-4 负例全零字节", 0, dev.out.size());
+
         if (failures > 0) { System.out.println("FAILED: " + failures); System.exit(1); }
         System.out.println("UsbScsiTest passed: CBW/CDB/CSW 与 Python 工具逐字节对拍、CRC16 向量、"
-            + "FB06 OUT 相位、FC0A 回显、坏 CSW/短读/白名单（FB01 无编码入口）/边界拒绝。");
+            + "FB06 OUT 相位、FC0A 回显、坏 CSW/短读/白名单（FB01 无编码入口）/边界拒绝、"
+            + "M3 写路径（writable 默认关/两道白名单/FB01+FB04 字节级/计划守卫负例零字节）。");
     }
 }

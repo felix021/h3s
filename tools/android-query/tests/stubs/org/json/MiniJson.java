@@ -170,6 +170,7 @@ final class MiniJson {
         if (v instanceof String) return quote((String) v);
         if (v instanceof Boolean) return v.toString();
         if (v instanceof Double) return numberToString((Double) v);
+        if (v instanceof Number) return v.toString();   // Integer/Long（org.json 整数直印；M3 扇区数组）
         if (v instanceof JSONObject) return v.toString();
         if (v instanceof JSONArray) return v.toString();
         throw new JSONException("不支持的值类型: " + v.getClass());

@@ -32,6 +32,11 @@ import org.json.JSONObject;
  *                                                     独立一条、长度精确（设计 §4.4 BOT 契约）
  *   app→server {"t":"usb_ctl","len":8|0}               EP0 厂商恢复请求（进入 ROM 流程）
  *   server→app {"t":"usb_ctl_result","data":b64}       len8→8×ff；len0→server 翻身份后断开
+ *   app→server {"t":"usb_arm","sectors":[…],…}         M3 armed 协商（Link.armFlash）
+ *   server→app {"t":"usb_arm_result","ok":bool,…}      校验失败 ok=false 不断链
+ *   app→server {"t":"usb_reboot"}                      M3 整机重启换身份（Link.rebootDevice）
+ *   server→app {"t":"usb_reboot_result","ok":bool,…}   ok=true 后断连重枚举（照 usb_ctl len0）
+ *   （usb_disarm_result 同族回执：app 侧未发 disarm——PREPARED 可取消、armed 不可，规格 §4.3）
  *
  * 线程约定照 AndroidUsbLink：Link 动作（open/channel 传输/控制）由 H3sUsbBridge 跑在注入的
  * io executor（单线程）——阻塞 socket IO 可接受（AndroidUsbLink.open 同为阻塞）；回调
@@ -212,6 +217,27 @@ public class SimulationUsbLink implements H3sUsbBridge.Link {
         return o;
     }
 
+    // ================================ M3 armed 刷机控制面 ================================
+
+    /** usb_arm：把计划（sectors/target_sha256/nonce，H3sUsbBridge.planJson 产物）送 server
+     *  armed 协商。校验失败 server 回 ok=false（不断链）——返回 false=可见失败。 */
+    @Override public boolean armFlash(String planJson) {
+        if (socket == null || out == null || planJson == null) return false;
+        JSONObject m;
+        try { m = new JSONObject(planJson); } catch (Exception e) { return false; }
+        try { m.put("t", "usb_arm"); } catch (org.json.JSONException impossible) { throw new RuntimeException(impossible); }
+        JSONObject r = roundtrip(m);
+        return r != null && r.optBoolean("ok", false);
+    }
+
+    /** usb_reboot：整机重启换身份。ok=true 后 server 断连（EOF=onDetached 模拟拔出）——
+     *  与 enterRomRequest 返回语义对称：返回=结果已送达，以重扫身份为准。 */
+    @Override public boolean rebootDevice() {
+        if (socket == null || out == null) return false;
+        JSONObject r = roundtrip(message("usb_reboot"));
+        return r != null && r.optBoolean("ok", false);
+    }
+
     // ================================ 内部 ================================
 
     private int bulkOut(byte[] data) {
@@ -284,7 +310,9 @@ public class SimulationUsbLink implements H3sUsbBridge.Link {
             catch (Exception e) { return; }
             rx.offer(data);                                    // 锁步下不会满；满=上层失控，丢弃
         } else if ("usb_scan_result".equals(t) || "usb_open_result".equals(t)
-                || "usb_ctl_result".equals(t) || "hello_ok".equals(t)) {
+                || "usb_ctl_result".equals(t) || "hello_ok".equals(t)
+                || "usb_arm_result".equals(t) || "usb_disarm_result".equals(t)   // M3 控制面回执
+                || "usb_reboot_result".equals(t)) {
             offerReply(m);
         } else if ("busy".equals(t) || "hello_err".equals(t) || "error".equals(t)) {
             // 请求级失败（占线/握手拒/设备端拒绝）——对等待方可见失败；

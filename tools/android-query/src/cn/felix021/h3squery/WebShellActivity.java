@@ -91,11 +91,13 @@ public class WebShellActivity extends Activity {
             ? new SimulationUsbLink(simHost, simPort, mainThreadExecutor())
             : new AndroidUsbLink(this);
         usbIo = Executors.newSingleThreadExecutor();
+        // M3（SIMB3A）：写能力位只随 sim 链路开启（运行时隔离——真机构建走默认构造=只读
+        // 红线；UsbScsi 两道白名单+计划守卫+server armed 门三层兜底）。
         usbBridge = new H3sUsbBridge(usbLink, new H3sUsbBridge.ResultSink() {
             @Override public void emit(final String json) {
                 web.post(new Runnable() { public void run() { web.evaluateJavascript("window.onH3sUsbEvent&&onH3sUsbEvent(" + json + ")", null); } });
             }
-        }, usbIo, fileSaver(), loadBundledLoader());
+        }, usbIo, fileSaver(), loadBundledLoader(), sim, targetLoader());
         web.addJavascriptInterface(bridge, "h3s");
         web.addJavascriptInterface(usbBridge, "h3susb");
         otaBridge = new OtaWebBridge(this, new OtaWebBridge.ResultSink() {
@@ -113,8 +115,14 @@ public class WebShellActivity extends Activity {
         setContentView(web);
         web.loadUrl("file:///android_asset/index.html");
         registerUsbDetach();
-        if (sim) registerDrive();   // P0（codex 审查 2026-11-17）：仅仿真模式注册——exported 广播
-                                   // 含 armWrite/setAnc/writeEq 真机写入口，真机构建不得暴露
+        if (sim) {   // 仅仿真模式：DRIVE 调试口 + M3 目标镜像目录
+            registerDrive();   // P0（codex 审查 2026-11-17）：仅仿真模式注册——exported 广播
+                               // 含 armWrite/setAnc/writeEq 真机写入口，真机构建不得暴露
+            // M3：预建外部 files/usb（宿主 adb push 放目标镜像）。须由 app 自建——shell 建的
+            // 目录在 sdcardfs 下属主是 shell，app 读取会 EACCES（AVD 实测 2026-11-17）。
+            File extUsb = new File(getExternalFilesDir(null), "usb");
+            if (!extUsb.exists()) extUsb.mkdirs();
+        }
         if (!sim && !permissionsGranted())   // 仿真模式不触 BT 权限面（AVD 上弹窗无意义，设计 §4.3）
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT}, 1);
     }
@@ -133,8 +141,10 @@ public class WebShellActivity extends Activity {
      * H3SBridge 方法 → 同一 transport/BLE 链路 → 同一 ResultSink → 同一 DOM 更新，
      * 仅绕过坏掉的「触摸→onclick」一环。E2E 断言仍以 UI 截图为准。
      * action=cn.felix021.h3squery.DRIVE，extras：method=connect/disconnect/arm/readStatus/
-     * setAnc/writeEq（writeEq 另带 eq_type/master_centid/bands_json；arm 带 on；readStatus
-     * 带 cmd；setAnc 带 mode）。仅 E2E 用：RECEIVER_EXPORTED + 不含任何写死的私有信息。
+     * setAnc/writeEq/usbPlanRestore/usbConfirmRestore/usbRestore/usbReboot（writeEq 另带
+     * eq_type/master_centid/bands_json；arm 带 on；readStatus 带 cmd；setAnc 带 mode；
+     * usbPlanRestore 带 target 文件名；usbConfirmRestore 带 nonce）。仅 E2E 用：
+     * RECEIVER_EXPORTED + 不含任何写死的私有信息。
      * P0 门（codex 审查 2026-11-17）：只在 sim 模式注册——接收器 exported 且含 armWrite 等
      * 真机写入口，任何第三方 app 都能发广播，真机构建绝不注册。
      */
@@ -172,6 +182,16 @@ public class WebShellActivity extends Activity {
                     bridge.writeEq(intent.getIntExtra("eq_type", 1),
                         intent.getIntExtra("master_centid", 0), bandsJson);
                 }
+                // M3 USB 恢复卡驱动口（SIMB3A：与页面按钮同一 H3sUsbBridge 方法/事件/DOM；
+                // 同受本接收器 sim-only 注册门保护——真机构建不注册）
+                else if ("usbPlanRestore".equals(m) && usbBridge != null)
+                    usbBridge.planRestore(intent.getStringExtra("target"));
+                else if ("usbConfirmRestore".equals(m) && usbBridge != null)
+                    usbBridge.confirmRestore(intent.getStringExtra("nonce"));
+                else if ("usbRestore".equals(m) && usbBridge != null)
+                    usbBridge.restoreFlash();
+                else if ("usbReboot".equals(m) && usbBridge != null)
+                    usbBridge.rebootDevice();
             }
         };
         IntentFilter filter = new IntentFilter("cn.felix021.h3squery.DRIVE");
@@ -209,6 +229,34 @@ public class WebShellActivity extends Activity {
                 } finally {
                     try { if (os != null) os.close(); } catch (Exception ignore) { }
                 }
+            }
+        };
+    }
+
+    /** 目标镜像读入器（M3 planRestore）：先外部 files/usb/<name>（adb push 直达，免 run-as），
+     *  再私有 files/usb/<name>。文件名已在业务层白名单化，这里再拒一次路径分量。 */
+    private H3sUsbBridge.FileLoader targetLoader() {
+        return new H3sUsbBridge.FileLoader() {
+            @Override public byte[] load(String name) {
+                if (name == null || !name.matches("[A-Za-z0-9._-]{1,64}") || name.contains("/")) return null;
+                File external = getExternalFilesDir(null);
+                File[] candidates = external != null
+                    ? new File[]{new File(new File(external, "usb"), name), new File(new File(getFilesDir(), "usb"), name)}
+                    : new File[]{new File(new File(getFilesDir(), "usb"), name)};
+                for (File f : candidates) {
+                    InputStream in = null;
+                    try {
+                        in = new java.io.FileInputStream(f);
+                        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                        return out.toByteArray();
+                    } catch (Exception e) {
+                        Log.w(TAG, "target load failed " + f + ": " + e);
+                    } finally { try { if (in != null) in.close(); } catch (Exception ignore) { } }
+                }
+                return null;
             }
         };
     }

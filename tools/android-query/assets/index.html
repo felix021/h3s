@@ -1175,22 +1175,43 @@ summary {
     <article class="card flash-card" id="sec-usb-flash">
       <div class="card-head">
         <h2>刷机区</h2>
-        <span class="badge bad">无写入路径</span>
+        <span id="usbFlashBadge" class="badge bad">无写入路径</span>
       </div>
-      <label class="switch-row" for="flashUnlock">
-        <input id="flashUnlock" class="toggle" type="checkbox"
-               role="switch" aria-controls="flashBody" aria-expanded="false">
-        <span>展开刷机限制说明</span>
-      </label>
-      <div id="flashBody" hidden>
+      <div id="usbRestoreStatic">
         <p class="note bad">
-          候选镜像 UNTESTED，不刷机。
-          USB 层未实现 FB01 / FB04 擦除与编程入口，
-          展开本区域不会出现刷机按钮。
-        </p>
-        <p class="note">
+          真机构建无 Flash 写路径（候选镜像 UNTESTED 不刷机）。
           固件恢复沿用桌面 tools/usb-recovery 的固定档案流程。
-          此页未内置 UFW 候选，OTA 入口位于“耳机控制”。
+        </p>
+      </div>
+      <div id="usbRestoreUi" hidden>
+        <p class="muted" id="restoreStateText">未生成计划</p>
+        <div class="actions" id="restorePlanRow">
+          <input id="restoreTargetName" type="text" value="target.bin"
+                 aria-label="目标镜像文件名（app 外部 files/usb/ 下）">
+          <button id="usbPlanBtn">生成刷机计划</button>
+        </div>
+        <div id="restoreConfirmBox" hidden>
+          <p id="restorePlanSummary" class="feedback" aria-live="polite"></p>
+          <div class="actions">
+            <button id="usbConfirmBtn" class="primary">确认计划（nonce 单次）</button>
+            <button id="usbCancelBtn">取消计划</button>
+          </div>
+        </div>
+        <div class="actions" id="restoreRunRow" hidden>
+          <button id="usbRestoreBtn" class="primary">开始擦写</button>
+        </div>
+        <div class="actions" id="restoreDoneRow" hidden>
+          <button id="usbRebootBtn">重启设备收尾</button>
+        </div>
+        <div id="restoreProgress" class="progress" role="progressbar"
+             aria-label="刷机进度" aria-valuemin="0"
+             aria-valuemax="100" aria-valuenow="0" hidden>
+          <div id="restoreBar"></div>
+        </div>
+        <p id="restoreResultText" class="feedback" aria-live="polite"></p>
+        <p class="note warning">
+          仅仿真 armed 会话：计划外扇区会被设备拒绝；擦写一旦开始没有安全中止点，
+          失败后保持 armed，处置前先核对设备状态。
         </p>
       </div>
     </article>
@@ -2315,6 +2336,9 @@ let usbKey = null;
 let usbBusy = false;
 let usbExpectedEvent = null;
 let usbDevices = [];
+let usbFlashWritable = false;
+let restoreStage = 'plan';       // plan → confirm → run → done
+let restoreNonce = null;
 
 function usbInfo() {
   if (!U) return;
@@ -2325,10 +2349,26 @@ function usbInfo() {
   usbLoaderReady = !!result.loaderReady;
   usbLoaderBundled = !!result.loaderBundled;
   usbKey = result.openedKey || null;
+  usbFlashWritable = !!result.flashWritable;
   $('usbVerifiedTag').textContent = result.physicalLinkVerified
     ? '链路已验证' : 'OTG 链路未验证';
   $('usbVerifiedTag').className = 'badge ' +
     (result.physicalLinkVerified ? 'good' : 'warning');
+  $('usbFlashBadge').textContent = usbFlashWritable ? '仿真 armed' : '无写入路径';
+  $('usbFlashBadge').className = 'badge ' + (usbFlashWritable ? 'warning' : 'bad');
+  $('usbRestoreStatic').hidden = usbFlashWritable;
+  $('usbRestoreUi').hidden = !usbFlashWritable;
+}
+/** 恢复卡四态切换（plan=生成计划 / confirm=待确认 / run=armed 可擦写 / done=完成待重启）。 */
+function restoreShow(stage, text) {
+  restoreStage = stage;
+  $('restorePlanRow').hidden = stage !== 'plan';
+  $('restoreConfirmBox').hidden = stage !== 'confirm';
+  $('restoreRunRow').hidden = stage !== 'run';
+  $('restoreDoneRow').hidden = stage !== 'done';
+  if (stage === 'plan') restoreNonce = null;
+  if (text !== undefined) $('restoreStateText').textContent = text;
+  usbUpdateButtons();
 }
 function usbUpdateButtons() {
   $('usbScan').disabled = !U || usbBusy;
@@ -2338,6 +2378,12 @@ function usbUpdateButtons() {
     !U || usbBusy || !usbOpened || !usbRom || !usbLoaderBundled || usbLoaderReady;
   $('usbRomWin').disabled = !U || usbBusy || !usbOpened || !usbLoaderReady;
   $('usbBackup').disabled = !U || usbBusy || !usbOpened || !usbLoaderReady;
+  const restoreReady = U && usbFlashWritable && usbOpened && usbLoaderReady;
+  $('usbPlanBtn').disabled = !restoreReady || usbBusy || restoreStage !== 'plan';
+  $('usbConfirmBtn').disabled = !restoreReady || usbBusy || restoreStage !== 'confirm';
+  $('usbCancelBtn').disabled = !U || usbBusy || restoreStage !== 'confirm';
+  $('usbRestoreBtn').disabled = !restoreReady || usbBusy || restoreStage !== 'run';
+  $('usbRebootBtn').disabled = !U || usbBusy || restoreStage !== 'done';
 
   $('usbLinkState').textContent = !U
     ? '离线预览，未接入 USB 原生桥'
@@ -2367,25 +2413,30 @@ function usbFinishOperation() {
   usbBusy = false;
   usbExpectedEvent = null;
   $('usbProgress').hidden = true;
+  $('restoreProgress').hidden = true;
   usbUpdateButtons();
 }
 function usbRun(method, args, expectedEvent, withProgress) {
   if (usbBusy) return;
   usbBusy = true;
   usbExpectedEvent = expectedEvent;
+  const isRestoreOp = expectedEvent.indexOf('usb_restore') === 0;
   if (withProgress) {
-    $('usbProgress').hidden = false;
-    $('usbProgress').setAttribute('aria-valuenow', '0');
-    $('usbBar').style.width = '0%';
-    $('usbProgressText').textContent = '正在读取…';
-  } else {
+    const bar = isRestoreOp ? $('restoreProgress') : $('usbProgress');
+    bar.hidden = false;
+    bar.setAttribute('aria-valuenow', '0');
+    (isRestoreOp ? $('restoreBar') : $('usbBar')).style.width = '0%';
+    if (isRestoreOp) $('restoreStateText').textContent = '正在读取…';
+    else $('usbProgressText').textContent = '正在读取…';
+  } else if (!isRestoreOp) {
     $('usbProgressText').textContent = '操作已提交，等待结果…';
   }
   usbUpdateButtons();
   const result = rpc(U, method, args);
   if (!result.ok) {
     usbFinishOperation();
-    $('usbProgressText').textContent = result.error || '操作被拒绝';
+    if (isRestoreOp) $('restoreResultText').textContent = result.error || '操作被拒绝';
+    else $('usbProgressText').textContent = result.error || '操作被拒绝';
     usbResult(result.error || '操作被拒绝', true);
   }
 }
@@ -2459,6 +2510,12 @@ $('usbLoader').onclick = () => {
 };
 $('usbRomWin').onclick = () => usbRun('readRomWindow', [], 'usb_rom_window', true);
 $('usbBackup').onclick = () => usbRun('backupFlash', [], 'usb_backup', true);
+$('usbPlanBtn').onclick = () =>
+  usbRun('planRestore', [$('restoreTargetName').value.trim()], 'usb_restore_plan', true);
+$('usbConfirmBtn').onclick = () => usbRun('confirmRestore', [restoreNonce], 'usb_restore_armed', false);
+$('usbCancelBtn').onclick = () => usbRun('cancelRestore', [], 'usb_restore_cancelled', false);
+$('usbRestoreBtn').onclick = () => usbRun('restoreFlash', [], 'usb_restore', true);
+$('usbRebootBtn').onclick = () => usbRun('rebootDevice', [], 'usb_restore_reboot', false);
 
 window.onH3sUsbEvent = raw => {
   try {
@@ -2471,11 +2528,14 @@ window.onH3sUsbEvent = raw => {
       const percent = total > 0 && Number.isFinite(done)
         ? Math.max(0, Math.min(100, Math.round(done / total * 100)))
         : 0;
-      $('usbProgress').hidden = false;
-      $('usbBar').style.width = percent + '%';
-      $('usbProgress').setAttribute('aria-valuenow', String(percent));
-      $('usbProgressText').textContent =
-        (event.op || '读取') + ' · ' + percent + '%';
+      const op = event.op || '读取';
+      const isRestoreOp = op === 'restore' || op === 'plan_read' || op === 'verify' || op === 'restore_read';
+      const bar = isRestoreOp ? $('restoreProgress') : $('usbProgress');
+      bar.hidden = false;
+      (isRestoreOp ? $('restoreBar') : $('usbBar')).style.width = percent + '%';
+      bar.setAttribute('aria-valuenow', String(percent));
+      if (isRestoreOp) $('restoreStateText').textContent = op + ' · ' + percent + '%';
+      else $('usbProgressText').textContent = op + ' · ' + percent + '%';
       return;
     }
 
@@ -2510,6 +2570,8 @@ window.onH3sUsbEvent = raw => {
         usbClearSession();
         usbFinishOperation();
         $('usbProgressText').textContent = '设备已断开';
+        if (restoreStage === 'run')
+          restoreShow('run', '设备已断开（armed 保持；重开+装载 loader 后可重试）');
       }
       if (!usbBusy) usbScan();
       return;
@@ -2574,16 +2636,70 @@ window.onH3sUsbEvent = raw => {
         usbResult('读取失败：' + event.error, true);
       }
       $('usbProgressText').textContent = event.ok ? '读取结束' : '读取失败';
+      return;
+    }
+
+    /* —— M3 恢复卡四态事件（计划 → 确认 nonce → 进度 → 结果）—— */
+    if (event.event === 'usb_restore_plan') {
+      usbFinishOperation();
+      if (event.ok) {
+        restoreNonce = event.nonce;
+        const sectors = (event.sectors || []).map(s => '0x' + Number(s).toString(16)).join(' ');
+        $('restorePlanSummary').textContent =
+          '扇区 ' + (event.sectors || []).length + ' 个：' + sectors + '\n' +
+          '目标 SHA256：' + event.targetSha256 + '\n' +
+          'nonce（单次，2 分钟内有效）：' + event.nonce;
+        $('restoreResultText').textContent = '';
+        restoreShow('confirm', '计划已生成，待确认');
+      } else {
+        restoreShow('plan');
+        $('restoreResultText').textContent = '计划失败：' + (event.error || '');
+      }
+      return;
+    }
+
+    if (event.event === 'usb_restore_armed') {
+      usbFinishOperation();
+      if (event.ok) {
+        $('restoreResultText').textContent = '';
+        restoreShow('run', '已 armed，可开始擦写');
+      } else {
+        restoreShow('plan');
+        $('restoreResultText').textContent = 'armed 失败：' + (event.error || '');
+      }
+      return;
+    }
+
+    if (event.event === 'usb_restore') {
+      usbFinishOperation();
+      if (event.ok) {
+        restoreShow('done', '擦写完成');
+        $('restoreResultText').textContent =
+          '全片复读==目标。SHA256：' + event.sha256 + '（点「重启设备收尾」结束会话）';
+      } else {
+        $('restoreResultText').textContent = (event.error || '') + '（保持 armed）';
+      }
+      return;
+    }
+
+    if (event.event === 'usb_restore_reboot') {
+      usbFinishOperation();
+      restoreShow('plan', '设备重启中，请重新扫描');
+      $('restoreResultText').textContent = event.ok
+        ? event.note : '重启失败：' + (event.error || '');
+      return;
+    }
+
+    if (event.event === 'usb_restore_cancelled') {
+      usbFinishOperation();
+      restoreShow('plan', '计划已取消');
+      $('restoreResultText').textContent = '';
+      return;
     }
   } catch (e) {
     log('USB 事件解析失败', String(e));
     notify('收到无法解析的 USB 事件，详情见日志。', true);
   }
-};
-$('flashUnlock').onchange = () => {
-  const expanded = $('flashUnlock').checked;
-  $('flashBody').hidden = !expanded;
-  $('flashUnlock').setAttribute('aria-expanded', String(expanded));
 };
 
 /* ---------- 启动：不自动连接、不自动发写命令 ---------- */
