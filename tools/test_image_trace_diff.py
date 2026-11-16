@@ -569,14 +569,17 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert set(CONDITIONAL_EXTRA_FLAGS) == set(frontier_registry.extra_flags(probe_irq_entry))
     # every base switch is a plain boolean opt-in
     assert all(value is True for value in BASE_SCENARIO_FLAGS.values())
-    # the non-boolean conditional flags are exactly the six named data
+    # the non-boolean conditional flags are exactly the named data
     # fixtures, resolved to the real probe_irq_entry module constants (no copies)
     non_boolean = {switch for switch, value in CONDITIONAL_EXTRA_FLAGS.items() if value is not True}
     assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values',
                            'jl_adda_daa_con1_initial_fixture', 'p33_canary_first_read_words',
-                           'ancif_official_resources', 'jl_rand_seed'}
+                           'ancif_official_resources', 'jl_rand_seed', 'gpcnt_num_value'}
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
+    # 路 GPCNUM:GPCNT NUM 具名探路值(assumed 标称 32768 Hz 恒等计数)
+    assert CONDITIONAL_EXTRA_FLAGS['gpcnt_num_value'] \
+        is probe_irq_entry.GPCNT_NUM_PROBE
     # 路 BM/S19 批 1:条件场景改传扩展表(勘误 BA「trim 环采样 fd31✓」——
     # 0x10005 缺行,+0x10005:400+0x10001:4);路 JLEQ 续三再扩两行
     # (0x1000d TWVD=350 恒走满环/0x1000e PVDD=550 良构数据路径,

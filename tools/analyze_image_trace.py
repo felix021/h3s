@@ -1351,11 +1351,19 @@ def check_self_conditional(report):
     (路 ADA)/21,800,325(路 LPV)已被后续投影替换,见 HANDOFF 对应
     「步含义」段):
 
-    - 双方 29,601,125 步、同停点 0x606955c(unmapped_memory 读
-      0xfd1104,当前条件前沿——路 JLEQ 批量放行后的新边界:JL_GPCNT->NUM
-      __RO 计数值,稳态测量任务 0x6069538 首次转换的测量值读;其前 park
-      稳态已建立(11 次喂狗事务闭合/事件钟 14,953,935 虚拟步/CPU0
-      1791+57 次 0x12c5ca parked 唤醒)。历史 29,215,313 @ 0x6072b92
+    - 双方 32,737,356 步、同停点 0x12c5ca(watchdog_expired_delivery_
+      not_implemented,当前条件前沿——路 GPCNUM 具名值放行后的新边界:
+      稳态测量任务 0x6069538 的 GPCNT 转换经 fixture(assumed 标称
+      32768 Hz 恒等计数 15000)服务满 20 次(20 槽窗口填满,fill==20
+      触发 epilogue 的 h[0x12A3DC] 消费+重启链),park 稳态继续推进至
+      看门狗 CON 0x2e(time_code=14,周期 16384 名义单位)到期——
+      到期交付(硬件复位/异常)不发明,诚实停;喂狗邮箱此前 11 次事务
+      全闭合,第 12 次未在到期前到来,归下一路)。历史 29,601,125 @
+      0x606955c(路 JLEQ 批量放行后的旧边界:unmapped_memory 读
+      0xfd1104=JL_GPCNT->NUM __RO 计数值,稳态测量任务 0x6069538 首次
+      转换的测量值读——路 GPCNUM 三选一 (a) 具名 fixture 放行;其前
+      park 稳态已建立(11 次喂狗事务闭合/事件钟 14,953,935 虚拟步/
+      CPU0 1791+57 次 0x12c5ca parked 唤醒)。历史 29,215,313 @ 0x6072b92
       (路 RAND jl_rand_seed 具名 fixture 放行
       后的旧边界:JL_RAND->R64L 0xfd3b00 映射为 readonly 单字 0x12345678
       (synthetic-not-measured,熵机制无文档值不可推导;R64H 0xfd3b04 零触达
@@ -1438,21 +1446,19 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 29594529, '1': 11496},
+                run['per_core_steps'] == {'0': 32733673, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (29601125 @ 0x606955c, the read of '
-                '0xfd1104 — JL_GPCNT->NUM, the __RO measured count of the steady-'
-                'state measurement task 0x6069538 first conversion — reached after '
-                'the route-JLEQ batch releases the JL_EQ two-word write-only '
-                'records, the upper-static-buffer window, the core-tick freerun '
-                'edge, the fd31 TWVD/PVDD channel rows, the canary rmw form, the '
-                'GPCNT config words, the P2M armed-mailbox precedence fix, the '
-                'insert.rrii||st.b byte-pair form and the GPCNT completion bit, '
-                'with the park steady state in between (eleven closed feed-dog '
-                'transactions, 14,953,935 virtual event-clock steps, 1791+57 '
-                'parked CPU0 wakes at 0x12c5ca); the NUM value feeds '
-                '491520000/NUM*1000 and a 20-slot sliding average — the measured-'
-                'value fixture three-way choice for the next route)')
+                'conditional frontier stop (32737356 @ 0x12c5ca, the watchdog '
+                'expiry — CON 0x2e, time_code 14, period 16384 nominal units '
+                'elapsed without a twelfth feed — reached after the route-GPCNUM '
+                'named fixture releases the JL_GPCNT->NUM read of the steady-state '
+                'measurement task 0x6069538 (twenty served conversions fill the '
+                '20-slot window, fill==20 fires the epilogue h[0x12A3DC] consumer '
+                'and the restart chain) with the park steady state continuing '
+                'in between (eleven closed feed-dog transactions, 1791+57 '
+                'parked CPU0 wakes at 0x12c5ca); the expiry delivery (hardware '
+                'reset/exception) is not invented — the honest stop is the '
+                'feed-cadence decision for the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

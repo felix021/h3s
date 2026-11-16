@@ -143,6 +143,18 @@ FEATURES = (
             'GPCNT_CON bit7 完成位投影(50M 预算耗尽 49,996,010 @ 0x6069546 '
             '稳态测量任务轮询;读侧 OR 0x80=lrct_trim_done/SFC PLL-lock 同模式;'
             '延迟不建模;NUM 读保持严格停=下一前沿测量值决策)'),
+    # ---- 路 GPCNUM:GPCNT NUM 具名值放行。29,601,125 停点 0x606955c
+    # (任务 0x6069538 首次转换读 0xfd1104=JL_GPCNT->NUM,br28.h __RO)——
+    # 三选一 (a) 具名 fixture(codex 参谋采纳+降档):491520000=32768×15000,
+    # 商=32768→×1000=32768000 mHz 落在假设标称 32768 Hz 睡眠钟上
+    # (assumed-not-measured:无固件侧标称常数可引,弱于 LRCT 闭环;
+    # 候选 32000/15360、160000/3072 已记录);值面验证臂内纯数据
+    # (20 槽滑动平均→[0x12A3D0]→低功耗漂移补偿)。 ----
+    Feature('gpcnt_num_value', 'conditional', ('gpcnt_con_completion',), True,
+            'GPCNT_NUM_PROBE',
+            'GPCNT NUM 具名探路值(29,601,125 停点 0x606955c 读 0xfd1104;'
+            'fixture=15000=491520000/32768,假设标称 assumed-not-measured,'
+            'LRCT 38400 同款降档;每次读回同一常量,值下界 1;未提供时严格停)'),
     Feature('jl_clock_dcck', 'conditional', (), False, None,
             'JL_CLOCK DCCK_CON0/1/2 容器投影(合成初始字 0+读回=当前值)'),
     Feature('jl_uart_con', 'conditional', (), False, None,
@@ -446,11 +458,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 29601125,
-        'stop_pc': '0x606955c',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfd1104', 'size': 4, 'reference_sdk_register': None},
-        'freshness_fields': ('kind', 'address'),
+        'completed_steps': 32737356,
+        'stop_pc': '0x12c5ca',
+        'stop': {'kind': 'watchdog_expired_delivery_not_implemented',
+                 'control': '0x2e', 'elapsed_nominal_units': 16384},
+        'freshness_fields': ('kind', 'control'),
     },
 }
 

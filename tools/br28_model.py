@@ -142,6 +142,7 @@ EFUSE_RDAT=EFUSE_CON0+8
 OSC_CONFIG=(0xfd1920,0xfd1924,0xfd1928,0xfd1940,0xfd1954)  # WLA_CON8/9/10/16/21
 OSC_STATUS=0xfd1978  # WLA_CON30, RO; sampled by actual QCY calibration
 GPCNT_CON=0xfd1100
+GPCNT_NUM=0xfd1104  # SDK br28.h JL_GPCNT_TypeDef 第二字 NUM(__RO 计数值);全 app+ROM 唯一读者=0x606955c
 # 路 F(sim-fd2000):0xfd2000/0xfd2100/0xfd2200 = JL_UART0/1/2 基址
 # (br28.h `JL_UART0_BASE = ls_base(0xfd0000) + map_adr(0x20,0x00)` = 0xfd2000
 # =16588800,与 0x601d198 读辅助函数的 li 字面量逐位一致;JL_UART1_BASE/
@@ -1167,7 +1168,7 @@ for _name,_operation in (('eq',operator.eq),('ne',operator.ne),('lt',operator.lt
 
 class GPCNTCleanup:
     """Only the observed disable/clear path; unknown neighbouring bits stay so."""
-    def __init__(self,readback_projection=False,config_words=False,completion_bit=False):
+    def __init__(self,readback_projection=False,config_words=False,completion_bit=False,num_value=None):
         self.bits=PartialWord();self.pending=None;self.disable_writes=0;self.clear_writes=0
         # con_readback_projection(opt-in,需 gpcnt_cleanup_projection,路 CG):
         # GPCNT_CON(0xfd1100,SDK br28.h JL_GPCNTTypeDef CON __RW/NUM __RO)读回
@@ -1194,6 +1195,20 @@ class GPCNTCleanup:
         # |=0x40 清 pending 投影照旧把存储位清 0(读侧强制与存储无关);
         # NUM 读(紧随其后的 0x606955c)不经本类、保持严格停=下一前沿。
         self.completion_bit=completion_bit;self.completion_reads=0
+        # num_value(路 GPCNUM,需 completion_bit):JL_GPCNT->NUM(0xfd1104,
+        # __RO 计数值)的显式探路值(derived-not-measured,LRCT trim_result
+        # 同款数据 fixture)。0x606955c 读值进 491520000/NUM*1000+20 槽滑动
+        # 平均(消费面=低功耗域漂移补偿数据路径,验证臂内无值分支);探路值
+        # =假设标称 32768 Hz 睡眠钟的恒等计数 15000(491520000=32768×15000,
+        # 32768 系 assumed 非推导,推导链见 probe 常量注释)。非零下界:消费面
+        # 0x606957a 无零检查直接除 NUM,0 值会触发除零,拒绝。未提供时 NUM
+        # 读保持 unmapped 严格停。
+        if num_value is not None and not completion_bit:
+            raise ValueError('the GPCNT NUM fixture requires the completion-bit projection')
+        if num_value is not None and (not isinstance(num_value,int)
+                                      or not 1<=num_value<=0xffffffff):
+            raise ValueError('GPCNT NUM fixture must be a nonzero unsigned32 count')
+        self.num_value=num_value;self.num_reads=0
 
     def rmw(self,kind,operand):
         if kind=='and' and operand&0xffffffff==0xfffffffe:
@@ -1229,6 +1244,18 @@ class GPCNTCleanup:
         if not self.config_words:raise ValueError('GPCNT config-word stores require the config opt-in')
         if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
         self.bits=PartialWord(value,0xffffffff);self.whole_writes+=1
+
+    def read_num(self):
+        """NUM(0xfd1104,__RO 计数值)读(路 GPCNUM,需显式探路值)。
+
+        硅测量值,默认不臆造数值(unmapped 严格停);显式探路值
+        (num_value,derived-not-measured)按 LRCT trim_result fixture 先例
+        放行,每次读回同一常量并计数(真实硬件逐次有抖动,20 槽滑动平均
+        消化——常量=标称理想化,与 LRCT 38400 服务 20 次读同款)。
+        """
+        if self.num_value is None:raise Blocked('gpcnt_num_not_modeled',address=hex(GPCNT_NUM))
+        self.num_reads+=1
+        return self.num_value
 
     def report(self):
         result={'known_value':hex(self.bits.value),'known_mask':hex(self.bits.known),'pending':self.pending,
@@ -1278,10 +1305,47 @@ class GPCNTCleanup:
                     'is inferred from the poll direction, the SDK __RW label carries no status '
                     'semantics and this is NOT a silicon measurement'),
                 'stored_bit7_untouched':True,
-                'num_register_served':False,
+                'num_register_served':self.num_value is not None,
                 'next_boundary':('the NUM read at 0x606955c ([0xfd1104], __RO measured count) '
-                    'stays strictly stopped — a measured-value fixture decision for the next '
-                    'route (the value feeds 491520000/NUM*1000 and a 20-slot sliding average)')}
+                    'stays strictly stopped without the explicit fixture — the measured-value '
+                    'three-way decision of route GPCNUM; with the fixture the run continues '
+                    'past twenty served conversions to the watchdog-expiry frontier '
+                    '(the value feeds 491520000/NUM*1000 and a 20-slot sliding average)')}
+        if self.num_value is not None:
+            result['num_register_fixture']={
+                'address':hex(GPCNT_NUM),'reads':self.num_reads,
+                'value':hex(self.num_value),
+                'fixture_semantics':('named probe value, derived-not-measured (route-GPCNUM '
+                    'three-choice (a), LRCT trim_result 38400 same shape): the firmware converts '
+                    'NUM into a frequency via 491520000/NUM*1000 (task 0x6069538 at 0x606957a/80) '
+                    'and slides it through the 20-slot average to [0x12A3D0]; the constant 15000 '
+                    'is the identity count of an ASSUMED nominal 32768 Hz sleep clock '
+                    '(491520000 = 32768*15000 exactly — arithmetic self-consistency, NOT an '
+                    'independent derivation: unlike the LRCT precedent, where the firmware '
+                    'itself writes the 200000 nominal elsewhere, no firmware-side nominal for '
+                    'this measurement exists in evidence; documented alternatives: 32000 Hz '
+                    '(count 15360) and 160000 Hz (count 3072, where the 4476/7188 consumer '
+                    'coefficients fall out exactly) — codex-review candidates, none exclusive); '
+                    'every read serves the same constant (real hardware jitters per conversion; '
+                    'the 20-slot average exists to absorb exactly that); the fixture is scoped '
+                    'to this world\'s CON configuration (GSS=4/GTS=6/CSS=6, measured 0x460C '
+                    'prefix) — a future reconfiguration needs re-examination'),
+                'consumer_sensitivity':('data-only within the verified arms: the quotient feeds '
+                    '[0x12A3E0] ring slots, '
+                    '[0x12A3D0] average and the low-power drift consumers 0x60675e4/0x6067668 '
+                    '(4476/7188 coefficients, P11 mailbox + P33 LP-domain payloads); the '
+                    'numerator gate byte '
+                    'b[0x126874] (the same device-struct +692 flag the LRCT trim reads) is 1 at '
+                    'the stop, so the quotient is live; a different plausible NUM '
+                    '(e.g. 15360 for a 32000 Hz nominal) changes only RAM/mailbox DATA — the '
+                    'in-world branches (0x6069584 ring[0]==0 init-vs-shift, the fill counter '
+                    'compare) do not test the quotient for any nonzero fixture that keeps '
+                    '491520000/NUM*1000 and the 20-term sum inside u32 (15000: 32768000 and '
+                    '655360000, both far in range); the ring-replacement path is dead in this '
+                    'world (the counter stays disabled after the first conversion), so the '
+                    'constant never exercises the shift-out leg — noted, not simulated'),
+                'zero_is_refused':True,
+                'counting_semantics_modeled':False}
         return result
 
 
@@ -5734,7 +5798,7 @@ class BR28Model:
                  lrct_trim_result_value=None,lp_timer_con_readback_projection=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
-                 gpcnt_cleanup_projection=False,gpcnt_con_readback=False,gpcnt_con_config=False,gpcnt_con_completion=False,core_tick_configuration=False,
+                 gpcnt_cleanup_projection=False,gpcnt_con_readback=False,gpcnt_con_config=False,gpcnt_con_completion=False,gpcnt_num_value=None,core_tick_configuration=False,
                  cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  p33_analog_config_projection=False,
@@ -5898,8 +5962,12 @@ class BR28Model:
         # lrct_trim_done/SFC PLL-lock 同模式);NUM 读保持严格停。
         if gpcnt_con_completion and not gpcnt_con_config:
             raise ValueError('the GPCNT completion-bit projection requires the config-word release')
+        # gpcnt_num_value(路 GPCNUM,opt-in,需 gpcnt_con_completion):NUM 读
+        # (0xfd1104)只有在完成位投影放行轮询后才真实到达(依赖链按世界
+        # 执行序);值校验在 GPCNTCleanup 内(非零下界:消费面 0x606957a
+        # 无零检查直接除 NUM)。
         self.gpcnt=(GPCNTCleanup(readback_projection=gpcnt_con_readback,config_words=gpcnt_con_config,
-                                 completion_bit=gpcnt_con_completion)
+                                 completion_bit=gpcnt_con_completion,num_value=gpcnt_num_value)
                     if gpcnt_cleanup_projection else None)
         if initial_core_tick_controls is not None and len(initial_core_tick_controls)!=2:raise ValueError('need two explicit core tick controls')
         if core_tick_progress is not None and len(core_tick_progress)!=2:raise ValueError('need explicit progress for two core ticks')
@@ -6494,6 +6562,7 @@ class BR28Model:
             (self.cpu1_held_projection and address==CPU1_CONTROL) or
             self.handles_core_tick(address) or
             self.handles_gpcnt(address) or
+            self.handles_gpcnt_num(address) or
             (self.oscillator_configuration_projection and address==OSC_STATUS) or
             (self.efuse is not None and address in (EFUSE_CON0,EFUSE_CON1,EFUSE_RDAT)) or
             (self.watchdog is not None and address in (WDT_CON,WDT_KEY)) or
@@ -6547,6 +6616,13 @@ class BR28Model:
 
     def handles_gpcnt(self,address):
         return self.gpcnt is not None and address==GPCNT_CON
+
+    def handles_gpcnt_num(self,address):
+        # 路 GPCNUM:NUM(0xfd1104)只在显式探路值给出时接管——默认保持
+        # unmapped 严格停(29,601,125 前沿形状);RMW/整字写不经此分发,
+        # 落到普通路径按 unmapped_or_readonly_write 拒绝(__RO)。
+        return (self.gpcnt is not None and address==GPCNT_NUM
+                and self.gpcnt.num_value is not None)
 
     def handles_fd31_rmw_synthesis(self,address):
         # 路 BY:PND 完成投影开启时,fd31 CON 的原子复合 RMW 走专用分发(内部
@@ -6704,6 +6780,7 @@ class BR28Model:
         if self.handles_core_tick(address):
             timer,offset=self.core_tick(address);return timer.read(offset)
         if self.handles_gpcnt(address):return self.gpcnt.read()
+        if self.handles_gpcnt_num(address):return self.gpcnt.read_num()
         if self.oscillator_configuration_projection and address==OSC_STATUS:
             if self.oscillator_status_word is None:raise Blocked('unknown_oscillator_status_input')
             return self.oscillator_status_word
@@ -7128,6 +7205,10 @@ class BR28Model:
             # st.w 写回(全字覆盖、全字已知);计数语义不建模。默认关时
             # GPCNT_CON 整字写落通用 registers 路径(legacy 形状不变)。
             self.gpcnt.write(value)
+        elif self.handles_gpcnt_num(address):
+            # NUM(__RO)只读(路 GPCNUM):fixture 开启时显式拒绝整字写/
+            # RMW 写路径,不经通用 registers 槽(本前缀零写者,合同面诚实)。
+            raise Blocked('gpcnt_num_is_readonly',address=hex(address))
         elif self.jl_adc_start is not None and self.jl_adc_start.handles(address):
             # ADC 启动配置块四字(路 ASS):MIC_CTL0 RMW 写回/MIC_CTL1·
             # MBG_CON·ADC_CON1 insert 族写回与整字写;配置生效/音频输入

@@ -5,7 +5,7 @@ from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PIN
 from probe_boot import Blocked
 from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
-from br28_model import GPCNT_CON, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
+from br28_model import GPCNT_CON, GPCNT_NUM, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
 from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
 from br28_model import JL_UART_CON_WORDS, JL_UART_INIT_WORDS, JL_UART_INIT_WORD_OFFSETS
 from br28_model import JLUartInitWriteRecords
@@ -283,6 +283,43 @@ class ModelTests(unittest.TestCase):
         plain.write(GPCNT_CON,composed);plain.gpcnt_rmw(GPCNT_CON,'or',1)
         self.assertEqual(plain.read(GPCNT_CON),enabled)
         self.assertNotIn('completion_bit_projection',plain.gpcnt.report())
+
+    def test_gpcnt_num_fixture_serves_named_value_readonly(self):
+        # 路 GPCNUM:29,601,125 停点 0x606955c(稳态测量任务 0x6069538 首次
+        # 转换 `ld.w r2=[r4+4]` 读 0xfd1104=JL_GPCNT->NUM,__RO)——三选一 (a)
+        # 具名探路值(derived-not-measured,LRCT trim_result 38400 同款标称
+        # 闭环:491520000=32768×15000,商=32768 精确落在标称睡眠钟上)。
+        # 开关放行:每次读回同一常量并计数;依赖链 num→completion→config→
+        # readback;值下界 1(消费面 0x606957a 无零检查直接除 NUM);整字写/
+        # RMW 写显式拒(__RO);未提供时 NUM 读 unmapped 严格停(legacy 形状)。
+        base=dict(gpcnt_cleanup_projection=True,gpcnt_con_readback=True,
+                  gpcnt_con_config=True,gpcnt_con_completion=True)
+        with self.assertRaisesRegex(ValueError,'requires the completion-bit projection'):
+            BR28Model(**dict(base,gpcnt_con_completion=False),gpcnt_num_value=15000)
+        for bad in (0,-1,2**32,1.5):
+            with self.assertRaisesRegex(ValueError,'nonzero unsigned32'):
+                BR28Model(**base,gpcnt_num_value=bad)
+        off=BR28Model(**base)
+        with self.assertRaises(Blocked):off.read(GPCNT_NUM)
+        self.assertNotIn('num_register_fixture',off.gpcnt.report())
+        h=BR28Model(**base,gpcnt_num_value=15000)
+        # 读回=常量(每次读同一值,计数累加;0x606955c 的装载走通用 MMIO 路径)。
+        self.assertEqual(h.read(GPCNT_NUM),15000)
+        self.assertEqual(h.read(GPCNT_NUM),15000)
+        self.assertEqual(h.gpcnt.num_reads,2)
+        # __RO:整字写显式拒,不落通用 registers 槽。
+        with self.assertRaisesRegex(Blocked,'gpcnt_num_is_readonly'):h.write(GPCNT_NUM,0)
+        report=h.gpcnt.report()
+        self.assertEqual(report['num_register_fixture']['reads'],2)
+        self.assertEqual(report['num_register_fixture']['value'],'0x3a98')
+        self.assertTrue(report['num_register_fixture']['zero_is_refused'])
+        self.assertFalse(report['num_register_fixture']['counting_semantics_modeled'])
+        self.assertIn('derived-not-measured',report['num_register_fixture']['fixture_semantics'])
+        self.assertIn('ASSUMED nominal',report['num_register_fixture']['fixture_semantics'])
+        self.assertIn('data-only within the verified arms',
+                      report['num_register_fixture']['consumer_sensitivity'])
+        # 完成位报告的 NUM 服务面如实联动。
+        self.assertTrue(report['completion_bit_projection']['num_register_served'])
 
     def test_core_tick_initial_state_and_enable_remain_explicit(self):
         h=BR28Model(core_tick_configuration=True)
