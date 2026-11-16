@@ -57,6 +57,7 @@ SYS_TIMER_FIRE_SITES=(0x6066e32,0x6066e7c)  # 火回调点(到期判定命中,§
 KEYSCAN_CALLBACK=0x6001944         # 键扫回调入口(S9 §1.1)
 ADC_SCAN_CALLBACK=0x60349d2        # adc_scan 回调入口(S8 §1.1)
 TIMER0_HANDLER_PC='0x12ece8'       # Timer0 IRQ4 handler(路 BE)
+JIFFIES_WORD=0x125004              # core tick handler 的 jiffies 计数字(D1-3 jiffies+1 面)
 TIMER0_RTI_PC='0x12ed0c'           # Timer0 RTI 尾(路 BE)
 CORE_TICK_HANDLER_PC='0x60661a4'   # core tick handler(路 BF)
 TASK_TABLE_PTR=0x126c5c            # 任务表[cnum=0]→TCB(first_task_setup 先例)
@@ -221,6 +222,14 @@ class D1WindowObserver:
         self._window_watch={}   # hex(pc)->窗口内执行次数(W_park 起)
         self._completed=0       # 最近一次 note_step 的 completed(指令步轴缓存)
         self._instructions=0    # 自累计指令步(机器钩子挂接模式,completed=None)
+        # 到期步号观察面(D1RUN 首轮实测归因:D1-2/BI-A1/A2 判定需要「每次到期
+        # 的模型步号」,模型层无该键——观察器侧 pending 边沿检测自累计,br28_model
+        # 零触碰。采样点=每圈 note_step+交付/engage 钩子:真实步精度 ±1 步
+        # (after_step 挂接位在 advance 前),快进段边沿=段终点即到期点)。
+        self._pending_edges={'timer0':None,'core_tick':None}
+        self._expiry_steps={'timer0':[],'core_tick':[]}
+        # jiffies 写序观测(D1-3;0x125004,写后值影子链)
+        self._jiffies_observations=[];self._jiffies_last=None
         self._loop_head_after_drain=0
         # W_park 锚定(§2.2:pend 写面首达后的首次 event_clock_engaged;boot 停泊
         # 全部发生在 S19 pend 写面之前,不触发)
@@ -259,6 +268,36 @@ class D1WindowObserver:
         return machine.model_step_total(self._completed+extra_completed)
 
     # ── machine 侧钩子(br28_machine 调用;全部只读) ──────────────────────────
+    def _eligibility_note(self,machine,event):
+        """core-tick 交付时刻的资格面快照(IRQController.eligible 同款只读判定)。"""
+        irq=machine.hardware.irq
+        index=event.get('irq')
+        value=irq.config[index//8]
+        nibble=(value>>4*(index%8))&15
+        priority=nibble>>1
+        core=event.get('core',0)
+        cpu=machine.cores.get(core)
+        icfg=cpu.icfg if cpu is not None and getattr(cpu,'icfg_known',False) else None
+        return {'core':core,'ipmask':irq.ipmask,'priority':priority,
+                'eligible':bool(irq.eligible(index,icfg)),
+                'note':'sampled at delivery dispatch (pending recheck per BF semantics; '
+                       'delivery having happened = the gate check passed at that time)'}
+
+    def _sample_pending_edges(self,machine):
+        """Timer0/core-tick pending False→True 边沿=到期步号(观察器侧观察面,
+        见 __init__ 注记;窗口未开/已停不采)。"""
+        if self._w_park is None or self._stopped:return
+        timer=machine.hardware.timer
+        tick=(machine.hardware.core_ticks or (None,))[0]
+        step=self._model_step(machine)
+        for name,obj in (('timer0',timer),('core_tick',tick)):
+            if obj is None:continue
+            pending=obj.pending
+            last=self._pending_edges.get(name)
+            if last is False and pending is True and step>self._w_park:
+                self._expiry_steps[name].append(step)
+            self._pending_edges[name]=pending
+
     def note_idle_wait_entered(self,machine,cpu):
         step=self._model_step(machine)
         self._park_log.append({'kind':'core_idle_wait_entered','core':cpu.core_id,
@@ -287,7 +326,15 @@ class D1WindowObserver:
     def note_irq_delivery(self,machine,event,woke_from_idle_wait):
         extra=0 if woke_from_idle_wait else 1
         step=self._model_step(machine,extra)
+        self._sample_pending_edges(machine)   # 快进段终点=交付点的到期边沿
         record={**event,'model_step':step,'woke_from_idle_wait':woke_from_idle_wait}
+        if event.get('irq')==3:
+            # D1-3 资格面([路 CH 需求] 键的观察器落地):交付时刻采样 ipmask/
+            # priority/eligible(交付已发生=当时 pending 重检通过;BF 语义)。
+            try:
+                record['eligibility_note']=self._eligibility_note(machine,event)
+            except Exception:
+                record['eligibility_note']=None
         self._deliveries.append(record)
         core=event.get('core')
         if woke_from_idle_wait:
@@ -300,8 +347,12 @@ class D1WindowObserver:
                                              'irq':event.get('irq'),'nesting':0})
         if self._w_park is not None and step>self._w_park:
             source=f"irq{event.get('irq')}"
-            if source not in {entry.get('source') for entry in self._per_source}:
-                # 非周期源触达才入表(§2.4:预期 0;软件 IRQ124-127)
+            if source not in {entry.get('source') for entry in self._per_source} and \
+                    source not in ('irq3','irq4'):
+                # 非周期源触达才入表(§2.4:预期 0;软件 IRQ124-127)。irq3/irq4
+                # 除外(D1RUN 首轮实测归因):timer0/core_tick 交付的 irq 字段
+                # 即 4/3,它们已有专属周期条目——重复入表会把同一批交付记成
+                # 「零到期高交付」的 interrupt-storm 假阳性(H2)。
                 self._per_source.append({'source':source,'core':core,'period':None,
                                          'expirations':0,'deliveries':0,'completions':0,
                                          'first_deadline':None,
@@ -311,6 +362,20 @@ class D1WindowObserver:
         self._rtis.append({'kind':kind,'core':cpu.core_id,
                            'reti_from_frame':hex(cpu.reti) if isinstance(cpu.reti,int) else None,
                            'model_step':self._model_step(machine,1)})
+
+    def note_memory_write(self,address,data):
+        """RAM 写钩子(D1-3 jiffies 面):0x125004 4 字节写序观测。写后值=写
+        载荷,写前值=观察器影子(上次写后值;首次不可知=RAM 已被覆盖,记 None
+        ——+1 语义由相邻写后值差判定,等价口径如实标注)。全程记录带模型步,
+        窗口切分归 checker。"""
+        target=JIFFIES_WORD
+        if not (address<=target and target+4<=address+len(data)):return
+        after=int.from_bytes(data[target-address:target-address+4],'little')
+        core_ticks_so_far=sum(1 for d in self._deliveries if d.get('irq')==3)
+        self._jiffies_observations.append({'model_step':self._model_step(self.machine),
+                                           'before':self._jiffies_last,'after':after,
+                                           'delivery_index':core_ticks_so_far-1})
+        self._jiffies_last=after
 
     def event_clock_horizon_limit(self,machine):
         """事件时钟快进段的窗口剩余步数上限(§5 机器侧 horizon 截断)。
@@ -326,6 +391,14 @@ class D1WindowObserver:
 
     def window_face(self):
         return {'model_step_start':self._w_park,'steps':self._n_effective}
+
+    def expiry_steps_faces(self):
+        """到期步号观察面(D1RUN:checker 的 D1-2/D1-3 消费 peripherals.timer0.
+        expiration_model_steps 与 core_tick_configuration[0].expiration_model_
+        steps——观察器侧 pending 边沿自累计,由 post_stop 注入 peripherals 面;
+        窗口未开=空列表,如实呈现)。"""
+        return {'timer0':list(self._expiry_steps['timer0']),
+                'core_tick':list(self._expiry_steps['core_tick'])}
 
     # ── probe 挂点(explore 主循环尾每圈一次;§1 数据流) ─────────────────────
     def note_step(self,cpu,executed_pc,completed,stalled=False):
@@ -360,15 +433,41 @@ class D1WindowObserver:
             if executed_pc==S18_HANDLER_PC and in_window:
                 self._dispatch_handler_steps.append(step)
             if executed_pc==PEND_WRITE_FACE:
+                # W_park 锚(§2.2 修正二稿,D1RUN r1-r3 实测定稿):「末次空队列
+                # pend 写面之后的首次 engage」。PR2SPEC §2.2 原锚(首次 pend 后
+                # engage)被 r1 证伪——boot 期任务在各自消息队列 pend(Q1 实测
+                # 17.7M 即出现),首锚落进 boot 中段;S19 循环头前置(r2/r3)也被
+                # 证伪——当前前沿世界 S19 消息循环尚未建立(0x60123e6 零执行,
+                # watchpoint 机器可证),窗口不可开。末次 pend 语义:窗口内出现
+                # 新 pend=先前锚定的停泊不是稳态终形,重锚让位;在 S19 已建立
+                # 的未来前沿(S19 空队列 pend=末次 pend)该锚自愈为 PR2SPEC 原义。
+                # 口径如实:当前前沿下窗口锚定的是 JLEQ 判定口径的稳态 park
+                # (两核 idle+事件循环),与 S19 终态 park 的差异在验收记录声明。
                 self._pend_write_seen=True
+                if self._w_park is not None and not self._stopped:
+                    self._w_park=None
+                    self._expiry_steps={'timer0':[],'core_tick':[]}
+                    self._pending_edges={'timer0':None,'core_tick':None}
+                    self._timeline={0:[],1:[]}
+                    self._loop_head_after_drain=0
+                    self._timeslice_seen_step=None;self._timeslice_returned=False
+                    self._dispatch_handler_steps=[]
+                    self._queue_ops=[]
+                    self._n_effective=None;self._n_extended=False
             core=cpu.core_id
             if core in self._pending_running:
+                # pop 不设窗口守卫(boot 期唤醒也要消化簿记);timeline 的 running
+                # 条目同 woken/entered 一样只记窗口内(D1RUN 首轮实测归因:boot
+                # 期 CPU1 唤醒后的 running 混进 timeline,与窗口内 woken/entered
+                # 守卫不一致 → H7 转换流在首条 running 处断裂)。
                 irq=self._pending_running.pop(core)
-                self._timeline[core].append({'model_step':step,'kind':'running',
-                                             'pc':pc_hex,'irq':irq,'nesting':0})
-        if self._w_park is not None and not self._stopped and \
-                step-self._w_park>=self._n_effective:
-            self._request_window_stop(machine)
+                if in_window:
+                    self._timeline[core].append({'model_step':step,'kind':'running',
+                                                 'pc':pc_hex,'irq':irq,'nesting':0})
+        if self._w_park is not None and not self._stopped:
+            self._sample_pending_edges(machine)
+            if step-self._w_park>=self._n_effective:
+                self._request_window_stop(machine)
 
     @property
     def window_stop_request(self):
@@ -387,6 +486,9 @@ class D1WindowObserver:
         timer=hardware.timer
         tick=(hardware.core_ticks or (None,))[0]
         self._w_park=step
+        # 到期边沿基线(开窗瞬间的 pending 状态,防开窗前的未知态当 False 误判)
+        self._pending_edges={'timer0':timer.pending,
+                             'core_tick':tick.pending if tick is not None else None}
         self._park_instruction_step=self._completed
         self._park_cores={str(cid):{'pc':hex(core_cpu.pc),**
                                     ({'via':'scheduler_idle_switch'}
@@ -481,10 +583,9 @@ class D1WindowObserver:
                              'deadline_closed_form':(self._w_park+self._s_tick)
                                                     if isinstance(self._s_tick,int) else None,
                              'assumption':CORE_TICK_ASSUMPTION}
-            expiry_steps=(getattr(timer,'expiration_model_steps',None)
-                          if isinstance(getattr(timer,'expiration_model_steps',None),list) else None)
-            window_expiries=([s for s in expiry_steps if isinstance(s,int) and s>self._w_park]
-                             if expiry_steps is not None else None)
+            # 到期步号=观察器 pending 边沿自累计(D1RUN:模型层无该键,见
+            # __init__ 注记;不再 getattr 模型属性)。
+            window_expiries=list(self._expiry_steps['timer0'])
             tree['park']={'model_step':self._w_park,
                           'instruction_step':self._park_instruction_step,
                           'cores':self._park_cores,'event_clock_engaged':True,
@@ -521,8 +622,7 @@ class D1WindowObserver:
             tree['canaries']={f'k1_{K1_PC}':self._watch.get(K1_PC,0),
                               f'k2_{K2_PC}':self._watch.get(K2_PC,0)}
             tree['timer0_cycles']=self._timer0_cycles(window_expiries)
-            tree['core_tick']=self._core_tick_face(window_expiries
-                                                   if window_expiries is not None else [])
+            tree['core_tick']=self._core_tick_face(list(self._expiry_steps['core_tick']))
             tree['d1_4']=self._d1_4_face(natural,broken)
             tree['health']=self._health_face(stop,total,window_expiries,natural)
             tree['d1_model_steps_total']=total
@@ -764,10 +864,33 @@ class D1WindowObserver:
                 {'event':s['event'],'false_stages':[stage for stage in CHAIN_STAGES
                                                     if s.get(stage) is False]}
                 for s in broken]
-        return {'watchpoint_hits':dict(sorted(self._watch.items())),
+        return {'watchpoint_hits':{**{hex(pc):0 for pc in WATCHPOINT_PCS
+                                      if hex(pc) not in self._watch},
+                                   **dict(sorted(self._watch.items()))},
+                # ↑ 锚定 PC 面(D1RUN 归因):WATCHPOINT_PCS 全集铺 0——「零执行」
+                # 的机器可证表达=键在而值为 0(checker canary 判定语义);键缺会被
+                # 误读为 MISSING(pending)。
                 'idle_wait_park_log':self._park_log,
                 'event_clock_engagements':self._engagements,
+                'jiffies_observations':self._jiffies_observations,
                 'message_chain_observations':observations}
+
+    def project_delivery_faces(self,machine_report):
+        """把观察器的交付步号/资格面注入机器 projection 的 deliveries(D1-3
+        checker 消费 core_tick_entry_projection.deliveries[].{model_step,
+        eligibility_note};观察器记录与机器 deliveries 按同序追加,zip 对齐,
+        短的截断=错位不冒充)。返回注入后的 report(原 dict 原位修改)。"""
+        projection=machine_report.get('core_tick_entry_projection')
+        if not isinstance(projection,dict):return machine_report
+        deliveries=projection.get('deliveries')
+        if not isinstance(deliveries,list):return machine_report
+        observed=[d for d in self._deliveries if d.get('irq')==3]
+        for entry,record in zip(deliveries,observed):
+            if isinstance(entry,dict):
+                entry.setdefault('model_step',record.get('model_step'))
+                if record.get('eligibility_note') is not None:
+                    entry.setdefault('eligibility_note',record['eligibility_note'])
+        return machine_report
 
 
 def _subcode_of(sample):

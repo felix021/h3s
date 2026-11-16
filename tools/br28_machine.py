@@ -873,6 +873,8 @@ class DualCoreMachine:
                            'sp':word(cpu.sp) if cpu.sp_known else 'unknown'})
 
     def note_memory_write(self,address,data):
+        if d1_window_observer is not None:
+            d1_window_observer.note_memory_write(address,data)
         for target,size in ((0x1265f5,1),(0x19ff54,4)):
             if address<=target and target+size<=address+len(data):
                 value=int.from_bytes(data[target-address:target-address+size],'little')

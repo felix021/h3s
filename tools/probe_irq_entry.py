@@ -1315,8 +1315,24 @@ def make_d1_window_post_stop():
                   'note':'the D1 scenario ran without its observer registered'}]}}
         try:
             face=observer.machine_face()
-            return {'d1_window':observer.finalize(stop),
-                    'machine':{**machine.report(),**face}}
+            tree=observer.finalize(stop)
+            # 到期步号注入 peripherals 面(checker 的 D1-2/D1-3 消费键;观察器
+            # pending 边沿自累计——hardware.report() 全量重建后覆写,不丢模型键)。
+            peripherals=hardware.report()
+            expiry=observer.expiry_steps_faces()
+            timer0=peripherals.get('timer0')
+            if isinstance(timer0,dict):
+                timer0['expiration_model_steps']=expiry['timer0']
+                timer0['expiration_model_steps_source']=('d1_window_observer pending-edge '
+                                                          'sampling (observer-side, model untouched)')
+            ticks=peripherals.get('core_tick_configuration')
+            if isinstance(ticks,list) and ticks and isinstance(ticks[0],dict):
+                ticks[0]['expiration_model_steps']=expiry['core_tick']
+                ticks[0]['expiration_model_steps_source']=('d1_window_observer pending-edge '
+                                                            'sampling (observer-side, model untouched)')
+            return {'d1_window':tree,
+                    'machine':{**observer.project_delivery_faces(machine.report()),**face},
+                    'peripherals':peripherals}
         finally:
             observer.detach()
     return post_stop
@@ -6478,6 +6494,12 @@ def main():
                    help='append the D1 acceptance window scenario (d1_acceptance_window: park '
                         '+ N model steps observed; emits d1_window keys and exits nonzero unless '
                         'the D1 gate passes) — default off keeps every legacy report identical')
+    p.add_argument('--d1-window-steps',type=int,default=None,
+                   help='explicit D1 window N in model steps (overrides the formula and skips '
+                        'the H8 auto-extension; PR2SPEC §2.3). D1RUN note: the current GPCNT '
+                        'frontier stop sits ~41k+ model steps after W_park, so the formula N '
+                        '(S_tick+160k) crosses it — an explicit N inside the frontier is the '
+                        'workable window until the GPCNT release route moves the stop')
     args=p.parse_args()
     rom=args.rom.read_bytes();check_rom(rom);module=upstream();app=application(args.firmware);header=package_header(args.firmware)
     image=flash_image(args.firmware)
@@ -6638,14 +6660,21 @@ def main():
     # 提层入栈,PR2SPEC 场景行的 event_clock=True 显式传参因重复 kwarg 省略)
     # + d1_acceptance 观察器;budget=41M(d1 分支覆盖 flag 推导)。
     if args.with_d1_window:
+        d1_kwargs={'d1_acceptance':True}
+        if args.d1_window_steps is not None:d1_kwargs['d1_window_steps']=args.d1_window_steps
         report['scenarios'].append(
             irq_case(module,app,header,rom,'d1_acceptance_window',
                      **scenario_flags('p11_heap_experimental',sys.modules[__name__]),
-                     d1_acceptance=True,flash_image_bytes=image))
+                     **d1_kwargs,flash_image_bytes=image))
     check(report,args.firmware)
+    # 报告先落盘再做 D1 正式验收(D1RUN 归因:验收崩溃不能吞报告——r2b 轮
+    # run_all 在 jiffies 判定面抛 TypeError 导致 write_text 未执行,checker
+    # 只能消费上一轮旧文件)。
+    args.report.parent.mkdir(parents=True,exist_ok=True)
+    args.report.write_text(json.dumps(report,indent=2)+'\n')
     # D1 正式验收入口(PR2SPEC §4.5):五断言机检消费同轮报告的 d1_window 键,
-    # verdicts 回填场景行,d1_gate 非 pass → 报告落盘后以非零码退出(checker
-    # CLI 自身退出码恒 0,非零退出义务在此)。
+    # verdicts 回填场景行,d1_gate 非 pass → 以非零码退出(checker CLI 自身
+    # 退出码恒 0,非零退出义务在此)。
     d1_gate=None
     if args.with_d1_window:
         from check_d1_acceptance import run_all
@@ -6654,8 +6683,7 @@ def main():
         row.setdefault('d1_window',{})['verdicts']=result
         d1_gate=result['d1_gate']
         report['d1_gate']=d1_gate
-    args.report.parent.mkdir(parents=True,exist_ok=True)
-    args.report.write_text(json.dumps(report,indent=2)+'\n')
+        args.report.write_text(json.dumps(report,indent=2)+'\n')
     if d1_gate is not None and d1_gate!='pass':
         sys.exit(1)
 

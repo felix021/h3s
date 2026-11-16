@@ -1,14 +1,15 @@
 {
   "case_id": "D1-TMR-02",
   "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；D1 场景世界=p11_heap 条件栈官方单臂；三镜像差分 L2-a 系过线后独立步另记，不进本批）",
-  "initial_state": "预填用例（未执行），计划起点=真实启动全程（Q1，d1-acceptance §7/§8 唯一合法首次过线形态）：p11_heap 条件栈自然推进到 S19/park 再进观察窗，单次运行从 boot 起跑、budget 一次给足，不设「从中间热启动」参数（s19-batch3-taskbook §2.1 第 1 条）；窗口起点 W_park=〔2026-11-16 PR3P2 刷新：RBKREV/runbook §1.1+PR2SPEC §2.2 口径，原「event_clock_engaged 首次」表述作废〕S19 空队列 pend 链完成后的那次事件时钟接管（机械判据=pend 写面 0x6064cf6 首达后的首次 event_clock_engaged；boot 期 os_time_dly 途中停泊的 engage 不算——B3 实测 13,429,113 虚拟步），报告键=d1_window.park.{model_step,instruction_step} 双轴并记；checker d1_2 的窗口切分与期望周期快照锚均取该值（PR2CHK §2.7 适配点 1，checker L534-580；键缺回退 park_log 首条=boot 期停泊会污染判据，故 PR-2 生产者必须带 d1_window 键）；前置=批 3 闸门②（前沿过 DAC_TM0〔DT 已放行，21,798,206 @ 0x606b5ee ADA_CON0 读在途〕+音频数字域整块+S19 终态 park）+PR-BI 首验+PR-2 场景骨架，前置未备前本条保持 NOT_RUN",
+  "initial_state": "真实启动全程（Q1，红线 5 唯一合法形态）：p11_heap 条件栈单次从 boot 起跑、budget 41M 一次给足（d1_acceptance 分支），场景行 d1_acceptance_window（--with-d1-window，D1RUN commit 落地）。实测 park 双轴步数（末次 pend 锚）：W_park=17,688,351 模型步 / 17,686,192 指令步；N=333,895 模型步（公式 max(S_tick+160k,200k)，S_tick=173,895）；窗口终点 18,022,246 模型步，停点=window_complete @ 0x12c5ca（两核 idle）。Q1 轮次轨迹 r1→r4 共四轮全程重放（每轮 ~26 分钟），判活=报告 status/d1_gate 字段（d1_gate=fail：5 fail/5 pending/38 子检查 pass）。",
   "inputs_schedule": "无外部输入（D1 排除面=P33/WKUP/USB/按键）；时间表=观察窗模型步轴 [W_park, W_park+N)（窗口步数只按全局模型步计、含事件时钟快进段；窗口内执行指令数另列 d1_window_instruction_steps，不冒充时间——d1-acceptance §1 时间口径）；注入变体不进本条",
   "observation_boundary": "[W_park, W_park+N) 内 ≥3 次完整 Timer0 周期，逐周期四查（观察点表=d1-scene-blueprint §2.2）：到期 timer0_cycles[i].expiry_model_step/交付 IrqDeliveryRequest(0,4)→timer0_irq_entry→handler 0x12ece8 真实字节/ACK=W1C bit14（|=0x4000）恰一次+delivery_in_flight 复位/RTI=尾锚 0x12ed0c→实际保存的 RETI→重新 core_idle_wait_entered（re_parked）；tick 回调真实效果 0x603622C：[0x1268CC]+1、[0x1268D0]+10ms、sys_timer 轮询 0x6066de0（BZ §2.2/2.3）；窗口零 Blocked（window_blocked_events 期望空）；报告键=timer0_cycles[i].{gap_from_previous,delivered,handler_entry_pc,frames,acked,w1c_count,rti_pc,reti_value,re_parked,tick_count_delta,tick_ms_delta,sys_timer_polled,delivery_delay_steps}（蓝图 §4.3）",
   "assertions": [
     "d1-acceptance §1 D1-2（观察点表=d1-scene-blueprint §2.2）：≥3 周期逐周期四查（到期/交付/ACK/返回）全过——无漏失（=少一次完整往返）、无重复（=同周期双交付）；相邻到期模型步差恒=P_park（park 态 timer0_state.{con,cnt,prd} 经 period_closed_form 用 INV 常量链现算——不预锁 40,000；BY 实测 delay 函数按调用重编 PRD 59999→47999→11999 三态都出现过，park 末态实际配置=运行观测项 R1；P_park≠40,000 时按实际周期核对「间隔恒定」并如实报告，BI A2「配置不变时」条款照抄）；tick 回调每周期真实推进计数（tick_count_delta=1/tick_ms_delta=10 按实读核对）；窗口内零 Blocked（「无未知停点」=没有未处理的未知边界、跳过或补值，旧 kind 再次阻塞也不通过——codex 条款）〔2026-11-16 PR3P2 刷新：checker no_unknown_stops_in_window 已含自然收尾豁免（PR2CHK §6 适配点 2）：stop=all_cores_idle_waiting 或 window_complete 且窗口内 ≥3 完整周期=自然收尾不算未知停；window_complete 不足 3 周期仍红（由 H1/H8 接管）；instruction_budget 豁免维持（park 前耗尽=未完成 pending）——checker L669-690；window_blocked_events 键=窗口已开而 stop 非 window_complete 时记入（PR2SPEC §5）〕",
     "交付延迟另记不判 FAIL（delivery_delay_steps）：溢落 IPMASK 临界区时经 BF pending 重检机制延后交付=既有建模语义，不要求交付间隔=P_park（codex 条款）",
     "窗口内若发生消息分发（D1-3 后调度的事件/注入变体），其后须再覆盖 ≥1 完整周期（post_dispatch_cycle_covered）——分发代码可能动 IPMASK/临界区（d1-acceptance §1 D1-2「分发之后」条款）",
-    "观察窗相容性自检（路 REVIEW 采纳盲区①，docs/phase-review-d1-readiness）：PR-2 窗口公式 N=max(S_tick(W_park)+160,000, 200,000) 按 park 实读 P_park 复核可覆盖周期数——可覆盖周期数<3=观察窗不足（补窗口重跑仍是全程 Q1），不判过也不冒充 FAIL 归因；BY 实测 PRD 三态重编使蓝图 160k 余量假设可被打破〔2026-11-16 PR3P2 刷新：本自检已进 checker=H8 第八规则（PR2H8，_h8_window_coverage L1962-1992）：N//P_park<3 → insufficient_window_coverage=pending 拒绝给结论（无 FAIL 级，窗口配置问题非 DUT 行为），d1_gate 非 pass（gate 优先级 fail>pass>pending，run_all L2043-2046——insufficient 压不过真 FAIL）；H1 联动=到期<3 且 H8 可证覆盖<3 → 转 pending 非 FAIL（d1-health-checks §1 H1 行）；生产者自检=公式 N 自动延长 N=max(N,3×P_park)，显式 d1_window_steps 覆盖不参与延长（PR2SPEC §2.3/§5）；verdict 分流=insufficient 非 verdict，修 N 重跑（runbook §4.1）〕"
+    "观察窗相容性自检（路 REVIEW 采纳盲区①，docs/phase-review-d1-readiness）：PR-2 窗口公式 N=max(S_tick(W_park)+160,000, 200,000) 按 park 实读 P_park 复核可覆盖周期数——可覆盖周期数<3=观察窗不足（补窗口重跑仍是全程 Q1），不判过也不冒充 FAIL 归因；BY 实测 PRD 三态重编使蓝图 160k 余量假设可被打破〔2026-11-16 PR3P2 刷新：本自检已进 checker=H8 第八规则（PR2H8，_h8_window_coverage L1962-1992）：N//P_park<3 → insufficient_window_coverage=pending 拒绝给结论（无 FAIL 级，窗口配置问题非 DUT 行为），d1_gate 非 pass（gate 优先级 fail>pass>pending，run_all L2043-2046——insufficient 压不过真 FAIL）；H1 联动=到期<3 且 H8 可证覆盖<3 → 转 pending 非 FAIL（d1-health-checks §1 H1 行）；生产者自检=公式 N 自动延长 N=max(N,3×P_park)，显式 d1_window_steps 覆盖不参与延长（PR2SPEC §2.3/§5）；verdict 分流=insufficient 非 verdict，修 N 重跑（runbook §4.1）〕",
+    "〔D1RUN 2026-11-17 Q1 r4 实测〕D1-2=fail（7 pass/1 fail/2 pending）：窗口内 38 次到期/38 交付/38 RTI 完成（per_source timer0 38/38/38 一致，H2 有界 pass）；expiry_interval FAIL——间隔序列 [4000×5, 21181, 20000, 17013, 16000, 13013, 12000, 9013, 8000, 8000, 5014, 4000, …] 非恒 4000：窗口（W_park=17.69M 模型步）跨固件 Timer0 PRD 重配段（W_park 时刻 prd=11999/P=4000，停点前终态 prd=59999），周期判据的「窗口内配置恒定」前提在 boot 侧前段窗不成立。no_unknown_stops pass（window_complete 豁免，38≥3 周期）。失败归因=窗口锚位（观察窗在 Timer0 重配段）非 park 稳态窗——S19 建立后按 PR2SPEC 原锚复跑即消；非 DUT 违约（固件重配 Timer0 是 boot 段真实行为）。"
   ],
   "timeout_budget": "N（蓝图 §1.3：N=S_tick(W_park)+160,000，下限 200,000——3×Timer0 周期（≥120,000）+core tick 首溢出闭式期限 S_tick+其交付执行+交付后再覆盖 ≥1 完整 Timer0 周期）；超时=FAIL 非重跑；NOT_RUN 语义只给 D1-4 无样本的诚实收口，本条超时=FAIL（蓝图 §1.3）",
   "model_assumptions": [
@@ -19,18 +20,27 @@
     "core_tick_irq3_delivery（HANDOFF 路 BF）",
     "TIMER2 投影+闭式 horizon 并入 min()（B1，4000 步闭式单测钉死）+闭式常量 STEPS_PER_MS=4000/TIMER0_STEPS_PER_10MS=40000（INV 四层断言）——P_park 计算的常量链",
     "p11_heap 条件栈 flag 集经 scenario_flags('p11_heap_experimental') 构造器实取（含音频域容器族 jl_adda_analog_family〔B3〕/jl_audio_dac_tm_readback〔DT〕等；不含已撤回的电池段两开关）；场景行=event_clock=True+d1_acceptance=True（任务书 §1.2 第 3 条）〔2026-11-16 PR3P2 刷新：PR-2 落地的场景行名=d1_acceptance_window（PR2SPEC §4.3；蓝图 §4.2 同）——PR-3 机检 --scenario d1_acceptance_window，d1_window.* 键只有该行产出；旧条件场景名 p11_heap_experimental_config 仅 runbook §1.2 park 判定用，两处场景名不同是预期（runbook §4.1）〕",
-    "交付假设叠加适用（event-clock §5）：入口银行/PSR 高位/RTI 装载等——全部结论投影等级（hardware_mode_certified=false 不升级）"
+    "交付假设叠加适用（event-clock §5）：入口银行/PSR 高位/RTI 装载等——全部结论投影等级（hardware_mode_certified=false 不升级）",
+    "观察窗锚口径=末次空队列 pend 写面后首次 engage（当前前沿 S19 未建立下的 JLEQ 口径稳态锚，与 S19 终态 park 差异显式声明）",
+    "交付假设叠加适用（hardware_mode_certified=false 不升级）"
   ],
-  "result": "NOT_RUN",
+  "result": "FAIL",
   "uncovered_items": [
     "本条=预填底稿未执行（NOT_RUN=未跑，不占 BLOCKED 语义）；等闸门②（前沿到 S19 终态 park）+PR-BI 首验（A2 周期守恒窗口版判据需 S19 后 park 样本）+PR-2 场景骨架，PR-3 正式落档时以实测 verdict 替换本预填",
     "R1 运行观测项：park 时 Timer0 实际配置（PRD 被 delay 函数重编后的末态；周期=40,000 还是别的）——由 park.timer0_state.period_closed_form 回答，本条预填不预锁数值",
     "硅时序/同刻仲裁；IDLE 指令硅语义（idle_wait 措辞）；外部输入域（P33/WKUP/USB/按键）；模拟前端/DMA 总线/声学面（蓝图 §6 底稿公共未覆盖项）",
-    "窗口内 D1-3 时间片调度把执行带进未建模域（任务体跑新 SFR）时=FAIL+记录归因（归 D2+ 域新边界），修复后重跑，不允许为过线缩短窗口（蓝图 §7 工程风险条款照抄）"
+    "窗口内 D1-3 时间片调度把执行带进未建模域（任务体跑新 SFR）时=FAIL+记录归因（归 D2+ 域新边界），修复后重跑，不允许为过线缩短窗口（蓝图 §7 工程风险条款照抄）",
+    "窗口锚位归因：间隔判据需要 park 稳态窗（Timer0 配置恒定段=喂狗稳态 29.5M+ 指令区，间隔恒 4000），当前锚开在重配段；w1c_ack/rti_to_reti 两子检查 pending=[路 CH 需求]观察键（timer0.w1c_acknowledgements 计数/RTI 对齐记录）未生产"
   ],
-  "evidence_level": "none",
-  "evidence_conditions": [],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "idle_wait_projection（IDLE 停泊语义；硅 IDLE 语义未证）",
+    "event_clock_projection（全核 IDLE 事件时钟推进）",
+    "timer0_irq4_delivery(entry/banks/rti)+repeat+core_tick_irq3_delivery 交付投影族",
+    "观察窗锚口径=末次空队列 pend 写面后首次 engage（D1RUN r1-r3 定稿；当前前沿 S19 消息循环未建立——watchpoint 0x60123e6 零执行机器可证——PR2SPEC §2.2 原 S19 锚不可开窗，本窗口锚定的是 JLEQ 判定口径稳态 park 的 boot 侧前段，与 S19 终态 park 的差异显式声明）",
+    "交付假设叠加适用（hardware_mode_certified=false 不升级）"
+  ],
   "evidence_refs": [],
   "blocked_missing": null,
-  "recorded_at": "2026-11-15T13:36:00"
+  "recorded_at": "2026-11-17T05:10:00"
 }
