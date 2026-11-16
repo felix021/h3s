@@ -338,6 +338,14 @@ core tick/软件 IRQ124-127 之后的**新周期性行为源**。换算：1 tick
    （独立源 vs timer0 衍生计数——sys_timer 到期挂在 Timer0 tick handler 的
    S8 检查之下）由 PR-2 生产者按实测定型，**若需新增键先改
    [d1-health-checks.md](d1-health-checks.md) 契约再改代码**。
+   〔2026-11-16 更新（路 H2SRC，基线 main `3a64ec2`）：形态已静态钉死并落地——
+   D1S9/S8SCAN 定为 timer0 衍生 sys_timer 条目（`kind='sys_timer'`、period=
+   10×/5×P_timer0、三分计数坍缩同数），d1-health-checks §2 已加 `kind` 字段+
+   周期源表，checker `PERIODIC_SOURCES` 同步四源+8 反例单测；「先改契约再改代码」
+   已完成 checker 半边，PR-2 只剩生产者 emit（adc_scan 无条件必 emit、keyscan 挂
+   cfg523 条件栈）。缺源语义随之精化：**keyscan 缺条目不 pending**（cfg523 条件性，
+   触达才入表——D1S9 §3.3 对本条「缺项=pending」的修正）；**adc_scan 缺条目=
+   pending**（init walker 直线段无条件注册，S8SCAN §5.2）。〕
 2. **d1_window 期望值**：健康报告的周期源清单、`wake_reasons` 计数（键扫唤醒/
    sys_timer 唤醒会出现非 timer0 源）都要能容纳它；H4/H7 的 wake_reasons 求和=
    wake_count 判据自然覆盖。
@@ -423,7 +431,7 @@ cnt，**携带该冻结假设**（只记录不代写）。
 |---|---|---|---|---|
 | **PR-1**（=§1.0b） | check_d1_acceptance.py 侧 d1_5_health（H1-H7）+FAIL 证据契约+单测 | **无**（不碰 probe/模型文件） | 每条规则独立 PASS/FAIL 判定正确；缺字段/截断/边界样本非零退出；总闸红一例；`--units` 绿 | ✅ **已完成**（`fafaffd`；PR2H8 `1cc166d` 增补 H8+8 反例，单测 78） |
 | **PR-BI**（=§1.1） | 真实启动 BI 首验（A1-A5 先观察后升级硬断言；B3 已备大半数据+S19MAP 消费者序列） | 闸门②（FLS+B2R+推进跑到 park；数据整理部分可先行） | A1-A5 实测记录+升级依据落 HANDOFF；观察失败不阻塞 PR-2 合并但阻塞 D1 验收 | 等前沿（首验跑 ~18min/轮，O7E） |
-| **PR-2**（=§1.2+§1.3+§1.3b 联动+§1.4 标注机制+§1.5 主样本接线） | 三参数+registry+场景行+观察件+报告键+窗口机制+**H8 生产者自检（§1.2 第 7a 条）**+**正式验收入口**+D1-1..4 断言适配 `d1_window` 键+CNT 假设标注机制+D1-4 主样本的观察面 | 闸门② | 生产者与 checker 契约对上（d1-health-checks §2 冻结契约）；旧场景逐字节不变；parity 钉子零变更（或有解释的差异，断言面先 assert_preflight 离线预检）；CNT 假设字段贯穿报告键+断言输出 | **checker 半边已落地**（PR2H8）；生产者侧整体等闸门② |
+| **PR-2**（=§1.2+§1.3+§1.3b 联动+§1.4 标注机制+§1.5 主样本接线） | 三参数+registry+场景行+观察件+报告键+窗口机制+**H8 生产者自检（§1.2 第 7a 条）**+**正式验收入口**+D1-1..4 断言适配 `d1_window` 键+CNT 假设标注机制+D1-4 主样本的观察面 | 闸门② | 生产者与 checker 契约对上（d1-health-checks §2 冻结契约）；旧场景逐字节不变；parity 钉子零变更（或有解释的差异，断言面先 assert_preflight 离线预检）；CNT 假设字段贯穿报告键+断言输出 | **checker 半边已落地**（PR2H8=H8 自检；H2SRC=H2 周期源 keyscan/adc_scan：§2 周期源表+`kind` 字段+checker `PERIODIC_SOURCES` 四源+缺源语义+8 反例单测，RBKREV P1 #5 缺口消账）；生产者侧整体等闸门② |
 | **PR-3**（=§1.6） | 完整主样本验收跑满窗口+五断言 verdict+验收记录落档（PR3P 底稿刷 verdict）+HANDOFF | PR-BI/PR-2 全绿（PR-1 已绿） | 五断言全 PASS（或诚实 FAIL 归因）；Q1 全量重放为唯一过线证据；`acceptance_record --validate` 绿；CNT 假设确认贯穿落档 | 等前沿；工作量较原估降（底稿已预填） |
 | **PR-D0**（新，过线后，原 §1.6 第 4 条「可选快照」升格） | park/D1-entry canonical 快照捕获（`--capture-snapshots`，一代码态一次）+验证轮登记+（可选）三镜像捕获 `--jobs 3` | PR-3 过线后 | 捕获轮报告+等价性证据（工具链三层自带）+`evidence/snapshot-artifact.json` 登记；快照只作回归/复核（Q2），不作过线证据 | 等过线；工具全部就位（SNAPX/PAR3） |
 | **PR-4**（可选，=§1.5 注入变体） | `d1_post_inject='s18_18'` 变体实现+BLOCKED/PASS 裁决记录 | PR-3 后 | 默认关；显式合成假设全文标注；不进过线必要条件 | 等前沿；注入若不改指纹文件可复用 PR-D0 快照起跑（注入点在 park 后=快照边界后），改动即重捕获（快照双闸机械保证）——实施时如实验证，不预承诺 |
@@ -484,7 +492,7 @@ Q1/Q2/Q3 取舍表。执行含义四条：
 | 0b（H1-H8） | ✅ 已完成：`test_d1_acceptance.py` 78 例全绿（每规则 PASS/FAIL 形状+总闸+pending 语义+H8 三态 PRD 边界/余量破/拦截不放宽）；`--units` 绿（PR-1+PR2H8） |
 | 1（BI 首验） | A1-A5 实测记录落档（先观察）；升级硬断言后单测同步；事件时钟首个消费者实测口径核（§1.1 第 0/4 条：W2[0] 6 tick） |
 | 2（骨架） | 场景行跑通；`d1_window` 报告键蓝图 §4.3+d1-health-checks §2 冻结契约全出；legacy 逐字节不变（stash 对照）；registry 闭包校验过；probe check() 断言面先 `assert_preflight.py` 离线预检（秒级）再上全量 verify |
-| 3（窗口公式） | P_park/S_tick 实测 vs 闭式差 ≤1 步（BP §6 口径）或如实记录偏差归因；P_park≠40000 时 D1-2 判据按实读周期核对通过；**H8 自检过（N//P_park≥3，不足延长 N）**；cfg523 开时 S9 键扫源入 per_source（§1.3b） |
+| 3（窗口公式） | P_park/S_tick 实测 vs 闭式差 ≤1 步（BP §6 口径）或如实记录偏差归因；P_park≠40000 时 D1-2 判据按实读周期核对通过；**H8 自检过（N//P_park≥3，不足延长 N）**；cfg523 开时 S9 键扫源入 per_source（§1.3b；checker 侧上界/缺源判定已落地——H2SRC，adc_scan 同入） |
 | 4（D1-3） | 闭式=实溢出（±1 步）；jiffies +1；ACK=1；时间片返回；**CNT 假设字段在报告键+断言输出+验收记录三处齐全** |
 | 5（D1-4） | 全链站点逐个执行证据（对照蓝图 §2.4 表）；(20,2) 观测如实（ID2 销项后仍观测「是否到达」，不测「是否存在」）；注入变体默认关验证 |
 | 6（落档） | `acceptance_record --validate` 绿；HANDOFF 条目；五断言 verdict 表；Q1 全量重放证据链单列（Q2 快照轮不冒充） |

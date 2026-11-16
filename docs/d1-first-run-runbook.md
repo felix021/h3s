@@ -360,6 +360,14 @@ python3 tools/acceptance_record.py --validate docs/acceptance-samples/d1
    误报风暴，缺源也不会 pending。PR-2 落地时先改 d1-health-checks §2 契约再改代码
    （任务书 §1.3b 第 1 条），并列为 PR-2 完成闸门（含反例：cfg523 开+缺键扫观测 →
    H2 pending）。
+   〔2026-11-16 更新（路 H2SRC，基线 main `3a64ec2`）：本条 checker 能力**已落地**
+   ——d1-health-checks §2 周期源表+`kind` 字段、checker `PERIODIC_SOURCES` 四源
+   （timer0/core_tick/keyscan/adc_scan）、8 反例单测；上文「未实现」表述自该路
+   合并后仅存档。缺源语义按 D1S9 §3.3/S8SCAN §5.2 精化：**adc_scan 缺条目=pending**
+   （init walker 直线段无条件注册）；**keyscan 缺条目不 pending**（cfg523 条件性，
+   触达才入表——d1_window 键面不携带 cfg523 状态，checker 无法分辨「关」与
+   「缺观测」，「cfg523 开+缺键扫 → pending」的严格反例由 PR-2 生产者 emit 纪律
+   承担：cfg523 开必 emit keyscan 条目）。〕
 
 ### 5.2 红线 5「调试迭代不改进入形态」（本步核心）
 

@@ -148,7 +148,10 @@ def d1_health_scenario():
     ——批 3 任务书 §1.0b 第 2 条)。数值贴 BQ/B3 实测形状:park=100、Timer0 period
     40,000(prd=119999/STD12M/div1 推导)、core tick period 300,000(prd=1199999/
     progress=4,PRD 读回=恒等链不承载冻结假设)、窗口 N=200,000(蓝图 §1.3 下限)。
-    窗口内 3 次 Timer0 到期/交付/回 park + 1 次 core tick 交付;CPU1 全窗静默。"""
+    窗口内 3 次 Timer0 到期/交付/回 park + 1 次 core tick 交付;CPU1 全窗静默。
+    sys_timer 衍生源两枚(2026-11-16 路 H2SRC,D1S9/S8SCAN 形态+§2 周期源表):
+    keyscan P=10×40,000=4×10⁵>N → 窗口内 0 到期合法;adc_scan P=5×40,000=2×10⁵
+    → 窗口内 1 次到期,三分计数坍缩同数(cfg523 开=cfg523 世界,键扫源在场)。"""
     park=100
     scenario=copy.deepcopy(parked_scenario())
     scenario['name']='synthetic_d1_health'
@@ -187,7 +190,13 @@ def d1_health_scenario():
           {'source':'core_tick','core':0,'period':300000,'expirations':1,'deliveries':1,
            'completions':1,'first_deadline':park+143173,'pending_at_window_start':False},
           {'source':'irq124','core':0,'period':None,'expirations':0,'deliveries':0,
-           'completions':0,'first_deadline':None,'pending_at_window_start':False}],
+           'completions':0,'first_deadline':None,'pending_at_window_start':False},
+          {'source':'keyscan','kind':'sys_timer','core':0,'period':400000,
+           'expirations':0,'deliveries':0,'completions':0,'first_deadline':None,
+           'pending_at_window_start':False},
+          {'source':'adc_scan','kind':'sys_timer','core':0,'period':200000,
+           'expirations':1,'deliveries':1,'completions':1,
+           'first_deadline':park+16780,'pending_at_window_start':False}],
         'event_reposts':[
           {'event_id':'0x10000c','subcode':18,'origin':'firmware-natural','posts':1,
            'consumed':1,'producer_pc':'0x60123aa','first_post_step':park+50000,
@@ -257,6 +266,12 @@ def _d15(scenario):
 
 def _failed_checks(result,prefix):
     return [c for c in result['checks'] if c['status']=='fail' and c['name'].startswith(prefix)]
+
+
+def _h2_source(scenario,name):
+    """H2 测试辅助:按源名取 per_source 条目(不存在即 KeyError=测试自身拼错)。"""
+    return next(e for e in scenario['d1_window']['health']['per_source']
+                if e.get('source')==name)
 
 
 class WindowTests(unittest.TestCase):
@@ -992,6 +1007,89 @@ class D1_5H8WindowCoverageTests(unittest.TestCase):
         self.assertEqual(evidence['coverage'],2)
         self.assertEqual(evidence['p_park'],70000)
         self.assertEqual(evidence['required_n_min'],210000)
+
+
+class D1_5H2SysTimerSourcesTests(unittest.TestCase):
+    """H2 周期源补齐(2026-11-16 路 H2SRC;RBKREV 复核 P1 #5 的机检面):
+    keyscan/adc_scan=sys_timer 衍生周期源(D1S9 §2③/S8SCAN §5——挂 Timer0 tick
+    回调内同步触发),⌈N/P⌉+1 上界按源名套用(P=10×/5×P_timer0 实读),三分计数
+    坍缩为同数;缺源语义按 emit 条件性分流(adc_scan 无条件必在/keyscan 触达才入表)。"""
+
+    def test_sys_timer_sources_consistent_pass(self):
+        # 正例:两源在场、计数自洽(keyscan P=4×10⁵>N → 窗口内 0 到期合法;
+        # adc_scan 三分同数坍缩)=pass,且产出各自的 bounded 检查
+        result=_d15(d1_health_scenario())
+        self.assertEqual(result['status'],'pass')
+        names={c['name'] for c in result['checks']}
+        self.assertTrue({'h2_keyscan_bounded','h2_adc_scan_bounded'}<=names)
+
+    def test_adc_scan_missing_is_pending(self):
+        # 负例:adc_scan=无条件注册源(init walker 直线段),D1 窗口内缺条目=观测
+        # 缺口 → pending 非 pass(键缺≠零事件;S8SCAN §5.2)
+        scenario=d1_health_scenario()
+        health=scenario['d1_window']['health']
+        health['per_source']=[e for e in health['per_source']
+                              if e.get('source')!='adc_scan']
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'pending')
+        self.assertTrue(any('adc_scan' in (c.get('missing') or '')
+                            for c in result['missing']),result['missing'])
+
+    def test_keyscan_missing_is_not_pending(self):
+        # keyscan 条件性(cfg523 才注册):不存在不 pending(触达才入表,
+        # D1S9 §3.3/任务书 §1.3b 第 4 条)——缺条目世界(cfg523 关)仍 pass
+        scenario=d1_health_scenario()
+        health=scenario['d1_window']['health']
+        health['per_source']=[e for e in health['per_source']
+                              if e.get('source')!='keyscan']
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'pass')
+
+    def test_keyscan_storm_fails(self):
+        # 负例:超上界=风暴(P=400,000、N=200,000 → bound=⌈N/P⌉+1=1;deliveries=3)
+        scenario=d1_health_scenario()
+        _h2_source(scenario,'keyscan').update(
+            deliveries=3,expirations=3,completions=3)
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'fail')
+        self.assertTrue(_failed_checks(result,'h2_keyscan'))
+
+    def test_adc_scan_storm_fails(self):
+        # 负例:同款超上界(P=200,000、N=200,000 → bound=2;deliveries=4)
+        scenario=d1_health_scenario()
+        _h2_source(scenario,'adc_scan').update(
+            deliveries=4,expirations=4,completions=4)
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'fail')
+        self.assertTrue(_failed_checks(result,'h2_adc_scan'))
+
+    def test_sys_timer_period_missing_is_pending(self):
+        # period 实读缺=无法算上界,不预锁 4×10⁵/2×10⁵ 兜底 → pending(H2 CNT
+        # 假设/core_tick period 缺同款红线)
+        scenario=d1_health_scenario()
+        _h2_source(scenario,'adc_scan')['period']=None
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'pending')
+        self.assertTrue(any('period' in (c.get('missing') or '')
+                            for c in result['missing']))
+
+    def test_sys_timer_kind_field_is_annotation_only(self):
+        # kind=注记性判别字段(缺省 'irq'):checker 按源名套上界,不因 kind 缺失
+        # pending/分流(D1S9 §3.2 落地面)
+        scenario=d1_health_scenario()
+        for entry in scenario['d1_window']['health']['per_source']:
+            entry.pop('kind',None)
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'pass')
+
+    def test_sys_timer_completion_exceeding_delivery_fails(self):
+        # 三分计数坍缩为同数:completions>deliveries(同步回调不可能)按既有
+        # 三分一致性检查 FAIL(交付≤到期+容差、完成≤交付对 sys_timer 源照用)
+        scenario=d1_health_scenario()
+        _h2_source(scenario,'adc_scan')['completions']=2
+        result=_d15(scenario)
+        self.assertEqual(result['status'],'fail')
+        self.assertTrue(_failed_checks(result,'h2_adc_scan'))
 
 
 class RealReportTests(unittest.TestCase):

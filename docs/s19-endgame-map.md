@@ -224,3 +224,19 @@ fixture 而非窗口），#0 可能裂成 2-3 个——**建议窗口方案**（
 - 运行读数：sim-ass 前缀报告 p11_heap 行（steps 28,764,184/stop 0x606c5ba 读
   0x61fbfe0/last_registers r5=0x126e90 r7=0x61fbfe0 r9=0x9881/事件时钟冻结
   13,429,113/per-core {0:28,757,497, 1:11,251}）。
+
+## 8. 混轴注记（2026-11-16 路 H2SRC 补；勘误式短文，正文数字一律不改）
+
+§7 末行把两个**不同轴**的步数并排列出（28,764,184 与 13,429,113），不注明口径
+容易被当成同轴可互算——RBKREV 复核 [d1-first-run-runbook.md](d1-first-run-runbook.md)
+P0 的根因正是这类混轴（registry 重钉占位符误写「模型步」），特此注记：
+
+- **steps 28,764,184** = completed_steps（**指令步轴**；HANDOFF 前沿表/registry
+  同轴取的就是这个值）。
+- **事件时钟冻结 13,429,113** = 事件时钟累计虚拟步（`virtual_model_steps_advanced`
+  口径，**另计**）——事件时钟快进步**不进** completed_steps（机器侧两计数器分离：
+  指令步计数 vs `event_clock_advances`，br28_machine 事件时钟投影实现）。
+- 本文 §0.3 的 park 预计 ≈3.7-3.9×10⁷ 是「模型步」口径（含事件时钟快进），与
+  completed_steps 不同轴。**两轴不得互填、勿手工换算**：registry 重钉只取实跑报告
+  completed_steps 原值（RUNBOOK §1.2 占位符裁决），freshness 是严格相等比较，
+  填错轴即伪证。
