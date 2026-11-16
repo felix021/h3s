@@ -1484,10 +1484,14 @@ def check_self_candidate(report, label, scenario):
       l1 447,490,δ₁=22)后交付相位彩票把等待域伸缩为 -102 尾段重锁),
       停点记录逐字段相同;前两个分歧锚(116,148 fence/169,439 config.dat)
       与 crc_bankb 档逐字段一致;reconvergence realigned lag=-102 于
-      19,123,794 重锁,其后控制流零分歧 2,674,412 步到双停点(偏移对的
-      彩票预期形状,非回归;三层清单判定见 docs/acceptance-samples/cot/
-      R2-COT-01.json 与 analysis/local-checks/difline/)。
-    上游前沿推进后按新结论重钉。r4_keyhook 走独立钉值函数(路 R4SNAP,
+      19,123,794 重锁,其后控制流零分歧到双停点(DIF 首轮实测 2,674,412
+      步;停点步数与零分歧步数跟 frontier_registry 条件前沿单源派生
+      label=base−102/czd=base−19,123,794,前沿推进自动跟随,路 L1FIX;
+      偏移对的彩票预期形状,非回归;三层清单判定见
+      docs/acceptance-samples/cot/R2-COT-01.json 与
+      analysis/local-checks/difline/)。
+    上游前沿推进后按新结论重钉(两条件档的停点/czd 除外——单源跟随)。
+    r4_keyhook 走独立钉值函数(路 R4SNAP,
     R4-COT-01 归档报告实测值;见 _check_self_candidate_r4_* docstring)。
     """
     pairs = {p['name']: p for p in report['pairs']}
@@ -1540,8 +1544,12 @@ def _check_self_candidate_conditional(p, label, base):
     """条件档钉死(2026-11-15 路 DIF 首轮):+458 偏移对过 C0 后被 core-tick
     交付相位彩票消费(相位重排),尾段重锁到恒定错位 -102(等待域伸缩把
     +458 磨成 -102),控制流在 19,123,794 重锁后零分歧到双停点;停点记录
-    逐字段相同(同 0x606b5ee 读 0xfe0a20);C0=official 447,512/l1 447,490
-    (δ₁=22,A1 b79↔EQ 同值——+458 偏移族 C0 相位差同构)。"""
+    逐字段相同(DIF 首轮 0x606b5ee 读 0xfe0a20);C0=official 447,512/l1
+    447,490(δ₁=22,A1 b79↔EQ 同值——+458 偏移族 C0 相位差同构)。
+    停点步数与 czd 不写死字面、跟 frontier_registry 条件前沿单源
+    (label=base−102、czd=base−19,123,794;−102/−103/19,123,794 为结构
+    恒量——DIF 21,798,206/R4C 21,798,257 双前沿实测恒定,前沿推进自动
+    跟随,路 L1FIX 消 R4SNAP 遗留的 DT 时点字面 2,674,412)。"""
     require(p['parity']['steps']['delta'] == -102 and
             p['parity']['steps'][label] == base['completed_steps'] - 102 and
             p['parity']['same_stop'] and p['parity']['stop_record']['identical'] and
@@ -1558,7 +1566,7 @@ def _check_self_candidate_conditional(p, label, base):
     rec = p['reconvergence']
     require(rec and rec['realigned'] and rec['lag'] == -102 and not rec['immediate'] and
             rec['realign_step_a'] == 19123794 and
-            rec['control_zero_divergence_steps'] == 2674412,
+            rec['control_zero_divergence_steps'] == base['completed_steps'] - 19123794,
             'the conditional reconvergence changed (expected the lottery-reshaped -102 '
             'realignment locking at step 19123794 with zero control divergence to the stops)')
 
