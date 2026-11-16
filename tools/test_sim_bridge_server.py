@@ -34,8 +34,11 @@ class ServerHandle:
             0x2f: [0x2f, 0x03, 80, 81 | 0x80, 100],
             0x17: [0x17, 0x03, 0x01, 0x01, 0x02],
         })
-        threading.Thread(target=sbs.serve, args=('127.0.0.1', self.port, state),
+        ready = threading.Event()                     # 防 bind/listen 竞态：就绪后再放行连接
+        threading.Thread(target=sbs.serve, args=('127.0.0.1', self.port, state), kwargs={'ready': ready},
                          daemon=True).start()
+        if not ready.wait(5.0):
+            raise AssertionError('server 未在 5s 内就绪')
 
 
 class Client:

@@ -45,7 +45,7 @@ public class WebShellActivity extends Activity {
     private H3SBridge bridge;
     private AndroidBleTransport transport;
     private H3sUsbBridge usbBridge;
-    private AndroidUsbLink usbLink;
+    private H3sUsbBridge.Link usbLink;
     private BroadcastReceiver usbDetachReceiver;
     private java.util.concurrent.ExecutorService usbIo;
     private OtaWebBridge otaBridge;
@@ -63,15 +63,18 @@ public class WebShellActivity extends Activity {
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true); // 页面主题选择等 localStorage 持久化
-        // SIMBRIDGE M1-a（docs/sim-bridge-design.md §4.3 接线点）：仿真模式经 intent extra
-        // 「sim」注入 SimulationGattLink（adb reverse 的 localhost TCP，默认端口 7788，可由
-        // 「sim_port」覆盖）；默认不传=真机 AndroidGattLink，真机行为零改动。USB 侧暂不切
-        // （SimulationUsbLink 属 M2/M3）。局部类型保持 Link 接口（codex 复核建议）。
+        // SIMBRIDGE M1-a/M2（docs/sim-bridge-design.md §4.3/§4.4 接线点）：仿真模式经 intent
+        // extra「sim」注入 SimulationGattLink/SimulationUsbLink（localhost TCP，默认 127.0.0.1:7788
+        // 走 adb reverse；「sim_host/sim_port」可覆盖——AVD 直连 10.0.2.2 免 adbd 中转，联调
+        // 长传输更稳）；默认不传=真机 AndroidGattLink/AndroidUsbLink，真机行为零改动。
+        // 局部/字段类型保持 Link 接口（codex 复核建议）。
         final boolean sim = getIntent().getBooleanExtra("sim", false);
+        String simHostValue = getIntent().getStringExtra("sim_host");
+        if (simHostValue == null) simHostValue = "127.0.0.1";
+        final String simHost = simHostValue;
+        final int simPort = getIntent().getIntExtra("sim_port", SimulationGattLink.DEFAULT_PORT);
         AndroidBleTransport.Link link = sim
-            ? new SimulationGattLink("127.0.0.1",
-                getIntent().getIntExtra("sim_port", SimulationGattLink.DEFAULT_PORT),
-                AndroidGattLink.mainScheduler())
+            ? new SimulationGattLink(simHost, simPort, AndroidGattLink.mainScheduler())
             : new AndroidGattLink(this, DeviceConfig.ADDRESS);
         transport = new AndroidBleTransport(link, AndroidGattLink.mainScheduler(),
             new AndroidBleTransport.Logger() {
@@ -82,7 +85,9 @@ public class WebShellActivity extends Activity {
                 web.post(new Runnable() { public void run() { web.evaluateJavascript("window.onH3sEvent&&onH3sEvent(" + json + ")", null); } });
             }
         });
-        usbLink = new AndroidUsbLink(this);
+        usbLink = sim
+            ? new SimulationUsbLink(simHost, simPort, mainThreadExecutor())
+            : new AndroidUsbLink(this);
         usbIo = Executors.newSingleThreadExecutor();
         usbBridge = new H3sUsbBridge(usbLink, new H3sUsbBridge.ResultSink() {
             @Override public void emit(final String json) {
@@ -108,6 +113,13 @@ public class WebShellActivity extends Activity {
         registerUsbDetach();
         if (!sim && !permissionsGranted())   // 仿真模式不触 BT 权限面（AVD 上弹窗无意义，设计 §4.3）
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT}, 1);
+    }
+
+    /** 主线程执行面（SimulationUsbLink 回调用；对照 AndroidUsbLink=广播 onReceive 天然主线程）。 */
+    private java.util.concurrent.Executor mainThreadExecutor() {
+        return new java.util.concurrent.Executor() {
+            @Override public void execute(Runnable r) { runOnUiThread(r); }
+        };
     }
 
     /** USB 插拔 → 桥状态作废 + 页面 usb_detached 事件。 */
