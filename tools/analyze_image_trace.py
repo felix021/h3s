@@ -1142,7 +1142,7 @@ def check_self(report):
 
 def check_self_conditional(report):
     """钉死 2026-11-15 路 JLA 条件场景结论(official vs
-    tested_b79,条件 flag 集到当前条件前沿 21,800,455;一切结论条件通过、
+    tested_b79,条件 flag 集到当前条件前沿 28,764,184;一切结论条件通过、
     derived-not-measured;历史世界 689,402(路 BS)/447,383(路 BY)/601,880
     (路 CB)/3,070,626(路 CG)/3,070,786(路 CL)/3,070,955(路 CO)/
     3,071,380(路 CQ)/3,071,984(路 F)/3,072,236(路 M)/3,073,402(路 R)/
@@ -1152,29 +1152,39 @@ def check_self_conditional(report):
     (路 ADA)/21,800,325(路 LPV)已被后续投影替换,见 HANDOFF 对应
     「步含义」段):
 
-    - 双方 21,800,455 步、同停点 0x606e044(unmapped_memory 读
-      0xfe0904,当前条件前沿——路 JLA 放行后的新边界:静态访问面(全 app
+    - 双方 28,764,184 步、同停点 0x606c5ba(unmapped_memory 读
+      0x61fbfe0,当前条件前沿——路 ASS 放行后的新边界;历史 21,800,455
+      (路 JLA 放行 set_buffer 五写后的 JL_ASS MIC_CTL0 RMW 内部读停点,
+      r0=r5+976 间接构造、li 枚举法免疫——间接构造地址的首个停点实证,
+      基址+偏移传播解析法〔356 li 锚点全 GPR 常量跟踪+寄存器间传播,
+      ~/tmp/ass-resolve.py,codex 独立复跑互证〕证实四字 {0xfe0904
+      MIC_CTL0/0xfe0908 MIC_CTL1/0xfe0554 MBG_CON/0xfe055c ADC_CON1}
+      访问面全部配置 RMW/insert 写回组装形状、读值零分支消费,codex 定调
+      选 (a) 合成配置读回容器恰四字,0xfe0900/0xfe0558 留 AK、SRN
+      0xfe0550 留 unmapped、零触达 0xfe090c/0xfe0910/0xfe0560 不进;放行
+      后容器 9 写〔MIC_CTL0 0x2/0x2、MIC_CTL1 终值 0xff8=codex 静态预测、
+      ADC_CON1 三写全 0、MBG_CON 门控关零写〕+3 合成初始读+6 写后读,链
+      再 +6,963,729 步〔音频 pipeline 多轮重配:AS ADC_CON 1→12 写、B3
+      0xfe0a0c +23、ADA +14、CV 0x33/0x73 PGA 切换、DT TM ×4、CRC +8 轮
+      65405 字节、core tick 116→140、Timer0 3671→4401;事件时钟冻结
+      13,429,113 不变=纯 CPU0 顺序段,per-core {0:+6,964,483,1:0}〕停在
+      0x606c5ba 资源查找链首读 0x61fbfe0=2MB flash 顶-0x4020〔SFC 明文区
+      0xe6000 外,构造链 0x600B15C 族写栈记录 +8 槽〕——flash 顶参数/
+      资源区指针读族,归下一路三选一;静态访问面(全 app
       逐 2 字节独立解码枚举 li 常量+每站点线性窗数据流解析+数据区字面值
       扫描,codex 独立复跑互证)证实 set_buffer 0x606dee4 五写同基本块连续
       (0x606df20..30,首写=停点并行对 store 半)、五字 {0xfe053c/40/44/
-      48/4c} 全 app 直接 li 解析恰 9 条访问(五写+audio_adc_irq_handler
-      [0x6072628,0x6072700) 的 ADR/PNS/SRP 三读+PNS 一写,后者当前前缀
-      不可达留严格停)、数据区零独立字面值——按 codex 定调选 (a) write-only
-      记录恰五字(拒绝合成读回=不提前承诺尚未建立的消费语义;0xfe0550
-      SRN 字不收;同址新写者须重审);放行后五写完成(ADR=0x419264/LEN=
-      0x100/PNS=0x80/HWP=SRP=0,值全真实指令结果),链再 +130 步(挂
-      handler 段+DAC_COP 第二写点 0x606e038+ADC_CON 邻字 AUD_CON 查重
-      bit4 清位 RMW)停在 0x606e044 启动函数 0x606df66 的 `[r0+0]|=0x2`
-      内部读 **0xfe0904=JL_ASS+4**(r0=r5+976 构造自 0xfe0534 基址,无
-      直接 li 站点——间接构造地址的首个停点实证;后续 &=~0x1 与 0xfe0908
-      字段 insert 族同窗)——JL_ASS 时钟/源选择 RMW 读族首读,归下一路
-      三选一。历史停点 21,800,325(路 LPV 放行单字容器后的 JL_AUDIO 数字
-      域写族边界,详见 HANDOFF「已实现」LPV 条目)、per-core {0:21793014,
-      1:11251}一致;stop parity
-      全同——official↔b79 parity 延长到条件前沿 21,800,455,控制流零
+      0x61fbfe0=2MB flash 顶-0x4020〔SFC 明文区 0xe6000 外,构造链
+      0x600B15C 族写栈记录 +8 槽〕——flash 顶参数/资源区指针读族,归
+      下一路三选一;函数全图存档 ~/tmp/ass-fn-0x606c54e.txt;历史停点
+      21,800,455(路 JLA 放行 set_buffer 五写后的 JL_ASS MIC_CTL0 RMW
+      内部读)与 21,800,325(路 LPV 单字容器后的 JL_AUDIO 数字域写族边界,
+      详见 HANDOFF「已实现」对应条目)、per-core {0:28757497,1:11251}
+      一致;stop parity
+      全同——official↔b79 parity 延长到条件前沿 28,764,184,控制流零
       分歧、无 reconvergence;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(资源表头 CRC 字节 r2=0x28 vs
-      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..21,800,455,
+      0x88,与 crc_bankb 前沿完全一致);条件前缀新增步(601,880..28,764,184,
       超时窗口+OS tick 级联+mode 切换体+scheduler helper+uart_init 写侧+
       GPIO TX/RX 复用链+Timer0 交付往返+JL_IMAP 输入复用链+fifo_reset+
       uart_init 收尾+init 链前三项+JL_WL_AUD entry 写+场景 walker 查名链+
@@ -1183,9 +1193,11 @@ def check_self_conditional(report):
       CNT held 快照+JL_ADDA 模拟族 RMW 群+模拟 init 尾段 OS 等待族+
       DAC_TM 两次 -600 半字写+DAC 启动尾段分配与 OS 等待族续段+ADA 九字
       配置段+51 步+LPVAD 单字 RMW+ADA 窗尾段/tbh case 体/缓冲配置 walk
-      2,068 步+JLA set_buffer 五写/挂 handler/启动段序章 130 步)没有
-      消费任何新的镜像差异(CRC 轮数 32/结果 74/3041 字节全不变——等待段
-      零新 CRC 轮);
+      2,068 步+JLA set_buffer 五写/挂 handler/启动段序章 130 步+ASS 四字
+      容器放行后的音频 pipeline 重配段 6,963,729 步)没有消费任何新的
+      镜像差异(CRC 轮数 32/结果 82/65405 字节——路 ASS 段 +8 轮全部
+      走共享 0x6000f0c wrapper 硬件路径,新增 8 值组 0xa1cd/0xb37d/
+      0xa11d/0xc190/0xf271/0xb758/0x5ddd/0x370 与既有六值循环同构);
     - final report 差异仍恰好 12 处(11 处 CRC result_reads + 1 处 watch r0;
       路 AN 的 5 处=walker 链新 CRC 轮序号 37/43/49/55/61,路 AS 再加 2 处
       =尾块新 CRC 轮序号 67/73——每六值循环组一处镜像相关差异,镜像字节
@@ -1204,19 +1216,20 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 21793014, '1': 11251},
+                run['per_core_steps'] == {'0': 28757497, '1': 11251},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (21800455 @ 0x606e044, the RMW internal '
-                'read of 0xfe0904 = JL_ASS+4 — the |=0x2 clock-select family in the '
-                'ADC start function 0x606df66, with the address CONSTRUCTED as '
-                'r5+976 from the 0xfe0534 base, no direct li site — after the '
-                'route-JLA write-only release completes the D2-b set_buffer five '
-                'writes (ADR 0x419264 / LEN 0x100 / PNS 0x80 / HWP 0 / SRP 0, the '
-                'first being the former 21,800,325 stop itself), the chain passes '
-                'the handler-hang segment, the second DAC_COP write site 0x606e038 '
-                'and the AUD_CON bit4-clear double-check RMW for 130 steps and '
-                'stops on the JL_ASS read-family boundary; the honest next boundary '
-                'for the route after JLA)')
+                'conditional frontier stop (28764184 @ 0x606c5ba, the unmapped read '
+                'of 0x61fbfe0 — a flash-top pointer read: the resource-lookup chain '
+                'of [0x606c54e,0x606c628) loads r7 from the stack-record +8 slot '
+                'written by the 0x600B15C-family constructor, the pointer being '
+                '0x61fbfe0 = 2MB flash top minus 0x4020, OUTSIDE the 0xe6000 SFC '
+                'plaintext window — after the route-ASS four-word read-back '
+                'container releases the 21,800,455 stop (the ADC start function '
+                '0x606df66 config block: MIC_CTL0 RMWs, MIC_CTL1 inserts ending '
+                '0xff8, ADC_CON1 zero write-backs, MBG_CON param-gated untouched) '
+                'the audio pipeline re-init rounds run for 6,963,729 more steps '
+                'and stop on the flash-top pointer boundary; the honest next '
+                'boundary for the route after ASS)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
