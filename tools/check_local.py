@@ -78,6 +78,9 @@ def main():
     run(sys.executable,'tools/test_sim_bridge_server.py')   # SIMBRIDGE M1-a：bridge server 骨架（静态 fixture 状态源）
     run(sys.executable,'tools/test_sim_usb_device.py')      # SIMBRIDGE M2：USB MSC BOT 设备端（字节级红绿双向）
     run(sys.executable,'tools/test_sim_flash_fixture.py')   # SIMBRIDGE M2：2MiB raw fixture 构造（真实产档缺资产 skip）
+    run(sys.executable,'tools/test_sim_world_driver.py')      # SIMB1C：直调驱动器（合成 machine 形状）
+    run(sys.executable,'tools/test_sim_world_boot.py')        # SIMB1C：世界引导缝合线（dual_case post_stop 注入）
+    run(sys.executable,'tools/test_sim_m1_helpers.py')       # SIMB1C：验收执行器纯函数面（帧形/EQ 曲线编码）
     run(sys.executable,'tools/test_world_snapshot.py')
     run(sys.executable,'tools/test_handoff_lint.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json',tool='probe_boot.py')
