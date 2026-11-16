@@ -14,7 +14,7 @@ verdict 替换本预填：五条全 PASS（D1-4 无样本=NOT_RUN=未完成，�
 运行态副本在 `analysis/local-checks/acceptance/`（git 忽略）。
 
 - 复核合法性：`python3 tools/acceptance_record.py --validate docs/acceptance-samples/d1`
-- 全局汇总：[../acceptance-dashboard.md](../acceptance-dashboard.md)（本目录未进 dashboard PANELS 六目录清单——按 d2a/d2b/d3/cot/parity 预填路先例，dashboard 收编归专门路；全局面板一致性由 `--check` 校验不受本目录影响）
+- 全局汇总：[../acceptance-dashboard.md](../acceptance-dashboard.md)（本目录已由 2026-11-15 收编进 dashboard PANELS 第 7 目录〔commit 2f5df87〕；全局面板一致性由 `--check` 校验）
 - 再生成本页表格（会整页覆写本文件，头部需手工补回）：
   `python3 tools/acceptance_record.py --summary --dir docs/acceptance-samples --dir docs/acceptance-samples/d1 --output docs/acceptance-samples/d1/README.md`
 - 记录格式与校验规则：docs/d1-acceptance.md §8/§8.1。

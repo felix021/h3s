@@ -2,7 +2,7 @@
 """Unit tests for tools/acceptance_dashboard.py(路 PANEL/sim-panel,全局面板生成器)。
 
 覆盖:合成目录的聚合逻辑(分布表/条件性列/分组表/FAIL·BLOCKED 归因/索引链接/
-映射过期拒绝/非法记录拒绝)+真实库集成(六目录+上级散置全部合法、库内面板与记录
+映射过期拒绝/非法记录拒绝)+真实库集成(七目录+上级散置全部合法、库内面板与记录
 字节级一致——即「记录改动而面板未再生成」的过期守卫)。
 """
 import subprocess
@@ -169,7 +169,7 @@ class SyntheticTests(unittest.TestCase):
 
 
 class RealRepoTests(unittest.TestCase):
-    """真实库:六目录+上级散置 70 条合法、面板与记录一致(过期守卫)。"""
+    """真实库:七目录+上级散置 70 条合法、面板与记录一致(过期守卫)。"""
 
     def test_all_real_records_valid(self):
         _, _, _, problems = ad.scan_panels(ad.SAMPLES)
