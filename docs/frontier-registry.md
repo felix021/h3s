@@ -18,7 +18,7 @@
 
 ## 数据结构
 
-- `FEATURES`：每个 opt-in 开关一条记录（82 条，2026-11-16 路 AUDIT2 对账时点），字段：
+- `FEATURES`：每个 opt-in 开关一条记录（84 条，2026-11-16 路 ASS 合并后：AUDIT2 对账 82 + jl_adc_start_config/jl_adc_start_probe_value），字段：
   - `switch`＝`probe_irq_entry.irq_case` 的场景参数名（开关名，即 feature id）；
   - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，54 个）/
     `probe_only`（只出现在 probe 自己的场景变体，9 个：探路 fixture、反事实掩码对照、键链直调×2、
