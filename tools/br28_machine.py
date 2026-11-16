@@ -38,6 +38,13 @@ class CoreStall(Exception):
 # 0x12cd7c ifs(r2>=0) 测 bit15 回跳——环头 idle 指令锚定 PC,全 app 唯一。
 TIMER2_POLL_ANCHOR=0x12cd76
 
+# 路 B2R/S19 批 2 重落地(0b875ed 原案,BH §2.1/§4.2):config-523 具名
+# fixture 的 PC 锚定首装坐标——解析器入口(0x60010b4,首指令执行前安装)
+# 与对象槽 0x1274F4(qcy_bss 内,S9 iokey init 前由 BSS 初始化清零,
+# 故不能预填)。
+CFG523_PARSER_ENTRY=0x60010b4
+CFG523_OBJECT_ADDRESS=0x1274F4
+
 
 class DualCoreMachine:
     # 对称 RTI 投影认定的 software-IRQ handler 尾部锚点（均为「弹出真实特殊帧后的 rti」）：
@@ -54,7 +61,8 @@ class DualCoreMachine:
                  core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False,
                  timer0_irq_entry=False,timer0_irq_entry_banks=False,timer0_irq_rti=False,
                  gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False,
-                 event_clock_projection=False,timer2_delay_projection=False):
+                 event_clock_projection=False,timer2_delay_projection=False,
+                 cfg523_object_bytes=None):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -132,6 +140,19 @@ class DualCoreMachine:
         # codex 暂停点1最小闭环:同核 handler RTI 返回后允许再次交付(见
         # deliver_software_irq/deliver_core_tick);默认关闭时保持每核一次性限制。
         self.repeat_irq_delivery=repeat_irq_delivery
+        # cfg523_named_fixture(BH §2.1/§4.2;首版路 B3/S19 批 2 续 0b875ed,
+        # 本版 B2R 重落地):PC 锚定首装。对象槽 0x1274F4 在 qcy_bss(boot 期
+        # RAM 初始化会清零/覆写),机器构建期预填会被擦——只能在解析器
+        # 0x60010b4 首次执行前(即 cpu.pc 首次等于该地址、其首指令尚未执行
+        # 时)写入 70B;幂等早退路径让解析器自己消费这次填充。默认 None:
+        # 零行为变化。消费时序:解析器在 W1[4]/S9 域,当前 flash 顶窗口停点
+        # (0x606c5ba,FLS 路在途,停点在 W1[3] 内)之后——放行跑归批 2 之后
+        # 的推进路。
+        require(cfg523_object_bytes is None or
+                (isinstance(cfg523_object_bytes,(bytes,bytearray)) and len(cfg523_object_bytes)==70),
+                'the cfg523 fixture must be exactly 70 bytes')
+        self.cfg523_object_bytes=(None if cfg523_object_bytes is None else bytes(cfg523_object_bytes))
+        self.cfg523_installed_at=None
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -440,6 +461,18 @@ class DualCoreMachine:
                            'bank_writeback_is_assumption':True,'icfg_effects_certified':False})
 
     def after_step(self,cpu=None,before_pc=None):
+        # cfg523 PC 锚定首装(BH §2.1;0b875ed 原案,B2R 重落地):解析器
+        # 0x60010b4 首条指令执行前写入 70B 对象(cpu.pc 已等于入口、该指令
+        # 尚未执行——after_step 在每步后调用,此刻正是「下一步将执行解析器
+        # 首指令」的唯一时机)。恰装一次(cfg523_installed_at 幂等门)。
+        if (self.cfg523_object_bytes is not None and cpu is not None and cpu.core_id==0
+                and cpu.pc==CFG523_PARSER_ENTRY and self.cfg523_installed_at is None):
+            cpu.mem.write(CFG523_OBJECT_ADDRESS,self.cfg523_object_bytes)
+            self.cfg523_installed_at={'pc':hex(before_pc),
+                                      'object_bytes':len(self.cfg523_object_bytes)}
+            self.record_event({'kind':'cfg523_fixture_installed','core':0,
+                               'pc':hex(before_pc),'next_pc':hex(cpu.pc),
+                               'address':hex(CFG523_OBJECT_ADDRESS)})
         if cpu is not None and cpu.core_id==1 and before_pc in (0,0xa144,0xc5fe,0xc602,0x12caf4,0x12cafa,0x12cb00):
             self.boot_anchor_count+=1
             if len(self.boot_anchors)<16:
@@ -756,6 +789,15 @@ class DualCoreMachine:
                 value=int.from_bytes(data[target-address:target-address+size],'little')
                 self.record_event({'kind':'guest_notification_write','core':self.hardware.current_core,
                     'pc':hex(self.cores[self.hardware.current_core].pc),'address':hex(target),'value':hex(value)})
+        # 路 B3/S19 批 2 续(0b875ed,B2R 重落地;BM §3):P2M 邮箱回声源——
+        # 对 M2P+7(0xF27F87,既有 harness 可写窗内的普通 RAM 字节)的写被动
+        # 镜像进邮箱模型(值照常落 RAM,不拦截真实存储;kick 后回声读=P11
+        # 把消息字节写回 P2M 槽的显式假设)。
+        mailbox=getattr(self.hardware,'p2m_mailbox',None)
+        if mailbox is not None:
+            target=mailbox.MESSAGE_BYTE
+            if address<=target and target+1<=address+len(data):
+                mailbox.note_message_byte(data[target-address])
 
     def return_bootstrap(self,cpu):
         if not self.bootstrap_rti:raise Blocked('cpu1_bootstrap_rti_contract_unknown')

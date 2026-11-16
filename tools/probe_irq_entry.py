@@ -569,6 +569,36 @@ FD31_ADC_RES_S19_VALUES={**FD31_ADC_RES_NAMED_VALUES,0x10005:400,0x10001:4}
 # 写后/重复读/未覆盖地址一律严格停(BV 的 canary 语义原样)。
 P33_CANARY_FIRST_READ_WORDS={0xf2c044:0}
 
+# 路 B2R/S19 批 2 重落地(0b875ed 原案,BH §5.1 字节级草案):config-523
+# 分档器产物对象具名 fixture(70B @ 0x1274F4,PC 锚定首装——解析器
+# 0x60010b4 首次执行前写入,幂等早退路径让解析器自己消费这次填充)。
+# 全部 synthetic-not-measured(真实 config 523 在 bank B 记录区 0x1e0200,
+# 公开工件外):
+# +0x00 enable=1(解析器成功路径写的值;S17 门 b[+0]!=0 不取 K2);
+# +0x01..03 io 描述全 0(+1 高半字节 port=0→DIE 调用早退);
+# +0x04 通道字 w=0x00100001(mux 1:boot 侧已占用 mux 0/4/5/6——BY 三通道
+#       +W4[4] trim 的 0x10005——1 空闲,S/AJ 同选);
+# +0x08..09 第三段门=0(iokey init 第三段跳过);
+# +0x0A 阈值表 20×u16=500/720/850/1022/1022×16(升序,AJ §8.1 原样);
+# +0x32 键 id 表 20×B=255/10/11/12/0×16(BW 掩码×App 表推导对应)。
+# 释放态 ≤9 修正(BH §3.3):through-boot 世界(D1/D2 窗口)键通道原始读数
+# 必须 ≤9(S17 键线稳定门),配套 RES 行 0x10001=4 已并入
+# FD31_ADC_RES_S19_VALUES(BM 批 1);S/AJ 停点后场景的释放代表值 400 维持
+# 不变(其世界不跑 S17)——两个世界的 bin 0 语义相同(≤500→255 无键),
+# 代表值按世界分岔。电池相关字段:无(S15 低电门阈值 h[0x127734] 属电池
+# 配置域 config 20,与本 fixture 无交集)。
+CFG523_OBJECT_BYTES=(
+    bytes((0x01,0x00,0x00,0x00))                          # +0x00 enable, io 描述
+    +(0x00100001).to_bytes(4,'little')                    # +0x04 通道字 mux 1
+    +bytes((0x00,0x00))                                    # +0x08 第三段门/参数
+    +b''.join(struct.pack('<H',v) for v in (500,720,850,1022)+(1022,)*16)   # +0x0A 阈值表
+    +bytes((255,10,11,12))+bytes(16)                       # +0x32 键 id 表
+)
+assert len(CFG523_OBJECT_BYTES)==70
+# 键通道 RES 释放态档(接地分压代表值,0..9 区间中段;S17 判定读队列存储值
+# 不依赖它——仅消 adc_scan 轮选启动转换的 fd31 诚实停;BM 批 1 已并入 S19 值表)。
+CFG523_KEY_CHANNEL_RES_IDLE=4
+
 # JL_ADDA->DAA_CON1(0xfe0a04)首读的显式初始字探针值(路 CV/sim-adda,
 # derived-not-measured;**sensitivity-probe-not-plausible-state——是探针,
 # 不是合理状态**)。背景:3,170,362 停点 0x606b426 是配置 RMW insert 函数
@@ -1142,6 +1172,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_pvdd_trim_writes=False,
              timer2_delay_projection=False,
              p33_canary=False,p33_canary_first_read_words=None,
+             p2m_mailbox_ack=False,
+             cfg523_named_fixture=False,
              key_chain_scan=None,
              key_chain_matrix=None,
              flash_image_bytes=None,readonly=(),
@@ -2354,6 +2386,29 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['p33_canary_projection']=True
         if p33_canary_first_read_words is not None:
             options['p33_canary_first_read_words']=dict(p33_canary_first_read_words)
+    # p2m_mailbox_ack(BM §3 规格;首版路 B3/S19 批 2 续 0b875ed,本版 B2R 重
+    # 落地,opt-in 默认关):S15/S17 喂狗 0x12cc7e 的 P11 邮箱事务(kick
+    # [0xF2A618]=0x400→P2M_INT_PND bit12 置位+P2M+3 回声=M2P+7 值;CLR 0x1000
+    # 清位)。依赖 p11_power_init(M2P 消息窗是其 harness 区)。消费时序:
+    # S15 邮箱首停 0x12CC94 在 flash 顶窗口停点(0x606c5ba,FLS 路在途)之后
+    # ——开关留在 probe 变体层(registry probe_only),FLS 窗口过界后的批 2
+    # 放行跑再按到达顺序提层;默认关世界本场景零行为差异(19,139,239 停点
+    # 实测 with/without 逐字节同停,B3 撤回记录)。
+    if p2m_mailbox_ack:
+        require(p11_power_init,
+                'the P2M mailbox ack projection only layers on the p11_power_init scenario '
+                '(the M2P message window is its harness region)')
+        options['p2m_mailbox_ack']=True
+    # cfg523_named_fixture(BH §4.2;首版路 B3/S19 批 2 续 0b875ed,本版 B2R
+    # 重落地,opt-in 默认关):70B 具名对象 PC 锚定首装(机器侧 after_step
+    # 钩子,解析器 0x60010b4 首次执行前写入 0x1274F4;BSS 初始化会清零故
+    # 不能预填)。消费时序:解析器在 W1[4]/S9 域,当前 flash 顶窗口停点
+    # (0x606c5ba,FLS 路在途,停点在 W1[3] 内)之后——开关留在 probe 变体层
+    # (registry probe_only),批 2 放行跑再按到达顺序提层;默认关世界零
+    # 行为差异。落地同时会激活 S9 键扫 10-tick sys_timer(D1 窗口多一个
+    # 周期源,H2 上界与 d1_window 期望值要算进去;S19MAP §4.3 提醒)。
+    if cfg523_named_fixture:
+        machine_options['cfg523_object_bytes']=CFG523_OBJECT_BYTES
     if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。
