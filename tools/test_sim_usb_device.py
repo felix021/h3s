@@ -9,6 +9,13 @@ FD05/FD07 精确字节（含 2MiB 全片 SHA 相等）、白名单外 opcode（F
 独立精确长度、tag 回显。
 会话级单测（localhost socket）：hello(sim-usb)/world 横幅、usb_scan→usb_open→bulk 往返、
 EP0 进入 ROM（len8 能力读→len0 翻转身份断连重枚举）、跨连接身份保持、busy 单活动连接。
+
+M3 扩展段（SIMB3C 设备级，docs/sim-m3-flash-spec.md §5 + codex 评审修正 1-7）：FB01/FB04
+字节级红绿双向（armed 门/计划门/形状门/CDB 长度+补齐门/先擦后写+重复写拒）、armed 状态机
+（nonce 单次消费/copy-on-armed/disarm 显式回滚/reboot 三态——armed 撤销+刷后镜像保留+
+BOT 在途清空）、断链 link_reset 半包不污染、N2 中断半态全片比较（独立构造预期镜像）、
+原始资产 bytes 全程不可变（红线实证）、planner 计划直喂 arm 的闭环。会话层消息接线
+（usb_arm/usb_disarm/usb_reboot 分发）属第二段，不在本文件。
 """
 import base64
 import binascii
@@ -21,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sim_bridge_server as sbs
+import sim_restore_planner as planner
 from test_sim_bridge_server import Client, free_port
 
 FLASH = bytes((i * 7 + 3) & 0xff for i in range(sbs.USB_FLASH_SIZE))       # 合成 2MiB（协议测试用）
@@ -388,6 +396,429 @@ class UsbSessionTest(unittest.TestCase):
                 second.close()
         finally:
             first.close()
+
+
+# ================================ M3：armed 刷机（SIMB3C 设备级） ================================
+
+# 六扇区形状照 image.ORDER（同地址复用——合成 FLASH 全片非 ff 模式，满足评审修正 7 的
+# 「待擦扇区预置非 ff 数据」基线要求）。
+M3_SECTORS = (0xf3000, 0x113000, 0x166000, 0x1d0000, 0x1d1000, 0xee000)
+TARGET = bytearray(FLASH)
+for _s in M3_SECTORS:
+    TARGET[_s:_s + 0x1000] = bytes((i * 5 + 17) & 0xff for i in range(0x1000))
+TARGET = bytes(TARGET)
+S0 = hashlib.sha256(FLASH).hexdigest()
+S_TARGET = hashlib.sha256(TARGET).hexdigest()
+
+
+def fd05_read(host, address, length=512):
+    return host.exchange(vendor_cdb(0xfd05, address.to_bytes(4, 'big') + length.to_bytes(2, 'big')),
+                         size=length)
+
+
+def fd05_full(host):
+    out = bytearray()
+    for address in range(0, sbs.USB_FLASH_SIZE, sbs.USB_SECTOR):
+        out += fd05_read(host, address)
+    return bytes(out)
+
+
+def fb04_args(address, chunk, crc=None):
+    return (address.to_bytes(4, 'big') + len(chunk).to_bytes(2, 'big') + b'\x00'
+            + (binascii.crc_hqx(chunk, 0) if crc is None else crc).to_bytes(2, 'little'))
+
+
+def arm_with(dev, sectors=M3_SECTORS, target=TARGET, nonce='nonce-1'):
+    return dev.arm({'sectors': list(sectors), 'target_sha256': hashlib.sha256(target).hexdigest(),
+                    'nonce': nonce})
+
+
+def flash_sector(host, sector, target=TARGET):
+    """单扇区擦写（照 h3s_usb.py:162-175 逐句：擦→读 ff→8×512 写→读比对）。绿路径断言内置。"""
+    host.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16)
+    got = b''.join(fd05_read(host, p) for p in range(sector, sector + 0x1000, 512))
+    assert got == b'\xff' * 0x1000, '擦除验证失败 @0x%x' % sector
+    for p in range(sector, sector + 0x1000, 512):
+        chunk = target[p:p + 512]
+        host.exchange(vendor_cdb(0xfb04, fb04_args(p, chunk)), data=chunk)
+    got = b''.join(fd05_read(host, p) for p in range(sector, sector + 0x1000, 512))
+    assert got == target[sector:sector + 0x1000], '扇区编程验证失败 @0x%x' % sector
+
+
+def load_loader(host):
+    """fresh-rom → loader-ready 装载序列（reboot 后重进 ROM 复用）。"""
+    for p in range(0, sbs.USB_LOADER_SIZE, sbs.USB_SECTOR):
+        chunk = LOADER[p:p + sbs.USB_SECTOR]
+        args = ((sbs.USB_LOADER_ADDRESS + p).to_bytes(4, 'big') + len(chunk).to_bytes(2, 'big')
+                + b'\x00' + binascii.crc_hqx(chunk, 0).to_bytes(2, 'little'))
+        host.exchange(vendor_cdb(0xfb06, args), data=chunk)
+    host.exchange(vendor_cdb(0xfb08, bytes.fromhex('001200000001')), size=16)
+    host.exchange(vendor_cdb(0xfc0a), size=16)
+
+
+class M3FlashDeviceTest(unittest.TestCase):
+    """M3 设备级：FB01/FB04 armed 门内字节级红绿双向 + 三态状态机 + 红线实证（in-process）。"""
+
+    def test_not_armed_fb01_fb04_rejected_like_m2(self):
+        """N1：未 armed 时 FB01/FB04=CSW status=1+记录（拒绝理由换成 armed 门，M2 形状一致）。"""
+        dev, host = ready_device()
+        sector = M3_SECTORS[0]
+        ins = dev.feed_out(cbw(1, 16, False, vendor_cdb(0xfb01, sector.to_bytes(4, 'big'))))
+        self.assertEqual(ins, [csw(1, 1)])
+        chunk = TARGET[sector:sector + 512]
+        ins = dev.feed_out(cbw(2, 512, True, vendor_cdb(0xfb04, fb04_args(sector, chunk)))) \
+            + dev.feed_out(chunk)
+        self.assertEqual(ins, [csw(2, 1)])
+        reasons = [r['reason'] for r in dev.rejected]
+        self.assertTrue(any('armed' in r for r in reasons), reasons)
+        self.assertIsNone(dev.flash_work)                       # 副本未建立
+        self.assertFalse(dev.describe()['armed'])
+        self.assertIsNone(dev.describe()['work_sha256'])
+        self.assertEqual(fd05_read(host, sector), FLASH[sector:sector + 512])   # FD05 仍读原始
+        self.assertEqual(dev.counts.get('rejected'), 2)
+
+    def test_arm_validation_and_duplicate_arm(self):
+        """arm 校验负例（§3.1）+ armed 期间重复 arm=busy 拒。"""
+        dev, _ = ready_device()
+        bad_plans = [
+            {'sectors': [], 'target_sha256': S_TARGET, 'nonce': 'n'},                # 空扇区
+            {'sectors': [0x1001], 'target_sha256': S_TARGET, 'nonce': 'n'},          # 非 4KiB 对齐
+            {'sectors': [sbs.USB_FLASH_SIZE], 'target_sha256': S_TARGET, 'nonce': 'n'},  # 越界
+            {'sectors': [0x1000, 0x1000], 'target_sha256': S_TARGET, 'nonce': 'n'},  # 重复
+            {'sectors': ['0x1000'], 'target_sha256': S_TARGET, 'nonce': 'n'},        # 非 int
+            {'sectors': [0x1000], 'target_sha256': S_TARGET, 'nonce': ''},           # 空 nonce
+            {'sectors': [0x1000], 'target_sha256': 'xyz', 'nonce': 'n'},             # 坏 target SHA
+            {'sectors': [0x1000], 'nonce': 'n'},                                     # 缺 target SHA
+        ]
+        for plan in bad_plans:
+            with self.assertRaises(ValueError, msg=repr(plan)):
+                dev.arm(plan)
+        self.assertIsNone(dev.plan)
+        granted = arm_with(dev, nonce='n-ok')
+        self.assertEqual(granted['sectors'], sorted(M3_SECTORS))
+        self.assertEqual(granted['base_sha256'], S0)            # 副本基线=当前仿真 flash
+        d = dev.describe()
+        self.assertTrue(d['armed'])
+        self.assertEqual(d['read_only'], False)                 # M2 字段语义更新：armed=可写
+        self.assertEqual(d['work_sha256'], S0)                  # P3-②：副本=基线拷贝
+        self.assertEqual(d['sim_sha256'], S0)
+        with self.assertRaisesRegex(ValueError, 'busy'):
+            arm_with(dev, nonce='n-other')                      # armed 期间重复 arm（无论 nonce）
+
+    def test_arm_requires_flash_backend(self):
+        dev = sbs.MscBotDevice(flash=None, rom=ROM)
+        with self.assertRaisesRegex(ValueError, '无 flash 后端'):
+            dev.arm({'sectors': [0x1000], 'target_sha256': S_TARGET, 'nonce': 'n'})
+
+    def test_nonce_single_use_across_disarm_and_reboot(self):
+        """修正 2：nonce 消费即作废——armed 期间（busy 门）/disarm 后/reboot 后同 nonce 全拒。"""
+        dev, host = ready_device()
+        arm_with(dev, nonce='N1')
+        with self.assertRaisesRegex(ValueError, 'busy'):
+            arm_with(dev, nonce='N1')                           # armed 期间重复 arm=busy（无论新旧 nonce）
+        dev.disarm()
+        with self.assertRaisesRegex(ValueError, '已消费'):
+            arm_with(dev, nonce='N1')                           # disarm 后旧 nonce 失效
+        arm_with(dev, nonce='N2')                               # 新 nonce 可用
+        flash_sector(host, M3_SECTORS[0])
+        self.assertIsNone(dev.reboot())
+        with self.assertRaisesRegex(ValueError, '已消费'):
+            arm_with(dev, nonce='N1')                           # reboot 后旧 nonce 失效
+        with self.assertRaisesRegex(ValueError, '已消费'):
+            arm_with(dev, nonce='N2')
+        record = dev.nonces_consumed['N1']                      # 消费记录绑定（修正 2）
+        self.assertIn('plan_digest', record)
+        self.assertEqual(record['base_sha256'], S0)
+        self.assertGreater(record['expires_at'], record['consumed_at'])
+
+    def test_fb01_erase_green_and_readback(self):
+        """P4 erase 半边：16B 回显 fb01（尾段 0 填充 U1）→ FD05×8==ff → journal/erased。"""
+        dev, host = ready_device()
+        arm_with(dev)
+        sector = M3_SECTORS[0]
+        r = host.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16)
+        self.assertEqual(r[:2], b'\xfb\x01')                    # protocol.py:42-44 回显校验规则
+        self.assertEqual(r[2:], b'\x00' * 14)                   # U1：尾段 0 填充（协议级合成标注）
+        got = b''.join(fd05_read(host, p) for p in range(sector, sector + 0x1000, 512))
+        self.assertEqual(got, b'\xff' * 0x1000)                 # 擦后立读全 ff（usb-recovery.md:106）
+        self.assertEqual(dev.journal, [{'op': 'erase', 'sector': sector}])
+        self.assertEqual(dev.erased, {sector})
+        self.assertNotEqual(dev.flash_work[sector:sector + 0x1000], FLASH[sector:sector + 0x1000])
+
+    def test_fb04_program_green_and_journal(self):
+        """P4 program 半边：FB04 无 IN 响应（OUT 后直接 CSW）→ 读回==target → journal 8 条。"""
+        dev, host = ready_device()
+        arm_with(dev)
+        sector = M3_SECTORS[0]
+        host.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16)
+        for p in range(sector, sector + 0x1000, 512):
+            chunk = TARGET[p:p + 512]
+            host.exchange(vendor_cdb(0xfb04, fb04_args(p, chunk)), data=chunk)
+        got = b''.join(fd05_read(host, p) for p in range(sector, sector + 0x1000, 512))
+        self.assertEqual(got, TARGET[sector:sector + 0x1000])   # 编程后读回==写入值（h3s_usb.py:173）
+        programs = [e for e in dev.journal if e['op'] == 'program']
+        self.assertEqual([e['addr'] for e in programs], list(range(sector, sector + 0x1000, 512)))
+        for e in programs:
+            self.assertEqual(e['sha256'], hashlib.sha256(TARGET[e['addr']:e['addr'] + 512]).hexdigest())
+
+    def test_fb01_gate_and_shape_errors(self):
+        """N4+N5：非对齐/越界/计划外/截短 CDB（缺地址）/错误填充 → 全拒+记录+副本不变。"""
+        dev, host = ready_device()
+        arm_with(dev)
+        before = bytes(dev.flash_work)
+        attempts = [
+            (0x1001).to_bytes(4, 'big'),                        # 非 4KiB 对齐
+            (sbs.USB_FLASH_SIZE).to_bytes(4, 'big'),            # 越界（2MiB 端点外）
+            (0x1000).to_bytes(4, 'big'),                        # 对齐但计划外
+        ]
+        for i, args in enumerate(attempts):
+            ins = dev.feed_out(cbw(i + 1, 16, False, vendor_cdb(0xfb01, args)))
+            self.assertEqual(ins, [csw(i + 1, 1)], args.hex())
+        # 截短 CDB（cdb_len=8：缺地址尾段）与错误填充（尾段非 ff）
+        ins = dev.feed_out(cbw(90, 16, False, b'\xfb\x01\x00\xee\x00\x00\xff\xff'
+                                    .ljust(8, b'\x00')[:8]))
+        self.assertEqual(ins, [csw(90, 1)])
+        bad_fill = bytearray(vendor_cdb(0xfb01, (M3_SECTORS[0]).to_bytes(4, 'big')))
+        bad_fill[8] = 0x00                                      # 尾段应为 ff
+        ins = dev.feed_out(cbw(91, 16, False, bytes(bad_fill)))
+        self.assertEqual(ins, [csw(91, 1)])
+        self.assertEqual(dev.counts.get('rejected'), 5)
+        self.assertEqual(bytes(dev.flash_work), before)         # 副本不变
+        # 16B IN 形状门：CBW size=0（无数据相位要求）
+        ins = dev.feed_out(cbw(92, 0, False, vendor_cdb(0xfb01, (M3_SECTORS[0]).to_bytes(4, 'big'))))
+        self.assertEqual(ins, [csw(92, 1)])
+
+    def test_fb04_gate_and_shape_errors(self):
+        """N4+N5：CRC 错/len≠512/非 512 对齐/未擦先写/重复写已编程块/计划外/截短/错误填充。"""
+        dev, host = ready_device()
+        arm_with(dev)
+        sector = M3_SECTORS[0]
+        other = M3_SECTORS[1]                                   # 计划内但未擦
+        planned_outside = 0x1000                                # 对齐、不在计划
+        chunk = TARGET[sector:sector + 512]
+        host.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16)   # 先擦：CRC/len 门可达
+        cases = []                                              # (cdb, data, desc)
+        cases.append((vendor_cdb(0xfb04, fb04_args(other, chunk)), chunk, '未擦先写'))
+        cases.append((vendor_cdb(0xfb04, fb04_args(planned_outside, chunk)), chunk, '计划外扇区'))
+        cases.append((vendor_cdb(0xfb04, fb04_args(sector + 1, chunk)), chunk, '非 512 对齐'))
+        cases.append((vendor_cdb(0xfb04, fb04_args(sector, chunk, crc=0xdead)), chunk, 'CRC 不符'))
+        short = TARGET[sector:sector + 256]
+        cases.append((((0xfb04).to_bytes(2, 'big') + (sector).to_bytes(4, 'big')
+                       + (256).to_bytes(2, 'big') + b'\x00' + (0).to_bytes(2, 'little')).ljust(16, b'\xff'),
+                      short, 'len≠512'))
+        # 截短 CDB：cdb_len=9（opcode+addr4+len2+00——缺 CRC）
+        cases.append((((0xfb04).to_bytes(2, 'big') + (sector).to_bytes(4, 'big')
+                       + (512).to_bytes(2, 'big') + b'\x00')[:9], chunk, '缺 CRC'))
+        bad_fill = bytearray(vendor_cdb(0xfb04, fb04_args(sector, chunk)))
+        bad_fill[12] = 0x00                                     # 尾段应为 ff
+        cases.append((bytes(bad_fill), chunk, '错误填充'))
+        for i, (cdb, data, desc) in enumerate(cases):
+            before_work = bytes(dev.flash_work)
+            ins = dev.feed_out(cbw(i + 1, len(data), True, cdb)) + dev.feed_out(data)
+            self.assertEqual(ins, [csw(i + 1, 1)], desc)
+            self.assertEqual(bytes(dev.flash_work), before_work, desc)   # 副本不变
+        reasons = [r['reason'] for r in dev.rejected]
+        for keyword in ('未擦除', '计划外', '512 对齐', 'CRC16', '512B OUT', '16B（got 9', '0xff 补齐'):
+            self.assertTrue(any(keyword in r for r in reasons), keyword)
+        # 重复写已编程块（修正 6）：完整擦写一块后，未重擦再写同块 → 拒；重擦后可再写
+        flash_sector(host, sector)
+        ins = dev.feed_out(cbw(50, 512, True, vendor_cdb(0xfb04, fb04_args(sector, chunk)))) \
+            + dev.feed_out(chunk)
+        self.assertEqual(ins, [csw(50, 1)])
+        self.assertTrue(any('已编程' in r['reason'] for r in dev.rejected))
+        host.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16)   # 重擦
+        host.exchange(vendor_cdb(0xfb04, fb04_args(sector, chunk)), data=chunk)  # 重写 OK
+        self.assertEqual(fd05_read(host, sector), chunk)
+
+    def test_full_plan_flash_preserved_and_sha_chain(self):
+        """P4+P5+P6：六扇区全擦写 → 计划外保留==原始、全片复读 SHA==S_target（两面互证）。"""
+        dev, host = ready_device()
+        arm_with(dev)
+        for sector in M3_SECTORS:
+            flash_sector(host, sector)
+        d = dev.describe()
+        self.assertTrue(d['armed'])
+        self.assertEqual(d['work_sha256'], S_TARGET)
+        self.assertEqual(d['sim_sha256'], S_TARGET)
+        # journal 按序：每扇区 erase×1 + program×8（P4 断言）
+        ops = [(e['op'], e.get('sector', e.get('addr'))) for e in dev.journal]
+        expected = []
+        for sector in M3_SECTORS:                               # 执行序（h3s_usb.py:162 逐扇区序）
+            expected.append(('erase', sector))
+            expected += [('program', p) for p in range(sector, sector + 0x1000, 512)]
+        self.assertEqual(ops, expected)
+        # P5：计划外保留扇区抽查（含计划区间之间的保留区）
+        for address in (0, 0x10000, 0x150000 if 0x150000 not in M3_SECTORS else 0x151000, 0x1ff800):
+            self.assertEqual(fd05_read(host, address), FLASH[address:address + 512], hex(address))
+        # P6：全片 4096×FD05 复读 SHA==S_target（预期由测试独立持有，不用 server 回报值）
+        self.assertEqual(hashlib.sha256(fd05_full(host)).hexdigest(), S_TARGET)
+
+    def test_planner_plan_feeds_arm_end_to_end(self):
+        """planner（sim_restore_planner）产出直接喂 arm：闪完全片==TARGET 的闭环（§3.4）。"""
+        plan = planner.plan_restore(FLASH, TARGET)
+        self.assertEqual(plan['sectors'], sorted(M3_SECTORS))
+        self.assertEqual(plan['base_sha256'], S0)
+        self.assertEqual(plan['target_sha256'], S_TARGET)
+        dev, host = ready_device()
+        dev.arm({**plan, 'nonce': 'planner-nonce'})
+        for sector in plan['sectors']:
+            flash_sector(host, sector)
+        self.assertEqual(fd05_full(host), TARGET)
+
+    def test_reboot_revokes_armed_keeps_content(self):
+        """修正 1+P7：reboot=armed 撤销+身份 normal+loader 丢弃；刷后镜像保留（FD05 复读
+        ==S_target）；旧 rom key 过期；再 arm 副本基线=刷后内容。"""
+        dev, host = ready_device()
+        arm_with(dev)
+        for sector in M3_SECTORS:
+            flash_sector(host, sector)
+        rom_key = dev.scan()[0]['key']
+        self.assertIsNone(dev.reboot())
+        self.assertEqual(dev.identity, 'normal')
+        self.assertEqual(dev.phase, 'n/a')
+        self.assertEqual(dev.loaded, 0)
+        self.assertFalse(dev.describe()['armed'])               # 写授权撤销
+        self.assertTrue(dev.describe()['read_only'])
+        tail = dev.journal[-1]
+        self.assertEqual(tail['op'], 'reboot')
+        self.assertEqual(tail['work_sha256'], S_TARGET)         # 断言输入（server 只记不评）
+        self.assertIs(tail['target_match'], True)
+        self.assertFalse(dev.open_key(rom_key)[0])              # 旧 rom key 过期
+        self.assertTrue(dev.open_key('sim:usb:3654:4a55')[0])
+        # ⑪ 验证环：再进 ROM 装载 loader → FD05 全片仍==S_target（副本内容保持）
+        dev.control(0)
+        load_loader(BotHost(dev))
+        self.assertEqual(dev.phase, 'loader-ready')
+        self.assertEqual(hashlib.sha256(fd05_full(BotHost(dev))).hexdigest(), S_TARGET)
+        # armed 已撤销：FB01 再拒（armed 门）；再 arm 从刷后内容起副本（修正 1）
+        ins = dev.feed_out(cbw(99, 16, False, vendor_cdb(0xfb01, (M3_SECTORS[0]).to_bytes(4, 'big'))))
+        self.assertEqual(ins, [csw(99, 1)])
+        granted = arm_with(dev, nonce='post-reboot')
+        self.assertEqual(granted['base_sha256'], S_TARGET)      # 基线=当前芯片（刷后内容）
+        self.assertEqual(dev.describe()['work_sha256'], S_TARGET)
+
+    def test_reboot_clears_bot_pipeline(self):
+        """修正 5（内存复现反例）：FB04 CBW+部分 OUT 数据在途 → reboot → 新 CBW 正常应答，
+        旧半包字节不被消化。"""
+        dev, _ = ready_device()
+        arm_with(dev)
+        sector = M3_SECTORS[0]
+        chunk = TARGET[sector:sector + 512]
+        dev.feed_out(cbw(1, 512, True, vendor_cdb(0xfb04, fb04_args(sector, chunk))))   # CBW 已收
+        dev.feed_out(chunk[:16])                                                          # OUT 只到 16B
+        self.assertIsNotNone(dev._waiting)
+        self.assertEqual(dev._waiting['got'], 16)
+        self.assertIsNone(dev.reboot())
+        self.assertIsNone(dev._waiting)                   # 在途清空
+        self.assertEqual(dev._rx, b'')
+        # reboot 后 normal：先回 rom 装载，新 CBW 立即得到完整应答（M2 bug 场景=零响应）
+        dev.control(0)
+        host = BotHost(dev)
+        load_loader(host)
+        r = host.exchange(vendor_cdb(0xfd05, (0).to_bytes(4, 'big') + (512).to_bytes(2, 'big')), size=512)
+        self.assertEqual(r, FLASH[0:512])                 # 未再 arm：读原始（reboot 后三态回只读）
+
+    def test_link_reset_clears_pipeline_and_keeps_armed(self):
+        """修正 5：断链清 BOT 在途（CBW 半包/OUT 半包/CSW 未收三种残留）且 armed 保持。"""
+        dev, _ = ready_device()
+        arm_with(dev)
+        sector = M3_SECTORS[0]
+        # ① CBW 半包：31B CBW 只到 20B
+        frame = cbw(1, 16, False, vendor_cdb(0xfb01, sector.to_bytes(4, 'big')))
+        dev.feed_out(frame[:20])
+        self.assertEqual(len(dev._rx), 20)
+        dev.link_reset()
+        self.assertEqual(dev._rx, b'')
+        self.assertIsNone(dev._waiting)
+        # ② OUT 半包：FB04 CBW+半数据
+        chunk = TARGET[sector:sector + 512]
+        dev.feed_out(cbw(2, 512, True, vendor_cdb(0xfb04, fb04_args(sector, chunk))))
+        dev.feed_out(chunk[:100])
+        self.assertEqual(dev._waiting['got'], 100)
+        dev.link_reset()
+        self.assertIsNone(dev._waiting)
+        # ③ 写完成但 CSW 未被宿主读走（设备侧无在途）：完整 FB04 后 reset 不影响后续
+        host = BotHost(dev)
+        host.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16)
+        host.exchange(vendor_cdb(0xfb04, fb04_args(sector, chunk)), data=chunk)
+        dev.link_reset()
+        # armed 保持（断链不退出 armed）：新「会话」可继续擦写
+        self.assertTrue(dev.describe()['armed'])
+        next_sector = M3_SECTORS[1]
+        host.exchange(vendor_cdb(0xfb01, next_sector.to_bytes(4, 'big')), size=16)
+        self.assertIn(next_sector, dev.erased)
+
+    def test_disarm_rolls_back_to_baseline_and_rearm(self):
+        """修正 3：中断恢复路径=半态可见 → 显式 disarm 回滚到 arm 前基线 → 新 nonce 重刷。"""
+        dev, host = ready_device()
+        arm_with(dev, nonce='N1')
+        for sector in sorted(M3_SECTORS)[:3]:                   # 擦写一半（3/6）
+            flash_sector(host, sector)
+        dev.link_reset()                                        # 断链（armed 保持）
+        d = dev.describe()
+        self.assertTrue(d['armed'])
+        self.assertNotEqual(d['work_sha256'], S0)
+        self.assertNotEqual(d['work_sha256'], S_TARGET)         # 半态可见（N2-②）
+        host2 = BotHost(dev)                                    # 「重连」后的新会话
+        self.assertEqual(fd05_read(host2, M3_SECTORS[1]), TARGET[M3_SECTORS[1]:M3_SECTORS[1] + 512])
+        dev.disarm()                                            # 显式回滚
+        self.assertFalse(dev.describe()['armed'])
+        self.assertEqual(fd05_read(host2, M3_SECTORS[1]), FLASH[M3_SECTORS[1]:M3_SECTORS[1] + 512])
+        with self.assertRaisesRegex(ValueError, '未 armed'):
+            dev.disarm()
+        granted = arm_with(dev, nonce='N2')                     # 重新 arm：副本重置为基线
+        self.assertEqual(granted['base_sha256'], S0)
+        self.assertEqual(dev.describe()['work_sha256'], S0)
+        for sector in M3_SECTORS:                               # 完整重刷（可恢复，N2-⑤）
+            flash_sector(host2, sector)
+        self.assertEqual(hashlib.sha256(fd05_full(host2)).hexdigest(), S_TARGET)
+
+    def test_interrupted_half_state_full_chip_compare(self):
+        """修正 7（N2 基线）：计划扇区预置非 ff 数据，擦 3/6 后全片 FD05==独立构造的半态
+        预期镜像（base 拷贝+3 扇区 ff）逐字节比较——不以内部状态自证。"""
+        for sector in M3_SECTORS:                               # 基线含非 ff 数据（合成模式保证）
+            self.assertNotEqual(FLASH[sector:sector + 0x1000], b'\xff' * 0x1000, hex(sector))
+        dev, host = ready_device()
+        arm_with(dev)
+        done = sorted(M3_SECTORS)[:3]
+        for sector in done:
+            host.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16)   # 只擦不写
+        expected = bytearray(FLASH)                             # 独立构造半态预期
+        for sector in done:
+            expected[sector:sector + 0x1000] = b'\xff' * 0x1000
+        self.assertEqual(fd05_full(host), bytes(expected))
+        self.assertEqual(hashlib.sha256(bytes(expected)).hexdigest(), dev.describe()['work_sha256'])
+
+    def test_original_flash_bytes_never_mutated(self):
+        """红线实证（D2）：arm/擦/写/disarm/再 arm/再刷/reboot 全程，原始资产 self.flash
+        逐字节不变且恒为 bytes（无写方法的结构保证）；flash_sha256 字段同步不变。"""
+        dev, host = ready_device()
+        sha_before = dev.flash_sha256
+        arm_with(dev, nonce='r1')
+        for sector in M3_SECTORS:
+            flash_sector(host, sector)
+        dev.link_reset()
+        dev.disarm()
+        arm_with(dev, nonce='r2')
+        for sector in M3_SECTORS:
+            flash_sector(host, sector)
+        self.assertIsNone(dev.reboot())
+        self.assertIsInstance(dev.flash, bytes)                 # bytes：无写方法（结构红线）
+        self.assertEqual(dev.flash, FLASH)                      # 原始资产逐字节不变
+        self.assertEqual(hashlib.sha256(dev.flash).hexdigest(), sha_before)
+        self.assertEqual(dev.flash_sha256, S0)
+
+    def test_short_cdb_rejected_without_crash(self):
+        """修正 4（M2 遗留）：1B CDB 不再 cdb[1] 越界崩溃——status=1+记录（opcode=None）。"""
+        dev, _ = ready_device()
+        ins = dev.feed_out(cbw(1, 16, False, b'\xfd'))
+        self.assertEqual(ins, [csw(1, 1)])
+        self.assertEqual(dev.rejected[-1]['opcode'], None)
+        self.assertIn('过短', dev.rejected[-1]['reason'])
+        # 后续命令仍正常（会话不崩）
+        host = BotHost(dev)
+        r = host.exchange(vendor_cdb(0xfd05, (0).to_bytes(4, 'big') + (512).to_bytes(2, 'big')), size=512)
+        self.assertEqual(r, FLASH[0:512])
 
 
 if __name__ == '__main__':
