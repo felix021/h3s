@@ -1040,7 +1040,8 @@ def _report_for_diff(result):
             if k not in ('name', 'snapshot_capture', 'snapshot_restore')}
 
 
-def compare_pair(image_a, run_a, image_b, run_b, budget, scenario='crc_bankb'):
+def compare_pair(image_a, run_a, image_b, run_b, budget, scenario='crc_bankb',
+                 resumed=False):
     """Compare one image pair over PRE-EXECUTED runs (route REUSE). Each arm's
     (result, trace) comes from the caller's RunPool: the same run object may
     already have served — or will later serve — other pairs and the freshness
@@ -1065,6 +1066,11 @@ def compare_pair(image_a, run_a, image_b, run_b, budget, scenario='crc_bankb'):
             'runs': {label_a: _run_summary(result_a), label_b: _run_summary(result_b)},
             'final_report_diffs': json_diff(_report_for_diff(result_a),
                                             _report_for_diff(result_b), limit=64)}
+    if resumed:
+        # SNAPX 尾巴:resume 轮轨迹面字段(trace_lengths=0/first_divergence=None
+        # 等)只反映 restore 之后的步,pair 级就近标记消「字段为 0/None」的
+        # 阅读困惑;全量重放/捕获轮报告不含该键(docs/snapshot-resume.md)。
+        pair['resumed'] = True
     first = None
     first_control = None
     for step, (row_a, row_b) in enumerate(zip(trace_a, trace_b)):
@@ -1719,7 +1725,8 @@ def main():
             print(f'== diff {a} vs {b} (scenario {scenario}) ==', flush=True)
             report['pairs'].append({'name': f'{a}_vs_{b}',
                                     **compare_pair(loaded[a], pool.run(a),
-                                                   loaded[b], pool.run(b), budget, scenario)})
+                                                   loaded[b], pool.run(b), budget, scenario,
+                                                   resumed=snapshot_mode == 'resume')})
         if args.self_check:
             if scenario == 'crc_bankb':
                 check_self(report)

@@ -55,7 +55,9 @@ freshness 钉子全部照常核验，报告顶层多一个 `snapshot_round` 溯�
 面（与全量重放完全同值，crc_bankb 双镜像实测逐字节对照）：freshness 停点钉子、
 每对的 `runs`/`parity`（步数/每核/完整停点记录）、`final_report_diffs`（镜像差异
 面）；resumed 报告里 `trace_lengths`/`first_divergence` 等轨迹面字段只反映
-restore 之后的步（前沿停点快照=0 步），报告顶层 `snapshot_round` 键即轮次溯源。
+restore 之后的步（前沿停点快照=0 步），报告顶层 `snapshot_round` 键即轮次溯源，
+每个 pair 对象另带 `resumed: true` 就近标记（全量重放/捕获轮不含该键）——读到
+轨迹面字段为 0/None 时先看该标记，属 resume 轮预期而非异常。
 
 ## 适用边界（判据，先读这个再用）
 
