@@ -68,7 +68,15 @@ TIMER0_TICK_PRD=119999             # tick_timer_init 的 10ms PRD(BZ §2.1)
 # ── D1-5 H1-H8 常量(蓝图 §3 表+任务书 §1.0b 修正+REVIEW 盲区#5 裁决;
 #    契约全文 docs/d1-health-checks.md)
 APP_CORE_ENTRY='0x6012028'          # H5 断言面任务=app_core 消费链(路 BE RTI 钉死)
-PERIODIC_SOURCES=('timer0','core_tick')  # H2 周期源(period 实读取上界);其余源=预期 0
+PERIODIC_SOURCES=('timer0','core_tick','keyscan','adc_scan')  # H2 周期源(period 实读
+# 取上界);其余源=预期 0。keyscan/adc_scan=sys_timer 衍生源(D1S9 §2③/S8SCAN §5:
+# 挂 Timer0 tick 回调内同步触发,无独立 IRQ 交付;period=10×/5×P_timer0 实读,
+# 三分计数坍缩为同数——语义见 d1-health-checks §2 周期源表)。
+SYS_TIMER_SOURCES=('keyscan','adc_scan')  # kind='sys_timer' 注记组:上界按源名套用,
+# 不以 kind 分流(D1S9 §3.2「识别衍生源」的落地面=period 实读+三分一致性照用)
+MANDATORY_SOURCES=('adc_scan',)  # 无条件注册源(init walker 直线段,S8SCAN §5.2):
+# D1 窗口(boot 已完成)内 per_source 缺条目=观测缺口 → pending;keyscan 条件性
+# (cfg523)不在列——不存在不 pending,触达才入表(D1S9 §3.3/任务书 §1.3b 第 4 条)
 HEALTH_POST_BOUND_NATURAL=2         # H3 上界:S18 静态每子码恰 post 一次,2 含一次容差
 HEALTH_POST_BOUND_INJECTED=3        # H3 注入变体显式 +1(蓝图 §3 H3 行括号注)
 HEALTH_TIMELINE_KINDS=('entered_idle_wait','woken','running')
@@ -88,6 +96,8 @@ SOURCE_BG='docs/d1-scene-blueprint.md'      # D1-5 规则表出处(路 BE 蓝图
 SOURCE_TB='docs/s19-batch3-taskbook.md'     # D1-5 修正口径出处(批 3 任务书 §1.0b)
 SOURCE_HL='docs/d1-health-checks.md'        # d1_window.health.* 冻结契约(本路 PR-1)
 SOURCE_RV='docs/phase-review-d1-readiness.md'  # REVIEW 盲区#5=H8 裁决出处(路 PR-2)
+SOURCE_S9='docs/s9-keyscan-timer.md'        # 键扫 sys_timer 周期源形态(路 D1S9)
+SOURCE_S8='docs/s8-adc-scan-timer.md'       # adc_scan sys_timer 周期源形态(路 S8SCAN)
 
 
 def _hex(value):
@@ -1382,7 +1392,8 @@ def _h1_timer0_events(health,window):
 
 
 # ── H2 同源重发有界(蓝图 §3 H2:每源交付 ≤⌈N/P_i⌉+1,P 从 per_source.period 实读,
-#     不预锁 40,000/300,000;软件 IRQ124-127 预期 0;FAIL=超上界=风暴/无限重发) ─────
+#     不预锁 40,000/300,000/4×10⁵/2×10⁵;周期源含 sys_timer 衍生 keyscan/adc_scan,
+#     d1-health-checks §2 周期源表;软件 IRQ124-127 预期 0;FAIL=超上界=风暴/无限重发) ─
 def _h2_source_bounds(health,window):
     per_source=health.get('per_source')
     if not isinstance(per_source,list) or not per_source:
@@ -1466,11 +1477,25 @@ def _h2_source_bounds(health,window):
                 detail=f'{source}@core{entry.get("core")}: {deliveries} deliveries <= '
                        f'bound {bound} (period {period} read back; assumption: {assumption})'))
         else:
+            note=('; sys_timer: synchronous callback in the timer0 tick frame, '
+                  'three-way counts collapsed'
+                  if source in SYS_TIMER_SOURCES else '')
             checks.append(_check(name,
                 detail=f'{source}@core{entry.get("core")}: {deliveries} deliveries '
-                       +(f'<= bound {bound} (period {period} from per_source)'
+                       +(f'<= bound {bound} (period {period} from per_source{note})'
                          if source in PERIODIC_SOURCES
                          else '== 0 expected in the closed D1 world')))
+    # 无条件注册源在场检查(S8SCAN §5.2:adc_scan=init walker 直线段注册,D1 窗口=
+    # boot 完成后开窗,必在):缺条目=观测缺口,键缺≠零事件 → pending 非 pass。
+    # keyscan 条件性(cfg523 才注册)不在列:不存在不 pending,触达才入表
+    # (D1S9 §3.3/任务书 §1.3b 第 4 条)。
+    present={e.get('source') for e in per_source if isinstance(e,dict)}
+    for source in MANDATORY_SOURCES:
+        if source not in present:
+            checks.append(_check(f'h2_{source}_bounded',
+                missing=f'per_source[{source!r}](无条件注册的 sys_timer 周期源:init '
+                        f'walker 直线段必在,{SOURCE_S8} §5.2;D1 窗口内缺条目=观测'
+                        '缺口,键缺≠零事件 → pending 非 pass)'))
     return checks
 
 

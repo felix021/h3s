@@ -13,6 +13,14 @@
 （折算输入全部复用 §2 既有键）；checker+单测先行落地，实跑数据等 D1 场景推进后
 自然消费。
 
+2026-11-16 路 H2SRC（sim-h2src；基线 main `3a64ec2`）按 D1S9 §3 / S8SCAN §5 的
+建议形态增补 **H2 周期源 keyscan/adc_scan**（sys_timer/Timer0 衍生；RBKREV 复核
+P1 #5 缺口消账）：§2 per_source 加 `kind` 判别字段+**周期源表**（四源：
+kind/period/三分计数语义/emit 条件性）；checker `PERIODIC_SOURCES` 同步四源——
+键扫/adc_scan 条目不再被按非周期源判上界 0 误报风暴；缺源语义分流：**adc_scan
+（无条件注册）缺条目=pending、keyscan（cfg523 条件性）缺条目不 pending**。生产者
+emit 仍归 PR-2（闸门②后），实跑数据等 D1 场景推进自然消费。
+
 **证据边界（参谋结论③，任务书 §1.0b 第 2 条）**：当前 H1-H7 的单测全部用合成
 scenario 样本（`tools/test_d1_acceptance.py` 的 `d1_health_scenario()`），只证明
 checker 有分辨力，**不计入 D1 首次过线证据**；实跑数据要等前沿过 DAC_TM0、到达
@@ -28,7 +36,7 @@ S19/park 后由 PR-2 的观察件产出。
 | # | 规则 | 输入键（health.*） | PASS 判据 | FAIL 信号（级别） | pending 语义 |
 |---|---|---|---|---|---|
 | H1 | 定时事件确实发生 | `timer0_expiries`(+`timer0_expiry_steps`) | 窗口内 Timer0 到期 ≥3；到期步号相邻间隔恒定且=per_source 实读 period；与 `d1_window.timer0_cycles` 同数互证 | 到期 <3；间隔漂移/倒流；互证矛盾（全 FAIL 级） | expiry_steps <2 个=间隔面证据不足；timer0_cycles 缺=不互证（不阻塞）；**到期 <3 且 H8 折算覆盖可证 <3=insufficient（pending）非 FAIL**——窗口伪证≠定时器违约（REVIEW §3.1 盲区 #5，2026-11-16 增） |
-| H2 | 同源重发有界 | `per_source[]`+`window.steps` | 每周期源交付 ≤ ⌈N/P⌉+1（P=per_source.period **实读**，不预锁 40,000/300,000）；非周期源（软件 IRQ124-127）交付=0；三分计数一致（交付≤到期+起点 pending 容差、完成≤交付）；报告 `upper_bound`（可选）与 checker 自算一致 | 超上界=风暴；交付>到期（+容差）；完成>交付；upper_bound 不符（全 FAIL 级，证据含三分计数） | 周期源 period 缺=无法算上界；window.steps 缺；**core_tick 的 CNT 冻结假设标注缺=断言形状不完整**（§1.4） |
+| H2 | 同源重发有界 | `per_source[]`+`window.steps` | 每周期源交付 ≤ ⌈N/P⌉+1（周期源=timer0/core_tick/keyscan/adc_scan，§2 周期源表；P=per_source.period **实读**，不预锁 40,000/300,000/4×10⁵/2×10⁵）；非周期源（软件 IRQ124-127）交付=0；三分计数一致（交付≤到期+起点 pending 容差、完成≤交付；sys_timer 源三分坍缩同数，语义见 §2 表）；报告 `upper_bound`（可选）与 checker 自算一致 | 超上界=风暴；交付>到期（+容差）；完成>交付；upper_bound 不符（全 FAIL 级，证据含三分计数） | 周期源 period 缺=无法算上界；window.steps 缺；**core_tick 的 CNT 冻结假设标注缺=断言形状不完整**（§1.4）；**adc_scan 条目缺=观测缺口**（无条件注册必在，S8SCAN §5.2）；**keyscan 条目缺不 pending**（cfg523 条件性，触达才入表，D1S9 §3.3） |
 | H3 | 无同事件无限重发 | `event_reposts[]`(+`queue_balance`) | 每 (event_id,子码) 入队 ≤2（S18 静态每子码恰 post 一次，上界含一次容差；注入条目 origin='injected' 上界=3）；消费=入队；queue_balance 与 reposts 汇总一致、出队≤入队 | 入队超上界；消费>入队（重复分发）；queue_balance 矛盾（FAIL 级） | 消费<入队=未闭合样本（右边界条款：`pending_at_window_end` 标注与否都 pending，需要完整样本不默认 PASS）；键缺≠零事件≠vacuous pass |
 | H4 | 必要任务可唤醒 | `per_core['0']`（判据面=CPU0；CPU1 记录面） | 窗口内 CPU0 唤醒 ≥1 且末态重新 entered_idle_wait（嵌套唤醒共享一次回等待合法：rewait<wake 不违约）；wake_reasons 求和=wake_count | 零唤醒；唤醒后卡运行态（窗口 complete 且末态 woken/running）；计数矛盾（rewait>wake / reasons 求和≠wake）（FAIL 级，证据含未闭合唤醒区间：最后 PC/在途 IRQ/嵌套层级） | 窗口截断+末态非等待=未闭合区间（「尚未到期」不误 FAIL）；timeline 缺且 rewait<wake（嵌套/未闭合不可分） |
 | H5 | 无任务饿死（两级受检） | `ready_tasks[]` | `[]`=扫描过且空→vacuous PASS 并记录；断言面任务（`assertion_face` 字段或 entry==0x6012028）调度 ≥1 | **断言面任务就绪零调度=FAIL 级**（固定优先级无公平性，但 app_core 消费链必须跑） | assertion_face/entry 都缺=无法分级；schedulings 缺 |
@@ -71,8 +79,12 @@ pending 面（拒绝给结论）**：H1-H7 全 PASS 而折算覆盖 <3 时 D1-5=
                'complete': bool},     # window_complete;False → 右边界条款生效
     'timer0_expiries': N,             # H1:窗口内到期次数(≥3)
     'timer0_expiry_steps': [N,...],   # H1(建议):窗口内到期全局步号,间隔漂移判据
-    'per_source': [                   # H2:每个 IRQ 源一条(timer0/core_tick/irq124..127)
-      {'source': 'timer0'|'core_tick'|'irq124'|...,
+    'per_source': [                   # H2:每个源一条(timer0/core_tick/keyscan/adc_scan/irq124..127)
+      {'source': 'timer0'|'core_tick'|'keyscan'|'adc_scan'|'irq124'|...,
+       'kind': 'irq'|'sys_timer',     # 判别字段(缺省='irq';2026-11-16 H2SRC 增):
+                                      # sys_timer=Timer0 tick 回调内同步触发的衍生源
+                                      # (keyscan/adc_scan),无独立 IRQ 交付——注记性,
+                                      # checker 按源名套上界,不以 kind 分流
        'core': N,
        'period': N|None,              # park 态实读周期;周期源必填;非周期源=None
        'expirations': N,              # 三分计数:到期(非周期源=0)
@@ -114,6 +126,23 @@ pending 面（拒绝给结论）**：H1-H7 全 PASS 而折算覆盖 <3 时 D1-5=
   },
 }
 ```
+
+**H2 周期源表**（2026-11-16 路 H2SRC 增；keyscan/adc_scan 形态出处
+[s9-keyscan-timer.md](s9-keyscan-timer.md) §2③ / [s8-adc-scan-timer.md](s8-adc-scan-timer.md)
+§5——sys_timer 节点挂 Timer0 tick 回调内同步触发，无独立 IRQ 交付/向量/交付帧）：
+
+| source | kind | period（park 实读） | 三分计数语义 | emit 条件性（生产者） |
+|---|---|---|---|---|
+| timer0 | irq | P_timer0 | 三分（IRQ 交付帧） | 无条件 |
+| core_tick | irq | P_core_tick | 三分；上界承载 CNT 冻结假设标注（§1.4） | 无条件 |
+| keyscan | sys_timer | 10×P_timer0（tick 数 10 静态；标称 4×10⁵） | **坍缩同数**：deliveries=同步回调调用（0x6001944）=expirations=到期判定命中=completions=回调返回；一致性检查（交付≤到期+相位容差、完成≤交付）照用 | **条件**：cfg523 解析成功才注册；缺条目**不** pending（触达才入表） |
+| adc_scan | sys_timer | 5×P_timer0（tick 数 5=立即数；标称 2×10⁵） | 同上坍缩（回调 0x60349d2） | **无条件**（init walker 直线段必注册）；D1 窗口（boot 已完成）内缺条目=观测缺口 → **pending** |
+
+上界公式 `⌈N/P⌉+1` 对四源同一（+1 即相位容差），P 一律 park 实读不预锁（P_timer0
+被场景重编时 10×/5× 随之缩放）。sys_timer 回调在 Timer0 交付帧内同步执行、不产生
+独立唤醒——H4 的 `wake_reasons` 求和=wake_count 判据对「键扫/sys_timer 唤醒」类
+条目自然容纳（枚举不预锁，任务书 §1.3b 第 2 条）；计数采集锚=轮询 0x6066de0 火回调
+点+回调入口/返回（D1S9 §4.3/S8SCAN §6.4 观察件纪律，只读旁路）。
 
 砍单项（任务书 §1.0b 第 9 条，勿加回）：不存逐指令 timeline；`scheduled` 布尔由
 调度次数推导；`entry` 只进任务元数据表（TCB 复用再加实例代次）；`wake_reasons`
@@ -191,6 +220,17 @@ rule 特化键=`{coverage, p_park, n, required_n_min}`。
   first_violation 锚 W_park 且 pc=None/source_or_task/window_end.evidence_
   complete/coverage+p_park+required_n_min 特化键）。
 
+**H2 周期源补齐反例**（2026-11-16 路 H2SRC 增，`tools/test_d1_acceptance.py` 新增
+8 例，`D1_5H2SysTimerSourcesTests` 一类；RBKREV 复核 P1 #5 的机检面）：
+
+- 正例：keyscan/adc_scan 在场且计数自洽=pass（keyscan P=4×10⁵>N 窗口内 0 到期
+  合法；adc_scan 三分同数坍缩）；`kind` 字段缺省（注记性）不 pending。
+- 负例：**adc_scan 缺条目=pending**（无条件注册必在，键缺≠零事件）；**keyscan 缺
+  条目=不 pending**（cfg523 条件性，D1S9 §3.3「触达才入表」）；超上界 FAIL
+  （keyscan bound=1 下 deliveries=3；adc_scan bound=2 下 deliveries=4）；period
+  键缺=pending（不预锁 4×10⁵/2×10⁵ 兜底）；completions>deliveries（同步回调
+  不可能）按既有三分一致性 FAIL。
+
 ## 5. 与 PR-2 的对接面（等闸门②，本路不实施）
 
 - 生产者按 §2 契约实现观察件（probe_irq_entry 场景 `d1_acceptance_window` 的
@@ -203,3 +243,8 @@ rule 特化键=`{coverage, p_park, n, required_n_min}`。
 - H8（2026-11-16 增）：checker 侧已上线（半前移，本路 PR-2）；PR-2 窗口机制侧
   在 park 落定后按实读 P_park 自检覆盖（<3 延长 N 或报「观察窗不足」不判过），
   与本表 checker 判定同一公式 `N // P_park >= 3`；生产者无需为此新增任何键。
+- H2 周期源（2026-11-16 路 H2SRC 增）：生产者按 §2 周期源表的 emit 条件性实现
+  （adc_scan 无条件必 emit、keyscan 挂 cfg523 条件栈，不硬编码「必有键扫源」，
+  D1S9 §3.3/S8SCAN §5.2），计数锚=轮询 0x6066de0 火回调点+回调入口/返回
+  （D1S9 §4.3/S8SCAN §6.4，只读旁路）；checker 侧上界/缺源语义已就位，生产者
+  照表 emit 即对上，无需再改 checker。
