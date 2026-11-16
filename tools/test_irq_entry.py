@@ -146,5 +146,57 @@ class KeyChainMatrixFixtureTests(unittest.TestCase):
                             '矩阵场景键通道缺省档(600)须区别于 S 路(700)——两 dict 独立')
 
 
+class AncifOfficialResourcesTests(unittest.TestCase):
+    """路 FLS:flash 顶 sdfile ANCIF/ANCIF1 官方资源内容 fixture 的静态钉子。
+
+    嵌入字节与官方 UFW(在场时)外层重提取互证;UFW 缺席时跳过重提取侧,
+    自校验(长度/魔数/内层 CRC/头内名)不跳过。
+    """
+
+    def test_shape_and_self_check(self):
+        import binascii
+        import probe_irq_entry
+        ancif, ancif1 = probe_irq_entry.ANCIF_OFFICIAL_RESOURCES
+        self.assertEqual(len(ancif), 0x100)
+        self.assertEqual(len(ancif1), 0xac8)
+        for blob, magic, name, payload_len in (
+                (ancif, 0x9881, b'ANCGAIN01', 0xec),
+                (ancif1, 0x98c1, b'ANCCOEF01', 0xab4)):
+            w0, stored, h6, h8 = struct.unpack_from('<IHHH', blob)
+            self.assertEqual(h6, magic)
+            self.assertEqual(6 + (w0 - 2), len(blob))
+            self.assertEqual(h8, 10 + payload_len)
+            self.assertEqual(blob[10:10 + len(name)], name)
+            self.assertEqual(binascii.crc_hqx(blob[6:], 0), stored)
+
+    def test_matches_official_ufw_outer_layer(self):
+        import subprocess
+        import tempfile
+        import probe_irq_entry as pe
+        root = Path(__file__).resolve().parents[1]
+        firmware = root / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        misctools = root / 'tools/jl-misctools/firmware'
+        if not firmware.exists():
+            self.skipTest('official UFW not fetched')
+        if not (misctools / 'fwunpack_newfw.py').exists():
+            self.skipTest('jl-misctools submodule not initialized')
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run([sys.executable, str(misctools / 'fwunpack_newfw.py'),
+                            '--dirname', str(work / 'unpacked'), str(firmware)],
+                           check=True, capture_output=True)
+            subprocess.run([sys.executable, str(root / 'tools/extract_ufw_resources.py'),
+                            str(firmware), '--unpacked', str(work / 'unpacked'),
+                            '--output', str(work / 'extracted')],
+                           check=True, capture_output=True)
+            ancif, ancif1 = pe.ANCIF_OFFICIAL_RESOURCES
+            for name, embedded in (('ANCIF', ancif), ('ANCIF1', ancif1)):
+                extracted = (work / 'extracted/outer' / name).read_bytes()
+                self.assertEqual(len(extracted), len(embedded))
+                self.assertEqual(extracted, embedded,
+                                 f'{name} embedded bytes diverge from the official UFW outer layer')
+
+
+
 if __name__=='__main__':
     unittest.main()

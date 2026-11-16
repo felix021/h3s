@@ -280,6 +280,19 @@ FEATURES = (
             '依赖边=当前场景推进顺序(JLA 放行后链才到达停点)非硬件依赖,模型类'
             '独立可用;codex 定调 gpt-6-astra:选 (a) 恰四字,缩 (b) 不解决额外'
             '语义疑问只重复停,敏感性探针见 jl_adc_start_probe_value)'),
+    Feature('ancif_official_resources', 'conditional', ('jl_adc_start_config',), True, 'ANCIF_OFFICIAL_RESOURCES',
+            'flash 顶 sdfile ANCIF/ANCIF1 文件头官方内容 fixture(28,764,184 停点'
+            '0x606c5ba 读 0x61fbfe0=app 分区表项 ANCIF virt 0x1FE000 经 0x6010c20'
+            '换算对 [0x127290]=0x2020/[0x127294]=0x06000000 的头地址;表在 flash'
+            '0x06000080 镜像内,内容在 UFW 外层 type50 资源 0x102120/0x102220,'
+            '外层/内层 CRC+魔数 0x9881/0x98C1+头内名 ANCGAIN01/ANCCOEF01 与消费'
+            '者 0x606c54e parse 期望逐项互证)readonly 映射 [0x61fbfe0,+0x100)+'
+            '[0x61fc0e0,+0xac8);显式假设=目标分区携带官方 UFW 资源内容'
+            '(official-resource-content,非设备实测——usb-recovery 实测布局标'
+            '「保留校准」,真机可能含每机差异),场景结论条件通过;挂载自校验'
+            '(长度/魔数/CRC 失败即拒);ANCIF1 只映射有效长不补 0xF00 声明容量;'
+            '依赖边挂 jl_adc_start_config=场景推进顺序(ASS 放行后链才到达停点)'
+            '非硬件依赖;同址新读者(头范围外/写者/其他核)须重审'),
     Feature('jl_adc_start_probe_value', 'probe_only', ('jl_adc_start_config',), True, None,
             'MIC_CTL0(0xfe0904)初值敏感性探针(初值一次性 0xffffffff 替换,其余三字'
             '不扰动保归因干净;零臂写回 0x2/ones 臂写回 0xfffffffe 异或保留位;'
@@ -332,10 +345,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 28764184,
-        'stop_pc': '0x606c5ba',
+        'completed_steps': 28890702,
+        'stop_pc': '0x6011976',
         'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0x61fbfe0', 'size': 4, 'reference_sdk_register': None},
+                 'address': '0xfd3b00', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }

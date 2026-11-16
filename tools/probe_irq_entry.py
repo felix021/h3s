@@ -330,6 +330,7 @@ area); docs/peripheral-input-simulation.md section 8 has the full
 derivation and the D2-a coverage table.
 """
 import argparse
+import binascii
 import json
 import struct
 import sys
@@ -416,6 +417,148 @@ ERASED_BANKB_VM_RANGE=(0x61d7fe0,0x2000)
 # 已清 0,0x600a412 入口判槽 828==0 直接返回 -250)、表区写路径 0x6060b80 与
 # VM 窗口 0x6060f9a 各自独立)。见 irq_case 的 erased_bankb 注释。
 ERASED_BANKB_RECORD_RANGE=(0x61de1e0,8)
+
+# 路 FLS:flash 顶 sdfile ANCIF/ANCIF1 文件头的映射窗与官方资源内容 fixture。
+# 背景(2026-11-16 路 FLS 全图+运行时里程碑钉死):28,764,184 停点 0x606c5ba
+# `ld.w r0=[r7+0]` 读 0x61fbfe0 = sdfile「app 分区」文件 ANCIF 的头首字。
+# 完整链条:app 分区表在 flash 0x06000080(镜像内,32 字节项 {头CRC@0,virt@4,
+# size@8,magic 0x8192@12,终止标记@14,名字@16},项 CRC16 由走查器 0x6010cec
+# 逐项校验)恰三项:BTIF virt=0x1E0000 size=0x1000、ANCIF virt=0x1FE000
+# size=0x100、ANCIF1 virt=0x1FE100 size=0xF00(其后擦除 padding);地址换算
+# 0x6010c20 `x-[0x1265C0+820*4]+[0x1265C0+821*4]` 的运行时对=[0x127290]=
+# 0x2020/[0x127294]=0x06000000(codex 以 boot-info 已知字节复跑 0x601101c..
+# 0x6011024 三条真实指令独立解出;BTIF/ANCIF/ANCIF1 三点换算一致互证:
+# CPU=virt-0x2020+0x06000000)——0x61ddfe0(BTIF,既有 ERASED_BANKB_WINDOW_
+# RANGE 同族)/0x61fbfe0(ANCIF,停点)/0x61fc0e0(ANCIF1,mode0)。
+# 「app/ANCIF」剩余路径无 '/',经 0x6010de6→0x6010e2e→0x6010d54→0x6010d78
+# →0x6010c20 解析(不经 0x606075c 尾部 island 的 -32 路径——codex 勘误);
+# 消费者=0x606c54e「读 ANC 配置资源」:mode1 开 "flash/app/ANCIF"(魔数
+# 0x9881,期望头内名 r8="ANCGAIN01")、mode0 开 "flash/app/ANCIF1"(0x98C1,
+# "ANCCOEF01");头 parse {word len@0(+1 无符号 >=2 才继续;0/0xFFFFFFFF
+# 擦除回绕→0 走 free 路径 return 0),hword CRC@4,hword 魔数@6,hword
+# 10+payload长@8,名字@10..19,payload@20},CRC 过 0x6000f0c 引擎校验,
+# 成功 return r7+20=payload 指针。音频域 4 个调用点 3 处直接判空、1 处
+# (0x60704fc)经 0x607008c 判空跳过 payload;全 app 共 11 个调用点形状
+# 含默认数据替代/传参/直返,「无文件」不必然崩溃。
+# 内容来源=官方 UFW 外层资源(docs/firmware-layout.md 外层清单条目
+# ANCIF/ANCIF1,type 50,UFW 偏移 0x102120/0x102220,有效长 0x100/0xAC8,
+# SFC 解扰相位=原始 UFW 绝对偏移):外层 CRC、内层 CRC(crc_hqx over
+# [6,6+len-2))、魔数 0x9881/0x98C1、头内名 ANCGAIN01/ANCCOEF01 与消费者
+# 期望逐项互证(codex 独立解扰校验+本路 tools/extract_ufw_resources.py
+# 复跑双口径一致)。物理 0x1FE000/0x1FE100=设备尾部保留参数区(docs/
+# usb-recovery.md 实测布局表「保留校准」)——真机该区可能含每机标定差异,
+# 本 fixture 的显式假设=「目标分区携带官方 UFW 资源内容」
+# (official-resource-content assumption,非设备实测值);场景一切结论
+# 条件通过。ANCIF1 只映射有效长 0xAC8,不补齐到目录声明 size 0xF00
+# (声明容量与有效内容是两回事,补齐=发明数据)。
+SDFILE_FLASHTOP_ANCIF_RANGE=(0x61fbfe0,0x100)
+SDFILE_FLASHTOP_ANCIF1_RANGE=(0x61fc0e0,0xac8)
+# 逐字节内容(官方 UFW 提取;SHA256 ANCIF=885121fbe0dbdaa5bedc5713ba1987c8f
+# d553b6596eb01df20c2523737d69a1d/ANCIF1=47bb7e25b035c79cf90998a45b299c2cb
+# 8c4f8eadb86558f7fa1bc8c9e7b46b8;单测 test_irq_entry.py 与在场 UFW 重提取
+# 互证):ANCIF(0x100 字节,payload 长 0xEC=ANCGAIN01 增益表)、ANCIF1
+# (0xAC8 字节,payload 长 0xAB4=ANCCOEF01 系数表)。
+ANCIF_OFFICIAL_RESOURCES=(
+    bytes.fromhex(
+        'fc0000003d588198f600414e434741494e303100127003010101000001ff0001'
+        '0500000005000000ce4d003fa99ee33fc164ff3fc8ddca3fce4d003fa99ee33f'
+        'c164ff3fc8ddca3f010000010000000000300004ff010004000070170004ff01'
+        '00040000ff7f00040004000401640901d200a00f00fc00000000c0c001010101'
+        '010000002c0114000000f04200007041cdcccc3e000000000000000000000000'
+        '0000000000000000000000000000000000000000000000000000000000000000'
+        '0000000000000000000000000000000000000000000000000000000000000000'
+        '0000000000000000000000000000000000000000000000000000000000000000'
+    ),
+    bytes.fromhex(
+        'c40a0000cd4dc198be0a414e43434f4546303100a40003000100100006000000'
+        '82000a00820004001600860082001a000801040007000c0168000b0074010400'
+        '1700780168001b00e00104000800e4014e000c0032020400180036024e001c00'
+        '84020400090088024e000d00d60204001900da024e001d002803040004000024'
+        '42a8c601410000803f020000ce422db21d3e0000803f020080d5430ad7814100'
+        '00803f0200800e4460e5bdc1cdcccc3f0200c04f4448e14a41cdcc8c3f0200c0'
+        '8d448b6c9fc00000803f0200f01845b0729cc00000803f020000904593188ec1'
+        '0000803f0200681b46583960c10000803f030068a54523db79c10000803fce4d'
+        '00bf040000184219042a410000803f020000bc421b2f5dbe0000803f020000e9'
+        '43d7a3b8403333333f0200001944cdcc1cc13333f33f0200403444a4702f41cd'
+        'cc8c3f0200e0a744b07268c10000803f0200502f452db2b5400000803f020040'
+        '9745ac1c9ec10000803f02001c1d46dbf94ec10000803f030068a54523db79c1'
+        '0000803fce4d00bf020000b0418b6c01c10000803f02000094421283403fcdcc'
+        'cc3e020000154300003840cdcc4c3f020080c64352b88e3f0000803f0200b026'
+        '45c976cac000000040020060c844000000c1000020400200608645000060c100'
+        '0000400300402d4554e32bc10000803fa99ee3bf020000b0418b6c01c1000080'
+        '3f02000094421283403fcdcccc3e020000154300003840cdcc4c3f020080c643'
+        '52b88e3f0000803f0200b02645c976cac000000040020060c844000000c10000'
+        '20400200608645000060c1000000400300402d4554e32bc10000803fa99ee3bf'
+        '04000018428716c9bf0000803f020000544360e590409a99193f0200806b4435'
+        '5e12c1cdcc4c3f0200a05d450c02e4c10000803f0300c04645000020c2000080'
+        '3f020000c7430ad7d7c00000803fc8ddcabf04000014428fc299c00000803f02'
+        '00004043ec5120409a99193f0200806b441d5a1ec1cdcc4c3f0200a05d450c02'
+        'e4c10000803f0300c04645000020c20000803f020000de430c02fbc00000803f'
+        'c8ddcabf040000fc4275930cc20000803f020080c443560e4dbf0000003f0200'
+        '80af43d1220bc10000003f0200408644c5202e410000003f0200006545f628ac'
+        'c0cdcc4c3f0300180c465a6490c10000803fc164ffbf040000fc4275930cc200'
+        '00803f020080c443560e4dbf0000003f020080af43d1220bc10000003f020040'
+        '8644c5202e410000003f0200006545f628acc0cdcc4c3f0300180c465a6490c1'
+        '0000803fc164ffbf020010000600000082000a00820004001600860082001a00'
+        '0801040007000c0168000b00740104001700780168001b00e00104000800e401'
+        '4e000c0032020400180036024e001c0084020400090088024e000d00d6020400'
+        '1900da024e001d00280304000400002442819501410000803f020000c0428fc2'
+        '75bd0000803f020000d843964381410000803f0200400f44f0a7b8c1cdcccc3f'
+        '020000494448e13c41cdcc8c3f0200e094440000d0c00000803f0200f018459a'
+        '99a9c00000803f0200c89045d7a386c10000803f02000c18467b1456c1000080'
+        '3f030068a5459a9979c10000803fce4d00bf040000144233331d410000803f02'
+        '0000b8422db21dbe0000803f020000df43c976ae403333333f0200801644bc74'
+        'f3c03333f33f0200802e44a4700d41cdcc8c3f0200e089442b8712c10000803f'
+        '0200f018459a99a9c00000803f020070964579e96ac10000803f0200b41f4656'
+        '0e33c10000803f030068a5458fc279c10000803fce4d00bf020000b041000000'
+        'c10000803f0200007442dbf96640cdcccc3e020000a042b4c88240cdcc4c3f02'
+        '00802c446210d83f0000803f0200003945643bf3c000000040020080e4440681'
+        '17c1000000400200608645000060c10000004003002023451058d5c00000803f'
+        'a99ee3bf020000b041000000c10000803f0200007442dbf96640cdcccc3e0200'
+        '00a042b4c88240cdcc4c3f0200802c446210d83f0000803f0200003945643bf3'
+        'c000000040020080e444068117c1000000400200608645000060c10000004003'
+        '002023451058d5c00000803fa99ee3bf0300788e451d5affc10000803f040000'
+        '40428b6c5dc10000803f020000c242bc749bc09a99193f020000764396438f40'
+        '0000803f0200c01f441b2f89c19a99193f0200a03745c3f58cc10000803f0000'
+        '803f0300788e451d5affc10000803f04000040428b6c5dc10000803f020000c2'
+        '42bc749bc09a99193f020000764396438f400000803f0200c01f441b2f89c19a'
+        '99193f0200a03745c3f58cc10000803f0000803f0300e8fe453bdf90c1000080'
+        '3f0400003c4279e96ac10000803f0200009442819533400000803f0200006c43'
+        '560ef1400000803f020080c54414ae77400000803f020000304433333b400000'
+        '803f7824a1bf0300e8fe453bdf90c10000803f0400003c4279e96ac10000803f'
+        '0200009442819533400000803f0200006c43560ef1400000803f020080c54414'
+        'ae77400000803f020000304433333b400000803f7824a1bf0300100006000000'
+        '82000a00820004000700860068000b00ee0004000900f2004e000d0040010400'
+        '080044014e000c00920104001600960182001a001802040017001c0268001b00'
+        '84020400190088024e001d00d60204001800da024e001c002803040004000024'
+        '42560e03410000803f020000c442e3a5db3e0000803f020080d5435eba5d4100'
+        '00803f02000011440681b7c13333f33f0200c045440ad73f41cdcc8c3f0200e0'
+        '94440000d0c00000803f0200f018459a99a9c00000803f0200188945e17a68c1'
+        '0000803f0200e018462db259c10000803f030068a5459a9979c10000803fce4d'
+        '00bf020000b041000000c10000803f020000ba429a9941c0cdcccc3e02000056'
+        '435a643b3fcdcc4c3f020000f243190456400000803f0200004b452db2c5c000'
+        '000040020080f94489415ac1000000400200608645000060c100000040030060'
+        '434523dbcdc00000803fa99ee3bf020000f04183c081c10000003f0200008642'
+        '9643cb400000803f0200007c436de7bf400000003f0200004744643b7f400000'
+        '803f0300508745b4c84ac10000803f0200408744000000000000803f000080bf'
+        '040000d841ec5148c10000803f02000092423f35a6c00000803f02000048437d'
+        '3f553f0000803f020000da43c976e6c09a99193f0200405044759366c1000080'
+        '3f0300401945cff7f6c10000803f0000803f0400001842c52022410000803f02'
+        '0000b6426891adbe0000803f020000d243fed494403333333f0200c01944508d'
+        '05c13333f33f0200802e449eef2f41cdcc8c3f0200c07c4454e305c10000803f'
+        '0200a015459cc4f4c00000803f0200709645871631c10000803f0200b41f46ba'
+        '493ac10000803f030068a5459a9979c10000803fce4d00bf020000b041000000'
+        'c10000803f020000ba429a9941c0cdcccc3e02000056435a643b3fcdcc4c3f02'
+        '0000f243190456400000803f0200004b452db2c5c000000040020080f9448941'
+        '5ac1000000400200608645000060c100000040030060434523dbcdc00000803f'
+        'a99ee3bf020000f04183c081c10000003f02000086429643cb400000803f0200'
+        '007c436de7bf400000003f0200004744643b7f400000803f0300508745b4c84a'
+        'c10000803f0200408744000000000000803f000080bf040000d841ec5148c100'
+        '00803f02000092423f35a6c00000803f02000048437d3f553f0000803f020000'
+        'da43c976e6c09a99193f0200405044759366c10000803f0300401945cff7f6c1'
+        '0000803f0000803f'
+    ),
+)
 
 # power_init 的 p11_code.bin 公共段拷贝目的窗:主核把 P11 公共代码段拷进 P11 RAM
 # (0x6067990..0x6067996 字节循环,destination li 0xf20080)。范围由资源自己声明:
@@ -1139,6 +1282,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_dma_writes=False,
              jl_audio_adc_dma_writes=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
+             ancif_official_resources=None,
              jl_pvdd_trim_writes=False,
              timer2_delay_projection=False,
              p33_canary=False,p33_canary_first_read_words=None,
@@ -2399,6 +2543,29 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         rbase,rlength=ERASED_BANKB_RECORD_RANGE
         readonly=tuple(readonly)+((base,b'\xff'*length),(wbase,b'\xff'*wlength),
                                   (vbase,b'\xff'*vlength),(rbase,b'\xff'*rlength))
+    # ancif_official_resources(路 FLS,默认 None=关):flash 顶 sdfile ANCIF/
+    # ANCIF1 文件头映射窗=官方 UFW 外层资源内容(readonly;来源/换算链/消费者
+    # 全图见 ANCIF_OFFICIAL_RESOURCES 常量注释)。挂载时自校验(长度/魔数/
+    # 内层 CRC),校验失败即拒绝——fixture 只认官方工件字节,不发明数据;
+    # 显式假设=目标分区携带官方资源内容(非设备实测),场景结论条件通过。
+    # 依赖边挂 jl_adc_start_config=场景推进顺序(ASS 放行后链才到达停点),
+    # 非硬件依赖;不触碰 erased_bankb 四窗(bank B 其余范围继续严格 unmapped:
+    # ANCIF1 有效长 0xAC8 之外、0xF00 声明容量之内的区间照旧停)。
+    if ancif_official_resources is not None:
+        require(len(ancif_official_resources)==2,
+                'the ANCIF fixture is the (ANCIF, ANCIF1) official-resource pair')
+        ancif_blob,ancif1_blob=ancif_official_resources
+        base,length=SDFILE_FLASHTOP_ANCIF_RANGE
+        cbase,clength=SDFILE_FLASHTOP_ANCIF1_RANGE
+        require(len(ancif_blob)==length and len(ancif1_blob)==clength,
+                'official ANCIF resource lengths changed (expected 0x100/0xac8)')
+        for blob,magic in ((ancif_blob,0x9881),(ancif1_blob,0x98c1)):
+            w0,stored,h6=struct.unpack_from('<IHH',blob)
+            require(h6==magic and 6+(w0-2)==len(blob),
+                    'ANCIF fixture header shape changed (magic/length cover)')
+            require(binascii.crc_hqx(blob[6:],0)==stored,
+                    'ANCIF fixture inner CRC self-check failed')
+        readonly=tuple(readonly)+((base,ancif_blob),(cbase,ancif1_blob))
     if sfc_suspend:
         # The SFC suspend tail sets 0xfd1c00|=1 (write-only RMW projection) and
         # then the wrapper reads the second SFC 0xfe0100 CON. The second SFC is
@@ -3582,25 +3749,52 @@ def check(report,firmware):
     # **0x61fbfe0**(r7=[sp+8]=构造链 0x600B15C 族写入栈记录 +8 槽的指针;
     # 0x61fbfe0=0x6200000-0x4020=2MB flash 顶-0x4020,**在 SFC 明文区
     # 0xe6000 之外**——app 镜像外/固件文件外)——函数 [0x606c54e,
-    # 0x606c628) 资源查找链(RAM 0x1265E0 配置门→锁对象 0x126EB0→表基址
-    # 0x609FF6E 魔数 0x98C1/0x9881 查找 call 0x60081A6→构造 call 0x600B15C
-    # 族)后首读,初分类=flash 顶参数/资源区指针读族候选(值来源=下一路
+    # 0x606c628) 资源查找链(RAM 0x1265C0+0x4FC 配置门→锁对象 0x126E90→
+    # 名字池 0x60A1DCE→按名开资源 call 0x6007ae8→虚方法 0x6060980 写栈记录)
+    # 后首读,初分类=flash 顶参数/资源区指针读族候选(值来源=下一路
     # 第一课题,全图存档 ~/tmp/ass-fn-0x606c54e.txt),三选一归下一路。
+    # 路 FLS:flash 顶 sdfile ANCIF/ANCIF1 官方资源内容 fixture
+    # (ancif_official_resources)放行。值来源全图(本路第一课题,已解):
+    # 停点 0x61fbfe0=sdfile「app 分区」文件 ANCIF 的头首字——app 分区表在
+    # flash 0x06000080(镜像内,32 字节项 {头CRC@0,virt@4,size@8,magic
+    # 0x8192@12,终止标记@14,名字@16})恰三项 BTIF/ANCIF/ANCIF1,换算对
+    # [0x127290]=0x2020/[0x127294]=0x06000000(CPU=virt-0x2020+0x06000000,
+    # BTIF 0x61ddfe0=既有 erased_bankb 窗 2 同族/ANCIF 0x61fbfe0/ANCIF1
+    # 0x61fc0e0 三点互证);内容在官方 UFW 外层 type50 资源(UFW 偏移
+    # 0x102120/0x102220,有效长 0x100/0xAC8;docs/usb-recovery.md 实测布局
+    # 标该区「保留校准」=真机可能每机不同),外层/内层 CRC+魔数 0x9881/
+    # 0x98C1+头内名 ANCGAIN01/ANCCOEF01 与消费者 parse 期望逐项互证——
+    # codex 定调(gpt-6-astra,逐条核实+复跑互证+6 处勘误全采纳:换算链
+    # 走 0x6010de6→0x6010d54→0x6010c20 不经 island -32;bge.ri 无符号仅
+    # 0/0xFFFFFFFF 两哨兵同判;第四调用点经 0x607008c 判空;11 调用点
+    # 形状各异不得概称全良性;0x6083a40 是路径串址非内容址)选修正 (c)
+    # 官方内容具名 fixture(擦除对照 (a) 4 字节窗留作对照场景未实施)。
+    # 放行后两文件 parse 全部真实走通(watch 钉死:mode1 首字 0xfc/魔数
+    # 0x9881、mode0 首字 0xac4/魔数 0x98C1,0x606c5e6 parse 块两入、
+    # 0x606c5c2 free 路径零执行=名字 strcmp+CRC 全过,调用者拿到 payload
+    # 指针 0x61fbff4/0x61fc0f4),链再 **+126,518 步**(ANCGAIN/ANCCOEF
+    # 系数真实进入 ANC 配置:音频域系数装载段+OS 等待族续)停在
+    # **28,890,702 @ 0x6011976**:`ld.w r10=[r0+0]` 读 **0xfd3b00**=
+    # ls_base+0x3b*0x100(SDK cpu.h rand32()=JL_RAND->R64L 同族)——随机
+    # 种子函数 [0x601196a,0x60119ca):读 [0xfd3b00] 一次做 Lehmer MINSTD
+    # LCG(乘 16807 模 0x7FFFFFFF)种子,循环产出 r1(=6)字节随机串,
+    # 初分类=硬件熵源只读寄存器读族(值不可推导,任何值都是合法随机抽取
+    # ——三选一按 lrct_trim_result 探路值先例归下一路),全图存档
+    # ~/tmp/fls-fn-0x6011976.txt。
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x606c5ba on the '
-            'unmapped read of 0x61fbfe0 (the resource-lookup chain of the '
-            'function [0x606c54e,0x606c628): the stack-record +8 slot written by '
-            'the 0x600B15C-family constructor is a pointer 0x61fbfe0 = 2MB flash '
-            'top minus 0x4020, OUTSIDE the 0xe6000 SFC plaintext window — the '
-            'first read of a flash-top parameter/resource-region pointer) — '
-            'reached 6,963,729 steps after the route-ASS container releases the '
-            '21,800,455 stop (the ADC start function 0x606df66 config block: '
-            'MIC_CTL0 |=0x2/&=~0x1 RMWs, MIC_CTL1 insert family ending 0xff8, '
-            'ADC_CON1 three zero write-backs, MBG_CON param-gated untouched) '
-            'and the audio pipeline re-init rounds run to completion — the '
-            'honest flash-top pointer boundary for the next route')
+            'the heap-experimental scenario must stop at 0x6011976 on the '
+            'unmapped read of 0xfd3b00 (the random-seed function '
+            '[0x601196a,0x60119ca): the Lehmer MINSTD LCG (x*16807 mod '
+            '0x7fffffff) loads its seed with the single read of JL_RAND-family '
+            '0xfd3b00 = ls_base+0x3b*0x100, then emits the requested byte '
+            'count) — reached 126,518 steps after the route-FLS official '
+            'ANCIF/ANCIF1 content fixture releases the 28,764,184 stop (both '
+            'sdfile flash-top file parses run for real: magic 0x9881/0x98c1 and '
+            'embedded names ANCGAIN01/ANCCOEF01 verified, free path never '
+            'taken, payload pointers returned to the audio-domain callers) — '
+            'the honest hardware-entropy boundary for the next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 B3:CNT held 快照报告断言——键在场、假设文本按 codex 原文措辞、
@@ -4241,10 +4435,10 @@ def check(report,firmware):
             not fd31['write_only'] and not fd31['readback_not_modeled'] and
             fd31['addresses']==['0xfd3100'] and
             'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'] and
-            fd31['con_readback_projection']['reads']==520 and
+            fd31['con_readback_projection']['reads']==521 and
             fd31['con_readback_projection']['address']=='0xfd3100' and
             fd31['con_readback_projection']['res_boundary']['address']=='0xfd3104' and
-            fd31['pnd_completion_projection']['forced_reads']==258 and
+            fd31['pnd_completion_projection']['forced_reads']==259 and
             fd31['pnd_completion_projection']['bit']=='0x80' and
             fd31['pnd_completion_projection']['not_a_timing_model'] and
             fd31['res_named_values_fixture']['served']=={'0x10000':56,'0x10004':12,'0x10006':12} and
@@ -4366,14 +4560,22 @@ def check(report,firmware):
     # (reti_from=块出口,延期-交付往返实证;机器守卫本身保持拒绝))。core
     # tick 交付 9→10(+1 次溢出,OS tick 级联继续)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==4401 and
+    require(len(t0['deliveries'])==4415 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6','0x12b608',
                                    '0x4372','0x4196','0x4246','0x6000f48','0x6000f4a',
                                    '0x6000f4c','0x6000f4e','0x6007b7e',
                                    '0x6010a4e','0x6010a5c','0x600a66e','0x606b0a2',
-                                   '0x12c5ca')
+                                   '0x12c5ca',
+                                   # 路 FLS 段新增中断上下文:0x6010a60/0x6010a82/
+                                   # 0x6010e7a=sdfile 走查器 0x6010cec 体内 ANCIF/
+                                   # ANCIF1 头 CRC 校验(经共享 wrapper 0x6000f0c)、
+                                   # 0x4166=ROM rep 拷贝体、0x606454e=资源锁
+                                   # 0x6064538 族临界区、0x60742b6=ANC 系数
+                                   # 消费段(payload 装载)。
+                                   '0x4166','0x6010a60','0x6010a82','0x6010e7a',
+                                   '0x606454e','0x60742b6')
                 for d in t0['deliveries']) and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==1557 and
@@ -4397,9 +4599,9 @@ def check(report,firmware):
              '0x12e282', '0x12e286', '0x12e284', '0x12e282', '0x12e286'] and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==8802 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==4401,
-            '3671 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==8830 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==4415,
+            '4415 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
             'route-AK/AN/AS/B1 prefix (287 through the AK stop, the route-R delivery '
             'interrupting the OS veneer 0x12b7b6, the eight route-AN walker-chain '
             'contexts, the route-AS ROM rep-block exit 0x4196 and the sixty-one B1 '
@@ -4444,7 +4646,7 @@ def check(report,firmware):
             'shape reti_from=0x12c5ca appears 50 times and the delay trio continues; '
             'one delivery interrupts the audio zone 0x60750e2)')
     dfr=r['machine']['irq_delivery_deferral_projection']
-    require(dfr['count']==2928 and
+    require(dfr['count']==2976 and
             all(e['irq'] in (3,4,127) and
                 e['deferred_while'] in ('core_tick_handler','timer0_irq_handler',
                                         'software_irq_handler',
@@ -4453,7 +4655,7 @@ def check(report,firmware):
             sum(1 for e in dfr['events'] if e['deferred_while']=='core_tick_handler')>0 and
             sum(1 for e in dfr['events']
                 if e['deferred_while']=='mid_instruction (after_then/repeat in flight)')>=0,
-            '2928 delivery requests must be HELD (not dropped) through the 28,764,184 stop. '
+            '2976 delivery requests must be HELD (not dropped) through the 28,890,702 stop. '
             'The retained 64-event window now shows the route-AS mid-instruction family '
             'BACK IN the window (62 members): the route-LPV tail segment calls the ROM '
             'memset rep bodies again, so Timer0 IRQ4 requests deferred to the '
@@ -4471,13 +4673,13 @@ def check(report,firmware):
     gp=r['peripherals']['gpcnt_cleanup_projection']
     require(gp['known_mask']=='0x81' and gp['known_value']=='0x0' and
             gp['disable_writes']==gp['clear_writes']==1 and
-            gp['con_readback_projection']['reads']==139 and
+            gp['con_readback_projection']['reads']==140 and
             gp['con_readback_projection']['address']=='0xfd1100' and
             gp['con_readback_projection']['known_mask']=='0x81' and
             not gp['con_readback_projection']['count_readback_proven'] and
             gp['con_readback_projection']['not_a_timing_model'] and
-            r['instruction_adapters'].get('gpcnt_con_readback_load')==139,
-            'the GPCNT CON readback projection must serve 116 partial-word reads (one per '
+            r['instruction_adapters'].get('gpcnt_con_readback_load')==140,
+            'the GPCNT CON readback projection must serve 140 partial-word reads (one per '
             'task 0x6069538 dispatch across the route-CG OS-tick cascades, the route-B1 '
             'delay family, the route-B3 OS-wait parked-wake schedule and nine more '
             'dispatches inside the route-DT OS-wait segment), each answering only '
@@ -4642,8 +4844,8 @@ def check(report,firmware):
     # 20,220→20,373(恰 +153=51 步×3 STD12M tick 精确走表)。
     # 路 JLA:+130 步(set_buffer 五写+挂 handler+启动段序章)零新到期零新
     # 交付,cnt 2,577→2,967(恰 +390=130 步×3 STD12M tick 精确走表)。
-    require(timer=={'con':0x1401,'cnt':25188,'prd':59999,'pending':False,
-            'expirations':4411},
+    require(timer=={'con':0x1401,'cnt':12585,'prd':59999,'pending':False,
+            'expirations':4425},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-B3 OS-wait prefix reprograms the window to the '
             '5ms one and the route-DT segment reprograms the latest window to the 2ms one '
@@ -4719,7 +4921,7 @@ def check(report,firmware):
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==140 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==140 and
-            tick0['cnt']==121396 and
+            tick0['cnt']==627468 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -4836,7 +5038,7 @@ def check(report,firmware):
             [(0,127,'0x12ad2a','0x12b608')]*2+
             [(1,125,'0x60662c8','0x12c5ca')]*2+
             [(0,127,'0x12ad2a','0x12b608')]+
-            [(0,127,'0x12ad2a','0x12c5ca')],
+            [(0,127,'0x12ad2a','0x12c5ca')]+[(0,127,'0x12ad2a','0x12b608')]*2,
             'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
             'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
             'the timer bring-up before any scheduler IPI); the route-CO scheduler helper prefix '
@@ -4860,8 +5062,8 @@ def check(report,firmware):
     # CPU1 同步 IPI 往返——交付列表 11→12(尾项仍是 (1,125,'0x12c5ca')),
     # conditional_software_irq_rti 11→12、commands/acks 22/11→24/12。
     require(r['machine']['events_truncated'] is True and
-            r['instruction_adapters'].get('conditional_software_irq_rti')==14,
-            'the software IRQ RTI count must reach fourteen (the pmu_task-entry RTI event lies '
+            r['instruction_adapters'].get('conditional_software_irq_rti')==16,
+            'the software IRQ RTI count must reach sixteen (the pmu_task-entry RTI event lies '
             'in the byte-identical pre-305k prefix pinned at the 689,402 landmark; the trimmed '
             '32+32 events window holds the IRQ4 round trips; the route-CO CPU1 sync '
             'IPI is a repeat_irq_delivery round whose handler RTI was still in flight at the '
@@ -4869,8 +5071,8 @@ def check(report,firmware):
             'the route-CW DAC-init tail adds one more CPU1 sync-IPI round, and the route-B3 '
             'OS-wait prefix adds the two CPU0 irq127 rounds — twelve complete plus the two '
             'B3 ones all RTI-complete)')
-    require(r['peripherals']['software_irq_commands']['commands']==28 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==14,
+    require(r['peripherals']['software_irq_commands']['commands']==32 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==16,
             'the two scheduler IPI round trips plus the route-CO scheduler-helper sync IPI '
             'and the route-CW DAC-init tail sync IPI must be the only new software IRQ '
             'bookkeeping')
@@ -4884,12 +5086,15 @@ def check(report,firmware):
     crc_heap=r['peripherals']['hardware_crc_projection']
     require(crc_heap['seed_writes'][:30]==crc_ff['seed_writes'] and
             crc_heap['result_reads'][:30]==crc_ff['result_reads'] and
-            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==82 and
+            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==130 and
             crc_heap['seed_writes'][30:]==['0x0','0x0'] and
             crc_heap['result_reads'][30:]==['0x62eb','0x9c78']+['0xa1cd','0x9946',
                 '0xd1cf','0x239e','0x7dee','0x91a9']*7+['0xa1cd','0xb37d','0xa11d',
-                '0xc190','0xf271','0xb758','0x5ddd','0x370'] and
-            crc_heap['fed_bytes']==65405,
+                '0xc190','0xf271','0xb758','0x5ddd','0x370']+['0x583d','0xc190',
+                '0xf271','0xb758','0x5ddd','0x370','0xfa0d','0x4dcd','0xcc9',
+                '0x9129']+['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee',
+                '0x91a9']*6+['0x9b61','0x97df'] and
+            crc_heap['fed_bytes']==69715,
             'the heap fixture must keep the first thirty hardware CRC round trips '
             'byte-identical to crc_bankb; the route-AA prefix adds the seeded '
             '0x62eb/0x9c78 pair, the route-AN walker chain thirty and the route-AS '
@@ -4917,16 +5122,16 @@ def check(report,firmware):
     # 路 LPV 尾段(+2,068 步,tbh case 体+RAM 对象链+缓冲配置 walk):并行
     # 半字 15→16、并行字节 412→416(case 体与 walk 的并行对存储半);双字/
     # 跨页/rep 族/insert 装载/LP 位 RMW/复位/mem_pwr/awkup/死读全不变。
-    require(r['instruction_adapters'].get('exact_doubleword_store')==59 and
+    require(r['instruction_adapters'].get('exact_doubleword_store')==85 and
             r['instruction_adapters'].get('exact_doubleword_store_cross_page_split')==7 and
-            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==427 and
-            r['instruction_adapters'].get('zero_count_skip_is_assumption')==46 and
-            r['instruction_adapters'].get('register_rep_multi_block_projection')==181 and
+            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==699 and
+            r['instruction_adapters'].get('zero_count_skip_is_assumption')==140 and
+            r['instruction_adapters'].get('register_rep_multi_block_projection')==331 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
-            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==26 and
-            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==696 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==464 and
+            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==35 and
+            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==2192 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==615 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==109 and
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
@@ -5056,13 +5261,13 @@ def check(report,firmware):
             # icfg bit9 32190→32194(+4)、cnum 54039→54043(+4)。
             # masked 分支 3 与其余族不变(LRC 帧零新增,与 trim 块计数
             # 冻结互证)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==125995 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==11744 and
-            r['instruction_adapters'].get('exact_full_word_store')==223302 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==16968 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==38450 and
+            r['instruction_adapters'].get('abstract_task_stack_transport')==129241 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==12148 and
+            r['instruction_adapters'].get('exact_full_word_store')==230091 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==17562 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==39430 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==3 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==64852,
+            r['instruction_adapters'].get('per_core_visible_cnum')==66729,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -5832,6 +6037,19 @@ def check(report,firmware):
         'beyond the 8-byte header at window+0x208) stays strictly unmapped; the '
         'crc_engine_roundtrip scenario without the fixture still stops honestly at 176,288 on the '
         'unmapped 0x60fdfe0 read')
+    report['ancif_official_resources_fixture']=(
+        'official-resource-content assumption (NOT a device measurement): the flash-top '
+        'sdfile app-partition file headers ANCIF [0x61fbfe0,0x61fc0e0) and ANCIF1 '
+        '[0x61fc0e0,0x61fcba8) are mapped read-only to the official UFW outer-layer '
+        'resource bytes (type-50 entries at UFW offsets 0x102120/0x102220, outer CRC, '
+        'inner CRC, magic 0x9881/0x98c1 and embedded names ANCGAIN01/ANCCOEF01 all '
+        'verified against the consumer 0x606c54e parse expectations). A real device '
+        'may hold per-unit calibration differences in this reserved area (usb-recovery '
+        'measured layout marks it 保留校准); every conclusion past this boundary is '
+        'conditional on the official-content assumption. ANCIF1 maps its 0xac8 valid '
+        'bytes only — the declared-but-unused remainder of the 0xf00 area stays '
+        'strictly unmapped.')
+
     report['insert_load_parallel_pair_assumption']=(
         'opt-in exact_parallel_insert_load: the compose pair of the misaligned-source ROM memcpy '
         '(0x417e, rep r5,22: four ld.bu.pin byte loads + insert.rrii.p||ld.bu.pin pairs assembling '
