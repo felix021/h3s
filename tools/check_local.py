@@ -75,6 +75,7 @@ def main():
     run(sys.executable,'tools/test_acceptance_record.py')
     run(sys.executable,'tools/test_acceptance_dashboard.py')
     run(sys.executable,'tools/test_falsification.py')
+    run(sys.executable,'tools/test_sim_bridge_server.py')   # SIMBRIDGE M1-a：bridge server 骨架（静态 fixture 状态源）
     run(sys.executable,'tools/test_world_snapshot.py')
     run(sys.executable,'tools/test_handoff_lint.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json',tool='probe_boot.py')
