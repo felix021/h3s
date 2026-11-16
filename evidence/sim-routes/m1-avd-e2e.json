@@ -1,0 +1,30 @@
+{
+  "route": "SIMB1E/sim-simb1e（commit e2e88c0，已并 main 3372750）",
+  "recorded_at": "2026-11-17T02:32:00",
+  "task": "M1 AVD 端到端联调验收（avd 与仿真环境完成联调）。本记录=原始验收记录的脱敏摘要；原始 JSON/server log 留本地（见 raw_local）。",
+  "environment": {
+    "avd": "h3s-app（Android 36 / pixel_7 arm64-sim → x86_64 image emulator-5554，headless -no-window -no-audio -gpu swiftshader_indirect）",
+    "app_launch": "am start -n cn.felix021.h3squery/.WebShellActivity --ez sim true --es sim_host 10.0.2.2 --ei sim_port 7788（QEMU slirp 直连，未用 adb reverse；10.0.2.2=AVD 宿主回环别名）",
+    "server": "python3 tools/sim_bridge_server.py --listen 127.0.0.1:7788 --world analysis/snapshots --rom <本地 ROM 窗口文件>（快照 restore 自 SIMB1C 世界，停点 0x6072b92 旧前沿）",
+    "real_devices_used": "无（禁真机红线遵守；期间 adb devices 曾出现一台他人真机，全程未对其执行任何命令）"
+  },
+  "scenario_results": {
+    "1_world_server": "PASS——快照 restore ~2s，世界就绪横幅 {stop_pc:0x6072b92, scratch 守卫+烟雾读通过, direct-world}",
+    "2_avd_app_connect": "PASS——sim link config 生效；server 客户端接入+hello 通过（proto=1 client=sim-gatt）；UI pill 已连接·MTU 247（截图 10）。注：连接由 DRIVE 广播驱动口触发（宿主高负载下触摸 click 不可达页面 JS，DRIVE 直调与页面按钮同一 H3SBridge 方法→同一 transport/BLE 链路→同一 DOM 更新，仅绕过触摸一环；UI 断言仍以截图为准）",
+    "3_read_loop": "PASS——0x2f 电量读 15B 回执→UI 电量 0%/10%/0%（载荷 2f03 000a00）；0x17 读→1703000000（模式 0，分段如实不标记）；0x22 读→2203000000→UI『设备回报：EQ 0 段』（0x22 读白名单+页面 2203 解析为 SIMB1E 新增）",
+    "4_write_loop": "PASS（EQ 读回值断言面除外）——ANC：写 0x17 setter 0x6025ca4 n=0 steps=332 写静默→读回 1703010000（模式 1=降噪）→UI『降噪』aria-pressed=true+页面日志 [setAnc] ok；EQ：写 0x22 66B（3B 头+9×7B 摇滚预设）setter 0x602583c steps=59654-59660 写静默→app 断开后控制面 inspect：EQ_SEGMENTS=9、EQ_MIRROR 66B 逐字段==写入曲线（head type=1/master=0xFE70=-400centidB；9 段 freq/q/gain(LE s16)/iir 全对上）；EQ 写后读 0x22 撞读分发器未初始化堆 0x18d03c（D4 族世界漂移）→world_dead——与 SIMB1C 实测一致，AVD 侧如实复现",
+    "5_robustness_world_dead": "PASS——EQ 写后读触发 world_dead→server ~1s 快照重建复役→app 可见断线（status=129 文案+显示清空+[BLE disconnected]，截图 13）→用户重连即时复役（hello+三连读全回执，截图 14）"
+  },
+  "screenshots_in_repo": "docs/acceptance-samples/screenshots/m1-avd/（7 张，逐张隐私核验=AVD 应用 UI/仿真世界状态，无真机数据/无私有路径）；12 号截图标注勘误见该目录 README——原标注『ANC 写环读回』有误，实为 EQ 编辑页",
+  "reproduce": [
+    "python3 tools/sim_bridge_server.py --listen 127.0.0.1:7788 --world analysis/snapshots --rom <本地 ROM 窗口文件>",
+    "emulator -avd h3s-app -no-window -no-audio -gpu swiftshader_indirect & adb install -r <app.apk>",
+    "adb shell am start -n cn.felix021.h3squery/.WebShellActivity --ez sim true --es sim_host 10.0.2.2 --ei sim_port 7788",
+    "驱动：adb shell am broadcast -a cn.felix021.h3squery.DRIVE --es action connect|readStatus|setAnc|writeEq（sim 构建专用，真机构建不注册——P0 修复 b1fba56）"
+  ],
+  "raw_local": {
+    "record": "~/worktrees/h3s/sim-simb1e/analysis/local-checks/sim-b1e-avd-e2e.json（gitignored，完整 avd_findings/场景明细）",
+    "server_log": "~/worktrees/h3s/sim-simb1e/analysis/local-checks/sim-b1e-world-server.log（gitignored，raw log 不入仓）",
+    "screenshots_dir": "~/worktrees/h3s/sim-simb1e/analysis/local-checks/screenshots/（gitignored 原图；精选副本已入仓）"
+  }
+}

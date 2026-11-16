@@ -1,0 +1,26 @@
+{
+  "route": "D2AI/sim-d2ai（commit ee0a302，已并 main a131dc3）",
+  "recorded_at": "2026-11-17T05:14:00",
+  "task": "D2 音频输入注入步 1+2（b1 开链+b2 单发交付+门关负例）场景级证据摘要；面板记录（D2-b-INJ-01/02 PASS conditional、INJ-03 NOT_RUN 不部分绿）已在 docs/acceptance-samples/d2b/。原始场景 JSON 留本地（见 raw_local）。",
+  "scene_basis": "park 快照 restore（前沿 29,601,125 @ 0x606955c，两轮重捕获验证零位移）；runner=tools/d2_audio_scene.py（默认 restore，--capture 全量重放）",
+  "b1_open_chain": {
+    "verdict": "PASS 6/6",
+    "detail": "直调 0x60200b6(0x5) 共 6,407,583 步（两通道 ADA 偏置等待 delay(20)≈3.2M 步×2 主导，预算 10M）；返回 0；五写 ADR=0x41aa8c 窗/LEN=0x300/PNS=0x100/HWP=SRP=0；hdl+79=2（两通道开）；挂链环形单节点 {node:0x41a81c, priv:0, handler:0x6033d5a}；CON 门位 bit5+bit4 置位"
+  },
+  "b2_single_delivery": {
+    "verdict": "PASS 7/7",
+    "detail": "produce_block 1024B（256 采样×2 通道×2B，样本式样=通道可辨高字节+逐采样索引低 nibble）写 set_buffer 配置的真实窗口 0x41aa8c→pending→IRQ68 嵌套进入（外层 in_flight=IRQ4，audio ICFG nibble 0x5>外层 0x3=优先级论证唯一 justified 扩面）→真实分发器 0x602f406..0x602f452 十站 PC 全覆盖（DAC 清位分支确认不在集）→链调用 (priv=0, data=0x41aa8c, len=0x200, handler=0x6033D5A)→DSP 前样本逐字节回读 1024B 相等→pending 真实 W1C 清（[0xfe0538]|=0x40 ×2）→SRN=PNS 重装→RTI 恢复 park 停点外层 Timer0 上下文（handler 窗口 131 步）"
+  },
+  "b2_negative_gate_closed": {
+    "verdict": "PASS 8/8",
+    "detail": "CON bit5 清（真实模型写 0xfe0538 分发器形 RMW）后：分发器读并清 pending、门分支 0x602f43a 走到、call 站 0x602f444 不达、handler 零调用、SRN 写不变、acks 恰增 1（仅分发器侧）"
+  },
+  "honest_stop": "场景终态=unmapped_memory 读 0xfd1104（JL_GPCNT->NUM，即前沿停点本身，非注入链缺陷）；elapsed 103.5s",
+  "reproduce": [
+    "python3 tools/d2_audio_scene.py --out analysis/local-checks/d2ai/scene.json（默认 restore park 快照，秒级；--capture 全量重放重新捕获）",
+    "单测：python3 tools/test_audio_dma_delivery.py（23 例，已接 check_local --units）"
+  ],
+  "raw_local": {
+    "scene": "~/worktrees/h3s/sim-d2ai/analysis/local-checks/d2ai/scene.json（gitignored，全量寄存器/PC 覆盖/watch 明细）"
+  }
+}
