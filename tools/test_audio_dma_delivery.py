@@ -166,16 +166,56 @@ class AudioDmaModelTests(unittest.TestCase):
             fresh=armed_model();fresh.jl_audio_adc_dma.produce_block(RamMem(),bytes(1024),
                                                                      channels=2,sample_bytes=2)
 
-    def test_produce_block_wraparound_is_honestly_stopped(self):
+    def test_produce_block_ring_wrap_aligned_folds_the_write_position(self):
+        # 路 D2AJ(b4 绕回投影):PNS 整除 LEN 时块界与环尾对齐——第 7 块
+        # 窗口折回 ADR+0,HWP 读回=环内位置(hwp%LEN)折返、单调累计继续,
+        # 圈数=hwp//LEN 派生;写位置折返≠数据折返(旧窗字节被新块覆盖)。
         h=armed_model();five_writes(h)
         dma=h.jl_audio_adc_dma
         block=bytes(256*2*2)
-        # LEN=1536 samples per channel; 6 blocks fill the ring; the 7th would wrap.
-        for _ in range(6):
+        for _ in range(6):                               # LEN=1536: one full lap
             dma.produce_block(RamMem(),block,channels=2,sample_bytes=2)
             dma.pending=False
-        with self.assertRaisesRegex(Blocked,'jl_audio_adc_dma_wraparound_not_modeled'):
+        self.assertEqual(h.read(0xfe0548),0)             # 1536%1536: folded back to ring start
+        mem=RamMem()
+        info=dma.produce_block(mem,block,channels=2,sample_bytes=2)   # block 7 wraps
+        self.assertEqual(mem.writes[0][0],0x419264)      # window = ADR+0
+        self.assertEqual((info['ring_pos_after'],info['ring_wraps']),(256,1))
+        self.assertEqual(dma.hwp,7*256)                  # monotonic count keeps going
+        self.assertEqual(h.read(0xfe0548),256)           # read-back is the ring position
+
+    def test_produce_block_ring_straddle_stays_honestly_stopped(self):
+        # PNS 不整除 LEN:跨环尾的块保持诚实停(硅上跨块搬运形状未测)。
+        h=armed_model()
+        h.write(JL_AUDIO_ADC_CON,0)
+        for address,value in zip(JL_AUDIO_ADC_DMA_WORDS,(0x419264,300,256,0,0)):
+            h.write(address,value)
+        dma=h.jl_audio_adc_dma
+        block=bytes(256*2*2)
+        dma.produce_block(RamMem(),block,channels=2,sample_bytes=2)   # offset 0 fits
+        with self.assertRaisesRegex(Blocked,'jl_audio_adc_dma_ring_straddle_not_modeled'):
+            dma.produce_block(RamMem(),block,channels=2,sample_bytes=2)   # 256..512 > 300
+
+    def test_srp_read_projection_tracks_the_freshest_completed_block(self):
+        # 路 D2AJ(b3/b4):SRP=硬件域读指针,投影=最近完成块的环内起点
+        # (hwp-PNS) mod LEN(读时刻 produce_block 已推进);未完成任何块=
+        # 最后写值容器面(set_buffer 写 0)。app 唯一读点=audio handler
+        # 0x607265a(data=ADR+SRP×ch×ssize)——b2 实测 block1 SRP=0 互证。
+        h=armed_model();five_writes(h)
+        dma=h.jl_audio_adc_dma
+        self.assertEqual(h.read(0xfe054c),0)             # no block yet: set_buffer's 0
+        block=bytes(256*2*2)
+        dma.produce_block(RamMem(),block,channels=2,sample_bytes=2)
+        self.assertEqual(h.read(0xfe054c),0)             # block 1 origin = ring pos 0
+        dma.pending=False
+        dma.produce_block(RamMem(),block,channels=2,sample_bytes=2)
+        self.assertEqual(h.read(0xfe054c),256)           # block 2 origin = 256
+        dma.pending=False
+        for _ in range(4):                               # blocks 3..6 fill the lap
             dma.produce_block(RamMem(),block,channels=2,sample_bytes=2)
+            dma.pending=False
+        dma.produce_block(RamMem(),block,channels=2,sample_bytes=2)   # block 7 wrapped
+        self.assertEqual(h.read(0xfe054c),0)             # block 7 origin = ring pos 0 again
 
     def test_advance_raises_the_delivery_request_once_per_episode(self):
         h=armed_model(audio_adc_dma_delivery_requests=True);five_writes(h)

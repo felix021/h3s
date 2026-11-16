@@ -77,6 +77,16 @@ class ArchitecturalModelTests(unittest.TestCase):
         self.assertEqual(r['memory_snapshots']['at_sp']['bytes_with_unknowns'],'??????12')
         self.assertEqual(r['memory_snapshots']['at_sp']['initialized_bytes'],1)
 
+    def test_indexed_halfword_store_writes_two_bytes_without_the_merge_read(self):
+        # 路 D2AJ:st.h.idxs h[r3+r5<<1]=r0(解交织惯用形,0x6033dc6 esco aec
+        # 前端)——直写 2 字节,包含字的邻居保持 unknown(无 RMW 合并读)。
+        regs=[0]*16;regs[0]=0xBEEF;regs[3]=SP;regs[5]=1
+        r=self.run_code(self.enc('st.h.idxs',r=3,s=5,t=0),regs=regs,
+                        extra={'exact_subword_stores':True})
+        self.assertEqual(r['completed_steps'],1)
+        self.assertEqual(r['memory_snapshots']['at_sp']['bytes_with_unknowns'],'????efbe')
+        self.assertEqual(r['memory_snapshots']['at_sp']['initialized_bytes'],2)
+
     def test_parallel_division_stores_old_source_without_reading_destination(self):
         # Exact QCY clock_init pair at06000542: R0=R1/R3 # [SP+16]=oldR0.
         code=self.enc('div.u.rrr.p',d=0,a=1,b=3)+self.enc('st.w.sp',r=0,n=4)

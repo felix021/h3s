@@ -1,34 +1,41 @@
 {
   "case_id": "D2-b-INJ-03",
   "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；开链/消费链静态源=app.bin sha 18f3d573…（通话链全图 AP §1.7③）+公开 stream.bin（esco_adc blob @0x1BFD，CFG-02）",
-  "initial_state": "部分执行（路 D2AI/sim-d2ai，2026-11-17）：b1 打开链+b2 单发交付已在 park 停点世界执行（快照 restore，直调开链 0x60200b6(0x5) 共 6,407,583 步——两通道各一次 ADA 偏置等待 delay(20)≈3.2M 步/次主导）；b3 消费闭环未跑，记录整体保持 NOT_RUN（四态纪律：b3 是本记录必需项，不得部分绿）。运行时勘误三条：①esco output handler=0x6033D5A（非 AP/AR 记的 0x6031D5A——链表节点 [node+12]=[obj+28] 实值+函数头读 [QCY+620] esco 对象槽互证；0x6031d5a 无函数序言非入口）;②开链返回 0（非预研§2 表「返回 1」）;③链表节点布局 {next@+0,prev@+4,priv@+8,handler@+12} 与 PRE §4.4 一致（AP「[obj+40]」口径就此运行时勘误——[obj+40] 实值 0）",
-  "inputs_schedule": "b1/b2 已执行（证据 analysis/local-checks/d2ai/scene.json）：flags=0x5→slot{1,0}→组{0,1}（hdl+79=2、hdl+78=0x3）;set_buffer 五写 ADR=0x41aa8c/LEN=0x300/PNS=0x100/HWP=0/SRP=0（LEN=0x300=768 样本——AE「LEN=uextra(buf_num×len,1,16)=1536」公式与实测不符,768=buf_num(3)×PNS(256),环字节 768×2ch×2B=0xC00与 2×0x600 大缓冲互证,3 块/环=buf_num 互证）;注入块 1024B=256 样本×2ch×2B;块公式 sample(ch,n)=((ch+1)<<8)|((k&0xF)<<4)|(n&0xF)。b3 及以后未执行",
-  "observation_boundary": "b1/b2 已执行观察点：五写记录/hdl+79/+78/挂链（node=0x41a81c=node{next=hdl,prev=hdl,priv=0,handler=0x6033d5a} 环形单节点）/CON=0x3893a（bit5+bit4 门位）;交付链 131 步:dispatcher 十站 PC 全覆盖+0x60726e4 链调用点实参 (priv=0,data=0x41aa8c,len=0x200,handler=0x6033d5a)+DSP 前样本逐字节回读byte_equal（1024B 全等）+尾部 SRN=0x100=PNS 重装+CON|=0x40×2+负例③门关变体全绿。b3 观察面（aec 簿记/下游）未采集",
+  "initial_state": "b1+b2 半边同前（路 D2AI）；b3 已执行（路 D2AJ/sim-d2aj，2026-11-17 05:41-06:34，快照两次重捕获验证前沿 29,601,125 @ 0x606955c 零位移）：负例③关掉的 CON bit5 门经真实 RMW 写重开后连续交付块 k=3..10——esco handler 0x6033D5A 首 8 次调用走丢弃门早退（b[esco+0]≤7→计数+1→0x6033e4e 出口，计数 0→8 逐次观测，b2 的调用#1 计 0→1），第 9 次调用（k=10）起真路径全跑通。**b3 必需项「aec 对象簿记前进」未达成=BLOCKED**：逐通道消费函数 0x6033cb4 入口读 [QCY+624]（aec 前端运行对象）运行时值=0——该对象唯一创建点 0x6021002 在事件分发函数 0x60207a2 内（b[msg+0]∈129..160 tbh 跳表、全 app 零静态 caller=函数指针/OS 事件面），park 世界无通话事件输入故不开；伪造事件消息超出「唯一合成输入=样本字节」红线，不硬凑",
+  "inputs_schedule": "b1/b2/b3 连续序列（证据 analysis/local-checks/d2aj/scene.json）：块公式 sample(ch,n)=((ch+1)<<8)|((k&0xF)<<4)|(n&0xF)，k=1..14 单调（k=2 为负例③门关块，产出不消费）；每块 produce_block 写当前环窗口（LEN=768 样本=3 块/环，ADR=0x41aa8c，PNS=0x100，块 1024B=256 样本×2ch×2B）→IRQ68 真实交付；k=14 为负例①全零静音块（INJ-01 未覆盖项闭合）",
+  "observation_boundary": "b3 观察面（全真实固件执行）：①handler 路径 PC 锚——0x6033d8e 早退 goto/0x6033d90 真路径首站/0x6033dc6 解交织写/0x6033cb4 逐通道消费入口/0x6033e4e 出口；②丢弃门计数 b[esco+0] 逐调用前后值（1→8 后保持 8）；③解交织证据——真路径块 512 次半字写（256 帧×2ch）后：环窗口前 512B=ch0 样本原地压实序（逐字节相等）、[esco+60] 指向的 ch1 缓冲 512B=ch1 样本序（逐字节相等）；④链调用点实参 (priv=0,data,len=0x200,handler=0x6033d5a) 的 data 指针逐块=SRP 投影环位；⑤0x6033cb4 每真路径块进入 2 次（2 通道）、[QCY+624] 交付前后均=0；⑥静音块——交付/解交织/双通道消费入口照常（数据面按固件真实语义流过零样本），ANC 三字节状态面 0x12666B..D 不变、machine.events 无新事件种类",
   "assertions": [
-    "d1-acceptance §6.2 b1（数据与布局/场景前置=打开链真实执行）+蓝图 §3.1 A0-A3：world_prep 前置三查（hdl guard=1/向量槽 0x19FF10=0x602f406/IRQ68 ICFG nibble 有效——不许合成向量）；开链真实执行=0x6014162 解析 \"esco_adc\"→blob 拷 QCY+3460→逐 slot 0x60142be→0x606b4d0（hdl+79++/ADA_CON8 档 1/ADA_CON4..7 bit0 写记录非空）→每通道 512B+大缓冲 ch×0x600→SR=16000→set_buffer 0x606dee4 五写（ADR/LEN/PNS/HWP=0/SRP=0）→挂 [obj+40]=0x6031D5A 进 hdl+92 链→0x606df66 启动；通道数=位计数（期望 2）非预设",
-    "b2（DMA 与 IRQ）+蓝图 §1.2/§4.2：每注入块=produce_block 填当前窗口→pending bit7→真实 IRQ68 交付（INJ-02 机制）→分发器 |=0x40 清位→bit5+bit4 门→0x6072628→尾部 SRN=PNS 重装+CON|=0x40——逐块四查 pending_set/delivered/acked 恰各一次，无漏失无重复（「直接调用 handler 或无视使能状态强送 IRQ不算过」codex 反例对照）",
-    "b3（消费结果）+蓝图 §3.1 A5：output-handler 链逐个回调——0x6031D5A 调用次数=N、入口 (priv,data,irq_pns×ssize) 的 data 指针处读回字节=注入交织序（DSP 前精确样本，d1-acceptance §6.2 数据设计）；aec 对象内部读指针/处理计数前进（字段偏移实施时从 0x6031D5A 反汇编钉，观测不预设）——b3 终点=帧抵达 aec 前端入口+其簿记前进（「到达 AEC 的 mic 输入」通过条件）；aec 下游（编码/回声参考信号）不在本场景，「参考信号来源另行说明」照 d1-acceptance §6.2 表",
-    "d1-acceptance §6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填未执行）——负例：链上无其他 handler 被调（未启用消费者不被调）；三消费者核对按订阅关系非简单帧数相等（§6.2 三消费者核对原则）"
+    "d1-acceptance §6.2 b1（数据与布局/场景前置=打开链真实执行）+蓝图 §3.1 A0-A3：world_prep 前置三查（hdl guard=1/向量槽 0x19FF10=0x602f406/IRQ68 ICFG nibble 有效——不许合成向量）；开链真实执行=0x6014162 解析 \"esco_adc\"→blob 拷 QCY+3460→逐 slot 0x60142be→0x606b4d0（hdl+79++/ADA_CON8 档 1/ADA_CON4..7 bit0 写记录非空）→每通道 512B+大缓冲 ch×0x600→SR=16000→set_buffer 0x606dee4 五写（ADR/LEN/PNS/HWP=0/SRP=0）→挂链→0x606df66 启动；通道数=位计数（期望 2）非预设【b1 6/6 PASS，D2AI】",
+    "b2（DMA 与 IRQ）+蓝图 §1.2/§4.2：每注入块=produce_block 填当前窗口→pending bit7→真实 IRQ68 交付（INJ-02 机制）→分发器 |=0x40 清位→bit5+bit4 门→0x6072628→尾部 SRN=PNS 重装+CON|=0x40——逐块四查 pending_set/delivered/acked 恰各一次【b2 7/7 PASS+负例③ 8/8 PASS，D2AI】",
+    "b3（消费结果）+蓝图 §3.1 A5：output-handler 逐块被调——0x6033D5A 调用次数=交付块数（13 次调用=13 次交付，含静音块）；入口 data 指针处读回字节=注入交织序（k=1 DSP 前逐字节相等+真路径块解交织后 ch0 压缩序/ch1 缓冲序逐字节相等=DSP 前精确样本抵达消费侧）；丢弃门 b[esco+0] 前 8 次调用计数前进（0→8，消费侧簿记的真实前进面）；**aec 对象内部读指针/处理计数前进未达成**：0x6033cb4 入口 [QCY+624]=0 即返（第二层门，运行时钉死）——字段偏移已按 PRE 要求从反汇编钉（0x6033cb4 读 [QCY+624]/b[aec+0] 状态机/[aec+20] 缓冲长/节点 h[node+10] 写位——全 app 唯一创建点 0x6021002 在 OS 事件分发函数 0x60207a2 内），观测不预设的原则保持【BLOCKED 根因如 initial_state】",
+    "d1-acceptance §6.3 共同断言——负例①静音已跑（INJ-01 未覆盖项闭合）：全零块交付照常（handler 被调、512 次解交织、双通道消费入口照进——数据面按固件真实语义流动）、样本字节=0（窗口/ch1 缓冲全零）、下游无本场景事件面变化（ANC 状态字节不变+零新事件种类）；「未启用消费者不被调」在单节点链上平凡成立（链遍历仅 0x6033d5a 一节点，多消费者世界待 mic_effect/ANC 场景）；三消费者核对按订阅关系非简单帧数相等（§6.2 原则）"
   ],
-  "timeout_budget": "场景步进以断言点/诚实停点为界（直调开链+每块一次交付的受控循环，无固定步预算；超时=FAIL 不是重跑理由）",
+  "timeout_budget": "场景步进以断言点/诚实停点为界（b1 开链 6.4M 步+每块一次交付的受控循环 k=1..14；单次 restore 全程 ~102s；无超时事件）",
   "model_assumptions": [
-    "b1/b2 半边承接 INJ-01/INJ-02 的全部条件假设（DMA 完成时序投影/样本合成 fixture/进入-RTI 反事实族）",
-    "b1/b2 证据等级=conditional（见 INJ-01/INJ-02 evidence_conditions）;本记录整体仍 NOT_RUN（b3 必需项未跑）",
-    "开链直调在冻结世界执行（S 路先例:不调 hardware.advance,外设时间冻结;6.4M 步窗口内 Timer0 不计时——偏置等待以 delay helper 真实步数自然走完）"
+    "b1/b2/b3 半边承接 INJ-01/INJ-02 的全部条件假设（DMA 完成时序投影/样本合成 fixture/进入-RTI 反事实族）",
+    "b3 新增投影两件（INJ-01 模型面，路 D2AJ）：SRP 读投影=(hwp-PNS) mod LEN（最近完成块环内起点；app 唯一读点=0x607265a，b2 实测 block1 SRP=0 互证，若与硅不符逐字节断言会 FAIL）+HWP 读回=环内位置（hwp mod LEN）；环形绕回=对齐折返（PNS 整除 LEN），见 INJ-06",
+    "st.h.idxs 直写适配（probe_boot exact_subword_stores 扩展，路 D2AJ）：解交织惯用形 h[r_base+r_idx<<1]=r_t 在硅上不读包含字，直写 2 字节——否则 zalloc 后未写过的 ch1 缓冲物理页会撞「RMW 合并读未初始化」假墙；全 app 284 站点，快照重捕获验证 boot 前缀前沿 29,601,125 逐字节零位移",
+    "丢弃门计数/解交织/消费入口全部真实固件执行；唯一合成输入=样本字节（静音块=全零样本字节，同一深度）"
   ],
-  "result": "NOT_RUN",
+  "result": "BLOCKED",
   "uncovered_items": [
-    "b3 消费闭环未验证:0x6033D5A 入口已被调（1 次,实参加上）但 aec 对象内部读指针/处理计数前进未观测（字段偏移按 d1-acceptance §6.2 应从 0x6033D5A 反汇编钉——实施时未做）;handler 仅 ~58 步即返回,是否早退（priv=0 路径）未判——b3 首个要回答的问题",
-    "§6.3 共同断言五条未逐条验（「未启用消费者不被调」在单节点链上平凡成立,多消费者世界待 mic_effect/ANC 场景）",
-    "b4 连续性/两整圈/SW-01/02 配置切换未跑（依赖 INJ-06）",
-    "各通话 case 真实 flags 取值（R6 观测项）仍开放——本场景取蓝图首选 0x5"
+    "b3 必需项「aec 簿记前进」被 [QCY+624]=0 挡住（BLOCKED 根因）：aec 前端对象唯一创建点 0x6021002 在 OS 事件分发函数 0x60207a2（tbh 跳表 129..160）内，需通话事件输入——park 世界无 BT 呼叫状态机输入；伪造事件消息超出样本字节红线。已交付半边证据：帧抵达 aec 前端入口（0x6033cb4 每真路径块 2 次）+解交织 DSP 前精确样本（ch0 压缩序/ch1 缓冲序逐字节相等）+丢弃门簿记前进（0→8）",
+    "§6.3 共同断言余项：「队列规则/流生命周期/模式切换期间输入」待 SW-01/02；多消费者「未启用消费者不被调」待 mic_effect/ANC 场景（单节点链平凡）",
+    "b4 连续性面归 INJ-06（本场景数据已供其 esco 侧）；各通话 case 真实 flags 取值（R6）仍开放——本场景取蓝图首选 0x5"
   ],
-  "evidence_level": "none",
-  "evidence_conditions": [],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "样本字节=显式合成 fixture（蓝图 §3.1 数据公式，synthetic-not-measured；场景报告标注）",
+    "DMA 完成时序=投影（produce_block 即完成事件；SRP 读投影=(hwp-PNS) mod LEN+HWP 读回=环内位置，INJ-01 路D2AJ 扩展）",
+    "st.h.idxs 半字写直写适配（硅上不读包含字；ch1 缓冲=zalloc 未写过区，假墙补偿）",
+    "aec 簿记半边 BLOCKED（[QCY+624]=0，通话未开）——本记录的 conditional 等级只覆盖已交付半边（抵达+解交织+丢弃门）"
+  ],
   "evidence_refs": [
-    "analysis/local-checks/d2ai/scene.json（b1/b2 执行证据,git 忽略运行态）",
-    "docs/acceptance-samples/d2b/D2-b-INJ-01.json / D2-b-INJ-02.json（b1/b2 依赖件的模型与机器件 PASS 记录）"
+    "analysis/local-checks/d2aj/scene.json（b1/b2/负例③/b3/b4/负例①全序列证据，git 忽略运行态）",
+    "tools/d2_audio_scene.py（场景 runner：b3_world_state/b3_deliveries/b4_aggregate/negative_mute）",
+    "tools/probe_boot.py exact_subword_stores 扩展 st.h.idxs（证据站点 0x6033dc6）+tools/test_architectural_models.py 对应单测",
+    "docs/acceptance-samples/d2b/D2-b-INJ-01.json / D2-b-INJ-02.json（b1/b2 依赖件 PASS 记录）"
   ],
-  "blocked_missing": null,
-  "recorded_at": "2026-11-17T05:10:00"
+  "blocked_missing": "aec 前端运行对象 [QCY+624]（b3 终点「aec 对象内部读指针/处理计数前进」的载体）：唯一创建点 0x6021002 位于 OS 事件分发函数 0x60207a2（b[msg+0]∈129..160 tbh 跳表，全 app 零静态 caller），需真实通话事件输入驱动；park 停点世界（无 BT 呼叫状态机）不满足，且伪造事件消息超出「唯一合成输入=样本字节」红线——解锁归后续路（真实通话事件注入或通话态世界前沿）",
+  "recorded_at": "2026-11-17T06:34:00"
 }

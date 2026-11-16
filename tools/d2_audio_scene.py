@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D2AI 场景 runner:park 停点世界上的 esco 首场景音频输入注入(b1+b2)。
+"""D2AI/D2AJ 场景 runner:park 停点世界上的 esco 首场景音频输入注入(b1-b4+负例)。
 
 docs/d2-audio-input-pre-study.md §7 步 2 的执行载体(预研 §4 方案 a+直调开链,
 按键先例同深度):唯一合成输入=样本字节;开链/配置/IRQ68 分发器/handler 链
@@ -12,10 +12,18 @@ docs/d2-audio-input-pre-study.md §7 步 2 的执行载体(预研 §4 方案 a+�
       停点的 Timer0 事件循环 handler,优先级严格更高论证在机器侧)→受控步进
       真实分发器 0x602f406→0x6072628→output-handler 链→RTI 恢复外层上下文。
       步进循环=direct_call 同款冻结纪律(不调 hardware.advance,外设时间冻结)。
+  负例③门关(D2AI):CON bit5 清→分发器读 pending 清位但不进 handler。
+  b3 消费闭环(D2AJ):连续块 k=3..10 交付——esco handler 0x6033D5A 首层
+      丢弃门 b[esco+0]≤7 计数早退(0x6033d8e→0x6033e4e),第 9 次调用起
+      真路径(0x6033d90):解交织(ch0 原地压实+ch1 写 [esco+60] 缓冲)→
+      逐通道 call 0x6033cb4(aec 前端入口,第二层门 [QCY+624])。
+  b4 连续性(D2AJ):块 k=11..13+全序列聚合——SRN 重装次数=handler 调用数、
+      data 指针按环位置推进(SRP 投影)、块号单调无旧帧重复消费、每轮 RTI。
+  负例①静音(D2AJ):全零块交付→交付/解交织照常、配置/状态面不动。
 
 用法:python3 tools/d2_audio_scene.py [--capture] [--max-handler-steps N]
   默认 restore analysis/snapshots 的 park 快照(~秒级);--capture 全量重放
-  重新捕获。证据 JSON 落 analysis/local-checks/d2ai/scene.json(git 忽略)。
+  重新捕获。证据 JSON 落 analysis/local-checks/d2aj/scene.json(git 忽略)。
 """
 from __future__ import annotations
 
@@ -57,6 +65,18 @@ DISPATCHER_PCS = (0x602f406, 0x602f412, 0x602f42e, 0x602f430, 0x602f434,
                   0x602f43a, 0x602f440, 0x602f444, 0x602f44e, 0x602f452)
 HANDLER_PCS = (0x6072628, 0x60726e4, 0x60726ec, 0x60726f8)
 WATCH_PCS = DISPATCHER_PCS + HANDLER_PCS + (ESCO_HANDLER, LINK_CALL_SITE, SET_BUFFER)
+# b3(D2AJ)esco handler 内部路径锚(反汇编钉死,不做语义预设):
+#   0x6033d8e 丢弃门早退 goto(计数≤7 路径) / 0x6033d90 真路径首站
+#   0x6033dc6 解交织写 h[local[ch]+n*2]=interleaved (0x6033dc2..cc 内环)
+#   0x6033cb4 逐通道消费函数入口(aec 前端) / 0x6033e4e 出口序言
+ESCO_EARLY_EXIT = 0x6033D8E
+ESCO_REAL_PATH = 0x6033D90
+ESCO_DEINTERLEAVE = 0x6033DC6
+ESCO_CHAN_CONSUMER = 0x6033CB4
+B3_WATCH_PCS = WATCH_PCS + (ESCO_EARLY_EXIT, ESCO_REAL_PATH, ESCO_DEINTERLEAVE,
+                            ESCO_CHAN_CONSUMER, 0x6033E4E)
+# ANC 三字节状态面(cmd-0x17-0x1d-layout.md;负例①「配置面不动」观察点)
+ANC_STATUS_BYTES = (0x12666B, 0x12666C, 0x12666D)
 
 BLOCK_FORMULA = 'sample(ch,n)=((ch+1)<<8)|((n_ch4&0xF)<<4)|(n&0xF) — blueprint §3.1 '\
                 'data design (channel-distinguishable high byte, per-sample index low nibble)'
@@ -325,6 +345,198 @@ def run_scene(machine, hardware, cpu, max_handler_steps):
                         and getattr(cpu, 'active_context', None) == 'timer0_irq_handler',
     }
     observations['b2_negative_gate_closed'] = negative
+
+    # ---------------- b3+b4(D2AJ):连续交付→丢弃门→真消费路径→两整圈 ----------------
+    length = dma.stores[0xfe0540]['values'][-1]
+
+    def deliver_and_collect(block_index, muted=False):
+        """一轮交付循环:produce→(交付前窗口回读)→IRQ68→受控步进→RTI 回停点。
+
+        返回逐块记录(窗口/指针/路径/计数/消费面),断言材料不做语义预设——
+        早退/真路径由 PC 锚客观区分,块号由窗口字节客观携带。
+        """
+        block = bytes(pns * channels * sample_bytes) if muted \
+            else compose_block(pns, channels, sample_bytes, block_index=block_index)
+        ring_pos = ((block_index - 1) * pns) % length
+        expected_window = adr + ring_pos * channels * sample_bytes
+        produced = dma.produce_block(cpu.mem, block, channels=channels,
+                                     sample_bytes=sample_bytes)
+        window_pre = read_bytes(cpu, expected_window, len(block))
+        counter_before = read_u8(cpu, esco_obj + 0)
+        # ch1 缓冲([esco+60] 指向的 zalloc 区)不做交付前预读:boot/b1 从未
+        # 写过它,严格模型按 uninitialized 拒读(真硅=零)——消费证据只在
+        # 真路径写入之后读,未写即如实记。
+        ch1_before = None
+        gate = machine.icfg_demands().get(0)
+        gate_used = gate if gate is not None else (cpu.icfg if getattr(cpu, 'icfg_known', False) else 0x300)
+        eligible = hardware.irq.eligible(68, gate_used)
+        rec = {'k': block_index, 'muted': muted,
+               'ring_pos_samples': ring_pos, 'ring_lap': (block_index - 1) * pns // length,
+               'produced_window': produced['window'], 'expected_window': hex(expected_window),
+               'window_matches_ring': produced['window'] == hex(expected_window),
+               'window_pre_equal': window_pre == block,
+               'counter_before': counter_before, 'eligible': eligible}
+        if not eligible:
+            rec['wall'] = {'type': 'irq68_not_eligible', 'gate': hex(gate_used)}
+            return rec, window_pre, ch1_before, block
+        machine.deliver_audio_dma_irq(0)
+        steps = 0
+        hits = []
+        wall = None
+        while steps < max_handler_steps:
+            if cpu.pc in B3_WATCH_PCS:
+                hits.append({'pc': cpu.pc,
+                             'r': [hex(v) if isinstance(v, int) else str(v) for v in cpu.R[:5]]})
+            try:
+                before = cpu.pc
+                insn, _raw, _size = cpu.decode(cpu.pc)
+                cpu.step()
+                steps += 1
+                machine.after_step(cpu, before)
+            except Blocked as exc:
+                wall = {'at_step': steps, 'stop_pc': hex(cpu.pc), 'stop': exc.details,
+                        'regs': {'r': [hex(v) if isinstance(v, int) else str(v)
+                                       for v in cpu.R[:16]],
+                                 'sp': hex(cpu.sp) if cpu.sp_known else 'unknown',
+                                 'rets': hex(cpu.rets),
+                                 'active_context': getattr(cpu, 'active_context', None)}}
+                break
+            if (cpu.pc == PARK_STOP_PC and
+                    getattr(cpu, 'active_context', None) == 'timer0_irq_handler'):
+                break
+        call_sites = [h for h in hits if h['pc'] == 0x60726e4]
+        data_ptr = int(call_sites[0]['r'][1], 16) if call_sites else None
+        window_post = read_bytes(cpu, expected_window, len(block))
+        try:
+            ch1_after = read_bytes(cpu, ch1_buf, pns * sample_bytes)
+        except Blocked:
+            ch1_after = None    # 真路径未发生(或未写满):缓冲保持未初始化
+        rec.update({
+            'window_steps': steps, 'wall': wall,
+            'chain_call_args': call_sites[0] if call_sites else None,
+            'data_ptr': hex(data_ptr) if data_ptr is not None else None,
+            'data_ptr_matches_ring': data_ptr == expected_window,
+            'esco_entries': sum(1 for h in hits if h['pc'] == ESCO_HANDLER),
+            'early_exit_hits': sum(1 for h in hits if h['pc'] == ESCO_EARLY_EXIT),
+            'real_path_hits': sum(1 for h in hits if h['pc'] == ESCO_REAL_PATH),
+            'deinterleave_hits': sum(1 for h in hits if h['pc'] == ESCO_DEINTERLEAVE),
+            'chan_consumer_hits': sum(1 for h in hits if h['pc'] == ESCO_CHAN_CONSUMER),
+            'counter_after': read_u8(cpu, esco_obj + 0),
+            'rti_ok': (cpu.pc == PARK_STOP_PC
+                       and getattr(cpu, 'active_context', None) == 'timer0_irq_handler'),
+        })
+        return rec, window_post, ch1_after, block
+
+    # 负例③关掉的 bit5 门重开(真实 RMW 形状;值含 bit6 的 ack 副作用如实记账)。
+    acks_before_reopen = dma.con_w1c_acks
+    hardware.write(0xfe0538, hardware.read(0xfe0538) | 0x20)
+    esco_obj = read_u32(cpu, QCY + 620)
+    aec_slot = read_u32(cpu, QCY + 624)
+    ch1_buf = read_u32(cpu, esco_obj + 60)
+    b3_base = {
+        'gate_reopened_bit5': bool(hardware.read(0xfe0538) & 0x20),
+        'reopen_ack_side_effect': dma.con_w1c_acks - acks_before_reopen,
+        'esco_obj_QCY620': hex(esco_obj), 'aec_obj_QCY624': hex(aec_slot),
+        'esco_fields': {'counter_b0': read_u8(cpu, esco_obj + 0),
+                        'channels_b2': read_u8(cpu, esco_obj + 2),
+                        'cfg_h4': hex(read_u16(cpu, esco_obj + 4)),
+                        'cfg_h6': hex(read_u16(cpu, esco_obj + 6)),
+                        'flags_h12': hex(read_u16(cpu, esco_obj + 12)),
+                        'ch_buf_60': hex(read_u32(cpu, esco_obj + 60)),
+                        'ch_buf_64': hex(read_u32(cpu, esco_obj + 64))},
+        'ring': {'ADR': hex(adr), 'LEN_samples': length, 'PNS': pns,
+                 'blocks_per_lap': length // pns,
+                 'span_bytes': length * channels * sample_bytes,
+                 'block_bytes': pns * channels * sample_bytes},
+    }
+    observations['b3_world_state'] = b3_base
+
+    delivery_records = []
+    for k in range(3, 11):                       # b3:k=3..10(调 #2..#9)
+        rec, window_post, ch1_after, block = deliver_and_collect(k)
+        rec['ch0_packed_equal'] = None
+        rec['ch1_buf_equal'] = None
+        if rec.get('real_path_hits'):
+            ch0_packed = b''.join(struct.pack('<H', (1 << 8) | ((k & 0xF) << 4) | (n & 0xF))
+                                  for n in range(pns))
+            ch1_expect = b''.join(struct.pack('<H', (2 << 8) | ((k & 0xF) << 4) | (n & 0xF))
+                                  for n in range(pns))
+            rec['ch0_packed_equal'] = window_post[:pns * sample_bytes] == ch0_packed
+            if ch1_after is not None:
+                rec['ch1_buf_equal'] = ch1_after == ch1_expect
+        else:
+            rec['window_post_equal'] = window_post == block
+        delivery_records.append(rec)
+    observations['b3_deliveries'] = delivery_records
+
+    b4_records = []
+    for k in range(11, 14):                      # b4:k=11..13(真路径续+第 4 圈)
+        rec, window_post, ch1_after, block = deliver_and_collect(k)
+        ch0_packed = b''.join(struct.pack('<H', (1 << 8) | ((k & 0xF) << 4) | (n & 0xF))
+                              for n in range(pns))
+        ch1_expect = b''.join(struct.pack('<H', (2 << 8) | ((k & 0xF) << 4) | (n & 0xF))
+                              for n in range(pns))
+        rec['ch0_packed_equal'] = (window_post[:pns * sample_bytes] == ch0_packed
+                                   if rec.get('real_path_hits') else None)
+        rec['ch1_buf_equal'] = ((ch1_after == ch1_expect)
+                                if rec.get('real_path_hits') and ch1_after is not None else None)
+        b4_records.append(rec)
+    observations['b4_deliveries'] = b4_records
+
+    # ---------------- 负例①(D2AJ):全零静音块→交付照常/消费面按固件真实语义 ----------------
+    anc_before = [read_u8(cpu, a) for a in ANC_STATUS_BYTES]
+    event_kinds_before = {e.get('kind') for e in machine.events}
+    muted_rec, muted_window_post, muted_ch1_after, muted_block = deliver_and_collect(14, muted=True)
+    anc_after = [read_u8(cpu, a) for a in ANC_STATUS_BYTES]
+    event_kinds_after = {e.get('kind') for e in machine.events}
+    muted_rec.update({
+        'anc_status_bytes_before': [hex(v) for v in anc_before],
+        'anc_status_bytes_after': [hex(v) for v in anc_after],
+        'anc_status_unchanged': anc_before == anc_after,
+        'new_event_kinds': sorted(event_kinds_after - event_kinds_before),
+        'window_post_all_zero': muted_window_post == bytes(len(muted_block)),
+        'ch1_buf_all_zero': (muted_ch1_after == bytes(pns * sample_bytes)
+                             if muted_ch1_after is not None else None),
+        'aec_slot_after': hex(read_u32(cpu, QCY + 624)),
+    })
+    observations['negative_mute'] = muted_rec
+
+    # ---------------- b4 聚合(全序列 k=1..13+静音):两整圈/SRN 重装/块号单调/RTI ----------------
+    consumed = [{'k': 1, 'path': 'early_exit',          # b2:block1=调用#1(计数 0→1)
+                 'data_ptr': b2['chain_call_sites'][0]['r'][1] if b2['chain_call_sites'] else None,
+                 'content_ok': b2['checks']['samples_byte_equal']}]
+    consumed.append({'k': 2, 'path': 'gate_closed',     # 负例③:产出不消费
+                     'data_ptr': None, 'content_ok': negative['srn_writes_unchanged']})
+    for r in delivery_records + b4_records:
+        consumed.append({'k': r['k'],
+                         'path': 'real_path' if r.get('real_path_hits') else 'early_exit',
+                         'data_ptr': r.get('data_ptr'),
+                         'content_ok': (r.get('ch0_packed_equal') if r.get('real_path_hits')
+                                        else r.get('window_post_equal', r.get('window_pre_equal')))})
+    srn_writes_end = dma.stores[0xfe0550]['writes']
+    handler_calls_end = srn_writes_end          # audio handler 尾每次调用写 SRN 一字
+    esco_entries_end = 1 + sum(r.get('esco_entries') or 0
+                               for r in delivery_records + b4_records) + \
+        (muted_rec.get('esco_entries') or 0)
+    b4_aggregate = {
+        'deliveries_total': len(consumed) + 1,   # +1 = 静音负例块(交付同轨)
+        'consumed_sequence': consumed,
+        'k_monotonic': [c['k'] for c in consumed] == sorted(c['k'] for c in consumed),
+        'handler_calls_vs_srn_reloads': {'srn_writes': srn_writes_end,
+                                         'esco_entries': esco_entries_end,
+                                         'equal': handler_calls_end == esco_entries_end},
+        'ring_wraps_total': dma.hwp // length,
+        'ring_laps_covered': (dma.hwp - pns) // length,   # 完整圈数(末块起点所在圈)
+        'two_full_laps': dma.hwp // length >= 2,
+        'data_ptrs_all_match_ring': all(r.get('data_ptr_matches_ring')
+                                        for r in delivery_records + b4_records),
+        'all_content_evidence_ok': all(c['content_ok'] for c in consumed if c['path'] != 'gate_closed'),
+        'all_rti_ok': all(r.get('rti_ok') for r in delivery_records + b4_records),
+        'hwp_samples_monotonic': dma.hwp,
+        'blocks_produced': dma.blocks_produced,
+        'con_w1c_acks_end': dma.con_w1c_acks,
+    }
+    observations['b4_aggregate'] = b4_aggregate
     return observations
 
 
@@ -332,13 +544,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--capture', action='store_true', help='全量重放重新捕获快照(~14min)')
     parser.add_argument('--max-handler-steps', type=int, default=400_000)
-    parser.add_argument('--out', default='analysis/local-checks/d2ai/scene.json')
+    parser.add_argument('--out', default='analysis/local-checks/d2aj/scene.json')
     args = parser.parse_args()
 
     from sim_world_boot import build_world
     t0 = time.time()
 
-    def serve_loop(machine, hardware, cpu):
+    def serve_loop(machine, hardware, cpu, stop=None):
         return run_scene(machine, hardware, cpu, args.max_handler_steps)
 
     result = build_world(serve_loop, capture=args.capture,
@@ -347,16 +559,24 @@ def main():
                          snapshot_dir='analysis/snapshots')
     payload = {'elapsed_s': round(time.time() - t0, 1),
                'stop': result.get('stop'),
-               'completed': result.get('completed'),
+               'completed_steps': result.get('completed_steps'),
                'scene': {k: v for k, v in result.items()
                          if k in ('banner', 'world_prep', 'b1_open_chain', 'b2_single_delivery',
-                                  'b2_negative_gate_closed')}}
+                                  'b2_negative_gate_closed', 'b3_world_state', 'b3_deliveries',
+                                  'b4_deliveries', 'b4_aggregate', 'negative_mute')}}
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=1, default=str), encoding='utf-8')
     b1 = payload['scene'].get('b1_open_chain', {})
     b2 = payload['scene'].get('b2_single_delivery', {})
     neg = payload['scene'].get('b2_negative_gate_closed', {})
+    b3 = payload['scene'].get('b3_deliveries', [])
+    b4 = payload['scene'].get('b4_deliveries', [])
+    mute = payload['scene'].get('negative_mute', {})
+
+    def series(records, key):
+        return [r.get(key) for r in records]
+
     print(json.dumps({'elapsed_s': payload['elapsed_s'],
                       'b1_checks': b1.get('checks'),
                       'b2_checks': b2.get('checks'),
@@ -368,6 +588,33 @@ def main():
                                                         'srn_writes_unchanged',
                                                         'acks_incremented_by_dispatcher_only',
                                                         'pending_cleared', 'rti_returned', 'wall')},
+                      'b3_world_state': payload['scene'].get('b3_world_state'),
+                      'b3_series': {'k': series(b3, 'k'),
+                                    'counter_after': series(b3, 'counter_after'),
+                                    'early_exit': series(b3, 'early_exit_hits'),
+                                    'real_path': series(b3, 'real_path_hits'),
+                                    'deinterleave': series(b3, 'deinterleave_hits'),
+                                    'chan_consumer': series(b3, 'chan_consumer_hits'),
+                                    'window_pre_equal': series(b3, 'window_pre_equal'),
+                                    'data_ptr_matches_ring': series(b3, 'data_ptr_matches_ring'),
+                                    'ch0_packed_equal': series(b3, 'ch0_packed_equal'),
+                                    'ch1_buf_equal': series(b3, 'ch1_buf_equal'),
+                                    'window_post_equal': series(b3, 'window_post_equal'),
+                                    'rti_ok': series(b3, 'rti_ok'),
+                                    'walls': [r.get('wall') for r in b3 if r.get('wall')]},
+                      'b4_series': {'k': series(b4, 'k'),
+                                    'real_path': series(b4, 'real_path_hits'),
+                                    'ch0_packed_equal': series(b4, 'ch0_packed_equal'),
+                                    'ch1_buf_equal': series(b4, 'ch1_buf_equal'),
+                                    'data_ptr_matches_ring': series(b4, 'data_ptr_matches_ring'),
+                                    'rti_ok': series(b4, 'rti_ok'),
+                                    'walls': [r.get('wall') for r in b4 if r.get('wall')]},
+                      'negative_mute': {k: mute.get(k) for k in
+                                        ('k', 'esco_entries', 'real_path_hits',
+                                         'deinterleave_hits', 'chan_consumer_hits',
+                                         'window_post_all_zero', 'ch1_buf_all_zero',
+                                         'anc_status_unchanged', 'new_event_kinds', 'wall')},
+                      'b4_aggregate': payload['scene'].get('b4_aggregate'),
                       'evidence': str(out)}, ensure_ascii=False, indent=1))
     return 0
 
