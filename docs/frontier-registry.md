@@ -18,20 +18,22 @@
 
 ## 数据结构
 
-- `FEATURES`：每个 opt-in 开关一条记录（88 条，2026-11-16 路 RAND 加 jl_rand_seed 后：FLS
-  ancif_official_resources + B2R 两案重落地并入条件栈 + RAND 熵源种子 fixture），字段：
+- `FEATURES`：每个 opt-in 开关一条记录（总数与分层计数不在此维护——以 `FEATURES`
+  遍历为准；演进：FLS ancif_official_resources + B2R 两案重落地并入条件栈 + RAND
+  熵源种子 fixture，2026-11-16 路 RAND 加 jl_rand_seed），字段：
   - `switch`＝`probe_irq_entry.irq_case` 的场景参数名（开关名，即 feature id）；
-  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，59 个——含路 B2G
+  - `stack`＝`base`（crc_bankb 共享栈）/`conditional`（p11_heap 条件栈增量——含路 B2G
     从 probe_only 提层的 p2m_mailbox_ack/cfg523_named_fixture 与路 RAND 的 jl_rand_seed，FLS
     合并后两案消费者仍在当前前沿停点之后，提层实测停点/步数不变）/
-    `probe_only`（只出现在 probe 自己的场景变体，10 个：探路 fixture、反事实掩码对照、键链直调×2、
+    `probe_only`（只出现在 probe 自己的场景变体：探路 fixture、反事实掩码对照、键链直调×2、
     DT/ADA 敏感性探针×2 等）；
-  - `requires`＝层叠依赖开关名（63 条依赖边，与 irq_case 内 require 守卫一致）；
-  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的七个数据 fixture
-    （`heap_info_bytes`/`lrct_trim_result`/`fd31_adc_res_named_values`/
-    `jl_adda_daa_con1_initial_fixture`/`p33_canary_first_read_words`/
-    `ancif_official_resources`——官方 UFW 外层 ANCIF/ANCIF1 内容二元组/
-    `jl_rand_seed`——JL_RAND->R64L 0xfd3b00 熵源种子 4 字节小端）只存
+  - `requires`＝层叠依赖开关名（依赖边数以 `requires` 字段合计为准，与 irq_case 内 require
+    守卫一致）；
+  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈的数据 fixture（计数与具名清单以
+    `FEATURES` 的 `value_switch` 项为准，不在此维护——如 `heap_info_bytes`/
+    `lrct_trim_result`/`fd31_adc_res_named_values`/`jl_adda_daa_con1_initial_fixture`/
+    `p33_canary_first_read_words`/`ancif_official_resources`——官方 UFW 外层 ANCIF/ANCIF1
+    内容二元组/`jl_rand_seed`——JL_RAND->R64L 0xfd3b00 熵源种子 4 字节小端）只存
     probe_irq_entry 模块常量**名**，由调用方传命名空间解析——数值绝不复制进 registry；
   - `summary`＝一句话描述（证据全文在 probe_irq_entry 注释与 HANDOFF）。
 - `FRONTIERS`：两个前沿契约单点——`crc_bankb`（289,849 @ 0x60679ba 读 0xf27f4b）与
@@ -93,8 +95,10 @@ budget（该值留在 analyze，属运行配置）。
   场景/前沿键对齐、value_attr 只出现在条件栈。
 - `test_image_trace_diff.test_flag_sets_derive_from_the_frontier_registry`：
   registry 全量开关 ↔ `irq_case` 签名逐一对账（漏登记或登记已删参数都会失败）、
-  条件栈非布尔开关恰为七个具名 fixture 且 `is` 同一模块常量、base 全布尔。（AUDIT3 勘误：
-  原文「三个」为 FLS 之前的旧计数，FLS/RAND 后实际七个；tools/test_image_trace_diff.py
-  内注释「the six named data fixtures」同样滞后，该文件本次只读未改，登记移交。）
+  条件栈非布尔开关与测试断言里的具名 fixture 集逐一对账且 `is` 同一模块常量、
+  base 全布尔（fixture 数随 registry 演进，本文不再计数——AUDIT3 §5 弱引用落地，
+  原「恰为 N 个」硬计数已两轮漂移；tools/test_image_trace_diff.py 内注释
+  「the six named data fixtures」滞后于实际七个，该文件在 probe 五文件禁区、
+  在途路正改，待其合并后顺手修）。
 - 真实性由全量检查闭环：probe 前沿 require 与 analyze freshness 在
   `check_local.py --rom` 下用真仿真复现停点，单测不重复断言数值。
