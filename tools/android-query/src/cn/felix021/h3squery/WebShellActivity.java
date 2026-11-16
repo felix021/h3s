@@ -63,7 +63,16 @@ public class WebShellActivity extends Activity {
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true); // 页面主题选择等 localStorage 持久化
-        AndroidGattLink link = new AndroidGattLink(this, DeviceConfig.ADDRESS);
+        // SIMBRIDGE M1-a（docs/sim-bridge-design.md §4.3 接线点）：仿真模式经 intent extra
+        // 「sim」注入 SimulationGattLink（adb reverse 的 localhost TCP，默认端口 7788，可由
+        // 「sim_port」覆盖）；默认不传=真机 AndroidGattLink，真机行为零改动。USB 侧暂不切
+        // （SimulationUsbLink 属 M2/M3）。局部类型保持 Link 接口（codex 复核建议）。
+        final boolean sim = getIntent().getBooleanExtra("sim", false);
+        AndroidBleTransport.Link link = sim
+            ? new SimulationGattLink("127.0.0.1",
+                getIntent().getIntExtra("sim_port", SimulationGattLink.DEFAULT_PORT),
+                AndroidGattLink.mainScheduler())
+            : new AndroidGattLink(this, DeviceConfig.ADDRESS);
         transport = new AndroidBleTransport(link, AndroidGattLink.mainScheduler(),
             new AndroidBleTransport.Logger() {
                 @Override public void log(String message) { Log.i(TAG, message); }
@@ -97,7 +106,7 @@ public class WebShellActivity extends Activity {
         setContentView(web);
         web.loadUrl("file:///android_asset/index.html");
         registerUsbDetach();
-        if (!permissionsGranted())
+        if (!sim && !permissionsGranted())   // 仿真模式不触 BT 权限面（AVD 上弹窗无意义，设计 §4.3）
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT}, 1);
     }
 
