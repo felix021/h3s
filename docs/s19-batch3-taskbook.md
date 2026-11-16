@@ -489,7 +489,7 @@ Q1/Q2/Q3 取舍表。执行含义四条：
 
 | 步骤 | 自验 |
 |---|---|
-| 0b（H1-H8） | ✅ 已完成：`test_d1_acceptance.py` 78 例全绿（每规则 PASS/FAIL 形状+总闸+pending 语义+H8 三态 PRD 边界/余量破/拦截不放宽）；`--units` 绿（PR-1+PR2H8） |
+| 0b（H1-H8） | ✅ 已完成：`test_d1_acceptance.py` 86 例全绿（每规则 PASS/FAIL 形状+总闸+pending 语义+H8 三态 PRD 边界/余量破/拦截不放宽；AUDIT3 勘误：H2SRC 加 D1_5H2SysTimerSourcesTests 后 78→86，本行原记 78 未跟）；`--units` 绿（PR-1+PR2H8+H2SRC） |
 | 1（BI 首验） | A1-A5 实测记录落档（先观察）；升级硬断言后单测同步；事件时钟首个消费者实测口径核（§1.1 第 0/4 条：W2[0] 6 tick） |
 | 2（骨架） | 场景行跑通；`d1_window` 报告键蓝图 §4.3+d1-health-checks §2 冻结契约全出；legacy 逐字节不变（stash 对照）；registry 闭包校验过；probe check() 断言面先 `assert_preflight.py` 离线预检（秒级）再上全量 verify |
 | 3（窗口公式） | P_park/S_tick 实测 vs 闭式差 ≤1 步（BP §6 口径）或如实记录偏差归因；P_park≠40000 时 D1-2 判据按实读周期核对通过；**H8 自检过（N//P_park≥3，不足延长 N）**；cfg523 开时 S9 键扫源入 per_source（§1.3b；checker 侧上界/缺源判定已落地——H2SRC，adc_scan 同入） |
