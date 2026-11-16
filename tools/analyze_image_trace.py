@@ -1351,9 +1351,13 @@ def check_self_conditional(report):
     (路 ADA)/21,800,325(路 LPV)已被后续投影替换,见 HANDOFF 对应
     「步含义」段):
 
-    - 双方 29,215,313 步、同停点 0x6072b92(unmapped_or_readonly_write
-      写 0xfe1500,当前条件前沿——路 RAND jl_rand_seed 具名 fixture 放行
-      后的新边界:JL_RAND->R64L 0xfd3b00 映射为 readonly 单字 0x12345678
+    - 双方 29,601,125 步、同停点 0x606955c(unmapped_memory 读
+      0xfd1104,当前条件前沿——路 JLEQ 批量放行后的新边界:JL_GPCNT->NUM
+      __RO 计数值,稳态测量任务 0x6069538 首次转换的测量值读;其前 park
+      稳态已建立(11 次喂狗事务闭合/事件钟 14,953,935 虚拟步/CPU0
+      1791+57 次 0x12c5ca parked 唤醒)。历史 29,215,313 @ 0x6072b92
+      (路 RAND jl_rand_seed 具名 fixture 放行
+      后的旧边界:JL_RAND->R64L 0xfd3b00 映射为 readonly 单字 0x12345678
       (synthetic-not-measured,熵机制无文档值不可推导;R64H 0xfd3b04 零触达
       不进容器),MAC 生成两调用点(0x6011c64/0x6011c92)真实走通(6 字节
       MAC 31 54 23 93 fe eb 非退化;首写后重读仍=擦除 FF 哨兵→第二次
@@ -1434,17 +1438,21 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 29208667, '1': 11461},
+                run['per_core_steps'] == {'0': 29594529, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (29215313 @ 0x6072b92, the write of '
-                '0xfe1500 — JL_EQ->CON0 = hs_base+map_adr(0x15,0), value 0 = the '
-                'EQ-disable config write — after the route-RAND JL_RAND->R64L seed '
-                'fixture releases the 28,890,702 entropy boundary (both MAC-generation '
-                'call sites run for real with the frozen seed 0x12345678, emitting the '
-                'non-degenerate 6-byte MAC 31 54 23 93 fe eb; the post-write re-read '
-                'still compares equal to the erased-FF sentinel so the fallback '
-                'regeneration runs once more); the honest next boundary for the '
-                'route after RAND)')
+                'conditional frontier stop (29601125 @ 0x606955c, the read of '
+                '0xfd1104 — JL_GPCNT->NUM, the __RO measured count of the steady-'
+                'state measurement task 0x6069538 first conversion — reached after '
+                'the route-JLEQ batch releases the JL_EQ two-word write-only '
+                'records, the upper-static-buffer window, the core-tick freerun '
+                'edge, the fd31 TWVD/PVDD channel rows, the canary rmw form, the '
+                'GPCNT config words, the P2M armed-mailbox precedence fix, the '
+                'insert.rrii||st.b byte-pair form and the GPCNT completion bit, '
+                'with the park steady state in between (eleven closed feed-dog '
+                'transactions, 14,953,935 virtual event-clock steps, 1791+57 '
+                'parked CPU0 wakes at 0x12c5ca); the NUM value feeds '
+                '491520000/NUM*1000 and a 20-slot sliding average — the measured-'
+                'value fixture three-way choice for the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

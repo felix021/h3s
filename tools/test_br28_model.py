@@ -208,6 +208,82 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'unknown_gpcnt_configuration_bits'):off.read(GPCNT_CON)
         self.assertNotIn('con_readback_projection',off.gpcnt.report())
 
+    def test_gpcnt_con_config_serves_full_word_and_records_writes(self):
+        # 路 JLEQ 续五:29,544,781 停点 0x60688b6(W4[4] VLVD 域重配置链
+        # ld.w→and/or 组装→st.w→|=0x40 清→|=0x1 使能)消费未知配置位——
+        # 开关放行:读回=全字整数(未知配置位显式合成初始 0,AM 先例非复位
+        # 值),整字写全字已知落记录,|=0x1 使能形状接受(计数不建模),
+        # NUM(+4)不经本类保持严格停;默认关时 |=0x1 仍拒(legacy 形状)。
+        with self.assertRaisesRegex(ValueError,'requires the CON readback projection'):
+            BR28Model(gpcnt_cleanup_projection=True,gpcnt_con_config=True)
+        h=BR28Model(gpcnt_cleanup_projection=True,gpcnt_con_readback=True,gpcnt_con_config=True)
+        h.gpcnt_rmw(GPCNT_CON,'and',0xfffffffe);h.gpcnt_rmw(GPCNT_CON,'or',64)
+        # 配置字读回:已知位照实、未知配置位合成初始 0 → 全 0 整数。
+        self.assertEqual(h.read(GPCNT_CON),0)
+        self.assertEqual(h.gpcnt.config_reads,1)
+        # W4[4] 重配置链形状(0x60688a6..d4 的字段组装终值)整字写。
+        composed=(0&0x0fffffff)|0xb0000000
+        composed=(composed&0xffff8fff)|0x4000
+        composed=(composed&0xfffffff1)|0xc
+        composed=(composed&0xfffff0ff)|0x600
+        h.write(GPCNT_CON,composed)
+        self.assertEqual((h.gpcnt.bits.value,h.gpcnt.bits.known),(composed,0xffffffff))
+        self.assertEqual(h.gpcnt.whole_writes,1)
+        self.assertEqual(h.read(GPCNT_CON),composed)
+        # |=0x40 清(位 7 立即清投影,不置位 bit6)与 |=0x1 使能(0x60688d6/da)。
+        h.gpcnt_rmw(GPCNT_CON,'or',64);h.gpcnt_rmw(GPCNT_CON,'or',1)
+        self.assertEqual(h.gpcnt.bits.value,((composed&~128)&0xffffffff)|1)
+        self.assertEqual(h.gpcnt.enable_writes,1)
+        report=h.gpcnt.report()
+        self.assertEqual(report['config_words_projection']['whole_writes'],1)
+        self.assertIn('synthetic initial 0',report['config_words_projection']['readback_semantics'])
+        # 默认关:|=0x1 使能仍拒(gpcnt_counting_or_configuration_not_modeled)。
+        off=BR28Model(gpcnt_cleanup_projection=True,gpcnt_con_readback=True)
+        off.gpcnt_rmw(GPCNT_CON,'and',0xfffffffe);off.gpcnt_rmw(GPCNT_CON,'or',64)
+        with self.assertRaisesRegex(Blocked,'gpcnt_counting_or_configuration_not_modeled'):
+            off.gpcnt_rmw(GPCNT_CON,'or',1)
+        self.assertNotIn('config_words_projection',off.gpcnt.report())
+
+    def test_gpcnt_con_completion_bit_forces_read_side_only(self):
+        # 路 JLEQ 续七:49,996,010(50M 预算耗尽)@ 0x6069546 稳态测量任务
+        # 0x6069538 的 bit7 完成位无界轮询(beq.and.ri 等置位;bit0 使能门
+        # 已被 W4[4] 重配置链 |=1 走轮询臂)。开关放行:配置字读回 OR 0x80
+        # (第一次轮询读即完成,延迟不建模;lrct_trim_done bit7/SFC PLL-lock
+        # bit15 同模式),存储位保持 0(|=0x40 清 pending 照旧 and~128),
+        # NUM(+4)不经本类保持严格停;依赖链 completion→config→readback,
+        # 默认关时读回不带强制位(legacy 形状)。
+        with self.assertRaisesRegex(ValueError,'requires the config-word release'):
+            BR28Model(gpcnt_cleanup_projection=True,gpcnt_con_readback=True,
+                      gpcnt_con_completion=True)
+        base=dict(gpcnt_cleanup_projection=True,gpcnt_con_readback=True,
+                  gpcnt_con_config=True)
+        h=BR28Model(**base,gpcnt_con_completion=True)
+        composed=(0&0x0fffffff)|0xb0000000
+        composed=(composed&0xffff8fff)|0x4000
+        composed=(composed&0xfffffff1)|0xc
+        composed=(composed&0xfffff0ff)|0x600
+        h.write(GPCNT_CON,composed);h.gpcnt_rmw(GPCNT_CON,'or',1)
+        enabled=h.gpcnt.bits.value
+        # 轮询读:bit7 强制置 1(第一次读即完成);位 0 使能门同读也过。
+        self.assertEqual(h.read(GPCNT_CON),enabled|0x80)
+        self.assertEqual(h.gpcnt.completion_reads,1)
+        # 轮询后真实清理序(0x6069500):先 &=~1 禁用、再 |=0x40 清 pending
+        # ——存储 bit7 保持 0,读侧强制不受影响。
+        h.gpcnt_rmw(GPCNT_CON,'and',0xfffffffe)
+        h.gpcnt_rmw(GPCNT_CON,'or',64)
+        self.assertEqual(h.gpcnt.bits.value&0x80,0)
+        self.assertEqual(h.read(GPCNT_CON),((enabled&~1)&~0x80)|0x80)
+        report=h.gpcnt.report()
+        self.assertEqual(report['completion_bit_projection']['reads'],2)
+        self.assertTrue(report['completion_bit_projection']['stored_bit7_untouched'])
+        self.assertFalse(report['completion_bit_projection']['num_register_served'])
+        self.assertIn('0x6069546',report['completion_bit_projection']['readback_semantics'])
+        # 默认关:读回不带强制位,报告无键。
+        plain=BR28Model(**base)
+        plain.write(GPCNT_CON,composed);plain.gpcnt_rmw(GPCNT_CON,'or',1)
+        self.assertEqual(plain.read(GPCNT_CON),enabled)
+        self.assertNotIn('completion_bit_projection',plain.gpcnt.report())
+
     def test_core_tick_initial_state_and_enable_remain_explicit(self):
         h=BR28Model(core_tick_configuration=True)
         with self.assertRaises(Blocked):h.read(CORE_TICK_BASES[0])
@@ -2839,6 +2915,55 @@ class ModelTests(unittest.TestCase):
                         and both.handles(0xfe0500,4))
         self.assertFalse(both.handles(0xfe0550,4))
 
+    def test_jl_eq_init_write_records_and_strict_readback(self):
+        # 路 JLEQ:29,215,313 停点 0x6072b92(EQ 初始化 0x6072b24 的 CON0=0
+        # 整字写)——恰两写零读(本前缀,两写无条件整字 st.w 无 RMW)→
+        # write-only 记录(codex 定调 (c),JLA 先例);读回显式严格停;默认关
+        # 保持 unmapped;六字 0xfe1504..0xfe1518 与 0xfe1520 起不吞(零触达
+        # 零证据,不得凭 br28.h __RW 推成可读回)。
+        from br28_model import JL_EQ_INIT_WORDS
+        plain=BR28Model()
+        for address in JL_EQ_INIT_WORDS:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe1500,0)
+        self.assertNotIn('jl_eq_init_write_records',plain.report())
+        h=BR28Model(jl_eq_init_writes=True)
+        for address in JL_EQ_INIT_WORDS:
+            self.assertTrue(h.handles(address,4))
+        # 六字声明成员与 0xfe1520 起不吞;子字/错位不服务。
+        for unmodeled in (0xfe1504,0xfe1508,0xfe150c,0xfe1510,0xfe1514,0xfe1518,0xfe1520):
+            self.assertFalse(h.handles(unmodeled,4))
+        self.assertFalse(h.handles(0xfe1501,4) or h.handles(0xfe1500,2) or h.handles(0xfe1500,1))
+        # EQ 初始化两写形状(CON0=0 停点字、FLT_ADR=分配缓冲指针)。
+        h.write(0xfe1500,0);h.write(0xfe151c,0x1265c0+0x32f*4)
+        r=h.report()['jl_eq_init_write_records']
+        self.assertEqual(r['addresses'],['0xfe1500','0xfe151c'])
+        self.assertEqual(r['word_writes'],2)
+        self.assertEqual(r['read_attempts'],0)
+        self.assertEqual(r['stores']['0xfe1500'],{'values':['0x0'],'writes':1,'cores':[0]})
+        self.assertTrue(r['write_only'] and r['readback_not_modeled'])
+        self.assertIn('map_adr(0x15',r['sdk_naming'])
+        self.assertIn('stay unmapped',r['whitelisted_words'])
+        self.assertIn('same-address new writer',r['whitelisted_words'])
+        self.assertIn('0x6072b92',r['observed_shapes'])
+        self.assertIn('does NOT verify any',r['assumption'])
+        with self.assertRaisesRegex(Blocked,'jl_eq_init_read_not_modeled'):
+            h.read(0xfe1500)
+        with self.assertRaisesRegex(Blocked,'jl_eq_init_read_not_modeled'):
+            h.read(0xfe151c)
+        self.assertEqual(h.report()['jl_eq_init_write_records']['read_attempts'],2)
+        self.assertIn('jl_eq_init_write_records',h.report()['assumptions'])
+        # 值域守卫:非 unsigned32 拒绝。
+        with self.assertRaises(ValueError):
+            h.write(0xfe1500,1<<32)
+        # 与 JLA/ASS 域叠加互不吞地址。
+        both=BR28Model(jl_eq_init_writes=True,jl_audio_adc_dma_writes=True,
+                       jl_adc_start_config=True)
+        self.assertTrue(both.handles(0xfe1500,4) and both.handles(0xfe151c,4)
+                        and both.handles(0xfe053c,4) and both.handles(0xfe0904,4))
+        self.assertFalse(both.handles(0xfe1504,4))
+
     def test_jl_adda_analog_family_container(self):
         # 路 B3/S19 批 2 续:4,521,083 停点 0x606ac42(模拟 init 0x606abf0 首条
         # DAA_CON0 bit13 清位 RMW 内部读)——AM 容器族:白名单恰五字
@@ -3268,6 +3393,44 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(h.read_bytes(0xF27F43,1),b'\x08')  # CLR 不解除回声
         h.write_byte(0xF27F43,0xFF)
         self.assertEqual(h.read_bytes(0xF27F43,1),b'\xff')
+
+    def test_p2m_mailbox_ack_wins_over_reset_history_when_armed(self):
+        # 路 JLEQ 续五:conditional 场景 reset_history_projection 与
+        # p2m_mailbox_ack 同开时,PND(0xF2A60C)/CLR(0xF2A608)双声明原先
+        # 全被靠前的 reset 分派吃掉——喂狗轮询(0x12cca2)死自旋在 NO_WAKE
+        # fixture 0 上(50M 步预算耗尽,advance 实测 pnd_reads=0)。同一物理
+        # 寄存器的两段生命周期:kick 武装的事务窗口内 mailbox 拥有 PND 读/CLR
+        # 写;事务外保持 reset 快照(wake-clear)语义。p2m 默认关时零差异。
+        words={0xfd0004:0x80,0xf2a60c:0,0xf2c158:0}
+        h=BR28Model(reset_history_projection=True,reset_history_words=words,
+                    p11_window_projection=True,p2m_mailbox_ack=True)
+        m=h.p2m_mailbox
+        # 事务外:boot 复位原因读走快照(fixture 0),不进 mailbox 计数。
+        self.assertEqual(h.read(0xF2A60C),0)
+        self.assertEqual(m.pnd_reads,0)
+        # 完整喂狗事务(arg=8)。
+        h.write_byte(0xF27F43,0xFF)
+        m.note_message_byte(8)
+        h.write(0xF2A618,0x400)
+        self.assertEqual(h.read(0xF2A60C),0x1000)
+        self.assertEqual(h.read_bytes(0xF27F43,1),b'\x08')
+        h.write(0xF2A608,0x1000)
+        self.assertEqual(m.transactions,
+                         [{'arg':8,'poll_reads':1,'echo_byte':8,'clr_writes':1}])
+        # CLR 后解除武装:读回快照语义(fixture 0)。
+        self.assertEqual(h.read(0xF2A60C),0)
+        # 事务外的 0xF2A608 写仍是 reset 投影的 wake-clear(记 pending_clear)。
+        h.write(0xF2A608,0x1000)
+        r=h.report()['reset_history_projection']
+        self.assertTrue(any(c['address']=='0xf2a608' for c in r['pending_clear_commands']))
+        # 武装态 CLR 形状守卫仍然生效(经模型分派层)。
+        h.write(0xF2A618,0x400)
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_clr_form_not_modeled'):
+            h.write(0xF2A608,0x2000)
+        # p2m 关(默认):快照语义照旧,无 mailbox 键。
+        plain=BR28Model(reset_history_projection=True,reset_history_words=words)
+        self.assertEqual(plain.read(0xF2A60C),0)
+        self.assertNotIn('p2m_mailbox',plain.report())
 
     def test_cfg523_object_bytes_shape(self):
         # 路 B2R/S19 批 2 重落地(0b875ed 原案,BH §5.1):70B 对象字节级

@@ -531,5 +531,62 @@ class CoreTickCntHeldSnapshotTests(unittest.TestCase):
         with self.assertRaises(ValueError):m.return_core_tick(cpu)
 
 
+class CoreTickFreerunEdgePeriodTests(unittest.TestCase):
+    """路 JLEQ 续二(core_tick_freerun_edge_period)的单测面。
+
+    背景(29,229,183 @ 0x6065834):tick 重启函数 0x6065806 尾的固件形状
+    CON=0→CNT=0→PRD=0xFFFFFFFF→CON=1(core tick 切自由运行 µs 计数器、
+    溢出关断;进入时若 CON&1 先收割 CNT 折算 µs 存 [0x1265C8])。模型使能
+    路径的边沿周期守卫默认拒;开关恰放行 prd==0xFFFFFFFF 一格(prd==0
+    恒拒),计数公式 period=prd+1=2^32 不变——任何受建模视界内零到期
+    (2^30 模型步),advance 连续推进不置 pending;读回/ACK 语义不动。
+    """
+
+    def freerun(self,enabled=True):
+        return CoreTickStopped(0,4,freerun_edge_period=enabled)
+
+    def primed(self,tick):
+        tick.con=0;tick.cnt=0;tick.prd=0xffffffff;tick.pending=False
+        return tick
+
+    def test_default_refuses_the_max_period_enable(self):
+        tick=self.primed(CoreTickStopped(0,4))
+        with self.assertRaisesRegex(Blocked,'core_tick_period_edge_unverified'):
+            tick.write(0,1)
+
+    def test_zero_period_stays_refused_even_with_the_release(self):
+        tick=self.primed(self.freerun());tick.prd=0
+        with self.assertRaisesRegex(Blocked,'core_tick_period_edge_unverified'):
+            tick.write(0,1)
+
+    def test_release_accepts_exactly_the_max_period_enable(self):
+        tick=self.primed(self.freerun())
+        tick.write(0,1)
+        self.assertEqual(tick.con,1)
+
+    def test_freerun_advance_never_expires_within_any_modeled_horizon(self):
+        tick=self.primed(self.freerun());tick.write(0,1)
+        for _ in range(10000):
+            tick.advance()
+        self.assertEqual(tick.cnt,40000)
+        self.assertFalse(tick.pending)
+        self.assertEqual(tick.expirations,0)
+
+    def test_report_key_only_present_when_enabled(self):
+        self.assertNotIn('freerun_edge_period_projection',self.primed(CoreTickStopped(0,4)).report())
+        row=self.primed(self.freerun()).report()['freerun_edge_period_projection']
+        self.assertTrue(row['enabled'])
+        self.assertIn('0xffffffff',row['accepts'])
+        self.assertIn('assumed-not-measured',row['assumption'])
+
+    def test_model_requires_core_tick_configuration(self):
+        with self.assertRaisesRegex(ValueError,'requires the core tick configuration'):
+            BR28Model(core_tick_freerun_edge_period=True)
+        h=BR28Model(core_tick_configuration=True,initial_core_tick_controls=(0,0),
+                    core_tick_progress=(4,4),core_tick_freerun_edge_period=True)
+        for tick in h.core_ticks:
+            self.assertTrue(tick.freerun_edge_period)
+
+
 if __name__=='__main__':
     unittest.main()

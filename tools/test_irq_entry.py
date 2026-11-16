@@ -242,6 +242,41 @@ class JlRandSeedTests(unittest.TestCase):
                       probe_irq_entry.JL_RAND_SEED_BYTES)
 
 
+class JlEqInitWritesTests(unittest.TestCase):
+    """路 JLEQ:EQ 初始化两字(CON0 0xfe1500/FLT_ADR 0xfe151c)write-only
+    记录的静态钉子(codex gpt-6-astra 定调 (c):恰两字、零读回、零合成
+    初值;六字 0xfe1504..0xfe1518 零触达留 unmapped)。
+
+    敏感性定调:两写都是纯 st.w 整字覆盖写、无 RMW 无读→初值零消费,
+    不设 ones 敏感性探针(CV/ADA 的 ones 臂是 RMW 保留位验证,形状不同
+    不适用);验证=主臂 read_attempts 断言 0 + 负例关停停原边界。
+    """
+
+    def test_whitelist_is_exactly_two_words(self):
+        from br28_model import JL_EQ_INIT_WORDS
+        self.assertEqual(tuple(JL_EQ_INIT_WORDS), (0xfe1500, 0xfe151c))
+        # 六个声明成员与 0xfe1520 起不进白名单(零访问证据不凭 __RW 推)。
+        for unmodeled in (0xfe1504, 0xfe1508, 0xfe150c,
+                          0xfe1510, 0xfe1514, 0xfe1518, 0xfe1520):
+            self.assertNotIn(unmodeled, JL_EQ_INIT_WORDS)
+
+    def test_registry_feature_shape(self):
+        import frontier_registry
+        f = frontier_registry._BY_SWITCH.get('jl_eq_init_writes')
+        self.assertIsNotNone(f, 'jl_eq_init_writes 须登记在 frontier_registry')
+        self.assertEqual(f.stack, 'conditional')
+        self.assertFalse(f.value_switch)
+        self.assertIsNone(f.value_attr)
+        # 依赖边=场景推进顺序(RAND 放行后链才到达停点),非硬件依赖。
+        self.assertEqual(f.requires, ('jl_rand_seed',))
+
+    def test_stop_word_and_companion_addresses(self):
+        # 停点字=CON0(0x6072b92 写 0xfe1500=值 0);同函数伴写=FLT_ADR
+        # (0x6072bae 写 0xfe151c=分配缓冲指针)。br28.h JL_EQ 基址钉死:
+        # hs_base(0xfe0000)+map_adr(0x15,0)=(0xfe0000+(64*0x15+0)*4)。
+        self.assertEqual(0xfe0000 + (64 * 0x15 + 0) * 4, 0xfe1500)
+        self.assertEqual(0xfe1500 + 0x1c, 0xfe151c)
+
 
 if __name__=='__main__':
     unittest.main()

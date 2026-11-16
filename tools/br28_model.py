@@ -65,6 +65,15 @@ JL_AUDIO_DAC_DMA_WORDS=(0xfe0504,0xfe0508,0xfe0510,0xfe0514)
 # (IRQ68 交付未建模),读的是运行期 DMA 指针状态,属 D2-b 后域留严格停。
 # 0xfe0550(handler 尾写的 +0x18 SRN 读通知字)零当前前缀触达,不进白名单。
 JL_AUDIO_ADC_DMA_WORDS=(0xfe053c,0xfe0540,0xfe0544,0xfe0548,0xfe054c)
+# 路 JLEQ/sim-jleq:EQ 初始化函数 0x6072b24 的两处整字写——JL_EQ->CON0
+# (0xfe1500=JL_EQ 基址 0xfe1500+0)与 JL_EQ->FLT_ADR(0xfe151c=+0x1c)。
+# br28.h `JL_EQ_TypeDef {__RW __u32 CON0..CON3, DATAI_ADR, DATAO_ADR,
+# DATA_LEN, FLT_ADR}` 全 __RW、8 成员 0xfe1500..0xfe151c;boot 路径只写
+# 不读(0x6072b92 [CON0]=r5=0、0x6072bae [FLT_ADR]=分配缓冲指针),两写
+# 都是整字 st.w、无 RMW、无条件执行(codex 勘误:0x6072b68 bnez 只跳过
+# 分配+首次 memset,目标 0x6072b90,CON0/FLT_ADR 两写仍必达)。按 JLA
+# write-only 记录先例:恰两字、零读回、零合成初值,读侧一律严格停。
+JL_EQ_INIT_WORDS=(0xfe1500,0xfe151c)
 # 路 ASS:ADC 启动函数 0x606df66 的未建模配置块四字——JL_ASS->MIC_CTL0
 # (0xfe0904=JL_ASS 基址 0xfe0900+4,br28.h JL_ASS_TypeDef 三成员 CLK_CON/
 # MIC_CTL0/MIC_CTL1 之二)、JL_ASS->MIC_CTL1(0xfe0908,之三)、JL_AUDIO->
@@ -932,7 +941,8 @@ class IcuIdleProjection:
 
 class CoreTickStopped:
     """Optional nominal counter; real IRQ entry and pending readback stay strict."""
-    def __init__(self,initial_con=None,progress=None,prd_readback=False,cnt_held_snapshot=False):
+    def __init__(self,initial_con=None,progress=None,prd_readback=False,cnt_held_snapshot=False,
+                 freerun_edge_period=False):
         if initial_con not in (None,0):raise ValueError('only unknown or explicitly disabled core tick supported')
         if progress is not None and (not isinstance(progress,int) or not 0<=progress<=256):raise ValueError('invalid explicit core tick progress')
         self.initial_con=initial_con
@@ -963,6 +973,14 @@ class CoreTickStopped:
         # CNT 读返回该探针值(0 vs 周期末值 PRD-1 两分叉对照用),主开关世界
         # 恒 None。只影响读值,不动任何状态。
         self.cnt_snapshot_probe_value=None
+        # 路 JLEQ 续二:PRD=0xFFFFFFFF 边沿周期使能放行(29,229,183 停点
+        # 0x6065834=tick 重启函数 0x6065806 尾 `st.w.modimm [r1+0]=0x1`:固件
+        # 先收割 CNT 折算 µs 存 [0x1265C8],再 CON=0/CNT=0/PRD=0xFFFFFFFF/
+        # CON=1——core tick 切「自由运行 µs 计数器、溢出关断」形态)。默认关:
+        # 使能仍停 core_tick_period_edge_unverified;开启后恰放行 prd==
+        # 0xFFFFFFFF 一格(prd==0 无证据恒拒),计数走既有 divmod(prd+1)
+        # 公式不变(2^32 周期内零到期),读回/ACK/pending 语义全不动。
+        self.freerun_edge_period=freerun_edge_period
 
     def read(self,offset):
         # 路 BQ(三查之二):异常由 read() 头部的通用 overflow guard 抛出
@@ -996,7 +1014,12 @@ class CoreTickStopped:
             if value&1:
                 if self.progress is None:raise Blocked('core_tick_enable_not_modeled',value=hex(value))
                 if self.cnt is None or self.prd is None or self.pending is None:raise Blocked('unknown_core_tick_state')
-                if self.prd in (0,0xffffffff):raise Blocked('core_tick_period_edge_unverified',period=hex(self.prd))
+                # 路 JLEQ 续二:边沿周期使能——恰放行 prd==0xFFFFFFFF(prd==0
+                # 恒拒):模型公式 period=prd+1=2^32 在任何受建模视界内零到期
+                # (2^30 模型步),与「溢出关断的自由运行计数器」固件意图一致;
+                # 硅上最大周期比较器行为未测量,显式假设只在开关开启时声明。
+                if self.prd==0 or (self.prd==0xffffffff and not self.freerun_edge_period):
+                    raise Blocked('core_tick_period_edge_unverified',period=hex(self.prd))
                 if self.cnt>self.prd:raise Blocked('core_tick_count_exceeds_period')
             self.con=value&1
             if value&64:self.pending=False
@@ -1061,6 +1084,22 @@ class CoreTickStopped:
                 'held_window_progress_lost_if_frozen':True}
             if self.cnt_snapshot_probe_value is not None:
                 row['cnt_held_snapshot_projection']['sensitivity_probe_value']=self.cnt_snapshot_probe_value
+        # 路 JLEQ 续二:freerun 边沿周期键只在开关开启时出现(legacy 报告
+        # 逐字节不变);假设文本=「PRD=0xFFFFFFFF 使能按模型公式 period=prd+1
+        # =2^32 计数、任何受建模视界内零到期」——硅上最大周期比较器行为
+        # 未测量,assumed-not-measured。
+        if self.freerun_edge_period:
+            row['freerun_edge_period_projection']={'enabled':True,
+                'accepts':'exactly the PRD==0xffffffff enable (the firmware tick-restart shape '
+                          'CON=0 -> CNT=0 -> PRD=0xffffffff -> CON=1, 0x6065830..34); PRD==0 '
+                          'stays refused',
+                'period_arithmetic':'unchanged model formula period=prd+1=2**32 — zero expirations '
+                                    'within any modeled horizon (~2**30 model steps at progress '
+                                    '4/step), matching the firmware free-run us-counter intent '
+                                    '(the restart harvests CNT/(clock/1e6) into [0x1265c8] first)',
+                'assumption':'assumed-not-measured — silicon max-period comparator/wraparound '
+                             'behavior at PRD==0xffffffff is unmeasured; readback/ACK/pending '
+                             'semantics unchanged'}
         return row
 
 
@@ -1123,7 +1162,7 @@ for _name,_operation in (('eq',operator.eq),('ne',operator.ne),('lt',operator.lt
 
 class GPCNTCleanup:
     """Only the observed disable/clear path; unknown neighbouring bits stay so."""
-    def __init__(self,readback_projection=False):
+    def __init__(self,readback_projection=False,config_words=False,completion_bit=False):
         self.bits=PartialWord();self.pending=None;self.disable_writes=0;self.clear_writes=0
         # con_readback_projection(opt-in,需 gpcnt_cleanup_projection,路 CG):
         # GPCNT_CON(0xfd1100,SDK br28.h JL_GPCNTTypeDef CON __RW/NUM __RO)读回
@@ -1131,6 +1170,25 @@ class GPCNTCleanup:
         # 写值」先例的位粒度变体——本前缀 CON 只有 disable/clear 两个位 RMW,
         # 无整字写,故返回部分值对象而非整数)。未知位消费诚实停,绝不臆造。
         self.readback_projection=readback_projection;self.con_reads=0
+        # config_words(opt-in,需 con_readback 投影,路 JLEQ 续五):W4[4] VLVD
+        # 域的 GPCNT 重配置面——29,544,781 停点 0x60688b6(ld.w→and/or 组装
+        # →st.w 重配置链,函数 0x60688xx,W4[4] walker 0x6034c8e 直调)消费
+        # 未知配置位(bits12-15/1-3/8-11/28-31 时钟选择·分频字段)。开启后:
+        # ①读回=全字整数(已知位照实、未知配置位显式合成初始 0,AM 容器族
+        # synthetic-zero 先例,derived-not-measured 非复位值声明);②整字写
+        # 记录(全字已知落 PartialWord);③接受 |=0x1 使能形状(计数开始,
+        # 计数语义不建模)。NUM(0xfd1104,__RO 计数值)仍严格停(不经本类)。
+        self.config_words=config_words;self.config_reads=0;self.whole_writes=0;self.enable_writes=0
+        # completion_bit(opt-in,需 config_words,路 JLEQ 续七):S17 稳态测量
+        # 任务 0x6069538 的完成位轮询——0x6069540 bit0 使能门(W4[4] 重配置
+        # 已 |=1 使能 → 实测走轮询臂)后 0x6069546/48 `beq.and.ri (r0&128)
+        # ==0 回跳`等 bit7 置位(等的是置 1 不是清零,方向按编码)。投影:
+        # 配置字读回 OR 0x80——「测量在第一次轮询读时已完成」的条件投影
+        # (lrct_trim_done bit7 强制置 1/SFC PLL-lock bit15 同模式;bit7 布局
+        # 由轮询方向推断,SDK __RW 无状态位语义,非硅测量;延迟不建模)。
+        # |=0x40 清 pending 投影照旧把存储位清 0(读侧强制与存储无关);
+        # NUM 读(紧随其后的 0x606955c)不经本类、保持严格停=下一前沿。
+        self.completion_bit=completion_bit;self.completion_reads=0
 
     def rmw(self,kind,operand):
         if kind=='and' and operand&0xffffffff==0xfffffffe:
@@ -1138,9 +1196,20 @@ class GPCNTCleanup:
         elif kind=='or' and operand==64:
             if not self.bits.known&1 or self.bits.value&1:raise Blocked('gpcnt_disable_state_unknown')
             self.pending=False;self.bits.apply('and',~128);self.clear_writes+=1
+        elif kind=='or' and operand==1 and self.config_words:
+            self.bits.apply('or',operand);self.enable_writes+=1
         else:raise Blocked('gpcnt_counting_or_configuration_not_modeled',operation=kind,operand=hex(operand&0xffffffff))
 
     def read(self):
+        if self.config_words and self.readback_projection:
+            # 配置字读回:全字整数——已知位照实(重配置写后全字已知),未知
+            # 配置位显式合成初始 0(AM 族先例;非复位值声明);completion
+            # 投影开启时 bit7 读侧强制置 1(存储位不变,清 pending 照旧)。
+            self.config_reads+=1
+            if self.completion_bit:
+                self.completion_reads+=1
+                return self.bits.value|0x80
+            return self.bits.value
         if self.readback_projection and self.bits.known:
             # 读回=固件自己写出的已知位(bit0=0 由 app 的 &=0xFFFFFFFE 强制,
             # bit7=0 由 |=0x40 后的立即清投影)。本前缀唯一读者=任务 0x6069538
@@ -1149,6 +1218,12 @@ class GPCNTCleanup:
             self.con_reads+=1
             return GpcntConValue(self.bits.value,self.bits.known)
         raise Blocked('unknown_gpcnt_configuration_bits',known_mask=hex(self.bits.known))
+
+    def write(self,value):
+        """配置字整字写(opt-in,路 JLEQ 续五):全字覆盖、全字已知落记录。"""
+        if not self.config_words:raise ValueError('GPCNT config-word stores require the config opt-in')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        self.bits=PartialWord(value,0xffffffff);self.whole_writes+=1
 
     def report(self):
         result={'known_value':hex(self.bits.value),'known_mask':hex(self.bits.known),'pending':self.pending,
@@ -1173,6 +1248,35 @@ class GPCNTCleanup:
                     'the epilogue at 0x60695fa — no NUM read, no bit7 poll, matching the disabled '
                     'counter the firmware itself left behind'),
                 'count_readback_proven':False,'not_a_timing_model':True}
+        if self.config_words:
+            result['config_words_projection']={
+                'reads':self.config_reads,'whole_writes':self.whole_writes,
+                'enable_writes':self.enable_writes,
+                'readback_semantics':('full-word integer — known bits as recorded, never-written '
+                    'configuration bits serve the explicit synthetic initial 0 (route-AM '
+                    'synthetic-zero precedent; derived-not-measured, NOT a reset-value claim); '
+                    'after the first whole-word config store the word is fully known'),
+                'accepted_shapes':('the W4[4] VLVD-domain reconfig chain (ld.w -> and/or '
+                    'compose -> st.w, 0x60688a4..d4: clock-select bits28-31=0xB, bits12-15=0x4, '
+                    'bits1-3=0xC, bits8-11=0x6) plus the |=0x40 clear and the |=0x1 enable '
+                    '(0x60688d6/da) — enable starts the counter, counting semantics are NOT '
+                    'modeled; NUM 0xfd1104 (__RO count) stays strictly stopped')}
+        if self.completion_bit:
+            result['completion_bit_projection']={
+                'reads':self.completion_reads,
+                'readback_semantics':('config-word readback with bit7 forced set — the steady-state '
+                    'measurement task 0x6069538 polls CON at 0x6069546/48 (beq.and.ri loops while '
+                    'bit7==0, i.e. waits for SET) after the 0x6069540 bit0 enable gate takes the '
+                    'poll arm (the W4[4] reconfig chain enabled the counter); projection = the '
+                    'measurement is already complete at the first poll read, latency not modeled '
+                    '(route lrct_trim_done bit7 / SFC PLL-lock bit15 same shape); the bit7 layout '
+                    'is inferred from the poll direction, the SDK __RW label carries no status '
+                    'semantics and this is NOT a silicon measurement'),
+                'stored_bit7_untouched':True,
+                'num_register_served':False,
+                'next_boundary':('the NUM read at 0x606955c ([0xfd1104], __RO measured count) '
+                    'stays strictly stopped — a measured-value fixture decision for the next '
+                    'route (the value feeds 491520000/NUM*1000 and a 20-slot sliding average)')}
         return result
 
 
@@ -3787,6 +3891,132 @@ class JLAudioAdcDmaWriteRecords:
                               'scenario')}
 
 
+class JlEqInitWriteRecords:
+    """JL_EQ 初始化写域(JL_EQ->CON0 0xfe1500 / FLT_ADR 0xfe151c)写侧
+    write-only 整字记录(opt-in,路 JLEQ/sim-jleq;codex gpt-6-astra 定调)。
+
+    背景:29,215,313 停点 0x6072b92——EQ 初始化函数 [0x6072b24,0x6072bb2)
+    (路 RAND 放行 JL_RAND 种子后到达)的 `st.w [r0+0]=r5` 写 0xfe1500
+    =JL_EQ->CON0(值 0,unmapped_or_readonly_write,size 4)。同函数尾段
+    0x6072bae `st.w [r0+28]=r1` 再写 0xfe151c=FLT_ADR(=分配缓冲指针)。
+    JL_EQ 是数据驱动地址族(S19MAP #7 漏判根因):0xfe1500 在 app.bin 仅
+    1 处出现=.data 段 0x60c3748(EQ 硬件描述符模板,随 .data 拷进 RAM
+    0x124c40 实例表),零 li 常量——经实例指针 [0x12727C]+16 间接装载,
+    li 枚举法免疫。
+
+    函数流(反汇编复核,codex 独立复跑互证):0x6072b30 读 b[0x127280]
+    (实例选择字节)→ ×24 进 0x124c40 实例表 → 0x6072b48 [0x12727C]=实例
+    指针 → 0x6072b50 call request_irq(0x6065d86,RAM/IPI)→ 0x6072b64
+    b[r1+3]=20 → 0x6072b66 ld r0=[实例+8] → 0x6072b68 bnez(目标
+    0x6072b90,只跳过分配+首次 memset,**不跳过 CON0/FLT_ADR 两写**——
+    codex 勘误) → 0x6072b6e call 分配 640B → 0x6072b86 call ROM memset
+    (0x1fd80) → 0x6072b90 r0=[实例+16]=0xfe1500 → 0x6072b92
+    [CON0]=r5=0 → 0x6072b9c 第二缓冲 memset → 0x6072bae [FLT_ADR]=
+    [实例+8](分配缓冲指针)。boot 路径只写不读:两写都是整字 st.w、无
+    RMW、无条件执行;值=真实指令结果(CON0=0、FLT_ADR=模型自有分配器
+    自然产生的 RAM 指针)。
+
+    裁决(codex 定调,gpt-6-astra):(c) write-only 记录恰两字——与 BM 路
+    DAC DMA 四字/JLA 路 ADC DMA 五字先例完全同构(同 struct 相邻成员、
+    同「当前推进零读、读属后域留严格停」);拒绝 (b) 全族八字读回容器的
+    最充分理由=当前推进不需要任何读回,而读回+合成初值 0 会提前承诺
+    尚未建立的消费语义(六个未触达字 0xfe1504..0xfe1518 零访问证据,
+    不得凭 br28.h __RW 推成可读回;EQ→park 后 handler 域 0x6072bb2 调用
+    族还会新写面,须按真实访问重审);拒绝 (a) 逐寄存器具名 fixture 的
+    理由=两字是同一函数同一基本块形状的连续整字写,一个开关统一管理
+    两字即可。__RW 是 SDK 布局定位,**不是**硅只写/无副作用证据,本容器
+    也不宣称硅寄存器只写(codex 措辞)。
+
+    覆盖边界:恰两字 {0xfe1500 CON0, 0xfe151c FLT_ADR};其余六字
+    (CON1/CON2/CON3/DATAI_ADR/DATAO_ADR/DATA_LEN=0xfe1504..0xfe1518)
+    与 0xfe1520 起(无已声明成员/属另一 SFR 组)零触达、保持 unmapped
+    诚实停;只服务对齐 32 位整字覆盖写,子字/错位/跨界访问严格停;同址
+    新读者/新写者/新 PC/新掩码/其他核须重审(地址白名单只拦新地址,
+    运行时同址新写者由访问记录揭示,codex 措辞)。运行效果(均衡器处理/
+    DMA/IRQ/滤波系数加载)一律不建模。
+    """
+
+    ADDRESSES=JL_EQ_INIT_WORDS
+    SDK_NAMES={0xfe1500:'JL_EQ->CON0',0xfe151c:'JL_EQ->FLT_ADR'}
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.ADDRESSES}
+        self.word_writes=0
+        self.read_attempts=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled JL_EQ init word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL_EQ init word')
+        self.read_attempts+=1
+        raise Blocked('jl_eq_init_read_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.ADDRESSES],
+                'word_writes':self.word_writes,
+                'read_attempts':self.read_attempts,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes'],'cores':e['cores'][-16:]}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'sdk_naming':('br28.h JL_EQ = hs_base + map_adr(0x15, 0x00) = 0xfe1500 '
+                              '(JL_EQ_TypeDef {__RW __u32 CON0..CON3, DATAI_ADR, DATAO_ADR, '
+                              'DATA_LEN, FLT_ADR}); the two written words are CON0 at +0 and '
+                              'FLT_ADR at +0x1c = 0xfe151c — the EQ init function 0x6072b24 '
+                              'clears CON0 and stores the allocated filter buffer pointer into '
+                              'FLT_ADR; the __RW labels locate the words, they are NOT silicon '
+                              'WO evidence and NOT a claim that these words ignore reads on '
+                              'silicon'),
+                'whitelisted_words':('exactly the two EQ-init words {0xfe1500 CON0, 0xfe151c '
+                                     'FLT_ADR} written by the EQ init function 0x6072b24; the '
+                                     'other six declared members (CON1/CON2/CON3/DATAI_ADR/'
+                                     'DATAO_ADR/DATA_LEN = 0xfe1504..0xfe1518) have zero '
+                                     'identified boot-path access and stay unmapped, as does '
+                                     '0xfe1520 onward (no declared member, next declared SRC '
+                                     'group starts at 0xfe1600); only aligned 32-bit whole-'
+                                     'word overwrite stores are served — sub-word, misaligned '
+                                     'and cross-word accesses stay unmapped; a NEW consumer of '
+                                     'either address (a new read PC, a new write PC, a new '
+                                     'access shape, another core) must be re-audited before '
+                                     'this container may serve it — the address whitelist only '
+                                     'gates addresses, it does not stop a same-address new '
+                                     'writer at runtime (codex wording)'),
+                'observed_shapes':('two whole-word st.w stores in the EQ init function '
+                                   '0x6072b24: 0x6072b92 [r0+0]=r5 (CON0=0, the stop word — '
+                                   'r0=[instance+16]=0xfe1500, r5=0 from 0x6072b4e) and '
+                                   '0x6072bae [r0+28]=r1 (FLT_ADR=[instance+8], the allocated '
+                                   '640B filter-buffer pointer — r0 reloaded at 0x6072bac); '
+                                   'both writes execute UNCONDITIONALLY — the 0x6072b68 bnez '
+                                   'targets 0x6072b90 and skips only the allocation plus the '
+                                   'first ROM memset (codex correction of the route-PARKPRE '
+                                   'branch description); every value is a real instruction '
+                                   'result, never invented; the FLT_ADR pointer is whatever the '
+                                   'model allocator actually returned, NOT pre-claimed to be '
+                                   '0x12xxxx'),
+                'write_only':True,'readback_not_modeled':True,
+                'consumption_face':('zero reads on this prefix (the boot path only writes CON0=0 '
+                                    'and FLT_ADR=buffer-pointer); reads of these words would '
+                                    'only arise in the EQ/audio handler domain (the 0x6072bb2 '
+                                    'copex family or DSP filter streaming) beyond this frontier '
+                                    '— "not read now" does NOT mean unreachable on all future '
+                                    'paths (codex); such reads stay strictly stopped under the '
+                                    'explicit kind and belong to a later EQ-consumption route'),
+                'assumption':('write-only word records (values are real executed results, never '
+                              'invented; the zero-read face on THIS prefix motivates the '
+                              'record, it is NOT a measured hardware WO property claim and the '
+                              'eight-member __RW layout is not evidence of readback semantics); '
+                              'no EQ filtering, DMA, IRQ, coefficient loading or audio '
+                              'processing is modeled — this releases the EQ initialization '
+                              'configuration writes only, it does NOT verify any audio '
+                              'processing or EQ function')}
+
+
 class JLAdcStartConfigRegisters:
     """ADC 启动函数配置块四字容器(合成初始 0+读回=当前值,opt-in,路 ASS)。
 
@@ -5341,7 +5571,7 @@ class BR28Model:
                  lrct_trim_result_value=None,lp_timer_con_readback_projection=False,
                  watchdog_projection=False,watchdog_progress=None,efuse_read_projection=False,efuse_words=None,
                  oscillator_configuration_projection=False,oscillator_status_word=None,timer_lsb_ticks_per_step=None,
-                 gpcnt_cleanup_projection=False,gpcnt_con_readback=False,core_tick_configuration=False,
+                 gpcnt_cleanup_projection=False,gpcnt_con_readback=False,gpcnt_con_config=False,gpcnt_con_completion=False,core_tick_configuration=False,
                  cpu1_held_projection=False,initial_cpu1_control=None,initial_core_tick_controls=None,
                  clock_divider_projection=False,voltage_configuration_projection=False,pll1_configuration_projection=False,
                  p33_analog_config_projection=False,
@@ -5368,6 +5598,7 @@ class BR28Model:
                  jl_pvdd_trim_writes=False,timer2_delay_projection=False,
                  jl_audio_dac_cop_writes=False,jl_audio_dac_dma_writes=False,
                  jl_audio_adc_dma_writes=False,
+                 jl_eq_init_writes=False,
                  jl_adc_start_config=False,jl_adc_start_probe_value=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
@@ -5386,6 +5617,7 @@ class BR28Model:
                  unmaskable_irq_projection=False,core_tick_delivery_requests=False,
                  core_tick_prd_readback=False,
                  core_tick_cnt_held_snapshot=False,
+                 core_tick_freerun_edge_period=False,
                  core_tick_cnt_snapshot_probe_value=None,
                  jl_adda_analog_family=False,
                  jl_audio_dac_tm_readback=False,jl_audio_dac_tm_probe_value=None,
@@ -5491,7 +5723,20 @@ class BR28Model:
         # 601,880 前沿形状)。
         if gpcnt_con_readback and not gpcnt_cleanup_projection:
             raise ValueError('the GPCNT CON readback projection requires the cleanup projection')
-        self.gpcnt=GPCNTCleanup(readback_projection=gpcnt_con_readback) if gpcnt_cleanup_projection else None
+        # gpcnt_con_config(路 JLEQ 续五,opt-in,需 gpcnt_con_readback):W4[4]
+        # VLVD 域 GPCNT 重配置面——全字读回(未知配置位合成初始 0)+整字写
+        # 记录+|=0x1 使能形状;必须叠在读回投影上(ld.w 拦截在 readback_
+        # projection 分发内)。
+        if gpcnt_con_config and not gpcnt_con_readback:
+            raise ValueError('the GPCNT config-word release requires the CON readback projection')
+        # gpcnt_con_completion(路 JLEQ 续七,opt-in,需 gpcnt_con_config):
+        # 稳态测量任务 0x6069538 的 bit7 完成位轮询投影(读侧强制置 1,
+        # lrct_trim_done/SFC PLL-lock 同模式);NUM 读保持严格停。
+        if gpcnt_con_completion and not gpcnt_con_config:
+            raise ValueError('the GPCNT completion-bit projection requires the config-word release')
+        self.gpcnt=(GPCNTCleanup(readback_projection=gpcnt_con_readback,config_words=gpcnt_con_config,
+                                 completion_bit=gpcnt_con_completion)
+                    if gpcnt_cleanup_projection else None)
         if initial_core_tick_controls is not None and len(initial_core_tick_controls)!=2:raise ValueError('need two explicit core tick controls')
         if core_tick_progress is not None and len(core_tick_progress)!=2:raise ValueError('need explicit progress for two core ticks')
         # core_tick_prd_readback(路 BQ 一案,opt-in,默认关):unresolved 溢出
@@ -5507,6 +5752,11 @@ class BR28Model:
         # CON 读/pending/ACK/计时相位全不动。
         if core_tick_cnt_held_snapshot and not core_tick_configuration:
             raise ValueError('the core-tick CNT held-snapshot projection requires the core tick configuration')
+        # core_tick_freerun_edge_period(路 JLEQ 续二,opt-in,默认关):放行
+        # PRD==0xFFFFFFFF 边沿周期使能(固件 tick 重启形状);必须叠在 core
+        # tick 配置上(无配置无该停点形状)。
+        if core_tick_freerun_edge_period and not core_tick_configuration:
+            raise ValueError('the core-tick freerun edge-period release requires the core tick configuration')
         # 敏感性探针值(probe_only,CV 双探针先例):非 None 时 unresolved 窗内
         # CNT 读返回该值(0 vs 周期末值 PRD-1 两分叉记录首次分叉),必须叠在
         # held 快照开关上(探针是快照读的替换值,不是独立投影)。
@@ -5517,7 +5767,8 @@ class BR28Model:
             if not core_tick_cnt_held_snapshot:
                 raise ValueError('the core-tick CNT snapshot probe value requires the held-snapshot projection')
         self.core_ticks=[CoreTickStopped(value,rate,prd_readback=core_tick_prd_readback,
-                                         cnt_held_snapshot=core_tick_cnt_held_snapshot) for value,rate in zip(initial_core_tick_controls or (None,None),
+                                         cnt_held_snapshot=core_tick_cnt_held_snapshot,
+                                         freerun_edge_period=core_tick_freerun_edge_period) for value,rate in zip(initial_core_tick_controls or (None,None),
                        core_tick_progress or (None,None))] if core_tick_configuration else None
         if core_tick_configuration and core_tick_cnt_snapshot_probe_value is not None:
             self.core_ticks[0].cnt_snapshot_probe_value=core_tick_cnt_snapshot_probe_value
@@ -5900,6 +6151,13 @@ class BR28Model:
         # 后域留严格停(显式 kind)。默认关:五字保持 unmapped
         # (21,800,325 前沿形状),legacy 逐字节不变。
         self.jl_audio_adc_dma=(JLAudioAdcDmaWriteRecords() if jl_audio_adc_dma_writes else None)
+        # 路 JLEQ/sim-jleq:EQ 初始化函数 0x6072b24 两字(JL_EQ->CON0 0xfe1500
+        # /FLT_ADR 0xfe151c)write-only 整字记录——29,215,313 停点 0x6072b92
+        # (写 CON0=0)放行;boot 路径只写不读(两写无条件整字 st.w、无 RMW,
+        # codex 勘误 0x6072b68 bnez 只跳分配不跳两写);六字 0xfe1504..0xfe1518
+        # 与 0xfe1520 起零触达不进白名单。默认关:两字保持 unmapped
+        # (29,215,313 前沿形状),legacy 逐字节不变。
+        self.jl_eq_init=(JlEqInitWriteRecords() if jl_eq_init_writes else None)
         # 路 ASS:ADC 启动函数配置块四字(JL_ASS MIC_CTL0/1+JL_AUDIO MBG_CON/
         # ADC_CON1)合成配置读回容器——21,800,455 停点 0x606e044(间接构造
         # 地址首停点,r0=r5+976)放行;读值只进写回组装(B3/DT/ADA/LPV 判据);
@@ -6090,6 +6348,7 @@ class BR28Model:
             (self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address)) or
             (self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address)) or
             (self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address)) or
+            (self.jl_eq_init is not None and self.jl_eq_init.handles(address)) or
             (self.jl_adc_start is not None and self.jl_adc_start.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
@@ -6220,6 +6479,16 @@ class BR28Model:
             if value is None:raise Blocked('unknown_cpu1_irq_configuration',address=hex(address))
             return value
         if self.debug is not None and self.debug.handles(address):return self.debug.read(address)
+        # P2M_INT_PND(0xF2A60C)是同一物理寄存器的两段生命周期:kick 武装的
+        # 喂狗事务窗口内由 p2m_mailbox 拥有(bit12=ack pending),事务外是
+        # 复位/唤醒历史快照(NO_WAKE fixture,boot 前缀的复位原因读)。
+        # conditional 场景两投影同开时,reset 分派在前会把武装态轮询也吃掉
+        # (fixture bit12=0 → 0x12cca2 死自旋,路 JLEQ 续五实测)——武装态
+        # 必须先于 reset 分派;p2m 关闭(默认)时本分支不存在,行为不变。
+        if (self.p2m_mailbox is not None and address==P2mMailboxAck.INT_PND
+                and self.p2m_mailbox.pnd_armed):
+            self.counts['reads']+=1
+            return self.p2m_mailbox.pnd_read()
         if self.reset is not None and self.reset.handles(address):
             # 清标志后的 PWR_CON 轮询读回(真实前缀:主 init 清标志→power_init
             # 请求→死等 bit5):仅 lpwr 投影开启且已观察到真实请求时按
@@ -6424,6 +6693,11 @@ class BR28Model:
         if self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_adc_dma.read(address)
+        # JL_EQ 初始化两字(路 JLEQ):write-only 记录,读回显式严格停
+        # (EQ/音频 handler 域 0x6072bb2 copex 族的读面属后域;当前前缀零读)。
+        if self.jl_eq_init is not None and self.jl_eq_init.handles(address):
+            self.counts['reads']+=1
+            return self.jl_eq_init.read(address)
         # ADC 启动配置块四字(路 ASS):合成配置读回(读回=当前值/显式合成
         # 初始 0,AM 容器族);停点 RMW 内部读与 insert 族显式 ld 均经此路径。
         if self.jl_adc_start is not None and self.jl_adc_start.handles(address):
@@ -6453,6 +6727,15 @@ class BR28Model:
         if self.debug is not None and self.debug.handles(address):
             self.debug.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
             return
+        # P2M_INT_CLR(0xF2A608)同 P2M_INT_PND 的双声明裁定:武装事务窗口内
+        # CLR=0x1000 是喂狗清 ack(进 mailbox 投影,闭合事务);事务外的写保持
+        # reset 投影的 wake-clear 语义不变。CLR 只清 live pending 位,复位快照
+        # 的 bit12 本就是 0(NO_WAKE fixture),不需要回写快照。
+        if (self.p2m_mailbox is not None and address==P2mMailboxAck.INT_CLR
+                and self.p2m_mailbox.pnd_armed):
+            self.p2m_mailbox.clear_ack(value)
+            self.record_write({'address':hex(address),'value':hex(value)})
+            return
         if self.reset is not None and self.reset.handles(address):
             self.reset.write(address,value);self.record_write({'address':hex(address),'value':hex(value)})
             return
@@ -6469,7 +6752,8 @@ class BR28Model:
         if self.l1p is not None and self.l1p.handles(address):self.l1p.write(address,value)
         if self.icu_idle is not None and self.icu_idle.handles(address):self.icu_idle.write(address,value)
         if self.cache_status_probe and address in CACHE_STATUS_REGISTERS:raise Blocked('cache_control_write_not_modeled',address=hex(address))
-        if self.handles_gpcnt(address):raise Blocked('gpcnt_full_control_store_not_modeled')
+        if self.handles_gpcnt(address) and not (self.gpcnt is not None and self.gpcnt.config_words):
+            raise Blocked('gpcnt_full_control_store_not_modeled')
         if self.oscillator_configuration_projection and address==OSC_STATUS:raise Blocked('oscillator_status_is_readonly')
         if self.sfc is not None and address in SFC_PRIMARY_WINDOW_ADDRESSES:
             self.sfc.write(address,value)
@@ -6641,6 +6925,16 @@ class BR28Model:
             # 连续整字写(ADR/LEN/PNS/HWP/SRP,首写=停点并行对 store 半),
             # write-only 记录;DMA 搬运/指针推进/IRQ68 不建模。
             self.jl_audio_adc_dma.write(address,value,self.current_core)
+        elif self.jl_eq_init is not None and self.jl_eq_init.handles(address):
+            # JL_EQ 初始化两字(路 JLEQ):EQ 初始化函数 0x6072b24 的 CON0=0
+            # (0x6072b92)与 FLT_ADR=分配缓冲指针(0x6072bae)两条整字写,
+            # write-only 记录;均衡器处理/DMA/滤波系数加载不建模。
+            self.jl_eq_init.write(address,value,self.current_core)
+        elif self.gpcnt is not None and self.gpcnt.config_words and address==GPCNT_CON:
+            # GPCNT 配置字整字写(路 JLEQ 续五):W4[4] VLVD 域重配置链的
+            # st.w 写回(全字覆盖、全字已知);计数语义不建模。默认关时
+            # GPCNT_CON 整字写落通用 registers 路径(legacy 形状不变)。
+            self.gpcnt.write(value)
         elif self.jl_adc_start is not None and self.jl_adc_start.handles(address):
             # ADC 启动配置块四字(路 ASS):MIC_CTL0 RMW 写回/MIC_CTL1·
             # MBG_CON·ADC_CON1 insert 族写回与整字写;配置生效/音频输入
@@ -7410,6 +7704,37 @@ class BR28Model:
                 'claim; no DMA transfer, pointer advance, SRN side effect, pending '
                 'bit, IRQ68 delivery or cache coherency is modeled — this does NOT '
                 'verify any audio input, ADC capture or D2-b acceptance scenario')
+        if self.jl_eq_init is not None:
+            result['jl_eq_init_write_records']=self.jl_eq_init.report()
+            result['assumptions']['jl_eq_init_write_records']=(
+                'JL_EQ initialization words (0xfe1500 = JL_EQ->CON0 at hs_base+'
+                'map_adr(0x15,0), br28.h JL_EQ_TypeDef {__RW __u32 CON0..CON3, '
+                'DATAI_ADR, DATAO_ADR, DATA_LEN, FLT_ADR}; 0xfe151c = FLT_ADR at '
+                '+0x1c, route JLEQ): write-only whole-word records of the two '
+                'unconditional stores in the EQ init function 0x6072b24 — '
+                '0x6072b92 [CON0]=0 (the 29,215,313 stop word, r5=0) and '
+                '0x6072bae [FLT_ADR]=the actually-allocated 640B filter-buffer '
+                'pointer (r0 reloaded from [instance+16]; the 0x6072b68 bnez '
+                'targets 0x6072b90 and skips only the allocation plus the first '
+                'memset — BOTH writes execute either way, codex correction of the '
+                'route-PARKPRE branch description); values are real instruction '
+                'results, never invented, and the FLT_ADR pointer is whatever the '
+                'model allocator returned, not pre-claimed; the JL_EQ base is '
+                'data-driven (0xfe1500 appears in app.bin only at .data 0x60c3748, '
+                'the hardware-descriptor template copied to the RAM instance table '
+                '0x124c40, loaded through the instance pointer slot [0x12727C]+16 '
+                '— immune to li-constant sweeps, the route-PARKPRE root cause for '
+                'the S19MAP #7 miss); reads of these words never happened on this '
+                'prefix and stay strictly stopped under the explicit kind — the '
+                'EQ/audio handler domain (0x6072bb2 copex family) and DSP '
+                'coefficient streaming are future write faces that must be '
+                're-audited as real accesses arrive; the other six declared '
+                'members (CON1/CON2/CON3/DATAI_ADR/DATAO_ADR/DATA_LEN = '
+                '0xfe1504..0xfe1518) and 0xfe1520 onward have zero identified '
+                'access and stay unmapped; the __RW layout is NOT silicon '
+                'readback/WO evidence; no EQ filtering, DMA, IRQ, coefficient '
+                'loading or audio processing is modeled — this does NOT verify any '
+                'EQ function or audio processing')
         if self.jl_adc_start is not None:
             result['jl_adc_start_config_registers']=self.jl_adc_start.report()
             result['assumptions']['jl_adc_start_config_registers']=(

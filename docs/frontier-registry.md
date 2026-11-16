@@ -18,15 +18,17 @@
 
 ## 数据结构
 
-- `FEATURES`：每个 opt-in 开关一条记录（88 条，2026-11-16 路 RAND 加 jl_rand_seed 后：FLS
-  ancif_official_resources + B2R 两案重落地并入条件栈 + RAND 熵源种子 fixture），字段：
+- `FEATURES`：每个 opt-in 开关一条记录（92 条，2026-11-16/17 路 JLEQ 批量放行四开关
+  jl_eq_init_writes/core_tick_freerun_edge_period/gpcnt_con_config/gpcnt_con_completion 后：FLS
+  ancif_official_resources + B2R 两案重落地并入条件栈 + RAND 熵源种子 fixture + JLEQ EQ 初始化
+  两字 write-only 记录等），字段：
   - `switch`＝`probe_irq_entry.irq_case` 的场景参数名（开关名，即 feature id）；
-  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，59 个——含路 B2G
-    从 probe_only 提层的 p2m_mailbox_ack/cfg523_named_fixture 与路 RAND 的 jl_rand_seed，FLS
-    合并后两案消费者仍在当前前沿停点之后，提层实测停点/步数不变）/
+  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，63 个——含路 B2G
+    从 probe_only 提层的 p2m_mailbox_ack/cfg523_named_fixture、路 RAND 的 jl_rand_seed 与路 JLEQ
+    的 jl_eq_init_writes 等，FLS 合并后部分消费者仍在当前前沿停点之后，提层实测停点/步数不变）/
     `probe_only`（只出现在 probe 自己的场景变体，10 个：探路 fixture、反事实掩码对照、键链直调×2、
     DT/ADA 敏感性探针×2 等）；
-  - `requires`＝层叠依赖开关名（63 条依赖边，与 irq_case 内 require 守卫一致）；  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的七个数据 fixture
+  - `requires`＝层叠依赖开关名（67 条依赖边，与 irq_case 内 require 守卫一致）；  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的七个数据 fixture
     （`heap_info_bytes`/`lrct_trim_result`/`fd31_adc_res_named_values`/
     `jl_adda_daa_con1_initial_fixture`/`p33_canary_first_read_words`/
     `ancif_official_resources`——官方 UFW 外层 ANCIF/ANCIF1 内容二元组/
