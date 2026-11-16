@@ -569,12 +569,12 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert set(CONDITIONAL_EXTRA_FLAGS) == set(frontier_registry.extra_flags(probe_irq_entry))
     # every base switch is a plain boolean opt-in
     assert all(value is True for value in BASE_SCENARIO_FLAGS.values())
-    # the non-boolean conditional flags are exactly the five named data
+    # the non-boolean conditional flags are exactly the six named data
     # fixtures, resolved to the real probe_irq_entry module constants (no copies)
     non_boolean = {switch for switch, value in CONDITIONAL_EXTRA_FLAGS.items() if value is not True}
     assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values',
                            'jl_adda_daa_con1_initial_fixture', 'p33_canary_first_read_words',
-                           'ancif_official_resources'}
+                           'ancif_official_resources', 'jl_rand_seed'}
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
     # 路 BM/S19 批 1:条件场景改传扩展表(勘误 BA「trim 环采样 fd31✓」——
@@ -593,6 +593,12 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert CONDITIONAL_EXTRA_FLAGS['ancif_official_resources'] \
         is probe_irq_entry.ANCIF_OFFICIAL_RESOURCES
     assert len(CONDITIONAL_EXTRA_FLAGS['ancif_official_resources']) == 2
+    # 路 RAND:JL_RAND->R64L(0xfd3b00)熵源种子 fixture(值=probe_irq_entry 常量
+    # 4 字节小端 0x12345678;irq_case 挂载时只校验长度 4,主臂非退化由
+    # test_irq_entry.py JlRandSeedTests 钉死)。
+    assert CONDITIONAL_EXTRA_FLAGS['jl_rand_seed'] \
+        is probe_irq_entry.JL_RAND_SEED_BYTES
+    assert len(CONDITIONAL_EXTRA_FLAGS['jl_rand_seed']) == 4
 
 
 def test_scenario_registry_shapes():

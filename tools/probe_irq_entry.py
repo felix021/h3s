@@ -631,6 +631,16 @@ P11_HEAP_INFO_DERIVED=bytes.fromhex('0c3df439')  # begin=0x3d0c size=0x39f4
 #   对硅行为的任何声称;未提供该参数时 NUM 读严格停(300,240 前沿形状)。
 LRCT_TRIM_RESULT_PROBE=38400  # 7,680,000,000/200,000 = 38,400 = 0x9600
 
+# JL_RAND->R64L(0xfd3b00)种子 fixture 常量(路 RAND/sim-rand)。熵源类停点:
+# 参考 SDK br28.h `JL_RAND_TypeDef {__RO u32 R64L; __RO u32 R64H}`,cpu.h
+# rand32() 直接读 R64L;熵机制(真随机/计数器/烧录值)在参考 SDK 无任何文档,
+# 值不可推导——synthetic-not-measured。fixture=冻结一次合法抽样的 4 字节
+# 常量(主臂 0x12345678,Lehmer MINSTD 首步 state=0x2a18e99e,6 字节 MAC 输出
+# 31 54 23 93 fe eb 非退化);退化种子 0/0x7FFFFFFF/0xFFFFFFFE 都是 LCG 不动点
+# (→全零输出,全零 MAC 会被消费者 0x6011a08 的 memcmp 判「仍空白」再生成),
+# 主 fixture 避开。R64H(0xfd3b04)零直接常量且已审查路径零访问,不进容器。
+JL_RAND_SEED_BYTES=(0x12345678).to_bytes(4,'little')
+
 # P3_AWKUP_P_IE(0xf2c184)首次读的具名零值 fixture(路 BB;合成假设,非硅测量)。
 # 证据与适用场景(全部 2026-11-13 路 BB 反汇编+运行态快照复核钉死):
 # - 本 boot 前缀对 P3_AWKUP_P_IE 的唯一一次读是 walker 0x6067cb4 第二轮表
@@ -1313,6 +1323,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_adc_dma_writes=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
              ancif_official_resources=None,
+             jl_rand_seed=None,
              jl_pvdd_trim_writes=False,
              timer2_delay_projection=False,
              p33_canary=False,p33_canary_first_read_words=None,
@@ -2620,6 +2631,18 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
             require(binascii.crc_hqx(blob[6:],0)==stored,
                     'ANCIF fixture inner CRC self-check failed')
         readonly=tuple(readonly)+((base,ancif_blob),(cbase,ancif1_blob))
+    # jl_rand_seed(路 RAND/sim-rand,默认 None=关):JL_RAND->R64L(0xfd3b00)熵源
+    # 种子 fixture——readonly 单字映射,每次读同一冻结常量(policy=constant_on_
+    # every_read)。熵机制无文档、值不可推导(synthetic-not-measured,非设备
+    # 实测);R64H(0xfd3b04)零触达不进容器,0xfd3b04 起/跨界访问/写继续严格停。
+    # 只要求 4 字节(bytes),不在此拒绝退化值——零臂(全零=LCG 不动点→全零
+    # MAC)是敏感性对照的显式诊断输入,由调用方显式传值;主臂用
+    # JL_RAND_SEED_BYTES=0x12345678。依赖边挂 ancif_official_resources=场景
+    # 推进顺序(ANCIF 放行后链才到达停点),非硬件依赖。
+    if jl_rand_seed is not None:
+        require(isinstance(jl_rand_seed,(bytes,bytearray)) and len(jl_rand_seed)==4,
+                'the JL_RAND seed fixture is a 4-byte little-endian R64L word')
+        readonly=tuple(readonly)+((0xfd3b00,bytes(jl_rand_seed)),)
     if sfc_suspend:
         # The SFC suspend tail sets 0xfd1c00|=1 (write-only RMW projection) and
         # then the wrapper reads the second SFC 0xfe0100 CON. The second SFC is
@@ -3828,27 +3851,29 @@ def check(report,firmware):
     # 0x606c5c2 free 路径零执行=名字 strcmp+CRC 全过,调用者拿到 payload
     # 指针 0x61fbff4/0x61fc0f4),链再 **+126,518 步**(ANCGAIN/ANCCOEF
     # 系数真实进入 ANC 配置:音频域系数装载段+OS 等待族续)停在
-    # **28,890,702 @ 0x6011976**:`ld.w r10=[r0+0]` 读 **0xfd3b00**=
-    # ls_base+0x3b*0x100(SDK cpu.h rand32()=JL_RAND->R64L 同族)——随机
-    # 种子函数 [0x601196a,0x60119ca):读 [0xfd3b00] 一次做 Lehmer MINSTD
-    # LCG(乘 16807 模 0x7FFFFFFF)种子,循环产出 r1(=6)字节随机串,
-    # 初分类=硬件熵源只读寄存器读族(值不可推导,任何值都是合法随机抽取
-    # ——三选一按 lrct_trim_result 探路值先例归下一路),全图存档
-    # ~/tmp/fls-fn-0x6011976.txt。
+    # **28,890,702 @ 0x6011976** JL_RAND->R64L 熵源种子首读(路 RAND
+    # 三选一=具名 fixture 放行,见 jl_rand_seed 开关注释)。
+    # 路 RAND/sim-rand:jl_rand_seed 具名 fixture(readonly 单字 0x12345678,
+    # synthetic-not-measured)放行后,MAC 生成两处调用点(0x6011c64/0x6011c92,
+    # rand_bytes 各读一次种子)真实走通(6 字节 MAC 31 54 23 93 fe eb 非退化;
+    # 首写后重读仍=擦除 FF 哨兵→第二次再生成+再写),链再 **+324,611 步**
+    # (ANC/EQ 音频域配置续)停在 **29,215,313 @ 0x6072b92**:
+    # `st.w [r0+0]=r5` 写 **0xfe1500=JL_EQ->CON0**(hs_base+map_adr(0x15,0),
+    # br28.h __RW,值 0=EQ 关闭配置)——初分类=音频域外设配置写族
+    # (EQ 硬件块首写,0xfe1500=0,函数 [0x6072b24,0x6072bb0) 浮点系数段)。
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x6011976 on the '
-            'unmapped read of 0xfd3b00 (the random-seed function '
-            '[0x601196a,0x60119ca): the Lehmer MINSTD LCG (x*16807 mod '
-            '0x7fffffff) loads its seed with the single read of JL_RAND-family '
-            '0xfd3b00 = ls_base+0x3b*0x100, then emits the requested byte '
-            'count) — reached 126,518 steps after the route-FLS official '
-            'ANCIF/ANCIF1 content fixture releases the 28,764,184 stop (both '
-            'sdfile flash-top file parses run for real: magic 0x9881/0x98c1 and '
-            'embedded names ANCGAIN01/ANCCOEF01 verified, free path never '
-            'taken, payload pointers returned to the audio-domain callers) — '
-            'the honest hardware-entropy boundary for the next route')
+            'the heap-experimental scenario must stop at 0x6072b92 on the '
+            'write of 0xfe1500 (JL_EQ->CON0 = hs_base+map_adr(0x15,0), value 0 '
+            '= EQ-disable config write) — reached 324,611 steps after the '
+            'route-RAND JL_RAND->R64L seed fixture releases the 28,890,702 '
+            'entropy boundary (both MAC-generation call sites run for real: '
+            'rand_bytes reads the frozen seed 0x12345678, emits the '
+            'non-degenerate 6-byte MAC 31 54 23 93 fe eb, the post-write '
+            're-read still compares equal to the erased-FF sentinel so the '
+            'fallback regeneration runs once more) — the honest audio-domain '
+            'peripheral-config boundary for the next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 B3:CNT held 快照报告断言——键在场、假设文本按 codex 原文措辞、
@@ -4061,8 +4086,8 @@ def check(report,firmware):
             '(r0=r5+976 from the 0xfe0534 base, the first stop point immune to the '
             'li enumeration method), the same-address new-consumer re-audit rule, the '
             'completeness wording and the no-audio-input limit')
-    require(r['peripherals']['core_tick_configuration'][0]['acknowledgements']==140 and
-            r['peripherals']['core_tick_configuration'][0]['expirations']==140,
+    require(r['peripherals']['core_tick_configuration'][0]['acknowledgements']==146 and
+            r['peripherals']['core_tick_configuration'][0]['expirations']==146,
             'the CNT release must let overflows 12..108 (route B3) plus the eight '
             'further overflows inside the route-DT segment (DAC start tail + OS wait '
             'family, 109..116) deliver and ACK naturally '
@@ -4105,7 +4130,7 @@ def check(report,firmware):
     # 时钟首次真实推进 13,429,113 虚拟步(与主循环同一逐步 advance(),无
     # 批量跳步)。A2-A5 硬断言仍归后续批次,此处不硬断言。
     eclock=r['machine']['event_clock_projection']
-    require(eclock['enabled'] and eclock['virtual_model_steps_advanced']==13429113,
+    require(eclock['enabled'] and eclock['virtual_model_steps_advanced']==14755693,
             'the route-CW event-clock wiring must be enabled, and through both the '
             'route-B3 stop and the route-DT stop it has advanced exactly the measured '
             '13,429,113 virtual model steps — the first real event-clock usage: after '
@@ -4489,10 +4514,10 @@ def check(report,firmware):
             not fd31['write_only'] and not fd31['readback_not_modeled'] and
             fd31['addresses']==['0xfd3100'] and
             'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'] and
-            fd31['con_readback_projection']['reads']==521 and
+            fd31['con_readback_projection']['reads']==532 and
             fd31['con_readback_projection']['address']=='0xfd3100' and
             fd31['con_readback_projection']['res_boundary']['address']=='0xfd3104' and
-            fd31['pnd_completion_projection']['forced_reads']==259 and
+            fd31['pnd_completion_projection']['forced_reads']==270 and
             fd31['pnd_completion_projection']['bit']=='0x80' and
             fd31['pnd_completion_projection']['not_a_timing_model'] and
             fd31['res_named_values_fixture']['served']=={'0x10000':56,'0x10004':12,'0x10006':12} and
@@ -4614,7 +4639,7 @@ def check(report,firmware):
     # (reti_from=块出口,延期-交付往返实证;机器守卫本身保持拒绝))。core
     # tick 交付 9→10(+1 次溢出,OS tick 级联继续)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==4415 and
+    require(len(t0['deliveries'])==4626 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6','0x12b608',
@@ -4632,9 +4657,9 @@ def check(report,firmware):
                                    '0x606454e','0x60742b6')
                 for d in t0['deliveries']) and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
-            sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==1557 and
+            sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==1763 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x606b0a2')==1 and
-            t0['deliveries'][-1]['reti_from']=='0x12b608' and
+            t0['deliveries'][-1]['reti_from']=='0x12c5ca' and
             [d['reti_from'] for d in t0['deliveries'][287:362]]==
             ['0x6010a4e', '0x12b608', '0x6010a5c', '0x12b608', '0x6007b7e',
              '0x4372', '0x6000f4a', '0x6007b7e', '0x12b608', '0x6000f4c',
@@ -4653,8 +4678,8 @@ def check(report,firmware):
              '0x12e282', '0x12e286', '0x12e284', '0x12e282', '0x12e286'] and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==8830 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==4415,
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==9252 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==4626,
             '4415 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
             'route-AK/AN/AS/B1 prefix (287 through the AK stop, the route-R delivery '
             'interrupting the OS veneer 0x12b7b6, the eight route-AN walker-chain '
@@ -4679,14 +4704,14 @@ def check(report,firmware):
             '933/925/934 and the 0x6000f48 context appears ten times inside the '
             'audio pipeline re-init rounds, parked-wake 0x12c5ca stays 1557)')
     ct=r['machine']['core_tick_entry_projection']
-    require(len(ct['deliveries'])==140 and
+    require(len(ct['deliveries'])==146 and
             (ct['deliveries'][0]['core'],ct['deliveries'][0]['vector_address'],
              ct['deliveries'][0]['handler'],ct['deliveries'][0]['reti_from'])==
             (0,'0x19fe0c','0x60661a4','0x12b7b6') and
             all(not d['delivery_clears_pending'] for d in ct['deliveries']) and
-            r['instruction_adapters'].get('core_tick_handler_frame')==280 and
-            r['instruction_adapters'].get('conditional_core_tick_rti')==140 and
-            r['instruction_adapters'].get('core_tick_ack_rmw')==140,
+            r['instruction_adapters'].get('core_tick_handler_frame')==292 and
+            r['instruction_adapters'].get('conditional_core_tick_rti')==146 and
+            r['instruction_adapters'].get('core_tick_ack_rmw')==146,
             'the CPU0 core tick must deliver its first overflow (the ~447,490 landmark) through '
             'the real IRQ3 vector slot 0x19fe0c to handler 0x60661a4, interrupting the OS '
             'veneer context 0x12b7b6, with pending cleared only by the handler ack; the '
@@ -4700,7 +4725,7 @@ def check(report,firmware):
             'shape reti_from=0x12c5ca appears 50 times and the delay trio continues; '
             'one delivery interrupts the audio zone 0x60750e2)')
     dfr=r['machine']['irq_delivery_deferral_projection']
-    require(dfr['count']==2976 and
+    require(dfr['count']==3215 and
             all(e['irq'] in (3,4,127) and
                 e['deferred_while'] in ('core_tick_handler','timer0_irq_handler',
                                         'software_irq_handler',
@@ -4727,12 +4752,12 @@ def check(report,firmware):
     gp=r['peripherals']['gpcnt_cleanup_projection']
     require(gp['known_mask']=='0x81' and gp['known_value']=='0x0' and
             gp['disable_writes']==gp['clear_writes']==1 and
-            gp['con_readback_projection']['reads']==140 and
+            gp['con_readback_projection']['reads']==145 and
             gp['con_readback_projection']['address']=='0xfd1100' and
             gp['con_readback_projection']['known_mask']=='0x81' and
             not gp['con_readback_projection']['count_readback_proven'] and
             gp['con_readback_projection']['not_a_timing_model'] and
-            r['instruction_adapters'].get('gpcnt_con_readback_load')==140,
+            r['instruction_adapters'].get('gpcnt_con_readback_load')==145,
             'the GPCNT CON readback projection must serve 140 partial-word reads (one per '
             'task 0x6069538 dispatch across the route-CG OS-tick cascades, the route-B1 '
             'delay family, the route-B3 OS-wait parked-wake schedule and nine more '
@@ -4898,8 +4923,8 @@ def check(report,firmware):
     # 20,220→20,373(恰 +153=51 步×3 STD12M tick 精确走表)。
     # 路 JLA:+130 步(set_buffer 五写+挂 handler+启动段序章)零新到期零新
     # 交付,cnt 2,577→2,967(恰 +390=130 步×3 STD12M tick 精确走表)。
-    require(timer=={'con':0x1401,'cnt':12585,'prd':59999,'pending':False,
-            'expirations':4425},
+    require(timer=={'con':0x1401,'cnt':15993,'prd':59999,'pending':False,
+            'expirations':4636},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-B3 OS-wait prefix reprograms the window to the '
             '5ms one and the route-DT segment reprograms the latest window to the 2ms one '
@@ -4973,9 +4998,9 @@ def check(report,firmware):
     # overflow guard 严格停(新停点,仍位于屏蔽窗内,IPMASK=6、ICFG 仍
     # 0x300,bit9 全程未动;读回投影只覆盖 offset 8,CNT 不在一案范围)。
     tick0=r['peripherals']['core_tick_configuration'][0]
-    require(tick0['pending'] is False and tick0['expirations']==140 and
-            tick0['unresolved_overflow'] is False and tick0['acknowledgements']==140 and
-            tick0['cnt']==627468 and
+    require(tick0['pending'] is False and tick0['expirations']==146 and
+            tick0['unresolved_overflow'] is False and tick0['acknowledgements']==146 and
+            tick0['cnt']==32160 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -5092,7 +5117,12 @@ def check(report,firmware):
             [(0,127,'0x12ad2a','0x12b608')]*2+
             [(1,125,'0x60662c8','0x12c5ca')]*2+
             [(0,127,'0x12ad2a','0x12b608')]+
-            [(0,127,'0x12ad2a','0x12c5ca')]+[(0,127,'0x12ad2a','0x12b608')]*2,
+            [(0,127,'0x12ad2a','0x12c5ca')]+[(0,127,'0x12ad2a','0x12b608')]*2+
+            [(1,125,'0x60662c8','0x12c5ca')]*5+
+            [(0,127,'0x12ad2a','0x12b608')]+[(0,127,'0x12ad2a','0x12c5ca')]+
+            [(0,127,'0x12ad2a','0x12b608')]+[(0,127,'0x12ad2a','0x12c5ca')]+
+            [(0,127,'0x12ad2a','0x12b608')]+[(0,127,'0x12ad2a','0x12c5ca')]+
+            [(1,125,'0x60662c8','0x12c5ca')],
             'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
             'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
             'the timer bring-up before any scheduler IPI); the route-CO scheduler helper prefix '
@@ -5116,7 +5146,7 @@ def check(report,firmware):
     # CPU1 同步 IPI 往返——交付列表 11→12(尾项仍是 (1,125,'0x12c5ca')),
     # conditional_software_irq_rti 11→12、commands/acks 22/11→24/12。
     require(r['machine']['events_truncated'] is True and
-            r['instruction_adapters'].get('conditional_software_irq_rti')==16,
+            r['instruction_adapters'].get('conditional_software_irq_rti')==28,
             'the software IRQ RTI count must reach sixteen (the pmu_task-entry RTI event lies '
             'in the byte-identical pre-305k prefix pinned at the 689,402 landmark; the trimmed '
             '32+32 events window holds the IRQ4 round trips; the route-CO CPU1 sync '
@@ -5125,8 +5155,8 @@ def check(report,firmware):
             'the route-CW DAC-init tail adds one more CPU1 sync-IPI round, and the route-B3 '
             'OS-wait prefix adds the two CPU0 irq127 rounds — twelve complete plus the two '
             'B3 ones all RTI-complete)')
-    require(r['peripherals']['software_irq_commands']['commands']==32 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==16,
+    require(r['peripherals']['software_irq_commands']['commands']==56 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==28,
             'the two scheduler IPI round trips plus the route-CO scheduler-helper sync IPI '
             'and the route-CW DAC-init tail sync IPI must be the only new software IRQ '
             'bookkeeping')
@@ -5140,15 +5170,18 @@ def check(report,firmware):
     crc_heap=r['peripherals']['hardware_crc_projection']
     require(crc_heap['seed_writes'][:30]==crc_ff['seed_writes'] and
             crc_heap['result_reads'][:30]==crc_ff['result_reads'] and
-            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==130 and
+            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==191 and
             crc_heap['seed_writes'][30:]==['0x0','0x0'] and
             crc_heap['result_reads'][30:]==['0x62eb','0x9c78']+['0xa1cd','0x9946',
                 '0xd1cf','0x239e','0x7dee','0x91a9']*7+['0xa1cd','0xb37d','0xa11d',
                 '0xc190','0xf271','0xb758','0x5ddd','0x370']+['0x583d','0xc190',
                 '0xf271','0xb758','0x5ddd','0x370','0xfa0d','0x4dcd','0xcc9',
                 '0x9129']+['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee',
-                '0x91a9']*6+['0x9b61','0x97df'] and
-            crc_heap['fed_bytes']==69715,
+                '0x91a9']*6+['0x9b61','0x97df']+['0xc190','0xf271','0xb758',
+                '0x5ddd','0x768']+['0x9b61','0x97df']+['0xc190','0xf271','0xb758',
+                '0x5ddd','0x768']+['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee',
+                '0x91a9','0xc1b0']*7 and
+            crc_heap['fed_bytes']==71449,
             'the heap fixture must keep the first thirty hardware CRC round trips '
             'byte-identical to crc_bankb; the route-AA prefix adds the seeded '
             '0x62eb/0x9c78 pair, the route-AN walker chain thirty and the route-AS '
@@ -5176,16 +5209,16 @@ def check(report,firmware):
     # 路 LPV 尾段(+2,068 步,tbh case 体+RAM 对象链+缓冲配置 walk):并行
     # 半字 15→16、并行字节 412→416(case 体与 walk 的并行对存储半);双字/
     # 跨页/rep 族/insert 装载/LP 位 RMW/复位/mem_pwr/awkup/死读全不变。
-    require(r['instruction_adapters'].get('exact_doubleword_store')==85 and
+    require(r['instruction_adapters'].get('exact_doubleword_store')==107 and
             r['instruction_adapters'].get('exact_doubleword_store_cross_page_split')==7 and
-            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==699 and
-            r['instruction_adapters'].get('zero_count_skip_is_assumption')==140 and
-            r['instruction_adapters'].get('register_rep_multi_block_projection')==331 and
+            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==998 and
+            r['instruction_adapters'].get('zero_count_skip_is_assumption')==174 and
+            r['instruction_adapters'].get('register_rep_multi_block_projection')==424 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
-            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==35 and
-            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==2192 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==615 and
+            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==42 and
+            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==2788 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==733 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==109 and
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
@@ -5315,13 +5348,13 @@ def check(report,firmware):
             # icfg bit9 32190→32194(+4)、cnum 54039→54043(+4)。
             # masked 分支 3 与其余族不变(LRC 帧零新增,与 trim 块计数
             # 冻结互证)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==129241 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==12148 and
-            r['instruction_adapters'].get('exact_full_word_store')==230091 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==17562 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==39430 and
-            r['instruction_adapters'].get('partial_icfg_masked_branch')==3 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==66729,
+            r['instruction_adapters'].get('abstract_task_stack_transport')==137871 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==13080 and
+            r['instruction_adapters'].get('exact_full_word_store')==242288 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==18685 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==42122 and
+            r['instruction_adapters'].get('partial_icfg_masked_branch')==5 and
+            r['instruction_adapters'].get('per_core_visible_cnum')==71802,
             'the heap-experimental prefix adapters differ from the observed conditional frontier')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
@@ -6103,6 +6136,19 @@ def check(report,firmware):
         'conditional on the official-content assumption. ANCIF1 maps its 0xac8 valid '
         'bytes only — the declared-but-unused remainder of the 0xf00 area stays '
         'strictly unmapped.')
+
+    report['jl_rand_seed_fixture']=(
+        'synthetic-not-measured entropy assumption (NOT a device measurement): '
+        'JL_RAND->R64L at 0xfd3b00 is mapped read-only to a frozen 4-byte little-endian '
+        'sample (default 0x12345678); every read returns that same constant (policy='
+        'constant_on_every_read), and no claim is made about the real device value, '
+        'distribution, read-to-read correlation, or update mechanism — the reference SDK '
+        '(br28.h JL_RAND_TypeDef {__RO u32 R64L; __RO u32 R64H}, cpu.h rand32()) documents '
+        'no entropy mechanism. R64H at 0xfd3b04 stays strictly unmapped (zero direct '
+        'constant loads and no reviewed-path access). Degenerate seeds 0/0x7fffffff/'
+        '0xfffffffe are LCG fixed points (all-zero MAC) and are avoided by the default; '
+        'a fixed seed can also stall future random-slot-allocation consumers (e.g. '
+        '0x6055f68 R64L%79 retry loop, beyond the current frontier).')
 
     report['insert_load_parallel_pair_assumption']=(
         'opt-in exact_parallel_insert_load: the compose pair of the misaligned-source ROM memcpy '

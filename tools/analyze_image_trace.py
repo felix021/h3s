@@ -327,6 +327,10 @@ SCENARIOS = {
         # 函数 [0x601196a,0x60119ca) Lehmer MINSTD LCG 的种子首读,
         # sdfile ANCIF/ANCIF1 两文件 parse 真实走通后 ANC 系数装载段的
         # 下一边界,归下一路)。
+        # 路 RAND jl_rand_seed 具名 fixture(0x12345678,synthetic-not-measured)
+        # 放行到 29,215,313 @ 0x6072b92(写 0xfe1500=JL_EQ->CON0,hs_base+
+        # map_adr(0x15,0),值 0=EQ 关闭配置;MAC 生成两调用点真实走通后
+        # ANC/EQ 音频域配置续的下一边界,归下一路)。
         'freshness': frontier_registry.freshness('p11_heap_experimental'),
     },
 }
@@ -1347,15 +1351,22 @@ def check_self_conditional(report):
     (路 ADA)/21,800,325(路 LPV)已被后续投影替换,见 HANDOFF 对应
     「步含义」段):
 
-    - 双方 28,890,702 步、同停点 0x6011976(unmapped_memory 读
-      0xfd3b00,当前条件前沿——路 FLS ancif_official_resources 放行后的
-      新边界:sdfile flash 顶 ANCIF/ANCIF1 文件头=官方 UFW 外层资源内容
-      具名 fixture(显式假设=目标分区携带官方资源内容,非设备实测),
+    - 双方 29,215,313 步、同停点 0x6072b92(unmapped_or_readonly_write
+      写 0xfe1500,当前条件前沿——路 RAND jl_rand_seed 具名 fixture 放行
+      后的新边界:JL_RAND->R64L 0xfd3b00 映射为 readonly 单字 0x12345678
+      (synthetic-not-measured,熵机制无文档值不可推导;R64H 0xfd3b04 零触达
+      不进容器),MAC 生成两调用点(0x6011c64/0x6011c92)真实走通(6 字节
+      MAC 31 54 23 93 fe eb 非退化;首写后重读仍=擦除 FF 哨兵→第二次
+      再生成+再写),链 +324,611 步停在 JL_EQ->CON0(hs_base+map_adr
+      (0x15,0),br28.h __RW,值 0=EQ 关闭配置)——音频域外设配置写族;
+      历史 28,890,702 @ 0x6011976(路 FLS ancif_official_resources 放行
+      后的新边界:sdfile flash 顶 ANCIF/ANCIF1 文件头=官方 UFW 外层资源
+      内容具名 fixture(显式假设=目标分区携带官方资源内容,非设备实测),
       两文件 parse 真实走通(魔数/头内名/内层 CRC 全过、free 路径零执行,
       硬件 CRC 引擎新校验值恰=两文件存储 CRC 0x583d/0x4dcd)后 ANC 系数
       装载 +126,518 步,停在随机种子函数的 JL_RAND 族 0xfd3b00 首读
-      (Lehmer MINSTD LCG 种子,硬件熵源——值不可推导,任何值都是合法
-      随机抽取,三选一按 lrct_trim_result 探路值先例归下一路);
+      (Lehmer MINSTD LCG 种子,硬件熵源——值不可推导,三选一按
+      lrct_trim_result 探路值先例归下一路));
       历史 28,764,184(路 ASS 放行后的 flash 顶指针首读,值来源归 FLS
       已解:app 分区表 0x06000080 项 virt 经 0x6010c20 换算对
       [0x127290]=0x2020/[0x127294]=0x06000000 的文件头地址,内容=UFW
@@ -1404,11 +1415,12 @@ def check_self_conditional(report):
       镜像差异(CRC 轮数 32/结果 82/65405 字节——路 ASS 段 +8 轮全部
       走共享 0x6000f0c wrapper 硬件路径,新增 8 值组 0xa1cd/0xb37d/
       0xa11d/0xc190/0xf271/0xb758/0x5ddd/0x370 与既有六值循环同构);
-    - final report 差异仍恰好 12 处(11 处 CRC result_reads + 1 处 watch r0;
-      路 AN 的 5 处=walker 链新 CRC 轮序号 37/43/49/55/61,路 AS 再加 2 处
-      =尾块新 CRC 轮序号 67/73——每六值循环组一处镜像相关差异,镜像字节
-      仍只以寄存器值/CRC 结果显形,存储字节零差异;路 B1/B3/DT/ADA/LPV/
-      JLA 的新增步对两镜像完全同构,新容器报告两侧逐字节相同,不新增差异)。
+    - final report 差异共 29 处(28 处 CRC result_reads + 1 处 milestones[23]
+      r0;路 AN 的 5 处=walker 链新 CRC 轮序号 37/43/49/55/61,路 AS 再加 2
+      处=尾块新 CRC 轮序号 67/73,路 FLS 再加 8 处=77/83/97/103/109/115/
+      121/127,路 RAND 再加 9 处=130/137/147/154/161/168/175/182/189——每
+      六值循环组一处镜像相关差异,镜像字节仍只以寄存器值/CRC 结果显形,
+      存储字节零差异;spans 147、writes_differ 全 False)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
     pairs = {p['name']: p for p in report['pairs']}
@@ -1422,18 +1434,17 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 28884031, '1': 11251},
+                run['per_core_steps'] == {'0': 29208667, '1': 11461},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (28890702 @ 0x6011976, the unmapped read '
-                'of 0xfd3b00 — a hardware-entropy seed read: the random-seed function '
-                '[0x601196a,0x60119ca) loads its Lehmer MINSTD LCG seed (x*16807 mod '
-                '0x7fffffff) from JL_RAND-family 0xfd3b00 = ls_base+0x3b*0x100 — after '
-                'the route-FLS official ANCIF/ANCIF1 content fixture releases the '
-                '28,764,184 stop (both flash-top sdfile file parses run for real: '
-                'magic 0x9881/0x98c1 and embedded names verified, free path never '
-                'taken) the ANC coefficient loading runs for 126,518 more steps and '
-                'stops on the entropy boundary; the honest next boundary for the '
-                'route after FLS)')
+                'conditional frontier stop (29215313 @ 0x6072b92, the write of '
+                '0xfe1500 — JL_EQ->CON0 = hs_base+map_adr(0x15,0), value 0 = the '
+                'EQ-disable config write — after the route-RAND JL_RAND->R64L seed '
+                'fixture releases the 28,890,702 entropy boundary (both MAC-generation '
+                'call sites run for real with the frozen seed 0x12345678, emitting the '
+                'non-degenerate 6-byte MAC 31 54 23 93 fe eb; the post-write re-read '
+                'still compares equal to the erased-FF sentinel so the fallback '
+                'regeneration runs once more); the honest next boundary for the '
+                'route after RAND)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
@@ -1455,7 +1466,7 @@ def check_self_conditional(report):
             'resource-table header CRC byte at 0x6010b16 (it must stay identical to the '
             'crc_bankb-scenario divergence)')
     spans = p['divergent_signature_spans']
-    require(spans['count'] == 109 and all(not s['writes_differ'] for s in spans['first']),
+    require(spans['count'] == 147 and all(not s['writes_differ'] for s in spans['first']),
             'the official-vs-b79 conditional divergence-span shape changed (image bytes must '
             'stay visible only as register values, never as differing stored bytes)')
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
@@ -1478,7 +1489,16 @@ def check_self_conditional(report):
                              '$.peripherals.hardware_crc_projection.result_reads[109]',
                              '$.peripherals.hardware_crc_projection.result_reads[115]',
                              '$.peripherals.hardware_crc_projection.result_reads[121]',
-                             '$.peripherals.hardware_crc_projection.result_reads[127]']),
+                             '$.peripherals.hardware_crc_projection.result_reads[127]',
+                             '$.peripherals.hardware_crc_projection.result_reads[130]',
+                             '$.peripherals.hardware_crc_projection.result_reads[137]',
+                             '$.peripherals.hardware_crc_projection.result_reads[147]',
+                             '$.peripherals.hardware_crc_projection.result_reads[154]',
+                             '$.peripherals.hardware_crc_projection.result_reads[161]',
+                             '$.peripherals.hardware_crc_projection.result_reads[168]',
+                             '$.peripherals.hardware_crc_projection.result_reads[175]',
+                             '$.peripherals.hardware_crc_projection.result_reads[182]',
+                             '$.peripherals.hardware_crc_projection.result_reads[189]']),
             'the official-vs-b79 conditional final-report differences changed: ' + str(diffs))
 
 

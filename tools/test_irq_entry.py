@@ -197,6 +197,51 @@ class AncifOfficialResourcesTests(unittest.TestCase):
                                  f'{name} embedded bytes diverge from the official UFW outer layer')
 
 
+class JlRandSeedTests(unittest.TestCase):
+    """路 RAND:JL_RAND->R64L(0xfd3b00)熵源种子 fixture 的静态钉子。
+
+    主臂常量=4 字节小端 0x12345678(非退化:Lehmer MINSTD 首步 state=
+    0x2a18e99e,6 字节 MAC 输出 31 54 23 93 fe eb);退化种子 0/0x7FFFFFFF/
+    0xFFFFFFFE 是 LCG 不动点(全零输出)不得作主臂。
+    """
+
+    def test_seed_constant_is_non_degenerate(self):
+        import probe_irq_entry
+        seed = int.from_bytes(probe_irq_entry.JL_RAND_SEED_BYTES, 'little')
+        self.assertEqual(len(probe_irq_entry.JL_RAND_SEED_BYTES), 4)
+        self.assertEqual(seed, 0x12345678)
+        self.assertNotIn(seed, (0, 0x7fffffff, 0xfffffffe),
+                         '主臂种子不得是 LCG 不动点(全零 MAC)')
+
+    def test_seed_first_lcg_step_shape(self):
+        import probe_irq_entry
+        seed = int.from_bytes(probe_irq_entry.JL_RAND_SEED_BYTES, 'little')
+        # rand_bytes:seed 读入 state 后,循环每步 state=(state*16807) mod
+        # 0x7fffffff、输出 2 字节=state>>15。首步 state=0x2a18e99e,6 字节
+        # MAC=3 步输出(内存序 31 54 23 93 fe eb),非全零。
+        state = seed
+        out = []
+        for _ in range(3):
+            state = (state * 16807) % 0x7fffffff
+            out.append(state >> 15)
+        self.assertEqual(out[0], 0x5431)
+        self.assertEqual(state, 0x75ff4bfa)
+        mac = b''.join(x.to_bytes(2, 'little') for x in out)
+        self.assertEqual(mac, bytes.fromhex('31542393feeb'))
+        self.assertTrue(any(mac))
+
+    def test_registry_feature_wires_to_constant(self):
+        import probe_irq_entry
+        import frontier_registry
+        f = frontier_registry._BY_SWITCH.get('jl_rand_seed')
+        self.assertIsNotNone(f, 'jl_rand_seed 须登记在 frontier_registry')
+        self.assertEqual(f.stack, 'conditional')
+        self.assertEqual(f.value_attr, 'JL_RAND_SEED_BYTES')
+        self.assertIn('ancif_official_resources', f.requires)
+        self.assertIs(getattr(probe_irq_entry, f.value_attr),
+                      probe_irq_entry.JL_RAND_SEED_BYTES)
+
+
 
 if __name__=='__main__':
     unittest.main()

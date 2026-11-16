@@ -18,18 +18,19 @@
 
 ## 数据结构
 
-- `FEATURES`：每个 opt-in 开关一条记录（87 条，2026-11-16 路 B2G 两开关提层后：FLS ancif_official_resources
-  + B2R 两案重落地并入条件栈），字段：
+- `FEATURES`：每个 opt-in 开关一条记录（88 条，2026-11-16 路 RAND 加 jl_rand_seed 后：FLS
+  ancif_official_resources + B2R 两案重落地并入条件栈 + RAND 熵源种子 fixture），字段：
   - `switch`＝`probe_irq_entry.irq_case` 的场景参数名（开关名，即 feature id）；
-  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，58 个——含路 B2G
-    从 probe_only 提层的 p2m_mailbox_ack/cfg523_named_fixture，FLS 合并后两案消费者仍在当前前沿
-    停点之后，提层实测停点/步数不变）/
+  - `stack`＝`base`（crc_bankb 共享栈，19 个）/`conditional`（p11_heap 条件栈增量，59 个——含路 B2G
+    从 probe_only 提层的 p2m_mailbox_ack/cfg523_named_fixture 与路 RAND 的 jl_rand_seed，FLS
+    合并后两案消费者仍在当前前沿停点之后，提层实测停点/步数不变）/
     `probe_only`（只出现在 probe 自己的场景变体，10 个：探路 fixture、反事实掩码对照、键链直调×2、
     DT/ADA 敏感性探针×2 等）；
-  - `requires`＝层叠依赖开关名（62 条依赖边，与 irq_case 内 require 守卫一致）；  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的六个数据 fixture
+  - `requires`＝层叠依赖开关名（63 条依赖边，与 irq_case 内 require 守卫一致）；  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的七个数据 fixture
     （`heap_info_bytes`/`lrct_trim_result`/`fd31_adc_res_named_values`/
     `jl_adda_daa_con1_initial_fixture`/`p33_canary_first_read_words`/
-    `ancif_official_resources`——官方 UFW 外层 ANCIF/ANCIF1 内容二元组）只存
+    `ancif_official_resources`——官方 UFW 外层 ANCIF/ANCIF1 内容二元组/
+    `jl_rand_seed`——JL_RAND->R64L 0xfd3b00 熵源种子 4 字节小端）只存
     probe_irq_entry 模块常量**名**，由调用方传命名空间解析——数值绝不复制进 registry；
   - `summary`＝一句话描述（证据全文在 probe_irq_entry 注释与 HANDOFF）。
 - `FRONTIERS`：两个前沿契约单点——`crc_bankb`（289,849 @ 0x60679ba 读 0xf27f4b）与
