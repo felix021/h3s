@@ -161,6 +161,40 @@ def _engagements(scenario):
     return value if isinstance(value,list) else None
 
 
+def _window_park_step(scenario):
+    """d1_window.park.model_step(RBKREV 窗口锚 W_park,d1-window-producer-spec §2.7):
+    D1 场景行由观察器落定(S19 pend 写面后的首次 event_clock_engaged)。键缺/非 int
+    返回 None,调用方回退现状锚(idle_wait_park_log 首条 park)——回退路径零行为变化。"""
+    window=scenario.get('d1_window')
+    if not isinstance(window,dict):return None
+    park=window.get('park')
+    if isinstance(park,dict) and isinstance(park.get('model_step'),int):
+        return park['model_step']
+    return None
+
+
+def _window_engagement(scenario,engagements,shape):
+    """W_park 的接管 engagement(§2.7 适配点 2):engagements 中 model_step 最大且
+    <=W_park 的合格条目。全程跑 D1 场景时首条 engagement=boot 期 os_time_dly 停泊的
+    engage(远早于 W_park),不能再用。shape='timer0'/'core_ticks' 选快照形状判据
+    (d1_2 周期推导/d1_3 core tick 快照)。d1_window 键缺返回 None(调用方回退现状=
+    首条合格 engagement);在场而无合格条目同样返回 None,由调用方按观测缺口处置
+    ——绝不回退 boot 快照。"""
+    w_park=_window_park_step(scenario)
+    if w_park is None:return None
+    best=None
+    for entry in (engagements or []):
+        if not isinstance(entry.get('model_step'),int) or entry['model_step']>w_park:continue
+        if shape=='timer0':
+            shaped=isinstance(entry.get('timer0'),dict)
+        else:
+            ticks=entry.get('core_ticks') if isinstance(entry.get('core_ticks'),dict) else {}
+            shaped=isinstance(ticks.get('0'),dict)
+        if shaped and (best is None or entry['model_step']>=best['model_step']):
+            best=entry
+    return best
+
+
 def _message_chain(scenario):
     value=_machine(scenario).get('message_chain_observations')
     if isinstance(value,dict):return value
@@ -388,9 +422,10 @@ def d1_1_park(scenario):
     # 空队列阻塞(pend 不返回)→ 调度器切 idle 任务 0x12c57e→0x12c5ca。
     # park pc 只核窗口边界的 park(有 model_step 时过滤);窗口开却零 park 记录=fail
     # (codex 复核修正:log 存在但空/无记录不得静默通过)。
+    # 窗口锚(§2.7 适配点 1):d1_window 在场→W_park;键缺回退=首条 park log(现状)。
     log=_park_log(scenario)
-    park_boundary=None
-    if log:
+    park_boundary=_window_park_step(scenario)
+    if park_boundary is None and log:
         for entry in log:
             if entry.get('kind')=='core_idle_wait_entered' and isinstance(entry.get('model_step'),int):
                 park_boundary=entry['model_step'];break
@@ -496,12 +531,14 @@ def d1_2_timer0_cycles(scenario):
     checks.append(_check('park_window',detail=why))
 
     # ≥3 次连续完整周期 + RTI 回实际 RETI + 重新 park(需要交付步号/park 日志)。
-    # 窗口切分:验收窗口=两核首次 park 之后——expiry/delivery 步号必须 > park 边界
-    # (idle_wait_park_log 首条 park 的 model_step);无法确定边界时不猜,missing。
+    # 窗口切分:验收窗口=W_park(d1_window.park.model_step,§2.7 适配点 1)之后——
+    # expiry/delivery 步号必须 > park 边界;键缺回退现状(idle_wait_park_log 首条
+    # park 的 model_step——全程跑 D1 场景时那是 boot 期停泊,判据会被 boot 前缀
+    # 污染,故生产者侧必须带 d1_window);无法确定边界时不猜,missing。
     expiry_steps=timer0.get('expiration_model_steps')
     log0=_park_log(scenario)
-    park_boundary=None
-    if log0:
+    park_boundary=_window_park_step(scenario)
+    if park_boundary is None and log0:
         for entry in log0:
             if entry.get('kind')=='core_idle_wait_entered' and isinstance(entry.get('model_step'),int):
                 park_boundary=entry['model_step'];break
@@ -529,10 +566,16 @@ def d1_2_timer0_cycles(scenario):
     # 相邻到期间隔恰推导周期步(配置不变;40,000 是 prd=119999/STD12M/div1 的推导值)。
     # 期望周期从 park 时刻快照推导(engage 时的 con/prd——窗口开头配置),终态只在
     # 无快照时使用并显式标注「假设窗口内配置不变」(codex 复核修正:不用窗口外的
-    # 历史配置套窗口内间隔)。
+    # 历史配置套窗口内间隔)。d1_window 在场时快照锚=W_park 的接管 engagement
+    # (§2.7 同款选择;engagements[0] 在全程跑时是 boot 期快照,不再使用)。
     engagements=_engagements(scenario)
     expected=None;expected_src=None
-    if engagements and isinstance(engagements[0].get('timer0'),dict):
+    snap=_window_engagement(scenario,engagements,'timer0')
+    if snap is not None:
+        expected=_timer0_expected_period_steps(snap['timer0'])
+        expected_src='park-time engage snapshot (anchored at d1_window.park)'
+    elif _window_park_step(scenario) is None and \
+            engagements and isinstance(engagements[0].get('timer0'),dict):
         expected=_timer0_expected_period_steps(engagements[0]['timer0'])
         expected_src='park-time engage snapshot'
     if expected is None:
@@ -625,8 +668,9 @@ def d1_2_timer0_cycles(scenario):
 
     # 「无未知停点」:窗口内没有未处理的未知边界/跳过或补值(旧 kind 再次阻塞也不通过)。
     # probe 单次运行:终态 stop 即第一个未被处理的停——窗口开后任何未知停 kind 都算窗口内
-    # 停;唯一豁免=全核停表(all_cores_idle_waiting)发生在 ≥3 周期完成之后(自然收尾,
-    # codex 复核修正:预算停/窗口后停表不算未知停)。
+    # 停;豁免=自然收尾停(all_cores_idle_waiting 全核停表/window_complete D1 窗口计数
+    # 耗尽,§2.7 适配点 3)发生在 ≥3 周期完成之后(codex 复核修正:预算停/窗口后停表
+    # 不算未知停;window_complete 不足 3 周期仍红,由 H1/H8 接管)。
     stop=scenario.get('stop') or {}
     kind=stop.get('kind')
     if kind in (None,'instruction_budget'):
@@ -635,6 +679,10 @@ def d1_2_timer0_cycles(scenario):
     elif kind=='all_cores_idle_waiting' and len(steps)>=3:
         checks.append(_check('no_unknown_stops_in_window',
             detail='honest all-cores stop after >=3 complete in-window cycles (natural end)'))
+    elif kind=='window_complete' and len(steps)>=3:
+        checks.append(_check('no_unknown_stops_in_window',
+            detail='d1 window counter exhausted after >=3 complete in-window cycles '
+                   '(natural end)'))
     else:
         checks.append(_check('no_unknown_stops_in_window',fail=True,
             detail=f'stop {kind} @ {scenario.get("stop_pc")} is an unhandled unknown boundary '
@@ -676,26 +724,44 @@ def d1_3_core_tick(scenario):
     # 首次溢出按从实际 park 状态推出的闭式期限到达(engage 快照互证,不预锁常数)。
     # 时间口径(codex 复核修正):ceil((prd+1-cnt)/progress) 是相对步数,必须加
     # engagement 的全局步号(model_step)后与**溢出时刻**步号
-    # (core_tick_configuration[0].expiration_model_steps[0])比对;交付步号允许更晚
+    # (core_tick_configuration[0].expiration_model_steps)比对;交付步号允许更晚
     # (交付延迟另记),溢出步号必须精确等于闭式。
+    # 窗口锚(§2.7 适配点 2):d1_window 在场→快照=engagements 中 model_step 最大且
+    # <=W_park 者(W_park 的接管)+比对目标=窗口内首个 >W_park 的溢出步号(boot 期
+    # engagement/溢出不参与闭式比对);键缺回退现状(首条快照+首条溢出)。
     engagements=_engagements(scenario)
     expiry_steps0=_core_tick0(scenario).get('expiration_model_steps')
-    first_delivery=deliveries[0] if deliveries and isinstance(deliveries[0].get('model_step'),int) else None
-    snap_entry=None
-    for entry in (engagements or []):
-        core_snap=entry.get('core_ticks',{}) if isinstance(entry.get('core_ticks'),dict) else {}
-        if isinstance(core_snap.get('0'),dict) and isinstance(entry.get('model_step'),int):
-            snap_entry=entry;break
+    w_park=_window_park_step(scenario)
+    if w_park is not None:
+        in_window=[d for d in deliveries if isinstance(d.get('model_step'),int)
+                   and d['model_step']>w_park]
+        first_delivery=in_window[0] if in_window else None
+        eligibility_delivery=first_delivery
+        expiry_first=next((s for s in (expiry_steps0 if isinstance(expiry_steps0,list) else ())
+                           if isinstance(s,int) and s>w_park),None)
+    else:
+        first_delivery=deliveries[0] if deliveries and isinstance(deliveries[0].get('model_step'),int) else None
+        eligibility_delivery=deliveries[0] if deliveries else None
+        expiry_first=(expiry_steps0[0] if isinstance(expiry_steps0,list) and expiry_steps0
+                      and isinstance(expiry_steps0[0],int) else None)
+    snap_entry=_window_engagement(scenario,engagements,'core_ticks')
+    if snap_entry is None and w_park is None:
+        for entry in (engagements or []):
+            core_snap=entry.get('core_ticks',{}) if isinstance(entry.get('core_ticks'),dict) else {}
+            if isinstance(core_snap.get('0'),dict) and isinstance(entry.get('model_step'),int):
+                snap_entry=entry;break
     if snap_entry is None or first_delivery is None:
         checks.append(_check('closed_form_deadline',
             missing='machine.event_clock_engagements[](model_step + core_ticks["0"] 快照'
                     '{con,cnt,prd,progress})+ core_tick deliveries[].model_step(交付步号)'
                     '+ core_tick_configuration[0].expiration_model_steps(溢出步号)'
                     '(相对闭式须加快照全局步号后与溢出时刻比对,交付允许延迟)'))
-    elif not (isinstance(expiry_steps0,list) and expiry_steps0 and isinstance(expiry_steps0[0],int)):
+    elif expiry_first is None:
+        hint=('窗口内首个 >W_park 的溢出步号,boot 前缀溢出不参与闭式比对'
+              if w_park is not None else
+              '首次溢出的全局步号,区分溢出时刻与允许延迟的交付时刻')
         checks.append(_check('closed_form_deadline',
-            missing='core_tick_configuration[0].expiration_model_steps(首次溢出的全局步号,'
-                    '区分溢出时刻与允许延迟的交付时刻)'))
+            missing=f'core_tick_configuration[0].expiration_model_steps({hint})'))
     else:
         snap=snap_entry['core_ticks']['0']
         cnt,prd,progress=(snap.get('cnt'),snap.get('prd'),snap.get('progress'))
@@ -704,7 +770,7 @@ def d1_3_core_tick(scenario):
                 missing=f'engage snapshot incomplete: {json.dumps(snap)}'))
         else:
             expected=snap_entry['model_step']-(-((prd+1-cnt))//progress)  # 全局步号+相对闭式
-            actual=expiry_steps0[0]
+            actual=expiry_first
             checks.append(_check('closed_form_deadline',fail=actual!=expected,
                 detail=(f'first core-tick expiry at model step {actual} == parked step '
                         f'{snap_entry["model_step"]} + closed form '
@@ -717,7 +783,8 @@ def d1_3_core_tick(scenario):
     # 交付符合当时的 IRQ 资格与优先级(pending 期间逐步重检;IPMASK 临界区延后属既有语义)。
     # 结构化契约:eligibility_note 为 dict 且 eligible==True 才算过(codex 复核修正:
     # 任意非空文本不算资格证明);字符串/缺键=观测格式不符→missing。
-    eligibility=deliveries[0].get('eligibility_note') if deliveries else None
+    # d1_window 在场时资格面取窗口内首个交付(同款 >W_park 过滤,§2.7)。
+    eligibility=eligibility_delivery.get('eligibility_note') if eligibility_delivery else None
     if isinstance(eligibility,dict) and eligibility.get('eligible') is True:
         checks.append(_check('delivery_eligibility_and_recheck',detail=json.dumps(eligibility)[:200]))
     else:

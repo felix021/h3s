@@ -35,6 +35,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from br28_model import Timer0
 from check_d1_acceptance import (ASSERTIONS,run_all,park_window,
                                  _timer0_expected_period_steps,
+                                 _window_park_step,_window_engagement,
                                  d1_1_park,d1_2_timer0_cycles,d1_3_core_tick,
                                  d1_4_message_chain,bi_a1_first_timer0_wake,
                                  bi_a2_period_conservation,bi_a5_c2_exit_two_levels,
@@ -264,6 +265,60 @@ def _d15(scenario):
     return d1_5_health(scenario)
 
 
+def boot_prefix_scenario(window_expiries=3):
+    """合成 boot 前缀世界(d1-window-producer-spec §2.7 换锚判据形状):
+    park_log 首条=boot 期 os_time_dly 途中停泊(model_step=1000,pc=0x6066318 非
+    idle 任务体);boot 段 Timer0 到期 [16780,56780,96780]+3 次交付(间隔恰推导
+    周期 40,000,boot 与窗口同配置——旧锚下污染不露破绽,「≥3 周期」被轻易满足);
+    boot engagement(model_step=1000,core tick cnt=1,000,000 → boot 溢出 51,000)。
+    S19 park=W_park=100,000(d1_window.park.model_step),窗口数值同 parked_scenario
+    平移:首段 36,780/周期 40,000/core tick 143,173(cnt=627,308)。window_expiries
+    可减(<3 时演示真窗口计数,boot 前缀不动)。"""
+    W=100000
+    scenario=copy.deepcopy(parked_scenario())
+    scenario['name']='synthetic_boot_prefix'
+    scenario['completed_steps']=1000000
+    expiry=[W+36780,W+76780,W+116780][:window_expiries]
+    boot_expiry=[16780,56780,96780]
+    deliveries=[{'kind':'timer0_irq_entry','core':0,'irq':4,'vector_address':'0x19fe10',
+                 'handler':'0x12ece8','reti_from':'0x12c5ca','delivery_clears_pending':False,
+                 'pending_cleared_by_handler_ack':True,'model_step':step}
+                for step in [16781,56781,96781]+[s+1 for s in expiry]]
+    timer0_snap={'con':0x1401,'cnt':9660,'prd':119999,'remainder':0,'source_remainder':0}
+    engagements=[
+        {'model_step':1000,'timer0':dict(timer0_snap),'first_segment_advances':50000,
+         'inter_segment_execution':0,
+         'core_ticks':{'0':{'con':1,'cnt':1000000,'prd':1199999,'progress':4}}},
+        {'model_step':W,'timer0':dict(timer0_snap),'first_segment_advances':36780,
+         'inter_segment_execution':3220,
+         'core_ticks':{'0':{'con':1,'cnt':627308,'prd':1199999,'progress':4}}}]
+    events=[{'kind':'core_idle_wait_entered','core':1,'pc':'0x12c5ca'},
+            {'kind':'core_idle_wait_entered','core':0,'pc':'0x12c5ca'},
+            {'kind':'event_clock_engaged','idle_cores':[0,1]}]
+    events+=[{'kind':'timer0_irq_rti','core':0,'reti_from_frame':'0x12c5ca'}]*window_expiries
+    log=[{'kind':'core_idle_wait_entered','core':1,'pc':'0x6066318','model_step':1000},
+         {'kind':'core_idle_wait_entered','core':1,'pc':'0x12c5ca','model_step':W},
+         {'kind':'core_idle_wait_entered','core':0,'pc':'0x12c5ca','model_step':W}]
+    log+=[{'kind':'core_idle_wait_entered','core':0,'pc':'0x12c5ca','model_step':W+s}
+          for s in (36790,76790,116790)[:window_expiries]]
+    machine=scenario['machine']
+    machine['events']=events
+    machine['idle_wait_park_log']=log
+    machine['event_clock_engagements']=engagements
+    machine['timer0_irq_entry_projection']['deliveries']=deliveries
+    machine['message_chain_observations']['last_dispatch_step']=W+50000
+    peripherals=scenario['peripherals']
+    peripherals['timer0'].update(expirations=3401+len(expiry),w1c_acknowledgements=window_expiries,
+                                 expiration_model_steps=boot_expiry+expiry)
+    peripherals['core_tick_configuration'][0]['expiration_model_steps']=[51000,W+143173]
+    machine['core_tick_entry_projection']['deliveries']=[
+        {'kind':'core_tick_entry','core':0,'irq':3,'vector_address':'0x19fe0c',
+         'handler':'0x60661a4','reti_from':'0x12c5ca','model_step':W+143173,
+         'eligibility_note':{'ipmask':0,'priority':1,'eligible':True}}]
+    scenario['d1_window']={'park':{'model_step':W}}
+    return scenario
+
+
 def _failed_checks(result,prefix):
     return [c for c in result['checks'] if c['status']=='fail' and c['name'].startswith(prefix)]
 
@@ -443,6 +498,156 @@ class FailTests(unittest.TestCase):
         scenario=self._mutated()
         scenario['machine']['watchpoint_hits']['0x60653ae']=0
         self.assertEqual(d1_3_core_tick(scenario)['status'],'fail')
+
+
+class WindowParkStepTests(unittest.TestCase):
+    """§2.7 窗口锚辅助:d1_window.park.model_step 读取与 W_park 接管 engagement
+    选择(最大且 <=W_park;键缺/无合格条目 None,调用方回退现状)。"""
+
+    def test_missing_or_malformed_keys_return_none(self):
+        self.assertIsNone(_window_park_step({}))
+        self.assertIsNone(_window_park_step({'d1_window':{}}))
+        self.assertIsNone(_window_park_step({'d1_window':{'park':{}}}))
+        self.assertIsNone(_window_park_step({'d1_window':{'park':'100'}}))
+        self.assertIsNone(_window_park_step({'d1_window':{'park':{'model_step':'100'}}}))
+
+    def test_int_step_is_returned(self):
+        self.assertEqual(_window_park_step({'d1_window':{'park':{'model_step':100}}}),100)
+
+    def test_engagement_selection_takes_latest_at_or_before_w_park(self):
+        scenario={'d1_window':{'park':{'model_step':100000}}}
+        ticks={'0':{'con':1,'cnt':1,'prd':1199999,'progress':4}}
+        boot={'model_step':1000,'core_ticks':dict(ticks)}
+        mid={'model_step':50000,'core_ticks':dict(ticks)}
+        takeover={'model_step':100000,'core_ticks':dict(ticks)}
+        after={'model_step':150000,'core_ticks':dict(ticks)}
+        engagements=[boot,mid,takeover,after]
+        self.assertIs(_window_engagement(scenario,engagements,'core_ticks'),takeover)
+        self.assertIs(_window_engagement(scenario,engagements,'timer0'),None)  # 形状不符
+        self.assertIs(_window_engagement({},engagements,'core_ticks'),None)    # 键缺回退
+        # 同步号并列取后见者(时间序在后=接管);形状不符条目跳过不挡合格条目
+        tie={'model_step':100000,'core_ticks':dict(ticks)}
+        self.assertIs(_window_engagement(scenario,[boot,tie,takeover],'core_ticks'),takeover)
+        broken={'model_step':90000,'core_ticks':'not-a-dict'}
+        self.assertIs(_window_engagement(scenario,[broken,boot],'core_ticks'),boot)
+
+
+class D1WindowAnchorTests(unittest.TestCase):
+    """§2.7 适配点 1/2(换锚):d1_window.park.model_step(W_park)在场时,d1_1/d1_2
+    的窗口切分与 d1_3 的闭式锚不再吃 boot 前缀(boot 停泊/到期/engagement);
+    键缺回退现状(首条 park log/首条快照)——同一世界去掉 d1_window 键即旧锚
+    行为,逐项对照(回退路径零行为变化的机检面)。"""
+
+    def test_boot_park_excluded_from_d1_1_window(self):
+        # boot 停泊 pc 非 idle 任务体:旧锚(首条 park=boot)把它计入窗口 → core1 fail;
+        # 换锚后窗口只含 S19 park → d1_1 pass
+        scenario=boot_prefix_scenario()
+        self.assertEqual(d1_1_park(scenario)['status'],'pass')
+        del scenario['d1_window']
+        self.assertEqual(d1_1_park(scenario)['status'],'fail')  # 回退=现状(boot 污染可见)
+
+    def test_boot_expiries_do_not_inflate_d1_2_cycle_count(self):
+        # 窗口内仅 2 次到期/交付+boot 段 3 次(间隔恰 40,000):旧锚计 5 次→
+        # three_complete_cycles 过(判据失效演示);换锚后=真窗口值 2 →红
+        scenario=boot_prefix_scenario(window_expiries=2)
+        by={c['name']:c for c in d1_2_timer0_cycles(scenario)['checks']}
+        self.assertEqual(by['three_complete_cycles']['status'],'fail')
+        self.assertIn('only 2 in-window',by['three_complete_cycles']['detail'])
+        del scenario['d1_window']
+        old={c['name']:c for c in d1_2_timer0_cycles(scenario)['checks']}
+        self.assertEqual(old['three_complete_cycles']['status'],'pass')
+
+    def test_boot_prefix_world_d1_full_window_still_passes(self):
+        # 真窗口 3 周期完整+boot 前缀在场:换锚不误伤(d1_1/d1_2/d1_3 全 pass)
+        scenario=boot_prefix_scenario()
+        for fn in (d1_1_park,d1_2_timer0_cycles,d1_3_core_tick):
+            result=fn(scenario)
+            self.assertEqual(result['status'],'pass',
+                             f'{result["id"]}: {json.dumps(result["failures"]+result["missing"])}')
+
+    def test_d1_3_closed_form_anchors_window_engagement(self):
+        # boot engagement(1000+50,000=51,000)与窗口 engagement(W_park+143,173=
+        # 243,173)两套闭式各自自洽:换锚后比对窗口闭式 vs 窗口内首个溢出,
+        # boot 溢出(51,000<W_park)不参与
+        scenario=boot_prefix_scenario()
+        by={c['name']:c for c in d1_3_core_tick(scenario)['checks']}
+        self.assertEqual(by['closed_form_deadline']['status'],'pass')
+        self.assertIn('== parked step 100000 + closed form',by['closed_form_deadline']['detail'])
+        self.assertNotIn('51000',by['closed_form_deadline']['detail'])
+
+    def test_d1_3_window_expiry_mismatch_fails_boot_anchor_still_passes(self):
+        # 窗口内首溢出 +1:换锚红(243,174 != 243,173);同一世界去掉 d1_window
+        # 回退现状=boot 锚自洽(51,000 == 1,000+50,000)→过(旧口径原样保留)
+        scenario=boot_prefix_scenario()
+        scenario['peripherals']['core_tick_configuration'][0]['expiration_model_steps']=[51000,243174]
+        by={c['name']:c for c in d1_3_core_tick(scenario)['checks']}
+        self.assertEqual(by['closed_form_deadline']['status'],'fail')
+        del scenario['d1_window']
+        old={c['name']:c for c in d1_3_core_tick(scenario)['checks']}
+        self.assertEqual(old['closed_form_deadline']['status'],'pass')
+
+    def test_d1_3_engagement_only_after_w_park_degrades_to_missing(self):
+        # d1_window 在场而 engagements 只有 >W_park 条目:锚定选择无合格者 →
+        # 观测缺口 pending;不回退「首条快照」(回退会把窗口闭式锚到窗口后条目上)
+        scenario=boot_prefix_scenario()
+        ticks={'0':{'con':1,'cnt':627308,'prd':1199999,'progress':4}}
+        scenario['machine']['event_clock_engagements']=[
+            {'model_step':150000,'core_ticks':dict(ticks),'timer0':{'con':0x1401,'cnt':9660,
+                                                                    'prd':119999}}]
+        by={c['name']:c for c in d1_3_core_tick(scenario)['checks']}
+        self.assertEqual(by['closed_form_deadline']['status'],'pending')
+        del scenario['d1_window']
+        old={c['name']:c for c in d1_3_core_tick(scenario)['checks']}
+        self.assertEqual(old['closed_form_deadline']['status'],'fail')  # 现状=首条快照直接比
+
+    def test_bi_assertions_ignore_d1_window_anchor(self):
+        # §2.7 适配点 4:BI-A1/A2 语义=首次停泊-唤醒往返,锚仍=首条 park log,
+        # d1_window 在场与否结果逐字节相同(零改动的机检钉)
+        scenario=boot_prefix_scenario()
+        stripped=copy.deepcopy(scenario);del stripped['d1_window']
+        for fn in (bi_a1_first_timer0_wake,bi_a2_period_conservation):
+            self.assertEqual(json.dumps(fn(scenario),sort_keys=True),
+                             json.dumps(fn(stripped),sort_keys=True))
+
+
+class WindowCompleteStopTests(unittest.TestCase):
+    """§2.7 适配点 3:stop=window_complete(D1 窗口计数耗尽)进 d1_2
+    no_unknown_stops_in_window 豁免(条件同 all_cores_idle_waiting:≥3 窗口内
+    周期后自然收尾);不足 3 周期依旧红(由 H1/H8 接管);instruction_budget
+    豁免维持不变。"""
+
+    def _by(self,scenario):
+        return {c['name']:c for c in d1_2_timer0_cycles(scenario)['checks']}
+
+    def test_natural_window_complete_after_three_cycles_passes(self):
+        scenario=copy.deepcopy(parked_scenario())
+        scenario['stop']={'kind':'window_complete','note':'d1 window exhausted'}
+        result=d1_2_timer0_cycles(scenario)
+        by={c['name']:c for c in result['checks']}
+        self.assertEqual(by['no_unknown_stops_in_window']['status'],'pass')
+        self.assertIn('window counter exhausted',by['no_unknown_stops_in_window']['detail'])
+        self.assertEqual(result['status'],'pass')
+
+    def test_window_complete_below_three_cycles_still_fails(self):
+        scenario=copy.deepcopy(parked_scenario())
+        scenario['stop']={'kind':'window_complete'}
+        scenario['peripherals']['timer0']['expiration_model_steps']=[46780,86780]  # 仅 2 周期
+        scenario['machine']['timer0_irq_entry_projection']['deliveries']= \
+            scenario['machine']['timer0_irq_entry_projection']['deliveries'][:2]
+        scenario['peripherals']['timer0']['w1c_acknowledgements']=2
+        scenario['machine']['events']=[e for e in scenario['machine']['events']
+                                       if e.get('kind')!='timer0_irq_rti'] \
+            +[{'kind':'timer0_irq_rti','core':0,'reti_from_frame':'0x12c5ca'}]*2
+        scenario['machine']['idle_wait_park_log']= \
+            scenario['machine']['idle_wait_park_log'][:-1]  # 去掉第 3 次重新 park
+        by=self._by(scenario)
+        self.assertEqual(by['no_unknown_stops_in_window']['status'],'fail')
+
+    def test_instruction_budget_exemption_unchanged(self):
+        # parked_scenario 本身 stop=instruction_budget:豁免维持(措辞不变)
+        by=self._by(parked_scenario())
+        self.assertEqual(by['no_unknown_stops_in_window']['status'],'pass')
+        self.assertIn('instruction budget',by['no_unknown_stops_in_window']['detail'])
 
 
 class D1_4VerdictTests(unittest.TestCase):
