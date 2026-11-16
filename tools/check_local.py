@@ -75,6 +75,7 @@ def main():
     run(sys.executable,'tools/test_acceptance_dashboard.py')
     run(sys.executable,'tools/test_falsification.py')
     run(sys.executable,'tools/test_world_snapshot.py')
+    run(sys.executable,'tools/test_handoff_lint.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json',tool='probe_boot.py')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json',tool='probe_boot_handoff.py')
     run(sys.executable,'tools/probe_boot_boundaries.py','--report','analysis/local-checks/boot-boundaries.json',tool='probe_boot_boundaries.py')
