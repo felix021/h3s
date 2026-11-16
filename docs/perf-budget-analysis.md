@@ -629,3 +629,87 @@ spool 逐行相等（含 chunk 中随机读）。
 
 三臂并行 RSS=3×~130MB（O6 包络内）；串行基线本身受并发负载影响偏高，无负载纯串行
 约 50 分钟（3×16），并行比恒为臂数比 3→1。
+
+## 14. O7 事件时钟段实测与裁决（路 O7E / sim-o7e，2026-11-16，基线 main 546b73c，一案一提交纯文档）
+
+§11.6 把 O7（事件时钟 advance 段闭式批量）列「等」级（上界法估 7-17%，上限
+1.1-1.2x）。时机变化：S19MAP 把 S16+S17 的 ~8M 事件时钟虚拟步列为 park 前步数
+增量大头（28.76M→37-39M 的 80%+）——本路以实测重估。纯测量路：**零 tools/
+改动**（测量脚本在 `~/tmp/o7e/` 不进仓；worktree 需软链 firmware+reference-cache
+两个 ignored 资产并初始化 jl-misctools 子模块，否则 units 的 hearing_aid 用例
+import 失败）。
+
+### 14.1 方法
+
+PROF3 §11 同法（py-spy 200Hz speedscope、CPU 时间口径）+ 事件时钟段专用仪表：
+`advance_event_clock` 包 `perf_counter`+`time.thread_time`
+（CLOCK_THREAD_CPUTIME_ID）双累计器——每 idle 停留段只调一次（全程 1,575 次），
+仪表开销可忽略；thread_time 粒度实测 0.66µs、千段累积偏置 +2.9%（受控校验）。
+计数面零 wrapper：机器自带 `event_clock_advances` 与
+`hardware.counts['completed_model_steps']`（=指令步 advance 21,796,266+stall 路径
+2,159+事件时钟 13,429,113=35,227,538，两跑同值）。场景=p11_heap_experimental
+单臂 official，budget 21.8M，双跑（run2 加两个 py-spy 窗）。
+
+### 14.2 实测
+
+世界对齐：停点 21,796,266@0x12e286 instruction_budget（与 PROF3 20M 停点同
+PC）、ec_advances 13,429,113 与 B3/DT/PROF3 钉值逐位一致。
+
+| 量 | run1（无 py-spy） | run2（带 py-spy 窗） |
+|---|---|---|
+| CPU（getrusage）/速率 | 760.9s / **28,646 步/s** | 806.0s / 27,043 步/s |
+| EC 段 thread CPU（仪表） | **22.445s = 2.95%** | 23.566s = 2.92% |
+| EC 段 wall | 22.456s（wall≈cpu：段内几乎不被调度出核） | —（py-spy 挂载扰动 +5%） |
+| **每事件时钟虚拟步** | **1.671µs** | 1.755µs |
+
+- **段形状**：EC 集中在指令步 ~18.0M-19.3M 的 OS 等待族窗口（~95s wall span 内
+  1,575 个 idle 停留段、最大单段 19,864 步、均值 ~8.5k 步），19.3M 后冻结在
+  13,429,113——与 S19MAP「当前前缀事件时钟冻结 13,429,113、S16 起再启动」互证。
+- **每虚拟步 1.67µs vs 指令步 ~35µs（21.8M/760.9s）**：EC 虚拟步不经过
+  decode/effect/访存/trace 签名/spool，只剩 `BR28Model.advance` 扫描体+机器侧
+  期限/轮询薄层——这就是 §11.4 上界法高估的根源（见 14.4）。
+- **段内构成**（py-spy EC 子树 leaf 归因，90s 窗内 6.88s）：~91.6% 是
+  `BR28Model.advance` 固定扫描体——software pending 逐步资格重检扫（br28_model
+  :6960-65 行族）~36%、core tick 扫描头（6883/6890）~9%、`CoreTickStopped.advance`
+  ~6%、Timer0 两级分数（5000/04）~5%、ICU（783）~3%、watchdog（1268）~2%；
+  `advance_event_clock` 循环帧+`timer2_poll_due` 合计 ~5%。**无单点 >15% 行**，
+  成本弥散在固定扫描结构——与 §11.2「每步全族扫描结构未变」一致。
+- **测量地基注记（py-spy 幅度偏差）**：受控对照（纯 Python 忙环+同款仪表）两仪器
+  零差（thread_time 99.76% vs py-spy 99.80%）；但真实 EC 段上 py-spy 子树只录到
+  thread_time 同窗口径的 ~57%（6.88s vs 12.1s）——深栈+113MB 进程的部分 unwind
+  失败可证（~1.8s advance-leaf 样本缺 `advance_event_clock` 祖先帧；正常窗
+  advance self 4.0µs/步×窗内实际指令步数只能解释 6.7s，其余 ~1.8s 为截断栈）。
+  **占比结论以 thread_time 仪表为准（2.92-2.95%）**；py-spy 只用于段内构成比例。
+  两仪器全跑折算区间 [0.7%（py-spy）, 3.0%（仪表）] 均在 5% 线下。
+
+### 14.3 S16+S17 外推与预算线
+
+- S16+S17 ~8M 事件步 × 1.671µs/步 ≈ **13.4s** 纯 EC 墙钟。
+- park 冲刺段（28.76M→37-39M）合计 ≈ 1-2M 指令步（37-74s @27-29k 步/s）+EC
+  13.4s ≈ **50-90s**——事件时钟占冲刺墙钟 ~15-27%。S19MAP「8M 占 80%+」是
+  **模型步**口径；**墙钟口径指令步仍是主导（3-5 倍）**，「advance 效率决定最后
+  冲刺路钟」的前提不成立。
+- 全程外推（单臂到 park ~37-39M 模型步）：21.8M 实测 761s +（21.8→28.76M）
+  ~6.96M 指令步 ~244s + 冲刺 50-90s ≈ **~18 min**——§11.8/§12.4 的 45min 预算
+  线余量继续扩大，O7 不是瓶颈项。
+
+### 14.4 裁决
+
+**不做（O7 永久关闭，§11.6「等」级销案）**：
+
+1. 占比 2.95% < 5% 线（两仪器区间 [0.7%, 3.0%]）；理论上限=完全消除 EC 段=
+   +3.0% 吞吐。
+2. 闭式批量须逐一复刻六族**逐步**语义：ICU 命令 pending 递减、watchdog 分数累积
+   +过期 Blocked、core tick 分数计数+溢出态+屏蔽期逐步资格重检（BF）、Timer0 两级
+   分数+pending 片单抛纪律（BE）、TIMER2 LRC 分数+事务簿记（BK）、软件 pending
+   合格立即请求交付——§11.6/codex §6.5「三条件不充分」裁决维持，行为零变化证明
+   面对 3% 收益为负 ROI。段内构成（14.2）也显示无「一处批量换掉大头」的单点。
+3. §11.4 上界法「事件时钟段 ~60-150s（7-17%）」实测纠偏为 22.4s（2.95%）——
+   上界法把 advance 族自耗时全记给 EC 段；advance 族其余自耗时属主循环逐步调用
+   （4.0µs/步 advance self），O7 批量化消不掉。
+
+**重开触发器**（写明，防再议无据）：单等待段规模 >1e8 虚拟步（现最大 19,864、
+全程 13.4M），或 advance 族占比结构性上升（如新外设族进扫描体）。
+
+本路（O7E）到此为止：纯测量与裁决，零 tools/ 改动；验收 `check_local.py
+--units` EXIT=0。
