@@ -273,13 +273,14 @@ public class H3SBridge {
 
     /**
      * 只读状态查询（opcode FF，body=`SN FE 01 <cmd>`，QueryPolicy §battery 白名单形状——
-     * SDK 实发 4 字节 body 含 SN 在前）：cmdId∈{0x2f 电量, 0x17 ANC, 0x14 电源, 0x10 睡眠}
-     * （docs/app-protocol.md §2.6）。回包按 SN 匹配走普通 response 事件；电量载荷实测形状
+     * SDK 实发 4 字节 body 含 SN 在前）：cmdId∈{0x2f 电量, 0x17 ANC, 0x14 电源, 0x10 睡眠,
+     * 0x22 EQ}（docs/app-protocol.md §2.6；0x22 回包形状 `22 n …` n=3+7×段数，SIMB1C A3 钉死，
+     * SIMB1E 读环 E2E 加入）。回包按 SN 匹配走普通 response 事件；电量载荷实测形状
      * `2f 03 s0 s1 s2`（槽位 percent|0x80充电位，MainActivity 先例）。只读不需武装。
      */
     @JavascriptInterface
     public String readStatus(int cmdId) {
-        boolean legal = cmdId == 0x2f || cmdId == 0x17 || cmdId == 0x14 || cmdId == 0x10;
+        boolean legal = cmdId == 0x2f || cmdId == 0x17 || cmdId == 0x14 || cmdId == 0x10 || cmdId == 0x22;
         if (!legal) return err("cmdId 非法（只收 0x2f 电量/0x17 ANC/0x14 电源/0x10 睡眠）: " + cmdId);
         if (!QueryPolicy.permitted(buildReadStatusFrame(0, cmdId))) return err("内部错误：读帧未过 QueryPolicy");
         int sn = transport == null ? 0 : allocSn();

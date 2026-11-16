@@ -1593,7 +1593,7 @@ function markSegment(id, predicate) {
     button.setAttribute('aria-pressed', String(predicate(button)));
   });
 }
-function bindSegment(id, attribute, method, feedbackId) {
+function bindSegment(id, attribute, method, feedbackId, readBack) {
   const buttons = Array.from($(id).children);
   buttons.forEach(button => {
     button.onclick = () => {
@@ -1607,12 +1607,14 @@ function bindSegment(id, attribute, method, feedbackId) {
         $(feedbackId).textContent = ok
           ? '设备已应答：' + button.textContent.trim().replace(/\s+/g, ' ')
           : message;
+        // 写静默链路（仿真直调世界）无写回执：写命令落定后回读设备真值确认（SIMB1E 写环）
+        if (readBack != null && connected) issue('readStatus', [readBack]);
         updateGates();
       });
     };
   });
 }
-bindSegment('ancSeg', 'data-anc', 'setAnc', 'ancFeedback');
+bindSegment('ancSeg', 'data-anc', 'setAnc', 'ancFeedback', 23);
 bindSegment('volSeg', 'data-vol', 'setPromptVolume', 'volFeedback');
 bindSegment('modeSeg', 'data-mode', 'setAudioMode', 'modeFeedback');
 
@@ -1651,6 +1653,18 @@ function parseDeviceMessage(payloadHex) {
       $('ancFeedback').textContent = '设备回报：' + names[mode];
     }
   }
+
+  /* EQ 回读（SIMB1E 读环）：形状 `22 n <nB 曲线>`，n=3+7×段数（SIMB1C A3 钉死）。
+     段字段字节布局未钉，只显示段数+曲线原样 hex，不猜字段。 */
+  if (hex.startsWith('22') && hex.length >= 4) {
+    const n = parseInt(hex.slice(2, 4), 16);
+    if (n >= 3 && (n - 3) % 7 === 0 && hex.length >= (n + 2) * 2) {
+      const segments = (n - 3) / 7;
+      $('eqFeedback').textContent = segments > 0
+        ? '设备回报：EQ ' + segments + ' 段 · ' + hex.slice(4)
+        : '设备回报：EQ 0 段（设备未配置自定义曲线）';
+    }
+  }
 }
 window.onH3sEvent = raw => {
   try {
@@ -1665,7 +1679,7 @@ window.onH3sEvent = raw => {
       mtu = event.mtu;
       connectionNote = '';
       renderConnection();
-      if (firstReady) issue('readStatus', [47]);
+      if (firstReady) [47, 23, 34].forEach(id => issue('readStatus', [id]));
       return;
     }
 
@@ -2005,6 +2019,8 @@ $('eqSend').onclick = () => {
           ? '设备已应答：' + name
           : '设备已应答刚才的 EQ；当前页面另有未发送修改。')
         : message;
+      // 写静默链路（仿真直调世界）无写回执：落定后回读设备曲线确认（SIMB1E 写环）
+      if (connected) issue('readStatus', [34]);
       updateGates();
     }
   );

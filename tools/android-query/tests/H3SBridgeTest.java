@@ -73,6 +73,11 @@ public class H3SBridgeTest {
             "readStatus 帧应过 QueryPolicy");
         bytes("readStatus(0x17) 帧", H3SBridge.unhex(result(b.readStatus(0x17)).getString("bytesHex")),
             H3SBridge.buildReadStatusFrame(0, 0x17));
+        // SIMB1E 读环 E2E：0x22 EQ 查询加入白名单（回包形状 22 n …，n=3+7×段数）
+        JSONObject r22 = result(b.readStatus(0x22));
+        expect(r22.getBoolean("ok"), "readStatus(0x22) 应成功: " + r22);
+        expect(cn.felix021.h3squery.QueryPolicy.permitted(H3SBridge.unhex(r22.getString("bytesHex"))),
+            "readStatus(0x22) 帧应过 QueryPolicy");
     }
 
     /** device_message 事件：未登记 SN 的响应帧透出给页面（只读查询回包的收口）。 */

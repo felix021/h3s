@@ -12,7 +12,8 @@ public final class QueryPolicy {
             boolean info = op == 3 && size == 6 && data[pos+8] == -1 && data[pos+9] == -1 && data[pos+10] == -1 && data[pos+11] == -1 && data[pos+12] == 0;
             boolean md5 = op == 212 && size == 1;
             boolean offset = op == 225 && size == 1;
-            boolean battery = op == 255 && size == 4 && data[pos+8] == (byte)0xfe && data[pos+9] == 1 && (data[pos+10] == 47 || data[pos+10] == 20 || data[pos+10] == 16 || data[pos+10] == 23);
+            // cmdid 白名单：0x2f 电量/0x14 电源/0x10 睡眠/0x17 ANC/0x22 EQ（SIMB1E 读环 E2E 加 0x22）
+            boolean battery = op == 255 && size == 4 && data[pos+8] == (byte)0xfe && data[pos+9] == 1 && (data[pos+10] == 47 || data[pos+10] == 20 || data[pos+10] == 16 || data[pos+10] == 23 || data[pos+10] == 34);
             boolean ancCycle = op == 193 && size == 5 && data[pos+8] == 0 && data[pos+9] == 0 && data[pos+10] == 4 && data[pos+11] == 0;
             boolean eligibility = op == 226 && size == 2 && data[pos+8] == 0;
             if (!info && !md5 && !offset && !battery && !eligibility && !ancCycle) return false;
