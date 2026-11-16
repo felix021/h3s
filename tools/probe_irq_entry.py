@@ -2531,13 +2531,12 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         if p33_canary_first_read_words is not None:
             options['p33_canary_first_read_words']=dict(p33_canary_first_read_words)
     # p2m_mailbox_ack(BM §3 规格;首版路 B3/S19 批 2 续 0b875ed,本版 B2R 重
-    # 落地,opt-in 默认关):S15/S17 喂狗 0x12cc7e 的 P11 邮箱事务(kick
+    # 落地,B2G 提层到 conditional):S15/S17 喂狗 0x12cc7e 的 P11 邮箱事务(kick
     # [0xF2A618]=0x400→P2M_INT_PND bit12 置位+P2M+3 回声=M2P+7 值;CLR 0x1000
     # 清位)。依赖 p11_power_init(M2P 消息窗是其 harness 区)。消费时序:
-    # S15 邮箱首停 0x12CC94 在 flash 顶窗口停点(0x606c5ba,FLS 路在途)之后
-    # ——开关留在 probe 变体层(registry probe_only),FLS 窗口过界后的批 2
-    # 放行跑再按到达顺序提层;默认关世界本场景零行为差异(19,139,239 停点
-    # 实测 with/without 逐字节同停,B3 撤回记录)。
+    # S15 邮箱首停 0x12CC94 在当前前沿停点(28,890,702 随机种子读)之后——
+    # conditional 层条件场景自动开,当前前缀容器零触达(提层实测停点/步数
+    # 逐值不变,19,139,239 时 with/without 逐字节同停的 B3 记录延续)。
     if p2m_mailbox_ack:
         require(p11_power_init,
                 'the P2M mailbox ack projection only layers on the p11_power_init scenario '
