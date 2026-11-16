@@ -1068,9 +1068,16 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     self.finish_exact(self.pc+size);adapters['rep_copy_unknown_transport_load']+=1
                     return
             if diagnostics and diagnostics.get('exact_subword_stores') and insn.id in (
-                    'st.h','st.b','st.h.l','st.b.l','st.h.sp','st.b.sp','st.h.sp.l','st.b.sp.l'):
+                    'st.h','st.b','st.h.l','st.b.l','st.h.sp','st.b.sp','st.h.sp.l','st.b.sp.l',
+                    'st.h.idxs'):
                 op=module.check.operands(insn,raw)
-                if '.sp' in insn.id:address=self.sp+op['n'];value=self.R[op['r']]
+                if insn.id.endswith('.idxs'):
+                    # 路 D2AJ:变址移位半字写 st.h.idxs h[r_base+r_idx<<1]=r_t
+                    # (解交织惯用形,证据站点 0x6033dc6 esco aec 前端;全 app
+                    # 284 站点)。与上面各形式同一理由——硅上半字写不读包含
+                    # 字,直写 2 字节;地址=基寄存器+索引寄存器×2(宽度定标)。
+                    address=self.R[op['r']]+(self.R[op['s']]<<1);value=self.R[op['t']]
+                elif '.sp' in insn.id:address=self.sp+op['n'];value=self.R[op['r']]
                 elif insn.id.endswith('.l'):address=self.R[op['r']]+op['n'];value=self.R[op['s']]
                 else:address=self.R[op['b']]+op['n'];value=self.R[op['d']]
                 width=2 if insn.id.startswith('st.h') else 1

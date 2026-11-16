@@ -1,30 +1,41 @@
 {
   "case_id": "D2-b-INJ-06",
   "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；断言源=d1-acceptance §6.2 b4 行+蓝图 §4.1 wraparound 键+§6 步 5",
-  "initial_state": "预填用例（未执行）。计划起点=三场景（INJ-03/04/05）各自 b1-b3 已过的世界（本条=b4 维度：在三场景上延长注入，不另建世界）",
-  "inputs_schedule": "计划注入（未执行）：三场景各注入 N=max(12, 2×⌈环形总长/PNS⌋+2) 块（两整圈+2；12 保辅听前 10 帧丢弃门后仍有消费样本，蓝图 §3 交付块数约定）——块参数 PNS/LEN/ADR 全部从开链后的寄存器记录读回不预设；数据公式块号字段 k 保证同通道跨块取不同值",
-  "observation_boundary": "计划观察点（未执行）：wraparound 键（蓝图 §4.1：hwp_wraps/blocks_total/stale_frame_negative）+每块 window/first_bytes/formula_tag 与 consumer_calls 的 first_bytes 逐块比对+块号字段 k 单调性（消费侧 DSP 前样本）",
+  "initial_state": "已执行（路 D2AJ/sim-d2aj，2026-11-17 05:41-06:34，INJ-03 esco 首场景世界上的 b4 维度延长注入，不另建世界）：块 k=1..14 连续交付（k=1=b2 单发，k=2=负例③门关块[产出不消费]，k=3..13=b3/b4 连续块，k=14=负例①静音块），环参数全从开链后寄存器记录读回（ADR=0x41aa8c/LEN=768 样本=3 块/环/PNS=0x100/块 1024B，blocks_per_lap=3）——蓝图 N=max(12,2×⌈环长/PNS⌉+2)=12 的下界被 14 超过",
+  "inputs_schedule": "已执行：14 块连续 produce_block→IRQ68 真实交付，块号字段 k=1..14 单调（数据公式 bits7-4）；绕回由模型环形投影承载（hwp 单调累计+写位置 (hwp mod LEN) 折返——INJ-01 路 D2AJ 扩展，替代原「越界诚实停」），SRP 读投影=(hwp-PNS) mod LEN 使 handler 每次读到本次块窗口",
+  "observation_boundary": "已执行观察点：每块 produced window=ADR+((k-1)×PNS mod LEN)×ch×ssize（window_matches_ring 14/14）+交付前窗口字节=块序（window_pre_equal 14/14）；链调用点 data 指针逐块=同式环位（data_ptr_matches_ring 13/13 消费块）；SRN 0xfe0550 写次数=13=handler 调用数（audio handler 尾每次调用重装 SRN=PNS 一字）；hwp 单调 3584 样本、ring_wraps=4（≥2）；真路径块（k=10..14）解交织后 ch0 压缩序/ch1 缓冲序仍逐字节=本块 k（旧帧重复消费即 FAIL 的检测面）；每块交付后 RTI 恢复 park 停点外层上下文（13/13）；负例③门关块（k=2）后重开 bit5 门续注（k=3 起 ring 连续推进无跳变）=「停止后重开无旧帧误用」的停止面证据",
   "assertions": [
-    "d1-acceptance §6.2 b4：连续运行跨过至少两次完整环回（ADC_HWP 绕 [ADC_ADR,+ADC_LEN) 两圈）——wraparound.hwp_wraps≥2；「单帧通过就声称持续流正常」不算过（codex 反例原样保留）",
-    "停止、重开或一次重配后无越界、旧帧误用、重复消费——数据设计三锚：通道间可区分（高字节 01/02/03）、随块变化（bits7-4 块号字段——检「旧帧重复消费」）、样本序可追踪（bits3-0）；块号字段 k 单调（消费侧出现旧 k 即 FAIL）；停止后再注入不产生交付（「停止之后不再消费旧缓冲」，d1-acceptance §6.3 第 4 条）",
-    "d1-acceptance §6.3 高收益边界两类优先覆盖：IRQ 到达缓冲切换前后（环回点附近的交付序）、停止时尚有待处理帧（stop 时刻 in-flight 块的归宿）——不穷举双核交错",
-    "投影措辞：b2/b4 的一切通过结论=「DMA 完成行为投影下通过」（DMA 总线行为/缓存一致性/真实完成时序不建模，d1-acceptance §6.2 DMA 预填方案段+b4 行承接）"
+    "d1-acceptance §6.2 b4：连续运行跨过至少两次完整环回——ring_wraps=4≥2【PASS】；「单帧通过就声称持续流正常」不算过（codex 反例原样保留——本条以 14 块连续+逐块内容证据回应）",
+    "无越界、旧帧误用、重复消费——数据设计三锚全用上：通道间可区分（高字节 01/02）、随块变化（bits7-4 块号字段——每块窗口/解交织面字节携带自身 k，真路径块绕回覆写后 ch0 压缩序仍=新 k）、样本序可追踪（bits3-0）；块号字段 k 单调（consumed_sequence k=1..13 严格递增+k_monotonic=true）【PASS】；停止后再注入不产生交付（负例③：门关块零 handler 调用零 SRN 写，§6.3 第 4 条）【PASS，D2AI 面】",
+    "d1-acceptance §6.3 高收益边界两类：IRQ 到达缓冲切换前后（环回点交付序）——绕回块 k=4/7/10/13 的 data 指针与内容证据连续（0x41aa8c→0x41ae8c→0x41b28c→折返 0x41aa8c 序列逐块核对）；停止时尚有待处理帧（in-flight 块归宿）——门关块 k=2 产出后 pending 被分发器真实清位、内容留在窗口不被消费（后续 k=3 覆写该环位前无任何消费面触达）【如实记录；不穷举双核交错】",
+    "投影措辞：b4 的一切通过结论=「DMA 完成行为投影下通过」（DMA 总线行为/缓存一致性/真实完成时序不建模）+环形绕回投影（对齐折返：PNS 整除 LEN 时写位置折回环首；跨环尾块的搬运形状未测保持诚实停 jl_audio_adc_dma_ring_straddle_not_modeled）+SRP 读投影（=(hwp-PNS) mod LEN，可证伪设计：投影错则逐字节断言 FAIL）"
   ],
-  "timeout_budget": "三场景延长注入的受控步进（无固定步预算；以断言点/诚实停点为界）",
+  "timeout_budget": "14 块连续交付的受控步进（早退块 ~131 步/块、真路径块 ~4803 步/块；单次 restore 全程 ~102s；无超时事件）",
   "model_assumptions": [
-    "本记录=预填：断言锚点出自 d1-acceptance §6.2 b4+§6.3+蓝图 §3/§4.1（静态规格），非执行证据",
     "DMA 完成行为投影（同 INJ-01——b4 是投影敏感度最高的断言类：环回推进由模型维护的 hwp 完成）",
-    "前置=三场景 b1-b3 各自 PASS（蓝图 §6 步 5 排在步 2-4 之后；本条 NOT_RUN 含该排队语义）"
+    "环形绕回投影（INJ-01 路 D2AJ 扩展）：hwp 单调累计、写位置/读回按 (hwp mod LEN) 折返；对齐绕回（PNS|LEN）折返写位置不折返数据，跨环尾块保持诚实停",
+    "SRP 读投影=(hwp-PNS) mod LEN（最近完成块环内起点；b2 实测 block1 SRP=0 互证；app 唯一读点 0x607265a）",
+    "st.h.idxs 直写适配（解交织半字写不读包含字——INJ-03 条件同款；无它则真路径块内容证据面不可达）",
+    "前置=INJ-03 b1-b3 半边（本条在其世界上延长，蓝图 §6 步 5 排队语义满足：b3 交付半边已过、aec 簿记半边 BLOCKED 不阻塞 b4 维度——b4 断言面=交付/绕回/单调，不含 aec 簿记）"
   ],
-  "result": "NOT_RUN",
+  "result": "PASS",
   "uncovered_items": [
-    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 5（b4 三场景+配置切换变体，蓝图 §6 估 1 天）",
-    "重配变体（L1/L2 不同 k 基）随 SW-01 联跑",
-    "停止/重开全生命周期变体（b4 行「停止、重开」三分支中重开一支需另一次开链——视 SW-02 让位变体覆盖度）"
+    "mic_effect/ANC 两场景的 b4 延长注入未跑（INJ-04/05 世界未建；本条 PASS 范围=esco 首场景 14 块）",
+    "重配变体（L1/L2 不同 k 基）随 SW-01 联跑；「重开」分支的完整形态（关链 0x601e436 后再开链）归 SW-02 让位变体——本条只覆盖门关/门开重开面（bit5）",
+    "跨环尾块（PNS 不整除 LEN 的配置）的搬运形状未测（模型诚实停 jl_audio_adc_dma_ring_straddle_not_modeled；本固件 esco 配置 256|768 恰对齐）"
   ],
-  "evidence_level": "none",
-  "evidence_conditions": [],
-  "evidence_refs": [],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "DMA 完成行为投影（同 INJ-01——b4 是投影敏感度最高的断言类：环回推进由模型维护的 hwp 完成）",
+    "环形绕回投影（INJ-01 路 D2AJ 扩展）：hwp 单调累计、写位置/读回按 (hwp mod LEN) 折返；对齐绕回（PNS|LEN）折返写位置不折返数据，跨环尾块保持诚实停",
+    "SRP 读投影=(hwp-PNS) mod LEN（最近完成块环内起点；b2 实测 block1 SRP=0 互证；app 唯一读点 0x607265a）",
+    "st.h.idxs 直写适配（解交织半字写不读包含字——INJ-03 条件同款；无它则真路径块内容证据面不可达）"
+  ],
+  "evidence_refs": [
+    "analysis/local-checks/d2aj/scene.json（b4_deliveries+b4_aggregate+negative_mute：ring_wraps=4/SRN=调用数/data_ptrs_all_match_ring/all_content_evidence_ok/all_rti_ok）",
+    "tools/br28_model.py JLAudioAdcDmaWriteRecords.produce_block/read（绕回+SRP 投影）+tools/test_audio_dma_delivery.py（wrap/straddle/SRP 三测）",
+    "docs/acceptance-samples/d2b/D2-b-INJ-03.json（b3 世界与前置记录）"
+  ],
   "blocked_missing": null,
-  "recorded_at": "2026-11-14T10:40:00"
+  "recorded_at": "2026-11-17T06:34:00"
 }

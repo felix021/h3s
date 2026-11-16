@@ -3834,7 +3834,9 @@ class JLAudioAdcDmaWriteRecords:
         self.word_writes=0
         self.pending=False             # ADC_CON bit7 投影源(硬件 DMA 完成置位)
         self.delivery_in_flight=False  # 每 pending 片至多抛一次 IrqDeliveryRequest
-        self.hwp=0                     # 模型侧硬件写指针(HWP 字单位=样本;软件写复位)
+        self.hwp=0                     # 模型侧硬件写指针累计样本数(单调;环形
+                                       # 位置=hwp%LEN——路 D2AJ 绕回投影,读回/
+                                       # 窗口都按环内位置折算)
         self.blocks_produced=0
         self.con_w1c_acks=0            # |=0x40 W1C 清 pending 的真实执行次数
         self.reads_served=0;self.synthesized_reads=0
@@ -3859,10 +3861,24 @@ class JLAudioAdcDmaWriteRecords:
         self.reads_served+=1
         entry=self.stores[address]
         if address==0xfe0548:
-            # HWP 是硬件写指针:读回=模型侧当前值(软件复位值+produce_block 推进),
-            # 不是「最后写值」——运行期 DMA 语义(PRE §6.3:读回=最后写值对
-            # HWP 不足)。
-            return self.hwp
+            # HWP 是硬件写指针:读回=模型侧当前环内位置(软件复位值+
+            # produce_block 推进后对 LEN 取模——环形缓冲的指针形状),
+            # 不是「最后写值」——运行期 DMA 语义(PRE §6.3:读回=最后写值
+            # 对 HWP 不足)。app 静态面无人读 HWP(audio handler 只读
+            # PNS/ADR/SRP),本投影只服务容器完整性/场景观察。
+            length=self.stores[0xfe0540]['values'][-1] if self.stores[0xfe0540]['writes'] else 0
+            return self.hwp%length if length>0 else self.hwp
+        if address==0xfe054c:
+            # SRP=硬件域读指针(路 D2AJ b3/b4):app 侧唯一读点=audio handler
+            # 0x607265a(算 data=ADR+SRP×ch×ssize),无人写(除 set_buffer 复位
+            # 0)——推进只属硬件域。投影=「最近完成块的环内起点」=(hwp-PNS)
+            # mod LEN(交付时刻读,produce_block 已推进 hwp)。b2 实测互证:
+            # block1 交付时 SRP 读 0、data=ADR+0。若该语义与硅不符,场景的
+            # 逐字节回读断言会 FAIL(可证伪设计),不静默。
+            if self.blocks_produced:
+                length=self._recorded(0xfe0540,'LEN');pns=self._recorded(0xfe0544,'PNS')
+                return (self.hwp-pns)%length
+            # 未完成任何块:走通用「最后写值/合成 0」容器面(set_buffer 写 0)。
         if entry['writes']>0:return entry['values'][-1]
         # 无写显式合成 0(路 AM 先例,derived-not-measured;本路径在开链
         # set_buffer 之后才会被读,该分支是容器完整面)。
@@ -3902,11 +3918,13 @@ class JLAudioAdcDmaWriteRecords:
             raise ValueError('block must be exactly PNS*channels*sample_bytes bytes '
                              '(%d*%d*%d=%d), got %d'%(pns,channels,sample_bytes,expected,len(block)))
         span=length*channels*sample_bytes
-        offset=self.hwp*channels*sample_bytes
+        # 环形窗口(路 D2AJ 绕回投影):hwp 单调累计,环内位置=hwp%LEN;
+        # PNS 整除 LEN 时块界恰好对齐环尾(越界即回 0),否则跨环尾的块
+        # 保持诚实停(硅上跨块搬运形状未测,不发明)。
+        offset=(self.hwp%length)*channels*sample_bytes
         if offset+expected>span:
-            # 环形绕回(b4 域)不在本投影内:单发/顺序推进下越界即诚实停,
-            # 不静默折返(PRE §5-b4 的两整圈验收归后续路)。
-            raise Blocked('jl_audio_adc_dma_wraparound_not_modeled',hwp_samples=self.hwp,
+            raise Blocked('jl_audio_adc_dma_ring_straddle_not_modeled',
+                          ring_pos_samples=self.hwp%length,
                           window_offset=hex(offset),span_bytes=hex(span),block_bytes=hex(expected))
         window=adr+offset
         # MMU 逐页分块写(大缓冲在虚拟堆 0x41xxxx,128B 页界跨界整块写会被
@@ -3918,13 +3936,14 @@ class JLAudioAdcDmaWriteRecords:
             chunk=len(data) if (cursor&127)+len(data)<=128 else 128-(cursor&127)
             mem.write(cursor,data[:chunk])
             cursor+=chunk;data=data[chunk:]
-        # HWP 不取模:越过环尾(下一次 offset+expected>span)即诚实停——
-        # 环形绕回(b4 域)是显式未建模面,不静默折返。
+        # HWP 单调累计(环内位置/圈数由 hwp%LEN 与 hwp//LEN 派生,不加状态
+        # 字段——快照 M4 面零变化);对齐绕回不静默折返数据,只折返写位置。
         self.hwp=self.hwp+pns
         self.pending=True;self.blocks_produced+=1
         return {'window':hex(window),'block_bytes':expected,'pns_samples':pns,
                 'channels':channels,'sample_bytes':sample_bytes,
-                'hwp_after':self.hwp,'pending':True}
+                'hwp_after':self.hwp,'ring_pos_after':self.hwp%length,
+                'ring_wraps':self.hwp//length,'pending':True}
 
     def _recorded(self,address,name):
         entry=self.stores.get(address)
@@ -3996,24 +4015,39 @@ class JLAudioAdcDmaWriteRecords:
                     'srn_word_added':hex(JL_AUDIO_ADC_SRN),
                     'read_semantics':('ADR/LEN/PNS/SRN = last firmware-written value (synthetic '
                                       'initial 0 when never written, route-AM precedent); HWP = '
-                                      'the model-side hardware write pointer (software write '
-                                      'resets it at set_buffer 0x606df2e, produce_block '
-                                      'advances it by PNS samples per block)'),
+                                      'the model-side hardware write pointer read back as its '
+                                      'ring position (software write resets it at set_buffer '
+                                      '0x606df2e, produce_block advances the monotonic count '
+                                      'by PNS samples per block, read-back folds it mod LEN — '
+                                      'route D2AJ); SRP = the hardware-domain read pointer '
+                                      'projected as the freshest completed block origin '
+                                      '((hwp-PNS) mod LEN at read time; the only app reader is '
+                                      'audio handler 0x607265a computing data=ADR+SRP*ch*ssize; '
+                                      'falsified by the per-block byte-equal scene assertions '
+                                      'if wrong)'),
                     'pending_bit':'ADC_CON bit7 reads back set iff the model DMA completed a '
                                   'block and no real |=0x40 W1C has acknowledged it since',
                     'w1c_semantics':'any firmware write to ADC_CON with bit6 set clears pending '
                                     'and delivery_in_flight (dispatcher 0x602f434 and handler '
                                     'tail 0x60726ec both write it; twice is harmless)',
                     'produce_block_shape':('writes exactly PNS*channels*sample_bytes '
-                                           'interleaved bytes at ADR+HWP*channels*sample_bytes '
-                                           '(the ONLY synthetic input is the sample bytes; '
-                                           'window/length derive from the firmware-written '
-                                           'ADR/LEN/PNS); advances HWP by PNS and sets '
-                                           'pending — DMA completion timing is a projection, '
-                                           'wraparound past the ring end is honestly stopped, '
-                                           'not modeled'),
+                                           'interleaved bytes at ADR+(hwp mod LEN)*channels*'
+                                           'sample_bytes (the ONLY synthetic input is the sample '
+                                           'bytes; window/length derive from the firmware-'
+                                           'written ADR/LEN/PNS); advances the monotonic HWP '
+                                           'count by PNS and sets pending — DMA completion '
+                                           'timing is a projection; aligned ring wrap (PNS '
+                                           'dividing LEN) folds the write position back to the '
+                                           'ring start (route D2AJ, two-full-lap b4 evidence '
+                                           'face), a straddling block stays honestly stopped '
+                                           '(jl_audio_adc_dma_ring_straddle_not_modeled)'),
                     'state':{'pending':self.pending,'delivery_in_flight':self.delivery_in_flight,
-                             'hwp_samples':self.hwp,'blocks_produced':self.blocks_produced,
+                             'hwp_samples_monotonic':self.hwp,
+                             'ring_pos_samples':(self.hwp%self.stores[0xfe0540]['values'][-1]
+                                                 if self.stores[0xfe0540]['writes'] else self.hwp),
+                             'ring_wraps':(self.hwp//self.stores[0xfe0540]['values'][-1]
+                                           if self.stores[0xfe0540]['writes'] else 0),
+                             'blocks_produced':self.blocks_produced,
                              'con_w1c_acks':self.con_w1c_acks,'reads_served':self.reads_served,
                              'synthesized_reads':self.synthesized_reads},
                     'synthetic_not_measured':True}} if self.delivery else {})}

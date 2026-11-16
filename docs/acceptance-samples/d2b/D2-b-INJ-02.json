@@ -25,7 +25,7 @@
     "dispatch_delivery irq==68 分支的运行场景触达（IrqDeliveryRequest 路径）留 probe 场景形式化（回归收口）",
     "线程级进入（banks 假设武装）未发生——park 世界稳态停点天然在 handler 内;出现线程态停点世界时补",
     "DAC 侧清位分支 0x602f418 的覆盖（单独置 DAC pending 的变体）未跑（ADC 单发场景按 PRE §5 修正不在覆盖集）",
-    "负例①静音/负例②场景面（②=单元测试覆盖;①未跑,静态标注:handler 被调但样本字节=0 的断言面在 b3 数据侧）"
+    "负例①静音已跑（路 D2AJ：全零块交付照常、消费面按固件真实语义流零、配置/状态面不动——证据 INJ-03/INJ-01）；负例②无 pending=单元测试覆盖"
   ],
   "evidence_level": "conditional",
   "evidence_conditions": [
@@ -40,5 +40,5 @@
     "analysis/local-checks/d2ai/scene.json b2_single_delivery/b2_negative_gate_closed（scene 证据）"
   ],
   "blocked_missing": null,
-  "recorded_at": "2026-11-17T05:10:00"
+  "recorded_at": "2026-11-17T06:34:00"
 }
