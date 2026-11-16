@@ -429,7 +429,7 @@ class PostStopFreezeTests(unittest.TestCase):
             after_steps=0
             def after_step(self,cpu=None,before_pc=None):self.after_steps+=1
 
-        def post_stop(machine,hw,cpu):
+        def post_stop(machine,hw,cpu,stop=None):
             bookkeeping=_Bookkeeping()
             saved={'pc':cpu.pc,'sp':cpu.sp,'rets':cpu.rets,'flags':cpu.flags,'R':list(cpu.R)}
             snapshot=lambda:(hw.timer.cnt,hw.timer.remainder,hw.timer.source_remainder,

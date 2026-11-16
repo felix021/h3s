@@ -220,6 +220,7 @@ class D1WindowObserver:
         self._watch_first={}    # hex(pc)->首次执行模型步(全程)
         self._window_watch={}   # hex(pc)->窗口内执行次数(W_park 起)
         self._completed=0       # 最近一次 note_step 的 completed(指令步轴缓存)
+        self._instructions=0    # 自累计指令步(机器钩子挂接模式,completed=None)
         self._loop_head_after_drain=0
         # W_park 锚定(§2.2:pend 写面首达后的首次 event_clock_engaged;boot 停泊
         # 全部发生在 S19 pend 写面之前,不触发)
@@ -329,7 +330,12 @@ class D1WindowObserver:
     # ── probe 挂点(explore 主循环尾每圈一次;§1 数据流) ─────────────────────
     def note_step(self,cpu,executed_pc,completed,stalled=False):
         """主循环每圈尾喂:本圈执行的指令 PC(stall 圈 idle 未执行,stalled=True)、
-        圈尾 completed。观察点:watchpoint 计数/链跟踪/窗口耗尽停。"""
+        圈尾 completed。观察点:watchpoint 计数/链跟踪/窗口耗尽停。
+        completed=None=机器钩子挂接模式(br28_machine after_step/note_stall):
+        观察器自累计指令步——attach 先于首指令,相对轴=绝对指令步轴。"""
+        if completed is None:
+            self._instructions+=0 if stalled else 1
+            completed=self._instructions
         self._completed=completed
         machine=self.machine
         step=machine.model_step_total(completed)

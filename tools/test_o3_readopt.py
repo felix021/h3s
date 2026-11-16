@@ -104,7 +104,7 @@ class ReadMemoInvalidationTests(unittest.TestCase):
         h['readonly'].append((0x01c60000,bytes.fromhex('a03f00000000')))  # st.w.sp [sp+252]=r0
         regs=[0]*16;regs[0]=0x11223344
         result=explore(self.module,self.app,name='o3_memo_probe',handoff=h,
-            post_stop=lambda machine,hardware,cpu:probe(cpu.mem),
+            post_stop=lambda machine,hardware,cpu,stop=None:probe(cpu.mem),
             diagnostics={'entry_pc':0x01c60000,'initial_sp':0x123700,'initial_gprs':regs,
                          'exact_parallel_stores':True},budget=1)
         self.assertEqual(result['completed_steps'],1)

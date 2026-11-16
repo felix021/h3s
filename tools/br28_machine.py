@@ -70,7 +70,7 @@ class DualCoreMachine:
                  timer0_irq_entry=False,timer0_irq_entry_banks=False,timer0_irq_rti=False,
                  gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False,
                  event_clock_projection=False,timer2_delay_projection=False,
-                 cfg523_object_bytes=None):
+                 cfg523_object_bytes=None,d1_window=False,d1_window_steps=None):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
         self.cpu1_reset_pc=cpu1_reset_pc;self.cpu1_icfg=cpu1_icfg
@@ -162,6 +162,17 @@ class DualCoreMachine:
                 'the cfg523 fixture must be exactly 70 bytes')
         self.cfg523_object_bytes=(None if cfg523_object_bytes is None else bytes(cfg523_object_bytes))
         self.cfg523_installed_at=None
+        # D1 观察窗挂接(路 D1RUN/PR-2;probe_boot PR2_HOOKUP 注记的机器侧
+        # 实现):d1_window=True 时 attach 构造 D1WindowObserver 并注册模块级
+        # d1_window_observer(机器钩子自动生效);d1_window_steps=None=公式 N。
+        # 刻意只存开关值不建观察器实例——M5 capture_static 枚举 vars(),可变
+        # 实例属性会被当静态配置捕获(观察器状态住观察器实例,零捕获面)。
+        require(isinstance(d1_window,bool),'the D1 window hookup is an opt-in boolean')
+        require(d1_window_steps is None or (isinstance(d1_window_steps,int)
+                and not isinstance(d1_window_steps,bool) and d1_window_steps>0),
+                'd1_window_steps must be None (formula) or a positive int')
+        require(not d1_window_steps or d1_window,'explicit D1 window steps require the D1 window hookup')
+        self.d1_window=d1_window;self.d1_window_steps=d1_window_steps
         self.cores={};self.last_core=1;self.stalls=0;self.launches=0;self.events=[];self.event_count=0
         self.boot_anchors=[];self.boot_anchor_count=0
 
@@ -171,6 +182,11 @@ class DualCoreMachine:
 
     def attach(self,cpu0,factory,hardware):
         require(not self.cores,'machine cannot be reused across execution sessions')
+        # 新执行会话开头清掉上一场景遗留的 D1 观察器注册(观察器持有旧世界
+        # 引用;每场景一机器,旧注册在新会话里必然失效——post_stop 尾部的
+        # detach 是常规清理,这里是防御兜底)。
+        global d1_window_observer
+        d1_window_observer=None
         # 执行层记忆化(路 OPT1):对上游钉死文件的三个纯函数做首调缓存,
         # 语义零变化(见 br28_exec_memo 模块头)。装配点是全执行会话的
         # 唯一入口,幂等且不可装入时静默保持原行为。
@@ -179,6 +195,11 @@ class DualCoreMachine:
         self.cores[0]=cpu0;self.factory=factory;self.hardware=hardware
         if self.partial_icfg:self.init_icfg(cpu0)
         hardware.enable_multicore(self.irq1_config,self.ipmask1,self.launch)
+        # D1 观察器构造点(PR2_HOOKUP 注记①的机器侧落点:attach=hardware 首次
+        # 挂上、主循环未启动的唯一时机;构造内部完成模块级注册)。
+        if self.d1_window:
+            from d1_window_observer import D1WindowObserver
+            D1WindowObserver(self,hardware,d1_window_steps=self.d1_window_steps)
 
     def init_icfg(self,cpu):
         cpu.icfg_state=IcfgState(cpu.core_id,cpu.icfg or 0,
@@ -518,6 +539,16 @@ class DualCoreMachine:
                 setup['pcs'].append(hex(before_pc));setup['index']+=1
             if cpu.first_task_return_frame is not None and before_pc in (0x606612c,0x606612e):
                 cpu.first_task_return_frame['next_pc']=cpu.pc
+        # D1 观察器喂步钩子(PR2_HOOKUP 注记②的机器侧落点;正常圈:本圈指令
+        # 已执行、hardware.advance 未跑——completed 传 None=观察器自累计,
+        # attach 先于首指令故相对轴=绝对指令步)。窗口耗尽停=唯一行为件
+        # (规格决策 C):raise Blocked('window_complete') 由主循环 except
+        # Blocked 归一为 stop(explore 既有通道,probe_boot 零改动)。
+        if d1_window_observer is not None and cpu is not None:
+            d1_window_observer.note_step(cpu,before_pc,None,stalled=False)
+            request=d1_window_observer.window_stop_request
+            if request is not None:
+                raise Blocked(request.pop('kind'),**request)
         self.hardware.core_icfg=self.icfg_demands()
 
     def first_task_tail(self,cpu,insn,raw):
@@ -787,6 +818,12 @@ class DualCoreMachine:
     def note_stall(self,cpu,details):
         self.stalls+=1
         self.record_event({'core':cpu.core_id,**details})
+        # D1 观察器喂步钩子(stall 圈=idle 停泊圈,无指令执行)。此处处于
+        # explore 的 except CoreStall 处理器内,不能 raise——窗口停请求只置
+        # 位,延到下一正常圈的 after_step 钩子 raise(延迟≤一个唤醒周期,
+        # 记录面如实呈现窗口终点步数)。
+        if d1_window_observer is not None:
+            d1_window_observer.note_step(cpu,None,None,stalled=True)
 
     def model_step_total(self,completed):
         """D1 双轴步数之模型步轴(d1-window-producer-spec §2.1 备选口径,路 PR2OBS):

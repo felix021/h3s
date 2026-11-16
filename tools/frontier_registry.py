@@ -402,6 +402,17 @@ FEATURES = (
     Feature('key_chain_matrix', 'probe_only', ('p11_power_init', 'fd31_adc_pnd_completion',
                                                'fd31_adc_res_named_values'), True, None,
             '停点后直调三键矩阵多手势场景(路 AJ:3 键 4 档分档器+单击/三击/四击/长按档)'),
+    Feature('d1_acceptance', 'probe_only', ('event_clock', 'timer0_irq4_delivery',
+                                            'core_tick_irq3_delivery', 'repeat'), False, None,
+            'D1 验收观察窗场景(park 后 N 模型步,断言 D1-1..5,含 H8 生产者自检'
+            '与正式验收入口;d1-acceptance §1;d1-scene-blueprint;'
+            'd1-window-producer-spec)'),
+    Feature('d1_window_steps', 'probe_only', ('d1_acceptance',), True, None,
+            'D1 观察窗模型步预算(默认=max(S_tick+160k,200k),H8 自检不足自动延长;'
+            '显式值覆盖且不延长)'),
+    Feature('d1_post_inject', 'probe_only', ('d1_acceptance',), True, None,
+            "park 后事件注入变体('s18_18' 直调 0x6000cba,显式合成假设,默认关;"
+            '行为实现归 PR-4)'),
 )
 
 # 两个共享栈场景(analyze_image_trace.SCENARIOS 同名;probe 场景名在

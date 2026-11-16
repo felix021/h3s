@@ -2094,7 +2094,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             'code_fingerprint':captured_snapshot.header['code_fingerprint']}
     post_stop_observations=None
     if post_stop is not None:
-        post_stop_observations=post_stop(machine,hardware,c)
+        # stop kwarg(路 D1RUN/PR-2,默认缺省=既有回调零影响):D1 观察器的
+        # finalize 需要停点 dict(window_complete vs unknown stop 的判别面)。
+        post_stop_observations=post_stop(machine,hardware,c,stop=stop)
     materialize_trace_text()  # 路 WIND:last_instructions 消费点物化(幂等)
     result={'name':name,'entry':hex(diagnostics.get('entry_pc',ENTRY) if diagnostics else ENTRY),'completed_steps':completed,'stop_pc':hex(c.pc),
         'stop':stop,'assumptions':{

@@ -985,7 +985,7 @@ def make_key_chain_post_stop(app):
         write_ram(cpu,KEY_CHAIN_CLICK_COUNT,bytes([0]))
         beat_states.append({'sequence_reset':True})
 
-    def post_stop(machine,hardware,cpu):
+    def post_stop(machine,hardware,cpu,stop=None):
         if machine is None or hardware is None:
             raise Blocked('key_chain_requires_dualcore_world')
         if cpu.core_id!=0:
@@ -1216,7 +1216,7 @@ def make_key_chain_matrix_post_stop(app):
         return {'key_name':name,'key_id':KEY_CHAIN_MATRIX_KEY_BY_NAME[name],'clicks':clicks,
                 'beats':beat,'post_calls':posts_of(seq)}
 
-    def post_stop(machine,hardware,cpu):
+    def post_stop(machine,hardware,cpu,stop=None):
         if machine is None or hardware is None:
             raise Blocked('key_chain_matrix_requires_dualcore_world')
         if cpu.core_id!=0:
@@ -1299,6 +1299,28 @@ def make_key_chain_matrix_post_stop(app):
         return observations
     return post_stop
 
+
+def make_d1_window_post_stop():
+    """构造 D1 验收观察窗场景的 post_stop 回调(路 D1RUN/PR-2;PR2_HOOKUP
+    注记③)。观察器由机器侧 attach 构造并注册模块级——此处只取注册实例
+    (同一 machine 校验),停点后组装 d1_window 全树+machine 面观察键,并在
+    尾部 detach(下一场景 attach 另有防御性清注册)。stop 由 probe_boot
+    停点后回调以 kwarg 传回(窗口停 vs unknown stop 的判别面)。"""
+    import br28_machine
+    def post_stop(machine,hardware,stopped_cpu,stop=None):
+        observer=br28_machine.d1_window_observer
+        if observer is None or observer.machine is not machine:
+            return {'d1_window':{'window_blocked_events':[
+                {'kind':'d1_observer_missing',
+                  'note':'the D1 scenario ran without its observer registered'}]}}
+        try:
+            face=observer.machine_face()
+            return {'d1_window':observer.finalize(stop),
+                    'machine':{**machine.report(),**face}}
+        finally:
+            observer.detach()
+    return post_stop
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -1370,6 +1392,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              cfg523_named_fixture=False,
              key_chain_scan=None,
              key_chain_matrix=None,
+             d1_acceptance=False,d1_window_steps=None,d1_post_inject=None,
              flash_image_bytes=None,readonly=(),
              snapshot=None):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
@@ -1558,6 +1581,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # ±20%→上界 ≈4.1×10⁷)——预算放宽到 50M 留余量(「一次到 park」是
         # derived-not-measured,新停点由实跑取得)。
         if jl_eq_init_writes:budget=50000000
+        # 路 D1RUN/PR-2(PR2SPEC §4.4):D1 观察窗场景——JLEQ 实测停点指令步
+        # 29,601,125,窗口=W_park+N(N 上界 3×P_park 量级≈几十万模型步,窗口内
+        # 真实指令步远小于 N),指令轴终点 ≈29.7M;41M 覆盖停点+窗口+余量
+        # (事件钟快进段虚拟步不耗指令预算)。park 实测落定后按实收紧。
+        if d1_acceptance:budget=41000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -2800,6 +2828,26 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         require(fd31_adc_res_named_values.get(KEY_CHAIN_CHANNEL_WORD) is not None,
                 'the key-chain matrix RES fixture must cover the key channel word')
         post_stop=make_key_chain_matrix_post_stop(app)
+    # d1_acceptance(路 D1RUN/PR-2,PR2SPEC §4.1;registry probe_only 三条之
+    # 开关):D1 验收观察窗场景——机器侧挂接=br28_machine d1_window 注册
+    # (attach 构造观察器/after_step+note_stall 喂步/窗口耗尽停),probe 侧
+    # 只传开关与 N;报告键组装走 post_stop 通道(stop kwarg 由 probe_boot
+    # 停点后回调传回)。激活要求事件钟+Timer0/core-tick 交付+repeat 全开
+    # (H1-H8 观察面的机制前提)。
+    if d1_post_inject is not None:
+        require(d1_post_inject=='s18_18',
+                "the D1 post-inject variant only defines 's18_18' (direct 0x6000cba call)")
+        require(d1_acceptance,'the D1 post-inject variant requires the D1 acceptance window')
+        raise Blocked('d1_post_inject_pending_pr4',
+                      note='explicit synthetic hypothesis; behavioral implementation belongs to PR-4')
+    if d1_acceptance:
+        require(event_clock and timer0_irq4_delivery and core_tick_irq3_delivery and repeat,
+                'the D1 acceptance window requires the event clock, Timer0 IRQ4 and core-tick '
+                'IRQ3 deliveries, and repeat delivery (H1-H8 observation prerequisites)')
+        require(post_stop is None,'the D1 acceptance window owns its post_stop slot')
+        machine_options['d1_window']=True
+        if d1_window_steps is not None:machine_options['d1_window_steps']=d1_window_steps
+        post_stop=make_d1_window_post_stop()
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=budget,
                      extra_diagnostics=extra or None,extra_regions=p11_regions+eq_regions,
@@ -6425,7 +6473,12 @@ def main():
     p.add_argument('--rom',type=Path,required=True)
     p.add_argument('--firmware',type=Path,default=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw')
     p.add_argument('--repaired-candidate',type=Path);p.add_argument('--failed-r2',type=Path)
-    p.add_argument('--report',type=Path,required=True);args=p.parse_args()
+    p.add_argument('--report',type=Path,required=True)
+    p.add_argument('--with-d1-window',action='store_true',
+                   help='append the D1 acceptance window scenario (d1_acceptance_window: park '
+                        '+ N model steps observed; emits d1_window keys and exits nonzero unless '
+                        'the D1 gate passes) — default off keeps every legacy report identical')
+    args=p.parse_args()
     rom=args.rom.read_bytes();check_rom(rom);module=upstream();app=application(args.firmware);header=package_header(args.firmware)
     image=flash_image(args.firmware)
     # 两个共享栈场景的开关集从 frontier_registry 单点派生(开关/依赖/前沿
@@ -6579,8 +6632,32 @@ def main():
         candidate,readonly=candidate_view(path,digest,args.firmware)
         r=irq_case(module,candidate,header,rom,name,entry=True,readonly=readonly);r['ufw_sha256']=digest
         report.setdefault('candidate_prefixes',[]).append(r)
-    check(report,args.firmware);args.report.parent.mkdir(parents=True,exist_ok=True)
+    # D1 验收观察窗场景行(路 D1RUN/PR-2;PR2SPEC §4.3 运行集合决策 (ii)):
+    # --with-d1-window 旗标开时才构造(默认关=legacy 报告逐字节不变)。场景
+    # =条件前沿栈全量(event_clock/Timer0 IRQ4/core-tick/repeat 均已随历路
+    # 提层入栈,PR2SPEC 场景行的 event_clock=True 显式传参因重复 kwarg 省略)
+    # + d1_acceptance 观察器;budget=41M(d1 分支覆盖 flag 推导)。
+    if args.with_d1_window:
+        report['scenarios'].append(
+            irq_case(module,app,header,rom,'d1_acceptance_window',
+                     **scenario_flags('p11_heap_experimental',sys.modules[__name__]),
+                     d1_acceptance=True,flash_image_bytes=image))
+    check(report,args.firmware)
+    # D1 正式验收入口(PR2SPEC §4.5):五断言机检消费同轮报告的 d1_window 键,
+    # verdicts 回填场景行,d1_gate 非 pass → 报告落盘后以非零码退出(checker
+    # CLI 自身退出码恒 0,非零退出义务在此)。
+    d1_gate=None
+    if args.with_d1_window:
+        from check_d1_acceptance import run_all
+        row=next(s for s in report['scenarios'] if s.get('name')=='d1_acceptance_window')
+        result=run_all(row)
+        row.setdefault('d1_window',{})['verdicts']=result
+        d1_gate=result['d1_gate']
+        report['d1_gate']=d1_gate
+    args.report.parent.mkdir(parents=True,exist_ok=True)
     args.report.write_text(json.dumps(report,indent=2)+'\n')
+    if d1_gate is not None and d1_gate!='pass':
+        sys.exit(1)
 
 
 if __name__=='__main__':main()

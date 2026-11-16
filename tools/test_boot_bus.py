@@ -1580,7 +1580,7 @@ class BusInstructionTests(unittest.TestCase):
         projected=BR28Model()
         result=explore(self.module,self.app,name='insert_pair_projected',handoff=self.handoff(),
             hardware=projected,
-            post_stop=lambda machine,hardware,cpu:{
+            post_stop=lambda machine,hardware,cpu,stop=None:{
                 'probe_byte':cpu.mem.read(0x123800,1).hex(),
                 'probe_neighbour':cpu.mem.ram.get(0x123801),
                 'probe_r3':hex(cpu.R[3])},
