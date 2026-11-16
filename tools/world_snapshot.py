@@ -1141,6 +1141,24 @@ M4_FAMILIES = (
     ('p11_lpvad', 'P11LPVADConfigRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('jl_audio_adc_dma', 'JLAudioAdcDmaWriteRecords', ('stores', 'word_writes')),
+    # Post-SNAPX families (route ASS jl_adc_start_config + route B2G
+    # p2m_mailbox_ack): two more peripheral-projection containers merged after
+    # the SNAPX capture and both ON in the current conditional frontier flag
+    # set, so a capture would refuse without them (the M3 hardware static guard
+    # surfaces them first — "attribute ... is neither captured state nor a
+    # static fixture"). jl_adc_start (JLAdcStartConfigRegisters) is the AM
+    # four-word synthetic read-back shape (stores/word_writes/reads_after_write/
+    # synthesized_initial_reads; the probe-only MIC_CTL0 initial-word probe
+    # rides the per-object static guard like DT/ADA). p2m_mailbox
+    # (P2mMailboxAck) is the request-response projection: one-shot armed bits
+    # (pnd/echo), kick/clr counts, the non-0x400 kick histogram, the passive
+    # message/echo slot mirrors and the in-flight transaction/current record.
+    ('jl_adc_start', 'JLAdcStartConfigRegisters',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    ('p2m_mailbox', 'P2mMailboxAck',
+     ('pnd_armed', 'echo_armed', 'kicks', 'other_kick_values', 'clr_writes',
+      'clear_slot_writes', 'pnd_reads', 'echo_reads', 'message_mirror',
+      'stored_slot', 'transactions', 'current')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 
@@ -1212,7 +1230,16 @@ M5_STATE = ('last_core', 'idle_wait_cores', 'stalls', 'launches', 'deferred_core
             'seen_cpu1_control_kicks', 'software_irq_deliveries', 'core_tick_deliveries',
             'timer0_irq_deliveries', 'irq_delivery_deferrals', 'irq_delivery_deferral_events',
             'events', 'event_count', 'boot_anchors', 'boot_anchor_count', 'first_task_calls',
-            'first_task_returns', 'first_task_setup', 'event_clock_advances', 'core_ids')
+            'first_task_returns', 'first_task_setup', 'event_clock_advances', 'core_ids',
+            # Route M3FIX: the cfg523 parser-entry install is a ONE-SHOT event
+            # bit (after_step flips it None -> {'pc','object_bytes'} when the
+            # parser entry PC is first reached; B2G landed it after the SNAPX
+            # canonical). Classified as STATE, not static: losing it would
+            # re-install the fixture on the first post-restore parser entry
+            # (double write + duplicate event); it surfaced exactly that way —
+            # a capture-time dict vs fresh-build None static mismatch refused
+            # the canonical 29,215,313 resume round.
+            'cfg523_installed_at')
 # Observation-layer attributes of analyze_image_trace.TraceMachine (route O6):
 # the per-run signature spool and its pending-writes buffer record what THIS
 # comparator run executed, not simulated world state — a restored world starts a
@@ -1302,8 +1329,8 @@ register_module('M3', 'hardware', capture=_capture_m3, restore=_restore_m3,
                             'object slots are skipped here and captured by the M4 adapter.')
 register_module('M4', 'hardware', capture=_capture_m4, restore=_restore_m4,
                 fields={cls: fields for _, cls, fields in M4_FAMILIES},
-                description='Peripheral projection object families: 35 BR28Model slots '
-                            'covering all 34 projection classes (32 stateful + the two '
+                description='Peripheral projection object families: 43 BR28Model slots '
+                            'covering all 42 projection classes (40 stateful + the two '
                             'stateless idle fixtures; SFCReadBus is two slots — design §M4 '
                             'six families). One-shot event bits and carry state (CRC '
                             'accumulator, ICU countdown) round-trip as ordinary fields; '

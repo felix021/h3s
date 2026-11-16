@@ -479,7 +479,43 @@ BD 蓝图 §2.5 的接入形状逐条兑现：
 | 21.8M 等价性重验：canonical 21,800,455 @ 0x606e044 捕获（2,539,009B，691s）+自反 #0 报告逐字节相等；N=21,700,455（=前沿−100k）预算停点捕获（idle 等待步耗预算不计数，实际完成 21,696,721）三档 advance（+1/+10k/+100k，均为 instruction_budget 停点；前沿停点形状由 canonical 行覆盖）resume vs 全量重放逐字节相等 | 就绪（env 门控手动层） | evidence/snapshot-artifact.json canonical 行 + frontier-n21700455 行 |
 | 验证轮入口：analyze_image_trace `--capture-snapshots DIR`（全量重放顺带捕获每镜像世界，一代码态一次）/`--resume-from DIR`（验证轮从快照起跑，秒级/臂；全或无、expected_context 按标签拒错配、`--self-check` 拒 resume） | 就绪（用法/边界判据详见 docs/snapshot-resume.md） | analyze_image_trace snapshot_path/resume_snapshot_config/RunPool |
 
+## 5.9 适配器缺口修复：ASS/B2G 两容器 + M5 cfg523 安装位（2026-11-16 路 M3FIX/sim-m3fix，基线 915531c）
+
+路 RAND 在条件场景跑 `--capture-snapshots` 撞到预存在缺口（非 RAND 引入）：
+`M3: attribute jl_adc_start of type JLAdcStartConfigRegisters is neither
+captured state nor a static fixture`——21.8M SNAPX canonical 之后合并的
+外设容器未注册进适配器，条件场景快照捕获整体不可用（park 后 PR-D0 的
+快照前置阻塞）。错误面在 M3 hardware 静态守卫，修复落点=M4_FAMILIES
+（外设投影族一贯槽位，BL/SNAPX 先例）。
+
+| 项 | 状态 | 锚点 |
+|---|---|---|
+| 缺口审计（守卫收集模式：低预算捕获让静态守卫「收集不拒」，一次性枚举全部未注册容器；另以 AST 全量提取 BR28Model/DualCoreMachine 两类 __init__ 外的运行期 self 赋值+外部链 machine 写点，逐一对照适配器清单） | 就绪（容器面恰两处：ASS `jl_adc_start`（JLAdcStartConfigRegisters）+ B2G 提层 `p2m_mailbox`（P2mMailboxAck）；机器面恰一处：`cfg523_installed_at`——B2G 的 cfg523 解析器入口一次性安装位，运行期 None→{'pc','object_bytes'}，误落 M5 static 段在 29,215,313 canonical resume 轮显形拒载；均无第四处） | ~/tmp 审计脚本（会话工件） |
+| M4 +两槽位（41→43 槽）：jl_adc_start 四字段（stores/word_writes/reads_after_write/synthesized_initial_reads；probe_initial 探针 fixture 走每对象静态守卫，DT/ADA 同款）；p2m_mailbox 十二字段（pnd_armed/echo_armed/kicks/other_kick_values/clr_writes/clear_slot_writes/pnd_reads/echo_reads/message_mirror/stored_slot/transactions/current——一次性 armed 位+事务日志+在途 current 记录，无构造 fixture） | 就绪 | world_snapshot.M4_FAMILIES 尾部 post-SNAPX 组 |
+| M5 +cfg523_installed_at 入 M5_STATE（一次性事件位归状态非 fixture：丢失=恢复后解析器入口二次安装 fixture+重复事件；构造侧 fixture cfg523_object_bytes 仍在 static 段双向把关） | 就绪 | world_snapshot.M5_STATE + test_world_snapshot.Cfg523InstallBit |
+| fast tier：M4ProjectionFamilies +1 行为例（test_ass_and_b2g_containers_resume_exact_semantics：AM 读回答自捕获 stores、P2M armed 位/事务/在途事务续演精确），M4_SWITCHES/poke 补两容器（全字段非默认值 poke）；Cfg523InstallBit 2 例（安装位 round-trip 到未装机机器+字节同一/未装机 None round-trip）；小世界 build_machine 同步带 fixture+poke | 就绪（46 例全绿） | tools/test_world_snapshot.py |
+| 条件场景实测（真实适配器）：N=1000 预算停点捕获过闸（51,735B）+自反 #0 报告逐字节相等+advance X=+10,000 resume vs 全量重放逐字节相等；篡改负例（M4.p2m_mailbox.pnd_reads / M4.jl_adc_start.word_writes 各 +1）→ resumed 报告对全量重放必红（值级破坏仍被抓，AZ B-3 语义不因适配器扩展漏检） | 就绪 | 本路会话验证记录（HANDOFF M3FIX 条目⑤） |
+| canonical CLI 捕获轮 + resume 验证轮（29,215,313 自然停点，双镜像） | 见 HANDOFF M3FIX 条目（实测结果随路落档） | analyze_image_trace --capture-snapshots/--resume-from |
+
+双闸语义照设计：适配器形状变化→SNAPX 时代旧快照拒载（指纹闸），重捕获
+（一次全量重放）即迁移，不做兼容层。
+
 # 6. HANDOFF 条目（同步落档）
+
+- 路 M3FIX（sim-m3fix，2026-11-16，基线 915531c）：**快照适配器缺口修复——
+  条件场景 --capture-snapshots/--resume-from 恢复可用**。21.8M SNAPX canonical
+  之后合并的两路外设容器补进 M4_FAMILIES（41→43 槽）：ASS jl_adc_start
+  （AM 四字合成读回，四字段+probe_initial 走静态守卫）与 B2G 提层 p2m_mailbox
+  （请求-响应投影，12 字段含一次性 armed 位/事务日志/在途 current）；另
+  M5_STATE +cfg523_installed_at（B2G cfg523 解析器入口一次性安装位，运行期
+  None→dict，误落 static 段在 29,215,313 resume 轮显形）。缺口审计=守卫
+  收集模式一次性枚举+AST 运行期赋值全量对照（容器面/机器面各恰上述项，
+  无第四处）；错误面在 M3 hardware 静态守卫（未注册 M4 槽位的容器撞它
+  显形），修复落点=M4 投影族一贯槽位。fast tier +3 例（AM/P2M 续演语义+
+  cfg523 安装位 round-trip）；条件场景实测：N=1000 捕获过闸+自反 #0 逐字节
+  相等+X=+10k resume vs 全量重放逐字节相等+两容器篡改负例必红；canonical
+  CLI 捕获/resume 轮实测见 HANDOFF.md M3FIX 条目。详见 §5.9 与
+  docs/snapshot-resume.md 补齐清单。
 
 - 路 SNAPX（sim-snapx，2026-11-15，基线 4178685）：**快照接入探索验证流程**——
   19M canonical 之后合并的四路容器状态补齐 M4（DT dac_tm/ADA 九字/LPV p11_lpvad/
