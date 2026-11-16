@@ -47,6 +47,7 @@ public class WebShellActivity extends Activity {
     private H3sUsbBridge usbBridge;
     private H3sUsbBridge.Link usbLink;
     private BroadcastReceiver usbDetachReceiver;
+    private BroadcastReceiver driveReceiver;      // SIMB1E E2E 驱动口（见 registerDrive 注释）
     private java.util.concurrent.ExecutorService usbIo;
     private OtaWebBridge otaBridge;
 
@@ -76,6 +77,7 @@ public class WebShellActivity extends Activity {
         AndroidBleTransport.Link link = sim
             ? new SimulationGattLink(simHost, simPort, AndroidGattLink.mainScheduler())
             : new AndroidGattLink(this, DeviceConfig.ADDRESS);
+        Log.i(TAG, "sim link config: sim=" + sim + " host=" + simHost + " port=" + simPort);
         transport = new AndroidBleTransport(link, AndroidGattLink.mainScheduler(),
             new AndroidBleTransport.Logger() {
                 @Override public void log(String message) { Log.i(TAG, message); }
@@ -111,6 +113,7 @@ public class WebShellActivity extends Activity {
         setContentView(web);
         web.loadUrl("file:///android_asset/index.html");
         registerUsbDetach();
+        registerDrive();
         if (!sim && !permissionsGranted())   // 仿真模式不触 BT 权限面（AVD 上弹窗无意义，设计 §4.3）
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT}, 1);
     }
@@ -120,6 +123,57 @@ public class WebShellActivity extends Activity {
         return new java.util.concurrent.Executor() {
             @Override public void execute(Runnable r) { runOnUiThread(r); }
         };
+    }
+
+    /**
+     * SIMB1E E2E 驱动口（调试注入，非用户功能）：本 AVD 在宿主机高负载下触摸 click
+     * 事件无法触达页面 JS（实测 input tap/长按 swipe 均丢，合成器滚动正常；见
+     * analysis/local-checks/sim-b1e 记录）。adb broadcast 直调与页面按钮完全相同的
+     * H3SBridge 方法 → 同一 transport/BLE 链路 → 同一 ResultSink → 同一 DOM 更新，
+     * 仅绕过坏掉的「触摸→onclick」一环。E2E 断言仍以 UI 截图为准。
+     * action=cn.felix021.h3squery.DRIVE，extras：method=connect/disconnect/arm/readStatus/
+     * setAnc/writeEq（writeEq 另带 eq_type/master_centid/bands_json；arm 带 on；readStatus
+     * 带 cmd；setAnc 带 mode）。仅 E2E 用：RECEIVER_EXPORTED + 不含任何写死的私有信息。
+     */
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private void registerDrive() {
+        driveReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context context, Intent intent) {
+                String m = intent.getStringExtra("method");
+                if (m == null || bridge == null) return;
+                Log.i(TAG, "DRIVE " + m);
+                if ("connect".equals(m)) bridge.connect();
+                else if ("disconnect".equals(m)) bridge.disconnect();
+                else if ("arm".equals(m)) bridge.armWrite(intent.getBooleanExtra("on", false));
+                else if ("readStatus".equals(m)) bridge.readStatus(intent.getIntExtra("cmd", 0x2f));
+                else if ("setAnc".equals(m)) bridge.setAnc(intent.getIntExtra("mode", 1), 0, 0);
+                else if ("writeEq".equals(m)) {
+                    // 紧凑段格式 f,q,gainCentid,iir;…（am broadcast 参数长度限制，页面形状
+                    // bandsJson 在 Java 侧组装，字段与页面 eqSend 完全一致）
+                    String compact = intent.getStringExtra("bands");
+                    String bandsJson = intent.getStringExtra("bands_json");
+                    if (bandsJson == null && compact != null) {
+                        StringBuilder sb = new StringBuilder("[");
+                        for (String seg : compact.split(";")) {
+                            String[] f = seg.split(",");
+                            if (f.length != 4) continue;
+                            if (sb.length() > 1) sb.append(',');
+                            sb.append("{\"freq\":").append(Integer.parseInt(f[0].trim()))
+                              .append(",\"q\":").append(Integer.parseInt(f[1].trim()))
+                              .append(",\"gain\":").append(Integer.parseInt(f[2].trim()))
+                              .append(",\"iirType\":").append(Integer.parseInt(f[3].trim()))
+                              .append('}');
+                        }
+                        bandsJson = sb.append(']').toString();
+                    }
+                    bridge.writeEq(intent.getIntExtra("eq_type", 1),
+                        intent.getIntExtra("master_centid", 0), bandsJson);
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter("cn.felix021.h3squery.DRIVE");
+        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(driveReceiver, filter, Context.RECEIVER_EXPORTED);
+        else registerReceiver(driveReceiver, filter);
     }
 
     /** USB 插拔 → 桥状态作废 + 页面 usb_detached 事件。 */
@@ -195,6 +249,7 @@ public class WebShellActivity extends Activity {
 
     @Override protected void onDestroy() {
         if (usbDetachReceiver != null) { try { unregisterReceiver(usbDetachReceiver); } catch (IllegalArgumentException ignore) { } }
+        if (driveReceiver != null) { try { unregisterReceiver(driveReceiver); } catch (IllegalArgumentException ignore) { } }
         if (transport != null) transport.disconnect();   // 停扫描 + 断开 + 释放 GATT（绑定释放）
         if (usbBridge != null) usbBridge.close();
         if (usbIo != null) {
