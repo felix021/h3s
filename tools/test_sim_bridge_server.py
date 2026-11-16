@@ -12,6 +12,7 @@ import json
 import socket
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -42,7 +43,15 @@ class Client:
     """最小 JSON-lines 客户端。"""
 
     def __init__(self, port):
-        self.sock = socket.create_connection(('127.0.0.1', port), timeout=2.0)
+        deadline = time.time() + 2.0            # 等 listener 就绪（线程启动竞态，不占活动槽）
+        while True:
+            try:
+                self.sock = socket.create_connection(('127.0.0.1', port), timeout=2.0)
+                break
+            except ConnectionRefusedError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.01)
         self.sock.settimeout(2.0)
         self.pending = b''
 
@@ -206,6 +215,142 @@ class SimBridgeServerTest(unittest.TestCase):
                 second.close()
         finally:
             first.close()
+
+
+# ---------------------------------------------------------------------------
+# 世界模式会话（SIMB1C）：StubWorld 驱动器 + socketpair，控制面与错误传播。
+# ---------------------------------------------------------------------------
+
+class StubWorld:
+    """SimWorldDriver 的鸭子类型桩：会话层只依赖其公共 API 面。"""
+
+    def __init__(self):
+        self.dead = False
+        self.command_count = 0
+
+    def describe(self):
+        return {'mode': 'direct-world', 'dead': self.dead, 'stop_pc': '0x6072b92',
+                'scratch': {'resp': '0x12a540', 'body': '0x12a5c0'}}
+
+    def read(self, cmdid, sn=None):
+        self.command_count += 1
+        return {0x17: bytes([0x17, 3, 1, 1, 2])}.get(cmdid)
+
+    def apply_write(self, cmdid, data):
+        self.command_count += 1
+        return {'setter': '0x6025ca4', 'n': 0, 'steps': 5, 'watch_hits': [], 'cmdid': cmdid,
+                'data_len': len(data), 'setter_returned_nonzero': False}
+
+    def world_inspect(self, address, size):
+        if address == 0x12666B and size == 3:
+            return bytes([1, 1, 2])
+        raise sbs.DriverError('not_whitelisted', address=hex(address), size=size)
+
+    def world_diff(self):
+        return {'changed_bytes': 0, 'regions': {}, 'unattributed': [],
+                'unattributed_count': 0}
+
+    def resume_steps(self, steps, watch=()):
+        return {'steps': steps, 'watch_hits': []}
+
+    def direct_call(self, pc, args, *, max_steps=1_000_000, watch=(), **kwargs):
+        if pc == 0x99:
+            self.dead = True
+            raise sbs.WorldDead('direct_call_blocked', pc=hex(pc))
+        return 0, 3, []
+
+
+class WorldSessionTest(unittest.TestCase):
+
+    def setUp(self):
+        self.world = StubWorld()
+        self.events = []
+        server_sock, client_sock = socket.socketpair()
+        server_sock.setblocking(True)
+        client_sock.setblocking(True)
+        self.session = sbs.SimBridgeSession(server_sock, ('127.0.0.1', 0), state=self.world,
+                                            world=self.world,
+                                            on_session_event=lambda name, payload: self.events.append(name))
+        self.client = Client.__new__(Client)
+        self.client.sock = client_sock
+        self.client.pending = b''
+
+    def tearDown(self):
+        self.session.close()
+        self.client.close()
+
+    def pump(self, obj):
+        # 世界服务循环同款纪律：pump 返回 False 即关连接（EOF 语义交给对端观察）
+        line = (json.dumps(obj) + '\n').encode()
+        keep = self.session.pump(line)
+        if not keep:
+            self.session.close()
+        return keep
+
+    def test_world_hello_banner(self):
+        self.pump({'t': 'hello', 'proto': sbs.PROTO, 'client': 'sim-gatt'})
+        ok = self.client.recv()
+        self.assertEqual(ok['world']['mode'], 'direct-world')
+
+    def test_world_read_roundtrip_and_silent_miss(self):
+        self.pump({'t': 'hello', 'proto': sbs.PROTO, 'client': 'sim-gatt'})
+        self.client.recv()
+        self.pump({'t': 'ble_write', 'data': base64.b64encode(read_status_frame(0x6f, 0x17)).decode()})
+        self.assertEqual(self.client.recv().get('t'), 'chunk_ack')
+        notify = self.client.recv()
+        self.assertEqual(base64.b64decode(notify['data']),
+                         bytes([0xfe, 0xdc, 0xba, 0x00, 0xff, 0x00, 0x07, 0x00, 0x6f,
+                                0x17, 0x03, 0x01, 0x01, 0x02, 0xef]))
+        self.pump({'t': 'ble_write', 'data': base64.b64encode(read_status_frame(5, 0x10)).decode()})
+        self.client.recv()                                  # chunk_ack
+        self.client.sock.settimeout(0.2)
+        with self.assertRaises(socket.timeout):
+            self.client.recv()                              # 未命中静默
+
+    def test_write_silent_last_write_and_set_fixture_refused(self):
+        self.pump({'t': 'hello', 'proto': sbs.PROTO, 'client': 'sim-gatt'})
+        self.client.recv()
+        self.pump({'t': 'ble_write', 'data': base64.b64encode(
+            write_frame(7, 0x17, bytes([2, 0, 0]))).decode()})
+        self.assertEqual(self.client.recv().get('t'), 'chunk_ack')
+        self.client.sock.settimeout(0.2)
+        with self.assertRaises(socket.timeout):
+            self.client.recv()                              # 写静默
+        self.client.sock.settimeout(2.0)
+        self.pump({'t': 'last_write'})
+        result = self.client.recv()
+        self.assertEqual(result['result']['setter'], '0x6025ca4')
+        self.assertEqual(result['result']['n'], 0)
+        self.pump({'t': 'set_fixture', 'reads': {'23': [0x17, 3, 3, 1, 4]}})
+        error = self.client.recv()
+        self.assertEqual((error['t'], error['code']), ('error', 'not_applicable'))
+
+    def test_inspect_and_not_whitelisted_keeps_connection(self):
+        self.pump({'t': 'inspect', 'addr': '0x12666B', 'len': 3})
+        self.assertEqual(self.client.recv(), {'t': 'inspect_ok', 'addr': '0x12666b',
+                                              'bytes': [1, 1, 2]})
+        self.pump({'t': 'inspect', 'addr': '0x19fd00', 'len': 4})
+        error = self.client.recv()
+        self.assertEqual(error['code'], 'not_whitelisted')
+        self.pump({'t': 'status'})
+        self.assertEqual(self.client.recv()['t'], 'hello_ok')      # 连接未被断
+
+    def test_direct_world_dead_visible_disconnect(self):
+        self.pump({'t': 'direct', 'pc': '0x99', 'args': []})
+        error = self.client.recv()
+        self.assertEqual(error['t'], 'error')
+        self.assertEqual(error['code'], 'direct_call_blocked')
+        self.assertIsNone(self.client.recv(), '致命错误=可见断线')
+        self.assertIn('world_dead', self.events)
+
+    def test_quit_and_resume_and_world_diff(self):
+        self.pump({'t': 'resume', 'steps': 10, 'watch': ['0x6064c0e']})
+        self.assertEqual(self.client.recv()['t'], 'resume_ok')
+        self.pump({'t': 'world_diff'})
+        self.assertEqual(self.client.recv()['t'], 'world_diff_ok')
+        self.pump({'t': 'quit'})
+        self.assertEqual(self.client.recv()['t'], 'bye')
+        self.assertIn('quit', self.events)
 
 
 if __name__ == '__main__':
