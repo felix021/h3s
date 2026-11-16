@@ -22,7 +22,7 @@ docs/HANDOFF 钉死条目；**[推断]** = 上述链推出。
    优先级 3、栈 0x300 字（3072B）。BX §5.1 的「一处运行时观测」就此静态闭合。
    **主前沿 601,880 前缀里它没有被创建**（app_core 任务体尚未执行到 init walker）。
 2. **任务体 0x6086980 与 S19 主循环（0x60123e6）是同一 get-event 惯用法、独立队列**：
-   同一 API 链 0x6064c8c→0x6064b98→0x60649b0→ROM pend 0x12b55c，S19 pend 的是
+   同一 API 链 0x6064c8c→0x6064b98→0x60649b0→RAM-code pend 0x12b55c，S19 pend 的是
    'app_core' 任务的 taskq（buf 16 字），0x6086980 pend 的是 'jlstream' 任务的
    taskq（buf 8 字）；post 侧同一 API 0x6064d72 按名字路由。
 3. **CF 停点精化**：0x12b56c 停在 **stream 槽分配函数 0x60744b4 内部的 pend 段
@@ -38,7 +38,7 @@ docs/HANDOFF 钉死条目；**[推断]** = 上述链推出。
 | 函数 | 角色 | 关键证据 |
 |---|---|---|
 | **0x6067242** `task_create_byname(entry, pdata, name)` | 按名字查配置表创建 | 入参 r0=入口/r1=pdata/r2=名字串指针；walk 12B 记录表（基址 li 0x609d780，0x606724e），ROM 0x1fd84 strcmp(name_表, r2)；命中取 {b4→r2 优先级, h6→r3 栈字数} 后 call 0x60650a0，栈参 [sp..sp+8]={entry, name, pdata}（0x6067266..0x6067278） |
-| **0x60650a0** `task_create_core` | TCB+栈分配 | r10=entry、r8=pdata、r9=name、r4=栈字数；TCB 88B 经 ROM 0x12e160 zalloc（0x60650b4）；0x60650da call 0x6065e80(栈字数)；0x606510a call 0x6065020 完成注册 |
+| **0x60650a0** `task_create_core` | TCB+栈分配 | r10=entry、r8=pdata、r9=name、r4=栈字数；TCB 88B 经 RAM-code 0x12e160 zalloc（0x60650b4）；0x60650da call 0x6065e80(栈字数)；0x606510a call 0x6065020 完成注册 |
 | **0x6065e80** 栈/帧分配器 | OS 帧池位图扫描 | 基址 r10=0x1265C0（QCY/OS 全局结构），帧池表项 [0x1265C0+7856]=[0x127A20]（0x6065f38），帧大小按入参<<7 位运算定位（0x6065f40..0x6065f4e） |
 | **0x6065020** `task_create_finish` | 查重+帧初始化+注册 | **0x6065034 call 0x60647fa(name) 同名查重**（错 25）；**0x606505a call 0x6065f96(entry)** 帧初始化；TCB 挂核任务链 [0x1265C0+1692+cnum*4]（0x6065060..0x6065074）；0x6065086 call 0x6064280 名字注册 |
 | **0x6065f96** 帧初始化 tail | 写任务帧 | `r2+=-76; [r2+12]=r1; r1=0; [r2+8]=r1; d[r2+0]=r1_r0`——**0x6065f9e 双字存储 {RETS=0, RETI=entry}**，即 irq-entry.json milestones 的 watch 点（r0=任务入口的 4 次记录） |
@@ -234,7 +234,7 @@ flags=0 的默认任务族）、0x6015a10、0x60162de、0x6016346、0x601ffbe、
 0x6075e22（cmd11 消费者; 调用点唯一 0x6086a1c=cmd11 分支内）:
   → 0x6075d8e → 0x6074a72（pipeline 节点操作大函数）
       ├─ 0x60746e6 节点查找/创建：复用或 0x607471e call 0x607452e（uuid→适配器
-      │   28 条 ops 表 0x60a8ed0，BX 已钉）→ ROM 0x12e16e zalloc(44) 建节点
+      │   28 条 ops 表 0x60a8ed0，BX 已钉）→ RAM-code 0x12e16e zalloc(44) 建节点
       │   → h[node+2]=uuid, b[node+0]=subid（0x6074734/0x6074738）
       ├─ 0x6074d9c 子任务 ensure walker（§2.2）
       └─ 节点 op1 ioctl → eq 0x6078594 / wdrc 0x607898e（subcommand 分发，
@@ -265,7 +265,7 @@ tone 引擎（0x6074ec6 族，app 侧）→ 0x60753e8（stream 请求入口）:
   0x60753f6: call 0x60744b4                    ; stream 槽分配（★CF 停点函数）
       h[0x1264B4C+4]==0（首次）:
         0x6064162(0x1264B4C+12)                ; q_init 槽位数组（=CF 的 OS_QUEUE_A）
-        ROM 0x12e16e(92)                       ; zalloc stream 对象
+        RAM-code 0x12e16e(92)                  ; zalloc stream 对象
         0x6064f18(obj+52, 0)                   ; 对象内嵌队列初始化（=CF 的 OS_QUEUE_B）
       0x60744ea: call 0x12b55c                 ; ★pend/调度复合点→内部 0x12b56c
       0x60744f0..0x6074520: 槽位图计数/置位, call 0x6074090
@@ -355,8 +355,8 @@ IPMASK 域 + #4 出队语义 = 最小可行；#2 任务切换若成本高可先�
 
 1. **12B 表 h8/qlimit 字段**的消费点未逐层跟（[推断] qlimit/时间片参数类）；
    b5=1 组（a2dp_dec 等 5 条）的语义未钉（疑「不随 init 建组/按需组」）。
-2. **0x12b55c 的完整 ROM 语义**（pend/临界/调度复合的分支条件）未逐指令解码
-   （ROM 域已有 BE/BF/probe_task_returns 钉子，本路未重解；引用其结论）。
+2. **0x12b55c 的完整 RAM-code 语义**（pend/临界/调度复合的分支条件）未逐指令解码
+   （该域已有 BE/BF/probe_task_returns 钉子，本路未重解；引用其结论）。
    0x12b56c 在 CF 场景显示为 st.w.idxs（写 RMW 读半），CF 条目「首读」表述
    按错误信息应理解为「首次访问（RMW 读半）」。
 3. **0x6086980 各 cmd 分支的完整语义**（cmd5/8/9/10/12 的对象字段效果）只钉了
@@ -386,7 +386,7 @@ IPMASK 域 + #4 出队语义 = 最小可行；#2 任务切换若成本高可先�
    （eq op1，经节点 ioctl 计算调用，无线性 caller）调用；0x6078a2e（node+35）
    是 eq op1 的 subcmd2。两者都需 cmd-11 参数消息（0x6075e22 消费）或等效直调，
    本场景不产生 → node+35 写集为空，0x6078846/0x6078a2e 诚实 false。
-3. **pend/调度桩的根因**：ROM 0x12b55c/0x12b5b0 内的 cli/sti/lockset/lockclr 走
+3. **pend/调度桩的根因**：RAM-code 0x12b55c/0x12b5b0 内的 cli/sti/lockset/lockclr 走
    semantics.v4 硬件 batch trace 模型（非通用语义），通用模拟器里跑污染 icfg/寄存器，
    故按 §6 fixture#2「单任务交替」捷径整体 stub（0x12b55c/0x12b5b0/0x6064340 具名
    synthetic-not-measured）。

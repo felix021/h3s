@@ -74,7 +74,7 @@ RAM 窗与前沿时刻的已初始化量估计（§2.2 大小测算用）：
 
 | 窗 | 范围 | 全大 | 3,137,573 时刻估计 |
 |---|---|---|---|
-| mmu_page_table | 0x120000..0x122800 | 10,240B | 全初始化（ROM memset 全 10240B [文档 mmu-startup]） |
+| mmu_page_table | 0x120000..0x122800 | 10,240B | 全初始化（memset 全 10240B [文档 mmu-startup]；RAMFIX 2026-11-16 注：原标「ROM memset」，memset 执行体地址未在案不硬改——真 ROM memset 0x1fd80 在案，若实为 0x12xxxx 则属 RAM-code OS，见 bt-stack-map §8.0(a)） |
 | bootstrap_stack | 0x123000..0x123840 | 2,112B | 部分（bootstrap 深度+复位路径下探） |
 | qcy_initialized_data | 0x124840..+0xae0 | 2,784B | 全（启动拷贝） |
 | qcy_bss | 0x125320..+0x530c | 21,260B | 全（清零+运行写入） |
