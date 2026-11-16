@@ -371,6 +371,17 @@ FEATURES = (
             '0x6065834 停点;恰放行 prd==0xffffffff 一格,prd==0 恒拒;模型公式 '
             'period=prd+1=2^32 不变零到期;assumed-not-measured;依赖边=推进顺序'
             '非硬件依赖)'),
+    # ---- 路 D2AI/sim-d2ai:ADC DMA 交付半边(模型件+IRQ68 进入,预研
+    # docs/d2-audio-input-pre-study.md §7 步 1;INJ-01/INJ-02 执行载体)。----
+    Feature('audio_adc_dma_delivery', 'conditional', ('core_tick_freerun_edge_period',), False, None,
+            'JL_AUDIO ADC DMA 五字交付半边扩类(读回投影:五字最后写值/HWP=模型'
+            '写指针/SRN 0xfe0550 并入白名单;ADC_CON bit7 pending 读侧叠加+'
+            '|=0x40 W1C 联动;produce_block=DMA 完成事件投影,唯一合成输入=样本'
+            '字节,窗口/块长按固件 set_buffer 写下的 ADR/LEN/PNS 推导;advance() '
+            'IRQ68 扫描逐 pending 片至多一次 IrqDeliveryRequest;机器侧最小进入/'
+            'RTI 投影镜像 Timer0,嵌套仅限 timer0 在途且真实 ICFG 优先级严格更高'
+            '(park 稳态 prio2>prio1);DMA 完成时序=投影;依赖边=场景推进顺序'
+            '非硬件依赖,前置五字容器+ADC reset 写域)'),
     Feature('jl_adc_start_probe_value', 'probe_only', ('jl_adc_start_config',), True, None,
             'MIC_CTL0(0xfe0904)初值敏感性探针(初值一次性 0xffffffff 替换,其余三字'
             '不扰动保归因干净;零臂写回 0x2/ones 臂写回 0xfffffffe 异或保留位;'

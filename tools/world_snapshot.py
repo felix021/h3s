@@ -1145,7 +1145,13 @@ M4_FAMILIES = (
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('p11_lpvad', 'P11LPVADConfigRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
-    ('jl_audio_adc_dma', 'JLAudioAdcDmaWriteRecords', ('stores', 'word_writes')),
+    ('jl_audio_adc_dma', 'JLAudioAdcDmaWriteRecords',
+     # Route D2AI: the delivery half (pending/in-flight/HWP model pointer,
+     # block/W1C/read counters) is runtime STATE — a restore without it would
+     # resurrect an already-served pending episode; 'delivery' rides as state
+     # (constant per construction) so the switch-off world keeps static {}.
+     ('stores', 'word_writes', 'delivery', 'pending', 'delivery_in_flight', 'hwp',
+      'blocks_produced', 'con_w1c_acks', 'reads_served', 'synthesized_reads')),
     # Post-SNAPX families (route ASS jl_adc_start_config + route B2G
     # p2m_mailbox_ack): two more peripheral-projection containers merged after
     # the SNAPX capture and both ON in the current conditional frontier flag
@@ -1258,7 +1264,11 @@ M5_STATE = ('last_core', 'idle_wait_cores', 'stalls', 'launches', 'deferred_core
             # (double write + duplicate event); it surfaced exactly that way —
             # a capture-time dict vs fresh-build None static mismatch refused
             # the canonical 29,215,313 resume round.
-            'cfg523_installed_at')
+            'cfg523_installed_at',
+            # Route D2AI: the audio IRQ68 delivery bookkeeping (bounded event
+            # list) — a restore without it would re-refuse the one-shot entry
+            # on an already-delivered core.
+            'audio_irq_deliveries')
 # Observation-layer attributes of analyze_image_trace.TraceMachine (route O6):
 # the per-run signature spool and its pending-writes buffer record what THIS
 # comparator run executed, not simulated world state — a restored world starts a

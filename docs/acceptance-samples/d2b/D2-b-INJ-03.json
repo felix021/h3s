@@ -1,9 +1,9 @@
 {
   "case_id": "D2-b-INJ-03",
   "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；开链/消费链静态源=app.bin sha 18f3d573…（通话链全图 AP §1.7③）+公开 stream.bin（esco_adc blob @0x1BFD，CFG-02）",
-  "initial_state": "预填用例（未执行）。计划起点=INJ-01/02 模型件就位后的条件世界 post_stop 直调（蓝图 §1.1 P1：停点后直调开链，S 路先例；上游「谁触发开链」的 BT esco 事件面不在覆盖内，诚实标注同 S 路 §7.4 边界）——建议首场景（开链最短：单次直调 0x60200b6，蓝图 §3.1）",
-  "inputs_schedule": "计划注入（未执行）：A1 直调 0x60200b6(flags)——flags 首选 0x5（bit0+bit2→slot{1,0}→组{0,1}=ch0+ch1，三方占用表的 ch0 共用在断言里可见，CFG-02 重映射表）；候选 0x3（组{1,2}）；flags 各通话 case 真值未钉死（AP §5.5④/蓝图 R6），两值都合法、取值显式记录为场景 fixture；A4 起注入 N 块 2ch 交织序 sample(0,k,n)/sample(1,k,n)（蓝图 §3 数据公式：((ch+1)<<8)|((k&0xF)<<4)|(n&0xF)——低幅值/通道可区分/随块变化/样本序可追踪）",
-  "observation_boundary": "计划观察点（未执行）：A3 五寄存器读回（ADR/LEN/PNS/HWP=0/SRP 记录非空+CON bit5+bit4）+hdl 面（+78 含组位/+79[ch]≥1）+A5 消费面（0x6072628 data=ADR+SRP×2×ssize 落环形内；0x6031D5A 调用计数与入口 data 指针处字节；aec 对象内部读指针/处理计数）+deliveries 键逐站 PC（蓝图 §4.1）",
+  "initial_state": "部分执行（路 D2AI/sim-d2ai，2026-11-17）：b1 打开链+b2 单发交付已在 park 停点世界执行（快照 restore，直调开链 0x60200b6(0x5) 共 6,407,583 步——两通道各一次 ADA 偏置等待 delay(20)≈3.2M 步/次主导）；b3 消费闭环未跑，记录整体保持 NOT_RUN（四态纪律：b3 是本记录必需项，不得部分绿）。运行时勘误三条：①esco output handler=0x6033D5A（非 AP/AR 记的 0x6031D5A——链表节点 [node+12]=[obj+28] 实值+函数头读 [QCY+620] esco 对象槽互证；0x6031d5a 无函数序言非入口）;②开链返回 0（非预研§2 表「返回 1」）;③链表节点布局 {next@+0,prev@+4,priv@+8,handler@+12} 与 PRE §4.4 一致（AP「[obj+40]」口径就此运行时勘误——[obj+40] 实值 0）",
+  "inputs_schedule": "b1/b2 已执行（证据 analysis/local-checks/d2ai/scene.json）：flags=0x5→slot{1,0}→组{0,1}（hdl+79=2、hdl+78=0x3）;set_buffer 五写 ADR=0x41aa8c/LEN=0x300/PNS=0x100/HWP=0/SRP=0（LEN=0x300=768 样本——AE「LEN=uextra(buf_num×len,1,16)=1536」公式与实测不符,768=buf_num(3)×PNS(256),环字节 768×2ch×2B=0xC00与 2×0x600 大缓冲互证,3 块/环=buf_num 互证）;注入块 1024B=256 样本×2ch×2B;块公式 sample(ch,n)=((ch+1)<<8)|((k&0xF)<<4)|(n&0xF)。b3 及以后未执行",
+  "observation_boundary": "b1/b2 已执行观察点：五写记录/hdl+79/+78/挂链（node=0x41a81c=node{next=hdl,prev=hdl,priv=0,handler=0x6033d5a} 环形单节点）/CON=0x3893a（bit5+bit4 门位）;交付链 131 步:dispatcher 十站 PC 全覆盖+0x60726e4 链调用点实参 (priv=0,data=0x41aa8c,len=0x200,handler=0x6033d5a)+DSP 前样本逐字节回读byte_equal（1024B 全等）+尾部 SRN=0x100=PNS 重装+CON|=0x40×2+负例③门关变体全绿。b3 观察面（aec 簿记/下游）未采集",
   "assertions": [
     "d1-acceptance §6.2 b1（数据与布局/场景前置=打开链真实执行）+蓝图 §3.1 A0-A3：world_prep 前置三查（hdl guard=1/向量槽 0x19FF10=0x602f406/IRQ68 ICFG nibble 有效——不许合成向量）；开链真实执行=0x6014162 解析 \"esco_adc\"→blob 拷 QCY+3460→逐 slot 0x60142be→0x606b4d0（hdl+79++/ADA_CON8 档 1/ADA_CON4..7 bit0 写记录非空）→每通道 512B+大缓冲 ch×0x600→SR=16000→set_buffer 0x606dee4 五写（ADR/LEN/PNS/HWP=0/SRP=0）→挂 [obj+40]=0x6031D5A 进 hdl+92 链→0x606df66 启动；通道数=位计数（期望 2）非预设",
     "b2（DMA 与 IRQ）+蓝图 §1.2/§4.2：每注入块=produce_block 填当前窗口→pending bit7→真实 IRQ68 交付（INJ-02 机制）→分发器 |=0x40 清位→bit5+bit4 门→0x6072628→尾部 SRN=PNS 重装+CON|=0x40——逐块四查 pending_set/delivered/acked 恰各一次，无漏失无重复（「直接调用 handler 或无视使能状态强送 IRQ不算过」codex 反例对照）",
@@ -12,21 +12,23 @@
   ],
   "timeout_budget": "场景步进以断言点/诚实停点为界（直调开链+每块一次交付的受控循环，无固定步预算；超时=FAIL 不是重跑理由）",
   "model_assumptions": [
-    "本记录=预填：断言锚点全部出自蓝图 §3.1/§4+audio-input-paths §1.7③+CFG-02（静态），非执行证据",
-    "DMA 完成行为投影（同 INJ-01）：b2/b4 通过结论带「DMA 完成行为投影下通过」前缀",
-    "flags=场景 fixture 显式合成，非真实通话 case 值（R6：场景不冒充回答真值，蓝图 §5 开放项）",
-    "aec 前端 flags 高 nibble（&0x10 ENC 位）路径不在本场景（flags 0x5/0x3 均低 nibble）"
+    "b1/b2 半边承接 INJ-01/INJ-02 的全部条件假设（DMA 完成时序投影/样本合成 fixture/进入-RTI 反事实族）",
+    "b1/b2 证据等级=conditional（见 INJ-01/INJ-02 evidence_conditions）;本记录整体仍 NOT_RUN（b3 必需项未跑）",
+    "开链直调在冻结世界执行（S 路先例:不调 hardware.advance,外设时间冻结;6.4M 步窗口内 Timer0 不计时——偏置等待以 delay helper 真实步数自然走完）"
   ],
   "result": "NOT_RUN",
   "uncovered_items": [
-    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 1-2（模型件+本场景骨架，蓝图 §6 估骨架+单场景 1-1.5 天）",
-    "R6 flags 真值（各通话 case 的 0x60212bc 上游 r5 来源链未逐 case 展开）",
-    "aec 下游（编码器/回声参考信号）——另立场景",
-    "上游触发面（BT esco 事件→0x60212bc）不在覆盖——归 D1 过线后自然回归（蓝图 §1.1 P4 回归位）"
+    "b3 消费闭环未验证:0x6033D5A 入口已被调（1 次,实参加上）但 aec 对象内部读指针/处理计数前进未观测（字段偏移按 d1-acceptance §6.2 应从 0x6033D5A 反汇编钉——实施时未做）;handler 仅 ~58 步即返回,是否早退（priv=0 路径）未判——b3 首个要回答的问题",
+    "§6.3 共同断言五条未逐条验（「未启用消费者不被调」在单节点链上平凡成立,多消费者世界待 mic_effect/ANC 场景）",
+    "b4 连续性/两整圈/SW-01/02 配置切换未跑（依赖 INJ-06）",
+    "各通话 case 真实 flags 取值（R6 观测项）仍开放——本场景取蓝图首选 0x5"
   ],
   "evidence_level": "none",
   "evidence_conditions": [],
-  "evidence_refs": [],
+  "evidence_refs": [
+    "analysis/local-checks/d2ai/scene.json（b1/b2 执行证据,git 忽略运行态）",
+    "docs/acceptance-samples/d2b/D2-b-INJ-01.json / D2-b-INJ-02.json（b1/b2 依赖件的模型与机器件 PASS 记录）"
+  ],
   "blocked_missing": null,
-  "recorded_at": "2026-11-14T10:40:00"
+  "recorded_at": "2026-11-17T05:10:00"
 }

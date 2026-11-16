@@ -354,6 +354,14 @@ HANDLER_PSR_FRAMES={0x12ad30:'psr_push',0x12ad60:'psr_pop',0x12adae:'psr_push',0
 # 28B 软件帧的另外 16B 是普通 push.rl {r3-r0},走既有 abstract 栈运输)。
 TIMER0_IRQ_FRAMES={0x12ece8:'frame12_push',0x12ed08:'frame12_pop'}
 
+# 路 D2AI(sim-d2ai,预研 docs/d2-audio-input-pre-study.md §4.4):IRQ68 分发器
+# 0x602f406 的 12B 特殊帧锚——入口 0x602f406 push.srl {psr,rets,reti}+0x602f408
+# push.rmask r4-r0(普通寄存器组走既有抽象栈运输);尾部 0x602f44a pop.rmask+
+# 0x602f44e pop.srl(特殊帧恢复,本表 pop 锚)→0x602f450 csync→0x602f452 rti
+# (RTI 尾锚=机器侧 AUDIO_IRQ_RTI_TAIL;与 TIMER0_IRQ_FRAMES 同形,经
+# diagnostics audio_irq_frames 并入 probe_boot frames 合并)。
+AUDIO_IRQ_FRAMES={0x602f406:'frame12_push',0x602f44e:'frame12_pop'}
+
 # 路 BF:core tick IRQ3 handler 0x60661a4 的 12B 特殊帧锚(本路证据核验,
 # 真实 app 反汇编三方互证:tick_timer_init 0x60661e8 的 0x6066204
 # li.u32 r2=101081508=0x60661a4 经 request_irq(0x6065d86)写进向量槽
@@ -1359,6 +1367,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_cop_writes=False,
              jl_audio_dac_dma_writes=False,
              jl_audio_adc_dma_writes=False,
+             audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
              ancif_official_resources=None,
              jl_rand_seed=None,
@@ -2267,6 +2276,22 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         machine_options['timer0_irq_rti']=True
         options['timer0_irq_delivery_requests']=True
         extra['timer0_irq_frames']=dict(TIMER0_IRQ_FRAMES)
+    # audio_adc_dma_delivery(路 D2AI/sim-d2ai,预研 §7 步 1;INJ-01/02 执行
+    # 载体):ADC DMA 五字容器交付半边——读回投影(五字+SRN 0xfe0550)+
+    # ADC_CON bit7 pending 叠加/|=0x40 W1C 联动+produce_block(DMA 完成事件,
+    # 唯一合成输入=样本字节)+advance() IRQ68 扫描(逐 pending 片至多一次
+    # IrqDeliveryRequest)+机器侧最小进入/RTI 投影(嵌套仅限 timer0 在途且
+    # 真实 ICFG 优先级严格更高)。前置:五字容器+ADC reset 写域(依赖边=
+    # 场景推进顺序)。默认关:行为与路 JLA write-only 半边逐字节一致。
+    if audio_adc_dma_delivery:
+        require(jl_audio_adc_dma_writes and jl_audio_adc_reset_writes,
+                'the audio ADC DMA delivery requires the five-word records and the '
+                'ADC-reset write records')
+        machine_options['audio_irq_entry']=True
+        machine_options['audio_irq_rti']=True
+        options['audio_adc_dma_delivery']=True
+        options['audio_adc_dma_delivery_requests']=True
+        extra['audio_irq_frames']=dict(AUDIO_IRQ_FRAMES)
     if timer0_irq4_probe_steps is not None:
         require(timer0_irq4_delivery,'the Timer0 IRQ4 probe steps require the delivery layer')
         options['timer0_irq4_expiry_probe_steps']=timer0_irq4_probe_steps
