@@ -515,6 +515,23 @@ def test_compare_pair_reuse_reports_identical_across_consumers():
             spool.close()
 
 
+def test_resume_round_pair_carries_resumed_marker_full_replays_do_not():
+    # SNAPX 尾巴:resume 轮 pair 报告的轨迹面字段只反映 restore 之后的步
+    # (前沿停点快照=0 步),pair 级 resumed 标记就近声明轮次;全量重放/捕获轮
+    # (resumed=False,默认)报告不含该键,除标记外逐字段相同。
+    image, results, spools, _ = _pair_runs('signature')
+    image_a, image_b = image('arm_a', b'plain-a'), image('arm_b', b'plain-b')
+    run_a, run_b = (results[0], spools[0]), (results[1], spools[1])
+    full = compare_pair(image_a, run_a, image_b, run_b, 300000)
+    resumed = compare_pair(image_a, run_a, image_b, run_b, 300000, resumed=True)
+    assert 'resumed' not in full
+    assert resumed['resumed'] is True
+    resumed.pop('resumed')
+    assert resumed == full
+    for spool in spools:
+        spool.close()
+
+
 def test_stop_parity_same_stop_and_step_deltas():
     def result(steps, core0, core1, pc, address='0xf27f4b'):
         return {'completed_steps': steps, 'stop_pc': pc,
