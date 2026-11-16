@@ -1,4 +1,4 @@
-# D1 第一轮执行手册：park → PR-BI → PR-D0 → PR-3 → 失败回退（路 RUNBOOK）
+# D1 第一轮执行手册：park → PR-BI → PR-3 → PR-D0 → 失败回退（路 RUNBOOK）
 
 2026-11-16 路 RUNBOOK（sim-runbook，纯文档路）。本手册把批 3 任务书
 [docs/s19-batch3-taskbook.md](s19-batch3-taskbook.md)（PR-BI/PR-D0/PR-3/PR-2 段）串成
@@ -6,6 +6,14 @@
 核对 PR-BI 预算、PR-D0 快照、PR-3 verdict 刷写与失败回退。所有依据随行标注
 （任务书 § / 蓝图 § / 快照文档 / 健康检查契约 §），未钉死值一律标「运行观测项」，
 不臆造。
+
+**复核记录**：2026-11-16 路 RBKREV（sim-rbkrev）用 codex（gpt-6-astra，只读）独立
+复核后修订 11 处（逐条经代码核实采纳）：[P0]×1 registry 重钉占位符的步数轴
+（completed_steps=指令步轴，勿填「模型步」）；[P1]×4 PR-3 验收场景名
+（d1_acceptance_window）/checker CLI 退出码恒 0/`--add` 缺 `--dir` 会落 git 忽略
+目录/键扫源 checker 能力未实现（列 PR-2 闸门）；[P2]×6 预算三口径不互算/W_park 非
+全程首次 engaged/快照命令块双镜像+候选可选/标题执行顺序（PR-D0 在 PR-3 后）/verdict
+三态→四态映射/H8 pending 的 gate 优先级。复核原稿存本机不入库。
 
 **适用范围与前置**：本手册假设 RAND 路（JL_RAND 种子读放行）已合并、P2M+cfg523 已随
 B2R 提层生效、前沿正从当前停点跑向 S19/park。开工闸门=任务书 §1.0「前沿/park 形态」
@@ -23,15 +31,17 @@ D1-4 注入变体（默认关）；④park 快照只能用于 Q2 复核，Q2 结
 
 ### 1.1 判据（什么算「到了 park」）
 
-park = S19 消息循环空队列后两核进入 idle 等待、事件时钟首次接管。到达形态按
+park = S19 消息循环空队列后两核进入 idle 等待、事件时钟接管。到达形态按
 S19MAP 终局图 §2 表 #15 + 蓝图 §1.1/§2.1：
 
 - CPU0 走到 S19 消息循环头（`0x60123e6`）→ get-event 成功码消费 → 分发表两表
   walk（表 2 六条 → 动态过滤链 → 表 1 五十四条）→ 空队列 pend 写面（`0x6064cf6` 起）
   → 经调度器切 idle 任务（`0x12c57e` → `0x12c5ca`）。
 - CPU1 早已停泊在 `0x12c5ca`（boot 期就位）。
-- 两核都进 idle 后事件时钟首次接管 = `event_clock_engaged` 首次为真 → 记 **W_park**
-  （模型步 + 指令步双轴并记）。
+- 两核都进 idle 后事件时钟接管 → 记 **W_park**（模型步 + 指令步双轴并记）。注意：
+  这里的 engage 指 **S19 空队列 pend 链完成后的那次接管，不是全程第一次**
+  `event_clock_engaged`——boot 期 os_time_dly 途中停泊已多次 engage（B3 实测
+  13.4M 虚拟步，见下方诚实区分），机器报告里「首次 engaged」不能直接当 W_park。
 
 **停点形态决策**（蓝图 §4.5，归前沿推进路定死，不在 D1 路）：二选一——
 (a) S19 循环头首达的指令步（freshness 钉 `0x60123e6`）；(b) event_clock 开启后首个
@@ -68,7 +78,9 @@ S19MAP 终局图 §2 表 #15 + 蓝图 §1.1/§2.1：
 
    ```python
    'p11_heap_experimental': {
-       'completed_steps': <park 实测模型步>,
+       'completed_steps': <park 实测停点 completed_steps——指令步轴，取实跑报告原值
+                           （「模型步」与该值不同轴：事件时钟快进步不进 completed_steps；
+                            freshness 是严格相等比较，两轴不得互填、勿手工换算）>,
        'stop_pc': '0x60123e6',          # 或 §1.1 (b) 的最后一个指令停点
        'stop': {'kind': ..., 'access': ..., 'address': ..., 'size': ...,
                 'reference_sdk_register': None},
@@ -95,8 +107,8 @@ D1 场景单列结果行）。
 任务书 §1.1 第 1 条：budget = **全程 park + 窗口 N + 余量**，一次给足、不设「从中间
 热启动」参数（红线 5 第 1 条）。
 
-- **全程 park** ≈ 3.7–3.9×10⁷ 模型步（S19MAP §2 预算；从当前 28.76M 再 +9–10M，
-  S16+S17 事件时钟 ~8M 占大头）。
+- **全程 park** ≈ 3.7–3.9×10⁷ 模型步（S19MAP §2 预算；从 28.76M〔S19MAP 立图时点，
+  前沿其后已推进至 ≈29.2M，park 估计不变〕再 +9–10M，S16+S17 事件时钟 ~8M 占大头）。
 - **窗口 N**（任务书 §1.3 默认公式，PR-2 窗口机制起算时现算）：
   `N = max(S_tick(W_park) + 160,000, 200,000)`。
   - `S_tick` = 从 park 态 core tick 的 CNT/PRD 推出的首溢出闭式期限（event-clock
@@ -108,11 +120,15 @@ D1 场景单列结果行）。
   P_park 折算 `N // P_park >= 3`；不足则延长 N 或报「观察窗不足」不判过。P_park
   形状值 40,000，但 BY 实测 delay 会按调用重编 PRD（周期三态 20,000/16,000/4,000，
   反例 P=70,000 已钉）——160,000 余量可能被打破，park 实读值出来前不预设结论。
-- **余量**：540,000 左右（park 上界到 40M 的缝隙）。
+- **余量**：540,000 左右（park 上界到 40M 的缝隙；**这只是保守合成，不是精确余量**
+  ——park 上界 39M 是 S19MAP 的「模型步」口径（含事件时钟快进），而 budget 是运行
+  循环迭代口径、`completed_steps` 是指令步口径，快进段不耗 budget，40M 的真实余量
+  远大于 540k。落档时执行预算 / completed_steps / 模型步三个数分列记录，不互换冒充）。
 
-**落地值**：`40,000,000`。计算：39,000,000（park 上界）+ 460,000（N 上界）+ 540,000
-（余量）。当前代码里 `p11_heap_experimental_config` 的 budget 已经由 `jl_adc_start_config`
-层推到 40M（`tools/probe_irq_entry.py` irq_case 的 budget 推导链），park 预算沿用同值；
+**落地值**：`40,000,000`（= 39,000,000〔park 上界〕+ 460,000〔N 上界〕+ 540,000
+〔余量〕的保守合成，作现行执行上限）。当前代码里 `p11_heap_experimental_config`
+的 budget 已经由 `jl_adc_start_config` 层推到 40M（`tools/probe_irq_entry.py`
+irq_case 的 budget 推导链），park 预算沿用同值；
 若 park 实测更靠后（>39M）或 N 因 cfg523 S9 键扫观察加长，按实上调（如 41M），
 「实测为准、不预设结论」同 P_park 红线。
 
@@ -158,6 +174,9 @@ PR-2 接线后正式验收跑（任务书 §1.2 第 7 条）调 `run_all` 传播
 
 ## 3. PR-D0：park 停点 canonical 快照捕获
 
+**执行顺序注意**：本步在 **PR-3 过线之后**（§3.4 / 任务书 §1.7「PR-D0 闸门=PR-3 过线
+后」）；本节排在 §4 之前只为叙述连贯，不代表先于 PR-3 执行。
+
 任务书 §1.6 第 4 条 / §1.7 PR-D0 行：park 点 canonical 快照**过线后**生成，只作回归/
 复核（Q2）加速，不作过线证据。工具 = SNAPX（快照续跑，[docs/snapshot-resume.md](snapshot-resume.md)）。
 
@@ -173,8 +192,10 @@ python3 tools/analyze_image_trace.py --rom <ROM> \
 
 每镜像照常全量重放到自然停点（freshness 钉子照常把关），停点边界把该镜像世界
 （CPU×2/内存/外设/机器/账本，M1–M7）捕获到 `analysis/snapshots/<scenario>-<label>.bin`。
-三镜像（官方/b79/候选）各一份快照，互不可替换。`--jobs 3`（PAR3）可三臂并行，约
-3.03x（条件三镜像 68m33s → 22m39s）。
+每镜像一份快照，互不可替换（restore 侧 expected_context 按 run 名拒错配）。上面
+命令块=官方/b79 **双镜像**；候选第三臂**可选**（任务书 §1.7 把三镜像捕获列为可选项），
+需要时补 `--image <label>=<路径>`（合法 label ∈ {eq_fence_repair, l1_slotram,
+r4_keyhook}）并加 `--jobs 3`（PAR3 三臂并行，约 3.03x：条件三镜像 68m33s → 22m39s）。
 
 ### 3.2 验证轮命令
 
@@ -234,12 +255,24 @@ verdict + 证据 + 实测值，不再从零起草。过线口径：五条全 PAS
 
    ```bash
    python3 tools/check_d1_acceptance.py --report analysis/local-checks/irq-entry.json \
-       --scenario p11_heap_experimental_config --json
+       --scenario d1_acceptance_window --json
    ```
 
-   输出里 `D1-1..D1-5` 各自 status（pass/pending/fail）+ `d1_gate`。每条验收记录的
-   verdict 直接取自对应断言的 status：LOOP-01 ← D1-1、TMR-02 ← D1-2、TCK-03 ← D1-3、
-   DSP-04 ← D1-4、HLT-05 ← D1-5（H1-H8 机检 + 否定式总闸）。
+   场景名注意：PR-3 正式验收消费的是 **PR-2 落地的 `d1_acceptance_window` 场景行**
+   （`d1_window.*` 报告键只有它产出；用旧条件场景名跑 D1-2..D1-5 会全部 pending，
+   永远到不了五条 PASS）。§1.2 的 park 判定命令仍用 `p11_heap_experimental_config`
+   （D1-1 消费 machine 既有键）——两处场景名不同是预期，不要「统一」。
+
+   输出里 `D1-1..D1-5` 各自 status（pass/pending/fail）+ `d1_gate`。verdict 映射（记录
+   的 `result` 只接受 PASS/FAIL/BLOCKED/NOT_RUN，小写 status 直接填会被拒）：
+   LOOP-01 ← D1-1、TMR-02 ← D1-2、TCK-03 ← D1-3、DSP-04 ← D1-4、HLT-05 ← D1-5
+   （H1-H8 机检 + 否定式总闸）；**pass→PASS、fail→FAIL**；pending 按原因分流——
+   D1-4 确认无样本→NOT_RUN、模型缺件→BLOCKED（必附 `blocked_missing`）、窗口配置
+   不足（H8 insufficient）→不落 PASS 也不落 FAIL（修 N 重跑，这不是 verdict）。
+
+   退出码注意：checker CLI 两种输出模式**退出码恒 0**（观察入口），判定以输出里的
+   status/`d1_gate` 字段为准，不要拿退出码做脚本判活；「非 pass 即非零退出码」的
+   传播是 PR-2 probe 正式入口的义务（§2.2 末段）。
 3. **Q1 全量重放是唯一过线证据**：上面机检消费的报告必须是全程 Q1 跑出来的
    （§2.2 的 probe_irq_entry 全量运行），不是快照 resume 轮。
 
@@ -255,7 +288,9 @@ verdict + 证据 + 实测值，不再从零起草。过线口径：五条全 PAS
   必须出现在 `model_assumptions` 栏，否则 `--validate` 红。
 - **CNT 假设贯穿三处**（任务书 §1.4 硬性要求，TCK-03 必核）：报告键
   `d1_window.core_tick_state.assumption`（顶层优先，park 下兼容）+ check_d1_acceptance
-  的 d1_3 判定输出 + TCK-03 的 `model_assumptions` 栏。原文照抄
+  的判定输出（PR-1 实现在 **H2/d1_5** 的 core tick 上界检查里、不在 d1_3——删掉
+  assumption 键 → H2 core_tick 子项 pending，任务书 §1.4 第 2 条末注）+ TCK-03 的
+  `model_assumptions` 栏。原文照抄
   "under the explicit 'CNT frozen after overflow' assumption (conditional,
   assumed-not-measured) — NOT PRD-1"。缺失 = 断言形状不完整（pending 非 pass）。
 - **PRD 读回 ≠ CNT 读回**（§1.4 第 4 条）：PRD 读回（`core_tick_prd_readback`）不承载
@@ -265,8 +300,11 @@ verdict + 证据 + 实测值，不再从零起草。过线口径：五条全 PAS
 刷写与校验命令（蓝图 §6 + acceptance_record CLI）：
 
 ```bash
-python3 tools/acceptance_record.py --add docs/acceptance-samples/d1/D1-LOOP-01.json
-# ... 逐条五条
+python3 tools/acceptance_record.py --add docs/acceptance-samples/d1/D1-LOOP-01.json \
+    --dir docs/acceptance-samples/d1
+# ... 逐条五条。--add 不带 --dir 会写进 git 忽略的 analysis/local-checks/acceptance/
+#     （DEFAULT_DIR），git 跟踪的 docs/acceptance-samples/d1/*.json 仍是 NOT_RUN，而
+#     --validate 照样绿——落档后必查五条 result 已实刷，不能拿 validate 绿当五条 PASS。
 python3 tools/acceptance_record.py --validate docs/acceptance-samples/d1
 ```
 
@@ -286,7 +324,9 @@ python3 tools/acceptance_record.py --validate docs/acceptance-samples/d1
 
 ### 5.1 归因流程（遇到 FAIL 先别急着改）
 
-1. **看 FAIL 证据契约**（d1-health-checks §3 七规则共用结构）：每条 FAIL 的 check 附
+1. **看 FAIL 证据契约**（d1-health-checks §3 七规则共用结构；**适用面=H1-H7**——
+   D1-1..D1-4 的 checks 是 `{name,status,fail,detail,missing}` 形状、无 first_violation，
+   归因读 detail/missing 加对应原始观测键）：每条 FAIL 的 check 附
    `evidence` 字段，形状：
 
    ```
@@ -301,7 +341,9 @@ python3 tools/acceptance_record.py --validate docs/acceptance-samples/d1
    （pending，键缺/右边界未闭合）还是**真违约**（fail，有数据但违反条款）。pending ≠
    fail ≠ pass，三态不要混写。
 2. **pending 面先排除「窗口伪证」**：H8 折算覆盖 <3 → insufficient_window_coverage →
-   D1-5=pending、d1_gate=pending（总闸不抵消）——这是窗口配置问题，修 N 重跑（仍是
+   D1-5=pending、d1_gate=pending（前提=H1-H7 无真 FAIL；若同窗口还有真 FAIL，gate
+   =fail 优先——run_all 先判 fail。「总闸不抵消」说的是 H 全 PASS 也压不下
+   insufficient，不是拿 pending 盖住真 FAIL）——这是窗口配置问题，修 N 重跑（仍是
    全程 Q1），不是 DUT 失败（d1-health-checks §1 H8 + §5）。
 3. **真 fail 面按七规则归因**：
    - H1/H2 三分计数（到期/交付/完成）+ 上界；H2 core_tick 的 CNT 假设标注缺 = pending
@@ -312,7 +354,12 @@ python3 tools/acceptance_record.py --validate docs/acceptance-samples/d1
    - H6 逻辑序号回退 / 物理指针≠序号 mod 容量 / 超限。
    - H7 状态转换流断裂（步号倒流/非法转移/CPU0 有唤醒而时间线空）。
 4. **cfg523 联动**（任务书 §1.3b）：若窗口内出现 S9 键扫 10-tick sys_timer 源，H2
-   per_source 必须含它；缺源 = H2 pending 非 pass。
+   per_source 必须含它；缺源 = H2 pending 非 pass。**注意这是 PR-2 必须补齐的
+   checker 能力，不是现成行为**：checker 当前 `PERIODIC_SOURCES` 只有
+   timer0/core_tick——键扫新周期源若直接进 per_source 会被按非周期源判上界 0、
+   误报风暴，缺源也不会 pending。PR-2 落地时先改 d1-health-checks §2 契约再改代码
+   （任务书 §1.3b 第 1 条），并列为 PR-2 完成闸门（含反例：cfg523 开+缺键扫观测 →
+   H2 pending）。
 
 ### 5.2 红线 5「调试迭代不改进入形态」（本步核心）
 
