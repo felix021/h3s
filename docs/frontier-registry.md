@@ -26,7 +26,8 @@
     合并后两案消费者仍在当前前沿停点之后，提层实测停点/步数不变）/
     `probe_only`（只出现在 probe 自己的场景变体，10 个：探路 fixture、反事实掩码对照、键链直调×2、
     DT/ADA 敏感性探针×2 等）；
-  - `requires`＝层叠依赖开关名（63 条依赖边，与 irq_case 内 require 守卫一致）；  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的七个数据 fixture
+  - `requires`＝层叠依赖开关名（63 条依赖边，与 irq_case 内 require 守卫一致）；
+  - `value_switch`/`value_attr`＝非布尔开关标记；条件栈里的七个数据 fixture
     （`heap_info_bytes`/`lrct_trim_result`/`fd31_adc_res_named_values`/
     `jl_adda_daa_con1_initial_fixture`/`p33_canary_first_read_words`/
     `ancif_official_resources`——官方 UFW 外层 ANCIF/ANCIF1 内容二元组/
@@ -92,6 +93,8 @@ budget（该值留在 analyze，属运行配置）。
   场景/前沿键对齐、value_attr 只出现在条件栈。
 - `test_image_trace_diff.test_flag_sets_derive_from_the_frontier_registry`：
   registry 全量开关 ↔ `irq_case` 签名逐一对账（漏登记或登记已删参数都会失败）、
-  条件栈非布尔开关恰为三个具名 fixture 且 `is` 同一模块常量、base 全布尔。
+  条件栈非布尔开关恰为七个具名 fixture 且 `is` 同一模块常量、base 全布尔。（AUDIT3 勘误：
+  原文「三个」为 FLS 之前的旧计数，FLS/RAND 后实际七个；tools/test_image_trace_diff.py
+  内注释「the six named data fixtures」同样滞后，该文件本次只读未改，登记移交。）
 - 真实性由全量检查闭环：probe 前沿 require 与 analyze freshness 在
   `check_local.py --rom` 下用真仿真复现停点，单测不重复断言数值。
