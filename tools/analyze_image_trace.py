@@ -20,6 +20,17 @@ sets, subword stores) on the same stack up to the current conditional frontier.
 Every conclusion under the conditional scenario is conditional, not a verified
 boot fact; the default scenario's behavior and pins stay byte-identical.
 
+Snapshot resume rounds (route SNAPX, docs/snapshot-resume.md):
+--capture-snapshots DIR captures each image's world at its natural stop during
+a full replay (once per code state), --resume-from DIR starts every arm from
+its captured world instead of replaying from zero — verification rounds
+(parity / stop re-checks / freshness) then cost seconds per arm. Boundary
+(documented in the doc): resume re-verifies the STOP and REPORT surface only;
+the per-step signature comparison covers post-restore steps, so pinned
+full-prefix trace facts are not re-executed, and any simulation-source change
+refuses at the snapshot fingerprint gate (behavior changes require a fresh
+full replay by construction).
+
 Honest comparison basis (what a "no divergence" result does and does not mean):
 - per-step comparison covers scheduling, fetch PC, control flow, flags, the
   full register file and guest RAM writes;
@@ -584,7 +595,7 @@ class TraceMachine(DualCoreMachine):
 
 
 def frontier_run(module, app, header, rom, name, *, flash_image_bytes, readonly=(),
-                 budget=None, scenario='crc_bankb'):
+                 budget=None, scenario='crc_bankb', snapshot=None):
     """One run of a shared-stack scenario via probe_irq_entry.irq_case (the
     scenario parameter construction is imported, never duplicated: the flag
     set comes from SCENARIOS and derives from the single-source
@@ -592,8 +603,10 @@ def frontier_run(module, app, header, rom, name, *, flash_image_bytes, readonly=
     itself uses). scenario 'crc_bankb' is the pinned shared
     frontier (default); 'p11_heap_experimental' layers the conditional
     derived-not-measured opt-ins on the same stack. budget overrides
-    irq_case's own budget through a dual_case wrapper. Returns
-    (result, machine_trace)."""
+    irq_case's own budget through a dual_case wrapper (a snapshot= restore
+    budget rides the same wrapper — the LAST budget set here wins, so callers
+    resuming from a snapshot pass the resume cap as budget, not the flag
+    budget). Returns (result, machine_trace)."""
     require(scenario in SCENARIOS, f'unknown scenario {scenario!r}')
     TraceMachine.instances = []
     original_machine = probe_dualcore.DualCoreMachine
@@ -608,12 +621,78 @@ def frontier_run(module, app, header, rom, name, *, flash_image_bytes, readonly=
         result = probe_irq_entry.irq_case(
             module, app, header, rom, name,
             **SCENARIOS[scenario]['irq_case_flags'],
-            flash_image_bytes=flash_image_bytes, readonly=readonly)
+            flash_image_bytes=flash_image_bytes, readonly=readonly,
+            snapshot=snapshot)
     finally:
         probe_dualcore.DualCoreMachine = original_machine
         probe_irq_entry.dual_case = original_dual
     require(len(TraceMachine.instances) == 1, 'expected exactly one machine per run')
     return result, TraceMachine.instances[0].trace
+
+
+def snapshot_path(snapshot_dir, scenario, label):
+    """Per-image snapshot file name inside a snapshot round directory (route
+    SNAPX): one snapshot per (scenario, label) — official and tested_b79 worlds
+    DIVERGE from step 155,390 on, so each image needs its own captured world."""
+    return Path(snapshot_dir) / f'{scenario}-{label}.bin'
+
+
+def resume_snapshot_config(snapshot_dir, scenario, label, effective_budget):
+    """Build the irq_case snapshot config for one resumed arm (route SNAPX).
+
+    Loads the per-image snapshot (running both drift gates up front: a stale
+    fingerprint refuses HERE with the regenerate message, before any stepping)
+    and converts the scenario-wide effective budget into the resume cap
+    max(1, effective - captured_steps). Both endpoint shapes land correctly:
+    a frontier-stop snapshot re-attempts its blocked instruction on the first
+    resumed step (the cap never binds), a budget-stop snapshot N advances to
+    the same stop a full effective-budget replay reaches. The expected_context
+    gate pins the snapshot to THIS label's run name — an official snapshot
+    restored into a tested_b79 arm (or a different scenario) refuses instead
+    of silently comparing a wrong world.
+    """
+    from world_snapshot import WorldSnapshot
+    path = snapshot_path(snapshot_dir, scenario, label)
+    loaded = WorldSnapshot.load(path)
+    context = loaded.header.get('capture_context') or {}
+    completed = context.get('completed_steps')
+    require(isinstance(completed, int) and completed >= 0,
+            f'{path}: snapshot header lacks a valid capture_context.completed_steps')
+    return {'restore': path,
+            'expected_context': {'scenario': f'trace_{label}'}}, max(1, effective_budget - completed)
+
+
+class _ReadOnlySpool(TraceSpool):
+    """Route PAR3: the parent-side view over a finished arm's handed-off
+    spool. Everything read-side is inherited unchanged; the two mutating
+    entry points refuse so a compared artifact cannot be edited in place
+    after the handoff."""
+
+    def append(self, row):
+        raise ValueError('append to a reattached (parallel-arm) spool')
+
+    def flush(self):
+        raise ValueError('flush on a reattached (parallel-arm) spool')
+
+
+def _reattach_spool(spool_path, index_path):
+    """Route PAR3: rebuild a READ-ONLY spool view over the bytes + chunk index
+    a parallel arm worker wrote. Same chunk semantics (a fresh Unpickler per
+    chunk, the two-chunk cache); the backing file is opened 'rb' on top of the
+    class-level refusal. Parent and child run one code version — the sidecar
+    index is a run-local handoff, not a persisted format."""
+    index = json.loads(index_path.read_text())
+    spool = _ReadOnlySpool.__new__(_ReadOnlySpool)  # skip __init__ (temp file)
+    spool._file = open(spool_path, 'rb')
+    spool._chunk = TraceSpool.DEFAULT_CHUNK
+    spool._offsets = list(index['offsets'])
+    spool._counts = list(index['counts'])
+    spool._starts = list(index['starts'])
+    spool._flushed = index['flushed']
+    spool._tail = list(index['tail'])
+    spool._cache = OrderedDict()
+    spool._closed = False
+    return spool
 
 
 class RunPool:
@@ -630,27 +709,119 @@ class RunPool:
     same registry stop literals from two independently executed official runs
     in one process). Spools are closed once, by close(), after the LAST
     consumer finishes (route O6 release discipline, ownership moved from the
-    pair comparator to the pool)."""
+    pair comparator to the pool).
 
-    def __init__(self, module, rom, header, budget, scenario, loaded):
+    Route SNAPX snapshot rounds (docs/snapshot-resume.md): snapshot_mode
+    'capture' additionally captures each arm's world at its natural stop into
+    snapshot_dir (one full replay per image, once per code state); 'resume'
+    starts every arm from its captured world instead of replaying from zero —
+    a frontier-stop snapshot round costs seconds per arm. Validity boundary:
+    resume only reproduces what the captured prefix already pinned (stop
+    records, final reports, per-core parity); the per-step signature
+    comparison only covers POST-restore steps, so the pinned full-prefix
+    trace facts (first divergence, reconvergence) are NOT re-executed — those
+    need a full replay (and the drift gates refuse any resume after a
+    simulation-source change anyway)."""
+
+    def __init__(self, module, rom, header, budget, scenario, loaded,
+                 snapshot_mode=None, snapshot_dir=None):
         self._module = module
         self._rom = rom
         self._header = header
         self._budget = budget
         self._scenario = scenario
         self._loaded = loaded
+        self._snapshot_mode = snapshot_mode
+        self._snapshot_dir = snapshot_dir
         self.runs = {}
+
+    def arm_config(self, label):
+        """(app, plain, readonly, budget, snapshot) for one arm — the single
+        source shared by the serial path, the parallel arm workers (route
+        PAR3) and the snapshot-round modes."""
+        app, plain, readonly, _sha = self._loaded[label][1]
+        budget, snapshot = self._budget, None
+        if self._snapshot_mode == 'capture':
+            snapshot = {'capture': snapshot_path(self._snapshot_dir,
+                                                 self._scenario, label)}
+        elif self._snapshot_mode == 'resume':
+            snapshot, budget = resume_snapshot_config(self._snapshot_dir,
+                                                      self._scenario, label,
+                                                      self._budget)
+        return app, plain, readonly, budget, snapshot
 
     def run(self, label):
         """Execute label once (first call) and return its (result, trace);
         every later call returns the SAME pair — the reuse itself."""
         if label not in self.runs:
-            app, plain, readonly, _sha = self._loaded[label][1]
+            app, plain, readonly, budget, snapshot = self.arm_config(label)
             self.runs[label] = frontier_run(
                 self._module, app, self._header, self._rom, f'trace_{label}',
                 flash_image_bytes=plain, readonly=readonly,
-                budget=self._budget, scenario=self._scenario)
+                budget=budget, scenario=self._scenario, snapshot=snapshot)
         return self.runs[label]
+
+    def run_parallel(self, labels, jobs):
+        """Route PAR3: execute the given labels in forked worker processes (up
+        to `jobs` concurrently) and register each (result, spool) pair in
+        self.runs — the three-image conditional round is three INDEPENDENT
+        simulations, so its wall clock is the arm count times the per-arm time
+        when serialized. Values are unchanged by construction: each worker
+        runs the very same frontier_run in a forked copy of this process
+        (module state, scenario flags and simulator PIN already imported and
+        pinned); the parent only relays the finished artifacts. The worker
+        flushes its TraceSpool and writes the spool bytes plus the chunk index
+        and the result dict into a scratch directory; the parent re-attaches a
+        read-only spool view (same class, same chunk semantics — parent and
+        child run one code version, no on-disk format contract). Comparisons
+        stay single-process in the parent, exactly as before."""
+        import multiprocessing
+        context = multiprocessing.get_context('fork')
+        scratch = Path(tempfile.mkdtemp(prefix='h3s-par3-'))
+        try:
+            pending = list(labels)
+            running = []  # (process, label, result_path, spool_path, index_path)
+            while pending or running:
+                while pending and len(running) < jobs:
+                    label = pending.pop(0)
+                    work = scratch / label
+                    work.mkdir()
+                    process = context.Process(
+                        target=self._arm_worker, args=(label, work),
+                        name=f'h3s-arm-{label}')
+                    process.start()
+                    running.append((process, label, work / 'result.pkl',
+                                    work / 'spool.bin', work / 'spool.json'))
+                process, label, result_path, spool_path, index_path = running.pop(0)
+                process.join()
+                require(process.exitcode == 0,
+                        f'parallel arm {label!r} failed with exit code '
+                        f'{process.exitcode}; its traceback is above')
+                result = pickle.loads(result_path.read_bytes())
+                self.runs[label] = (result, _reattach_spool(spool_path, index_path))
+        finally:
+            import shutil
+            shutil.rmtree(scratch, ignore_errors=True)
+
+    def _arm_worker(self, label, work):
+        # Child process: run one arm exactly like the serial path, then hand
+        # the artifacts to the parent. Any exception exits non-zero (the
+        # parent requires exitcode 0); stderr is inherited so the traceback
+        # surfaces in place.
+        app, plain, readonly, budget, snapshot = self.arm_config(label)
+        result, trace = frontier_run(
+            self._module, app, self._header, self._rom, f'trace_{label}',
+            flash_image_bytes=plain, readonly=readonly,
+            budget=budget, scenario=self._scenario, snapshot=snapshot)
+        trace.flush()
+        trace._file.seek(0)
+        (work / 'spool.bin').write_bytes(trace._file.read())
+        (work / 'spool.json').write_text(json.dumps(
+            {'offsets': trace._offsets, 'counts': trace._counts,
+             'starts': trace._starts, 'flushed': trace._flushed,
+             'tail': trace._tail}))
+        with open(work / 'result.pkl', 'wb') as handle:
+            pickle.dump(result, handle, protocol=4)
 
     def close(self):
         for _result, trace in self.runs.values():
@@ -856,6 +1027,19 @@ def _control(row):
     return (row[0], row[1], row[2])
 
 
+def _report_for_diff(result):
+    """Report view for the final-report comparison: strips the run NAME and
+    the SNAPSHOT-ROUND transport keys (route SNAPX). 'name' differs by design
+    (trace_<label>); snapshot_capture/snapshot_restore are per-run provenance
+    of HOW the world was produced (full replay vs capture vs restore), not
+    world observation — in a snapshot round BOTH arms carry them and their
+    digests differ per image, which would swamp the diff with transport noise.
+    The comparison stays symmetric all-or-none: the tool refuses a mixed
+    round (some arms resumed, some replayed) at startup."""
+    return {k: v for k, v in result.items()
+            if k not in ('name', 'snapshot_capture', 'snapshot_restore')}
+
+
 def compare_pair(image_a, run_a, image_b, run_b, budget, scenario='crc_bankb'):
     """Compare one image pair over PRE-EXECUTED runs (route REUSE). Each arm's
     (result, trace) comes from the caller's RunPool: the same run object may
@@ -879,8 +1063,8 @@ def compare_pair(image_a, run_a, image_b, run_b, budget, scenario='crc_bankb'):
             'shared_stack': SCENARIOS[scenario]['stack_description'],
             'budget': budget,
             'runs': {label_a: _run_summary(result_a), label_b: _run_summary(result_b)},
-            'final_report_diffs': json_diff({k: v for k, v in result_a.items() if k != 'name'},
-                                            {k: v for k, v in result_b.items() if k != 'name'}, limit=64)}
+            'final_report_diffs': json_diff(_report_for_diff(result_a),
+                                            _report_for_diff(result_b), limit=64)}
     first = None
     first_control = None
     for step, (row_a, row_b) in enumerate(zip(trace_a, trace_b)):
@@ -1394,10 +1578,41 @@ def main():
                              'selected scenario (label in {l1_slotram,r4_keyhook}, path = the '
                              'candidate .ufw built by build_quiet_candidate; independent from the '
                              '2026-11-12 official-vs-b79 pin; UNTESTED candidate, no flash approval)')
+    parser.add_argument('--capture-snapshots', type=Path, metavar='DIR',
+                        help='(snapshot resume rounds, docs/snapshot-resume.md) while running the '
+                             'full replays, also capture each image\'s world at its natural stop '
+                             'into DIR as <scenario>-<label>.bin — one full replay per image, once '
+                             'per code state; every later verification round can then start from '
+                             '--resume-from DIR in seconds')
+    parser.add_argument('--resume-from', type=Path, metavar='DIR',
+                        help='(snapshot resume rounds, docs/snapshot-resume.md) start every arm '
+                             'from its captured snapshot in DIR instead of replaying from zero '
+                             '(requires DIR to hold <scenario>-<label>.bin for EVERY --image '
+                             'label; stop/report parity is re-verified, per-step comparison only '
+                             'covers post-restore steps — pinned full-prefix trace facts are NOT '
+                             're-executed, see the doc; refuses --self-check/--candidate-self-check)')
+    parser.add_argument('--jobs', type=int, default=1, metavar='N',
+                        help='(route PAR3) run the per-image simulation arms in N parallel '
+                             'worker processes (fork; comparisons stay single-process in the '
+                             'parent). Default 1 = the legacy serial order. Values are '
+                             'unchanged either way — each arm is an independent simulation; '
+                             'the wall clock of a three-image round drops from 3x arm time '
+                             'to ~1x')
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
     scenario = args.scenario
     budget = args.budget if args.budget is not None else SCENARIOS[scenario]['default_budget']
+    snapshot_mode, snapshot_dir = None, None
+    if args.capture_snapshots is not None and args.resume_from is not None:
+        require(False, '--capture-snapshots and --resume-from are mutually exclusive')
+    if args.capture_snapshots is not None:
+        snapshot_mode, snapshot_dir = 'capture', args.capture_snapshots
+    if args.resume_from is not None:
+        snapshot_mode, snapshot_dir = 'resume', args.resume_from
+        require(not args.self_check and not args.candidate_self_check,
+                '--resume-from cannot feed --self-check/--candidate-self-check: those pins '
+                'assert full-prefix trace facts (first divergence step, reconvergence) that a '
+                'resumed round does not re-execute — re-pin from full replays')
 
     if args.self_check:
         # 自检固定跑仓库内两镜像(official vs tested_b79)到所选场景的前沿停点;
@@ -1460,8 +1675,26 @@ def main():
     # 复用替代的重复执行本就被 self-check 钉死为同值(freshness require 与
     # check_self 对同进程两次独立执行的 official 运行要求同一 registry 停点
     # 字面值),故报告逐字节不变;执行次数见各 trace_<label> 打印行计数。
-    pool = RunPool(module, rom, header, budget, scenario, loaded)
+    # 路 SNAPX 快照轮(--capture-snapshots/--resume-from):capture=全量重放
+    # 顺带在自然停点捕获每镜像世界(一代码态一次);resume=验证轮从捕获世界
+    # 起跑,停点/报告 parity 照常核验(freshness require 对 resumed 报告同样
+    # 成立——restore 世界重现捕获停点),全或无(all-or-none)拒混合轮。
+    if snapshot_mode == 'resume':
+        missing = [label for label in sorted(loaded)
+                   if not snapshot_path(snapshot_dir, scenario, label).exists()]
+        require(not missing,
+                f'--resume-from {snapshot_dir} lacks snapshots for {missing} '
+                f'(expected <scenario>-<label>.bin for every image; capture them first with '
+                f'--capture-snapshots under the SAME code state)')
+    if snapshot_mode is not None:
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+    pool = RunPool(module, rom, header, budget, scenario, loaded,
+                   snapshot_mode=snapshot_mode, snapshot_dir=snapshot_dir)
     try:
+        if args.jobs > 1:
+            # 路 PAR3:镜像臂=独立仿真,并行分叉执行后在父进程汇合;报告值与
+            # 串行版逐字节相同(同一 frontier_run,每次分叉副本各跑一臂)。
+            pool.run_parallel(sorted(loaded), jobs=args.jobs)
         if 'official' in loaded:
             fresh = SCENARIOS[scenario]['freshness']
             check = pool.run('official')[0]
@@ -1476,6 +1709,9 @@ def main():
                   'candidate_whole_boot_validated': False, 'suitable_for_flash_approval_alone': False,
                   'comparison_basis': COMPARISON_BASIS,
                   'pairs': []}
+        if snapshot_mode is not None:
+            report['snapshot_round'] = {'mode': snapshot_mode, 'dir': str(snapshot_dir),
+                                        'scenario': scenario}
         if scenario != 'crc_bankb':
             # 默认场景报告保持逐字节不变;非默认场景才标注场景键。
             report['scenario'] = scenario

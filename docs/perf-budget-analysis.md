@@ -601,3 +601,31 @@ batched_write_truncation_matrix_raises_not_silent` 钉批量化后块界 ±1 与
 27.6k = 36.2µs/步——距结构地板 34-35.5µs/步 <5-7%，与 PROF3 预估
 （43.7−7.7−1.8≈34.2µs≈29k/s）方向一致；第三波到此收口，下一级是
 O7/O9（等/不立项，§11.6 裁决维持）。
+
+## 13. 三臂进程并行实施记录（路 PAR3 / sim-snapx，2026-11-16，一案一提交，基线 main 4178685）
+
+三镜像条件轮的三个臂是**互相独立的仿真**（各自独立的 irq_case 世界，互不共享
+状态），REUSE（§10）后仍串行执行（3 臂×~16 分钟 ≈50 分钟）。本路给
+`tools/analyze_image_trace.py` 加 `--jobs N`（默认 1=原串行不变）：N>1 时
+`RunPool.run_parallel` 用 fork 工作进程并发执行各镜像臂，每臂在子进程里跑与串行版
+**完全同一**的 `frontier_run`（同 flag 集、同 PIN、同 monkeypatch——分叉副本各跑
+各的），结束后把 result dict + 签名链 spool（O6 临时文件字节+chunk 索引）落
+scratch 目录交给父进程；父进程以只读 spool 视图（`_ReadOnlySpool`：读路径继承
+TraceSpool chunk 语义，append/flush 拒绝）接回 `pool.runs`，**比对仍单进程**在父
+进程进行，消费矩阵（freshness+各 pair）不变。臂失败（子进程非零退出）以 require
+显式失败，traceback 就地透传。
+
+**值不变性论证**：每臂代码路径与串行版逐指令相同；子/父进程运行同一份代码，spool
+handoff 是 run-local 约定非持久格式；单测钉死 fork handoff 后 result 逐字段相等、
+spool 逐行相等（含 chunk 中随机读）。
+
+**实测（本机 6 核，背景有其他路线负载）**：
+
+| 场景 | 串行 | 并行 --jobs 3 | 报告对照 |
+| --- | --- | --- | --- |
+| crc_bankb 双镜像 --self-check | 29.6s | 20.5s（147% CPU） | **逐字节相同**（含 self-check 断言面） |
+| p11 条件前沿三镜像（official/b79/l1_slotram，各 21.8M 步） | 68m33s（捕获轮，与 N-tier 等价验证并发） | **22m39s**（3.03x） | 剥离 top-level `snapshot_round` 溯源键后**逐字节相同**（捕获轮独有） |
+| 同上 + `--resume-from`（SNAPX 快照轮） | — | **2.2s** | 停点/报告面与全量重放同值（轨迹面不重执行，见 docs/snapshot-resume.md） |
+
+三臂并行 RSS=3×~130MB（O6 包络内）；串行基线本身受并发负载影响偏高，无负载纯串行
+约 50 分钟（3×16），并行比恒为臂数比 3→1。

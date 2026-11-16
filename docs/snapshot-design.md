@@ -466,7 +466,31 @@ BD 蓝图 §2.5 的接入形状逐条兑现：
   「改动前后报告」变成「重放 vs 恢复续跑报告」）；
 - frontier_registry 四步 checklist——advance-tier 等价作为第五步并入，不另立流程。
 
+## 5.8 探索验证流程接入（2026-11-15 路 SNAPX/sim-snapx，基线 4178685）
+
+接线路把快照点留在了 D1 后，探索期的重复验证轮被漏算：每次放行后同一新停点要被
+全量重放 N 遍（parity 三臂/--rom 条件场景/断言重钉，LPV 峰值 4 轮×35 分钟）。本路
+补两件事：
+
+| 项 | 状态 | 锚点 |
+|---|---|---|
+| 适配器补齐（19,139,239 canonical 之后合并的状态）：M4 +四槽位 jl_audio_dac_tm（DT）/jl_adda_ada（ADA）/p11_lpvad（LPV）/jl_audio_adc_dma（JLA），字段=各类实例属性清单（同 BL 方法）；DT/ADA 的 probe_only 初值替换进每对象静态守卫 | 就绪（低预算捕获让缺状态守卫显形拒载作清单，300k 世界全绿） | world_snapshot.M4_FAMILIES + test_world_snapshot.M4ProjectionFamilies |
+| M5 observation-skip：TraceMachine 的 trace/pending_writes（O6 签名链 spool 及其缓冲）=analyze 层观测记录、非仿真世界状态——跳过不捕获（恢复世界起新 spool）；其它未登记机器属性仍拒载 | 就绪 | world_snapshot.M5_OBSERVATION_SKIP + test_world_snapshot.ObservationLayerMachine |
+| 21.8M 等价性重验：canonical 21,800,455 @ 0x606e044 捕获（2,539,009B，691s）+自反 #0 报告逐字节相等；N=21,700,455（=前沿−100k）预算停点捕获（idle 等待步耗预算不计数，实际完成 21,696,721）三档 advance（+1/+10k/+100k，均为 instruction_budget 停点；前沿停点形状由 canonical 行覆盖）resume vs 全量重放逐字节相等 | 就绪（env 门控手动层） | evidence/snapshot-artifact.json canonical 行 + frontier-n21700455 行 |
+| 验证轮入口：analyze_image_trace `--capture-snapshots DIR`（全量重放顺带捕获每镜像世界，一代码态一次）/`--resume-from DIR`（验证轮从快照起跑，秒级/臂；全或无、expected_context 按标签拒错配、`--self-check` 拒 resume） | 就绪（用法/边界判据详见 docs/snapshot-resume.md） | analyze_image_trace snapshot_path/resume_snapshot_config/RunPool |
+
 # 6. HANDOFF 条目（同步落档）
+
+- 路 SNAPX（sim-snapx，2026-11-15，基线 4178685）：**快照接入探索验证流程**——
+  19M canonical 之后合并的四路容器状态补齐 M4（DT dac_tm/ADA 九字/LPV p11_lpvad/
+  JLA adc_dma，缺状态守卫低预算捕获显形清单后逐项落表）+M5 observation-skip
+  （TraceMachine 的 O6 签名链 spool=本 comparator run 记录非世界状态）；21.8M 时代
+  等价性重验（canonical 21,800,455 捕获+自反逐字节相等+N=21,700,455 三档 advance
+  见 evidence/snapshot-artifact.json）；analyze_image_trace 增 `--capture-snapshots/
+  --resume-from` 验证轮断点起跑入口（用法与适用边界=docs/snapshot-resume.md：
+  前缀行为零变化是前提，指纹闸机械保证，行为变化类改动必须全量重放；resumed 轮
+  只核停点/报告面，全前缀逐步签名事实不重执行，--self-check 拒 resume）。
+  详见 §5.8 与 docs/snapshot-resume.md。
 
 - 路 SNAP（sim-snapwire，2026-11-14，基线 48a49d0）：**接线路完成**——BJ 清单
   ①捕获点④中点往返全量⑤canonical+artifact tier 全落地，主交付

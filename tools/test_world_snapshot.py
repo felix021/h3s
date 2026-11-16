@@ -601,7 +601,7 @@ class M1FullCPUInventory(unittest.TestCase):
 
 
 class M4ProjectionFamilies(unittest.TestCase):
-    """All ~30 M4 projection slots (28 stateful classes + the two stateless
+    """All ~34 M4 projection slots (32 stateful classes + the two stateless
     idle fixtures): full-family round trip, one-shot event-bit semantics,
     carry-state (CRC/ICU) resumption and the AZ counterexamples."""
 
@@ -641,6 +641,14 @@ class M4ProjectionFamilies(unittest.TestCase):
         jl_audio_dac_vl0_readback=True,
         jl_audio_dac_cop_writes=True, jl_audio_dac_dma_writes=True,
         jl_adda_analog_family=True, timer2_delay_projection=True,
+        # Post-wiring families (route SNAPX/sim-snapx): dac_tm (DT)/adda_ada
+        # (ADA)/p11_lpvad (LPV)/adc_dma (JLA), all ON in the current
+        # conditional frontier flag set (21.8M era); probe values stay None
+        # like the canonical flag set (probe_only switches are off).
+        jl_audio_dac_tm_readback=True,
+        jl_adda_ada_family=True,
+        p11_lpvad_config=True,
+        jl_audio_adc_dma_writes=True,
     )
 
     def build_world(self):
@@ -755,6 +763,20 @@ class M4ProjectionFamilies(unittest.TestCase):
         hw.timer2.write(0xfd0600, 0xc01)        # start: opens a transaction
         hw.timer2.con_reads = 1
         hw.timer2.write_iwkup(0xffe1b0, 6, 0)   # bounded write-only log
+        # Post-wiring families (route SNAPX): DT TM0 half-word setter write +
+        # readback (reads_after_write) and an untouched-word synthetic initial
+        # read (TM1); ADA nine-word config write + RMW-shaped read; LPVAD
+        # single-word bit-set write + readback; JLA ADC DMA write-only record
+        # with the per-write core log.
+        hw.jl_audio_dac_tm.write(0xfe0524, 0xfda80000)
+        self.assertEqual(hw.jl_audio_dac_tm.read(0xfe0524), 0xfda80000)
+        hw.jl_audio_dac_tm.read(0xfe0528)       # synthesized initial 0
+        hw.jl_adda_ada.write(0xfe0a20, 0xffffffdf)
+        hw.jl_adda_ada.read(0xfe0a24)           # synthesized initial 0
+        hw.p11_lpvad.write(0xf2b404, 0x10000000)
+        self.assertEqual(hw.p11_lpvad.read(0xf2b404), 0x10000000)
+        hw.jl_audio_adc_dma.write(0xfe053c, 0x419264, 0)
+        hw.jl_audio_adc_dma.write(0xfe0540, 0x100, 0)
         return hardware
 
     def captured_m4(self, world):
@@ -871,6 +893,90 @@ class M4ProjectionFamilies(unittest.TestCase):
         wrong_progress = dict(self.M4_SWITCHES, watchdog_progress=(2, 5))
         with self.assertRaisesRegex(SnapshotError, 'static configuration mismatch'):
             self.restored_m4(loaded, wrong_progress)
+
+    def test_snapx_probe_fixture_rides_the_static_guard(self):
+        """Route SNAPX: the DT/ADA probe_only initial-word substitutions are
+        per-object constructor fixtures — a restore target built with a
+        different probe value must refuse (naming the fixture), never silently
+        re-substitute the initial word."""
+        probed = dict(self.M4_SWITCHES, jl_audio_dac_tm_probe_value=0xffffffff,
+                      jl_adda_ada_probe_value=0xfffffff8)
+        original = self.poke(BR28Model(**probed))
+        snapshot = WorldSnapshot.from_bytes(self.captured_m4(original).encode())
+        with self.assertRaisesRegex(SnapshotError, 'tm0_probe_initial'):
+            self.restored_m4(snapshot)                      # target: probes off
+        with self.assertRaisesRegex(SnapshotError, 'ada_probe_initial'):
+            self.restored_m4(snapshot, dict(probed, jl_adda_ada_probe_value=None))
+        # Same probes on both sides: round-trips and the probe value survives.
+        restored = self.restored_m4(snapshot, probed)
+        self.assertEqual(restored.jl_audio_dac_tm._initial_word(0xfe0524), 0xffffffff)
+        self.assertEqual(restored.jl_adda_ada._initial_word(0xfe0a20), 0xfffffff8)
+
+    def test_snapx_containers_resume_readback_and_write_only_semantics(self):
+        """Route SNAPX behavioral pin: after restore the DT/ADA/LPVAD readback
+        containers answer from the CAPTURED stores (last written value, and
+        the untouched word keeps answering the synthetic initial 0), while the
+        JLA ADC DMA record stays write-only (read refuses on both worlds)."""
+        original, snapshot = self.world_and_snapshot()
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        for world in (original, restored):
+            self.assertEqual(world.jl_audio_dac_tm.read(0xfe0524), 0xfda80000)
+            self.assertEqual(world.jl_audio_dac_tm.read(0xfe0528), 0)
+            self.assertEqual(world.jl_adda_ada.read(0xfe0a20), 0xffffffdf)
+            self.assertEqual(world.jl_adda_ada.read(0xfe0a24), 0)
+            self.assertEqual(world.p11_lpvad.read(0xf2b404), 0x10000000)
+            with self.assertRaisesRegex(Blocked, 'jl_audio_adc_dma_read_not_modeled'):
+                world.jl_audio_adc_dma.read(0xfe053c)
+        # The counters (reads_after_write / synthesized_initial_reads) resumed
+        # exactly, so the post-restore reads keep counting from the captured
+        # values (poke did one written-read; the loop above added one more).
+        self.assertEqual(restored.jl_audio_dac_tm.reads_after_write,
+                         original.jl_audio_dac_tm.reads_after_write)
+        self.assertEqual(original.jl_audio_dac_tm.reads_after_write, 2)
+        self.assertEqual(restored.jl_audio_dac_tm.synthesized_initial_reads, 2)
+
+
+class ObservationLayerMachine(unittest.TestCase):
+    """Route SNAPX: analyze_image_trace.TraceMachine layers two observation
+    attributes (the route-O6 signature spool and its pending-writes buffer) on
+    top of DualCoreMachine. They record what THIS comparator run executed,
+    not simulated world state — capture/restore must SKIP them (a restored
+    world starts a fresh spool) while any other unexpected machine attribute
+    still refuses (the missing-state guard keeps its teeth)."""
+
+    def _world(self, with_observation=True):
+        world = small_world()
+        if with_observation:
+            world['machine'].trace = object()          # opaque spool stand-in
+            world['machine'].pending_writes = [(0x123, 'ab')]
+        return world
+
+    def test_observation_attributes_are_skipped_not_restored(self):
+        world = self._world()
+        snapshot = WorldSnapshot.from_bytes(captured(world).encode())
+        target = fresh_world()
+        target['machine'].trace = object()
+        target['machine'].pending_writes = []
+        summary = restore_world(snapshot, **target,
+                                expected_context={'scenario': 'small_world_test'})
+        self.assertIn('M5', summary.modules)
+        # The spool buffer is per-run observation: restore must NOT have
+        # overwritten the fresh run's (empty) buffer with the captured one.
+        self.assertEqual(target['machine'].pending_writes, [])
+        # M5 state itself round-trips as before.
+        self.assertEqual(target['machine'].stalls, world['machine'].stalls)
+        self.assertEqual(target['machine'].last_core, world['machine'].last_core)
+        # A world without the observation attrs restores identically too (the
+        # skip is one-directional: absence on the capture side is fine).
+        plain = fresh_world()
+        restore_world(snapshot, **plain)
+
+    def test_any_other_new_machine_attribute_still_refuses(self):
+        world = self._world()
+        world['machine'].some_future_state = object()
+        with self.assertRaisesRegex(SnapshotError, 'some_future_state'):
+            captured(world)
+
 
 class ValueCodec(unittest.TestCase):
     def test_abstract_values_round_trip(self):

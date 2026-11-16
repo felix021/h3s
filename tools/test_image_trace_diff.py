@@ -408,7 +408,8 @@ def test_run_pool_executes_each_label_once_and_shares_runs():
     calls = []
 
     def fake_frontier_run(module, app, header, rom, name, *, flash_image_bytes,
-                          readonly=(), budget=None, scenario='crc_bankb'):
+                          readonly=(), budget=None, scenario='crc_bankb', snapshot=None):
+        assert snapshot is None, 'plain (non-snapshot-round) pool runs pass no snapshot'
         calls.append({'name': name, 'app': app, 'plain': flash_image_bytes,
                       'budget': budget, 'scenario': scenario})
         spool = TraceSpool()
@@ -587,6 +588,129 @@ def test_scenario_registry_shapes():
     assert SCENARIOS['crc_bankb']['default_budget'] == 300000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
+
+def test_snapshot_round_entry_naming_and_resume_budget_math():
+    """Route SNAPX resume-round entry: per-(scenario, label) snapshot naming,
+    the all-or-none resume budget conversion max(1, effective - captured) and
+    the label-pinning expected_context (an official snapshot may not serve a
+    tested_b79 arm)."""
+    import tempfile
+    from types import SimpleNamespace
+    from collections import Counter
+    from pathlib import Path
+    from world_snapshot import capture_world
+    from analyze_image_trace import resume_snapshot_config, snapshot_path
+
+    directory = Path(tempfile.mkdtemp(prefix='h3s-snapx-entry-'))
+    label_path = snapshot_path(directory, 'p11_heap_experimental', 'official')
+    assert label_path.name == 'p11_heap_experimental-official.bin'
+    assert snapshot_path(directory, 'crc_bankb', 'tested_b79').name == \
+        'crc_bankb-tested_b79.bin'
+
+    def write_snapshot(label, completed):
+        ledger = SimpleNamespace(events=[], adapters=Counter(), rom_steps=Counter(),
+                                 event_counts=Counter(), milestones=[], trace=[],
+                                 completed=completed, stop={'kind': 'instruction_budget'})
+        snapshot = capture_world(ledger=ledger,
+                                 context={'scenario': f'trace_{label}',
+                                          'completed_steps': completed})
+        snapshot.save(snapshot_path(directory, 'p11_heap_experimental', label))
+
+    # Frontier-stop shape: the cap is huge but never binds (the restored world
+    # re-attempts its blocked instruction on the first resumed step).
+    write_snapshot('official', 21800455)
+    config, cap = resume_snapshot_config(directory, 'p11_heap_experimental',
+                                         'official', 40000000)
+    assert config['restore'] == snapshot_path(directory, 'p11_heap_experimental', 'official')
+    assert config['expected_context'] == {'scenario': 'trace_official'}
+    assert cap == 40000000 - 21800455
+    # Budget-stop shape: the cap lands the resumed run on the same endpoint a
+    # full effective-budget replay reaches; a captured 0-step world keeps a cap.
+    write_snapshot('tested_b79', 21700455)
+    _config, cap = resume_snapshot_config(directory, 'p11_heap_experimental',
+                                          'tested_b79', 21710455)
+    assert cap == 10000
+    _config, cap = resume_snapshot_config(directory, 'p11_heap_experimental',
+                                          'tested_b79', 21700455)
+    assert cap == 1
+    # A snapshot header without a step count refuses (not silently 0).
+    ledger = SimpleNamespace(events=[], adapters=Counter(), rom_steps=Counter(),
+                             event_counts=Counter(), milestones=[], trace=[],
+                             completed=0, stop=None)
+    capture_world(ledger=ledger, context={'scenario': 'trace_l1_slotram'}) \
+        .save(snapshot_path(directory, 'p11_heap_experimental', 'l1_slotram'))
+    try:
+        resume_snapshot_config(directory, 'p11_heap_experimental', 'l1_slotram', 40000000)
+    except ValueError as error:
+        assert 'completed_steps' in str(error)
+    else:
+        raise AssertionError('resume config accepted a snapshot without completed_steps')
+
+
+def test_report_for_diff_strips_transport_keys_only():
+    """Route SNAPX: the final-report comparison strips the run name and the
+    snapshot-round transport keys (per-run provenance, both arms carry them in
+    a round) but keeps every world observation."""
+    from analyze_image_trace import _report_for_diff
+    report = {'name': 'trace_official', 'completed_steps': 21800455,
+              'stop': {'kind': 'unmapped_memory'},
+              'snapshot_capture': {'sha256': 'a', 'bytes': 1},
+              'snapshot_restore': {'digest': 'b', 'completed_steps': 21800455}}
+    assert _report_for_diff(report) == {'completed_steps': 21800455,
+                                        'stop': {'kind': 'unmapped_memory'}}
+
+
+def test_parallel_arms_match_serial_values_via_fork_handoff():
+    """Route PAR3: run_parallel forks one worker per label, each running the
+    SAME frontier_run and handing (result, spool) to the parent through a
+    scratch directory; the reattached read-only spool must read back the exact
+    rows the arm produced, and the pool registration must equal the serial
+    path's (same fake arms, same values). Simulator-free: frontier_run is
+    stubbed per-arm; the fork/handoff/reattach machinery is the real one."""
+    import analyze_image_trace as ait
+
+    def fake_frontier_run(module, app, header, rom, name, *, flash_image_bytes,
+                          readonly=(), budget=None, scenario='crc_bankb', snapshot=None):
+        label = name[len('trace_'):]
+        spool = TraceSpool()
+        for i in range(5):
+            spool.append(row(0x100 + i * 2, 0x102 + i * 2,
+                             marker=(15, f'{label}-{i}')))
+        result = {'name': name, 'label': label, 'budget': budget,
+                  'snapshot': snapshot, 'completed_steps': 5, 'stop_pc': '0x10a',
+                  'stop': {'kind': 'unmapped_memory'}, 'machine': {'cores': {'0': {'steps': 5}}}}
+        return result, spool
+
+    labels = ('official', 'tested_b79', 'eq_fence_repair')
+    loaded = {label: (label, (f'app-{label}'.encode(), f'plain-{label}'.encode(), (), f'sha-{label}'))
+              for label in labels}
+    original = ait.frontier_run
+    ait.frontier_run = fake_frontier_run
+    try:
+        serial_pool = ait.RunPool(object(), b'rom', 'header', 300000, 'crc_bankb', loaded)
+        serial_runs = {label: serial_pool.run(label) for label in labels}
+        parallel_pool = ait.RunPool(object(), b'rom', 'header', 300000, 'crc_bankb', loaded)
+        parallel_pool.run_parallel(list(labels), jobs=3)
+        assert sorted(parallel_pool.runs) == sorted(labels)
+        for label in labels:
+            serial_result, serial_trace = serial_runs[label]
+            result, trace = parallel_pool.runs[label]
+            assert result == serial_result, f'{label}: parallel result drifted'
+            assert len(trace) == len(serial_trace) == 5
+            assert list(trace) == list(serial_trace), f'{label}: spool rows drifted'
+            assert trace[2] == serial_trace[2]  # mid-chunk random access
+        # read-only handoff: mutating operations on a reattached spool fail
+        # loudly instead of silently editing a compared artifact
+        spool = parallel_pool.runs['official'][1]
+        try:
+            spool.append(row(0, 2))
+        except (io.UnsupportedOperation, OSError, ValueError):
+            pass
+        else:
+            raise AssertionError('reattached spool accepted an append')
+        serial_pool.close(); parallel_pool.close()
+    finally:
+        ait.frontier_run = original
 
 
 if __name__ == '__main__':
