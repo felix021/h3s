@@ -18,13 +18,15 @@ BLE 状态源二选一（SIMB1C §3.5）+ USB 设备端（SIMB2A，进程级共�
     重建复役。世界模式单线程纪律：accept+handle 全部跑在 post_stop 线程内（machine 非
     线程安全），并发客户端回 busy。
 
-  USB 面 = MSC BOT 设备端（M2 只读，协议级仿真，设计 §4.6 诚实边界：不执行固件代码）：
-  `MscBotDevice` 按 tools/usb-recovery 的钉死字节形状应答 CBW→数据→CSW（UsbScsi.java 的
-  host 端镜像），flash 后端 = 2MiB raw fixture（tools/sim_flash_fixture.py 从公开 UFW 构造），
-  FD07 内存窗后端 = 公开 CPU ROM dump（rom-read.md 发布件）。设备身份与 loader 相位是
-  **进程级状态**（跨 socket 重连保留——「进 ROM 后断开再扫描」仍见 ROM 身份；server 退出才
-  复位，设计 §4.4）。**红线内置：USB 通道无 Flash 写路径**——FB01/FB04/WRITE(10) 等白名单外
-  opcode 一律 CSW status=1 明确拒绝并记录；flash 后端 bytes 只读挂载（无写方法）。
+  USB 面 = MSC BOT 设备端（M2 只读 + M3 armed 刷机，协议级仿真，设计 §4.6 诚实边界：不执行
+  固件代码）：`MscBotDevice` 按 tools/usb-recovery 的钉死字节形状应答 CBW→数据→CSW
+  （UsbScsi.java 的 host 端镜像），flash 后端 = 2MiB raw fixture（tools/sim_flash_fixture.py
+  从公开 UFW 构造），FD07 内存窗后端 = 公开 CPU ROM dump（rom-read.md 发布件）。设备身份与
+  loader 相位是**进程级状态**（跨 socket 重连保留——「进 ROM 后断开再扫描」仍见 ROM 身份；
+  server 退出才复位，设计 §4.4）。**红线内置：原始 flash 资产永不写**——FB01（擦 4KiB 扇区）
+  /FB04（512B 编程）仅在 armed 门内可写且只落 copy-on-armed 进程内副本（docs/sim-m3-flash-spec.md
+  §2/§3），未 armed 时行为与 M2 逐字节一致（CSW status=1 拒绝+记录）；WRITE(10)/FC0C/FC12
+  等白名单外 opcode 仍一律拒绝；原始 bytes 后端无写方法。
 
 协议（与 SimulationGattLink.java / SimulationUsbLink.java / 设计 §4.2 对齐，proto=1）：
   app→server {"t":"hello","proto":1,"client":"sim-gatt"|"sim-usb"}
@@ -222,6 +224,8 @@ USB_SECTOR = 512                               # FD05 固定 512B 扇区读
 USB_LOADER_ADDRESS = 0x120000                  # RAM loader 装载地址（br28loader.bin 钉死）
 USB_LOADER_SIZE = 23552                        # 46×512B
 USB_MEM_READ_MAX = 128                         # FD07 单次 ≤128B（512B 实测断链，rom-read.md）
+USB_ERASE_SECTOR = 0x1000                      # FB01 NOR 擦除块 4KiB（image.py SECTOR 同源）
+USB_ARM_NONCE_TTL = 120.0                      # nonce 消费记录有效期（UpgradeGate 2min 先例；审计字段）
 
 
 class _Reject(Exception):
@@ -229,7 +233,7 @@ class _Reject(Exception):
 
 
 class MscBotDevice:
-    """MSC Bulk-Only Transport 设备端（M2 只读命令集，进程级状态）。
+    """MSC Bulk-Only Transport 设备端（M2 只读命令集 + M3 armed 刷机，进程级状态）。
 
     - BOT 流解析：usb_bulk_out 消息只是 socket 分片，设备按字节流重组 CBW/OUT 数据相位
       （「USBC」签名重同步），应答以 usb_bulk_in 消息逐 USB IN transfer 发出——数据相位
@@ -237,18 +241,21 @@ class MscBotDevice:
     - 相位机照 read_rom.py：fresh-rom →(FB06×46)→ FB08 → loader-started → FC0A →
       loader-ready；FD05/FD07 只在 loader-ready 后应答（app 的 loaderReady 门同源）。
     - 身份机：normal →(EP0 usb_ctl len0)→ rom；跨连接保留、server 退出才复位（设计 §4.4）。
-    - 只读红线：flash 后端 bytes 无写方法（只读挂载语义）；FB01/FB04/FC0C/FC12/WRITE(10)
-      等白名单外 opcode 一律 _Reject 并记录 self.rejected——**M2 不存在任何 Flash 写路径**。
+    - M3 三态红线（docs/sim-m3-flash-spec.md §3.1 + codex 评审修正 1）：①原始资产 self.flash
+      （bytes，永不写、绑定永不变更）②当前仿真 flash self.flash_sim（设备芯片内容；reboot
+      保留刷后镜像）③写授权 self.plan（armed；reboot/disarm 撤销）。FB01/FB04 仅在 armed
+      门内可写且只落 copy-on-armed 进程内副本 self.flash_work；未 armed 时行为与 M2 逐字节
+      一致（CSW status=1 拒绝+记录）；FC0C/FC12/WRITE(10) 等白名单外 opcode 仍一律拒绝。
     """
 
-    def __init__(self, flash=None, rom=None, identity='normal'):
+    def __init__(self, flash=None, rom=None, identity='normal', plan=None):
         if flash is not None and len(flash) != USB_FLASH_SIZE:
             raise ValueError('flash fixture 须恰为 2MiB raw（got %dB）' % len(flash))
         if rom is not None and len(rom) != USB_ROM_WINDOW:
             raise ValueError('ROM 后端须恰为 128KiB（got %dB）' % len(rom))
         if identity not in ('normal', 'rom'):
             raise ValueError('identity 须 normal|rom')
-        self.flash = flash                                   # bytes：只读（无写路径）
+        self.flash = flash                                   # bytes：原始资产，永不写（M2 锚定字段）
         self.rom = rom                                       # bytes | None：FD07 后端
         self.flash_sha256 = hashlib.sha256(flash).hexdigest() if flash is not None else None
         self.rom_sha256 = hashlib.sha256(rom).hexdigest() if rom is not None else None
@@ -259,14 +266,25 @@ class MscBotDevice:
         self.loader = bytearray(USB_LOADER_SIZE)
         self.counts = {}                                     # opcode → 次数（验收证据）
         self.rejected = []                                   # [{'opcode','reason'}]（红线记录）
-        # BOT 字节流状态（feed_out 专用）
+        # —— M3 armed 刷机状态（三态模型；会话层消息接线 usb_arm/usb_disarm/usb_reboot 待第二段）——
+        self.flash_sim = flash                               # bytes：当前仿真 flash（芯片内容；初始=原始资产）
+        self.flash_work = None                               # bytearray | None：armed 写副本（copy-on-armed）
+        self.plan = None                                     # dict | None：armed 写授权
+        self.journal = []                                    # [{'op':'erase'|'program'|'reboot',…}]（验收证据）
+        self.erased = set()                                  # 已擦 4KiB 扇区基址（FB04 前置门）
+        self.written = set()                                 # 已写 512B 块基址（未重擦的重复写拒绝）
+        self.nonces_consumed = {}                            # nonce → 消费记录（单次有效，防重放）
+        # BOT 字节流状态（feed_out 专用；断链/reboot 须经 link_reset/reboot 清空——评审修正 5）
         self._rx = bytearray()
         self._waiting = None                                 # None=等 CBW；dict=命令在途
+        if plan is not None:
+            self.arm(plan)                                   # CLI --arm-plan 冒烟入口（第二段接线）
 
     # ---------------- 外观（world 横幅 / 枚举 / 打开） ----------------
 
     def describe(self):
         with self.lock:
+            backend = self.flash_work if self.flash_work is not None else self.flash_sim
             return {
                 'mode': 'sim-usb-msc',
                 'identity': self.identity,
@@ -275,7 +293,14 @@ class MscBotDevice:
                 'flash_bytes': len(self.flash) if self.flash is not None else 0,
                 'flash_sha256': self.flash_sha256,
                 'rom_sha256': self.rom_sha256,
-                'read_only': True,                           # M2 红线：无 Flash 写路径
+                'read_only': self.plan is None,              # armed（写授权）之外无 Flash 写路径；未 armed=M2 语义
+                'armed': self.plan is not None,              # M3 写授权态（reboot 后 False=不可再写）
+                'plan_sectors': list(self.plan['sectors']) if self.plan is not None else None,
+                'journal_len': len(self.journal),
+                'work_sha256': hashlib.sha256(self.flash_work).hexdigest()
+                              if self.flash_work is not None else None,   # armed 副本当前 SHA（半态可见性）
+                'sim_sha256': hashlib.sha256(backend).hexdigest()
+                             if backend is not None else None,             # FD05 后端（芯片内容）SHA
                 'commands': dict(self.counts),
                 'rejected': len(self.rejected),
             }
@@ -371,26 +396,32 @@ class MscBotDevice:
     def _execute(self, w):
         """执行一条完整命令（数据相位已齐/无数据相位）→ IN transfer 列表。"""
         cdb = w['cdb']
-        opcode = 0x12 if cdb[0] == 0x12 else ((cdb[0] << 8) | cdb[1])
+        opcode = None
         try:
+            if len(cdb) < 2:
+                raise _Reject('CDB 过短（%dB）：无法解析 2B opcode' % len(cdb))   # 评审修正 4（防 cdb[1] 越界）
+            opcode = 0x12 if cdb[0] == 0x12 else ((cdb[0] << 8) | cdb[1])
             if w['lun'] != 0:
                 raise _Reject('lun=%d 非 0' % w['lun'])
             if cdb[0] == 0x12:
                 return self._inquiry(w)
             handler = {0xfb06: self._ram_write, 0xfb08: self._loader_start,
                        0xfc0a: self._online_query, 0xfd05: self._flash_read,
-                       0xfd07: self._mem_read}.get(opcode)
+                       0xfd07: self._mem_read,
+                       0xfb01: self._sector_erase,            # M3：armed 门在 handler 体内（§3.2 取舍注：
+                       0xfb04: self._sector_program}.get(opcode)   # 白名单恒注册，未 armed 拒绝理由=armed 门）
             if handler is None:
-                raise _Reject('opcode 0x%04x 不在 M2 只读白名单（USB 通道无写路径）' % opcode)
+                raise _Reject('opcode 0x%04x 不在命令白名单（FC0C/FC12/WRITE(10) 等无此命令）' % opcode)
             return handler(w)
         except _Reject as exc:
             self.rejected.append({'opcode': '0x%04x' % opcode if opcode is not None else None,
                                   'reason': str(exc)})
             self.counts['rejected'] = self.counts.get('rejected', 0) + 1
-            log('MSC 拒绝 opcode 0x%04x: %s' % (opcode, exc))
+            log('MSC 拒绝 opcode %s: %s' % ('0x%04x' % opcode if opcode is not None else '?', exc))
             return [self._csw(w['tag'], 1)]
         finally:
-            self.counts['%04x' % opcode] = self.counts.get('%04x' % opcode, 0) + 1
+            if opcode is not None:
+                self.counts['%04x' % opcode] = self.counts.get('%04x' % opcode, 0) + 1
 
     @staticmethod
     def _csw(tag, status=0):
@@ -474,9 +505,10 @@ class MscBotDevice:
             raise _Reject('FD05 须 512B IN（got %d/%d）' % (length, w['size']))
         if address % USB_SECTOR != 0 or not 0 <= address < address + length <= USB_FLASH_SIZE:
             raise _Reject('FD05 地址越界/未对齐: 0x%x' % address)
-        if self.flash is None:
+        backend = self.flash_work if self.flash_work is not None else self.flash_sim
+        if backend is None:
             raise _Reject('无 flash 后端（--flash-image 未提供）')
-        return [self.flash[address:address + length], self._csw(w['tag'])]
+        return [backend[address:address + length], self._csw(w['tag'])]   # armed 读副本（§1 擦写中途读回可见）
 
     def _mem_read(self, w):
         self._rom_gate('FD07')
@@ -492,6 +524,183 @@ class MscBotDevice:
         if self.rom is None:
             raise _Reject('无 ROM 后端（--rom 未提供）')
         return [bytes(self.rom[address:address + length]), self._csw(w['tag'])]
+
+    # ---------------- M3：armed 刷机（FB01/FB04 + 状态机；docs/sim-m3-flash-spec.md §2/§3） ----------------
+
+    def arm(self, plan):
+        """armed 进入（§3.1 一次性原子三步：校验 → copy-on-armed → nonce 消费作废）。
+
+        plan={'sectors':[4KiB 基址…],'target_sha256':hex64,'nonce':str}。校验失败/armed 期间
+        重复 arm/已消费 nonce 复用 → ValueError（会话层翻译为 usb_arm_result ok=false，不断链）。
+        副本基线=**当前仿真 flash**（reboot 保留的刷后内容也算「当前芯片」，评审修正 1）；
+        原始资产 self.flash 永不作为写目标。nonce 单次有效：消费即记 nonces_consumed（含
+        进程实例/计划摘要/基线 SHA/有效期，评审修正 2），disarm/reboot 后同 nonce 不得复用。
+        会话层消息分发（usb_arm）待第二段（SIMB3C 只做设备级）。
+        """
+        with self.lock:
+            if self.plan is not None:
+                raise ValueError('已 armed（busy 语义：先 disarm 作废或 reboot 收尾）')
+            if not isinstance(plan, dict):
+                raise ValueError('plan 须为 dict {"sectors":[…],"target_sha256":…,"nonce":…}')
+            sectors = plan.get('sectors')
+            if not isinstance(sectors, (list, tuple)) or not sectors:
+                raise ValueError('sectors 须为非空列表（4KiB 基址）')
+            seen = set()
+            for base in sectors:
+                if isinstance(base, bool) or not isinstance(base, int):
+                    raise ValueError('扇区基址须为 int: %r' % (base,))
+                if base % USB_ERASE_SECTOR != 0 or not 0 <= base < USB_FLASH_SIZE:
+                    raise ValueError('扇区基址须 4KiB 对齐且在 2MiB 内: 0x%x' % base)
+                if base in seen:
+                    raise ValueError('扇区基址重复: 0x%x' % base)
+                seen.add(base)
+            nonce = plan.get('nonce')
+            if not isinstance(nonce, str) or not nonce:
+                raise ValueError('nonce 须为非空字符串（单次确认凭证）')
+            consumed = self.nonces_consumed.get(nonce)
+            if consumed is not None:
+                raise ValueError('nonce 已消费（%s，计划摘要=%s）：单次有效，不得复用'
+                                 % (consumed['note'], consumed['plan_digest'][:12]))
+            target_sha = plan.get('target_sha256')
+            if not isinstance(target_sha, str) or len(target_sha) != 64 \
+                    or any(c not in '0123456789abcdef' for c in target_sha):
+                raise ValueError('target_sha256 须为 64 位小写 hex 字符串')
+            if self.flash_sim is None:
+                raise ValueError('无 flash 后端（--flash-image 未提供）：无可刷镜像')
+            # —— 原子三步（§3.1）：校验全过 → 副本建立 → nonce 消费（三者间无拒绝路径）——
+            baseline = self.flash_sim
+            self.flash_work = bytearray(baseline)
+            base_sha = hashlib.sha256(baseline).hexdigest()
+            digest = hashlib.sha256(('%s|%s' % (';'.join(hex(b) for b in sorted(seen)), target_sha))
+                                    .encode('ascii')).hexdigest()
+            self.plan = {'sectors': sorted(seen), 'target_sha256': target_sha,
+                         'nonce': nonce, 'nonce_consumed': True, 'base_sha256': base_sha}
+            now = time.time()
+            self.nonces_consumed[nonce] = {
+                'consumed_at': now,
+                'expires_at': now + USB_ARM_NONCE_TTL,       # 审计记录（UpgradeGate 2min 先例）；消费即永久作废
+                'instance': id(self),                        # 进程实例绑定（重启后无 armed 态，构造性防复用）
+                'plan_digest': digest,
+                'base_sha256': base_sha,
+                'note': 'arm@%s' % time.strftime('%H:%M:%S', time.localtime(now)),
+            }
+            return dict(self.plan)
+
+    def disarm(self):
+        """armed 主动作废（§3.1-2 + 评审修正 3）：丢弃副本=**显式回滚到 arm 前基线**（半擦状态
+        不保留；armed 期间的写全在 flash_work 上，flash_sim 未动，丢弃即回滚）。未 armed 调用 →
+        ValueError。恢复路径纪律：中断后重刷=检查半态（describe/FD05）→ disarm 回滚 → 重新 arm
+        （新 nonce）重刷，不做「同计划幂等重跑」（擦前核验会失败）。会话层（usb_disarm）待第二段。"""
+        with self.lock:
+            if self.plan is None:
+                raise ValueError('未 armed（无可作废的刷机会话）')
+            self.flash_work = None
+            self.plan = None
+            self.erased = set()
+            self.written = set()
+
+    def reboot(self):
+        """整机重启换身份（§3.3 + 评审修正 1/5）：rom→normal、loader 丢弃、BOT 在途状态清空、
+        armed 写授权作废；**当前仿真 flash 内容保留**（刷后镜像固化进 flash_sim——§0/⑪/P7-③
+        「再进 ROM 复读==S_target」；规格 §3.3 伪码的 flash_work=None 与验收判据相抵，按评审
+        修正取三态模型）。journal 记 reboot 条目（armed 时含 work_sha256+target_match 供验收读）。
+        成功返回 None；非 rom 身份返回错误字符串。会话层（usb_reboot 消息+断连重枚举）待第二段。"""
+        with self.lock:
+            if self.identity != 'rom':
+                return '已是 normal 身份'
+            entry = {'op': 'reboot'}
+            if self.plan is not None and self.flash_work is not None:
+                work_sha = hashlib.sha256(self.flash_work).hexdigest()
+                entry['work_sha256'] = work_sha
+                entry['target_match'] = (work_sha == self.plan.get('target_sha256'))
+                self.flash_sim = bytes(self.flash_work)      # 刷后内容固化（reboot 不回滚物理 flash）
+            self.identity = 'normal'
+            self.phase = 'n/a'
+            self.loaded = 0
+            self.loader = bytearray(USB_LOADER_SIZE)
+            self.plan = None                                  # 写授权撤销
+            self.flash_work = None
+            self.erased = set()
+            self.written = set()
+            self._rx = bytearray()                            # BOT 在途状态清空（评审修正 5）
+            self._waiting = None
+            self.journal.append(entry)
+            return None
+
+    def link_reset(self):
+        """socket 断链时的 BOT 字节流清理（评审修正 5：CBW/OUT 数据相位半包不跨会话污染——
+        M2 遗留：残留 _waiting 会吞掉新会话首条 CBW 的字节）。armed 与副本**保持**（断链不退出
+        armed，§3.1——重连可见半态、可继续或 disarm）。会话层在连接关闭处调用（第二段接线）。"""
+        with self.lock:
+            self._rx = bytearray()
+            self._waiting = None
+
+    def _sector_erase(self, w):
+        """FB01 擦 4KiB 扇区（§2.2 [实测] h3s_usb.py:167 / protocol.py:39-40：addr4 BE + 0xff
+        补齐 16B CDB；无 DATA OUT、16B DATA IN 回显 opcode；尾段 14B [未实证 U1] 0 填充；
+        置目标扇区为 NOR 擦除态 ff）。门链 §2.4-1..4；未 armed=M2 同形拒绝。"""
+        cdb = w['cdb']
+        if len(cdb) != 16:
+            raise _Reject('FB01 CDB 须 16B（got %dB；缺地址/截短拒绝）' % len(cdb))   # 评审修正 4
+        if cdb[6:16] != b'\xff' * 10:
+            raise _Reject('FB01 CDB 尾段须 0xff 补齐（protocol.py:40 补齐纪律；错误填充拒绝）')
+        self._rom_gate('FB01')
+        if self.phase != 'loader-ready':
+            raise _Reject('FB01 仅 loader-ready 相位（当前 %s）' % self.phase)
+        if self.plan is None:
+            raise _Reject('FB01 需要 armed（未确认的刷机会话不开写路径）')
+        address = int.from_bytes(cdb[2:6], 'big')
+        if address % USB_ERASE_SECTOR != 0 or not 0 <= address < USB_FLASH_SIZE:
+            raise _Reject('FB01 地址须 4KiB 对齐且在 2MiB 内: 0x%x' % address)
+        if address not in self.plan['sectors']:
+            raise _Reject('FB01 计划外扇区 0x%x（计划=%s）'
+                          % (address, [hex(s) for s in self.plan['sectors']]))
+        if w['size'] != 16 or w['data_out']:
+            raise _Reject('FB01 须 16B IN（got size=%d data_out=%s）' % (w['size'], w['data_out']))
+        self.flash_work[address:address + USB_ERASE_SECTOR] = b'\xff' * USB_ERASE_SECTOR
+        self.erased.add(address)
+        for block in range(address, address + USB_ERASE_SECTOR, USB_SECTOR):
+            self.written.discard(block)                       # 重擦后块可再写（评审修正 6 的重擦出口）
+        self.journal.append({'op': 'erase', 'sector': address})
+        r = bytearray(16)
+        r[0], r[1] = 0xfb, 0x01                               # 回显 opcode；尾段 0 填充 [未实证 U1]
+        return [bytes(r), self._csw(w['tag'])]
+
+    def _sector_program(self, w):
+        """FB04 512B 编程（§2.3 [实测] h3s_usb.py:171-172：addr4+len2 BE + 00 + crc16LE（XMODEM，
+        binascii.crc_hqx）；DATA OUT 精确 512B、无 IN 响应）。门链 §2.4；先擦后写纪律（erased 门）
+        + 未重擦的重复写拒绝（[保守] 仿真纪律，非真机行为证据——评审修正 6）。"""
+        cdb, data = w['cdb'], w['buf']
+        if len(cdb) != 16:
+            raise _Reject('FB04 CDB 须 16B（got %dB；缺长度/缺 CRC/截短拒绝）' % len(cdb))   # 评审修正 4
+        if cdb[11:16] != b'\xff' * 5:
+            raise _Reject('FB04 CDB 尾段须 0xff 补齐（protocol.py:40 补齐纪律；错误填充拒绝）')
+        self._rom_gate('FB04')
+        if self.phase != 'loader-ready':
+            raise _Reject('FB04 仅 loader-ready 相位（当前 %s）' % self.phase)
+        if self.plan is None:
+            raise _Reject('FB04 需要 armed（未确认的刷机会话不开写路径）')
+        address = int.from_bytes(cdb[2:6], 'big')
+        length = int.from_bytes(cdb[6:8], 'big')
+        if not w['data_out'] or length != len(data) or length != USB_SECTOR:
+            raise _Reject('FB04 须 512B OUT（got len=%d data=%dB）' % (length, len(data)))
+        if address % USB_SECTOR != 0 or not 0 <= address < address + length <= USB_FLASH_SIZE:
+            raise _Reject('FB04 地址须 512 对齐且在 2MiB 内: 0x%x' % address)
+        sector = address // USB_ERASE_SECTOR * USB_ERASE_SECTOR
+        if sector not in self.plan['sectors']:
+            raise _Reject('FB04 计划外扇区 0x%x（计划=%s）'
+                          % (sector, [hex(s) for s in self.plan['sectors']]))
+        if sector not in self.erased:
+            raise _Reject('FB04 目标扇区未擦除（先 FB01）: 0x%x' % sector)
+        if address in self.written:
+            raise _Reject('FB04 块 0x%x 已编程（未重擦的重复写拒绝——保守仿真纪律，非真机行为证据）' % address)
+        if cdb[8] != 0 or int.from_bytes(cdb[9:11], 'little') != binascii.crc_hqx(data, 0):
+            raise _Reject('FB04 CRC16-XMODEM 不符')
+        self.flash_work[address:address + length] = data
+        self.written.add(address)
+        self.journal.append({'op': 'program', 'addr': address,
+                             'sha256': hashlib.sha256(data).hexdigest()})
+        return [self._csw(w['tag'])]                          # 无 IN 响应（§2.3：OUT 后直接 CSW）
 
 
 class SimBridgeSession:
