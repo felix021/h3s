@@ -129,7 +129,7 @@ BU §3.6 一致。**docs/d2-audio-first-scene.md §1.4 曾把 IRQ39/0x60348e8 �
 **扫描回调与注册表** [静态]：app_core init walker 段 0x60121ce-0x6012212 遍历注册表
 0x60C0E20（16B：`01 00 00 00 | 88 48 12 00 | 94 0e 00 06 | 66 18 00 06` = enable=1 /
 ctx=0x124888 / read_fn=0x6000E94 / init=0x6001866），先 `call [表+12]`（iokey init）再以
-ctx[+16]=10 为周期注册扫描回调 0x6001944（sys_timer_add 0x6066ba6 族）。ctx @0x124888 是
+ctx[+16]=10 为周期注册扫描回调 0x6001944（sys_timer_add 0x6066ba6 族；勘误注记：thunk 0x6066c26 call 目标实为 0x6066a7e，0x6066ba6 为邻族函数，路 BZERR 复算确认）。ctx @0x124888 是
 .data blob 内容（flash 0x60C3380，48B 见 §6）：`FF 00 00 00 00 00 00 00 01 02 4B 5A 14 00
 00 00 0A 00 00 00 …`——初始电平 0xFF（无键）、键数 1、组合键值 2、按下/释放阈值 75/90、
 长按常数 20、扫描周期 10。
