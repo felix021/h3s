@@ -80,7 +80,7 @@ FEATURES = (
             '并行对半字存储第二半(exact_parallel_halfword_stores 子开关)'),
     Feature('p11_power_init', 'base', (), False, None,
             'power_init 的 P11 依赖链(lpwr 响应/窗口/公共段拷贝/配置 RMW)'),
-    # ---- conditional 栈(p11_heap_experimental_config 场景增量,54 个开关) ----
+    # ---- conditional 栈(p11_heap_experimental_config 场景增量,58 个开关) ----
     Feature('heap_info_bytes', 'conditional', ('p11_power_init',), True, 'P11_HEAP_INFO_DERIVED',
             'P11 堆信息 4 字节显式 fixture(静态推导候选,derived-not-measured)'),
     Feature('byte_pair', 'conditional', (), False, None,
@@ -293,6 +293,30 @@ FEATURES = (
             '(长度/魔数/CRC 失败即拒);ANCIF1 只映射有效长不补 0xF00 声明容量;'
             '依赖边挂 jl_adc_start_config=场景推进顺序(ASS 放行后链才到达停点)'
             '非硬件依赖;同址新读者(头范围外/写者/其他核)须重审'),
+    # ---- 路 B2G/sim-b2g:B2R 案 1 提层(probe_only→conditional)。B2R 落地时
+    # 登记 probe_only 的理由:S15 邮箱首停 0x12CC94 在当时前沿(flash 顶窗口
+    # 0x606c5ba,FLS 在途)之后,条件栈成员被 scenario_flags 自动置真会破坏
+    # official 快照钉值;FLS 合并(前沿 28,890,702 @ 0x6011976,随机种子读)
+    # 后提层——S15 消费者仍在停点之后,提层实测停点/步数逐值不变(容器在
+    # 当前前缀零触达,条件场景报告新增 p2m_mailbox 状态键,零事务)。 ----
+    Feature('p2m_mailbox_ack', 'conditional', ('p11_power_init',), False, None,
+            'P11 邮箱 ack 完成投影(BM §3 规格:S15/S17 喂狗 0x12cc7e——M2P_INT_SET kick '
+            '0x400→P2M_INT_PND bit12 置位+P2M+3 回声=M2P+7 值;P2M_INT_CLR 0x1000 清位;lpwr '
+            '请求-响应同款,即时无延迟,synthetic-not-measured;三勘误后的正确地址 '
+            '0xF27F43/0xF27F87/0xF2A618/0xF2A60C/0xF2A608;首版 0b875ed,B2R 重落地)'),
+    # ---- 路 B2G/sim-b2g:B2R 案 2 提层(0b875ed 原案顺序:案 1 之后)。B2R
+    # 落地时登记 probe_only 的理由:解析器 0x60010b4(W1[4]/S9 域)在当时前沿
+    # (flash 顶窗口 0x606c5ba,FLS 在途)之后,进条件栈会改共享场景报告形状;
+    # FLS 合并(前沿 28,890,702 @ 0x6011976,随机种子读)后提层——解析器入口
+    # 仍在停点之后,提层实测停点/步数逐值不变(PC 锚定安装钩子零触发,机器
+    # 报告新增 cfg523_named_fixture_projection 状态键,installed_at=None)。 ----
+    Feature('cfg523_named_fixture', 'conditional', (), False, None,
+            'config-523 分档器产物对象具名 fixture(70B=CFG523_OBJECT_BYTES PC 锚定首装 '
+            '0x1274F4,解析器 0x60010b4 首次执行前写入→幂等早退返回对象;S9 注册/S17 '
+            '健康门/S19 后键扫三读者共用;通道字 0x10001 mux1;释放态 ≤9 修正的配套 '
+            'RES 行 0x10001=4 已在 BM 批 1 S19 值表;synthetic-not-measured——真实 '
+            'config 523 在 bank B 记录区,公开工件外;BH §4.2 设计;首版 0b875ed,'
+            'B2R 重落地)'),
     Feature('jl_adc_start_probe_value', 'probe_only', ('jl_adc_start_config',), True, None,
             'MIC_CTL0(0xfe0904)初值敏感性探针(初值一次性 0xffffffff 替换,其余三字'
             '不扰动保归因干净;零臂写回 0x2/ones 臂写回 0xfffffffe 异或保留位;'
@@ -302,10 +326,10 @@ FEATURES = (
             'plausible-state)'),
     # (p2m_mailbox_ack / cfg523_named_fixture 曾按 BQ 零消费者先例于 1103fa8
     # 从条件栈撤回(19,139,239 停点证实消费时序在音频数字域之后);音频域
-    # 过界后由路 B2R 从 0b875ed 重落地到下列 probe_only 层——消费时序仍在
-    # flash 顶窗口停点(0x606c5ba,FLS 路在途)之后,批 2 放行跑再按到达
-    # 顺序提层到 conditional。)
-    # ---- probe_only(只在 probe_irq_entry 场景变体出现,12 个开关) ----
+    # 过界后由路 B2R 从 0b875ed 重落地到 probe_only 层,FLS 合并后由路
+    # B2G 按到达顺序提层回 conditional(见条件栈尾两块)——提层实测当前
+    # 前沿停点/步数不变,两消费者(S15 邮箱/S17 cfg523)都在停点之后。)
+    # ---- probe_only(只在 probe_irq_entry 场景变体出现,10 个开关) ----
     Feature('timer0_irq4_probe_steps', 'probe_only', ('timer0_irq4_delivery',), True, None,
             'Timer0 首次到期拉近探路 fixture(计数 seed,场景传值)'),
     Feature('timer0_irq4_masked', 'probe_only', ('timer0_irq4_probe_steps',), False, None,
@@ -324,23 +348,6 @@ FEATURES = (
     Feature('key_chain_matrix', 'probe_only', ('p11_power_init', 'fd31_adc_pnd_completion',
                                                'fd31_adc_res_named_values'), True, None,
             '停点后直调三键矩阵多手势场景(路 AJ:3 键 4 档分档器+单击/三击/四击/长按档)'),
-    # ---- 路 B2R/sim-b2r:S19 批 2 两案重落地(实现摘自 0b875ed,适配当前形态)。
-    # 登记在 probe_only 层=不进两个共享栈:S15 邮箱/S17 旗标消费时序都在 flash
-    # 顶窗口停点(0x606c5ba,FLS 路在途)之后,进条件栈会改共享场景报告形状
-    # (违反「开关默认关+关态基线逐字节不变」判据);FLS 窗口过界后的批 2 放行
-    # 跑再按到达顺序提层到 conditional(B3 0b875ed 原案顺序维持)。 ----
-    Feature('p2m_mailbox_ack', 'probe_only', ('p11_power_init',), False, None,
-            'P11 邮箱 ack 完成投影(BM §3 规格:S15/S17 喂狗 0x12cc7e——M2P_INT_SET kick '
-            '0x400→P2M_INT_PND bit12 置位+P2M+3 回声=M2P+7 值;P2M_INT_CLR 0x1000 清位;lpwr '
-            '请求-响应同款,即时无延迟,synthetic-not-measured;三勘误后的正确地址 '
-            '0xF27F43/0xF27F87/0xF2A618/0xF2A60C/0xF2A608;首版 0b875ed,B2R 重落地)'),
-    Feature('cfg523_named_fixture', 'probe_only', (), False, None,
-            'config-523 分档器产物对象具名 fixture(70B=CFG523_OBJECT_BYTES PC 锚定首装 '
-            '0x1274F4,解析器 0x60010b4 首次执行前写入→幂等早退返回对象;S9 注册/S17 '
-            '健康门/S19 后键扫三读者共用;通道字 0x10001 mux1;释放态 ≤9 修正的配套 '
-            'RES 行 0x10001=4 已在 BM 批 1 S19 值表;synthetic-not-measured——真实 '
-            'config 523 在 bank B 记录区,公开工件外;BH §4.2 设计;首版 0b875ed,'
-            'B2R 重落地)'),
 )
 
 # 两个共享栈场景(analyze_image_trace.SCENARIOS 同名;probe 场景名在

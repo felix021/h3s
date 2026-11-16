@@ -141,13 +141,14 @@ class DualCoreMachine:
         # deliver_software_irq/deliver_core_tick);默认关闭时保持每核一次性限制。
         self.repeat_irq_delivery=repeat_irq_delivery
         # cfg523_named_fixture(BH §2.1/§4.2;首版路 B3/S19 批 2 续 0b875ed,
-        # 本版 B2R 重落地):PC 锚定首装。对象槽 0x1274F4 在 qcy_bss(boot 期
-        # RAM 初始化会清零/覆写),机器构建期预填会被擦——只能在解析器
-        # 0x60010b4 首次执行前(即 cpu.pc 首次等于该地址、其首指令尚未执行
-        # 时)写入 70B;幂等早退路径让解析器自己消费这次填充。默认 None:
-        # 零行为变化。消费时序:解析器在 W1[4]/S9 域,当前 flash 顶窗口停点
-        # (0x606c5ba,FLS 路在途,停点在 W1[3] 内)之后——放行跑归批 2 之后
-        # 的推进路。
+        # 本版 B2R 重落地,B2G 提层到 conditional):PC 锚定首装。对象槽
+        # 0x1274F4 在 qcy_bss(boot 期 RAM 初始化会清零/覆写),机器构建期
+        # 预填会被擦——只能在解析器 0x60010b4 首次执行前(即 cpu.pc 首次
+        # 等于该地址、其首指令尚未执行时)写入 70B;幂等早退路径让解析器
+        # 自己消费这次填充。默认 None:零行为变化(条件场景传值自动武装,
+        # 状态经报告键 cfg523_named_fixture_projection 可见)。消费时序:
+        # 解析器在 W1[4]/S9 域,当前前沿停点(28,890,702 随机种子读)之后
+        # ——前缀零触达,提层实测停点/步数不变。
         require(cfg523_object_bytes is None or
                 (isinstance(cfg523_object_bytes,(bytes,bytearray)) and len(cfg523_object_bytes)==70),
                 'the cfg523 fixture must be exactly 70 bytes')
@@ -864,6 +865,16 @@ class DualCoreMachine:
                     'nesting_implemented':False,
                     'full_revalidation_per_delivery':True,
                     'pending_rearmed_only_by_real_firmware_command':True}} if self.repeat_irq_delivery else {}),
+                # cfg523_named_fixture 状态键(路 B2G:开关提层 conditional 后
+                # 条件场景自动武装,状态须在报告可见):armed=70B 已挂,installed_at
+                # =None 即解析器入口未到(PC 锚定安装零触发)——到达后为
+                # {'pc','object_bytes'} 且事件 cfg523_fixture_installed 入册。
+                **({'cfg523_named_fixture_projection':{'enabled':True,
+                    'object_bytes':len(self.cfg523_object_bytes),
+                    'parser_entry':hex(CFG523_PARSER_ENTRY),
+                    'object_address':hex(CFG523_OBJECT_ADDRESS),
+                    'installed_at':self.cfg523_installed_at,
+                    'synthetic_not_measured':True}} if self.cfg523_object_bytes is not None else {}),
                 **({'irq_delivery_deferral_projection':{'enabled':True,
                     'count':self.irq_delivery_deferrals,
                     'semantics':'a delivery request landing while the target core is inside an '
