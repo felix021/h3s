@@ -1079,8 +1079,10 @@ M4_FAMILIES = (
       # Route JLEQ 续五/续七: the config-word release added three counters and
       # the completion-bit projection one more — they are runtime state (a
       # restore without them changes behavior inside the config-read dispatch),
-      # not static fixtures.
-      'config_reads', 'whole_writes', 'enable_writes', 'completion_reads')),
+      # not static fixtures. Route GPCNUM adds the NUM fixture read counter
+      # (same runtime-state class).
+      'config_reads', 'whole_writes', 'enable_writes', 'completion_reads',
+      'num_reads')),
     ('efuse', 'EfuseReadProjection',
      ('page', 'byte', 'active', 'read_done', 'reads')),
     ('watchdog', 'WatchdogProjection',

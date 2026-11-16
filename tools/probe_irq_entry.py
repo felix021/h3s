@@ -647,6 +647,44 @@ P11_HEAP_INFO_DERIVED=bytes.fromhex('0c3df439')  # begin=0x3d0c size=0x39f4
 #   对硅行为的任何声称;未提供该参数时 NUM 读严格停(300,240 前沿形状)。
 LRCT_TRIM_RESULT_PROBE=38400  # 7,680,000,000/200,000 = 38,400 = 0x9600
 
+# JL_GPCNT->NUM(0xfd1104,__RO 计数值)的具名探路值(路 GPCNUM,
+# derived-not-measured;三选一 (a) 标称闭环,LRCT_TRIM_RESULT_PROBE 同款)。
+# 推导链(2026-11-17 路反汇编+停点世界运行态观察 R3=1,codex 参谋采纳):
+# ①消费面(任务 0x6069538 反汇编钉死):0x6069558 先读分子门字节
+# b[0x1265C0+692]=b[0x126874](与 LRCT trim 0x6067532 读的是同一设备结构同
+# 一字节,停点世界寄存器实测 R3=1——门开着),0x606955c 读
+# NUM(全 app+ROM 唯一读者,无直接 li 经 [基址+4],ROM 零访问),0x606956e
+# 分子 491,520,000 → 0x606957a `r2=r3/r2` 无零检查直接除 → ×1000 → 20 槽
+# 滑动平均(首次 ring[0]==0 → 全 20 槽填商,平均=商)→ [0x12A3D0] → 消费者
+# 0x60675e4/0x6067668 的 4476·Hz/160000 与 7188·Hz/160000 漂移系数(P11
+# 邮箱+P33 低功耗配置;验证臂内纯数据面,商 32768000 与 20 项和 655360000
+# 均在 u32 内)。
+# ②换算常数恒等式:491,520,000 = 32768×15000 = 7,680,000×64 = 240,000×2048
+# (与 LRCT 分子 7.68e9=7.68 MHz×1000 同族;硬件门/采样布线 BR28 无 SDK
+# 参考——官方 GPCNT 文档(wl82)写门=32×2^GTS,该口径下等效参考=
+# 491.52e6/2048=240 kHz,7.68 MHz×2^6 是多种分解之一,不构成硬件声称;
+# 唯固件侧恒等式 NUM=491520000/f 可考)。
+# ③标称频率=32768 Hz 睡眠钟(**assumed,非推导**——codex 参谋降档:LRCT
+# 先例里固件自己在别处写 200000 标称,本处无固件侧标称常数可引):BT/RTC
+# 生态标准;测量任务由 W4[4] VLVD/低功耗域 init 注册(sys_timer 115 tick≈
+# 1.15s 周期)、消费面=P11/低功耗漂移补偿=慢漂移钟校准形态。已记录的候选
+# (均不排他):32000 Hz(NUM=15360,无生态先例)、160000 Hz(NUM=3072,
+# 消费者系数 4476/7188 在该频率下整数精确——codex 复核发现);200 kHz LRC
+# 整数不除(2457.6,但量化误差不排除:NUM=2457→200048 Hz)且已由 JL_LRCT
+# 独立测量(结构上两套机制同测一钟的可能性低,未证伪)。
+# ④探路值 NUM=15000(0x3A98):491,520,000/15,000=32,768 整除精确,×1000=
+# 32,768,000 mHz——「假设标称 32768 Hz 在该换算常数下的恒等计数」,商即
+# 假设标称频率本身(算术自洽;LRCT 38400→200000 的「标称闭环」强度更高,
+# 本处降一档=assumed-not-measured+推导计数)。**非硅测量**:真实 NUM 逐片
+# 逐次有抖动(20 槽滑动平均正是为消化它),fixture 每次读回同一常量=标称
+# 理想化(本世界首次转换后计数器保持禁用,ring 替换路径不执行,常量不
+# 触发移位淘汰腿——如实标注);CON 位段命名(GSS/CSS/GTS)取自 wl82 家族
+# SDK gpcnt.h 的 SFR 宏位宽(交叉家族证据,BR28 本尊无公开驱动头),CSS=6
+# 的源清单不可考;fixture 有效域=本世界 CON 配置(GSS=4/GTS=6/CSS=6,
+# 实测 0x460C 前缀),未来重配置需重审。未提供该参数时 NUM 读严格停
+# (29,601,125 前沿形状);值下界 1(0 会除零)。
+GPCNT_NUM_PROBE=15000  # 491,520,000/32,768 = 15,000 = 0x3A98(assumed 32768 Hz)
+
 # JL_RAND->R64L(0xfd3b00)种子 fixture 常量(路 RAND/sim-rand)。熵源类停点:
 # 参考 SDK br28.h `JL_RAND_TypeDef {__RO u32 R64L; __RO u32 R64H}`,cpu.h
 # rand32() 直接读 R64L;熵机制(真随机/计数器/烧录值)在参考 SDK 无任何文档,
@@ -1329,7 +1367,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              fd31_adc_con=False,fd31_adc_con_readback=False,
              fd31_adc_pnd_completion=False,fd31_adc_res_named_values=None,
              p33_analog_tail=False,p3_ana_read_ldoin_low=False,gpcnt_con_readback=False,
-             gpcnt_con_config=False,gpcnt_con_completion=False,
+             gpcnt_con_config=False,gpcnt_con_completion=False,gpcnt_num_value=None,
              jl_clock_dcck=False,
              jl_uart_con=False,
              jl_uart_init_writes=False,
@@ -1617,6 +1655,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['lrct_trim_result_value']=lrct_trim_result
         p11_snapshots=tuple(p11_snapshots)+(('lrc_trim_result_head',0x129D88,40),
                                             ('lrc_trim_result_block',0x129D88,0x64))
+    # 路 GPCNUM:GPCNT 结果块快照(avg[0x12A3D0]/fill[+4]/valid[+6]/半字
+    # [+0xc]/20 槽 ring[0x12A3E0..+0x50]),只挂进实验场景(与 LRC 快照同款,
+    # 不进共享 p11_snapshots)——探路值的全部数值侧效应逐字节可钉。
+    if gpcnt_num_value is not None:
+        p11_snapshots=tuple(p11_snapshots)+(('gpcnt_result_head',0x12A3D0,0x60),)
     # timer0_std12m(路 AH):TIMER0 时钟源字段 5 的命名+速率放行。三方证据
     # (SDK gptimer_hw.h 宏 GPTIMER_CLK_SRC_STD12M=0b0101<<10、SDK 驱动
     # gptimer_hw_v2.c bitcode IR 的 src<<10|div<<4 与 std_clk==12→字段 5/
@@ -1974,6 +2017,19 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'config-word release (the forced bit lives in the full-word '
                 'readback dispatch)')
         options['gpcnt_con_completion']=True
+    # gpcnt_num_value(路 GPCNUM,opt-in 默认关,值开关):29,601,125 停点
+    # 0x606955c——稳态测量任务 0x6069538 首次 GPCNT 转换 `ld.w r2=[r4+4]`
+    # 读 0xfd1104=JL_GPCNT->NUM(br28.h __RO 计数值)的具名探路值
+    # (derived-not-measured;LRCT trim_result 38400 同款三选一 (a) 标称闭环,
+    # 推导链见 GPCNT_NUM_PROBE 常量注释)。值面:491520000/NUM*1000+20 槽
+    # 滑动平均→[0x12A3D0]→低功耗漂移补偿(纯数据路径,无值分支);未提供
+    # 时 NUM 读保持 unmapped 严格停(29,601,125 前沿形状)。依赖边挂
+    # gpcnt_con_completion(NUM 读只有在完成位投影放行轮询后才真实到达)。
+    if gpcnt_num_value is not None:
+        require(gpcnt_con_completion,
+                'the GPCNT NUM fixture only layers on the completion-bit '
+                'projection (the NUM read is only reached after the poll release)')
+        options['gpcnt_num_value']=gpcnt_num_value
     # jl_clock_dcck(路 CL/sim-dcck,读侧三选一=方案 (a) 投影):JL_CLOCK->DCCK_CON0/1/2
     # (0xfd0008/0c/10)按路 AM 容器同款「显式合成初始字 0 + 读回=当前寄存器值」
     # 建模。证据链:①br28.h JL_CLOCK_TypeDef 全字段 __RW(可读回);②SDK
@@ -4011,50 +4067,59 @@ def check(report,firmware):
     # (0x12c5ca)、CPU1 16 次 parked 软中断唤醒、TIMER2 锚定轮询 3 次到期
     # 唤醒)——两核 idle+事件循环形态=park 判定证据;随后 S17 稳态测量
     # 任务 0x6069538(task 栈 0x418xxx)首次 GPCNT 转换:bit7 完成位投影
-    # 放行后停在 **29,601,125 @ 0x606955c** `ld.w r2=[r4+4]` 读
-    # **0xfd1104=JL_GPCNT->NUM**(br28.h __RO 计数值)——测量值读族,
-    # 值进 491520000/NUM*1000+20 槽滑动平均,具名 fixture 三选一归下一路。
+    # 放行后曾停 29,601,125 @ 0x606955c 读 0xfd1104=JL_GPCNT->NUM——路
+    # GPCNUM 三选一 (a) 具名 fixture(assumed 标称 32768 Hz 恒等计数
+    # 15000,codex 参谋采纳+降档,推导链见 GPCNT_NUM_PROBE 常量注释)放行
+    # 后:测量任务转换持续被服务满 **20 次**(20 槽窗口填满,fill==20 触发
+    # epilogue 的 h[0x12A3DC] 消费+0x6068880 重启链),park 稳态继续推进
+    # 至看门狗 CON 0x2e(time_code=14,周期 16384 名义单位)到期——到期
+    # 交付(硬件复位/异常)不发明,停在 **32,737,356 @ 0x12c5ca**
+    # (parked 轮询头);喂狗邮箱此前 11 次事务全闭合,第 12 次未在到期前
+    # 到来,喂狗节拍/到期交付归下一路。
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x606955c on the '
-            'read of 0xfd1104 (JL_GPCNT->NUM, br28.h __RO measured count) — '
-            'the steady-state measurement task 0x6069538 first GPCNT '
-            'conversion after the park steady state is established (11 '
-            'closed feed-dog mailbox transactions, 14,953,935 virtual '
-            'event-clock steps, 1791 Timer0 plus 57 core-tick parked wakes '
-            'of CPU0 at 0x12c5ca and 16 parked CPU1 software-IRQ wakes); '
-            'the NUM value feeds 491520000/NUM*1000 and a 20-slot sliding '
-            'average — the measured-value fixture three-way choice for the '
-            'next route')
+            'the heap-experimental scenario must stop at 0x12c5ca on the '
+            'watchdog expiry (CON 0x2e, time_code 14, 16384 nominal units '
+            'elapsed without a twelfth feed) — reached after the route-GPCNUM '
+            'named fixture releases the JL_GPCNT->NUM read of the steady-state '
+            'measurement task 0x6069538 (twenty served conversions fill the '
+            '20-slot window at 0x12A3E0, fill==20 fires the epilogue '
+            'h[0x12A3DC] consumer and the 0x6068880 restart chain) with the '
+            'park steady state continuing in between (eleven closed feed-dog '
+            'mailbox transactions, 1791 Timer0 plus 57 core-tick parked wakes '
+            'of CPU0 at 0x12c5ca and 16 parked CPU1 software-IRQ wakes); the '
+            'expiry delivery (hardware reset/exception) is not invented — the '
+            'honest stop leaves the feed cadence decision to the next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
     p2m=r['peripherals']['p2m_mailbox']
-    require(p2m['kicks']==11 and len(p2m['transactions'])==11 and
-            p2m['clear_slot_writes']==11 and p2m['pnd_reads']==11 and
-            p2m['echo_reads']==11 and p2m['other_kick_values']=={} and
+    require(p2m['kicks']==16 and len(p2m['transactions'])==16 and
+            p2m['clear_slot_writes']==16 and p2m['pnd_reads']==16 and
+            p2m['echo_reads']==16 and p2m['other_kick_values']=={} and
             all(t=={'arg':8,'poll_reads':1,'echo_byte':8,'clr_writes':1}
                 for t in p2m['transactions']),
-            'the feed-dog mailbox transactions must all be closed on this prefix: eleven '
-            'kicks, eleven first-read PND exits, eleven matching echoes (arg 8 == echo '
-            '8) and eleven CLR closures with zero foreign kick values — the armed-'
+            'the feed-dog mailbox transactions must all be closed on this prefix: sixteen '
+            'kicks, sixteen first-read PND exits, sixteen matching echoes (arg 8 == echo '
+            '8) and sixteen CLR closures with zero foreign kick values — the armed-'
             'transaction precedence over the reset-history snapshot (route JLEQ fix) '
-            'is what un-sticks the 0x12cca2 poll')
+            'is what un-sticks the 0x12cca2 poll, and the route-GPCNUM extension adds '
+            'five more closed transactions before the watchdog expiry frontier')
     parked_timer0=sum(1 for d in r['machine']['timer0_irq_entry_projection']['deliveries']
                       if d['reti_from']=='0x12c5ca')
     parked_ct=sum(1 for d in r['machine']['core_tick_entry_projection']['deliveries']
                   if d['reti_from']=='0x12c5ca')
     parked_sw=sum(1 for d in r['machine']['software_irq_entry_projection']['deliveries']
                   if d['reti_from']=='0x12c5ca')
-    require((parked_timer0,parked_ct,parked_sw)==(1791,57,20) and
-            r['machine']['event_clock_projection']['virtual_model_steps_advanced']==14953935,
+    require((parked_timer0,parked_ct,parked_sw)==(4627,110,29) and
+            r['machine']['event_clock_projection']['virtual_model_steps_advanced']==32948208,
             'the park steady state must show both cores cycling through the all-core '
-            'IDLE: 1791 Timer0 IRQ4 wakes plus 57 core-tick wakes of the parked CPU0 '
-            'and 20 software-IRQ wakes (16 CPU1 + 4 CPU0) all reti_from the anchored '
-            'idle poll head 0x12c5ca, with the event clock advancing 14,953,935 '
+            'IDLE: 4627 Timer0 IRQ4 wakes plus 110 core-tick wakes of the parked CPU0 '
+            'and 29 software-IRQ wakes (16 CPU1 + 13 CPU0) all reti_from the anchored '
+            'idle poll head 0x12c5ca, with the event clock advancing 32,948,208 '
             'virtual model steps through the same per-step advance() — the two-core '
             'idle + event-loop shape of the D1 park criterion')
     eqrec=r['peripherals']['jl_eq_init_write_records']
@@ -4066,12 +4131,27 @@ def check(report,firmware):
             'function 0x6072b24 stores (CON0=0 and FLT_ADR=the allocated 0x18cb80 '
             'buffer) with zero read attempts on this prefix')
     gpc=r['peripherals']['gpcnt_cleanup_projection']
-    require(gpc['completion_bit_projection']['reads']==151 and
-            gpc['config_words_projection']['whole_writes']==3 and
-            gpc['config_words_projection']['enable_writes']==1,
+    require(gpc['completion_bit_projection']['reads']==249 and
+            gpc['config_words_projection']['whole_writes']==63 and
+            gpc['config_words_projection']['enable_writes']==1+20 and
+            gpc['num_register_fixture']['reads']==20 and
+            gpc['num_register_fixture']['value']=='0x3a98',
             'the GPCNT completion-bit projection must have served the steady-state '
-            'poll schedule (151 forced-bit7 reads) after the W4[4] reconfig chain '
-            '(three whole-word stores, one |=1 enable)')
+            'poll schedule (249 forced-bit7 reads) after the W4[4] reconfig chain '
+            '(three whole-word stores, one |=1 enable) plus the twenty measurement '
+            'conversions of the route-GPCNUM extension (twenty NUM fixture reads, '
+            'sixty further whole-word compose stores and twenty restart enables) — '
+            'the named fixture 15000 serves every conversion the same constant')
+    # 路 GPCNUM:结果块快照——探路值数值侧效应逐字节钉死(SHA 口径,窗
+    # 0x12A3D0..+0x60 覆盖 avg/fill/valid/半字/20 槽 ring;敏感臂 15360 的
+    # SHA 不同而停点/步数/计数全同=值不敏感实证)。
+    gpc_snap=r['memory_snapshots']['gpcnt_result_head']
+    require(gpc_snap['initialized_bytes']==0x60 and
+            gpc_snap['sha256']=='2e0b1fed017cf2484101b1970b29e33825cd071abbb0f6b83e26ce682fbfec07',
+            'the GPCNT result-block snapshot (avg [0x12A3D0], fill/valid bytes, '
+            'h[0x12A3DC], the twenty ring slots at 0x12A3E0) must pin the probe-value '
+            'side effects byte-exactly — every slot the identity 32768000 mHz frame '
+            'of the assumed-nominal fixture, the fill counter at twenty')
     # 路 B3:CNT held 快照报告断言——键在场、假设文本按 codex 原文措辞、
     # 该场景快照=0(12 次溢出的对齐冻结)、读侧零副作用面如实标注。
     cnt_snapshot=r['peripherals']['core_tick_configuration'][0].get('cnt_held_snapshot_projection')
@@ -4282,12 +4362,14 @@ def check(report,firmware):
             '(r0=r5+976 from the 0xfe0534 base, the first stop point immune to the '
             'li enumeration method), the same-address new-consumer re-audit rule, the '
             'completeness wording and the no-audio-input limit')
-    require(r['peripherals']['core_tick_configuration'][0]['acknowledgements']==147 and
-            r['peripherals']['core_tick_configuration'][0]['expirations']==147,
+    require(r['peripherals']['core_tick_configuration'][0]['acknowledgements']==200 and
+            r['peripherals']['core_tick_configuration'][0]['expirations']==200,
             'the CNT release must let overflows 12..108 (route B3) plus the eight '
             'further overflows inside the route-DT segment (DAC start tail + OS wait '
-            'family, 109..116) deliver and ACK naturally, and the route-JLEQ steady '
-            'state (S16/S17 event-clock cycling) carries the count to 147 '
+            'family, 109..116) deliver and ACK naturally, the route-JLEQ steady '
+            'state (S16/S17 event-clock cycling) carries the count to 147 and the '
+            'route-GPCNUM extension (twenty served GPCNT conversions plus five more '
+            'feed-dog cycles before the watchdog expiry frontier) to 200 '
             '(the masked window of overflow #12 ends later in the prefix; the BF '
             'per-step recheck delivers every later overflow exactly once)')
     # 路 CW:JL_AUDIO DAC_VL0 容器断言——恰一次合成 0 首读(0x606db4c 并行对
@@ -4327,12 +4409,15 @@ def check(report,firmware):
     # 时钟首次真实推进 13,429,113 虚拟步(与主循环同一逐步 advance(),无
     # 批量跳步)。A2-A5 硬断言仍归后续批次,此处不硬断言。
     eclock=r['machine']['event_clock_projection']
-    require(eclock['enabled'] and eclock['virtual_model_steps_advanced']==14953935,
+    require(eclock['enabled'] and eclock['virtual_model_steps_advanced']==32948208,
             'the route-CW event-clock wiring must be enabled, and through the '
             'route-B3/DT stops it advanced the then-measured 13,429,113 virtual '
             'model steps; the route-JLEQ steady state (S16/S17/S18/S19 park-'
             'wake cycling between the JL_EQ release and the GPCNT task dispatch) '
-            'carries the advancement to 14,953,935 — the park evidence body: '
+            'carries the advancement to 14,953,935, and the route-GPCNUM '
+            'extension (twenty served GPCNT conversions plus five more feed-dog '
+            'cycles before the watchdog expiry frontier) to 32,948,208 — the '
+            'park evidence body: '
             'every advancement uses the same per-model-step advance() as the run '
             'loop with no bulk counter jumps')
     # 路 B1(S19 批 1):四件容器的本前缀形态断言——全部「落地但零运行态
@@ -4713,10 +4798,10 @@ def check(report,firmware):
             not fd31['write_only'] and not fd31['readback_not_modeled'] and
             fd31['addresses']==['0xfd3100'] and
             'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'] and
-            fd31['con_readback_projection']['reads']==2123 and
+            fd31['con_readback_projection']['reads']==2228 and
             fd31['con_readback_projection']['address']=='0xfd3100' and
             fd31['con_readback_projection']['res_boundary']['address']=='0xfd3104' and
-            fd31['pnd_completion_projection']['forced_reads']==803 and
+            fd31['pnd_completion_projection']['forced_reads']==908 and
             fd31['pnd_completion_projection']['bit']=='0x80' and
             fd31['pnd_completion_projection']['not_a_timing_model'] and
             fd31['res_named_values_fixture']['served']=={'0x10000':368,'0x10004':12,
@@ -4730,8 +4815,10 @@ def check(report,firmware):
             'the fd31 ADC CON projection must record 3058 word writes (the steady-state '
             'round engine: the same round shape — setter 0x46105e/0x46107e (the '
             'steady-state setter form carries bit0), control 0x20000/0x20040/0x40 — '
-            'cycling through the route-JLEQ prefix), 2123 projected CON reads and 803 '
-            'folded PND polls, while the RES fixture serves the mux-keyed reads '
+            'cycling through the route-JLEQ prefix), 2228 projected CON reads and 908 '
+            'folded PND polls (the route-GPCNUM park extension keeps the round engine '
+            'cycling; the RES served counts stay frozen — the parked rounds read CON/'
+            'PND only), while the RES fixture serves the mux-keyed reads '
             '368+12+36 on the legacy channels plus the route-JLEQ TWVD/PVDD rows '
             '0x1000d=350 (180 served) and 0x1000e=550 (12 served); the key/battery '
             'rows 0x10005/0x10001 stay in the value table with ZERO served reads '
@@ -4832,7 +4919,7 @@ def check(report,firmware):
     # (reti_from=块出口,延期-交付往返实证;机器守卫本身保持拒绝))。core
     # tick 交付 9→10(+1 次溢出,OS tick 级联继续)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==4700 and
+    require(len(t0['deliveries'])==7542 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6','0x12b608',
@@ -4858,7 +4945,7 @@ def check(report,firmware):
                                    '0x12cd76','0x6011774','0x6000d6c','0x6011f18')
                 for d in t0['deliveries']) and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
-            sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==1791 and
+            sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==4627 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x606b0a2')==1 and
             t0['deliveries'][-1]['reti_from']=='0x12c5ca' and
             [d['reti_from'] for d in t0['deliveries'][287:362]]==
@@ -4879,9 +4966,9 @@ def check(report,firmware):
              '0x12e282', '0x12e286', '0x12e284', '0x12e282', '0x12e286'] and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==9399 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==4699,
-            '4700 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==15084 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==7542,
+            '7542 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
             'route-AK/AN/AS/B1 prefix (287 through the AK stop, the route-R delivery '
             'interrupting the OS veneer 0x12b7b6, the eight route-AN walker-chain '
             'contexts, the route-AS ROM rep-block exit 0x4196 and the sixty-one B1 '
@@ -4912,14 +4999,14 @@ def check(report,firmware):
             'loop 0x6011f18 (the round-8 stop shape upstream), then the long '
             'parked-wake tail 0x12c5ca')
     ct=r['machine']['core_tick_entry_projection']
-    require(len(ct['deliveries'])==147 and
+    require(len(ct['deliveries'])==200 and
             (ct['deliveries'][0]['core'],ct['deliveries'][0]['vector_address'],
              ct['deliveries'][0]['handler'],ct['deliveries'][0]['reti_from'])==
             (0,'0x19fe0c','0x60661a4','0x12b7b6') and
             all(not d['delivery_clears_pending'] for d in ct['deliveries']) and
-            r['instruction_adapters'].get('core_tick_handler_frame')==294 and
-            r['instruction_adapters'].get('conditional_core_tick_rti')==147 and
-            r['instruction_adapters'].get('core_tick_ack_rmw')==147,
+            r['instruction_adapters'].get('core_tick_handler_frame')==400 and
+            r['instruction_adapters'].get('conditional_core_tick_rti')==200 and
+            r['instruction_adapters'].get('core_tick_ack_rmw')==200,
             'the CPU0 core tick must deliver its first overflow (the ~447,490 landmark) through '
             'the real IRQ3 vector slot 0x19fe0c to handler 0x60661a4, interrupting the OS '
             'veneer context 0x12b7b6, with pending cleared only by the handler ack; the '
@@ -4927,13 +5014,14 @@ def check(report,firmware):
             'delivers the remaining ninety-seven (overflows 12..108 all delivered, acked '
             'and RTI-complete — the delayed 12th overflow leaves its masked window when '
             'the critical section ends and every later overflow rides the same '
-            'eligibility recheck); the route-DT segment adds eight more overflows and the '
-            'route-JLEQ steady state adds the last one: 147 deliveries, 147 acks, 147 '
-            'symmetric RTIs, frame 294 = 2x147, NOTHING in flight at the stop (the '
-            'parked-wake shape reti_from=0x12c5ca appears 57 times and the delay family '
+            'eligibility recheck); the route-DT segment adds eight more overflows, the '
+            'route-JLEQ steady state carries the count to 147 and the route-GPCNUM '
+            'extension to 200: 200 deliveries, 200 acks, 200 '
+            'symmetric RTIs, frame 400 = 2x200, NOTHING in flight at the stop (the '
+            'parked-wake shape reti_from=0x12c5ca appears 110 times and the delay family '
             'continues; one delivery interrupts the audio zone 0x60750e2)')
     dfr=r['machine']['irq_delivery_deferral_projection']
-    require(dfr['count']==3232 and
+    require(dfr['count']==3964 and
             all(e['irq'] in (3,4,127) and
                 e['deferred_while'] in ('core_tick_handler','timer0_irq_handler',
                                         'software_irq_handler',
@@ -4957,30 +5045,34 @@ def check(report,firmware):
     # 退场:reads=0)、整字写 3(W4[4] 重配置链,known 全字 0x460c)、
     # |=0x1 使能 1 次;completion 投影同样 151 读(读侧 OR 0x80)。稳态测量
     # 任务 0x6069538 每次调度的 bit0 使能门都走配置字读回;首次使能后的
-    # bit7 轮询经 completion 投影第一读退出,随后停在 NUM 读(0xfd1104,
-    # 严格停=当前前沿)。
+    # bit7 轮询经 completion 投影第一读退出。路 GPCNUM 具名值放行后:
+    # 20 次转换全服务(每转换 bit0 门+bit7 轮询走配置字读回共 249 读、
+    # 组装整字写 3+3×20=63、重启 |=1 使能 1+20=21、cleanup 禁用/清
+    # 3+19/4+2×19+1=22/43),终态 known_value=0x460d(末次重启 |=1 后);
+    # NUM fixture 20 读,读回未证不变。
     gp=r['peripherals']['gpcnt_cleanup_projection']
-    require(gp['known_mask']=='0xffffffff' and gp['known_value']=='0x460c' and
-            gp['disable_writes']==3 and gp['clear_writes']==4 and
+    require(gp['known_mask']=='0xffffffff' and gp['known_value']=='0x460d' and
+            gp['disable_writes']==22 and gp['clear_writes']==43 and
             gp['con_readback_projection']['reads']==0 and
             gp['con_readback_projection']['address']=='0xfd1100' and
-            gp['config_words_projection']['reads']==151 and
-            gp['config_words_projection']['whole_writes']==3 and
-            gp['config_words_projection']['enable_writes']==1 and
-            gp['completion_bit_projection']['reads']==151 and
+            gp['config_words_projection']['reads']==249 and
+            gp['config_words_projection']['whole_writes']==63 and
+            gp['config_words_projection']['enable_writes']==21 and
+            gp['completion_bit_projection']['reads']==249 and
             gp['completion_bit_projection']['stored_bit7_untouched'] and
-            not gp['completion_bit_projection']['num_register_served'] and
+            gp['completion_bit_projection']['num_register_served'] and
             not gp['con_readback_projection']['count_readback_proven'] and
             gp['con_readback_projection']['not_a_timing_model'] and
-            r['instruction_adapters'].get('gpcnt_con_readback_load')==151,
+            r['instruction_adapters'].get('gpcnt_con_readback_load')==249,
             'the GPCNT CON readback projection must serve the steady-state dispatch '
-            'schedule through the config-word path: 151 full-word reads (the bit0 '
-            'enable gate of every task 0x6069538 dispatch plus the first enabled '
-            'bit7 poll), three whole-word reconfig stores (known value 0x460c), '
-            'one |=0x1 enable, disable/clear RMWs 3/4, and the completion-bit '
-            'projection answering the same 151 reads with bit7 forced set '
-            '(read-side only); the NUM count read stays strictly stopped (the '
-            'current frontier) and the count readback stays unproven')
+            'schedule through the config-word path: 249 full-word reads (the bit0 '
+            'enable gate of every task 0x6069538 dispatch plus the enabled bit7 '
+            'polls), sixty-three whole-word reconfig stores (three W4[4] plus the '
+            'twenty restart composes), twenty-one |=0x1 enables, disable/clear '
+            'RMWs 22/43, and the completion-bit '
+            'projection answering the same 249 reads with bit7 forced set '
+            '(read-side only); the NUM fixture serves all twenty conversions the '
+            'named constant and the count readback stays unproven')
     reset_config=r['peripherals']['reset_history_projection']['configuration']
     require(reset_config['0xf2c054']=={'known_mask':'0xffffc0e0','known_value':'0x0'} and
             r['peripherals']['reset_history_projection']['accepted_configuration_mask_sets']==
@@ -5138,11 +5230,11 @@ def check(report,firmware):
     # 20,220→20,373(恰 +153=51 步×3 STD12M tick 精确走表)。
     # 路 JLA:+130 步(set_buffer 五写+挂 handler+启动段序章)零新到期零新
     # 交付,cnt 2,577→2,967(恰 +390=130 步×3 STD12M tick 精确走表)。
-    require(timer=={'con':0x1401,'cnt':1455,'prd':11999,'pending':False,
-            'expirations':4710},
+    require(timer=={'con':0x1401,'cnt':10503,'prd':35999,'pending':False,
+            'expirations':7554},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
-            'call reprograms PRD; the steady state leaves the 1ms window PRD 11999 with '
-            'the counter walked down to 1455), 4710 '
+            'call reprograms PRD; the watchdog-expiry stop leaves the 3ms window PRD 35999 '
+            'with the counter walked on to 10503), 7554 '
             'expirations total (10 legacy + 4700 delivered/acked), pending FALSE at the stop: '
             'the route-M stop left the 297th expiration pending-in-flight inside the GPIO '
             'critical section (ICFG 0x100, CLI bit9 clear), and the route-R release lets the '
@@ -5212,9 +5304,9 @@ def check(report,firmware):
     # overflow guard 严格停(新停点,仍位于屏蔽窗内,IPMASK=6、ICFG 仍
     # 0x300,bit9 全程未动;读回投影只覆盖 offset 8,CNT 不在一案范围)。
     tick0=r['peripherals']['core_tick_configuration'][0]
-    require(tick0['pending'] is False and tick0['expirations']==147 and
-            tick0['unresolved_overflow'] is False and tick0['acknowledgements']==147 and
-            tick0['cnt']==816344 and
+    require(tick0['pending'] is False and tick0['expirations']==200 and
+            tick0['unresolved_overflow'] is False and tick0['acknowledgements']==200 and
+            tick0['cnt']==481056 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -5232,7 +5324,9 @@ def check(report,firmware):
             'same recheck (108 expirations = 108 acknowledgements through the route-B3 '
             'stop, the route-DT segment adds eight more for 116/116, nothing pending, no '
             'unresolved overflow at the stop, the counter walked on through the steady state '
-            'to cnt 816344 with PRD reprogrammed to 1599999 — the tick restart fn '
+            'to cnt 816344 at the route-JLEQ frontier (147/147) and on through the '
+            'route-GPCNUM extension to cnt 481056 with 200/200 delivered-and-acked '
+            '(nothing pending, PRD reprogrammed to 1599999 — the tick restart fn '
             '0x6065806 freerun shape); the '
             'CPU1 core tick never overflows and CPU0 partial ICFG stays 0x300 (bit9 '
             'untouched throughout)')
@@ -5337,7 +5431,8 @@ def check(report,firmware):
             [(0,127,'0x12ad2a','0x12b608')]+[(0,127,'0x12ad2a','0x12c5ca')]+
             [(1,125,'0x60662c8','0x12c5ca')]+
             [(0,127,'0x12ad2a','0x12b608')]*2+[(1,125,'0x60662c8','0x12c5ca')]+
-            [(0,127,'0x12ad2a','0x12b608')]*3,
+            [(0,127,'0x12ad2a','0x12b608')]*3+
+            [(0,127,'0x12ad2a','0x12c5ca'),(0,127,'0x12ad2a','0x12b608')]*9,
             'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
             'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
             'the timer bring-up before any scheduler IPI); the route-CO scheduler helper prefix '
@@ -5363,17 +5458,18 @@ def check(report,firmware):
     # CPU1 同步 IPI 往返——交付列表 11→12(尾项仍是 (1,125,'0x12c5ca')),
     # conditional_software_irq_rti 11→12、commands/acks 22/11→24/12。
     require(r['machine']['events_truncated'] is True and
-            r['instruction_adapters'].get('conditional_software_irq_rti')==34,
+            r['instruction_adapters'].get('conditional_software_irq_rti')==52,
             'the software IRQ RTI count must reach sixteen (the pmu_task-entry RTI event lies '
             'in the byte-identical pre-305k prefix pinned at the 689,402 landmark; the trimmed '
             '32+32 events window holds the IRQ4 round trips; the route-CO CPU1 sync '
             'IPI is a repeat_irq_delivery round whose handler RTI was still in flight at the '
             'route-CO stop and completes during the route-CQ helper-tail/W1[1]-walker steps, '
             'the route-CW DAC-init tail adds one more CPU1 sync-IPI round, and the route-B3 '
-            'OS-wait prefix adds the two CPU0 irq127 rounds and the route-JLEQ steady state '
-            'adds six more — all thirty-four RTI-complete)')
-    require(r['peripherals']['software_irq_commands']['commands']==68 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==34,
+            'OS-wait prefix adds the two CPU0 irq127 rounds, the route-JLEQ steady state '
+            'adds six more and the route-GPCNUM park extension eighteen (nine parked '
+            'wake + scheduler-IPI alternations) — all fifty-two RTI-complete)')
+    require(r['peripherals']['software_irq_commands']['commands']==104 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==52,
             'the two scheduler IPI round trips plus the route-CO scheduler-helper sync IPI '
             'and the route-CW DAC-init tail sync IPI must be the only new software IRQ '
             'bookkeeping')
@@ -5426,7 +5522,7 @@ def check(report,firmware):
     # 路 LPV 尾段(+2,068 步,tbh case 体+RAM 对象链+缓冲配置 walk):并行
     # 半字 15→16、并行字节 412→416(case 体与 walk 的并行对存储半);双字/
     # 跨页/rep 族/insert 装载/LP 位 RMW/复位/mem_pwr/awkup/死读全不变。
-    require(r['instruction_adapters'].get('exact_doubleword_store')==115 and
+    require(r['instruction_adapters'].get('exact_doubleword_store')==116 and
             r['instruction_adapters'].get('exact_doubleword_store_cross_page_split')==7 and
             r['instruction_adapters'].get('immediate_rep_multi_block_projection')==1002 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==175 and
@@ -5435,7 +5531,7 @@ def check(report,firmware):
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==42 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==2788 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==1536 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==2228 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==114 and
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
@@ -5565,18 +5661,21 @@ def check(report,firmware):
             # icfg bit9 32190→32194(+4)、cnum 54039→54043(+4)。
             # masked 分支 3 与其余族不变(LRC 帧零新增,与 trim 块计数
             # 冻结互证)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==145078 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==14414 and
-            r['instruction_adapters'].get('exact_full_word_store')==292675 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==19844 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==45130 and
+            r['instruction_adapters'].get('abstract_task_stack_transport')==227193 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==21076 and
+            r['instruction_adapters'].get('exact_full_word_store')==404469 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==28146 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==66490 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==8 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==75831,
+            r['instruction_adapters'].get('per_core_visible_cnum')==118945,
             'the heap-experimental prefix adapters differ from the observed conditional frontier '
             '(route JLEQ: the steady-state segment — feed-dog cycles, S16/S17 event-clock '
             'windows, the key-table compression loop and the GPCNT measurement dispatch — '
-            'grows the transport/lock/store/RMW/icfg/cnum families to 145078/14414/292675/'
-            '19844/45130/75831 and the masked-branch count to 8)')
+            'grew the transport/lock/store/RMW/icfg/cnum families to 145078/14414/292675/'
+            '19844/45130/75831; route GPCNUM adds the twenty served measurement '
+            'conversions plus five more feed-dog cycles, growing them to '
+            '227193/21076/404469/28146/66490/118945 with the masked-branch count '
+            'still 8)')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
     # 循环在 ~110,768 步把 IRQ4 以 priority 1 真实使能且此后无清零)。
