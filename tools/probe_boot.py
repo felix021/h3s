@@ -814,6 +814,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # 同款反事实假设:PC=RETI、SP=USP、银行回写/ICFG 未认证)。
                     machine.return_timer0_irq(self);adapters['conditional_timer0_irq_rti']+=1
                     return
+                if (insn.id=='rti' and machine.audio_irq_rti and
+                        getattr(self,'active_context',None)=='audio_dma_irq_handler' and
+                        self.pc==machine.AUDIO_IRQ_RTI_TAIL):
+                    # 路 D2AI:IRQ68 分发器的对称一次性 RTI(尾锚 0x602f452,
+                    # PRE §4.4 反汇编钉死;0x602f44e 的 pop.srl 已从真实栈弹回
+                    # 特殊帧;嵌套进入时恢复外层 timer0 handler 上下文)。
+                    machine.return_audio_dma_irq(self);adapters['conditional_audio_irq_rti']+=1
+                    return
                 if self.pc==0x06066126:
                     require(insn.id=='pop.srl' and raw.get('m',raw.get('n'))==0x29 and self.task_frame_restore and
                             self.sp==self.task_frame_restore['base'],'first-task special frame lacks its selected stack')
@@ -891,6 +899,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 frames.update(core_tick_frames)
                 timer0_frames=(diagnostics or {}).get('timer0_irq_frames') or {}
                 frames.update(timer0_frames)
+                audio_frames=(diagnostics or {}).get('audio_irq_frames') or {}
+                frames.update(audio_frames)
                 if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and self.pc in frames:
                     shape=frames[self.pc];push=shape.endswith('push')
                     require(shape in ('psr_push','psr_pop','frame12_push','frame12_pop') and
@@ -923,6 +933,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     elif self.pc-size in timer0_frames:
                         # 路 BE:Timer0 IRQ4 handler 的 12B 特殊帧锚(按本锚计)。
                         adapters['timer0_irq_handler_frame']+=1
+                    elif self.pc-size in audio_frames:
+                        # 路 D2AI:IRQ68 分发器的 12B 特殊帧锚(0x602f406 push/
+                        # 0x602f44e pop,PRE §4.4 反汇编钉死)。
+                        adapters['audio_irq_handler_frame']+=1
                     else:adapters['software_irq_handler_psr_frame' if shape.startswith('psr') else
                                  'software_irq_handler_context_frame']+=1
                     return
@@ -1955,6 +1969,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         in_flight_handler=(target_cpu is not None and
                            getattr(target_cpu,'active_context',None) in
                            ('software_irq_handler','core_tick_handler','timer0_irq_handler'))
+        if request.details['irq']==68:
+            # 路 D2AI:IRQ68 允许优先级抢占式嵌套进 timer0 handler(park 稳态
+            # 事件循环;机器侧 deliver_audio_dma_irq 用真实 ICFG nibble 严格
+            # 更高来论证)——对 irq68 的延期面收窄为:指令中途/自身在途/
+            # software-IPI 与 core-tick 在途(unmaskable 族不可被 prio2 抢占)。
+            context=getattr(target_cpu,'active_context',None) if target_cpu is not None else None
+            in_flight_handler=(context in ('software_irq_handler','core_tick_handler',
+                                           'audio_dma_irq_handler'))
         if mid_instruction or in_flight_handler:
             deferred_while=('mid_instruction (after_then/repeat in flight)'
                             if mid_instruction and not in_flight_handler
@@ -1964,6 +1986,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     hardware.core_ticks[request.details['core']].delivery_in_flight=False
                 elif request.details['irq']==4:
                     hardware.timer.delivery_in_flight=False
+                elif request.details['irq']==68 and getattr(hardware,'jl_audio_adc_dma',None) is not None:
+                    hardware.jl_audio_adc_dma.delivery_in_flight=False
             machine.note_delivery_deferral(request.details,deferred_while)
             row['deferred_delivery']=request.details
             return
@@ -1981,6 +2005,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 raise ValueError('Timer0 IRQ4 delivery request without the opt-in machine entry projection')
             machine.deliver_timer0_irq(request.details['core'])
             row['timer0_irq_entry']=request.details
+        elif request.details['irq']==68:
+            # 路 D2AI:音频 ADC DMA pending→IRQ68 合格的交付请求(模型侧
+            # audio_adc_dma_delivery_requests 逐 pending 片至多抛一次)。
+            if not machine.audio_irq_entry:
+                raise ValueError('audio IRQ68 delivery request without the opt-in machine entry projection')
+            machine.deliver_audio_dma_irq(request.details['core'])
+            row['audio_irq_entry']=request.details
         else:
             if not machine.software_irq_entry:
                 raise ValueError('delivery request without the opt-in machine entry projection')

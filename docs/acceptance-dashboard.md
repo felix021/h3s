@@ -11,13 +11,13 @@
 |---|---|---|---|---|---|---|---|
 | [d2a](acceptance-samples/d2a/README.md) | D2-a 按键输入响应:识别×动作覆盖(路 BB/sim-d2arecords) | 8 | 8 | 0 | 2 | 8 | 18 |
 | [r234](acceptance-samples/r234/README.md) | R2 辅听/R3 独立 app/R4 命令接驳(路 CU/sim-r234records) | 12 | 12 | 0 | 3 | 0 | 15 |
-| [d2b](acceptance-samples/d2b/README.md) | D2-b 音频输入闭环:配置实证×注入预填(路 BI/sim-d2brecords) | 7 | 7 | 0 | 0 | 8 | 15 |
+| [d2b](acceptance-samples/d2b/README.md) | D2-b 音频输入闭环:配置实证×注入预填(路 BI/sim-d2brecords) | 9 | 9 | 0 | 0 | 6 | 15 |
 | [cot](acceptance-samples/cot/README.md) | 候选镜像联动用例(路 BT/sim-coimg,d1-acceptance §6.5) | 2 | 2 | 0 | 0 | 9 | 11 |
 | [d3](acceptance-samples/d3/README.md) | D3 真机一致性:案头就绪底稿(路 BS/sim-d3prep) | 1 | 0 | 0 | 0 | 7 | 8 |
 | [parity](acceptance-samples/parity/README.md) | 镜像间轨迹差分(路 A1/EQDIV,L2 系证据) | 1 | 1 | 1 | 0 | 0 | 2 |
 | [d1](acceptance-samples/d1/README.md) | D1 稳定调度验收(路 PR3P 预填,等闸门②) | 0 | 0 | 3 | 1 | 1 | 5 |
 | (上级散置) | 上级目录示例:D2-a-REC-01(属 d2a)/R4-VM-01(属 r234),§8.1 | 2 | 2 | 0 | 0 | 0 | 2 |
-| **合计** |  | **33** | **32** | **4** | **6** | **33** | **76** |
+| **合计** |  | **35** | **34** | **4** | **6** | **31** | **76** |
 
 BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证据等级 conditional(断言在显式投影/fixture 下成立,§8)。
 
@@ -76,8 +76,8 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [R2-HEA-06](acceptance-samples/r234/R2-HEA-06.json) | r234 | BLOCKED | none |
 | [R4-VM-05](acceptance-samples/r234/R4-VM-05.json) | r234 | BLOCKED | none |
 | [D2-a-ACT-10](acceptance-samples/d2a/D2-a-ACT-10.json) | d2a | BLOCKED | none |
-| [D2-b-INJ-01](acceptance-samples/d2b/D2-b-INJ-01.json) | d2b | NOT_RUN | none |
-| [D2-b-INJ-02](acceptance-samples/d2b/D2-b-INJ-02.json) | d2b | NOT_RUN | none |
+| [D2-b-INJ-01](acceptance-samples/d2b/D2-b-INJ-01.json) | d2b | PASS | conditional(3) |
+| [D2-b-INJ-02](acceptance-samples/d2b/D2-b-INJ-02.json) | d2b | PASS | conditional(3) |
 | [D2-b-INJ-03](acceptance-samples/d2b/D2-b-INJ-03.json) | d2b | NOT_RUN | none |
 | [D2-b-INJ-04](acceptance-samples/d2b/D2-b-INJ-04.json) | d2b | NOT_RUN | none |
 | [D2-b-INJ-05](acceptance-samples/d2b/D2-b-INJ-05.json) | d2b | NOT_RUN | none |
@@ -127,12 +127,12 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [R3-APP-05](acceptance-samples/r234/R3-APP-05.json) | r234 | 真机 BLE 联调授权缺失——需用户当场显式授权的设备连接会话（红线：不连真机、不刷机），tools/android-query/README.md 真机适配清单第 9/10 条无法执行 |
 | [R4-VM-05](acceptance-samples/r234/R4-VM-05.json) | r234 | 主仿真前沿未推进到 RCSP/任务派发相位——BLE 协议栈与命名任务 0x060A1D11 的命令投递世界不可达，分发器 0x0600f85e 对载荷（0x060E31E0）的实际调用没有执行载体（… |
 
-### NOT_RUN(33 条,按目录聚合;等待说明=面板 README 指针)
+### NOT_RUN(31 条,按目录聚合;等待说明=面板 README 指针)
 
 | 目录 | NOT_RUN | 其中入组挂账 | 组外(依赖见记录「未覆盖项」) |
 |---|---|---|---|
 | d2a | 8 | 0 | 8 | 等执行载体(§6.1 等价类预填);ACT-10 BLOCKED 归 D1 事件循环——d2a README |
-| d2b | 8 | 8 | 0 | 等 BF 前沿释放+AW 蓝图实施——d2b README「注入面共同依赖地图」 |
+| d2b | 6 | 6 | 0 | 等 BF 前沿释放+AW 蓝图实施——d2b README「注入面共同依赖地图」 |
 | cot | 9 | 9 | 0 | 按 L0-L3 前置链(COT-01 两条不依赖 D1 可立即跑)——cot README |
 | d3 | 7 | 7 | 0 | 等授权或观测手段——d3 README「等待项地图」 |
 | d1 | 1 | 0 | 1 | 见该面板 README |
@@ -181,9 +181,9 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [D2-b-CFG-05](acceptance-samples/d2b/D2-b-CFG-05.json) | d2b | PASS | conditional(2) | 2026-11-14T10:40:00 |
 | [D2-b-CFG-06](acceptance-samples/d2b/D2-b-CFG-06.json) | d2b | PASS | conditional(3) | 2026-11-14T10:40:00 |
 | [D2-b-CFG-07](acceptance-samples/d2b/D2-b-CFG-07.json) | d2b | PASS | conditional(2) | 2026-11-14T10:40:00 |
-| [D2-b-INJ-01](acceptance-samples/d2b/D2-b-INJ-01.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |
-| [D2-b-INJ-02](acceptance-samples/d2b/D2-b-INJ-02.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |
-| [D2-b-INJ-03](acceptance-samples/d2b/D2-b-INJ-03.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |
+| [D2-b-INJ-01](acceptance-samples/d2b/D2-b-INJ-01.json) | d2b | PASS | conditional(3) | 2026-11-17T05:10:00 |
+| [D2-b-INJ-02](acceptance-samples/d2b/D2-b-INJ-02.json) | d2b | PASS | conditional(3) | 2026-11-17T05:10:00 |
+| [D2-b-INJ-03](acceptance-samples/d2b/D2-b-INJ-03.json) | d2b | NOT_RUN | none | 2026-11-17T05:10:00 |
 | [D2-b-INJ-04](acceptance-samples/d2b/D2-b-INJ-04.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |
 | [D2-b-INJ-05](acceptance-samples/d2b/D2-b-INJ-05.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |
 | [D2-b-INJ-06](acceptance-samples/d2b/D2-b-INJ-06.json) | d2b | NOT_RUN | none | 2026-11-14T10:40:00 |

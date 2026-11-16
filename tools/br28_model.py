@@ -65,6 +65,11 @@ JL_AUDIO_DAC_DMA_WORDS=(0xfe0504,0xfe0508,0xfe0510,0xfe0514)
 # (IRQ68 交付未建模),读的是运行期 DMA 指针状态,属 D2-b 后域留严格停。
 # 0xfe0550(handler 尾写的 +0x18 SRN 读通知字)零当前前缀触达,不进白名单。
 JL_AUDIO_ADC_DMA_WORDS=(0xfe053c,0xfe0540,0xfe0544,0xfe0548,0xfe054c)
+# 路 D2AI/sim-d2ai:ADC DMA 读通知字(handler 尾 [r10+24]=r8 的 0xfe0550,
+# JL_AUDIO 基址 0xfe0500+0x50=成员 SRN)。五字容器交付模式下并入白名单
+# (路 JLA 裁决「不收 SRN」是 write-only 半边的边界;读侧/交付半边=本路
+# 扩类后的新事务,PRE §6.3 钉为交付段硬前置之一)。
+JL_AUDIO_ADC_SRN=0xfe0550
 # 路 JLEQ/sim-jleq:EQ 初始化函数 0x6072b24 的两处整字写——JL_EQ->CON0
 # (0xfe1500=JL_EQ 基址 0xfe1500+0)与 JL_EQ->FLT_ADR(0xfe151c=+0x1c)。
 # br28.h `JL_EQ_TypeDef {__RW __u32 CON0..CON3, DATAI_ADR, DATAO_ADR,
@@ -3815,9 +3820,24 @@ class JLAudioAdcDmaWriteRecords:
 
     ADDRESSES=JL_AUDIO_ADC_DMA_WORDS
 
-    def __init__(self):
+    def __init__(self,delivery=False):
+        # 路 D2AI(sim-d2ai,预研 docs/d2-audio-input-pre-study.md §7 步 1):
+        # 交付半边扩类(opt-in delivery)——五字读回投影(最后写值/无写合成 0,
+        # HWP=模型写指针)+SRN 0xfe0550 并入白名单+pending/delivery_in_flight
+        # 簿记+produce_block(DMA 完成事件:按 ADR/LEN/PNS/HWP 计算当前窗口
+        # 写入交织样本块、HWP 推进、置 ADC_CON bit7 pending)。默认关:行为与
+        # 路 JLA write-only 半边逐字节一致(读仍 jl_audio_adc_dma_read_not_
+        # modeled 严格停、SRN 保持 unmapped)。
+        self.delivery=delivery
         self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.ADDRESSES}
+        if delivery:self.stores[JL_AUDIO_ADC_SRN]={'values':[],'writes':0,'cores':[]}
         self.word_writes=0
+        self.pending=False             # ADC_CON bit7 投影源(硬件 DMA 完成置位)
+        self.delivery_in_flight=False  # 每 pending 片至多抛一次 IrqDeliveryRequest
+        self.hwp=0                     # 模型侧硬件写指针(HWP 字单位=样本;软件写复位)
+        self.blocks_produced=0
+        self.con_w1c_acks=0            # |=0x40 W1C 清 pending 的真实执行次数
+        self.reads_served=0;self.synthesized_reads=0
 
     def handles(self,address):
         return address in self.stores
@@ -3827,12 +3847,93 @@ class JLAudioAdcDmaWriteRecords:
         if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
         entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
         entry['cores'].append(core);self.word_writes+=1
+        if self.delivery and address==0xfe0548:
+            # HWP 软件写复位(0x606df2e,set_buffer 第四写):模型侧写指针跟随
+            # 写值重置(INJ-01「hwp 软件写 0 复位」;此后推进只归 produce_block)。
+            self.hwp=value
 
     def read(self,address):
-        raise Blocked('jl_audio_adc_dma_read_not_modeled',address=hex(address))
+        if not self.delivery:
+            raise Blocked('jl_audio_adc_dma_read_not_modeled',address=hex(address))
+        if address not in self.stores:raise ValueError('not a modeled JL_AUDIO ADC DMA word')
+        self.reads_served+=1
+        entry=self.stores[address]
+        if address==0xfe0548:
+            # HWP 是硬件写指针:读回=模型侧当前值(软件复位值+produce_block 推进),
+            # 不是「最后写值」——运行期 DMA 语义(PRE §6.3:读回=最后写值对
+            # HWP 不足)。
+            return self.hwp
+        if entry['writes']>0:return entry['values'][-1]
+        # 无写显式合成 0(路 AM 先例,derived-not-measured;本路径在开链
+        # set_buffer 之后才会被读,该分支是容器完整面)。
+        self.synthesized_reads+=1
+        return 0
+
+    def note_con_write(self,value):
+        """ADC_CON(0xfe0538)整字/RMW 写回的 W1C 联动(delivery 模式)。
+
+        分发器 0x602f434 与 handler 尾 0x60726ec 的 `|=0x40`(经通用 mmio 路径
+        读投影值再写回)是真实清 pending 写:bit6 置位的写清 pending+解除
+        delivery_in_flight(两处真实清两次无害,INJ-01)。bit7 是硬件域
+        (pending 投影在读侧 OR,存储值不保留)——本函数不动 stores 记录。
+        """
+        if not self.delivery:return
+        if value&0x40:
+            self.pending=False;self.delivery_in_flight=False;self.con_w1c_acks+=1
+
+    def produce_block(self,mem,block,*,channels,sample_bytes):
+        """DMA 完成事件投影:把一个 PNS 样本块的交织字节写进当前窗口。
+
+        唯一合成输入=样本字节本身(按键先例的「RES 档位值」同一深度,PRE
+        §4.2 方案 a);窗口位置/块长全部按固件 set_buffer 写下的 ADR/LEN/PNS
+        与模型 HWP 推导,不发明地址。步序(INJ-01):①按记录的 ADR/LEN/PNS/
+        HWP 计算当前窗口写块 ②HWP 推进过块边界+置 pending(bit7)。
+        channels=b[hdl+79](活跃通道计数,单字节直读)、sample_bytes=2 或 4
+        (b[hdl+90] 宽度布尔)——两者由调用方从真实 RAM 读出传入。
+        """
+        if not self.delivery:raise ValueError('produce_block requires the delivery projection')
+        if not isinstance(channels,int) or channels<1:raise ValueError('channel count must be a positive int')
+        if sample_bytes not in (2,4):raise ValueError('sample width must be 2 or 4 bytes')
+        adr=self._recorded(0xfe053c,'ADR');length=self._recorded(0xfe0540,'LEN');pns=self._recorded(0xfe0544,'PNS')
+        if length<=0 or pns<=0:
+            raise Blocked('jl_audio_adc_dma_window_unconfigured',ADR=hex(adr),LEN=length,PNS=pns)
+        expected=pns*channels*sample_bytes
+        if len(block)!=expected:
+            raise ValueError('block must be exactly PNS*channels*sample_bytes bytes '
+                             '(%d*%d*%d=%d), got %d'%(pns,channels,sample_bytes,expected,len(block)))
+        span=length*channels*sample_bytes
+        offset=self.hwp*channels*sample_bytes
+        if offset+expected>span:
+            # 环形绕回(b4 域)不在本投影内:单发/顺序推进下越界即诚实停,
+            # 不静默折返(PRE §5-b4 的两整圈验收归后续路)。
+            raise Blocked('jl_audio_adc_dma_wraparound_not_modeled',hwp_samples=self.hwp,
+                          window_offset=hex(offset),span_bytes=hex(span),block_bytes=hex(expected))
+        window=adr+offset
+        # MMU 逐页分块写(大缓冲在虚拟堆 0x41xxxx,128B 页界跨界整块写会被
+        # mmu_cross_page_access_not_split 拒绝;按页内长度切片=逐访问翻译的
+        # DMA 总线形状,与固件逐指令写同一翻译面)。
+        data=bytes(block)
+        cursor=window
+        while data:
+            chunk=len(data) if (cursor&127)+len(data)<=128 else 128-(cursor&127)
+            mem.write(cursor,data[:chunk])
+            cursor+=chunk;data=data[chunk:]
+        # HWP 不取模:越过环尾(下一次 offset+expected>span)即诚实停——
+        # 环形绕回(b4 域)是显式未建模面,不静默折返。
+        self.hwp=self.hwp+pns
+        self.pending=True;self.blocks_produced+=1
+        return {'window':hex(window),'block_bytes':expected,'pns_samples':pns,
+                'channels':channels,'sample_bytes':sample_bytes,
+                'hwp_after':self.hwp,'pending':True}
+
+    def _recorded(self,address,name):
+        entry=self.stores.get(address)
+        if entry is None or entry['writes']==0:
+            raise Blocked('jl_audio_adc_dma_word_unwritten',word=name,address=hex(address))
+        return entry['values'][-1]
 
     def report(self):
-        return {'addresses':[hex(a) for a in self.ADDRESSES],
+        result={'addresses':[hex(a) for a in self.ADDRESSES],
                 'word_writes':self.word_writes,
                 'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
                                   'writes':e['writes'],'cores':e['cores'][-16:]}
@@ -3888,7 +3989,35 @@ class JLAudioAdcDmaWriteRecords:
                               'transfer, no pointer advance, no SRN side effect, no pending '
                               'bit, no IRQ68 delivery and no cache coherency is modeled — this '
                               'does NOT verify any audio input, ADC capture or D2-b acceptance '
-                              'scenario')}
+                              'scenario'),
+                **({'delivery_projection':{
+                    'enabled':True,
+                    'words_served':[hex(a) for a in sorted(self.stores)],
+                    'srn_word_added':hex(JL_AUDIO_ADC_SRN),
+                    'read_semantics':('ADR/LEN/PNS/SRN = last firmware-written value (synthetic '
+                                      'initial 0 when never written, route-AM precedent); HWP = '
+                                      'the model-side hardware write pointer (software write '
+                                      'resets it at set_buffer 0x606df2e, produce_block '
+                                      'advances it by PNS samples per block)'),
+                    'pending_bit':'ADC_CON bit7 reads back set iff the model DMA completed a '
+                                  'block and no real |=0x40 W1C has acknowledged it since',
+                    'w1c_semantics':'any firmware write to ADC_CON with bit6 set clears pending '
+                                    'and delivery_in_flight (dispatcher 0x602f434 and handler '
+                                    'tail 0x60726ec both write it; twice is harmless)',
+                    'produce_block_shape':('writes exactly PNS*channels*sample_bytes '
+                                           'interleaved bytes at ADR+HWP*channels*sample_bytes '
+                                           '(the ONLY synthetic input is the sample bytes; '
+                                           'window/length derive from the firmware-written '
+                                           'ADR/LEN/PNS); advances HWP by PNS and sets '
+                                           'pending — DMA completion timing is a projection, '
+                                           'wraparound past the ring end is honestly stopped, '
+                                           'not modeled'),
+                    'state':{'pending':self.pending,'delivery_in_flight':self.delivery_in_flight,
+                             'hwp_samples':self.hwp,'blocks_produced':self.blocks_produced,
+                             'con_w1c_acks':self.con_w1c_acks,'reads_served':self.reads_served,
+                             'synthesized_reads':self.synthesized_reads},
+                    'synthetic_not_measured':True}} if self.delivery else {})}
+        return result
 
 
 class JlEqInitWriteRecords:
@@ -5598,6 +5727,7 @@ class BR28Model:
                  jl_pvdd_trim_writes=False,timer2_delay_projection=False,
                  jl_audio_dac_cop_writes=False,jl_audio_dac_dma_writes=False,
                  jl_audio_adc_dma_writes=False,
+                 audio_adc_dma_delivery=False,audio_adc_dma_delivery_requests=False,
                  jl_eq_init_writes=False,
                  jl_adc_start_config=False,jl_adc_start_probe_value=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
@@ -6150,7 +6280,23 @@ class BR28Model:
         # BM DAC DMA 四字同族;audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b
         # 后域留严格停(显式 kind)。默认关:五字保持 unmapped
         # (21,800,325 前沿形状),legacy 逐字节不变。
-        self.jl_audio_adc_dma=(JLAudioAdcDmaWriteRecords() if jl_audio_adc_dma_writes else None)
+        # 路 D2AI(sim-d2ai,预研 §7 步 1):ADC DMA 交付半边扩类(opt-in,
+        # 默认关)——读回投影(五字+SRN)+pending 位+produce_block+advance()
+        # IRQ68 扫描(见下)。前置:五字容器(write 侧)+ADC reset 写域
+        # (ADC_CON bit7 投影叠加在读侧、W1C 联动挂在写侧)。默认关时行为与
+        # 路 JLA 半边逐字节一致。
+        if audio_adc_dma_delivery and not jl_audio_adc_dma_writes:
+            raise ValueError('the ADC DMA delivery projection requires the five-word '
+                             'write records (set_buffer must run first)')
+        if audio_adc_dma_delivery and not jl_audio_adc_reset_write_records:
+            raise ValueError('the ADC DMA delivery projection requires the ADC-reset '
+                             'write records (ADC_CON 0xfe0538 must be served for the '
+                             'pending-bit overlay)')
+        if audio_adc_dma_delivery_requests and not audio_adc_dma_delivery:
+            raise ValueError('the ADC DMA delivery requests require the delivery projection')
+        self.audio_adc_dma_delivery_requests=audio_adc_dma_delivery_requests
+        self.jl_audio_adc_dma=(JLAudioAdcDmaWriteRecords(delivery=audio_adc_dma_delivery)
+                               if jl_audio_adc_dma_writes else None)
         # 路 JLEQ/sim-jleq:EQ 初始化函数 0x6072b24 两字(JL_EQ->CON0 0xfe1500
         # /FLT_ADR 0xfe151c)write-only 整字记录——29,215,313 停点 0x6072b92
         # (写 CON0=0)放行;boot 路径只写不读(两写无条件整字 st.w、无 RMW,
@@ -6582,9 +6728,16 @@ class BR28Model:
         # ADC 节点 reset 写域(路 AS):ADC_CON 读回=最后写值,无写时显式合成 0
         # (路 AM 先例);本前缀零读(AE 消费者全在 IRQ68/esco 链上)——bit7
         # pending 恒 0=无 ADC 硬件活动的诚实显形,不发明完成。
+        # 路 D2AI:交付投影开启时 bit7 叠加模型 pending(硬件域位:存储值一律
+        # 掩掉,读值=软件值|pending 位)——分发器 0x602f430 的 pending 门由此
+        # 读到真实投影(PRE §4.4)。
         if self.jl_audio_adc_reset_records is not None and self.jl_audio_adc_reset_records.handles(address):
             self.counts['reads']+=1
-            return self.jl_audio_adc_reset_records.read(address)
+            value=self.jl_audio_adc_reset_records.read(address)
+            dma=self.jl_audio_adc_dma
+            if dma is not None and dma.delivery:
+                value=(value&~0x80)|(0x80 if dma.pending else 0)
+            return value
         # JL_ADDA DAA_CON1(路 CV):两开关分立——写前读=显式 fixture(无隐式
         # 零默认);写后读=配置位读回(最后写值,需读回开关)。只开读回无初值
         # 未写入、或初值开读回关写后读:停原边界(unmapped_memory 读
@@ -6690,6 +6843,8 @@ class BR28Model:
             return self.jl_audio_dac_dma.read(address)
         # JL_AUDIO ADC DMA 五字(路 JLA):write-only 记录,读回显式严格停
         # (audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b 完成投影后域)。
+        # 路 D2AI:交付投影开启时读回由容器服务(五字+SRN,见类注释);
+        # SRN 0xfe0550 只在此模式进白名单。
         if self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_adc_dma.read(address)
@@ -6837,6 +6992,10 @@ class BR28Model:
             # 侧 exact_parallel 机制保真),写记录;ADC 时钟/模拟前端/DMA/
             # IRQ68 事件一律不建模。
             self.jl_audio_adc_reset_records.write(address,value,self.current_core)
+            # 路 D2AI:交付投影开启时联动 W1C——|=0x40(bit6)写清模型 pending
+            # (分发器 0x602f434 与 handler 尾 0x60726ec 两处真实清位;两次无害)。
+            if self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.delivery:
+                self.jl_audio_adc_dma.note_con_write(value)
         elif self.jl_adda_daa_con1 is not None and self.jl_adda_daa_con1.handles(address):
             # JL_ADDA DAA_CON1(路 CV):0x606b43c 写回(在两个通道选择块之外,
             # 未选通道时旧值原样回写、总线写仍发生)整字写记录;值=真实指令
@@ -7393,6 +7552,29 @@ class BR28Model:
                 if not self.timer.delivery_in_flight:
                     self.timer.delivery_in_flight=True
                     raise IrqDeliveryRequest(core=0,irq=4)
+        # 路 D2AI(sim-d2ai,预研 §7 步 1/INJ-01):ADC DMA pending 扫描——
+        # Timer0 块后同位。IRQ68 是全固件唯一音频 DMA 中断,注册于 CPU0 语境
+        # (boot initcall 0x602ec28 request_irq prio2,向量槽 0x19FF10 运行时
+        # 落盘 0x602f406,PRE §6.1)——核选择按运行观测钉 CPU0;若固件未来
+        # 把 IRQ68 配到 CPU1(ICFG nibble),新站点须重审后扩核。pending 且
+        # 非 in-flight 时按真实 ICFG nibble+IPMASK 判资格,合格即抛
+        # IrqDeliveryRequest(core=0,irq=68)(每 pending 片至多一次;真实
+        # |=0x40 W1C 清 pending 时一并解除 in-flight)。
+        dma=self.jl_audio_adc_dma
+        if dma is not None and dma.delivery and dma.pending:
+            gate=self.core_icfg.get(0) if self.multicore_enabled else icfg
+            try:eligible=self.irq.eligible(68,0x300 if gate is None else gate)
+            except Blocked as e:
+                raise Blocked('audio_dma_irq_delivery_blocked',core=0,irq=68,
+                              reason=e.details['kind']) from None
+            if eligible:
+                if not self.audio_adc_dma_delivery_requests:
+                    raise Blocked('interrupt_delivery_not_implemented',core=0,irq=68,
+                                  note='audio ADC DMA pending and eligible; CPU entry not '
+                                       'bypassed — enable the audio ADC DMA delivery requests')
+                if not dma.delivery_in_flight:
+                    dma.delivery_in_flight=True
+                    raise IrqDeliveryRequest(core=0,irq=68)
         if self.software_irq is not None:
             for core,word in enumerate(self.software_irq.pending):
                 if core==1 and (not self.multicore_enabled or not self.cpu1_control&1):continue
@@ -7684,6 +7866,7 @@ class BR28Model:
                 'modeled — this does NOT verify any audio output')
         if self.jl_audio_adc_dma is not None:
             result['jl_audio_adc_dma_write_records']=self.jl_audio_adc_dma.report()
+            delivery_on=self.jl_audio_adc_dma.delivery
             result['assumptions']['jl_audio_adc_dma_write_records']=(
                 'JL_AUDIO ADC channel-buffer DMA words (0xfe053c/0xfe0540/0xfe0544/'
                 '0xfe0548/0xfe054c = base +0x3c/+0x40/+0x44/+0x48/+0x4c, the ADR/LEN/'
@@ -7696,14 +7879,23 @@ class BR28Model:
                 'access sweep resolved exactly nine accesses — the five set_buffer '
                 'writes plus the audio_adc_irq_handler [0x6072628,0x6072700) reads '
                 'of PNS/ADR/SRP and its PNS write, reachable only through the IRQ68 '
-                'dispatcher 0x602f444 and NOT reached on this prefix (IRQ68 delivery '
-                'not modeled) — those reads stay strictly stopped and belong to the '
-                'D2-b completion-projection domain; the handler-tail SRN word '
-                '0xfe0550 is NOT whitelisted; the zero-read face on THIS prefix '
-                'motivates the record, it is NOT a measured hardware WO property '
-                'claim; no DMA transfer, pointer advance, SRN side effect, pending '
-                'bit, IRQ68 delivery or cache coherency is modeled — this does NOT '
-                'verify any audio input, ADC capture or D2-b acceptance scenario')
+                'dispatcher 0x602f444'
+                + (' (route D2AI delivery projection ON: those reads are now served '
+                   'by the container — ADR/LEN/PNS/SRN = last firmware write with a '
+                   'synthetic initial 0, HWP = the model hardware write pointer; the '
+                   'handler-tail SRN word 0xfe0550 IS whitelisted in this mode; the '
+                   'ADC_CON bit7 pending overlay, |=0x40 W1C coupling, produce_block '
+                   'DMA-completion projection and the advance() IRQ68 scan are all '
+                   'opt-in on the same switch — DMA completion TIMING is a projection '
+                   'and the only synthetic input is the sample bytes)' if delivery_on
+                   else ' and NOT reached on this prefix (IRQ68 delivery '
+                        'not modeled) — those reads stay strictly stopped and belong to the '
+                        'D2-b completion-projection domain; the handler-tail SRN word '
+                        '0xfe0550 is NOT whitelisted; the zero-read face on THIS prefix '
+                        'motivates the record, it is NOT a measured hardware WO property '
+                        'claim; no DMA transfer, pointer advance, SRN side effect, pending '
+                        'bit, IRQ68 delivery or cache coherency is modeled — this does NOT '
+                        'verify any audio input, ADC capture or D2-b acceptance scenario'))
         if self.jl_eq_init is not None:
             result['jl_eq_init_write_records']=self.jl_eq_init.report()
             result['assumptions']['jl_eq_init_write_records']=(
