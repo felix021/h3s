@@ -177,8 +177,8 @@ flags=0 的默认任务族）、0x6015a10、0x60162de、0x6016346、0x601ffbe、
   目标 = 0x60869ce + 字节×2（9 分支全部落有效块头，本路逐一验证）:
   cmd4  → 0x60869d8  st[r0+44]=r4（stream 槽登记）; b[obj+9]==3 检查;
                         0x6075a08(obj, 4)
-  cmd5  → 0x60869f0  0x12b55c(pend/调度); h[obj+16] 时间戳; 无之则
-                        sys_timer_reconfig 0x6066ba6(id=h[obj+16], 50)  ; 勘误注记：0x6066ba6 实为按节点 id [+28] 查表重配族（改 [+24] 参数、重算 [+20] 到期、摘链重挂），非 add（add 体=0x6066a7e）；cmd5 于 0x6086a08 直 call 重配既有 timer 至 50，非新建注册——路 D2BID 复算确认
+  cmd5  → 0x60869f0  0x12b55c(pend/调度); h[obj+16] 时间戳; ≠0 则
+                        sys_timer_reconfig 0x6066ba6(id=h[obj+16], 50)  ; 勘误注记：0x6066ba6 实为按节点 id [+28] 查表重配族（改 [+24] 参数、重算 [+20] 到期、摘链重挂），非 add（add 体=0x6066a7e）；cmd5 于 0x6086a08 直 call 重配既有 timer 至 50，非新建注册——路 D2BID 复算确认；条件方向「无之则」亦反：0x6086a04 `if r0==0 goto +8` 跳过重配，h[obj+16]≠0 才直 call 重配（==0 走 0x6086a0e）——路 CMDFIX codec+app.bin 复算确认
   cmd6/7→ 0x6086b06  循环尾（忽略——两表项同偏移 0x9c）
   cmd8  → 0x6086a24  b[obj+10]==16 状态迁移→b[obj+9]=1;
                         0x6064d72('jlstream',1,0)（0x6086aaa，自队列 post）
