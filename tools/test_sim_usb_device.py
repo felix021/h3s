@@ -14,15 +14,22 @@ M3 扩展段（SIMB3C 设备级，docs/sim-m3-flash-spec.md §5 + codex 评审�
 字节级红绿双向（armed 门/计划门/形状门/CDB 长度+补齐门/先擦后写+重复写拒）、armed 状态机
 （nonce 单次消费/copy-on-armed/disarm 显式回滚/reboot 三态——armed 撤销+刷后镜像保留+
 BOT 在途清空）、断链 link_reset 半包不污染、N2 中断半态全片比较（独立构造预期镜像）、
-原始资产 bytes 全程不可变（红线实证）、planner 计划直喂 arm 的闭环。会话层消息接线
-（usb_arm/usb_disarm/usb_reboot 分发）属第二段，不在本文件。
+原始资产 bytes 全程不可变（红线实证）、planner 计划直喂 arm 的闭环。
+M3 会话层段（SIMB3S 第二段）：usb_arm/usb_disarm/usb_reboot 消息往返（ok=false 不断链/
+reboot 成功断连重枚举）、断链清理接线（close()→link_reset——codex P1 复现：OUT 半相位
+断开→新连接 INQUIRY 必须完整应答，另含 CBW 半包/写完 CSW 未收两种断链）、断链 armed
+保持+FD05 读副本（socket 级）、busy 单活动不破、--arm-plan CLI 冒烟（hello 横幅即 armed）。
 """
 import base64
 import binascii
 import hashlib
+import json
 import struct
+import subprocess
 import sys
+import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -819,6 +826,317 @@ class M3FlashDeviceTest(unittest.TestCase):
         host = BotHost(dev)
         r = host.exchange(vendor_cdb(0xfd05, (0).to_bytes(4, 'big') + (512).to_bytes(2, 'big')), size=512)
         self.assertEqual(r, FLASH[0:512])
+
+
+# ================================ M3 会话层（SIMB3S 第二段） ================================
+
+TOOLS_DIR = Path(__file__).resolve().parent
+
+
+class SocketBot:
+    """socket 级 BOT 交换器（usb_bulk_out/usb_bulk_in 消息面；app 的 SimulationUsbLink +
+    UsbScsi.exchange 同形）。与 BotHost 同接口——load_loader/flash_sector/fd05_read 直接复用。"""
+
+    def __init__(self, client):
+        self.client = client
+        self.tag = 0
+
+    def send_raw(self, raw: bytes) -> None:
+        self.client.send({'t': 'usb_bulk_out', 'data': base64.b64encode(raw).decode('ascii')})
+
+    def exchange(self, cdb, size=0, data=None):
+        self.tag += 1
+        self.send_raw(cbw(self.tag, len(data) if data is not None else size, data is not None, cdb))
+        if data is not None:
+            self.send_raw(data)
+        result = b''
+        if data is None and size > 0:
+            result = base64.b64decode(self.client.drain_until('usb_bulk_in')['data'])
+        got = base64.b64decode(self.client.drain_until('usb_bulk_in')['data'])
+        assert got == csw(self.tag), 'CSW 不符: %s' % got.hex()
+        return result
+
+
+def connect_with(port, message):
+    """连接并发送首条消息，返回 (client, 首条应答)。旧会话线程尚未释放活动锁时会回 busy——
+    短退避重试（客户端主动断链后立刻重连的竞态兜底，非 server 行为断言面）。"""
+    for _ in range(200):
+        client = Client(port)
+        client.send(message)
+        reply = client.recv()
+        if reply is not None and reply.get('t') == 'busy':
+            client.close()
+            time.sleep(0.01)
+            continue
+        if reply is None:
+            client.close()
+            raise AssertionError('首条消息 %r 无应答即断开' % message.get('t'))
+        return client, reply
+    raise AssertionError('重连 2s 仍 busy（活动锁未释放）')
+
+
+def hello_client(port):
+    client, reply = connect_with(port, {'t': 'hello', 'proto': sbs.PROTO, 'client': 'sim-usb'})
+    assert reply.get('t') == 'hello_ok', reply
+    assert reply['world']['mode'] == 'sim-usb-msc', reply
+    return client
+
+
+def arm_msg(sectors=M3_SECTORS, target_sha256=S_TARGET, nonce='sess-nonce'):
+    return {'t': 'usb_arm', 'sectors': list(sectors), 'target_sha256': target_sha256, 'nonce': nonce}
+
+
+class M3FlashSessionTest(unittest.TestCase):
+    """M3 会话层（socket 级）：usb_arm/usb_disarm/usb_reboot 消息往返 + 断链清理接线
+    （codex P1：close()→link_reset）+ 断链 armed 保持 + busy 纪律 + CLI --arm-plan 冒烟。"""
+
+    def setUp(self):
+        self._start_server()
+
+    def _start_server(self):
+        """新设备 + 新 server 线程（断链清理子测各自起——身份/相位是进程级状态，跨子测
+        残留会让 ctl len0/FB06 的门拒绝，场景本就是独立会话生命周期）。"""
+        self.usb = sbs.MscBotDevice(flash=FLASH, rom=ROM)
+        self.port = free_port()
+        ready = threading.Event()
+        threading.Thread(target=sbs.serve, args=('127.0.0.1', self.port, sbs.DEFAULT_FIXTURE, self.usb),
+                         kwargs={'ready': ready}, daemon=True).start()
+        if not ready.wait(5.0):
+            raise AssertionError('server 未在 5s 内就绪')
+
+    def hello(self):
+        return hello_client(self.port)
+
+    def ready_client(self):
+        """新会话走到 loader-ready：ctl len0 断连重枚举 → 重连 open → 装载 loader 序列。"""
+        client = self.hello()
+        client.send({'t': 'usb_ctl', 'len': 0})
+        client.drain_until('usb_ctl_result')
+        self.assertIsNone(client.recv(), 'ctl len0 后应断连（重枚举）')
+        client = self.hello()
+        client.send({'t': 'usb_open', 'key': self.usb.scan()[0]['key']})
+        self.assertTrue(client.drain_until('usb_open_result')['ok'])
+        load_loader(SocketBot(client))
+        self.assertEqual(self.usb.phase, 'loader-ready')
+        return client
+
+    def arm_via(self, client, nonce):
+        client.send(arm_msg(nonce=nonce))
+        return client.drain_until('usb_arm_result')
+
+    def test_arm_disarm_reboot_roundtrip(self):
+        client = self.ready_client()
+        try:
+            granted = self.arm_via(client, 'sess-1')
+            self.assertTrue(granted['ok'], granted)
+            self.assertTrue(self.usb.describe()['armed'])
+            # armed 期间重复 arm=busy 语义 → ok=false+detail，连接保持
+            dup = self.arm_via(client, 'sess-2')
+            self.assertFalse(dup['ok'])
+            self.assertIn('busy', dup['detail'])
+            client.send({'t': 'usb_scan'})                       # 连接仍可用（拒绝不断链）
+            self.assertEqual(client.drain_until('usb_scan_result')['devices'][0]['vid'], sbs.USB_VID_ROM)
+            # disarm 往返：ok=true；未 armed 再 disarm → ok=false 不断链
+            client.send({'t': 'usb_disarm'})
+            self.assertTrue(client.drain_until('usb_disarm_result')['ok'])
+            client.send({'t': 'usb_disarm'})
+            r = client.drain_until('usb_disarm_result')
+            self.assertFalse(r['ok'])
+            self.assertIn('未 armed', r['detail'])
+            # 再 arm + 留一个 FB04 OUT 半相位在途 → reboot：ok=true 后断连（重枚举先例）
+            self.assertTrue(self.arm_via(client, 'sess-3')['ok'])
+            bot = SocketBot(client)
+            sector = M3_SECTORS[0]
+            chunk = TARGET[sector:sector + 512]
+            bot.send_raw(cbw(1, 512, True, vendor_cdb(0xfb04, fb04_args(sector, chunk))))
+            bot.send_raw(chunk[:16])                              # OUT 数据相位半途
+            client.send({'t': 'usb_reboot'})
+            r = client.drain_until('usb_reboot_result')
+            self.assertTrue(r['ok'], r)
+            self.assertIsNone(client.recv(), 'reboot 成功后应断连（重枚举）')
+        finally:
+            client.close()
+        self.assertFalse(self.usb.describe()['armed'])           # reboot 撤销 armed
+        self.assertIsNone(self.usb._waiting)                     # 在途半相位被清（设备级 reboot）
+        # 重枚举后：normal 身份；journal 尾部 reboot 条目（armed 副本在途 → 记半态 SHA）
+        client = self.hello()
+        try:
+            client.send({'t': 'usb_scan'})
+            self.assertEqual(client.drain_until('usb_scan_result')['devices'][0]['vid'], sbs.USB_VID_QCY)
+        finally:
+            client.close()
+        tail = self.usb.journal[-1]
+        self.assertEqual(tail['op'], 'reboot')
+        self.assertIn('work_sha256', tail)                       # armed 会话的 reboot 记半态（§3.3）
+        self.assertIs(tail['target_match'], False)               # OUT 半途=未达 target（如实）
+
+    def test_arm_validation_failures_keep_connection(self):
+        """§3.6：usb_arm 校验失败 → ok=false+detail 不断链（消息级，区别于 no_hello 断链）。"""
+        client = self.ready_client()
+        try:
+            bad_plans = [
+                {'sectors': [], 'target_sha256': S_TARGET, 'nonce': 'n'},        # 空扇区
+                {'sectors': [0x1001], 'target_sha256': S_TARGET, 'nonce': 'n'},  # 非 4KiB 对齐
+                {'sectors': [0x1000], 'target_sha256': 'xyz', 'nonce': 'n'},     # 坏 target SHA
+                {'sectors': [0x1000], 'target_sha256': S_TARGET},                # 缺 nonce
+                {'nonce': 'n'},                                                  # 缺扇区
+            ]
+            for plan in bad_plans:
+                client.send({'t': 'usb_arm', **plan})
+                r = client.drain_until('usb_arm_result')
+                self.assertFalse(r['ok'], plan)
+                self.assertTrue(r['detail'], plan)
+            self.assertFalse(self.usb.describe()['armed'])       # 全拒：未进入 armed
+            # nonce 单次消费（消息面）：arm→disarm→旧 nonce 复用 → ok=false 已消费
+            self.assertTrue(self.arm_via(client, 'once')['ok'])
+            client.send({'t': 'usb_disarm'})
+            self.assertTrue(client.drain_until('usb_disarm_result')['ok'])
+            r = self.arm_via(client, 'once')
+            self.assertFalse(r['ok'])
+            self.assertIn('已消费', r['detail'])
+            # 全程连接未断：scan 仍应答
+            client.send({'t': 'usb_scan'})
+            self.assertEqual(client.drain_until('usb_scan_result')['devices'][0]['vid'], sbs.USB_VID_ROM)
+        finally:
+            client.close()
+
+    def test_m3_messages_require_hello(self):
+        for kind, extra in (('usb_arm', {'sectors': [0x1000], 'target_sha256': S_TARGET, 'nonce': 'n'}),
+                            ('usb_disarm', {}),
+                            ('usb_reboot', {})):
+            with self.subTest(kind):
+                client, reply = connect_with(self.port, {'t': kind, **extra})
+                try:
+                    self.assertEqual(reply.get('t'), 'error')
+                    self.assertEqual(reply.get('code'), 'no_hello')
+                    self.assertIsNone(client.recv(), 'no_hello 后应断开')
+                finally:
+                    client.close()
+
+    def test_disconnect_clears_bot_half_phases(self):
+        """codex P1 修复验证（socket 级）：三种断链残留后新连接 INQUIRY 必须完整应答——
+        旧行为=旧 _waiting 吞掉新 CBW 字节（codex 复现：响应数=0、旧相位 got=47）。"""
+        sector = M3_SECTORS[0]
+        chunk = TARGET[sector:sector + 512]
+        cases = [  # (描述, 断链前的字节注入, 子测 nonce)
+            ('OUT 数据相位半途 got=16（codex 复现场景）',
+             lambda bot: (bot.send_raw(cbw(1, 512, True, vendor_cdb(0xfb04, fb04_args(sector, chunk)))),
+                          bot.send_raw(chunk[:16])), 'p1-out-half'),
+            ('CBW 半包（31B 只到 20B）',
+             lambda bot: (bot.send_raw(cbw(2, 16, False, vendor_cdb(0xfb01, sector.to_bytes(4, 'big')))[:20]),),
+             'p1-cbw-half'),
+            ('写完成但 CSW 未被宿主读走',
+             lambda bot: (bot.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16),
+                          bot.send_raw(cbw(3, 512, True, vendor_cdb(0xfb04, fb04_args(sector, chunk)))),
+                          bot.send_raw(chunk)),                    # 设备侧已完成写并发出 CSW，
+             'p1-csw-unread'),                                     # 宿主未读即断链
+        ]
+        for desc, feed, nonce in cases:
+            with self.subTest(desc):
+                self._start_server()                             # 子测独立设备+server（进程级状态隔离）
+                client = self.ready_client()
+                self.assertTrue(self.arm_via(client, nonce)['ok'])
+                feed(SocketBot(client))
+                client.close()                                   # 断链（不 disarm/reboot）
+                # 新连接：31B INQUIRY 必须得到完整应答（36B 数据+13B CSW——旧行为零响应）
+                client = self.hello()
+                try:
+                    # hello 成功=活动锁已释放=close()→link_reset 已执行（run() finally 顺序）
+                    self.assertTrue(self.usb.describe()['armed'], desc)     # armed 保持（§3.1）
+                    self.assertIsNone(self.usb._waiting, desc)              # BOT 在途已清
+                    self.assertEqual(self.usb._rx, b'', desc)
+                    client.send({'t': 'usb_open', 'key': self.usb.scan()[0]['key']})
+                    self.assertTrue(client.drain_until('usb_open_result')['ok'])
+                    r = SocketBot(client).exchange(bytes([0x12, 0, 0, 0, 36, 0]), size=36)
+                    self.assertEqual(len(r), 36)
+                    self.assertEqual(r[8:16], b'BR28    ')
+                finally:
+                    client.close()
+
+    def test_disconnect_keeps_armed_and_fd05_reads_work_copy(self):
+        """断链 armed 保持（N2 语义）：擦一扇区→断链→重连 FD05 仍读 ff（副本=半态可见）、
+        计划外扇区读==原始；disarm 消息收兵后 FD05 回原始基线。"""
+        sector = M3_SECTORS[0]
+        client = self.ready_client()
+        self.assertTrue(self.arm_via(client, 'keep')['ok'])
+        bot = SocketBot(client)
+        r = bot.exchange(vendor_cdb(0xfb01, sector.to_bytes(4, 'big')), size=16)
+        self.assertEqual(r[:2], b'\xfb\x01')
+        self.assertEqual(bot.exchange(vendor_cdb(0xfd05, sector.to_bytes(4, 'big')
+                                                + (512).to_bytes(2, 'big')), size=512), b'\xff' * 512)
+        client.close()                                           # 断链（不 disarm）
+        d = self.usb.describe()
+        self.assertTrue(d['armed'])                              # 断链不退出 armed
+        self.assertEqual(d['journal_len'], 1)
+        client = self.hello()
+        try:
+            client.send({'t': 'usb_open', 'key': self.usb.scan()[0]['key']})
+            self.assertTrue(client.drain_until('usb_open_result')['ok'])
+            bot = SocketBot(client)
+            got = bot.exchange(vendor_cdb(0xfd05, sector.to_bytes(4, 'big') + (512).to_bytes(2, 'big')), size=512)
+            self.assertEqual(got, b'\xff' * 512)                 # 已擦扇区仍 ff（副本保持）
+            got = bot.exchange(vendor_cdb(0xfd05, (0x8000).to_bytes(4, 'big') + (512).to_bytes(2, 'big')),
+                               size=512)
+            self.assertEqual(got, FLASH[0x8000:0x8000 + 512])    # 计划外==原始（状态如实）
+            client.send({'t': 'usb_disarm'})                     # 重连会话上 disarm 收兵
+            self.assertTrue(client.drain_until('usb_disarm_result')['ok'])
+            got = bot.exchange(vendor_cdb(0xfd05, sector.to_bytes(4, 'big') + (512).to_bytes(2, 'big')),
+                               size=512)
+            self.assertEqual(got, FLASH[sector:sector + 512])    # 回滚到 arm 前基线
+        finally:
+            client.close()
+
+    def test_busy_single_active_not_broken_by_arm(self):
+        """usb_arm 是普通请求消息：armed 状态下并发客户端仍 busy 断开、原会话不破。"""
+        client = self.ready_client()
+        try:
+            self.assertTrue(self.arm_via(client, 'busy-1')['ok'])
+            second = Client(self.port)
+            try:
+                self.assertEqual(second.recv().get('t'), 'busy')
+            finally:
+                second.close()
+            client.send({'t': 'usb_scan'})                       # 原会话仍可用
+            self.assertEqual(client.drain_until('usb_scan_result')['devices'][0]['vid'], sbs.USB_VID_ROM)
+        finally:
+            client.close()
+        third = self.hello()                                     # 会话结束后活动锁已释放
+        third.close()
+
+    def test_cli_arm_plan_and_persist_placeholder(self):
+        """CLI --arm-plan 构造即 armed（子进程 hello 横幅可见）+ --persist 占位（§3.5-B
+        未实施——帮助文本与启动日志如实标注，不发明落盘行为）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            flash_path = Path(tmp) / 'flash.bin'
+            flash_path.write_bytes(FLASH)
+            plan_path = Path(tmp) / 'plan.json'
+            plan_path.write_text(json.dumps({'sectors': list(M3_SECTORS), 'target_sha256': S_TARGET,
+                                             'nonce': 'cli-smoke'}))
+            help_out = subprocess.run([sys.executable, str(TOOLS_DIR / 'sim_bridge_server.py'), '--help'],
+                                      capture_output=True, text=True, timeout=60)
+            self.assertEqual(help_out.returncode, 0, help_out.stderr)
+            self.assertIn('--arm-plan', help_out.stdout)
+            self.assertIn('--persist', help_out.stdout)
+            port = free_port()
+            proc = subprocess.Popen(
+                [sys.executable, str(TOOLS_DIR / 'sim_bridge_server.py'),
+                 '--listen', '127.0.0.1:%d' % port, '--flash-image', str(flash_path),
+                 '--arm-plan', str(plan_path), '--persist'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                client, reply = connect_with(
+                    port, {'t': 'hello', 'proto': sbs.PROTO, 'client': 'sim-usb'})
+                self.assertEqual(reply.get('t'), 'hello_ok', reply)
+                self.assertTrue(reply['world']['armed'], reply)          # 构造即 armed
+                self.assertEqual(reply['world']['plan_sectors'], sorted(M3_SECTORS))
+                self.assertEqual(reply['world']['work_sha256'], S0)      # 副本=原始拷贝
+                client.close()
+            finally:
+                proc.terminate()
+                proc.wait(10)
+            stderr = proc.stderr.read().decode('utf-8')
+            self.assertIn('启动即 armed', stderr)
+            self.assertIn('占位', stderr)                          # --persist 如实标注未实施
 
 
 if __name__ == '__main__':

@@ -26,7 +26,9 @@ BLE 状态源二选一（SIMB1C §3.5）+ USB 设备端（SIMB2A，进程级共�
   server 退出才复位，设计 §4.4）。**红线内置：原始 flash 资产永不写**——FB01（擦 4KiB 扇区）
   /FB04（512B 编程）仅在 armed 门内可写且只落 copy-on-armed 进程内副本（docs/sim-m3-flash-spec.md
   §2/§3），未 armed 时行为与 M2 逐字节一致（CSW status=1 拒绝+记录）；WRITE(10)/FC0C/FC12
-  等白名单外 opcode 仍一律拒绝；原始 bytes 后端无写方法。
+  等白名单外 opcode 仍一律拒绝；原始 bytes 后端无写方法。会话断开（EOF/quit/重枚举
+  断连）统一走 close() → usb.link_reset() 清 BOT 在途半包（codex 评审 P1：半相位不跨
+  会话残留吞包）；armed 与副本**保持**（断链不退出 armed，重连可见半态）。
 
 协议（与 SimulationGattLink.java / SimulationUsbLink.java / 设计 §4.2 对齐，proto=1）：
   app→server {"t":"hello","proto":1,"client":"sim-gatt"|"sim-usb"}
@@ -43,6 +45,13 @@ BLE 状态源二选一（SIMB1C §3.5）+ USB 设备端（SIMB2A，进程级共�
                                                       #   各自独立一条消息、长度精确（BOT 契约）
   app→server {"t":"usb_ctl","len":8|0}                # EP0 厂商恢复请求（usb-recovery.md）
   server→app {"t":"usb_ctl_result","data":b64}        # len8→8×ff；len0→进 ROM 并断开（重枚举）
+  app→server {"t":"usb_arm","sectors":[…],"target_sha256":…,"nonce":…}   # M3 armed 进入（§3.1）
+  server→app {"t":"usb_arm_result","ok":bool,"detail":…}                 # 校验失败 ok=false 不断链
+  app→server {"t":"usb_disarm"}                        # M3 armed 主动作废（副本回滚到 arm 前基线）
+  server→app {"t":"usb_disarm_result","ok":bool,"detail":…}
+  app→server {"t":"usb_reboot"}                        # M3 整机重启换身份（§3.3）
+  server→app {"t":"usb_reboot_result","ok":bool,"detail":…}              # ok=true 后断连重枚举（照
+                                                      #   usb_ctl len0 先例；ok=false 不断链）
   server→app {"t":"hello_err"|"busy"|"error",...}     # 拒绝/占线/链路错误（不臆造回执）
   控制面（宿主测试客户端用；app 不发，SimulationGattLink 对未知消息忽略）：
   client→server {"t":"set_fixture","reads":{...}}                    # 仅 static
@@ -743,6 +752,11 @@ class SimBridgeSession:
     def close(self) -> None:
         if not self.closed:
             self.closed = True
+            # 断链清理（codex 评审 P1 / SIMB3C 修正 5 的会话层接线点）：设备对象进程级共享，
+            # CBW/OUT 数据相位半包不得跨会话残留（旧行为=旧 _waiting 吞掉新会话首条 CBW 的
+            # 字节→零响应）；armed 与副本保持（§3.1 断链不退出 armed）。静态模式 serve() 的
+            # finally 与世界模式 serve_loop 的 session.close() 均汇到本方法——单一接线点。
+            self.usb.link_reset()
             try:
                 self.conn.close()
             except OSError:
@@ -880,6 +894,52 @@ class SimBridgeSession:
                 log('usb_ctl len0：身份翻转 normal→rom，断开连接（重枚举）')
                 return False
             return True
+        # —— M3 armed 刷机控制面（docs/sim-m3-flash-spec.md §3.6；app/宿主客户端均可发）——
+        if kind == 'usb_arm':
+            if not hello_done:
+                self.send({'t': 'error', 'code': 'no_hello', 'detail': '先发 hello'})
+                return False
+            try:
+                granted = self.usb.arm({'sectors': message.get('sectors'),
+                                        'target_sha256': message.get('target_sha256'),
+                                        'nonce': message.get('nonce')})
+            except ValueError as exc:
+                self.send({'t': 'usb_arm_result', 'ok': False, 'detail': str(exc)})
+                log('usb_arm 拒绝（不断链）: %s' % exc)
+                return True                             # 校验失败 ok=false+detail（§3.6）
+            self.send({'t': 'usb_arm_result', 'ok': True,
+                       'detail': 'armed：扇区 %d 个，副本基线 sha256=%s…'
+                                 % (len(granted['sectors']), granted['base_sha256'][:16])})
+            log('usb_arm 通过：sectors=%s target=%s…' % (granted['sectors'],
+                                                         granted['target_sha256'][:16]))
+            return True
+        if kind == 'usb_disarm':
+            if not hello_done:
+                self.send({'t': 'error', 'code': 'no_hello', 'detail': '先发 hello'})
+                return False
+            try:
+                self.usb.disarm()
+            except ValueError as exc:
+                self.send({'t': 'usb_disarm_result', 'ok': False, 'detail': str(exc)})
+                log('usb_disarm 拒绝（不断链）: %s' % exc)
+                return True
+            self.send({'t': 'usb_disarm_result', 'ok': True,
+                       'detail': '已作废：副本回滚到 arm 前基线（半擦状态不保留）'})
+            log('usb_disarm 通过：副本回滚')
+            return True
+        if kind == 'usb_reboot':
+            if not hello_done:
+                self.send({'t': 'error', 'code': 'no_hello', 'detail': '先发 hello'})
+                return False
+            error = self.usb.reboot()
+            if error is not None:
+                self.send({'t': 'usb_reboot_result', 'ok': False, 'detail': error})
+                log('usb_reboot 拒绝（不断链）: %s' % error)
+                return True
+            self.send({'t': 'usb_reboot_result', 'ok': True,
+                       'detail': '重启换身份 rom→normal（armed 撤销，刷后内容固化）'})
+            log('usb_reboot 通过：断开连接（重枚举，照 usb_ctl len0 先例）')
+            return False                                # 成功即断连：设备重启重枚举（§3.3）
         if self.world is not None:
             return self.handle_world_message(kind, message)
         log('忽略未知消息类型: %r' % kind)
@@ -1187,12 +1247,21 @@ def main(argv=None) -> int:
                         help='（世界模式）官方 UFW 固件路径（缺省仓内 firmware/ 官方镜像）')
     parser.add_argument('--scenario', type=str, default='p11_heap_experimental',
                         help='（世界模式）共享栈场景（默认 p11_heap_experimental 前沿）')
+    parser.add_argument('--arm-plan', type=str, default=None, metavar='PLAN_JSON',
+                        help='M3 armed 刷机计划 JSON 文件 {"sectors":[4KiB 基址…],"target_sha256":…,'
+                             '"nonce":…}（启动即 armed——宿主冒烟构图用；验收走 usb_arm 消息面；'
+                             '仅静态模式）')
+    parser.add_argument('--persist', action='store_true',
+                        help='（占位，未实施）写后状态/journal 落盘——规格 §3.5-B 第一版不做：'
+                             '副本只活在进程内，server 退出=回滚原始 fixture')
     args = parser.parse_args(argv)
     try:
         host, port_str = args.listen.rsplit(':', 1)
         port = int(port_str)
     except ValueError:
         parser.error('--listen 形如 127.0.0.1:7788')
+    if args.world is not None and args.arm_plan:
+        parser.error('--arm-plan 仅静态模式（世界模式会话不共享 USB 设备对象）')
     if args.world is None:
         state = DEFAULT_FIXTURE
         if args.fixture:
@@ -1200,14 +1269,29 @@ def main(argv=None) -> int:
                 doc = json.load(fh)
             state = StaticFixtureState(doc.get('reads', {}))
             log('fixture 已从 %s 载入: %s' % (args.fixture, sorted(state.reads)))
+        plan = None
+        if args.arm_plan:
+            try:
+                with open(args.arm_plan, 'r', encoding='utf-8') as fh:
+                    plan = json.load(fh)
+            except (OSError, ValueError) as exc:
+                parser.error('--arm-plan 载入失败: %s' % exc)
         flash = open(args.flash_image, 'rb').read() if args.flash_image else None
         rom_bytes = open(args.rom, 'rb').read() if args.rom else None
-        usb = MscBotDevice(flash=flash, rom=rom_bytes, identity=args.identity)
+        try:
+            usb = MscBotDevice(flash=flash, rom=rom_bytes, identity=args.identity, plan=plan)
+        except ValueError as exc:
+            parser.error('--arm-plan 无效: %s' % exc)
+        if args.persist:
+            log('--persist 为占位（§3.5-B 未实施）：副本仍只活在进程内，server 退出=回滚原始 fixture')
         log('状态源=静态 fixture（synthetic-not-firmware）：读命中回预置值，写更新状态但写静默')
-        log('USB MSC 设备端：identity=%s flash=%s rom=%s（M2 只读：无 Flash 写路径，白名单外 opcode 拒绝+记录）'
+        log('USB MSC 设备端：identity=%s flash=%s rom=%s%s'
             % (usb.identity,
                ('%dB sha256=%s' % (len(flash), usb.flash_sha256[:16] + '…')) if flash is not None else '无',
-               ('%dB sha256=%s' % (len(rom_bytes), usb.rom_sha256[:16] + '…')) if rom_bytes is not None else '无'))
+               ('%dB sha256=%s' % (len(rom_bytes), usb.rom_sha256[:16] + '…')) if rom_bytes is not None else '无',
+               '（--arm-plan：启动即 armed，扇区 %d 个，target=%s…）'
+               % (len(plan['sectors']), plan['target_sha256'][:16]) if plan is not None
+               else '（未 armed：FB01/FB04=armed 门拒绝+记录；白名单外 opcode 拒绝+记录）'))
         serve(host, port, state, usb)
         return 0
     if not args.rom:
