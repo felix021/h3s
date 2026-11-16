@@ -31,7 +31,8 @@ from world_snapshot import (SnapshotError, WorldSnapshot, assert_equal, capture_
 from br28_icfg import IcfgState, IcfgValue
 from br28_machine import DualCoreMachine
 from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT,
-                        ICU_BASES, IRQController, P33AwkupRegisters, P33CanaryWatchRegisters,
+                        ICU_BASES, IRQController, JLAdcStartConfigRegisters,
+                        P2mMailboxAck, P33AwkupRegisters, P33CanaryWatchRegisters,
                         PartialWord)
 from br28_unknown import UnknownWord
 from br28_model import GpcntConValue, GpioOutValue
@@ -96,10 +97,15 @@ def build_machine():
     machine = DualCoreMachine(software_irq_entry=True, core_tick_entry=True,
                               core_tick_rti=True, timer0_irq_entry=True, timer0_irq_rti=True,
                               idle_wait_projection=True, software_irq_rti=True,
-                              event_clock_projection=True)
+                              event_clock_projection=True,
+                              cfg523_object_bytes=bytes(range(70)))
     machine.last_core, machine.stalls, machine.launches = 0, 5, 1
     machine.idle_wait_cores = {0}
     machine.deferred_core1_turns, machine.seen_cpu1_control_kicks = 7, 2
+    # Route M3FIX: the cfg523 parser-entry install already fired before the
+    # stop — the one-shot bit holds the after_step result shape (a restored
+    # world must keep the fixture installed, never re-install it).
+    machine.cfg523_installed_at = {'pc': '0x60010af', 'object_bytes': 70}
     machine.software_irq_deliveries = [{'kind': 'software_irq_entry', 'core': 0, 'irq': 127,
                                         'handler': '0x12ad2a', 'reti_from': '0x6066128'}]
     machine.core_tick_deliveries = [{'kind': 'core_tick_entry', 'core': 0, 'irq': 3}]
@@ -198,7 +204,8 @@ def fresh_world():
                 machine=DualCoreMachine(software_irq_entry=True, core_tick_entry=True,
                                         core_tick_rti=True, timer0_irq_entry=True,
                                         timer0_irq_rti=True, idle_wait_projection=True,
-                                        software_irq_rti=True, event_clock_projection=True),
+                                        software_irq_rti=True, event_clock_projection=True,
+                                        cfg523_object_bytes=bytes(range(70))),
                 ledger=SimpleNamespace(events=[], adapters=Counter(), rom_steps=Counter(),
                                        event_counts=Counter(), milestones=[], trace=[],
                                        completed=0, stop=None))
@@ -649,6 +656,11 @@ class M4ProjectionFamilies(unittest.TestCase):
         jl_adda_ada_family=True,
         p11_lpvad_config=True,
         jl_audio_adc_dma_writes=True,
+        # Post-SNAPX families (route ASS + B2G): the AM four-word ADC-start
+        # read-back container and the P2M mailbox request-response projection,
+        # both ON in the current conditional frontier flag set.
+        jl_adc_start_config=True,
+        p2m_mailbox_ack=True,
     )
 
     def build_world(self):
@@ -777,6 +789,23 @@ class M4ProjectionFamilies(unittest.TestCase):
         self.assertEqual(hw.p11_lpvad.read(0xf2b404), 0x10000000)
         hw.jl_audio_adc_dma.write(0xfe053c, 0x419264, 0)
         hw.jl_audio_adc_dma.write(0xfe0540, 0x100, 0)
+        # Route ASS: AM four-word ADC-start synthetic read-back — one written
+        # word (read-after-write) and one untouched word (synthetic initial 0).
+        hw.jl_adc_start.write(JLAdcStartConfigRegisters.WORDS[0], 0x2, 0)
+        self.assertEqual(hw.jl_adc_start.read(JLAdcStartConfigRegisters.WORDS[0]), 0x2)
+        hw.jl_adc_start.read(JLAdcStartConfigRegisters.WORDS[1])  # synthetic initial 0
+        # Route B2G: P2M mailbox request-response — one completed transaction,
+        # one non-0x400 kick (histogram), a clear-slot write and a second
+        # in-flight transaction left armed.
+        hw.p2m_mailbox.note_message_byte(0xFF)
+        hw.p2m_mailbox.kick(P2mMailboxAck.KICK_VALUE)
+        hw.p2m_mailbox.pnd_read()
+        hw.p2m_mailbox.echo_read()
+        hw.p2m_mailbox.clear_ack(P2mMailboxAck.CLR_VALUE)
+        hw.p2m_mailbox.kick(0x800)          # non-0x400 kick -> histogram, not armed
+        hw.p2m_mailbox.clear_slot(0x5c)
+        hw.p2m_mailbox.note_message_byte(0x3c)
+        hw.p2m_mailbox.kick(P2mMailboxAck.KICK_VALUE)  # in-flight current
         return hardware
 
     def captured_m4(self, world):
@@ -934,6 +963,72 @@ class M4ProjectionFamilies(unittest.TestCase):
                          original.jl_audio_dac_tm.reads_after_write)
         self.assertEqual(original.jl_audio_dac_tm.reads_after_write, 2)
         self.assertEqual(restored.jl_audio_dac_tm.synthesized_initial_reads, 2)
+
+    def test_ass_and_b2g_containers_resume_exact_semantics(self):
+        """Route ASS + B2G behavioral pin: the AM ADC-start read-back answers
+        from the captured stores (written word = last value, untouched word =
+        synthetic initial 0); the P2M mailbox keeps its one-shot armed bits,
+        transaction log and in-flight current record across the restore, so a
+        resumed world continues the exact same request-response episode."""
+        original, snapshot = self.world_and_snapshot()
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        for world in (original, restored):
+            self.assertEqual(world.jl_adc_start.read(JLAdcStartConfigRegisters.WORDS[0]), 0x2)
+            self.assertEqual(world.jl_adc_start.read(JLAdcStartConfigRegisters.WORDS[1]), 0)
+            # P2M: pnd still armed from the in-flight kick; completing it appends
+            # a second transaction that matches the first (same message byte).
+            self.assertTrue(world.p2m_mailbox.pnd_armed)
+            self.assertEqual(world.p2m_mailbox.pnd_read(), P2mMailboxAck.ACK_BIT)
+            self.assertEqual(world.p2m_mailbox.echo_read(), 0x3c)
+            world.p2m_mailbox.clear_ack(P2mMailboxAck.CLR_VALUE)
+        # One completed transaction before the snapshot, one after: both worlds
+        # end with two identical transactions and the same counters.
+        self.assertEqual(len(restored.p2m_mailbox.transactions), 2)
+        self.assertEqual(restored.p2m_mailbox.transactions,
+                         original.p2m_mailbox.transactions)
+        self.assertEqual(restored.p2m_mailbox.kicks, original.p2m_mailbox.kicks)
+        self.assertEqual(restored.p2m_mailbox.pnd_reads, 2)
+        self.assertEqual(restored.p2m_mailbox.other_kick_values,
+                         {'0x800': 1})
+        # The AM container counters resumed exactly, too.
+        self.assertEqual(restored.jl_adc_start.reads_after_write,
+                         original.jl_adc_start.reads_after_write)
+        self.assertEqual(restored.jl_adc_start.synthesized_initial_reads,
+                         original.jl_adc_start.synthesized_initial_reads)
+
+
+class Cfg523InstallBit(unittest.TestCase):
+    """Route M3FIX: the cfg523 parser-entry install bit is M5 STATE, not a
+    constructor fixture. It flips None -> {'pc','object_bytes'} at runtime
+    (after_step, one-shot idempotence gate); the canonical 29,215,313 resume
+    round refused while it sat in the static section — a capture-time dict vs
+    fresh-build None mismatch. As state it must round-trip exactly and apply
+    onto a fresh (uninstalled) machine without any static refusal."""
+
+    def test_installed_bit_round_trips_onto_a_fresh_machine(self):
+        installed = build_machine()          # cfg523_installed_at already poked
+        direct = capture_world(machine=installed, context={'scenario': 'cfg523_bit'})
+        loaded = WorldSnapshot.from_bytes(direct.encode())
+        fresh = DualCoreMachine(software_irq_entry=True, core_tick_entry=True,
+                                core_tick_rti=True, timer0_irq_entry=True,
+                                timer0_irq_rti=True, idle_wait_projection=True,
+                                software_irq_rti=True, event_clock_projection=True,
+                                cfg523_object_bytes=bytes(range(70)))
+        restore_world(loaded, machine=fresh,
+                      expected_context={'scenario': 'cfg523_bit'})
+        self.assertEqual(fresh.cfg523_installed_at,
+                         {'pc': '0x60010af', 'object_bytes': 70})
+        # Re-capturing the restored machine is byte-identical (check #0 shape).
+        again = capture_world(machine=fresh, context={'scenario': 'cfg523_bit'})
+        self.assertEqual(again.encode(), direct.encode())
+
+    def test_uninstalled_bit_round_trips_none(self):
+        machine = DualCoreMachine(cfg523_object_bytes=None)
+        direct = capture_world(machine=machine)
+        loaded = WorldSnapshot.from_bytes(direct.encode())
+        fresh = DualCoreMachine()
+        restore_world(loaded, machine=fresh)
+        self.assertIsNone(fresh.cfg523_installed_at)
 
 
 class ObservationLayerMachine(unittest.TestCase):

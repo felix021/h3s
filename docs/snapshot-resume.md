@@ -101,6 +101,13 @@ JL_ASS+4 读停点）与 N=21,700,455 预算停点（实际完成 21,696,721—�
 | JL_ADDA ADA 九字容器（ADA） | `jl_adda_ada` | 同上四字段 | ada_probe_initial |
 | P11_LPVAD VAD_ACON0 单字容器（LPV） | `p11_lpvad` | 同上四字段 | — |
 | JL_AUDIO ADC DMA 五字 write-only（JLA） | `jl_audio_adc_dma` | stores/word_writes | — |
+| ADC 启动配置块四字合成读回（ASS） | `jl_adc_start` | 同 DT 四字段 | probe_initial（MIC_CTL0 探针） |
+| P2M 邮箱 ack 请求-响应投影（B2G 提层） | `p2m_mailbox` | pnd_armed/echo_armed/kicks/other_kick_values/clr_writes/clear_slot_writes/pnd_reads/echo_reads/message_mirror/stored_slot/transactions/current（12 字段，无构造 fixture） | — |
+
+机器侧（M5，路 M3FIX）：`cfg523_installed_at`（B2G cfg523 解析器入口一次性
+安装位，运行期 None→{'pc','object_bytes'}）按**状态**捕获恢复——误落 static
+段时 29,215,313 canonical resume 轮显形拒载（捕获时 dict vs 重建时 None）；
+构造侧 fixture `cfg523_object_bytes` 仍在 static 段双向把关。
 
 另：`analyze_image_trace.TraceMachine` 的观察层属性（O6 签名链 spool `trace` 与
 `pending_writes`）是本 comparator run 的记录、非仿真世界状态，M5 按 observation-skip
