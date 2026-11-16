@@ -80,7 +80,7 @@ FEATURES = (
             '并行对半字存储第二半(exact_parallel_halfword_stores 子开关)'),
     Feature('p11_power_init', 'base', (), False, None,
             'power_init 的 P11 依赖链(lpwr 响应/窗口/公共段拷贝/配置 RMW)'),
-    # ---- conditional 栈(p11_heap_experimental_config 场景增量,58 个开关) ----
+    # ---- conditional 栈(p11_heap_experimental_config 场景增量,59 个开关) ----
     Feature('heap_info_bytes', 'conditional', ('p11_power_init',), True, 'P11_HEAP_INFO_DERIVED',
             'P11 堆信息 4 字节显式 fixture(静态推导候选,derived-not-measured)'),
     Feature('byte_pair', 'conditional', (), False, None,
@@ -317,6 +317,19 @@ FEATURES = (
             'RES 行 0x10001=4 已在 BM 批 1 S19 值表;synthetic-not-measured——真实 '
             'config 523 在 bank B 记录区,公开工件外;BH §4.2 设计;首版 0b875ed,'
             'B2R 重落地)'),
+    # ---- 路 RAND/sim-rand:JL_RAND->R64L(0xfd3b00)熵源种子 fixture。熵源类
+    # 停点(EFUSE 页「显式 synthetic fixtures,绝不臆造 allF/all0」先例):
+    # 熵机制无文档、值不可推导(synthetic-not-measured),主臂 0x12345678
+    # (Lehmer MINSTD 首步 state=0x2a18e99e,6 字节 MAC 输出非退化);退化种子
+    # 0/0x7FFFFFFF/0xFFFFFFFE=LCG 不动点(全零 MAC)主臂避开;R64H(0xfd3b04)
+    # 零触达不进容器;依赖边挂 ancif_official_resources=场景推进顺序(ANCIF
+    # 放行后链才到达停点)非硬件依赖;固定种子对 BT 栈随机槽分配消费者
+    # (0x6055f68 R64L%79 重试环)可能停滞,前沿外消费者到达时须重审。 ----
+    Feature('jl_rand_seed', 'conditional', ('ancif_official_resources',), True,
+            'JL_RAND_SEED_BYTES',
+            'JL_RAND->R64L(0xfd3b00)熵源种子 fixture(readonly 单字,每次读同一冻结常量'
+            '=constant_on_every_read;synthetic-not-measured,非设备实测;熵机制无文档、'
+            '值不可推导;R64H 0xfd3b04 零触达不进容器)'),
     Feature('jl_adc_start_probe_value', 'probe_only', ('jl_adc_start_config',), True, None,
             'MIC_CTL0(0xfe0904)初值敏感性探针(初值一次性 0xffffffff 替换,其余三字'
             '不扰动保归因干净;零臂写回 0x2/ones 臂写回 0xfffffffe 异或保留位;'
@@ -370,10 +383,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 28890702,
-        'stop_pc': '0x6011976',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfd3b00', 'size': 4, 'reference_sdk_register': None},
+        'completed_steps': 29215313,
+        'stop_pc': '0x6072b92',
+        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
+                 'address': '0xfe1500', 'size': 4, 'value_bytes': '00000000'},
         'freshness_fields': ('kind', 'address'),
     },
 }
