@@ -287,11 +287,12 @@ FEATURES = (
             '零会漏掉 RMW 读写不同容器状态的实现错误;探针过只支持所测软件路径'
             '稳定,不证明硬件初值无关;CV/ADA 双探针先例;sensitivity-probe-not-'
             'plausible-state)'),
-    # (p2m_mailbox_ack / cfg523_named_fixture 已实现并单测,但 19,139,239 停点
-    # (JL_AUDIO->DAC_TM0 运行态读)证实两者的全部运行态消费者仍在音频数字域整块
-    # 之后——按 BQ 先例(零消费者不落地)从条件栈撤回,实现保留在本分支历史
-    # 0b875ed,待音频域过界后按到达顺序落地。)
-    # ---- probe_only(只在 probe_irq_entry 场景变体出现,9 个开关) ----
+    # (cfg523_named_fixture 已实现并单测,但 19,139,239 停点(JL_AUDIO->DAC_TM0
+    # 运行态读)证实其全部运行态消费者仍在音频数字域整块之后——按 BQ 先例
+    # (零消费者不落地)从条件栈撤回,实现保留在本分支历史 0b875ed,待音频域
+    # 过界后按到达顺序落地。p2m_mailbox_ack 已由路 B2R 重落地到 probe_only 层,
+    # 见下。)
+    # ---- probe_only(只在 probe_irq_entry 场景变体出现,11 个开关) ----
     Feature('timer0_irq4_probe_steps', 'probe_only', ('timer0_irq4_delivery',), True, None,
             'Timer0 首次到期拉近探路 fixture(计数 seed,场景传值)'),
     Feature('timer0_irq4_masked', 'probe_only', ('timer0_irq4_probe_steps',), False, None,
@@ -310,6 +311,16 @@ FEATURES = (
     Feature('key_chain_matrix', 'probe_only', ('p11_power_init', 'fd31_adc_pnd_completion',
                                                'fd31_adc_res_named_values'), True, None,
             '停点后直调三键矩阵多手势场景(路 AJ:3 键 4 档分档器+单击/三击/四击/长按档)'),
+    # ---- 路 B2R/sim-b2r:S19 批 2 两案重落地(实现摘自 0b875ed,适配当前形态)。
+    # 登记在 probe_only 层=不进两个共享栈:S15 邮箱/S17 旗标消费时序都在 flash
+    # 顶窗口停点(0x606c5ba,FLS 路在途)之后,进条件栈会改共享场景报告形状
+    # (违反「开关默认关+关态基线逐字节不变」判据);FLS 窗口过界后的批 2 放行
+    # 跑再按到达顺序提层到 conditional(B3 0b875ed 原案顺序维持)。 ----
+    Feature('p2m_mailbox_ack', 'probe_only', ('p11_power_init',), False, None,
+            'P11 邮箱 ack 完成投影(BM §3 规格:S15/S17 喂狗 0x12cc7e——M2P_INT_SET kick '
+            '0x400→P2M_INT_PND bit12 置位+P2M+3 回声=M2P+7 值;P2M_INT_CLR 0x1000 清位;lpwr '
+            '请求-响应同款,即时无延迟,synthetic-not-measured;三勘误后的正确地址 '
+            '0xF27F43/0xF27F87/0xF2A618/0xF2A60C/0xF2A608;首版 0b875ed,B2R 重落地)'),
 )
 
 # 两个共享栈场景(analyze_image_trace.SCENARIOS 同名;probe 场景名在

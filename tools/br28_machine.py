@@ -756,6 +756,15 @@ class DualCoreMachine:
                 value=int.from_bytes(data[target-address:target-address+size],'little')
                 self.record_event({'kind':'guest_notification_write','core':self.hardware.current_core,
                     'pc':hex(self.cores[self.hardware.current_core].pc),'address':hex(target),'value':hex(value)})
+        # 路 B3/S19 批 2 续(0b875ed,B2R 重落地;BM §3):P2M 邮箱回声源——
+        # 对 M2P+7(0xF27F87,既有 harness 可写窗内的普通 RAM 字节)的写被动
+        # 镜像进邮箱模型(值照常落 RAM,不拦截真实存储;kick 后回声读=P11
+        # 把消息字节写回 P2M 槽的显式假设)。
+        mailbox=getattr(self.hardware,'p2m_mailbox',None)
+        if mailbox is not None:
+            target=mailbox.MESSAGE_BYTE
+            if address<=target and target+1<=address+len(data):
+                mailbox.note_message_byte(data[target-address])
 
     def return_bootstrap(self,cpu):
         if not self.bootstrap_rti:raise Blocked('cpu1_bootstrap_rti_contract_unknown')

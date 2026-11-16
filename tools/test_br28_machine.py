@@ -613,4 +613,33 @@ class MachineTests(unittest.TestCase):
         self.assertEqual(h.core_power[CORE_PMU_CON1[1]].known,0x100)
 
 
+class P2mMailboxMirrorTests(unittest.TestCase):
+    """路 B2R/S19 批 2 重落地(0b875ed 原案):M2P+7 消息字节的机器侧被动镜像。
+
+    喂狗 0x12cc7e 写 b[0xF27F87]=arg 是普通 harness RAM 写(不拦截),机器
+    note_memory_write 顺带把该字节镜像进 P2mMailboxAck;kick 后回声读=镜像值。
+    """
+
+    def test_mirror_captures_m2p_message_byte_only(self):
+        from br28_model import P2mMailboxAck
+        m=DualCoreMachine()
+        m.hardware=SimpleNamespace(p2m_mailbox=P2mMailboxAck())
+        m.note_memory_write(0xF27F84,b'\x00\x00\x00\x08')   # 覆盖 M2P+7 的 4 字节写
+        self.assertEqual(m.hardware.p2m_mailbox.message_mirror,8)
+        m.note_memory_write(0xF27F00,b'\xff'*8)             # 窗外写不扰动镜像
+        self.assertEqual(m.hardware.p2m_mailbox.message_mirror,8)
+        m.note_memory_write(0xF27F87,b'\x0a')               # 单字节直写同样镜像
+        self.assertEqual(m.hardware.p2m_mailbox.message_mirror,0x0a)
+        # 完整事务:kick 0x400 武装后回声读=最近镜像值。
+        box=m.hardware.p2m_mailbox
+        box.kick(0x400)
+        self.assertEqual(box.echo_read(),0x0a)
+
+    def test_no_mailbox_attribute_is_inert(self):
+        m=DualCoreMachine()
+        m.hardware=SimpleNamespace(current_core=0)          # 未挂邮箱模型
+        m.note_memory_write(0xF27F84,b'\x00\x00\x00\x08')   # 不抛、无副作用
+        self.assertEqual(m.events,[])
+
+
 if __name__=='__main__':unittest.main()

@@ -1142,6 +1142,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_pvdd_trim_writes=False,
              timer2_delay_projection=False,
              p33_canary=False,p33_canary_first_read_words=None,
+             p2m_mailbox_ack=False,
              key_chain_scan=None,
              key_chain_matrix=None,
              flash_image_bytes=None,readonly=(),
@@ -2354,6 +2355,19 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['p33_canary_projection']=True
         if p33_canary_first_read_words is not None:
             options['p33_canary_first_read_words']=dict(p33_canary_first_read_words)
+    # p2m_mailbox_ack(BM §3 规格;首版路 B3/S19 批 2 续 0b875ed,本版 B2R 重
+    # 落地,opt-in 默认关):S15/S17 喂狗 0x12cc7e 的 P11 邮箱事务(kick
+    # [0xF2A618]=0x400→P2M_INT_PND bit12 置位+P2M+3 回声=M2P+7 值;CLR 0x1000
+    # 清位)。依赖 p11_power_init(M2P 消息窗是其 harness 区)。消费时序:
+    # S15 邮箱首停 0x12CC94 在 flash 顶窗口停点(0x606c5ba,FLS 路在途)之后
+    # ——开关留在 probe 变体层(registry probe_only),FLS 窗口过界后的批 2
+    # 放行跑再按到达顺序提层;默认关世界本场景零行为差异(19,139,239 停点
+    # 实测 with/without 逐字节同停,B3 撤回记录)。
+    if p2m_mailbox_ack:
+        require(p11_power_init,
+                'the P2M mailbox ack projection only layers on the p11_power_init scenario '
+                '(the M2P message window is its harness region)')
+        options['p2m_mailbox_ack']=True
     if subword_stores:extra['exact_subword_stores']=True
     # 资源表扫描从 flash 基址 0x06000000 读 app 映射(ENTRY 之下、app 结束
     # 之后)之外的已知真实字节:按需挂完整 sfc 明文只读区,同样不影响默认映射。

@@ -3210,5 +3210,64 @@ class ModelTests(unittest.TestCase):
                         and allf.handles(0xfe0558,4) and allf.handles(0xfe0900,4))
         self.assertFalse(allf.handles(0xfe0550,4) or allf.handles(0xfe090c,4))
 
+    def test_p2m_mailbox_ack_projection(self):
+        # 路 B2R/S19 批 2 重落地(首版 0b875ed,BM §3):喂狗 0x12cc7e 事务
+        # 序列的状态机——清槽(解除回声)→消息字节镜像→kick 0x400(武装)→
+        # PND 读=0x1000→回声读=消息值→CLR 0x1000(清位+闭合事务);未武装
+        # PND 读=Blocked;非 0x400 kick 只记录;必须叠在 p11 窗口投影上。
+        # 消费时序:S15 邮箱首停 0x12CC94 在 flash 顶窗口(FLS 在途)之后,
+        # 开关默认关,关态世界零行为差异(本测试只钉容器语义)。
+        from br28_model import P2mMailboxAck
+        with self.assertRaisesRegex(ValueError,'requires the P11 window projection'):
+            BR28Model(p2m_mailbox_ack=True)
+        h=BR28Model(p11_window_projection=True,p2m_mailbox_ack=True)
+        m=h.p2m_mailbox
+        # 字路由:kick/CLR/PND 三字 + 回声槽字节读写;M2P+7 消息字节经机器侧
+        # note_memory_write 镜像(模型只收 note)。
+        for address in (0xF2A618,0xF2A60C,0xF2A608):
+            self.assertTrue(h.handles(address,4))
+        self.assertTrue(h.handles_byte_write(0xF27F43))
+        self.assertFalse(h.handles_byte_write(0xF27F87))  # 消息字节不拦截,普通 RAM
+        # 默认关:四地址全部不收口,报告无键。
+        plain=BR28Model(p11_window_projection=True)
+        for address in (0xF2A618,0xF2A60C,0xF2A608):
+            self.assertFalse(plain.handles(address,4))
+        self.assertFalse(plain.handles_byte_write(0xF27F43))
+        self.assertNotIn('p2m_mailbox',plain.report())
+        # 完整事务(喂狗 arg=8)。
+        h.write_byte(0xF27F43,0xFF)                 # 清回声槽
+        m.note_message_byte(8)                      # 机器侧镜像 M2P+7 写
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_pnd_read_without_kick'):
+            h.read(0xF2A60C)                        # 未武装 PND 读=世界错即停
+        h.write(0xF2A618,0x400)                     # kick
+        self.assertEqual(h.read(0xF2A60C),0x1000)   # PND bit12 置位(即时无延迟)
+        self.assertEqual(h.read_bytes(0xF27F43,1),b'\x08')   # 回声=消息字节
+        h.write(0xF2A608,0x1000)                    # CLR:清位+闭合事务
+        self.assertEqual(m.kicks,1)
+        self.assertEqual(m.transactions,
+                         [{'arg':8,'poll_reads':1,'echo_byte':8,'clr_writes':1}])
+        # CLR 后 PND 读=Blocked(下一个事务前的世界错即停);回声保持到下次
+        # 清槽(固件每事务先清槽,无越窗读)。
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_pnd_read_without_kick'):
+            h.read(0xF2A60C)
+        # 非 0x400 kick 值(0x800/0x80 域)只记录不武装。
+        h.write(0xF2A618,0x800)
+        self.assertEqual(m.other_kick_values,{'0x800':1})
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_pnd_read_without_kick'):
+            h.read(0xF2A60C)
+        # CLR 形状守卫:非 0x1000 值拒绝。
+        h.write(0xF2A618,0x400)
+        with self.assertRaisesRegex(Blocked,'p2m_mailbox_clr_form_not_modeled'):
+            h.write(0xF2A608,0x2000)
+        r=h.report()['p2m_mailbox']
+        self.assertEqual(r['kicks'],2)  # 0x400×2(0x800 记 other 不计数)
+        self.assertIn('latency not',r['assumption'])
+        self.assertIn('0x12cc7e',r['disassembly_anchor'])
+        self.assertFalse(r['latency_modeled'])
+        # 清槽后的回声读=槽内存储值(回声解除,非镜像)。
+        self.assertEqual(h.read_bytes(0xF27F43,1),b'\x08')  # CLR 不解除回声
+        h.write_byte(0xF27F43,0xFF)
+        self.assertEqual(h.read_bytes(0xF27F43,1),b'\xff')
+
 
 if __name__=='__main__':unittest.main()
