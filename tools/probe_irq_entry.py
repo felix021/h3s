@@ -1370,6 +1370,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              cfg523_named_fixture=False,
              key_chain_scan=None,
              key_chain_matrix=None,
+             post_stop=None,
              flash_image_bytes=None,readonly=(),
              snapshot=None):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
@@ -2781,7 +2782,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 唯一合成输入=RES 档位值。依赖 BY 的 ADC 投影栈(CON 读回+PND 完成
     # +RES fixture);RES fixture 由场景传入含键通道行的独立 dict
     # (BY 场景自己的 dict 不变,legacy 报告逐字节不变)。
-    post_stop=None
+    # post_stop 透传(SIMB1F §5.2,probe 禁区解禁后的最小改):显式回调直通
+    # dual_case,与键链场景互斥(一个场景一个 post_stop)。
+    if post_stop is not None:
+        require(key_chain_scan is None and key_chain_matrix is None,
+                'explicit post_stop and the key-chain scenarios are exclusive (one post_stop)')
     if key_chain_scan is not None:
         require(p11_power_init and fd31_adc_pnd_completion and fd31_adc_res_named_values is not None,
                 'the key-chain direct-scan scenario requires the full BY ADC projection stack')

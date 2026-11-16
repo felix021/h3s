@@ -507,3 +507,98 @@ verdict=**完整命令通过**（ANC 全环）。C1 铁证缺失（resume 跑完
   于 §5.3 第一刀 3 与 §6 D7，不臆造值。
 - 三级验收全部机检（§4 消息序列+断言+退出码）；写静默不合成回执；BLOCKED 不计通过。
 - 提交不加 Co-Authored-By；文档内无私有路径/主机名（示例一律 127.0.0.1）。
+
+## 9. SIMB1F 实施记录与勘误（JLEQ 合并后第一刀实跑，2026-11-17）
+
+基线 main 5e65791（JLEQ 已合并），worktree sim-simb1f。§5.3 五步全部实跑；以下为实测与
+本规格的冲突/超出点，逐条勘误（原章节文字不改，以本节为准）。
+
+### 9.1 重钉世界（§5.3-1）
+
+- 新前沿复现：29,601,125 @ 0x606955c 读 0xfd1104（快照 3.2MB，capture ~13.5min）。
+- **勘误（快照适配器延伸）**：规格假设「旧快照必拒载→重捕获即可」；实际 JLEQ 新增的三处
+  硬件/机器状态不在 world_snapshot 适配器清单里，守卫显形拒载（missing-state guard 设计
+  如期工作）：M4 加 `jl_eq_init` 行 + `gpcnt` 行补四个计数器（config_reads/whole_writes/
+  enable_writes/completion_reads）、M5 加 `timer2_poll_wakes`。三处都是「恢复缺失会改变
+  后续行为」的 STATE，不是 static。
+- **勘误（世界就绪自检）**：park 前沿停点在 **Timer0 handler 链内**（事件循环=handler，
+  稳态停点天然如此；停点 sp=0x1237d8 在 bootstrap_stack 区）。SIMB1C 纪律②的
+  「active_context 必须 None」一刀切拒绝对此世界不可用。处置：handler 上下文不再拒绝，
+  改为**上下文寄存器完整性校验**（哨兵处比对 icfg/icfg_known/reti/irq_psr/active_context，
+  callee 触碰任一 → world_dead 如实暴露）+ banner `in_irq_context` 如实标注。S 先例
+  （probe_irq_entry.py:846-876）本无此门；其上下文敏感性关注点是 callee 依赖中断帧
+  （IRQ39 EMA 段不直调），不是调用方上下文污染。
+
+### 9.2 irq_case 透传参（§5.2 第一行）
+
+已落地：签名加 `post_stop=None` + 与键链场景互斥守卫（~6 行含注释）；
+sim_world_boot.py 退役 monkeypatch 缝合线改直连。probe_irq_entry.py 其余零触碰。
+
+### 9.3 P2 动态试跑（§5.3-3，三处 [待实测] 实测值）
+
+- **0x17 四门停点读值**：gate2=[0x1265C0+2444]=0（id≠5）；gate3=b[0x1265C0+5]=0
+  （直调 0x60065bc 返 0，3 步）；gate1=连接查询 0x6003578 直调返 0（91 步，~10ms）；
+  gate4 静态零调用（无动态量）。注意：四门读值不掩 W3——本世界 ANC 直存生效
+  （W3 PASS，wire=01 01 02），门值与 setter 行为的精确对应关系留静态面复核。
+- **0x22 setter 首跑（JL_EQ 域写集=verdict 档位依据）**：apply 0x6025118 **真实命中**
+  （step 66，N=2）→ 深链 0x60642ec 写 0x20（近空指针）撞 unmapped_or_readonly_write。
+  非 JL_EQ 域（0xfe1500 族零触达）——是 apply 链的事件机制面（0x6064xxx post 族）在
+  park 世界无 EQ 管线节点状态下的真实墙。**M1-b EQ verdict=停半程（D2 如实分档，
+  不降级冒充）**；旧世界（EQ 域写入处停点）同调用链 59,634 步全通——两世界档位差异
+  的根因=管线节点初始化状态不同，归 EQ 深链世界状态依赖项，留待（消费面/节点来源
+  钉死后）复验。
+- **0x600f85e 读路径首跑+直调耗时**：分发器直调在停点世界撞**上游 store 模型合并读旧字**
+  的未初始化栈假停——0x600f95a `ext.l.u.p∥st.w.sp`（Writes.put 对整字存也读旧字，
+  probe_boot:1633 注释钉死这是模型簿记读非 guest 装载）；分发器 216B 帧落在从未写过的
+  handler 栈口袋 [0x123700,0x1237d8)。世界已有的 exact_parallel_stores gate 只接受
+  pure-ALU 前缀清单（li/mov/add/sub/and/or/xor/div + 扩展 ext.b0.u），`ext.l.u` 不在
+  清单（probe_boot 属五文件禁区，本路不扩）。**§2.2 降级备选落地**：getter 直调
+  （表 A server 侧 walk + cmdid|n 头 server 组装——R15 残余，cmdid 路由无固件执行
+  证据，banner read_mode 如实标注）。复役判形（严格）：direct_call_blocked + 上下文
+  面未动 + 墙在死帧窗 [min_sp_seen, entry_sp) 内；寄存器由 finally 恢复，留下的存储
+  副作用=死帧区栈字（真机上中止的调用同样留下）。直调实测耗时：getter 12 步、读环
+  往返均值 40.7ms（R7 面宽裕，5s 看门狗无虞）。
+
+### 9.4 M1 三级验收（§5.3-4，park 前沿世界）
+
+- **M1-a 读环 5/5 PASS**（A1 字节级往返/A2 镜像互证/A3 EQ 双面/A4 确定性+SN 回显/
+  A5 diff 归因⊆{direct_call_stack,scratch} 且镜像面零变化）。勘误：A5 的 regions 期望
+  值在本世界无 heap 项（getter 路径不走 BT 池）。
+- **M1-b ANC 写半程全 PASS**（setter 0x6025ca4/343 步/post 0x6064978 触达/直存
+  0x12666B..D=01 01 02/读回 1703010102/0x2f 官方槽空静默）；W4 落队=INCOMPLETE
+  （post 触达但 poster 调度门静默丢，与旧世界同款，固件 fire-and-forget 同语义）。
+  **M1-b EQ=停半程**（见 §9.3 第二条：B1 BLOCKED，墙形状入验收记录）。
+- **M1-c 解冻全环=C0 steps=0 即撞墙**：前沿停点本身就是未放行的 0xfd1104 读
+  （GPCNT NUM 测量值 fixture 三选一归下一路）；CPU0 停在故障指令上，restore+budget=1
+  语义下首个 select 必重撞——park 稳态不改变此结构位置（与旧世界撞 0xfe1500 写墙
+  同构，墙换了地址）。墙前无 0x300000 消费命中（C1 INCOMPLETE；且 W4 的 post 本就
+  未落队——双重前置缺）。**C7 负例全过**：resume 死亡=可见断线、外层快照重建后
+  横幅回基线停点 0x606955c、读命令恢复服务。M1-c 全环通过的前置=下一路放行 GPCNT
+  NUM fixture（或停点不再压在故障指令上的前沿）+ poster 调度门世界状态。
+- 验收器四态化（codex P1 吸收）：PASS/FAIL/BLOCKED/PARTIAL——必需断言被世界状态挡住
+  记 INCOMPLETE（note_required），总 verdict 降 PARTIAL（退出码 5），不许靠 NOTE 混
+  全绿；输出带 executed/incomplete/notes 计数。
+
+### 9.5 resume 循环校准（§5.2 第二行）
+
+两处与 explore 主循环形状对齐（旧世界未显形、park 世界必踩）：
+- **idle 停泊分支**：park 世界两核靠 idle→enter_idle_wait 停泊，SIMB1C 复刻段漏了
+  主循环的 idle 检查（idle 不交给模型 step）；
+- **停泊分支嵌套 advance 的 IrqDeliveryRequest 必须走交付分发**（codex P1：此前被转成
+  upstream_simulator_failure——resume 与主循环不等价，消费铁证不可信）。
+另：Blocked+st.* 的未初始化读按主循环同款重分类为 upstream_store_bookkeeping_read
+（报告口径对齐，控制流不变）；延期交付补 note_delivery_deferral 簿记。
+
+### 9.6 本路新增/修改文件清单
+
+- tools/probe_irq_entry.py：irq_case post_stop 透传（§5.2 最小改，唯一 probe 五文件改动）。
+- tools/sim_world_boot.py：退役 monkeypatch，irq_case 直连。
+- tools/sim_world_driver.py：上下文完整性校验/读路径 getter 备选/resume 两处校准/
+  错误诊断面（stop_pc+watch_hits 进 detail）/min_sp 步内记账。
+- tools/sim_m1_p2_dynamic.py（新）：P2 动态试跑执行器。
+- tools/test_sim_m1_verdicts.py：四态验收器+M1-c 独立试跑+连接死亡处理。
+- tools/world_snapshot.py + test_world_snapshot.py：M4/M5 三处新状态面。
+- tools/test_sim_world_boot.py / test_sim_world_driver.py / test_sim_m1_helpers.py /
+  test_image_trace_diff.py：配套单测（透传参守卫/回退判形/四态机/transports 清单）。
+- 验收记录：analysis/local-checks/sim-m1-p2-dynamic.json、sim-m1-verdicts.json
+  （本地工件，不入 git；关键值已摘入本节与 HANDOFF 条目）。

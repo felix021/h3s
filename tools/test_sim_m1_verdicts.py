@@ -6,13 +6,15 @@
      A4 确定性+SN 回显 / A5 world_diff 可归因且镜像面零变化；
   M1-b（§4.2）写半程：B0-B6 EQ 0x22 setter 直调=全效果（apply watch+镜像+段数+读回+畸形负例），
      W1-W5 ANC 0x17 直存+post 落队+0x2f 官方槽空负例；
-  M1-c（§4.3，--level m1c 才跑）解冻续跑全环：C0-C7。本路（SIMB1C）只落地驱动器
-     支持（resume_steps/watch 0x6064c0e），全环验收留待 JLEQ 合并后重钉世界——
-     默认 level=ab 时 C 级记 skipped_pending_jleq_repin，不硬凑通过。
+  M1-c（§4.3，--level m1c 才跑）解冻续跑全环：C0-C7。SIMB1F 起（JLEQ 合并、
+     park 前沿世界重钉）真跑：resume 撞墙时错误 detail 携带墙前 watch 流水，
+     C1 断言先对墙前流水判（消费铁证可能在墙之前已发生），再如实 BLOCKED——
+     默认 level=ab 时 C 级记 skipped（不硬凑通过）。
 
 验收记录（消息序列/断言/watch/world_diff/横幅）落 JSON（--record，默认
 analysis/local-checks/sim-m1-verdicts.json）。
-退出码：0=全过；3=FAIL；4=BLOCKED（形状与世界假设不符，回报不猜）。
+退出码：0=PASS 全过；3=FAIL；4=BLOCKED（形状与世界假设不符，回报不猜）；
+5=PARTIAL（必需断言被世界状态挡住未完成——codex P1：不许靠 NOTE 混全绿）。
 """
 from __future__ import annotations
 
@@ -68,11 +70,21 @@ def eq_curve(n_segments: int, *, master_gain_db: float = -4.0) -> bytes:
 
 
 class Verdict:
-    """断言收集器：每条 check 记 {id, ok, detail}，FAIL 不中断（汇总退出码）。"""
+    """断言收集器（codex P1 四态化：PASS/FAIL/BLOCKED/PARTIAL）。
+
+    每条 check 记 {id, ok, detail}；FAIL 不中断（汇总退出码）。note 分两档：
+    - note_required：**必需断言**被世界状态/未钉项挡住（W4 落队、B4 读回这类
+      规格表里的必需项）——记 incomplete，总 verdict 降级 PARTIAL（退出码 5），
+      不许靠 NOTE 混进全绿。
+    - note：可选诊断面（C4 通知、W3b 对照这类规格明示「不产生不判 FAIL」项）
+      ——纯记录。
+    """
 
     def __init__(self, record):
         self.record = record
         self.failures = 0
+        self.incomplete = 0
+        self.notes = 0
         self.blocked = None
 
     def check(self, check_id: str, ok: bool, detail=None) -> bool:
@@ -84,15 +96,27 @@ class Verdict:
             self.failures += 1
         return ok
 
+    def note_required(self, check_id: str, detail=None):
+        """必需断言未完成：不计 PASS、不冒充、总 verdict 降 PARTIAL。"""
+        row = {'id': check_id, 'ok': None, 'state': 'incomplete', 'detail': detail}
+        self.record.setdefault('checks', []).append(row)
+        self.record.setdefault('incomplete', []).append(row)
+        self.incomplete += 1
+        print('[INCOMPLETE] %s %s' % (check_id, json.dumps(detail, default=str)))
+
     def note(self, check_id: str, detail=None):
-        """实测分档记录：断言面被世界状态/未钉项挡住——不判 FAIL、不冒充 PASS（如实标注）。"""
-        row = {'id': check_id, 'ok': None, 'detail': detail}
+        """可选诊断面（规格明示可缺席的项）：纯记录，不影响 verdict。"""
+        row = {'id': check_id, 'ok': None, 'state': 'optional', 'detail': detail}
         self.record.setdefault('checks', []).append(row)
         self.record.setdefault('notes', []).append(row)
+        self.notes += 1
         print('[NOTE] %s %s' % (check_id, json.dumps(detail, default=str)))
 
     def fail_blocked(self, reason: str, detail=None):
-        self.blocked = {'reason': reason, 'detail': detail}
+        if self.blocked is None:
+            self.blocked = {'reason': reason, 'detail': detail}
+        else:                                   # 后续阻塞原因不覆盖首个（全记录）
+            self.blocked.setdefault('subsequent', []).append({'reason': reason, 'detail': detail})
         print('[BLOCKED] %s %s' % (reason, json.dumps(detail or {}, default=str)))
 
 
@@ -111,7 +135,10 @@ class WorldClient:
         if timeout is not None:
             self.sock.settimeout(timeout)
         while b'\n' not in self.pending:
-            data = self.sock.recv(4096)
+            try:
+                data = self.sock.recv(4096)
+            except (ConnectionResetError, BrokenPipeError):
+                return None                  # world_dead 断线（RST）=干净的关闭信号
             if not data:
                 return None
             self.pending += data
@@ -250,14 +277,27 @@ def run_m1a(client: WorldClient, verdict: Verdict):
                    'dead': banner.get('dead')})
     record['a5_diff'] = diff
 
+    # 读路径模式注记（SIMB1F，放 A5 后=首读已发生）：park 前沿世界的分发器路径撞
+    # 栈口袋簿记读假停时，驱动器按 §2.2 降级备选切 getter 直调（cmdid 路由=server
+    # 表 walk，R15 残余）——横幅 read_mode 如实进记录，不冒充分发器路径已验证。
+    client.send({'t': 'status'})
+    mode_banner = client.drain_until('hello_ok')['world']
+    record['read_mode'] = mode_banner.get('read_mode')
+    if mode_banner.get('read_mode') != 'dispatcher':
+        verdict.note('A_read_mode', {'read_mode': mode_banner.get('read_mode'),
+                                      'fallback_reason': mode_banner.get('read_fallback_reason'),
+                                      'meaning': '读回执=表 A getter 直调+server 组装 cmdid|n 头'
+                                                 '（规格 §2.2 降级备选；0x600b66e 拦截面未走）'})
+
 
 
 def write_and_check_silent(client: WorldClient, verdict: Verdict, check_id: str,
-                           sn: int, cmdid: int, data: bytes) -> bool:
+                           sn: int, cmdid: int, data: bytes, silence: float = 0.5) -> bool:
     """写命令 → chunk_ack + 写静默断言。静默窗口收到 error 帧（world_dead 族）
-    = D2/D3 风险面落地——如实判 FAIL+BLOCKED，不降级冒充（设计 §5.1-b 纪律）。"""
+    = D2/D3 风险面落地——如实判 FAIL+BLOCKED，不降级冒充（设计 §5.1-b 纪律）。
+    silence=窗口秒数（EQ 写的 apply 深链可达秒级，B1 用长窗收 error 帧）。"""
     client.ble_write(write_frame(sn, cmdid, data))
-    message = client.expect_silence(0.5)
+    message = client.expect_silence(silence)
     if message is None:
         verdict.check(check_id, True)
         return True
@@ -311,10 +351,11 @@ def run_m1b(client: WorldClient, verdict: Verdict):
     if face is None:
         # 实测（SIMB1C 首跑）：post wrapper 入口 watch 命中（投递触达），但 poster 体内
         # 调度门（b[0x1265C0+52] 或查名）在此世界状态下静默丢事件——固件同款 fire-and-
-        # forget（0x17 setter 不检查 post 返回值），不 Blocked。落队断言如实停在此。
-        verdict.note('W4_post_enqueued', {'queue_face': None,
-                                          'measured': 'post wrapper 触达但未落队（世界状态门静默丢，'
-                                                      '固件同款）；落队断言留 JLEQ 重钉世界后复验'})
+        # forget（0x17 setter 不检查 post 返回值），不 Blocked。落队断言=必需项，
+        # 未完成记 incomplete（codex P1：不许靠 NOTE 混全绿）。
+        verdict.note_required('W4_post_enqueued', {'queue_face': None,
+                                                   'measured': 'post wrapper 触达但未落队（世界状态门静默丢，'
+                                                               '固件同款）'})
     else:
         words = [int(w, 16) for w in face['buffer_words']]
         expect = [0x30000004, 0x6025D6A, 1, 0]
@@ -344,12 +385,23 @@ def run_m1b(client: WorldClient, verdict: Verdict):
     verdict.check('B0_prepare', n_old != n_new, {'n_old': n_old, 'n_new': n_new,
                                                  'curve_len': len(curve), 'curve_head': curve[:10].hex()})
 
-    # B1：EQ 写（写静默——窗口内无 ble_notify）
-    if not write_and_check_silent(client, verdict, 'B1_write_silent', 0x55, 0x22, curve):
+    # B1：EQ 写（写静默——窗口内无 ble_notify；长窗：apply 深链秒级，死亡时
+    # error 帧要能在窗内被收到，墙形状进 BLOCKED 记录）
+    if not write_and_check_silent(client, verdict, 'B1_write_silent', 0x55, 0x22, curve,
+                                  silence=5.0):
         return
 
-    # B2：last_write 断言（setter/n/watch/steps）
-    result = client.last_write()
+    # B2：last_write 断言（setter/n/watch/steps）——EQ 写直调若把世界打死
+    # （D2 风险面落地：apply 深链撞未映射），连接被 RST：如实 BLOCKED 记录
+    # 墙形状（服务端日志有 stop_pc/watch 详情），不冒充、不崩执行器。
+    try:
+        result = client.last_write()
+    except (OSError, AssertionError) as exc:
+        verdict.fail_blocked('B2_eq_write_world_dead', {'error': str(exc)[:200],
+                                                        'note': 'EQ 0x22 setter 直调的世界死亡'
+                                                                '（服务端日志 direct_call_blocked 详情）'})
+        client.close()
+        return
     watch_pcs = [hit['pc'] for hit in (result or {}).get('watch_hits', [])]
     verdict.check('B2_setter_direct_call',
                   (result or {}).get('setter') == EQ_SETTER and result.get('n') == 0
@@ -397,25 +449,47 @@ def run_m1b(client: WorldClient, verdict: Verdict):
         verdict.check('B4_readback', payload == bytes([0x22, 3 + 7 * n_new]) + curve,
                       {'payload_len': len(payload)})
     except AssertionError as exc:
-        verdict.note('B4_readback', {'blocked': str(exc)[:400],
-                                     'measured': 'EQ 写后读命令在池路径撞未初始化堆（D4 族世界'
-                                                 '漂移）；值断言面=B3 inspect（已过）。JLEQ 重钉'
-                                                 '世界/池域覆盖后复验'})
+        verdict.note_required('B4_readback', {'blocked': str(exc)[:400],
+                                              'measured': 'EQ 写后读命令在池路径撞未初始化堆（D4 族世界'
+                                                          '漂移）；值断言面=B3 inspect（已过）。JLEQ 重钉'
+                                                          '世界/池域覆盖后复验'})
 
 
 # ---------------------------------------------------------------------------
 # M1-c（§4.3）：解冻续跑全环——本路仅驱动器支持，默认 skipped（不硬凑通过）
 # ---------------------------------------------------------------------------
 
-def run_m1c(client: WorldClient, verdict: Verdict, steps: int):
+def run_m1c(client: WorldClient, verdict: Verdict, steps: int, host='127.0.0.1', port=7789,
+            baseline_stop_pc=None):
     record = verdict.record.setdefault('m1c', {'steps_requested': steps})
     watch = list(M1C_WATCH)
     # C0：解冻续跑（Blocked 会以 error(world_dead)/resume 形状回来——那是 D3 风险面，如实分档）
     client.send({'t': 'resume', 'steps': steps, 'watch': watch})
     message = client.recv()
     if message.get('t') != 'resume_ok':
+        # SIMB1F：resume_stopped 的错误 detail 携带墙前 watch 流水——C1 断言先对
+        # 墙前流水跑（解冻窗口内 0x6064c0e 消费证据可能在墙之前已发生），如实
+        # 分档后再 BLOCKED；世界由外层快照重建复役，C2-C5 留待（规格 §4.3 D3）。
+        detail = (message.get('detail') or {}) if message.get('t') == 'error' else {}
+        hits = [hit['pc'] for hit in detail.get('watch_hits') or []]
+        record['resume_stopped'] = message
+        record['watch_hits_before_stop'] = hits
+        if hits:
+            verdict.check('C1_consume_evidence', '0x6064c0e' in hits, {'watch_hits': hits[:32]})
+            verdict.check('C1_anc_callback_chain',
+                          '0x6025d6a' in hits and ('0x6012be2' in hits or '0x600dcee' in hits),
+                          {'hits': hits[:64]})
+        else:
+            verdict.note_required('C1_consume_evidence',
+                                  {'measured': '墙前无 0x300000 消费命中（resume 撞墙早于事件泵取到注入事件）',
+                                   'stop': detail.get('stop'), 'steps_done': detail.get('steps')})
         verdict.fail_blocked('C0_resume_stopped', message)
+        # resume 撞墙本身就是 world_dead 可见断线（C7 前半）：连接关+重建复役验证
+        closed = client.recv() is None
+        verdict.check('C7_connection_closed', closed, {'closed': closed, 'via': 'resume_stopped'})
         client.close()
+        if closed:
+            check_rebuilt_world(verdict, record, host, port, baseline_stop_pc)
         return
     record['resume'] = message
     hits = [hit['pc'] for hit in message['watch_hits']]
@@ -445,13 +519,37 @@ def run_m1c(client: WorldClient, verdict: Verdict, steps: int):
                   {'payload': payload.hex()})
 
     # C7：负例——直调未映射地址（ROM/flash 空洞取指）→ world_dead 可见断线；
-    # 快照重建复役由外层 server 循环完成（重连验证留给下一次连接，本执行器如实记录断线面）。
+    # 快照重建复役由外层 server 循环完成。
     client.send({'t': 'direct', 'pc': '0x00f00000', 'args': []})
     message = client.recv()
     verdict.check('C7_world_dead_visible', message.get('t') == 'error', message)
     closed = client.recv() is None
     verdict.check('C7_connection_closed', closed, {'closed': closed})
     client.close()
+    if closed:
+        check_rebuilt_world(verdict, record, host, port, baseline_stop_pc)
+
+
+def check_rebuilt_world(verdict: Verdict, record, host, port, baseline_stop_pc):
+    """C7 ③④：重连拿重建世界（外层循环 restore）——横幅 stop_pc 回基线停点
+    （重建语义）+读命令恢复服务。"""
+    try:
+        rebuilt, banner = connect_world(host, port, 60.0)
+    except (OSError, AssertionError) as exc:
+        verdict.note_required('C7_rebuild_and_reserve', {'error': repr(exc)[:200]})
+        return
+    record['c7_rebuilt_banner'] = banner
+    verdict.check('C7_rebuilt_world_back_to_baseline_stop',
+                  baseline_stop_pc is None or banner.get('stop_pc') == baseline_stop_pc,
+                  {'rebuilt': banner.get('stop_pc'), 'baseline': baseline_stop_pc})
+    try:
+        payload = parse_notify(rebuilt.ble_read(0x62, 0x17))[2]
+        verdict.check('C7_service_restored_after_rebuild',
+                      payload[0] == 0x17 and payload[1] == 3, {'payload': payload.hex()})
+    except AssertionError as exc:
+        verdict.check('C7_service_restored_after_rebuild', False, {'error': str(exc)[:200]})
+    rebuilt.send({'t': 'quit'})
+    rebuilt.close()
 
 
 def wait_server(host, port, seconds: float):
@@ -519,12 +617,17 @@ def main(argv=None) -> int:
             run_m1a(client, verdict)
             if verdict.blocked is None:
                 run_m1b(client, verdict)
-            if args.level == 'm1c' and verdict.blocked is None:
-                run_m1c(client, verdict, args.m1c_steps)
+            if args.level == 'm1c':
+                # M1-c 独立试跑（SIMB1F）：a/b 的 BLOCKED 不连带跳过 c——世界已被
+                # 外层快照重建（EQ 写死亡等），重连拿净世界跑解冻全环，墙形状
+                # 各自如实记录。
+                client.close()
+                client, banner = connect_world(args.host, args.port, args.wait)
+                run_m1c(client, verdict, args.m1c_steps, args.host, args.port,
+                        banner.get('stop_pc'))
             else:
-                record['m1c'] = {'status': 'skipped_pending_jleq_repin',
-                                 'note': 'M1-c 全环验收留待 JLEQ 合并后重钉世界（规格 §5.3）；'
-                                         '本路只落驱动器支持（resume_steps/watch 0x6064c0e）'}
+                record['m1c'] = {'status': 'skipped',
+                                 'note': 'M1-c 全环验收需 --level m1c（规格 §4.3）'}
     finally:
         client.close()
     if verdict.blocked is not None:
@@ -532,14 +635,21 @@ def main(argv=None) -> int:
         record['blocked'] = verdict.blocked
     elif verdict.failures:
         record['verdict'] = 'FAIL'
+    elif verdict.incomplete:
+        record['verdict'] = 'PARTIAL'
     else:
         record['verdict'] = 'PASS'
     record['failures'] = verdict.failures
+    record['incomplete'] = verdict.incomplete
+    record['counts'] = {'executed': sum(1 for c in record.get('checks', []) if c.get('ok') is not None),
+                        'incomplete': verdict.incomplete,
+                        'optional_notes': verdict.notes}
     record['finished'] = time.strftime('%Y-%m-%d %H:%M:%S')
     Path(args.record).parent.mkdir(parents=True, exist_ok=True)
     Path(args.record).write_text(json.dumps(record, indent=2, default=str) + '\n')
-    print('verdict=%s failures=%d record=%s' % (record['verdict'], verdict.failures, args.record))
-    return {'PASS': 0, 'FAIL': 3, 'BLOCKED': 4}[record['verdict']]
+    print('verdict=%s failures=%d incomplete=%d notes=%d record=%s'
+          % (record['verdict'], verdict.failures, verdict.incomplete, verdict.notes, args.record))
+    return {'PASS': 0, 'FAIL': 3, 'BLOCKED': 4, 'PARTIAL': 5}[record['verdict']]
 
 
 if __name__ == '__main__':

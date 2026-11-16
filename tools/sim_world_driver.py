@@ -8,9 +8,13 @@
   - direct_call：全量保存 pc/sp/rets/flags/R → 设 pc 与 r0..r3 → rets=哨兵 →
     decode→step→machine.after_step 受控步进（不调 hardware.advance，外设时间冻结
     =中断交付冻结）。三条纪律（设计 §4.1，S 先例之上补齐）：
-    ① 成功返回先校验 SP 平衡（哨兵处 sp==入口 sp，全程 min_sp 记账）再恢复；
-    ② 调用前置门：CPU0 / sp_known / 非 IRQ handler 上下文 / 无在途并行对与
-       repeat 体——任一不满足拒绝直调（world_not_ready，不碰世界）；
+    ① 成功返回先校验 SP 平衡（哨兵处 sp==入口 sp，全程 min_sp 记账）与
+       上下文寄存器完整性（icfg/reti/irq_psr/active_context 不被 callee 触碰，
+       违者 world_dead——SIMB1F 起 park 前沿停点在 Timer0 handler 链内，
+       「非 handler 上下文」一刀切拒绝对此世界不可用，改为逐调用校验+banner
+       如实标注 in_irq_context）再恢复；
+    ② 调用前置门：CPU0 / sp_known / 无在途并行对与 repeat 体——任一不满足
+       拒绝直调（world_not_ready，不碰世界）；
     ③ Blocked/预算耗尽/SP 不平衡 → 世界标记不可继续（world_dead），finally 只
        恢复寄存器，存储副作用留在世界里（靠快照重建收场）。
   - rcsp_read：读命令直调分发器 0x600f85e 读路径（FE 01 cmdid→表 walk→getter→
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import struct
 
+from br28_machine import CoreStall
 from probe_boot import Blocked
 
 DIRECT_SENTINEL = 0x00100000     # ROM(0..0x20000)与 flash(0x06000100..)之间未映射空洞，
@@ -120,6 +125,10 @@ class SimWorldDriver:
         self.min_sp_seen = self.entry_sp    # 全部直调段的栈下界记账
         self.queue_base = None              # app_core 任务队列（0x17 post 后由 watch 推导）
         self.extra_windows = []             # 运行时解析的 inspect 白名单窗
+        self.in_irq_context = None          # 停点上下文标注（park 前沿=Timer0 handler 链）
+        self.read_mode = 'dispatcher'       # §2.2 首选全固件路径；撞假停墙后切 getter 备选
+        self.read_fallback_reason = None    # 降级原因（验收记录面）
+        self._last_insn_id = ''             # resume 段最近指令 id（stop 重分类口径）
         self.scratch_resp = scratch_resp or SCRATCH_RESP_DEFAULT
         self.scratch_body = scratch_body or SCRATCH_BODY_DEFAULT
         self._resolve_pointer_windows()
@@ -161,12 +170,24 @@ class SimWorldDriver:
             problems.append('core_id=%r' % (cpu.core_id,))
         if not getattr(cpu, 'sp_known', False):
             problems.append('sp_unknown')
-        if getattr(cpu, 'active_context', None) is not None:
-            problems.append('active_context=%r' % (cpu.active_context,))
         if getattr(cpu, 'after_then', None) is not None or getattr(cpu, 'repeat', None) is not None:
             problems.append('parallel_pair_or_repeat_in_flight')
         if problems:
             raise DriverError('world_not_ready', problems=problems)
+        # SIMB1F（park 前沿实测修正）：新前沿 29,601,125@0x606955c 停在 Timer0
+        # handler 链内（事件循环=handler，稳态停点天然如此）——SIMB1C 的
+        # 「active_context 必须 None」一刀切拒绝对此世界不可用。S 先例本无此
+        # 门；上下文敏感的真实风险面（callee 写 icfg/reti/irq_psr 或切换
+        # active_context 而 direct_call 不保存它们）改为哨兵处的**完整性校验**
+        # （_context_face 比对，违者 world_dead 如实暴露）+ banner 如实标注。
+        self.in_irq_context = getattr(cpu, 'active_context', None)
+
+    def _context_face(self):
+        """直调不得触碰的上下文敏感面（保存集之外的完整性校验目标）。"""
+        cpu = self.cpu
+        return (getattr(cpu, 'icfg', None), getattr(cpu, 'icfg_known', None),
+                getattr(cpu, 'reti', None), getattr(cpu, 'irq_psr', None),
+                getattr(cpu, 'active_context', None))
 
     def direct_call(self, pc, args, *, max_steps=1_000_000, watch=(), need_return=True, label=None):
         """在停点世界 CPU0 上直调真实固件函数，返回 (r0, steps, watch_hits)。"""
@@ -175,6 +196,7 @@ class SimWorldDriver:
         self._precheck()
         cpu, machine = self.cpu, self.machine
         saved = {'pc': cpu.pc, 'sp': cpu.sp, 'rets': cpu.rets, 'flags': cpu.flags, 'R': list(cpu.R)}
+        context_before = self._context_face()
         entry_sp = cpu.sp
         cpu.pc = pc
         for index, value in enumerate(args):
@@ -200,6 +222,9 @@ class SimWorldDriver:
                 steps += 1
                 if isinstance(cpu.sp, int) and cpu.sp < min_sp:
                     min_sp = cpu.sp
+                    if (self.min_sp_seen is None or min_sp < self.min_sp_seen):
+                        self.min_sp_seen = min_sp   # 步内记账：失败路径同样反映最深下探
+                                                       # （§2.2 回退判形的死帧窗依据）
                 machine.after_step(cpu, before)
             # 纪律①：成功返回先校验 SP 平衡再恢复。返回值在恢复寄存器之前取
             # （S 先例形状：哨兵处 r0）。
@@ -207,10 +232,23 @@ class SimWorldDriver:
             if cpu.sp != entry_sp:
                 self._die('direct_call_sp_unbalanced', pc=hex(pc), entry_sp=_hex(entry_sp),
                           exit_sp=_hex(cpu.sp), label=label)
+            # 纪律①b（SIMB1F，park handler 上下文世界）：callee 不得触碰
+            # direct_call 保存集之外的上下文敏感寄存器（icfg/reti/irq_psr/
+            # active_context）——违者=世界半写，如实 world_dead。
+            context_after = self._context_face()
+            if context_after != context_before:
+                render = lambda v: hex(v) if isinstance(v, int) and not isinstance(v, bool) else v
+                self._die('direct_call_context_corrupted', pc=hex(pc), label=label,
+                          context_before=[render(v) for v in context_before],
+                          context_after=[render(v) for v in context_after])
         except WorldDead:
             raise
         except Blocked as exc:
-            self._die('direct_call_blocked', pc=hex(pc), stop=exc.details, label=label)
+            # 诊断面（SIMB1F）：Blocked 的指令 PC（cpu.pc=未完成指令）与已发生
+            # 的 watch 流水并进错误 detail——定位「哪个 callee 在哪读/写了什么」
+            # 不需要复跑。
+            self._die('direct_call_blocked', pc=hex(pc), stop_pc=hex(cpu.pc),
+                      stop=exc.details, label=label, watch_hits=watch_hits)
         except Exception as exc:             # 上游模拟器未预期异常：世界不可继续（§3.3）
             self._die('direct_call_simulator_failure', pc=hex(pc),
                       error_type=type(exc).__name__, message=str(exc)[:200], label=label)
@@ -230,13 +268,35 @@ class SimWorldDriver:
 
     # ------------------------------------------------------------------ 读命令（§2.2）
     def read(self, cmdid, sn):
-        """读命令全固件路径直调；返回回执数据段 cmdid|n|payload，n<1 → None（静默）。"""
+        """读命令全固件路径直调；返回回执数据段 cmdid|n|payload，n<1 → None（静默）。
+
+        分发器路径（§2.2 首选）撞「上游 store 模型合并读旧字」的未初始化栈假停时
+        （park 前沿停点在 Timer0 handler 栈 0x1237d8 深处，分发器 216B 帧落在从未
+        写过的栈口袋 [0x123700,0x1237d8) 上——旧前沿任务栈世界无此形状，SIMB1F
+        实测 0x600f95a ext.l.u.p∥st.w.sp 假停），按 §2.2 降级备选切 getter 直调：
+        表 A server 侧 walk + cmdid|n 头由 server 组装（R15 残余——cmdid 路由无固件
+        执行证据，banner read_mode 如实标注）。"""
         self.command_count += 1
+        if self.read_mode == 'getter-fallback':
+            return self._read_via_getter(cmdid)
         body = bytes([0xFE, 0x01, cmdid & 0xff])
         self.mem_write(self.scratch_body, body)
-        _r0, _steps, hits = self.direct_call(
-            DISPATCHER, [sn & 0xff, self.scratch_body, 0, len(body)],
-            max_steps=200_000, watch=WATCH_READ, label='read:0x%02x' % cmdid)
+        context_before = self._context_face()
+        try:
+            _r0, _steps, hits = self.direct_call(
+                DISPATCHER, [sn & 0xff, self.scratch_body, 0, len(body)],
+                max_steps=200_000, watch=WATCH_READ, label='read:0x%02x' % cmdid)
+        except WorldDead as exc:
+            if (exc.code != 'direct_call_blocked' or self._context_face() != context_before
+                    or not self._stop_in_dead_frame(exc.detail.get('stop'))):
+                raise                          # 非栈口袋假停形状：如实 world_dead（D4 族另归因）
+            # 复役判据全过：寄存器已由 direct_call finally 恢复、上下文寄存器未动、
+            # 墙=分发器自己帧内的簿记读（非 guest 语义读）；留下的存储副作用=死帧
+            # 区栈字（真机上中止的调用同样留下），世界仍在停点语义上。
+            self.dead = False
+            self.read_mode = 'getter-fallback'
+            self.read_fallback_reason = exc.detail
+            return self._read_via_getter(cmdid)
         hit = next((h for h in hits if h['pc'] == hex(RETURN_EXIT)), None)
         if hit is None:
             return None                      # n<1 静默（getter 返 -1/<1 同此）
@@ -251,6 +311,35 @@ class SimWorldDriver:
         if r0_hit != 0xFF or sn_echo != (sn & 0xff) or head[0] != (cmdid & 0xff) or not 1 <= n <= 126:
             self._die('read_shape', **shape)
         return self.mem_read(resp, n + 2)
+
+    def _stop_in_dead_frame(self, stop):
+        """墙是否落在死帧窗 [min_sp_seen, entry_sp) 内（栈口袋簿记读假停的判形）。"""
+        if not isinstance(stop, dict) or stop.get('kind') != 'uninitialized_memory':
+            return False
+        try:
+            address = int(stop.get('address'), 16)
+        except (TypeError, ValueError):
+            return False
+        if self.min_sp_seen is None or self.entry_sp is None:
+            return False
+        return self.min_sp_seen <= address < self.entry_sp
+
+    def _read_via_getter(self, cmdid):
+        """§2.2 降级备选：表 A server 侧 walk → getter 直调 → cmdid|n|payload 组装。"""
+        entry = self.table_a_entry(cmdid)
+        if entry is None:
+            return None                      # 表未命中=静默（固件同款表 walk 未命中）
+        getter = entry['getter']
+        if getter == 0:
+            return None
+        n, _steps, _hits = self.direct_call(
+            getter, [self.scratch_resp, SCRATCH_RESP_SIZE - 2],
+            max_steps=200_000, label='read:getter 0x%02x' % cmdid)
+        if not isinstance(n, int) or n < 1:
+            return None                      # n<1 静默（§2.2 同款 0x600f942 语义）
+        if n > SCRATCH_RESP_SIZE - 2:
+            self._die('read_shape', getter=hex(getter), n=n)
+        return bytes([cmdid & 0xff, n]) + bytes(self.mem_read(self.scratch_resp, n))
 
     # ------------------------------------------------------------------ 写命令（§2.3）
     def table_a_entry(self, cmdid):
@@ -451,7 +540,14 @@ class SimWorldDriver:
                              'step': completed, 'label': 'resume'})
             try:
                 insn, _raw, _size = cpu.decode(cpu.pc)
+                self._last_insn_id = insn.id
                 before = cpu.pc
+                if insn.id == 'idle' and getattr(machine, 'idle_wait_projection', False):
+                    # park 世界（JLEQ 后前沿）两核靠 idle 停泊：explore 主循环形状
+                    # （probe_boot 停点循环同款）——idle 不交给模型 step，进停泊集
+                    # 等 IRQ 交付唤醒（SIMB1F §5.2 校准：缺此分支会在停泊核上空转）。
+                    machine.enter_idle_wait(cpu)
+                    raise CoreStall('core_idle_waiting', core=cpu.core_id)
                 cpu.step()
                 completed += 1
                 if isinstance(cpu.sp, int) and (self.min_sp_seen is None or cpu.sp < self.min_sp_seen):
@@ -466,7 +562,14 @@ class SimWorldDriver:
                     try:
                         hardware.advance(cpu.icfg)
                     except Exception as advance_exc:
-                        stop = self._resume_stop(advance_exc)
+                        # 对齐 probe_boot:2043-2047 的真实执行循环：停泊分支嵌套
+                        # advance 抛出的 IrqDeliveryRequest 走交付分发（codex P1：
+                        # 此前被转成 upstream_simulator_failure——resume 与主循环
+                        # 不等价，M1-c 消费铁证不可信）；Blocked 才是停。
+                        if type(advance_exc).__name__ == 'IrqDeliveryRequest':
+                            self._dispatch_delivery(getattr(advance_exc, 'details', {}))
+                        else:
+                            stop = self._resume_stop(advance_exc)
                 elif name == 'IrqDeliveryRequest':
                     self._dispatch_delivery(getattr(exc, 'details', {}))
                 else:
@@ -477,12 +580,22 @@ class SimWorldDriver:
         # 解冻推进了世界：后续直调发生在新上下文（direct_call 每次重跑前置门）。
         self.entry_sp = cpu.sp if getattr(cpu, 'sp_known', False) else None
         if stop is not None:
-            self._die('resume_stopped', stop=stop, steps=completed)
+            # 铁证不随世界死亡丢面：撞墙前的 watch 流水并进错误 detail（M1-c
+            # 的 C1 断言面——解冻窗口内 0x6064c0e 消费证据可能在墙之前已发生）。
+            self._die('resume_stopped', stop=stop, steps=completed, watch_hits=hits)
         return {'steps': completed, 'watch_hits': hits}
 
     def _resume_stop(self, exc):
         if isinstance(exc, Blocked):
-            return exc.details
+            details = exc.details
+            # 探针主循环同款重分类（probe_boot 停点循环）：st.* 的未初始化读=
+            # 上游 store 模型为合并写读旧字的簿记读，非 guest load——报告口径
+            # 对齐，控制流语义不变。
+            if details.get('kind') == 'uninitialized_memory' and self._last_insn_id.startswith('st.'):
+                details = {**details, 'kind': 'upstream_store_bookkeeping_read',
+                           'note': 'upstream store model reads previous words to merge/drop '
+                                   'writes; not a guest load'}
+            return details
         return {'kind': 'upstream_simulator_failure', 'error_type': type(exc).__name__,
                 'message': str(exc)[:200]}
 
@@ -502,6 +615,12 @@ class SimWorldDriver:
                     self.hardware.core_ticks[details['core']].delivery_in_flight = False
                 elif details.get('irq') == 4:
                     self.hardware.timer.delivery_in_flight = False
+            deferred_while = ('mid_instruction (after_then/repeat in flight)'
+                              if mid_instruction and not in_flight
+                              else getattr(target, 'active_context', None))
+            note = getattr(machine, 'note_delivery_deferral', None)
+            if note is not None:                    # 主循环同款延期簿记（M5 可捕获面）
+                note(details, deferred_while)
             return                                  # 延期：下个 advance 以同一 pending 重新请求
         irq = details.get('irq')
         if irq == 3:
@@ -516,6 +635,9 @@ class SimWorldDriver:
         return {'mode': 'direct-world', 'dead': self.dead,
                 'stop_pc': hex(self.stop_pc), 'entry_sp': _hex(self.entry_sp),
                 'commands': self.command_count,
+                'in_irq_context': self.in_irq_context,
+                'read_mode': self.read_mode,
+                'read_fallback_reason': self.read_fallback_reason,
                 'scratch': {'resp': hex(self.scratch_resp), 'body': hex(self.scratch_body)},
                 'min_sp_seen': _hex(self.min_sp_seen),
                 'queue_base': _hex(self.queue_base)}

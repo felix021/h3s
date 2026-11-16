@@ -69,6 +69,8 @@ class FakeCpu:
                 return
             elif kind == 'watch_r4':
                 self.R[4] = action[1]
+            elif kind == 'icfg':
+                self.icfg = action[1]
         self.pc = self.pc + 2
 
 
@@ -137,19 +139,38 @@ class DirectCallTest(unittest.TestCase):
 
     def test_precondition_gate_refuses_without_touching_world(self):
         driver, cpu, _ = make_driver({swd.GATE3: [('ret',)]})
-        cpu.active_context = 'software_irq_handler'
+        cpu.sp_known = False
         with self.assertRaises(swd.DriverError) as ctx:
             driver.direct_call(swd.GATE3, [])
         self.assertEqual(ctx.exception.code, 'world_not_ready')
         self.assertFalse(driver.dead)                                 # 纪律②：不碰世界
-        cpu.active_context = None
-        cpu.sp_known = False
-        with self.assertRaises(swd.DriverError):
-            driver.direct_call(swd.GATE3, [])
         cpu.sp_known = True
         cpu.repeat = object()
         with self.assertRaises(swd.DriverError):
             driver.direct_call(swd.GATE3, [])
+        cpu.repeat = None
+        cpu.core_id = 1
+        with self.assertRaises(swd.DriverError):
+            driver.direct_call(swd.GATE3, [])
+
+    def test_handler_context_stop_is_served_and_annotated(self):
+        """SIMB1F：park 前沿停点在 Timer0 handler 链内——handler 上下文不再
+        一刀切拒绝（banner in_irq_context 如实标注），callee 不碰上下文寄存器
+        即可正常直调（纪律①b 校验兜底）。"""
+        driver, cpu, _ = make_driver({swd.GATE3: [('ret',)]})
+        cpu.active_context = 'timer0_irq_handler'
+        _r0, _steps, _hits = driver.direct_call(swd.GATE3, [])
+        self.assertFalse(driver.dead)
+        self.assertEqual(driver.in_irq_context, 'timer0_irq_handler')
+        self.assertEqual(driver.describe()['in_irq_context'], 'timer0_irq_handler')
+
+    def test_callee_touching_context_registers_kills_world(self):
+        """纪律①b：callee 触碰 icfg（保存集之外的上下文面）→ world_dead 如实暴露。"""
+        driver, _cpu, _machine = make_driver({swd.GATE3: [('icfg', 0x0), ('ret',)]})
+        with self.assertRaises(swd.WorldDead) as ctx:
+            driver.direct_call(swd.GATE3, [])
+        self.assertEqual(ctx.exception.code, 'direct_call_context_corrupted')
+        self.assertTrue(driver.dead)
 
 
 class MemBlockedTest(unittest.TestCase):
@@ -164,6 +185,76 @@ class MemBlockedTest(unittest.TestCase):
         self.assertFalse(driver.dead)                       # 指针面缺失不杀世界
         with self.assertRaises(swd.WorldDead):
             driver.mem_read(0x99, 4)
+        self.assertTrue(driver.dead)
+
+
+class ReadFallbackTest(unittest.TestCase):
+    """SIMB1F §2.2 降级备选：分发器路径撞栈口袋簿记读假停 → getter 直调复役。"""
+
+    def _driver(self):
+        driver, cpu, _machine = make_driver({})
+        cpu.sp = 0x1237d8
+        driver.entry_sp = 0x1237d8
+        driver.min_sp_seen = 0x123700
+        return driver, cpu
+
+    def test_dead_frame_bookkeeping_stop_falls_back_to_getter(self):
+        driver, _cpu = self._driver()
+        calls = []
+
+        def fake_direct_call(pc, args, **kwargs):
+            calls.append(pc)
+            if pc == swd.DISPATCHER:
+                raise swd.WorldDead('direct_call_blocked', pc=hex(pc),
+                                    stop={'kind': 'uninitialized_memory', 'access': 'read',
+                                          'address': '0x123704', 'size': 4,
+                                          'region': 'bootstrap_stack'})
+            if pc == swd.ANC_GETTER:
+                _cpu.mem.write(driver.scratch_resp, b'\x01\x02\x03')
+                return 3, 12, []
+            raise AssertionError('unexpected pc %r' % pc)
+
+        driver.direct_call = fake_direct_call
+        driver.table_a_entry = lambda cmdid: {'getter': swd.ANC_GETTER, 'setter': 0, 'cmdid': cmdid,
+                                              'init': 0, 'restore': 0, 'slot32': 0, 'entry': 0}
+        payload = driver.read(0x17, 0x6f)
+        self.assertEqual(payload, bytes([0x17, 3, 1, 2, 3]))   # cmdid|n 头 server 组装
+        self.assertEqual(driver.read_mode, 'getter-fallback')
+        self.assertFalse(driver.dead)                          # 复役（寄存器/上下文未动）
+        self.assertEqual(calls, [swd.DISPATCHER, swd.ANC_GETTER])
+        # 粘性：后续读不再撞分发器
+        payload2 = driver.read(0x17, 0x70)
+        self.assertEqual(payload2, bytes([0x17, 3, 1, 2, 3]))
+        self.assertEqual(calls, [swd.DISPATCHER, swd.ANC_GETTER, swd.ANC_GETTER])
+
+    def test_non_dead_frame_stop_stays_world_dead(self):
+        driver, _cpu = self._driver()
+
+        def fake_direct_call(pc, args, **kwargs):
+            driver.dead = True                                  # 镜像 _die 语义
+            raise swd.WorldDead('direct_call_blocked', pc=hex(pc),
+                                stop={'kind': 'uninitialized_memory', 'access': 'read',
+                                      'address': '0x18d03c', 'size': 4})   # 堆上，非死帧窗
+
+        driver.direct_call = fake_direct_call
+        with self.assertRaises(swd.WorldDead):
+            driver.read(0x17, 0x6f)
+        self.assertTrue(driver.dead)
+        self.assertEqual(driver.read_mode, 'dispatcher')       # 不降级（D4 族另归因）
+
+    def test_context_corruption_blocks_fallback(self):
+        driver, cpu = self._driver()
+
+        def fake_direct_call(pc, args, **kwargs):
+            driver.dead = True                                  # 镜像 _die 语义
+            cpu.icfg = 0x123                                    # 上下文寄存器被碰
+            raise swd.WorldDead('direct_call_blocked', pc=hex(pc),
+                                stop={'kind': 'uninitialized_memory', 'access': 'read',
+                                      'address': '0x123704', 'size': 4})
+
+        driver.direct_call = fake_direct_call
+        with self.assertRaises(swd.WorldDead):
+            driver.read(0x17, 0x6f)
         self.assertTrue(driver.dead)
 
 
@@ -405,6 +496,120 @@ class ResumeTest(unittest.TestCase):
             driver.resume_steps(3)
         self.assertEqual(ctx.exception.code, 'resume_stopped')
         self.assertEqual(ctx.exception.detail['stop']['address'], '0xfe1500')
+
+    def test_resume_stop_carries_pre_stop_watch_hits(self):
+        """SIMB1F：撞墙前的 watch 流水并进 resume_stopped 的错误 detail——
+        M1-c 的 C1 断言面（解冻窗口内 0x6064c0e 消费证据可能在墙之前已发生）。"""
+        class BlockedHardware(FakeHardware):
+            def __init__(self):
+                super().__init__()
+                self.grace = 2                       # 前两次 advance 放行（让 watch 先命中）
+
+            def advance(self, icfg):
+                if self.grace > 0:
+                    self.grace -= 1
+                    return
+                raise swd.Blocked('unmapped_memory', address='0xfd1104')
+
+        driver, cpu, _machine = make_driver({0x6072b92: [('pc', 0x6064c0e)],
+                                             0x6064c0e: [('pc', 0x6064c0e)]})
+        driver.hardware = BlockedHardware()              # 换成撞墙硬件
+        with self.assertRaises(swd.WorldDead) as ctx:
+            driver.resume_steps(10, watch=(0x6064c0e,))
+        detail = ctx.exception.detail
+        self.assertEqual(detail['stop']['address'], '0xfd1104')
+        hit_pcs = [hit['pc'] for hit in detail['watch_hits']]
+        self.assertIn('0x6064c0e', hit_pcs)
+
+    def test_resume_stall_branch_dispatches_delivery_request(self):
+        """codex P1（2026-11-17 对账审查）：停泊（CoreStall）分支嵌套 advance 抛出的
+        IrqDeliveryRequest 必须走交付分发（probe_boot:2043-2047 等价），不得转成
+        upstream_simulator_failure——否则 resume 与真实执行循环不等价，M1-c 消费
+        铁证不可信。桩形：idle 停泊步触发 CoreStall；第一次 advance 抛交付请求、
+        第二次抛 Blocked（无事件可推的诚实停）。"""
+        from probe_boot import IrqDeliveryRequest
+
+        class DeliveringHardware(FakeHardware):
+            def __init__(self):
+                super().__init__()
+                self.raised = False
+
+            def advance(self, icfg):
+                if not self.raised:
+                    self.raised = True
+                    raise IrqDeliveryRequest(core=0, irq=3)
+                raise swd.Blocked('all_cores_idle_waiting', idle_cores=[0])
+
+        delivered = []
+
+        class DeliveringMachine(FakeMachine):
+            idle_wait_projection = True
+            idle_wait_cores = set()
+
+            def enter_idle_wait(self, cpu):      # 停泊记账被砍掉：循环持续选中停泊步
+                pass
+
+            def deliver_core_tick(self, core):
+                delivered.append(core)
+
+        cpu = FakeCpu({})
+        cpu.decode = lambda pc: (FakeInsn('idle'), {}, 2)
+        machine = DeliveringMachine()
+        machine.current = cpu
+        driver = swd.SimWorldDriver(machine, DeliveringHardware(), cpu)
+        with self.assertRaises(swd.WorldDead) as ctx:
+            driver.resume_steps(4)
+        self.assertEqual(delivered, [0])                     # 交付先发生（不是 simulator_failure）
+        self.assertEqual(ctx.exception.detail['stop']['kind'], 'all_cores_idle_waiting')
+        self.assertEqual(ctx.exception.detail['steps'], '0x0')
+
+    def test_resume_stall_branch_blocked_advances_still_stop(self):
+        """对照负例：停泊分支 advance 抛 Blocked（无事件可推）仍是诚实停。"""
+        class BlockedHardware(FakeHardware):
+            def advance(self, icfg):
+                raise swd.Blocked('all_cores_idle_waiting', idle_cores=[0])
+
+        cpu = FakeCpu({})
+        cpu.decode = lambda pc: (FakeInsn('idle'), {}, 2)
+        machine = FakeMachine()
+        machine.current = cpu
+        machine.idle_wait_projection = False
+        driver = swd.SimWorldDriver(machine, BlockedHardware(), cpu)
+        with self.assertRaises(swd.WorldDead) as ctx:
+            driver.resume_steps(2)
+        self.assertEqual(ctx.exception.detail['stop']['kind'], 'all_cores_idle_waiting')
+
+    def test_resume_parks_idle_core_via_idle_wait_projection(self):
+        """SIMB1F §5.2 校准：park 世界两核靠 idle 停泊——idle 指令不交给模型
+        step，进 machine 停泊集（explore 主循环同款），CoreStall 路径记账推进。"""
+        parked = []
+
+        class ParkingMachine(FakeMachine):
+            idle_wait_projection = True
+            idle_wait_cores = set()
+
+            def enter_idle_wait(self, cpu):
+                if cpu.core_id in self.idle_wait_cores:
+                    # 真机形状：全核停泊且无事件钟可推 → 诚实停（explore 同款出口）
+                    raise swd.Blocked('all_cores_idle_waiting',
+                                      idle_cores=sorted(self.idle_wait_cores))
+                self.idle_wait_cores.add(cpu.core_id)
+                parked.append(cpu.core_id)
+
+        class IdleCpu(FakeCpu):
+            def decode(self, pc):
+                return FakeInsn('idle'), {}, 2
+
+        cpu = IdleCpu({})
+        machine = ParkingMachine()
+        machine.current = cpu
+        driver = swd.SimWorldDriver(machine, FakeHardware(), cpu)
+        with self.assertRaises(swd.WorldDead) as ctx:
+            driver.resume_steps(3)
+        self.assertEqual(parked, [0])                     # idle 进停泊集，不 step
+        self.assertEqual(ctx.exception.detail['stop']['kind'], 'all_cores_idle_waiting')
+        self.assertEqual(ctx.exception.detail['steps'], '0x0')   # 停泊步不推进
+        self.assertIn(0, machine.idle_wait_cores)
 
 
 class DescribeTest(unittest.TestCase):
