@@ -1009,11 +1009,12 @@ def _write_note(result: dict) -> str:
 def make_world_serve_loop(listener: socket.socket):
     """构造 post_stop 回调：世界就绪自检 → baseline → accept/handle 单线程循环。
 
-    返回（serve_loop(machine, hardware, stopped_cpu) -> dict）：正常退出带
+    返回（serve_loop(machine, hardware, stopped_cpu, stop=None) -> dict）：正常退出带
     {'world_served': 摘要}；世界死亡带 {'world_dead': {...}}（外层循环重建信号）；
     就绪自检不过带 {'sim_bridge_world_not_ready': {...}}（不猜，如实退出）。
+    stop kwarg=explore 停点后回调的既有通道扩展(路 D1RUN,probe_boot 侧统一传)。
     """
-    def serve_loop(machine, hardware, cpu):
+    def serve_loop(machine, hardware, cpu, stop=None):
         from sim_world_driver import DriverError, SimWorldDriver, WorldDead
         if machine is None or hardware is None or cpu is None:
             return {'sim_bridge_world_not_ready': {'reason': 'requires the dualcore world'}}

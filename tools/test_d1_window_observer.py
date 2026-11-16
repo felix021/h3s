@@ -73,12 +73,15 @@ def make_observer(machine,**kwargs):
         'd1_window_steps',None),**kwargs)
 
 
-def reach_park(machine,observer,*,pre_steps=()):
-    """驱动到 W_park:若干前置步→pend 写面→停泊(enter_idle_wait 钩子)→engage。
-    返回 (完成步数,W_park)。"""
+def reach_park(machine,observer,*,pre_steps=(),s19_seen=True):
+    """驱动到 W_park:若干前置步→(S19 循环头)→pend 写面→停泊(enter_idle_wait
+    钩子)→engage。s19_seen=False 复现 boot 期任务的消息队列 pend(S19 头未执行,
+    D1RUN 首轮实测锚修正的负例面)。返回 (完成步数,W_park)。"""
     completed=0
     for pc in pre_steps:
         observer.note_step(machine.cores[0],pc,completed);completed+=1
+    if s19_seen:
+        observer.note_step(machine.cores[0],S19_LOOP_HEAD,completed);completed+=1
     observer.note_step(machine.cores[0],PEND_WRITE_FACE,completed);completed+=1
     machine.stalls+=1  # pend 写面后的停泊圈(stall 分支)
     observer.note_step(machine.cores[0],0x12c5ca,completed,stalled=True)
@@ -136,6 +139,25 @@ class WParkAnchoringTests(unittest.TestCase):
         tree=observer.finalize(stop={'kind':'instruction_budget'})
         self.assertNotIn('park',tree)
         self.assertEqual(tree['window_blocked_events'],[])
+
+    def test_in_window_pend_reanchors_to_last_park(self):
+        """末次 pend 重锚(D1RUN r1-r3 定稿):窗口内出现新的空队列 pend=先前
+        锚定的停泊不是稳态终形,W_park 清除让位给该 pend 之后的首次 engage;
+        boot 期 pend(窗口前)只置位候选,首窗仍开在其后首个 engage。"""
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        completed,w=reach_park(machine,observer,s19_seen=False)  # boot 期 pend:开窗
+        self.assertIsInstance(w,int)
+        # 窗口内新 pend(模拟稳态前的又一次任务停泊)→重锚
+        observer.note_step(machine.cores[0],PEND_WRITE_FACE,completed);completed+=1
+        machine.stalls+=1
+        observer.note_step(machine.cores[0],0x12c5ca,completed,stalled=True)
+        machine.idle_wait_cores.update((0,1))
+        observer.note_idle_wait_entered(machine,machine.cores[0])
+        observer.note_event_clock_engaged(machine,machine.cores[0])
+        self.assertGreater(observer._w_park,w)   # 重开在更晚的 engage
+        tree=observer.finalize(stop={'kind':'window_complete'})
+        self.assertEqual(tree['park']['model_step'],observer._w_park)
 
     def test_pend_write_then_engage_opens_window(self):
         machine=FakeMachine()
@@ -583,6 +605,13 @@ class CheckerConsumptionTests(unittest.TestCase):
         for pc in (POST_API,*ENQUEUE_SITES,GET_EVENT_CALL,CONSUME_PC,BIT20_PC,
                    SPECIAL_PATH_PC,S18_HANDLER_PC,PEND_WRITE_FACE):
             observer.note_step(cpu,pc,completed);completed+=1
+        # 链尾 pend_again(空队列再停泊)触发末次 pend 重锚——补停泊+engage
+        # 重开窗口(消息循环继续=稳态),后续观察数据落在重锚后的窗口。
+        machine.stalls+=1
+        observer.note_step(cpu,0x12c5ca,completed,stalled=True)
+        machine.idle_wait_cores.update((0,1))
+        observer.note_idle_wait_entered(machine,cpu)
+        observer.note_event_clock_engaged(machine,cpu)
         cpu.reti=0x12c5ca
         observer.note_irq_rti(machine,'timer0_irq_rti',cpu)
         machine.timer.expirations=3401+1
@@ -623,7 +652,7 @@ class _HookCpu:
     """最小 CPU 桩(test_br28_machine.RepeatIrqDeliveryCpu 同款面)。"""
     def __init__(self,slots,pc,core_id):
         self.mem=_HookMem(slots);self.pc=pc;self.reti=0;self.steps=7
-        self.core_id=core_id;self.flags=0
+        self.core_id=core_id;self.flags=0;self.R=[0]*16   # 通用寄存器桩(note_step 链跟踪消费)
         self.sp_known=True;self.sp=0x4013f0;self.usp=None;self.ssp=0x123840
         self.last_explicit_ssp=0x123840
         self.bootstrap_context=None;self.after_then=None;self.repeat=None
@@ -704,6 +733,168 @@ class MachineHookIntegrationTests(unittest.TestCase):
                          {'model_step_start':0,'steps':5})
         self.assertEqual(m.event_clock_advances,5)   # 恰在窗口边界,不多走一步
         self.assertTrue(observer._stopped)
+
+
+class PendingEdgeExpiryTests(unittest.TestCase):
+    """到期步号边沿检测(D1RUN 首轮归因落地):pending False→True 边沿记模型步,
+    注入 peripherals 面(checker D1-2/D1-3 消费键);窗口未开不采。"""
+
+    def tearDown(self):
+        br28_machine.d1_window_observer=None
+
+    def test_timer0_pending_edges_recorded_after_window(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        reach_park(machine,observer)
+        w=observer._w_park
+        # 窗口内两次 False→True 边沿(timer0),core_tick 恒 False 不记。
+        # (先推进一圈让模型步越过 W_park 边界——开窗圈自身的 step==W_park。)
+        machine.stalls+=1
+        observer.note_step(machine.cores[0],0x12c5ca,2,stalled=True)
+        machine.hardware.timer.pending=True
+        observer._sample_pending_edges(machine)
+        machine.hardware.timer.pending=False
+        observer._sample_pending_edges(machine)
+        machine.hardware.timer.pending=True
+        observer._sample_pending_edges(machine)
+        faces=observer.expiry_steps_faces()
+        self.assertEqual(len(faces['timer0']),2)
+        self.assertTrue(all(isinstance(s,int) and s>w for s in faces['timer0']))
+        self.assertEqual(faces['core_tick'],[])
+        tree=observer.finalize(stop={'kind':'window_complete'})
+        self.assertEqual(tree['health']['timer0_expiry_steps'],faces['timer0'])
+        self.assertTrue(all(c['expiry_model_step'] in faces['timer0']
+                            for c in tree['timer0_cycles']))
+
+    def test_pending_none_then_true_is_not_an_edge(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        reach_park(machine,observer)
+        machine.stalls+=1
+        observer.note_step(machine.cores[0],0x12c5ca,2,stalled=True)
+        # 模拟「基线未知」(开窗时 pending=None 的世界):None→True 不算边沿。
+        observer._pending_edges['timer0']=None
+        machine.hardware.timer.pending=True
+        observer._sample_pending_edges(machine)
+        self.assertEqual(observer.expiry_steps_faces()['timer0'],[])
+
+
+class JiffiesAndProjectionTests(unittest.TestCase):
+    """jiffies 写序观测(D1-3)与 projection 注入面的对表用例(D1RUN)。"""
+
+    def tearDown(self):
+        br28_machine.d1_window_observer=None
+
+    def test_jiffies_write_sequence_shadow_chain(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        reach_park(machine,observer)
+        observer.note_memory_write(0x125004,b'\x05\x00\x00\x00')
+        observer.note_memory_write(0x125002,b'\xff\xff\x06\x00\x00\x00')  # 跨字写也要命中
+        observer.note_memory_write(0x125004,b'\x07\x00\x00\x00')
+        obs=observer.machine_face()['jiffies_observations']
+        self.assertEqual([(o['before'],o['after']) for o in obs],
+                         [(None,5),(5,6),(6,7)])
+        self.assertTrue(all(isinstance(o['model_step'],int) for o in obs))
+
+    def test_project_delivery_faces_injects_model_step_and_eligibility(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        reach_park(machine,observer)
+        observer._deliveries.append({'core':0,'irq':3,'model_step':101,
+                                     'eligibility_note':{'ipmask':0,'priority':1,'eligible':True}})
+        report={'core_tick_entry_projection':{'deliveries':[{'core':0,'irq':3},
+                                                            {'core':0,'irq':3}]}}
+        observer.project_delivery_faces(report)
+        entries=report['core_tick_entry_projection']['deliveries']
+        self.assertEqual(entries[0]['model_step'],101)
+        self.assertEqual(entries[0]['eligibility_note']['eligible'],True)
+        self.assertNotIn('model_step',entries[1])   # 错位不冒充
+
+
+class D1WindowHookupTests(unittest.TestCase):
+    """路 D1RUN 挂接对表用例(PR2SPEC §7⑧):DualCoreMachine d1_window 参数
+    校验/attach 构造注册/after_step 正常圈喂步(自累计)+窗口耗尽 raise
+    Blocked/note_stall 停泊圈喂步(不 raise)。挂接位=after_step(c.step 已过
+    completed+=1 已做、advance 未跑)与 note_stall(stalls 已 +1)。"""
+
+    def test_d1_window_option_validation(self):
+        with self.assertRaises(ValueError):
+            DualCoreMachine(d1_window='yes')            # 非布尔
+        with self.assertRaises(ValueError):
+            DualCoreMachine(d1_window_steps=100)        # steps 需 d1_window
+        with self.assertRaises(ValueError):
+            DualCoreMachine(d1_window=True,d1_window_steps=0)   # 非正整数
+        with self.assertRaises(ValueError):
+            DualCoreMachine(d1_window=True,d1_window_steps=True)  # bool 不算 int
+        DualCoreMachine(d1_window=True)                 # None=公式 N,合法
+
+    def test_attach_constructs_and_registers_the_observer(self):
+        h=self.hardware()
+        m=DualCoreMachine(cpu1_reset_pc=0,software_irq_entry=True,idle_wait_projection=True,
+                          event_clock_projection=True,d1_window=True,d1_window_steps=12345)
+        cpu0=_HookCpu({0x19fe10:0x12ece8},pc=0x6066318,core_id=0)
+        self.assertIsNone(br28_machine.d1_window_observer)
+        m.attach(cpu0,lambda:_HookCpu({0x19fe10:0x12ece8},pc=0x12c5ca,core_id=1),h)
+        observer=br28_machine.d1_window_observer
+        self.assertIsInstance(observer,D1WindowObserver)
+        self.assertIs(observer.machine,m)
+        self.assertEqual(observer.explicit_steps,12345)
+        observer.detach()
+        self.assertIsNone(br28_machine.d1_window_observer)
+        # 防御兜底:遗留注册被下一次 attach 清掉(d1_window=False 的会话)。
+        br28_machine.d1_window_observer=observer
+        m2=DualCoreMachine(cpu1_reset_pc=0,software_irq_entry=True,idle_wait_projection=True,
+                           event_clock_projection=True,d1_window=True)
+        m2.attach(cpu0,lambda:_HookCpu({0x19fe10:0x12ece8},pc=0x12c5ca,core_id=1),
+                  self.hardware())
+        self.assertIsNot(br28_machine.d1_window_observer,observer)
+        br28_machine.d1_window_observer=None
+
+    def hardware(self):
+        # 不预调 enable_multicore——attach 会自己调(fresh held-CPU1 守卫)。
+        return BR28Model(cpu1_held_projection=True,initial_cpu1_control=0,
+                         initial_irq_config=[0]*32,initial_ipmask=0,
+                         software_irq_command_projection=True)
+
+    def test_after_step_feeds_instructions_and_raises_window_complete(self):
+        h=self.hardware()
+        m=DualCoreMachine(cpu1_reset_pc=0,software_irq_entry=True,idle_wait_projection=True,
+                          event_clock_projection=True,d1_window=True)
+        cpu0=_HookCpu({0x19fe10:0x12ece8},pc=0x6066318,core_id=0)
+        m.attach(cpu0,lambda:_HookCpu({0x19fe10:0x12ece8},pc=0x12c5ca,core_id=1),h)
+        observer=br28_machine.d1_window_observer
+        self.addCleanup(observer.detach)
+        observer._w_park=0;observer._n_effective=3   # 直接置开窗态(判据单测已钉)
+        for i in range(3):
+            try:
+                m.after_step(cpu0,0x60123e6+i)       # 正常圈:喂步(自累计)
+            except Blocked as e:                     # 第 3 圈:窗口耗尽
+                self.assertEqual(e.details['kind'],'window_complete')
+                self.assertEqual(e.details['window'],{'model_step_start':0,'steps':3})
+                break
+            self.assertIsNone(observer.window_stop_request)
+        else:
+            self.fail('window exhaustion never raised Blocked')
+        self.assertEqual(observer._completed,3)      # 自累计指令步=绝对轴
+
+    def test_note_stall_feeds_stalled_steps_without_raising(self):
+        h=self.hardware()
+        m=DualCoreMachine(cpu1_reset_pc=0,software_irq_entry=True,idle_wait_projection=True,
+                          event_clock_projection=True,d1_window=True)
+        cpu0=_HookCpu({0x19fe10:0x12ece8},pc=0x6066318,core_id=0)
+        m.attach(cpu0,lambda:_HookCpu({0x19fe10:0x12ece8},pc=0x12c5ca,core_id=1),h)
+        observer=br28_machine.d1_window_observer
+        self.addCleanup(observer.detach)
+        observer._w_park=0;observer._n_effective=1
+        m.note_stall(cpu0,{'kind':'core_idle_waiting','core':0})
+        # 停泊圈:模型步已过窗口边界(stalls+1)但指令步不累计、不 raise——
+        # 窗口停请求置位,延到下一正常圈(after_step 兜底)。
+        self.assertEqual(observer._completed,0)
+        self.assertIsNotNone(observer.window_stop_request)
+        with self.assertRaises(Blocked) as ctx:
+            m.after_step(cpu0,0x60123e6)
+        self.assertEqual(ctx.exception.details['kind'],'window_complete')
 
 
 if __name__=='__main__':

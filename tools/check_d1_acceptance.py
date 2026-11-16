@@ -806,7 +806,9 @@ def d1_3_core_tick(scenario):
                     '(否则无法验证「该次 handler 入口/出口恰 +1」)'))
     else:
         deltas=[(entry.get('after',0)-entry.get('before',0))&0xffffffff
-                for entry in jiffies if isinstance(entry,dict)]
+                for entry in jiffies if isinstance(entry,dict)
+                and isinstance(entry.get('before'),int)
+                and isinstance(entry.get('after'),int)]   # 首样本 before=None(写前值不可知)不参与 delta,如实跳过
         bad=[d for d in deltas if d!=1]
         checks.append(_check('jiffies_plus_one',fail=bool(bad),
             detail=f'jiffies {JIFFIES_ADDR} deltas {deltas} all == +1 (mod 2^32), bound to the '

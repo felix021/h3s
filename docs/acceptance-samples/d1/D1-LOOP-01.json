@@ -1,13 +1,14 @@
 {
   "case_id": "D1-LOOP-01",
   "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；D1 场景世界=p11_heap 条件栈官方单臂；三镜像差分 L2-a 系过线后独立步另记，不进本批）",
-  "initial_state": "预填用例（未执行），计划起点=真实启动全程（Q1，d1-acceptance §7/§8 唯一合法首次过线形态）：p11_heap 条件栈自然推进到 S19/park 再进观察窗，单次运行从 boot 起跑、budget 一次给足，不设「从中间热启动」参数（s19-batch3-taskbook §2.1 第 1 条）；park 双轴步数（模型步+指令步）随执行记录按 d1_window.park 键写明；前置=批 3 闸门②（前沿过 DAC_TM0〔DT 已放行，21,798,206 @ 0x606b5ee ADA_CON0 读在途〕+音频数字域整块+S16/S17/S18→S19 终态 park——「途中停泊已真实发生≠S19 终态 park」不得混写）+PR-BI 首验+PR-2 场景骨架（probe 三参数/场景行/观察件/d1_window 报告键），前置未备前本条保持 NOT_RUN",
+  "initial_state": "真实启动全程（Q1，红线 5 唯一合法形态）：p11_heap 条件栈单次从 boot 起跑、budget 41M 一次给足（d1_acceptance 分支），场景行 d1_acceptance_window（--with-d1-window，D1RUN commit 落地）。实测 park 双轴步数（末次 pend 锚）：W_park=17,688,351 模型步 / 17,686,192 指令步；N=333,895 模型步（公式 max(S_tick+160k,200k)，S_tick=173,895）；窗口终点 18,022,246 模型步，停点=window_complete @ 0x12c5ca（两核 idle）。Q1 轮次轨迹 r1→r4 共四轮全程重放（每轮 ~26 分钟），判活=报告 status/d1_gate 字段（d1_gate=fail：5 fail/5 pending/38 子检查 pass）。",
   "inputs_schedule": "无外部输入（D1 排除面=P33/WKUP/USB/按键，d1-acceptance §1 D1-4 codex 条款+BP §2 排除表）；时间表=观察窗模型步轴（全局模型步含事件时钟快进段，指令步另列只作执行预算，§1 时间口径）；唯一合成件=注入变体 d1_post_inject（仅可选 D1-DSP-04b，默认关+显式合成假设全文标注，不进过线必要条件，不进本条）",
   "observation_boundary": "循环头 0x60123e6 首达→park（event_clock_engaged），观察面=d1-scene-blueprint §2.1 表全列：S19 循环头 0x60123e6/get-event 调用 0x60123ea call 0x6064c8c(sp,16) 与成功码消费 0x60123f0（r0!=13 重调，13=取得事件）/S18 首批消费如实记录（(18,0)→表 1[39] 0x6023962；(20,2)→特路 sys_timer 0x126F3C id=2，BZ §1.5/§1.3）/bit20 过滤 0x60123f6/特路 0x60123fa→0x60108fe/分发顺序=表 2（0x60a8c68 起 6 条）→[0x126f4c] 动态过滤链（期望 0=跳过）→表 1（0x60a89e0 起 54 条）/空队列 pend 写面 0x6064cf6..0x6064d06（TCB+48/b+1|=0x30、TCB+49、h[TCB+6]=r12）+让出链 0x6064188/0x60642bc/0x6064340/两核终态（CPU1 0x12c5ca；CPU0 0x12c57e→0x12c5ca）/金丝雀 K1 0x601249c、K2 0x60124ae；报告键=d1_window.{loop_head_first_step,get_event_calls,get_event_returns_13,s18_first_pass,dispatch.*,empty_queue_pend.*,park.*,canaries.*}（蓝图 §4.3）〔2026-11-16 PR3P2 刷新（PR2SPEC 决策 A/§2.6）：d1_1..d1_4 的 checker 判定消费 machine.*/peripherals.* 观察键（watchpoint_hits/idle_wait_park_log/message_chain_observations/event_clock_projection 等，REQUIRED_OBSERVATIONS L276-312），d1_window.* 子树=观察器聚合镜像（两数据面并存）；park 记录窗口过滤锚=d1_window.park.model_step（PR2CHK §2.7 适配点 1，checker L425-438）〕",
   "assertions": [
     "d1-acceptance §1 D1-1（观察点表=d1-scene-blueprint §2.1）：①循环头首达+S18 首批消费链每个站点有执行证据（不能只以 handler PC 出现过算通过——codex 反例条款对消费链站点同样适用；〔2026-11-16 PR3P2 刷新：d1-acceptance §1 D1-1 原文=「先如实记录」S18 首批消费结果，站点级执行证据的实质判定面在 D1-4 十站三值；checker d1_1 的对应子项 s18_first_batch_recorded=键缺 pending、窗口已覆盖（window_covered）却零 S18 样本=违反 S18 必 post 静态结构→FAIL——checker L403-420〕）；②空队列后 pend 写面四写+让出链执行、循环头停达（loop_head_count_after_drain 期望=0）；③两核各有代码依据的状态（park 是预期形态非断言形状——「终态不要求两核同形」codex 2026-11-14 条款：一核持续跑应用任务、另一核 idle 同样算过，按实记录判定）；④event_clock_engaged 成立；⑤K1/K2 计数=0（到达即方向错误信号，FAIL 并停机归因，BA §4.6）",
     "FAIL 判据（蓝图 §2.1 原文）：任一站点缺失；pend 写面执行后循环头继续到达且队列计数>0（pend 假阻塞）；K1/K2>0",
-    "不要求首次 pend 即空队列（正常路径可先消费 S18 事件）——codex 条款照抄；S18 首批消费在 park 前自然发生即计入本条观察面"
+    "不要求首次 pend 即空队列（正常路径可先消费 S18 事件）——codex 条款照抄；S18 首批消费在 park 前自然发生即计入本条观察面",
+    "〔D1RUN 2026-11-17 Q1 r4 实测〕D1-1=fail（8 子检查 pass/1 fail）：s19_loop_entered FAIL——S19 循环头 0x60123e6 零执行+get-event 成功码消费 0x60123f0 零执行（watchpoint_hits 机器可证），S19 消息循环在当前前沿 GPCNT 停点（29,601,125@0x606955c 读 0xfd1104）之后未建立；canary K1/K2 零执行 pass、park_window/empty_queue_pend/both_cores_parked pass（窗口内两核 0x12c5ca）。失败归因=前沿依赖（非 DUT 违约、非断言错）：解锁条件=前沿穿过 GPCNT NUM 读（测量值 fixture 三选一归下一路）及后续链到 S19 建立。"
   ],
   "timeout_budget": "boot 段+park（窗口前，蓝图 §6 表）；全程 budget=park 指令步+窗口执行预算一次给足（任务书 §2.1 第 1 条，BR 口径 ~1.2×10⁷ 模型步+S17 健康环余量随前沿实测复核）；超时=FAIL 非重跑（d1-acceptance §8 超时预算条款）",
   "model_assumptions": [
@@ -16,18 +17,27 @@
     "timer0_irq4_delivery(entry/banks/rti) 三件套（HANDOFF 路 BE）+repeat_irq_delivery（第二次 Timer0 交付必需，base 栈）",
     "core_tick_irq3_delivery（HANDOFF 路 BF）",
     "p11_heap 条件栈 flag 集经 scenario_flags('p11_heap_experimental') 构造器实取（含事件时钟段前置的音频域容器族：jl_adda_analog_family〔B3〕、jl_audio_dac_tm_readback〔DT〕等；不含已撤回的 p2m_mailbox_ack/cfg523_named_fixture——实现保留历史 0b875ed，音频域过界后按到达顺序重新落地，任务书 §1.0 空位表）；场景行=event_clock=True+d1_acceptance=True（任务书 §1.2 第 3 条）〔2026-11-16 PR3P2 刷新：PR-2 落地的场景行名=d1_acceptance_window（PR2SPEC §4.3）——PR-3 机检 --scenario d1_acceptance_window，d1_window.* 键只有该行产出；旧条件场景名仅 runbook §1.2 park 判定用（runbook §4.1）〕",
-    "交付假设叠加适用（event-clock §5）：入口银行/PSR 高位/RTI 装载等——全部结论投影等级（hardware_mode_certified=false 不升级）"
+    "交付假设叠加适用（event-clock §5）：入口银行/PSR 高位/RTI 装载等——全部结论投影等级（hardware_mode_certified=false 不升级）",
+    "观察窗锚口径=末次空队列 pend 写面后首次 engage（当前前沿 S19 未建立下的 JLEQ 口径稳态锚，与 S19 终态 park 差异显式声明）",
+    "交付假设叠加适用（hardware_mode_certified=false 不升级）"
   ],
-  "result": "NOT_RUN",
+  "result": "FAIL",
   "uncovered_items": [
     "本条=预填底稿未执行（NOT_RUN=未跑，不占 BLOCKED 语义）；等闸门②（前沿到 S19 终态 park）+PR-BI 首验+PR-2 场景骨架，PR-3 正式落档时以实测 verdict 替换本预填（任务书 §1.6/§1.7）",
     "硅时序/同刻仲裁；IDLE 指令硅语义（idle_wait 措辞）；外部输入域（P33/WKUP/USB/按键）；模拟前端/DMA 总线/声学面（蓝图 §6 底稿公共未覆盖项）",
     "(20,2) 特路 0x126F3C 链表 id=2 节点存在性=运行观测项 R3（缺失时 0x6010946 诚实停归前沿推进路，BZ 定性，非本条 FAIL 面）",
-    "D1-4 深层 0x601a5xx 域（门控开时的 BT/提示域，D2+，REVIEW 结论②边界表——与本条分发链边界三处分散，合成一张表的动作归 PR-BI/蓝图 §11 文档面）"
+    "D1-4 深层 0x601a5xx 域（门控开时的 BT/提示域，D2+，REVIEW 结论②边界表——与本条分发链边界三处分散，合成一张表的动作归 PR-BI/蓝图 §11 文档面）",
+    "前沿依赖：S19 消息循环未建立（0x60123e6/0x60123f0 零执行）——D1-1 消息循环面解锁归前沿推进路（GPCNT NUM 三选一→S17 完成→S18/S19），D1 路不接管归因；窗口锚在 boot 侧前段（Timer0 PRD 重配段内）非 S19 终态 park 稳态"
   ],
-  "evidence_level": "none",
-  "evidence_conditions": [],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "idle_wait_projection（IDLE 停泊语义；硅 IDLE 语义未证）",
+    "event_clock_projection（全核 IDLE 事件时钟推进）",
+    "timer0_irq4_delivery(entry/banks/rti)+repeat+core_tick_irq3_delivery 交付投影族",
+    "观察窗锚口径=末次空队列 pend 写面后首次 engage（D1RUN r1-r3 定稿；当前前沿 S19 消息循环未建立——watchpoint 0x60123e6 零执行机器可证——PR2SPEC §2.2 原 S19 锚不可开窗，本窗口锚定的是 JLEQ 判定口径稳态 park 的 boot 侧前段，与 S19 终态 park 的差异显式声明）",
+    "交付假设叠加适用（hardware_mode_certified=false 不升级）"
+  ],
   "evidence_refs": [],
   "blocked_missing": null,
-  "recorded_at": "2026-11-15T13:36:00"
+  "recorded_at": "2026-11-17T05:10:00"
 }
