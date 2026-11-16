@@ -1,0 +1,38 @@
+{
+  "route": "SIMB1F/sim-simb1f（commit 6a7fccc，已并 main 06956a1）",
+  "recorded_at": "2026-11-17T03:27:23",
+  "task": "M1 直调三级验收记录卡（docs/sim-m1-direct-spec.md §4）。执行器=tools/test_sim_m1_verdicts.py（socket 消息序列+断言，四态退出码 0=PASS/3=FAIL/4=BLOCKED/5=PARTIAL）；本卡=该执行器 2026-11-17 实跑结果的脱敏摘要，原始记录留本地（见 raw_local）。",
+  "world": "park 前沿快照 restore：29,601,125 模型步 @ 0x606955c（JLEQ 合并后重钉；停点在 Timer0 handler 链内=park 事件循环，上下文寄存器完整性校验通过）",
+  "levels": {
+    "m1a_read_loop": {
+      "verdict": "PASS",
+      "checks": "5/5：A1 ANC 读往返字节级（帧 fedcba00ff000700 6f 1703000000 ef）/A2 inspect 镜像互证（回执=RAM 实读）/A3 EQ 读双面互证（0x22→n=3/0 段，payload==inspect 镜像）/A4 确定性+SN 回显/A5 world_diff 可归因（34B：direct_call_stack 31B+scratch 3B，零未归因字节）",
+      "note": "读分发器走 getter 降级备选（spec §2.2）：直调面 0x600f85e 撞 store 模型合并读旧字假停（ext.l.u.p∥st.w.sp 不在 exact_parallel_stores 清单），按规格降级为表 A getter 直调+server 组装 cmdid|n 头；复役判形三条件全过"
+    },
+    "m1b_write_half": {
+      "verdict": "PARTIAL",
+      "anc": "W1-W3b/W5 全 PASS：setter 0x6025ca4 直调 332-343 步写静默、直存 0x12666B、读回 1703010102、0x2f 官方槽空负例静默跳尾；W4 post 落队 INCOMPLETE（post wrapper 0x6064978 触达但未落队——世界状态门静默丢，固件同款行为，如实不计 PASS）",
+      "eq": "B0 prepare PASS（n 0→2，17B 曲线头）；B1 BLOCKED：apply 0x6025118 真实命中（step 66，N=2）后深链 0x60642ec 写地址 0x20 空指针墙——管线节点世界状态依赖（非 JL_EQ 域零触达；旧世界同链 59,634 步全通，档位差异根因留复验）"
+    },
+    "m1c_resume_full_loop": {
+      "verdict": "BLOCKED",
+      "note": "C0 resume steps=0 撞前沿墙本身：0xfd1104=JL_GPCNT->NUM 读即当前停点（fixture 三选一归下一路，与 0xfe1500 墙同构）；C1 消费证据 INCOMPLETE（墙前流水无 0x300000 消费命中）；C7 重建复役三连 PASS（连接关闭 via resume_stopped/重建世界回基线停点 0x606955c/服务恢复 1703000000）"
+    }
+  },
+  "overall_verdict": "BLOCKED",
+  "counts": {"executed": 16, "incomplete": 2, "optional_notes": 1, "failures": 1},
+  "p2_dynamic": {
+    "verdict": "OK",
+    "gates_0x17": "四门全落值：gate2 [0x1265C0+2444]=0（module record 四字 00000000，id≠5）/gate3 b[0x1265C0+5]=0/gate1 0x6003578 直调返 0（91 步，8.4ms）/gate4 静态零调用",
+    "read_loop": "5 次读全回执 1703000000，均值 0.0407s；getter 直调 12 步返 0"
+  },
+  "reproduce": [
+    "python3 tools/sim_bridge_server.py --listen 127.0.0.1:7788 --world analysis/snapshots --rom <本地 ROM 窗口文件>（快照 restore 秒级；首轮捕获约 13.5 分钟）",
+    "python3 tools/test_sim_m1_verdicts.py --host 127.0.0.1 --port 7788 --level m1c --record analysis/local-checks/sim-m1-verdicts.json（退出码即四态）",
+    "python3 tools/sim_m1_p2_dynamic.py --host 127.0.0.1 --port 7788 --record analysis/local-checks/sim-m1-p2-dynamic.json"
+  ],
+  "raw_local": {
+    "verdicts": "~/worktrees/h3s/sim-simb1f/analysis/local-checks/sim-m1-verdicts.json（gitignored，全量 checks/watch/world_diff 明细）",
+    "p2_dynamic": "~/worktrees/h3s/sim-simb1f/analysis/local-checks/sim-m1-p2-dynamic.json（gitignored）"
+  }
+}

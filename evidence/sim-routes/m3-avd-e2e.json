@@ -1,0 +1,35 @@
+{
+  "route": "SIMB3A/sim-simb3a（commit 0a3456f，已并 main c75cec7；前置 SIMB3C 39d3964 设备级/SIMB3S 02fd911 会话层）",
+  "recorded_at": "2026-11-17T06:25:00",
+  "task": "M3 刷机流 AVD 端到端全环验收（app 侧写路径+计划守卫，docs/sim-m3-flash-spec.md）。原始 log/计划/截图留本地（见 raw_local），精选截图副本已入仓。",
+  "fixture": {
+    "flash_2mib": "tools/sim_flash_fixture.py 合成（profile h3s-sim-usb-flash-fixture-v1）：[0,942080)=官方 UFW flash.bin 逐字节（SHA256 fe1a578d…）；[942080,2MiB)=擦除态 0xff 合成填充（bank B/VM/BTIF/TON/ANCIF 无公开工件，显式标注）",
+    "base_sha256": "27fe1fe6f589821689cfdaafb7ea372579f15020569bfa1c68435fac7d4453a9",
+    "target_sha256": "05ec42423c2cbdc580d9e0ae3c5a6208d2949f25ea5f7917eec35637c69afc36",
+    "plan": "三扇区 0x0/0x1000/0x1f8000；保留区 [2068480,2097152)"
+  },
+  "e2e_flow": {
+    "verdict": "PASS",
+    "timeline": "06:11:27-06:23:24（prep→enter→loader→plan(173s 全片读)→confirm→restore(177s 擦写+全片复读)→reboot→verify(349s 验证环双读备份)，退出码 0）",
+    "wire_chain": "scan→open-normal→enterRom→重扫→open-rom→loader→target-name→planRestore→nonce 确认→restoreFlash→reboot（重扫=normal 身份）→验证环再进 ROM 双读备份",
+    "server_accounting": "fb01=3 / fb04=24 / journal_len=28 / rejected=0 / sim_sha256==S_target / flash_sha256==S0（磁盘原始资产全程未被写）",
+    "restore_result": "全片复读==目标：SHA256 05ec4242…==S_target；验证环备份==S_target；final describe {identity:null, armed:null, read_only:null}=会话收尾干净",
+    "guard_negatives": "计划守卫四种负例（对齐但计划外擦除/数据不符/无活动扇区/无守卫）全部发送前抛出且 FakeDev.out 零字节——拒绝不产生总线流量；只读红线：默认构造 planRestore/restoreFlash/eraseSector/programSector 全拒（writable 能力三点接线：vendorCdb 包私有重载+exchange 白名单+open 传 flashWritable，仅 WebShellActivity sim 路径 true=运行时隔离）"
+  },
+  "screenshots_in_repo": "docs/acceptance-samples/screenshots/m3-avd/（1 张终态：恢复卡『已验证』+设备 SHA256==S_target+操作日志；隐私核验=AVD 应用 UI/合成 fixture SHA，无真机数据）",
+  "reproduce": [
+    "python3 tools/sim_flash_fixture.py --output analysis/sim-usb/flash-2mib.bin",
+    "python3 tools/sim_restore_planner.py --base <flash-2mib.bin> --target <目标镜像> --plan analysis/sim-usb/plan.json",
+    "python3 tools/sim_bridge_server.py --listen 127.0.0.1:7788 --flash-image analysis/sim-usb/flash-2mib.bin --rom <本地 ROM 窗口文件>",
+    "emulator -avd h3s-app -no-window -no-audio -gpu swiftshader_indirect & adb install -r <app.apk>",
+    "adb shell am start -n cn.felix021.h3squery/.WebShellActivity --ez sim true --es sim_host 10.0.2.2 --ei sim_port 7788",
+    "app 内 USB tab（CDP onclick 或 DRIVE 广播）：扫描→进入 ROM→装载 loader→全片备份→选目标镜像→planRestore→确认（nonce）→restoreFlash→rebootDevice→（验证环）再进 ROM 复读"
+  ],
+  "raw_local": {
+    "flow_log": "~/tmp/simb3a/e2e-flow.log（gitignored，全环时间线 raw log）",
+    "plan": "~/tmp/simb3a/plan.json（gitignored）",
+    "fixture_report": "~/tmp/simb3a/flash-2mib.output.report.json（gitignored，fixture 区段明细）",
+    "screenshot_original": "~/tmp/simb3a/simb3a_e2e_final_usb_tab.png（gitignored 原图；副本已入仓）",
+    "note": "server 相位/身份是进程级的——重试须重启 server（SIMB3A 实测修正）；sim 模式需预建外部 usb 目录（sdcardfs EACCES 规避）"
+  }
+}
