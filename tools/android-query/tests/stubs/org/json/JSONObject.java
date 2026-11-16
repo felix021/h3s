@@ -74,6 +74,20 @@ public class JSONObject {
         return v instanceof String ? (String) v : fallback;
     }
 
+    public String optString(String key) { return optString(key, ""); }
+
+    /** 对齐 Android org.json：取布尔，不存在/非布尔返回默认值（SimulationUsbLink 用）。 */
+    public boolean optBoolean(String key, boolean fallback) {
+        Object v = map.get(key);
+        return v instanceof Boolean ? (Boolean) v : fallback;
+    }
+
+    /** 对齐 Android org.json：取数组字段，不存在/非数组返回 null（SimulationUsbLink 用）。 */
+    public JSONArray optJSONArray(String key) {
+        Object v = map.get(key);
+        return v instanceof JSONArray ? (JSONArray) v : null;
+    }
+
     @Override public String toString() {
         StringBuilder out = new StringBuilder("{");
         boolean first = true;
