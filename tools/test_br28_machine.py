@@ -699,5 +699,20 @@ class Cfg523InstallTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'exactly 70 bytes'):
                 DualCoreMachine(cfg523_object_bytes=bad)
 
+    def test_report_projection_key(self):
+        # 路 B2G:开关提层 conditional 后条件场景自动武装,状态须经报告键
+        # 可见——armed 未装=installed_at None(解析器入口未到,当前前缀零
+        # 触达);默认 None=键缺席。注意 report() 只读已挂核,此处无须 cpu。
+        from br28_machine import CFG523_PARSER_ENTRY,CFG523_OBJECT_ADDRESS
+        m=self._machine()
+        r=m.report()
+        self.assertEqual(r['cfg523_named_fixture_projection'],
+                         {'enabled':True,'object_bytes':70,
+                          'parser_entry':hex(CFG523_PARSER_ENTRY),
+                          'object_address':hex(CFG523_OBJECT_ADDRESS),
+                          'installed_at':None,'synthetic_not_measured':True})
+        self.assertNotIn('cfg523_named_fixture_projection',
+                         DualCoreMachine().report())
+
 
 if __name__=='__main__':unittest.main()

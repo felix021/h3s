@@ -2543,13 +2543,13 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 '(the M2P message window is its harness region)')
         options['p2m_mailbox_ack']=True
     # cfg523_named_fixture(BH §4.2;首版路 B3/S19 批 2 续 0b875ed,本版 B2R
-    # 重落地,opt-in 默认关):70B 具名对象 PC 锚定首装(机器侧 after_step
-    # 钩子,解析器 0x60010b4 首次执行前写入 0x1274F4;BSS 初始化会清零故
-    # 不能预填)。消费时序:解析器在 W1[4]/S9 域,当前 flash 顶窗口停点
-    # (0x606c5ba,FLS 路在途,停点在 W1[3] 内)之后——开关留在 probe 变体层
-    # (registry probe_only),批 2 放行跑再按到达顺序提层;默认关世界零
-    # 行为差异。落地同时会激活 S9 键扫 10-tick sys_timer(D1 窗口多一个
-    # 周期源,H2 上界与 d1_window 期望值要算进去;S19MAP §4.3 提醒)。
+    # 重落地,B2G 提层到 conditional):70B 具名对象 PC 锚定首装(机器侧
+    # after_step 钩子,解析器 0x60010b4 首次执行前写入 0x1274F4;BSS 初始化
+    # 会清零故不能预填)。消费时序:解析器在 W1[4]/S9 域,当前前沿停点
+    # (28,890,702 随机种子读,W1[3] 域)之后——conditional 层条件场景自动
+    # 开,当前前缀安装钩子零触发(提层实测停点/步数逐值不变)。解析器到达
+    # 后会激活 S9 键扫 10-tick sys_timer(D1 窗口多一个周期源,H2 上界与
+    # d1_window 期望值要算进去;S19MAP §4.3 提醒)。
     if cfg523_named_fixture:
         machine_options['cfg523_object_bytes']=CFG523_OBJECT_BYTES
     if subword_stores:extra['exact_subword_stores']=True
