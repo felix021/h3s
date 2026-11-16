@@ -45,6 +45,14 @@ TIMER2_POLL_ANCHOR=0x12cd76
 CFG523_PARSER_ENTRY=0x60010b4
 CFG523_OBJECT_ADDRESS=0x1274F4
 
+# 路 PR2OBS(d1-window-producer-spec §1 决策 B/§5):D1 窗口观察器的模块级注册点。
+# 默认 None=本文件全部观察钩子零行为、零报告变化(legacy 逐字节不变);观察器
+# (tools/d1_window_observer.D1WindowObserver)构造时注册、detach 时清回 None。
+# 刻意不放实例属性:world_snapshot M5 的 capture_static 枚举 vars(machine),新增
+# 可变实例属性会被当静态配置捕获、恢复世界必然失配拒载(cfg523_installed_at 的
+# M3FIX 教训);模块级变量不在捕获面,观察器状态也不属于仿真世界状态。
+d1_window_observer=None
+
 
 class DualCoreMachine:
     # 对称 RTI 投影认定的 software-IRQ handler 尾部锚点（均为「弹出真实特殊帧后的 rti」）：
@@ -229,6 +237,8 @@ class DualCoreMachine:
         if cpu.core_id in self.idle_wait_cores:return
         self.idle_wait_cores.add(cpu.core_id)
         self.record_event({'kind':'core_idle_wait_entered','core':cpu.core_id,'pc':hex(cpu.pc)})
+        if d1_window_observer is not None:
+            d1_window_observer.note_idle_wait_entered(self,cpu)
         # 路 BK §5.2/S19 批 1:停泊即查——pending 已置位且本核恰停在锚点
         # (handler 执行期间跨过到期点的窗口)时 0 步立即唤醒,不进推进循环
         # (防「已到期死等」;唤醒按完成计步消费 idle 指令)。
@@ -365,6 +375,9 @@ class DualCoreMachine:
         """
         self.record_event({'kind':'event_clock_engaged','idle_cores':sorted(self.idle_wait_cores),
                            'clock_source':'modeled timer counters only'})
+        if d1_window_observer is not None:
+            # 观察器在 engage 瞬间做 W_park 判定与落定快照(只读,d1-window-producer-spec §2.2)。
+            d1_window_observer.note_event_clock_engaged(self,cpu)
         probe_pending=self.software_pending_probe_needed()
         while True:
             # 路 BK §5.2/S19 批 1:推进前先查 TIMER2 完成唤醒(0 步语义——
@@ -394,6 +407,19 @@ class DualCoreMachine:
                                        'no set software pending bit '
                                        '(masked pending or IRQ never wakes)')
                 horizon=1;probe_pending=False  # 单步探查:置位 pending 若合格立即请求交付
+            if d1_window_observer is not None:
+                # 路 PR2OBS(d1-window-producer-spec §5):事件时钟快进段一次可走数万步,
+                # D1 窗口(模型步轴)在此截断——观察器返回窗口剩余步数上限,并入本段
+                # horizon 的 min();剩余已耗尽则到界停(window_complete,与主循环侧窗口
+                # 计数停同 kind,explore 的 Blocked→stop 既有通道转停点)。默认 None 时
+                # 零行为。观察器未开窗时返回 None,同样零行为。
+                limit=d1_window_observer.event_clock_horizon_limit(self)
+                if limit is not None:
+                    if limit<=0:
+                        raise Blocked('window_complete',
+                                      note='d1 window exhausted: N model steps after W_park',
+                                      window=d1_window_observer.window_face())
+                    horizon=min(horizon,limit)
             for _ in range(horizon):
                 self.event_clock_advances+=1
                 self.hardware.advance(cpu.icfg)  # IrqDeliveryRequest/Blocked 原样传播
@@ -460,6 +486,8 @@ class DualCoreMachine:
         self.record_event({'kind':'core_tick_rti','core':cpu.core_id,'pc_after':hex(cpu.pc),
                            'sp_after':hex(cpu.sp),'reti_from_frame':hex(interrupted_task),
                            'bank_writeback_is_assumption':True,'icfg_effects_certified':False})
+        if d1_window_observer is not None:
+            d1_window_observer.note_irq_rti(self,'core_tick_rti',cpu)
 
     def after_step(self,cpu=None,before_pc=None):
         # cfg523 PC 锚定首装(BH §2.1;0b875ed 原案,B2R 重落地):解析器
@@ -592,6 +620,7 @@ class DualCoreMachine:
             entry_banks={'usp':hex(bank_usp),'ssp':hex(bank_ssp),
                          'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
         # Commit atomically: no further failure is possible past this point.
+        woke=cpu.core_id in self.idle_wait_cores
         if cpu.core_id in self.idle_wait_cores:
             self.idle_wait_cores.discard(cpu.core_id)
             self.record_event({'kind':'core_woken_by_delivery','core':cpu.core_id,'irq':irq})
@@ -609,6 +638,8 @@ class DualCoreMachine:
                'entry_banks':entry_banks,
                'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
         self.software_irq_deliveries.append(event);self.record_event(event)
+        if d1_window_observer is not None:
+            d1_window_observer.note_irq_delivery(self,event,woke)
 
     def deliver_core_tick(self,core):
         # Opt-in minimal CPU entry for a per-core system tick IRQ3 overflow.
@@ -644,6 +675,7 @@ class DualCoreMachine:
             entry_banks={'usp':hex(bank_usp),'ssp':hex(bank_ssp),
                          'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
         # Commit atomically: no further failure is possible past this point.
+        woke=core in self.idle_wait_cores
         if core in self.idle_wait_cores:
             self.idle_wait_cores.discard(core)
             self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':3})
@@ -661,6 +693,8 @@ class DualCoreMachine:
                'entry_banks':entry_banks,
                'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
         self.core_tick_deliveries.append(event);self.record_event(event)
+        if d1_window_observer is not None:
+            d1_window_observer.note_irq_delivery(self,event,woke)
 
     # 路 BE:Timer0(IRQ4)handler 0x12ece8 的 RTI 尾锚(gpio-irq 域六 handler
     # 反汇编钉死:每个 38 字节、rti 是最后一条,Timer0 的在 +0x24;RAM 入口
@@ -705,6 +739,7 @@ class DualCoreMachine:
             entry_banks={'usp':hex(bank_usp),'ssp':hex(bank_ssp),
                          'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
         # Commit atomically: no further failure is possible past this point.
+        woke=core in self.idle_wait_cores
         if core in self.idle_wait_cores:
             self.idle_wait_cores.discard(core)
             self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':4})
@@ -723,6 +758,8 @@ class DualCoreMachine:
                'entry_banks':entry_banks,
                'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
         self.timer0_irq_deliveries.append(event);self.record_event(event)
+        if d1_window_observer is not None:
+            d1_window_observer.note_irq_delivery(self,event,woke)
 
     def return_timer0_irq(self,cpu):
         # Symmetric opt-in return for the Timer0 IRQ4 handler at its exact tail
@@ -744,10 +781,24 @@ class DualCoreMachine:
         self.record_event({'kind':'timer0_irq_rti','core':cpu.core_id,'pc_after':hex(cpu.pc),
                            'sp_after':hex(cpu.sp),'reti_from_frame':hex(interrupted_task),
                            'bank_writeback_is_assumption':True,'icfg_effects_certified':False})
+        if d1_window_observer is not None:
+            d1_window_observer.note_irq_rti(self,'timer0_irq_rti',cpu)
 
     def note_stall(self,cpu,details):
         self.stalls+=1
         self.record_event({'core':cpu.core_id,**details})
+
+    def model_step_total(self,completed):
+        """D1 双轴步数之模型步轴(d1-window-producer-spec §2.1 备选口径,路 PR2OBS):
+        hardware.advance() 总调用数 = completed(主循环正常步,probe_boot L2048 侧每步
+        一次 advance)+ stalls(停泊步,L2052 侧同款一次)+ event_clock_advances(事件
+        时钟快进段,advance_event_clock 每虚拟步一次)。主循环每圈恰一次 advance、
+        Blocked 圈三者皆零,与 advance 调用数一一对应(源码逐行核;快进段另由本计数
+        单列)——[待 PR-2 实测核对差值](规格 §2.1 备选标注义务)。只读派生方法,
+        不新增实例属性(world_snapshot M5 capture_static 会把新实例属性当静态配置,
+        捕获/恢复必然失配),不进 report()——legacy 报告逐字节不变。
+        """
+        return completed+self.stalls+self.event_clock_advances
 
     def note_delivery_deferral(self,details,active_context):
         # 路 CB:交付请求落在目标核在途 handler(software/core-tick/Timer0)
