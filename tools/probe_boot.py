@@ -1647,6 +1647,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         self.finish_exact(self.pc+size)
                         adapters['mmio_rmw_always_writes']+=1
                         return
+                    if hardware.handles_pled_con3_rmw(address):
+                        # 路 FD610C:JL_PLED CON3(0xfd610c)配置 RMW 专用分发——
+                        # 内部读走 rmw()(合成初始 0/最后写值),只服务原子
+                        # RMW 形状(清位/置位/|=r0);显式 load 不在此分支,落
+                        # 通用读路径后由 read() 严格停 jl_pled_con3_read_
+                        # not_modeled。写回与整字写共享 stores 记录。
+                        if insn.id in ('rmw.and.nmodimm','rmw.and.modimm'):kind='and';operand=op['m']
+                        elif insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        elif insn.id=='rmw.or.r':kind='or';operand=self.R[op['s']]
+                        elif insn.id=='rmw.and.r':kind='and';operand=self.R[op['s']]
+                        else:raise Blocked('pled_con3_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.jl_pled_con3.rmw(kind,operand)
+                        if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
+                        self.finish_exact(self.pc+size)
+                        adapters['mmio_rmw_always_writes']+=1
+                        return
                     old=int.from_bytes(self.mem.read(address,4),'little')
                     if insn.id=='rmw.or.modimm':value=old|op['m']
                     elif insn.id=='rmw.and.nmodimm':value=old&op['m']

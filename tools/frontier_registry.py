@@ -214,6 +214,11 @@ FEATURES = (
             '证据形状 0x60649d0 st.w.pin.l=WDFEED 前沿 41,828,530 停点)'),
     Feature('mmu_cross_page_split', 'conditional', (), False, None,
             '跨 128B MMU 页界双字存储拆两半各自翻译(derived-not-measured)'),
+    Feature('jl_pled_con3_readback', 'conditional', (), False, None,
+            'JL_PLED CON3(0xfd610c)单字容器(合成初始 0+读回=当前值;boot 前缀'
+            'LED 驱动 0x6019458 停点的配置 RMW 读(清 bit5);CON3 全 6 站点均为'
+            '原子 RMW 配置写、读值只进写回组装、零分支零轮询;codex 定调单字'
+            '最小假设——CON0 save-restore 位消费/其余 17 字留 unmapped)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
@@ -517,10 +522,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 41847303,
-        'stop_pc': '0x6019458',
+        'completed_steps': 41847806,
+        'stop_pc': '0x60194b4',
         'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfd610c', 'size': 4, 'reference_sdk_register': None},
+                 'address': '0xfd6100', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }
