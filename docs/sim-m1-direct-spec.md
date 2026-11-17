@@ -615,6 +615,18 @@ sim_world_boot.py 退役 monkeypatch 缝合线改直连。probe_irq_entry.py 其
 adapter 计数迁移只落在 opt-in 条件场景报告）。M1 三级验收按此世界刷新（§4 四态
 如实：EQ 0x18d03c 堆墙/0x60642ec 空指针墙是另外两族问题，不在本路范围）。
 
+PARSTOR 留待的 pi·pr 形 6 站点由路 DEBTCLEAR（2026-11-17）收口：枚举核实为
+st.{w,b}.{pi,pin} 后增量第二半（`[基址++=增量]=源`，基址写回），ISA confirmed
+三源（hw/fm1-2026-10-24-v2「存到旧基址再加增量、flags 不动」）；与 ext A 半
+组合=run3 旧寄存器纪律+both-write A 结果保留（该冲突捕获的 B 半是装载，
+writeback 组合无直接硬件捕获，寄存器面与既有上游 pair 模型架构等值——本 gate
+只把存储半从合并读迁直写，derived-not-measured 显式标注）。新子开关
+`exact_parallel_postincrement_stores`（registry `postincrement_pair`，依赖
+`ext_pair`；宽度门分层照旧：half/byte 各自子开关）收 ext 传送族 A 半全家族
+12 形；其他前缀的 pi 对（静态另 118 站点）不随迁，照旧落上游通用 pair 模型。
+红绿测试 4 例（0x6077628 冲突写回抑制/0x60776c2 写回生效/0x609999a 寄存器
+增量+符号扩展/字节三站点含 0x60b61ba「存储值取 A 写 r3 之前的旧值」）。
+
 ### 9.8 EQPIPE：EQ 深链墙根因钉死（两世界对照复跑，2026-11-17 07:17-08:3x）
 
 SIMB1F 留待项「EQ 管线节点 0x60642ec 世界状态钉源」的结案记录：**档位差异的根因不是

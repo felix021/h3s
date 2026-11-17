@@ -61,6 +61,26 @@ EXACT_PARALLEL_BYTE_STORE_HALVES=('st.b',)
 # 告的 adapter 计数迁移(4182→4184/42→327,byte 1536 不动=byte 形前缀零执行);
 # base 场景与 probe_dualcore(ext.b0.u 单形 exact_parallel_extensions)零变化。
 EXACT_PARALLEL_EXT_TRANSFER_PREFIXES=('ext.b0.u','ext.b0.s','ext.l.u','ext.l.s')
+# pi/pin 后增量存储第二半(exact_parallel_postincrement_stores 独立子开关,路
+# DEBTCLEAR 收口 PARSTOR 留待的 pi·pr 形 6 站点):st.{w,h,b}.{pi,pin} 及 .l
+# 长形=存储到旧基址后基址+=增量(寄存器或立即),ISA confirmed 三源(hw/
+# fm1-2026-10-24-v2「stores the word/byte/halfword to the old base address,
+# then adds …; flags N Z C V are left alone」)。与 ext 传送族 A 半组合=FM-1
+# run3 纪律(B 读 A 之前旧寄存器:存储地址/存储值都取旧基址/旧寄存器)+
+# both-write 冲突 A 结果保留(upstream pair() 同规则,hw/fm1-2026-10-24-v3
+# 「when both write a register, A's result stays」——该捕获的 B 半是装载,
+# 写回冲突组合无直接硬件捕获;寄存器面与既有上游 pair 模型架构等值,本 gate
+# 只把存储半从合并读迁直写,冲突外延 derived-not-measured 显式标注)。
+# 静态面:全 app 233 个 ext.*.p∥st.* 站点中 6 个是本形(st.w.pin.l
+# 0x6077628/0x60776c2 `ext.l.u.p r0=r4.l (u) ∥ [r0++=4]=r12`/`∥ [r3++=4]=r12`、
+# st.w.pi 0x609999a `ext.b0.s.p r0=r0.b0 (s) ∥ [r0++=r8]=r4`、st.b.pi
+# 0x60b5e66/0x60b6572、st.b.pin 0x60b61ba)。宽度子门照旧分层(word 无额外/
+# half 要 exact_parallel_halfword_stores/byte 要 exact_parallel_byte_stores);
+# A 半仍限 ext 传送族——add/mul 等其他前缀的 pi 对(静态另有 118 站点)照旧
+# 落上游通用 pair 模型,不随本开关迁移。
+EXACT_PARALLEL_POSTINCREMENT_STORE_HALVES=('st.w.pi','st.w.pin','st.w.pi.l','st.w.pin.l',
+                                           'st.h.pi','st.h.pin','st.h.pi.l','st.h.pin.l',
+                                           'st.b.pi','st.b.pin','st.b.pi.l','st.b.pin.l')
 
 
 def check_rom(rom):
@@ -1192,6 +1212,54 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     self.apply(effect);self.finish_exact(self.pc+size+pair_size)
                     adapters['parallel_full_word_store_old_registers']+=1
                     return
+                if (diagnostics.get('exact_parallel_postincrement_stores') and
+                        diagnostics.get('exact_parallel_ext_transfers') and
+                        base.id in EXACT_PARALLEL_EXT_TRANSFER_PREFIXES and
+                        pair.id in EXACT_PARALLEL_POSTINCREMENT_STORE_HALVES and
+                        (pair.id.startswith('st.w') or
+                         (diagnostics.get('exact_parallel_halfword_stores') and
+                          pair.id.startswith('st.h')) or
+                         (diagnostics.get('exact_parallel_byte_stores') and
+                          pair.id.startswith('st.b')))):
+                    # pi/pin 后增量第二半(路 DEBTCLEAR,判据/证据见
+                    # EXACT_PARALLEL_POSTINCREMENT_STORE_HALVES 头注释):A 半(ext
+                    # 传送族)按旧寄存器求值;B 半存储到旧基址、存储值取旧寄存器,
+                    # 随后基址+=增量;both-write 冲突由执行次序解决——B 半先写
+                    # self.R、再 apply(A 半效果),A 结果保留(exact_parallel_
+                    # insert_load gate 同款次序,upstream pair() 同规则)。基址或
+                    # 增量为抽象值时诚实停(不臆造写回值);存储值含 unknown 时按
+                    # 字节粒度 abstract 写(与半字/字节先例同语义)。
+                    params=module.table.placeholders(insn.syntax);plain=module.table.placeholders(base.syntax)
+                    base_raw=dict(zip(plain,(raw[k] for k in params)))
+                    base_raw.update({k:raw[k] for k in base.fields if k not in base_raw and k in raw})
+                    effect,_,_=self.effect(base,base_raw,self.pc,size,self.R)
+                    require(set(effect)<={'regs','flags'},'parallel ALU produced non-ALU effects')
+                    hop=module.check.operands(pair,pair_raw)
+                    if pair.id.endswith('.pi'):base_reg,data_reg,step=hop['b'],hop['d'],self.R[hop['i']]
+                    elif pair.id.endswith('.pin'):base_reg,data_reg,step=hop['b'],hop['d'],hop['n']
+                    elif pair.id.endswith('.pi.l'):base_reg,data_reg,step=hop['r'],hop['t'],self.R[hop['s']]
+                    else:base_reg,data_reg,step=hop['r'],hop['s'],hop['n']
+                    width=4 if pair.id.startswith('st.w') else 2 if pair.id.startswith('st.h') else 1
+                    address=self.R[base_reg]&0xffffffff;value=self.R[data_reg]
+                    require(isinstance(step,int),
+                            'postincrement store needs a known increment')
+                    require(address%width==0,'unaligned exact postincrement store')
+                    if width==4:
+                        if isinstance(value,IcfgValue):self.mem.write_abstract_word(address,value)
+                        else:self.mem.write(address,struct.pack('<I',value&0xffffffff))
+                    elif width==2:
+                        if isinstance(value,int):self.mem.write(address,(value&0xffff).to_bytes(2,'little'))
+                        else:
+                            self.mem.write_abstract_byte(address,value,0)
+                            self.mem.write_abstract_byte(address+1,value,1)
+                    else:
+                        if isinstance(value,int):self.mem.write(address,(value&0xff).to_bytes(1,'little'))
+                        else:self.mem.write_abstract_byte(address,value,0)
+                    self.R[base_reg]=(address+step)&0xffffffff
+                    self.apply(effect)
+                    self.finish_exact(self.pc+size+pair_size)
+                    adapters['parallel_postincrement_store_old_registers']+=1
+                    return
             if diagnostics and diagnostics.get('exact_parallel_insert_load') and insn.id=='insert.rrii.p':
                 # 「装载+组装」并行对(ROM memcpy 0x417e 族的不对齐源组装变体):
                 # A 半=insert.rrii(把 B 半之前装入的字节插进目的字 bits[p,p+l)),
@@ -1845,7 +1913,19 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                                     diagnostics.get('exact_parallel_byte_stores') and
                                     pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)) or (
                                    diagnostics.get('exact_parallel_insert_load') and
-                                   inner.id=='insert.rrii.p' and pair.id=='ld.bu.pin')
+                                   inner.id=='insert.rrii.p' and pair.id=='ld.bu.pin') or (
+                                   # 与主 gate 同步:ext 传送族 A 半的 pi/pin 后增量
+                                   # 第二半(路 DEBTCLEAR,宽度子门分层同主 gate)。
+                                   diagnostics.get('exact_parallel_stores') and
+                                   diagnostics.get('exact_parallel_postincrement_stores') and
+                                   diagnostics.get('exact_parallel_ext_transfers') and
+                                   base.id in EXACT_PARALLEL_EXT_TRANSFER_PREFIXES and
+                                   pair.id in EXACT_PARALLEL_POSTINCREMENT_STORE_HALVES and
+                                   (pair.id.startswith('st.w') or
+                                    (diagnostics.get('exact_parallel_halfword_stores') and
+                                     pair.id.startswith('st.h')) or
+                                    (diagnostics.get('exact_parallel_byte_stores') and
+                                     pair.id.startswith('st.b'))))
                         if not supported:
                             raise Blocked('rep_multi_block_body_parallel_pair_unsupported',
                                           instruction_id=inner.id,pair_id=pair.id,address=hex(walk))

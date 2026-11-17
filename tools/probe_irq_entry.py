@@ -1429,6 +1429,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              subword_stores=False,
              word_store_sp_l=False,
              ext_pair=False,
+             postincrement_pair=False,
              mmu_cross_page_split=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
@@ -1553,6 +1554,19 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 等值,adapter 4182→4184/42→327 只落在本 opt-in 条件场景),base 场景与
     # probe_dualcore 零变化。
     if ext_pair:extra['exact_parallel_ext_transfers']=True
+    # postincrement_pair:opt-in 的 ext 传送族∥pi/pin 后增量存储对(exact_parallel_
+    # stores 独立子开关 exact_parallel_postincrement_stores,依赖 ext_pair 的
+    # exact_parallel_ext_transfers,路 DEBTCLEAR——PARSTOR 留待的 pi·pr 形 6 站点
+    # 收口)。st.{w,h,b}.{pi,pin}(及 .l 长形)=存储到旧基址后基址+=增量(寄存器
+    # 或立即),ISA confirmed 三源(hw/fm1-2026-10-24-v2);与 ext A 半组合按 FM-1
+    # run3 旧寄存器纪律执行(存储地址/值都取旧寄存器),both-write 冲突 A 结果
+    # 保留(upstream pair() 同规则;该冲突捕获的 B 半是装载,writeback 组合无
+    # 直接硬件捕获,derived-not-measured)。静态面:全 app 233 个 ext.*.p∥st.*
+    # 站点中 6 个本形(st.w.pin.l 0x6077628/0x60776c2、st.w.pi 0x609999a、
+    # st.b.pi 0x60b5e66/0x60b6572、st.b.pin 0x60b61ba),宽度子门分层照旧
+    # (word 无额外/half/byte 各自子开关);其他前缀(add/mul 等 118 站点)照旧
+    # 落上游通用 pair 模型。默认关,legacy 报告不变。
+    if postincrement_pair:extra['exact_parallel_postincrement_stores']=True
     # mmu_cross_page_split:opt-in 的跨 128B MMU 页界双字存储拆分(probe_boot
     # exact_doubleword_stores 独立子开关)。证据形状 app 0x6007af2
     # `st.d.sp.l d[sp+8]=r1_r0`(配置表查名 helper 0x6007ae8 函数头,app_core

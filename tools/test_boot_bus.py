@@ -1217,6 +1217,113 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(green['instruction_adapters'],{'parallel_byte_store_old_registers':1})
         self.assertEqual(green['memory_snapshots']['ext_byte_target']['bytes_with_unknowns'],'80')
 
+    def test_postincrement_word_pin_l_pair_a_result_wins_over_writeback(self):
+        # 0x6077628 `ext.l.u.p r0=r4.l (u) # ∥ [r0++=4] = r12`(DEBTCLEAR:PARSTOR
+        # 留待的 pi·pr 形 6 站点之一,st.w.pin.l 长形):B 半把 r12 存到旧基址 r0
+        # 后基址+=4,但 A 半同写 r0——both-write 冲突 A 结果保留(upstream pair()
+        # 同规则,hw/fm1-2026-10-24-v3 的 both-write 捕获 B 半是装载,writeback
+        # 冲突组合 derived-not-measured),写回被抑制。不开本子开关时照旧落上游
+        # pair 模型的合并读,未初始化目标上严格停(legacy 行为不变)。
+        h=self.handoff();h['snapshots'].append(('pi_word_conflict',0x123700,4))
+        regs=[0]*16;regs[0]=0x123700;regs[4]=0xaabbccdd;regs[12]=0x13572468
+        strict=explore(self.module,self.app,name='pi_word_conflict_strict',
+            diagnostics={'entry_pc':0x6077628,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True},budget=1)
+        self.assertEqual(strict['completed_steps'],0)
+        self.assertEqual(strict['stop']['kind'],'uninitialized_memory')
+        self.assertEqual(strict['stop']['address'],'0x123700')
+        green=explore(self.module,self.app,name='pi_word_conflict',handoff=h,
+            diagnostics={'entry_pc':0x6077628,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_postincrement_stores':True},budget=1)
+        self.assertEqual(green['completed_steps'],1)
+        self.assertEqual(green['stop_pc'],hex(0x607762e))
+        self.assertEqual(green['last_registers']['r'][0],'0xccdd')           # A 半零扩展胜出,写回抑制
+        self.assertEqual(green['last_registers']['r'][4],'0xaabbccdd')       # 源不动
+        self.assertEqual(green['instruction_adapters'],{'parallel_postincrement_store_old_registers':1})
+        self.assertEqual(green['memory_snapshots']['pi_word_conflict']['bytes_with_unknowns'],'68245713')
+
+    def test_postincrement_word_pin_l_pair_writeback_applies_without_conflict(self):
+        # 0x60776c2 `ext.l.u.p r0=r4.l (u) # ∥ [r3++=4] = r12`:A 半目的 r0 与
+        # B 半基址 r3 不冲突——r0 取扩展值,r3 写回 +4,存储到旧 r3。
+        h=self.handoff();h['snapshots'].append(('pi_word_plain',0x123710,4))
+        regs=[0]*16;regs[3]=0x123710;regs[4]=0xaabbccdd;regs[12]=0x13572468
+        green=explore(self.module,self.app,name='pi_word_plain',handoff=h,
+            diagnostics={'entry_pc':0x60776c2,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_postincrement_stores':True},budget=1)
+        self.assertEqual(green['completed_steps'],1)
+        self.assertEqual(green['last_registers']['r'][0],'0xccdd')
+        self.assertEqual(green['last_registers']['r'][3],'0x123714')         # 基址写回生效
+        self.assertEqual(green['instruction_adapters'],{'parallel_postincrement_store_old_registers':1})
+        self.assertEqual(green['memory_snapshots']['pi_word_plain']['bytes_with_unknowns'],'68245713')
+
+    def test_postincrement_word_pi_register_step_sign_extends_and_a_wins(self):
+        # 0x609999a `ext.b0.s.p r0=r0.b0 (s) # ∥ [r0++=r8] = r4`(16 位 st.w.pi,
+        # 增量取自寄存器 r8):旧基址 0x123780 低字节 0x80 符号扩展,A 半同写
+        # r0 胜出;r4 存到旧基址。
+        h=self.handoff();h['snapshots'].append(('pi_word_reg',0x123780,4))
+        regs=[0]*16;regs[0]=0x123780;regs[4]=0x11223344;regs[8]=4
+        green=explore(self.module,self.app,name='pi_word_reg',handoff=h,
+            diagnostics={'entry_pc':0x609999a,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_postincrement_stores':True},budget=1)
+        self.assertEqual(green['completed_steps'],1)
+        self.assertEqual(green['last_registers']['r'][0],'0xffffff80')       # (s) 符号扩展,A 胜出
+        self.assertEqual(green['instruction_adapters'],{'parallel_postincrement_store_old_registers':1})
+        self.assertEqual(green['memory_snapshots']['pi_word_reg']['bytes_with_unknowns'],'44332211')
+
+    def test_postincrement_byte_pairs_need_width_subgate(self):
+        # 字节 pi/pin 形(st.b.pi 0x60b5e66/0x60b6572、st.b.pin 0x60b61ba,全
+        # app 6 站点中的 3 个):本子开关不豁免宽度门——不开 exact_parallel_
+        # byte_stores 仍严格停;开了以后旧寄存器语义(存储值=旧寄存器、基址
+        # 写回、A 半扩展)逐字段钉死。0x60b61ba 的存储值取 A 半写 r3 之前的
+        # 旧值(B 读 A 之前旧寄存器,Fm-1 run3 纪律)。
+        regs=[0]*16;regs[2]=0x12ff56;regs[7]=0x123730;regs[15]=2;regs[4]=0xcafe87
+        strict=explore(self.module,self.app,name='pi_byte_strict',
+            diagnostics={'entry_pc':0x60b5e66,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_postincrement_stores':True},budget=1)
+        self.assertEqual(strict['completed_steps'],0)
+        self.assertEqual(strict['stop']['kind'],'uninitialized_memory')
+        self.assertEqual(strict['stop']['address'],'0x123730')
+        h=self.handoff();h['snapshots'].append(('pi_byte',0x123730,1))
+        green=explore(self.module,self.app,name='pi_byte',handoff=h,
+            diagnostics={'entry_pc':0x60b5e66,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_postincrement_stores':True,
+                         'exact_parallel_byte_stores':True},budget=1)
+        self.assertEqual(green['completed_steps'],1)
+        self.assertEqual(green['last_registers']['r'][0],'0x56')             # (u) 零扩展
+        self.assertEqual(green['last_registers']['r'][7],'0x123732')         # 基址 += r15
+        self.assertEqual(green['instruction_adapters'],{'parallel_postincrement_store_old_registers':1})
+        self.assertEqual(green['memory_snapshots']['pi_byte']['bytes_with_unknowns'],'87')
+        # 0x60b61ba `ext.l.s.p r3=r6.l (s) # ∥ b[r7++=-1] = r3`:存储旧 r3,
+        # r3=符号扩展(r6.l=0x8001→0xffff8001),r7 步进 -1。
+        h2=self.handoff();h2['snapshots'].append(('pi_byte_neg',0x123741,1))
+        regs2=[0]*16;regs2[3]=0x7f;regs2[6]=0x00018001;regs2[7]=0x123741
+        neg=explore(self.module,self.app,name='pi_byte_neg',handoff=h2,
+            diagnostics={'entry_pc':0x60b61ba,'initial_sp':0x123400,'initial_gprs':regs2,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_postincrement_stores':True,
+                         'exact_parallel_byte_stores':True},budget=1)
+        self.assertEqual(neg['completed_steps'],1)
+        self.assertEqual(neg['last_registers']['r'][3],'0xffff8001')         # A 半扩展(新值)
+        self.assertEqual(neg['last_registers']['r'][7],'0x123740')           # 步进 -1
+        self.assertEqual(neg['memory_snapshots']['pi_byte_neg']['bytes_with_unknowns'],'7f')  # 存的是旧 r3
+        # 0x60b6572 `ext.b0.s.p r5=r0.b0 (s) # ∥ b[r6++=r13] = r7`
+        h3=self.handoff();h3['snapshots'].append(('pi_byte_s',0x123750,1))
+        regs3=[0]*16;regs3[0]=0x12ff80;regs3[6]=0x123750;regs3[13]=1;regs3[7]=0xab
+        sgn=explore(self.module,self.app,name='pi_byte_s',handoff=h3,
+            diagnostics={'entry_pc':0x60b6572,'initial_sp':0x123400,'initial_gprs':regs3,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_postincrement_stores':True,
+                         'exact_parallel_byte_stores':True},budget=1)
+        self.assertEqual(sgn['completed_steps'],1)
+        self.assertEqual(sgn['last_registers']['r'][5],'0xffffff80')
+        self.assertEqual(sgn['last_registers']['r'][6],'0x123751')
+        self.assertEqual(sgn['memory_snapshots']['pi_byte_s']['bytes_with_unknowns'],'ab')
+
     def test_first_task_partial_restore_does_not_zero_or_half_restore_unknown_gprs(self):
         h=self.handoff();tcb=0x124f00;frame=0x124f40
         h['seeds'] += [(tcb,struct.pack('<I',frame)),(frame,struct.pack('<IIII',ENTRY,0,0,0))]
