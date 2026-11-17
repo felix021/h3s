@@ -318,6 +318,13 @@ def main():
                         "把 cmd 7（双击）分支体入口 0x06025404 接驳为 HA toggle（读槽→开/关），"
                         "开辅听前先请求关 ANC（db3c(1,1)）；ANC 键保持原 OFF/ON/TRANS 语义"
                         "（不接驳 TRANS=HA，见 docs/hearing-aid-l1-key7.md）；候选 UNTESTED 不刷机")
+    p.add_argument("--hearing-aid-l3-mpo", action="store_true",
+                   help="助听 L3 MPO 消费链离线候选：隐含 --r4-keyhook（BLE cmdid 0x30 写 VM key 30"
+                        " + --hearing-aid-l1-slotram 全链），追加 apply_mpo 载荷并把双击 toggle 桩扩展为"
+                        " open 成功后读 key 30（版本化 8B：魔数 HA+版本+float MPO）→ L2 水平尾段曲线 →"
+                        " jlstream_set_node_param(0xdefe,\"Drc1Eff\",76B) 热更（wdrc ioctl 0x06078d0a"
+                        " 0x2000F 分支整包复制+updata，下一音频块生效）；与 --hearing-aid-l1-key7"
+                        " 互斥（同一接驳窗）；见 docs/hearing-aid-l3-mpo.md；候选 UNTESTED 不刷机")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -337,6 +344,13 @@ def main():
         args.hearing_aid_l1_patch = True
     if args.hearing_aid_l1_key7:
         args.hearing_aid_l1_slotram = True    # L1KEY toggle 是 slotram 候选族的超集（路 L1KEY）
+        args.hearing_aid_l1_close = True
+        args.hearing_aid_l1_patch = True
+    if args.hearing_aid_l3_mpo:
+        if args.hearing_aid_l1_key7:
+            p.error('--hearing-aid-l3-mpo and --hearing-aid-l1-key7 share the KEY7 graft window')
+        args.r4_keyhook = True                # L3 MPO 消费链 = keyhook 写入 + toggle 消费（路 HAL3）
+        args.hearing_aid_l1_slotram = True
         args.hearing_aid_l1_close = True
         args.hearing_aid_l1_patch = True
     if args.hearing_aid_l1_patch and args.eq_toggle_elf:
@@ -449,7 +463,8 @@ def main():
                                         close_hooks=args.hearing_aid_l1_close,
                                         slot_ram=args.hearing_aid_l1_slotram,
                                         r4_keyhook=args.r4_keyhook,
-                                        key7_toggle=args.hearing_aid_l1_key7)
+                                        key7_toggle=args.hearing_aid_l1_key7,
+                                        l3_mpo=args.hearing_aid_l3_mpo)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -532,7 +547,8 @@ def main():
     elif args.hearing_aid_mpo is not None:
         suffix += f"_HEARING_AID_MPO{mpo:g}"
     if hearing_aid_l1:
-        suffix += ("_R4_KEYHOOK_OFFLINE" if args.r4_keyhook
+        suffix += ("_HEARING_AID_L3_MPO_OFFLINE" if args.hearing_aid_l3_mpo
+                   else "_R4_KEYHOOK_OFFLINE" if args.r4_keyhook
                    else "_HEARING_AID_L1_KEY7_OFFLINE" if args.hearing_aid_l1_key7
                    else "_HEARING_AID_L1_SLOTRAM_OFFLINE" if args.hearing_aid_l1_slotram
                    else "_HEARING_AID_L1_CLOSE_OFFLINE" if args.hearing_aid_l1_close

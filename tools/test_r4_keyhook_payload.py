@@ -138,11 +138,15 @@ class R4KeyhookPayloadTest(unittest.TestCase):
 
     def test_06_response_and_value_addressing(self):
         """resp+2 for the read-back destination, data+1 for the write source,
-        and the status word stored through the saved resp pointer at +0."""
+        and the status byte stored through the saved resp pointer at +2
+        (dispatcher overwrites resp[0..1] only — a word store at +0 would
+        leave resp[2]==0 for both success and failure, L3 erratum)."""
         texts = [text for _o, _i, text, _r in self.insns]
         self.assertIn('r1 = r4 + 2', texts, 'read branch must target resp+2')
         self.assertIn('r1 = r2 + 1', texts, 'write branch must source data+1')
-        self.assertIn('[r4+0] = r5', texts, 'write status must store at resp+0')
+        self.assertIn('b[r4+2] = r5', texts, 'write status must store byte at resp+2')
+        self.assertNotIn('[r4+0] = r5', texts,
+                         'word store at resp+0 loses status (L3 erratum fix)')
         # callee-saved discipline: prologue/epilogue pair around r4-r6
         self.assertEqual(self.insns[0][3].hex(), '7604',
                          'prologue must save {rets, r6-r4}')

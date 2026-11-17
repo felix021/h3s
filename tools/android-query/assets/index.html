@@ -1269,12 +1269,14 @@ summary {
     <article class="card" id="sec-ha-bands">
       <div class="card-head">
         <h2>助听 · 每频段调节</h2>
-        <span class="badge warning">BLE 命令留桩</span>
+        <span class="badge warning">MPO 走 key30（L3 链，候选 UNTESTED）</span>
       </div>
       <p class="note">
         通透/辅听链（mic→DAC）的逐频段草稿：增益放大环境声，上限是该频段期望的最大
         输出（数字域 dB，非标定 SPL）。固件为单带 WDRC，每频上限聚合为全带 MPO 生效
-        （见下方汇总行）；命令绑定暂为留桩（BLE 参数通道未落地）。
+        （见下方汇总行）。全带 MPO 经 BLE 自定义命令 0x30 写入固件 VM key 30
+        （8B 版本化协议），由 L3 候选固件在下次开启辅听时应用；逐频增益热更未实现
+        （需 L0 重刷镜像或后续 EQ 段通道）。
       </p>
       <div class="ha-head" aria-hidden="true">
         <span>频率</span><span>增益（dB）</span><span></span><span>上限（dB）</span><span></span>
@@ -1287,6 +1289,7 @@ summary {
       </div>
       <div class="actions">
         <button id="haFlat">全部复位</button>
+        <button id="haSaveMpo" class="primary">保存全带 MPO（BLE cmd 0x30）</button>
       </div>
       <p id="haFeedback" class="feedback" aria-live="polite">本地草稿，尚未发送。</p>
     </article>
@@ -2525,8 +2528,42 @@ window.h3sHearingAidPayload = buildHearingAidPayload;
 
 function haChanged() {
   updateHaMpoSummary();
-  $('haFeedback').textContent = '本地草稿已修改（BLE 命令留桩，未发送）。';
+  $('haFeedback').textContent = '本地草稿已修改（逐频增益热更未实现；全带 MPO 可经下方按钮写入固件 key 30）。';
 }
+
+// L3 MPO 值协议（与固件 apply_mpo.S / KeyStoreFrame.encodeMpoValue 对齐）：
+// 8B = { 'H','A', ver=1, rsv=0, float32 LE(MPO dB 位型) }。位型即 IEEE754
+// 字节序，JS 侧用 DataView 手工编码；范围 (0.3, 119.9) 与固件位型门一致。
+function haEncodeMpoValue(mpo) {
+  if (!isFinite(mpo) || mpo <= 0.3 || mpo >= 119.9) return null;
+  const buf = new ArrayBuffer(8);
+  const u8 = new Uint8Array(buf);
+  u8[0] = 0x48; u8[1] = 0x41; u8[2] = 0x01; u8[3] = 0x00;
+  new DataView(buf).setFloat32(4, mpo, true);
+  return Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+$('haSaveMpo').onclick = () => {
+  const mpo = haEffectiveMpo();
+  const hex = haEncodeMpoValue(mpo);
+  if (!hex) {
+    $('haFeedback').textContent = 'MPO ' + mpo + ' dB 超出可编码范围 (0.3, 119.9)，未发送。';
+    return;
+  }
+  if (!H || typeof H.setHearingCfg !== 'function') {
+    $('haFeedback').textContent = 'bridge 不可用（setHearingCfg 缺失），未发送。';
+    return;
+  }
+  try {
+    const result = H.setHearingCfg(hex);
+    $('haFeedback').textContent = 'MPO ' + mpo + ' dB 已提交 BLE cmd 0x30（key 30）：'
+      + (result && !String(result).startsWith('ERR')
+        ? '保存成功——固件 L3 候选在下次开启辅听时应用（运行中即时调节未实现）。'
+        : '失败或未确认（' + result + '）。');
+  } catch (e) {
+    $('haFeedback').textContent = '发送异常（' + e + '），未写入。';
+  }
+};
 
 function updateHaMpoSummary() {
   const mpo = haEffectiveMpo();

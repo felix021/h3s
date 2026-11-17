@@ -67,9 +67,11 @@ class SpecPinTest(unittest.TestCase):
         self.assertEqual(CWC.CANDIDATES['l1_slotram']['sha256'],
                          '6f267a2ed0b62ed118047e889a64483907c727d36eb5172a5d'
                          '0f0067d37b1b93')
+        # HAL3 re-pin: keyhook status-byte erratum fix (st.w -> st.b),
+        # docs/hearing-aid-l3-mpo.md §5 — old bfc3f681… superseded
         self.assertEqual(CWC.CANDIDATES['r4_keyhook']['sha256'],
-                         'bfc3f681e969d3c984a5ff7ee6d33ae759897788b132777ede'
-                         '01423104e3ab20')
+                         '1873027bcf82026aa1829aeeebf348c9227a8f9b3895009dbc8'
+                         '1205f0b30ac65')
         self.assertEqual(CWC.CANDIDATES['l1_slotram']['whole_file_diff_bytes'], 493)
         self.assertEqual(CWC.CANDIDATES['r4_keyhook']['whole_file_diff_bytes'], 574)
         self.assertEqual(CWC.OFFICIAL_SHA,
