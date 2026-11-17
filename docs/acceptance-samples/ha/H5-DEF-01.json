@@ -1,0 +1,28 @@
+{
+  "case_id": "H5-DEF-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "受限坏魔数操作完成并获授权；已保存原key；离耳停音源",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：分别把key30/31魔数48改00，其余字节不变；回执→读回→完整关开→默认对照",
+  "observation_boundary": "坏魔数字节保存与重新开流的声学观察分开",
+  "assertions": [
+    "仍回30 01 00且读回精确8B/88B坏魔数；不能把这当set_config失败",
+    "默认回退预期key30为L2 M95、key31文件默认；两key各自验证，不互相代替",
+    "保存失效值可客观验；默认实际曲线缺观测则BLOCKED，不凭相似听感证明",
+    "低M回退95可能增大输出；非静音/删key/固件回滚"
+  ],
+  "timeout_budget": "BLE每响应5s；关开每动作5s；开后等2s；异常立即停",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "当前key31受限入口尚缺",
+    "无观测不能证明整曲线相等"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

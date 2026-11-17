@@ -1,0 +1,28 @@
+{
+  "case_id": "H5-PRE-02",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "离线；当前源码key31白名单/读入口与UI确认存在缺口",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：后续修复精确key31通道、异步回执状态、受限坏魔数操作及音频实际路由观测；做带真实策略的端到端测试",
+  "observation_boundary": "UI→bridge→策略→传输及回执/读回；离线假设备",
+  "assertions": [
+    "key31的89B写data及1B读data可走精确白名单；其它key/坏形状仍零发送",
+    "错误JSON及仅排队成功不显示设备保存成功，只有关联回执与读回确认存储",
+    "key31坏魔数仅受限固定形状操作；无任意帧写总开关",
+    "MTU23/103/247分片重组、SN关联、超时不补写的离线检查通过"
+  ],
+  "timeout_budget": "按现有5s片回调/5s帧响应模型推进；所有依赖刷前完成",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "手机APK是否含修复未检查",
+    "真机BLE回调时序未测"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

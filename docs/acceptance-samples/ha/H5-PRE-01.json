@@ -1,0 +1,29 @@
+{
+  "case_id": "H5-PRE-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "离线；旧工具仅r2→b79六扇区，新profile未完成",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：建立b79→HAL5和HAL5→b79固定摘要profile；以假设备逐擦除/块写/提交点故障注入",
+  "observation_boundary": "离线目标字节、扇区集合、头字段、拒绝时点及journal",
+  "assertions": [
+    "双向plan独立重算一致；变化仅在B精确允许扇区，0xee000最后提交，扇区数从差分推导",
+    "A/bootloader/VM/资源/校准不变；B头仅CRC与长度更新，序号3与设备参数保留",
+    "错包/坏CRC/错相位/越界/非VM新变化/旧journal/双读不同全部在首擦前拒绝",
+    "完整HAL5回滚与中途中断混合态分开；所有注入中断点有journal绑定处置，未知态拒绝"
+  ],
+  "timeout_budget": "离线操作定时与USB耗时估算须在实际授权包中冻结；未满足不得刷",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "真实断电恢复未测",
+    "自动bank A回退未证",
+    "新profile本路不实现"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

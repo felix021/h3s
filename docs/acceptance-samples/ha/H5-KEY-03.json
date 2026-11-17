@@ -1,0 +1,26 @@
+{
+  "case_id": "H5-KEY-03",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "KEY-02通过；key持久；无内部槽遥测",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：正常重启3轮，每轮观察默认关闭、首次双击开再双击关",
+  "observation_boundary": "外部声音对照与key读回，RAM清零仅作设计依据",
+  "assertions": [
+    "3/3轮开机可观察HA关闭，首次双击开、再次关；key值仍一致",
+    "未观察RAM槽，不宣称直接证明0x125574为0"
+  ],
+  "timeout_budget": "开机60s/动作5s/读响应5s/关机10s",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "内部槽数值",
+    "冷启动全部电源路径"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

@@ -1,0 +1,29 @@
+{
+  "case_id": "H5-BLE-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "HLT通过；PRE-02通道就绪；HA关闭；音源停止；已授权参数写",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：保存原key；每key3轮有效值写→回执→读回，其中至少一轮与前值不同；最后M95/全0EQ",
+  "observation_boundary": "真实TX/RX、外层状态/SN、payloadHex及原始8B/88B",
+  "assertions": [
+    "写key30/31精确回执30 01 00；读分别30 08+8B/30 58+88B，逐字节与发送值相等",
+    "M95值48 41 01 00 00 00 be 42；EQ头48 41 02 00 0a 00 00 00加十段LE值",
+    "每次一个应用请求在途；记录实际MTU及片数；不把GATT回调或UI成功当VM证据",
+    "写超时先读回消歧、不自动补写；首次失败保留"
+  ],
+  "timeout_budget": "单片回调5s；完整发送后响应5s；片间隔至少10ms",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "音频消费/出声",
+    "跨key事务性",
+    "未实测MTU组合"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

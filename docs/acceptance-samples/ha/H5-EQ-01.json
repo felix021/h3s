@@ -1,0 +1,28 @@
+{
+  "case_id": "H5-EQ-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "所有安全/路由门通过；已授权有限听感；固定M/摆位/音量/样本",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：全0 vs index5/1070Hz -6dB；8对4AB+4BA随机；每次关→写全包→读回→开→等2s",
+  "observation_boundary": "单人配对选择、信心与备注；原始参数/样本SHA",
+  "assertions": [
+    "比较流程完成8对且记录听不出/无法判断，不强迫选赢家",
+    "本卡PASS仅指比较协议完成，不表示EQ生效；十段生效另需MET-01",
+    "每4对休息至少1min；异常/不适/疲劳停止，不追求升音量获得差异"
+  ],
+  "timeout_budget": "每条件5–10s；开后2s；动作超5s停；最多8对",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "双盲/统计显著性",
+    "其余九段及精确增益",
+    "SPL与临床效果"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

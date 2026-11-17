@@ -1,9 +1,9 @@
-# 验收记录全局面板(七目录一页汇总,路 PANEL/sim-panel)
+# 验收记录全局面板(8 目录一页汇总,路 PANEL/sim-panel)
 
 数据=`docs/acceptance-samples/` 全部记录的只读汇总(不改记录;每条链接直达 JSON)。
 记录改动后须再生成:`python3 tools/acceptance_dashboard.py`;
 `check_local --units` 会校验本页与记录一致(test_acceptance_dashboard.py)。
-数据截至(记录 recorded_at 最大值)=2026-11-17T14:30:00 ｜ 共 76 条(七目录 74+上级散置 2)。
+数据截至(记录 recorded_at 最大值)=2026-11-18T01:12:10 ｜ 共 98 条(8 目录 96+上级散置 2)。
 
 ## 1. 总览
 
@@ -16,8 +16,9 @@
 | [d3](acceptance-samples/d3/README.md) | D3 真机一致性:案头就绪底稿(路 BS/sim-d3prep) | 1 | 0 | 0 | 0 | 7 | 8 |
 | [parity](acceptance-samples/parity/README.md) | 镜像间轨迹差分(路 A1/EQDIV,L2 系证据) | 1 | 1 | 1 | 0 | 0 | 2 |
 | [d1](acceptance-samples/d1/README.md) | D1 稳定调度验收(路 PR3P 预填,等闸门②) | 0 | 0 | 3 | 1 | 1 | 5 |
+| [ha](acceptance-samples/ha/README.md) | HAL5 助听合一候选真机验证计划预填(路 ACCEPT-HA/sim-accept-ha) | 0 | 0 | 0 | 0 | 22 | 22 |
 | (上级散置) | 上级目录示例:D2-a-REC-01(属 d2a)/R4-VM-01(属 r234),§8.1 | 2 | 2 | 0 | 0 | 0 | 2 |
-| **合计** |  | **42** | **41** | **4** | **9** | **21** | **76** |
+| **合计** |  | **42** | **41** | **4** | **9** | **43** | **98** |
 
 BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证据等级 conditional(断言在显式投影/fixture 下成立,§8)。
 
@@ -103,6 +104,42 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [D3-TIM-01](acceptance-samples/d3/D3-TIM-01.json) | d3 | NOT_RUN | none |
 | [D3-AUD-01](acceptance-samples/d3/D3-AUD-01.json) | d3 | NOT_RUN | none |
 
+### 2.6 HAL5 真机验证授权(路 ACCEPT-HA 计划)(19 条挂账)
+
+性质:助听 HAL5 合一候选 9ad0f088… 真机分阶段验证的共同前提;计划=docs/hearing-aid-acceptance-plan.md(授权话术见其阶段1b:两段式,复述 sha 前 8 位) ｜ 映射出处:ha README「等待项」+计划 §阶段1b
+
+| 记录 | 目录 | 结果 | 证据等级 |
+|---|---|---|---|
+| [H5-AUT-01](acceptance-samples/ha/H5-AUT-01.json) | ha | NOT_RUN | none |
+| [H5-BAS-01](acceptance-samples/ha/H5-BAS-01.json) | ha | NOT_RUN | none |
+| [H5-APP-01](acceptance-samples/ha/H5-APP-01.json) | ha | NOT_RUN | none |
+| [H5-USB-01](acceptance-samples/ha/H5-USB-01.json) | ha | NOT_RUN | none |
+| [H5-HLT-01](acceptance-samples/ha/H5-HLT-01.json) | ha | NOT_RUN | none |
+| [H5-BLE-01](acceptance-samples/ha/H5-BLE-01.json) | ha | NOT_RUN | none |
+| [H5-BLE-02](acceptance-samples/ha/H5-BLE-02.json) | ha | NOT_RUN | none |
+| [H5-BLE-03](acceptance-samples/ha/H5-BLE-03.json) | ha | NOT_RUN | none |
+| [H5-BLE-04](acceptance-samples/ha/H5-BLE-04.json) | ha | NOT_RUN | none |
+| [H5-KEY-01](acceptance-samples/ha/H5-KEY-01.json) | ha | NOT_RUN | none |
+| [H5-KEY-02](acceptance-samples/ha/H5-KEY-02.json) | ha | NOT_RUN | none |
+| [H5-KEY-03](acceptance-samples/ha/H5-KEY-03.json) | ha | NOT_RUN | none |
+| [H5-ANC-01](acceptance-samples/ha/H5-ANC-01.json) | ha | NOT_RUN | none |
+| [H5-AUD-01](acceptance-samples/ha/H5-AUD-01.json) | ha | NOT_RUN | none |
+| [H5-EQ-01](acceptance-samples/ha/H5-EQ-01.json) | ha | NOT_RUN | none |
+| [H5-MPO-01](acceptance-samples/ha/H5-MPO-01.json) | ha | NOT_RUN | none |
+| [H5-DEF-01](acceptance-samples/ha/H5-DEF-01.json) | ha | NOT_RUN | none |
+| [H5-RBK-01](acceptance-samples/ha/H5-RBK-01.json) | ha | NOT_RUN | none |
+| [H5-END-01](acceptance-samples/ha/H5-END-01.json) | ha | NOT_RUN | none |
+
+### 2.7 HAL5 工具/观测前置(非授权类,阶段0a 离线就绪)(3 条挂账)
+
+性质:USB 双向 profile(PRE-01)/App key31 通道与保存按钮假成功修复(PRE-02)/客观声学测量器材(MET-01)——纯离线或器材缺口,先于任何授权成立 ｜ 映射出处:ha README「等待项」+计划 §阶段0a 与刷前缺口表
+
+| 记录 | 目录 | 结果 | 证据等级 |
+|---|---|---|---|
+| [H5-PRE-01](acceptance-samples/ha/H5-PRE-01.json) | ha | NOT_RUN | none |
+| [H5-PRE-02](acceptance-samples/ha/H5-PRE-02.json) | ha | NOT_RUN | none |
+| [H5-MET-01](acceptance-samples/ha/H5-MET-01.json) | ha | NOT_RUN | none |
+
 未入组等待项 5 条(依赖见各记录「未覆盖项」): [D1-DSP-04](acceptance-samples/d1/D1-DSP-04.json), [D1-TCK-03](acceptance-samples/d1/D1-TCK-03.json), [D2-a-ACT-05](acceptance-samples/d2a/D2-a-ACT-05.json), [D2-a-ACT-08](acceptance-samples/d2a/D2-a-ACT-08.json), [D2-a-SEC-01](acceptance-samples/d2a/D2-a-SEC-01.json).
 
 ## 3. 关键 FAIL/BLOCKED(归因取自记录本身)
@@ -130,7 +167,7 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [R3-APP-05](acceptance-samples/r234/R3-APP-05.json) | r234 | 真机 BLE 联调授权缺失——需用户当场显式授权的设备连接会话（红线：不连真机、不刷机），tools/android-query/README.md 真机适配清单第 9/10 条无法执行 |
 | [R4-VM-05](acceptance-samples/r234/R4-VM-05.json) | r234 | 主仿真前沿未推进到 RCSP/任务派发相位——BLE 协议栈与命名任务 0x060A1D11 的命令投递世界不可达，分发器 0x0600f85e 对载荷（0x060E31E0）的实际调用没有执行载体（… |
 
-### NOT_RUN(21 条,按目录聚合;等待说明=面板 README 指针)
+### NOT_RUN(43 条,按目录聚合;等待说明=面板 README 指针)
 
 | 目录 | NOT_RUN | 其中入组挂账 | 组外(依赖见记录「未覆盖项」) |
 |---|---|---|---|
@@ -139,6 +176,7 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | cot | 9 | 9 | 0 | 按 L0-L3 前置链(COT-01 两条不依赖 D1 可立即跑)——cot README |
 | d3 | 7 | 7 | 0 | 等授权或观测手段——d3 README「等待项地图」 |
 | d1 | 1 | 0 | 1 | 见该面板 README |
+| ha | 22 | 22 | 0 | 等阶段0a 离线就绪(USB 双向 profile/App key31 通道)+用户明示授权——ha README 与计划 go/no-go |
 
 ## 4. 记录索引(逐条链接)
 
@@ -218,8 +256,30 @@ BLOCKED=必选用例因模型缺失未过,不是弱化 PASS(§6.4);条件性=证
 | [D1-LOOP-01](acceptance-samples/d1/D1-LOOP-01.json) | d1 | FAIL | conditional(5) | 2026-11-17T05:10:00 |
 | [D1-TCK-03](acceptance-samples/d1/D1-TCK-03.json) | d1 | BLOCKED | conditional(5) | 2026-11-17T05:10:00 |
 | [D1-TMR-02](acceptance-samples/d1/D1-TMR-02.json) | d1 | FAIL | conditional(5) | 2026-11-17T05:10:00 |
+| [H5-ANC-01](acceptance-samples/ha/H5-ANC-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-APP-01](acceptance-samples/ha/H5-APP-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-AUD-01](acceptance-samples/ha/H5-AUD-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-AUT-01](acceptance-samples/ha/H5-AUT-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-BAS-01](acceptance-samples/ha/H5-BAS-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-BLE-01](acceptance-samples/ha/H5-BLE-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-BLE-02](acceptance-samples/ha/H5-BLE-02.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-BLE-03](acceptance-samples/ha/H5-BLE-03.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-BLE-04](acceptance-samples/ha/H5-BLE-04.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-DEF-01](acceptance-samples/ha/H5-DEF-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-END-01](acceptance-samples/ha/H5-END-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-EQ-01](acceptance-samples/ha/H5-EQ-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-HLT-01](acceptance-samples/ha/H5-HLT-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-KEY-01](acceptance-samples/ha/H5-KEY-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-KEY-02](acceptance-samples/ha/H5-KEY-02.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-KEY-03](acceptance-samples/ha/H5-KEY-03.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-MET-01](acceptance-samples/ha/H5-MET-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-MPO-01](acceptance-samples/ha/H5-MPO-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-PRE-01](acceptance-samples/ha/H5-PRE-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-PRE-02](acceptance-samples/ha/H5-PRE-02.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-RBK-01](acceptance-samples/ha/H5-RBK-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
+| [H5-USB-01](acceptance-samples/ha/H5-USB-01.json) | ha | NOT_RUN | none | 2026-11-18T01:12:10 |
 | [D2-a-REC-01](acceptance-samples/D2-a-REC-01.json) | (上级散置) | PASS | conditional(2) | 2026-11-14T08:30:00 |
 | [R4-VM-01](acceptance-samples/R4-VM-01.json) | (上级散置) | PASS | conditional(2) | 2026-11-14T08:30:00 |
 
-- 记录格式与校验规则:docs/d1-acceptance.md §8/§8.1;各目录面板(含依赖地图):[d2a](acceptance-samples/d2a/README.md) [r234](acceptance-samples/r234/README.md) [d2b](acceptance-samples/d2b/README.md) [cot](acceptance-samples/cot/README.md) [d3](acceptance-samples/d3/README.md) [parity](acceptance-samples/parity/README.md) [d1](acceptance-samples/d1/README.md)。
+- 记录格式与校验规则:docs/d1-acceptance.md §8/§8.1;各目录面板(含依赖地图):[d2a](acceptance-samples/d2a/README.md) [r234](acceptance-samples/r234/README.md) [d2b](acceptance-samples/d2b/README.md) [cot](acceptance-samples/cot/README.md) [d3](acceptance-samples/d3/README.md) [parity](acceptance-samples/parity/README.md) [d1](acceptance-samples/d1/README.md) [ha](acceptance-samples/ha/README.md)。
 - 本页由 tools/acceptance_dashboard.py 生成(只读汇总,不手改;数字全部来自记录文件)。

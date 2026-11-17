@@ -1,0 +1,26 @@
+{
+  "case_id": "H5-BLE-03",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "仅在能独立证明key缺失/长度不符时执行；历史VM不假定为空",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：已知健康查询→一次指定key读→健康查询；不清VM制造条件",
+  "observation_boundary": "5s响应窗口和前后健康查询，缺key前提证据",
+  "assertions": [
+    "确有缺失/长度不符证据才可把5s无响应计为预期静默",
+    "无独立前提证据时BLOCKED；超时本身不证明key不存在"
+  ],
+  "timeout_budget": "读请求完整发送后5s；前后健康查询各5s",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "静默不能唯一定位根因",
+    "无法经现有写入口删除key"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}
