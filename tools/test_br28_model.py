@@ -3364,10 +3364,11 @@ class ModelTests(unittest.TestCase):
         # (`delay(41); PLED->CON3 &= ~0x20`)首条 rmw.and.nmodimm
         # [0xfd610c]&=0xFFFFFFDF 的配置 RMW 内部读撞 unmapped。容器白名单
         # 恰一字 {0xfd610c}=br28.h JL_PLED_TypeDef 第 4 字 CON3(__RW);
-        # 合成初始 0+读回=当前值(两项均显式模型假设);codex 定调单字最小
-        # 假设——CON0(0xfd6100)有 save-restore 位消费(0x60194ae/0x60194b4
-        # + 0x6069b0e 读 bit0 定亮度步进)属分支消费者,CNT_RD(__RO)/
-        # CNT_SYNC(__WO)/CNT_DEC(计数未证)及其余字全部留 unmapped。
+        # 合成初始 0+RMW 内部读回=当前值(两项均显式模型假设);显式 load
+        # 是算术消费者(0x6034b7a 进乘除),read() 严格停;codex 定调单字
+        # 最小假设——CON0(0xfd6100)有 save-restore 位消费(0x60194ae/
+        # 0x60194b4 + 0x6069b0e 读 bit0 定亮度步进)属分支消费者,CNT_RD
+        # (__RO)/CNT_SYNC(__WO)/CNT_DEC(计数未证)及其余字全部留 unmapped。
         plain=BR28Model()
         for address in (0xfd6100,0xfd6104,0xfd6108,0xfd610c,0xfd613c,
                         0xfd6140,0xfd6144,0xfd6148):
@@ -3385,31 +3386,37 @@ class ModelTests(unittest.TestCase):
                          or h.handles(0xfd6108,4) or h.handles(0xfd613c,4)
                          or h.handles(0xfd6140,4) or h.handles(0xfd6144,4)
                          or h.handles(0xfd6148,4) or h.handles(0xfd610d,1))
+        # 显式 load(0x6034b7a 算术消费者形状)严格停——路由只授权配置 RMW,
+        # 不服务未经审计的显式读;专用分发谓词 handles_pled_con3_rmw 在
+        # probe_boot 层区分 RMW 与 load,read() 一律拒绝。
+        with self.assertRaisesRegex(Blocked,'jl_pled_con3_read_not_modeled'):
+            h.read(0xfd610c)
         # 停点 RMW 形状([r0+0] &= 0xFFFFFFDF):初读=合成 0,清位写回
-        # 0&0xFFFFFFDF=0,写后读=最后写值;读与 RMW 内部读共享同一份容器
-        # 状态(RMW 自身消费旧值,不能判死读)。
-        self.assertEqual(h.read(0xfd610c),0)
-        h.write(0xfd610c,0 & 0xffffffdf)
-        self.assertEqual(h.read(0xfd610c),0)
+        # 0&0xFFFFFFDF=0;RMW 内部读与整字写共享同一份容器状态(RMW 自身
+        # 消费旧值,不能判死读)。
+        self.assertEqual(h.jl_pled_con3.rmw('and',0xffffffdf),0)
         # 保留位钉:非零旧字经清 bit5 RMW 后其余 27 位原样保留
         # (0xffffffff & 0xffffffdf = 0xffffffdf)——仅测初值零会漏掉
         # RMW 内部读/写不同容器状态的实现错误(codex/depmap 钉子)。
-        h.write(0xfd610c,0xffffffff)
-        self.assertEqual(h.read(0xfd610c),0xffffffff)
-        h.write(0xfd610c,0xffffffff & 0xffffffdf)
-        self.assertEqual(h.read(0xfd610c),0xffffffdf)
+        self.assertEqual(h.jl_pled_con3.rmw('or',0xffffffff),0xffffffff)
+        self.assertEqual(h.jl_pled_con3.rmw('and',0xffffffdf),0xffffffdf)
+        # 整字清零(0x60195fc st.w =0)仍走 write(),写入后 RMW 内部读=最后
+        # 写值(reads_after_write 计数)。
+        h.write(0xfd610c,0)
+        self.assertEqual(h.jl_pled_con3.rmw('or',0x40),0x40)
         r=h.report()['jl_pled_con3_registers']
-        self.assertEqual(r['word_writes'],3)
+        self.assertEqual(r['word_writes'],5)
         self.assertEqual(r['addresses'],['0xfd610c'])
         self.assertEqual((r['readback_projection']['reads'],
                           r['readback_projection']['synthesized_initial_reads']),
                          (3,1))
-        self.assertEqual(r['stores']['0xfd610c']['values'],['0x0','0xffffffff','0xffffffdf'])
+        self.assertEqual(r['stores']['0xfd610c']['values'],
+                         ['0x0','0xffffffff','0xffffffdf','0x0','0x40'])
         self.assertIn('modeled exactly one word',r['modeled_vs_touched'])
-        self.assertIn('new read consumer',r['readback_projection']['known_limitation'])
-        self.assertIn('re-classified',r['readback_projection']['known_limitation'])
-        self.assertIn('six whole-app sites',r['whitelisted_words'])
+        self.assertIn('0x6034b7a',r['readback_projection']['known_limitation'])
+        self.assertIn('ten config-write sites',r['whitelisted_words'])
         self.assertIn('0x6019458',r['whitelisted_words'])
+        self.assertIn('0x601956e',r['whitelisted_words'])
         self.assertIn('no branch',r['observed_shapes'])
         self.assertIn('NOT a reset-value claim',
                       r['readback_projection']['readback_semantics'])
@@ -3420,7 +3427,7 @@ class ModelTests(unittest.TestCase):
         assumption=h.report()['assumptions']['jl_pled_con3_registers']
         self.assertIn('synthetic initial 0',assumption)
         self.assertIn('save-restore bit consumer',assumption)
-        self.assertIn('new read consumer must be re-classified',assumption)
+        self.assertIn('0x6034b7a',assumption)
         self.assertIn('no LED waveform',assumption)
 
     def test_jl_adc_start_config_registers(self):

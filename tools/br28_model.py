@@ -3716,19 +3716,25 @@ class JLPledCon3Registers:
     JL_PLED_TypeDef(sha 111e29ea…,L1249-1272)把 CON3 标 __RW(0xfd610c=
     ls_base+map_adr(0x61,3),第 4 个字)。
 
-    静态访问面(LED 驱动域 0x6019xxx 反汇编):CON3 全部触达=6 站点——
-    0x6019458(清 bit5)、0x6019566(清低 nibble)、0x601956e(|=0x1000)、
-    0x60195fe(|=0x10)、0x6019602(|=0x40),均为原子 RMW 配置写,读值只进
-    `old&mask`/`old|mask` 写回组装、零分支、零轮询。CON0(0xfd6100)有
-    save-restore 位消费(`r6=[0xfd6100]`→清 bit0→`if(r6&1)`恢复,0x60194ae;
-    +0x6069b08 读 bit0 定亮度步进)属分支消费者,本轮**不纳入**;其余字
-    (CON1/CON2/PRD_DIVL/DUTY0..3/CNT_RD/CON4/CNT_SYNC/CNT_DEC)留 unmapped,
-    到达时按各自读者单独核验(codex 定调:单字最小假设,不把 __RW 整组放行)。
+    静态访问面(LED 驱动域反汇编,2026-11-17 补全):CON3(0xfd610c)全应用
+    触达=11 站点——9 处原子 RMW(0x6019458 清 bit5、0x6019566 清低 nibble、
+    0x601956e |=r0、0x60195fe |=0x10、0x6019602 |=0x40、0x601a086 清 bit5、
+    0x601a08a |=0x40、0x601a0a0 |=0x20、0x6034b12 |=0x40)、1 处整字清零
+    (0x60195fc st.w =0)、1 处显式 load(0x6034b7a `ld.w r1=[r5+12]`,读值
+    经 lsl/and/or 后进乘除计算)。前 10 站点读值只进 old&mask/old|mask
+    写回组装、零分支零轮询;末站点是真实算术消费者,超出配置 RMW 授权
+    范围,本容器**不服务**显式读(read() 严格停),RMW 内部读由容器合成
+    初始 0/最后写值服务。CON0(0xfd6100)有 save-restore 位消费
+    (`r6=[0xfd6100]`→清 bit0→`if(r6&1)`恢复,0x60194ae;+0x6069b08 读
+    bit0 定亮度步进)属分支消费者,本轮**不纳入**;其余字(CON1/CON2/
+    PRD_DIVL/DUTY0..3/CNT_RD/CON4/CNT_SYNC/CNT_DEC)留 unmapped,到达时按
+    各自读者单独核验(codex 定调:单字最小假设,不把 __RW 整组放行)。
 
     分类:AM 容器族——合成初始 0+读回=当前值(derived-not-measured 非复位
-    值声明);只服务对齐 32 位字。known_limitation:LED 波形/亮度/时钟/计数/
-    自清位/中断一律不建模;物理外设可能消费保留位(写事务真实落盘);同址
-    新读者(显式 ld 分支/轮询/他核访问)须重审,地址白名单不自动阻断。
+    值声明);只服务对齐 32 位字;RMW 内部读走 rmw(),显式 load 走 read()
+    严格停。known_limitation:LED 波形/亮度/时钟/计数/自清位/中断一律不
+    建模;物理外设可能消费保留位(写事务真实落盘);地址白名单不自动阻断
+    新读者——已知显式读者 0x6034b7a 已按 Blocked 拒绝而非服务合成值。
     """
 
     ADDRESS=0xfd610c
@@ -3750,12 +3756,26 @@ class JLPledCon3Registers:
 
     def read(self,address):
         if address!=self.ADDRESS:raise ValueError('not the modeled JL_PLED CON3 word')
-        entry=self.stores[address]
+        # 显式 load(如 0x6034b7a `ld.w r1=[r5+12]`)把读值带进乘除计算,是
+        # 配置 RMW 之外的算术消费者——合成值不能喂给它,严格停(显式 kind
+        # 优先于泛 unmapped,便于诊断)。RMW 内部读(0x6019458 等清位/置位)
+        # 走 rmw(),由该路径计数 reads_after_write/synthesized_initial_reads。
+        raise Blocked('jl_pled_con3_read_not_modeled',address=hex(address))
+
+    def rmw(self,kind,operand):
+        if kind not in ('or','and'):raise ValueError('CON3 RMW kind must be or/and')
+        if not isinstance(operand,int) or not 0<=operand<=0xffffffff:raise ValueError('unsigned32 operand expected')
+        entry=self.stores[self.ADDRESS]
         if entry['writes']>0:
             self.reads_after_write+=1
-            return entry['values'][-1]
-        self.synthesized_initial_reads+=1
-        return self.SYNTHETIC_INITIAL_WORD
+            old=entry['values'][-1]
+        else:
+            self.synthesized_initial_reads+=1
+            old=self.SYNTHETIC_INITIAL_WORD
+        value=((old|operand) if kind=='or' else (old&operand))&0xffffffff
+        entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+        return value
 
     def report(self):
         entry=self.stores[self.ADDRESS]
@@ -3773,35 +3793,47 @@ class JLPledCon3Registers:
                           'container — mutually exclusive: this whitelist is '
                           'exactly {0xfd610c}'),
             'whitelisted_words':('exactly {0xfd610c}; the audited CON3 access set '
-                                 'is the six whole-app sites in the LED driver '
-                                 '(0x6019458 clear-bit5, 0x6019566 clear-low-'
-                                 'nibble, 0x601956e |=0x1000, 0x60195fe |=0x10, '
-                                 '0x6019602 |=0x40); every other JL_PLED word and '
+                                 'is ten config-write sites plus one explicit-read '
+                                 'consumer — RMW: 0x6019458 clear-bit5, 0x6019566 '
+                                 'clear-low-nibble, 0x601956e |=r0, 0x60195fe '
+                                 '|=0x10, 0x6019602 |=0x40, 0x601a086 clear-bit5, '
+                                 '0x601a08a |=0x40, 0x601a0a0 |=0x20, 0x6034b12 '
+                                 '|=0x40; whole-word store: 0x60195fc =0; explicit '
+                                 'load: 0x6034b7a (arithmetic consumer, read '
+                                 'raises Blocked); every other JL_PLED word and '
                                  'every sub-word/misaligned access stays unmapped'),
-            'observed_shapes':('atomic RMW bit operations only (rmw.and.nmodimm / '
-                               'rmw.or.modimm / rmw.or.r): every read value feeds '
-                               'only old&mask / old|mask write-back assembly — no '
-                               'branch, no polling, no busy-wait consumption'),
+            'observed_shapes':('atomic RMW bit operations (rmw.and.nmodimm / '
+                               'rmw.or.modimm / rmw.or.r) plus one whole-word '
+                               'zero store (0x60195fc st.w =0): every RMW read '
+                               'value feeds only old&mask / old|mask write-back '
+                               'assembly — no branch, no polling, no busy-wait '
+                               'consumption; the one explicit load (0x6034b7a) '
+                               'is a multiply/divide consumer, deliberately '
+                               'refused (jl_pled_con3_read_not_modeled)'),
             'readback_projection':{
                 'addresses':[hex(self.ADDRESS)],
                 'reads':self.reads_after_write,
                 'synthesized_initial_reads':self.synthesized_initial_reads,
-                'readback_semantics':('last firmware-written value; before any '
-                    'firmware write the explicit synthetic initial word 0 — '
-                    'derived-not-measured, NOT a reset-value claim; no LED '
-                    'waveform/brightness/clock/count/self-clearing-bit/interrupt '
-                    'side effect is modeled'),
+                'readback_semantics':('RMW-internal reads answer the last '
+                    'firmware-written value (or the synthetic initial word 0 '
+                    'before the first write) and only feed write-back assembly; '
+                    'explicit loads are refused — derived-not-measured, NOT a '
+                    'reset-value claim; no LED waveform/brightness/clock/count/'
+                    'self-clearing-bit/interrupt side effect is modeled'),
                 'known_limitation':('the preserved bits of the old word still '
                     'enter the real write transaction and the physical peripheral '
-                    'may consume them; a new read consumer (explicit load-and-'
-                    'branch, polling, another core) of 0xfd610c must be '
-                    're-classified before this container serves it — the address '
-                    'whitelist does not automatically block new consumers'),
+                    'may consume them; the explicit CON3 load at 0x6034b7a '
+                    '(feeds lsl/and/or then mul/div) is a real arithmetic '
+                    'consumer outside the config-RMW scope, so the container '
+                    'refuses explicit reads instead of serving them a '
+                    'synthesized word'),
             },
-            'assumption':('synthetic-initial-0 + last-write readback of one word '
-                          '(AM family precedent); CON3-only scope — the branch-'
-                          'consuming CON0 save-restore word is deliberately '
-                          'excluded (route-FD610C codex decision)'),
+            'assumption':('synthetic-initial-0 + last-write RMW-internal readback '
+                          'of one word (AM family precedent); explicit loads '
+                          'refused (0x6034b7a is an arithmetic consumer); '
+                          'CON3-only scope — the branch-consuming CON0 '
+                          'save-restore word is deliberately excluded '
+                          '(route-FD610C codex decision)'),
         }
 
 
@@ -7079,6 +7111,13 @@ class BR28Model:
         return (self.fd31_adc_con is not None and self.fd31_adc_con.pnd_completion
                 and self.fd31_adc_con.handles(address))
 
+    def handles_pled_con3_rmw(self,address):
+        # 路 FD610C:CON3(0xfd610c)的配置 RMW(0x6019458 清 bit5 等 9 站点)
+        # 走专用分发→jl_pled_con3.rmw()(内部读=合成初始 0/最后写值,写回
+        # 记录);显式 load 不经此分发,落通用读路径后由 read() 严格停。开关
+        # 关时返回 False,0xfd610c 保持 unmapped(41,847,303 前沿形状)。
+        return self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address)
+
     def gpcnt_rmw(self,address,kind,operand):
         if not self.handles_gpcnt(address):raise ValueError('not modeled GPCNT CON')
         self.gpcnt.rmw(kind,operand);self.counts['reads']+=1
@@ -7381,9 +7420,10 @@ class BR28Model:
         if self.jl_clock_con3 is not None and self.jl_clock_con3.handles(address):
             self.counts['reads']+=1
             return self.jl_clock_con3.read(address)
-        # JL_PLED CON3(路 FD610C):0x6019458 的配置 RMW 内部读(清 bit5)走通用
-        # mmio 路径的 rmw 读侧=容器当前值;LED 波形/亮度/时钟/计数/自清位/
-        # 中断不建模(类注释)。
+        # JL_PLED CON3(路 FD610C):显式 load(0x6034b7a 算术消费者)严格停
+        # (read() 内 jl_pled_con3_read_not_modeled);配置 RMW 内部读走
+        # probe_boot 的 handles_pled_con3_rmw 专用分发→jl_pled_con3.rmw(),
+        # 不进本读路径。LED 波形/亮度/时钟/计数/自清位/中断不建模(类注释)。
         if self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address):
             self.counts['reads']+=1
             return self.jl_pled_con3.read(address)
@@ -7631,8 +7671,9 @@ class BR28Model:
             # (经通用 mmio 路径的内部读=容器当前值);时钟树硬件语义不建模。
             self.jl_clock_con3.write(address,value)
         elif self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address):
-            # JL_PLED CON3(路 FD610C):0x6019458 的 RMW 写回与整字写记录
-            # (经通用 mmio 路径的内部读=容器当前值);LED 外设硬件语义不建模。
+            # JL_PLED CON3(路 FD610C):整字写(0x60195fc st.w =0)记录;RMW 写回
+            # 走 probe_boot 的 handles_pled_con3_rmw 专用分发→jl_pled_con3.
+            # rmw()(内部读=容器当前值);LED 外设硬件语义不建模。
             self.jl_pled_con3.write(address,value)
         elif self.p11_lpvad is not None and self.p11_lpvad.handles(address):
             # P11_SFR LPVAD VAD_ACON0(路 LPV):停点 0x606b68e 的 bit28 置位
@@ -8407,17 +8448,22 @@ class BR28Model:
             result['jl_pled_con3_registers']=self.jl_pled_con3.report()
             result['assumptions']['jl_pled_con3_registers']=(
                 'JL_PLED CON3 single word 0xfd610c (br28.h JL_PLED_TypeDef word 3, '
-                'route FD610C): write record plus last-write readback with an '
-                'explicit synthetic initial 0 (AM family); the audited face is the '
-                'six whole-app sites in the LED driver — atomic RMW bit operations '
-                '(0x6019458 clear-bit5 = the 41,847,303 frontier stop, 0x6019566 '
-                'clear-low-nibble, 0x601956e |=0x1000, 0x60195fe |=0x10, 0x6019602 '
-                '|=0x40), every read value feeds only old&mask / old|mask write-back '
-                'assembly with zero branch/polling consumption; CON0 (0xfd6100) has '
-                'a save-restore bit consumer and the other 17 words stay unmapped; '
-                'no LED waveform/brightness/clock/count/self-clearing-bit/interrupt '
-                'side effect is modeled; the preserved old-word bits still enter '
-                'the real write transaction (the physical peripheral may consume '
+                'route FD610C): write record plus RMW-internal readback with an '
+                'explicit synthetic initial 0 (AM family); the audited face is ten '
+                'config-write sites plus one explicit-read consumer — atomic RMW '
+                'bit operations (0x6019458 clear-bit5 = the 41,847,303 frontier '
+                'stop, 0x6019566 clear-low-nibble, 0x601956e |=r0, 0x60195fe '
+                '|=0x10, 0x6019602 |=0x40, 0x601a086 clear-bit5, 0x601a08a '
+                '|=0x40, 0x601a0a0 |=0x20, 0x6034b12 |=0x40), one whole-word zero '
+                'store (0x60195fc), and one explicit load (0x6034b7a) that feeds '
+                'multiply/divide — every RMW read value feeds only old&mask / '
+                'old|mask write-back assembly with zero branch/polling '
+                'consumption, and the explicit load is refused (the route only '
+                'authorizes config RMW); CON0 (0xfd6100) has a save-restore bit '
+                'consumer and the other 17 words stay unmapped; no LED '
+                'waveform/brightness/clock/count/self-clearing-bit/interrupt side '
+                'effect is modeled; the preserved old-word bits still enter the '
+                'real write transaction (the physical peripheral may consume '
                 'them) — a new read consumer must be re-classified')
         if self.p11_lpvad is not None:
             result['p11_lpvad_config_registers']=self.p11_lpvad.report()

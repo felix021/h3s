@@ -1449,10 +1449,15 @@ def check_self_conditional(report):
       r0;路 AN 的 5 处=walker 链新 CRC 轮序号 37/43/49/55/61,路 AS 再加 2
       处=尾块新 CRC 轮序号 67/73,路 FLS 再加 8 处=77/83/97/103/109/115/
       121/127,路 RAND 再加 9 处=130/137/147/154/161/168/175/182/189,路
-      FD610C 再加 1 处=197(过墙段 +503 步触达任务创建/配置验证的下一轮
-      硬件 CRC)——每六值循环组一处镜像相关差异,镜像字节仍只以寄存器值/
-      CRC 结果显形,存储字节零差异;spans 147→151(+4 同属寄存器值分歧
-      面,writes_differ 全 False、首分歧仍 155,390、控制流全同构)。
+      FD610C 段到 result_reads[197] 的差异有真实镜像数据解释——30 字节
+      窗口 0x60e0a2e..0x60e0a4c=stream.bin 表项头(official 66 c9 / b79
+      7f a5,独立 crc_hqx 得 0x91a9/0x64f2);该项在 STOREG3 基线/关闭臂/
+      开启臂的 official 报告里完全相等(均为 204 次结果读取),第 197 项
+      早已存在、不是本路新增,不能归因于 +503 步;其动态源地址的完整
+      记录留 TODO(后续重建 base/head 基线时补)。spans 147→151(+4 同属
+      寄存器值分歧面,首分歧仍 155,390、控制流全同构);writes_differ
+      只查前 8 段起点,段内 store 与第 9 段以后未纳入——镜像字节复制进
+      RAM 自然产生存储差异,不能据此断言存储字节零差异或证明模型有 bug。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
     pairs = {p['name']: p for p in report['pairs']}
@@ -1504,8 +1509,10 @@ def check_self_conditional(report):
             'crc_bankb-scenario divergence)')
     spans = p['divergent_signature_spans']
     require(spans['count'] == 151 and all(not s['writes_differ'] for s in spans['first']),
-            'the official-vs-b79 conditional divergence-span shape changed (image bytes must '
-            'stay visible only as register values, never as differing stored bytes)')
+            'the official-vs-b79 conditional divergence-span shape changed (only the first '
+            '8 spans\' start points are checked: intra-span stores and spans beyond the '
+            'first 8 are NOT in scope — mirror byte copies into RAM naturally differ and '
+            'cannot by themselves prove a model bug)')
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
     require(diffs == sorted(['$.milestones[23].r0',
                              '$.peripherals.hardware_crc_projection.result_reads[1]',
