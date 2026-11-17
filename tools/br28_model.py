@@ -4088,6 +4088,166 @@ class JLPledCon0Registers:
         }
 
 
+class P2MClkCon0Registers:
+    """P11_SYSTEM->P2M_CLK_CON0(0xf2a610)单字配置 RMW 容器(合成初始 0+
+    RMW 内部读回=当前值,显式读一律拒绝,opt-in,路 P2MCLK)。
+
+    背景:41,848,382 停点 @ 0x6019508(路 FD610C-con0 放行 CON0 后 +576 步
+    纯 CPU0 段)——极小 helper 0x6019502 首条 `rmw.and.nmodimm
+    [0xf2a610]&=0xFFFFFF1F`(raw m=0xE0,清 bits5-7)的配置 RMW 内部读撞
+    unmapped。helper 整体 = SDK 宏 LED_CLK_SEL(3)(p11_app.h L117
+    `P2M_CLK_CON0=(P2M_CLK_CON0&~0xe0)|x<<5`):
+      [0xf2a610]&=~0xE0 → [0xf2a610]|=0x60(bits[7:5]=0b011) → b[0x12603C]=1
+    (RAM 标志「LED 时钟已选」)→ rts。0xf2a610=P11_SYSTEM_TypeDef
+    (基 0xf2a600)第 5 字 P2M_CLK_CON0(__RW __u32,p11_sfr.h;无任何位宏/
+    复位值说明)。
+
+    静态访问面(2026-11-17 全量扫描:指令级线性反汇编窗口 0xf2a5f0-80、
+    4 字节 LE 字面值扫描、0xa610 偏移表形式对齐字扫描、0x6019502 函数
+    指针 4 字节模式扫描、128KB ROM dump 全窗口):**0xf2a610 全 app 唯一
+    引用 = helper 0x6019502 的 li.u32**;两条 RMW(0x6019508 清位/0x601950c
+    置位)是仅有的读——读值只进 old&mask/old|mask 写回组装,零分支零轮询
+    零查表零算术;helper 之后只写 RAM 标志即返回。SDK 的
+    GET_LED_CLK_SEL(x)=P2M_CLK_CON0&0xe0(p11_app.h L118,真实读值消费者
+    宏)全 SDK .c 与 app 均无引用。已审计静态访问面仅发现该 helper——
+    基址+偏移/寄存器传播/RAM 指针等计算形访问不由此证明绝无,由执行面
+    诚实停兜底(未建模读者到达即停)。调用面:全 app 直接 call 恰 2 站点
+    (0x6019fda/0x601a30c),同一形状一次性初始化守卫
+    `if((b[ctx+48]&1)==0){call 0x60194a4(CON0 配置);…;call 0x6019502;
+    b[ctx+48]|=1;}`——LED 初始化块先配 JL_PLED CON0 再选 P2M 域 LED 时钟
+    源,当前停点在前缀唯一一次执行中。
+
+    邻域成员全部核验、无一触 +0x10:0xf2a600 P2M_INT_IE(0x6069204 pmu
+    事件域读进分支/0x60c6858 flash pmu 库,均不在健康 boot 前缀)、
+    0xf2a604/614/61c/620 零引用、0xf2a608 P2M_INT_CLR(0x606920a pmu 域
+    RMW+邮箱整字写,邮箱已由 P2mMailboxAck 建模)、0xf2a60c P2M_INT_PND
+    (0x6069202 pmu 域/邮箱轮询,P2mMailboxAck 武装态建模)、0xf2a618
+    M2P_INT_SET(纯写 kick)、0xf2a628 P11_SYS_CON1(0x6068c88 power_init
+    域 RMW)、0xf2a62c MEM_PWR_CON(3 站点既有)。本容器是孤立单字,不建
+    邻域联合状态(「孤立」是模型范围声明,不是硬件联动结论)。
+
+    codex 三选一(路 P2MCLK,gpt-6-astra,2026-11-17):选 (a) 配置 RMW
+    单字容器(CON3 式)——读值只进写回组装,与 CON3 授权范围一致;不选
+    (b) 具名 fixture(CON0 的 fixture 机制回答「首读值进哪个分支」,本字
+    读值不进任何分支;不同初态主核控制流相同但写事务不同,「保留位无人
+    显式读」不能推出「任意初态等价」,更不能发明初态);不选 (c) 诚实停
+    (条件线无法推进,关开关即回到严格基线)。read() 首写前后都拒绝显式
+    读(本路线只授权配置 RMW;零显式读者=当前前缀不需要读能力,拒绝还
+    防住静态扫描遗漏/后续新增读者——CON3 的 read 拒绝同款,其拒绝理由
+    「存在真实算术消费者」在本例甚至不成立,拒绝是能力最小化而非危险
+    读者防御)。分发放 CON3 同款专用分发(probe_boot
+    handles_p2m_clk_con0_rmw→rmw());只服务已观测的两种立即数形状
+    (rmw.and.nmodimm/rmw.or.modimm),其他形状具名拒绝。
+
+    分类:AM 容器族——合成初始 0+RMW 内部读回=当前值(derived-not-
+    measured 非复位值声明);只服务对齐 32 位字;整字写记录(支持、前缀
+    未观测);显式 load 走 read() 严格停。known_limitation:LED 时钟树/
+    波形/亮度/中断/P11 侧响应一律不建模——时钟选择位可直接被硬件时钟
+    逻辑消费(无需任何 CPU load),P11 未执行,不能排除其经另一地址视图
+    修改同一状态;两条 RMW 是两个独立事务,不把整个 helper 当一次原子
+    更新;物理外设可能消费保留位(写事务真实落盘)。地址白名单不自动
+    阻断新读者——未建模读者到达即停。
+    """
+
+    ADDRESS=0xF2A610
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self):
+        self.stores={self.ADDRESS:{'values':[],'writes':0}}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address==self.ADDRESS
+
+    def write(self,address,value):
+        if address!=self.ADDRESS:raise ValueError('not the modeled P2M_CLK_CON0 word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address!=self.ADDRESS:raise ValueError('not the modeled P2M_CLK_CON0 word')
+        # 显式 load 一律拒绝(本路线只授权配置 RMW;SDK GET_LED_CLK_SEL 无人
+        # 用,零显式读者=当前前缀不需要读能力,不为假想读者开放)。
+        raise Blocked('p2m_clk_con0_read_not_modeled',address=hex(address))
+
+    def rmw(self,kind,operand):
+        if kind not in ('or','and'):raise ValueError('P2M_CLK_CON0 RMW kind must be or/and')
+        if not isinstance(operand,int) or not 0<=operand<=0xffffffff:raise ValueError('unsigned32 operand expected')
+        entry=self.stores[self.ADDRESS]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            old=entry['values'][-1]
+        else:
+            self.synthesized_initial_reads+=1
+            old=self.SYNTHETIC_INITIAL_WORD
+        value=((old|operand) if kind=='or' else (old&operand))&0xffffffff
+        entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+        return value
+
+    def report(self):
+        entry=self.stores[self.ADDRESS]
+        return {
+            'addresses':[hex(self.ADDRESS)],
+            'modeled_vs_touched':('modeled exactly one word 0xf2a610 P11_SYSTEM->'
+                                  'P2M_CLK_CON0 (touched: %d writes)'%entry['writes']),
+            'word_writes':self.word_writes,
+            'stores':{hex(self.ADDRESS):{'values':[hex(v) for v in entry['values'][-8:]],
+                                         'writes':entry['writes']}} if entry['writes'] else {},
+            'sdk_naming':('p11_sfr.h P11_SYSTEM_TypeDef word 4 P2M_CLK_CON0 at '
+                          'P11_SYSTEM_BASE(p11_sfr_base+map_adr(0x06,0))=0xf2a600, '
+                          'so P2M_CLK_CON0=0xf2a610 (__RW __u32, no bit macros); the '
+                          'firmware helper 0x6019502 is exactly SDK macro '
+                          'LED_CLK_SEL(3) (p11_app.h L117); every other P11_SYSTEM '
+                          'word (P2M/M2P INT_IE/SET/CLR/PND, P11_SYS_CON0/1, '
+                          'MEM_PWR_CON) stays OUT of this container — the mailbox '
+                          'INT_SET/INT_PND/INT_CLR traffic is owned by '
+                          'P2mMailboxAck, mutually exclusive address sets'),
+            'whitelisted_words':('exactly {0xf2a610}; the audited static access face '
+                                 'is one helper — 0x6019502 li 0xF2A610 then two '
+                                 'atomic RMWs (0x6019508 rmw.and.nmodimm clear '
+                                 'bits5-7 raw m=0xE0, 0x601950c rmw.or.modimm '
+                                 '|=0x60) plus the RAM flag store b[0x12603C]=1; '
+                                 'callers 0x6019fda / 0x601a30c (one-shot LED-init '
+                                 'guard); ROM and offset-form table scans found no '
+                                 'other reference; every other P11_SYSTEM word and '
+                                 'every sub-word/misaligned access stays unmapped'),
+            'observed_shapes':('two atomic immediate RMW bit operations '
+                               '(rmw.and.nmodimm / rmw.or.modimm): every RMW read '
+                               'value feeds only old&mask / old|mask write-back '
+                               'assembly — no branch, no polling, no table, no '
+                               'arithmetic consumer; SDK GET_LED_CLK_SEL (the '
+                               'read-out macro) is referenced nowhere'),
+            'readback_projection':{
+                'addresses':[hex(self.ADDRESS)],
+                'reads':self.reads_after_write,
+                'synthesized_initial_reads':self.synthesized_initial_reads,
+                'readback_semantics':('RMW-internal reads answer the last '
+                    'firmware-written value (or the synthetic initial word 0 '
+                    'before the first write) and only feed write-back assembly; '
+                    'explicit loads are always refused, before and after the '
+                    'first write — derived-not-measured, NOT a reset-value '
+                    'claim; no LED clock-tree/waveform/brightness/interrupt/'
+                    'P11-response side effect is modeled'),
+                'known_limitation':('the preserved bits of the old word still '
+                    'enter the real write transaction and the physical '
+                    'peripheral (clock logic) may consume the select bits with '
+                    'no CPU load at all; P11 (not executed here) may mutate the '
+                    'same state through another address view; the two RMWs are '
+                    'two separate transactions, not one atomic helper'),
+            },
+            'assumption':('synthetic-initial-0 + last-write RMW-internal readback '
+                          'of one word (AM family precedent, route-FD610C shape); '
+                          'explicit loads always refused (zero app readers — '
+                          'capability minimization, not danger defense); '
+                          'observed-form-only RMW shapes (and.nmodimm/or.modimm); '
+                          'single-word scope with no neighborhood coupling '
+                          '(route-P2MCLK codex three-way (a))'),
+        }
+
+
 class P11LPVADConfigRegisters:
     """P11_SFR LPVAD VAD_ACON0 单字容器(合成初始 0+读回=当前值,opt-in,路 LPV)。
 
@@ -6555,6 +6715,7 @@ class BR28Model:
                  jl_clock_con3_readback=False,
                  jl_pled_con3_readback=False,
                  jl_pled_con0_initial_fixture=None,
+                 p2m_clk_con0_config_rmw=False,
                  p11_lpvad_config=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
@@ -6776,6 +6937,15 @@ class BR28Model:
         # 「纯写记录读回 Blocked」族与配置读回语义冲突;codex 定调)。
         self.p11_lpvad=(P11LPVADConfigRegisters()
                         if p11_lpvad_config else None)
+        # p2m_clk_con0_config_rmw(路 P2MCLK):P11_SYSTEM P2M_CLK_CON0(0xf2a610)
+        # 单字配置 RMW 容器——41,848,382 停点 0x6019508(LED_CLK_SEL(3)
+        # helper 0x6019502 首条清 bits5-7 RMW)的内部读。全 app 唯一引用=
+        # 该 helper,读值只进写回组装(codex 三选一定调 (a),CON3 式:合成
+        # 初始 0+RMW 内部读回=当前值,显式读一律拒绝,只服务已观测的两种
+        # 立即数形状)。开关关时 0xf2a610 保持 unmapped(41,848,382 前沿
+        # 形状),legacy 报告逐字节不变;与邮箱(P2mMailboxAck 的 608/60c/
+        # 618)地址集互斥不重叠。
+        self.p2m_clk_con0=(P2MClkCon0Registers() if p2m_clk_con0_config_rmw else None)
         if core_tick_delivery_requests and not core_tick_configuration:
             raise ValueError('core tick delivery requests require the core tick configuration')
         self.core_tick_delivery_requests=core_tick_delivery_requests
@@ -7351,6 +7521,7 @@ class BR28Model:
             (self.jl_clock_con3 is not None and self.jl_clock_con3.handles(address)) or
             (self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address)) or
             (self.jl_pled_con0 is not None and self.jl_pled_con0.handles(address)) or
+            (self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address)) or
             (self.p11_lpvad is not None and self.p11_lpvad.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
@@ -7398,6 +7569,14 @@ class BR28Model:
         # 记录);显式 load 不经此分发,落通用读路径后由 read() 严格停。开关
         # 关时返回 False,0xfd610c 保持 unmapped(41,847,303 前沿形状)。
         return self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address)
+
+    def handles_p2m_clk_con0_rmw(self,address):
+        # 路 P2MCLK:P2M_CLK_CON0(0xf2a610)的配置 RMW(0x6019508 清 bits5-7/
+        # 0x601950c |=0x60,LED_CLK_SEL(3) helper 全部两条)走专用分发→
+        # p2m_clk_con0.rmw()(内部读=合成初始 0/最后写值,写回记录);显式
+        # load 不经此分发,落通用读路径后由 read() 严格停。开关关时返回
+        # False,0xf2a610 保持 unmapped(41,848,382 前沿形状)。
+        return self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address)
 
     def gpcnt_rmw(self,address,kind,operand):
         if not self.handles_gpcnt(address):raise ValueError('not modeled GPCNT CON')
@@ -7721,6 +7900,14 @@ class BR28Model:
         if self.jl_pled_con0 is not None and self.jl_pled_con0.handles(address):
             self.counts['reads']+=1
             return self.jl_pled_con0.read(address)
+        # P11_SYSTEM P2M_CLK_CON0(路 P2MCLK):显式 load 一律严格停(read()
+        # 内 p2m_clk_con0_read_not_modeled——全 app 零显式读者,SDK
+        # GET_LED_CLK_SEL 无人引用,能力最小化不开放);配置 RMW 内部读走
+        # probe_boot 的 handles_p2m_clk_con0_rmw 专用分发→p2m_clk_con0.
+        # rmw(),不进本读路径。
+        if self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address):
+            self.counts['reads']+=1
+            return self.p2m_clk_con0.read(address)
         # P11_SFR LPVAD VAD_ACON0(路 LPV):读回=当前值(最后写值/无写时合成
         # 初始 0);只服务对齐 32 位字,子字/错位落严格 unmapped;读与原子 RMW
         # 内部读共享同一份容器状态。
@@ -7981,6 +8168,12 @@ class BR28Model:
             # 通用 mmio 路径(mem.read→hardware.read→mem.write→hardware.write,
             # 内部读=容器当前值);LED 外设硬件语义不建模。
             self.jl_pled_con0.write(address,value)
+        elif self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address):
+            # P11_SYSTEM P2M_CLK_CON0(路 P2MCLK):整字写记录(支持、前缀
+            # 未观测——已审计静态面只有两条立即数 RMW);RMW 写回走 probe_boot
+            # 的 handles_p2m_clk_con0_rmw 专用分发→p2m_clk_con0.rmw()(内部
+            # 读=容器当前值);LED 时钟树/P11 侧响应不建模。
+            self.p2m_clk_con0.write(address,value)
         elif self.p11_lpvad is not None and self.p11_lpvad.handles(address):
             # P11_SFR LPVAD VAD_ACON0(路 LPV):停点 0x606b68e 的 bit28 置位
             # RMW 写回与整字写记录(经通用 mmio 路径的内部读=容器当前值);
@@ -8794,6 +8987,29 @@ class BR28Model:
                 'self-clearing-bit/interrupt side effect is modeled; the '
                 'preserved old-word bits still enter the real write transaction '
                 '(the physical peripheral may consume them)')
+        if self.p2m_clk_con0 is not None:
+            result['p2m_clk_con0_registers']=self.p2m_clk_con0.report()
+            result['assumptions']['p2m_clk_con0_registers']=(
+                'P11_SYSTEM P2M_CLK_CON0 single word 0xf2a610 (p11_sfr.h '
+                'P11_SYSTEM_TypeDef word 4, route P2MCLK): synthetic initial 0 '
+                'plus last-write RMW-internal readback (AM family precedent, '
+                'route-FD610C shape); the audited static face is exactly one '
+                'helper — 0x6019502 = SDK macro LED_CLK_SEL(3) (p11_app.h L117), '
+                'two immediate RMWs (0x6019508 rmw.and.nmodimm clear bits5-7, '
+                '0x601950c rmw.or.modimm |=0x60) whose read values feed only '
+                'write-back assembly, plus the RAM flag store b[0x12603C]=1; '
+                'callers 0x6019fda/0x601a30c (one-shot LED-init guard); the SDK '
+                'read-out macro GET_LED_CLK_SEL is referenced nowhere (app, SDK '
+                'sources, ROM) — explicit loads are always refused (capability '
+                'minimization, not danger defense); observed-form-only RMW '
+                'shapes; derived-not-measured (NOT silicon reset state); the '
+                'mailbox words 0xf2a608/0x0c/0x18 stay with P2mMailboxAck and '
+                'every other P11_SYSTEM word stays unmapped; no LED '
+                'clock-tree/waveform/interrupt/P11-response side effect is '
+                'modeled; the clock select bits may be consumed by hardware '
+                'clock logic with no CPU load and P11 may mutate the same state '
+                'through another address view; the two RMWs are two separate '
+                'transactions, not one atomic helper')
         if self.p11_lpvad is not None:
             result['p11_lpvad_config_registers']=self.p11_lpvad.report()
             result['assumptions']['p11_lpvad_config_registers']=(

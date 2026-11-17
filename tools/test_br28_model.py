@@ -3554,6 +3554,82 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             BR28Model(jl_pled_con0_initial_fixture=0x100000000)
 
+    def test_p2m_clk_con0_config_rmw_container(self):
+        # 路 P2MCLK:41,848,382 停点 0x6019508——LED_CLK_SEL(3) helper
+        # 0x6019502(SDK p11_app.h L117 宏逐字对应)首条 rmw.and.nmodimm
+        # [0xf2a610]&=0xFFFFFF1F(清 bits5-7,raw m=0xE0)的配置 RMW 内部读
+        # 撞 unmapped。全 app 唯一引用=该 helper 两条立即数 RMW(读值只进
+        # 写回组装零分支零轮询,GET_LED_CLK_SEL 无人引用);codex 三选一
+        # 定调 (a) CON3 式:合成初始 0+RMW 内部读回=当前值,显式读一律
+        # 拒绝(零显式读者=能力最小化),只服务已观测两种形状。
+        plain=BR28Model()
+        self.assertFalse(plain.handles(0xf2a610,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xf2a610)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xf2a610,0x60)
+        self.assertNotIn('p2m_clk_con0_registers',plain.report())
+        h=BR28Model(p2m_clk_con0_config_rmw=True)
+        self.assertTrue(h.handles(0xf2a610,4))
+        # 邻域(P11_SYSTEM 其余字)与邮箱地址集不吞:P2M_INT_IE/SET/CLR/
+        # PND、M2P_INT_IE/SET/CLR/PND、P11_SYS_CON0/1、MEM_PWR_CON 及
+        # 子字 0xf2a611(错位)全部保持原语义(608/60c/618 归 P2mMailboxAck)。
+        for address in (0xf2a600,0xf2a604,0xf2a608,0xf2a60c,0xf2a614,
+                        0xf2a618,0xf2a61c,0xf2a620,0xf2a624,0xf2a628,
+                        0xf2a62c):
+            self.assertFalse(h.handles(address,4))
+        self.assertFalse(h.handles(0xf2a611,1) or h.handles(0xf2a612,2))
+        # 显式 load 一律拒绝——首写前与整字写后都停(本路线只授权配置
+        # RMW;全 app 零显式读者,不为假想读者开放)。
+        with self.assertRaisesRegex(Blocked,'p2m_clk_con0_read_not_modeled'):
+            h.read(0xf2a610)
+        h.write(0xf2a610,0x60)
+        with self.assertRaisesRegex(Blocked,'p2m_clk_con0_read_not_modeled'):
+            h.read(0xf2a610)
+        # 停点两条 RMW + 保留位钉,干净实例:0x6019508 清 bits5-7/
+        # 0x601950c |=0x60——首读=合成 0→0&0xFFFFFF1F=0 写回;次读
+        # after-write 0→0|0x60=0x60 写回(最终 bits[7:5]=0b011=
+        # LED_CLK_SEL(3))。
+        c=BR28Model(p2m_clk_con0_config_rmw=True)
+        self.assertEqual(c.p2m_clk_con0.rmw('and',0xffffff1f),0)
+        self.assertEqual(c.p2m_clk_con0.rmw('or',0x60),0x60)
+        # 保留位钉(codex):非零旧字经清 bits5-7 只动 [7:5]——0xffffffff&
+        # 0xFFFFFF1F=0xffffff1f,再 |0x60=0xffffff7f——仅测初值零会漏掉
+        # 掩码错误(取反/用 raw 0xE0 当保持掩码都会在这里露馅)。
+        c.write(0xf2a610,0xffffffff)
+        self.assertEqual(c.p2m_clk_con0.rmw('and',0xffffff1f),0xffffff1f)
+        self.assertEqual(c.p2m_clk_con0.rmw('or',0x60),0xffffff7f)
+        r=c.report()['p2m_clk_con0_registers']
+        self.assertEqual(r['word_writes'],5)
+        self.assertEqual(r['addresses'],['0xf2a610'])
+        self.assertEqual((r['readback_projection']['reads'],
+                          r['readback_projection']['synthesized_initial_reads']),
+                         (3,1))
+        self.assertEqual(r['stores']['0xf2a610']['values'],
+                         ['0x0','0x60','0xffffffff','0xffffff1f','0xffffff7f'])
+        self.assertIn('modeled exactly one word',r['modeled_vs_touched'])
+        self.assertIn('LED_CLK_SEL(3)',r['sdk_naming'])
+        self.assertIn('0x6019508',r['whitelisted_words'])
+        self.assertIn('no branch',r['observed_shapes'])
+        self.assertIn('NOT a reset-value claim',
+                      r['readback_projection']['readback_semantics'])
+        self.assertIn('derived-not-measured',
+                      r['readback_projection']['readback_semantics'])
+        self.assertIn('no CPU load',r['readback_projection']['known_limitation'])
+        self.assertIn('P2mMailboxAck',r['sdk_naming'])
+        assumption=c.report()['assumptions']['p2m_clk_con0_registers']
+        self.assertIn('synthetic initial 0',assumption)
+        self.assertIn('capability minimization',assumption)
+        self.assertIn('GET_LED_CLK_SEL',assumption)
+        self.assertIn('two separate transactions',assumption)
+        # RMW kind/值域校验。
+        with self.assertRaises(ValueError):
+            c.p2m_clk_con0.rmw('xor',0x60)
+        with self.assertRaises(ValueError):
+            c.p2m_clk_con0.rmw('or',-1)
+        with self.assertRaises(ValueError):
+            c.p2m_clk_con0.rmw('and',0x100000000)
+
     def test_jl_adc_start_config_registers(self):
         # 路 ASS:21,800,455 停点 0x606e044(ADC 启动函数 0x606df66 的
         # MIC_CTL0 |=0x2 RMW 内部读,地址 r0=r5+976 间接构造,li 枚举法

@@ -1663,6 +1663,24 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         self.finish_exact(self.pc+size)
                         adapters['mmio_rmw_always_writes']+=1
                         return
+                    if hardware.handles_p2m_clk_con0_rmw(address):
+                        # 路 P2MCLK:P11_SYSTEM P2M_CLK_CON0(0xf2a610)配置 RMW
+                        # 专用分发——LED_CLK_SEL(3) helper 0x6019502 的两条
+                        # 立即数 RMW(0x6019508 清 bits5-7 raw m=0xE0/0x601950c
+                        # |=0x60),内部读走 rmw()(合成初始 0/最后写值,首写
+                        # 0→0 也照常发写事务);只服务这两种已观测形状,其他
+                        # 形状具名拒绝;显式 load 不在此分支,落通用读路径后
+                        # 由 read() 严格停(p2m_clk_con0_read_not_modeled)。
+                        # 写回与整字写共享 stores 记录;计数键与通用 mmio 路径
+                        # 一致(同一 mmio_rmw_always_writes)。
+                        if insn.id=='rmw.and.nmodimm':kind='and';operand=op['m']
+                        elif insn.id=='rmw.or.modimm':kind='or';operand=op['m']
+                        else:raise Blocked('p2m_clk_con0_rmw_form_not_modeled',instruction_id=insn.id)
+                        hardware.p2m_clk_con0.rmw(kind,operand)
+                        if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
+                        self.finish_exact(self.pc+size)
+                        adapters['mmio_rmw_always_writes']+=1
+                        return
                     old=int.from_bytes(self.mem.read(address,4),'little')
                     if insn.id=='rmw.or.modimm':value=old|op['m']
                     elif insn.id=='rmw.and.nmodimm':value=old&op['m']

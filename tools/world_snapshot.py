@@ -1213,6 +1213,13 @@ M4_FAMILIES = (
     # fixture is refused (different initial word => different branch world).
     ('jl_pled_con0', 'JLPledCon0Registers',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    # Route P2MCLK: the P11_SYSTEM P2M_CLK_CON0 single-word config-RMW
+    # container rides the same AM four-field state shape (synthetic initial 0
+    # is a CLASS constant, not instance state — same protection layer as
+    # jl_pled_con3: class-identity check plus code fingerprint, with an empty
+    # per-object static record; no per-instance fixture exists).
+    ('p2m_clk_con0', 'P2MClkCon0Registers',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 
