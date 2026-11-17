@@ -757,6 +757,26 @@ input[type="range"]::-moz-range-thumb {
 }
 .ha-band .gval { color: var(--accent); font-weight: 700; }
 .ha-band .lval { color: var(--warn); font-weight: 700; }
+.ha-mpo-summary {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-hover, transparent);
+}
+.ha-mpo-summary strong {
+  color: var(--warn);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.ha-mpo-summary .note-inline {
+  color: var(--muted);
+  font-size: 12px;
+}
 
 table {
   width: 100%;
@@ -1252,14 +1272,19 @@ summary {
         <span class="badge warning">BLE 命令留桩</span>
       </div>
       <p class="note">
-        通透/辅听链（mic→DAC）的逐频段草稿：增益放大环境声，上限是该频段最大输出
-        （数字域 dB，非标定 SPL）。字段名与 docs/hearing-aid-eq-feasibility.md 的
-        eq_tool / wdrc_struct 对齐；命令绑定暂为留桩（firmware L0/L1 未落地）。
+        通透/辅听链（mic→DAC）的逐频段草稿：增益放大环境声，上限是该频段期望的最大
+        输出（数字域 dB，非标定 SPL）。固件为单带 WDRC，每频上限聚合为全带 MPO 生效
+        （见下方汇总行）；命令绑定暂为留桩（BLE 参数通道未落地）。
       </p>
       <div class="ha-head" aria-hidden="true">
         <span>频率</span><span>增益（dB）</span><span></span><span>上限（dB）</span><span></span>
       </div>
       <div id="haBands" class="ha-bands"></div>
+      <div class="ha-mpo-summary">
+        <span>全带 MPO（聚合生效值）</span>
+        <strong id="haMpoValue">110 dB</strong>
+        <span id="haMpoNote" class="note-inline">全带生效（取十频段最小值，任一频段调低都会压低全带上限）；固件 Drc1Eff 为单带 WDRC，每频独立限幅需 multiband（未落地）。</span>
+      </div>
       <div class="actions">
         <button id="haFlat">全部复位</button>
       </div>
@@ -2449,6 +2474,8 @@ function createHSlider(opts) {
 //   - index / iir_type / freq / gain / q = §1.2 eq_seg_info
 //   - out_threshold（本频段最大输出上限）= §2 wdrc_struct.threshold[].out_threshold 语义
 const HA_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+const HA_MPO_KNEE0 = 0.3;   // 固件 Drc1Eff 原点拐点 (0.3,0.3)
+const HA_MPO_TAIL = 110.3;  // 固件 Drc1Eff 原末点输入电平
 const hearingAid = {
   bands: HA_FREQS.map((freq, index) => ({
     index, freq, iir_type: 2, q: 0.7, gain: 0, out_threshold: 110
@@ -2456,27 +2483,57 @@ const hearingAid = {
   eq_tool: { global_gain: 0, seg_num: HA_FREQS.length },
   wdrc: {
     bypass: 0, attack: 100, release: 200, inputgain: 0, outputgain: 0,
-    threshold_num: 6, algorithm: 0, mode: 1, holdtime: 0, reserved: [0, 0]
+    threshold_num: 3, algorithm: 0, mode: 1, holdtime: 0, reserved: [0, 0]
   }
 };
+// 全带 MPO 聚合（L2 落地口径，codex 参谋修正版 a）：
+//   固件 Drc1Eff 是单带 WDRC，做不了每频独立限幅；App 把每频上限聚合为
+//   M = min(band.out_threshold) 写成水平尾段三点曲线 (0.3,0.3)/(M,M)/(X,M)——
+//   末段斜率 0 才是真稳态上限（只改末点 out 只是压缩比，DRC 按末段直线外推）。
+//   X = 110.3（M 低于原末点），M ≥ 110.3 时抬到 M+10.3 保证拐点严格递增。
+function haEffectiveMpo() {
+  return Math.min(...hearingAid.bands.map(b => b.out_threshold));
+}
+function haMpoCurve(mpo) {
+  const tail = mpo < HA_MPO_TAIL ? HA_MPO_TAIL : mpo + 10.3;
+  return [[HA_MPO_KNEE0, HA_MPO_KNEE0], [mpo, mpo], [tail, mpo]];
+}
 function buildHearingAidPayload() {
+  const mpo = haEffectiveMpo();
   return {
     eq_tool: Object.assign({}, hearingAid.eq_tool, {
       seg: hearingAid.bands.map(b => ({
         index: b.index, iir_type: b.iir_type, freq: b.freq, gain: b.gain, q: b.q
       }))
     }),
-    wdrc_struct: Object.assign({}, hearingAid.wdrc, {
-      // 每频段输出上限（语义=threshold[].out_threshold）。固件 Drc1Eff 为单带
-      // threshold[6]，per-band 限幅需 L2 multiband_drc —— BLE 绑定留桩。
-      band_out_threshold: hearingAid.bands.map(b => b.out_threshold)
-    })
+    // 固件原生结构只有单带 Drc1Eff：这里如实给「聚合后的全带生效值 + 三点曲线」，
+    // 不再伪装成原生 wdrc_struct（threshold_num 与固件实际值 3 对齐）。
+    mpo: {
+      effective: mpo,
+      aggregation: 'min(band out_threshold)',
+      curve: haMpoCurve(mpo),
+      threshold_num: hearingAid.wdrc.threshold_num,
+      semantics: '全带数字域稳态压缩上限；非每频独立限幅（单带 WDRC），非 dB SPL 标定，'
+        + 'attack=100/TWOPOINT 平滑下不保证瞬时峰值不越限'
+    },
+    // 每频段上限请求原样保留：真 multiband_drc（分频+多 WDRC+merge）未落地，
+    // 这是 L3 每频独立限幅的用户输入存档 —— BLE 绑定留桩。
+    band_out_threshold: hearingAid.bands.map(b => b.out_threshold)
   };
 }
 window.h3sHearingAidPayload = buildHearingAidPayload;
 
 function haChanged() {
+  updateHaMpoSummary();
   $('haFeedback').textContent = '本地草稿已修改（BLE 命令留桩，未发送）。';
+}
+
+function updateHaMpoSummary() {
+  const mpo = haEffectiveMpo();
+  $('haMpoValue').textContent = mpo + ' dB';
+  $('haMpoNote').textContent =
+    '全带生效（取十频段最小值，任一频段调低都会压低全带上限）；固件 Drc1Eff 为单带 WDRC，'
+    + '每频独立限幅需 multiband（未落地）。';
 }
 
 const HA_GAIN_MIN = -12;
@@ -2507,9 +2564,11 @@ function renderHearingAidBands() {
 $('haFlat').onclick = () => {
   hearingAid.bands.forEach(b => { b.gain = 0; b.out_threshold = 110; });
   renderHearingAidBands();
+  updateHaMpoSummary();
   $('haFeedback').textContent = '已复位为默认（增益 0 dB、上限 110 dB）。';
 };
 renderHearingAidBands();
+updateHaMpoSummary();
 
 // —— 测试音与样本（h3sha 桥：AudioTrack + 内置扬声器路由）——
 const T = window.h3sha || null;

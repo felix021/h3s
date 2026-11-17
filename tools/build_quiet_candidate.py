@@ -104,11 +104,83 @@ def stream_param_records(data):
     return s5_base, records
 
 
-def apply_hearing_aid_demo(stream):
-    """离线把辅听链参数改成「1kHz +39dB + 输出限幅」演示值，原地改、尺寸不变。
+def apply_hearing_aid_mpo_curve(stream, mpo):
+    """把 Drc1Eff 写成「水平尾段」MPO 限幅曲线（原地改、尺寸不变）。
+
+    路 L2/codex 复核修正：DRC 核心按相邻拐点对算分段斜率、对末段**线性外推**，
+    没有超末点钳位（drc.o DrcInit/DrcGainProcess）——只改 threshold[2].out 得到的是
+    压缩比 ~2:1 而非上限（120dB 输入仍映出 ~104.7dB）。真正的稳态上限需要把三点写成
+    (0.3,0.3)/(M,M)/(X,M)：末段斜率 0、截距 M，任意过驱动输入都映射到 M。
+    X 取 110.3（M 低于原末点时保持），M≥110.3 时抬高到 M+10.3 保证 in 严格递增
+    （分母为零会让 DrcInit 算出 NaN 斜率）。M 需 > 0.3。
+    返回 (changes, s5_base)。M 是调音工具数字域 dB 刻度，非 SPL 标定。
+    """
+    if not (mpo > 0.3):
+        raise ValueError(f"MPO 必须 > 0.3（数字域 dB），收到 {mpo}")
+    mpo = f32(mpo)
+    s5_base, records = stream_param_records(stream)
+    spec = HEARING_AID_NODES["Drc1Eff"]
+    rec = {(r["name_hash"], r["cfg_index"]): r for r in records}[(spec["name_hash"], 0)]
+    drc_off = s5_base + rec["offset"]
+    bypass = struct.unpack_from("<i", stream, drc_off)[0]
+    attack, release = struct.unpack_from("<HH", stream, drc_off + 4)
+    tnum = stream[drc_off + 68]
+    if (bypass, attack, release, tnum) != (0, 100, 200, 3):
+        raise ValueError("Drc1Eff 初始参数与已核实版本不一致")
+    knees = [struct.unpack_from("<ff", stream, drc_off + 8 + i * 8) for i in range(3)]
+    expected = [(f32(0.3), f32(0.3)), (f32(90.3), f32(90.3)), (f32(110.3), f32(110.3))]
+    if knees != expected:
+        raise ValueError("Drc1Eff 初始拐点与已核实版本不一致")
+    x_tail = f32(110.3) if mpo < f32(110.3) else f32(mpo + 10.3)
+    if not (f32(0.3) < mpo < x_tail):
+        raise ValueError("拐点 in 电平必须严格递增")
+    changes = []
+    for field, offset, after in (("threshold[1].in", 8 + 8, mpo),
+                                 ("threshold[1].out", 8 + 12, mpo),
+                                 ("threshold[2].in", 8 + 16, x_tail),
+                                 ("threshold[2].out", 8 + 20, mpo)):
+        off = drc_off + offset
+        old = struct.unpack_from("<f", stream, off)[0]
+        struct.pack_into("<f", stream, off, after)
+        changes.append({"node": "Drc1Eff", "stream_off": off, "field": field,
+                        "before": old, "after": after,
+                        "note": "水平尾段 MPO（数字域稳态上限，非 SPL 标定）"})
+    verify_mpo_curve([(f32(0.3), f32(0.3)), (mpo, mpo), (x_tail, mpo)], 3, mpo)
+    return changes, s5_base
+
+
+def verify_mpo_curve(knees, tnum, mpo):
+    """按 DrcInit/DrcGainProcess 的分段线性语义断言曲线确实是 M 上限。
+
+    斜率 k[i]=(out[i+1]-out[i])/(in[i+1]-in[i])；检测电平超过末拐点后沿用末段直线
+    （无钳位）。要稳态上限=M：in 严格递增（防 NaN 斜率）、末段斜率=0、截距=M、
+    全曲线（含 +30dB 过驱动外推）不超过 M。
+    """
+    pts = knees[:tnum]
+    ins = [p[0] for p in pts]
+    if any(b <= a for a, b in zip(ins, ins[1:])):
+        raise ValueError(f"拐点 in 电平非严格递增：{ins}")
+    slopes = [(pts[i + 1][1] - pts[i][1]) / (pts[i + 1][0] - pts[i][0])
+              for i in range(len(pts) - 1)]
+    if slopes[-1] != 0.0:
+        raise ValueError(f"末段斜率非 0（{slopes[-1]}），过驱动输入会突破 {mpo}")
+    for probe in (ins[0], mpo / 2, mpo, ins[-1], ins[-1] + 30.0, ins[-1] + 300.0):
+        # 分段选择照 DrcGainProcess：内部边界=pts[1..tnum-2].in，段号=严格高于
+        # 检测电平的边界数；超出末拐点沿用末段直线外推（无钳位）。
+        seg = sum(1 for i in range(1, len(pts) - 1) if probe > pts[i][0])
+        b = pts[seg + 1][1] - slopes[seg] * pts[seg + 1][0]
+        if slopes[seg] * probe + b > mpo + 1e-4:
+            raise ValueError(f"曲线在 {probe} dB 处突破 MPO {mpo}")
+    return slopes
+
+
+def apply_hearing_aid_demo(stream, mpo=100.0):
+    """离线把辅听链参数改成「1kHz +39dB + MPO 限幅」演示值，原地改、尺寸不变。
 
     - Eq1Eff（eq_tool @0xeac，与 Eq4Eff/Eq5Eff 共享）：seg[5] 1070Hz/0dB → 1000Hz/+39dB。
-    - Drc1Eff（wdrc_struct @0x1038）：threshold[2].out 110.3 → 100.0（数字域上限，非 SPL 标定）。
+    - Drc1Eff（wdrc_struct @0x1038）：水平尾段 MPO 曲线（默认 100.0，见
+      apply_hearing_aid_mpo_curve；多点写入是对路 E「只改 threshold[2].out 不成上限」
+      的修正）。
     - VolEff（volume_cfg @0x14d7）：定位并校验，不改（输入侧主音量，与本次增益/限幅演示正交）。
     返回 (changes, s5_base)。
     """
@@ -154,22 +226,9 @@ def apply_hearing_aid_demo(stream):
     changes.append({"node": "Eq1Eff", "stream_off": gain_off, "field": "seg[5].gain",
                     "before": old_gain, "after": 39.0})
 
-    # wdrc_struct：{i32 bypass, u16 attack, u16 release,
-    # threshold[6]{float in, float out}, float inputgain, float outputgain,
-    # float rms_time, u8 threshold_num, ...}。threshold[2].out 在 +8+2*8+4。
-    drc_off = s5_base + drc["offset"]
-    bypass = struct.unpack_from("<i", stream, drc_off)[0]
-    attack, release = struct.unpack_from("<HH", stream, drc_off + 4)
-    tnum = stream[drc_off + 68]
-    if (bypass, attack, release, tnum) != (0, 100, 200, 3):
-        raise ValueError("Drc1Eff 初始参数与已核实版本不一致")
-    out_off = drc_off + 28
-    old_out = struct.unpack_from("<f", stream, out_off)[0]
-    if old_out != f32(110.3):
-        raise ValueError("Drc1Eff 初始限幅阈值与已核实版本不一致")
-    struct.pack_into("<f", stream, out_off, 100.0)
-    changes.append({"node": "Drc1Eff", "stream_off": out_off, "field": "threshold[2].out",
-                    "before": old_out, "after": 100.0, "note": "数字域上限，非 SPL 标定"})
+    # Drc1Eff：水平尾段 MPO 曲线（多点写入，见 apply_hearing_aid_mpo_curve）。
+    mpo_changes, _ = apply_hearing_aid_mpo_curve(stream, mpo)
+    changes.extend(mpo_changes)
     changes.append({"node": "VolEff", "stream_off": s5_base + vol["offset"],
                     "field": "<BHiBihH>", "before": list(vol_values),
                     "after": list(vol_values), "unchanged": True,
@@ -177,8 +236,8 @@ def apply_hearing_aid_demo(stream):
     return changes, s5_base
 
 
-def verify_hearing_aid_roundtrip(stream, s5_base):
-    """把改后的参数区按 §1.2 结构重新解析，确认 1kHz/+39dB/out=100 如预期（往返一致）。"""
+def verify_hearing_aid_roundtrip(stream, s5_base, mpo=100.0, eq_demo=True):
+    """把改后的参数区按 §1.2 结构重新解析，确认 EQ/MPO 曲线如预期（往返一致）。"""
     _, records = stream_param_records(stream)
     by_key = {(r["name_hash"], r["cfg_index"]): r for r in records}
     eq = by_key[(HEARING_AID_NODES["Eq1Eff"]["name_hash"], 0)]
@@ -187,11 +246,19 @@ def verify_hearing_aid_roundtrip(stream, s5_base):
     drc_off = s5_base + drc["offset"]
     freq = struct.unpack_from("<i", stream, eq_off + 8 + 5 * 16 + 4)[0]
     gain = struct.unpack_from("<f", stream, eq_off + 8 + 5 * 16 + 8)[0]
-    out = struct.unpack_from("<f", stream, drc_off + 28)[0]
-    if freq != 1000 or gain != f32(39.0) or out != f32(100.0):
-        raise ValueError("改后参数区往返解析不一致："
-                         f"freq={freq} gain={gain} out={out}")
-    return {"freq": freq, "gain": gain, "out_threshold": out}
+    if eq_demo and (freq, gain) != (1000, f32(39.0)):
+        raise ValueError(f"改后 Eq1Eff 往返解析不一致：freq={freq} gain={gain}")
+    if not eq_demo and (freq, gain) != (1070, 0.0):
+        raise ValueError(f"纯 MPO 模式不应动 EQ：freq={freq} gain={gain}")
+    mpo = f32(mpo)
+    knees = [struct.unpack_from("<ff", stream, drc_off + 8 + i * 8) for i in range(3)]
+    tnum = stream[drc_off + 68]
+    x_tail = f32(110.3) if mpo < f32(110.3) else f32(mpo + 10.3)
+    if knees != [(f32(0.3), f32(0.3)), (mpo, mpo), (x_tail, mpo)] or tnum != 3:
+        raise ValueError(f"改后 Drc1Eff 往返解析不一致：knees={knees} tnum={tnum}")
+    verify_mpo_curve(knees, tnum, mpo)
+    return {"freq": freq, "gain": gain,
+            "mpo_curve": [[k[0], k[1]] for k in knees], "threshold_num": tnum}
 
 
 def verify_hearing_aid_diff(result, source, flash_pos, data_pos, ent_pos, boot_pos,
@@ -225,7 +292,12 @@ def main():
     p.add_argument('--eq-code-fence-repair',action='store_true',
                    help='离线修复候选：扩展实际Flash PC上界到EQ载荷末尾；不代表启动验证通过')
     p.add_argument("--hearing-aid-demo", action="store_true",
-                   help="助听器弱化版 EQ L0 演示：辅听链 1kHz +39dB + 输出限幅；仅离线候选")
+                   help="助听器弱化版 EQ L0 演示：辅听链 1kHz +39dB + MPO 限幅曲线（默认 100dB）；仅离线候选")
+    p.add_argument("--hearing-aid-mpo", type=float, metavar="DB",
+                   help="全带 MPO 数字域上限（dB，>0.3）：把 Drc1Eff 写成水平尾段曲线 (0.3,0.3)/"
+                        "(M,M)/(X,M)——多点写入才是真稳态上限（只改末点 out 只是压缩比，路 L2 修正）；"
+                        "单用时只动 Drc1Eff 不动 EQ；与 --hearing-aid-demo 同用则覆盖其默认 100；"
+                        "数字域刻度非 SPL 标定，仅离线候选")
     p.add_argument("--hearing-aid-l1-patch", action="store_true",
                    help="辅听 L1 离线候选：追加 mic_effect 激活载荷 + ANC 通透档接驳 + PC fence 扩界；"
                         "不可与 --eq-toggle-elf 同用（追加区冲突）；候选 UNTESTED 不刷机")
@@ -301,10 +373,20 @@ def main():
         changes.append({"node": name, "stream_offset": pos, "before": before,
                         "after": after, "table_before": table_before, "table_after": table_after})
     hearing_aid = None
-    if args.hearing_aid_demo:
-        demo_changes, s5_base = apply_hearing_aid_demo(stream)
-        hearing_aid = {"changes": demo_changes,
-                       "roundtrip": verify_hearing_aid_roundtrip(stream, s5_base)}
+    if args.hearing_aid_demo or args.hearing_aid_mpo is not None:
+        mpo = args.hearing_aid_mpo if args.hearing_aid_mpo is not None else 100.0
+        if args.hearing_aid_demo:
+            demo_changes, s5_base = apply_hearing_aid_demo(stream, mpo=mpo)
+        else:
+            demo_changes, s5_base = apply_hearing_aid_mpo_curve(stream, mpo)
+        hearing_aid = {"mode": "demo+mpo" if args.hearing_aid_demo else "mpo",
+                       "mpo_db": f32(mpo),
+                       "mpo_semantics": "全带数字域稳态压缩上限（水平尾段多点曲线）；"
+                                        "非每频独立限幅（单带 WDRC）、非 SPL 标定、"
+                                        "attack=100/TWOPOINT 下不保证瞬时峰值不越限",
+                       "changes": demo_changes,
+                       "roundtrip": verify_hearing_aid_roundtrip(
+                           stream, s5_base, mpo=mpo, eq_demo=args.hearing_aid_demo)}
     if stream_flow_identifier(stream) != flow_identifier:
         raise ValueError("不应改变在线调音流程标识")
     # 内层 stream.bin 的 JLFS 目录头与原始数据先做交叉校验。
@@ -420,9 +502,10 @@ def main():
     struct.pack_into("<H", ufw_header, 0, jl_crc16(ufw_header[2:]))
     result[:64] = encode_header(ufw_header)
     if args.attenuation_db == 0 and not args.anc_cycle_two_state and not eq_toggle and \
-            not args.hearing_aid_demo and not hearing_aid_l1 and result != source:
+            args.hearing_aid_mpo is None and not args.hearing_aid_demo \
+            and not hearing_aid_l1 and result != source:
         raise ValueError("零改动重打包不一致")
-    if args.hearing_aid_demo and not hearing_aid_l1:
+    if hearing_aid is not None and not hearing_aid_l1:
         # L1 启用时由 verify_l1_image 做覆盖更广的全镜像精确差异断言（含本演示的
         # stream 明文差异），旧断言的期望集不包含 L1 的字节，此处让位。
         stream_changed_offsets = [i for i in range(len(original_stream))
@@ -444,7 +527,10 @@ def main():
     if eq_toggle:
         suffix += "_eq_toggle_EXPERIMENTAL"
     if args.hearing_aid_demo:
-        suffix += "_HEARING_AID_DEMO"
+        suffix += ("_HEARING_AID_DEMO" if args.hearing_aid_mpo is None
+                   else f"_HEARING_AID_DEMO_MPO{mpo:g}")
+    elif args.hearing_aid_mpo is not None:
+        suffix += f"_HEARING_AID_MPO{mpo:g}"
     if hearing_aid_l1:
         suffix += ("_R4_KEYHOOK_OFFLINE" if args.r4_keyhook
                    else "_HEARING_AID_L1_KEY7_OFFLINE" if args.hearing_aid_l1_key7

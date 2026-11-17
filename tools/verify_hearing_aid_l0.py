@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""Independent byte-level + CRC audit for the hearing-aid L0 demo candidate.
+"""Independent byte-level + CRC audit for the hearing-aid L0/L2 candidates.
 
 不 import builder（build_quiet_candidate.py），只复用 verify_ufw_integrity.py 的
 stdlib CRC/解码助手，照 verify_eq_candidate.py 的「独立校验」口径。三步：
 
 1. CRC 合法性：对官方镜像与候选镜像各自跑 verify()（UFW 外层 / flash 条目 /
    双备份 boot-info / JLFS 头与数据 CRC 全查）。
-2. 字节级差异：候选 .ufw 与官方镜像逐字节比对，差异必须恰好落在 23 个字节上——
-   6 个 UFW 外层头/条目 CRC + 4 个 stream JLFS 头 CRC + 6 个双备份 boot-info CRC
-   + 7 个 stream 参数字节（Eq1Eff seg[5].freq 低 2 字节 + gain 高 2 字节 +
-   Drc1Eff threshold[2].out 低 3 字节）。flash 层 17 字节，UFW 外层 6 字节。
+2. 字节级差异：候选 .ufw 与官方镜像逐字节比对，差异必须恰好落在
+   「改动的 stream 参数字节 + 6 个 UFW 外层 CRC + 4 个 stream JLFS 头 CRC +
+   6 个双备份 boot-info CRC」上（期望集由参数往返先确认、再逐字节精确比对，
+   任何多余/缺失字节都直接抛错）。
 3. 参数往返：把候选 stream.bin §5 按 node_cfg_format 记录（name_hash 引用）重新
-   定位 Eq1Eff/Drc1Eff/VolEff 并读回，确认 1000Hz / +39.0dB / out=100.0，同时用
-   官方镜像确认改前值 1070Hz / 0dB / 110.3 / VolEff 不变。
+   定位 Eq1Eff/Drc1Eff/VolEff 并读回。demo 模式（--mode demo）确认 1000Hz /
+   +39.0dB；mpo 模式（--mode mpo）确认 EQ 未动。两种模式都确认 Drc1Eff 是
+   水平尾段 MPO 曲线 (0.3,0.3)/(M,M)/(X,M)——末段斜率 0、外推不过 M（路 L2 修正：
+   DRC 核心按末段直线外推、无末点钳位，只改 threshold[2].out 不构成上限），
+   同时用官方镜像确认改前值 1070Hz / 0dB / 拐点 (0.3)/(90.3)/(110.3) / VolEff 不变。
 
-诚实边界：本脚本验证的是「参数区改动 + CRC 更新」的字节级复现闭环，NOT 助听器可用。
+诚实边界：本脚本验证的是「参数区改动 + CRC 更新」的字节级复现闭环，NOT 助听器可用，
+也 NOT 瞬时峰值保护（attack=100/TWOPOINT 平滑下稳态上限成立，瞬态仍可能越限）。
 辅听模式进入方式（L1 接驳，docs/hearing-aid-l1-payload.md）与声学标定（真机声压）均
-不在本路范围；threshold[2].out=100.0 的 100 是调音工具数字域 dB 刻度上的绝对上限，
-不是 100 dB SPL（docs/hearing-aid-eq-feasibility.md §4 / docs/eq-gain-limit.md §3）。
+不在本路范围；M 的 dB 是调音工具数字域刻度，不是 dB SPL（docs/hearing-aid-eq-
+feasibility.md §4 / docs/eq-gain-limit.md §3）。
 """
 import argparse
 import hashlib
@@ -122,7 +126,7 @@ def stream_s5(stream):
 
 
 def read_params(stream, s5_base, records, stage):
-    """按 §5 记录定位三节点并读回关键字段；stage='before'/'after' 决定期望值。"""
+    """按 §5 记录定位三节点并读回关键字段（stage 仅用于报错语境）。"""
     out = {}
     for name, spec in NODES.items():
         rec = records.get((spec["name_hash"], 0))
@@ -142,15 +146,38 @@ def read_params(stream, s5_base, records, stage):
             bypass = struct.unpack_from("<i", stream, base)[0]
             attack, release = struct.unpack_from("<HH", stream, base + 4)
             tnum = stream[base + 68]
-            outv = struct.unpack_from("<f", stream, base + 28)[0]
+            knees = [struct.unpack_from("<ff", stream, base + 8 + i * 8) for i in range(3)]
             out[name] = {"bypass": bypass, "attack": attack, "release": release,
-                         "threshold_num": tnum, "threshold[2].out": outv}
+                         "threshold_num": tnum, "knees": knees}
         else:  # VolEff
             out[name] = list(struct.unpack_from("<BHiBihH", stream, base))
     return out
 
 
-def audit(source_path, candidate_path):
+def check_mpo_curve(knees, tnum, mpo):
+    """独立复核水平尾段 MPO 语义（与 builder 的 verify_mpo_curve 同规则、独立实现口径）。
+
+    斜率 k[i]=(out[i+1]-out[i])/(in[i+1]-in[i])；内部边界=pts[1..tnum-2].in；检测电平
+    超末拐点沿用末段直线外推（drc.o DrcInit/DrcGainProcess，路 L2/codex 复核钉死）。
+    要稳态上限=M：in 严格递增、末段斜率=0、截距=M、全曲线（含过驱动外推）≤M。
+    """
+    pts = knees[:tnum]
+    ins = [p[0] for p in pts]
+    if any(b <= a for a, b in zip(ins, ins[1:])):
+        raise ValueError(f"拐点 in 电平非严格递增：{ins}")
+    slopes = [(pts[i + 1][1] - pts[i][1]) / (pts[i + 1][0] - pts[i][0])
+              for i in range(len(pts) - 1)]
+    if slopes[-1] != 0.0:
+        raise ValueError(f"末段斜率非 0（{slopes[-1]}）：过驱动输入会突破 MPO {mpo}")
+    for probe in (ins[0], mpo / 2, mpo, ins[-1], ins[-1] + 30.0, ins[-1] + 300.0):
+        seg = sum(1 for i in range(1, len(pts) - 1) if probe > pts[i][0])
+        b = pts[seg + 1][1] - slopes[seg] * pts[seg + 1][0]
+        if slopes[seg] * probe + b > mpo + 1e-4:
+            raise ValueError(f"曲线在 {probe} dB 处突破 MPO {mpo}")
+    return slopes
+
+
+def audit(source_path, candidate_path, mpo=100.0, mode="demo"):
     for path in (source_path, candidate_path):
         if not verify(path)["passed"]:
             raise ValueError("独立 CRC 校验失败: " + str(path))
@@ -166,16 +193,28 @@ def audit(source_path, candidate_path):
     after = read_params(cand[3], cand_s5, cand_records, "after")
     if (before["Eq1Eff"]["seg[5].freq"], before["Eq1Eff"]["seg[5].gain"]) != (1070, 0.0):
         raise ValueError("官方 Eq1Eff 改前值不符")
-    if before["Drc1Eff"]["threshold[2].out"] != f32(110.3):
-        raise ValueError("官方 Drc1Eff 改前限幅阈值不符")
-    if (after["Eq1Eff"]["seg[5].freq"], after["Eq1Eff"]["seg[5].gain"]) != (1000, f32(39.0)):
-        raise ValueError("候选 Eq1Eff 改后值不符")
-    if after["Drc1Eff"]["threshold[2].out"] != f32(100.0):
-        raise ValueError("候选 Drc1Eff 改后限幅阈值不符")
+    if before["Drc1Eff"]["knees"] != [(f32(0.3), f32(0.3)), (f32(90.3), f32(90.3)),
+                                      (f32(110.3), f32(110.3))]:
+        raise ValueError("官方 Drc1Eff 改前拐点不符")
+    if mode == "demo":
+        if (after["Eq1Eff"]["seg[5].freq"], after["Eq1Eff"]["seg[5].gain"]) != (1000, f32(39.0)):
+            raise ValueError("候选 Eq1Eff 改后值不符")
+    else:  # mpo：纯限幅候选，EQ 必须保持官方值
+        if (after["Eq1Eff"]["seg[5].freq"], after["Eq1Eff"]["seg[5].gain"]) != (1070, 0.0):
+            raise ValueError("纯 MPO 候选不应改动 Eq1Eff")
+    mpo = f32(mpo)
+    x_tail = f32(110.3) if mpo < f32(110.3) else f32(mpo + 10.3)
+    expected_knees = [(f32(0.3), f32(0.3)), (mpo, mpo), (x_tail, mpo)]
+    drc_after = after["Drc1Eff"]
+    if drc_after["knees"] != expected_knees or drc_after["threshold_num"] != 3:
+        raise ValueError(f"候选 Drc1Eff 改后拐点不符：{drc_after['knees']} != {expected_knees}")
+    if (drc_after["bypass"], drc_after["attack"], drc_after["release"]) != (0, 100, 200):
+        raise ValueError("候选 Drc1Eff attack/release/bypass 应保持原值")
+    slopes = check_mpo_curve(drc_after["knees"], drc_after["threshold_num"], mpo)
     if before["VolEff"] != after["VolEff"] or tuple(after["VolEff"]) != (0, 16, -45, 1, 0, 5, 0):
         raise ValueError("VolEff 应保持不变")
 
-    # 字节级差异：只允许 23 个字节。
+    # 字节级差异：只允许「参数字节 + 三层 CRC」。
     ent_pos = cand[4]
     data_pos = cand[5]
     flash_pos = cand[6]
@@ -193,6 +232,8 @@ def audit(source_path, candidate_path):
 
     return {
         "status": "offline audit passed; NOT hardware validation",
+        "mode": mode,
+        "mpo_db": mpo,
         "source_sha256": hashlib.sha256(src[0]).hexdigest(),
         "candidate_sha256": hashlib.sha256(cand[0]).hexdigest(),
         "bytes": len(cand[0]),
@@ -203,10 +244,12 @@ def audit(source_path, candidate_path):
         "stream_jlfs_data_offset": hex(data_pos),
         "before": before,
         "after": after,
+        "mpo_curve_slopes": slopes,
         "crc_valid": True,
         "device_verified": False,
         "honest_boundary": (
-            "数字域绝对上限（threshold[2].out=100.0 为调音工具刻度，非 100dB SPL）；"
+            "全带数字域稳态压缩上限（水平尾段曲线，非每频独立限幅、非 dB SPL、"
+            "attack/TWOPOINT 平滑下不保证瞬时峰值不越限）；"
             "辅听模式进入方式（L1 接驳）与真机声压标定不在本路范围"),
     }
 
@@ -216,9 +259,13 @@ if __name__ == "__main__":
     p.add_argument("--source", type=Path,
                    default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--candidate", type=Path, required=True)
+    p.add_argument("--mode", choices=["demo", "mpo"], default="demo",
+                   help="demo=1kHz+39dB+MPO 曲线；mpo=纯限幅（EQ 不动）")
+    p.add_argument("--mpo", type=float, default=100.0,
+                   help="期望的 MPO 数字域上限 dB（默认 100）")
     p.add_argument("--report", type=Path)
     args = p.parse_args()
-    result = audit(args.source, args.candidate)
+    result = audit(args.source, args.candidate, mpo=args.mpo, mode=args.mode)
     text = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.report:
         args.report.write_text(text)

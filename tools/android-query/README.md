@@ -143,13 +143,19 @@ WebView 壳第三 tab，页面在 `assets/index.html`，原生侧只有一个 to
 [docs/hearing-aid-eq-feasibility.md](../../docs/hearing-aid-eq-feasibility.md) 对齐：
 
 - `index / iir_type / freq / gain / q` = §1.2 `eq_seg_info`；`global_gain / seg_num / seg` = `eq_tool`；
-- 每频段上限 `out_threshold` = §2 `wdrc_struct.threshold[].out_threshold` 语义（输出上限）；
-  `attack / release / inputgain / outputgain / threshold_num / algorithm / mode / holdtime / bypass`
-  沿用 `wdrc_struct` 字段。
+- 每频段上限 `out_threshold` = §2 `wdrc_struct.threshold[].out_threshold` 语义（输出上限）。
 
-**诚实标注**：固件 `Drc1Eff` 是单带 `threshold[6]`（3 拐点），per-band 限幅在当前固件里无 1:1
-落点（需 L2 `multiband_drc`）；UI 的逐频段上限是前瞻结构，`buildHearingAidPayload()`（页面
-`window.h3sHearingAidPayload`）已留好形状，**BLE 命令绑定未接**（firmware L0/L1 未落地）。
+**全带 MPO 聚合（L2 落地，[docs/hearing-aid-l2-mpo.md](../../docs/hearing-aid-l2-mpo.md)）**：
+固件 `Drc1Eff` 是单带 WDRC，做不了每频独立限幅；页面把每频上限聚合为
+`M = min(band.out_threshold)`，卡片下方「全带 MPO」汇总行实时显示生效值。
+`buildHearingAidPayload()`（页面 `window.h3sHearingAidPayload`）输出 `mpo`（聚合值 +
+三点水平尾段曲线 `(0.3,0.3)/(M,M)/(X,M)`，与 `--hearing-aid-mpo` 写进镜像的形状一致）
+和 `band_out_threshold`（每频请求原样保留，L3 multiband 的用户输入存档）。
+
+**诚实标注**：per-band 限幅在当前固件里无 1:1 落点（需 L3 分频+多 WDRC+merge 拓扑）；
+M 是数字域 dB 刻度、非标定 SPL；attack/TWOPOINT 平滑下稳态上限成立≠瞬时峰值保护。
+**BLE 命令绑定未接**（App→固件参数写入通道不存在，r4-keyhook 的 8B VM key 30 只有
+往返、无消费链；L3 见 docs/hearing-aid-l2-mpo.md §5）。
 
 ### 测试音与样本（h3sha 桥）
 
