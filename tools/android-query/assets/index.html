@@ -727,46 +727,105 @@ input[type="range"]::-moz-range-thumb {
   min-width: 40px;
   padding: 6px 10px;
 }
-.ha-head {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 46px minmax(0, 1fr) 46px;
-  gap: 8px;
-  padding: 0 2px 4px;
-  color: var(--muted);
-  font-size: 12px;
+/* —— 助听 tab：10 频段横排纵列（上限数值行 + 拉长的增益条）—— */
+#haBandGrid {
+  margin: 12px 0;
 }
-.ha-bands {
-  display: grid;
-  gap: 6px;
+#haBandGrid .slider {
+  height: 240px; /* 增益条拉长：±80dB 大范围下方便精细调节 */
 }
-.ha-band {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 46px minmax(0, 1fr) 46px;
-  gap: 8px;
+.ha-limit {
+  min-height: 30px;
+  padding: 2px 1px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: center;
+}
+.ha-limit:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+/* 上限数值弹窗（点频段上限数字弹出） */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
   align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
 }
-.ha-band .freq {
-  font-size: 12px;
-  color: var(--muted);
-  text-align: right;
+.modal {
+  width: min(100%, 320px);
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+.modal input[type="number"] {
+  width: 100%;
+  min-height: 44px;
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 17px;
   font-variant-numeric: tabular-nums;
 }
-.ha-band output {
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-}
-.ha-band .gval { color: var(--accent); font-weight: 700; }
-.ha-band .lval { color: var(--warn); font-weight: 700; }
-.ha-mpo-summary {
+/* 二级样本列表 */
+.sample-panel {
+  margin-top: 12px;
   display: grid;
-  grid-template-columns: auto auto 1fr;
+  gap: 8px;
+}
+.sample-item {
+  display: flex;
+  align-items: center;
   gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+}
+.sample-item .sample-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sample-item small {
+  display: block;
+  color: var(--muted);
+}
+.sample-item button {
+  flex: 0 0 auto;
+  min-width: 76px;
+}
+.tone-freq-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+.ha-mpo-summary {
+  /* 两行布局：上行 label + 数值，下行整行描述——避免窄屏下描述被挤成逐字竖排 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
   align-items: baseline;
   margin-top: 10px;
   padding: 8px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--card-hover, transparent);
+  background: var(--soft);
 }
 .ha-mpo-summary strong {
   color: var(--warn);
@@ -774,8 +833,10 @@ input[type="range"]::-moz-range-thumb {
   font-variant-numeric: tabular-nums;
 }
 .ha-mpo-summary .note-inline {
+  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.6;
 }
 
 table {
@@ -1277,11 +1338,11 @@ summary {
         （见下方汇总行）。全带 MPO 经 BLE 自定义命令 0x30 写入固件 VM key 30
         （8B 版本化协议），由 L3 候选固件在下次开启辅听时应用；逐频增益热更未实现
         （需 L0 重刷镜像或后续 EQ 段通道）。
+        十个频段横排：每列上层数字是上限（点击弹窗修改），中间长条是该频段增益
+        （先点选锁定，再上下拖动；鼠标可直接拖，双击归零），最下是频点。
       </p>
-      <div class="ha-head" aria-hidden="true">
-        <span>频率</span><span>增益（dB）</span><span></span><span>上限（dB）</span><span></span>
-      </div>
-      <div id="haBands" class="ha-bands"></div>
+      <div id="haBandGrid" class="band-grid" role="group"
+           aria-label="助听十频段调节"></div>
       <div class="ha-mpo-summary">
         <span>全带 MPO（聚合生效值）</span>
         <strong id="haMpoValue">110 dB</strong>
@@ -1300,35 +1361,64 @@ summary {
         <span id="haToneBadge" class="badge">走手机扬声器</span>
       </div>
       <p class="note">
-        播放单频正弦或语音/音乐/自然样本，配合调节助听效果；尽量路由到手机内置扬声器，
-        绕开蓝牙耳机（避免拾音→放大→再进同一副耳机形成回环）。样本为合成近似。
+        先选类型，再选该类型下的具体声音；尽量路由到手机内置扬声器，绕开蓝牙耳机
+        （避免拾音→放大→再进同一副耳机形成回环）。语音为 edge-tts 构建期生成，
+        音乐/自然为 Wikimedia Commons 公共领域录音（来源与许可见 assets/samples/manifest.json）。
       </p>
-      <h3>手动单频</h3>
-      <div id="toneFreqChips" class="chips" role="group" aria-label="测试音频率"></div>
-      <label for="toneVolume">音量</label>
-      <div class="master-row">
-        <div id="toneVolumeWrap"></div>
-        <output id="toneVolumeValue" for="toneVolume">60%</output>
+      <div id="soundTypeSeg" class="segment" role="group" aria-label="声音类型">
+        <button data-type="tone" aria-pressed="true">手动单频</button>
+        <button data-type="speech" aria-pressed="false">语音</button>
+        <button data-type="music" aria-pressed="false">音乐</button>
+        <button data-type="nature" aria-pressed="false">自然</button>
       </div>
-      <div class="actions">
-        <button id="tonePlay" class="primary">播放单频</button>
-        <button id="toneStop">停止</button>
+
+      <div id="tonePanel" style="margin-top:12px">
+        <label for="toneFreqPreset">频率预设（听测常用）</label>
+        <div class="tone-freq-row">
+          <select id="toneFreqPreset"></select>
+          <input id="toneFreqInput" type="number" min="20" max="20000" step="1"
+                 value="1000" inputmode="numeric" aria-label="任意频率 Hz">
+        </div>
+        <label for="toneVolume">音量</label>
+        <div class="master-row">
+          <div id="toneVolumeWrap"></div>
+          <output id="toneVolumeValue" for="toneVolume">60%</output>
+        </div>
+        <div class="actions">
+          <button id="tonePlay" class="primary">播放单频</button>
+          <button id="toneStop">停止</button>
+        </div>
       </div>
-      <h3 style="margin-top:12px">样本播放</h3>
-      <div id="sampleButtons" class="segment three" role="group" aria-label="声音样本">
-        <button data-sample="speech" aria-pressed="false">语音</button>
-        <button data-sample="music" aria-pressed="false">音乐</button>
-        <button data-sample="nature" aria-pressed="false">自然</button>
-      </div>
+
+      <div id="samplePanelSpeech" class="sample-panel" hidden></div>
+      <div id="samplePanelMusic" class="sample-panel" hidden></div>
+      <div id="samplePanelNature" class="sample-panel" hidden></div>
+
       <label class="switch-row" for="sampleLoop" style="margin-top:10px">
         <input id="sampleLoop" class="toggle" type="checkbox" role="switch">
-        <span>循环播放（关闭为单次）</span>
+        <span>循环播放（关闭为单次，样本类型有效）</span>
       </label>
       <p id="toneFeedback" class="feedback" aria-live="polite">
         离线预览：测试音与样本需要原生壳（h3sha 桥）。
       </p>
     </article>
   </section>
+
+  <div id="haLimitDialog" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true"
+         aria-labelledby="haLimitTitle">
+      <h3 id="haLimitTitle">上限 · 1k Hz</h3>
+      <p class="small muted">
+        该频段期望的最大输出（数字域 dB，非标定 SPL），范围 60–120。
+      </p>
+      <input id="haLimitInput" type="number" min="60" max="120" step="1"
+             inputmode="numeric" aria-label="上限 dB">
+      <div class="actions">
+        <button id="haLimitCancel">取消</button>
+        <button id="haLimitOk" class="primary">确定</button>
+      </div>
+    </div>
+  </div>
 
   <section id="tabUsb" role="tabpanel" aria-labelledby="tabBtnUsb" hidden>
     <article class="card" id="sec-usb-dev">
@@ -1651,8 +1741,8 @@ function selectTab(name, focus) {
   window.scrollTo({ top: 0 });
   if (name === 'usb') {
     if (!usbBusy) usbScan();
-  } else if (name !== 'ha' && tonePlaying) {
-    stopTone();
+  } else if (name !== 'ha' && playingId) {
+    stopPlayback();
   }
 }
 $('tabBtnHs').onclick = () => selectTab('hs', false);
@@ -2171,6 +2261,7 @@ customEq.freq.forEach((frequency, index) => {
 
   let pointer = null;
   let tapCandidate = null;
+  let lastTouchAt = 0; // 触屏 tap 会合成 mouse pointerdown（立即设值）——500ms 内忽略
 
   function updateFromPointer(event) {
     const rect = slider.getBoundingClientRect();
@@ -2182,6 +2273,7 @@ customEq.freq.forEach((frequency, index) => {
   slider.addEventListener('pointerdown', event => {
     if (event.pointerType === 'mouse') {
       if (event.button !== 0) return;
+      if (performance.now() - lastTouchAt < 500) return; // 触屏 tap 的合成鼠标事件
       event.preventDefault();
       slider.focus({ preventScroll: true });
       pointer = event.pointerId;
@@ -2189,6 +2281,7 @@ customEq.freq.forEach((frequency, index) => {
       updateFromPointer(event);
       return;
     }
+    if (event.pointerType === 'touch') lastTouchAt = performance.now();
     // 触摸：未选中时先记作「点选」候选，不捕获指针（让纵向滚动照常）；选中后才锁定拖动。
     if (selectedBand !== index) {
       tapCandidate = { x: event.clientX, y: event.clientY, t: performance.now(), id: event.pointerId };
@@ -2267,9 +2360,10 @@ $('freqInput').onkeydown = event => {
   }
 };
 
-// 页面滚动即解除选中：避免点选锁定的滑杆挡住后续纵向滚动
+// 页面滚动即解除选中：避免点选锁定的滑杆挡住后续纵向滚动（EQ 与助听两处同机制）
 window.addEventListener('scroll', () => {
   if (selectedBand >= 0) setSelectedBand(-1);
+  if (haSelectedBand >= 0) setHaSelectedBand(-1);
 }, { passive: true });
 
 function selectPreset(index) {
@@ -2573,31 +2667,212 @@ function updateHaMpoSummary() {
     + '每频独立限幅需 multiband（未落地）。';
 }
 
-const HA_GAIN_MIN = -12;
-const HA_GAIN_MAX = 40;
+const HA_GAIN_MIN = -80;
+const HA_GAIN_MAX = 80;
 const HA_LIMIT_MIN = 60;
 const HA_LIMIT_MAX = 120;
-function renderHearingAidBands() {
-  $('haBands').replaceChildren();
-  hearingAid.bands.forEach((band) => {
-    const row = element('div', undefined, 'ha-band');
-    const freq = element('span', hz(band.freq), 'freq');
-    const gainOut = element('output', signed(band.gain), 'gval');
-    const limitOut = element('output', String(band.out_threshold), 'lval');
-    const gainSlider = createHSlider({
-      min: HA_GAIN_MIN, max: HA_GAIN_MAX, step: 1, value: band.gain, resetValue: 0,
-      ariaLabel: band.freq + ' Hz 增益', format: v => signed(v) + ' dB',
-      onChange: v => { band.gain = v; gainOut.textContent = signed(v); haChanged(); }
-    });
-    const limitSlider = createHSlider({
-      min: HA_LIMIT_MIN, max: HA_LIMIT_MAX, step: 1, value: band.out_threshold, resetValue: 110,
-      ariaLabel: band.freq + ' Hz 输出上限', format: v => v + ' dB',
-      onChange: v => { band.out_threshold = v; limitOut.textContent = String(v); haChanged(); }
-    });
-    row.append(freq, gainSlider, gainOut, limitSlider, limitOut);
-    $('haBands').appendChild(row);
+
+/* 纵向增益条：与 EQ tab 同机制（touch-action pan-y + 点选锁定），范围 ±80dB。 */
+function createVSlider(opts) {
+  const slider = element('div', undefined, 'slider');
+  slider.tabIndex = 0;
+  slider.setAttribute('role', 'slider');
+  slider.setAttribute('aria-orientation', 'vertical');
+  slider.setAttribute('aria-valuemin', String(opts.min));
+  slider.setAttribute('aria-valuemax', String(opts.max));
+  slider.setAttribute('aria-label', opts.ariaLabel || '滑杆');
+  ['rail', 'zero', 'thumb'].forEach(className => {
+    const part = element('span', undefined, className);
+    part.setAttribute('aria-hidden', 'true');
+    slider.appendChild(part);
+  });
+  slider.style.touchAction = 'pan-y';
+
+  let value = opts.value;
+  let pointer = null;
+  let tapCandidate = null;
+  let lastTouchAt = 0; // 触屏 tap 会合成 mouse pointerdown（立即设值）——500ms 内忽略
+
+  function render() {
+    slider.style.setProperty('--position',
+      String((opts.max - value) / (opts.max - opts.min)));
+    slider.setAttribute('aria-valuenow', String(value));
+    slider.setAttribute('aria-valuetext', opts.format ? opts.format(value) : String(value));
+  }
+  function commit(next) {
+    const clamped = Math.min(opts.max, Math.max(opts.min, next));
+    const stepped = opts.step ? Math.round(clamped / opts.step) * opts.step : clamped;
+    const v = Math.min(opts.max, Math.max(opts.min, stepped));
+    if (v !== value) {
+      value = v;
+      if (opts.onChange) opts.onChange(v);
+    }
+    render();
+  }
+  function updateFromPointer(event) {
+    const rect = slider.getBoundingClientRect();
+    const top = rect.top + 16;
+    const height = Math.max(1, rect.height - 32);
+    const ratio = Math.max(0, Math.min(1, (event.clientY - top) / height));
+    commit(opts.max - ratio * (opts.max - opts.min));
+  }
+  slider.addEventListener('pointerdown', event => {
+    if (event.pointerType === 'mouse') {
+      if (event.button !== 0) return;
+      if (performance.now() - lastTouchAt < 500) return; // 触屏 tap 的合成鼠标事件
+      event.preventDefault();
+      slider.focus({ preventScroll: true });
+      pointer = event.pointerId;
+      slider.setPointerCapture(pointer);
+      updateFromPointer(event);
+      return;
+    }
+    if (event.pointerType === 'touch') lastTouchAt = performance.now();
+    // 触摸：未点选锁定时先记「点选」候选，不捕获指针（纵向滚动照常）；
+    // 锁定后才独占指针拖动，避免滚动页面误调增益。
+    if (!opts.isLocked || !opts.isLocked()) {
+      tapCandidate = { x: event.clientX, y: event.clientY, t: performance.now(), id: event.pointerId };
+      return;
+    }
+    event.preventDefault();
+    slider.focus({ preventScroll: true });
+    pointer = event.pointerId;
+    slider.setPointerCapture(pointer);
+    updateFromPointer(event);
+  });
+  slider.addEventListener('pointermove', event => {
+    if (event.pointerId === pointer) {
+      event.preventDefault();
+      updateFromPointer(event);
+    } else if (tapCandidate && event.pointerId === tapCandidate.id) {
+      if (Math.hypot(event.clientX - tapCandidate.x, event.clientY - tapCandidate.y) > 8) {
+        tapCandidate = null; // 位移超阈值：这是滚动，不是点选
+      }
+    }
+  });
+  function releasePointer(event) {
+    if (event.pointerId === pointer) {
+      const captured = pointer;
+      pointer = null;
+      if (slider.hasPointerCapture(captured)) slider.releasePointerCapture(captured);
+    } else if (tapCandidate && event.pointerId === tapCandidate.id) {
+      const dt = performance.now() - tapCandidate.t;
+      tapCandidate = null;
+      if (dt < 400 && opts.onSelect) opts.onSelect(); // 点选锁定
+    }
+  }
+  slider.addEventListener('pointerup', releasePointer);
+  slider.addEventListener('pointercancel', event => {
+    if (event.pointerId === pointer) pointer = null;
+    tapCandidate = null;
+  });
+  slider.addEventListener('lostpointercapture', () => { pointer = null; });
+  slider.addEventListener('dblclick', event => {
+    event.preventDefault();
+    if (opts.resetValue != null) commit(opts.resetValue);
+  });
+  slider.addEventListener('keydown', event => {
+    const s = opts.step || 1;
+    let next;
+    if (event.key === 'ArrowUp' || event.key === 'ArrowRight') next = value + s;
+    else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') next = value - s;
+    else if (event.key === 'PageUp') next = value + s * 10;
+    else if (event.key === 'PageDown') next = value - s * 10;
+    else if (event.key === 'Home') next = opts.min;
+    else if (event.key === 'End') next = opts.max;
+    else if (event.key === '0') next = opts.resetValue != null ? opts.resetValue : 0;
+    else return;
+    event.preventDefault();
+    commit(next);
+  });
+  slider.setLocked = locked => {
+    slider.style.touchAction = locked ? 'none' : 'pan-y';
+  };
+  render();
+  return slider;
+}
+
+/* 十频段横排：每列 = 上限数值（点击弹窗改）→ 纵向增益条 → 增益读数 → 频点。 */
+let haSelectedBand = -1;
+const haBandItems = [];
+function setHaSelectedBand(index) {
+  haSelectedBand = index;
+  haBandItems.forEach((item, i) => {
+    item.bandEl.classList.toggle('selected', i === index);
+    item.slider.setLocked(i === index);
   });
 }
+function haLimitAria(band) {
+  return hz(band.freq) + ' Hz 上限 ' + band.out_threshold + ' dB，点击修改';
+}
+function renderHearingAidBands() {
+  $('haBandGrid').replaceChildren();
+  haBandItems.length = 0;
+  hearingAid.bands.forEach((band, index) => {
+    const col = element('div', undefined, 'band');
+    const limitBtn = element('button', String(band.out_threshold), 'ha-limit');
+    limitBtn.type = 'button';
+    limitBtn.setAttribute('aria-label', haLimitAria(band));
+    limitBtn.onclick = () => openHaLimitDialog(index);
+    const gainOut = element('output', signed(band.gain), 'gval');
+    const slider = createVSlider({
+      min: HA_GAIN_MIN, max: HA_GAIN_MAX, step: 1, value: band.gain, resetValue: 0,
+      ariaLabel: band.freq + ' Hz 增益', format: v => signed(v) + ' dB',
+      isLocked: () => haSelectedBand === index,
+      onSelect: () => setHaSelectedBand(haSelectedBand === index ? -1 : index),
+      onChange: v => { band.gain = v; gainOut.textContent = signed(v); haChanged(); }
+    });
+    slider.id = 'ha-band-' + index;
+    gainOut.setAttribute('for', slider.id);
+    const freqLabel = element('span', hz(band.freq), 'frequency');
+    col.append(limitBtn, slider, gainOut, freqLabel);
+    $('haBandGrid').appendChild(col);
+    haBandItems.push({ bandEl: col, slider, limitBtn, gainOut });
+  });
+  setHaSelectedBand(-1);
+}
+
+/* 上限数值弹窗：点频段上限数字 → 数字输入对话框（60–120，默认 110 量级） */
+let haLimitIndex = -1;
+function openHaLimitDialog(index) {
+  haLimitIndex = index;
+  const band = hearingAid.bands[index];
+  $('haLimitTitle').textContent = '上限 · ' + hz(band.freq) + ' Hz';
+  $('haLimitInput').value = String(band.out_threshold);
+  $('haLimitDialog').hidden = false;
+  const input = $('haLimitInput');
+  input.focus({ preventScroll: true });
+  input.select();
+}
+function closeHaLimitDialog() {
+  $('haLimitDialog').hidden = true;
+  haLimitIndex = -1;
+}
+$('haLimitOk').onclick = () => {
+  if (haLimitIndex < 0) { closeHaLimitDialog(); return; }
+  const parsed = Number($('haLimitInput').value);
+  if (!Number.isFinite(parsed)) { $('haLimitInput').focus(); return; }
+  const limit = Math.max(HA_LIMIT_MIN, Math.min(HA_LIMIT_MAX, Math.round(parsed)));
+  const band = hearingAid.bands[haLimitIndex];
+  band.out_threshold = limit;
+  haBandItems[haLimitIndex].limitBtn.textContent = String(limit);
+  haBandItems[haLimitIndex].limitBtn.setAttribute('aria-label', haLimitAria(band));
+  haChanged();
+  closeHaLimitDialog();
+};
+$('haLimitCancel').onclick = closeHaLimitDialog;
+$('haLimitDialog').addEventListener('click', event => {
+  if (event.target === $('haLimitDialog')) closeHaLimitDialog();
+});
+$('haLimitInput').addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    $('haLimitOk').onclick();
+  } else if (event.key === 'Escape') {
+    closeHaLimitDialog();
+  }
+});
+
 $('haFlat').onclick = () => {
   hearingAid.bands.forEach(b => { b.gain = 0; b.out_threshold = 110; });
   renderHearingAidBands();
@@ -2608,36 +2883,90 @@ renderHearingAidBands();
 updateHaMpoSummary();
 
 // —— 测试音与样本（h3sha 桥：AudioTrack + 内置扬声器路由）——
+// 二级选择：先选类型（手动单频/语音/音乐/自然），再选该类型下的具体声音。
 const T = window.h3sha || null;
-const TONE_FREQS = [125, 250, 500, 1000, 2000, 4000, 8000];
-let toneFreq = 1000;
+const TONE_PRESETS = [125, 250, 500, 1000, 2000, 3000, 4000, 6000, 8000, 12000, 16000];
+/* 样本清单：id 即 assets/samples/<id>.wav，与 assets/samples/manifest.json 同步维护。 */
+const HA_SAMPLES = {
+  speech: [
+    { id: 'speech/en_f_daily', name: '英语女声 · 日常对话', meta: 'en-US Aria · edge-tts' },
+    { id: 'speech/en_m_news', name: '英语男声 · 新闻句', meta: 'en-US Guy · edge-tts' },
+    { id: 'speech/en_gb_f_numbers', name: '英语女声 · 数字报数', meta: 'en-GB Sonia · edge-tts' },
+    { id: 'speech/zh_f_daily', name: '中文女声 · 日常对话', meta: 'zh-CN 晓晓 · edge-tts' },
+    { id: 'speech/zh_m_numbers', name: '中文男声 · 数字报数', meta: 'zh-CN 云希 · edge-tts' }
+  ],
+  music: [
+    { id: 'music/violin_bach_adagio', name: '小提琴 · 巴赫 BWV1001 柔板', meta: 'CC0 · Wikimedia Commons' },
+    { id: 'music/violin_bach_allemanda', name: '小提琴 · 巴赫 BWV1004 阿勒芒德', meta: 'CC0 · Wikimedia Commons' },
+    { id: 'music/piano_chopin_nocturne', name: '钢琴 · 肖邦夜曲 Op.37 No.1', meta: 'CC0 · Wikimedia Commons' }
+  ],
+  nature: [
+    { id: 'nature/waves_pebble_beach', name: '海浪 · 砾石滩拍岸', meta: '公共领域 · Wikimedia Commons' },
+    { id: 'nature/rain_shower', name: '雨 · 阵雨', meta: '公共领域 · Wikimedia Commons' },
+    { id: 'nature/breeze_birds', name: '风 · 微风与鸟鸣', meta: '公共领域 · Wikimedia Commons' },
+    { id: 'nature/stream_water', name: '溪流 · 流水', meta: '公共领域 · Wikimedia Commons' }
+  ]
+};
 let toneVolume = 60;
-let tonePlaying = false;
+let playingId = null; // 'tone' | '<sample id>' | null
 
-function updateToneButtons() {
-  $('tonePlay').textContent = tonePlaying ? '停止播放' : '播放单频';
-  $('tonePlay').setAttribute('aria-pressed', String(tonePlaying));
-  all('#sampleButtons button').forEach(b => b.setAttribute('aria-pressed', 'false'));
+function updatePlayButtons() {
+  $('tonePlay').textContent = playingId === 'tone' ? '停止播放' : '播放单频';
+  $('tonePlay').setAttribute('aria-pressed', String(playingId === 'tone'));
+  all('.sample-item button').forEach(b => {
+    const active = b.dataset.sample === playingId;
+    b.setAttribute('aria-pressed', String(active));
+    b.textContent = active ? '停止' : '播放';
+  });
 }
-function stopTone() {
+function stopPlayback() {
   if (T) { try { T.stop(); } catch (e) { /* 忽略 */ } }
-  tonePlaying = false;
-  updateToneButtons();
+  playingId = null;
+  updatePlayButtons();
 }
-TONE_FREQS.forEach(f => {
-  const b = element('button', hz(f));
-  b.type = 'button';
-  b.setAttribute('aria-pressed', String(f === toneFreq));
+
+/* 类型切换（二级的第一级） */
+all('#soundTypeSeg button').forEach(b => {
   b.onclick = () => {
-    toneFreq = f;
-    all('#toneFreqChips button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-    if (tonePlaying) {
-      stopTone();
-      $('toneFeedback').textContent = '已切换频率，重新点「播放单频」开始。';
-    }
+    if (playingId) stopPlayback();
+    selectSoundType(b.dataset.type);
   };
-  $('toneFreqChips').appendChild(b);
 });
+function selectSoundType(type) {
+  all('#soundTypeSeg button').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.type === type)));
+  $('tonePanel').hidden = type !== 'tone';
+  ['speech', 'music', 'nature'].forEach(k => {
+    $('samplePanel' + k[0].toUpperCase() + k.slice(1)).hidden = type !== k;
+  });
+}
+selectSoundType('tone');
+
+/* 手动单频：预设下拉（听测常用频点）+ 任意频率数字输入，输入框为准 */
+const presetSelect = $('toneFreqPreset');
+(function buildPresetOptions() {
+  const custom = element('option', '自定义');
+  custom.value = '';
+  presetSelect.appendChild(custom);
+  TONE_PRESETS.forEach(f => {
+    const opt = element('option', hz(f) + ' Hz');
+    opt.value = String(f);
+    presetSelect.appendChild(opt);
+  });
+})();
+function readToneFreq() {
+  const v = Number($('toneFreqInput').value);
+  return Number.isFinite(v) ? Math.round(v) : 1000;
+}
+function syncPresetSelect(freq) {
+  presetSelect.value = TONE_PRESETS.indexOf(freq) !== -1 ? String(freq) : '';
+}
+presetSelect.onchange = () => {
+  if (presetSelect.value) $('toneFreqInput').value = presetSelect.value;
+};
+$('toneFreqInput').oninput = () => syncPresetSelect(readToneFreq());
+syncPresetSelect(1000);
+
 $('toneVolumeWrap').appendChild(createHSlider({
   min: 0, max: 100, step: 5, value: toneVolume, ariaLabel: '测试音音量',
   format: v => v + '%',
@@ -2645,31 +2974,53 @@ $('toneVolumeWrap').appendChild(createHSlider({
 }));
 $('tonePlay').onclick = () => {
   if (!T) { notify('离线预览：测试音需要原生壳（h3sha 桥）', true); return; }
-  if (tonePlaying) { stopTone(); $('toneFeedback').textContent = '已停止。'; return; }
-  const r = rpc(T, 'playTone', [toneFreq, toneVolume]);
+  if (playingId === 'tone') { stopPlayback(); $('toneFeedback').textContent = '已停止。'; return; }
+  const freq = Math.max(20, Math.min(20000, readToneFreq()));
+  $('toneFreqInput').value = String(freq);
+  syncPresetSelect(freq);
+  const r = rpc(T, 'playTone', [freq, toneVolume]);
   if (r && r.ok) {
-    tonePlaying = true;
-    updateToneButtons();
-    $('toneFeedback').textContent = '单频 ' + toneFreq + ' Hz · 音量 ' + toneVolume + '% · ' +
+    playingId = 'tone';
+    updatePlayButtons();
+    $('toneFeedback').textContent = '单频 ' + freq + ' Hz · 音量 ' + toneVolume + '% · ' +
       (r.speaker ? '已选内置扬声器' : '未找到内置扬声器，走默认路由');
   }
 };
-$('toneStop').onclick = () => { stopTone(); $('toneFeedback').textContent = '已停止。'; };
-all('[data-sample]').forEach(b => {
-  b.onclick = () => {
-    if (!T) { notify('离线预览：样本需要原生壳（h3sha 桥）', true); return; }
-    const name = b.dataset.sample;
-    const loop = $('sampleLoop').checked;
-    const r = rpc(T, 'playSample', [name, loop]);
-    if (r && r.ok) {
-      tonePlaying = true;
-      updateToneButtons();
-      b.setAttribute('aria-pressed', 'true');
-      $('toneFeedback').textContent = '样本：' + b.textContent + ' · ' + (loop ? '循环' : '单次') + ' · ' +
-        (r.speaker ? '已选内置扬声器' : '未找到内置扬声器，走默认路由');
-    }
-  };
+$('toneStop').onclick = () => { stopPlayback(); $('toneFeedback').textContent = '已停止。'; };
+
+/* 二级样本列表：每项可播/停 */
+['speech', 'music', 'nature'].forEach(kind => {
+  const panel = $('samplePanel' + kind[0].toUpperCase() + kind.slice(1));
+  HA_SAMPLES[kind].forEach(sample => {
+    const row = element('div', undefined, 'sample-item');
+    const info = element('div', undefined, 'sample-info');
+    info.append(element('strong', sample.name), element('small', sample.meta));
+    const btn = element('button', '播放');
+    btn.type = 'button';
+    btn.dataset.sample = sample.id;
+    btn.setAttribute('aria-pressed', 'false');
+    btn.setAttribute('aria-label', sample.name + '，点击播放或停止');
+    btn.onclick = () => {
+      if (!T) { notify('离线预览：样本需要原生壳（h3sha 桥）', true); return; }
+      if (playingId === sample.id) {
+        stopPlayback();
+        $('toneFeedback').textContent = '已停止。';
+        return;
+      }
+      const loop = $('sampleLoop').checked;
+      const r = rpc(T, 'playSample', [sample.id, loop]);
+      if (r && r.ok) {
+        playingId = sample.id;
+        updatePlayButtons();
+        $('toneFeedback').textContent = '样本：' + sample.name + ' · ' + (loop ? '循环' : '单次') + ' · ' +
+          (r.speaker ? '已选内置扬声器' : '未找到内置扬声器，走默认路由');
+      }
+    };
+    row.append(info, btn);
+    panel.appendChild(row);
+  });
 });
+
 function toneInfo() {
   try {
     if (!T || typeof T.info !== 'function') return null;
@@ -2684,9 +3035,9 @@ if (T) {
     const badge = $('haToneBadge');
     badge.textContent = info.speaker ? '已选内置扬声器' : '未找到内置扬声器';
     badge.className = 'badge ' + (info.speaker ? 'good' : 'warning');
-    if (tonePlaying && info.playing === false) {
-      tonePlaying = false;
-      updateToneButtons();
+    if (playingId && info.playing === false) {
+      playingId = null;
+      updatePlayButtons();
       $('toneFeedback').textContent = '播放已结束。';
     }
   }, 800);

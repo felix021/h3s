@@ -138,7 +138,11 @@ WebView 壳第三 tab，页面在 `assets/index.html`，原生侧只有一个 to
 
 ### 每频段调节（BLE 命令留桩）
 
-每频段一行：频率 + 增益横滑杆 + 上限横滑杆（上限=该频段最大输出，数字域 dB，非标定 SPL）。
+十个频段**横排**（每频段一纵列，窄屏可横向滚动，与 EQ tab 的 band-grid 同模式）。每列自上而下：
+**上限数值**（默认 110，对应固件 Drc1Eff 原始末点 110.3 量级；点击数字弹窗输入修改，
+范围 60–120）→ **纵向增益条**（±80 dB，App 滑杆范围；路 CN 已证 EQ float 无 clamp，
+39 dB 放行，±80 只是 UI 范围）→ 增益读数 → 频点。增益条沿用防误触机制：
+`touch-action: pan-y` + 点选锁定（未锁定时纵向滚动照常，点选后独占拖动；双击归零、方向键微调）。
 10 段频率默认与 EQ 自定义一致（31..16k）。参数结构字段名与
 [docs/hearing-aid-eq-feasibility.md](../../docs/hearing-aid-eq-feasibility.md) 对齐：
 
@@ -147,33 +151,46 @@ WebView 壳第三 tab，页面在 `assets/index.html`，原生侧只有一个 to
 
 **全带 MPO 聚合（L2 落地，[docs/hearing-aid-l2-mpo.md](../../docs/hearing-aid-l2-mpo.md)）**：
 固件 `Drc1Eff` 是单带 WDRC，做不了每频独立限幅；页面把每频上限聚合为
-`M = min(band.out_threshold)`，卡片下方「全带 MPO」汇总行实时显示生效值。
+`M = min(band.out_threshold)`，卡片下方「全带 MPO」汇总行实时显示生效值（弹窗/复位即时刷新）。
 `buildHearingAidPayload()`（页面 `window.h3sHearingAidPayload`）输出 `mpo`（聚合值 +
 三点水平尾段曲线 `(0.3,0.3)/(M,M)/(X,M)`，与 `--hearing-aid-mpo` 写进镜像的形状一致）
 和 `band_out_threshold`（每频请求原样保留，L3 multiband 的用户输入存档）。
 
 **诚实标注**：per-band 限幅在当前固件里无 1:1 落点（需 L3 分频+多 WDRC+merge 拓扑）；
-M 是数字域 dB 刻度、非标定 SPL；attack/TWOPOINT 平滑下稳态上限成立≠瞬时峰值保护。
-**BLE 命令绑定未接**（App→固件参数写入通道不存在，r4-keyhook 的 8B VM key 30 只有
-往返、无消费链；L3 见 docs/hearing-aid-l2-mpo.md §5）。
+M 是数字域 dB 刻度、非标定 SPL；attack/TWOPOINT 平滑下稳态上限成立≠瞬时峰值保护；
+±80 dB 只是 App 草稿范围，越界实际效果未验。**BLE 命令绑定未接**（App→固件参数写入通道
+不存在，r4-keyhook 的 8B VM key 30 只有往返、无消费链；L3 见 docs/hearing-aid-l2-mpo.md §5）。
 
 ### 测试音与样本（h3sha 桥）
 
-- **手动单频**：125/250/500/1k/2k/4k/8k Hz + 音量滑杆；AudioTrack MODE_STATIC 生成整周期
-  正弦、`setLoopPoints` 无缝循环直到 `stop()`。
-- **样本**：语音/音乐/自然 3 个按钮 + 循环/单次；`assets/samples/{speech,music,nature}.wav`
-  （16 kHz 单声道 PCM 16-bit，各 ~2.5–3 s，共约 260 KB）。
+**二级选择**：先选类型（手动单频 / 语音 / 音乐 / 自然），再列该类型下的具体样本，每项可播/停。
+
+- **手动单频**：频率**预设下拉**（125/250/500/1k/2k/3k/4k/6k/8k/12k/16k 听测常用频点）
+  + **任意频率数字输入**（20–20000 Hz，输入框为准，预设变化跟随高亮）+ 音量滑杆；
+  AudioTrack MODE_STATIC 生成整周期正弦、`setLoopPoints` 无缝循环直到 `stop()`。
+- **样本**（`assets/samples/{speech,music,nature}/` 二级目录，16 kHz 单声道 PCM 16-bit，
+  共 12 段约 2.9 MB）：
+  - 语音 5 段：edge-tts 构建期生成的静态 WAV——en-US 男女声（日常对话/新闻）、en-GB 女声
+    （数字报数）、zh-CN 男女声（日常对话/数字报数）。**不集成运行时 TTS 引擎**（端侧模型分发
+    方案参考过 ~/code/podic-dictionary/tts，但本工具只需几段静态样本，静态生成是明确取舍）；
+    edge-tts 服务条款允许个人使用其合成音频。
+  - 音乐 3 段：小提琴（巴赫 BWV 1001 柔板、BWV 1004 阿勒芒德）×2 + 钢琴（肖邦夜曲
+    Op.37 No.1），裁 9.3 s 片段，全部 CC0（Wikimedia Commons）。
+  - 自然 4 场景：海浪（砾石滩）/ 雨（阵雨）/ 风（微风鸟鸣）/ 溪流（流水），各 6.2 s，
+    全部 Public domain（Wikimedia Commons / PDSounds）。
+  - 统一处理：去首尾静音 → loudnorm −20 LUFS（响度可比）→ 淡入淡出；每段来源 URL +
+    license + 文本/时长记录在 `assets/samples/manifest.json`，与页面 `HA_SAMPLES` 同步维护。
+    仅收 CC0/Public Domain，CC-BY 需署名的一律避开。
 - **扬声器路由**：`AudioTrack.Builder.setPreferredDevice(TYPE_BUILTIN_SPEAKER)`——这是「首选
   设备」提示（android.jar 无 `MODIFY_AUDIO_ROUTING` 权限要求），用于绕开 BLE A2DP 的默认路由
   （否则耳机拾音→放大→再进同一副耳机会形成回环）。
-- bridge 方法：`playTone(freqHz, volume)` / `playSample(name, loop)` / `stop()` / `info()`，
+- bridge 方法：`playTone(freqHz, volume)` / `playSample(id, loop)`（id 形如
+  `speech/en_f_daily`，白名单按 assets 目录动态列举） / `stop()` / `info()`，
   返回 `{ok, playing, speaker, ...}`；`info()` 供页面 800ms 轮询（播放自然结束 + 扬声器状态）。
 
 **诚实标注**：
 
-- **样本是合成近似**，不是真实录音：语音=合成元音串（非真实人声）、音乐=合成琶音、自然=合成
-  雨声+鸟鸣扫频。测真实语音可懂度/音乐听感前，需换成经确认的 CC0/公共领域样本（本路未引入
-  版权不明内容）。
+- 语音样本是 edge-tts 合成人声（非真人录音），可用于试听频响变化，不等同真人言语可懂度测试。
 - **真机 BT 连着时 `setPreferredDevice` 是否完全强制路由到内置扬声器未验证**——AVD 无真实
   BT，只能验 bridge 不崩、参数合法；路由行为、样本实际听感都要真机联调确认。
 
