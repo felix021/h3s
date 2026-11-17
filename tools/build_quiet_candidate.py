@@ -8,6 +8,7 @@ Requires analysis/v1.1.8 from tools/unpack.py and the pinned jl-misctools submod
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import struct
 import sys
@@ -336,6 +337,13 @@ def main():
                         "（eq ioctl 0x0607898e subcmd 7 分支，每条要求返回 1 否则停止）；只发 Eq1Eff"
                         "（mic_effect 主链 MPO 上游输入 EQ；Eq4Eff/Eq5Eff 在输出支路不动，避免限幅后"
                         "重复整形）；候选 UNTESTED 不刷机，见 docs/hearing-aid-l4-eq.md")
+    p.add_argument("--hearing-aid-full", action="store_true",
+                   help="助听 L1+L2+L3+L4 全功能合一离线候选（路 HAL5）：隐含 --hearing-aid-l4-eq 全链"
+                        "（代码字节与该候选完全一致——L4 的双击桩已按 open成功→apply_mpo→apply_eq 链成），"
+                        "并要求显式 --hearing-aid-mpo M（0.3<M<120，与 key30 消费范围一致）把 L2 水平尾段"
+                        " MPO 曲线烘进 stream.bin 作为无 key 时的兜底；固件字节 == --hearing-aid-l4-eq"
+                        " --hearing-aid-mpo M 组合构建（零新增载荷）；与 --hearing-aid-demo /"
+                        " --hearing-aid-l1-key7 互斥；候选 UNTESTED 不刷机，见 docs/hearing-aid-l5-full.md")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -368,6 +376,34 @@ def main():
         if args.hearing_aid_l1_key7:
             p.error('--hearing-aid-l4-eq and --hearing-aid-l1-key7 share the KEY7 graft window')
         args.hearing_aid_l3_mpo = True        # L4 EQ = L3 MPO 全链 + EQ 段热更（路 HAL4）
+        args.r4_keyhook = True
+        args.hearing_aid_l1_slotram = True
+        args.hearing_aid_l1_close = True
+        args.hearing_aid_l1_patch = True
+    if args.hearing_aid_full:
+        # 路 HAL5（codex ~/tmp/codex/202611180021-hal5 + 复核 202611180041-hal5rev）：
+        # full 只是组合/命名/审计层，固件字节必须等于 --hearing-aid-l4-eq
+        # --hearing-aid-mpo M（零新增载荷）。校验顺序 demo→缺M→范围→key7；范围门
+        # 先挡非有限/越界 double（f32 转换 1e100 会 OverflowError），再按 float32
+        # 化后的值判 0.3f < M < 120.0f（0.300000001 会舍入到 0.3f，须在此拒绝）。
+        if args.hearing_aid_demo:
+            p.error('--hearing-aid-full and --hearing-aid-demo are mutually exclusive '
+                    '(demo also edits the Eq1Eff/Eq4Eff/Eq5Eff shared blob on the '
+                    'post-MPO output branches)')
+        if args.hearing_aid_mpo is None:
+            p.error('--hearing-aid-full requires an explicit --hearing-aid-mpo <dB> '
+                    '(the baked fallback curve is part of the candidate contract)')
+        _m = args.hearing_aid_mpo
+        if not math.isfinite(_m) or not (0.3 < _m < 120.0):
+            p.error('--hearing-aid-full requires 0.3 < --hearing-aid-mpo < 120 '
+                    '(same consumption range as VM key 30)')
+        if not (f32(0.3) < f32(_m) < f32(120.0)):
+            p.error('--hearing-aid-full requires 0.3 < --hearing-aid-mpo < 120 after '
+                    'float32 rounding (same consumption range as VM key 30)')
+        if args.hearing_aid_l1_key7:
+            p.error('--hearing-aid-full and --hearing-aid-l1-key7 share the KEY7 graft window')
+        args.hearing_aid_l4_eq = True         # full = L4 全链 + L2 烘焙兜底（路 HAL5）
+        args.hearing_aid_l3_mpo = True
         args.r4_keyhook = True
         args.hearing_aid_l1_slotram = True
         args.hearing_aid_l1_close = True
@@ -420,6 +456,61 @@ def main():
                        "changes": demo_changes,
                        "roundtrip": verify_hearing_aid_roundtrip(
                            stream, s5_base, mpo=mpo, eq_demo=args.hearing_aid_demo)}
+    hearing_aid_full = None
+    if args.hearing_aid_full:
+        # 路 HAL5 合一语义报告（codex ~/tmp/codex/202611180021-hal5 §4）：由最终有效
+        # 配置生成，不改任何载荷字节——full 候选的固件字节 == --hearing-aid-l4-eq
+        # --hearing-aid-mpo M 组合构建。
+        baked = f32(mpo)
+        # 与 apply_hearing_aid_mpo_curve 同式：mpo 先 float32 化再加 10.3（双精度
+        # 直加会与镜像实况漂移 ~7e-6，codex 复核 202611180041-hal5rev #3）
+        x_tail = f32(110.3) if baked < f32(110.3) else f32(baked + 10.3)
+        hearing_aid_full = {
+            "mode": "l1_key7_toggle + l2_baked_mpo + l3_key30_mpo + l4_key31_eq",
+            "features": {
+                "l1": "双击多功能键 toggle（读槽 0x125574 → open 先 db3c(1,1) 请求关 ANC / close）",
+                "l2": "stream.bin Drc1Eff 水平尾段 MPO 曲线（构建期烘焙，pipeline open 按文件配置装载）",
+                "l3": "key 30（8B {HA,01,00,float32 M1}）→ open 成功后 apply_mpo 运行时覆盖 Drc1Eff",
+                "l4": "key 31（88B 十段）→ open 成功后 apply_mpo 再 apply_eq 热更 Eq1Eff 十段",
+            },
+            "baked_mpo_db": baked,
+            "baked_curve": [[f32(0.3), f32(0.3)], [baked, baked], [x_tail, baked]],
+            "runtime_priority":
+                "key30 运行时值 > L2 烘焙值：open 成功后 apply_mpo 读 key 30，值合法则"
+                "以 (0.3,0.3)/(M1,M1)/(120,M1) 覆盖运行参数；key 30 缺失/格式拒/范围拒"
+                "则跳过（返回 1），保持本次 open 从 stream.bin 装载的 L2 曲线。close→open"
+                " 每次重读。M1 无 min(M, M1) 钳位——L2 的 M 是默认值不是硬上限，合法"
+                " M1 可以大于 M。",
+            "semantics_by_key30_state": [
+                {"key30": "缺失/长度/格式/范围拒", "curve": "保持本次从文件装载的 L2 曲线 M"},
+                {"key30": "合法 M1，运行时更新成功", "curve": "先装载 M，随后覆盖为 M1"},
+                {"key30": "已开启时修改 key 30", "curve": "不立即重应用；下次 close→open 重读"},
+                {"key30": "前次成功应用 M1，本次 key 30 已失效",
+                 "curve": "本次重建先装载 M，跳过覆盖；不承诺保留前次 M1"},
+                {"key30": "参数提交返回错误/等待不返回",
+                 "curve": "不能仅凭 key 合法推断最终音频状态"},
+            ],
+            "semantics_note":
+                "上表是设计语义（静态链路证据），完整消费链未在任何仿真/真机执行验证。",
+            "non_atomic_caveats": [
+                "open 成功 ≠ 首个音频块已用新参数：start 返回与第一块消费之间的窗口内"
+                "用 L2 烘焙曲线（这正是 L2 兜底的价值）",
+                "十段 EQ 非事务：段间可能跨音频块逐步生效（fade 0.1f 平滑），中途失败"
+                "留下部分应用的曲线；key 31 值仍在，下次 open 重试全部十条",
+                "MPO 失败不阻止 EQ：apply_mpo 返回后无条件 apply_eq；若 apply_mpo 在"
+                "同步等待上阻塞则 EQ 也到不了",
+                "ANC 互斥只有请求动作：db3c(1,1) 返回 ≠ anc_task 硬件退出完成；HA 开启"
+                "期间外部再开 ANC 无『先关 HA』处理",
+                "保存回执 ≠ 消费 ≠ 出声三个层级；0x0607538a 的同步等待在冻结单上下文"
+                "会撞 EQPIPE 同族墙，真机标准调度下未验证",
+            ],
+            "tail_point_note":
+                "L2 烘焙 th[2].in = 110.3（M≥110.3 时 M+10.3）；运行时模板固定 120.0f。"
+                "末段斜率 0 下两者静态传递曲线等价，76B 参数包不逐字节相同。",
+            "equivalent_build":
+                f"--hearing-aid-l4-eq --hearing-aid-mpo {baked:.9g}",
+            "status": "OFFLINE_UNTESTED",
+        }
     if stream_flow_identifier(stream) != flow_identifier:
         raise ValueError("不应改变在线调音流程标识")
     # 内层 stream.bin 的 JLFS 目录头与原始数据先做交叉校验。
@@ -561,12 +652,17 @@ def main():
     suffix = "_anc_on_trans" if args.anc_cycle_two_state else ""
     if eq_toggle:
         suffix += "_eq_toggle_EXPERIMENTAL"
-    if args.hearing_aid_demo:
+    if args.hearing_aid_full:
+        # 路 HAL5：full 单独命名（隐含链的 L4 后缀不再叠加）。M 文本用 float32
+        # 化后的 .9g（可往返；:g 的 6 位有效数字会把 119.99999 显示成 120，
+        # 而该命令烘焙的是不同字节且 120 不满足 full 契约——codex 复核 #4）
+        suffix += f"_HEARING_AID_FULL_MPO{f32(mpo):.9g}_OFFLINE"
+    elif args.hearing_aid_demo:
         suffix += ("_HEARING_AID_DEMO" if args.hearing_aid_mpo is None
                    else f"_HEARING_AID_DEMO_MPO{mpo:g}")
     elif args.hearing_aid_mpo is not None:
         suffix += f"_HEARING_AID_MPO{mpo:g}"
-    if hearing_aid_l1:
+    if hearing_aid_l1 and not args.hearing_aid_full:
         suffix += ("_HEARING_AID_L4_EQ_OFFLINE" if args.hearing_aid_l4_eq
                    else "_HEARING_AID_L3_MPO_OFFLINE" if args.hearing_aid_l3_mpo
                    else "_R4_KEYHOOK_OFFLINE" if args.r4_keyhook
@@ -590,6 +686,7 @@ def main():
               **({'eq_toggle': eq_toggle} if eq_toggle else {}),
               **({'hearing_aid_demo': hearing_aid} if hearing_aid else {}),
               **({'hearing_aid_l1': hearing_aid_l1} if hearing_aid_l1 else {}),
+              **({'hearing_aid_full': hearing_aid_full} if hearing_aid_full else {}),
               "zero_change_identical": bytes(result) == source,
               "dual_bank_boot_info": {"flash_offset": boot_pos, "app_offset": app_pos,
                                       "app_bytes": app_size, "plain_crc_before": plain_crc,
