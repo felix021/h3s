@@ -4248,6 +4248,184 @@ class P2MClkCon0Registers:
         }
 
 
+class JLIomcMapRegisters:
+    """JL_IOMC 映射表七字具名 fixture 容器(首写前读=具名 fixture/写后读=
+    最后写值,opt-in,批 B JL_IOMC/scout2 §4;docs/frontier-scout2-batchbc.md)。
+
+    背景:批 B=JL_IOMC 字族 8 字(基 0xfd6014,br28.h JL_IOMC_TypeDef
+    {CON0,OCH_CON0..2,ICH_CON0..3},GPIO 输入/输出通道映射表)。scout2 静态
+    全表核实:**CON0 0xfd6014 在当前前沿世界已是活容器**——场景经
+    platform_case 默认 seed IOMAP_CON0=0(port_initialization_projection 进
+    additional_configuration)服务 0x6010b84 RMW 等站点,本容器**不含 CON0、
+    不重复建模**。真正 unmapped 的是 OCH 三字+ICH 四字:
+
+      * OCH 0xfd6018/1c/20(输出通道映射,16 槽×5 位,slot<6→CON0/6..11→
+        CON1/12..15→CON2):槽搜索 0x6019634(0x601966e `r1>>s&0x1F; if(!=r4)`)
+        **读值进比较分支**;resolver 0x6001356 RMW 读值只承载保留位;save/
+        restore(0x12D1B8/0x12D4BA)跨地址 RAM 快照+整字写生产者。
+      * ICH 0xfd6024/28/2c/30(输入通道映射,32 通道×4 位 nibble,通道>23→
+        ICH_CON3/16..23→CON2/8..15→CON1/0..7→CON0):槽搜索 0x6019692
+        (0x60196c2 读 nibble→`if(>13)`→选 JL_IMAP 清零目标 0xfd5c00+
+        (nibble<<2)→call 0x601968c 清字+位图清位)**读值进分支+跨地址传播**
+        ——三重消费,批 B 最强;resolver 0x60013ce RMW 保留位;save/restore 同上。
+
+    三选一(scout2 §4 定调 (b)):OCH/ICH **无一可进容器**(读值进比较分支/
+    分支+传播),全落具名 fixture——条件主臂 0x00000000(=空映射表的最小
+    语义,derived-not-measured 非硅复位值),敏感性对照臂直接用同一参数传
+    非 0 值。不敏感性预判(scout2 §4,synthetic-not-measured):
+      * OCH=0:十六槽全读 0→`0>>s&0x1F=0 != r4`(r4=FO_* 编码值≥2)→恒不
+        匹配、零写副作用;任一槽==r4 会触发写侧 0x6019618+位图清位——行为
+        可分叉,0=「无占用」。
+      * ICH=0:nibble=0→`0>13` 假→**有写副作用**:清 JL_IMAP 字
+        [0xfd5c00]+位图 bit0(0xfd5c00 在路 V 63 字白名单内,幂等清零可
+        接受);nibble 1..13 会改清零目标字——值敏感点=IMAP 目标选择。该
+        副作用是固件代码自然演进(模型只供读值 0,清零写走 JL_IMAP 容器的
+        既有白名单路径),本容器**不额外模拟**跨地址传播。
+
+    触达面(scout2 §3,三组全不在 LED→S19 立即路径):引脚卸载 switch
+    0x60196e8(boot 前缀 LED 路恒 case32 不触达)、GPIO pfun 分发器
+    0x6001456(前缀已穿)、RAM-code 低功耗/SFC 域(健康 boot 前缀不到达)
+    ——**前缀零触达=开启不动前沿**(与批 A 零交集、放行互不依赖)。
+
+    分类:具名初态容器族(JLPledCon0Registers 同族,CON0 先例的七字扩展):
+    首写前所有读=具名初态(七字同一 fixture 值,合成输入非实测),写后所有
+    读=最后实际写值(save/restore 与 resolver RMW 的保留位语义需要它);只
+    服务对齐 32 位字。显式 load、原子 RMW、整字写共享同一容器状态:读是
+    分支/传播消费者,read() 必须返回值(不能像 CON3/P2MCLK 那样拒绝),
+    RMW 内部读走 probe_boot 通用 mmio 路径——**零新分发**。known_limitation:
+    GPIO 交叉开关布线/输入采样/输出驱动一律不建模;物理外设可能消费保留位;
+    ICH nibble 非 0 的清目标分叉不建模(真需要映射真值时按 (c) live 处理);
+    RAM 表驱动域 0x6034274 的 r2 表值/分发器间接调用面静态不可穷尽(运行
+    观测项),同址新读者须重审。
+    """
+
+    # 白名单恰七字(CON0 0xfd6014 已是活容器——port_initialization_projection
+    # 的 IOMAP_CON0 seed 服务它,与本容器地址集互斥)。
+    WORDS=(0xfd6018,0xfd601c,0xfd6020,0xfd6024,0xfd6028,0xfd602c,0xfd6030)
+    SDK_NAMES={0xfd6018:'JL_IOMC->OCH_CON0',0xfd601c:'JL_IOMC->OCH_CON1',
+               0xfd6020:'JL_IOMC->OCH_CON2',0xfd6024:'JL_IOMC->ICH_CON0',
+               0xfd6028:'JL_IOMC->ICH_CON1',0xfd602c:'JL_IOMC->ICH_CON2',
+               0xfd6030:'JL_IOMC->ICH_CON3'}
+
+    def __init__(self,initial_word):
+        if not isinstance(initial_word,int) or not 0<=initial_word<=0xffffffff:
+            raise ValueError('JL_IOMC map fixture must be unsigned32')
+        self.initial_word=initial_word
+        self.stores={address:{'values':[],'writes':0} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled JL_IOMC map word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL_IOMC map word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        self.synthesized_initial_reads+=1
+        return self.initial_word
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-8:]],
+                         'writes':e['writes']}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        return {
+            'addresses':[hex(a) for a in self.WORDS],
+            'modeled_vs_touched':('modeled exactly the seven JL_IOMC map-table '
+                                  'words 0xfd6018..0xfd6030 (OCH_CON0..2 + '
+                                  'ICH_CON0..3; CON0 0xfd6014 is already an '
+                                  'active container via the port-initialization '
+                                  'seed and is NOT in this container); touched: '
+                                  +((', '.join(sorted(touched)) or 'none'))),
+            'word_writes':self.word_writes,
+            'stores':touched,
+            'initial_fixture':{
+                'name':'JL_IOMC_MAP_INITIAL_VALUE',
+                'word':hex(self.initial_word),
+                'provenance':('explicit named synthetic input, derived-not-measured '
+                              '— NOT a derived silicon reset value; 0x00000000 = the '
+                              'empty map table (OCH slots all unoccupied / ICH '
+                              'nibbles all 0), a chosen experimental input'),
+            },
+            'sdk_naming':('br28.h JL_IOMC_TypeDef words 1..7 at JL_IOMC_BASE'
+                          '(0xfd6014)+4/8/12/16/20/24/28 = OCH_CON0..2 '
+                          '(0xfd6018/1c/20, output-channel map, 16 slots x 5 '
+                          'bits) and ICH_CON0..3 (0xfd6024/28/2c/30, input-'
+                          'channel map, 32 channels x 4-bit nibble; channel>23 '
+                          '->ICH_CON3 per the two matching firmware branch '
+                          'shapes 0x6019694..b6 / 0x6001408..2a); word 0 CON0 '
+                          '(0xfd6014) stays with the port-initialization '
+                          'container (mutually exclusive address sets)'),
+            'whitelisted_words':('exactly the seven statically-verified map words '
+                                 '{0xfd6018 OCH_CON0, 0xfd601c OCH_CON1, '
+                                 '0xfd6020 OCH_CON2, 0xfd6024 ICH_CON0, '
+                                 '0xfd6028 ICH_CON1, 0xfd602c ICH_CON2, '
+                                 '0xfd6030 ICH_CON3}; only aligned 32-bit word '
+                                 'accesses are served (sub-word/misaligned '
+                                 'strictly unmapped); 0xfd6014 CON0 stays with '
+                                 'the port-initialization projection and every '
+                                 'other JL_IOMC word stays unmapped; the '
+                                 'JL_IMAP clear writes the ICH slot search '
+                                 'issues (0xfd5c00+(nibble<<2)) stay with the '
+                                 'route-V 63-word JL_IMAP write record '
+                                 '(mutually exclusive address sets); re-audit '
+                                 'boundary: the address whitelist only blocks '
+                                 'NEW addresses — a NEW consumer shape of an '
+                                 'already-whitelisted word must be re-classified'),
+            'observed_shapes':('explicit loads feeding comparison branches '
+                               '(OCH slot search 0x601966e `>>s & 0x1F; != r4`), '
+                               'branch + cross-address propagation (ICH slot '
+                               'search 0x60196c2: nibble >13 check then select '
+                               'the JL_IMAP clear target word and RAM bitmap '
+                               'bit), resolver RMW preserve-bit compositions '
+                               '(0x6001356/0x60013ce), and low-power save/'
+                               'restore whole-word snapshots (0x12D1B8/0x12D4BA) '
+                               '— the read value is never write-back-only, so '
+                               'reads are served a named initial value rather '
+                               'than refused'),
+            'readback_projection':{
+                'addresses':[hex(a) for a in self.WORDS],
+                'reads':self.reads_after_write,
+                'synthesized_initial_reads':self.synthesized_initial_reads,
+                'readback_semantics':('before the first firmware write every read '
+                    'returns the named initial fixture (explicit synthetic input, '
+                    'derived-not-measured, NOT a reset-value claim); after a write '
+                    'every read returns the last firmware-written value (a write-'
+                    'record projection the save/restore and resolver preserve-bit '
+                    'semantics need)'),
+                'known_limitation':('the fixture feeds real branches directly: '
+                    'OCH=0 means the 16-slot search never matches (zero write '
+                    'side effects) while a nonzero slot equal to r4 would call '
+                    'the write side 0x6019618; ICH=0 HAS a firmware side effect '
+                    '— nibble 0 passes the >13 check and the search clears '
+                    'JL_IMAP word [0xfd5c00] plus RAM bitmap bit0 (in the '
+                    'route-V whitelist, idempotent), and a nonzero nibble 1..13 '
+                    'would change the clear target — the model only serves the '
+                    'read value, the propagation itself is the firmware code '
+                    'running on real instructions; no crossbar routing / input '
+                    'sampling / output driving is modeled'),
+            },
+            'assumption':('named whole-word initial fixture (conditional main arm '
+                          '0x00000000 = empty map table) + last-write readback of '
+                          'the seven words (scout2 batch-B three-way (b); '
+                          'JL_PLED CON0 named-initial precedent extended to a '
+                          'word family); derived-not-measured — the initial value '
+                          'is a chosen experimental input, NOT silicon reset '
+                          'state and NOT SDK-derived; CON0 deliberately excluded '
+                          '(already an active container); prefix-zero-touch '
+                          '(all three trigger faces are outside the LED->S19 '
+                          'immediate path)'),
+        }
+
+
 class P11LPVADConfigRegisters:
     """P11_SFR LPVAD VAD_ACON0 单字容器(合成初始 0+读回=当前值,opt-in,路 LPV)。
 
@@ -6716,6 +6894,7 @@ class BR28Model:
                  jl_pled_con3_readback=False,
                  jl_pled_con0_initial_fixture=None,
                  p2m_clk_con0_config_rmw=False,
+                 jl_iomc_map_fixture=None,
                  p11_lpvad_config=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
@@ -6932,6 +7111,17 @@ class BR28Model:
         # unmapped(41,847,806 前沿形状),legacy 报告逐字节不变。
         self.jl_pled_con0=(JLPledCon0Registers(jl_pled_con0_initial_fixture)
                           if jl_pled_con0_initial_fixture is not None else None)
+        # jl_iomc_map_fixture(批 B JL_IOMC,opt-in 默认 None=关):JL_IOMC 映射
+        # 表七字(OCH_CON0..2 0xfd6018/1c/20+ICH_CON0..3 0xfd6024/28/2c/30)具名
+        # fixture 容器——首写前所有读=具名初态(条件主臂 0=空映射表,scout2 §4
+        # 三选一 (b)),写后所有读=最后写值;显式 load/RMW/整字写共享同一状态
+        # (读值进比较分支/分支+跨地址传播,read() 必须返回值,通用 mmio 路径
+        # 零新分发)。CON0 0xfd6014 不在此容器——当前前沿世界已是活容器
+        # (platform_case seed IOMAP_CON0=0+port_initialization_projection)。
+        # 批 B 触达面全不在 LED→S19 立即路径=前缀零触达。None=关,七字保持
+        # unmapped,legacy 报告逐字节不变。
+        self.jl_iomc_map=(JLIomcMapRegisters(jl_iomc_map_fixture)
+                          if jl_iomc_map_fixture is not None else None)
         # p11_lpvad_config(路 LPV):P11_SFR LPVAD VAD_ACON0(0xf2b404)单字容器
         # ——新开关分立而非扩 p11_window 白名单(改已开开关服务面=改契约,且
         # 「纯写记录读回 Blocked」族与配置读回语义冲突;codex 定调)。
@@ -7522,6 +7712,7 @@ class BR28Model:
             (self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address)) or
             (self.jl_pled_con0 is not None and self.jl_pled_con0.handles(address)) or
             (self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address)) or
+            (self.jl_iomc_map is not None and self.jl_iomc_map.handles(address)) or
             (self.p11_lpvad is not None and self.p11_lpvad.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
@@ -7908,6 +8099,15 @@ class BR28Model:
         if self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address):
             self.counts['reads']+=1
             return self.p2m_clk_con0.read(address)
+        # JL_IOMC 映射表七字(批 B):首写前读=具名 fixture(主臂 0=空映射表),
+        # 写后读=最后写值;读值进比较分支/分支+跨地址传播,read() 必须返回值
+        # 而非拒绝——显式 load 与原子 RMW 内部读共享同一状态,走 probe_boot
+        # 通用 mmio 路径(零新分发)。ICH=0 的清 JL_IMAP 副作用是固件代码在
+        # 真实指令上的自然演进(清零写走路 V 白名单),本容器不额外模拟。
+        # GPIO 交叉开关布线/输入采样/输出驱动不建模(类注释)。
+        if self.jl_iomc_map is not None and self.jl_iomc_map.handles(address):
+            self.counts['reads']+=1
+            return self.jl_iomc_map.read(address)
         # P11_SFR LPVAD VAD_ACON0(路 LPV):读回=当前值(最后写值/无写时合成
         # 初始 0);只服务对齐 32 位字,子字/错位落严格 unmapped;读与原子 RMW
         # 内部读共享同一份容器状态。
@@ -8174,6 +8374,11 @@ class BR28Model:
             # 的 handles_p2m_clk_con0_rmw 专用分发→p2m_clk_con0.rmw()(内部
             # 读=容器当前值);LED 时钟树/P11 侧响应不建模。
             self.p2m_clk_con0.write(address,value)
+        elif self.jl_iomc_map is not None and self.jl_iomc_map.handles(address):
+            # JL_IOMC 映射表七字(批 B):resolver RMW 写回(save/restore 域与
+            # pfun 分发器 case 的保留位组装)与整字写记录(经通用 mmio 路径的
+            # 内部读=容器当前值);GPIO 映射硬件语义不建模。
+            self.jl_iomc_map.write(address,value)
         elif self.p11_lpvad is not None and self.p11_lpvad.handles(address):
             # P11_SFR LPVAD VAD_ACON0(路 LPV):停点 0x606b68e 的 bit28 置位
             # RMW 写回与整字写记录(经通用 mmio 路径的内部读=容器当前值);
@@ -9010,6 +9215,33 @@ class BR28Model:
                 'clock logic with no CPU load and P11 may mutate the same state '
                 'through another address view; the two RMWs are two separate '
                 'transactions, not one atomic helper')
+        if self.jl_iomc_map is not None:
+            result['jl_iomc_map_registers']=self.jl_iomc_map.report()
+            result['assumptions']['jl_iomc_map_registers']=(
+                'JL_IOMC map-table seven words 0xfd6018..0xfd6030 (br28.h '
+                'JL_IOMC_TypeDef OCH_CON0..2 + ICH_CON0..3, route scout2 '
+                'batch B): named whole-word initial fixture (conditional main '
+                'arm 0x00000000 = empty map table) plus last-write readback; '
+                'the audited face is a full branch-consumer set — the OCH '
+                'slot search 0x601966e feeds the loaded slot value into a '
+                'comparison branch, the ICH slot search 0x60196c2 feeds the '
+                'nibble into a >13 branch AND cross-address propagation (it '
+                'selects the JL_IMAP clear-target word 0xfd5c00+(nibble<<2) '
+                'and the RAM bitmap bit), the resolvers 0x6001356/0x60013ce '
+                'compose preserve-bit write-backs, and the low-power save/'
+                'restore pair 0x12D1B8/0x12D4BA snapshots all words — so '
+                'reads are served the named initial value rather than '
+                'refused; ICH=0 HAS a firmware side effect (the search clears '
+                'JL_IMAP word [0xfd5c00], in the route-V 63-word whitelist, '
+                'idempotent) which the model does not additionally simulate '
+                '(the firmware runs it on real instructions); CON0 0xfd6014 '
+                'is deliberately excluded (already an active container via '
+                'the port-initialization seed); all three trigger faces are '
+                'outside the LED->S19 immediate path (prefix zero-touch); '
+                'derived-not-measured (NOT silicon reset state, NOT '
+                'SDK-derived); no crossbar routing / input sampling / output '
+                'driving side effect is modeled; the preserved old-word bits '
+                'still enter the real write transaction')
         if self.p11_lpvad is not None:
             result['p11_lpvad_config_registers']=self.p11_lpvad.report()
             result['assumptions']['p11_lpvad_config_registers']=(

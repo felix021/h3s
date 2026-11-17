@@ -575,7 +575,7 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values',
                            'jl_adda_daa_con1_initial_fixture', 'p33_canary_first_read_words',
                            'ancif_official_resources', 'jl_rand_seed', 'gpcnt_num_value',
-                           'jl_pled_con0_initial_fixture'}
+                           'jl_pled_con0_initial_fixture', 'jl_iomc_map_fixture'}
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
     # 路 GPCNUM:GPCNT NUM 具名探路值(assumed 标称 32768 Hz 恒等计数)
@@ -611,6 +611,11 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert CONDITIONAL_EXTRA_FLAGS['jl_pled_con0_initial_fixture'] \
         is probe_irq_entry.JL_PLED_CON0_INITIAL_VALUE
     assert CONDITIONAL_EXTRA_FLAGS['jl_pled_con0_initial_fixture'] == 0x00000000
+    # 批 B JL_IOMC(路 BATCHB):映射表七字具名 fixture(0x00000000 条件主臂
+    # =空映射表;derived-not-measured 非硅复位值;敏感性对照臂直接传非 0)。
+    assert CONDITIONAL_EXTRA_FLAGS['jl_iomc_map_fixture'] \
+        is probe_irq_entry.JL_IOMC_MAP_INITIAL_VALUE
+    assert CONDITIONAL_EXTRA_FLAGS['jl_iomc_map_fixture'] == 0x00000000
 
 
 def test_scenario_registry_shapes():

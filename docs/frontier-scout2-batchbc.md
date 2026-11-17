@@ -168,6 +168,41 @@ call 0x60674aa（[0x12521C] bit1 wake 判定）返回 0（首 boot [文档：路
 跳过——与已穿前缀从未停在这些点的行为证据自洽。软关机/恢复/cleanup 三函数
 （0x12D072/0x12D4BA/0x12CEB8）全在低功耗域，健康前缀不到达。
 
+## 5.5 实现落地（路 BATCHB / sim-batchb，2026-11-18）
+
+§4 预案 (b) 已按 CON0 fixture 先例（JLPledCon0Registers 族）落地为模型件+单测；
+**条件线实跑验证臂未跑**（见下）。
+
+- **开关**：`jl_iomc_map_fixture`（独立开关，不并批 A）。`None`=关（七字保持
+  unmapped，legacy 报告逐字节不变）；**0 是合法开值**（`is not None` 判定，
+  条件主臂 0x00000000=空映射表）。值语义=七字同一具名初态；敏感性对照臂直接
+  同参数传非 0（如 0x11111111），不另设开关。registry 登记为 conditional 栈
+  value_switch，值常量 `probe_irq_entry.JL_IOMC_MAP_INITIAL_VALUE`（0x00000000，
+  derived-not-measured 非硅复位值）。
+- **容器**：`br28_model.JLIomcMapRegisters`，白名单恰七字 0xfd6018..0xfd6030
+  （OCH_CON0..2+ICH_CON0..3）；首写前读=fixture、写后读=最后写值；显式读/
+  RMW 内部读/整字写共享同一状态，走 probe_boot 通用 mmio 路径**零新分发**
+  （读值进比较分支/分支+跨地址传播，read() 必须返回值而非拒绝——与 CON3/
+  P2MCLK 的专用 rmw() 分发不同形，按消费链形状选了 CON0 先例）。CON0
+  0xfd6014 **不在容器**（platform_case seed IOMAP_CON0=0 的活容器路径回归
+  单测钉死不变）。ICH=0 的清 JL_IMAP 副作用不额外模拟：固件清
+  [0xfd5c00]+位图走真实指令+路 V 63 字白名单路径（幂等）。
+- **world_snapshot**：M4_FAMILIES 槽 `jl_iomc_map`（四字段状态形状同 CON0）；
+  per-instance `initial_word` 留在 per-object 静态守卫——不同 fixture 值=不同
+  分支世界，恢复拒绝（CON0 同款，单测钉死）；开关关的恢复目标按槽位失配拒绝。
+- **单测面**：`test_br28_model.py::test_jl_iomc_map_fixture_container`（七字
+  各自首读=0/写后读=最后写值/关拒绝/邻域不吞含 0xfd6014 活容器回归/ICH 0
+  副作用白名单幂等/报告措辞/非法值拒绝）；`test_world_snapshot.py`（M4 全族
+  往返+`test_batchb_jl_iomc_map_container_resumes_exact_semantics` 行为恢复/
+  异 fixture 拒绝）；`test_image_trace_diff.py`（registry↔irq_case 参数闭包+
+  值常量同一性）。
+- **等批 A 验证臂**：本路**未跑任何条件线实跑**（probe_irq_entry 主场景留给
+  后续合批路，避免与在途主批 A 撞线）。批 B 前缀零触达（§3）目前是静态论证；
+  待主批 A 放行出新前沿后，合批路重钉前沿时顺带验证：(1) 新前沿停点不在
+  JL_IOMC 七字（零触达负例）；(2) conditional 场景报告新增
+  `jl_iomc_map_registers` 状态键（全零记录）而停点/步数逐值不变。若意外
+  触达，回读本页 §2/§4 对应字预案重审。
+
 ## 6. 攒批可行性
 
 - **批 A ↔ 批 B：无依赖、不同批**。批 A（CON3 式容器 13 字）放行后的前沿重钉
