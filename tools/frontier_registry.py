@@ -234,6 +234,22 @@ FEATURES = (
             ',SDK GET_LED_CLK_SEL 无人引用;codex 三选一 (a) CON3 式,只服务已'
             '观测两种形状;derived-not-measured 非复位值;与邮箱 608/60c/618 '
             '地址集互斥)'),
+    # ---- 批 B JL_IOMC(路 BATCHB/sim-batchb,scout2 §4 三选一 (b)):映射表
+    # 七字具名 fixture 容器。OCH 读值进比较分支(0x601966e 槽搜索)、ICH 读值
+    # 进分支+跨地址传播(0x60196c2 nibble 选 JL_IMAP 清零目标)——无一可进
+    # 容器,全落具名 fixture 0=空映射表;CON0 0xfd6014 已是活容器(platform_
+    # case seed IOMAP_CON0=0)不在此容器;ICH=0 的清 [0xfd5c00] 副作用在路 V
+    # 63 字白名单内幂等;触达面全不在 LED→S19 立即路径=前缀零触达;与批 A
+    # 独立开关独立批(形状/触达面/报告键全不同)。验证臂留待主批 A 新前沿后
+    # 合批路(docs/frontier-scout2-batchbc.md「实现落地」节)。 ----
+    Feature('jl_iomc_map_fixture', 'conditional', (), True, 'JL_IOMC_MAP_INITIAL_VALUE',
+            'JL_IOMC 映射表七字(OCH_CON0..2 0xfd6018/1c/20+ICH_CON0..3 '
+            '0xfd6024/28/2c/30)具名 fixture 容器(首写前读=fixture、写后读='
+            '最后写值;条件主臂 0=空映射表,scout2 §4 三选一 (b);OCH 读值进'
+            '比较分支、ICH 读值进分支+跨地址传播(nibble 选 JL_IMAP 清零目标,'
+            '清 0xfd5c00 在路 V 白名单内幂等,模型不额外模拟该副作用);CON0 '
+            '0xfd6014 已是活容器不在此容器;derived-not-measured 非硅复位值;'
+            '显式读/RMW/整字写共享同一状态走通用 mmio 路径零新分发)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,

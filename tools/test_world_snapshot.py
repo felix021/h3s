@@ -679,6 +679,11 @@ class M4ProjectionFamilies(unittest.TestCase):
         # Route P2MCLK: the P11_SYSTEM P2M_CLK_CON0 single-word config-RMW
         # container, ON in the current conditional frontier flag set.
         p2m_clk_con0_config_rmw=True,
+        # Route BATCHB (scout2 batch B): the JL_IOMC map-table seven-word
+        # named-fixture container, ON in the current conditional frontier
+        # flag set (prefix zero-touch — all three batch-B trigger faces are
+        # outside the LED->S19 immediate path).
+        jl_iomc_map_fixture=0x00000000,
     )
 
     def build_world(self):
@@ -862,6 +867,13 @@ class M4ProjectionFamilies(unittest.TestCase):
         # both stop-point shapes resume from the captured store.
         self.assertEqual(hw.p2m_clk_con0.rmw('and', 0xffffff1f), 0)
         self.assertEqual(hw.p2m_clk_con0.rmw('or', 0x60), 0x60)
+        # Route BATCHB: the JL_IOMC map container served one synthesized-
+        # initial read (ICH_CON0 fixture 0, the slot-search branch input) and
+        # one whole-word write + read-back (the save/restore shape) — both
+        # counters and the per-word store are branch-world state.
+        self.assertEqual(hw.jl_iomc_map.read(0xfd6024), 0)
+        hw.jl_iomc_map.write(0xfd601c, 0x12345678)
+        self.assertEqual(hw.jl_iomc_map.read(0xfd601c), 0x12345678)
         return hardware
 
     def captured_m4(self, world):
@@ -1107,6 +1119,39 @@ class M4ProjectionFamilies(unittest.TestCase):
             self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()),
                              switches={**self.M4_SWITCHES,
                                        'p2m_clk_con0_config_rmw': False})
+
+    def test_batchb_jl_iomc_map_container_resumes_exact_semantics(self):
+        """Route BATCHB behavioral pin: after restore the JL_IOMC map
+        container keeps the named initial fixture (static, must match),
+        resumes read-after-write from the CAPTURED store and keeps answering
+        first-read words with the fixture (the OCH/ICH branch inputs); a
+        restore target with a different fixture is refused (a different map
+        table feeds the comparison branch and the nibble->JL_IMAP propagation
+        — a different branch world), and one built with the switch off is
+        refused (slot mismatch)."""
+        original, snapshot = self.world_and_snapshot()
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        for world in (original, restored):
+            # 已消费字从捕获存储续读(save/restore 写回值);未写字仍答 fixture
+            # (槽搜索分支输入),且消费行为在恢复后继续记账。
+            self.assertEqual(world.jl_iomc_map.read(0xfd601c), 0x12345678)
+            self.assertEqual(world.jl_iomc_map.read(0xfd6018), 0)
+            self.assertEqual(world.jl_iomc_map.read(0xfd6030), 0)
+        self.assertEqual(restored.jl_iomc_map.reads_after_write,
+                         original.jl_iomc_map.reads_after_write)
+        self.assertEqual(restored.jl_iomc_map.reads_after_write, 2)
+        self.assertEqual(restored.jl_iomc_map.synthesized_initial_reads,
+                         original.jl_iomc_map.synthesized_initial_reads)
+        # 不同 fixture 值=不同分支世界,静态守卫拒绝(CON0 先例同款)。
+        with self.assertRaises(SnapshotError):
+            self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()),
+                             switches={**self.M4_SWITCHES,
+                                       'jl_iomc_map_fixture': 0x11111111})
+        # 开关关的恢复目标必须被拒绝(快照有该槽而目标没有)。
+        with self.assertRaises(SnapshotError):
+            self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()),
+                             switches={**self.M4_SWITCHES,
+                                       'jl_iomc_map_fixture': None})
 
     def test_p2mclk_snapshot_between_the_two_rmw_legs_resumes(self):
         """Route P2MCLK mid-helper pin (codex): capture BETWEEN the two

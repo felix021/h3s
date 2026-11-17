@@ -3630,6 +3630,112 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             c.p2m_clk_con0.rmw('and',0x100000000)
 
+    def test_jl_iomc_map_fixture_container(self):
+        # 批 B JL_IOMC(路 BATCHB,scout2 §4 三选一 (b)):映射表七字
+        # (OCH_CON0..2 0xfd6018/1c/20+ICH_CON0..3 0xfd6024/28/2c/30)具名
+        # fixture 容器——OCH 读值进比较分支(0x601966e)、ICH 读值进分支+
+        # 跨地址传播(0x60196c2 nibble 选 JL_IMAP 清零目标),无一可进容器,
+        # 全落具名 fixture(主臂 0=空映射表,derived-not-measured)。首写前
+        # 读=fixture、写后读=最后写值,显式读/RMW/整字写共享同一状态(走通用
+        # mmio 路径,零新分发)。CON0 0xfd6014 已是活容器,不在本容器。
+        plain=BR28Model()
+        for address in (0xfd6018,0xfd601c,0xfd6020,0xfd6024,0xfd6028,0xfd602c,0xfd6030):
+            self.assertFalse(plain.handles(address,4))
+            with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+                plain.read(address)
+            with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+                plain.write(address,0)
+        self.assertNotIn('jl_iomc_map_registers',plain.report())
+        # None=关(is not None 判定,0 是合法开值不能被当成关)。
+        h0=BR28Model(jl_iomc_map_fixture=None)
+        self.assertFalse(h0.handles(0xfd6024,4))
+        # 显式 0 开启(主臂)。
+        h=BR28Model(jl_iomc_map_fixture=0x00000000)
+        # 七字各自首读=0(空映射表),重复读不构成固件写;写后读=最后写值
+        # (save/restore 与 resolver RMW 的保留位语义需要它)。
+        for address in (0xfd6018,0xfd601c,0xfd6020,0xfd6024,0xfd6028,0xfd602c,0xfd6030):
+            self.assertTrue(h.handles(address,4))
+            self.assertEqual(h.read(address),0)
+            self.assertEqual(h.read(address),0)
+            h.write(address,address&0xff)
+            self.assertEqual(h.read(address),address&0xff)
+        self.assertEqual(h.jl_iomc_map.word_writes,7)
+        self.assertEqual((h.jl_iomc_map.reads_after_write,
+                          h.jl_iomc_map.synthesized_initial_reads),(7,14))
+        # 邻域不吞:CON0 0xfd6014 活容器路径回归不变(port_initialization_
+        # projection seed IOMAP_CON0=0 服务 RMW/读写,平台场景同款形状),
+        # 且本容器不吞它;字族两端外侧与子字/错位全部保持原语义。
+        self.assertFalse(h.handles(0xfd6014,4))
+        for address,size in ((0xfd600c,4),(0xfd6010,4),(0xfd6034,4),(0xfd6038,4),
+                             (0xfd6019,1),(0xfd6022,2),(0xfd6025,1)):
+            self.assertFalse(h.handles(address,size))
+        seed=BR28Model(port_initialization_projection=True,
+                       initial_registers={IOMAP_CON0:0})
+        self.assertTrue(seed.handles(0xfd6014,4))
+        self.assertEqual(seed.read(0xfd6014),0)
+        seed.write(0xfd6014,0x2000)
+        self.assertEqual(seed.read(0xfd6014),0x2000)
+        both=BR28Model(port_initialization_projection=True,
+                       initial_registers={IOMAP_CON0:0},jl_iomc_map_fixture=0)
+        self.assertEqual(both.read(0xfd6014),0)
+        self.assertEqual(both.read(0xfd6018),0)
+        both.write(0xfd6014,0x2000);both.write(0xfd6018,0x1f)
+        self.assertEqual(both.read(0xfd6014),0x2000)
+        self.assertEqual(both.read(0xfd6018),0x1f)
+        self.assertNotIn(0xfd6014,both.jl_iomc_map.stores)
+        # ICH=0 的副作用白名单:固件槽搜索读 nibble=0→清 JL_IMAP 字
+        # [0xfd5c00]+位图(0x601968c 整字写 0,路 V 63 字白名单内)——清零
+        # 写走路 V 容器被接受且幂等;JL_IMAP 读回保持严格停(路 V 语义)。
+        imap=BR28Model(jl_iomc_map_fixture=0,jl_imap_write_records=True)
+        self.assertEqual(imap.read(0xfd6024),0)
+        imap.write(0xfd5c00,0)
+        imap.write(0xfd5c00,0)
+        self.assertEqual(imap.jl_imap_records.stores[0xfd5c00]['writes'],2)
+        self.assertEqual(imap.jl_imap_records.stores[0xfd5c00]['values'],[0,0])
+        with self.assertRaisesRegex(Blocked,'jl_imap_word_readback_not_modeled'):
+            imap.read(0xfd5c00)
+        self.assertEqual(imap.jl_iomc_map.reads_after_write,0)
+        # 报告面:七字地址/初值来源/消费链措辞。
+        r=h.report()['jl_iomc_map_registers']
+        self.assertEqual(r['addresses'],
+                         ['0xfd6018','0xfd601c','0xfd6020','0xfd6024',
+                          '0xfd6028','0xfd602c','0xfd6030'])
+        self.assertEqual(r['initial_fixture']['word'],'0x0')
+        self.assertEqual(r['initial_fixture']['name'],'JL_IOMC_MAP_INITIAL_VALUE')
+        self.assertIn('derived-not-measured',r['initial_fixture']['provenance'])
+        self.assertIn('NOT a derived silicon reset value',
+                      r['initial_fixture']['provenance'])
+        self.assertEqual(r['word_writes'],7)
+        self.assertEqual(sorted(r['stores']),
+                         ['0xfd6018','0xfd601c','0xfd6020','0xfd6024',
+                          '0xfd6028','0xfd602c','0xfd6030'])
+        self.assertIn('JL_IOMC_TypeDef',r['sdk_naming'])
+        self.assertIn('port-initialization',r['whitelisted_words'])
+        self.assertIn('route-V',r['whitelisted_words'])
+        self.assertIn('comparison branch',r['observed_shapes'])
+        self.assertIn('cross-address propagation',r['observed_shapes'])
+        self.assertIn('HAS a firmware side effect',
+                      r['readback_projection']['known_limitation'])
+        self.assertIn('0xfd5c00',r['readback_projection']['known_limitation'])
+        self.assertIn('NOT a reset-value claim',
+                      r['readback_projection']['readback_semantics'])
+        assumption=h.report()['assumptions']['jl_iomc_map_registers']
+        self.assertIn('empty map table',assumption)
+        self.assertIn('0x00000000',assumption)
+        self.assertIn('prefix zero-touch',assumption)
+        self.assertIn('NOT silicon reset state',assumption)
+        # 敏感性对照臂:非 0 初值七字同读(值敏感点=ICH nibble 的清零目标
+        # 选择/OCH 槽匹配),独立实例不互扰。
+        h1=BR28Model(jl_iomc_map_fixture=0x11111111)
+        self.assertEqual(h1.read(0xfd6024),0x11111111)
+        self.assertEqual(h1.read(0xfd6018),0x11111111)
+        self.assertEqual(h.jl_iomc_map.initial_word,0)
+        # 非法 fixture 拒绝(unsigned32 校验)。
+        with self.assertRaises(ValueError):
+            BR28Model(jl_iomc_map_fixture=-1)
+        with self.assertRaises(ValueError):
+            BR28Model(jl_iomc_map_fixture=0x100000000)
+
     def test_jl_adc_start_config_registers(self):
         # 路 ASS:21,800,455 停点 0x606e044(ADC 启动函数 0x606df66 的
         # MIC_CTL0 |=0x2 RMW 内部读,地址 r0=r5+976 间接构造,li 枚举法

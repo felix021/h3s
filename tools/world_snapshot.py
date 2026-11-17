@@ -1253,6 +1253,15 @@ M4_FAMILIES = (
     # per-object static record; no per-instance fixture exists).
     ('p2m_clk_con0', 'P2MClkCon0Registers',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    # Route BATCHB (scout2 batch B): the JL_IOMC map-table seven-word named-
+    # fixture container rides the same AM four-field state shape; the
+    # per-instance initial_word fixture stays under the per-object static
+    # guard (NOT in the state fields) so a restore target with a different
+    # fixture — a different map table feeds the OCH compare branch and the
+    # ICH nibble->JL_IMAP propagation, i.e. a different branch world — is
+    # refused, mirroring jl_pled_con0.
+    ('jl_iomc_map', 'JLIomcMapRegisters',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 

@@ -931,6 +931,19 @@ KEY_CHAIN_RES_NAMED_VALUES={**FD31_ADC_RES_NAMED_VALUES,
 # 参数传 1 即可。
 JL_PLED_CON0_INITIAL_VALUE=0x00000000
 
+# JL_IOMC 映射表七字(批 B/scout2 §4,docs/frontier-scout2-batchbc.md)具名
+# fixture(条件主臂 0=空映射表;derived-not-measured,非硅复位值、非 SDK 推导)。
+# 七字=OCH_CON0..2 0xfd6018/1c/20+ICH_CON0..3 0xfd6024/28/2c/30;CON0 0xfd6014
+# 不在此——当前前沿世界已是活容器(platform_case 默认 seed IOMAP_CON0=0+
+# port_initialization_projection 服务 0x6010b84 RMW 等)。OCH 读值进比较分支
+# (0x601966e 槽搜索)、ICH 读值进分支+跨地址传播(0x60196c2 nibble 选 JL_IMAP
+# 清零目标 0xfd5c00+(nibble<<2))——读者需要值,fixture 放行显式读。ICH=0 的
+# 副作用=固件清 [0xfd5c00]+位图 bit0(路 V 63 字白名单内,幂等清零);OCH=0
+# 恒不匹配零写副作用。批 B 触达面(引脚卸载 switch/pfun 分发器/RAM-code
+# 低功耗域)全不在 LED→S19 立即路径=前缀零触达。敏感性对照臂直接用同一
+# 参数传非 0 值(不单独登记开关)。
+JL_IOMC_MAP_INITIAL_VALUE=0x00000000
+
 # 直调返回哨兵:0x100000 落在 ROM(0..0x20000)与 flash(0x06000100..)之间的
 # 未映射空洞,直调循环在 decode 之前检查 pc==哨兵,从不真的取指。
 KEY_CHAIN_DIRECT_SENTINEL=0x00100000
@@ -1457,6 +1470,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_pled_con3_readback=False,
              jl_pled_con0_initial_fixture=None,
              p2m_clk_con0_config_rmw=False,
+             jl_iomc_map_fixture=None,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -2705,6 +2719,18 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 与邮箱 608/60c/618 地址集互斥不重叠)。
     if p2m_clk_con0_config_rmw:
         options['p2m_clk_con0_config_rmw']=True
+    # jl_iomc_map_fixture(批 B JL_IOMC,opt-in 默认 None=关):映射表七字
+    # (OCH_CON0..2 0xfd6018/1c/20+ICH_CON0..3 0xfd6024/28/2c/30)具名 fixture
+    # 容器——首写前读=具名初态(条件主臂 JL_IOMC_MAP_INITIAL_VALUE=0=空映射
+    # 表,scout2 §4 三选一 (b)),写后读=最后写值;显式读/RMW/整字写共享同一
+    # 状态走通用 mmio 路径(读值进比较分支/分支+跨地址传播,read() 返回值
+    # 而非拒绝,零新分发)。CON0 0xfd6014 不在此容器(已是活容器:platform_
+    # case seed IOMAP_CON0=0)。ICH=0 的清 JL_IMAP 副作用是固件自然演进
+    # (清 0xfd5c00 在路 V 白名单内幂等),模型不额外模拟。批 B 触达面全不
+    # 在 LED→S19 立即路径=前缀零触达,开启不动前沿。无依赖(与批 A 容器/
+    # 触达面零交集,独立开关独立批)。
+    if jl_iomc_map_fixture is not None:
+        options['jl_iomc_map_fixture']=jl_iomc_map_fixture
     # 敏感性探针值(probe_only):ADA_CON0(0xfe0a20)初值一次性 0xffffffff
     # 替换(只注初值,后续读回真实写回值;其余八字不扰动保归因干净)。
     # codex 钉子:断言非零合成初值经停点 RMW 只清 bit5——仅测初值零会漏掉
