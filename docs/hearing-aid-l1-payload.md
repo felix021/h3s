@@ -130,6 +130,10 @@ pipeline_parse 第一步 0x060743f6 按流水线 uuid 遍历 **flash/res/stream.
 - ctx getter 0x0600c2aa：读 QCY[348] 判断后返回 ctx 基（0x060a379c 或 +224）[静态]。
 - apply 0x0600dae4(fn, flag)：flag≠0 走 0x0600dab6 异步包装，flag==0 直接调 fn [静态]。
 - **模式应用函数槽**：[ctx+112]=ON、[ctx+116]=TRANS、[ctx+120]=OFF [静态]。
+  〔**2026-11-17 路 L1KEY 勘误**：上称「模式应用函数槽」系误读——0x0600c2aa 返回的是静态结构
+  0x060a379c/0x060a387c，+112/+116/+120 存的是 anc_on/anc_trans/anc_off **提示音资源名指针**
+  （0x0609c7fd/c813/c82c），0x0600dae4 走的是提示音播放+回调，不是「关 ANC 通透」；真正的模式
+  应用是 0x0600db3c 的 b[ctx+5]/b[ctx+33] 写 + 过渡标志。见 docs/hearing-aid-l1-key7.md §2.1〕
 - **「先关 ANC 通透」的现成调用面** = 复用 OFF 槽：`call 0x0600c2aa; r0=[r0+120]; r1=r4(flag);
   call 0x0600dae4`——与 OFF 模式路径（0x0600dc74..0x0600dc88）逐指令同形 [静态]。
 - App 命令 0x17 直接设置路径 0x0600dcee 是另一套函数（独立 `if r0==3` 分支），接驳它才能让

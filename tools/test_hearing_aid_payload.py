@@ -13,7 +13,12 @@ and never touches a device; it proves, offline:
 3. call pairing: every register-indirect call is immediately preceded by
    loading the API address it must call;
 4. slot parametrization: changing MIC_EFX_SLOT changes only the two slot
-   immediate words (the payload is otherwise base-address independent).
+   immediate words (the payload is otherwise base-address independent);
+5. cross-call r0 restore (route L1KEY fix): the stream handle held in r4 is
+   reloaded into r0 before set_scene/set_notify/start, matching the pc_mic
+   template's `r0=[r4+0]` reload;
+6. failure clock recovery: the error path after clock_alloc emits
+   event_notify(11, "mic_effect") to free the 24 MHz clock (route L1KEY).
 
 Evidence table is from docs/hearing-aid-l1-payload.md (route L disassembly
 of tone player 0x0600d9be, pc_mic player 0x060339a4 and the jlstream
@@ -39,6 +44,10 @@ API_ADDRS = {
     0x06074ffe: 'jlstream_start',
     0x06074204: 'jlstream_release',
 }
+# 0x060057e6 is the same dispatch entry as get_pipeline_uuid; the route-L1KEY
+# error path loads it a second time (event 11 = CLOSE_PLAYER -> clock_free),
+# so its expected load count is 2, every other anchor exactly 1.
+EVENT_NOTIFY_ADDR = 0x060057e6
 CONSTS = {
     0x060a1de2: '"mic_effect" string in firmware',
     0xD06D: 'NODE_UUID_ADC (SDK fallback node)',
@@ -48,10 +57,14 @@ CONSTS = {
     16: 'STREAM_SCENE_HEARING_AID (SDK enum; QCY value unverified)',
     10: 'set_notify value (pc_mic same value; semantics unpinned)',
     15: 'STREAM_EVENT_GET_PIPELINE_UUID',
+    11: 'STREAM_EVENT_CLOSE_PLAYER (failure clock recovery)',
 }
 ERRORS = {-22: '-EINVAL'}
 SLOT_DEFAULT = 0x060e3200
 SLOT_ALT = 0x060e4000
+MAIN_CHAIN = ['get_pipeline_uuid', 'jlstream_pipeline_parse',
+              'jlstream_add_thread', 'jlstream_set_scene',
+              'set_notify (stream[28] + 0x20006 dispatch)', 'jlstream_start']
 
 
 def build(slot=None):
@@ -96,15 +109,16 @@ class MicEffectPayloadTest(unittest.TestCase):
         self.assertLessEqual(count, 60, 'activation payload larger than estimated shape')
 
     def test_02_api_anchor_addresses(self):
-        """Every firmware API address appears exactly once, as an r6 load."""
-        loads = [(off, m.group(1)) for off, iid, text, raw in self.insns
+        """Each API address is loaded as r6 the pinned number of times."""
+        loads = [int(m.group(1)) for off, iid, text, raw in self.insns
                  if iid == 'li.u32' and text.startswith('r6 = ')
                  for m in [re.match(r'r6 = (\d+)$', text)] if m]
-        loaded = [int(v) for _, v in loads]
         for addr, name in API_ADDRS.items():
-            self.assertEqual(loaded.count(addr), 1,
-                             f'{name} ({addr:#x}) must be loaded exactly once')
-        self.assertEqual(len(loaded), len(API_ADDRS), 'unexpected extra r6 API loads')
+            expected = 2 if addr == EVENT_NOTIFY_ADDR else 1
+            self.assertEqual(loads.count(addr), expected,
+                             f'{name} ({addr:#x}) must be loaded {expected}x')
+        self.assertEqual(len(loads), len(API_ADDRS) + 1,
+                         'unexpected r6 API load count (7 anchors + 1 notify)')
 
     def test_03_argument_constants(self):
         """Every argument constant from the evidence table is present."""
@@ -119,8 +133,8 @@ class MicEffectPayloadTest(unittest.TestCase):
         """Each register-indirect call is immediately preceded by its API load."""
         seq = [(off, iid, text) for off, iid, text, raw in self.insns]
         calls = [i for i, (_, iid, _) in enumerate(seq) if iid == 'call.r']
-        self.assertEqual(len(calls), len(API_ADDRS),
-                         'one call per API anchor expected')
+        self.assertEqual(len(calls), len(API_ADDRS) + 1,
+                         '7 API calls + 1 failure-clock notify expected')
         for i in calls:
             prev = seq[i - 1]
             self.assertEqual(prev[1], 'li.u32', 'call must follow an API address load')
@@ -132,16 +146,11 @@ class MicEffectPayloadTest(unittest.TestCase):
     def test_05_slot_parametrization(self):
         """Changing MIC_EFX_SLOT changes only the two slot load/store words."""
         self.assertNotEqual(self.data, self.alt_data)
-        # diff byte runs must all be inside li.u32 slot loads only
         diffs = [(i, a, b) for i, (a, b) in enumerate(zip(self.data, self.alt_data)) if a != b]
         self.assertTrue(diffs)
-        # collect instruction extents containing any diff
+        extents = [(off, off + len(raw), iid, text)
+                   for off, iid, text, raw in self.insns]
         changed_ids = set()
-        offset = 0
-        idx = 0
-        extents = []
-        for off, iid, text, raw in self.insns:
-            extents.append((off, off + len(raw), iid, text))
         for i, _, _ in diffs:
             for start, end, iid, text in extents:
                 if start <= i < end:
@@ -153,20 +162,50 @@ class MicEffectPayloadTest(unittest.TestCase):
                             f'unexpected changed immediate: {value:#x}')
 
     def test_06_call_order_matches_activation_chain(self):
-        """APIs appear in the activation order pinned from pc_mic/tone players."""
-        order = ['get_pipeline_uuid', 'jlstream_pipeline_parse',
-                 'jlstream_add_thread', 'jlstream_set_scene',
-                 'set_notify (stream[28] + 0x20006 dispatch)',
-                 'jlstream_start', 'jlstream_release']
+        """APIs appear in the activation order pinned from pc_mic/tone players,
+        with release and the failure-clock notify only on the error path."""
         addr_to_name = {a: n for a, n in API_ADDRS.items()}
         seen = []
         for off, iid, text, raw in self.insns:
             m = re.match(r'r6 = (\d+)$', text)
             if m and int(m.group(1)) in addr_to_name:
                 seen.append(addr_to_name[int(m.group(1))])
-        main_chain = [n for n in seen if n != 'jlstream_release']
-        self.assertEqual(main_chain, order[:6], 'activation order mismatch')
-        self.assertEqual(seen[-1], 'jlstream_release', 'release must be the error path last call')
+        # the first six API loads form the activation chain, in order
+        self.assertEqual(seen[:6], MAIN_CHAIN, 'activation order mismatch')
+        # release (index 6) then the second get_pipeline_uuid load (event 11)
+        self.assertEqual(seen[6], 'jlstream_release',
+                         'release must precede the failure-clock notify')
+        self.assertEqual(seen[7], 'get_pipeline_uuid',
+                         'failure path must re-load 0x060057e6 for event 11')
+
+    def test_07_cross_call_r0_restore(self):
+        """The stream in r4 is reloaded into r0 before set_scene/set_notify/start."""
+        seq = [t for _, _, t, _ in self.insns]
+        # set_scene has two extra args (r1 scene, r2 callback), set_notify one
+        # (r1 notify val), start none — the r0=r4 reload sits before them all.
+        cases = [('jlstream_set_scene', 3),
+                 ('set_notify (stream[28] + 0x20006 dispatch)', 2),
+                 ('jlstream_start', 1)]
+        for api, gap in cases:
+            addr = [a for a, n in API_ADDRS.items() if n == api][0]
+            i = seq.index(f'r6 = {addr}')
+            self.assertEqual(seq[i - gap], 'r0 = r4',
+                             f'{api} must receive the reloaded stream (r0 = r4)')
+
+    def test_08_failure_clock_recovery(self):
+        """After clock_alloc, every failure exit runs event_notify(11, name)."""
+        seq = [t for _, _, t, _ in self.insns]
+        # the clock-recovery block: r0 = 11; r1 = <name>; r6 = 0x060057e6; call r6
+        i11 = seq.index('r0 = 11')
+        self.assertEqual(seq[i11 + 1], f'r1 = {0x060a1de2}')
+        self.assertEqual(seq[i11 + 2], f'r6 = {EVENT_NOTIFY_ADDR}')
+        self.assertEqual(seq[i11 + 3], 'call r6')
+        # the notify load must sit after release (failure path), so the notify
+        # is the last r6 API load in the listing
+        loads = [t for t in seq if t.startswith('r6 = ') and int(t.split('= ')[1])
+                 in API_ADDRS]
+        self.assertEqual(loads[-1], f'r6 = {EVENT_NOTIFY_ADDR}',
+                         'clock-recovery notify must be the error-path tail')
 
 
 if __name__ == '__main__':

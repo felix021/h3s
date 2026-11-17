@@ -108,14 +108,34 @@ CLOSE_WINDOWS = [
 ]
 STUB_INSN_IDS = ['li.u32', 'call.r', 'ld.w.l', 'mov.rr', 'li.u32',
                  'call.r', 'call.s', 'li.u32', 'goto.r']
+# The fixed (156B) open payload pushes trans_branch_2's `call mic_effect_open`
+# beyond call.s range, so the assembler emits call.l there (route L1KEY).
+STUB_B_INSN_IDS = ['li.u32', 'call.r', 'ld.w.l', 'mov.rr', 'li.u32',
+                   'call.r', 'call.l', 'li.u32', 'goto.r']
 LEAVE_INSN_IDS = ['li.u32', 'call.r', 'ld.w.l', 'call.s', 'mov.rr',
                   'li.u32', 'goto.r']
 LEAVE_ON2_INSN_IDS = ['li.u32', 'call.r', 'ld.w.l', 'call.s', 'li.u32',
                       'call.r', 'li.u32', 'goto.r']
+# Route L1KEY (docs/hearing-aid-l1-key7.md): the cmd7_toggle stub shape —
+# slot guard -> ANC OFF request (db3c(1,1)) -> open, else close -> r4=1 ->
+# goto the handler's "handled" return. Exactly the disassembled 13-insn stub.
+TOGGLE_INSN_IDS = ['li.u32', 'ld.w', 'bnez', 'li.u8', 'li.u8', 'li.u32',
+                   'call.r', 'call.s', 'goto.s', 'call.s', 'li.u8', 'li.u32',
+                   'goto.r']
+# Route L1KEY cmd 7 graft window: the double-click action-branch entry at
+# 0x06025404 (jump table 0x06025382 byte 0x40). Original 8B = the publish-name
+# setup `add.s14.rri r1=r8+1873; li.u8 r0=0; li.u8 r4=0`. A full-app pc-relative
+# branch-landing scan (route L1KEY, 51,710 sites) found zero landings inside the
+# window; the only incoming branch is the jump-table tbb byte itself (not a
+# pc-relative branch, so it does not appear in the scan — the known entry).
+KEY7_WINDOW = ('KEY7', 0x06025404, bytes.fromhex('01e1518740204420'))
+HANDLER_RET = 0x0602530c        # handler "handled" return: r0=r4; pop.pc_rl l=9
+ANC_DISPATCH = 0x0600db3c       # internal-mode dispatch: r0=1(OFF), r1=flag
 PAYLOAD_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open.S'
 HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_hook.S'
 CLOSE_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close.S'
 CLOSE_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close_hook.S'
+TOGGLE_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_toggle_hook.S'
 # Route AQ (docs/r4-command-hook.md): the R4 key-store command payload + the
 # registry slot it is wired into. The RCSP custom-command dispatch table
 # [0x060a9b78, 0x060a9d1c) has 15 entries x 28B {+0 init, +4 getter, +8 setter,
@@ -185,13 +205,22 @@ def _strip_r4_section(text):
     return stripped
 
 
-def _compose(slot, close_hooks=False, r4_keyhook=False):
-    """Concatenate payload source (slot-patched) + hook stubs into one text."""
+def _compose(slot, close_hooks=False, r4_keyhook=False, key7_toggle=False):
+    """Concatenate payload source (slot-patched) + hook stubs into one text.
+
+    key7_toggle=True (route L1KEY) composes open + close + the cmd7_toggle
+    stub and OMITS the ANC-key trans/leave stubs — the double-click toggle
+    drives its own ANC OFF via db3c(1,1), and the ANC key keeps its stock
+    OFF/ON/TRANS windows (no TRANS=HA, no ON/OFF close hooks).
+    """
     text = _patch_slot(PAYLOAD_SOURCE.read_text(), slot)
     if close_hooks:
         text += _strip_close_section(_patch_slot(CLOSE_SOURCE.read_text(), slot))
-    text += HOOK_SOURCE.read_text() + \
-        (CLOSE_HOOK_SOURCE.read_text() if close_hooks else '')
+    if not key7_toggle:
+        text += HOOK_SOURCE.read_text() + \
+            (CLOSE_HOOK_SOURCE.read_text() if close_hooks else '')
+    if key7_toggle:
+        text += _patch_slot(TOGGLE_HOOK_SOURCE.read_text(), slot)
     if r4_keyhook:
         text += _strip_r4_section(R4_KEYHOOK_SOURCE.read_text())
     return text
@@ -215,7 +244,8 @@ def _assemble(text):
     return obj, sections[0][1]
 
 
-def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False):
+def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
+                     key7_toggle=False):
     """Assemble payload+stubs at PAYLOAD_ADDRESS with the real slot address.
 
     Two passes: the section length is layout-stable (test_hearing_aid_payload /
@@ -225,22 +255,27 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False):
     the boot-zeroed BSS address RAM_SLOT — layout-independent, so the two-pass
     byte-diff assertion does not apply — and the segment carries no trailing
     slot bytes. r4_keyhook=True (route AQ) additionally appends the R4
-    key-store command payload after the stubs (implies the slotram variant —
-    the R4 hook rides the same candidate family and append point). Returns a
-    report dict with bytes, entry offsets and the disassembly.
+    key-store command payload after the stubs. key7_toggle=True (route L1KEY)
+    composes open + close + the cmd7_toggle stub and drops the ANC-key
+    trans/leave stubs (requires close_hooks + slot_ram; docs/hearing-aid-l1-key7.md).
+    Returns a report dict with bytes, entry offsets and the disassembly.
     """
     if r4_keyhook and not (close_hooks and slot_ram):
         raise ValueError('r4_keyhook requires close_hooks+slot_ram '
                          '(route AQ is a slotram superset)')
+    if key7_toggle and not (close_hooks and slot_ram):
+        raise ValueError('key7_toggle requires close_hooks+slot_ram '
+                         '(route L1KEY is a slotram superset)')
     if slot_ram:
         if not close_hooks:
             raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
         _slot_checks(RAM_SLOT)
         slot = RAM_SLOT
-    _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks, r4_keyhook))
+    _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks, r4_keyhook,
+                                  key7_toggle))
     if not slot_ram:
         slot = PAYLOAD_ADDRESS + len(first)
-    obj, code = _assemble(_compose(slot, close_hooks, r4_keyhook))
+    obj, code = _assemble(_compose(slot, close_hooks, r4_keyhook, key7_toggle))
     if len(code) != len(first):
         raise ValueError('slot immediate changed the section layout')
     if slot_ram:
@@ -249,15 +284,22 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False):
         diffs = [i for i, (a, b) in enumerate(zip(first, code)) if a != b]
         if any(code[i] == first[i] for i in diffs) or not diffs:
             raise ValueError('expected slot-only byte differences between passes')
-    names = ['mic_effect_open', 'trans_branch_1', 'trans_branch_2']
-    if close_hooks:
-        names += ['mic_effect_close'] + [w[4] for w in CLOSE_WINDOWS]
-    if r4_keyhook:
-        names += ['r4_keystore_hook']
+    if key7_toggle:
+        names = ['mic_effect_open', 'mic_effect_close', 'cmd7_toggle']
+    else:
+        names = ['mic_effect_open', 'trans_branch_1', 'trans_branch_2']
+        if close_hooks:
+            names += ['mic_effect_close'] + [w[4] for w in CLOSE_WINDOWS]
+        if r4_keyhook:
+            names += ['r4_keystore_hook']
     symbols = {s.name: s.value for s in obj.symbols if s.name in names}
     if len(symbols) != len(names):
         raise ValueError(f'missing section symbols: {set(names) - set(symbols)}')
-    stub_offsets = [symbols[n] for n in ('trans_branch_1', 'trans_branch_2')]
+    if key7_toggle:
+        open_len = len(_assemble(_patch_slot(PAYLOAD_SOURCE.read_text(), slot))[1])
+        stub_offsets = [open_len]   # payload_bytes boundary for the report
+    else:
+        stub_offsets = [symbols[n] for n in ('trans_branch_1', 'trans_branch_2')]
     for name, off in symbols.items():
         if name != 'mic_effect_open' and not 0 < off < len(code):
             raise ValueError(f'symbol {name} out of segment')
@@ -273,7 +315,8 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False):
         if ASM.encode(insn_id, **values) != raw:
             raise ValueError(f're-encode differs at {addr:#x} ({text})')
     slot_tail = 0 if slot_ram else 4
-    variant = ('open+close+slotram+r4keyhook' if r4_keyhook else
+    variant = ('open+close+slotram+key7toggle' if key7_toggle else
+               'open+close+slotram+r4keyhook' if r4_keyhook else
                'open+close+slotram' if slot_ram else
                'open+close' if close_hooks else 'open')
     report = {'variant': variant,
@@ -285,11 +328,15 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False):
                                   else 'image bytes 00 00 00 00'),
               'segment_start': f'0x{PAYLOAD_ADDRESS:08x}',
               'segment_end_runtime': f'0x{PAYLOAD_ADDRESS + len(code) + slot_tail:08x}',
-              'stub_1_address': f'0x{PAYLOAD_ADDRESS + stub_offsets[0]:08x}',
-              'stub_2_address': f'0x{PAYLOAD_ADDRESS + stub_offsets[1]:08x}',
               'code_sha256': hashlib.sha256(code).hexdigest(),
               'slot_diff_offsets': diffs, 'listing': listing}
-    if close_hooks:
+    if key7_toggle:
+        report['toggle_address'] = f'0x{PAYLOAD_ADDRESS + symbols["cmd7_toggle"]:08x}'
+        report['close_address'] = f'0x{PAYLOAD_ADDRESS + symbols["mic_effect_close"]:08x}'
+    else:
+        report['stub_1_address'] = f'0x{PAYLOAD_ADDRESS + stub_offsets[0]:08x}'
+        report['stub_2_address'] = f'0x{PAYLOAD_ADDRESS + stub_offsets[1]:08x}'
+    if close_hooks and not key7_toggle:
         report['close_address'] = f'0x{PAYLOAD_ADDRESS + symbols["mic_effect_close"]:08x}'
         report['leave_stub_addresses'] = {
             tag: f'0x{PAYLOAD_ADDRESS + symbols[label]:08x}'
@@ -297,12 +344,12 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False):
     if r4_keyhook:
         report['r4_keyhook_address'] = f'0x{PAYLOAD_ADDRESS + symbols["r4_keystore_hook"]:08x}'
     _verify_semantics(code, stub_offsets, slot, report, close_hooks,
-                      r4_keyhook=r4_keyhook)
+                      r4_keyhook=r4_keyhook, key7_toggle=key7_toggle)
     return report, code, slot
 
 
 def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
-                      r4_keyhook=False):
+                      r4_keyhook=False, key7_toggle=False):
     """Decode-level assertions: stub shape, every pinned firmware target."""
     insns = list(ASM.disassemble(code, PAYLOAD_ADDRESS))
     by_off = {a - PAYLOAD_ADDRESS: (iid, t, raw) for a, iid, t, raw in insns}
@@ -319,44 +366,89 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
         if code[close_off:close_off + len(standalone_close)] != standalone_close:
             raise ValueError('composed close payload != standalone route-X payload')
         report['close_payload_matches_route_X'] = True
-    # stubs: exact instruction-shape + absolute firmware targets
-    epi = {'A': WINDOWS[0][3], 'B': WINDOWS[1][3]}
-    stub_b_end = len(code)
-    if close_hooks:
-        stub_b_end = int(report['leave_stub_addresses']['ON-1'], 16) - PAYLOAD_ADDRESS
-    for tag, stub_off, other in (('A', stub_offsets[0], stub_offsets[1]),
-                                 ('B', stub_offsets[1], stub_b_end)):
-        end = other
-        shape = [by_off[o][0] for o in range(stub_off, end) if o in by_off]
-        if shape != STUB_INSN_IDS:
-            raise ValueError(f'stub {tag} instruction shape mismatch: {shape}')
-        loads = [int(by_off[o][1].split('= ')[1])
-                 for o in range(stub_off, end) if o in by_off and by_off[o][0] == 'li.u32']
-        call_off = stub_off + 6 + 2 + 4 + 2 + 6 + 2   # `call mic_effect_open`
-        iid, t, raw = by_off[call_off]
-        m = re.search(r'call (-?\d+)$', t)
-        if m is None:
-            raise ValueError(f'stub {tag} internal call does not decode: {t}')
-        target = PAYLOAD_ADDRESS + call_off + len(raw) + int(m.group(1))
-        if (loads[:2] != [ANC_CTX_GET, 0x0600dae4] or loads[2] != epi[tag]
-                or iid != 'call.s' or target != PAYLOAD_ADDRESS):
-            raise ValueError(f'stub {tag} targets mismatch: loads={loads} call={t} target={target:#x}')
-    # the last leave stub must end where the R4 payload begins (when present),
-    # so its shape check cannot bleed into the appended keyhook
-    leave_end = len(code)
-    if r4_keyhook:
-        leave_end = int(report['r4_keyhook_address'], 16) - PAYLOAD_ADDRESS
-    if close_hooks:
-        _verify_leave_stubs(code, by_off, report, seg_end=leave_end)
-    if r4_keyhook:
-        _verify_r4_keyhook(code, by_off, report)
-    # slot loads/stores in the payload part resolve to the real slot address
-    # (open: guard + record; close: guard + clear — both load r0 = slot)
-    expected_loads = [slot] * (4 if close_hooks else 2)
+    if key7_toggle:
+        _verify_toggle_stub(code, by_off, report)
+    else:
+        # stubs: exact instruction-shape + absolute firmware targets
+        epi = {'A': WINDOWS[0][3], 'B': WINDOWS[1][3]}
+        stub_b_end = len(code)
+        if close_hooks:
+            stub_b_end = int(report['leave_stub_addresses']['ON-1'], 16) - PAYLOAD_ADDRESS
+        for tag, stub_off, other in (('A', stub_offsets[0], stub_offsets[1]),
+                                     ('B', stub_offsets[1], stub_b_end)):
+            end = other
+            shape = [by_off[o][0] for o in range(stub_off, end) if o in by_off]
+            expected_shape = STUB_B_INSN_IDS if (tag == 'B' and close_hooks) \
+                else STUB_INSN_IDS
+            if shape != expected_shape:
+                raise ValueError(f'stub {tag} instruction shape mismatch: {shape}')
+            loads = [int(by_off[o][1].split('= ')[1])
+                     for o in range(stub_off, end) if o in by_off and by_off[o][0] == 'li.u32']
+            call_off = stub_off + 6 + 2 + 4 + 2 + 6 + 2   # `call mic_effect_open`
+            iid, t, raw = by_off[call_off]
+            m = re.search(r'call (-?\d+)$', t)
+            if m is None:
+                raise ValueError(f'stub {tag} internal call does not decode: {t}')
+            target = PAYLOAD_ADDRESS + call_off + len(raw) + int(m.group(1))
+            if (loads[:2] != [ANC_CTX_GET, 0x0600dae4] or loads[2] != epi[tag]
+                    or iid not in ('call.s', 'call.l') or target != PAYLOAD_ADDRESS):
+                raise ValueError(f'stub {tag} targets mismatch: loads={loads} call={t} target={target:#x}')
+        # the last leave stub must end where the R4 payload begins (when present),
+        # so its shape check cannot bleed into the appended keyhook
+        leave_end = len(code)
+        if r4_keyhook:
+            leave_end = int(report['r4_keyhook_address'], 16) - PAYLOAD_ADDRESS
+        if close_hooks:
+            _verify_leave_stubs(code, by_off, report, seg_end=leave_end)
+        if r4_keyhook:
+            _verify_r4_keyhook(code, by_off, report)
+    # slot loads in the payload+stub part resolve to the real slot address
+    # (open: guard + record; close: guard + clear; toggle: guard — all
+    # load r0 = slot). key7 adds the toggle guard.
+    expected_loads = [slot] * ((4 if close_hooks else 2) + (1 if key7_toggle else 0))
     slot_loads = [int(t.split('= ')[1]) for o, (iid, t, raw) in sorted(by_off.items())
-                  if iid == 'li.u32' and o < stub_offsets[0] and t.startswith('r0 = ')]
-    if slot_loads != expected_loads:
+                  if iid == 'li.u32' and t.startswith('r0 = ')
+                  and int(t.split('= ')[1]) == slot]
+    if len(slot_loads) != len(expected_loads):
         raise ValueError(f'slot immediates mismatch: {slot_loads}')
+
+
+def _verify_toggle_stub(code, by_off, report):
+    """The cmd7_toggle stub (route L1KEY): exact shape + every firmware target.
+
+    Shape = slot guard -> (open) r0=1/r1=1 -> db3c(1,1) -> mic_effect_open,
+    else mic_effect_close -> r4=1 -> goto HANDLER_RET. The two internal calls
+    must reach the open/close payload entries, and the ANC_DISPATCH load must
+    sit immediately before its call.
+    """
+    toggle_off = int(report['toggle_address'], 16) - PAYLOAD_ADDRESS
+    close_off = int(report['close_address'], 16) - PAYLOAD_ADDRESS
+    if toggle_off + sum(6 if i == 'li.u32' else 2 for i in TOGGLE_INSN_IDS) != len(code):
+        raise ValueError('cmd7_toggle stub must close the segment')
+    shape = [by_off[o][0] for o in range(toggle_off, len(code)) if o in by_off]
+    if shape != TOGGLE_INSN_IDS:
+        raise ValueError(f'toggle stub shape mismatch: {shape}')
+    # li.u32 loads: [slot, ANC_DISPATCH, HANDLER_RET]
+    loads = [int(by_off[o][1].split('= ')[1])
+             for o in range(toggle_off, len(code)) if o in by_off and by_off[o][0] == 'li.u32']
+    if loads != [int(report['slot_address'], 16), ANC_DISPATCH, HANDLER_RET]:
+        raise ValueError(f'toggle stub loads mismatch: {loads}')
+    # the db3c call must immediately follow the ANC_DISPATCH li.u32 load
+    seq = [(o, by_off[o][0], by_off[o][1]) for o in range(toggle_off, len(code))
+           if o in by_off]
+    for i, (o, iid, t) in enumerate(seq):
+        if iid == 'li.u32' and t == f'r6 = {ANC_DISPATCH}':
+            if seq[i + 1][1] != 'call.r':
+                raise ValueError('db3c load not immediately followed by its call')
+        if iid == 'call.s':
+            m = re.search(r'call (-?\d+)$', t)
+            if m is None:
+                raise ValueError(f'toggle internal call does not decode: {t}')
+            raw = by_off[o][2]
+            target = PAYLOAD_ADDRESS + o + len(raw) + int(m.group(1))
+            if target not in (PAYLOAD_ADDRESS, PAYLOAD_ADDRESS + close_off):
+                raise ValueError(f'toggle call reaches {target:#x}, not open/close')
+    report['toggle_stub_shape_matches'] = True
 
 
 def _verify_leave_stubs(code, by_off, report, seg_end=None):
@@ -445,7 +537,8 @@ def _verify_r4_keyhook(code, by_off, report):
     report['r4_keyhook_bytes'] = len(standalone)
 
 
-def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False):
+def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
+                   key7_toggle=False):
     """Apply the implant edits to the decrypted flash image in place.
 
     close_hooks=True builds the open+close segment (route Y) and additionally
@@ -453,18 +546,25 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False):
     data slot to boot-zeroed BSS instead of the flash segment tail (implies
     the close variant). r4_keyhook=True (route AQ) additionally appends the
     R4 key-store command payload and wires it into the cmdid 0x30 registry
-    entry's null setter word (implies the slotram variant). Returns the
-    report dict (incl. new_app_end for the caller's SFC/boot-info pass).
+    entry's null setter word (implies the slotram variant). key7_toggle=True
+    (route L1KEY) instead composes open + close + the cmd7_toggle stub and
+    grafts ONLY the double-click cmd 7 entry (0x06025404) — the ANC key keeps
+    its stock OFF/ON/TRANS windows. Returns the report dict (incl.
+    new_app_end for the caller's SFC/boot-info pass).
     Per-site byte assertions keep this valid with or without the ANC
     two-state table change, which edits one unrelated app.bin byte first.
     """
     if r4_keyhook and not (close_hooks and slot_ram):
         raise ValueError('r4_keyhook requires close_hooks+slot_ram '
                          '(route AQ is a slotram superset)')
+    if key7_toggle and not (close_hooks and slot_ram):
+        raise ValueError('key7_toggle requires close_hooks+slot_ram '
+                         '(route L1KEY is a slotram superset)')
     if slot_ram and not close_hooks:
         raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
     segment, code, slot = assemble_segment(close_hooks, slot_ram=slot_ram,
-                                           r4_keyhook=r4_keyhook)
+                                           r4_keyhook=r4_keyhook,
+                                           key7_toggle=key7_toggle)
     slot_tail = 0 if slot_ram else 4
     end = OLD_APP_END + 32 + 1 + len(code) + slot_tail   # header + 0xff + code (+ slot)
     if end > len(flash) or any(v != 255 for v in flash[OLD_APP_END:end]):
@@ -472,25 +572,33 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False):
     hooks = []
     # one uniform window spec: (tag, address, original 8B, stub address text,
     # replaced-instruction description, only-incoming-branch note)
-    specs = [
-        ('A', WINDOWS[0][1], WINDOWS[0][2], segment['stub_1_address'],
-         'call 0x0600c2aa; r0=[r0+116] (TRANS apply fetch)',
-         '0x0600db92 (TRANS)'),
-        ('B', WINDOWS[1][1], WINDOWS[1][2], segment['stub_2_address'],
-         'call 0x0600c2aa; r0=[r0+116] (TRANS apply fetch)',
-         '0x0600dbbc (TRANS)'),
-    ]
-    if close_hooks:
-        incoming = {'ON-1': 'none (plain fall-through)',
-                    'ON-2': 'none (plain fall-through)',
-                    'OFF-1': '0x0600db8e (mode==1)', 'OFF-2': '0x0600dbb8 (mode==1)'}
-        for tag, address, original, mode_slot, _label in CLOSE_WINDOWS:
-            reg = 'r5' if tag == 'ON-2' else 'r0'    # original load target
-            specs.append((tag, address, original,
-                          segment['leave_stub_addresses'][tag],
-                          f'call 0x0600c2aa; {reg}=[r0+{mode_slot}] '
-                          f'({"ON" if mode_slot == 112 else "OFF"} apply fetch)',
-                          incoming[tag]))
+    if key7_toggle:
+        specs = [
+            ('KEY7', KEY7_WINDOW[1], KEY7_WINDOW[2], segment['toggle_address'],
+             'add.s14.rri r1=r8+1873; li.u8 r0=0; li.u8 r4=0 '
+             '(audio-mode-cycle publish-name setup)',
+             'jump table 0x06025382 byte 0x40 (double-click cmd 7)'),
+        ]
+    else:
+        specs = [
+            ('A', WINDOWS[0][1], WINDOWS[0][2], segment['stub_1_address'],
+             'call 0x0600c2aa; r0=[r0+116] (TRANS apply fetch)',
+             '0x0600db92 (TRANS)'),
+            ('B', WINDOWS[1][1], WINDOWS[1][2], segment['stub_2_address'],
+             'call 0x0600c2aa; r0=[r0+116] (TRANS apply fetch)',
+             '0x0600dbbc (TRANS)'),
+        ]
+        if close_hooks:
+            incoming = {'ON-1': 'none (plain fall-through)',
+                        'ON-2': 'none (plain fall-through)',
+                        'OFF-1': '0x0600db8e (mode==1)', 'OFF-2': '0x0600dbb8 (mode==1)'}
+            for tag, address, original, mode_slot, _label in CLOSE_WINDOWS:
+                reg = 'r5' if tag == 'ON-2' else 'r0'    # original load target
+                specs.append((tag, address, original,
+                              segment['leave_stub_addresses'][tag],
+                              f'call 0x0600c2aa; {reg}=[r0+{mode_slot}] '
+                              f'({"ON" if mode_slot == 112 else "OFF"} apply fetch)',
+                              incoming[tag]))
     for tag, address, original, stub_text, replaced, incoming_note in specs:
         position = APP_DATA + address - APP_BASE
         if flash[position:position + 8] != original:

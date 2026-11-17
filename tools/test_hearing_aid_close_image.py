@@ -33,8 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 import hearing_aid_l1_image as IMG
 
 PAYLOAD_ADDRESS = IMG.PAYLOAD_ADDRESS
-# Route-T composed segment (open variant), §9.1: 198B code, this sha.
-ROUTE_T_SHA = 'b0feed11b7d3c896423faf876b5300232e5277f2ad9e7b3b6b78e43f84ea4a7d'
+# Open variant (fixed open 156B + two TRANS stubs 32B+32B), route L1KEY: this sha.
+OPEN_VARIANT_SHA = '4ffd736e3f52f269b46363001272e7ddd2b6cd9f54653cd12d812d2eb0003c2d'
 CLOSE_WINDOWS = {tag: (addr, mode_slot) for tag, addr, _b, mode_slot, _l in IMG.CLOSE_WINDOWS}
 
 
@@ -45,22 +45,22 @@ class ComposedCloseSegmentTest(unittest.TestCase):
         cls.open_report, cls.open_code, cls.open_slot = IMG.assemble_segment()
         cls.close_report, cls.close_code, cls.close_slot = IMG.assemble_segment(close_hooks=True)
 
-    def test_01_open_variant_is_route_t_segment(self):
-        """The open-only variant reproduces the route-T §9.1 segment exactly."""
-        self.assertEqual(len(self.open_code), 198)
-        self.assertEqual(self.open_slot, 0x060e313a)
+    def test_01_open_variant_is_route_l1key_segment(self):
+        """The open-only variant reproduces the fixed route-L1KEY segment."""
+        self.assertEqual(len(self.open_code), 220)
+        self.assertEqual(self.open_slot, 0x060e3150)
         import hashlib
-        self.assertEqual(hashlib.sha256(self.open_code).hexdigest(), ROUTE_T_SHA)
+        self.assertEqual(hashlib.sha256(self.open_code).hexdigest(), OPEN_VARIANT_SHA)
 
     def test_02_segment_geometry(self):
-        """open(134) + close(64) + stubs(64+102) = 364B, slot at the tail."""
-        self.assertEqual(len(self.close_code), 364)
-        self.assertEqual(self.close_slot, PAYLOAD_ADDRESS + 364)
+        """open(156) + close(64) + stubs(32+34+102) = 388B, slot at the tail."""
+        self.assertEqual(len(self.close_code), 388)
+        self.assertEqual(self.close_slot, PAYLOAD_ADDRESS + 388)
         self.assertEqual(self.close_report['close_address'],
-                         f'0x{PAYLOAD_ADDRESS + 134:08x}')
+                         f'0x{PAYLOAD_ADDRESS + 156:08x}')
         # close payload length pinned by the route-X test
         self.assertEqual(int(self.close_report['close_address'], 16)
-                         - PAYLOAD_ADDRESS, 134)
+                         - PAYLOAD_ADDRESS, 156)
 
     def test_03_composed_prefix_matches_standalone_payloads(self):
         """Prefix bytes == standalone route-L open, then standalone route-X close."""

@@ -19,7 +19,7 @@ docs/candidate-image-cotest.md §1.2 gates every candidate-image loader
                     slot (r4 only), the config.dat header CRC + last-file
                     index byte, the appended mic_effect.bin segment, the two
                     app-area JLFS CRC pairs), the whole-UFW-file diff count
-                    equals the builder byte account (472B / 554B), and —
+                    equals the builder byte account (493B / 574B), and —
                     when the builder's build-report.json is supplied — its
                     output_sha256 / diff_count / diff_positions reconcile
                     with the independently computed diff (forged accounts
@@ -36,9 +36,9 @@ shared one (verify_eq_candidate.load_image, same as analyze_image_trace).
 Plain coordinates: plain[i] corresponds to runtime address 0x06000000+i and
 flash offset 0x2020+i; runs are [lo, hi) byte ranges. Plain LENGTHS are the
 decrypted app-region lengths (boot-info app_size = flash end - 0x2020):
-0xE31E0 / 0xE322E — NOT the flash-end values 0xE5200/0xE524E quoted in the
+0xE31F8 / 0xE3246 — NOT the flash-end values 0xE5218/0xE5266 quoted in the
 r4/slotram docs' loose convention; the fence upper limit equals the plain
-end's runtime address (0x060E31E0 / 0x060E322E), which cross-checks the two.
+end's runtime address (0x060E31F8 / 0x060E3246), which cross-checks the two.
 
 Offline assertions only. Nothing here runs a simulation or touches a device;
 both candidates stay UNTESTED and must not be flashed.
@@ -79,15 +79,15 @@ FULL_COVERAGE_REGIONS = {name for name, _lo, _hi in HOOK_WINDOWS}
 
 CANDIDATES = {
     'l1_slotram': {
-        'sha256': '906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914',
-        'plain_length': 0xE31E0,          # flash end 0xE5200 - 0x2020 (measured)
-        'whole_file_diff_bytes': 472,     # hearing-aid-l1-payload §12.3 byte account
+        'sha256': '6f267a2ed0b62ed118047e889a64483907c727d36eb5172a5d0f0067d37b1b93',
+        'plain_length': 0xE31F8,          # flash end 0xE5218 - 0x2020 (measured)
+        'whole_file_diff_bytes': 493,     # hearing-aid-l1-payload §12.3 byte account (fixed open)
         'registry_slot': False,
     },
     'r4_keyhook': {
-        'sha256': '8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d',
-        'plain_length': 0xE322E,          # flash end 0xE524E - 0x2020 (measured)
-        'whole_file_diff_bytes': 554,     # r4-command-hook §3.3 byte account
+        'sha256': 'bfc3f681e969d3c984a5ff7ee6d33ae759897788b132777ede01423104e3ab20',
+        'plain_length': 0xE3246,          # flash end 0xE5266 - 0x2020 (measured)
+        'whole_file_diff_bytes': 574,     # r4-command-hook §3.3 byte account (fixed open)
         'registry_slot': True,
     },
 }
@@ -217,7 +217,7 @@ def _check_byte_account(official, candidate):
                       for (lo, hi), region in zip(runs, (c['region'] for c in classified))]
     detail['unexplained_runs'] = unexplained
     detail['missing_regions'] = missing
-    # Whole-UFW-file diff against the builder byte account (472B / 554B).
+    # Whole-UFW-file diff against the builder byte account (493B / 574B).
     positions = None
     if len(official['raw']) != len(candidate['raw']):
         problems.append(f'candidate file length {len(candidate["raw"])} != official '
