@@ -3078,6 +3078,48 @@ def check_delivery(r,*,before_rti=True):
     return d
 
 
+# 22 个 instruction_adapters 计数基线(条件场景 p11_heap_experimental_config)。
+# 推进前沿会漂移的 adapter 计数不再手工钉绝对值:期望值统一放在
+# evidence/p11_heap_adapter_count_baseline.json,由 tools/capture_p11_heap_adapter_counts.py
+# --recapture 重取。键集合写死在代码里(不能只遍历 JSON 现存键,防删键顺带删检查)。
+_ADAPTER_COUNT_KEYS = ('exact_doubleword_store', 'exact_doubleword_store_cross_page_split',
+                       'immediate_rep_multi_block_projection', 'zero_count_skip_is_assumption',
+                       'register_rep_multi_block_projection', 'rep_copy_unknown_transport_load',
+                       'rep_copy_unknown_transport_store', 'parallel_halfword_store_old_registers',
+                       'parallel_insert_load_old_registers_is_assumption',
+                       'parallel_byte_store_old_registers', 'lp_timer_bit_rmw',
+                       'reset_unknown_preserving_configuration_rmw', 'mem_pwr_con_rmw',
+                       'p33_awkup_bit_rmw', 'proven_dead_mem_pwr_con_read',
+                       'abstract_task_stack_transport', 'cpu0_shared_lock_ownership',
+                       'exact_full_word_store', 'mmio_rmw_always_writes',
+                       'partial_icfg_bit9_only', 'partial_icfg_masked_branch',
+                       'per_core_visible_cnum')
+_ADAPTER_COUNT_BASELINE = ROOT / 'evidence/p11_heap_adapter_count_baseline.json'
+
+
+def _adapter_count_actual(adapters):
+    """从场景 adapter 计数里取 22 个钉值键(缺失键记 None,交给比较判红)。"""
+    return {key: adapters.get(key) for key in _ADAPTER_COUNT_KEYS}
+
+
+def _adapter_count_baseline():
+    """读 in-tree 22 键 adapter 计数基线(纯数据文件,不 import 任何工具模块)。"""
+    return json.loads(_ADAPTER_COUNT_BASELINE.read_text())['counts']
+
+
+def _adapter_count_mismatch(actual, expected):
+    """逐键差异描述(空串=一致);require 消息用,比较本身保持纯计算。"""
+    parts = []
+    for key in _ADAPTER_COUNT_KEYS:
+        a = actual.get(key)
+        e = expected.get(key)
+        if a == e:
+            continue
+        delta = f', delta {a - e:+d}' if isinstance(a, int) and isinstance(e, int) else ''
+        parts.append(f'{key}={a!r} (expected {e!r}{delta})')
+    return '; '.join(parts)
+
+
 def check(report,firmware):
     rows={r['name']:r for r in report['scenarios']}
     r=rows['irq127_request_strict']
@@ -5768,181 +5810,15 @@ def check(report,firmware):
     require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')
-    # adapter 计数:与 300,240 前沿一致的全部投影不变;并行对字节存储
-    # 100→103(路 AQ +2)→116(路 CB +3:L5V/CHG 配置表的字节装载 pair)→140
-    # (路 CG +24:超时窗口 20 轮 delay 的 L5V/CHG 配置字节 pair 与 W1[0] 循环
-    # 簿记)、LRCT 位 RMW 14→54(路 CG:LRC 周期链 9 轮)、reset 配置 RMW 8 不变。
-    # 路 CW(S19 批 0b)新前缀(+31,769 步):页内双字 43→47(DAC-init 尾段
-    # 函数帧的四对 st.d)、其余(rep 族/运输/半字/insert 装载/字节 pair/
-    # lp_timer/reset/mem_pwr/awkup/死读)全部不变——新前缀无 rep.i 体、
-    # 无 unknown 运输、无 LP/复位域访问。
-    # 路 DT(S19 批 2 续二)新前缀(+2,658,967 步,DAC 启动尾段+OS 等待族):
-    # 双字 47→48(分配对象填充的 st.d)、立即 rep 多块 383→385(DT 段两个新
-    # rep 体)、并行字节 411→412;其余全部不变(无 unknown 运输、无 LP/复位
-    # 域访问、LRC 帧零新增)。
-    # 路 LPV 尾段(+2,068 步,tbh case 体+RAM 对象链+缓冲配置 walk):并行
-    # 半字 15→16、并行字节 412→416(case 体与 walk 的并行对存储半);双字/
-    # 跨页/rep 族/insert 装载/LP 位 RMW/复位/mem_pwr/awkup/死读全不变。
-    # 并行传送族并入后钉值失配(非 bug,纯钉值):parallel_halfword_store_old_registers
-    # 42→527(+485)——PARSTOR ext.* 传送族并入 exact 并行存清单(551 站点/233 st-pairs)、
-    # D2AJ st.h.idxs 284 站点、DEBTCLEAR pi·pr 6 站点,均在 RAND 设钉 42 之后并入;
-    # parity self-check spans 147/diffs 29 不变,证无镜像分歧(重分类非语义变更)。
-    require(r['instruction_adapters'].get('exact_doubleword_store')==119 and
-            r['instruction_adapters'].get('exact_doubleword_store_cross_page_split')==7 and
-            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==1002 and
-            r['instruction_adapters'].get('zero_count_skip_is_assumption')==175 and
-            r['instruction_adapters'].get('register_rep_multi_block_projection')==425 and
-            r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
-            r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
-            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==527 and
-            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==2788 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==13223 and
-            r['instruction_adapters'].get('lp_timer_bit_rmw')==124 and
-            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
-            r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
-            r['instruction_adapters'].get('p33_awkup_bit_rmw')==17 and
-            r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1 and
-            # 路 CG 新前缀(W1[0] 循环2 全 20 轮超时窗口+9 次 OS tick 级联+286
-            # 次 IRQ4 交付+GPCNT 任务 9 次调度往返):任务栈帧运输 3987→10697、
-            # 共享锁 580→1221、整字存储 5775→14122、mmio RMW 563→1482、icfg
-            # bit9 1600→3724、cnum 2361→5770(OS tick/调度器/中断往返的真实执行);
-            # 路 CL:mode 切换函数 0x6068152 体 +160 步真实执行(DCCK 位域配置+
-            # WLA_CON8/P3_ANA_CON0/7/8/9/10 配置+软件延时+临界区退出)与 W1[1]
-            # scheduler helper 帧——并行字节 140→141、任务栈帧运输 10697→10703、
-            # 共享锁 1221→1222、整字存储 14122→14144、mmio RMW 1482→1492、icfg
-            # bit9 3724→3726、cnum 5770→5772。路 CO:scheduler helper 判定前置
-            # 段真实执行(masked 分支 1 次、0x12cb08 临界查询、0x12b55c 临界区
-            # 进出 cli/sti、0x60659ee/0x6065ab8 包装)——新增 partial_icfg_masked_
-            # branch=1,任务栈帧运输 10703→10706、共享锁 1222→1223、整字存储
-            # 14144→14150、icfg bit9 3726→3730、cnum 5772→5781(mmio RMW 1492 不变)。
-            # 路 CQ:+425 步(scheduler helper 0x6065c3a 尾段 + W1[1] walker 后续到
-            # 0x601d1ac)——任务栈帧运输 10706→10721、共享锁 1223→1224、整字存储
-            # 14150→14168(6 个 st.w.sp.l 转 exact +425 步内新整字存储)、icfg bit9
-            # 3730→3734、cnum 5781→5788(mmio RMW 1492 与 masked 分支 1 不变)。
-            # 路 F:jl_uart_con_projection 放行 uart_is_idle(0) 读后 uart_init 真实
-            # 执行 +604 步(CON0 写/|0x3 RMW/gpio 配置/互斥量+信号量创建/context
-            # 填充/并行对字节存储等)——任务栈帧运输 10721→10739、共享锁 1224→
-            # 1226、整字存储 14168→14192、mmio RMW 1492→1496、icfg bit9 3734→
-            # 3746、cnum 5788→5804(半字 pair 3→4、字节 pair 141→143、双字 26→27)。
-            # 路 M:jl_uart_init_write_records 放行 CON1/CON2 两写后 uart_init 继续
-            # +252 步(CON2 写、tx/rx 引脚判定、gpio_set_mode 进入引脚复用链)——
-            # 任务栈帧运输 10739→10753、整字存储 14192→14202、icfg bit9 3746→
-            # 3751、cnum 5804→5809(共享锁 1226、mmio RMW 1496、masked 分支 1、
-            # 半字 pair 4、字节 pair 143、双字 27 全不变——新前缀无新临界区/
-            # MMIO RMW/并行对存储)。
-            # 路 R(sim-gpioface):jl_omap_write_records 放行 0xfd58b8 写后
-            # +1,166 步(TX 复用链完成+第 297 次到期的交付往返+RX 复用链到
-            # JL_IMAP 停点)——任务栈帧运输 10753→10805、共享锁 1226→1228
-            # (TX/RX 复用各一组 0x12b746/0x12b772)、整字存储 14202→14254、
-            # mmio RMW 1496→1497(RX 复用的 0xfd6000 RMW)、icfg bit9 3751→
-            # 3769(临界区进出+交付往返)、cnum 5809→5832(masked 分支 1、
-            # 半字 pair 4、字节 pair 143、双字 27 全不变)。
-            # 路 V(sim-imapwr):jl_imap_write_records 放行 0xfd5c90 写后
-            # +516 步(RX 复用链完成+返回路径+uart_fifo_reset 序列头到 CON1
-            # RMW 读回停点)——任务栈帧运输 10805→10832、共享锁 1228→1229
-            # (fifo_reset 的 0x60340cc 一组)、整字存储 14254→14279、icfg
-            # bit9 3769→3782、cnum 5832→5845(mmio RMW 1497 不变——停点
-            # RMW 未执行;masked 分支 1、半字 pair 4、字节 pair 143、双字
-            # 27 全不变)。
-            # 路 AA(sim-con1rb):CON1 读回放行后 uart_init 事务收尾+事件域
-            # init 链前三项 +5,323 步——任务栈帧运输 10832→10904、共享锁
-            # 1229→1250(fifo_reset 临界区退出+uart 尾段/init 链的锁组)、
-            # 整字存储 14279→15257(BAUD×2/OTCNT/RX 三连写等白名单写+init
-            # 链 RAM 写)、**mmio RMW 1497→1506**(+9:0x60340d8 CON1 RMW
-            # 本身 + 两次 baudrate 的 CON0 &=~3/|=3 对 + OTCNT 门控 + CON0
-            # |=0x68/|=0x4 RX 使能对,全部走通用路径真实执行)、icfg bit9
-            # 3782→3824、cnum 5845→5907;双字 27→30、半字 pair 4→8(uart
-            # 尾段/init 链的并行对存储);masked 分支 1、字节 pair 143 不变。
-            # 路 AK(sim-audioinit):JL_WL_AUD entry 写放行后场景 walker 段
-            # +1,760 步(0x60755b2→0x6074234→0x6007ae8 查名链到跨页 st.d 停点)
-            # ——任务栈帧运输 10904→10917、共享锁 1250→1252、整字存储
-            # 15257→15275(含 S0 的 0xfe2200=1 白名单写)、mmio RMW 1506→1538
-            # (+32:查名链里 0xf2c/时钟族等已建模域的配置 RMW)、icfg bit9
-            # 3824→3832、cnum 5907→5947;字节 pair 143→159、双字 30/半字
-            # pair 8/masked 分支 1 不变(停点 st.d 未完成不计)。
-            # 路 AN(sim-crosspage):跨页拆分放行后 walker 链 +56,572 步
-            # (5×场景表 walker 完整跑完查名/配置 init/zalloc/ROM memset,尾段
-            # 进入 ADC 节点 reset 到 0xfe0538 停点)——**跨页拆分 5 次**(每个
-            # walker 的查名 helper 函数头 st.d.sp.l 各一次)、页内双字 30→35、
-            # 任务栈帧运输 10917→12527、共享锁 1252→1458(walker 链的锁组)、
-            # 整字存储 15275→17385(表/config 结构写)、mmio RMW 1538→1850
-            # (+312:已建模 0xf2c/时钟族的批量配置 RMW)、icfg bit9 3832→4312
-            # (临界区进出+新交付 8 次往返)、masked 分支 1→2、cnum 5947→6908;
-            # 寄存器计数 rep 26→112、rep.i 体 165→320(walker 链 ROM memset/
-            # 结构清零)、字节 pair 159→223、半字 pair 8→13、insert 装载
-            # 8→28;rep unknown 运输 9/9、LRCT 位 RMW 54、reset RMW 8、
-            # mem_pwr 4、awkup 17、死读 1 全不变。
-            # 路 AS(sim-adcreset):ADC reset+S1..S5+initcall 尾块+后续 2 项
-            # initcall +32,789 步——跨页拆分 5→6(尾块再触查名 helper 形状)、
-            # 页内双字 35→43、任务栈帧运输 12527→13475、共享锁 1458→1556、
-            # 整字存储 17385→18369(含 ADC reset/S1..S5 七个白名单写)、
-            # mmio RMW 1850→2046(+196:S3..S5 RMW 对+尾块已建模域配置)、
-            # icfg bit9 4312→4544(新交付 4 次往返)、cnum 6908→7399;
-            # rep.i 体 320→383、寄存器计数 rep 112→170(尾块/initcall 的
-            # memset/拷贝族)、零计数跳过 3→44(ROM 拷贝族尾循环零 len 频现)、
-            # 字节 pair 223→283、半字 pair 13→15、insert 装载 28→688(配置
-            # 表位段组装对频现);masked 分支 2、rep unknown 运输 9/9、LRCT
-            # 位 RMW 54、reset RMW 8、mem_pwr 4、awkup 17、死读 1 不变。
-            # 路 CV 再 +17 步(DAA_CON1 RMW 放行→setter 首读停):任务栈帧
-            # 运输 13475→13477(fixer {rets,r4} 与 setter {rets,r4} 各一对
-            # push/pop)、整字存储 18369→18370(0x606b43c DAA_CON1 写回);
-            # mmio RMW/cnum/icfg/共享锁全不变(17 步内无 RMW 指令、无交付)。
-            # 路 CW(S19 批 0b)再 +31,769 步(DAC_VL0 放行→DAC_COP 写停):
-            # 任务栈帧运输 13477→13594、共享锁 1556→1574、整字存储 18370→
-            # 18964(含 60KB 缓冲 memset 的字存储族与 DAC_VL0 写回)、mmio
-            # RMW 2046→2062(0x606ab0a 的 AUD_CON/DAC_CON 六连)、icfg bit9
-            # 4544→4592(新交付 2 次往返)、cnum 7399→7469;**后增存储
-            # 33069→48429(+15,360=memset 0x3c00 字恰一存储/字)**;ROM memset
-            # 适配器非零倒数 27→28/零跳过 25→26(大缓冲清零一对)。
-            # 路 B1(S19 批 1)再 +545,430 步(DAC_COP/DMA 放行→core-tick
-            # 边界停):任务栈帧运输 13594→15154、共享锁 1574→1717、整字
-            # 存储 18964→20918、mmio RMW 2062→2273(延时等待族的已建模域
-            # 配置)、icfg bit9 4592→5072(61 次新交付往返+临界区进出)、
-            # cnum 7469→8254、字节 pair 283→288、LRCT 位 RMW 54→64(LP 链
-            # 2 帧);rep 族/双字/半字/insert 装载/reset/mem_pwr/awkup/死读/
-            # masked 分支/后增存储全部不变(延时等待段无 rep 体、无大清零)。
-            # 路 B3(S19 批 2 续)再 +15,391,654 步(OS 等待族+3029 次
-            # Timer0/97 次 core-tick 新交付往返):任务栈帧运输 15154→97170、
-            # 共享锁 1717→9160、整字存储 20918→123648、mmio RMW
-            # 2273→13215、icfg bit9 5072→29896、cnum 8254→50045、字节
-            # pair 288→411(OS 等待族的字节对存储)、LRCT 位 RMW 64→104
-            # (LP 链 8 帧);masked 分支 3、rep 族/双字/半字/insert 装载/
-            # reset/mem_pwr/awkup/死读/后增存储不变。
-            # 路 DT(S19 批 2 续二)再 +2,658,967 步(DAC 启动尾段+其 OS
-            # 等待族+279 次 Timer0/8 次 core-tick 新交付往返):任务栈帧
-            # 运输 97170→104965、共享锁 9160→9838、整字存储 123648→
-            # 133628、mmio RMW 13215→14200(音频 ADC init 簇的已建模域
-            # 配置 RMW)、icfg bit9 29896→32162、cnum 50045→53995;
-            # 路 ADA(S19 批 2 续三)再 +51 步:整字存储 133628→133636
-            # (+8,ADA 组装 st)、mmio RMW 14200→14214(+14,B3/ADA 容器
-            # 域 RMW);其余四键与 masked 分支 3 不变。
-            # 路 LPV 再 +2,068 步:任务栈帧运输 104965→105021、共享锁
-            # 9838→9844、整字存储 133636→133722、mmio RMW 14214→14256、
-            # icfg bit9 32162→32190、cnum 53995→54039。
-            # 路 JLA 再 +130 步(set_buffer 五写+挂 handler+启动段序章):
-            # 任务栈帧运输 105021→105027(+6)、共享锁 9844→9846(+2)、整字
-            # 存储 133722→133738(+16:set_buffer 四条 st.w+RAM 槽写+启动段
-            # 已服务域写)、mmio RMW 14256→14257(+1:AUD_CON bit4 清位)、
-            # icfg bit9 32190→32194(+4)、cnum 54039→54043(+4)。
-            # masked 分支 3 与其余族不变(LRC 帧零新增,与 trim 块计数
-            # 冻结互证)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==456050 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==41337 and
-            r['instruction_adapters'].get('exact_full_word_store')==707566 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==69044 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==133634 and
-            r['instruction_adapters'].get('partial_icfg_masked_branch')==8 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==259995,
-            'the heap-experimental prefix adapters differ from the observed conditional frontier '
-            '(route JLEQ: the steady-state segment — feed-dog cycles, S16/S17 event-clock '
-            'windows, the key-table compression loop and the GPCNT measurement dispatch — '
-            'grew the transport/lock/store/RMW/icfg/cnum families to 145078/14414/292675/'
-            '19844/45130/75831; route GPCNUM adds the twenty served measurement '
-            'conversions plus five more feed-dog cycles, growing them to '
-            '227193/21076/404469/28146/66490/118945, and the route-WDFEED steady-state '
-            'extension past the crossed watchdog point grows them further to '
-            '456050/41337/707566/69044/133634/259995 with the masked-branch count '
-            'still 8)')
+    # 22 个 adapter 计数期望值见 evidence/p11_heap_adapter_count_baseline.json,
+    # 用 tools/capture_p11_heap_adapter_counts.py --recapture 重取(推进前沿后
+    # 计数漂移时)。route-by-route 增量叙事已随绝对值一起迁出断言。
+    _adapter_actual = _adapter_count_actual(r['instruction_adapters'])
+    _adapter_expected = _adapter_count_baseline()
+    require(_adapter_actual == _adapter_expected,
+            'the heap-experimental prefix adapter counts differ from the in-tree baseline '
+            'evidence/p11_heap_adapter_count_baseline.json: '
+            + _adapter_count_mismatch(_adapter_actual, _adapter_expected))
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
     # 循环在 ~110,768 步把 IRQ4 以 priority 1 真实使能且此后无清零)。
