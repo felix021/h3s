@@ -1390,6 +1390,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_vl0_readback=False,
              subword_stores=False,
              word_store_sp_l=False,
+             ext_pair=False,
              mmu_cross_page_split=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
@@ -1498,6 +1499,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 并入主开关会改 legacy 报告的 adapter 计数,故单独 opt-in。默认关闭,
     # legacy 报告不变。
     if word_store_sp_l:extra['exact_word_store_sp_l']=True
+    # ext_pair:opt-in 的并行对 ext.* 传送族前缀(exact_parallel_stores 独立
+    # 子开关 exact_parallel_ext_transfers,路 PARSTOR)。ext.b0.u/ext.b0.s/
+    # ext.l.u/ext.l.s=寄存器低字节/低半字零/符号扩展,pure-ALU(效果只有
+    # regs+flags,ISA confirmed、hw/fm1 硬件确认「result as stated, N/Z follow,
+    # C/V kept」)。证据形状 app 0x600f95a `ext.l.u.p r2=r0.l (u) ∥
+    # st.w.sp [sp+4]=r5`(BLE 读分发器 0x600f85e 帧内,SIMB1F 假停现场:停点
+    # 世界 park 前沿的分发器 216B 帧落在从未写过的 handler 栈口袋,上游
+    # store 模型写前合并读旧 word=模型簿记读非 guest 装载,未初始化 RAM 上
+    # 假停)。第二半按 FM-1 run3 旧寄存器语义执行(「B 读 A 之前旧寄存器」,
+    # SIMPRE §1.5 纪律)。静态面:全 app 233 个 ext.*.p∥st.* 站点;重捕获实测
+    # 前沿 29,601,125@0x606955c 零位移,287 次前缀内 ext 对迁至本 gate(架构
+    # 等值,adapter 4182→4184/42→327 只落在本 opt-in 条件场景),base 场景与
+    # probe_dualcore 零变化。
+    if ext_pair:extra['exact_parallel_ext_transfers']=True
     # mmu_cross_page_split:opt-in 的跨 128B MMU 页界双字存储拆分(probe_boot
     # exact_doubleword_stores 独立子开关)。证据形状 app 0x6007af2
     # `st.d.sp.l d[sp+8]=r1_r0`(配置表查名 helper 0x6007ae8 函数头,app_core

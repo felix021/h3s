@@ -177,6 +177,8 @@ FEATURES = (
             '普通子字存储直写(exact_subword_stores,绕过合并读)'),
     Feature('word_store_sp_l', 'conditional', (), False, None,
             '长位移 sp 相对整字存储直写(exact_word_store_sp_l)'),
+    Feature('ext_pair', 'conditional', (), False, None,
+            '并行对 ext.* 传送族前缀(exact_parallel_ext_transfers 子开关;SIMB1F 0x600f95a 假停的读路径解锁)'),
     Feature('mmu_cross_page_split', 'conditional', (), False, None,
             '跨 128B MMU 页界双字存储拆两半各自翻译(derived-not-measured)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
