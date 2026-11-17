@@ -1471,6 +1471,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_pled_con0_initial_fixture=None,
              p2m_clk_con0_config_rmw=False,
              jl_iomc_map_fixture=None,
+             jl_pled_config_words=False,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -1726,6 +1727,14 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 真实指令步远小于 N),指令轴终点 ≈29.7M;41M 覆盖停点+窗口+余量
         # (事件钟快进段虚拟步不耗指令预算)。park 实测落定后按实收紧。
         if d1_acceptance:budget=41000000
+        # 路 BATCHA:批 A 13 字放行后 LED 全字重配 0x60195e2 全函数走完
+        # (CON1/CON2 写+PRD writer+DUTY 配置器,18 笔配置写),效果机返回
+        # S19 环继续任务安装/资源 VFS 域——+7,033 步实测停 41,858,013 @
+        # 0x6010ca6(EXT_RESERVED/APP 分区 open 0x6010c3c 的 128B 目录条目
+        # rep 拷贝,首字节读 flash 0x61eafe0=偏移 0x1EAFE0,OTA 镜像
+        # 0x1442C0 之外,模型无字节)。预算放宽到 60M(>50M JLEQ 上界,
+        # 余量 >18M)。
+        if jl_pled_config_words:budget=60000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -2731,6 +2740,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 触达面零交集,独立开关独立批)。
     if jl_iomc_map_fixture is not None:
         options['jl_iomc_map_fixture']=jl_iomc_map_fixture
+    # jl_pled_config_words(路 BATCHA,攒批,opt-in 默认关):JL_PLED 配置字族
+    # 13 字批容器——41,850,980 停点 0x60195f8(LED 全字重配 0x60195e2 的
+    # CON1 整字清零)起的 LED 配置链(同函数 CON2=0、PRD 分频 0x6019552、
+    # DUTY 配置器 0x6019574、BRI 六连写 0x6019ab0、CON1/CON2 insert
+    # 0x6019af2、效果机 A1 路 0x601a3ce..da)全部未建模配置字一次放行。
+    # 消费链(落地前 vendor objdump 复核修正 scout「无读者」表述):
+    # CON1/CON2 活路径显式读只进写回组装(分支全在实参)且先写后读→写后
+    # 读回、首写前拒读(无合成初始字,写零按写次数计已写);BRI×6/
+    # PRD_DIVL/DUTY×4 活路径零读,唯一读者在 IRQ41 handler 域(算术/分支)
+    # →读一律拒绝+该域入口(0x6034b06/0x6034aba)执行前 canary。RMW 零新
+    # 分发(CON1/CON2 走通用 mmio 路径,CON0 先例)。新开关分立不扩
+    # CON0/CON3/P2MCLK 旧容器;无依赖(停点在 boot 前缀 LED 域内)。
+    if jl_pled_config_words:
+        options['jl_pled_config_words']=True
     # 敏感性探针值(probe_only):ADA_CON0(0xfe0a20)初值一次性 0xffffffff
     # 替换(只注初值,后续读回真实写回值;其余八字不扰动保归因干净)。
     # codex 钉子:断言非零合成初值经停点 RMW 只清 bit5——仅测初值零会漏掉
@@ -4475,15 +4498,17 @@ def check(report,firmware):
             'route-STOREG3 release segment beyond it adds no transaction — the '
             '162 totals stay frozen through the new 41,847,303 stop)')
     # 路 WDFEED:喂狗副作用投影断言——162 笔闭合事务恰 162 次重装(feeds
-    # 总数 163=主核 init 直接 feed 1+邮箱 162),未到期(停点 elapsed 105<
+    # 总数 163=主核 init 直接 feed 1+邮箱 162),未到期(停点 elapsed 107<
     # 16384——路 STOREG3 过墙段是纯 CPU0 顺序段,事件钟冻结、无新喂狗事务,
     # elapsed 100→104 只涨 4 个名义单位;路 FD610C-con0 再过墙 +576 步纯
-    # CPU0 段又涨 1 个名义单位到 105),command_values 保持主核 6 条真实
-    # 命令零伪造(副作用不写总线、不消耗 key_phase/commands);已到期拒绝
-    # 补喂的语义在单测钉死。
+    # CPU0 段又涨 1 个名义单位到 105;路 P2MCLK +2,598 步纯 CPU0 段维持
+    # 105;路 BATCHA +7,033 步段(LED 复位 helper 走完→S19 环→资源 VFS)
+    # 涨 2 个名义单位到 107——两段均无新喂狗事务,162/163 冻结),command_values
+    # 保持主核 6 条真实命令零伪造(副作用不写总线、不消耗 key_phase/
+    # commands);已到期拒绝补喂的语义在单测钉死。
     wdt=r['peripherals']['watchdog_projection']
     require(wdt['feeds']==163 and wdt['mailbox_feed_side_effects']==162 and
-            wdt['expired'] is False and wdt['elapsed_nominal_units']==105 and
+            wdt['expired'] is False and wdt['elapsed_nominal_units']==107 and
             wdt['commands']==6 and wdt['command_values']==[0,0,0,14,46,65582] and
             wdt['assumptions']['expiry_reset_or_irq_delivery_simulated'] is False and
             'mailbox_feed_side_effect' in wdt['assumptions'] and
@@ -5654,8 +5679,11 @@ def check(report,firmware):
     # 路 P2MCLK:+2,598 步纯 CPU0 段(LED_CLK_SEL(3) 两 RMW+RAM 标志+一次性
     # LED 初始化守卫尾+LED 复位 helper 0x60195e2 的 CON0 清位/整字清零到
     # CON1 写停点),零新到期零新交付零新喂狗,cnt 12,579→20,373(恰
-    # +7,794=2,598 步×3 STD12M tick 精确走表),PRD 保持 59,999。
-    require(timer=={'con':0x1401,'cnt':20373,'prd':59999,'pending':False,
+    # +7,794=2,598 步×3 STD12M tick 精确走表),PRD 保持 59,999;路 BATCHA
+    # 批放行后 +7,033 步段(LED 复位 helper 走完→S19 环→资源 VFS)再走
+    # 20,373→41,472(恰 +21,099=7,033×3 tick 精确走表,零新到期零新交付
+    # 零新喂狗——41,472<PRD 59,999 无到期窗),PRD 仍 59,999。
+    require(timer=={'con':0x1401,'cnt':41472,'prd':59999,'pending':False,
             'expirations':15775},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
@@ -5664,7 +5692,10 @@ def check(report,firmware):
             'on to 12579 in the save-restore/0x6019502 delay windows and the route-P2MCLK '
             'release walks it on to 20373 in the LED_CLK_SEL/LED-reset delay windows '
             '(+2598 steps x 3 STD12M ticks, no new expiry, no new delivery, no new '
-            'mailbox feed)), 15775 '
+            'mailbox feed) and the route-BATCHA release walks it on to 41472 through '
+            'the completed LED reset helper, the S19 ring and into the resource-VFS '
+            'open (+7033 steps x 3 STD12M ticks, no new expiry — 41472 stays inside '
+            'the 59999 PRD window, no new delivery, no new mailbox feed)), 15775 '
             'expirations total (15758 delivered/acked — the route-STOREG3 walk segment '
             'serves exactly one more delivery, the 17-expiry remainder folded into '
             'in-flight/deferred windows), pending FALSE at the stop: '
@@ -5736,19 +5767,22 @@ def check(report,firmware):
     # overflow guard 严格停(新停点,仍位于屏蔽窗内,IPMASK=6、ICFG 仍
     # 0x300,bit9 全程未动;读回投影只覆盖 offset 8,CNT 不在一案范围)。
     # 路 P2MCLK:+2,598 步纯 CPU0 段零新溢出零新交付,cnt 107,580→117,972
-    # (恰 +10,392=2,598 步×4 core tick 精确走表,仍 <prd 1,599,999);新停点
+    # (恰 +10,392=2,598 步×4 core tick 精确走表,仍 <prd 1,599,999);停点
     # 0x60195f8 在 LED 复位 helper 体内,但该 helper 由 0x601a422 调用、处于
     # 0x601a41c pend 的 OS 临界区内(IPMASK=6 机制,不动 CLI bit9),ICFG 保持
-    # 0x300。
+    # 0x300。路 BATCHA:批放行后复位 helper 全函数走完,pend 窗退出(IPMASK
+    # 6→0 回落,S19 环与资源 VFS 段全在临界区外运行),+7,033 步段零新溢出
+    # 零新交付,cnt 117,972→146,104(恰 +28,132=7,033×4 tick 精确走表,
+    # 仍 <prd 1,599,999),ICFG 仍 0x300(bit9 全程未动)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==117972 and
+            tick0['cnt']==146104 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300' and
-            r['peripherals']['ipmask']==6,
+            r['peripherals']['ipmask']==0,
             'the CPU0 core tick must deliver and ack ALL 116 overflows through the '
             '21,798,206 stop: the historical route-AK landmark, timeout-window, AS and '
             'B1 ones carry the count to eleven, the route-BQ release replays the masked '
@@ -5773,15 +5807,17 @@ def check(report,firmware):
             'route-FD610C-con0 release walks it on to cnt 107580, still 347/347 '
             'delivered-and-acked (zero new overflow) and the route-P2MCLK release '
             'walks it on to cnt 117972 (+2598 steps x 4 core ticks), still 347/347 '
-            'delivered-and-acked (zero new overflow); the CPU1 core tick never '
-            'overflows and CPU0 partial ICFG stays 0x300 (bit9 untouched '
-            'throughout); IPMASK is 6 at the new stop — the walk leaves the '
-            'one-shot LED-init guard (0x601a30c caller arm) into the per-channel '
-            'reconfig sequence whose 0x601a41c pend opens an OS critical section '
-            'and the 0x601a422 call runs the LED reset helper 0x60195e2 INSIDE the '
-            'pend window (the route-V uart_fifo_reset IPMASK 0->6 shape, not the '
-            'CLI bit9 one), so the stop 0x60195f8 sits inside the section with '
-            'IPMASK 6')
+            'delivered-and-acked (zero new overflow) and the route-BATCHA release '
+            'completes the LED reset helper inside the pend window, EXITS the '
+            'critical section (IPMASK back to 0 — the S19 ring and the resource-'
+            'VFS walk run unmasked) and walks the counter on to cnt 146104 '
+            '(+7033 steps x 4 core ticks, still zero new overflow); the CPU1 '
+            'core tick never overflows and CPU0 partial ICFG stays 0x300 '
+            '(bit9 untouched throughout); IPMASK is 0 at the new stop — the '
+            '0x601a41c pend section closed when the LED reset helper returned, '
+            'and the 0x6010ca6 resource-VFS directory read sits OUTSIDE any '
+            'OS critical section (unmasked execution, the route-STOREG3 shape '
+            'again)')
     # 路 BQ 读回投影面:报告键只在开关开启的世界出现(legacy 逐字节不变),
     # 证据链字段钉死(最近写入=1199999、只覆盖 unresolved 窗的 offset 8、
     # 硅读回行为未测量)。
@@ -5946,7 +5982,7 @@ def check(report,firmware):
     crc_heap=r['peripherals']['hardware_crc_projection']
     require(crc_heap['seed_writes'][:30]==crc_ff['seed_writes'] and
             crc_heap['result_reads'][:30]==crc_ff['result_reads'] and
-            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==204 and
+            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==207 and
             crc_heap['seed_writes'][30:]==['0x0','0x0'] and
             crc_heap['result_reads'][30:]==['0x62eb','0x9c78']+['0xa1cd','0x9946',
                 '0xd1cf','0x239e','0x7dee','0x91a9']*7+['0xa1cd','0xb37d','0xa11d',
@@ -5958,8 +5994,8 @@ def check(report,firmware):
                 '0x5ddd','0x768']+['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee',
                 '0x91a9','0xc1b0']*7+['0xafef']+['0xa1cd','0x9946','0xd1cf',
                 '0x239e','0x7dee','0x91a9','0xc1b0']+['0xa1cd','0x9946','0xd1cf',
-                '0x239e','0x7dee'] and
-            crc_heap['fed_bytes']==71849,
+                '0x239e','0x7dee']+['0x66e5','0xc73e','0x60ca'] and
+            crc_heap['fed_bytes']==71939,
             'the heap fixture must keep the first thirty hardware CRC round trips '
             'byte-identical to crc_bankb; the route-AA prefix adds the seeded '
             '0x62eb/0x9c78 pair, the route-AN walker chain thirty and the route-AS '
@@ -5970,8 +6006,13 @@ def check(report,firmware):
             'scenario-table walkers plus two route-AS tail groups); the route-STOREG3 '
             'consumption-chain walk adds twelve more rounds on the same standing zero '
             'seed (one seven-value cycle plus a five-value prefix of the next — the S18 '
-            'event dispatch walks the CRC-verified config tables again), 71849 fed '
-            'bytes total')
+            'event dispatch walks the CRC-verified config tables again), and the '
+            'route-BATCHA release segment adds three more rounds on the same '
+            'standing zero seed (0x66e5/0xc73e/0x60ca — the resource-VFS '
+            'EXT_RESERVED/APP partition open walks three 32-byte directory '
+            'entries, each CRC-checking header bytes 2..31 = 90 fed bytes) '
+            'before the fourth entry read stops at the unmapped flash byte, '
+            '71939 fed bytes total')
     require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')

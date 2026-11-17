@@ -1693,10 +1693,10 @@ def check_self_conditional(report, arms=None):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 41855953, '1': 11496},
+                run['per_core_steps'] == {'0': 41862986, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (41850980 @ 0x60195f8, the unmapped '
-                'write of JL_PLED CON1 0xfd6104 — reached after the route-STOREG3 standalone '
+                'conditional frontier stop (41858013 @ 0x6010ca6, the unmapped '
+                'byte read of flash 0x61eafe0 — reached after the route-STOREG3 standalone '
                 'postincrement word-store release executes the byte-unpack '
                 'st.w.pin.l of 0x60649b0 directly (crossing the route-WDFEED '
                 '41,828,530 bookkeeping-read stop) and the route-FD610C single-'
@@ -1718,11 +1718,23 @@ def check_self_conditional(report, arms=None):
                 'caller (0x601a30c arm) walks the per-channel reconfig into '
                 'the 0x601a41c pend window (IPMASK 0->6) that calls the LED '
                 'reset helper 0x60195e2 whose CON0 '
-                'clears and zero store are served, and +2,598 pure-CPU0 '
-                'steps walk into the 0x60195f8 st.w [0xfd6104]=0 which stops '
-                'honestly on the unmapped JL_PLED CON1 word; per-core 1 '
-                'unchanged at 11496 — the 0xfd6104 decision belongs to the '
-                'next route)')
+                'clears and zero store are served, the 0x60195f8 st.w '
+                '[0xfd6104]=0 JL_PLED CON1 whole-word clear is served by the '
+                'route-BATCHA 13-word config-family container (CON1/CON2 '
+                'last-write readback after an explicit first write — no '
+                'synthetic initial — and eleven always-read-refused '
+                'BRI/PRD/DUTY words, IRQ41 consumer domain canaried at '
+                '0x6034b06/0x6034aba, codex 20261118), the whole reset helper '
+                'completes (18 config writes: CON1 RMW chain to 0x1c, CON2=0, '
+                'PRD_DIVL=3, DUTY0=1, DUTY3=40, BRI six=200/0 pattern), the '
+                'pend window exits, the S19 ring installs further tasks and '
+                'walks into the resource-VFS EXT_RESERVED/APP partition open '
+                'whose 128-byte directory-entry rep copy at 0x6010ca6 reads '
+                'its first byte from flash 0x61eafe0 (offset 0x1EAFE0, beyond '
+                'the 0x1442C0 OTA image — real-chip flash content the model '
+                'has no bytes for); +7,033 steps past the previous stop, '
+                'per-core 1 unchanged at 11496 — the 0x61eafe0 read belongs '
+                'to the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

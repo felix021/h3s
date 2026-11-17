@@ -3735,6 +3735,88 @@ class ModelTests(unittest.TestCase):
             BR28Model(jl_iomc_map_fixture=-1)
         with self.assertRaises(ValueError):
             BR28Model(jl_iomc_map_fixture=0x100000000)
+    def test_jl_pled_config_words_container(self):
+        # 路 BATCHA(攒批):41,850,980 停点 0x60195f8——LED 全字重配
+        # 0x60195e2 的 CON1 整字清零。13 字批容器(codex 202611180207):
+        # CON1/CON2 写后读回(活路径显式读只进写回组装且先写后读;首写前
+        # 拒读,无合成初始字,写零按写次数计已写)+BRI×6/PRD_DIVL/DUTY×4
+        # 纯写记录(读一律拒绝,唯一读者在 IRQ41 handler 域)+该域入口
+        # 0x6034b06/0x6034aba 执行前 canary(probe_boot decode 拒)。
+        from br28_model import JL_PLED_CONFIG_WORDS
+        self.assertEqual(len(JL_PLED_CONFIG_WORDS),13)
+        plain=BR28Model()
+        for address in JL_PLED_CONFIG_WORDS:
+            self.assertFalse(plain.handles(address,4),hex(address))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xfd6104)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfd6104,0)
+        self.assertNotIn('jl_pled_config_words_registers',plain.report())
+        h=BR28Model(jl_pled_config_words=True)
+        # 恰 13 字白名单;CON0/CON3(既有容器)、CNT_RD/CON4/CNT_SYNC/
+        # CNT_DEC(批 A 不含)与子字/错位访问全部不吞。
+        for address in JL_PLED_CONFIG_WORDS:
+            self.assertTrue(h.handles(address,4),hex(address))
+        for address in (0xfd6100,0xfd610c,0xfd613c,0xfd6140,0xfd6144,0xfd6148,
+                        0xfd60fc,0xfd614c):
+            self.assertFalse(h.handles(address,4),hex(address))
+        self.assertFalse(h.handles(0xfd6105,1) or h.handles(0xfd6106,2))
+        # CON1/CON2 首写前拒读(访问顺序变化显形)。
+        with self.assertRaisesRegex(Blocked,
+                'jl_pled_config_word_read_before_first_write_not_modeled'):
+            h.read(0xfd6104)
+        with self.assertRaisesRegex(Blocked,
+                'jl_pled_config_word_read_before_first_write_not_modeled'):
+            h.read(0xfd6108)
+        # 写零算「已写」(写次数判,非值真假)→读回=最后写值;逐地址状态隔离。
+        h.write(0xfd6104,0)
+        self.assertEqual(h.read(0xfd6104),0)
+        h.write(0xfd6104,0xc0)
+        self.assertEqual(h.read(0xfd6104),0xc0)
+        h.write(0xfd6108,0x50)
+        self.assertEqual(h.read(0xfd6108),0x50)
+        self.assertEqual(h.read(0xfd6104),0xc0)
+        # 11 字写前/写后读一律拒绝(read_not_modeled),RMW 内部读同拒。
+        with self.assertRaisesRegex(Blocked,'jl_pled_config_word_read_not_modeled'):
+            h.read(0xfd6110)
+        h.write(0xfd6134,0xff)
+        for address in (0xfd6110,0xfd6114,0xfd6118,0xfd611c,0xfd6120,0xfd6124,
+                        0xfd6128,0xfd612c,0xfd6130,0xfd6134,0xfd6138):
+            with self.assertRaisesRegex(Blocked,'jl_pled_config_word_read_not_modeled'):
+                h.read(address)
+        # 值域校验(容器直调;白名单外地址由模型层 unsupported_peripheral_write
+        # 先拒,0xfd6100 归 CON0 容器域)。
+        with self.assertRaises(ValueError):
+            h.jl_pled_config_words.write(0xfd6104,-1)
+        with self.assertRaises(ValueError):
+            h.jl_pled_config_words.write(0xfd6104,0x100000000)
+        with self.assertRaises(ValueError):
+            h.jl_pled_config_words.write(0xfd6100,0)
+        with self.assertRaises(ValueError):
+            h.jl_pled_config_words.read(0xfd6100)
+        # 报告:策略分组/逐字 stores/计数/canary 面。
+        report=h.report()['jl_pled_config_words_registers']
+        self.assertEqual(report['word_writes'],4)
+        self.assertEqual(report['read_policy']['readback_after_first_write'],
+                         ['0xfd6104','0xfd6108'])
+        self.assertEqual(len(report['read_policy']['always_refused']),11)
+        self.assertEqual(report['stores']['0xfd6104']['values'],['0x0','0xc0'])
+        self.assertEqual(report['readback_projection']['reads'],4)
+        self.assertEqual(report['irq41_domain_canary']['entry_pcs'],
+                         ['0x6034aba','0x6034b06'])
+        self.assertIn('0x60195f8',report['whitelisted_words'])
+        self.assertIn('NOT a reset-value claim',
+                      report['readback_projection']['readback_semantics'])
+        self.assertIn('no synthetic initial word',
+                      report['readback_projection']['readback_semantics'])
+        assumption=h.report()['assumptions']['jl_pled_config_words_registers']
+        self.assertIn('write-record batch release',assumption)
+        self.assertIn('access-order changes surface',assumption)
+        self.assertIn('entry canaries',assumption)
+        # canary PC 集(类常量):恰两入口,probe_boot decode 消费。
+        self.assertEqual(sorted(hex(pc) for pc in
+                         h.jl_pled_config_words.CANARY_PCS),
+                         ['0x6034aba','0x6034b06'])
 
     def test_jl_adc_start_config_registers(self):
         # 路 ASS:21,800,455 停点 0x606e044(ADC 启动函数 0x606df66 的

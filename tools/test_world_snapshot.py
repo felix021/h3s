@@ -684,6 +684,9 @@ class M4ProjectionFamilies(unittest.TestCase):
         # flag set (prefix zero-touch — all three batch-B trigger faces are
         # outside the LED->S19 immediate path).
         jl_iomc_map_fixture=0x00000000,
+        # Route BATCHA: the JL_PLED config-word family container (13 words),
+        # ON in the current conditional frontier flag set.
+        jl_pled_config_words=True,
     )
 
     def build_world(self):
@@ -874,6 +877,14 @@ class M4ProjectionFamilies(unittest.TestCase):
         self.assertEqual(hw.jl_iomc_map.read(0xfd6024), 0)
         hw.jl_iomc_map.write(0xfd601c, 0x12345678)
         self.assertEqual(hw.jl_iomc_map.read(0xfd601c), 0x12345678)
+        # Route BATCHA: the config-word family took the frontier-stop shape —
+        # whole-word zero clears (CON1=0 at 0x60195f8 / CON2=0 at 0x60195fa),
+        # a post-write readback on CON1, plus a BRI/DUTY write whose word
+        # stays read-refused (frontier shape: PRD_DIVL write-only).
+        hw.jl_pled_config_words.write(0xfd6104, 0)
+        hw.jl_pled_config_words.write(0xfd6108, 0)
+        self.assertEqual(hw.jl_pled_config_words.read(0xfd6104), 0)
+        hw.jl_pled_config_words.write(0xfd6128, 3)
         return hardware
 
     def captured_m4(self, world):
