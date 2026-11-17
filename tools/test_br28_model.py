@@ -3430,6 +3430,74 @@ class ModelTests(unittest.TestCase):
         self.assertIn('0x6034b7a',assumption)
         self.assertIn('no LED waveform',assumption)
 
+    def test_jl_pled_con0_named_initial_container(self):
+        # 路 FD610C-con0:41,847,806 停点 0x60194b4——LED 驱动 0x60194a4
+        # save-restore(`r6=[0xfd6100]` 存使能位→清 bit0→`if(r6&1)` 恢复)
+        # 首读。CON0 是分支消费者(bit0 恢复门控/bit1 分支/bits4-7 查表),
+        # 不能照搬 CON3 合成 0;codex 三选一定调 (a):具名整字初态 fixture,
+        # 条件主臂 0x00000000、敏感性对照臂 0x00000001(derived-not-measured
+        # 非硅复位值)。容器首写前读=fixture、写后读=最后写值,显式读/RMW/
+        # 整字写共享同一状态(走通用 mmio 路径,无专用 rmw()/分发)。
+        plain=BR28Model()
+        self.assertFalse(plain.handles(0xfd6100,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xfd6100)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfd6100,0)
+        self.assertNotIn('jl_pled_con0_registers',plain.report())
+        # None=关(is not None 判定,0 是合法开值不能被当成关)。
+        h0=BR28Model(jl_pled_con0_initial_fixture=None)
+        self.assertFalse(h0.handles(0xfd6100,4))
+        # 显式 0 开启(主臂)。
+        h=BR28Model(jl_pled_con0_initial_fixture=0x00000000)
+        self.assertTrue(h.handles(0xfd6100,4))
+        # 邻字/子字/错位不进容器:CON1/CON3 及其余 JL_PLED 字、字节
+        # 0xfd6101 全部保持原语义。
+        for address,size in ((0xfd6104,4),(0xfd6108,4),(0xfd610c,4),
+                             (0xfd613c,4),(0xfd6140,4),(0xfd6144,4),
+                             (0xfd6148,4),(0xfd6101,1)):
+            self.assertFalse(h.handles(address,size))
+        # 首写前读=具名 fixture(0 主臂),重复读不构成固件写。
+        self.assertEqual(h.read(0xfd6100),0)
+        self.assertEqual(h.read(0xfd6100),0)
+        self.assertEqual(h.jl_pled_con0.synthesized_initial_reads,2)
+        self.assertEqual(h.jl_pled_con0.reads_after_write,0)
+        # 整字写后读=最后写值(fixture 不伪装成一次写)。
+        h.write(0xfd6100,0xffffffff)
+        self.assertEqual(h.read(0xfd6100),0xffffffff)
+        self.assertEqual((h.jl_pled_con0.reads_after_write,
+                          h.jl_pled_con0.synthesized_initial_reads),(1,2))
+        r=h.report()['jl_pled_con0_registers']
+        self.assertEqual(r['addresses'],['0xfd6100'])
+        self.assertEqual(r['initial_fixture']['word'],'0x0')
+        self.assertEqual(r['word_writes'],1)
+        self.assertEqual(r['stores']['0xfd6100']['values'],['0xffffffff'])
+        self.assertIn('assumed-not-measured',r['initial_fixture']['provenance'])
+        self.assertIn('derived-not-measured',r['readback_projection']['readback_semantics'])
+        self.assertIn('NOT a reset-value claim',r['readback_projection']['readback_semantics'])
+        self.assertIn('0x60194ca',r['readback_projection']['known_limitation'])
+        self.assertIn('0x6069b10',r['readback_projection']['known_limitation'])
+        self.assertIn('branch',r['observed_shapes'])
+        self.assertIn('0x6034bb2',r['whitelisted_words'])
+        self.assertIn('save-restore',r['whitelisted_words'])
+        self.assertIn('bits4-7',r['whitelisted_words'])
+        assumption=h.report()['assumptions']['jl_pled_con0_registers']
+        self.assertIn('named whole-word initial fixture',assumption)
+        self.assertIn('0x00000000',assumption)
+        self.assertIn('0x00000001',assumption)
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT silicon reset state',assumption)
+        # 敏感性对照臂:初值 1 使首读 bit0=1(真分支形状),独立实例不互扰。
+        h1=BR28Model(jl_pled_con0_initial_fixture=0x00000001)
+        self.assertEqual(h1.read(0xfd6100),1)
+        self.assertEqual(h1.jl_pled_con0.initial_word,1)
+        self.assertEqual(h.jl_pled_con0.initial_word,0)
+        # 非法 fixture 拒绝(unsigned32 校验)。
+        with self.assertRaises(ValueError):
+            BR28Model(jl_pled_con0_initial_fixture=-1)
+        with self.assertRaises(ValueError):
+            BR28Model(jl_pled_con0_initial_fixture=0x100000000)
+
     def test_jl_adc_start_config_registers(self):
         # 路 ASS:21,800,455 停点 0x606e044(ADC 启动函数 0x606df66 的
         # MIC_CTL0 |=0x2 RMW 内部读,地址 r0=r5+976 间接构造,li 枚举法

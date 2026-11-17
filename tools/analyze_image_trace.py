@@ -157,6 +157,16 @@ SCENARIOS = {
         # 0xfd6100=JL_PLED CON0 的 save-restore 首读(r6=[0xfd6100] 存使能
         # 位→清 bit0→if(r6&1)恢复——CON0 是分支消费者,单字容器不纳入,
         # 诚实停;0x6069b0e 读 bit0 定亮度步进同域)。预算 50M 保持。
+        # 路 FD610C-con0:JL_PLED CON0(0xfd6100)具名整字初态容器(首写前
+        # 读=具名 fixture、写后读=最后写值;codex 三选一 (a) 定调条件主臂
+        # 0x00000000、敏感性对照臂 0x00000001,derived-not-measured 非硅复位
+        # 值;显式读/RMW/整字写共享同一状态走通用 mmio 路径零新分发)放行
+        # 后,0x60194b4 save-restore 首读服务 0→0x60194b6 清 bit0 RMW 写回
+        # 0(word_writes 1)→0x60194ca if(r6&1)假分支跳过恢复→0x60194a4
+        # 返回,再 +576 步(纯 CPU0 段,per-core1 11496 不变)到 41,848,382 @
+        # 0x6019508 读 0xf2a610(0x6019502 helper 首条 [0xf2a610]&=0xFFFFFFE0
+        # 清 bits5-7 RMW 的内部读——JL_PLED 块之外的未建模 SFR,诚实停,
+        # 归下一路)。预算 50M 保持。
         'default_budget': 50000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
@@ -1471,22 +1481,25 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 41852779, '1': 11496},
+                run['per_core_steps'] == {'0': 41853355, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (41847806 @ 0x60194b4, the unmapped '
-                'read of JL_PLED CON0 0xfd6100 inside the LED driver '
-                'save-restore (r6=[0xfd6100] → clear bit0 → if(r6&1) restore) '
-                '— reached after the route-STOREG3 standalone postincrement '
-                'word-store release executes the byte-unpack st.w.pin.l of '
-                '0x60649b0 directly (crossing the route-WDFEED 41,828,530 '
-                'bookkeeping-read stop) and the route-FD610C single-word '
-                'JL_PLED CON3 container serves the 0x6019458 clear-bit5 '
+                'conditional frontier stop (41848382 @ 0x6019508, the unmapped '
+                'read of 0xf2a610 — reached after the route-STOREG3 standalone '
+                'postincrement word-store release executes the byte-unpack '
+                'st.w.pin.l of 0x60649b0 directly (crossing the route-WDFEED '
+                '41,828,530 bookkeeping-read stop) and the route-FD610C single-'
+                'word JL_PLED CON3 container serves the 0x6019458 clear-bit5 '
                 'RMW read as synthetic 0 (derived-not-measured), then the '
                 'helper returns and +503 pure-CPU0 steps walk into the CON0 '
-                'save-restore read whose architectural value feeds a branch '
-                '— CON0 is deliberately out of the single-word container, '
-                'honest stop; per-core 1 unchanged at 11496 — the CON0 '
-                'branch-consumer decision belongs to the next route)')
+                'save-restore read; the route-FD610C-con0 JL_PLED CON0 named '
+                'whole-word initial fixture (0x00000000 main arm, codex '
+                'three-way (a), derived-not-measured) serves the 0x60194b4 '
+                'read as 0, the clear-bit0 RMW writes 0, the if(r6&1) restore '
+                'is skipped on the false branch, the save-restore returns, '
+                'and +576 pure-CPU0 steps walk into the 0x6019502 helper whose '
+                'first [0xf2a610]&=0xFFFFFFE0 RMW internal read stops honestly '
+                'on the unmapped word 0xf2a610; per-core 1 unchanged at 11496 '
+                '— the 0xf2a610 decision belongs to the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

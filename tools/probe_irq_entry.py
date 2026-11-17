@@ -921,6 +921,16 @@ def key_chain_sensor_object_bytes():
 KEY_CHAIN_RES_NAMED_VALUES={**FD31_ADC_RES_NAMED_VALUES,
                             KEY_CHAIN_CHANNEL_WORD:KEY_CHAIN_RES_PRESSED}
 
+# JL_PLED->CON0(0xfd6100)具名整字初态 fixture(路 FD610C-con0,条件主臂;
+# derived-not-measured,非硅复位值、非 SDK 推导)。0x60194b4 的 save-restore
+# 首读(r6=[0xfd6100]→清 bit0→if(r6&1)恢复)读值 bit0 直接进分支,boot 前缀
+# 在首读前从未写过 0xfd6100(写会 Blocked),故初值是明确选择的实验输入。
+# codex 三选一(2026-11-17,gpt-6-astra)定调 (a):0=假分支(条件恢复不执行,
+# LED 保持关),1=真分支(恢复执行,LED 保持开);两臂均无硬件证据,不因哪臂
+# 跑得更远反推更真实。敏感性对照臂 0x00000001 不单独登记开关,直接用同一
+# 参数传 1 即可。
+JL_PLED_CON0_INITIAL_VALUE=0x00000000
+
 # 直调返回哨兵:0x100000 落在 ROM(0..0x20000)与 flash(0x06000100..)之间的
 # 未映射空洞,直调循环在 decode 之前检查 pc==哨兵,从不真的取指。
 KEY_CHAIN_DIRECT_SENTINEL=0x00100000
@@ -1444,6 +1454,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_anc_writes=False,
              jl_clock_con3_readback=False,
              jl_pled_con3_readback=False,
+             jl_pled_con0_initial_fixture=None,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -2641,6 +2652,15 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # (停点在 boot 前缀,不叠任何其他场景)。
     if jl_pled_con3_readback:
         options['jl_pled_con3_readback']=True
+    # jl_pled_con0_initial_fixture(路 FD610C-con0,opt-in 默认 None=关):JL_PLED
+    # CON0(0xfd6100)单字具名初态容器——41,847,806 停点 0x60194b4 的
+    # save-restore 首读(r6=[0xfd6100]→清 bit0→if(r6&1)恢复)。CON0 是分支
+    # 消费者(bit0 恢复门控/bit1 分支/bits4-7 查表),不能照搬 CON3 合成 0;
+    # codex 三选一(2026-11-17)定调 (a):具名整字初态 fixture,条件主臂
+    # 0x00000000、敏感性对照臂 0x00000001。显式读/RMW/整字写共享同一状态,
+    # 走通用 mmio 路径(零新分发)。无依赖(停点在 boot 前缀)。
+    if jl_pled_con0_initial_fixture is not None:
+        options['jl_pled_con0_initial_fixture']=jl_pled_con0_initial_fixture
     # 敏感性探针值(probe_only):ADA_CON0(0xfe0a20)初值一次性 0xffffffff
     # 替换(只注初值,后续读回真实写回值;其余八字不扰动保归因干净)。
     # codex 钉子:断言非零合成初值经停点 RMW 只清 bit5——仅测初值零会漏掉
@@ -4272,9 +4292,9 @@ def check(report,firmware):
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x60194b4 on the '
-            'unmapped read of JL_PLED CON0 0xfd6100 — reached after the '
-            'route-STOREG3 standalone postincrement word-store release '
+            'the heap-experimental scenario must stop at 0x6019508 on the '
+            'unmapped read of 0xf2a610 — reached after the route-STOREG3 '
+            'standalone postincrement word-store release '
             '(exact_postincrement_word_stores) executes the st.w.pin.l '
             'full-word store of the byte-unpack loop in 0x60649b0 directly '
             '(the route-WDFEED frontier 41,828,530 upstream bookkeeping read '
@@ -4290,11 +4310,16 @@ def check(report,firmware):
             '[0xfd610c]&=0xFFFFFFDF RMW read as the explicit synthetic '
             'initial 0 (derived-not-measured, not a reset value), the helper '
             'returns, and +503 pure-CPU0 steps walk into the CON0 save-'
-            'restore at 0x60194b4 (r6=[0xfd6100] → clear bit0 → if(r6&1) '
-            'restore) whose architectural read feeds a branch — CON0 is a '
-            'branch consumer deliberately kept OUT of the single-word CON3 '
-            'container, honest stop; the 0x6069b0e read of CON0 bit0 (LED '
-            'brightness step) is the same branch-consuming domain and '
+            'restore at 0x60194b4; the route-FD610C-con0 JL_PLED CON0 named '
+            'whole-word initial fixture (conditional main arm 0x00000000, '
+            'codex three-way (a), derived-not-measured — NOT silicon reset '
+            'state) serves the 0x60194b4 r6=[0xfd6100] read as 0, the '
+            '0x60194b6 clear-bit0 RMW writes back 0 (word_writes 1), the '
+            '0x60194ca if(r6&1) restore is skipped on the false branch, the '
+            'save-restore function returns, and +576 pure-CPU0 steps walk '
+            'into the 0x6019502 helper whose first rmw.and.nmodimm '
+            '[0xf2a610]&=0xFFFFFFE0 RMW internal read stops honestly on the '
+            'unmapped word 0xf2a610 — a new SFR outside the JL_PLED block, '
             'belongs to the next route)')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
@@ -4318,14 +4343,15 @@ def check(report,firmware):
             'route-STOREG3 release segment beyond it adds no transaction — the '
             '162 totals stay frozen through the new 41,847,303 stop)')
     # 路 WDFEED:喂狗副作用投影断言——162 笔闭合事务恰 162 次重装(feeds
-    # 总数 163=主核 init 直接 feed 1+邮箱 162),未到期(停点 elapsed 104<
+    # 总数 163=主核 init 直接 feed 1+邮箱 162),未到期(停点 elapsed 105<
     # 16384——路 STOREG3 过墙段是纯 CPU0 顺序段,事件钟冻结、无新喂狗事务,
-    # elapsed 100→104 只涨 4 个名义单位),command_values 保持主核 6 条真实
+    # elapsed 100→104 只涨 4 个名义单位;路 FD610C-con0 再过墙 +576 步纯
+    # CPU0 段又涨 1 个名义单位到 105),command_values 保持主核 6 条真实
     # 命令零伪造(副作用不写总线、不消耗 key_phase/commands);已到期拒绝
     # 补喂的语义在单测钉死。
     wdt=r['peripherals']['watchdog_projection']
     require(wdt['feeds']==163 and wdt['mailbox_feed_side_effects']==162 and
-            wdt['expired'] is False and wdt['elapsed_nominal_units']==104 and
+            wdt['expired'] is False and wdt['elapsed_nominal_units']==105 and
             wdt['commands']==6 and wdt['command_values']==[0,0,0,14,46,65582] and
             wdt['assumptions']['expiry_reset_or_irq_delivery_simulated'] is False and
             'mailbox_feed_side_effect' in wdt['assumptions'] and
@@ -4333,10 +4359,12 @@ def check(report,firmware):
             'the route-WDFEED mailbox feed side-effect must reload the WDT exactly '
             'once per closed feed transaction (162 reloads against the 162 closed '
             'transactions, feeds total 163 = one direct init feed + 162 projected), '
-            'leaving the watchdog NOT expired at the stop (elapsed 104 of the 16384 '
+            'leaving the watchdog NOT expired at the stop (elapsed 105 of the 16384 '
             'nominal units of the CON 0x2e period — the route-STOREG3 release '
             'segment past 41,828,530 is a pure CPU0 sequence, no new feed '
-            'transaction, only four more nominal units consumed) with the '
+            'transaction, only four more nominal units consumed; the route-'
+            'FD610C-con0 release past 41,847,806 is another pure CPU0 sequence, '
+            'one more nominal unit consumed) with the '
             'main-core command accounting untouched (six real commands '
             '[0,0,0,14,46,0x1002E], zero fabricated bus writes) and the '
             'expiry-stays-a-reset honesty flag intact')
@@ -5204,7 +5232,7 @@ def check(report,firmware):
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==12791 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x606b0a2')==1 and
-            t0['deliveries'][-1]['reti_from']=='0x12c5ca' and
+            t0['deliveries'][-1]['reti_from']=='0x4196' and
             [d['reti_from'] for d in t0['deliveries'][287:362]]==
             ['0x6010a4e', '0x12b608', '0x6010a5c', '0x12b608', '0x6007b7e',
              '0x4372', '0x6000f4a', '0x6007b7e', '0x12b608', '0x6000f4c',
@@ -5491,12 +5519,13 @@ def check(report,firmware):
     # 20,220→20,373(恰 +153=51 步×3 STD12M tick 精确走表)。
     # 路 JLA:+130 步(set_buffer 五写+挂 handler+启动段序章)零新到期零新
     # 交付,cnt 2,577→2,967(恰 +390=130 步×3 STD12M tick 精确走表)。
-    require(timer=={'con':0x1401,'cnt':9342,'prd':59999,'pending':False,
+    require(timer=={'con':0x1401,'cnt':12579,'prd':59999,'pending':False,
             'expirations':15775},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
             'with the counter walked on to 9342 inside the freshly reprogrammed delay '
-            'window of the LED-driver prologue), 15775 '
+            'window of the LED-driver prologue and the route-FD610C-con0 release walks it '
+            'on to 12579 in the save-restore/0x6019502 delay windows), 15775 '
             'expirations total (15758 delivered/acked — the route-STOREG3 walk segment '
             'serves exactly one more delivery, the 17-expiry remainder folded into '
             'in-flight/deferred windows), pending FALSE at the stop: '
@@ -5570,7 +5599,7 @@ def check(report,firmware):
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==103264 and
+            tick0['cnt']==107580 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -5596,7 +5625,9 @@ def check(report,firmware):
             'leaves the OS critical section behind (the new stop has IPMASK 0, the '
             'byte-unpack and dispatch code runs unmasked) and the counter walks on '
             'through the release segment to cnt 103264, still 347/347 delivered-and-acked '
-            '(zero new overflow — the pure-CPU0 walk takes ~4 nominal WDT units); the '
+            '(zero new overflow — the pure-CPU0 walk takes ~4 nominal WDT units) and the '
+            'route-FD610C-con0 release walks it on to cnt 107580, still 347/347 '
+            'delivered-and-acked (zero new overflow); the '
             'CPU1 core tick never overflows and CPU0 partial ICFG stays 0x300 (bit9 '
             'untouched throughout)')
     # 路 BQ 读回投影面:报告键只在开关开启的世界出现(legacy 逐字节不变),
@@ -5980,13 +6011,22 @@ def check(report,firmware):
             # 260239→260245(+6);masked 分支 8 不变、独立新 gate 5 不变。
             # 旧短形 gate exact_postincrement_store 61392→61426(+34:过墙段
             # 后 +503 步消费链另执行 34 次独立 st.w.pin 短形,行为不变)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==456502 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==41421 and
-            r['instruction_adapters'].get('exact_full_word_store')==708325 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==69049 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==133808 and
+            # 路 FD610C-con0 再 +576 步(JL_PLED CON0 具名初态 fixture 0 放行
+            # 0x60194b4 save-restore 首读→清 bit0 RMW→if(r6&1)假分支跳过恢复
+            # →0x60194a4 返回后进入 0x6019502 函数首条 RMW [0xf2a610]&=~0xE0
+            # 的内部读停):任务栈帧运输 456502→456537(+35)、共享锁 41421→
+            # 41422(+1)、整字存储 708325→708343(+18)、mmio RMW 69049→69050
+            # (+1:0x60194b6 清 bit0 RMW 本身走通用路径)、icfg bit9 133808→
+            # 133820(+12)、cnum 260245→260257(+12);masked 分支 8 不变、
+            # 独立新 gate 5 不变、旧短形 gate 61426 不变、双字 125/立即 rep
+            # 多块 1070/并行半字 545/并行字节 13226 全不变。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==456537 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==41422 and
+            r['instruction_adapters'].get('exact_full_word_store')==708343 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==69050 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==133820 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==8 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==260245 and
+            r['instruction_adapters'].get('per_core_visible_cnum')==260257 and
             r['instruction_adapters'].get('exact_postincrement_word_store')==5 and
             r['instruction_adapters'].get('exact_postincrement_store')==61426,
             'the heap-experimental prefix adapters differ from the observed conditional frontier '

@@ -574,7 +574,8 @@ def test_flag_sets_derive_from_the_frontier_registry():
     non_boolean = {switch for switch, value in CONDITIONAL_EXTRA_FLAGS.items() if value is not True}
     assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values',
                            'jl_adda_daa_con1_initial_fixture', 'p33_canary_first_read_words',
-                           'ancif_official_resources', 'jl_rand_seed', 'gpcnt_num_value'}
+                           'ancif_official_resources', 'jl_rand_seed', 'gpcnt_num_value',
+                           'jl_pled_con0_initial_fixture'}
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
     # 路 GPCNUM:GPCNT NUM 具名探路值(assumed 标称 32768 Hz 恒等计数)
@@ -605,6 +606,11 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert CONDITIONAL_EXTRA_FLAGS['jl_rand_seed'] \
         is probe_irq_entry.JL_RAND_SEED_BYTES
     assert len(CONDITIONAL_EXTRA_FLAGS['jl_rand_seed']) == 4
+    # 路 FD610C-con0:JL_PLED CON0 具名整字初态 fixture(0x00000000 条件主臂,
+    # 0x00000001 敏感性对照臂;derived-not-measured 非硅复位值)。
+    assert CONDITIONAL_EXTRA_FLAGS['jl_pled_con0_initial_fixture'] \
+        is probe_irq_entry.JL_PLED_CON0_INITIAL_VALUE
+    assert CONDITIONAL_EXTRA_FLAGS['jl_pled_con0_initial_fixture'] == 0x00000000
 
 
 def test_scenario_registry_shapes():
