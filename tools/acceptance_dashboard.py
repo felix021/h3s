@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """验收记录全局面板生成器(路 PANEL/sim-panel,d1-acceptance §8 档案的全局视察面)。
 
-扫描 docs/acceptance-samples/ 七目录+上级散置的全部记录 JSON(只读汇总,不改记录),
+扫描 docs/acceptance-samples/ 各分目录(PANELS)+上级散置的全部记录 JSON(只读汇总,不改记录),
 产出一页 markdown:docs/acceptance-dashboard.md。
   1. 总览:各目录 PASS/FAIL/BLOCKED/NOT_RUN 分布+PASS(条件性)列;
   2. 待授权/依赖项汇总:记录按类别聚组(刷机/BLE 联调/只读观测会话/前沿推进/观测手段)
@@ -44,6 +44,7 @@ PANELS = (
     ('d3', 'D3 真机一致性:案头就绪底稿(路 BS/sim-d3prep)'),
     ('parity', '镜像间轨迹差分(路 A1/EQDIV,L2 系证据)'),
     ('d1', 'D1 稳定调度验收(路 PR3P 预填,等闸门②)'),
+    ('ha', 'HAL5 助听合一候选真机验证计划预填(路 ACCEPT-HA/sim-accept-ha)'),
 )
 # 上级目录散置的两条真实示例(§8.1):逻辑上分属 d2a/r234 面板(两 README 已注明),
 # 这里按物理位置单列一行,扫描口径=每个 JSON 属于它所在的目录。
@@ -80,6 +81,19 @@ AUTH_GROUPS = (
      '事件日志面/音频校准手段——授权也解不了,须先造观测手段',
      ('D3-TIM-01', 'D3-AUD-01'),
      'd3 README「等待项地图」第 3/4 行'),
+    ('HAL5 真机验证授权(路 ACCEPT-HA 计划)',
+     '助听 HAL5 合一候选 9ad0f088… 真机分阶段验证的共同前提;计划=docs/hearing-aid-acceptance-plan.md'
+     '(授权话术见其阶段1b:两段式,复述 sha 前 8 位)',
+     ('H5-AUT-01', 'H5-BAS-01', 'H5-APP-01', 'H5-USB-01', 'H5-HLT-01',
+      'H5-BLE-01', 'H5-BLE-02', 'H5-BLE-03', 'H5-BLE-04',
+      'H5-KEY-01', 'H5-KEY-02', 'H5-KEY-03', 'H5-ANC-01', 'H5-AUD-01',
+      'H5-EQ-01', 'H5-MPO-01', 'H5-DEF-01', 'H5-RBK-01', 'H5-END-01'),
+     'ha README「等待项」+计划 §阶段1b'),
+    ('HAL5 工具/观测前置(非授权类,阶段0a 离线就绪)',
+     'USB 双向 profile(PRE-01)/App key31 通道与保存按钮假成功修复(PRE-02)/客观声学测量器材'
+     '(MET-01)——纯离线或器材缺口,先于任何授权成立',
+     ('H5-PRE-01', 'H5-PRE-02', 'H5-MET-01'),
+     'ha README「等待项」+计划 §阶段0a 与刷前缺口表'),
 )
 
 # NOT_RUN 聚合行的等待说明=指向各面板 README 的依赖地图(文字为指针非数据)。
@@ -88,6 +102,7 @@ PANEL_WAITING_NOTE = {
     'd2b': '等 BF 前沿释放+AW 蓝图实施——d2b README「注入面共同依赖地图」',
     'cot': '按 L0-L3 前置链(COT-01 两条不依赖 D1 可立即跑)——cot README',
     'd3': '等授权或观测手段——d3 README「等待项地图」',
+    'ha': '等阶段0a 离线就绪(USB 双向 profile/App key31 通道)+用户明示授权——ha README 与计划 go/no-go',
 }
 
 
@@ -171,12 +186,12 @@ def generate(samples: Path = SAMPLES, panels=PANELS, root_panel=ROOT_PANEL,
     data_as_of = max((r.recorded_at for r in all_records), default='—')
     panel_total = sum(len(entries[key]) for key, _ in panels)
     lines: list[str] = []
-    lines += ['# 验收记录全局面板(七目录一页汇总,路 PANEL/sim-panel)', '',
+    lines += [f'# 验收记录全局面板({len(panels)} 目录一页汇总,路 PANEL/sim-panel)', '',
               '数据=`docs/acceptance-samples/` 全部记录的只读汇总(不改记录;每条链接直达 JSON)。',
               '记录改动后须再生成:`python3 tools/acceptance_dashboard.py`;',
               '`check_local --units` 会校验本页与记录一致(test_acceptance_dashboard.py)。',
               f'数据截至(记录 recorded_at 最大值)={data_as_of} ｜ '
-              f'共 {len(all_records)} 条(七目录 {panel_total}+上级散置 '
+              f'共 {len(all_records)} 条({len(panels)} 目录 {panel_total}+上级散置 '
               f'{len(entries[root_panel[0]])})。', '',
               '## 1. 总览', '',
               '| 目录 | 内容 | PASS | 其中条件性 | FAIL | BLOCKED | NOT_RUN | 共计 |',

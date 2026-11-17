@@ -1,0 +1,27 @@
+{
+  "case_id": "H5-HLT-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "USB-01完整通过；离耳；HA尚未开",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：拔USB并手动正常重启一次；查询/播放/空闲/正常关机；按HAL5契约检查ANC与App",
+  "observation_boundary": "应用服务响应、播放与关机；全片身份与运行现象分离",
+  "assertions": [
+    "手动正常关开机完成，启动60s内可查询；播放60s、空闲120s无复位失联",
+    "正常关机10s内完成；BLE无法连接/无法关机停止功能试验并转已授权恢复",
+    "HAL5没有b79两态补丁；按候选三态预期检查，不把广播/280版本视作候选身份"
+  ],
+  "timeout_budget": "启动60s；BLE初始化窗口75s；播放60s；空闲120s；关机10s",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "HA出声/曲线未测",
+    "实际boot bank缺独立观测时只能标预期B"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

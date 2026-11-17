@@ -1,0 +1,27 @@
+{
+  "case_id": "H5-BLE-02",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "App构建已固定；使用离线或已授权本地拒发观察，不向真机发坏帧",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：未armed、8B坏长度、EQ9/11段、非有限/越界、坏白名单形状负例",
+  "observation_boundary": "指定UI/编码器/bridge/策略层的错误与TX增量",
+  "assertions": [
+    "各受测拒发例返回错误且TX增量0；明确拒绝所在层",
+    "App M(0.3,119.9)/EQ绝对值<40与固件M(0.3,120)/EQ绝对值<=40分列",
+    "setHearingCfg的8B坏魔数可过shape门，不虚称bridge拒绝一切协议非法值"
+  ],
+  "timeout_budget": "本地调用完成即判；异步TX观察5s；不得发往真机绕过门控",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "固件坏形状拒绝仅离线验",
+    "set_config失败不在真机故意制造"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

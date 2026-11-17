@@ -1,0 +1,27 @@
+{
+  "case_id": "H5-END-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "各已执行用例与失败/中止记录齐备；最终固件选择明确",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：有限10min运行观察；关闭HA、音源、armed，断开控制App；登记最后镜像/key/ANC状态与未完成项",
+  "observation_boundary": "最终健康、设备状态及公开脱敏证据卡",
+  "assertions": [
+    "首轮建议回b79；用户保留HAL5须明确确认，RBK-01仍NOT_RUN不能PASS",
+    "保留所有FAIL与BLOCKED，听不出如实记录；不发布整片/身份/原始私人日志",
+    "10min无异常只支持有限窗口，不报告长期稳定或医疗助听有效"
+  ],
+  "timeout_budget": "有限运行观察10min；异常/用户叫停立即停止，不凑时长",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "长期稳定性",
+    "临床用途与跨设备兼容性"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

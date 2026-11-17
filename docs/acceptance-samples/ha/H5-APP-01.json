@@ -1,0 +1,27 @@
+{
+  "case_id": "H5-APP-01",
+  "firmware_identity": "b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "仅计划；手机未连接；将来须只读检查授权",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：检查包/版本/签名/APK与assets摘要、构建来源、OS/WebView、权限及真实GATT模式",
+  "observation_boundary": "设备包管理与APK只读证据；匿名化记录",
+  "assertions": [
+    "已装全部APK SHA与冻结构建相符，不能只用versionCode=10识别",
+    "实际App具备PRE-02所需路径；无simulation/loopback；样本manifest与SHA可追溯",
+    "不安装、不清数据、不改权限来完成只读检查"
+  ],
+  "timeout_budget": "会话开始前完成；缺身份或构建对应证据即BLOCKED",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "手机尚未只读检查",
+    "APK身份不证明耳机固件身份"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

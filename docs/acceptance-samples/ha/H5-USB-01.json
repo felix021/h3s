@@ -1,0 +1,28 @@
+{
+  "case_id": "H5-USB-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "AUT-01通过；HAL5固定候选、新profile；私有新会话目录",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：现场2MiB双读→审查→写前新双读→精确扇区写入→逐扇区及整片读回",
+  "observation_boundary": "USB协议状态、每扇区字节、最终2MiB target及journal",
+  "assertions": [
+    "两遍备份完全相等；执行前非VM变化拒绝，最新VM保留",
+    "擦后全FF、块写状态/CRC正确、每扇区及整片逐字节等于本次target",
+    "任何擦写/读回错误停止后续步骤，不删journal重跑；不套旧六扇区ORDER"
+  ],
+  "timeout_budget": "操作时限由新profile离线验收冻结；异常立即停止后续事务",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "应用是否启动",
+    "助听功能",
+    "完全不枚举USB的恢复"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

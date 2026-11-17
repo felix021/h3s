@@ -1,0 +1,27 @@
+{
+  "case_id": "H5-BAS-01",
+  "firmware_identity": "b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "b79历史健康；基线真机会话尚未授权",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：3次正常关开机；每轮查询与播放；ANC键6次、双击6次、App三态各一次，其它基本键各3次",
+  "observation_boundary": "用户动作录像、设备查询、播放/提示音与主观观察分列",
+  "assertions": [
+    "每轮开机60s内可查询，播放60s无异常，正常关机手势后10s内关闭",
+    "ANC键ON/TRANS两态；双击按当前映射循环音乐/游戏/电影，记录实际顺序",
+    "无基线异常才允许计划进入HAL5写入门"
+  ],
+  "timeout_budget": "开机60s；播放60s；关机10s；双击动作5s；BLE独立上限75s",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "本轮尚未复测",
+    "不继承为HAL5健康证据"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

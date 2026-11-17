@@ -1,0 +1,29 @@
+{
+  "case_id": "H5-MET-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "测量声源/夹具/输出采集/噪声与校准条件尚未具备",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：同参数3次重复先定误差；十段逐段变化；M95/M85至少3档输入测稳态与峰值",
+  "observation_boundary": "固定声学路径下左右输出相对频响/电平；无AGC测量链",
+  "assertions": [
+    "先冻结检测门max(3dB,3×基线标准差)，不事后放宽；不稳定夹具先修再测",
+    "十段逐段覆盖并与邻频比较；一段可闻不代表十段通过",
+    "MPO判据排除声源压缩/NoiseGate等混淆；缺器材或前提即BLOCKED",
+    "只有观测支持的相对变化可声明，无校准不报告绝对SPL"
+  ],
+  "timeout_budget": "测量会话输入/采集/时间窗口在器材就绪后冻结，未冻结不执行",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "数字节点精确值",
+    "临床/一般人群有效性",
+    "绝对SPL无标定"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

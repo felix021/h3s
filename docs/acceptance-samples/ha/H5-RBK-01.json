@@ -1,0 +1,29 @@
+{
+  "case_id": "H5-RBK-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "完整HAL5状态或独立已审查中断恢复方案；已有恢复授权",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：回滚现场新双读，以最新VM为底图；新profile恢复b79→整片比对→拔USB手动重启→健康清单",
+  "observation_boundary": "本次恢复target全片/头/两bank应用，随后实际行为",
+  "assertions": [
+    "全片逐字节等本次target；两bank应用为b79、A2/B3，A/资源/校准及最新VM保留",
+    "不套用r2六扇区；不要求等首次备份全片SHA；HA key残留如实归档",
+    "手动正常重启后连接/播放/关机、ANC六次两态、双击六次音频模式循环与App三态均过",
+    "无法进入USB或未知混合态停止并另报方案，不能宣称已恢复"
+  ],
+  "timeout_budget": "USB操作按新profile冻结时限；启动60s/播放60s/关机10s；异常停止",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "无USB枚举情况下的救援",
+    "自动bank A fallback",
+    "初始VM恢复不在本范围"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}

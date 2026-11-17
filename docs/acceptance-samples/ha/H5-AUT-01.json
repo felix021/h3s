@@ -1,0 +1,27 @@
+{
+  "case_id": "H5-AUT-01",
+  "firmware_identity": "HAL5 UFW SHA256 9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465；L2 M=95；UNTESTED，未刷机；恢复目标：b79 UFW SHA256 b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b；历史设备A2/B3均b79，本路未复测",
+  "initial_state": "PRE/APP/BAS满足；现场双读与实际plan可审查后",
+  "inputs_schedule": "计划 docs/hearing-aid-acceptance-plan.md：分别记录基线/ROM备份授权，以及绑定候选、plan、恢复范围的写入与测试授权",
+  "observation_boundary": "用户明确聊天确认和授权包版本/摘要",
+  "assertions": [
+    "授权绑定完整9ad0f088…SHA、B写区、保留A/VM/设备参数、未测风险及恢复耗时估计",
+    "回退是否预授权明确；输入清单包含BLE写/开关/音频，ANC并存和坏魔数另列",
+    "只认可明确确认；撤销即停止新事务；候选或profile变化重新审查"
+  ],
+  "timeout_budget": "授权必须在相应动作之前；未获授权保持NOT_RUN，不把等待视为同意",
+  "model_assumptions": [
+    "本卡为ACCEPT-HA计划预填，NOT_RUN；本路没有真机连接或操作，未取得新的设备授权",
+    "计划依据checkout 628de93；时间/次数是拟定验收预算，非已测硬件规格；实际执行需绑定会话、APK、profile/plan与原始证据"
+  ],
+  "result": "NOT_RUN",
+  "uncovered_items": [
+    "本文件不是授权",
+    "风险告知不保证USB一定可恢复"
+  ],
+  "evidence_level": "none",
+  "evidence_conditions": [],
+  "evidence_refs": [],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-18T01:12:10"
+}
