@@ -1,0 +1,47 @@
+{
+  "route": "SCOUT / sim-scout",
+  "date": "2026-11-17",
+  "kind": "static-reconnaissance (no simulation run)",
+  "baseline": {"commit": "2712dcb", "frontier": {"steps": 41848382, "pc": "0x6019508", "stop": "unmapped_memory read 0xf2a610 (RMW internal read of rmw.and.nmodimm at 0x6019508)"}},
+  "method": {
+    "linear_asm": "vendor objdump of app.bin sha 18f3d573..., load base 0x06000100",
+    "stream_redisasm": "repo-pinned pi32v2-isa codec (probe_pi32v2 PIN) decode + check.operands; tbb/tbh table regions skipped to avoid table-data mis-decodes",
+    "call_edges": "target = call_insn_end + signed offset; validated against BO-anchored call sites (0x600a590 x5, 0x60116d0 x5)",
+    "sdk_headers": ["br28.h sha 111e29ea", "p11_sfr.h", "p11_app.h", "io_omap.h", "io_imap.h"] ,
+    "sdk_commit": "67328f4741c69993c88e504c67377b196c724f97"
+  },
+  "release_shape_assumed": {
+    "address": "0xf2a610",
+    "sdk_name": "P11_SYSTEM->P2M_CLK_CON0 (+0x10)",
+    "helper": "0x6019502 = LED_CLK_SEL(3): [0xf2a610] = ([0xf2a610] & 0xFFFFFF1F) | 0x60",
+    "mask_erratum": "HANDOFF wrote &=0xFFFFFFE0; actual mask 0xFFFFFF1F (~0xE0, clears bits 5-7)",
+    "sole_app_consumer": "0x6019502 (only 32-bit literal site app-wide)",
+    "inflight_design": "sim-p2mclk + codex 202611172110: (a) single-word container, synthetic initial 0, RMW-internal reads served, explicit reads rejected (p2m_clk_con0_read_not_modeled)"
+  },
+  "live_caller_chain": ["0x60237ea (S18 (18,0) handler deep path)", "0x601a590 (gate fn, RAM-only)", "0x601a6d4 -> 0x601a206 (recursive LED effect-step machine)", "0x601a2fa -> 0x60194a4 (LED driver, released)", "0x601a30c -> 0x6019502 (frontier)"],
+  "predicted_stops": [
+    {"batch": "A", "order": 1, "address": "0xfd6134", "sdk": "JL_PLED->DUTY2 (+0x34, __RW)", "first_site": "0x601a3ce st.w [r3+52]=0xFF", "path": "A1 (config byte6 != 0 and state byte == 2)", "read_destination": "none (write-only, zero app readers)", "plan": "(a) CON3-style config container, 13-word batch"},
+    {"batch": "A", "order": 2, "address": "0xfd6138", "sdk": "JL_PLED->DUTY3 (+0x38, __RW)", "first_site": "0x601a3d0 st.w [r3+56]=0xFF", "path": "A1", "read_destination": "none", "plan": "(a)"},
+    {"batch": "A", "order": 3, "address": "0xfd6104", "sdk": "JL_PLED->CON1 (+0x04, __RW)", "first_site": "0x601a3d2 rmw.and [r3+4] &= ~8 (then |=0x80, |=0x40)", "path": "A1 (also B2 whole-write 0x60195f8; ld/st forms 0x6019588/0x6019afa/0x60195b6..)", "read_destination": "write-back composition only (branches are on args)", "plan": "(a)"},
+    {"batch": "A", "order": 4, "address": "0xfd6128", "sdk": "JL_PLED->PRD_DIVL (+0x28, __RW)", "first_site": "0x6019564 st.w [r2+28]=r1 (in 0x6019552, called from 0x6019c5e breathing setup @0x6019cc8)", "path": "A2 (config byte6 != 0 and state != 2)", "read_destination": "none", "plan": "(a)"},
+    {"batch": "A", "order": "5-10", "address": "0xfd6110/0xfd6114/0xfd6118/0xfd611c/0xfd6120/0xfd6124", "sdk": "JL_PLED->BRI_PRDL/PRDH/DUTY0L/DUTY0H/DUTY1L/DUTY1H (__RW)", "first_site": "0x6019ab0 body: st.w [r3+0/4/16/20/8/12] (base li 0x6019abc = 0xfd6110); reached via 0x6019c5e@0x6019cfa, 0x6019b16@0x6019ba6, 0x6019bc0@0x6019c56, 0x601a206@0x601a438", "path": "A2 / B2", "read_destination": "none", "plan": "(a)"},
+    {"batch": "A", "order": 11, "address": "0xfd6108", "sdk": "JL_PLED->CON2 (+0x08, __RW)", "first_site": "0x60195fa st.w (in 0x60195e2, called @0x601a422 path B2 / 0x6019ffc); ld->insert->st form 0x6019b0c..12 (0x6019af2)", "path": "B2 / A2", "read_destination": "write-back composition (insert field from arg r1)", "plan": "(a)"},
+    {"batch": "A", "order": "12-13", "address": "0xfd612c/0xfd6130", "sdk": "JL_PLED->DUTY0/DUTY1 (+0x2c/+0x30, __RW)", "first_site": "0x60195b4/0x60195c4 st.w (in 0x6019574, arg-gated)", "path": "A2 / B2 (0x6019574 called @0x601a116/0x6019d34/0x6019c40/0x6019612)", "read_destination": "none", "plan": "(a)"},
+    {"batch": "B (conditional, far)", "address": "0xfd6018/0xfd601c/0xfd6020", "sdk": "JL_IOMC->OCH_CON0/1/2 (base 0xfd6014)", "sites": "0x601966e read in 0x6019634 slot-search loop; resolver 0x6001356 (via 0x600180a)", "read_destination": "branch: if (slot_val != arg) 0x6019678", "plan": "(b) CON0-style named fixture (0 = empty map -> no-match arm) or live value; CON3-style NOT applicable", "reach_condition": "only 0x60196e8 cases != 32 (LED caller 0x6019a1a hardcodes r2=33 -> case 32 -> 0x6084eac) or debug-domain callers 0x6034xxx / GPIO resolver"},
+    {"batch": "B (conditional, far)", "address": "0xfd6020/0xfd6024/0xfd6028/0xfd602c", "sdk": "input map words read as ICH table by firmware (SDK struct names ICH_CON0..3 at 0xfd6024..)", "sites": "0x60196c2 read in 0x6019692 (nibble -> if (>13) skip -> IMAP clear index); resolver 0x60013ce (via 0x6001820)", "read_destination": "branch + index (IMAP word select)", "plan": "(b) or live value", "reach_condition": "same as above"},
+    {"batch": "C (G2 runtime, register only)", "address": "0xf2a600/0xf2a608/0xf2a618", "sdk": "P2M_INT_IE / P2M_INT_CLR / M2P_INT_SET", "sites": "pmu_task 0x60691fc/0x6068c82/0x606905c (kick 0x800); IRQ68 domain 0x602f45e (kick 0x80 + b[0xF27F88]); feed-dog RAM 0x12cc7e family (modeled via p2m_mailbox_ack + wdt_mailbox_feed)", "read_destination": "n/a (mailbox projection family)", "plan": "extend mailbox idiom if reached (s19-final-specs 3.3)"},
+    {"batch": "C", "address": "0xf2a604/0xf2a61c/0xf2a620", "sdk": "P2M_INT_SET / M2P_INT_CLR / M2P_INT_PND", "sites": "zero app users (literal scan)", "plan": "none needed"}
+  ],
+  "certified_no_stop_surfaces": [
+    "JL_PLED CON0 0xfd6100 / CON3 0xfd610c containers serve all 20 LED-domain sites",
+    "JL_IMAP 63-word write records: 0x60196e8 case bodies' whole-word zero writes all inside 0xfd5c00..0xfd5cf8; NO testset/RMW (linear-asm artifact retracted)",
+    "USB_IO CON0 0xfd6000 PartialWord (fully-known seed) serves 0x6084eac/0x6084f12/0x6084f7e/0x6084fe8/0x6085052/0x60850bc",
+    "RAM-only: 0x601a590 gate fn, S18 handler chain 0x60237d8..0x6023b34 (zero SFR literals), 0x12d010 (= [0x12A058] getter), 0x6019b16/0x6019bc0 math, pend/post, task creates 0x6066a56/0x6066b88, vector install 0x6065d86"
+  ],
+  "irq41_note": "0x6019d70 registers IRQ41 (handler arg 0x6034B06 domain, contains CON3 explicit read 0x6034b7a which the CON3 container rejects); model has no IRQ41 source -> zero execution; reaching it = wrong-direction signal",
+  "errata": [
+    "HANDOFF frontier entry: mask on 0xf2a610 is 0xFFFFFF1F (~0xE0), not 0xFFFFFFE0",
+    "retracted own initial-scan artifact: 'testset b[0xfd5c38] @0x60197a6' was tbh jump-table data mis-decoded by linear asm"
+  ],
+  "honesty": "all predictions static-derived-not-measured; actual stop order is decided by the sim-p2mclk advance; A1/A2/B2 branch values come from the runtime LED effect table and are not statically resolvable"
+}
