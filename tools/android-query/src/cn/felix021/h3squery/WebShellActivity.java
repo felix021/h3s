@@ -26,7 +26,7 @@ import java.util.concurrent.Executors;
  *   - "h3s"（H3SBridge + AndroidBleTransport）：耳机 tab——连接/查询/EQ/ANC/按键/音量/模式；
  *   - "h3susb"（H3sUsbBridge + AndroidUsbLink）：USB tab——枚举/授权/INQUIRY/ROM 只读
  *     （FB06 装载 loader + FD07 窗读 + FD05 备份，双读一致；无 Flash 写路径）；
- *   - "h3sha"（H3sToneBridge）：助听 tab——单频正弦测试音 + 合成样本播放，AudioTrack
+ *   - "h3sha"（H3sToneBridge）：助听 tab——单频正弦测试音 + 静态样本播放（TTS/公共领域录音，见 assets/samples/manifest.json），AudioTrack
  *     尽量路由到内置扬声器（TYPE_BUILTIN_SPEAKER）绕开 BLE A2DP。
  *
  * USB 资产：assets/loader/br28loader.bin（构建时按 SHA256 打包、可缺省）→ loader 缺失时

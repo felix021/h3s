@@ -10,6 +10,9 @@ import android.webkit.JavascriptInterface;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -25,22 +28,25 @@ import org.json.JSONObject;
  *     是「首选设备」提示（android.jar 无 MODIFY_AUDIO_ROUTING 权限要求），真机 BT 连着时是否
  *     完全强制路由到扬声器需真机验证（AVD 无真实 BT，只能验 bridge 不崩）。
  *   - 单频音：生成整周期倍数长度的正弦缓冲 → setLoopPoints 无缝循环，直到 stop()。
- *   - 样本：assets/samples/{speech,music,nature}.wav，PCM 16-bit（合成近似样本，见 README），
- *     读 fmt/data 块按实际采样率/声道喂给 AudioTrack；loop 用 MODE_STATIC 循环点。
+ *   - 样本：assets/samples/{speech,music,nature}/<名>.wav（二级目录），PCM 16-bit 单声道
+ *     （语音=edge-tts 构建期生成；音乐/自然=Wikimedia Commons 公共领域录音，见
+ *     assets/samples/manifest.json），读 fmt/data 块按实际采样率/声道喂给 AudioTrack；
+ *     loop 用 MODE_STATIC 循环点。样本清单从 assets 目录动态列举（加样本不必改本类）。
  *
  * 返回统一 JSON：成功 {"ok":true,...}，失败 {"ok":false,"error":"..."}。
  * 本类只依赖 android.media + android.webkit，纯 JVM 不可实例化（不进 test.sh），Android 构建
  * 走 build.sh 的 android.jar 编译。
  */
 public class H3sToneBridge {
-    /** assets/samples/ 下内置的合成样本名（不含 .wav）。 */
-    public static final String[] SAMPLES = {"speech", "music", "nature"};
+    /** 样本二级目录（assets/samples/ 下）。 */
+    private static final String[] SAMPLE_DIRS = {"speech", "music", "nature"};
 
     private static final int TONE_SAMPLE_RATE = 16000;
 
     private final Context context;
     private final AudioManager audioManager;
     private AudioTrack track;
+    private String[] sampleIds;
 
     public H3sToneBridge(Context context) {
         this.context = context.getApplicationContext();
@@ -61,13 +67,13 @@ public class H3sToneBridge {
         return result("tone", freqHz, volume, routed);
     }
 
-    /** 播内置样本（speech/music/nature），loop=true 循环。 */
+    /** 播内置样本（id 形如 "speech/en_f_daily"，即 samples/ 下 "<目录>/<名>"），loop=true 循环。 */
     @JavascriptInterface
     public String playSample(String name, boolean loop) {
         stopAndRelease();
         if (name == null) return err("样本名不能为空");
         boolean known = false;
-        for (String s : SAMPLES) if (s.equals(name)) { known = true; break; }
+        for (String s : listSamples()) if (s.equals(name)) { known = true; break; }
         if (!known) return err("未知样本: " + name);
         Sample sample;
         try {
@@ -98,10 +104,32 @@ public class H3sToneBridge {
             o.put("playing", track != null && track.getPlayState() == AudioTrack.PLAYSTATE_PLAYING);
             o.put("speaker", speaker != null);
             JSONArray arr = new JSONArray();
-            for (String s : SAMPLES) arr.put(s);
+            for (String s : listSamples()) arr.put(s);
             o.put("samples", arr);
             return o.toString();
         } catch (JSONException impossible) { return "{\"ok\":true}"; }
+    }
+
+    /** 列举 assets/samples/{speech,music,nature}/ 下的样本 id（"<目录>/<名>"），首次列举后缓存。 */
+    private String[] listSamples() {
+        if (sampleIds == null) {
+            List<String> ids = new ArrayList<>();
+            for (String dir : SAMPLE_DIRS) {
+                String[] files;
+                try {
+                    files = context.getAssets().list("samples/" + dir);
+                } catch (IOException e) {
+                    files = null;
+                }
+                if (files == null) continue;
+                for (String f : files) {
+                    if (f.endsWith(".wav")) ids.add(dir + "/" + f.substring(0, f.length() - 4));
+                }
+            }
+            Collections.sort(ids);
+            sampleIds = ids.toArray(new String[0]);
+        }
+        return sampleIds;
     }
 
     /** Activity onDestroy 收尾：停播 + 释放。 */

@@ -1,0 +1,95 @@
+{
+  "format": "WAV PCM 16-bit 单声道 16 kHz。构建期由 sources 统一处理：去首尾静音 → loudnorm -20 LUFS（TP -2）→ 淡入 0.4 s / 淡出 1.0 s。总量约 2.9 MB。",
+  "generation_note": "语音为 edge-tts（Microsoft 在线 TTS）构建期一次性生成的静态资产，App 不集成任何运行时 TTS 引擎；edge-tts 服务条款允许个人使用其合成音频。音乐/自然仅收 CC0 / Public Domain（CC-BY 需署名，一律避开）。",
+  "sync_note": "本清单须与 assets/index.html 的 HA_SAMPLES（样本 id 与展示名）及实际 .wav 文件保持一致；原生侧 H3sToneBridge 按目录动态列举，不需要改 Java。",
+  "speech": [
+    {
+      "file": "speech/en_f_daily.wav",
+      "duration_s": 8.1,
+      "source": "edge-tts en-US-AriaNeural（女声）",
+      "text": "Good morning. Would you like some coffee or tea? The weather is lovely today, so let's take a walk in the park after breakfast.",
+      "license": "TTS 合成（edge-tts，个人使用）"
+    },
+    {
+      "file": "speech/en_m_news.wav",
+      "duration_s": 8.5,
+      "source": "edge-tts en-US-GuyNeural（男声）",
+      "text": "Researchers say regular exercise helps protect your hearing as you age. Doctors recommend at least thirty minutes of moderate activity every day.",
+      "license": "TTS 合成（edge-tts，个人使用）"
+    },
+    {
+      "file": "speech/en_gb_f_numbers.wav",
+      "duration_s": 9.5,
+      "source": "edge-tts en-GB-SoniaNeural（女声）",
+      "text": "One, two, three, four, five, six, seven, eight, nine, ten. Eleven, twelve, thirteen, fourteen, fifteen.",
+      "license": "TTS 合成（edge-tts，个人使用）"
+    },
+    {
+      "file": "speech/zh_f_daily.wav",
+      "duration_s": 7.1,
+      "source": "edge-tts zh-CN-XiaoxiaoNeural（女声「晓晓」）",
+      "text": "今天天气不错，我们一起去公园散散步吧。中午想吃点什么？米饭还是面条？",
+      "license": "TTS 合成（edge-tts，个人使用）"
+    },
+    {
+      "file": "speech/zh_m_numbers.wav",
+      "duration_s": 8.6,
+      "source": "edge-tts zh-CN-YunxiNeural（男声「云希」）",
+      "text": "一、二、三、四、五、六、七、八、九、十。二十五、五十、七十五、一百。",
+      "license": "TTS 合成（edge-tts，个人使用）"
+    }
+  ],
+  "music": [
+    {
+      "file": "music/violin_bach_adagio.wav",
+      "duration_s": 9.3,
+      "title": "巴赫 无伴奏小提琴奏鸣曲第 1 号 g 小调 BWV 1001 第一乐章 柔板（开头 9.3 s）",
+      "source_url": "https://commons.wikimedia.org/wiki/File:J._S._Bach_%E2%80%93_Violin_Sonata_No.1_in_G_minor,_BWV_1001,_I._Adagio.ogg",
+      "license": "CC0（Wikimedia Commons）"
+    },
+    {
+      "file": "music/violin_bach_allemanda.wav",
+      "duration_s": 9.3,
+      "title": "巴赫 无伴奏小提琴帕蒂塔第 2 号 d 小调 BWV 1004 阿勒芒德（开头 9.3 s；QMUL MAT Listening Room 录音）",
+      "source_url": "https://commons.wikimedia.org/wiki/File:Bach_Partita_2_-_Allemanda_-_18-04-2013.ogg",
+      "license": "CC0（Wikimedia Commons）"
+    },
+    {
+      "file": "music/piano_chopin_nocturne.wav",
+      "duration_s": 9.3,
+      "title": "肖邦 夜曲 Op. 37 No. 1（开头 9.3 s）",
+      "source_url": "https://commons.wikimedia.org/wiki/File:Chopin-_Nocturne_op._37_no._1.ogg",
+      "license": "CC0（Wikimedia Commons）"
+    }
+  ],
+  "nature": [
+    {
+      "file": "nature/waves_pebble_beach.wav",
+      "duration_s": 6.2,
+      "title": "海浪：砾石滩拍岸（PDSounds 343，earthcalling）",
+      "source_url": "https://commons.wikimedia.org/wiki/File:On_a_pebble_beach.ogg",
+      "license": "Public domain（Wikimedia Commons / PDSounds）"
+    },
+    {
+      "file": "nature/rain_shower.wav",
+      "duration_s": 6.2,
+      "title": "雨：阵雨（PDSounds 682，ezwa）",
+      "source_url": "https://commons.wikimedia.org/wiki/File:Rain_(1).ogg",
+      "license": "Public domain（Wikimedia Commons / PDSounds）"
+    },
+    {
+      "file": "nature/breeze_birds.wav",
+      "duration_s": 6.2,
+      "title": "风：微风与鸟鸣（PDSounds，ezwa）",
+      "source_url": "https://commons.wikimedia.org/wiki/File:Gentle_breeze_and_birds_singing.ogg",
+      "license": "Public domain（Wikimedia Commons / PDSounds）"
+    },
+    {
+      "file": "nature/stream_water.wav",
+      "duration_s": 6.2,
+      "title": "溪流：流水/潺潺（PDSounds，stephan）",
+      "source_url": "https://commons.wikimedia.org/wiki/File:Water_flowing_pouring_trickling.ogg",
+      "license": "Public domain（Wikimedia Commons / PDSounds）"
+    }
+  ]
+}
