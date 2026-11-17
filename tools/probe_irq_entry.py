@@ -3078,31 +3078,39 @@ def check_delivery(r,*,before_rti=True):
     return d
 
 
-# 六族 instruction_adapters 计数基线(条件场景 p11_heap_experimental_config)。
-# 推进前沿会漂移的六个计数 + masked_branch 不再手工钉绝对值:期望值统一放在
-# evidence/p11_heap_six_family_baseline.json,由 tools/capture_p11_heap_six_family.py
+# 22 个 instruction_adapters 计数基线(条件场景 p11_heap_experimental_config)。
+# 推进前沿会漂移的 adapter 计数不再手工钉绝对值:期望值统一放在
+# evidence/p11_heap_adapter_count_baseline.json,由 tools/capture_p11_heap_adapter_counts.py
 # --recapture 重取。键集合写死在代码里(不能只遍历 JSON 现存键,防删键顺带删检查)。
-_SIX_FAMILY_KEYS = ('abstract_task_stack_transport', 'cpu0_shared_lock_ownership',
-                    'exact_full_word_store', 'mmio_rmw_always_writes',
-                    'partial_icfg_bit9_only', 'partial_icfg_masked_branch',
-                    'per_core_visible_cnum')
-_SIX_FAMILY_BASELINE = ROOT / 'evidence/p11_heap_six_family_baseline.json'
+_ADAPTER_COUNT_KEYS = ('exact_doubleword_store', 'exact_doubleword_store_cross_page_split',
+                       'immediate_rep_multi_block_projection', 'zero_count_skip_is_assumption',
+                       'register_rep_multi_block_projection', 'rep_copy_unknown_transport_load',
+                       'rep_copy_unknown_transport_store', 'parallel_halfword_store_old_registers',
+                       'parallel_insert_load_old_registers_is_assumption',
+                       'parallel_byte_store_old_registers', 'lp_timer_bit_rmw',
+                       'reset_unknown_preserving_configuration_rmw', 'mem_pwr_con_rmw',
+                       'p33_awkup_bit_rmw', 'proven_dead_mem_pwr_con_read',
+                       'abstract_task_stack_transport', 'cpu0_shared_lock_ownership',
+                       'exact_full_word_store', 'mmio_rmw_always_writes',
+                       'partial_icfg_bit9_only', 'partial_icfg_masked_branch',
+                       'per_core_visible_cnum')
+_ADAPTER_COUNT_BASELINE = ROOT / 'evidence/p11_heap_adapter_count_baseline.json'
 
 
-def _six_family_actual(adapters):
-    """从场景 adapter 计数里取六族键(缺失键记 None,交给比较判红)。"""
-    return {key: adapters.get(key) for key in _SIX_FAMILY_KEYS}
+def _adapter_count_actual(adapters):
+    """从场景 adapter 计数里取 22 个钉值键(缺失键记 None,交给比较判红)。"""
+    return {key: adapters.get(key) for key in _ADAPTER_COUNT_KEYS}
 
 
-def _six_family_baseline():
-    """读 in-tree 六族计数基线(纯数据文件,不 import 任何工具模块)。"""
-    return json.loads(_SIX_FAMILY_BASELINE.read_text())['counts']
+def _adapter_count_baseline():
+    """读 in-tree 22 键 adapter 计数基线(纯数据文件,不 import 任何工具模块)。"""
+    return json.loads(_ADAPTER_COUNT_BASELINE.read_text())['counts']
 
 
-def _six_family_mismatch(actual, expected):
+def _adapter_count_mismatch(actual, expected):
     """逐键差异描述(空串=一致);require 消息用,比较本身保持纯计算。"""
     parts = []
-    for key in _SIX_FAMILY_KEYS:
+    for key in _ADAPTER_COUNT_KEYS:
         a = actual.get(key)
         e = expected.get(key)
         if a == e:
@@ -5802,49 +5810,15 @@ def check(report,firmware):
     require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')
-    # adapter 计数:与 300,240 前沿一致的全部投影不变;并行对字节存储
-    # 100→103(路 AQ +2)→116(路 CB +3:L5V/CHG 配置表的字节装载 pair)→140
-    # (路 CG +24:超时窗口 20 轮 delay 的 L5V/CHG 配置字节 pair 与 W1[0] 循环
-    # 簿记)、LRCT 位 RMW 14→54(路 CG:LRC 周期链 9 轮)、reset 配置 RMW 8 不变。
-    # 路 CW(S19 批 0b)新前缀(+31,769 步):页内双字 43→47(DAC-init 尾段
-    # 函数帧的四对 st.d)、其余(rep 族/运输/半字/insert 装载/字节 pair/
-    # lp_timer/reset/mem_pwr/awkup/死读)全部不变——新前缀无 rep.i 体、
-    # 无 unknown 运输、无 LP/复位域访问。
-    # 路 DT(S19 批 2 续二)新前缀(+2,658,967 步,DAC 启动尾段+OS 等待族):
-    # 双字 47→48(分配对象填充的 st.d)、立即 rep 多块 383→385(DT 段两个新
-    # rep 体)、并行字节 411→412;其余全部不变(无 unknown 运输、无 LP/复位
-    # 域访问、LRC 帧零新增)。
-    # 路 LPV 尾段(+2,068 步,tbh case 体+RAM 对象链+缓冲配置 walk):并行
-    # 半字 15→16、并行字节 412→416(case 体与 walk 的并行对存储半);双字/
-    # 跨页/rep 族/insert 装载/LP 位 RMW/复位/mem_pwr/awkup/死读全不变。
-    require(r['instruction_adapters'].get('exact_doubleword_store')==119 and
-            r['instruction_adapters'].get('exact_doubleword_store_cross_page_split')==7 and
-            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==1002 and
-            r['instruction_adapters'].get('zero_count_skip_is_assumption')==175 and
-            r['instruction_adapters'].get('register_rep_multi_block_projection')==425 and
-            r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
-            r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
-            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==42 and
-            r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==2788 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==13223 and
-            r['instruction_adapters'].get('lp_timer_bit_rmw')==124 and
-            r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
-            r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
-            r['instruction_adapters'].get('p33_awkup_bit_rmw')==17 and
-            r['instruction_adapters'].get('proven_dead_mem_pwr_con_read')==1,
-            'the heap-experimental prefix non-six-family adapter counts (doubleword/'
-            'cross-page split/register-immediate rep/zero-count skip/unknown rep transport/'
-            'parallel halfword-insert-byte/lp-timer/reset/mem-pwr/awkup/dead-read) must '
-            'stay at the pinned frontier values')
-    # 六族计数期望值见 evidence/p11_heap_six_family_baseline.json,用
-    # tools/capture_p11_heap_six_family.py --recapture 重取(推进前沿后
+    # 22 个 adapter 计数期望值见 evidence/p11_heap_adapter_count_baseline.json,
+    # 用 tools/capture_p11_heap_adapter_counts.py --recapture 重取(推进前沿后
     # 计数漂移时)。route-by-route 增量叙事已随绝对值一起迁出断言。
-    _six_actual = _six_family_actual(r['instruction_adapters'])
-    _six_expected = _six_family_baseline()
-    require(_six_actual == _six_expected,
-            'the heap-experimental prefix six-family adapter counts differ from the '
-            'in-tree baseline evidence/p11_heap_six_family_baseline.json: '
-            + _six_family_mismatch(_six_actual, _six_expected))
+    _adapter_actual = _adapter_count_actual(r['instruction_adapters'])
+    _adapter_expected = _adapter_count_baseline()
+    require(_adapter_actual == _adapter_expected,
+            'the heap-experimental prefix adapter counts differ from the in-tree baseline '
+            'evidence/p11_heap_adapter_count_baseline.json: '
+            + _adapter_count_mismatch(_adapter_actual, _adapter_expected))
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
     # 循环在 ~110,768 步把 IRQ4 以 priority 1 真实使能且此后无清零)。

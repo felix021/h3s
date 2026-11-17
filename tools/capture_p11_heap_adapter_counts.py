@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""重取 in-tree 六族 adapter 计数基线(条件场景 p11_heap_experimental_config)。
+"""重取 in-tree 22 键 adapter 计数基线(条件场景 p11_heap_experimental_config)。
 
-probe_irq_entry.check() 的六族计数断言不再钉绝对值,改为读
-evidence/p11_heap_six_family_baseline.json。前沿推进导致六族计数漂移时,
+probe_irq_entry.check() 的 22 个 adapter 计数断言不再钉绝对值,改为读
+evidence/p11_heap_adapter_count_baseline.json。前沿推进导致计数漂移时,
 用本工具重跑条件场景并显式更新基线:
 
-    python3 tools/capture_p11_heap_six_family.py --recapture \
+    python3 tools/capture_p11_heap_adapter_counts.py --recapture \
         --rom /path/to/QCY_H3S_BR28_ROM_000000-020000.bin
 
 不带 --recapture 只打印当前基线(只读,不启动 41.8M 步仿真)。--recapture
@@ -26,7 +26,7 @@ from probe_boot_handoff import package_header  # noqa: E402
 from frontier_registry import scenario_flags  # noqa: E402
 import probe_irq_entry  # noqa: E402
 
-BASELINE = ROOT / 'evidence/p11_heap_six_family_baseline.json'
+BASELINE = ROOT / 'evidence/p11_heap_adapter_count_baseline.json'
 SCENARIO = 'p11_heap_experimental_config'
 
 
@@ -64,12 +64,12 @@ def main():
         **scenario_flags('p11_heap_experimental', probe_irq_entry),
         flash_image_bytes=image)
     counts = {key: result['instruction_adapters'].get(key)
-              for key in probe_irq_entry._SIX_FAMILY_KEYS}
+              for key in probe_irq_entry._ADAPTER_COUNT_KEYS}
     baseline = {'scenario': SCENARIO,
                 'completed_steps': result['completed_steps'],
                 'stop_pc': result['stop_pc'],
-                'note': '六族 instruction_adapters 计数基线(条件场景前缀)。推进前沿后计数漂移时用 '
-                        'tools/capture_p11_heap_six_family.py --recapture 重取;断言见 '
+                'note': '22 个 instruction_adapters 计数基线(条件场景前缀)。推进前沿后计数漂移时用 '
+                        'tools/capture_p11_heap_adapter_counts.py --recapture 重取;断言见 '
                         'tools/probe_irq_entry.py check()。',
                 'counts': counts}
     BASELINE.write_text(json.dumps(baseline, indent=2) + '\n')
