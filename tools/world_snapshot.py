@@ -1087,7 +1087,7 @@ M4_FAMILIES = (
      ('page', 'byte', 'active', 'read_done', 'reads')),
     ('watchdog', 'WatchdogProjection',
      ('con', 'key_phase', 'elapsed', 'remainder', 'commands', 'feeds', 'expired',
-      'command_values')),
+      'command_values', 'mailbox_feeds')),
     ('p11', 'P11AccessProbe', ('phase', 'sequences', 'polls')),
     ('p11_lp', 'P11LowPowerResponse', ('requests',)),
     ('p11_win', 'P11WindowRegisters', ('control', 'release_rmw_writes', 'stores')),

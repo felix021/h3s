@@ -3,7 +3,7 @@ import unittest
 
 from br28_model import BR28Model, CLOCK0, IPMASK, IRQ_CONFIG, IRQController, PINR1, TIMER0, Timer0, PartialWord, MMU, MMU_BASE, P11AccessProbe, P11_UART_CON2, PMU_STA, PWR_CON, P11_HEAP_INFO
 from probe_boot import Blocked
-from br28_model import WatchdogProjection, WDT_CON, WDT_KEY
+from br28_model import WatchdogProjection, WDT_CON, WDT_KEY, P2mMailboxAck
 from br28_model import EfuseReadProjection, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT
 from br28_model import GPCNT_CON, GPCNT_NUM, CORE_TICK_BASES, CPU1_CONTROL, SYS_DIV, VOLTAGE_CONFIG, PLL1_CON3, P33_ANALOG_CONFIG
 from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
@@ -451,6 +451,83 @@ class ModelTests(unittest.TestCase):
         w.advance()
         with self.assertRaisesRegex(Blocked,'active_watchdog_period_change'):self.wdt_command(w,0x23)
         self.assertEqual((w.con,w.elapsed),(0x22,1))
+
+    # ---- 路 WDFEED:喂狗邮箱事务闭合→P11 侧 WDT feed 副作用投影 ----
+
+    def _wdfeed_model(self,*,side_effect=True,progress=(1,1000)):
+        h=BR28Model(p11_window_projection=True,p2m_mailbox_ack=True,
+                    watchdog_projection=True,watchdog_progress=progress,
+                    wdt_mailbox_feed_side_effect=side_effect)
+        for key in WatchdogProjection.keys:h.write(WDT_KEY,key)
+        h.write(WDT_CON,0x2e)  # time_code 14 + 计数使能(观测形状)
+        return h
+
+    def _mailbox_transaction(self,h,*,message=8,echo=None):
+        """一笔喂狗形状的邮箱事务:消息→清槽→kick→PND 轮询→回声读→CLR。
+        echo=None 表示回声==消息(观测形状);显式值可造不匹配臂。"""
+        h.p2m_mailbox.note_message_byte(message)
+        h.write_byte(P2mMailboxAck.ECHO_SLOT,0xFF)
+        h.write(P2mMailboxAck.INT_SET,P2mMailboxAck.KICK_VALUE)
+        h.read(P2mMailboxAck.INT_PND)
+        if echo is not None:h.p2m_mailbox.message_mirror=echo  # 回声读前改镜面=不匹配臂
+        self.assertEqual(h.read_bytes(P2mMailboxAck.ECHO_SLOT,1),bytes((message if echo is None else echo,)))
+        h.write(P2mMailboxAck.INT_CLR,P2mMailboxAck.CLR_VALUE)
+
+    def test_wdt_mailbox_feed_reloads_counter_on_closed_feed_transaction(self):
+        h=self._wdfeed_model()
+        for _ in range(3000):h.advance(0)
+        self.assertGreater(h.watchdog.elapsed,0)
+        self._mailbox_transaction(h)
+        self.assertEqual((h.watchdog.elapsed,h.watchdog.remainder),(0,0))
+        self.assertEqual((h.watchdog.feeds,h.watchdog.mailbox_feeds),(1,1))
+        self.assertEqual(h.watchdog.commands,1)  # CON 记账不被副作用伪造(KEY 不计 commands)
+        self.assertEqual(h.watchdog.command_values,[0x2e])  # 无合成总线写
+
+    def test_wdt_mailbox_feed_off_keeps_counting_to_expiry(self):
+        h=self._wdfeed_model(side_effect=False,progress=(2,1))
+        # 16384 名义单位到期;喂两笔事务都不重装,计数继续走到诚实停
+        for i in range(2):
+            self._mailbox_transaction(h)
+            self.assertEqual(h.watchdog.mailbox_feeds,0)
+        with self.assertRaisesRegex(Blocked,'watchdog_expired_delivery_not_implemented'):
+            for _ in range(1<<14):h.advance(0)
+        self.assertTrue(h.watchdog.expired)
+
+    def test_wdt_mailbox_feed_authorization_gates(self):
+        # 回声不匹配:事务闭合但本投影不授予 feed(不是「硬件没喂」的证明)
+        h=self._wdfeed_model(progress=(2,1))
+        for _ in range(100):h.advance(0)
+        self._mailbox_transaction(h,echo=7)
+        self.assertEqual((h.watchdog.elapsed>0,h.watchdog.mailbox_feeds),(True,0))
+        # 消息字节非 8:P11 语义未知,不喂
+        h2=self._wdfeed_model(progress=(2,1))
+        for _ in range(100):h2.advance(0)
+        self._mailbox_transaction(h2,message=9)
+        self.assertEqual(h2.watchdog.mailbox_feeds,0)
+        # 重复 CLR:事务外(pnd_armed 已清)不再进邮箱分支,不重复喂
+        h3=self._wdfeed_model(progress=(2,1))
+        self._mailbox_transaction(h3)
+        before=h3.watchdog.mailbox_feeds
+        h3.reset=None if False else h3.reset  # no-op(保持引用)
+        h3.write(P2mMailboxAck.INT_CLR,P2mMailboxAck.CLR_VALUE)  # 事务外 CLR:reset 投影缺席时普通路径
+        self.assertEqual(h3.watchdog.mailbox_feeds,before)
+
+    def test_wdt_mailbox_feed_requires_both_projections(self):
+        with self.assertRaisesRegex(ValueError,'requires the P2M mailbox'):
+            BR28Model(watchdog_projection=True,watchdog_progress=(1,1),
+                      wdt_mailbox_feed_side_effect=True)
+        with self.assertRaisesRegex(ValueError,'requires the watchdog'):
+            BR28Model(p11_window_projection=True,p2m_mailbox_ack=True,
+                      wdt_mailbox_feed_side_effect=True)
+
+    def test_wdt_mailbox_feed_expired_watchdog_is_not_revived(self):
+        h=self._wdfeed_model(progress=(2,1))
+        with self.assertRaisesRegex(Blocked,'watchdog_expired'):
+            for _ in range(1<<14):h.advance(0)
+        self.assertTrue(h.watchdog.expired)
+        with self.assertRaisesRegex(Blocked,'watchdog_requires_reset_after_expiry'):
+            h.watchdog.mailbox_feed()
+        self.assertEqual(h.watchdog.mailbox_feeds,0)
 
     def test_watchdog_key_scope_and_unsupported_modes(self):
         w=WatchdogProjection((1,1));self.wdt_command(w,0)

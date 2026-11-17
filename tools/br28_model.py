@@ -1407,6 +1407,10 @@ class WatchdogProjection:
         self.progress=progress;self.con=None;self.key_phase=0
         self.elapsed=0;self.remainder=0;self.commands=0;self.feeds=0;self.expired=False
         self.command_values=[]
+        # 路 WDFEED:邮箱喂狗事务闭合的 P11 侧 feed 副作用计数(投影,见
+        # mailbox_feed)。与 feeds 分开计:feeds 里既有主核直接 CON bit16 命令
+        # (观测形状),也有本投影合成的 P11 侧副作用。
+        self.mailbox_feeds=0
 
     def read(self,address):
         if self.expired:raise Blocked('watchdog_requires_reset_after_expiry')
@@ -1445,8 +1449,39 @@ class WatchdogProjection:
             raise Blocked('watchdog_expired_delivery_not_implemented',control=hex(self.con),
                           elapsed_nominal_units=self.elapsed)
 
+    def mailbox_feed(self):
+        """路 WDFEED:喂狗邮箱事务闭合(P11 回声匹配+固件 CLR 清 ack)时,
+        P11 侧 WDT feed 副作用投影(计数器重装)。
+
+        证据链(全部静态/运行态,无 q32s 执行):
+        - 主核喂狗函数 0x12cc7e(16 指令反汇编钉死,docs/s19-final-specs.md
+          §3.1)只走邮箱(kick 0x400/消息字节 8/回声比较 0x12ccac/CLR
+          0x12ccb0),成功条件=回声匹配后清 ack——本投影的提交点与固件
+          自己的成功判据重合;本前缀 WDT 接口主核 command_values=
+          [0,0,0,14,46,0x1002E] 恰一次直接 feed(init 内),此后零直接写;
+        - 官方 p11_code.bin(12248B,BANKCB CRC 全过)公共代码段 3 处 32 位
+          字面量 0x048c159d(p11_local 0x2e2/0x8c4/0x20cc)=WDT 双 KEY 第
+          一个——P11 固件含 WDT 解锁序列(字面量存在≠消息 8 分派链已证);
+        - 真机 park 稳态长时间存活(用户设备待机不重启)支持稳态存在
+          保活机制(不排除周期自主喂狗/停钟等其他控制路径)。
+        假设(显式,synthetic-not-measured):P11 成功处理消息 8 会重装本
+        模型中的 WDT;q32s 未执行,消息处理器到 WDT 写入的完整路径、实
+        际副作用时刻与延迟均未验证;ack 成功沿用既有邮箱投影。**提交点
+        =事务闭合(CLR)是本投影选定的记账时刻,非已证明的物理喂狗时刻**
+        (真实 P11 可能在写回声之前已经喂狗;对 16384 单位名义周期,事务
+        长度量级的时刻差不建模)。计数语义与主核 CON bit16 feed 写一致:
+        elapsed/remainder 同时清(相位重置仍属 counter_phase 既有假设);
+        feeds 为总计数(主核直接+本投影),mailbox_feeds 单列仅计本投影,
+        不伪造 KEY/CON 总线写、不消耗主核 key_phase/commands。已 expired
+        的看门狗不允许补喂复活(与 read/write/advance 同判)。
+        """
+        if self.expired:raise Blocked('watchdog_requires_reset_after_expiry')
+        self.elapsed=0;self.remainder=0
+        self.feeds+=1;self.mailbox_feeds+=1
+
     def report(self):
         return {'con':self.con,'key_phase':self.key_phase,'commands':self.commands,'feeds':self.feeds,
+                'mailbox_feed_side_effects':self.mailbox_feeds,
                 'command_values':self.command_values,'command_values_truncated':self.commands>len(self.command_values),
                 'elapsed_nominal_units':self.elapsed,'fraction_remainder':self.remainder,'expired':self.expired,
                 'assumptions':{'nominal_units_per_model_step':self.progress,
@@ -1455,6 +1490,21 @@ class WatchdogProjection:
                     'counting_before_first_explicit_CON_initialization_modeled':False,
                     'bit16_readback':'configuration projection omits command bit; silicon readback unmeasured',
                     'key_policy':'one CON command per observed KEY pair; hardware key lifetime unverified',
+                    'mailbox_feed_side_effect':('route WDFEED, opt-in: a successfully closed feed-dog '
+                        'mailbox transaction (kick-latched message byte 8, observed ack, matching echo, '
+                        'then the firmware CLR) reloads the modeled WDT; counted separately in '
+                        'mailbox_feed_side_effects while feeds stays the total (direct + projected). '
+                        'Evidence: the feed-dog function 0x12cc7e only touches the mailbox and its own '
+                        'success test IS the echo match (0x12ccac) followed by the CLR (0x12ccb0); the '
+                        'main core wrote the WDT interface exactly once after init (0x1002E) on this '
+                        'prefix; the official p11_code.bin common segment contains the WDT unlock key '
+                        '0x048c159d three times (p11_local 0x2e2/0x8c4/0x20cc); real devices survive '
+                        'park steady state far longer than the nominal 1<<14-unit period. EXPLICIT '
+                        'ASSUMPTION: the P11 message-8 handler reloads the WDT — the dispatch chain to '
+                        'the WDT write, the physical feed moment and its latency are NOT verified (no '
+                        'q32s execution exists here; the CLR commit point is the projection bookkeeping '
+                        'instant, not a proven physical feed time; ack success itself rides the existing '
+                        'mailbox projection). Conditional pass, derived-not-measured'),
                     'expiry_reset_or_irq_delivery_simulated':False}}
 
 
@@ -1652,6 +1702,10 @@ class P2mMailboxAck:
     KICK_VALUE=0x400
     ACK_BIT=0x1000
     CLR_VALUE=0x1000
+    # 路 WDFEED:喂狗事务的消息字节(0x12cc7e 写 M2P+7 的观测值;本前缀
+    # 0x400 kick 的唯一消息)。P11 对该消息的处理含 WDT feed——是推断
+    # (q32s 未执行),证据链见 WatchdogProjection.mailbox_feed 注释。
+    FEED_MESSAGE=8
 
     def __init__(self):
         self.pnd_armed=False       # kick 置位、CLR 清位:PND 读的服务门
@@ -5791,7 +5845,7 @@ class BR28Model:
                  mmu_model=False,initial_mmu_con=None,p11_access_probe=False,p11_status=None,
                  p11_pmu_ready_projection=False,p11_lpwr_response_projection=False,
                  p11_heap_info_bytes=None,p11_window_projection=False,
-                 p2m_mailbox_ack=False,
+                 p2m_mailbox_ack=False,wdt_mailbox_feed_side_effect=False,
                  power_init_config_rmw=False,power_init_rstcon_mask_sets=False,
                  power_init_wkup_dly_rmw=False,
                  lp_timer_init_projection=False,lrct_trim_done_projection=False,
@@ -5905,6 +5959,17 @@ class BR28Model:
         if p2m_mailbox_ack and not p11_window_projection:
             raise ValueError('the P2M mailbox ack projection requires the P11 window projection')
         self.p2m_mailbox=P2mMailboxAck() if p2m_mailbox_ack else None
+        # wdt_mailbox_feed_side_effect(路 WDFEED,opt-in,需 p2m_mailbox_ack+
+        # watchdog_projection):喂狗邮箱事务闭合(回声匹配+固件 CLR)时 P11 侧
+        # WDT feed 副作用投影(计数器重装,WatchdogProjection.mailbox_feed 注
+        # 释全证据链)。默认关:事务闭合不触碰看门狗——32,737,356 停点
+        # (watchdog_expired_delivery_not_implemented)的钉死语义,legacy 报告
+        # 逐字节不变。
+        if wdt_mailbox_feed_side_effect and not p2m_mailbox_ack:
+            raise ValueError('the WDT mailbox feed side effect requires the P2M mailbox ack projection')
+        if wdt_mailbox_feed_side_effect and not watchdog_projection:
+            raise ValueError('the WDT mailbox feed side effect requires the watchdog projection')
+        self.wdt_mailbox_feed_side_effect=wdt_mailbox_feed_side_effect
         # lp_timer_init:power_init 尾部低功耗定时器初始化链(P11_LPTMR0 CON 写、
         # PMU 配置族 0xf2c04c/50 写、JL_LRCT CON 位 RMW)的 write-only 记录。
         # 独立开关而非并入 p11_window_projection:后者的报告键在 crc_bankb 场景
@@ -6999,7 +7064,27 @@ class BR28Model:
         # 的 bit12 本就是 0(NO_WAKE fixture),不需要回写快照。
         if (self.p2m_mailbox is not None and address==P2mMailboxAck.INT_CLR
                 and self.p2m_mailbox.pnd_armed):
+            # 路 WDFEED:喂狗事务闭合(这笔事务的回声已读且匹配 kick 时刻
+            # 锁定的消息字节,现被 CLR 收尾)时,看门狗投影计一次 P11 侧
+            # feed(计数器重装)。授权条件(codex 参谋定形):①开关显式
+            # opt-in;②恰有一笔新闭合事务(武装态 CLR 分发已保证在途事务
+            # 存在;事务外 CLR 走 reset 投影语义不触发);③该事务回声字节
+            # 非空且==kick 时刻锁定的 arg(arg 在 kick 时快照,不受后续
+            # 消息写入串账;回声不满足=该事务不满足本投影的授权条件,
+            # 不授予 feed 副作用——不是「硬件没喂」的证明);④arg==8
+            # (喂狗函数 0x12cc7e 的观测消息,本前缀 0x400 kick 的唯一值;
+            # 其它消息的 P11 语义未知不喂)。每笔事务只提交一次(current
+            # 在 CLR 后清空,重复 CLR 时 pnd_armed 已 False 不再进本分支)。
+            # 副作用时序=事务闭合时刻=本投影选定的记账时刻(假设,见
+            # WatchdogProjection.mailbox_feed 注释)。
+            closed=len(self.p2m_mailbox.transactions)
             self.p2m_mailbox.clear_ack(value)
+            if (self.wdt_mailbox_feed_side_effect
+                    and len(self.p2m_mailbox.transactions)==closed+1):
+                t=self.p2m_mailbox.transactions[-1]
+                if (t['echo_byte'] is not None and t['echo_byte']==t['arg']
+                        and t['arg']==P2mMailboxAck.FEED_MESSAGE):
+                    self.watchdog.mailbox_feed()
             self.record_write({'address':hex(address),'value':hex(value)})
             return
         if self.reset is not None and self.reset.handles(address):
