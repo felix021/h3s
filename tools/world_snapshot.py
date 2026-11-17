@@ -1180,6 +1180,18 @@ M4_FAMILIES = (
     # container serves exactly two words and models no readback), only the
     # attempt counter is state.
     ('jl_eq_init', 'JlEqInitWriteRecords', ('stores', 'word_writes', 'read_attempts')),
+    # Post-JLEQ family (route D2ANC): the JL_ANC 44-word container merged after
+    # the GPCNUM/PARSTOR captures and is ON in the current conditional frontier
+    # flag set, so a capture refuses without it. Same AM four-field write/read
+    # record shape as ADA/LPV (stores/word_writes/reads_after_write/
+    # synthesized_initial_reads); the prefix never touches the block, so a
+    # captured state is the all-zero record unless an audio scene already ran.
+    ('jl_anc', 'JLAncRegisters',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    # Route D2ANC companion: the JL_CLOCK CLK_CON3 single-word container rides
+    # the same four-field AM shape.
+    ('jl_clock_con3', 'JLClockCon3Registers',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 

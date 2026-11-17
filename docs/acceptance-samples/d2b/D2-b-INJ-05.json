@@ -1,9 +1,9 @@
 {
   "case_id": "D2-b-INJ-05",
   "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；重配链静态源=app.bin sha 18f3d573…（AL §1.6/§2.2b）+3mic_coeff.bin 公开资源（CRC 过的资源读取，内容不解）",
-  "initial_state": "预填用例（未执行）。计划起点=同 INJ-03 世界+扩展 world_prep（[QCY+500] anc_hdl 非零——P1-a 下 boot initcall 已建，否则回退直调整段 0x602ea68，蓝图 §3.3 C0）；**co-opener 设计**：先直调 0x60200b6(0x5) 开 ch0+ch1——ANC 不独立开 ADA 数字通道（CFG-06 第 6 条：adc_ch 0x602f258 只声明搭便车、hdl+79 计数只由 adc_mic_open 增）——ANC 场景的通道集=运行时实读 hdl+78（不臆造；已知形状下=ch0+ch1）",
-  "inputs_schedule": "计划注入（未执行）：C1 co-opener 直调 0x60200b6(0x5)；C2 直调 audio_anc_run 0x601c8de(mode=on,…)（实参两形记录 AL §2.2b/AP §1.7③，实施步 0 钉死后统一）；C4 注入 N 块（通道集=hdl+78 实读位期望 {0,1}；交织序按实读通道号升序，公式按 ch）",
-  "observation_boundary": "计划观察点（未执行）：C3 读回（JL_ANC/ADA/JL_ASS 写记录非空+MIC_CTL1 位段=mic_type 映射 insert 形状 adc0_sel=1/adc1_sel=2/adc2_sel=0/adc3_sel=0+IRQ67 向量槽有效+hdl 面）+C5 消费两候选记账（0x6072628 链表遍历逐 handler 记账 vs 64KB buf [param+64]/0xFE0400 域 DMA 地址寄存器指向）",
+  "initial_state": "执行起点(2026-11-17 路 D2ANC/sim-d2anc)=park 停点世界 29,601,125 @ 0x606955c(快照 restore;gpcnt_num_value=None 负例臂钉 park,GPCNUM 路钉过);esco 首场景b1-b4 同世界接力(b1 六查/b2/负例③/b3/b4 全绿复跑)。co-opener 实况=esco b1 已开 ch0+ch1(hdl+79=2 实读;CFG-06 第 6 条:ANC 搭便车不自开数字通道——本场景验证其运行对偶:hdl 面全程不动)。anc_hdl=[QCY+500]=0x41921c 实读(param=+32)。三臂设计(墙=driver 死,先净后墙):臂R=named mode fixture+直调重配包装;C4=两块交付;臂F=无 fixture 全路径(最后跑,如实记墙)",
+  "inputs_schedule": "臂R:b[anc_hdl+33]=0x02(named synthetic-mode-fixture-one-byte,场景报告显式登记;真固件写点=anc_task 消息环 0x602d3a0 域,frozen 世界不可达;fixture 只放开模式门选分支)+直调 0x606ee26(0x41923c, 0)——audio_anc_run 0x601c92a 的同参调用形(5839 步完整走通)。C4:注入 k=15,16 两块(esco 通道集,样本公式同b3)。臂F:恢复 park 模式面(=1)后直调全路径 audio_anc_run(2, 0x1285A4)(无 fixture,3M 步预算,pc 采样证明自旋)",
+  "observation_boundary": "已观察(analysis/local-checks/d2anc/scene.json):臂R watch 全链命中(0x606ee26→0x606e9e8(0)→0x606ebe0→0x606ec02 IRQ67→0x606c844 ASS 时钟→0x606c8aa MIC mux→0x606cc36/0x606ce02/0x606cfb2/0x606d9c0 滤波族→0x606e9e8(1))+IRQ67 向量槽 0x19FF0C=0x6073d7e/ICFG nibble/b[QCY+1268]=1/JL_ANC 44 字容器 1206 次写(0xfe0404 DMA 地址字 1 写/0xfe0424..0xfe04e8 滤波系数族)/DUT 块(0xA1 门)跳过/模式字节轨迹 [1,2];C4 两块交付(esco handler 每块被调+RTI+ANC 状态字节不动+共享链无 ANC 节点);臂F watch(0x601c8de→0x600c406 memcpy→0x606b440 增益→0x601c82e mic_management→0x606ee98 PGA→0x606e7c2 系数重读门命中后 3M 步预算耗尽,pc 采样钉自旋;tone/重配缺席=模式门早退直证)",
   "assertions": [
     "d1-acceptance §6.2 b1+蓝图 §3.3 C2/C3：audio_anc_run 链内真实执行——mic_management 0x601c82e（mic_type [1,2,0,0]→mic_param en/type/mult_flag，CFG-06 求值）→ANC PGA 0x606ee98（ADA_CON8 4×5bit insert+ADC_CON|=0x800）→非 off 时播模式提示音 0x600bcbe→**停-重配-启**：0x606e9e8(0)（JL_ANC CON 0xFE0400 bit1 清）→0x606ebe0 重配主体（重注册 IRQ67 0x606ec02 prio0 handler 0x6073d7e+JL_ASS 时钟 0x606c844+MIC_CTL1 重 mux 0x606c8aa(param+13)+JL_ANC 滤波 0x606cc36/0x606ce02/0x606d9c0（按 ch=3 的 L/R 位、lff/lfb_en、mode 分支配滤波器）+64KB DMA 缓冲 zalloc [param+64]）→0x606e9e8(1)（bit1 置）→系数文件重读 0x606e7c2（\"flash/res/3mic_coeff.bin\" 公开资源 CRC 过）",
     "b2：同 INJ-03 时序（通道集按 C1 实读位；每块 pending→IRQ68→清→重装四查）",
@@ -13,21 +13,33 @@
   ],
   "timeout_budget": "场景步进以断言点/诚实停点为界（co-opener 直调+重配链+受控交付，无固定步预算）",
   "model_assumptions": [
-    "本记录=预填：断言锚点全部出自蓝图 §3.3/§4+audio-input-paths §1.6/§2.2b+CFG-06（静态），非执行证据",
-    "jl_anc_writes 模型族（蓝图 §2.6 条件栈新开关：JL_ANC 族 0xFE0400+JL_ASS MIC_CTL0/1 写记录，ANC 重配链条件族 AG §3.3b）是本场景额外模型件（先按 conditional 草案；若推进后新前沿在到达 ANC 图门 0x601bd3a 前停住可降 probe_only——registry validate 依赖闭包两向都过）",
-    "DMA 完成行为投影（同 INJ-01）",
-    "C5 消费路径不预设（两候选记账，按实际状态裁决）——「不臆造」承接蓝图 C1 原则"
+    "本记录=执行证据(2026-11-17 路 D2ANC):断言锚点出自蓝图 §3.3+AL §1.6/§2.2b 静态钉死,执行面=scene.json 三臂记录(臂R 5839 步/臂F 3M 步墙+C4 两块)",
+    "jl_anc_writes(44 字)/jl_clock_con3_readback(1 字)条件开关已落地(registry 条件栈,M4 家族表注册;快照重捕获验证 park 前沿 29,601,125 零位移)",
+    "DMA 完成行为投影(同 INJ-01)",
+    "C5 消费路径不预设(两候选记账):候选①共享链无 ANC 节点/候选② 0xfe0404 有写——均为实测记录,数据面完整裁决维持开放"
   ],
-  "result": "NOT_RUN",
+  "result": "BLOCKED",
   "uncovered_items": [
-    "等路 BF（sim-adda）DAA_CON1 前沿释放文件+AW 蓝图实施步 4（ANC 场景因新模型族 +1 天内，蓝图 §6）",
-    "R4 ch2 张力裁决+R5 ANC 消费路径裁决（本场景观测项）",
-    "ANC 专用采样率（JL_ANC 块配置+系数文件内，CFG-06 残余）",
-    "ANC 声学效果/滤波正确性（永不进 D2 断言——D3 比较面另立，d1-acceptance §7）"
+    "全路径单调用串联残余:mic_management/PGA/tone/系数重读经 audio_anc_run 一次调用完整执行(臂F 已证 park 门早退+自旋墙;臂R 已证重配核心)——解锁依赖见 blocked_missing 三根因",
+    "R4 ch2 张力维持开放(C1 通道集=ch0+ch1 实读,en_map 无 bit2——LFB 无开启者;JL_ANC DMA 字 0xfe0404 已有写但指向完整数据面裁决归 ANC 数据交付场景)",
+    "R5 两候选实记:候选①共享 hdl+92 链无 ANC 侧 handler(链遍历记账)/候选② JL_ANC 自有 DMA 地址字 0xfe0404 有写(1 次,0x0)——「指向共享环形或自采」的数据面裁决需 ANC 侧采样数据,归后续",
+    "ANC 专用采样率(JL_ANC 块配置+系数文件内,CFG-06 残余)",
+    "ANC 声学效果/滤波正确性(永不进 D2 断言——D3 比较面另立,d1-acceptance §7)"
   ],
-  "evidence_level": "none",
-  "evidence_conditions": [],
-  "evidence_refs": [],
-  "blocked_missing": null,
-  "recorded_at": "2026-11-14T10:40:00"
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "内部模式字节 b[anc_hdl+33]=named synthetic-mode-fixture 单字节(0x01→0x02,场景报告显式登记;真固件写点=anc_task 消息环 0x602d3a0 域,frozen 世界不可达)——fixture 只放开 b3 形模式门选分支,臂R 链体 0x606ee26(param,0) 与 audio_anc_run 在 0x601c92a 的调用形逐参一致,全真固件",
+    "JL_ANC 44 字容器(22 li 扫描字+22 表驱动滤波族运行时变址墙钉字,逐站停点引证)+JL_CLOCK CLK_CON3 单字容器:合成初始 0+读回=当前值——滤波硬件语义/系数装载效果/IRQ67 交付不建模,只记录「配置写已执行」(derived-not-measured)",
+    "DMA 完成行为投影(同 INJ-01)+esco co-opener 面(b1 已开 ch0+ch1)",
+    "本记录 conditional 只覆盖重配核心半边(停-重配-启+IRQ67 挂载+滤波族+JL_ANC 写面+C4 交付共存);全路径半边 BLOCKED(见 blocked_missing 三根因)——臂F 实证:模式门早退(tone/重配 watch 缺席)+系数重读门命中后自旋 3M 步预算耗尽"
+  ],
+  "evidence_refs": [
+    "analysis/local-checks/d2anc/scene.json(anc_scene 三臂+C4;git 忽略运行态)",
+    "tools/d2_audio_scene.py(anc_scene 臂R/C4/臂F 场景段+ANC_WATCH_PCS)",
+    "tools/br28_model.py JLAncRegisters 44 字+JLClockCon3Registers 容器+tools/test_jl_anc_registers.py 单测(10 用例)",
+    "tools/frontier_registry.py jl_anc_writes/jl_clock_con3_readback 条件开关+tools/world_snapshot.py M4 家族表+快照重捕获(前沿 29,601,125 零位移)",
+    "docs/acceptance-samples/d2b/D2-b-INJ-01/02/06.json(b1/b2/b4 依赖件,路 D2AI/D2AJ)"
+  ],
+  "blocked_missing": "全路径 audio_anc_run(2,0x1285A4) 单次调用完整走通的三重缺件(均指令级钉死):①内部模式字节 b[anc_hdl+33] 唯一写点在 anc_task 消息环(0x602d3a0 域,全 app 零静态 caller)——park 世界恒 1(OFF),模式门 0x601c918 早退跳过 tone+重配(臂F watch 直证);②系数重读 0x606e7c2(b[QCY+1276]=1 已开)进 ANCIF flash 读后停在跨核仲裁自旋 RAM 0x12b66a `while (b[QCY+55]&2)`(等 CPU1 flash 应答,frozen 单核世界不可满足;臂F 3M 步预算耗尽,实测停点 0x12b66e,pc 采样 500k..2.5M 步恒钉该处);③模式置 ON 后 tone 0x600bcbe 撞 copex.ppi 无模型(0x600c50c,上游模拟器 DSP 协处理器缺口,诊断臂钉)。解锁归后续路(CPU1 flash 应答模型/协处理器模型/通话态世界)",
+  "recorded_at": "2026-11-17T10:52:00"
 }

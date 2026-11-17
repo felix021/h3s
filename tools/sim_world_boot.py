@@ -31,13 +31,20 @@ def snapshot_path(snapshot_dir, scenario='p11_heap_experimental') -> Path:
 
 
 def build_world(serve_loop, *, rom_path, firmware_path, snapshot_dir,
-                scenario='p11_heap_experimental', capture=False, world_name=WORLD_NAME):
+                scenario='p11_heap_experimental', capture=False, world_name=WORLD_NAME,
+                flag_overrides=None):
     """构造一个停点世界并把 serve_loop 挂进 post_stop；返回 explore 场景结果 dict。
 
     serve_loop(machine, hardware, stopped_cpu) -> dict|None（post_stop 契约，
     probe_boot.py:98-116 docstring）：停点后、报告组装前在活机器上回调；返回的
     dict 并进场景报告（probe_boot.py:2140-2141）。serve_loop 返回 {'world_dead':
     {...}} 即外层循环的重建信号（§3.3）。
+
+    flag_overrides（路 D2ANC）：对 scenario_flags 结果的显式覆盖 dict（值为
+    None=关该开关）。用途=音频场景世界钉 park 停点：GPCNUM 之后条件前沿已推到
+    32,737,356（watchdog expiry），gpcnt_num_value=None 负例臂逐字段复现
+    29,601,125 @ 0x606955c（GPCNUM 路钉过）——d2 音频场景的快照/世界前提。
+    覆盖只影响本调用，registry 官方契约单点不动。
     """
     import frontier_registry
     import probe_irq_entry
@@ -52,6 +59,8 @@ def build_world(serve_loop, *, rom_path, firmware_path, snapshot_dir,
     check_rom(rom)
     image = flash_image(Path(firmware_path))
     flags = frontier_registry.scenario_flags(scenario, probe_irq_entry)
+    if flag_overrides:
+        flags.update(flag_overrides)
 
     target = snapshot_path(snapshot_dir, scenario)
     if capture or not target.exists():

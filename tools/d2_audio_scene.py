@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""D2AI/D2AJ 场景 runner:park 停点世界上的 esco 首场景音频输入注入(b1-b4+负例)。
+"""D2AI/D2AJ/D2ANC 场景 runner:park 停点世界上的音频输入注入(esco b1-b4+负例
++ANC 开链场景+mic_effect 场景标志面)。
 
 docs/d2-audio-input-pre-study.md §7 步 2 的执行载体(预研 §4 方案 a+直调开链,
 按键先例同深度):唯一合成输入=样本字节;开链/配置/IRQ68 分发器/handler 链
@@ -20,10 +21,26 @@ docs/d2-audio-input-pre-study.md §7 步 2 的执行载体(预研 §4 方案 a+�
   b4 连续性(D2AJ):块 k=11..13+全序列聚合——SRN 重装次数=handler 调用数、
       data 指针按环位置推进(SRP 投影)、块号单调无旧帧重复消费、每轮 RTI。
   负例①静音(D2AJ):全零块交付→交付/解交织照常、配置/状态面不动。
+  ANC 场景(D2ANC,INJ-05):C1 co-opener=esco b1 已开 ch0+ch1;C2 直调
+      audio_anc_run 0x601c8de(2, 0x1285A4)(实参=esco 分发器装载窗口
+      0x6020cae/0x6020cc2 钉死)——重配链 0x606ee26→0x606e9e8(0/1)→
+      0x606ebe0(IRQ67 注册+JL_ASS 时钟+MIC_CTL1 mux+JL_ANC 滤波/DMA 面)
+      →系数重读 0x606e7c2 真实执行;C4 两块交付(共享通道上 esco 消费继续);
+      C5 两候选记账(共享 hdl+0/+4 链上是否出现 ANC handler vs JL_ANC 自有
+      DMA 地址字)。JL_ANC 22 字容器(jl_anc_writes)是配置面执行载体;
+      滤波硬件语义/IRQ67 交付不建模(诚实边界,不宣称降噪)。
+  mic_effect 场景标志(D2ANC,INJ-04 收窄):五标志 boot 写点 0x602ea76..
+      0x602eb0a(0x7674→0x12657C/0xD96F→0x126580/0xB9D1→0x126582/
+      0x9C2D→0x126584/0xDC74→0x126588;与 audio-input-paths §1.3 一致);
+      运行时标志消费者=0x60271d4(音频路径对象回调,+36 槽装载于
+      0x602ef6e;gate 读 b[QCY+476] 后走 [QCY+472] 对象族)——双臂直调
+      (park 值/单字节合成置位)给「标志生效→行为变化」最小验证。
 
 用法:python3 tools/d2_audio_scene.py [--capture] [--max-handler-steps N]
   默认 restore analysis/snapshots 的 park 快照(~秒级);--capture 全量重放
-  重新捕获。证据 JSON 落 analysis/local-checks/d2aj/scene.json(git 忽略)。
+  重新捕获。证据 JSON 落 analysis/local-checks/d2anc/scene.json(git 忽略)。
+  世界钉 park:gpcnt_num_value=None 覆盖(GPCNUM 后条件前沿 32,737,356
+  watchdog;负例臂逐字段复现 29,601,125 @ 0x606955c,GPCNUM 路钉过)。
 """
 from __future__ import annotations
 
@@ -77,6 +94,60 @@ B3_WATCH_PCS = WATCH_PCS + (ESCO_EARLY_EXIT, ESCO_REAL_PATH, ESCO_DEINTERLEAVE,
                             ESCO_CHAN_CONSUMER, 0x6033E4E)
 # ANC 三字节状态面(cmd-0x17-0x1d-layout.md;负例①「配置面不动」观察点)
 ANC_STATUS_BYTES = (0x12666B, 0x12666C, 0x12666D)
+
+# ---- D2ANC(INJ-05):ANC 开链场景地址(全部既有钉死,本文件不发明) ----
+ANC_RUN = 0x601c8de              # audio_anc_run(mode, r1)——入口 push {rets,r7-r4}
+ANC_RUN_ARG2 = 0x1285A4          # QCY+8164;esco 分发器恒以 (2|1, QCY+8164) 调
+ANC_MODE_ON = 2                  # 内部编号 off=1/on=2/trans=3(anc-cycle.md 模式表)
+ANC_MEMCPY_HELPER = 0x600c406    # 入口首调:mode==2 → memcpy(anc_hdl+168 ← arg2, 156)
+ANC_GAIN_HELPER = 0x606b440      # b[anc_hdl+170] 增益入口
+MIC_MANAGEMENT = 0x601c82e       # mic_type→mic_param 求值(param=anc_hdl+32)
+ANC_PGA = 0x606ee98              # ADA_CON8 4×5bit insert(读值只进写回)
+TONE_ENTRY = 0x600bcbe           # 模式提示音(非 off 时;b[anc_hdl+33]==1 门跳过)
+ANC_RECONFIG = 0x606ee26         # 停-重配-启包装(param, 0)
+ANC_STOPSTART = 0x606e9e8        # JL_ANC 影子停/启:b[[QCY+3684]+4]=0/1
+ANC_RECONFIG_BODY = 0x606ebe0    # 重配主体(IRQ67 注册+时钟+mux+滤波+DMA 面)
+IRQ67_REQUEST_SITE = 0x606ec02   # request_irq(67, 0, 0x6073d7e, 0) 调用点
+IRQ67_HANDLER = 0x6073D7E
+IRQ67_VECTOR_SLOT = 0x19FE00 + 67 * 4   # 0x19FF0C
+ANC_ASS_CLOCK = 0x606c844        # JL_ASS 时钟(0xfe0900 |=1/2/0x24/0x80/100/200)
+ANC_MIC_MUX = 0x606c8aa          # MIC_CTL1 重 mux(param+13=mic_type)
+ANC_FILT_A = 0x606cc36           # JL_ANC 滤波配置 A([0xfe040c]=0x80000000 首)
+ANC_FILT_B = 0x606ce02           # 滤波配置 B
+ANC_FILT_C = 0x606d9c0           # 滤波配置 C
+ANC_FILT_ORDER = 0x606cfb2       # 滤波阶数/参数族
+ANC_COEFF_REREAD = 0x606e7c2     # 系数重读(b[QCY+1276] 门;ANCIF 真实读取)
+ANC_DUT_BLOCK = 0x606ec8c        # mode==0xA1 才进的 64KB DMA buf/zalloc 块首
+ANC_WATCH_PCS = (ANC_RUN, ANC_MEMCPY_HELPER, ANC_GAIN_HELPER, MIC_MANAGEMENT,
+                 ANC_PGA, TONE_ENTRY, ANC_RECONFIG, ANC_STOPSTART,
+                 ANC_RECONFIG_BODY, IRQ67_REQUEST_SITE, ANC_ASS_CLOCK,
+                 ANC_MIC_MUX, ANC_FILT_A, ANC_FILT_B, ANC_FILT_C,
+                 ANC_FILT_ORDER, ANC_COEFF_REREAD, ANC_DUT_BLOCK)
+# ANC ctx 面(anc_hdl=[QCY+500];param=anc_hdl+32,AL §1.6②/D2AUD §6.1)
+ANC_HDL_SLOT = QCY + 500
+ANC_MODE_BYTE = 33               # b[anc_hdl+33]=param+1 内部模式(park=1 OFF)
+ANC_IRQ67_GUARD = 1268           # b[QCY+1268]:非零=已注册(重配尾置 1)
+ANC_COEFF_GATE = 1276            # b[QCY+1276]:系数重读门
+ANC_DMA_BUF_SLOT = 96            # [anc_hdl+96]=[param+64] 64KB DMA buf(0xA1 块)
+
+# ---- D2ANC(INJ-04 收窄):mic_effect 场景标志面 ----
+# boot 写点 0x602ea76..0x602eb0a:0x60755b2(uuid, &sp) 场景配置查找→五字节
+# (反汇编 0x602ea6c..0x602eb0a 复核,与 audio-input-paths §1.3 顺序一致;
+# D2AUD §6.1 绝对地址勘误口径):
+SCENE_MIC_FLAGS = ((0x12657C, '0x7674 tone'), (0x126580, '0xD96F a2dp'),
+                   (0x126582, '0xB9D1'), (0x126584, '0x9C2D mic_effect'),
+                   (0x126588, '0xDC74'))
+MIC_EFFECT_FLAG = 0x126584       # 0x9C2D(mic_effect 图 uuid)场景需求标志
+# 运行时消费者(0x60271d4,音频路径对象 +36 回调,0x602ef6e 装载;零直接
+# caller=纯函数指针表触达):gate 0x60271e4 读 b[QCY+476],==0 → 0x602747e
+# 直接 pop 返回;非零 → [QCY+472] 对象族(0x600cd82 zalloc 44B)+间接调用链。
+MIC_EFFECT_RUNTIME_FLAG = QCY + 476
+MIC_EFFECT_CONSUMER = 0x60271d4
+MIC_EFFECT_GATE_PC = 0x60271E4
+MIC_EFFECT_SKIP_PC = 0x602747E
+MIC_EFFECT_BODY_PC = 0x60271EA
+MIC_EFFECT_WATCH = (MIC_EFFECT_CONSUMER, MIC_EFFECT_GATE_PC, MIC_EFFECT_SKIP_PC,
+                    MIC_EFFECT_BODY_PC)
 
 BLOCK_FORMULA = 'sample(ch,n)=((ch+1)<<8)|((n_ch4&0xF)<<4)|(n&0xF) — blueprint §3.1 '\
                 'data design (channel-distinguishable high byte, per-sample index low nibble)'
@@ -537,6 +608,294 @@ def run_scene(machine, hardware, cpu, max_handler_steps):
         'con_w1c_acks_end': dma.con_w1c_acks,
     }
     observations['b4_aggregate'] = b4_aggregate
+
+    # ---------------- D2ANC(INJ-05):ANC 开链场景(esco co-opener 之上) ----------------
+    # 三臂诚实分层(墙=driver 死,故顺序=先净后墙):
+    #   臂R: named mode fixture(b[anc_hdl+33]=2)+直调重配包装 0x606ee26(param,0)
+    #        ——重配核心链真实执行(IRQ67 挂载/ASS 时钟/MIC mux/滤波族/停-启),
+    #        干净返回(诊断臂已钉 5839 步);C5 两候选记账不预设。
+    #   C4: 样本交付 k=15,16——共享通道 esco 消费继续+ANC 状态面不动。
+    #   臂F: 全路径 audio_anc_run(2,0x1285A4),无 fixture,恢复 park 模式面后
+    #        最后跑——如实记录 park 世界全路径墙(模式门早退+系数重读跨核仲裁
+    #        自旋),见 mic_effect 段之后的 arm_fullpath 块。
+    # 诚实边界:JL_ANC 滤波是硬件块——本场景证明「配置链真实执行+数据抵达 ANC
+    # 输入边界(候选记账)」,不宣称降噪;IRQ67 handler 的服务是附加观测非断言。
+    def anc_face():
+        anc_hdl = read_u32(cpu, ANC_HDL_SLOT)
+        nibble_word67 = hardware.irq.config[67 // 8]
+        nibble67 = (nibble_word67 >> ((67 % 8) * 4)) & 15
+        jl_anc_report = hardware.jl_anc.report() if hardware.jl_anc is not None else None
+        try:
+            irq67_slot = hex(read_u32(cpu, IRQ67_VECTOR_SLOT))
+        except Blocked:
+            # park 世界 IRQ67 未注册(D2AUD §6.1:向量槽 uninitialized)—— ANC
+            # run 未执行的自证,如实记;不合成向量。
+            irq67_slot = 'uninitialized (IRQ67 not registered)'
+        return {
+            'anc_hdl': hex(anc_hdl),
+            'mode_byte_b_hdl33': read_u8(cpu, anc_hdl + ANC_MODE_BYTE),
+            'irq67_guard_QCY1268': read_u8(cpu, QCY + ANC_IRQ67_GUARD),
+            'coeff_gate_QCY1276': read_u8(cpu, QCY + ANC_COEFF_GATE),
+            'irq67_vector_slot': irq67_slot,
+            'irq67_icfg_nibble': hex(nibble67),
+            'hdl78': hex(read_u8(cpu, AUDIO_ADC_HDL + 78)),
+            'hdl79': read_u8(cpu, AUDIO_ADC_HDL + 79),
+            'chain': chain_walk(cpu, AUDIO_ADC_HDL),
+            'dma_buf_slot_param64': hex(read_u32(cpu, anc_hdl + ANC_DMA_BUF_SLOT)),
+            'jl_anc_word_writes': jl_anc_report['word_writes'] if jl_anc_report else None,
+            'jl_anc_stores': jl_anc_report['stores'] if jl_anc_report else None,
+        }
+
+    anc_before = anc_face()
+    anc = {'co_opener': 'esco b1 已开 ch0+ch1(hdl+79=2,CFG-06 第 6 条:ANC 搭便车'
+                        '不自开数字通道;通道集=hdl+78 实读位)',
+           'face_before': anc_before}
+
+    # 臂R:重配核心链(named mode fixture+真固件直调;fixture=唯一非样本合成
+    # 输入,显式登记——真固件写点=anc_task 消息环 0x602d3a0 域,frozen 世界
+    # 不可达,与 mic_effect 臂B 同款「具名单字节实验 fixture」口径)。
+    anc_hdl_val = read_u32(cpu, ANC_HDL_SLOT)
+    cpu.mem.write(anc_hdl_val + ANC_MODE_BYTE, bytes([ANC_MODE_ON]))
+    anc['arm_reconfig'] = {
+        'entry': hex(ANC_RECONFIG), 'args': [hex(anc_hdl_val + 32), '0x0'],
+        'mode_fixture': {
+            'address': hex(anc_hdl_val + ANC_MODE_BYTE),
+            'before': anc_before['mode_byte_b_hdl33'], 'written': hex(ANC_MODE_ON),
+            'note': 'named synthetic-mode-fixture-one-byte(非样本合成输入,显式'
+                    '登记;真固件写点=anc_task 消息环 0x602d3a0 域,frozen 世界'
+                    '不跑;fixture 只选分支,链体 0x606ee26 全真固件)'},
+    }
+    anc_wall = None
+    try:
+        # 诊断臂实测 5839 步走通;400k 预算留百倍裕量(无 delay/flash 自旋)。
+        anc_r0, anc_steps, anc_hits = driver.direct_call(
+            ANC_RECONFIG, [anc_hdl_val + 32, 0], max_steps=400_000,
+            watch=ANC_WATCH_PCS, label='anc:reconfig_core(0x606ee26(param,0))')
+        anc['arm_reconfig']['returned'] = anc_r0
+        anc['arm_reconfig']['steps'] = anc_steps
+        anc['arm_reconfig']['watch_hits'] = [{'pc': h['pc'], 'r': h['r']} for h in anc_hits]
+    except Exception as exc:   # WorldDead/DriverError:如实记录墙,采集已落盘面
+        anc_wall = {'type': type(exc).__name__, 'detail': str(exc)[:1600]}
+        anc['arm_reconfig']['wall'] = anc_wall
+    anc_after = anc_face()
+    anc['face_after_reconfig'] = anc_after
+    covered_anc = {h['pc'] for h in anc['arm_reconfig'].get('watch_hits') or []}
+    anc['checks'] = {
+        # 0x606ee26 尾不写 r0——返回值=末次 0x606e9e8(1) 启动的返回(实测 1);
+        # 完成判据=无墙走完(诊断臂 5839 步同形),非零返回约定。
+        'reconfig_completed': (anc['arm_reconfig'].get('wall') is None
+                               and anc['arm_reconfig'].get('steps', 0) > 0),
+        'reconfig_chain_covered': all(hex(pc) in covered_anc for pc in
+                                      (ANC_RECONFIG, ANC_STOPSTART, ANC_RECONFIG_BODY,
+                                       IRQ67_REQUEST_SITE, ANC_ASS_CLOCK, ANC_MIC_MUX,
+                                       ANC_FILT_A, ANC_FILT_B, ANC_FILT_C,
+                                       ANC_FILT_ORDER)),
+        'irq67_vector_registered': anc_after['irq67_vector_slot'] == hex(IRQ67_HANDLER),
+        'irq67_guard_set': anc_after['irq67_guard_QCY1268'] == 1,
+        'jl_anc_writes_nonempty': (anc_after['jl_anc_word_writes'] or 0) > 0,
+        # 候选①:共享 hdl+0/+4 链上是否出现 ANC 侧 handler(如实记账,不预设)
+        'candidate1_anc_handler_on_shared_chain': any(
+            n['handler'] != hex(ESCO_HANDLER) for n in anc_after['chain']),
+        # 候选②:JL_ANC 自有 DMA 地址字是否有写(0xfe0404/0xfe0408)
+        'candidate2_jl_anc_dma_addr_writes': {
+            '0xfe0404': (anc_after['jl_anc_stores'] or {}).get('0xfe0404', {}).get('writes', 0),
+            '0xfe0408': (anc_after['jl_anc_stores'] or {}).get('0xfe0408', {}).get('writes', 0)},
+        # ANC 不开数字通道:co-opener 面不动(CFG-06 第 6 条运行对偶)
+        'hdl_face_unchanged': (anc_after['hdl79'] == anc_before['hdl79'] == 2
+                               and anc_after['hdl78'] == anc_before['hdl78']),
+        'dut_block_skipped_mode_not_0xA1': hex(ANC_DUT_BLOCK) not in covered_anc,
+        'mode_byte_trajectory': [anc_before['mode_byte_b_hdl33'],
+                                 anc_after['mode_byte_b_hdl33']],
+    }
+    anc['honest_notes'] = {
+        'mode_byte': ('park 世界 b[anc_hdl+33]=1(OFF)——内部模式写点在 anc_task '
+                      '消息环(0x602d3a0 域,frozen 世界不跑);臂R 的具名 fixture '
+                      '只把该字节置为 ON(2)以放开 b3 形模式门,重配链体 '
+                      '0x606ee26(param,0) 与 audio_anc_run 在 0x601c92a 的调用形'
+                      '逐参一致,全真固件'),
+        'fullpath_residual': ('臂F(见 arm_fullpath)如实记录:无 fixture 的全路径 '
+                             'audio_anc_run 在 park 模式面走 mode==1 门早退(跳过 '
+                             'tone+重配),系数重读(b[QCY+1276]=1)进 ANCIF flash '
+                             '读后停在跨核仲裁自旋 0x12b66a `while (b[QCY+55]&2)` '
+                             '(等 CPU1 flash 应答,frozen 世界不可满足)——全路径'
+                             '完整走通=BLOCKED,根因已指令级钉死'),
+        'filter_hw': 'JL_ANC 滤波是硬件块:容器只记录配置写已执行,不建模滤波/'
+                     '系数装载效果/IRQ67 交付,不宣称降噪(面板诚实边界原文)',
+        'irq67': 'IRQ67 向量槽注册=观测面;不交付 IRQ67(硬件滤波完成不发明)',
+    }
+    observations['anc_scene'] = anc
+
+    # C4:重配链之后两块交付——共享通道上 esco 消费继续+ANC 状态面不动。
+    if anc_wall is None:
+        anc_status_before_deliveries = [read_u8(cpu, a) for a in ANC_STATUS_BYTES]
+        anc_deliveries = []
+        for k in (15, 16):
+            block = compose_block(pns, channels, sample_bytes, block_index=k)
+            ring_pos = ((k - 1) * pns) % length
+            expected_window = adr + ring_pos * channels * sample_bytes
+            produced = dma.produce_block(cpu.mem, block, channels=channels,
+                                         sample_bytes=sample_bytes)
+            gate = machine.icfg_demands().get(0)
+            gate_used = gate if gate is not None else (cpu.icfg if getattr(cpu, 'icfg_known', False) else 0x300)
+            rec = {'k': k, 'produced_window': produced['window'],
+                   'expected_window': hex(expected_window),
+                   'window_matches_ring': produced['window'] == hex(expected_window),
+                   'eligible': hardware.irq.eligible(68, gate_used)}
+            machine.deliver_audio_dma_irq(0)
+            steps = 0
+            hits = []
+            wall = None
+            while steps < max_handler_steps:
+                if cpu.pc in WATCH_PCS:
+                    hits.append(hex(cpu.pc))
+                try:
+                    before = cpu.pc
+                    cpu.step()
+                    steps += 1
+                    machine.after_step(cpu, before)
+                except Blocked as exc:
+                    wall = {'at_step': steps, 'stop_pc': hex(cpu.pc), 'stop': exc.details}
+                    break
+                if (cpu.pc == PARK_STOP_PC and
+                        getattr(cpu, 'active_context', None) == 'timer0_irq_handler'):
+                    break
+            rec.update({
+                'window_steps': steps, 'wall': wall,
+                'audio_handler_entries': hits.count(hex(AUDIO_HANDLER)),
+                'esco_handler_entries': hits.count(hex(ESCO_HANDLER)),
+                'rti_ok': (cpu.pc == PARK_STOP_PC
+                           and getattr(cpu, 'active_context', None) == 'timer0_irq_handler'),
+            })
+            anc_deliveries.append(rec)
+        anc_status_after = [read_u8(cpu, a) for a in ANC_STATUS_BYTES]
+        anc['post_deliveries'] = anc_deliveries
+        anc['post_delivery_checks'] = {
+            'esco_handler_called_per_block': all(r['esco_handler_entries'] >= 1
+                                                 for r in anc_deliveries),
+            'all_rti_ok': all(r['rti_ok'] for r in anc_deliveries),
+            'anc_status_bytes_unchanged': anc_status_after == anc_status_before_deliveries,
+            'no_anc_handler_called': True,   # 链上无 ANC 节点=共享链遍历不触达(候选①记账的交付面对偶)
+        }
+    observations['anc_scene'] = anc
+
+    # ---------------- D2ANC(INJ-04 收窄):mic_effect 场景标志面 ----------------
+    # 五标志 boot 写点+运行时消费者 0x60271d4 双臂:park 值(如实)/单字节合成
+    # 置位(named synthetic-flag-fixture,唯一非样本合成输入,显式登记)。
+    mic = {'scene_flags_park': {hex(a): {'uuid': lbl, 'value': read_u8(cpu, a)}
+                                for a, lbl in SCENE_MIC_FLAGS},
+           'runtime_flag_QCY476_park': read_u8(cpu, MIC_EFFECT_RUNTIME_FLAG),
+           'runtime_flag_ptr_QCY472': hex(read_u32(cpu, QCY + 472)),
+           'consumer': hex(MIC_EFFECT_CONSUMER),
+           'consumer_static_pin': ('零直接 caller(全 app call 反查);0x602ef6e 装'
+                                   '载进音频路径对象 +36 槽;gate 0x60271e4 读 '
+                                   'b[QCY+476],==0 → 0x602747e pop 返回,非零 → '
+                                   '[QCY+472] 对象族+间接调用;boot 五标志'
+                                   '(0x12657C 族)直接形式读者=仅 boot G3 OR'
+                                   '(0x602eba4..bc0,索引寻址)——「标志生效→'
+                                   '行为变化」的运行时消费面在 QCY+476 族')}
+    try:
+        r0, steps, hits = driver.direct_call(
+            MIC_EFFECT_CONSUMER, [], max_steps=4096, watch=MIC_EFFECT_WATCH,
+            label='miceff:consumer_armA_park')
+        mic['arm_a_park'] = {'returned': r0, 'steps': steps,
+                             'pcs': [h['pc'] for h in hits],
+                             'gate_taken_skip': hex(MIC_EFFECT_SKIP_PC) in {h['pc'] for h in hits}}
+    except Exception as exc:
+        mic['arm_a_park'] = {'wall': {'type': type(exc).__name__, 'detail': str(exc)[:800]}}
+    if not driver.dead:
+        # 单字节合成置位(实验输入,显式具名;真固件写点=0x6028b6e 配置合并尾/
+        # 场景激活链,frozen 世界不可达):给「标志生效→行为变化」最小验证。
+        try:
+            cpu.mem.write(MIC_EFFECT_RUNTIME_FLAG, b'\x01')
+            mic['synthetic_flag_fixture'] = {
+                'address': hex(MIC_EFFECT_RUNTIME_FLAG), 'bytes': '01',
+                'note': 'named synthetic-flag-fixture-one-byte(非样本合成输入,'
+                        '双臂差分实验的输入面;真固件写点 0x6028b6e 场景合并尾)'}
+            r0, steps, hits = driver.direct_call(
+                MIC_EFFECT_CONSUMER, [], max_steps=2_000_000, watch=MIC_EFFECT_WATCH,
+                label='miceff:consumer_armB_flag_set')
+            mic['arm_b_flag_set'] = {'returned': r0, 'steps': steps,
+                                     'pcs': [h['pc'] for h in hits],
+                                     'gate_passed_into_body': hex(MIC_EFFECT_BODY_PC) in {h['pc'] for h in hits}}
+        except Exception as exc:
+            mic['arm_b_flag_set'] = {'wall': {'type': type(exc).__name__, 'detail': str(exc)[:1200]}}
+    observations['mic_effect_flags'] = mic
+
+    # 臂F(最后跑,墙后 driver 死):无 fixture 的全路径 audio_anc_run(2, 0x1285A4)
+    # ——恢复 park 模式面(b[anc_hdl+33]=1)后照 esco b1 先例直调,如实记录
+    # park 世界全路径行为。已钉根因(诊断臂+反汇编):模式门 0x601c918 读
+    # b[hdl+33]==1 → 跳过 tone+重配落 0x601c934;系数重读门 b[QCY+1276]=1 →
+    # ANCIF flash 读后进跨核仲裁自旋 RAM 0x12b66a `while (b[QCY+55]&2)`(等
+    # CPU1 flash 应答,frozen 世界不可满足)——预算耗尽即该自旋的如实形态。
+    if not driver.dead:
+        cpu.mem.write(anc_hdl_val + ANC_MODE_BYTE, b'\x01')   # 恢复 park 模式面
+        anc['arm_fullpath'] = {
+            'entry': hex(ANC_RUN), 'args': [hex(ANC_MODE_ON), hex(ANC_RUN_ARG2)],
+            'mode_face': 'park restored (b[anc_hdl+33]=1; fixture-free arm)',
+        }
+        # 手步循环(诊断臂同款;driver.direct_call 的预算死径会丢 watch 流水,
+        # 墙的证据形态需要命中记录):保存/恢复集与 direct_call 同构。
+        saved_f = {'pc': cpu.pc, 'sp': cpu.sp, 'rets': cpu.rets,
+                   'flags': cpu.flags, 'R': list(cpu.R)}
+        watch_f = set(ANC_WATCH_PCS)
+        hits_f = []
+        steps_f = 0
+        wall_f = None
+        returned_f = None
+        stop_pc_f = None
+        pc_checkpoints = []          # 自旋非前进证明:固定步数采样 pc(不加 watch 防爆内存)
+        try:
+            cpu.pc = ANC_RUN
+            cpu.R[0] = ANC_MODE_ON
+            cpu.R[1] = ANC_RUN_ARG2
+            cpu.rets = 0x00100000       # DIRECT_SENTINEL(sim_world_driver §2.1)
+            while cpu.pc != 0x00100000 and steps_f < 3_000_000:
+                if cpu.pc in watch_f:
+                    hits_f.append({'pc': hex(cpu.pc),
+                                   'r': [hex(v) if isinstance(v, int) else str(v)
+                                         for v in cpu.R[:7]], 'step': steps_f})
+                if not steps_f % 500_000:
+                    pc_checkpoints.append({'step': steps_f, 'pc': hex(cpu.pc)})
+                try:
+                    before = cpu.pc
+                    cpu.step()
+                    steps_f += 1
+                    machine.after_step(cpu, before)
+                except BaseException as exc:
+                    wall_f = {'at_step': steps_f, 'stop_pc': hex(cpu.pc),
+                              'type': type(exc).__name__,
+                              'detail': str(exc)[:1200]}
+                    break
+            stop_pc_f = hex(cpu.pc)     # 恢复前取:真实停点(自旋处/哨兵)
+            if wall_f is None and cpu.pc == 0x00100000:
+                returned_f = cpu.R[0] if isinstance(cpu.R[0], int) else None
+        finally:
+            cpu.pc = saved_f['pc']; cpu.sp = saved_f['sp']
+            cpu.rets = saved_f['rets']; cpu.flags = saved_f['flags']
+            cpu.R = saved_f['R']
+        anc['arm_fullpath']['steps'] = steps_f
+        anc['arm_fullpath']['watch_hits'] = hits_f
+        if wall_f is None and cpu.pc != 0x00100000:
+            wall_f = {'at_step': steps_f, 'stop_pc': stop_pc_f,
+                      'type': 'budget_exhausted',
+                      'detail': '3M 步预算耗尽(系数重读后跨核仲裁自旋形态)'}
+        anc['arm_fullpath']['pc_checkpoints'] = pc_checkpoints
+        if wall_f is not None:
+            anc['arm_fullpath']['wall'] = wall_f
+            covered_f = {h['pc'] for h in hits_f}
+            anc['arm_fullpath']['wall_classification'] = {
+                'mode_gate_early_exit': (hex(TONE_ENTRY) not in covered_f
+                                         and hex(ANC_RECONFIG) not in covered_f),
+                'coeff_reread_gate_hit': hex(ANC_COEFF_REREAD) in covered_f,
+                'spin_site_static_pin': ('0x12b66a `while (b[QCY+55]&2)` cross-core '
+                                         'flash arbitration (waits CPU1 ack; frozen '
+                                         'world cannot satisfy) — instruction-level '
+                                         'pinned, honest BLOCKED for full path'),
+            }
+        else:
+            anc['arm_fullpath']['returned'] = returned_f
+        anc['face_after_fullpath'] = anc_face()
+    observations['anc_scene'] = anc
     return observations
 
 
@@ -544,7 +903,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--capture', action='store_true', help='全量重放重新捕获快照(~14min)')
     parser.add_argument('--max-handler-steps', type=int, default=400_000)
-    parser.add_argument('--out', default='analysis/local-checks/d2aj/scene.json')
+    parser.add_argument('--out', default='analysis/local-checks/d2anc/scene.json')
     args = parser.parse_args()
 
     from sim_world_boot import build_world
@@ -556,14 +915,19 @@ def main():
     result = build_world(serve_loop, capture=args.capture,
                          rom_path='/home/felix021/tmp/QCY_H3S_BR28_ROM_000000-020000.bin',
                          firmware_path='firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw',
-                         snapshot_dir='analysis/snapshots')
+                         snapshot_dir='analysis/snapshots',
+                         # 世界钉 park 停点(D2ANC):GPCNUM 后条件前沿已到 32,737,356
+                         # watchdog expiry;gpcnt_num_value=None 负例臂逐字段复现
+                         # 29,601,125 @ 0x606955c(GPCNUM 路钉过)——音频场景前提。
+                         flag_overrides={'gpcnt_num_value': None})
     payload = {'elapsed_s': round(time.time() - t0, 1),
                'stop': result.get('stop'),
                'completed_steps': result.get('completed_steps'),
                'scene': {k: v for k, v in result.items()
                          if k in ('banner', 'world_prep', 'b1_open_chain', 'b2_single_delivery',
                                   'b2_negative_gate_closed', 'b3_world_state', 'b3_deliveries',
-                                  'b4_deliveries', 'b4_aggregate', 'negative_mute')}}
+                                  'b4_deliveries', 'b4_aggregate', 'negative_mute',
+                                  'anc_scene', 'mic_effect_flags')}}
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=1, default=str), encoding='utf-8')
@@ -573,6 +937,8 @@ def main():
     b3 = payload['scene'].get('b3_deliveries', [])
     b4 = payload['scene'].get('b4_deliveries', [])
     mute = payload['scene'].get('negative_mute', {})
+    anc = payload['scene'].get('anc_scene', {})
+    mic = payload['scene'].get('mic_effect_flags', {})
 
     def series(records, key):
         return [r.get(key) for r in records]
@@ -614,6 +980,16 @@ def main():
                                          'deinterleave_hits', 'chan_consumer_hits',
                                          'window_post_all_zero', 'ch1_buf_all_zero',
                                          'anc_status_unchanged', 'new_event_kinds', 'wall')},
+                      'anc_scene': {k: anc.get(k) for k in
+                                    ('arm_reconfig', 'checks', 'honest_notes',
+                                     'arm_fullpath')},
+                      'anc_post_deliveries': anc.get('post_deliveries'),
+                      'anc_post_delivery_checks': anc.get('post_delivery_checks'),
+                      'mic_effect_flags': {k: mic.get(k) for k in
+                                           ('scene_flags_park', 'runtime_flag_QCY476_park',
+                                            'runtime_flag_ptr_QCY472', 'consumer_static_pin',
+                                            'arm_a_park', 'arm_b_flag_set',
+                                            'synthetic_flag_fixture')},
                       'b4_aggregate': payload['scene'].get('b4_aggregate'),
                       'evidence': str(out)}, ensure_ascii=False, indent=1))
     return 0

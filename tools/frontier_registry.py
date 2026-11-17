@@ -396,6 +396,24 @@ FEATURES = (
             'RTI 投影镜像 Timer0,嵌套仅限 timer0 在途且真实 ICFG 优先级严格更高'
             '(park 稳态 prio2>prio1);DMA 完成时序=投影;依赖边=场景推进顺序'
             '非硬件依赖,前置五字容器+ADC reset 写域)'),
+    # ---- 路 D2ANC/sim-d2anc:JL_ANC 硬件滤波块 44 字容器(INJ-05 ANC 场景
+    # 的寄存器写记录面)。22 字=全 app li 常量→寄存器传播扫描钉死;另 22 字=
+    # 表驱动滤波配置族(0x606cfb2 域)的运行时变址触达(寄存器索引来自滤波
+    # 模式表,静态不可枚举;D2ANC 重配链直调逐墙钉死并入,并入后 0x606ee26
+    # (param,0) 5839 步完整走通),窗外零触达字留 unmapped;读值只进写回组装
+    # (AM 判据);boot 前缀零触达(D2AUD §6.2)=开启不动前沿;滤波硬件语义/
+    # IRQ67 交付不建模。 ----
+    Feature('jl_anc_writes', 'conditional', ('audio_adc_dma_delivery',), False, None,
+            'JL_ANC 硬件滤波块 44 字容器(0xfe0400..0xfe04f4,停-重配-启链'
+            '0x606e9e8/0x606ebe0+滤波配置族 0x606cc36/0x606ce02/0x606d9c0/'
+            '0x606cfb2/0x606da1e 的写记录+读回=当前值,合成初始 0;'
+            'AM/ADA 先例;前缀零触达,只服务 INJ-05 场景 post_stop 直调段;'
+            '依赖边=场景先后关系非硬件依赖)'),
+    Feature('jl_clock_con3_readback', 'conditional', ('jl_anc_writes',), False, None,
+            'JL_CLOCK CLK_CON3(0xfd0024)单字容器(JL_ASS 时钟函数 0x606c844 的'
+            'ADC 时钟选择字,10 站点读值只进写回;合成初始 0+读回=当前值;'
+            'AM 族;前缀零触达,只服务 ANC 场景;依赖边=场景先后关系非硬件'
+            '依赖)'),
     Feature('jl_adc_start_probe_value', 'probe_only', ('jl_adc_start_config',), True, None,
             'MIC_CTL0(0xfe0904)初值敏感性探针(初值一次性 0xffffffff 替换,其余三字'
             '不扰动保归因干净;零臂写回 0x2/ones 臂写回 0xfffffffe 异或保留位;'
