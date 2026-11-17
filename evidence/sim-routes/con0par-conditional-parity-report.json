@@ -1,0 +1,930 @@
+{
+  "simulator_commit": "3608ed19bc21324f8ecfe79cc0018d05e43d9563",
+  "device_accessed": false,
+  "whole_h3s_boot_simulated": false,
+  "candidate_whole_boot_validated": false,
+  "suitable_for_flash_approval_alone": false,
+  "comparison_basis": "per-step comparison covers scheduling, fetch PC, control flow, flags, the full 16-GPR register file (including UnknownWord byte provenance and IcfgValue masks) and every guest RAM write of the step; peripheral-register writes are NOT in the per-step signature (no hook), so a divergence there only becomes visible through a later read-back into a GPR, a stop-point difference or the final report comparison; when both step traces are identical the two final reports are compared as a whole; after a control-flow divergence a step-lag search reports reconvergence (the realignment point, zero-divergence lengths and every remaining signature-divergent span under the lag) or the honest no-realignment fact; every pair reports stop-point parity; identical or reconverging trajectories on this prefix only mean the prefix did not consume the image differences into any compared observable (or consumed them into values that died without changing control flow), it is NOT an image-equivalence proof",
+  "pairs": [
+    {
+      "name": "official_vs_tested_b79",
+      "images": {
+        "official": {
+          "ufw_sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af",
+          "flash_plain_sha256": "c46558f79bc2d1328cc94996511d8ebf2c8345c4839077839f3e02f93f0f72cc",
+          "flash_plain_bytes": 929875
+        },
+        "tested_b79": {
+          "ufw_sha256": "b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b",
+          "flash_plain_sha256": "10ae4e2ae309b7226c8382aba3f1b926d825e2d3483420f32492e4b63af72be4",
+          "flash_plain_bytes": 929875
+        }
+      },
+      "image_byte_diff_runs": [
+        {
+          "plain_offset": [
+            "0x0",
+            "0x4"
+          ],
+          "known_site": "resource table header CRC word"
+        },
+        {
+          "plain_offset": [
+            "0x20",
+            "0x24"
+          ],
+          "known_site": "resource table nested CRC word"
+        },
+        {
+          "plain_offset": [
+            "0x9e510",
+            "0x9e511"
+          ],
+          "known_site": "official-vs-b79 ANC key-cycle table byte at app.bin 0x9e410"
+        },
+        {
+          "plain_offset": [
+            "0xe0a2c",
+            "0xe0a30"
+          ],
+          "known_site": "stream.bin entry header CRC"
+        },
+        {
+          "plain_offset": [
+            "0xe2344",
+            "0xe2345"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2349",
+            "0xe234d"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2354",
+            "0xe2355"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2359",
+            "0xe235d"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2363",
+            "0xe2364"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2365",
+            "0xe2368"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe236b",
+            "0xe236c"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe236f",
+            "0xe2370"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2373",
+            "0xe2374"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2377",
+            "0xe2378"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe237b",
+            "0xe237c"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe237f",
+            "0xe2380"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2383",
+            "0xe2389"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe238b",
+            "0xe238d"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe238f",
+            "0xe2390"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2393",
+            "0xe2394"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe2395",
+            "0xe2398"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe239b",
+            "0xe239d"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        },
+        {
+          "plain_offset": [
+            "0xe239f",
+            "0xe23a1"
+          ],
+          "known_site": "stream.bin volume parameter region"
+        }
+      ],
+      "shared_stack": "probe_irq_entry.irq_case with the p11_heap_experimental_config conditional flag set (crc_bankb stack plus the derived-not-measured opt-ins: every conclusion under this scenario is conditional, not a verified boot fact)",
+      "budget": 50000000,
+      "runs": {
+        "official": {
+          "completed_steps": 41848382,
+          "stop_pc": "0x6019508",
+          "stop": {
+            "kind": "unmapped_memory",
+            "access": "read",
+            "address": "0xf2a610",
+            "size": 4,
+            "reference_sdk_register": null
+          },
+          "per_core_steps": {
+            "0": 41853355,
+            "1": 11496
+          }
+        },
+        "tested_b79": {
+          "completed_steps": 41848382,
+          "stop_pc": "0x6019508",
+          "stop": {
+            "kind": "unmapped_memory",
+            "access": "read",
+            "address": "0xf2a610",
+            "size": 4,
+            "reference_sdk_register": null
+          },
+          "per_core_steps": {
+            "0": 41853355,
+            "1": 11496
+          }
+        }
+      },
+      "final_report_diffs": [
+        {
+          "path": "$.milestones[23].r0",
+          "kind": "value",
+          "a": "\"0xd0b7\"",
+          "b": "\"0xd4fb\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[1]",
+          "kind": "value",
+          "a": "\"0x3328\"",
+          "b": "\"0xfa88\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[8]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[15]",
+          "kind": "value",
+          "a": "\"0xc190\"",
+          "b": "\"0x7a41\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[22]",
+          "kind": "value",
+          "a": "\"0xc190\"",
+          "b": "\"0x7a41\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[37]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[43]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[49]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[55]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[61]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[67]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[73]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[77]",
+          "kind": "value",
+          "a": "\"0xc190\"",
+          "b": "\"0x7a41\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[83]",
+          "kind": "value",
+          "a": "\"0xc190\"",
+          "b": "\"0x7a41\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[97]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[103]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[109]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[115]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[121]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[127]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[130]",
+          "kind": "value",
+          "a": "\"0xc190\"",
+          "b": "\"0x7a41\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[137]",
+          "kind": "value",
+          "a": "\"0xc190\"",
+          "b": "\"0x7a41\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[147]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[154]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[161]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[168]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[175]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[182]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[189]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        },
+        {
+          "path": "$.peripherals.hardware_crc_projection.result_reads[197]",
+          "kind": "value",
+          "a": "\"0x91a9\"",
+          "b": "\"0x64f2\""
+        }
+      ],
+      "trace_lengths": {
+        "official": 41848382,
+        "tested_b79": 41848382
+      },
+      "parity": {
+        "steps": {
+          "official": 41848382,
+          "tested_b79": 41848382,
+          "delta": 0
+        },
+        "per_core_steps": {
+          "official": {
+            "0": 41853355,
+            "1": 11496
+          },
+          "tested_b79": {
+            "0": 41853355,
+            "1": 11496
+          },
+          "delta": {
+            "0": 0,
+            "1": 0
+          }
+        },
+        "stop_pc": {
+          "a": "0x6019508",
+          "b": "0x6019508",
+          "same": true
+        },
+        "stop_record": {
+          "a": {
+            "kind": "unmapped_memory",
+            "access": "read",
+            "address": "0xf2a610",
+            "size": 4,
+            "reference_sdk_register": null
+          },
+          "b": {
+            "kind": "unmapped_memory",
+            "access": "read",
+            "address": "0xf2a610",
+            "size": 4,
+            "reference_sdk_register": null
+          },
+          "identical": true
+        },
+        "same_stop": true
+      },
+      "control_flow_identical_over": {
+        "steps": 41848382,
+        "summary": {
+          "run_count": 41820932,
+          "head": [
+            [
+              "0x6000100",
+              1,
+              0
+            ],
+            [
+              "0x6000106",
+              1,
+              0
+            ],
+            [
+              "0x600010c",
+              1,
+              0
+            ],
+            [
+              "0x6000110",
+              1,
+              0
+            ],
+            [
+              "0x6035616",
+              1,
+              0
+            ],
+            [
+              "0x6035618",
+              1,
+              0
+            ],
+            [
+              "0x603561e",
+              1,
+              0
+            ],
+            [
+              "0x6035620",
+              1,
+              0
+            ],
+            [
+              "0x6035640",
+              1,
+              0
+            ],
+            [
+              "0x6000116",
+              1,
+              0
+            ],
+            [
+              "0x600011a",
+              1,
+              0
+            ],
+            [
+              "0x60664d8",
+              1,
+              0
+            ]
+          ],
+          "tail": [
+            [
+              "0x60194e8",
+              1,
+              0
+            ],
+            [
+              "0x60194ea",
+              1,
+              0
+            ],
+            [
+              "0x60194ee",
+              1,
+              0
+            ],
+            [
+              "0x60194fc",
+              1,
+              0
+            ],
+            [
+              "0x60194fe",
+              1,
+              0
+            ],
+            [
+              "0x6019500",
+              1,
+              0
+            ],
+            [
+              "0x601a2fe",
+              1,
+              0
+            ],
+            [
+              "0x601a302",
+              1,
+              0
+            ],
+            [
+              "0x601a306",
+              1,
+              0
+            ],
+            [
+              "0x601a308",
+              1,
+              0
+            ],
+            [
+              "0x601a30c",
+              1,
+              0
+            ],
+            [
+              "0x6019502",
+              1,
+              0
+            ]
+          ],
+          "omitted_middle_runs": 41820908
+        }
+      },
+      "first_divergence": {
+        "step": 155390,
+        "core_a": 0,
+        "core_b": 0,
+        "pc_a": "0x6010b16",
+        "pc_b": "0x6010b16",
+        "next_pc_a": "0x6010b18",
+        "next_pc_b": "0x6010b18",
+        "classification": "register_state_divergence",
+        "registers": {
+          "2": {
+            "a": "00000028",
+            "b": "00000088"
+          }
+        },
+        "instruction_bytes_differ_within_instruction": false,
+        "note": "instruction bytes are identical at this PC; the differing input is data loaded earlier from image-differing memory (flash/app/resource bytes) whose value entered this register or an earlier one",
+        "context_before": [
+          [
+            0,
+            "0x6010b04"
+          ],
+          [
+            0,
+            "0x6010b06"
+          ],
+          [
+            0,
+            "0x6010b0c"
+          ],
+          [
+            0,
+            "0x6010b10"
+          ],
+          [
+            0,
+            "0x6010b12"
+          ],
+          [
+            0,
+            "0x6010b14"
+          ]
+        ],
+        "context_after_a": [
+          [
+            0,
+            "0x6010b16"
+          ],
+          [
+            0,
+            "0x6010b18"
+          ],
+          [
+            0,
+            "0x6010b16"
+          ],
+          [
+            0,
+            "0x6010b18"
+          ],
+          [
+            0,
+            "0x6010b16"
+          ],
+          [
+            0,
+            "0x6010b18"
+          ]
+        ],
+        "context_after_b": [
+          [
+            0,
+            "0x6010b16"
+          ],
+          [
+            0,
+            "0x6010b18"
+          ],
+          [
+            0,
+            "0x6010b16"
+          ],
+          [
+            0,
+            "0x6010b18"
+          ],
+          [
+            0,
+            "0x6010b16"
+          ],
+          [
+            0,
+            "0x6010b18"
+          ]
+        ]
+      },
+      "common_prefix": {
+        "steps": 155390,
+        "summary": {
+          "run_count": 147001,
+          "head": [
+            [
+              "0x6000100",
+              1,
+              0
+            ],
+            [
+              "0x6000106",
+              1,
+              0
+            ],
+            [
+              "0x600010c",
+              1,
+              0
+            ],
+            [
+              "0x6000110",
+              1,
+              0
+            ],
+            [
+              "0x6035616",
+              1,
+              0
+            ],
+            [
+              "0x6035618",
+              1,
+              0
+            ],
+            [
+              "0x603561e",
+              1,
+              0
+            ],
+            [
+              "0x6035620",
+              1,
+              0
+            ],
+            [
+              "0x6035640",
+              1,
+              0
+            ],
+            [
+              "0x6000116",
+              1,
+              0
+            ],
+            [
+              "0x600011a",
+              1,
+              0
+            ],
+            [
+              "0x60664d8",
+              1,
+              0
+            ]
+          ],
+          "tail": [
+            [
+              "0x6010af2",
+              1,
+              0
+            ],
+            [
+              "0x6010af8",
+              1,
+              0
+            ],
+            [
+              "0x6010afc",
+              1,
+              0
+            ],
+            [
+              "0x6010afe",
+              1,
+              0
+            ],
+            [
+              "0x6010b00",
+              1,
+              0
+            ],
+            [
+              "0x6010b02",
+              1,
+              0
+            ],
+            [
+              "0x6010b04",
+              1,
+              0
+            ],
+            [
+              "0x6010b06",
+              1,
+              0
+            ],
+            [
+              "0x6010b0c",
+              1,
+              0
+            ],
+            [
+              "0x6010b10",
+              1,
+              0
+            ],
+            [
+              "0x6010b12",
+              1,
+              0
+            ],
+            [
+              "0x6010b14",
+              1,
+              0
+            ]
+          ],
+          "omitted_middle_runs": 146977
+        }
+      },
+      "divergent_signature_spans": {
+        "count": 151,
+        "first": [
+          {
+            "steps": [
+              155390,
+              155398
+            ],
+            "pc": "0x6010b16",
+            "registers": {
+              "2": [
+                "00000028",
+                "00000088"
+              ]
+            },
+            "writes_differ": false
+          },
+          {
+            "steps": [
+              156468,
+              156476
+            ],
+            "pc": "0x6010b16",
+            "registers": {
+              "2": [
+                "00000028",
+                "00000088"
+              ]
+            },
+            "writes_differ": false
+          },
+          {
+            "steps": [
+              158743,
+              158751
+            ],
+            "pc": "0x6010b16",
+            "registers": {
+              "2": [
+                "00000028",
+                "00000088"
+              ]
+            },
+            "writes_differ": false
+          },
+          {
+            "steps": [
+              165322,
+              165330
+            ],
+            "pc": "0x601113a",
+            "registers": {
+              "2": [
+                "00000028",
+                "00000088"
+              ]
+            },
+            "writes_differ": false
+          },
+          {
+            "steps": [
+              165530,
+              165538
+            ],
+            "pc": "0x6000f48",
+            "registers": {
+              "1": [
+                "0000007d",
+                "000000d2"
+              ]
+            },
+            "writes_differ": false
+          },
+          {
+            "steps": [
+              165651,
+              165654
+            ],
+            "pc": "0x6000f52",
+            "registers": {
+              "4": [
+                "00003328",
+                "0000fa88"
+              ]
+            },
+            "writes_differ": false
+          },
+          {
+            "steps": [
+              165767,
+              165774
+            ],
+            "pc": "0x60647a8",
+            "registers": {
+              "4": [
+                "00003328",
+                "0000fa88"
+              ]
+            },
+            "writes_differ": false
+          },
+          {
+            "steps": [
+              168528,
+              168536
+            ],
+            "pc": "0x601113a",
+            "registers": {
+              "2": [
+                "000000a9",
+                "000000f2"
+              ]
+            },
+            "writes_differ": false
+          }
+        ]
+      },
+      "note": "register/memory-signature divergences exist but the CONTROL FLOW never diverged and both runs reached the same stop; see divergent_signature_spans for every point where an image difference became visible in a compared observable"
+    }
+  ],
+  "scenario": "p11_heap_experimental",
+  "image_trace_self_check_passed": true
+}

@@ -1,0 +1,28 @@
+{
+  "route": "CON0PAR/sim-con0par（基线 main 2712dcb，零 tools/ 改动）",
+  "recorded_at": "2026-11-17T21:26:30+08:00",
+  "task": "FD610C-con0 遗留补验二：official↔tested_b79 parity 全量重跑到 CON0 新停点 41,848,382——CON0 commit 只把 check_self_conditional 停点/步数钉值推进到新停点（spans/diffs 钉值沿用 FD610C 停点预测「预期 0 新增」），本补验实跑证实。",
+  "method": {
+    "command": "cd /home/felix021/worktrees/h3s/sim-con0par && python3 tools/analyze_image_trace.py --rom /home/felix021/tmp/QCY_H3S_BR28_ROM_000000-020000.bin --self-check --scenario p11_heap_experimental --jobs 2 --report analysis/local-checks/image-trace-selfcheck-conditional.json",
+    "exit_code": 0,
+    "assertion_surface": "check_self_conditional 全钉值过（image_trace_self_check_passed=true）：进程内断言 8 组全绿；report 另存 evidence/sim-routes/con0par-conditional-parity-report.json（完整 23KB，与 analysis/local-checks/ 落盘件逐字节同源）",
+    "run_window": "2026-11-17 20:53:20 - 21:26:30（≈33m10s，--jobs 2 双臂并行 + 汇合比较）",
+    "arms": "official=firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw（ufw sha 65cafc7f…）↔ tested_b79=firmware/H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw（ufw sha b79cb3a6…），simulator 3608ed19"
+  },
+  "result": {
+    "verdict": "两镜像同停点 41,848,382 @ 0x6019508（unmapped_memory 读 0xf2a610 size4），parity delta 0——CON0 放行段（41,847,806→41,848,382，+576 步纯 CPU0）零新增镜像分歧面，预测成立",
+    "steps": {"official": 41848382, "tested_b79": 41848382, "delta": 0},
+    "per_core_steps": {"official": {"0": 41853355, "1": 11496}, "tested_b79": {"0": 41853355, "1": 11496}, "delta": {"0": 0, "1": 0}},
+    "stop_record_identical": true,
+    "same_stop": true,
+    "control_flow": "41,848,382 步控制流（核调度/PC/next_pc）零分歧，无 reconvergence 字段",
+    "first_divergence": {"step": 155390, "pc": "0x6010b16", "classification": "register_state_divergence", "registers": {"2": {"a": "00000028", "b": "00000088"}}, "note": "与 crc_bankb/历次条件前沿完全一致（资源表头 CRC 字节经 rep 4 32 拷贝进寄存器）"},
+    "divergent_signature_spans": {"count": 151, "vs_fd610c_stop": "147→151 为 FD610C 段（+503 步）实测；本次 CON0 段 +576 步后仍 151——零新增分歧段", "first8_writes_differ": [false, false, false, false, false, false, false, false], "first8_steps": ["[155390,155398]@0x6010b16", "[156468,156476]@0x6010b16", "[158743,158751]@0x6010b16", "[165322,165330]@0x601113a", "[165530,165538]@0x6000f48", "[165651,165654]@0x6000f52", "[165767,165774]@0x60647a8", "[168528,168536]@0x601113a"]},
+    "final_report_diffs": {"count": 30, "paths": "$.milestones[23].r0 + hardware_crc result_reads[1,8,15,22,37,43,49,55,61,67,73,77,83,97,103,109,115,121,127,130,137,147,154,161,168,175,182,189,197]", "vs_fd610c_stop": "逐路径与 FD610C 停点记录一致（含 result_reads[197]=stream.bin 表项头 CRC 差异，非本路新增）"}
+  },
+  "honesty": {
+    "writes_differ_caveat": "writes_differ 全 False 只覆盖前 8 段起点（工具与断言的已知口径）；镜像字节复制进 RAM 本就产生存储差异，不引用「writes_differ 全 False」做强结论——本补验结论只立在 spans 151/diffs 30/parity delta 0/控制流零分歧四个如实数字上",
+    "conditional": "一切结论条件通过（p11_heap_experimental 条件栈 derived-not-measured 前提下），非已验证 boot 事实"
+  },
+  "units_impact": "零（未改 tools/ 断言/模型代码；analysis/local-checks 报告在 gitignored 区）"
+}

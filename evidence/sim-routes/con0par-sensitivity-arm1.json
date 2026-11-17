@@ -1,0 +1,49 @@
+{
+  "route": "CON0PAR/sim-con0par（基线 main 2712dcb，零 tools/ 改动，driver ~/tmp/con0par/con0_sensitivity_arm.py 不进仓）",
+  "recorded_at": "2026-11-17T21:17:55+08:00",
+  "task": "FD610C-con0 遗留补验一：敏感性对照臂 fixture=0x00000001——codex 三选一 (a) 定调的第二臂，验证 fixture=1 时 if(r6&1) 走真分支（恢复 [0xfd6100]|=1）后前沿呈现不同形态。",
+  "method": {
+    "mechanism": "运行时改写 probe_irq_entry.JL_PLED_CON0_INITIAL_VALUE=0x00000001 再经 frontier_registry.scenario_flags(values=probe_irq_entry) 解析（registry 的 value_attr 即该模块常量，getattr 运行时取值），等价于 probe_irq_entry.irq_case 显式传参 jl_pled_con0_initial_fixture=1；不改任何 tools/ 文件",
+    "command": "cd /home/felix021/worktrees/h3s/sim-con0par && python3 /home/felix021/tmp/con0par/con0_sensitivity_arm.py",
+    "scenario": "p11_heap_experimental_config 全条件栈（93 开关，flag 推导预算 50M）",
+    "assertion_surface": "只跑 irq_case 仿真本体（停点记录原样返回）；probe_irq_entry.check() 的前沿 require 不在调用路径——本臂预期与主臂停点不同，不消费断言面",
+    "run_window": "2026-11-17 20:53:20 - 21:17:55（1477.5s ≈ 24m38s）",
+    "row_artifact": "~/tmp/con0par/con0-arm1-row.json（完整场景行 14.7MB，与本 JSON 同源）"
+  },
+  "result": {
+    "verdict": "真分支恢复路径实走：与主臂差异恰为 +1 条恢复 RMW 指令，随后重合到同一诚实停点",
+    "completed_steps": 41848383,
+    "stop_pc": "0x6019508",
+    "stop_core": 0,
+    "stop": {"kind": "unmapped_memory", "access": "read", "address": "0xf2a610", "size": 4, "reference_sdk_register": null},
+    "stop_instruction": "0x6019508 rmw.and.nmodimm [r0+0] &= 0xFFFFFF1F（r0=0xF2A610，0x6019502 helper 首条；RMW 内部读 0xf2a610 unmapped 诚实停，与主臂同一停指令）",
+    "per_core_steps": {"0": 41853356, "1": 11496},
+    "container": {
+      "word_writes": 2,
+      "stores_values": ["0x0", "0x1"],
+      "synthesized_initial_reads": 2,
+      "reads_after_write": 1,
+      "reading": "0x60194b4 save-restore 首读 r6=1（初读#1）→0x60194b6 清 bit0 RMW 内部读 1（初读#2，写前）→写 0（写#1）→0x60194ca if(r6&1) 真分支→恢复 RMW 内部读 0（写后读#1，读回最后写值）→写 0|1=1（写#2，LED 使能位恢复）"
+    }
+  },
+  "diff_vs_main_arm": {
+    "main_arm_source": "~/tmp/con0-full-result.json（FD610C-con0 路主臂工件，2026-11-17 19:36，fixture=0x00000000）",
+    "completed_steps": "41848382 → 41848383（+1：真分支多执行 1 条恢复 RMW）",
+    "stop": "逐字段一致（0x6019508 读 0xf2a610 unmapped_memory size4 core0）",
+    "per_core": "{0:41853355,1:11496} → {0:41853356,1:11496}（CPU0 +1，CPU1 不变）",
+    "container": "word_writes 1[0x0]→2[0x0,0x1]、reads_after_write 0→1（恢复 RMW 写后读 0）、synthesized_initial_reads 2→2 不变（首读+清位 RMW 内部读，两臂分支前指令流相同）",
+    "mmio_rmw_always_writes": "69050 → 69051（+1=恢复 RMW）",
+    "timer0_cnt": "12579 → 12582（+3，事件时钟耦合的真实观测差）",
+    "unchanged": [
+      "abstract_task_stack_transport 456537、exact_full_word_store 708343、交付总数 345",
+      "watchdog feeds 163 / mailbox 162 / expired false / elapsed 105",
+      "0x60194ca 之后两臂在同一函数内重合，+575 步纯 CPU0 段走到与主臂相同的 0x6019502 helper 首条 RMW 停点"
+    ]
+  },
+  "honesty": {
+    "derived_not_measured": "fixture=1 与主臂 fixture=0 同为明确选择的实验输入，无硅复位值证据；不因本臂与主臂停点相同反推任何一臂更真实",
+    "coverage": "单臂全量跑（boot 前缀 0 步起至自然诚实停点，50M 预算内 41,848,383 步停），非分叉点截断；负例臂（开关 None）与主臂的既有验收（41,847,806/41,848,382）不在本补验重跑",
+    "handoff_note_correction": "主臂 HANDOFF 叙事中「synthesized_initial_reads 1」与主臂工件实际值 2 不符（清 bit0 RMW 的内部读亦计初读），本补验以两侧工件实测值为准记录"
+  },
+  "units_impact": "零（本补验未改任何 tools/ 断言/模型代码；worktree 内仅新增 evidence 与 HANDOFF 补验段）"
+}
