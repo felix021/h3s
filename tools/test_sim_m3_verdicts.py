@@ -39,6 +39,7 @@ import base64
 import binascii
 import hashlib
 import json
+import re
 import socket
 import struct
 import subprocess
@@ -322,10 +323,7 @@ def load_loader(bot: BotLink):
 # server 子进程管理（真进程，非 mock；stderr 落文件防管道死锁）
 # ---------------------------------------------------------------------------
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
+_LISTEN_RE = re.compile(r'监听 127\.0\.0\.1:(\d+)')
 
 
 class ServerProc:
@@ -334,13 +332,35 @@ class ServerProc:
     def __init__(self, fixture: Path, log_path: Path):
         self.fixture = fixture
         self.log_path = log_path
-        self.port = free_port()
+        # 并发隔离（FLAKYFIX-2，同 test_sim_usb_device CLI 冒烟做法）：--listen :0 由内核
+        # 随机分配（bind 即独占）——子进程启动期上百 ms 的 free_port 探测窗口（bind 0→读号→
+        # 关→稍后再 bind，跨进程可双分配同号 → 后 bind 者 EADDRINUSE 挂）不复存在；
+        # 实际端口从 stderr 落盘日志的「监听 127.0.0.1:<port>」行取（log() 逐行 flush）。
         self.log_file = open(log_path, 'wb')
         self.proc = subprocess.Popen(
             [sys.executable, str(TOOLS / 'sim_bridge_server.py'),
-             '--listen', '127.0.0.1:%d' % self.port, '--flash-image', str(fixture)],
+             '--listen', '127.0.0.1:0', '--flash-image', str(fixture)],
             cwd=str(ROOT), stdout=subprocess.DEVNULL, stderr=self.log_file)
         self.dead = False
+        try:
+            self.port = self._wait_listen_port(20.0)
+        except BaseException:
+            self.terminate()                            # 不留孤儿 server 进程
+            raise
+
+    def _wait_listen_port(self, deadline: float) -> int:
+        """轮询 stderr 日志取实际监听端口；子进程先死/超时则带日志如实报错。"""
+        limit = time.time() + deadline
+        while True:
+            with open(self.log_path, 'rb') as fh:
+                text = fh.read().decode('utf-8', 'replace')
+            m = _LISTEN_RE.search(text)
+            if m:
+                return int(m.group(1))
+            if self.proc.poll() is not None or time.time() > limit:
+                raise AssertionError('server 子进程未报告监听端口（exit=%s）：\n%s'
+                                     % (self.proc.poll(), text[-2000:]))
+            time.sleep(0.02)
 
     def connect(self, wait_seconds=20.0):
         """连接 + hello（refused=bind 前/busy=活动锁未释放——都退避重试）。"""
