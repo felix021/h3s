@@ -139,7 +139,12 @@ SCENARIOS = {
         # 函数 0x606b4d0 的 ADA 配置段(12 写)再 +51 步到 21,798,257 @
         # 0x606b68e 读 0xf2b404(P11_LPVAD->VAD_ACON0 bit28 置位 RMW 内部读),
         # 预算 40M 保持(余量 >18M)。
-        'default_budget': 40000000,
+        # 路 WDFEED:喂狗邮箱事务闭合→P11 侧 WDT feed 副作用放行后,park
+        # 稳态越过看门狗伪到期(32,737,356;喂狗 162 笔全重装,watchdog 未
+        # 到期)到 41,828,530 @ 0x60649d0 st.w.pin.l 全字存储写未初始化物理
+        # 堆 0x19f7a8——上游 store 模型簿记读边界(183,486 st.d.sp.l/236,415
+        # 半字 pair 同族第三例),预算 40M→50M(留停点后余量)。
+        'default_budget': 50000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
         # 单点在 tools/frontier_registry.py,前沿推进后只改 registry(本值自动
@@ -1446,19 +1451,19 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 32733673, '1': 11496},
+                run['per_core_steps'] == {'0': 41833502, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (32737356 @ 0x12c5ca, the watchdog '
-                'expiry — CON 0x2e, time_code 14, period 16384 nominal units '
-                'elapsed without a twelfth feed — reached after the route-GPCNUM '
-                'named fixture releases the JL_GPCNT->NUM read of the steady-state '
-                'measurement task 0x6069538 (twenty served conversions fill the '
-                '20-slot window, fill==20 fires the epilogue h[0x12A3DC] consumer '
-                'and the restart chain) with the park steady state continuing '
-                'in between (eleven closed feed-dog transactions, 1791+57 '
-                'parked CPU0 wakes at 0x12c5ca); the expiry delivery (hardware '
-                'reset/exception) is not invented — the honest stop is the '
-                'feed-cadence decision for the next route)')
+                'conditional frontier stop (41828530 @ 0x60649d0, the upstream '
+                'store bookkeeping read of the uninitialized physical-heap word '
+                '0x19f7a8 — reached after the route-WDFEED mailbox feed '
+                'side-effect release keeps the WDT reloaded through the park '
+                'steady state (the GPCNUM pseudo-expiry point 32737356 is '
+                'crossed with 162 closed feed transactions and zero watchdog '
+                'expiry), the st.w.pin.l full-word store of the byte-unpack '
+                'loop in 0x60649b0 writing the never-initialized heap word; '
+                'the 183486 st.d.sp.l and 236415 halfword-pair stops are the '
+                'same bookkeeping-read family — the instruction-shape gate '
+                'decision belongs to the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

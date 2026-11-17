@@ -337,6 +337,24 @@ FEATURES = (
             '0x400→P2M_INT_PND bit12 置位+P2M+3 回声=M2P+7 值;P2M_INT_CLR 0x1000 清位;lpwr '
             '请求-响应同款,即时无延迟,synthetic-not-measured;三勘误后的正确地址 '
             '0xF27F43/0xF27F87/0xF2A618/0xF2A60C/0xF2A608;首版 0b875ed,B2R 重落地)'),
+    # ---- 路 WDFEED/sim-wdfeed:三选一 (b) 喂狗副作用补全。32,737,356 @
+    # 0x12c5ca 的 watchdog_expired_delivery_not_implemented(CON 0x2e/
+    # time_code 14/elapsed 16384)根因=喂狗事务的请求/ack 面已建模、P11 侧
+    # feed 副作用缺失:主核 init 后 WDT 接口恰一次直接 feed(command_values
+    # 末项 0x1002E),此后全部喂狗走邮箱,P11(q32s 不执行)的 WDT KEY/CON
+    # 写不可见,计数器自 init 起必然到期。放行=事务闭合(回声匹配 kick 时刻
+    # 锁定的消息字节 8+固件 CLR)时计数器重装;证据=喂狗函数成功判据恰为
+    # 回声匹配+CLR(0x12ccac/0x12ccb0,s19-final-specs §3.1)+p11_code.bin 三处
+    # WDT KEY 字面量 0x048c159d(p11_local 0x2e2/0x8c4/0x20cc)+真机 park 长期
+    # 存活;假设显式:P11 消息 8 处理器重装 WDT 未执行验证,提交点=事务闭合
+    # 是记账时刻非物理喂狗时刻。(a) 到期交付不采纳:真硅到期=复位、无向量
+    # 槽、稳态不发生;(c) 不需要:节拍无漂移、时钟标称值只定墙钟刻度。
+    # codex 参谋全文 /tmp/wdfeed-codex.md(裁定 (b)+四点吸收)。----
+    Feature('wdt_mailbox_feed', 'conditional', ('p2m_mailbox_ack',), False, None,
+            '喂狗邮箱事务闭合→P11 侧 WDT feed 副作用投影(计数器重装;显式假设='
+            'P11 成功处理消息 8 重装所建模 WDT,q32s 未执行;提交点=回声匹配+CLR'
+            '与固件自身成功判据重合;已到期不补喂;watchdog 报告 mailbox_feed_'
+            'side_effects 单列,feeds 保持总数)'),
     # ---- 路 B2G/sim-b2g:B2R 案 2 提层(0b875ed 原案顺序:案 1 之后)。B2R
     # 落地时登记 probe_only 的理由:解析器 0x60010b4(W1[4]/S9 域)在当时前沿
     # (flash 顶窗口 0x606c5ba,FLS 在途)之后,进条件栈会改共享场景报告形状;
@@ -483,11 +501,13 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 32737356,
-        'stop_pc': '0x12c5ca',
-        'stop': {'kind': 'watchdog_expired_delivery_not_implemented',
-                 'control': '0x2e', 'elapsed_nominal_units': 16384},
-        'freshness_fields': ('kind', 'control'),
+        'completed_steps': 41828530,
+        'stop_pc': '0x60649d0',
+        'stop': {'kind': 'upstream_store_bookkeeping_read', 'access': 'read',
+                 'address': '0x19f7a8', 'size': 4, 'region': 'physical_heap',
+                 'first_missing': '0x19f7a8',
+                 'note': 'upstream store model reads previous words to merge/drop writes; not a guest load'},
+        'freshness_fields': ('kind', 'address'),
     },
 }
 
