@@ -10,11 +10,12 @@ offline:
 1. round trip: every assembled instruction re-encodes byte-identically
    (encode(decode(x)) == x) and the size stays in the estimated shape band;
 2. anchor audit: exactly the two pinned API addresses (set/get_config
-   dispatchers, route AB) are loaded, each once, into r6;
+   dispatchers, route AB) are loaded, each twice (key-30 and key-31 branches,
+   route HAL4), into r6;
 3. call pairing: every register-indirect call is preceded by its API load
    (three 2B argument setups in between, the payload's pinned shape);
-4. shape constants: the command-shape constants (key id 30, value length 8,
-   write length 9, read length 1) all appear as instruction operands;
+4. shape constants: the command-shape constants (key ids 30/31, value lengths
+   8/88, write lengths 9/89, read length 1) all appear as instruction operands;
 5. position independence: the payload carries no absolute address except the
    two API anchors — assembling it under a different base yields identical
    bytes (no .equ depends on the segment layout);
@@ -48,8 +49,11 @@ CONSTS = {
     8: 'value length (route AB roundtrip length)',
     9: 'write shape data_len = key byte + 8 value bytes',
     1: 'read shape data_len = key byte only',
+    31: 'HAL4 EQ ten-band VM key id (same free-key band)',
+    88: 'HAL4 value length (8B header + 10 segs x 8B)',
+    89: 'HAL4 write shape data_len = key byte + 88 value bytes',
 }
-MIN_INSNS, MAX_INSNS = 20, 40
+MIN_INSNS, MAX_INSNS = 20, 60
 
 
 def build():
@@ -82,13 +86,14 @@ class R4KeyhookPayloadTest(unittest.TestCase):
             count += 1
         self.assertGreaterEqual(count, MIN_INSNS, 'payload unexpectedly small')
         self.assertLessEqual(count, MAX_INSNS, 'payload larger than estimated shape')
-        self.assertEqual(len(self.data), 78, 'payload size changed')
+        self.assertEqual(len(self.data), 142, 'payload size changed (HAL4 key-31 extension: 78 -> 142)')
 
     def test_02_api_anchor_addresses(self):
-        """Exactly the two pinned API addresses, each loaded once into r6."""
+        """Exactly the two pinned API addresses, each loaded twice into r6
+        (key-30 + key-31 write/read branches, route HAL4)."""
         loads = [int(text.split('= ')[1]) for _off, iid, text, _raw in self.insns
                  if iid == 'li.u32']
-        self.assertEqual(sorted(loads), sorted(API_ADDRS),
+        self.assertEqual(sorted(loads), sorted(list(API_ADDRS) * 2),
                          f'API anchor set mismatch: {[hex(v) for v in loads]}')
         for _off, iid, text, _raw in self.insns:
             if iid == 'li.u32':
@@ -99,7 +104,8 @@ class R4KeyhookPayloadTest(unittest.TestCase):
         """Each register-indirect call follows its own API load (3x 2B args)."""
         by_off = {off: (iid, text) for off, iid, text, _raw in self.insns}
         calls = [(off, iid) for off, iid, _t, _r in self.insns if iid == 'call.r']
-        self.assertEqual(len(calls), len(API_ADDRS), 'one call per API anchor')
+        self.assertEqual(len(calls), len(API_ADDRS) * 2,
+                         'one call per API anchor per key branch')
         for off, _iid in calls:
             prev = by_off[off - 12]           # li.u32(6B) + 3x 2B arg setups
             self.assertEqual(prev[0], 'li.u32', 'call must follow its API load')
@@ -156,6 +162,22 @@ class R4KeyhookPayloadTest(unittest.TestCase):
         # returns, consumed at 0x0600f946) is never written
         for off, iid, text, raw in self.insns:
             self.assertNotIn('r7 = ', text, f'payload must not touch r7: {text}')
+
+    def test_07_key31_branch_shapes(self):
+        """HAL4 key-31 extension: the length dispatch covers {9, 89, 1}; the
+        key-31 write checks data[0]==31 and posts set_config(31, data+1, 88);
+        the key-31 read posts get_config(31, resp+2, 88) and echoes n=88
+        (response `30 58 <88B>` fits the dispatcher's 128B buffer)."""
+        texts = [text for _o, _i, text, _r in self.insns]
+        for gate in ('if (r3 == 9)', 'if (r3 == 89)', 'if (r3 == 1)',
+                     'if (r5 != 31)', 'if (r5 == 31)'):
+            self.assertTrue(any(t.startswith(gate) for t in texts),
+                            f'dispatch gate missing: {gate}')
+        self.assertEqual(texts.count('r2 = 88'), 2,
+                         'key-31 write/read both pass length 88')
+        self.assertEqual(texts.count('r0 = 88'), 1, 'key-31 read echoes n=88')
+        self.assertEqual(texts.count('r0 = 31'), 2,
+                         'key-31 write and read both post key 31')
 
 
 if __name__ == '__main__':

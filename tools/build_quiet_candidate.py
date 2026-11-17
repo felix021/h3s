@@ -206,8 +206,11 @@ def apply_hearing_aid_demo(stream, mpo=100.0):
 
     changes = []
     # eq_tool：{float global_gain, 4B 段数字段, seg[10]{u16 index, u16 iir_type,
-    # i32 freq, float gain, float q}}。段数字段为大端 u16（10 段=00 0a 00 00），
-    # 其余字段小端；seg[i] 位于 +8+i*16。尺寸=8+16*seg_num 与记录 size 自洽。
+    # i32 freq, float gain, float q}}。+4..7 为位域 {u8 bypass, u8 seg_num,
+    # u16 pad}（10 段=00 0a 00 00；HAL4 勘误：旧「大端 u16 段数」表述作废，
+    # 消费端 eq_open_config 读 +4 为 bypass、eq ioctl 读 bits8..15 为段数，
+    # 见 docs/hearing-aid-l4-eq.md §1.5）；其余字段小端；seg[i] 位于 +8+i*16。
+    # 尺寸=8+16*seg_num 与记录 size 自洽。
     eq_off = s5_base + eq["offset"]
     seg_num = struct.unpack_from(">H", stream, eq_off + 4)[0]
     if seg_num != 10 or eq["size"] != 8 + 16 * seg_num:
@@ -325,6 +328,14 @@ def main():
                         " jlstream_set_node_param(0xdefe,\"Drc1Eff\",76B) 热更（wdrc ioctl 0x06078d0a"
                         " 0x2000F 分支整包复制+updata，下一音频块生效）；与 --hearing-aid-l1-key7"
                         " 互斥（同一接驳窗）；见 docs/hearing-aid-l3-mpo.md；候选 UNTESTED 不刷机")
+    p.add_argument("--hearing-aid-l4-eq", action="store_true",
+                   help="助听 L4 EQ 十段热更离线候选：隐含 --hearing-aid-l3-mpo 全链（keyhook 扩展"
+                        " key 31 分支），追加 apply_eq 载荷——open 成功后读 key 31（版本化 88B：魔数 HA+版本"
+                        "+段数+10 段 {u16 freq, float32 gain}）→ 整包先验（freq 1..21599、|gain|≤40dB）→"
+                        " 10 条 EQ_SEG 44B 段包 jlstream_set_node_param(0x737b,\"Eq1Eff\",包,44) 热更"
+                        "（eq ioctl 0x0607898e subcmd 7 分支，每条要求返回 1 否则停止）；只发 Eq1Eff"
+                        "（mic_effect 主链 MPO 上游输入 EQ；Eq4Eff/Eq5Eff 在输出支路不动，避免限幅后"
+                        "重复整形）；候选 UNTESTED 不刷机，见 docs/hearing-aid-l4-eq.md")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -350,6 +361,14 @@ def main():
         if args.hearing_aid_l1_key7:
             p.error('--hearing-aid-l3-mpo and --hearing-aid-l1-key7 share the KEY7 graft window')
         args.r4_keyhook = True                # L3 MPO 消费链 = keyhook 写入 + toggle 消费（路 HAL3）
+        args.hearing_aid_l1_slotram = True
+        args.hearing_aid_l1_close = True
+        args.hearing_aid_l1_patch = True
+    if args.hearing_aid_l4_eq:
+        if args.hearing_aid_l1_key7:
+            p.error('--hearing-aid-l4-eq and --hearing-aid-l1-key7 share the KEY7 graft window')
+        args.hearing_aid_l3_mpo = True        # L4 EQ = L3 MPO 全链 + EQ 段热更（路 HAL4）
+        args.r4_keyhook = True
         args.hearing_aid_l1_slotram = True
         args.hearing_aid_l1_close = True
         args.hearing_aid_l1_patch = True
@@ -464,7 +483,8 @@ def main():
                                         slot_ram=args.hearing_aid_l1_slotram,
                                         r4_keyhook=args.r4_keyhook,
                                         key7_toggle=args.hearing_aid_l1_key7,
-                                        l3_mpo=args.hearing_aid_l3_mpo)
+                                        l3_mpo=args.hearing_aid_l3_mpo,
+                                        l4_eq=args.hearing_aid_l4_eq)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -547,7 +567,8 @@ def main():
     elif args.hearing_aid_mpo is not None:
         suffix += f"_HEARING_AID_MPO{mpo:g}"
     if hearing_aid_l1:
-        suffix += ("_HEARING_AID_L3_MPO_OFFLINE" if args.hearing_aid_l3_mpo
+        suffix += ("_HEARING_AID_L4_EQ_OFFLINE" if args.hearing_aid_l4_eq
+                   else "_HEARING_AID_L3_MPO_OFFLINE" if args.hearing_aid_l3_mpo
                    else "_R4_KEYHOOK_OFFLINE" if args.r4_keyhook
                    else "_HEARING_AID_L1_KEY7_OFFLINE" if args.hearing_aid_l1_key7
                    else "_HEARING_AID_L1_SLOTRAM_OFFLINE" if args.hearing_aid_l1_slotram

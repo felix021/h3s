@@ -50,7 +50,8 @@ public class KeyStoreFrameTest {
         policy();
         endToEnd();
         mpoCodec();
-        System.out.println("KeyStoreFrameTest passed: 写/读往返、文档字节、边界拒绝、回执解析、EqWritePolicy 放行、Loopback 端到端读写、L3 MPO 值协议");
+        eqCodec();
+        System.out.println("KeyStoreFrameTest passed: 写/读往返、文档字节、边界拒绝、回执解析、EqWritePolicy 放行、Loopback 端到端读写、L3 MPO 值协议、L4 EQ 十段值协议");
     }
 
     // L3 MPO 值协议（docs/hearing-aid-l3-mpo.md；与固件 apply_mpo.S 位型门对齐）
@@ -79,6 +80,67 @@ public class KeyStoreFrameTest {
         // 8B 协议值可进普通 write 通道（帧形状与既有写完全一致）
         byte[] w = KeyStoreFrame.buildWriteCommand(3, v100);
         bytes("MPO 写帧", KeyStoreFrame.parseWriteCommand(w), v100);
+    }
+
+    // L4 EQ 十段值协议（docs/hearing-aid-l4-eq.md；与固件 apply_eq.S 整包先验对齐）
+    static void eqCodec() {
+        // 官方 Eq1Eff blob 的十个频点 + 一组非零增益（含负增益）往返
+        int[] freqs = {25, 53, 112, 238, 505, 1070, 2268, 4807, 10190, 21599};
+        float[] gains = {12.5f, -6.25f, 0f, 39f, -39.9f, 3f, 0.5f, -1f, 20f, 40f - 0.01f};
+        KeyStoreFrame.EqSeg[] segs = new KeyStoreFrame.EqSeg[10];
+        for (int i = 0; i < 10; i++) segs[i] = new KeyStoreFrame.EqSeg(freqs[i], gains[i]);
+        byte[] v = KeyStoreFrame.encodeEqValue(segs);
+        expect(v.length == 88, "EQ 值应为 88B: " + v.length);
+        // 头部字节形状：'H','A',02,00,0a,00 00 00
+        bytes("EQ 头", java.util.Arrays.copyOfRange(v, 0, 8), unhex("484102000a000000"));
+        // 段 0 字节形状：freq u16 LE + pad + float32 LE（25=0x0019, 12.5f=0x41480000）
+        bytes("EQ seg0", java.util.Arrays.copyOfRange(v, 8, 16), unhex("1900" + "0000" + "00004841"));
+        KeyStoreFrame.EqSeg[] back = KeyStoreFrame.decodeEqValue(v);
+        expect(back != null, "EQ 值解码失败");
+        for (int i = 0; i < 10; i++) {
+            expect(back[i].freqHz == freqs[i], "freq 往返[" + i + "]: " + back[i].freqHz);
+            expect(Math.abs(back[i].gainDb - gains[i]) < 1e-4, "gain 往返[" + i + "]: " + back[i].gainDb);
+        }
+        // 门：段数错 / freq=0 / freq>21599 / |gain|>=40 / NaN / Inf
+        KeyStoreFrame.EqSeg[] nine = java.util.Arrays.copyOf(segs, 9);
+        rejected(() -> KeyStoreFrame.encodeEqValue(nine), "9 段应拒绝");
+        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 0, 0, 0f)), "freq=0 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 9, 21600, 0f)), "freq>21599 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, 40.0f)), "gain>=40 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, -40.0f)), "gain<=-40 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, Float.NaN)), "NaN 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, Float.POSITIVE_INFINITY)), "Inf 应拒绝");
+        // 头破损 / 段数错 / 段值越界 → 解码 null；key30 的 8B MPO 值不被误读成 EQ
+        expect(KeyStoreFrame.decodeEqValue(unhex("4841010000000000" + "00".repeat(80))) == null, "ver=1 不解为 EQ");
+        byte[] bad = v.clone(); bad[4] = 9;
+        expect(KeyStoreFrame.decodeEqValue(bad) == null, "段数 9 拒绝");
+        bad = v.clone();
+        int nanBits = Float.floatToIntBits(Float.NaN);
+        for (int k = 0; k < 4; k++) bad[8 + 4 + 4 + k] = (byte) (nanBits >>> (8 * k)); // seg0 gain -> NaN 位型
+        expect(KeyStoreFrame.decodeEqValue(bad) == null, "段值 NaN 拒绝");
+        bad = v.clone();
+        int infBits = Float.floatToIntBits(Float.POSITIVE_INFINITY);
+        for (int k = 0; k < 4; k++) bad[8 + 5 * 8 + 4 + k] = (byte) (infBits >>> (8 * k)); // seg5 gain -> Inf
+        expect(KeyStoreFrame.decodeEqValue(bad) == null, "段值 Inf 拒绝");
+        // 两种值互不误读：长度门在 validate 层直接报错（8B 值进 EQ 解码 / 88B 值进 MPO 解码都拒）
+        rejected(() -> KeyStoreFrame.decodeEqValue(KeyStoreFrame.encodeMpoValue(100.0f)), "8B 值不是 EQ 值");
+        rejected(() -> KeyStoreFrame.decodeMpoValue(v), "88B 值不是 MPO 值");
+        // EQ 写命令帧形状：data = [31, 88B]，帧头/cmdid/data_len 与 key30 写同族
+        byte[] w = KeyStoreFrame.buildEqWriteCommand(0, segs);
+        expect(w.length == 7 + 3 + 89 + 1, "EQ 写帧长度: " + w.length);
+        expect((w[8] & 0xff) == 0x30 && (w[9] & 0xff) == 89 && (w[10] & 0xff) == 31,
+                "EQ 写帧 cmdid/data_len/key 字节");
+        // EQ 读回载荷解析 `30 58 <88B>`
+        byte[] payload = new byte[2 + 88];
+        payload[0] = 0x30; payload[1] = 88;
+        System.arraycopy(v, 0, payload, 2, 88);
+        bytes("EQ 读回载荷值", KeyStoreFrame.parseEqReadPayload(payload), v);
+    }
+
+    static KeyStoreFrame.EqSeg[] mut(KeyStoreFrame.EqSeg[] segs, int i, int f, float g) {
+        KeyStoreFrame.EqSeg[] out = segs.clone();
+        out[i] = new KeyStoreFrame.EqSeg(f, g);
+        return out;
     }
 
     static void roundTrip() {
