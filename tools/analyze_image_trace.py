@@ -150,6 +150,13 @@ SCENARIOS = {
         # LED 驱动 RMW [0xfd610c]&=~0x20 的架构性读(JL_PLED 域 slot3,
         # 未建模寄存器,读侧无证据诚实停)——PLED/N2 电源框架三选一归下一
         # 路。预算 50M 保持。
+        # 路 FD610C:JL_PLED CON3(0xfd610c)单字容器(合成初始 0+读回=当前
+        # 值;codex 定调单字最小假设)放行后,0x6019458 的配置 RMW 内部读
+        # 服务合成 0→清 bit5 写回 0,helper 0x601945c 返回,再 +503 步(纯
+        # CPU0 段,per-core1 11496 不变)到 41,847,806 @ 0x60194b4 读
+        # 0xfd6100=JL_PLED CON0 的 save-restore 首读(r6=[0xfd6100] 存使能
+        # 位→清 bit0→if(r6&1)恢复——CON0 是分支消费者,单字容器不纳入,
+        # 诚实停;0x6069b0e 读 bit0 定亮度步进同域)。预算 50M 保持。
         'default_budget': 50000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
@@ -1438,12 +1445,14 @@ def check_self_conditional(report):
       镜像差异(CRC 轮数 32/结果 82/65405 字节——路 ASS 段 +8 轮全部
       走共享 0x6000f0c wrapper 硬件路径,新增 8 值组 0xa1cd/0xb37d/
       0xa11d/0xc190/0xf271/0xb758/0x5ddd/0x370 与既有六值循环同构);
-    - final report 差异共 29 处(28 处 CRC result_reads + 1 处 milestones[23]
+    - final report 差异共 30 处(29 处 CRC result_reads + 1 处 milestones[23]
       r0;路 AN 的 5 处=walker 链新 CRC 轮序号 37/43/49/55/61,路 AS 再加 2
       处=尾块新 CRC 轮序号 67/73,路 FLS 再加 8 处=77/83/97/103/109/115/
-      121/127,路 RAND 再加 9 处=130/137/147/154/161/168/175/182/189——每
-      六值循环组一处镜像相关差异,镜像字节仍只以寄存器值/CRC 结果显形,
-      存储字节零差异;spans 147、writes_differ 全 False)。
+      121/127,路 RAND 再加 9 处=130/137/147/154/161/168/175/182/189,路
+      FD610C 再加 1 处=197(过墙段 +503 步触达任务创建/配置验证的下一轮
+      硬件 CRC)——每六值循环组一处镜像相关差异,镜像字节仍只以寄存器值/
+      CRC 结果显形,存储字节零差异;spans 147→151(+4 同属寄存器值分歧
+      面,writes_differ 全 False、首分歧仍 155,390、控制流全同构)。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
     pairs = {p['name']: p for p in report['pairs']}
@@ -1457,22 +1466,22 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 41852276, '1': 11496},
+                run['per_core_steps'] == {'0': 41852779, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (41847303 @ 0x6019458, the unmapped '
-                'read of JL_PLED slot 0xfd610c inside the LED driver RMW '
-                '[r0] &= ~0x20 — reached after the route-STOREG3 standalone '
-                'postincrement word-store release executes the byte-unpack '
-                'st.w.pin.l of 0x60649b0 directly (crossing the route-WDFEED '
-                '41,828,530 bookkeeping-read stop: a full-word store '
-                'overwrites all four bytes, the old value cannot matter, the '
-                'merge read is model bookkeeping, not a guest load) and the '
-                'S18 event consumption chain walks on through the scheduler '
-                'return into the PLED RMW whose architectural read has no '
-                'evidence; the parked counters and the event clock stay '
-                'frozen through the release segment (a pure CPU0 sequence, '
-                'per-core 1 unchanged at 11496) — the PLED/N2 register '
-                'decision belongs to the next route)')
+                'conditional frontier stop (41847806 @ 0x60194b4, the unmapped '
+                'read of JL_PLED CON0 0xfd6100 inside the LED driver '
+                'save-restore (r6=[0xfd6100] → clear bit0 → if(r6&1) restore) '
+                '— reached after the route-STOREG3 standalone postincrement '
+                'word-store release executes the byte-unpack st.w.pin.l of '
+                '0x60649b0 directly (crossing the route-WDFEED 41,828,530 '
+                'bookkeeping-read stop) and the route-FD610C single-word '
+                'JL_PLED CON3 container serves the 0x6019458 clear-bit5 '
+                'RMW read as synthetic 0 (derived-not-measured), then the '
+                'helper returns and +503 pure-CPU0 steps walk into the CON0 '
+                'save-restore read whose architectural value feeds a branch '
+                '— CON0 is deliberately out of the single-word container, '
+                'honest stop; per-core 1 unchanged at 11496 — the CON0 '
+                'branch-consumer decision belongs to the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
@@ -1494,7 +1503,7 @@ def check_self_conditional(report):
             'resource-table header CRC byte at 0x6010b16 (it must stay identical to the '
             'crc_bankb-scenario divergence)')
     spans = p['divergent_signature_spans']
-    require(spans['count'] == 147 and all(not s['writes_differ'] for s in spans['first']),
+    require(spans['count'] == 151 and all(not s['writes_differ'] for s in spans['first']),
             'the official-vs-b79 conditional divergence-span shape changed (image bytes must '
             'stay visible only as register values, never as differing stored bytes)')
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
@@ -1526,7 +1535,8 @@ def check_self_conditional(report):
                              '$.peripherals.hardware_crc_projection.result_reads[168]',
                              '$.peripherals.hardware_crc_projection.result_reads[175]',
                              '$.peripherals.hardware_crc_projection.result_reads[182]',
-                             '$.peripherals.hardware_crc_projection.result_reads[189]']),
+                             '$.peripherals.hardware_crc_projection.result_reads[189]',
+                             '$.peripherals.hardware_crc_projection.result_reads[197]']),
             'the official-vs-b79 conditional final-report differences changed: ' + str(diffs))
 
 

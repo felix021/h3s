@@ -3706,6 +3706,105 @@ class JLClockCon3Registers:
         }
 
 
+class JLPledCon3Registers:
+    """JL_PLED->CON3(0xfd610c)单字容器(合成初始 0+读回=当前值,opt-in,路
+    FD610C;boot 前缀 LED 驱动 0x6019458 停点的架构性 RMW 读)。
+
+    背景:41,847,303 停点 @ 0x6019458(STOREG3 放行后)——极小 helper
+    0x6019448 = `delay(41); PLED->CON3 &= ~0x20`(rmw.and.nmodimm
+    [0xfd610c]&=0xFFFFFFDF,清 bit5)的配置 RMW 内部读撞 unmapped。br28.h
+    JL_PLED_TypeDef(sha 111e29ea…,L1249-1272)把 CON3 标 __RW(0xfd610c=
+    ls_base+map_adr(0x61,3),第 4 个字)。
+
+    静态访问面(LED 驱动域 0x6019xxx 反汇编):CON3 全部触达=6 站点——
+    0x6019458(清 bit5)、0x6019566(清低 nibble)、0x601956e(|=0x1000)、
+    0x60195fe(|=0x10)、0x6019602(|=0x40),均为原子 RMW 配置写,读值只进
+    `old&mask`/`old|mask` 写回组装、零分支、零轮询。CON0(0xfd6100)有
+    save-restore 位消费(`r6=[0xfd6100]`→清 bit0→`if(r6&1)`恢复,0x60194ae;
+    +0x6069b08 读 bit0 定亮度步进)属分支消费者,本轮**不纳入**;其余字
+    (CON1/CON2/PRD_DIVL/DUTY0..3/CNT_RD/CON4/CNT_SYNC/CNT_DEC)留 unmapped,
+    到达时按各自读者单独核验(codex 定调:单字最小假设,不把 __RW 整组放行)。
+
+    分类:AM 容器族——合成初始 0+读回=当前值(derived-not-measured 非复位
+    值声明);只服务对齐 32 位字。known_limitation:LED 波形/亮度/时钟/计数/
+    自清位/中断一律不建模;物理外设可能消费保留位(写事务真实落盘);同址
+    新读者(显式 ld 分支/轮询/他核访问)须重审,地址白名单不自动阻断。
+    """
+
+    ADDRESS=0xfd610c
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self):
+        self.stores={self.ADDRESS:{'values':[],'writes':0}}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address==self.ADDRESS
+
+    def write(self,address,value):
+        if address!=self.ADDRESS:raise ValueError('not the modeled JL_PLED CON3 word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address!=self.ADDRESS:raise ValueError('not the modeled JL_PLED CON3 word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        self.synthesized_initial_reads+=1
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def report(self):
+        entry=self.stores[self.ADDRESS]
+        return {
+            'addresses':[hex(self.ADDRESS)],
+            'modeled_vs_touched':('modeled exactly one word 0xfd610c JL_PLED->'
+                                  'CON3 (touched: %d writes)'%entry['writes']),
+            'word_writes':self.word_writes,
+            'stores':{hex(self.ADDRESS):{'values':[hex(v) for v in entry['values'][-8:]],
+                                         'writes':entry['writes']}} if entry['writes'] else {},
+            'sdk_naming':('br28.h JL_PLED_TypeDef word 3 CON3 at JL_PLED_BASE'
+                          '(ls_base+map_adr(0x61,0))=0xfd6100, so CON3=0xfd610c '
+                          '(__RW __u32); CON0 (0xfd6100) save-restore bit '
+                          'consumer and the other 17 words stay OUT of this '
+                          'container — mutually exclusive: this whitelist is '
+                          'exactly {0xfd610c}'),
+            'whitelisted_words':('exactly {0xfd610c}; the audited CON3 access set '
+                                 'is the six whole-app sites in the LED driver '
+                                 '(0x6019458 clear-bit5, 0x6019566 clear-low-'
+                                 'nibble, 0x601956e |=0x1000, 0x60195fe |=0x10, '
+                                 '0x6019602 |=0x40); every other JL_PLED word and '
+                                 'every sub-word/misaligned access stays unmapped'),
+            'observed_shapes':('atomic RMW bit operations only (rmw.and.nmodimm / '
+                               'rmw.or.modimm / rmw.or.r): every read value feeds '
+                               'only old&mask / old|mask write-back assembly — no '
+                               'branch, no polling, no busy-wait consumption'),
+            'readback_projection':{
+                'addresses':[hex(self.ADDRESS)],
+                'reads':self.reads_after_write,
+                'synthesized_initial_reads':self.synthesized_initial_reads,
+                'readback_semantics':('last firmware-written value; before any '
+                    'firmware write the explicit synthetic initial word 0 — '
+                    'derived-not-measured, NOT a reset-value claim; no LED '
+                    'waveform/brightness/clock/count/self-clearing-bit/interrupt '
+                    'side effect is modeled'),
+                'known_limitation':('the preserved bits of the old word still '
+                    'enter the real write transaction and the physical peripheral '
+                    'may consume them; a new read consumer (explicit load-and-'
+                    'branch, polling, another core) of 0xfd610c must be '
+                    're-classified before this container serves it — the address '
+                    'whitelist does not automatically block new consumers'),
+            },
+            'assumption':('synthetic-initial-0 + last-write readback of one word '
+                          '(AM family precedent); CON3-only scope — the branch-'
+                          'consuming CON0 save-restore word is deliberately '
+                          'excluded (route-FD610C codex decision)'),
+        }
+
+
 class P11LPVADConfigRegisters:
     """P11_SFR LPVAD VAD_ACON0 单字容器(合成初始 0+读回=当前值,opt-in,路 LPV)。
 
@@ -6170,6 +6269,7 @@ class BR28Model:
                  jl_adda_ada_family=False,jl_adda_ada_probe_value=None,
                  jl_anc_writes=False,
                  jl_clock_con3_readback=False,
+                 jl_pled_con3_readback=False,
                  p11_lpvad_config=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
@@ -6372,6 +6472,12 @@ class BR28Model:
         # jl_clock_con3_readback(路 D2ANC):JL_CLOCK CLK_CON3(0xfd0024)单字——
         # ANC 重配链 0x606c844 的 ADC 时钟选择字(此前零触达,AM 族)。
         self.jl_clock_con3=(JLClockCon3Registers() if jl_clock_con3_readback else None)
+        # jl_pled_con3_readback(路 FD610C):JL_PLED CON3(0xfd610c)单字容器——
+        # boot 前缀 LED 驱动 0x6019458 停点的配置 RMW 读(清 bit5)。新开关
+        # 分立(CON0 有 save-restore 位消费/其余字留 unmapped;codex 定调
+        # 单字最小假设)。开关关时 0xfd610c 保持 unmapped(41,847,303 前沿
+        # 形状),legacy 报告逐字节不变。
+        self.jl_pled_con3=(JLPledCon3Registers() if jl_pled_con3_readback else None)
         # p11_lpvad_config(路 LPV):P11_SFR LPVAD VAD_ACON0(0xf2b404)单字容器
         # ——新开关分立而非扩 p11_window 白名单(改已开开关服务面=改契约,且
         # 「纯写记录读回 Blocked」族与配置读回语义冲突;codex 定调)。
@@ -6931,6 +7037,7 @@ class BR28Model:
             (self.jl_adda_ada is not None and self.jl_adda_ada.handles(address)) or
             (self.jl_anc is not None and self.jl_anc.handles(address)) or
             (self.jl_clock_con3 is not None and self.jl_clock_con3.handles(address)) or
+            (self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address)) or
             (self.p11_lpvad is not None and self.p11_lpvad.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
@@ -7274,6 +7381,12 @@ class BR28Model:
         if self.jl_clock_con3 is not None and self.jl_clock_con3.handles(address):
             self.counts['reads']+=1
             return self.jl_clock_con3.read(address)
+        # JL_PLED CON3(路 FD610C):0x6019458 的配置 RMW 内部读(清 bit5)走通用
+        # mmio 路径的 rmw 读侧=容器当前值;LED 波形/亮度/时钟/计数/自清位/
+        # 中断不建模(类注释)。
+        if self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address):
+            self.counts['reads']+=1
+            return self.jl_pled_con3.read(address)
         # P11_SFR LPVAD VAD_ACON0(路 LPV):读回=当前值(最后写值/无写时合成
         # 初始 0);只服务对齐 32 位字,子字/错位落严格 unmapped;读与原子 RMW
         # 内部读共享同一份容器状态。
@@ -7517,6 +7630,10 @@ class BR28Model:
             # JL_CLOCK CLK_CON3(路 D2ANC):0x606c844 的 RMW 写回与整字写记录
             # (经通用 mmio 路径的内部读=容器当前值);时钟树硬件语义不建模。
             self.jl_clock_con3.write(address,value)
+        elif self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address):
+            # JL_PLED CON3(路 FD610C):0x6019458 的 RMW 写回与整字写记录
+            # (经通用 mmio 路径的内部读=容器当前值);LED 外设硬件语义不建模。
+            self.jl_pled_con3.write(address,value)
         elif self.p11_lpvad is not None and self.p11_lpvad.handles(address):
             # P11_SFR LPVAD VAD_ACON0(路 LPV):停点 0x606b68e 的 bit28 置位
             # RMW 写回与整字写记录(经通用 mmio 路径的内部读=容器当前值);
@@ -8286,6 +8403,22 @@ class BR28Model:
                 'compositions, zero branch consumption — plus two in the loaded '
                 'RAM-code copy); 0xfd0028 has zero sites and stays unmapped; no '
                 'clock-tree hardware semantics is modeled')
+        if self.jl_pled_con3 is not None:
+            result['jl_pled_con3_registers']=self.jl_pled_con3.report()
+            result['assumptions']['jl_pled_con3_registers']=(
+                'JL_PLED CON3 single word 0xfd610c (br28.h JL_PLED_TypeDef word 3, '
+                'route FD610C): write record plus last-write readback with an '
+                'explicit synthetic initial 0 (AM family); the audited face is the '
+                'six whole-app sites in the LED driver — atomic RMW bit operations '
+                '(0x6019458 clear-bit5 = the 41,847,303 frontier stop, 0x6019566 '
+                'clear-low-nibble, 0x601956e |=0x1000, 0x60195fe |=0x10, 0x6019602 '
+                '|=0x40), every read value feeds only old&mask / old|mask write-back '
+                'assembly with zero branch/polling consumption; CON0 (0xfd6100) has '
+                'a save-restore bit consumer and the other 17 words stay unmapped; '
+                'no LED waveform/brightness/clock/count/self-clearing-bit/interrupt '
+                'side effect is modeled; the preserved old-word bits still enter '
+                'the real write transaction (the physical peripheral may consume '
+                'them) — a new read consumer must be re-classified')
         if self.p11_lpvad is not None:
             result['p11_lpvad_config_registers']=self.p11_lpvad.report()
             result['assumptions']['p11_lpvad_config_registers']=(

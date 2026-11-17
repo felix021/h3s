@@ -3359,6 +3359,70 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(all4.handles(0xf2b400,4) or all4.handles(0xf2b408,4)
                          or all4.handles(0xfe0a44,4))
 
+    def test_jl_pled_con3_config_container(self):
+        # 路 FD610C:41,847,303 停点 0x6019458——LED 驱动 helper 0x6019448
+        # (`delay(41); PLED->CON3 &= ~0x20`)首条 rmw.and.nmodimm
+        # [0xfd610c]&=0xFFFFFFDF 的配置 RMW 内部读撞 unmapped。容器白名单
+        # 恰一字 {0xfd610c}=br28.h JL_PLED_TypeDef 第 4 字 CON3(__RW);
+        # 合成初始 0+读回=当前值(两项均显式模型假设);codex 定调单字最小
+        # 假设——CON0(0xfd6100)有 save-restore 位消费(0x60194ae/0x60194b4
+        # + 0x6069b0e 读 bit0 定亮度步进)属分支消费者,CNT_RD(__RO)/
+        # CNT_SYNC(__WO)/CNT_DEC(计数未证)及其余字全部留 unmapped。
+        plain=BR28Model()
+        for address in (0xfd6100,0xfd6104,0xfd6108,0xfd610c,0xfd613c,
+                        0xfd6140,0xfd6144,0xfd6148):
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xfd610c)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfd610c,0xffffffdf)
+        self.assertNotIn('jl_pled_con3_registers',plain.report())
+        h=BR28Model(jl_pled_con3_readback=True)
+        self.assertTrue(h.handles(0xfd610c,4))
+        # 邻字/计数/同步面不进容器:CON0/CON1/CON2、CNT_RD、CON4、
+        # CNT_SYNC、CNT_DEC 与子字 0xfd610d(错位)全部保持原语义。
+        self.assertFalse(h.handles(0xfd6100,4) or h.handles(0xfd6104,4)
+                         or h.handles(0xfd6108,4) or h.handles(0xfd613c,4)
+                         or h.handles(0xfd6140,4) or h.handles(0xfd6144,4)
+                         or h.handles(0xfd6148,4) or h.handles(0xfd610d,1))
+        # 停点 RMW 形状([r0+0] &= 0xFFFFFFDF):初读=合成 0,清位写回
+        # 0&0xFFFFFFDF=0,写后读=最后写值;读与 RMW 内部读共享同一份容器
+        # 状态(RMW 自身消费旧值,不能判死读)。
+        self.assertEqual(h.read(0xfd610c),0)
+        h.write(0xfd610c,0 & 0xffffffdf)
+        self.assertEqual(h.read(0xfd610c),0)
+        # 保留位钉:非零旧字经清 bit5 RMW 后其余 27 位原样保留
+        # (0xffffffff & 0xffffffdf = 0xffffffdf)——仅测初值零会漏掉
+        # RMW 内部读/写不同容器状态的实现错误(codex/depmap 钉子)。
+        h.write(0xfd610c,0xffffffff)
+        self.assertEqual(h.read(0xfd610c),0xffffffff)
+        h.write(0xfd610c,0xffffffff & 0xffffffdf)
+        self.assertEqual(h.read(0xfd610c),0xffffffdf)
+        r=h.report()['jl_pled_con3_registers']
+        self.assertEqual(r['word_writes'],3)
+        self.assertEqual(r['addresses'],['0xfd610c'])
+        self.assertEqual((r['readback_projection']['reads'],
+                          r['readback_projection']['synthesized_initial_reads']),
+                         (3,1))
+        self.assertEqual(r['stores']['0xfd610c']['values'],['0x0','0xffffffff','0xffffffdf'])
+        self.assertIn('modeled exactly one word',r['modeled_vs_touched'])
+        self.assertIn('new read consumer',r['readback_projection']['known_limitation'])
+        self.assertIn('re-classified',r['readback_projection']['known_limitation'])
+        self.assertIn('six whole-app sites',r['whitelisted_words'])
+        self.assertIn('0x6019458',r['whitelisted_words'])
+        self.assertIn('no branch',r['observed_shapes'])
+        self.assertIn('NOT a reset-value claim',
+                      r['readback_projection']['readback_semantics'])
+        self.assertIn('derived-not-measured',
+                      r['readback_projection']['readback_semantics'])
+        self.assertIn('CON0',r['sdk_naming'])
+        self.assertIn('save-restore',r['assumption'])
+        assumption=h.report()['assumptions']['jl_pled_con3_registers']
+        self.assertIn('synthetic initial 0',assumption)
+        self.assertIn('save-restore bit consumer',assumption)
+        self.assertIn('new read consumer must be re-classified',assumption)
+        self.assertIn('no LED waveform',assumption)
+
     def test_jl_adc_start_config_registers(self):
         # 路 ASS:21,800,455 停点 0x606e044(ADC 启动函数 0x606df66 的
         # MIC_CTL0 |=0x2 RMW 内部读,地址 r0=r5+976 间接构造,li 枚举法

@@ -1443,6 +1443,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_adda_ada_family=False,jl_adda_ada_probe_value=None,
              jl_anc_writes=False,
              jl_clock_con3_readback=False,
+             jl_pled_con3_readback=False,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -2632,6 +2633,14 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'the ANC scene; the dependency encodes THIS scenario order, not a '
                 'hardware dependency)')
         options['jl_clock_con3_readback']=True
+    # jl_pled_con3_readback(路 FD610C,opt-in 默认关):JL_PLED CON3(0xfd610c)
+    # 单字容器——boot 前缀 LED 驱动 0x6019458 停点的配置 RMW 读(清 bit5,
+    # 41,847,303 前沿)。CON3 全 6 站点均为原子 RMW 配置写、读值只进
+    # old&mask/old|mask 写回组装、零分支零轮询(codex 定调:单字最小假设,
+    # CON0 save-restore 位消费/其余 17 字留 unmapped 到各自到达)。无依赖
+    # (停点在 boot 前缀,不叠任何其他场景)。
+    if jl_pled_con3_readback:
+        options['jl_pled_con3_readback']=True
     # 敏感性探针值(probe_only):ADA_CON0(0xfe0a20)初值一次性 0xffffffff
     # 替换(只注初值,后续读回真实写回值;其余八字不扰动保归因干净)。
     # codex 钉子:断言非零合成初值经停点 RMW 只清 bit5——仅测初值零会漏掉
@@ -4263,8 +4272,8 @@ def check(report,firmware):
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x6019458 on the '
-            'unmapped read of JL_PLED slot 0xfd610c — reached after the '
+            'the heap-experimental scenario must stop at 0x60194b4 on the '
+            'unmapped read of JL_PLED CON0 0xfd6100 — reached after the '
             'route-STOREG3 standalone postincrement word-store release '
             '(exact_postincrement_word_stores) executes the st.w.pin.l '
             'full-word store of the byte-unpack loop in 0x60649b0 directly '
@@ -4274,18 +4283,19 @@ def check(report,firmware):
             'cannot affect the result, the merge read is a model-internal '
             'bookkeeping read, not a guest load — the 183,486 st.d.sp.l and '
             '236,415 halfword-pair precedents of the same family), the '
-            'unpacked S18 event buffer fills (five standalone postincrement '
-            'word stores served by the new gate in the whole prefix) and the '
-            'consumption chain walks on through the OS scheduler return '
-            '(0x6066016) into the LED driver prologue at 0x6019448 (li r0=41 '
-            '→ delay call → li r0=0xfd610c) until the rmw.and.nmodimm '
-            '[r0+0] &= 0xFFFFFFDF read-modify-write of the PLED register '
-            'needs the old value — an architectural RMW read, not a '
-            'bookkeeping read: the register is unmodeled, the read side has '
-            'no evidence, honest stop; the SDK __RW PLED family (ls grp 0x61, '
-            'CON0 0xfd6100 with its save-restore consumer documented at '
-            '0x60194ae by route BO docs/appcore-tail-sfr-semantics.md) '
-            'belongs to the N2 power-framework decision of the next route)')
+            'unpacked S18 event buffer fills and the consumption chain walks '
+            'on through the OS scheduler return (0x6066016) into the LED '
+            'driver helper 0x6019448; the route-FD610C single-word JL_PLED '
+            'CON3 container serves the 0x6019458 rmw.and.nmodimm '
+            '[0xfd610c]&=0xFFFFFFDF RMW read as the explicit synthetic '
+            'initial 0 (derived-not-measured, not a reset value), the helper '
+            'returns, and +503 pure-CPU0 steps walk into the CON0 save-'
+            'restore at 0x60194b4 (r6=[0xfd6100] → clear bit0 → if(r6&1) '
+            'restore) whose architectural read feeds a branch — CON0 is a '
+            'branch consumer deliberately kept OUT of the single-word CON3 '
+            'container, honest stop; the 0x6069b0e read of CON0 bit0 (LED '
+            'brightness step) is the same branch-consuming domain and '
+            'belongs to the next route)')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
@@ -5955,15 +5965,23 @@ def check(report,firmware):
             # 另执行 +1,110 次独立 st.w.pin 短形,全走旧 gate 行为不变);
             # 独立新 gate 恰 5 次(0x60649d0 停点形状 1+前缀内 pi/pi.l/
             # pin.l 4)。
-            r['instruction_adapters'].get('abstract_task_stack_transport')==456492 and
-            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==41418 and
-            r['instruction_adapters'].get('exact_full_word_store')==708318 and
-            r['instruction_adapters'].get('mmio_rmw_always_writes')==69048 and
-            r['instruction_adapters'].get('partial_icfg_bit9_only')==133802 and
+            # 路 FD610C 再 +503 步(JL_PLED CON3 单字容器放行 0x6019458 清
+            # bit5 RMW 读→helper 返回→CON0 save-restore 首读停):任务栈帧
+            # 运输 456492→456502(+10)、共享锁 41418→41421(+3)、整字存储
+            # 708318→708325(+7)、mmio RMW 69048→69049(+1:0x6019458 清 bit5
+            # RMW 本身走通用路径)、icfg bit9 133802→133808(+6)、cnum
+            # 260239→260245(+6);masked 分支 8 不变、独立新 gate 5 不变。
+            # 旧短形 gate exact_postincrement_store 61392→61426(+34:过墙段
+            # 后 +503 步消费链另执行 34 次独立 st.w.pin 短形,行为不变)。
+            r['instruction_adapters'].get('abstract_task_stack_transport')==456502 and
+            r['instruction_adapters'].get('cpu0_shared_lock_ownership')==41421 and
+            r['instruction_adapters'].get('exact_full_word_store')==708325 and
+            r['instruction_adapters'].get('mmio_rmw_always_writes')==69049 and
+            r['instruction_adapters'].get('partial_icfg_bit9_only')==133808 and
             r['instruction_adapters'].get('partial_icfg_masked_branch')==8 and
-            r['instruction_adapters'].get('per_core_visible_cnum')==260239 and
+            r['instruction_adapters'].get('per_core_visible_cnum')==260245 and
             r['instruction_adapters'].get('exact_postincrement_word_store')==5 and
-            r['instruction_adapters'].get('exact_postincrement_store')==61392,
+            r['instruction_adapters'].get('exact_postincrement_store')==61426,
             'the heap-experimental prefix adapters differ from the observed conditional frontier '
             '(route JLEQ: the steady-state segment — feed-dog cycles, S16/S17 event-clock '
             'windows, the key-table compression loop and the GPCNT measurement dispatch — '
@@ -5973,13 +5991,19 @@ def check(report,firmware):
             '227193/21076/404469/28146/66490/118945, the route-WDFEED steady-state '
             'extension past the crossed watchdog point grows them further to '
             '456050/41337/707566/69044/133634/259995 with the masked-branch count '
-            'still 8, and the route-STOREG3 release segment (the S18 event '
+            'still 8, the route-STOREG3 release segment (the S18 event '
             'consumption chain from the byte-unpack store to the PLED RMW read) '
             'grows them to 456492/41418/708318/69048/133802/260239 while the '
             'old short-form postincrement gate grows 60282 → 61392 (the walk '
             'segment executes 1110 more standalone st.w.pin short forms, all '
             'served by the old gate, behavior unchanged) and the new standalone '
-            'word gate fires exactly five times)')
+            'word gate fires exactly five times; the route-FD610C release '
+            'segment (the JL_PLED CON3 RMW read served as synthetic 0, helper '
+            'return, +503 pure-CPU0 steps to the CON0 save-restore read) '
+            'grows them to 456502/41421/708325/69049/133808/260245 with the '
+            'masked-branch count and the new word gate still 8/5, and the old '
+            'short-form gate grows 61392 → 61426 (34 more standalone st.w.pin '
+            'short forms, all served by the old gate, behavior unchanged))')
     # 路 BE:Timer0 IRQ4 交付/惰性两分支探针(探路 fixture 只拉近到期计数,
     # 交付分支不注入任何资格 fixture——运行态 trace 已证实前缀里驱动安装
     # 循环在 ~110,768 步把 IRQ4 以 priority 1 真实使能且此后无清零)。
