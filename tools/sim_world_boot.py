@@ -31,13 +31,19 @@ def snapshot_path(snapshot_dir, scenario='p11_heap_experimental') -> Path:
 
 
 def build_world(serve_loop, *, rom_path, firmware_path, snapshot_dir,
-                scenario='p11_heap_experimental', capture=False, world_name=WORLD_NAME):
+                scenario='p11_heap_experimental', capture=False, world_name=WORLD_NAME,
+                flag_overrides=None):
     """构造一个停点世界并把 serve_loop 挂进 post_stop；返回 explore 场景结果 dict。
 
     serve_loop(machine, hardware, stopped_cpu) -> dict|None（post_stop 契约，
     probe_boot.py:98-116 docstring）：停点后、报告组装前在活机器上回调；返回的
     dict 并进场景报告（probe_boot.py:2140-2141）。serve_loop 返回 {'world_dead':
     {...}} 即外层循环的重建信号（§3.3）。
+
+    flag_overrides（CALLIMPL 增补，可选 dict）：场景 flag 的显式覆盖点——如
+    {'gpcnt_num_value': None} 关掉 GPCNUM NUM fixture，让重放停回 park 前沿
+    29,601,125@0x606955c（GPCNUM 负例臂同款口径），用于在 GPCNUM 之后的代码上
+    重捕 park 快照（SIMB1G「park 前沿快照+配套代码」惯例的配套侧）。
     """
     import frontier_registry
     import probe_irq_entry
@@ -52,6 +58,8 @@ def build_world(serve_loop, *, rom_path, firmware_path, snapshot_dir,
     check_rom(rom)
     image = flash_image(Path(firmware_path))
     flags = frontier_registry.scenario_flags(scenario, probe_irq_entry)
+    if flag_overrides:
+        flags = {**flags, **flag_overrides}
 
     target = snapshot_path(snapshot_dir, scenario)
     if capture or not target.exists():
