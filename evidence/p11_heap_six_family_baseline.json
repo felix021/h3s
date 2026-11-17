@@ -1,0 +1,15 @@
+{
+  "scenario": "p11_heap_experimental_config",
+  "completed_steps": 41828530,
+  "stop_pc": "0x60649d0",
+  "note": "六族 instruction_adapters 计数基线(条件场景前缀)。推进前沿后计数漂移时用 tools/capture_p11_heap_six_family.py --recapture 重取;断言见 tools/probe_irq_entry.py check()。",
+  "counts": {
+    "abstract_task_stack_transport": 456050,
+    "cpu0_shared_lock_ownership": 41337,
+    "exact_full_word_store": 707566,
+    "mmio_rmw_always_writes": 69044,
+    "partial_icfg_bit9_only": 133634,
+    "partial_icfg_masked_branch": 8,
+    "per_core_visible_cnum": 259995
+  }
+}
