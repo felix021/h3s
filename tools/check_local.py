@@ -86,6 +86,7 @@ def main():
     run(sys.executable,'tools/test_sim_world_boot.py')        # SIMB1C：世界引导缝合线（dual_case post_stop 注入）
     run(sys.executable,'tools/test_sim_m1_helpers.py')       # SIMB1C：验收执行器纯函数面（帧形/EQ 曲线编码）
     run(sys.executable,'tools/test_call_scene.py')           # CALLIMPL：通话态注入场景纯函数面（帧/watch/队列/节点环）
+    run(sys.executable,'tools/test_keycons_scene.py')        # KEYCONS：按键事件消费面场景纯函数面（队列/环/watch/泵寄存器面）
     run(sys.executable,'tools/test_world_snapshot.py')
     run(sys.executable,'tools/test_handoff_lint.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json',tool='probe_boot.py')
