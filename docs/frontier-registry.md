@@ -99,8 +99,8 @@ budget（该值留在 analyze，属运行配置）。
   registry 全量开关 ↔ `irq_case` 签名逐一对账（漏登记或登记已删参数都会失败）、
   条件栈非布尔开关与测试断言里的具名 fixture 集逐一对账且 `is` 同一模块常量、
   base 全布尔（fixture 数随 registry 演进，本文不再计数——AUDIT3 §5 弱引用落地，
-  原「恰为 N 个」硬计数已两轮漂移；tools/test_image_trace_diff.py 内注释
-  「the six named data fixtures」滞后于实际七个，该文件在 probe 五文件禁区、
-  在途路正改，待其合并后顺手修）。
+  原「恰为 N 个」硬计数已两轮漂移；AUDIT3 登记的 tools/test_image_trace_diff.py
+  「the six named data fixtures」滞后注释已由路 GPCNUM 落地为弱引用
+  （「exactly the named data fixtures」，计数词移除），DEBTCLEAR 复核闭环）。
 - 真实性由全量检查闭环：probe 前沿 require 与 analyze freshness 在
   `check_local.py --rom` 下用真仿真复现停点，单测不重复断言数值。

@@ -191,6 +191,11 @@ FEATURES = (
             '长位移 sp 相对整字存储直写(exact_word_store_sp_l)'),
     Feature('ext_pair', 'conditional', (), False, None,
             '并行对 ext.* 传送族前缀(exact_parallel_ext_transfers 子开关;SIMB1F 0x600f95a 假停的读路径解锁)'),
+    Feature('postincrement_pair', 'conditional', ('ext_pair',), False, None,
+            'ext 传送族∥pi/pin 后增量存储对(exact_parallel_postincrement_stores 子开关;'
+            'PARSTOR 留待的 pi·pr 形 6 站点收口,st.w.pin.l 0x6077628/0x60776c2/st.w.pi'
+            ' 0x609999a/st.b.pi 0x60b5e66/0x60b6572/st.b.pin 0x60b61ba;writeback 冲突'
+            '外延 derived-not-measured)'),
     Feature('mmu_cross_page_split', 'conditional', (), False, None,
             '跨 128B MMU 页界双字存储拆两半各自翻译(derived-not-measured)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,

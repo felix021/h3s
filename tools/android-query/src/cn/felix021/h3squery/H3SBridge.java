@@ -392,6 +392,30 @@ public class H3SBridge {
         catch (JSONException impossible) { return "{\"ok\":true}"; }
     }
 
+    /** DRIVE bands 紧凑串（f,q,gainCentid,iir;…，am broadcast 参数长度限制的页面形状）→ bandsJson。
+     *  任一段数值非法（shell 转义残留等）返回 null，调用方记日志并忽略该次驱动——SIMB1G：
+     *  广播 extras 经多层 shell 转义后 Integer.parseInt 会抛 NumberFormatException，
+     *  onReceive 里未捕获即崩整个 app 进程，所以本方法不抛、不产出半成品 JSON。
+     *  纯字符串组装，无传输副作用。段形状不符（逗号数≠3）仍按原行为跳过该段。 */
+    public static String bandsJsonFromCompact(String compact) {
+        if (compact == null) return null;
+        StringBuilder sb = new StringBuilder("[");
+        for (String seg : compact.split(";")) {
+            String[] f = seg.split(",");
+            if (f.length != 4) continue;
+            int[] v = new int[4];
+            try {
+                for (int i = 0; i < 4; i++) v[i] = Integer.parseInt(f[i].trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
+            if (sb.length() > 1) sb.append(',');
+            sb.append("{\"freq\":").append(v[0]).append(",\"q\":").append(v[1])
+              .append(",\"gain\":").append(v[2]).append(",\"iirType\":").append(v[3]).append('}');
+        }
+        return sb.append(']').toString();
+    }
+
     /** 解析段数组 JSON → EqBand 列表；JSON 语法错误抛 JSONException，字段问题抛 IllegalArgumentException。 */
     static List<EqFrame.EqBand> parseBands(String bandsJson) throws JSONException {
         if (bandsJson == null) throw new IllegalArgumentException("bandsJson 不能为 null");

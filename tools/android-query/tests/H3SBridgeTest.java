@@ -36,6 +36,7 @@ public class H3SBridgeTest {
         armGate();
         writeEqOk();
         writeEqBadInput();
+        bandsFromCompact();
         setAncBytes();
         setPromptVolumeBytes();
         keyRemapBytes();
@@ -43,7 +44,8 @@ public class H3SBridgeTest {
         policyConsistency();
         audioModeAndReadStatus();
         deviceMessageEvent();
-        System.out.println("H3SBridgeTest passed: 门控、writeEq JSON 解析/组帧对拍/错误路径、setAnc/setPromptVolume/setKeyRemap 字节对照、"
+        System.out.println("H3SBridgeTest passed: 门控、writeEq JSON 解析/组帧对拍/错误路径、DRIVE bands 紧凑串好坏负例（SIMB1G 崩溃回归）、"
+            + "setAnc/setPromptVolume/setKeyRemap 字节对照、"
             + "getKeyRemap 默认/更新、EqWritePolicy 一致性、setAudioMode(0x2E)/readStatus 字节对照、device_message 事件");
     }
 
@@ -205,6 +207,39 @@ public class H3SBridgeTest {
         JSONObject neg = result(b.writeEq(1, 0, "[{\"freq\":1000,\"gain\":-250.4}]"));
         expect(neg.getBoolean("ok"), "负小数应成功");
         eq("负小数 gain", -250, EqFrame.parseEqCommand(unhex(neg.getString("bytesHex"))).bands.get(0).gain);
+    }
+
+    /** DRIVE bands 紧凑串解析（SIMB1G 崩溃回归）：坏 bands 负例必须返回 null 而非抛
+     *  NumberFormatException——WebShellActivity 收到 null 即记日志忽略该次驱动，
+     *  不调 writeEq（无组帧/传输副作用），app 进程存活。 */
+    static void bandsFromCompact() {
+        // 好串：与页面 eqSend 字段一致的紧凑形状
+        expect(H3SBridge.bandsJsonFromCompact("1000,100,-100,0;2000,150,-50,1").equals(
+                   "[{\"freq\":1000,\"q\":100,\"gain\":-100,\"iirType\":0},{\"freq\":2000,\"q\":150,\"gain\":-50,\"iirType\":1}]"),
+               "好串解析");
+        // 空白容错（原行为保留）
+        expect(H3SBridge.bandsJsonFromCompact(" 1000 , 100 , -100 , 0 ").equals(
+                   "[{\"freq\":1000,\"q\":100,\"gain\":-100,\"iirType\":0}]"),
+               "字段空白容错");
+        // 段形状不符（逗号数≠3）：跳过该段、不视为坏串（原行为保留）
+        expect(H3SBridge.bandsJsonFromCompact("garbage;1000,100,-100,0").equals(
+                   "[{\"freq\":1000,\"q\":100,\"gain\":-100,\"iirType\":0}]"),
+               "坏形状段跳过");
+        // null 输入 → null（WebShellActivity 照旧把 null 交给 writeEq 走既有的 err 路径）
+        expect(H3SBridge.bandsJsonFromCompact(null) == null, "null 输入");
+        // 转义残留负例（SIMB1G 现场）：反斜杠/引号/非数字混入字段 → 整串放弃返回 null，
+        // 不抛异常（进程存活）、不产出半成品 JSON（无副作用）。任一段脏即整体忽略。
+        String[] bad = {
+            "1000\\,100,-100,0",                       // 分隔符转义残留
+            "\"1000\",100,-100,0",                     // 引号残留
+            "1000,100,-100,0;2000,1o0,-50,1",          // 段内非数字（一坏全弃）
+            "1000,100,-100,0x",                        // 16 进制残留（parseInt 十进制拒绝）
+            "-,100,-100,0",
+        };
+        for (String c : bad) {
+            String got = H3SBridge.bandsJsonFromCompact(c);
+            expect(got == null, "坏串应返回 null: " + c + " -> " + got);
+        }
     }
 
     /** setAnc 三态：逐字节对照 docs/app-protocol.md §2.3 钉死载荷；mode 越界拒绝。 */

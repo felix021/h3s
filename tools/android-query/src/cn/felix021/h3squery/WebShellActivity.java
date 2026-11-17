@@ -162,22 +162,16 @@ public class WebShellActivity extends Activity {
                 else if ("setAnc".equals(m)) bridge.setAnc(intent.getIntExtra("mode", 1), 0, 0);
                 else if ("writeEq".equals(m)) {
                     // 紧凑段格式 f,q,gainCentid,iir;…（am broadcast 参数长度限制，页面形状
-                    // bandsJson 在 Java 侧组装，字段与页面 eqSend 完全一致）
+                    // bandsJson 在 Java 侧组装，字段与页面 eqSend 完全一致）。坏串（转义
+                    // 残留等）解析返回 null：记日志并忽略该次驱动，不崩进程（SIMB1G 登记）。
                     String compact = intent.getStringExtra("bands");
                     String bandsJson = intent.getStringExtra("bands_json");
                     if (bandsJson == null && compact != null) {
-                        StringBuilder sb = new StringBuilder("[");
-                        for (String seg : compact.split(";")) {
-                            String[] f = seg.split(",");
-                            if (f.length != 4) continue;
-                            if (sb.length() > 1) sb.append(',');
-                            sb.append("{\"freq\":").append(Integer.parseInt(f[0].trim()))
-                              .append(",\"q\":").append(Integer.parseInt(f[1].trim()))
-                              .append(",\"gain\":").append(Integer.parseInt(f[2].trim()))
-                              .append(",\"iirType\":").append(Integer.parseInt(f[3].trim()))
-                              .append('}');
+                        bandsJson = H3SBridge.bandsJsonFromCompact(compact);
+                        if (bandsJson == null) {
+                            Log.w(TAG, "DRIVE writeEq: malformed bands ignored: " + compact);
+                            return;
                         }
-                        bandsJson = sb.append(']').toString();
                     }
                     bridge.writeEq(intent.getIntExtra("eq_type", 1),
                         intent.getIntExtra("master_centid", 0), bandsJson);
