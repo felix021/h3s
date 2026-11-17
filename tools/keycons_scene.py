@@ -45,6 +45,14 @@ PC watch 全部为反汇编钉死的真实指令地址（本文件不发明地�
   默认 restore analysis/snapshots 的 park 快照（gpcnt_num 关——CALLIMPL 同款
   flag_overrides 配套侧）；证据 JSON 落 analysis/local-checks/keycons/scene.json
   （git 忽略）。
+
+分支体复跑（路 KEYBR）：--payload 换载荷字即换查表槽位——断言面表驱动
+（payload_face 折叠→lookup_action 默认表 45B 查 action→按 action 分派分支锚点：
+cmd 1/2/3=发布名+提示音（2/3 带 r6 门）、4=发布+0x6008298 门、5/6=r9 链路门
+早退（音量 API 负证据+级别槽不动）、7='InLowLatency'+key 22 状态机、0=跳表外
+早退未处理；默认表无 8/9/10/11/127 条目=不可达，如实记）。各分支名串/门/API
+锚点为本路静态反汇编逐 call 校准（call 偏移=PC+4+disp，cmd1 发布器 0x6018bf4
+基准互证）。
 """
 from __future__ import annotations
 
@@ -91,14 +99,53 @@ KEY_HANDLER = 0x60252c6           # 表2[5]（按键 handler；BW/AO 互证）
 # handler 内部链（AO 文档+本路复核）
 H_BIT16_GATE = 0x60252cc          # bit16 键事件族门（过门=不跳走）
 H_TBB = 0x60252d8                 # 手势子类型 tbb
+H_TBB_CAT5 = 0x60252e6            # 子类型 1（长按确认）→类别 5 折叠目标（AO §1.2/§3.3）
 H_SWALLOW_GATE = 0x60252fa        # b[QCY+38]==1 吞键门（不得命中跳走）
 H_SECOND_GATE = 0x6025302         # 0x60c0fd8()≠0 吞键门（park 预期返 0 过门）
 H_MODE_QUERY = 0x602531c          # 0x6008170 模式查询调用点
+H_MAP_MISS = 0x602535e            # 查表未命中臂（call 0x6017958 后返 0 未处理）
 H_MAP_HIT = 0x6025364             # 映射命中（r5=动作号）
+LINK_QUERY = 0x6017958            # 活动链路查询（命中/未命中两臂都调）
 CMD1_BRANCH = 0x6025396           # cmd 1 分支体（发布 'music_pp'+提示音 66）
 PUBLISHER = 0x6018bf4             # 动作名发布器（[QCY+416] 环追加）
 TONE_THUNK = 0x60075c6            # 提示音（0x6003b02 thunk）
-H_RET_HANDLED = 0x602530a         # handler 返 1 出口（r4=1）
+H_RET_HANDLED = 0x602530a         # handler 返 1 出口（li r4=1 装载点）
+H_RET_PACK = 0x602530c            # 返值打包点（mov r0,r4——已处理/未处理共用出口）
+H_CAT6_EARLY = 0x6025310          # 类别 6 直返门（beq r5==6→0x602530c,不查表）
+# 动作分支锚点（AO key-action-map §1.5/§2+本路静态反汇编逐 call 校准：发布器
+# 0x6018bf4/门 0x6008298/tone 0x60075c6 均按 call 偏移=PC+4+disp 复核到位）
+NAME_BASE = 0x60A18C0             # 0x602537a li r8（跳表前装名串基址）
+CMD2_BRANCH = 0x60253ac           # 'music_prev'(r8+1347)+r6 门+提示音 70
+CMD3_BRANCH = 0x60253bc           # 'music_next'(r8+1358)+r6 门+提示音 69
+CMD4_BRANCH = 0x60253cc           # 'open_siri'(r8+1164)+0x6008298 门+提示音 45
+CMD5_BRANCH = 0x60253e8           # 音量+：r9/r6 门→0x6017a58
+CMD6_BRANCH = 0x60253f6           # 音量-：r9/r6 门→0x6017b22
+CMD7_BRANCH = 0x6025404           # 'InLowLatency'(r8+1873)+get_config(22)+模式状态机
+CMD0_GATE = 0x60253a4             # 动作 0/127 共享门（r4=1;r5==127→0x602530c 已处理）
+CMD0_UNHANDLED = 0x6025392        # r4=0 未处理出口（cmd 0/8/10 同落点）
+SIRI_GATE = 0x6008298             # cmd4 链路能力计数（0x1281fa 2×40B 表 b[rec+15]&4）
+VOLUP_API = 0x6017a58             # cmd5 音量+ API（park 无链路=负证据锚）
+VOLDN_API = 0x6017b22             # cmd6 音量- API（同上）
+CMD7_GETCFG = 0x602541c           # cmd7 get_config(22,0x124A04,1) 调用点
+CMD7_MODE_TABLE_LOOP = 0x6025424  # cmd7 {1,3,4}@r8+18 查表循环体
+CMD7_APPLY = 0x60254aa            # cmd7 模式应用器 0x60251fc(3,1) 调用点（当前=3 臂）
+CMD7_BLE_ACK = 0x60254b6          # cmd7 BLE 回执 0x6025652(46,..) 调用点
+MODE_BYTE = 0x124A04              # key 22 音频模式字节（cmd7 状态机读写点）
+VOL_LEVEL_SLOT = QCY + 4434       # key 86 u16 音量级别槽（cmd5/6 负形断言面）
+# 载荷→(键,子类型,逻辑键槽,手势类别)——handler 0x6025334/0x60252d8 同式折叠
+GESTURE_FOLD = {0: 1, 1: 5, 4: 2, 5: 3, 6: 4}   # 其余子类型（2/3/10..14）→6 无动作类
+KEY_MASK = 0x09050307                            # key10..13→逻辑键 {7,3,5,9}
+# 各动作分支的名串偏移与提示音号（None=该分支无发布/提示音或不适用）
+ACTION_FACE = {
+    1: (1024, 66),    # 'music_pp' 无门提示音
+    2: (1347, 70),    # 'music_prev' r6 门提示音
+    3: (1358, 69),    # 'music_next' r6 门提示音
+    4: (1164, 45),    # 'open_siri' 0x6008298 门提示音
+    7: (1873, None),  # 'InLowLatency' 模式状态机
+}
+ACTION_BRANCH_PC = {1: CMD1_BRANCH, 2: CMD2_BRANCH, 3: CMD3_BRANCH,
+                    4: CMD4_BRANCH, 5: CMD5_BRANCH, 6: CMD6_BRANCH,
+                    7: CMD7_BRANCH}
 # 停点集（分段边界=真实控制流点）
 PUMP_LOOP_HEAD = 0x60123e6        # 循环头（walk 穷尽/下一事件）
 PUMP_EVENT_DONE = 0x6012422       # 事件终结（handler 返非 0）
@@ -131,9 +178,14 @@ POST_WATCH = (POST_API, POST_WRAPPER, POST_INNER, POST_MAIN, POST_TASK_FOUND,
 DEQ_WATCH = (DEQUEUE, UNPACK)
 FILTER_KEY_WATCH = (FILTER, FILTER_CB_N1)     # 按键事件走普通臂：回调点=负证据
 PUMP_WATCH = (PUMP_CONT, SPECIAL_PATH, SPECIAL_EXIT, WALK_CMP, CALL_SITE,
-              TABLE2_R0, KEY_HANDLER, H_BIT16_GATE, H_TBB, H_SWALLOW_GATE,
-              H_SECOND_GATE, H_MODE_QUERY, H_MAP_HIT, CMD1_BRANCH, PUBLISHER,
-              TONE_THUNK, H_RET_HANDLED, PUMP_EVENT_DONE)
+              TABLE2_R0, KEY_HANDLER, H_BIT16_GATE, H_TBB, H_TBB_CAT5,
+              H_SWALLOW_GATE, H_SECOND_GATE, H_MODE_QUERY, H_MAP_MISS,
+              H_MAP_HIT, LINK_QUERY, CMD1_BRANCH, CMD2_BRANCH, CMD3_BRANCH,
+              CMD4_BRANCH, CMD5_BRANCH, CMD6_BRANCH, CMD7_BRANCH, CMD0_GATE,
+              CMD0_UNHANDLED, SIRI_GATE, VOLUP_API, VOLDN_API, PUBLISHER,
+              TONE_THUNK, H_RET_HANDLED, H_RET_PACK, H_CAT6_EARLY,
+              PUMP_EVENT_DONE, CMD7_GETCFG, CMD7_MODE_TABLE_LOOP, CMD7_APPLY,
+              CMD7_BLE_ACK)
 
 # 队列几何（任务对象坐标：+8 写游标/+10 读游标/+12 容量/+14 计数/+16 缓冲；
 # 出队函数坐标=任务+8 起：+2 读游标/+4 容量/+6 计数/+8 缓冲——两套坐标同一物理）
@@ -179,6 +231,34 @@ def read_u8(cpu, address):
 
 def hexed(value):
     return None if value is None else hex(value)
+
+
+def payload_face(payload):
+    """载荷字→(键id, 子类型, 逻辑键槽, 手势类别)——handler 真码同式折叠。
+
+    0x60252d0 取子类型 b0→tbb 折叠（GESTURE_FOLD；其余→6 无动作类）；
+    0x6025334 (载荷>>8).b0-10→键掩码 0x09050307 移位取槽（key10..13→{7,3,5,9}，
+    越界键→255 不命中）。纯函数面，供断言分派与单测复核。"""
+    key = (payload >> 8) & 0xFF
+    sub = payload & 0xFF
+    slot = ((KEY_MASK >> ((key - 10) * 8)) & 0xFF) if 0 <= key - 10 <= 3 else 255
+    return key, sub, slot, GESTURE_FOLD.get(sub, 6)
+
+
+def lookup_action(map45, slot, category):
+    """15×3B 首匹配查表——0x602534a 循环同式（miss→None=未命中臂 0x602535e）。"""
+    for i in range(15):
+        if map45[3 * i] == slot and map45[3 * i + 1] == category:
+            return map45[3 * i + 2]
+    return None
+
+
+def cstr_at(cpu, address, limit=24):
+    """flash 名串直读（C 字符串，遇 0 止）——发布器 r1 的互证面。"""
+    raw = read_bytes(cpu, address, limit)
+    if raw is None:
+        return None
+    return raw.split(b'\x00', 1)[0].decode('ascii', 'replace')
 
 
 def task_queue_face(cpu, task):
@@ -544,6 +624,10 @@ def run_scene(machine, hardware, cpu, payload, max_steps_seg):
     t2r0_hit = hit_at(hits6, TABLE2_R0)
     s6 = {
         'entry': hex(PUMP_CONT),
+        'payload_face_world_truth': {
+            'note': '世界真值档:RAM 映射表全零（config 48 缺档）→任何载荷查表 miss',
+            **dict(zip(('key', 'subtype', 'slot', 'category'),
+                       payload_face(payload)))},
         'register_face': ('r4=sp+4,r7=0x60A8C68,r8=QCY,r9=611,r10=0x60A89E0,'
                           'r11=0x60A8C68,r12=0x10000C,r13=0x60A8CB0'
                           '（0x60123c0..0x60123e0 prologue 常量）;block@%#x'
@@ -610,6 +694,12 @@ def run_scene(machine, hardware, cpu, payload, max_steps_seg):
     # 重跑 post→出队→过滤→泵分发,取动作分支（cmd1→发布器→提示音）执行证据。
     default_map = read_bytes(cpu, DEFAULT_MAP_FLASH, 45)
     driver.mem_write(MAP_TABLE, default_map)
+    # 分支体断言分派（表驱动:载荷→(槽,类别)→默认表 action→分支锚点——表解出
+    # 什么就是什么,runner 不发明动作映射）
+    key_id, sub_type, slot, category = payload_face(payload)
+    map_action = lookup_action(default_map, slot, category)
+    vol_before = read_u16(cpu, VOL_LEVEL_SLOT)
+    mode_before = read_u8(cpu, MODE_BYTE)
     r0_1b, steps1b, hits1b = driver.direct_call(
         POST_API, [payload, 0], max_steps=200_000, watch=POST_WATCH,
         label='s6b:post_%#x' % payload)
@@ -630,14 +720,20 @@ def run_scene(machine, hardware, cpu, payload, max_steps_seg):
         max_steps=max_steps_seg, label='s6b:pump_dispatch_%#x' % payload)
     cov6b = covered_pcs(seg_b['watch_hits'])
     ring_after_b = ring_face(cpu)
+    vol_after = read_u16(cpu, VOL_LEVEL_SLOT)
+    mode_after = read_u8(cpu, MODE_BYTE)
     publisher_hit = hit_at(seg_b['watch_hits'], PUBLISHER)
     handler_hit_b = hit_at(seg_b['watch_hits'], KEY_HANDLER)
+    name_off, _tone = ACTION_FACE.get(map_action, (None, None))
+    expected_name = cstr_at(cpu, NAME_BASE + name_off) if name_off is not None else None
     s6b = {
         'note': ('fixture 档:RAM 映射表 @%#x 装入 flash 默认表 45B@%#x'
                  '（0x60254ce 装载源;擦除态世界 config 48 缺档致原表全零——'
                  'synthetic-load-of-real-bytes,同 S 路 config 523 fixture 先例）'
                  % (MAP_TABLE, DEFAULT_MAP_FLASH)),
         'default_map_bytes': list(default_map),
+        'payload_face': {'key': key_id, 'subtype': sub_type, 'slot': slot,
+                         'category': category, 'map_action': map_action},
         'map_table_after': [list(read_bytes(cpu, MAP_TABLE + 3 * i, 3) or [])
                             for i in range(15)],
         'post_returned': r0_1b, 'dequeue_block': [hexed(w) for w in blk4b],
@@ -648,26 +744,130 @@ def run_scene(machine, hardware, cpu, payload, max_steps_seg):
         'publisher': {'entered': publisher_hit is not None,
                       'r0': publisher_hit['r'][0] if publisher_hit else None,
                       'r1_name_ptr': publisher_hit['r'][1] if publisher_hit else None},
+        'expected_name_cstr': expected_name,
+        'vol_level_slot': {'addr': hex(VOL_LEVEL_SLOT), 'before': vol_before,
+                           'after': vol_after},
+        'mode_byte': {'addr': hex(MODE_BYTE), 'before': mode_before,
+                      'after': mode_after},
         'action_ring': {'before': ring_before_b, 'after': ring_after_b},
         'tone_thunk_covered': hex(TONE_THUNK) in cov6b,
         'watch_hit_pcs': sorted(cov6b),
     }
-    s6b['checks'] = {
-        # 断言 F①:fixture 后查表命中→cmd1 分支（映射机制+动作分发动真码）。
-        'map_hit_action_loaded': hex(H_MAP_HIT) in cov6b,
-        'cmd1_branch_taken': hex(CMD1_BRANCH) in cov6b,
-        # 断言 F②:发布器以真名串指针被调（r1=0x60a1cc0 'music_pp'——flash 直读互证）；
-        # park 无环对象（[QCY+416]=0 世界真值）→发布器 r7==0 门早退=诚实边界,
-        # 环写入本身归有环世界（D1 窗口/后段前沿）。
-        'publisher_called_with_music_pp': bool(
-            publisher_hit and publisher_hit['r'][1] == hex(CMD1_NAME_ADDR)),
-        'ring_absent_in_park': ring_after_b.get('ring_ptr') == '0x0',
-        # 断言 F③:提示音沿真码到达（播放成败不进必要条件——SEC-01 两档裁定）。
-        'tone_path_reached': hex(TONE_THUNK) in cov6b,
-        # 断言 F④:事件终结（停点=0x6012422,handler 返 1）。
-        'stopped_at_event_done': seg_b['stop_pc'] == PUMP_EVENT_DONE,
-        'handler_returned_one': bool(seg_b['r_face'] and seg_b['r_face'][0] == '0x1'),
-    }
+    ret_one = bool(seg_b['r_face'] and seg_b['r_face'][0] == '0x1')
+    done = seg_b['stop_pc'] == PUMP_EVENT_DONE
+    loop_head = seg_b['stop_pc'] == PUMP_LOOP_HEAD
+    if map_action is None and category == 6:
+        # 类别 6（持续 2/释放 3/档位 10..14 post）：0x6025310 beq r5==6 直返
+        # 0x602530c——不进查表（REC-08 负例「长按释放不发单击」消费半边的
+        # 运行时验证面）。
+        s6b['checks'] = {
+            'cat6_early_return_gate': hex(H_CAT6_EARLY) in cov6b,
+            'ret_pack_reached': hex(H_RET_PACK) in cov6b,
+            'no_lookup_loop': hex(H_MAP_HIT) not in cov6b,
+            'no_publisher_call': publisher_hit is None,
+            'no_tone_call': hex(TONE_THUNK) not in cov6b,
+            'vol_level_untouched': vol_after == vol_before,
+            'mode_byte_untouched': mode_after == mode_before,
+        }
+    elif map_action is None:
+        # 未命中臂（槽位不匹配,如 key13 槽 9 默认表无条目）：0x602535e→
+        # 0x6017958→返 0 未处理（返 0 证据面=未命中臂 PC+循环头停,同 cmd0
+        # 口径不拿停点 r_face 当判据）。
+        s6b['checks'] = {
+            'map_miss_path_taken': hex(H_MAP_MISS) in cov6b,
+            'link_query_ran': hex(LINK_QUERY) in cov6b,
+            'no_publisher_call': publisher_hit is None,
+            'no_tone_call': hex(TONE_THUNK) not in cov6b,
+            'no_event_done_stop': not done,
+            'stopped_at_loop_head': loop_head,
+        }
+    elif map_action == 0:
+        # cmd 0：跳表外早退（r1=−1>10）→0x60253a4 门（r5≠127）→0x6025392 r4=0。
+        # 返 0 证据面=0x6025392（li r4=0 装载点）+循环头停（handler 返 0 续 walk——
+        # 停点 r0 是 walk 残留值,不是 handler 返值,不拿 r_face 当判据）。
+        s6b['checks'] = {
+            'map_hit_action_loaded': hex(H_MAP_HIT) in cov6b,
+            'cmd0_gate_taken': hex(CMD0_GATE) in cov6b,
+            'cmd0_unhandled_exit': hex(CMD0_UNHANDLED) in cov6b,
+            'ret_pack_after_zero': hex(H_RET_PACK) in cov6b,
+            'publisher_not_called': publisher_hit is None,
+            'tone_not_reached': hex(TONE_THUNK) not in cov6b,
+            'vol_level_untouched': vol_after == vol_before,
+            'mode_byte_untouched': mode_after == mode_before,
+            'no_event_done_stop': not done,
+            'stopped_at_loop_head': loop_head,
+        }
+    elif map_action in (1, 2, 3):
+        # cmd 1/2/3：发布名+提示音（2/3 提示音带 r6 门——park 无链路 r6=0 不响,
+        # 断言面=发布器真名串+门早退后的已处理返回；1 无门提示音必达）。
+        s6b['checks'] = {
+            'map_hit_action_loaded': hex(H_MAP_HIT) in cov6b,
+            'cmd_branch_taken': hex(ACTION_BRANCH_PC[map_action]) in cov6b,
+            'publisher_called_with_expected_name': bool(
+                publisher_hit and publisher_hit['r'][1] == hex(NAME_BASE + name_off)),
+            'ring_absent_in_park': ring_after_b.get('ring_ptr') == '0x0',
+            'ret_handled_path': hex(H_RET_HANDLED) in cov6b,
+            'stopped_at_event_done': done,
+            'handler_returned_one': ret_one,
+        }
+        if map_action == 1:
+            s6b['checks']['tone_path_reached'] = hex(TONE_THUNK) in cov6b
+        else:
+            s6b['checks']['tone_gated_by_link'] = hex(TONE_THUNK) not in cov6b
+    elif map_action == 4:
+        # cmd 4：发布 'open_siri'→0x6008298 门（park 无支持链路→r0=0 早退返已处理,
+        # 提示音负证据——门行为断言）。
+        s6b['checks'] = {
+            'map_hit_action_loaded': hex(H_MAP_HIT) in cov6b,
+            'cmd4_branch_taken': hex(CMD4_BRANCH) in cov6b,
+            'publisher_called_with_open_siri': bool(
+                publisher_hit and publisher_hit['r'][1] == hex(NAME_BASE + name_off)),
+            'ring_absent_in_park': ring_after_b.get('ring_ptr') == '0x0',
+            'siri_gate_ran': hex(SIRI_GATE) in cov6b,
+            'tone_blocked_no_supporting_link': hex(TONE_THUNK) not in cov6b,
+            'ret_handled_path': hex(H_RET_HANDLED) in cov6b,
+            'stopped_at_event_done': done,
+            'handler_returned_one': ret_one,
+        }
+    elif map_action in (5, 6):
+        # cmd 5/6：r9==0（无活动链路）门早退返已处理不执行——音量 API 负证据+
+        # 级别槽 QCY+4434 不变（负形断言,非方向断言——ACT-03 链路门负形口径）。
+        s6b['checks'] = {
+            'map_hit_action_loaded': hex(H_MAP_HIT) in cov6b,
+            'cmd_branch_taken': hex(ACTION_BRANCH_PC[map_action]) in cov6b,
+            'link_query_ran': hex(LINK_QUERY) in cov6b,
+            'vol_api_not_called_no_link': (hex(VOLUP_API) not in cov6b
+                                           and hex(VOLDN_API) not in cov6b),
+            'vol_level_untouched': vol_after == vol_before,
+            'no_publisher_call': publisher_hit is None,
+            'no_tone_call': hex(TONE_THUNK) not in cov6b,
+            'ret_handled_path': hex(H_RET_HANDLED) in cov6b,
+            'stopped_at_event_done': done,
+            'handler_returned_one': ret_one,
+        }
+    elif map_action == 7:
+        # cmd 7：发布 'InLowLatency'→get_config(22)→{1,3,4}@r8+18 查表→按当前值
+        # 分派（park 世界真值决定走向——下游模式应用/BLE 回执命中与否如实记录）。
+        s6b['checks'] = {
+            'map_hit_action_loaded': hex(H_MAP_HIT) in cov6b,
+            'cmd7_branch_taken': hex(CMD7_BRANCH) in cov6b,
+            'publisher_called_with_InLowLatency': bool(
+                publisher_hit and publisher_hit['r'][1] == hex(NAME_BASE + name_off)),
+            'ring_absent_in_park': ring_after_b.get('ring_ptr') == '0x0',
+            'mode_state_read': hex(CMD7_GETCFG) in cov6b,
+            'mode_table_loop_ran': hex(CMD7_MODE_TABLE_LOOP) in cov6b,
+            'mode_apply_called': hex(CMD7_APPLY) in cov6b,
+            'stopped_at_event_done': done,
+            'handler_returned_one': ret_one,
+        }
+    else:
+        # 默认表可达动作 0..7 之外（8/9/10/11/127 无默认表条目——本路不可达,
+        # 如实记无断言面;等价类外的表驱动边界）。
+        s6b['checks'] = {
+            'map_hit_action_loaded': hex(H_MAP_HIT) in cov6b,
+            'note': 'action %r 无默认表条目,分支体不可达（表解出什么就是什么）'
+                    % map_action,
+        }
     observations['s6b_pump_dispatch_fixture'] = s6b
     return observations
 
@@ -733,6 +933,10 @@ def main():
                       's6_walk': s6.get('table2_walk'),
                       's6_ring_after': (s6.get('action_ring') or {}).get('after'),
                       's6_wall': s6.get('wall'),
+                      's6b_face': s6b.get('payload_face'),
+                      's6b_expected_name': s6b.get('expected_name_cstr'),
+                      's6b_vol_slot': s6b.get('vol_level_slot'),
+                      's6b_mode_byte': s6b.get('mode_byte'),
                       's6b_checks': s6b.get('checks'),
                       's6b_stop': s6b.get('stop_pc'),
                       's6b_publisher': s6b.get('publisher'),

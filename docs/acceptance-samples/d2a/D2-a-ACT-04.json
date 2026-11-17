@@ -1,37 +1,49 @@
 {
- "case_id": "D2-a-ACT-04",
- "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
- "initial_state": "预填用例（未执行），计划起点=函数级直调 harness（路 BW --event-injection 先例：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），从 S19 第二分发表记录[5] 的 handler 0x060252c6 入口注入载荷字）；S19 生产分发路径（post→队列→任务消费）不在当前停点世界可达段（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环 BI/BJ，接线后升格重跑）",
- "inputs_schedule": "计划注入（预填未执行）：handler 入口载荷字 0x10a04（多功能键双击，子类型 4→类别 2）——默认表 (7,2,7) 命中 cmd 7 模式切换（App「模式切换」=双击默认）；识别半边该载荷已由路 S 实测（REC-04）",
- "observation_boundary": "计划观察点：首锚点 0x06025404：0x06018bf4('InLowLatency')→get_config(22,0x124a04,1)→0x60a18c0+18 三字节表 {1,3,4} 找当前值→0x060251fc(下一模式,1)；「动作执行」=0x124a04 模式字节翻转（1↔3 往复、4 也进 3）+尾部 set_config(22,0x124a04,1)持久化+flag!=0 路径 [ctx+120]/[ctx+124] 挂音乐模式恢复回调 0x602619a；失配读数（不属 {1,3,4}）→仅 BLE 回执 0x06025652(46,0x124a04,1)（cmd 0x2E 帧经 [QCY+1004] RCSP 对象 0x06009f6a 发送）",
- "assertions": [
-  "d1-acceptance §6.1 B 组+key-action-map §4.1/§5：cmd 7=音频模式循环切换（key 22 状态机）——1↔3 往复、4 也进 3；前置门 0x0601662a 返回 &4 且 b[0x125f7e]==0 直接返回、模式>4 返回",
-  "cmd 7 不触 ANC/mic_effect dispatch：模式应用走 0x0600dab6（音频效果 ctx 槽族），与 0x0600db3c（ANC dispatch）无调用边（key-action-map §4.1/§4.4）",
-  "证据边界（如实）：路 BW 双击载荷 0x10a04 的 handler 入口消费链已实测，但走的是合成表项 (7,2,9)（EQ 路线），cmd 7 分支体（0x06025404 及其下游）纯静态——本记录按真实默认表 (7,2,7) 预填（ACT-07 记录 BW 实测的那一支）",
-  "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
- ],
- "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
- "model_assumptions": [
-  "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
-  "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
-  "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
-  "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
-  "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
-  "BW 双击实测证据的表项差异：BW fixture=(7,2,9)，默认表=(7,2,7)——入口消费链形状可迁移，cmd 7 分支体不可迁移（未执行）",
-  "S19 消费链（post→出队→过滤→泵分发→handler 0x60252c6）已在 park 世界直调定位验证全绿（路 KEYCONS 2026-11-17，ACT-01 载荷 0x10a00 代表：真 post 入队+真出队+真过滤+泵分发段经表2[5] 以 r0=载荷指针调 handler+门链/查表/cmd 分支/事件终结）——本条载荷与 0x10a00 走同一链，差异仅在 handler 内查表槽位与动作分支（双击 0x10a04→cmd 7）；cmd 7 下游 set_config(22) 属 VM/flash 域，冻结世界预期诚实停，待跑待分档"
- ],
- "result": "NOT_RUN",
- "uncovered_items": [
-  "cmd 7 分支体从未在仿真执行（本记录=静态锚点预填）",
-  "模式应用器 0x060251fc 的场景切换（0x06024f02/MusicEqBt 预设装载 0x06024fe6）深链——BW S4 仅站点尾窗字节重放，非全链执行",
-  "BLE 0x2E 回执的无线侧（RCSP 发送后的空口）不建模",
-  "0x06008170 模式查询返回 5 的确切语义（普通基线 vs 通话占用）是 [推断]（key-action-map §4.3/§6.3）——非基线模式下按键映射动作被抑制（0x80 位）的行为依赖此假设"
- ],
- "evidence_level": "conditional",
- "evidence_conditions": [
-  "S19 消费链（post→出队→过滤→泵分发→handler 0x60252c6）已在 park 世界直调定位验证全绿（路 KEYCONS 2026-11-17，ACT-01 载荷 0x10a00 代表：真 post 入队+真出队+真过滤+泵分发段经表2[5] 以 r0=载荷指针调 handler+门链/查表/cmd 分支/事件终结）——本条载荷与 0x10a00 走同一链，差异仅在 handler 内查表槽位与动作分支（双击 0x10a04→cmd 7）；cmd 7 下游 set_config(22) 属 VM/flash 域，冻结世界预期诚实停，待跑待分档"
- ],
- "evidence_refs": [],
- "blocked_missing": null,
- "recorded_at": "2026-11-17T13:36:00"
+  "case_id": "D2-a-ACT-04",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "已执行（路 KEYBR 2026-11-17，KEYCONS 同款 park 停点世界——快照因指纹闸重捕 881s 停回 29,601,125@0x606955c，gpcnt_num 关配套侧）：六段消费链同 ACT-01（真 post 入队→真出队→真过滤→泵分发段经表2[5] 以 r0=载荷指针调 handler 0x60252c6），唯一合成输入=载荷字+s6b 默认表 fixture（flash 默认表 45B@0x609e250 装入 0x12730C，synthetic-load-of-real-bytes）；载荷 0x10a04=key10 双击（REC-04 实测，BW 消费链互证）；key 22 模式字节 0x124A04 park 真值=1（音乐模式，擦除态世界读值）",
+  "inputs_schedule": "已执行：--payload 0x10a04——tbb 子类型 4→类别 2→查表命中 (7,2)→动作 7（真实默认表 [7,2,7]——BW 合成表项 (7,2,9) 的修正对照）→cmd7 分支 0x6025404：发布器 0x6018bf4(r1=0x60a2011 'InLowLatency')→get_config(22,0x124A04,1) 调用点 0x602541c 真跑→{1,3,4}@r8+18 查表循环 0x6025424→当前=1→下一模式 3：0x60251fc(3,1) 调用点 0x60254aa 命中（模式应用器真跑）→handler 返 1 事件终结 0x6012422，568 步零墙",
+  "observation_boundary": "实际观察面（表驱动断言分派）：折叠面（槽 7/类别 2）+查表命中动作 7+cmd7 锚点链（0x6025404 分支体/发布器 r1=0x60a2011/0x602541c config 读/0x6025424 模式表循环/0x60254aa 模式应用调用）+0x124A04 前后值；证据 analysis/local-checks/keycons/scene_0x10a04.json",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §4.1/§5：cmd 7=音频模式循环切换（key 22 状态机）——1↔3 往复、4 也进 3；前置门 0x0601662a 返回 &4 且 b[0x125f7e]==0 直接返回、模式>4 返回",
+    "cmd 7 不触 ANC/mic_effect dispatch：模式应用走 0x0600dab6（音频效果 ctx 槽族），与 0x0600db3c（ANC dispatch）无调用边（key-action-map §4.1/§4.4）",
+    "证据边界（如实）：路 BW 双击载荷 0x10a04 的 handler 入口消费链已实测，但走的是合成表项 (7,2,9)（EQ 路线），cmd 7 分支体（0x06025404 及其下游）纯静态——本记录按真实默认表 (7,2,7) 预填（ACT-07 记录 BW 实测的那一支）",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "BW 双击实测证据的表项差异：BW fixture=(7,2,9)，默认表=(7,2,7)——入口消费链形状可迁移，cmd 7 分支体不可迁移（未执行）",
+    "S19 消费链（post→出队→过滤→泵分发→handler 0x60252c6）已在 park 世界直调定位验证全绿（路 KEYCONS 2026-11-17，ACT-01 载荷 0x10a00 代表：真 post 入队+真出队+真过滤+泵分发段经表2[5] 以 r0=载荷指针调 handler+门链/查表/cmd 分支/事件终结）——本条载荷与 0x10a00 走同一链，差异仅在 handler 内查表槽位与动作分支（双击 0x10a04→cmd 7）；cmd 7 下游 set_config(22) 属 VM/flash 域，冻结世界预期诚实停，待跑待分档",
+    "KEYBR 实测修正：0x124A04 前后=1 不变——flag=1 走 ctx 路径（模式应用写点在 ctx 槽族 [ctx+100]，0x124A04 直写是 flag==0 路，key-action-map §4.1 的双路描述在此获得运行时分叉证据）",
+    "定位法接缝同 ACT-01（get_event 的 icfg 门+13 返泵打包点为分段边界；泵段寄存器面=prologue 常量直载，block=真出队产物）",
+    "s6b fixture：擦除态世界 config 48 缺档→默认表装载未发生，装入真 flash 字节后分支可达（KEYCONS 同款先例）；断言分派表驱动——默认表解出什么就是什么，runner 不发明映射",
+    "park 无动作名环对象（[QCY+416]=0）→发布器 r7==0 门早退；提示音播放器句柄 [QCY+924]=0——提示音沿真码到达/被门挡住均为分支行为证据，播放成败不进必要条件",
+    "cmd7 与真实默认表的会师：BW 实测走合成表项 (7,2,9)（EQ 空），本记录走真实 [7,2,7]——两条证据在同一 handler 入口链上互补，(7,2,7) 分支体 0x6025404 及下游首次运行时执行"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "1↔3 往复第二拍与「4 也进 3」变体未跑（单事件场景；状态机多拍归 SEC-01 二次输入/D1 窗口）",
+    "0x60251fc 前置门（0x0601662a 返 &4 且 b[0x125f7e]==0 直接返回）未单独断言（在应用器内部，本记录断言到调用点）",
+    "ctx 槽族写点（[ctx+100]）观测归音频效果域（D2-b/路 AL 界）；BLE 回执 0x2E 帧构造未观测（0x60254b6 未到达——flag 路径不走失配臂）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "定位法接缝同 ACT-01（get_event 的 icfg 门+13 返泵打包点为分段边界；泵段寄存器面=prologue 常量直载，block=真出队产物）",
+    "s6b fixture：擦除态世界 config 48 缺档→默认表装载未发生，装入真 flash 字节后分支可达（KEYCONS 同款先例）；断言分派表驱动——默认表解出什么就是什么，runner 不发明映射",
+    "park 无动作名环对象（[QCY+416]=0）→发布器 r7==0 门早退；提示音播放器句柄 [QCY+924]=0——提示音沿真码到达/被门挡住均为分支行为证据，播放成败不进必要条件",
+    "cmd7 与真实默认表的会师：BW 实测走合成表项 (7,2,9)（EQ 空），本记录走真实 [7,2,7]——两条证据在同一 handler 入口链上互补，(7,2,7) 分支体 0x6025404 及下游首次运行时执行"
+  ],
+  "evidence_refs": [
+    "tools/keycons_scene.py（--payload 分支体复跑+表驱动断言分派 payload_face/lookup_action，路 KEYBR，sim-keybr 分支）",
+    "tools/test_keycons_scene.py（24 例：折叠/查表/锚点算术/不可达动作无表项）",
+    "analysis/local-checks/keycons/scene_<payload>.json（运行证据，git 忽略；python3 tools/keycons_scene.py --payload <字> 复跑再生）",
+    "docs/peripheral-input-simulation.md §9.4（分支体复跑记录）"
+  ],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-17T14:30:00"
 }
