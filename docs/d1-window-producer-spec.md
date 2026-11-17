@@ -131,12 +131,17 @@ checker（验收入口在 probe_irq_entry 侧调 run_all，观察器只产数据
 'core_tick_state': {同 park.core_tick_state},     # 顶层重复一份（键位=顶层优先，§1.4）
 ```
 
-- **W_park 判据（核心）**：runbook §1.1（RBKREV）修正口径——W_park=「**S19 空队列
-  pend 链完成后的那次事件时钟接管**」，不是全程第一次 `event_clock_engaged`
-  （boot 期 os_time_dly 途中停泊已多次 engage，B3 实测 13,429,113 虚拟步）。机械
-  判据（主）：观察器 watchpoint **0x6064cf6（pend 写面首 PC）首达**置
-  `pend_write_seen=True`，此后的**首次** `event_clock_engaged` 即 W_park——时间序
-  保证：boot 停泊全部发生在 S19 pend 写面之前（BA #15 前的停泊均无 pend 写面）。
+- **W_park 判据（核心，⑤ 收口 2026-11-17 路 S18WIN）**：runbook §1.1（RBKREV）
+  修正口径——W_park=「**S19 空队列 pend 链完成后的那次事件时钟接管**」，不是全程
+  第一次 `event_clock_engaged`（boot 期 os_time_dly 途中停泊已多次 engage，B3 实测
+  13,429,113 虚拟步）。机械判据（主）：观察器 watchpoint **0x60123e6（S19 消息
+  循环头）首达**置 `s19_loop_head_seen=True`，此后的 **0x6064cf6（pend 写面首
+  PC）** 才置 `pend_write_seen=True`，其后的**首次** `event_clock_engaged` 即
+  W_park。**不再随新 pend 重锚**——S19 已建立后的空队列 pend 即末次 pend（稳态
+  终形），后续只有 Timer0 唤醒/repark、无新 pend 写面。此口径修正 D1RUN r1 证伪的
+  「首次 pend 即锚」（boot 期任务各自 pend 早于 S19，17.7M 即出现）与「末次 pend
+  重锚」兜底（S19 尚未建立时的临时口径）：当前前沿已过 S19（DEPMAP 41,847,303），
+  S19 循环头前置条件已满足，锚定绑定到 S19/app_core 链本身，不落在 boot 中段。
   互证（实现可选，进 `park.queue_count`）：engage 事件时读任务表
   `[0x126c5c]`（cnum=0）→TCB→`h[TCB+6]`==0（空队列）+ engage 事件自带
   `idle_cores==[0,1]`。
@@ -363,7 +368,8 @@ runbook §5.1 第 4 条（H2SRC 更新后）：「cfg523 开+缺键扫 → pendi
   0x126F3C 链表 id=2）；表 2 walk（6 条，0x600434a/0x60252c6 不认领返回 0）→
   `[0x126f4c]` 动态过滤链（期望 0=跳过）→ 表 1 walk（54 条，[39] 命中）；
   handler 0x6023962（0x6023972 子码门→0x60239b2→0x60237d8→门控
-  b[0x125B54]/b[0x127184]——运行值=观测项 R4，关=短闭合返 0）；返回→回环→
+  b[0x125B54]/b[0x12715C]——运行值=观测项 R4，关=短闭合返 0；门控2 地址
+  路 S18WIN 复算修正，见 docs/d1-s18-destinations.md §3）；返回→回环→
   空队列 pend 再执行。观察=PC watchpoint + 关键 RAM 值采样，全程累计。
 - **samples[] 条目**：`{event:'(18,0)', origin:'firmware-natural', 十站三值
   True/False/None, id_read_value, producer_pc, first_post_step}`；

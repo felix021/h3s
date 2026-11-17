@@ -25,6 +25,8 @@ from d1_window_observer import (D1WindowObserver,CHAIN_STAGES,PEND_WRITE_FACE,
     S19_LOOP_HEAD,GET_EVENT_CALL,CONSUME_PC,BIT20_PC,SPECIAL_PATH_PC,
     S18_HANDLER_PC,POST_API,ENQUEUE_SITES,KEYSCAN_CALLBACK,ADC_SCAN_CALLBACK,
     SYS_TIMER_FIRE_SITES,TIMER0_HANDLER_PC,
+    GATE1_READ_PC,GATE1_ADDR,GATE2_READ_PC,GATE2_ADDR,
+    SPECIAL_SUBCODE20_PC,SPECIAL_NODE_CALLBACK_PC,ID2_LIST_HEAD,
     timer0_period_closed_form,core_tick_deadline_closed_form)
 
 import check_d1_acceptance as checker
@@ -76,7 +78,7 @@ def make_observer(machine,**kwargs):
 def reach_park(machine,observer,*,pre_steps=(),s19_seen=True):
     """驱动到 W_park:若干前置步→(S19 循环头)→pend 写面→停泊(enter_idle_wait
     钩子)→engage。s19_seen=False 复现 boot 期任务的消息队列 pend(S19 头未执行,
-    D1RUN 首轮实测锚修正的负例面)。返回 (完成步数,W_park)。"""
+    ⑤ 收口后窗口不开=W_park None 的负例面)。返回 (完成步数,W_park)。"""
     completed=0
     for pc in pre_steps:
         observer.note_step(machine.cores[0],pc,completed);completed+=1
@@ -140,24 +142,29 @@ class WParkAnchoringTests(unittest.TestCase):
         self.assertNotIn('park',tree)
         self.assertEqual(tree['window_blocked_events'],[])
 
-    def test_in_window_pend_reanchors_to_last_park(self):
-        """末次 pend 重锚(D1RUN r1-r3 定稿):窗口内出现新的空队列 pend=先前
-        锚定的停泊不是稳态终形,W_park 清除让位给该 pend 之后的首次 engage;
-        boot 期 pend(窗口前)只置位候选,首窗仍开在其后首个 engage。"""
+    def test_boot_pend_without_s19_loop_head_does_not_open(self):
+        """负例(⑤ 窗口绑定):S19 循环头 0x60123e6 未执行时,pend 写面+engage
+        不开窗(boot 期任务各自 pend 早于 S19,首锚不得落进 boot 中段)。"""
         machine=FakeMachine()
         observer=make_observer(machine)
-        completed,w=reach_park(machine,observer,s19_seen=False)  # boot 期 pend:开窗
-        self.assertIsInstance(w,int)
-        # 窗口内新 pend(模拟稳态前的又一次任务停泊)→重锚
-        observer.note_step(machine.cores[0],PEND_WRITE_FACE,completed);completed+=1
-        machine.stalls+=1
-        observer.note_step(machine.cores[0],0x12c5ca,completed,stalled=True)
-        machine.idle_wait_cores.update((0,1))
-        observer.note_idle_wait_entered(machine,machine.cores[0])
-        observer.note_event_clock_engaged(machine,machine.cores[0])
-        self.assertGreater(observer._w_park,w)   # 重开在更晚的 engage
+        completed,w=reach_park(machine,observer,s19_seen=False)
+        self.assertIsNone(w)   # S19 头未达:pend 写面不计入候选,窗口不开
         tree=observer.finalize(stop={'kind':'window_complete'})
-        self.assertEqual(tree['park']['model_step'],observer._w_park)
+        self.assertNotIn('park',tree)
+        self.assertEqual(tree['window_blocked_events'],[])
+
+    def test_window_does_not_reanchor_on_new_pend(self):
+        """⑤:窗口锚定到 S19 空队列 pend 后,不再随新 pend 重锚(一次锚定=稳态
+        终形;后续只有 Timer0 唤醒/repark、无新 pend 写面)。"""
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        completed,w=reach_park(machine,observer)   # s19_seen=True:开窗
+        self.assertIsInstance(w,int)
+        # 窗口内再出现 pend 写面(模拟稳态前的又一次停泊):不再重锚
+        observer.note_step(machine.cores[0],PEND_WRITE_FACE,completed);completed+=1
+        self.assertEqual(observer._w_park,w)   # 锚不重置
+        tree=observer.finalize(stop={'kind':'window_complete'})
+        self.assertEqual(tree['park']['model_step'],w)
 
     def test_pend_write_then_engage_opens_window(self):
         machine=FakeMachine()
@@ -502,6 +509,95 @@ class ChainTrackerTests(unittest.TestCase):
         chain=observer.machine_face()['message_chain_observations']
         self.assertEqual(len(chain['s18_preset_samples']),1)
         self.assertEqual(chain['s18_preset_samples'][0][0],'(18,0)')
+
+
+class S18DestinationAnchorTests(unittest.TestCase):
+    """S18 (20,2)/(18,0) 去向锚(④,DEPMAP §6 收口):(18,0) 两级门控读锚实读字节、
+    (20,2) 特路 id=2 链表节点扫描与回调、s18_destinations 面(全程口径)。"""
+    def tearDown(self):
+        br28_machine.d1_window_observer=None
+
+    def _put(self,mem,addr,data):
+        for i,b in enumerate(data):
+            mem.ram[addr+i]=b
+
+    def _seed_id2_list(self,mem,*,present=True):
+        # 链表 0x126F3C:节点 {b[node-4]=id,[node]=next},[head]=首节点;
+        # present 时含 id=2 节点,否则只有 id=1 节点(走完回 head=不存在)。
+        n1,n2=0x125000,0x125100
+        self._put(mem,ID2_LIST_HEAD,n1.to_bytes(4,'little'))
+        self._put(mem,n1-4,b'\x01')
+        if present:
+            self._put(mem,n1,n2.to_bytes(4,'little'))
+            self._put(mem,n2-4,b'\x02')
+            self._put(mem,n2,ID2_LIST_HEAD.to_bytes(4,'little'))
+        else:
+            self._put(mem,n1,ID2_LIST_HEAD.to_bytes(4,'little'))
+
+    def test_gate_values_sampled_from_ram(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        mem=machine.cores[0].mem
+        mem.ram[GATE1_ADDR]=0
+        mem.ram[GATE2_ADDR]=0
+        observer.note_step(machine.cores[0],GATE1_READ_PC,0)
+        observer.note_step(machine.cores[0],GATE2_READ_PC,1)
+        face=observer.finalize(stop={'kind':'window_complete'})['s18_destinations']
+        self.assertEqual(face['gate1']['addr'],hex(GATE1_ADDR))
+        self.assertEqual(face['gate1']['value'],0)
+        self.assertEqual(face['gate1']['branch'],'proceed_to_gate2')
+        self.assertEqual(face['gate2']['addr'],hex(GATE2_ADDR))
+        self.assertEqual(face['gate2']['value'],0)
+        self.assertEqual(face['gate2']['branch'],'short_close')
+
+    def test_gate1_nonzero_short_circuits(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        machine.cores[0].mem.ram[GATE1_ADDR]=1
+        observer.note_step(machine.cores[0],GATE1_READ_PC,0)
+        face=observer.finalize(stop={'kind':'window_complete'})['s18_destinations']
+        self.assertEqual(face['gate1']['value'],1)
+        self.assertEqual(face['gate1']['branch'],'return')
+
+    def test_gates_unobserved_when_ram_uninitialized(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        face=observer.finalize(stop={'kind':'window_complete'})['s18_destinations']
+        self.assertIsNone(face['gate1']['value'])
+        self.assertIsNone(face['gate2']['value'])
+        self.assertIsNone(face['gate1']['branch'])
+
+    def test_id2_node_present(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        self._seed_id2_list(machine.cores[0].mem,present=True)
+        observer.note_step(machine.cores[0],SPECIAL_SUBCODE20_PC,0)
+        face=observer.finalize(stop={'kind':'window_complete'})['s18_destinations']
+        self.assertTrue(face['id2_node']['exists'])
+        self.assertEqual(face['id2_node']['addr'],hex(0x125100-4))
+
+    def test_id2_node_absent_observed(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        self._seed_id2_list(machine.cores[0].mem,present=False)
+        observer.note_step(machine.cores[0],SPECIAL_SUBCODE20_PC,0)
+        face=observer.finalize(stop={'kind':'window_complete'})['s18_destinations']
+        self.assertFalse(face['id2_node']['exists'])
+        self.assertIsNone(face['id2_node']['addr'])
+
+    def test_id2_unobserved_when_ram_uninitialized(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        observer.note_step(machine.cores[0],SPECIAL_SUBCODE20_PC,0)
+        face=observer.finalize(stop={'kind':'window_complete'})['s18_destinations']
+        self.assertIsNone(face['id2_node']['exists'])
+
+    def test_id2_callback_seen(self):
+        machine=FakeMachine()
+        observer=make_observer(machine)
+        observer.note_step(machine.cores[0],SPECIAL_NODE_CALLBACK_PC,0)
+        face=observer.finalize(stop={'kind':'window_complete'})['s18_destinations']
+        self.assertTrue(face['id2_node']['callback_seen'])
 
 
 class KeyContractTests(unittest.TestCase):
