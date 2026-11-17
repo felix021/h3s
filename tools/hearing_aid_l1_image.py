@@ -161,6 +161,53 @@ MPO_TEMPLATE_EXPECTED = bytes.fromhex(
 )
 MPO_NAME_EXPECTED = b'Drc1Eff\x00' + b'\x00' * 8   # 16B name field
 MPO_API_ANCHORS = [0x06000f88, 0x0607538a]         # get_config, set_node_param
+# Route HAL4 (docs/hearing-aid-l4-eq.md): the EQ ten-band consumption payload
+# (reads VM key 31, gates the whole 88B packet, sends ten EQ_SEG 44B packets to
+# "Eq1Eff" via jlstream_set_node_param). Pinned by the L4 tests.
+EQ_SOURCE = ROOT / 'tools/hearing-aid/apply_eq.S'
+EQ_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_toggle_l4_hook.S'
+# apply_eq code shape (62 insns / 180B): prologue -> get_config(31,sp,88) ->
+# two header-word gates -> per-seg {freq 1..21599, |gain|<=40.0f} gate loop ->
+# ten-segment send loop (template copy -> idx/freq/gain patch ->
+# set_node_param(0x737b,"Eq1Eff",pkt,44) -> r0==1 check) -> 0/1/2 return.
+EQ_INSN_IDS = ['push.rets_rl', 'add.sp_i', 'mov.r_sr', 'li.u8', 'mov.rr',
+               'li.u8', 'li.u32', 'call.r', 'bne.ri', 'ld.w', 'li.u32',
+               'bne.rr', 'ld.w', 'li.u8', 'bne.rr', 'li.u32', 'li.s16',
+               'add.rri', 'li.u8', 'ld.hu', 'beqz', 'bgt.rr', 'ld.w',
+               'and.nmodimm.rri', 'bgt.rr', 'add.rri', 'add.ri.neg7', 'bnez',
+               'li.u32', 'li.u32', 'li.zero_hi', 'add.s14.rri', 'li.u32',
+               'li.u8', 'ld.w.pin', 'st.w.pin', 'add.ri.neg7', 'bnez',
+               'add.s14.rri', 'st.h.l', 'lsl.rri.l', 'add.rrr', 'add.rri',
+               'ld.hu', 'st.w', 'ld.w', 'st.w', 'li.s16', 'mov.rr', 'mov.rr',
+               'li.u8', 'call.r', 'bne.ri', 'add.s14.rri', 'bne.ri', 'li.u8',
+               'goto.s', 'li.u8', 'goto.s', 'li.u8', 'add.sp_i', 'pop.pc_rl']
+EQ_CODE_BYTES = 180
+# The EQ_SEG 44B packet template: u32 subcmd 7; 16B seg {index(0), iir=2,
+# freq(0), gain(0), q=0.7f}; 24B fade {10, 100, 0, 0.1f, zeros}. Segment
+# constants (iir/q) mirror the official Eq1Eff blob (stream.bin §5 @0xeac);
+# fade constants mirror both firmware producer loops (0x06025096/0x06024f68).
+EQ_PKT_EXPECTED = bytes.fromhex(
+    '07000000'                      # +0  subcmd 7 = EQ_SEG
+    '0000' '0200'                   # +4  index(0) / iir_type=2 band_pass
+    '00000000'                      # +8  freq (runtime)
+    '00000000'                      # +12 gain (runtime)
+    '3333333f'                      # +16 q = 0.7f
+    '0a' '64' '0000'                # +20 fade {10, 100, 0}
+    'cdcccc3d'                      # +24 fade step 0.1f
+    '00000000' '00000000' '00000000' '00000000'   # +28..44
+)
+EQ_NAME_EXPECTED = b'Eq1Eff\x00' + b'\x00' * 9    # 16B name field
+EQ_API_ANCHORS = [0x06000f88, 0x0607538a]         # get_config, set_node_param
+EQ_HDR_WORD0 = 0x00024148          # {'H','A', ver 2, rsv 0}
+EQ_GAIN_MAX_BITS = 0x42200000      # 40.0f bit pattern (magnitude bound)
+EQ_NODE_UUID = 0x737b
+EQ_IOCTL_OK = 1                    # eq ioctl 0x2000F routine return
+# The cmd7_toggle_l4 stub: the HAL3 mpo stub plus one instruction on the open
+# path (call apply_eq after apply_mpo). Same wide call.l forms (entries sit
+# >240B away).
+L4_TOGGLE_INSN_IDS = ['li.u32', 'ld.w', 'bnez', 'li.u8', 'li.u8', 'li.u32',
+                      'call.r', 'call.l', 'bnez', 'call.l', 'call.l',
+                      'goto.s', 'call.l', 'li.u8', 'li.u32', 'goto.r']
 # Route L1KEY cmd 7 graft window: the double-click action-branch entry at
 # 0x06025404 (jump table 0x06025382 byte 0x40). Original 8B = the publish-name
 # setup `add.s14.rri r1=r8+1873; li.u8 r0=0; li.u8 r4=0`. A full-app pc-relative
@@ -284,8 +331,36 @@ def _strip_mpo_sections(text):
     return stripped
 
 
+def _patch_eq_addrs(text, pkt, name):
+    """Bake the segment-local EQ rodata runtime addresses into the L4 payload
+    (same two-pass contract as _patch_mpo_addrs)."""
+    for equ, value in (('EQ_PKT_ADDR', pkt), ('EQ_NAME_ADDR', name)):
+        patched = re.sub(r'\.equ ' + equ + r',\s*0x[0-9a-fA-F]+',
+                         f'.equ {equ}, 0x{value:x}', text, count=1)
+        if patched == text:
+            raise ValueError(f'{equ} equ not found for patching')
+        text = patched
+    return text
+
+
+def _strip_eq_sections(text):
+    """Drop the L4 payload's .section lines (code + both rodata blobs).
+
+    Same contract as _strip_mpo_sections: the source stays byte-identical for
+    its standalone test; the composed segment is ONE section and refers to
+    the rodata via EQ_*_ADDR .equ values.
+    """
+    stripped = re.sub(r'^[ \t]*\.section[ \t]+\.(?:text\.apply_eq'
+                      r'|rodata\.eq_pkt|rodata\.eq_name).*$', '', text, flags=re.M)
+    if '.section' in stripped:
+        raise ValueError('unexpected extra .section in L4 payload')
+    if len(stripped) == len(text):
+        raise ValueError('no L4 section directive found to strip')
+    return stripped
+
+
 def _compose(slot, close_hooks=False, r4_keyhook=False, key7_toggle=False,
-             l3_mpo=False, mpo_addrs=None):
+             l3_mpo=False, mpo_addrs=None, l4_eq=False, eq_addrs=None):
     """Concatenate payload source (slot-patched) + hook stubs into one text.
 
     key7_toggle=True (route L1KEY) composes open + close + the cmd7_toggle
@@ -297,23 +372,35 @@ def _compose(slot, close_hooks=False, r4_keyhook=False, key7_toggle=False,
     the cmd7_toggle_mpo stub (open path additionally applies the latest VM
     key 30 MPO after a successful open). Same KEY7 graft window as L1KEY;
     mutually exclusive with key7_toggle (identical graft site).
+
+    l4_eq=True (route HAL4) additionally inserts the apply_eq payload after
+    the apply_mpo rodata and uses the cmd7_toggle_l4 stub (open path applies
+    the latest VM key 31 ten-band EQ to Eq1Eff after apply_mpo). Implies
+    l3_mpo; same KEY7 graft window.
     """
     if l3_mpo and key7_toggle:
         raise ValueError('l3_mpo and key7_toggle share the KEY7 graft window')
+    if l4_eq and not l3_mpo:
+        raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
     mpo_addrs = mpo_addrs or (PAYLOAD_ADDRESS, PAYLOAD_ADDRESS)  # pass-1 placeholder
+    eq_addrs = eq_addrs or (PAYLOAD_ADDRESS, PAYLOAD_ADDRESS)    # pass-1 placeholder
     text = _patch_slot(PAYLOAD_SOURCE.read_text(), slot)
     if close_hooks:
         text += _strip_close_section(_patch_slot(CLOSE_SOURCE.read_text(), slot))
     if l3_mpo:
         text += _patch_mpo_addrs(_strip_mpo_sections(MPO_SOURCE.read_text()),
                                  *mpo_addrs)
+    if l4_eq:
+        text += _patch_eq_addrs(_strip_eq_sections(EQ_SOURCE.read_text()),
+                                *eq_addrs)
     if not key7_toggle and not l3_mpo:
         text += HOOK_SOURCE.read_text() + \
             (CLOSE_HOOK_SOURCE.read_text() if close_hooks else '')
     if key7_toggle:
         text += _patch_slot(TOGGLE_HOOK_SOURCE.read_text(), slot)
     if l3_mpo:
-        text += _patch_slot(MPO_HOOK_SOURCE.read_text(), slot)
+        text += _patch_slot(
+            (EQ_HOOK_SOURCE if l4_eq else MPO_HOOK_SOURCE).read_text(), slot)
     if r4_keyhook:
         text += _strip_r4_section(R4_KEYHOOK_SOURCE.read_text())
     return text
@@ -338,7 +425,7 @@ def _assemble(text):
 
 
 def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
-                     key7_toggle=False, l3_mpo=False):
+                     key7_toggle=False, l3_mpo=False, l4_eq=False):
     """Assemble payload+stubs at PAYLOAD_ADDRESS with the real slot address.
 
     Two passes: the section length is layout-stable (test_hearing_aid_payload /
@@ -354,6 +441,8 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
     l3_mpo=True (route HAL3) additionally inserts the apply_mpo payload and
     uses the cmd7_toggle_mpo stub (requires close_hooks + slot_ram, mutually
     exclusive with key7_toggle; docs/hearing-aid-l3-mpo.md).
+    l4_eq=True (route HAL4) additionally inserts the apply_eq payload and
+    uses the cmd7_toggle_l4 stub (requires l3_mpo; docs/hearing-aid-l4-eq.md).
     Returns a report dict with bytes, entry offsets and the disassembly.
     """
     if r4_keyhook and not (close_hooks and slot_ram):
@@ -365,31 +454,39 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
     if l3_mpo and not (close_hooks and slot_ram):
         raise ValueError('l3_mpo requires close_hooks+slot_ram '
                          '(route HAL3 is a slotram superset)')
+    if l4_eq and not l3_mpo:
+        raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
     if slot_ram:
         if not close_hooks:
             raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
         _slot_checks(RAM_SLOT)
         slot = RAM_SLOT
     _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks, r4_keyhook,
-                                  key7_toggle, l3_mpo))
+                                  key7_toggle, l3_mpo, l4_eq=l4_eq))
     mpo_addrs = None
+    eq_addrs = None
     if l3_mpo:
         # measure the rodata offsets from pass 1, bake real runtime addresses
         # into pass 2 (placeholder and real values are both wide li.u32 —
         # layout-stable across passes, same contract as the slot patch)
         probe = ASM.read_object(ASM.assemble_text(
-            _compose(slot, close_hooks, r4_keyhook, key7_toggle, l3_mpo),
+            _compose(slot, close_hooks, r4_keyhook, key7_toggle, l3_mpo,
+                     l4_eq=l4_eq),
             '<mpo-probe>'))
-        syms = {s.name: s.value for s in probe.symbols
-                if s.name in ('mpo_template', 'mpo_name')}
-        if len(syms) != 2:
-            raise ValueError(f'missing L3 rodata symbols: {set(("mpo_template", "mpo_name")) - set(syms)}')
+        want = ('mpo_template', 'mpo_name') + \
+            (('eq_pkt_template', 'eq_name') if l4_eq else ())
+        syms = {s.name: s.value for s in probe.symbols if s.name in want}
+        if set(syms) != set(want):
+            raise ValueError(f'missing rodata symbols: {set(want) - set(syms)}')
         mpo_addrs = (PAYLOAD_ADDRESS + syms['mpo_template'],
                      PAYLOAD_ADDRESS + syms['mpo_name'])
+        if l4_eq:
+            eq_addrs = (PAYLOAD_ADDRESS + syms['eq_pkt_template'],
+                        PAYLOAD_ADDRESS + syms['eq_name'])
     if not slot_ram:
         slot = PAYLOAD_ADDRESS + len(first)
     obj, code = _assemble(_compose(slot, close_hooks, r4_keyhook, key7_toggle,
-                                   l3_mpo, mpo_addrs))
+                                   l3_mpo, mpo_addrs, l4_eq, eq_addrs))
     if len(code) != len(first):
         raise ValueError('slot immediate changed the section layout')
     if slot_ram:
@@ -400,7 +497,10 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
             raise ValueError('expected slot-only byte differences between passes')
     if key7_toggle or l3_mpo:
         names = ['mic_effect_open', 'mic_effect_close']
-        if l3_mpo:
+        if l4_eq:
+            names += ['apply_mpo', 'mpo_template', 'mpo_name',
+                      'apply_eq', 'eq_pkt_template', 'eq_name', 'cmd7_toggle_l4']
+        elif l3_mpo:
             names += ['apply_mpo', 'mpo_template', 'mpo_name', 'cmd7_toggle_mpo']
         else:
             names += ['cmd7_toggle']
@@ -426,25 +526,50 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
     if symbols['mic_effect_open'] != 0:
         raise ValueError('mic_effect_open must open the segment')
     listing = []
-    # L3 variant: only the code part [0, mpo_template) is instruction-decoded;
-    # the trailing template/name rodata blobs are appended as data entries
-    # (they are not instructions — the encode round-trip does not apply).
-    decode_end = (symbols['mpo_template'] if l3_mpo else len(code))
-    for addr, insn_id, text, raw in ASM.disassemble(code[:decode_end], PAYLOAD_ADDRESS):
-        listing.append({'address': f'0x{addr:08x}', 'bytes': raw.hex(),
-                        'insn': insn_id, 'text': text})
-        if insn_id is None:
-            raise ValueError(f'undecodable word at {addr:#x}')
-        insn, values, length = ASM.decode(code, addr - PAYLOAD_ADDRESS)
-        if ASM.encode(insn_id, **values) != raw:
-            raise ValueError(f're-encode differs at {addr:#x} ({text})')
-    if l3_mpo:
-        listing.append({'address': f'0x{PAYLOAD_ADDRESS + decode_end:08x}',
-                        'bytes': code[decode_end:].hex(), 'insn': None,
-                        'text': f'.data {len(code) - decode_end}B '
-                                '(mpo_template 76B + mpo_name 16B)'})
+    # L3/L4 variants: only the CODE parts are instruction-decoded; the rodata
+    # blobs interleaved between them are appended as data entries (they are
+    # not instructions — the encode round-trip does not apply). L3 carries one
+    # data span (template+name at the tail); L4 carries two (apply_mpo's
+    # template/name between the payload codes, apply_eq's pkt/name before the
+    # stub).
+    data_spans = []
+    if l4_eq:
+        # mpo rodata (template+name) ends where the apply_eq code begins;
+        # eq rodata (pkt+name) ends where the toggle stub begins
+        data_spans = [(symbols['mpo_template'], symbols['apply_eq'],
+                       'mpo_template 76B + mpo_name 16B'),
+                      (symbols['eq_pkt_template'], symbols['cmd7_toggle_l4'],
+                       'eq_pkt 44B + eq_name 16B')]
+    elif l3_mpo:
+        data_spans = [(symbols['mpo_template'], len(code),
+                       'mpo_template 76B + mpo_name 16B')]
+    decode_ranges = []
+    cursor = 0
+    for lo, hi, _label in sorted(data_spans):
+        if lo < cursor or hi <= lo:
+            raise ValueError('data spans overlap or misordered')
+        decode_ranges.append((cursor, lo))
+        cursor = hi
+    decode_ranges.append((cursor, len(code)))
+    for (lo, hi), span in zip(decode_ranges,
+                              data_spans + [None]):
+        for addr, insn_id, text, raw in ASM.disassemble(code[lo:hi],
+                                                        PAYLOAD_ADDRESS + lo):
+            listing.append({'address': f'0x{addr:08x}', 'bytes': raw.hex(),
+                            'insn': insn_id, 'text': text})
+            if insn_id is None:
+                raise ValueError(f'undecodable word at {addr:#x}')
+            insn, values, length = ASM.decode(code, addr - PAYLOAD_ADDRESS)
+            if ASM.encode(insn_id, **values) != raw:
+                raise ValueError(f're-encode differs at {addr:#x} ({text})')
+        if span is not None:
+            slo, shi, label = span
+            listing.append({'address': f'0x{PAYLOAD_ADDRESS + slo:08x}',
+                            'bytes': code[slo:shi].hex(), 'insn': None,
+                            'text': f'.data {shi - slo}B ({label})'})
     slot_tail = 0 if slot_ram else 4
-    variant = ('open+close+slotram+l3mpo' if l3_mpo else
+    variant = ('open+close+slotram+l4eq' if l4_eq else
+               'open+close+slotram+l3mpo' if l3_mpo else
                'open+close+slotram+key7toggle' if key7_toggle else
                'open+close+slotram+r4keyhook' if r4_keyhook else
                'open+close+slotram' if slot_ram else
@@ -460,7 +585,16 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
               'segment_end_runtime': f'0x{PAYLOAD_ADDRESS + len(code) + slot_tail:08x}',
               'code_sha256': hashlib.sha256(code).hexdigest(),
               'slot_diff_offsets': diffs, 'listing': listing}
-    if l3_mpo:
+    if l4_eq:
+        report['toggle_address'] = f'0x{PAYLOAD_ADDRESS + symbols["cmd7_toggle_l4"]:08x}'
+        report['close_address'] = f'0x{PAYLOAD_ADDRESS + symbols["mic_effect_close"]:08x}'
+        report['apply_mpo_address'] = f'0x{PAYLOAD_ADDRESS + symbols["apply_mpo"]:08x}'
+        report['apply_eq_address'] = f'0x{PAYLOAD_ADDRESS + symbols["apply_eq"]:08x}'
+        report['mpo_template_offset'] = symbols['mpo_template']
+        report['mpo_name_offset'] = symbols['mpo_name']
+        report['eq_pkt_offset'] = symbols['eq_pkt_template']
+        report['eq_name_offset'] = symbols['eq_name']
+    elif l3_mpo:
         report['toggle_address'] = f'0x{PAYLOAD_ADDRESS + symbols["cmd7_toggle_mpo"]:08x}'
         report['close_address'] = f'0x{PAYLOAD_ADDRESS + symbols["mic_effect_close"]:08x}'
         report['apply_mpo_address'] = f'0x{PAYLOAD_ADDRESS + symbols["apply_mpo"]:08x}'
@@ -481,12 +615,13 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
         report['r4_keyhook_address'] = f'0x{PAYLOAD_ADDRESS + symbols["r4_keystore_hook"]:08x}'
     _verify_semantics(code, stub_offsets, slot, report, close_hooks,
                       r4_keyhook=r4_keyhook, key7_toggle=key7_toggle,
-                      l3_mpo=l3_mpo)
+                      l3_mpo=l3_mpo, l4_eq=l4_eq)
     return report, code, slot
 
 
 def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
-                      r4_keyhook=False, key7_toggle=False, l3_mpo=False):
+                      r4_keyhook=False, key7_toggle=False, l3_mpo=False,
+                      l4_eq=False):
     """Decode-level assertions: stub shape, every pinned firmware target."""
     insns = list(ASM.disassemble(code, PAYLOAD_ADDRESS))
     by_off = {a - PAYLOAD_ADDRESS: (iid, t, raw) for a, iid, t, raw in insns}
@@ -503,9 +638,17 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
         if code[close_off:close_off + len(standalone_close)] != standalone_close:
             raise ValueError('composed close payload != standalone route-X payload')
         report['close_payload_matches_route_X'] = True
-    if l3_mpo:
+    if l4_eq:
+        _verify_mpo(code, by_off, report)
+        _verify_eq(code, by_off, report)
+        _verify_l4_toggle_stub(code, by_off, report)
+        if r4_keyhook:
+            _verify_r4_keyhook(code, by_off, report)
+    elif l3_mpo:
         _verify_mpo(code, by_off, report)
         _verify_mpo_toggle_stub(code, by_off, report)
+        if r4_keyhook:
+            _verify_r4_keyhook(code, by_off, report)
     elif key7_toggle:
         _verify_toggle_stub(code, by_off, report)
     else:
@@ -640,6 +783,105 @@ def _verify_mpo_toggle_stub(code, by_off, report):
     report['mpo_toggle_stub_shape_matches'] = True
 
 
+def _verify_eq(code, by_off, report):
+    """The apply_eq payload (route HAL4): exact code shape, pkt/name bytes,
+    and every firmware/segment target.
+
+    The code part (between the mpo rodata and the eq pkt blob) must match
+    EQ_INSN_IDS; the li.u32 loads must cover both API anchors, the header
+    word0, the gain-magnitude bound, and the segment-local pkt/name
+    addresses; the per-segment patch stores keep their pinned displacements
+    (idx halfword @+4, freq word @+8, gain word @+12 of the stack packet).
+    """
+    eq_off = int(report['apply_eq_address'], 16) - PAYLOAD_ADDRESS
+    pkt_off = report['eq_pkt_offset']
+    name_off = report['eq_name_offset']
+    if eq_off + EQ_CODE_BYTES != pkt_off:
+        raise ValueError('eq_pkt must directly follow the apply_eq code')
+    if pkt_off + len(EQ_PKT_EXPECTED) != name_off:
+        raise ValueError('eq_name must directly follow the pkt template')
+    shape = [by_off[o][0] for o in range(eq_off, pkt_off) if o in by_off]
+    if shape != EQ_INSN_IDS:
+        raise ValueError(f'apply_eq shape mismatch: {shape}')
+    loads = [int(by_off[o][1].split('= ')[1])
+             for o in range(eq_off, pkt_off) if o in by_off and by_off[o][0] == 'li.u32']
+    seg = PAYLOAD_ADDRESS
+    expected_loads = [EQ_API_ANCHORS[0],          # get_config
+                      EQ_HDR_WORD0,               # {'H','A',ver2,rsv0}
+                      EQ_GAIN_MAX_BITS,           # 40.0f magnitude bound
+                      EQ_API_ANCHORS[1],          # jlstream_set_node_param
+                      seg + name_off,             # eq_name
+                      seg + pkt_off]              # eq_pkt_template
+    if loads != expected_loads:
+        raise ValueError(f'apply_eq loads mismatch: {[hex(x) for x in loads]}')
+    # per-segment patches: index halfword @+4, freq word @+8, gain word @+12
+    # of the stack packet (r3 = packet base)
+    stores = [t for o in range(eq_off, pkt_off) if o in by_off
+              for t in [by_off[o][1]]
+              if t.startswith('h[r3+') or t.startswith('[r3+')]
+    if stores != ['h[r3+4] = r8', '[r3+8] = r1', '[r3+12] = r1']:
+        raise ValueError(f'apply_eq patch stores mismatch: {stores}')
+    # the send argument setup feeds set_node_param(uuid, name, packet, 44)
+    texts = [by_off[o][1] for o in sorted(by_off) if eq_off <= o < pkt_off]
+    for needed in (f'r0 = {EQ_NODE_UUID}', 'r1 = r5', 'r2 = r3', 'r3 = 44'):
+        if needed not in texts:
+            raise ValueError(f'apply_eq send setup missing: {needed}')
+    if not any(t.startswith(f'if (r0 != {EQ_IOCTL_OK})') for t in texts):
+        raise ValueError('apply_eq missing the r0==1 continue gate')
+    if code[pkt_off:pkt_off + 44] != EQ_PKT_EXPECTED:
+        raise ValueError('eq pkt template bytes differ from the pinned '
+                         'EQ_SEG 44B constants')
+    if code[name_off:name_off + 16] != EQ_NAME_EXPECTED:
+        raise ValueError('eq name field mismatch')
+    report['apply_eq_shape_matches'] = True
+    report['eq_pkt_template_matches'] = True
+
+
+def _verify_l4_toggle_stub(code, by_off, report):
+    """The cmd7_toggle_l4 stub: exact shape + every firmware target.
+
+    Shape = slot guard -> (open) r0=1/r1=1 -> db3c(1,1) -> mic_effect_open ->
+    open!=0 shortcut -> apply_mpo -> apply_eq, else mic_effect_close ->
+    r4=1 -> goto HANDLER_RET. Internal calls must reach open/apply_mpo/
+    apply_eq/close.
+    """
+    toggle_off = int(report['toggle_address'], 16) - PAYLOAD_ADDRESS
+    close_off = int(report['close_address'], 16) - PAYLOAD_ADDRESS
+    mpo_off = int(report['apply_mpo_address'], 16) - PAYLOAD_ADDRESS
+    eq_off = int(report['apply_eq_address'], 16) - PAYLOAD_ADDRESS
+    stub_end = len(code)
+    if 'r4_keyhook_address' in report:
+        stub_end = int(report['r4_keyhook_address'], 16) - PAYLOAD_ADDRESS
+    shape = [by_off[o][0] for o in range(toggle_off, stub_end) if o in by_off]
+    stub_bytes = sum(len(by_off[o][2]) for o in range(toggle_off, stub_end) if o in by_off)
+    if toggle_off + stub_bytes != stub_end:
+        raise ValueError('cmd7_toggle_l4 stub must close (or border the keyhook)')
+    if shape != L4_TOGGLE_INSN_IDS:
+        raise ValueError(f'l4 toggle stub shape mismatch: {shape}')
+    loads = [int(by_off[o][1].split('= ')[1])
+             for o in range(toggle_off, stub_end) if o in by_off and by_off[o][0] == 'li.u32']
+    if loads != [int(report['slot_address'], 16), ANC_DISPATCH, HANDLER_RET]:
+        raise ValueError(f'l4 toggle stub loads mismatch: {loads}')
+    seq = [(o, by_off[o][0], by_off[o][1]) for o in range(toggle_off, stub_end)
+           if o in by_off]
+    for i, (o, iid, t) in enumerate(seq):
+        if iid == 'li.u32' and t == f'r6 = {ANC_DISPATCH}':
+            if seq[i + 1][1] != 'call.r':
+                raise ValueError('db3c load not immediately followed by its call')
+        if iid in ('call.s', 'call.l'):
+            m = re.search(r'call (-?\d+)$', t)
+            if m is None:
+                raise ValueError(f'l4 toggle call does not decode: {t}')
+            raw = by_off[o][2]
+            target = PAYLOAD_ADDRESS + o + len(raw) + int(m.group(1))
+            if target not in (PAYLOAD_ADDRESS,                      # open
+                              PAYLOAD_ADDRESS + mpo_off,            # apply_mpo
+                              PAYLOAD_ADDRESS + eq_off,             # apply_eq
+                              PAYLOAD_ADDRESS + close_off):         # close
+                raise ValueError(f'l4 toggle call reaches {target:#x}')
+    report['l4_toggle_stub_shape_matches'] = True
+
+
 def _verify_toggle_stub(code, by_off, report):
     """The cmd7_toggle stub (route L1KEY): exact shape + every firmware target.
 
@@ -715,16 +957,20 @@ def _verify_leave_stubs(code, by_off, report, seg_end=None):
             raise ValueError(f'leave stub {tag} calls {target:#x}, not the close payload')
 
 
-# Route AQ: the R4 keyhook payload's exact instruction shape, from the
-# assembled keystore_hook.S (prologue, len dispatch, write branch with the
-# set_config arg setup + status word store, read branch with the get_config
-# arg setup + length check, silent/epilogue).
-R4_INSN_IDS = ['push.rets_rl', 'mov.rr', 'beq.ri', 'beq.ri', 'goto.s',
-               'ld.bu', 'bne.ri', 'li.u32', 'li.u8', 'add.rri', 'li.u8',
-               'call.r', 'li.u8', 'beqz', 'li.u8', 'st.b', 'li.u8',
+# Route AQ (+HAL4 key-31 extension): the R4 keyhook payload's exact
+# instruction shape, from the assembled keystore_hook.S (prologue, len
+# dispatch over {9, 89, 1}, key-30/key-31 write branches with the set_config
+# arg setup + status byte store, read branch dispatching key 30/31 to their
+# get_config lengths, silent/epilogue).
+R4_INSN_IDS = ['push.rets_rl', 'mov.rr', 'beq.ri', 'beq.ri', 'beq.ri',
                'goto.s', 'ld.bu', 'bne.ri', 'li.u32', 'li.u8', 'add.rri',
-               'li.u8', 'call.r', 'bne.ri', 'li.u8', 'goto.s', 'li.u8',
-               'pop.pc_rl']
+               'li.u8', 'call.r', 'li.u8', 'beqz', 'li.u8', 'st.b', 'li.u8',
+               'goto.s', 'ld.bu', 'bne.ri', 'li.u32', 'li.u8', 'add.rri',
+               'li.u8', 'call.r', 'li.u8', 'beqz', 'li.u8', 'st.b', 'li.u8',
+               'goto.s', 'ld.bu', 'beq.ri', 'beq.ri', 'goto.s', 'li.u32',
+               'li.u8', 'add.rri', 'li.u8', 'call.r', 'bne.ri', 'li.u8',
+               'goto.s', 'li.u32', 'li.u8', 'add.rri', 'li.u8', 'call.r',
+               'bne.ri', 'li.u8', 'goto.s', 'li.u8', 'pop.pc_rl']
 R4_SET_CONFIG = 0x06001f12        # VM set_config dispatcher (route AB)
 R4_GET_CONFIG = 0x06000f88        # VM get_config dispatcher (route AB)
 R4_VALUE_LEN = 8
@@ -746,7 +992,10 @@ def _verify_r4_keyhook(code, by_off, report):
         raise ValueError(f'R4 keyhook instruction shape mismatch: {shape}')
     loads = [int(by_off[o][1].split('= ')[1]) for o in range(hook_off, len(code))
              if o in by_off and by_off[o][0] == 'li.u32']
-    if sorted(loads) != sorted([R4_SET_CONFIG, R4_GET_CONFIG]):
+    # HAL4 extension: two write branches (set_config) + two read branches
+    # (get_config) — each anchor loaded exactly twice
+    if sorted(loads) != sorted([R4_SET_CONFIG, R4_SET_CONFIG,
+                                R4_GET_CONFIG, R4_GET_CONFIG]):
         raise ValueError(f'R4 keyhook API anchors mismatch: {loads}')
     # every call r6 is preceded (three 2B arg setups earlier) by its API load
     offsets = sorted(o for o in by_off if o >= hook_off)
@@ -767,7 +1016,7 @@ def _verify_r4_keyhook(code, by_off, report):
 
 
 def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
-                   key7_toggle=False, l3_mpo=False):
+                   key7_toggle=False, l3_mpo=False, l4_eq=False):
     """Apply the implant edits to the decrypted flash image in place.
 
     close_hooks=True builds the open+close segment (route Y) and additionally
@@ -781,7 +1030,10 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
     its stock OFF/ON/TRANS windows. l3_mpo=True (route HAL3) is the L1KEY
     shape plus the apply_mpo payload: open success feeds the latest VM key 30
     MPO into Drc1Eff via jlstream_set_node_param (same KEY7 graft window,
-    mutually exclusive with key7_toggle). Returns the report dict (incl.
+    mutually exclusive with key7_toggle). l4_eq=True (route HAL4) additionally
+    inserts the apply_eq payload and uses the cmd7_toggle_l4 stub: open
+    success then applies the latest VM key 31 ten-band EQ to Eq1Eff the same
+    way (docs/hearing-aid-l4-eq.md). Returns the report dict (incl.
     new_app_end for the caller's SFC/boot-info pass).
     Per-site byte assertions keep this valid with or without the ANC
     two-state table change, which edits one unrelated app.bin byte first.
@@ -795,12 +1047,14 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
     if l3_mpo and not (close_hooks and slot_ram):
         raise ValueError('l3_mpo requires close_hooks+slot_ram '
                          '(route HAL3 is a slotram superset)')
+    if l4_eq and not l3_mpo:
+        raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
     if slot_ram and not close_hooks:
         raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
     segment, code, slot = assemble_segment(close_hooks, slot_ram=slot_ram,
                                            r4_keyhook=r4_keyhook,
                                            key7_toggle=key7_toggle,
-                                           l3_mpo=l3_mpo)
+                                           l3_mpo=l3_mpo, l4_eq=l4_eq)
     slot_tail = 0 if slot_ram else 4
     end = OLD_APP_END + 32 + 1 + len(code) + slot_tail   # header + 0xff + code (+ slot)
     if end > len(flash) or any(v != 255 for v in flash[OLD_APP_END:end]):

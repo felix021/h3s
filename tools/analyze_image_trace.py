@@ -93,11 +93,11 @@ L1_APP_SHA = 'd830222c902bf5663027ecbbf540d983054fb39af45fd47e0dce955a0c1f52ab'
 # set_config failures read as successes; app-slice sha unchanged (the fix
 # lives in the appended segment, the registry slot still points at the same
 # entry address).
-R4_KEYHOOK_SHA = '1873027bcf82026aa1829aeeebf348c9227a8f9b3895009dbc81205f0b30ac65'
-R4_APP_SHA = 'da93483fc73c094734eb65735f9e5e6b760ac3eec1c0ff54f84ca629f585ee2e'
+R4_KEYHOOK_SHA = '2576df46f583a8ac8b235705fd0bb75eaa6e6ebcb04c86afac125e9b018f00cf'
+R4_APP_SHA = '3a186192370195f9823f0427cf7c6d4f9ab9dffb7e25d8956baab35b7e23451f'
 CANDIDATE_APP_SHAS = {'l1_slotram': L1_APP_SHA, 'r4_keyhook': R4_APP_SHA}
 PLAIN_LENGTHS = {'official': 0xE3053, 'tested_b79': 0xE3053, 'eq_fence_repair': 0xE31C5,
-                 'l1_slotram': 0xE31F8, 'r4_keyhook': 0xE3246}
+                 'l1_slotram': 0xE31F8, 'r4_keyhook': 0xE3286}
 OFFICIAL_DEFAULT = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
 
 # Shared-stack scenarios. The crc_bankb flag set is the pinned shared-frontier
@@ -385,7 +385,7 @@ COMPARISON_BASIS = (
 # 资源节)。只用于把首分歧 PC/差异游程标注成人类可读的语义,不参与判定。
 KNOWN_SITE_LABELS = (
     (0x34E92, 0x34E98, 'debug_init lower PC limit load 0x06000100 (shared)'),
-    (0x34E98, 0x34E9E, 'debug_init fence upper PC limit immediate (b79 0x060c3338, eq candidate 0x060e31c5, l1_slotram 0x060e31e0, r4_keyhook 0x060e322e)'),
+    (0x34E98, 0x34E9E, 'debug_init fence upper PC limit immediate (b79 0x060c3338, eq candidate 0x060e31c5, l1_slotram 0x060e31e0, r4_keyhook 0x060e3286, l4_eq 0x060e33de)'),
     (0xDB9A, 0xDBA2, 'hearing-aid hook window ON-1 (whole-8B replacement, l1/r4 candidates)'),
     (0xDBC4, 0xDBCC, 'hearing-aid hook window ON-2 (whole-8B replacement, l1/r4 candidates)'),
     (0xDC74, 0xDC7C, 'hearing-aid hook window OFF-1 (whole-8B replacement, l1/r4 candidates)'),

@@ -6,12 +6,16 @@ package cn.felix021.h3squery;
  * 固件侧离线候选（--r4-keyhook，UNTESTED 不刷机）把 RCSP 自定义命令注册表 cmdid 0x30 项的
  * 空 setter 字（0x060a9c7c，原值 0——写路径今日为 no-op）填为 keystore_hook 载荷地址；载荷
  * 直调 VM get/set_config 分派器（0x06000f88/0x06001f12，路 AB 函数级仿真实证 key 30 读写
- * 全链）读写 key 30。两条命令形状（与载荷 .equ 常量一一对应）：
+ * 全链）读写 key 30。HAL4 候选（--hearing-aid-l4-eq）把载荷扩展为双 key。命令形状：
  *
  *   写：FF/0x30 data = [30, v0..v7]（data_len=9）→ set_config(30, data+1, 8)
  *       回执载荷 `30 01 status`（status 0=成功，1=set_config 返回非 0）
  *   读：FF/0x30 data = [30]（data_len=1）→ get_config(30, resp+2, 8)
  *       回执载荷 `30 08 v0..v7`；key 无记录时固件静默不回（n<1 分发器跳过响应）
+ *   写：FF/0x30 data = [31, v0..v87]（data_len=89，路 HAL4）→ set_config(31, data+1, 88)
+ *       回执同 `30 01 status`；key 31 = 助听 EQ 十段 88B 版本化协议（encodeEqValue）
+ *   读：FF/0x30 data = [31]（data_len=1，路 HAL4）→ get_config(31, resp+2, 88)
+ *       回执 `30 58 v0..v87`（90B，分发器 128B 响应缓冲装得下）
  *
  * key 30 属 1..99 的 54 个空 key（27..36 整段空，路 K），VM 后端无需注册；8 字节值对本层
  * 不透明（真机语义=写入的配置内容，R4 阶段只验证「写→读回往返一致」）。
@@ -83,6 +87,125 @@ public final class KeyStoreFrame {
         float mpo = Float.intBitsToFloat(bits);
         if (!Float.isFinite(mpo) || mpo <= MPO_MIN_DB || mpo >= MPO_MAX_DB) return null;
         return mpo;
+    }
+
+    // ---------- L4 EQ 十段值协议（docs/hearing-aid-l4-eq.md，与固件 apply_eq.S 对齐） ----------
+
+    /** EQ 用 VM key 号：路 K 空 key 段（27..36），与 key 30 同族。 */
+    public static final int EQ_KEY_ID = 31;
+    /** EQ 值长度：8B 头 + 10 段 × {u16 freq, u16 pad, float32 gain}。 */
+    public static final int EQ_VALUE_LEN = 8 + 10 * 8;
+    /** EQ 写形状 data_len = key(1B) + value(88B)。 */
+    public static final int EQ_WRITE_LEN = 1 + EQ_VALUE_LEN;
+    /** 协议版本 2（魔数同 "HA"，保留字节必须为 0）。 */
+    public static final byte EQ_VERSION = 2;
+    /** 段数固定十段（固件整包先验要求 == 10）。 */
+    public static final int EQ_SEG_COUNT = 10;
+    /** 段频点门（官方 Eq1Eff blob 观测域 [1, 21599]Hz，非算法验证上界）。 */
+    public static final int EQ_FREQ_MIN_HZ = 1, EQ_FREQ_MAX_HZ = 21599;
+    /** 段增益幅值门 ±40dB（固件按位型幅值 |bits|<=40.0f 同界排 NaN/Inf）。 */
+    public static final float EQ_GAIN_MAX_DB = 40.0f;
+
+    /** 单段参数（freq Hz + gain dB；iir=band_pass/q=0.7 由固件模板烘定）。 */
+    public static final class EqSeg {
+        public final int freqHz;
+        public final float gainDb;
+
+        public EqSeg(int freqHz, float gainDb) {
+            this.freqHz = freqHz;
+            this.gainDb = gainDb;
+        }
+    }
+
+    private static void putFloat(byte[] buf, int off, float v) {
+        int bits = Float.floatToIntBits(v);
+        buf[off] = (byte) bits;
+        buf[off + 1] = (byte) (bits >>> 8);
+        buf[off + 2] = (byte) (bits >>> 16);
+        buf[off + 3] = (byte) (bits >>> 24);
+    }
+
+    private static float getFloat(byte[] buf, int off) {
+        return Float.intBitsToFloat(((buf[off] & 0xff)) | ((buf[off + 1] & 0xff) << 8)
+                | ((buf[off + 2] & 0xff) << 16) | ((buf[off + 3] & 0xff) << 24));
+    }
+
+    /**
+     * 把十段曲线编成 88B key 31 值：{'H','A', ver=2, rsv=0, seg_count=10, pad[3],
+     * 10 × {u16 freq LE, u16 pad=0, float32 gain LE}}。任一段频点出
+     * [1, 21599]Hz、增益非有限或 |gain|>=40dB、段数≠10 都拒绝——固件侧
+     * apply_eq.S 整包先验同门（App 侧先挡一道）。
+     */
+    public static byte[] encodeEqValue(EqSeg[] segs) {
+        check(segs != null, "segs 不能为 null");
+        check(segs.length == EQ_SEG_COUNT, "段数必须为 " + EQ_SEG_COUNT + ": " + (segs == null ? -1 : segs.length));
+        for (EqSeg s : segs) {
+            check(s != null, "段不能为 null");
+            check(s.freqHz >= EQ_FREQ_MIN_HZ && s.freqHz <= EQ_FREQ_MAX_HZ,
+                    "freq 超出 [" + EQ_FREQ_MIN_HZ + ", " + EQ_FREQ_MAX_HZ + "]Hz: " + s.freqHz);
+            check(Float.isFinite(s.gainDb) && Math.abs(s.gainDb) < EQ_GAIN_MAX_DB,
+                    "gain 超出 (-" + EQ_GAIN_MAX_DB + ", " + EQ_GAIN_MAX_DB + ")dB: " + s.gainDb);
+        }
+        byte[] value = new byte[EQ_VALUE_LEN];
+        value[0] = MPO_MAGIC_H;
+        value[1] = MPO_MAGIC_A;
+        value[2] = EQ_VERSION;
+        value[3] = 0;
+        value[4] = (byte) EQ_SEG_COUNT;
+        for (int i = 0; i < EQ_SEG_COUNT; i++) {
+            int off = 8 + i * 8;
+            value[off] = (byte) segs[i].freqHz;
+            value[off + 1] = (byte) (segs[i].freqHz >>> 8);
+            value[off + 2] = 0;                     // pad（固件忽略）
+            value[off + 3] = 0;
+            putFloat(value, off + 4, segs[i].gainDb);
+        }
+        return value;
+    }
+
+    /** 从 88B 值解出十段（头/段数/每段门任一不符返回 null；pad 字节不校验）。 */
+    public static EqSeg[] decodeEqValue(byte[] value) {
+        check(value != null, "value 不能为 null");
+        check(value.length == EQ_VALUE_LEN,
+                "EQ 值长度必须为 " + EQ_VALUE_LEN + " 字节: " + (value == null ? -1 : value.length));
+        if (value[0] != MPO_MAGIC_H || value[1] != MPO_MAGIC_A
+                || value[2] != EQ_VERSION || value[3] != 0
+                || (value[4] & 0xff) != EQ_SEG_COUNT) return null;
+        EqSeg[] segs = new EqSeg[EQ_SEG_COUNT];
+        for (int i = 0; i < EQ_SEG_COUNT; i++) {
+            int off = 8 + i * 8;
+            int freq = (value[off] & 0xff) | ((value[off + 1] & 0xff) << 8);
+            float gain = getFloat(value, off + 4);
+            if (freq < EQ_FREQ_MIN_HZ || freq > EQ_FREQ_MAX_HZ
+                    || !Float.isFinite(gain) || Math.abs(gain) >= EQ_GAIN_MAX_DB) return null;
+            segs[i] = new EqSeg(freq, gain);
+        }
+        return segs;
+    }
+
+    /** EQ 写命令 data：[31, v0..v87] 共 89B（与固件 keyhook key-31 分支对齐）。 */
+    public static byte[] buildEqWriteData(EqSeg[] segs) {
+        byte[] value = encodeEqValue(segs);
+        byte[] data = new byte[EQ_WRITE_LEN];
+        data[0] = (byte) EQ_KEY_ID;
+        System.arraycopy(value, 0, data, 1, EQ_VALUE_LEN);
+        return data;
+    }
+
+    /** EQ 写命令完整帧：FE DC BA | C0 | FF | len_BE16 | SN | 30 | 59 | key31+88B 值 | EF。 */
+    public static byte[] buildEqWriteCommand(int sn, EqSeg[] segs) {
+        return H3SBridge.buildCustomCommand(sn, CMD_ID, buildEqWriteData(segs));
+    }
+
+    /** 解析 EQ 读回响应载荷：期望 `30 58 v0..v87`，返回 88B 值。 */
+    public static byte[] parseEqReadPayload(byte[] payload) {
+        check(payload != null && payload.length == 2 + EQ_VALUE_LEN,
+                "0x30 EQ 读回载荷长度应为 " + (2 + EQ_VALUE_LEN) + ": " + (payload == null ? -1 : payload.length));
+        check((payload[0] & 0xff) == CMD_ID, "EQ 读回载荷 cmdid 不是 0x30");
+        check((payload[1] & 0xff) == EQ_VALUE_LEN, "EQ 读回载荷 n 不是 88");
+        byte[] value = new byte[EQ_VALUE_LEN];
+        System.arraycopy(payload, 2, value, 0, EQ_VALUE_LEN);
+        return value;
     }
 
     // ---------- 命令组帧 ----------

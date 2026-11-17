@@ -7,16 +7,18 @@ Exercises the builder-side segment assembly for the --r4-keyhook candidate
 input (docs/r4-command-hook.md). The byte-level implant/diff assertions run
 at build time (verify_l1_image); this test pins:
 
-1. the composed segment is the slotram segment + exactly 78 keyhook bytes:
-   the first 364B are byte-identical to the route-CT variant, the keyhook
-   opens at offset 364 (runtime 0x060e31e0) and closes the segment;
+1. the composed segment is the slotram segment + exactly 142 keyhook bytes
+   (route HAL4 grew the hook 78B -> 142B with the key-31 branch): the first
+   388B are byte-identical to the route-CT variant, the keyhook opens at
+   offset 388 (runtime 0x060e31fc) and closes the segment;
 2. the keyhook tail equals the standalone route-AQ payload assembly and
-   carries both VM dispatcher anchors (set/get_config) exactly once;
+   carries both VM dispatcher anchors (set/get_config) exactly twice (the
+   key-30 and key-31 write/read branches);
 3. the registry constants: cmdid 0x30 entry base, null setter word at
    entry+8, original bytes zero, entry inside the dispatch-table range and
    on its 28B stride grid;
 4. the segment end (and therefore the fence upper limit and the appended
-   file size) grows by exactly the keyhook bytes;
+   file size) grows by exactly the keyhook bytes (142B, route HAL4);
 5. the switch ladder rejects r4_keyhook without close_hooks+slotram.
 
 The full-app reference scan proving no static reference targets the cmdid
@@ -35,7 +37,7 @@ import pi32v2_asm as W
 import hearing_aid_l1_image as IMG
 
 PAYLOAD_ADDRESS = IMG.PAYLOAD_ADDRESS
-KEYHOOK_BYTES = 78
+KEYHOOK_BYTES = 142                     # route HAL4: key-31 branch grew the hook (was 78)
 KEYHOOK_OFFSET = 388                      # fixed open 156 + close 64 + stubs 168
 R4_TABLE_START = 0x060a9b78               # RCSP custom-command dispatch table
 R4_TABLE_END = 0x060a9d1c
@@ -51,7 +53,7 @@ class R4KeyhookImageTest(unittest.TestCase):
             IMG.assemble_segment(close_hooks=True, slot_ram=True, r4_keyhook=True)
 
     def test_01_segment_is_slotram_plus_keyhook(self):
-        """442B = 364B slotram segment + 78B keyhook at offset 364."""
+        """530B = 388B slotram segment + 142B keyhook at offset 388."""
         self.assertEqual(len(self.r4_code), KEYHOOK_OFFSET + KEYHOOK_BYTES)
         self.assertEqual(self.r4_code[:KEYHOOK_OFFSET], self.ram_code,
                          'L1 part must stay byte-identical to route CT')
@@ -62,7 +64,7 @@ class R4KeyhookImageTest(unittest.TestCase):
         self.assertTrue(self.r4_report['r4_payload_matches_route_AQ'])
 
     def test_02_keyhook_anchors(self):
-        """Standalone-equal tail carrying both VM dispatcher anchors once."""
+        """Standalone-equal tail carrying both VM dispatcher anchors twice."""
         standalone = W.code_sections(
             W.read_object(W.assemble_file(IMG.R4_KEYHOOK_SOURCE)))[0][1]
         self.assertEqual(
@@ -72,7 +74,8 @@ class R4KeyhookImageTest(unittest.TestCase):
                  in W.disassemble(self.r4_code[KEYHOOK_OFFSET:])
                  if iid == 'li.u32']
         self.assertEqual(sorted(loads),
-                         sorted([IMG.R4_SET_CONFIG, IMG.R4_GET_CONFIG]))
+                         sorted([IMG.R4_SET_CONFIG, IMG.R4_SET_CONFIG,
+                                 IMG.R4_GET_CONFIG, IMG.R4_GET_CONFIG]))
 
     def test_03_registry_slot_geometry(self):
         """cmdid 0x30 entry: on the table grid, inside the table, null setter."""
@@ -89,7 +92,7 @@ class R4KeyhookImageTest(unittest.TestCase):
         # re-decodes both from the final plaintext at build time)
 
     def test_04_geometry_grows_by_keyhook_only(self):
-        """Segment end / fence top follow the 78B growth exactly."""
+        """Segment end / fence top follow the 142B growth exactly."""
         self.assertEqual(
             self.r4_report['segment_end_runtime'],
             f'0x{PAYLOAD_ADDRESS + KEYHOOK_OFFSET + KEYHOOK_BYTES:08x}')

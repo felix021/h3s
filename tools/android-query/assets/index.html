@@ -1336,8 +1336,8 @@ summary {
         通透/辅听链（mic→DAC）的逐频段草稿：增益放大环境声，上限是该频段期望的最大
         输出（数字域 dB，非标定 SPL）。固件为单带 WDRC，每频上限聚合为全带 MPO 生效
         （见下方汇总行）。全带 MPO 经 BLE 自定义命令 0x30 写入固件 VM key 30
-        （8B 版本化协议），由 L3 候选固件在下次开启辅听时应用；逐频增益热更未实现
-        （需 L0 重刷镜像或后续 EQ 段通道）。
+        （8B 版本化协议），十段 EQ 增益/频点写 key 31（88B 版本化协议），均由候选固件
+        在下次开启辅听时应用（MPO 全带曲线 + EQ 十段逐条段消息，候选 UNTESTED）。
         十个频段横排：每列上层数字是上限（点击弹窗修改），中间长条是该频段增益
         （先点选锁定，再上下拖动；鼠标可直接拖，双击归零），最下是频点。
       </p>
@@ -1351,6 +1351,7 @@ summary {
       <div class="actions">
         <button id="haFlat">全部复位</button>
         <button id="haSaveMpo" class="primary">保存全带 MPO（BLE cmd 0x30）</button>
+        <button id="haSaveEq" class="primary">保存十段 EQ（key 31，L4 候选）</button>
       </div>
       <p id="haFeedback" class="feedback" aria-live="polite">本地草稿，尚未发送。</p>
     </article>
@@ -2653,6 +2654,51 @@ $('haSaveMpo').onclick = () => {
     $('haFeedback').textContent = 'MPO ' + mpo + ' dB 已提交 BLE cmd 0x30（key 30）：'
       + (result && !String(result).startsWith('ERR')
         ? '保存成功——固件 L3 候选在下次开启辅听时应用（运行中即时调节未实现）。'
+        : '失败或未确认（' + result + '）。');
+  } catch (e) {
+    $('haFeedback').textContent = '发送异常（' + e + '），未写入。';
+  }
+};
+
+// L4 EQ 十段值协议（与固件 apply_eq.S / KeyStoreFrame.encodeEqValue 对齐）：
+// 88B = {'H','A', ver=2, rsv=0, seg_count=10, pad[3], 10×{u16 freq LE, u16 pad,
+// float32 LE(gain dB 位型)}}。固件整包先验同门（freq 1..21599、|gain|<40dB）。
+// 本按钮只发本表十段 {freq, gain}；iir=band_pass/q=0.7 由固件段包模板烘定。
+function haEncodeEqValue(bands) {
+  if (bands.length !== 10) return null;
+  const buf = new ArrayBuffer(88);
+  const u8 = new Uint8Array(buf), dv = new DataView(buf);
+  u8[0] = 0x48; u8[1] = 0x41; u8[2] = 0x02; u8[3] = 0x00; u8[4] = 0x0A;
+  for (let i = 0; i < 10; i++) {
+    const b = bands[i];
+    if (!isFinite(b.freq) || b.freq < 1 || b.freq > 21599) return null;
+    if (!isFinite(b.gain) || Math.abs(b.gain) >= 40) return null;
+    dv.setUint16(8 + i * 8, b.freq, true);
+    dv.setUint16(10 + i * 8, 0, true);
+    dv.setFloat32(12 + i * 8, b.gain, true);
+  }
+  const hex = [];
+  for (const byte of u8) hex.push(byte.toString(16).padStart(2, '0'));
+  return hex.join('');
+}
+
+$('haSaveEq').onclick = () => {
+  const bands = hearingAid.bands;
+  const hex = haEncodeEqValue(bands);
+  if (!hex) {
+    $('haFeedback').textContent = '十段 EQ 有频点/增益超出可编码范围（freq 1..21599Hz、|gain|<40dB），未发送。';
+    return;
+  }
+  if (!H || typeof H.setHearingEq !== 'function') {
+    $('haFeedback').textContent = 'bridge 不可用（setHearingEq 缺失），未发送。';
+    return;
+  }
+  const segs = bands.map(b => ({ f: b.freq, g: b.gain }));
+  try {
+    const result = H.setHearingEq(JSON.stringify(segs));
+    $('haFeedback').textContent = '十段 EQ 已提交 BLE cmd 0x30（key 31）：'
+      + (result && !String(result).startsWith('ERR')
+        ? '保存成功——固件 L4 候选在下次开启辅听时逐段应用到 Eq1Eff（每条段消息要求回执 1，非事务性整曲线）。'
         : '失败或未确认（' + result + '）。');
   } catch (e) {
     $('haFeedback').textContent = '发送异常（' + e + '），未写入。';

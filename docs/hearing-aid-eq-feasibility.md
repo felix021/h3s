@@ -60,9 +60,12 @@ stream.bin §5 的辅听链参数（零代码）**，配一个 **L1 的模式接
   + `jlstream_read_form_node_info_base` 复核；名字经 **djb2 哈希**引用，哈希表见 §7）。
   同一节点多套配置用 cfg_index 区分（MusicEqBt 有 cfg0-3 四套）。
 
-**EQ 参数格式**（eq_tool，本路钉死）[静态+SDK]：`{float global_gain, i32 seg_num,
-eq_seg_info seg[10]}`，每段 `{u16 index, u16 iir_type, i32 freq(Hz), float gain(dB),
-float q}`，共 168B。SDK `eq_config.c` 的 `eq_seg_info`/`eq_tool` 与 IR
+**EQ 参数格式**（eq_tool，本路钉死）[静态+SDK]：`{float global_gain, u8 bypass,
+u8 seg_num, u16 pad, eq_seg_info seg[10]}`（〔HAL4 勘误 2026-11-17：+4..7 为
+位域 {u8 bypass, u8 seg_num, u16 pad}，10 段=00 0a 00 00，旧「i32 seg_num /
+大端 u16」表述作废；eq_open_config 读 +4 为 bypass、eq ioctl 读 bits8..15 为
+段数，见 docs/hearing-aid-l4-eq.md §1.5〕），每段 `{u16 index, u16 iir_type,
+i32 freq(Hz), float gain(dB), float q}`，共 168B。SDK `eq_config.c` 的 `eq_seg_info`/`eq_tool` 与 IR
 `%struct.eq_seg_info = {i16,i16,i32,float,float}`/`%struct.eq_tool = {float,i32,[0 x
 eq_seg_info]}` 完全互证。iir_type 枚举：0=high_pass/1=low_pass/2=band_pass/3=high_shelf/
 4=low_shelf（eq_config.h 注释）。**增益表示是 float**；SDK 注释标 `gain(-18~18)`（见 §5.1

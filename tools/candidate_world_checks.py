@@ -19,7 +19,7 @@ docs/candidate-image-cotest.md §1.2 gates every candidate-image loader
                     slot (r4 only), the config.dat header CRC + last-file
                     index byte, the appended mic_effect.bin segment, the two
                     app-area JLFS CRC pairs), the whole-UFW-file diff count
-                    equals the builder byte account (493B / 574B), and —
+                    equals the builder byte account (493B / 639B), and —
                     when the builder's build-report.json is supplied — its
                     output_sha256 / diff_count / diff_positions reconcile
                     with the independently computed diff (forged accounts
@@ -36,9 +36,9 @@ shared one (verify_eq_candidate.load_image, same as analyze_image_trace).
 Plain coordinates: plain[i] corresponds to runtime address 0x06000000+i and
 flash offset 0x2020+i; runs are [lo, hi) byte ranges. Plain LENGTHS are the
 decrypted app-region lengths (boot-info app_size = flash end - 0x2020):
-0xE31F8 / 0xE3246 — NOT the flash-end values 0xE5218/0xE5266 quoted in the
+0xE31F8 / 0xE3286 — NOT the flash-end values 0xE5218/0xE52A6 quoted in the
 r4/slotram docs' loose convention; the fence upper limit equals the plain
-end's runtime address (0x060E31F8 / 0x060E3246), which cross-checks the two.
+end's runtime address (0x060E31F8 / 0x060E3286), which cross-checks the two.
 
 Offline assertions only. Nothing here runs a simulation or touches a device;
 both candidates stay UNTESTED and must not be flashed.
@@ -88,9 +88,12 @@ CANDIDATES = {
         # HAL3 re-pin: keystore_hook status-byte erratum fix (st.w -> st.b at
         # resp+2, docs/hearing-aid-l3-mpo.md §5) changed the payload byte —
         # the old pin bfc3f681… is superseded by the corrected candidate.
-        'sha256': '1873027bcf82026aa1829aeeebf348c9227a8f9b3895009dbc81205f0b30ac65',
-        'plain_length': 0xE3246,          # flash end 0xE5266 - 0x2020 (measured)
-        'whole_file_diff_bytes': 574,     # r4-command-hook §3.3 byte account (fixed open)
+        # HAL4 re-pin: the key-31 branch (ten-band EQ write/read, route HAL4)
+        # grew the hook 78B -> 142B — the 1873027b… candidate is superseded
+        # the same way (docs/hearing-aid-l4-eq.md §5).
+        'sha256': '2576df46f583a8ac8b235705fd0bb75eaa6e6ebcb04c86afac125e9b018f00cf',
+        'plain_length': 0xE3286,          # flash end 0xE52A6 - 0x2020 (measured)
+        'whole_file_diff_bytes': 639,     # r4-command-hook §3.3 byte account (fixed open)
         'registry_slot': True,
     },
 }
@@ -220,7 +223,7 @@ def _check_byte_account(official, candidate):
                       for (lo, hi), region in zip(runs, (c['region'] for c in classified))]
     detail['unexplained_runs'] = unexplained
     detail['missing_regions'] = missing
-    # Whole-UFW-file diff against the builder byte account (493B / 574B).
+    # Whole-UFW-file diff against the builder byte account (493B / 639B).
     positions = None
     if len(official['raw']) != len(candidate['raw']):
         problems.append(f'candidate file length {len(candidate["raw"])} != official '

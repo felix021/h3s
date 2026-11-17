@@ -368,6 +368,46 @@ public class H3SBridge {
         return dispatch(KeyStoreFrame.buildReadCommand(sn), sn);
     }
 
+    /**
+     * 组 R4 key-store EQ 写命令（FF/0x30，key 31，docs/hearing-aid-l4-eq.md）：
+     * segsJson = [{"f":freqHz,"g":gainDb} × 10]，编成 88B 版本化值
+     * （KeyStoreFrame.encodeEqValue）后随 data=[31, …] 发送。回执 `30 01 status`
+     * 只代表 VM 写入成功；曲线由 HAL4 候选固件在下次开启辅听时应用到 Eq1Eff
+     * （十段运行时热更，逐条段消息，候选 UNTESTED 不刷机）。
+     */
+    @JavascriptInterface
+    public String setHearingEq(String segsJson) {
+        if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
+        org.json.JSONArray arr;
+        try {
+            arr = new org.json.JSONArray(segsJson);
+        } catch (org.json.JSONException e) {
+            return err("segsJson 不是合法数组: " + e.getMessage());
+        }
+        if (arr.length() != KeyStoreFrame.EQ_SEG_COUNT) {
+            return err("段数必须为 " + KeyStoreFrame.EQ_SEG_COUNT + ": " + arr.length());
+        }
+        KeyStoreFrame.EqSeg[] segs = new KeyStoreFrame.EqSeg[KeyStoreFrame.EQ_SEG_COUNT];
+        try {
+            for (int i = 0; i < segs.length; i++) {
+                org.json.JSONObject o = arr.getJSONObject(i);
+                // optDouble(fallback NaN)：缺 g 字段时经 encodeEqValue 的有限值门拒绝
+                segs[i] = new KeyStoreFrame.EqSeg(o.getInt("f"),
+                        (float) o.optDouble("g", Double.NaN));
+            }
+        } catch (org.json.JSONException e) {
+            return err("段对象缺 f 字段: " + e.getMessage());
+        }
+        byte[] data;
+        try {
+            data = KeyStoreFrame.buildEqWriteData(segs);
+        } catch (IllegalArgumentException e) {
+            return err(e.getMessage());
+        }
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(H3SBridge.buildCustomCommand(sn, KeyStoreFrame.CMD_ID, data), sn);
+    }
+
     /** hex 串 → 字节数组（长度须为偶数；只认 0-9a-fA-F）。 */
     public static byte[] unhex(String hex) {
         if (hex == null) throw new IllegalArgumentException("valueHex 不能为 null");

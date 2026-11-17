@@ -8,7 +8,7 @@ implements them independently of the builder module; this suite pins:
 
 Logic tier (no firmware input, always runs):
 1. the pinned spec constants match the merged docs — candidate shas, whole-
-   file byte accounts (493B/574B), plain lengths (flash end - 0x2020, NOT
+   file byte accounts (493B/639B), plain lengths (flash end - 0x2020, NOT
    the loose flash-end convention the docs quote), fence top == plain end
    runtime address, six window spans at the documented runtime addresses,
    registry slot only for r4, whitelist spans disjoint;
@@ -67,13 +67,14 @@ class SpecPinTest(unittest.TestCase):
         self.assertEqual(CWC.CANDIDATES['l1_slotram']['sha256'],
                          '6f267a2ed0b62ed118047e889a64483907c727d36eb5172a5d'
                          '0f0067d37b1b93')
-        # HAL3 re-pin: keyhook status-byte erratum fix (st.w -> st.b),
-        # docs/hearing-aid-l3-mpo.md §5 — old bfc3f681… superseded
+        # HAL3 re-pin (st.b erratum fix) then HAL4 re-pin: the key-31 branch
+        # grew the hook 78B -> 142B — 1873027b… superseded by route HAL4
+        # (docs/hearing-aid-l4-eq.md §5)
         self.assertEqual(CWC.CANDIDATES['r4_keyhook']['sha256'],
-                         '1873027bcf82026aa1829aeeebf348c9227a8f9b3895009dbc8'
-                         '1205f0b30ac65')
+                         '2576df46f583a8ac8b235705fd0bb75eaa6e6ebcb04c86afac'
+                         '125e9b018f00cf')
         self.assertEqual(CWC.CANDIDATES['l1_slotram']['whole_file_diff_bytes'], 493)
-        self.assertEqual(CWC.CANDIDATES['r4_keyhook']['whole_file_diff_bytes'], 574)
+        self.assertEqual(CWC.CANDIDATES['r4_keyhook']['whole_file_diff_bytes'], 639)
         self.assertEqual(CWC.OFFICIAL_SHA,
                          '65cafc7f9a7545c5c30701d141c77db334e37065589e42c513'
                          '06132c94c879af')
@@ -83,7 +84,7 @@ class SpecPinTest(unittest.TestCase):
         0xE5200/0xE524E are flash-end values, not plain lengths); fence top
         equals the plain end's runtime address."""
         for name, flash_end, fence_top in (('l1_slotram', 0xE5218, 0x060E31F8),
-                                           ('r4_keyhook', 0xE5266, 0x060E3246)):
+                                           ('r4_keyhook', 0xE52A6, 0x060E3286)):
             plain = CWC.CANDIDATES[name]['plain_length']
             self.assertEqual(plain, flash_end - 0x2020)
             self.assertEqual(0x06000000 + plain, fence_top)
@@ -205,7 +206,7 @@ class ArtifactGateTest(unittest.TestCase):
 
     def test_01_both_candidates_all_green(self):
         for name, count, registry in (('l1_slotram', 493, False),
-                                      ('r4_keyhook', 574, True)):
+                                      ('r4_keyhook', 639, True)):
             report = self._checks(name, build_report=True)
             self.assertTrue(report['passed'], (name, report['assertions']))
             for assertion in report['assertions']:
