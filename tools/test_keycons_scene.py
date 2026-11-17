@@ -131,5 +131,121 @@ class ConstantFaceTest(unittest.TestCase):
         self.assertEqual(set(ks.PUMP_REG_FACE_DEFAULT), needed)
 
 
+class PayloadFaceTest(unittest.TestCase):
+    """载荷→(键,子类型,槽,类别)折叠复核（handler 0x60252d8/0x6025334 同式）。"""
+
+    def test_click_payloads(self):
+        # AJ §8.2 实测单击载荷族：key10/11/12 单击=子类型 0→类别 1,槽 {7,3,5}。
+        self.assertEqual(ks.payload_face(0x10a00), (10, 0, 7, 1))
+        self.assertEqual(ks.payload_face(0x10b00), (11, 0, 3, 1))
+        self.assertEqual(ks.payload_face(0x10c00), (12, 0, 5, 1))
+
+    def test_multi_click_and_hold(self):
+        # 双击 4→2/三击 5→3/四击 6→4（n+2 规律的类别面）;长按确认 1→类别 5
+        # （AO §1.2/§3.3:75 拍阈值 post 0x10a01 是类别 5 唯一来源）。
+        self.assertEqual(ks.payload_face(0x10a04), (10, 4, 7, 2))
+        self.assertEqual(ks.payload_face(0x10a05), (10, 5, 7, 3))
+        self.assertEqual(ks.payload_face(0x10a06), (10, 6, 7, 4))
+        self.assertEqual(ks.payload_face(0x10a01), (10, 1, 7, 5))
+        self.assertEqual(ks.payload_face(0x10b01), (11, 1, 3, 5))
+        self.assertEqual(ks.payload_face(0x10c01), (12, 1, 5, 5))
+
+    def test_no_action_categories(self):
+        # 持续 2/释放 3/档位 10..14→类别 6（无动作类——REC-08 负例的折叠面）。
+        for sub in (2, 3, 10, 11, 14):
+            self.assertEqual(ks.payload_face(0x10000 | (10 << 8) | sub)[3], 6)
+
+    def test_out_of_mask_key(self):
+        # 越界键（key13 槽 9 在默认表无条目;key14 越掩码→255 不命中）。
+        self.assertEqual(ks.payload_face(0x10000 | (13 << 8) | 0), (13, 0, 9, 1))
+        self.assertEqual(ks.payload_face(0x10000 | (14 << 8) | 0), (14, 0, 255, 1))
+
+
+class DefaultMapLookupTest(unittest.TestCase):
+    """flash 默认表 45B（0x609e250,§3.2 钉死字节）的首匹配查表复核。"""
+
+    MAP45 = bytes([7, 1, 1, 7, 2, 7, 7, 3, 4, 7, 4, 0, 7, 5, 0,
+                   3, 1, 6, 3, 2, 0, 3, 3, 0, 3, 4, 0, 3, 5, 2,
+                   5, 1, 5, 5, 2, 0, 5, 3, 0, 5, 4, 0, 5, 5, 3])
+
+    def test_default_bindings(self):
+        # §3.2 表:多功能单击 1/双击 7/三击 4/四击 0/长按 0;音量-单击 6/长按 2;
+        # 音量+单击 5/长按 3;其余槽 0。
+        self.assertEqual(ks.lookup_action(self.MAP45, 7, 1), 1)
+        self.assertEqual(ks.lookup_action(self.MAP45, 7, 2), 7)
+        self.assertEqual(ks.lookup_action(self.MAP45, 7, 3), 4)
+        self.assertEqual(ks.lookup_action(self.MAP45, 7, 4), 0)
+        self.assertEqual(ks.lookup_action(self.MAP45, 7, 5), 0)
+        self.assertEqual(ks.lookup_action(self.MAP45, 3, 1), 6)
+        self.assertEqual(ks.lookup_action(self.MAP45, 3, 5), 2)
+        self.assertEqual(ks.lookup_action(self.MAP45, 5, 1), 5)
+        self.assertEqual(ks.lookup_action(self.MAP45, 5, 5), 3)
+        self.assertEqual(ks.lookup_action(self.MAP45, 3, 2), 0)
+        self.assertEqual(ks.lookup_action(self.MAP45, 5, 4), 0)
+
+    def test_miss_returns_none(self):
+        # key13 槽 9 默认表无条目;类别 6（持续/释放/档位）同样 miss。
+        self.assertIsNone(ks.lookup_action(self.MAP45, 9, 1))
+        self.assertIsNone(ks.lookup_action(self.MAP45, 7, 6))
+        self.assertIsNone(ks.lookup_action(bytes(45), 7, 1))   # 世界真值全零表
+
+    def test_payload_to_action_chain(self):
+        # 载荷→折叠→查表全链（分支断言分派的输入面）。
+        for payload, want in ((0x10a00, 1), (0x10a04, 7), (0x10a05, 4),
+                              (0x10a06, 0), (0x10a01, 0), (0x10b00, 6),
+                              (0x10c00, 5), (0x10b01, 2), (0x10c01, 3)):
+            _k, _s, slot, cat = ks.payload_face(payload)
+            self.assertEqual(ks.lookup_action(self.MAP45, slot, cat), want,
+                             hex(payload))
+
+    def test_unreachable_actions_have_no_entry(self):
+        # cmd 8/9/10/11/127 无默认表条目（ACT-05/06(8,10)/08 不可达的根因面）。
+        for slot in (7, 3, 5, 9):
+            for cat in range(1, 6):
+                self.assertNotIn(ks.lookup_action(self.MAP45, slot, cat),
+                                 (8, 9, 10, 11, 127))
+
+
+class ActionAnchorTest(unittest.TestCase):
+    """分支锚点与名串偏移的算术复核（AO §1.5+本路反汇编校准）。"""
+
+    def test_name_addresses(self):
+        # r8=0x60A18C0（0x602537a li）+偏移=各分支发布器 r1 名串地址。
+        self.assertEqual(ks.NAME_BASE + 1024, 0x60A1CC0)   # 'music_pp'（KEYCONS）
+        self.assertEqual(ks.NAME_BASE + 1347, 0x60A1E03)   # 'music_prev'
+        self.assertEqual(ks.NAME_BASE + 1358, 0x60A1E0E)   # 'music_next'
+        self.assertEqual(ks.NAME_BASE + 1164, 0x60A1D4C)   # 'open_siri'
+        self.assertEqual(ks.NAME_BASE + 1873, 0x60A2011)   # 'InLowLatency'
+
+    def test_branch_pcs_cover_default_table_actions(self):
+        # 默认表可达动作 0..7 每个都有分支锚点或门锚（0=门对,1..7=跳表目标）。
+        for action in range(0, 8):
+            if action == 0:
+                anchors = (ks.CMD0_GATE, ks.CMD0_UNHANDLED)
+            else:
+                anchors = (ks.ACTION_BRANCH_PC[action],)
+            for pc in anchors:
+                self.assertTrue(0x06000100 <= pc < 0x07000000, hex(pc))
+
+    def test_action_face_tones(self):
+        # 提示音号:1=66/2=70/3=69/4=45/7 无（模式状态机不响键提示音）。
+        self.assertEqual(ks.ACTION_FACE[1][1], 66)
+        self.assertEqual(ks.ACTION_FACE[2][1], 70)
+        self.assertEqual(ks.ACTION_FACE[3][1], 69)
+        self.assertEqual(ks.ACTION_FACE[4][1], 45)
+        self.assertIsNone(ks.ACTION_FACE[7][1])
+
+    def test_cstr_at_reads_null_terminated(self):
+        store = dict.fromkeys(range(0x60A1D4C, 0x60A1D4C + 16), 0x41)
+        store.update({0x60A1D4C + i: b for i, b in enumerate(b'open_siri\x00')})
+        self.assertEqual(ks.cstr_at(FakeCpu(store), 0x60A1D4C), 'open_siri')
+
+    def test_vol_and_mode_slots(self):
+        # QCY+4434（key 86 u16 音量级别）/0x124A04（key 22 模式字节）。
+        self.assertEqual(ks.VOL_LEVEL_SLOT, 0x1265C0 + 4434)
+        self.assertEqual(ks.VOL_LEVEL_SLOT, 0x127712)
+        self.assertEqual(ks.MODE_BYTE, 0x124A04)
+
+
 if __name__ == '__main__':
     unittest.main()

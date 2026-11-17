@@ -1,36 +1,49 @@
 {
- "case_id": "D2-a-ACT-09",
- "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
- "initial_state": "预填用例（未执行），计划起点=函数级直调 harness（路 BW --event-injection 先例：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），从 S19 第二分发表记录[5] 的 handler 0x060252c6 入口注入载荷字）；S19 生产分发路径（post→队列→任务消费）不在当前停点世界可达段（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环 BI/BJ，接线后升格重跑）",
- "inputs_schedule": "计划注入（预填未执行）：音量- 长按 0x10b01（key11 按下确认，子类型 1→类别 5）命中默认表 (3,5,2)→cmd 2 上一曲；音量+ 长按 0x10c01 命中 (5,5,3)→cmd 3 下一曲（面板不可见的长按槽默认绑定，key-action-map §3.2）",
- "observation_boundary": "计划观察点：同 ACT-01 的 cmd 2/3 观察点（环写入 'music_prev'/'music_next'+r6 门后提示音 70/69）——动作半边与单击槽同一查表同一跳表；触发时机断言=类别 5 的唯一来源是按下确认 0x10a01（非持续/档位/释放）",
- "assertions": [
-  "d1-acceptance §6.1 B 组+key-action-map §3.3/§5：长按槽（gesture 5）与单击槽走同一查表，动作半边无新分支（§6.4 准入：识别半边差异在子类型→类别折叠）——长按动作在「按住超窗确认」时刻触发一次",
-  "不发双发断言：AJ 实测单击序列只 post 0x10a00（无 0x10a01）——长按槽不会被单击误触发；其后持续（2）/档位（10..14）/释放确认（3）折入类别 6 不再触发（REC-08 负例的静态解释，key-action-map §1.2/§3.3）",
-  "§6.1 事件表对照：App 侧无长按 eventID（面板只有单击~四击）——长按槽是固件侧独有默认绑定，eventID 待钉死项（d1-acceptance §6.1 待钉②）",
-  "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
- ],
- "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
- "model_assumptions": [
-  "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
-  "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
-  "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
-  "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
-  "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
-  "key11/key12 的按下确认载荷（0x10b01/0x10c01）识别半边未实测——AJ 长按序列是 key10（0x10a01@78 拍实测）；类别折叠按子类型不按键 id（tbb 表只看低字节），跨键迁移是推导性假设",
-  "S19 消费链（post→出队→过滤→泵分发→handler 0x60252c6）已在 park 世界直调定位验证全绿（路 KEYCONS 2026-11-17，ACT-01 载荷 0x10a00 代表：真 post 入队+真出队+真过滤+泵分发段经表2[5] 以 r0=载荷指针调 handler+门链/查表/cmd 分支/事件终结）——本条载荷与 0x10a00 走同一链，差异仅在 handler 内查表槽位与动作分支；长按槽（类别 5）与单击槽同链同门，动作差异仅在查表槽位"
- ],
- "result": "NOT_RUN",
- "uncovered_items": [
-  "长按槽动作分支从未在仿真执行",
-  "key11/12 长按识别半边（0x10b01/0x10c01 的 75 拍阈值确认）未实测（推导假设见上）",
-  "App 长按 eventID 与面板不可见绑定的产品语义（为什么面板不暴露）不在固件窗口"
- ],
- "evidence_level": "conditional",
- "evidence_conditions": [
-  "S19 消费链（post→出队→过滤→泵分发→handler 0x60252c6）已在 park 世界直调定位验证全绿（路 KEYCONS 2026-11-17，ACT-01 载荷 0x10a00 代表：真 post 入队+真出队+真过滤+泵分发段经表2[5] 以 r0=载荷指针调 handler+门链/查表/cmd 分支/事件终结）——本条载荷与 0x10a00 走同一链，差异仅在 handler 内查表槽位与动作分支；长按槽（类别 5）与单击槽同链同门，动作差异仅在查表槽位"
- ],
- "evidence_refs": [],
- "blocked_missing": null,
- "recorded_at": "2026-11-17T13:36:00"
+  "case_id": "D2-a-ACT-09",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "已执行（路 KEYBR 2026-11-17，KEYCONS 同款 park 停点世界——快照因指纹闸重捕 881s 停回 29,601,125@0x606955c，gpcnt_num 关配套侧）：六段消费链同 ACT-01（真 post 入队→真出队→真过滤→泵分发段经表2[5] 以 r0=载荷指针调 handler 0x60252c6），唯一合成输入=载荷字+s6b 默认表 fixture（flash 默认表 45B@0x609e250 装入 0x12730C，synthetic-load-of-real-bytes）；载荷族 0x10b01/0x10c01（音量键长按=按下确认 post，REC-07 实测 75 拍阈值）+0x10a01（多功能长按）+0x10a03（释放确认，REC-08 实测显式手势 3）",
+  "inputs_schedule": "已执行四跑：①--payload 0x10b01——子类型 1→tbb 折叠目标 0x60252e6 （类别 5 装载点命中）→查表 (3,5)→动作 2→cmd2 分支 0x60253ac：发布器 r1=0x60a1e03 'music_prev'→r6 门（0x60140fc 真跑，park 无链路→0）→提示音 70 不响→返已处理，286 步；②--payload 0x10c01——(5,5)→动作 3→cmd3 0x60253bc：r1=0x60a1e0e 'music_next'+同门，311 步；③--payload 0x10a01——(7,5)→动作 0（多功能长按默认无绑定）→cmd0 未处理，3207 步；④--payload 0x10a03——子类型 3→类别 6→0x6025310 直返门（不进查表）→零动作面，3061 步（REC-08 负例消费半边运行时佐证）",
+  "observation_boundary": "实际观察面：类别 5 折叠目标 0x60252e6 命中+长按槽查表命中 cmd2/3+发布器真名串（0x60a1e03/0x60a1e0e flash 直读互证）+r6 门负证据+类别 6 直返门 0x6025310+零动作面四负证据；证据 scene_0x10b01.json+scene_0x10c01.json+scene_0x10a01.json+scene_0x10a03.json",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §3.3/§5：长按槽（gesture 5）与单击槽走同一查表，动作半边无新分支（§6.4 准入：识别半边差异在子类型→类别折叠）——长按动作在「按住超窗确认」时刻触发一次",
+    "不发双发断言：AJ 实测单击序列只 post 0x10a00（无 0x10a01）——长按槽不会被单击误触发；其后持续（2）/档位（10..14）/释放确认（3）折入类别 6 不再触发（REC-08 负例的静态解释，key-action-map §1.2/§3.3）",
+    "§6.1 事件表对照：App 侧无长按 eventID（面板只有单击~四击）——长按槽是固件侧独有默认绑定，eventID 待钉死项（d1-acceptance §6.1 待钉②）",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "key11/key12 的按下确认载荷（0x10b01/0x10c01）识别半边未实测——AJ 长按序列是 key10（0x10a01@78 拍实测）；类别折叠按子类型不按键 id（tbb 表只看低字节），跨键迁移是推导性假设",
+    "S19 消费链（post→出队→过滤→泵分发→handler 0x60252c6）已在 park 世界直调定位验证全绿（路 KEYCONS 2026-11-17，ACT-01 载荷 0x10a00 代表：真 post 入队+真出队+真过滤+泵分发段经表2[5] 以 r0=载荷指针调 handler+门链/查表/cmd 分支/事件终结）——本条载荷与 0x10a00 走同一链，差异仅在 handler 内查表槽位与动作分支；长按槽（类别 5）与单击槽同链同门，动作差异仅在查表槽位",
+    "KEYBR 实测修正记录：0x6025310 类别 6 直返跳 0x602530c（mov r0,r4）不经 0x602530a（li r4=1）——运行时 handler 返 0（walk 穷尽回循环头收尾），key-action-map §1.2「吞掉返回已处理」修正为「零动作返未处理」（功能等效吞掉：无任何动作面，事件仍被消费出队）",
+    "定位法接缝同 ACT-01（get_event 的 icfg 门+13 返泵打包点为分段边界；泵段寄存器面=prologue 常量直载，block=真出队产物）",
+    "s6b fixture：擦除态世界 config 48 缺档→默认表装载未发生，装入真 flash 字节后分支可达（KEYCONS 同款先例）；断言分派表驱动——默认表解出什么就是什么，runner 不发明映射",
+    "park 无动作名环对象（[QCY+416]=0）→发布器 r7==0 门早退；提示音播放器句柄 [QCY+924]=0——提示音沿真码到达/被门挡住均为分支行为证据，播放成败不进必要条件",
+    "不发双发断言的消费半边：类别 6（释放确认 3/持续 2/档位 10..14）经 0x6025310 直返门（运行时命中）不进查表——REC-08「长按释放不发单击」的静态解释获得消费侧运行时佐证；单击族（类别 1）与长按槽（类别 5）走不同查表槽位互不误触发（(7,1)→1 与 (7,5)→0 两实例）"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "长按 eventID（App 侧无长按条目——固件侧独有默认绑定的 wire 侧对应）仍为待钉死项（d1-acceptance §6.1 待钉②）",
+    "「按住超窗确认时刻触发一次」的时序半边归识别覆盖（REC-07 已实测 75 拍阈值），本记录为消费半边（类别 5 槽位动作）",
+    "环写入本体在 park 世界不可观测（同 ACT-01 口径）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "定位法接缝同 ACT-01（get_event 的 icfg 门+13 返泵打包点为分段边界；泵段寄存器面=prologue 常量直载，block=真出队产物）",
+    "s6b fixture：擦除态世界 config 48 缺档→默认表装载未发生，装入真 flash 字节后分支可达（KEYCONS 同款先例）；断言分派表驱动——默认表解出什么就是什么，runner 不发明映射",
+    "park 无动作名环对象（[QCY+416]=0）→发布器 r7==0 门早退；提示音播放器句柄 [QCY+924]=0——提示音沿真码到达/被门挡住均为分支行为证据，播放成败不进必要条件",
+    "不发双发断言的消费半边：类别 6（释放确认 3/持续 2/档位 10..14）经 0x6025310 直返门（运行时命中）不进查表——REC-08「长按释放不发单击」的静态解释获得消费侧运行时佐证；单击族（类别 1）与长按槽（类别 5）走不同查表槽位互不误触发（(7,1)→1 与 (7,5)→0 两实例）"
+  ],
+  "evidence_refs": [
+    "tools/keycons_scene.py（--payload 分支体复跑+表驱动断言分派 payload_face/lookup_action，路 KEYBR，sim-keybr 分支）",
+    "tools/test_keycons_scene.py（24 例：折叠/查表/锚点算术/不可达动作无表项）",
+    "analysis/local-checks/keycons/scene_<payload>.json（运行证据，git 忽略；python3 tools/keycons_scene.py --payload <字> 复跑再生）",
+    "docs/peripheral-input-simulation.md §9.4（分支体复跑记录）"
+  ],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-17T14:30:00"
 }

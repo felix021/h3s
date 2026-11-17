@@ -1,34 +1,46 @@
 {
- "case_id": "D2-a-ACT-02",
- "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
- "initial_state": "预填用例（未执行），计划起点=函数级直调 harness（路 BW --event-injection 先例：RAM 启动内容=镜像自身 blob（.data 0x124840..+0xae0 + RAM code），从 S19 第二分发表记录[5] 的 handler 0x060252c6 入口注入载荷字）；S19 生产分发路径（post→队列→任务消费）不在当前停点世界可达段（路 S §7.3 第 6/7 层诚实边界，归 D1 事件循环 BI/BJ，接线后升格重跑）",
- "inputs_schedule": "计划注入（预填未执行）：handler 入口载荷字 0x10a05（多功能键三击，子类型 5→类别 3）——默认表 (7,3,4) 命中 cmd 4 语音助手；识别半边该载荷已由路 AJ 实测（REC-05）",
- "observation_boundary": "计划观察点：首锚点 0x060253cc→0x06018bf4('open_siri')→0x06008298（链路能力计数）→提示音 0x060075c6(r9,45)；环写入同 ACT-01",
- "assertions": [
-  "d1-acceptance §6.1 B 组+key-action-map §1.5/§5：cmd 4 分支=发布 'open_siri'+带 0x06008298 门的提示音——跳表目标 0x060253cc（表字节 24），与 cmd 1 覆盖「无门/带门」两形（等价类划分的另一半）",
-  "门行为断言：0x06008298 数 0x1281fa 起 2×40B 记录表中 b[rec+15]&4（语音助手能力位）的链路数——0 条支持链路→不响提示音直接返回已处理（key-action-map §2）",
-  "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
- ],
- "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
- "model_assumptions": [
-  "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
-  "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
-  "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
-  "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
-  "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
-  "S19 消费链（post→出队→过滤→泵分发→handler 0x60252c6）已在 park 世界直调定位验证全绿（路 KEYCONS 2026-11-17，ACT-01 载荷 0x10a00 代表：真 post 入队+真出队+真过滤+泵分发段经表2[5] 以 r0=载荷指针调 handler+门链/查表/cmd 分支/事件终结）——本条载荷与 0x10a00 走同一链，差异仅在 handler 内查表槽位与动作分支（长按确认 0x10a01→类别 5 槽）；分支体待跑（keycons_scene --payload 可复跑）"
- ],
- "result": "NOT_RUN",
- "uncovered_items": [
-  "cmd 4 分支从未在仿真执行",
-  "0x1281fa 2×40B 链路能力记录表的运行时内容未观测（静态形状钉死，真值未达）",
-  "语音助手链路的实际触发（Siri/小艺类）不在固件本分支窗口（发布名后的消费归未定位面）"
- ],
- "evidence_level": "conditional",
- "evidence_conditions": [
-  "S19 消费链（post→出队→过滤→泵分发→handler 0x60252c6）已在 park 世界直调定位验证全绿（路 KEYCONS 2026-11-17，ACT-01 载荷 0x10a00 代表：真 post 入队+真出队+真过滤+泵分发段经表2[5] 以 r0=载荷指针调 handler+门链/查表/cmd 分支/事件终结）——本条载荷与 0x10a00 走同一链，差异仅在 handler 内查表槽位与动作分支（长按确认 0x10a01→类别 5 槽）；分支体待跑（keycons_scene --payload 可复跑）"
- ],
- "evidence_refs": [],
- "blocked_missing": null,
- "recorded_at": "2026-11-17T13:36:00"
+  "case_id": "D2-a-ACT-02",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af，probe 默认镜像；ACT-07 已执行证据=路 BW 官方臂）；动作面静态全图证据=官方原 app.bin（SHA256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，docs/key-action-map.md §7）",
+  "initial_state": "已执行（路 KEYBR 2026-11-17，KEYCONS 同款 park 停点世界——快照因指纹闸重捕 881s 停回 29,601,125@0x606955c，gpcnt_num 关配套侧）：六段消费链同 ACT-01（真 post 入队→真出队→真过滤→泵分发段经表2[5] 以 r0=载荷指针调 handler 0x60252c6），唯一合成输入=载荷字+s6b 默认表 fixture（flash 默认表 45B@0x609e250 装入 0x12730C，synthetic-load-of-real-bytes）；载荷 0x10a05=key10 三击（REC-05 实测手势码 5，识别半边 AJ §8.2）",
+  "inputs_schedule": "已执行：--payload 0x10a05——tbb 子类型 5→类别 3→查表命中 (7,3)→动作 4→cmd4 分支 0x60253cc：发布器 0x6018bf4(r0=0,r1=0x60a1d4c)——名串 flash 直读互证 'open_siri'→0x6008298 语音助手链路能力门真跑（park 无支持链路→r0=0）→beqz 早退经 0x602530a 返已处理（提示音 45 不响=门行为断言的负证据面）→事件终结 0x6012422，270 步零墙",
+  "observation_boundary": "实际观察面（表驱动断言分派）：payload_face 折叠（key10/子类型 5/槽 7/类别 3）+lookup_action 默认表命中动作 4+cmd4 锚点链（0x60253cc 分支体/发布器 r1=0x60a1d4c/0x6008298 门执行/0x602530a 已处理装载/0x6012422 事件终结/提示音 thunk 负证据）；证据 analysis/local-checks/keycons/scene_0x10a05.json",
+  "assertions": [
+    "d1-acceptance §6.1 B 组+key-action-map §1.5/§5：cmd 4 分支=发布 'open_siri'+带 0x06008298 门的提示音——跳表目标 0x060253cc（表字节 24），与 cmd 1 覆盖「无门/带门」两形（等价类划分的另一半）",
+    "门行为断言：0x06008298 数 0x1281fa 起 2×40B 记录表中 b[rec+15]&4（语音助手能力位）的链路数——0 条支持链路→不响提示音直接返回已处理（key-action-map §2）",
+    "§6.3 共同断言五条（分支一致/队列规则/流生命周期/未启用消费者不被调/模式切换期间输入）随执行补验（本记录预填，未执行）"
+  ],
+  "timeout_budget": "函数级直调场景，无固定模型步预算；以断言点/诚实停点为界（超时=FAIL，不是重跑的理由）",
+  "model_assumptions": [
+    "动作半边执行链锚点/观察点全部 derived-not-measured（docs/key-action-map.md 静态反汇编，官方 app.bin，4 个已知锚点校准；本记录=预填断言，静态钉死不等于执行证据）",
+    "映射表=QCY+3404（0x12730c）15×3B {key,gesture,action} 首匹配；开机装载 0x060254ce（flash 默认表 0x0609e250 45B→get_config(48) 有存档覆盖）；默认表与 App defaultFun 逐项一致",
+    "入口载荷字=0x10a00 族（0x10000|(键id<<8)|手势子类型）：bit16 门+tbb 折叠表 @0x060252da（子类型 0/4/5/6→手势类别 1/2/3/4，1→5（长按槽），其余（2/3/10..14）→6 无动作类）+键掩码 0x09050307（key10..13→逻辑键 {7,3,5,9}）",
+    "BW 先例桩表（SYNTHETIC 具名 bw1）：0x6008170 模式查询→5（基线，0x80 位不加）、0x6017958/0x60140fc 按键上下文 API→合成 1、分配器/ROM memcpy 族纯字节桩",
+    "键 id 分配 key10=多功能/key11=音量-/key12=音量+ 是 BW 掩码 0x09050307 与 App eventID 布局两端的推导对应，非运行时互证",
+    "KEYBR 实测后仍成立的假设：0x1281fa 2×40B 能力记录表的字节真值未直读（门执行+返回 0 已测，表内容为静态形状）；发布名后的消费者（Siri 触发链）不在固件本分支窗口",
+    "定位法接缝同 ACT-01（get_event 的 icfg 门+13 返泵打包点为分段边界；泵段寄存器面=prologue 常量直载，block=真出队产物）",
+    "s6b fixture：擦除态世界 config 48 缺档→默认表装载未发生，装入真 flash 字节后分支可达（KEYCONS 同款先例）；断言分派表驱动——默认表解出什么就是什么，runner 不发明映射",
+    "park 无动作名环对象（[QCY+416]=0）→发布器 r7==0 门早退；提示音播放器句柄 [QCY+924]=0——提示音沿真码到达/被门挡住均为分支行为证据，播放成败不进必要条件",
+    "门行为断言口径：0x6008298 返 0（无支持链路）→提示音不响直接返已处理——「0 条支持链路」是 park 世界真值（BT 未连接），非门逻辑缺测；有链路世界的提示音 45 正向路径归 D1 窗口/后段"
+  ],
+  "result": "PASS",
+  "uncovered_items": [
+    "0x1281fa 链路能力记录表运行时内容未观测（门 0x6008298 执行与 r0=0 早退已测，表字节真值未达）",
+    "语音助手链路的实际触发（Siri/小艺类）不在固件本分支窗口（发布名后的消费归未定位面）",
+    "环写入本体在 park 世界不可观测（无环对象），归有环世界补验（同 ACT-01 口径）"
+  ],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "定位法接缝同 ACT-01（get_event 的 icfg 门+13 返泵打包点为分段边界；泵段寄存器面=prologue 常量直载，block=真出队产物）",
+    "s6b fixture：擦除态世界 config 48 缺档→默认表装载未发生，装入真 flash 字节后分支可达（KEYCONS 同款先例）；断言分派表驱动——默认表解出什么就是什么，runner 不发明映射",
+    "park 无动作名环对象（[QCY+416]=0）→发布器 r7==0 门早退；提示音播放器句柄 [QCY+924]=0——提示音沿真码到达/被门挡住均为分支行为证据，播放成败不进必要条件",
+    "门行为断言口径：0x6008298 返 0（无支持链路）→提示音不响直接返已处理——「0 条支持链路」是 park 世界真值（BT 未连接），非门逻辑缺测；有链路世界的提示音 45 正向路径归 D1 窗口/后段"
+  ],
+  "evidence_refs": [
+    "tools/keycons_scene.py（--payload 分支体复跑+表驱动断言分派 payload_face/lookup_action，路 KEYBR，sim-keybr 分支）",
+    "tools/test_keycons_scene.py（24 例：折叠/查表/锚点算术/不可达动作无表项）",
+    "analysis/local-checks/keycons/scene_<payload>.json（运行证据，git 忽略；python3 tools/keycons_scene.py --payload <字> 复跑再生）",
+    "docs/peripheral-input-simulation.md §9.4（分支体复跑记录）"
+  ],
+  "blocked_missing": null,
+  "recorded_at": "2026-11-17T14:30:00"
 }
