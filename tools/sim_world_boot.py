@@ -40,11 +40,11 @@ def build_world(serve_loop, *, rom_path, firmware_path, snapshot_dir,
     dict 并进场景报告（probe_boot.py:2140-2141）。serve_loop 返回 {'world_dead':
     {...}} 即外层循环的重建信号（§3.3）。
 
-    flag_overrides（路 D2ANC）：对 scenario_flags 结果的显式覆盖 dict（值为
-    None=关该开关）。用途=音频场景世界钉 park 停点：GPCNUM 之后条件前沿已推到
-    32,737,356（watchdog expiry），gpcnt_num_value=None 负例臂逐字段复现
-    29,601,125 @ 0x606955c（GPCNUM 路钉过）——d2 音频场景的快照/世界前提。
-    覆盖只影响本调用，registry 官方契约单点不动。
+    flag_overrides（D2ANC/CALLIMPL 两路同需）：场景 flag 的显式覆盖 dict（值为
+    None=关该开关），只影响本调用，registry 官方契约单点不动。用途=在 GPCNUM 之后
+    的代码上钉 park 停点：条件前沿已推到 32,737,356（watchdog expiry），
+    gpcnt_num_value=None 负例臂逐字段复现 29,601,125 @ 0x606955c（GPCNUM 路钉过）
+    ——音频/通话场景的 park 快照/世界前提（SIMB1G「park 前沿快照+配套代码」惯例）。
     """
     import frontier_registry
     import probe_irq_entry
