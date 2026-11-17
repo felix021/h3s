@@ -43,6 +43,24 @@ EXACT_PARALLEL_HALFWORD_STORE_HALVES=('st.h',)
 # 前缀(走上游通用 pair 模型),并入主开关有改变既有报告的风险。字节存储
 # 单字节全覆盖,旧值完全无关,直写 1 个真实字节。
 EXACT_PARALLEL_BYTE_STORE_HALVES=('st.b',)
+# ext.* 传送族并行前缀(exact_parallel_ext_transfers 独立子开关,路 PARSTOR):
+# 寄存器低字节/低半字的零/符号扩展——ext.b0.u/ext.b0.s/ext.l.u/ext.l.s 四形
+# 同族,ISA confirmed(pi32v2.toml:效果只有 regs+flags,N/Z 随结果、C/V 保持,
+# oracle+compiler+硬件三源,hw/fm1-2026-10-24「result as stated」)。与 ext.b0.u
+# (exact_parallel_extensions,既有子开关)同语义同证据等级,此处按「整族」
+# 收口而非逐形 opt-in。并入动机=SIMB1F 假停:0x600f95a `ext.l.u.p r2=r0.l (u)
+# ∥ st.w.sp [sp+4]=r5` 在停点世界的分发器直调里撞上游 store 模型写前合并读
+# 旧字(Writes.put 对整字存也读旧字——模型簿记读非 guest 装载,未初始化栈口
+# 袋假停);ext.* 不在 pure-ALU 前缀清单,只能落上游模型。第二半(存储)按
+# FM-1 run3 硬件捕获的旧寄存器语义执行(「B 读 A 之前旧寄存器」,SIMPRE §1.5
+# 「# 后缀下条指令读旧值」纪律)。静态面:全 app 551 个 ext.*.p 站点中 233 个
+# 第二半是 st.*(word 族 97/half 78/byte 52/其余 6 个 pi·pr 等本 gate 不收形)。
+# 重捕获实测(路 PARSTOR):p11 前缀(29,601,125)前沿/步数/停点零位移,287 次
+# 前缀内 ext 对(2 word+285 half)从上游 pair 模型迁至本 gate——目标内存已初
+# 始化时整字/半字写的合并读与直写架构等值,结果不变,只有 opt-in 条件场景报
+# 告的 adapter 计数迁移(4182→4184/42→327,byte 1536 不动=byte 形前缀零执行);
+# base 场景与 probe_dualcore(ext.b0.u 单形 exact_parallel_extensions)零变化。
+EXACT_PARALLEL_EXT_TRANSFER_PREFIXES=('ext.b0.u','ext.b0.s','ext.l.u','ext.l.s')
 
 
 def check_rom(rom):
@@ -1089,7 +1107,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 pair,pair_raw,pair_size=self.decode(self.pc+size)
                 base=self.tab.by_id(insn.id[:-2])
                 pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
-                    diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
+                    diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u') or (
+                    diagnostics.get('exact_parallel_ext_transfers') and
+                    base.id in EXACT_PARALLEL_EXT_TRANSFER_PREFIXES)
                 # uextra.rrii(无符号位域提取,ISA 三源 confirmed,效果只有
                 # regs+flags)与 ext.b0.u 同族;仅当 byte 子开关开启且第二半是
                 # st.b 时接受。判据:全 app 12 处 uextra.rrii.p∥st.b 站点在
@@ -1809,7 +1829,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         pair,_,pair_size=self.decode(walk+inner_size)
                         base=self.tab.by_id(inner.id[:-2])
                         pure_alu=base.id.startswith(('li.','mov.','add.','sub.','and.','or.','xor.','div.')) or (
-                            diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u')
+                            diagnostics.get('exact_parallel_extensions') and base.id=='ext.b0.u') or (
+                            diagnostics.get('exact_parallel_ext_transfers') and
+                            base.id in EXACT_PARALLEL_EXT_TRANSFER_PREFIXES)
                         # 与主 gate 同步:uextra.rrii/insert.rrii A 半仅在 byte
                         # 子开关+st.b 第二半时接受(既有前缀零执行,判据见主
                         # gate 注释;insert.rrii 证据形状 0x6011f20,路 JLEQ 续六)。

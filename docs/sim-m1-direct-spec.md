@@ -602,3 +602,15 @@ sim_world_boot.py 退役 monkeypatch 缝合线改直连。probe_irq_entry.py 其
   test_image_trace_diff.py：配套单测（透传参守卫/回退判形/四态机/transports 清单）。
 - 验收记录：analysis/local-checks/sim-m1-p2-dynamic.json、sim-m1-verdicts.json
   （本地工件，不入 git；关键值已摘入本节与 HANDOFF 条目）。
+
+### 9.7 读路径回全固件证据（路 PARSTOR，2026-11-17）
+
+§9.3 记录的 getter 降级根因（0x600f95a `ext.l.u.p∥st.w.sp` 撞上游 store 模型
+合并读旧字）由路 PARSTOR 关闭：probe_boot exact_parallel_stores 新增独立子开关
+`exact_parallel_ext_transfers`（ext.b0.u/ext.b0.s/ext.l.u/ext.l.s 传送族前缀，
+旧寄存器语义同 FM-1 run3），经 registry `ext_pair`（conditional）进本世界开关集。
+重捕获实测：前沿 29,601,125@0x606955c 逐字段零位移；停点世界分发器直调过
+0x600f95a 墙，read_mode 保持 dispatcher（§2.2 首选路径恢复，getter 备选仅作
+运行时兜底保留）。前缀内 287 次 ext 对从上游 pair 模型迁至新 gate（架构等值，
+adapter 计数迁移只落在 opt-in 条件场景报告）。M1 三级验收按此世界刷新（§4 四态
+如实：EQ 0x18d03c 堆墙/0x60642ec 空指针墙是另外两族问题，不在本路范围）。

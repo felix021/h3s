@@ -1119,6 +1119,104 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['last_registers']['r'][1],'0x56')
         self.assertEqual(result['memory_snapshots']['parallel_stack_word']['bytes_with_unknowns'],'efbeadde')
 
+    def test_ext_transfer_word_store_keeps_strict_without_its_subgate(self):
+        # 0x600f95a is the SIMB1F false-stop site: `ext.l.u.p r2=r0.l (u) # ∥
+        # st.w.sp [sp+4]=r5` inside the BLE read dispatcher 0x600f85e frame.
+        # Without the exact_parallel_ext_transfers sub-gate the pair must keep
+        # stopping on the upstream store model's merge read of the old word
+        # (a model-internal bookkeeping read, not a guest load) — bare, with
+        # the parent gate, and with the older single-form ext.b0.u extension
+        # all stay strict (legacy behaviour unchanged).
+        sp=0x123700
+        regs=[0]*16;regs[0]=0x12345678;regs[5]=0xdeadbeef
+        for label,switches in (('bare',{}),
+                               ('parent_only',{'exact_parallel_stores':True}),
+                               ('parent_plus_b0_extension',{'exact_parallel_stores':True,
+                                                            'exact_parallel_extensions':True})):
+            result=explore(self.module,self.app,name='ext_transfer_strict_'+label,
+                diagnostics={'entry_pc':0x600f95a,'initial_sp':sp,'initial_gprs':regs,**switches},budget=1)
+            self.assertEqual(result['completed_steps'],0,label)
+            self.assertEqual(result['stop']['kind'],'uninitialized_memory',label)
+            self.assertEqual(result['stop']['address'],hex(sp+4),label)
+            self.assertEqual(result['stop']['region'],'bootstrap_stack',label)
+
+    def test_ext_transfer_word_store_old_registers_without_merge_read(self):
+        # Same site with the ext.* transfer-family sub-gate on: the store half
+        # writes the full word from OLD registers directly (FM-1 run3 hardware
+        # capture: the second slot reads the registers before the first slot),
+        # the extract half zero-extends the old source's low halfword — the
+        # pair executes as one step with no bookkeeping read.
+        sp=0x123700
+        h=self.handoff();h['snapshots'].append(('ext_word_target',sp+4,4))
+        regs=[0]*16;regs[0]=0x12345678;regs[5]=0xdeadbeef
+        result=explore(self.module,self.app,name='ext_transfer_word',handoff=h,
+            diagnostics={'entry_pc':0x600f95a,'initial_sp':sp,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],hex(0x600f95e))
+        self.assertEqual(result['last_registers']['r'][0],'0x12345678')       # source untouched
+        self.assertEqual(result['last_registers']['r'][2],'0x5678')           # (u) zero-extend
+        self.assertEqual(result['instruction_adapters'],{'parallel_full_word_store_old_registers':1})
+        self.assertEqual(result['memory_snapshots']['ext_word_target']['bytes_with_unknowns'],'efbeadde')
+
+    def test_ext_transfer_signed_halfword_extension_pair(self):
+        # 0x60c059e `ext.l.s.p r0=r0.l (s) # ∥ st.w.sp [sp+4]=r5`: the signed
+        # form sign-extends the old low halfword (0x8001 -> 0xffff8001) while
+        # the store half writes r5 — same family, same old-register execution.
+        sp=0x123700
+        h=self.handoff();h['snapshots'].append(('ext_signed_target',sp+4,4))
+        regs=[0]*16;regs[0]=0x12348001;regs[5]=0xcafebabe
+        result=explore(self.module,self.app,name='ext_transfer_signed',handoff=h,
+            diagnostics={'entry_pc':0x60c059e,'initial_sp':sp,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['last_registers']['r'][0],'0xffff8001')       # (s) sign-extend
+        self.assertEqual(result['instruction_adapters'],{'parallel_full_word_store_old_registers':1})
+        self.assertEqual(result['memory_snapshots']['ext_signed_target']['bytes_with_unknowns'],'bebafeca')
+
+    def test_ext_transfer_halfword_store_needs_its_own_subgate(self):
+        # 0x6005050 `ext.l.u.p r7=r6.l (u) # ∥ st.h h[r2+22]=r6`: the ext.*
+        # prefix sub-gate alone must NOT release the halfword store half —
+        # the halfword sub-gate (exact_parallel_halfword_stores) is still
+        # required, and with both on the store writes exactly 2 bytes.
+        h=self.handoff();h['snapshots'].append(('ext_halfword_target',0x123700,2))
+        regs=[0]*16;regs[2]=0x1236EA;regs[6]=0xAABBCCDD
+        strict=explore(self.module,self.app,name='ext_halfword_strict',
+            diagnostics={'entry_pc':0x6005050,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True},budget=1)
+        self.assertEqual(strict['completed_steps'],0)
+        self.assertEqual(strict['stop']['kind'],'uninitialized_memory')
+        self.assertEqual(strict['stop']['address'],'0x123700')
+        green=explore(self.module,self.app,name='ext_halfword',handoff=h,
+            diagnostics={'entry_pc':0x6005050,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_halfword_stores':True},budget=1)
+        self.assertEqual(green['completed_steps'],1)
+        self.assertEqual(green['last_registers']['r'][7],'0xccdd')
+        self.assertEqual(green['instruction_adapters'],{'parallel_halfword_store_old_registers':1})
+        self.assertEqual(green['memory_snapshots']['ext_halfword_target']['bytes_with_unknowns'],'ddcc')
+
+    def test_ext_transfer_signed_byte_store_needs_its_own_subgate(self):
+        # 0x6026446 `ext.b0.s.p r1=r0.b0 (s) # ∥ st.b b[r2+3]=r0`: the byte
+        # store half keeps requiring exact_parallel_byte_stores; the signed
+        # byte extract sign-extends the old low byte (0x80 -> 0xffffff80).
+        h=self.handoff();h['snapshots'].append(('ext_byte_target',0x123700,1))
+        regs=[0]*16;regs[0]=0x12FF80;regs[2]=0x1236FD
+        strict=explore(self.module,self.app,name='ext_byte_strict',
+            diagnostics={'entry_pc':0x6026446,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True},budget=1)
+        self.assertEqual(strict['completed_steps'],0)
+        self.assertEqual(strict['stop']['kind'],'uninitialized_memory')
+        self.assertEqual(strict['stop']['address'],'0x123700')
+        green=explore(self.module,self.app,name='ext_byte',handoff=h,
+            diagnostics={'entry_pc':0x6026446,'initial_sp':0x123400,'initial_gprs':regs,
+                         'exact_parallel_stores':True,'exact_parallel_ext_transfers':True,
+                         'exact_parallel_byte_stores':True},budget=1)
+        self.assertEqual(green['completed_steps'],1)
+        self.assertEqual(green['last_registers']['r'][1],'0xffffff80')
+        self.assertEqual(green['instruction_adapters'],{'parallel_byte_store_old_registers':1})
+        self.assertEqual(green['memory_snapshots']['ext_byte_target']['bytes_with_unknowns'],'80')
+
     def test_first_task_partial_restore_does_not_zero_or_half_restore_unknown_gprs(self):
         h=self.handoff();tcb=0x124f00;frame=0x124f40
         h['seeds'] += [(tcb,struct.pack('<I',frame)),(frame,struct.pack('<IIII',ENTRY,0,0,0))]
