@@ -111,5 +111,48 @@
       "reason": "post-pilot delta: message text/observability/CLI guard only, zero semantic change",
       "prior_fingerprint": "d61d21bed3140c3edc566d08398b1a5bb01022b8668d0af7c8c02d5ecff82c31"
     }
+  },
+  {
+    "route": "batcha",
+    "name": "off-reproduce",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_or_readonly_write",
+      "access": "write",
+      "address": "0xfd6104",
+      "size": 4,
+      "value_bytes": "00000000"
+    },
+    "completed_steps": 41850980,
+    "report_equal_to_reference": true,
+    "wall_seconds": 0.5,
+    "snapshot_digest": "eaad5d8081ce796e",
+    "code_fingerprint": "558b53b24e015e2f",
+    "ack": {
+      "reason": "\u8d1f\u4f8b\u81c2:\u5f00\u5173\u5173=13\u5b57unmapped,\u4e16\u754c\u4e0e\u6355\u83b7\u524d\u7f00\u9010\u5b57\u8282\u540c"
+    }
+  },
+  {
+    "route": "batcha",
+    "name": "on-main",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_memory",
+      "access": "read",
+      "address": "0x61eafe0",
+      "size": 1,
+      "reference_sdk_register": null
+    },
+    "completed_steps": 41858013,
+    "report_equal_to_reference": true,
+    "wall_seconds": 0.8,
+    "snapshot_digest": "eaad5d8081ce796e",
+    "code_fingerprint": "558b53b24e015e2f",
+    "ack": {
+      "enable_slots": [
+        "jl_pled_config_words"
+      ],
+      "reason": "\u6279A 13\u5b57\u9996\u6b21\u89e6\u8fbe=\u65e7\u505c\u70b90x60195f8\u524d\u7f00\u96f6\u89e6\u8fbe;canary PC 0x6034b06/0x6034aba \u524d\u7f00\u96f6\u6267\u884c(IRQ41\u65e0\u6e90)"
+    }
   }
 ]

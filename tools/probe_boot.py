@@ -577,6 +577,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def decode(self,pc):
             if pc%2:
                 raise Blocked('unaligned_instruction_fetch',address=hex(pc))
+            # 路 BATCHA:IRQ41 LED 消费域入口 canary(执行前拒)。jl_pled_config_words
+            # 开启时 0x6034b06(handler)/0x6034aba(亮度 getter)到达即停——该域
+            # 持有本族全部算术/分支读者(CON2 bits4-7 分支读 0x6034bae 会被容器
+            # 读回喂值,不能只靠读拒绝关门);模型无 IRQ41 源,主臂验证零触达。
+            # 开关关时槽位 None,一次 is-not-None 测试即过。
+            if (hardware is not None and hardware.jl_pled_config_words is not None
+                    and pc in hardware.jl_pled_config_words.CANARY_PCS):
+                raise Blocked('jl_pled_irq41_domain_entry_not_modeled',pc=hex(pc))
             if hardware is not None and hardware.sfc is not None:hardware.sfc.check_flash_access(pc)
             old=self.mem.operation
             self.mem.operation='fetch'

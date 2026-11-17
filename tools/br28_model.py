@@ -4248,6 +4248,221 @@ class P2MClkCon0Registers:
         }
 
 
+JL_PLED_CONFIG_WORDS=(0xfd6104,0xfd6108,0xfd6110,0xfd6114,0xfd6118,0xfd611c,
+                      0xfd6120,0xfd6124,0xfd6128,0xfd612c,0xfd6130,0xfd6134,0xfd6138)
+JL_PLED_CONFIG_SDK_NAMES={0xfd6104:'CON1',0xfd6108:'CON2',0xfd6110:'BRI_PRDL',
+                          0xfd6114:'BRI_PRDH',0xfd6118:'BRI_DUTY0L',0xfd611c:'BRI_DUTY0H',
+                          0xfd6120:'BRI_DUTY1L',0xfd6124:'BRI_DUTY1H',0xfd6128:'PRD_DIVL',
+                          0xfd612c:'DUTY0',0xfd6130:'DUTY1',0xfd6134:'DUTY2',0xfd6138:'DUTY3'}
+
+
+class JLPledConfigWords:
+    """JL_PLED 配置字族 13 字批放行容器(路 BATCHA,攒批一次落地;codex 参谋
+    202611180207 修正稿):CON1/CON2 写后读回 + BRI×6/PRD_DIVL/DUTY×4 纯写
+    记录 + IRQ41 消费域入口 canary。
+
+    背景:41,850,980 停点 @ 0x60195f8(路 P2MCLK 放行后 +2,598 步)——LED
+    全字重配函数 0x60195e2 的第三条整字写 `st.w [0xfd6104]=0`(CON1 整字
+    清零,unmapped_or_readonly_write)。同函数后续序列(0x60195fa CON2=0、
+    0x60195fc/fe/02 CON3=0/|=0x10/|=0x40 已建模)与两个被调函数——PRD 分频
+    写 0x6019552(0x6019564 [PRD_DIVL]=低字节)与 DUTY 配置器 0x6019574
+    (r4=0xfd6104:CON1 RMW/显式读×9/写回 + DUTY0..3 四整字写)——覆盖了
+    JL_PLED 剩余 13 个配置字的全部 LED 活路径访问面。LED 效果机 0x601a206
+    (A1 路 0x601a3ce/d0 DUTY2/3=0xFF + 0x601a3d2..da CON1 RMW、呼吸建立链
+    0x6019c5e→BRI 六连写 0x6019ab0/CON1+CON2 insert 0x6019af2)按效果表
+    数据步进重入这些函数。scout(docs/frontier-scout-f2a-batch.md §3 批 A,
+    静态预判)+ 本路落地前 vendor objdump 复核(scout 工具链,指令锚定)
+    逐字确认消费链。
+
+    消费链分类(本路复核修正 scout 的「无读者」表述):
+    - **CON1 0xfd6104 / CON2 0xfd6108(活路径显式读=写回组装)**:CON1 的
+      9 处显式 ld(0x6019588/0x60195a0/0x60195b6/ba/0x60195c6/ca/0x60195d6/
+      da/0x6019afa)读值全部只进 |=/ &=/insert 写回组装,分支全在实参
+      r1/r2/r3/[sp+12] 上;CON2 的 0x6019b0c 读只承载 insert(bits4-7 来自
+      实参 r1)的保留位。停点前两字均先整字写(0x60195f8/fa 写 0)后读——
+      **首写前读拒绝**(codex 修正:去掉合成初始 0——真实路径先写后读,
+      初态假设无必要,首写前拒读让访问顺序变化立即显形;写零按写次数计
+      「已写」,不按值真假)。
+    - **BRI 六字/PRD_DIVL/DUTY 四字(11 字,活路径零读)**:LED 配置链只有
+      整字写;全部已知读者在 **IRQ41 handler 域**(亮度 getter 0x6034aba
+      0x6034aca..fe: BRI_DUTY×4/DUTY×4 读值进移位/加法算术;handler
+      0x6034b06 0x6034b6e: PRD_DIVL 读进乘法;0x6034bae: CON2 bits4-7 读
+      进分支)——与 CON3 容器拒绝的 0x6034b7a(乘除消费者)同域同类。
+      模型无 IRQ41 源(LED 硬件不建模)→该域零执行;本容器对这 11 字
+      **读一律拒绝**(含 RMW 内部读),canary 见下。
+    - **IRQ41 消费域入口 canary(codex 补缺口)**:CON2 读回开放后,若
+      handler 域意外执行,0x6034bae 的 bits4-7 分支读会被喂合成配置值——
+      「CON0 已允许分支读」不能替它授权(CON0 有独立的具名 fixture 决策)。
+      故开关开启时在 probe_boot decode(执行前)对入口 PC
+      {0x6034b06 handler, 0x6034aba getter}一律 Blocked——主臂验证零触达,
+      把「已知消费域保持关闭」做成可执行边界而非祈望。已知局限:本 canary
+      不覆盖函数中段进入(如假想的隔离探针从 0x6034bae 直接起跑),该形状
+      当前模型不存在,到达时按新读者重审。
+
+    批 A 不含(维持 unmapped):CNT_RD 0xfd613c(__RO,读者 0x6034b9e 在
+    handler 域)、CON4 0xfd6140(RMW 0x6034b7c/读 0x6034b90 bit5 轮询,同域)、
+    CNT_SYNC 0xfd6144(__WO)、CNT_DEC 0xfd6148——LED 活路径零触达。与
+    CON0(jl_pled_con0_initial_fixture)/CON3(jl_pled_con3_readback)既有
+    容器地址集互斥不重叠,不并入旧开关(BV/BN「新开关分立不改旧容器」纪律)。
+
+    codex 三选一(路 BATCHA,gpt-6-astra,2026-11-18):单开关 13 字一批
+    (同一配置事务,逐字已审计);容器内按固定地址集分读策略(CON1/CON2
+    写后读回、11 字始终拒读),策略由单测钉死无须独立执行臂;剔除标准按
+    「访问能力」——13 字写侧证据成立、CON1/CON2 配置读先写后读、其余读
+    拒绝、IRQ41 域 canary 关闭,无需剔除任何字。RMW 零新分发:CON1/CON2
+    的原子 RMW(0x6019584 &=~8、0x601a3d2..da 等)走 probe_boot 通用 mmio
+    路径(mem.read→hardware.read→mem.write→hardware.write,CON0 先例),
+    「值没变也发写事务」语义照旧。
+
+    分类:混合策略批容器——13 字整字写记录;CON1/CON2 首写后读=最后写值
+    (写记录投影,非硅读回声明);11 字读一律严格停。known_limitation:
+    LED 波形/亮度/时钟/计数/自清位/中断/IRQ41 硬件语义一律不建模;写入
+    使能/周期/占空比不会自动生成 LED 计数或中断(缺事件停泊只能报告该
+    条件世界状态);物理外设可能消费保留位(写事务真实落盘);地址白名单
+    不自动阻断新读者——已知读者域已 canary,域外新读者到达即停重审。
+    """
+
+    ADDRESSES=JL_PLED_CONFIG_WORDS
+    SDK_NAMES=JL_PLED_CONFIG_SDK_NAMES
+    READBACK_ADDRESSES=frozenset((0xfd6104,0xfd6108))
+    CANARY_PCS=frozenset((0x6034b06,0x6034aba))
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.ADDRESSES}
+        self.word_writes=0
+        self.reads_after_write=0
+        self.read_attempts=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled JL_PLED config word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL_PLED config word')
+        entry=self.stores[address]
+        # CON1/CON2:首写后读=最后写值(写零也算「已写」,按写次数判);其余
+        # 11 字读一律拒绝——唯一读者在 IRQ41 消费域(算术/分支),喂合成值
+        # 违背 CON3 拒绝 0x6034b7a 的同域先例。拒绝路径世界即停,计数只为
+        # 报告口径(read_attempts 在任何快照里恒 0)。
+        if address in self.READBACK_ADDRESSES and entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        self.read_attempts+=1
+        kind=('jl_pled_config_word_read_before_first_write_not_modeled'
+              if address in self.READBACK_ADDRESSES else 'jl_pled_config_word_read_not_modeled')
+        raise Blocked(kind,address=hex(address))
+
+    def report(self):
+        return {
+            'addresses':[hex(a) for a in self.ADDRESSES],
+            'modeled_vs_touched':('modeled exactly the 13 JL_PLED config words '
+                                  '(write records: %d; CON1/CON2 readback reads: %d)'
+                                  %(self.word_writes,self.reads_after_write)),
+            'word_writes':self.word_writes,
+            'read_attempts':self.read_attempts,
+            'stores':{hex(a):{'values':[hex(v) for v in e['values'][-8:]],
+                              'writes':e['writes']}
+                      for a,e in sorted(self.stores.items()) if e['writes']},
+            'read_policy':{
+                'readback_after_first_write':[hex(a) for a in sorted(self.READBACK_ADDRESSES)],
+                'always_refused':[hex(a) for a in sorted(set(self.ADDRESSES)-self.READBACK_ADDRESSES)],
+                'semantics':('CON1/CON2: reads are refused before the first whole-word '
+                             'write and answer the last written value afterwards (a '
+                             'write-record projection, derived-not-measured — no '
+                             'synthetic initial word exists in this container; writing '
+                             'zero counts as written, judged by write count not value); '
+                             'the other eleven words refuse every read including the '
+                             'internal read an RMW would need'),
+            },
+            'irq41_domain_canary':{
+                'entry_pcs':[hex(pc) for pc in sorted(self.CANARY_PCS)],
+                'semantics':('pre-execution refusal in the fetch path: reaching the '
+                             'IRQ41 LED handler (0x6034b06) or its brightness getter '
+                             '(0x6034aba) raises jl_pled_irq41_domain_entry_not_modeled '
+                             '— the domain holding every arithmetic/branch consumer of '
+                             'this family (getter 0x6034aca..fe BRI_DUTY/DUTY reads, '
+                             '0x6034b6e PRD_DIVL, 0x6034bae CON2 bits4-7, plus the '
+                             'refused CON3 load 0x6034b7a) stays closed as an '
+                             'executable boundary; mid-function entry (an isolation '
+                             'probe starting at 0x6034bae, say) is NOT covered — that '
+                             'shape does not exist in the current model and must be '
+                             're-classified if introduced'),
+            },
+            'sdk_naming':('br28.h JL_PLED_TypeDef (sha 111e29ea…) words at '
+                          'JL_PLED_BASE(ls_base+map_adr(0x61,0))=0xfd6100: CON1 '
+                          '(+0x04), CON2 (+0x08), BRI_PRDL (+0x10), BRI_PRDH (+0x14), '
+                          'BRI_DUTY0L (+0x18), BRI_DUTY0H (+0x1c), BRI_DUTY1L (+0x20), '
+                          'BRI_DUTY1H (+0x24), PRD_DIVL (+0x28), DUTY0 (+0x2c), DUTY1 '
+                          '(+0x30), DUTY2 (+0x34), DUTY3 (+0x38) — all __RW __u32; '
+                          'CON0 (0xfd6100) and CON3 (0xfd610c) stay with their own '
+                          'route-FD610C containers (mutually exclusive address sets); '
+                          'CNT_RD (__RO) / CON4 / CNT_SYNC (__WO) / CNT_DEC '
+                          '(0xfd613c..0xfd6148) stay unmapped'),
+            'whitelisted_words':('exactly the thirteen words listed in addresses; the '
+                                 'audited live-path access face — whole-word reconfig '
+                                 '0x60195e2 (CON1=0 @0x60195f8 = the 41,850,980 '
+                                 'frontier stop, CON2=0 @0x60195fa), PRD writer '
+                                 '0x6019552 ([PRD_DIVL] @0x6019564), duty configurator '
+                                 '0x6019574 (CON1 RMW @0x6019584/0x601958e/0x6019592, '
+                                 'explicit loads @0x6019588/0x60195a0/0x60195b6/0x60195ba/'
+                                 '0x60195c6/0x60195ca/0x60195d6/0x60195da, write-backs '
+                                 '@0x60195ac/0x60195be/0x60195ce/0x60195de, DUTY3 '
+                                 '@0x60195ae, DUTY0 @0x60195b4, DUTY1 @0x60195c4, DUTY2 '
+                                 '@0x60195d4), breathing BRI six-write 0x6019ab0 '
+                                 '(@0x6019ac2/c6/ad6/da/aea/aee), CON1/CON2 insert '
+                                 '0x6019af2 (@0x6019afa..b06, 0x6019b0c..12), effect '
+                                 'machine A1 0x601a206 (DUTY2/DUTY3=0xFF @0x601a3ce/d0, '
+                                 'CON1 RMW @0x601a3d2..da) — every CON1/CON2 read value '
+                                 'feeds only write-back assembly (branches sit on '
+                                 'arguments r1/r2/r3/[sp+12]); the eleven always-refused '
+                                 'words have zero live-path reads (their only readers are '
+                                 'the canaried IRQ41 domain); every other JL_PLED word '
+                                 'and every sub-word/misaligned access stays unmapped'),
+            'observed_shapes':('whole-word stores (including the frontier-stop zero '
+                               'clear), atomic RMW bit operations riding the generic '
+                               'MMIO path for CON1/CON2 only (old&mask / old|mask / '
+                               'insert write-back with branch conditions on arguments), '
+                               'and zero live-path reads of the eleven write-only '
+                               'words — no polling, no table, no arithmetic consumer '
+                               'on any live path'),
+            'readback_projection':{
+                'addresses':[hex(a) for a in sorted(self.READBACK_ADDRESSES)],
+                'reads':self.reads_after_write,
+                'read_attempts_refused':self.read_attempts,
+                'readback_semantics':('CON1/CON2 reads after the first whole-word '
+                    'write answer the last firmware-written value — a write-record '
+                    'projection, derived-not-measured, NOT a silicon-readback claim '
+                    'and NOT a reset-value claim (there is no synthetic initial word; '
+                    'a read before the first write raises Blocked); reads of the other '
+                    'eleven words are always refused'),
+                'known_limitation':('no LED waveform/brightness/clock/count/'
+                    'self-clearing-bit/interrupt effect is modeled — enabling, period '
+                    'and duty writes never generate LED counts or IRQ41, so a park '
+                    'caused by missing events only reports the conditional world; the '
+                    'preserved old-word bits still enter the real write transaction '
+                    'and the physical peripheral may consume them; the IRQ41 consumer '
+                    'domain is closed by entry canaries (0x6034b06/0x6034aba), not by '
+                    'read refusal alone — CON2 readback would otherwise serve the '
+                    'bits4-7 branch consumer at 0x6034bae'),
+            },
+            'assumption':('write-record-only batch release of 13 JL_PLED config words '
+                          '(route BATCHA codex decision, 2026-11-18): CON1/CON2 '
+                          'last-write readback after an explicit first write (no '
+                          'synthetic initial — the live path always writes before it '
+                          'reads, and an access-order change must surface, not be '
+                          'papered over); eleven words refuse every read; the IRQ41 '
+                          'consumer domain is canaried at its two entry PCs; access '
+                          'capability is granted per word from the audited face — a '
+                          'new reader, writer, PC, mask or core must be re-classified '
+                          '(the address whitelist only blocks new addresses)'),
+        }
+
+
 class P11LPVADConfigRegisters:
     """P11_SFR LPVAD VAD_ACON0 单字容器(合成初始 0+读回=当前值,opt-in,路 LPV)。
 
@@ -6716,6 +6931,7 @@ class BR28Model:
                  jl_pled_con3_readback=False,
                  jl_pled_con0_initial_fixture=None,
                  p2m_clk_con0_config_rmw=False,
+                 jl_pled_config_words=False,
                  p11_lpvad_config=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
@@ -6946,6 +7162,15 @@ class BR28Model:
         # 形状),legacy 报告逐字节不变;与邮箱(P2mMailboxAck 的 608/60c/
         # 618)地址集互斥不重叠。
         self.p2m_clk_con0=(P2MClkCon0Registers() if p2m_clk_con0_config_rmw else None)
+        # jl_pled_config_words(路 BATCHA,攒批):JL_PLED 配置字族 13 字批容器
+        # ——41,850,980 停点 0x60195f8(CON1 整字清零)起的 LED 配置链全部
+        # 未建模配置字一次放行:CON1/CON2 写后读回(活路径显式读只进写回
+        # 组装,先写后读,首写前拒读——无合成初始字)+ BRI×6/PRD_DIVL/
+        # DUTY×4 纯写记录(读一律拒绝,唯一读者在 IRQ41 域)+ 该域入口
+        # canary(0x6034b06/0x6034aba,probe_boot decode 前拒,类注释)。
+        # 新开关分立不扩 CON0/CON3/P2MCLK 旧容器;开关关时 13 字保持
+        # unmapped(41,850,980 前沿形状),legacy 报告逐字节不变。
+        self.jl_pled_config_words=(JLPledConfigWords() if jl_pled_config_words else None)
         if core_tick_delivery_requests and not core_tick_configuration:
             raise ValueError('core tick delivery requests require the core tick configuration')
         self.core_tick_delivery_requests=core_tick_delivery_requests
@@ -7522,6 +7747,7 @@ class BR28Model:
             (self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address)) or
             (self.jl_pled_con0 is not None and self.jl_pled_con0.handles(address)) or
             (self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address)) or
+            (self.jl_pled_config_words is not None and self.jl_pled_config_words.handles(address)) or
             (self.p11_lpvad is not None and self.p11_lpvad.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
@@ -7908,6 +8134,13 @@ class BR28Model:
         if self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address):
             self.counts['reads']+=1
             return self.p2m_clk_con0.read(address)
+        # JL_PLED 配置字族 13 字(路 BATCHA):CON1/CON2 首写后读=最后写值,
+        # 首写前与其余 11 字读一律严格停(read() 内两种具名 kind);原子 RMW
+        # 内部读走 probe_boot 通用 mmio 路径(mem.read→hardware.read),与
+        # CON0 同款零专用分发。LED 波形/亮度/时钟/计数/中断不建模(类注释)。
+        if self.jl_pled_config_words is not None and self.jl_pled_config_words.handles(address):
+            self.counts['reads']+=1
+            return self.jl_pled_config_words.read(address)
         # P11_SFR LPVAD VAD_ACON0(路 LPV):读回=当前值(最后写值/无写时合成
         # 初始 0);只服务对齐 32 位字,子字/错位落严格 unmapped;读与原子 RMW
         # 内部读共享同一份容器状态。
@@ -8174,6 +8407,13 @@ class BR28Model:
             # 的 handles_p2m_clk_con0_rmw 专用分发→p2m_clk_con0.rmw()(内部
             # 读=容器当前值);LED 时钟树/P11 侧响应不建模。
             self.p2m_clk_con0.write(address,value)
+        elif self.jl_pled_config_words is not None and self.jl_pled_config_words.handles(address):
+            # JL_PLED 配置字族 13 字(路 BATCHA):整字写记录(停点 0x60195f8
+            # CON1=0、0x60195fa CON2=0、PRD/BRI/DUTY 配置链全部);CON1/CON2
+            # 原子 RMW 写回走 probe_boot 通用 mmio 路径(mem.read→hardware.
+            # read→mem.write→hardware.write,内部读=容器当前值,CON0 同款);
+            # LED 外设硬件语义不建模(类注释)。
+            self.jl_pled_config_words.write(address,value)
         elif self.p11_lpvad is not None and self.p11_lpvad.handles(address):
             # P11_SFR LPVAD VAD_ACON0(路 LPV):停点 0x606b68e 的 bit28 置位
             # RMW 写回与整字写记录(经通用 mmio 路径的内部读=容器当前值);
@@ -9010,6 +9250,31 @@ class BR28Model:
                 'clock logic with no CPU load and P11 may mutate the same state '
                 'through another address view; the two RMWs are two separate '
                 'transactions, not one atomic helper')
+        if self.jl_pled_config_words is not None:
+            result['jl_pled_config_words_registers']=self.jl_pled_config_words.report()
+            result['assumptions']['jl_pled_config_words_registers']=(
+                'JL_PLED config-word family, 13 words 0xfd6104..0xfd6138 minus the '
+                'already-modeled CON0/CON3 (route BATCHA): write-record batch release '
+                'with per-word read policy — CON1/CON2 answer the last written value '
+                'after an explicit first whole-word write (no synthetic initial word: '
+                'the live path always writes before it reads — the frontier stop '
+                '0x60195f8 CON1=0 and 0x60195fa CON2=0 precede every live-path read — '
+                'and a read-before-first-write raises Blocked so access-order changes '
+                'surface immediately; writing zero counts as written, judged by write '
+                'count not value); the other eleven words (BRI×6, PRD_DIVL, DUTY0..3) '
+                'refuse every read including an RMW-internal one — their only known '
+                'readers are arithmetic/branch consumers inside the IRQ41 LED domain '
+                '(getter 0x6034aba reads BRI_DUTY×4/DUTY×4 into shift/add, handler '
+                '0x6034b06 reads PRD_DIVL into multiply and CON2 bits4-7 into a '
+                'branch), the same domain whose CON3 explicit load 0x6034b7a the '
+                'route-FD610C container refuses; that domain is closed as an '
+                'executable boundary — pre-execution entry canaries at 0x6034b06 and '
+                '0x6034aba raise jl_pled_irq41_domain_entry_not_modeled (mid-function '
+                'entry is not covered and must be re-classified if ever introduced); '
+                'every CON1/CON2 live-path read value feeds only write-back assembly '
+                '(branches sit on arguments); derived-not-measured — no LED '
+                'waveform/brightness/clock/count/interrupt effect is modeled, and '
+                'enable/period/duty writes never generate LED counts or IRQ41')
         if self.p11_lpvad is not None:
             result['p11_lpvad_config_registers']=self.p11_lpvad.report()
             result['assumptions']['p11_lpvad_config_registers']=(

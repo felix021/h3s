@@ -679,6 +679,9 @@ class M4ProjectionFamilies(unittest.TestCase):
         # Route P2MCLK: the P11_SYSTEM P2M_CLK_CON0 single-word config-RMW
         # container, ON in the current conditional frontier flag set.
         p2m_clk_con0_config_rmw=True,
+        # Route BATCHA: the JL_PLED config-word family container (13 words),
+        # ON in the current conditional frontier flag set.
+        jl_pled_config_words=True,
     )
 
     def build_world(self):
@@ -862,6 +865,14 @@ class M4ProjectionFamilies(unittest.TestCase):
         # both stop-point shapes resume from the captured store.
         self.assertEqual(hw.p2m_clk_con0.rmw('and', 0xffffff1f), 0)
         self.assertEqual(hw.p2m_clk_con0.rmw('or', 0x60), 0x60)
+        # Route BATCHA: the config-word family took the frontier-stop shape —
+        # whole-word zero clears (CON1=0 at 0x60195f8 / CON2=0 at 0x60195fa),
+        # a post-write readback on CON1, plus a BRI/DUTY write whose word
+        # stays read-refused (frontier shape: PRD_DIVL write-only).
+        hw.jl_pled_config_words.write(0xfd6104, 0)
+        hw.jl_pled_config_words.write(0xfd6108, 0)
+        self.assertEqual(hw.jl_pled_config_words.read(0xfd6104), 0)
+        hw.jl_pled_config_words.write(0xfd6128, 3)
         return hardware
 
     def captured_m4(self, world):

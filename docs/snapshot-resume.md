@@ -202,3 +202,23 @@ SHA——断言不分层的实证）。对照：每臂从 0 跑 ≈25.6 分钟 �
 一代码态的迭代循环成本=1 次全量+分钟级臂位。runner 的标准条件场景行与主仓
 b1f4e57 的 local-checks 报告逐字节一致（legacy 红线）。摘要行
 `evidence/frontier-iteration.json`。
+
+### BATCHA 首次实战（2026-11-18，攒批放行模式）
+
+「侦察（已备）+攒批一次落地+一次验证」提速模式的第一次生产使用：路 BATCHA
+（JL_PLED 配置字族 13 字批放行，前沿 41,850,980→41,858,013）。一代码态三路
+从 0 并行（off 参照+K 采集 / on 参照推进新停点 / base 41M 捕获，≈23.5 分钟/路）
+之后全部秒级：
+
+| 步骤 | 耗时 | 结果 |
+| --- | --- | --- |
+| cut Q（K=41,866,040，Q=41,866,039 attempts） | **43.8s** | budget 停点干净快照（41,850,980 步完成=失败迭代前一步） |
+| arm off-reproduce（负例复现） | **0.5s** | 41,850,980@0x60195f8，与从 0 关臂**逐键相等** |
+| arm on-main（enable_slots ack） | **0.8s** | 41,858,013@0x6010ca6（新停点），与从 0 开臂**逐键相等** |
+
+与 CON0 试点差异：①on-main 从 cut（开关关界）跨开关启用走 `--set`+`--ack-enable-slot`
+（试点同款）；②`--reason` 是顶层参数（放子命令前会被拒）；③本路新增 decode 前
+canary（IRQ41 域入口 PC）不影响前缀中性判定——canary PC 前缀零执行由反汇编
+调用面复核（getter 唯二 call 点在 handler 体内、handler 地址唯一字面量=IRQ41
+注册点 0x601a090）。merge 前全量收口照旧（probe --rom EXIT=0 + 条件线 self-check
+从 0 全量 + adapter 基线重取）。摘要行 `evidence/frontier-iteration.json`。

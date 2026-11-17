@@ -234,6 +234,15 @@ FEATURES = (
             ',SDK GET_LED_CLK_SEL 无人引用;codex 三选一 (a) CON3 式,只服务已'
             '观测两种形状;derived-not-measured 非复位值;与邮箱 608/60c/618 '
             '地址集互斥)'),
+    Feature('jl_pled_config_words', 'conditional', (), False, None,
+            'JL_PLED 配置字族 13 字批容器(攒批一次放行;41,850,980 停点'
+            '0x60195f8=CON1 整字清零起的 LED 配置链全部未建模字:CON1/CON2 写'
+            '后读回——活路径显式读只进写回组装且先写后读,首写前拒读无合成'
+            '初始字;BRI×6/PRD_DIVL/DUTY×4 纯写记录读一律拒绝——唯一读者在'
+            'IRQ41 handler 域(getter 0x6034aba 算术×8、0x6034b6e PRD 乘法、'
+            '0x6034bae CON2 分支),该域入口 0x6034b06/0x6034aba 执行前 canary'
+            '到达即停;CON0/CON3 既有容器地址集互斥不并入;codex 20261118 单'
+            '开关 13 字裁决)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
@@ -537,10 +546,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 41850980,
-        'stop_pc': '0x60195f8',
-        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
-                 'address': '0xfd6104', 'size': 4, 'value_bytes': '00000000'},
+        'completed_steps': 41858013,
+        'stop_pc': '0x6010ca6',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                 'address': '0x61eafe0', 'size': 1, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }

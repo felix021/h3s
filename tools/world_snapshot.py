@@ -1253,6 +1253,16 @@ M4_FAMILIES = (
     # per-object static record; no per-instance fixture exists).
     ('p2m_clk_con0', 'P2MClkCon0Registers',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    # Route BATCHA: the JL_PLED config-word family container (13 words) has NO
+    # synthetic-initial semantics — reads before the first write raise Blocked,
+    # so the AM pair collapses to the fields that can actually mutate:
+    # per-word stores, the write total, CON1/CON2 readback reads, and the
+    # refusal counter (constant zero in any captured world because a refusal
+    # stops the run, kept as state for shape symmetry with the write-only
+    # record families). The per-word read policy sets and the IRQ41 entry
+    # canary PCs are CLASS constants under the class-identity check.
+    ('jl_pled_config_words', 'JLPledConfigWords',
+     ('stores', 'word_writes', 'reads_after_write', 'read_attempts')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 
