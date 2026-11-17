@@ -90,6 +90,7 @@ def main():
     run(sys.executable,'tools/test_call_scene.py')           # CALLIMPL：通话态注入场景纯函数面（帧/watch/队列/节点环）
     run(sys.executable,'tools/test_keycons_scene.py')        # KEYCONS：按键事件消费面场景纯函数面（队列/环/watch/泵寄存器面）
     run(sys.executable,'tools/test_world_snapshot.py')
+    run(sys.executable,'tools/test_frontier_iteration.py')  # CKPT:前沿迭代 runner 纯函数面(比较口径/值解析)
     run(sys.executable,'tools/test_handoff_lint.py')
     run(sys.executable,'tools/probe_boot.py','--check-known-blockers','--report','analysis/local-checks/boot-prefix.json',tool='probe_boot.py')
     run(sys.executable,'tools/probe_boot_handoff.py','--report','analysis/local-checks/boot-handoff.json',tool='probe_boot_handoff.py')

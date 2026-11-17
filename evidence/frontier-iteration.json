@@ -1,0 +1,115 @@
+[
+  {
+    "route": "con0-pilot",
+    "name": "off-reproduce",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_memory",
+      "access": "read",
+      "address": "0xfd6100",
+      "size": 4,
+      "reference_sdk_register": null
+    },
+    "completed_steps": 41847806,
+    "report_equal_to_reference": true,
+    "wall_seconds": 0.4,
+    "snapshot_digest": "942858f5811d3f7e",
+    "code_fingerprint": "d61d21bed3140c3e",
+    "ack": {
+      "reason": "CON0 first access = old stop 41,847,806; prefix untouched"
+    }
+  },
+  {
+    "route": "con0-pilot",
+    "name": "on-main",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_memory",
+      "access": "read",
+      "address": "0xf2a610",
+      "size": 4,
+      "reference_sdk_register": null
+    },
+    "completed_steps": 41848382,
+    "report_equal_to_reference": true,
+    "wall_seconds": 0.5,
+    "snapshot_digest": "942858f5811d3f7e",
+    "code_fingerprint": "d61d21bed3140c3e",
+    "ack": {
+      "enable_slots": [
+        "jl_pled_con0"
+      ],
+      "reason": "CON0 first access = old stop 41,847,806; prefix untouched"
+    }
+  },
+  {
+    "route": "con0-pilot",
+    "name": "fixture-ones",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_memory",
+      "access": "read",
+      "address": "0xf2a610",
+      "size": 4,
+      "reference_sdk_register": null
+    },
+    "completed_steps": 41848383,
+    "report_equal_to_reference": true,
+    "wall_seconds": 0.5,
+    "snapshot_digest": "942858f5811d3f7e",
+    "code_fingerprint": "d61d21bed3140c3e",
+    "ack": {
+      "enable_slots": [
+        "jl_pled_con0"
+      ],
+      "reason": "CON0 first access = old stop 41,847,806; prefix untouched"
+    }
+  },
+  {
+    "route": "con0-pilot",
+    "name": "refixture-ones",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_memory",
+      "access": "read",
+      "address": "0xf2a610",
+      "size": 4,
+      "reference_sdk_register": null
+    },
+    "completed_steps": 41848383,
+    "report_equal_to_reference": true,
+    "wall_seconds": 0.5,
+    "snapshot_digest": "67fd11e8c14fbea7",
+    "code_fingerprint": "d61d21bed3140c3e",
+    "ack": {
+      "refixture_slots": [
+        "jl_pled_con0"
+      ],
+      "reason": "virgin container fixture swap for sensitivity arm"
+    }
+  },
+  {
+    "route": "con0-pilot",
+    "name": "re-final",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_memory",
+      "access": "read",
+      "address": "0xf2a610",
+      "size": 4,
+      "reference_sdk_register": null
+    },
+    "completed_steps": 41848382,
+    "report_equal_to_reference": true,
+    "wall_seconds": 0.5,
+    "snapshot_digest": "942858f5811d3f7e",
+    "code_fingerprint": "3b554b83c6234068",
+    "ack": {
+      "enable_slots": [
+        "jl_pled_con0"
+      ],
+      "reason": "post-pilot delta: message text/observability/CLI guard only, zero semantic change",
+      "prior_fingerprint": "d61d21bed3140c3edc566d08398b1a5bb01022b8668d0af7c8c02d5ecff82c31"
+    }
+  }
+]

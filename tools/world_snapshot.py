@@ -479,6 +479,9 @@ class WorldSnapshot:
         self.manifest = manifest
         self.body = body
         self.ram = ram
+        # Route CKPT: set by from_bytes when a fingerprint mismatch was
+        # explicitly acknowledged (None = gates passed unmodified).
+        self.fingerprint_acknowledged = None
 
     @property
     def captured_modules(self):
@@ -528,8 +531,23 @@ class WorldSnapshot:
         return b''.join(parts)
 
     @classmethod
-    def from_bytes(cls, data, *, expected_fingerprint=None):
-        """Decode + run both drift gates; any refusal raises SnapshotError."""
+    def from_bytes(cls, data, *, expected_fingerprint=None, fingerprint_ack=None):
+        """Decode + run both drift gates; any refusal raises SnapshotError.
+
+        fingerprint_ack (route CKPT, the frontier-iteration resume loop):
+        dict {'prior_fingerprint': <the snapshot's own recorded fingerprint>,
+        'reason': str}. A code delta that only ADDS opt-in switches keeps old
+        stops' prefixes identical (honest-stop semantics: the old stop is the
+        first access to the released registers), so an iteration may resume a
+        snapshot captured under older sources. The ack must QUOTE the
+        snapshot's recorded fingerprint (proof the operator is acknowledging
+        this snapshot's provenance, not copy-pasting); it only bypasses gate
+        equality, never the manifest gate, and the restore-time static guards
+        for every pre-existing slot still apply. The structural gates cannot
+        prove the old prefix still equals a fresh replay under the new
+        sources — the resumed result is CONDITIONAL until the merge-time
+        full replay re-validates it (recorded in the restore summary)."""
+        acknowledged = None
         def read_u32(offset, what):
             if offset + 4 > len(data):
                 raise SnapshotError(f'truncated snapshot while reading {what}')
@@ -556,14 +574,27 @@ class WorldSnapshot:
         ram, offset = cls._decode_ram(data, offset)
         if offset != len(data):
             raise SnapshotError('trailing bytes after the RAM section')
-        # Drift gate 1: code fingerprint.
+        # Drift gate 1: code fingerprint (acknowledgeable — see from_bytes docstring).
         current = expected_fingerprint or code_fingerprint()
         if header.get('code_fingerprint') != current:
-            raise SnapshotError('code fingerprint mismatch: the snapshot was captured under '
-                                'different simulation sources (snapshot '
-                                + str(header.get('code_fingerprint'))[:16] + '... vs current '
-                                + current[:16] + '...) — regenerate the snapshot (one full '
-                                'replay to the capture point)')
+            recorded = header.get('code_fingerprint')
+            if (isinstance(fingerprint_ack, dict)
+                    and fingerprint_ack.get('prior_fingerprint') == recorded
+                    and isinstance(fingerprint_ack.get('reason'), str)
+                    and fingerprint_ack['reason'].strip()):
+                acknowledged = {'was': recorded, 'now': current,
+                                'reason': fingerprint_ack['reason']}
+            else:
+                raise SnapshotError('code fingerprint mismatch: the snapshot was captured under '
+                                    'different simulation sources (snapshot '
+                                    + str(recorded)[:16] + '... vs current '
+                                    + current[:16] + '...) — regenerate the snapshot (one full '
+                                    'replay to the capture point), or resume it with '
+                                    "snapshot['resume_ack']={'prior_fingerprint': <the "
+                                    "snapshot's recorded fingerprint>, 'reason': <why the code "
+                                    'delta is prefix-neutral>} when the delta only adds opt-in '
+                                    'switches (the resumed result stays conditional until the '
+                                    'merge-time full replay)')
         # Drift gate 2: stored manifest must match the state shape in the body.
         derived = derive_manifest(body)
         if manifest != derived:
@@ -571,6 +602,7 @@ class WorldSnapshot:
                                 'tampered with — ' +
                                 (_manifest_diff(manifest, derived) or 'content differs'))
         snapshot = cls(header, manifest, body, ram)
+        snapshot.fingerprint_acknowledged = acknowledged
         if 'M2' in snapshot.captured_modules:
             fields = snapshot.body['M2']['objects']['memory']['fields']
             if (fields.get('ram') != sum(length for _, length, _ in ram.segments)
@@ -625,8 +657,9 @@ class WorldSnapshot:
         return data
 
     @classmethod
-    def load(cls, path, *, expected_fingerprint=None):
-        return cls.from_bytes(Path(path).read_bytes(), expected_fingerprint=expected_fingerprint)
+    def load(cls, path, *, expected_fingerprint=None, fingerprint_ack=None):
+        return cls.from_bytes(Path(path).read_bytes(), expected_fingerprint=expected_fingerprint,
+                              fingerprint_ack=fingerprint_ack)
 
 
 # ---------------------------------------------------------------------------
@@ -1236,26 +1269,98 @@ def _capture_m4(world):
     return {'objects': objects, 'scalars': {}, 'static': {}}
 
 
+def _slot_virgin(record, obj, fields, module, key):
+    """True when the snapshot record's STATE equals the target object's CURRENT
+    state (both virgin): the captured prefix never touched the container, so
+    the constructor difference (fixture value, family existence) is
+    prefix-neutral and the resumed suffix starts from the correct initial
+    state. Any deviation (a counted read/write) refuses — a consumed container
+    is real branch-world state, not a static fixture."""
+    for field in fields:
+        try:
+            assert_equal(getattr(obj, field), decode_value(record['fields'][field]),
+                         f'{module}.{key}.{field}')
+        except AssertionError as error:
+            raise SnapshotError(f'{module}.{key}: refixture resume refused — the snapshot '
+                                f'state is not the virgin initial state ({error}); a container '
+                                'the prefix touched is branch-world state, rebuild + '
+                                'recapture instead') from None
+    return True
+
+
 def _restore_m4(payload, world):
     if world.hardware is None:
         raise SnapshotError('M4 state present but no hardware= restore target was provided')
     objects = payload['objects']
+    resume_ack = getattr(world, 'resume_ack', None) or {}
+    enabled, refixtured = resume_ack.get('enable_slots', ()), resume_ack.get('refixture_slots', ())
+    applied = getattr(world, 'resume_ack_applied', None)
     for slot, cls_name, fields in M4_FAMILIES:
         if slot not in objects:
+            # Cross-code shape (route CKPT): the family joined M4_FAMILIES after
+            # this snapshot was captured. Enabling it is prefix-neutral only as
+            # an explicit operator ack (the old stop is the first access by
+            # honest-stop semantics); the fresh container is the correct state.
+            if slot in enabled and getattr(world.hardware, slot, None) is not None:
+                if applied is not None:
+                    applied.setdefault('enabled_slots', []).append(slot)
+                continue
             raise SnapshotError(f'M4.{slot}: the snapshot body is missing the projection '
-                                'slot — regenerate the snapshot')
+                                'slot — regenerate the snapshot, or list the slot in '
+                                "resume_ack['enable_slots'] when it is a family added after "
+                                'capture whose prefix never touched it')
         record = objects[slot]
         obj = getattr(world.hardware, slot, None)
         if record is None:
             if obj is not None:
+                if slot in enabled:
+                    # None->on (route CKPT): the captured world ran with the switch
+                    # off; the target enables it. Allowed only as an explicit ack —
+                    # the container stays freshly constructed (== the state a from-0
+                    # run holds at this boundary when the prefix never accessed it).
+                    if applied is not None:
+                        applied.setdefault('enabled_slots', []).append(slot)
+                    continue
                 raise SnapshotError(f'M4.{slot}: the snapshot was captured with this '
                                     'projection off but the restore target has it on — '
-                                    'rebuild the target with the same scenario switches')
+                                    "rebuild the target with the same scenario switches, or "
+                                    "list the slot in resume_ack['enable_slots'] when the "
+                                    'acknowledged code/switch delta is prefix-neutral')
+            if slot in enabled and applied is not None:
+                # ack 点名了槽位但两侧都关:ack 无效,如实入档(见下条 unused 规则)。
+                applied.setdefault('unused_enable_slots', []).append(slot)
             continue
         if obj is None:
             raise SnapshotError(f'M4.{slot}: the snapshot holds {cls_name} state but the '
                                 'restore target has the projection off (switch mismatch)')
-        check_static(record['static'], obj, f'M4.{slot}', skip=fields)  # switches first...
+        if slot in refixtured:
+            # Fixture A->B on a virgin container (route CKPT sensitivity arms):
+            # skip the per-object static check for the named slot; virgin state
+            # equality below is the mechanical half of the prefix-neutrality
+            # claim (a consumed container refuses in _slot_virgin). The static
+            # delta actually waived rides the summary for audit.
+            _slot_virgin(record, obj, fields, 'M4', slot)
+            if applied is not None:
+                current_static = capture_static(obj, f'M4.{slot}', skip=fields)
+                waived = {name: {'snapshot': record['static'].get(name),
+                                 'target': current_static.get(name)}
+                          for name in sorted(set(record['static']) | set(current_static))
+                          if record['static'].get(name) != current_static.get(name)}
+                applied.setdefault('refixtured_slots', []).append(slot)
+                if waived:
+                    applied.setdefault('refixtured_static_waived', {})[slot] = waived
+            continue
+        if slot in enabled and applied is not None:
+            # record present (ON->ON): the enable ack is a no-op here — record it
+            # instead of silently dropping the operator's acknowledgement.
+            applied.setdefault('unused_enable_slots', []).append(slot)
+        try:
+            check_static(record['static'], obj, f'M4.{slot}', skip=fields)  # switches first...
+        except SnapshotError as error:
+            raise SnapshotError(f'{error} — rebuild the target with the same switches, or '
+                                '(a fixture-VALUE-only delta on a never-touched container) '
+                                "list the slot in resume_ack['refixture_slots'] (the snapshot "
+                                'state must be virgin; a consumed container refuses)') from None
         restore_object(record, obj, 'M4', slot)
 
 
@@ -1478,8 +1583,42 @@ def capture_world(*, cpus=None, mem=None, hardware=None, machine=None, ledger=No
                          world.ram_section or encode_ram_section({}, {}, {}))
 
 
+def normalize_resume_ack(resume_ack):
+    """Validate the route-CKPT resume acknowledgement dict (refuse bad shapes).
+
+    Shape: {'enable_slots': (M4 slot names whose None/missing->on transition is
+    acknowledged prefix-neutral), 'refixture_slots': (slots whose per-object
+    static fixture may differ while the captured state is virgin),
+    'prior_fingerprint': str (consumed by WorldSnapshot.from_bytes),
+    'reason': str (required, non-empty)}. Every key is optional except that a
+    non-empty ack requires a reason."""
+    if resume_ack is None:
+        return {}
+    if not isinstance(resume_ack, dict):
+        raise SnapshotError('resume_ack must be a dict')
+    unknown = set(resume_ack) - {'enable_slots', 'refixture_slots', 'prior_fingerprint',
+                                 'reason'}
+    if unknown:
+        raise SnapshotError(f'resume_ack carries unknown keys {sorted(unknown)}')
+    for key in ('enable_slots', 'refixture_slots'):
+        value = resume_ack.get(key, ())
+        if not isinstance(value, (list, tuple)) or not all(isinstance(s, str) for s in value):
+            raise SnapshotError(f'resume_ack[{key!r}] must be a list of M4 slot names')
+        unknown_slots = sorted(set(value) - set(M4_SLOTS))
+        if unknown_slots:
+            raise SnapshotError(f'resume_ack[{key!r}] names unknown M4 slots {unknown_slots}')
+    if set(resume_ack.get('enable_slots', ())) & set(resume_ack.get('refixture_slots', ())):
+        raise SnapshotError('resume_ack lists a slot in both enable_slots and refixture_slots')
+    if (not isinstance(resume_ack.get('reason', ''), str)
+            or not resume_ack.get('reason', '').strip()):
+        raise SnapshotError("resume_ack requires a non-empty reason (the prefix-neutrality "
+                            "judgement is the operator's, recorded with the result)")
+    return {key: (tuple(value) if key in ('enable_slots', 'refixture_slots') else value)
+            for key, value in resume_ack.items()}
+
+
 def restore_world(snapshot, *, cpus=None, mem=None, hardware=None, machine=None,
-                  ledger=None, expected_context=None):
+                  ledger=None, expected_context=None, resume_ack=None):
     """Apply a snapshot onto freshly constructed world objects (overlay model).
 
     Targets are constructed with the SAME static switches as the captured
@@ -1487,15 +1626,25 @@ def restore_world(snapshot, *, cpus=None, mem=None, hardware=None, machine=None,
     matches, then overwrites its state fields. Returns a summary namespace.
     Proving the restored world equivalent to a full replay is the wiring
     route's tier, not this function.
-    """
+
+    resume_ack (route CKPT, the frontier-iteration loop): explicitly
+    acknowledged switch/code deltas — 'enable_slots' (snapshot None/missing ->
+    target on; prefix-neutral by the honest-stop argument, container kept
+    freshly constructed) and 'refixture_slots' (virgin container, per-object
+    static fixture delta for sensitivity arms; the mechanical half is the
+    snapshot-state == virgin-target comparison). Everything else keeps
+    refusing; an acknowledged resume is CONDITIONAL until the merge-time full
+    replay re-validates the prefix."""
     if expected_context is not None:
         actual = snapshot.header.get('capture_context') or {}
         for key, value in expected_context.items():
             if actual.get(key) != value:
                 raise SnapshotError(f'capture context mismatch on {key!r}: snapshot has '
                                     f'{actual.get(key)!r}, expected {value!r}')
+    resume_ack = normalize_resume_ack(resume_ack)
     world = SimpleNamespace(cpus=cpus, mem=mem, hardware=hardware, machine=machine,
-                            ledger=ledger, ram_section=snapshot.ram)
+                            ledger=ledger, ram_section=snapshot.ram,
+                            resume_ack=resume_ack, resume_ack_applied={})
     applied = {}
     for module in snapshot.captured_modules:
         adapter = MODULES.get(module)
@@ -1521,4 +1670,5 @@ def restore_world(snapshot, *, cpus=None, mem=None, hardware=None, machine=None,
         payload = snapshot.body[module]
         applied[module] = sorted(payload.get('objects', {}) or payload.get('scalars', {}))
     return SimpleNamespace(applied=applied, digest=snapshot.digest(),
-                           modules=snapshot.captured_modules)
+                           modules=snapshot.captured_modules,
+                           resume_ack=world.resume_ack_applied)

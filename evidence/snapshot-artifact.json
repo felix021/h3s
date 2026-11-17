@@ -95,5 +95,19 @@
     "resumed_steps": 21796721,
     "report_byte_equal": true,
     "stop_kind": "instruction_budget"
+  },
+  {
+    "scenario": "p11_heap_experimental_config",
+    "capture_kind": "instruction_budget",
+    "capture_steps": 297845,
+    "cross_switch_enable_slots": [
+      "jl_pled_con0"
+    ],
+    "advance_steps": 2000,
+    "snapshot": "frontier-crossswitch-n300000.bin",
+    "full_steps": 299845,
+    "resumed_steps": 299845,
+    "report_byte_equal": true,
+    "stop_kind": "instruction_budget"
   }
 ]
