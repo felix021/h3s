@@ -1,0 +1,110 @@
+{
+ "route": "VFSSCOUT / sim-vfsscout",
+ "date": "2026-11-18",
+ "kind": "static-reconnaissance (no simulation run, no tools/ changes)",
+ "baseline": {
+  "commit": "fc6e75e",
+  "frontier": {
+   "steps": 41858013,
+   "pc": "0x6010ca6",
+   "stop": "unmapped_memory read 0x61eafe0 size 1 (sdfile partition walker 0x6010c3c rep-body first byte, TON1 partition head area)"
+  }
+ },
+ "method": {
+  "tools": "prior-scout ~/tmp/frontier-scout toolkit (parse_asm call edges, codec stream redisasm via gotarget.py NEW = branch-target resolver pc+size+raw.n, slotscan.py NEW = base-derived QCY slot access scan) + world_snapshot decode of sim-batcha cut-41866039.bin (fingerprint-acked read-only) + official UFW artifact extraction (jl-misctools cipher via main-repo checkout, SFC phase = absolute UFW offset)",
+  "official_artifact": "~/tmp/ae-audioin/orig.ufw sha256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af (manifest original)",
+  "snapshot": "/home/felix021/worktrees/h3s/sim-batcha/analysis/frontier-iterations/batcha/cut-41866039.bin @ completed_steps 41850980 (stop 0x60195f8), decoded read-only"
+ },
+ "stop_function": {
+  "walker": "0x6010c3c sdfile partition directory walker variant A (no retry budget; CRC fail -> ret -251 immediately). Sibling 0x6010cec = variant B (32-entry retry budget, CRC fail -> r7-=1 continue, ret -254 when exhausted). Both walk 32-byte entries {hcrc@0 (covers [2..32)), dcrc@2, addr@4, len@8, flags@12, last@14, name@16} step +32 bytes",
+  "entry_layout": "32 bytes, NOT 128: rep.i {n:32 iterations, b:4 body bytes} copies 1 byte per iteration; vendor asm 'rep 4 32'; HANDOFF '128B 目录条目' is a misread (erratum #1)",
+  "dispatch": "partition-name strcmp vs 0x60A1966-family strings selects QCY slot: 'app_area_head'(+8)->slot824 / 'EXT_RESERVED'(+4)->slot823 / 'res'(+0)->slot822; QCY=0x1265C0, slots at 0x127298/0x12729c/0x1272a0",
+  "resume_path": "[r8+8] != 0 -> r6 = 0x6010c20(x) = x - [0x127290] + [0x127294] = x - 0x2020 + 0x06000000; [r8+8] == 0 -> r9=0 fresh walk from r6=[slot]",
+  "hit_exit": "0x6010cd2 copy 8x4 entry to [r8+4..36]; first-hit only (r9==0): [r8+8] = entry.addr field (0x6010ce0..0x6010ce2) -- the KEY link: next segment's walk starts at virt2cpu(entry.addr)",
+  "crc_call": "0x6000f0c hardware CRC wrapper, len 30, input entry+2 (r4 = sp|2 == sp+2 on aligned sp); stored hcrc h[sp] @0",
+  "callers": ["0x6010dfc/0x6010e16 in 0x6010da6 (APP dispatch entry)", "0x60607ac/0x60607c6 in 0x606075c (EXT_RESERVED dispatch entry)"],
+  "dispatch_callers": {"0x6010da6": ["0x6011202 (in sdfile init 0x6011000, open 'mnt/sdfile/boot/otp_cfg')", "0x606086c (mount ctor 0x6060802 strcmp dispatch)"], "0x606075c": ["0x6060862 (mount ctor)"], "0x6010ece": ["0x601120c", "0x6060876"]}
+ },
+ "stop_resolution": {
+  "reading_address": "0x61eafe0",
+  "inverse_xlate": "0x61eafe0 = 0x06000000 + 0x1ED000 - 0x2020 -> [r8+8] = 0x1ED000 (unique ADDRESS inversion given the resume path and xlate pair 0x2020/0x06000000; does not by itself pin the upper caller)",
+  "identity": "0x1ED000 = TON1 partition entry addr field in the EXT_RESERVED partition entry table at SFC-plaintext offset 0xCDCA0 (in-image, official bytes, hcrc OK)",
+  "coordinate_systems": "three coordinate systems must not be conflated (codex correction #1): (1) sdfile entry addr field = SFC app-area phase; (2) SFC-plaintext offset = CPU - 0x06000000 (model mapping, used in this layout table); (3) device flash cipher-view offset = SFC-plaintext + 0x2020 (FD05/usb-recovery table coordinates)",
+  "layout_sfc_plaintext": "TON1 container head @ SFC-plaintext 0x1EAFE0 (= stop), len 0x10340 -> 0x1FB320 < ANCIF head 0x1FBFE0; TON @ 0x1E0FE0 len 0xB7B0 -> 0x1EC790; TON1 entry len 0x11000 spans 0x1EAFE0..0x1FBFE0 exactly to ANCIF head (no overlap); device-view equivalents: TON head @ 0x1E1000, TON1 head @ 0x1ED000 (matches usb-recovery.md table)"
+ },
+ "official_artifacts": {
+  "flash_head_partition_table": {
+   "phys": "0x0..0x2000, per-32B independent JL-ENC key 0xffff",
+   "entries": ["uboot.boot addr=0xC0 len=0x15AF", "isd_config.ini addr=0x166F len=0x4D", "app_dir_head addr=0x2020 len=0x2000 flags=0x81", "app_dir_head2 addr=0xEE020 len=0xEE000 flags=0x81", "key_mac addr=0x1FF000 len=0x1000 flags=0x12 end=0xffff"]
+  },
+  "ext_reserved_entry_table": {
+   "phys": "0xCDCA0 (= boot slot823 value 0x060CDCA0 target; official in-image plaintext via sfc(flash[0x2020:]))",
+   "entries": [
+    {"name": "EXT_RESERVED", "addr": "0x20", "len": "0x60", "flags": "0x93"},
+    {"name": "TON", "addr": "0x1E1000", "len": "0xC000", "flags": "0x92"},
+    {"name": "TON1", "addr": "0x1ED000", "len": "0x11000", "flags": "0x92", "last": "0x01"}
+   ],
+   "note": "ALIGN_DIR table at 0xCDD00 (= boot slot824 value 0x060CDD00 target): ALIGN_DIR addr=0x20 len=0xF310 + anc_ext.bin addr=0x40 len=0xF2D0 last=0x01; content at 0xCFD20 matches firmware-layout.md"
+  },
+  "ton_containers_from_uwf": {
+   "TON": {"ufw_offset": "0xE6620", "size": "0xB7B0", "head32_name": "tone_zh", "dir_at": "+0x20", "files": ["index.idx", "power_on.wts", "power_off.wts", "low_power.wts", "..."], "crc": "container data CRC + all dir hcrc OK"},
+   "TON1": {"ufw_offset": "0xF1DE0", "size": "0x10340", "head32_name": "tone_en", "dir_at": "+0x20", "files": ["index.idx", "power_on.wts", "power_off.wts", "low_power.wts", "..."], "crc": "container data CRC + all dir hcrc OK", "head32_hex": "4e7e5a86200000004003010003ff0000746f6e655f656e00ffffffffffffffff"},
+   "note": "prior extraction at ~/tmp/fls-outer/tones/ (FLS route) matches; re-extracted this route with jl-misctools cipher from official ufw"
+  }
+ },
+ "cross_verification_anchors": [
+  "FLS route ANCIF stop 0x61fbfe0 = xlate(0x1FE000) with official ANCIF content mapped there and parse CRC/magic all passed -- same addr=phys+0x2020 convention, hardest independent anchor",
+  "FLS route BTIF 0x61ddfe0 = xlate(0x1E0000); app-partition dir at flash 0x06000080 lists BTIF virt=0x1E0000 / ANCIF 0x1FE000 / ANCIF1 0x1FE100",
+  "boot slot823 = 0x060CDCA0 -> table at phys 0xCDCA0 in-image (this route decoded it); boot slot824 = 0x060CDD00 -> ALIGN_DIR table; firmware-layout.md EXT_RESERVED seq block 0xCFCC0 = 0xCDCA0+0x2020 (content offset of entry[0] addr=0x20 -> 0xCDCA0+0x2020+0x20)",
+  "usb-recovery.md real-device table TON/TON1 @ 1e1000/1ed000 = addr-field values (physical 0x1E0FE0/0x1EAFE0); VM 1da000..1ddfff; ANCIF/ANCIF1 1fe000/1fe100",
+  "language word QCY+348 = 0x41A358 != 1 -> en table -> 'TON1/tone_en/power_on.*' (CA route entry10 pattern strings), consistent with TON1 being the stop domain; tone gate QCY+4451 = 1"
+ ],
+ "snapshot_state_at_41850980": {
+  "slots": {"QCY+820": "0x2020", "QCY+821": "0x06000000", "QCY+822": "0x06000000", "QCY+823": "0x060cdca0", "QCY+824": "0x060cdd00", "QCY+829": "0x0", "QCY+830": "0x3328"},
+  "fs_info_0x122800": {"+0": "0x10", "+4": "0x1DA000 (VM)", "+C": "0x4000 (VM len)", "+10": "0x2020", "+14": "0x06000000", "+18": "0x1FF000", "+1C": "0x24681357"},
+  "pled_clk_flag_0x12603c": "1 (BATCHA released world)",
+  "note": "final 7033 steps re-ran sdfile init (0x601201a->0x6011000): adapter deltas +463 postinc store / +227 word store / +156 task stack / +23 shared lock / +37 rep multi-block / +22 irq-return = task install + sdfile re-init shape; slot writer for the 0x1ED000 value not per-instruction pinned (st.w.idxs forms under-disassembled) -- run observation item"
+ },
+ "errata": [
+  "HANDOFF/BATCHA 'rep 128B 目录条目拷贝' misread: rep.i encodes 32 iterations x 1 byte = 32-byte entry copy (identical rep at 0x6010d08 in FLS-pinned 32B-entry walker 0x6010cec); r6 += 32 bytes per entry confirms; the hit-exit rep 8x4 is likewise 32 bytes",
+  "task framing 'EXT_RESERVED/APP 分区 open 的 128B 目录条目' -> both dispatch entries walk the SAME 32-byte-entry format; stop is on the SECOND 0x6010c3c call (resume path from first-hit TON1 entry.addr), reading the TON1 container head at xlate(0x1ED000)",
+  "usb-recovery.md table values 1e1000/1ed000 are device flash cipher-view offsets (numerically equal to sdfile addr fields); container heads in SFC-plaintext view sit 0x2020 lower (0x1E0FE0/0x1EAFE0)",
+  "firmware-layout.md UFW table TON1 offset 990688 is off by 0x100: TON padded tail 0xE6620+0xB7C0 = 0xF1DE0 (990944) is the CRC-verified TON1 start; ANCIF 0x102120 = exact TON1 tail junction",
+  "HANDOFF 'OTA 镜像 0x1442C0 之外' mixes artifact lengths (codex): official UFW total 0x143F00, app SFC plaintext 0xE3053; rephrase as 'beyond currently-mapped official SFC plaintext and existing named resource windows'",
+  "task text '已穿 3 个目录条目 CRC 轮 ×30B=90 fed bytes' MATCHES the first 0x6010c3c call over the entry table (exactly 3 entries EXT_RESERVED/TON/TON1, one 30B CRC each = 90 fed bytes, third entry name-hits and sets [r8+8]=0x1ED000); the stop is the SECOND call's first container-head byte"
+ ],
+ "ff_window_semantics": {
+  "crc16_of_30x_0xFF": "0x75F8 != 0xFFFF stored -> first-entry CRC fail -> 0x6010c3c returns -251 -> open fails gracefully (CA route scenario 1 measured not-found path); an all-0xFF window = 'EXT_RESERVED erased machine' probe world, clean exit, no retry loop (variant A has no budget)"
+ },
+ "three_way": {
+  "codex_adjudication": {
+   "model": "gpt-6-astra",
+   "full_text": "~/tmp/codex/202611180638-vfsscout/final.md",
+   "verdict": "(a) proceed first; (b) later real-device alignment batch behind authorization, NOT blocking; (c) unnecessary to maintain",
+   "switch_shape": "single switch ton_official_partition_pair (default off), TON+TON1 paired",
+   "windows": {"TON": "[0x61E0FE0, 0x61EC790) len 0xB7B0", "TON1": "[0x61EAFE0, 0x61FB320) len 0x10340"},
+   "window_policy": "full effective container length (not clipped to this run's file reads; FLS effective-length precedent); padded tails and declared partition capacity (0xC000/0x11000) NOT mapped; gaps stay unmapped",
+   "mount_self_check": "length + full SHA256 + container/dir CRC + file data CRC + range; refuse overlap and writes",
+   "container_sha256_codex_recomputed": {"TON": "6a511c89acfa4433fbab7d46f22bbbb62c8524cdd93cd72c9b5101f104ae52b5", "TON1": "f765091dadf26e5042cbfd94ad8570f71be4714e5fdfa98ed0bcf3f0b4c1fc66"},
+   "explicit_assumption_wording": "scenario assumes target TON/TON1 partitions carry the named official-UFW-extracted resource content in the firmware SFC-plaintext view, mapped by current sdfile address translation; all mapped bytes from official artifacts; content of remaining partition capacity NOT assumed; device-vs-official consistency NOT verified; results conditional/derived-not-measured, not a real-device playback verification",
+   "verification_arms": ["off arm (required): reproduce 41,858,013 @ 0x6010ca6 all-keys-equal", "on arm (required): record lookup names, CRC, handle base/size, file reads, new stop; official<->b79 same-condition diff", "zh sensitivity arm: apply explicitly-labeled language input BEFORE the language branch (pin read width + compare instruction first; snapshot language word 0x41A358 looks like a pointer, do not decide mutation from whole-word value); compare paths/resource attribution not step counts", "integrity negatives: wrong length/tampered content/out-of-bounds dir entry refused at mount", "optional FF diagnostic arm: only first 32B erased head, let firmware compute CRC 0x75F8 itself and return -251; do NOT inherit CA's graceful-failure conclusion"],
+   "corrections_adopted": ["coordinate terminology: 0x1EAFE0 is SFC-plaintext/CPU mapping position, NOT 'physical'; device-view = +0x2020; FD05 window must be [0x1ED000,0x1FE000) in device coordinates and read-back cipher must be descrambled with the device-view key (not UFW absolute-offset phase)", "'unique solution' scoped to address inversion only; caller identity stays open; [r8+8] is phase-dependent (first hit r9==0 stores entry.addr; resume hit r9==1 keeps current entry CPU address r6)", "HANDOFF 'OTA image 0x1442C0' mixes artifact lengths: official UFW total 0x143F00, app SFC plaintext 0xE3053; rephrase as 'beyond currently-mapped official SFC plaintext and existing named resource windows'"]
+  },
+  "b_real_device_window": {
+    "capability": "FD05 flash direct read EXISTS and is battle-tested (usb-recovery 2026-11-10 full-chip backup x2 + restore; SIMB2A AVD loopback FD05 2MiB double-read == fixture); read_rom.py itself is the RAM-window loader read -- flash read is h3s_usb.py backup/FD05, not read_rom.py",
+    "window": "device-view [0x1ED000, 0x1FE000) (codex-corrected; NOT the SFC-plaintext [0x1EAFE0,0x1FB320))",
+    "gate": "user authorization + device at hand; 2026-11-10 backups existed but not reachable on this machine (only SIMB2A simulator fixture pull is on disk, which is official+0xFF synthetic, not real device)",
+    "value": "closes official-vs-real consistency; read-back must be descrambled per device view before comparing to official plaintext containers"
+  },
+  "c_honest_stop": "fallback only: if (a) stops at an unexpected address past the container head, capture failing instruction/width/effective address/handle/last dir entry, backtrace 'dir addr -> xlate -> in-container offset -> read length'; in-window faults check mapping impl, out-of-window faults check address construction; do NOT auto-widen/patch-FF/edit pointers"
+ },
+ "open_run_observation_items": [
+  "watch QCY slots 0x127290/0x127294/0x127298/0x12729c/0x1272a0 (five, incl. xlate subtrahend 0x127290) after release to pin which slot carries 0x1ED000, writer PC and old/new values (st.w.idxs forms in 0x6011000 mid-section)",
+  "watch [r8+8] with r9/r6 recorded together -- its meaning is phase-dependent (first hit stores entry.addr, resume hit keeps entry CPU address)",
+  "stop caller identity (tone handler en power_on vs sdfile init otp_cfg open) via 0x6010c3c entry args, path string, call site/return -- both converge on the same 0x61EAFE0 window semantics",
+  "record container hit, file-dir hit, final handle base/size (CD never fully ran EXT_RESERVED open to completion)",
+  "count TON vs TON1 accesses separately (paired mapping must not mask path anomalies; en main arm touching TON needs a caller explanation)",
+  "report open/read-out/decode/output stages separately -- resource readability must not be oversold as playback success",
+  "zh sensitivity arm needs language-field read width + compare instruction pinned before any mutation design (snapshot word 0x41A358 looks like a pointer value)"
+ ]
+}
