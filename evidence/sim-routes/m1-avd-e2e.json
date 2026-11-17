@@ -26,5 +26,39 @@
     "record": "~/worktrees/h3s/sim-simb1e/analysis/local-checks/sim-b1e-avd-e2e.json（gitignored，完整 avd_findings/场景明细）",
     "server_log": "~/worktrees/h3s/sim-simb1e/analysis/local-checks/sim-b1e-world-server.log（gitignored，raw log 不入仓）",
     "screenshots_dir": "~/worktrees/h3s/sim-simb1e/analysis/local-checks/screenshots/（gitignored 原图；精选副本已入仓）"
+  },
+  "simb1g_recheck": {
+    "recorded_at": "2026-11-17T09:24:00",
+    "task": "SIMB1G 复验：PARSTOR 把 M1 读环升回 dispatcher 全固件证据后的端到端复跑 + ANC 写环 UI 截图补拍（关闭 EVIDENCE 12 号勘误）。",
+    "environment": {
+      "route_code": "~/worktrees/h3s/sim-simb1g（branch sim-simb1g，基线 0c19334；零 server/driver/app 改动）",
+      "server": "python3 tools/sim_bridge_server.py --listen 127.0.0.1:7788 --world analysis/snapshots --rom <本地 ROM> --firmware <官方 ufw>，**运行自 sim-parstor worktree（6626aae）+其 park 快照**——E2E 复验对象=PARSTOR 验证过 dispatcher 读路径的同一世界（29,601,125 @0x606955c）",
+      "avd": "h3s-app 同 SIMB1E（app 0.6.0-r3-webview 未重装，DRIVE 口 sim-only 注册在位）",
+      "real_devices_used": "无（禁真机红线遵守）"
+    },
+    "scenario_results": {
+      "1_world_server": "PASS——sim-parstor 快照 restore ~1s，banner stop_pc=0x606955c（park 29,601,125）、in_irq_context=timer0_irq_handler、read_mode=dispatcher / read_fallback_reason=null；会话全程（3 次读环+ANC 写读回+2 次 EQ 写撞墙）**零降级**，复验末控制面 status 复查 read_mode 仍=dispatcher",
+      "2_avd_app_connect": "PASS——slirp 10.0.2.2:7788 直连+hello 通过+连接自动三连读（截图 21 域）；期间一次首连失败（宿主误发 quit 使 server 退出后重起窗口）属工具失误，已如实记录",
+      "3_read_loop_dispatcher": "PASS（本次主断言）——读回执全走分发器全固件路径：0x2f→2f03003200（电量 0%/50%/0%，park 世界真值；SIMB1E 旧世界 29,215,313 为 0/10/0%——世界不同非路径漂移）、0x17→1703000000（模式 0 如实不标记）、0x22→2203000000（n=3→0 段）。UI 电量/EQ 0 段显示与线级载荷逐字段一致；EQ 段数读=dispatcher 真回执（非 getter 备选）",
+      "4_write_loop_anc": "PASS——写 0x17（3B）setter=0x6025ca4 n=0 steps=340 写静默→读回 1703010000（模式 1）→UI『降噪』分段 aria-pressed=true+ancFeedback『设备回报：降噪』——**UI 断言面经 WebView devtools DOM 复核**（aria-pressed=[true,false,false]）+截图 15（补拍项，关闭 EVIDENCE 12 号勘误）",
+      "4b_write_loop_eq": "BLOCKED（如实）——写 0x22（66B 摇滚预设，bands_json 驱动）setter=0x602583c→watch 0x6025118（EQ apply）step 92 撞 0x60642ec 写 0x20（近空指针）→world_dead——与 PARSTOR M1 刷新（EQ B1 BLOCKED）+EQPIPE 根因落档一致（冻结世界方法论边界；解锁=M1-c 真调度）；10B 单段臂同墙（step 64），镜像断言面因死亡回滚不可取（复役后 EQ_SEGMENTS=0 复核）",
+      "5_robustness_world_dead": "PASS——EQ 写触发 world_dead→server ~1s 快照重建复役→app 可见断线（未连接+『与耳机的连接已断开（status=129）』+显示清空+[BLE disconnected]，截图 25 域）→DRIVE 重连即时复役（hello+三连读全回执，fresh 世界真值 0/50/0、模式 0、0 段，截图 26 域）"
+    },
+    "new_findings": [
+      "0c19334 当前代码下重 capture 的快照（16m29s，前沿 32,737,356 @0x12c5ca GPCNUM 看门狗停点）**restore 后不可服务**：budget=1 重撞步落 core 1 且 watchdog 已 expired→stop 变 kind=watchdog_requires_reset_after_expiry→就绪自检 core_id!=0 如实退出（server exit 2）；sim-parstor 快照在 0c19334 下指纹拒载（cff8bbca vs 5383a074）——M1 世界服务当前只能锚在 park 前沿快照+其配套代码上，GPCNUM 前沿对 M1 restore 语义的影响需后续路线处理（重钉或看门狗 reset 建模）",
+      "DRIVE writeEq bands 紧凑串解析无输入校验：bands 值含转义残留（'2\\'）时 Integer.parseInt 抛 NumberFormatException→BroadcastReceiver.onReceive 未捕获→**app 进程崩溃**（logcat AndroidRuntime 栈 WebShellActivity.java:177）；E2E 工具面 finding，app 侧修复不在本路红线内（零改动），报告主协调",
+      "AVD 宿主高负载下 adb screencap 表面偶发与页面 DOM 不同步（渲染滞后帧）：UI 断言以 WebView devtools DOM 状态+Page.captureScreenshot 为权威面，adb 截图作过程留档"
+    ],
+    "reproduce": [
+      "（park 世界）cd ~/worktrees/h3s/sim-parstor && python3 tools/sim_bridge_server.py --listen 127.0.0.1:7788 --world analysis/snapshots --rom <ROM> --firmware <官方 ufw>",
+      "emulator -avd h3s-app -no-window -no-audio -gpu swiftshader_indirect；am start -n cn.felix021.h3squery/.WebShellActivity --ez sim true --es sim_host 10.0.2.2 --ei sim_port 7788",
+      "驱动：am broadcast -a cn.felix021.h3squery.DRIVE --es method connect|readStatus --ei cmd 47|23|34|setAnc --ei mode 1|writeEq（EQ 用 --es bands_json '[{...},{...}]'，勿用含 ; 的 bands 紧凑串经 shell 转义）",
+      "控制面：JSON 行协议 hello{proto:1,client:sim-gatt}→status/inspect（read_mode 断言面）；勿发 quit（=server 优雅退出）"
+    ],
+    "raw_local_this_run": {
+      "server_log_park": "~/worktrees/h3s/sim-simb1g/analysis/local-checks/sim-b1g-world-server-park.log（gitignored）",
+      "server_log_0c19334_capture": "~/worktrees/h3s/sim-simb1g/analysis/local-checks/sim-b1g-world-server.log（gitignored，含 16m29s capture+restore 拒役实录）",
+      "screenshots_dir": "~/worktrees/h3s/sim-simb1g/analysis/local-checks/screenshots/（gitignored 原图全集 b1g-*；15 号精选副本已入仓）"
+    }
   }
 }

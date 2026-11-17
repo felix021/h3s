@@ -1,4 +1,4 @@
-# AVD 验收截图档案（路 SIMB1E / SIMB3A，2026-11-17 入库）
+# AVD 验收截图档案（路 SIMB1E / SIMB3A / SIMB1G，2026-11-17 入库）
 
 本目录=仿真联调验收的 UI 断言面截图精选（AVD h3s-app 模拟器，非真机）。对应验收摘要：
 `evidence/sim-routes/m1-avd-e2e.json`、`evidence/sim-routes/m3-avd-e2e.json`；
@@ -17,6 +17,7 @@
 | 10-connected-readloop.png | 读环：已连接·MTU247·电量 0%/10%/0% + 页面日志 [BLE mtu]/[readStatus]×3 |
 | 11-anc-eq-cards.png | 读环：EQ 卡『设备回报：EQ 0 段』+ ANC 分段（fresh 世界模式 0，如实不标记） |
 | 12-anc-write-readback.png | **（标注勘误，见下）**实为 EQ 编辑页：writeEq 发送 66 字节后的曲线编辑视图 |
+| 15-anc-write-readback.png | ANC 写环读回（SIMB1G 补拍，2026-11-17）：降噪分段按下+『设备回报：降噪』，对应回执 1703010000 |
 | 13-worlddead-disconnect.png | world_dead：未连接+『与耳机的连接已断开（status=129）』+显示清空+[BLE disconnected] |
 | 14-reconnect-recovered.png | 复役：重连后已连接·电量恢复显示·[BLE mtu]/[readStatus]×3 |
 | theme-test.png | 调试期主题测试（深色变体；电量数值为静态 fixture 期状态，非本验收读环） |
@@ -30,6 +31,13 @@
 ANC 写环的 UI 断言截图因此**缺失**——该场景的既有证据面=线级回执
 （写后读 0x17 → `1703010000` 模式 1=降噪）+页面日志 [setAnc] ok，UI 截图留待下次
 AVD 会话补拍（HANDOFF 待办）。入库摘要 `m1-avd-e2e.json` 已按勘误后口径书写。
+
+**勘误已关闭（2026-11-17 SIMB1G 复验补拍）**：`15-anc-write-readback.png` =
+ANC 写环读回 UI 断言（park 世界 29,601,125 快照，dispatcher 读路径）：降噪分段
+按下（aria-pressed=true 的按下态渲染）+ ancFeedback『设备回报：降噪』，对应线级
+回执 `1703010000`。采集通道=WebView devtools `Page.captureScreenshot`（AVD 宿主
+高负载下 adb screencap 表面偶发渲染滞后，devtools 渲染面与页面 DOM 状态一致；
+同状态 adb 截图留 raw_local）。12 号原图按「不删原图、勘误随档」继续保留。
 
 ## m3-avd/（M3 刷机流 AVD 全环，路 SIMB3A）
 
