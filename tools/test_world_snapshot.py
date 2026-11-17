@@ -1345,6 +1345,219 @@ class AdvanceTierExploreWorld(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Route CKPT (frontier-iteration resume loop): cross-switch restore rules,
+# the dirty-stop refusal, loop-attempt reporting and the fingerprint ack.
+# ---------------------------------------------------------------------------
+
+class CrossSwitchResume(unittest.TestCase):
+    """resume_ack 两条兼容规则(同一 M4 全开世界的 OFF 变体做捕获源):
+    enable_slots(None/缺键→on)与 refixture_slots(virgin 容器换 fixture)。
+    红线:on→off、非 virgin 换 fixture、未承认的槽位差、ack 形状错全部拒。"""
+
+    OFF_SWITCHES = {key: value for key, value in M4ProjectionFamilies.M4_SWITCHES.items()
+                    if key != 'jl_pled_con0_initial_fixture'}
+
+    def captured_off(self):
+        return capture_world(hardware=BR28Model(**self.OFF_SWITCHES),
+                             context={'scenario': 'm4_all_families'})
+
+    def test_none_to_on_refuses_without_ack(self):
+        loaded = WorldSnapshot.from_bytes(self.captured_off().encode())
+        target = BR28Model(**M4ProjectionFamilies.M4_SWITCHES)
+        with self.assertRaisesRegex(SnapshotError, 'projection off but the restore target'):
+            restore_world(loaded, hardware=target,
+                          expected_context={'scenario': 'm4_all_families'})
+
+    def test_enable_slot_ack_keeps_container_virgin_and_restores_the_rest(self):
+        # 在 OFF 世界里戳一个真实停点形状的状态(CON3 已消费)——enable 规则
+        # 不得碰其它槽位的状态恢复。
+        original = BR28Model(**self.OFF_SWITCHES)
+        original.jl_pled_con3.rmw('and', 0xffffffdf)
+        original.jl_pled_con3.write(0xfd610c, 0x40)
+        snapshot = capture_world(hardware=original, context={'scenario': 'm4_all_families'})
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        target = BR28Model(**M4ProjectionFamilies.M4_SWITCHES)
+        result = restore_world(loaded, hardware=target,
+                               expected_context={'scenario': 'm4_all_families'},
+                               resume_ack={'enable_slots': ['jl_pled_con0'],
+                                           'reason': 'CON0 first access is the old stop'})
+        # 恢复摘要如实记录启用面;新容器保持初态(=从 0 跑到该边界的状态)。
+        self.assertEqual(result.resume_ack, {'enabled_slots': ['jl_pled_con0']})
+        self.assertEqual(target.jl_pled_con0.stores, {0xfd6100: {'values': [], 'writes': 0}})
+        self.assertEqual(target.jl_pled_con0.initial_word, 0)
+        self.assertEqual(target.jl_pled_con0.word_writes, 0)
+        # 其它槽位照常恢复(CON3 的消费状态来自 OFF 快照)。
+        assert_equal(target.jl_pled_con3.stores, original.jl_pled_con3.stores, 'con3.stores')
+        self.assertEqual(target.jl_pled_con3.word_writes, original.jl_pled_con3.word_writes)
+
+    def test_missing_slot_key_is_not_none_and_needs_the_same_ack(self):
+        """跨代码形状(家族在捕获后才登记):body 缺键 ≠ 槽位 None——未承认时
+        拒;承认后与 None→on 同规则(新容器保持初态)。目标世界用 OFF 开关集
+        (con0 两边都关,隔离出 con3 的缺键差)。"""
+        snapshot = self.captured_off()
+        del snapshot.body['M4']['objects']['jl_pled_con3']      # 模拟旧代码无该家族
+        snapshot.manifest = ws.derive_manifest(snapshot.body)   # manifest 与 body 一致
+        data = snapshot.encode()
+        loaded = WorldSnapshot.from_bytes(data)
+        with self.assertRaisesRegex(SnapshotError, 'missing the projection slot'):
+            restore_world(loaded, hardware=BR28Model(**self.OFF_SWITCHES),
+                          expected_context={'scenario': 'm4_all_families'})
+        target = BR28Model(**self.OFF_SWITCHES)
+        result = restore_world(loaded, hardware=target,
+                               expected_context={'scenario': 'm4_all_families'},
+                               resume_ack={'enable_slots': ['jl_pled_con3'],
+                                           'reason': 'family registered after capture'})
+        self.assertEqual(result.resume_ack, {'enabled_slots': ['jl_pled_con3']})
+        self.assertEqual(target.jl_pled_con3.word_writes, 0)    # 新容器初态
+
+    def test_refixture_virgin_allows_static_delta_consumed_refuses(self):
+        # virgin ON 快照(fixture 0,CON0 零触达)→ 目标 fixture 1。
+        virgin = BR28Model(**M4ProjectionFamilies.M4_SWITCHES)
+        snapshot = capture_world(hardware=virgin, context={'scenario': 'm4_all_families'})
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        switches = dict(M4ProjectionFamilies.M4_SWITCHES,
+                        jl_pled_con0_initial_fixture=0x00000001)
+        with self.assertRaisesRegex(SnapshotError, 'static configuration mismatch'):
+            restore_world(loaded, hardware=BR28Model(**switches),
+                          expected_context={'scenario': 'm4_all_families'})
+        target = BR28Model(**switches)
+        result = restore_world(loaded, hardware=target,
+                               expected_context={'scenario': 'm4_all_families'},
+                               resume_ack={'refixture_slots': ['jl_pled_con0'],
+                                           'reason': 'sensitivity arm, virgin container'})
+        # 摘要记录实际放行的静态差(审计面:操作者能看到 waived 了什么)。
+        self.assertEqual(result.resume_ack,
+                         {'refixtured_slots': ['jl_pled_con0'],
+                          'refixtured_static_waived': {'jl_pled_con0': {
+                              'initial_word': {'snapshot': 0, 'target': 1}}}})
+        self.assertEqual(target.jl_pled_con0.initial_word, 1)
+        # 非 virgin(读过一次 fixture)→ 拒:已消费容器是分支世界状态。
+        consumed = BR28Model(**M4ProjectionFamilies.M4_SWITCHES)
+        consumed.jl_pled_con0.read(0xfd6100)      # synthesized_initial_reads += 1
+        snapshot = capture_world(hardware=consumed, context={'scenario': 'm4_all_families'})
+        loaded = WorldSnapshot.from_bytes(snapshot.encode())
+        with self.assertRaisesRegex(SnapshotError, 'not the virgin initial state'):
+            restore_world(loaded, hardware=BR28Model(**switches),
+                          expected_context={'scenario': 'm4_all_families'},
+                          resume_ack={'refixture_slots': ['jl_pled_con0'],
+                                      'reason': 'consumed container must refuse'})
+
+    def test_ack_shape_validation(self):
+        loaded = WorldSnapshot.from_bytes(self.captured_off().encode())
+        target = BR28Model(**M4ProjectionFamilies.M4_SWITCHES)
+        context = {'scenario': 'm4_all_families'}
+        for bad in ({'enable_slots': ['no_such_slot'], 'reason': 'x'},
+                    {'enable_slots': ['jl_pled_con0']},                # 缺 reason
+                    {'enable_slots': ['jl_pled_con0'],
+                     'refixture_slots': ['jl_pled_con0'], 'reason': 'x'},
+                    {'enable_slots': 'jl_pled_con0', 'reason': 'x'},   # 非列表
+                    {'unknown_key': 1, 'reason': 'x'}):
+            with self.assertRaises(SnapshotError):
+                restore_world(loaded, hardware=BR28Model(**M4ProjectionFamilies.M4_SWITCHES),
+                              expected_context=context, resume_ack=bad)
+        # on→off 永远拒,即使 ack 点名(快照 ON、目标 OFF=真实分支世界差)。
+        snapshot = capture_world(hardware=BR28Model(**M4ProjectionFamilies.M4_SWITCHES),
+                                 context={'scenario': 'm4_all_families'})
+        loaded_on = WorldSnapshot.from_bytes(snapshot.encode())
+        with self.assertRaisesRegex(SnapshotError, 'restore target has the projection off'):
+            restore_world(loaded_on, hardware=BR28Model(**self.OFF_SWITCHES),
+                          expected_context=context,
+                          resume_ack={'enable_slots': ['jl_pled_con0'], 'reason': 'x'})
+
+
+class FingerprintAck(unittest.TestCase):
+    """跨代码续跑的指纹承认:ack 必须引用快照自记指纹(证明看过来源),
+    结构闸(manifest)与恢复侧守卫不因 ack 放松。"""
+
+    def test_ack_must_quote_the_snapshot_provenance(self):
+        world = BR28Model(**M4ProjectionFamilies.M4_SWITCHES)
+        snapshot = capture_world(hardware=world, context={'scenario': 'm4'})
+        data = snapshot.encode()
+        recorded = snapshot.header['code_fingerprint']
+        wrong_current = 'f' * 64
+        # 无 ack:维持既有拒绝语义(换一个「当前指纹」模拟代码态漂移)。
+        with self.assertRaisesRegex(SnapshotError, 'code fingerprint mismatch'):
+            WorldSnapshot.from_bytes(data, expected_fingerprint=wrong_current)
+        # 引用错值/缺 reason:拒。
+        with self.assertRaisesRegex(SnapshotError, 'code fingerprint mismatch'):
+            WorldSnapshot.from_bytes(data, expected_fingerprint=wrong_current,
+                                     fingerprint_ack={'prior_fingerprint': wrong_current,
+                                                      'reason': 'quoted the wrong value'})
+        with self.assertRaisesRegex(SnapshotError, 'code fingerprint mismatch'):
+            WorldSnapshot.from_bytes(data, expected_fingerprint=wrong_current,
+                                     fingerprint_ack={'prior_fingerprint': recorded})
+        # 正确引用:过闸,ack 记录 was/now。
+        loaded = WorldSnapshot.from_bytes(
+            data, expected_fingerprint=wrong_current,
+            fingerprint_ack={'prior_fingerprint': recorded,
+                             'reason': 'delta only adds an opt-in switch'})
+        self.assertEqual(loaded.fingerprint_acknowledged,
+                         {'was': recorded, 'now': wrong_current,
+                          'reason': 'delta only adds an opt-in switch'})
+        # manifest 闸与 ack 无关(encode 会按 body 重导 manifest,篡改 body 后
+        # 编码仍是自洽文件——manifest 独立拒载语义由 DriftGates 钉死,此处
+        # 只钉「ack 不触碰结构闸」:acknowledged 加载后 manifest 校验照常跑)。
+
+
+class DirtyStopLegacyResume(unittest.TestCase):
+    """脏停点(step-Blocked 自然停点)快照的 budget>0 恢复保持既有语义照跑
+    (parity 验证轮 --resume-from 的契约:首次重试即重现同一停点;世界停在
+    迭代中途——select 已消耗/trace 半行已追加/check_fetch 已计数,重试会
+    重复这些簿记,所以逐字节等价的臂位只能用干净 budget 边界快照,那道
+    契约由 frontier_iteration 的 runner 侧守卫钉死)。本类钉两件事:
+    attempts 计数口径,与脏恢复的 legacy 行为不因本路改动而变。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from probe_pi32v2 import upstream
+        from probe_boot import application
+        from probe_boot_handoff import profile, package_header, SENTINEL_A
+        from probe_pi32v2 import ROOT
+        firmware = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.module = upstream()
+        cls.app = application(firmware)
+        cls.handoff = profile(package_header(firmware), SENTINEL_A)
+        cls.temp = tempfile.TemporaryDirectory(prefix='h3s-ckpt-dirty-')
+        cls.addClassCleanup(cls.temp.cleanup)
+
+    def run_world(self, budget, **snapshot):
+        from probe_boot import explore
+        from probe_boot_handoff import HANDOFF
+        config = {key: value for key, value in snapshot.items()
+                  if key in ('capture', 'restore', 'expected_context', 'resume_ack')}
+        return explore(self.module, self.app, name='typed_memory_replay',
+                       adapt_stack=True, pll=1, r0=HANDOFF,
+                       handoff=self.handoff, startup_loops=True, budget=budget,
+                       snapshot=config or None)
+
+    def test_dirty_capture_reports_attempts_and_legacy_resume_reblocks(self):
+        snap = Path(self.temp.name) / 'dirty.bin'
+        # 自然停点捕获(真实 Blocked:未验证零计数 rep)=脏停点快照。
+        captured = self.run_world(budget=100_000, capture=snap)
+        self.assertNotEqual(captured['stop']['kind'], 'instruction_budget')
+        self.assertIn('loop_attempts', captured['snapshot_capture'])
+        attempts = captured['snapshot_capture']['loop_attempts']
+        self.assertLess(attempts, 100_000)
+        self.assertGreaterEqual(attempts, captured['completed_steps'])
+        # budget=0 自反检查(报告重现捕获轮)。
+        zero = self.run_world(budget=0, restore=snap)
+        left = {k: v for k, v in captured.items() if k != 'snapshot_capture'}
+        right = {k: v for k, v in zero.items() if k != 'snapshot_restore'}
+        self.assertEqual(json.dumps(left), json.dumps(right))
+        # budget>0 恢复照跑(legacy 契约):首次重试即重现同一停点、步数不动。
+        resumed = self.run_world(budget=10, restore=snap)
+        self.assertEqual(resumed['stop'], captured['stop'])
+        self.assertEqual(resumed['completed_steps'], captured['completed_steps'])
+        self.assertEqual(resumed['snapshot_restore']['post_restore_attempts'], 1)
+
+    def test_clean_budget_capture_reports_attempts_equal_to_budget(self):
+        snap = Path(self.temp.name) / 'clean.bin'
+        captured = self.run_world(budget=3000, capture=snap)
+        self.assertEqual(captured['stop'], {'kind': 'instruction_budget'})
+        self.assertEqual(captured['snapshot_capture']['loop_attempts'], 3000)
+
+
+# ---------------------------------------------------------------------------
 # Artifact tier (design §3.2): manual, ROM-gated. The conditional-frontier
 # flag stack (frontier_registry scenario_flags('p11_heap_experimental'))
 # rebuilt through the full irq_case construction chain; capture at a budget
@@ -1434,6 +1647,53 @@ class ArtifactTierFrontierWorld(unittest.TestCase):
                 self.assertTrue(equal, f'advance tier X=+{steps} diverged from the '
                                 'full replay (no diff whitelist)')
         self.write_summary(rows)
+
+    def test_cross_switch_resume_matches_full_replay(self):
+        """路 CKPT(前沿迭代循环)实尺度等价:OFF 世界(CON0 fixture 关)
+        budget 停点捕获 → ON 世界从快照 resume(resume_ack enable_slots)vs
+        ON 从 0 跑到同预算——前缀未触该容器,两世界逐字节同;跨开关恢复的
+        机械正确性(真旗舰形状的 None→on,免 41M 步全量)。"""
+        from probe_irq_entry import irq_case
+        snap = self.work / f'frontier-crossswitch-n{ARTIFACT_CAPTURE_N}.bin'
+        off_flags = {**self.flags, 'jl_pled_con0_initial_fixture': None}
+        captured = irq_case(self.module, self.app, self.header, self.rom,
+                            'p11_heap_experimental_config', **off_flags,
+                            flash_image_bytes=self.image,
+                            snapshot={'budget': ARTIFACT_CAPTURE_N, 'capture': str(snap)})
+        self.assertEqual(captured['stop'], {'kind': 'instruction_budget'})
+        advance = 2000
+        full = irq_case(self.module, self.app, self.header, self.rom,
+                        'p11_heap_experimental_config', **self.flags,
+                        flash_image_bytes=self.image,
+                        snapshot={'budget': ARTIFACT_CAPTURE_N + advance})
+        resumed = irq_case(self.module, self.app, self.header, self.rom,
+                           'p11_heap_experimental_config', **self.flags,
+                           flash_image_bytes=self.image,
+                           snapshot={'restore': str(snap), 'budget': advance,
+                                     'expected_context': {
+                                         'scenario': 'p11_heap_experimental_config',
+                                         'completed_steps': captured['completed_steps']},
+                                     'resume_ack': {
+                                         'enable_slots': ['jl_pled_con0'],
+                                         'reason': 'CON0 first access is at 41,847,806, '
+                                                   'beyond this capture boundary'}})
+        comparison = dict(resumed)
+        comparison.pop('snapshot_restore')
+        equal = json.dumps(comparison) == json.dumps(full)
+        rows = [row for row in self.summary_rows()
+                if row.get('snapshot') != snap.name]
+        rows.append({'scenario': 'p11_heap_experimental_config',
+                     'capture_kind': 'instruction_budget',
+                     'capture_steps': captured['completed_steps'],
+                     'cross_switch_enable_slots': ['jl_pled_con0'],
+                     'advance_steps': advance, 'snapshot': snap.name,
+                     'full_steps': full['completed_steps'],
+                     'resumed_steps': resumed['completed_steps'],
+                     'report_byte_equal': equal,
+                     'stop_kind': full['stop']['kind']})
+        self.write_summary(rows)
+        self.assertTrue(equal, 'cross-switch resumed report differs from the full '
+                        'replay (no diff whitelist)')
 
     def test_canonical_frontier_capture_and_self_check(self):
         if not ARTIFACT_CANONICAL:

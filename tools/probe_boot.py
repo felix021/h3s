@@ -165,13 +165,28 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     # docs/snapshot-design.md §2.5):dict 形状
     #   {'capture': path}           停点后(在 post_stop 之前,世界未被直调段
     #                                改动)把五元组+循环账本全量捕获落盘,摘要
-    #                                (digest/指纹/步数/停点)进报告 snapshot_capture 键;
+    #                                (digest/指纹/步数/停点/循环尝试数)进报告
+    #                                snapshot_capture 键;
     #   {'restore': path,           完整走构造链重建世界(M8)后、进主循环前,
     #    'expected_context': {...}}  用快照覆盖五元组+账本再继续跑 budget 步。
     #                                expected_context 对照捕获时 header.capture_context;
+    #   {'resume_ack': {...}}       路 CKPT(前沿迭代循环):跨开关/跨代码恢复
+    #                                的显式承认(enable_slots/refixture_slots/
+    #                                prior_fingerprint/reason,形状与红线见
+    #                                world_snapshot.normalize_resume_ack)。ack
+    #                                只放宽「开关/指纹相等」判定;结构闸、
+    #                                既有槽位静态守卫、manifest 闸全部照旧,
+    #                                恢复摘要记录 ack 实际启用面(条件通过,
+    #                                合并前全量重放收口)。step-Blocked 停点
+    #                                (脏停点)快照的 budget>0 恢复保持 legacy
+    #                                语义照跑(parity 验证轮契约);逐字节等
+    #                                价的臂位用 frontier_iteration 的 cut 取
+    #                                干净 budget 边界快照(runner 侧守卫)。
     #   {'budget': N}               只在 irq_case 层消费:覆盖 flag 推导的预算,
     #                                「可配置步数停点」=instruction_budget 快照点。
-    # 预算停点是干净边界(B-1:恢复不补调 advance,从循环头重新 decode)。
+    # 预算停点是干净边界(B-1:恢复不补调 advance,从循环头重新 decode);
+    # 循环尝试数(attempts,含不完成指令的停泊/交付迭代)进快照摘要——
+    # 「在失败迭代之前切快照」按 attempts-1 对齐,不是按 completed_steps。
     if rom is not None:
         check_rom(rom)
     # O3-A3b(docs/o3-memory-design.md §4.1):RAM 读结果 memo。挂 explore
@@ -2070,6 +2085,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         for pc in diagnostics.get('predecode_pcs',()):c.decode(pc)
     trace=[]
     completed=0
+    # 路 CKPT:循环尝试计数(含 CoreStall/交付分发等不完成指令的迭代)——
+    # 与 completed_steps 分立;预算停点 attempts==budget,自然停点 attempts<
+    # budget。「在失败迭代之前取干净快照」(frontier_iteration cut)用它对齐:
+    # 从同界快照重放 attempts-1 次循环即落在失败迭代的循环边界上。
+    attempts=0
     stop=None
     if machine is not None:
         cpu0=c
@@ -2084,8 +2104,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # 账本覆盖回去(world_snapshot 恢复侧静态守卫+双闸先校验)。CPU1 若
         # 快照世界已发射而重建世界尚未,走与原始 launch 相同的 factory 路径
         # 构造(M8 重建,其 launch 计数/事件副作用随后被 M5 恢复覆盖)。
+        # resume_ack(路 CKPT,前沿迭代循环):指纹差/开关差的显式承认,形状
+        # 与语义见 world_snapshot.normalize_resume_ack;ack 只改两道闸的
+        # 「相等」判定,恢复摘要如实记录 was/now 与启用槽位(结果条件通过,
+        # 合并前全量重放收口)。
         from world_snapshot import WorldSnapshot,restore_world
-        loaded=WorldSnapshot.load(snapshot['restore'])
+        resume_ack=snapshot.get('resume_ack')
+        loaded=WorldSnapshot.load(snapshot['restore'],
+                                  fingerprint_ack=resume_ack if isinstance(resume_ack,dict) else None)
         ledger_namespace=SimpleNamespace(events=events,adapters=adapters,rom_steps=rom_steps,
                                          event_counts=event_counts,milestones=milestones,
                                          trace=trace,completed=completed,stop=stop)
@@ -2100,7 +2126,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
               ((machine.cores.items() if machine is not None else [(0,c)]))}
         applied=restore_world(loaded,cpus=cpus,mem=c.mem,hardware=hardware,machine=machine,
                               ledger=ledger_namespace,
-                              expected_context=snapshot.get('expected_context'))
+                              expected_context=snapshot.get('expected_context'),
+                              resume_ack=resume_ack)
         ram_read_memo.clear()  # O3-A3b 失效:restore(apply_ram_section)直写三 dict;
         # 显式清空不依赖「restore 前 memo 必空」的时序论证(当前构造链确实
         # 不在主循环前调 read,但契约自足)。
@@ -2113,9 +2140,20 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # budget>0 的续跑从循环头重新开始:预算停点的 stop 记录不是世界状态
         # (B-1 非幂等 advance 论证),清掉再跑;budget=0 的自反检查 #0 保留
         # 原 stop,报告应逐字节重现捕获时报告。
+        # 路 CKPT 注:step-Blocked 停点(脏停点)的世界停在迭代中途——select()
+        # 已消耗、trace 已追加失败指令半行、check_fetch 已计数。budget>0 恢复
+        # 在此语义下照跑(parity 验证轮 --resume-from 的既有契约:首次重试即
+        # 重现同一停点,臂间对比自洽;park 世界单核可运行,选核翻转不可见);
+        # 但**逐字节等价断言**(前沿迭代循环的臂位)只能建立在干净循环边界
+        # (budget 停点)上——frontier_iteration 的 cut 在失败迭代之前取快照。
         stop=None if budget>0 else ledger_namespace.stop
         snapshot_restore_summary={'path':str(snapshot['restore']),'digest':applied.digest,
             'modules':applied.modules,'completed_steps':completed,'resume_budget':budget}
+        if loaded.fingerprint_acknowledged is not None:
+            snapshot_restore_summary['fingerprint_acknowledged']=loaded.fingerprint_acknowledged
+        if applied.resume_ack:
+            snapshot_restore_summary['resume_ack_applied']=applied.resume_ack
+            snapshot_restore_summary['resume_ack_reason']=resume_ack.get('reason')
 
     def dispatch_delivery(request,row):
         # 路 BQ/G2:主路径与停泊步(CoreStall)嵌套 advance 共用同一条交付分发。
@@ -2213,6 +2251,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             row.clear();row.update(rebuilt)
 
     for _ in range(budget):
+        attempts+=1
         if machine is not None:c=machine.select()
         if hardware is not None and diagnostics and c.pc==diagnostics.get('stop_before_pc'):
             stop={'kind':'diagnostic_milestone_reached','address':hex(c.pc)}
@@ -2274,6 +2313,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             break
     if stop is None:
         stop={'kind':'instruction_budget'}
+    if snapshot_restore_summary is not None:
+        # 路 CKPT:恢复轮的尝试计数在循环后回填(探索轮读它取 K=cut 预算)。
+        snapshot_restore_summary['post_restore_attempts']=attempts
     snapshot_capture_summary=None
     if snapshot is not None and snapshot.get('capture') is not None:
         # 捕获点(docs/snapshot-design.md §2.1/§2.5):停点处的干净边界——
@@ -2298,6 +2340,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         snapshot_capture_summary={'path':str(snapshot['capture']),
             'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data),
             'completed_steps':completed,'stop':stop,
+            'loop_attempts':attempts,
             'captured_modules':captured_snapshot.captured_modules,
             'code_fingerprint':captured_snapshot.header['code_fingerprint']}
     post_stop_observations=None
