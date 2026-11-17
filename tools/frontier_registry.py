@@ -167,6 +167,18 @@ FEATURES = (
             'JL_OMAP 引脚输出复用 49 字白名单 write-only 记录'),
     Feature('jl_imap_writes', 'conditional', ('jl_omap_writes',), False, None,
             'JL_IMAP 外设输入复用 63 字白名单 write-only 记录'),
+    # ---- 路 UARTTX(sim-uarttx):UART TX 启动写白名单。CALLIMPL 的 TX relay
+    # 墙(0x603425a 写 TXADR 0xfd2014=会话缓冲,白名单外诚实停)按真实语义
+    # 放行:TXADR(+0x14)/TXCNT(+0x18)三基址对称六字 write-only 记录(唯二
+    # 静态站点=0x603413c DMA 启动对;零静态读者)。完成语义已钉:轮询档
+    # (b[obj+80]==0,park 实测)同步路径 TXCNT 写后读 RAM 标志即返回,零等待
+    # ——不发明完成投影/IRQ12 交付;中断域消费面(handler 0x60354e0 TX-done
+    # 支 CON0 bit15+bit2)不建模。依赖=执行序前置(CON0 bit0 读走路 F、
+    # CON1|=0x10 RMW 走路 M+AA)。----
+    Feature('jl_uart_tx_start_writes', 'conditional', ('jl_uart_con', 'jl_uart_con1_readback'),
+            False, None,
+            'UART TX 启动写(TXADR/TXCNT)六字白名单 write-only 记录(完成不建模;'
+            'CALLIMPL TX 墙 0x603425a 放行)'),
     Feature('wl_aud_con_writes', 'conditional', ('jl_uart_con1_readback',), False, None,
             'JL_WL_AUD CON0(0xfe2200)整字写记录+读回=最后写值(音频 init 域一)'),
     Feature('audio_dac_init_writes', 'conditional', ('wl_aud_con_writes',), False, None,

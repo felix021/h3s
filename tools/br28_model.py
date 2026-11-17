@@ -2201,7 +2201,11 @@ class JLUartInitWriteRecords:
     - TXADR(+0x14)/TXCNT(+0x18)/BUF(+0xc)不进白名单:发送路径字段不在
       初始化序列;TXCNT 写=启动 TX 硬件活动的信号(JieLi 官方示例「写
       TXADR/TXCNT 后等 CON0 完成位」),出现即诚实停。HRXCNT(+0x28,__RO)
-      保持严格。
+      保持严格。**路 UARTTX 例外(opt-in jl_uart_tx_start_write_records,需
+      jl_uart_con+con1_readback 前置)**:TXADR/TXCNT 两字升级为独立容器的
+      write-only 记录(见 JLUartTxStartWriteRecords)——完成语义已按固件
+      真实形状钉死(TX 启动后轮询档同步路径零等待),仍不建模任何硬件活动;
+      BUF/HRXCNT 与本容器其余边界不变。
     """
     CON1_ADDRESSES=tuple(base+0x4 for base in JL_UART_CON_WORDS)
 
@@ -2295,6 +2299,105 @@ class JLUartInitWriteRecords:
                     'strict jl_uart_init_word_readback_not_modeled stop (no readback '
                     'consumer observed, so no read value is invented for them)')}
         return result
+
+
+class JLUartTxStartWriteRecords:
+    """JL_UART TX 启动写(TXADR/TXCNT)的 write-only 整字记录(opt-in,路 UARTTX/sim-uarttx)。
+
+    证据(2026-11-17 路 UARTTX 反汇编+park 世界直调探针钉死):
+    - **地址与布局**:TXADR=UART 基址+0x14、TXCNT=+0x18(编译对象 uart_v1.c.o 的
+      {i32 x12} 布局成员 5/6,路 M 钉死同源),三基址对称:
+      0xfd2014/0xfd2018、0xfd2114/0xfd2118、0xfd2214/0xfd2218。全 app+ROM 镜像
+      LE32 字面量扫描六地址全部零命中——访问全部经基址寄存器相对寻径,唯二
+      静态站点=发送函数 0x603413c 的 DMA 启动对 0x603425a `[r7+20]=r5`(TXADR
+      =会话缓冲)/0x603425c `[r7+24]=r4`(TXCNT=帧长),均为 st.w 族全字写、
+      旧值无关、值=真实指令结果;**零静态读者**(读回/RMW 无观测形状)。
+    - **启动序列全形状(park 世界探针实测+反汇编互证)**:通话态 TX relay
+      0x601b85c({144,83},2)→发送门(b[QCY+2619]==0 且 h[QCY+2616]≠0)→表[+16](1)
+      开链 0x60343e8(已初始化即 no-op)→会话 vtable[+8]=0x6060254 帧构建器
+      ({0x55,0xAA,len,payload...,checksum} 包络,payload 2→总长 6)→DMA 发送
+      0x603413c:入口 CON0 bit0 读(uart_is_idle 0x601d198,路 F 投影服务,
+      park 值 0x346f bit0=1=busy→走等待支)→b[obj+80]==0(轮询档,实测)→
+      等待环立即经 0x12cb08 返 0 出口退出(0x6034200)→队列 pend 0x6064d9e
+      (obj+116,timeout 0)→cache flush 0x12e19a 返非零→**CON1|=0x10
+      (0x60340f6,RMW 经路 AA 读回投影)→0x603411c tick 记录→CON0|=0x2000
+      (0x603424a,路 F registers 路径)→TXADR(0x603425a)→TXCNT(0x603425c)**
+      →b[obj+80]==0 →函数直接返回 0(0x6034266→0x6034172 epilogue)→
+      0x601b85c 清 b[QCY+2619]+关链(0x60343e8(0),同样 no-op)→返 0。
+    - **完成语义钉死(本场景零等待)**:同步发送路径在轮询档(b[obj+80]==0)
+      启动后**不等待任何完成位**——TXCNT 写后的唯一分支读 b[obj+80](RAM)
+      即返回。完成的真实消费面在中断域:UART IRQ12/13/14 handler 0x60354e0
+      的 TX-done 支(CON0 bit15+bit2→kick CON0|=0x2000+obj->40=1+TX IRQ 使能
+      +队列 post 0x6064b90+IRQ 位清)与轮询等待环 0x60341a6 的 CON0 bit0
+      (uart_is_idle)。**本容器一概不建模**:不发明 CON0 bit0/bit15 硬件跳变
+      (CON0 保持路 F「读回=最后软件写值」语义,bit0 停留软件终值)、不交付
+      IRQ12、不模拟 TX DMA 数据流——只记录「TX 启动信号写已执行」。
+    - **读回/RMW 严格停**:六字零静态读者,读回显式 kind
+      jl_uart_tx_word_readback_not_modeled(优先泛 unmapped,便于诊断);
+      RMW 经读侧同样严格停。
+    - **依赖(执行序)**:TXADR/TXCNT 只在 CON0 bit0 读(路 F jl_uart_con
+      投影)与 CON1|=0x10 RMW(路 M 白名单+路 AA con1_readback)放行后到达,
+      开关依赖边挂两前置(声明方式同 jl_omap_writes→jl_uart_init_writes 先例)。
+    - 默认关:六字保持 unmapped(TX relay 在 0x603425a 诚实停的 CALLIMPL
+      前沿形状),legacy 报告逐字节不变。
+    """
+
+    TX_START_WORDS=tuple(base+off for base in JL_UART_CON_WORDS for off in (0x14,0x18))
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.TX_START_WORDS}
+        self.word_writes=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled JL_UART TX start word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        raise Blocked('jl_uart_tx_word_readback_not_modeled',address=hex(address))
+
+    def report(self):
+        return {'addresses':[hex(a) for a in self.TX_START_WORDS],
+                'word_writes':self.word_writes,
+                'stores':{hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                                  'writes':e['writes']}
+                          for a,e in sorted(self.stores.items()) if e['writes']},
+                'layout':('TXADR +0x14 / TXCNT +0x18 per UART base 0xfd2000/0xfd2100/0xfd2200 '
+                          '(compiled uart_v1.c.o {i32 x12} members 5/6, route-M layout); the '
+                          'only static sites are the DMA-start pair 0x603425a [r7+20]=r5 / '
+                          '0x603425c [r7+24]=r4 in the send function 0x603413c — full-word '
+                          'st.w stores, values are real executed instruction results'),
+                'write_only':True,
+                'readback_not_modeled':True,
+                'txcnt_semantics':('the TXCNT write is the TX hardware START signal (JieLi '
+                                   'SDK sequence: write TXADR/TXCNT -> hardware latches and '
+                                   'begins the DMA; completion shows up as CON0 bit0 clearing '
+                                   'and/or the UART TX IRQ) — recording the stores does NOT '
+                                   'start any modeled hardware activity'),
+                'completion_not_modeled':('the synchronous send path in the polling mode '
+                    '(b[obj+80]==0, the park-world-observed mode) returns right after the '
+                    'TXCNT write (0x6034266 reads the RAM flag b[obj+80] and takes the '
+                    'epilogue at 0x6034172 — it never polls a completion bit after start; '
+                    'the pre-start wait loop 0x60341a6 polls CON0 bit0 via uart_is_idle but '
+                    'exits immediately in this world through the 0x12cb08-returns-0 exit at '
+                    '0x6034200). Real completion consumers are interrupt-domain: the UART '
+                    'IRQ12/13/14 handler 0x60354e0 TX-done arm (CON0 bit15+bit2 -> kick '
+                    'CON0|=0x2000, obj->40=1, TX IRQ enable, queue post 0x6064b90) and the '
+                    'wait loop above. NONE of that is modeled: no CON0 bit0/bit15 hardware '
+                    'transition (CON0 keeps the route-F last-software-value semantics), no '
+                    'IRQ12/13/14 delivery, no TX DMA data flow — this records "TX start '
+                    'signal stores executed" only, NOT verified UART transmission'),
+                'assumption':('write-only word records of the TX start signal stores '
+                              '(derived-not-measured); stored values are real executed '
+                              'instruction results, never invented; zero static readers in '
+                              'app.bin and ROM (LE32 literal scan) so no read value is '
+                              'invented; requires the route-F CON0 projection and the '
+                              'route-AA CON1 readback prefixes to even be reached in '
+                              'execution order')}
 
 
 class JLOmapWriteRecords:
@@ -6131,6 +6234,7 @@ class BR28Model:
                  jl_uart_con_projection=False,
                  jl_uart_init_write_records=False,
                  jl_uart_con1_readback=False,
+                 jl_uart_tx_start_write_records=False,
                  jl_omap_write_records=False,
                  jl_imap_write_records=False,
                  jl_wl_aud_write_records=False,
@@ -6545,7 +6649,9 @@ class BR28Model:
         # uart_dma_init 序列实际出现的纯配置整字写(st.w 族全字覆盖、旧值无关、
         # 值全为真实指令结果);读回/RMW 一律严格停;TXADR/TXCNT/BUF/HRXCNT 不
         # 进白名单(TX 路径=「写已启动硬件活动」信号,codex 风险点,出现即诚实
-        # 停);运行效果(波特率/RX/TX DMA/UART IRQ)不建模——只记录「初始化
+        # 停——TXADR/TXCNT 后由路 UARTTX 独立 opt-in 容器放行写侧记录,见
+        # self.jl_uart_tx_start_records 赋值处;BUF/HRXCNT 保持严格);运行效果
+        # (波特率/RX/TX DMA/UART IRQ)不建模——只记录「初始化
         # 配置写已执行」,不扩展为「UART 收发已验证」。默认关:这些字保持
         # unmapped(3,071,984 @ 0x603446a 前沿形状),legacy 报告逐字节不变。
         # jl_uart_con1_readback(opt-in,路 AA/sim-con1rb,需 jl_uart_init_write_
@@ -6564,6 +6670,22 @@ class BR28Model:
             raise ValueError('the JL_UART CON1 readback projection requires the init write records')
         self.jl_uart_init_records=(JLUartInitWriteRecords(con1_readback=jl_uart_con1_readback)
                                    if jl_uart_init_write_records else None)
+        # jl_uart_tx_start_write_records(opt-in,路 UARTTX/sim-uarttx):JL_UART TX 启动写
+        # (TXADR+0x14/TXCNT+0x18,三基址对称)的 write-only 整字记录。证据与完成
+        # 语义(本场景零等待:TXCNT 写后读 RAM 标志 b[obj+80] 即返回;完成消费
+        # 面=IRQ12/13/14 handler 0x60354e0 TX-done 支+等待环 CON0 bit0,均不
+        # 建模)全文见 JLUartTxStartWriteRecords 文档串。依赖(执行序):TXADR/
+        # TXCNT 只在 CON0 bit0 读(路 F jl_uart_con_projection)与 CON1|=0x10
+        # RMW(路 M+路 AA con1_readback)放行后到达——缺任一前置即拒。默认关:
+        # 六字保持 unmapped(TX relay 0x603425a 诚实停的 CALLIMPL 前沿形状),
+        # legacy 报告逐字节不变。
+        if jl_uart_tx_start_write_records and not (jl_uart_con_projection
+                                                   and jl_uart_con1_readback):
+            raise ValueError('the JL_UART TX start write records require the route-F CON0 '
+                             'projection and the route-AA CON1 readback (the TX-start '
+                             'sequence reads CON0 bit0 and RMWs CON1 before TXADR/TXCNT)')
+        self.jl_uart_tx_start_records=(JLUartTxStartWriteRecords()
+                                       if jl_uart_tx_start_write_records else None)
         # 路 AK(sim-audioinit):0x602ea68 boot 期音频框架 init 的两个已审查写域
         # (函数全图/写集枚举见 docs/wlaud-init-map.md,路 AG 预研;写集默认关、
         # 关着时 4 地址保持 unmapped,3,079,241 @ 0x602ea72 前沿形状与 legacy
@@ -6912,6 +7034,7 @@ class BR28Model:
             (self.mem_pwr_con is not None and self.mem_pwr_con.handles(address)) or
             (self.p33_port_sel is not None and self.p33_port_sel.handles(address)) or
             (self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address)) or
+            (self.jl_uart_tx_start_records is not None and self.jl_uart_tx_start_records.handles(address)) or
             (self.jl_omap_records is not None and self.jl_omap_records.handles(address)) or
             (self.jl_imap_records is not None and self.jl_imap_records.handles(address)) or
             (self.jl_wl_aud_records is not None and self.jl_wl_aud_records.handles(address)) or
@@ -7154,6 +7277,11 @@ class BR28Model:
         if self.jl_uart_init_records is not None and self.jl_uart_init_records.handles(address):
             self.counts['reads']+=1
             return self.jl_uart_init_records.read(address)
+        # JL_UART TX 启动写(路 UARTTX):TXADR/TXCNT write-only 记录,读回一律
+        # 严格停(全 app+ROM 零静态读者;显式 kind 优先泛 unmapped,便于诊断)。
+        if self.jl_uart_tx_start_records is not None and self.jl_uart_tx_start_records.handles(address):
+            self.counts['reads']+=1
+            return self.jl_uart_tx_start_records.read(address)
         # JL_OMAP 逐引脚输出功能选择字(路 R):整字写 write-only 记录,读回
         # 一律严格停(本 boot 前缀零读回观测;SDK disable 路径的 load+store
         # 不在本前缀,出现即在读侧显形)。
@@ -7447,6 +7575,12 @@ class BR28Model:
             # JL_UART 初始化配置字(路 M):st.w 族全字覆盖写(旧值无关),
             # write-only 记录;值=真实指令结果,运行效果不建模。
             self.jl_uart_init_records.write(address,value)
+        elif self.jl_uart_tx_start_records is not None and self.jl_uart_tx_start_records.handles(address):
+            # JL_UART TX 启动写(路 UARTTX):TXADR/TXCNT 的 st.w 全字覆盖写
+            # (0x603425a/0x603425c DMA 启动对),write-only 记录;TXCNT 写=TX
+            # 硬件启动信号——只记录「启动写已执行」,不启动任何被建模的硬件
+            # 活动(无 CON0 位跳变/无 IRQ12 交付/无 TX DMA 数据流)。
+            self.jl_uart_tx_start_records.write(address,value)
         elif self.jl_omap_records is not None and self.jl_omap_records.handles(address):
             # JL_OMAP 逐引脚输出功能选择字(路 R):st.w 族全字覆盖写(旧值
             # 无关),write-only 记录;值=真实指令结果(FO_* 常量由真实指令
@@ -8120,6 +8254,7 @@ class BR28Model:
         if self.p33_window is not None:result['p33_window_projection']=self.p33_window.report()
         if self.p33_port_sel is not None:result['p33_port_sel_projection']=self.p33_port_sel.report()
         if self.jl_uart_init_records is not None:result['jl_uart_init_write_records']=self.jl_uart_init_records.report()
+        if self.jl_uart_tx_start_records is not None:result['jl_uart_tx_start_write_records']=self.jl_uart_tx_start_records.report()
         if self.jl_omap_records is not None:result['jl_omap_write_records']=self.jl_omap_records.report()
         if self.jl_imap_records is not None:result['jl_imap_write_records']=self.jl_imap_records.report()
         if self.jl_wl_aud_records is not None:
@@ -8661,8 +8796,10 @@ class BR28Model:
                 'BAUD divider write goes to 0xfd2008. All released writes are full-word '
                 'st.w-family stores whose values are real executed instruction results '
                 '(derived-not-measured); readback and RMW of these words stay strictly blocked; '
-                'TXADR/TXCNT/BUF/HRXCNT are NOT whitelisted (a TXCNT write or CON0 status poll '
-                'would be a started-hardware-activity signal and stops honestly); no baud-rate '
+                'TXADR/TXCNT/BUF/HRXCNT are NOT whitelisted here (a TXCNT write or CON0 status poll '
+                'would be a started-hardware-activity signal and stops honestly — TXADR/TXCNT '
+                ' gained their own opt-in route-UARTTX write-record container layered on this '
+                'prefix; BUF/HRXCNT stay strictly blocked); no baud-rate '
                 'runtime effect, RX/TX DMA data flow or UART IRQ is modeled — this records '
                 '"initialization config writes executed" only, NOT verified UART '
                 'transmission/reception')
@@ -8691,6 +8828,33 @@ class BR28Model:
                     'route-F projection; never-written CON1 words (UART1/2) still stop '
                     'honestly; no UART IRQ, RX/TX DMA data flow or baud-rate runtime effect '
                     'is modeled — NOT verified UART transmission/reception')
+        if self.jl_uart_tx_start_records is not None:
+            # 路 UARTTX(sim-uarttx):TX 启动写白名单。「完成语义=本场景零等待」
+            # 与不建模边界写进 assumptions(全文见容器文档串)。
+            result['assumptions']['jl_uart_tx_start_write_records']=(
+                'JL_UART TX start words (TXADR +0x14 / TXCNT +0x18 per UART base '
+                '0xfd2000/0xfd2100/0xfd2200) released as write-only whole-word records '
+                '(route-M jl_uart_init_write_records precedent). The only static sites are '
+                'the DMA-start pair in the send function 0x603413c: 0x603425a [r7+20]=r5 '
+                '(TXADR = session buffer) and 0x603425c [r7+24]=r4 (TXCNT = framed length); '
+                'the LE32 literal scan of app.bin and ROM finds ZERO readers, so readback '
+                'and RMW stay strictly blocked (explicit jl_uart_tx_word_readback_not_modeled '
+                'kind). COMPLETION SEMANTICS PINNED (route-UARTTX probe): in the '
+                'park-world-observed polling mode (b[obj+80]==0) the synchronous send path '
+                'returns right after the TXCNT write (0x6034266 reads the RAM flag '
+                'b[obj+80] and takes the epilogue — it never polls a completion bit after '
+                'the start; the pre-start wait loop 0x60341a6 polls CON0 bit0 via '
+                'uart_is_idle 0x601d198 but exits immediately through the '
+                '0x12cb08-returns-0 exit at 0x6034200), so NO completion projection is '
+                'invented and none is needed for the send to return; the real completion '
+                'consumers are interrupt-domain (UART IRQ12/13/14 handler 0x60354e0 TX-done '
+                'arm keyed on CON0 bit15+bit2, and the CON0-bit0 wait loop) and are '
+                'deliberately NOT modeled: no CON0 bit0/bit15 hardware transition (CON0 '
+                'keeps the route-F last-software-value semantics), no IRQ12/13/14 '
+                'delivery, no TX DMA data flow. Recording the TXCNT store does NOT start '
+                'any modeled hardware activity — this records "TX start signal stores '
+                'executed" only (derived-not-measured, like every route-M write-record '
+                'precedent), NOT verified UART transmission/reception')
         if self.jl_omap_records is not None:
             # 路 R(sim-gpioface):JL_OMAP 逐引脚输出功能选择字白名单。识别链
             # 见 JLOmapWriteRecords 文档串;此处把「写记录 derived-not-measured、

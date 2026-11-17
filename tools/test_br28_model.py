@@ -9,6 +9,7 @@ from br28_model import GPCNT_CON, GPCNT_NUM, CORE_TICK_BASES, CPU1_CONTROL, SYS_
 from br28_model import DCCK_CON0, DCCK_CON1, DCCK_CON2, JL_CLOCK_DCCK
 from br28_model import JL_UART_CON_WORDS, JL_UART_INIT_WORDS, JL_UART_INIT_WORD_OFFSETS
 from br28_model import JLUartInitWriteRecords
+from br28_model import JLUartTxStartWriteRecords
 from br28_model import JL_OMAP_OUT_WORDS, JL_OMAP_USB_WORDS
 from br28_model import JL_IMAP_IN_WORDS
 from br28_model import JL_WL_AUD_CON0, JL_AUDIO_DAC_CON, JL_AUDIO_AUD_CON, JL_AUDIO_ADC_CON, JL_ASS_CLK_CON, JL_AUDIO_DAC_INIT_WORDS, JL_ADDA_DAA_CON1, JL_AUDIO_DAC_VL0, JLAudioDacVl0Registers
@@ -1282,6 +1283,61 @@ class ModelTests(unittest.TestCase):
         self.assertIn('derived-not-measured',assumption)
         self.assertIn('NOT verified UART transmission/reception',assumption)
         self.assertIn('ONLY CON1',assumption)
+
+    def test_jl_uart_tx_start_write_records_whitelist_and_strict_readback(self):
+        # 路 UARTTX(sim-uarttx):UART TX 启动写(TXADR+0x14/TXCNT+0x18,三
+        # 基址对称)的 write-only 整字记录白名单。唯二静态站点=发送函数
+        # 0x603413c 的 DMA 启动对 0x603425a [r7+20]=r5 / 0x603425c [r7+24]=r4
+        # (值=会话缓冲/帧构建器 0x6060254 包络总长 payload+4);全 app+ROM
+        # LE32 字面量扫描六地址零命中=零静态读者——读回/RMW 显式严格停。
+        # 完成语义(park 探针钉死):轮询档(b[obj+80]==0)同步路径 TXCNT 写
+        # 后读 RAM 标志即返回(0x6034266→0x6034172),零等待——不发明完成
+        # 投影/IRQ12 交付;CON0 保持路 F 最后软件写值(bit0 不模拟硬件清零)。
+        # 依赖(执行序):TXADR/TXCNT 只在 CON0 bit0 读(路 F)与 CON1|=0x10
+        # RMW(路 M+路 AA)放行后到达——缺任一前置即拒。
+        self.assertEqual(JLUartTxStartWriteRecords.TX_START_WORDS,
+                         (0xfd2014,0xfd2018,0xfd2114,0xfd2118,0xfd2214,0xfd2218))
+        # 默认关:六字不被接管,报告/assumptions 零变化。
+        g=BR28Model()
+        for address in JLUartTxStartWriteRecords.TX_START_WORDS:
+            self.assertFalse(g.handles(address,4))
+        self.assertNotIn('jl_uart_tx_start_write_records',g.report())
+        self.assertNotIn('jl_uart_tx_start_write_records',g.report()['assumptions'])
+        # 依赖守卫:路 F CON0 投影与路 AA CON1 读回缺一即拒(执行序前置)。
+        with self.assertRaises(ValueError):BR28Model(jl_uart_tx_start_write_records=True)
+        with self.assertRaises(ValueError):(
+            BR28Model(jl_uart_init_write_records=True,jl_uart_con1_readback=True,
+                      jl_uart_tx_start_write_records=True))
+        h=BR28Model(jl_uart_con_projection=True,jl_uart_init_write_records=True,
+                    jl_uart_con1_readback=True,jl_uart_tx_start_write_records=True)
+        for address in JLUartTxStartWriteRecords.TX_START_WORDS:
+            self.assertTrue(h.handles(address,4))
+        # 相邻字(+0xc BUF/+0x28 HRXCNT)即使开关开也不放行(RXSADR +0x1c 归
+        # 路 M 初始化白名单管辖,不在此断言)。
+        for base in JL_UART_CON_WORDS:
+            self.assertFalse(h.handles(base+0xc,4) or h.handles(base+0x28,4))
+        # TX 启动对真实形状(探针实测):TXADR=会话缓冲 0x19df00、TXCNT=6
+        # ({144,83} 2 字节 payload 的 0x55/0xAA 包络总长=2+4)。
+        h.write(0xfd2014,0x19df00)
+        h.write(0xfd2018,6)
+        with self.assertRaisesRegex(Blocked,'jl_uart_tx_word_readback_not_modeled'):h.read(0xfd2014)
+        with self.assertRaisesRegex(Blocked,'jl_uart_tx_word_readback_not_modeled'):h.read(0xfd2018)
+        with self.assertRaisesRegex(Blocked,'jl_uart_tx_word_readback_not_modeled'):h.read(0xfd2114)
+        report=h.report()['jl_uart_tx_start_write_records']
+        self.assertEqual(report['word_writes'],2)
+        self.assertEqual(report['stores']['0xfd2014'],{'values':['0x19df00'],'writes':1})
+        self.assertEqual(report['stores']['0xfd2018'],{'values':['0x6'],'writes':1})
+        self.assertTrue(report['write_only'] and report['readback_not_modeled'])
+        self.assertIn('0x603425a',report['layout'])
+        self.assertIn('START signal',report['txcnt_semantics'])
+        self.assertIn('never polls a completion bit',report['completion_not_modeled'])
+        self.assertIn('IRQ12/13/14',report['completion_not_modeled'])
+        assumption=h.report()['assumptions']['jl_uart_tx_start_write_records']
+        self.assertIn('0x603425a',assumption)
+        self.assertIn('derived-not-measured',assumption)
+        self.assertIn('NOT verified UART transmission/reception',assumption)
+        # 非整字/未对齐访问不经白名单(handles 只认 4 字节对齐整字)。
+        self.assertFalse(h.handles(0xfd2015,4) or h.handles(0xfd2014,2) or h.handles(0xfd2014,1))
 
     def test_jl_wl_aud_write_records_and_readback(self):
         # 路 AK(sim-audioinit):JL_WL_AUD->CON0(0xfe2200,br28.h hs_base+

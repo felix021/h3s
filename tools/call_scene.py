@@ -13,19 +13,27 @@ docs/call-state-pre-study.md §6 实施切分的前三步执行载体(D2AJ/d2_au
       →仅 post 0x100009(分发器层不 relay,负证据断言)。
   步 2 直调 handler 0x60207a2(8B 参数缓冲{83,0,...}):**定位法**(预研
       §5.3(ii)——跳过队列语义/事件所有权/调度时序,不进验收),两种分段:
-      handler 档全程跑(TX 段实证至墙);post-tx 档从 0x6020fc6 续行(跳过
-      TX relay 段,入口寄存器面静态复现:r13/r7=prologue 常量、r5 真码自载)
-      取创建体/出口链/aec 门证据。case 83 体全链:bit0x20 清零支路
+      handler 档全程跑(TX 段经路 UARTTX 放行后完成返回);post-tx 档从
+      0x6020fc6 续行(跳过 TX relay 段,入口寄存器面静态复现:r13/r7=
+      prologue 常量、r5 真码自载)取创建体/出口链/aec 门证据。
+      case 83 体全链:bit0x20 清零支路
       0x601d8a6→TX relay 0x6020fbe→0x601b85c({144,83},2)→task_create
       ('enc_mpt_sel')→zalloc(32)→[QCY+624] 落槽→popcount 通道节点环→
       b[obj+0]=1→共享出口 0x60212ba 链式调 0x60200b6(chmap)→返回 0=对象
       存活。真实泵消费(队列出队进 handler)=M1-c 世界重钉后,本路如实
       BLOCKED 分档。
-  步 3 TX 支路首跑实证(handler 档内 0x6020fbe 段):0x601b85c 门(b[QCY+2619]
-      ==0 且 h[QCY+2616]≠0)→表[+16](1) 开链→会话 vtable[+8] 发送→UART TX
-      DMA 启动写(TXADR 0xfd2014=会话缓冲)——模型白名单外诚实停(br28_model
-      JLUartInitWriteRecords 类注释钉死的「TXCNT/TXADR 出现即诚实停」)。
-      UART TX 完成位/数据流投影归 probe 排期,本路不发明。
+  步 3 TX 支路实证(handler 档内 0x6020fbe 段,路 UARTTX 已放行):0x601b85c
+      门(b[QCY+2619]==0 且 h[QCY+2616]≠0)→表[+16](1) 开链 0x60343e8(已初始
+      化即 no-op)→会话 vtable[+8]=帧构建器 0x6060254({0x55,0xAA,len,payload...,
+      checksum} 包络)→DMA 发送 0x603413c→**TXADR 0xfd2014=会话缓冲+TXCNT
+      0xfd2018=包络总长(2+4=6)两写落 JLUartTxStartWriteRecords 记录**→
+      b[obj+80]==0(轮询档)→函数直接返回(0x6034266→0x6034172,零等待)→
+      0x601b85c 清 b[QCY+2619]+关链→返 0——断言⑤后半(0x6020fc6 续行=TX
+      relay 完成返回)过。完成语义钉死(路 UARTTX 探针):同步路径启动后不等
+      任何完成位;完成消费面=中断域(IRQ12 handler 0x60354e0 TX-done 支,
+      CON0 bit15+bit2 键控)与启动前等待环 CON0 bit0(经 0x12cb08 返 0 出口
+      立即退出)——**不发明完成投影**(无读时投影位/无 advance 置位/无 IRQ12
+      交付件),CON0 保持路 F「读回=最后软件写值」。
   负例 --chmap 0:事件照达(分发器不设门)、创建被 handler 内 r5==0 真门拦
       (PC 覆盖 0x6020fd2 分支,[QCY+624] 保持 0;出口仍调 0x60200b6(0)=未钉
       项 9,观测其返回与 [QCY+620] 副作用)。
@@ -262,7 +270,8 @@ def world_prep(cpu):
     return face
 
 
-def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
+def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler',
+              max_steps_b3=400_000):
     driver = SimWorldDriver(machine, hardware, cpu)
     observations = {'banner': {
         'stop_pc': hex(cpu.pc), 'core': cpu.core_id,
@@ -273,7 +282,8 @@ def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
             'frame bytes {144,83,chmap} (synthetic-not-measured, UART 物理输入未验证)',
             's2 定位法:handler 档=param buffer {83,0,..} 跳过队列语义;'
             'post-tx 档=0x6020fc6 续行跳过 TX relay 段(TX 段由 handler 档单独实证'
-            '至 TXADR 写墙;入口寄存器 r13/r7=prologue 常量,r5 真码自载)——均不进验收'],
+            '至 TX 启动(路 UARTTX 放行 TXADR/TXCNT 写侧记录,完成零等待);入口寄存器'
+            ' r13/r7=prologue 常量,r5 真码自载)——均不进验收'],
         'park_anchor': ('snapshot frontier 29,601,125@0x606955c(快照 restore 服务面);'
                         '条件前沿 32,737,356(watchdog)不在本路锚定——前沿已前移但'
                         'park 快照仍是可直接 restore 的最新可服役停点(SIMB1G 记录)')}}
@@ -401,13 +411,14 @@ def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
     # 所有权/时序弱化——预研 §5.3(ii) 定位档,不进验收)。chmap 已由步 1 真码
     # 写入 b[QCY+8087],handler 读回的是真实全局,不手写该字节。
     #
-    # s2_entry='handler'(默认):从 0x60207a2 全程跑——已知墙=TX relay 段的
-    #   UART TX 启动写(TXADR 0xfd2014,br28_model 白名单外诚实停,步 3 实证)。
+    # s2_entry='handler'(默认):从 0x60207a2 全程跑——TX relay 段经路 UARTTX
+    #   (JLUartTxStartWriteRecords,TXADR/TXCNT 写侧记录)放行:轮询档启动后
+    #   零等待返回(步 3 实证),断言⑤完整。
     # s2_entry='post-tx'(分段诊断):从 0x6020fc6 续行——跳过的只有 TX relay 段
-    #   (该段由 handler 档单独实证至墙);入口寄存器面全部静态复现:r13/r7=
+    #   (该段由 handler 档单独实证:TX 启动写落记录);入口寄存器面全部静态复现:r13/r7=
     #   prologue 常量(0x60207b8/0x60207c6),r5 由真码 0x6020fca 从 b[QCY+8087]
-    #   自载,r0..r4 均先写后读。分段法不伪造 TX 完成(墙如实留在 handler 档
-    #   证据里),只为 ⑥⑦⑧(创建体/出口链/aec 门)取真实执行证据。
+    #   自载,r0..r4 均先写后读。分段法跳过 TX 段的启动记录面(该证据由
+    #   handler 档完整覆盖),只为 ⑥⑦⑧(创建体/出口链/aec 门)取分段对照。
     param_addr = driver.scratch_body + 16
     driver.mem_write(param_addr, bytes([83, 0, 0, 0, 0, 0, 0, 0]))
     queue_face_pre_s2 = queue_face_raw(cpu, queue_base)
@@ -416,6 +427,12 @@ def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
     if getattr(hardware, 'jl_uart_init_records', None) is not None:
         uart_stores_before = {a: e['writes']
                               for a, e in hardware.jl_uart_init_records.stores.items()}
+    # 路 UARTTX:TX 启动写(TXADR/TXCNT)记录容器的 s2 前基线(轮询档 TX relay
+    # 完成返回的证据面:两写落记录=TX 启动信号真实执行)。
+    tx_start_before = None
+    if getattr(hardware, 'jl_uart_tx_start_records', None) is not None:
+        tx_start_before = {a: e['writes']
+                           for a, e in hardware.jl_uart_tx_start_records.stores.items()}
     if s2_entry == 'post-tx':
         # r0..r6=0、r7=表基、r8..r12=0、r13=QCY(r5 由真码自载,见上注)
         s2_args = [0, 0, 0, 0, 0, 0, 0, R7_TABLE_BASE, 0, 0, 0, 0, 0, R13_QCY]
@@ -481,9 +498,20 @@ def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
             if delta:
                 uart_delta[hex(a)] = {'writes': delta,
                                       'last': hex(entry['values'][-1]) if entry['values'] else None}
+    # 路 UARTTX:TX 启动写记录 delta——TXADR(0xfd2014)末值应=会话缓冲
+    # [QCY+2608](world_prep 读回),TXCNT(0xfd2018)末值=帧构建器包络总长
+    # (payload 2+包络 4=6,0x6060254 反汇编钉死)。
+    tx_start_delta = None
+    if getattr(hardware, 'jl_uart_tx_start_records', None) is not None and tx_start_before is not None:
+        tx_start_delta = {}
+        for a, entry in hardware.jl_uart_tx_start_records.stores.items():
+            delta = entry['writes'] - tx_start_before.get(a, 0)
+            if delta:
+                tx_start_delta[hex(a)] = {'writes': delta,
+                                          'last': hex(entry['values'][-1]) if entry['values'] else None}
     s2 = {
         'segment': ('post-tx continuation(0x6020fc6 续行;TX relay 段由 handler 档'
-                    '单独实证至 TXADR 写墙,本段不伪造 TX 完成)' if s2_entry == 'post-tx'
+                    '单独实证:TX 启动写落记录+完成返回,本段跳过该段只为分段对照)' if s2_entry == 'post-tx'
                     else 'handler 全程(0x60207a2 起,含 TX relay 段)'),
         'entry': hex(s2_target),
         'param_buffer': ('r13/r7=prologue 常量直载,r5 真码自载' if s2_entry == 'post-tx'
@@ -512,6 +540,10 @@ def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
             'tx_api_hit': {'pc': tx_api_hit['pc'], 'r': tx_api_hit['r']} if tx_api_hit else None,
             'post_tx_pc_covered': hex(POST_TX_PC) in covered2,
             'uart_init_word_writes_delta': uart_delta,
+            # 路 UARTTX:TX 启动写记录(轮询档 TX relay 完成返回的物证——
+            # TXADR=会话缓冲/TXCNT=包络总长,完成语义=启动后零等待,详见
+            # JLUartTxStartWriteRecords 文档串)。
+            'tx_start_word_writes_delta': tx_start_delta,
         },
         'aec_object': obj_face, 'node_checks': node_checks,
         'esco_slot_QCY620_after': hex(read_u32(cpu, QCY + 620)),
@@ -532,13 +564,23 @@ def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
             'continuation_entry_covered': (hex(POST_TX_CONT) in covered2 if continuation
                                            else None),
             # 断言⑤:bit0x20 清零支路+TX relay 完成返回(0x6020fc6 续行=完成证据;
-            # 若 TX 撞墙则此处 False 且 wall 记录停点——预研 §5.4 首跑实证项)。
-            # post-tx 分段:TX 段被显式跳过,⑤ 记 None(墙证据在 handler 档)。
+            # 路 UARTTX 放行后 TX 启动写落记录:TXADR=会话缓冲、TXCNT=包络总长
+            # 6——两写记录+续行命中=「真实执行至 TX 启动并返回」的完整证据面;
+            # 若 TX 撞墙则此处 False 且 wall 记录停点)。post-tx 分段:TX 段被
+            # 显式跳过,⑤ 记 None(墙/放行证据在 handler 档)。
             'uart_con_branch_taken': (hit_at(hits2, UART_CON_FN) is not None
                                       if not continuation else None),
             'tx_relay_reached': (hex(TX_RELAY_SITE) in covered2 or tx_api_hit is not None
                                  if not continuation else None),
             'tx_relay_completed': (hex(POST_TX_PC) in covered2 if not continuation else None),
+            'tx_start_pair_recorded': (
+                bool(tx_start_delta
+                     and isinstance(tx_start_delta.get('0xfd2014'), dict)
+                     and tx_start_delta['0xfd2014']['last'] == observations['world_prep'].get(
+                         'session_QCY2608')
+                     and isinstance(tx_start_delta.get('0xfd2018'), dict)
+                     and tx_start_delta['0xfd2018']['last'] == hex(6))
+                if not continuation else None),
             # 断言⑥:task_create 被调且返回成功。实测极性(CALLIMPL 运行时钉):
             # 0x6020ffa 处 r0=0——JL OS 族 0=成功惯例;预研 §1.2「返回非零」为
             # 静态猜测,按实测修正。传入 entry 实测=0x6033e54(预研 §1.2 记
@@ -584,6 +626,16 @@ def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
             'tx_relay_still_runs': ((hex(TX_RELAY_SITE) in covered2
                                      or tx_api_hit is not None)
                                     if not continuation else None),
+            # 负例同样经 TX relay({144,83} 帧不含 chmap)——TX 启动写记录
+            # 照落(TXADR=会话缓冲/TXCNT=6)。
+            'tx_start_pair_recorded': (
+                bool(tx_start_delta
+                     and isinstance(tx_start_delta.get('0xfd2014'), dict)
+                     and tx_start_delta['0xfd2014']['last'] == observations['world_prep'].get(
+                         'session_QCY2608')
+                     and isinstance(tx_start_delta.get('0xfd2018'), dict)
+                     and tx_start_delta['0xfd2018']['last'] == hex(6))
+                if not continuation else None),
         }
         s2['negative_notes'] = {
             'esco_open_zero_return': (esco_ret_hit['r'][0] if esco_ret_hit else None),
@@ -593,7 +645,154 @@ def run_scene(machine, hardware, cpu, chmap, max_steps_s2, s2_entry='handler'):
             'unpinned_item_9': '0x60200b6(0) 出口调用行为=预研 §7 未钉项 9,本负例实测落档',
         }
     observations['s2_handler'] = s2
+
+    # ---------------- 步 4:b3 消费闭环(INJ-03 步 4,路 UARTTX 复跑) ----------------
+    # 前置:s2 handler 档全链完成(aec 对象存活+esco 开链已由共享出口 0x60212ba
+    # →0x60200b6(chmap) 真码执行——ADC DMA 五写/handler 挂链都在,无需 b1 直调)。
+    # 交付环=D2AJ b2/b3 同款(d2_audio_scene.deliver_and_collect 形状):合成
+    # 交织样本块(通道高字节 01/02 可区分+块号 bits7-4+样本序 bits3-0)→
+    # produce_block(当前窗口+置 pending)→IRQ68 真实交付(嵌套进入 park 停点
+    # 的 Timer0 事件循环)→受控步进真实分发器链→RTI 回 park 停点。esco handler
+    # 丢弃门 b[esco+0]≤7 计数早退,第 9 次调用起真路径(解交织→逐通道
+    # 0x6033cb4——aec 前端门 b[obj+0]==1 由步 2 真码置位,即 INJ-03 b3 墙)。
+    if (s2_entry == 'handler' and chmap != 0 and aec_obj
+            and s2.get('wall') is None
+            and all(bool(v) for k, v in (s2.get('checks') or {}).items()
+                    if v is not None and k in ('aec_object_alive', 'active_store_covered',
+                                               'nodes_valid'))):
+        observations['b3_loop'] = run_b3_loop(machine, hardware, cpu, aec_obj,
+                                              max_steps_b3)
+    else:
+        observations['b3_loop'] = {'skipped': ('s2 未完成(aec 对象未活或 wall 在)或'
+                                               '分段/负例档——b3 只在 handler 档正例后跑')}
     return observations
+
+
+def run_b3_loop(machine, hardware, cpu, aec_obj, max_steps_b3):
+    """步 4:b3 交付环(k=1..12)——样本消费闭环+aec 簿记断言面。
+
+    机器纪律与 d2_audio_scene.deliver_and_collect 同款:冻结世界受控步进
+    (不调 hardware.advance)、Blocked 如实记墙、RTI 回 park 停点收口。"""
+    from d2_audio_scene import (compose_block, AUDIO_ADC_HDL, PARK_STOP_PC,
+                                DISPATCHER_PCS, HANDLER_PCS, ESCO_HANDLER,
+                                ESCO_EARLY_EXIT, ESCO_REAL_PATH, ESCO_DEINTERLEAVE,
+                                ESCO_CHAN_CONSUMER)
+    dma = hardware.jl_audio_adc_dma
+    watch = set(DISPATCHER_PCS + HANDLER_PCS + (ESCO_HANDLER, ESCO_EARLY_EXIT,
+                                                ESCO_REAL_PATH, ESCO_DEINTERLEAVE,
+                                                ESCO_CHAN_CONSUMER))
+    esco_obj = read_u32(cpu, QCY + 620)
+    channels = read_u8(cpu, AUDIO_ADC_HDL + 79)
+    sample_bytes = 2 if read_u8(cpu, AUDIO_ADC_HDL + 90) == 0 else 4
+    pns = dma.stores[0xfe0544]['values'][-1]
+    adr = dma.stores[0xfe053c]['values'][-1]
+    length = dma.stores[0xfe0540]['values'][-1]
+
+    def node_faces():
+        faces = []
+        for node in node_ring_walk(cpu, aec_obj):
+            buf = int(node['buf_16'], 16)
+            face = {'node': node['node'], 'mask': node['mask_h8'],
+                    'cursor_h10': node['cursor_h10']}
+            try:
+                face['buffer_head'] = read_bytes(cpu, buf, 8).hex()
+            except Exception:
+                face['buffer_head'] = 'uninitialized_read'
+            faces.append(face)
+        return faces
+
+    base = {
+        'esco_obj_QCY620': hex(esco_obj),
+        'aec_obj_QCY624': hex(aec_obj),
+        'esco_counter_b0': read_u8(cpu, esco_obj + 0),
+        'channels': channels, 'sample_bytes': sample_bytes,
+        'pns': pns, 'adr': hex(adr), 'len_samples': length,
+        'aec_active_b0': read_u8(cpu, aec_obj + 0),
+        'aec_nodes_before': node_faces(),
+    }
+    records = []
+    for k in range(1, 13):
+        block = compose_block(pns, channels, sample_bytes, block_index=k)
+        ring_pos = ((k - 1) * pns) % length
+        expected_window = adr + ring_pos * channels * sample_bytes
+        produced = dma.produce_block(cpu.mem, block, channels=channels,
+                                     sample_bytes=sample_bytes)
+        gate = machine.icfg_demands().get(0)
+        gate_used = gate if gate is not None else (
+            cpu.icfg if getattr(cpu, 'icfg_known', False) else 0x300)
+        eligible = hardware.irq.eligible(68, gate_used)
+        rec = {'k': k, 'produced_window': produced['window'],
+               'expected_window': hex(expected_window),
+               'window_matches_ring': produced['window'] == hex(expected_window),
+               'eligible': eligible,
+               'esco_counter_before': read_u8(cpu, esco_obj + 0)}
+        if not eligible:
+            rec['wall'] = {'type': 'irq68_not_eligible', 'gate': hex(gate_used)}
+            records.append(rec)
+            break
+        try:
+            machine.deliver_audio_dma_irq(0)
+        except (Blocked, ValueError) as exc:
+            rec['wall'] = {'type': type(exc).__name__, 'detail': str(exc)[:600]}
+            records.append(rec)
+            break
+        steps = 0
+        early = real = deinter = consumer = 0
+        wall = None
+        while steps < max_steps_b3:
+            if cpu.pc in watch:
+                if cpu.pc == ESCO_EARLY_EXIT:early += 1
+                elif cpu.pc == ESCO_REAL_PATH:real += 1
+                elif cpu.pc == ESCO_DEINTERLEAVE:deinter += 1
+                elif cpu.pc == ESCO_CHAN_CONSUMER:consumer += 1
+            try:
+                before = cpu.pc
+                insn, _raw, _size = cpu.decode(cpu.pc)
+                cpu.step()
+                steps += 1
+                machine.after_step(cpu, before)
+            except Blocked as exc:
+                wall = {'at_step': steps, 'stop_pc': hex(cpu.pc), 'stop': exc.details}
+                break
+            if (cpu.pc == PARK_STOP_PC
+                    and getattr(cpu, 'active_context', None) == 'timer0_irq_handler'):
+                break
+        rec.update({'window_steps': steps, 'wall': wall,
+                    'early_exit_hits': early, 'real_path_hits': real,
+                    'deinterleave_hits': deinter, 'chan_consumer_hits': consumer,
+                    'esco_counter_after': read_u8(cpu, esco_obj + 0),
+                    'rti_ok': (cpu.pc == PARK_STOP_PC
+                               and getattr(cpu, 'active_context', None) == 'timer0_irq_handler')})
+        records.append(rec)
+        if wall is not None:
+            break
+    # 消费闭环断言面:aec 节点游标推进+缓冲样本字节回读(真路径 k 起才可能)。
+    nodes_after = node_faces()
+    real_ks = [r['k'] for r in records if r.get('real_path_hits')]
+    consumer_ks = [r['k'] for r in records if r.get('chan_consumer_hits')]
+    # 真路径起点=丢弃门派生(首个 counter_before>=8 的 k),不硬编码 k 值;
+    # D2AJ 先例(开链后 2 发)为 k=9,本场景开链即出口链、counter 起点
+    # 由真码决定(预期 0→同 k=9,如实记录)。
+    gate_k = next((r['k'] for r in records if r.get('esco_counter_before', 0) >= 8), None)
+    checks = {
+        'deliveries_rti_all': all(r.get('rti_ok') for r in records) and len(records) == 12,
+        'early_exit_until_gate': bool(real_ks) and all(
+            r.get('early_exit_hits') and not r.get('real_path_hits')
+            for r in records if r['k'] < real_ks[0]),
+        'real_path_starts_at_counter_gate': bool(real_ks) and real_ks[0] == gate_k
+                                            and real_ks == list(range(real_ks[0], real_ks[-1] + 1)),
+        'chan_consumer_called': bool(consumer_ks),
+        'aec_gate_passed': bool(consumer_ks) and read_u8(cpu, aec_obj + 0) == 1,
+        'node_cursor_advanced': any(int(n['cursor_h10'], 16) > 0 for n in nodes_after),
+        'node_buffer_written': any(n.get('buffer_head') not in ('uninitialized_read', '')
+                                   and n['buffer_head'] != '00' * 4
+                                   for n in nodes_after),
+    }
+    return {'base': base, 'deliveries': records, 'nodes_after': nodes_after,
+            'checks': checks,
+            'note': ('真路径 k=9 起=b[esco+0] 丢弃门计数满 8(D2AJ b3 同形);'
+                     '0x6033cb4 逐通道消费过 b[obj+0]==1 活跃门(INJ-03 b3 墙实体,'
+                     '对象由本场景步 2 真码创建——TX relay 放行前该门恒假)')}
 
 
 def main():
@@ -609,10 +808,12 @@ def main():
     parser.add_argument('--chmap', type=lambda s: int(s, 0), default=CHMAP_DEFAULT,
                         help='通道图字节(默认 0x05;负例用 0)')
     parser.add_argument('--s2-entry', choices=('handler', 'post-tx'), default='handler',
-                        help='步 2 直调分段:handler=0x60207a2 全程(TX 段撞 TXADR 写墙);'
+                        help='步 2 直调分段:handler=0x60207a2 全程(TX 段放行后完成返回);'
                              'post-tx=0x6020fc6 续行分段诊断(TX 段跳过,创建体/出口链全真码)')
     parser.add_argument('--max-s2-steps', type=int, default=20_000_000,
                         help='步 2 handler 直调步数预算(含 esco 开链 ~6.4M)')
+    parser.add_argument('--max-b3-steps', type=int, default=400_000,
+                        help='步 4 b3 每轮交付的受控步进预算(D2AJ 同款 400k)')
     parser.add_argument('--out', default='analysis/local-checks/callimpl/scene.json')
     args = parser.parse_args()
 
@@ -621,7 +822,7 @@ def main():
 
     def serve_loop(machine, hardware, cpu, stop=None):
         return run_scene(machine, hardware, cpu, args.chmap, args.max_s2_steps,
-                          args.s2_entry)
+                          args.s2_entry, max_steps_b3=args.max_b3_steps)
 
     # 快照开关集一致性:park 锚(gpcnt_num_value=None)是捕获与还原的共同前提
     # (M4 静态校验会拒载异开关快照);--frontier/--capture 才锚 registry 前沿
@@ -639,7 +840,8 @@ def main():
                'stop': result.get('stop'),
                'completed_steps': result.get('completed_steps'),
                'scene': {k: v for k, v in result.items()
-                         if k in ('banner', 'world_prep', 's1_walker', 's2_handler')}}
+                         if k in ('banner', 'world_prep', 's1_walker', 's2_handler',
+                                  'b3_loop')}}
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=1, default=str), encoding='utf-8')
@@ -647,6 +849,17 @@ def main():
     wp = payload['scene'].get('world_prep', {})
     s1 = payload['scene'].get('s1_walker', {})
     s2 = payload['scene'].get('s2_handler', {})
+    b3 = payload['scene'].get('b3_loop', {})
+    b3face = ({'checks': b3.get('checks'),
+               'series': {'k': [r.get('k') for r in b3.get('deliveries', [])],
+                          'early': [r.get('early_exit_hits') for r in b3.get('deliveries', [])],
+                          'real': [r.get('real_path_hits') for r in b3.get('deliveries', [])],
+                          'consumer': [r.get('chan_consumer_hits') for r in b3.get('deliveries', [])],
+                          'counter': [r.get('esco_counter_after') for r in b3.get('deliveries', [])],
+                          'rti': [r.get('rti_ok') for r in b3.get('deliveries', [])]},
+               'wall': next((r['wall'] for r in b3.get('deliveries', []) if r.get('wall')), None),
+               'nodes_after': b3.get('nodes_after')}
+              if isinstance(b3, dict) and 'deliveries' in b3 else b3)
     print(json.dumps({'elapsed_s': payload['elapsed_s'],
                       'world_prep': {'face': {k: v for k, v in wp.items() if k != 'checks'},
                                      'checks': wp.get('checks')},
@@ -663,6 +876,7 @@ def main():
                       's2_queue_post_count': ((s2.get('queue_face_post') or {}).get('count')),
                       's2_heap_bytes': s2.get('heap_bytes_touched_by_s2'),
                       's2_wall': s2.get('wall'),
+                      'b3': b3face,
                       'evidence': str(out)}, ensure_ascii=False, indent=1))
     return 0
 

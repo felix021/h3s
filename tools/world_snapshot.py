@@ -1098,6 +1098,10 @@ M4_FAMILIES = (
     ('p33_port_sel', 'P33PortSelRegisters', ('stores', 'word_writes')),
     ('jl_uart_init_records', 'JLUartInitWriteRecords',
      ('stores', 'word_writes', 'con1_reads')),
+    # 路 UARTTX(sim-uarttx):TX 启动写记录容器(条件栈全开,快照捕获面必含;
+    # 字段清单=类实例真实清单,BL 同款源核法)。
+    ('jl_uart_tx_start_records', 'JLUartTxStartWriteRecords',
+     ('stores', 'word_writes')),
     ('jl_omap_records', 'JLOmapWriteRecords', ('stores', 'word_writes')),
     ('jl_imap_records', 'JLImapWriteRecords', ('stores', 'word_writes')),
     ('jl_wl_aud_records', 'JLWlAudWriteRecords',
