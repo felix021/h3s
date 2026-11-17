@@ -208,6 +208,10 @@ FEATURES = (
             'PARSTOR 留待的 pi·pr 形 6 站点收口,st.w.pin.l 0x6077628/0x60776c2/st.w.pi'
             ' 0x609999a/st.b.pi 0x60b5e66/0x60b6572/st.b.pin 0x60b61ba;writeback 冲突'
             '外延 derived-not-measured)'),
+    Feature('postincrement_store_word', 'conditional', (), False, None,
+            '独立(非并行)pi/pin 整字存储直写(exact_postincrement_word_stores 子开关;'
+            'st.{w}.{pi,pin}+.l 4 形全族,独立 word 形静态 1,045 站点;硬件捕获 53/53;'
+            '证据形状 0x60649d0 st.w.pin.l=WDFEED 前沿 41,828,530 停点)'),
     Feature('mmu_cross_page_split', 'conditional', (), False, None,
             '跨 128B MMU 页界双字存储拆两半各自翻译(derived-not-measured)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
@@ -513,12 +517,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 41828530,
-        'stop_pc': '0x60649d0',
-        'stop': {'kind': 'upstream_store_bookkeeping_read', 'access': 'read',
-                 'address': '0x19f7a8', 'size': 4, 'region': 'physical_heap',
-                 'first_missing': '0x19f7a8',
-                 'note': 'upstream store model reads previous words to merge/drop writes; not a guest load'},
+        'completed_steps': 41847303,
+        'stop_pc': '0x6019458',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                 'address': '0xfd610c', 'size': 4, 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }

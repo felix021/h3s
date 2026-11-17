@@ -2481,4 +2481,88 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(dead.report()['mem_pwr_con_projection']['dead_reads'],1)
 
 
+class StandalonePostincrementWordStoreTests(unittest.TestCase):
+    """路 STOREG3:独立(非并行)后增量整字存储直写(exact_postincrement_word_stores)。
+
+    每例都用真实 app 站点隔离执行(budget=1),断言:值落盘、基址+=增量、
+    未初始化目标字不触发上游簿记读假停(completed_steps=1 而非 stop)。
+    行为依据=hw/fm1-2026-10-24-v2+followup5 捕获 53/53(旧基址存储/旧寄存器
+    取值/基址增量/flags 不动,含别名样本);短形在 immediate_rep_projection
+    开启时由旧 gate 先接(此处只开新开关,钉「新 gate 独立覆盖全部四形」路径)。
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.module=upstream()
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.app=application(firmware);cls.header=package_header(firmware)
+
+    def handoff(self):
+        h=profile(self.header,SENTINEL_A)
+        dst,src,length=RAM_CODE
+        h['seeds'].append((dst,self.app[src-ENTRY:src-ENTRY+length]))
+        h['description']['phase']='isolated real-instruction bus test; not contiguous startup'
+        return h
+
+    def run_one(self,name,pc,regs,snap_addr,snap_name):
+        h=self.handoff();h['snapshots'].append((snap_name,snap_addr,4))
+        return explore(self.module,self.app,name=name,handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_postincrement_word_stores':True},budget=1)
+
+    def test_pin_l_store_shape_of_the_storeg3_frontier(self):
+        # 0x60649d0 `st.w.pin.l [r9++=4]=r0`(WDFEED 前沿 41,828,530 停点形状)。
+        regs=[0]*16;regs[9]=0x124f00;regs[0]=0xdeadbeef
+        result=self.run_one('storeg3_pin_l',0x60649d0,regs,0x124f00,'storeg3_pin_l')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(result['memory_snapshots']['storeg3_pin_l']['bytes_with_unknowns'],'efbeadde')
+        self.assertEqual(result['last_registers']['r'][9],'0x124f04')
+
+    def test_pi_register_increment_uses_the_old_base_and_value(self):
+        # 0x600deac `st.w.pi [r0++=r12]=r3`:增量来自寄存器(operands i=gpr_hi
+        # 解析后的 r8-r15),存储值取旧寄存器、基址写回在写之后。
+        regs=[0]*16;regs[0]=0x124f10;regs[12]=8;regs[3]=0x11223344
+        result=self.run_one('storeg3_pi',0x600deac,regs,0x124f10,'storeg3_pi')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['storeg3_pi']['bytes_with_unknowns'],'44332211')
+        self.assertEqual(result['last_registers']['r'][0],'0x124f18')
+
+    def test_pi_l_long_form_decodes_base_data_and_increment_registers(self):
+        # 0x601e9a6 `st.w.pi.l [r10++=r12]=r7`:r=基址/t=数据/s=增量寄存器。
+        regs=[0]*16;regs[10]=0x124f20;regs[12]=0x10;regs[7]=0x55667788
+        result=self.run_one('storeg3_pi_l',0x601e9a6,regs,0x124f20,'storeg3_pi_l')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['storeg3_pi_l']['bytes_with_unknowns'],'88776655')
+        self.assertEqual(result['last_registers']['r'][10],'0x124f30')
+
+    def test_pin_short_form_is_served_by_the_new_gate_alone(self):
+        # 0x6000132 `st.w.pin [r3++=4]=r1`:immediate_rep_projection 关闭时短形
+        # 由本 gate 独立服务(开启时由旧 gate 先接,主场景行为不变)。
+        regs=[0]*16;regs[3]=0x124f40;regs[1]=0x99aabbcc
+        result=self.run_one('storeg3_pin',0x6000132,regs,0x124f40,'storeg3_pin')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['storeg3_pin']['bytes_with_unknowns'],'ccbbaa99')
+        self.assertEqual(result['last_registers']['r'][3],'0x124f44')
+
+    def test_pin_l_negative_increment_stores_at_old_base_then_decrements(self):
+        # 0x608ac6a `st.w.pin.l [r0++=-8]=r12`:长形 simm 已符号扩展并 scale
+        # (-8),负增量走同一旧基址/写回序。
+        regs=[0]*16;regs[0]=0x124f60;regs[12]=0x7f3c5a9e
+        result=self.run_one('storeg3_pin_l_neg',0x608ac6a,regs,0x124f60,'storeg3_pin_l_neg')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['storeg3_pin_l_neg']['bytes_with_unknowns'],'9e5a3c7f')
+        self.assertEqual(result['last_registers']['r'][0],'0x124f58')
+
+    def test_switch_off_leaves_the_stores_to_the_upstream_model(self):
+        # 负例:开关关时同一指令照旧落上游模型——未初始化目标字触发写前
+        # 合并读(模型簿记读非 guest 装载),completed_steps=0 诚实停。
+        regs=[0]*16;regs[9]=0x124f00;regs[0]=0xdeadbeef
+        h=self.handoff();h['snapshots'].append(('storeg3_off',0x124f00,4))
+        result=explore(self.module,self.app,name='storeg3_off',handoff=h,
+            diagnostics={'entry_pc':0x60649d0,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'upstream_store_bookkeeping_read')
+        self.assertEqual(result['stop']['address'],'0x124f00')
+
+
 if __name__=='__main__':unittest.main()

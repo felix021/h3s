@@ -81,6 +81,26 @@ EXACT_PARALLEL_EXT_TRANSFER_PREFIXES=('ext.b0.u','ext.b0.s','ext.l.u','ext.l.s')
 EXACT_PARALLEL_POSTINCREMENT_STORE_HALVES=('st.w.pi','st.w.pin','st.w.pi.l','st.w.pin.l',
                                            'st.h.pi','st.h.pin','st.h.pi.l','st.h.pin.l',
                                            'st.b.pi','st.b.pin','st.b.pi.l','st.b.pin.l')
+# 独立(非并行对 B 半)后增量整字存储直写(exact_postincrement_word_stores 独立
+# 子开关,路 STOREG3):st.{w}.{pi,pin} 及 .l 长形 4 形全族。与上面并行族同一
+# 形状语义(存储到旧基址后基址+=增量,寄存器或立即,ISA confirmed 三源+hw/
+# fm1-2026-10-24-v2 硬件捕获——DEBTCLEAR 12 形收口时已引),差别只在指令是
+# 独立执行而非并行对第二半,不存在 A 半寄存器次序问题。整字存储 4 字节全
+# 覆盖、旧值语义上完全无关(与 st.d.sp.l 183,486/st.w.sp.l/word 家族既有
+# gate 同论证):不走上游存储模型的写前合并读——那是模型内部簿记读(Writes.put
+# 的 scratch 合并)而非 guest 装载,未初始化 RAM 上假停。证据形状 app
+# 0x60649d0 `st.w.pin.l [r9++=4]=r0`(0x60649b0 get-event 解包循环,WDFEED
+# 前沿 41,828,530 停点:写 0x19f7a8 物理堆未初始化字)。静态面:全 app 独立
+# word 形 1,045 站点(pi 497/pin 450/pi.l 29/pin.l 69);half/byte 的 pi/pin
+# 形(部分写,需字节粒度+宽度子门)与 st.d.pi/pin.l(奇偶寄存器序,fm1
+# followup5)不在本开关,到达时诚实停归后续路。行为依据引用:hw/
+# fm1-2026-10-24-v2 及 followup5 硬件捕获(独立 st.{w}.{pi,pin,pi.l,pin.l}
+# 53/53 条:旧基址存储、旧寄存器取值、基址+=增量、flags 不动,含基址=数据
+# /基址=增量别名样本),m2 模型 memop 同语义;ISA 表 encoding confirmed 不
+# 单独作为行为证据。与既有 immediate_rep_projection 下独立 st.w.pin 短形
+# 直写的次序关系见 gate 内注释(短形由旧 gate 先接);本开关独立 opt-in
+# (照 word_store_sp_l 先例,默认关,legacy 报告不变)。
+EXACT_POSTINCREMENT_WORD_STORE_FORMS=('st.w.pi','st.w.pin','st.w.pi.l','st.w.pin.l')
 
 
 def check_rom(rom):
@@ -1055,6 +1075,38 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.mem.write(address&0xffffffff,value.to_bytes(width,'little'))
                 self.R[op['b']]=(address+op['n'])&0xffffffff
                 self.finish_exact(self.pc+size);adapters['exact_postincrement_store']+=1
+                return
+            if (diagnostics and diagnostics.get('exact_postincrement_word_stores') and
+                    insn.id in EXACT_POSTINCREMENT_WORD_STORE_FORMS):
+                # 独立后增量整字存储直写(路 STOREG3,判据/证据见
+                # EXACT_POSTINCREMENT_WORD_STORE_FORMS 头注释):存储到旧基址、
+                # 随后基址+=增量;增量取寄存器(pi,operands 的 i 已是 gpr_hi
+                # 解析后的 r8-r15)或立即数(pin,短形 operands n=+4/-4,长形
+                # .l 已符号扩展并 scale)。次序在上方 immediate_rep_projection
+                # 的短形 gate 之后:主场景链(irq_case→dual/platform/architecture_
+                # case 基础 diagnostics)默认开 immediate_rep_projection,独立
+                # st.w.pin 短形已由旧 gate 服务,本 gate 实际接手其余三形
+                # (清单仍收 4 形保持族完整;旧 gate 关闭时本 gate 兜住短形)。
+                # 全部增量求值在写内存之前完成:基址/增量为抽象值时先停
+                # (require 与并行 postincrement gate 同款;未知基址在此前的
+                # & 掩码处已被 UnknownWord.consumed 拦截),不污染目标内存;
+                # 存储值含 unknown 时数值消费严格停,IcfgValue 走 abstract
+                # word 写(并行 gate 同款)。
+                op=module.check.operands(insn,raw)
+                if insn.id=='st.w.pi':base_reg,data_reg,step=op['b'],op['d'],self.R[op['i']]
+                elif insn.id=='st.w.pin':base_reg,data_reg,step=op['b'],op['d'],op['n']
+                elif insn.id=='st.w.pi.l':base_reg,data_reg,step=op['r'],op['t'],self.R[op['s']]
+                else:base_reg,data_reg,step=op['r'],op['s'],op['n']
+                address=self.R[base_reg]&0xffffffff;value=self.R[data_reg]
+                require(isinstance(step,int),
+                        'postincrement word store needs a known increment')
+                next_base=(address+step)&0xffffffff
+                require(address%4==0,'unaligned exact postincrement word store')
+                if isinstance(value,IcfgValue):self.mem.write_abstract_word(address,value)
+                else:self.mem.write(address,struct.pack('<I',value&0xffffffff))
+                self.R[base_reg]=next_base
+                self.finish_exact(self.pc+size)
+                adapters['exact_postincrement_word_store']+=1
                 return
             if (diagnostics and diagnostics.get('rep_copy_unknown_transport') and insn.id=='ld.w.pin' and
                     self.repeat is not None and self.repeat.get('multi_block')):
