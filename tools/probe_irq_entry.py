@@ -5815,16 +5815,23 @@ def check(report,firmware):
     # 2788→2966(+178:表拷贝的装载+组装对)、并行字节 13223→13225(+2);
     # 运输 9/9、跨页 7、LP 位 RMW 124、复位 8、mem_pwr 4、awkup 17、死读
     # 1 全不变(walk 段无 unknown 运输、无 LP/复位域访问)。
-    require(r['instruction_adapters'].get('exact_doubleword_store')==123 and
+    # 路 FD610C 再 +503 步(JL_PLED CON3 单字容器放行 0x6019458 清 bit5
+    # RMW 读→helper 返回→CON0 save-restore 首读停;LED 域任务创建/消费链
+    # 纯 CPU0 段,per-core1 不变):双字 123→125(+2:任务创建链的 st.d)、
+    # 立即 rep 多块 1064→1070(+6:任务创建/配置验证链的 rep.i 体)、并行
+    # 半字 544→545(+1)、并行字节 13225→13226(+1);跨页 7、零跳过 177、
+    # 寄存器计数 rep 438、transport 9/9、compose 对 2966、LP 位 RMW 124、
+    # 复位 8、mem_pwr 4、awkup 17、死读 1 全不变。
+    require(r['instruction_adapters'].get('exact_doubleword_store')==125 and
             r['instruction_adapters'].get('exact_doubleword_store_cross_page_split')==7 and
-            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==1064 and
+            r['instruction_adapters'].get('immediate_rep_multi_block_projection')==1070 and
             r['instruction_adapters'].get('zero_count_skip_is_assumption')==177 and
             r['instruction_adapters'].get('register_rep_multi_block_projection')==438 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
-            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==544 and
+            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==545 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==2966 and
-            r['instruction_adapters'].get('parallel_byte_store_old_registers')==13225 and
+            r['instruction_adapters'].get('parallel_byte_store_old_registers')==13226 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==124 and
             r['instruction_adapters'].get('reset_unknown_preserving_configuration_rmw')==8 and
             r['instruction_adapters'].get('mem_pwr_con_rmw')==4 and
