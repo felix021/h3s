@@ -35,8 +35,8 @@ stream.bin §5 的辅听链参数（零代码）**，配一个 **L1 的模式接
 | name | uuid | op1（控制入口） | 助听器角色 |
 |---|---|---|---|
 | eq | 0x737b | 0x6078594 | 多段频响整形 |
-| wdrc | 0xdefe | 0x607898e | 多通道宽动态范围压缩/限幅 |
-| dynamic_eq | 0x87a0 | 0x6078d0a | 动态均衡 |
+| wdrc | 0xdefe | 0x607898e→**0x06078d0a**〔HAL3 勘误：0x0607898e 是 eq 记录的 ioctl（注册表 0x060a8f84/0x060a8f9c 双记录解码）；wdrc ioctl=0x06078d0a，0x2000F 事件分支整包 76B 热更，见 docs/hearing-aid-l3-mpo.md §1.1〕 | 多通道宽动态范围压缩/限幅 |
+| dynamic_eq | 0x87a0 | 0x6078d0a→〔HAL3 勘误：此值系早期把 wdrc ioctl 位错记到此行；dynamic_eq 记录 op1 未重扫，不引用〕 | 动态均衡 |
 | spk_eq | 0x3be6 | — | 扬声器专用 EQ |
 | data_saturation | 0x6b29 | 0x607a418 | **数字域硬限幅候选**（saturation 语义） |
 | auto_mute | 0x86b9 | 0x607a2a2 | 自动静音 |

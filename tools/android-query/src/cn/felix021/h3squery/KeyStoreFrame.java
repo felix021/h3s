@@ -44,6 +44,47 @@ public final class KeyStoreFrame {
         check(value.length == VALUE_LEN, "value 长度必须为 " + VALUE_LEN + " 字节: " + (value == null ? -1 : value.length));
     }
 
+    // ---------- L3 MPO 值协议（docs/hearing-aid-l3-mpo.md，与固件 apply_mpo.S 对齐） ----------
+
+    /** 协议魔数 "HA"。 */
+    public static final byte MPO_MAGIC_H = 0x48, MPO_MAGIC_A = 0x41;
+    /** 协议版本 1（保留字节必须为 0）。 */
+    public static final byte MPO_VERSION = 1;
+    /** MPO 取值范围（数字域 dB 刻度，与固件位型边界一致；UI 滑杆范围同源）。 */
+    public static final float MPO_MIN_DB = 0.3f, MPO_MAX_DB = 119.9f;
+
+    /** 把全带 MPO 值编成 8B key 30 值：{ 'H','A', ver=1, rsv=0, float32 LE }。
+     *  非有限值或超出 (0.3, 119.9) 拒绝——固件侧 apply_mpo.S 的位型门
+     *  （0x3E99999A < bits < 0x42F00000）在 App 侧先挡一道。 */
+    public static byte[] encodeMpoValue(float mpoDb) {
+        check(Float.isFinite(mpoDb), "MPO 必须是有限数: " + mpoDb);
+        check(mpoDb > MPO_MIN_DB && mpoDb < MPO_MAX_DB,
+                "MPO 超出范围 (" + MPO_MIN_DB + ", " + MPO_MAX_DB + "): " + mpoDb);
+        byte[] value = new byte[VALUE_LEN];
+        value[0] = MPO_MAGIC_H;
+        value[1] = MPO_MAGIC_A;
+        value[2] = MPO_VERSION;
+        value[3] = 0;
+        int bits = Float.floatToIntBits(mpoDb);
+        value[4] = (byte) bits;
+        value[5] = (byte) (bits >>> 8);
+        value[6] = (byte) (bits >>> 16);
+        value[7] = (byte) (bits >>> 24);
+        return value;
+    }
+
+    /** 从 8B 值解出 MPO（魔数/版本/保留/范围不符返回 null）。 */
+    public static Float decodeMpoValue(byte[] value) {
+        validateValue(value);
+        if (value[0] != MPO_MAGIC_H || value[1] != MPO_MAGIC_A
+                || value[2] != MPO_VERSION || value[3] != 0) return null;
+        int bits = ((value[4] & 0xff)) | ((value[5] & 0xff) << 8)
+                | ((value[6] & 0xff) << 16) | ((value[7] & 0xff) << 24);
+        float mpo = Float.intBitsToFloat(bits);
+        if (!Float.isFinite(mpo) || mpo <= MPO_MIN_DB || mpo >= MPO_MAX_DB) return null;
+        return mpo;
+    }
+
     // ---------- 命令组帧 ----------
 
     /** 写命令 data：[key, v0..v7] 共 9B。 */

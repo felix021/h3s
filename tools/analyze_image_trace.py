@@ -88,7 +88,12 @@ EQ_APP_SHA = '3788e3a1e25ed4e14ac3e8167674279e2d9e48e1904684c4aeaa06bc11d579cb'
 # --attenuation-db 0 --hearing-aid-l1-slotram / --r4-keyhook)。
 L1_SLOTRAM_SHA = '6f267a2ed0b62ed118047e889a64483907c727d36eb5172a5d0f0067d37b1b93'
 L1_APP_SHA = 'd830222c902bf5663027ecbbf540d983054fb39af45fd47e0dce955a0c1f52ab'
-R4_KEYHOOK_SHA = 'bfc3f681e969d3c984a5ff7ee6d33ae759897788b132777ede01423104e3ab20'
+# HAL3 re-pin: keystore_hook status-byte erratum fix (st.w -> st.b at
+# resp+2, docs/hearing-aid-l3-mpo.md §5) — the old candidate bfc3f681… made
+# set_config failures read as successes; app-slice sha unchanged (the fix
+# lives in the appended segment, the registry slot still points at the same
+# entry address).
+R4_KEYHOOK_SHA = '1873027bcf82026aa1829aeeebf348c9227a8f9b3895009dbc81205f0b30ac65'
 R4_APP_SHA = 'da93483fc73c094734eb65735f9e5e6b760ac3eec1c0ff54f84ca629f585ee2e'
 CANDIDATE_APP_SHAS = {'l1_slotram': L1_APP_SHA, 'r4_keyhook': R4_APP_SHA}
 PLAIN_LENGTHS = {'official': 0xE3053, 'tested_b79': 0xE3053, 'eq_fence_repair': 0xE31C5,

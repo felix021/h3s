@@ -147,6 +147,12 @@ decoder/resample/…/**eq**/**wdrc**/dynamic_eq/…/encoder。要点：
 - `'eq'` 记录 @0x60a8f78：ops={0x607857c,0x6078594,0x607863e}，**uuid16=0x737b**——
   BR 标作「u16 crc」的字段实为效果类型 UUID（0x737b 正是 eq-toggle.md 钉死的 EQ 节点
   UUID）。`'wdrc'` @0x60a8f90：ops={0x607876a,**0x607898e**,0x6078bb0}，uuid=0xdefe。
+  〔**HAL3 勘误 2026-11-17**：wdrc 行的 ops 三元组系把 eq 记录的抄串——注册表
+  双记录重解码：eq @0x060a8f84 {bind=0x0607876a, ioctl=**0x0607898e**, x=0x06078bb0}、
+  wdrc @0x060a8f9c {bind=**0x06078cee**, ioctl=**0x06078d0a**, x=0x06078e32}。即
+  本页 §2.3 的 subcommand tbh 表（0x607898e）是 **eq** 的参数消息面（subcmd 7 =
+  EQ_SEG 44B 段包），wdrc 的参数热更是 0x06078d0a 的 0x2000F 事件整包 76B 路径
+  （无 subcommand 头）。见 docs/hearing-aid-l3-mpo.md §1.1。〕
 - **uuid 查找器 0x607452e**：从 0x60a8dec 起步 24 遍历到 0x60a917c，比较
   h[ptr+4]（=记录+16 的 uuid 字段），命中返回记录+12 指针；调用者 0x607471e/
   0x6074976（框架内部）[静态]。

@@ -49,7 +49,36 @@ public class KeyStoreFrameTest {
         ackParsing();
         policy();
         endToEnd();
-        System.out.println("KeyStoreFrameTest passed: 写/读往返、文档字节、边界拒绝、回执解析、EqWritePolicy 放行、Loopback 端到端读写");
+        mpoCodec();
+        System.out.println("KeyStoreFrameTest passed: 写/读往返、文档字节、边界拒绝、回执解析、EqWritePolicy 放行、Loopback 端到端读写、L3 MPO 值协议");
+    }
+
+    // L3 MPO 值协议（docs/hearing-aid-l3-mpo.md；与固件 apply_mpo.S 位型门对齐）
+    static void mpoCodec() {
+        // 正常值往返 + 字节形状（'H','A',01,00,float32 LE）
+        byte[] v100 = KeyStoreFrame.encodeMpoValue(100.0f);
+        bytes("MPO=100 编码", v100, unhex("48410100" + "0000c842"));
+        Float back = KeyStoreFrame.decodeMpoValue(v100);
+        expect(back != null && Math.abs(back - 100.0f) < 1e-4, "MPO=100 解码");
+        // 位型门：与固件一致地拒绝 <=0.3 / >=120 / NaN / Inf / 负数
+        rejected(() -> KeyStoreFrame.encodeMpoValue(0.3f), "MPO<=0.3 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeMpoValue(120.0f), "MPO>=120 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeMpoValue(Float.NaN), "NaN 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeMpoValue(Float.POSITIVE_INFINITY), "Inf 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeMpoValue(-90.0f), "负数应拒绝");
+        // 旧格式/任意测试字节不被误读（历史 key30 值 5730dead… 解码为 null）
+        expect(KeyStoreFrame.decodeMpoValue(unhex("5730deadbeef2100")) == null,
+                "非协议值必须解不出 MPO");
+        // 协议头破损拒绝
+        byte[] bad = v100.clone(); bad[0] = 0x49;
+        expect(KeyStoreFrame.decodeMpoValue(bad) == null, "魔数错拒绝");
+        bad = v100.clone(); bad[2] = 2;
+        expect(KeyStoreFrame.decodeMpoValue(bad) == null, "版本错拒绝");
+        bad = v100.clone(); bad[3] = 1;
+        expect(KeyStoreFrame.decodeMpoValue(bad) == null, "保留字节非 0 拒绝");
+        // 8B 协议值可进普通 write 通道（帧形状与既有写完全一致）
+        byte[] w = KeyStoreFrame.buildWriteCommand(3, v100);
+        bytes("MPO 写帧", KeyStoreFrame.parseWriteCommand(w), v100);
     }
 
     static void roundTrip() {

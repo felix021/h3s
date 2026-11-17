@@ -15,8 +15,9 @@
  * 异步投递路径经 trampoline 0x060256aa 以同一四参形状调起，本路静态复核）：
  *   setter(r0=响应缓冲, r1=缓冲容量128, r2=data指针, r3=data_len) → r0=回执字节数 n
  *   分发器随后覆写 resp[0]=cmdid、resp[1]=n，只发送 resp[0..n+2)——所以本载荷把
- *   回执数据写在 resp+2 起，写路径用一次字存储 [resp+0]=status 写 status 到
- *   resp[2]（resp[0..1] 反正会被覆写，resp[3] 的残留字节落在 n+2 之外不会被发送）。
+ *   回执数据写在 resp+2 起，写路径用字节存储 b[resp+2]=status（路 L3 勘误：旧版
+ *   字存储 [resp+0]=status 实际把 status 落在 resp[0]，resp[2] 恒为 0，失败也被
+ *   App 解析成成功；分发器覆写点 0x0600f94a/0x0600f94e 为 b[sp+44]/b[sp+45]）。
  *
  * 固件锚点：
  *   - set_config 0x06001f12 / get_config 0x06000f88：路 AB（docs/vm-key-roundtrip.md）
@@ -67,7 +68,9 @@ hook_write:
     if (r0 == 0) goto hook_w_ok
     r5 = 1
 hook_w_ok:
-    [r4+0] = r5                      /* 字存储：resp[2]=状态（resp[0..1] 分发器覆写） */
+    b[r4+2] = r5                     /* 字节直写 resp[2]（分发器覆写 resp[0..1]；路 L3
+                                        勘误：旧版字存储 [r4+0] 把 status 落在 resp[0]，
+                                        resp[2] 恒 0——失败也回 30 01 00 假成功，codex 复核） */
     r0 = 1
     goto hook_ret
 

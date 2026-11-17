@@ -85,7 +85,10 @@ CANDIDATES = {
         'registry_slot': False,
     },
     'r4_keyhook': {
-        'sha256': 'bfc3f681e969d3c984a5ff7ee6d33ae759897788b132777ede01423104e3ab20',
+        # HAL3 re-pin: keystore_hook status-byte erratum fix (st.w -> st.b at
+        # resp+2, docs/hearing-aid-l3-mpo.md §5) changed the payload byte —
+        # the old pin bfc3f681… is superseded by the corrected candidate.
+        'sha256': '1873027bcf82026aa1829aeeebf348c9227a8f9b3895009dbc81205f0b30ac65',
         'plain_length': 0xE3246,          # flash end 0xE5266 - 0x2020 (measured)
         'whole_file_diff_bytes': 574,     # r4-command-hook §3.3 byte account (fixed open)
         'registry_slot': True,
