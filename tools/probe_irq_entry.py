@@ -5783,6 +5783,10 @@ def check(report,firmware):
     # 路 LPV 尾段(+2,068 步,tbh case 体+RAM 对象链+缓冲配置 walk):并行
     # 半字 15→16、并行字节 412→416(case 体与 walk 的并行对存储半);双字/
     # 跨页/rep 族/insert 装载/LP 位 RMW/复位/mem_pwr/awkup/死读全不变。
+    # 并行传送族并入后钉值失配(非 bug,纯钉值):parallel_halfword_store_old_registers
+    # 42→527(+485)——PARSTOR ext.* 传送族并入 exact 并行存清单(551 站点/233 st-pairs)、
+    # D2AJ st.h.idxs 284 站点、DEBTCLEAR pi·pr 6 站点,均在 RAND 设钉 42 之后并入;
+    # parity self-check spans 147/diffs 29 不变,证无镜像分歧(重分类非语义变更)。
     require(r['instruction_adapters'].get('exact_doubleword_store')==119 and
             r['instruction_adapters'].get('exact_doubleword_store_cross_page_split')==7 and
             r['instruction_adapters'].get('immediate_rep_multi_block_projection')==1002 and
@@ -5790,7 +5794,7 @@ def check(report,firmware):
             r['instruction_adapters'].get('register_rep_multi_block_projection')==425 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_load')==9 and
             r['instruction_adapters'].get('rep_copy_unknown_transport_store')==9 and
-            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==42 and
+            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==527 and
             r['instruction_adapters'].get('parallel_insert_load_old_registers_is_assumption')==2788 and
             r['instruction_adapters'].get('parallel_byte_store_old_registers')==13223 and
             r['instruction_adapters'].get('lp_timer_bit_rmw')==124 and
