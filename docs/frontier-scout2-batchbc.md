@@ -196,12 +196,17 @@ call 0x60674aa（[0x12521C] bit1 wake 判定）返回 0（首 boot [文档：路
   往返+`test_batchb_jl_iomc_map_container_resumes_exact_semantics` 行为恢复/
   异 fixture 拒绝）；`test_image_trace_diff.py`（registry↔irq_case 参数闭包+
   值常量同一性）。
-- **等批 A 验证臂**：本路**未跑任何条件线实跑**（probe_irq_entry 主场景留给
-  后续合批路，避免与在途主批 A 撞线）。批 B 前缀零触达（§3）目前是静态论证；
-  待主批 A 放行出新前沿后，合批路重钉前沿时顺带验证：(1) 新前沿停点不在
-  JL_IOMC 七字（零触达负例）；(2) conditional 场景报告新增
-  `jl_iomc_map_registers` 状态键（全零记录）而停点/步数逐值不变。若意外
-  触达，回读本页 §2/§4 对应字预案重审。
+- **验证臂已收口（路 BATCHB2/sim-batchb2，2026-11-18 06:09，基线 main fc6e75e）**：
+  批 A 合批出新前沿后，从批 A 谱系 cut 快照（cut-41866039，跨代码
+  `--ack-prior-fingerprint`+跨开关 `enable_slots`×2）续跑 `jl_iomc_map_fixture=0`
+  臂（wall 0.8s），两项预期逐条兑现：(1) **零触达负例成立**——停点
+  41,858,013 @ 0x6010ca6（资源 VFS 目录读 0x61eafe0，不在 JL_IOMC 七字），
+  与批 A 从 0 参照除 peripherals 外逐键相等（含 22 键 adapter 计数）；(2)
+  **新增 `jl_iomc_map_registers` 状态键全零**（word_writes=0/stores={}/
+  reads=0/synthesized_initial_reads=0，fixture=0x0），peripherals 内差异恰为
+  该键+assumptions 同名键。§3/§8 静态零触达论证获运行证实；快照续跑为
+  条件通过（合并前从 0 全量重放照红线收口）。证据
+  [evidence/sim-routes/batchb2-verify.json](../evidence/sim-routes/batchb2-verify.json)。
 
 ## 6. 攒批可行性
 

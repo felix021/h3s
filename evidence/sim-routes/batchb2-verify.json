@@ -1,0 +1,42 @@
+{
+  "route": "BATCHB2 / sim-batchb2（基线 main fc6e75e，零 tools/ 改动，快照续跑验证臂）",
+  "recorded_at": "2026-11-18T06:11:20+08:00",
+  "task": "批 B（JL_IOMC 七字 jl_iomc_map_fixture，scout2 §5.5 留臂）验证臂：批 A 合批出新前沿 41,858,013 @ 0x6010ca6 后验证 (1) 零触达负例——新前沿停点不在 JL_IOMC 七字、开关=0 开启后停点/步数逐值不变；(2) conditional 报告新增 jl_iomc_map_registers 状态键（全零记录）。",
+  "method": {
+    "mechanism": "frontier_iteration.py arm 从批 A 谱系 cut 快照续跑（docs/snapshot-resume.md §resume_ack 三规则）：源=cut-41866039（批 A 代码态 490fce2 捕获的 budget 干净界，41,850,980 完成步），跨代码 resume（--ack-prior-fingerprint 558b53b2…，恢复摘要记 was/now）+ 跨开关 enable_slots×2——jl_pled_config_words None→on 与批 A on-main 臂同款；jl_iomc_map 缺键→on＝「家族捕获后才登记」路径（快照代码态无批 B）",
+    "command": "python3 tools/frontier_iteration.py --rom <ROM> --firmware <UFW> --route batcha --work-root ~/worktrees/h3s/sim-batcha/analysis/frontier-iterations --ack-prior-fingerprint 558b53b2… --reason <前缀中性依据> arm batchb2-verify --from cut-41866039 --set jl_pled_config_words=true --set jl_iomc_map_fixture=0 --ack-enable-slot jl_pled_config_words --ack-enable-slot jl_iomc_map --reference …/batcha/on-reference.json",
+    "scenario": "p11_heap_experimental_config 全条件栈（含批 A jl_pled_config_words=true、本臂 jl_iomc_map_fixture=0）",
+    "code_delta_490fce2_to_fc6e75e": "BATCHB 23faf4f（默认关，本臂开启）＋PARSTD d25adca（parity 断言层，报告逐字节不变，不触及 irq_case 行）＋FLAKYFIX 2f2318d/f2455c2（测试文件）＋PREGAP 8fc0307（离线 App/USB 工具）＋HADOC 1dd46ca/d47427b（文档）",
+    "run_window": "2026-11-18 06:09:58-06:09:59（wall 0.8s；对照：从 0 全量 ≈23 分钟/臂）",
+    "row_artifact": "~/worktrees/h3s/sim-batcha/analysis/frontier-iterations/batcha/（batchb2-verify.json=本臂行；on-reference.json=批 A 从 0 参照；lineage.json=谱系追加条目）"
+  },
+  "result": {
+    "verdict": "零触达负例成立＋新键全零：两项预期逐条兑现，批 B §3/§8 静态零触达论证获运行证实",
+    "completed_steps": 41858013,
+    "stop_pc": "0x6010ca6",
+    "stop_core": 0,
+    "stop": {"kind": "unmapped_memory", "access": "read", "address": "0x61eafe0", "size": 1, "reference_sdk_register": null},
+    "stop_reading": "资源 VFS 目录读 0x61eafe0 镜像外停点（批 A 新前沿原样重现，不在 JL_IOMC 七字 0xfd6018..0xfd6030）",
+    "container": {
+      "word_writes": 0,
+      "stores": {},
+      "reads": 0,
+      "synthesized_initial_reads": 0,
+      "initial_fixture_word": "0x0",
+      "reading": "七字全零触达：无写、无读（含 RMW 内部读/合成初读），容器保持新构造初态"
+    }
+  },
+  "diff_vs_from0_reference": {
+    "reference": "批 A on-reference.json（从 0 全量，代码态 490fce2=批 B 开关尚不存在≡关，41,858,013 @ 0x6010ca6）",
+    "runner_compare": "differing_keys=['peripherals']（differing_count=1），reference_equal=false=预期非意外",
+    "outer_keys": "除 peripherals 外逐键相等（含 completed_steps/stop/stop_pc/per_core 步数/instruction_adapters（22 键 adapter 计数基线不动）/memory_event_counts/milestones/machine/memory_snapshots SHA）",
+    "peripherals_inner": "key-set 差恰＝+jl_iomc_map_registers；peripherals.assumptions key-set 差恰＝+jl_iomc_map_registers；共享子键全部值相等",
+    "baseline_untouched": "evidence/p11_heap_adapter_count_baseline.json 零触达负例不动基线（红线遵守）"
+  },
+  "honesty": {
+    "derived_not_measured": "fixture=0x00000000 是明确选择的实验输入（空映射表最小语义），无硅复位值证据",
+    "resume_conditional_pass": "本臂为快照续跑（0.8s）非从 0 全量；等价性依据＝(a) CKPT/CON0 试点/BATCHA 三轮已证 resume≡from-0 逐键相等；(b) 与批 A 真·从 0 参照比较，除新容器键外逐键相等——代码差 490fce2..fc6e75e 中唯一触及条件行的就是批 B 本身（本臂对象）。ack 的前缀中性判断是操作者的（lineage reason 入档）；结构闸/manifest/virgin 判据机械面照旧（enabled_slots=[jl_iomc_map, jl_pled_config_words] 实际生效）。合并前从 0 全量重放（check_local 全量层+adapter 基线重取）按红线由复核者收口",
+    "prefix_neutrality_basis": "scout2 §3 三组触达面（引脚卸载 switch 0x60196e8 boot 前缀恒 case32 / GPIO pfun 分发器 0x6001456 前缀已穿 / RAM-code 低功耗·SFC 域健康前缀不到达）＋§8 与批 A 放行后执行流零交集——本臂为该静态论证的运行侧复验"
+  },
+  "units_impact": "零（本路零 tools/ 代码改动；入库仅本 JSON＋docs/frontier-scout2-batchbc.md §5.5 状态句更新）"
+}
