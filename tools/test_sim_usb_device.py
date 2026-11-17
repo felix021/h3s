@@ -24,6 +24,7 @@ import base64
 import binascii
 import hashlib
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -36,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sim_bridge_server as sbs
 import sim_restore_planner as planner
-from test_sim_bridge_server import Client, free_port
+from test_sim_bridge_server import Client
 
 FLASH = bytes((i * 7 + 3) & 0xff for i in range(sbs.USB_FLASH_SIZE))       # 合成 2MiB（协议测试用）
 ROM = bytes((i * 13 + 5) & 0xff for i in range(sbs.USB_ROM_WINDOW))        # 合成 128KiB 窗
@@ -287,17 +288,20 @@ class UsbSessionTest(unittest.TestCase):
         self.flash = bytes((i * 5 + 1) & 0xff for i in range(sbs.USB_FLASH_SIZE))
         self.rom = bytes((i * 9 + 7) & 0xff for i in range(sbs.USB_ROM_WINDOW))
         self.usb = sbs.MscBotDevice(flash=self.flash, rom=self.rom)
-        self.port = free_port()
-        ready = threading.Event()                     # 防 bind/listen 竞态：就绪后再放行连接
-        threading.Thread(target=sbs.serve, args=('127.0.0.1', self.port, sbs.DEFAULT_FIXTURE, self.usb),
-                         kwargs={'ready': ready}, daemon=True).start()
-        if not ready.wait(5.0):
-            raise AssertionError('server 未在 5s 内就绪')
+        # 并发隔离（FLAKYFIX）：listener 在测试线程内同步 bind 127.0.0.1:0——内核随机端口
+        # bind 即独占，根除 free_port 探测式「bind 0→读号→关→稍后再 bind」的跨进程双分配
+        # 窗口；bind+listen 已同步完成，无需 ready Event 再防 bind 竞态。
+        self.listener = sbs.make_listener('127.0.0.1', 0)
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=sbs.serve_listener,
+                         args=(self.listener, sbs.DEFAULT_FIXTURE, self.usb), daemon=True).start()
 
     def hello(self):
-        client = Client(self.port)
-        client.send({'t': 'hello', 'proto': sbs.PROTO, 'client': 'sim-usb'})
-        ok = client.recv()
+        # connect_with（FLAKYFIX）：断连后立即重 hello 时，旧会话线程的 close→link_reset→
+        # lock.release 是异步三步，裸 Client 会偶发吃到 busy（并发测试实例抢 CPU 放大窗口；
+        # 复现：4 进程并发同模式 600 迭代 87 次 busy，单进程 0）。busy 短退避是对异步拆链的
+        # 正确客户端容忍（M3 会话层 connect_with 同理），非掩盖 server 语义的重试兜底。
+        client, ok = connect_with(self.port, {'t': 'hello', 'proto': sbs.PROTO, 'client': 'sim-usb'})
         self.assertEqual(ok.get('t'), 'hello_ok')
         self.assertEqual(ok['world']['mode'], 'sim-usb-msc')
         self.assertEqual(ok['world']['read_only'], True)
@@ -897,12 +901,11 @@ class M3FlashSessionTest(unittest.TestCase):
         """新设备 + 新 server 线程（断链清理子测各自起——身份/相位是进程级状态，跨子测
         残留会让 ctl len0/FB06 的门拒绝，场景本就是独立会话生命周期）。"""
         self.usb = sbs.MscBotDevice(flash=FLASH, rom=ROM)
-        self.port = free_port()
-        ready = threading.Event()
-        threading.Thread(target=sbs.serve, args=('127.0.0.1', self.port, sbs.DEFAULT_FIXTURE, self.usb),
-                         kwargs={'ready': ready}, daemon=True).start()
-        if not ready.wait(5.0):
-            raise AssertionError('server 未在 5s 内就绪')
+        # 并发隔离（FLAKYFIX）：port-0 listener 同步 bind（见 UsbSessionTest.setUp 注）。
+        self.listener = sbs.make_listener('127.0.0.1', 0)
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=sbs.serve_listener,
+                         args=(self.listener, sbs.DEFAULT_FIXTURE, self.usb), daemon=True).start()
 
     def hello(self):
         return hello_client(self.port)
@@ -1117,13 +1120,32 @@ class M3FlashSessionTest(unittest.TestCase):
             self.assertEqual(help_out.returncode, 0, help_out.stderr)
             self.assertIn('--arm-plan', help_out.stdout)
             self.assertIn('--persist', help_out.stdout)
-            port = free_port()
+            # 并发隔离（FLAKYFIX）：--listen :0 由内核随机分配（子进程启动期上百 ms 的
+            # 探测端口窗口不复存在），实际端口从 stderr「监听 127.0.0.1:<port>」行取；
+            # 读者线程持续排水 stderr（防 PIPE 缓冲死锁），行累积供尾部断言。
+            stderr_lines = []
+            port_seen = threading.Event()
+
+            def drain_stderr():
+                for raw in proc.stderr:
+                    stderr_lines.append(raw.decode('utf-8'))
+                    m = re.search(r'监听 127\.0\.0\.1:(\d+)', stderr_lines[-1])
+                    if m:
+                        actual_port.append(int(m.group(1)))
+                        port_seen.set()
+
+            actual_port = []
             proc = subprocess.Popen(
                 [sys.executable, str(TOOLS_DIR / 'sim_bridge_server.py'),
-                 '--listen', '127.0.0.1:%d' % port, '--flash-image', str(flash_path),
+                 '--listen', '127.0.0.1:0', '--flash-image', str(flash_path),
                  '--arm-plan', str(plan_path), '--persist'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             try:
+                reader = threading.Thread(target=drain_stderr, daemon=True)
+                reader.start()
+                if not port_seen.wait(10.0):
+                    raise AssertionError('CLI server 10s 内未报告监听端口: %s' % ''.join(stderr_lines))
+                port = actual_port[0]
                 client, reply = connect_with(
                     port, {'t': 'hello', 'proto': sbs.PROTO, 'client': 'sim-usb'})
                 self.assertEqual(reply.get('t'), 'hello_ok', reply)
@@ -1134,7 +1156,8 @@ class M3FlashSessionTest(unittest.TestCase):
             finally:
                 proc.terminate()
                 proc.wait(10)
-            stderr = proc.stderr.read().decode('utf-8')
+            reader.join(2.0)
+            stderr = ''.join(stderr_lines)
             self.assertIn('启动即 armed', stderr)
             self.assertIn('占位', stderr)                          # --persist 如实标注未实施
 

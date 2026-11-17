@@ -20,26 +20,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sim_bridge_server as sbs
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
-
-
 class ServerHandle:
     """后台跑 serve() 的测试句柄（静态 fixture 世界，独立于进程级 DEFAULT_FIXTURE）。"""
 
     def __init__(self, reads=None):
-        self.port = free_port()
         state = sbs.StaticFixtureState(reads if reads is not None else {
             0x2f: [0x2f, 0x03, 80, 81 | 0x80, 100],
             0x17: [0x17, 0x03, 0x01, 0x01, 0x02],
         })
-        ready = threading.Event()                     # 防 bind/listen 竞态：就绪后再放行连接
-        threading.Thread(target=sbs.serve, args=('127.0.0.1', self.port, state), kwargs={'ready': ready},
-                         daemon=True).start()
-        if not ready.wait(5.0):
-            raise AssertionError('server 未在 5s 内就绪')
+        # 并发隔离（FLAKYFIX）：listener 同步 bind 127.0.0.1:0 取内核随机端口（bind 即独占，
+        # 根除 free_port 探测式「bind 0→读号→关→稍后再 bind」跨进程双分配窗口）；
+        # bind+listen 已同步完成，无需 ready Event。原 free_port() 已删防复用。
+        self.listener = sbs.make_listener('127.0.0.1', 0)
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=sbs.serve_listener, args=(self.listener, state), daemon=True).start()
 
 
 class Client:

@@ -1197,9 +1197,21 @@ def serve_worlds(host: str, port: int, *, rom_path, firmware_path, snapshot_dir,
 
 def serve(host: str, port: int, state: StaticFixtureState, usb: MscBotDevice | None = None,
           ready: threading.Event | None = None) -> None:
-    listener = make_listener(host, port)
+    listener = make_listener(host, port)              # port=0 → 内核随机分配（日志打实际端口）
     if ready is not None:
         ready.set()                                   # 测试同步用：listen 就绪后再连（防 bind 竞态）
+    serve_listener(listener, state, usb)
+
+
+def serve_listener(listener: socket.socket, state: StaticFixtureState,
+                   usb: MscBotDevice | None = None) -> None:
+    """静态模式 accept 循环（serve() 的循环体，行为不变）。
+
+    测试设施并发隔离入口（FLAKYFIX）：调用方 make_listener('127.0.0.1', 0) 在测试线程内
+    同步 bind 即独占端口、getsockname 取实际端口——根除 free_port 探测式
+    「bind 0→读号→关闭→稍后再 bind」的跨进程 TOCTOU 双分配窗口（两个测试实例并发时
+    后 bind 者 EADDRINUSE / CLI 子进程起不来）。"""
+    host, port = listener.getsockname()
     log('bridge server（静态 fixture + USB MSC 设备端）监听 %s:%d，proto=%d' % (host, port, PROTO))
     active_lock = threading.Lock()             # 单活动客户端纪律（设计 §4.1：BLE/USB 共用）
     try:
@@ -1232,7 +1244,8 @@ def serve(host: str, port: int, state: StaticFixtureState, usb: MscBotDevice | N
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--listen', default='%s:%d' % DEFAULT_LISTEN,
-                        help='监听地址 host:port（默认 127.0.0.1:7788；adb reverse tcp:port tcp:port）')
+                        help='监听地址 host:port（默认 127.0.0.1:7788；adb reverse tcp:port tcp:port；'
+                             'port=0 内核随机分配，日志打实际端口）')
     parser.add_argument('--fixture', type=str, default=None,
     help='fixture JSON 文件 {"reads":{"47":[79,3,80,129,100],...}}（缺省用内置合成值；仅静态模式）')
     parser.add_argument('--flash-image', type=str, default=None,
