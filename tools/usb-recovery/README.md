@@ -7,10 +7,19 @@
 - `protocol.py`：MSC BOT、CDB与响应校验。
 - `image.py`：已知r2→b79镜像/布局/CRC/VM保留约束。
 - `test_recovery.py`：脱机安全失败路径测试；不打开USB。
+- `accept_profile.py` / `accept_verify.py` / `accept_usb.py` / `test_accept_recovery.py`：
+  助听真机验证计划（H5-PRE-01）的双向 profile——b79→HAL5 刷写与 HAL5→b79 回退。
+  具名、摘要钉死、精确变化扇区（全差分推导+独立校验器复算，绝不预填 r2 六扇区）、
+  boot-info 扇区最后提交、VM 保留最新、一次性 nonce（固定状态目录 O_EXCL 占用）、
+  意图日志（intent→result 逐条 fsync）、全读回校验，以及中断分析器（只接受日志
+  可解释的执行前缀状态，输出限定恢复方案或拒绝）。旧 r2→b79 门一律不动。
+  纯离线实现+假设备故障注入测试；未在真机执行。
 
 ```bash
 python3 tools/usb-recovery/h3s_usb.py --help
 python3 tools/usb-recovery/test_recovery.py
+python3 tools/usb-recovery/test_accept_recovery.py
+python3 tools/usb-recovery/accept_usb.py --help   # plan-flash/flash/plan-rollback/rollback/analyze/recover
 ```
 
 设备完整备份含私有身份、配对和校准数据，保存在忽略目录，勿提交。当前仅验证一台H3S这一故障场景；公开CLI整理后没有再次刷写，不能把它当成通用厂商全片烧录器。

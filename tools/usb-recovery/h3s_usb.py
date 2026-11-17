@@ -26,6 +26,8 @@ def save(path, data):
     fd = os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
     with os.fdopen(fd,'wb') as f:
         f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def save_json(path, report):

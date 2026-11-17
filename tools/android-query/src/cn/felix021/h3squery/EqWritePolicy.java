@@ -12,9 +12,10 @@ import java.util.Arrays;
  *     第二字节忽略；档位 3/6/8 是控制面板层约束，固件接收层不钳）；
  *   - 0x2b 按键重映射（候选 B）：data_len==3，data=[key,gesture,action]，字段域照
  *     KeyRemapFrame（key∈{3,5,7}、gesture 1..5（5=长按假设）、action 0..7/11）；
- *   - 0x30 R4 key-store（docs/r4-command-hook.md）：data=[30,v0..v7]（len 9，写 key 30）或
- *     data=[30]（len 1，读 key 30）——固件侧 --r4-keyhook 离线候选的 keystore_hook 载荷
- *     （UNTESTED），值 8 字节对本层不透明，白名单只钉形状；
+ *   - 0x30 R4 key-store（docs/r4-command-hook.md）：data=[30,v0..v7]（len 9，写 key 30）/
+ *     data=[30]（len 1，读 key 30）；key31 同族（路 HAL4）：data=[31,v0..v87]（len 89，写）/
+ *     data=[31]（len 1，读）——固件侧 --r4-keyhook 离线候选的 keystore_hook 载荷
+ *     （UNTESTED），值字节对本层不透明，白名单只钉形状（key30 先例同款，不开任意帧写）；
  *   - 0x2E 音频模式（docs/wired-game-mode.md §2.1，音乐 1/游戏 3/电影 4）：固件 setter
  *     0x6026134 只读载荷首字节写 0x124a04；data_len=1 是本仓假设（0x1d 先例固件要求
  *     len>=2，0x2E 的 len 要求未钉），真机联调对照；
@@ -75,9 +76,13 @@ public final class EqWritePolicy {
                 return false;
             case CMD_KEY_REMAP:             // 0x2b：data=[key,gesture,action]，字段域照 KeyRemapFrame
                 return dataLen == 3 && KeyRemapFrame.isValidTriple(frame[10] & 255, frame[11] & 255, frame[12] & 255);
-            case CMD_KEY_STORE:             // 0x30：data=[30,8B 值]（写）或 [30]（读），形状钉死、值不透明
-                return (dataLen == KeyStoreFrame.WRITE_LEN || dataLen == KeyStoreFrame.READ_LEN)
-                        && (frame[10] & 255) == KeyStoreFrame.KEY_ID;
+            case CMD_KEY_STORE:             // 0x30：key30 data=[30,8B]/[30]；key31 data=[31,88B]/[31]
+                int key = frame[10] & 255;  // （写/读形状钉死、值不透明，key30 先例同款）
+                if (key == KeyStoreFrame.KEY_ID)
+                    return dataLen == KeyStoreFrame.WRITE_LEN || dataLen == KeyStoreFrame.READ_LEN;
+                if (key == KeyStoreFrame.EQ_KEY_ID)
+                    return dataLen == KeyStoreFrame.EQ_WRITE_LEN || dataLen == KeyStoreFrame.READ_LEN;
+                return false;
             case CMD_AUDIO_MODE:            // 0x2E：data=[模式]（len 1 [假设]），模式∈{1,3,4}
                 int mode = frame[10] & 255;
                 return dataLen == 1 && (mode == 1 || mode == 3 || mode == 4);

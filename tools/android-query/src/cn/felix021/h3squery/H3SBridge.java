@@ -369,6 +369,19 @@ public class H3SBridge {
     }
 
     /**
+     * 组 R4 key-store EQ 读命令（FF/0x30，data=[31]）：固件 get_config(31, resp+2, 88)
+     * 回执 `30 58`+88B 值（KeyStoreFrame.parseEqReadPayload→decodeEqValue 解码链）；
+     * key 无记录或读回长度 != 88 时固件静默不回（keystore_hook.S hook_read31）。
+     * 返回排队 JSON（{ok,sent,seq,sn}），值经 response 事件 payloadHex 异步到达。
+     */
+    @JavascriptInterface
+    public String getHearingEq() {
+        if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(KeyStoreFrame.buildEqReadCommand(sn), sn);
+    }
+
+    /**
      * 组 R4 key-store EQ 写命令（FF/0x30，key 31，docs/hearing-aid-l4-eq.md）：
      * segsJson = [{"f":freqHz,"g":gainDb} × 10]，编成 88B 版本化值
      * （KeyStoreFrame.encodeEqValue）后随 data=[31, …] 发送。回执 `30 01 status`
@@ -406,6 +419,68 @@ public class H3SBridge {
         }
         int sn = transport == null ? 0 : allocSn();
         return dispatch(H3SBridge.buildCustomCommand(sn, KeyStoreFrame.CMD_ID, data), sn);
+    }
+
+    // ---------- 双 key 软回退受限入口（docs/hearing-aid-acceptance-plan.md §4d） ----------
+
+    /**
+     * key30 软回退（H5-DEF-01）：只改魔数首字节 48→00，其余 7 字节与长度原样保留。
+     * 入参 valueHex 必须是「刚从设备读回的 8B 原值」且能通过 decodeMpoValue 协议门
+     * （魔数/版本/范围）——即只接受真实 MPO 协议值，本方法在 Java 侧自行把首字节置 0
+     * 后组帧，页面无法借这条入口发任意 8 字节（发任意值仍只有 setHearingCfg 的 8B
+     * 形状门，与既有一致、不放松）。原值备份是调用方责任：先 getHearingCfg 存档
+     * payloadHex 再调本方法。回执 `30 01 00` = set_config 成功（≠ 曲线已回退，生效
+     * 需完整关→开重装载 L2 兜底）。
+     */
+    @JavascriptInterface
+    public String invalidateHearingCfg(String valueHex) {
+        return invalidateKeyStore(valueHex, false);
+    }
+
+    /**
+     * key31 软回退（H5-DEF-01）：只改魔数首字节 48→00，其余 87 字节与长度原样保留。
+     * 入参 valueHex 必须是「刚从设备读回的 88B 原值」且能通过 decodeEqValue 协议门；
+     * 帧仍走 0x30 key31 白名单形状（89B 写），魔数置 0 后固件 apply_eq 整包先验拒收、
+     * 下次开启辅听回退 Eq1Eff 文件默认曲线。原值备份同上（先 getHearingEq）。
+     */
+    @JavascriptInterface
+    public String invalidateHearingEq(String valueHex) {
+        return invalidateKeyStore(valueHex, true);
+    }
+
+    /** 软回退公共实现：解码门验原值 → 首字节置 0 → 原值直写帧（不重编码）。 */
+    private String invalidateKeyStore(String valueHex, boolean eq) {
+        if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
+        byte[] value;
+        try {
+            value = unhex(valueHex);
+        } catch (IllegalArgumentException e) {
+            return err(e.getMessage());
+        }
+        // 长度/协议门：decode 系对长度错抛 IllegalArgumentException、对协议头不符返回 null，
+        // 两种都拒——软回退只接受「真实协议原值」，不是任意字节。
+        if (eq ? !decodesAsEq(value) : !decodesAsMpo(value)) {
+            return err("原值不是可解码的 key" + (eq ? 31 : 30) + " 协议值（先 "
+                + (eq ? "getHearingEq" : "getHearingCfg") + " 取回设备原值；软回退只接受真实协议值）");
+        }
+        byte[] bad = value.clone();
+        bad[0] = 0;                                        // 魔数 'H'(0x48) → 0x00，其余字节不动
+        int sn = transport == null ? 0 : allocSn();
+        byte[] frame = eq
+            ? H3SBridge.buildCustomCommand(sn, KeyStoreFrame.CMD_ID, KeyStoreFrame.buildEqWriteDataFromValue(bad))
+            : KeyStoreFrame.buildWriteCommand(sn, bad);
+        return dispatch(frame, sn);
+    }
+
+    /** decode 门（长度错抛异常也按「不可解码」处理）。 */
+    private static boolean decodesAsMpo(byte[] value) {
+        try { return KeyStoreFrame.decodeMpoValue(value) != null; }
+        catch (IllegalArgumentException e) { return false; }
+    }
+
+    private static boolean decodesAsEq(byte[] value) {
+        try { return KeyStoreFrame.decodeEqValue(value) != null; }
+        catch (IllegalArgumentException e) { return false; }
     }
 
     /** hex 串 → 字节数组（长度须为偶数；只认 0-9a-fA-F）。 */

@@ -48,10 +48,13 @@ public class KeyStoreFrameTest {
         boundary();
         ackParsing();
         policy();
+        policyKey31();
         endToEnd();
+        endToEndKey31();
+        softRollback();
         mpoCodec();
         eqCodec();
-        System.out.println("KeyStoreFrameTest passed: 写/读往返、文档字节、边界拒绝、回执解析、EqWritePolicy 放行、Loopback 端到端读写、L3 MPO 值协议、L4 EQ 十段值协议");
+        System.out.println("KeyStoreFrameTest passed: 写/读往返、文档字节、边界拒绝、回执解析、EqWritePolicy 放行（key30+key31）、Loopback 端到端读写（双 key）、软回退受限入口、L3 MPO 值协议、L4 EQ 十段值协议");
     }
 
     // L3 MPO 值协议（docs/hearing-aid-l3-mpo.md；与固件 apply_mpo.S 位型门对齐）
@@ -191,6 +194,45 @@ public class KeyStoreFrameTest {
         rejected(() -> KeyStoreFrame.parseReadPayload(unhex("3007" + "0102030405060708")), "读回 n=7 应拒绝");
     }
 
+    // key31 白名单（缺口表第 1 项）：89B 写 + 1B 读精确放行；错长度/错 key/混合形状拒绝，
+    // 不开任意帧写（0x30 只认 30/31 两个 key 的四个精确形状）。
+    static void policyKey31() {
+        KeyStoreFrame.EqSeg[] segs = flatSegs();
+        byte[] w = KeyStoreFrame.buildEqWriteCommand(1, segs);
+        byte[] r = KeyStoreFrame.buildEqReadCommand(1);
+        expect(w.length == 8 + 3 + 89 && (w[9] & 0xff) == 89 && (w[10] & 0xff) == 31,
+                "EQ 写帧形状: len=" + w.length);
+        bytes("EQ 读命令文档字节", KeyStoreFrame.buildEqReadCommand(0),
+              unhex("fedcbac0ff0004" + "00" + "30" + "01" + "1f" + "ef"));
+        eqInt(KeyStoreFrame.parseEqReadCommand(r), KeyStoreFrame.EQ_KEY_ID);
+        bytes("EQ 写命令往返", KeyStoreFrame.parseEqWriteCommand(w), KeyStoreFrame.encodeEqValue(segs));
+        expect(EqWritePolicy.permitted(w, true), "armed 应放行 key31 89B 写形状");
+        expect(EqWritePolicy.permitted(r, true), "armed 应放行 key31 1B 读形状");
+        expect(!EqWritePolicy.permitted(w, false), "未武装应拒绝 key31 写");
+        expect(!EqWritePolicy.permitted(r, false), "未武装应拒绝 key31 读");
+        // key31 帧 key 字节/长度破坏：89B 但 key=30 / 9B 但 key=31 / 88B / 90B 全拒
+        byte[] badKey = w.clone(); badKey[10] = 0x1e;
+        expect(!EqWritePolicy.permitted(badKey, true), "89B 但 key=30 应拒绝");
+        byte[] nine = KeyStoreFrame.buildWriteCommand(1, new byte[8]); nine[10] = 0x1f;
+        expect(!EqWritePolicy.permitted(nine, true), "9B 但 key=31 应拒绝");
+        byte[] badLen = w.clone(); badLen[9] = 88;
+        expect(!EqWritePolicy.permitted(badLen, true), "data_len=88 应拒绝");
+        byte[] overLen = w.clone(); overLen[9] = 90;   // 声明 90 与实长不符（len_BE16 也不符）
+        expect(!EqWritePolicy.permitted(overLen, true), "data_len=90 应拒绝");
+        byte[] otherKey = r.clone(); otherKey[10] = 0x20;
+        expect(!EqWritePolicy.permitted(otherKey, true), "key=32 应拒绝");
+        // key30 白名单不回归
+        expect(EqWritePolicy.permitted(KeyStoreFrame.buildWriteCommand(1, new byte[8]), true),
+                "key30 写形状回归");
+    }
+
+    static KeyStoreFrame.EqSeg[] flatSegs() {
+        int[] freqs = {25, 53, 112, 238, 505, 1070, 2268, 4807, 10190, 21599};
+        KeyStoreFrame.EqSeg[] segs = new KeyStoreFrame.EqSeg[10];
+        for (int i = 0; i < 10; i++) segs[i] = new KeyStoreFrame.EqSeg(freqs[i], 0f);
+        return segs;
+    }
+
     static void policy() {
         byte[] w = KeyStoreFrame.buildWriteCommand(1, new byte[8]);
         byte[] r = KeyStoreFrame.buildReadCommand(1);
@@ -254,5 +296,92 @@ public class KeyStoreFrameTest {
         // 组帧层校验：非 hex / 长度错
         expect(new JSONObject(bridge.setHearingCfg("xyz")).getBoolean("ok") == false, "非 hex 应拒绝");
         expect(new JSONObject(bridge.setHearingCfg("0102")).getBoolean("ok") == false, "长度错应拒绝");
+    }
+
+    // key31 端到端（Loopback 桩按 keystore_hook.S HAL4 形状应答）：写→30 01 00；
+    // 读→30 58+桩值 88B → parseEqReadPayload → decodeEqValue 十段往返。
+    static void endToEndKey31() throws Exception {
+        LoopbackTransport loop = new LoopbackTransport();
+        Events sink = new Events();
+        H3SBridge bridge = new H3SBridge(loop, sink);
+        loop.connect();
+        bridge.armWrite(true);
+
+        KeyStoreFrame.EqSeg[] segs = flatSegs();
+        JSONObject wres = new JSONObject(bridge.setHearingEq(segJson(segs)));
+        expect(wres.getBoolean("ok") && wres.getBoolean("sent"), "EQ 写发送应成功: " + wres);
+        JSONObject wack = sink.bySeq(wres.getInt("seq"));
+        expect(wack.getBoolean("ok"), "EQ 写回执 status 应为 0: " + wack);
+        eqInt(KeyStoreFrame.parseWriteAck(unhex(wack.getString("payloadHex"))), 0);
+        bytes("设备桩收到的 EQ 写帧", loop.receivedFrames.get(0),
+              KeyStoreFrame.buildEqWriteCommand(wres.getInt("sn"), segs));
+
+        byte[] stub = KeyStoreFrame.encodeEqValue(segs);
+        loop.eqKeyStoreValue = stub.clone();
+        JSONObject rres = new JSONObject(bridge.getHearingEq());
+        expect(rres.getBoolean("ok") && rres.getBoolean("sent"), "EQ 读发送应成功: " + rres);
+        JSONObject rval = sink.bySeq(rres.getInt("seq"));
+        byte[] value = KeyStoreFrame.parseEqReadPayload(unhex(rval.getString("payloadHex")));
+        bytes("读回 88B", value, stub);
+        KeyStoreFrame.EqSeg[] back = KeyStoreFrame.decodeEqValue(value);
+        expect(back != null, "读回值应可解码");
+        for (int i = 0; i < 10; i++) expect(back[i].freqHz == segs[i].freqHz, "读回 freq[" + i + "]");
+
+        // 未武装拒绝 + 非协议桩值读回后软回退应拒（endToEnd 的 key30 未武装已覆盖）
+        H3SBridge unarmed = new H3SBridge(new LoopbackTransport(), new Events());
+        expect(new JSONObject(unarmed.getHearingEq()).getBoolean("ok") == false, "未武装 key31 读应拒绝");
+        expect(new JSONObject(unarmed.setHearingEq(segJson(segs))).getBoolean("ok") == false, "未武装 key31 写应拒绝");
+    }
+
+    // 软回退受限入口（H5-DEF-01）：只接受可解码协议原值，Java 侧自行置魔数首字节 0，
+    // 设备桩收到的帧 = 原值且仅 byte0 差异；任意/坏形状原值拒绝；未武装拒绝。
+    static void softRollback() throws Exception {
+        LoopbackTransport loop = new LoopbackTransport();
+        Events sink = new Events();
+        H3SBridge bridge = new H3SBridge(loop, sink);
+        loop.connect();
+        bridge.armWrite(true);
+
+        // key30：原值 = 真实 MPO 协议值
+        byte[] mpo = KeyStoreFrame.encodeMpoValue(95.0f);
+        JSONObject r30 = new JSONObject(bridge.invalidateHearingCfg(hex(mpo)));
+        expect(r30.getBoolean("ok") && r30.getBoolean("sent"), "key30 软回退应可发送: " + r30);
+        byte[] sent30 = KeyStoreFrame.parseWriteCommand(loop.receivedFrames.get(0));
+        expect(sent30[0] == 0 && java.util.Arrays.equals(sent30, 1, 8, mpo, 1, 8),
+                "key30 软回退帧应只改魔数首字节");
+        eqInt(KeyStoreFrame.parseWriteAck(unhex(sink.bySeq(r30.getInt("seq")).getString("payloadHex"))), 0);
+
+        // key31：原值 = 真实 EQ 协议值（88B）
+        byte[] eq = KeyStoreFrame.encodeEqValue(flatSegs());
+        JSONObject r31 = new JSONObject(bridge.invalidateHearingEq(hex(eq)));
+        expect(r31.getBoolean("ok") && r31.getBoolean("sent"), "key31 软回退应可发送: " + r31);
+        byte[] sent31 = KeyStoreFrame.parseEqWriteCommand(loop.receivedFrames.get(1));
+        expect(sent31[0] == 0 && java.util.Arrays.equals(sent31, 1, 88, eq, 1, 88),
+                "key31 软回退帧应只改魔数首字节");
+        eqInt(KeyStoreFrame.parseWriteAck(unhex(sink.bySeq(r31.getInt("seq")).getString("payloadHex"))), 0);
+
+        // 负例：非协议原值（坏魔数/坏版本/长度错/任意字节）与已失效值都不接受
+        for (String bad : new String[]{"00" + hex(mpo).substring(2),          // 已是坏魔数
+                                       "48410200" + "00".repeat(72),          // ver=2 冒充 8B？长度即错
+                                       "0102030405060708",                    // 任意字节
+                                       hex(eq).replaceFirst("4841", "4842")}) { // 坏魔数第二字节
+            expect(new JSONObject(bridge.invalidateHearingCfg(bad)).getBoolean("ok") == false,
+                    "key30 非协议原值应拒绝: " + bad.substring(0, 8));
+            expect(new JSONObject(bridge.invalidateHearingEq(bad)).getBoolean("ok") == false,
+                    "key31 非协议原值应拒绝: " + bad.substring(0, 8));
+        }
+        // 未武装拒绝
+        H3SBridge unarmed = new H3SBridge(new LoopbackTransport(), new Events());
+        expect(new JSONObject(unarmed.invalidateHearingCfg(hex(mpo))).getBoolean("ok") == false, "未武装软回退应拒绝");
+        expect(new JSONObject(unarmed.invalidateHearingEq(hex(eq))).getBoolean("ok") == false, "未武装软回退应拒绝");
+    }
+
+    static String segJson(KeyStoreFrame.EqSeg[] segs) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < segs.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append("{\"f\":").append(segs[i].freqHz).append(",\"g\":").append(segs[i].gainDb).append('}');
+        }
+        return sb.append(']').toString();
     }
 }
