@@ -1293,6 +1293,152 @@ def find_reconvergence(trace_a, trace_b, first_control):
                      'first control divergence only reports that the traces differ, not where')}
 
 
+def _fmt_addr(address):
+    return hex(address) if isinstance(address, int) else str(address)
+
+
+def _slice_of_differing_registers(regs_a, regs_b, byte_a, byte_b):
+    """True when the differing written byte pair is a byte slice of a register
+    pair that differs at the same step (both signatures carry the byte at the
+    SAME offset): the store transported a register that already carried
+    propagated image bytes (verbatim copies and computed values alike — a
+    register is the only path a stored data byte ever takes). Every character
+    offset is scanned: int signatures hold their bytes at even offsets,
+    unknown-word signatures ('u????????|…') at odd offsets."""
+    for sig_a, sig_b in zip(regs_a, regs_b):
+        if sig_a == sig_b:
+            continue
+        span = min(len(sig_a), len(sig_b)) - 1
+        for offset in range(span):
+            if sig_a[offset:offset + 2] == byte_a and sig_b[offset:offset + 2] == byte_b:
+                return True
+    return False
+
+
+def write_delta_facts(trace_a, trace_b, plain_a, plain_b):
+    """PARSTD storage-delta standard, facts pass: enumerate and explain EVERY
+    guest-write difference between two control-aligned runs (same step count,
+    identical per-step PCs — the stop/control parity the self-checks pin).
+
+    This closes both coverage gaps of the old report field
+    divergent_signature_spans['first'] (it only carried the FIRST 8 divergence
+    spans, and per span only its START step): every step whose writes tuple
+    differs is enumerated, inside any span and past the first 8.
+
+    A differing written byte pair is EXPLAINED by the image delta only when it
+    is a byte slice of a register pair that differs at that same step — a
+    store's data bytes always come from a register, so a differing byte at a
+    step whose registers are all identical is an INVENTED difference (same
+    inputs, same instruction, different outcome: nondeterminism or a model
+    bug), never image propagation. The register slice is then classified
+    - 'image': the pair ALSO equals a differing image byte pair at some offset
+      inside the known image diff runs (byte_diff_runs) — the firmware copied
+      differing image bytes into RAM verbatim (rep/word copies), or
+    - 'register': computed propagation — the register already carries image
+      bytes transformed by earlier arithmetic (e.g. the software CRC
+      accumulator byte stored at 0x60106a8: computed from, not equal to, the
+      image bytes).
+    With the two deterministic runs sharing flags, ROM, control flow and stop
+    point, the flash images are the ONLY input difference — so a differing
+    written byte that passes NEITHER class is an invented difference, which
+    the old 'writes_differ all False' span-start standard could never see.
+    The write stream STRUCTURE (write count, addresses, widths per step) must
+    match exactly; only data bytes may differ — a structural mismatch is a
+    behavioral store divergence.
+
+    Pure trace-array + image logic, no simulator state. Returns
+    {'steps', 'cells', 'image_cells', 'register_cells', 'structural',
+     'unexplained'}: steps = count of write-differing steps; cells maps
+    (address, byte_a, byte_b) -> occurrence count (address per differing
+    BYTE, so a differing halfword store yields two adjacent cells);
+    image_cells/register_cells partition cells by explanation; structural
+    and unexplained list the violations (empty = standard holds)."""
+    image_pairs = set()
+    for lo, hi in byte_diff_runs(plain_a, plain_b):
+        for offset in range(lo, min(hi, len(plain_a), len(plain_b))):
+            if plain_a[offset] != plain_b[offset]:
+                image_pairs.add((plain_a[offset], plain_b[offset]))
+    steps = 0
+    cells = {}
+    image_cells = {}
+    register_cells = {}
+    structural = []
+    unexplained = []
+    for step, (row_a, row_b) in enumerate(zip(trace_a, trace_b)):
+        writes_a, writes_b = row_a[5], row_b[5]
+        if writes_a == writes_b:
+            continue
+        steps += 1
+        if len(writes_a) != len(writes_b):
+            structural.append({'step': step, 'pc': hex(row_a[1]), 'kind': 'write_count',
+                               'a': [[_fmt_addr(address), data] for address, data in writes_a],
+                               'b': [[_fmt_addr(address), data] for address, data in writes_b]})
+            continue
+        for (address_a, data_a), (address_b, data_b) in zip(writes_a, writes_b):
+            if address_a != address_b or len(data_a) != len(data_b):
+                structural.append({'step': step, 'pc': hex(row_a[1]), 'kind': 'store_shape',
+                                   'a': [_fmt_addr(address_a), data_a],
+                                   'b': [_fmt_addr(address_b), data_b]})
+                continue
+            for offset in range(0, len(data_a), 2):
+                byte_a, byte_b = data_a[offset:offset + 2], data_b[offset:offset + 2]
+                if byte_a == byte_b:
+                    continue
+                cell = (_fmt_addr(address_a)
+                        + (f'+{offset // 2}' if offset else ''), byte_a, byte_b)
+                cells[cell] = cells.get(cell, 0) + 1
+                if not _slice_of_differing_registers(row_a[4], row_b[4], byte_a, byte_b):
+                    unexplained.append({'step': step, 'pc': hex(row_a[1]), 'address': cell[0],
+                                        'bytes': [byte_a, byte_b]})
+                elif (int(byte_a, 16), int(byte_b, 16)) in image_pairs:
+                    image_cells[cell] = image_cells.get(cell, 0) + 1
+                else:
+                    register_cells[cell] = register_cells.get(cell, 0) + 1
+    return {'steps': steps, 'cells': cells, 'image_cells': image_cells,
+            'register_cells': register_cells, 'structural': structural,
+            'unexplained': unexplained}
+
+
+def writes_explained_by_image_delta(trace_a, trace_b, plain_a, plain_b):
+    """PARSTD assertion predicate: [] iff every guest-write difference between
+    the two control-aligned runs is explained by the image byte delta — each
+    differing byte is a slice of a register pair differing at that step (the
+    mechanical transport proof), itself either a verbatim image byte pair or
+    a computed propagation — and the store stream is structurally identical.
+    Any violation is returned verbatim (structural mismatches first, then
+    unexplained differing bytes)."""
+    facts = write_delta_facts(trace_a, trace_b, plain_a, plain_b)
+    return facts['structural'] + facts['unexplained']
+
+
+def _require_pinned_write_delta(label, trace_a, trace_b, plain_a, plain_b,
+                                pinned_steps, pinned_cells):
+    """PARSTD require block shared by the official-vs-b79 self-checks: the
+    storage-delta standard must hold with ZERO violations AND the enumerated
+    propagation must reproduce the pinned facts exactly (steps + per-cell
+    counts), so a new, removed, moved or re-valued storage difference fails
+    the check even when it is perfectly image-explained. The pins come from a
+    fresh full replay at pin time (route discipline: the frontier advance
+    re-pins them)."""
+    facts = write_delta_facts(trace_a, trace_b, plain_a, plain_b)
+    require(not facts['structural'],
+            f'{label}: the write streams diverged structurally (count/address/width) — '
+            f'that is a behavioral store divergence, not image-byte propagation: '
+            f'{facts["structural"][:3]}')
+    require(not facts['unexplained'],
+            f'{label}: storage differences NOT explained by the image byte delta '
+            f'(not a slice of any register pair differing at that step — an invented '
+            f'difference; an image byte-pair match alone transports nothing): '
+            f'{facts["unexplained"][:3]}')
+    require(facts['steps'] == pinned_steps,
+            f'{label}: the image-delta storage propagation step count changed '
+            f'({facts["steps"]} != pinned {pinned_steps})')
+    require(facts['cells'] == pinned_cells,
+            f'{label}: the image-delta storage propagation cells changed '
+            f'(now-vs-pinned {sorted(facts["cells"].items())} vs '
+            f'{sorted(pinned_cells.items())})')
+
+
 def stop_parity(label_a, result_a, label_b, result_b):
     """Explicit stop-point parity between the two runs of a pair: step counts,
     per-core steps and the full stop records (kind/PC/address). Same-stop parity
@@ -1325,7 +1471,7 @@ LOADERS = {'official': load_official,
            'r4_keyhook': load_r4_keyhook}
 
 
-def check_self(report):
+def check_self(report, arms=None):
     """钉死 2026-11-12 首轮 official vs tested_b79 结论(全量到前沿停点):
 
     - 双方 289,849 步、同停点 0x60679ba(power_init 内堆信息 0xf27f4b unmapped 读)、
@@ -1335,6 +1481,15 @@ def check_self(report):
       r2=b[r1++]),r2=0x28 vs 0x88——两镜像资源表头 CRC 字节差异(plain 0x0
       首字节)被运输进寄存器;共 30 个分歧段,每段都是表头 CRC 字节经 rep 拷贝
       /硬件 CRC 引擎计算显形(CRC 读回结果 4 处不同),全部不改变控制流;
+    - 存储差异标准(路 PARSTD 升级,替代旧「前 8 段起点 writes_differ 全
+      False」——该口径漏检段内 store 与第 9 段以后,且镜像字节复制进 RAM
+      本来就合法产生存储差异):全程 51 个写差异步、59 个差异字节 cell
+      (58 个=镜像 diff run 字节对的逐字拷贝:资源表头/嵌套 CRC 字与 stream
+      表项头 CRC 字被 rep/字拷贝运输进 RAM;1 个=0x19e298 的 b7/fb=共享
+      CRC wrapper 0x6000f0c 软件累计器 r2 低字节(0x60106a8 st.b),是对已
+      分歧表字节的计算传播,寄存器传输类),写流结构(次数/地址/宽度)两臂
+      全同,零未解释差异——需要活的 traces(arms 参数;fresh --self-check
+      总是提供;assert_preflight 的纯报告重放无法重验该面,跳过);
     - ANC 键表字节(0x609e510/app.bin 0x9e410)与 stream.bin 音量参数区
       (0x60e2344..)在前缀内零读取(任何装载都会显形为 GPR/写分歧);
     - final report 差异恰好 5 处(4 处 CRC result_reads + 1 处 watch r0)。
@@ -1370,9 +1525,41 @@ def check_self(report):
             'the first official-vs-b79 signature divergence is no longer the resource-table header '
             'CRC byte transported by the rep 4 32 copy at 0x6010b16')
     spans = p['divergent_signature_spans']
-    require(spans['count'] == 30 and all(not s['writes_differ'] for s in spans['first']),
-            'the official-vs-b79 divergence-span shape changed (image bytes visible only as '
-            'register values, never as differing stored bytes)')
+    # 路 PARSTD:count 钉值保留;旧「前 8 段起点 writes_differ 全 False」子条件
+    # 由下面的写差异传播钉值蕴含(钉住的 59 个 cell 不含任何前 8 段起点步)。
+    require(spans['count'] == 30,
+            'the official-vs-b79 divergence-span count changed')
+    if arms is not None:
+        trace_official, plain_official = arms['official']
+        trace_b79, plain_b79 = arms['tested_b79']
+        _require_pinned_write_delta(
+            'official-vs-b79 (crc_bankb)', trace_official, trace_b79,
+            plain_official, plain_b79, pinned_steps=51, pinned_cells={
+                ('0x1272b8', '28', '88'): 1, ('0x1272b8+1', '33', 'fa'): 1,
+                ('0x19e284', '33', 'fa'): 1, ('0x19e298', 'b7', 'fb'): 1,
+                ('0x19e2a4', '33', 'fa'): 1, ('0x19e2a8', '33', 'fa'): 1,
+                ('0x19e2c0', '28', '88'): 1, ('0x19e2c0', 'a9', 'f2'): 1,
+                ('0x19e2c1', '33', 'fa'): 1, ('0x19e2c1', '91', '64'): 1,
+                ('0x19e2c2', '66', '7f'): 1, ('0x19e2c2', '7d', 'd2'): 1,
+                ('0x19e2c3', '93', '53'): 1, ('0x19e2c3', 'c9', 'a5'): 1,
+                ('0x19e2c8', '28', '88'): 2, ('0x19e2c8+1', '33', 'fa'): 1,
+                ('0x19e2cc', '33', 'fa'): 2,
+                ('0x19e304', '90', '41'): 1, ('0x19e305', 'c1', '7a'): 1,
+                ('0x19e306', '9b', 'bd'): 1, ('0x19e307', 'a2', '77'): 1,
+                ('0x19e350', '28', '88'): 1, ('0x19e351', '33', 'fa'): 1,
+                ('0x19e352', '7d', 'd2'): 1, ('0x19e353', '93', '53'): 1,
+                ('0x19e358', '28', '88'): 1, ('0x19e359', '33', 'fa'): 1,
+                ('0x19e35a', '7d', 'd2'): 1, ('0x19e35b', '93', '53'): 1,
+                ('0x19e35c', '28', '88'): 3, ('0x19e35d', '33', 'fa'): 3,
+                ('0x19e35e', '7d', 'd2'): 3, ('0x19e35f', '93', '53'): 3,
+                ('0x19e370', '33', 'fa'): 2, ('0x19e374', '33', 'fa'): 1,
+                ('0x19e37c', '28', '88'): 1, ('0x19e37c', '33', 'fa'): 1,
+                ('0x19e37c', 'a9', 'f2'): 1, ('0x19e37c+1', '33', 'fa'): 1,
+                ('0x19e37c+1', '91', '64'): 1,
+                ('0x19e3d8', '90', '41'): 1, ('0x19e3d8+1', 'c1', '7a'): 1,
+                ('0x19e3e0', '90', '41'): 1, ('0x19e3e0+1', 'c1', '7a'): 1,
+                ('0x19e3fc', '90', '41'): 1, ('0x19e3fd', 'c1', '7a'): 1,
+                ('0x19e3fe', '9b', 'bd'): 1, ('0x19e3ff', 'a2', '77'): 1})
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
     require(diffs == sorted(['$.milestones[23].r0',
                              '$.peripherals.hardware_crc_projection.result_reads[1]',
@@ -1382,7 +1569,7 @@ def check_self(report):
             'the official-vs-b79 final-report differences changed: ' + str(diffs))
 
 
-def check_self_conditional(report):
+def check_self_conditional(report, arms=None):
     """钉死 2026-11-15 路 JLA 条件场景结论(official vs
     tested_b79,条件 flag 集到当前条件前沿 28,764,184;一切结论条件通过、
     derived-not-measured;历史世界 689,402(路 BS)/447,383(路 BY)/601,880
@@ -1480,9 +1667,19 @@ def check_self_conditional(report):
       开启臂的 official 报告里完全相等(均为 204 次结果读取),第 197 项
       早已存在、不是本路新增,不能归因于 +503 步;其动态源地址的完整
       记录留 TODO(后续重建 base/head 基线时补)。spans 147→151(+4 同属
-      寄存器值分歧面,首分歧仍 155,390、控制流全同构);writes_differ
+      寄存器值分歧面,首分歧仍 155,390、控制流全同构);旧 writes_differ
       只查前 8 段起点,段内 store 与第 9 段以后未纳入——镜像字节复制进
-      RAM 自然产生存储差异,不能据此断言存储字节零差异或证明模型有 bug。
+      RAM 自然产生存储差异,不能据此断言存储字节零差异或证明模型有 bug
+      (路 PARSTD 已升级:全程写差异枚举+镜像字节解释+钉值,见下方
+      require 块——251 个写差异步、136 个差异 cell 共 287 次出现,286 次
+      =镜像 diff run 字节对的逐字拷贝(资源表头/嵌套 CRC 字、stream 表项
+      头 CRC 字与音量参数区字节被 rep/字/半字拷贝运输进 RAM,含条件前缀
+      新增的音量参数区 00/f6、00/ff 族与表项头 a9/f2、91/64、66/7f、c9/a5
+      族的多次重拷),1 个=0x19e298 的 b7/fb=共享 CRC wrapper 0x6000f0c
+      软件 CRC 累计器 r2 低字节(0x60106a8 st.b,计算传播,寄存器传输类),
+      写流结构(次数/地址/宽度)两臂全同,零未解释差异;需要活的 traces
+      (arms 参数;fresh --self-check 总是提供;assert_preflight 的纯报告
+      重放无法重验该面,跳过))。
     条件前沿推进后按新前沿重钉(前沿前移后可重跑跟进)。
     """
     pairs = {p['name']: p for p in report['pairs']}
@@ -1547,11 +1744,50 @@ def check_self_conditional(report):
             'resource-table header CRC byte at 0x6010b16 (it must stay identical to the '
             'crc_bankb-scenario divergence)')
     spans = p['divergent_signature_spans']
-    require(spans['count'] == 151 and all(not s['writes_differ'] for s in spans['first']),
-            'the official-vs-b79 conditional divergence-span shape changed (only the first '
-            '8 spans\' start points are checked: intra-span stores and spans beyond the '
-            'first 8 are NOT in scope — mirror byte copies into RAM naturally differ and '
-            'cannot by themselves prove a model bug)')
+    # 路 PARSTD:count 钉值保留;旧「前 8 段起点 writes_differ 全 False」子条件
+    # 由下面的写差异传播钉值蕴含(钉住的 136 个 cell 不含任何前 8 段起点步)。
+    require(spans['count'] == 151,
+            'the official-vs-b79 conditional divergence-span count changed')
+    if arms is not None:
+        trace_official, plain_official = arms['official']
+        trace_b79, plain_b79 = arms['tested_b79']
+        _require_pinned_write_delta(
+            'official-vs-b79 (p11_heap_experimental)', trace_official, trace_b79,
+            plain_official, plain_b79, pinned_steps=251, pinned_cells={
+                ('0x1272b8', '28', '88'): 1, ('0x1272b8+1', '33', 'fa'): 1, ('0x18c580', 'a9', 'f2'): 1, ('0x18c581', '91', '64'): 1,
+                ('0x18c582', '66', '7f'): 1, ('0x18c583', 'c9', 'a5'): 1, ('0x18c82c', 'a9', 'f2'): 2, ('0x18c82d', '91', '64'): 2,
+                ('0x18c82e', '66', '7f'): 2, ('0x18c82f', 'c9', 'a5'): 2, ('0x18d004', 'a9', 'f2'): 3, ('0x18d004+1', '91', '64'): 3,
+                ('0x18d028', 'a9', 'f2'): 3, ('0x18d029', '91', '64'): 3, ('0x18d02a', '66', '7f'): 3, ('0x18d02b', 'c9', 'a5'): 3,
+                ('0x18d050', '28', '88'): 2, ('0x18d051', '33', 'fa'): 2, ('0x18d052', '7d', 'd2'): 2, ('0x18d053', '93', '53'): 2,
+                ('0x18d05c', 'a9', 'f2'): 1, ('0x18d05c+1', '91', '64'): 1, ('0x18d0a4', 'a9', 'f2'): 7, ('0x18d0a4+1', '91', '64'): 7,
+                ('0x18d0b8', 'a9', 'f2'): 3, ('0x18d0b8+1', '91', '64'): 3, ('0x18d0c8', 'a9', 'f2'): 7, ('0x18d0c9', '91', '64'): 7,
+                ('0x18d0ca', '66', '7f'): 7, ('0x18d0cb', 'c9', 'a5'): 7, ('0x18d0d8', '90', '41'): 2, ('0x18d0d8+1', 'c1', '7a'): 2,
+                ('0x18d0dc', 'a9', 'f2'): 3, ('0x18d0dd', '91', '64'): 3, ('0x18d0de', '66', '7f'): 3, ('0x18d0df', 'c9', 'a5'): 3,
+                ('0x18d0fc', '90', '41'): 2, ('0x18d0fd', 'c1', '7a'): 2, ('0x18d0fe', '9b', 'bd'): 2, ('0x18d0ff', 'a2', '77'): 2,
+                ('0x18d290', 'a9', 'f2'): 4, ('0x18d291', '91', '64'): 4, ('0x18d292', '66', '7f'): 4, ('0x18d293', 'c9', 'a5'): 4,
+                ('0x18d36c+3', 'd3', 'c9'): 1, ('0x18d374', '00', 'f6'): 1, ('0x18d374+1', '00', 'ff'): 1, ('0x18d374+2', '00', 'ff'): 1,
+                ('0x18d374+3', '00', 'ff'): 1, ('0x19d644', 'a9', 'f2'): 7, ('0x19d645', '91', '64'): 7, ('0x19d646', '66', '7f'): 7,
+                ('0x19d647', 'c9', 'a5'): 7, ('0x19e08c', '90', '41'): 1, ('0x19e08c+1', 'c1', '7a'): 1, ('0x19e094', '90', '41'): 1,
+                ('0x19e095', 'c1', '7a'): 1, ('0x19e096', '9b', 'bd'): 1, ('0x19e097', 'a2', '77'): 1, ('0x19e0b0', '90', '41'): 1,
+                ('0x19e0b1', 'c1', '7a'): 1, ('0x19e0b2', '9b', 'bd'): 1, ('0x19e0b3', 'a2', '77'): 1, ('0x19e0d0', 'a9', 'f2'): 1,
+                ('0x19e0d0+1', '91', '64'): 1, ('0x19e0e8', '28', '88'): 1, ('0x19e0e9', '33', 'fa'): 1, ('0x19e0ea', '7d', 'd2'): 1,
+                ('0x19e0eb', '93', '53'): 1, ('0x19e0f4', 'a9', 'f2'): 1, ('0x19e0f5', '91', '64'): 1, ('0x19e0f6', '66', '7f'): 1,
+                ('0x19e0f7', 'c9', 'a5'): 1, ('0x19e170', '90', '41'): 1, ('0x19e170+1', 'c1', '7a'): 1, ('0x19e284', '33', 'fa'): 1,
+                ('0x19e298', 'b7', 'fb'): 1, ('0x19e2a4', '33', 'fa'): 1, ('0x19e2a8', '33', 'fa'): 1, ('0x19e2c0', '28', '88'): 1,
+                ('0x19e2c0', 'a9', 'f2'): 1, ('0x19e2c1', '33', 'fa'): 1, ('0x19e2c1', '91', '64'): 1, ('0x19e2c2', '66', '7f'): 1,
+                ('0x19e2c2', '7d', 'd2'): 1, ('0x19e2c3', '93', '53'): 1, ('0x19e2c3', 'c9', 'a5'): 1, ('0x19e2c8', '28', '88'): 2,
+                ('0x19e2c8+1', '33', 'fa'): 1, ('0x19e2cc', '33', 'fa'): 2, ('0x19e304', '28', '88'): 1, ('0x19e304', '90', '41'): 1,
+                ('0x19e305', '33', 'fa'): 1, ('0x19e305', 'c1', '7a'): 1, ('0x19e306', '7d', 'd2'): 1, ('0x19e306', '9b', 'bd'): 1,
+                ('0x19e307', '93', '53'): 1, ('0x19e307', 'a2', '77'): 1, ('0x19e350', '28', '88'): 1, ('0x19e351', '33', 'fa'): 1,
+                ('0x19e352', '7d', 'd2'): 1, ('0x19e353', '93', '53'): 1, ('0x19e358', '28', '88'): 1, ('0x19e359', '33', 'fa'): 1,
+                ('0x19e35a', '7d', 'd2'): 1, ('0x19e35b', '93', '53'): 1, ('0x19e35b', 'd3', 'c9'): 1, ('0x19e35c', '28', '88'): 3,
+                ('0x19e35d', '33', 'fa'): 3, ('0x19e35e', '7d', 'd2'): 3, ('0x19e35f', '93', '53'): 3, ('0x19e360', '00', 'f6'): 1,
+                ('0x19e361', '00', 'ff'): 1, ('0x19e362', '00', 'ff'): 1, ('0x19e363', '00', 'ff'): 1, ('0x19e370', '33', 'fa'): 2,
+                ('0x19e374', '33', 'fa'): 1, ('0x19e37c', '28', '88'): 1, ('0x19e37c', '33', 'fa'): 1, ('0x19e37c', 'a9', 'f2'): 1,
+                ('0x19e37c+1', '33', 'fa'): 1, ('0x19e37c+1', '91', '64'): 1, ('0x19e398', 'a9', 'f2'): 6, ('0x19e398+1', '91', '64'): 6,
+                ('0x19e3bc', 'a9', 'f2'): 6, ('0x19e3bd', '91', '64'): 6, ('0x19e3be', '66', '7f'): 6, ('0x19e3bf', 'c9', 'a5'): 6,
+                ('0x19e3d8', '90', '41'): 1, ('0x19e3d8+1', 'c1', '7a'): 1, ('0x19e3e0', '90', '41'): 1, ('0x19e3e0+1', 'c1', '7a'): 1,
+                ('0x19e3fc', '90', '41'): 1, ('0x19e3fd', 'c1', '7a'): 1, ('0x19e3fe', '9b', 'bd'): 1, ('0x19e3ff', 'a2', '77'): 1})
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
     require(diffs == sorted(['$.milestones[23].r0',
                              '$.peripherals.hardware_crc_projection.result_reads[1]',
@@ -1951,10 +2187,14 @@ def main():
                                                    loaded[b], pool.run(b), budget, scenario,
                                                    resumed=snapshot_mode == 'resume')})
         if args.self_check:
+            # 路 PARSTD:写差异标准断言需要活的 traces(报告 JSON 保持逐字节
+            # 不变,新增事实不进报告);arms={label: (trace, flash plain)}。
+            arms = {label: (pool.run(label)[1], loaded[label][1][1])
+                    for label in ('official', 'tested_b79')}
             if scenario == 'crc_bankb':
-                check_self(report)
+                check_self(report, arms=arms)
             else:
-                check_self_conditional(report)
+                check_self_conditional(report, arms=arms)
             report['image_trace_self_check_passed'] = True
         if candidate_self_check:
             check_self_candidate(report, candidate_self_check, scenario)

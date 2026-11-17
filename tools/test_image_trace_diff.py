@@ -755,6 +755,169 @@ def test_parallel_arms_match_serial_values_via_fork_handoff():
         ait.frontier_run = original
 
 
+def test_write_delta_red_case_ninth_span_unexplained_storage_difference():
+    """PARSTD red case: the first 8 divergent spans carry no write difference
+    at their start points (the OLD standard's entire field of view — it passes,
+    i.e. is blind here), but the 9th span stores a byte pair that is neither a
+    differing image byte pair nor a slice of a differing register. The new
+    writes_explained_by_image_delta standard must flag it."""
+    from analyze_image_trace import (_divergent_spans,
+                                     writes_explained_by_image_delta)
+    plain_a = bytes([0x28]) + bytes(63)
+    plain_b = bytes([0x88]) + bytes(63)   # the only image delta: byte pair 28/88
+
+    def arms():
+        a = common(4)
+        b = common(4)
+        # eight register-marker divergence spans, identical writes throughout
+        for span in range(8):
+            seg_a = tail(2, 0x1000 + span * 0x10, markers={0: '00000001', 1: '00000001'})
+            seg_b = tail(2, 0x1000 + span * 0x10, markers={0: '00000002', 1: '00000002'})
+            a += seg_a + common(2, 0x1080 + span * 0x10)
+            b += seg_b + common(2, 0x1080 + span * 0x10)
+        # ninth span: same marker divergence PLUS an unexplained stored byte
+        a += tail(2, 0x1400, markers={0: '00000001', 1: '00000001'},
+                  writes={1: ((0x2000, '11'),)})
+        b += tail(2, 0x1400, markers={0: '00000002', 1: '00000002'},
+                  writes={1: ((0x2000, '22'),)})
+        return a, b
+
+    a, b = arms()
+    spans = _divergent_spans(a, b)
+    assert len(spans) == 9, spans
+    # the OLD assertion expression (span-start writes_differ over spans[:8])
+    # still passes — that is exactly the blind spot being closed
+    assert all(a[s][5] == b[s][5] for s, _e in spans[:8])
+    violations = writes_explained_by_image_delta(a, b, plain_a, plain_b)
+    assert violations and len(violations) == 1
+    assert violations[0]['address'] == '0x2000' and violations[0]['bytes'] == ['11', '22']
+    # the offending step is inside the NINTH span, past the first 8
+    assert spans[8][0] <= violations[0]['step'] < spans[8][1]
+
+
+def test_write_delta_red_case_unexplained_store_inside_first_span():
+    """PARSTD red case (the intra-span gap): the very first span STARTS with
+    identical writes but a LATER step inside that same span stores an
+    unexplained byte pair — invisible to the old start-point-only field."""
+    from analyze_image_trace import (_divergent_spans,
+                                     writes_explained_by_image_delta)
+    plain_a = bytes([0x28]) + bytes(15)
+    plain_b = bytes([0x88]) + bytes(15)
+    a = common(2) + tail(4, 0x1000, markers={i: '00000001' for i in range(4)},
+                        writes={2: ((0x2100, '33'),)})
+    b = common(2) + tail(4, 0x1000, markers={i: '00000002' for i in range(4)},
+                        writes={2: ((0x2100, '44'),)})
+    spans = _divergent_spans(a, b)
+    assert len(spans) == 1
+    assert a[spans[0][0]][5] == b[spans[0][0]][5]  # old start-point check passes
+    violations = writes_explained_by_image_delta(a, b, plain_a, plain_b)
+    assert violations and violations[0]['bytes'] == ['33', '44']
+    assert spans[0][0] < violations[0]['step'] < spans[0][1]  # strictly inside
+
+
+def test_write_delta_verbatim_image_copy_and_register_transport_are_explained():
+    """PARSTD green cases: a differing stored byte pair is EXPLAINED when it is
+    a verbatim differing image byte pair (rep/word copy of image bytes into
+    RAM) or a byte slice of a register pair differing at the same step (the
+    0x60106a8 CRC-accumulator shape: computed from, not equal to, the image
+    bytes)."""
+    from analyze_image_trace import write_delta_facts
+    plain_a = bytes([0x28, 0x33, 0x7d, 0x93]) + bytes(28)
+    plain_b = bytes([0x88, 0xfa, 0xd2, 0x53]) + bytes(28)
+    loaded_a = ['00000000'] * 16
+    loaded_b = ['00000000'] * 16
+    loaded_a[2], loaded_b[2] = '00000028', '00000088'
+    crc_a = ['00000000'] * 16
+    crc_b = ['00000000'] * 16
+    crc_a[2], crc_b[2] = 'ea57d0b7', '979bd4fb'
+    store_verbatim = (0, 0x6010b18, 0x6010b1a, '00', tuple(loaded_a), ((0x19e35c, '28'),))
+    store_verbatim_b = (0, 0x6010b18, 0x6010b1a, '00', tuple(loaded_b),
+                        ((0x19e35c, '88'),))
+    store_computed = (0, 0x60106a8, 0x60106aa, '00', tuple(crc_a), ((0x19e298, 'b7'),))
+    store_computed_b = (0, 0x60106a8, 0x60106aa, '00', tuple(crc_b), ((0x19e298, 'fb'),))
+    facts = write_delta_facts([store_verbatim, store_computed],
+                              [store_verbatim_b, store_computed_b], plain_a, plain_b)
+    assert facts['steps'] == 2
+    assert not facts['structural'] and not facts['unexplained']
+    assert facts['image_cells'] == {('0x19e35c', '28', '88'): 1}
+    assert facts['register_cells'] == {('0x19e298', 'b7', 'fb'): 1}
+    # multi-byte stores split per byte: a differing halfword store yields two
+    # adjacent cells (byte 0 verbatim + byte 1 verbatim at addr+1) when the
+    # source register pair carries both differing bytes
+    half_regs_a = ['00000000'] * 16
+    half_regs_b = ['00000000'] * 16
+    half_regs_a[4], half_regs_b[4] = '00002833', '000088fa'
+    half_a = (0, 0x6010, 0x6012, '00', tuple(half_regs_a), ((0x1272b8, '2833'),))
+    half_b = (0, 0x6010, 0x6012, '00', tuple(half_regs_b), ((0x1272b8, '88fa'),))
+    facts = write_delta_facts([half_a], [half_b], plain_a, plain_b)
+    assert facts['cells'] == {('0x1272b8', '28', '88'): 1, ('0x1272b8+1', '33', 'fa'): 1}
+
+
+def test_write_delta_structural_store_divergence_is_a_violation():
+    """PARSTD: only data bytes may differ. A differing write count, a differing
+    store address or a differing width is a structural store divergence — a
+    behavioral difference, not image-byte propagation."""
+    from analyze_image_trace import write_delta_facts
+    plain = bytes(16)
+    count_a = (0, 0x6010, 0x6012, '00', tuple(['00000000'] * 16), ((0x2000, 'ff'),))
+    count_b = (0, 0x6010, 0x6012, '00', tuple(['00000000'] * 16),
+               ((0x2000, 'ff'), (0x2004, 'ff')))
+    addr_a = (0, 0x6020, 0x6022, '00', tuple(['00000000'] * 16), ((0x2000, 'ff'),))
+    addr_b = (0, 0x6020, 0x6022, '00', tuple(['00000000'] * 16), ((0x3000, 'ff'),))
+    width_a = (0, 0x6040, 0x6042, '00', tuple(['00000000'] * 16), ((0x2000, 'ff'),))
+    width_b = (0, 0x6040, 0x6042, '00', tuple(['00000000'] * 16), ((0x2000, 'ffff'),))
+    for a, b, kind in ((count_a, count_b, 'write_count'),
+                       (addr_a, addr_b, 'store_shape'),
+                       (width_a, width_b, 'store_shape')):
+        facts = write_delta_facts([a], [b], plain, plain)
+        assert len(facts['structural']) == 1 and facts['structural'][0]['kind'] == kind
+        assert facts['cells'] == {}
+
+
+def test_write_delta_invented_difference_from_identical_registers_is_a_violation():
+    """PARSTD 'same-origin literal' rule: the two arms write different data at
+    a step where NO register differs — with identical inputs and identical
+    instruction there is no image path to the difference; it is invented
+    (nondeterminism / model bug) and must be flagged."""
+    from analyze_image_trace import writes_explained_by_image_delta
+    plain_a = bytes([0x28]) + bytes(15)
+    plain_b = bytes([0x88]) + bytes(15)
+    a = [(0, 0x6010, 0x6012, '00', tuple(['00000000'] * 16), ((0x2000, '28'),))]
+    b = [(0, 0x6010, 0x6012, '00', tuple(['00000000'] * 16), ((0x2000, '88'),))]
+    violations = writes_explained_by_image_delta(a, b, plain_a, plain_b)
+    # the byte pair IS an image pair, but nothing transported it: no register
+    # differs at the store step, so the difference was invented on the spot
+    assert violations and violations[0]['bytes'] == ['28', '88']
+
+
+def test_write_delta_pinned_propagation_drift_fails_the_require():
+    """PARSTD pin discipline: even a perfectly image-explained propagation must
+    reproduce the pinned facts exactly — a new/removed/re-valued storage
+    difference (steps count or per-cell count) fails the require block."""
+    import analyze_image_trace as ait
+    plain_a = bytes([0x28]) + bytes(15)
+    plain_b = bytes([0x88]) + bytes(15)
+    step_a = (0, 0x6010, 0x6012, '00', ('00000028',) + ('00000000',) * 15, ((0x2000, '28'),))
+    step_b = (0, 0x6010, 0x6012, '00', ('00000088',) + ('00000000',) * 15, ((0x2000, '88'),))
+    marker_a = (1, 0x6014, 0x6016, '00', ('00000028',) + ('00000000',) * 15, ())
+    marker_b = (1, 0x6014, 0x6016, '00', ('00000088',) + ('00000000',) * 15, ())
+    trace_a = [step_a, marker_a]
+    trace_b = [step_b, marker_b]
+    pinned_cells = {('0x2000', '28', '88'): 1}
+    ait._require_pinned_write_delta('test-pair', trace_a, trace_b,
+                                    plain_a, plain_b, 1, pinned_cells)  # green
+    for bad_steps, bad_cells, why in ((2, pinned_cells, 'steps'),
+                                      (1, {('0x2000', '28', '88'): 2}, 'cell count'),
+                                      (1, {('0x9000', '28', '88'): 1}, 'cell address')):
+        try:
+            ait._require_pinned_write_delta('test-pair', trace_a, trace_b,
+                                            plain_a, plain_b, bad_steps, bad_cells)
+        except ValueError as error:
+            assert why in str(error) or 'changed' in str(error), error
+        else:
+            raise AssertionError(f'drifted pin ({why}) passed the require')
+
+
 if __name__ == '__main__':
     for name, case in sorted(globals().items()):
         if name.startswith('test_'):
