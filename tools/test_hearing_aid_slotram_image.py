@@ -48,8 +48,8 @@ class SlotramSegmentTest(unittest.TestCase):
             IMG.assemble_segment(close_hooks=True, slot_ram=True)
 
     def test_01_geometry_unchanged_slot_in_ram(self):
-        """364B segment, route-Y layout; slot is the pinned BSS word."""
-        self.assertEqual(len(self.ram_code), 364)
+        """388B segment (fixed open), route-Y layout; slot is the pinned BSS word."""
+        self.assertEqual(len(self.ram_code), 388)
         self.assertEqual(self.ram_slot, RAM_SLOT)
         self.assertNotEqual(self.ram_slot, PAYLOAD_ADDRESS + len(self.ram_code))
         self.assertEqual(self.ram_report['slot_location'], 'ram-bss')
@@ -61,7 +61,7 @@ class SlotramSegmentTest(unittest.TestCase):
                  if a != b]
         self.assertEqual(len(self.close_code), len(self.ram_code))
         self.assertEqual(len(diffs), 16, 'expected 4 li.u32 immediates x 4B')
-        self.assertTrue(all(d < 198 for d in diffs),
+        self.assertTrue(all(d < 220 for d in diffs),
                         'diffs must stay inside the payload part (open+close)')
         # every differing byte sits inside one r0=<slot> li.u32 instruction
         listing = self.ram_report['listing']
@@ -84,10 +84,10 @@ class SlotramSegmentTest(unittest.TestCase):
     def test_04_segment_end_drops_flash_tail_slot(self):
         """Appended file ends at code end; no image slot, fence top follows."""
         self.assertEqual(self.ram_report['segment_end_runtime'],
-                         f'0x{PAYLOAD_ADDRESS + 364:08x}')
-        self.assertEqual(self.ram_report['segment_end_runtime'], '0x060e31e0')
+                         f'0x{PAYLOAD_ADDRESS + 388:08x}')
+        self.assertEqual(self.ram_report['segment_end_runtime'], '0x060e31f8')
         # route-Y flash-tail slot must keep its own geometry untouched
-        self.assertEqual(self.close_report['segment_end_runtime'], '0x060e31e4')
+        self.assertEqual(self.close_report['segment_end_runtime'], '0x060e31fc')
 
     def test_05_payload_prefixes_match_standalone_sources(self):
         """Open/close payload bytes still equal their standalone assemblies."""

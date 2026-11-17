@@ -71,6 +71,7 @@ def main():
     run(sys.executable,'tools/test_hearing_aid_close_payload.py')
     run(sys.executable,'tools/test_hearing_aid_close_image.py')
     run(sys.executable,'tools/test_hearing_aid_slotram_image.py')
+    run(sys.executable,'tools/test_hearing_aid_key7_image.py')
     run(sys.executable,'tools/test_r4_keyhook_payload.py')
     run(sys.executable,'tools/test_r4_keyhook_image.py')
     run(sys.executable,'tools/test_candidate_world_checks.py')

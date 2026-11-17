@@ -8,7 +8,7 @@ implements them independently of the builder module; this suite pins:
 
 Logic tier (no firmware input, always runs):
 1. the pinned spec constants match the merged docs — candidate shas, whole-
-   file byte accounts (472B/554B), plain lengths (flash end - 0x2020, NOT
+   file byte accounts (493B/574B), plain lengths (flash end - 0x2020, NOT
    the loose flash-end convention the docs quote), fence top == plain end
    runtime address, six window spans at the documented runtime addresses,
    registry slot only for r4, whitelist spans disjoint;
@@ -56,7 +56,7 @@ ARTIFACTS_READY = (OFFICIAL.exists()
 L1_RUN_SHAPE = [(0x0, 0x4), (0x20, 0x24), (0xDB9A, 0xDBA2), (0xDBC4, 0xDBCC),
                 (0xDC74, 0xDC7C), (0xDC7E, 0xDC86), (0xDC9A, 0xDCA2),
                 (0xDCA4, 0xDCAC), (0x34E9A, 0x34E9D), (0xE2ED3, 0xE2ED5),
-                (0xE2EE1, 0xE2EE2), (0xE3053, 0xE31E0)]
+                (0xE2EE1, 0xE2EE2), (0xE3053, 0xE31F8)]
 R4_EXTRA_RUNS = [(0xA9C7C, 0xA9C80)]          # registry setter slot, r4 only
 
 
@@ -65,13 +65,13 @@ class SpecPinTest(unittest.TestCase):
 
     def test_01_candidate_pins(self):
         self.assertEqual(CWC.CANDIDATES['l1_slotram']['sha256'],
-                         '906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba'
-                         '1f1df29036b5914')
+                         '6f267a2ed0b62ed118047e889a64483907c727d36eb5172a5d'
+                         '0f0067d37b1b93')
         self.assertEqual(CWC.CANDIDATES['r4_keyhook']['sha256'],
-                         '8e9a47d0ec89982bd6f35a616d0e1d310562c1509d7617468'
-                         '22e787bf5dcbf5d')
-        self.assertEqual(CWC.CANDIDATES['l1_slotram']['whole_file_diff_bytes'], 472)
-        self.assertEqual(CWC.CANDIDATES['r4_keyhook']['whole_file_diff_bytes'], 554)
+                         'bfc3f681e969d3c984a5ff7ee6d33ae759897788b132777ede'
+                         '01423104e3ab20')
+        self.assertEqual(CWC.CANDIDATES['l1_slotram']['whole_file_diff_bytes'], 493)
+        self.assertEqual(CWC.CANDIDATES['r4_keyhook']['whole_file_diff_bytes'], 574)
         self.assertEqual(CWC.OFFICIAL_SHA,
                          '65cafc7f9a7545c5c30701d141c77db334e37065589e42c513'
                          '06132c94c879af')
@@ -80,8 +80,8 @@ class SpecPinTest(unittest.TestCase):
         """Plain length = boot-info app_size = flash end - 0x2020 (the docs'
         0xE5200/0xE524E are flash-end values, not plain lengths); fence top
         equals the plain end's runtime address."""
-        for name, flash_end, fence_top in (('l1_slotram', 0xE5200, 0x060E31E0),
-                                           ('r4_keyhook', 0xE524E, 0x060E322E)):
+        for name, flash_end, fence_top in (('l1_slotram', 0xE5218, 0x060E31F8),
+                                           ('r4_keyhook', 0xE5266, 0x060E3246)):
             plain = CWC.CANDIDATES[name]['plain_length']
             self.assertEqual(plain, flash_end - 0x2020)
             self.assertEqual(0x06000000 + plain, fence_top)
@@ -202,8 +202,8 @@ class ArtifactGateTest(unittest.TestCase):
         return next(a for a in report['assertions'] if a['assertion'] == name)
 
     def test_01_both_candidates_all_green(self):
-        for name, count, registry in (('l1_slotram', 472, False),
-                                      ('r4_keyhook', 554, True)):
+        for name, count, registry in (('l1_slotram', 493, False),
+                                      ('r4_keyhook', 574, True)):
             report = self._checks(name, build_report=True)
             self.assertTrue(report['passed'], (name, report['assertions']))
             for assertion in report['assertions']:
@@ -229,14 +229,14 @@ class ArtifactGateTest(unittest.TestCase):
         for assertion in ('ufw_sha', 'integrity_crc', 'shared_boot', 'byte_account'):
             self.assertFalse(self._assertion(report, assertion)['passed'], assertion)
         account = self._assertion(report, 'byte_account')
-        self.assertEqual(account['whole_file_diff']['count'], 473)
+        self.assertEqual(account['whole_file_diff']['count'], 494)
 
     def test_03_forged_byte_account_red(self):
         """Builder account tampered in place: exactly the byte account goes
         red (image bytes untouched, sha/CRC/boot stay green)."""
         art = self.artifacts['l1_slotram']
         forged = json.loads(art['report'].read_text())
-        forged['hearing_aid_l1']['byte_diff']['diff_count'] = 471
+        forged['hearing_aid_l1']['byte_diff']['diff_count'] = 492
         path = Path(self.temp.name) / 'forged-report.json'
         path.write_text(json.dumps(forged))
         report = CWC.run_checks('l1_slotram', art['ufw'], OFFICIAL,
@@ -248,7 +248,7 @@ class ArtifactGateTest(unittest.TestCase):
         self.assertFalse(account['passed'])
         self.assertFalse(account['build_report']['passed'])
         # a forged position list is caught the same way
-        forged['hearing_aid_l1']['byte_diff']['diff_count'] = 472
+        forged['hearing_aid_l1']['byte_diff']['diff_count'] = 493
         forged['hearing_aid_l1']['byte_diff']['diff_positions'] = \
             forged['hearing_aid_l1']['byte_diff']['diff_positions'][:-1]
         path.write_text(json.dumps(forged))

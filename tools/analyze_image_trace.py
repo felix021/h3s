@@ -86,13 +86,13 @@ EQ_APP_SHA = '3788e3a1e25ed4e14ac3e8167674279e2d9e48e1904684c4aeaa06bc11d579cb'
 # sha/plain 长度钉死值来自 candidate_world_checks.CANDIDATES(单源,勿复制);
 # app 切片 sha 为 2026-11-15 路 DIF 从规范构建产物实测钉死(build_quiet_candidate
 # --attenuation-db 0 --hearing-aid-l1-slotram / --r4-keyhook)。
-L1_SLOTRAM_SHA = '906184b2e3a5f36669ba80e97d6716206a0b9b78923a34eba1f1df29036b5914'
-L1_APP_SHA = '0536a9c72cd062c86aff01f3b1e8571f7dd8235e3b9d48362cdded19dc32d411'
-R4_KEYHOOK_SHA = '8e9a47d0ec89982bd6f35a616d0e1d310562c1509d761746822e787bf5dcbf5d'
-R4_APP_SHA = 'e4ee706f106713ab34aa3bb7088171540586acdffa67b6c961cf41c852fbd272'
+L1_SLOTRAM_SHA = '6f267a2ed0b62ed118047e889a64483907c727d36eb5172a5d0f0067d37b1b93'
+L1_APP_SHA = 'd830222c902bf5663027ecbbf540d983054fb39af45fd47e0dce955a0c1f52ab'
+R4_KEYHOOK_SHA = 'bfc3f681e969d3c984a5ff7ee6d33ae759897788b132777ede01423104e3ab20'
+R4_APP_SHA = 'da93483fc73c094734eb65735f9e5e6b760ac3eec1c0ff54f84ca629f585ee2e'
 CANDIDATE_APP_SHAS = {'l1_slotram': L1_APP_SHA, 'r4_keyhook': R4_APP_SHA}
 PLAIN_LENGTHS = {'official': 0xE3053, 'tested_b79': 0xE3053, 'eq_fence_repair': 0xE31C5,
-                 'l1_slotram': 0xE31E0, 'r4_keyhook': 0xE322E}
+                 'l1_slotram': 0xE31F8, 'r4_keyhook': 0xE3246}
 OFFICIAL_DEFAULT = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
 
 # Shared-stack scenarios. The crc_bankb flag set is the pinned shared-frontier
@@ -390,7 +390,7 @@ KNOWN_SITE_LABELS = (
     (0xE2344, 0xE23A2, 'stream.bin volume parameter region'),
     (0xE2ED3, 0xE2ED5, 'config.dat JLFS header CRC (recomputed over the flipped index field)'),
     (0xE2EE1, 0xE2EE2, 'config.dat JLFS index field (b79 terminator 1, eq/l1/r4 candidates 0: enumeration continues to the appended entry)'),
-    (0xE3053, 0xE322E, 'appended payload segment (eq eq_toggle.bin / l1 mic_effect.bin / r4 mic_effect.bin + keystore_hook)'),
+    (0xE3053, 0xE3246, 'appended payload segment (eq eq_toggle.bin / l1 mic_effect.bin / r4 mic_effect.bin + keystore_hook)'),
 )
 
 
@@ -891,7 +891,7 @@ def _load_candidate_world(name, path, official_path):
     ①UFW sha 双侧钉死 ②独立校验器 CRC ③共享 bootloader flash[:0x2000]
     逐字节同官方 ④plain 长度+byte-diff 白名单区域分类等式语义(6 窗口/
     fence 立即数/注册表槽 r4/config.dat CRC+index/追加段/两处 app 区 CRC
-    对)+构建器字节账 472/554B 对账——任一断言红即拒载,候选世界不开门。
+    对)+构建器字节账 493/574B 对账——任一断言红即拒载,候选世界不开门。
     本 loader 只增量钉 app 切片 sha(实测值,见 CANDIDATE_APP_SHAS 注释)。
     候选镜像保持 UNTESTED;本入口不构成任何刷机或行为验证声明。
     """
@@ -1560,7 +1560,7 @@ def check_self_candidate(report, label, scenario):
       (fence 上限立即数差,指令编码内差,P1/EQ 同款);
     - 首个控制流分歧 step 169,439 @ 0x6011154(config.dat JLFS 枚举段),
       reconvergence realigned lag=+458 immediate(一步重合,EQ 同款);
-    - 表尾跨 4KiB 对齐桶派生族(l1 表尾 0xE31E0 对齐 0xE5000,与 official
+    - 表尾跨 4KiB 对齐桶派生族(l1 表尾 0xE31F8 对齐 0xE5000,与 official
       表尾 0xE3053 的 0xE3000 桶差 0x2000,BT §1.4 新观测项):实测形状
       与 EQ 同构——残余签名差持续 63,290 步,全签名重合于 step 232,729,
       无流入基址计算的控制流差(新形状未出现);

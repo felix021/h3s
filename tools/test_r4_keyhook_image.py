@@ -36,7 +36,7 @@ import hearing_aid_l1_image as IMG
 
 PAYLOAD_ADDRESS = IMG.PAYLOAD_ADDRESS
 KEYHOOK_BYTES = 78
-KEYHOOK_OFFSET = 364                      # open 134 + close 64 + stubs 166
+KEYHOOK_OFFSET = 388                      # fixed open 156 + close 64 + stubs 168
 R4_TABLE_START = 0x060a9b78               # RCSP custom-command dispatch table
 R4_TABLE_END = 0x060a9d1c
 

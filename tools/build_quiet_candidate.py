@@ -241,6 +241,11 @@ def main():
                         "（App 自定义命令 → VM get/set_config key 30）并把命令注册表 cmdid 0x30 项的空"
                         " setter 字（0x060a9c7c，原值 0）填为载荷地址——写路径今日为 no-op，属纯增量；"
                         "候选 UNTESTED 不刷机")
+    p.add_argument("--hearing-aid-l1-key7", action="store_true",
+                   help="辅听 L1 双击多功能键 toggle 离线候选：隐含 --hearing-aid-l1-slotram，"
+                        "把 cmd 7（双击）分支体入口 0x06025404 接驳为 HA toggle（读槽→开/关），"
+                        "开辅听前先请求关 ANC（db3c(1,1)）；ANC 键保持原 OFF/ON/TRANS 语义"
+                        "（不接驳 TRANS=HA，见 docs/hearing-aid-l1-key7.md）；候选 UNTESTED 不刷机")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -256,6 +261,10 @@ def main():
         args.hearing_aid_l1_patch = True
     if args.r4_keyhook:
         args.hearing_aid_l1_slotram = True    # R4 接驳是 slotram 候选族的超集（路 AQ）
+        args.hearing_aid_l1_close = True
+        args.hearing_aid_l1_patch = True
+    if args.hearing_aid_l1_key7:
+        args.hearing_aid_l1_slotram = True    # L1KEY toggle 是 slotram 候选族的超集（路 L1KEY）
         args.hearing_aid_l1_close = True
         args.hearing_aid_l1_patch = True
     if args.hearing_aid_l1_patch and args.eq_toggle_elf:
@@ -357,7 +366,8 @@ def main():
         hearing_aid_l1 = apply_l1_patch(flash_plain,
                                         close_hooks=args.hearing_aid_l1_close,
                                         slot_ram=args.hearing_aid_l1_slotram,
-                                        r4_keyhook=args.r4_keyhook)
+                                        r4_keyhook=args.r4_keyhook,
+                                        key7_toggle=args.hearing_aid_l1_key7)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -437,6 +447,7 @@ def main():
         suffix += "_HEARING_AID_DEMO"
     if hearing_aid_l1:
         suffix += ("_R4_KEYHOOK_OFFLINE" if args.r4_keyhook
+                   else "_HEARING_AID_L1_KEY7_OFFLINE" if args.hearing_aid_l1_key7
                    else "_HEARING_AID_L1_SLOTRAM_OFFLINE" if args.hearing_aid_l1_slotram
                    else "_HEARING_AID_L1_CLOSE_OFFLINE" if args.hearing_aid_l1_close
                    else "_HEARING_AID_L1_OFFLINE")
