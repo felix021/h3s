@@ -107,14 +107,16 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 `{"ok":false,"error":"..."}`（坏 JSON、字段缺失/非数值、取值越界、未武装等都有独立错误信息）。
 未匹配 SN 的响应帧以 `device_message` 事件透出（迟到响应/主动通知，页面按前缀启发式解析）。
 
-**页面（`assets/index.html`，单文件内联 CSS/JS、无外部 CDN）**：暗色主题、卡片式、双 tab——
+**页面（`assets/index.html`，单文件内联 CSS/JS、无外部 CDN）**：暗色主题、卡片式、三 tab——
 
 - **耳机 tab**：连接卡（状态/MTU/电量槽位——连接就绪自动查电量，只读 0x2f）、写入门控开关、
   ANC 三态、音频模式（音乐/游戏·低延迟/电影，标注「低延迟=效果重配，帧长未钉」）、EQ 卡
-  （预设 chips=QCY 面板原始 7 预设+自定义，含 −17dB 等 ±8 外调音值；canvas 曲线+10 竖滑块
-  +master gain）、按键自定义（3 键×5 手势矩阵，长按列虚线标注 [假设]；wire 单选默认 ADV
-  type2）、提示音音量三档、固件升级卡（跳 MainActivity 升级工具+固定候选说明）、未调研功能
-  占位卡（查找耳机/双设备/佩戴检测/恢复默认，灰态「协议未调研」）。
+  （预设 chips=QCY 面板原始 7 预设+自定义，含 −17dB 等 ±8 外调音值；曲线 + 一行横排 10 段，
+  每段可调中心频率 20–20000 Hz 与增益 −12..+12 dB +master gain；点选锁定防滚动误触）、
+  按键自定义（3 键×5 手势矩阵，长按列虚线标注 [假设]；wire 单选默认 ADV type2）、提示音
+  音量三档、固件升级卡（跳 MainActivity 升级工具+固定候选说明）、未调研功能占位卡
+  （查找耳机/双设备/佩戴检测/恢复默认，灰态「协议未调研」）。
+- **助听 tab**：见下节「助听 tab」——每频段增益/上限（BLE 留桩）+ 测试音/样本播放（h3sha 桥）。
 - **USB tab**：见下节。在无 bridge 的普通浏览器打开会显示降级提示；调用与事件日志抽屉
   常驻（最近 60 条）。
 
@@ -128,6 +130,46 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 - 本机无 Android SDK 完整打包条件时，可用
   `javac -cp $ANDROID_HOME/platforms/android-35/android.jar src/.../H3SBridge.java src/.../EqFrame.java src/.../WebShellActivity.java`
   单独验证新增类的 Android 侧编译（本仓库开发机已验证通过；`test.sh` 只需 JDK+Python）。
+
+## 助听 tab（R3：每频段增益/上限 + 测试音样本）
+
+WebView 壳第三 tab，页面在 `assets/index.html`，原生侧只有一个 tone 播放桥 `h3sha`
+（`H3sToneBridge.java`）。分两块：
+
+### 每频段调节（BLE 命令留桩）
+
+每频段一行：频率 + 增益横滑杆 + 上限横滑杆（上限=该频段最大输出，数字域 dB，非标定 SPL）。
+10 段频率默认与 EQ 自定义一致（31..16k）。参数结构字段名与
+[docs/hearing-aid-eq-feasibility.md](../../docs/hearing-aid-eq-feasibility.md) 对齐：
+
+- `index / iir_type / freq / gain / q` = §1.2 `eq_seg_info`；`global_gain / seg_num / seg` = `eq_tool`；
+- 每频段上限 `out_threshold` = §2 `wdrc_struct.threshold[].out_threshold` 语义（输出上限）；
+  `attack / release / inputgain / outputgain / threshold_num / algorithm / mode / holdtime / bypass`
+  沿用 `wdrc_struct` 字段。
+
+**诚实标注**：固件 `Drc1Eff` 是单带 `threshold[6]`（3 拐点），per-band 限幅在当前固件里无 1:1
+落点（需 L2 `multiband_drc`）；UI 的逐频段上限是前瞻结构，`buildHearingAidPayload()`（页面
+`window.h3sHearingAidPayload`）已留好形状，**BLE 命令绑定未接**（firmware L0/L1 未落地）。
+
+### 测试音与样本（h3sha 桥）
+
+- **手动单频**：125/250/500/1k/2k/4k/8k Hz + 音量滑杆；AudioTrack MODE_STATIC 生成整周期
+  正弦、`setLoopPoints` 无缝循环直到 `stop()`。
+- **样本**：语音/音乐/自然 3 个按钮 + 循环/单次；`assets/samples/{speech,music,nature}.wav`
+  （16 kHz 单声道 PCM 16-bit，各 ~2.5–3 s，共约 260 KB）。
+- **扬声器路由**：`AudioTrack.Builder.setPreferredDevice(TYPE_BUILTIN_SPEAKER)`——这是「首选
+  设备」提示（android.jar 无 `MODIFY_AUDIO_ROUTING` 权限要求），用于绕开 BLE A2DP 的默认路由
+  （否则耳机拾音→放大→再进同一副耳机会形成回环）。
+- bridge 方法：`playTone(freqHz, volume)` / `playSample(name, loop)` / `stop()` / `info()`，
+  返回 `{ok, playing, speaker, ...}`；`info()` 供页面 800ms 轮询（播放自然结束 + 扬声器状态）。
+
+**诚实标注**：
+
+- **样本是合成近似**，不是真实录音：语音=合成元音串（非真实人声）、音乐=合成琶音、自然=合成
+  雨声+鸟鸣扫频。测真实语音可懂度/音乐听感前，需换成经确认的 CC0/公共领域样本（本路未引入
+  版权不明内容）。
+- **真机 BT 连着时 `setPreferredDevice` 是否完全强制路由到内置扬声器未验证**——AVD 无真实
+  BT，只能验 bridge 不崩、参数合法；路由行为、样本实际听感都要真机联调确认。
 
 ## USB tab（R3 USB 侧骨架，链路未验证）
 

@@ -21,11 +21,13 @@ import java.io.OutputStream;
 import java.util.concurrent.Executors;
 
 /**
- * R3 独立 app 的 WebView 壳（launcher）：加载本地 assets/index.html（耳机/USB 双 tab），
- * 全部 UI 在 WebView 渲染，原生零 UI。注入两个 JS bridge：
+ * R3 独立 app 的 WebView 壳（launcher）：加载本地 assets/index.html（耳机/USB/助听三 tab），
+ * 全部 UI 在 WebView 渲染，原生零 UI。注入三个 JS bridge：
  *   - "h3s"（H3SBridge + AndroidBleTransport）：耳机 tab——连接/查询/EQ/ANC/按键/音量/模式；
  *   - "h3susb"（H3sUsbBridge + AndroidUsbLink）：USB tab——枚举/授权/INQUIRY/ROM 只读
- *     （FB06 装载 loader + FD07 窗读 + FD05 备份，双读一致；无 Flash 写路径）。
+ *     （FB06 装载 loader + FD07 窗读 + FD05 备份，双读一致；无 Flash 写路径）；
+ *   - "h3sha"（H3sToneBridge）：助听 tab——单频正弦测试音 + 合成样本播放，AudioTrack
+ *     尽量路由到内置扬声器（TYPE_BUILTIN_SPEAKER）绕开 BLE A2DP。
  *
  * USB 资产：assets/loader/br28loader.bin（构建时按 SHA256 打包、可缺省）→ loader 缺失时
  * USB 读操作返回明确错误，不影响其余功能。USB 插拔广播 → onH3sUsbEvent 事件（usb_detached）。
@@ -50,6 +52,7 @@ public class WebShellActivity extends Activity {
     private BroadcastReceiver driveReceiver;      // SIMB1E E2E 驱动口（见 registerDrive 注释）
     private java.util.concurrent.ExecutorService usbIo;
     private OtaWebBridge otaBridge;
+    private H3sToneBridge toneBridge;
 
     @SuppressLint("SetJavaScriptEnabled") // 本地 asset 页面 + 显式 bridge，JS 必须开
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -106,6 +109,8 @@ public class WebShellActivity extends Activity {
             }
         });
         web.addJavascriptInterface(otaBridge, "h3sota");
+        toneBridge = new H3sToneBridge(this);
+        web.addJavascriptInterface(toneBridge, "h3sha");
         web.setWebChromeClient(new WebChromeClient() {
             @Override public boolean onConsoleMessage(ConsoleMessage m) {
                 Log.d(TAG, m.lineNumber() + ": " + m.message());
@@ -304,6 +309,7 @@ public class WebShellActivity extends Activity {
         transport = null;
         bridge = null;
         usbBridge = null;
+        if (toneBridge != null) { toneBridge.release(); toneBridge = null; }
         if (web != null) web.destroy();
         super.onDestroy();
     }

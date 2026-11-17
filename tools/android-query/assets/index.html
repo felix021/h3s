@@ -329,6 +329,9 @@ html:not([data-theme-choice]) #themeCycle svg[data-theme-icon='auto'] {
 .segment.two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+.segment.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .segment button {
   padding-inline: 6px;
 }
@@ -504,28 +507,58 @@ figcaption {
   font-size: 12px;
 }
 .band-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 14px 6px;
-  margin: 12px 0;
-}
-.band {
   display: flex;
-  min-width: 0;
+  flex-wrap: nowrap;           /* 一行横排所有频段，不折叠 */
+  gap: 2px;
+  margin: 12px 0;
+  overflow-x: auto;            /* 极窄屏兜底：仍保持一行，横向滚动 */
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.band-grid::-webkit-scrollbar { display: none; }
+.band {
+  flex: 1 1 0;
+  min-width: 26px;
+  display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
   text-align: center;
+  padding: 2px;
+  border-radius: 8px;
+}
+.band.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .band output {
   color: var(--accent);
-  font-size: 15px;
+  font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 .band .frequency {
   color: var(--muted);
   font-size: 12px;
+}
+.band-freq {
+  min-height: 30px;
+  padding: 2px 1px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.band-freq:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
 }
 .slider {
   position: relative;
@@ -534,7 +567,7 @@ figcaption {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--soft);
-  touch-action: none;
+  touch-action: pan-y;  /* 未点选时允许纵向滚动；点选锁定后由 JS 置为 none */
   user-select: none;
   -webkit-user-select: none;
   cursor: ns-resize;
@@ -617,6 +650,114 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 50%;
   background: var(--accent);
 }
+/* —— 助听 tab：每频段横滑杆 + 测试音 —— */
+.hslider {
+  position: relative;
+  width: 100%;
+  height: 44px;
+  border-radius: 8px;
+  touch-action: pan-y; /* 关键：纵向滚动交给浏览器，横向拖拽进滑杆 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: ew-resize;
+}
+.hslider:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+.hslider .hslider-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
+  border-radius: 6px;
+  background: var(--line);
+}
+.hslider .hslider-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--fill, 0%);
+  border-radius: 6px;
+  background: var(--accent);
+}
+.hslider .hslider-thumb {
+  position: absolute;
+  top: 50%;
+  left: var(--pos, 0%);
+  width: 26px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--on-accent);
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+}
+.band-inspector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 4px 0 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+  font-size: 13px;
+}
+.band-inspector label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.band-inspector input[type="number"] {
+  width: 84px;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.band-inspector button {
+  min-height: 40px;
+  min-width: 40px;
+  padding: 6px 10px;
+}
+.ha-head {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 46px minmax(0, 1fr) 46px;
+  gap: 8px;
+  padding: 0 2px 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ha-bands {
+  display: grid;
+  gap: 6px;
+}
+.ha-band {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 46px minmax(0, 1fr) 46px;
+  gap: 8px;
+  align-items: center;
+}
+.ha-band .freq {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ha-band output {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.ha-band .gval { color: var(--accent); font-weight: 700; }
+.ha-band .lval { color: var(--warn); font-weight: 700; }
+
 table {
   width: 100%;
   table-layout: fixed;
@@ -762,15 +903,7 @@ summary {
   color: var(--muted);
   font: 12px/1.7 ui-monospace, monospace;
 }
-@media (min-width: 600px) {
-  .band-grid {
-    grid-template-columns: repeat(10, minmax(0, 1fr));
-  }
-}
 @media (max-width: 339px) {
-  .band-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
   .chips {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -818,9 +951,11 @@ summary {
       </button>
     </div>
 
-    <div class="segment two tabs" role="tablist" aria-label="工具分类">
+    <div class="segment three tabs" role="tablist" aria-label="工具分类">
       <button id="tabBtnHs" role="tab" aria-selected="true"
               aria-controls="tabHs" tabindex="0">耳机控制</button>
+      <button id="tabBtnHa" role="tab" aria-selected="false"
+              aria-controls="tabHa" tabindex="-1">助听</button>
       <button id="tabBtnUsb" role="tab" aria-selected="false"
               aria-controls="tabUsb" tabindex="-1">USB 工具</button>
     </div>
@@ -927,9 +1062,20 @@ summary {
 
       <div id="customEditor">
         <div id="bandGrid" class="band-grid"></div>
+        <div id="bandInspector" class="band-inspector" hidden>
+          <span id="inspectorLabel">第 1 段</span>
+          <button id="freqDown" aria-label="中心频率减 10 Hz">−</button>
+          <label>中心频率
+            <input id="freqInput" type="number" min="20" max="20000" step="10"
+                   inputmode="numeric" aria-label="中心频率 Hz">
+            Hz
+          </label>
+          <button id="freqUp" aria-label="中心频率加 10 Hz">+</button>
+          <span class="muted">点频段数字或拖其滑杆选中；Q / 类型沿用自定义默认。</span>
+        </div>
         <p class="note">
-          上下拖动调节，双击滑块归零。支持方向键、Home / End；
-          按键盘数字 0 也可复位。单位 dB。
+          每个频段可调中心频率与增益；先点选频段再上下拖动调增益（鼠标可直接拖）。
+          双击（鼠标）或按 0 归零，方向键微调。频率 20–20000 Hz，增益 −12 至 +12 dB。
         </p>
         <label for="master">总增益</label>
         <div class="master-row">
@@ -1096,6 +1242,63 @@ summary {
         <div class="placeholder">佩戴检测<small>协议未调研</small></div>
         <div class="placeholder">恢复默认设置<small>协议未调研</small></div>
       </div>
+    </article>
+  </section>
+
+  <section id="tabHa" role="tabpanel" aria-labelledby="tabBtnHa" hidden>
+    <article class="card" id="sec-ha-bands">
+      <div class="card-head">
+        <h2>助听 · 每频段调节</h2>
+        <span class="badge warning">BLE 命令留桩</span>
+      </div>
+      <p class="note">
+        通透/辅听链（mic→DAC）的逐频段草稿：增益放大环境声，上限是该频段最大输出
+        （数字域 dB，非标定 SPL）。字段名与 docs/hearing-aid-eq-feasibility.md 的
+        eq_tool / wdrc_struct 对齐；命令绑定暂为留桩（firmware L0/L1 未落地）。
+      </p>
+      <div class="ha-head" aria-hidden="true">
+        <span>频率</span><span>增益（dB）</span><span></span><span>上限（dB）</span><span></span>
+      </div>
+      <div id="haBands" class="ha-bands"></div>
+      <div class="actions">
+        <button id="haFlat">全部复位</button>
+      </div>
+      <p id="haFeedback" class="feedback" aria-live="polite">本地草稿，尚未发送。</p>
+    </article>
+
+    <article class="card" id="sec-ha-tone">
+      <div class="card-head">
+        <h2>测试音与样本</h2>
+        <span id="haToneBadge" class="badge">走手机扬声器</span>
+      </div>
+      <p class="note">
+        播放单频正弦或语音/音乐/自然样本，配合调节助听效果；尽量路由到手机内置扬声器，
+        绕开蓝牙耳机（避免拾音→放大→再进同一副耳机形成回环）。样本为合成近似。
+      </p>
+      <h3>手动单频</h3>
+      <div id="toneFreqChips" class="chips" role="group" aria-label="测试音频率"></div>
+      <label for="toneVolume">音量</label>
+      <div class="master-row">
+        <div id="toneVolumeWrap"></div>
+        <output id="toneVolumeValue" for="toneVolume">60%</output>
+      </div>
+      <div class="actions">
+        <button id="tonePlay" class="primary">播放单频</button>
+        <button id="toneStop">停止</button>
+      </div>
+      <h3 style="margin-top:12px">样本播放</h3>
+      <div id="sampleButtons" class="segment three" role="group" aria-label="声音样本">
+        <button data-sample="speech" aria-pressed="false">语音</button>
+        <button data-sample="music" aria-pressed="false">音乐</button>
+        <button data-sample="nature" aria-pressed="false">自然</button>
+      </div>
+      <label class="switch-row" for="sampleLoop" style="margin-top:10px">
+        <input id="sampleLoop" class="toggle" type="checkbox" role="switch">
+        <span>循环播放（关闭为单次）</span>
+      </label>
+      <p id="toneFeedback" class="feedback" aria-live="polite">
+        离线预览：测试音与样本需要原生壳（h3sha 桥）。
+      </p>
     </article>
   </section>
 
@@ -1336,6 +1539,9 @@ const TOC = {
     ['sec-prompt', '提示音'], ['sec-keys', '按键'], ['sec-audio', '音频模式'],
     ['sec-upgrade', '固件升级'], ['sec-more', '更多']
   ],
+  ha: [
+    ['sec-ha-bands', '每频段调节'], ['sec-ha-tone', '测试音']
+  ],
   usb: [
     ['sec-usb-dev', '设备'], ['sec-usb-rom', 'ROM 模式'],
     ['sec-usb-read', '读取/备份'], ['sec-usb-flash', '刷机区']
@@ -1401,25 +1607,28 @@ function syncHeaderOffset() {
 }
 window.addEventListener('resize', syncHeaderOffset);
 if (window.ResizeObserver) new ResizeObserver(syncHeaderOffset).observe(document.querySelector('header'));
+const TAB_ORDER = ['hs', 'ha', 'usb'];
 function selectTab(name, focus) {
-  const headset = name === 'hs';
-  $('tabHs').hidden = !headset;
-  $('tabUsb').hidden = headset;
-  [
-    [$('tabBtnHs'), headset],
-    [$('tabBtnUsb'), !headset]
-  ].forEach(([button, selected]) => {
+  $('tabHs').hidden = name !== 'hs';
+  $('tabHa').hidden = name !== 'ha';
+  $('tabUsb').hidden = name !== 'usb';
+  [['tabBtnHs', 'hs'], ['tabBtnHa', 'ha'], ['tabBtnUsb', 'usb']].forEach(([id, n]) => {
+    const button = $(id);
+    const selected = n === name;
     button.setAttribute('aria-selected', String(selected));
     button.tabIndex = selected ? 0 : -1;
     if (selected && focus) button.focus();
   });
   renderToc(name);
   window.scrollTo({ top: 0 });
-  if (!headset) {
+  if (name === 'usb') {
     if (!usbBusy) usbScan();
+  } else if (name !== 'ha' && tonePlaying) {
+    stopTone();
   }
 }
 $('tabBtnHs').onclick = () => selectTab('hs', false);
+$('tabBtnHa').onclick = () => selectTab('ha', false);
 $('tabBtnUsb').onclick = () => selectTab('usb', false);
 renderToc('hs');
 syncHeaderOffset();
@@ -1427,10 +1636,15 @@ all('[role="tab"]').forEach(button => {
   button.onkeydown = event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const name = event.key === 'Home' ? 'hs'
+    const name = button.id === 'tabBtnHs' ? 'hs'
+      : button.id === 'tabBtnHa' ? 'ha' : 'usb';
+    const idx = TAB_ORDER.indexOf(name);
+    const next = event.key === 'Home' ? 'hs'
       : event.key === 'End' ? 'usb'
-      : button.id === 'tabBtnHs' ? 'usb' : 'hs';
-    selectTab(name, true);
+      : event.key === 'ArrowLeft'
+        ? TAB_ORDER[(idx + TAB_ORDER.length - 1) % TAB_ORDER.length]
+        : TAB_ORDER[(idx + 1) % TAB_ORDER.length];
+    selectTab(next, true);
   };
 });
 function setLogOpen(open) {
@@ -1828,7 +2042,10 @@ function drawCurve() {
   const eq = currentEq();
   const low = Math.min(-12, ...eq.gain);
   const high = 12;
-  const x = f => 31 + Math.log(f / 30) / Math.log(16000 / 30) * 257;
+  const x = f => {
+    const fx = Math.min(16000, Math.max(30, f));
+    return 31 + Math.log(fx / 30) / Math.log(16000 / 30) * 257;
+  };
   const y = gain => 12 + (high - gain) / (high - low) * 94;
 
   $('curveGrid').replaceChildren();
@@ -1865,11 +2082,50 @@ function setBand(index, value) {
   updateSlider(index);
   localEqChanged();
 }
+let selectedBand = -1;
+
+function setSelectedBand(index) {
+  selectedBand = index;
+  sliderItems.forEach((item, i) => {
+    item.bandEl.classList.toggle('selected', i === index);
+    // 点选后锁定调整：选中滑杆 touch-action:none（拖拽归它），
+    // 未选中的保持 pan-y（纵向滚动走浏览器，不误调增益）。
+    item.slider.style.touchAction = (i === index) ? 'none' : 'pan-y';
+  });
+  $('bandInspector').hidden = index < 0;
+  if (index >= 0) {
+    $('inspectorLabel').textContent = '第 ' + (index + 1) + ' 段';
+    $('freqInput').value = customEq.freq[index];
+  }
+}
+
+function updateFreqLabel(index) {
+  const item = sliderItems[index];
+  item.freqBtn.textContent = hz(customEq.freq[index]);
+  item.freqBtn.setAttribute('aria-label', customEq.freq[index] + ' Hz，点按调整中心频率');
+  item.slider.setAttribute('aria-label', customEq.freq[index] + ' Hz 增益');
+}
+
+function applyBandFreq(index, value) {
+  if (index < 0) return;
+  const freq = Math.max(20, Math.min(20000, Math.round(value)));
+  if (customEq.freq[index] === freq) {
+    $('freqInput').value = freq;
+    return;
+  }
+  customEq.freq[index] = freq;
+  updateFreqLabel(index);
+  if (selectedBand === index) $('freqInput').value = freq;
+  localEqChanged();
+}
+
 customEq.freq.forEach((frequency, index) => {
   const band = element('div', undefined, 'band');
+  const freqBtn = element('button', hz(frequency), 'band-freq');
+  freqBtn.type = 'button';
+  freqBtn.setAttribute('aria-label', frequency + ' Hz，点按调整中心频率');
   const output = element('output', '0');
   const slider = element('div', undefined, 'slider');
-  const label = element('span', hz(frequency) + ' Hz', 'frequency');
   slider.id = 'band-' + index;
   slider.tabIndex = 0;
   slider.setAttribute('role', 'slider');
@@ -1886,11 +2142,7 @@ customEq.freq.forEach((frequency, index) => {
   });
 
   let pointer = null;
-  let startX = 0;
-  let startY = 0;
-  let downAt = 0;
-  let lastTap = null;
-  let moved = false;
+  let tapCandidate = null;
 
   function updateFromPointer(event) {
     const rect = slider.getBoundingClientRect();
@@ -1900,48 +2152,53 @@ customEq.freq.forEach((frequency, index) => {
     setBand(index, 12 - ratio * 24);
   }
   slider.addEventListener('pointerdown', event => {
-    if (pointer !== null || !event.isPrimary) return;
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (event.pointerType === 'mouse') {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      slider.focus({ preventScroll: true });
+      pointer = event.pointerId;
+      slider.setPointerCapture(pointer);
+      updateFromPointer(event);
+      return;
+    }
+    // 触摸：未选中时先记作「点选」候选，不捕获指针（让纵向滚动照常）；选中后才锁定拖动。
+    if (selectedBand !== index) {
+      tapCandidate = { x: event.clientX, y: event.clientY, t: performance.now(), id: event.pointerId };
+      return;
+    }
     event.preventDefault();
     slider.focus({ preventScroll: true });
     pointer = event.pointerId;
-    startX = event.clientX;
-    startY = event.clientY;
-    downAt = performance.now();
-    moved = false;
     slider.setPointerCapture(pointer);
     updateFromPointer(event);
   });
   slider.addEventListener('pointermove', event => {
-    if (event.pointerId !== pointer) return;
-    event.preventDefault();
-    if (Math.hypot(event.clientX - startX, event.clientY - startY) > 8) moved = true;
-    updateFromPointer(event);
-  });
-  slider.addEventListener('pointerup', event => {
-    if (event.pointerId !== pointer) return;
-    const now = performance.now();
-    const tap = !moved && now - downAt < 280;
-    if (tap && lastTap &&
-        now - lastTap.time < 350 &&
-        Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 24) {
-      setBand(index, 0);
-      lastTap = null;
-    } else {
-      lastTap = tap ? { time: now, x: event.clientX, y: event.clientY } : null;
+    if (event.pointerId === pointer) {
+      event.preventDefault();
+      updateFromPointer(event);
+    } else if (tapCandidate && event.pointerId === tapCandidate.id) {
+      if (Math.hypot(event.clientX - tapCandidate.x, event.clientY - tapCandidate.y) > 8) {
+        tapCandidate = null; // 移动超过阈值：这是滚动，不是点选
+      }
     }
-    const captured = pointer;
-    pointer = null;
-    if (slider.hasPointerCapture(captured)) slider.releasePointerCapture(captured);
   });
-  function cancelPointer() {
-    pointer = null;
-    lastTap = null;
+  function releasePointer(event) {
+    if (event.pointerId === pointer) {
+      const captured = pointer;
+      pointer = null;
+      if (slider.hasPointerCapture(captured)) slider.releasePointerCapture(captured);
+    } else if (tapCandidate && event.pointerId === tapCandidate.id) {
+      const dt = performance.now() - tapCandidate.t;
+      tapCandidate = null;
+      if (dt < 400) setSelectedBand(index); // 点选锁定
+    }
   }
-  slider.addEventListener('pointercancel', cancelPointer);
-  slider.addEventListener('lostpointercapture', () => {
-    pointer = null;
+  slider.addEventListener('pointerup', releasePointer);
+  slider.addEventListener('pointercancel', event => {
+    if (event.pointerId === pointer) pointer = null;
+    tapCandidate = null;
   });
+  slider.addEventListener('lostpointercapture', () => { pointer = null; });
   slider.addEventListener('dblclick', event => {
     event.preventDefault();
     setBand(index, 0);
@@ -1961,15 +2218,36 @@ customEq.freq.forEach((frequency, index) => {
     setBand(index, next);
   });
 
-  band.append(output, slider, label);
+  freqBtn.addEventListener('click', () => {
+    setSelectedBand(selectedBand === index ? -1 : index);
+  });
+
+  band.append(freqBtn, slider, output);
   $('bandGrid').appendChild(band);
-  sliderItems.push({ output, slider });
+  sliderItems.push({ output, slider, freqBtn, bandEl: band });
   updateSlider(index);
 });
+
+// 中心频率编辑（选中频段后的 inspector）
+$('freqDown').onclick = () => applyBandFreq(selectedBand, customEq.freq[selectedBand] - 10);
+$('freqUp').onclick = () => applyBandFreq(selectedBand, customEq.freq[selectedBand] + 10);
+$('freqInput').onchange = () => applyBandFreq(selectedBand, Number($('freqInput').value));
+$('freqInput').onkeydown = event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    applyBandFreq(selectedBand, Number($('freqInput').value));
+  }
+};
+
+// 页面滚动即解除选中：避免点选锁定的滑杆挡住后续纵向滚动
+window.addEventListener('scroll', () => {
+  if (selectedBand >= 0) setSelectedBand(-1);
+}, { passive: true });
 
 function selectPreset(index) {
   selectedPreset = index;
   eqRevision++;
+  setSelectedBand(-1);
   const eq = currentEq();
   const custom = index === -1;
   $('customEditor').hidden = !custom;
@@ -2047,6 +2325,279 @@ $('eqSend').onclick = () => {
   );
 };
 selectPreset(-1);
+
+/* ---------- 助听 tab：每频段增益/上限 + 测试音样本 ---------- */
+function createHSlider(opts) {
+  const slider = element('div', undefined, 'hslider');
+  slider.setAttribute('role', 'slider');
+  slider.setAttribute('tabindex', '0');
+  slider.setAttribute('aria-orientation', 'horizontal');
+  slider.setAttribute('aria-valuemin', String(opts.min));
+  slider.setAttribute('aria-valuemax', String(opts.max));
+  slider.setAttribute('aria-valuenow', String(opts.value));
+  slider.setAttribute('aria-label', opts.ariaLabel || '滑杆');
+  const rail = element('span', undefined, 'hslider-rail');
+  const fill = element('span', undefined, 'hslider-fill');
+  const thumb = element('span', undefined, 'hslider-thumb');
+  rail.appendChild(fill);
+  slider.append(rail, thumb);
+
+  let value = opts.value;
+  let pointer = null;
+  let pending = null;
+  let decided = null;
+  let startX = 0;
+  let startY = 0;
+
+  function render() {
+    const ratio = (value - opts.min) / (opts.max - opts.min);
+    slider.style.setProperty('--pos', (ratio * 100) + '%');
+    slider.style.setProperty('--fill', (ratio * 100) + '%');
+    slider.setAttribute('aria-valuenow', String(value));
+    slider.setAttribute('aria-valuetext', opts.format ? opts.format(value) : String(value));
+  }
+  function commit(next) {
+    const clamped = Math.min(opts.max, Math.max(opts.min, next));
+    const stepped = opts.step ? Math.round(clamped / opts.step) * opts.step : clamped;
+    const v = Math.min(opts.max, Math.max(opts.min, stepped));
+    if (v !== value) {
+      value = v;
+      if (opts.onChange) opts.onChange(v);
+    }
+    render();
+  }
+  function fromClientX(clientX) {
+    const rect = slider.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+    return opts.min + ratio * (opts.max - opts.min);
+  }
+  slider.addEventListener('pointerdown', event => {
+    if (event.pointerType === 'mouse') {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      slider.focus({ preventScroll: true });
+      pointer = event.pointerId;
+      slider.setPointerCapture(pointer);
+      commit(fromClientX(event.clientX));
+      return;
+    }
+    // 触摸：横向才锁定，纵向交浏览器滚动（.hslider touch-action: pan-y）
+    pending = event.pointerId;
+    decided = null;
+    startX = event.clientX;
+    startY = event.clientY;
+    slider.focus({ preventScroll: true });
+  });
+  slider.addEventListener('pointermove', event => {
+    if (event.pointerId === pointer) {
+      event.preventDefault();
+      commit(fromClientX(event.clientX));
+      return;
+    }
+    if (event.pointerId !== pending) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (decided === null) {
+      if (Math.abs(dx) > 6 && Math.abs(dx) >= Math.abs(dy)) {
+        decided = 'drag';
+        slider.setPointerCapture(event.pointerId);
+        commit(fromClientX(event.clientX));
+      } else if (Math.abs(dy) > 6 && Math.abs(dy) > Math.abs(dx)) {
+        decided = 'scroll';
+      }
+      return;
+    }
+    if (decided === 'drag') {
+      event.preventDefault();
+      commit(fromClientX(event.clientX));
+    }
+  });
+  function release(event) {
+    if (event.pointerId === pointer) {
+      const captured = pointer;
+      pointer = null;
+      if (slider.hasPointerCapture(captured)) slider.releasePointerCapture(captured);
+    }
+    if (event.pointerId === pending) pending = null;
+  }
+  slider.addEventListener('pointerup', release);
+  slider.addEventListener('pointercancel', release);
+  if (opts.resetValue != null) {
+    slider.addEventListener('dblclick', event => {
+      event.preventDefault();
+      commit(opts.resetValue);
+    });
+  }
+  slider.addEventListener('keydown', event => {
+    const s = opts.step || 1;
+    let delta = null;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowUp') delta = s;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') delta = -s;
+    else if (event.key === 'PageUp') delta = s * 5;
+    else if (event.key === 'PageDown') delta = -s * 5;
+    else if (event.key === 'Home') delta = opts.min - value;
+    else if (event.key === 'End') delta = opts.max - value;
+    if (delta === null) return;
+    event.preventDefault();
+    commit(value + delta);
+  });
+  render();
+  return slider;
+}
+
+// 每频段参数结构：字段名与 docs/hearing-aid-eq-feasibility.md 对齐
+//   - index / iir_type / freq / gain / q = §1.2 eq_seg_info
+//   - out_threshold（本频段最大输出上限）= §2 wdrc_struct.threshold[].out_threshold 语义
+const HA_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+const hearingAid = {
+  bands: HA_FREQS.map((freq, index) => ({
+    index, freq, iir_type: 2, q: 0.7, gain: 0, out_threshold: 110
+  })),
+  eq_tool: { global_gain: 0, seg_num: HA_FREQS.length },
+  wdrc: {
+    bypass: 0, attack: 100, release: 200, inputgain: 0, outputgain: 0,
+    threshold_num: 6, algorithm: 0, mode: 1, holdtime: 0, reserved: [0, 0]
+  }
+};
+function buildHearingAidPayload() {
+  return {
+    eq_tool: Object.assign({}, hearingAid.eq_tool, {
+      seg: hearingAid.bands.map(b => ({
+        index: b.index, iir_type: b.iir_type, freq: b.freq, gain: b.gain, q: b.q
+      }))
+    }),
+    wdrc_struct: Object.assign({}, hearingAid.wdrc, {
+      // 每频段输出上限（语义=threshold[].out_threshold）。固件 Drc1Eff 为单带
+      // threshold[6]，per-band 限幅需 L2 multiband_drc —— BLE 绑定留桩。
+      band_out_threshold: hearingAid.bands.map(b => b.out_threshold)
+    })
+  };
+}
+window.h3sHearingAidPayload = buildHearingAidPayload;
+
+function haChanged() {
+  $('haFeedback').textContent = '本地草稿已修改（BLE 命令留桩，未发送）。';
+}
+
+const HA_GAIN_MIN = -12;
+const HA_GAIN_MAX = 40;
+const HA_LIMIT_MIN = 60;
+const HA_LIMIT_MAX = 120;
+function renderHearingAidBands() {
+  $('haBands').replaceChildren();
+  hearingAid.bands.forEach((band) => {
+    const row = element('div', undefined, 'ha-band');
+    const freq = element('span', hz(band.freq), 'freq');
+    const gainOut = element('output', signed(band.gain), 'gval');
+    const limitOut = element('output', String(band.out_threshold), 'lval');
+    const gainSlider = createHSlider({
+      min: HA_GAIN_MIN, max: HA_GAIN_MAX, step: 1, value: band.gain, resetValue: 0,
+      ariaLabel: band.freq + ' Hz 增益', format: v => signed(v) + ' dB',
+      onChange: v => { band.gain = v; gainOut.textContent = signed(v); haChanged(); }
+    });
+    const limitSlider = createHSlider({
+      min: HA_LIMIT_MIN, max: HA_LIMIT_MAX, step: 1, value: band.out_threshold, resetValue: 110,
+      ariaLabel: band.freq + ' Hz 输出上限', format: v => v + ' dB',
+      onChange: v => { band.out_threshold = v; limitOut.textContent = String(v); haChanged(); }
+    });
+    row.append(freq, gainSlider, gainOut, limitSlider, limitOut);
+    $('haBands').appendChild(row);
+  });
+}
+$('haFlat').onclick = () => {
+  hearingAid.bands.forEach(b => { b.gain = 0; b.out_threshold = 110; });
+  renderHearingAidBands();
+  $('haFeedback').textContent = '已复位为默认（增益 0 dB、上限 110 dB）。';
+};
+renderHearingAidBands();
+
+// —— 测试音与样本（h3sha 桥：AudioTrack + 内置扬声器路由）——
+const T = window.h3sha || null;
+const TONE_FREQS = [125, 250, 500, 1000, 2000, 4000, 8000];
+let toneFreq = 1000;
+let toneVolume = 60;
+let tonePlaying = false;
+
+function updateToneButtons() {
+  $('tonePlay').textContent = tonePlaying ? '停止播放' : '播放单频';
+  $('tonePlay').setAttribute('aria-pressed', String(tonePlaying));
+  all('#sampleButtons button').forEach(b => b.setAttribute('aria-pressed', 'false'));
+}
+function stopTone() {
+  if (T) { try { T.stop(); } catch (e) { /* 忽略 */ } }
+  tonePlaying = false;
+  updateToneButtons();
+}
+TONE_FREQS.forEach(f => {
+  const b = element('button', hz(f));
+  b.type = 'button';
+  b.setAttribute('aria-pressed', String(f === toneFreq));
+  b.onclick = () => {
+    toneFreq = f;
+    all('#toneFreqChips button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    if (tonePlaying) {
+      stopTone();
+      $('toneFeedback').textContent = '已切换频率，重新点「播放单频」开始。';
+    }
+  };
+  $('toneFreqChips').appendChild(b);
+});
+$('toneVolumeWrap').appendChild(createHSlider({
+  min: 0, max: 100, step: 5, value: toneVolume, ariaLabel: '测试音音量',
+  format: v => v + '%',
+  onChange: v => { toneVolume = v; $('toneVolumeValue').textContent = v + '%'; }
+}));
+$('tonePlay').onclick = () => {
+  if (!T) { notify('离线预览：测试音需要原生壳（h3sha 桥）', true); return; }
+  if (tonePlaying) { stopTone(); $('toneFeedback').textContent = '已停止。'; return; }
+  const r = rpc(T, 'playTone', [toneFreq, toneVolume]);
+  if (r && r.ok) {
+    tonePlaying = true;
+    updateToneButtons();
+    $('toneFeedback').textContent = '单频 ' + toneFreq + ' Hz · 音量 ' + toneVolume + '% · ' +
+      (r.speaker ? '已选内置扬声器' : '未找到内置扬声器，走默认路由');
+  }
+};
+$('toneStop').onclick = () => { stopTone(); $('toneFeedback').textContent = '已停止。'; };
+all('[data-sample]').forEach(b => {
+  b.onclick = () => {
+    if (!T) { notify('离线预览：样本需要原生壳（h3sha 桥）', true); return; }
+    const name = b.dataset.sample;
+    const loop = $('sampleLoop').checked;
+    const r = rpc(T, 'playSample', [name, loop]);
+    if (r && r.ok) {
+      tonePlaying = true;
+      updateToneButtons();
+      b.setAttribute('aria-pressed', 'true');
+      $('toneFeedback').textContent = '样本：' + b.textContent + ' · ' + (loop ? '循环' : '单次') + ' · ' +
+        (r.speaker ? '已选内置扬声器' : '未找到内置扬声器，走默认路由');
+    }
+  };
+});
+function toneInfo() {
+  try {
+    if (!T || typeof T.info !== 'function') return null;
+    const raw = T.info();
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (e) { return null; }
+}
+if (T) {
+  setInterval(() => {
+    const info = toneInfo();
+    if (!info) return;
+    const badge = $('haToneBadge');
+    badge.textContent = info.speaker ? '已选内置扬声器' : '未找到内置扬声器';
+    badge.className = 'badge ' + (info.speaker ? 'good' : 'warning');
+    if (tonePlaying && info.playing === false) {
+      tonePlaying = false;
+      updateToneButtons();
+      $('toneFeedback').textContent = '播放已结束。';
+    }
+  }, 800);
+} else {
+  $('haToneBadge').textContent = '离线预览';
+  $('haToneBadge').className = 'badge';
+}
 
 /* ---------- 按键：选择物理键后编辑五种手势 ---------- */
 const KEYS = [
