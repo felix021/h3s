@@ -1418,6 +1418,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_uart_con=False,
              jl_uart_init_writes=False,
              jl_uart_con1_readback=False,
+             jl_uart_tx_start_writes=False,
              jl_omap_writes=False,
              jl_imap_writes=False,
              wl_aud_con_writes=False,
@@ -2373,6 +2374,36 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         require(jl_uart_init_writes,
                 'the JL_UART CON1 readback projection requires the route-M init write records')
         options['jl_uart_con1_readback']=True
+    # jl_uart_tx_start_writes(路 UARTTX/sim-uarttx,UART TX 启动写白名单):
+    # TXADR(+0x14)/TXCNT(+0x18)(三基址对称 0xfd2014/18、0xfd2114/18、
+    # 0xfd2214/18)按路 M write-only 整字记录先例放行。**唯二静态站点**=
+    # 发送函数 0x603413c 的 DMA 启动对 0x603425a `[r7+20]=r5`(TXADR=会话
+    # 缓冲)/0x603425c `[r7+24]=r4`(TXCNT=帧构建器 0x6060254 的包络总长
+    # {0x55,0xAA,len,payload...,checksum}=payload+4);全 app+ROM LE32 字面量
+    # 扫描六地址零命中(访问全经基址寄存器相对寻径),**零静态读者**——读回/
+    # RMW 显式严格停(jl_uart_tx_word_readback_not_modeled)。**完成语义钉死
+    # (路 UARTTX park 世界探针)**:轮询档(b[obj+80]==0,实测档)同步发送
+    # 路径 TXCNT 写后读 RAM 标志即返回(0x6034266→0x6034172),不等待任何
+    # 完成位;启动前等待环 0x60341a6 轮询 CON0 bit0(uart_is_idle)但经
+    # 0x12cb08 返 0 出口立即退出(0x6034200)——**不发明完成投影**(无读时
+    # 投影位、无 advance 置位、无 IRQ12 交付件);完成的真实消费面=中断域
+    # (UART IRQ12/13/14 handler 0x60354e0 TX-done 支,CON0 bit15+bit2 键控)
+    # 与等待环 CON0 bit0,均不建模:CON0 保持路 F「读回=最后软件写值」
+    # (bit0 停留软件终值,不模拟硬件清零)。依赖(执行序):TXADR/TXCNT 只
+    # 在 CON0 bit0 读(路 F jl_uart_con)与 CON1|=0x10 RMW(路 M+路 AA)放行
+    # 后到达。运行效果(TX DMA 数据流/IRQ12)不建模——只记录「TX 启动信号
+    # 写已执行」,不扩展为「UART 发送已验证」。默认关:六字保持 unmapped
+    # (TX relay 0x603425a 诚实停的 CALLIMPL 前沿形状),legacy 报告逐字节不变。
+    if jl_uart_tx_start_writes:
+        require(jl_uart_con,
+                'the JL_UART TX start write records only layer on the route-F CON0 '
+                'projection (the send path reads CON0 bit0 via uart_is_idle before '
+                'reaching the TX start pair)')
+        require(jl_uart_con1_readback,
+                'the JL_UART TX start write records only layer on the route-AA CON1 '
+                'readback prefix (the TX start sequence RMWs CON1 |= 0x10 at 0x60340f6 '
+                'before TXADR/TXCNT)')
+        options['jl_uart_tx_start_write_records']=True
     # timer0_irq4_*(路 BE,独立成段便于并行路线合并):Timer0 pending→IRQ4 交付
     # 机制就位(在 ~341,097 硬期限前)。机制全部抄 core_tick/软件 IRQ 两先例:
     # 模型 advance() 在资格合格时抛 IrqDeliveryRequest(core,irq=4)(每个

@@ -639,6 +639,9 @@ class M4ProjectionFamilies(unittest.TestCase):
         p33_canary_projection=True,
         p33_canary_first_read_words={P33CanaryWatchRegisters.VLVD_CON: 0x180},
         jl_uart_init_write_records=True, jl_uart_con1_readback=True,
+        # 路 UARTTX(sim-uarttx):TX 启动写记录容器(条件栈全开 flag 集成员;
+        # 依赖路 F CON0 投影+路 AA CON1 读回,执行序前置)。
+        jl_uart_con_projection=True, jl_uart_tx_start_write_records=True,
         jl_omap_write_records=True, jl_imap_write_records=True,
         jl_wl_aud_write_records=True, jl_audio_dac_init_write_records=True,
         jl_audio_adc_reset_write_records=True,
