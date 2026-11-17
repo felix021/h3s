@@ -671,6 +671,7 @@ class M4ProjectionFamilies(unittest.TestCase):
         # the current conditional frontier flag set (zero prefix touches).
         jl_anc_writes=True,
         jl_clock_con3_readback=True,
+        jl_pled_con3_readback=True,
     )
 
     def build_world(self):
@@ -837,6 +838,12 @@ class M4ProjectionFamilies(unittest.TestCase):
         # Route D2ANC companion: CLK_CON3 written once, one synthesized read.
         hw.jl_clock_con3.write(0xfd0024, 0x20000)
         self.assertEqual(hw.jl_clock_con3.read(0xfd0024), 0x20000)
+        # Route FD610C companion: PLED CON3 served one config RMW (synthetic
+        # initial 0 read + write-back), then one whole-word store — exercising
+        # both the synthesized-initial-read and the read-after-write counters.
+        self.assertEqual(hw.jl_pled_con3.rmw('and', 0xffffffdf), 0)
+        hw.jl_pled_con3.write(0xfd610c, 0x40)
+        self.assertEqual(hw.jl_pled_con3.rmw('or', 0x20), 0x60)
         return hardware
 
     def captured_m4(self, world):
@@ -1026,6 +1033,20 @@ class M4ProjectionFamilies(unittest.TestCase):
                          original.jl_adc_start.reads_after_write)
         self.assertEqual(restored.jl_adc_start.synthesized_initial_reads,
                          original.jl_adc_start.synthesized_initial_reads)
+
+    def test_fd610c_pled_con3_container_resumes_exact_semantics(self):
+        """Route FD610C behavioral pin: after restore the PLED CON3 container
+        keeps answering config RMWs from the CAPTURED store (last written value
+        still feeds the write-back), and the synthesized-initial-read /
+        read-after-write counters resume exactly."""
+        original, snapshot = self.world_and_snapshot()
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        for world in (original, restored):
+            self.assertEqual(world.jl_pled_con3.rmw('or', 0x80), 0xe0)
+        self.assertEqual(restored.jl_pled_con3.reads_after_write,
+                         original.jl_pled_con3.reads_after_write)
+        self.assertEqual(restored.jl_pled_con3.reads_after_write, 2)
+        self.assertEqual(restored.jl_pled_con3.synthesized_initial_reads, 1)
 
 
 class Cfg523InstallBit(unittest.TestCase):

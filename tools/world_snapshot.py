@@ -1192,6 +1192,16 @@ M4_FAMILIES = (
     # the same four-field AM shape.
     ('jl_clock_con3', 'JLClockCon3Registers',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    # Route FD610C: the JL_PLED CON3 single-word container rides the same AM
+    # four-field shape (stores/word_writes/reads_after_write/
+    # synthesized_initial_reads); the one prefix RMW write + one synthesized-
+    # initial read are the only runtime state, and the address / synthetic-
+    # initial constants ride the per-object static guard like every other M4
+    # fixture. Without this slot the conditional-world capture refuses:
+    # "attribute jl_pled_con3 ... is neither captured state nor a static
+    # fixture".
+    ('jl_pled_con3', 'JLPledCon3Registers',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 
