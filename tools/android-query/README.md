@@ -102,6 +102,9 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 | `setKeyRemap(eventId, action)` | 组按键重映射帧（默认 wire=ADV type2） | 走 `KeyRemapFrame.buildAdvType2Command`（opcode C2+type2 mask+三元组，帧形状 [假设]）；eventId 布局 0x{逻辑键}0{连击数}（769/1281/1793..1796，长按低字节 5 [假设]），action 0..7 或 11（ANC） |
 | `setKeyRemapCustom(eventId, action)` | 组按键重映射帧（候选 wire=自定义 0x2b） | 走 `KeyRemapFrame.buildCustomCommand`（FF/0x2b+3B 三元组）；字段域同上，两条 wire 真机抓包定案（docs/app-protocol.md §2.5） |
 | `getKeyRemap()` | 读按键映射（本地工作副本） | `{"ok":true,"map":{"769":6,...}}`，初始=控制面板 defaultFun、set 成功后更新；非设备读回（type2 查询响应形状未钉），长按条目 -1=未知 |
+| `setHearingCfg(hex)` / `getHearingCfg()` | key30 写/读（FF/0x30 写形态帧） | 8B 值不透明；写回执 `30 01 status`、读回执 `30 08`+8B 经 response 事件 |
+| `setHearingEq(segsJson)` / `getHearingEq()` | key31 十段 EQ 写/读 | 写 data=[31,88B]（encodeEqValue 协议门），读 data=[31] 回执 `30 58`+88B（parseEqReadPayload→decodeEqValue 解码链）；EqWritePolicy 白名单放行 key31 的 89B 写/1B 读精确形状（值不透明，key30 先例同款） |
+| `invalidateHearingCfg(hex)` / `invalidateHearingEq(hex)` | 双 key 软回退（H5-DEF-01，§4d） | 只接受「可解码的真实协议原值」，Java 侧自行把魔数首字节 48→00、其余字节原样发（页面无法借这条入口发任意字节）；原值备份=调用方先 get 后存档 |
 
 返回统一 JSON：成功 `{"ok":true,"bytesHex":"fedcba..."}`（小写连续 hex）；失败
 `{"ok":false,"error":"..."}`（坏 JSON、字段缺失/非数值、取值越界、未武装等都有独立错误信息）。
@@ -158,8 +161,15 @@ WebView 壳第三 tab，页面在 `assets/index.html`，原生侧只有一个 to
 
 **诚实标注**：per-band 限幅在当前固件里无 1:1 落点（需 L3 分频+多 WDRC+merge 拓扑）；
 M 是数字域 dB 刻度、非标定 SPL；attack/TWOPOINT 平滑下稳态上限成立≠瞬时峰值保护；
-±80 dB 只是 App 草稿范围，越界实际效果未验。**BLE 命令绑定未接**（App→固件参数写入通道
-不存在，r4-keyhook 的 8B VM key 30 只有往返、无消费链；L3 见 docs/hearing-aid-l2-mpo.md §5）。
+±80 dB 只是 App 草稿范围，越界实际效果未验。
+
+**key30/key31 通道与成功判据（H5-PRE 缺口表修正）**：保存全带 MPO（key30）/保存十段 EQ
+（key31）按钮按**四态**走：排队（`{ok,sent,seq}`）→ 发送（send_failed/桥拒绝）→ 回执
+（挂精确判据：成功=载荷逐字节 `30 01 00`；`30 01 01`=set_config 失败；旧「返回串不以 ERR
+开头」判成功会误报，已废）→ 读回（「读取两 key 原始值」按钮显示 `30 08`+8B / `30 58`+88B
+原始 hex 并按协议门解码，非协议值如实标注）。「软回退 key30/key31（坏魔数，§4d）」按钮
+先读后写：仅魔数首字节 48→00、其余字节原样（写入前弹窗显示确切 hex）；原值 hex 留档页面
+副本。回执成功 ≠ 曲线已应用/已回退生效（固件候选 UNTESTED 红线不变）。
 
 ### 测试音与样本（h3sha 桥）
 

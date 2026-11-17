@@ -34,6 +34,8 @@ public class LoopbackTransport extends SerialBleTransport {
     private boolean connected;
     /** R4 key-store 读回桩值（cmdid 0x30 data_len=1 的回执 8 字节；测试可改写）。 */
     public byte[] keyStoreValue = new byte[KeyStoreFrame.VALUE_LEN];
+    /** R4 key-store key31 读回桩值（data=[31] 的回执 88 字节；测试可改写，全零=非协议值）。 */
+    public byte[] eqKeyStoreValue = new byte[KeyStoreFrame.EQ_VALUE_LEN];
 
     /** negotiatedMtu：模拟协商到的 ATT MTU（默认 247=实测值；压小可测跨片路径）。 */
     public LoopbackTransport(int negotiatedMtu) { this.negotiatedMtu = negotiatedMtu; }
@@ -95,12 +97,17 @@ public class LoopbackTransport extends SerialBleTransport {
         return buildSuccessResponse(commandFrame, null);
     }
 
-    /** 带 R4 key-store 桩值的版本（keystore 读回 8 字节；null=全零）。 */
+    /** 带 R4 key-store 桩值的版本（key30/key31 各自的读回桩值）。 */
     public byte[] buildDeviceResponse(byte[] commandFrame) {
-        return buildSuccessResponse(commandFrame, keyStoreValue);
+        return buildSuccessResponse(commandFrame, keyStoreValue, eqKeyStoreValue);
     }
 
     static byte[] buildSuccessResponse(byte[] commandFrame, byte[] keyStoreValue) {
+        return buildSuccessResponse(commandFrame, keyStoreValue, new byte[KeyStoreFrame.EQ_VALUE_LEN]);
+    }
+
+    /** key31 分支照 keystore_hook.S 的 HAL4 扩展：写→`30 01 status`，读→`30 58`+88B 桩值。 */
+    static byte[] buildSuccessResponse(byte[] commandFrame, byte[] keyStoreValue, byte[] eqKeyStoreValue) {
         if (commandFrame == null || commandFrame.length < 11) return null;
         int flags = commandFrame[3] & 0xff;
         int opcode = commandFrame[4] & 0xff;
@@ -111,26 +118,29 @@ public class LoopbackTransport extends SerialBleTransport {
         int cmdId = commandFrame[8] & 0xff;
         int dataLen = commandFrame[9] & 0xff;
         if (cmdId == 0xfe || dataLen != commandFrame.length - 11) return null;  // 只读形态/长度不符不响应
-        // R4 key-store（docs/r4-command-hook.md）：按固件 keystore_hook 载荷的设计回执应答
-        // （写→`30 01 00`，读→`30 08 桩值`）——不是回显，也不是实测设备帧。
-        if (cmdId == KeyStoreFrame.CMD_ID
-                && (dataLen == KeyStoreFrame.WRITE_LEN || dataLen == KeyStoreFrame.READ_LEN)
-                && (commandFrame[10] & 0xff) == KeyStoreFrame.KEY_ID) {
-            byte[] payload;
-            if (dataLen == KeyStoreFrame.READ_LEN) {
-                payload = new byte[2 + KeyStoreFrame.VALUE_LEN];
+        // R4 key-store（docs/r4-command-hook.md + keystore_hook.S HAL4 扩展）：按固件载荷的
+        // 设计回执应答（写→`30 01 00`，读 key30→`30 08 桩值`，读 key31→`30 58 桩值`）
+        // ——不是回显，也不是实测设备帧。
+        if (cmdId == KeyStoreFrame.CMD_ID && dataLen == KeyStoreFrame.READ_LEN) {
+            int key = commandFrame[10] & 0xff;
+            int valueLen = key == KeyStoreFrame.EQ_KEY_ID ? KeyStoreFrame.EQ_VALUE_LEN
+                    : key == KeyStoreFrame.KEY_ID ? KeyStoreFrame.VALUE_LEN : -1;
+            if (valueLen >= 0) {
+                byte[] value = key == KeyStoreFrame.EQ_KEY_ID
+                        ? (eqKeyStoreValue == null ? new byte[KeyStoreFrame.EQ_VALUE_LEN] : eqKeyStoreValue)
+                        : (keyStoreValue == null ? new byte[KeyStoreFrame.VALUE_LEN] : keyStoreValue);
+                byte[] payload = new byte[2 + valueLen];
                 payload[0] = (byte) cmdId;
-                payload[1] = (byte) KeyStoreFrame.VALUE_LEN;
-                byte[] value = keyStoreValue == null ? new byte[KeyStoreFrame.VALUE_LEN] : keyStoreValue;
-                System.arraycopy(value, 0, payload, 2, KeyStoreFrame.VALUE_LEN);
-            } else {
-                payload = new byte[]{(byte) cmdId, 0x01, 0x00};
+                payload[1] = (byte) valueLen;
+                System.arraycopy(value, 0, payload, 2, valueLen);
+                return wrapKeystoreBody(sn, payload, opcode);
             }
-            byte[] body = new byte[2 + payload.length];      // status + SN + payload
-            body[0] = 0x00;
-            body[1] = (byte) sn;
-            System.arraycopy(payload, 0, body, 2, payload.length);
-            return wrapResponseBody(body, opcode);
+        }
+        if (cmdId == KeyStoreFrame.CMD_ID
+                && (dataLen == KeyStoreFrame.WRITE_LEN || dataLen == KeyStoreFrame.EQ_WRITE_LEN)
+                && (commandFrame[10] & 0xff) == (dataLen == KeyStoreFrame.EQ_WRITE_LEN
+                        ? KeyStoreFrame.EQ_KEY_ID : KeyStoreFrame.KEY_ID)) {
+            return wrapKeystoreBody(sn, new byte[]{(byte) cmdId, 0x01, 0x00}, opcode);
         }
         byte[] body = new byte[4 + dataLen];      // status + SN + cmdid + n + data
         body[0] = 0x00;                            // status=0 成功
@@ -138,6 +148,15 @@ public class LoopbackTransport extends SerialBleTransport {
         body[2] = (byte) cmdId;
         body[3] = (byte) dataLen;                  // n（载荷字节数，分发器包装格式）
         System.arraycopy(commandFrame, 10, body, 4, dataLen);
+        return wrapResponseBody(body, opcode);
+    }
+
+    /** key-store 回执包装：body=status(00)+SN+payload，再套响应帧头尾。 */
+    private static byte[] wrapKeystoreBody(int sn, byte[] payload, int opcode) {
+        byte[] body = new byte[2 + payload.length];          // status + SN + payload
+        body[0] = 0x00;
+        body[1] = (byte) sn;
+        System.arraycopy(payload, 0, body, 2, payload.length);
         return wrapResponseBody(body, opcode);
     }
 

@@ -1352,6 +1352,9 @@ summary {
         <button id="haFlat">全部复位</button>
         <button id="haSaveMpo" class="primary">保存全带 MPO（BLE cmd 0x30）</button>
         <button id="haSaveEq" class="primary">保存十段 EQ（key 31，L4 候选）</button>
+        <button id="haReadKeys">读取两 key 原始值（回执核对）</button>
+        <button id="haInvalidateMpo" class="danger" disabled>软回退 key30（坏魔数，§4d）</button>
+        <button id="haInvalidateEq" class="danger" disabled>软回退 key31（坏魔数，§4d）</button>
       </div>
       <p id="haFeedback" class="feedback" aria-live="polite">本地草稿，尚未发送。</p>
     </article>
@@ -1843,11 +1846,20 @@ function renderConnection() {
     : '仅连接构建时指定的耳机；占位地址需在构建时配置。';
   updateGates();
 }
-function completeCommand(seq, success, message) {
+function completeCommand(seq, success, message, event) {
   const item = pending.get(Number(seq));
   if (!item) return;
   pending.delete(Number(seq));
   clearTimeout(item.timer);
+  // 精确回执判据（H5-BLE-01）：挂了 expectAck 的命令，成功 = 外层 status==0 且载荷
+  // 逐字节等于期望（如 key30/31 写回执 `30 01 00`）。排队 JSON/外层 ok 都不算保存成功。
+  if (item.expectAck && event && event.event === 'response') {
+    const payload = String(event.payloadHex || '');
+    if (payload !== item.expectAck) {
+      success = false;
+      message = '回执不符：期望 ' + item.expectAck + '，实际 ' + (payload || '（空）');
+    }
+  }
   if (item.callback) item.callback(success, message);
 }
 function failPending(message) {
@@ -1855,7 +1867,7 @@ function failPending(message) {
     completeCommand(seq, false, message);
   });
 }
-function issue(method, args, callback) {
+function issue(method, args, callback, expectAck) {
   const result = rpc(H, method, args);
   if (!result.ok) {
     if (callback) callback(false, result.error || '操作被拒绝');
@@ -1870,7 +1882,7 @@ function issue(method, args, callback) {
       completeCommand(seq, false, message);
       notify(message, true);
     }, 15000);
-    pending.set(seq, { callback, timer, method });
+    pending.set(seq, { callback, timer, method, expectAck: expectAck || null });
     notify('命令已排队，等待设备应答。');
   } else {
     const message = '仅生成了命令，当前桥未实际发送。';
@@ -1980,6 +1992,7 @@ bindSegment('modeSeg', 'data-mode', 'setAudioMode', 'modeFeedback');
 function parseDeviceMessage(payloadHex) {
   const hex = String(payloadHex || '').replace(/\s+/g, '').toLowerCase();
   if (!/^(?:[0-9a-f]{2})+$/.test(hex)) return;
+  if (parseKeyStoreReadback(hex)) return;
 
   const batteryAt = hex.startsWith('2f03') ? 0
     : hex.slice(4, 8) === '2f03' ? 4 : -1;
@@ -2053,7 +2066,8 @@ window.onH3sEvent = raw => {
       completeCommand(
         event.seq,
         success,
-        success ? '设备已应答' : '设备返回失败，状态码：' + event.status
+        success ? '设备已应答' : '设备返回失败，状态码：' + event.status,
+        event
       );
       if (success) parseDeviceMessage(event.payloadHex);
       else notify('设备返回失败，状态码：' + event.status, true);
@@ -2638,6 +2652,10 @@ function haEncodeMpoValue(mpo) {
   return Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/* 保存按钮成功判据（H5-BLE-01，缺口表第 3 项修正）：旧「返回串不以 ERR 开头」把排队
+ * JSON / {ok:false} 误报成已保存。现按四态走：排队（sent+seq）/ 发送（send_failed 或
+ * 桥拒绝）/ 回执（挂 expectAck，成功=载荷精确 `30 01 00`；`30 01 01`=set_config 失败）/
+ * 读回（另点「读取两 key 原始值」核对原始字节）。排队成功只算「已提交」。 */
 $('haSaveMpo').onclick = () => {
   const mpo = haEffectiveMpo();
   const hex = haEncodeMpoValue(mpo);
@@ -2645,19 +2663,12 @@ $('haSaveMpo').onclick = () => {
     $('haFeedback').textContent = 'MPO ' + mpo + ' dB 超出可编码范围 (0.3, 119.9)，未发送。';
     return;
   }
-  if (!H || typeof H.setHearingCfg !== 'function') {
-    $('haFeedback').textContent = 'bridge 不可用（setHearingCfg 缺失），未发送。';
-    return;
-  }
-  try {
-    const result = H.setHearingCfg(hex);
-    $('haFeedback').textContent = 'MPO ' + mpo + ' dB 已提交 BLE cmd 0x30（key 30）：'
-      + (result && !String(result).startsWith('ERR')
-        ? '保存成功——固件 L3 候选在下次开启辅听时应用（运行中即时调节未实现）。'
-        : '失败或未确认（' + result + '）。');
-  } catch (e) {
-    $('haFeedback').textContent = '发送异常（' + e + '），未写入。';
-  }
+  $('haFeedback').textContent = 'MPO ' + mpo + ' dB 已提交排队，等待回执（成功判据=精确回执 30 01 00）…';
+  writeCommand('setHearingCfg', [hex], (ok, message) => {
+    $('haFeedback').textContent = ok
+      ? 'key30 写入回执 30 01 00 精确匹配：set_config 成功（≠ 曲线已应用；L3 候选在下次开启辅听时应用）。可用「读取两 key 原始值」复核。'
+      : 'key30 未确认保存（' + message + '）——按回执判据不算保存成功。';
+  }, '300100');
 };
 
 // L4 EQ 十段值协议（与固件 apply_eq.S / KeyStoreFrame.encodeEqValue 对齐）：
@@ -2689,21 +2700,91 @@ $('haSaveEq').onclick = () => {
     $('haFeedback').textContent = '十段 EQ 有频点/增益超出可编码范围（freq 1..21599Hz、|gain|<40dB），未发送。';
     return;
   }
-  if (!H || typeof H.setHearingEq !== 'function') {
-    $('haFeedback').textContent = 'bridge 不可用（setHearingEq 缺失），未发送。';
+  $('haFeedback').textContent = '十段 EQ 已提交排队，等待回执（成功判据=精确回执 30 01 00）…';
+  writeCommand('setHearingEq', [JSON.stringify(bands.map(b => ({ f: b.freq, g: b.gain })))],
+    (ok, message) => {
+      $('haFeedback').textContent = ok
+        ? 'key31 写入回执 30 01 00 精确匹配：set_config 成功（≠ 曲线已应用；L4 候选在下次开启辅听时逐段应用，非事务性）。可用「读取两 key 原始值」复核。'
+        : 'key31 未确认保存（' + message + '）——按回执判据不算保存成功。';
+    }, '300100');
+};
+
+/* ---------- key30/key31 读回解码链 + 软回退（H5-BLE-01/H5-DEF-01） ----------
+ * 与 Java 侧 KeyStoreFrame.decodeMpoValue/decodeEqValue 对齐：魔数/版本/保留/范围门
+ * 任一不符只如实标「非协议值」，不猜语义。原始 hex 全程可见（日志 + 反馈行）。 */
+const haLastRead = { key30: null, key31: null };
+function haFloat32FromHexLE(h4) {
+  if (!/^[0-9a-f]{8}$/.test(h4)) return null;
+  const buf = new ArrayBuffer(4), u8 = new Uint8Array(buf);
+  for (let i = 0; i < 4; i++) u8[i] = parseInt(h4.slice(i * 2, i * 2 + 2), 16);
+  const v = new DataView(buf).getFloat32(0, true);
+  return isFinite(v) ? v : null;
+}
+function haDecodeMpoValue(hex) {
+  if (!/^[0-9a-f]{16}$/.test(hex)) return null;
+  if (hex.slice(0, 8) !== '48410100') return null;      // 'H','A',ver=1,rsv=0
+  const mpo = haFloat32FromHexLE(hex.slice(8));
+  return mpo != null && mpo > 0.3 && mpo < 119.9 ? mpo : null;
+}
+function haDecodeEqValue(hex) {
+  if (!/^[0-9a-f]{176}$/.test(hex)) return null;
+  if (hex.slice(0, 10) !== '484102000a') return null;   // 'H','A',ver=2,rsv=0,seg=10
+  const segs = [];
+  for (let i = 0; i < 10; i++) {
+    const off = 16 + i * 16;                            // 8B 头 + 每段 8B
+    const freq = parseInt(hex.slice(off, off + 4), 16);
+    const gain = haFloat32FromHexLE(hex.slice(off + 8, off + 16));
+    if (!(freq >= 1 && freq <= 21599) || gain == null || Math.abs(gain) >= 40) return null;
+    segs.push({ f: freq, g: gain });
+  }
+  return segs;
+}
+function parseKeyStoreReadback(hex) {
+  if (hex.startsWith('3008') && hex.length === 20) {
+    const value = hex.slice(4);
+    haLastRead.key30 = value;
+    $('haInvalidateMpo').disabled = false;
+    const mpo = haDecodeMpoValue(value);
+    $('haFeedback').textContent = 'key30 读回原始值 ' + value
+      + (mpo != null ? '（协议值：MPO ' + mpo + ' dB）' : '（非协议值：历史/测试字节，不能当 MPO 解读）')
+      + '。软回退按钮已按此原值待命（§4d）。';
+    return true;
+  }
+  if (hex.startsWith('3058') && hex.length === 180) {
+    const value = hex.slice(4);
+    haLastRead.key31 = value;
+    $('haInvalidateEq').disabled = false;
+    const segs = haDecodeEqValue(value);
+    $('haFeedback').textContent = 'key31 读回原始值 ' + value
+      + (segs ? '（协议值：十段 ' + segs.map(s => s.f + 'Hz' + (s.g >= 0 ? '+' : '') + s.g.toFixed(2)).join(', ') + 'dB）'
+              : '（非协议值：不能当 EQ 解读）')
+      + '。软回退按钮已按此原值待命（§4d）。';
+    return true;
+  }
+  return false;
+}
+$('haReadKeys').onclick = () => {
+  $('haFeedback').textContent = '读取 key30（期望回执 30 08+8B），随后 key31（期望 30 58+88B）…';
+  issue('getHearingCfg', [], () => issue('getHearingEq', []));
+};
+function haInvalidateKey(key) {
+  const value = haLastRead[key];
+  if (!value) return;
+  const bad = '00' + value.slice(2);                    // 仅魔数首字节 48→00，其余原样
+  const method = key === 'key30' ? 'invalidateHearingCfg' : 'invalidateHearingEq';
+  const preview = bad.length > 48 ? bad.slice(0, 48) + '…（共 ' + bad.length / 2 + 'B）' : bad;
+  if (!window.confirm('软回退 ' + key + '：将写入坏魔数值\n' + preview
+      + '\n（仅魔数首字节 48→00；回执仍应为 30 01 00；生效需完整关→开重装载兜底/默认曲线。）\n确认写入？')) {
     return;
   }
-  const segs = bands.map(b => ({ f: b.freq, g: b.gain }));
-  try {
-    const result = H.setHearingEq(JSON.stringify(segs));
-    $('haFeedback').textContent = '十段 EQ 已提交 BLE cmd 0x30（key 31）：'
-      + (result && !String(result).startsWith('ERR')
-        ? '保存成功——固件 L4 候选在下次开启辅听时逐段应用到 Eq1Eff（每条段消息要求回执 1，非事务性整曲线）。'
-        : '失败或未确认（' + result + '）。');
-  } catch (e) {
-    $('haFeedback').textContent = '发送异常（' + e + '），未写入。';
-  }
-};
+  writeCommand(method, [value], (ok, message) => {
+    $('haFeedback').textContent = ok
+      ? key + ' 坏魔数写入回执 30 01 00 精确匹配（set_config 成功 ≠ 已回退生效；需完整关→开后按 §4d 复核读回与默认曲线）。'
+      : key + ' 坏魔数写入未确认（' + message + '）——不算成功。';
+  }, '300100');
+}
+$('haInvalidateMpo').onclick = () => haInvalidateKey('key30');
+$('haInvalidateEq').onclick = () => haInvalidateKey('key31');
 
 function updateHaMpoSummary() {
   const mpo = haEffectiveMpo();

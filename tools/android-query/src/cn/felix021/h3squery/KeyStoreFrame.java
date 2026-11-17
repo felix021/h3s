@@ -185,7 +185,16 @@ public final class KeyStoreFrame {
 
     /** EQ 写命令 data：[31, v0..v87] 共 89B（与固件 keyhook key-31 分支对齐）。 */
     public static byte[] buildEqWriteData(EqSeg[] segs) {
-        byte[] value = encodeEqValue(segs);
+        return buildEqWriteDataFromValue(encodeEqValue(segs));
+    }
+
+    /** EQ 写命令 data（原值直写变体）：软回退工具把「魔数首字节置 0 的原 88B 值」原样
+     *  发回（decodeEqValue 验过的协议值只动魔数位，不重编码）——值对本层仍不透明，
+     *  长度/长度门照常钉死。 */
+    public static byte[] buildEqWriteDataFromValue(byte[] value) {
+        check(value != null, "value 不能为 null");
+        check(value.length == EQ_VALUE_LEN,
+                "EQ 值长度必须为 " + EQ_VALUE_LEN + " 字节: " + (value == null ? -1 : value.length));
         byte[] data = new byte[EQ_WRITE_LEN];
         data[0] = (byte) EQ_KEY_ID;
         System.arraycopy(value, 0, data, 1, EQ_VALUE_LEN);
@@ -195,6 +204,18 @@ public final class KeyStoreFrame {
     /** EQ 写命令完整帧：FE DC BA | C0 | FF | len_BE16 | SN | 30 | 59 | key31+88B 值 | EF。 */
     public static byte[] buildEqWriteCommand(int sn, EqSeg[] segs) {
         return H3SBridge.buildCustomCommand(sn, CMD_ID, buildEqWriteData(segs));
+    }
+
+    /** EQ 读命令 data：[31] 共 1B（读也走写形态帧，与 key30 读同族；固件按 data_len==1
+     *  分路到 get_config(31, resp+2, 88)，key 无记录时静默不回）。 */
+    public static byte[] buildEqReadData() {
+        return new byte[]{(byte) EQ_KEY_ID};
+    }
+
+    /** EQ 读命令完整帧：FE DC BA | C0 | FF | len_BE16(5) | SN | 30 | 01 | 1F | EF；
+     *  回执载荷 `30 58 v0..v87`（parseEqReadPayload 解析）。 */
+    public static byte[] buildEqReadCommand(int sn) {
+        return H3SBridge.buildCustomCommand(sn, CMD_ID, buildEqReadData());
     }
 
     /** 解析 EQ 读回响应载荷：期望 `30 58 v0..v87`，返回 88B 值。 */
@@ -244,7 +265,7 @@ public final class KeyStoreFrame {
 
     /** 严格校验头/opcode/cmdid/长度/尾后抽出写命令的 8 字节值。 */
     public static byte[] parseWriteCommand(byte[] frame) {
-        byte[] head = parseFrameHead(frame, WRITE_LEN);
+        byte[] head = parseFrameHead(frame, WRITE_LEN, KEY_ID);
         byte[] value = new byte[VALUE_LEN];
         System.arraycopy(head, 1, value, 0, VALUE_LEN);
         return value;
@@ -252,12 +273,26 @@ public final class KeyStoreFrame {
 
     /** 严格校验头/opcode/cmdid/长度/尾后确认读命令形状（返回 key 字节）。 */
     public static int parseReadCommand(byte[] frame) {
-        byte[] head = parseFrameHead(frame, READ_LEN);
+        byte[] head = parseFrameHead(frame, READ_LEN, KEY_ID);
         return head[0] & 0xff;
     }
 
-    /** 帧头/cmdid/data_len 通用校验：返回 data（长度 dataLen）。 */
-    private static byte[] parseFrameHead(byte[] frame, int expectLen) {
+    /** EQ 写命令反解析：抽出 88 字节原值（key 字节必须是 31）。 */
+    public static byte[] parseEqWriteCommand(byte[] frame) {
+        byte[] head = parseFrameHead(frame, EQ_WRITE_LEN, EQ_KEY_ID);
+        byte[] value = new byte[EQ_VALUE_LEN];
+        System.arraycopy(head, 1, value, 0, EQ_VALUE_LEN);
+        return value;
+    }
+
+    /** EQ 读命令反解析：确认 key 字节是 31。 */
+    public static int parseEqReadCommand(byte[] frame) {
+        byte[] head = parseFrameHead(frame, READ_LEN, EQ_KEY_ID);
+        return head[0] & 0xff;
+    }
+
+    /** 帧头/cmdid/data_len/key 字节通用校验：返回 data（长度 dataLen）。 */
+    private static byte[] parseFrameHead(byte[] frame, int expectLen, int expectKey) {
         check(frame != null && frame.length >= 12, "0x30 帧太短");
         check((frame[0] & 0xff) == 0xfe && (frame[1] & 0xff) == 0xdc && (frame[2] & 0xff) == 0xba, "帧头不是 FE DC BA");
         check((frame[3] & 0xff) == EqFrame.FLAGS_CMD, "flags 不是 C0");
@@ -271,7 +306,7 @@ public final class KeyStoreFrame {
                 "0x30 data_len 应为 " + expectLen + ": " + dataLen);
         byte[] data = new byte[dataLen];
         System.arraycopy(frame, 10, data, 0, dataLen);
-        check((data[0] & 0xff) == KEY_ID, "data[0] 不是 key 30");
+        check((data[0] & 0xff) == expectKey, "data[0] 不是 key " + expectKey);
         return data;
     }
 
