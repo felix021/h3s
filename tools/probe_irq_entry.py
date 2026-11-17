@@ -1439,6 +1439,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_adda_analog_family=False,
              jl_audio_dac_tm_readback=False,jl_audio_dac_tm_probe_value=None,
              jl_adda_ada_family=False,jl_adda_ada_probe_value=None,
+             jl_anc_writes=False,
+             jl_clock_con3_readback=False,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -2573,6 +2575,32 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'container the world still stops at 0x606abbe; the dependency encodes '
                 'THIS execution order, not a hardware dependency)')
         options['jl_adda_ada_family']=True
+    # jl_anc_writes(路 D2ANC,opt-in 默认关):JL_ANC 硬件滤波块 44 字容器
+    # (0xfe0400..0xfe04f4;22 个 li 常量传播扫描字+22 个表驱动滤波族运行时
+    # 变址墙钉字(0x606cfb2 域,索引来自滤波模式表);窗外零触达留 unmapped)。消费者=INJ-05 ANC 场景的 post_stop 直调段
+    # (audio_anc_run 0x601c8de 停-重配-启链 0x606ee26→0x606e9e8→0x606ebe0+
+    # 滤波配置族);boot 前缀零触达(D2AUD §6.2 运行时自证)=开启不动前沿。
+    # 依赖边挂 audio_adc_dma_delivery=场景先后关系(音频注入世界就绪后 ANC
+    # 场景才触达该块),非硬件依赖。
+    if jl_anc_writes:
+        require(audio_adc_dma_delivery,
+                'the JL_ANC 44-word container only layers on the audio ADC DMA '
+                'delivery release (the ANC scene that first touches the block is '
+                'the post-stop direct-call world built on the audio injection '
+                'stack; the dependency encodes THIS scenario order, not a '
+                'hardware dependency)')
+        options['jl_anc_writes']=True
+    # jl_clock_con3_readback(路 D2ANC,opt-in 默认关):JL_CLOCK CLK_CON3(0xfd0024)
+    # 单字容器——ANC 重配链 0x606c844 的 ADC 时钟选择字(全 app 10 站点,读值
+    # 只进写回组装;0xfd0028 零触达留 unmapped)。boot 前缀零触达=开启不动
+    # 前沿;依赖边挂 jl_anc_writes=场景先后关系(同一 ANC 场景的链内先后)。
+    if jl_clock_con3_readback:
+        require(jl_anc_writes,
+                'the JL_CLOCK CLK_CON3 container only layers on the JL_ANC release '
+                '(the sole consumer is the ANC reconfig chain 0x606c844 reached in '
+                'the ANC scene; the dependency encodes THIS scenario order, not a '
+                'hardware dependency)')
+        options['jl_clock_con3_readback']=True
     # 敏感性探针值(probe_only):ADA_CON0(0xfe0a20)初值一次性 0xffffffff
     # 替换(只注初值,后续读回真实写回值;其余八字不扰动保归因干净)。
     # codex 钉子:断言非零合成初值经停点 RMW 只清 bit5——仅测初值零会漏掉

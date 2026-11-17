@@ -667,6 +667,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         gpcnt_con_config=True,
         gpcnt_con_completion=True,
         jl_eq_init_writes=True,
+        # Post-JLEQ family (route D2ANC): the JL_ANC 44-word container, ON in
+        # the current conditional frontier flag set (zero prefix touches).
+        jl_anc_writes=True,
+        jl_clock_con3_readback=True,
     )
 
     def build_world(self):
@@ -824,6 +828,15 @@ class M4ProjectionFamilies(unittest.TestCase):
         hw.jl_eq_init.write(0xfe151c, 0x18cb80, 0)
         with self.assertRaises(Blocked):
             hw.jl_eq_init.read(0xfe1500)
+        # Route D2ANC: the JL_ANC 44-word container mid-reconfig — CON start
+        # word written, one filter word written, one synthesized-initial read
+        # consumed by an RMW before its first write.
+        hw.jl_anc.write(0xfe0400, 0x102)
+        hw.jl_anc.write(0xfe040c, 0x80000000)
+        self.assertEqual(hw.jl_anc.read(0xfe0420), 0)
+        # Route D2ANC companion: CLK_CON3 written once, one synthesized read.
+        hw.jl_clock_con3.write(0xfd0024, 0x20000)
+        self.assertEqual(hw.jl_clock_con3.read(0xfd0024), 0x20000)
         return hardware
 
     def captured_m4(self, world):

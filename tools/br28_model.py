@@ -3388,6 +3388,270 @@ class JLAddaAdaFamilyRegisters:
         return proj
 
 
+class JLAncRegisters:
+    """JL_ANC 硬件滤波块 44 字容器(合成初始 0+读回=当前值,opt-in,路
+    D2ANC/INJ-05;ANC 数据面配置链的执行载体)。
+
+    背景:audio_anc_run 0x601c8de(mode,0x1285A4) 的停-重配-启链
+    (0x606ee26→0x606e9e8(0/1)→0x606ebe0 重配主体→系数重读 0x606e7c2,
+    docs/audio-input-paths §2.2b)在 park 停点世界直调时首次触达 JL_ANC 块
+    (0xFE0400..0xFE04C0,br28.h map_adr(0x04,0x00);勘误 §2.3 已钉=ANC 硬件
+    滤波块,IRQ67 prio0 handler 0x6073d7e)。此前零投影容器(D2AUD §6.2
+    运行时自证:ANC run 未执行)。
+
+    静态全图(路 D2ANC 全 app 逐 2 字节独立解码+li 常量→寄存器线性传播扫描,
+    方法照 ADA/DT):JL_ANC 窗 0xfe0400..0xfe0500 全部触达=22 字(li 形);
+    另有 22 字=表驱动滤波配置族(0x606cfb2 域)的运行时变址触达——寄存器索
+    引来自滤波模式表,静态枚举不到,由 D2ANC 重配链直调逐墙钉死并入
+    (0xfe0424/0xfe0430..0xfe0448/0xfe0480..0xfe048c/0xfe04b4..0xfe04e8,
+    逐字停点引证见 WORDS 注释),并入后直调链 5839 步完整走通。站点族:
+      * 0xfe0400 CON:0x606e9fc(bit1 RMW 停/启)/0x606ea0c(bit0 insert)/
+        0x606ea12(bit1/2-6+DMA 地址组装)/0x606ebac 族/0x606ede0(|=0x100)/
+        0x6071488/0x6071492(IRQ67 handler 域,本前缀不可达);
+      * 0xfe0404/0xfe0408:0x606ea3a/3e/50 DMA 地址寄存器写+0x606ee12 重配
+        尾清(候选②「JL_ANC 自有 DMA」的观测面,INJ-05 C5);
+      * 0xfe040c/0xfe0410:0x606c94e/8e/b4+0x606cc2a/32/48+0x606cdfc——滤波
+        配置函数 0x606cc36/0x606ce02 域(首写 0x606cc48 [0xfe040c]=
+        0x80000000 整字);
+      * 0xfe0420:0x606c704..772+0x606d0c2/c4(0x606c776 使能族);
+      * 0xfe0428/0xfe042c/0xfe0460/0xfe0464/0xfe0468/0xfe0470/0xfe0474/
+        0xfe0478:0x606ce02/0x606ceb0 域字段写;
+      * 0xfe046c/0xfe047c:0x606a71e/0x606a75c(时钟门 0x606a708 通过后
+        的 RMW 组装,读值只进写回);
+      * 0xfe044c:0x606cef4/04+0x606d9a8/bc(0x606d9c0 域)+0x6073dde/
+        0x6073f82(IRQ67 handler 域,本前缀不可达);
+      * 0xfe04a8/0xfe04b0/0xfe04d4/0xfe04e0/0xfe04f4:0x606cf22..8e+
+        0x606da30..4a(0x606cfb2/0x606da1e 域)。
+    读值消费面(逐站点窗口核查):全部 RMW 内部读→and/or/insert→st 组装
+    (0x606a71e/0x606a75c/0x606ea12 等),零轮询零 busy 位等待——AM 容器族
+    判据成立;唯一直接读回分支=时钟门 0x606a708 读 [0xfe0900](JL_ASS
+    CLK_CON,AK 容器字,不在本容器)。
+
+    分类:合成初始 0+读回=当前值,derived-not-measured 非复位值声明(ADA/
+    AM 先例)。**新开关分立**而非并入任何既有容器(JL_ANC 块此前零触达,无
+    可扩的既有字域)。known_limitation:滤波器硬件语义/系数装载效果/IRQ67
+    交付/硬件滤波行为一律不建模——容器只记录「ANC 配置链的寄存器写已执行」,
+    不宣称降噪或滤波正确(INJ-05 诚实边界);同址新读者(busy 轮询/状态分支)
+    须重审。
+    """
+
+    # 白名单恰 44 字=22 个 li 传播扫描站点字+22 个墙钉字(D2ANC 重配链直调
+    # 0x606ee26(param,0) 逐墙并入):表驱动滤波配置族(0x606cfb2 域,r7=0xfe0420
+    # li 常量+变址 [r7+n])的寄存器索引来自运行时滤波模式表,静态 li 扫描枚举
+    # 不到——0xfe0424:0x606d224、0xfe0430:0x606d5ae、0xfe0434:0x606d5d4、
+    # 0xfe0438/0xfe043c/0xfe0440/0xfe0444/0xfe0448(0x606d5d4..0x606d698 系数
+    # 组装族)、0xfe0480:0x606d698、0xfe0484/0xfe0488/0xfe048c(CORE_CON 域)、
+    # 0xfe04b4:0x606d808、0xfe04b8:0x606d854、0xfe04c0:0x606d858、
+    # 0xfe04c4:0x606d86c、0xfe04cc:0x606d8a2、0xfe04d0:0x606d8c4、
+    # 0xfe04d8:0x606d908、0xfe04dc:0x606d912、0xfe04e4:0x606d95a、
+    # 0xfe04e8:0x606d968;并入后该直调链 5839 步完整走通(0x606ee26→
+    # 0x606e9e8(0)→0x606ebe0→IRQ67 挂载→ASS 时钟→MIC mux→滤波族→
+    # 0x606e9e8(1)→返回)。窗外零触达字(0xfe0414..0xfe041f、0xfe0450..
+    # 0xfe045c、0xfe0490..0xfe04a4、0xfe04ac、0xfe04bc、0xfe04c8、0xfe04ec、
+    # 0xfe04f0 等)留 unmapped。
+    WORDS=(0xfe0400,0xfe0404,0xfe0408,0xfe040c,0xfe0410,0xfe0420,0xfe0424,
+           0xfe0428,0xfe042c,0xfe0430,0xfe0434,0xfe0438,0xfe043c,0xfe0440,
+           0xfe0444,0xfe0448,0xfe044c,0xfe0460,0xfe0464,0xfe0468,0xfe046c,
+           0xfe0470,0xfe0474,0xfe0478,0xfe047c,0xfe0480,0xfe0484,0xfe0488,
+           0xfe048c,0xfe04a8,0xfe04b0,0xfe04b4,0xfe04b8,0xfe04c0,0xfe04c4,
+           0xfe04cc,0xfe04d0,0xfe04d4,0xfe04d8,0xfe04dc,0xfe04e0,0xfe04e4,
+           0xfe04e8,0xfe04f4)
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value):
+        if address not in self.stores:raise ValueError('not a modeled JL_ANC word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL_ANC word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(AM 容器族先例;读值只进写回组装)。
+        self.synthesized_initial_reads+=1
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-8:]],
+                         'writes':e['writes']}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        return {
+            'addresses':[hex(a) for a in self.WORDS],
+            'modeled_vs_touched':('modeled exactly the 44 enumerated '
+                                  'JL_ANC block words (whole-app li-constant '
+                                  'register-propagation sweep, route D2ANC); '
+                                  'touched: '+(', '.join(sorted(touched)) or 'none')),
+            'word_writes':self.word_writes,
+            'stores':touched,
+            'sdk_naming':('br28.h map_adr(0x04,0x00) = JL_ANC hardware filter '
+                          'block 0xFE0400..0xFE04C0 (route-BX guess corrected by '
+                          'audio-input-paths §2.3); the SDK type layout locates '
+                          'the words, it is NOT evidence of plain-RW/reset-zero '
+                          'silicon; IRQ67 (prio0, handler 0x6073d7e) belongs to '
+                          'this block and is NOT modeled here'),
+            'whitelisted_words':('exactly the 44 words with identified app access '
+                                 'sites: 22 li-constant sweep words {0xfe0400 CON, '
+                                 '0xfe0404/0xfe0408 DMA address, 0xfe040c/0xfe0410 '
+                                 'filter, 0xfe0420, 0xfe0428/0xfe042c, 0xfe044c, '
+                                 '0xfe0460/64/68/70/74/78, 0xfe046c/0xfe047c '
+                                 'clock-gated RMW, 0xfe04a8/0xfe04b0, 0xfe04d4/'
+                                 '0xfe04e0/0xfe04f4} + 22 wall-pinned words of the '
+                                 'runtime-indexed table-driven filter family '
+                                 '(0x606cfb2 domain, register index from the '
+                                 'firmware filter-mode table — statically '
+                                 'unenumerable; each word pinned by an actual '
+                                 'unmapped stop during the D2ANC reconfig-chain '
+                                 'direct call: 0xfe0424@0x606d224, '
+                                 '0xfe0430@0x606d5ae, 0xfe0434@0x606d5d4, '
+                                 '0xfe0438/0xfe043c/0xfe0440/0xfe0444/0xfe0448 '
+                                 '(0x606d5d4..0x606d698), 0xfe0480@0x606d698, '
+                                 '0xfe0484/0xfe0488/0xfe048c, 0xfe04b4@0x606d808, '
+                                 '0xfe04b8@0x606d854, 0xfe04c0@0x606d858, '
+                                 '0xfe04c4@0x606d86c, 0xfe04cc@0x606d8a2, '
+                                 '0xfe04d0@0x606d8c4, 0xfe04d8@0x606d908, '
+                                 '0xfe04dc@0x606d912, 0xfe04e4@0x606d95a, '
+                                 '0xfe04e8@0x606d968); the zero-touch words '
+                                 '(0xfe0414..0xfe041f, 0xfe0450..0xfe045c, '
+                                 '0xfe0490..0xfe04a4, 0xfe04ac, 0xfe04bc, '
+                                 '0xfe04c8, 0xfe04ec, 0xfe04f0, ...) stay '
+                                 'unmapped; re-audit '
+                                 'boundary: the whitelist only blocks NEW '
+                                 'addresses — a NEW READ CONSUMER of a served '
+                                 'word (busy polling, status branch) must be '
+                                 're-classified before this container serves it'),
+            'observed_shapes':('whole-word st.w stores ([0xfe040c]=0x80000000 at '
+                               '0x606cc48, DMA address words at 0x606ea3a/3e), '
+                               'atomic RMW bit ops (CON bit0/bit1 inserts, '
+                               '|=0x100 at 0x606ede0) and ld→mask/insert→st '
+                               'compositions in the filter config family '
+                               '(0x606cc36/0x606ce02/0x606d9c0/0x606cfb2/'
+                               '0x606da1e/0x606a71e/0x606a75c); every read '
+                               'value only composes a write-back — the sole '
+                               'direct read-and-branch is the ANC clock gate '
+                               '0x606a708 which reads JL_ASS CLK_CON 0xfe0900 '
+                               '(served by the route-AK container, not here)'),
+            'readback_projection':{
+                'addresses':[hex(a) for a in self.WORDS],
+                'reads':self.reads_after_write,
+                'synthesized_initial_reads':self.synthesized_initial_reads,
+                'readback_semantics':('last firmware-written value; before any '
+                    'firmware write the explicit synthetic initial word 0 — '
+                    'derived-not-measured, NOT a reset-value claim; no filter '
+                    'hardware semantics, coefficient-load effect, IRQ67 delivery '
+                    'or hardware noise reduction is modeled — the container '
+                    'records that the ANC configuration writes executed'),
+                'known_limitation':('the served words are filter/DMA-config '
+                    'registers of a hardware DSP block; silicon reset values, '
+                    'busy/status bits and side effects are unverified — a future '
+                    'polling reader would read synthesized config bits, not '
+                    'silicon state (INJ-05 honest boundary: no ANC effect '
+                    'claimed)'),
+            },
+            'assumption':('synthetic-initial-0 + last-write readback of the 44 '
+                          'audited JL_ANC words (AM/ADA family precedent); '
+                          'zero prefix touches — the container only serves the '
+                          'post-stop ANC scene direct calls, so enabling it '
+                          'cannot move the replay frontier'),
+        }
+
+
+class JLClockCon3Registers:
+    """JL_CLOCK->CLK_CON3(0xfd0024)单字容器(合成初始 0+读回=当前值,opt-in,
+    路 D2ANC;ANC 重配链 JL_ASS 时钟函数 0x606c844 的 ADC 时钟选择字)。
+
+    背景:0x606ee26(param,0) 重配链在 0x606c882 `r0=[r1+4]`(r1=0xfd0020=
+    JL_CLOCK+0x20)首读撞 unmapped——CLK_CON3 是 JL_CLOCK_TypeDef 末字
+    (br28.h:RST/PWR_CON/DCCK×3/SYS_DIV/CLK_CON0..3;CLK_CON0/1/2=0xfd0018/
+    1c/20 在基模型 registers 槽,DCCK 有路 CL 容器,CLK_CON3 此前零触达)。
+
+    静态全图(路 D2ANC 全 app 逐 2 字节独立解码+li→寄存器传播,含装载形):
+    0xfd0024 全部触达=10 站点——0x606c844 内 8 处(3 整字写 0x606c88a/9c/a6
+    +5 读 0x606c882/8c/94/9e/a6 前置,读值只进 & 0xFFF1FFFF/| 0x20000/
+    & 0xFF0FFFFF 位组装写回,零分支)+RAM-code 装载段 2 处(0x60c7318 读/
+    0x60c7400 写,同一时钟函数的 RAM 拷贝)。0xfd0028 零触达不进白名单。
+
+    分类:AM 容器族——合成初始 0+读回=当前值(derived-not-measured 非复位
+    值声明);只服务对齐 32 位字。known_limitation:ADC 时钟树硬件语义不
+    建模(容器只记录配置写已执行,不证实时钟已切换)。
+    """
+
+    ADDRESS=0xfd0024
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self):
+        self.stores={self.ADDRESS:{'values':[],'writes':0}}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address==self.ADDRESS
+
+    def write(self,address,value):
+        if address!=self.ADDRESS:raise ValueError('not the modeled JL_CLOCK CLK_CON3 word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address!=self.ADDRESS:raise ValueError('not the modeled JL_CLOCK CLK_CON3 word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        self.synthesized_initial_reads+=1
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def report(self):
+        entry=self.stores[self.ADDRESS]
+        return {
+            'addresses':[hex(self.ADDRESS)],
+            'modeled_vs_touched':('modeled exactly one word 0xfd0024 JL_CLOCK->'
+                                  'CLK_CON3 (touched: %d writes)'%entry['writes']),
+            'word_writes':self.word_writes,
+            'stores':{hex(self.ADDRESS):{'values':[hex(v) for v in entry['values'][-8:]],
+                                         'writes':entry['writes']}} if entry['writes'] else {},
+            'sdk_naming':('br28.h JL_CLOCK_TypeDef tail word CLK_CON3 at '
+                          'JL_CLOCK_BASE+0x20 = 0xfd0024 (__RW __u32); '
+                          'CLK_CON0/1/2 (0xfd0018/1c/20) stay in the base '
+                          'registers slot and DCCK_CON0/1/2 with the route-CL '
+                          'container — mutually exclusive address sets'),
+            'whitelisted_words':('exactly {0xfd0024}; the audited access set is '
+                                 'the ten whole-app sites (8 in 0x606c844, 2 in '
+                                 'the loaded RAM-code copy); 0xfd0028 has zero '
+                                 'sites and stays unmapped; only aligned 32-bit '
+                                 'word accesses are served'),
+            'observed_shapes':('load→mask/insert→store compositions feeding the '
+                               'ADC clock-select bit fields (bits 16-23), plus '
+                               'whole-word stores; every read value only composes '
+                               'a write-back — no branch consumes it'),
+            'readback_projection':{
+                'addresses':[hex(self.ADDRESS)],
+                'reads':self.reads_after_write,
+                'synthesized_initial_reads':self.synthesized_initial_reads,
+                'readback_semantics':('last firmware-written value; before any '
+                    'firmware write the explicit synthetic initial word 0 — '
+                    'derived-not-measured, NOT a reset-value claim; no clock-tree '
+                    'hardware semantics is modeled'),
+                'known_limitation':('a future branch consumer of 0xfd0024 would '
+                    'read synthesized config bits, not silicon clock state'),
+            },
+            'assumption':('synthetic-initial-0 + last-write readback of one word '
+                          '(AM family precedent); zero prefix touches — the '
+                          'container only serves the ANC scene direct calls'),
+        }
+
+
 class P11LPVADConfigRegisters:
     """P11_SFR LPVAD VAD_ACON0 单字容器(合成初始 0+读回=当前值,opt-in,路 LPV)。
 
@@ -5850,6 +6114,8 @@ class BR28Model:
                  jl_adda_analog_family=False,
                  jl_audio_dac_tm_readback=False,jl_audio_dac_tm_probe_value=None,
                  jl_adda_ada_family=False,jl_adda_ada_probe_value=None,
+                 jl_anc_writes=False,
+                 jl_clock_con3_readback=False,
                  p11_lpvad_config=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
@@ -6033,6 +6299,14 @@ class BR28Model:
             raise ValueError('the JL_ADDA ADA probe value rides on the ADA family container')
         self.jl_adda_ada=(JLAddaAdaFamilyRegisters(ada_probe_initial=jl_adda_ada_probe_value)
                           if jl_adda_ada_family else None)
+        # jl_anc_writes(路 D2ANC):JL_ANC 硬件滤波块 44 字容器——ANC 数据面
+        # 配置链(audio_anc_run 停-重配-启)的寄存器写记录+读回投影。新开关
+        # 分立(块此前零触达);前缀零触达=开启不动前沿,只服务 INJ-05 场景
+        # 的 post_stop 直调段。
+        self.jl_anc=(JLAncRegisters() if jl_anc_writes else None)
+        # jl_clock_con3_readback(路 D2ANC):JL_CLOCK CLK_CON3(0xfd0024)单字——
+        # ANC 重配链 0x606c844 的 ADC 时钟选择字(此前零触达,AM 族)。
+        self.jl_clock_con3=(JLClockCon3Registers() if jl_clock_con3_readback else None)
         # p11_lpvad_config(路 LPV):P11_SFR LPVAD VAD_ACON0(0xf2b404)单字容器
         # ——新开关分立而非扩 p11_window 白名单(改已开开关服务面=改契约,且
         # 「纯写记录读回 Blocked」族与配置读回语义冲突;codex 定调)。
@@ -6590,6 +6864,8 @@ class BR28Model:
             (self.jl_adda_family is not None and self.jl_adda_family.handles(address)) or
             (self.jl_audio_dac_tm is not None and self.jl_audio_dac_tm.handles(address)) or
             (self.jl_adda_ada is not None and self.jl_adda_ada.handles(address)) or
+            (self.jl_anc is not None and self.jl_anc.handles(address)) or
+            (self.jl_clock_con3 is not None and self.jl_clock_con3.handles(address)) or
             (self.p11_lpvad is not None and self.p11_lpvad.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
@@ -6923,6 +7199,16 @@ class BR28Model:
         if self.jl_adda_ada is not None and self.jl_adda_ada.handles(address):
             self.counts['reads']+=1
             return self.jl_adda_ada.read(address)
+        # JL_ANC 硬件滤波块 44 字(路 D2ANC):读回=当前值(最后写值/无写时合成
+        # 初始 0);只服务对齐 32 位字;读与原子 RMW 内部读共享同一份容器状态
+        # (滤波硬件语义/IRQ67 交付不建模,见类注释)。
+        if self.jl_anc is not None and self.jl_anc.handles(address):
+            self.counts['reads']+=1
+            return self.jl_anc.read(address)
+        # JL_CLOCK CLK_CON3(路 D2ANC):读回=当前值(最后写值/无写时合成初始 0)。
+        if self.jl_clock_con3 is not None and self.jl_clock_con3.handles(address):
+            self.counts['reads']+=1
+            return self.jl_clock_con3.read(address)
         # P11_SFR LPVAD VAD_ACON0(路 LPV):读回=当前值(最后写值/无写时合成
         # 初始 0);只服务对齐 32 位字,子字/错位落严格 unmapped;读与原子 RMW
         # 内部读共享同一份容器状态。
@@ -7137,6 +7423,15 @@ class BR28Model:
             # 0x606b4d0/close 族/field setter 的 RMW 写回与整字写记录(经通用
             # mmio 路径的内部读=容器当前值);ADC 模拟通路/偏置/音频输入不建模。
             self.jl_adda_ada.write(address,value)
+        elif self.jl_anc is not None and self.jl_anc.handles(address):
+            # JL_ANC 硬件滤波块 44 字(路 D2ANC):ANC 重配链(0x606ebe0 域)
+            # 的 RMW 写回与整字写记录(经通用 mmio 路径的内部读=容器当前值);
+            # 滤波硬件语义/系数装载效果/IRQ67 交付不建模(类注释)。
+            self.jl_anc.write(address,value)
+        elif self.jl_clock_con3 is not None and self.jl_clock_con3.handles(address):
+            # JL_CLOCK CLK_CON3(路 D2ANC):0x606c844 的 RMW 写回与整字写记录
+            # (经通用 mmio 路径的内部读=容器当前值);时钟树硬件语义不建模。
+            self.jl_clock_con3.write(address,value)
         elif self.p11_lpvad is not None and self.p11_lpvad.handles(address):
             # P11_SFR LPVAD VAD_ACON0(路 LPV):停点 0x606b68e 的 bit28 置位
             # RMW 写回与整字写记录(经通用 mmio 路径的内部读=容器当前值);
@@ -7874,6 +8169,38 @@ class BR28Model:
                 'ADDA_CON1, the B3 text stays byte-pinned and its served addresses are '
                 'unchanged; no ADC analog path, bias, calibration or audio input is '
                 'modeled — this does NOT verify any audio input')
+        if self.jl_anc is not None:
+            result['jl_anc_registers']=self.jl_anc.report()
+            result['assumptions']['jl_anc_registers']=(
+                'JL_ANC hardware filter block, 23 words 0xfe0400..0xfe04f4 '
+                '(br28.h map_adr(0x04,0x00), route D2ANC): write record plus '
+                'last-write readback with an explicit synthetic initial 0 before '
+                'the first write (derived-not-measured, AM/ADA family); the face '
+                'is the whole-app li-constant register-propagation sweep of the '
+                'ANC reconfig family (audio_anc_run 0x601c8de stop-reconfig-start '
+                'chain 0x606ee26/0x606e9e8/0x606ebe0 + filter config 0x606cc36/'
+                '0x606ce02/0x606d9c0/0x606cfb2/0x606da1e + clock-gated RMW '
+                '0x606a71e/0x606a75c + DMA address setters 0x606ea0c/0x606ea12) — '
+                'indirect sources are not exhausted and stay an explicit boundary; '
+                'every audited read value only composes a write-back; whitelist = '
+                'exactly the 23 proven-access words, the in-between words stay '
+                'unmapped; the address whitelist only blocks new addresses — a new '
+                'READ consumer (busy polling, status branch) must be re-classified '
+                'before this container serves it; no filter hardware semantics, '
+                'coefficient-load effect, IRQ67 delivery or noise reduction is '
+                'modeled — this does NOT verify any ANC effect (INJ-05 honest '
+                'boundary)')
+        if self.jl_clock_con3 is not None:
+            result['jl_clock_con3_registers']=self.jl_clock_con3.report()
+            result['assumptions']['jl_clock_con3_registers']=(
+                'JL_CLOCK CLK_CON3 single word 0xfd0024 (br28.h JL_CLOCK_TypeDef '
+                'tail, route D2ANC): write record plus last-write readback with '
+                'an explicit synthetic initial 0 (AM family); the audited face is '
+                'the ten whole-app sites (eight in the JL_ASS clock function '
+                '0x606c844 — load→mask/insert→store ADC clock-select '
+                'compositions, zero branch consumption — plus two in the loaded '
+                'RAM-code copy); 0xfd0028 has zero sites and stays unmapped; no '
+                'clock-tree hardware semantics is modeled')
         if self.p11_lpvad is not None:
             result['p11_lpvad_config_registers']=self.p11_lpvad.report()
             result['assumptions']['p11_lpvad_config_registers']=(

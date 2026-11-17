@@ -63,6 +63,7 @@ def main():
     run(sys.executable,'tools/test_core_tick.py')
     run(sys.executable,'tools/test_timer0_irq.py')
     run(sys.executable,'tools/test_audio_dma_delivery.py')  # D2AI：ADC DMA 交付投影（模型件+IRQ68 进入/RTI）
+    run(sys.executable,'tools/test_jl_anc_registers.py')    # D2ANC：JL_ANC 44 字容器（INJ-05 配置面载体）
     run(sys.executable,'tools/test_d1_acceptance.py')
     run(sys.executable,'tools/test_d1_window_observer.py')
     run(sys.executable,'tools/test_pi32v2_asm.py')
