@@ -144,6 +144,12 @@ SCENARIOS = {
         # 到期)到 41,828,530 @ 0x60649d0 st.w.pin.l 全字存储写未初始化物理
         # 堆 0x19f7a8——上游 store 模型簿记读边界(183,486 st.d.sp.l/236,415
         # 半字 pair 同族第三例),预算 40M→50M(留停点后余量)。
+        # 路 STOREG3:独立(非并行)后增整字存储直写(exact_postincrement_
+        # word_stores,word 4 形全族)放行后过 41,828,530 簿记读停点,S18
+        # 事件消费链走通 +18,773 步(纯 CPU0 段)到 41,847,303 @ 0x6019458
+        # LED 驱动 RMW [0xfd610c]&=~0x20 的架构性读(JL_PLED 域 slot3,
+        # 未建模寄存器,读侧无证据诚实停)——PLED/N2 电源框架三选一归下一
+        # 路。预算 50M 保持。
         'default_budget': 50000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
@@ -1451,18 +1457,21 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 41833502, '1': 11496},
+                run['per_core_steps'] == {'0': 41852276, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (41828530 @ 0x60649d0, the upstream '
-                'store bookkeeping read of the uninitialized physical-heap word '
-                '0x19f7a8 — reached after the route-WDFEED mailbox feed '
-                'side-effect release keeps the WDT reloaded through the park '
-                'steady state (the GPCNUM pseudo-expiry point 32737356 is '
-                'crossed with 162 closed feed transactions and zero watchdog '
-                'expiry), the st.w.pin.l full-word store of the byte-unpack '
-                'loop in 0x60649b0 writing the never-initialized heap word; '
-                'the 183486 st.d.sp.l and 236415 halfword-pair stops are the '
-                'same bookkeeping-read family — the instruction-shape gate '
+                'conditional frontier stop (41847303 @ 0x6019458, the unmapped '
+                'read of JL_PLED slot 0xfd610c inside the LED driver RMW '
+                '[r0] &= ~0x20 — reached after the route-STOREG3 standalone '
+                'postincrement word-store release executes the byte-unpack '
+                'st.w.pin.l of 0x60649b0 directly (crossing the route-WDFEED '
+                '41,828,530 bookkeeping-read stop: a full-word store '
+                'overwrites all four bytes, the old value cannot matter, the '
+                'merge read is model bookkeeping, not a guest load) and the '
+                'S18 event consumption chain walks on through the scheduler '
+                'return into the PLED RMW whose architectural read has no '
+                'evidence; the parked counters and the event clock stay '
+                'frozen through the release segment (a pure CPU0 sequence, '
+                'per-core 1 unchanged at 11496) — the PLED/N2 register '
                 'decision belongs to the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
