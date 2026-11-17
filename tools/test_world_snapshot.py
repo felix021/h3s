@@ -675,6 +675,7 @@ class M4ProjectionFamilies(unittest.TestCase):
         jl_anc_writes=True,
         jl_clock_con3_readback=True,
         jl_pled_con3_readback=True,
+        jl_pled_con0_initial_fixture=0x00000000,
     )
 
     def build_world(self):
@@ -847,6 +848,12 @@ class M4ProjectionFamilies(unittest.TestCase):
         self.assertEqual(hw.jl_pled_con3.rmw('and', 0xffffffdf), 0)
         hw.jl_pled_con3.write(0xfd610c, 0x40)
         self.assertEqual(hw.jl_pled_con3.rmw('or', 0x20), 0x60)
+        # Route FD610C-con0: PLED CON0 served one named-initial read (fixture
+        # 0, not a firmware write) then one whole-word store — exercising both
+        # the synthesized-initial-read and the read-after-write counters.
+        self.assertEqual(hw.jl_pled_con0.read(0xfd6100), 0)
+        hw.jl_pled_con0.write(0xfd6100, 0x1)
+        self.assertEqual(hw.jl_pled_con0.read(0xfd6100), 0x1)
         return hardware
 
     def captured_m4(self, world):
@@ -1050,6 +1057,25 @@ class M4ProjectionFamilies(unittest.TestCase):
                          original.jl_pled_con3.reads_after_write)
         self.assertEqual(restored.jl_pled_con3.reads_after_write, 2)
         self.assertEqual(restored.jl_pled_con3.synthesized_initial_reads, 1)
+
+    def test_fd610c_pled_con0_container_resumes_exact_semantics(self):
+        """Route FD610C-con0 behavioral pin: after restore the PLED CON0
+        container keeps the named initial fixture (static, must match) and
+        resumes read-after-write from the CAPTURED store; the counters resume
+        exactly. A different initial fixture on the restore target is refused."""
+        original, snapshot = self.world_and_snapshot()
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        for world in (original, restored):
+            self.assertEqual(world.jl_pled_con0.read(0xfd6100), 0x1)
+        self.assertEqual(restored.jl_pled_con0.reads_after_write,
+                         original.jl_pled_con0.reads_after_write)
+        self.assertEqual(restored.jl_pled_con0.reads_after_write, 2)
+        self.assertEqual(restored.jl_pled_con0.synthesized_initial_reads, 1)
+        # 不同初态 fixture 必须被静态守卫拒绝(不同初态=不同分支世界)。
+        with self.assertRaises(SnapshotError):
+            self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()),
+                             switches={**self.M4_SWITCHES,
+                                       'jl_pled_con0_initial_fixture': 0x00000001})
 
 
 class Cfg523InstallBit(unittest.TestCase):

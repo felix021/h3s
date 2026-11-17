@@ -1,8 +1,8 @@
 {
   "scenario": "p11_heap_experimental_config",
-  "completed_steps": 41847806,
-  "stop_pc": "0x60194b4",
-  "note": "22 个 instruction_adapters 计数基线(条件场景前缀)。推进前沿后计数漂移时用 tools/capture_p11_heap_adapter_counts.py --recapture 重取;断言见 tools/probe_irq_entry.py check()。本基线=路 FD610C 前沿 41,847,806 @ 0x60194b4(JL_PLED CON0 save-restore 首读)。",
+  "completed_steps": 41848382,
+  "stop_pc": "0x6019508",
+  "note": "22 个 instruction_adapters 计数基线(条件场景前缀)。推进前沿后计数漂移时用 tools/capture_p11_heap_adapter_counts.py --recapture 重取;断言见 tools/probe_irq_entry.py check()。本基线=路 CON0 前沿 41,848,382 @ 0x6019508(0xf2a610 RMW 内部读,下一路)。",
   "counts": {
     "exact_doubleword_store": 125,
     "exact_doubleword_store_cross_page_split": 7,
@@ -19,12 +19,12 @@
     "mem_pwr_con_rmw": 4,
     "p33_awkup_bit_rmw": 17,
     "proven_dead_mem_pwr_con_read": 1,
-    "abstract_task_stack_transport": 456502,
-    "cpu0_shared_lock_ownership": 41421,
-    "exact_full_word_store": 708325,
-    "mmio_rmw_always_writes": 69049,
-    "partial_icfg_bit9_only": 133808,
+    "abstract_task_stack_transport": 456537,
+    "cpu0_shared_lock_ownership": 41422,
+    "exact_full_word_store": 708343,
+    "mmio_rmw_always_writes": 69050,
+    "partial_icfg_bit9_only": 133820,
     "partial_icfg_masked_branch": 8,
-    "per_core_visible_cnum": 260245
+    "per_core_visible_cnum": 260257
   }
 }

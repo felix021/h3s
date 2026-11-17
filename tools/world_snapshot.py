@@ -1206,6 +1206,13 @@ M4_FAMILIES = (
     # fixture".
     ('jl_pled_con3', 'JLPledCon3Registers',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    # Route FD610C-con0: the JL_PLED CON0 single-word named-initial container
+    # rides the same AM four-field state shape; the per-instance initial_word
+    # fixture is deliberately NOT in the state fields — it stays under the
+    # per-object static guard so a restore target with a different initial
+    # fixture is refused (different initial word => different branch world).
+    ('jl_pled_con0', 'JLPledCon0Registers',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 

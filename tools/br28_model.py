@@ -3940,6 +3940,154 @@ class JLPledCon3Registers:
         }
 
 
+class JLPledCon0Registers:
+    """JL_PLED->CON0(0xfd6100)单字具名初态容器(读=初态 fixture/最后写值,
+    opt-in,路 FD610C-con0;41,847,806 停点 0x60194b4 的 save-restore 首读)。
+
+    背景:FD610C 放行 CON3 单字容器后 +503 步(纯 CPU0 段)到 0x60194b4——
+    LED 驱动 0x60194a4 `r6=[0xfd6100]`(存使能位)→清 bit0→配置→
+    `if(r6&1) [0xfd6100]|=1` 恢复(save-restore 型 RMW)的首读。CON0 是
+    **分支消费者**:读值 bit0 直接进 `if(r6&1)`,bit1 进 `if((r4&2)==0)`
+    (0x6034ac6),bits4-7 进查表索引(0x6034b0c 第二读的 uextra),与 CON3
+    的「读值只进 old&mask/old|mask 写回组装」完全不同——CON3 先例不能
+    覆盖 CON0。SDK br28.h(sha 111e29ea…,L1248-1272)JL_PLED_TypeDef 只有
+    结构布局,CON0 标 __RW(0xfd6100=ls_base+map_adr(0x61,0)),**无任何位
+    宏/复位值**。boot 前缀在 0x60194b4 之前从未写过 0xfd6100(写会
+    Blocked unmapped_or_readonly_write),故首读值=具名合成输入,derived-
+    not-measured,不是硅复位值。
+
+    codex 三选一(路 FD610C-con0,gpt-6-astra,2026-11-17):选 (a)——具名
+    整字初态 fixture,条件主臂 0x00000000、敏感性对照臂 0x00000001。0 是
+    明确选择的实验输入,无证据证明它是硅复位值;不把「此前无写」推导成
+    「首读=已知复位状态」。bit0=0 使 `if(r6&1)` 走假分支(条件恢复不
+    执行);bit0=1 使真分支(恢复执行)。两臂均 derived-not-measured,不因
+    哪臂跑得更远反推更真实。
+
+    静态访问面(2026-11-17 补全):CON0 全应用触达=9 处 li(16605440)站点
+    ——0x60194ae(save-restore 读 bit0+清/恢复 RMW)、0x60195e6(清 bit0/1
+    +整字清零)、0x6019a62(读 bit1→条件写回、读 bit0→条件写回)、
+    0x6019a9e(读低 nibble 保留 bits0-3 组装写回)、0x6019bb0(清 bit0/1)、
+    0x601a38c(仅用基址,触 CON1/DUTY2/DUTY3)、0x6034abc(读 bit1 分支)、
+    0x6034b0c(读 bit0 分支+读 bits4-7 查表)、0x6069b08(读 bit0 门控亮度
+    步进)。另有寄存器传播/计算基址读者:0x6034bb2 `r3=[r5+0]`(bit1
+    分支,0x6034bba)、0x60680e8/ea 计算基址清零(电荷树,不在 boot 前缀)。
+    全部读者都消费位值(分支/查表/写回组装),无一可喂 CON3 式合成 0 而
+    不改变控制流。
+
+    分类:具名初态容器族——首写前所有读=具名初态(合成输入,非实测),
+    写后所有读=最后实际写值;只服务对齐 32 位字。显式 load、原子 RMW、
+    整字写共享同一容器状态:显式读走 read(),RMW 内部读走 probe_boot 的
+    通用 mmio 路径(mem.read→hardware.read,再 mem.write→hardware.write,
+    CON3 因 read() 拒绝才需专用 rmw(),CON0 的 read() 返回当前值,通用
+    路径即够,机器侧零新分发)。known_limitation:LED 波形/亮度/时钟/计数/
+    自清位/中断一律不建模;物理外设可能消费保留位(写事务真实落盘);
+    初态整字 0 同时假定 bit1/bits4-7 及其余位为 0。
+    """
+
+    ADDRESS=0xfd6100
+
+    def __init__(self,initial_word):
+        if not isinstance(initial_word,int) or not 0<=initial_word<=0xffffffff:
+            raise ValueError('JL_PLED CON0 initial fixture must be unsigned32')
+        self.initial_word=initial_word
+        self.stores={self.ADDRESS:{'values':[],'writes':0}}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+
+    def handles(self,address):
+        return address==self.ADDRESS
+
+    def write(self,address,value):
+        if address!=self.ADDRESS:raise ValueError('not the modeled JL_PLED CON0 word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        self.word_writes+=1
+
+    def read(self,address):
+        if address!=self.ADDRESS:raise ValueError('not the modeled JL_PLED CON0 word')
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        self.synthesized_initial_reads+=1
+        return self.initial_word
+
+    def report(self):
+        entry=self.stores[self.ADDRESS]
+        return {
+            'addresses':[hex(self.ADDRESS)],
+            'modeled_vs_touched':('modeled exactly one word 0xfd6100 JL_PLED->'
+                                  'CON0 (touched: %d writes)'%entry['writes']),
+            'word_writes':self.word_writes,
+            'stores':{hex(self.ADDRESS):{'values':[hex(v) for v in entry['values'][-8:]],
+                                         'writes':entry['writes']}} if entry['writes'] else {},
+            'initial_fixture':{
+                'name':'JL_PLED_CON0_INITIAL_VALUE',
+                'word':hex(self.initial_word),
+                'provenance':('explicit named synthetic input, assumed-not-measured '
+                              '— NOT a derived silicon reset value; the whole word '
+                              'assumes bit0/bit1/bits4-7 and all other bits equal '
+                              'to the fixture, not just bit0'),
+            },
+            'sdk_naming':('br28.h JL_PLED_TypeDef word 0 CON0 at JL_PLED_BASE'
+                          '(ls_base+map_adr(0x61,0))=0xfd6100 (__RW __u32); '
+                          'the other 18 words (CON1/2/3, BRI_*, DUTY0..3, '
+                          'CNT_RD, CON4, CNT_SYNC, CNT_DEC) stay OUT of this '
+                          'container — CON3 (0xfd610c) has its own route-FD610C '
+                          'container, mutually exclusive with this one'),
+            'whitelisted_words':('exactly {0xfd6100}; the audited CON0 access set '
+                                 'is nine direct-li sites (0x60194ae save-restore '
+                                 'read-bit0 + clear/restore RMW, 0x60195e6 clear-'
+                                 'bit0/1 + whole-word zero, 0x6019a62 bit1/bit0 '
+                                 'conditional write-back, 0x6019a9e low-nibble '
+                                 'preserve, 0x6019bb0 clear-bit0/1, 0x601a38c '
+                                 'base-only, 0x6034abc read-bit1 branch, '
+                                 '0x6034b0c read-bit0 branch + read-bits4-7 '
+                                 'table index, 0x6069b08 read-bit0 brightness '
+                                 'gate) plus register-propagated / computed-base '
+                                 'readers (0x6034bb2 read-bit1 branch, '
+                                 '0x60680e8/ea charge-tree clear) — every read '
+                                 'consumes bits (branch/table/write-back), '
+                                 'not a single config-RMW-only face; every other '
+                                 'JL_PLED word and every sub-word/misaligned '
+                                 'access stays unmapped'),
+            'observed_shapes':('explicit loads feeding branches (bit0 save-restore '
+                               'restore, bit0 brightness gate, bit1 gates, bits4-7 '
+                               'table index), atomic RMW bit clears/sets, and '
+                               'whole-word stores — unlike CON3 the read value is '
+                               'never write-back-only; the container serves reads, '
+                               'RMW-internal reads, and whole-word writes from the '
+                               'same single-word state'),
+            'readback_projection':{
+                'addresses':[hex(self.ADDRESS)],
+                'reads':self.reads_after_write,
+                'synthesized_initial_reads':self.synthesized_initial_reads,
+                'readback_semantics':('before the first firmware write every read '
+                    'returns the named initial fixture (explicit synthetic input, '
+                    'derived-not-measured, NOT a reset-value claim); after a write '
+                    'every read returns the last firmware-written value (a write-'
+                    'record projection, not proof the silicon latches read back '
+                    'identically)'),
+                'known_limitation':('the initial fixture is fed directly into '
+                    'real branches (0x60194ca restore, 0x6069b10 brightness '
+                    'gate, bit1/bits4-7 consumers), so the conditional world is '
+                    'qualified by the chosen input; the preserved old-word bits '
+                    'still enter the real write transaction and the physical '
+                    'peripheral may consume them; no LED waveform/brightness/'
+                    'clock/count/self-clearing-bit/interrupt side effect is '
+                    'modeled; a new read consumer must be re-classified'),
+            },
+            'assumption':('named whole-word initial fixture (0x00000000 '
+                          'conditional main arm; 0x00000001 sensitivity '
+                          'counter-arm) + last-write readback of one word; '
+                          'explicit loads served (branch consumers, unlike CON3 '
+                          'which refuses its one arithmetic read); derived-'
+                          'not-measured — the initial value is a chosen '
+                          'experimental input, NOT silicon reset state and NOT '
+                          'SDK-derived'),
+        }
+
+
 class P11LPVADConfigRegisters:
     """P11_SFR LPVAD VAD_ACON0 单字容器(合成初始 0+读回=当前值,opt-in,路 LPV)。
 
@@ -6406,6 +6554,7 @@ class BR28Model:
                  jl_anc_writes=False,
                  jl_clock_con3_readback=False,
                  jl_pled_con3_readback=False,
+                 jl_pled_con0_initial_fixture=None,
                  p11_lpvad_config=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
@@ -6614,6 +6763,14 @@ class BR28Model:
         # 单字最小假设)。开关关时 0xfd610c 保持 unmapped(41,847,303 前沿
         # 形状),legacy 报告逐字节不变。
         self.jl_pled_con3=(JLPledCon3Registers() if jl_pled_con3_readback else None)
+        # jl_pled_con0_initial_fixture(路 FD610C-con0):JL_PLED CON0(0xfd6100)
+        # 单字具名初态容器——首写前所有读=具名初态 fixture(条件主臂
+        # 0x00000000,codex 三选一定调 (a)),写后所有读=最后写值;显式 load/
+        # RMW/整字写共享同一状态(读是分支消费者,不能像 CON3 那样 read()
+        # 拒绝,通用 mmio 路径即够,零新分发)。None=开关关,0xfd6100 保持
+        # unmapped(41,847,806 前沿形状),legacy 报告逐字节不变。
+        self.jl_pled_con0=(JLPledCon0Registers(jl_pled_con0_initial_fixture)
+                          if jl_pled_con0_initial_fixture is not None else None)
         # p11_lpvad_config(路 LPV):P11_SFR LPVAD VAD_ACON0(0xf2b404)单字容器
         # ——新开关分立而非扩 p11_window 白名单(改已开开关服务面=改契约,且
         # 「纯写记录读回 Blocked」族与配置读回语义冲突;codex 定调)。
@@ -7193,6 +7350,7 @@ class BR28Model:
             (self.jl_anc is not None and self.jl_anc.handles(address)) or
             (self.jl_clock_con3 is not None and self.jl_clock_con3.handles(address)) or
             (self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address)) or
+            (self.jl_pled_con0 is not None and self.jl_pled_con0.handles(address)) or
             (self.p11_lpvad is not None and self.p11_lpvad.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
@@ -7555,6 +7713,14 @@ class BR28Model:
         if self.jl_pled_con3 is not None and self.jl_pled_con3.handles(address):
             self.counts['reads']+=1
             return self.jl_pled_con3.read(address)
+        # JL_PLED CON0(路 FD610C-con0):首写前读=具名初态 fixture,写后读=
+        # 最后写值(分支消费者,read() 返回当前值而非拒绝);显式 load 与
+        # 原子 RMW 内部读共享同一状态——RMW 内部读走 probe_boot 通用 mmio
+        # 路径(mem.read→hardware.read),不再有专用 rmw() 分发。LED 波形/
+        # 亮度/时钟/计数/自清位/中断不建模(类注释)。
+        if self.jl_pled_con0 is not None and self.jl_pled_con0.handles(address):
+            self.counts['reads']+=1
+            return self.jl_pled_con0.read(address)
         # P11_SFR LPVAD VAD_ACON0(路 LPV):读回=当前值(最后写值/无写时合成
         # 初始 0);只服务对齐 32 位字,子字/错位落严格 unmapped;读与原子 RMW
         # 内部读共享同一份容器状态。
@@ -7809,6 +7975,12 @@ class BR28Model:
             # 走 probe_boot 的 handles_pled_con3_rmw 专用分发→jl_pled_con3.
             # rmw()(内部读=容器当前值);LED 外设硬件语义不建模。
             self.jl_pled_con3.write(address,value)
+        elif self.jl_pled_con0 is not None and self.jl_pled_con0.handles(address):
+            # JL_PLED CON0(路 FD610C-con0):整字写(0x60195f6 st.w=0、0x6019a74/
+            # 0x6019a82/0x6019aac 组装写回)记录;原子 RMW 写回走 probe_boot
+            # 通用 mmio 路径(mem.read→hardware.read→mem.write→hardware.write,
+            # 内部读=容器当前值);LED 外设硬件语义不建模。
+            self.jl_pled_con0.write(address,value)
         elif self.p11_lpvad is not None and self.p11_lpvad.handles(address):
             # P11_SFR LPVAD VAD_ACON0(路 LPV):停点 0x606b68e 的 bit28 置位
             # RMW 写回与整字写记录(经通用 mmio 路径的内部读=容器当前值);
@@ -8600,6 +8772,28 @@ class BR28Model:
                 'effect is modeled; the preserved old-word bits still enter the '
                 'real write transaction (the physical peripheral may consume '
                 'them) — a new read consumer must be re-classified')
+        if self.jl_pled_con0 is not None:
+            result['jl_pled_con0_registers']=self.jl_pled_con0.report()
+            result['assumptions']['jl_pled_con0_registers']=(
+                'JL_PLED CON0 single word 0xfd6100 (br28.h JL_PLED_TypeDef word 0, '
+                'route FD610C-con0): named whole-word initial fixture (conditional '
+                'main arm 0x00000000, sensitivity counter-arm 0x00000001) plus '
+                'last-write readback; the audited face is a full branch-consumer '
+                'set — 0x60194ae save-restore read-bit0 + clear/restore RMW, '
+                '0x60195e6 clear-bit0/1 + whole-word zero, 0x6019a62 bit1/bit0 '
+                'conditional write-back, 0x6019a9e low-nibble preserve, 0x6019bb0 '
+                'clear-bit0/1, 0x6034abc read-bit1 branch, 0x6034b0c read-bit0 '
+                'branch + read-bits4-7 table index, 0x6069b08 read-bit0 brightness '
+                'gate (plus register-propagated 0x6034bb2 read-bit1 and computed-'
+                'base charge-tree clears) — every read consumes bits, so the '
+                'initial fixture is fed directly into real branches and the '
+                'conditional world is qualified by the chosen input; derived-'
+                'not-measured (NOT silicon reset state, NOT SDK-derived); the '
+                'other 18 JL_PLED words stay unmapped (CON3 has its own '
+                'route-FD610C container); no LED waveform/brightness/clock/count/'
+                'self-clearing-bit/interrupt side effect is modeled; the '
+                'preserved old-word bits still enter the real write transaction '
+                '(the physical peripheral may consume them)')
         if self.p11_lpvad is not None:
             result['p11_lpvad_config_registers']=self.p11_lpvad.report()
             result['assumptions']['p11_lpvad_config_registers']=(
