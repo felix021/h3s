@@ -19,9 +19,13 @@ emit 纪律/(18,0)/(20,2) 链十站采集锚/双轴步数),供 probe 侧挂接(�
   序列自累计(machine_face() 产 machine 面键)。
 
 口径标注(规格红线的「不臆造」义务):
-- [待 PR-2 实测] 的取数点(CHAIN_STAGES 的 id_read/表 1 walk 命中/handler 返回
-  锚、sys_timer first_deadline 换算、TCB ready 扫描偏移、qlimit/capacity、
-  queue_head、RAM 采样字段)一律产 None/缺键(=checker pending 语义),不硬编码。
+- 已钉(G3/DEPMAP §2):CHAIN_STAGES 的 id_read(0x60123f4)/table_record_hit
+  (0x601244e)/handler_returned(0x6012450,以 call 在飞判别)三锚 + id_read_value
+  实读 + 队列 capacity(h[TCB+12])/cursor_trace.physical(seq mod capacity)+
+  ready_tasks(消息计数代理)+ task_switch_observations。
+- [待 PR-2 实测] 的取数点(sys_timer first_deadline 换算、TCB state==ready 扫描
+  偏移、qlimit 实读来源、queue_head、RAM 采样字段)仍产 None/缺键(=checker
+  pending 语义),不硬编码。
 - 双轴步数:模型步轴=DualCoreMachine.model_step_total(completed)(=completed+
   stalls+event_clock_advances,与 hardware.advance 调用数一一对应,公式源码核
   见该方法注记);指令步轴=completed 差分。两轴不互填换算(RBKREV P0)。
@@ -52,6 +56,7 @@ TABLE2_WALK_SITES=(0x600434a,0x60252c6)  # 表 2 walk 循环体(不认领返回 
 PEND_WRITE_FACE=0x6064cf6          # 空队列 pend 写面首 PC(W_park 机械判据主锚,§2.2)
 PEND_WRITE_FACE_END=0x6064d06      # 写面末 PC(BA §6.2)
 YIELD_CHAIN_PCS=(0x6064188,0x60642bc,0x6064340)  # 让出链(BA §6.2)
+SCHEDULER_SAMPLE_PCS=frozenset((TIMESLICE_CALL,*YIELD_CHAIN_PCS))  # 任务切换采样点
 SYS_TIMER_POLLER=0x6066de0         # sys_timer 轮询器(锚点,S9/S8)
 SYS_TIMER_FIRE_SITES=(0x6066e32,0x6066e7c)  # 火回调点(到期判定命中,§2.4)
 KEYSCAN_CALLBACK=0x6001944         # 键扫回调入口(S9 §1.1)
@@ -63,6 +68,12 @@ CORE_TICK_HANDLER_PC='0x60661a4'   # core tick handler(路 BF)
 TASK_TABLE_PTR=0x126c5c            # 任务表[cnum=0]→TCB(first_task_setup 先例)
 QUEUE_COUNT_OFFSET=6               # h[TCB+6] 队列计数(BA §6.2,半字)
 CALLBACK_TABLE_PTR=0x126F6C        # 回调表(d1_4 verdict 互证,BZ)
+ID_READ_PC=0x60123f4               # [sp] id 读锚(r0=[sp];BZ §1.2 无 raw→0x1000xx 变换)
+TABLE1_HIT_CALL=0x601244e          # 表 1 walk 间接 call r1(记录命中→handler;BZ §1.4)
+HANDLER_RETURN_PC=0x6012450        # 表 1 call r1 返回点(与「记录不匹配/过滤跳过」跳转共用
+                                   # 同一 PC,须以 0x601244e call 在飞判别真返回,不裸计数)
+TCB_CAPACITY_OFFSET=12             # h[TCB+12]=环容量(dequeue 0x6064cec 读;队列头=任务+8)
+TCB_COUNT_OFFSET=14                # h[TCB+14]=环计数(dequeue 0x6064cf0 读)
 WINDOW_BASE_STEPS=200_000          # N 公式下限(蓝图 §1.3)
 WINDOW_MARGIN_STEPS=160_000        # N 公式余量(蓝图 §1.3)
 H8_MIN_CYCLES=3                    # H8:N//P_park>=3(任务书 §1.2 第 7a 条)
@@ -78,14 +89,20 @@ PROJECTION_NOTE=('D1 window verdicts are conditional on the delivery/event-clock
 CHAIN_STAGES=('posted','enqueued','get_event_returned_13','id_read','bit20_checked',
               'special_path','table_record_hit','handler_executed','handler_returned',
               'pend_again')
-# 已钉锚的站→watchpoint PC 集;不在表中的站=id_read/table_record_hit(表 1 命中)/
-# handler_returned,[待 PR-2 实测:锚 PC]——站值保持 None(unobserved),不硬编码。
+# 已钉锚的站→watchpoint PC 集。id_read/table_record_hit/handler_returned 三站已钉
+# (G3/DEPMAP §2):id_read=0x60123f4、table_record_hit=0x601244e、handler_returned=
+# 0x6012450。注意 handler_returned 的 0x6012450 与「记录不匹配/过滤跳过」的跳转
+# 共用同一 PC,note_pc 里用「0x601244e call r1 在飞」判别,STAGE_SITES 只承担
+# _close 的「已钉锚→零命中可判 False」职责,不在通用锚循环里裸计数。
 STAGE_SITES={'posted':(POST_API,),
              'enqueued':ENQUEUE_SITES,
              'get_event_returned_13':(CONSUME_PC,),
+             'id_read':(ID_READ_PC,),
              'bit20_checked':(BIT20_PC,),
              'special_path':(SPECIAL_PATH_PC,),
+             'table_record_hit':(TABLE1_HIT_CALL,),
              'handler_executed':(S18_HANDLER_PC,),
+             'handler_returned':(HANDLER_RETURN_PC,),
              'pend_again':(PEND_WRITE_FACE,)}
 # 观察器维护的 watchpoint 面(d1_1/d1_3 消费的 machine.watchpoint_hits 键集)∪ 链/源锚。
 WATCHPOINT_PCS=frozenset({S19_LOOP_HEAD,GET_EVENT_CALL,CONSUME_PC,BIT20_PC,SPECIAL_PATH_PC,
@@ -137,67 +154,141 @@ def _hex_or_none(value):
 class _ChainTracker:
     """(18,0)/(20,2) 消息链跟踪(全程口径,规格 §3.3:主样本发生在 park 前首批迭代)。
 
-    时间序状态机:POST_API 执行(call 不改通用寄存器,寄存器实参可在步后采样)→
-    开样本;各站锚命中→三值 True;下一次 post/pend 写面/停点→闭合。站三值:
+    时间序状态机(POST_API 执行→开样本;get-event 返 13→按 FIFO 推进消费游标;
+    后续站归该游标样本;空队列 pend 写面→闭合全部在途样本)。站三值:
     True=锚观察到;False=后续站命中而本站零命中(观测到没发生=链断);
-    None=锚未钉([待 PR-2 实测])或链未走到(未观测)。
+    None=锚未钉或链未走到(未观测)。
+
+    G3 多消息关联(DEPMAP §2):S18 连 post (18,0)/(20,2) 两条,旧实现只存一个
+    open_sample、第二次 post 会把首样本提前闭合(tail_unreached)、且两条的消费
+    站串到后一个样本上。现 open_samples 为 FIFO 列表,消费按 get_event 返 13
+    逐条推进游标,post 后立即入队(enqueued)归最近 post,消费段站归游标样本。
     """
     def __init__(self):
-        self.samples=[];self.open_sample=None;self.posts=0;self.last_producer_pc=None
+        self.samples=[];self.open_samples=[];self.posts=0
+        self.last_producer_pc=None
+        self._consume_idx=None          # 当前被消费样本在 open_samples 中的下标(FIFO)
+        self._call_in_flight=False      # 0x601244e call r1 已发未返(handler_returned 判别)
+
+    def _new_open_sample(self,step,registers):
+        args=None
+        if registers is not None and len(registers)>=4:
+            args=[hex(registers[i]) if isinstance(registers[i],int) else None
+                  for i in range(4)]
+        subcode=registers[2] if registers is not None and isinstance(registers[2],int) else None
+        code=registers[3] if registers is not None and isinstance(registers[3],int) else None
+        return {'event':(f'({subcode},{code})' if subcode is not None
+                         and code is not None else '(?,?)'),
+                'origin':'firmware-natural',
+                'producer_pc':self.last_producer_pc,
+                'first_post_step':step,'post_args':args,
+                'hits':{**{stage:0 for stage in CHAIN_STAGES},'posted':1},
+                'first_hit_step':{'posted':step},'id_read_value':None}
+
+    def _consuming(self):
+        if self._consume_idx is None or self._consume_idx>=len(self.open_samples):
+            return None
+        return self.open_samples[self._consume_idx]
+
+    def _hit(self,sample,stage,step):
+        sample['hits'][stage]+=1
+        sample['first_hit_step'].setdefault(stage,step)
 
     def note_pc(self,pc,step,registers=None):
         if pc in POST_SITES:
             self.last_producer_pc=hex(pc)
         if pc==POST_API:
             self.posts+=1
-            if self.open_sample is not None:self._close(tail_unreached=True)
-            args=None
-            if registers is not None and len(registers)>=4:
-                args=[hex(registers[i]) if isinstance(registers[i],int) else None
-                      for i in range(4)]
-            subcode=registers[2] if registers is not None and isinstance(registers[2],int) else None
-            code=registers[3] if registers is not None and isinstance(registers[3],int) else None
-            self.open_sample={'event':(f'({subcode},{code})' if subcode is not None
-                                       and code is not None else '(?,?)'),
-                              'origin':'firmware-natural',
-                              'producer_pc':self.last_producer_pc,
-                              'first_post_step':step,'post_args':args,
-                              'hits':{**{stage:0 for stage in CHAIN_STAGES},
-                                      'posted':1},
-                              'first_hit_step':{'posted':step}}
-        elif self.open_sample is not None:
-            for stage,sites in STAGE_SITES.items():
-                if pc in sites:
-                    self.open_sample['hits'][stage]+=1
-                    self.open_sample['first_hit_step'].setdefault(stage,step)
-                    break
-            if pc==PEND_WRITE_FACE and self.open_sample['hits']['get_event_returned_13']:
-                self._close(tail_unreached=False)
+            self.open_samples.append(self._new_open_sample(step,registers))
+            return
+        if not self.open_samples:
+            return
+        # 表 1 间接调用在飞判定(0x601244e 发 call、0x6012450 是返回点;返回点与
+        # 「记录不匹配/过滤跳过」的跳转共用同一 PC,只有 call 在飞才是真返回)。
+        if pc==TABLE1_HIT_CALL:
+            self._call_in_flight=True
+            sample=self._consuming()
+            if sample is not None:
+                self._hit(sample,'table_record_hit',step)
+            return
+        if pc==HANDLER_RETURN_PC:
+            if self._call_in_flight:
+                self._call_in_flight=False
+                sample=self._consuming()
+                if sample is not None:
+                    self._hit(sample,'handler_returned',step)
+            return
+        # get-event 返 13 = 取下一条在途消息(FIFO 消费游标推进)。
+        if pc==CONSUME_PC:
+            ret13=(registers is not None and isinstance(registers[0],int)
+                   and registers[0]==13)
+            if ret13:
+                self._consume_idx=(0 if self._consume_idx is None
+                                   else min(self._consume_idx+1,len(self.open_samples)-1))
+                sample=self._consuming()
+                if sample is not None:
+                    self._hit(sample,'get_event_returned_13',step)
+            return
+        # 空队列 pend 写面 = 队列排空、全部在途样本回 pend 闭合。
+        if pc==PEND_WRITE_FACE:
+            self._close_all(step)
+            return
+        # 常规锚:入队归最近 post;id_read/bit20/特路/handler 执行归消费样本。
+        if pc in ENQUEUE_SITES:
+            sample=self.open_samples[-1] if self.open_samples else None
+            if sample is not None:
+                self._hit(sample,'enqueued',step)
+            return
+        sample=self._consuming()
+        if sample is None:
+            return
+        if pc==ID_READ_PC:
+            self._hit(sample,'id_read',step)
+            sample['id_read_value']=(hex(registers[0])
+                                     if registers is not None
+                                     and isinstance(registers[0],int) else None)
+        elif pc==BIT20_PC:
+            self._hit(sample,'bit20_checked',step)
+        elif pc==SPECIAL_PATH_PC:
+            self._hit(sample,'special_path',step)
+        elif pc==S18_HANDLER_PC:
+            self._hit(sample,'handler_executed',step)
 
-    def _close(self,tail_unreached):
-        sample=self.open_sample;self.open_sample=None
-        if sample is None:return
-        stages={}
-        observed=[i for i,stage in enumerate(CHAIN_STAGES)
-                  if sample['hits'][stage]>0 or stage not in STAGE_SITES]
+    def _close_one(self,sample):
         last_observed=max((i for i,stage in enumerate(CHAIN_STAGES)
                            if sample['hits'][stage]>0),default=-1)
+        stages={}
         for i,stage in enumerate(CHAIN_STAGES):
             hits=sample['hits'][stage]
-            if hits>0:stages[stage]=True
+            if hits>0:
+                stages[stage]=True
             elif stage in STAGE_SITES and i<last_observed:
                 stages[stage]=False  # 已钉锚:后续站命中而本站零命中=观测到没发生
             else:
-                stages[stage]=None   # 锚未钉([待 PR-2 实测])或链未走到:未观测,不猜
-        closed={**{k:stages[k] for k in CHAIN_STAGES},
+                stages[stage]=None   # 锚未钉或链未走到:未观测,不猜
+        return {**{k:stages[k] for k in CHAIN_STAGES},
                 'event':sample['event'],'origin':sample['origin'],
                 'first_post_step':sample['first_post_step'],
-                'post_args':sample['post_args'],'id_read_value':None,
-                'producer_pc':sample['producer_pc'],'closed_at_step':sample['first_hit_step'].get('pend_again')}
-        self.samples.append(closed)
+                'post_args':sample['post_args'],'id_read_value':sample.get('id_read_value'),
+                'producer_pc':sample['producer_pc'],
+                'closed_at_step':sample['first_hit_step'].get('pend_again')}
+
+    def _close_all(self,step):
+        for sample in self.open_samples:
+            if sample['hits']['get_event_returned_13']>0:
+                self._hit(sample,'pend_again',step)
+            self.samples.append(self._close_one(sample))
+        self.open_samples=[]
+        self._consume_idx=None
+        self._call_in_flight=False
 
     def finish(self):
-        if self.open_sample is not None:self._close(tail_unreached=True)
+        if self.open_samples:
+            for sample in self.open_samples:
+                self.samples.append(self._close_one(sample))
+            self.open_samples=[]
+            self._consume_idx=None
+            self._call_in_flight=False
 
 
 class D1WindowObserver:
@@ -248,6 +339,8 @@ class D1WindowObserver:
         self._deliveries=[]     # 窗口判别用交付记录(含 model_step,§2.4)
         self._rtis=[]           # RTI 记录(timer0/core_tick)
         self._chain=_ChainTracker()
+        self._task_switch_observations=[]  # core0 当前 TCB 变化序列(D1-3 观察项,路 CH)
+        self._last_tcb=None                 # 上次调度点采样的 core0 当前 TCB
         self._timeslice_seen_step=None;self._timeslice_returned=False
         self._pending_running={}  # core->irq(deliver 唤醒后待记 running 转换)
         self._timeline={0:[],1:[]}
@@ -377,6 +470,19 @@ class D1WindowObserver:
                                            'delivery_index':core_ticks_so_far-1})
         self._jiffies_last=after
 
+    def _sample_task_switch(self,cpu,step,pc):
+        """任务切换观察(D1-3 观察项,路 CH):调度点(时间片 call/让出链)读 core0
+        当前任务 [0x126c5c],变化即记一条 {from_tcb,to_tcb,model_step,pc}。
+        观察项非硬断言(checker 只要求 key 是 list),不强求回原任务。"""
+        tcb=_read_ram(cpu.mem,TASK_TABLE_PTR,4)
+        if tcb is None:
+            return
+        if self._last_tcb is not None and tcb!=self._last_tcb:
+            self._task_switch_observations.append(
+                {'from_tcb':hex(self._last_tcb),'to_tcb':hex(tcb),
+                 'model_step':step,'pc':hex(pc)})
+        self._last_tcb=tcb
+
     def event_clock_horizon_limit(self,machine):
         """事件时钟快进段的窗口剩余步数上限(§5 机器侧 horizon 截断)。
 
@@ -424,6 +530,8 @@ class D1WindowObserver:
                 elif executed_pc==CONSUME_PC:
                     self._queue_ops.append(('dequeue',step))
             self._chain.note_pc(executed_pc,step,cpu.R)
+            if executed_pc in SCHEDULER_SAMPLE_PCS and cpu.core_id==0:
+                self._sample_task_switch(cpu,step,executed_pc)
             if executed_pc==S19_LOOP_HEAD and in_window:
                 self._loop_head_after_drain+=1
             if executed_pc==TIMESLICE_CALL and in_window:
@@ -556,6 +664,29 @@ class D1WindowObserver:
         if tcb is None:return None
         return _read_ram(mem,tcb+QUEUE_COUNT_OFFSET,2)
 
+    def _queue_capacity(self,mem):
+        """app_core 消息环容量 h[TCB+12](dequeue 0x6064cec 实测读;G3 补齐)。"""
+        tcb=_read_ram(mem,TASK_TABLE_PTR,4)
+        if tcb is None:return None
+        return _read_ram(mem,tcb+TCB_CAPACITY_OFFSET,2)
+
+    def _ready_tasks_scan(self):
+        """H5 停点 ready 扫描(G3 补齐):扫两核当前任务 [0x126c5c+cnum*4] 的消息环
+        计数 h[TCB+14](dequeue 0x6064cf0 实测读),非空=有待处理消息=就绪。
+        诚实边界:全 TCB state==ready 扫描需 TCB state 字段偏移,该偏移 [待 PR-2
+        实测](d1-window-producer-spec §2.5),本扫描用消息驱动的就绪代理;
+        停点两核 idle 时当前任务=idle、计数 0 → [] = vacuous pass。"""
+        tasks=[]
+        for core,cpu in self.machine.cores.items():
+            tcb=_read_ram(cpu.mem,TASK_TABLE_PTR+core*4,4)
+            if tcb is None:continue
+            count=_read_ram(cpu.mem,tcb+TCB_COUNT_OFFSET,2)
+            if count is None or count==0:continue
+            tasks.append({'tcb':hex(tcb),'entry':None,'assertion_face':None,
+                          'schedulings':0,'ready_since_step':None,
+                          'longest_wait':None,'first_scheduled_step':None})
+        return tasks
+
     def _callback_table_word(self):
         cpu=self.machine.cores.get(0)
         return _read_ram(cpu.mem,CALLBACK_TABLE_PTR,4) if cpu is not None else None
@@ -678,6 +809,8 @@ class D1WindowObserver:
         base_expirations=self._base.get('core_tick_expirations',0)
         base_acks=self._base.get('core_tick_acks',0)
         first_expiry=next((s for s in window_expiries if isinstance(s,int)),None)
+        in_window_switches=[s for s in self._task_switch_observations
+                            if self._w_park is not None and s['model_step']>self._w_park]
         return {'deadline_closed_form':(self._w_park+self._s_tick)
                                        if isinstance(self._s_tick,int) else None,
                 'actual_overflow_model_step':first_expiry,
@@ -686,7 +819,11 @@ class D1WindowObserver:
                 'jiffies_before':None,'jiffies_after':None,  # [路 CH 需求,挂接路带出]
                 'timeslice_call':{'executed':self._timeslice_seen_step is not None,
                                   'returned':self._timeslice_returned},
-                'task_switch':{'occurred':False}}  # 观察项 [路 CH 需求,挂接路带出]
+                'task_switch':{'occurred':bool(in_window_switches),
+                               'from_tcb':(in_window_switches[0]['from_tcb']
+                                           if in_window_switches else None),
+                               'to_tcb':(in_window_switches[0]['to_tcb']
+                                         if in_window_switches else None)}}
 
     def _d1_4_face(self,natural,broken):
         if natural:
@@ -697,7 +834,7 @@ class D1WindowObserver:
                                'queue_count_before':None,'queue_count_after':None},
                     'get_event':{'return_code':13
                                  if sample.get('get_event_returned_13') else None},
-                    'event_id_read':None,                 # id_read 锚 [待 PR-2 实测]
+                    'event_id_read':sample.get('id_read_value'),  # id_read 锚 0x60123f4(实读)
                     'special_path':{'taken':sample.get('special_path') is True,
                                     'subcode':_subcode_of(sample)},
                     'walk':{'table2_hits':sum(self._watch.get(hex(pc),0)
@@ -800,11 +937,19 @@ class D1WindowObserver:
             repost_list.append(entry)
         queue_count_final=(self._queue_count(machine.cores[0].mem)
                            if machine.cores else None)
+        capacity=(self._queue_capacity(machine.cores[0].mem)
+                  if machine.cores else None)
         for entry in repost_list:
             entry['pending_at_window_end']=(None if queue_count_final is None
                                             else bool(queue_count_final))
-        cursor_trace=[{'step':step,'op':op,'seq':seq,'physical':None}
-                      for seq,(op,step) in enumerate(self._queue_ops)]
+        # cursor_trace:逻辑序号按 op 分开(入队/出队各自递增),物理指针=序号 mod 容量
+        # (H6 勘误口径:物理回绕合法,checker 自算一致性)。
+        seq_counters={'enqueue':0,'dequeue':0}
+        cursor_trace=[]
+        for op,step in self._queue_ops:
+            seq=seq_counters[op];seq_counters[op]+=1
+            physical=(seq%capacity if isinstance(capacity,int) and capacity>0 else None)
+            cursor_trace.append({'step':step,'op':op,'seq':seq,'physical':physical})
         cursor_monotonic=all(a['step']<b['step']
                              for a,b in zip(cursor_trace,cursor_trace[1:]))
         health={'window':{'model_step_start':self._w_park,
@@ -822,9 +967,10 @@ class D1WindowObserver:
                                                 and s['first_post_step']>self._w_park
                                                 and s.get('get_event_returned_13'))},
                 'per_core':per_core,
+                'ready_tasks':self._ready_tasks_scan(),
                 'queue':{'count_final':queue_count_final,
-                         'qlimit':None,    # [待 PR-2 实测:实读来源]
-                         'capacity':None,  # [待 PR-2 实测:实读来源]
+                         'qlimit':None,    # 积压上限(registry qlimit;RAM 实读来源 [待 PR-2 实测])
+                         'capacity':capacity,  # h[TCB+12] 环容量(dequeue 实测读)
                          'cursor_trace':cursor_trace,'cursor_monotonic':cursor_monotonic}}
         return health
 
@@ -873,6 +1019,7 @@ class D1WindowObserver:
                 'idle_wait_park_log':self._park_log,
                 'event_clock_engagements':self._engagements,
                 'jiffies_observations':self._jiffies_observations,
+                'task_switch_observations':self._task_switch_observations,
                 'message_chain_observations':observations}
 
     def project_delivery_faces(self,machine_report):

@@ -23,7 +23,9 @@ import br28_machine
 import d1_window_observer as observer_module
 from d1_window_observer import (D1WindowObserver,CHAIN_STAGES,PEND_WRITE_FACE,
     S19_LOOP_HEAD,GET_EVENT_CALL,CONSUME_PC,BIT20_PC,SPECIAL_PATH_PC,
-    S18_HANDLER_PC,POST_API,ENQUEUE_SITES,KEYSCAN_CALLBACK,ADC_SCAN_CALLBACK,
+    S18_HANDLER_PC,POST_API,ENQUEUE_SITES,ID_READ_PC,TABLE1_HIT_CALL,
+    HANDLER_RETURN_PC,YIELD_CHAIN_PCS,TIMESLICE_CALL,
+    KEYSCAN_CALLBACK,ADC_SCAN_CALLBACK,
     SYS_TIMER_FIRE_SITES,TIMER0_HANDLER_PC,
     timer0_period_closed_form,core_tick_deadline_closed_form)
 
@@ -448,11 +450,23 @@ class ChainTrackerTests(unittest.TestCase):
         return make_observer(machine)
 
     def _full_chain_steps(self,cpu):
+        # 寄存器面沿用既有合成约定(registers[2]=subcode/registers[3]=code);
+        # get-event 返 13 用 r0=13,id_read 用 r0=[sp]=0x10000C 的实读形状。
         cpu.R=[0x60a1d11,0x10000C,18,0]+[0]*12
         yield POST_API
-        for pc in (*ENQUEUE_SITES,GET_EVENT_CALL,CONSUME_PC,BIT20_PC,
-                   SPECIAL_PATH_PC,S18_HANDLER_PC,PEND_WRITE_FACE):
+        for pc in ENQUEUE_SITES:
             yield pc
+        yield GET_EVENT_CALL
+        cpu.R[0]=13                     # get-event 返 13(成功码)
+        yield CONSUME_PC
+        cpu.R[0]=0x10000C               # 0x60123f4 r0=[sp]=0x10000C
+        yield ID_READ_PC
+        yield BIT20_PC
+        yield SPECIAL_PATH_PC
+        yield TABLE1_HIT_CALL           # 表 1 记录命中→间接 call r1
+        yield S18_HANDLER_PC            # handler 0x6023962 执行
+        yield HANDLER_RETURN_PC         # call 返回点(在飞=真返回)
+        yield PEND_WRITE_FACE           # 空队列回 pend
 
     def test_full_chain_marks_pinned_stages_true(self):
         observer=self._chain_observer()
@@ -467,12 +481,9 @@ class ChainTrackerTests(unittest.TestCase):
         sample=samples[0]
         self.assertEqual(sample['event'],'(18,0)')
         self.assertEqual(sample['origin'],'firmware-natural')
-        self.assertEqual(sample['id_read_value'],None)   # 锚 [待 PR-2 实测]
-        for stage in ('posted','enqueued','get_event_returned_13','bit20_checked',
-                      'special_path','handler_executed','pend_again'):
+        self.assertEqual(sample['id_read_value'],'0x10000c')   # 0x60123f4 实读
+        for stage in CHAIN_STAGES:
             self.assertIs(sample[stage],True,(stage))
-        for stage in ('id_read','table_record_hit','handler_returned'):
-            self.assertIsNone(sample[stage],(stage))      # 未钉锚=未观测
         self.assertEqual(chain['verdict'],'samples')
 
     def test_broken_chain_flags_skipped_stage_false(self):
@@ -480,7 +491,10 @@ class ChainTrackerTests(unittest.TestCase):
         cpu=observer.machine.cores[0]
         cpu.R=[0x60a1d11,0x10000C,20,2]+[0]*12
         completed=0
-        for pc in (POST_API,GET_EVENT_CALL,CONSUME_PC,S18_HANDLER_PC):
+        for pc in (POST_API,GET_EVENT_CALL):
+            observer.note_step(cpu,pc,completed);completed+=1
+        cpu.R[0]=13                     # get-event 返 13
+        for pc in (CONSUME_PC,S18_HANDLER_PC):
             # 缺 enqueued/bit20/special_path 站:后续站命中→中间站 False
             observer.note_step(cpu,pc,completed);completed+=1
         chain=observer.machine_face()['message_chain_observations']
@@ -492,6 +506,33 @@ class ChainTrackerTests(unittest.TestCase):
         self.assertEqual(chain['verdict'],'chain_broken')
         self.assertIn('broken_evidence',chain)
 
+    def test_two_messages_are_not_cross_wired(self):
+        """G3 多消息关联:S18 连 post (18,0)/(20,2) 两条,FIFO 消费不串、两条都留档。"""
+        observer=self._chain_observer()
+        cpu=observer.machine.cores[0]
+        completed=0
+        for subcode,code in ((18,0),(20,2)):
+            cpu.R=[0x60a1d11,0x10000C,subcode,code]+[0]*12
+            observer.note_step(cpu,POST_API,completed);completed+=1
+            for pc in ENQUEUE_SITES:
+                observer.note_step(cpu,pc,completed);completed+=1
+        # 第一条(18,0)被消费:get-event 返 13 → id_read
+        cpu.R[0]=13
+        observer.note_step(cpu,CONSUME_PC,completed);completed+=1
+        cpu.R[0]=0x10000C
+        observer.note_step(cpu,ID_READ_PC,completed);completed+=1
+        chain=observer.machine_face()['message_chain_observations']
+        samples=chain['samples']
+        self.assertEqual(len(samples),2)
+        self.assertEqual(samples[0]['event'],'(18,0)')
+        self.assertEqual(samples[1]['event'],'(20,2)')
+        # 消费段归第一条(18,0),不是串到第二条
+        self.assertIs(samples[0]['get_event_returned_13'],True)
+        self.assertIs(samples[0]['id_read'],True)
+        self.assertEqual(samples[0]['id_read_value'],'0x10000c')
+        self.assertIsNone(samples[1]['get_event_returned_13'])
+        self.assertIsNone(samples[1]['id_read'])
+
     def test_s18_preset_samples_are_prewindow(self):
         machine=FakeMachine()
         observer=make_observer(machine)
@@ -502,6 +543,66 @@ class ChainTrackerTests(unittest.TestCase):
         chain=observer.machine_face()['message_chain_observations']
         self.assertEqual(len(chain['s18_preset_samples']),1)
         self.assertEqual(chain['s18_preset_samples'][0][0],'(18,0)')
+
+
+class G3ObservationTests(unittest.TestCase):
+    """G3 补齐的观察键生产(DEPMAP §2):task_switch_observations / queue
+    capacity+cursor_trace.physical / ready_tasks(消息计数代理)。"""
+    def tearDown(self):
+        br28_machine.d1_window_observer=None
+
+    def _machine(self,*,capacity=None,count=0):
+        machine=FakeMachine()
+        tcb=0x127db8
+        mem=machine.cores[0].mem
+        if capacity is not None:
+            for i,byte in enumerate(capacity.to_bytes(2,'little')):
+                mem.ram[tcb+12+i]=byte
+        for i,byte in enumerate(count.to_bytes(2,'little')):
+            mem.ram[tcb+14+i]=byte
+        return machine
+
+    def test_task_switch_observations_recorded_on_tcb_change(self):
+        machine=self._machine()
+        observer=make_observer(machine)
+        completed,w=reach_park(machine,observer)
+        cpu=machine.cores[0]
+        observer.note_step(cpu,YIELD_CHAIN_PCS[0],completed+1)   # 首次采样(无 from)
+        for i,byte in enumerate((0x127e10).to_bytes(4,'little')):
+            cpu.mem.ram[0x126c5c+i]=byte                          # 改当前 TCB
+        observer.note_step(cpu,TIMESLICE_CALL,completed+2)
+        switches=observer.machine_face()['task_switch_observations']
+        self.assertEqual(len(switches),1)
+        self.assertEqual(switches[0]['from_tcb'],'0x127db8')
+        self.assertEqual(switches[0]['to_tcb'],'0x127e10')
+        self.assertIsInstance(switches[0]['model_step'],int)
+
+    def test_queue_capacity_and_cursor_physical(self):
+        machine=self._machine(capacity=8)
+        observer=make_observer(machine)
+        completed,w=reach_park(machine,observer)
+        cpu=machine.cores[0]
+        for i in range(3):
+            observer.note_step(cpu,ENQUEUE_SITES[0],completed+1+i)
+        for i in range(2):
+            observer.note_step(cpu,CONSUME_PC,completed+4+i)
+        queue=observer.finalize(stop={'kind':'window_complete'})['health']['queue']
+        self.assertEqual(queue['capacity'],8)
+        enq=[t for t in queue['cursor_trace'] if t['op']=='enqueue']
+        deq=[t for t in queue['cursor_trace'] if t['op']=='dequeue']
+        self.assertEqual([t['seq'] for t in enq],[0,1,2])
+        self.assertEqual([t['physical'] for t in enq],[0,1,2])
+        self.assertEqual([t['seq'] for t in deq],[0,1])
+        self.assertEqual([t['physical'] for t in deq],[0,1])
+
+    def test_ready_tasks_nonempty_when_queue_count_positive(self):
+        machine=self._machine(count=1)
+        observer=make_observer(machine)
+        reach_park(machine,observer)
+        tasks=observer.finalize(stop={'kind':'window_complete'})['health']['ready_tasks']
+        self.assertEqual(len(tasks),1)
+        self.assertEqual(tasks[0]['tcb'],'0x127db8')
+        self.assertIsNone(tasks[0]['entry'])   # entry 实读来源 [待 PR-2 实测]
 
 
 class KeyContractTests(unittest.TestCase):
@@ -577,8 +678,9 @@ class KeyContractTests(unittest.TestCase):
         self.assertIsNone(tree['dispatch']['table1_records_walked'])
         self.assertIsNone(tree['dispatch']['dynamic_filter_ptr'])
         self.assertIsNone(tree['core_tick']['jiffies_before'])
-        self.assertIsNone(tree['health']['queue']['qlimit'])
-        self.assertNotIn('ready_tasks',tree['health'])   # 未扫描=键缺→pending
+        self.assertIsNone(tree['health']['queue']['qlimit'])      # registry qlimit 实读来源待 PR-2
+        self.assertIsNone(tree['health']['queue']['capacity'])    # FakeMachine 未铺 h[TCB+12]
+        self.assertEqual(tree['health']['ready_tasks'],[])        # 已扫描(消息计数代理),空
         for source in ('keyscan','adc_scan'):
             entry=next(e for e in tree['health']['per_source'] if e['source']==source)
             self.assertIsNone(entry['first_deadline'])
