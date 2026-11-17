@@ -216,15 +216,24 @@ FEATURES = (
             '跨 128B MMU 页界双字存储拆两半各自翻译(derived-not-measured)'),
     Feature('jl_pled_con3_readback', 'conditional', (), False, None,
             'JL_PLED CON3(0xfd610c)单字容器(合成初始 0+读回=当前值;boot 前缀'
-            'LED 驱动 0x6019458 停点的配置 RMW 读(清 bit5);CON3 全 6 站点均为'
-            '原子 RMW 配置写、读值只进写回组装、零分支零轮询;codex 定调单字'
-            '最小假设——CON0 save-restore 位消费/其余 17 字留 unmapped)'),
+            'LED 驱动 0x6019458 停点的配置 RMW 读(清 bit5);CON3 已审计静态面'
+            '11 站点=9 原子 RMW+1 整字清零+1 显式算术读,RMW 读值只进写回组装、'
+            '零分支零轮询;codex 定调单字最小假设——显式读拒绝、CON0 save-'
+            'restore 位消费/其余 17 字留 unmapped)'),
     Feature('jl_pled_con0_initial_fixture', 'conditional', (), True, 'JL_PLED_CON0_INITIAL_VALUE',
             'JL_PLED CON0(0xfd6100)单字具名初态容器(首写前读=具名 fixture、写后'
             '读=最后写值;41,847,806 停点 0x60194b4 save-restore 首读 bit0 直接进'
             '分支——codex 三选一 (a) 定调条件主臂 0x00000000、敏感性对照臂 '
             '0x00000001,derived-not-measured 非硅复位值;显式读/RMW/整字写共享'
             '同一状态走通用 mmio 路径零新分发)'),
+    Feature('p2m_clk_con0_config_rmw', 'conditional', (), False, None,
+            'P11_SYSTEM P2M_CLK_CON0(0xf2a610)单字配置 RMW 容器(合成初始 0+'
+            'RMW 内部读回=当前值,显式读一律拒绝;41,848,382 停点 0x6019508='
+            'LED_CLK_SEL(3) helper 0x6019502 首条清 bits5-7 RMW 的内部读;全 app '
+            '唯一引用=该 helper 两条立即数 RMW,读值只进写回组装零分支零轮询'
+            ',SDK GET_LED_CLK_SEL 无人引用;codex 三选一 (a) CON3 式,只服务已'
+            '观测两种形状;derived-not-measured 非复位值;与邮箱 608/60c/618 '
+            '地址集互斥)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
@@ -528,10 +537,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 41848382,
-        'stop_pc': '0x6019508',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xf2a610', 'size': 4, 'reference_sdk_register': None},
+        'completed_steps': 41850980,
+        'stop_pc': '0x60195f8',
+        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
+                 'address': '0xfd6104', 'size': 4, 'value_bytes': '00000000'},
         'freshness_fields': ('kind', 'address'),
     },
 }

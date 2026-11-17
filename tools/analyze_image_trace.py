@@ -168,10 +168,20 @@ SCENARIOS = {
         # 值;显式读/RMW/整字写共享同一状态走通用 mmio 路径零新分发)放行
         # 后,0x60194b4 save-restore 首读服务 0→0x60194b6 清 bit0 RMW 写回
         # 0(word_writes 1)→0x60194ca if(r6&1)假分支跳过恢复→0x60194a4
-        # 返回,再 +576 步(纯 CPU0 段,per-core1 11496 不变)到 41,848,382 @
-        # 0x6019508 读 0xf2a610(0x6019502 helper 首条 [0xf2a610]&=0xFFFFFFE0
-        # 清 bits5-7 RMW 的内部读——JL_PLED 块之外的未建模 SFR,诚实停,
-        # 归下一路)。预算 50M 保持。
+        # 返回,再 +576 步(纯 CPU0 段,per-core1 11496 不变)到 0x6019502
+        # helper 首条 [0xf2a610]&=0xFFFFFF1F 清 bits5-7 RMW 的内部读;路
+        # P2MCLK:P11_SYSTEM P2M_CLK_CON0(0xf2a610)单字配置 RMW 容器(helper
+        # =SDK 宏 LED_CLK_SEL(3),全 app 唯一引用、读值只进写回组装零分支
+        # 零轮询,GET_LED_CLK_SEL 无人引用;codex 三选一 (a) CON3 式:合成
+        # 初始 0+RMW 内部读回=当前值,显式读一律拒绝,只服务已观测两种立即
+        # 数形状)放行后,两腿 0→0→0x60 写回、RAM 标志 b[0x12603C]=1、返回
+        # 一次性 LED 初始化守卫调用者(0x601a30c 臂,b[ctx+48]|=1)走逐通道
+        # 重配序列进 0x601a41c pend(IPMASK 0→6,OS 临界区机制不动 CLI
+        # bit9)于 0x601a422 在 pend 窗内调 LED 复位 helper 0x60195e2,其
+        # CON0 清位/整字清零(0x60195ec/f0/f6)由 CON0 容器服务,再 +2,598
+        # 步(纯 CPU0 段,per-core1 11496 不变)到 41,850,980 @ 0x60195f8
+        # 写 0xfd6104=JL_PLED CON1 整字 0(pend 窗内停,两容器之外的
+        # JL_PLED 字,诚实停,归下一路)。预算 50M 保持。
         'default_budget': 50000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
@@ -1486,10 +1496,10 @@ def check_self_conditional(report):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 41853355, '1': 11496},
+                run['per_core_steps'] == {'0': 41855953, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (41848382 @ 0x6019508, the unmapped '
-                'read of 0xf2a610 — reached after the route-STOREG3 standalone '
+                'conditional frontier stop (41850980 @ 0x60195f8, the unmapped '
+                'write of JL_PLED CON1 0xfd6104 — reached after the route-STOREG3 standalone '
                 'postincrement word-store release executes the byte-unpack '
                 'st.w.pin.l of 0x60649b0 directly (crossing the route-WDFEED '
                 '41,828,530 bookkeeping-read stop) and the route-FD610C single-'
@@ -1502,9 +1512,20 @@ def check_self_conditional(report):
                 'read as 0, the clear-bit0 RMW writes 0, the if(r6&1) restore '
                 'is skipped on the false branch, the save-restore returns, '
                 'and +576 pure-CPU0 steps walk into the 0x6019502 helper whose '
-                'first [0xf2a610]&=0xFFFFFFE0 RMW internal read stops honestly '
-                'on the unmapped word 0xf2a610; per-core 1 unchanged at 11496 '
-                '— the 0xf2a610 decision belongs to the next route)')
+                'first [0xf2a610]&=0xFFFFFF1F RMW internal read is served by '
+                'the route-P2MCLK P2M_CLK_CON0 single-word config-RMW '
+                'container (SDK macro LED_CLK_SEL(3), codex three-way (a), '
+                'synthetic initial 0 + last-write RMW-internal readback, '
+                'explicit loads refused, derived-not-measured), the second '
+                'leg writes 0x60, the RAM flag is set, the one-shot LED-init '
+                'caller (0x601a30c arm) walks the per-channel reconfig into '
+                'the 0x601a41c pend window (IPMASK 0->6) that calls the LED '
+                'reset helper 0x60195e2 whose CON0 '
+                'clears and zero store are served, and +2,598 pure-CPU0 '
+                'steps walk into the 0x60195f8 st.w [0xfd6104]=0 which stops '
+                'honestly on the unmapped JL_PLED CON1 word; per-core 1 '
+                'unchanged at 11496 — the 0xfd6104 decision belongs to the '
+                'next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and

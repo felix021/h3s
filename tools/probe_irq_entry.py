@@ -1456,6 +1456,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_clock_con3_readback=False,
              jl_pled_con3_readback=False,
              jl_pled_con0_initial_fixture=None,
+             p2m_clk_con0_config_rmw=False,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -2692,6 +2693,18 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # 走通用 mmio 路径(零新分发)。无依赖(停点在 boot 前缀)。
     if jl_pled_con0_initial_fixture is not None:
         options['jl_pled_con0_initial_fixture']=jl_pled_con0_initial_fixture
+    # p2m_clk_con0_config_rmw(路 P2MCLK,opt-in 默认关):P11_SYSTEM
+    # P2M_CLK_CON0(0xf2a610)单字配置 RMW 容器——41,848,382 停点 0x6019508
+    # (LED_CLK_SEL(3) helper 0x6019502 首条清 bits5-7 RMW,SDK p11_app.h L117
+    # 宏逐字对应)的内部读。全 app 唯一引用=该 helper(指令级线性反汇编+
+    # 字面值/偏移表/函数指针/ROM 全扫描),两条立即数 RMW 读值只进写回组装
+    # 零分支零轮询,SDK GET_LED_CLK_SEL(L118 读值宏)无人引用。codex 三选一
+    # (2026-11-17)定调 (a) CON3 式:合成初始 0+RMW 内部读回=当前值,显式读
+    # 一律拒绝(零显式读者=能力最小化,不为假想读者开放),只服务已观测
+    # rmw.and.nmodimm/rmw.or.modimm 两种形状。无依赖(停点在 boot 前缀,
+    # 与邮箱 608/60c/618 地址集互斥不重叠)。
+    if p2m_clk_con0_config_rmw:
+        options['p2m_clk_con0_config_rmw']=True
     # 敏感性探针值(probe_only):ADA_CON0(0xfe0a20)初值一次性 0xffffffff
     # 替换(只注初值,后续读回真实写回值;其余八字不扰动保归因干净)。
     # codex 钉子:断言非零合成初值经停点 RMW 只清 bit5——仅测初值零会漏掉
@@ -4365,8 +4378,8 @@ def check(report,firmware):
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x6019508 on the '
-            'unmapped read of 0xf2a610 — reached after the route-STOREG3 '
+            'the heap-experimental scenario must stop at 0x60195f8 on the '
+            'unmapped write of 0xfd6104 — reached after the route-STOREG3 '
             'standalone postincrement word-store release '
             '(exact_postincrement_word_stores) executes the st.w.pin.l '
             'full-word store of the byte-unpack loop in 0x60649b0 directly '
@@ -4391,9 +4404,29 @@ def check(report,firmware):
             '0x60194ca if(r6&1) restore is skipped on the false branch, the '
             'save-restore function returns, and +576 pure-CPU0 steps walk '
             'into the 0x6019502 helper whose first rmw.and.nmodimm '
-            '[0xf2a610]&=0xFFFFFFE0 RMW internal read stops honestly on the '
-            'unmapped word 0xf2a610 — a new SFR outside the JL_PLED block, '
-            'belongs to the next route)')
+            '[0xf2a610]&=0xFFFFFF1F RMW internal read (clear bits5-7; raw '
+            'm=0xE0) is served by the route-P2MCLK P11_SYSTEM P2M_CLK_CON0 '
+            'single-word config-RMW container (the helper is exactly SDK '
+            'macro LED_CLK_SEL(3), p11_app.h L117; the audited static face '
+            'is this one helper — two immediate RMWs whose read values feed '
+            'only write-back assembly, zero branches/polls/table lookups, '
+            'GET_LED_CLK_SEL referenced nowhere; codex three-way (a), CON3 '
+            'shape: synthetic initial 0, RMW-internal readback = last write, '
+            'explicit loads always refused, observed forms only — derived-'
+            'not-measured): first leg 0&0xFFFFFF1F=0 writes back 0, second '
+            'leg 0|0x60=0x60 writes back 0x60 (bits[7:5]=0b011), the RAM '
+            'flag b[0x12603C]=1 is set, the helper returns to its one-shot '
+            'LED-init caller (0x601a30c arm) which marks b[ctx+48]|=1 and walks '
+            'the per-channel reconfig sequence into the 0x601a41c pend (IPMASK '
+            '0->6, the OS critical-section mechanism, CLI bit9 untouched) that '
+            'calls the LED reset helper 0x60195e2 at 0x601a422 INSIDE the pend '
+            'window; its CON0 clears (0x60195ec &=~1, '
+            '0x60195f0 &=~2) and the 0x60195f6 whole-word zero store are '
+            'served by the route-FD610C-con0 container, then the 0x60195f8 '
+            'st.w [0xfd6104]=0 (JL_PLED CON1) stops honestly on the '
+            'unmapped-or-readonly word inside the still-open pend window — '
+            'a JL_PLED word outside both released containers, belongs to the '
+            'next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
@@ -5592,13 +5625,20 @@ def check(report,firmware):
     # 20,220→20,373(恰 +153=51 步×3 STD12M tick 精确走表)。
     # 路 JLA:+130 步(set_buffer 五写+挂 handler+启动段序章)零新到期零新
     # 交付,cnt 2,577→2,967(恰 +390=130 步×3 STD12M tick 精确走表)。
-    require(timer=={'con':0x1401,'cnt':12579,'prd':59999,'pending':False,
+    # 路 P2MCLK:+2,598 步纯 CPU0 段(LED_CLK_SEL(3) 两 RMW+RAM 标志+一次性
+    # LED 初始化守卫尾+LED 复位 helper 0x60195e2 的 CON0 清位/整字清零到
+    # CON1 写停点),零新到期零新交付零新喂狗,cnt 12,579→20,373(恰
+    # +7,794=2,598 步×3 STD12M tick 精确走表),PRD 保持 59,999。
+    require(timer=={'con':0x1401,'cnt':20373,'prd':59999,'pending':False,
             'expirations':15775},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
             'with the counter walked on to 9342 inside the freshly reprogrammed delay '
-            'window of the LED-driver prologue and the route-FD610C-con0 release walks it '
-            'on to 12579 in the save-restore/0x6019502 delay windows), 15775 '
+            'window of the LED-driver prologue, the route-FD610C-con0 release walks it '
+            'on to 12579 in the save-restore/0x6019502 delay windows and the route-P2MCLK '
+            'release walks it on to 20373 in the LED_CLK_SEL/LED-reset delay windows '
+            '(+2598 steps x 3 STD12M ticks, no new expiry, no new delivery, no new '
+            'mailbox feed)), 15775 '
             'expirations total (15758 delivered/acked — the route-STOREG3 walk segment '
             'serves exactly one more delivery, the 17-expiry remainder folded into '
             'in-flight/deferred windows), pending FALSE at the stop: '
@@ -5669,15 +5709,20 @@ def check(report,firmware):
     # r3=1199999),+7 步后 retry 环第一半 **0x12b0e8 读 CNT** 撞同一通用
     # overflow guard 严格停(新停点,仍位于屏蔽窗内,IPMASK=6、ICFG 仍
     # 0x300,bit9 全程未动;读回投影只覆盖 offset 8,CNT 不在一案范围)。
+    # 路 P2MCLK:+2,598 步纯 CPU0 段零新溢出零新交付,cnt 107,580→117,972
+    # (恰 +10,392=2,598 步×4 core tick 精确走表,仍 <prd 1,599,999);新停点
+    # 0x60195f8 在 LED 复位 helper 体内,但该 helper 由 0x601a422 调用、处于
+    # 0x601a41c pend 的 OS 临界区内(IPMASK=6 机制,不动 CLI bit9),ICFG 保持
+    # 0x300。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==107580 and
+            tick0['cnt']==117972 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
-            r['peripherals']['ipmask']==0 and
-            r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300',
+            r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300' and
+            r['peripherals']['ipmask']==6,
             'the CPU0 core tick must deliver and ack ALL 116 overflows through the '
             '21,798,206 stop: the historical route-AK landmark, timeout-window, AS and '
             'B1 ones carry the count to eleven, the route-BQ release replays the masked '
@@ -5700,9 +5745,17 @@ def check(report,firmware):
             'through the release segment to cnt 103264, still 347/347 delivered-and-acked '
             '(zero new overflow — the pure-CPU0 walk takes ~4 nominal WDT units) and the '
             'route-FD610C-con0 release walks it on to cnt 107580, still 347/347 '
-            'delivered-and-acked (zero new overflow); the '
-            'CPU1 core tick never overflows and CPU0 partial ICFG stays 0x300 (bit9 '
-            'untouched throughout)')
+            'delivered-and-acked (zero new overflow) and the route-P2MCLK release '
+            'walks it on to cnt 117972 (+2598 steps x 4 core ticks), still 347/347 '
+            'delivered-and-acked (zero new overflow); the CPU1 core tick never '
+            'overflows and CPU0 partial ICFG stays 0x300 (bit9 untouched '
+            'throughout); IPMASK is 6 at the new stop — the walk leaves the '
+            'one-shot LED-init guard (0x601a30c caller arm) into the per-channel '
+            'reconfig sequence whose 0x601a41c pend opens an OS critical section '
+            'and the 0x601a422 call runs the LED reset helper 0x60195e2 INSIDE the '
+            'pend window (the route-V uart_fifo_reset IPMASK 0->6 shape, not the '
+            'CLI bit9 one), so the stop 0x60195f8 sits inside the section with '
+            'IPMASK 6')
     # 路 BQ 读回投影面:报告键只在开关开启的世界出现(legacy 逐字节不变),
     # 证据链字段钉死(最近写入=1199999、只覆盖 unresolved 窗的 offset 8、
     # 硅读回行为未测量)。

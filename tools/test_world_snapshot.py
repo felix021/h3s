@@ -676,6 +676,9 @@ class M4ProjectionFamilies(unittest.TestCase):
         jl_clock_con3_readback=True,
         jl_pled_con3_readback=True,
         jl_pled_con0_initial_fixture=0x00000000,
+        # Route P2MCLK: the P11_SYSTEM P2M_CLK_CON0 single-word config-RMW
+        # container, ON in the current conditional frontier flag set.
+        p2m_clk_con0_config_rmw=True,
     )
 
     def build_world(self):
@@ -854,6 +857,11 @@ class M4ProjectionFamilies(unittest.TestCase):
         self.assertEqual(hw.jl_pled_con0.read(0xfd6100), 0)
         hw.jl_pled_con0.write(0xfd6100, 0x1)
         self.assertEqual(hw.jl_pled_con0.read(0xfd6100), 0x1)
+        # Route P2MCLK: P2M_CLK_CON0 served the LED_CLK_SEL(3) pair (first
+        # RMW answers the synthetic initial 0, second RMW reads after write) —
+        # both stop-point shapes resume from the captured store.
+        self.assertEqual(hw.p2m_clk_con0.rmw('and', 0xffffff1f), 0)
+        self.assertEqual(hw.p2m_clk_con0.rmw('or', 0x60), 0x60)
         return hardware
 
     def captured_m4(self, world):
@@ -1076,6 +1084,52 @@ class M4ProjectionFamilies(unittest.TestCase):
             self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()),
                              switches={**self.M4_SWITCHES,
                                        'jl_pled_con0_initial_fixture': 0x00000001})
+
+    def test_p2mclk_p2m_clk_con0_container_resumes_exact_semantics(self):
+        """Route P2MCLK behavioral pin: after restore the P2M_CLK_CON0
+        container keeps answering config RMWs from the CAPTURED store (the
+        post-LED_CLK_SEL word 0x60 still feeds later write-backs), the
+        counters resume exactly, and a restore target built with the switch
+        off is refused (slot mismatch)."""
+        original, snapshot = self.world_and_snapshot()
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        for world in (original, restored):
+            # 后续写回从捕获存储续算:0x60|0x80=0xe0,再清 bits5-8→0
+            # (0xFFFFFF1F 恰清时钟选择位段,保留位钉子)。
+            self.assertEqual(world.p2m_clk_con0.rmw('or', 0x80), 0xe0)
+            self.assertEqual(world.p2m_clk_con0.rmw('and', 0xffffff1f), 0x0)
+        self.assertEqual(restored.p2m_clk_con0.reads_after_write,
+                         original.p2m_clk_con0.reads_after_write)
+        self.assertEqual(restored.p2m_clk_con0.reads_after_write, 3)
+        self.assertEqual(restored.p2m_clk_con0.synthesized_initial_reads, 1)
+        # 开关关的恢复目标必须被拒绝(快照有该槽而目标没有)。
+        with self.assertRaises(SnapshotError):
+            self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()),
+                             switches={**self.M4_SWITCHES,
+                                       'p2m_clk_con0_config_rmw': False})
+
+    def test_p2mclk_snapshot_between_the_two_rmw_legs_resumes(self):
+        """Route P2MCLK mid-helper pin (codex): capture BETWEEN the two
+        LED_CLK_SEL RMW legs — after the 0x6019508 clear-bits5-7 leg, before
+        the 0x601950c |=0x60 leg. The restore must answer the second leg from
+        the captured store (0 -> 0x60) with counters resuming exactly; the two
+        RMW legs are two separate transactions, not one atomic helper."""
+        world = self.build_world()
+        self.assertEqual(world.p2m_clk_con0.rmw('and', 0xffffff1f), 0)
+        snapshot = self.captured_m4(world)
+        twin = self.build_world()
+        self.assertEqual(twin.p2m_clk_con0.rmw('and', 0xffffff1f), 0)
+        restored = self.restored_m4(WorldSnapshot.from_bytes(snapshot.encode()))
+        restored_second = restored.p2m_clk_con0.rmw('or', 0x60)
+        twin_second = twin.p2m_clk_con0.rmw('or', 0x60)
+        self.assertEqual(restored_second, twin_second)
+        self.assertEqual(restored_second, 0x60)
+        for field in ('stores', 'word_writes', 'reads_after_write',
+                      'synthesized_initial_reads'):
+            self.assertEqual(getattr(restored.p2m_clk_con0, field),
+                             getattr(twin.p2m_clk_con0, field))
+        self.assertEqual(restored.p2m_clk_con0.reads_after_write, 1)
+        self.assertEqual(restored.p2m_clk_con0.synthesized_initial_reads, 1)
 
 
 class Cfg523InstallBit(unittest.TestCase):
