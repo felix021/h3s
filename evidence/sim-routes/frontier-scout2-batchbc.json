@@ -1,0 +1,81 @@
+{
+  "route": "SCOUT2 / sim-scout2",
+  "date": "2026-11-18",
+  "kind": "static-reconnaissance (no simulation run)",
+  "baseline": {"commit": "363fded", "frontier": {"steps": 41848382, "pc": "0x6019508", "stop": "unmapped_memory read 0xf2a610 (inflight sim-p2mclk)"}},
+  "method": {
+    "tools": "reused prior-scout ~/tmp/frontier-scout toolkit (parse_asm call edges, streamdis codec redisasm, globalscan literal scan); NEW p11scan.py = per-function li/add/mov constant propagation + [rN+D] operand match for base-derived accesses (literal-only scan misses poll [base+4] forms)",
+    "sdk_headers": ["br28.h sha 111e29ea", "io_omap.h", "io_imap.h", "p11_sfr.h", "p11_app.h"],
+    "sdk_commit": "67328f4741c69993c88e504c67377b196c724f97",
+    "ramcode_mapping": "runtime = flash - 0x060c3e18 + 0x12a640"
+  },
+  "errata_vs_prior_scout": [
+    "prior batch B listed ICH words as 0xfd6020/24/28/2c claiming firmware-vs-SDK one-word offset; actual firmware selects 0xfd6024 (ch 0-7) / 0xfd6028 (8-15) / 0xfd602c (16-23) / 0xfd6030 (24-31) in BOTH 0x6019694..b6 and 0x6001408..2a -- matches SDK names exactly; 0xfd6020 is OCH_CON2 only; prior claim retracted",
+    "prior batch B said '6 words'; actual domain is 8 words: CON0 0xfd6014 (bit16 branch consumers, SFC suspend, save/restore) and ICH_CON3 0xfd6030 were missing",
+    "prior batch C listed 8 members; full struct is 12: M2P_INT_IE 0xf2a614 and P11_SYS_CON0 0xf2a624 (both zero-access, now proven) were missing, and P11_SYS_CON1 0xf2a628 two RMW sites were missing",
+    "confirmed unchanged: OCH 3-word range + compare-branch consumption, resolver RMW preserve-bits consumption, 0x6019a1a hardcoded r2=33 -> case32 (re-verified at 0x6019a28)",
+    "new finding: CON0 0xfd6014 is already served in the current frontier world (scenario seed 0 + port_initialization_projection); prior framing of batch B as '8 unmapped words' reduces to SEVEN unmapped words (OCH/ICH) + one already-live word"
+  ],
+  "batch_B": {
+    "domain": "JL_IOMC base 0xfd6014, 8 words 0xfd6014/18/1c/20/24/28/2c/30",
+    "access_sites": {
+      "0xfd6014": [
+        {"pc": "0x6010b84", "fn": "0x6010b58 SFC clock reconfig (boot 162,615 crossed)", "form": "RMW &=0xFFF7FFFF", "consumption": "write-back only", "note": "REALLY EXECUTED in crossed prefix (same guard block as [0xfd1c04]=3 which ran); never stopped because the frontier scenario chain seeds IOMAP_CON0=0 via probe_platform_startup platform_case default (iomap=0, port_initialization_projection=True; probe_dualcore.dual_case does not override) -> additional_configuration generic container serves it. 0xfd6014 is a LIVE container in the current world, NOT unmapped"},
+        {"pc": "0x60c508a/9c/bc", "fn": "0x60c5068 = runtime 0x12B890 SFC suspend helper", "form": "explicit read x2", "consumption": "BRANCH on bit16 + selects write target in 0xfd5300 domain"},
+        {"pc": "0x60c51ce/d0", "fn": "0x60c51a2 = 0x12B9CA", "form": "explicit read", "consumption": "BRANCH on bit16 -> RMW 0xfd5340 vs 0xfd5540 domain"},
+        {"pc": "0x60c54fc", "fn": "0x60c54ac = 0x12BCD4", "form": "RMW |=0x2000", "consumption": "write-back only"},
+        {"pc": "0x60c656a/a0", "fn": "0x60c6562 = 0x12CD8A", "form": "explicit read", "consumption": "BRANCH on bit16 -> 0xfd5308-domain RMW sequence shape"},
+        {"pc": "0x60c6aea", "fn": "0x60c6990 = 0x12D1B8 low-power SAVE", "form": "read -> RAM 0x12A5A4 (8-word snapshot)", "consumption": "cross-address propagation to RAM"},
+        {"pc": "0x60c6dbc/e14", "fn": "0x60c6c92 = 0x12D4BA low-power RESTORE", "form": "whole-word writes (arg / RAM snapshot)", "consumption": "producer"}
+      ],
+      "OCH 0xfd6018/1c/20": [
+        {"pc": "0x601966e", "fn": "0x6019634 OCH slot search (sole caller 0x60199d0 = 0x60196e8 case)", "form": "read >>5*slot &0x1F", "consumption": "COMPARE BRANCH vs arg (match -> call 0x6019618 + clear RAM bitmap 0x126424)"},
+        {"pc": "0x60013ae..c2", "fn": "0x6001356 OCH resolver (sole caller 0x600180a = 0x6001456 pfun dispatcher case)", "form": "RMW read-modify-write", "consumption": "preserve-bits only (slot-choice branch is on RAM bitmap, not reg value)"},
+        {"pc": "save 0x60c6990 / restore 0x60c6c92", "form": "read->RAM / RAM->write", "consumption": "cross-address / producer"}
+      ],
+      "ICH 0xfd6024/28/2c/30": [
+        {"pc": "0x60196c2", "fn": "0x6019692 ICH slot search (12 call sites all in 0x60196e8 cases: 0x6019972..9aa odd ch 1..11, 0x60199d8..9f0)", "form": "read >>4*ch &0xF", "consumption": "BRANCH (nibble>13 skip) + CROSS-ADDRESS (nibble selects JL_IMAP clear target 0xfd5c00+n*4 via call 0x601968c) + RAM bitmap bit index -- strongest consumer in batch B"},
+        {"pc": "0x6001434..4c", "fn": "0x60013ce ICH resolver (sole caller 0x6001820)", "form": "RMW", "consumption": "preserve-bits only; also writes JL_IMAP word via 0x6001332 (inside 63-word whitelist)"},
+        {"pc": "save/restore", "form": "read->RAM / RAM->write", "consumption": "cross-address / producer"}
+      ]
+    },
+    "reach_conditions": [
+      "0x60196e8 unload switch: LED caller 0x6019a1a hardcodes r2=33 -> always case32 -> 0x6084eac (USB_IO, modeled); other 4 callers 0x60342e2/312/37a/396 in fn 0x6034274 (RAM-table-driven batch remap domain), r2 = table value [r8+1580/1592/1604/1616+r4<<2] -- runtime-observable",
+      "0x6001456 pfun dispatcher: crossed prefix passed uart_init without stopping -> resolver reads never executed (route V table-lookup arm)",
+      "RAM-code low-power/SFC domain (0x12B890/0x12D1B8/0x12D4BA/0x12CD8A/0x12D916/0x12BCD4): all in suspend-resume paths, not in healthy boot prefix"
+    ],
+    "plan": {
+      "verdict": "CON0 0xfd6014: ZERO ACTION (already a live container with seed 0 in the current world; bit16 branch consumers will read 0 = 'no second function' arm; the one |=0x2000 RMW leaves bit16=0, self-consistent). OCH/ICH seven words 0xfd6018..0xfd6030: (b) named fixture, value 0x0, one switch (e.g. jl_iomc_map_fixture), read-back = last written value (resolver preserve-bits + save/restore need it), explicit reads served with named value (branch consumers need a value); CON3-style container NOT applicable to any of the seven",
+      "sensitivity": {
+        "OCH=0": "16 slots all read 0 -> never matches (FO_* encodings >= 2, 0 not a legal map value) -> no side effects, ~1e2 model steps; nonzero slot == arg would trigger write side 0x6019618 (calls 0x6019574 etc.) -- behavior forks",
+        "ICH=0": "nibble 0 -> NOT skipped -> clears JL_IMAP word 0xfd5c00 + bitmap bit0 (inside route-V whitelist, idempotent) -- NOT zero-side-effect; value-sensitive point = IMAP target selection",
+        "CON0 already 0": "bit16=0 arm (0xfd5308+8 writes); true bit16=1 would take +504/+520 arms -- value-sensitive point = 0xfd5300-domain write target"
+      },
+      "batching": "independent batch & switch, NOT merged with batch A (different shape: fixture vs container; different reach surface); one frontier re-pin after batch A doubles as batch-B zero-reach negative test"
+    }
+  },
+  "batch_C": {
+    "domain": "P11_SYSTEM_TypeDef base 0xf2a600, 12 words (p11_sfr.h)",
+    "words": {
+      "0xf2a600 P2M_INT_IE": {"sites": ["0x6069204 read (pmu_task: IE&PND -> bit3 branch)", "0x60c6858 read->RAM + 0x60c6864 write=2 (0x12D072 soft-off enter)", "0x60c7514 read->RAM, 0x60c7520/0x60c7570/0x60c78e0 write (0x12D4BA restore)", "0x60c672e write (0x12CEB8 K1/K2 cleanup)"], "disposition": "register; project alongside PND when pmu_task reached"},
+      "0xf2a604 P2M_INT_SET": {"sites": [], "disposition": "zero-access proven (literal + base-derived) -- no modeling needed"},
+      "0xf2a608 P2M_INT_CLR": {"sites": ["0x606920a RMW |= (pmu_task)", "0x60c6488 write 0x1000 (feed-dog ack clear, MODELED p2m_mailbox)", "0x6067906 write=PND (power_init, wake-gated: 0x6067900 if(r0==0) skip, r0 = 0x60674aa wake check = 0 on first boot)", "0x60c756e/0x60c78da=0x20 (restore)"], "disposition": "feed-dog face modeled; rest by kick/clear idiom"},
+      "0xf2a60c P2M_INT_PND __RO": {"sites": ["0x6069202 read (pmu_task event loop core: r4=IE&PND; if((r4&8)==0) goto)", "0x60c647c poll bit12 (feed-dog, MODELED)", "0x6067902 read (power_init wake-gated)", "0x60c7558/62 poll bit0/bit4, 0x60c78d4 poll bit5 (restore-domain spin)"], "disposition": "READ-INTO-BRANCH; pmu_task arrival needs an event-bitmap projection (NOT a container) -- independent G2 decision point, consult codex then"},
+      "0xf2a610 P2M_CLK_CON0": {"sites": ["0x6019508/0c RMW x2 (inflight sim-p2mclk)"], "disposition": "inflight"},
+      "0xf2a614 M2P_INT_IE": {"sites": [], "disposition": "zero-access proven -- no modeling needed"},
+      "0xf2a618 M2P_INT_SET": {"sites": ["0x602f464 =0x80 (IRQ68 domain)", "0x6067a2a =0x8 (power_init wake-gated at 0x6067a28)", "0x6069062 =0x800 (pmu kick)", "0x60c6476 =0x400 (feed-dog kick, MODELED)", "0x60c6732 (cleanup)", "0x60c6866 =2 (soft-off)", "0x60c7522 (restore)"], "disposition": "kick idiom precedents complete"},
+      "0xf2a61c M2P_INT_CLR": {"sites": [], "disposition": "zero-access proven"},
+      "0xf2a620 M2P_INT_PND __RO": {"sites": [], "disposition": "zero-access proven"},
+      "0xf2a624 P11_SYS_CON0": {"sites": [], "disposition": "zero-access proven (prior scout omitted)"},
+      "0xf2a628 P11_SYS_CON1": {"sites": ["0x6068c88 RMW &=0xFFFFFFEF (pmu_task prologue, base r2=0xf2a608+32 derived)", "0x60c73e4 RMW |=0x80 (restore)"], "disposition": "model ALREADY HAS P11_SYSCON1_MASK_SETS (reset-projection extra_mask_sets); verify masks cover ~0x10 / 0x80 on arrival"},
+      "0xf2a62c MEM_PWR_CON": {"sites": ["0x6067730/52/74/96 RMW |= (power_init, executed)", "0x6067844 dead read (overwritten next insn)", "0x6067e88..be RMW &=~r0 x6 (power-off)"], "disposition": "MODELED mem_pwr_con (RMW bit records + strict readback + opaque dead-read gate)"}
+    },
+    "batching": "register-only, no action now; no dependency on batch A; the single read-into-branch core (pmu_task PND&IE) is the only future decision point"
+  },
+  "certified_surfaces": [
+    "batch B reach surfaces have zero intersection with the LED->S19 immediate path; JL_IMAP writes from ICH consumers stay inside the 63-word whitelist (route V)",
+    "feed-dog family (0x60c6456 = runtime 0x12cc7e) words 0xf2a608/0x60c/0x618 covered by p2m_mailbox_ack + wdt_mailbox_feed",
+    "linear-asm testset artifact at 0x6019774 (tbh table data) remains retracted (reproduced by sfrscan rerun, absent in stream redisasm)"
+  ],
+  "honesty": "all static-derived-not-measured; r2 table values in 0x6034274 domain and indirect callers of 0x6001456 not statically enumerable (1189 indirect calls); fixture-0 sensitivity predictions unverified; pmu event-bitmap projection intentionally not pre-designed (no SDK bit-definition evidence, codex consult required when reached)"
+}
