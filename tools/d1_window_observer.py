@@ -74,6 +74,16 @@ HANDLER_RETURN_PC=0x6012450        # 表 1 call r1 返回点(与「记录不匹�
                                    # 同一 PC,须以 0x601244e call 在飞判别真返回,不裸计数)
 TCB_CAPACITY_OFFSET=12             # h[TCB+12]=环容量(dequeue 0x6064cec 读;队列头=任务+8)
 TCB_COUNT_OFFSET=14                # h[TCB+14]=环计数(dequeue 0x6064cf0 读)
+# ── S18 (20,2)/(18,0) 去向锚(④,DEPMAP §6 收口;BZ §1.3/§1.5 + 本路反汇编复算) ──
+GATE1_READ_PC=0x60237e2            # (18,0) 门控1 读锚 b[0x125B54](0x60237d8 内)
+GATE1_ADDR=0x125B54                # 门控1 地址(非 0→return 短闭合;=0→查门控2)
+GATE2_READ_PC=0x601a59c            # (18,0) 门控2 读锚 b[0x1265C0+2972](0x601a590 内)
+GATE2_ADDR=0x12715C                # 门控2 地址(=0x1265C0+0xB9C;本路复算,BZ 记 0x127184 系笔误)
+SPECIAL_SUBCODE20_PC=0x6010932     # (20,2) 特路子码20 分派(r0=r6.b0=2;后 call 0x60108c6)
+SPECIAL_FIND_ID_CALL=0x6010934     # call 0x60108c6:查 0x126F3C 链表 id=2
+SPECIAL_NODE_CALLBACK_PC=0x601096a # 命中节点的调节点回调(call r1;未命中→[r5+12] 读空地址)
+ID2_LIST_HEAD=0x126F3C             # 特路查的第一链表头(首节点 id=1,BZ 采样)
+ID2_LIST2_HEAD=0x126F44            # 特路查的第二链表头(fallback/子码21 用)
 WINDOW_BASE_STEPS=200_000          # N 公式下限(蓝图 §1.3)
 WINDOW_MARGIN_STEPS=160_000        # N 公式余量(蓝图 §1.3)
 H8_MIN_CYCLES=3                    # H8:N//P_park>=3(任务书 §1.2 第 7a 条)
@@ -322,8 +332,10 @@ class D1WindowObserver:
         # jiffies 写序观测(D1-3;0x125004,写后值影子链)
         self._jiffies_observations=[];self._jiffies_last=None
         self._loop_head_after_drain=0
-        # W_park 锚定(§2.2:pend 写面首达后的首次 event_clock_engaged;boot 停泊
-        # 全部发生在 S19 pend 写面之前,不触发)
+        # W_park 锚定(§2.2,⑤ 收口:S19 循环头 0x60123e6 首达后的首次空队列
+        # pend 写面→再首次 event_clock_engaged;boot 期任务各自 pend 早于 S19,
+        # 不加 S19 前置会落进 boot 中段)
+        self._s19_loop_head_seen=False
         self._pend_write_seen=False
         self._w_park=None;self._park_instruction_step=None
         self._park_cores={};self._park_queue_count=None
@@ -341,6 +353,9 @@ class D1WindowObserver:
         self._chain=_ChainTracker()
         self._task_switch_observations=[]  # core0 当前 TCB 变化序列(D1-3 观察项,路 CH)
         self._last_tcb=None                 # 上次调度点采样的 core0 当前 TCB
+        self._s18_dest_obs={'gate1':None,'gate2':None,   # (18,0) 两级门控实读值(④)
+                            'id2_node':None,'id2_absent_observed':False,
+                            'id2_callback_seen':False}   # (20,2) id=2 节点/回调(④)
         self._timeslice_seen_step=None;self._timeslice_returned=False
         self._pending_running={}  # core->irq(deliver 唤醒后待记 running 转换)
         self._timeline={0:[],1:[]}
@@ -532,8 +547,13 @@ class D1WindowObserver:
             self._chain.note_pc(executed_pc,step,cpu.R)
             if executed_pc in SCHEDULER_SAMPLE_PCS and cpu.core_id==0:
                 self._sample_task_switch(cpu,step,executed_pc)
-            if executed_pc==S19_LOOP_HEAD and in_window:
-                self._loop_head_after_drain+=1
+            self._sample_s18_destination(cpu,executed_pc)
+            if executed_pc==S19_LOOP_HEAD:
+                # ⑤ 窗口绑定:S19 消息循环头 0x60123e6 首达=app_core 链已建立,
+                # 此后的空队列 pend 写面才是 S19 稳态 park 候选(boot 期 pend 不计)。
+                self._s19_loop_head_seen=True
+                if in_window:
+                    self._loop_head_after_drain+=1
             if executed_pc==TIMESLICE_CALL and in_window:
                 self._timeslice_seen_step=step
             elif self._timeslice_seen_step is not None and not self._timeslice_returned:
@@ -541,27 +561,12 @@ class D1WindowObserver:
             if executed_pc==S18_HANDLER_PC and in_window:
                 self._dispatch_handler_steps.append(step)
             if executed_pc==PEND_WRITE_FACE:
-                # W_park 锚(§2.2 修正二稿,D1RUN r1-r3 实测定稿):「末次空队列
-                # pend 写面之后的首次 engage」。PR2SPEC §2.2 原锚(首次 pend 后
-                # engage)被 r1 证伪——boot 期任务在各自消息队列 pend(Q1 实测
-                # 17.7M 即出现),首锚落进 boot 中段;S19 循环头前置(r2/r3)也被
-                # 证伪——当前前沿世界 S19 消息循环尚未建立(0x60123e6 零执行,
-                # watchpoint 机器可证),窗口不可开。末次 pend 语义:窗口内出现
-                # 新 pend=先前锚定的停泊不是稳态终形,重锚让位;在 S19 已建立
-                # 的未来前沿(S19 空队列 pend=末次 pend)该锚自愈为 PR2SPEC 原义。
-                # 口径如实:当前前沿下窗口锚定的是 JLEQ 判定口径的稳态 park
-                # (两核 idle+事件循环),与 S19 终态 park 的差异在验收记录声明。
-                self._pend_write_seen=True
-                if self._w_park is not None and not self._stopped:
-                    self._w_park=None
-                    self._expiry_steps={'timer0':[],'core_tick':[]}
-                    self._pending_edges={'timer0':None,'core_tick':None}
-                    self._timeline={0:[],1:[]}
-                    self._loop_head_after_drain=0
-                    self._timeslice_seen_step=None;self._timeslice_returned=False
-                    self._dispatch_handler_steps=[]
-                    self._queue_ops=[]
-                    self._n_effective=None;self._n_extended=False
+                # W_park 锚(§2.2,⑤ 收口):「S19 循环头首达后的首次空队列 pend 写面
+                # →其后首次 engage」。不再随新 pend 重锚——S19 已建立后的空队列
+                # pend 即末次 pend(稳态终形),后续只有 Timer0 唤醒/repark、无新
+                # pend 写面。boot 期任务各自 pend 早于 S19 循环头,不置位候选。
+                if self._s19_loop_head_seen:
+                    self._pend_write_seen=True
             core=cpu.core_id
             if core in self._pending_running:
                 # pop 不设窗口守卫(boot 期唤醒也要消化簿记);timeline 的 running
@@ -581,6 +586,49 @@ class D1WindowObserver:
     def window_stop_request(self):
         """主循环侧窗口停请求(挂接路:非 None → stop=该 dict 并 break,§5)。"""
         return self._window_stop
+
+    # ── S18 (20,2)/(18,0) 去向锚(④,DEPMAP §6 收口;零新增 SFR,纯观察) ─────────
+    def _sample_s18_destination(self,cpu,pc):
+        """S18 两事件实际去向的运行值采样:门控1/门控2 读锚实读字节、(20,2)
+        特路 id=2 链表节点存在性、命中节点回调是否执行。None=未观测(未认定),
+        不猜;只在固件真实执行到锚点时采。"""
+        if pc==GATE1_READ_PC:
+            self._s18_dest_obs['gate1']=_read_ram(cpu.mem,GATE1_ADDR,1)
+        elif pc==GATE2_READ_PC:
+            self._s18_dest_obs['gate2']=_read_ram(cpu.mem,GATE2_ADDR,1)
+        elif pc==SPECIAL_SUBCODE20_PC:
+            node,complete=self._scan_list_for_id(cpu.mem,2)
+            self._s18_dest_obs['id2_node']=node
+            self._s18_dest_obs['id2_absent_observed']=(complete and node is None)
+        elif pc==SPECIAL_NODE_CALLBACK_PC:
+            self._s18_dest_obs['id2_callback_seen']=True
+
+    def _scan_list_for_id(self,mem,target):
+        """走 0x126F3C(再 fallback 0x126F44)链表查 id=target 节点,与固件
+        0x60108c6 同构(BZ §1.3+本路反汇编复算):节点 {b[node-4]=id,[node]=next},
+        命中返 (node-4) 地址。返回 (addr, 是否完整走过至少一张链表):
+        addr=int=命中;addr=None 且 complete=True=链表存在但无该 id(已认定不存在);
+        complete=False=链表 RAM 未初始化(未观测)。"""
+        for head in (ID2_LIST_HEAD,ID2_LIST2_HEAD):
+            node=_read_ram(mem,head,4)
+            if node is None:
+                continue
+            walked_clean=True
+            while node!=head:
+                node_id=_read_ram(mem,node-4,1)
+                if node_id==target:
+                    return node-4,True
+                if node_id is None:
+                    walked_clean=False
+                    break
+                nxt=_read_ram(mem,node,4)
+                if nxt is None:
+                    walked_clean=False
+                    break
+                node=nxt
+            if walked_clean:
+                return None,True
+        return None,False
 
     def _request_window_stop(self,machine):
         self._stopped=True
@@ -766,10 +814,35 @@ class D1WindowObserver:
             tree['window_blocked_events']=blocked
         else:
             tree['window_blocked_events']=[]  # 窗口未开:前沿未到,pending 语义
+        tree['s18_destinations']=self._s18_destination_face()  # ④ 去向观测面(全程口径)
         tree['projection']=PROJECTION_NOTE
         return tree
 
     # ── 子树组装 ──────────────────────────────────────────────────────────────
+    def _s18_destination_face(self):
+        """S18 (20,2)/(18,0) 两事件去向观测面(④,DEPMAP §6 收口;全程口径)。
+
+        静态去向(链形)已由反汇编钉死,见 docs/d1-s18-consumption.md §1(本路复算
+        修正:BZ 的门控2 0x127184→0x12715C、(20,2) 未命中失败点 0x6010946→
+        0x6010980)。运行值(门控字节/链表节点)由锚点实读,值 None=未观测(未认定)、
+        int=实读(已认定),不猜不硬编码。"""
+        gate1=self._s18_dest_obs['gate1']
+        gate2=self._s18_dest_obs['gate2']
+        id2=self._s18_dest_obs['id2_node']
+        id2_exists=(True if isinstance(id2,int)
+                    else False if self._s18_dest_obs['id2_absent_observed'] else None)
+        return {'gate1':{'addr':hex(GATE1_ADDR),'value':gate1,
+                         'branch':('return' if gate1 else
+                                   'proceed_to_gate2' if gate1==0 else None)},
+                'gate2':{'addr':hex(GATE2_ADDR),'value':gate2,
+                         'branch':('short_close' if gate2==0 else
+                                   'deep_0x601a5xx' if gate2 is not None and gate2!=0
+                                   else None)},
+                'id2_node':{'list_head':hex(ID2_LIST_HEAD),
+                            'addr':hex(id2) if isinstance(id2,int) else None,
+                            'exists':id2_exists,
+                            'callback_seen':self._s18_dest_obs['id2_callback_seen']}}
+
     def _timer0_cycles(self,window_expiries):
         cycles=[]
         previous=None
@@ -836,14 +909,22 @@ class D1WindowObserver:
                                  if sample.get('get_event_returned_13') else None},
                     'event_id_read':sample.get('id_read_value'),  # id_read 锚 0x60123f4(实读)
                     'special_path':{'taken':sample.get('special_path') is True,
-                                    'subcode':_subcode_of(sample)},
+                                    'subcode':_subcode_of(sample),
+                                    # (20,2) 去向锚(④):id=2 节点/回调(子码20 特路)
+                                    'id2_node':hex(self._s18_dest_obs['id2_node'])
+                                    if isinstance(self._s18_dest_obs['id2_node'],int) else None,
+                                    'id2_callback_seen':
+                                    self._s18_dest_obs['id2_callback_seen']},
                     'walk':{'table2_hits':sum(self._watch.get(hex(pc),0)
                                               for pc in TABLE2_WALK_SITES),
                             'filter_ptr':None,            # [待 PR-2 实测:[0x126f4c] 读锚]
                             'table1_hit_record':None},    # 表 1 命中锚 [待 PR-2 实测]
                     'handler':{'entry_pc':S18_HANDLER_PC
                                if sample.get('handler_executed') else None,
-                               'executed_steps':None,'gates':None}}  # R4 门控运行值 [待 PR-2 实测]
+                               'executed_steps':None,
+                               # (18,0) 去向锚(④):R4 门控运行值(实读,None=未观测)
+                               'gates':{'gate1':self._s18_dest_obs['gate1'],
+                                        'gate2':self._s18_dest_obs['gate2']}}}
         reason=('queue empty with the callback table populated: link up, no firmware-natural '
                 'event source in window' if self._w_park is not None
                 else 'window not reached (frontier below S19 park)')
