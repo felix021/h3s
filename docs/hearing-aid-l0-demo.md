@@ -87,6 +87,9 @@ python3 tools/build_quiet_candidate.py --hearing-aid-demo --attenuation-db 0 \
 产物（文件名 `H3S_0.1.1.8_tones_minus0dB_HEARING_AID_DEMO_UNTESTED.ufw`）：
 
 - 输出 sha256 `fbad438b74ccf7a3318279e1ba2cd2f77c6192d023d5f5900152c5f163545873`。
+- 独立校验：`python3 tools/verify_hearing_aid_l0.py --candidate <候选输出目录>/H3S_0.1.1.8_tones_minus0dB_HEARING_AID_DEMO_UNTESTED.ufw`
+  ——不 import builder，独立重算 UFW 外层 / 双备份 boot-info / JLFS CRC、逐字节 diff（恰好 23 字节）
+  与 §5 参数往返（1000Hz/+39dB/out=100），并读回官方镜像改前值。
 - `build-report.json` 内含 `hearing_aid_demo` 子键：三节点 change 记录（改前/改后值）、
   往返解析结果（freq=1000/gain=39.0/out_threshold=100.0）、字节级 diff 位置清单与计数。
 - 断言（`apply_hearing_aid_demo` 的定位/初值校验 + `verify_hearing_aid_roundtrip` 往返 +
