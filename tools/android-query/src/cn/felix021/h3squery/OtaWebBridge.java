@@ -15,12 +15,14 @@ import java.security.MessageDigest;
 import org.json.JSONObject;
 
 /**
- * WebView 升级页的原生桥（注入名 "h3sota"）：把原 MainActivity 按钮编排换成
+ * WebView 固件 tab 的原生桥（注入名 "h3sota"）：把原 MainActivity 按钮编排换成
  * HTML 交互面。gate 全部保留在 UpgradeGate/UpgradeService，本桥只做编排：
  *   pickUfw()        SAF 选文件 + 流式 SHA-256（16 MiB 上限）→ ota_file 事件
- *                    （kind: official_0118 / anc_restore_UNTESTED 之外还会识别
- *                    anc 恢复镜像=UpgradeGate.SHA，即历史上已实测的 b79）。
- *   installCandidate()  仅当上次检查结果=已验证恢复镜像时，把该 Uri 复制到
+ *                    （sha 命中 UpgradeGate.REGISTRY 钉死候选才 is_candidate=true；
+ *                    未命中明确拒绝并在 note 列出允许的 sha 清单）。
+ *   candidates()     返回 UpgradeGate.REGISTRY（页面渲染内置候选清单——从
+ *                    审批门本体读，不存在页面与门各维护一份清单的分叉）。
+ *   installCandidate()  仅当上次检查结果命中固定候选注册表时，把该 Uri 复制到
  *                    files/candidate.ufw 并回读校验 → ota_candidate 事件。
  *   prepare()        startForegroundService(UpgradeService.PREPARE)：服务核对
  *                    candidate.ufw + 连接设备 fresh-read 准入，不写入。
@@ -29,7 +31,8 @@ import org.json.JSONObject;
  *   cancel()         UpgradeService.CANCEL（已 armed/复查中不可取消，服务拒绝）。
  *   readState()      读 upgrade-state.json（含 state/message/sent_bytes/device），
  *                    页面 2s 轮询渲染进度。
- * 不新增任何任意写入通道：候选固定为 UpgradeGate.SHA 单一镜像，确认仍走
+ * 不新增任何任意写入通道：候选固定为 UpgradeGate.REGISTRY 钉死清单（0.7.3 固件
+ * tab 起 b79 ANC 恢复镜像 + HAL5 full MPO95 两条），确认仍走
  * nonce+PREPARED+fresh-read 三重门。BLE 真机链路未验证（红线：授权前不刷机）。
  */
 public class OtaWebBridge {
@@ -44,6 +47,7 @@ public class OtaWebBridge {
     final Handler main = new Handler(Looper.getMainLooper());
     Uri picked;
     String pickedKind, pickedSha;
+    int pickedBytes;
 
     public OtaWebBridge(Activity activity, ResultSink sink) {
         this.activity = activity;
@@ -80,12 +84,13 @@ public class OtaWebBridge {
 
     /** SAF 回调入口（壳 onActivityResult 调用，主线程）。 */
     public void onFilePicked(final Uri uri) {
-        picked = null; pickedKind = null; pickedSha = null;
+        picked = null; pickedKind = null; pickedSha = null; pickedBytes = 0;
         new Thread(() -> {
             try {
                 JSONObject result = inspect(uri);
                 pickedSha = result.optString("sha256");
                 pickedKind = result.optString("kind");
+                pickedBytes = result.optInt("bytes", 0);
                 picked = uri;
                 emit("ota_file", result);
             } catch (Exception e) { emitError("inspect", e); }
@@ -106,25 +111,47 @@ public class OtaWebBridge {
         }
         String hash = hex(digest.digest());
         boolean official = hash.equals(OFFICIAL_SHA);
-        boolean restore = hash.equals(UpgradeGate.SHA);
-        String kind = official ? "official_0.1.1.8"
-                : restore ? "anc_restore_tested" : "unknown";
+        // 固定候选门：sha+长度同时命中 UpgradeGate.REGISTRY 才算候选（int 溢出前 total 不会超 MAX_BYTES）。
+        UpgradeGate.Candidate hit = UpgradeGate.candidateFor(hash, (int) total);
+        String kind = hit != null ? hit.kind
+                : official ? "official_0.1.1.8" : "unknown";
         return new JSONObject()
                 .put("bytes", total).put("sha256", hash).put("kind", kind)
-                .put("is_candidate", restore)
-                .put("note", restore
-                        ? "已实测的 ANC 两态恢复镜像（可设为本次候选）"
-                        : official ? "官方 0.1.1.8 原版（本工具不用它刷机）"
-                        : "未识别文件：型号与版本无法确定，不能作为候选");
+                .put("is_candidate", hit != null)
+                .put("note", hit != null
+                        ? hit.description + "（可设为本次候选）"
+                        : official ? "官方 0.1.1.8 原版（本工具不用它刷机）；允许的候选 SHA-256：" + UpgradeGate.allowedShaList()
+                        : "未识别文件：不在固定候选清单内，拒绝设为候选；允许的候选 SHA-256：" + UpgradeGate.allowedShaList());
     }
 
-    /** 仅接受上次检查确认为恢复镜像的 Uri，复制到 files/candidate.ufw 并回读校验。 */
+    /** 内置候选清单（UpgradeGate.REGISTRY 原样投影，页面「升级通道」卡渲染用）。 */
+    @android.webkit.JavascriptInterface
+    public String candidates() {
+        try {
+            org.json.JSONArray list = new org.json.JSONArray();
+            for (UpgradeGate.Candidate c : UpgradeGate.REGISTRY)
+                list.put(new JSONObject().put("sha256", c.sha).put("bytes", c.bytes)
+                        .put("version", c.version).put("kind", c.kind)
+                        .put("description", c.description));
+            return new JSONObject().put("candidates", list).toString();
+        } catch (Exception e) {
+            try { return new JSONObject().put("error", String.valueOf(e)).toString(); }
+            catch (Exception ignore) { return "{\"error\":\"unavailable\"}"; }
+        }
+    }
+
+    /** 仅接受上次检查命中固定候选注册表的 Uri，复制到 files/candidate.ufw 并回读校验。 */
     @android.webkit.JavascriptInterface
     public void installCandidate() {
         new Thread(() -> {
             try {
-                if (picked == null || !"anc_restore_tested".equals(pickedKind) || pickedSha == null)
-                    throw new IllegalStateException("请先检查文件，且候选只能是已实测的 ANC 恢复镜像");
+                if (picked == null || pickedSha == null || pickedBytes <= 0)
+                    throw new IllegalStateException("请先检查文件，且候选必须命中固定候选清单（"
+                            + UpgradeGate.allowedShaList() + "）");
+                final UpgradeGate.Candidate plan = UpgradeGate.candidateFor(pickedSha, pickedBytes);
+                if (plan == null)
+                    throw new IllegalStateException("所选文件不在固定候选清单内；允许的候选 SHA-256："
+                            + UpgradeGate.allowedShaList());
                 File out = new File(activity.getFilesDir(), "candidate.ufw");
                 File tmp = new File(activity.getFilesDir(), "candidate.ufw.tmp");
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -135,21 +162,22 @@ public class OtaWebBridge {
                     byte[] buf = new byte[8192]; int n;
                     while ((n = in.read(buf)) > 0) {
                         total += n;
-                        if (total > UpgradeGate.FILE_BYTES) throw new IllegalStateException("文件超过候选长度上限");
+                        if (total > plan.bytes) throw new IllegalStateException("文件超过候选长度上限");
                         digest.update(buf, 0, n);
                         os.write(buf, 0, n);
                     }
                 }
                 String hash = hex(digest.digest());
-                if (total != UpgradeGate.FILE_BYTES || !UpgradeGate.SHA.equals(hash))
+                if (total != plan.bytes || !plan.sha.equals(hash))
                     throw new IllegalStateException("复制后校验不通过（长度或 SHA-256 不匹配）");
                 if (!tmp.renameTo(out)) throw new IllegalStateException("候选落盘重命名失败");
                 // 回读一遍，确认磁盘上的 candidate.ufw 与校验值一致
                 JSONObject verify = inspect(android.net.Uri.fromFile(out));
-                if (!UpgradeGate.SHA.equals(verify.optString("sha256")))
+                if (!plan.sha.equals(verify.optString("sha256")))
                     throw new IllegalStateException("落盘回读 SHA-256 不匹配");
                 emit("ota_candidate", new JSONObject()
-                        .put("bytes", total).put("sha256", hash)
+                        .put("bytes", total).put("sha256", hash).put("kind", plan.kind)
+                        .put("description", plan.description)
                         .put("path", out.getName()).put("ready_for_prepare", true));
             } catch (Exception e) { emitError("install_candidate", e); }
         }, "ota-install").start();

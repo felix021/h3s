@@ -302,6 +302,105 @@ public class H3SBridge {
             (byte) EqFrame.OPCODE_CUSTOM, 0x00, 0x04, (byte) sn, (byte) 0xfe, 0x01, (byte) cmdId, (byte) 0xef};
     }
 
+    /**
+     * 只读设备信息查询（opcode 03 全属性 mask，docs/app-protocol.md §2.6 / docs/protocol.md
+     * 「设备信息和身份」）：固件版本（属性 05，280=0x1.1.8 先例）、双备份能力（08）、
+     * VID/PID（0A）。回包载荷形状未留全档 [未钉]——页面收到 payloadHex 后调
+     * parseInfoPayload 解析；解析失败如实报 unknown，不猜。只读不需武装。
+     */
+    @JavascriptInterface
+    public String readInfo() {
+        if (!QueryPolicy.permitted(buildReadInfoFrame(0))) return err("内部错误：设备信息读帧未过 QueryPolicy");
+        int sn = transport == null ? 0 : allocSn();
+        return dispatch(buildReadInfoFrame(sn), sn);
+    }
+
+    /** 组设备信息查询帧：FE DC BA | C0 | 03 | 00 06 | SN | FF FF FF FF 00 | EF（QueryPolicy §info 形状）。 */
+    public static byte[] buildReadInfoFrame(int sn) {
+        return new byte[]{(byte) 0xfe, (byte) 0xdc, (byte) 0xba, (byte) EqFrame.FLAGS_CMD,
+            0x03, 0x00, 0x06, (byte) sn, (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff, 0x00, (byte) 0xef};
+    }
+
+    /**
+     * 解析 03 设备信息回包载荷（response/device_message 事件的 payloadHex 对应字节）。
+     * 属性表（docs/protocol.md 与 SDK 解读交叉核对）：05=版本码 u16 小端（280=0x0118；
+     * 文本按 0x0118→0.1.1.8 先例换算）、08=双备份能力（01 00 01）、0A=VID/PID
+     * （VID 7250=0x1C52、PID 16764=0x417C，原始字节序未留档——两种 u16 字节序都认，
+     * 命中已知身份才算识别）。
+     * 载荷外层形状 [未钉]（0x17 回包带 cmdid+len 前缀，03 可能同样带 03+len 前缀或
+     * 直接裸 LTV）：从首个「LTV 连续走完恰好耗尽剩余字节」的位置开始解析，两种
+     * 形状都兼容；走不通返回 ok:false，页面显示 unknown。
+     */
+    public static String parseInfoPayload(byte[] payload) {
+        if (payload == null || payload.length < 4) return infoParseError("载荷过短");
+        for (int start = 0; start + 2 <= payload.length; start++) {
+            org.json.JSONObject parsed = tryParseLtv(payload, start);
+            if (parsed != null) return parsed.toString();
+        }
+        return infoParseError("载荷不是可识别的 LTV 属性流");
+    }
+
+    /** 页面入口：payloadHex（response 事件的载荷 hex）→ parseInfoPayload。 */
+    @JavascriptInterface
+    public String parseInfo(String payloadHex) {
+        if (payloadHex == null || !payloadHex.matches("(?:[0-9a-fA-F]{2})+"))
+            return infoParseError("载荷不是连续 hex 字节串");
+        byte[] bytes = new byte[payloadHex.length() / 2];
+        for (int i = 0; i < bytes.length; i++)
+            bytes[i] = (byte) Integer.parseInt(payloadHex.substring(i * 2, i * 2 + 2), 16);
+        return parseInfoPayload(bytes);
+    }
+
+    private static String infoParseError(String message) {
+        try { return new JSONObject().put("ok", false).put("error", message).toString(); }
+        catch (JSONException impossible) { return "{\"ok\":false}"; }
+    }
+
+    /** 从 start 走 LTV（tag,len,value…）；走完恰好耗尽全部字节才算命中，否则 null 换下一起点。 */
+    private static org.json.JSONObject tryParseLtv(byte[] payload, int start) {
+        int version = -1, attr08 = -1;
+        long vidPid = -1;
+        int p = start;
+        while (p < payload.length) {
+            if (p + 2 > payload.length) return null;
+            int tag = payload[p] & 255, len = payload[p + 1] & 255;
+            if (len > 8 || p + 2 + len > payload.length) return null;  // 属性表已知值最长 4B，>8 直接排除
+            byte[] value = java.util.Arrays.copyOfRange(payload, p + 2, p + 2 + len);
+            if (tag == 0x05 && len >= 2)
+                version = (value[0] & 255) | ((value[1] & 255) << 8);   // 小端（0x0118 先例）
+            else if (tag == 0x08 && len >= 1) attr08 = value[0] & 255;
+            else if (tag == 0x0a && len >= 4) {
+                int be = ((value[0] & 255) << 8) | (value[1] & 255);
+                int be2 = ((value[2] & 255) << 8) | (value[3] & 255);
+                int le = ((value[1] & 255) << 8) | (value[0] & 255);
+                int le2 = ((value[3] & 255) << 8) | (value[2] & 255);
+                if (be == 7250 && be2 == 16764) vidPid = ((long) be << 16) | be2;
+                else if (le == 7250 && le2 == 16764) vidPid = ((long) le << 16) | le2;
+                else vidPid = 0;                                        // 未知身份：0=不识别（不猜）
+            }
+            p += 2 + len;
+        }
+        if (p != payload.length || version < 0) return null;
+        try {
+            return new JSONObject().put("ok", true).put("version", version)
+                .put("versionText", versionText(version))
+                .put("doubleBackup", attr08 == 1)
+                .put("vid", (int) (vidPid >> 16)).put("pid", (int) (vidPid & 0xffff))
+                .put("identityKnown", vidPid == (((long) 7250 << 16) | 16764));
+        } catch (JSONException impossible) { return null; }
+    }
+
+    /** 版本码→文本（0x0118→0.1.1.8、0x0119→0.1.1.9 先例；换算失败回码值本身）。 */
+    static String versionText(int version) {
+        if (version < 0 || version > 0xffff) return String.valueOf(version);
+        int[] nibbles = {(version >> 12) & 15, (version >> 8) & 15, (version >> 4) & 15, version & 15};
+        StringBuilder s = new StringBuilder();
+        for (int n : nibbles) {
+            s.append('.').append(n);
+        }
+        return s.substring(1);
+    }
+
     @JavascriptInterface
     public String setKeyRemap(int eventId, int action) {
         return setKeyRemapWire(eventId, action, false);
