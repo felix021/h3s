@@ -1,0 +1,58 @@
+{
+  "route": "TONMAP / sim-tonmap（基线 main 12d15c0，路 VFSSCOUT 侦察收口后的实施路）",
+  "recorded_at": "2026-11-18T07:4x:00+08:00",
+  "task": "TON/TON1 官方分区容器成对只读映射（codex 裁决 (a) 单开关 ton_official_partition_pair）：41,858,013 @ 0x6010ca6（TON1 容器头首字节读 0x61eafe0 镜像外停）放行 → 推进新前沿 → 验证臂。",
+  "coord_erratum_found_during_implementation": {
+    "what": "侦察文档 §2 布局表与 codex 裁决表的 TON 容器头 0x61E0FE0 系坐标误算",
+    "correct": "xlate(0x1E1000) = 0x1E1000 - 0x2020 = 0x1DEFE0 → CPU 0x61DEFE0（尾 0x1EA790 非 0x1EC790）",
+    "why_the_table_was_wrong": "少减 0x1000；codex 表照抄侦察表，其 TON 窗右端会越过 TON 分区右界并与 TON1 头 0x61EAFE0 重叠 0x17B0 字节",
+    "caught_by": "挂载范围守卫（两两不重叠）+ 单测 test_windows_do_not_overlap_ancif_or_erased_bankb",
+    "cross_verification": "BTIF 头 0x61DDFE0+0x1000=TON 头；TON 分区右端 xlate(0x1E1000+0xC000)=0x61EAFE0=TON1 头；TON1 分区右端 xlate(0x1ED000+0x11000)=0x61FBFE0=ANCIF 头（=既有 SDFILE_FLASHTOP_ANCIF_RANGE）；erased_bankb VM/record 窗均在 TON 头之下"
+  },
+  "implementation": {
+    "switch": "ton_official_partition_pair（conditional，value_switch，值=probe_irq_entry.TON_OFFICIAL_PARTITION_PAIR 内嵌官方字节二元组 0xB7B0+0x10340；默认 None=关，零行为差异零新报告键）",
+    "windows": {"TON": "[0x61defe0,0x61ea790)", "TON1": "[0x61eafe0,0x61fb320)"},
+    "window_semantics": "窗口=容器有效全长（codex 裁决：不按读取范围裁剪、不补齐声明容量 0xC000/0x11000、padded 尾与两窗间 0x850/尾部 0xCC0 空隙维持 unmapped）",
+    "mount_self_check": "长度 / SHA256==TON_OFFICIAL_SHA256（三方钉死）/ 容器头 32B JLFS 项（hcrc+addr=0x20+len+flags=3+name tone_zh·tone_en）/ 目录逐项 hcrc+flags=2+文件数据 dcrc / 范围两两不重叠且不与既有窗（应用区 SFC 明文、erased_bankb 四窗、ANCIF 两窗）重叠；校验失败即拒，零合成字节",
+    "sha256_three_way": {
+      "TON": "6a511c89acfa4433fbab7d46f22bbbb62c8524cdd93cd72c9b5101f104ae52b5",
+      "TON1": "f765091dadf26e5042cbfd94ad8570f71be4714e5fdfa98ed0bcf3f0b4c1fc66",
+      "parties": "本路 jl-misctools/extract_ufw_resources 提取 == codex gpt-6-astra 独立复算（final.md）== 仓内嵌常量；另有官方 flash SFC 明文 0xCDCA0 EXT_RESERVED 条目表锚（TON addr=0x1E1000 len=0xC000 / TON1 addr=0x1ED000 len=0x11000 last=1，单测互证窗口换算）"
+    },
+    "assumption": "codex 原文：本场景假设目标 TON/TON1 分区在固件 SFC 明文视图中携带指定官方 UFW 提取的资源内容，并按当前 sdfile 地址换算映射。映射字节全部来自官方工件；未假定分区剩余容量的内容，未验证该设备当前资源与官方内容一致。执行结论为 conditional / derived-not-measured，不构成真机播放验证。"
+  },
+  "verification_arms": {
+    "mechanism": "frontier_iteration.py 从批 A 谱系 cut-41866039（batcha 代码态 budget 干净界快照）跨代码 --ack-prior-fingerprint 558b53b2… + 跨开关 enable_slots×2（jl_pled_config_words/jl_iomc_map）续跑",
+    "off_reproduce": {
+      "stop": "41858013 @ 0x6010ca6 unmapped_memory read 0x61eafe0（旧前沿逐字节复现）",
+      "comparison": "与 batcha on-reference.json（从 0 全量）differing_keys=['peripherals']——内部差异恰=batchb2 已知新增键 jl_iomc_map_registers+assumptions 同名键（预期非意外，batchb2 先例口径）；其余逐键相等（completed_steps/stop/22 键 adapter/memory_snapshots SHA）",
+      "wall_seconds": 0.8
+    },
+    "on_main": {
+      "stop": "41909506 @ 0x60869ba uninitialized_memory read 0x18ca64 size 4 region=physical_heap first_missing=0x18ca64",
+      "advance": "+51493 steps, per-core core1 11496 unchanged（纯 CPU0 段）",
+      "stop_reading": "事件循环任务 0x6086980（0x6065f9e 任务安装点装入栈 0x41a390）call 0x6064c2a 取事件返回 13，读第二输出参数 [r10+8]=任务栈物理 0x18ca64 未初始化——固件读自建任务栈从未写过的槽，silicon=残留值，模型严格停=正确行为，归下一路",
+      "container_readback_proof": "硬件 CRC 引擎复算 TON1 容器头 30B = 0x7e4e == 官方头 hcrc 字段（官方字节的最强运行互证）；目录 index.idx(0xcf96)/power_on.wts(0xf5c0) 两项 hcrc 过",
+      "shape": "Timer0 交付 15758→15761（+3 无新中断上下文，末次打断 0x12b608）；software_irq 345→346（+1 任务安装往返）；watchdog feeds 163/162 冻结（elapsed 名义单位 107→120）；事件钟 82545158 冻结（CPU0 全程活动无全核 IDLE）；core-tick cnt 146104→352076（恰 +51493×4）；CRC results 207→222（+15 轮全 30B）、fed 71939→72389",
+      "wall_seconds": 2.9
+    }
+  },
+  "observations_scout_left_open": {
+    "five_slots_0x127290_2a0": "实测（新前沿快照恢复 post_stop）=0x2020/0x06000000/0x06000000/0x60cdca0/0x60cdd00，与侦察 §4 快照（41,850,980）逐值一致。任务文「预期 0x1ED000」不成立：0x1ED000 只存在于 walker 句柄 [r8+8]（栈对象，调用返回后消亡），不落五槽；槽 822-824 由 0x6011000 二次 init 重写同值（slotscan 静态钉死唯一写者，写者 PC 未逐指令 watch）",
+    "caller_two_candidates": "tone en power_open（mount ctor 0x6060802→分派 0x606075c）vs sdfile otp_cfg（0x6010da6）：trace bounded 窗口无法直接捕获两入口 PC 执行；但停点任务身份已静态钉死——0x6086980 的注册点 0x60759ee（mov r0,#0x6086980 / mov r2,#0x0609D3BB / call 0x6067282 task_create 族）r2 指向字符串 'jlstream'：停点任务=**jlstream 音频流任务**，tone 文件 open→流任务创建→事件循环的链与 tone 候选强一致（otp_cfg 候选不创建 jlstream 流）；入口级直接区分仍缺（两候选同窗不影响 fixture 语义，侦察 §4 先行钉死）",
+    "file_data_readout": "无证据：RAM 物理段扫描无 power_on.wts/index.idx 内容特征、无句柄 base 值（0x61eb340/0x61eafe0/0x1ed000）残留——停点在 open 完成后、数据读取前；按 codex 措辞打开/读出/解码/输出分别判定，不预承诺进入音频域"
+  },
+  "repins": {
+    "frontier_registry": "p11_heap_experimental → 41909506 @ 0x60869ba uninitialized_memory 0x18ca64",
+    "probe_check_counts": "CRC 222/fed 72389；sw 692/346；deliveries 346（尾+1 0x12b608）；timer0 15761/15778/cnt 35667/PRD 47999；dfr 11239；core-tick cnt 352076；wdt elapsed 120；中文注释段+叙事同步",
+    "adapter_baseline": "22 键 evidence/p11_heap_adapter_count_baseline.json --recapture 重取（本路 +51,493 步漂移 14 键）",
+    "analyze_check_self": "per-core {'0':41914483,'1':11496}+叙事重钉（b79 臂 parity 由主协调复核验证）",
+    "assert_preflight": "合成报告（batcha 全量 legacy 行+on-main 行）220 断言离线闭环：除 22 键基线（重取中）外全绿"
+  },
+  "next_stop_prediction": "0x18ca64 uninitialized 域=固件读自建任务栈未写槽（事件 13 输出参数 2）。下一路选项：①事件 13 语义钉死（0x6064c2a 生产者是否写参数 2——可能是固件仅填参数 1 的真实形状）→未初始化栈槽处理策略（unknown-word 先例/具名 fixture 需消费链证据）；②观察 RAM 无 wts 读出=数据读取在更晚事件（需先过①）。不自动补零、不发明参数值。",
+  "honesty": {
+    "derived_not_measured": "容器映射假设=官方资源内容非设备实测（codex 措辞全文进常量注释+报告键 ton_official_partition_pair_fixture）；真机对齐批 (b)（FD05 设备坐标窗 [0x1ed000,0x1fe000)）留待授权",
+    "resume_conditional_pass": "两臂均为快照续跑（0.8-2.9s）非从 0 全量；等价性依据=CKPT/CON0/BATCHA 三轮 resume≡from-0 先证+负例臂与 batcha 真·从 0 参照逐键相等；合并前 probe --rom 从 0 全量 EXIT=0 收口",
+    "parity": "official↔b79 parity 到新停点未在本路重跑（放行段纯 CPU0、VFS/任务域两镜像同构预期 delta 0，per-core 算术更新已入 check_self 断言），留主协调复核"
+  }
+}

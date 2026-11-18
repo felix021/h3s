@@ -259,6 +259,23 @@ FEATURES = (
             '0x6034bae CON2 分支),该域入口 0x6034b06/0x6034aba 执行前 canary'
             '到达即停;CON0/CON3 既有容器地址集互斥不并入;codex 20261118 单'
             '开关 13 字裁决)'),
+    # ---- 路 TONMAP/sim-tonmap:TON/TON1 分区容器官方内容成对只读映射
+    # (41,858,013 停点 0x6010ca6=第二次 sdfile 目录走查器 0x6010c3c 恢复
+    # 路径首字节读 TON1 容器头 0x61eafe0;布局/坐标/容器全案见 docs/
+    # frontier-scout-vfs.md;codex 裁 (a) 单开关成对开放,窗口=容器有效全长,
+    # 不裁剪不补齐,padded 尾与空隙维持 unmapped)。挂载自校验=长度/SHA256
+    # 三方钉死/容器头+目录+文件 CRC/范围不重叠,零合成字节;显式假设=目标
+    # 分区携带官方 UFW 提取内容(conditional/derived-not-measured,真机对齐
+    # 批 (b) 后续授权);zh 语言臂同批覆盖(TON/tone_zh)。依赖边挂
+    # jl_pled_config_words=场景推进顺序(BATCHA 放行后链才到达停点)非硬件
+    # 依赖。----
+    Feature('ton_official_partition_pair', 'conditional', ('jl_pled_config_words',), True,
+            'TON_OFFICIAL_PARTITION_PAIR',
+            'TON/TON1 分区容器官方内容成对只读映射(TON [0x61defe0,0x61ea790)'
+            '/TON1 [0x61eafe0,0x61fb320),窗口=容器有效全长 0xb7b0/0x10340;'
+            '官方 UFW 外层 type50 容器,SHA256 三方复算钉死,挂载自校验全套'
+            '(长度/SHA/头+目录+文件 CRC/范围),零合成字节;显式假设=分区携带'
+            '官方内容非设备实测,结论 conditional)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
@@ -562,10 +579,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 41858013,
-        'stop_pc': '0x6010ca6',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0x61eafe0', 'size': 1, 'reference_sdk_register': None},
+        'completed_steps': 41909506,
+        'stop_pc': '0x60869ba',
+        'stop': {'kind': 'uninitialized_memory', 'access': 'read',
+                 'address': '0x18ca64', 'size': 4, 'region': 'physical_heap',
+                 'first_missing': '0x18ca64'},
         'freshness_fields': ('kind', 'address'),
     },
 }
