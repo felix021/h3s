@@ -743,6 +743,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # PC、另一核读在消费前拒(jl_sync_con_*_not_modeled)。开关
                 # 关=槽 None,一次 is-not-None 测试即过,legacy 世界零变化。
                 hardware.jl_sync.note_step(self.pc,self.core_id)
+            if hardware is not None and hardware.jl_btclk is not None:
+                # 路 TIMERIMPL(codex 裁 B):BT clock timer 两字容器的写者
+                # PC/读策略溯源(每步刷新,jl_sync note_step 先例)。写者
+                # PC 守卫逐地址只认 0x60befee/0x60beff6,其余 PC(含 None)
+                # 写=消费前停(jl_btclk_write_pc_not_audited);读一律拒
+                # (首写前/写后/RMW 内部读同拒)。开关关=槽 None,一次
+                # is-not-None 测试即过,legacy 世界零变化。
+                hardware.jl_btclk.note_step(self.pc,self.core_id)
             if hardware is not None and hardware.copex_exp22 is not None:
                 # 路 COPEXIMPL(codex 裁 (a) 收窄版,坑②):copex.ppi mode-22
                 # 指数近似模型的指令级拦截门。必须在 upstream pair()/step1

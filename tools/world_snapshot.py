@@ -1246,6 +1246,18 @@ M4_FAMILIES = (
     ('jl_sync', 'JLSyncConfigWords',
      ('stores', 'word_writes', 'reads_after_write', 'con_read_attempts',
       'wo_read_attempts', 'current_pc', 'current_pc_core')),
+    # Route TIMERIMPL: the BT modem window tail BT clock timer two-address
+    # write-record container — the captured state is the write record plus the
+    # refusal counters (constant zero in any captured world: a refusal stops
+    # the run). current_pc/current_pc_core are transient per-step writer/read
+    # policy provenance (overwritten each step, jl_sync precedent); they ride
+    # as state so the per-object static guard stays constant. The per-address
+    # writer PC map and the expected values are CLASS constants under the
+    # class-identity check.
+    ('jl_btclk', 'JLBtclkTimerWords',
+     ('stores', 'word_writes', 'read_attempts_before_write',
+      'read_attempts_after_write', 'write_pc_refusals', 'current_pc',
+      'current_pc_core')),
     ('p2m_mailbox', 'P2mMailboxAck',
      ('pnd_armed', 'echo_armed', 'kicks', 'other_kick_values', 'clr_writes',
       'clear_slot_writes', 'pnd_reads', 'echo_reads', 'message_mirror',

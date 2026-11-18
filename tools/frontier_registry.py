@@ -401,6 +401,25 @@ FEATURES = (
             '续跑只执行 CON 一写零读,fn_config 在三道墙后不执行;证据='
             '已验证实现契约与当前前缀推进,不证明 audio_sync/IRQ88/BT '
             'clock timer/音频同步已运行)'),
+    # ---- 路 TIMERIMPL(codex 20261119 三选一裁 B):BT modem 窗尾 BT
+    # clock timer 恰两地址写记录容器 jl_btclk_timer_words——42,061,359
+    # 停点 0x60befee(写 0xF00130=0x2F4)与 +2 步 0x60beff6(写 0xF00140=
+    # 1754)放行。块身份勘误:btctrler 闭源库数字窗 0xF00000..0xF0018F
+    # (非 SDK JL_TIMER0-5);两写=全 app 唯一站点。策略:无合成初值+
+    # 首写前读拒+写后读仍拒(记录值只进账本)+RMW 内部读即拒+不触发
+    # IRQ88+邻接成员一概不承接+写者 PC 守卫逐地址只认 0x60befee/
+    # 0x60beff6;副作用边界已答(两纯写+与已建模域零交叠+观察面全拒)。----
+    Feature('jl_btclk_timer_words', 'conditional', ('jl_sync_config_words',),
+            False, None,
+            'BT modem 窗尾 BT clock timer 恰两地址写记录容器{0xF00130,'
+            '0xF00140}(42,061,359 停点 0x60befee 写 0x2F4 与 +2 步'
+            ' 0x60beff6 写 1754 放行,均在 audio_sync creator 0x60befae '
+            '体内 request_irq(88) 前;无合成初值+首写前读拒+写后读仍拒+'
+            'RMW 内部读即拒+不触发 IRQ88+邻接成员不承接;写者 PC 守卫'
+            '逐地址只认 0x60befee/0x60beff6;本次续跑恰两写零读,读口 '
+            '0xF00144/48 与 400B 整窗不承接;证据=已验证实现契约与当前'
+            '前缀推进,不证明 BT clock timer 启动/计数/IRQ88/音频同步'
+            '已运行)'),
     Feature('jl_pvdd_trim_writes', 'conditional', ('p11_power_init',), False, None,
             'W4[4] PVDD/trim 域容器:P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/'
             'P3_PVDD0_AUTO(0xf2c10c) 合成初始字 0+读回=当前值(VOLTAGE_CONFIG/'
@@ -682,10 +701,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42061359,
-        'stop_pc': '0x60befee',
-        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
-                 'address': '0xf00130', 'size': 4, 'value_bytes': 'f4020000'},
+        'completed_steps': 42061478,
+        'stop_pc': '0x60befa8',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                 'address': '0xf00000', 'size': 4,
+                 'reference_sdk_register': None},
         'freshness_fields': ('kind', 'address'),
     },
 }

@@ -4143,7 +4143,7 @@ class ModelTests(unittest.TestCase):
         self.assertIn('thirteen members',r['sdk_naming'])
         self.assertIn('NOT covered',r['access_face_completeness'])
         self.assertIn('REJECTED',r['model_assumptions'])
-        self.assertIn('NOT executed',r['modeled_vs_touched'])
+        self.assertIn('fn_config has executed',r['modeled_vs_touched'])
         self.assertIn('does NOT mean',r['cross_domain_limitations'])
         self.assertIn('jl_sync_config_registers',h.report()['assumptions'])
         # 负例⑪:报告无发明状态(键集合里没有任何 pending/计时/DMA 面)。
@@ -4164,6 +4164,142 @@ class ModelTests(unittest.TestCase):
                         and allf.handles(0xfe0904,4) and allf.handles(0xfe0a20,4)
                         and allf.handles(0xf2b404,4) and allf.handles(0xfd6104,4))
         self.assertFalse(allf.handles(0xfe2504,4) or allf.handles(0xfe2608,4))
+
+    def test_jl_btclk_timer_words(self):
+        # 路 TIMERIMPL(codex 三选一裁 B,负例矩阵 12+1 项的单测面):
+        # 42,061,359 停点 0x60befee(creator 0x60befae 体内写 0xF00130=
+        # 0x2F4)与 +2 步 0x60beff6(写 0xF00140=1754)——恰两地址写记录
+        # 容器:无合成初值、首写前读拒、写后读仍拒(记录值只进账本)、
+        # RMW 内部读即拒、写者 PC 守卫逐地址只认两站点;邻接成员一概
+        # 不承接;子字/错位不承接。
+        from br28_model import JL_BTCLK_TIMER_WORDS, JLBtclkTimerWords
+        self.assertEqual(JL_BTCLK_TIMER_WORDS,(0xf00130,0xf00140))
+        plain=BR28Model()
+        for address in JL_BTCLK_TIMER_WORDS:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xf00130)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xf00130,0x2F4)
+        self.assertNotIn('jl_btclk_timer_registers',plain.report())
+        h=BR28Model(jl_btclk_timer_words=True)
+        for address in JL_BTCLK_TIMER_WORDS:
+            self.assertTrue(h.handles(address,4))
+        # 负例⑦/⑧/⑨/⑩:间隙 0xF00134/38/3C、捕获/提交位簇 0xF00120/
+        # 24/28/2C、读口 0xF00144/48、modem 窗其余(头段+整窗范围)一概
+        # 不承接——将来扩展仅接受独立批准地址,不按连续区间映射(jlsync
+        # 负例②先例);读口到达也不返回 0/配置值/软件时钟(unmapped 停)。
+        for address in (0xf00134,0xf00138,0xf0013c,
+                        0xf00120,0xf00124,0xf00128,0xf0012c,
+                        0xf00144,0xf00148,0xf00110,0xf00114,0xf0014c,
+                        0xf00100,0xf00150,0xf00154,0xf00000,0xf0018c,
+                        0xf0012e,0xf00132,0xf00142):
+            self.assertFalse(h.handles(address,4),hex(address))
+        # 负例⑤/⑥:子字/错位/跨成员不承接(handles 门 size==4+对齐)。
+        self.assertFalse(h.handles(0xf00131,4) or h.handles(0xf00130,2) or
+                         h.handles(0xf00130,1) or h.handles(0xf00132,2))
+        gate=h.jl_btclk
+        # 负例①②:首写前读拒绝不返回 0(两字均未写;getter 读点形状也
+        # 一样拒)。
+        gate.note_step(0x60bf1c4,0)
+        for address in JL_BTCLK_TIMER_WORDS:
+            with self.assertRaisesRegex(Blocked,
+                    'jl_btclk_read_before_first_write_not_modeled'):
+                gate.read(address,0)
+        self.assertEqual(gate.read_attempts_before_write,2)
+        # 负例⑬:写者 PC 守卫——其余 PC 写相同常量也停(逐地址绑定:
+        # 0x60beff6 写 0xF00130、0x60befee 写 0xF00140 均拒)。
+        for pc,address,value in ((0x60beff6,0xf00130,0x2F4),
+                                 (0x60befee,0xf00140,1754),
+                                 (0x3000000,0xf00130,0x2F4)):
+            gate.note_step(pc,0)
+            with self.assertRaisesRegex(Blocked,'jl_btclk_write_pc_not_audited'):
+                h.write(address,value)
+        # restore 后首步前 current_pc=None=未审计,写即拒(安全默认)。
+        gate.note_step(None,0)
+        with self.assertRaisesRegex(Blocked,'jl_btclk_write_pc_not_audited'):
+            h.write(0xf00130,0x2F4)
+        self.assertEqual(gate.write_pc_refusals,4)
+        self.assertEqual(gate.stores[0xf00130]['writes'],0)
+        # 主事务形状:两站点写恰记两账(值透明照记,PC/核入账本);
+        # 负例⑫:记账无任何硬件事件面。
+        gate.note_step(0x60befee,0)
+        h.write(0xf00130,0x2F4)
+        gate.note_step(0x60beff6,0)
+        h.write(0xf00140,1754)
+        self.assertEqual(gate.word_writes,2)
+        self.assertEqual(gate.stores[0xf00130],
+                         {'values':[0x2F4],'writes':1,'pcs':[0x60befee],'cores':[0]})
+        self.assertEqual(gate.stores[0xf00140],
+                         {'values':[1754],'writes':1,'pcs':[0x60beff6],'cores':[0]})
+        # 负例③④:写后读仍拒绝不返回最后写值(两字均已写);负例⑪:
+        # RMW 内部读同一路径读阶段即拒(容器无任何读服务面)。
+        gate.note_step(0x60bf1c4,0)
+        for address in JL_BTCLK_TIMER_WORDS:
+            with self.assertRaisesRegex(Blocked,'jl_btclk_read_not_modeled'):
+                gate.read(address,0)
+        self.assertEqual(gate.read_attempts_before_write,2)
+        self.assertEqual(gate.read_attempts_after_write,2)
+        # 换核不放松:写守卫钉主核——另一核即便在已审计 PC 写也拒(两
+        # 站点只存在于 core0 app 链,与 jl_sync 读守卫同款收紧)。
+        gate.note_step(0x60befee,1)
+        with self.assertRaisesRegex(Blocked,'jl_btclk_write_pc_not_audited'):
+            gate.write(0xf00130,0x2F4,1)
+        # 值域校验(容器直调;白名单外由模型层先拒)。
+        with self.assertRaises(ValueError):
+            gate.write(0xf00130,-1,0)
+        with self.assertRaises(ValueError):
+            gate.write(0xf00130,0x100000000,0)
+        with self.assertRaises(ValueError):
+            gate.write(0xf00144,0,0)
+        with self.assertRaises(ValueError):
+            gate.read(0xf00144,0)
+        # 报告面(负例⑫:无发明状态——报告键集合无 pending/计数/IRQ 面,
+        # 只有写记录/读拒计数/守卫叙事;副作用边界条目必在)。
+        r=h.report()['jl_btclk_timer_registers']
+        self.assertEqual(r['addresses'],['0xf00130','0xf00140'])
+        self.assertEqual(r['word_writes'],2)
+        self.assertEqual(r['stores'],
+                         {'0xf00130':{'values':['0x2f4'],'writes':1,
+                                      'pcs':['0x60befee'],'cores':[0]},
+                          '0xf00140':{'values':['0x6da'],'writes':1,
+                                      'pcs':['0x60beff6'],'cores':[0]}})
+        self.assertEqual(r['read_refusals']['before_first_write'],2)
+        self.assertEqual(r['read_refusals']['after_write'],2)
+        self.assertEqual(r['writer_guard']['per_address_writer_pcs'],
+                         {'0xf00130':'0x60befee','0xf00140':'0x60beff6'})
+        self.assertEqual(r['writer_guard']['refusals'],5)
+        self.assertIn('not a silicon register-attribute claim',
+                      r['read_refusals']['semantics'])
+        self.assertIn('jl_btclk_write_pc_not_audited',r['writer_guard']['semantics'])
+        self.assertIn('0xf00144/48',r['whitelisted_words'])
+        self.assertIn('never a contiguous range',r['whitelisted_words'])
+        self.assertIn('side_effect_boundary',r)
+        self.assertIn('ZERO already-modeled domains',r['side_effect_boundary'])
+        self.assertIn('pure writes (no RMW',r['side_effect_boundary'])
+        self.assertIn('minimal abstraction',r['model_assumptions'])
+        self.assertIn('NOT verify any BT clock',r['assumption'])
+        self.assertIn('jl_btclk_timer_registers',h.report()['assumptions'])
+        self.assertEqual(sorted(r),sorted(('addresses','word_writes','stores',
+                                           'read_refusals','writer_guard',
+                                           'modeled_vs_touched','whitelisted_words',
+                                           'observed_shapes','side_effect_boundary',
+                                           'access_face_completeness',
+                                           'model_assumptions','known_limitation',
+                                           'assumption')))
+        # 负例⑫:快照保存恢复不扩大权限,复位清除已写状态——新容器即
+        # 未写态(读回到首写前拒);与 JL_SYNC/SRC_SYNC 容器叠加:地址集
+        # 互斥互不吞(0xfe25xx/0xfe26xx 与 0xf001xx modem 窗不串)。
+        fresh=JLBtclkTimerWords()
+        fresh.note_step(0x60befee,0)
+        with self.assertRaisesRegex(Blocked,
+                'jl_btclk_read_before_first_write_not_modeled'):
+            fresh.read(0xf00130,0)
+        allf=BR28Model(jl_btclk_timer_words=True,jl_sync_config_words=True,
+                       jl_src_sync_config_words=True)
+        self.assertTrue(allf.handles(0xf00130,4) and allf.handles(0xf00140,4)
+                        and allf.handles(0xfe2500,4) and allf.handles(0xfe2600,4))
+        self.assertFalse(allf.handles(0xf00144,4) or allf.handles(0xfe2504,4))
 
     def test_p2m_mailbox_ack_projection(self):
         # 路 B2R/S19 批 2 重落地(首版 0b875ed,BM §3):喂狗 0x12cc7e 事务

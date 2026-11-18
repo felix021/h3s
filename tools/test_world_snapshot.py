@@ -32,7 +32,8 @@ from br28_icfg import IcfgState, IcfgValue
 from br28_machine import DualCoreMachine
 from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT,
                         ICU_BASES, IRQController, JLAdcStartConfigRegisters,
-                        JLSyncConfigWords, JLSrcSyncConfigRegisters,
+                        JLBtclkTimerWords, JLSyncConfigWords,
+                        JLSrcSyncConfigRegisters,
                         P2mMailboxAck, P33AwkupRegisters, P33CanaryWatchRegisters,
                         PartialWord)
 from br28_unknown import UnknownWord
@@ -707,6 +708,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # conditional frontier flag set (its first recorded store sits at the
         # 42,061,357 frontier stop).
         jl_sync_config_words=True,
+        # Route TIMERIMPL: the BT clock timer two-word write-record container,
+        # ON in the current conditional frontier flag set (its first recorded
+        # store sits at the 42,061,359 frontier stop).
+        jl_btclk_timer_words=True,
     )
 
     def build_world(self):
@@ -973,6 +978,17 @@ class M4ProjectionFamilies(unittest.TestCase):
         gate.write(JLSyncConfigWords.WORDS[0], 0, 0)
         self.assertEqual(gate.read(JLSyncConfigWords.WORDS[0], 0), 0)
         gate.write(JLSyncConfigWords.WORDS[1], 0x00C80000, 0)
+        # Route TIMERIMPL: the two-word write-record container carries state —
+        # both audited creator stores (writer PC per address, core 0); reads
+        # are refused before AND after the writes (policy ledger counters);
+        # the per-step PC/core provenance rides as state.
+        bt = hw.jl_btclk
+        bt.note_step(0x60befee, 0)
+        bt.write(JLBtclkTimerWords.WORDS[0], 0x2F4, 0)
+        bt.note_step(0x60beff6, 0)
+        bt.write(JLBtclkTimerWords.WORDS[1], 0x6DA, 0)
+        with self.assertRaisesRegex(Exception, 'jl_btclk_read_not_modeled'):
+            bt.read(JLBtclkTimerWords.WORDS[0], 0)
         return hardware
 
     def captured_m4(self, world):
