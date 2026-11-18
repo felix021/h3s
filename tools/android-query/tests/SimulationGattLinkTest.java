@@ -45,8 +45,13 @@ public class SimulationGattLinkTest {
         final CountDownLatch scanHit = new CountDownLatch(1);
         final List<Integer> states = new ArrayList<Integer>();
         final List<byte[]> notifies = new ArrayList<byte[]>();
+        volatile String candidateName, candidateAddress;
+        volatile int candidateRssi;
         int reportedMtu = -1, reportedMtuStatus = -1;
-        public synchronized void onScanResult() { scanHit.countDown(); }
+        public synchronized void onCandidate(String name, String address, int rssi) {
+            candidateName = name; candidateAddress = address; candidateRssi = rssi;
+            scanHit.countDown();
+        }
         public void onScanFailed(int error) { }
         public synchronized void onConnectionStateChange(int status, int state) {
             states.add((status << 8) | state);
@@ -140,7 +145,10 @@ public class SimulationGattLinkTest {
 
             link.startScan();
             await(rec.scanHit, "扫描命中");
-            link.connectGatt();
+            expect(SimulationGattLink.SIMULATED_NAME.equals(rec.candidateName)
+                && SimulationGattLink.SIMULATED_ADDRESS.equals(rec.candidateAddress),
+                "合成候选应带名字/地址: " + rec.candidateName + "/" + rec.candidateAddress);
+            link.connectGatt(SimulationGattLink.SIMULATED_ADDRESS);
             await(rec.connected, "CONNECTED 回调");
             expect(link.discoverServices(), "discoverServices 应被接受");
             await(rec.services, "服务发现回调");
@@ -184,7 +192,7 @@ public class SimulationGattLinkTest {
         SimulationGattLink link = new SimulationGattLink("127.0.0.1", deadPort, DIRECT);
         Recorder rec = new Recorder();
         link.setCallbacks(rec);
-        link.connectGatt();
+        link.connectGatt(SimulationGattLink.SIMULATED_ADDRESS);
         await(rec.disconnected, "拨号失败回调");
         expect(!link.socketConnected(), "失败后不应标记连接");
         link.closeGatt();
@@ -198,7 +206,7 @@ public class SimulationGattLinkTest {
             SimulationGattLink link = new SimulationGattLink("127.0.0.1", bridge.port(), DIRECT);
             Recorder rec = new Recorder();
             link.setCallbacks(rec);
-            link.connectGatt();
+            link.connectGatt(SimulationGattLink.SIMULATED_ADDRESS);
             await(rec.connected, "CONNECTED");
             link.closeGatt();
             link.closeGatt();                                             // 幂等
@@ -216,7 +224,7 @@ public class SimulationGattLinkTest {
         SimulationGattLink link = new SimulationGattLink("127.0.0.1", bridge.port(), DIRECT);
         Recorder rec = new Recorder();
         link.setCallbacks(rec);
-        link.connectGatt();
+        link.connectGatt(SimulationGattLink.SIMULATED_ADDRESS);
         await(rec.connected, "CONNECTED");
         bridge.dropClient();
         await(rec.disconnected, "服务端断连回调");

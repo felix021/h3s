@@ -11,12 +11,17 @@ package cn.felix021.h3squery;
  * 只在 build.sh 按 android.jar 编译）。离线契约测试见 TransportContractTest：同一套断言
  * 同时跑 LoopbackTransport（Z 路）与本类+假 Link。
  *
- * 连接状态机（照 tools/android-query/README.md「真机适配清单」与 docs/app-protocol.md §1）：
+ * 连接状态机（照 tools/android-query/README.md「真机适配清单」与 docs/app-protocol.md §1；
+ * 路 BLEDISC 2026-11-18 起目标地址由扫描发现，见 {@link BleDiscoveryPolicy}）：
  *
- *   IDLE → SCAN(可选，按目标地址过滤，超时/失败也继续) → CONNECT(connectGatt)
+ *   IDLE → SCAN(可选，按广播名发现；注入地址优先命中即选，名字候选 settle {@link
+ *        #CANDIDATE_SETTLE_MS} 取最强；超时=明确失败，不再直连兜底) → CONNECT(connectGatt(选定地址))
  *        → DISCOVER(discoverServices) → SUBSCRIBE(setCharacteristicNotification+CCCD)
  *        → MTU(requestMtu(517)，以 onMtuChanged 回调实际值为准，不假定 247/517)
  *        → READY(markReady(实际MTU)，connect 前积压的帧开闸)
+ *
+ * 连接过程经 {@link Progress} 推状态（扫描中/发现/连接中——页面文案不再静默卡「连接中」）；
+ * 终态仍走 listener：就绪=onMtuChanged、失败/断开=onDisconnected(reason)。
  *
  * 就绪条件 = CCCD 写成功 && 收到过 onMtuChanged 实际值（两者先后任意——Android 可能主动
  * 回报 MTU，照 UpgradeService 的 cccdEnabled/attMtu 双标志先例）。MTU 协商失败不致命：
@@ -58,8 +63,11 @@ public class AndroidBleTransport extends SerialBleTransport {
     /** BluetoothProfile.STATE_DISCONNECTED。 */
     public static final int STATE_DISCONNECTED = 0;
 
-    /** 扫描超时（超时/失败不阻断——转直连；Android 允许不扫描直接 connectGatt）。 */
-    public static final long SCAN_TIMEOUT_MS = 10000;
+    /** 发现扫描整体超时（10-15s 区间取 12s；超时=明确失败——官方 App 先例是扫到才连，
+     *  直连一个不在广播的地址正是 2026-11-18 诊断的 30s 看门狗死等根因）。 */
+    public static final long DISCOVERY_TIMEOUT_MS = 12000;
+    /** 名字候选的信号观察窗（首个匹配候选出现后等这么多 ms 取最强再连——多设备同 名时选信号最好者）。 */
+    public static final long CANDIDATE_SETTLE_MS = 2000;
     /** 连接+初始化整体看门狗（照 MainActivity 30s 先例；超时直接失败，不占重试额度）。 */
     public static final long CONNECT_TIMEOUT_MS = 30000;
     /** 单片 GATT 写回调看门狗（照 UpgradeService 5s 先例；超时=断链）。 */
@@ -77,13 +85,13 @@ public class AndroidBleTransport extends SerialBleTransport {
      * 测试=TransportContractTest 的假 Link）。实现方保证回调在单线程上调用。
      */
     public interface Link {
-        /** 连接前置检查：蓝牙权限/开关/目标地址合法性；就绪返回 null，否则返回原因（直接进日志与断线事件）。 */
+        /** 连接前置检查：蓝牙权限/开关/（注入时的）目标地址合法性；就绪返回 null，否则返回原因（直接进日志与断线事件）。 */
         String notReadyReason();
-        /** 按「目标地址」过滤开始扫描（不扫任意设备——地址门槛在实现侧钉死，照清单第 8 条）。 */
+        /** 开始发现扫描：实现侧按共享 {@link BleDiscoveryPolicy} 前置过滤，只上报名字匹配/注入地址的候选。 */
         void startScan();
         void stopScan();
-        /** 发起 GATT 连接（autoConnect=false、TRANSPORT_LE，异步）。 */
-        void connectGatt();
+        /** 发起 GATT 连接（autoConnect=false、TRANSPORT_LE，异步）到发现选定的地址。 */
+        void connectGatt(String address);
         /** 触发服务发现（异步，回调 onServicesDiscovered）。返回 false=请求被同步拒绝。 */
         boolean discoverServices();
         /** 服务发现完成后：QCY A002 服务与写/通知特征是否齐（校验留在 transport，失败按连接失败重试）。 */
@@ -103,8 +111,8 @@ public class AndroidBleTransport extends SerialBleTransport {
 
         /** 平台回调（真实现把 BluetoothGattCallback 全部翻译到这里并统一过主线程）。 */
         interface Callbacks {
-            /** 目标地址的广播出现（扫描命中）。 */
-            void onScanResult();
+            /** 一个匹配候选的广播出现（已按 BleDiscoveryPolicy 前置过滤；name 可能为 null——注入地址候选可无名）。 */
+            void onCandidate(String name, String address, int rssi);
             /** 扫描启动失败（transport 直接转直连，不阻断）。 */
             void onScanFailed(int error);
             /** status==0 && state==STATE_CONNECTED=链路建立；断开/错误见 state/status。 */
@@ -130,11 +138,24 @@ public class AndroidBleTransport extends SerialBleTransport {
         void log(String message);
     }
 
+    /** 连接过程状态出口（WebShell→页面「扫描中/发现/连接中」文案；终态走 listener 的 mtu/disconnected）。 */
+    public interface Progress {
+        /**
+         * state ∈ {"scanning","found","connecting"}（发现失败/断开不经此口——走 onDisconnected(reason)
+         * 的明确文案）；detail 为人类可读文案，直显页面。
+         */
+        void onConnectState(String state, String detail);
+    }
+
     private final Link link;
+    private final BleDiscoveryPolicy discovery;     // 发现策略（构造注入；null=默认 QCY H3S 前缀匹配）
     private final Scheduler scheduler;              // 可空：null=用 SerialBleTransport 默认手动调度器
     private final Logger logger;                    // 可空
+    private Progress progressListener;              // 可空：连接过程状态出口
+    private String targetAddress;                   // 本次会话选定的连接地址（发现选定或注入直连）
+    private boolean settleScheduled;                // settle 观察窗已排（每次连接会话重置）
     private final Link.Callbacks callbacks = new Link.Callbacks() {
-        @Override public void onScanResult() { handleScanResult(); }
+        @Override public void onCandidate(String name, String address, int rssi) { handleCandidate(name, address, rssi); }
         @Override public void onScanFailed(int error) { handleScanFailed(error); }
         @Override public void onConnectionStateChange(int status, int state) { handleConnectionState(status, state); }
         @Override public void onServicesDiscovered(int status) { handleServicesDiscovered(status); }
@@ -156,17 +177,25 @@ public class AndroidBleTransport extends SerialBleTransport {
     private long connectEpoch = 0;                  // 每次连接尝试递增；看门狗/退避任务自检
     private long writeEpoch = 0;                    // 每次片写动作递增；写看门狗自检
 
-    public AndroidBleTransport(Link link) { this(link, null, null); }
+    public AndroidBleTransport(Link link) { this(link, null, null, null); }
 
-    public AndroidBleTransport(Link link, Scheduler scheduler, Logger logger) {
+    public AndroidBleTransport(Link link, Scheduler scheduler, Logger logger) { this(link, null, scheduler, logger); }
+
+    /** discovery 可空：null=默认策略（无注入地址，按 "QCY H3S" 前缀匹配发现）。 */
+    public AndroidBleTransport(Link link, BleDiscoveryPolicy discovery, Scheduler scheduler, Logger logger) {
         this.link = link;
+        this.discovery = discovery != null ? discovery
+            : new BleDiscoveryPolicy(null, BleDiscoveryPolicy.DEFAULT_NAME, false);
         this.scheduler = scheduler;
         this.logger = logger;
         if (link != null) link.setCallbacks(callbacks);
     }
 
-    /** 连接前是否先扫描（默认 true；关掉=直接 connectGatt）。 */
+    /** 连接前是否先扫描（默认 true；关掉=直接 connectGatt——仅注入了地址的策略可用，发现模式必须有扫描）。 */
     public void setScanEnabled(boolean enabled) { this.scanEnabled = enabled; }
+
+    /** 注入连接过程状态出口（WebShell 接 H3SBridge.emitConnectState 推页面）。 */
+    public void setProgress(Progress p) { this.progressListener = p; }
 
     // ================================ 线程入口（主线程跳转） ================================
 
@@ -203,19 +232,31 @@ public class AndroidBleTransport extends SerialBleTransport {
         cccdOk = false;
         mtuArrived = false;
         lastMtu = 23;                                // 新连接会话从 ATT 默认 23 起（防上一会话的陈旧值）
+        discovery.reset();
+        settleScheduled = false;
         if (scanEnabled) {
             phase = Phase.SCAN;
-            log("扫描目标设备（" + SCAN_TIMEOUT_MS + "ms 超时后转直连）");
+            String preferred = discovery.preferredAddress();
+            log("发现扫描：目标名 \"" + discovery.name() + "\""
+                + (preferred != null ? "，优先地址 " + preferred : "（未注入地址）")
+                + "，" + DISCOVERY_TIMEOUT_MS + "ms 超时");
+            progress("scanning", "扫描中：寻找 " + discovery.name() + " 蓝牙广播…");
             final long epoch = connectEpoch;
-            schedule(SCAN_TIMEOUT_MS, new Runnable() { public void run() {          // 扫描超时→直连
+            schedule(DISCOVERY_TIMEOUT_MS, new Runnable() { public void run() {      // 超时=明确失败（不再直连兜底）
                 if (phase != Phase.SCAN || connectEpoch != epoch) return;
-                log("扫描超时未命中，转直连");
+                if (settleScheduled) return;   // settle(2s)已排且仍在 SCAN ⇒ 只可能是测试手动队列的 FIFO 乱序
+                                             // （真实调度下 settle 必先到期并转出 SCAN），让位 no-op
                 link.stopScan();
-                beginAttempt();
+                phase = Phase.IDLE;
+                failConnect("扫描 " + DISCOVERY_TIMEOUT_MS + "ms 未发现 \"" + discovery.name()
+                    + "\" 广播——耳机在广播范围吗（已开机/未连接其他手机/距离别太远）？");
             }});
             link.startScan();
         } else {
-            beginAttempt();
+            // 关扫描直连仅注入地址时可用：发现模式没有「已知地址」可直连
+            String preferred = discovery.preferredAddress();
+            if (preferred == null) { failConnect("未注入目标地址，无法跳过扫描（发现模式需扫描确定地址）"); return; }
+            beginAttempt(preferred);
         }
     }
 
@@ -230,21 +271,23 @@ public class AndroidBleTransport extends SerialBleTransport {
         failConnect("主动断开");
     }
 
-    private void beginAttempt() {
+    private void beginAttempt(String address) {
+        targetAddress = address;
         attempt++;
         phase = Phase.CONNECT;
         final long epoch = ++connectEpoch;
-        log("连接尝试 " + attempt + "/" + CONNECT_ATTEMPTS);
+        log("连接 " + address + "（尝试 " + attempt + "/" + CONNECT_ATTEMPTS + "）");
+        progress("connecting", "连接中：" + address + "（尝试 " + attempt + "/" + CONNECT_ATTEMPTS + "）");
         schedule(CONNECT_TIMEOUT_MS, new Runnable() { public void run() {           // 整体看门狗：超时直接失败不重试
             if (phase == Phase.READY || phase == Phase.IDLE || connectEpoch != epoch) return;
             link.closeGatt();
             phase = Phase.IDLE;
-            failConnect("连接/初始化超过 " + CONNECT_TIMEOUT_MS + "ms");
+            failConnect("连接/初始化超过 " + CONNECT_TIMEOUT_MS + "ms——耳机在广播范围吗？");
         }});
-        link.connectGatt();
+        link.connectGatt(address);
     }
 
-    /** 连接初始化失败的重试入口（GATT 断开/发现失败/特征缺失/订阅失败）。 */
+    /** 连接初始化失败的重试入口（GATT 断开/发现失败/特征缺失/订阅失败）——重试沿用已选定的地址。 */
     private void retryOrFail(String reason) {
         link.closeGatt();
         phase = Phase.IDLE;
@@ -253,7 +296,7 @@ public class AndroidBleTransport extends SerialBleTransport {
             final long epoch = connectEpoch;
             schedule(RETRY_BACKOFF_MS, new Runnable() { public void run() {
                 if (phase != Phase.IDLE || connectEpoch != epoch) return;          // 用户已断开/已开新连接
-                beginAttempt();
+                beginAttempt(targetAddress);
             }});
         } else {
             failConnect(reason + "（已尝试 " + attempt + " 次）");
@@ -268,17 +311,49 @@ public class AndroidBleTransport extends SerialBleTransport {
 
     // ================================ Link 回调 ================================
 
-    private void handleScanResult() {
+    /** 扫描候选：注入地址命中→立即选定；名字匹配候选→首个出现后排 settle 观察窗取最强。 */
+    private void handleCandidate(String name, String address, int rssi) {
         if (phase != Phase.SCAN) return;
-        log("扫描命中目标，转连接");
-        link.stopScan();
-        beginAttempt();
+        String immediate = discovery.offer(name, address, rssi);
+        if (immediate != null) {
+            log("扫描命中注入地址 " + immediate + "（RSSI " + rssi + "），转连接");
+            selectTarget(immediate);
+            return;
+        }
+        if (discovery.candidateCount() > 0 && !settleScheduled) {
+            settleScheduled = true;                 // 观察窗只排一次；窗内更强的候选由 strongest() 兜住
+            progress("found", "发现 " + discovery.name() + "（候选 ×" + discovery.candidateCount()
+                + "，观察信号 " + CANDIDATE_SETTLE_MS + "ms 取最强）");
+            log("发现候选 ×" + discovery.candidateCount() + "，" + CANDIDATE_SETTLE_MS + "ms 后取信号最强者");
+            final long epoch = connectEpoch;
+            Runnable settleTask = new Runnable() { public void run() {
+                if (phase != Phase.SCAN || connectEpoch != epoch) return;
+                String best = discovery.strongest();
+                if (best == null) return;           // 不可能（有候选才调度），保险
+                selectTarget(best);
+            }};
+            if (scheduler != null) schedule(CANDIDATE_SETTLE_MS, settleTask);  // 真机 Handler/注入假调度器：延时触发
+            else settleTask.run();                  // JVM 直跑（默认手动队列，无时钟）：候选已同步喂完，
+                                                    // 立即取最强等价于等满观察窗（保持 connect() 同步就绪的测试契约）
+        }
     }
 
+    /** 选定目标：停扫 + 进入连接尝试。 */
+    private void selectTarget(String address) {
+        link.stopScan();
+        beginAttempt(address);
+    }
+
+    /** 扫描启动失败：注入了地址→回退直连（扫描子系统坏了但地址已知，保留旧回退）；纯发现模式→明确失败。 */
     private void handleScanFailed(int error) {
         if (phase != Phase.SCAN) return;
-        log("扫描启动失败(" + error + ")，转直连");
-        beginAttempt();
+        String preferred = discovery.preferredAddress();
+        if (preferred != null) {
+            log("扫描启动失败(" + error + ")，回退直连注入地址 " + preferred);
+            beginAttempt(preferred);
+            return;
+        }
+        failConnect("扫描启动失败(error " + error + ")且未注入地址可回退——检查蓝牙权限/开关后重试");
     }
 
     private void handleConnectionState(int status, int state) {
@@ -397,6 +472,12 @@ public class AndroidBleTransport extends SerialBleTransport {
 
     private void log(String message) {
         if (logger != null) logger.log(message);
+    }
+
+    /** 连接过程状态统一出口（文案进日志 + 页面 progress 回调）。 */
+    private void progress(String state, String detail) {
+        log(detail);
+        if (progressListener != null) progressListener.onConnectState(state, detail);
     }
 
     // 测试探针

@@ -14,11 +14,14 @@
 python tools/bootstrap.py --android
 bash tools/android-query/test.sh
 export ANDROID_SDK_ROOT=/path/to/android-sdk
-export H3S_BLE_ADDRESS=AA:BB:CC:DD:EE:FF
 bash tools/android-query/build.sh
 ```
 
-填自己的BLE地址，不是A2DP经典地址。环境要求：JDK、Python、unzip/zip、Android platform35、build-tools35.0.0。`test.sh`只需JDK和Python，使用虚构地址，不访问蓝牙。
+默认不需要任何地址：App 扫描 BLE 广播按名字（"QCY H3S"）自动发现耳机再连接（路 BLEDISC，
+2026-11-18 起，照 QCY 官方 App 先例；根因见 docs/android-ble-connection-diagnosis-20261118.md）。
+可选环境变量：`H3S_BLE_ADDRESS`（注入则作为扫描时的优先地址，扫到即连）、`H3S_BLE_NAME`
+（默认 "QCY H3S"）、`H3S_BLE_NAME_MATCH`（prefix|exact，默认 prefix）。
+环境要求：JDK、Python、unzip/zip、Android platform35、build-tools35.0.0。`test.sh`只需JDK和Python，不访问蓝牙。
 
 两份依赖下载到被忽略的vendor/，均按固定摘要检查：
 
@@ -27,7 +30,7 @@ bash tools/android-query/build.sh
 | jl_bt_ota.aar（1.10.0/10932） | 7b0671e4f98b39537ed1a0701fcd0aecd16c17eebc43468fa58f17af0e84ee15 |
 | androidx-core-1.7.0.aar | aaf6734226fff923784f92f65d78a2984dbf17534138855c5ce2038f18656e0b |
 
-AndroidX Core是SDK权限检查的实际依赖，不能省略。地址只写入 `build/generated/.../DeviceConfig.java`；APK含所配目标地址，公开分享自己的APK前要考虑这一点。本仓库不附带原测试APK和签名私钥。
+AndroidX Core是SDK权限检查的实际依赖，不能省略。配置只写入 `build/generated/.../DeviceConfig.java`（地址留空=扫描发现模式）；注入了地址的APK含所配目标地址，公开分享自己的APK前要考虑这一点。本仓库不附带原测试APK和签名私钥。
 
 构建运行 tests/ 下全部 JVM 测试（QueryPolicy/UpgradeGate/BlePacketizer/EqFrame/KeyRemapFrame/
 KeyStore/H3SBridge/H3sTransport/TransportContract/UsbScsi/H3sUsbBridge），再编译、打包、签名和检查APK。开始构建即移除旧APK，避免失败后误用旧产物。调试签名在 `build/debug.keystore` 创建；同一设备覆盖安装需要保留自己的签名，不要把它提交Git。输出 `build/h3s-query.apk`。
@@ -297,13 +300,16 @@ window.onH3sEvent = e => {                               // 壳经 ResultSink �
 `TransportContractTest` 与 Loopback 同断言对拍），真机粘合在 `AndroidGattLink`（照
 MainActivity/UpgradeService 先例，本机按 android.jar 编译检查过，真机行为待联调）。
 
-1. ✅ **connect()**：扫描（按目标地址过滤，10s 超时/失败转直连）→ `connectGatt(autoConnect=false,
-   TRANSPORT_LE)` → `discoverServices` → 校验 A002/1/2 与写特征属性（属性含 WRITE 用
+1. ✅ **connect()**：发现扫描（路 BLEDISC：按广播名 "QCY H3S" 匹配——`BleDiscoveryPolicy`
+   前缀/全匹配可配；注入地址候选扫到即优先选定，名字候选首现后 settle 2s 取信号最强者；12s
+   超时=明确失败，不再直连兜底死等）→ `connectGatt(autoConnect=false, TRANSPORT_LE)` 到发现
+   选定的地址 → `discoverServices` → 校验 A002/1/2 与写特征属性（属性含 WRITE 用
    WRITE_TYPE_DEFAULT、只含 WRITE_NO_RESPONSE 用 NO_RESPONSE——H3S 实测属性 4）→
    `setCharacteristicNotification + CCCD ENABLE_NOTIFICATION_VALUE` → **等 CCCD 成功 +
    `onMtuChanged` 实际值双标志**（`requestMtu(517)` 以回调为准；MTU 协商失败不致命，按当前值
-   就绪只增片数）→ `markReady(实际MTU)`。连接初始化失败重试（默认 2 次总尝试、退避 1s），
-   30s 整体看门狗。
+   就绪只增片数）→ `markReady(实际MTU)`。连接初始化失败重试（默认 2 次总尝试、退避 1s，沿用
+   已选定地址），30s 整体看门狗。连接过程经 `Progress` 推「扫描中/发现/连接中」状态（页面
+   conn 事件），终态走 mtu/disconnected 事件。
 2. ✅ **doWriteChunk(chunk)**：`setWriteType + setValue + writeCharacteristic`；`status==0` →
    `chunkWritten(true)`，`status!=0` → `chunkWritten(false, "GATT status N")`（只终结当前帧，
    串行队列试下一条）；写请求同步被拒同样立即片失败；写回调 5s 缺失**断链**（照 UpgradeService
@@ -317,13 +323,17 @@ MainActivity/UpgradeService 先例，本机按 android.jar 编译检查过，真
 6. ✅ **断开**：READY 后 `onConnectionStateChange` 断开 → `markNotReady(reason)`（未完成帧按
    失败回调，不自动重连，页面可再 connect）。附带修复：`SerialBleTransport.markNotReady` 不再清
    listener——原来断一次线 H3SBridge 就永久收不到事件，重连后链路才完整（契约测试钉死）。
-7. ✅ **壳接线**：`WebShellActivity` 构造 `AndroidGattLink(DeviceConfig.ADDRESS)` +
-   `AndroidBleTransport`（日志接 Log.i）注入 `H3SBridge`，事件经 `evaluateJavascript` 推
-   `window.onH3sEvent`；页面加连接卡片（连接/断开/MTU 状态）与事件回显（旧 index/keyremap
-   两页已并为单页双 tab）。
+7. ✅ **壳接线**：`WebShellActivity` 构造 `AndroidGattLink` + `AndroidBleTransport`（共享
+   `BleDiscoveryPolicy`，日志接 Log.i）注入 `H3SBridge`，事件经 `evaluateJavascript` 推
+   `window.onH3sEvent`；连接过程状态（扫描中/发现/连接中）经 `Progress` → `H3SBridge.emitConnectState`
+   推 conn 事件，页面连接卡片实时显示流程文案；页面加连接卡片（连接/断开/MTU 状态）与事件回显
+   （旧 index/keyremap 两页已并为单页双 tab）。
    连接由页面显式 `h3s.connect()` 触发，不自动连接。
 8. ✅ **权限与目标**：`WebShellActivity` 进入即请求 `BLUETOOTH_SCAN/CONNECT`（照 MainActivity
-   先例）；目标地址只认构建注入的 `DeviceConfig.ADDRESS`（扫描也按地址过滤，不开任意设备连接）。
+   先例）；目标=按广播名发现的耳机（`BleDiscoveryPolicy`：名字匹配 "QCY H3S" 或注入地址命中，
+   GattLink 前置过滤不上报无关广播；只有被 transport 选定的地址才会被 connectGatt，不开任意
+   设备连接）。注入的 `H3S_BLE_ADDRESS` 作为优先地址（扫到即连）。厂商 adv 数据识别 [未钉]
+   （无 QCY 厂商 ID 线索，只按名字）。
 9. ⬜ **联调顺序**：先只读查询对拍（SN 匹配 + deframe 与 docs/protocol.md 实测帧对照）→
    单条 ANC 切换（响应最小）→ 提示音音量 → EQ 整组；EQ 候选 UNTESTED 不变。
 10. ⬜ **联调时对照项**：真机 setter 响应载荷形状（替换 Loopback 的回显假设）、EQ 写是否需要
