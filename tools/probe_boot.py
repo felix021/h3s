@@ -323,6 +323,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def write(self,address,data):
             if hardware is not None and hardware.mmu is not None:
                 address=hardware.mmu.translate(address,len(data),self.read)
+            # 路 DMAIMPL:PNS/SWN 写触达观察——两字不在任何容器白名单
+            # (handles=False),Hardware.write 不可达,在 mem.write 分发前入
+            # 事件历史(flush 臂 PNS 写=预测墙,记录后自然严格停)。
+            if (hardware is not None and hardware.jl_audio_dac_dma_idle is not None
+                    and address in (hardware.jl_audio_dac_dma_idle.PNS,
+                                    hardware.jl_audio_dac_dma_idle.SWN)):
+                gate=hardware.jl_audio_dac_dma_idle
+                gate.note_write(address,int.from_bytes(data,'little'),
+                                hardware.current_core,hardware)
             if rom is not None and address<len(rom) and address+len(data)>0:
                 raise Blocked('unmapped_or_readonly_write',access='write',address=hex(address),size=len(data))
             if hardware is not None and hardware.handles(address,len(data)):
@@ -688,6 +697,34 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         return
                     # 守卫拒绝:落回普通严格路径(邻槽/他 PC/他实例/映射
                     # 改变等负例即在此处诚实停)。
+            if hardware is not None and hardware.jl_audio_dac_dma_idle is not None:
+                # 路 DMAIMPL(codex 裁 (a) 收窄版):HRP/SWP 两字读回=最后写值
+                # 放行的装载门。current_pc=每步刷新的写事件溯源(守卫事件
+                # 历史的 PC 来源);装载门只在四个已核验读点上拦
+                # (0x606e148/14a/150/152=set_sample_rate 空闲守卫 volatile
+                # 双读对,ld.w {d,b:5,n:4/5} 形状+字节钉死),五要素守卫见
+                # JLAudioDacDmaIdleReadback.serve(零写/阶段失效/地址未核验
+                # 拒绝→回落普通严格路径,kind 与开关关世界一致)。开关关=
+                # 槽 None,一次 is-not-None 测试即过,legacy 世界零变化。
+                gate=hardware.jl_audio_dac_dma_idle
+                gate.current_pc=self.pc
+                shape=gate.READ_SITES.get(self.pc)
+                if shape is not None:
+                    require(insn.id=='ld.w' and raw==shape,
+                            'the DAC DMA idle readback site must keep its pinned '
+                            'shape (ld.w {d,b,n} word-index addressing, '
+                            f'expected {shape})')
+                    require(self.mem.read(self.pc,2)==bytes.fromhex(gate.SITE_BYTES[self.pc]),
+                            'the DAC DMA idle readback site bytes changed '
+                            f'(expected {gate.SITE_BYTES[self.pc]})')
+                    value=gate.serve(self,hardware,raw)
+                    if value is not None:
+                        self.R[raw['d']]=value
+                        self.finish_exact(self.pc+size)
+                        adapters['jl_audio_dac_dma_idle_readback_load']+=1
+                        return
+                    # 守卫拒绝:落回普通严格路径(零写/阶段失效/基址不符
+                    # 负例即在此处诚实停,kind 与开关关世界一致)。
             if machine is not None:
                 if machine.first_task_return_hypothesis is not None:
                     machine.first_task_tail(self,insn,raw)

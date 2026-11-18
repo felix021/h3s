@@ -3027,7 +3027,7 @@ class ModelTests(unittest.TestCase):
                          {'values':['0x18e180'],'writes':1,'cores':[0]})
         self.assertEqual(r['stores']['0xfe0508'],{'values':['0x1'],'writes':1,'cores':[0]})
         self.assertTrue(r['write_only'] and r['readback_not_modeled'])
-        self.assertIn('route-AG',r['sdk_naming'])
+        self.assertIn('ADR/LEN/HRP/SWP',r['sdk_naming'])  # 路 DMAIMPL 勘误:+0x14=SWP 非 PNS
         with self.assertRaisesRegex(Blocked,'jl_audio_dac_dma_read_not_modeled'):
             h.read(0xfe0504)
         # 与 DAC_COP/邻域容器叠加互不吞地址(DAC_CON AK 域不受影响)

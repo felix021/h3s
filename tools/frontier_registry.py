@@ -310,9 +310,22 @@ FEATURES = (
             '(全 app 恰两处纯写 0x7F:W1[3] 尾 0x606ab2c+音频域 0x606e038,零读回;'
             'D2 场景的 RMW/读面属 D1 后另立证据包;路 BM §4.3 行 0b 勘误的写侧三选一)'),
     Feature('jl_audio_dac_dma_writes', 'conditional', ('jl_audio_dac_cop_writes',), False, None,
-            'JL_AUDIO DAC DMA 四字(0xfe0504/08/10/14,ADR/LEN/HRP/PNS)写侧 write-only 整字记录'
-            '(W1[3] 尾 DAC 启动 0x6071e92..ea8 四写恰 0x18e180 缓冲址+1+0+0,探路实证零读回'
-            '零 RMW;D2 的 DMA 指针/计数读属 tone/PCM 推送域 D1 后;路 BM 行 0b 勘误之二)'),
+            'JL_AUDIO DAC DMA 四字(0xfe0504/08/10/14,ADR/LEN/HRP/SWP——路 DMAIMPL 勘误:'
+            '+0x14 是 SWP 非 PNS,PNS 在 +0x0c=0xfe050c 未映射,DWARF/csfr.h 成员序×4)'
+            '写侧 write-only 整字记录(W1[3] 尾 DAC 启动 0x6071e92..ea8 四写恰'
+            ' 0x18e180 缓冲址+1+0+0,探路实证零读回零 RMW;D2 的 DMA 指针/计数读属'
+            ' tone/PCM 推送域 D1 后;路 BM 行 0b 勘误之二)'),
+    # ---- 路 DMAIMPL/sim-dmaimpl:HRP/SWP 两字读回=最后写值(codex 裁 (a) 收窄版,
+    # docs/frontier-scout-dacdma.md §5;41,965,883 @ 0x606e148 停点=audio_dac_
+    # set_sample_rate 空闲守卫首读,勘误=非轮询等待环)----
+    Feature('jl_audio_dac_dma_idle_readback', 'conditional', ('jl_audio_dac_dma_writes',),
+            False, None,
+            'JL_AUDIO DAC DMA HRP/SWP 两字(0xfe0510/14)读回=最后写值放行'
+            '(仅 0x606e148/14a/150/152 四个已核验读点,ld.w {d,b:5,n:4/5} 形状'
+            '钉死;零合成字节,值=固件自己的写;零写/阶段失效/位置未核验维持'
+            '原严格停;初始化阶段由事件历史维护——SWN/PNS 触达、DAC_CON 控制'
+            '位变化、另一核写、未预期重写(同值也审查)均失效;显式初始化空闲'
+            '假设 derived-not-measured 非硅等价;依赖 jl_audio_dac_dma_writes)'),
     Feature('jl_pvdd_trim_writes', 'conditional', ('p11_power_init',), False, None,
             'W4[4] PVDD/trim 域容器:P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/'
             'P3_PVDD0_AUTO(0xf2c10c) 合成初始字 0+读回=当前值(VOLTAGE_CONFIG/'
@@ -594,11 +607,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 41965883,
-        'stop_pc': '0x606e148',
-        'stop': {'kind': 'jl_audio_dac_dma_read_not_modeled',
-                 'address': '0xfe0510'},
-        'freshness_fields': ('kind', 'address'),
+        'completed_steps': 42037363,
+        'stop_pc': '0x606a900',
+        'stop': {'kind': 'upstream_simulator_failure', 'error_type': 'RuntimeError',
+                 'message': '0x606a900: copex.ppi has no model'},
+        'freshness_fields': ('kind', 'message'),
     },
 }
 

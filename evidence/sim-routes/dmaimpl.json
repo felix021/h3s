@@ -1,0 +1,57 @@
+{
+ "route": "DMAIMPL / sim-dmaimpl（基线 main f97b1bf=DMASCOUT 合并点，侦察停点收口后的实施路）",
+ "recorded_at": "2026-11-18T17:20:00+08:00",
+ "task": "DAC HRP/SWP 两字读回放行（codex 裁决 (a) 收窄版，docs/frontier-scout-dacdma.md §5）：41,965,883 @ 0x606e148（audio_dac_set_sample_rate 空闲守卫首读 HRP）放行 → 推进新前沿 → 10 臂验收 → 重钉。",
+ "runtime_erratum_found_during_implementation": {
+  "what": "DAC_CON 观测面 v1 规则（{低 4 位索引, 0x110 power_on 掩码}之外位变化即失效）把初始化轨迹本身判失效——W1[3] 窗口前 AK 族已写 0x100→…→0x835e110 共 16 写（bit27 等富配置位远超 0x110 掩码），v2 首臂 on-main 在 dac_con_control_change（0x606ab1c 0x100→0x8000100，step 3,204,303）失效后于旧停点拒绝",
+  "v1_symptom": "on-main 停 41,965,883 @ 0x606e148（phase_invalidated 拒绝回落严格停——守卫 fail-closed 行为正确，规则过严）",
+  "fix": "v3 锚定规则：判定锚=HRP 复位写（钉死站点 0x6071ea8）的步号 hrp_reset_step；锚前/同窗全部 DAC_CON 写=初始化轨迹基线（不失效）；锚后仅尾段站点 0x6071eb8（|=0x110，值 0x835e100→0x835e110）免检；再后他站点按观测面判——低 4 位采样率索引面（POST RMW 0x606e19a/19e）不失效，flush 臂位 0x20/0x40 或索引面外位变化失效",
+  "evidence": "停点世界写事件全量审计（on-main 臂报告 write_audit）：24×DAC_CON 中前 16 笔全落在 step 3,204,3xx 初始化窗（末笔 3,204,352=0x6071eb8），后 8 笔=本路放行后 POST RMW 对×4 调（值恒 0x835e110，delta⊆0xF）——v3 规则在前缀+放行段上零误判零漏判",
+  "caught_by": "自建 base-on 快照续跑首臂（M4 状态恢复后事件历史显形）；连带 M4 字段表增 hrp_reset_step（12 字段），base-on 重捕一次"
+ },
+ "implementation": {
+  "switch": "jl_audio_dac_dma_idle_readback（conditional，显式依赖 jl_audio_dac_dma_writes（缺依赖 Hardware 构造 ValueError+irq_case require 双报错），默认 False=关；关闭世界零行为差异，off 复现臂逐键相等实证（唯一差异=本路勘误修正的两处命名文本））",
+  "read_semantics": "仅 HRP(0xfe0510)/SWP(0xfe0514) 两字、对齐 32 位、读回=最后写值（零合成字节，值=固件自己的写记录）；仅四个已核验读点 0x606e148/14a/150/152（ld.w {d,b:5,n:4/5} 形状+字节 50 64/51 65 钉死，r5==0xfe0500 有效地址恰为两字）；零写/阶段失效/基址不符/位置未核验=拒绝回落普通严格路径（kind 与开关关世界一致）；ADR/LEN 读侧不动",
+  "phase_event_history": "初始化阶段由事件历史维护（非逐读指针检查）：失效事件=SWN/PNS 触达（写经 probe_boot mem.write 双点观察——两字无容器白名单 handles=False 不达 Hardware.write；读在 mem.read 层自然停=诚实边界，事件历史读触达覆盖=模型级单测面）、DAC_CON 控制位变化（v3 锚定）、另一核写、未预期重写（同值也审查也失效）、写溯源缺失（fail-closed）；守卫状态（写来源+阶段+失效位+判定锚）随 M4 族快照恢复（12 字段）",
+  "report_face": "每字读计数/首末读 PC·核·步（模型步轴=hardware.advance 计数，含事件钟虚拟步）/最后写值及来源 PC·步·核、拒绝计数（按 reason:word 键）、当前阶段+失效事件、写事件审计面（每字末 8 笔+总数+DAC_CON 基线锚定标记）、守卫常量（读点形状/字节/期望写者/DAC_CON 观测面/逐装载重验标记）",
+  "wording": "显式初始化空闲假设（derived-not-measured，非硅等价声明）：仿真无 IRQ39 不能反证硅上无 DMA 活动；SWN 未写≠复位值为 0；LEN=1 配置待解释；控制位序列对硬件静止的影响未审；先例（lp_timer CON/UART CON1/DAC_VL0）只提供实现方式不自动赋予硬件语义——codex 原文进 report.assumption+Hardware assumptions+registry 描述",
+  "files": "tools/br28_model.py（JLAudioDacDmaIdleReadback 类+Hardware 读写钩子+报告+四字容器注释勘误）、tools/probe_boot.py（step_body 装载门+current_pc 溯源+PNS/SWN 写观察）、tools/probe_irq_entry.py（参数+require+budget+check 断言面+叙事+计数重钉）、tools/frontier_registry.py（feature+四字容器命名勘误+FRONTIERS 重钉）、tools/world_snapshot.py（M4 族 12 字段）、tools/test_jl_audio_dac_dma_idle.py（19 项）、tools/test_world_snapshot.py（M4 开关+poke）、tools/check_local.py（挂单测）、HANDOFF.md（前沿行+条目+勘误两处）"
+ },
+ "verification_arms": {
+  "mechanism": "frontier_iteration.py 自建 base 对（dmaimpl-base-off：off 世界从零 41,884,941 @ budget 41.9M/23.2 分钟；dmaimpl-base-on：全开世界从零同边界，v3 代码态重捕一次）+秒级臂位续跑",
+  "arm1_off_reproduce": {
+   "stop": "41965883 @ 0x606e148 jl_audio_dac_dma_read_not_modeled 0xfe0510（旧前沿逐字复现）",
+   "comparison": "与 evimpl 路全量参照 on-main.json 逐键比较：differing_keys=['peripherals'] 且差异面恰=本路有意修正的两处勘误命名文本（四字容器 sdk_naming 与 assumptions 的 ADR/LEN/HRP/PNS→SWP）——步数/停点/22 键 adapter 计数/全部 counters 逐键相等（提取器全量核对）",
+   "wall_seconds": 3.7
+  },
+  "arm9_on_main": {
+   "stop": "42037363 @ 0x606a900 upstream_simulator_failure 'copex.ppi has no model'（+71,480 步新前沿）",
+   "advance": "per-core core1 11496 冻结（纯 CPU0 段），wall 6.2s",
+   "stop_reading": "0x606a8fc 函数体（mov r2=r0/li r3=0/copex.ppi {r:1,s:1,n:22}/st.w [r1]=r2/rts）——DSP 协处理指令族，上游仿真器无模型=诚实指令级墙；0x606a908 起邻函数为浮点族（div.f/mul.f）=音频 DSP helper 域。侦察分支 1『调用者续段→再往后首撞…解码器资源域』命中；数据相三重墙（LEN 首读/SWN 0xfe0518/PNS 0xfe050c）全部未触达——空间函数 0x607236c 未执行，守卫审计 SWN/PNS 零触达",
+   "release_evidence": "reads_served 4+4（set_sample_rate 段内四调，每调首对 volatile 双读 0==0 相等臂直进 POST，第二对 0x606e150/152 从不执行）；写溯源=固件自己的指针复位写 0x6071ea8/0x6071ea4（step 3,204,348/347、core 0、值 0x0——零合成字节）；rejections={}、invalidation_events=[]（全段守卫零拒绝零失效）；adapter jl_audio_dac_dma_idle_readback_load=8；M4 快照恢复保真运行时证明（写溯源 step 3,204,3xx 来自 41.9M 边界快照恢复而非本段重放）",
+   "post_segment": "POST 段全执行：[r6+20]=r4 采样率记录、DAC_CON [3:0] RMW 对×4（AK 容器服务，写值恒 0x835e110=delta⊆0xF 不失效）、audio_dac_read_reset_all 纯 RAM、回调槽 [r6+0]==0 空（侦察开放项 §7.1 运行时闭包=空）；观察项：四调 DAC_CON 终值不变（低 4 位 0）——采样率索引值/调用者身份未深究，只登记观察",
+   "shape": "Timer0 交付 15766→15778（+12，新中断上下文 0x6010ad6/0x6010a52=sdfile 走查器族、0x6007b60/0x6007ba8=0x6007b7e 同族，末次打断 0x6007b60）；到期 15783→15795、PRD 23999→35999、cnt 15417→33810、handler 帧 31532→31556；core-tick cnt 577584→863504（恰 +71,480×4）、347/347 冻结；CRC 246→264（+18=六值周期×3）/fed 73109→73649；wdt elapsed 134→152、feeds 163/162 冻结；sw commands/acks 692/346→696/348（+2 调度器等待交付）、held 窗 11239→11259（窗口族=mid_instruction+software_irq_handler 混合，全 irq4）；DAC_CON 16→24 写；fd31 CON 读 2522→2523/PND 1202→1203（+1 采样轮）；eclock 82545158/parked (12791,257,176)/p2m 162 冻结",
+   "wall_seconds": 6.2
+  },
+  "arm_extra_enable_ack_refusal": "跨开关 enable-ack 负证据（意外收获）：从 evimpl 路代码态 base-on（无本守卫 M4 槽）enable-ack 续跑——fresh 守卫零写事件=zero_write 拒绝，如实停旧停点 41,965,883（kind 与关世界一致）——enable-ack 的『前缀零触达』前提对本守卫不成立（前缀已写观察字），自建 base 对是唯一干净路径",
+  "arm3_negative_model": "12 项守卫矩阵单测（tools/test_jl_audio_dac_dma_idle.py）：零写拒绝、未预期重写（同值也失效）、钉死站点重写不失效、另一核写、写溯源缺失、SWN/PNS 触达（读+写）、DAC_CON 观测面（索引面/尾段站点不失效，flush 臂位/面外位失效）、基址不符、不等指针不构造相等、位置未核验计数、快照字段清单、Hardware 依赖缺失/钩子先于分发",
+  "arm_shape_pins": "四读点形状表与官方镜像互证（codec 解码 0x606e148/14a/150/152=ld.w {d,b:5,n:4/5}、字节 50 64/51 65、li.u32 r5=0xfe0500 恰邻、两 beq.rr 均前跳 0x606e194——空闲守卫非回边等待环勘误钉子）",
+  "arm8_snapshot_consistency": "M4 族 round-trip（test_world_snapshot poke：12 字段含判定锚）+on 世界快照恢复运行时证明（见 release_evidence）+base-on 重捕后干净续跑（无 ack）",
+  "arm10_regression": "assert_preflight 合成报告（main 全量 14 行+on-main 行拼合）222 断言 222 过（重取后全绿）；recapture 从零全量（1,382s）停点 42,037,363 @ 0x606a900 与快照续跑臂逐字一致=resume≡from-0 独立确认（CKPT 口径外再一路）；check_local --units EXIT=0（含新增 19 项定向单测+test_world_snapshot 60 项 poke 扩）；全量 probe --rom 从零 EXIT=0 见 repins.full_run"
+ },
+ "repins": {
+  "frontier_registry": "p11_heap_experimental → 42037363 @ 0x606a900 upstream_simulator_failure 'copex.ppi has no model'（freshness_fields kind+message；probe require/analyze freshness/test 期望自动跟随单点）",
+  "probe_check_counts": "timer0 交付 15778/到期 15795/cnt 33810/PRD 35999/handler 帧 31556+新中断上下文 4 站；core-tick cnt 863504（347/347 冻结）；CRC 264/fed 73649（尾段六值周期×9）；wdt elapsed 152；sw 696/348+交付列表尾 +2×调度器等待+RTI 348+held 11259；DAC_CON stores 24 写（word_writes 28/读回 25）；fd31 CON 读 2523/PND 1203；DMAIMPL 释放记录断言块+中文注释段+预算注记",
+  "adapter_baseline": "22 键 evidence/p11_heap_adapter_count_baseline.json --recapture 重取（本路 +71,480 步漂移 13 键：exact_full_word_store +2279/abstract_task_stack_transport +1754/per_core_visible_cnum +1338/partial_icfg_bit9_only +636/mmio_rmw_always_writes +468/parallel_insert_load_old_registers_is_assumption +372 等）",
+  "analyze_check_self": "不改动 analyze_image_trace.py（红线；sim-evimpl 路并行持有该文件改动）——其 per_core 硬钉 {'0':41914483,'1':11496} 相对本路新前沿将漂移为 {'0':42042359,'1':11496}（on-main 臂 machine.cores 实测），与 evimpl 期漂移一并向主协调报告",
+  "full_run": "tools/probe_irq_entry.py --rom 全量从零 15 场景 EXIT=0（17:18-17:44,26 分钟;p11 行 42,037,363 @ 0x606a900 upstream_simulator_failure 'copex.ppi has no model';产物 analysis/local-checks/irq-entry.json,assert_preflight 复检 222/222 全绿）"
+ },
+ "next_stop_prediction": "新停点 0x606a900 copex.ppi=上游无模型的 DSP 协处理指令（0x606a8fc 小叶子函数体：mov/li/copex.ppi/st.w/rts；邻域 0x606a908 起为 div.f/mul.f 浮点族=音频 DSP helper 域）。下一路候选：①copex 协处理指令族建模/投影（SDK DSP 库 IR 对位，全 app copex 站点扫描定形状面）；②若绕过则解码器资源域 SFR（d2 §3 清单）首撞；③数据相三重墙（LEN 首读/SWN/PNS）仍在后（空间函数 0x607236c 未执行）。侦察 top3 第 1/2 名（walker 对象域、兄弟任务/事件钟）本段无停点越过",
+ "honesty": {
+  "derived_not_measured": "放行=显式初始化空闲假设（『HRP 自软写 0 后硬件未推进』为新增硬件假设，derived-not-measured 非硅等价声明；证据缺口四条照 codex 原文进报告）；读回值本身零合成字节（=固件自己的写记录）",
+  "resume_conditional_pass": "on/off 两臂均自建 base 快照续跑（6.2s/3.7s 档）；等价性依据=CKPT 先例+off 臂与 evimpl 全量参照逐键相等（除两处勘误文本）+on 臂停点被 --recapture 从零全量逐字复现+断言面离线闭环 221/222（基线重取中）；合并前全量 probe --rom 从零重放是红线收口",
+  "preflight_splice_method": "离线预检用 main 全量报告 legacy 14 行+本路 on-main 行拼合（零仿真重放 check()）；legacy 行对本路开关中立（默认关）",
+  "parity": "official↔b79 parity 到新停点未在本路重跑（放行段纯 CPU0、无镜像分叉点，预期 delta 0——evimpl 同款边界）；analyze_image_trace 的 per_core 钉值漂移（evimpl 期+本路两段）留主协调复核准入",
+  "scope": "本放行只覆盖四个钉死读点的 HRP/SWP 两字；ADR/LEN/SWN/PNS 读侧与一切他址读保持严格停；flush 臂（HRP≠SWP 世界）未在场景级跑（守卫不构造相等由单测钉死，PNS 未映射停=模型级钉死）；POST 段观察项（四调 DAC_CON 低 4 位值恒 0/调用者二选一）只登记未深究"
+ }
+}
