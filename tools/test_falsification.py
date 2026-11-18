@@ -93,6 +93,9 @@ class WiringGuardFalsificationTests(unittest.TestCase):
         ('SRC_SYNC 容器撤掉 copex mode-22 放行(路 SRCSYNC 依赖边)',
          dict(jl_src_sync_config_words=True),
          'the JL_SRC_SYNC config container only layers on the copex mode-22 release'),
+        ('JL_SYNC 容器撤掉 SRC_SYNC 放行(路 SYNCIMPL 依赖边)',
+         dict(jl_sync_config_words=True),
+         'the JL_SYNC config container only layers on the JL_SRC_SYNC release'),
     )
 
     def test_dependency_sabotage_is_refused_before_any_simulation(self):

@@ -736,6 +736,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         return
                     # 守卫拒绝:落回普通严格路径(零写/阶段失效/基址不符
                     # 负例即在此处诚实停,kind 与开关关世界一致)。
+            if hardware is not None and hardware.jl_sync is not None:
+                # 路 SYNCIMPL(codex 裁收窄版 a):JL_SYNC 四字容器读策略的
+                # PC/核溯源(每步刷新,DMAIMPL current_pc 先例)。CON 读只
+                # 服务已审计写回组装读点+主核;IRQ/getter 分支读点、未审计
+                # PC、另一核读在消费前拒(jl_sync_con_*_not_modeled)。开关
+                # 关=槽 None,一次 is-not-None 测试即过,legacy 世界零变化。
+                hardware.jl_sync.note_step(self.pc,self.core_id)
             if hardware is not None and hardware.copex_exp22 is not None:
                 # 路 COPEXIMPL(codex 裁 (a) 收窄版,坑②):copex.ppi mode-22
                 # 指数近似模型的指令级拦截门。必须在 upstream pair()/step1

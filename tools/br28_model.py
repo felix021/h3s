@@ -113,6 +113,19 @@ JL_ADC_START_CONFIG_WORDS=(0xfe0904,0xfe0908,0xfe0554,0xfe055c)
 # 其余 13 成员(CON2/CON3/IDAT/ODAT/FLTB/ODAT_ADR_START/END/STOP_FLAG/
 # INSR/OUTSR/PHASE)零触达不进白名单,不据 __RW 扩整块。
 JL_SRC_SYNC_CONFIG_WORDS=(0xfe2600,0xfe2604,0xfe263c)
+# 路 SYNCIMPL:JL_SYNC(audio_sync)四字容器(2026-11-19 侦察钉死,
+# docs/frontier-scout-jlsync.md;基址 0xfe2500=hs_base+map_adr(0x25,0),
+# br28.h JL_SYNC_TypeDef 13 成员)。42,061,357 停点 0x60befe6 `[r0+0]=r1`
+# (r0=li 0xfe2500,r1=0)——audio sync 对象创建器 0x60befae 体内 CON 整字
+# 写 0。creator→fn_config 链上最终触达恰四字:CON(+0 __RW,停点整字写 0+
+# fn_config 读-改-写)与 CON1(+0x1c __WO)/BT_OFFSET(+0x24 __WO)/
+# MIN_SLOT(+0x28 __WO)(fn_config 纯写);其余 9 成员(DABUF/DASPACE/
+# OFFEND/OFFSUM/PCMNUM/BTTIME/CON2/OUTSR/INSR)零触达不进白名单,
+# 不据 __RW/__WO 扩整块。codex 裁收窄版 (a):CON 不设合成初值(当前链
+# 首个访问就是写,首写前读拒绝 BATCHA 先例)、写后读回=最后写值、
+# RMW 内部读走通用 mmio 路径;WO 三字纯写记录读一律拒绝(含 RMW 内部读);
+# 消费者 PC 守卫拒 IRQ/getter 的分支读点(详见 JLSyncConfigWords 类注释)。
+JL_SYNC_CONFIG_WORDS=(0xfe2500,0xfe251c,0xfe2524,0xfe2528)
 PLL0=0xfd4600
 CLOCK0=0xfd0018
 SYS_DIV=0xfd0014
@@ -6453,6 +6466,260 @@ class JLSrcSyncConfigRegisters:
                               'scenario')}
 
 
+class JLSyncConfigWords:
+    """JL_SYNC(audio_sync)四字容器 CON/CON1/BT_OFFSET/MIN_SLOT(opt-in,路
+    SYNCIMPL,codex 收窄版 (a),docs/frontier-scout-jlsync.md §5)。
+
+    背景:42,061,357 停点 0x60befe6 `[r0+0]=r1`(r0=li 0xfe2500、r1=0)——
+    audio sync 对象创建器 0x60befae 体内(zalloc 56B→字段 init→probe 链表空
+    判定→**CON=0 复位写=停点**→BT clock timer 配置→request_irq(88)→
+    fn_config→链表插入→回调安装),IPMASK=6 临界区内。
+
+    识别与证据(2026-11-19 路 SYNCSOUT 静态侦察+codex 复核,反汇编=仓外
+    app-linear.asm 与 disassemble_app.py 同源;audio_sync 驱动公开 SDK 三源
+    闭源,固件反汇编即第一手):
+    - **基址 li 装载驱动**:CON 字 0xfe2500 的 li 站点恰 12 处全在
+      0x60beeee-0x60bf1f0(audio_sync 库函数族),app 零 .data 地址字面量
+      (与 JL_SRC_SYNC 的 hw_res 表形状对照——本块纯 li)。
+    - **creator→fn_config 链触达恰四字**:CON(停点整字写 0;fn_config
+      0x60bef9e 读-改-写——0x60bef62 显式读→&0xE9DFC000 保留位→两组装
+      分支 `if (r4!=1)`(r4=b[obj+4] 对象字节非 CON 值)二选一整字写)、
+      CON1(0x60bef60 `=h[obj+10]<<16`,预期 200<<16)、BT_OFFSET
+      (0x60bef58 整字写 0)、MIN_SLOT(0x60bef96 `=h[obj+12]`,预期 80)。
+      **本次续跑(fn_config 在 request_irq/0xF001xx 三道墙之后)只执行
+      CON 一写零读;WO 三字零写零读**——四字一次建好,下路跨墙后 fn_config
+      无需再改模型(执行断言按本次一字收口,不宣称配置事务已跑通)。
+    - **CON 读值去向(读点逐 PC 分类)**:写回组装读点(读值只进
+      old|bit/old&~bit/insert 写回,AM/B3/DT/ADA/LPV 判据)——fn_clear_b22
+      0x60beef4(&=0xFFBFFFFF)、fn_config 0x60bef62、fn_stop 0x60bf062/
+      0x60bf066、fn_pause 0x60bf0c4/0x60bf0d8、fn_resume 0x60bf12e/
+      0x60bf142、IRQ handler 0x60bf1f8/0x60bf24a(原子 RMW 内部读)与
+      0x60bf276(insert 写回);**分支消费读点(读值决定控制流,拒绝)**——
+      IRQ 0x60bf1f6(bit19 `if(r0&0x80000)`)、IRQ 0x60bf25c(装载,
+      uextra 0x60bf25e 消费 bit28 vs 对象槽号比较——侦察文档引 uextra 站点
+      0x60bf25e,守卫按装载指令 PC 0x60bf25c 拒,同一访问)、getter
+      get_SLOT_MIX 0x60bf19c(bit28 vs b[obj+3] 比较)。getter 族与 IRQ
+      handler 不在当前执行前缀(SRCSYNC 实测交接的运行事实;回调槽
+      0x607f5f6 结构上可达——静态不能替代运行排除,故做可执行守卫)。
+
+    建模选择(codex 三选一裁收窄版 (a)):
+    - **CON 无合成初值**:当前链首个访问就是 creator 整字写 0,无初值读
+      需求;首写前读拒绝(未写字读=停,BATCHA 首写前拒读先例——真实路径
+      先写后读,初态假设无必要,访问顺序变化立即显形);写后读回=最后写值
+      (写记录投影非硅读回声明);RMW 内部读走 probe_boot 通用 mmio 路径
+      (mem.read→hardware.read→mem.write→hardware.write)。
+    - **WO 三字纯写记录读一律拒绝**(显式读与 RMW 内部读同拒,写过也
+      拒绝;jl_sync_wo_read_not_modeled)。
+    - **消费者 PC/核守卫(负例矩阵⑥)**:CON 读只在「已审计写回组装读点
+      +主核」服务;分支读点(jl_sync_con_branch_read_not_modeled)、未审计
+      PC(jl_sync_con_read_pc_not_audited——同址新读者到达即停,把 codex
+      「地址白名单不挡同址新消费者」从诚实边界升级为可执行边界)、另一核
+      (jl_sync_con_other_core_read_not_modeled)一律消费前停。PC/核溯源=
+      probe_boot step_body 每步刷新(DMAIMPL current_pc 先例),快照 rides
+      as state。
+    - 写不设 PC 守卫(写记录值透明,cores 照记);暂停/恢复/停止函数
+      (fn_pause/fn_resume/fn_stop)的写回读点已在白名单,到达时按
+      「同址新 RMW 掩码重审」条款另行核。
+
+    known_limitation:容器存配置字记录非硅状态位;IRQ88 触发、DASPACE/
+    OUTSR/DABUF/BTTIME 状态读面、BT clock timer(0xF00130/40 写、
+    0xF00144/48 读)、0xF00000|=0x400 modem 窗全部不建模;主核越过停点
+    不表示真实 audio_sync 已配置或任何音频同步/中断/DMA 运行
+    (codex 措辞)。
+    """
+
+    WORDS=JL_SYNC_CONFIG_WORDS
+    SDK_NAMES={0xfe2500:'JL_SYNC->CON',0xfe251c:'JL_SYNC->CON1',
+               0xfe2524:'JL_SYNC->BT_OFFSET',0xfe2528:'JL_SYNC->MIN_SLOT'}
+    WO_ADDRESSES=frozenset((0xfe251c,0xfe2524,0xfe2528))
+    # CON 读值只进写回组装的已审计读点(RMW 内部读=指令自身 PC):
+    WRITEBACK_READ_PCS=frozenset((0x60beef4,0x60bef62,0x60bf062,0x60bf066,
+                                  0x60bf0c4,0x60bf0d8,0x60bf12e,0x60bf142,
+                                  0x60bf1f8,0x60bf24a,0x60bf276))
+    # CON 读值进分支的消费读点(装载指令 PC;0x60bf25e 是其 uextra 消费者,
+    # 侦察文档按消费者引用,同一访问):
+    BRANCH_READ_PCS=frozenset((0x60bf1f6,0x60bf25c,0x60bf19c))
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0
+        self.con_read_attempts=0
+        self.wo_read_attempts=0
+        # PC/核溯源(probe_boot step_body 每步刷新;restore 后首步前为 None
+        # =未审计,读即拒绝——安全默认)。
+        self.current_pc=None
+        self.current_pc_core=None
+
+    def handles(self,address):
+        return address in self.stores
+
+    def note_step(self,pc,core):
+        """probe_boot step_body 每步刷新的读策略溯源(DMAIMPL current_pc
+        先例;开关关=槽 None,一次 is-not-None 测试即过,legacy 零变化)。"""
+        self.current_pc=pc
+        self.current_pc_core=core
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled JL_SYNC config word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address,core=0):
+        if address not in self.stores:raise ValueError('not a modeled JL_SYNC config word')
+        if address in self.WO_ADDRESSES:
+            # WO 三字(CON1/BT_OFFSET/MIN_SLOT):纯写配置口零读观测——读
+            # 到达即新访问点,拒绝即停(含 RMW 内部读;写过也拒绝)。
+            self.wo_read_attempts+=1
+            raise Blocked('jl_sync_wo_read_not_modeled',address=hex(address))
+        # CON 消费者守卫(负例矩阵⑥):分支读点/另一核/未审计 PC 一律消费
+        # 前停;仅已审计写回组装读点在首写后读回最后写值。
+        pc=self.current_pc
+        if pc in self.BRANCH_READ_PCS:
+            self.con_read_attempts+=1
+            raise Blocked('jl_sync_con_branch_read_not_modeled',
+                          address=hex(address),pc=hex(pc))
+        if core!=0:
+            self.con_read_attempts+=1
+            raise Blocked('jl_sync_con_other_core_read_not_modeled',
+                          address=hex(address),core=core)
+        if pc not in self.WRITEBACK_READ_PCS:
+            self.con_read_attempts+=1
+            raise Blocked('jl_sync_con_read_pc_not_audited',
+                          address=hex(address),pc='None' if pc is None else hex(pc))
+        entry=self.stores[address]
+        if entry['writes']==0:
+            # 无合成初值(codex 裁:首访问即写;首写前读=访问顺序变化,停)。
+            self.con_read_attempts+=1
+            raise Blocked('jl_sync_con_read_before_first_write_not_modeled',
+                          address=hex(address))
+        self.reads_after_write+=1
+        return entry['values'][-1]
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                         'writes':e['writes'],'cores':e['cores'][-16:]}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        return {'addresses':[hex(a) for a in self.WORDS],
+                'sdk_names':{hex(a):name for a,name in sorted(self.SDK_NAMES.items())},
+                'word_writes':self.word_writes,
+                'stores':touched,
+                'readback_projection':{
+                    'con':{'reads':self.reads_after_write,
+                           'read_attempts_refused':self.con_read_attempts,
+                           'semantics':('CON has NO synthetic initial word (codex narrowed-(a) '
+                                        'decision: the first access on the audited chain IS the '
+                                        'creator whole-word zero store) — a read before the first '
+                                        'write raises Blocked; after the first write reads answer '
+                                        'the last written value (write-record projection, '
+                                        'derived-not-measured, NOT a silicon readback claim); the '
+                                        'RMW internal reads ride the generic mmio path')},
+                    'wo':{'addresses':[hex(a) for a in sorted(self.WO_ADDRESSES)],
+                          'read_attempts_refused':self.wo_read_attempts,
+                          'semantics':('CON1/BT_OFFSET/MIN_SLOT are __WO pure-write config ports '
+                                       'with zero read observations — every read is refused '
+                                       'including the internal read an RMW would need, even after '
+                                       'writes')},
+                },
+                'consumer_guard':{
+                    'branch_read_pcs':[hex(pc) for pc in sorted(self.BRANCH_READ_PCS)],
+                    'writeback_read_pcs':[hex(pc) for pc in sorted(self.WRITEBACK_READ_PCS)],
+                    'semantics':('CON reads are served ONLY from the audited write-back-assembly '
+                                 'read PCs on core 0 — the three branch-consuming loads (IRQ '
+                                 'handler 0x60bf1f6 bit19, 0x60bf25c bit28-uextra vs slot, getter '
+                                 'get_SLOT_MIX 0x60bf19c bit28 vs slot; the scout doc cites the '
+                                 'uextra consumer 0x60bf25e, the guard refuses at the load PC '
+                                 '0x60bf25c of the same access), any unaudited PC and any other '
+                                 'core stop BEFORE consumption (jl_sync_con_branch_read_not_'
+                                 'modeled / jl_sync_con_read_pc_not_audited / '
+                                 'jl_sync_con_other_core_read_not_modeled) — the same-address '
+                                 'new-consumer re-audit clause made executable; writes are '
+                                 'recorded from any PC/core (value-transparent records)'),
+                },
+                'modeled_vs_touched':('modeled exactly the four JL_SYNC words of the creator→'
+                                      'fn_config chain (0xfe2500 CON / 0xfe251c CON1 / 0xfe2524 '
+                                      'BT_OFFSET / 0xfe2528 MIN_SLOT); the other nine block '
+                                      'members (DABUF/DASPACE/OFFEND/OFFSUM/PCMNUM/BTTIME/CON2/'
+                                      'OUTSR/INSR) have zero touches on this chain and stay '
+                                      'unmapped — this release crosses only the creator CON '
+                                      'whole-word zero store; fn_config (the WO three-word writer '
+                                      'and the CON read-modify-write) sits behind the 0xF00130/'
+                                      '0xF00140 timer writes and the request_irq ICU RMW and has '
+                                      'NOT executed in the released prefix'),
+                'whitelisted_words':('exactly the four words above; only aligned 32-bit whole-word '
+                                     'accesses are served — sub-word, misaligned and cross-word '
+                                     'accesses stay unmapped; the 0xF00130/0xF00140/0xF00144/'
+                                     '0xF00148 BT-clock-timer addresses are NOT part of this '
+                                     'container (a future release takes independently approved '
+                                     'addresses, never a contiguous range); a same-address new '
+                                     'consumer is refused at read time by the PC/core guard '
+                                     '(writes recorded, re-audited on arrival)'),
+                'observed_shapes':('the 42,061,357 stop itself: the creator 0x60befae li-constant '
+                                   'whole-word zero store [0xfe2500]=0 at 0x60befe6 inside the '
+                                   'IPMASK-6 critical section after zalloc/field-init/probe; '
+                                   'the statically-audited fn_config face behind the walls: '
+                                   'BT_OFFSET=0 @0x60bef58, CON1=h[obj+10]<<16 @0x60bef60 '
+                                   '(expected 200<<16=0x00C80000), the CON read @0x60bef62 → '
+                                   '&0xE9DFC000 preserved-bits assembly with the '
+                                   'if (r4!=1) two-way write @0x60bef9e (arm values '
+                                   '0x06210000|r5 vs (r5&0xF9DEFFFF)|0x06200000, r4=b[obj+4] a '
+                                   'RAM object byte, NOT the CON value), MIN_SLOT=h[obj+12] '
+                                   '@0x60bef96 (expected 80) — unit-pinned mask arithmetic, '
+                                   'runtime-unreached'),
+                'access_face_completeness':('whole-image 4-byte-literal scan (the 12 li sites '
+                                           '0x60beeee-0x60bf1f0 ARE the only 0xfe25xx address '
+                                           'hits — the block has ZERO .data/.rodata address '
+                                           'literals, unlike JL_SRC_SYNC\'s hw_res table), plus a '
+                                           'full linear read of the library family '
+                                           '0x60bee98-0x60bf2c8 (creator/fn_config/fn_stop/'
+                                           'fn_pause/fn_resume/fn_clear_b22/getters×5/IRQ '
+                                           'handler) and the adapter call chain 0x607e376-'
+                                           '0x607f7xx; covers the main-core app linear window '
+                                           'only — cross-function register passing, RAM copies, '
+                                           'ROM, q32s and other cores are NOT covered (LPV/ADA '
+                                           'wording)'),
+                'model_assumptions':('no synthetic initial word and read-back=last-write are the '
+                                     'codex narrowed-(a) decision (the zero-initial assumption '
+                                     'was explicitly REJECTED for CON — the honest shape is '
+                                     'refuse-before-first-write); the PC/core read guard turns '
+                                     'the same-address-new-consumer re-audit duty into an '
+                                     'executable stop; the creator/fn_config branch conditions '
+                                     '(probe list-empty, b[obj+4], b[obj+6]) sit on RAM object '
+                                     'fields, never on CON values — the released segment runs '
+                                     'zero reads, so no container value influences control flow'),
+                'cross_domain_limitations':('the projection records main-core config-word updates '
+                                            'only; no IRQ88 delivery, no BT clock timer behavior '
+                                            '(0xF00130/40/44/48), no DASPACE/OUTSR/DABUF/BTTIME '
+                                            'state, no slot alignment, no DMA and no cross-core '
+                                            'visibility is modeled — the main core passing the '
+                                            'stop does NOT mean the real audio_sync block is '
+                                            'configured or that any audio synchronization runs '
+                                            '(codex wording)'),
+                'sdk_naming':('JL_SYNC = hs_base + map_adr(0x25, 0x00) = 0xfe2500 with the br28.h '
+                              'JL_SYNC_TypeDef (sha 111e29ea…) thirteen members: CON(+0 __RW), '
+                              'DABUF(+4 __RW), DASPACE(+8 __RO), OFFEND(+c __RO), OFFSUM(+10 '
+                              '__RO), PCMNUM(+14 __RO), BTTIME(+18 __RO), CON1(+1c __WO), '
+                              'CON2(+20 __RW), BT_OFFSET(+24 __WO), MIN_SLOT(+28 __WO), OUTSR'
+                              '(+2c __RW), INSR(+30 __WO); IRQ_SYNC_IDX=88 (hwi.h); the '
+                              '__RW/__WO labels locate the words, they are NOT silicon '
+                              'read-back evidence'),
+                'known_limitation':('the container stores config-word records, NOT silicon state; '
+                                    'silicon reset values, the CON bit semantics (bit19/bit22/'
+                                    'bit23/bit28, bits0-13 slot insert) and the WO port effects '
+                                    'remain unverified — the bit semantics are derived from the '
+                                    'firmware driver shape (public JieLi SDKs carry no '
+                                    'audio_sync driver source; the firmware disassembly IS the '
+                                    'first-hand evidence)'),
+                'assumption':('four-word config container of the codex narrowed-(a) shape with a '
+                              'BATCHA-style split read policy and a consumer PC/core guard: CON '
+                              'refuses reads before the first write and answers the last written '
+                              'value afterwards (write-record projection), the three __WO words '
+                              'refuse every read, branch/unknown-PC/other-core CON readers stop '
+                              'before consumption; this does NOT verify any audio '
+                              'synchronization, IRQ88, timer or DMA scenario')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -7848,6 +8115,7 @@ class BR28Model:
                  jl_eq_init_writes=False,
                  jl_adc_start_config=False,jl_adc_start_probe_value=None,
                  jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
+                 jl_sync_config_words=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -8562,6 +8830,13 @@ class BR28Model:
         # 保持 unmapped(42,059,070 前沿形状),legacy 逐字节不变。
         self.jl_src_sync=(JLSrcSyncConfigRegisters(probe_initial=jl_src_sync_probe_value)
                           if jl_src_sync_config_words else None)
+        # 路 SYNCIMPL:JL_SYNC(audio_sync)四字容器(CON/CON1/BT_OFFSET/
+        # MIN_SLOT)——42,061,357 停点 0x60befe6(creator 0x60befae 体内 CON
+        # 整字写 0)放行;CON 无合成初值(首写前读拒绝)+写后读回=最后写值
+        # +消费者 PC/核守卫(分支读点/未审计 PC/另一核消费前停),WO 三字
+        # 纯写记录读一律拒绝;其余 9 成员零触达不进。默认关:四字保持
+        # unmapped(42,061,357 前沿形状),legacy 逐字节不变。
+        self.jl_sync=JLSyncConfigWords() if jl_sync_config_words else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -8756,6 +9031,7 @@ class BR28Model:
             (self.jl_eq_init is not None and self.jl_eq_init.handles(address)) or
             (self.jl_adc_start is not None and self.jl_adc_start.handles(address)) or
             (self.jl_src_sync is not None and self.jl_src_sync.handles(address)) or
+            (self.jl_sync is not None and self.jl_sync.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -9203,6 +9479,12 @@ class BR28Model:
         if self.jl_src_sync is not None and self.jl_src_sync.handles(address):
             self.counts['reads']+=1
             return self.jl_src_sync.read(address)
+        # JL_SYNC 四字(路 SYNCIMPL):CON 首写后读回=最后写值(读策略带
+        # 消费者 PC/核守卫——分支读点/未审计 PC/另一核消费前停,PC 溯源由
+        # probe_boot step_body 每步刷新),WO 三字读一律拒绝。
+        if self.jl_sync is not None and self.jl_sync.handles(address):
+            self.counts['reads']+=1
+            return self.jl_sync.read(address,self.current_core)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -9523,6 +9805,11 @@ class BR28Model:
             # (系数装载,55 轮恒零);原子 RMW 内部读=容器当前值(通用 mmio
             # 路径);SRC_SYNC 硬件语义/采样率转换不建模。
             self.jl_src_sync.write(address,value,self.current_core)
+        elif self.jl_sync is not None and self.jl_sync.handles(address):
+            # JL_SYNC 四字(路 SYNCIMPL):creator CON 整字写 0(停点)与
+            # fn_config WO 三字纯写/CON RMW 写回的记录;JL_SYNC 硬件语义/
+            # IRQ88/BT clock timer 一律不建模。
+            self.jl_sync.write(address,value,self.current_core)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -10604,6 +10891,30 @@ class BR28Model:
                 're-audited; no SRC_SYNC hardware behavior, sample-rate conversion, '
                 'DMA, coefficient FIFO semantics or IRQ89 delivery is modeled — this '
                 'does NOT verify any sample-rate conversion, DMA or audio processing')
+        if self.jl_sync is not None:
+            result['jl_sync_config_registers']=self.jl_sync.report()
+            result['assumptions']['jl_sync_config_registers']=(
+                'JL_SYNC audio-sync block (CON 0xfe2500 / CON1 0xfe251c / '
+                'BT_OFFSET 0xfe2524 / MIN_SLOT 0xfe2528, the four words of the '
+                'creator->fn_config chain behind the 42,061,357 stop 0x60befe6 '
+                'creator whole-word zero store): codex narrowed-(a) container — '
+                'CON has NO synthetic initial word (a read before the first write '
+                'raises Blocked; after the first write it answers the last written '
+                'value, a write-record projection derived-not-measured), the three '
+                '__WO words record pure writes and refuse every read including the '
+                'internal read an RMW would need, and a consumer PC/core guard '
+                'refuses the three branch-consuming loads (IRQ 0x60bf1f6 bit19, '
+                '0x60bf25c bit28-uextra vs slot, getter get_SLOT_MIX 0x60bf19c '
+                'bit28 vs slot), any unaudited PC and any other core BEFORE '
+                'consumption; the base 0xfe2500 is li-driven (12 li sites in the '
+                'audio_sync library family 0x60beeee-0x60bf1f0, zero .data address '
+                'literals); fn_config (the WO writer and the CON read-modify-write) '
+                'sits behind the 0xF00130/0xF00140 timer writes and the request_irq '
+                'ICU RMW and has NOT executed in the released prefix; the other '
+                'nine block members stay unmapped; no IRQ88 delivery, BT clock '
+                'timer behavior, DASPACE/OUTSR/DABUF/BTTIME state, slot alignment '
+                'or DMA is modeled — this does NOT verify any audio '
+                'synchronization, timer or interrupt scenario')
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
