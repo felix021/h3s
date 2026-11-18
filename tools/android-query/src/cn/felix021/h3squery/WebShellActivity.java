@@ -190,7 +190,9 @@ public class WebShellActivity extends Activity {
                             return;
                         }
                     }
-                    bridge.writeEq(intent.getIntExtra("eq_type", 1),
+                    // 默认 type=2（TYPE_APPLY）：type=1 是固件「装载自定义槽」指令、载荷被忽略
+                    //（docs/eq-cmd-0x22-layout.md §2.3），页面 eqSend 同款形状。
+                    bridge.writeEq(intent.getIntExtra("eq_type", EqFrame.TYPE_APPLY),
                         intent.getIntExtra("master_centid", 0), bandsJson);
                 }
                 // M3 USB 恢复卡驱动口（SIMB3A：与页面按钮同一 H3sUsbBridge 方法/事件/DOM；

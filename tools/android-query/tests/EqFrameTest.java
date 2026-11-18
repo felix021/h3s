@@ -27,9 +27,28 @@ public class EqFrameTest {
         roundTrip();
         boundary();
         docBytes();
+        typeSemantics();
         overLimit();
         policy();
-        System.out.println("EqFrameTest passed: 往返一致、边界、路 H 文档字节对照、段数超限、EqWritePolicy 放行/拒绝");
+        System.out.println("EqFrameTest passed: 往返一致、边界、路 H 文档字节对照、type 语义常量、段数超限、EqWritePolicy 放行/拒绝");
+    }
+
+    /** type 字节语义（路 EQFIX 重解 apply 0x06025118 钉死，docs/eq-cmd-0x22-layout.md §2.3）：
+     *  1=装载 MusicEqBt[0] 槽（载荷被忽略）、10=空间音效、其余=解码载荷应用——下发曲线用 2。 */
+    static void typeSemantics() {
+        eq("TYPE_APPLY=2", 2, EqFrame.TYPE_APPLY);
+        eq("TYPE_RECALL_SLOT=1", 1, EqFrame.TYPE_RECALL_SLOT);
+        eq("TYPE_SPATIAL=10", 10, EqFrame.TYPE_SPATIAL);
+        // 推荐下发头：type=2 + mastergain -4dB → 02 70 FE（文档 §7 修正后的示例）
+        bytes("type=2 头", EqFrame.buildEqData(EqFrame.TYPE_APPLY, -400, new ArrayList<EqBand>()),
+              hexBytes("02 70 FE"));
+        // type=2 曲线帧形状过写策略；type=1 帧形状同样是 0x22 setter（策略只钉形状，语义由调用方选择）
+        byte[] apply = EqFrame.buildEqCommand(EqFrame.TYPE_APPLY, -400,
+            Arrays.asList(new EqBand(30, 80, 0, 0), new EqBand(170, 60, -1700, 2)));
+        expect(EqWritePolicy.permitted(apply, true), "type=2 曲线下发帧应放行");
+        expect(!EqWritePolicy.permitted(apply, false), "未 armed 应拒绝 type=2 帧");
+        expect(EqWritePolicy.permitted(EqFrame.buildEqCommand(EqFrame.TYPE_RECALL_SLOT, -400,
+            Arrays.asList(new EqBand(30, 80, 0, 0))), true), "type=1 帧形状合法（策略按形状放行）");
     }
 
     static void roundTrip() {
