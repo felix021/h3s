@@ -39,6 +39,28 @@ if [ ! -f build/debug.keystore ]; then
   keytool -genkeypair -keystore build/debug.keystore -storepass android -keypass android -alias androiddebugkey -dname CN=H3SQuery -keyalg RSA -validity 10000 >/dev/null 2>&1
 fi
 "$bt/zipalign" -f 4 build/unsigned.apk build/aligned.apk
-"$bt/apksigner" sign --ks build/debug.keystore --ks-pass pass:android --out build/h3s-query.apk build/aligned.apk
+# 签名（仿 podic 配置仓模式）：H3S_CONFIG_DIR（默认 ~/.config/podic 共用同一套 key）
+# 下的 env.sh 提供 H3S_RELEASE_KEYSTORE/STORE_PASS/ALIAS；缺失时回退本地 debug.keystore。
+# 密钥/密码只存配置仓，绝不进 git（podic 同款约定）。
+config_dir="${H3S_CONFIG_DIR:-$HOME/.config/podic}"
+if [ -f "$config_dir/env.sh" ]; then
+  # shellcheck disable=SC1090
+  PODIC_CONFIG_DIR="$config_dir"; export PODIC_CONFIG_DIR
+  set -a; source "$config_dir/env.sh"; set +a
+fi
+if [ -n "${H3S_RELEASE_KEYSTORE:-}" ] || [ -n "${PODIC_RELEASE_KEYSTORE:-}" ]; then
+  ks="${H3S_RELEASE_KEYSTORE:-${PODIC_RELEASE_KEYSTORE:-}}"
+  ks="${ks/#\$PODIC_CONFIG_DIR/$config_dir}"
+  if [ ! -f "$ks" ]; then
+    echo "release keystore 不存在：$ks" >&2; exit 1
+  fi
+  pass="${H3S_RELEASE_STORE_PASS:-${PODIC_RELEASE_STORE_PASS:-}}"
+  alias="${H3S_RELEASE_ALIAS:-${PODIC_RELEASE_ALIAS:-podic-release}}"
+  echo "signing: release keystore ($ks)"
+  "$bt/apksigner" sign --ks "$ks" --ks-pass "pass:$pass" --ks-key-alias "$alias" --key-pass "pass:$pass" --out build/h3s-query.apk build/aligned.apk
+else
+  echo 'signing: local debug.keystore（未配置 release key，覆盖安装旧签名版需先卸载）' >&2
+  "$bt/apksigner" sign --ks build/debug.keystore --ks-pass pass:android --out build/h3s-query.apk build/aligned.apk
+fi
 "$bt/apksigner" verify build/h3s-query.apk
 sha256sum build/h3s-query.apk
