@@ -6,12 +6,17 @@ beyond) exercise the full logic: plan geometry, target byte rules, independent
 verification, from-state/package pin refusals, transport gates, nonce
 occupation, the apply flow on a fake flash device, and per-boundary fault
 injection with the interruption analyzer (H5-PRE-01 offline discrimination).
+Covers all three candidates: hal5 (b79<->HAL5, regression-pinned) and
+f1a/f1b (HAL5->F1 flash, F1->HAL5 same-layer rollback, ALREADY_HAL5,
+wrong-artifact refusals).
 
 Tier 2 (skips unless the real b79/HAL5 packages are present with matching
 digests): the shipped pins produce valid plans against a synthetic device
 built from the real application ciphertexts — concrete extents
 (0xee020+929875 / +930782), precise changed-sector narrowing, rollback fill
-range, and full executor round trips at real scale.
+range, and full executor round trips at real scale. A second F1 tier (real
+F1a/F1b artifacts at ~/tmp/lfiximpl/ or via H3S_F1A_UFW/H3S_F1B_UFW) checks
+the F1 extents (930968/930854), the F1->HAL5 fill range and round trips.
 """
 import json
 import os
@@ -135,20 +140,32 @@ def target_with_vm(target, fresh):
 class SyntheticWorld:
     """Deterministic device + packages with the real layout geometry. The
     device models the post-2026-11-10-restoration shape: bank B carries the
-    b79 app, 0xff up to the old r2 extent, r2-era residue beyond."""
+    b79 app, 0xff up to the old r2 extent, r2-era residue beyond. App lengths
+    mirror the real ordering b79 < HAL5 < F1b < F1a (F1 apps are longer than
+    their HAL5 base: +186/+72 bytes)."""
 
-    def __init__(self, b79_len=9000, hal5_len=9500, r2_len=9200):
+    def __init__(self, b79_len=9000, hal5_len=9500, r2_len=9200,
+                 f1b_len=9572, f1a_len=9686):
         self.b79_app = bytes((i * i + 11) % 251 for i in range(b79_len))
         self.hal5_app = bytes(((i + 7) * 3 + 5) % 251 for i in range(hal5_len))
+        self.f1b_app = bytes(((i + 11) * 5 + 3) % 251 for i in range(f1b_len))
+        self.f1a_app = bytes(((i + 13) * 7 + 1) % 251 for i in range(f1a_len))
         self.r2_len = r2_len
         tmp = Path(tempfile.mkdtemp())
         self.b79_ufw_path = tmp / 'b79-synth.ufw'
         self.hal5_ufw_path = tmp / 'hal5-synth.ufw'
+        self.f1a_ufw_path = tmp / 'f1a-synth.ufw'
+        self.f1b_ufw_path = tmp / 'f1b-synth.ufw'
         self.b79_ufw = make_ufw_package(self.b79_app)
         self.hal5_ufw = make_ufw_package(self.hal5_app)
+        self.f1a_ufw = make_ufw_package(self.f1a_app)
+        self.f1b_ufw = make_ufw_package(self.f1b_app)
         self.b79_ufw_path.write_bytes(self.b79_ufw)
         self.hal5_ufw_path.write_bytes(self.hal5_ufw)
+        self.f1a_ufw_path.write_bytes(self.f1a_ufw)
+        self.f1b_ufw_path.write_bytes(self.f1b_ufw)
         self.b79_device = self._device_image(self.b79_app)
+        self.hal5_device = self._device_image(self.hal5_app)
 
     def _device_image(self, b_app):
         image = bytearray(b'\xff' * SIZE)
@@ -158,9 +175,11 @@ class SyntheticWorld:
         b_end = BANK_B + 32 + len(b_app)
         image[BANK_B:BANK_B + 32] = encode(make_header(3, b_app, DEVICE_FIELDS))
         image[BANK_B + 32:b_end] = b_app
-        r2_end = BANK_B + 32 + self.r2_len
-        image[b_end:r2_end] = b'\xff' * (r2_end - b_end)
-        for off in range(r2_end, BANK_B_END):
+        # r2-era residue only beyond the committed app: when b_app is longer
+        # than the old r2 extent (HAL5/F1), the app covers the old 0xff gap
+        residue_from = max(b_end, BANK_B + 32 + self.r2_len)
+        image[b_end:residue_from] = b'\xff' * (residue_from - b_end)
+        for off in range(residue_from, BANK_B_END):
             image[off] = 0x5a                                     # r2-era residue
         for off in range(VM_BEGIN, VM_END):
             image[off] = (off // 16) & 0xff
@@ -176,13 +195,21 @@ class PinnedIdentities(unittest.TestCase):
         self.world = SyntheticWorld()
         self._saved = {name: getattr(ap, name) for name in
                        ('B79_PROFILE_SHA', 'B79_APP_LEN', 'B79_APP_SHA',
-                        'HAL5_UFW_SHA', 'HAL5_APP_LEN', 'HAL5_APP_SHA')}
+                        'HAL5_UFW_SHA', 'HAL5_APP_LEN', 'HAL5_APP_SHA',
+                        'F1A_UFW_SHA', 'F1A_APP_LEN', 'F1A_APP_SHA',
+                        'F1B_UFW_SHA', 'F1B_APP_LEN', 'F1B_APP_SHA')}
         ap.B79_PROFILE_SHA = sha(self.world.b79_ufw)
         ap.B79_APP_LEN = len(self.world.b79_app)
         ap.B79_APP_SHA = sha(self.world.b79_app)
         ap.HAL5_UFW_SHA = sha(self.world.hal5_ufw)
         ap.HAL5_APP_LEN = len(self.world.hal5_app)
         ap.HAL5_APP_SHA = sha(self.world.hal5_app)
+        ap.F1A_UFW_SHA = sha(self.world.f1a_ufw)
+        ap.F1A_APP_LEN = len(self.world.f1a_app)
+        ap.F1A_APP_SHA = sha(self.world.f1a_app)
+        ap.F1B_UFW_SHA = sha(self.world.f1b_ufw)
+        ap.F1B_APP_LEN = len(self.world.f1b_app)
+        ap.F1B_APP_SHA = sha(self.world.f1b_app)
 
     def tearDown(self):
         ap.__dict__.update(self._saved)
@@ -304,6 +331,78 @@ class PlanTests(PinnedIdentities):
                     rebind_live_target(w.b79_device, target, bytes(bad), bytes(bad))
 
 
+class F1PlanTests(PinnedIdentities):
+    """F1a/F1b directions: flash from a HAL5 bank B, same-layer rollback to
+    HAL5, ALREADY_HAL5 zero-write report, and explicit wrong-package refusals
+    (the artifact digests must gate, not just the app layer)."""
+
+    def test_f1_flash_from_hal5_state(self):
+        w = self.world
+        for cand, ufw, app in (('f1a', w.f1a_ufw, w.f1a_app),
+                               ('f1b', w.f1b_ufw, w.f1b_app)):
+            with self.subTest(candidate=cand):
+                target, plan = make_plan('flash', w.hal5_device, ufw, new_nonce(), cand)
+                verify_plan(plan, w.hal5_device, target, app)
+                self.assertEqual(plan['profile'], 'accept-%s-flash-v1' % cand)
+                self.assertEqual(plan['candidate'], cand)
+                self.assertEqual(plan['geometry']['old_extent'], BANK_B + 32 + len(w.hal5_app))
+                self.assertEqual(plan['geometry']['new_extent'], BANK_B + 32 + len(app))
+                self.assertIsNone(plan['geometry']['fill_0ff_range'])  # F1 apps are longer
+                order = plan['write_order']
+                self.assertEqual(order[-1], BANK_B)
+                self.assertEqual(set(order), changed_sectors(w.hal5_device, target))
+                self.assertEqual(target[:BANK_B], w.hal5_device[:BANK_B])
+                self.assertEqual(target[BANK_B_END:], w.hal5_device[BANK_B_END:])
+                _, app_b = decode_bank(target, BANK_B)
+                self.assertEqual(sha(app_b), sha(app))
+
+    def test_f1_flash_from_wrong_states_refused(self):
+        w = self.world
+        for name, before in (('both banks b79 (F1 never preceded by HAL5 flash)',
+                              w.b79_device),
+                             ('bank B already F1a', make_plan(
+                                 'flash', w.hal5_device, w.f1a_ufw, new_nonce(), 'f1a')[0])):
+            with self.subTest(case=name):
+                with self.assertRaises(ValueError):
+                    make_plan('flash', before, w.f1a_ufw, new_nonce(), 'f1a')
+
+    def test_f1_rollback_to_hal5_and_already_hal5(self):
+        w = self.world
+        f1a_target, _ = make_plan('flash', w.hal5_device, w.f1a_ufw, new_nonce(), 'f1a')
+        target, plan = make_plan('rollback', f1a_target, w.hal5_ufw, new_nonce(), 'f1a')
+        verify_plan(plan, f1a_target, target, w.hal5_app)
+        self.assertEqual(plan['profile'], 'accept-f1a-rollback-v1')
+        new_end = BANK_B + 32 + len(w.hal5_app)
+        old_end = BANK_B + 32 + len(w.f1a_app)
+        self.assertEqual(plan['geometry']['fill_0ff_range'], [new_end, old_end])
+        self.assertEqual(target[new_end:old_end], b'\xff' * (old_end - new_end))
+        _, app_b = decode_bank(target, BANK_B)
+        self.assertEqual(sha(app_b), sha(w.hal5_app))
+        # bank B already HAL5: zero-write report, never an erase
+        again, report = make_plan('rollback', w.hal5_device, w.hal5_ufw, new_nonce(), 'f1a')
+        self.assertIsNone(again)
+        self.assertEqual(report['status'], 'ALREADY_HAL5')
+        self.assertTrue(report['zero_write'])
+
+    def test_f1_package_digest_refusals(self):
+        w = self.world
+        flipped = w.f1a_ufw[:0x600 + 0x2020] + bytes([w.f1a_ufw[0x600 + 0x2020] ^ 1]) \
+            + w.f1a_ufw[0x600 + 0x2021:]
+        for name, ufw, cand in (
+                ('single flipped byte in the F1a artifact', flipped, 'f1a'),
+                ('F1b artifact offered as F1a', w.f1b_ufw, 'f1a'),
+                ('HAL5 artifact offered as F1a', w.hal5_ufw, 'f1a'),
+                ('F1a artifact for the hal5 direction', w.f1a_ufw, 'hal5')):
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ValueError, 'pinned UFW'):
+                    make_plan('flash', w.hal5_device, ufw, new_nonce(), cand)
+        f1a_target, _ = make_plan('flash', w.hal5_device, w.f1a_ufw, new_nonce(), 'f1a')
+        with self.assertRaisesRegex(ValueError, 'pinned UFW'):     # wrong rollback package
+            make_plan('rollback', f1a_target, w.f1b_ufw, new_nonce(), 'f1a')
+        with self.assertRaisesRegex(ValueError, 'unknown candidate'):
+            make_plan('flash', w.hal5_device, w.f1a_ufw, new_nonce(), 'f1x')
+
+
 class TransportGateTests(PinnedIdentities):
     def _fresh(self, target, plan):
         t = FakeFlash(self.world.b79_device)
@@ -393,9 +492,9 @@ class ApplyFlowTests(PinnedIdentities):
         save_persistent(work / 'before-pass2.bin', device)
         return work
 
-    def _args(self, work, package, nonce, nonce_dir=None):
+    def _args(self, work, package, nonce, nonce_dir=None, candidate='hal5'):
         return types.SimpleNamespace(apply=True, confirm_nonce=nonce, workdir=str(work),
-                                     package=str(package), loader='unused',
+                                     package=str(package), loader='unused', candidate=candidate,
                                      nonce_dir=nonce_dir or Path(tempfile.mkdtemp()))
 
     def test_plan_cmd_then_full_apply_and_nonce_single_use(self):
@@ -420,6 +519,36 @@ class ApplyFlowTests(PinnedIdentities):
         with self.assertRaisesRegex(ValueError, 'nonce already consumed'):
             apply_direction('flash', self._args(work, w.hal5_ufw_path, plan['nonce'], nonce_dir),
                             transport_factory=lambda: FakeFlash(w.b79_device))
+
+    def test_f1a_plan_cmd_then_apply_roundtrip(self):
+        w = self.world
+        work = self._workdir(w.hal5_device)                # device already on HAL5
+        cmd_plan('flash', types.SimpleNamespace(workdir=str(work),
+                                                package=str(w.f1a_ufw_path), candidate='f1a'))
+        plan = json.loads((work / 'plan.json').read_text())
+        self.assertEqual(plan['candidate'], 'f1a')
+        self.assertEqual(plan['profile'], 'accept-f1a-flash-v1')
+        self.assertTrue((work / 'target.bin').exists())
+        fake = FakeFlash(w.hal5_device)
+        apply_direction('flash', self._args(work, w.f1a_ufw_path, plan['nonce'],
+                                            candidate='f1a'),
+                        transport_factory=lambda: fake)
+        live_target = (work / 'live-target.bin').read_bytes()
+        self.assertEqual(bytes(fake.image), live_target)
+        _, app_b = decode_bank(live_target, BANK_B)
+        self.assertEqual(sha(app_b), sha(w.f1a_app))
+        rows = journal_rows(work / 'restore.jsonl')
+        self.assertEqual([r['stage'] for r in rows][-1], 'FLASH_ACCEPT_VERIFIED')
+        # candidate mismatch between plan.json and the CLI is refused pre-erase
+        work2 = self._workdir(w.hal5_device)
+        cmd_plan('flash', types.SimpleNamespace(workdir=str(work2),
+                                                package=str(w.f1a_ufw_path), candidate='f1a'))
+        plan2 = json.loads((work2 / 'plan.json').read_text())
+        fake2 = FakeFlash(w.hal5_device)
+        with self.assertRaisesRegex(ValueError, 'candidate mismatch'):
+            apply_direction('flash', self._args(work2, w.f1a_ufw_path, plan2['nonce']),
+                            transport_factory=lambda: fake2)
+        self.assertEqual(fake2.fb01_calls, 0)
 
     def test_apply_rejects_nonvm_drift_and_old_plan_reuse(self):
         w = self.world
@@ -636,6 +765,29 @@ def _candidate(paths):
     return next((p for p in paths if p.exists()), None)
 
 
+def _real_b79_device(b79_app):
+    """Synthetic 2MiB device with the real b79 app in both banks (the
+    post-2026-11-10-restoration shape with r2-era residue beyond bank B)."""
+    flash = good_flash(B79_PATH.read_bytes())
+    device = bytearray(b'\xff' * SIZE)
+    device[0:942080] = flash                                   # boot + bank A + package tail
+    # device-style bank A header: seq 2 + consistent device fields (the
+    # package header carries seq 0 / 0xff fields — codex fixture correction)
+    device[0x2000:0x2020] = encode(make_header(2, b79_app, DEVICE_FIELDS))
+    device[BANK_B:BANK_B + 32] = encode(make_header(3, b79_app, DEVICE_FIELDS))
+    device[BANK_B + 32:BANK_B + 32 + len(b79_app)] = b79_app
+    r2_end = BANK_B + 32 + 930245                              # r2-era extent
+    device[BANK_B + 32 + len(b79_app):r2_end] = \
+        b'\xff' * (r2_end - BANK_B - 32 - len(b79_app))
+    for off in range(r2_end, BANK_B_END):
+        device[off] = 0x5a                                     # r2 residue
+    for off in range(VM_BEGIN, VM_END):
+        device[off] = (off // 16) & 0xff
+    for off in range(VM_END, SIZE):
+        device[off] = (off // 32 + 1) & 0xff
+    return bytes(device)
+
+
 B79_PATH = _candidate(([Path(os.environ['H3S_B79_UFW'])] if os.environ.get('H3S_B79_UFW') else [])
                      + [ROOT / 'firmware/H3S_0.1.1.8_ANC_ON_TRANSPARENT.ufw',
                         Path('/home/felix021/code/headsets/h3s/firmware/'
@@ -643,9 +795,19 @@ B79_PATH = _candidate(([Path(os.environ['H3S_B79_UFW'])] if os.environ.get('H3S_
 HAL5_PATH = _candidate(([Path(os.environ['H3S_HAL5_UFW'])] if os.environ.get('H3S_HAL5_UFW') else [])
                        + [Path.home() / 'tmp/hal5-probe/full95/'
                           'H3S_0.1.1.8_tones_minus0dB_HEARING_AID_FULL_MPO95_OFFLINE_UNTESTED.ufw'])
+# F1 artifacts: LFIX-IMPL build outputs, kept out of git by precedent; the
+# stable local copy is ~/tmp/lfiximpl/ (same convention as the HAL5 probe dir),
+# overridable with H3S_F1A_UFW / H3S_F1B_UFW.
+F1A_PATH = _candidate(([Path(os.environ['H3S_F1A_UFW'])] if os.environ.get('H3S_F1A_UFW') else [])
+                      + [Path.home() / 'tmp/lfiximpl/lfiximpl-f1a.ufw'])
+F1B_PATH = _candidate(([Path(os.environ['H3S_F1B_UFW'])] if os.environ.get('H3S_F1B_UFW') else [])
+                      + [Path.home() / 'tmp/lfiximpl/lfiximpl-f1b.ufw'])
 REAL_READY = (B79_PATH is not None and HAL5_PATH is not None
               and sha(B79_PATH.read_bytes()) == ap.B79_PROFILE_SHA
               and sha(HAL5_PATH.read_bytes()) == ap.HAL5_UFW_SHA)
+REAL_F1_READY = (REAL_READY and F1A_PATH is not None and F1B_PATH is not None
+                 and sha(F1A_PATH.read_bytes()) == ap.F1A_UFW_SHA
+                 and sha(F1B_PATH.read_bytes()) == ap.F1B_UFW_SHA)
 
 
 @unittest.skipUnless(REAL_READY, 'real b79/HAL5 packages not materialized with pinned digests')
@@ -659,24 +821,7 @@ class RealProfileTests(unittest.TestCase):
                                      ap.HAL5_APP_LEN, ap.HAL5_APP_SHA)
         cls.b79_app = parse_package(B79_PATH.read_bytes(), ap.B79_PROFILE_SHA,
                                     ap.B79_APP_LEN, ap.B79_APP_SHA)
-        flash = good_flash(B79_PATH.read_bytes())
-        device = bytearray(b'\xff' * SIZE)
-        device[0:942080] = flash                                   # boot + bank A + package tail
-        # device-style bank A header: seq 2 + consistent device fields (the
-        # package header carries seq 0 / 0xff fields — codex fixture correction)
-        device[0x2000:0x2020] = encode(make_header(2, cls.b79_app, DEVICE_FIELDS))
-        device[BANK_B:BANK_B + 32] = encode(make_header(3, cls.b79_app, DEVICE_FIELDS))
-        device[BANK_B + 32:BANK_B + 32 + len(cls.b79_app)] = cls.b79_app
-        r2_end = BANK_B + 32 + 930245                              # r2-era extent
-        device[BANK_B + 32 + len(cls.b79_app):r2_end] = \
-            b'\xff' * (r2_end - BANK_B - 32 - len(cls.b79_app))
-        for off in range(r2_end, BANK_B_END):
-            device[off] = 0x5a                                     # r2 residue
-        for off in range(VM_BEGIN, VM_END):
-            device[off] = (off // 16) & 0xff
-        for off in range(VM_END, SIZE):
-            device[off] = (off // 32 + 1) & 0xff
-        cls.b79_device = bytes(device)
+        cls.b79_device = _real_b79_device(cls.b79_app)
 
     def test_real_flash_plan_narrow_sector_set(self):
         target, plan = make_plan('flash', self.b79_device, HAL5_PATH.read_bytes(), new_nonce())
@@ -722,6 +867,95 @@ class RealProfileTests(unittest.TestCase):
     def test_real_rollback_already_b79(self):
         _, report = make_plan('rollback', self.b79_device, B79_PATH.read_bytes(), new_nonce())
         self.assertEqual(report['status'], 'ALREADY_B79')
+
+
+@unittest.skipUnless(REAL_F1_READY, 'real F1 packages not materialized with pinned digests')
+class RealF1ProfileTests(unittest.TestCase):
+    """The shipped F1 pins against synthetic devices built from the real apps:
+    F1 flashes from a HAL5 bank B and rolls back to HAL5 (same layer)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from accept_profile import parse_package
+        cls.hal5_app = parse_package(HAL5_PATH.read_bytes(), ap.HAL5_UFW_SHA,
+                                     ap.HAL5_APP_LEN, ap.HAL5_APP_SHA)
+        cls.f1a_app = parse_package(F1A_PATH.read_bytes(), ap.F1A_UFW_SHA,
+                                    ap.F1A_APP_LEN, ap.F1A_APP_SHA)
+        cls.f1b_app = parse_package(F1B_PATH.read_bytes(), ap.F1B_UFW_SHA,
+                                    ap.F1B_APP_LEN, ap.F1B_APP_SHA)
+        b79_app = parse_package(B79_PATH.read_bytes(), ap.B79_PROFILE_SHA,
+                                ap.B79_APP_LEN, ap.B79_APP_SHA)
+        cls.hal5_device, _ = make_plan('flash', _real_b79_device(b79_app),
+                                       HAL5_PATH.read_bytes(), new_nonce())
+
+    def test_real_f1_flash_narrow_sector_set(self):
+        for cand, path, app, extra in (('f1a', F1A_PATH, self.f1a_app, 186),
+                                       ('f1b', F1B_PATH, self.f1b_app, 72)):
+            with self.subTest(candidate=cand):
+                ufw = path.read_bytes()
+                target, plan = make_plan('flash', self.hal5_device, ufw, new_nonce(), cand)
+                verify_plan(plan, self.hal5_device, target, app)
+                self.assertEqual(plan['profile'], 'accept-%s-flash-v1' % cand)
+                self.assertEqual(plan['package_ufw_sha256'],
+                                 {'f1a': ap.F1A_UFW_SHA, 'f1b': ap.F1B_UFW_SHA}[cand])
+                self.assertEqual(plan['geometry']['old_extent'], 0xee020 + 930782)
+                self.assertEqual(plan['geometry']['new_extent'], 0xee020 + 930782 + extra)
+                self.assertIsNone(plan['geometry']['fill_0ff_range'])  # F1 apps are longer
+                order = plan['write_order']
+                self.assertEqual(order[-1], BANK_B)
+                self.assertLess(len(order), 40, 'write set must be the precise diff')
+
+    def test_real_f1_flash_then_rollback_roundtrip(self):
+        ufw = F1A_PATH.read_bytes()
+        _, plan = make_plan('flash', self.hal5_device, ufw, new_nonce(), 'f1a')
+        f1a_target, _ = make_plan('flash', self.hal5_device, ufw, plan['nonce'], 'f1a')
+        fake = FakeFlash(self.hal5_device)
+        journal = Journal(Path(tempfile.mkdtemp()) / 'restore.jsonl', sync=False)
+        fake.bind(f1a_target, plan['write_order'])
+        fake.writing = True
+        try:
+            execute_plan(fake, f1a_target, self.hal5_device, plan['write_order'], journal)
+        finally:
+            journal.close()
+        self.assertEqual(bytes(fake.image), f1a_target)
+        target2, plan2 = make_plan('rollback', f1a_target, HAL5_PATH.read_bytes(),
+                                   new_nonce(), 'f1a')
+        verify_plan(plan2, f1a_target, target2, self.hal5_app)
+        self.assertEqual(plan2['profile'], 'accept-f1a-rollback-v1')
+        self.assertEqual(plan2['geometry']['fill_0ff_range'],
+                         [0xee020 + 930782, 0xee020 + 930968])
+        fake2 = FakeFlash(f1a_target)
+        journal2 = Journal(Path(tempfile.mkdtemp()) / 'restore.jsonl', sync=False)
+        fake2.bind(target2, plan2['write_order'])
+        fake2.writing = True
+        try:
+            execute_plan(fake2, target2, f1a_target, plan2['write_order'], journal2)
+        finally:
+            journal2.close()
+        self.assertEqual(bytes(fake2.image), target2)
+        _, app_b = decode_bank(target2, BANK_B)
+        self.assertEqual(sha(app_b), ap.HAL5_APP_SHA)
+        self.assertEqual(target2[:BANK_B], self.hal5_device[:BANK_B])
+
+    def test_real_f1_rollback_already_hal5(self):
+        for cand in ('f1a', 'f1b'):
+            with self.subTest(candidate=cand):
+                _, report = make_plan('rollback', self.hal5_device,
+                                      HAL5_PATH.read_bytes(), new_nonce(), cand)
+                self.assertEqual(report['status'], 'ALREADY_HAL5')
+                self.assertTrue(report['zero_write'])
+
+    def test_real_f1_wrong_artifact_refused(self):
+        f1a = F1A_PATH.read_bytes()
+        flipped = f1a[:0x600 + 0x2020] + bytes([f1a[0x600 + 0x2020] ^ 1]) \
+            + f1a[0x600 + 0x2021:]
+        for name, ufw, cand, direction in (
+                ('flipped byte in the real F1a artifact', flipped, 'f1a', 'flash'),
+                ('real F1b artifact offered as F1a', F1B_PATH.read_bytes(), 'f1a', 'flash'),
+                ('real HAL5 artifact offered as F1a', HAL5_PATH.read_bytes(), 'f1a', 'flash')):
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ValueError, 'pinned UFW'):
+                    make_plan(direction, self.hal5_device, ufw, new_nonce(), cand)
 
 
 if __name__ == '__main__':

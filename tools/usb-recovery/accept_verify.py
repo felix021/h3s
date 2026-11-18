@@ -7,11 +7,12 @@ plan cannot pass just because it was produced by the same code that checks it
 (codex consult D2: diff derivation is not authorization).
 
 Checked, in order:
-  1. plan identity/nonce/digest self-consistency (profile, direction, pinned
-     package digests, plan_digest over the canonical body);
-  2. from-state: full device_state validation of `before` for the direction
-     (bank A always pinned b79; bank B pinned b79 for flash / HAL5 for
-     rollback);
+  1. plan identity/nonce/digest self-consistency (profile, direction,
+     candidate, pinned package digests, plan_digest over the canonical body);
+  2. from-state: full device_state validation of `before` for the
+     direction+candidate (bank A always pinned b79; bank B pinned to the
+     transition's from-state app — b79 for hal5-flash / HAL5 for hal5-rollback
+     and f1x-flash / F1x for f1x-rollback);
   3. package app: length/digest match the pins;
   4. target byte rules against `before`: [0, 0xee000) and [0x1da000, 0x200000)
      identical; bank-B header differs only at +0..6 (three CRCs) and +8..12
@@ -34,17 +35,16 @@ from accept_profile import (BANK_B, BANK_B_END, SECTOR, SEQ_B, SIZE,
 
 
 def verify_plan(plan, before, target, package_app):
-    require(plan.get('profile') == profile_for(plan['direction']),
-            'plan profile does not match its direction')
+    candidate = plan.get('candidate', 'hal5')
+    require(plan.get('profile') == profile_for(plan['direction'], candidate),
+            'plan profile does not match its direction+candidate')
     require(plan.get('profile_version') == 1, 'unknown profile version')
     require(plan['plan_digest'] == _plan_digest(plan), 'plan digest mismatch')
     require_nonce_shape(plan['nonce'])
 
     # pins resolved through the module at call time (test fixtures may pin
     # synthetic identities; the shipped constants are the real profiles)
-    pinned = {'flash': (ap.B79_APP_LEN, ap.B79_APP_SHA),
-              'rollback': (ap.HAL5_APP_LEN, ap.HAL5_APP_SHA)}[plan['direction']]
-    device_state(before, *pinned)
+    device_state(before, *ap.from_state_id(plan['direction'], candidate))
     require(sha(before) == plan['before_sha256'], 'before digest mismatch')
     require(sha(target) == plan['target_sha256'], 'target digest mismatch')
     require(len(package_app) == plan['package_app_len']
