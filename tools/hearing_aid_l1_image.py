@@ -241,6 +241,80 @@ MPO_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_toggle_mpo_hook.S'
 # consumers are the table-base walkers (dispatch 0x0600f85e / restore
 # 0x0600f836 / boot-init 0x06024df4), which read +4/+20/+0 respectively and
 # leave +8 to the write path alone.
+# Route LFIX-IMPL (docs/hearing-aid-lfix-impl.md; plan = docs/hearing-aid-
+# lfix-plan.md §4): the F1 repair variant of the open/close payloads on top of
+# the HAL5 full chain. F1b = A1 (pre-open ANC-exit wait with timeout-cancel:
+# poll b[[QCY+500]+29]==0 && b[...+33]==1, delay via the ANC chain's own task
+# sleep 0x06064efc(10ms), cap 60 tries ~= 600ms, cancel returns -22 with the
+# slot untouched) + B1 (set_scene(stream,10) block deleted — mislabeled
+# set_notify, actually set_scene(PC_SPK), official DHA never calls it) + B2
+# (explicit SET_CHANNEL(1) AFTER start returns: node_ioctl(stream,0x1100,
+# 0x20007,1) overrides the fmt negotiation last; arg=1 is the channel-COUNT
+# semantics — the ADC recomputes b[priv+28] from en_map at open, so a
+# pre-start value would be overwritten; the mode enums 17/18/20 use ch>>4).
+# F1a additionally carries A3 (clock hold): clock_alloc("lfix_hold",128MHz)
+# after the uuid hit / before pipeline_parse, clock_free("lfix_hold") in the
+# shared failure tail and in the close payload after stop/release/notify —
+# one alloc/free pair per open cycle (slot guard blocks duplicate alloc;
+# clock_free on a never-alloc'd name is a benign no-op, 0x0600572c walk).
+# Anchors re-verified against official app.bin by this route: db3c ctx ptr
+# [0x1265C0+500], flags +29/+33 write sites @0x0600db72/db76; delay callers
+# (1)/(2)/(100) @0x0606ec18/ec58/eca2 (call.xl) with the task path sleeping
+# through 0x06064e80; clock_alloc(r0=name,r1=hz)/clock_free(r0=name) shapes;
+# ADC channel-count recompute block 0x06032b6c-0x06032b96.
+LFIX_OPEN_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open_lfix.S'
+LFIX_OPEN_HOLD_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open_lfix_hold.S'
+LFIX_CLOSE_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close_lfix.S'
+ANC_QCY_BASE = 0x1265c0          # QCY device struct base (== QCY_BASE)
+ANC_CTX_PTR_OFFSET = 500         # ANC ctx pointer field
+ANC_TRANSITION_OFFSET = 29       # b[ctx+29]: set 1 by db3c, cleared by exit chain
+ANC_TARGET_OFFSET = 33           # b[ctx+33]: target mode, internal OFF=1
+ANC_DELAY_FN = 0x06064efc        # task-context ms sleep (ANC exit chain's own)
+ANC_WAIT_TRIES = 60              # x 10ms = 600ms cap, then cancel this open
+NODE_IOCTL = 0x06074ec6          # jlstream_node_ioctl(stream, id, cmd, arg)
+IOC_SET_CHANNEL = 0x20007        # NODE_IOC_SET_CHANNEL
+IOC_SET_CHANNEL_MONO = 1         # channel COUNT semantics, not the mode enum
+CLOCK_ALLOC = 0x06000978         # clock_alloc(r0=name, r1=hz)
+CLOCK_FREE = 0x0600572c          # clock_free(r0=name)
+LFIX_HOLD_HZ = 128000000
+LFIX_HOLD_NAME = b'lfix_hold\x00'
+# F1b open payload shape (67 insns / 216B) and F1a open code shape (75 insns /
+# 252B code + the 10B name rodata); pinned by the lfix tests.
+LFIX_OPEN_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'bnez', 'li.u32',
+                      'ld.w.l', 'beqz', 'li.u8', 'li.u32', 'ld.bu.l', 'bnez',
+                      'ld.bu.l', 'beq.ri', 'add.ri.neg7', 'beqz', 'li.u8',
+                      'call.r', 'goto.s', 'li.u8', 'li.u32', 'li.u32',
+                      'call.r', 'ext.l.u', 'beqz', 'mov.rr', 'li.u32',
+                      'li.u32', 'call.r', 'mov.rr', 'beqz', 'mov.rr',
+                      'li.s16', 'li.u32', 'li.s16', 'li.u32', 'call.r',
+                      'bnez', 'mov.rr', 'li.u8', 'li.u8', 'li.u32', 'call.r',
+                      'mov.rr', 'li.u32', 'call.r', 'bnez', 'mov.rr',
+                      'li.s16', 'li.u32', 'li.u8', 'li.u32', 'call.r',
+                      'li.u32', 'st.w', 'li.u8', 'goto.s', 'li.neg5',
+                      'goto.s', 'mov.rr', 'li.u32', 'call.r', 'li.u8',
+                      'li.u32', 'li.u32', 'call.r', 'li.neg5', 'pop.pc_rl']
+LFIX_OPEN_HOLD_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'bnez', 'li.u32',
+                           'ld.w.l', 'beqz', 'li.u8', 'li.u32', 'ld.bu.l',
+                           'bnez', 'ld.bu.l', 'beq.ri', 'add.ri.neg7', 'beqz',
+                           'li.u8', 'call.r', 'goto.s', 'li.u8', 'li.u32',
+                           'li.u32', 'call.r', 'ext.l.u', 'beqz', 'mov.rr',
+                           'li.u32', 'li.u32', 'li.u32', 'call.r', 'mov.rr',
+                           'li.u32', 'li.u32', 'call.r', 'mov.rr', 'beqz',
+                           'mov.rr', 'li.s16', 'li.u32', 'li.s16', 'li.u32',
+                           'call.r', 'bnez', 'mov.rr', 'li.u8', 'li.u8',
+                           'li.u32', 'call.r', 'mov.rr', 'li.u32', 'call.r',
+                           'bnez', 'mov.rr', 'li.s16', 'li.u32', 'li.u8',
+                           'li.u32', 'call.r', 'li.u32', 'st.w', 'li.u8',
+                           'goto.s', 'li.neg5', 'goto.s', 'mov.rr', 'li.u32',
+                           'call.r', 'li.u8', 'li.u32', 'li.u32', 'call.r',
+                           'li.u32', 'li.u32', 'call.r', 'li.neg5',
+                           'pop.pc_rl']
+# F1a close payload shape (23 insns / 78B): stock close + clock_free("lfix_hold").
+LFIX_CLOSE_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'beqz', 'mov.rr',
+                       'li.u8', 'li.u32', 'call.r', 'mov.rr', 'li.u32',
+                       'call.r', 'li.u32', 'li.u8', 'st.w', 'li.u8', 'li.u32',
+                       'li.u32', 'call.r', 'li.u32', 'li.u32', 'call.r',
+                       'li.u8', 'pop.pc_rl']
 R4_KEYHOOK_SOURCE = ROOT / 'tools/r4cmd/keystore_hook.S'
 R4_REG_ENTRY = 0x060a9c74             # cmdid 0x30 entry base
 R4_REG_SLOT = 0x060a9c7c              # entry+8, the null setter word
@@ -343,6 +417,17 @@ def _patch_eq_addrs(text, pkt, name):
     return text
 
 
+def _patch_lfix_addrs(text, name_addr):
+    """Bake the segment-local lfix_hold name runtime address into a payload
+    source (same two-pass contract as _patch_mpo_addrs; placeholder and real
+    values are both wide li.u32, so the section layout is stable)."""
+    patched = re.sub(r'\.equ LFIX_HOLD_NAME_ADDR, 0x[0-9a-fA-F]+',
+                     f'.equ LFIX_HOLD_NAME_ADDR, 0x{name_addr:x}', text, count=1)
+    if patched == text:
+        raise ValueError('LFIX_HOLD_NAME_ADDR equ not found for patching')
+    return patched
+
+
 def _strip_eq_sections(text):
     """Drop the L4 payload's .section lines (code + both rodata blobs).
 
@@ -360,7 +445,8 @@ def _strip_eq_sections(text):
 
 
 def _compose(slot, close_hooks=False, r4_keyhook=False, key7_toggle=False,
-             l3_mpo=False, mpo_addrs=None, l4_eq=False, eq_addrs=None):
+             l3_mpo=False, mpo_addrs=None, l4_eq=False, eq_addrs=None,
+             lfix=False, lfix_hold=False, lfix_addrs=None):
     """Concatenate payload source (slot-patched) + hook stubs into one text.
 
     key7_toggle=True (route L1KEY) composes open + close + the cmd7_toggle
@@ -377,16 +463,37 @@ def _compose(slot, close_hooks=False, r4_keyhook=False, key7_toggle=False,
     the apply_mpo rodata and uses the cmd7_toggle_l4 stub (open path applies
     the latest VM key 31 ten-band EQ to Eq1Eff after apply_mpo). Implies
     l3_mpo; same KEY7 graft window.
+
+    lfix=True (route LFIX-IMPL, requires the l4_eq chain = HAL5 base) swaps
+    the open payload for the F1 repair variant (A1 ANC wait + B1 set_scene(10)
+    removed + B2 post-start SET_CHANNEL(1)); the close payload stays stock.
+    lfix_hold=True (implies lfix) is F1a: the open variant additionally does
+    the A3 clock hold (clock_alloc/free "lfix_hold", name rodata baked via
+    lfix_addrs) and the close payload gains the paired clock_free.
     """
     if l3_mpo and key7_toggle:
         raise ValueError('l3_mpo and key7_toggle share the KEY7 graft window')
     if l4_eq and not l3_mpo:
         raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
+    if lfix_hold and not lfix:
+        raise ValueError('lfix_hold requires lfix (F1a = F1 + A3)')
+    if lfix and not l4_eq:
+        raise ValueError('lfix requires l4_eq (F1 is defined on the HAL5 chain)')
     mpo_addrs = mpo_addrs or (PAYLOAD_ADDRESS, PAYLOAD_ADDRESS)  # pass-1 placeholder
     eq_addrs = eq_addrs or (PAYLOAD_ADDRESS, PAYLOAD_ADDRESS)    # pass-1 placeholder
-    text = _patch_slot(PAYLOAD_SOURCE.read_text(), slot)
+    name_addr = (lfix_addrs or (PAYLOAD_ADDRESS,))[0]            # pass-1 placeholder
+    open_source = (LFIX_OPEN_HOLD_SOURCE if lfix_hold else
+                   LFIX_OPEN_SOURCE if lfix else PAYLOAD_SOURCE)
+    close_source = LFIX_CLOSE_SOURCE if lfix_hold else CLOSE_SOURCE
+    open_text = _patch_slot(open_source.read_text(), slot)
+    if lfix_hold:
+        open_text = _patch_lfix_addrs(open_text, name_addr)
+    text = open_text
     if close_hooks:
-        text += _strip_close_section(_patch_slot(CLOSE_SOURCE.read_text(), slot))
+        close_text = _patch_slot(close_source.read_text(), slot)
+        if lfix_hold:
+            close_text = _patch_lfix_addrs(close_text, name_addr)
+        text += _strip_close_section(close_text)
     if l3_mpo:
         text += _patch_mpo_addrs(_strip_mpo_sections(MPO_SOURCE.read_text()),
                                  *mpo_addrs)
@@ -425,7 +532,8 @@ def _assemble(text):
 
 
 def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
-                     key7_toggle=False, l3_mpo=False, l4_eq=False):
+                     key7_toggle=False, l3_mpo=False, l4_eq=False,
+                     lfix=False, lfix_hold=False):
     """Assemble payload+stubs at PAYLOAD_ADDRESS with the real slot address.
 
     Two passes: the section length is layout-stable (test_hearing_aid_payload /
@@ -443,6 +551,11 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
     exclusive with key7_toggle; docs/hearing-aid-l3-mpo.md).
     l4_eq=True (route HAL4) additionally inserts the apply_eq payload and
     uses the cmd7_toggle_l4 stub (requires l3_mpo; docs/hearing-aid-l4-eq.md).
+    lfix=True (route LFIX-IMPL, requires l4_eq + close_hooks + slot_ram +
+    r4_keyhook = the HAL5 full chain) swaps in the F1 repair open payload
+    (A1 ANC wait + B1 set_scene(10) removed + B2 post-start SET_CHANNEL(1)).
+    lfix_hold=True (implies lfix) is F1a and additionally carries the A3
+    clock hold: open alloc + shared-tail free + close free + 10B name rodata.
     Returns a report dict with bytes, entry offsets and the disassembly.
     """
     if r4_keyhook and not (close_hooks and slot_ram):
@@ -456,25 +569,33 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
                          '(route HAL3 is a slotram superset)')
     if l4_eq and not l3_mpo:
         raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
+    if lfix_hold and not lfix:
+        raise ValueError('lfix_hold requires lfix (F1a = F1 + A3)')
+    if lfix and not (l4_eq and r4_keyhook and close_hooks and slot_ram):
+        raise ValueError('lfix requires the HAL5 full chain '
+                         '(close_hooks+slotram+r4keyhook+l3mpo+l4eq)')
     if slot_ram:
         if not close_hooks:
             raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
         _slot_checks(RAM_SLOT)
         slot = RAM_SLOT
     _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks, r4_keyhook,
-                                  key7_toggle, l3_mpo, l4_eq=l4_eq))
+                                  key7_toggle, l3_mpo, l4_eq=l4_eq,
+                                  lfix=lfix, lfix_hold=lfix_hold))
     mpo_addrs = None
     eq_addrs = None
+    lfix_addrs = None
     if l3_mpo:
         # measure the rodata offsets from pass 1, bake real runtime addresses
         # into pass 2 (placeholder and real values are both wide li.u32 —
         # layout-stable across passes, same contract as the slot patch)
         probe = ASM.read_object(ASM.assemble_text(
             _compose(slot, close_hooks, r4_keyhook, key7_toggle, l3_mpo,
-                     l4_eq=l4_eq),
+                     l4_eq=l4_eq, lfix=lfix, lfix_hold=lfix_hold),
             '<mpo-probe>'))
         want = ('mpo_template', 'mpo_name') + \
-            (('eq_pkt_template', 'eq_name') if l4_eq else ())
+            (('eq_pkt_template', 'eq_name') if l4_eq else ()) + \
+            (('lfix_hold_name',) if lfix_hold else ())
         syms = {s.name: s.value for s in probe.symbols if s.name in want}
         if set(syms) != set(want):
             raise ValueError(f'missing rodata symbols: {set(want) - set(syms)}')
@@ -483,10 +604,13 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
         if l4_eq:
             eq_addrs = (PAYLOAD_ADDRESS + syms['eq_pkt_template'],
                         PAYLOAD_ADDRESS + syms['eq_name'])
+        if lfix_hold:
+            lfix_addrs = (PAYLOAD_ADDRESS + syms['lfix_hold_name'],)
     if not slot_ram:
         slot = PAYLOAD_ADDRESS + len(first)
     obj, code = _assemble(_compose(slot, close_hooks, r4_keyhook, key7_toggle,
-                                   l3_mpo, mpo_addrs, l4_eq, eq_addrs))
+                                   l3_mpo, mpo_addrs, l4_eq, eq_addrs,
+                                   lfix, lfix_hold, lfix_addrs))
     if len(code) != len(first):
         raise ValueError('slot immediate changed the section layout')
     if slot_ram:
@@ -504,6 +628,8 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
             names += ['apply_mpo', 'mpo_template', 'mpo_name', 'cmd7_toggle_mpo']
         else:
             names += ['cmd7_toggle']
+        if lfix_hold:
+            names += ['lfix_hold_name']
         if r4_keyhook:
             names += ['r4_keystore_hook']
     else:
@@ -516,7 +642,9 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
     if len(symbols) != len(names):
         raise ValueError(f'missing section symbols: {set(names) - set(symbols)}')
     if key7_toggle or l3_mpo:
-        open_len = len(_assemble(_patch_slot(PAYLOAD_SOURCE.read_text(), slot))[1])
+        open_source = (LFIX_OPEN_HOLD_SOURCE if lfix_hold else
+                       LFIX_OPEN_SOURCE if lfix else PAYLOAD_SOURCE)
+        open_len = len(_assemble(_patch_slot(open_source.read_text(), slot))[1])
         stub_offsets = [open_len]   # payload_bytes boundary for the report
     else:
         stub_offsets = [symbols[n] for n in ('trans_branch_1', 'trans_branch_2')]
@@ -531,7 +659,8 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
     # not instructions — the encode round-trip does not apply). L3 carries one
     # data span (template+name at the tail); L4 carries two (apply_mpo's
     # template/name between the payload codes, apply_eq's pkt/name before the
-    # stub).
+    # stub). F1a additionally carries the 10B lfix_hold name between the open
+    # and close payloads.
     data_spans = []
     if l4_eq:
         # mpo rodata (template+name) ends where the apply_eq code begins;
@@ -540,19 +669,24 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
                        'mpo_template 76B + mpo_name 16B'),
                       (symbols['eq_pkt_template'], symbols['cmd7_toggle_l4'],
                        'eq_pkt 44B + eq_name 16B')]
+        if lfix_hold:
+            data_spans.append((symbols['lfix_hold_name'],
+                               symbols['lfix_hold_name'] + len(LFIX_HOLD_NAME),
+                               'lfix_hold_name 10B'))
     elif l3_mpo:
         data_spans = [(symbols['mpo_template'], len(code),
                        'mpo_template 76B + mpo_name 16B')]
     decode_ranges = []
     cursor = 0
-    for lo, hi, _label in sorted(data_spans):
+    ordered_spans = sorted(data_spans)
+    for lo, hi, _label in ordered_spans:
         if lo < cursor or hi <= lo:
             raise ValueError('data spans overlap or misordered')
         decode_ranges.append((cursor, lo))
         cursor = hi
     decode_ranges.append((cursor, len(code)))
     for (lo, hi), span in zip(decode_ranges,
-                              data_spans + [None]):
+                              ordered_spans + [None]):
         for addr, insn_id, text, raw in ASM.disassemble(code[lo:hi],
                                                         PAYLOAD_ADDRESS + lo):
             listing.append({'address': f'0x{addr:08x}', 'bytes': raw.hex(),
@@ -568,7 +702,9 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
                             'bytes': code[slo:shi].hex(), 'insn': None,
                             'text': f'.data {shi - slo}B ({label})'})
     slot_tail = 0 if slot_ram else 4
-    variant = ('open+close+slotram+l4eq' if l4_eq else
+    variant = ('open+close+slotram+l4eq+lfixhold' if lfix_hold else
+               'open+close+slotram+l4eq+lfix' if lfix else
+               'open+close+slotram+l4eq' if l4_eq else
                'open+close+slotram+l3mpo' if l3_mpo else
                'open+close+slotram+key7toggle' if key7_toggle else
                'open+close+slotram+r4keyhook' if r4_keyhook else
@@ -613,27 +749,70 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
             for tag, _a, _b, _s, label in CLOSE_WINDOWS}
     if r4_keyhook:
         report['r4_keyhook_address'] = f'0x{PAYLOAD_ADDRESS + symbols["r4_keystore_hook"]:08x}'
+    if lfix:
+        report['lfix'] = {
+            'variant': 'F1a (A1+B1+B2+A3 clock hold)' if lfix_hold
+                       else 'F1b (A1+B1+B2, no clock hold)',
+            'a1_anc_wait': {'ctx_pointer': f'[0x{ANC_QCY_BASE:08x}+{ANC_CTX_PTR_OFFSET}]',
+                            'transition_offset': ANC_TRANSITION_OFFSET,
+                            'target_offset': ANC_TARGET_OFFSET,
+                            'internal_off_mode': 1,
+                            'delay_fn': f'0x{ANC_DELAY_FN:08x}',
+                            'delay_ms': 10, 'max_tries': ANC_WAIT_TRIES,
+                            'timeout_action': 'cancel this open (return -22, slot stays 0)'},
+            'b1_set_scene10_removed': True,
+            'b2_set_channel': {'after': 'start returns', 'node_ioctl': f'0x{NODE_IOCTL:08x}',
+                               'target_id': 0x1100, 'cmd': f'0x{IOC_SET_CHANNEL:05x}',
+                               'arg': IOC_SET_CHANNEL_MONO,
+                               'arg_semantics': 'channel COUNT (not the 17/18/20 mode enum)'},
+        }
+        if lfix_hold:
+            report['lfix']['a3_clock_hold'] = {
+                'alloc': f'clock_alloc("lfix_hold", {LFIX_HOLD_HZ}) '
+                         f'@ open, after uuid hit, before pipeline_parse',
+                'free': ['open shared failure tail (after event_notify(11))',
+                         'close payload, after stop/release/notify'],
+                'name_rodata': f'0x{PAYLOAD_ADDRESS + symbols["lfix_hold_name"]:08x} '
+                               f'({len(LFIX_HOLD_NAME)}B)',
+                'first_upswitch_unavoidable': True,
+                'diagnostic_tier_only': True,
+            }
+            report['lfix_hold_name_offset'] = symbols['lfix_hold_name']
     _verify_semantics(code, stub_offsets, slot, report, close_hooks,
                       r4_keyhook=r4_keyhook, key7_toggle=key7_toggle,
-                      l3_mpo=l3_mpo, l4_eq=l4_eq)
+                      l3_mpo=l3_mpo, l4_eq=l4_eq, lfix=lfix,
+                      lfix_hold=lfix_hold)
     return report, code, slot
 
 
 def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
                       r4_keyhook=False, key7_toggle=False, l3_mpo=False,
-                      l4_eq=False):
+                      l4_eq=False, lfix=False, lfix_hold=False):
     """Decode-level assertions: stub shape, every pinned firmware target."""
     insns = list(ASM.disassemble(code, PAYLOAD_ADDRESS))
     by_off = {a - PAYLOAD_ADDRESS: (iid, t, raw) for a, iid, t, raw in insns}
     # payload part: first bytes == the route-L payload assembled alone, then
-    # (close variant) the route-X close payload assembled alone.
-    standalone_open = _assemble(_patch_slot(PAYLOAD_SOURCE.read_text(), slot))[1]
+    # (close variant) the route-X close payload assembled alone. lfix variants
+    # compare against their own payload sources instead (same contract).
+    open_source = (LFIX_OPEN_HOLD_SOURCE if lfix_hold else
+                   LFIX_OPEN_SOURCE if lfix else PAYLOAD_SOURCE)
+    close_source = LFIX_CLOSE_SOURCE if lfix_hold else CLOSE_SOURCE
+    open_text = _patch_slot(open_source.read_text(), slot)
+    if lfix_hold:
+        open_text = _patch_lfix_addrs(
+            open_text, int(report['lfix']['a3_clock_hold']['name_rodata']
+                           .split()[0], 16))
+    standalone_open = _assemble(open_text)[1]
     if code[:len(standalone_open)] != standalone_open:
         raise ValueError('composed segment prefix != standalone route-L payload')
     report['payload_prefix_matches_route_L'] = True
     if close_hooks:
-        standalone_close = _assemble(
-            _patch_slot(CLOSE_SOURCE.read_text(), slot))[1]
+        close_text = _patch_slot(close_source.read_text(), slot)
+        if lfix_hold:
+            close_text = _patch_lfix_addrs(
+                close_text, int(report['lfix']['a3_clock_hold']['name_rodata']
+                                .split()[0], 16))
+        standalone_close = _assemble(close_text)[1]
         close_off = len(standalone_open)
         if code[close_off:close_off + len(standalone_close)] != standalone_close:
             raise ValueError('composed close payload != standalone route-X payload')
@@ -642,6 +821,10 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
         _verify_mpo(code, by_off, report)
         _verify_eq(code, by_off, report)
         _verify_l4_toggle_stub(code, by_off, report)
+        if lfix:
+            _verify_lfix_open(code, by_off, report, hold=lfix_hold)
+            if lfix_hold:
+                _verify_lfix_close(code, by_off, report)
         if r4_keyhook:
             _verify_r4_keyhook(code, by_off, report)
     elif l3_mpo:
@@ -882,6 +1065,93 @@ def _verify_l4_toggle_stub(code, by_off, report):
     report['l4_toggle_stub_shape_matches'] = True
 
 
+def _verify_lfix_open(code, by_off, report, hold=False):
+    """The F1 open payload (route LFIX-IMPL): exact shape + every target.
+
+    The code part must match LFIX_OPEN_HOLD_INSN_IDS (F1a) / LFIX_OPEN_INSN_IDS
+    (F1b); the li.u32 loads must cover the stock API anchors plus the A1 pair
+    (QCY struct base, ANC delay fn), the B2 SET_CHANNEL cmd, and — F1a only —
+    the A3 triple (hold name addr, 128MHz, clock_alloc) with the failure-tail
+    free pair (hold name addr, clock_free). Structural checks pin the A1 poll
+    reads (b[ctx+29] / b[ctx+33]), the B2 argument setup (r1=0x1100 root,
+    r2=0x20007 SET_CHANNEL, r3=1 channel count), and — F1a — the uuid reload
+    after the A3a call (the cross-call r0 discipline).
+    """
+    end = report['lfix_hold_name_offset'] if hold else report['payload_bytes']
+    shape = [by_off[o][0] for o in range(0, end) if o in by_off]
+    expected_shape = LFIX_OPEN_HOLD_INSN_IDS if hold else LFIX_OPEN_INSN_IDS
+    if shape != expected_shape:
+        raise ValueError(f'lfix open shape mismatch: {shape}')
+    slot = int(report['slot_address'], 16)
+    loads = [int(by_off[o][1].split('= ')[1])
+             for o in range(0, end) if o in by_off and by_off[o][0] == 'li.u32']
+    base_loads = [slot, ANC_QCY_BASE, ANC_DELAY_FN,
+                  0x060a1de2,                      # "mic_effect" (uuid call)
+                  0x060057e6,                      # get_pipeline_uuid
+                  53357,                           # NODE_UUID_ADC (wide: > s16)
+                  0x06074938,                      # pipeline_parse
+                  0x2000d,                         # NODE_IOC_SET_PRIV_FMT
+                  NODE_IOCTL, 0x06074a5e, 0x06074ffe,
+                  IOC_SET_CHANNEL,                 # B2 cmd (wide: > s16)
+                  NODE_IOCTL,                      # B2 call target
+                  slot, 0x06074204, 0x060a1de2, 0x060057e6]   # tail
+    if hold:
+        name_addr = int(report['lfix']['a3_clock_hold']['name_rodata']
+                        .split()[0], 16)
+        expected_loads = base_loads[:5] + [name_addr, LFIX_HOLD_HZ, CLOCK_ALLOC] \
+            + base_loads[5:] + [name_addr, CLOCK_FREE]
+    else:
+        expected_loads = base_loads
+    if loads != expected_loads:
+        raise ValueError(f'lfix open loads mismatch: {[hex(x) for x in loads]}')
+    texts = [by_off[o][1] for o in sorted(by_off) if o < end]
+    for needed in (f'r4 = [r6+{ANC_CTX_PTR_OFFSET}]',          # A1 ctx fetch
+                   f'r0 = b[r4+{ANC_TRANSITION_OFFSET}] (u)',  # A1 poll: transition
+                   f'r0 = b[r4+{ANC_TARGET_OFFSET}] (u)',      # A1 poll: target mode
+                   'r5 += -1',                                 # A1 countdown
+                   'r1 = 4352',                                # B2 root id 0x1100
+                   'r2 = 131079',                              # B2 SET_CHANNEL cmd
+                   'r3 = 1'):                                  # B2 channel count
+        if needed not in texts:
+            raise ValueError(f'lfix open missing: {needed}')
+    if hold:
+        if 'r1 = 128000000' not in texts:
+            raise ValueError('lfix hold missing the A3 128MHz request')
+        # the uuid reload (mov.rr r0=r4) must sit between the A3a clock_alloc
+        # call and the pipeline_parse argument setup (the cross-call r0
+        # discipline: parse consumes r0=uuid from r4)
+        seq = [by_off[o][1] for o in sorted(by_off) if o < end]
+        i_alloc_call = seq.index('call r6', seq.index(f'r6 = {CLOCK_ALLOC}'))
+        i_parse_arg = seq.index('r1 = 53357')
+        window = seq[i_alloc_call + 1:i_parse_arg]
+        if 'r0 = r4' not in window:
+            raise ValueError('lfix hold A3a call not followed by the uuid reload')
+    report['lfix_open_shape_matches'] = True
+    report['lfix_open_targets_pinned'] = True
+
+
+def _verify_lfix_close(code, by_off, report):
+    """The F1a close payload: stock close shape + the A3c clock_free tail.
+
+    Shape = LFIX_CLOSE_INSN_IDS (23 insns / 78B); loads end with the hold name
+    address and clock_free — the one-per-cycle pairing of the open-side alloc.
+    """
+    close_off = int(report['close_address'], 16) - PAYLOAD_ADDRESS
+    end = close_off + 78
+    shape = [by_off[o][0] for o in range(close_off, end) if o in by_off]
+    if shape != LFIX_CLOSE_INSN_IDS:
+        raise ValueError(f'lfix close shape mismatch: {shape}')
+    slot = int(report['slot_address'], 16)
+    name_addr = int(report['lfix']['a3_clock_hold']['name_rodata']
+                    .split()[0], 16)
+    loads = [int(by_off[o][1].split('= ')[1])
+             for o in range(close_off, end) if o in by_off and by_off[o][0] == 'li.u32']
+    if loads != [slot, 0x060741ee, 0x06074204, slot, 0x060a1de2,
+                 0x060057e6, name_addr, CLOCK_FREE]:
+        raise ValueError(f'lfix close loads mismatch: {[hex(x) for x in loads]}')
+    report['lfix_close_shape_matches'] = True
+
+
 def _verify_toggle_stub(code, by_off, report):
     """The cmd7_toggle stub (route L1KEY): exact shape + every firmware target.
 
@@ -1016,7 +1286,8 @@ def _verify_r4_keyhook(code, by_off, report):
 
 
 def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
-                   key7_toggle=False, l3_mpo=False, l4_eq=False):
+                   key7_toggle=False, l3_mpo=False, l4_eq=False,
+                   lfix=False, lfix_hold=False):
     """Apply the implant edits to the decrypted flash image in place.
 
     close_hooks=True builds the open+close segment (route Y) and additionally
@@ -1033,8 +1304,10 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
     mutually exclusive with key7_toggle). l4_eq=True (route HAL4) additionally
     inserts the apply_eq payload and uses the cmd7_toggle_l4 stub: open
     success then applies the latest VM key 31 ten-band EQ to Eq1Eff the same
-    way (docs/hearing-aid-l4-eq.md). Returns the report dict (incl.
-    new_app_end for the caller's SFC/boot-info pass).
+    way (docs/hearing-aid-l4-eq.md). lfix=True (route LFIX-IMPL, requires the
+    full l4 chain) swaps in the F1 repair open payload (A1+B1+B2);
+    lfix_hold=True (implies lfix) is F1a with the A3 clock hold. Returns the
+    report dict (incl. new_app_end for the caller's SFC/boot-info pass).
     Per-site byte assertions keep this valid with or without the ANC
     two-state table change, which edits one unrelated app.bin byte first.
     """
@@ -1049,12 +1322,18 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
                          '(route HAL3 is a slotram superset)')
     if l4_eq and not l3_mpo:
         raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
+    if lfix_hold and not lfix:
+        raise ValueError('lfix_hold requires lfix (F1a = F1 + A3)')
+    if lfix and not (l4_eq and r4_keyhook and close_hooks and slot_ram):
+        raise ValueError('lfix requires the HAL5 full chain '
+                         '(close_hooks+slotram+r4keyhook+l3mpo+l4eq)')
     if slot_ram and not close_hooks:
         raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
     segment, code, slot = assemble_segment(close_hooks, slot_ram=slot_ram,
                                            r4_keyhook=r4_keyhook,
                                            key7_toggle=key7_toggle,
-                                           l3_mpo=l3_mpo, l4_eq=l4_eq)
+                                           l3_mpo=l3_mpo, l4_eq=l4_eq,
+                                           lfix=lfix, lfix_hold=lfix_hold)
     slot_tail = 0 if slot_ram else 4
     end = OLD_APP_END + 32 + 1 + len(code) + slot_tail   # header + 0xff + code (+ slot)
     if end > len(flash) or any(v != 255 for v in flash[OLD_APP_END:end]):

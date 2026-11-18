@@ -344,6 +344,19 @@ def main():
                         " MPO 曲线烘进 stream.bin 作为无 key 时的兜底；固件字节 == --hearing-aid-l4-eq"
                         " --hearing-aid-mpo M 组合构建（零新增载荷）；与 --hearing-aid-demo /"
                         " --hearing-aid-l1-key7 互斥；候选 UNTESTED 不刷机，见 docs/hearing-aid-l5-full.md")
+    p.add_argument("--hearing-aid-lfix", action="store_true",
+                   help="辅听 lfix 修复候选 F1（路 LFIX-IMPL，基座=HAL5 合一全链）：open/close 载荷替换为"
+                        "修复版——A1 open 前 ANC 退出等待（b[[QCY+500]+29]==0 且 [+33]==1 放行，"
+                        "0x6064efc(10ms) 轮询，上限 ~600ms，超时取消本次 open 槽保持 0）+ B1 删除"
+                        " set_scene(stream,10)（实为 set_scene(PC_SPK)，官方 DHA 从不调用）+ B2 start 返回后"
+                        "显式 SET_CHANNEL(1)（node_ioctl(stream,0x1100,0x20007,1)，arg=1 通道数量语义）；"
+                        "要求显式 --hearing-aid-mpo M（同 full 契约）；默认叠加 A3 时钟压舱"
+                        " clock_alloc(\\\"lfix_hold\\\",128MHz)（F1a 诊断档），--lfix-no-hold 出 F1b"
+                        "（仅差 A3，双镜像 A/B 对照）；候选 UNTESTED 不刷机，见 docs/hearing-aid-lfix-impl.md")
+    p.add_argument("--lfix-no-hold", action="store_true",
+                   help="F1b 变体：去掉 A3 时钟压舱（alloc/配对 free/名串全不出现在镜像中），"
+                        "与默认 F1a 仅差 A3——plan §4-C 双产物裁决（运行时开关需 key32 参数通道，"
+                        "改造面大不划算）；两个产物一次刷机各验一轮即可做 A/B 对照")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -403,6 +416,31 @@ def main():
         if args.hearing_aid_l1_key7:
             p.error('--hearing-aid-full and --hearing-aid-l1-key7 share the KEY7 graft window')
         args.hearing_aid_l4_eq = True         # full = L4 全链 + L2 烘焙兜底（路 HAL5）
+        args.hearing_aid_l3_mpo = True
+        args.r4_keyhook = True
+        args.hearing_aid_l1_slotram = True
+        args.hearing_aid_l1_close = True
+        args.hearing_aid_l1_patch = True
+    if args.lfix_no_hold and not args.hearing_aid_lfix:
+        p.error('--lfix-no-hold requires --hearing-aid-lfix')
+    if args.hearing_aid_lfix:
+        # 路 LFIX-IMPL：F1 = HAL5 合一基座 + open/close 载荷修复版（A1+B1+B2[+A3]）。
+        # 校验契约与 full 相同（显式 M、范围门、demo/key7 互斥）；隐含全链同 full。
+        if args.hearing_aid_demo:
+            p.error('--hearing-aid-lfix and --hearing-aid-demo are mutually exclusive')
+        if args.hearing_aid_mpo is None:
+            p.error('--hearing-aid-lfix requires an explicit --hearing-aid-mpo <dB> '
+                    '(same baked-fallback contract as --hearing-aid-full)')
+        _m = args.hearing_aid_mpo
+        if not math.isfinite(_m) or not (0.3 < _m < 120.0):
+            p.error('--hearing-aid-lfix requires 0.3 < --hearing-aid-mpo < 120 '
+                    '(same consumption range as VM key 30)')
+        if not (f32(0.3) < f32(_m) < f32(120.0)):
+            p.error('--hearing-aid-lfix requires 0.3 < --hearing-aid-mpo < 120 after '
+                    'float32 rounding (same consumption range as VM key 30)')
+        if args.hearing_aid_l1_key7:
+            p.error('--hearing-aid-lfix and --hearing-aid-l1-key7 share the KEY7 graft window')
+        args.hearing_aid_l4_eq = True         # F1 基座 = HAL5 全链 + 修复载荷
         args.hearing_aid_l3_mpo = True
         args.r4_keyhook = True
         args.hearing_aid_l1_slotram = True
@@ -511,6 +549,47 @@ def main():
                 f"--hearing-aid-l4-eq --hearing-aid-mpo {baked:.9g}",
             "status": "OFFLINE_UNTESTED",
         }
+    hearing_aid_lfix = None
+    if args.hearing_aid_lfix:
+        # 路 LFIX-IMPL：F1 候选语义报告（docs/hearing-aid-lfix-impl.md；
+        # 方案 docs/hearing-aid-lfix-plan.md §4，codex 裁决修订版已吸收）。
+        hearing_aid_lfix = {
+            "candidate": "F1b (A1+B1+B2, no clock hold)" if args.lfix_no_hold
+                         else "F1a (A1+B1+B2+A3 clock hold, diagnostic tier)",
+            "base": "HAL5 full chain (l1 toggle + l2 baked MPO + l3 key30 "
+                    "+ l4 key31 + r4 keyhook); only the open/close payload "
+                    "sources change vs the HAL5 candidate",
+            "a1_anc_wait":
+                "open 前轮询 b[[0x1265C0+500]+29]==0 且 [+33]==1（内部 OFF=1）；"
+                "0x6064efc(10ms) 任务睡眠轮询，上限 60 次 ~600ms；超时取消本次"
+                " open（返回 -22，槽保持 0，再按一次即重试）；ctx==0 跳过等待",
+            "b1_set_scene10_removed":
+                "删除 0x06074e64(stream,10)（set_scene PC_SPK，路 L1 误标 "
+                "set_notify）；场景保持 set_scene(stream,16,0) 的 HEARING_AID",
+            "b2_set_channel_after_start":
+                "start 返回 0 后 node_ioctl(stream,0x1100,0x20007,1)——对协商"
+                "结果最后覆盖；arg=1 是通道数量语义（非 17/18/20 模式枚举）；"
+                "返回值不检查（协商默认 mono 时为无害重申）",
+            "a3_clock_hold": None if args.lfix_no_hold else
+                "open uuid 命中后 clock_alloc('lfix_hold',128MHz)，close 尾/"
+                "open 失败尾 clock_free('lfix_hold')；Σ=base24+mic24+hold128 →"
+                " DVFS 恒 160M 封顶，抑制运行期振荡；首次升频切换不可避免；"
+                "长期续航/温升未测——短期诊断档，非最终产品方案",
+            "a3_switch": ("双产物 A/B（plan §4-C）：运行时开关需 key32 参数通道"
+                          "（keystore_hook+App 通道+测试面改造），判定双镜像更划算；"
+                          "F1a(默认,含压舱) 与 F1b(--lfix-no-hold) 仅差 A3"),
+            "honest_boundary": [
+                "静态补丁：全部锚点反汇编复核，但 ANC 等待放行、SET_CHANNEL 覆盖、"
+                "压舱抑制振荡均为设计语义，运行行为留给真机刷写后用户实测",
+                "验收标准=open→运行→close→再 open 全程稳定 + 左耳无刺耳噪声；"
+                "按三时间窗分开记录（open 当场/持续运行/close 后再 open）",
+                "A3 判读边界：F1a 不掉线只判「高频保持相关」（C1 时钟扰动 vs C5 "
+                "算力不足不分），归因需跨周期保持实验（plan §5⑦）",
+            ],
+            "plan": "docs/hearing-aid-lfix-plan.md",
+            "impl_report": "docs/hearing-aid-lfix-impl.md",
+            "status": "OFFLINE_UNTESTED",
+        }
     if stream_flow_identifier(stream) != flow_identifier:
         raise ValueError("不应改变在线调音流程标识")
     # 内层 stream.bin 的 JLFS 目录头与原始数据先做交叉校验。
@@ -575,7 +654,10 @@ def main():
                                         r4_keyhook=args.r4_keyhook,
                                         key7_toggle=args.hearing_aid_l1_key7,
                                         l3_mpo=args.hearing_aid_l3_mpo,
-                                        l4_eq=args.hearing_aid_l4_eq)
+                                        l4_eq=args.hearing_aid_l4_eq,
+                                        lfix=args.hearing_aid_lfix,
+                                        lfix_hold=(args.hearing_aid_lfix
+                                                   and not args.lfix_no_hold))
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -652,7 +734,12 @@ def main():
     suffix = "_anc_on_trans" if args.anc_cycle_two_state else ""
     if eq_toggle:
         suffix += "_eq_toggle_EXPERIMENTAL"
-    if args.hearing_aid_full:
+    if args.hearing_aid_lfix:
+        # 路 LFIX-IMPL：F1a/F1b 单独命名（F1a=含 A3 压舱诊断档，F1b=仅差 A3 的
+        # 对照镜像）。M 文本同 full 用 float32 化后的 .9g（可往返）。
+        suffix += (f"_LFIX_F1{'B_NOHOLD' if args.lfix_no_hold else 'A_HOLD'}"
+                   f"_MPO{f32(mpo):.9g}_OFFLINE")
+    elif args.hearing_aid_full:
         # 路 HAL5：full 单独命名（隐含链的 L4 后缀不再叠加）。M 文本用 float32
         # 化后的 .9g（可往返；:g 的 6 位有效数字会把 119.99999 显示成 120，
         # 而该命令烘焙的是不同字节且 120 不满足 full 契约——codex 复核 #4）
@@ -662,7 +749,7 @@ def main():
                    else f"_HEARING_AID_DEMO_MPO{mpo:g}")
     elif args.hearing_aid_mpo is not None:
         suffix += f"_HEARING_AID_MPO{mpo:g}"
-    if hearing_aid_l1 and not args.hearing_aid_full:
+    if hearing_aid_l1 and not args.hearing_aid_full and not args.hearing_aid_lfix:
         suffix += ("_HEARING_AID_L4_EQ_OFFLINE" if args.hearing_aid_l4_eq
                    else "_HEARING_AID_L3_MPO_OFFLINE" if args.hearing_aid_l3_mpo
                    else "_R4_KEYHOOK_OFFLINE" if args.r4_keyhook
@@ -687,6 +774,7 @@ def main():
               **({'hearing_aid_demo': hearing_aid} if hearing_aid else {}),
               **({'hearing_aid_l1': hearing_aid_l1} if hearing_aid_l1 else {}),
               **({'hearing_aid_full': hearing_aid_full} if hearing_aid_full else {}),
+              **({'hearing_aid_lfix': hearing_aid_lfix} if hearing_aid_lfix else {}),
               "zero_change_identical": bytes(result) == source,
               "dual_bank_boot_info": {"flash_offset": boot_pos, "app_offset": app_pos,
                                       "app_bytes": app_size, "plain_crc_before": plain_crc,
