@@ -48,7 +48,7 @@ public class SimulationGattLinkTest {
         volatile String candidateName, candidateAddress;
         volatile int candidateRssi;
         int reportedMtu = -1, reportedMtuStatus = -1;
-        public synchronized void onCandidate(String name, String address, int rssi) {
+        public synchronized void onCandidate(String name, String address, int rssi, boolean vendorAd) {
             candidateName = name; candidateAddress = address; candidateRssi = rssi;
             scanHit.countDown();
         }

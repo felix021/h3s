@@ -17,10 +17,12 @@ export ANDROID_SDK_ROOT=/path/to/android-sdk
 bash tools/android-query/build.sh
 ```
 
-默认不需要任何地址：App 扫描 BLE 广播按名字（"QCY H3S"）自动发现耳机再连接（路 BLEDISC，
-2026-11-18 起，照 QCY 官方 App 先例；根因见 docs/android-ble-connection-diagnosis-20261118.md）。
-可选环境变量：`H3S_BLE_ADDRESS`（注入则作为扫描时的优先地址，扫到即连）、`H3S_BLE_NAME`
-（默认 "QCY H3S"）、`H3S_BLE_NAME_MATCH`（prefix|exact，默认 prefix）。
+默认不需要任何地址：App 扫描 BLE 广播按**厂商特定 AD**（公司 ID 0x521C + 载荷 ≥24B + 型号
+0x417C，照 QCY 官方 App 先例）自动发现耳机再连接，广播名匹配保留为辅（路 BLEDISC2，
+2026-11-19——H3S 广播实测无 Local Name，按名发现的前提不成立；根因见
+docs/android-ble-connection-diagnosis-20261118.md）。可选环境变量：`H3S_BLE_ADDRESS`
+（注入则作为扫描时的优先地址，扫到即连）、`H3S_BLE_NAME`（辅助名字匹配，默认 "QCY H3S"）、
+`H3S_BLE_NAME_MATCH`（prefix|exact，默认 prefix）。
 环境要求：JDK、Python、unzip/zip、Android platform35、build-tools35.0.0。`test.sh`只需JDK和Python，不访问蓝牙。
 
 两份依赖下载到被忽略的vendor/，均按固定摘要检查：
@@ -300,10 +302,15 @@ window.onH3sEvent = e => {                               // 壳经 ResultSink �
 `TransportContractTest` 与 Loopback 同断言对拍），真机粘合在 `AndroidGattLink`（照
 MainActivity/UpgradeService 先例，本机按 android.jar 编译检查过，真机行为待联调）。
 
-1. ✅ **connect()**：发现扫描（路 BLEDISC：按广播名 "QCY H3S" 匹配——`BleDiscoveryPolicy`
-   前缀/全匹配可配；注入地址候选扫到即优先选定，名字候选首现后 settle 2s 取信号最强者；12s
-   超时=明确失败，不再直连兜底死等）→ `connectGatt(autoConnect=false, TRANSPORT_LE)` 到发现
-   选定的地址 → `discoverServices` → 校验 A002/1/2 与写特征属性（属性含 WRITE 用
+1. ✅ **connect()**：发现扫描（路 BLEDISC2，2026-11-19：**厂商特定 AD 主识别**——0xFF 结构含
+   公司 ID 0x521C（报告未钉字节序，小端/大端镜像都认）+ 载荷 ≥24B（实测 H3S 恒 24，截断拒绝）
+   + 载荷头两字节大端=型号 0x417C（同公司异型号拒绝），照 QCY 官方 App 按厂商数据筛选的先例；
+   H3S 广播实测无 Local Name（5/5 历史目标广播 getName()=null），名字匹配降为辅助。0x03 服务
+   列表含 0xFEE8 是辅助信号（加分不否决，只进候选日志）。注入地址候选扫到即优先选定，匹配候选
+   首现后 settle 2s 取信号最强者（多台同型号）；12s 超时=明确失败，不再直连兜底死等）→
+   `connectGatt(autoConnect=false, TRANSPORT_LE)` 到发现选定的地址 → `discoverServices` →
+   校验 A002/1/2 与写特征属性（缺 A002 服务/特征=按连接失败处理——防同厂误连的最后一道防线；
+   属性含 WRITE 用
    WRITE_TYPE_DEFAULT、只含 WRITE_NO_RESPONSE 用 NO_RESPONSE——H3S 实测属性 4）→
    `setCharacteristicNotification + CCCD ENABLE_NOTIFICATION_VALUE` → **等 CCCD 成功 +
    `onMtuChanged` 实际值双标志**（`requestMtu(517)` 以回调为准；MTU 协商失败不致命，按当前值
@@ -330,10 +337,13 @@ MainActivity/UpgradeService 先例，本机按 android.jar 编译检查过，真
    （旧 index/keyremap 两页已并为单页双 tab）。
    连接由页面显式 `h3s.connect()` 触发，不自动连接。
 8. ✅ **权限与目标**：`WebShellActivity` 进入即请求 `BLUETOOTH_SCAN/CONNECT`（照 MainActivity
-   先例）；目标=按广播名发现的耳机（`BleDiscoveryPolicy`：名字匹配 "QCY H3S" 或注入地址命中，
-   GattLink 前置过滤不上报无关广播；只有被 transport 选定的地址才会被 connectGatt，不开任意
-   设备连接）。注入的 `H3S_BLE_ADDRESS` 作为优先地址（扫到即连）。厂商 adv 数据识别 [未钉]
-   （无 QCY 厂商 ID 线索，只按名字）。
+   先例）；目标=按厂商 AD（0x521C/0x417C/≥24B，主识别）或广播名（辅助）发现的耳机
+   （`BleDiscoveryPolicy`：GattLink 前置过滤不上报无关广播；只有被 transport 选定的地址才会被
+   connectGatt，不开任意设备连接），连接后再以 A002 服务/特征核对身份（缺=失败重试/终态）。
+   注入的 `H3S_BLE_ADDRESS` 作为优先地址（扫到即连）。终态通知按连接会话计
+   （`SerialBleTransport.beginConnectSession`）：连续两次连接尝试失败各自报一次终态，
+   会话内重复断线事件仍去重——2026-11-19 修复此前第二次失败被 `disconnectReported` 吞掉、
+   页面永卡「扫描中」的 bug（诊断报告 00:29:34 复现两次）。
 9. ⬜ **联调顺序**：先只读查询对拍（SN 匹配 + deframe 与 docs/protocol.md 实测帧对照）→
    单条 ANC 切换（响应最小）→ 提示音音量 → EQ 整组；EQ 候选 UNTESTED 不变。
 10. ⬜ **联调时对照项**：真机 setter 响应载荷形状（替换 Loopback 的回显假设）、EQ 写是否需要

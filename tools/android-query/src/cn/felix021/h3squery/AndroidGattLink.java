@@ -28,10 +28,12 @@ import android.os.Looper;
  * （同 MainActivity/UpgradeService/WebShellActivity），只在 build.sh 按 android.jar 编译；
  * 状态机逻辑全在 AndroidBleTransport（纯 JVM，假 Link 单测覆盖）。
  *
- * 目标门槛（README 清单第 8 条；路 BLEDISC 2026-11-18 起为发现模式）：不连任意设备——
- * 扫描回调按共享 {@link BleDiscoveryPolicy} 前置过滤（名字匹配 "QCY H3S" 或注入地址命中，
- * 照 QCY 官方 App 扫描发现的先例），只有被 transport 发现选定的地址才会被 connectGatt；
- * 构建注入的 DeviceConfig.ADDRESS 仍被优先认（扫到该地址时立即上报，由 transport 优先选定）。
+ * 目标门槛（README 清单第 8 条；路 BLEDISC2 2026-11-19 起为厂商 AD 发现模式）：不连任意
+ * 设备——扫描回调按共享 {@link BleDiscoveryPolicy} 前置过滤（厂商 AD 0x521C/型号 0x417C 命中
+ * ——H3S 广播实测无 Local Name，这是主路径；名字匹配保留为辅；注入地址命中——照 QCY 官方
+ * App 按厂商数据筛选的先例），只有被 transport 发现选定的地址才会被 connectGatt；构建注入的
+ * DeviceConfig.ADDRESS 仍被优先认（扫到该地址时立即上报，由 transport 优先选定）。连错设备
+ * 的最后一道防线在 transport：GATT 服务发现后核对 A002 服务/特征，缺=按连接失败处理。
  *
  * 线程模型：平台回调（Binder 线程来的 BluetoothGattCallback/ScanCallback）统一 main.post
  * 后再调 Link.Callbacks；Link 的动作方法由 transport 在主线程调用（transport 注入的
@@ -49,6 +51,9 @@ public class AndroidGattLink implements AndroidBleTransport.Link {
     static final UUID WRITE = UUID.fromString("00000001-0000-1000-8000-00805f9b34fb");
     static final UUID NOTIFY = UUID.fromString("00000002-0000-1000-8000-00805f9b34fb");
     static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+
+    /** 候选命中日志 tag（WebShellActivity.TAG 同前缀；真机 logcat 排查用）。 */
+    private static final String TAG = "H3S-GattLink";
 
     private final Context context;
     private final BleDiscoveryPolicy discovery;    // 与 transport 共用：前置过滤 + 注入地址优先
@@ -94,9 +99,10 @@ public class AndroidGattLink implements AndroidBleTransport.Link {
     }
 
     /**
-     * 发现扫描（路 BLEDISC）：无平台过滤全扫——注入地址不保证在广播（地址错时平台过滤会零命中，
-     * 正是 2026-11-18 诊断的死等根因），名字匹配在 {@link #scanCallback} 里按共享策略前置过滤，
-     * 只把匹配候选上报 transport（不扫/不连任意设备）。服务 UUID 过滤不加：H3S 广播是否含 A002 [未钉]。
+     * 发现扫描（路 BLEDISC2）：无平台过滤全扫——注入地址不保证在广播（地址错时平台过滤会零命中，
+     * 正是 2026-11-18 诊断的死等根因），厂商 AD/名字匹配在 {@link #scanCallback} 里按共享策略
+     * 前置过滤，只把匹配候选上报 transport（不扫/不连任意设备）。平台过滤不加服务 UUID：H3S 的
+     * 0xFEE8 面向整个 QCY/杰理家族，只作辅助信号不作过滤（见 BleDiscoveryPolicy 类注）。
      */
     @Override public void startScan() {
         BluetoothLeScanner s = scanner();
@@ -119,14 +125,20 @@ public class AndroidGattLink implements AndroidBleTransport.Link {
             if (cb == null || result.getDevice() == null) return;
             final String address = result.getDevice().getAddress();
             if (address == null || address.isEmpty()) return;
+            final byte[] record = result.getScanRecord() != null ? result.getScanRecord().getBytes() : null;
             final String name = scanName(result);
+            final boolean vendor = BleDiscoveryPolicy.vendorMatches(record);  // 厂商 AD 0x521C/0x417C——H3S 无名广播的主识别
             boolean preferred = discovery.isPreferred(address);               // 注入地址候选可无名
-            if (!preferred && !discovery.nameMatches(name)) return;           // 前置过滤：非匹配广播不上报
+            if (!preferred && !vendor && !discovery.nameMatches(name)) return; // 前置过滤：非匹配广播不上报
             long now = android.os.SystemClock.elapsedRealtime();
             Long last = lastReport.put(address, Long.valueOf(now));
             if (last != null && now - last.longValue() < REPORT_DEBOUNCE_MS) return;   // 同址去抖
             final int rssi = result.getRssi();
-            post(new Runnable() { public void run() { if (cb != null) cb.onCandidate(name, address, rssi); } });
+            // 候选命中留痕（真机排查用）：厂商命中/注入地址/服务列表辅助信号 0xFEE8 都进日志
+            android.util.Log.i(TAG, "扫描候选 " + address + " RSSI " + rssi
+                + (vendor ? " 厂商AD命中(服务0xFEE8=" + BleDiscoveryPolicy.serviceUuidListed(record, BleDiscoveryPolicy.AUX_SERVICE_UUID16) + ")" : "")
+                + (preferred ? " 注入地址" : "") + (name != null && !name.isEmpty() ? " 名=\"" + name + "\"" : " 无名"));
+            post(new Runnable() { public void run() { if (cb != null) cb.onCandidate(name, address, rssi, vendor); } });
         }
         @Override public void onScanFailed(int errorCode) {
             post(new Runnable() { public void run() { if (cb != null) cb.onScanFailed(errorCode); } });

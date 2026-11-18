@@ -12,9 +12,10 @@ package cn.felix021.h3squery;
  * 同时跑 LoopbackTransport（Z 路）与本类+假 Link。
  *
  * 连接状态机（照 tools/android-query/README.md「真机适配清单」与 docs/app-protocol.md §1；
- * 路 BLEDISC 2026-11-18 起目标地址由扫描发现，见 {@link BleDiscoveryPolicy}）：
+ * 路 BLEDISC2 2026-11-19 起目标地址由扫描发现，主识别=厂商 AD（H3S 广播实测无名），见
+ * {@link BleDiscoveryPolicy}）：
  *
- *   IDLE → SCAN(可选，按广播名发现；注入地址优先命中即选，名字候选 settle {@link
+ *   IDLE → SCAN(可选，按厂商 AD/广播名发现；注入地址优先命中即选，匹配候选 settle {@link
  *        #CANDIDATE_SETTLE_MS} 取最强；超时=明确失败，不再直连兜底) → CONNECT(connectGatt(选定地址))
  *        → DISCOVER(discoverServices) → SUBSCRIBE(setCharacteristicNotification+CCCD)
  *        → MTU(requestMtu(517)，以 onMtuChanged 回调实际值为准，不假定 247/517)
@@ -87,7 +88,8 @@ public class AndroidBleTransport extends SerialBleTransport {
     public interface Link {
         /** 连接前置检查：蓝牙权限/开关/（注入时的）目标地址合法性；就绪返回 null，否则返回原因（直接进日志与断线事件）。 */
         String notReadyReason();
-        /** 开始发现扫描：实现侧按共享 {@link BleDiscoveryPolicy} 前置过滤，只上报名字匹配/注入地址的候选。 */
+        /** 开始发现扫描：实现侧按共享 {@link BleDiscoveryPolicy} 前置过滤（厂商 AD/名字匹配/注入
+         *  地址命中），只上报匹配候选；厂商命中位随 onCandidate 的 vendorAd 传出。 */
         void startScan();
         void stopScan();
         /** 发起 GATT 连接（autoConnect=false、TRANSPORT_LE，异步）到发现选定的地址。 */
@@ -111,8 +113,12 @@ public class AndroidBleTransport extends SerialBleTransport {
 
         /** 平台回调（真实现把 BluetoothGattCallback 全部翻译到这里并统一过主线程）。 */
         interface Callbacks {
-            /** 一个匹配候选的广播出现（已按 BleDiscoveryPolicy 前置过滤；name 可能为 null——注入地址候选可无名）。 */
-            void onCandidate(String name, String address, int rssi);
+            /**
+             * 一个匹配候选的广播出现（已按 BleDiscoveryPolicy 前置过滤）。name 可能为 null——
+             * H3S 实测广播无名（2026-11-19），主路径靠 vendorAd=true（厂商 AD 0x521C/型号 0x417C
+             * 命中）；注入地址候选可无名且 vendorAd 可为 false。
+             */
+            void onCandidate(String name, String address, int rssi, boolean vendorAd);
             /** 扫描启动失败（transport 直接转直连，不阻断）。 */
             void onScanFailed(int error);
             /** status==0 && state==STATE_CONNECTED=链路建立；断开/错误见 state/status。 */
@@ -155,7 +161,7 @@ public class AndroidBleTransport extends SerialBleTransport {
     private String targetAddress;                   // 本次会话选定的连接地址（发现选定或注入直连）
     private boolean settleScheduled;                // settle 观察窗已排（每次连接会话重置）
     private final Link.Callbacks callbacks = new Link.Callbacks() {
-        @Override public void onCandidate(String name, String address, int rssi) { handleCandidate(name, address, rssi); }
+        @Override public void onCandidate(String name, String address, int rssi, boolean vendorAd) { handleCandidate(name, address, rssi, vendorAd); }
         @Override public void onScanFailed(int error) { handleScanFailed(error); }
         @Override public void onConnectionStateChange(int status, int state) { handleConnectionState(status, state); }
         @Override public void onServicesDiscovered(int status) { handleServicesDiscovered(status); }
@@ -226,6 +232,7 @@ public class AndroidBleTransport extends SerialBleTransport {
     /** 幂等：连接中/已连接时重复调用是 no-op。 */
     private void connectInternal() {
         if (phase != Phase.IDLE) return;
+        beginConnectSession();                       // 终态去重按会话计：上次失败不吞本次终态（2026-11-19 修复）
         String reason = link.notReadyReason();
         if (reason != null) { failConnect(reason); return; }
         attempt = 0;
@@ -237,10 +244,12 @@ public class AndroidBleTransport extends SerialBleTransport {
         if (scanEnabled) {
             phase = Phase.SCAN;
             String preferred = discovery.preferredAddress();
-            log("发现扫描：目标名 \"" + discovery.name() + "\""
+            log("发现扫描：厂商 AD 0x" + Integer.toHexString(BleDiscoveryPolicy.VENDOR_COMPANY_ID)
+                + "/型号 0x" + Integer.toHexString(BleDiscoveryPolicy.VENDOR_MODEL_ID)
+                + " 或广播名 \"" + discovery.name() + "\""
                 + (preferred != null ? "，优先地址 " + preferred : "（未注入地址）")
                 + "，" + DISCOVERY_TIMEOUT_MS + "ms 超时");
-            progress("scanning", "扫描中：寻找 " + discovery.name() + " 蓝牙广播…");
+            progress("scanning", "扫描中：寻找 H3S 耳机蓝牙广播…");
             final long epoch = connectEpoch;
             schedule(DISCOVERY_TIMEOUT_MS, new Runnable() { public void run() {      // 超时=明确失败（不再直连兜底）
                 if (phase != Phase.SCAN || connectEpoch != epoch) return;
@@ -248,8 +257,10 @@ public class AndroidBleTransport extends SerialBleTransport {
                                              // （真实调度下 settle 必先到期并转出 SCAN），让位 no-op
                 link.stopScan();
                 phase = Phase.IDLE;
-                failConnect("扫描 " + DISCOVERY_TIMEOUT_MS + "ms 未发现 \"" + discovery.name()
-                    + "\" 广播——耳机在广播范围吗（已开机/未连接其他手机/距离别太远）？");
+                failConnect("扫描 " + DISCOVERY_TIMEOUT_MS + "ms 未发现 H3S 广播（厂商 AD 0x"
+                    + Integer.toHexString(BleDiscoveryPolicy.VENDOR_COMPANY_ID) + "/型号 0x"
+                    + Integer.toHexString(BleDiscoveryPolicy.VENDOR_MODEL_ID) + " 与广播名 \""
+                    + discovery.name() + "\" 均未命中）——耳机在广播范围吗（已开机/未连接其他手机/距离别太远）？");
             }});
             link.startScan();
         } else {
@@ -311,10 +322,10 @@ public class AndroidBleTransport extends SerialBleTransport {
 
     // ================================ Link 回调 ================================
 
-    /** 扫描候选：注入地址命中→立即选定；名字匹配候选→首个出现后排 settle 观察窗取最强。 */
-    private void handleCandidate(String name, String address, int rssi) {
+    /** 扫描候选：注入地址命中→立即选定；厂商 AD/名字匹配候选→首个出现后排 settle 观察窗取最强。 */
+    private void handleCandidate(String name, String address, int rssi, boolean vendorAd) {
         if (phase != Phase.SCAN) return;
-        String immediate = discovery.offer(name, address, rssi);
+        String immediate = discovery.offer(name, address, rssi, vendorAd);
         if (immediate != null) {
             log("扫描命中注入地址 " + immediate + "（RSSI " + rssi + "），转连接");
             selectTarget(immediate);
@@ -322,7 +333,7 @@ public class AndroidBleTransport extends SerialBleTransport {
         }
         if (discovery.candidateCount() > 0 && !settleScheduled) {
             settleScheduled = true;                 // 观察窗只排一次；窗内更强的候选由 strongest() 兜住
-            progress("found", "发现 " + discovery.name() + "（候选 ×" + discovery.candidateCount()
+            progress("found", "发现 H3S（候选 ×" + discovery.candidateCount()
                 + "，观察信号 " + CANDIDATE_SETTLE_MS + "ms 取最强）");
             log("发现候选 ×" + discovery.candidateCount() + "，" + CANDIDATE_SETTLE_MS + "ms 后取信号最强者");
             final long epoch = connectEpoch;

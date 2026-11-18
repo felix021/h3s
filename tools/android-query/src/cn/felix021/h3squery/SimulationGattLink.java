@@ -90,7 +90,8 @@ public class SimulationGattLink implements AndroidBleTransport.Link {
         scanning = true;
         postDelayed(SCAN_HIT_DELAY_MS, new Runnable() { public void run() {
             if (!scanning) return;                          // stopScan 后晚到任务 no-op
-            post(new Runnable() { public void run() { if (cb != null) cb.onCandidate(SIMULATED_NAME, SIMULATED_ADDRESS, SIMULATED_RSSI); } });
+            // vendorAd=false：仿真候选走名字匹配路径（真机主路径厂商 AD 的识别在 BleDiscoveryPolicy 单测覆盖）
+            post(new Runnable() { public void run() { if (cb != null) cb.onCandidate(SIMULATED_NAME, SIMULATED_ADDRESS, SIMULATED_RSSI, false); } });
         }});
     }
 
