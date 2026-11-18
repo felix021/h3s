@@ -1,0 +1,97 @@
+{
+  "route": "DMASCOUT / sim-dmascout（基线 main 5cc4d12 worktree，静态侦察，零 tools/ 改动，不跑条件线）",
+  "recorded_at": "2026-11-18T13:44:00+08:00",
+  "task": "JL_AUDIO DAC DMA 指针读停点侦察：41,965,883 @ 0x606e148（jl_audio_dac_dma_read_not_modeled 读 0xfe0510）——寄存器语义/停点函数/消费链/先例边界/三选一预案/下一停点分臂预判",
+  "method": {
+    "firmware": "官方 app.bin sha256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100），vendor 线性反汇编（~/tmp/sim-wla-disasm/app-linear.asm，既有）+ 钉死 codec 复核（reference-cache pi32v2-isa，主仓 tools 加载，静态解码分支/访存原始字段）",
+    "sdk": "media.a（pinned，bootstrap SHA 6d1c5ed5…）llvm-dis 提取 audio_dac.c.o/dac_base.c.o/audio_dac_io.c.o 等 9 对象到 ~/tmp/dmascout-static/mediaao/；DWARF JL_AUDIO_TypeDef 布局（earphone_sdk br28.h 构建变体）+ csfr.h __u16→unsigned int 互证；SDK IR 段级语义对位（非逐指令）",
+    "callgraph": "全 app call 编码扫描（复用 ~/tmp/ae-audioin/ae_calls.py，20300 边）",
+    "runtime_facts": "analysis/local-checks/irq-entry.json p11_heap_experimental_config 场景 executor 报告（四字写记录）+ evidence/sim-routes/evimpl.json arm9（停点记录/shape）",
+    "mirror": "ait.load_b79 解密 plain 切片 vs official 逐字节比对",
+    "scripts_local": "~/tmp/dmascout-static/（decode_branches.py/verify_targets.py；不进仓）"
+  },
+  "stop": {
+    "frontier": "41965883 @ 0x606e148",
+    "kind": "jl_audio_dac_dma_read_not_modeled",
+    "address": "0xfe0510",
+    "instruction": "ld.w r0=[r5+16]（raw 字索引 [r5+4]，r5=0x606e142 li r5=0xfe0500）",
+    "function": "0x606e106 = audio_dac_set_sample_rate（SDK dac_base.c 构建变体，内联 wait_for_dac_stop + set_sample_rate_base；15 项采样率表 0x609FB70 逐字节==SDK sample_rate_tbl 互证）"
+  },
+  "register_semantics": {
+    "layout_sources": ["media.a audio_dac_io.c.o DWARF JL_AUDIO_TypeDef（成员序×4 全 32 位）", "csfr.h L15-17 #define __u8/__u16 unsigned int", "固件全部对齐 32 位访问"],
+    "dac_dma_words": {
+      "0xfe0500": "DAC_CON（使能+采样率低 4 位索引；AK 容器已建模）",
+      "0xfe0504": "DAC_ADR=环缓冲基址（固件写 0x18e180=60KB CW 缓冲）",
+      "0xfe0508": "DAC_LEN（固件写 1；SDK dac_platform_power_on 按缓冲尺寸计算；单位/回绕未证=开放项）",
+      "0xfe050c": "DAC_PNS（flush 臂写 1 arm 停止中断；未映射）",
+      "0xfe0510": "DAC_HRP=硬件读指针（软复位写 0+硬件消费推进）——停点字",
+      "0xfe0514": "DAC_SWP=软件写指针——停点第二读字（EVIMPL 预判 HWP/TWP/PNS 三案均不对）",
+      "0xfe0518": "DAC_SWN（空间计算读；本前缀从未被写；未映射）"
+    },
+    "wait_loop_erratum": "0x606e142..0x606e192 无向后分支（codec 钉死 beq.rr n=34/30 均前跳 0x606e194）——非轮询等待环，是 wait_for_dac_stop 空闲守卫的 volatile 双读；真正等待（flush 臂）=os_sem_pend(sem, delay_ms/10+1) 等 IRQ39 信号量",
+    "recorded_writes_at_stop": {
+      "source": "0x6071e92..0x6071ea8（W1[3] 尾段=SDK dac_platform_power_on 构建变体），恰四写零读（3800 万步无新写）",
+      "0xfe0504": "0x18e180",
+      "0xfe0508": "0x1",
+      "0xfe0510": "0x0",
+      "0xfe0514": "0x0"
+    }
+  },
+  "consumer_chain": {
+    "equal_arm_exit": "POST 0x606e194：dac_hdl 族 RAM 写（0x1265C0+7508 段）→ DAC_CON[3:0]=索引 RMW（AK 容器地址级服务）→ read_reset_all 0x60474A（SDK IR 证纯 RAM+mutex）→ 可选回调 [r6+0]（未证空=开放项）→ 返 0；不再触未建模 SFR 读（回调除外）",
+    "flush_arm_not_taken": "本前缀 HRP==SWP==0 第一检即相等；flush 臂需 PNS 写 0xfe050c（未映射=天然墙）+os_sem_pend 等 IRQ39（不建模=第二道墙）",
+    "callers": ["0x601442c（r0=16000 字面量，app 初始化族）", "0x6076942（jlstream DAC 节点速率协商段）"],
+    "caller_note": "停点证据无 GPR 转储不可分辨；两者返回后消费链同形，不影响预案",
+    "space_fn_0x607236c": "读 [0xfe0508/0xfe0518/0xfe0514/0xfe0504] 现算可用空间（环回绕算术）；本前缀从未执行（读 0xfe0514 会更早停）——tone/PCM 推送域（D2）入口"
+  },
+  "mirror_isomorphism": {
+    "b79_app_sha256_prefix": "b79cb3a6f8702eb9（ait.load_b79 解密 plain 切片，与 manifest 钉死值一致）",
+    "diff_vs_official": "全镜像恰 1 字节差 @0x609e510（ANC 键循环表，钉死预期）",
+    "byte_identical_regions": ["0x606e100-0x606e1d0 set_rate 函数", "0x609fb60-0x609fbc0 采样率表", "0x6071e70-0x6071ec0 power_on 尾段", "0x6072360-0x6072400 空间函数", "0x6076800-0x6076960 调用者段", "0x6014400-0x6014450 调用者段"],
+    "caveat": "结构同构=代码+表字节相同；动态前缀一致性仍需 official↔b79 对照臂分别核对；stream.bin 41B 音量差不在本段读面"
+  },
+  "prior_art_boundaries": {
+    "served_by_existing": ["AK DAC_INIT_WORDS（DAC_CON RMW）", "CW DAC_VL0", "p3_ls DAC_COP", "DT DAC_TM0/TM1", "AM jl_adda_analog_family", "ADC DMA 五字写记录 0xfe053c..54c"],
+    "this_stop_is": "路 BM 四字 write-only 容器的读侧 fence 在 DAC 节点开放路径首次触发（比 BM『D1 后 tone/PCM 推送域』的边界注早——勘误 4，实施路修注释）"
+  },
+  "errata": [
+    "命名级：registry/模型/报告注释『四字=ADR/LEN/HRP/PNS』成员序错一位——+0x14=SWP，PNS=+0x0c（0xfe050c）；地址/行为零影响",
+    "文档级：本地缓存 br28.h（md5 0314dd3c…，u16 混排）非固件构建变体；构建真值=成员序×4（csfr.h 宏，DWARF 互证）",
+    "语义级：HANDOFF/EVIMPL『beq.rr 指针对轮询=DMA 等待环』作废——无回边，双读空闲守卫+sem 等待",
+    "边界级：BM/registry『DMA 指针读属 D1 后 tone/PCM 推送域』漏了节点开放路径 set_sample_rate 空闲守卫这一更早读者",
+    "d2-audio-first-scene §3『0xfe0538(bit4 完成轮询)』按旧布局命名，实际 0xfe0538=ADC_CON（DWARF）；到达时重核"
+  ],
+  "plan": {
+    "decision": "a（收窄版，codex 裁决）",
+    "scope": "仅 HRP(0xfe0510)/SWP(0xfe0514) 两字对齐 32 位读回=最后写值；ADR/LEN 不动；任一被读字零写→维持原严格停",
+    "switch": "jl_audio_dac_dma_idle_readback（建议名），conditional，默认 False，依赖 jl_audio_dac_dma_writes（缺依赖报错）",
+    "guards": "绑定已核验镜像+场景+初始化阶段（事件历史维护，非逐读检查 HRP==SWP==0）；读位置限定已核验比较段形状（0x606e148/14a/150/152）；失效事件=SWN/PNS 触达、DAC 启停/控制位变化、另一核写、任何重写（同值也审查）、快照恢复携带阶段",
+    "reporting": "每字成功读次数+最后写值+来源 PC/步数；首末读 PC/核/步数；拒绝计数+原因；当前阶段+失效事件",
+    "wording_grade": "『零合成字节（值=固件写记录）』成立；『相等臂=硅真相』降级为显式初始化空闲假设（HRP 软写后硬件未推进；不声明 BR28 硅等价——证据缺口：无 IRQ39 不能反证、SWN 未知、LEN=1 未解释、控制序列未审）",
+    "negative_arms": ["off 复现 41,965,883 逐字", "零写读停", "宽度/对齐/位置未核验停", "不等注入不构造相等", "先推进后回零不复活", "数据提交/控制变化后再读停", "快照恢复含写来源+阶段"],
+    "rejected": "b（需 DMA 引擎+IRQ39+信号量整套投影=数据相另立项，本前缀不进 flush 臂）；c（a 零合成字节+同族先例，仅在守卫不成立时兜底）"
+  },
+  "next_stop_prediction": {
+    "by_branch_not_global_order": true,
+    "two_word_release_arm": "POST 返回→调用者续段 RAM/已建模族；再往后首撞 0xfe04xx 时钟门族或解码器资源域（未建模，d2 §3 清单）；回调 [r6+0] 若非空属新域",
+    "four_word_release_arm": "空间函数 0x607236c 首读未写过的 0xfe0518(SWN) 停（读回语义无值可回=天然诚实停）",
+    "two_word_arm_space_fn": "首读 0xfe0508(LEN) 即停（LEN 不在放行两字内）",
+    "flush_arm": "ROM 锁/分配服务→PNS 写 0xfe050c unmapped 停→os_sem_pend 挂起/超时",
+    "audio_domain_depth": "配置相浅（POST+调用者续段即可越）；数据相（解码器→DAC 输出→park）被 SWN/IRQ39/信号量三重墙挡住=结构性诚实边界，需独立数据相路线（d2 G3/G5）"
+  },
+  "open_items": [
+    "POST 可选回调 [r6+0]（0x1265C0+7508 槽）未证空——on 臂首停点自然收口",
+    "停点调用者 0x601442c/0x6076942 二选一未定（无 GPR 转储；不影响预案）",
+    "LEN=1 语义（长度单位/回绕/60KB 缓冲与有效长度关系）未证，只登记观察值",
+    "0x12355C/0x123530 ROM 调用身份按 SDK IR 对位推断锁/分配/延时族，未逐指令反汇编（flush 臂不进非必需）",
+    "双核历史审计（core1 11496 冻结=旁证）与动态 parity 对照留实施路",
+    "SDK 67328f4 wait_for_dac_stop 单检 vs QCY 双检——段级对位成立，逐指令以目标镜像解码为准"
+  ],
+  "codex_advisory": {
+    "model": "gpt-6-astra",
+    "when": "2026-11-18 14:26-14:33",
+    "transcript": "~/tmp/codex/202611181426-dmascout/（prompt.md/final.md，43679 tokens）",
+    "verdict": "选 a 收窄版：仅 HRP/SWP 两字读回+事件历史守卫；不批四字扩展；『硅真相』降级为显式初始化空闲假设；零合成字节成立",
+    "key_corrections_adopted": ["PNS 地址笔误 0xfe0510c→0xfe050c", "下一墙按分支预测不给全局顺序（两字臂下空间函数首停 LEN 而非 SWN）", "POST 结论需回调目标证明（空或已核验二择一）", "双检以目标镜像解码为准（SDK 单检≠逐指令一致）", "先例只提供实现方式不自动赋予硬件语义", "镜像六区域同构≠动态前缀一致，对照臂照跑", "同值重写也要审查写事件；阶段由事件历史维护"]
+  }
+}
