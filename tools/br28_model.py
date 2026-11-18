@@ -8,6 +8,7 @@ import operator
 import struct
 
 from probe_boot import Blocked, IrqDeliveryRequest
+from br28_dsp_models import CopexExp22Model
 
 TIMER0=0xfd0400
 # 路 BK/S19 批 1:JL_TIMER2(br28.h ls_base+map_adr(0x06,0),CON/CNT/PRD 与
@@ -7641,6 +7642,7 @@ class BR28Model:
                  jl_pled_config_words=False,
                  jlstream_kick_param2_unknown=False,
                  p11_lpvad_config=False,
+                 copex_exp22_model=False,copex_exp22_probe_ul_bias=None,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
@@ -8270,6 +8272,15 @@ class BR28Model:
             self.jl_audio_dac_dma_idle=JLAudioDacDmaIdleReadback()
         else:
             self.jl_audio_dac_dma_idle=None
+        # 路 COPEXIMPL(codex 裁 (a) 收窄版):copex.ppi mode-22 指数近似模型
+        # ——42,037,363 停点 0x606a900(upstream『copex.ppi has no model』)
+        # 的放行。非内存映射寄存器容器:拦截/执行在 probe_boot CPU.step_body
+        # (契约与证据全案见 br28_dsp_models 模块注释),本槽只承载账本
+        # (executions/首末样本/模式直方图,M4 族随快照恢复)与报告面;
+        # 上游模型面冲突检查在 probe_boot CPU 构造点(坑⑤)。开关关=槽
+        # None=一次 is-not-None 即过,legacy 报告零变化。
+        self.copex_exp22=(CopexExp22Model(probe_ul_bias=copex_exp22_probe_ul_bias)
+                          if copex_exp22_model else None)
         # 路 JLA:JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c,set_buffer
         # 0x606dee4 五写)写侧 write-only 整字记录——恰五写零读(本前缀),与
         # BM DAC DMA 四字同族;audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b
@@ -10207,6 +10218,33 @@ class BR28Model:
                 'silicon-equivalence claim (no IRQ39 in the simulation cannot '
                 'disprove silicon DMA activity; SWN-unwritten is not a zero-reset '
                 'claim; LEN=1 unexplained; control-bit quiescence unaudited)')
+        # 路 COPEXIMPL:mode-22 指数近似模型报告(开关关=槽 None=零键,
+        # legacy 报告不变)。
+        if self.copex_exp22 is not None:
+            result['copex_exp22_model']=self.copex_exp22.report()
+            result['assumptions']['copex_exp22_model']=(
+                'copex.ppi mode-22 exponential approximation (route COPEXIMPL, '
+                'codex decision (a) narrowed): mode 22 = e^x is dual-source named '
+                '(SDK math_fast_funtion.c exp_float shape-identical to the firmware '
+                'leaf 0x606a8fc; AC791N captures agree on 4 of 6 samples) — a '
+                'CONDITIONAL MATHEMATICAL APPROXIMATION, derived-not-measured: the '
+                'destination lower word is float32 round-to-nearest of the host '
+                'double exponential and is NOT a silicon replica (the AC791N '
+                'capture e^1.0=0x402df853 sits 1 ulp BELOW correct rounding; BR28 '
+                'numerics unmeasured); the destination upper word is a hardware-'
+                'nonconstant opaque result (captures 0x1ffffff5/0x2b7e14f2, history '
+                'dependence not excluded) carried as an unknown word with the '
+                'copex PC provenance — numeric consumption is an honest stop; '
+                'flags preserved per the 364-capture consensus. Contract is '
+                'fail-closed: n==22 exactly (no n&31 generalization), source '
+                'upper word known zero (SDK zext shape), finite float32 input '
+                'inside the declared normal-range domain [ln(2^-126), '
+                'ln((2-2^-23)*2^127)] — anything else stops with the dedicated '
+                'kinds dsp_mode_not_modeled / dsp_operand_shape_not_modeled / '
+                'dsp_domain_boundary; the .p parallel twin is rejected in both '
+                'positions before either half commits; the other seven app modes '
+                'are NOT modelled by this switch. AC791N != BR28 caveat applies '
+                'to every number this model emits')
         if self.jl_audio_adc_dma is not None:
             result['jl_audio_adc_dma_write_records']=self.jl_audio_adc_dma.report()
             delivery_on=self.jl_audio_adc_dma.delivery

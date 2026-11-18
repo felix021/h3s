@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from probe_pi32v2 import ROOT, PIN, require, upstream
 from verify_ufw_integrity import decode, sfc
 from br28_unknown import UnknownWord, word
+from br28_dsp_models import CopexUpperWord
 from br28_icfg import IcfgValue, M as WORD_MASK
 from br28_arch_models import architectural_k2, K2_SHA
 
@@ -406,7 +407,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
         def write_abstract_word(self,address,value):
             if isinstance(value,int):self.write(address,struct.pack('<I',value&0xffffffff));return
-            require(isinstance(value,(UnknownWord,IcfgValue)),'unsupported abstract memory value')
+            require(isinstance(value,(UnknownWord,IcfgValue,CopexUpperWord)),
+                    'unsupported abstract memory value')
             physical=self.preflight_abstract_word(address,value);region=self.region(physical,4)
             if isinstance(value,IcfgValue):
                 self.icfg_spills[physical]=value
@@ -429,7 +431,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                    'bytes_with_unknowns':''.join('??' if v is None else f'{v:02x}' for v in value.bytes)})
 
         def preflight_abstract_word(self,address,value):
-            require(isinstance(value,(int,UnknownWord,IcfgValue)),'unsupported abstract stack source')
+            require(isinstance(value,(int,UnknownWord,IcfgValue,CopexUpperWord)),
+                    'unsupported abstract stack source')
             physical=self.abstract_write_target(address)
             if isinstance(value,IcfgValue) and physical%4:
                 raise Blocked('partial_icfg_spill_unaligned',address=hex(physical))
@@ -470,6 +473,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if use_architectural_models:
                 self.models,names=architectural_k2(self.models)
                 architectural_model_names.update(names)
+                if diagnostics and diagnostics.get('copex_exp22_model'):
+                    # 路 COPEXIMPL(坑③/⑤):mode-22 指数近似模型的安装点——
+                    # 整机前沿 CPU 的唯一构造点,k2 同级;probe_pi32v2 的四个
+                    # 函数级探针 harness 不含 copex 站点(拦截门经 hardware.
+                    # copex_exp22 槽进 step_body)。上游模型面冲突在此报错,
+                    # 不让 step_body 拦截门静默遮蔽上游模型。
+                    from br28_dsp_models import assert_copex_exp22_installable
+                    assert_copex_exp22_installable(self.models)
         usp=None
         reti=None
         sp_known=True
@@ -725,6 +736,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         return
                     # 守卫拒绝:落回普通严格路径(零写/阶段失效/基址不符
                     # 负例即在此处诚实停,kind 与开关关世界一致)。
+            if hardware is not None and hardware.copex_exp22 is not None:
+                # 路 COPEXIMPL(codex 裁 (a) 收窄版,坑②):copex.ppi mode-22
+                # 指数近似模型的指令级拦截门。必须在 upstream pair()/step1
+                # 之前拦截——上游 pair() 会把 copex.ppi.p 派发到基形模型
+                # (「不注册即诚实停」不成立),门内对 .p 孪生两位置显式拒
+                # 绝;契约不满足抛 Blocked(坑④:独立 stop kind,不经上游
+                # effect() 的 ValueError 路由)。开关关=槽 None,一次
+                # is-not-None 测试即过,legacy 世界零变化(copex.ppi 维持
+                # upstream『has no model』诚实停)。
+                if hardware.copex_exp22.intercept(self,insn,raw,size,module.check.operands):
+                    adapters['copex_exp22_model_execute']+=1
+                    return
             if machine is not None:
                 if machine.first_task_return_hypothesis is not None:
                     machine.first_task_tail(self,insn,raw)
@@ -990,7 +1013,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     self.task_gpr_frame=None
                     self.finish_exact(self.pc+size);adapters['actual_first_task_abstract_gprs']+=1
                     return
-                if machine.unknown_task_gprs and insn.id=='mov.rr' and isinstance(self.R[raw['y']],UnknownWord):
+                if machine.unknown_task_gprs and insn.id=='mov.rr' and isinstance(
+                        self.R[raw['y']],(UnknownWord,CopexUpperWord)):
                     self.R[raw['x']]=self.R[raw['y']]
                     self.finish_exact(self.pc+size);adapters['unknown_gpr_copy']+=1
                     return

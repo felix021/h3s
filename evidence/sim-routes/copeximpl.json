@@ -1,0 +1,56 @@
+{
+ "route": "COPEXIMPL / sim-copeximpl（基线 main 3fea82a=COPEXSCOUT 合并点，侦察停点收口后的实施路）",
+ "recorded_at": "2026-11-18T21:20:00+08:00",
+ "task": "copex.ppi mode-22 指数近似模型（codex 裁决 (a) 收窄版+六坑修正，docs/frontier-scout-copex.md §5/§6）：42,037,363 @ 0x606a900（upstream『copex.ppi has no model』）放行 → 推进新前沿 → 5 臂验收 → 重钉 → 下一停点预判修正（codex 二次参谋）。",
+ "runtime_divergence_from_scout_prediction": {
+  "prediction": "侦察 §7 预判『解锁 mode 22 后，eq 重开路径下一停点大概率 mode 24（sqrt）』",
+  "actual": "on-main +21,707 步停 42,059,070 @ 0x606fbe4=unmapped_memory 读 0xfe2604——rmw.or.modimm [r0+4] |= 0x400000 的内部读，SDK br28.h 标 0xfe2600=JL_SRC_SYNC（src_sync 块 0x2600-0x26ff），+4=CON1 __RW。eq 系数算完即配置 SRC_SYNC，早于 eq 设计族任何下一个 copex 站点（0x6072bb8 mode16 sincos / 0x6072d1a mode24 sqrt，均官方镜像 codec 线性解码钉死为真码站点但未到达）",
+  "second_divergence": "首末样本措辞曾写『3 次执行全在停点 0x606a900』——samples 账本揭示第 2 次执行在第二站点 0x606600c（x=0→e^0=1.0）；codex 指出首末样本不足以支撑同形声明后加 samples 字段坐实修正",
+  "codex_verdict": "2026-11-18 20:20（gpt-6-astra，~/tmp/codex/202611182031-copeximpl-frontier/）：接受 42,059,070 @ 0x606fbe4 重钉——mode 24 是预测不是验收目标，不为命中预测扩张本路范围；SRC_SYNC 独立另路；重钉≠合并验收完成（沿用镜像 parity/从零回归/archived r2 拒绝清单）"
+ },
+ "implementation": {
+  "switch": "copex_exp22_model（conditional，依赖 jl_audio_dac_dma_idle_readback=场景推进顺序非硬件依赖，默认 False=关；关闭世界零行为差异：off 臂与 dmaimpl on-main 参照逐键相等+crc_bankb 289,849 步场景逐键相等双证）；probe_only 值开关 copex_exp22_probe_ul_bias（±1，CV/ADA sensitivity-probe 先例）",
+  "model": "tools/br28_dsp_models.py：CopexExp22Model 拦截门（probe_boot step_body 指令级，upstream pair() 之前）+账本（executions/samples 有界 32/first/last/modes，M4 族快照恢复）；下字=float32(host double exp) 就近舍入（conditional mathematical approximation / derived-not-measured，AC791N e^1.0=0x402df853 比正确舍入 0x402df854 低 1 ulp 如实标注不刻意复刻）；上字=CopexUpperWord 不透明结果（硬件捕获非常数 0x1ffffff5/0x2b7e14f2、isa notes mode-15 历史依赖前科未排除；数值消费 Blocked copex_dst_upper_word_consumed，bytes/origins 接口与 UnknownWord 同形走既有抽象值搬运路径）；flags 保持（364 条捕获共识 psr 低 4 位不变）",
+  "contract": "fail-closed 三重契约+孪生拒绝：n==22 精确匹配（不用 n&31 推广——控制高位组合无硬件等价证据，22|32/22|224 等单测红例）；源上字已知 0（SDK zext 形状，非零/抽象值=dsp_operand_shape_not_modeled，AC791N e^1.0 条的 1.0 上字即此形状互证有限）；源下字有限 float32 且 x∈[ln(2^-126), ln((2-2^-23)·2^127)]≈[-87.3365,+88.7228]（闭区间=float32 正常态可表；域外/NaN/Inf=dsp_domain_boundary，不模仿硬件域外输出 1.0、不做 SDK 式自动钳位——把固件没做的运算塞进指令模型与否决项）；.p 孪生两位置（copex.ppi.p 前半+任何 .p 指令的 copex 后半 peek decode）提交前拒 dsp_operand_shape_not_modeled；其余 7 个 app 模式（24/16/17/23/0/6/7）一律 dsp_mode_not_modeled 另案",
+  "six_pitfalls": "①上字非常数→不透明结果非假常数；②.p 孪生→step_body 拦截先于 upstream pair() 基形派发（『不注册即诚实停』不成立的勘误落实），两位置全拒且两半副作用均未提交；③接入点→安装检查挂 probe_boot CPU 构造点（k2 同级）+拦截门经 hardware.copex_exp22 槽（probe_pi32v2 四个函数级 harness 无 copex 站点不经过）；④异常路由→Blocked 直接穿透（上游 effect() 只捕 KeyError/ValueError），三个独立 stop kind 绝不落入 upstream_simulator_failure；⑤冲突检查→assert_copex_exp22_installable：上游 models 含 copex.ppi/.p 即 RuntimeError 要求重审（不静默让位/遮蔽）；⑥快照契约→FINGERPRINT_FILES 纳入 br28_dsp_models.py+M4 族 copex_exp22 五字段+$copex_upper_word 抽象值编解码（寄存器面）",
+  "files": "tools/br28_dsp_models.py（新）、tools/probe_boot.py（step_body 门+安装检查+抽象值三元组/mov.rr 扩展）、tools/br28_model.py（Hardware 槽+报告+假设面）、tools/probe_irq_entry.py（参数+require+budget 60M+check 六处重钉+COPEXIMPL 释放记录断言块+停点叙事延段）、tools/frontier_registry.py（conditional+probe_only 两 feature+FRONTIERS 重钉+措辞）、tools/world_snapshot.py（指纹/编解码/M4 族）、tools/test_br28_dsp_models.py（19 项新）、tools/test_world_snapshot.py（M4 开关+poke+samples）、tools/check_local.py（挂单测）、HANDOFF.md（前沿行+条目+下路分类）"
+ },
+ "verification_arms": {
+  "mechanism": "frontier_iteration.py 自建 base-off（off 世界从零 41,884,941 @ budget 41.9M，1406s≈23.4 分钟）+秒级臂位；跨代码 smoke 用 dmaimpl 路代码态 base-on 本地副本（base-dma.bin，unique stem——勘误：v1 用 --from base 按 kind 先匹配了自家 base-off，codex 查证后改 unique stem 重跑）",
+  "arm_off_reproduce": {
+   "stop": "42037363 @ 0x606a900 upstream_simulator_failure 'copex.ppi has no model'（旧前沿逐键复现）",
+   "comparison": "与 dmaimpl on-main 参照逐键比较 differing_keys=[] 差异 0——本路代码对关闭世界零行为差异（含 probe_ul_bias 参数默认 None 中性）",
+   "wall_seconds": 6.3
+  },
+  "arm_on_main": {
+   "stop": "42059070 @ 0x606fbe4 unmapped_memory read 0xfe2604 size 4（+21,707 步新前沿）",
+   "copex_ledger": "executions=3 modes={'22':3} samples=[(0x606a900,0xc05d0c55,0x3d0186e2),(0x606600c,0x0,0x3f800000),(0x606a900,0xc05d0c55,0x3d0186e2)]——两站点两输入形状：db2mag x≈(-30/20)·ln10→exp≈10^(-30/20)=0.031622775×2 + 第二站点 0x606600c（-32.0 下钳包装族）e^0=1.0；三个 dst 上字全被固件丢弃（零 copex_dst_upper_word_consumed、unknown_gpr_copy 零次）；adapter copex_exp22_model_execute=3；per-core1 11496 冻结",
+   "stop_reading": "eq open-config 系数设计链走完后进入 SRC_SYNC 重配：0x606fbd8 r0=r9*0x14+r13（band 表游走）→[r0+12] 函数指针检查→0x606fbe2 r0=[r7+12]（=0xfe2600 基址）→0x606fbe4 rmw.or.modimm [r0+4]|=0x400000（CON1 设 bit22）首读未映射——普通 SFR 边界",
+   "shape": "Timer0 交付 15778→15780（+2，新中断上下文 0x6064754=eq open-config 调用域 call/0x60745fa=jlstream kick 族 call，末次打断 0x60745fa）；到期 15795→15797、PRD 35999、cnt→26931、handler帧 31560；core-tick cnt 863504→950332（恰 +21,707×4）、347/347 冻结；CRC 264→270（+6=六值周期×1，eq 设计重读 CRC 校验配置表）/fed 73649→73829；wdt elapsed 152→157、feeds 163/162 冻结；p2m/parked/eclock 冻结",
+   "wall_seconds": 7.3
+  },
+  "arm_smoke_cross_code": "从 dmaimpl 代码态 base-on（fingerprint f474b334，prior-fingerprint ack+enable-slot ack）on 臂→42,059,070 @ 0x606fbe4 与同代码 on-main 逐键相等（differing_keys=[]）——跨代码+跨开关 resume≡from-0 交链（dmaimpl smoke-on 同款）",
+  "arm_sensitivity_pm1ulp": "probe_ul_bias=±1 两臂（base-off+enable-slot+prior-fp ack）：同停点 42,059,070 同步数，与 on-main 唯一差异=peripherals（账本 result_bits 恰 0x3d0186e3/0x3f800001/0x3d0186e3 与 0x3d0186e1/0x3f7fffff/0x3d0186e1）——措辞按 codex 定稿：『±1 ulp 扰动两臂在本前缀具有相同停点、步数和已报告计数』，支持本实现与本前缀推进，不升级为『系数绝不参与分支/误差不可观测』（完整 RAM 与后续消费者未被该比较覆盖）",
+  "arm_unit_tests": "19 项定向单测（test_br28_dsp_models.py）：契约矩阵（e^0/e^1.0=正确舍入 0x402df854/db2mag 域内换算链独立 math 双对拍/域常量端点钉死 0xC2AEAC50-0x42B17218）、域外红例（上下溢侧/NaN/Inf 全 dsp_domain_boundary）、他模式（0/6/7/16/17/23/24/255+控制高位 22|32/22|224 全 dsp_mode_not_modeled）、源上字非零/抽象值（isinstance 先行不触运算符陷阱）、.p 两位置拒绝、冲突检查、上字消费停+搬运接口+快照编解码 round-trip、真件字节钉子（停点 ffe11622 codec 解码 {r:1,s:1,n:22}+isa 表例 ffe100e0→r15_r14 互证+叶子 mov.rr/li.u8 r3=0/copex/st.w [r1]=r2 只存下字/rts 逐指令对 SDK IR 形状）",
+  "arm_offworld_redline": "crc_bankb_erased_fixture 289,849 步全场景与 main 参照 irq-entry.json 逐键相等（differing=[]）——六处 probe_boot 改动对无开关世界零行为差异的独立实证"
+ },
+ "repins": {
+  "frontier_registry": "p11_heap_experimental → 42059070 @ 0x606fbe4 unmapped_memory read 0xfe2604（freshness_fields kind+address；probe require/analyze freshness/test 期望自动跟随单点）",
+  "probe_check_counts": "wdt elapsed 157；Timer0 交付 15780/到期 15797/cnt 26931/PRD 35999/handler帧 31560+新中断上下文 2 站+末次 PC 0x60745fa；core-tick cnt 950332（347/347 冻结）；CRC 270/fed 73829（尾段六值周期×10）；COPEXIMPL 释放记录断言块（三样本逐值+措辞钉死 CONDITIONAL MATHEMATICAL APPROXIMATION/NOT a silicon replica/1 ulp BELOW correct rounding）；停点叙事延段（eq 系数设计→SRC_SYNC CON1 RMW→mode-24 预测未命中 codex 裁决）",
+  "adapter_baseline": "evidence/p11_heap_adapter_count_baseline.json --recapture 重取（键集合+copex_exp22_model_execute=23 键；本路漂移 14 键）",
+  "analyze_check_self": "不改动 analyze_image_trace.py（红线；sim-dmaimpl 路并行持有该文件改动）——freshness 派生自 registry 自动跟随；per_core 硬钉相对新前沿将漂移为 {'0':42064068,'1':11496}（on-main machine.cores 实测），与 evimpl/dmaimpl 期漂移一并向主协调报告"
+ },
+ "next_stop_classification": {
+  "stop": "JL_SRC_SYNC CON1（0xfe2604）rmw.or.modimm |= 0x400000 的内部读——SDK br28.h src_sync 块；勘误（codex）：SRC_SYNC 16 成员=14 __RW+2 __WO（ODAT_ADR_START/END），非 17；__RW/__WO 宏均展开 volatile，无复位值/W1C/自清/完成时序证据",
+  "recommendation": "独立另路（不属本路未尽义务）：优先审『CON1 单字配置 RMW 容器』（AM/ADA/LPV 先例）默认关；纯 write-only 记录不能解决眼前指令（old|0x400000 保留其余 31 位、旧值参与实际写回，绕读或替填零=额外语义假设）；必补证据=CON1 引用与消费者审计（指针表/别名/回调路径，读值是否进分支/轮询/地址/长度计算）+首次写入与 bit22 的 SDK 驱动用法；若旧值仅进配置写回且无需完成状态→显式声明初值（合成假设非复位值）+最后写值读回投影；若见状态轮询/硬件推进值/数据通路依赖→转具名 fixture/独立行为投影另审；仅放行证据覆盖的字或访问面，不据 __RW 扩整块，不声称采样率转换/DMA/音频处理已运行",
+  "beyond": "eq 设计族内联 copex 站点（0x6072bb8 mode16 sincos r5_r4 双字都存/0x6072d1a mode24 sqrt 单字存——wrapper 均上字清零形状）在 SRC_SYNC 放行后仍会到达；全 app copex 真码 98 站点 8 模式分布（本路独立扫描复现侦察表逐项一致：24:33/16:18/17:14/22:11/23:11/0:9/6:1/7:1）"
+ },
+ "honesty": {
+  "derived_not_measured": "模型=conditional mathematical approximation / derived-not-measured：下字 float32(double exp) 非硅位精确复刻（AC791N≠BR28 全程 caveat；e^1.0 1ulp-low 特性如实标注）；上字硬件非常数不透明；证据=已验证实现契约与当前前缀推进（3 次运行时执行+19 项定向单测+域外红例+off 世界逐键相等+±1 ulp 敏感性），不证明 BR28 数值等价、其余 9 个 mode-22 站点覆盖、完整 EQ 系数设计或任何音频效果",
+  "single_test_oracle_caveat": "部分单测期望值同样用 math.exp+float32 转换对拍——验证软件契约，不提供独立硅数值真值（codex 指出，如实入档）",
+  "resume_conditional_pass": "on/off 臂均自建 base-off 快照续跑（7.3s/6.3s 档）；等价性依据=off 臂与 dmaimpl 参照逐键相等+跨代码 smoke 逐键相等+recapture 从零全量逐字复现（resume≡from-0）+断言面离线闭环；合并前全量 probe --rom 从零重放是红线收口",
+  "smoke_v1_erratum": "跨代码 smoke v1 的 --from base 按 kind 匹配先命中自家 base-off（实际同代码恢复，跨代码结论不成立）——codex 查证抓出；unique-stem 本地副本重跑后成立。教训：clean_source 的 kind 匹配与多 base 谱系并用时 stem 必须唯一",
+  "parity": "official↔b79 parity 到新停点未在本路重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0——evimpl/dmaimpl 同款边界）；analyze_image_trace 的 per_core 钉值漂移（evimpl+dmaimpl+本路三段）留主协调",
+  "scope": "本放行只覆盖 n==22 的 copex.ppi 基形（contract 全集）；其余 7 模式/控制高位/非 zext 源/域外/.p 两位置/上字消费全维持诚实停；eq 设计族 mode 16/24 站点未建模未触达"
+ }
+}

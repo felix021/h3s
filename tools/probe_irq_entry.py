@@ -5067,6 +5067,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_iomc_map_fixture=None,
              jl_pled_config_words=False,
              jlstream_kick_param2_unknown=False,
+             copex_exp22_model=False,copex_exp22_probe_ul_bias=None,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -5350,6 +5351,10 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # +可选回调检查),链继续走调用者续段与音频/OS 域——新停点由实跑
         # 取得;预算沿用 60M(余量以实跑核)。
         if jl_audio_dac_dma_idle_readback:budget=60000000
+        # 路 COPEXIMPL:mode-22 模型放行后 eq 系数链(db2mag→exp 叶子)真实
+        # 执行,链继续走 eq/wdrc 设计域(侦察预判下一停点大概率 mode 24
+        # sqrt 的内联站点)——新停点由实跑取得;预算沿用 60M(余量以实跑核)。
+        if copex_exp22_model:budget=60000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -6548,6 +6553,28 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'stores — without jl_audio_dac_dma_writes the world still stops at '
                 'the 0x6071e92 unmapped store)')
         options['jl_audio_dac_dma_idle_readback']=True
+    # copex_exp22_model(路 COPEXIMPL,codex 裁 (a) 收窄版,默认 False=关):
+    # copex.ppi mode-22 指数近似模型——42,037,363 停点 0x606a900(upstream
+    # 『copex.ppi has no model』,音频管线重配段 exp 叶子 0x606a8fc 体内)
+    # 的放行。mode 22=e^x 双源钉死(SDK exp_float 形状+AC791N 捕获);模型
+    # 是 conditional mathematical approximation(下字 float32(double exp)
+    # 非硅复刻,上字不透明消费即停),契约/证据/六坑对照全文见
+    # br28_dsp_models 模块注释与 docs/frontier-scout-copex.md。拦截门在
+    # probe_boot CPU.step_body(hardware.copex_exp22 槽),上游模型冲突检查
+    # 在 CPU 构造点。依赖边挂 jl_audio_dac_dma_idle_readback=场景推进顺序
+    # (DMAIMPL 放行后链才到达 copex 停点)非硬件依赖;默认关=拦截门不装,
+    # legacy 报告逐字节不变。
+    if copex_exp22_model:
+        require(jl_audio_dac_dma_idle_readback,
+                'the copex mode-22 release rides on the DMAIMPL idle-readback '
+                'world (the chain reaches the copex stop at 0x606a900 only after '
+                'the set_sample_rate idle guard passes)')
+        options['copex_exp22_model']=True
+        if copex_exp22_probe_ul_bias is not None:
+            require(copex_exp22_probe_ul_bias in (-1, 1),
+                    'the copex ul sensitivity probe takes exactly +1 or -1 '
+                    '(sensitivity-probe-not-plausible-state, CV/ADA precedent)')
+            options['copex_exp22_probe_ul_bias']=copex_exp22_probe_ul_bias
     # jl_pvdd_trim_writes(路 BM §1/S19 批 1 ①):W4[4] PVDD/trim 域容器——
     # P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/P3_PVDD0_AUTO(0xf2c10c)
     # 合成初始字 0+读回=当前值(AM 容器族;BM §1.1 逐地址访问点钉死:复合
@@ -6908,7 +6935,10 @@ _ADAPTER_COUNT_KEYS = ('exact_doubleword_store', 'exact_doubleword_store_cross_p
                        'abstract_task_stack_transport', 'cpu0_shared_lock_ownership',
                        'exact_full_word_store', 'mmio_rmw_always_writes',
                        'partial_icfg_bit9_only', 'partial_icfg_masked_branch',
-                       'per_core_visible_cnum')
+                       'per_core_visible_cnum',
+                       # 路 COPEXIMPL:mode-22 指数近似模型的执行计数
+                       # (推进前沿会随 eq 系数链长度漂移,进基线钉值集合)。
+                       'copex_exp22_model_execute')
 _ADAPTER_COUNT_BASELINE = ROOT / 'evidence/p11_heap_adapter_count_baseline.json'
 
 
@@ -8217,7 +8247,25 @@ def check(report,firmware):
             'scout branch-1 "decoder/DSP resource domain" wall, NOT one '
             'of the three data-phase walls (LEN read/SWN 0xfe0518/PNS '
             '0xfe050c — the space function never ran, the guard audit '
-            'shows zero SWN/PNS touches)')
+            'shows zero SWN/PNS touches); and the route-COPEXIMPL release '
+            '(this scenario, the codex (a) narrowed mode-22 exponential '
+            'approximation) executes the exp leaf 0x606a8fc three times '
+            '(two at the old stop site 0x606a900 with x=0xc05d0c55 ≈ '
+            '(-30/20)·ln10 → 0x3d0186e2 ≈ 10^(-30/20), one at the second '
+            'mode-22 site 0x606600c with x=0 → e^0=1.0 — the eq db2mag '
+            'coefficient chain plus one clamp-wrapped wrapper call), the '
+            'chain walks on through the eq open-config coefficient '
+            'design (+21,707 steps, per-core1 still frozen at 11496, '
+            'the three destination upper words discarded by the firmware '
+            'before any read) and stops at 42,059,070 @ 0x606fbe4 on the '
+            'unmapped read of 0xfe2604 — JL_SRC_SYNC CON1 (SDK br28.h '
+            'src_sync block 0x2600-0x26ff), the rmw.or.modimm |= 0x400000 '
+            'bit22 configuration RMW whose internal read precedes any '
+            'write-back — an ordinary unmapped SFR boundary, NOT the '
+            'scout\'s predicted next copex (the eq-design inline sites '
+            '0x6072bb8 mode 16 / 0x6072d1a mode 24 sit further down the '
+            'chain and stay unreached; codex 20261118: accept the honest '
+            'stop, mode 24 was a prediction, not an acceptance target)')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 EVIMPL(2026-11-18,docs/frontier-scout-evqueue.md 停点 41,909,506;
@@ -8349,6 +8397,43 @@ def check(report,firmware):
             'exemption, same-value rewrites audited) with the explicit '
             'initialization-idle assumption wording — derived-not-measured, '
             'not a silicon-equivalence claim')
+    # 路 COPEXIMPL:mode-22 指数近似模型释放记录断言——三次执行/两站点/
+    # 两输入形状/逐次样本账本(codex 20261118 措辞定稿:证据=已验证实现
+    # 契约与当前前缀推进的条件数学近似,不证明 BR28 数值等价/其余 mode-22
+    # 站点覆盖/完整 EQ 系数设计)。±1 ulp 敏感性=同停点同步数+已报告计数
+    # 不变(不升级为「系数绝不参与分支」)。
+    copexrel=r['peripherals']['copex_exp22_model']
+    require(copexrel['executions']==3 and
+            copexrel['modes']=={'22':3} and
+            [(s['pc'],s['x_bits'],s['result_bits']) for s in copexrel['samples']]==
+            [('0x606a900','0xc05d0c55','0x3d0186e2'),
+             ('0x606600c','0x0','0x3f800000'),
+             ('0x606a900','0xc05d0c55','0x3d0186e2')] and
+            all(s['core']==0 for s in copexrel['samples']) and
+            'CONDITIONAL MATHEMATICAL APPROXIMATION' in
+            r['peripherals']['assumptions']['copex_exp22_model'] and
+            'NOT a silicon replica' in
+            r['peripherals']['assumptions']['copex_exp22_model'] and
+            '1 ulp BELOW correct rounding' in
+            r['peripherals']['assumptions']['copex_exp22_model'] and
+            r['instruction_adapters'].get('copex_exp22_model_execute')==3,
+            'the route-COPEXIMPL mode-22 exponential release record must pin the '
+            'runtime evidence: exactly THREE executions over the segment at TWO '
+            'sites (the old stop 0x606a900 twice with the db2mag shape '
+            'x=0xc05d0c55 ≈ (-30/20)·ln10 → 0x3d0186e2 ≈ 10^(-30/20), and the '
+            'clamp-wrapped wrapper site 0x606600c once with x=0 → e^0=1.0 '
+            '0x3f800000), the per-execution sample ledger carrying every '
+            'input/output, the three destination upper words discarded by the '
+            'firmware before any read (zero copex_dst_upper_word_consumed '
+            'stops, zero transport copies), the assumption wording pinning the '
+            'approximation class (conditional mathematical approximation, '
+            'derived-not-measured, AC791N e^1.0 1-ulp-below-correct-rounding '
+            'noted and NOT replicated, fail-closed contract with the dedicated '
+            'stop kinds, the other seven modes NOT modelled by this switch), '
+            'and the evidence boundary: this supports the implementation '
+            'contract and the current-prefix advance only — it does NOT prove '
+            'BR28 numeric equivalence, coverage of the other nine mode-22 '
+            'sites, the full EQ coefficient design, or any audio effect')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -8382,7 +8467,7 @@ def check(report,firmware):
     # commands);已到期拒绝补喂的语义在单测钉死。
     wdt=r['peripherals']['watchdog_projection']
     require(wdt['feeds']==163 and wdt['mailbox_feed_side_effects']==162 and
-            wdt['expired'] is False and wdt['elapsed_nominal_units']==152 and
+            wdt['expired'] is False and wdt['elapsed_nominal_units']==157 and
             wdt['commands']==6 and wdt['command_values']==[0,0,0,14,46,65582] and
             wdt['assumptions']['expiry_reset_or_irq_delivery_simulated'] is False and
             'mailbox_feed_side_effect' in wdt['assumptions'] and
@@ -8390,15 +8475,18 @@ def check(report,firmware):
             'the route-WDFEED mailbox feed side-effect must reload the WDT exactly '
             'once per closed feed transaction (162 reloads against the 162 closed '
             'transactions, feeds total 163 = one direct init feed + 162 projected), '
-            'leaving the watchdog NOT expired at the stop (elapsed 134 of the 16384 '
+            'leaving the watchdog NOT expired at the stop (elapsed 157 of the 16384 '
             'nominal units of the CON 0x2e period — the route-STOREG3 release '
             'segment past 41,828,530 is a pure CPU0 sequence, no new feed '
             'transaction, only four more nominal units consumed; the route-'
             'FD610C-con0 release past 41,847,806 is another pure CPU0 sequence, '
             'one more nominal unit consumed; the route-TONMAP release walks the '
-            'elapsed units on to 120 and the route-EVIMPL release (the jlstream '
-            'task-stack 4B slot unknown-word pass) on to 134 — both pure CPU0 '
-            'sequences, zero new feed transactions) with the '
+            'elapsed units on to 120, the route-EVIMPL release (the jlstream '
+            'task-stack 4B slot unknown-word pass) on to 134 and the route-DMAIMPL '
+            'audio-pipeline segment on to 152; the route-COPEXIMPL release (the '
+            'mode-22 exponential pass) walks five more nominal units on to 157 — '
+            'all pure CPU0 sequences, zero new feed transactions, the 162/163 '
+            'totals frozen) with the '
             'main-core command accounting untouched (six real commands '
             '[0,0,0,14,46,0x1002E], zero fabricated bus writes) and the '
             'expiry-stays-a-reset honesty flag intact')
@@ -9239,7 +9327,7 @@ def check(report,firmware):
     # (reti_from=块出口,延期-交付往返实证;机器守卫本身保持拒绝))。core
     # tick 交付 9→10(+1 次溢出,OS tick 级联继续)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==15778 and
+    require(len(t0['deliveries'])==15780 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6','0x12b608',
@@ -9275,12 +9363,20 @@ def check(report,firmware):
                                    # 0x6010cec 族体内(0x6010a4e/0x6010a5c 的
                                    # 同族邻近站)、0x6007b60/0x6007ba8=0x6007b7e
                                    # 同函数族邻近站。
-                                   '0x6010ad6','0x6010a52','0x6007b60','0x6007ba8')
+                                   '0x6010ad6','0x6010a52','0x6007b60','0x6007ba8',
+                                   # 路 COPEXIMPL 段新增中断上下文(+21,707
+                                   # 步:eq 系数设计+SRC_SYNC 重配段):
+                                   # 0x6064754=eq open-config 调用者域的事件
+                                   # 分发 call(mov/call/bnez 序列后)、
+                                   # 0x60745fa=jlstream kick/参数族函数体内
+                                   # 的 call(0x6074614 同族,EVIMPL 上下文
+                                   # 邻近站)。
+                                   '0x6064754','0x60745fa')
                 for d in t0['deliveries']) and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==12791 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x606b0a2')==1 and
-            t0['deliveries'][-1]['reti_from']=='0x6007b60' and
+            t0['deliveries'][-1]['reti_from']=='0x60745fa' and
             [d['reti_from'] for d in t0['deliveries'][287:362]]==
             ['0x6010a4e', '0x12b608', '0x6010a5c', '0x12b608', '0x6007b7e',
              '0x4372', '0x6000f4a', '0x6007b7e', '0x12b608', '0x6000f4c',
@@ -9299,9 +9395,9 @@ def check(report,firmware):
              '0x12e282', '0x12e286', '0x12e284', '0x12e282', '0x12e286'] and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==31556 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==15778,
-            '15778 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==31560 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==15780,
+            '15780 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
             'route-AK/AN/AS/B1 prefix (287 through the AK stop, the route-R delivery '
             'interrupting the OS veneer 0x12b7b6, the eight route-AN walker-chain '
             'contexts, the route-AS ROM rep-block exit 0x4196 and the sixty-one B1 '
@@ -9350,7 +9446,17 @@ def check(report,firmware):
             'shape recurring as an interrupted PC), another scheduler wait, '
             'and the LAST one interrupting 0x6074614 (the ld.hu.sp.l inside '
             'the jlstream kick/param function family, right beside the '
-            'released load) — 15766 total, parked-wake count still 12791')
+            'released load) — 15766 total, parked-wake count still 12791; '
+            'the route-DMAIMPL audio-pipeline segment walks twelve more '
+            'deliveries on to 15778 (known contexts only) and the route-'
+            'COPEXIMPL release (the mode-22 exponential pass, +21707 steps '
+            'of eq coefficient design into the SRC_SYNC reconfiguration) '
+            'adds two more deliveries 15779..15780 — one interrupting '
+            '0x6064754 (the eq open-config caller domain, the event-loop '
+            'dispatch call) and the LAST one interrupting 0x60745fa (a call '
+            'inside the jlstream kick/param function family, the EVIMPL '
+            'context 0x6074614 next door) — 15780 total, parked-wake count '
+            'still 12791')
     ct=r['machine']['core_tick_entry_projection']
     require(len(ct['deliveries'])==347 and
             (ct['deliveries'][0]['core'],ct['deliveries'][0]['vector_address'],
@@ -9597,8 +9703,14 @@ def check(report,firmware):
     # 跨界 5 次到期(15778→15783)全交付全 ACK(+5=交付 15761→15766,新增
     # 两个中断上下文 0x6007af2/0x6074614),零新喂狗(163/162 冻结),elapsed
     # 名义单位 120→134。
-    require(timer=={'con':0x1401,'cnt':33810,'prd':35999,'pending':False,
-            'expirations':15795},
+    # 路 DMAIMPL:音频管线段把 PRD 走到 35,999/cnt 33,810/到期 15795。
+    # 路 COPEXIMPL:mode-22 指数放行后 +21,707 步段(eq 系数设计→SRC_SYNC
+    # 重配)再走 33,810→26,931:段内 PRD 重编回 35,999 的新延时窗,跨界
+    # 2 次到期(15795→15797)全交付全 ACK(+2=交付 15778→15780,新增两个
+    # 中断上下文 0x6064754/0x60745fa),零新喂狗(163/162 冻结),elapsed
+    # 名义单位 152→157。
+    require(timer=={'con':0x1401,'cnt':26931,'prd':35999,'pending':False,
+            'expirations':15797},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
             'with the counter walked on to 9342 inside the freshly reprogrammed delay '
@@ -9705,10 +9817,16 @@ def check(report,firmware):
     # 路 EVIMPL:+56,377 步段零新溢出零新交付(347/347 冻结),cnt 352,076→
     # 577,584(恰 +225,508=56,377×4 tick 精确走表,仍 <prd 1,599,999;新停点
     # 0x606e148 在音频 DAC DMA 指针轮询体内、无临界区,IPMASK 0、ICFG 0x300)。
+    # 路 DMAIMPL:+71,480 步段零新溢出零新交付,cnt 577,584→863,504
+    # (恰 +285,920=71,480×4 tick 精确走表)。
+    # 路 COPEXIMPL:+21,707 步段(eq 系数设计→SRC_SYNC 重配)零新溢出零新
+    # 交付(347/347 冻结),cnt 863,504→950,332(恰 +86,828=21,707×4 tick
+    # 精确走表,仍 <prd 1,599,999;新停点 0x606fbe4 在 SRC_SYNC CON1 RMW
+    # 体内、无临界区,IPMASK 0、ICFG 0x300)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==863504 and
+            tick0['cnt']==950332 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -9751,7 +9869,11 @@ def check(report,firmware):
             '(the jlstream task-stack 4B slot unknown-word pass) walks it '
             'on to cnt 577584 (+56377 steps x 4 core ticks, still zero new '
             'overflow — 347/347 delivered-and-acked, CPU0 active throughout, '
-            'the event clock frozen at 82545158); the CPU1 '
+            'the event clock frozen at 82545158), the route-DMAIMPL segment '
+            'walks it on to 863504 and the route-COPEXIMPL release (the '
+            'mode-22 exponential pass) on to 950332 (+21707 steps x 4 core '
+            'ticks, still zero new overflow — the eq coefficient design runs '
+            'unmasked); the CPU1 '
             'core tick never overflows and CPU0 partial ICFG stays 0x300 '
             '(bit9 untouched throughout); IPMASK is 0 at the new stop — the '
             '0x601a41c pend section closed when the LED reset helper returned, '
@@ -9929,7 +10051,7 @@ def check(report,firmware):
     crc_heap=r['peripherals']['hardware_crc_projection']
     require(crc_heap['seed_writes'][:30]==crc_ff['seed_writes'] and
             crc_heap['result_reads'][:30]==crc_ff['result_reads'] and
-            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==264 and
+            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==270 and
             crc_heap['seed_writes'][30:]==['0x0','0x0'] and
             crc_heap['result_reads'][30:]==['0x62eb','0x9c78']+['0xa1cd','0x9946',
                 '0xd1cf','0x239e','0x7dee','0x91a9']*7+['0xa1cd','0xb37d','0xa11d',
@@ -9943,8 +10065,8 @@ def check(report,firmware):
                 '0x239e','0x7dee','0x91a9','0xc1b0']+['0xa1cd','0x9946','0xd1cf',
                 '0x239e','0x7dee']+['0x66e5','0xc73e','0x60ca']
             +['0x7e4e','0xcf96','0xf5c0']
-            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*9 and
-            crc_heap['fed_bytes']==73649,
+            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*10 and
+            crc_heap['fed_bytes']==73829,
             'the heap fixture must keep the first thirty hardware CRC round trips '
             'byte-identical to crc_bankb; the route-AA prefix adds the seeded '
             '0x62eb/0x9c78 pair, the route-AN walker chain thirty and the route-AS '
@@ -9973,7 +10095,10 @@ def check(report,firmware):
             'route-EVIMPL release (the jlstream task-stack 4B slot unknown-word '
             'pass) walks the same CONFIG cycle four more times (twenty-four '
             'rounds — the first jlstream message dispatch re-reads the '
-            'CRC-verified config tables), 73109 fed bytes total')
+            'CRC-verified config tables), and the route-COPEXIMPL release (the '
+            'mode-22 exponential pass) walks the same CONFIG cycle one more '
+            'time (six rounds — the eq open-config coefficient design re-reads '
+            'the CRC-verified config tables again), 73829 fed bytes total')
     require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')

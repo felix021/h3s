@@ -326,6 +326,37 @@ FEATURES = (
             '原严格停;初始化阶段由事件历史维护——SWN/PNS 触达、DAC_CON 控制'
             '位变化、另一核写、未预期重写(同值也审查)均失效;显式初始化空闲'
             '假设 derived-not-measured 非硅等价;依赖 jl_audio_dac_dma_writes)'),
+    # ---- 路 COPEXIMPL/sim-copeximpl:copex.ppi mode-22 指数近似模型(codex 裁
+    # (a) 收窄版,docs/frontier-scout-copex.md §5/§6):mode 22=e^x 双源钉死
+    # (SDK math_fast_funtion.c exp_float 与固件叶子 0x606a8fc 逐指令同形+
+    # AC791N 捕获 4/6 吻合)。42,037,363 停点 0x606a900(upstream『copex.ppi
+    # has no model』)的放行:下字=float32(host double exp) 的条件数学近似
+    # (conditional/derived-not-measured,非硅复刻——AC791N e^1.0 比正确舍入
+    # 低 1 ulp 如实标注不刻意复刻);上字=硬件非常数不透明结果(数值消费即
+    # 停,搬运带 copex PC 溯源);flags 保持(364 条捕获共识)。契约
+    # fail-closed:n==22 精确(不 n&31 推广)+源上字已知 0(SDK zext 形状)
+    # +有限 float32+声明域内(float32 正常态可表,≈[-87.34,+88.72])——
+    # 违反分别停 dsp_mode_not_modeled/dsp_operand_shape_not_modeled/
+    # dsp_domain_boundary;.p 孪生两位置提交前拒绝;其余 7 个 app 模式另案
+    # 审查不在本开关。上游模型冲突检查在 probe_boot CPU 构造点(不静默
+    # 遮蔽)。依赖边挂 jl_audio_dac_dma_idle_readback=场景推进顺序(DMAIMPL
+    # 放行后链才到达 copex 停点)非硬件依赖;默认关=拦截门不装,42,037,363
+    # 停点形状逐字节不变。----
+    Feature('copex_exp22_model', 'conditional', ('jl_audio_dac_dma_idle_readback',),
+            False, None,
+            'copex.ppi mode-22 指数近似模型(42,037,363 停点 0x606a900 放行;'
+            '下字=float32(double exp) 条件近似 derived-not-measured,上字=不'
+            '透明结果消费即停;n==22 精确+源上字 0+有限域内三重契约,违反走'
+            '专用停点;.p 两位置拒绝;其余 7 模式另案;证据=已验证实现契约与'
+            '当前前缀推进(本前缀恰 3 次执行/2 站点/2 输入形状:0x606a900 两'
+            '次 x=0xc05d0c55≈(-30/20)·ln10→0x3d0186e2≈10^(-30/20)+0x606600c '
+            '一次 e^0=1.0;不证明 BR28 数值等价/其余 9 个 mode-22 站点覆盖/'
+            '完整 EQ 系数设计)'),
+    Feature('copex_exp22_probe_ul_bias', 'probe_only', ('copex_exp22_model',), True, None,
+            'mode-22 下字 ±1 ulp 敏感性探针(每次执行结果整体 +bias ulp,'
+            'probe_only 不进共享栈;sensitivity-probe-not-plausible-state,'
+            'CV/ADA 双探针先例——三镜像 parity 只证相对行为不证共同模型'
+            '误差,扰动臂单测近似误差对下游路径的影响)'),
     Feature('jl_pvdd_trim_writes', 'conditional', ('p11_power_init',), False, None,
             'W4[4] PVDD/trim 域容器:P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/'
             'P3_PVDD0_AUTO(0xf2c10c) 合成初始字 0+读回=当前值(VOLTAGE_CONFIG/'
@@ -607,11 +638,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42037363,
-        'stop_pc': '0x606a900',
-        'stop': {'kind': 'upstream_simulator_failure', 'error_type': 'RuntimeError',
-                 'message': '0x606a900: copex.ppi has no model'},
-        'freshness_fields': ('kind', 'message'),
+        'completed_steps': 42059070,
+        'stop_pc': '0x606fbe4',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read',
+                 'address': '0xfe2604', 'size': 4, 'reference_sdk_register': None},
+        'freshness_fields': ('kind', 'address'),
     },
 }
 
