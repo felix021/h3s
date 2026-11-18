@@ -16,6 +16,14 @@ import java.util.List;
  * 每段 7B：[0..1]=freq(u16 小端，Hz 直存)、[2..3]=q(i16 小端，÷100)、
  *          [4..5]=gain(i16 小端，÷100 得 dB)、[6]=iir_type(u8，255=未指定→固件兜底 band_pass=2)。
  *
+ * EQ 类型字节语义（路 EQFIX 重解 apply 0x06025118 钉死，docs/eq-cmd-0x22-layout.md §2.3）：
+ *   type==1  → 固件调 0x6024fe6("MusicEqBt",0) 装载自定义槽后直接返回，**载荷段被忽略**；
+ *   type==10 → 空间音效开关路径（0x602262e），同样不进载荷解码循环；
+ *   其余值   → 解码 3B 头+各段并应用到 DSP（0x602503a）——要下发曲线必用这类值。
+ * 独立 app 下发曲线（自定义/官方预设整组）一律 TYPE_APPLY(2)；「1=自定义」是 getter 编码器
+ * （0x60256be 硬编码 type=1 回读/落盘）方向的语义，不是写入方向——官方 App 实发字节 [未钉]
+ * （无抓包），但 2 与控制面板「音乐均衡器 type=2」对齐且落在「解码载荷」分支内。
+ *
  * 所有数值用整数表示：master gain/每段 gain 用 centidB(=dB×100)、q 用 ×100、freq 用 Hz，
  * 编码为小端 i16/u16——对齐固件「i16÷100 得 dB」「u16 直存 Hz」，不碰浮点、无舍入误差。
  *
@@ -27,6 +35,12 @@ public final class EqFrame {
     public static final int FLAGS_CMD = 0xC0;      // flags：命令需响应（EQ 写属 setter）
     public static final int MAX_BANDS = 10;        // 固件 apply 循环只应用前 10 段
     public static final int IIR_DEFAULT = 255;     // 255=未指定→固件兜底 band_pass(2)
+    /** 下发曲线用的类型字节：落在 apply「解码载荷」分支（type ∉ {1,10}），与面板音乐均衡器 type=2 对齐。 */
+    public static final int TYPE_APPLY = 2;
+    /** type=1：固件装载 MusicEqBt[0]（自定义槽）并忽略载荷段——不是「下发自定义曲线」的取值。 */
+    public static final int TYPE_RECALL_SLOT = 1;
+    /** type=10：空间音效路径。 */
+    public static final int TYPE_SPATIAL = 10;
 
     /** EQ 段：freq/q/gain/iirType，全部整数。 */
     public static final class EqBand {

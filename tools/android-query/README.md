@@ -1,6 +1,6 @@
 # H3S Android 查询与固定候选OTA工具
 
-独立调试客户端，包名 `cn.felix021.h3squery`。通过QCY BLE服务调用官方JL OTA SDK；查询和实际升级分层。当前源码版本0.6.0-r3-webview（launcher=WebView 壳双 tab，原生查询页降级为工具入口），保留已实测的协议、传输和固定候选门槛，目标地址由构建生成。
+独立调试客户端，包名 `cn.felix021.h3squery`。通过QCY BLE服务调用官方JL OTA SDK；查询和实际升级分层。当前源码版本0.7.2-eqfix（launcher=WebView 壳双 tab，原生查询页降级为工具入口），保留已实测的协议、传输和固定候选门槛，目标地址由构建生成。
 
 当前只接受已验证的 ANC 固件 SHA256 `b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b`、长度1326848，输入H3S版本280。EQ r2 实机出现运行异常，r1/r2均拒绝。记录见 [EQ 实验故障](../../docs/eq-toggle.md)。当前恢复还依赖可用设备连接；不能把工具准备完毕当作已恢复。
 
@@ -63,12 +63,17 @@ adb -s "$ANDROID_SERIAL" shell am start \
 | E1 | 空参数，升级检查字段 |
 | E2 | 仅00，且需先确认E1 offset/len0 |
 
-## EQ 写命令组帧（纯离线，真机下发未验证）
+## EQ 写命令组帧（字节布局钉死；EQ 下发通道与 ANC 同路，曲线生效待 0.7.2 复测）
 
 `EqFrame` 按路 H 钉死的字节布局（[eq-cmd-0x22-layout.md](../../docs/eq-cmd-0x22-layout.md)）把「EQ 类型 + master gain + 段列表」组帧成 RCSP 自定义命令 0x22：
 
 - 帧：`FE DC BA | C0 | FF | len_BE16 | SN | 22 | data_len | data | EF`
-- data = 3B 头 + 每段 7B；头[0]=EQ 类型(u8，1=自定义/10=空间音效)、头[1..2]=master gain(i16 小端 ÷100 得 dB)；每段 = freq(u16 小端，Hz 直存) + q(i16 ÷100) + gain(i16 ÷100 得 dB) + iir_type(u8，0..4，255=默认 band_pass)。段数上限 10。
+- data = 3B 头 + 每段 7B；头[0]=EQ 类型(u8)、头[1..2]=master gain(i16 小端 ÷100 得 dB)；每段 = freq(u16 小端，Hz 直存) + q(i16 ÷100) + gain(i16 ÷100 得 dB) + iir_type(u8，0..4，255=默认 band_pass)。段数上限 10。
+- **EQ 类型字节写入语义（路 EQFIX 2026-11-19 钉死，docs/eq-cmd-0x22-layout.md §2.3）**：
+  type=1 = 固件装载自定义槽 MusicEqBt[0]、**载荷曲线被忽略**；type=10 = 空间音效；
+  type ∉ {1,10}（含 `EqFrame.TYPE_APPLY=2`）才解码载荷并应用。0.7.1 及之前页面发
+  type=1 是真机「EQ 发送无效果」（连接/电量/ANC 全通）的根因；0.7.2 起预设与自定义
+  全部改发 type=2，空间音效预设保持 type=10。
 - 全部整数入参：master gain/每段 gain 用 centidB(=dB×100)、q 用 ×100、freq 用 Hz，避免浮点误差。
 
 ```java
@@ -120,7 +125,10 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 - **耳机 tab**：连接卡（状态/MTU/电量槽位——连接就绪自动查电量，只读 0x2f）、写入门控开关、
   ANC 三态、音频模式（音乐/游戏·低延迟/电影，标注「低延迟=效果重配，帧长未钉」）、EQ 卡
   （预设 chips=QCY 面板原始 7 预设+自定义，含 −17dB 等 ±8 外调音值；曲线 + 一行横排 10 段，
-  每段可调中心频率 20–20000 Hz 与增益 −12..+12 dB +master gain；点选锁定防滚动误触）、
+  每段可调中心频率 20–20000 Hz 与增益 −12..+12 dB +master gain；点选锁定防滚动误触；
+  **0.7.2/路 EQFIX**：①下发 type 字节 1→2 修复「发送无效果」（§EQ 写命令组帧）；
+  ②自定义滑杆状态 localStorage 自动记忆/恢复；③「我的预设」——当前自定义可存为命名
+  预设，列表加载/重命名/删除，同名单名覆盖，localStorage 持久化，上限 50 组）、
   按键自定义（3 键×5 手势矩阵，长按列虚线标注 [假设]；wire 单选默认 ADV type2）、提示音
   音量三档、固件升级卡（跳 MainActivity 升级工具+固定候选说明）、未调研功能占位卡
   （查找耳机/双设备/佩戴检测/恢复默认，灰态「协议未调研」）。

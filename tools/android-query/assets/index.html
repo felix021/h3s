@@ -471,6 +471,58 @@ main {
   font-size: 13px;
   padding-inline: 4px;
 }
+/* EQ 我的预设（路 EQFIX）：命名保存/加载/重命名/删除，localStorage 本机持久化 */
+.preset-save-row {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+.preset-save-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+  font-size: 14px;
+}
+.user-preset-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.user-preset-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.user-preset-list .preset-name {
+  flex: 1;
+  min-width: 72px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.user-preset-list .preset-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+.user-preset-list input {
+  flex: 1;
+  min-width: 72px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  font-size: 14px;
+}
 .chart {
   margin: 12px 0;
   padding: 8px;
@@ -1188,6 +1240,20 @@ summary {
       <p id="eqFeedback" class="feedback" aria-live="polite">
         本地预览，尚未发送。
       </p>
+
+      <details id="userPresetBox">
+        <summary>我的预设（保存在本机）</summary>
+        <div class="preset-save-row">
+          <input id="userPresetName" type="text" maxlength="24"
+                 placeholder="预设名称" aria-label="预设名称">
+          <button id="userPresetSave">保存当前自定义</button>
+        </div>
+        <ul id="userPresetList" class="user-preset-list"></ul>
+        <p class="note" id="userPresetNote">
+          预设只存本机（localStorage），重进 App 自动保留；「加载」把曲线写回自定义滑杆，
+          仍需点「发送当前 EQ」才下发给耳机。自定义滑杆本身也会自动记忆。
+        </p>
+      </details>
     </article>
 
     <article class="card" id="sec-prompt">
@@ -2026,13 +2092,19 @@ function parseDeviceMessage(payloadHex) {
   }
 
   /* EQ 回读（SIMB1E 读环）：形状 `22 n <nB 曲线>`，n=3+7×段数（SIMB1C A3 钉死）。
-     段字段字节布局未钉，只显示段数+曲线原样 hex，不猜字段。 */
+     字段布局照 docs/eq-cmd-0x22-layout.md（路 H 钉死、路 EQFIX 复核）：
+     data[0]=type、data[1..2]=master i16 小端 ÷100dB、每段 7B。解码显示摘要。 */
   if (hex.startsWith('22') && hex.length >= 4) {
     const n = parseInt(hex.slice(2, 4), 16);
     if (n >= 3 && (n - 3) % 7 === 0 && hex.length >= (n + 2) * 2) {
       const segments = (n - 3) / 7;
+      const bytes = hex.slice(4);
+      const type = parseInt(bytes.slice(0, 2), 16);
+      let master = parseInt(bytes.slice(2, 4), 16) | (parseInt(bytes.slice(4, 6), 16) << 8);
+      if (master > 32767) master -= 65536;
+      const typeName = { 1: '槽位回读', 2: '曲线', 10: '空间音效' }[type] || ('type ' + type);
       $('eqFeedback').textContent = segments > 0
-        ? '设备回报：EQ ' + segments + ' 段 · ' + hex.slice(4)
+        ? '设备回报：EQ ' + segments + ' 段 · 总增益 ' + (master / 100).toFixed(1) + ' dB（' + typeName + '）'
         : '设备回报：EQ 0 段（设备未配置自定义曲线）';
     }
   }
@@ -2103,52 +2175,58 @@ window.onH3sEvent = raw => {
   }
 };
 
-/* ---------- EQ：七个原始预设，数据不转换 ---------- */
+/* ---------- EQ：七个原始预设，数据不转换 ----------
+   type 语义（docs/eq-cmd-0x22-layout.md §2.3，路 EQFIX 反汇编钉死）：
+   固件 apply 0x06025118 按 type 分支——1=装载自定义槽 MusicEqBt[0]（载荷段被忽略）、
+   10=空间音效、其余=解码载荷曲线应用。下发曲线（预设整组/自定义）必须用 2；
+   旧版发 type=1 是真机「EQ 发送无效果」的根因。 */
+const EQ_TYPE_APPLY = 2;
+const EQ_TYPE_SPATIAL = 10;
 const EQ_PRESETS = [
   {
-    name: '默认', type: 1, master: -4,
+    name: '默认', type: EQ_TYPE_APPLY, master: -4,
     freq: [30,170,300,700,1200,2800,5000,10000,11000],
     q: [.8,.6,2,1,2,1,2,3,2],
     iir: [0,2,2,2,2,2,2,2,3],
     gain: [0,-17,-2,2,-2.5,3,-3,-6,2]
   },
   {
-    name: '流行', type: 1, master: -4,
+    name: '流行', type: EQ_TYPE_APPLY, master: -4,
     freq: [30,170,300,700,1200,2800,5000,10000,11000],
     q: [.5,.4,2,1,2,1,2,3,2],
     iir: [0,2,2,2,2,2,2,2,3],
     gain: [0,-17,-2,2,-2.5,4,0,-6,2]
   },
   {
-    name: '重低音', type: 1, master: -4,
+    name: '重低音', type: EQ_TYPE_APPLY, master: -4,
     freq: [70,170,300,700,1200,2800,5000,10000,11000],
     q: [.6,.6,2,1,2,1,1,3,.7],
     iir: [2,2,2,2,2,2,2,2,2],
     gain: [5,-17,-2,2,-2.5,0,-6,-6,0]
   },
   {
-    name: '摇滚', type: 1, master: -4,
+    name: '摇滚', type: EQ_TYPE_APPLY, master: -4,
     freq: [70,170,300,700,1200,2800,5000,10000,11000],
     q: [.5,.6,2,1,2,1,2,3,2],
     iir: [2,2,2,2,2,2,2,2,3],
     gain: [3,-17,-2,0,-2.5,4,0,-3,2]
   },
   {
-    name: '柔和', type: 1, master: -4,
+    name: '柔和', type: EQ_TYPE_APPLY, master: -4,
     freq: [30,170,300,700,1200,2800,5000,10000,11000],
     q: [.5,.6,2,1,2,1,2,3,2],
     iir: [0,2,2,2,2,2,2,2,2],
     gain: [0,-17,-2,2,-2.5,0,-5,-6,0]
   },
   {
-    name: '古典', type: 1, master: -4,
+    name: '古典', type: EQ_TYPE_APPLY, master: -4,
     freq: [30,170,300,700,1200,2800,5000,10000,11000],
     q: [1,.6,2,1,2,1,2,3,2],
     iir: [0,2,2,2,2,2,2,2,3],
     gain: [0,-14,-2,2,-2.5,3,-3,-6,2]
   },
   {
-    name: '空间音效', type: 10, master: -4,
+    name: '空间音效', type: EQ_TYPE_SPATIAL, master: -4,
     freq: [30,45,120,220,900,1300,2800,6000,7500,11000],
     q: [.7,.7,1,.7,1.5,2,1.8,2,3,2.5],
     iir: [0,2,2,2,2,2,2,2,2,2],
@@ -2157,13 +2235,208 @@ const EQ_PRESETS = [
 ];
 const customEq = {
   name: '自定义',
-  type: 1,
+  type: EQ_TYPE_APPLY,
   master: 0,
   freq: [31,62,125,250,500,1000,2000,4000,8000,16000],
   q: [.4,1.2,1.5,1.5,1.2,.8,1.2,1.2,1.2,1.2],
   iir: [2,2,2,2,2,2,2,2,2,2],
   gain: [0,0,0,0,0,0,0,0,0,0]
 };
+
+/* ---------- EQ 本机持久化 + 多组命名预设（路 EQFIX，localStorage） ----------
+   需求①：自定义滑杆状态自动记忆/恢复；需求②：当前自定义可存为命名预设，
+   列表管理（加载/重命名/删除）。存储失败（隐私模式等）降级为不持久化并提示。 */
+const EQ_CUSTOM_KEY = 'h3s.eq.custom.v1';
+const EQ_USER_PRESET_KEY = 'h3s.eq.presets.v1';
+const EQ_MAX_PRESETS = 50;
+
+function eqStorageProbe() {
+  try {
+    localStorage.setItem('h3s.eq.probe', '1');
+    localStorage.removeItem('h3s.eq.probe');
+    return true;
+  } catch (e) { return false; }
+}
+let eqStorage = eqStorageProbe();
+
+/** 校验一份曲线数据（10 段 + master），合法返回规整副本，非法返回 null。 */
+function sanitizeEqCurve(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const numOf = v => typeof v === 'number' && Number.isFinite(v);
+  if (!numOf(raw.master) || raw.master < -18 || raw.master > 12) return null;
+  const arraysOk = arr => Array.isArray(arr) && arr.length === 10;
+  if (!arraysOk(raw.freq) || !arraysOk(raw.q) || !arraysOk(raw.iir) || !arraysOk(raw.gain)) return null;
+  const freq = [], q = [], iir = [], gain = [];
+  for (let i = 0; i < 10; i++) {
+    if (!Number.isInteger(raw.freq[i]) || raw.freq[i] < 20 || raw.freq[i] > 20000) return null;
+    if (!numOf(raw.q[i]) || raw.q[i] <= 0 || raw.q[i] > 20) return null;
+    if (!Number.isInteger(raw.iir[i]) || !(raw.iir[i] >= 0 && raw.iir[i] <= 4)) return null;
+    if (!numOf(raw.gain[i]) || raw.gain[i] < -12 || raw.gain[i] > 12) return null;
+    freq.push(raw.freq[i]); q.push(raw.q[i]); iir.push(raw.iir[i]); gain.push(raw.gain[i]);
+  }
+  return { master: raw.master, freq, q, iir, gain };
+}
+
+function loadStoredJson(key) {
+  if (!eqStorage) return null;
+  try {
+    const text = localStorage.getItem(key);
+    return text ? JSON.parse(text) : null;
+  } catch (e) { return null; }
+}
+function storeJson(key, value) {
+  if (!eqStorage) return false;
+  try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+  catch (e) { eqStorage = false; return false; }
+}
+
+function saveCustomEq() {
+  storeJson(EQ_CUSTOM_KEY, {
+    master: customEq.master, freq: customEq.freq, q: customEq.q,
+    iir: customEq.iir, gain: customEq.gain
+  });
+}
+// 恢复要在滑杆网格构建（下方 customEq.freq.forEach）之前完成
+const restoredCustom = sanitizeEqCurve(loadStoredJson(EQ_CUSTOM_KEY));
+if (restoredCustom) {
+  customEq.master = restoredCustom.master;
+  customEq.freq = restoredCustom.freq;
+  customEq.q = restoredCustom.q;
+  customEq.iir = restoredCustom.iir;
+  customEq.gain = restoredCustom.gain;
+}
+
+/** 用户命名预设：[{id, name, curve:{master,freq,q,iir,gain}}]，逐条校验、坏条目丢弃。 */
+function loadUserPresets() {
+  const raw = loadStoredJson(EQ_USER_PRESET_KEY);
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  raw.forEach(item => {
+    if (!item || typeof item.name !== 'string' || !item.name.trim()) return;
+    const curve = sanitizeEqCurve(item.curve);
+    if (curve) out.push({ id: typeof item.id === 'number' ? item.id : Date.now() + out.length,
+                          name: item.name.trim().slice(0, 24), curve });
+  });
+  return out.slice(0, EQ_MAX_PRESETS);
+}
+let userPresets = loadUserPresets();
+function persistUserPresets() {
+  if (!storeJson(EQ_USER_PRESET_KEY, userPresets)) {
+    $('userPresetNote').textContent = '本机存储不可用，预设不会保留（页面重进后丢失）。';
+  }
+}
+function applyCustomCurve(curve) {
+  customEq.master = curve.master;
+  customEq.freq = curve.freq.slice();
+  customEq.q = curve.q.slice();
+  customEq.iir = curve.iir.slice();
+  customEq.gain = curve.gain.slice();
+  $('master').value = String(curve.master);
+  $('masterValue').textContent = Number(curve.master).toFixed(1) + ' dB';
+  sliderItems.forEach((item, i) => { updateSlider(i); updateFreqLabel(i); });
+  saveCustomEq();
+  localEqChanged();
+}
+function renderUserPresets() {
+  const list = $('userPresetList');
+  list.replaceChildren();
+  if (!userPresets.length) {
+    const empty = element('li', '还没有保存的预设。');
+    empty.className = 'preset-meta';
+    list.appendChild(empty);
+    return;
+  }
+  userPresets.forEach(preset => {
+    const row = element('li');
+    const name = element('span', preset.name, 'preset-name');
+    const load = element('button', '加载');
+    const rename = element('button', '重命名');
+    const remove = element('button', '删除');
+    load.type = rename.type = remove.type = 'button';
+    load.onclick = () => {
+      selectPreset(-1);                       // 切回自定义视图再写入，避免被预设视图盖住
+      applyCustomCurve(preset.curve);
+      $('eqFeedback').textContent = '已加载预设「' + preset.name + '」到自定义滑杆（尚未发送）。';
+    };
+    rename.onclick = () => { renderRenameInput(row, preset); };
+    remove.onclick = () => {
+      userPresets = userPresets.filter(p => p.id !== preset.id);
+      persistUserPresets();
+      renderUserPresets();
+      $('eqFeedback').textContent = '已删除预设「' + preset.name + '」。';
+    };
+    row.append(name, load, rename, remove);
+    list.appendChild(row);
+  });
+}
+function renderRenameInput(row, preset) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.maxLength = 24;
+  input.value = preset.name;
+  input.setAttribute('aria-label', '预设新名称');
+  const confirm = element('button', '确定');
+  const cancel = element('button', '取消');
+  confirm.type = cancel.type = 'button';
+  const commit = () => {
+    const value = input.value.trim();
+    if (value && value !== preset.name) {
+      preset.name = value;
+      persistUserPresets();
+    }
+    renderUserPresets();
+  };
+  confirm.onclick = commit;
+  input.onkeydown = event => {
+    if (event.key === 'Enter') { event.preventDefault(); commit(); }
+    if (event.key === 'Escape') renderUserPresets();
+  };
+  cancel.onclick = () => renderUserPresets();
+  row.replaceChildren(input, confirm, cancel);
+  input.focus();
+  input.select();
+}
+$('userPresetName').onkeydown = event => {
+  if (event.key === 'Enter') { event.preventDefault(); $('userPresetSave').click(); }
+};
+$('userPresetSave').onclick = () => {
+  if (!eqStorage) {
+    $('userPresetNote').textContent = '本机存储不可用，无法保存预设。';
+    return;
+  }
+  const name = $('userPresetName').value.trim();
+  if (!name) {
+    $('eqFeedback').textContent = '请先输入预设名称。';
+    return;
+  }
+  if (userPresets.length >= EQ_MAX_PRESETS) {
+    $('eqFeedback').textContent = '预设数量已达上限（' + EQ_MAX_PRESETS + '），请先删除一些。';
+    return;
+  }
+  const curve = { master: customEq.master, freq: customEq.freq.slice(), q: customEq.q.slice(),
+                  iir: customEq.iir.slice(), gain: customEq.gain.slice() };
+  const existing = userPresets.find(p => p.name === name);
+  if (existing) {
+    existing.curve = curve;                   // 同名覆盖，保持列表顺序
+    persistUserPresets();
+    renderUserPresets();
+    $('eqFeedback').textContent = '已覆盖预设「' + name + '」。';
+  } else {
+    userPresets.push({ id: Date.now(), name, curve });
+    persistUserPresets();
+    renderUserPresets();
+    $('userPresetNote').textContent = '';     // 保存成功清掉降级提示
+    $('eqFeedback').textContent = '已保存预设「' + name + '」（共 ' + userPresets.length + ' 组）。';
+  }
+  $('userPresetName').value = '';
+};
+if (!eqStorage) {
+  $('userPresetSave').disabled = true;
+  $('userPresetName').disabled = true;
+  $('userPresetNote').textContent = '本机存储不可用（localStorage 被禁用），预设与滑杆状态不会保留。';
+}
+renderUserPresets();
+
 let selectedPreset = -1;
 let eqRevision = 0;
 let curveFrame = 0;
@@ -2175,6 +2448,7 @@ function currentEq() {
 function localEqChanged() {
   eqRevision++;
   $('eqFeedback').textContent = '本地参数已修改，尚未发送。';
+  saveCustomEq();        // 需求①：滑杆状态自动记忆（路 EQFIX）
   scheduleCurve();
 }
 function scheduleCurve() {
@@ -2442,6 +2716,7 @@ $('eqFlat').onclick = () => {
   sliderItems.forEach((item, i) => updateSlider(i));
   $('master').value = '0';
   $('masterValue').textContent = '0.0 dB';
+  saveCustomEq();
   selectPreset(-1);
 };
 $('eqSend').onclick = () => {
@@ -2474,7 +2749,13 @@ $('eqSend').onclick = () => {
     }
   );
 };
+// 初始化：同步恢复的总增益到滑杆显示（自定义滑杆值已在构建时读 customEq）
+$('master').value = String(customEq.master);
+$('masterValue').textContent = Number(customEq.master).toFixed(1) + ' dB';
 selectPreset(-1);
+if (restoredCustom) {
+  $('eqFeedback').textContent = '已恢复上次的自定义 EQ（本机记忆，尚未发送）。';
+}
 
 /* ---------- 助听 tab：每频段增益/上限 + 测试音样本 ---------- */
 function createHSlider(opts) {

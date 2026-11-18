@@ -63,9 +63,12 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 - 通道：opcode `0xFF` 自定义命令，cmdid `0x22`（App 方法 `setEQWtihQFG2()`）。
 - 固件注册点：`app.bin+0xa9a78`——getter `0x0602580a`、setter `0x0602583c`、应用当前参数例程
   `0x06025118`；配置保存 key 42。
-- 载荷格式：**3 字节头 + 每段 7 字节**，至少含 EQ 类型、master gain，以及各段的频率/增益/Q/
-  IIR 类型。[未钉] 各字段的精确字节宽度/字节序未在仓库内完整钉死——需 vendor objdump 重解
-  `0x0602583c` 才能逐字节钉死（见 §4.4）。
+- 载荷格式：**3 字节头 + 每段 7 字节**，逐字节钉死（[静态：docs/eq-cmd-0x22-layout.md]
+  路 H 反汇编钉死、路 EQFIX 独立复核）：头 = `type(u8) + master_gain(i16 LE ÷100 dB)`；
+  每段 = `freq(u16 LE, Hz 直存) + q(i16 LE ÷100) + gain(i16 LE ÷100 dB) + iir_type(u8,
+  255=未指定→固件兜底 band_pass)`。**type 写入语义（EQFIX 钉死）：type=1 = 装载自定义槽
+  MusicEqBt[0]、载荷被忽略；type=10 = 空间音效；type ∉ {1,10}（独立 app 用 2）才解码
+  载荷曲线**——0.7.1 及之前独立 app 发 type=1 是真机「EQ 发送无效果」的根因。
 - 控制面板给出滑块/曲线参数（type=2「音乐均衡器」，`count=10` 段，默认 freq
   `32,64,125,250,500,1000,2000,4000,8000,16000`，`q`/`iitType` 默认全 2=band_pass，
   `mastergain:-4`，`volumelevel:4`，`basedb:0`，`maxdb:8`/`mindb:8`）。预设 6 条（默认/流行/
@@ -197,7 +200,7 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 
 | 功能 | 通道 | 载荷 | 状态 |
 | --- | --- | --- | --- |
-| EQ 写 | FF/`0x22` | 3B 头 + 每段 7B（EQ 类型/master gain/freq/gain/Q/iir） | 字段字节布局 [未钉]，需重解 0x0602583c |
+| EQ 写 | FF/`0x22` | 3B 头 + 每段 7B（type/master gain/freq/gain/Q/iir），type=2 下发曲线（type=1=装载槽、载荷被忽略） | 逐字节钉死 [静态：docs/eq-cmd-0x22-layout.md] |
 | ANC 切 | FF/`0x17` | `17 03 mode scene strength` | 已钉 [文档]；路 P 反汇编核对一致（data=后 3 字节） |
 | 按键重映射 | FF/`0x2b` 或 ADV type2 | gesture/action 组合 或 `[key,gesture,action]` | H3S 用哪个分支 [未钉]；App 侧两条 wire 组帧已实现（§2.5 实现状态，默认 ADV type2） |
 | 提示音音量 | FF/`0x1d` | data=`value 占位`（len=2，值 3/6/8） | 帧形状已钉 [静态：docs/cmd-0x17-0x1d-layout.md 路P] |
@@ -238,9 +241,10 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 
 ### 4.4 待补齐 / 未钉清单（如实标注）
 
-1. **0x22 EQ 载荷精确字节布局**：仓库只钉到「3B 头 + 每段 7B + 字段名」，未钉各字段字节宽/
-   序。补齐方法 = 在构建机用 vendor objdump 反汇编 `0x0602583c`（setter）读参数解析形状
-   （`tools/disassemble_app.py --elf-only` + 构建机 objdump，AGENTS 已有该流程）。
+1. ~~0x22 EQ 载荷精确字节布局~~ **已钉死**：docs/eq-cmd-0x22-layout.md（路 H 反汇编 +
+   路 EQFIX 独立复核）——3B 头(type/master) + 每段 7B(freq/q/gain/iir) 全小端；type 写入
+   语义 EQFIX 钉死（1=装载槽载荷被忽略/10=空间/∉{1,10}=解码应用，app 发 2）。剩余
+   [未钉]：官方 App 实发 type 字节（无抓包）、空间音效曲线进 DSP 的内部链路。
 2. **按键重映射 H3S 走 ADV type2 还是 0x2b**：需真机抓一次 setKeyFunction 的实际 BLE 包
    （红线：不连接真机——本路不做，标 [未钉] 留给后续授权会话）。
 3. **媒体音量命令**：仓库无证据，先按 AVRCP 或真机对照 BLE 音量命令。
