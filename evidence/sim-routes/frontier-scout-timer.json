@@ -1,0 +1,47 @@
+{
+ "route": "TIMERCOUT / sim-timerscout（基线 main 6129ac9，静态侦察路，零 tools/ 改动，不跑条件线，不碰 sim-syncimpl）",
+ "recorded_at": "2026-11-19T02:47:00+08:00",
+ "task": "modem 窗尾 BT clock timer 0xF00130/40 停点侦察：JL_SYNC 容器放行后预判 42,061,359 @ 0x60befee 写 0xF00130=0x2F4 → 尾段簇逐站审计 → 三选一预案 → codex 参谋裁决 → 墙序三候选。产出 docs/frontier-scout-timer.md。",
+ "method": {
+  "disassembly": "仓外既有 ~/code/headsets/archive/h3s-all/h3s/analysis/anc-cycle-20261109/app-linear.asm（app.bin sha256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041 与 disassemble_app.py 钉死源一致，加载基址 0x06000100）",
+  "display_erratum": "objdump li 立即数两种显示并存：多数十进制，0xF00000 等整值十六进制（0x6048038 处 r1 = 0xF00000 即十六进制）——单扫十进制会漏 22 站，双轨扫描必须",
+  "scans": "li 十进制 grep [15728640,15732735]=[0xF00000,0xF00FFF] 42 站 + 十六进制补扫（= 0xF0..）22 站全为 0xF00000 整值 + 0xF00000 基址站点下游 40 指令窗偏移深扫（最大 0x24，无 >=0x100，尾段不被头段基址间接触达）+ app.bin 全量 LE32 扫 [0xF00100,0xF00158)（13 命中全为 li 立即数字段，零 .data/.rodata 表字面量）+ ROM（sha 7cae0a02）LE32 扫 0xF00000-0xF00FFF（尾段零命中；头段 0xF00064/D4/D8/DC/EC 五处 16 位拼装序列另站）+ p11_code.bin LE32 零命中 + call 全量扫描（目标=指令地址+实际长度+十进制字节偏移，python 复核 creator->request_irq=0x6065d86 与 jlsync 一致）",
+  "codex_independent_check": "gpt-6-astra 独立参谋（~/tmp/codex/202611190240-timerscout/），裁决 B + 两处措辞修正 + 负例矩阵 12+1 + 副作用边界要求；本路无实质分歧"
+ },
+ "block_identity": {
+  "erratum": "0xF00130 不是 SDK JL_TIMER0-5：br28.h（sha 111e29ea 与 dependencies.json 钉死一致）JL_TIMER_TypeDef={CON,CNT,PRD,PWM} 全 __RW，JL_TIMER0-5=ls_base(0xfd0000)+map_adr(04..09,0)=0xfd0400-0xfd0900。csfr.h=q32DSP 核 SFR（0xff0000）。0xF00000 域全部 SDK 头零定义（btctrler 闭源库私有窗，bt-stack-map.md §2 唯一既有档案）",
+  "naming_derived": "timer/BT clock 命名从访问形状归纳（/1250 换算、32 位拆半写、读对拼算 >>1、消费者 BTTIME/slot 语义），derived-not-measured，0x2F4/1754 位含义不解读"
+ },
+ "access_face": {
+  "on_chain_two_writes": "0x60befee [0xF00130]=0x2F4（st.w.modimm，预判停点 42,061,359）；0x60beff6 [0xF00140]=1754（[r0+16] 基址偏移形态，预判 42,061,361）。全 app 唯一站点=audio_sync creator 0x60befae 体内，IPMASK=6，request_irq(88) 之前",
+  "read_pair": "0xF00144/48 读对：getter 0x60bf1c4（(([0xF00148]&0xFFFF)<<16|([0xF00144]&0xFFFE))>>1 + BTTIME &0x7FFFFFF 返回）与 IRQ88 handler 0x60bf216（同拼算，差值 abs<3 进分支，不满足则 [0xF00000]|=0x400）——getter 结构可达当前前缀未执行、IRQ88 无源不触发",
+  "btctrler_tail_cluster": "0xF00100 bit3 置/清对（0x604fb74/0x604ea62/0x604dc4a）；0xF00110/14/4C 模式域（0x604e506 函数，读 &7 进分支）；0xF00120/24/28 32 位计数拆半写+0x8000 提交位（0x6050b34 函数，val/1250）；0xF0012C 自旋轮询 (v&0x6)==0b100（0x6050ae4）+|=1（0x6048184/0x6050ad0）；0xF00150/54 位段 RMW 族（0x60231e4）。域未启动零执行",
+  "bulk_window": "memcpy 读 0xF00000 400B 进影子（0x6048038）/写回（0x60481bc），覆盖全部尾段成员（含 0xF00130/40）——btctrler init/下电路径",
+  "consumed_split": "前沿已消费=零（停点 42,061,357 先于块首访问）；未消费链上=恰两写；未消费 audio_sync 域更远=getter/IRQ88（向量槽+回调槽 0x607f5f6 结构注册）；未消费 btctrler 域=其余全部+整窗 bulk",
+  "zero_direct_callers": "0x6050ad0/0x6050ae4/0x6050b34（BT clock 捕获/设置/轮询）call 全量扫描零直接调用者——表派发/thunk [推断]（BTMAP §1 指针表同域先例）"
+ },
+ "decision": {
+  "verdict": "B——恰两地址写记录容器 {0xF00130, 0xF00140}（codex 定稿，本路独立判断同）",
+  "shape": "合法写=对齐 32 位整字、分别记最后写值；无合成初值（复位后未写入态）；首写前读拒绝；写后读仍拒绝（记录值只进诊断账本，与 DMAIMPL 读回=最后写值的差异：本站无读者取更保守拒读）；byte/halfword/非对齐拒绝；RMW 内部读走通用 mmio 路径即拒；不推进计数/不产生完成状态/不触发 IRQ88/不改其他寄存器；邻接成员一概不承接（独立批准，不连续区间映射）；建议启用写者 PC 守卫（只认 0x60befee/0x60beff6）",
+  "rejected": "A 否（提交位/0xF0012C 自旋状态机/活计数器//1250 换算全零依据且 btctrler 未启动无验证面）；C 否（墙在 +2 步，不放行则 request_irq/fn_config 及其后全部到不了）",
+  "wording_corrections": "①『全 app 零读者』降级：当前链上只有两次写；直接标量访问中未发现这两字读取；另一域存在覆盖它们的 400B 整窗读（整窗读到此继续停，不自动返回记录值）。②WO 只是本模型拒读策略，不是硅上寄存器只写属性结论",
+  "expected_ledger": "本次续跑仅 0xF00130<-0x2F4、0xF00140<-0x6DA 两次成功写、零读、零硬件事件；两写值适合轨迹验收断言但不解读位含义；后续受阻不撤销已完成写",
+  "negative_matrix": "12+1 项：首写前读拒/写后读拒/子字写拒/非对齐拒/间隙 0xF00134/38/3C 保持未映射/0xF00120-2C 不承接/0xF00144/48 读写拒/其余 modem 地址与 400B 整窗不获区间授权/RMW 读阶段拒/不凭空产生计数状态 IRQ 且快照恢复不扩大权限复位清已写态/PC 守卫臂（其他 PC 写相同常量也停）"
+ },
+ "next_stop": {
+  "prediction": "42,061,359 @ 0x60befee 写 0xF00130=0x2F4（距 JL_SYNC 停点 +2 步，静态推算 completed_steps 口径）；第二墙 42,061,361 @ 0x60beff6 写 0xF00140=1754",
+  "wall_order": "①本站两写（容器内放行）②request_irq(88,2,0,0x60bf1e4)：向量槽 0x1A01C0 纯 RAM 写 + ICU 0xffe12c RMW（=IRQ_CONFIG 0xffe100+字 11，旧配置字运行时定，静态无解候选一）③fn_config JL_SYNC 四字（另一路容器）+条件臂 b[obj+6]==0 -> [0xF00000]|=0x400（RMW 读阶段先停，运行时值未观测候选二）④二者皆过后材料不足不预判；0xF00144/48 不在本链必经集合"
+ },
+ "side_effect_boundary": "codex 点名最弱一环：两次纯写指令不能排除 0x2F4 启动计数/清状态/发提交命令/影响其他寄存器。落地前必须补副作用边界说明：a) 明确接受记录配置暂不实现硬件活动的仿真边界 b) 影响面证据/未知清单 c) 未知影响若被观察须都经过仍拒绝的访问或无源 IRQ 边界——尤其排查对既有已建模地址的影响；若波及当前链上已放行的读取/分支则 B 不足以支撑续跑",
+ "advisory": {
+  "model": "gpt-6-astra（codex --yolo exec，~/tmp/codex/202611190240-timerscout/，briefing.md/final.md/log.md）",
+  "verdict_quote": "选 B，采用精确两地址的写记录容器。这批准的是当前执行链的最小抽象，不能据此宣称 BT timer 的启动、计数或 IRQ 语义已经认证。此前 (a+) 被退回的副作用问题，仍需在落地前明确交代。",
+  "agreement": "本路独立判断同为 B，无实质分歧；本路补充材料（十六进制显示扫描勘误/基址下游偏移深扫/零直接调用者）为自查项不涉分歧"
+ },
+ "honesty": {
+  "static_only": "本路零场景运行（红线），步数/停点为静态推算，依赖 sim-syncimpl 容器落地后实测对账；『btctrler 域未启动』『getter 前缀未达』为运行事实引用（BTMAP/SRCSYNC 交接）非本路重放",
+  "not_claimed": "不证明 0xF00130/40 硬件语义/BT clock 计数行为/IRQ88 交付/写副作用不存在；不宣称尾段簇其他成员零访问（限主核 app 线性窗）",
+  "blind_spots": "动态计算地址/跨函数传参/表驱动基址（运行期组装静态不可见）；ROM 16 位拼装只排尾段地址；q32s(P11) 只扫 LE32 字面量（其 SFR 空间 !=0xF00000 主窗，mailbox 间接不排除无证据）；DMA 对本窗访问无证据亦无排除",
+  "parity": "official↔b79 parity 未重跑（纯静态侦察路无放行段）"
+ }
+}
