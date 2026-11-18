@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Acceptance-plan USB flow (H5-PRE-01): flash HAL5 to bank B / roll back to b79.
+"""Acceptance-plan USB flow (H5-PRE-01): candidate flash to bank B / rollback.
 
 Named, digest-pinned, bidirectional profiles on top of accept_profile.py
-(offline planning) and accept_verify.py (independent verification). The
-historical r2->b79 profile in h3s_usb.py/image.py is not modified and keeps
-all of its gates; this tool never writes without --apply plus a matching
-one-shot nonce, and never uses the 942080B UFW flash.bin as a 2MiB image.
+(offline planning) and accept_verify.py (independent verification). One
+candidate per flash/rollback pair, selected with --candidate (default hal5:
+b79->HAL5 flash, HAL5->b79 rollback; f1a/f1b: HAL5->F1x flash, F1x->HAL5
+same-layer rollback — retreat to b79 chains the unchanged hal5 rollback
+afterwards). The historical r2->b79 profile in h3s_usb.py/image.py is not
+modified and keeps all of its gates; this tool never writes without --apply
+plus a matching one-shot nonce, and never uses the 942080B UFW flash.bin as
+a 2MiB image.
 
 Live sequence (flash/rollback, mirrors the verified 2026-11-10 restore):
   reviewed plan (plan.json + target.bin in a workdir fed by `h3s_usb.py
@@ -36,7 +40,7 @@ import os
 from pathlib import Path
 import time
 
-from accept_profile import (BANK_B, SECTOR, SIZE, VM_BEGIN, VM_END,
+from accept_profile import (BANK_B, CANDIDATES, SECTOR, SIZE, VM_BEGIN, VM_END,
                             _plan_digest, changed_sectors, crc, make_plan,
                             new_nonce, package_id, rebind_live_target, require)
 from accept_verify import verify_plan
@@ -379,23 +383,24 @@ def _load_backups(work):
     return first
 
 
-def _package_app(direction, ufw):
+def _package_app(direction, candidate, ufw):
     from accept_profile import parse_package
-    pinned_ufw, pinned_len, pinned_sha = package_id(direction)
+    pinned_ufw, pinned_len, pinned_sha = package_id(direction, candidate)
     return parse_package(ufw, pinned_ufw, pinned_len, pinned_sha)
 
 
 def cmd_plan(direction, args):
+    candidate = getattr(args, 'candidate', 'hal5')
     work = Path(args.workdir)
     ufw = Path(args.package).read_bytes()
     before = _load_backups(work)
-    target, plan = make_plan(direction, before, ufw, new_nonce())
-    if plan.get('status') == 'ALREADY_B79':
+    target, plan = make_plan(direction, before, ufw, new_nonce(), candidate)
+    if target is None:                      # zero-write ALREADY_* report
         save_persistent(work / 'plan.json',
                         (json.dumps(plan, indent=2, sort_keys=True) + '\n').encode())
         print(json.dumps(plan, indent=2, sort_keys=True))
         return
-    verify_plan(plan, before, target, _package_app(direction, ufw))
+    verify_plan(plan, before, target, _package_app(direction, candidate, ufw))
     save_persistent(work / 'target.bin', target)
     save_persistent(work / 'plan.json',
                     (json.dumps(plan, indent=2, sort_keys=True) + '\n').encode())
@@ -403,25 +408,29 @@ def cmd_plan(direction, args):
 
 
 def apply_direction(direction, args, transport_factory=None):
+    candidate = getattr(args, 'candidate', 'hal5')
     require(args.apply, '%s requires --apply after reviewing plan.json' % direction)
     require(args.confirm_nonce, '--confirm-nonce must echo the plan nonce')
     work = Path(args.workdir)
     plan = json.loads((work / 'plan.json').read_text())
     require(plan.get('direction') == direction, 'plan direction mismatch')
-    require('target_sha256' in plan, 'plan is ALREADY_B79; there is nothing to execute')
+    require(plan.get('candidate', 'hal5') == candidate, 'plan candidate mismatch')
+    require('target_sha256' in plan,
+            'plan is a zero-write ALREADY_* report; there is nothing to execute')
     require(plan.get('nonce') == args.confirm_nonce, 'nonce does not match plan.json')
     ufw = Path(args.package).read_bytes()
     before = _load_backups(work)
-    target, regenerated = make_plan(direction, before, ufw, plan['nonce'])
+    target, regenerated = make_plan(direction, before, ufw, plan['nonce'], candidate)
     require(target == (work / 'target.bin').read_bytes(),
             'target file differs from the regenerated plan')
     require(regenerated == plan, 'plan.json differs from the regenerated plan')
-    verify_plan(plan, before, target, _package_app(direction, ufw))
+    verify_plan(plan, before, target, _package_app(direction, candidate, ufw))
 
     pool = NoncePool(args.nonce_dir)
     require(not pool.occupied(plan['nonce']),
             'nonce already consumed by an earlier attempt; generate a NEW plan')
-    pool.consume(plan['nonce'], {'direction': direction, 'plan_digest': plan['plan_digest'],
+    pool.consume(plan['nonce'], {'direction': direction, 'candidate': candidate,
+                                 'plan_digest': plan['plan_digest'],
                                  'workdir': str(work), 'nonce': plan['nonce']})
     require(not (work / 'restore.jsonl').exists(),
             'session already attempted; review its journal before any new action')
@@ -439,6 +448,7 @@ def apply_direction(direction, args, transport_factory=None):
         save_persistent(work / 'live-target.bin', live_target)
         journal.event(stage='fresh_double_read_verified', before_sha256=sha(fresh),
                       target_sha256=sha(live_target), vm_preserved=True,
+                      candidate=candidate,
                       nonce=plan['nonce'], plan_digest=plan['plan_digest'])
         t.bind(live_target, plan['write_order'])
         t.writing = True
@@ -526,17 +536,27 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='operation', required=True)
     q = sub.add_parser('plan-flash',
-                       help='offline: b79->HAL5 bank-B plan from a backup workdir + HAL5 UFW')
+                       help='offline: bank-B flash plan (hal5: b79->HAL5; f1a/f1b: HAL5->F1x) '
+                            'from a backup workdir + candidate UFW')
     q.add_argument('--workdir', required=True)
-    q.add_argument('--package', required=True, help='HAL5 candidate UFW (digest-pinned)')
+    q.add_argument('--package', required=True,
+                   help='candidate UFW to install (digest-pinned per --candidate)')
+    q.add_argument('--candidate', choices=list(CANDIDATES), default='hal5',
+                   help='app identity to flash (default hal5 = the original b79->HAL5 pair)')
     q = sub.add_parser('plan-rollback',
-                       help='offline: HAL5->b79 rollback plan (or an ALREADY_B79 report)')
+                       help='offline: rollback plan (hal5: HAL5->b79, or ALREADY_B79; '
+                            'f1a/f1b: F1x->HAL5 same-layer, or ALREADY_HAL5)')
     q.add_argument('--workdir', required=True)
-    q.add_argument('--package', required=True, help='tested b79 UFW (digest-pinned)')
+    q.add_argument('--package', required=True,
+                   help='rollback target UFW (b79 for hal5, HAL5 for f1a/f1b; digest-pinned)')
+    q.add_argument('--candidate', choices=list(CANDIDATES), default='hal5',
+                   help='candidate being rolled back (default hal5 = the original HAL5->b79)')
     for name in ('flash', 'rollback'):
         q = sub.add_parser(name, help='live: execute the reviewed plan (needs --apply + nonce)')
         q.add_argument('--workdir', required=True)
         q.add_argument('--package', required=True)
+        q.add_argument('--candidate', choices=list(CANDIDATES), default='hal5',
+                       help='app identity this plan is for (must match plan.json)')
         q.add_argument('--loader', required=True)
         q.add_argument('--apply', action='store_true')
         q.add_argument('--confirm-nonce', dest='confirm_nonce', default=None)
