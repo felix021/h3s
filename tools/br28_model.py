@@ -5,6 +5,7 @@ capture/PWM modes, reset stimuli and actual CPU interrupt delivery still stop.
 """
 from collections import Counter
 import operator
+import struct
 
 from probe_boot import Blocked, IrqDeliveryRequest
 
@@ -4660,16 +4661,20 @@ class JlstreamKickParam2Unknown:
     0x12b5b0 只用 r0-r4/SP/RETS),最终 0x6086b0c r6=r12 覆盖。补零/fixture
     无证据支持特定值(违反不发明参数值红线),诚实停无信息量且锁死前沿。
 
-    放行形状(codex 定稿五要素):本放行**不是**物理地址豁免,每次装载逐条
-    重验守卫——
+    放行形状(codex 定稿五要素;实施勘误一条:任务体入口 0x6086980 从不
+    执行——安装代码把前奏寄存器预置进初始 GPR 帧、首派发直入 get-event,
+    实例绑定按 codex 原文「绑定 jlstream 的当前 TCB/栈分配实例」落在安装
+    点 0x6065f9e(r0==0x6086980)的任务结构上,栈窗在装载时从结构现读
+    +64 栈字数 0x300/+68 栈基址/+72 名字指针 0x609d3bb 三重校验)。本放行
+    **不是**物理地址豁免,每次装载逐条重验守卫——
       1. 开关默认关(条件栈 off 臂=41,909,506 逐键复现,零新报告键);
-      2. 任务实例绑定:0x6086980 任务体入口执行时记录当前实例
-         (entry sp+core;栈释放/重分配/新实例后旧授权自然失效——物理地址
-         永不延续授权);
+      2. 任务实例绑定:安装点观测(0x6065f9e,r0=jlstream 入口,r4=任务
+         结构地址);栈释放/重分配/结构改写后旧授权自然失效(装载时现读
+         现验,地址与字段都不延续豁免);
       3. PC=0x60869ba 且操作数形状 r6=[r10+8] 宽 4、原始编码 d0 ec a8 60
          (probe_boot 装载门 require 钉死);
-      4. r10 恰为本任务 sp+24 消息缓冲、实例栈窗内(0x300 字=0xC00 字节,
-         12B 配置表条目 [0x609d780+4])、MMU 实际翻译恰为 [0x18ca64,
+      4. r10 恰为本任务 sp+24 消息缓冲、sp 与槽 VA 都在 TCB 栈窗
+         ([栈基址,栈基址+0xC00))内、MMU 实际翻译恰为 [0x18ca64,
          0x18ca68)(当前基线钉子)且属有效可写 RAM region;
       5. 值构造走 probe_boot Memory.abstract_word(task_frame=True)——按实际
          已知字节+物理来源构造 UnknownWord(不写零、不把原槽标成已初始
@@ -4691,9 +4696,18 @@ class JlstreamKickParam2Unknown:
 
     LOAD_PC=0x60869ba
     ENCODING=bytes.fromhex('d0eca860')
-    TASK_ENTRY_PC=0x6086980
+    TASK_ENTRY=0x6086980           # 任务函数头(反汇编锚;OS 从不直接执行它——
+                                   # 初帧 GPR 由安装代码预置、首派发直入 get-event,
+                                   # 运行面钉死:基线段内 0x6086980 零执行)
+    INSTALL_PC=0x6065f9e           # 任务安装尾 st.d.l(此点 r0=入口/r4=任务结构)
     TASK_BODY_RANGE=(0x6086980,0x6086d00)
-    STACK_BYTES=0x300*4          # 12B 配置表条目 [0x609d780+4]:prio3、栈 0x300 字
+    # 任务结构(安装点 r4,运行面 dump 钉死):+64 栈字数(0x300)、+68 栈基址
+    # VA(0x402800,窗长恰 0xC00)、+72 名字指针(0x609d3bb 'jlstream')。
+    TCB_STACK_WORDS_OFFSET=64
+    TCB_STACK_BASE_OFFSET=68
+    TCB_NAME_OFFSET=72
+    STACK_WORDS=0x300              # 12B 配置表条目 [0x609d780+4]:prio3、栈 0x300 字
+    TASK_NAME_POINTER=0x609d3bb    # 'jlstream'
     SLOT_PHYSICAL=0x18ca64       # 当前基线钉子:r10+8 的 MMU 翻译起点(4B 窗)
     OVERWRITE_PC=0x6086b0c       # r6=r12 哨兵覆盖点(unknown 死点)
     WINDOW_CLOSE_PC=0x6086b0e    # 覆盖点之后首条(此处 r6 必为已知哨兵)
@@ -4711,9 +4725,9 @@ class JlstreamKickParam2Unknown:
 
     def __init__(self):
         # M4 状态字段(快照捕获面;守卫常量全部是类属性,走类同一性+指纹)。
-        self.task_entries=0
+        self.task_installs=0
         self.instance_core=None
-        self.instance_entry_sp=None
+        self.instance_tcb=None
         self.authorized_loads=0
         self.unknown_word_loads=0
         self.value_known_loads=0
@@ -4728,12 +4742,15 @@ class JlstreamKickParam2Unknown:
     # ---------------------------------------------------------------- 观测面
     def note_step(self,cpu):
         """每条指令执行前调用(probe_boot step 门,开关开启时)。
-        记录:任务体入口实例、生产者候选执行、装载后活区间追踪。"""
+        记录:任务安装实例(0x6065f9e,r0==jlstream 入口)、生产者候选执行、
+        装载后活区间追踪。任务体入口 0x6086980 本身从不执行(OS 预置初帧
+        GPR、首派发直入 get-event——运行面钉死),实例绑定按 codex 授权形状
+        落在「当前 TCB/栈分配实例」=安装点的任务结构上。"""
         pc=cpu.pc
-        if pc==self.TASK_ENTRY_PC:
-            self.task_entries+=1
+        if pc==self.INSTALL_PC and cpu.R[0]==self.TASK_ENTRY:
+            self.task_installs+=1
             self.instance_core=cpu.core_id
-            self.instance_entry_sp=cpu.sp
+            self.instance_tcb=cpu.R[4]&0xffffffff
         name=self.PRODUCER_WATCH.get(pc)
         if name is not None:self.producer_executions[name]+=1
         if self.window_open:self._note_window(cpu)
@@ -4767,12 +4784,24 @@ class JlstreamKickParam2Unknown:
         """五要素守卫(每次装载逐条重验)。displacement=装载门按 operands 换算
         的字节位移(钉死形状下恒 +8)。返回 int|UnknownWord,拒绝返回 None
         (调用方落回普通严格路径)。pc/编码/操作数形状由 probe_boot 装载门
-        require 钉死;本方法验实例绑定/sp+24 关系/栈窗/MMU 翻译/region。"""
+        require 钉死;本方法验实例绑定/TCB 栈窗/sp+24 关系/MMU 翻译/region。
+        栈窗在装载时从任务结构现读(不缓存)——TCB 释放/重分配/改写后旧授权
+        自然失效,物理地址与结构字段都不延续豁免。"""
         mem=cpu.mem
-        if self.instance_entry_sp is None or cpu.core_id!=self.instance_core:return None
-        address=(cpu.R[10]+displacement)&0xffffffff
+        if self.instance_tcb is None or cpu.core_id!=self.instance_core:return None
+        try:
+            header=mem.read(self.instance_tcb+self.TCB_STACK_WORDS_OFFSET,12)
+            stack_words,stack_base,name=struct.unpack_from('<III',header)
+        except Exception:
+            return None                     # TCB 不可读=结构已变,拒绝
+        if (stack_words!=self.STACK_WORDS or name!=self.TASK_NAME_POINTER
+                or stack_base+stack_words*4>0x100000000):
+            return None
+        stack_bytes=stack_words*4
         if cpu.R[10]!=(cpu.sp+24)&0xffffffff or displacement!=8:return None
-        if not 0<=self.instance_entry_sp-cpu.sp<self.STACK_BYTES:return None
+        address=(cpu.R[10]+displacement)&0xffffffff
+        if not stack_base<=cpu.sp<stack_base+stack_bytes:return None
+        if not stack_base<=address<stack_base+stack_bytes:return None
         physical=(hardware.mmu.translate(address,4,mem.read)
                   if hardware.mmu is not None else address)
         if physical!=self.SLOT_PHYSICAL:return None
@@ -4792,7 +4821,8 @@ class JlstreamKickParam2Unknown:
                 'cmd_register':key,
                 'physical':hex(physical),
                 'region':region,
-                'entry_sp':hex(self.instance_entry_sp),
+                'tcb':hex(self.instance_tcb),
+                'stack_window':f'[{hex(stack_base)},{hex(stack_base+stack_bytes)})',
                 'loop_sp':hex(cpu.sp),
                 'r10':hex(cpu.R[10]),
                 'buf_words':[
@@ -4820,15 +4850,24 @@ class JlstreamKickParam2Unknown:
                 'unknown_word':self.unknown_word_loads,
                 'value_known':self.value_known_loads},
             'cmd_histogram':dict(sorted(self.cmd_histogram.items())),
-            'task_entries':self.task_entries,
+            'task_installs':self.task_installs,
             'producer_executions':dict(self.producer_executions),
             'first_load':self.first_load,
             'guard':{
                 'load_pc':hex(self.LOAD_PC),
                 'encoding':self.ENCODING.hex(),
                 'slot_physical_window':f'[{hex(self.SLOT_PHYSICAL)},{hex(self.SLOT_PHYSICAL+4)})',
-                'task_entry_pc':hex(self.TASK_ENTRY_PC),
-                'stack_window_bytes':hex(self.STACK_BYTES),
+                'install_pc':hex(self.INSTALL_PC),
+                'task_entry':hex(self.TASK_ENTRY),
+                'task_entry_never_executes':('the OS preloads the initial GPR frame '
+                                             'and first-dispatches straight into '
+                                             'get-event; 0x6086980 is the disassembly '
+                                             'anchor only (runtime-pinned: zero '
+                                             'executions on the baseline segment)'),
+                'tcb_stack_words_offset':self.TCB_STACK_WORDS_OFFSET,
+                'tcb_stack_base_offset':self.TCB_STACK_BASE_OFFSET,
+                'tcb_name_offset':self.TCB_NAME_OFFSET,
+                'stack_bounds_read_per_load':True,
                 'revalidated_per_load':True,
                 'not_a_permanent_address_exemption':True},
             'semantics':('single 4-byte task-stack slot unknown-word release: the '

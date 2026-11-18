@@ -27,28 +27,46 @@ from probe_pi32v2 import ROOT, upstream
 
 FIRMWARE = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
 LOAD_PC = JlstreamKickParam2Unknown.LOAD_PC            # 0x60869ba
-TASK_ENTRY_PC = JlstreamKickParam2Unknown.TASK_ENTRY_PC  # 0x6086980
+TASK_ENTRY = JlstreamKickParam2Unknown.TASK_ENTRY      # 0x6086980(反汇编锚)
+INSTALL_PC = JlstreamKickParam2Unknown.INSTALL_PC      # 0x6065f9e
 SLOT = JlstreamKickParam2Unknown.SLOT_PHYSICAL         # 0x18ca64
 GET_EVENT_ENTRY = 0x6064c8c
 HELPER_ENTRY = 0x6075ce0
-# 停点世界几何(tonmap 41,909,506 实测):entry sp=loop sp+56,r10=sp+24。
+# 停点世界几何(tonmap 41,909,506 实测+TCB dump):任务结构 0x41a390
+# (+64=0x300 栈字数/+68=0x402800 栈基址/+72=名字指针);循环 sp=0x4033c4
+# (VA,→物理 0x18ca44);r10=sp+24。隔离测试用恒等映射,VA=PA 几何
+# [0x18c800,0x18d400) 模拟同一分配窗。
+TCB = 0x18c800
+STACK_BASE = 0x18ca00
 ENTRY_SP = 0x18ca7c
 LOOP_SP = 0x18ca44
 BUF = 0x18ca5c                                          # r10(=sp+24)
 ID_WORD = struct.pack('<I', 0x00100000)                 # post API id 族
 
 
-class GuardMem:
-    """authorize() 的 mem 面:identity 翻译 + 可控已知字节。"""
+def tcb_words():
+    """任务结构三字(栈字数/栈基址/名字指针)——与运行面 dump 相同布局。"""
+    return struct.pack('<III', JlstreamKickParam2Unknown.STACK_WORDS, STACK_BASE,
+                       JlstreamKickParam2Unknown.TASK_NAME_POINTER)
 
-    def __init__(self, known=None):
+
+class GuardMem:
+    """authorize() 的 mem 面:identity 翻译 + 可控已知字节 + TCB 结构。"""
+
+    def __init__(self, known=None, tcb=TCB, tcb_bytes=None):
         self.ram = {}
         for base, data in (known or {}).items():
             self.ram.update((base + i, byte) for i, byte in enumerate(data))
+        if tcb is not None and tcb_bytes is None:
+            self.ram.update((tcb + JlstreamKickParam2Unknown.TCB_STACK_WORDS_OFFSET + i, b)
+                            for i, b in enumerate(tcb_words()))
+        elif tcb is not None:
+            self.ram.update((tcb + JlstreamKickParam2Unknown.TCB_STACK_WORDS_OFFSET + i, b)
+                            for i, b in enumerate(tcb_bytes))
         self.unknown_origins = {}
 
     def region(self, address, size):
-        if 0x18c000 <= address and address + size <= 0x18d000:
+        if 0x18c000 <= address and address + size <= 0x18d400:
             return 'fake_jlstream_stack'
         return None
 
@@ -61,8 +79,11 @@ class GuardMem:
         return UnknownWord(values, origins)
 
     def read(self, address, size):
-        # MMU translate 的读回调占位(守卫测试的翻译目标固定,不经本路径)。
-        raise AssertionError('GuardMem.read is a placeholder for translate()')
+        values = [self.ram.get(address + i) for i in range(size)]
+        if any(v is None for v in values):
+            from probe_boot import Blocked
+            raise Blocked('uninitialized_memory', address=hex(address))
+        return bytes(values)
 
 
 class GuardCpu:
@@ -100,7 +121,7 @@ class GuardUnitTests(unittest.TestCase):
     def armed_guard(self):
         guard = JlstreamKickParam2Unknown()
         guard.instance_core = 0
-        guard.instance_entry_sp = ENTRY_SP
+        guard.instance_tcb = TCB
         return guard
 
     def test_exact_geometry_grants_unknown_word_with_physical_origins(self):
@@ -117,6 +138,8 @@ class GuardUnitTests(unittest.TestCase):
         self.assertEqual(guard.first_load['buf_words'][0], '00001000')
         self.assertEqual(guard.first_load['buf_words'][1], '00000000')
         self.assertEqual(guard.first_load['buf_words'][2], '????????')
+        self.assertEqual(guard.first_load['stack_window'],
+                         f'[{hex(STACK_BASE)},{hex(STACK_BASE + 0xC00)})')
 
     def test_known_word_answers_true_value_and_partial_write_keeps_unknowns(self):
         guard = self.armed_guard()
@@ -132,22 +155,40 @@ class GuardUnitTests(unittest.TestCase):
         self.assertEqual(value.origins[1:], (SLOT + 1, SLOT + 2, SLOT + 3))
 
     def test_refusals_never_grant_source_permission(self):
-        # 无实例观测(任务从未进入)→ 拒绝。
+        # 无实例观测(任务从未安装)→ 拒绝。
         guard = self.armed_guard()
-        guard.instance_entry_sp = None
+        guard.instance_tcb = None
         self.assertIsNone(guard.authorize(GuardCpu(), GuardHardware(), 8))
         # 另一核的实例 → 拒绝。
         guard = self.armed_guard()
         guard.instance_core = 1
         self.assertIsNone(guard.authorize(GuardCpu(), GuardHardware(), 8))
+        # TCB 栈字数不符(结构改写/重分配为他用)→ 拒绝。
+        guard = self.armed_guard()
+        cpu = GuardCpu(mem=GuardMem(tcb_bytes=struct.pack(
+            '<III', 0x100, STACK_BASE,
+            JlstreamKickParam2Unknown.TASK_NAME_POINTER)))
+        self.assertIsNone(guard.authorize(cpu, GuardHardware(), 8))
+        # TCB 名字指针不符 → 拒绝。
+        guard = self.armed_guard()
+        cpu = GuardCpu(mem=GuardMem(tcb_bytes=struct.pack(
+            '<III', JlstreamKickParam2Unknown.STACK_WORDS, STACK_BASE, 0)))
+        self.assertIsNone(guard.authorize(cpu, GuardHardware(), 8))
+        # TCB 不可读(结构区已变)→ 拒绝。
+        guard = self.armed_guard()
+        guard.instance_tcb = 0x18ff00             # 窗外不可读地址
+        self.assertIsNone(guard.authorize(GuardCpu(), GuardHardware(), 8))
         # r10 ≠ sp+24(位移后仍可指向同一物理槽)→ 拒绝。
         guard = self.armed_guard()
         cpu = GuardCpu(sp=LOOP_SP - 4)          # r10 不变,sp+24 不再等于 r10
         self.assertIsNone(guard.authorize(cpu, GuardHardware(), 8))
-        # sp 在实例栈窗之外(0x300 字)→ 拒绝。
+        # sp 在 TCB 栈窗之外 → 拒绝。
         guard = self.armed_guard()
-        guard.instance_entry_sp = LOOP_SP + JlstreamKickParam2Unknown.STACK_BYTES
-        self.assertIsNone(guard.authorize(GuardCpu(), GuardHardware(), 8))
+        cpu = GuardCpu(sp=STACK_BASE - 4, r10=BUF - 4)
+        cpu.mem.ram.update((TCB + 64 + i, b) for i, b in enumerate(
+            struct.pack('<III', 0x300, STACK_BASE - 0x1000,
+                        JlstreamKickParam2Unknown.TASK_NAME_POINTER)))
+        self.assertIsNone(guard.authorize(cpu, GuardHardware(), 8))
         # 位移 ≠ +8(邻槽/跨界非 4B)→ 拒绝。
         guard = self.armed_guard()
         self.assertIsNone(guard.authorize(GuardCpu(), GuardHardware(), 4))
@@ -169,17 +210,27 @@ class GuardUnitTests(unittest.TestCase):
 
     def test_instance_reobservation_replaces_old_authorization_geometry(self):
         guard = self.armed_guard()
-        # 旧实例装载授权一次后,任务重入(新实例落在旧栈窗之外):旧几何拒绝。
+        # 旧实例装载授权一次后,任务重装(新 TCB 落在别处、旧 TCB 改写):
+        # 旧几何拒绝。
         self.assertIsInstance(guard.authorize(GuardCpu(mem=GuardMem({BUF: ID_WORD + bytes(4)})),
                                               GuardHardware(), 8), UnknownWord)
-        guard.instance_entry_sp = LOOP_SP + JlstreamKickParam2Unknown.STACK_BYTES
+        guard.instance_tcb = TCB + 0x400
         self.assertIsNone(guard.authorize(GuardCpu(), GuardHardware(), 8))
 
-    def test_note_step_records_entry_instance_and_producer_candidates(self):
+    def test_note_step_records_install_instance_and_producer_candidates(self):
         guard = JlstreamKickParam2Unknown()
-        guard.note_step(GuardCpu(pc=TASK_ENTRY_PC, sp=ENTRY_SP, core=0))
-        self.assertEqual((guard.task_entries, guard.instance_core,
-                          guard.instance_entry_sp), (1, 0, ENTRY_SP))
+        installer = GuardCpu(pc=INSTALL_PC, sp=ENTRY_SP, core=0)
+        installer.R[0] = TASK_ENTRY
+        installer.R[4] = TCB
+        guard.note_step(installer)
+        self.assertEqual((guard.task_installs, guard.instance_core,
+                          guard.instance_tcb), (1, 0, TCB))
+        # 其他任务的安装点执行(r0 不同)不触碰 jlstream 实例。
+        other = GuardCpu(pc=INSTALL_PC, sp=ENTRY_SP, core=0)
+        other.R[0] = 0x602d3a0
+        other.R[4] = TCB + 0x800
+        guard.note_step(other)
+        self.assertEqual((guard.task_installs, guard.instance_tcb), (1, TCB))
         guard.note_step(GuardCpu(pc=0x6075078, sp=ENTRY_SP, core=0))
         guard.note_step(GuardCpu(pc=0x6075078, sp=ENTRY_SP, core=0))
         self.assertEqual(guard.producer_executions['open_kick_api_0x6074ffe'], 2)
@@ -199,8 +250,9 @@ class IsolatedChainTests(unittest.TestCase):
               seed_instance=True):
         handoff = profile(self.header, SENTINEL_A)
         handoff['regions'] = list(handoff['regions']) + [
-            (0x18c000, 0x18d000, 'fake_jlstream_stack')]
-        seeds = [(BUF, ID_WORD), (BUF + 4, struct.pack('<I', cmd & 0xffffffff))]
+            (0x18c000, 0x18d400, 'fake_jlstream_stack')]
+        seeds = [(BUF, ID_WORD), (BUF + 4, struct.pack('<I', cmd & 0xffffffff)),
+                 (TCB + JlstreamKickParam2Unknown.TCB_STACK_WORDS_OFFSET, tcb_words())]
         if slot_bytes is not None:
             seeds.append((SLOT, slot_bytes))
         handoff['seeds'] = list(handoff['seeds']) + seeds
@@ -211,10 +263,10 @@ class IsolatedChainTests(unittest.TestCase):
         guard = hardware.jlstream_kick_param2
         if seed_instance:
             guard.instance_core = 0
-            guard.instance_entry_sp = ENTRY_SP   # the prologue test below proves
-            # the REAL 0x6086980 prologue produces exactly this geometry.
+            guard.instance_tcb = TCB    # the install-observation machinery is fed
+            # the TCB the real install site passes (r4 @ 0x6065f9e, r0=0x6086980).
         regs = [0] * 16
-        regs[10] = BUF if entry_pc != TASK_ENTRY_PC else 0
+        regs[10] = BUF if entry_pc != TASK_ENTRY else 0
         regs[12] = 0x1264B8
         diagnostics = {'entry_pc': entry_pc, 'initial_sp': initial_sp,
                        'initial_gprs': regs, 'stop_before_pc': stop_before}
@@ -222,14 +274,17 @@ class IsolatedChainTests(unittest.TestCase):
                        handoff=handoff, hardware=hardware,
                        diagnostics=diagnostics, budget=budget), guard
 
-    def test_real_task_prologue_records_instance_and_builds_r10_eq_sp_plus_24(self):
-        result, guard = self.world(entry_pc=TASK_ENTRY_PC, initial_sp=ENTRY_SP,
+    def test_real_task_prologue_builds_r10_eq_sp_plus_24(self):
+        # 反汇编锚验证:真前奏指令(0x6086980..0x60869a8)建立 r10==sp+24 与
+        # 停点世界一致的寄存器几何。注意:真机世界 OS 从不执行该前奏(初帧
+        # GPR 由安装代码预置、首派发直入 get-event,类注释勘误)——本测试
+        # 验证的是锚几何本身,不是实例绑定路径。
+        result, guard = self.world(entry_pc=TASK_ENTRY, initial_sp=ENTRY_SP,
                                    stop_before=GET_EVENT_ENTRY, budget=32)
         self.assertEqual(result['stop'],
                          {'kind': 'diagnostic_milestone_reached',
                           'address': hex(GET_EVENT_ENTRY)})
-        self.assertEqual((guard.task_entries, guard.instance_core,
-                          guard.instance_entry_sp), (1, 0, ENTRY_SP))
+        self.assertEqual(guard.task_installs, 0)
         # 真指令建立几何:add sp,-56 → 0x18ca44;r10 = sp+24 → 0x18ca5c;
         # 哨兵/名字寄存器同步装载(与停点世界实测寄存器一致)。
         registers = result['last_registers']

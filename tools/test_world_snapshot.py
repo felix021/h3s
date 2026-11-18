@@ -889,15 +889,19 @@ class M4ProjectionFamilies(unittest.TestCase):
         self.assertEqual(hw.jl_pled_config_words.read(0xfd6104), 0)
         hw.jl_pled_config_words.write(0xfd6128, 3)
         # Route EVIMPL: the jlstream release guard took the frontier-stop
-        # shape — one observed task entry, one authorized unknown-word load
-        # (first-load evidence window still open at the stop), one producer
-        # candidate executed. All of it is behavior state: a restore without
-        # the instance would make the guard refuse (strict stop regression).
+        # shape — one observed task install (TCB instance), one authorized
+        # unknown-word load (first-load evidence window still open at the
+        # stop), one producer candidate executed. All of it is behavior
+        # state: a restore without the instance would make the guard refuse
+        # (strict stop regression).
         from br28_unknown import UnknownWord as _UnknownWord
-        from test_jlstream_kick_param2 import GuardCpu, GuardMem
+        from test_jlstream_kick_param2 import GuardCpu, GuardMem, TCB
         guard = hw.jlstream_kick_param2
-        guard.note_step(GuardCpu(pc=guard.TASK_ENTRY_PC, sp=0x18ca7c, core=0,
-                                 mem=GuardMem()))
+        installer = GuardCpu(pc=guard.INSTALL_PC, sp=0x18ca7c, core=0,
+                             mem=GuardMem())
+        installer.R[0] = guard.TASK_ENTRY
+        installer.R[4] = TCB
+        guard.note_step(installer)
         loader = GuardCpu(pc=guard.LOAD_PC, sp=0x18ca44, core=0,
                           mem=GuardMem({0x18ca5c: b'\x00\x00\x10\x00',
                                         0x18ca60: b'\x00\x00\x00\x00'}))

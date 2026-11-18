@@ -1280,7 +1280,7 @@ M4_FAMILIES = (
     # strict stop) and the first-load evidence/counters, i.e. real behavior
     # state, not a static fixture. Switch off = slot None like every family.
     ('jlstream_kick_param2', 'JlstreamKickParam2Unknown',
-     ('task_entries', 'instance_core', 'instance_entry_sp', 'authorized_loads',
+     ('task_installs', 'instance_core', 'instance_tcb', 'authorized_loads',
       'unknown_word_loads', 'value_known_loads', 'cmd_histogram',
       'producer_executions', 'first_load', 'window_open', 'window_trace',
       'window_foreign_steps', 'window_async')),
