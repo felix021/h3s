@@ -77,7 +77,8 @@ public class WebShellActivity extends Activity {
         if (simHostValue == null) simHostValue = "127.0.0.1";
         final String simHost = simHostValue;
         final int simPort = getIntent().getIntExtra("sim_port", SimulationGattLink.DEFAULT_PORT);
-        // 路 BLEDISC：目标地址默认由扫描发现（按广播名 "QCY H3S"，官方 App 先例）；构建注入
+        // 路 BLEDISC2：目标地址默认由扫描发现（厂商 AD 0x521C/型号 0x417C 主识别，广播名/注入
+        // 地址为辅——H3S 广播实测无 Local Name，官方 App 亦按厂商数据筛选）；构建注入
         // H3S_BLE_ADDRESS 时它作为优先地址（扫到即连，兼容注入构建）。GattLink 前置过滤与
         // transport 发现选优共用同一 policy 实例。
         BleDiscoveryPolicy discovery = new BleDiscoveryPolicy(DeviceConfig.ADDRESS, DeviceConfig.NAME,

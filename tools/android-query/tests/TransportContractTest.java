@@ -103,7 +103,8 @@ public class TransportContractTest {
         boolean charsPresent = true;
         boolean scanFindsDevice = true;
         boolean scanFails;
-        String candidateName = "QCY H3S";      // 首个候选的广播名
+        String candidateName = "QCY H3S";      // 首个候选的广播名（null=无名广播，BLEDISC2 主路径）
+        boolean candidateVendor;               // 首个候选的厂商 AD 命中位（无名广播靠它入候选）
         String candidateAddress = "02:00:00:00:00:01";
         int candidateRssi = -50;
         String secondName;                     // 可选第二候选（null=无）
@@ -133,8 +134,8 @@ public class TransportContractTest {
             scanStarts++;
             if (scanFails) cb.onScanFailed(1);
             else if (scanFindsDevice) {
-                cb.onCandidate(candidateName, candidateAddress, candidateRssi);
-                if (secondAddress != null) cb.onCandidate(secondName, secondAddress, secondRssi);
+                cb.onCandidate(candidateName, candidateAddress, candidateRssi, candidateVendor);
+                if (secondAddress != null) cb.onCandidate(secondName, secondAddress, secondRssi, false);
             }
         }
         @Override public void stopScan() { scanStops++; }
@@ -255,6 +256,8 @@ public class TransportContractTest {
         androidMtuVariants();
         androidScanVariants();
         androidDiscoveryVariants();
+        androidVendorDiscovery();
+        androidConsecutiveScanFailures();
         androidConnectRetries();
         androidConnectFailures();
         androidUnexpectedDisconnect();
@@ -263,8 +266,8 @@ public class TransportContractTest {
         bridgeConnectionControl();
         System.out.println("TransportContractTest passed: 契约（EQ/串行/跨片/未连接拒绝/断线重连，"
             + "Loopback 与 AndroidBleTransport+FakeLink 同断言）+ Android 状态机（连接五段式/MTU 三变体/"
-            + "扫描发现变体/发现选优（注入地址优先+多候选最强）/重试/失败路径/意外断线/写看门狗）"
-            + "+ 调度定时值（12s/2s/30s/5s/10ms/5s）+ bridge 连接控制。未连真机。");
+            + "扫描发现变体/发现选优（注入地址优先+多候选最强）/厂商 AD 无名候选主路径/连续失败终态不吞"
+            + "/重试/失败路径/意外断线/写看门狗）+ 调度定时值（12s/2s/30s/5s/10ms/5s）+ bridge 连接控制。未连真机。");
     }
 
     /** 端到端契约：EQ 帧→分片序列=BlePacketizer.split→设备逐字节收到→响应经 notify 重组回 listener。 */
@@ -568,6 +571,62 @@ public class TransportContractTest {
         expect(t2.isReady(), "settle 后应就绪");
         eq("选信号最强者", multi.secondAddress, multi.gattAddresses.get(0));
         expect(containsOnce(s2, 12000), "应有发现超时 12000ms: " + s2.delays);
+    }
+
+    /**
+     * 厂商 AD 发现主路径（路 BLEDISC2，2026-11-19）：H3S 广播实测无 Local Name（5/5 历史目标
+     * 广播 getName()=null、无 0x08/0x09 AD）——无名候选靠 vendorAd=true 入池→settle→连接。
+     * 解析正/反例（异公司/异型号/截断/服务列表辅助）在 BleDiscoveryTest（纯函数层）。
+     */
+    static void androidVendorDiscovery() {
+        FakeLink link = new FakeLink();
+        link.candidateName = null;             // 无名广播——上一版按名发现在此前置过滤即被丢
+        link.candidateVendor = true;           // 厂商 AD 0x521C/0x417C 命中
+        AndroidBleTransport t = new AndroidBleTransport(link);
+        t.connect();                           // 手动调度器：settle 同步执行，connect 同步就绪
+        expect(t.isReady(), "无名厂商 AD 候选应连接就绪");
+        eq("连接厂商候选的地址", link.candidateAddress, link.gattAddresses.get(0));
+
+        // 对照：无名且非厂商命中（只有注入地址可救）→ 零候选超时失败
+        FakeLink stranger = new FakeLink();
+        stranger.candidateName = null;
+        stranger.candidateVendor = false;      // 无名无名厂商位：谁也不是
+        AndroidBleTransport t2 = new AndroidBleTransport(stranger);
+        Events e2 = new Events();
+        t2.setListener(e2);
+        t2.connect();
+        expect("SCAN".equals(t2.phase()), "无名非厂商广播不应入候选: " + t2.phase());
+        t2.runScheduler();                     // 推进 12s 超时
+        eq("无名非厂商零连接", 0, stranger.gattConnects);
+        eq("无名非厂商超时终态", 1, e2.disconnects.size());
+    }
+
+    /**
+     * 终态通知按连接会话计（2026-11-19 修复，诊断报告 00:29:34 复现）：连续两次扫描超时，
+     * 两次都在 12s 后收到 onDisconnected——上一次会话的 disconnectReported 不得吞掉本次终态
+     * （页面此前永卡「扫描中」）；会话内重复事件仍去重（不多报）。
+     */
+    static void androidConsecutiveScanFailures() {
+        FakeLink link = new FakeLink();
+        link.scanFindsDevice = false;
+        AndroidBleTransport t = new AndroidBleTransport(link);
+        Events events = new Events();
+        t.setListener(events);
+        t.connect();
+        t.runScheduler();                      // 第一次 12s 发现超时 → 终态
+        expect(!t.isReady() && "IDLE".equals(t.phase()), "第一次失败应收尾回 IDLE");
+        eq("第一次终态已报", 1, events.disconnects.size());
+        expect(events.disconnects.get(0).contains("未发现"), "第一次失败文案: " + events.disconnects.get(0));
+        t.disconnect();                        // 失败后的页面断开：IDLE 早退，不加终态
+        eq("IDLE 断开不加终态", 1, events.disconnects.size());
+        t.connect();                           // 第二次尝试（页面重试，同进程）
+        expect("SCAN".equals(t.phase()), "第二次应进入扫描: " + t.phase());
+        t.runScheduler();                      // 第二次 12s 超时 → 终态（修复点：不再被去重吞掉）
+        eq("第二次终态也报", 2, events.disconnects.size());
+        expect(events.disconnects.get(1).contains("未发现"), "第二次失败文案: " + events.disconnects.get(1));
+        t.runScheduler();                      // 无剩余任务；会话内仍去重——不会第三报
+        eq("终态不重复", 2, events.disconnects.size());
+        eq("两次会话各扫一次", 2, link.scanStarts);
     }
 
     /** 连接重试：首次 GATT 断开(133)→退避 1s→第二次成功；重试期间旧帧仍开闸。 */

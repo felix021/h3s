@@ -53,7 +53,7 @@ public abstract class SerialBleTransport implements H3sTransport {
     private long generation;                     // 每帧递增，惰性失效旧超时任务
     private int mtu = 23;                        // ATT MTU 默认值；connect 链路里协商更新
     private boolean ready;
-    private boolean disconnectReported;          // 连续 markNotReady 只报一次 onDisconnected；markReady 复位
+    private boolean disconnectReported;          // 连续 markNotReady 只报一次 onDisconnected；markReady/新会话复位
     /** 每次 schedule 的 delay 记录（片间隔断言用；只增不删，含已失效任务）。测试探针。 */
     public final List<Long> scheduledDelays = new ArrayList<Long>();
     /** 手动调度队列（默认调度器）：schedule 入队，runScheduler() 同步驱动。 */
@@ -81,7 +81,8 @@ public abstract class SerialBleTransport implements H3sTransport {
      * 子类在链路断开/连接失败时调；未完成帧按失败回调、清队列。
      * listener 保留（重连后 markReady 仍能报 onMtuChanged——真机适配层会断开重连，
      * 清 listener 会让 H3SBridge 重连后收不到任何事件）；连续断线只报一次
-     * onDisconnected，由 disconnectReported 去重，markReady 复位。
+     * onDisconnected，由 disconnectReported 去重（同一会话内的重复事件不刷屏），
+     * markReady 与 {@link #beginConnectSession()} 复位——跨会话不吞终态。
      */
     protected void markNotReady(String reason) {
         ready = false;
@@ -91,6 +92,14 @@ public abstract class SerialBleTransport implements H3sTransport {
             if (listener != null) listener.onDisconnected(reason);
         }
     }
+
+    /**
+     * 新一次连接会话开始（子类 connect 入口调）：复位终态去重——上一会话的失败已报过，
+     * 本次会话的失败终态必须再报 onDisconnected。2026-11-19 修复：此前标志只在 markReady
+     * 复位，连续两次连接尝试都失败时第二次终态被吞、页面永卡「扫描中」（诊断报告
+     * 00:29:34 复现）。会话内（重试/竞态产生的重复断线事件）仍去重。
+     */
+    protected final void beginConnectSession() { disconnectReported = false; }
 
     @Override public void write(byte[] frame, FrameCallback callback) {
         if (frame == null) { callback.onDone(false, "帧不能为 null"); return; }
