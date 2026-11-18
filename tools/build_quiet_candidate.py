@@ -561,20 +561,26 @@ def main():
                     "sources change vs the HAL5 candidate",
             "a1_anc_wait":
                 "open 前轮询 b[[0x1265C0+500]+29]==0 且 [+33]==1（内部 OFF=1）；"
-                "0x6064efc(10ms) 任务睡眠轮询，上限 60 次 ~600ms；超时取消本次"
-                " open（返回 -22，槽保持 0，再按一次即重试）；ctx==0 跳过等待",
-            "b1_set_scene10_removed":
-                "删除 0x06074e64(stream,10)（set_scene PC_SPK，路 L1 误标 "
-                "set_notify）；场景保持 set_scene(stream,16,0) 的 HEARING_AID",
+                "0x6064efc(1 OS tick=10ms) 任务睡眠轮询，上限 60 次 ≈590ms"
+                "（codex 勘误：参数是 tick 非毫秒）；超时取消本次 open（返回 -22，"
+                "槽保持 0，再按一次即重试）；ctx==0 跳过等待",
+            "b1_scene_value_change":
+                "0x06074e64(stream,16)——调用保留（它是场景字节到达 ADC 的唯一"
+                "入口：写 b[stream+28] 并派发 0x20006；三参 0x06074a5e 只写 "
+                "stream+80 族字段不派发），值 10(PC_SPK 抄错) 改 16(HEARING_AID)",
             "b2_set_channel_after_start":
-                "start 返回 0 后 node_ioctl(stream,0x1100,0x20007,1)——对协商"
-                "结果最后覆盖；arg=1 是通道数量语义（非 17/18/20 模式枚举）；"
-                "返回值不检查（协商默认 mono 时为无害重申）",
+                "start 返回 0 后 node_ioctl(stream,0x1100,0x2000C,1)——对协商"
+                "结果最后覆盖；0x2000C 在 ADC ioctl 跳表落 0x06032a58 "
+                "b[priv+28]=arg 直存（0x20007 落纯返回，codex 勘误）；arg=1 是"
+                "通道数量语义（非 17/18/20 模式枚举）；返回值不检查（协商默认"
+                " mono 时为无害重申）",
             "a3_clock_hold": None if args.lfix_no_hold else
-                "open uuid 命中后 clock_alloc('lfix_hold',128MHz)，close 尾/"
-                "open 失败尾 clock_free('lfix_hold')；Σ=base24+mic24+hold128 →"
-                " DVFS 恒 160M 封顶，抑制运行期振荡；首次升频切换不可避免；"
-                "长期续航/温升未测——短期诊断档，非最终产品方案",
+                "open uuid 命中后 clock_alloc('lfix_hold',128MHz)，返回 0 才置"
+                " BSS 持有标志 b[0x125578]=1；close 尾/open 失败尾只在标志为 1"
+                "时 clock_free 并清零（每轮恰一次配对；alloc 失败不释放）；"
+                "Σ=base24+mic24+hold128 → DVFS 恒 160M 封顶，抑制运行期振荡；"
+                "首次升频切换不可避免；长期续航/温升未测——短期诊断档，"
+                "非最终产品方案",
             "a3_switch": ("双产物 A/B（plan §4-C）：运行时开关需 key32 参数通道"
                           "（keystore_hook+App 通道+测试面改造），判定双镜像更划算；"
                           "F1a(默认,含压舱) 与 F1b(--lfix-no-hold) 仅差 A3"),

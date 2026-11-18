@@ -244,24 +244,33 @@ MPO_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_toggle_mpo_hook.S'
 # Route LFIX-IMPL (docs/hearing-aid-lfix-impl.md; plan = docs/hearing-aid-
 # lfix-plan.md §4): the F1 repair variant of the open/close payloads on top of
 # the HAL5 full chain. F1b = A1 (pre-open ANC-exit wait with timeout-cancel:
-# poll b[[QCY+500]+29]==0 && b[...+33]==1, delay via the ANC chain's own task
-# sleep 0x06064efc(10ms), cap 60 tries ~= 600ms, cancel returns -22 with the
-# slot untouched) + B1 (set_scene(stream,10) block deleted — mislabeled
-# set_notify, actually set_scene(PC_SPK), official DHA never calls it) + B2
-# (explicit SET_CHANNEL(1) AFTER start returns: node_ioctl(stream,0x1100,
-# 0x20007,1) overrides the fmt negotiation last; arg=1 is the channel-COUNT
-# semantics — the ADC recomputes b[priv+28] from en_map at open, so a
-# pre-start value would be overwritten; the mode enums 17/18/20 use ch>>4).
+# poll b[[QCY+500]+29]==0 && b[...+33]==1, delay via os_time_dly 0x06064efc
+# 1 tick = 10 ms per poll, cap 60 tries ~= 590 ms, cancel returns -22 with
+# the slot untouched) + B1 (the two-arg scene call 0x06074e64(stream,·) is
+# KEPT with the value changed 10 -> 16: it is the ONLY path that sets the
+# stream scene byte b[stream+28] and dispatches 0x20006 to the nodes — the
+# three-arg 0x06074a5e only stores stream+80-family fields and never
+# dispatches, so deleting the call would strand the scene at its default;
+# 16 = HEARING_AID puts the ADC GET_FMT three-way on the 44100 branch) + B2
+# (post-start channel-count override: node_ioctl(stream,0x1100,0x2000C,1) —
+# 0x2000C lands on 0x06032a58 `b[priv+28]=arg`, the ADC's direct channel-
+# count store, while the SDK-header 0x20007 lands on a pure return; arg=1 is
+# the channel-COUNT semantics, the ADC recomputes b[priv+28] from en_map at
+# open so a pre-start value would be overwritten).
 # F1a additionally carries A3 (clock hold): clock_alloc("lfix_hold",128MHz)
-# after the uuid hit / before pipeline_parse, clock_free("lfix_hold") in the
-# shared failure tail and in the close payload after stop/release/notify —
-# one alloc/free pair per open cycle (slot guard blocks duplicate alloc;
-# clock_free on a never-alloc'd name is a benign no-op, 0x0600572c walk).
+# after the uuid hit / before pipeline_parse with an ownership flag byte at
+# BSS 0x125578 (set only when alloc returns 0; the shared failure tail and
+# the close payload free ONLY while the flag is set, then clear it — alloc
+# failures (-1: name-exists or heap exhaustion) never free), one gated
+# free per open cycle (slot guard blocks duplicate alloc).
 # Anchors re-verified against official app.bin by this route: db3c ctx ptr
 # [0x1265C0+500], flags +29/+33 write sites @0x0600db72/db76; delay callers
 # (1)/(2)/(100) @0x0606ec18/ec58/eca2 (call.xl) with the task path sleeping
-# through 0x06064e80; clock_alloc(r0=name,r1=hz)/clock_free(r0=name) shapes;
-# ADC channel-count recompute block 0x06032b6c-0x06032b96.
+# through 0x06064e80 (tick units per docs/s19-preboundaries.md §4.4);
+# clock_alloc(r0=name,r1=hz)->0/-1 and clock_free(r0=name) shapes; the ADC
+# ioctl tbh mapping 0x2000C->0x06032a58 direct store / 0x20007->pure return;
+# the root-class forwarder 0x06076d24-30 passing (ctx,cmd,arg) to the bound
+# plug; ADC channel-count recompute block 0x06032b6c-0x06032b96.
 LFIX_OPEN_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open_lfix.S'
 LFIX_OPEN_HOLD_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open_lfix_hold.S'
 LFIX_CLOSE_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close_lfix.S'
@@ -269,17 +278,28 @@ ANC_QCY_BASE = 0x1265c0          # QCY device struct base (== QCY_BASE)
 ANC_CTX_PTR_OFFSET = 500         # ANC ctx pointer field
 ANC_TRANSITION_OFFSET = 29       # b[ctx+29]: set 1 by db3c, cleared by exit chain
 ANC_TARGET_OFFSET = 33           # b[ctx+33]: target mode, internal OFF=1
-ANC_DELAY_FN = 0x06064efc        # task-context ms sleep (ANC exit chain's own)
-ANC_WAIT_TRIES = 60              # x 10ms = 600ms cap, then cancel this open
+ANC_DELAY_FN = 0x06064efc        # os_time_dly(r0=n tick); 1 tick = 10 ms
+                                 # (docs/s19-preboundaries.md §4.4 — codex review
+                                 # correction: the argument is ticks, NOT ms)
+ANC_DELAY_TICKS = 1              # 1 tick = 10 ms per poll
+ANC_WAIT_TRIES = 60              # ~590 ms cap, then cancel this open
 NODE_IOCTL = 0x06074ec6          # jlstream_node_ioctl(stream, id, cmd, arg)
-IOC_SET_CHANNEL = 0x20007        # NODE_IOC_SET_CHANNEL
+IOC_SET_CHANNEL = 0x2000C        # ADC channel-count byte store: the ADC ioctl
+                                 # jump table maps 0x2000C -> 0x06032a58
+                                 # `b[priv+28]=arg` (0x20007 lands on the pure
+                                 # return at 0x06032d6e — codex review correction,
+                                 # offline single-function execution)
 IOC_SET_CHANNEL_MONO = 1         # channel COUNT semantics, not the mode enum
-CLOCK_ALLOC = 0x06000978         # clock_alloc(r0=name, r1=hz)
-CLOCK_FREE = 0x0600572c          # clock_free(r0=name)
+CLOCK_ALLOC = 0x06000978         # clock_alloc(r0=name, r1=hz) -> 0 ok / -1 fail
+CLOCK_FREE = 0x0600572c          # clock_free(r0=name); no-match = benign no-op
 LFIX_HOLD_HZ = 128000000
 LFIX_HOLD_NAME = b'lfix_hold\x00'
-# F1b open payload shape (67 insns / 216B) and F1a open code shape (75 insns /
-# 252B code + the 10B name rodata); pinned by the lfix tests.
+LFIX_HOLD_FLAG = 0x125578        # BSS ownership byte (RAM_SLOT+4, same dead
+                                 # hole [0x12544e,0x12569f); 1 = this open cycle
+                                 # holds the clock — free only when set, then
+                                 # clear; codex review ownership discipline)
+# F1b open payload shape (71 insns / 228B) and F1a open code shape (90 insns /
+# 298B code + the 10B name rodata); pinned by the lfix tests.
 LFIX_OPEN_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'bnez', 'li.u32',
                       'ld.w.l', 'beqz', 'li.u8', 'li.u32', 'ld.bu.l', 'bnez',
                       'ld.bu.l', 'beq.ri', 'add.ri.neg7', 'beqz', 'li.u8',
@@ -288,33 +308,38 @@ LFIX_OPEN_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'bnez', 'li.u32',
                       'li.u32', 'call.r', 'mov.rr', 'beqz', 'mov.rr',
                       'li.s16', 'li.u32', 'li.s16', 'li.u32', 'call.r',
                       'bnez', 'mov.rr', 'li.u8', 'li.u8', 'li.u32', 'call.r',
-                      'mov.rr', 'li.u32', 'call.r', 'bnez', 'mov.rr',
-                      'li.s16', 'li.u32', 'li.u8', 'li.u32', 'call.r',
-                      'li.u32', 'st.w', 'li.u8', 'goto.s', 'li.neg5',
-                      'goto.s', 'mov.rr', 'li.u32', 'call.r', 'li.u8',
-                      'li.u32', 'li.u32', 'call.r', 'li.neg5', 'pop.pc_rl']
+                      'mov.rr', 'li.u8', 'li.u32', 'call.r', 'mov.rr',
+                      'li.u32', 'call.r', 'bnez', 'mov.rr', 'li.s16',
+                      'li.u32', 'li.u8', 'li.u32', 'call.r', 'li.u32',
+                      'st.w', 'li.u8', 'goto.s', 'li.neg5', 'goto.s',
+                      'mov.rr', 'li.u32', 'call.r', 'li.u8', 'li.u32',
+                      'li.u32', 'call.r', 'li.neg5', 'pop.pc_rl']
 LFIX_OPEN_HOLD_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'bnez', 'li.u32',
                            'ld.w.l', 'beqz', 'li.u8', 'li.u32', 'ld.bu.l',
                            'bnez', 'ld.bu.l', 'beq.ri', 'add.ri.neg7', 'beqz',
                            'li.u8', 'call.r', 'goto.s', 'li.u8', 'li.u32',
                            'li.u32', 'call.r', 'ext.l.u', 'beqz', 'mov.rr',
                            'li.u32', 'li.u32', 'li.u32', 'call.r', 'mov.rr',
+                           'li.u32', 'bnez', 'li.u8', 'st.b', 'mov.rr',
                            'li.u32', 'li.u32', 'call.r', 'mov.rr', 'beqz',
                            'mov.rr', 'li.s16', 'li.u32', 'li.s16', 'li.u32',
                            'call.r', 'bnez', 'mov.rr', 'li.u8', 'li.u8',
-                           'li.u32', 'call.r', 'mov.rr', 'li.u32', 'call.r',
-                           'bnez', 'mov.rr', 'li.s16', 'li.u32', 'li.u8',
-                           'li.u32', 'call.r', 'li.u32', 'st.w', 'li.u8',
-                           'goto.s', 'li.neg5', 'goto.s', 'mov.rr', 'li.u32',
-                           'call.r', 'li.u8', 'li.u32', 'li.u32', 'call.r',
-                           'li.u32', 'li.u32', 'call.r', 'li.neg5',
-                           'pop.pc_rl']
-# F1a close payload shape (23 insns / 78B): stock close + clock_free("lfix_hold").
+                           'li.u32', 'call.r', 'mov.rr', 'li.u8', 'li.u32',
+                           'call.r', 'mov.rr', 'li.u32', 'call.r', 'bnez',
+                           'mov.rr', 'li.s16', 'li.u32', 'li.u8', 'li.u32',
+                           'call.r', 'li.u32', 'st.w', 'li.u8', 'goto.s',
+                           'li.neg5', 'goto.s', 'mov.rr', 'li.u32', 'call.r',
+                           'li.u8', 'li.u32', 'li.u32', 'call.r', 'li.u32',
+                           'ld.bu', 'beqz', 'li.u32', 'li.u32', 'call.r',
+                           'li.u32', 'li.u8', 'st.b', 'li.neg5', 'pop.pc_rl']
+# F1a close payload shape (29 insns / 98B): stock close + flag-gated
+# clock_free("lfix_hold").
 LFIX_CLOSE_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'beqz', 'mov.rr',
                        'li.u8', 'li.u32', 'call.r', 'mov.rr', 'li.u32',
                        'call.r', 'li.u32', 'li.u8', 'st.w', 'li.u8', 'li.u32',
-                       'li.u32', 'call.r', 'li.u32', 'li.u32', 'call.r',
-                       'li.u8', 'pop.pc_rl']
+                       'li.u32', 'call.r', 'li.u32', 'ld.bu', 'beqz', 'li.u32',
+                       'li.u32', 'call.r', 'li.u32', 'li.u8', 'st.b', 'li.u8',
+                       'pop.pc_rl']
 R4_KEYHOOK_SOURCE = ROOT / 'tools/r4cmd/keystore_hook.S'
 R4_REG_ENTRY = 0x060a9c74             # cmdid 0x30 entry base
 R4_REG_SLOT = 0x060a9c7c              # entry+8, the null setter word
@@ -523,6 +548,21 @@ def _slot_checks(slot):
         raise ValueError('RAM slot must stay below the QCY struct base')
 
 
+def _lfix_flag_checks():
+    """Invariants of the A3 ownership-flag byte (route LFIX-IMPL): inside the
+    same statically dead 593B hole as the RAM slot ([0x12544e, 0x12569f), the
+    route-CT evidence body), inside the boot BSS zero loop, distinct from the
+    slot itself."""
+    hole_start, hole_end = 0x12544e, 0x12569f
+    if not (hole_start <= LFIX_HOLD_FLAG < hole_end):
+        raise ValueError(f'lfix hold flag {LFIX_HOLD_FLAG:#x} outside the dead hole')
+    start, end = BSS_ZERO_RANGE
+    if not (start <= LFIX_HOLD_FLAG < end):
+        raise ValueError('lfix hold flag outside the boot BSS zero loop')
+    if LFIX_HOLD_FLAG == RAM_SLOT:
+        raise ValueError('lfix hold flag must not alias the data slot')
+
+
 def _assemble(text):
     obj = ASM.read_object(ASM.assemble_text(text, '<hearing-aid-l1>'))
     sections = ASM.code_sections(obj)
@@ -574,6 +614,8 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
     if lfix and not (l4_eq and r4_keyhook and close_hooks and slot_ram):
         raise ValueError('lfix requires the HAL5 full chain '
                          '(close_hooks+slotram+r4keyhook+l3mpo+l4eq)')
+    if lfix_hold:
+        _lfix_flag_checks()
     if slot_ram:
         if not close_hooks:
             raise ValueError('slot_ram requires close_hooks (route CT is a close superset)')
@@ -758,20 +800,35 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
                             'target_offset': ANC_TARGET_OFFSET,
                             'internal_off_mode': 1,
                             'delay_fn': f'0x{ANC_DELAY_FN:08x}',
-                            'delay_ms': 10, 'max_tries': ANC_WAIT_TRIES,
+                            'delay_unit': 'os tick (1 tick = 10 ms, '
+                                          'docs/s19-preboundaries.md §4.4)',
+                            'delay_ticks': ANC_DELAY_TICKS,
+                            'max_tries': ANC_WAIT_TRIES,
                             'timeout_action': 'cancel this open (return -22, slot stays 0)'},
-            'b1_set_scene10_removed': True,
-            'b2_set_channel': {'after': 'start returns', 'node_ioctl': f'0x{NODE_IOCTL:08x}',
-                               'target_id': 0x1100, 'cmd': f'0x{IOC_SET_CHANNEL:05x}',
-                               'arg': IOC_SET_CHANNEL_MONO,
-                               'arg_semantics': 'channel COUNT (not the 17/18/20 mode enum)'},
+            'b1_scene_value_change':
+                '0x06074e64(stream,16) — call KEPT (it is the only scene-byte '
+                'setter: writes b[stream+28] + dispatches 0x20006; the 3-arg '
+                '0x06074a5e only stores stream+80-family fields), value '
+                '10(PC_SPK) -> 16(HEARING_AID)',
+            'b2_channel_count': {'after': 'start returns',
+                                 'node_ioctl': f'0x{NODE_IOCTL:08x}',
+                                 'target_id': 0x1100,
+                                 'cmd': f'0x{IOC_SET_CHANNEL:x}',
+                                 'cmd_note': 'ADC tbh 0x2000C -> 0x06032a58 '
+                                             'b[priv+28]=arg direct store '
+                                             '(0x20007 is a pure return there)',
+                                 'arg': IOC_SET_CHANNEL_MONO,
+                                 'arg_semantics': 'channel COUNT (not the 17/18/20 mode enum)'},
         }
         if lfix_hold:
             report['lfix']['a3_clock_hold'] = {
                 'alloc': f'clock_alloc("lfix_hold", {LFIX_HOLD_HZ}) '
-                         f'@ open, after uuid hit, before pipeline_parse',
-                'free': ['open shared failure tail (after event_notify(11))',
-                         'close payload, after stop/release/notify'],
+                         f'@ open, after uuid hit, before pipeline_parse; '
+                         f'returns 0/-1 — ownership flag byte '
+                         f'b[0x{LFIX_HOLD_FLAG:x}] set only on success',
+                'free': ['open shared failure tail (after event_notify(11)), '
+                         'flag-gated',
+                         'close payload, after stop/release/notify, flag-gated'],
                 'name_rodata': f'0x{PAYLOAD_ADDRESS + symbols["lfix_hold_name"]:08x} '
                                f'({len(LFIX_HOLD_NAME)}B)',
                 'first_upswitch_unavoidable': True,
@@ -805,7 +862,12 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
     standalone_open = _assemble(open_text)[1]
     if code[:len(standalone_open)] != standalone_open:
         raise ValueError('composed segment prefix != standalone route-L payload')
-    report['payload_prefix_matches_route_L'] = True
+    if lfix:
+        # the lfix variants compare against their own payload sources, not the
+        # route-L stock payload — record that under an accurate key
+        report['payload_prefix_matches_lfix_source'] = True
+    else:
+        report['payload_prefix_matches_route_L'] = True
     if close_hooks:
         close_text = _patch_slot(close_source.read_text(), slot)
         if lfix_hold:
@@ -816,7 +878,10 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
         close_off = len(standalone_open)
         if code[close_off:close_off + len(standalone_close)] != standalone_close:
             raise ValueError('composed close payload != standalone route-X payload')
-        report['close_payload_matches_route_X'] = True
+        if lfix_hold:
+            report['close_payload_matches_lfix_source'] = True
+        else:
+            report['close_payload_matches_route_X'] = True
     if l4_eq:
         _verify_mpo(code, by_off, report)
         _verify_eq(code, by_off, report)
@@ -1070,12 +1135,14 @@ def _verify_lfix_open(code, by_off, report, hold=False):
 
     The code part must match LFIX_OPEN_HOLD_INSN_IDS (F1a) / LFIX_OPEN_INSN_IDS
     (F1b); the li.u32 loads must cover the stock API anchors plus the A1 pair
-    (QCY struct base, ANC delay fn), the B2 SET_CHANNEL cmd, and — F1a only —
-    the A3 triple (hold name addr, 128MHz, clock_alloc) with the failure-tail
-    free pair (hold name addr, clock_free). Structural checks pin the A1 poll
-    reads (b[ctx+29] / b[ctx+33]), the B2 argument setup (r1=0x1100 root,
-    r2=0x20007 SET_CHANNEL, r3=1 channel count), and — F1a — the uuid reload
-    after the A3a call (the cross-call r0 discipline).
+    (QCY struct base, ANC delay fn), the B1 two-arg scene call (0x06074e64 —
+    the only scene byte setter), the B2 channel-count cmd 0x2000C, and — F1a
+    only — the A3 chain (name addr, 128MHz, clock_alloc, ownership-flag byte)
+    with the gated failure-tail free (flag, name addr, clock_free, flag).
+    Structural checks pin the A1 poll reads (b[ctx+29] / b[ctx+33]), the B2
+    argument setup (r1=0x1100 root, r2=0x2000C channel-count store,
+    r3=1 channel count), and — F1a — the uuid reload after the A3a call (the
+    cross-call r0 discipline) plus the ownership-flag set/clear discipline.
     """
     end = report['lfix_hold_name_offset'] if hold else report['payload_bytes']
     shape = [by_off[o][0] for o in range(0, end) if o in by_off]
@@ -1091,15 +1158,20 @@ def _verify_lfix_open(code, by_off, report, hold=False):
                   53357,                           # NODE_UUID_ADC (wide: > s16)
                   0x06074938,                      # pipeline_parse
                   0x2000d,                         # NODE_IOC_SET_PRIV_FMT
-                  NODE_IOCTL, 0x06074a5e, 0x06074ffe,
-                  IOC_SET_CHANNEL,                 # B2 cmd (wide: > s16)
+                  NODE_IOCTL,                      # SET_PRIV_FMT call
+                  0x06074a5e,                      # set_scene 3-arg (fields only)
+                  0x06074e64,                      # B1: scene byte + 0x20006
+                  0x06074ffe,                      # start
+                  IOC_SET_CHANNEL,                 # B2 cmd 0x2000C (wide: > s16)
                   NODE_IOCTL,                      # B2 call target
                   slot, 0x06074204, 0x060a1de2, 0x060057e6]   # tail
     if hold:
         name_addr = int(report['lfix']['a3_clock_hold']['name_rodata']
                         .split()[0], 16)
-        expected_loads = base_loads[:5] + [name_addr, LFIX_HOLD_HZ, CLOCK_ALLOC] \
-            + base_loads[5:] + [name_addr, CLOCK_FREE]
+        expected_loads = base_loads[:5] + [name_addr, LFIX_HOLD_HZ, CLOCK_ALLOC,
+                                           LFIX_HOLD_FLAG] \
+            + base_loads[5:] + [LFIX_HOLD_FLAG, name_addr, CLOCK_FREE,
+                                LFIX_HOLD_FLAG]
     else:
         expected_loads = base_loads
     if loads != expected_loads:
@@ -1110,34 +1182,43 @@ def _verify_lfix_open(code, by_off, report, hold=False):
                    f'r0 = b[r4+{ANC_TARGET_OFFSET}] (u)',      # A1 poll: target mode
                    'r5 += -1',                                 # A1 countdown
                    'r1 = 4352',                                # B2 root id 0x1100
-                   'r2 = 131079',                              # B2 SET_CHANNEL cmd
-                   'r3 = 1'):                                  # B2 channel count
+                   f'r2 = {IOC_SET_CHANNEL}',                  # B2 channel-count cmd
+                   'r3 = 1',                                   # B2 channel count
+                   'r1 = 16'):                                 # B1 scene value (x2)
         if needed not in texts:
             raise ValueError(f'lfix open missing: {needed}')
     if hold:
         if 'r1 = 128000000' not in texts:
             raise ValueError('lfix hold missing the A3 128MHz request')
-        # the uuid reload (mov.rr r0=r4) must sit between the A3a clock_alloc
-        # call and the pipeline_parse argument setup (the cross-call r0
-        # discipline: parse consumes r0=uuid from r4)
         seq = [by_off[o][1] for o in sorted(by_off) if o < end]
+        # ownership discipline (A3a): flag load -> bnez skip -> r5=1 -> store,
+        # i.e. the flag byte is set ONLY when the alloc result is 0
+        i_flag = seq.index(f'r0 = {LFIX_HOLD_FLAG}')
+        window = seq[i_flag + 1:i_flag + 4]
+        if not (window[0].startswith('if (r5 != 0)')
+                and window[1] == 'r5 = 1' and window[2] == 'b[r0+0] = r5'):
+            raise ValueError(f'lfix hold A3a flag-set discipline mismatch: '
+                             f'{seq[i_flag:i_flag + 4]}')
+        # the uuid reload (mov.rr r0=r4) must sit between the A3a clock_alloc
+        # call chain and the pipeline_parse argument setup (the cross-call r0
+        # discipline: parse consumes r0=uuid from r4)
         i_alloc_call = seq.index('call r6', seq.index(f'r6 = {CLOCK_ALLOC}'))
         i_parse_arg = seq.index('r1 = 53357')
-        window = seq[i_alloc_call + 1:i_parse_arg]
-        if 'r0 = r4' not in window:
+        if 'r0 = r4' not in seq[i_alloc_call + 1:i_parse_arg]:
             raise ValueError('lfix hold A3a call not followed by the uuid reload')
     report['lfix_open_shape_matches'] = True
     report['lfix_open_targets_pinned'] = True
 
 
 def _verify_lfix_close(code, by_off, report):
-    """The F1a close payload: stock close shape + the A3c clock_free tail.
+    """The F1a close payload: stock close shape + the flag-gated A3c free.
 
-    Shape = LFIX_CLOSE_INSN_IDS (23 insns / 78B); loads end with the hold name
-    address and clock_free — the one-per-cycle pairing of the open-side alloc.
+    Shape = LFIX_CLOSE_INSN_IDS (29 insns / 98B); loads end with the gated
+    free chain (flag, name addr, clock_free, flag) — one gated free per open
+    cycle, pairing the open-side alloc.
     """
     close_off = int(report['close_address'], 16) - PAYLOAD_ADDRESS
-    end = close_off + 78
+    end = close_off + 98
     shape = [by_off[o][0] for o in range(close_off, end) if o in by_off]
     if shape != LFIX_CLOSE_INSN_IDS:
         raise ValueError(f'lfix close shape mismatch: {shape}')
@@ -1147,7 +1228,8 @@ def _verify_lfix_close(code, by_off, report):
     loads = [int(by_off[o][1].split('= ')[1])
              for o in range(close_off, end) if o in by_off and by_off[o][0] == 'li.u32']
     if loads != [slot, 0x060741ee, 0x06074204, slot, 0x060a1de2,
-                 0x060057e6, name_addr, CLOCK_FREE]:
+                 0x060057e6, LFIX_HOLD_FLAG, name_addr, CLOCK_FREE,
+                 LFIX_HOLD_FLAG]:
         raise ValueError(f'lfix close loads mismatch: {[hex(x) for x in loads]}')
     report['lfix_close_shape_matches'] = True
 

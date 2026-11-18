@@ -72,18 +72,19 @@ SEG = 0xE3074                       # appended segment base (plain coords)
 KEY7_WINDOW = (0x25404, 0x2540C)    # cmd7 branch body entry (plain coords)
 FENCE_IMM = (0x34E9A, 0x34E9E)      # LIM_PC0 upper-limit immediate (plain coords)
 REGISTRY_WORD = (0xA9C7C, 0xA9C80)  # cmdid 0x30 setter word (plain coords)
-# F1a segment layout (994B): open code 252 + name 10 + close 78 + mpo 128 +
+# F1a segment layout (1060B): open code 298 + name 10 + close 98 + mpo 128 +
 # mpo rodata 92 + eq 180 + eq rodata 60 + toggle stub 52 + keyhook 142
-F1A = {'code_bytes': 994, 'open': 252, 'name': 10, 'close': 78,
-       'close_off': 262, 'new_app_end': OLD_APP_END + 33 + 994,
-       'sha256': '869b7f9b55498c1b6b208502ba2e51d01555dcceff97edd04e37a947c639302d',
+F1A = {'code_bytes': 1060, 'open': 298, 'name': 10, 'close': 98,
+       'close_off': 308, 'new_app_end': OLD_APP_END + 33 + 1060,
+       'sha256': '73b45e659d127452697b5580b2474ef481ce9b8118f3f5dfa8b9c731bb4fef48',
        'name_off': 'H3S_0.1.1.8_tones_minus0dB_LFIX_F1A_HOLD_MPO95_OFFLINE_UNTESTED.ufw'}
-# F1b segment layout (934B): open 216 + close 64 + mpo 128 + mpo rodata 92 +
+# F1b segment layout (946B): open 228 + close 64 + mpo 128 + mpo rodata 92 +
 # eq 180 + eq rodata 60 + toggle stub 52 + keyhook 142 (close == stock HAL5)
-F1B = {'code_bytes': 934, 'open': 216, 'close': 64,
-       'close_off': 216, 'new_app_end': OLD_APP_END + 33 + 934,
-       'sha256': '0274431f50f7eac7171594d6faf6b3903b5b31cc851d205d80d62a4b9e6fd514',
+F1B = {'code_bytes': 946, 'open': 228, 'close': 64,
+       'close_off': 228, 'new_app_end': OLD_APP_END + 33 + 946,
+       'sha256': 'f16576687dae42a583149aa9f8a2f1b89dc777228245a27c289f0faeec00f2c1',
        'name_off': 'H3S_0.1.1.8_tones_minus0dB_LFIX_F1B_NOHOLD_MPO95_OFFLINE_UNTESTED.ufw'}
+LFIX_HOLD_FLAG = 0x125578          # A3 ownership byte (BSS, slot+4)
 HAL5_SHA = '9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465'
 CLOCK_ALLOC, CLOCK_FREE = 0x06000978, 0x0600572c
 DELAY_FN = 0x6064efc
@@ -101,13 +102,20 @@ def _allowed_regions(new_app_end):
     Plain-coord constants shift by 0x2020 to reach flash coords (load_image
     slices plain from flash 0x2020); OLD_APP_END/new_app_end are already
     flash coords; every flash coord shifts by the 0x600 flash.bin file entry.
+    Narrowed per the codex review: boot-info allows only the CRC [0,6) and
+    app-length [8,12) fields (the rest of the 32B window must be identical);
+    the nested app CRCs are the four 2B words at 0x2020/0x2022/0x2040/0x2042
+    (the words in between must be identical); the append region is our own
+    file (content pinned byte-exactly by test_03 + header fields in test_03b).
     """
     f = FLASH_FILE_OFF
     p = FLASH_PLAIN_BASE
     regions = [
         (0x0, 0x4), (0x44, 0x46),                       # UFW outer CRC (6B)
-        (f + 0x2000, f + 0x2020),                       # boot-info 32B window
-        (f + 0x2020, f + 0x2044),                       # nested app CRC pairs
+        (f + 0x2000, f + 0x2006),                       # boot-info CRC field
+        (f + 0x2008, f + 0x200C),                       # boot-info length field
+        (f + 0x2020, f + 0x2024),                       # nested app CRC pair 1
+        (f + 0x2040, f + 0x2044),                       # nested app CRC pair 2
         (f + p + KEY7_WINDOW[0], f + p + KEY7_WINDOW[1]),      # cmd7 graft
         (f + p + FENCE_IMM[0], f + p + FENCE_IMM[1]),   # fence upper-limit imm
         (f + p + REGISTRY_WORD[0], f + p + REGISTRY_WORD[1]),  # R4 setter word
@@ -193,7 +201,7 @@ class LfixArtifactTest(unittest.TestCase):
             self.assertEqual(digest, spec['sha256'])
             rep = self.builds[tag]['report']['hearing_aid_lfix']
             self.assertIn('F1', rep['candidate'])
-            for key in ('a1_anc_wait', 'b1_set_scene10_removed',
+            for key in ('a1_anc_wait', 'b1_scene_value_change',
                         'b2_set_channel_after_start', 'a3_switch',
                         'honest_boundary'):
                 self.assertIn(key, rep)
@@ -211,7 +219,7 @@ class LfixArtifactTest(unittest.TestCase):
             diffs = _assert_diffs_in_regions(self, raw[x], raw[y], end, label)
             self.assertTrue(diffs, f'{label}: expected nonzero diffs')
 
-    # —— 3. 镜像内追加段 == 载荷源独立重汇编 ——
+    # —— 3. 镜像内追加段 == 载荷源独立重汇编；追加头字段钉死 ——
     def test_03_segment_matches_sources(self):
         for tag, spec, hold in (('f1a', F1A, True), ('f1b', F1B, False)):
             _, _, plain = self.images[tag]
@@ -221,81 +229,149 @@ class LfixArtifactTest(unittest.TestCase):
             self.assertEqual(rep['code_bytes'], spec['code_bytes'])
             self.assertEqual(plain[SEG:SEG + spec['code_bytes']], code,
                              f'{tag}: embedded segment != re-assembled sources')
+            # appended-file header fields: JLFS name + 0xff marker (the CRC
+            # and size fields are recomputed and covered by the diff regions;
+            # name/kind/flags/marker must be exactly the HAL5 precedent shape)
+            hdr = plain[OLD_APP_END - FLASH_PLAIN_BASE: SEG]
+            self.assertEqual(hdr[16:30], b'mic_effect.bin', 'append filename')
+            self.assertEqual(hdr[12], 0x82, 'append file kind')
+            self.assertEqual(hdr[13:16], b'\x00\x01\x00', 'append flags/index')
+            self.assertEqual(plain[SEG - 1], 0xFF, 'append 0xff marker')
 
     # —— 4. 「仅差 A3」契约 ——
     def test_04_delta_is_a3_only(self):
         _, _, plain_a = self.images['f1a']
         _, _, plain_b = self.images['f1b']
         _, _, plain_h = self.images['hal5']
-        # F1b close payload == HAL5 close payload (byte-identical, no shift:
-        # both assemble standalone with the same slot + firmware anchors)
+        seg_a = plain_a[SEG:SEG + F1A['code_bytes']]
         seg_b = plain_b[SEG:SEG + F1B['code_bytes']]
         seg_h = plain_h[SEG:SEG + 874]
+        # F1b close payload == HAL5 close payload (byte-identical, no shift:
+        # both assemble standalone with the same slot + firmware anchors)
         self.assertEqual(seg_b[F1B['close_off']:F1B['close_off'] + 64],
                          seg_h[156:220], 'F1b close != HAL5 stock close')
-        # F1b carries no A3 anchors and no name bytes anywhere in the append
+        # F1b carries no A3 anchors, no flag byte reference and no name bytes
         append_plain = (OLD_APP_END - FLASH_PLAIN_BASE,
                         F1B['new_app_end'] - FLASH_PLAIN_BASE)
         self.assertNotIn(b'lfix_hold', plain_b[append_plain[0]:append_plain[1]])
-        self.assertNotIn(struct.pack('<I', CLOCK_ALLOC), seg_b[:F1B['open']])
-        self.assertNotIn(struct.pack('<I', CLOCK_FREE), seg_b[:F1B['open']])
+        for anchor in (CLOCK_ALLOC, CLOCK_FREE, LFIX_HOLD_FLAG):
+            self.assertNotIn(struct.pack('<I', anchor), seg_b[:F1B['open']])
         # F1a carries exactly the A3 anchor set inside its open code
-        seg_a = plain_a[SEG:SEG + F1A['code_bytes']]
         open_a = seg_a[:F1A['open']]
-        name_addr = 0x06000000 + SEG + F1A['close_off'] - F1A['name']  # name sits right before close
+        name_addr = 0x06000000 + SEG + F1A['close_off'] - F1A['name']
         for anchor, count in ((CLOCK_ALLOC, 1), (CLOCK_FREE, 1),
-                              (name_addr, 2), (128000000, 1)):
+                              (name_addr, 2), (128000000, 1),
+                              (LFIX_HOLD_FLAG, 3)):
             got = open_a.count(struct.pack('<I', anchor))
             self.assertEqual(got, count,
                              f'F1a open anchor {anchor:#x}: {got} != {count}')
         self.assertEqual(seg_a[F1A['close_off'] - F1A['name']:F1A['close_off']],
                          b'lfix_hold\x00')
-        # F1a close carries the paired free (name addr + clock_free)
+        # F1a close carries the gated free (flag x2 + name addr + clock_free)
         close_a = seg_a[F1A['close_off']:F1A['close_off'] + F1A['close']]
-        self.assertEqual(close_a.count(struct.pack('<I', CLOCK_FREE)), 1)
-        self.assertEqual(close_a.count(struct.pack('<I', name_addr)), 1)
+        for anchor, count in ((CLOCK_FREE, 1), (name_addr, 1),
+                              (LFIX_HOLD_FLAG, 2)):
+            got = close_a.count(struct.pack('<I', anchor))
+            self.assertEqual(got, count,
+                             f'F1a close anchor {anchor:#x}: {got} != {count}')
+        # normalized common-instruction stream: strip the 19 A3 instructions
+        # from F1a's open and normalize branch targets — the remaining
+        # instruction sequence must equal F1b's open EXACTLY (codex review:
+        # anchor counting alone cannot catch a corrupted shared instruction)
+        self._assert_normalized_open_equal(seg_a[:F1A['open']],
+                                           seg_b[:F1B['open']])
 
-    # —— 5. A1 循环接线（从镜像解码，独立于构建器）——
+    def _assert_normalized_open_equal(self, open_a, open_b):
+        """A3-stripped normalized comparison of the two open payloads.
+
+        Align the two NORMALIZED text streams (branch displacements replaced
+        by T) with difflib — the instruction texts disambiguate repeated ids
+        (e.g. `r4 = r0` vs `r0 = r4`); every insert opcode must be one of the
+        19 A3 instructions and after removing them the streams must be
+        IDENTICAL. This is the codex-review contract: anchor counting cannot
+        catch a corrupted shared instruction, this can.
+        """
+        import difflib
+        import re
+
+        def norm(code):
+            return [re.sub(r'goto -?\d+$', 'goto T', t)
+                    for _a, _iid, t, _raw in ASM.disassemble(code, 0x060E3074)]
+
+        a = norm(open_a)
+        b = norm(open_b)
+        name_addr = 0x06000000 + SEG + F1A['close_off'] - F1A['name']
+        flag = LFIX_HOLD_FLAG
+        a3_texts = [f'r0 = {name_addr}', 'r1 = 128000000',
+                    f'r6 = {CLOCK_ALLOC}', 'call r6', 'r5 = r0',
+                    f'r0 = {flag}', 'if (r5 != 0) goto T', 'r5 = 1',
+                    'b[r0+0] = r5', 'r0 = r4',
+                    f'r0 = {flag}', 'r5 = b[r0+0] (u)', 'if (r5 == 0) goto T',
+                    f'r0 = {name_addr}', f'r6 = {CLOCK_FREE}', 'call r6',
+                    f'r0 = {flag}', 'r5 = 0', 'b[r0+0] = r5']
+        removed = []
+        for op, _a1, a2, b1, b2 in difflib.SequenceMatcher(
+                None, b, a, autojunk=False).get_opcodes():
+            if op == 'insert':
+                removed.extend(a[b1:b2])
+            elif op != 'equal':
+                raise AssertionError(f'open streams are not insert-only: {op}')
+        # insert-only alignment + the inserted multiset being exactly the 19
+        # A3 instructions == "F1a open is F1b open plus the A3 blocks" over
+        # normalized texts (branch targets abstracted)
+        self.assertEqual(sorted(removed), sorted(a3_texts),
+                         'A3 delta is not exactly the pinned A3 instruction set')
+
+    # —— 5. A1 循环接线（双产物都解码，五条边全覆盖，独立于构建器）——
     def test_05_a1_loop_wiring(self):
-        _, _, plain = self.images['f1b']
-        seg = plain[SEG:SEG + F1B['code_bytes']]
-        open_b = seg[:F1B['open']]
-        insns = list(ASM.disassemble(open_b, 0x060E3074))
-        by_addr = {a: (iid, t, raw) for a, iid, t, raw in insns}
-        texts = [t for _a, _i, t, _r in insns]
-        # ctx fetch + poll reads
-        for needed in ('r4 = [r6+500]', 'r0 = b[r4+29] (u)', 'r0 = b[r4+33] (u)',
-                       'r5 += -1', 'r0 = 10'):
-            self.assertIn(needed, texts)
-        # delay call target 0x06064efc: the load exists once and the poll
-        # tail is exactly `r0 = 10; call r6; goto <poll head>`
-        delay_loads = [i for i, t in enumerate(texts)
-                       if t.startswith(f'r6 = {DELAY_FN}')]
-        self.assertEqual(len(delay_loads), 1)
-        i10 = texts.index('r0 = 10')
-        self.assertEqual(texts[i10 + 1], 'call r6')
-        addr_cancel = next(a for a, t in ((i[0], i[2]) for i in insns)
-                           if t == 'r0 = -22')   # first = open_err_cancel
-        addr_poll = next(a for a, t in ((i[0], i[2]) for i in insns)
-                         if t == 'r0 = b[r4+29] (u)')
-        addr_uuid = next(a for a, t in ((i[0], i[2]) for i in insns)
-                         if t == 'r0 = 15')
-        # timeout beqz (r5 == 0) must land exactly on the cancel path
-        timeout = next((a, t, raw) for a, (iid, t, raw) in by_addr.items()
-                       if iid == 'beqz' and t.startswith('if (r5 == 0)'))
-        self.assertEqual(_branch_target(timeout[0], timeout[2], timeout[1]),
-                         addr_cancel, 'A1 timeout branch does not hit the cancel path')
-        # the retry goto must return exactly to the poll head
-        retry = next((a, t, raw) for a, (iid, t, raw) in by_addr.items()
-                     if iid == 'goto.s'
-                     and _branch_target(a, raw, t) == addr_poll)
-        self.assertIsNotNone(retry, 'A1 retry goto does not return to the poll head')
-        # the settled branch (target == 1) must resume the open chain at the
-        # uuid setup (r0 = 15) — the loop's only exit that proceeds to open
-        settled = next((a, t, raw) for a, (iid, t, raw) in by_addr.items()
-                       if iid == 'beq.ri' and t.startswith('if (r0 == 1)'))
-        self.assertEqual(_branch_target(settled[0], settled[2], settled[1]),
-                         addr_uuid, 'A1 settled branch does not resume the open chain')
+        for tag, spec in (('f1b', F1B), ('f1a', F1A)):
+            _, _, plain = self.images[tag]
+            seg = plain[SEG:SEG + spec['code_bytes']]
+            open_code = seg[:spec['open']]
+            insns = list(ASM.disassemble(open_code, 0x060E3074))
+            by_addr = {a: (iid, t, raw) for a, iid, t, raw in insns}
+            texts = [t for _a, _i, t, _r in insns]
+            for needed in ('r4 = [r6+500]', 'r0 = b[r4+29] (u)',
+                           'r0 = b[r4+33] (u)', 'r5 += -1', 'r0 = 1'):
+                self.assertIn(needed, texts, f'{tag}: {needed}')
+            # delay fn loaded once; the poll tail is r0=1; call r6; goto poll
+            delay_loads = [i for i, t in enumerate(texts)
+                           if t.startswith(f'r6 = {DELAY_FN}')]
+            self.assertEqual(len(delay_loads), 1, tag)
+            i1 = texts.index('r0 = 1')
+            self.assertEqual(texts[i1 + 1], 'call r6', tag)
+            at = [(i[0], i[2]) for i in insns]
+            addr_cancel = next(a for a, t in at if t == 'r0 = -22')
+            addr_poll = next(a for a, t in at if t == 'r0 = b[r4+29] (u)')
+            addr_uuid = next(a for a, t in at if t == 'r0 = 15')
+            addr_count = next(a for a, t in at if t == 'r5 += -1')
+            # edge 1: ctx == 0 -> straight to the uuid setup (skip the wait)
+            ctx0 = next((a, t, raw) for a, (iid, t, raw) in by_addr.items()
+                        if iid == 'beqz' and t.startswith('if (r4 == 0)'))
+            self.assertEqual(_branch_target(ctx0[0], ctx0[2], ctx0[1]),
+                             addr_uuid, f'{tag}: ctx==0 skip does not reach uuid')
+            # edge 2: transition busy (+29 != 0) -> the countdown, NOT open
+            busy = next((a, t, raw) for a, (iid, t, raw) in by_addr.items()
+                        if iid == 'bnez' and t.startswith('if (r0 != 0)')
+                        and by_addr[a - 4][1].startswith('r0 = b[r4+29]'))
+            self.assertEqual(_branch_target(busy[0], busy[2], busy[1]),
+                             addr_count,
+                             f'{tag}: busy branch does not reach the countdown')
+            # edge 3: settled (+33 == 1, +29 == 0) -> uuid setup
+            settled = next((a, t, raw) for a, (iid, t, raw) in by_addr.items()
+                           if iid == 'beq.ri' and t.startswith('if (r0 == 1)'))
+            self.assertEqual(_branch_target(settled[0], settled[2], settled[1]),
+                             addr_uuid, f'{tag}: settled branch misses uuid')
+            # edge 4: countdown exhausted -> the cancel path (r0 = -22)
+            timeout = next((a, t, raw) for a, (iid, t, raw) in by_addr.items()
+                           if iid == 'beqz' and t.startswith('if (r5 == 0)'))
+            self.assertEqual(_branch_target(timeout[0], timeout[2], timeout[1]),
+                             addr_cancel, f'{tag}: timeout misses the cancel path')
+            # edge 5: retry goto returns exactly to the poll head
+            retry = [a for a, (iid, t, raw) in by_addr.items()
+                     if iid == 'goto.s' and _branch_target(a, raw, t) == addr_poll]
+            self.assertEqual(len(retry), 1,
+                             f'{tag}: retry goto does not return to the poll head')
 
     # —— 6. 预算 ——
     def test_06_append_budget(self):
@@ -315,13 +391,19 @@ class LfixArtifactTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0,
                              f'{tag}: integrity verifier rejected the image')
 
-    # —— 8. 反例：预期区外翻 1 字节必须红 ——
+    # —— 8. 反例：预期区外翻 1 字节必须红（codex 复核：对照须用 HAL5——
+    #     F1b 对官方的合法差异含 stream.bin L2 烘焙区，不在本测试区域集内）——
     def test_08_tamper_detected(self):
-        raw = bytearray(self.builds['f1b']['ufw'].read_bytes())
-        raw[FLASH_FILE_OFF + 0x500] ^= 0xFF       # unrelated code byte
-        with self.assertRaises(AssertionError):
-            _assert_diffs_in_regions(self, bytes(raw), self.source,
+        hal5 = self.builds['hal5']['ufw'].read_bytes()
+        clean = self.builds['f1b']['ufw'].read_bytes()
+        # sanity: the untampered F1b vs HAL5 diff passes (all in regions)
+        _assert_diffs_in_regions(self, clean, hal5, F1B['new_app_end'], 'clean')
+        tampered = bytearray(clean)
+        tampered[FLASH_FILE_OFF + 0x500] ^= 0xFF       # unrelated code byte
+        with self.assertRaises(AssertionError) as cm:
+            _assert_diffs_in_regions(self, bytes(tampered), hal5,
                                      F1B['new_app_end'], 'tampered')
+        self.assertIn('0xb00', str(cm.exception))
 
     # —— 9. 基座未受扰动：HAL5 复现逐字节 ——
     def test_09_hal5_base_untouched(self):

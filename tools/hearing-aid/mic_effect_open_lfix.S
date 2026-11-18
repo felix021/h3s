@@ -7,22 +7,28 @@
  *       db3c(1,1) 由 toggle 桩先行调用（返回 ≠ 硬件已退）。本载荷在槽守卫之后
  *       轮询 ANC 过渡标志：b[[QCY+500]+29]==0（过渡清零）且
  *       b[[QCY+500]+33]==1（目标=OFF，内部枚举 OFF=1）才继续；否则小步延时
- *       0x6064efc(10ms) 重试，上限 60 次 ≈ 600ms（ANC 退出 3ms-100ms+ 的 6 倍
+ *       0x6064efc(1 tick) 重试，上限 60 次 ≈ 590ms（ANC 退出 3ms-100ms+ 的
  *       裕量）。超时=前置条件未成立（codex 裁决）：直接返回 -22 取消本次
  *       open，槽保持 0，用户再按一次即可重试——不放行、不挂死。
- *       延时原语 0x6064efc 是 ANC 退出链 0x606ebe0 自己在用的任务上下文延时
- *       （实调 (1)/(2)/(100)，本路反汇编复核）；按键任务上下文走 0x6064e80
- *       睡眠路径。ctx 指针为 0（ANC 子系统未建）时 db3c 空转，本等待跳过。
- *   B1  删除 set_scene(stream,10)
- *       原载荷第 5 步 0x06074e64(stream,10) 实为 set_scene(PC_SPK)（路 L1 误标
- *       set_notify，lfix §1.2 勘误），把第 4 步刚设的 16(HEARING_AID) 改写成
- *       10——官方 DHA open 从不做这个调用。整块删除（-12B）。
- *   B2  start 返回后显式 SET_CHANNEL(1)
- *       node_ioctl(stream, 0x1100, 0x20007, 1)。必须在 start 之后：ADC 开链
+ *       延时原语 0x6064efc = os_time_dly(n tick)（codex 实施审勘误：参数是
+ *       OS tick 非毫秒，1 tick=10ms，仓内 s19-preboundaries §4.4 钉死）；ANC
+ *       退出链以 (1)/(2)/(100) tick 实调（本路反汇编复核）。ctx 指针为 0
+ *       （ANC 子系统未建）时 db3c 空转，本等待跳过。
+ *   B1  set_scene 两参调用改值 10 → 16（保留调用，非删除）
+ *       原载荷第 5 步 0x06074e64(stream,10) 是场景字节真正到达 ADC 的唯一
+ *       入口（写 b[stream+28] + 派发 0x20006；第 4 步三参 0x06074a5e 只写
+ *       stream+80 族字段不派发——codex 实施审反汇编核实）。删除会把场景
+ *       留在默认值，故按 plan §4-B1 的「改值」形态把 PC_SPK(10) 改成
+ *       HEARING_AID(16)：ADC GET_FMT 三态 16→44100（plan 预期态），
+ *       VolEff 场景注册也归 HEARING_AID。字节数与原第 5 步相同（0B 净增）。
+ *   B2  start 返回后显式写 ADC 通道数字节 =1
+ *       node_ioctl(stream, 0x1100, 0x2000C, 1)。必须在 start 之后：ADC 开链
  *       （cmd 0x40001 兜底块 0x6032b6c-0x6032b94）会按 en_map 重算通道数字节
  *       b[priv+28]——先写初值会被覆盖；start 后设是对协商结果的最后覆盖
- *       （codex 修订）。arg=1 是通道数量语义（消费者直接存字节；17/18/20 是
- *       audio_fmt.channel_mode 模式枚举，AUDIO_CH_NUM=ch>>4 编码不同，不用）。
+ *       （codex 修订）。cmd 用 0x2000C：ADC ioctl 跳表里 0x2000C 落
+ *       0x06032a58 `b[priv+28]=arg` 直存；0x20007（SDK 头的 SET_CHANNEL 值）
+ *       在 ADC 落 0x06032d6e 纯返回（codex 实施审离线执行勘误）。arg=1 是
+ *       通道数量语义（17/18/20 是模式枚举，AUDIO_CH_NUM=ch>>4 编码不同）。
  *
  * 与基座的其余步骤（uuid → parse → SET_PRIV_FMT → set_scene(16) → start →
  * 失败路径回收）逐指令一致；错误路径回收语义不变（parse/start 失败 =
@@ -43,7 +49,12 @@
                                           r2=cmd, r3=arg -> r0=err（lfix §1.2 勘误：
                                           原 ADD_THREAD 标签错，实为 jlstream_node_ioctl；
                                           与已在真机出声的 SET_PRIV_FMT 调用同构） */
-    .equ SET_SCENE,         0x06074a5e  /* r0=stream, r1=scene, r2=场景恢复回调(0=无) */
+    .equ SET_SCENE,         0x06074a5e  /* r0=stream, r1=scene, r2=场景恢复回调(0=无)；
+                                          只写 stream+80/+84/+88 字段，不向节点派发
+                                          （codex 实施审反汇编核实） */
+    .equ SET_SCENE_NOTIFY,  0x06074e64  /* r0=stream, r1=场景值：写 b[stream+28] 并派发
+                                          0x20006（NODE_IOC_SET_SCENE）——场景字节真正
+                                          到达 ADC 的唯一入口（路 L1 误标 set_notify） */
     .equ START,             0x06074ffe  /* r0=stream -> r0=err */
     .equ RELEASE,           0x06074204  /* r0=stream; 失败路径回收 */
     .equ EVENT_NOTIFY,      0x060057e6  /* = GET_PIPELINE_UUID 同一入口（tbh switch，
@@ -56,7 +67,11 @@
     .equ SET_PRIV_FMT_CMD,  131085      /* 0x2000D = NODE_IOC_SET_PRIV_FMT */
     .equ PRIV_FMT_POINTS,   256         /* 0x100（官方 DHA 同参：HEARING_AID 点数） */
     .equ SCENE_HEARING_AID, 16          /* SDK 枚举 STREAM_SCENE_HEARING_AID */
-    .equ SET_CHANNEL_CMD,   131079      /* 0x20007 = NODE_IOC_SET_CHANNEL */
+    .equ SET_CHANNEL_CMD,   131084      /* 0x2000C = ADC 通道数字节直存 ioctl
+                                          （codex 实施审勘误：0x20007 在 ADC 跳表
+                                          落 0x06032d6e 纯返回；0x2000C 落
+                                          0x06032a58 `b[priv+28]=arg` 直存——经
+                                          root 类 0x06076d24-30 透传到 D06D plug） */
     .equ CHANNEL_COUNT_1,   1           /* 通道数量语义（mono） */
     .equ ERR_INVAL,         -22         /* -EINVAL */
 
@@ -66,9 +81,11 @@
     .equ ANC_TRANS_OFF,     29          /* b[ctx+29] 过渡标志：db3c 置 1，退出链清 0 */
     .equ ANC_TARGET_OFF,    33          /* b[ctx+33] 目标模式：内部枚举 OFF=1 */
     .equ ANC_MODE_OFF,      1           /* 内部 ANC 模式 OFF（勿与线上 ID 混淆） */
-    .equ ANC_DELAY_FN,      0x06064efc  /* 任务上下文延时 r0=ms（ANC 退出链自用原语） */
-    .equ ANC_DELAY_MS,      10          /* 每次轮询间隔 */
-    .equ ANC_WAIT_TRIES,    60          /* 上限 60 次 ≈ 600ms（超时取消本次 open） */
+    .equ ANC_DELAY_FN,      0x06064efc  /* os_time_dly(r0=n tick)：任务睡眠让出调度
+                                          （s19-preboundaries §4.4 钉死：h[TCB+6]=n
+                                          tick；1 tick = 10ms） */
+    .equ ANC_DELAY_TICKS,   1           /* 每次轮询睡 1 tick = 10ms */
+    .equ ANC_WAIT_TRIES,    60          /* 上限 60 次 ≈ 590ms（超时取消本次 open） */
 
     .section .text.mic_effect_open,"ax",@progbits
     .global mic_effect_open
@@ -96,9 +113,9 @@ anc_wait:
     if (r0 == ANC_MODE_OFF) goto anc_settled   /* 过渡清零 + 目标 OFF：放行 */
 anc_poll:
     r5 += -1
-    if (r5 == 0) goto open_err_cancel           /* ~600ms 超时：取消本次 open */
-    r0 = ANC_DELAY_MS
-    call r6                                     /* 0x6064efc(10)：任务上下文睡眠 */
+    if (r5 == 0) goto open_err_cancel           /* ~590ms 超时：取消本次 open */
+    r0 = ANC_DELAY_TICKS
+    call r6                                     /* os_time_dly(1 tick=10ms) */
     goto anc_wait
 anc_settled:
 
@@ -136,8 +153,13 @@ anc_settled:
     r6 = SET_SCENE
     call r6
 
-    /* B1. 原第 5 步 set_scene(stream,10)（误标 set_notify）已删除：
-     *     场景保持本步的 16(HEARING_AID)，ADC GET_FMT 三态走 44100 支。 */
+    /* B1. 两参场景调用改值：0x06074e64(stream, 16) —— 场景字节 + 0x20006 派发
+     *    都归 HEARING_AID（原值 10=PC_SPK 是抄 pc_mic 的错值；这个调用本身
+     *    必须保留——它是场景到达 ADC 的唯一入口）。 */
+    r0 = r4                          /* 跨 call 重载 stream */
+    r1 = SCENE_HEARING_AID
+    r6 = SET_SCENE_NOTIFY
+    call r6
 
     /* 5. err = start(stream) */
     r0 = r4                          /* 跨 call 重载 stream */
@@ -145,9 +167,10 @@ anc_settled:
     call r6
     if (r0 != 0) goto open_err_release /* 失败：release stream + 回收时钟 */
 
-    /* B2. node_ioctl(stream, 根 0x1100, SET_CHANNEL, 1) —— start 返回后对协商
-     *    结果做最后覆盖（先设会被 ADC 开链重算覆盖，codex 修订）；arg=1 是
-     *    通道数量语义。返回值不检查：协商默认即 mono 时本调用为无害重申。 */
+    /* B2. node_ioctl(stream, 根 0x1100, 0x2000C, 1) —— start 返回后对协商
+     *    结果做最后覆盖（先设会被 ADC 开链重算覆盖，codex 修订）；0x2000C
+     *    在 ADC 直存 b[priv+28]=arg（通道数量）。返回值不检查：协商默认即
+     *    mono 时本调用为无害重申。 */
     r0 = r4                          /* 跨 call 重载 stream */
     r1 = THREAD_ROOT
     r2 = SET_CHANNEL_CMD
