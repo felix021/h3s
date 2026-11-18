@@ -51,7 +51,7 @@
     "frontier_registry": "p11_heap_experimental → 41965883 @ 0x606e148 jl_audio_dac_dma_read_not_modeled 0xfe0510（probe require/analyze freshness/test 期望自动跟随单点）",
     "probe_check_counts": "CRC 246/fed 73109（尾段 cycle6 ×2→×6）；sw 692/346、deliveries 346 冻结；timer0 15766/15783/cnt 15417/PRD 23999+新中断上下文 0x6007af2/0x6074614；core-tick cnt 577584；wdt elapsed 134；EVIMPL 释放记录断言块+中文注释段+fixture 注记 jlstream_kick_param2_unknown_release_fixture",
     "adapter_baseline": "22 键 evidence/p11_heap_adapter_count_baseline.json --recapture 重取（本路 +56,377 步漂移 12 键，含 abstract_task_stack_transport +1782/exact_full_word_store +1986 等）；重取=从零全量条件场景，停点 41,965,883 @ 0x606e148 与快照续跑臂逐字一致——on 臂 resume≡from-0 的独立确认（CKPT 先例口径外再加一路）",
-    "analyze_check_self": "不改动 analyze_image_trace.py（红线；sim-tonmap 路并行持有该文件改动）——其 per_core 硬钉 {'0':41914483,'1':11496} 将漂移为 {'0':41970865,'1':11496}，如实报告留主协调统一处理",
+    "analyze_check_self": "merge 5cc4d12 后统一收口（本 worktree）：per_core {'0':41970865,'1':11496}+停点叙事延至 0x606e148、spans 161→181、pinned_steps 269→305、pinned_cells 156→186、diffs 32→36 路（+result_reads[227]/[233]/[239]/[245]）+路 EVIMPL 归因注释；self-check 全量重跑 EXIT=0（退出码不经管道直取）",
     "full_run": "tools/probe_irq_entry.py --rom 全量从零 15 场景 EXIT=0（13:04-13:35，p11 行 41,965,883 @ 0x606e148 jl_audio_dac_dma_read_not_modeled 0xfe0510；产物 analysis/local-checks/irq-entry.json，assert_preflight 复检 221/221 全绿）"
   },
   "next_stop_prediction": "0x606e148 读 0xfe0510=JL_AUDIO DAC DMA HRP 指针（0x606e14a 第二读 0xfe0514 PNS？+beq.rr 指针对轮询=DMA 完成等待环）。下一路候选：①DAC DMA 指针/完成位投影（读侧具名 fixture 或运行域投影——需 DMA 通道行为证据）；②跳过等待环后的首条 DMA 缓冲写读（音频数据路径=解码器域入口）；③若 0xfe0514 属 PNS/配置字则可能先撞写侧。探路 top3 第 1/2 名（walker 对象域、兄弟任务/事件钟）本段已无停点越过，不排除在音频域之后再临。",
@@ -59,7 +59,7 @@
     "derived_not_measured": "等价措辞限已知 cmd0 同步片段、反汇编推导，非设备实测，不意味 silicon 到达同一状态（codex 原文进 assumptions 与 fixture 注记）；生产者甄别（六候选谁 post 首条消息）保持 open 痕迹项（载荷同为 {0}，不设障本放行）",
     "resume_conditional_pass": "on/off 两臂均自建 base 快照续跑（3.8s/0.9s 档）；等价性依据=CKPT/CON0/BATCHA 三轮 resume≡from-0 先例+off 臂与 tonmap 全量参照逐键相等+on 臂停点被 --recapture 从零全量条件场景逐字复现（41,965,883 @ 0x606e148）+断言面离线闭环 221/221",
     "preflight_splice_method": "离线预检用 tonmap 路全量报告的 legacy 14 行+本路 on-main 行拼合（零仿真重放 check()）；legacy 行对本路开关中立（默认关），拼合仅为断言字面值校验，非执行验证",
-    "parity": "official↔b79 parity 到新停点未在本路重跑（放行段纯 CPU0、无镜像分叉点，预期 delta 0）；analyze_image_trace 的 per_core 钉值漂移留主协调复核准入",
+    "parity": "official↔b79 parity 已在收口补跑（merge 5cc4d12 后、tonmap 重钉版 analyze 基）：双镜像从零同停点 41,965,883 @ 0x606e148、delta 0、per_core 双侧 {0:41970865,1:11496} 全同、首分歧仍 155390 @ 0x6010b16；spans 161→181（+20 寄存器值分歧段）、写差异 steps 269→305/cells 156→186（30 新增+2 复触全属 image 类逐字传播、零 removed 零 value-change、零 structural 零 unexplained——同一 tone 参数四字节块拷进新分配堆对象 0x18b290/0x18b344/0x18bb94/0x18d084..0x18d160，无新传播机制）；final_report_diffs 32→36（+result_reads[227]/[233]/[239]/[245]=四轮新 CONFIG CRC 周期上的同族 -10dB 累加器差异）",
     "scope": "本放行只覆盖 0x60869ba 一处一字；0x18ca64 槽在真实消息写入后仍按已知字节应答（部分写保留剩余字节 unknown 带源）；第二输出参数若 n=2 出现（obj 指针消息）不在本放行内"
   }
 }
