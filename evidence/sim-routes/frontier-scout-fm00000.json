@@ -1,0 +1,63 @@
+{
+ "route": "FMSCOUT / sim-fmscout（基线 main c0a520b=TIMERIMPL 合并点，静态侦察路，零 tools/ 改动，不跑条件线，不碰其他 worktree）",
+ "recorded_at": "2026-11-19T06:10:00+08:00",
+ "task": "modem 窗 CON 头 0xF00000 RMW 停点侦察：TIMERIMPL 实测停点 42,061,478 @ 0x60befa8（fn_config 条件臂 b[obj+6]==0→[0xF00000]|=0x400 的 RMW 内部读）——读值来源静态分析+RMW 语义拆解+放行后墙序预判+codex 三选一参谋，产出 docs/frontier-scout-fm00000.md。",
+ "method": {
+  "disassembly": "仓外既有 ~/code/headsets/archive/h3s-all/h3s/analysis/anc-cycle-20261109/app-linear.asm（与 disassemble_app.py 钉死源一致，基址 0x06000100；li 双显示勘误沿用 timer §1）；全量 call 图+li 基址+偏移深扫用一次性内联 python（300,801 指令逐条解析，call 相对目标=PC+指令长+rel 全部程序化计算并抽样交叉验证）",
+  "scans": "li 双轨（十进制 15728640+十六进制 0xF00000 含 '#' 尾注变体）22 站基址装载+下游 40 指令窗偏移深扫；app.bin 全量 LE32 窗值扫描 54 处命中逐站分类（candidate sha 8f594d59——官方 18f3d573 未在本机，仅差 key 表 3 字节+CRC〔repo 不变量 2〕，字面量域等价）；ROM/p11 沿用 timer §1 ④⑤",
+  "codex_independent_check": "gpt-6.2-astra 独立参谋（~/tmp/codex/202611190534-fmscout/，briefing.md/final.md/log.md）"
+ },
+ "stop": {
+  "measured": "42,061,478 @ 0x60befa8 unmapped_memory read 0xf00000 size4（TIMERIMPL 实测交接，非本路推算）",
+  "instruction": "rmw.or.modimm [r0+0] |= 0x400，r0=0xF00000（0x60befa4 li）",
+  "context": "fn_config 0x60bef46 尾段 b[obj+6]==0 条件臂；IPMASK=6 临界区；前序已过：request_irq(88)（ICU 0xffe12c 读 0x3030→写 0x3035 实测放行）+fn_config JL_SYNC 四字事务（CON1=0x00C80000/MIN_SLOT=80/BT_OFFSET=0/CON 写回 0x06200050）"
+ },
+ "read_value_provenance": {
+  "core_proof": "本 RMW 是执行前缀内对窗内头字 0xF00000（及整个头段 0xF00000..0xF000FF）的第一次访问——模型对窗头段零覆盖（timer §0；窗内尾段 0xF00130/40 两写已发生但走 TIMERIMPL 容器精确地址分发不触头字），任何更早的头字读写（含 btctrler 任务首跑 400B 整窗快照读 0x6048038——它会读到头字）都会停得更早（反证法；codex 措辞修正：『第一次触达头字』非『第一次触达全窗』，头字旧值不可追溯≠硅上为 0，先前尾字写是否间接影响头字模拟无法回答）",
+  "conclusion": "RMW 读值无任何链上来源：非 bulk 影子（快照读未执行/恢复写 0x60481bc 在下电路径）、非先前单字写（不存在）；读值=硅初始态，闭源 modem SDK 零定义，静态不可知——模型须显式合成初值（FD610C CON3/SRCSYNC 先例）或事务式服务",
+  "software_writers_off_chain": {
+   "audio_sync_bit10": "fn_config 0x60befa8（本停点，链上）/fn_resume 0x60bf14e（同 b[obj+6] 门镜像臂，链外）/IRQ88 0x60bf238（无源不可达）——bit10 全 app 仅 audio_sync 域写（私有位，derived）",
+   "btctrler_family": "13 站：|=0x4 ×6（0x6048348/0x605075c/0x60508fa/0x60509ec/0x6051650/0x6085bb0）、&=0xFFFFFF8F ×6（0x6050fb4/0x605120e/0x6053bc2/0x6085518/0x6085a92 + 0x6085324〔后接 |=r10/|=0x8〕）、&=0xFFFFEFFF（0x6032332）——bit2/3/4-6/12；域未启动零执行",
+   "bulk_restore": "0x60481bc memcpy 写回 400B 含头字（下电恢复路径，btctrler 域）"
+  }
+ },
+ "rmw_semantics": {
+  "three_beats": "①内部读 [0xF00000] 32 位对齐（通用 mmio→现停点）②OR 0x400 ③整字写回（若到达将落 unmapped write）——容器须给①显式值，③为容器首次记录写",
+  "branch_neq0": "0x60befa2 if(b[obj+6]!=0) goto 0x60befac 直接 pop 返回，零窗口访问；两臂唯一分叉=这一条 RMW，汇合于 0x60befac，放行后下游完全一致",
+  "b_obj6_provenance": "creator 0x60befbe 唯一写者（=creator 首参）←adapter 0x607e4f0-0x607e4f6 三态门（b[adapter+92]=b[param+4]：0=跳过 creator/2→arg1 臂不取/其他→arg0 臂取）←框架 0x6077dd6 装配 param blob（b[param+4]=b[[[r4+4]+20]+9]）；运行时闭包=臂命中（timerimpl 停点即臂内）⇒ b[obj+6]==0、param+4∉{0,2}（值未观测，1 最可能〔推断〕）",
+  "obj6_immutable": "audio_sync 域全函数通读除 creator 外零写者——两次 fn_config 执行必然同臂"
+ },
+ "new_findings": {
+  "fn_config_second_caller": "0x607e46c——节点 start 函数 0x607e460（r0=[adapter+156] 读 audio_sync obj 重调 fn_config）←框架节点 walker 0x6073514（0x6073558 call）；同一指令 PC 0x60befa8、同一 obj、同臂——RMW 放行后大概率执行第二次（容器服务幂等 0x400|0x400=0x400）〔timer 侦察未记〕",
+  "fn_resume_mirror": "fn_resume 0x60bf12e-0x60bf168 内 0x60bf146 同款 b[obj+6] 门→0x60bf14e 同款 |=0x400（不同 PC，链外）——容器 PC 守卫应拒（同址新写者须重审）",
+  "callback_imm_erratum": "回调安装 0x60bf030 写 [obj+36]=0x607f5e2（audio_sync 事件回调入口，实测反汇编通读）——jlsync 文档「0x607f5f6」实为该函数体内分支指令地址（0x607f5f6: if (r0 != 2) goto），本站勘误",
+  "data_literal_false_positives": "app.bin LE32 窗值命中数据段 6+8 处判全部假阳性：0x60a4450-0x60a4818 斜坡表 8 处 0xF00000=0x55555 步进 16 点满量程 ramp 采样值（0x60 间距结构性重复）；0xF000CF/0xF000E7 非对齐值=音频采样数据——timer §7「表驱动基址」盲区担忧对 0xF00000 不成立（收口）",
+  "released_segment_all_ram": "放行段全调用目标逐个通读：0x6064f18/0x60735d8/0x12b5b0(exit-crit)/0x60bef00(注册表)/0x60bf030(安装)/0x6064162/0x6073502(探针)——零 MMIO/copex 风险点（call 图程序化验证）"
+ },
+ "decision": {
+  "verdict": "B——恰 0xF00000 单字容器（codex 定稿 gpt-6.2-astra，本路独立判断同，无实质分歧；五条修正全采纳）",
+  "shape": "合成初值 0（显式假设 derived-not-measured 非硅复位值声明；codex 数学论证：两次写回 x|0x400 与 (x|0x400)|0x400 对任意 x 相等，选 0 只为可复核轨迹）+RMW 读拍返回当前容器值且账本区分来源标签（首执行 synthetic 0→0x400；第二次同 PC last_write 0x400→0x400，两笔写事务都记账保留写脉冲——数值幂等只说明结果字相同硅上重复写效果未知）+授权单位=一条完整指令（主核+PC 0x60befa8+有效地址+对齐 32 位+rmw.or.modimm 立即数 0x400 五元组全匹配——同 PC 的 ld.w/st.w/不同掩码不借用 RMW 权限）+其余 PC/核消费前停（fn_resume 0x60bf14e/IRQ88 0x60bf238/btctrler 13 站/bulk 恢复 memcpy 写全拒另停——同址新写者须重审可执行边界）+其他 PC 显式读拒绝+32 位对齐整字门+无副作用（不产生 IRQ88/不改其他寄存器/无协议事件；地址级分发隔离只证明模拟器写隔离——硅上 modem 写是否联动已建模 JL_SYNC 无依据，下游若依赖该联动在消费者处重审〔codex 缺口声明〕）+邻接成员（头段 +4..+FF/尾段/400B 整窗双向）一概不承接将来独立批准+复位清态+快照不扩大权限",
+  "rejected": "A 否（399 字节零语义证据+btctrler 未启动无验证面+bulk 快照读一旦执行 A 等于替硅合成 400B 初始状态——codex 可传播性论证：离链 memcpy 把合成字节搬进 RAM 后普通 RAM 读绕开寄存器守卫，再经 0x60481bc 写回污染窗口）；C 否（墙在停点上停住=前沿冻结 timer §5 同款否决；codex 表述=关开关臂留作严格对照）",
+  "weakest_link": "初值 0=链上无观察面能区分下的最小假设（唯一链上读者=RMW 自身）；btctrler 域将来若放行头字其他位 RMW 会把 0|0x400 当基线——若发现实际依赖真实初始值，本容器不足以支撑须先解决（timer §7 同款条款）",
+  "expected_ledger": "本段至少一次至多两次成功 RMW（synthetic 0→0x400 一笔写；若节点 start 先行于 eq open 则第二笔 last_write 0x400→0x400——第二次是否落本段取决于表派发顺序运行时定，账本分别记账）、零显式读、零硬件事件；0x400 适合轨迹验收断言不解读 bit10 含义；后续受阻不撤销已完成写",
+  "negative_matrix": "codex 13 项：①TIMERIMPL 开仅关本站开关→复现 42,061,478 逐键/②首合法 RMW 账本注明首读来源 synthetic 0→0x400 恰一笔写报告不列 0 为硅复位值/③连续两次第二次旧值来源 last_write 累计一次合成读+一次写后内部读+两笔写（第二次实际发生单独记账）/④非零初值对照（0x1014→两次均写 0x1414 抓固定值或清零实现错误，codex 新增）/⑤fn_resume 0x60bf14e+IRQ88 0x60bf238 不同 PC 即使头字已记 0x400 也停在内部读/⑥btctrler 13 站逐个代入全不能取得旧值/⑦整窗快照读+恢复写在首个不支持总线访问处停守卫不能只查 memcpy 调用点/⑧显式 load/独立 store/同 PC 换指令或掩码全拒/⑨CPU1+PC 核来源缺失或过期（含 restore 后 None）全拒/⑩子字非对齐跨字不取整不拆分/⑪邻接+尾段+交叉 0xF00130/40 不认领（继续只认 TIMERIMPL 原核准写者）/⑫推进时间+IRQ88 已注册+复位：零计数零 pending 零投递复位清除写回值与来源/⑬首笔事务前后快照保存恢复与直跑一致恢复后未重新确认当前指令即拒；依赖破坏 jl_fm 开而 jl_sync/jl_btclk 关→require 先炸"
+ },
+ "advisory": {
+  "model": "gpt-6.2-astra（codex --yolo exec，~/tmp/codex/202611190534-fmscout/，briefing.md/final.md/log.md，2026-11-19 05:34-05:37）",
+  "verdict_quote": "选 B。只放行 CPU0 在 0x60befa8 对 0xF00000 执行的整字 |= 0x400。首拍可用显式合成的 0，同一站点再次执行时读上次写回值，照常发出第二次写事务。",
+  "corrections_adopted": "①『第一次触达头字』措辞纠错（非全窗）②账本区分 synthetic/last_write 读来源③授权单位=完整指令五元组④负例非零初值对照+bulk 守卫不能只查 memcpy 调用点⑤硅 modem 写是否联动 JL_SYNC 无依据的缺口声明",
+  "wall_order_agreement": "第二次 RMW=可观测路标、copex mode16/24=候选停点、先后开放；补充：退出临界区后可能先交付已有源中断；对账三件事=0x607e46c 是否调到同一对象/0x60befa8 完成几次及每次旧值来源/首个停点 PC 与原因",
+  "agreement": "本路独立判断同为 B，无实质分歧"
+ },
+ "next_stop": {
+  "wall_order": "①RMW 放行→fn_config RTS→0x6064f18/0x60735d8/0x12b5b0 三纯调用→creator RTS→②adapter 0x607e4fe 续走（0x60bef00 注册表/0x60bf030 安装/0x6064162 全 RAM）→RTS→③框架 0x6077dd6 返回→表派发段（静态缺口）→④节点 walker 0x6073514→第二次 fn_config/RMW（容器内幂等）→⑤eq 设计族 copex 0x6072bb8（mode16）/0x6072d1a（mode24）",
+  "prediction": "下一停点候选 dsp_mode_not_modeled @ 0x6072bb8（mode16）/0x6072d1a（mode24）（copex_exp22_model 只服务 n==22，16/24 fail-closed）——除非表派发段有更早未建模 SFR 读（静态不可见）；codex 同判：第二次 RMW=可观测路标、copex=候选停点、先后开放（若 eq open 先行则头字账本只有一笔也合理；若 walker 先行第二笔同值写是区分派发顺序的直接证据）；退出临界区后可能先交付已有源中断（Timer0/core-tick 继续走表）",
+  "icu_no_longer_wall": "0xffe12c 全 32 字 initial_irq_config=[0]*32 具已知（timerimpl 实证 request_irq 族 RMW 放行）"
+ },
+ "honesty": {
+  "static_only": "本路零场景运行（红线）；停点 42,061,478 为 TIMERIMPL 实测交接；墙序步骤 3-5 顺序与第二次 RMW 是否落本段=运行时验证",
+  "blind_spots": "0x6077dd6 调用者表派发不可见；动态地址/跨函数传参（0x605d3ee r11=0xF00000 疑传参给窗口访问器，btctrler 域链外）；ROM 16 位拼装只排尾段（头字 +0 的 ROM 访问未单独排除——ROM 仅启动早期执行风险低非零）；q32s/DMA 照 timer §7 无证据亦无排除；数据段 0xF00004@0x60c85e4 等 3 处判假阳性无代码引用佐证纯属形状归纳（+4 字不在容器范围由邻接不承接兜底）",
+  "not_claimed": "不证明硅初始值为 0/bit10 写入无硬件副作用/btctrler 头字段语义（全 derived）；『btctrler 域未启动』为运行事实引用非本路重放；若将来 BT 链提前触达头字站 PC 守卫先停",
+  "parity": "official↔b79 parity 未重跑（纯静态侦察路无放行段，预期 delta 0 边界沿用）"
+ }
+}
