@@ -154,5 +154,40 @@
       ],
       "reason": "\u6279A 13\u5b57\u9996\u6b21\u89e6\u8fbe=\u65e7\u505c\u70b90x60195f8\u524d\u7f00\u96f6\u89e6\u8fbe;canary PC 0x6034b06/0x6034aba \u524d\u7f00\u96f6\u6267\u884c(IRQ41\u65e0\u6e90)"
     }
+  },
+  {
+    "route": "batcha",
+    "name": "tonmap-off-reproduce",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_memory",
+      "access": "read",
+      "address": "0x61eafe0",
+      "size": 1,
+      "reference_sdk_register": null
+    },
+    "completed_steps": 41858013,
+    "report_equal_to_reference": false,
+    "note": "differing=[peripherals]=batchb2 \u5df2\u77e5\u65b0\u952e(\u9884\u671f\u975e\u610f\u5916),\u5176\u4f59\u9010\u952e\u76f8\u7b49\u542b 22 \u952e adapter;\u8de8\u4ee3\u7801 ack-prior 558b53b2+enable_slots x2",
+    "wall_seconds": 0.8,
+    "code_fingerprint": ""
+  },
+  {
+    "route": "batcha",
+    "name": "tonmap-on-main",
+    "kind": "arm",
+    "stop": {
+      "kind": "uninitialized_memory",
+      "access": "read",
+      "address": "0x18ca64",
+      "size": 4,
+      "region": "physical_heap",
+      "first_missing": "0x18ca64"
+    },
+    "completed_steps": 41909506,
+    "report_equal_to_reference": null,
+    "note": "\u65b0\u524d\u6cbf 41909506 @ 0x60869ba(uninitialized \u4efb\u52a1\u6808 0x18ca64);+51493 \u6b65;CRC \u590d\u7b97 0x7e4e==\u5b98\u65b9 hcrc;\u4ece 0 \u53c2\u7167\u5f85 merge \u524d\u5168\u91cf",
+    "wall_seconds": 2.9,
+    "code_fingerprint": ""
   }
 ]

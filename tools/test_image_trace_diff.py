@@ -575,7 +575,8 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert non_boolean == {'heap_info_bytes', 'lrct_trim_result', 'fd31_adc_res_named_values',
                            'jl_adda_daa_con1_initial_fixture', 'p33_canary_first_read_words',
                            'ancif_official_resources', 'jl_rand_seed', 'gpcnt_num_value',
-                           'jl_pled_con0_initial_fixture', 'jl_iomc_map_fixture'}
+                           'jl_pled_con0_initial_fixture', 'jl_iomc_map_fixture',
+                           'ton_official_partition_pair'}
     assert CONDITIONAL_EXTRA_FLAGS['heap_info_bytes'] is probe_irq_entry.P11_HEAP_INFO_DERIVED
     assert CONDITIONAL_EXTRA_FLAGS['lrct_trim_result'] is probe_irq_entry.LRCT_TRIM_RESULT_PROBE
     # 路 GPCNUM:GPCNT NUM 具名探路值(assumed 标称 32768 Hz 恒等计数)
@@ -616,6 +617,12 @@ def test_flag_sets_derive_from_the_frontier_registry():
     assert CONDITIONAL_EXTRA_FLAGS['jl_iomc_map_fixture'] \
         is probe_irq_entry.JL_IOMC_MAP_INITIAL_VALUE
     assert CONDITIONAL_EXTRA_FLAGS['jl_iomc_map_fixture'] == 0x00000000
+    # 路 TONMAP:TON/TON1 官方容器成对 fixture(值=probe_irq_entry 常量二元组;
+    # 长度/SHA256/头+目录+文件 CRC/窗口不重叠由 irq_case 挂载时自校验;单测
+    # test_irq_entry.py 另与在场官方 UFW 重提取+条目表锚互证)。
+    assert CONDITIONAL_EXTRA_FLAGS['ton_official_partition_pair'] \
+        is probe_irq_entry.TON_OFFICIAL_PARTITION_PAIR
+    assert len(CONDITIONAL_EXTRA_FLAGS['ton_official_partition_pair']) == 2
 
 
 def test_scenario_registry_shapes():

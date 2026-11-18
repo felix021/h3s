@@ -197,6 +197,134 @@ class AncifOfficialResourcesTests(unittest.TestCase):
                                  f'{name} embedded bytes diverge from the official UFW outer layer')
 
 
+class TonOfficialPartitionPairTests(unittest.TestCase):
+    """路 TONMAP:TON/TON1 分区容器官方内容成对 fixture 的静态钉子。
+
+    自校验面(长度/SHA256 三方钉死/容器头+目录+文件 CRC)不依赖在场工件;
+    嵌入字节与官方 UFW(在场时)外层重提取互证+官方 flash SFC 明文的
+    EXT_RESERVED 分区条目表锚(TON/TON1 addr/len/last 与窗口换算对齐)。
+    """
+
+    def test_shape_and_self_check(self):
+        import binascii
+        import hashlib
+        import probe_irq_entry as pe
+        ton, ton1 = pe.TON_OFFICIAL_PARTITION_PAIR
+        # 勘误①坐标:TON 头=xlate(0x1E1000)=0x61DEFE0(侦察文档/codex 表的
+        # 0x61E0FE0 系误算,见常量注释);分区右界四方互证在条目表锚测试里。
+        self.assertEqual(pe.SDFILE_TON_RANGE, (0x61defe0, 0xb7b0))
+        self.assertEqual(pe.SDFILE_TON1_RANGE, (0x61eafe0, 0x10340))
+        for blob, expect_sha, expect_len, name in (
+                (ton, pe.TON_OFFICIAL_SHA256[0], 0xb7b0, b'tone_zh'),
+                (ton1, pe.TON_OFFICIAL_SHA256[1], 0x10340, b'tone_en')):
+            self.assertEqual(len(blob), expect_len)
+            self.assertEqual(hashlib.sha256(blob).hexdigest(), expect_sha,
+                             'TON 容器字节必须与三方复算钉死的官方 SHA256 全等')
+            hcrc, dcrc, addr, clen, flags, _, last, raw = \
+                struct.unpack_from('<HHIIBBH16s', blob)
+            self.assertEqual(addr, 0x20)
+            self.assertEqual(clen, expect_len)
+            self.assertEqual(flags, 3)
+            self.assertEqual(last, 0)
+            self.assertEqual(raw.split(b'\0')[0], name)
+            self.assertEqual(binascii.crc_hqx(blob[2:32], 0), hcrc)
+            # 目录逐项 hcrc/flags + 文件数据 dcrc(与提取器同款 32B JLFS 项)
+            offset, files = 32, 0
+            while True:
+                self.assertLessEqual(offset + 32, expect_len)
+                ehcrc, edcrc, start, size, eflags, _, elast = \
+                    struct.unpack_from('<HHIIBBH', blob, offset)
+                self.assertEqual(eflags, 2)
+                self.assertEqual(binascii.crc_hqx(blob[offset + 2:offset + 32], 0),
+                                 ehcrc)
+                self.assertLessEqual(start + size, expect_len)
+                self.assertEqual(binascii.crc_hqx(blob[start:start + size], 0), edcrc)
+                files += 1
+                offset += 32
+                if elast:
+                    break
+            self.assertEqual(files, 17)
+
+    def test_windows_do_not_overlap_ancif_or_erased_bankb(self):
+        import probe_irq_entry as pe
+        windows = [pe.SDFILE_TON_RANGE, pe.SDFILE_TON1_RANGE,
+                   pe.SDFILE_FLASHTOP_ANCIF_RANGE, pe.SDFILE_FLASHTOP_ANCIF1_RANGE,
+                   pe.ERASED_BANKB_HEADER_RANGE, pe.ERASED_BANKB_WINDOW_RANGE,
+                   pe.ERASED_BANKB_VM_RANGE, pe.ERASED_BANKB_RECORD_RANGE]
+        for i in range(len(windows)):
+            for j in range(i + 1, len(windows)):
+                bi, bj = windows[i], windows[j]
+                self.assertTrue(bi[0] + bi[1] <= bj[0] or bj[0] + bj[1] <= bi[0],
+                                f'窗口 {hex(bi[0])}/{hex(bj[0])} 重叠')
+        # SFC 明文应用区窗(flash_image_bytes)右端 0xe3053 远在 TON 头之下。
+        self.assertLess(0xe3053, pe.SDFILE_TON_RANGE[0] - 0x06000000)
+
+    def test_matches_official_ufw_outer_layer_and_entry_table(self):
+        import binascii
+        import subprocess
+        import tempfile
+        import probe_irq_entry as pe
+        root = Path(__file__).resolve().parents[1]
+        firmware = root / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        misctools = root / 'tools/jl-misctools/firmware'
+        if not firmware.exists():
+            self.skipTest('official UFW not fetched')
+        if not (misctools / 'fwunpack_newfw.py').exists():
+            self.skipTest('jl-misctools submodule not initialized')
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run([sys.executable, str(misctools / 'fwunpack_newfw.py'),
+                            '--dirname', str(work / 'unpacked'), str(firmware)],
+                           check=True, capture_output=True)
+            subprocess.run([sys.executable, str(root / 'tools/extract_ufw_resources.py'),
+                            str(firmware), '--unpacked', str(work / 'unpacked'),
+                            '--output', str(work / 'extracted')],
+                           check=True, capture_output=True)
+            ton, ton1 = pe.TON_OFFICIAL_PARTITION_PAIR
+            for name, embedded in (('TON', ton), ('TON1', ton1)):
+                extracted = (work / 'extracted/outer' / name).read_bytes()
+                self.assertEqual(len(extracted), len(embedded))
+                self.assertEqual(extracted, embedded,
+                                 f'{name} embedded bytes diverge from the official UFW outer layer')
+            # 官方 flash 应用区 SFC 明文 0xCDCA0 的 EXT_RESERVED 条目表锚:
+            # TON/TON1 的 addr/len/last 与 fixture 窗口按统一换算对齐。
+            from probe_boot import flash_image
+            image = flash_image(firmware)
+            table = 0xCDCA0
+            rows = {}
+            for i in range(3):
+                off = table + i * 32
+                hcrc, _, addr, ln, _, _, last, raw = \
+                    struct.unpack_from('<HHIIBBH16s', image, off)
+                self.assertEqual(binascii.crc_hqx(image[off + 2:off + 32], 0), hcrc)
+                rows[raw.split(b'\0')[0].decode('ascii')] = (addr, ln, last)
+            self.assertEqual(rows['EXT_RESERVED'], (0x20, 0x60, 0))
+            self.assertEqual(rows['TON'], (0x1E1000, 0xC000, 0))
+            self.assertEqual(rows['TON1'], (0x1ED000, 0x11000, 1))
+            self.assertEqual(pe.SDFILE_TON_RANGE[0],
+                             0x06000000 + rows['TON'][0] - 0x2020)
+            self.assertEqual(pe.SDFILE_TON1_RANGE[0],
+                             0x06000000 + rows['TON1'][0] - 0x2020)
+            self.assertEqual(pe.SDFILE_TON_RANGE[1] + pe.SDFILE_TON1_RANGE[1],
+                             0xb7b0 + 0x10340)
+            # TON1 声明容量恰覆盖到 ANCIF 头(0x1ed000+0x11000=0x1fe000)。
+            self.assertEqual(rows['TON1'][0] + rows['TON1'][1], 0x1FE000)
+
+    def test_registry_feature_wires_to_constant(self):
+        import probe_irq_entry
+        import frontier_registry
+        f = frontier_registry._BY_SWITCH.get('ton_official_partition_pair')
+        self.assertIsNotNone(f, 'ton_official_partition_pair 须登记在 frontier_registry')
+        self.assertEqual(f.stack, 'conditional')
+        self.assertTrue(f.value_switch)
+        self.assertEqual(f.value_attr, 'TON_OFFICIAL_PARTITION_PAIR')
+        # 依赖边=场景推进顺序(BATCHA 放行后链才到达 TON1 容器头停点),
+        # 非硬件依赖。
+        self.assertEqual(f.requires, ('jl_pled_config_words',))
+        self.assertIs(getattr(probe_irq_entry, f.value_attr),
+                      probe_irq_entry.TON_OFFICIAL_PARTITION_PAIR)
+
+
 class JlRandSeedTests(unittest.TestCase):
     """路 RAND:JL_RAND->R64L(0xfd3b00)熵源种子 fixture 的静态钉子。
 

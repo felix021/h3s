@@ -181,7 +181,13 @@ SCENARIOS = {
         # CON0 清位/整字清零(0x60195ec/f0/f6)由 CON0 容器服务,再 +2,598
         # 步(纯 CPU0 段,per-core1 11496 不变)到 41,850,980 @ 0x60195f8
         # 写 0xfd6104=JL_PLED CON1 整字 0(pend 窗内停,两容器之外的
-        # JL_PLED 字,诚实停,归下一路)。预算 50M 保持。
+        # JL_PLED 字,诚实停,归下一路);路 BATCHA:13 字批放行后 +7,033 步
+        # 到 41,858,013 @ 0x6010ca6(第二次 sdfile 目录走查器恢复路径首字节
+        # 读 TON1 容器头 0x61eafe0,镜像外诚实停);路 TONMAP:官方容器对
+        # 放行后容器头 CRC 复算 0x7e4e==官方 hcrc、目录走查、文件 open、
+        # 三任务安装,再 +51,493 步(纯 CPU0 段,per-core1 11496 不变)到
+        # 41,909,506 @ 0x60869ba(事件循环任务读第二输出参数=任务栈物理
+        # 0x18ca64 未初始化,physical_heap 诚实停,归下一路)。预算 50M 保持。
         'default_budget': 50000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
@@ -1693,10 +1699,11 @@ def check_self_conditional(report, arms=None):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 41862986, '1': 11496},
+                run['per_core_steps'] == {'0': 41914483, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (41858013 @ 0x6010ca6, the unmapped '
-                'byte read of flash 0x61eafe0 — reached after the route-STOREG3 standalone '
+                'conditional frontier stop (41909506 @ 0x60869ba, the uninitialized '
+                '4-byte task-stack read at physical 0x18ca64 — reached after the '
+                'route-STOREG3 standalone '
                 'postincrement word-store release executes the byte-unpack '
                 'st.w.pin.l of 0x60649b0 directly (crossing the route-WDFEED '
                 '41,828,530 bookkeeping-read stop) and the route-FD610C single-'
@@ -1729,11 +1736,23 @@ def check_self_conditional(report, arms=None):
                 'PRD_DIVL=3, DUTY0=1, DUTY3=40, BRI six=200/0 pattern), the '
                 'pend window exits, the S19 ring installs further tasks and '
                 'walks into the resource-VFS EXT_RESERVED/APP partition open '
-                'whose 128-byte directory-entry rep copy at 0x6010ca6 reads '
-                'its first byte from flash 0x61eafe0 (offset 0x1EAFE0, beyond '
-                'the 0x1442C0 OTA image — real-chip flash content the model '
-                'has no bytes for); +7,033 steps past the previous stop, '
-                'per-core 1 unchanged at 11496 — the 0x61eafe0 read belongs '
+                'whose directory-entry rep copy at 0x6010ca6 reads '
+                'its first byte from flash 0x61eafe0 (the TON1 partition-'
+                'container header in the SFC plaintext view; the route-TONMAP '
+                'official-container pair now maps TON [0x61defe0,0x61ea790) '
+                'and TON1 [0x61eafe0,0x61fb320) read-only with the official '
+                'UFW outer-layer bytes — SHA256 three-way pinned, mount-time '
+                'CRC self-check, zero synthesized bytes, official-resource-'
+                'content assumption, conditional / derived-not-measured), '
+                'the second walker call recomputes the container header CRC '
+                'as 0x7e4e == the official hcrc field, walks the container '
+                'directory (index.idx / power_on.wts), opens the tone file, '
+                'the S19 ring installs three further tasks (0x602d3a0, '
+                '0x6086980, 0x6000d6c) and walks +51,493 steps into the '
+                'task-0x6086980 event loop whose second output-parameter '
+                'read [r10+8] touches the never-written task-stack word at '
+                'physical 0x18ca64 — an honest uninitialized stop; '
+                'per-core 1 unchanged at 11496 — the 0x18ca64 read belongs '
                 'to the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
