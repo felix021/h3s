@@ -47,12 +47,16 @@ JL_AUDIO_DAC_COP=0xfe0534
 # 路 BM §4.3 行 0b 勘误之二/S19 批 1 ④续:W1[3] 尾段 DAC 启动函数 0x6071e74
 # 在 call 0x606ab0a(输出级门控)返回后的四个 DAC DMA 配置整字写(0x6071e92
 # 起,[r10+k],r10=0xfe0500):[+8]=1、[+4]=0x18e180(60KB DMA 缓冲首址,与
-# 0x6071d50 memset 目的同址互证)、[+0x14]=0、[+0x10]=0——成员名按路 AG
-# wlaud-init-map「DAC_LEN/ADR/HRP/PNS 整字写」的布局链([SDK推断]级命名,
-# br28.h JL_AUDIO_TypeDef 全 __RW 家族);探路运行实证**恰四写、零读回、
-# 零 RMW**(RMW 面 0x6071eb8 的 [r10+0]|=0x110 是 DAC_CON,AK 容器服务)。
+# 0x6071d50 memset 目的同址互证)、[+0x14]=0、[+0x10]=0——成员名按 DWARF/
+# csfr.h 布局链=**DAC_ADR/DAC_LEN/DAC_HRP/DAC_SWP**([SDK推断]级命名,
+# br28.h JL_AUDIO_TypeDef 全 __RW 家族;路 DMAIMPL 勘误:旧注释「HRP/PNS」
+# 成员序错一位,+0x14 是 SWP,PNS 在 +0x0c=0xfe050c,未映射);探路运行实证
+# **恰四写、零读回、零 RMW**(RMW 面 0x6071eb8 的 [r10+0]|=0x110 是
+# DAC_CON,AK 容器服务)。
 # D2 场景表对 0xfe0504/08 的「DMA 指针/计数读×6」消费面属 tone/PCM 推送域
-# (0x607236c caller 0x607249c/0x6073258,D1 后)。
+# (0x607236c caller 0x607249c/0x6073258,D1 后);更早的一类读者=set_sample_
+# rate 空闲守卫(0x606e148/14a 读 HRP/SWP,41,965,883 停点,路 DMAIMPL 放行,
+# 勘误 4 边界注修正)。
 JL_AUDIO_DAC_DMA_WORDS=(0xfe0504,0xfe0508,0xfe0510,0xfe0514)
 # 路 JLA:JL_AUDIO ADC 通道缓冲配置五字(set_buffer 0x606dee4 五写,
 # [r4+k] r4=0xfe0538=ADC_CON):[+4]=ADR(缓冲首址)、[+8]=LEN(buf_num*len>>1
@@ -5298,6 +5302,10 @@ class JLAudioDacDmaWriteRecords:
       §3)的「0xfe0504 DMA 指针/计数读×6」消费面属 tone/PCM 推送域
       (0x607236c,caller 0x607249c/0x6073258,D1 后),到达时再逐地址分类
       (路 BO §5「D1 后另立证据包」同一纪律)。
+    - **勘误 4 边界注(路 DMASCOUT §4/路 DMAIMPL)**:该划分漏了一类更早
+      的读者——DAC 节点开放路径的 set_sample_rate 空闲守卫(0x606e148/14a
+      读 HRP/SWP,41,965,883 到达;两字读回由路 DMAIMPL idle 容器放行,
+      ADR/LEN 读侧仍属各域留严格停)。
     - 裁决:纯配置整字写(全字覆盖、旧值无关、值=真实指令结果)→
       write-only 记录(p3_ls/DAC_COP 同族);读回显式严格停(显式 kind
       优先于泛 unmapped);DMA 传输/IRQ39/音频数据流一律不建模。
@@ -5329,9 +5337,11 @@ class JLAudioDacDmaWriteRecords:
                           for a,e in sorted(self.stores.items()) if e['writes']},
                 'sdk_naming':('JL_AUDIO = hs_base + map_adr(0x05, 0x00) = 0xfe0500 (br28.h all-__RW '
                               'JL_AUDIO_TypeDef); the four words at +0x04/+0x08/+0x10/+0x14 are the '
-                              'DAC DMA configuration block — member names per the route-AG '
-                              'wlaud-init-map layout chain (ADR/LEN/HRP/PNS whole-word writes, '
-                              '[SDK-inferred] naming level)'),
+                              'DAC DMA configuration block — member names per the DWARF/'
+                              'csfr.h member-order-times-four chain (ADR/LEN/HRP/SWP '
+                              'whole-word writes, [SDK-inferred] naming level; route-DMAIMPL '
+                              'erratum: the earlier ADR/LEN/HRP/PNS naming was off by one '
+                              'member — +0x14 is SWP, PNS is +0x0c=0xfe050c, unmapped)'),
                 'whitelisted_words':('exactly the four DAC DMA words of the W1[3]-tail start '
                                      'function 0x6071e74; the D2-scene DMA pointer/count reads of '
                                      '0xfe0504/08 belong to the post-D1 tone/PCM push domain and '
@@ -5351,6 +5361,264 @@ class JLAudioDacDmaWriteRecords:
                               'the record, not a measured WO property claim); no DMA transfer, '
                               'no IRQ39 event and no audio data flow is modeled — this does NOT '
                               'verify any audio output')}
+
+
+class JLAudioDacDmaIdleReadback:
+    """JL_AUDIO DAC DMA HRP/SWP 两字读回=最后写值放行(opt-in,路 DMAIMPL,
+    codex 裁 (a) 收窄版,docs/frontier-scout-dacdma.md §5)。
+
+    背景:41,965,883 停点 @ 0x606e148——audio_dac_set_sample_rate(0x606e106,
+    采样率表 0x609FB70 逐字节==SDK)命中后的**空闲守卫**首读 `ld.w r0=[r5+16]`
+    读 DAC_HRP(0xfe0510),第二读 0x606e14a `ld.w r1=[r5+20]` 读 DAC_SWP
+    (0xfe0514)。勘误(路 DMASCOUT):这不是 DMA 指针轮询等待环——两次
+    volatile 双读任一次相等即前跳出函数(0x606e14c/154 beq.rr 目标均为
+    0x606e194 POST 段),两次都不等才进 flush 臂(PNS=1+CON|=0x20/0x40+
+    os_sem_pend 等 IRQ39,本前缀不进)。
+
+    停点世界机器事实(analysis/local-checks/irq-entry.json,p11 场景):四字
+    恰各 1 写(0x6071e92..ea8,dac_platform_power_on 尾段,SWP 先 HRP 后写 0),
+    之后 3800 万步零新写零读;HRP=SWP=0——首检即相等,相等臂直进 POST。
+
+    放行形状(codex 意见书要点,全文 ~/tmp/codex/202611181426-dmascout/final.md):
+    1. 只批准 HRP/SWP 两字、对齐 32 位、读回=最后写值(零合成字节,值=固件
+       自己的写);不批准四字容器无条件扩展;ADR/LEN 读侧不动(无消费需求)。
+    2. 任一被读字零写 → 维持原严格停(kind=jl_audio_dac_dma_read_not_modeled,
+       不补零、不从另一指针复制)。
+    3. 读位置限定到已核验的 set_sample_rate 指针比较段四点
+       (0x606e148/14a/150/152,ld.w {d,b=5,n=4/5} 形状钉死);他处读 HRP/SWP
+       回落普通严格停(拒绝计数)。非物理地址豁免——每次装载逐条重验。
+    4. 「初始化阶段」由事件历史维护,不是逐读检查 HRP==SWP==0(「曾经运行过
+       又回到零」不得重新获得放行资格)。失效事件:SWN(0xfe0518)/PNS
+       (0xfe050c) 触达、DAC_CON 控制位变化(判定锚 v3=HRP 复位写:锚前
+       初始化轨迹 0x100→…→0x835e110 全为基线;锚后仅尾段站点 0x6071eb8
+       (|=0x110)免检,其余站点低 4 位采样率索引面外位变化或触 flush 臂位
+       0x20/0x40 即失效)、另一核写(初始化写者核外)、任何未预期重写
+       (ADR/LEN/HRP/SWP 写 PC 不在钉死初始化站点集——同值重写也审查也
+       失效;写溯源缺失同样失效,fail-closed)。观察面边界:观察字写触达经
+       Hardware.write(白名单字)与 probe_boot mem.write(PNS/SWN,两字无
+       容器白名单 handles=False 不达 Hardware)双点全覆盖;SWN/PNS **读**
+       触达在 mem.read 层直接严格停(不达 Hardware.read),事件历史对读触
+       达的覆盖=模型级单测面——真实运行中读触达=立即诚实停,失效无后续
+       消费。
+    5. 快照恢复:写来源+阶段+失效位随 M4 族一并恢复(world_snapshot
+       M4_FAMILIES jl_audio_dac_dma_idle 槽)。
+    6. 证据分级措辞:「返回值直接来自固件写记录,零合成字节」成立;放行隐含
+       新增硬件假设「HRP 自软写 0 后硬件未推进」——登记为**显式初始化空闲
+       假设**(derived-not-measured),不声明与 BR28 硅行为等价。证据缺口:
+       仿真无 IRQ39 不能反证硅上无 DMA 活动;SWN 未写≠复位值为 0;LEN=1
+       配置待解释;控制位序列对硬件静止的影响未审。先例(lp_timer CON/
+       UART CON1/DAC_VL0)只提供实现方式,不自动赋予硬件语义。
+    7. SDK 对应关系是段级语义对位(audio_dac_set_sample_rate 全形状+采样率
+       表逐字节==),不写「逐指令一致」(SDK 67328f4 wait_for_dac_stop 单检,
+       QCY 构建双检——以目标镜像解码为准)。
+    8. 双核审计:零写/零读断言按「两核+全部写路径」合并审计——本容器挂在
+       Hardware.read/write 单点(两核共享,current_core 区分),地址键为
+       MMU 平移后的物理字(地址别名同键);运行面旁证=core1 步数冻结
+       11,496(DMASCOUT §5.7,实施路 off 臂 per-core 复核)。
+    """
+
+    BASE=0xfe0500
+    HRP=0xfe0510
+    SWP=0xfe0514
+    DAC_CON=0xfe0500
+    ADR=0xfe0504
+    LEN=0xfe0508
+    PNS=0xfe050c
+    SWN=0xfe0518
+    RELEASE_WORDS=(HRP,SWP)
+    WATCH_WRITE_WORDS=frozenset((DAC_CON,ADR,LEN,HRP,SWP,PNS,SWN))
+    # 四个已核验读点(audio_dac_set_sample_rate 空闲守卫,字节 50 64/51 65
+    # =ld.w {d,b:5,n:4/5},n 为字索引×4 → +16/+20;0x606e150/152 是第二对
+    # volatile 双读,仅 HRP≠SWP 时执行)。
+    READ_SITES={0x606e148:{'d':0,'b':5,'n':4},
+                0x606e14a:{'d':1,'b':5,'n':5},
+                0x606e150:{'d':0,'b':5,'n':4},
+                0x606e152:{'d':1,'b':5,'n':5}}
+    SITE_BYTES={0x606e148:'5064',0x606e14a:'5165',
+                0x606e150:'5064',0x606e152:'5165'}
+    # 初始化唯一被期望写者(dac_platform_power_on 尾段 0x6071e92..ea8):
+    # LEN=1(0x6071e92)、ADR=0x18e180(0x6071e9e)、SWP=0(0x6071ea4)、
+    # HRP=0(0x6071ea8,SWP 先 HRP 后)。
+    EXPECTED_WRITE_PCS={0x6071e92:0xfe0508,0x6071e9e:0xfe0504,
+                        0x6071ea4:0xfe0514,0x6071ea8:0xfe0510}
+    # DAC_CON 判定锚(v3,实施臂运行时勘误):初始化轨迹(0x606ab84 族
+    # 12+ 写,值族 0x100→…→0x835e110)全部落在 HRP 复位写**之前或同窗**,
+    # 唯一在后的初始化写=0x6071eb8(|=0x110 尾段,值 0x835e100→0x835e110)
+    # ——钉死为尾段站点;此后他站点写按观测面判:低 4 位=采样率索引
+    # (POST 段 0x606e19e &[3:0] RMW 面)不失效,位 0x20/0x40=flush 臂
+    # stop-request 证据面(0x606e16e/172,本前缀不执行)与其外观测面外
+    # 位变化均失效(停点世界实测:锚点后零 DAC_CON 写,16 写全在初始化窗)。
+    DAC_CON_INIT_TAIL_PC=0x6071eb8
+    RATE_INDEX_MASK=0xF
+    FLUSH_ARM_MASK=0x60
+    AUDIT_BOUND=8
+
+    def __init__(self):
+        # M4 状态字段(world_snapshot M4_FAMILIES jl_audio_dac_dma_idle 槽;
+        # 守卫常量全部是类属性,走类同一性+指纹)。current_pc 为 probe_boot
+        # step_body 每步刷新的暂态溯源(写事件 PC 的唯一来源);hrp_reset_
+        # step=HRP 复位写(钉死站点 0x6071ea8)的步号=DAC_CON 初始化轨迹
+        # 的判定锚(其后仅尾段站点 0x6071eb8 免检)。
+        self.phase='initialization'
+        self.invalidations=[]
+        self.write_events={hex(w):[] for w in self.WATCH_WRITE_WORDS}
+        self.write_totals={hex(w):0 for w in self.WATCH_WRITE_WORDS}
+        self.last_dac_con=None
+        self.hrp_reset_step=None
+        self.init_core=None
+        self.reads_served={hex(w):0 for w in self.RELEASE_WORDS}
+        self.first_read={};self.last_read={}
+        self.rejections={}
+        self.current_pc=None
+
+    # ------------------------------------------------------------- 观测面
+    def _step(self,hardware):
+        return hardware.counts['completed_model_steps']
+
+    def note_write(self,address,value,core,hardware):
+        """Hardware.write 对观察字集合的每笔写调用(先于各容器分发/未映射
+        拒绝——PNS/SWN 写在自然 Blocked 前已入事件历史)。全量审计+失效判定。
+        """
+        pc=self.current_pc
+        step=self._step(hardware)
+        key=hex(address)
+        event={'pc':hex(pc) if isinstance(pc,int) else None,
+               'step':step,'core':core,'value':hex(value)}
+        self.write_totals[key]+=1
+        events=self.write_events[key];events.append(event)
+        if len(events)>self.AUDIT_BOUND:events.pop(0)
+        if address in (self.PNS,self.SWN):
+            self._invalidate('swn_pns_touched',
+                             {'word':key,'access':'write',**event})
+            return
+        if address==self.DAC_CON:
+            old=self.last_dac_con;self.last_dac_con=value
+            # v3 锚定:HRP 复位写之前/同窗=初始化轨迹(基线,不失效);
+            # 其后仅钉死尾段站点 0x6071eb8 免检;再后按观测面判
+            # (低 4 位索引面不失效;flush 臂位/外观测面位变化失效)。
+            if (self.hrp_reset_step is None or step<=self.hrp_reset_step
+                    or pc==self.DAC_CON_INIT_TAIL_PC):
+                return
+            if old is None:return          # 无锚点世界的首写(零写检查兜底)
+            delta=(old^value)&0xffffffff
+            if delta&self.FLUSH_ARM_MASK:
+                self._invalidate('dac_con_flush_arm_bits',{**event,'old':hex(old)})
+            elif delta&~self.RATE_INDEX_MASK&0xffffffff:
+                self._invalidate('dac_con_control_change',{**event,'old':hex(old),
+                                                           'changed_bits':hex(delta)})
+            return
+        # ADR/LEN/HRP/SWP:初始化字——写者 PC/核审查(同值重写同样失效)
+        if self.init_core is None:self.init_core=core
+        elif core!=self.init_core:
+            self._invalidate('other_core_write',{**event,'init_core':self.init_core})
+        expected=self.EXPECTED_WRITE_PCS.get(pc)
+        if expected==address and address==self.HRP:
+            self.hrp_reset_step=step        # 判定锚随钉死站点 HRP 复位写更新
+        if expected!=address:
+            reason=('write_pc_unattributed' if not isinstance(pc,int)
+                    else 'unexpected_rewrite')
+            self._invalidate(reason,{**event,'expected_pc_site_for':hex(address)})
+
+    def note_read(self,address):
+        """Hardware.read 头部对观察字的读尝试(已核验四点之外的 HRP/SWP 读
+        在此拒绝计数;SWN/PNS 读触达在此失效)——自然路径随后照旧(未映射/
+        容器严格停)。已核验站点的守卫拒绝(零写/阶段失效)已由 serve 计数,
+        不重复计。"""
+        if address in (self.PNS,self.SWN):
+            self._invalidate('swn_pns_touched',
+                             {'word':hex(address),'access':'read',
+                              'step':'unattributed-read','core':None,'value':None,
+                              'pc':hex(self.current_pc) if isinstance(self.current_pc,int) else None})
+        elif address in self.RELEASE_WORDS and self.current_pc not in self.READ_SITES:
+            self._reject('unverified_read_location',address)
+
+    # ------------------------------------------------------------- 守卫面
+    def _invalidate(self,event,detail):
+        if self.phase=='initialization':
+            self.phase='invalidated'
+            self.invalidations.append({'event':event,'detail':detail})
+            if len(self.invalidations)>self.AUDIT_BOUND:self.invalidations.pop(0)
+
+    def _reject(self,reason,address):
+        key=f'{reason}:{hex(address)}'
+        self.rejections[key]=self.rejections.get(key,0)+1
+
+    def serve(self,cpu,hardware,raw):
+        """已核验读点的装载门(probe_boot step_body 调用;指令形状/字节由
+        调用方 require 钉死)。返回 int=放行值,None=守卫拒绝(调用方回落
+        普通严格路径,kind 与开关关世界一致)。逐条重验,非地址豁免。"""
+        address=(cpu.R[raw['b']]+raw['n']*4)&0xffffffff
+        if address not in self.RELEASE_WORDS:
+            self._reject('base_register_mismatch',address);return None
+        key=hex(address)
+        if not self.write_events[key]:
+            self._reject('zero_write',address);return None
+        if self.phase!='initialization':
+            self._reject('phase_invalidated',address);return None
+        source=self.write_events[key][-1]
+        evidence={'pc':hex(cpu.pc),'core':cpu.core_id,
+                  'step':self._step(hardware)}
+        self.reads_served[key]+=1
+        if key not in self.first_read:self.first_read[key]=dict(evidence)
+        self.last_read[key]=evidence
+        return int(source['value'],16)
+
+    # ------------------------------------------------------------- 报告面
+    def report(self):
+        words={}
+        for word in self.RELEASE_WORDS:
+            key=hex(word);events=self.write_events[key]
+            words[key]={
+                'reads_served':self.reads_served[key],
+                'first_read':self.first_read.get(key),
+                'last_read':self.last_read.get(key),
+                'last_written_value':(events[-1] if events else None),
+                'writes':self.write_totals[key]}
+        return {
+            'enabled':True,
+            'release_words':[hex(w) for w in self.RELEASE_WORDS],
+            'phase':self.phase,
+            'reads':words,
+            'rejections':dict(sorted(self.rejections.items())),
+            'invalidation_events':list(self.invalidations),
+            'write_audit':{'totals':dict(sorted(self.write_totals.items())),
+                           'last_events':{k:list(v[-4:]) for k,v in
+                                          sorted(self.write_events.items()) if v},
+                           'dac_con_baseline_anchored':self.last_dac_con is not None},
+            'guard':{
+                'read_sites':{hex(pc):dict(shape) for pc,shape in
+                              sorted(self.READ_SITES.items())},
+                'site_bytes':{hex(pc):b for pc,b in sorted(self.SITE_BYTES.items())},
+                'expected_write_pcs':{hex(pc):hex(a) for pc,a in
+                                      sorted(self.EXPECTED_WRITE_PCS.items())},
+                'dac_con_observed_faces':{'rate_index':hex(self.RATE_INDEX_MASK),
+                                          'flush_arm':hex(self.FLUSH_ARM_MASK),
+                                          'init_tail_site':hex(self.DAC_CON_INIT_TAIL_PC),
+                                          'anchor':'hrp_reset_step (the pinned-site '
+                                                  'HRP=0 store re-anchors the '
+                                                  'initialization trajectory)'},
+                'revalidated_per_load':True,
+                'not_a_permanent_address_exemption':True,
+                'phase_by_event_history_not_per_read_pointer_check':True,
+                'same_value_rewrites_audited':True},
+            'readback_semantics':('last firmware-written value on HRP/SWP at the four '
+                                  'pinned set_sample_rate guard sites only — zero '
+                                  'synthesized bytes, the value is the firmware\'s own '
+                                  'store; ADR/LEN read sides keep the write-only strict '
+                                  'stop; any zero-write word / invalidated phase / '
+                                  'off-site load falls back to the ordinary strict stop '
+                                  '(kind jl_audio_dac_dma_read_not_modeled)'),
+            'assumption':('EXPLICIT INITIALIZATION-IDLE ASSUMPTION (derived-not-'
+                          'measured, NOT a silicon-equivalence claim): the release '
+                          'implies the new hardware assumption that HRP has not '
+                          'advanced since the software reset store 0 — the '
+                          'simulation has no IRQ39 and cannot disprove DMA activity '
+                          'on silicon; SWN never being written is not evidence of a '
+                          'zero reset value; the LEN=1 configuration is unexplained; '
+                          'the control-bit sequence\'s effect on hardware quiescence '
+                          'is unaudited. Precedents (lp_timer CON / uart CON1 / '
+                          'DAC_VL0 readbacks) provide the implementation form only '
+                          'and do not by themselves confer hardware semantics')}
 
 
 class JLAudioAdcDmaWriteRecords:
@@ -7337,6 +7605,7 @@ class BR28Model:
                  p33_canary_projection=False,p33_canary_first_read_words=None,
                  jl_pvdd_trim_writes=False,timer2_delay_projection=False,
                  jl_audio_dac_cop_writes=False,jl_audio_dac_dma_writes=False,
+                 jl_audio_dac_dma_idle_readback=False,
                  jl_audio_adc_dma_writes=False,
                  audio_adc_dma_delivery=False,audio_adc_dma_delivery_requests=False,
                  jl_eq_init_writes=False,
@@ -7985,6 +8254,22 @@ class BR28Model:
         # jl_audio_dac_cop_writes(执行序 0x6071e92 在 0x606ab2c 之后)。
         # 默认关:四字保持 unmapped,legacy 逐字节不变。
         self.jl_audio_dac_dma=(JLAudioDacDmaWriteRecords() if jl_audio_dac_dma_writes else None)
+        # 路 DMAIMPL(codex 裁 (a) 收窄版):HRP/SWP 两字读回=最后写值放行
+        # ——只放行 0x606e148/14a/150/152 四个已核验读点(空闲守卫形状钉死),
+        # 值=固件自己的写记录(零合成字节);零写/阶段失效/位置未核验维持
+        # 原严格停。显式依赖 jl_audio_dac_dma_writes(缺依赖=配置错误)。
+        # 「初始化阶段」由事件历史维护(SWN/PNS 触达、DAC_CON 控制位变化、
+        # 另一核写、未预期重写——同值也审查——均失效;快照随 M4 族恢复)。
+        # 显式初始化空闲假设(derived-not-measured),非硅等价声明。默认关:
+        # 读点行为与开关关世界逐字节一致。
+        if jl_audio_dac_dma_idle_readback:
+            if not jl_audio_dac_dma_writes:
+                raise ValueError('jl_audio_dac_dma_idle_readback requires '
+                                 'jl_audio_dac_dma_writes (the HRP/SWP readback '
+                                 'answers from the four-word write records)')
+            self.jl_audio_dac_dma_idle=JLAudioDacDmaIdleReadback()
+        else:
+            self.jl_audio_dac_dma_idle=None
         # 路 JLA:JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c,set_buffer
         # 0x606dee4 五写)写侧 write-only 整字记录——恰五写零读(本前缀),与
         # BM DAC DMA 四字同族;audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b
@@ -8353,6 +8638,11 @@ class BR28Model:
 
     def read(self,address):
         self.counts['reads']+=1
+        # 路 DMAIMPL:HRP/SWP/SWN/PNS 读触达观察(已核验四点在 probe_boot
+        # step_body 装载门服务,不达此处;达此处的 HRP/SWP 读=位置未核验
+        # 拒绝计数,SWN/PNS 触达=阶段失效)。自然路径随后照旧(严格停)。
+        if self.jl_audio_dac_dma_idle is not None:
+            self.jl_audio_dac_dma_idle.note_read(address)
         if self.software_irq is not None and self.software_irq.handles(address):
             raise Blocked('software_irq_wo_readback_unverified',address=hex(address))
         if self.icu is not None and self.icu.handles(address):return self.icu.read(address)
@@ -8662,6 +8952,11 @@ class BR28Model:
 
     def write(self,address,value):
         if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('MMIO value must be unsigned32')
+        # 路 DMAIMPL:观察字集合的每笔写先入事件历史(先于 handles 门——
+        # PNS/SWN 写在未映射拒绝前已被审计+失效判定)。
+        if (self.jl_audio_dac_dma_idle is not None
+                and address in self.jl_audio_dac_dma_idle.WATCH_WRITE_WORDS):
+            self.jl_audio_dac_dma_idle.note_write(address,value,self.current_core,self)
         if not self.handles(address,4):raise Blocked('unsupported_peripheral_write',address=hex(address))
         if self.software_irq is not None and self.software_irq.handles(address):
             raise Blocked('software_irq_full_store_contract_unmodeled',address=hex(address))
@@ -9886,15 +10181,32 @@ class BR28Model:
             result['jl_audio_dac_dma_write_records']=self.jl_audio_dac_dma.report()
             result['assumptions']['jl_audio_dac_dma_write_records']=(
                 'JL_AUDIO DAC DMA words (0xfe0504/0xfe0508/0xfe0510/0xfe0514 = base '
-                '+0x04/+0x08/+0x10/+0x14, the ADR/LEN/HRP/PNS block per the route-AG '
-                'wlaud-init-map layout chain): write-only whole-word records of the four '
+                '+0x04/+0x08/+0x10/+0x14, the ADR/LEN/HRP/SWP block per the DWARF/'
+                'csfr.h member-order-times-four layout chain — route-DMAIMPL erratum: '
+                'the earlier ADR/LEN/HRP/PNS naming was off by one member, +0x14 is '
+                'SWP and PNS is +0x0c=0xfe050c, unmapped): write-only whole-word '
+                'records of the four '
                 'stores in the W1[3]-tail DAC start function 0x6071e74 (0x6071e92..0x6071ea8, '
                 'right after the output-stage gate call; ADR=0x18e180 is the 60KB DMA buffer '
                 'cleared by the 0x6071d50 ROM memset, route-CW); a pathfinding run proved '
-                'exactly four writes with ZERO reads/RMWs on this prefix — the D2-scene DMA '
-                'pointer/count reads belong to the post-D1 tone/PCM push domain and stay '
-                'strictly stopped; no DMA transfer, IRQ39 event or audio data flow is '
+                'exactly four writes with ZERO reads/RMWs before the set_sample_rate '
+                'idle-guard stop — the D2-scene DMA pointer/count reads belong to the '
+                'post-D1 tone/PCM push domain and stay strictly stopped; no DMA '
+                'transfer, IRQ39 event or audio data flow is '
                 'modeled — this does NOT verify any audio output')
+        if self.jl_audio_dac_dma_idle is not None:
+            result['jl_audio_dac_dma_idle_readback']=self.jl_audio_dac_dma_idle.report()
+            result['assumptions']['jl_audio_dac_dma_idle_readback']=(
+                'JL_AUDIO DAC DMA HRP/SWP two-word readback=last-write release '
+                '(route DMAIMPL, codex (a) narrowed): only the four pinned '
+                'set_sample_rate idle-guard load sites (0x606e148/14a/150/152), '
+                'aligned 32-bit, value=the firmware\'s own recorded store (zero '
+                'synthesized bytes); zero-write words, invalidated phase, '
+                'off-site/unaligned loads keep the ordinary strict stop. EXPLICIT '
+                'INITIALIZATION-IDLE ASSUMPTION, derived-not-measured — NOT a '
+                'silicon-equivalence claim (no IRQ39 in the simulation cannot '
+                'disprove silicon DMA activity; SWN-unwritten is not a zero-reset '
+                'claim; LEN=1 unexplained; control-bit quiescence unaudited)')
         if self.jl_audio_adc_dma is not None:
             result['jl_audio_adc_dma_write_records']=self.jl_audio_adc_dma.report()
             delivery_on=self.jl_audio_adc_dma.delivery

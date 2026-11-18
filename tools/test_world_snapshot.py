@@ -690,6 +690,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # Route EVIMPL: the jlstream single-slot unknown-word release guard,
         # ON in the current conditional frontier flag set (41.9M-era frontier).
         jlstream_kick_param2_unknown=True,
+        # Route DMAIMPL: the DAC DMA HRP/SWP idle-readback guard, ON in the
+        # current conditional frontier flag set (its first served load sits at
+        # the 41,965,883-era frontier stop).
+        jl_audio_dac_dma_idle_readback=True,
     )
 
     def build_world(self):
@@ -910,6 +914,25 @@ class M4ProjectionFamilies(unittest.TestCase):
         value = guard.authorize(loader, hw, 8)
         self.assertIsInstance(value, _UnknownWord)
         guard.producer_executions['open_kick_api_0x6074ffe'] = 1
+        # Route DMAIMPL: the idle-readback guard took the frontier-stop shape —
+        # the four initialization writes audited (with provenance), the DAC_CON
+        # baseline anchored, and one served HRP load (the 41,965,883 stop was
+        # the FIRST guard-site load). All of it is behavior state: a restore
+        # without the phase/invalidations/provenance would answer a read the
+        # prefix already audited differently (strict stop regression).
+        from test_jl_audio_dac_dma_idle import GuardCpu, GuardHardware
+        idle = hw.jl_audio_dac_dma_idle
+        idle_hw = GuardHardware()
+        for pc, address in sorted(idle.EXPECTED_WRITE_PCS.items()):
+            idle.current_pc = pc
+            idle.note_write(address,
+                            {0xfe0508: 1, 0xfe0504: 0x18e180, 0xfe0514: 0, 0xfe0510: 0}[address],
+                            0, idle_hw)
+        idle.current_pc = 0x6071eb8
+        idle.note_write(idle.DAC_CON, 0x110, 0, idle_hw)
+        idle.current_pc = 0x606e148
+        self.assertEqual(idle.serve(GuardCpu(0x606e148), idle_hw,
+                                    idle.READ_SITES[0x606e148]), 0)
         return hardware
 
     def captured_m4(self, world):

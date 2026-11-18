@@ -1164,6 +1164,20 @@ M4_FAMILIES = (
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('jl_audio_dac_cop', 'JLAudioDacCopRegisters', ('stores', 'word_writes')),
     ('jl_audio_dac_dma', 'JLAudioDacDmaWriteRecords', ('stores', 'word_writes')),
+    # Route DMAIMPL: the HRP/SWP idle-readback guard. Guard pins (read sites /
+    # site bytes / expected write PCs / DAC_CON observed masks) are CLASS
+    # constants under the class-identity check; the captured state is the
+    # event-history guard itself — phase, invalidations, the audited write
+    # provenance (pc/step/core/value per watched word, the release answers from
+    # the LAST recorded store), the DAC_CON baseline and the read/rejection
+    # counters. A restore without them would resurrect a phase the prefix
+    # already left (codex: 'write sources + phase + invalidation bits restored
+    # together'). current_pc is transient per-step provenance (overwritten each
+    # step); it rides as state so the per-object static guard stays constant.
+    ('jl_audio_dac_dma_idle', 'JLAudioDacDmaIdleReadback',
+     ('phase', 'invalidations', 'write_events', 'write_totals', 'last_dac_con',
+      'hrp_reset_step', 'init_core', 'reads_served', 'first_read', 'last_read',
+      'rejections', 'current_pc')),
     ('jl_adda_family', 'JLAddaAnalogFamilyRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('timer2', 'Timer2Delay',

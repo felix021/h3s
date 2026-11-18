@@ -5071,6 +5071,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              event_clock=False,
              jl_audio_dac_cop_writes=False,
              jl_audio_dac_dma_writes=False,
+             jl_audio_dac_dma_idle_readback=False,
              jl_audio_adc_dma_writes=False,
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
@@ -5344,6 +5345,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 轮询体 0x606e14a beq.rr 0xfe0510/0xfe0514 对读——探路 top3 第 3 名
         # 解码器/音频域)。预算沿用 60M(余量 >18M)。
         if jlstream_kick_param2_unknown:budget=60000000
+        # 路 DMAIMPL:HRP/SWP 两字读回放行后空闲守卫双读相等直进 POST 段
+        # (采样率记录+DAC_CON 低 4 位 RMW+audio_dac_read_reset_all 纯 RAM 段
+        # +可选回调检查),链继续走调用者续段与音频/OS 域——新停点由实跑
+        # 取得;预算沿用 60M(余量以实跑核)。
+        if jl_audio_dac_dma_idle_readback:budget=60000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -6522,6 +6528,26 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'four stores 0x6071e92..0x6071ea8 sit right after the output-stage gate call '
                 'that stores DAC_COP — without it the world still stops at 0x606ab2c)')
         options['jl_audio_dac_dma_writes']=True
+    # jl_audio_dac_dma_idle_readback(路 DMAIMPL,codex 裁 (a) 收窄版,
+    # docs/frontier-scout-dacdma.md §5):HRP(0xfe0510)/SWP(0xfe0514)两字
+    # 读回=最后写值——41,965,883 停点 0x606e148 是 audio_dac_set_sample_
+    # rate 空闲守卫首读(勘误:非轮询等待环,两次 volatile 双读任一次相等
+    # 即前跳 POST);停点世界四字恰各 1 写、HRP=SWP=0、首检即相等。放行
+    # 只覆盖 0x606e148/14a/150/152 四个已核验读点(ld.w {d,b:5,n:4/5} 形状
+    # +字节钉死),值=固件自己的写记录(零合成字节);零写/阶段失效/位置
+    # 未核验/基址不符维持原严格停。「初始化阶段」由事件历史维护(SWN/PNS
+    # 触达、DAC_CON 控制位变化、另一核写、未预期重写——同值也审查——均
+    # 失效;写来源+阶段随 M4 快照恢复)。显式初始化空闲假设
+    # (derived-not-measured):仿真无 IRQ39 不能反证硅上无 DMA 活动,不
+    # 声明硅等价。依赖边挂 jl_audio_dac_dma_writes(读回答自四字写记录,
+    # 缺依赖=配置错误)。默认关:读点停点形状与开关关世界逐字节一致。
+    if jl_audio_dac_dma_idle_readback:
+        require(jl_audio_dac_dma_writes,
+                'the DAC DMA idle readback requires the four-word write records '
+                '(the HRP/SWP readback answers from JLAudioDacDmaWriteRecords '
+                'stores — without jl_audio_dac_dma_writes the world still stops at '
+                'the 0x6071e92 unmapped store)')
+        options['jl_audio_dac_dma_idle_readback']=True
     # jl_pvdd_trim_writes(路 BM §1/S19 批 1 ①):W4[4] PVDD/trim 域容器——
     # P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/P3_PVDD0_AUTO(0xf2c10c)
     # 合成初始字 0+读回=当前值(AM 容器族;BM §1.1 逐地址访问点钉死:复合
@@ -8175,7 +8201,23 @@ def check(report,firmware):
             'event loop and the chain walks into the audio DAC DMA run '
             'domain, stopping at 41,965,883 @ 0x606e148 on the DAC DMA HRP '
             'pointer read 0xfe0510 — the decoder/audio domain, scout top3 '
-            'rank 3')
+            'rank 3; and the route-DMAIMPL release (this scenario, the '
+            'codex (a) narrowed two-word readback) answers the four '
+            'set_sample_rate idle-guard loads (0x606e148/14a, called four '
+            'times over the segment) with the firmware\'s own recorded '
+            'pointer-reset stores (zero synthesized bytes) — the volatile '
+            'double read compares 0==0, takes the equal arm straight into '
+            'the POST segment (sample-rate record store, the DAC_CON '
+            '[3:0] RMW pair served by the route-AK container, '
+            'audio_dac_read_reset_all pure RAM, empty callback slot), the '
+            'chain walks on through the audio pipeline reconfiguration '
+            '(+71,480 steps, per-core1 frozen at 11496) into the DSP '
+            'coprocessor family and stops at 42,037,363 @ 0x606a900 on '
+            'copex.ppi — an upstream unmodeled DSP instruction, the '
+            'scout branch-1 "decoder/DSP resource domain" wall, NOT one '
+            'of the three data-phase walls (LEN read/SWN 0xfe0518/PNS '
+            '0xfe050c — the space function never ran, the guard audit '
+            'shows zero SWN/PNS touches)')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 EVIMPL(2026-11-18,docs/frontier-scout-evqueue.md 停点 41,909,506;
@@ -8251,6 +8293,62 @@ def check(report,firmware):
             '(only the open_kick_api_0x6074ffe candidate executed; all six '
             'carry the identical {0} payload and it does not gate this '
             'release)')
+    # 路 DMAIMPL(2026-11-18,docs/frontier-scout-dacdma.md 停点 41,965,883;
+    # codex 裁 (a) 收窄版):HRP/SWP 两字读回=最后写值放行。守卫链=①读点
+    # 限定四点 0x606e148/14a/150/152(ld.w {d,b:5,n:4/5} 形状+字节 50 64/
+    # 51 65 钉死,r5==0xfe0500 有效地址恰为 0xfe0510/14);②零写拒绝(不补
+    # 零、不从另一指针复制);③「初始化阶段」由事件历史维护(判定锚 v3=
+    # HRP 复位写步号:DAC_CON 初始化轨迹 0x100→…→0x835e110 全在锚前/同窗
+    # =基线,锚后仅尾段站点 0x6071eb8 免检,再后他站点低 4 位采样率索引面
+    # 外位变化或 flush 臂位 0x20/0x40 即失效;SWN/PNS 触达、另一核写、未
+    # 预期重写——同值也审查——写溯源缺失均失效);④拒绝回落普通严格路径
+    # (kind 与开关关世界一致)。每次装载逐条重验,非地址豁免;守卫状态
+    # (写来源+阶段+失效位)随 M4 快照恢复。措辞=显式初始化空闲假设
+    # (derived-not-measured,非硅等价声明)。
+    dmaidle=r['peripherals']['jl_audio_dac_dma_idle_readback']
+    require(dmaidle['enabled'] and
+            dmaidle['phase']=='initialization' and
+            dmaidle['rejections']=={} and
+            dmaidle['invalidation_events']==[] and
+            dmaidle['reads']['0xfe0510']['reads_served']==4 and
+            dmaidle['reads']['0xfe0514']['reads_served']==4 and
+            dmaidle['reads']['0xfe0510']['first_read']['pc']=='0x606e148' and
+            dmaidle['reads']['0xfe0514']['first_read']['pc']=='0x606e14a' and
+            dmaidle['reads']['0xfe0510']['first_read']['core']==0 and
+            dmaidle['reads']['0xfe0510']['last_written_value']==
+            {'pc':'0x6071ea8','step':3204348,'core':0,'value':'0x0'} and
+            dmaidle['reads']['0xfe0514']['last_written_value']==
+            {'pc':'0x6071ea4','step':3204347,'core':0,'value':'0x0'} and
+            dmaidle['write_audit']['totals']=={'0xfe0500':24,'0xfe0504':1,
+                                               '0xfe0508':1,'0xfe050c':0,
+                                               '0xfe0510':1,'0xfe0514':1,
+                                               '0xfe0518':0} and
+            dmaidle['guard']['revalidated_per_load'] and
+            dmaidle['guard']['not_a_permanent_address_exemption'] and
+            dmaidle['guard']['phase_by_event_history_not_per_read_pointer_check'] and
+            dmaidle['guard']['same_value_rewrites_audited'] and
+            'EXPLICIT INITIALIZATION-IDLE ASSUMPTION' in dmaidle['assumption'] and
+            'NOT a silicon-equivalence claim' in dmaidle['assumption'] and
+            'zero synthesized bytes' in dmaidle['readback_semantics'] and
+            r['instruction_adapters'].get('jl_audio_dac_dma_idle_readback_load')==8 and
+            'EXPLICIT INITIALIZATION-IDLE ASSUMPTION' in
+            r['peripherals']['assumptions']['jl_audio_dac_dma_idle_readback'],
+            'the route-DMAIMPL two-word readback record must pin the runtime '
+            'evidence: FOUR served loads per word (set_sample_rate called four '
+            'times over the segment, each first-pair compare 0==0 taking the '
+            'equal arm — the second volatile pair 0x606e150/152 never executed), '
+            'the write provenance answering them is the firmware\'s own '
+            'pointer-reset stores at 0x6071ea8/0x6071ea4 (steps 3,204,348/347, '
+            'core 0, value 0x0 — zero synthesized bytes), ZERO rejections and '
+            'ZERO invalidation events over the whole segment (the event-history '
+            'guard never refused: the DAC_CON anchor held — 24 audited writes '
+            'with the trajectory entirely inside the initialization window plus '
+            'the POST [3:0] RMW pairs, and SWN/PNS were never touched — the '
+            'scout data-phase walls stay uncrossed), and the guard contract '
+            '(per-load revalidation, event-history phase, no permanent address '
+            'exemption, same-value rewrites audited) with the explicit '
+            'initialization-idle assumption wording — derived-not-measured, '
+            'not a silicon-equivalence claim')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -8284,7 +8382,7 @@ def check(report,firmware):
     # commands);已到期拒绝补喂的语义在单测钉死。
     wdt=r['peripherals']['watchdog_projection']
     require(wdt['feeds']==163 and wdt['mailbox_feed_side_effects']==162 and
-            wdt['expired'] is False and wdt['elapsed_nominal_units']==134 and
+            wdt['expired'] is False and wdt['elapsed_nominal_units']==152 and
             wdt['commands']==6 and wdt['command_values']==[0,0,0,14,46,65582] and
             wdt['assumptions']['expiry_reset_or_irq_delivery_simulated'] is False and
             'mailbox_feed_side_effect' in wdt['assumptions'] and
@@ -8843,18 +8941,19 @@ def check(report,firmware):
     # [r10+0]|=0x110 AK 服务链与后续位域配置 RMW,写回序列 0x8000100(再
     # 一条)、0x8100100×2、0x8350100×3、0x835e100、0x835e110(末值)。
     audio_init=r['peripherals']['jl_audio_dac_init_write_records']
-    require(audio_init['stores']=={'0xfe0500':{'values':['0x0','0x0','0x100','0x100',
-                                                        '0x8000100','0x8000100','0x8000100',
-                                                        '0x8000100','0x8000100','0x8100100',
+    require(audio_init['stores']=={'0xfe0500':{'values':['0x8000100','0x8100100',
                                                         '0x8100100','0x8350100','0x8350100',
-                                                        '0x8350100','0x835e100','0x835e110'],
-                                                'writes':16,
+                                                        '0x8350100','0x835e100',
+                                                        '0x835e110','0x835e110','0x835e110',
+                                                        '0x835e110','0x835e110','0x835e110',
+                                                        '0x835e110','0x835e110','0x835e110'],
+                                                'writes':24,
                                                 'cores':[0]*16},
                                    '0xfe0558':{'values':['0x0','0x100','0x100'],'writes':3,'cores':[0,0,0]},
                                    '0xfe0900':{'values':['0x1'],'writes':1,'cores':[0]}} and
-            audio_init['word_writes']==20 and
+            audio_init['word_writes']==28 and
             audio_init['addresses']==['0xfe0500','0xfe0558','0xfe0900'] and
-            audio_init['readback_projection']['reads']==17 and
+            audio_init['readback_projection']['reads']==25 and
             audio_init['readback_projection']['synthesized_initial_reads']==2 and
             'synthetic initial word 0' in audio_init['readback_projection']['readback_semantics'] and
             'derived-not-measured' in audio_init['readback_projection']['readback_semantics'],
@@ -9019,10 +9118,10 @@ def check(report,firmware):
             not fd31['write_only'] and not fd31['readback_not_modeled'] and
             fd31['addresses']==['0xfd3100'] and
             'NOT 0x200' in fd31['observed_shapes'] and 'JL_ADC' in fd31['sdk_naming'] and
-            fd31['con_readback_projection']['reads']==2522 and
+            fd31['con_readback_projection']['reads']==2523 and
             fd31['con_readback_projection']['address']=='0xfd3100' and
             fd31['con_readback_projection']['res_boundary']['address']=='0xfd3104' and
-            fd31['pnd_completion_projection']['forced_reads']==1202 and
+            fd31['pnd_completion_projection']['forced_reads']==1203 and
             fd31['pnd_completion_projection']['bit']=='0x80' and
             fd31['pnd_completion_projection']['not_a_timing_model'] and
             fd31['res_named_values_fixture']['served']=={'0x10000':368,'0x10004':12,
@@ -9140,7 +9239,7 @@ def check(report,firmware):
     # (reti_from=块出口,延期-交付往返实证;机器守卫本身保持拒绝))。core
     # tick 交付 9→10(+1 次溢出,OS tick 级联继续)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==15766 and
+    require(len(t0['deliveries'])==15778 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6','0x12b608',
@@ -9169,12 +9268,19 @@ def check(report,firmware):
                                    # 形状,此处作为被中断 PC 出现)、0x6074614=
                                    # jlstream kick/参数族函数体内的 ld.hu.sp.l
                                    # (放行装载附近,装载半字参数的栈访问)。
-                                   '0x6007af2','0x6074614')
+                                   '0x6007af2','0x6074614',
+                                   # 路 DMAIMPL 段新增中断上下文(+71,480 步:
+                                   # set_sample_rate 四调+POST 段+音频管线
+                                   # 重配段):0x6010ad6/0x6010a52=sdfile 走查器
+                                   # 0x6010cec 族体内(0x6010a4e/0x6010a5c 的
+                                   # 同族邻近站)、0x6007b60/0x6007ba8=0x6007b7e
+                                   # 同函数族邻近站。
+                                   '0x6010ad6','0x6010a52','0x6007b60','0x6007ba8')
                 for d in t0['deliveries']) and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==12791 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x606b0a2')==1 and
-            t0['deliveries'][-1]['reti_from']=='0x6074614' and
+            t0['deliveries'][-1]['reti_from']=='0x6007b60' and
             [d['reti_from'] for d in t0['deliveries'][287:362]]==
             ['0x6010a4e', '0x12b608', '0x6010a5c', '0x12b608', '0x6007b7e',
              '0x4372', '0x6000f4a', '0x6007b7e', '0x12b608', '0x6000f4c',
@@ -9193,9 +9299,9 @@ def check(report,firmware):
              '0x12e282', '0x12e286', '0x12e284', '0x12e282', '0x12e286'] and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==31532 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==15766,
-            '15758 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==31556 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==15778,
+            '15778 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
             'route-AK/AN/AS/B1 prefix (287 through the AK stop, the route-R delivery '
             'interrupting the OS veneer 0x12b7b6, the eight route-AN walker-chain '
             'contexts, the route-AS ROM rep-block exit 0x4196 and the sixty-one B1 '
@@ -9269,15 +9375,14 @@ def check(report,firmware):
             'parked-wake shape reti_from=0x12c5ca appears 257 times and the delay family '
             'continues; one delivery interrupts the audio zone 0x60750e2)')
     dfr=r['machine']['irq_delivery_deferral_projection']
-    require(dfr['count']==11239 and
+    require(dfr['count']==11259 and
             all(e['irq'] in (3,4,127) and
                 e['deferred_while'] in ('core_tick_handler','timer0_irq_handler',
                                         'software_irq_handler',
                                         'mid_instruction (after_then/repeat in flight)')
                 for e in dfr['events']) and
-            all(e['deferred_while']=='mid_instruction (after_then/repeat in flight)'
-                for e in dfr['events']),
-            '11229 delivery requests must be HELD (not dropped) through the 41,847,303 '
+            all(e['irq']==4 for e in dfr['events']),
+            '11259 delivery requests must be HELD (not dropped) through the 42,037,363 '
             'stop. The retained 64-event window is now ALL mid-instruction family '
             '(64 members, Timer0 IRQ4 behind the route-STOREG3 consumption-chain walk: '
             'the S18 event dispatch calls the ROM delay rep bodies, so IRQ4 requests '
@@ -9492,8 +9597,8 @@ def check(report,firmware):
     # 跨界 5 次到期(15778→15783)全交付全 ACK(+5=交付 15761→15766,新增
     # 两个中断上下文 0x6007af2/0x6074614),零新喂狗(163/162 冻结),elapsed
     # 名义单位 120→134。
-    require(timer=={'con':0x1401,'cnt':15417,'prd':23999,'pending':False,
-            'expirations':15783},
+    require(timer=={'con':0x1401,'cnt':33810,'prd':35999,'pending':False,
+            'expirations':15795},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
             'with the counter walked on to 9342 inside the freshly reprogrammed delay '
@@ -9603,7 +9708,7 @@ def check(report,firmware):
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==577584 and
+            tick0['cnt']==863504 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -9764,7 +9869,10 @@ def check(report,firmware):
             [(0,127,'0x12ad2a','0x12c5ca')]+
             # 路 TONMAP:任务安装段新增一轮调度器等待交付(新任务 0x602d3a0/
             # 0x6086980/0x6000d6c 安装的调度往返,346 交付合计)。
-            [(0,127,'0x12ad2a','0x12b608')],
+            [(0,127,'0x12ad2a','0x12b608')]+
+            # 路 DMAIMPL:set_sample_rate 四调+POST 段的调度往返再增两轮
+            # 调度器等待交付(348 交付合计;commands/acks 696/348 同步)。
+            [(0,127,'0x12ad2a','0x12b608')]*2,
             'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
             'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
             'the timer bring-up before any scheduler IPI); the route-CO scheduler helper prefix '
@@ -9794,8 +9902,8 @@ def check(report,firmware):
     # CPU1 同步 IPI 往返——交付列表 11→12(尾项仍是 (1,125,'0x12c5ca')),
     # conditional_software_irq_rti 11→12、commands/acks 22/11→24/12。
     require(r['machine']['events_truncated'] is True and
-            r['instruction_adapters'].get('conditional_software_irq_rti')==346,
-            'the software IRQ RTI count must reach 345 = the 345 delivered rounds (the pmu_task-entry RTI event lies '
+            r['instruction_adapters'].get('conditional_software_irq_rti')==348,
+            'the software IRQ RTI count must reach 348 = the 348 delivered rounds (the pmu_task-entry RTI event lies '
             'in the byte-identical pre-305k prefix pinned at the 689,402 landmark; the trimmed '
             '32+32 events window holds the IRQ4 round trips; the route-CO CPU1 sync '
             'IPI is a repeat_irq_delivery round whose handler RTI was still in flight at the '
@@ -9804,8 +9912,8 @@ def check(report,firmware):
             'OS-wait prefix adds the two CPU0 irq127 rounds, the route-JLEQ steady state '
             'adds six more and the route-GPCNUM park extension eighteen (nine parked '
             'wake + scheduler-IPI alternations) — all fifty-two RTI-complete)')
-    require(r['peripherals']['software_irq_commands']['commands']==692 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==346,
+    require(r['peripherals']['software_irq_commands']['commands']==696 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==348,
             'the two scheduler IPI round trips plus the route-CO scheduler-helper sync IPI '
             'and the route-CW DAC-init tail sync IPI carry the historical bookkeeping to '
             '104/52, and the route-WDFEED steady-state park extension runs the scheduler '
@@ -9821,7 +9929,7 @@ def check(report,firmware):
     crc_heap=r['peripherals']['hardware_crc_projection']
     require(crc_heap['seed_writes'][:30]==crc_ff['seed_writes'] and
             crc_heap['result_reads'][:30]==crc_ff['result_reads'] and
-            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==246 and
+            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==264 and
             crc_heap['seed_writes'][30:]==['0x0','0x0'] and
             crc_heap['result_reads'][30:]==['0x62eb','0x9c78']+['0xa1cd','0x9946',
                 '0xd1cf','0x239e','0x7dee','0x91a9']*7+['0xa1cd','0xb37d','0xa11d',
@@ -9835,8 +9943,8 @@ def check(report,firmware):
                 '0x239e','0x7dee','0x91a9','0xc1b0']+['0xa1cd','0x9946','0xd1cf',
                 '0x239e','0x7dee']+['0x66e5','0xc73e','0x60ca']
             +['0x7e4e','0xcf96','0xf5c0']
-            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*6 and
-            crc_heap['fed_bytes']==73109,
+            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*9 and
+            crc_heap['fed_bytes']==73649,
             'the heap fixture must keep the first thirty hardware CRC round trips '
             'byte-identical to crc_bankb; the route-AA prefix adds the seeded '
             '0x62eb/0x9c78 pair, the route-AN walker chain thirty and the route-AS '
