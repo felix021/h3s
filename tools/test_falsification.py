@@ -90,6 +90,9 @@ class WiringGuardFalsificationTests(unittest.TestCase):
         ('堆信息 fixture 撤掉 power_init 前缀',
          dict(p11_power_init=False,heap_info_bytes=b'\x00'*4),
          'heap-info fixture only layers on the p11_power_init scenario'),
+        ('SRC_SYNC 容器撤掉 copex mode-22 放行(路 SRCSYNC 依赖边)',
+         dict(jl_src_sync_config_words=True),
+         'the JL_SRC_SYNC config container only layers on the copex mode-22 release'),
     )
 
     def test_dependency_sabotage_is_refused_before_any_simulation(self):
@@ -108,6 +111,21 @@ class WiringGuardFalsificationTests(unittest.TestCase):
                                     'entry bank assumption requires the entry projection'):
             irq_case(_SimulatorBomb(),b'',b'',b'','control_wiring',
                      entry=False,banks=True)
+
+    def test_src_sync_probe_value_guard_on_full_conditional_stack(self):
+        # 路 SRCSYNC:probe 值域守卫(恰全一字)藏在 jl_src_sync_config_words
+        # 块内,最小依赖组合够不着(copex 依赖链 vl0→daa_con1→…更深),改用
+        # registry 全开条件栈——只错置 probe 值,守卫必须先于任何仿真炸出。
+        import frontier_registry
+        import probe_irq_entry
+        from probe_irq_entry import irq_case
+        flags = frontier_registry.scenario_flags('p11_heap_experimental',
+                                                 probe_irq_entry)
+        flags['jl_src_sync_probe_value'] = 0x1234
+        with self.assertRaisesRegex(
+                ValueError,
+                'the SRC_SYNC CON1 sensitivity probe takes exactly the all-ones word'):
+            irq_case(_SimulatorBomb(),b'',b'',b'','sabotaged_probe',**flags)
 
 
 # ---------------------------------------------------------------------------

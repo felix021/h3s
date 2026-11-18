@@ -1225,6 +1225,15 @@ M4_FAMILIES = (
     # message/echo slot mirrors and the in-flight transaction/current record.
     ('jl_adc_start', 'JLAdcStartConfigRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
+    # Route SRCSYNC: the JL_SRC_SYNC config-transaction container (CON0/CON1
+    # read-back plus the COEF write-only port) rides the AM four-field state
+    # shape with one extra refusal counter: coef_read_attempts stays zero in
+    # any captured world (a refusal stops the run, kept for shape symmetry
+    # with the BATCHA read_attempts discipline); the probe-only CON1
+    # initial-word probe rides the per-object static guard like DT/ADA/ASS.
+    ('jl_src_sync', 'JLSrcSyncConfigRegisters',
+     ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads',
+      'coef_read_attempts')),
     ('p2m_mailbox', 'P2mMailboxAck',
      ('pnd_armed', 'echo_armed', 'kicks', 'other_kick_values', 'clr_writes',
       'clear_slot_writes', 'pnd_reads', 'echo_reads', 'message_mirror',

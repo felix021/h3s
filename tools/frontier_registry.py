@@ -357,6 +357,32 @@ FEATURES = (
             'probe_only 不进共享栈;sensitivity-probe-not-plausible-state,'
             'CV/ADA 双探针先例——三镜像 parity 只证相对行为不证共同模型'
             '误差,扰动臂单测近似误差对下游路径的影响)'),
+    # ---- 路 SRCSYNC(codex 20261118 下路指引:「CON1 单字配置 RMW 容器」的
+    # 同函数事务扩展):JL_SRC_SYNC 配置事务三字容器 jl_src_sync_config_
+    # words——42,059,070 停点 0x606fbe4(rmw.or.modimm [r0+4]|=0x400000 内部
+    # 读 0xfe2604=CON1,br28.h src_sync 块 16 成员之 +4 __RW)放行。审计:
+    # 基址数据驱动(全 app 字面量恰 .data 0x60a29d4 一处/零 li,hw_res 表
+    # 0x60a29c8 唯一访问函数=停点函数 0x606fa7e);函数全通读访问面恰三字
+    # =CON1 RMW×2+CON0 RMW 恰 2 次(bit4 开/关门)+COEF 纯写×55,读值只进写回组装零分支
+    # 消费;其余 13 成员零触达不进(不据 __RW 扩整块)。策略:CON0/CON1
+    # 合成初值 0+读回=最后写值(合成假设非复位值),COEF 读拒绝;bit22/
+    # bit4 门控语义=derived(公开 SDK 三源无 src_sync 驱动源,固件内置
+    # 驱动形状即第一手证据)。----
+    Feature('jl_src_sync_config_words', 'conditional', ('copex_exp22_model',),
+            False, None,
+            'JL_SRC_SYNC 配置事务容器三字(CON0 0xfe2600/CON1 0xfe2604/'
+            'COEF 0xfe263c;42,059,070 停点 0x606fbe4 CON1|=0x400000 RMW 内部读'
+            '放行;CON0/CON1 合成初值 0+读回=最后写值 derived-not-measured,'
+            'COEF 纯写记录读拒绝;读值只进写回组装;其余 13 成员零触达不进;'
+            'bit22/bit4=配置事务/系数装载门语义 derived;证据=已验证实现契约'
+            '与当前前缀推进,不证明 SRC_SYNC 硬件/采样率转换/DMA/音频处理'
+            '已运行)'),
+    Feature('jl_src_sync_probe_value', 'probe_only', ('jl_src_sync_config_words',), True, None,
+            'SRC_SYNC CON1 初值敏感性探针(恰 0xffffffff 全一,一次性替换停点'
+            '字初值,后续读回真实写回值;probe_only 不进共享栈;sensitivity-'
+            'probe-not-plausible-state,CV/ADA/ASS 探针先例——零臂 CON1 终值'
+            ' 0x0/ones 臂 0xffbfffff(bit22 在全一字本为 1,|0x400000 不变),未覆盖位保留初值进写事务;当前链段内'
+            '零纯读段外零读者,敏感性臂证同停点同步数)'),
     Feature('jl_pvdd_trim_writes', 'conditional', ('p11_power_init',), False, None,
             'W4[4] PVDD/trim 域容器:P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/'
             'P3_PVDD0_AUTO(0xf2c10c) 合成初始字 0+读回=当前值(VOLTAGE_CONFIG/'
@@ -638,10 +664,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42059070,
-        'stop_pc': '0x606fbe4',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xfe2604', 'size': 4, 'reference_sdk_register': None},
+        'completed_steps': 42061357,
+        'stop_pc': '0x60befe6',
+        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
+                 'address': '0xfe2500', 'size': 4, 'value_bytes': '00000000'},
         'freshness_fields': ('kind', 'address'),
     },
 }

@@ -5076,6 +5076,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_adc_dma_writes=False,
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
+             jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
              ancif_official_resources=None,
              ton_official_partition_pair=None,
              jl_rand_seed=None,
@@ -5355,6 +5356,11 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 执行,链继续走 eq/wdrc 设计域(侦察预判下一停点大概率 mode 24
         # sqrt 的内联站点)——新停点由实跑取得;预算沿用 60M(余量以实跑核)。
         if copex_exp22_model:budget=60000000
+        # 路 SRCSYNC:JL_SRC_SYNC 配置事务三字放行后 eq open-config 尾段的
+        # SRC_SYNC 重配函数 0x606fa7e 走完(bit22 开→memset→55 轮系数装载→
+        # bit4 关→系数表拷贝→bit22 关),链继续走 eq 设计族/音频配置域——
+        # 新停点由实跑取得;预算沿用 60M(余量以实跑核)。
+        if jl_src_sync_config_words:budget=60000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -6575,6 +6581,43 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                     'the copex ul sensitivity probe takes exactly +1 or -1 '
                     '(sensitivity-probe-not-plausible-state, CV/ADA precedent)')
             options['copex_exp22_probe_ul_bias']=copex_exp22_probe_ul_bias
+    # jl_src_sync_config_words(路 SRCSYNC,codex 20261118 下路指引「CON1 单字
+    # 配置 RMW 容器」(AM/ADA/LPV 先例)的同函数事务扩展,默认 False=关):
+    # JL_SRC_SYNC 配置事务三字——42,059,070 停点 0x606fbe4(rmw.or.modimm
+    # [r0+4]|=0x400000 的内部读 0xfe2604=JL_SRC_SYNC CON1,br28.h src_sync 块
+    # 16 成员 14 __RW+2 __WO 之 +4)放行。审计钉死:基址数据驱动(全 app 字
+    # 面量恰 .data 0x60a29d4 一处、零 li,hw_res 表 0x60a29c8 唯一访问函数
+    # =停点函数 0x606fa7e,`+4360` 全 app 唯一站点);函数全通读 SRC_SYNC
+    # 访问面恰三字=CON1 RMW×2(|=0x400000 @0x606fbe4/ &=0xFFBFFFFF
+    # @0x606fc2c)+CON0 RMW 恰 2 次(|=0x10 开门 @0x606fbfa/ &=0xFFFFFFEF
+    # 关门 @0x606fc0a)+COEF 纯写×55(@0x606fc02 循环体,恒零;goto 偏移
+    # 单位勘误=字节,|=0x10 不在循环内——主臂账本 CON0 2 写+COEF 55 写
+    # 纠正首版 word×2 误读);读值只进写回组装零分支
+    # 消费;其余 13 成员零触达不进白名单(不据 __RW 扩整块)。容器策略:
+    # CON0/CON1 合成初值 0+读回=最后写值(合成假设非复位值,显式声明),
+    # COEF 纯写记录读一律拒绝(零读观测);原子 RMW 内部读走通用 mmio 路径。
+    # bit22/bit4 门控语义=derived(固件驱动形状归纳:bit22 配置事务总门、
+    # bit4 系数装载门——公开 SDK 三源 grep 无 src_sync 驱动源,固件内置驱动
+    # 即第一手证据,如实标注)。SDK 驱动用法/消费者审计/证据全文见
+    # br28_model.py JLSrcSyncConfigRegisters 类注释。依赖边挂
+    # copex_exp22_model=场景推进顺序(COPEXIMPL 放行后链才到达停点)非硬件
+    # 依赖;默认关=三字保持 unmapped(42,059,070 停点形状),legacy 逐字节
+    # 不变。
+    if jl_src_sync_config_words:
+        require(copex_exp22_model,
+                'the JL_SRC_SYNC config container only layers on the copex mode-22 '
+                'release (the chain reaches the SRC_SYNC reconfiguration function '
+                '0x606fa7e and its CON1 RMW only after the eq coefficient design '
+                'segment crosses the exp sites — without the COPEXIMPL release the '
+                'world still stops at 0x606a900; the dependency records THIS scenario '
+                'advance order, not a hardware dependency of the SRC_SYNC config '
+                'registers on the DSP coprocessor model)')
+        options['jl_src_sync_config_words']=True
+        if jl_src_sync_probe_value is not None:
+            require(jl_src_sync_probe_value==0xffffffff,
+                    'the SRC_SYNC CON1 sensitivity probe takes exactly the all-ones '
+                    'word (sensitivity-probe-not-plausible-state, CV/ADA/ASS precedent)')
+            options['jl_src_sync_probe_value']=jl_src_sync_probe_value
     # jl_pvdd_trim_writes(路 BM §1/S19 批 1 ①):W4[4] PVDD/trim 域容器——
     # P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/P3_PVDD0_AUTO(0xf2c10c)
     # 合成初始字 0+读回=当前值(AM 容器族;BM §1.1 逐地址访问点钉死:复合
@@ -8265,7 +8308,24 @@ def check(report,firmware):
             'scout\'s predicted next copex (the eq-design inline sites '
             '0x6072bb8 mode 16 / 0x6072d1a mode 24 sit further down the '
             'chain and stay unreached; codex 20261118: accept the honest '
-            'stop, mode 24 was a prediction, not an acceptance target)')
+            'stop, mode 24 was a prediction, not an acceptance target); and '
+            'the route-SRCSYNC release (this scenario, the codex '
+            'next-stop-classification container: CON0/CON1 synthetic-initial '
+            'read-back plus the COEF write-only port, exactly the three '
+            'audited words of the reconfiguration driver 0x606fa7e) serves '
+            'the whole bit22 reconfiguration transaction — CON1 |=0x400000 '
+            'opening, the hw_res RAM-buffer memset, CON0 bit4 opening the '
+            'coefficient-load gate once, the 55-round COEF zero-store loop, '
+            'CON0 bit4 closing, the flash coefficient-table copy, CON1 '
+            '&=0xFFBFFFFF closing — and the chain walks on (+2,287 steps, '
+            'per-core1 still frozen at 11496, container ledger 59 writes '
+            'exactly as audited) into the audio sync object creator '
+            '0x60befae and stops at 42,061,357 @ 0x60befe6 on the '
+            'unmapped write of 0xfe2500 — JL_SYNC CON0 (SDK br28.h '
+            '0x2500-0x25ff block), the li-constant full-word zero store '
+            'inside an IPMASK-6 critical section after the creator\'s '
+            'zalloc/field-init/probe call chain — the JL_SYNC write face, '
+            'a fresh SFR boundary for the next route)')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 EVIMPL(2026-11-18,docs/frontier-scout-evqueue.md 停点 41,909,506;
@@ -8434,6 +8494,49 @@ def check(report,firmware):
             'contract and the current-prefix advance only — it does NOT prove '
             'BR28 numeric equivalence, coverage of the other nine mode-22 '
             'sites, the full EQ coefficient design, or any audio effect')
+    # 路 SRCSYNC:配置事务三字容器释放记录断言——容器账本逐字逐次钉死
+    # (codex 措辞:证据=已验证实现契约与当前前缀推进,不证明 SRC_SYNC
+    # 硬件/采样率转换/DMA/音频处理已运行)。goto 偏移单位勘误后的事务
+    # 形状:CON0 |=0x10 开门恰 1 次(循环外)→55 轮循环体仅 COEF 写零→
+    # CON0 &=~0x10 关门;CON1 |=0x400000→段尾 &=0xFFBFFFFF 归 0。
+    srcsyncrel=r['peripherals']['jl_src_sync_config_registers']
+    require(srcsyncrel['word_writes']==59 and
+            srcsyncrel['stores']['0xfe2604']=={'values':['0x400000','0x0'],
+                                               'writes':2,'cores':[0,0]} and
+            srcsyncrel['stores']['0xfe2600']=={'values':['0x10','0x0'],
+                                               'writes':2,'cores':[0,0]} and
+            srcsyncrel['stores']['0xfe263c']['writes']==55 and
+            all(v=='0x0' for v in srcsyncrel['stores']['0xfe263c']['values']) and
+            srcsyncrel['readback_projection']['reads']==2 and
+            srcsyncrel['readback_projection']['synthesized_initial_reads']==2 and
+            srcsyncrel['readback_projection']['coef_read_attempts']==0 and
+            'synthetic-not-measured' in
+            srcsyncrel['readback_projection']['readback'] and
+            'COEF refuses every read' in
+            srcsyncrel['readback_projection']['readback'] and
+            'sixteen members' in srcsyncrel['sdk_naming'] and
+            'same-address new consumer' in srcsyncrel['whitelisted_words'] and
+            '0x60a29d4' in srcsyncrel['whitelisted_words'] and
+            'sample-rate conversion' in
+            r['peripherals']['assumptions']['jl_src_sync_config_registers'],
+            'the route-SRCSYNC config-transaction release record must pin the '
+            'runtime evidence: exactly 59 word writes over the reconfiguration '
+            'function 0x606fa7e — CON1 twice (|=0x400000 at the released stop '
+            '0x606fbe4, then &=0xFFBFFFFF at 0x606fc2c ending at 0x0 with the '
+            'zero synthetic initial), CON0 twice (|=0x10 opening the '
+            'coefficient-load gate ONCE before the loop — the goto-offset '
+            'erratum: byte units, the |=0x10 does NOT sit inside the 55-round '
+            'body — then &=~0x10 closing it, ending at 0x0), COEF exactly 55 '
+            'zero stores (r5=0 every round), two RMW internal reads answered '
+            'by the synthetic initial and two by the last written value, zero '
+            'COEF read attempts; the synthetic-initial and read-back=current '
+            'semantics wording (synthetic-not-measured, NOT silicon reset '
+            'values), the data-driven base narrative (sole literal .data '
+            '0x60a29d4 in the hw_res table, single accessor function), the '
+            'sixteen-member naming with the 14 __RW + 2 __WO erratum, the '
+            'same-address-new-consumer re-audit clause, and the assumption '
+            'boundary — this does NOT verify any sample-rate conversion, DMA '
+            'or audio processing')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -8467,7 +8570,7 @@ def check(report,firmware):
     # commands);已到期拒绝补喂的语义在单测钉死。
     wdt=r['peripherals']['watchdog_projection']
     require(wdt['feeds']==163 and wdt['mailbox_feed_side_effects']==162 and
-            wdt['expired'] is False and wdt['elapsed_nominal_units']==157 and
+            wdt['expired'] is False and wdt['elapsed_nominal_units']==158 and
             wdt['commands']==6 and wdt['command_values']==[0,0,0,14,46,65582] and
             wdt['assumptions']['expiry_reset_or_irq_delivery_simulated'] is False and
             'mailbox_feed_side_effect' in wdt['assumptions'] and
@@ -9709,7 +9812,11 @@ def check(report,firmware):
     # 2 次到期(15795→15797)全交付全 ACK(+2=交付 15778→15780,新增两个
     # 中断上下文 0x6064754/0x60745fa),零新喂狗(163/162 冻结),elapsed
     # 名义单位 152→157。
-    require(timer=={'con':0x1401,'cnt':26931,'prd':35999,'pending':False,
+    # 路 SRCSYNC:配置事务三字容器放行后 +2,287 步段(SRC_SYNC 重配函数
+    # 0x606fa7e 全走完→audio sync 对象创建器 0x60befae)计数走表 26,931→
+    # 33,792(PRd 35,999 窗内、无到期跨界:交付/到期 15780/15797 冻结),
+    # 零新喂狗(163/162 冻结),elapsed 名义单位 157→158。
+    require(timer=={'con':0x1401,'cnt':33792,'prd':35999,'pending':False,
             'expirations':15797},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
@@ -9821,17 +9928,20 @@ def check(report,firmware):
     # (恰 +285,920=71,480×4 tick 精确走表)。
     # 路 COPEXIMPL:+21,707 步段(eq 系数设计→SRC_SYNC 重配)零新溢出零新
     # 交付(347/347 冻结),cnt 863,504→950,332(恰 +86,828=21,707×4 tick
-    # 精确走表,仍 <prd 1,599,999;新停点 0x606fbe4 在 SRC_SYNC CON1 RMW
-    # 体内、无临界区,IPMASK 0、ICFG 0x300)。
+    # 精确走表,仍 <prd 1,599,999)。
+    # 路 SRCSYNC:+2,287 步段零新溢出零新交付(347/347 冻结),cnt
+    # 950,332→959,480(恰 +9,148=2,287×4 tick 精确走表);新停点 0x60befe6
+    # 在 audio sync 对象创建器 0x60befae 体内(JL_SYNC CON0 整字写 0 之前
+    # 的临界区内,IPMASK 6=两中断屏蔽中,ICFG 0x300)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==950332 and
+            tick0['cnt']==959480 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300' and
-            r['peripherals']['ipmask']==0,
+            r['peripherals']['ipmask']==6,
             'the CPU0 core tick must deliver and ack ALL 116 overflows through the '
             '21,798,206 stop: the historical route-AK landmark, timeout-window, AS and '
             'B1 ones carry the count to eleven, the route-BQ release replays the masked '

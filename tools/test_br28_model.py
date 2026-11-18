@@ -3908,6 +3908,111 @@ class ModelTests(unittest.TestCase):
                         and allf.handles(0xfe0558,4) and allf.handles(0xfe0900,4))
         self.assertFalse(allf.handles(0xfe0550,4) or allf.handles(0xfe090c,4))
 
+    def test_jl_src_sync_config_registers(self):
+        # 路 SRCSYNC:42,059,070 停点 0x606fbe4(SRC_SYNC 重配函数 0x606fa7e
+        # 的 CON1 |=0x400000 RMW 内部读,基址数据驱动自 hw_res 表)——三字
+        # 配置事务容器:CON0/CON1 合成初始 0+读回=最后写值,COEF 纯写记录
+        # 读拒绝;默认关保持 unmapped;其余 13 成员零触达不吞。
+        from br28_model import JL_SRC_SYNC_CONFIG_WORDS
+        self.assertEqual(JL_SRC_SYNC_CONFIG_WORDS,(0xfe2600,0xfe2604,0xfe263c))
+        plain=BR28Model()
+        for address in JL_SRC_SYNC_CONFIG_WORDS:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xfe2604)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe2604,0x400000)
+        self.assertNotIn('jl_src_sync_config_registers',plain.report())
+        h=BR28Model(jl_src_sync_config_words=True)
+        for address in JL_SRC_SYNC_CONFIG_WORDS:
+            self.assertTrue(h.handles(address,4))
+        # 邻字不吞:CON2/CON3 0xfe2608/0c、IDAT/ODAT 族 0xfe2610..0x2620、
+        # __WO 对 0xfe2624/28、STOP_FLAG/INSR/OUTSR/PHASE 0xfe262c..38、
+        # 子字错位。
+        for address in (0xfe2608,0xfe260c,0xfe2610,0xfe2614,0xfe2618,0xfe261c,
+                        0xfe2620,0xfe2624,0xfe2628,0xfe262c,0xfe2630,0xfe2634,
+                        0xfe2638,0xfe2640,0xfe25fc,0xfe2700):
+            self.assertFalse(h.handles(address,4),hex(address))
+        self.assertFalse(h.handles(0xfe2605,4) or h.handles(0xfe2606,2))
+        # 停点事务形状(0x606fa7e 序列逐指令,goto 偏移单位=字节勘误后):
+        # CON1 首读=合成初始 0→|=0x400000 写回;CON0 |=0x10 开门(恰 1 次,
+        # 循环外)→55 轮循环体仅 COEF 写零→CON0 &=~0x10 关门;CON1
+        # &=0xFFBFFFFF 段尾归 0(主臂账本:CON0 2 写/COEF 55 写互证)。
+        self.assertEqual(h.read(0xfe2604),0)
+        h.write(0xfe2604,0|0x400000)
+        self.assertEqual(h.read(0xfe2604),0x400000)
+        self.assertEqual(h.read(0xfe2600),0)
+        h.write(0xfe2600,0|0x10)
+        self.assertEqual(h.read(0xfe2600),0x10)
+        h.write(0xfe2600,0x10&0xffffffef)
+        for _ in range(55):
+            h.write(0xfe263c,0)
+        h.write(0xfe2604,0x400000&0xffbfffff)
+        self.assertEqual(h.read(0xfe2604),0)
+        self.assertEqual(h.read(0xfe2600),0)
+        # COEF 读一律拒绝(纯写系数口,零读观测;拒绝即停)。
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_coef_read_not_modeled'):
+            h.read(0xfe263c)
+        # 值域校验(容器直调;白名单外由模型层先拒)。
+        with self.assertRaises(ValueError):
+            h.jl_src_sync.write(0xfe2604,-1,0)
+        with self.assertRaises(ValueError):
+            h.jl_src_sync.write(0xfe2604,0x100000000,0)
+        with self.assertRaises(ValueError):
+            h.jl_src_sync.write(0xfe2608,0,0)
+        with self.assertRaises(ValueError):
+            h.jl_src_sync.read(0xfe2608)
+        # 报告面:策略分组/三字 stores/计数/数据驱动叙事/完备性措辞/
+        # 模型假设(零臂 0x0/ones 臂 0xffbfffff 静态算术)/跨域限制/命名。
+        r=h.report()['jl_src_sync_config_registers']
+        self.assertEqual(r['addresses'],['0xfe2600','0xfe2604','0xfe263c'])
+        self.assertEqual(r['sdk_names'],{'0xfe2600':'JL_SRC_SYNC->CON0',
+                                         '0xfe2604':'JL_SRC_SYNC->CON1',
+                                         '0xfe263c':'JL_SRC_SYNC->COEF'})
+        self.assertEqual(r['word_writes'],2+2+55)
+        self.assertEqual(r['stores']['0xfe2604'],
+                         {'values':['0x400000','0x0'],'writes':2,'cores':[0,0]})
+        self.assertEqual(r['stores']['0xfe263c']['writes'],55)
+        self.assertEqual(r['readback_projection']['reads'],4)
+        self.assertEqual(r['readback_projection']['synthesized_initial_reads'],2)
+        self.assertEqual(r['readback_projection']['coef_read_attempts'],1)
+        self.assertIn('0x60a29d4',r['whitelisted_words'])
+        self.assertIn('same-address new consumer',r['whitelisted_words'])
+        self.assertIn('0x606fbe4',r['observed_shapes'])
+        self.assertIn('0x606fc2c',r['observed_shapes'])
+        self.assertIn('DERIVED',r['observed_shapes'])
+        self.assertIn('NOT covered',r['access_face_completeness'])
+        self.assertIn('synthetic-not-measured',r['model_assumptions'])
+        self.assertIn('0xffbfffff',r['model_assumptions'])
+        self.assertIn('does NOT mean',r['cross_domain_limitations'])
+        self.assertIn('sixteen members',r['sdk_naming'])
+        self.assertIn('synthetic config words',r['known_limitation'])
+        self.assertIn('jl_src_sync_config_registers',h.report()['assumptions'])
+        # 敏感性探针(probe_only,CV/ADA/ASS 先例):CON1 初值一次性
+        # 0xffffffff——「只进写回」≠初值无影响:|=0x400000 后段尾
+        # &=0xFFBFFFFF,零臂终值 0x0/ones 臂 0xffbfffff(未覆盖位保留初值
+        # 进写事务);后续读回真实写回值;CON0/COEF 不扰动。
+        probe=BR28Model(jl_src_sync_config_words=True,
+                        jl_src_sync_probe_value=0xffffffff)
+        old=probe.read(0xfe2604)
+        self.assertEqual(old,0xffffffff)
+        probe.write(0xfe2604,old|0x400000)                          # 0x606fbe4 形状
+        probe.write(0xfe2604,probe.read(0xfe2604)&0xffbfffff)       # 0x606fc2c 形状
+        self.assertEqual(probe.read(0xfe2604),0xffbfffff)
+        self.assertEqual(probe.read(0xfe2600),0)  # 其余两字不扰动
+        rp=probe.report()['jl_src_sync_config_registers']
+        self.assertEqual(rp['stores']['0xfe2604'],
+                         {'values':['0xffffffff','0xffbfffff'],'writes':2,'cores':[0,0]})
+        self.assertEqual(rp['readback_projection']['synthesized_initial_reads'],2)
+        # 与 ASS/ADA/LPV/PLED 容器叠加:地址集互斥互不吞。
+        allf=BR28Model(jl_src_sync_config_words=True,jl_adc_start_config=True,
+                       jl_adda_ada_family=True,p11_lpvad_config=True,
+                       jl_pled_config_words=True)
+        self.assertTrue(allf.handles(0xfe2604,4) and allf.handles(0xfe0904,4)
+                        and allf.handles(0xfe0a20,4) and allf.handles(0xf2b404,4)
+                        and allf.handles(0xfd6104,4))
+        self.assertFalse(allf.handles(0xfe2608,4) or allf.handles(0xfe2638,4))
+
     def test_p2m_mailbox_ack_projection(self):
         # 路 B2R/S19 批 2 重落地(首版 0b875ed,BM §3):喂狗 0x12cc7e 事务
         # 序列的状态机——清槽(解除回声)→消息字节镜像→kick 0x400(武装)→
