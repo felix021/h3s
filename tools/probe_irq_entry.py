@@ -5338,6 +5338,12 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # [r10+8]=任务栈 0x18ca64 未初始化,physical_heap 诚实停)。预算沿用
         # 60M(余量 >18M)。
         if ton_official_partition_pair is not None:budget=60000000
+        # 路 EVIMPL:jlstream 任务栈单点 4B 槽放行后首条消息(cmd 0)走完整
+        # 事件分发,链进入音频 DAC DMA 运行域,+56,377 步实测停 41,965,883 @
+        # 0x606e148(JL_AUDIO DAC DMA HRP 指针读 0xfe0510 未建模,DMA 指针
+        # 轮询体 0x606e14a beq.rr 0xfe0510/0xfe0514 对读——探路 top3 第 3 名
+        # 解码器/音频域)。预算沿用 60M(余量 >18M)。
+        if jlstream_kick_param2_unknown:budget=60000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -8103,8 +8109,9 @@ def check(report,firmware):
     conditional_frontier=frontier('p11_heap_experimental')
     require(r['stop_core']==0 and r['stop_pc']==conditional_frontier['stop_pc'] and
             r['stop']==conditional_frontier['stop'],
-            'the heap-experimental scenario must stop at 0x60195f8 on the '
-            'unmapped write of 0xfd6104 — reached after the route-STOREG3 '
+            'the heap-experimental scenario must stop at 0x606e148 on the '
+            'not-modeled JL_AUDIO DAC DMA register read 0xfe0510 — reached '
+            'after the route-STOREG3 '
             'standalone postincrement word-store release '
             '(exact_postincrement_word_stores) executes the st.w.pin.l '
             'full-word store of the byte-unpack loop in 0x60649b0 directly '
@@ -8150,10 +8157,100 @@ def check(report,firmware):
             'served by the route-FD610C-con0 container, then the 0x60195f8 '
             'st.w [0xfd6104]=0 (JL_PLED CON1) stops honestly on the '
             'unmapped-or-readonly word inside the still-open pend window — '
-            'a JL_PLED word outside both released containers, belongs to the '
-            'next route')
+            'a JL_PLED word outside both released containers; the route-'
+            'BATCHA batch release then serves that whole-word zero store '
+            '(the same STOREG3 full-word family), the LED reset helper '
+            'completes inside the pend window, the IPMASK falls back to 0 '
+            'and the chain walks through the S19 ring into the resource-VFS '
+            'open; the route-TONMAP release maps the official TON/TON1 '
+            'containers read-only (three-way SHA agreement, container CRCs '
+            'verify at mount) carrying the VFS open past the directory walk '
+            'into the task installations (jlstream 0x6086980 among them) and '
+            'the event-loop prefix, stopping at 41,909,506 @ 0x60869ba on '
+            'the uninitialized read of the task message slot '
+            '[0x18ca64,0x18ca68); and the route-EVIMPL release (this '
+            'scenario, the codex five-element guard) passes that single 4B '
+            'slot as an unknown-word built from the actual known bytes — '
+            'the first jlstream message (cmd 0) dispatches through the '
+            'event loop and the chain walks into the audio DAC DMA run '
+            'domain, stopping at 41,965,883 @ 0x606e148 on the DAC DMA HRP '
+            'pointer read 0xfe0510 — the decoder/audio domain, scout top3 '
+            'rank 3')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
+    # 路 EVIMPL(2026-11-18,docs/frontier-scout-evqueue.md 停点 41,909,506;
+    # codex 裁决 (a)-1 五要素守卫):jlstream 任务栈单点 4B 槽 unknown-word
+    # 放行。守卫链=①任务实例绑定:任务安装点 0x6065f9e(r0==0x6086980、
+    # r4=TCB)观察到的当前实例(任务体入口 0x6086980 本身从不执行——OS
+    # 预装初始 GPR 帧后首派直接进取事件循环 0x6064c8c,入口只是反汇编
+    # 锚点,安装点才是运行时可观察事实);②PC+编码钉死:0x60869ba 且字节
+    # d0 ec a8 60(ld.w.l r6=[r10+8],raw n=2 换算 +8);③r10==sp+24 且 sp
+    # 落在 TCB 槢述的 0xC00 字节栈窗([0x402800,0x403400));④MMU 平移恰为
+    # [0x18ca64,0x18ca68) 且 region 可写 RAM;⑤值=按实际已知字节构造的
+    # UnknownWord(物理字节带源,不写零,槽保持未初始化)。每次装载全链
+    # 重验,拒绝即回落普通严格停点;放行不持久、邻槽/其他 PC/其他实例/
+    # 改映射/ROM/MMIO/取指一律无源权限;消费负例(cmd∈[4,12] 最迟
+    # 0x60869c6 停)由定向单测钉死。段内运行时证据:首条消息 cmd=0、
+    # buf_words ['00001000','00000000','????????','????????'] 把探路遗留
+    # 开放项 n 的运行时闭包交出(buf[1] 已初始化 0 ⇒ n<2;buf[2] 未初始
+    # 化 ⇒ n≥2 不成立 ⇒ n=1);unknown 在 0x6086b0c 整字覆写前活过一次
+    # 异步 IRQ 落窗(window_async,foreign_steps 1),覆写后 r6=0x1264b8;
+    # 六个候选 kick post 站点中只有 open_kick_api_0x6074ffe 执行(生产者
+    # 甄别收窄,痕迹项保持 open 不设障)。
+    evrel=r['peripherals']['jlstream_kick_param2_unknown_release']
+    require(evrel['enabled'] and
+            evrel['loads']=={'authorized':1,'unknown_word':1,'value_known':0} and
+            evrel['cmd_histogram']=={'0x0':1} and
+            evrel['task_installs']==1 and
+            evrel['producer_executions']['open_kick_api_0x6074ffe']==1 and
+            sum(evrel['producer_executions'].values())==1 and
+            evrel['first_load']['cmd_register']=='0x0' and
+            evrel['first_load']['physical']=='0x18ca64' and
+            evrel['first_load']['region']=='physical_heap' and
+            evrel['first_load']['tcb']=='0x41a390' and
+            evrel['first_load']['stack_window']=='[0x402800,0x403400)' and
+            evrel['first_load']['buf_words']==['00001000','00000000',
+                                               '????????','????????'] and
+            evrel['first_load']['value']=='unknown' and
+            evrel['first_load']['r6_after_overwrite']=='0x1264b8' and
+            evrel['first_load']['window_async'] is True and
+            evrel['first_load']['window_foreign_steps']==1 and
+            [t['pc'] for t in evrel['first_load']['trace_tail']]==
+            ['0x60869be','0x60869c2','0x6086b06','0x6086b0c','0x6086b0e'] and
+            [t['r6'] for t in evrel['first_load']['trace_tail']]==
+            ['unknown']*4+['0x1264b8'] and
+            evrel['guard']['load_pc']=='0x60869ba' and
+            evrel['guard']['encoding']=='d0eca860' and
+            evrel['guard']['slot_physical_window']=='[0x18ca64,0x18ca68)' and
+            evrel['guard']['install_pc']=='0x6065f9e' and
+            evrel['guard']['task_entry']=='0x6086980' and
+            evrel['guard']['stack_bounds_read_per_load'] and
+            evrel['guard']['revalidated_per_load'] and
+            evrel['guard']['not_a_permanent_address_exemption'] and
+            'zero executions' in evrel['guard']['task_entry_never_executes'] and
+            'NOT measured on the device' in evrel['equivalence_wording'] and
+            'producer_identification_open' in evrel and
+            r['instruction_adapters'].get('jlstream_kick_param2_load')==1 and
+            'never zero-filled' in
+            r['peripherals']['assumptions']['jlstream_kick_param2_unknown_release'],
+            'the route-EVIMPL single-slot unknown-word release record must pin '
+            'the full runtime evidence: exactly ONE authorized load in the '
+            'segment (the first jlstream message, cmd 0 — the cmd histogram '
+            'has the single 0x0 key, zero consumption-negative arms here), '
+            'the slot bytes 00001000/00000000/????/???? closing the scout '
+            'open item n at runtime (buf[1] initialized zero, buf[2] '
+            'uninitialized ⇒ n=1), the unknown value surviving one async '
+            'IRQ landing in its live window (window_async, one foreign step) '
+            'until the whole-word overwrite at 0x6086b0c answers r6=0x1264b8, '
+            'the TCB 0x41a390 stack window [0x402800,0x403400) with '
+            'r10==sp+24 geometry, and the guard contract (per-load '
+            'revalidation, stack bounds read from the TCB every time, no '
+            'permanent address exemption, the task body entry never '
+            'executing — install-site binding is the observable fact); the '
+            'producer identification stays an open runtime-traceability item '
+            '(only the open_kick_api_0x6074ffe candidate executed; all six '
+            'carry the identical {0} payload and it does not gate this '
+            'release)')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -8174,17 +8271,20 @@ def check(report,firmware):
             'route-STOREG3 release segment beyond it adds no transaction — the '
             '162 totals stay frozen through the new 41,847,303 stop)')
     # 路 WDFEED:喂狗副作用投影断言——162 笔闭合事务恰 162 次重装(feeds
-    # 总数 163=主核 init 直接 feed 1+邮箱 162),未到期(停点 elapsed 107<
+    # 总数 163=主核 init 直接 feed 1+邮箱 162),未到期(停点 elapsed 134<
     # 16384——路 STOREG3 过墙段是纯 CPU0 顺序段,事件钟冻结、无新喂狗事务,
     # elapsed 100→104 只涨 4 个名义单位;路 FD610C-con0 再过墙 +576 步纯
     # CPU0 段又涨 1 个名义单位到 105;路 P2MCLK +2,598 步纯 CPU0 段维持
     # 105;路 BATCHA +7,033 步段(LED 复位 helper 走完→S19 环→资源 VFS)
-    # 涨 2 个名义单位到 107——两段均无新喂狗事务,162/163 冻结),command_values
+    # 涨 2 个名义单位到 107——两段均无新喂狗事务,162/163 冻结;路 TONMAP
+    # +51,493 步段再涨 13 个名义单位到 120;路 EVIMPL(jlstream 任务栈单点
+    # 4B 槽放行)+56,377 步段又涨 14 个名义单位到 134——两段同样零新喂狗
+    # 事务,162/163 冻结),command_values
     # 保持主核 6 条真实命令零伪造(副作用不写总线、不消耗 key_phase/
     # commands);已到期拒绝补喂的语义在单测钉死。
     wdt=r['peripherals']['watchdog_projection']
     require(wdt['feeds']==163 and wdt['mailbox_feed_side_effects']==162 and
-            wdt['expired'] is False and wdt['elapsed_nominal_units']==120 and
+            wdt['expired'] is False and wdt['elapsed_nominal_units']==134 and
             wdt['commands']==6 and wdt['command_values']==[0,0,0,14,46,65582] and
             wdt['assumptions']['expiry_reset_or_irq_delivery_simulated'] is False and
             'mailbox_feed_side_effect' in wdt['assumptions'] and
@@ -8192,12 +8292,15 @@ def check(report,firmware):
             'the route-WDFEED mailbox feed side-effect must reload the WDT exactly '
             'once per closed feed transaction (162 reloads against the 162 closed '
             'transactions, feeds total 163 = one direct init feed + 162 projected), '
-            'leaving the watchdog NOT expired at the stop (elapsed 105 of the 16384 '
+            'leaving the watchdog NOT expired at the stop (elapsed 134 of the 16384 '
             'nominal units of the CON 0x2e period — the route-STOREG3 release '
             'segment past 41,828,530 is a pure CPU0 sequence, no new feed '
             'transaction, only four more nominal units consumed; the route-'
             'FD610C-con0 release past 41,847,806 is another pure CPU0 sequence, '
-            'one more nominal unit consumed) with the '
+            'one more nominal unit consumed; the route-TONMAP release walks the '
+            'elapsed units on to 120 and the route-EVIMPL release (the jlstream '
+            'task-stack 4B slot unknown-word pass) on to 134 — both pure CPU0 '
+            'sequences, zero new feed transactions) with the '
             'main-core command accounting untouched (six real commands '
             '[0,0,0,14,46,0x1002E], zero fabricated bus writes) and the '
             'expiry-stays-a-reset honesty flag intact')
@@ -9037,7 +9140,7 @@ def check(report,firmware):
     # (reti_from=块出口,延期-交付往返实证;机器守卫本身保持拒绝))。core
     # tick 交付 9→10(+1 次溢出,OS tick 级联继续)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==15761 and
+    require(len(t0['deliveries'])==15766 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6','0x12b608',
@@ -9060,12 +9163,18 @@ def check(report,firmware):
                                    # 0x6000d6c=ROM 键链、0x6011f18=配置键表
                                    # 压缩循环体(0x6011f20 停点形状的上游)。
                                    '0x12e2a2','0x12e2a4','0x12e2a6','0x12e2ac','0x12e2aa',
-                                   '0x12cd76','0x6011774','0x6000d6c','0x6011f18')
+                                   '0x12cd76','0x6011774','0x6000d6c','0x6011f18',
+                                   # 路 EVIMPL 段新增中断上下文:0x6007af2=查名
+                                   # helper 函数头的 st.d.sp.l(路 AK 历史停点
+                                   # 形状,此处作为被中断 PC 出现)、0x6074614=
+                                   # jlstream kick/参数族函数体内的 ld.hu.sp.l
+                                   # (放行装载附近,装载半字参数的栈访问)。
+                                   '0x6007af2','0x6074614')
                 for d in t0['deliveries']) and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==12791 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x606b0a2')==1 and
-            t0['deliveries'][-1]['reti_from']=='0x12b608' and
+            t0['deliveries'][-1]['reti_from']=='0x6074614' and
             [d['reti_from'] for d in t0['deliveries'][287:362]]==
             ['0x6010a4e', '0x12b608', '0x6010a5c', '0x12b608', '0x6007b7e',
              '0x4372', '0x6000f4a', '0x6007b7e', '0x12b608', '0x6000f4c',
@@ -9084,8 +9193,8 @@ def check(report,firmware):
              '0x12e282', '0x12e286', '0x12e284', '0x12e282', '0x12e286'] and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==31522 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==15761,
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==31532 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==15766,
             '15758 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
             'route-AK/AN/AS/B1 prefix (287 through the AK stop, the route-R delivery '
             'interrupting the OS veneer 0x12b7b6, the eight route-AN walker-chain '
@@ -9126,7 +9235,16 @@ def check(report,firmware):
             'installations and the event-loop prefix — all three interrupting '
             'contexts already in the known set (no new interrupt context), the '
             'final one interrupting the scheduler wait 0x12b608 — 15761 total, '
-            'parked-wake count still 12791')
+            'parked-wake count still 12791; the route-EVIMPL release (the '
+            'jlstream task-stack 4B slot unknown-word pass, +56377 steps '
+            'through the first message dispatch and into the audio DAC DMA '
+            'run domain) adds five more deliveries 15762..15766 — two '
+            'interrupting the scheduler wait 0x12b608, one the name-lookup '
+            'helper prologue store 0x6007af2 (the historical route-AK stop '
+            'shape recurring as an interrupted PC), another scheduler wait, '
+            'and the LAST one interrupting 0x6074614 (the ld.hu.sp.l inside '
+            'the jlstream kick/param function family, right beside the '
+            'released load) — 15766 total, parked-wake count still 12791')
     ct=r['machine']['core_tick_entry_projection']
     require(len(ct['deliveries'])==347 and
             (ct['deliveries'][0]['core'],ct['deliveries'][0]['vector_address'],
@@ -9369,8 +9487,13 @@ def check(report,firmware):
     # 走 41,472→35,667:段内 PRD 两次重编至 47,999,跨界 3 次到期(15775→
     # 15778)全交付全 ACK(+3=交付 15758→15761,无新中断上下文),零新喂狗
     # (163/162 冻结),elapsed 名义单位 107→120。
-    require(timer=={'con':0x1401,'cnt':35667,'prd':47999,'pending':False,
-            'expirations':15778},
+    # 路 EVIMPL:jlstream 任务栈单点 4B 槽放行后 +56,377 步段(首条消息分发
+    # →音频 DAC DMA 运行域)再走 35,667→15,417:段内 PRD 重编至 23,999,
+    # 跨界 5 次到期(15778→15783)全交付全 ACK(+5=交付 15761→15766,新增
+    # 两个中断上下文 0x6007af2/0x6074614),零新喂狗(163/162 冻结),elapsed
+    # 名义单位 120→134。
+    require(timer=={'con':0x1401,'cnt':15417,'prd':23999,'pending':False,
+            'expirations':15783},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
             'with the counter walked on to 9342 inside the freshly reprogrammed delay '
@@ -9386,8 +9509,15 @@ def check(report,firmware):
             'steps of VFS open / task installation / event-loop prefix) '
             'reprograms the delay window twice more and crosses the boundary '
             'three times — PRD 47999 with cnt 35667 at the stop, three new '
-            'expirations/deliveries/acks, no new mailbox feed), 15778 '
-            'expirations total (15761 delivered/acked — the route-STOREG3 walk segment '
+            'expirations/deliveries/acks, no new mailbox feed), and the '
+            'route-EVIMPL release (the jlstream task-stack 4B slot unknown-word '
+            'pass, +56377 steps of first-message dispatch into the audio DAC '
+            'DMA run domain) reprograms the window once more (PRD 23999) and '
+            'crosses the boundary five times — cnt 15417 at the stop, five '
+            'more expirations/deliveries/acks (15766 delivered, two new '
+            'interrupt contexts 0x6007af2/0x6074614), no new mailbox feed), '
+            '15783 '
+            'expirations total (15766 delivered/acked — the route-STOREG3 walk segment '
             'serves exactly one more delivery, the 17-expiry remainder folded into '
             'in-flight/deferred windows), pending FALSE at the stop: '
             'the route-M stop left the 297th expiration pending-in-flight inside the GPIO '
@@ -9465,10 +9595,15 @@ def check(report,firmware):
     # 6→0 回落,S19 环与资源 VFS 段全在临界区外运行),+7,033 步段零新溢出
     # 零新交付,cnt 117,972→146,104(恰 +28,132=7,033×4 tick 精确走表,
     # 仍 <prd 1,599,999),ICFG 仍 0x300(bit9 全程未动)。
+    # 路 TONMAP:+51,493 步段零新溢出零新交付,cnt 146,104→352,076(恰
+    # +205,972=51,493×4 tick 精确走表,仍 <prd 1,599,999)。
+    # 路 EVIMPL:+56,377 步段零新溢出零新交付(347/347 冻结),cnt 352,076→
+    # 577,584(恰 +225,508=56,377×4 tick 精确走表,仍 <prd 1,599,999;新停点
+    # 0x606e148 在音频 DAC DMA 指针轮询体内、无临界区,IPMASK 0、ICFG 0x300)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==352076 and
+            tick0['cnt']==577584 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -9507,7 +9642,11 @@ def check(report,firmware):
             'of VFS open / task installation / event-loop prefix) walks the '
             'counter on to cnt 352076 (+51493 steps x 4 core ticks, still '
             'zero new overflow — the whole segment runs with CPU0 active, '
-            'the event clock never advances); the CPU1 '
+            'the event clock never advances) and the route-EVIMPL release '
+            '(the jlstream task-stack 4B slot unknown-word pass) walks it '
+            'on to cnt 577584 (+56377 steps x 4 core ticks, still zero new '
+            'overflow — 347/347 delivered-and-acked, CPU0 active throughout, '
+            'the event clock frozen at 82545158); the CPU1 '
             'core tick never overflows and CPU0 partial ICFG stays 0x300 '
             '(bit9 untouched throughout); IPMASK is 0 at the new stop — the '
             '0x601a41c pend section closed when the LED reset helper returned, '
@@ -9682,7 +9821,7 @@ def check(report,firmware):
     crc_heap=r['peripherals']['hardware_crc_projection']
     require(crc_heap['seed_writes'][:30]==crc_ff['seed_writes'] and
             crc_heap['result_reads'][:30]==crc_ff['result_reads'] and
-            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==222 and
+            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==246 and
             crc_heap['seed_writes'][30:]==['0x0','0x0'] and
             crc_heap['result_reads'][30:]==['0x62eb','0x9c78']+['0xa1cd','0x9946',
                 '0xd1cf','0x239e','0x7dee','0x91a9']*7+['0xa1cd','0xb37d','0xa11d',
@@ -9696,8 +9835,8 @@ def check(report,firmware):
                 '0x239e','0x7dee','0x91a9','0xc1b0']+['0xa1cd','0x9946','0xd1cf',
                 '0x239e','0x7dee']+['0x66e5','0xc73e','0x60ca']
             +['0x7e4e','0xcf96','0xf5c0']
-            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*2 and
-            crc_heap['fed_bytes']==72389,
+            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*6 and
+            crc_heap['fed_bytes']==73109,
             'the heap fixture must keep the first thirty hardware CRC round trips '
             'byte-identical to crc_bankb; the route-AA prefix adds the seeded '
             '0x62eb/0x9c78 pair, the route-AN walker chain thirty and the route-AS '
@@ -9722,8 +9861,11 @@ def check(report,firmware):
             'mapped bytes are the official container — then two directory '
             'entries (0xcf96 index.idx / 0xf5c0 power_on.wts); the task-'
             'installation tail walks the six-value CONFIG cycle 0xa1cd/0x9946/'
-            '0xd1cf/0x239e/0x7dee/0x91a9 twice more (twelve rounds), '
-            '72389 fed bytes total')
+            '0xd1cf/0x239e/0x7dee/0x91a9 twice more (twelve rounds), and the '
+            'route-EVIMPL release (the jlstream task-stack 4B slot unknown-word '
+            'pass) walks the same CONFIG cycle four more times (twenty-four '
+            'rounds — the first jlstream message dispatch re-reads the '
+            'CRC-verified config tables), 73109 fed bytes total')
     require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')
@@ -10539,6 +10681,31 @@ def check(report,firmware):
         'authorization-gated alignment batch). Every conclusion past this '
         'boundary is conditional / derived-not-measured and is not a '
         'real-device playback verification.')
+
+    report['jlstream_kick_param2_unknown_release_fixture']=(
+        'single-slot unknown-word release assumption (NOT a device '
+        'measurement; route EVIMPL, codex decision (a)-1 with the '
+        'five-element context guard): the 41,909,506 stop 0x60869ba '
+        '(ld.w.l r6=[r10+8], encoding d0 ec a8 60) reads the jlstream '
+        'task-stack message slot whose MMU translation is exactly '
+        '[0x18ca64,0x18ca68). The release is NOT a physical-address '
+        'exemption: every load re-validates the jlstream task instance '
+        '(bound at the install site 0x6065f9e — the task body entry '
+        '0x6086980 never executes, the OS preloads the initial GPR frame '
+        'and first-dispatches into get-event; entry is the disassembly '
+        'anchor only), the pinned PC and bytes, r10==sp+24, the '
+        'TCB-described 0xC00-byte stack window, and a writable RAM region. '
+        'The value is an UnknownWord built from the actual known bytes '
+        'with physical-byte origins (never zero-filled; the slot stays '
+        'uninitialized — a later real message write answers the true '
+        'value, a partial write keeps the remaining bytes '
+        'unknown-with-origin). Consumption stays fail-closed (cmd 4..12 '
+        'arms stop at 0x60869c6 at the latest, unit-pinned). The '
+        'equivalence wording is scoped to the known-cmd0 synchronous '
+        'fragment and derived from disassembly; it does not imply silicon '
+        'reached the same state. Neighboring slots, other PCs, other task '
+        'instances, changed mappings, ROM/MMIO windows and instruction '
+        'fetch never receive source permission.')
 
     report['jl_rand_seed_fixture']=(
         'synthetic-not-measured entropy assumption (NOT a device measurement): '

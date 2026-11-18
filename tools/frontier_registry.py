@@ -594,11 +594,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 41909506,
-        'stop_pc': '0x60869ba',
-        'stop': {'kind': 'uninitialized_memory', 'access': 'read',
-                 'address': '0x18ca64', 'size': 4, 'region': 'physical_heap',
-                 'first_missing': '0x18ca64'},
+        'completed_steps': 41965883,
+        'stop_pc': '0x606e148',
+        'stop': {'kind': 'jl_audio_dac_dma_read_not_modeled',
+                 'address': '0xfe0510'},
         'freshness_fields': ('kind', 'address'),
     },
 }
