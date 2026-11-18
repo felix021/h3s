@@ -687,6 +687,9 @@ class M4ProjectionFamilies(unittest.TestCase):
         # Route BATCHA: the JL_PLED config-word family container (13 words),
         # ON in the current conditional frontier flag set.
         jl_pled_config_words=True,
+        # Route EVIMPL: the jlstream single-slot unknown-word release guard,
+        # ON in the current conditional frontier flag set (41.9M-era frontier).
+        jlstream_kick_param2_unknown=True,
     )
 
     def build_world(self):
@@ -885,6 +888,24 @@ class M4ProjectionFamilies(unittest.TestCase):
         hw.jl_pled_config_words.write(0xfd6108, 0)
         self.assertEqual(hw.jl_pled_config_words.read(0xfd6104), 0)
         hw.jl_pled_config_words.write(0xfd6128, 3)
+        # Route EVIMPL: the jlstream release guard took the frontier-stop
+        # shape — one observed task entry, one authorized unknown-word load
+        # (first-load evidence window still open at the stop), one producer
+        # candidate executed. All of it is behavior state: a restore without
+        # the instance would make the guard refuse (strict stop regression).
+        from br28_unknown import UnknownWord as _UnknownWord
+        from test_jlstream_kick_param2 import GuardCpu, GuardMem
+        guard = hw.jlstream_kick_param2
+        guard.note_step(GuardCpu(pc=guard.TASK_ENTRY_PC, sp=0x18ca7c, core=0,
+                                 mem=GuardMem()))
+        loader = GuardCpu(pc=guard.LOAD_PC, sp=0x18ca44, core=0,
+                          mem=GuardMem({0x18ca5c: b'\x00\x00\x10\x00',
+                                        0x18ca60: b'\x00\x00\x00\x00'}))
+        loader.R[10] = 0x18ca5c
+        loader.R[0] = 0
+        value = guard.authorize(loader, hw, 8)
+        self.assertIsInstance(value, _UnknownWord)
+        guard.producer_executions['open_kick_api_0x6074ffe'] = 1
         return hardware
 
     def captured_m4(self, world):

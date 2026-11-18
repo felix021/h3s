@@ -276,6 +276,21 @@ FEATURES = (
             '官方 UFW 外层 type50 容器,SHA256 三方复算钉死,挂载自校验全套'
             '(长度/SHA/头+目录+文件 CRC/范围),零合成字节;显式假设=分区携带'
             '官方内容非设备实测,结论 conditional)'),
+    # ---- 路 EVIMPL/sim-evimpl:jlstream 任务栈单点 4B 槽 unknown-word 放行
+    # (41,909,506 停点 0x60869ba=r6=[r10+8] 读 kick 消息从不写的第二输出参
+    # 数槽,任务栈物理 [0x18ca64,0x18ca68);codex 裁决 (a)①+五要素上下文守
+    # 卫:任务实例/PC+原始编码 d0 ec a8 60/r10==sp+24+0xC00 栈窗/MMU 翻译恰
+    # 为钉死物理窗,每次装载逐条重验非地址豁免;值=abstract_word(task_frame
+    # =True) 构造 UnknownWord 按实际已知字节+物理来源,不写零不标初始化,后
+    # 续真消息写槽返真值;消费面 fail-closed(cmd∈[4,12] 最迟 0x60869c6 停);
+    # 读值零消费+0x6086b0c r6=r12 覆盖=反汇编结论未设备测量。全案 docs/
+    # frontier-scout-evqueue.md;依赖边挂 ton_official_partition_pair=场景
+    # 推进顺序(TONMAP 放行后链才到达停点)非硬件依赖。----
+    Feature('jlstream_kick_param2_unknown', 'conditional', ('ton_official_partition_pair',),
+            False, None,
+            'jlstream 任务栈单点 4B 槽 unknown-word 放行(41,909,506 停点 '
+            '0x60869ba 读 0x18ca64;五要素守卫每次装载重验,值构造不写零、'
+            '消费负例仍停;conditional/derived-not-measured)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
     Feature('core_tick_irq3_delivery', 'conditional', (), False, None,

@@ -5066,6 +5066,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              p2m_clk_con0_config_rmw=False,
              jl_iomc_map_fixture=None,
              jl_pled_config_words=False,
+             jlstream_kick_param2_unknown=False,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -6728,6 +6729,23 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 require(windows[i][1]<=windows[j][0] or windows[j][1]<=windows[i][0],
                         'TON fixture windows must not overlap an existing mapping')
         readonly=tuple(readonly)+((ton_base,ton_blob),(ton1_base,ton1_blob))
+    # jlstream_kick_param2_unknown(路 EVIMPL,默认 False=关):jlstream 任务栈
+    # 单点 4B 槽 unknown-word 放行——41,909,506 停点 0x60869ba(r6=[r10+8] 读
+    # post('jlstream',1,{0}) kick 消息从不写的第二输出参数槽,任务栈物理
+    # [0x18ca64,0x18ca68))。codex 裁决 (a)①:unknown-word 传播+单点槽+上下文
+    # 守卫(五要素=任务实例/PC+编码 d0 ec a8 60/r10==sp+24+0xC00 栈窗/MMU 翻译
+    # 恰为钉死物理窗;每次装载逐条重验,非地址豁免;值构造走 abstract_word
+    # (task_frame=True) 不写零不标初始化;消费面 fail-closed 不变)。机制/
+    # 证据全图见 JlstreamKickParam2Unknown 类注释与 docs/frontier-scout-
+    # evqueue.md;消费负例(cmd∈[4,12] 最迟 0x60869c6 停)由定向单测钉死。
+    # 依赖边挂 ton_official_partition_pair=场景推进顺序(TONMAP 放行后链才
+    # 到达本停点),非硬件依赖;开关关=拦截门不装,41,909,506 逐键复现。
+    if jlstream_kick_param2_unknown:
+        require(ton_official_partition_pair is not None,
+                'the jlstream kick param2 release rides on the TONMAP official-'
+                'container world (the chain reaches the slot load only after the '
+                'TON/TON1 release)')
+        options['jlstream_kick_param2_unknown']=True
     # jl_rand_seed(路 RAND/sim-rand,默认 None=关):JL_RAND->R64L(0xfd3b00)熵源
     # 种子 fixture——readonly 单字映射,每次读同一冻结常量(policy=constant_on_
     # every_read)。熵机制无文档、值不可推导(synthetic-not-measured,非设备
