@@ -1699,9 +1699,10 @@ def check_self_conditional(report, arms=None):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 41914483, '1': 11496},
+                run['per_core_steps'] == {'0': 41970865, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (41909506 @ 0x60869ba, the uninitialized '
+                'conditional frontier stop (41965883 @ 0x606e148, the not-modeled JL_AUDIO '
+                'DAC DMA HRP pointer read 0xfe0510 '
                 '4-byte task-stack read at physical 0x18ca64 — reached after the '
                 'route-STOREG3 standalone '
                 'postincrement word-store release executes the byte-unpack '
@@ -1751,9 +1752,23 @@ def check_self_conditional(report, arms=None):
                 '0x6086980, 0x6000d6c) and walks +51,493 steps into the '
                 'task-0x6086980 event loop whose second output-parameter '
                 'read [r10+8] touches the never-written task-stack word at '
-                'physical 0x18ca64 — an honest uninitialized stop; '
-                'per-core 1 unchanged at 11496 — the 0x18ca64 read belongs '
-                'to the next route)')
+                'physical 0x18ca64 — an honest uninitialized stop; and the '
+                'route-EVIMPL single-slot unknown-word release '
+                '(jlstream_kick_param2_unknown, codex five-element context '
+                'guard: the task instance observed at install site '
+                '0x6065f9e with the task body entry never executing, the '
+                'pinned PC and encoding d0 ec a8 60, r10==sp+24 inside the '
+                'TCB-described 0xC00-byte stack window, the MMU '
+                'translation exactly [0x18ca64,0x18ca68), an UnknownWord '
+                'built from the actual known bytes — never zero-filled, '
+                're-validated per load) passes that one 4-byte slot, the '
+                'first jlstream message (cmd 0) dispatches through the '
+                'event loop and +56,377 more steps walk into the audio '
+                'DAC DMA run domain where the pointer-poll body at '
+                '0x606e148 reads JL_AUDIO+4 (DAC DMA HRP 0xfe0510) — an '
+                'honest not-modeled register read; '
+                'per-core 1 unchanged at 11496 — the 0xfe0510 DMA pointer '
+                'read belongs to the next route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
@@ -1782,16 +1797,36 @@ def check_self_conditional(report, arms=None):
     # +10 个寄存器值分歧段;写差异传播钉值(下方)机械证明全部分歧写=
     # 镜像字节差异传播,新增 20 cell 逐一属 image 类(=镜像差异字节对
     # 逐字,零 removed 零 value-change)。
-    require(spans['count'] == 161,
+    # 路 EVIMPL:单点 4B 槽放行段(首条 jlstream 消息分发+音频 DAC DMA 域,
+    # +56,377 步)再把同一 tone 参数四字节块(a9 91 66 c9 ↔ f2 64 7f a5)
+    # 逐字拷进新分配的堆对象(0x18b290/0x18b344/0x18bb94 与 0x18d084..0x18d160
+    # 配置对象族,0x18d0f0 计数 1→2)——spans 161→181(+20 寄存器值分歧段,
+    # 同族 CONFIG 拷贝循环),写差异 steps 269→305、cells 156→186:30 新增
+    # +2 复触全部属 image 类逐字传播,零 removed 零 value-change,零
+    # structural 零 unexplained(寄存器计算传播仍仅既有软件 CRC 累加器 1 例);
+    # 无新传播机制,只是同一镜像差异字节在同族地址上的重现。
+    require(spans['count'] == 181,
             'the official-vs-b79 conditional divergence-span count changed')
     if arms is not None:
         trace_official, plain_official = arms['official']
         trace_b79, plain_b79 = arms['tested_b79']
         _require_pinned_write_delta(
             'official-vs-b79 (p11_heap_experimental)', trace_official, trace_b79,
-            plain_official, plain_b79, pinned_steps=269, pinned_cells={
+            plain_official, plain_b79, pinned_steps=305, pinned_cells={
                 ('0x1272b8', '28', '88'): 1,
                 ('0x1272b8+1', '33', 'fa'): 1,
+                ('0x18b290', 'a9', 'f2'): 3,
+                ('0x18b291', '91', '64'): 3,
+                ('0x18b292', '66', '7f'): 3,
+                ('0x18b293', 'c9', 'a5'): 3,
+                ('0x18b344', 'a9', 'f2'): 1,
+                ('0x18b345', '91', '64'): 1,
+                ('0x18b346', '66', '7f'): 1,
+                ('0x18b347', 'c9', 'a5'): 1,
+                ('0x18bb94', 'a9', 'f2'): 1,
+                ('0x18bb95', '91', '64'): 1,
+                ('0x18bb96', '66', '7f'): 1,
+                ('0x18bb97', 'c9', 'a5'): 1,
                 ('0x18bc78', 'a9', 'f2'): 1,
                 ('0x18bc79', '91', '64'): 1,
                 ('0x18bc7a', '66', '7f'): 1,
@@ -1824,10 +1859,22 @@ def check_self_conditional(report, arms=None):
                 ('0x18d053', '93', '53'): 2,
                 ('0x18d05c', 'a9', 'f2'): 1,
                 ('0x18d05c+1', '91', '64'): 1,
+                ('0x18d084', 'a9', 'f2'): 1,
+                ('0x18d085', '91', '64'): 1,
+                ('0x18d086', '66', '7f'): 1,
+                ('0x18d087', 'c9', 'a5'): 1,
+                ('0x18d090', 'a9', 'f2'): 1,
+                ('0x18d090+1', '91', '64'): 1,
                 ('0x18d0a4', 'a9', 'f2'): 7,
                 ('0x18d0a4+1', '91', '64'): 7,
+                ('0x18d0b4', 'a9', 'f2'): 1,
+                ('0x18d0b5', '91', '64'): 1,
+                ('0x18d0b6', '66', '7f'): 1,
+                ('0x18d0b7', 'c9', 'a5'): 1,
                 ('0x18d0b8', 'a9', 'f2'): 3,
                 ('0x18d0b8+1', '91', '64'): 3,
+                ('0x18d0c0', 'a9', 'f2'): 1,
+                ('0x18d0c0+1', '91', '64'): 1,
                 ('0x18d0c8', 'a9', 'f2'): 7,
                 ('0x18d0c9', '91', '64'): 7,
                 ('0x18d0ca', '66', '7f'): 7,
@@ -1840,8 +1887,12 @@ def check_self_conditional(report, arms=None):
                 ('0x18d0dd', '91', '64'): 3,
                 ('0x18d0de', '66', '7f'): 3,
                 ('0x18d0df', 'c9', 'a5'): 3,
-                ('0x18d0f0', 'a9', 'f2'): 1,
-                ('0x18d0f0+1', '91', '64'): 1,
+                ('0x18d0e4', 'a9', 'f2'): 1,
+                ('0x18d0e5', '91', '64'): 1,
+                ('0x18d0e6', '66', '7f'): 1,
+                ('0x18d0e7', 'c9', 'a5'): 1,
+                ('0x18d0f0', 'a9', 'f2'): 2,
+                ('0x18d0f0+1', '91', '64'): 2,
                 ('0x18d0f8', 'a9', 'f2'): 1,
                 ('0x18d0f9', '91', '64'): 1,
                 ('0x18d0fa', '66', '7f'): 1,
@@ -1850,6 +1901,8 @@ def check_self_conditional(report, arms=None):
                 ('0x18d0fd', 'c1', '7a'): 2,
                 ('0x18d0fe', '9b', 'bd'): 2,
                 ('0x18d0ff', 'a2', '77'): 2,
+                ('0x18d160', 'a9', 'f2'): 1,
+                ('0x18d160+1', '91', '64'): 1,
                 ('0x18d290', 'a9', 'f2'): 4,
                 ('0x18d291', '91', '64'): 4,
                 ('0x18d292', '66', '7f'): 4,
@@ -1945,23 +1998,11 @@ def check_self_conditional(report, arms=None):
                 ('0x19e3fc', '90', '41'): 1,
                 ('0x19e3fd', 'c1', '7a'): 1,
                 ('0x19e3fe', '9b', 'bd'): 1,
-                ('0x19e3ff', 'a2', '77'): 1})
+                ('0x19e3ff', 'a2', '77'): 1,
+            })
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
-    require(diffs == sorted(['$.milestones[23].r0',
-                             '$.peripherals.hardware_crc_projection.result_reads[1]',
-                             '$.peripherals.hardware_crc_projection.result_reads[8]',
-                             '$.peripherals.hardware_crc_projection.result_reads[15]',
-                             '$.peripherals.hardware_crc_projection.result_reads[22]',
-                             '$.peripherals.hardware_crc_projection.result_reads[37]',
-                             '$.peripherals.hardware_crc_projection.result_reads[43]',
-                             '$.peripherals.hardware_crc_projection.result_reads[49]',
-                             '$.peripherals.hardware_crc_projection.result_reads[55]',
-                             '$.peripherals.hardware_crc_projection.result_reads[61]',
-                             '$.peripherals.hardware_crc_projection.result_reads[67]',
-                             '$.peripherals.hardware_crc_projection.result_reads[73]',
-                             '$.peripherals.hardware_crc_projection.result_reads[77]',
-                             '$.peripherals.hardware_crc_projection.result_reads[83]',
-                             '$.peripherals.hardware_crc_projection.result_reads[97]',
+    require(diffs == sorted([
+                             '$.milestones[23].r0',
                              '$.peripherals.hardware_crc_projection.result_reads[103]',
                              '$.peripherals.hardware_crc_projection.result_reads[109]',
                              '$.peripherals.hardware_crc_projection.result_reads[115]',
@@ -1971,19 +2012,39 @@ def check_self_conditional(report, arms=None):
                              '$.peripherals.hardware_crc_projection.result_reads[137]',
                              '$.peripherals.hardware_crc_projection.result_reads[147]',
                              '$.peripherals.hardware_crc_projection.result_reads[154]',
+                             '$.peripherals.hardware_crc_projection.result_reads[15]',
                              '$.peripherals.hardware_crc_projection.result_reads[161]',
                              '$.peripherals.hardware_crc_projection.result_reads[168]',
                              '$.peripherals.hardware_crc_projection.result_reads[175]',
                              '$.peripherals.hardware_crc_projection.result_reads[182]',
                              '$.peripherals.hardware_crc_projection.result_reads[189]',
                              '$.peripherals.hardware_crc_projection.result_reads[197]',
+                             '$.peripherals.hardware_crc_projection.result_reads[1]',
                              '$.peripherals.hardware_crc_projection.result_reads[215]',
-                             '$.peripherals.hardware_crc_projection.result_reads[221]']),
+                             '$.peripherals.hardware_crc_projection.result_reads[221]',
+                             '$.peripherals.hardware_crc_projection.result_reads[227]',
+                             '$.peripherals.hardware_crc_projection.result_reads[22]',
+                             '$.peripherals.hardware_crc_projection.result_reads[233]',
+                             '$.peripherals.hardware_crc_projection.result_reads[239]',
+                             '$.peripherals.hardware_crc_projection.result_reads[245]',
+                             '$.peripherals.hardware_crc_projection.result_reads[37]',
+                             '$.peripherals.hardware_crc_projection.result_reads[43]',
+                             '$.peripherals.hardware_crc_projection.result_reads[49]',
+                             '$.peripherals.hardware_crc_projection.result_reads[55]',
+                             '$.peripherals.hardware_crc_projection.result_reads[61]',
+                             '$.peripherals.hardware_crc_projection.result_reads[67]',
+                             '$.peripherals.hardware_crc_projection.result_reads[73]',
+                             '$.peripherals.hardware_crc_projection.result_reads[77]',
+                             '$.peripherals.hardware_crc_projection.result_reads[83]',
+                             '$.peripherals.hardware_crc_projection.result_reads[8]',
+                             '$.peripherals.hardware_crc_projection.result_reads[97]']),
             'the official-vs-b79 conditional final-report differences changed: ' + str(diffs)
             + ' (route TONMAP: the container-release segment adds result_reads[215]/[221] '
               '— CRC rounds over tone-parameter CONFIG bytes whose official-vs-b79 -10dB '
               'difference propagates into the accumulator, the same image-delta family '
-              'as every other result_reads entry)')
+              'as every other result_reads entry; route EVIMPL: the first-message '
+              'dispatch walks four more CONFIG cycles in the audio DAC DMA domain, '
+              'adding result_reads[227]/[233]/[239]/[245] of exactly that family)')
 
 
 def check_self_candidate(report, label, scenario):
