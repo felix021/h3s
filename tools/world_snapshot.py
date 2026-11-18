@@ -1272,6 +1272,18 @@ M4_FAMILIES = (
     # canary PCs are CLASS constants under the class-identity check.
     ('jl_pled_config_words', 'JLPledConfigWords',
      ('stores', 'word_writes', 'reads_after_write', 'read_attempts')),
+    # Route EVIMPL: the jlstream single-slot unknown-word release guard. All the
+    # guard pins (LOAD_PC / encoding / physical window / task entry / stack
+    # window / producer watch table) are CLASS constants under the class-identity
+    # check; the captured state is the guard's runtime bookkeeping — a restore
+    # without it would lose the observed task instance (guard refuses, honest
+    # strict stop) and the first-load evidence/counters, i.e. real behavior
+    # state, not a static fixture. Switch off = slot None like every family.
+    ('jlstream_kick_param2', 'JlstreamKickParam2Unknown',
+     ('task_installs', 'instance_core', 'instance_tcb', 'authorized_loads',
+      'unknown_word_loads', 'value_known_loads', 'cmd_histogram',
+      'producer_executions', 'first_load', 'window_open', 'window_trace',
+      'window_foreign_steps', 'window_async')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 

@@ -664,6 +664,30 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         def step_body(self):
             insn,raw,size=self.decode(self.pc)
             self.check_opaque(insn,raw)
+            if hardware is not None and hardware.jlstream_kick_param2 is not None:
+                # 路 EVIMPL:jlstream 任务栈单点 4B 槽放行的观测/守卫挂点。
+                # note_step=纯观测(任务体入口实例/生产者候选计数/装载后活
+                # 区间追踪);装载门只在 LOAD_PC 一点上拦,五要素守卫见
+                # JlstreamKickParam2Unknown.authorize。开关关=槽 None,一次
+                # is-not-None 测试即过,legacy 世界零变化。
+                hardware.jlstream_kick_param2.note_step(self)
+                if self.pc==hardware.jlstream_kick_param2.LOAD_PC:
+                    gate=hardware.jlstream_kick_param2
+                    require(insn.id=='ld.w.l' and raw=={'r':6,'s':10,'n':2},
+                            'the jlstream kick param2 release site must keep its '
+                            'pinned shape (ld.w.l r6=[r10+8], width 4 — raw word '
+                            'index n=2, operands scale to +8)')
+                    require(self.mem.read(self.pc,4)==gate.ENCODING,
+                            'the jlstream kick param2 release site bytes changed '
+                            '(expected the pinned encoding d0 ec a8 60)')
+                    value=gate.authorize(self,hardware,module.check.operands(insn,raw)['n'])
+                    if value is not None:
+                        self.R[6]=value
+                        self.finish_exact(self.pc+size)
+                        adapters['jlstream_kick_param2_load']+=1
+                        return
+                    # 守卫拒绝:落回普通严格路径(邻槽/他 PC/他实例/映射
+                    # 改变等负例即在此处诚实停)。
             if machine is not None:
                 if machine.first_task_return_hypothesis is not None:
                     machine.first_task_tail(self,insn,raw)

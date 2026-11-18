@@ -1,0 +1,65 @@
+{
+  "route": "EVIMPL / sim-evimpl（基线 main 507b10e=EVSCOUT 合并点，路 EVSCOUT 停点收口后的实施路）",
+  "recorded_at": "2026-11-18T12:46:00+08:00",
+  "task": "jlstream 任务栈单点 4B 槽 unknown-word 放行（codex 裁决 (a)-1 五要素上下文守卫，evidence/sim-routes/evscout.json plan）：41,909,506 @ 0x60869ba（ld.w.l r6=[r10+8] 读任务栈物理 0x18ca64 未初始化 4B）放行 → 推进新前沿 → 10 臂验证 → 重钉。",
+  "runtime_erratum_found_during_implementation": {
+    "what": "任务体入口 0x6086980 在运行面从不执行——OS 任务安装代码预装初始 GPR 帧（r5/r9/r10/r11/r12/r13/r14），首次调度直接进入 get-event 0x6064c8c；入口地址只是反汇编锚点",
+    "v1_symptom": "守卫 v1 绑定『执行到 0x6086980』→ 任何快照续跑 task_entries=0，授权永不成立",
+    "fix": "v2 改绑任务安装点 0x6065f9e（st.d.l，r0==0x6086980 且 r4=任务结构 TCB）——安装是运行时可观察事实；栈界装载时从 TCB 现读（[+64] 栈字数 0x300、[+68] 栈基址、[+72] 名字指针 0x609d3bb 三重校验）",
+    "second_consequence": "jlstream 安装远早于既有可复用快照边界（batcha cut-41866039 之前）→ 从旧快照续跑同样观察不到安装；本路自建一对从零 base（off 世界 / 全开世界，各 41,884,941 步，wall 22.6 分钟档）解决，on 臂续跑零 ack 需求",
+    "caught_by": "PRODUCER_WATCH 类属性诊断补丁 + 里程碑里安装点执行记录（0x6065f9e r0=0x6086980 r4=0x41a390）"
+  },
+  "implementation": {
+    "switch": "jlstream_kick_param2_unknown（conditional，依赖 ton_official_partition_pair，默认 False=关；关闭世界零行为差异，off 复现臂逐键相等实证）",
+    "guard_five_elements": {
+      "1_instance": "安装点 0x6065f9e 观察到的当前 jlstream 任务实例（r0==0x6086980、r4=TCB；核号一致；TCB 三重校验后取栈界）",
+      "2_pc_encoding": "PC==0x60869ba 且指令字节==d0 ec a8 60 且形状==ld.w.l r6=[r10+8]（raw n=2 字索引，操作数换算 +8——pi32v2 惯例：raw 按字计）",
+      "3_frame": "r10==(sp+24)&0xffffffff 且位移==8 且 sp 落在 TCB 描述的 0xC00 字节栈窗",
+      "4_address": "装载地址落同一栈窗且 MMU 平移恰为 [0x18ca64,0x18ca68) 且 region 为可写 RAM",
+      "5_value": "mem.abstract_word(address,task_frame=True) 按实际已知字节构造 UnknownWord（物理字节带源；不写零，槽保持未初始化）"
+    },
+    "per_load_revalidation": "每次装载全链重验；拒绝即回落普通严格路径（uninitialized_memory 诚实停）；放行不持久、非物理地址豁免；邻槽/其他 PC/其他任务实例/改映射/ROM/MMIO/取指一律无源权限",
+    "m4_snapshot_family": "world_snapshot.py M4 族 JlstreamKickParam2Unknown 13 字段（task_installs/instance_core/instance_tcb/authorized_loads/unknown_word_loads/value_known_loads/cmd_histogram/producer_executions/first_load/window_open/window_trace/window_foreign_steps/window_async）——快照续跑一致性单测覆盖（开臂恢复状态、关臂拒绝缺槽、None→on 前缀未触声明）",
+    "files": "tools/br28_model.py（类+接线+报告）、tools/probe_boot.py（CPU.step_body 钩子+适配器 jlstream_kick_param2_load）、tools/world_snapshot.py（M4 族）、tools/probe_irq_entry.py（参数+接线+断言面）、tools/frontier_registry.py（feature）、tools/test_jlstream_kick_param2.py（12 项）、tools/test_world_snapshot.py（poke）、tools/check_local.py（挂单测）"
+  },
+  "verification_arms": {
+    "mechanism": "frontier_iteration.py 自建 base 对：base.bin（off 世界，从零 41,884,941）+ base-on.bin（全开世界，从零 41,884,941，体内携带安装观察 task_installs=1）；on 臂从 base-on 续跑（跨代码同开关，零 ack）",
+    "arm1_off_reproduce": {
+      "stop": "41909506 @ 0x60869ba uninitialized_memory read 0x18ca64（旧前沿逐字节复现）",
+      "comparison": "与 tonmap on-main.json（tonmap 路全量参照）reference_equal=true，零差异键——关闭世界对本路全部代码改动中立",
+      "wall_seconds": 0.9
+    },
+    "arm9_on_main": {
+      "stop": "41965883 @ 0x606e148 jl_audio_dac_dma_read_not_modeled address 0xfe0510",
+      "advance": "+56377 步（新前沿），per-core core1 11496 不变（纯 CPU0 段），wall 3.8s；10k/50k 阶梯被真第一停点直接覆盖",
+      "stop_reading": "0x606e142 li r5=0xfe0500（JL_AUDIO 基址）；0x606e148 ld.w r0=[r5+4] 读 0xfe0510（DAC DMA HRP 指针）；0x606e14a ld.w r1=[r5+5] 读 0xfe0514 + beq.rr 轮询——音频 DAC DMA 运行域（DMA 指针等待环），探路 top3 第 3 名（解码器/音频域）；第 1/2 名（walker 对象域、兄弟任务/事件钟）无停点越过",
+      "release_evidence": "authorized_loads=1/unknown_word=1/value_known=0；cmd_histogram {'0x0':1}；first_load：TCB 0x41a390、栈窗 [0x402800,0x403400)、buf_words ['00001000','00000000','????????','????????']、trace_tail 69be→69c2→6b06→6b0c→6b0e、r6 unknown×4 后 0x1264b8（0x6086b0c 整字覆写）、window_async=true（活区间落一次异步 IRQ，foreign_steps=1，unknown 活过运输）、producer open_kick_api_0x6074ffe=1（六候选仅它执行）",
+      "n_runtime_closure": "buf[0]=0x00100000 族 id 头（⇒载荷字数 n=1）、buf[1]=0（已初始化 ⇒ n≥1）、buf[2] 未初始化（⇒ n<2）——探路开放项 n 运行时闭包为 1，与 codex 两案中 n=1 案吻合",
+      "shape": "Timer0 交付 15761→15766（+5，新中断上下文 0x6007af2 查名 helper 函数头 st.d.sp.l / 0x6074614 kick 参数族 ld.hu.sp.l，末次打断 0x6074614）；software_irq 692/346 冻结（零兄弟调度往返）；事件钟 82545158 冻结；parked (12791,257,176) 冻结；core-tick cnt 352076→577584（恰 +56377×4）、347/347 冻结；CRC 222→246（+24=CONFIG 六值周期×4）、fed 72389→73109（+720）；timer0 PRD 47999→23999、到期 15778→15783、cnt 15417；wdt elapsed 120→134、feeds 163/162 冻结；TON 窗读=保留事件窗内 0 次（窗已截断，非全量断言）",
+      "wall_seconds": 3.8
+    },
+    "arm2_source_observation": "队首头字/解包写集/返回码记录于 first_load 与 cmd_histogram（cmd=0、载荷 1 字=0）；post PC 计数=producer_executions（唯一执行 0x6074ffe；0x607607e r3==0 臂/任务体 cmd8/cmd9 自 post/walker 收尾自 post/0x6086c4c 定时器回调全部 0）",
+    "arm3_local_open": "69b6→69ba→69be→69c2→6b06→6b0c→6b0e 指令序+6b0c 后 r6=0x1264b8+不执行 69c6/69c8/69cc（隔离 explore 直跑钉死，pcs 列表逐项）",
+    "arm4_switch_scope_negatives": "邻槽/跨界/另一 PC/另一 TCB/实例重装替换/ROM/MMIO/取指=无源权限（类级单测+守卫拒绝回落严格停集成臂）；n=2 写 obj 后读真值（known-obj 对照 69c6/69c8/69cc/69f0 正常走）",
+    "arm5_consumption_negatives": "cmd=4/5/8/11/12 配未知 buf[2] 全部最迟 0x60869c6 停（kind=unknown_task_register_consumed，sources 含 0x18ca64）；cmd=3/13 越界对照跳过 69c6；12/12 定向测试通过",
+    "arm6_concrete_value_controls": "缺失 word 设 0/0xffffffff/0x80000000/0x12345678+unknown 对照：cmd0 片段 PC 轨迹完全一致（读值零语义实证）",
+    "arm7_async_save_restore": "window_async=true 运行时实证（活区间一次异步 Timer0 交付，unknown 活过栈运输到覆写点）；同步片段限定措辞进报告 assumptions",
+    "arm8_snapshot_consistency": "M4 族恢复（on→on 状态复原）；off 臂从自建 base 复现旧前沿逐键相等；快照捕获在源读前（first_load 证据在停点报告内）",
+    "arm10_regression": "check_local --units EXIT=0（含新增 12 项定向测试+test_world_snapshot 60 项）；assert_preflight 合成报告（tonmap 全量 legacy 行+on-main 行）221 断言离线闭环，唯一 mismatch=22 键基线（重取中）；全量 probe --rom 从零 EXIT=0 见 repins.full_run"
+  },
+  "repins": {
+    "frontier_registry": "p11_heap_experimental → 41965883 @ 0x606e148 jl_audio_dac_dma_read_not_modeled 0xfe0510（probe require/analyze freshness/test 期望自动跟随单点）",
+    "probe_check_counts": "CRC 246/fed 73109（尾段 cycle6 ×2→×6）；sw 692/346、deliveries 346 冻结；timer0 15766/15783/cnt 15417/PRD 23999+新中断上下文 0x6007af2/0x6074614；core-tick cnt 577584；wdt elapsed 134；EVIMPL 释放记录断言块+中文注释段+fixture 注记 jlstream_kick_param2_unknown_release_fixture",
+    "adapter_baseline": "22 键 evidence/p11_heap_adapter_count_baseline.json --recapture 重取（本路 +56,377 步漂移 12 键，含 abstract_task_stack_transport +1782/exact_full_word_store +1986 等）；重取=从零全量条件场景，停点 41,965,883 @ 0x606e148 与快照续跑臂逐字一致——on 臂 resume≡from-0 的独立确认（CKPT 先例口径外再加一路）",
+    "analyze_check_self": "不改动 analyze_image_trace.py（红线；sim-tonmap 路并行持有该文件改动）——其 per_core 硬钉 {'0':41914483,'1':11496} 将漂移为 {'0':41970865,'1':11496}，如实报告留主协调统一处理",
+    "full_run": "tools/probe_irq_entry.py --rom 全量从零 15 场景 EXIT=0（13:04-13:35，p11 行 41,965,883 @ 0x606e148 jl_audio_dac_dma_read_not_modeled 0xfe0510；产物 analysis/local-checks/irq-entry.json，assert_preflight 复检 221/221 全绿）"
+  },
+  "next_stop_prediction": "0x606e148 读 0xfe0510=JL_AUDIO DAC DMA HRP 指针（0x606e14a 第二读 0xfe0514 PNS？+beq.rr 指针对轮询=DMA 完成等待环）。下一路候选：①DAC DMA 指针/完成位投影（读侧具名 fixture 或运行域投影——需 DMA 通道行为证据）；②跳过等待环后的首条 DMA 缓冲写读（音频数据路径=解码器域入口）；③若 0xfe0514 属 PNS/配置字则可能先撞写侧。探路 top3 第 1/2 名（walker 对象域、兄弟任务/事件钟）本段已无停点越过，不排除在音频域之后再临。",
+  "honesty": {
+    "derived_not_measured": "等价措辞限已知 cmd0 同步片段、反汇编推导，非设备实测，不意味 silicon 到达同一状态（codex 原文进 assumptions 与 fixture 注记）；生产者甄别（六候选谁 post 首条消息）保持 open 痕迹项（载荷同为 {0}，不设障本放行）",
+    "resume_conditional_pass": "on/off 两臂均自建 base 快照续跑（3.8s/0.9s 档）；等价性依据=CKPT/CON0/BATCHA 三轮 resume≡from-0 先例+off 臂与 tonmap 全量参照逐键相等+on 臂停点被 --recapture 从零全量条件场景逐字复现（41,965,883 @ 0x606e148）+断言面离线闭环 221/221",
+    "preflight_splice_method": "离线预检用 tonmap 路全量报告的 legacy 14 行+本路 on-main 行拼合（零仿真重放 check()）；legacy 行对本路开关中立（默认关），拼合仅为断言字面值校验，非执行验证",
+    "parity": "official↔b79 parity 到新停点未在本路重跑（放行段纯 CPU0、无镜像分叉点，预期 delta 0）；analyze_image_trace 的 per_core 钉值漂移留主协调复核准入",
+    "scope": "本放行只覆盖 0x60869ba 一处一字；0x18ca64 槽在真实消息写入后仍按已知字节应答（部分写保留剩余字节 unknown 带源）；第二输出参数若 n=2 出现（obj 指针消息）不在本放行内"
+  }
+}

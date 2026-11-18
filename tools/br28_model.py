@@ -5,6 +5,7 @@ capture/PWM modes, reset stimuli and actual CPU interrupt delivery still stop.
 """
 from collections import Counter
 import operator
+import struct
 
 from probe_boot import Blocked, IrqDeliveryRequest
 
@@ -4642,6 +4643,263 @@ class JLPledConfigWords:
         }
 
 
+class JlstreamKickParam2Unknown:
+    """jlstream 任务栈单点 4B 槽 unknown-word 放行(路 EVIMPL,codex 裁决
+    (a)①「unknown-word 传播+单点槽+上下文守卫」,docs/frontier-scout-evqueue.md)。
+
+    背景:41,909,506 停点 @ 0x60869ba(tonmap 放行后 +51,493 步)——jlstream
+    框架主任务 0x6086980(注册点 0x60759ee,名字 'jlstream'@0x609d3bb,prio3、
+    栈 0x300 字)事件循环 get-event(0x6064c8c)返回 13 后读第二输出参数
+    `r6=[r10+8]`(ld.w.l,原始编码 d0 ec a8 60)。消息形状=post('jlstream',1,
+    {0}) 1 字 kick 惯用法(全镜像 6 处同形状):get-event 解包(0x60649b0)
+    按载荷字数 n 写 buf,n=1 时 buf[2] 从不写——任务栈物理 0x18ca64 未初始化,
+    silicon=残留值,模型严格停。
+
+    侦察钉死(EVSCOUT+codex 逐指令/被调链复核):在已知 cmd0、同步路径上,
+    读值不参与谓词/地址/算术/控制目标——r6 活区间 [0x60869ba,0x6086b0c)
+    零消费(69be 用 r0、69c2 用 r1、6b06 call 常量、被调 0x6075ce0/0x12b55c/
+    0x12b5b0 只用 r0-r4/SP/RETS),最终 0x6086b0c r6=r12 覆盖。补零/fixture
+    无证据支持特定值(违反不发明参数值红线),诚实停无信息量且锁死前沿。
+
+    放行形状(codex 定稿五要素;实施勘误一条:任务体入口 0x6086980 从不
+    执行——安装代码把前奏寄存器预置进初始 GPR 帧、首派发直入 get-event,
+    实例绑定按 codex 原文「绑定 jlstream 的当前 TCB/栈分配实例」落在安装
+    点 0x6065f9e(r0==0x6086980)的任务结构上,栈窗在装载时从结构现读
+    +64 栈字数 0x300/+68 栈基址/+72 名字指针 0x609d3bb 三重校验)。本放行
+    **不是**物理地址豁免,每次装载逐条重验守卫——
+      1. 开关默认关(条件栈 off 臂=41,909,506 逐键复现,零新报告键);
+      2. 任务实例绑定:安装点观测(0x6065f9e,r0=jlstream 入口,r4=任务
+         结构地址);栈释放/重分配/结构改写后旧授权自然失效(装载时现读
+         现验,地址与字段都不延续豁免);
+      3. PC=0x60869ba 且操作数形状 r6=[r10+8] 宽 4、原始编码 d0 ec a8 60
+         (probe_boot 装载门 require 钉死);
+      4. r10 恰为本任务 sp+24 消息缓冲、sp 与槽 VA 都在 TCB 栈窗
+         ([栈基址,栈基址+0xC00))内、MMU 实际翻译恰为 [0x18ca64,
+         0x18ca68)(当前基线钉子)且属有效可写 RAM region;
+      5. 值构造走 probe_boot Memory.abstract_word(task_frame=True)——按实际
+         已知字节+物理来源构造 UnknownWord(不写零、不把原槽标成已初始
+         化;后续真实消息写该槽返回真值,部分写保留剩余字节未知来源);
+         来源窗只有这一个 word。
+    fail-closed 语义:UnknownWord 进算术/谓词/地址/控制目标仍停(消费负例
+    cmd∈[4,12] 最迟 0x60869c6 r7=r6+8 停);邻槽/另一 PC/另一 TCB/映射改变/
+    ROM/MMIO/取指都取不到来源权限(守卫拒绝→落入普通严格路径)。
+    等价性措辞(codex 限域):在该固件字节、同一已知 cmd0、有效任务栈映射
+    及当前已声明的架构假设下,真实装载所得任意 32 位值都不影响同步路径的
+    分支、地址和已知状态结果,且在 0x6086b0c 被覆盖;结论来自反汇编,未通
+    过本设备测量;不可由此推出 silicon 已到达同状态。
+
+    附带观测面(不发明行为,只记录):cmd 直方图、首装载证据(buf 三字
+    id/cmd/槽字节态→n=1 运行时闭合)、装载后任务体 PC 追踪(至 0x6086b0c
+    覆盖点,窗口内异步介入如实标注)、6 处 kick 生产者候选执行计数(溯源
+    项,不阻挡放行)。
+    """
+
+    LOAD_PC=0x60869ba
+    ENCODING=bytes.fromhex('d0eca860')
+    TASK_ENTRY=0x6086980           # 任务函数头(反汇编锚;OS 从不直接执行它——
+                                   # 初帧 GPR 由安装代码预置、首派发直入 get-event,
+                                   # 运行面钉死:基线段内 0x6086980 零执行)
+    INSTALL_PC=0x6065f9e           # 任务安装尾 st.d.l(此点 r0=入口/r4=任务结构)
+    TASK_BODY_RANGE=(0x6086980,0x6086d00)
+    # 任务结构(安装点 r4,运行面 dump 钉死):+64 栈字数(0x300)、+68 栈基址
+    # VA(0x402800,窗长恰 0xC00)、+72 名字指针(0x609d3bb 'jlstream')。
+    TCB_STACK_WORDS_OFFSET=64
+    TCB_STACK_BASE_OFFSET=68
+    TCB_NAME_OFFSET=72
+    STACK_WORDS=0x300              # 12B 配置表条目 [0x609d780+4]:prio3、栈 0x300 字
+    TASK_NAME_POINTER=0x609d3bb    # 'jlstream'
+    SLOT_PHYSICAL=0x18ca64       # 当前基线钉子:r10+8 的 MMU 翻译起点(4B 窗)
+    OVERWRITE_PC=0x6086b0c       # r6=r12 哨兵覆盖点(unknown 死点)
+    WINDOW_CLOSE_PC=0x6086b0e    # 覆盖点之后首条(此处 r6 必为已知哨兵)
+    SYNC_HELPER_RANGES=((0x6075ce0,0x6075d10),(0x12b55c,0x12b608))
+    # 6 处 1 字 {0} kick 惯用法 post 点 + 两处动态注册候选函数入口(§2.1);
+    # producer 唯一性=溯源项,不阻挡放行(所有 1 字候选载荷全同 {0})。
+    PRODUCER_WATCH={0x6075078:'open_kick_api_0x6074ffe',
+                    0x607609a:'fn_0x607607e_r3_zero_arm',
+                    0x6086a40:'task_cmd8_self_post',
+                    0x6086aaa:'task_cmd9_self_post',
+                    0x6086b8a:'task_walker_tail_self_post',
+                    0x6086c7e:'timer_callback_0x6086c4c',
+                    0x607607e:'fn_0x607607e_entry',
+                    0x6086c4c:'timer_callback_0x6086c4c_entry'}
+
+    def __init__(self):
+        # M4 状态字段(快照捕获面;守卫常量全部是类属性,走类同一性+指纹)。
+        self.task_installs=0
+        self.instance_core=None
+        self.instance_tcb=None
+        self.authorized_loads=0
+        self.unknown_word_loads=0
+        self.value_known_loads=0
+        self.cmd_histogram={}
+        self.producer_executions={name:0 for name in self.PRODUCER_WATCH.values()}
+        self.first_load=None
+        self.window_open=False
+        self.window_trace=[]
+        self.window_foreign_steps=0
+        self.window_async=False
+
+    # ---------------------------------------------------------------- 观测面
+    def note_step(self,cpu):
+        """每条指令执行前调用(probe_boot step 门,开关开启时)。
+        记录:任务安装实例(0x6065f9e,r0==jlstream 入口)、生产者候选执行、
+        装载后活区间追踪。任务体入口 0x6086980 本身从不执行(OS 预置初帧
+        GPR、首派发直入 get-event——运行面钉死),实例绑定按 codex 授权形状
+        落在「当前 TCB/栈分配实例」=安装点的任务结构上。"""
+        pc=cpu.pc
+        if pc==self.INSTALL_PC and cpu.R[0]==self.TASK_ENTRY:
+            self.task_installs+=1
+            self.instance_core=cpu.core_id
+            self.instance_tcb=cpu.R[4]&0xffffffff
+        name=self.PRODUCER_WATCH.get(pc)
+        if name is not None:self.producer_executions[name]+=1
+        if self.window_open:self._note_window(cpu)
+
+    def _note_window(self,cpu):
+        pc=cpu.pc
+        in_body=self.TASK_BODY_RANGE[0]<=pc<self.TASK_BODY_RANGE[1]
+        if in_body:
+            self.window_trace.append({'pc':hex(pc),'r6':self._word(cpu.R[6])})
+            if len(self.window_trace)>64:self.window_trace.pop(0)
+        elif not any(lo<=pc<hi for lo,hi in self.SYNC_HELPER_RANGES):
+            # 活区间内的第三域 PC(IRQ/调度/无关函数)——异步介入如实标注,
+            # 不中断、不发明(unknown 栈运输走既有 abstract_task_stack_transport)。
+            self.window_foreign_steps+=1
+            self.window_async=True
+        if pc==self.WINDOW_CLOSE_PC:
+            self.window_open=False
+            if self.first_load is not None:
+                self.first_load['trace_tail']=list(self.window_trace)
+                self.first_load['r6_after_overwrite']=self._word(cpu.R[6])
+                self.first_load['window_foreign_steps']=self.window_foreign_steps
+                self.first_load['window_async']=self.window_async
+
+    @staticmethod
+    def _word(value):
+        if isinstance(value,int):return hex(value)
+        return 'unknown'
+
+    # ---------------------------------------------------------------- 守卫面
+    def authorize(self,cpu,hardware,displacement):
+        """五要素守卫(每次装载逐条重验)。displacement=装载门按 operands 换算
+        的字节位移(钉死形状下恒 +8)。返回 int|UnknownWord,拒绝返回 None
+        (调用方落回普通严格路径)。pc/编码/操作数形状由 probe_boot 装载门
+        require 钉死;本方法验实例绑定/TCB 栈窗/sp+24 关系/MMU 翻译/region。
+        栈窗在装载时从任务结构现读(不缓存)——TCB 释放/重分配/改写后旧授权
+        自然失效,物理地址与结构字段都不延续豁免。"""
+        mem=cpu.mem
+        if self.instance_tcb is None or cpu.core_id!=self.instance_core:return None
+        try:
+            header=mem.read(self.instance_tcb+self.TCB_STACK_WORDS_OFFSET,12)
+            stack_words,stack_base,name=struct.unpack_from('<III',header)
+        except Exception:
+            return None                     # TCB 不可读=结构已变,拒绝
+        if (stack_words!=self.STACK_WORDS or name!=self.TASK_NAME_POINTER
+                or stack_base+stack_words*4>0x100000000):
+            return None
+        stack_bytes=stack_words*4
+        if cpu.R[10]!=(cpu.sp+24)&0xffffffff or displacement!=8:return None
+        address=(cpu.R[10]+displacement)&0xffffffff
+        if not stack_base<=cpu.sp<stack_base+stack_bytes:return None
+        if not stack_base<=address<stack_base+stack_bytes:return None
+        physical=(hardware.mmu.translate(address,4,mem.read)
+                  if hardware.mmu is not None else address)
+        if physical!=self.SLOT_PHYSICAL:return None
+        region=mem.region(physical,4)
+        if not region:return None
+        value=mem.abstract_word(address,task_frame=True)
+        cmd=cpu.R[0]
+        key=hex(cmd) if isinstance(cmd,int) else 'unknown'
+        self.cmd_histogram[key]=self.cmd_histogram.get(key,0)+1
+        self.authorized_loads+=1
+        from br28_unknown import UnknownWord
+        if isinstance(value,UnknownWord):self.unknown_word_loads+=1
+        else:self.value_known_loads+=1
+        if self.first_load is None:
+            buf=[mem.ram.get(physical-8+i) for i in range(16)]
+            self.first_load={
+                'cmd_register':key,
+                'physical':hex(physical),
+                'region':region,
+                'tcb':hex(self.instance_tcb),
+                'stack_window':f'[{hex(stack_base)},{hex(stack_base+stack_bytes)})',
+                'loop_sp':hex(cpu.sp),
+                'r10':hex(cpu.R[10]),
+                'buf_words':[
+                    self._slot_text(buf[0:4]),   # buf[0]=id 字(0x100000 族)
+                    self._slot_text(buf[4:8]),   # buf[1]=cmd 字(n>=1 时被解包写)
+                    self._slot_text(buf[8:12]),  # buf[2]=本槽(未初始化=never written)
+                    self._slot_text(buf[12:16])],
+                'value':self._word(value)}
+            self.window_open=True
+            self.window_trace=[]
+            self.window_foreign_steps=0
+            self.window_async=False
+        return value
+
+    @staticmethod
+    def _slot_text(bytes4):
+        return ''.join('??' if b is None else f'{b:02x}' for b in bytes4)
+
+    # ---------------------------------------------------------------- 报告面
+    def report(self):
+        return {
+            'enabled':True,
+            'loads':{
+                'authorized':self.authorized_loads,
+                'unknown_word':self.unknown_word_loads,
+                'value_known':self.value_known_loads},
+            'cmd_histogram':dict(sorted(self.cmd_histogram.items())),
+            'task_installs':self.task_installs,
+            'producer_executions':dict(self.producer_executions),
+            'first_load':self.first_load,
+            'guard':{
+                'load_pc':hex(self.LOAD_PC),
+                'encoding':self.ENCODING.hex(),
+                'slot_physical_window':f'[{hex(self.SLOT_PHYSICAL)},{hex(self.SLOT_PHYSICAL+4)})',
+                'install_pc':hex(self.INSTALL_PC),
+                'task_entry':hex(self.TASK_ENTRY),
+                'task_entry_never_executes':('the OS preloads the initial GPR frame '
+                                             'and first-dispatches straight into '
+                                             'get-event; 0x6086980 is the disassembly '
+                                             'anchor only (runtime-pinned: zero '
+                                             'executions on the baseline segment)'),
+                'tcb_stack_words_offset':self.TCB_STACK_WORDS_OFFSET,
+                'tcb_stack_base_offset':self.TCB_STACK_BASE_OFFSET,
+                'tcb_name_offset':self.TCB_NAME_OFFSET,
+                'stack_bounds_read_per_load':True,
+                'revalidated_per_load':True,
+                'not_a_permanent_address_exemption':True},
+            'semantics':('single 4-byte task-stack slot unknown-word release: the '
+                         'guarded load builds an UnknownWord from the actual known '
+                         'bytes with physical-byte origins (no zero fill, the slot '
+                         'stays uninitialized; a later real message write to the '
+                         'slot answers its true value, a partial write keeps the '
+                         'remaining bytes unknown-with-origin); only explicit '
+                         'copy/stack transports may move it, arithmetic/predicate/'
+                         'address/control-target consumption still stops '
+                         'fail-closed; neighboring slots, other PCs, other task '
+                         'instances, changed mappings, ROM/MMIO and instruction '
+                         'fetch never receive source permission (the guard '
+                         're-validates every load and a refusal falls through to '
+                         'the ordinary strict stop)'),
+            'equivalence_wording':('under this firmware\'s bytes, the same known '
+                                   'cmd0, a valid task-stack mapping and the '
+                                   'currently declared architectural assumptions, '
+                                   'no 32-bit value a real load could produce '
+                                   'changes the synchronous path\'s branches, '
+                                   'addresses or known-state results, and it is '
+                                   'overwritten at 0x6086b0c; derived from '
+                                   'disassembly, NOT measured on the device; this '
+                                   'does not imply silicon reached the same state'),
+            'producer_identification_open':('which of the six one-word kick post '
+                                            'sites produced the first message is a '
+                                            'runtime traceability item (all carry '
+                                            'the identical {0} payload; it does not '
+                                            'gate this release)'),
+        }
+
+
 class P11LPVADConfigRegisters:
     """P11_SFR LPVAD VAD_ACON0 单字容器(合成初始 0+读回=当前值,opt-in,路 LPV)。
 
@@ -7112,6 +7370,7 @@ class BR28Model:
                  p2m_clk_con0_config_rmw=False,
                  jl_iomc_map_fixture=None,
                  jl_pled_config_words=False,
+                 jlstream_kick_param2_unknown=False,
                  p11_lpvad_config=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
@@ -7348,6 +7607,13 @@ class BR28Model:
         # 新开关分立不扩 CON0/CON3/P2MCLK 旧容器;开关关时 13 字保持
         # unmapped(41,850,980 前沿形状),legacy 报告逐字节不变。
         self.jl_pled_config_words=(JLPledConfigWords() if jl_pled_config_words else None)
+        # jlstream_kick_param2_unknown(路 EVIMPL):jlstream 任务栈单点 4B 槽
+        # unknown-word 放行——41,909,506 停点 0x60869ba(r6=[r10+8] 读从未写
+        # 的消息槽第二输出参数)。非内存映射寄存器容器:装载拦截在 probe_
+        # boot CPU.step_body(五要素守卫见类注释),本槽只承载守卫状态/观测
+        # 计数/报告;开关关时拦截门一次 is-not-None 即过,legacy 报告不变。
+        self.jlstream_kick_param2=(JlstreamKickParam2Unknown()
+                                   if jlstream_kick_param2_unknown else None)
         # p11_lpvad_config(路 LPV):P11_SFR LPVAD VAD_ACON0(0xf2b404)单字容器
         # ——新开关分立而非扩 p11_window 白名单(改已开开关服务面=改契约,且
         # 「纯写记录读回 Blocked」族与配置读回语义冲突;codex 定调)。
@@ -9505,6 +9771,25 @@ class BR28Model:
                 '(branches sit on arguments); derived-not-measured — no LED '
                 'waveform/brightness/clock/count/interrupt effect is modeled, and '
                 'enable/period/duty writes never generate LED counts or IRQ41')
+        # 路 EVIMPL:jlstream 任务栈单点 4B 槽 unknown-word 放行报告(开关
+        # 关=槽 None=零键,legacy 报告不变;开启时守卫/证据/假设面全量入册)。
+        if self.jlstream_kick_param2 is not None:
+            result['jlstream_kick_param2_unknown_release']=self.jlstream_kick_param2.report()
+            result['assumptions']['jlstream_kick_param2_unknown_release']=(
+                'single-slot unknown-word release for the jlstream task-stack message '
+                'slot read at 0x60869ba (r6=[r10+8], encoding d0 ec a8 60, physical '
+                '[0x18ca64,0x18ca68); route EVIMPL, codex decision (a)-1 with the '
+                'five-element context guard): the release is NOT a physical-address '
+                'exemption — every load re-validates the jlstream task instance '
+                '(entry observed at 0x6086980), r10==sp+24, the 0xC00-byte stack '
+                'window, the exact MMU translation and a writable RAM region; the '
+                'value is an UnknownWord built from the actual known bytes with '
+                'physical-byte origins (never zero-filled, the slot stays '
+                'uninitialized; a real later message write answers the true value); '
+                'consumption stays fail-closed (cmd 4..12 stops at 0x60869c6 '
+                'latest); the equivalence wording is scoped to the known-cmd0 '
+                'synchronous fragment and is derived from disassembly, NOT a device '
+                'measurement, and does not imply silicon reached the same state')
         if self.p11_lpvad is not None:
             result['p11_lpvad_config_registers']=self.p11_lpvad.report()
             result['assumptions']['p11_lpvad_config_registers']=(
