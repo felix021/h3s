@@ -42,6 +42,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from br28_unknown import UnknownWord
+from br28_dsp_models import CopexUpperWord
 from br28_icfg import IcfgState, IcfgValue
 from br28_model import GpcntConValue, GpioOutValue, PartialWord
 from probe_pi32v2 import PIN
@@ -59,7 +60,7 @@ FINGERPRINT_FILES = ('probe_boot.py', 'br28_model.py', 'br28_machine.py', 'br28_
                      'br28_unknown.py', 'probe_irq_entry.py', 'probe_dualcore.py',
                      'probe_platform_startup.py', 'probe_arch_startup.py',
                      'probe_clock_startup.py', 'probe_boot_handoff.py',
-                     'frontier_registry.py', 'world_snapshot.py')
+                     'frontier_registry.py', 'world_snapshot.py', 'br28_dsp_models.py')
 
 
 class SnapshotError(RuntimeError):
@@ -76,16 +77,21 @@ _ABSTRACT_FIELDS = {
     GpioOutValue: ('address', 'value', 'known'),
     GpcntConValue: ('value', 'known'),
     PartialWord: ('value', 'known'),
+    # 路 COPEXIMPL(坑⑥):copex dst 上字的不透明结果——硬件非常数(捕获
+    # 0x1ffffff5/0x2b7e14f2,历史依赖未排除),寄存器面按 pc 溯源序列化。
+    CopexUpperWord: ('pc',),
 }
 _ABSTRACT_TAGS = {'$unknown_word': UnknownWord, '$icfg_value': IcfgValue,
                   '$gpio_out_value': GpioOutValue, '$gpcnt_con_value': GpcntConValue,
-                  '$partial_word': PartialWord}
+                  '$partial_word': PartialWord,
+                  '$copex_upper_word': CopexUpperWord}
 _ABSTRACT_CONSTRUCTORS = {
     UnknownWord: lambda f: (f['bytes'], f['origins']),
     IcfgValue: lambda f: (f['value'], f['known'], tuple(f['origin']), f['identity']),
     GpioOutValue: lambda f: (f['address'], f['value'], f['known']),
     GpcntConValue: lambda f: (f['value'], f['known']),
     PartialWord: lambda f: (f['value'], f['known']),
+    CopexUpperWord: lambda f: (f['pc'],),
 }
 
 
@@ -1298,6 +1304,16 @@ M4_FAMILIES = (
       'unknown_word_loads', 'value_known_loads', 'cmd_histogram',
       'producer_executions', 'first_load', 'window_open', 'window_trace',
       'window_foreign_steps', 'window_async')),
+    # Route COPEXIMPL: the copex mode-22 exponential approximation gate. Guard
+    # pins (mode/domain constants, the fail-closed stop kinds) are CLASS
+    # constants under the class-identity check; the captured state is the
+    # release ledger itself — executions, the bounded per-execution sample
+    # list, first/last samples and the mode histogram. A restore without them
+    # would under-count the segment and drop the evidence samples (the resumed
+    # report must equal the from-zero report), so they are real report state,
+    # not static fixtures. Switch off = slot None like every family.
+    ('copex_exp22', 'CopexExp22Model',
+     ('executions', 'samples', 'first', 'last', 'modes')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 

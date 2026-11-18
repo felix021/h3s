@@ -694,6 +694,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # current conditional frontier flag set (its first served load sits at
         # the 41,965,883-era frontier stop).
         jl_audio_dac_dma_idle_readback=True,
+        # Route COPEXIMPL: the copex mode-22 exponential approximation gate,
+        # ON in the current conditional frontier flag set (its first intercepted
+        # copex sits at the 42,037,363-era frontier stop).
+        copex_exp22_model=True,
     )
 
     def build_world(self):
@@ -933,6 +937,17 @@ class M4ProjectionFamilies(unittest.TestCase):
         idle.current_pc = 0x606e148
         self.assertEqual(idle.serve(GuardCpu(0x606e148), idle_hw,
                                     idle.READ_SITES[0x606e148]), 0)
+        # Route COPEXIMPL: the mode-22 ledger carries state (executions,
+        # first/last samples, mode histogram) — poke a stop-point-shaped pair.
+        copex = hw.copex_exp22
+        copex.executions = 2
+        copex.samples = [{'pc': '0x606a900', 'core': 0, 'x_bits': '0xc05d0c55',
+                          'result_bits': '0x3d0186e2'},
+                         {'pc': '0x606a900', 'core': 0, 'x_bits': '0x0',
+                          'result_bits': '0x3f800000'}]
+        copex.first = copex.samples[0]
+        copex.last = copex.samples[1]
+        copex.modes = {22: 2}
         return hardware
 
     def captured_m4(self, world):
