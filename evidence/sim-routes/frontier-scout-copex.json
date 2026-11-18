@@ -1,0 +1,137 @@
+{
+ "route": "COPEXSCOUT / sim-copexscout（基线 main 1b72d04 worktree，静态侦察，零 tools/ 改动，不跑条件线）",
+ "recorded_at": "2026-11-18T19:00:00+08:00",
+ "task": "copex.ppi DSP 协处理器停点侦察：42,037,363 @ 0x606a900（upstream_simulator_failure 'copex.ppi has no model'）——ISA/编码/SDK DSP 库 IR 对位/硬件捕获数值验证/全 app 站点扫描/调用链/三选一预案/codex 裁决",
+ "method": {
+  "firmware": "官方 app.bin sha256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100），钉死 codec（reference-cache pi32v2-isa @3608ed19，主仓 tools 加载）全对齐偏移解码 + 既有 vendor 线性反汇编（~/tmp/sim-wla-disasm/app-linear.asm）互证",
+  "sdk": "参考 SDK（gitlab 701n commit 67328f4，路 CJ 钉死）system.a/math_fast_funtion.c.o 的 LLVM IR（~/tmp/h3s-anaread/objref/all/math_fast_funtion.c.o.ll，2289 行）——copex 内联汇编逐函数模式号映射",
+  "hardware": "pi32v2-isa hw/fm1-2026-10-24/*.jsonl 364 条 copex 捕获（AC791N 开发板，非 BR28）重分析：mode 22 全 6 条 + mode 23/24/16/17/0 假设数值测试",
+  "isa": "isa/pi32v2.toml:17773-17810 copex.ppi 条目 + 32666-32699 copex.ppi.p 条目（编码/字段/notes 全文）",
+  "callgraph": "全 app call 编码扫描（codec.value 符号扩展 + field scale 公式，370,344 个对齐解码位点的 call 边集合；BFS 可达性）",
+  "scripts_local": "~/tmp/copexscout/（scan2.py 站点+调用边、chain.py 函数归属+可达性、path.py 停点路径；不进仓）"
+ },
+ "stop": {
+  "frontier": "42037363 @ 0x606a900",
+  "kind": "upstream_simulator_failure",
+  "error_type": "RuntimeError",
+  "message": "0x606a900: copex.ppi has no model",
+  "origin": "上游 sim.py effect()（tools/llvm/sim.py:101 models.get(insn.id) 为 None 即 raise）；sim_world_driver.py:599 包装成 stop kind——上游模拟器能力缺口，非固件墙"
+ },
+ "instruction": {
+  "id": "copex.ppi",
+  "isa_entry": "isa/pi32v2.toml:17773（status=confirmed，sources=oracle+compiler+hardware，group=dsp，absent_on=generic）",
+  "encoding": "两字：word1=0xE1FF 固定（1110000111111111）；word2 = rrr-sss-nnnnnnnn = (dst_pair_base/2)<<13 | (src_pair_base/2)<<10 | n(u8)",
+  "site_bytes": "0x606a900: ff e1 16 22 → r3_r2 = copex(r3_r2)(22)（dst pair base 2、src pair base 2、n=22）",
+  "operand_convention": "pair (lo,hi)=(r_s, r_s+1)；app 全站点参数在下字 lo、上字 hi 置零（单目 exp/ln/sqrt/sincos）或 (y,x) 双实参（atan2 mode 17：0x602807a 从数组取两元素进 pair）",
+  "state_contract": "[硬件捕获 364 条] 只写 dst pair 两寄存器（changed 字段恰 2 项）、psr 低 4 位保持（flags_in==psr_out==15）；isa notes：mode=control&31、高位掩码 32/64/128/224 对已采样模式输出不变、bit4 影响部分模式行为",
+  "parallel_twin": "copex.ppi.p（word1 bit12 置位，0xF1FF）：app 内 2 处解码命中均为伪（数据/指令中段），真码零站点；但注意上游 sim.py pair() 会把 .p 派发到基形模型（见 plan.codex_corrections）"
+ },
+ "sdk_mode_table": {
+  "source": "math_fast_funtion.c.o.ll（SDK lib/system/cpu/br28/math/math_fast_funtion.c，section .system.cpu.text，'copex($1)($2)' 内联汇编逐函数提取）",
+  "mode_map": {
+   "0": "sin_fix + cos_fix（一指令出 sin/cos 定点对：app 0x609694a 取 r1/r0 双结果后各自 >>5 缩放）",
+   "1": "angle_fix（atan2 定点）",
+   "2": "complex_abs_fix（hypot 定点）",
+   "3": "sinh_fix/cosh_fix",
+   "4": "atanh_fix",
+   "5": "complex_dqdt_fix（及 _limit 变体）",
+   "6": "exp_fix（Q24 钳位版见 app 0x601d96a）",
+   "7": "ln_fix / log10_fix（app 0x605f0e2 带 ln10 定点缩放）",
+   "8": "root_fix（sqrt 定点）",
+   "9": "mul_fix", "10": "div_fix",
+   "11": "add_float", "12": "sub_float", "13": "float_to_int", "14": "int_to_float",
+   "16": "sin_float + cos_float（sincos 对；= mode 0 + bit4 浮点变体）",
+   "17": "angle_float（atan2）",
+   "18": "complex_abs_float（hypot）",
+   "19": "sinh_float/cosh_float",
+   "20": "atanh_float",
+   "21": "complex_dqdt_float（及 _limit）",
+   "22": "exp_float（fmin 31.f/fmax -32.f 钳位后 copex，IR 行 529-549）",
+   "23": "ln_float / log10_float",
+   "24": "root_float（sqrt）",
+   "25": "mul_float", "26": "div_float"
+  },
+  "exp_float_ir_shape": "钳位→zext i32→i64（上字清零）→copex(22)→trunc i32（下字取出）→bitcast 回 float——与固件 0x606a8fc 叶子形状逐指令一致",
+  "bit4_reading": "SDK 模式表 0..10 定点族与 16..26 浮点族恰差 16，与 isa notes「bit4 有作用」互证：bit4=浮点/定点位"
+ },
+ "hardware_validation": {
+  "scope_caveat": "AC791N（FM-1）非 BR28——只证 ISA 层协处理器行为，不证 BR28 数值细节",
+  "mode22_captures": [
+   {"src_lo": "0x3f800000(1.0)", "src_hi": "0x3f800000(1.0)", "dst_lo": "0x402df853(2.7182815074920654)", "dst_hi": "0x2b7e14f2", "verdict": "e^1.0；比 float32 正确舍入(0x402df854)低 1 ulp=非正确舍入（近似实现），但注意此条源上字非零、非 SDK 包装形状"},
+   {"src_lo": "0x10000000", "src_hi": "0x0", "dst_lo": "0x3f800000(1.0)", "dst_hi": "0x1ffffff5", "verdict": "e^极小=1.0 ✓"},
+   {"src_lo": "0x20000000", "src_hi": "0x0", "dst_lo": "0x3f800000", "dst_hi": "0x1ffffff5", "verdict": "✓"},
+   {"src_lo": "0x0", "src_hi": "0x20000000", "dst_lo": "0x3f800000", "dst_hi": "0x1ffffff5", "verdict": "e^0=1.0 ✓"},
+   {"src_lo": "0x10000000", "src_hi": "0x08000000", "dst_lo": "0x3f800000", "dst_hi": "0x1ffffff5", "verdict": "✓（上字不影响下字结果）"},
+   {"src_lo": "0xf0000000(-1.58e29 域外)", "src_hi": "0x08000000", "dst_lo": "0x3f800000", "dst_hi": "0x1ffffff5", "verdict": "域外输出 1.0（疑似默认/残留值）——SDK fmin/fmax 钳位正是为规避此域；不能当域外规则建模"}
+  ],
+  "mode23_captures": "ln 吻合 2 条：ln(0x20000000 极小)→0xc22eac4f（host ln=0xc22eac50，1 ulp 偏差）；ln(0)→0xff800000(-inf) ✓；ln(0x10000000 极小)→+22.87 异常（域外）",
+  "uninformative": "mode 16 全部输出 1.0、mode 17 输出≈src、mode 24 仅 src=0 一条吻合 sqrt、mode 0 输出钉 (0x20000000,0)——探测输入不在有效域，无数值信息量（与 isa notes「No numerical or lookup-table model」结论一致）",
+  "dst_hi_not_constant": "mode 22 六条中 5 条 0x1ffffff5、e^1.0 条 0x2b7e14f2——dst 上字非常数；isa notes mode 15 有未解历史依赖，mode 22 上字稳定性未排除"
+ },
+ "app_site_scan": {
+  "method": "codec 全对齐偏移解码 104 处 copex；手工核验邻域剔 6 处伪解码",
+  "excluded_as_data_or_misdecode": [
+   {"addr": "0x60a5410/0x60a55d8/0x60a66e4/0x60a6a74", "mode": 67, "reason": "浮点常数表区（0x3f3f/0x3d3f 位型邻域，多 no-decode 洞）"},
+   {"addr": "0x601a7f4", "mode": 72, "reason": "call -7170（0x601a7f2，4 字节）指令中段错位解码"},
+   {"addr": "0x60845d6", "mode": 124, "reason": "邻域指令流不合理（疑数据）[疑]"}
+  ],
+  "code_sites": 98,
+  "mode_histogram": {"24": 33, "16": 18, "17": 14, "22": 11, "23": 11, "0": 9, "6": 1, "7": 1},
+  "coverage": {
+   "mode22_only": "11/98 = 11.2%（解锁当前停点 + eq 系数域/tone dB 换算）",
+   "22+23+24": "55/98 = 56.1%（eq/wdrc 系数设计全链）",
+   "all_8_modes": "98/98 = 100%"
+  },
+  "domains": {
+   "eq_wdrc_coefficient": "停点链 0x60787ac→0x607b9ee→0x606feba→0x606a908(db2mag)→0x606a8fc→0x606a900；db2mag(0x606a908) 25 调用点：eq 设计 0x606feba(2)/0x606ffbc(3)/0x6072c92..0x6072fd0(5)、解码器库 0x6030f2c(7)、tone 0x600bcbe(2)、app 0x60118ea/0x6013b52/0x601e4e0(4)；eq 设计函数族内联站点 0x606a936/0x6072d16 等 mode 24/16——重开路径大概率 22 后接 24",
+   "tone_oscillator": "0x600c50c/0x600c586 mode 16（D2ANC 已钉 tone 停点）+ 0x600c7e6/0x600ca5c mode 24",
+   "math_cluster": "0x6027ff4-0x602ac78（33 站点，16/17/22/23/24 混合）+ 0x60a9d2a/0x60a9d96 + 0x60be7aa——通用 DSP 数学簇（sincos/atan2/sqrt/exp/ln 全家桶）[推断]",
+   "fixed_sincos": "0x6096418/0x6097076/0x6097d36/0x60980dc + 0x607f790/0x60917ee mode 0 对——定点 sin/cos 成对使用（>>5 Q 格式缩放）",
+   "decoder_codec": "0x6030f2c 内 7 处 db2mag 调用（WTS/AAC plug 0x60318e0 同库）[推断]",
+   "misc": "0x601d93a mode 6（Q24 钳位 exp_fix）、0x605f0e2 mode 7（ln_fix×ln10 缩放）、0x608f944..0x609be2a 22/23/24 单点族（wdrc/drc 域 [推断]）"
+  }
+ },
+ "stop_function_family": {
+  "leaf_0x606a8fc": "r2=r0; r3=0; r3_r2=copex(r3_r2)(22); [r1]=r2; rts——exp 薄包装（无钳位），唯一调用者 0x606a924（db2mag 体内）",
+  "db2mag_0x606a908": "[--sp]=rets; sp-=4; r1=0x41A00000(20.0f); r0=r0/r1(f); r1=0x40135D8E(float32 ln10); r0=r0*r1(f); [sp]=r0; r1=sp; call exp 叶子; r0=[sp]; …… = 10^(dB/20)——SDK eq_db2mag/drc_db2mag 同式（SDK IR: mag=exp_float(db*ln10/20)）",
+  "exp_wrapper_family_all_mode22_sites": "全部 10 个真码 mode-22 站点均为 exp 包装；7 个带 fmax 域钳（0x6027b68/0x606600c 钳 -32.0=0xC2000000 与 SDK exp_float 下钳常数一致；0x602f9a6/0x6094628 钳 4.0；0x608f95a/0x6090470/0x609be7e 钳位值由调用方栈传）；2 个裸包装（0x602a90a、0x606a900 停点）依赖调用方有界输入",
+  "input_domain_on_stop_path": "db2mag 输入=EQ 段增益 dB（典型 [-90,+39]dB）→ x=dB·ln10/20 ∈ [-10.4,+4.5]，在捕获/SDK 有效域内；停点世界此调用来自 eq open-config 重开的系数计算"
+ },
+ "plan": {
+  "options": {
+   "a_local_semantic_model": "本地 copex.ppi 语义建模：新建 tools/br28_dsp_models.py（形如 br28_arch_models.py）conditional_copex_exp22(models)，合入 models dict——机制等同既有 architectural_k2 先例（SHA 钉上游源、解包 wrapper、不改钉死树、git diff --exit-code 继续过）",
+   "b_named_fixture": "具名 fixture：停点处喂常数/表值——对 db2mag 这类计算型读值等于变相 NOP（输入连续变化），证据价值低；仅适合精确捕获重放/反事实臂，不作主推进",
+   "c_fork_upstream": "改/fork 上游 pi32v2-isa 加模型——不增加语义证据，破坏 pin/干净检查或新增 fork 维护成本；本地 adapter 已足够隔离假设；将来证据成熟可再上游贡献"
+  },
+  "codex_verdict": "收窄版 (a)：本地、默认关闭、仅 mode 22 的指数近似模型，归 conditional 层；标注 conditional mathematical approximation / derived-not-measured；域外输入在架构状态提交前抛专用停点（dsp_mode_not_modeled / dsp_domain_boundary / dsp_operand_shape_not_modeled）；其余 7 个 app 模式另案审查（单源 SDK 证据不自动够，需逐模式审参数序/缩放/上下字/特殊值）；(b)(c) 从主推进方案排除但不判天然违规",
+  "codex_corrections_verified": [
+   "dst 上字非常数：e^1.0 条 dst_hi=0x2b7e14f2 ≠ 其余 5 条 0x1ffffff5（本路复核 followup-q2.jsonl:135-140 成立）——上字不得按常数建模，也不得保留旧值冒充语义；codex 建议表示为不透明结果或维持边界停",
+   "上游 sim.py pair()（tools/llvm/sim.py:117-121）把 .p 孪生按基形派发 models.get('copex.ppi')——只注册基形则 copex.ppi.p 自动走同一模型，『不注册 .p 保持诚实停』说法不成立；adapter 必须在并行派发处显式拒绝未支持组合（两半副作用均未提交前）",
+   "整机前沿 CPU 在 probe_boot.py:466-471 构造并独立应用 architectural_k2（另有 probe_pi32v2.py 139/513/1127/2154 四处）——只改 run_probe 局部 cpu() 接不到 p11_heap_experimental 场景；安装逻辑须共享且全点位覆盖",
+   "上游 effect() 捕获 ValueError/KeyError 转报『model needs the hardware run's context』（sim.py:109-110）——域边界须用不被该 except 捕获的专用异常类型并接入独立 stop kind，防止误报 upstream_simulator_failure",
+   "world_snapshot.py:58 FINGERPRINT_FILES 显式枚举——新模型文件与开关须纳入快照指纹/恢复配置核验，不会自动覆盖",
+   "e^1.0 捕获源上字=1.0 非零（非 SDK 包装形状）——数值互证有限；1 ulp 偏差只能证『非正确舍入』，不能推导多项式结构或全域误差包络"
+  ],
+  "domain_boundary_policy": "契约限 n==22（不用 n&31 推广，硬件等价证据未覆盖控制高位组合）+ 源上字已知为零 + 低字有限 float32 + 声明的模型域内；域外/NaN/Inf/未知形状→专用边界停（模仿硬件输出 1.0 和 SDK 式自动钳位都被否：前者单条域外样本推不出规则，后者会把固件自己没做的运算塞进指令模型）",
+  "precision_policy": "低字用显式版本数学近似（host expf 或 float32(exp)，记录实现与舍入策略）；三镜像 parity 证相对行为不证共同模型误差——另做 ±1 ulp 低字扰动敏感性实验；AC791N≠BR28 caveat 全程标注",
+  "rollout_checklist": [
+   "1 mode 22 契约+证据表（修正『上字常数/已证多项式/全域 1ulp』表述）",
+   "2 先定上字表示与消费边界（br28_unknown.py UnknownWord 需物理内存来源、effect() 拒绝抽象输出——两处现状须先适配），再实现低字近似",
+   "3 接整机 CPU（probe_boot.py:466 与 probe_pi32v2 四处共享安装）、conditional registry 开关、模型冲突显式报错（上游若出现 copex 模型→报冲突要求重审，不静默让位/遮蔽）、并行 .p 拒绝、快照指纹",
+   "4 测试臂：正常数值/域边界/未知输入/其他模式/.p 两种位置/源目标重叠/上字运输与消费/冲突拒绝；失败时架构状态零部分提交",
+   "5 关开关复现 42,037,363 @ 0x606a900 原停点；开开关记录每次输入/输出/近似策略与下一诚实停点；镜像 parity+敏感性+从零回归；五条 archived r2 拒绝保留"
+  ]
+ },
+ "evidence_tiers": {
+  "mode22_is_exp": "[SDK IR 具名+形状] + [AC791N 硬件捕获数值吻合 4 条+1 条有限互证] 双源",
+  "mode23_is_ln": "[SDK IR] + [AC791N 捕获 2 条吻合（1 ulp）]",
+  "modes_0/6/7/16/17/24": "[SDK IR 具名] 单源（硬件捕获无信息量）——另案审查后才能建模",
+  "mode_map_bit4": "[SDK 模式表差 16 规律] 与 [isa notes bit4 有作用] 互证 [推断]",
+  "domain_labels": "eq 系数域/tone 域=静态调用链钉死；math 簇/解码器域/wdrc 域=[推断]（地址邻域+模式组合，未逐函数对 SDK）"
+ },
+ "notes": [
+  "本路只读：未改 tools/ 任何代码、未跑任何改状态 probe、不 merge 不 push；一次性脚本在 ~/tmp/copexscout/ 不进仓",
+  "「coefficients all mode 22」旧猜测（peripheral-input-simulation.md §5）修正：mode 22 只覆盖 exp 换算；eq 设计族还有 16/24 内联站点，重开路径解锁 22 后下一停点大概率在 mode 24",
+  "上游 sim.py 的 stop 语义（无模型即停）本身是红线友好的——扩展点在 models dict 合入侧，不动上游树"
+ ]
+}
