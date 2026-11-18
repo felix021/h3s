@@ -1,0 +1,47 @@
+{
+ "route": "SRCSYNC / sim-srcsync（基线 main c4401b5=COPEXIMPL 合并点，42,059,070 停点实施路）",
+ "recorded_at": "2026-11-19T00:25:00+08:00",
+ "task": "JL_SRC_SYNC CON1 配置 RMW 容器放行（codex copeximpl.json next_stop_classification 指引「CON1 单字配置 RMW 容器」(AM/ADA/LPV 先例)的同函数事务扩展）：42,059,070 @ 0x606fbe4（rmw.or.modimm [r0+4]|=0x400000 内部读 0xfe2604=CON1）放行 → 快照续跑推进新前沿 → 4 臂验证 → 负例矩阵 → 重钉。",
+ "consumer_audit": {
+  "base_address_provenance": "SFR 字 0xfe2600 全 app 字面量恰一处=.data 0x60a29d4（hw_res 表 0x60a29c8 项 0 的 sfr 字段），零 li 站点（十进制立即数 grep 16665856..16666111 零命中）；hw_res 表（tag 0x59120100/ram 0x1a0dc0/len 0x300/sfr 0xfe2600/ram2 0x12ca24；第二项 0x5a040101→JL_SRC 0xfe1600 同族）经 r10=0x60a18c0+4360 装载，`+ 4360` 全 app 唯一站点 0x606fb46=停点函数——hw_res 表唯一访问函数=0x606fa7e",
+  "access_face": "函数 0x606fa7e-0x606fe00 全通读（含 0x606fbe0/0x606fc4e 两处 r6!=0 旁路分支——旁路绕过 SFR 段不触达新字）：恰三字。CON1 RMW×2（|=0x400000 @0x606fbe4 停点、&=0xFFBFFFFF @0x606fc2c 段尾）；CON0 RMW 恰 2 次（|=0x10 @0x606fbfa 系数装载门开门、&=0xFFFFFFEF @0x606fc0a 关门）；COEF 纯写×55（@0x606fc02 [r1+60]=r5，r5=0 恒写零）",
+  "read_value_destiny": "CON0/CON1 的 RMW 内部读读值仅进写回组装（old|bit / old&~bit），零分支/轮询/地址/长度消费（AM/B3/DT/ADA/LPV 判据）；全函数无任何 SRC_SYNC 纯读",
+  "goto_offset_erratum": "首版静态审计曾把 CON0 |=0x10 误读进 55 轮循环体（预言 CON0 56 写）——objdump goto 十进制数=字节偏移（目标=指令末尾+n；ISA 表 beqz/bnez 字段 scale 注记+主臂账本 CON0 恰 2 写+COEF 恰 55 写双源纠正）：循环体 0x606fc02-08 仅 COEF 写，|=0x10 在循环外恰 1 次",
+  "bit22_bit4_semantics": "derived：bit22=配置事务总门（置位→memset RAM 缓冲 0x1a0dc0/0x300→系数装载→flash 系数表拷贝→清除）、bit4=系数装载门——从固件驱动形状归纳；公开 SDK 三源（gitlab 701n@67328f4 / gitee AC792 / gitee AC79-AIoT）grep 均无 src_sync 驱动源（闭源库），固件内置驱动反汇编即第一手用法证据，如实标注",
+  "other_13_members": "CON2/CON3/IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/FLTB_ADR/ODAT_ADR_START(__WO)/ODAT_ADR_END(__WO)/STOP_FLAG/INSR/OUTSR/PHASE 停点函数内零访问——不据 __RW 扩整块，到达时按新访问点停",
+  "sdk_block": "br28.h（sha 111e29ea…）JL_SRC_SYNC=hs_base+map_adr(0x26,0x00)，16 成员=14 __RW+2 __WO（copeXimpl codex 勘误），CON0 +0/CON1 +4/COEF +0x3c；IRQ_SRC_SYNC_IDX=89（hwi.h）"
+ },
+ "implementation": {
+  "switch": "jl_src_sync_config_words（conditional，依赖 copex_exp22_model=场景推进顺序非硬件依赖，默认 False=关；默认关世界=42,059,070 停点形状逐字节不变）；probe_only 值开关 jl_src_sync_probe_value（恰 0xffffffff，CV/ADA/ASS 探针先例）",
+  "model": "tools/br28_model.py JLSrcSyncConfigRegisters：CON0/CON1 合成初值 0（SYNTHETIC_INITIAL_WORD 类常量，synthetic-not-measured 非硅复位值非静态推导）+写后读回=最后写值（AM 容器族）；COEF 纯写记录读一律拒绝（jl_src_sync_coef_read_not_modeled，零读观测，BATCHA 11 字拒读同判据）；原子 RMW 内部读走 probe_boot 通用 mmio 路径（mem.read→hardware.read→mem.write→hardware.write）；probe_initial 只替换 CON1（停点字）初值一次",
+  "initial_word_static_arithmetic": "零臂 CON1 终值 0x0；ones 臂 0xffbfffff（bit22 在全一字本为 1，|=0x400000 不变，段尾 &=0xFFBFFFFF 清之；其余位保留初值进写事务）——初版 0xfbffffff 系笔误，主臂/敏感性臂互证后修正三处文本",
+  "wiring": "br28_model.py（常量+类+构造/handles/read/write/report/assumptions 六点）；probe_irq_entry.py（参数+budget+options+require 依赖）；frontier_registry.py（Feature×2+FRONTIERS 重钉）；world_snapshot.py（M4 槽 jl_src_sync：stores/word_writes/reads_after_write/synthesized_initial_reads/coef_read_attempts，probe_initial 走 per-object static guard）；test_world_snapshot poke+M4_SWITCHES"
+ },
+ "verification_arms": {
+  "base_off": "自建 base-off（本路代码态，copex 开+jl_src_sync 关，41,900,000 budget 干净循环边界，22:31-22:54 wall≈23 分钟，code_fingerprint 7c262e68…，snapshot sha abc279de…）",
+  "off_reproduce": "从 base-off 续跑开关关 → 42,059,070 @ 0x606fbe4 unmapped_memory 读 0xfe2604，与 copeximpl on-main 参照 reference_equal=true 逐键相等（wall 7.1s）",
+  "on_main": "从 base-off 续跑开（--ack-enable-slot jl_src_sync，None->on 跨开关=前缀零触达等价续跑）→ +2,287 步 → 42,061,357 @ 0x60befe6 unmapped_or_readonly_write 0xfe2500（value_bytes 00000000，wall 7.0s）；容器账本恰如审计：CON1 ['0x400000','0x0'] 2 写、CON0 ['0x10','0x0'] 2 写、COEF 55 写全 0、word_writes 59、reads 2+synth 2+coef_read_attempts 0",
+  "cross_code_smoke": "copeximpl 代码态 base-off（fingerprint bac74e2f…，prior-fingerprint ack）+copex/jl_src_sync 双 enable → 同停点 42,061,357 同步数（wall 7.3s）——跨代码双开与单开等价",
+  "sensitivity_ones": "probe=0xffffffff（缺槽走 enable 分支=新构容器即正确状态，probe_initial 静态差在 fresh 构造里成立，无需 refixture）→ 同停点 42,061,357 同步数，唯一差异=容器 CON1 stores ['0xffffffff','0xffbfffff']（与修正后静态算术一致）",
+  "negative_matrix": "①开关关=停点 42,059,070 逐键复现（off 臂）；②COEF 读拒绝 jl_src_sync_coef_read_not_modeled（单测）；③其余 13 成员+子字/错位不吞（单测 handles False 16 地址+2 形状）；④依赖缺失 require（falsification：jl_src_sync 开而 copex 关）；⑤probe 值域守卫恰全一字（falsification registry 全开栈+错值）；⑥值域校验 write/read 非 u32 拒（单测）；⑦敏感探针不扰动 CON0/COEF（单测）；⑧容器叠加地址集互斥（单测 vs ASS/ADA/LPV/PLED）",
+  "preflight_offline": "assert_preflight 合成报告（旧 probe 16 场景+on-main 条件行）224 断言离线闭环：基线重取后 224/224 全绿（含新 SRCSYNC 释放记录断言块+重钉计数 wdt/timer0/core-tick/ipmask）"
+ },
+ "repins": {
+  "frontier": "FRONTIERS p11_heap_experimental → 42,061,357 @ 0x60befe6（unmapped_or_readonly_write/write/0xfe2500/size4/value_bytes 00000000；freshness kind+address）",
+  "counters": "wdt elapsed 157→158（feeds 163/162 冻结）；timer0 cnt 26931→33792（PRD 35999 窗内走表，交付 15780/到期 15797 冻结——零新交付零新喂狗）；core-tick cnt 950332→959480（恰 +9,148=2,287×4 tick 精确走表，347/347 冻结）；CRC 270/73829 冻结（段内零 CRC）；IPMASK 0→6（新停点在 audio sync 创建器临界区内）；check() 增 SRCSYNC 释放记录断言块（59 写逐字钉死+goto 偏移勘误入档）",
+  "adapter_baseline": "22 键 --recapture 重取完成（23:20-23:43 wall≈23 分钟，14 键漂移：exact_doubleword_store 186→188、exact_full_word_store 715623→715772、mmio_rmw_always_writes 70175→70183、abstract_task_stack_transport 462809→462890、exact_postincrement_store 68975→69295、cpu0_shared_lock_ownership 42262→42271、exact_subword_store 79492→79520、parallel_byte_store_old_registers 13785→13790、parallel_full_word_store_old_registers 15042→15058、partial_icfg_bit9_only 135970→135996、per_core_visible_cnum 264213→264243、exact_doubleword_store_cross_page_split 7→8、multicore_visible_special_move 897→900、register_rep_multi_block_projection 682→683；copex_exp22_model_execute=3 冻结）",
+  "analyze_image_trace": "未动（红线）——freshness/flags 派生自 registry 自动跟随；per_core 硬钉漂移 {'0':42066355,'1':11496}（per-core0=42,066,355=completed+2,287）留主协调统一收口",
+  "probe_full_from_zero": "probe --rom 全量从零 15 场景完成（23:44-00:11 wall≈27 分钟）EXIT=0：条件场景 42,061,357 @ 0x60befe6 与快照续跑臂逐键相等（唯一差异=observed_shapes 勘误文本——goto 偏移单位修正属有意变更，dmaimpl 先例同款）；其余 14 场景 legacy 形状全部不变；assert_preflight 对从零报告 224/224 全绿"
+ },
+ "next_stop": {
+  "stop": "42,061,357 @ 0x60befe6——audio sync 对象创建器 0x60befae 体内 li r0=0xfe2500; r1=0; [r0+0]=r1（JL_SYNC CON 整字写 0，IPMASK=6 临界区内，函数=zalloc 56B 对象+b[+6]参数+list init+200/80/512 字段+probe call 成功后的复位写）",
+  "block": "br28.h JL_SYNC（audio_sync）=hs_base+map_adr(0x25,0x00)，13 成员：CON(+0 __RW)/DABUF(+4 __RW)/DASPACE(+8 __RO)/OFFEND(+c __RO)/OFFSUM(+10 __RO)/PCMNUM(+14 __RO)/BTTIME(+18 __RO)/CON1(+1c __WO)/CON2(+20 __RW)/BT_OFFSET(+24 __WO)/MIN_SLOT(+28 __WO)/OUTSR(+2c __RW)/INSR(+30 __WO)",
+  "access_face_preview": "全 app 访问集中 0x60beeee-0x60bf200：CON li×8（0x60beeee/0x60bef52/0x60befde/0x60bf05c/0x60bf0be/0x60bf128/0x60bf192/0x60bf1f0）+字面量 4 处；RO 状态字读者 DASPACE 0x60bf174/OFFEND 0x60bf16a/BTTIME 0x60bf1b2+0x60bf1bc（+字面量 0xfe250c/0xfe2518）；rand-to-park-map 旧档另有 .data 0x60bee74.. 读者 0x607aafa/0x607ae22/0x607b10e（DSP handler 域）",
+  "classification_for_next_route": "停点=CON 复位整字写 0（write-only 形状）——下路先做 JL_SYNC 块全访问面审计（读/写/RMW 逐点分类），RO 状态字组（DASPACE/OFFEND/OFFSUM/PCMNUM/BTTIME）是数据面候选具名 fixture，WO 命令字组（CON1/BT_OFFSET/MIN_SLOT/INSR）write-only 记录候选；eq 设计族 copex 站点（mode16 0x6072bb8/mode24 0x6072d1a）仍在更下游未到达"
+ },
+ "honesty": {
+  "assumption": "容器=conditional 配置事务批容器（AM 族 + BATCHA 分读策略）：合成初值 0+读回=当前值均为显式模型假设（synthetic-not-measured，非硅复位值非静态推导）；RMW 指令自己消费旧值（读非死读——段内零分支消费不等于初值无影响，未覆盖位保留初值进写事务，ones 臂单测+敏感性臂双证）；bit22/bit4 门控语义 derived（固件驱动形状归纳，公开 SDK 无驱动源）",
+  "not_claimed": "不证明 SRC_SYNC 硬件行为/采样率转换/DMA/系数 FIFO 语义/IRQ89 交付已运行；不证明跨函数寄存器传递/RAM 副本/ROM/q32s/其他核无访问（主核 app 线性窗审计的完备性边界，LPV/ADA 措辞）；同址新消费者（新读 PC/新写 PC/新 RMW 掩码/其他核）须重审",
+  "parity": "official↔b79 parity 未重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0，evimpl/dmaimpl/copeximpl 同款边界）"
+ }
+}

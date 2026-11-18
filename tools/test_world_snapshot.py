@@ -32,6 +32,7 @@ from br28_icfg import IcfgState, IcfgValue
 from br28_machine import DualCoreMachine
 from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT,
                         ICU_BASES, IRQController, JLAdcStartConfigRegisters,
+                        JLSrcSyncConfigRegisters,
                         P2mMailboxAck, P33AwkupRegisters, P33CanaryWatchRegisters,
                         PartialWord)
 from br28_unknown import UnknownWord
@@ -698,6 +699,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # ON in the current conditional frontier flag set (its first intercepted
         # copex sits at the 42,037,363-era frontier stop).
         copex_exp22_model=True,
+        # Route SRCSYNC: the JL_SRC_SYNC config-transaction container, ON in
+        # the current conditional frontier flag set (its first served RMW sits
+        # at the 42,059,070 frontier stop).
+        jl_src_sync_config_words=True,
     )
 
     def build_world(self):
@@ -948,6 +953,13 @@ class M4ProjectionFamilies(unittest.TestCase):
         copex.first = copex.samples[0]
         copex.last = copex.samples[1]
         copex.modes = {22: 2}
+        # Route SRCSYNC: the config-transaction container carries state —
+        # one written CON1 (read-after-write), one untouched CON0 (synthetic
+        # initial 0), COEF zero-value stores.
+        hw.jl_src_sync.write(JLSrcSyncConfigRegisters.WORDS[1], 0x400000, 0)
+        self.assertEqual(hw.jl_src_sync.read(JLSrcSyncConfigRegisters.WORDS[1]), 0x400000)
+        hw.jl_src_sync.read(JLSrcSyncConfigRegisters.WORDS[0])  # synthetic initial 0
+        hw.jl_src_sync.write(JLSrcSyncConfigRegisters.WORDS[2], 0, 0)
         return hardware
 
     def captured_m4(self, world):

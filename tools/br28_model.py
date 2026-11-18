@@ -97,6 +97,22 @@ JL_EQ_INIT_WORDS=(0xfe1500,0xfe151c)
 # 全部为配置 RMW/insert 写回组装形状,读值零分支消费(B3/DT/ADA/LPV
 # 判据),0xfe090c/0xfe0910/0xfe0560 零触达,0xfe0550 SRN 归 JLA 边界。
 JL_ADC_START_CONFIG_WORDS=(0xfe0904,0xfe0908,0xfe0554,0xfe055c)
+# 路 SRCSYNC:JL_SRC_SYNC 配置事务容器三字(2026-11-18 审计钉死,基址
+# 0xfe2600=hs_base+map_adr(0x26,0),br28.h JL_SRC_SYNC_TypeDef 16 成员
+# 14 __RW+2 __WO 的 +0 CON0/+4 CON1/+0x3c COEF)。42,059,070 停点
+# 0x606fbe4 `rmw.or.modimm [r0+4]|=0x400000` 的内部读——r0=[r7+12] 数据
+# 驱动装载(hw_res 表 0x60a29c8 的 hw_res[0].sfr 字段 0x60a29d4,全 app
+# 字面量扫描恰此一处、零 li 站点;表经 r10=0x60a18c0+4360 唯一访问点
+# =停点函数 0x606fa7e)。函数内 SRC_SYNC 访问面恰三字:CON1 RMW×2
+# (|=0x400000 @0x606fbe4 停点、&=0xFFBFFFFF @0x606fc2c 段尾)、CON0
+# RMW 恰 2 次(|=0x10 开门 @0x606fbfa、&=0xFFFFFFEF 关门 @0x606fc0a)、
+# COEF 纯写×55(@0x606fc02 循环体 [r1+60],r5=0 恒写零,系数 FIFO 口;
+# goto 偏移单位勘误=字节,|=0x10 不在循环内——主臂账本 CON0 2 写+COEF
+# 55 写纠正首版 word×2 误读);全部零纯读、读值零分支消费(AM/B3/DT/
+# ADA/LPV 判据)。
+# 其余 13 成员(CON2/CON3/IDAT/ODAT/FLTB/ODAT_ADR_START/END/STOP_FLAG/
+# INSR/OUTSR/PHASE)零触达不进白名单,不据 __RW 扩整块。
+JL_SRC_SYNC_CONFIG_WORDS=(0xfe2600,0xfe2604,0xfe263c)
 PLL0=0xfd4600
 CLOCK0=0xfd0018
 SYS_DIV=0xfd0014
@@ -6217,6 +6233,226 @@ class JLAdcStartConfigRegisters:
                               'ADC capture, clock enable or D2-b acceptance scenario')}
 
 
+class JLSrcSyncConfigRegisters:
+    """JL_SRC_SYNC 配置事务容器三字(CON0/CON1/COEF)的「合成初值 0+读回=当前值」
+    混合策略容器(opt-in,路 SRCSYNC)。
+
+    背景:42,059,070 停点 0x606fbe4 是 eq open-config 系数设计收尾后 SRC_SYNC
+    重配函数 0x606fa7e 内 `rmw.or.modimm [r0+4] |= 0x400000` 的内部读——
+    JL_SRC_SYNC CON1(br28.h 0x2600-0x26ff src_sync 块,+4 __RW)。codex
+    20261118 下路指引(copeximpl.json next_stop_classification):优先审「CON1
+    单字配置 RMW 容器」(AM/ADA/LPV 先例);纯 write-only 记录解决不了眼前
+    指令(old|0x400000 保留其余 31 位、旧值参与实际写回,绕读或替填零=额外
+    语义假设);必补 CON1 消费者审计+bit22 的 SDK 驱动用法;仅放行证据覆盖
+    的字,不据 __RW 扩整块。
+
+    识别与证据(2026-11-18 路 SRCSYNC 静态审计,官方 app.bin 线性反汇编
+    +全镜像字面量扫描;SDK src_sync 驱动在公开 SDK 中闭源——701n gitlab
+    仓/ac792/AC79-AIoT 三源 grep 均无驱动源,br28.h 只有寄存器布局,固件
+    内置驱动反汇编本身即 SDK 驱动用法的第一手证据):
+    - **基址数据驱动**:SFR 字 0xfe2600 全 app 字面量恰一处=.data 0x60a29d4
+      (hw_res 表 0x60a29c8 的 hw_res[0] 第 4 字),零 li 站点;hw_res 表
+      (tag 0x59120100/ram 0x1a0dc0/len 0x300/sfr 0xfe2600/ram2 0x12ca24,
+      第二项 0x5a040101→JL_SRC 0xfe1600 同族)经 r10=0x60a18c0+4360 装载,
+      `+ 4360` 全 app 唯一站点 0x606fb46=停点函数——**hw_res 表唯一访问
+      函数=0x606fa7e**;基址读出链 [r7+12](0x606fbe2)后三处重装载
+      (0x606fbf8/0x606fc2a 的 [r4+16]→[+12])同函数同表。
+    - **函数 0x606fa7e-0x606fe00 全通读,SRC_SYNC 访问面恰三字**:
+      CON1 RMW×2——0x606fbe4 `|=0x400000`(bit22 置位,配置段开头=停点)、
+      0x606fc2c `&=0xFFBFFFFF`(bit22 清除,配置段收尾);CON0 RMW 恰 2
+      次——0x606fbfa `|=0x10`(bit4 置位,系数装载门开门)、0x606fc0a
+      `&=0xFFFFFFEF`(bit4 清除,关门);COEF 纯写×55——0x606fc02
+      `[r1+60]=r5`(r5=0 恒写零,系数 FIFO 数据口;+0x3c=__RW COEF)。
+      段形状=SDK「复位/重配门」序列:bit22 置位→memset RAM 缓冲(hw_res
+      ram 0x1a0dc0,0x300 字节,0x606fbf0 memset)→bit4 开门→55 轮系数
+      装载(循环体 0x606fc02-08 仅 COEF 写,恰 55 写)→bit4 关门→flash
+      系数表拷贝→bit22 清除。**goto 偏移勘误**:objdump 显示的十进制数=
+      字节偏移(目标=指令末尾+n,ISA 表 beqz/bnez 字段 scale 注记),
+      首版审计曾按 word×2 解码把 |=0x10 误读进循环体(预言 CON0 56 写,
+      主臂实测 2 写+COEF 55 写纠正)。**bit22/
+      bit4 语义=derived(从固件驱动用法归纳的门控形状),无 SDK 源码注释
+      佐证,如实标注**。
+    - **读值去向**:CON0/CON1 的 RMW 内部读,读值仅进写回组装(old|bit /
+      old&~bit),零分支/轮询/地址/长度消费(AM/B3/DT/ADA/LPV 判据);全
+      函数无任何 SRC_SYNC 纯读(ld.w)。
+    - **跳转变体**:0x606fbe0/0x606fc4e `if (r6!=0) goto` 的 r6=RAM 表
+      [0x1264fc+ch*0x14+12],停点已证 r6==0 走 SFR 段;r6!=0 分支绕过
+      SFR 配置(另一路径),不触达容器外新字。
+    - **其余 13 成员零触达**:CON2/CON3/IDAT_ADR/IDAT_LEN/ODAT_ADR/
+      ODAT_LEN/FLTB_ADR/ODAT_ADR_START(__WO)/ODAT_ADR_END(__WO)/
+      STOP_FLAG/INSR/OUTSR/PHASE 在停点函数内零访问;后续链(INSR/OUTSR
+      等可能的配置)到达时按新访问点停,不预放行。
+
+    建模选择(codex 指引「显式声明初值(合成假设非复位值)+最后写值读回
+    投影」+BATCHA 同函数事务分读策略先例):
+    - CON0/CON1:合成初始字 0(AM 容器族;SYNTHETIC_INITIAL_WORD 类常量,
+      synthetic-not-measured 非硅复位值非静态推导)+写后读回=最后写值。
+      RMW 内部读照 AM 先例由 probe_boot 通用 mmio 路径服务(内部读=容器
+      当前值)。**初值对当前链无观察路径**:段内零纯读、段外零读者(静态
+      审计),敏感性探针互证(codex 钉子:仅测初值零会漏掉 RMW 读写不同
+      容器状态的实现错误——零臂 CON1 终值 0x0/ones 臂 0xffbfffff(bit22 在全一字
+      本为 1),未覆盖
+      位保留初值进写事务)。
+    - COEF:纯写记录(55 写,值=真实指令结果恒 0),读一律拒绝
+      jl_src_sync_coef_read_not_modeled——零读观测,读到达即新访问点停
+      (BATCHA 11 字拒读同判据)。
+    - probe_initial 敏感性探针(probe_only,CV/ADA/ASS 先例):只替换
+      CON1(停点字)初值一次,后续读回真实写回值;CON0/COEF 不扰动。
+
+    known_limitation:容器存储合成配置字非硅状态位;bit22/bit4 门控语义
+    derived、SRC_SYNC 硬件(采样率转换/DMA/中断 IRQ89/系数装载效果)一律
+    不建模;主核越过停点不表示真实 SRC_SYNC 已配置或任何采样率转换运行
+    (codex 措辞:不声称采样率转换/DMA/音频处理已运行)。
+    """
+
+    WORDS=JL_SRC_SYNC_CONFIG_WORDS
+    SDK_NAMES={0xfe2600:'JL_SRC_SYNC->CON0',0xfe2604:'JL_SRC_SYNC->CON1',
+               0xfe263c:'JL_SRC_SYNC->COEF'}
+    READBACK_ADDRESSES=frozenset((0xfe2600,0xfe2604))
+    SYNTHETIC_INITIAL_WORD=0
+
+    def __init__(self,probe_initial=None):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.WORDS}
+        self.word_writes=0
+        self.reads_after_write=0;self.synthesized_initial_reads=0
+        self.coef_read_attempts=0
+        self.probe_initial=probe_initial
+
+    def handles(self,address):
+        return address in self.stores
+
+    def _initial_word(self,address):
+        if address==0xfe2604 and self.probe_initial is not None:
+            return self.probe_initial
+        return self.SYNTHETIC_INITIAL_WORD
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled JL_SRC_SYNC config word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address):
+        if address not in self.stores:raise ValueError('not a modeled JL_SRC_SYNC config word')
+        if address not in self.READBACK_ADDRESSES:
+            # COEF:系数 FIFO 数据口,纯写×55 零读观测——读到达即新访问点,
+            # 拒绝即停(计数只为报告口径,任何快照里恒 0)。
+            self.coef_read_attempts+=1
+            raise Blocked('jl_src_sync_coef_read_not_modeled',address=hex(address))
+        entry=self.stores[address]
+        if entry['writes']>0:
+            self.reads_after_write+=1
+            return entry['values'][-1]
+        # 从未写过:显式合成初始字 0(AM 容器族;读值只进写回组装不进分支
+        # =初值不参与观察路径,ones 探针单测互证)。
+        self.synthesized_initial_reads+=1
+        return self._initial_word(address)
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                         'writes':e['writes'],'cores':e['cores'][-16:]}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        return {'addresses':[hex(a) for a in self.WORDS],
+                'sdk_names':{hex(a):name for a,name in sorted(self.SDK_NAMES.items())},
+                'word_writes':self.word_writes,
+                'stores':touched,
+                'readback_projection':{'reads':self.reads_after_write,
+                                       'synthesized_initial_reads':self.synthesized_initial_reads,
+                                       'coef_read_attempts':self.coef_read_attempts,
+                                       'readback':('CON0/CON1: last written value; a never-written word '
+                                                   'reads back the explicit synthetic initial word 0 '
+                                                   '(synthetic-not-measured, NOT a silicon reset value '
+                                                   'and NOT statically derived); COEF refuses every '
+                                                   'read including the internal read an RMW would '
+                                                   'need — zero read observations exist for the '
+                                                   'coefficient FIFO port')},
+                'modeled_vs_touched':('modeled exactly the three statically-verified JL_SRC_SYNC '
+                                      'config-transaction words inside the reconfiguration driver '
+                                      '0x606fa7e (0xfe2600 CON0 / 0xfe2604 CON1 / 0xfe263c COEF); '
+                                      'the other thirteen block members (CON2/CON3/IDAT/ODAT/FLTB/'
+                                      'ODAT_ADR_START/END/STOP_FLAG/INSR/OUTSR/PHASE) have zero '
+                                      'touches on the audited face and stay unmapped'),
+                'whitelisted_words':('exactly the three words above; only aligned 32-bit whole-word '
+                                     'accesses are served — sub-word, misaligned and cross-word '
+                                     'accesses stay unmapped; the base 0xfe2600 is data-driven '
+                                     '(sole app literal .data 0x60a29d4 inside the hw_res table '
+                                     '0x60a29c8, zero li sites; the table has exactly one accessor '
+                                     'function = the stop function 0x606fa7e); a NEW consumer of any '
+                                     'of these addresses (a new read PC, a new write PC, a new RMW '
+                                     'mask, another core) must be re-audited before this container '
+                                     'may serve it — the address whitelist only gates addresses, it '
+                                     'does not stop a same-address new consumer at runtime (codex '
+                                     'wording)'),
+                'observed_shapes':('the stop-shape family in the SRC_SYNC reconfiguration function '
+                                   '0x606fa7e (eq open-config tail): 0x606fbe4 [r0+4]|=0x400000 — '
+                                   'the 42,059,070 stop itself, CON1 bit22 set opening the config '
+                                   'transaction; 0x606fbf0 memset of the hw_res RAM buffer '
+                                   '0x1a0dc0/0x300; CON0 |=0x10 opening the coefficient-load gate once '
+                                   '(BEFORE the loop); the 55-round loop body 0x606fc02-0x606fc08 '
+                                   'storing only COEF=[r1+60]=0 (r5=0) each round; 0x606fc0a CON0 '
+                                   '&=~0x10 closing the load gate (runtime ledger: CON0 exactly 2 '
+                                   'writes, COEF exactly 55 — correcting a first-guess word-unit '
+                                   'goto decode that misread |=0x10 into the loop body); '
+                                   '0x606fc22 flash coefficient-table copy into the RAM buffer; '
+                                   '0x606fc2c [r1+4]&=0xFFBFFFFF clearing bit22 closing the '
+                                   'transaction; every stored value is a real instruction result, '
+                                   'never invented; bit22/bit4 semantics are DERIVED from this '
+                                   'driver shape (open/close gates of a reconfiguration transaction) '
+                                   '— no SDK driver source exists in any public JieLi SDK (701n '
+                                   'gitlab / AC792 / AC79-AIoT all grep-negative), the firmware-'
+                                   'embedded driver IS the first-hand usage evidence'),
+                'access_face_completeness':('whole-image word-aligned literal scan (exactly one '
+                                           '0xfe2600 hit at .data 0x60a29d4), zero li sites by '
+                                           'decimal-immediate grep, the hw_res table accessed only '
+                                           'via the unique `+4360` site 0x606fb46, plus a full '
+                                           'linear read of the accessor function 0x606fa7e-0x606fe00 '
+                                           '(including both r6!=0 bypass branches staying off the '
+                                           'SFR segment); covers the main-core app linear window '
+                                           'only — cross-function register passing of the loaded '
+                                           'base, RAM-side copies, ROM, q32s and other cores are '
+                                           'NOT covered; "no other site found" does NOT mean "the '
+                                           'only access in the system" (LPV/ADA wording)'),
+                'model_assumptions':('synthetic initial word 0 and read-back=current-value are both '
+                                     'explicit model assumptions (synthetic-not-measured, NOT '
+                                     'silicon reset values, NOT statically derived); the RMW '
+                                     'instructions consume the old value themselves (new=old|bit, '
+                                     'new=old&~bit), so the internal reads are NOT dead even though '
+                                     'no branch consumes them on the audited face — with the zero '
+                                     'initial word the CON1 transaction ends at 0x0, with an '
+                                     'all-ones probe at 0xffbfffff — bit22 already set in the '
+                                     'all-ones word, so |=0x400000 leaves it unchanged and the '
+                                     'final &=0xFFBFFFFF clears it; the other bits carry the '
+                                     'initial word into the write transactions, codex static '
+                                     'arithmetic); potential consumers include the SRC_SYNC '
+                                     'hardware itself, IRQ89 and q32s (codex nail, LPV precedent)'),
+                'cross_domain_limitations':('the projection only records main-core-side synthetic '
+                                            'config-word updates; it does NOT model SRC_SYNC '
+                                            'hardware behavior (sample-rate conversion, DMA, '
+                                            'coefficient FIFO semantics, IRQ89 delivery), q32s '
+                                            'access, cross-domain visibility or read/write side '
+                                            'effects — the main core passing the stop does NOT '
+                                            'mean the real SRC_SYNC is configured or that any '
+                                            'sample-rate conversion, DMA or audio processing runs '
+                                            '(codex wording)'),
+                'sdk_naming':('JL_SRC_SYNC = hs_base + map_adr(0x26, 0x00) = 0xfe2600 with the '
+                              'br28.h JL_SRC_SYNC_TypeDef (sha 111e29ea…) sixteen members — 14 '
+                              '__RW plus the two __WO ODAT_ADR_START/END (route-COPEXIMPL codex '
+                              'erratum: sixteen not seventeen); CON0 at +0, CON1 at +4, COEF at '
+                              '+0x3c; the __RW labels locate the words, they are NOT silicon '
+                              'read-back evidence'),
+                'known_limitation':('the container stores synthetic config words, NOT silicon '
+                                    'state; silicon reset values and runtime semantics of CON0, '
+                                    'CON1 and the COEF port remain unverified; the bit22/bit4 '
+                                    'gate semantics are derived from the firmware driver shape, '
+                                    'not from SDK documentation'),
+                'assumption':('config read-back container of the AM family (B3/DT/ADA/LPV/AK/ASS '
+                              'precedents) with the BATCHA-style split read policy: CON0/CON1 '
+                              'reads return the last written value or the explicit synthetic '
+                              'initial word 0, COEF refuses every read; this does NOT verify any '
+                              'sample-rate conversion, audio path or SRC_SYNC interrupt '
+                              'scenario')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -7611,6 +7847,7 @@ class BR28Model:
                  audio_adc_dma_delivery=False,audio_adc_dma_delivery_requests=False,
                  jl_eq_init_writes=False,
                  jl_adc_start_config=False,jl_adc_start_probe_value=None,
+                 jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -8318,6 +8555,13 @@ class BR28Model:
         # (21,800,455 前沿形状),legacy 逐字节不变。
         self.jl_adc_start=(JLAdcStartConfigRegisters(probe_initial=jl_adc_start_probe_value)
                            if jl_adc_start_config else None)
+        # 路 SRCSYNC:JL_SRC_SYNC 配置事务容器三字(CON0/CON1/COEF)——42,059,070
+        # 停点 0x606fbe4(CON1 |=0x400000 RMW 内部读,eq open-config 尾段 SRC_SYNC
+        # 重配函数 0x606fa7e)放行;CON0/CON1 合成初值 0+读回=当前值(读值只进
+        # 写回组装),COEF 纯写记录读拒绝;其余 13 成员零触达不进。默认关:三字
+        # 保持 unmapped(42,059,070 前沿形状),legacy 逐字节不变。
+        self.jl_src_sync=(JLSrcSyncConfigRegisters(probe_initial=jl_src_sync_probe_value)
+                          if jl_src_sync_config_words else None)
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -8511,6 +8755,7 @@ class BR28Model:
             (self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address)) or
             (self.jl_eq_init is not None and self.jl_eq_init.handles(address)) or
             (self.jl_adc_start is not None and self.jl_adc_start.handles(address)) or
+            (self.jl_src_sync is not None and self.jl_src_sync.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -8952,6 +9197,12 @@ class BR28Model:
         if self.jl_adc_start is not None and self.jl_adc_start.handles(address):
             self.counts['reads']+=1
             return self.jl_adc_start.read(address)
+        # JL_SRC_SYNC 配置事务三字(路 SRCSYNC):CON0/CON1 合成配置读回
+        # (读回=当前值/显式合成初始 0,AM 容器族;停点 RMW 内部读经此路径),
+        # COEF 读一律拒绝(系数 FIFO 口零读观测)。
+        if self.jl_src_sync is not None and self.jl_src_sync.handles(address):
+            self.counts['reads']+=1
+            return self.jl_src_sync.read(address)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -9266,6 +9517,12 @@ class BR28Model:
             # MBG_CON·ADC_CON1 insert 族写回与整字写;配置生效/音频输入
             # 不建模。
             self.jl_adc_start.write(address,value,self.current_core)
+        elif self.jl_src_sync is not None and self.jl_src_sync.handles(address):
+            # JL_SRC_SYNC 配置事务三字(路 SRCSYNC):CON1/CON0 RMW 写回
+            # (|=0x400000/0xFFBFFFFF、|=0x10/0xFFFFFFEF)与 COEF 整字写
+            # (系数装载,55 轮恒零);原子 RMW 内部读=容器当前值(通用 mmio
+            # 路径);SRC_SYNC 硬件语义/采样率转换不建模。
+            self.jl_src_sync.write(address,value,self.current_core)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -10327,6 +10584,26 @@ class BR28Model:
                 'be re-audited; no q32s access, ADC capture, clock enable or audio '
                 'input is modeled — this does NOT verify any audio input or D2-b '
                 'acceptance scenario')
+        if self.jl_src_sync is not None:
+            result['jl_src_sync_config_registers']=self.jl_src_sync.report()
+            result['assumptions']['jl_src_sync_config_registers']=(
+                'JL_SRC_SYNC config-transaction block (CON0 0xfe2600 / CON1 0xfe2604 / '
+                'COEF 0xfe263c, the three words of the reconfiguration driver 0x606fa7e '
+                'behind the 42,059,070 stop 0x606fbe4 CON1|=0x400000): mixed-policy '
+                'container — CON0/CON1 serve the RMW internal reads with the explicit '
+                'synthetic initial word 0 before any write and the last written value '
+                'afterwards (both synthetic-not-measured, NOT silicon reset values), '
+                'COEF records the 55 zero coefficient stores and refuses every read; '
+                'the base 0xfe2600 is data-driven (sole literal .data 0x60a29d4 in the '
+                'hw_res table 0x60a29c8, zero li sites, single accessor function = the '
+                'stop function) and every CON0/CON1 read value feeds only write-back '
+                'assembly; the bit22/bit4 gate semantics are derived from the firmware '
+                'driver shape (no SDK driver source exists in any public JieLi SDK); '
+                'the other thirteen block members stay unmapped; a new consumer of any '
+                'whitelisted address (new PC, new RMW mask, another core) must be '
+                're-audited; no SRC_SYNC hardware behavior, sample-rate conversion, '
+                'DMA, coefficient FIFO semantics or IRQ89 delivery is modeled — this '
+                'does NOT verify any sample-rate conversion, DMA or audio processing')
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
