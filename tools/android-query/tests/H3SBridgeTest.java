@@ -43,10 +43,61 @@ public class H3SBridgeTest {
         keyRemapGet();
         policyConsistency();
         audioModeAndReadStatus();
+        readInfoAndParse();
         deviceMessageEvent();
         System.out.println("H3SBridgeTest passed: 门控、writeEq JSON 解析/组帧对拍/错误路径、DRIVE bands 紧凑串好坏负例（SIMB1G 崩溃回归）、"
             + "setAnc/setPromptVolume/setKeyRemap 字节对照、"
-            + "getKeyRemap 默认/更新、EqWritePolicy 一致性、setAudioMode(0x2E)/readStatus 字节对照、device_message 事件");
+            + "getKeyRemap 默认/更新、EqWritePolicy 一致性、setAudioMode(0x2E)/readStatus 字节对照、"
+            + "readInfo(03)/parseInfoPayload LTV 解析（固件 tab 版本展示）、device_message 事件");
+    }
+
+    /** readInfo（opcode 03 设备信息，只读）与 parseInfoPayload LTV 解析（固件 tab 版本展示）。 */
+    static void readInfoAndParse() throws Exception {
+        H3SBridge b = new H3SBridge();
+        JSONObject r = result(b.readInfo());
+        expect(r.getBoolean("ok"), "readInfo 应成功（只读不需武装）: " + r);
+        bytes("readInfo 帧", H3SBridge.unhex(r.getString("bytesHex")),
+            new byte[]{(byte)0xfe,(byte)0xdc,(byte)0xba,(byte)0xc0,0x03,0,6,0,
+                (byte)0xff,(byte)0xff,(byte)0xff,(byte)0xff,0x00,(byte)0xef});
+        expect(cn.felix021.h3squery.QueryPolicy.permitted(H3SBridge.unhex(r.getString("bytesHex"))),
+            "readInfo 帧应过 QueryPolicy（03 全属性 mask 白名单）");
+        expect(cn.felix021.h3squery.QueryPolicy.permitted(H3SBridge.buildReadInfoFrame(7)),
+            "任意 SN 的 readInfo 帧都应过 QueryPolicy");
+        // 03 回包载荷形状 [未钉]：属性表按 docs/protocol.md「设备信息和身份」构造
+        // （05 版本码小端 0x0118=280、08 双备份 01 00 01、0A VID/PID 1C52 417C）。
+        // 样例 A：带 `03 len` 前缀（0x17 回包 cmdid+len 先例的对称形状）。
+        JSONObject info = result(H3SBridge.parseInfoPayload(
+            H3SBridge.unhex("030f0502180108030100010a041c52417c")));
+        expect(info.getBoolean("ok"), "带前缀样例应解析: " + info);
+        expect(info.getInt("version") == 280, "版本码 280: " + info);
+        expect("0.1.1.8".equals(info.getString("versionText")), "版本文本换算 0.1.1.8: " + info);
+        expect(info.getBoolean("doubleBackup"), "双备份能力位");
+        expect(info.getInt("vid") == 7250 && info.getInt("pid") == 16764, "VID/PID 大端识别: " + info);
+        expect(info.getBoolean("identityKnown"), "已知 H3S 身份");
+        // 样例 B：裸 LTV（无前缀变体也兼容）。
+        JSONObject bare = result(H3SBridge.parseInfoPayload(
+            H3SBridge.unhex("0502180108030100010a041c52417c")));
+        expect(bare.getBoolean("ok") && bare.getInt("version") == 280, "裸 LTV 样例应解析: " + bare);
+        // 0A 字节序未留档：小端镜像 52 1C 7C 41 同样识别为 H3S 身份。
+        JSONObject le = result(H3SBridge.parseInfoPayload(
+            H3SBridge.unhex("030f0502180108030100010a04521c7c41")));
+        expect(le.getBoolean("ok") && le.getBoolean("identityKnown")
+            && le.getInt("vid") == 7250 && le.getInt("pid") == 16764, "0A 小端镜像识别: " + le);
+        // 版本 281=0x0119 先例（换算 0.1.1.9）。
+        JSONObject v281 = result(H3SBridge.parseInfoPayload(H3SBridge.unhex("030405021901")));
+        expect(v281.getBoolean("ok") && v281.getInt("version") == 281
+            && "0.1.1.9".equals(v281.getString("versionText")), "0x0119 换算: " + v281);
+        // 负例：空/过短/垃圾流/电量载荷（无 05 属性）都不得猜出版本。
+        expect(!result(H3SBridge.parseInfoPayload(null)).getBoolean("ok"), "null 载荷拒绝");
+        expect(!result(H3SBridge.parseInfoPayload(new byte[0])).getBoolean("ok"), "空载荷拒绝");
+        expect(!result(H3SBridge.parseInfoPayload(H3SBridge.unhex("ffff"))).getBoolean("ok"), "垃圾拒绝");
+        expect(!result(H3SBridge.parseInfoPayload(H3SBridge.unhex("2f03006400"))).getBoolean("ok"),
+            "电量载荷（无版本属性）不得解析为设备信息");
+        // 页面入口 parseInfo(String)：hex 校验 + 大小写。
+        expect(result(b.parseInfo("030f0502180108030100010a041c52417c")).getBoolean("ok"), "hex 入口解析");
+        expect(result(b.parseInfo("030F0502180108030100010A041C52417C")).getBoolean("ok"), "大写 hex 解析");
+        expect(!result(b.parseInfo("030f0")).getBoolean("ok"), "奇数长度 hex 拒绝");
+        expect(!result(b.parseInfo("zz")).getBoolean("ok"), "非 hex 拒绝");
     }
 
     /** setAudioMode（FF/0x2E，音乐 1/游戏 3/电影 4）与 readStatus（只读四点）字节对照。 */

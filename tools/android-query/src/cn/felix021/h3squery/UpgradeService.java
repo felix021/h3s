@@ -38,7 +38,7 @@ public class UpgradeService extends Service {
     int queuedBytes, chunks, reconnects, attMtu=23;
     long sentBytes, nextWriteAt;
     byte[] firmware;
-    String sha, nonce, message="尚未准备";
+    String sha, nonce, message="尚未准备", planDescription=UpgradeGate.DESCRIPTION;
     File logFile;
     PowerManager.WakeLock wakeLock;
     Runnable stageTimeout, writeTimeout;
@@ -68,9 +68,11 @@ public class UpgradeService extends Service {
                         bytes=out.toByteArray();
                     }
                     String hash=MainActivity.hex(MessageDigest.getInstance("SHA-256").digest(bytes));
-                    if (bytes.length!=UpgradeGate.FILE_BYTES || !UpgradeGate.SHA.equals(hash)) throw new IOException("候选文件大小或 SHA-256 不匹配");
+                    // 固定候选门（0.7.3 固件 tab 起为注册表）：sha+长度必须命中钉死清单，否则拒绝。
+                    final UpgradeGate.Candidate plan=UpgradeGate.candidateFor(hash, bytes.length);
+                    if (plan==null) throw new IOException("候选文件大小或 SHA-256 不在允许清单（"+UpgradeGate.allowedShaList()+"）");
                     main.post(() -> { if (!destroyed && gate.state()==UpgradeGate.State.PREPARING) {
-                        firmware=bytes; sha=hash;
+                        firmware=bytes; sha=hash; planDescription=plan.description;
                         peer=((BluetoothManager)getSystemService(BLUETOOTH_SERVICE)).getAdapter().getRemoteDevice(MainActivity.ADDRESS);
                         openGatt();
                     } });
@@ -277,7 +279,7 @@ public class UpgradeService extends Service {
                             if(gate.state()==UpgradeGate.State.PREPARING) {
                                 nonce=UUID.randomUUID().toString();
                                 gate.prepared(snapshot,sha,firmware.length,nonce,SystemClock.elapsedRealtime());
-                                state("准备完成：0.1.1.8 同版本更新 / "+UpgradeGate.DESCRIPTION+"；等待本次确认，尚未写入");
+                                state("准备完成：0.1.1.8 同版本更新 / "+planDescription+"；等待本次确认，尚未写入");
                                 timeout(UpgradeGate.MAX_AGE_MS,"升级计划已过期，请重新准备");
                             } else if(gate.state()==UpgradeGate.State.RECHECKING) beginTransfer();
                             else fail("准入响应到达了无效阶段");

@@ -1,8 +1,15 @@
 # H3S Android 查询与固定候选OTA工具
 
-独立调试客户端，包名 `cn.felix021.h3squery`。通过QCY BLE服务调用官方JL OTA SDK；查询和实际升级分层。当前源码版本0.8.0-morefunc（含 0.7.2-eqfix 的 EQ type 修复；launcher=WebView 壳四 tab：耳机控制/助听/更多功能/USB，原生查询页降级为工具入口），保留已实测的协议、传输和固定候选门槛，目标地址由构建生成。
+独立调试客户端，包名 `cn.felix021.h3squery`。通过QCY BLE服务调用官方JL OTA SDK；查询和实际升级分层。当前源码版本0.8.1-otatab（含 0.8.0-morefunc 与 0.7.2-eqfix 的修复；launcher=WebView 壳五 tab：耳机控制/助听/更多功能/USB 工具/固件，原生查询页降级为工具入口），保留已实测的协议、传输和固定候选门槛，目标地址由构建生成。
 
-当前只接受已验证的 ANC 固件 SHA256 `b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b`、长度1326848，输入H3S版本280。EQ r2 实机出现运行异常，r1/r2均拒绝。记录见 [EQ 实验故障](../../docs/eq-toggle.md)。当前恢复还依赖可用设备连接；不能把工具准备完毕当作已恢复。
+升级通道只接受固定候选注册表（`UpgradeGate.REGISTRY`，sha+长度双钉死，均为0.1.1.8/版本码280/1326848字节）：
+
+| 候选 | SHA256 | 说明 |
+| --- | --- | --- |
+| `anc_restore_tested` | `b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b` | 已实测的 ANC 降噪/通透两态恢复镜像（2026-11-09 设备验收） |
+| `hearing_aid_full_mpo95` | `9ad0f0881a7996cb4dea81477d8731aa9b4db69a6f352603118663d68eda5465` | HAL5 助听全功能合一候选（docs/hearing-aid-l5-full.md；2026-11-18 已刷入真机） |
+
+清单外文件一律拒绝并明确列出允许的 SHA；EQ r2 实机出现运行异常，r1/r2均拒绝。记录见 [EQ 实验故障](../../docs/eq-toggle.md)。当前恢复还依赖可用设备连接；不能把工具准备完毕当作已恢复。
 
 `firmware` Release 仍是已验证的 ANC 两态包，当前源码恢复为固定此摘要。实际手机先装回此前已验证的0.4/code6 APK，避免在排查期间更改传输逻辑。此限制不放宽为任意文件／版本。
 
@@ -34,15 +41,15 @@ docs/android-ble-connection-diagnosis-20261118.md）。可选环境变量：`H3S
 
 AndroidX Core是SDK权限检查的实际依赖，不能省略。配置只写入 `build/generated/.../DeviceConfig.java`（地址留空=扫描发现模式）；注入了地址的APK含所配目标地址，公开分享自己的APK前要考虑这一点。本仓库不附带原测试APK和签名私钥。
 
-构建运行 tests/ 下全部 JVM 测试（QueryPolicy/UpgradeGate/BleDiscovery/BlePacketizer/EqFrame/KeyRemapFrame/
-KeyStore/MoreFunc/H3SBridge/H3sTransport/TransportContract/SimulationGattLink/SimulationUsbLink/UsbScsi/H3sUsbBridge），再编译、打包、签名和检查APK。开始构建即移除旧APK，避免失败后误用旧产物。调试签名在 `build/debug.keystore` 创建；同一设备覆盖安装需要保留自己的签名，不要把它提交Git。输出 `build/h3s-query.apk`。
+构建运行 tests/ 下全部 JVM 测试（QueryPolicy/UpgradeGate（含固定候选注册表 sha 门）/BleDiscovery/BlePacketizer/EqFrame/KeyRemapFrame/
+KeyStore/MoreFunc/H3SBridge（含 readInfo/parseInfoPayload）/H3sTransport/TransportContract/SimulationGattLink/SimulationUsbLink/UsbScsi/H3sUsbBridge），再编译、打包、签名和检查APK。开始构建即移除旧APK，避免失败后误用旧产物。调试签名在 `build/debug.keystore` 创建；同一设备覆盖安装需要保留自己的签名，不要把它提交Git。输出 `build/h3s-query.apk`。
 
 ## 安装和只读检查
 
 ```bash
 export ANDROID_SERIAL=YOUR_ADB_SERIAL
 adb -s "$ANDROID_SERIAL" install -r tools/android-query/build/h3s-query.apk
-# 桌面图标 / launcher 直接打开 WebView 壳（耳机 + USB 双 tab）
+# 桌面图标 / launcher 直接打开 WebView 壳（耳机/助听/USB/固件 四 tab）
 adb -s "$ANDROID_SERIAL" shell monkey -p cn.felix021.h3squery \
   -c android.intent.category.LAUNCHER 1
 # 原生查询/升级工具页（非导出，adb 显式启动照旧）
@@ -96,7 +103,7 @@ R3 独立 app 按用户指定架构实现为「HTML5 WebView 页面 + Android �
 放行 + 串行发送 + 事件回推」；未注入（无参构造）退化为纯组帧「校验 + 组帧 + hex 回显」——
 旧测试与离线演示行为不变。真机下发需授权联调（路 AU 已把传输层接到壳，连接由页面显式触发）。
 
-入口：**launcher=WebShellActivity**（桌面图标直达，耳机/USB 双 tab 全 WebView，原生零 UI）；
+入口：**launcher=WebShellActivity**（桌面图标直达，耳机/助听/USB/固件 四 tab 全 WebView，原生零 UI）；
 MainActivity 原生查询页降级为非导出工具入口（升级卡按钮 / adb 显式 am start / PROBE 流程不变）。
 
 bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
@@ -144,7 +151,17 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
   （声道平衡=官方面板占位无命令绑定、固件无 L/R 平衡 key——不放假滑杆）。全部选择
   localStorage 记忆（`h3s.morefunc.*`），连接就绪自动回读 9 个只读 cmdid 对齐设备真值。
 - **助听 tab**：见下节「助听 tab」——每频段增益/上限（BLE 留桩）+ 测试音/样本播放（h3sha 桥）。
-- **USB tab**：见下节。在无 bridge 的普通浏览器打开会显示降级提示；调用与事件日志抽屉
+- **USB tab**：见下节。
+- **固件 tab（0.7.3 新增，h3sota 桥）**：设备与当前版本卡（连接就绪自动发只读 03 设备信息
+  查询，属性 05 版本码→0.1.1.8 文本、0A 身份；03 回包载荷形状 [未钉]，解析不出如实显示
+  未识别）+ 升级通道卡（内置候选清单由 `h3sota.candidates()` 从 UpgradeGate.REGISTRY
+  实时读取，页面不维护副本；本地 ufw 文件 sha+长度必须命中清单才可设为候选，拒绝文案
+  列出允许的 SHA）+ 升级步骤（候选→准备→确认→进度，沿用 UpgradeService 状态文件 2s
+  轮询）+ 安全提示卡（升级中勿断连/前台服务说明、电量 <30% 警告——30% 是 SDK 缺省
+  lowPowerLimit 参考值非设备上报阈值、确认 2 分钟窗口、失败不自动重试、版本号不变
+  不能当成功判据）。
+- tab 状态 localStorage 记忆（`h3s.tab`，重进 App 回到上次所在 tab；非法值回落耳机 tab）。
+  在无 bridge 的普通浏览器打开会显示降级提示；调用与事件日志抽屉
   常驻（最近 60 条）。
 
 诚实标注：
@@ -372,14 +389,17 @@ MainActivity/UpgradeService 先例，本机按 android.jar 编译检查过，真
 
 先完整阅读 [OTA实现与边界](../../docs/ota.md)。本例另有 [USB救砖实测](../../docs/usb-recovery.md)，其完整备份与限定恢复流程不由这个Android OTA客户端执行；双备份能力报告本身不能替代恢复步骤。
 
-1. 核对当前固定候选的完整SHA256；当前源码对应已验证的 ANC 包。
-2. 把**当前固定候选**复制到App私有 `files/candidate.ufw`。文件选择器的“检查本地uFW”只检查文件，不会把任意选择文件设为升级输入。
-3. 点击“准备本次候选升级（不写入）”，等PREPARED，检查设备身份、版本、电量和MTU。
-4. 点击“查看并确认本次刷写”，审阅摘要与修改说明，在两分钟内确认。服务再次读取设备后才开始实际OTA。
+1. 核对固定候选注册表（本文件顶部表格）的完整SHA256；两条候选均已在真机刷过。
+2. 在固件 tab 选择本地 uFW 文件（SAF 文件选择器，无需存储权限——ACTION_OPEN_DOCUMENT
+   返回的 Uri 只在本次选择内使用）。选中文件 sha+长度命中注册表才能「设为本次候选」，
+   复制到App私有 `files/candidate.ufw` 并回读校验；未命中文件被明确拒绝并列出允许的 SHA，
+   不会成为升级输入。
+3. 点击“开始准备”，等PREPARED，检查设备身份、版本、电量和MTU。
+4. 点击“确认刷入”，审阅摘要与修改说明，在两分钟内确认。服务再次读取设备后才开始实际OTA。
 5. 传输期间保持连接，不更新APK、不重启手机、不重复开始。等待终态。
 6. 成功后重新连接确认正常状态，实际验证声音与 ANC 模式键；版本号仍280，不能只看版本号。
 
-复制候选的ADB示例：
+复制候选的ADB示例（绕过文件选择器，直接落盘；服务侧仍会做 sha 门+准入复查）：
 
 ```bash
 adb -s "$ANDROID_SERIAL" shell -T run-as cn.felix021.h3squery \

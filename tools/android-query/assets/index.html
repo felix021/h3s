@@ -157,6 +157,22 @@ button.danger:not(:disabled):active {
 .ota-steps strong {
   font-size: 14px;
 }
+/* 固件 tab：内置候选清单条目（sha 等宽字体、可横向滚动防溢出） */
+.ota-candidate {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.ota-candidate + .ota-candidate {
+  margin-top: 10px;
+}
+.ota-sha {
+  font: 12px/1.6 ui-monospace, monospace;
+  word-break: break-all;
+  color: var(--muted);
+}
 .progress {
   height: 8px;
   border-radius: 999px;
@@ -334,6 +350,9 @@ html:not([data-theme-choice]) #themeCycle svg[data-theme-icon='auto'] {
 }
 .segment.four {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.segment.five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 .segment button {
   padding-inline: 6px;
@@ -1103,7 +1122,7 @@ summary {
       </button>
     </div>
 
-    <div class="segment four tabs" role="tablist" aria-label="工具分类">
+    <div class="segment five tabs" role="tablist" aria-label="工具分类">
       <button id="tabBtnHs" role="tab" aria-selected="true"
               aria-controls="tabHs" tabindex="0">耳机控制</button>
       <button id="tabBtnHa" role="tab" aria-selected="false"
@@ -1112,6 +1131,8 @@ summary {
               aria-controls="tabMore" tabindex="-1">更多功能</button>
       <button id="tabBtnUsb" role="tab" aria-selected="false"
               aria-controls="tabUsb" tabindex="-1">USB 工具</button>
+      <button id="tabBtnOta" role="tab" aria-selected="false"
+              aria-controls="tabOta" tabindex="-1">固件</button>
     </div>
     <nav id="toc" class="toc" aria-label="页面目录"></nav>
   </div>
@@ -1349,57 +1370,6 @@ summary {
       <p id="modeFeedback" class="feedback" aria-live="polite">
         此接口的报文长度仍待真机验证。
       </p>
-    </article>
-
-    <article class="card" id="sec-upgrade">
-      <div class="card-head">
-        <h2>固件升级</h2>
-        <span class="badge warning">写入操作</span>
-      </div>
-      <p class="muted">
-        仅支持刷入<b>已实测的 ANC 两态恢复镜像</b>（0.1.1.8，此前已通过实际
-        OTA 与按键验收）。EQ 实验镜像已停用，不提供刷入入口；未识别文件
-        不能作为候选。确认刷写后服务会重新即时读取设备准入条件，通过后
-        才开始写入。
-      </p>
-      <ol class="ota-steps">
-        <li>
-          <strong>检查升级文件</strong>
-          <div class="actions">
-            <button id="otaPick">选择 uFW 文件</button>
-          </div>
-          <p id="otaFileInfo" class="note" hidden></p>
-        </li>
-        <li>
-          <strong>设为本次候选</strong>
-          <div class="actions">
-            <button id="otaInstall" disabled>复制为候选（不写入耳机）</button>
-          </div>
-          <p id="otaCandidateInfo" class="note" hidden></p>
-        </li>
-        <li>
-          <strong>准备：核对文件并读取设备准入</strong>
-          <div class="actions">
-            <button id="otaPrepare" disabled>开始准备（连接耳机）</button>
-          </div>
-        </li>
-        <li>
-          <strong>确认并刷写</strong>
-          <div id="otaPlan" class="note" hidden></div>
-          <div class="actions">
-            <button id="otaConfirm" class="danger" disabled>确认刷入</button>
-            <button id="otaCancel" disabled>取消准备</button>
-          </div>
-        </li>
-        <li>
-          <strong>进度与结果</strong>
-          <div id="otaProgressWrap" hidden>
-            <div class="progress"><div id="otaProgressBar"></div></div>
-            <p id="otaProgressText" class="note"></p>
-          </div>
-          <p id="otaStateLine" class="note">尚未开始。</p>
-        </li>
-      </ol>
     </article>
 
   </section>
@@ -1777,6 +1747,120 @@ summary {
       </div>
     </article>
   </section>
+
+  <section id="tabOta" role="tabpanel" aria-labelledby="tabBtnOta" hidden>
+    <article class="card" id="sec-ota-device">
+      <div class="card-head">
+        <h2>设备与当前版本</h2>
+        <span id="otaConnBadge" class="badge">未连接</span>
+      </div>
+      <div class="kv">
+        <span>连接状态</span>
+        <span id="otaConnText">先在「耳机控制」tab 连接耳机</span>
+      </div>
+      <div class="kv">
+        <span>固件版本</span>
+        <span id="otaVersion">未查询</span>
+      </div>
+      <div class="kv">
+        <span>电量（槽位 1，升级判据同款）</span>
+        <span id="otaBatt">未查询</span>
+      </div>
+      <div class="kv">
+        <span>身份</span>
+        <span id="otaIdentity">未查询</span>
+      </div>
+      <div class="actions">
+        <button id="otaQueryBtn">查询版本与电量</button>
+      </div>
+      <p id="otaBattWarn" class="note warning" hidden></p>
+      <p class="note">
+        版本/身份走 RCSP 只读命令 03（docs/protocol.md「设备信息和身份」，属性 05
+        版本码 / 0A 身份）；电量走只读 0x2f 槽位 1（升级服务同款读法）。03 回包
+        载荷形状未留全档，解析不出时如实显示未识别，不猜。
+      </p>
+    </article>
+
+    <article class="card" id="sec-ota-candidates">
+      <div class="card-head">
+        <h2>升级通道 · 固定候选清单</h2>
+        <span class="badge warning">sha 钉死审批门</span>
+      </div>
+      <p class="muted">
+        本工具只允许刷入下面清单里逐字节钉死的镜像（清单来自原生侧审批门
+        UpgradeGate，页面不另维护副本）。本地选择的 ufw 文件必须 SHA-256 与
+        长度同时命中清单才能设为候选；不命中会被明确拒绝并给出允许的 SHA。
+        不提供任意固件推送。
+      </p>
+      <div id="otaCandidateList" class="empty">清单读取中……</div>
+      <details>
+        <summary>本地文件检查（选中后仍需过同一 SHA 门）</summary>
+        <div class="actions">
+          <button id="otaPick">选择 uFW 文件</button>
+        </div>
+        <p id="otaFileInfo" class="note" hidden></p>
+      </details>
+    </article>
+
+    <article class="card" id="sec-upgrade">
+      <div class="card-head">
+        <h2>升级步骤</h2>
+        <span class="badge warning">写入操作</span>
+      </div>
+      <ol class="ota-steps">
+        <li>
+          <strong>设为本次候选</strong>
+          <div class="actions">
+            <button id="otaInstall" disabled>复制为候选（不写入耳机）</button>
+          </div>
+          <p id="otaCandidateInfo" class="note" hidden></p>
+        </li>
+        <li>
+          <strong>准备：核对文件并读取设备准入</strong>
+          <div class="actions">
+            <button id="otaPrepare" disabled>开始准备（连接耳机）</button>
+          </div>
+        </li>
+        <li>
+          <strong>确认并刷写</strong>
+          <div id="otaPlan" class="note" hidden></div>
+          <div class="actions">
+            <button id="otaConfirm" class="danger" disabled>确认刷入</button>
+            <button id="otaCancel" disabled>取消准备</button>
+          </div>
+        </li>
+        <li>
+          <strong>进度与结果</strong>
+          <div id="otaProgressWrap" hidden>
+            <div class="progress"><div id="otaProgressBar"></div></div>
+            <p id="otaProgressText" class="note"></p>
+          </div>
+          <p id="otaStateLine" class="note">尚未开始。</p>
+        </li>
+      </ol>
+    </article>
+
+    <article class="card" id="sec-ota-safety">
+      <div class="card-head">
+        <h2>安全提示</h2>
+        <span class="badge">升级前必读</span>
+      </div>
+      <ul class="ota-steps">
+        <li><strong>升级中勿断开</strong>：传输期间保持手机与耳机的 BLE 连接，
+          不要锁屏杀后台（升级以前台服务 + 唤醒锁运行）、不要把手机带离耳机、
+          不要更新 APK 或重启手机、不要重复开始。</li>
+        <li><strong>电量要求</strong>：建议电量 ≥30% 再开始（30% 是 SDK 缺省
+          低电参考值，不是设备上报阈值；设备侧升级条件 E2 会在准备/确认两轮
+          再判一次，电量过低会被拒绝）。</li>
+        <li><strong>确认窗口</strong>：准备通过后的确认令牌 2 分钟内有效，过期
+          需重新准备。</li>
+        <li><strong>失败处置</strong>：失败不自动重试、不自动恢复；先读状态与
+          原因，不要随意放宽代码门槛或换包「试一试」。</li>
+        <li><strong>成功判据</strong>：版本号相同（280/0.1.1.8）不能当成功
+          证据，完成后需重连确认正常连接、声音与按键行为。</li>
+      </ul>
+    </article>
+  </section>
 </main>
 
 <aside id="logPanel" aria-label="调用与事件日志" hidden>
@@ -1894,8 +1978,7 @@ applyTheme();
 const TOC = {
   hs: [
     ['sec-connect', '连接'], ['sec-anc', '降噪'], ['sec-eq', '均衡器'],
-    ['sec-prompt', '提示音'], ['sec-keys', '按键'], ['sec-audio', '音频模式'],
-    ['sec-upgrade', '固件升级']
+    ['sec-prompt', '提示音'], ['sec-keys', '按键'], ['sec-audio', '音频模式']
   ],
   ha: [
     ['sec-ha-bands', '每频段调节'], ['sec-ha-tone', '测试音']
@@ -1909,6 +1992,10 @@ const TOC = {
   usb: [
     ['sec-usb-dev', '设备'], ['sec-usb-rom', 'ROM 模式'],
     ['sec-usb-read', '读取/备份'], ['sec-usb-flash', '刷机区']
+  ],
+  ota: [
+    ['sec-ota-device', '设备版本'], ['sec-ota-candidates', '升级通道'],
+    ['sec-upgrade', '升级步骤'], ['sec-ota-safety', '安全提示']
   ]
 };
 function renderToc(name) {
@@ -1971,13 +2058,15 @@ function syncHeaderOffset() {
 }
 window.addEventListener('resize', syncHeaderOffset);
 if (window.ResizeObserver) new ResizeObserver(syncHeaderOffset).observe(document.querySelector('header'));
-const TAB_ORDER = ['hs', 'ha', 'more', 'usb'];
+const TAB_ORDER = ['hs', 'ha', 'more', 'usb', 'ota'];
+const TAB_STORAGE_KEY = 'h3s.tab';
 function selectTab(name, focus) {
   $('tabHs').hidden = name !== 'hs';
   $('tabHa').hidden = name !== 'ha';
   $('tabMore').hidden = name !== 'more';
   $('tabUsb').hidden = name !== 'usb';
-  [['tabBtnHs', 'hs'], ['tabBtnHa', 'ha'], ['tabBtnMore', 'more'], ['tabBtnUsb', 'usb']].forEach(([id, n]) => {
+  $('tabOta').hidden = name !== 'ota';
+  [['tabBtnHs', 'hs'], ['tabBtnHa', 'ha'], ['tabBtnMore', 'more'], ['tabBtnUsb', 'usb'], ['tabBtnOta', 'ota']].forEach(([id, n]) => {
     const button = $(id);
     const selected = n === name;
     button.setAttribute('aria-selected', String(selected));
@@ -1986,8 +2075,12 @@ function selectTab(name, focus) {
   });
   renderToc(name);
   window.scrollTo({ top: 0 });
+  // tab 状态记忆（localStorage 可用才写；不可用只影响记忆，不影响切换）
+  try { localStorage.setItem(TAB_STORAGE_KEY, name); } catch (e) { /* 同 storageNote 降级 */ }
   if (name === 'usb') {
     if (!usbBusy) usbScan();
+  } else if (name === 'ota') {
+    otaPoll();          // 切进来立即刷一次升级状态（轮询本来就常驻，这里只是即时呈现）
   } else if (name !== 'ha' && playingId) {
     stopPlayback();
   }
@@ -1996,7 +2089,16 @@ $('tabBtnHs').onclick = () => selectTab('hs', false);
 $('tabBtnHa').onclick = () => selectTab('ha', false);
 $('tabBtnMore').onclick = () => selectTab('more', false);
 $('tabBtnUsb').onclick = () => selectTab('usb', false);
-renderToc('hs');
+$('tabBtnOta').onclick = () => selectTab('ota', false);
+/* 恢复上次所在 tab（非法值/首次打开回落耳机 tab）。rAF 延迟到脚本解析完成后执行：
+   selectTab 的 ota/usb 分支会触达后文才声明的 otaPoll/usbBusy（TDZ），点击天然在后文，
+   恢复路径必须等声明就位。 */
+(function restoreTab() {
+  let saved = null;
+  try { saved = localStorage.getItem(TAB_STORAGE_KEY); } catch (e) { /* 无存储 */ }
+  const target = TAB_ORDER.includes(saved) ? saved : 'hs';
+  requestAnimationFrame(() => { try { selectTab(target, false); } catch (e) { selectTab('hs', false); } });
+})();
 syncHeaderOffset();
 all('[role="tab"]').forEach(button => {
   button.onkeydown = event => {
@@ -2004,10 +2106,11 @@ all('[role="tab"]').forEach(button => {
     event.preventDefault();
     const name = button.id === 'tabBtnHs' ? 'hs'
       : button.id === 'tabBtnHa' ? 'ha'
-      : button.id === 'tabBtnMore' ? 'more' : 'usb';
+      : button.id === 'tabBtnMore' ? 'more'
+      : button.id === 'tabBtnUsb' ? 'usb' : 'ota';
     const idx = TAB_ORDER.indexOf(name);
-    const next = event.key === 'Home' ? 'hs'
-      : event.key === 'End' ? 'usb'
+    const next = event.key === 'Home' ? TAB_ORDER[0]
+      : event.key === 'End' ? TAB_ORDER[TAB_ORDER.length - 1]
       : event.key === 'ArrowLeft'
         ? TAB_ORDER[(idx + TAB_ORDER.length - 1) % TAB_ORDER.length]
         : TAB_ORDER[(idx + 1) % TAB_ORDER.length];
@@ -2091,6 +2194,7 @@ function renderConnection() {
     ? '连接就绪 · MTU ' + mtu
     : '点击连接后自动扫描附近的 QCY H3S 耳机（按广播名发现并连接）。';
   updateGates();
+  if (typeof updateOtaConnBadge === 'function') updateOtaConnBadge();
 }
 function completeCommand(seq, success, message, event) {
   const item = pending.get(Number(seq));
@@ -2209,6 +2313,7 @@ function clearDeviceDisplays() {
     $(id).textContent = '连接已断开，设备状态未知。';
     $(id).className = 'feedback';
   });
+  resetOtaDeviceCard('连接已断开');
 }
 function markSegment(id, predicate) {
   Array.from($(id).children).forEach(button => {
@@ -2267,6 +2372,7 @@ function parseDeviceMessage(payloadHex) {
       ));
     }
     $('batt').replaceChildren(...slots);
+    renderOtaBattery(hex, batteryAt);
     return;
   }
 
@@ -2319,7 +2425,13 @@ window.onH3sEvent = raw => {
       mtu = event.mtu;
       connectionNote = '';
       renderConnection();
-      if (firstReady) [47, 23, 34, 20, 31, 25, 35, 36, 46].forEach(id => issue('readStatus', [id]));
+      // 连接就绪自动查：电量/ANC/睡眠等状态（原行为）+ 设备信息 03（固件 tab 当前版本展示）
+      if (firstReady) {
+        [47, 23, 34, 20, 31, 25, 35, 36, 46].forEach(id => issue('readStatus', [id]));
+        issue('readInfo', [], (ok, message, ev) => {
+          if (ok) renderOtaInfo(ev && ev.payloadHex);
+        });
+      }
       return;
     }
 
@@ -4105,14 +4217,110 @@ function parseKeyTableReadback(hex) {
   }
 })();
 
-/* ---------- 固件升级（h3sota 桥：文件→候选→准备→确认→进度） ---------- */
+/* ---------- 固件 tab（h3sota 桥：版本/候选→文件→准备→确认→进度） ---------- */
 const OTA = window.h3sota || null;
 let otaCandidateReady = false;
 let otaPollTimer = null;
+/* 低电量提示阈值：SDK 缺省 lowPowerLimit=30（docs/protocol.md：缺省值，非设备上报阈值）。
+   仅作 UI 提醒；真正准入由服务侧电量读值 + E2 升级条件两轮判定。 */
+const OTA_BATT_WARN_PERCENT = 30;
 
 function otaNotify(text, bad) {
   notify(text, bad);
 }
+
+/* —— 设备与当前版本卡 —— */
+function updateOtaConnBadge() {
+  const badge = $('otaConnBadge');
+  const text = $('otaConnText');
+  if (!H) { badge.textContent = '离线预览'; badge.className = 'badge'; return; }
+  badge.className = 'badge';
+  if (connected) { badge.textContent = '已连接'; badge.classList.add('good'); text.textContent = '已连接，可查询'; }
+  else if (connecting) { badge.textContent = '连接中'; badge.classList.add('warning'); text.textContent = connDetail || '正在连接'; }
+  else { badge.textContent = '未连接'; text.textContent = connectionNote || '先在「耳机控制」tab 连接耳机'; }
+}
+function renderOtaInfo(payloadHex) {
+  if (!H || typeof H.parseInfo !== 'function') return;
+  let parsed = null;
+  try { parsed = JSON.parse(H.parseInfo(String(payloadHex || ''))); } catch (e) { parsed = null; }
+  if (!parsed || parsed.ok !== true) {
+    $('otaVersion').textContent = '未识别（03 回包形状未留全档，详情见日志）';
+    $('otaIdentity').textContent = '未识别';
+    return;
+  }
+  $('otaVersion').textContent = (parsed.versionText || parsed.version)
+    + '（版本码 ' + parsed.version + '）';
+  $('otaIdentity').textContent = parsed.identityKnown
+    ? 'VID ' + parsed.vid + ' / PID ' + parsed.pid + '（H3S）'
+    : '未识别（解析值 vid=' + parsed.vid + ' pid=' + parsed.pid + '）';
+}
+function renderOtaBattery(hex, batteryAt) {
+  // 槽位 1（b[3]）是升级服务同款有效电量读值（UpgradeService.queryBattery 先例）
+  const byte = parseInt(hex.slice(batteryAt + 6, batteryAt + 8), 16);
+  const percent = byte & 127;
+  const warn = $('otaBattWarn');
+  if (percent > 100) {
+    $('otaBatt').textContent = '无效读值';
+    warn.hidden = true;
+    return;
+  }
+  $('otaBatt').textContent = percent + '%' + ((byte & 128) ? ' · 充电' : '');
+  if (percent < OTA_BATT_WARN_PERCENT) {
+    warn.hidden = false;
+    warn.textContent = '电量偏低（' + percent + '% < ' + OTA_BATT_WARN_PERCENT
+      + '%）：建议先充电再升级。30% 是 SDK 缺省低电参考值，非设备上报阈值；'
+      + '设备侧升级条件仍会在准备/确认时各判一次。';
+  } else {
+    warn.hidden = true;
+  }
+}
+function resetOtaDeviceCard(reason) {
+  $('otaVersion').textContent = '未查询';
+  $('otaBatt').textContent = '未查询';
+  $('otaIdentity').textContent = '未查询';
+  $('otaBattWarn').hidden = true;
+  updateOtaConnBadge();
+  if (reason) $('otaConnText').textContent = reason + '，重新连接后可查询';
+}
+$('otaQueryBtn').onclick = () => {
+  updateOtaConnBadge();
+  if (!H) { otaNotify('离线预览：版本查询需要原生壳（h3s 桥）。', true); return; }
+  if (!connected) { otaNotify('请先在「耳机控制」tab 连接耳机。', true); return; }
+  issue('readInfo', [], (ok, message, event) => {
+    if (!ok) { otaNotify(message, true); return; }
+    renderOtaInfo(event && event.payloadHex);
+  });
+  issue('readStatus', [47], (ok, message) => {
+    if (!ok) otaNotify(message, true);
+  });
+};
+
+/* —— 升级通道：内置候选清单（从 UpgradeGate 注册表读，页面不另维护副本） —— */
+function renderOtaCandidates() {
+  const list = $('otaCandidateList');
+  if (!OTA) {
+    list.textContent = '离线预览：候选清单与升级功能需要原生壳（h3sota 桥）。';
+    return;
+  }
+  let payload = null;
+  try { payload = JSON.parse(OTA.candidates()); } catch (e) { payload = null; }
+  if (!payload || !Array.isArray(payload.candidates) || !payload.candidates.length) {
+    list.textContent = '候选清单读取失败（' + (payload && payload.error ? payload.error : '桥未返回') + '）。';
+    return;
+  }
+  list.replaceChildren(...payload.candidates.map(c => {
+    const item = element('div');
+    item.className = 'ota-candidate';
+    const head = element('strong', c.kind + ' · ' + (c.bytes / 1024 / 1024).toFixed(2) + ' MiB · 版本码 ' + c.version);
+    const sha = element('div', 'SHA-256：' + c.sha256);
+    sha.className = 'ota-sha';
+    const desc = element('div', c.description);
+    desc.className = 'note';
+    item.append(head, sha, desc);
+    return item;
+  }));
+}
+
 window.onH3sOtaEvent = payload => {
   if (!payload || !payload.event) return;
   if (payload.event === 'ota_file') {
@@ -4120,6 +4328,7 @@ window.onH3sOtaEvent = payload => {
     info.hidden = false;
     info.textContent = '文件：' + (payload.bytes / 1024 / 1024).toFixed(2) + ' MiB · '
       + 'SHA-256 ' + String(payload.sha256).slice(0, 16) + '… · ' + payload.note;
+    info.className = 'note' + (payload.is_candidate ? '' : ' warning');
     $('otaInstall').disabled = !payload.is_candidate;
     otaCandidateReady = false;
     $('otaPrepare').disabled = true;
@@ -4128,7 +4337,8 @@ window.onH3sOtaEvent = payload => {
     $('otaPrepare').disabled = false;
     const info = $('otaCandidateInfo');
     info.hidden = false;
-    info.textContent = '候选已就绪：' + (payload.bytes / 1024 / 1024).toFixed(2)
+    info.textContent = '候选已就绪：' + (payload.kind ? payload.kind + ' · ' : '')
+      + (payload.bytes / 1024 / 1024).toFixed(2)
       + ' MiB（candidate.ufw，回读校验一致）。下一步将连接耳机做即时准入检查。';
     otaNotify('候选文件已就绪，尚未写入耳机。');
   } else if (payload.event === 'ota_error') {
@@ -4204,8 +4414,12 @@ if (OTA) {
   otaPollTimer = setInterval(otaPoll, 2000);
 } else {
   $('otaPick').disabled = true;
+  $('otaInstall').disabled = true;
+  $('otaPrepare').disabled = true;
   $('otaStateLine').textContent = '离线预览：升级功能需要原生壳（h3sota 桥）。';
 }
+renderOtaCandidates();
+updateOtaConnBadge();
 
 /* ---------- USB：沿用现有桥方法与事件 ---------- */
 let usbOpened = false;
