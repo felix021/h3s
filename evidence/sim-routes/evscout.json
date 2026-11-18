@@ -1,0 +1,115 @@
+{
+ "route": "EVSCOUT / sim-evscout（基线 main 003ca0f，静态侦察，不跑条件线零 tools/ 改动）",
+ "recorded_at": "2026-11-18T08:47-10:0x+08:00",
+ "task": "jlstream 任务栈未初始化读停点侦察：41,909,506 @ 0x60869ba（uninitialized_memory 读 0x18ca64 4B physical_heap）——事件循环/事件 13 生产者/消费链/三选一预案/下一停点预判",
+ "method": {
+  "tools": "自建 ~/tmp/evscout 一次性脚本（evdis.py=pi32v2-isa codec 反汇编 helper；scan_calls.py 弃用/线性 desync；scan_callxl.py=字节级 call.xl 扫描 word1==0xFF80 零 desync；LE 指针扫描）+ d2b-framework-task/BZ/S18/BH/SIMPRE 先例交叉",
+  "app_bin": "app.bin sha256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041，加载基址 0x06000100，pi32v2-isa @3608ed19",
+  "no_simulation_run": true
+ },
+ "stop": {
+  "steps": 41909506,
+  "pc": "0x60869ba",
+  "kind": "uninitialized_memory read 0x18ca64 size 4 region=physical_heap",
+  "task": "jlstream 框架主任务 0x6086980（注册点 0x60759ee，名字 'jlstream'@0x609d3bb，12B 表条目[4] prio3 栈0x300字）",
+  "instruction": "r6 = [r10+8]（get-event 返回 13 后读消息缓冲第二输出参数；r10=sp+24 → 槽=任务栈 0x18ca64）"
+ },
+ "consumer_chain": {
+  "event_loop": {
+   "get_event_call": "0x60869a8: r0=sp+24; r1=8; call 0x6064c8c（勘误：tonmap 记 0x6064c2a 有误，四方先例+字节复算=0x6064c8c）",
+   "return_13_gate": "0x60869b2: if (r0 != 13) goto 0x6086b06（返回码 3/4/11 走循环尾）",
+   "param1_read": "0x60869b6: r0 = [r10+4]（载荷1=cmd，停点前已成功=buf[1] 有效）",
+   "param2_read": "0x60869ba: r6 = [r10+8]（载荷2=停点）",
+   "range_check": "0x60869be/c2: r1=r0-4 无符号>8 → goto 0x6086b06（cmd∉[4,12] 丢弃，含 cmd0）",
+   "obj_bases": "0x60869c6/c8: r7=r6+8/r0=r6+44（仅 cmd∈[4,12] 执行——cmd0 不经过）",
+   "tbb": "0x60869cc 表 9B @0x60869ce = 05 11 9c 9c 2b 3d 72 24 77 → cmd4/5/6/7/8/9/10/11/12 分支 0x60869d8/0x60869f0/0x6086b06/0x6086b06/0x6086a24/0x6086a48/0x6086ab2/0x6086a16/0x6086abc（与 d2b §3.1 一致）",
+   "loop_tail": "0x6086b06 call 0x6075ce0（tick 心跳：[0x12649C] 28B 节点链 b[+9]++，临界对 0x12b55c/0x12b5b0）→ 0x6086b0c r6=r12（★unknown 覆盖点）→ walker（0x1264B8 哨兵链，b[obj+17] 状态分派）→ 回 0x60869a8"
+  },
+  "get_event_internals": {
+   "unpack": "0x6064c8c → 0x6064b98 取记录 → 0x60649b0 解包（BZ 先例互证，本路逐指令复核）：buf[0]=slot头字>>8=id；载荷字数 n=头字低8位-1；buf[1..n]=载荷（上限 N-1=7 字，超长头 0x60649c0/c4 异常检查）",
+   "key_inference": "buf 写字数=消息载荷字数 n 与容量无关；n=1 → buf[2]（0x18ca64）从不写；n=0 结构也可能（codex：0x6064a00 有符号 0<0 不成立+0x606487c 入队无 n>0 检查）——n 归属需运行时 watch 头字闭合",
+   "return13_paths": "13 唯一装点 0x6064d4a（来自 0x6064cd4 对 0x6064c0e 返 0 分支）；必经 0x6064b98（0x6064bf2/0x6064c00 两路调解包后 0x6064c08 出队）——无绕过解包的返 13 正常路径（codex 复核）；其他返回码 3/4/11",
+   "callback_family": "0x300000 族消息（0x60752c4 post 3 字到 jlstream，经 0x6064978 另一 API）在 0x6064c0e 内联消费返 1 续取不返 13（SIMPRE P3 先例），不进 buf 检查"
+  },
+  "r6_unknown_live_range": "[0x60869ba, 0x6086b0c)：69b6/69ba 独立 ld.w.l（flags 不变）/69be（r1=r0-4）/69c2（bgt.ri 32 位无符号直接跳 6b06）/6b06（call 常量目标）/6b0c（r6=r12 覆盖）——零 r6 消费零并行对（.p 并行传送仅 cmd10/cmd8 分支体 0x6086ace/0x6086af0，cmd0 不执行）；被调链补核（codex）：0x6075ce0..0x6075d0e 只用 r0/r1/r2/SP/RETS（两调 0x12b55c/0x12b5b0），0x12b55c..ae 只用 r0..r3，0x12b5b0..608 只用 r0..r4——同步链不读写 r6 无继续调用；helper 自身有内存访问/分支但全不依赖 r6（不可简写成零内存访问/零分支）",
+  "ce0_semantics_correction": "0x6075ce0=遍历保护/引用计数增加（b[0x12649c]++、链表对象 b[obj+9]++；对应 0x6075d54 减计数/零值清理），非完整流状态机——b[obj+17] 状态分派在返回后的 walker（codex）",
+  "verdict": "在已知 cmd0、同步路径上，读值不参与谓词/地址/算术/控制目标，最终被 r12 覆盖（限域措辞见 plan.equivalence_wording_codex）；cmd∈[4,12] 后续 2 字消息 r6=已初始化 obj 无交叉；IRQ/任务切换若介入属验证臂 7 覆盖项静态不预承诺"
+ },
+ "producers": {
+  "post_api": "0x6064d72(name, n, r2, r3)：载荷 {r2,r3}≤2字 id 恒 0x100000 → 0x606487c 环入队 slot 头字=(n+1)|(id<<8)",
+  "scan": "call.xl 字节级扫描（26 处→0x6064d72，本路与 codex call.s/l/xl 三编码补扫一致）∩ 'jlstream' 名字 LE 指针扫描（9 处引用，含注册表/任务创建/另一 API 0x6064978 引用≠9 条 post）=9 个直 post 点",
+  "one_word_kick_posts_six": [
+   {"site": "0x6075078", "fn": "0x6074ffe stream open/kick API", "note": "条件 [obj+68]!=0，置 b[obj+17]=1/b[obj+18]=5 后 kick；11 个 call.xl 调用者：0x600da42/0x6013dfc(音频设备事件 handler 域)/0x6016e4c/0x6016f02/0x60170ce/0x6017ede/0x603344c/0x60334b6/0x603355c/0x6033810/0x6033a42", "verdict": "强候选（与当前前缀高度吻合）；唯一性未证"},
+   {"site": "0x607609a", "fn": "0x607607e r3==0 臂", "note": "直调唯一 0x6086d7e（jlstream_N 子任务体，惰性未创建）；但 0x607607e 还被 0x6086cd4 装入 r9 经 0x6086cfe..d02 作回调注册参数（codex）", "verdict": "弱排除（需运行观测）"},
+   {"site": "0x6086a40", "fn": "任务体 cmd8 完成相自 post", "note": "第一条消息前未执行=静态先后关系", "verdict": "弱排除"},
+   {"site": "0x6086aaa", "fn": "任务体 cmd9 自 post", "note": "同上", "verdict": "弱排除"},
+   {"site": "0x6086b8a", "fn": "任务体 walker 迁移收尾自 post", "note": "同上", "verdict": "弱排除"},
+   {"site": "0x6086c7e", "fn": "独立函数 0x6086c4c..0x6086c8a 定时器回调（codex 勘误：非 jlstream_N 任务体；子任务入口是 0x6086c8c）", "note": "回调地址引用 0x6075a88/0x6075e60/0x6086bbc（→0x6066c26 定时器注册）——sys_timer 回调可在主任务域执行", "verdict": "不排除（需 timer 注册/执行记录）"}
+  ],
+  "two_word_posts": [
+   {"site": "0x6075414", "fn": "0x60753e8 stream 请求入口（唯一调用者 0x6018f0e tone/提示音域）", "payload": "{5,obj}（d2b §9 实测 slot[1]=5/slot[2]=obj）"},
+   {"site": "0x607608e", "fn": "0x607607e r3!=0 臂", "payload": "{5,r3}"}
+  ],
+  "three_word_posts": [
+   {"site": "0x60741bc", "fn": "0x6074192 框架内部事件（调用点 0x6074200/0x6074228/0x60753d2/0x60754da/0x60755a4，Q_FULL=21 重试≤10）", "payload": "{cmd,a1,a2}"},
+   {"site": "0x60752c4", "fn": "id=0x300000 回调族经 0x6064978 另一 API（get-event 内联消费，不产生返 13 停点）", "payload": "3 字"}
+  ],
+  "design_pattern": "post('jlstream',1,{0}) 是系统性 kick 惯用法（6 处独立代码同形状 r1=1/r2=0）：载荷 0 越界即弃是设计意图——目的是触发循环尾 0x6075ce0 推进+walker，不需要 cmd 分支",
+  "stop_message_verdict": "停点消息=post('jlstream',1,{0}) 1 字 kick，buf[1]=0（cmd0）有效、buf[2] 未写；n=1 静态收敛但 n=0 结构可能（codex：0x6064a00 有符号 0<0 不成立+0x606487c 入队无 n>0 检查），开启臂 watch 头字（预期 0x10000002）/写集/r0 即闭合；生产者=0x6075078 强候选未唯一化（所有 1 字候选载荷全同 {0}，不影响判定）",
+  "completeness_caveat": "直 post 清单覆盖 call.s/l/xl 三编码直接调用（两方独立扫描一致）；数据段伪指令/间接调用/名字经寄存器传入/别名引用不在列——『已核实这组直接点』成立，『穷尽所有 jlstream 消息来源』证据不足（codex 措辞）"
+ },
+ "plan": {
+  "choice": "(a) unknown-word 传播 + ①单点 4B 槽 + 上下文守卫（本路推荐，codex 裁决采纳）",
+  "rationale": "读值零消费（同步路径静态证明+codex 被调链补核）；具名 fixture 无证据支持特定值；诚实停无信息量且锁死前沿。整栈放行超出证明范围（codex）",
+  "switch_authorization_shape_codex": "『本任务实例、该条装载、该消息槽引入 unknown』非永久豁免物理地址：默认关；绑定 jlstream 当前 TCB/栈实例；PC=0x60869ba 原始编码 d0 ec a8 60（r6=[r10+8] 宽4）；校验 r10=本任务 sp+24 且 MMU 翻译恰 [0x18ca64,0x18ca68) 属有效该任务栈——释放/重分配后不延续授权；按实际字节+来源构造 UnknownWord 不写零不标初始化；后续真消息写槽返真值部分写保留剩余未知；来源窗仅此 word，寄存器/栈运输可传播不引入新 unknown，unknown 进地址/谓词/算术/控制目标仍停；abstract_word(task_frame=True) 不得改为所有任务栈读通行证",
+  "gate_to_ship_codex": "单槽来源守卫成立+cmd 实际值已记录+局部真指令链通过+消费负例仍停；生产者唯一性是溯源项不阻挡",
+  "mechanism_precedents": "tools/br28_unknown.py UnknownWord fail-closed；probe_boot abstract_word/unknown_origins/abstract_task_stack_transport（147263 任务帧 GPR）；unknown_gpr_copy（mov.rr 搬运）；Blocked unknown_task_register_consumed",
+  "equivalence_wording_codex": "在该固件字节、同一已知 cmd0、有效任务栈映射及当前已声明的架构假设下，真实装载所得任意 32 位值都不影响同步路径的分支/地址/已知状态结果，且在 0x6086b0c 被覆盖；保留未知值的模型对该局部片段保留所有可能值的共同控制流；结论来自反汇编未通过设备测量。『残留值』不必然随机（可能复位值或先前写入——模型未写≠设备从未写）；不可由此推出 silicon 已到达同状态；可比项=PC/已知寄存器/外部可见写入/unknown 来源与运输关系",
+  "verification_arms_ten": [
+   "1 关闭臂：复现 41,909,506 逐键相等，默认关零新键",
+   "2 消息来源观测臂：watch 队列头/游标/解包写集/返回码/cmd，断言 n=1 buf[1]=0 buf[2] 零写；记录 post PC 与候选执行计数（含 0x6086c4c 定时器回调、0x607607e 注册）",
+   "3 开启局部臂：来源字节 0x18ca64..67 一次引入；断言 69ba→69be→69c2→6b06 指令序、6b0c 后 r6=0x1264B8、不执行 69c6/69c8/69cc、无 unknown 敏感消费",
+   "4 开关范围负臂：邻槽/跨界/另一 PC/另一 TCB/释放复用/映射改变/ROM/MMIO/取指均无来源权限；n=2 写 obj 后读真值",
+   "5 真实消费负臂：cmd=4/5/8/11/12 配未知 buf[2] 必须最迟 0x60869c6 停；cmd=3/13 越界对照；已知 obj 走正常指令",
+   "6 具体值对照臂（隔离测试）：缺失 word 设 0/0xffffffff/0x80000000/非特殊模式跑 cmd0 片段比较 PC/分支/访存/写值",
+   "7 异步保存恢复臂：活区间中断交付，栈运输保留来源、覆盖清来源、恢复后到 6b0c；未覆盖则明示限于同步片段",
+   "8 快照一致性臂：源读前捕获；关闭续跑复现/开启与从零对齐；活跃 unknown 快照不丢来源",
+   "9 开启推进与镜像对照臂：先 10k 扩 50k 记录真第一停点；official↔b79 扩新共同前沿；链表/ops/cmd5/分配/TON 读/兄弟切换/事件钟分别报告",
+   "10 实施后回归：来源门+运输负例定向测试+全量 --rom+前沿断言"
+  ]
+ },
+ "next_stop_prediction": {
+  "framing": "侦察优先级排序（codex 口径），非实测停点/概率估计——无链表字段/队列次序/就绪态/timer 状态运行数据，无法承诺 +1-5 万步落在精确 PC",
+  "top3": [
+   {"rank": 1, "what": "jlstream walker 对象 RAM/间接节点操作边界：0x6086b0c 哨兵→0x6086b0e→0x6086c3e 取首对象→0x6086b2a 读状态；状态 1 保持→0x6086b3a/44/4a→0x60746a4→0x6075e44→0x60747dc；状态 3→0x6086b52..58 经 obj+40→0x60867a0。最邻近真实新消费面"},
+   {"rank": 2, "what": "回 pend 后兄弟任务边界/无新边界进事件钟：0x6086c44→0x6075d54（减计数清理）→0x60869a8；兄弟 0x602d3a0（0x602d3c6 取事件 cmd 161..186 分派）/0x6000d6c 由就绪态定；全 pend 后事件钟=阶段标志非新阻塞"},
+   {"rank": 3, "what": "已有节点数据回调→decoder/未覆盖音频运行域：状态 3 入口 0x6086b58→0x60867a0 后按运行对象 ops/回调落图；TON1 可读≠decoder/DMA/IRQ/音频运行域已覆盖"}
+  ],
+  "adjudications": {
+   "cmd5": "必需观测点非首要 blocker（查链上对象+h[obj+24] 非零才重配 timer 0x6066ba6，不直接 zalloc）",
+   "zalloc44": "静态成立（0x6074728 装 44/0x607472a→0x12e16e，前置 0x607471e→0x607452e 查 ops）但紧迫性不足（cmd0 公共尾不直接进入；节点复用不经过）",
+   "audio_sfr_prediction_withdrawn": "撤回『0xfe051c/0xfe0a04 unmapped 必停』：003ca0f registry 已含 jl_audio_dac_vl0_readback/jl_adda_daa_con1_initial_fixture/jl_adda_daa_con1_config_readback；指令仍在 0x606db50/0x606b426 但历史边界口径作废"
+  }
+ },
+ "errata": [
+  {"what": "tonmap evidence/HANDOFF『call 0x6064c2a 取事件』", "correct": "0x60869ac call.xl 目标=0x6064c8c（字节复算+d2b/BH/BZ/KEYCONS 四方一致；0x6064c2a 是 0x6064c0e 函数体内地址）", "impact": "tonmap 结论不受影响（仅引用取事件返回 13 语义）"},
+  {"what": "任务文/tonmap 注册点『call 0x6067282』（codex 勘误）", "correct": "0x60759fe 编码 80 ff 3e 18 ff ff 目标=0x6067242（与 CI 路记录一致）；任务身份不受影响（0x60759f0 装 0x6086980/0x60759f6 装名 0x609d3bb/表项 0x609d7b0 12B 一致）", "impact": "无（身份钉死链不依赖该 call 目标）"},
+  {"what": "d2b cmd6/7 忽略路径", "correct": "复核成立；cmd0 丢弃与 cmd6/7 忽略同汇点 0x6086b06（非新路径）", "impact": "无"},
+  {"what": "BH 时代『音频 SFR unmapped』（codex 勘误）", "correct": "003ca0f 条件栈已含音频 DAC/ADDA readback fixture，不可再列必停", "impact": "下一停点预判撤回该候选"},
+  {"what": "本路初版『0x6086c7e 在 jlstream_N 任务体』（codex 勘误）", "correct": "独立函数 0x6086c4c..0x6086c8a 定时器回调（子任务入口 0x6086c8c）；回调注册 0x6075a88/0x6075e60/0x6086bbc", "impact": "生产者筛选表修正（§2.1）"},
+  {"what": "本路初版『直 post 8 点/单字 5 处』（codex 复扫）", "correct": "直 post 9 点/单字 {0} 6 处（0x6086c7e 漏计）；call.s/l/xl 三编码补扫与 26 处总数一致", "impact": "计数修正"}
+ ],
+ "open_items": [
+  "停点消息 11 选 1 调用者未定（运行时观测项，载荷全同不影响判定）；生产者唯一性整体降级为溯源项",
+  "n=1 的运行时确认（watch 头字 0x10000002/写集/r0）",
+  "{0} 与 {5,obj} 队列相对次序静态不可知（开启臂记录消费序闭合）",
+  "直 post 清单完备性=直接调用编码覆盖（间接/别名/寄存器传名不在列）",
+  "(a) 开关实施（registry 条目/来源门/守卫代码）归下一实施路"
+ ],
+ "codex_advisory": {
+  "model": "gpt-6-astra",
+  "window": "2026-11-18 09:22-09:30",
+  "dir": "~/tmp/codex/202611180922-evscout/（prompt.md/log.md/final.md）",
+  "verdict": "选 (a) 单个 4B 槽+任务实例与指令守卫；勘误 6 条全采纳（n=0 可能、9/6 计数、0x6086c7e 定时器回调归属、cmd0 同步链含被调函数均不消费 r6、音频 SFR 已有模型、0x60759fe 目标 0x6067242）；top3 重排与 10 验证臂定稿；未实施开关未续跑"
+ }
+}
