@@ -280,28 +280,39 @@ public class H3SBridgeTest {
         expect(!result(b.setPromptVolume(9)).getBoolean("ok"), "档位 9 应拒绝");
     }
 
-    /** setKeyRemap/setKeyRemapCustom 字节对照：默认 wire=ADV type2（C2+mask+三元组）、候选 B=FF/0x2b 三元组；
+    /** setKeyRemap/setKeyRemapAdv/setKeyRemapCustom 字节对照：默认 wire=批量同步 0xC0 item
+     *  cmdid 2（MOREFUNC 钉死）、候选 A=ADV type2（C2+mask+三元组）、候选 B=FF/0x2b 三元组；
      *  eventID 面板全集+长按假设、SN=0（未注入 transport）；非法 eventID/action 拒绝。 */
     static void keyRemapBytes() throws Exception {
         H3SBridge b = new H3SBridge();
         b.armWrite(true);
-        // 默认 wire：多功能双击→模式切换（eventID 1794=0x0702, action 7）
-        JSONObject adv = result(b.setKeyRemap(1794, 7));
-        expect(adv.getBoolean("ok"), "setKeyRemap 应成功: " + adv);
-        bytes("默认 ADV type2 帧", unhex(adv.getString("bytesHex")),
+        // 默认 wire（批量同步）：多功能双击→模式切换（eventID 1794=0x0702, action 7）
+        JSONObject batch = result(b.setKeyRemap(1794, 7));
+        expect(batch.getBoolean("ok"), "setKeyRemap 应成功: " + batch);
+        bytes("默认批量同步帧", unhex(batch.getString("bytesHex")),
+            unhex("fedcbac0c00006" + "00" + "0402" + "070207" + "ef"));
+        bytes("与 KeyRemapFrame 直组对拍", unhex(batch.getString("bytesHex")),
+            KeyRemapFrame.buildBatchSyncCommand(0, 7, 2, 7));
+        // 候选 A wire（ADV type2）
+        JSONObject adv = result(b.setKeyRemapAdv(1794, 7));
+        expect(adv.getBoolean("ok"), "setKeyRemapAdv 应成功: " + adv);
+        bytes("ADV type2 帧", unhex(adv.getString("bytesHex")),
             unhex("fedcbac0c20008" + "00" + "00000004" + "070207" + "ef"));
-        bytes("与 KeyRemapFrame 直组对拍", unhex(adv.getString("bytesHex")),
-            KeyRemapFrame.buildAdvType2Command(0, 7, 2, 7));
-        // 候选 B wire：音量- 单击→音量-（eventID 769, action 6）
+        // 候选 B wire（FF/0x2b，固件注册表无对应——实发必无回执，仅对照）：音量- 单击→音量-
         JSONObject custom = result(b.setKeyRemapCustom(769, 6));
         expect(custom.getBoolean("ok"), "setKeyRemapCustom 应成功: " + custom);
         bytes("0x2b 帧", unhex(custom.getString("bytesHex")),
             unhex("fedcbac0ff0006" + "00" + "2b03" + "030106" + "ef"));
-        // 长按假设 eventID（低字节 5）+ 固件侧 action 11（ANC）
+        // 长按假设 eventID（低字节 5）+ 固件侧 action 11（ANC）——默认批量同步 wire
         JSONObject hold = result(b.setKeyRemap(0x0705, 11));
         expect(hold.getBoolean("ok"), "长按 eventID 应成功: " + hold);
-        bytes("长按 ANC 帧", unhex(hold.getString("bytesHex")),
-            KeyRemapFrame.buildAdvType2Command(0, 7, 5, 11));
+        bytes("长按 ANC 帧（批量同步）", unhex(hold.getString("bytesHex")),
+            KeyRemapFrame.buildBatchSyncCommand(0, 7, 5, 11));
+        // 全表写帧（45B）与 C1 读帧
+        bytes("全表写帧", KeyRemapFrame.buildBatchSyncTableCommand(0, new byte[45]),
+            unhex("fedcbac0c0" + "0030" + "00" + "2e02" + "00".repeat(45) + "ef"));
+        bytes("C1 读帧", KeyRemapFrame.buildBatchReadCommand(0),
+            unhex("fedcbac0c10005" + "00" + "00000004" + "ef"));
         // 非法输入：key/gesture 越界的 eventID、action 8/12/-1
         int[] badEvents = {0x0901, 0x0300, 0x0306, 0x0311, -1, 0x10000};
         for (int ev : badEvents)
@@ -349,8 +360,8 @@ public class H3SBridgeTest {
         expect(!EqWritePolicy.permitted(vol, false), "提示音帧未武装应被策略拒绝");
         expect(EqWritePolicy.permitted(vol, true), "提示音帧武装后应被 EqWritePolicy 放行（路 P 扩白名单）");
         byte[] remapAdv = unhex(result(b.setKeyRemap(1794, 7)).getString("bytesHex"));
-        expect(!EqWritePolicy.permitted(remapAdv, false), "按键重映射 ADV 帧未武装应被策略拒绝");
-        expect(EqWritePolicy.permitted(remapAdv, true), "按键重映射 ADV 帧武装后应被 EqWritePolicy 放行");
+        expect(!EqWritePolicy.permitted(remapAdv, false), "按键重映射批量同步帧未武装应被策略拒绝");
+        expect(EqWritePolicy.permitted(remapAdv, true), "按键重映射批量同步帧武装后应被 EqWritePolicy 放行");
         byte[] remapCustom = unhex(result(b.setKeyRemapCustom(769, 6)).getString("bytesHex"));
         expect(!EqWritePolicy.permitted(remapCustom, false), "按键重映射 0x2b 帧未武装应被策略拒绝");
         expect(EqWritePolicy.permitted(remapCustom, true), "按键重映射 0x2b 帧武装后应被 EqWritePolicy 放行");
