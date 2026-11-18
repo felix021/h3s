@@ -96,6 +96,10 @@ class WiringGuardFalsificationTests(unittest.TestCase):
         ('JL_SYNC 容器撤掉 SRC_SYNC 放行(路 SYNCIMPL 依赖边)',
          dict(jl_sync_config_words=True),
          'the JL_SYNC config container only layers on the JL_SRC_SYNC release'),
+        ('BT clock timer 容器撤掉 JL_SYNC 放行(路 TIMERIMPL 依赖边)',
+         dict(jl_btclk_timer_words=True),
+         'the BT clock timer two-word container only layers on the JL_SYNC '
+         'release'),
     )
 
     def test_dependency_sabotage_is_refused_before_any_simulation(self):

@@ -126,6 +126,20 @@ JL_SRC_SYNC_CONFIG_WORDS=(0xfe2600,0xfe2604,0xfe263c)
 # RMW 内部读走通用 mmio 路径;WO 三字纯写记录读一律拒绝(含 RMW 内部读);
 # 消费者 PC 守卫拒 IRQ/getter 的分支读点(详见 JLSyncConfigWords 类注释)。
 JL_SYNC_CONFIG_WORDS=(0xfe2500,0xfe251c,0xfe2524,0xfe2528)
+# 路 TIMERIMPL:BT modem 窗尾 BT clock timer 恰两地址写记录容器(2026-11-19
+# 侦察钉死,docs/frontier-scout-timer.md;codex 裁三选一 B)。块身份勘误:
+# 0xF00130/40 不是 SDK JL_TIMER0-5(那些在 0xfd0400-0xfd0900),属 BT modem
+# 数字窗 0xF00000..0xF0018F(btctrler 闭源库私有窗,SDK 头零定义,成员从
+# 固件反汇编归纳)。42,061,359 停点 0x60befee `[r0+0]=0x2F4`(st.w.modimm
+# 整字立即写)与 +2 步 0x60beff6 `[r0+16]=1754`——audio_sync 对象创建器
+# 0x60befae 体内(JL_SYNC CON 写之后、request_irq(88) 之前,IPMASK=6 临界
+# 区),全 app 唯一写站点。codex 裁 B:恰两地址写记录容器——无合成初值、
+# 首写前读拒绝、写后读仍拒绝(记录值只进账本)、RMW 内部读走通用 mmio
+# 路径即拒、不推进计数/不产生完成状态/不触发 IRQ88、邻接成员(含
+# 0xF00144/48 读口与 400B 整窗)一概不承接;写者 PC 守卫只认
+# 0x60befee/0x60beff6(codex 建议,负例⑬)。副作用边界说明详见
+# JLBtclkTimerWords 类注释。
+JL_BTCLK_TIMER_WORDS=(0xf00130,0xf00140)
 PLL0=0xfd4600
 CLOCK0=0xfd0018
 SYS_DIV=0xfd0014
@@ -6486,9 +6500,10 @@ class JLSyncConfigWords:
       分支 `if (r4!=1)`(r4=b[obj+4] 对象字节非 CON 值)二选一整字写)、
       CON1(0x60bef60 `=h[obj+10]<<16`,预期 200<<16)、BT_OFFSET
       (0x60bef58 整字写 0)、MIN_SLOT(0x60bef96 `=h[obj+12]`,预期 80)。
-      **本次续跑(fn_config 在 request_irq/0xF001xx 三道墙之后)只执行
-      CON 一写零读;WO 三字零写零读**——四字一次建好,下路跨墙后 fn_config
-      无需再改模型(执行断言按本次一字收口,不宣称配置事务已跑通)。
+      SYNCIMPL 时代本次续跑只执行 CON 一写零读;TIMERIMPL 放行两 timer 写
+      后 **fn_config 已执行一次**(实测:已审计写回读点 0x60bef62 服务恰
+      一次、CON1=0x00C80000、BT_OFFSET=0、MIN_SLOT=80、CON RMW 写回
+      0x06200050)——「四字一次建好,跨墙后 fn_config 无需再改模型」兑现。
     - **CON 读值去向(读点逐 PC 分类)**:写回组装读点(读值只进
       old|bit/old&~bit/insert 写回,AM/B3/DT/ADA/LPV 判据)——fn_clear_b22
       0x60beef4(&=0xFFBFFFFF)、fn_config 0x60bef62、fn_stop 0x60bf062/
@@ -6642,17 +6657,22 @@ class JLSyncConfigWords:
                                       'BT_OFFSET / 0xfe2528 MIN_SLOT); the other nine block '
                                       'members (DABUF/DASPACE/OFFEND/OFFSUM/PCMNUM/BTTIME/CON2/'
                                       'OUTSR/INSR) have zero touches on this chain and stay '
-                                      'unmapped — this release crosses only the creator CON '
-                                      'whole-word zero store; fn_config (the WO three-word writer '
-                                      'and the CON read-modify-write) sits behind the 0xF00130/'
-                                      '0xF00140 timer writes and the request_irq ICU RMW and has '
-                                      'NOT executed in the released prefix'),
+                                      'unmapped — the SYNCIMPL release crossed the creator CON '
+                                      'whole-word zero store, and fn_config has executed exactly '
+                                      'once behind the TIMERIMPL release (the BT clock timer '
+                                      'stores and the request_irq ICU RMW crossed first): the '
+                                      'audited write-back read PC 0x60bef62 served once, '
+                                      'BT_OFFSET=0, CON1=0x00C80000 (200<<16), MIN_SLOT=80 and '
+                                      'the CON RMW writing back 0x06200050 — the four-words-'
+                                      'once design (no model change needed after the walls) '
+                                      'fulfilled at runtime'),
                 'whitelisted_words':('exactly the four words above; only aligned 32-bit whole-word '
                                      'accesses are served — sub-word, misaligned and cross-word '
                                      'accesses stay unmapped; the 0xF00130/0xF00140/0xF00144/'
                                      '0xF00148 BT-clock-timer addresses are NOT part of this '
-                                     'container (a future release takes independently approved '
-                                     'addresses, never a contiguous range); a same-address new '
+                                     'container (the TIMERIMPL route took 0xF00130/0xF00140 as '
+                                     'independently approved addresses in their own container, '
+                                     'never a contiguous range); a same-address new '
                                      'consumer is refused at read time by the PC/core guard '
                                      '(writes recorded, re-audited on arrival)'),
                 'observed_shapes':('the 42,061,357 stop itself: the creator 0x60befae li-constant '
@@ -6718,6 +6738,246 @@ class JLSyncConfigWords:
                               'refuse every read, branch/unknown-PC/other-core CON readers stop '
                               'before consumption; this does NOT verify any audio '
                               'synchronization, IRQ88, timer or DMA scenario')}
+
+
+class JLBtclkTimerWords:
+    """BT modem 窗尾 BT clock timer 恰两地址写记录容器 {0xF00130, 0xF00140}
+    (opt-in,路 TIMERIMPL,codex 三选一裁 B,docs/frontier-scout-timer.md §5)。
+
+    背景:42,061,359 停点 0x60befee `[r0+0]=0x2F4`(st.w.modimm 整字立即写
+    756)——audio sync 对象创建器 0x60befae 体内(JL_SYNC CON 写完成 +2 步、
+    request_irq(88) 之前,IPMASK=6 临界区);+2 步 0x60beff6 `[r0+16]=r1`
+    (r1=1754=0x6DA,[r0+16] 基址+偏移形态)。两写是全 app 对这两字的唯一
+    写站点(2026-11-19 路 TIMERSCOUT 双轨 li 扫描+app.bin/ROM/p11 LE32
+    扫+函数体通读钉死)。
+
+    块身份(勘误,侦察 §1):0xF00130 不是 SDK JL_TIMER0-5(那些在 ls_base
+    0xfd0000+map_adr(04..09,0)=0xfd0400-0xfd0900,成员 CON/CNT/PRD/PWM),
+    也非 q32DSP 核 SFR(csfr.h 0xff0000)。0xF00000..0xF0018F 是 btctrler
+    闭源库硬件数字窗,SDK 头零定义;窗尾 0xF00100-0xF00154 是 timer/时钟簇
+    (「BT clock timer 配置对」命名取自访问形状与 /1250 换算、读口 0xF00144/
+    48 拼算 >>1 的消费者 BTTIME/slot 语义,derived-not-measured,无 SDK 佐证;
+    0x2F4/1754 位含义不解读)。
+
+    访问面(侦察 §2/§3):
+    - **链上恰两写**(本容器放行面):0xF00130←0x2F4 @0x60befee、
+      0xF00140←0x6DA @0x60beff6,均纯写指令(无 RMW、无读旧值)。
+    - **读口 0xF00144/48 不在容器**:getter 0x60bf1c4(get_BTTIME_calc,
+      结构可达当前前缀未执行)与 IRQ88 handler 0x60bf216(无源不触发)。
+    - **邻接成员一概不承接**:0xF00134/38/3C 间隙、0xF00120/24/28/2C 捕获/
+      提交位簇、0xF00110/14/4C 模式域、0xF00100/0xF00150/54 位段 RMW 族、
+      400B 整窗 bulk(btctrler init 0x6048038 读/0x60481bc 写回,域未启动)
+      ——将来独立批准地址,不按连续区间映射(jlsync 负例②先例)。
+
+    建模选择(codex 裁 B):
+    - **无合成初值**:链上首访问即写;首写前读拒绝
+      (jl_btclk_read_before_first_write_not_modeled,不返回 0)。
+    - **写后读仍拒绝**(jl_btclk_read_not_modeled,不返回最后写值):
+      记录值只进诊断账本/容器视图,不做读回投影——与 DMAIMPL HRP/SWP
+      「读回=最后写值」的差异:本站当前链上零读者,读回语义不可观测,取
+      更保守拒读(codex 措辞:「WO」只是本模型拒读策略,不是硅上寄存器
+      只写属性的结论)。RMW 内部读走 probe_boot 通用 mmio 路径,读阶段
+      即拒。
+    - **写者 PC/核守卫(codex 建议,负例⑬)**:0xF00130 只认 0x60befee、
+      0xF00140 只认 0x60beff6(逐地址绑定),且均须主核(两站点只存在于
+      core0 app 链,与 jl_sync 读守卫「已审计读点+主核」同款);其余
+      PC/核(含 restore 后首步前 current_pc=None)写=消费前停
+      (jl_btclk_write_pc_not_audited)——其他 PC 写相同常量也停。写值
+      本身不设守卫(值透明照记)。
+    - **不推进计数/不产生完成状态/不触发 IRQ88/不改其他寄存器**;快照
+      保存恢复不扩大权限,复位清除已写状态。
+
+    副作用边界(codex 点名最弱一环,落地路必答,侦察 §7):
+    a) 本容器显式接受「记录配置、暂不实现硬件活动」的仿真边界——0x2F4/
+       1754 在硅上是否启动计数/清状态/发提交命令,零测量零文档依据,
+       一概不建模。
+    b) 指令级:两放行指令均为纯写(非 RMW),不读改任何共享状态;地址级:
+       0xF00130/40 与全部已建模域零交叠(br28_model 此前对 0xF00000 域
+       零模型,已建模容器地址集不含 0xF001xx)——写事务按精确地址分发,
+       只进本容器记录,不可能改写任何已建模地址的状态。
+    c) 未知硬件副作用若被软件观察,观察面全部经过仍拒绝的访问或无源
+       IRQ 边界:0xF00144/48 读口(到达即按 unmapped 停,负例⑨)、400B
+       整窗读(首个不支持访问处停,负例⑩)、IRQ88(模型无源不触发,
+       Timer0/IRQ4 与 core-tick/IRQ3 之外无交付路径)——对当前链上已
+       放行的读取/分支零影响:放行段后续分支(request_irq 的 ICU 0xffe12c
+       RMW、fn_config 的 b[obj+4]/b[obj+6] 对象字段臂)无一消费这两字的
+       值。若将来发现副作用波及已放行链,本容器不足以支撑,须先解决该
+       依赖(侦察 §7 条款)。
+
+    known_limitation:容器存配置写记录非硅状态位;BT clock timer 启动/
+    计数/IRQ88 交付/0xF00144/48 软件时钟读面全部不建模;主核越过停点不
+    表示真实 BT clock timer 已启动或任何 BT 时序/中断运行(codex 措辞:
+    「这批准的是当前执行链的最小抽象,不能据此宣称 BT timer 的启动、计数
+    或 IRQ 语义已经认证」)。
+    """
+
+    WORDS=JL_BTCLK_TIMER_WORDS
+    # 逐地址写者 PC(全 app 唯一写站点,均主核;守卫按 PC+核不按值,
+    # 负例⑬:其他 PC 写相同常量也停):
+    WRITER_PCS={0xf00130:0x60befee,0xf00140:0x60beff6}
+    # 侦察钉死的预期写值(只做轨迹验收断言语料,不做位含义解读,不做值
+    # 守卫):
+    EXPECTED_VALUES={0xf00130:0x2F4,0xf00140:0x6DA}
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0,'pcs':[],'cores':[]}
+                     for address in self.WORDS}
+        self.word_writes=0
+        self.read_attempts_before_write=0
+        self.read_attempts_after_write=0
+        self.write_pc_refusals=0
+        # PC/核溯源(probe_boot step_body 每步刷新;restore 后首步前为 None
+        # =未审计,写即拒绝——安全默认)。
+        self.current_pc=None
+        self.current_pc_core=None
+
+    def handles(self,address):
+        return address in self.stores
+
+    def note_step(self,pc,core):
+        """probe_boot step_body 每步刷新的写者 PC/读策略溯源(DMAIMPL
+        current_pc 先例;开关关=槽 None,一次 is-not-None 测试即过,legacy
+        零变化)。"""
+        self.current_pc=pc
+        self.current_pc_core=core
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled BT-clock-timer word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        # 写者 PC/核守卫(负例⑬):逐地址只认全 app 唯一写站点且须主核;
+        # 其余 PC/核(含 None=restore 后首步前)写=消费前停。
+        pc=self.current_pc
+        if pc!=self.WRITER_PCS[address] or core!=0:
+            self.write_pc_refusals+=1
+            raise Blocked('jl_btclk_write_pc_not_audited',
+                          address=hex(address),
+                          pc='None' if pc is None else hex(pc),
+                          core=core)
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['pcs'].append(pc);entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address,core=0):
+        if address not in self.stores:raise ValueError('not a modeled BT-clock-timer word')
+        # 拒读策略(codex B):首写前/写后读一律拒绝(不返回 0 也不返回
+        # 最后写值;RMW 内部读同路径);记值只进诊断账本。
+        if self.stores[address]['writes']==0:
+            self.read_attempts_before_write+=1
+            raise Blocked('jl_btclk_read_before_first_write_not_modeled',
+                          address=hex(address))
+        self.read_attempts_after_write+=1
+        raise Blocked('jl_btclk_read_not_modeled',address=hex(address))
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                         'writes':e['writes'],'pcs':[hex(p) for p in e['pcs'][-16:]],
+                         'cores':e['cores'][-16:]}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        return {'addresses':[hex(a) for a in self.WORDS],
+                'word_writes':self.word_writes,
+                'stores':touched,
+                'read_refusals':{
+                    'before_first_write':self.read_attempts_before_write,
+                    'after_write':self.read_attempts_after_write,
+                    'semantics':('NO synthetic initial word and NO read-back: a read before the '
+                                 'first write raises Blocked (jl_btclk_read_before_first_write_'
+                                 'not_modeled) and a read after writes raises Blocked too '
+                                 '(jl_btclk_read_not_modeled) — the recorded values live only in '
+                                 'this diagnostic ledger, never a read-back projection; the '
+                                 'RMW internal read rides the generic mmio path and is refused '
+                                 'at the read stage; "write-only" is this model\'s refusal '
+                                 'POLICY, not a silicon register-attribute claim (codex wording '
+                                 'corrections)')},
+                'writer_guard':{
+                    'per_address_writer_pcs':{hex(a):hex(pc) for a,pc in sorted(self.WRITER_PCS.items())},
+                    'refusals':self.write_pc_refusals,
+                    'semantics':('writes are accepted ONLY from the single all-app writer '
+                                 'site of each word on core 0 — 0x60befee for 0xf00130 '
+                                 '(st.w.modimm whole-word immediate store 0x2F4) and '
+                                 '0x60beff6 for 0xf00140 (register store 1754, [r0+16] '
+                                 'base-offset form), both inside the audio_sync creator '
+                                 '0x60befae before request_irq(88); any other PC or core '
+                                 '(including the None of a restore-before-first-step world) '
+                                 'stops BEFORE the write with '
+                                 'jl_btclk_write_pc_not_audited — the same-address '
+                                 'new-writer re-audit duty made executable; the VALUES are '
+                                 'not guarded (value-transparent records)')},
+                'modeled_vs_touched':('modeled exactly the two BT-clock-timer words of the '
+                                      'released segment (0xf00130 and 0xf00140, the two '
+                                      'whole-word stores at 42,061,359/+2 inside the audio '
+                                      'sync creator); this release records the two stores and '
+                                      'walks on into request_irq — no BT clock timer activity '
+                                      'has executed or been verified'),
+                'whitelisted_words':('exactly the two words above; only aligned 32-bit '
+                                     'whole-word accesses are served — sub-word, misaligned '
+                                     'and cross-word accesses stay unmapped; the neighbors '
+                                     '(gap words 0xf00134/38/3c, the capture/commit cluster '
+                                     '0xf00120/24/28/2c, mode words 0xf00110/14/4c, the '
+                                     '0xf00100 and 0xf00150/54 RMW pairs, read ports '
+                                     '0xf00144/48, the rest of the modem window and its '
+                                     '400-byte bulk copy) are NOT covered and wait for '
+                                     'independently approved addresses, never a contiguous '
+                                     'range'),
+                'observed_shapes':('the 42,061,359 stop itself and its +2-step successor: '
+                                   'st.w.modimm [0xf00130]=0x2F4 at 0x60befee and '
+                                   '[r0+16]=r1 with r1=1754(0x6DA) at 0x60beff6, both '
+                                   'li-constant pure stores inside the IPMASK-6 critical '
+                                   'section of the creator 0x60befae, before '
+                                   'request_irq(88,prio=2,handler=0x60bf1e4); the values '
+                                   'make good trajectory assertions but their bit meanings '
+                                   'are NOT interpreted'),
+                'side_effect_boundary':('the codex-flagged weakest link, answered: (a) this '
+                                        'container explicitly accepts record-configuration-'
+                                        'no-hardware-activity — whether 0x2F4/1754 start a '
+                                        'counter, clear state or issue a commit on silicon is '
+                                        'unknown and unmodeled; (b) at the instruction level '
+                                        'both released stores are pure writes (no RMW, no '
+                                        'old-value read) and at the address level 0xf00130/'
+                                        '0xf00140 overlap ZERO already-modeled domains (the '
+                                        'model had no 0xF00000-window face before this route) '
+                                        '— an exact-address write dispatch cannot mutate any '
+                                        'modeled register\'s state; (c) any hypothetical '
+                                        'hardware side effect is observable only through '
+                                        'faces that still refuse or have no source — the '
+                                        '0xf00144/48 read pair (getter 0x60bf1c4 / IRQ88 '
+                                        'handler 0x60bf216, both unmapped on arrival), the '
+                                        '400-byte bulk window copy (btctrler domain, not '
+                                        'started), and IRQ88 delivery (no modeled source) — '
+                                        'and no branch of the released segment (request_irq '
+                                        'ICU 0xffe12c RMW, fn_config b[obj+4]/b[obj+6] '
+                                        'arms) consumes either word\'s value'),
+                'access_face_completeness':('dual-track li scan (decimal AND hex display '
+                                            'erratum) of the main-core app linear window plus '
+                                            'app.bin/ROM/p11_code.bin LE32 literal scans and '
+                                            'full reads of the audio_sync library family — '
+                                            'the two stores are the ONLY write sites of these '
+                                            'words in the app; blind spots remain: dynamically '
+                                            'computed addresses, cross-function register '
+                                            'passing, table-driven bases, q32s mailbox '
+                                            'indirection and DMA (no evidence, not excluded)'),
+                'model_assumptions':('no-synthetic-initial + refuse-every-read + per-address '
+                                     'writer-PC guard are the codex decision-B shape: this '
+                                     'approves the minimal abstraction of the current '
+                                     'execution chain only, it does NOT certify BT timer '
+                                     'start, counting or IRQ semantics; a future consumer of '
+                                     'these words is refused at read time (the same-address '
+                                     'new-consumer re-audit clause made executable); '
+                                     'snapshot save/restore never widens the face and reset '
+                                     'clears the written records'),
+                'known_limitation':('the container stores config-word records, NOT silicon '
+                                    'state; silicon reset values, the meaning of 0x2F4/1754 '
+                                    'and every hardware activity of the BT modem window '
+                                    'remain unverified — the "BT clock timer" naming is '
+                                    'derived from access shape (/1250 conversion, split '
+                                    '32-bit counting, read-pair assembly >>1), public SDKs '
+                                    'carry no btctrler source, the firmware disassembly IS '
+                                    'the first-hand evidence'),
+                'assumption':('two-address write-record container of the codex decision-B '
+                              'shape: no synthetic initial word, reads refused before the '
+                              'first write and after it, RMW internal reads refused at the '
+                              'read stage, no counting/completion/IRQ88 and no other-register '
+                              'effects, neighbors not covered, per-address writer PC guard '
+                              '0x60befee/0x60beff6 — this does NOT verify any BT clock '
+                              'timer, IRQ88 or audio synchronization scenario')}
 
 
 class P33AwkupRegisters:
@@ -8116,6 +8376,7 @@ class BR28Model:
                  jl_adc_start_config=False,jl_adc_start_probe_value=None,
                  jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
                  jl_sync_config_words=False,
+                 jl_btclk_timer_words=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -8837,6 +9098,14 @@ class BR28Model:
         # 纯写记录读一律拒绝;其余 9 成员零触达不进。默认关:四字保持
         # unmapped(42,061,357 前沿形状),legacy 逐字节不变。
         self.jl_sync=JLSyncConfigWords() if jl_sync_config_words else None
+        # 路 TIMERIMPL:BT modem 窗尾 BT clock timer 恰两地址写记录容器
+        # {0xF00130, 0xF00140}——42,061,359 停点 0x60befee(写 0xF00130=
+        # 0x2F4)与 +2 步 0x60beff6(写 0xF00140=1754)放行(codex 裁 B):
+        # 无合成初值、首写前读拒、写后读仍拒(记录值只进账本)、RMW 内部
+        # 读走通用 mmio 路径即拒、不触发 IRQ88、邻接成员一概不承接、
+        # 写者 PC 守卫只认 0x60befee/0x60beff6。默认关:两字保持 unmapped
+        # (42,061,359 前沿形状),legacy 逐字节不变。
+        self.jl_btclk=JLBtclkTimerWords() if jl_btclk_timer_words else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -9032,6 +9301,7 @@ class BR28Model:
             (self.jl_adc_start is not None and self.jl_adc_start.handles(address)) or
             (self.jl_src_sync is not None and self.jl_src_sync.handles(address)) or
             (self.jl_sync is not None and self.jl_sync.handles(address)) or
+            (self.jl_btclk is not None and self.jl_btclk.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -9485,6 +9755,12 @@ class BR28Model:
         if self.jl_sync is not None and self.jl_sync.handles(address):
             self.counts['reads']+=1
             return self.jl_sync.read(address,self.current_core)
+        # BT clock timer 两字(路 TIMERIMPL):读一律拒绝(codex 裁 B——
+        # 无读者站点,读回语义不可观测取保守拒读;首写前/写后/RMW 内部读
+        # 同拒,记录值只进诊断账本)。
+        if self.jl_btclk is not None and self.jl_btclk.handles(address):
+            self.counts['reads']+=1
+            return self.jl_btclk.read(address,self.current_core)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -9810,6 +10086,11 @@ class BR28Model:
             # fn_config WO 三字纯写/CON RMW 写回的记录;JL_SYNC 硬件语义/
             # IRQ88/BT clock timer 一律不建模。
             self.jl_sync.write(address,value,self.current_core)
+        elif self.jl_btclk is not None and self.jl_btclk.handles(address):
+            # BT clock timer 两字(路 TIMERIMPL):creator 两纯写的记录
+            # (写者 PC 守卫逐地址只认 0x60befee/0x60beff6,其余 PC 写=
+            # 消费前停);BT clock timer 硬件活动/IRQ88 一律不建模。
+            self.jl_btclk.write(address,value,self.current_core)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -10909,12 +11190,41 @@ class BR28Model:
                 'consumption; the base 0xfe2500 is li-driven (12 li sites in the '
                 'audio_sync library family 0x60beeee-0x60bf1f0, zero .data address '
                 'literals); fn_config (the WO writer and the CON read-modify-write) '
-                'sits behind the 0xF00130/0xF00140 timer writes and the request_irq '
-                'ICU RMW and has NOT executed in the released prefix; the other '
+                'executed exactly once behind the TIMERIMPL release (the '
+                '0xF00130/0xF00140 timer stores and the request_irq ICU RMW crossed '
+                'first: CON read served once at the audited PC 0x60bef62, '
+                'CON1=0x00C80000, BT_OFFSET=0, MIN_SLOT=80, CON write-back '
+                '0x06200050); the other '
                 'nine block members stay unmapped; no IRQ88 delivery, BT clock '
                 'timer behavior, DASPACE/OUTSR/DABUF/BTTIME state, slot alignment '
                 'or DMA is modeled — this does NOT verify any audio '
                 'synchronization, timer or interrupt scenario')
+        if self.jl_btclk is not None:
+            result['jl_btclk_timer_registers']=self.jl_btclk.report()
+            result['assumptions']['jl_btclk_timer_registers']=(
+                'BT modem window tail, BT clock timer two-address write-record '
+                'container (0xf00130 / 0xf00140, the 42,061,359 stop 0x60befee '
+                'st.w.modimm [0xf00130]=0x2F4 and its +2-step successor '
+                '0x60beff6 [0xf00140]=1754, both inside the audio_sync creator '
+                '0x60befae before request_irq(88)): codex decision B — NO '
+                'synthetic initial word, reads refused before the first write '
+                'and after it (the recorded values live only in the diagnostic '
+                'ledger), RMW internal reads refused at the read stage, no '
+                'counting, no completion state, no IRQ88 and no other-register '
+                'effects, neighbors (gap words, capture/commit cluster, mode '
+                'words, RMW pairs, read ports 0xf00144/48, the 400-byte bulk '
+                'window) NOT covered, and a per-address writer PC guard '
+                'accepting only 0x60befee/0x60beff6; the block identity is the '
+                'closed-source btctrler modem window 0xF00000..0xF0018F (SDK '
+                'headers carry zero definitions — NOT the SDK JL_TIMER0-5 at '
+                '0xfd0400-0xfd0900), naming derived from access shape; the '
+                'side-effect boundary is pinned in the report: both released '
+                'instructions are pure stores overlapping zero already-modeled '
+                'domains, and every face that could observe hypothetical '
+                'hardware activity still refuses or has no source — this '
+                'approves the minimal abstraction of the current chain only '
+                'and does NOT verify any BT clock timer, IRQ88 or audio '
+                'synchronization scenario')
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
