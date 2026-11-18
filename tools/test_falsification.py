@@ -100,6 +100,10 @@ class WiringGuardFalsificationTests(unittest.TestCase):
          dict(jl_btclk_timer_words=True),
          'the BT clock timer two-word container only layers on the JL_SYNC '
          'release'),
+        ('FM CON 头容器撤掉 BT clock timer 放行(路 FMIMPL 依赖边)',
+         dict(jl_fm_con_head_rmw=True),
+         'the FM CON-head RMW container only layers on the BT clock timer '
+         'release'),
     )
 
     def test_dependency_sabotage_is_refused_before_any_simulation(self):

@@ -32,7 +32,7 @@ from br28_icfg import IcfgState, IcfgValue
 from br28_machine import DualCoreMachine
 from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT,
                         ICU_BASES, IRQController, JLAdcStartConfigRegisters,
-                        JLBtclkTimerWords, JLSyncConfigWords,
+                        JLBtclkTimerWords, JLFmConHeadRmw, JLSyncConfigWords,
                         JLSrcSyncConfigRegisters,
                         P2mMailboxAck, P33AwkupRegisters, P33CanaryWatchRegisters,
                         PartialWord)
@@ -712,6 +712,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # ON in the current conditional frontier flag set (its first recorded
         # store sits at the 42,061,359 frontier stop).
         jl_btclk_timer_words=True,
+        # Route FMIMPL: the modem-window CON head single-word five-tuple RMW
+        # container, ON in the current conditional frontier flag set (its first
+        # served RMW sits at the 42,061,478 frontier stop).
+        jl_fm_con_head_rmw=True,
     )
 
     def build_world(self):
@@ -989,6 +993,19 @@ class M4ProjectionFamilies(unittest.TestCase):
         bt.write(JLBtclkTimerWords.WORDS[1], 0x6DA, 0)
         with self.assertRaisesRegex(Exception, 'jl_btclk_read_not_modeled'):
             bt.read(JLBtclkTimerWords.WORDS[0], 0)
+        # Route FMIMPL: the CON-head single-word five-tuple RMW container
+        # carries state — two authorized transactions (synthetic first read,
+        # last_write second read; the idempotent second write keeps its pulse)
+        # plus a refused explicit read and a refused wrong-PC RMW (policy
+        # counters); the per-step PC/core provenance rides as state.
+        fm = hw.jl_fm
+        fm.note_step(0x60befa8, 0)
+        self.assertEqual(fm.rmw(0x60befa8, 'rmw.or.modimm', 0x400, 0), 0x400)
+        self.assertEqual(fm.rmw(0x60befa8, 'rmw.or.modimm', 0x400, 0), 0x400)
+        with self.assertRaisesRegex(Exception, 'jl_fm_rmw_pc_not_audited'):
+            fm.rmw(0x60bf14e, 'rmw.or.modimm', 0x400, 0)
+        with self.assertRaisesRegex(Exception, 'jl_fm_read_not_modeled'):
+            fm.read(JLFmConHeadRmw.ADDRESS, 0)
         return hardware
 
     def captured_m4(self, world):

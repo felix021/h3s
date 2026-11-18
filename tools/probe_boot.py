@@ -751,6 +751,16 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # (首写前/写后/RMW 内部读同拒)。开关关=槽 None,一次
                 # is-not-None 测试即过,legacy 世界零变化。
                 hardware.jl_btclk.note_step(self.pc,self.core_id)
+            if hardware is not None and hardware.jl_fm is not None:
+                # 路 FMIMPL(codex 裁 B):modem 窗 CON 头 0xF00000 容器的
+                # 读/写拒绝溯源(每步刷新,jl_btclk note_step 先例;只进
+                # Blocked 细节)。授权不走此值——五元组的 PC/核由 RMW 专用
+                # 分发点直接传入当前指令,无过期借用(负例⑨:上次 CPU0
+                # 留下的 PC 不能授权本次);显式读(jl_fm_read_not_modeled)
+                # 与独立写(jl_fm_store_pc_not_audited,含 bulk memcpy)在
+                # 总线访问级拒。开关关=槽 None,一次 is-not-None 测试即过,
+                # legacy 世界零变化。
+                hardware.jl_fm.note_step(self.pc,self.core_id)
             if hardware is not None and hardware.copex_exp22 is not None:
                 # 路 COPEXIMPL(codex 裁 (a) 收窄版,坑②):copex.ppi mode-22
                 # 指数近似模型的指令级拦截门。必须在 upstream pair()/step1
@@ -1800,6 +1810,23 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         elif insn.id=='rmw.or.modimm':kind='or';operand=op['m']
                         else:raise Blocked('p2m_clk_con0_rmw_form_not_modeled',instruction_id=insn.id)
                         hardware.p2m_clk_con0.rmw(kind,operand)
+                        if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
+                        self.finish_exact(self.pc+size)
+                        adapters['mmio_rmw_always_writes']+=1
+                        return
+                    if hardware.handles_jl_fm_rmw(address):
+                        # 路 FMIMPL:modem 窗 CON 头 0xF00000(codex 裁 B)——
+                        # 授权单位=一条完整指令五元组(主核+PC 0x60befa8+有效
+                        # 地址+对齐 32 位+rmw.or.modimm 立即数 0x400),五元组
+                        # 由 jl_fm.rmw() 以当前指令的 pc/insn_id/mask/core 逐项
+                        # 核验(同 PC 的 ld/st 不经 RMW 分支,不同掩码/其余
+                        # PC/核消费前停 jl_fm_rmw_pc/form_not_audited——
+                        # fn_resume 0x60bf14e/IRQ88 0x60bf238/btctrler 13 站
+                        # 全拒);内部读=合成初始 0/当前容器值(账本区分
+                        # synthetic/last_write),幂等写回也保留写脉冲;
+                        # fn_config 第二调用者(节点 start 0x607e46c)同 PC
+                        # 第二次 RMW 同通道服务。
+                        hardware.jl_fm.rmw(self.pc,insn.id,op.get('m'),self.core_id)
                         if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
                         self.finish_exact(self.pc+size)
                         adapters['mmio_rmw_always_writes']+=1

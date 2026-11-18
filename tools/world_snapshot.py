@@ -1258,6 +1258,19 @@ M4_FAMILIES = (
      ('stores', 'word_writes', 'read_attempts_before_write',
       'read_attempts_after_write', 'write_pc_refusals', 'current_pc',
       'current_pc_core')),
+    # Route FMIMPL: the modem-window CON head single-word RMW container — the
+    # captured state is the write-pulse record plus the per-transaction ledger
+    # (read_source synthetic/last_write distinction is runtime state) and the
+    # refusal counters (constant zero in any captured world: a refusal stops
+    # the run). current_pc/current_pc_core are transient per-step refusal
+    # provenance (authorization never reads them — the five-tuple PC/core ride
+    # the dispatch arguments); they ride as state so the per-object static
+    # guard stays constant. The authorized instruction identity (PC/form/mask/
+    # core) is CLASS constants under the class-identity check.
+    ('jl_fm', 'JLFmConHeadRmw',
+     ('values', 'word_writes', 'transactions', 'read_attempts_refused',
+      'store_refusals', 'rmw_pc_refusals', 'rmw_form_refusals', 'current_pc',
+      'current_pc_core')),
     ('p2m_mailbox', 'P2mMailboxAck',
      ('pnd_armed', 'echo_armed', 'kicks', 'other_kick_values', 'clr_writes',
       'clear_slot_writes', 'pnd_reads', 'echo_reads', 'message_mirror',

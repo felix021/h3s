@@ -140,6 +140,22 @@ JL_SYNC_CONFIG_WORDS=(0xfe2500,0xfe251c,0xfe2524,0xfe2528)
 # 0x60befee/0x60beff6(codex 建议,负例⑬)。副作用边界说明详见
 # JLBtclkTimerWords 类注释。
 JL_BTCLK_TIMER_WORDS=(0xf00130,0xf00140)
+# 路 FMIMPL:modem 窗 CON 头 0xF00000 恰一字 RMW 容器(2026-11-19 侦察
+# docs/frontier-scout-fm00000.md;codex 裁三选一 B)。42,061,478 停点
+# 0x60befa8 `[r0+0]|=0x400`(rmw.or.modimm)的 RMW 内部读——fn_config
+# (0x60bef46,audio_sync 对象配置函数)尾段 b[obj+6]==0 条件臂,IPMASK=6
+# 临界区内。侦察反证法钉死:读值无任何链上来源(本 RMW 是前缀内对窗内头字
+# 的第一次访问)=硅初始态静态不可知,模型须显式合成初值(与 JL_SYNC CON
+# 「无合成初值」先例的关键差异:RMW 内部读是放行前提,容器注释写明为什么
+# 这里必须合成)。codex 裁 B:恰 0xF00000 单字——合成初值 0(显式假设
+# derived-not-measured)+RMW 读拍返回当前容器值(账本区分首读来源
+# synthetic 与写后内部读 last_write)+授权单位=一条完整指令五元组(主核+
+# PC 0x60befa8+有效地址+对齐 32 位+rmw.or.modimm 立即数 0x400 全匹配,
+# 同 PC 的普通 ld/st/不同掩码不借用)+其余 PC/核消费前停(fn_resume
+# 0x60bf14e 镜像臂/IRQ88 0x60bf238/btctrler 13 站/bulk 恢复 memcpy 写全
+# 拒)+显式标量读一律拒绝+邻接成员一概不承接。副作用边界说明详见
+# JLFmConHeadRmw 类注释。
+JL_FM_CON_HEAD=0xf00000
 PLL0=0xfd4600
 CLOCK0=0xfd0018
 SYS_DIV=0xfd0014
@@ -6980,6 +6996,318 @@ class JLBtclkTimerWords:
                               'timer, IRQ88 or audio synchronization scenario')}
 
 
+class JLFmConHeadRmw:
+    """modem 窗 CON 头 0xF00000 恰一字 RMW 容器(合成初值 0+读拍返回
+    当前值,显式读/独立写一律拒绝,opt-in,路 FMIMPL)。
+
+    背景:42,061,478 停点 @ 0x60befa8 `[r0+0] |= 0x400`(rmw.or.modimm,
+    r0=0xF00000 由 0x60befa4 li 装载)的 **RMW 内部读**撞 unmapped——
+    fn_config(0x60bef46,audio_sync 对象配置函数)尾段 b[obj+6]==0
+    条件臂,IPMASK=6 临界区内(前序已过 request_irq(88) 与 JL_SYNC 四字
+    事务)。
+
+    读值来源(2026-11-19 路 FMSCOUT 侦察+codex 复核,反证法钉死):本 RMW
+    是执行前缀内对窗内头字 0xF00000(及整个头段 0xF00000..0xF000FF)的
+    第一次访问——模型对窗头段零覆盖(窗内尾段 0xF00130/40 两写已发生但走
+    TIMERIMPL 容器精确地址分发不触头字),任何更早的头字读写(含 btctrler
+    任务首跑 400B 整窗快照读 0x6048038)都会把仿真停得更早。因此 RMW 读值
+    无任何链上来源:非 bulk 影子、非先前单字写,读值=硅初始态,闭源 modem
+    SDK 零定义,静态不可知——**与 JL_SYNC CON「无合成初值」先例的关键差异:
+    那里链上首访问是整字写,这里 RMW 内部读是放行前提,模型必须显式合成
+    初值**(FD610C CON3/SRCSYNC CON0·CON1 合成初值 0 先例;非硅复位值
+    声明——头字旧值不可追溯≠硅上此刻为 0,先前两次尾字写是否间接影响头字
+    模拟无法回答〔codex 措辞修正〕)。
+
+    访问面(侦察 §2):头字 [0xF00000]+0 的全部 app 站点——链上恰一处
+    0x60befa8(fn_config 本停点);fn_resume 0x60bf14e 同款 RMW 镜像臂
+    (同 b[obj+6] 门,不同 PC,链外 pause/resume 周期)、IRQ88 handler
+    0x60bf238(无源不可达)、btctrler 域 13 站(bit2/3/4-6/bit12,
+    |=0x4 ×6/&=0xFFFFFF8F ×6+&=0xFFFFEFFF,域未启动零执行)、bulk 恢复
+    0x60481bc memcpy 写回 400B(下电路径)。位归属:bit10(0x400)全 app
+    仅 audio_sync 域三站写——bit10 是 audio_sync 私有位(derived)。
+
+    fn_config 第二调用者(侦察 §4 新钉):节点 start 函数 0x607e460 内
+    0x607e46c(框架节点 walker 0x6073514 派发)重调 fn_config——同一指令
+    PC 0x60befa8、同一 obj(obj+6 创建后不可变)、同臂,放行后大概率执行
+    第二次(容器服务幂等 0x400|0x400=0x400,但两笔写事务都记账——数值幂等
+    只说明结果字相同,硅上重复写效果未知〔codex〕)。
+
+    建模选择(codex 裁 B,五条修正照做):
+    - **合成初值 0**(数学论证:两次写回 x|0x400 与 (x|0x400)|0x400 对任意
+      x 相等,选 0 只为给出可复核轨迹;初值 0 是「链上无观察面能区分」下的
+      最小假设,不是硅复位值结论——最弱一环:btctrler 域将来若放行头字其他
+      位 RMW 会把 0|0x400 当基线,若发现实际依赖真实初始值本容器不足以
+      支撑,须先解决该依赖)。
+    - **RMW 读拍返回当前容器值,账本区分读来源标签**(codex 修正②):首
+      执行旧值来源=synthetic(0),写 0x400;第二次同 PC 旧值来源=
+      last_write(上次写回值),再写一笔——每次临时返回 0 会掩盖第二次是否
+      真正读到第一次的结果。
+    - **授权单位=一条完整指令五元组**(codex 修正③):主核+PC 0x60befa8+
+      有效地址 0xF00000+对齐 32 位(handles 门)+rmw.or.modimm 立即数
+      0x400 五者全匹配才服务——同 PC 的普通 ld.w/st.w 或不同掩码不借用
+      RMW 权限。其余 PC/核的 RMW 消费前停(jl_fm_rmw_pc_not_audited,
+      负例⑤⑥:fn_resume/IRQ88/btctrler 13 站即使头字已记 0x400 也取不到
+      旧值);同址形状不符停(jl_fm_rmw_form_not_audited,负例⑧:不同
+      掩码/寄存器操作数形式)。
+    - **显式标量读一律拒绝**(jl_fm_read_not_modeled,首写前后同拒——
+      本站链上零标量读者,保守拒读与 BTCLK 一致)。
+    - **独立写一律拒绝**(jl_fm_store_pc_not_audited,任何 PC 任何值——
+      含已审计 PC 本身:写回更新只经五元组 RMW 通道,同值 store 不借用;
+      bulk 恢复 memcpy 写在这里停,守卫在总线访问级不在 memcpy 调用点,
+      codex 修正④「bulk 守卫不能只查 memcpy 调用点」)。
+    - **无副作用**:不产生 IRQ88/不推进计数/不改其他寄存器;复位清除容器
+      态(新容器=未写态,下次合法首读重标 synthetic);快照保存恢复不扩大
+      权限。
+    - **邻接成员一概不承接**:头段 +4..+FF、尾段(0xF00130/40 继续只认
+      TIMERIMPL 原核准写者)、400B 整窗 bulk 两向——将来独立批准地址,不按
+      连续区间映射(jlsync 负例②先例)。
+
+    副作用边界(codex 修正⑤缺口声明):模拟器地址级分发隔离只证明写隔离
+    (写事务按精确地址只进本容器),硅上 modem 写是否联动已建模 JL_SYNC 域
+    无依据——若下游依赖该联动在消费者处重审。观察面:IRQ88 无源不触发、
+    0xF00144/48 读口与整窗 bulk 到达即停、放行段后续分支无一消费头字值
+    (RMW 读值只进 old|0x400 写回组装)。
+
+    known_limitation:容器存配置字记录非硅状态位;modem 窗 CON 头位义
+    (bit10 及其余)全部 derived 不解读;主核越过停点不表示真实 modem
+    窗已配置或任何 BT/modem 时序运行(codex 措辞:批准的是当前执行链的
+    最小抽象)。
+    """
+
+    ADDRESS=JL_FM_CON_HEAD
+    SYNTHETIC_INITIAL_WORD=0
+    # 五元组的指令身份(侦察钉死):fn_config 0x60befa8 `[r0+0]|=0x400`
+    # (rmw.or.modimm,字节 00 ef 80 0e);fn_resume 0x60bf14e 同款指令
+    # 不同 PC——不借用。
+    AUTHORIZED_PC=0x60befa8
+    AUTHORIZED_INSN='rmw.or.modimm'
+    AUTHORIZED_MASK=0x400
+    AUTHORIZED_CORE=0
+
+    def __init__(self):
+        self.values=[]           # 写脉冲记录(每笔 RMW 写回一个值,幂等也记)
+        self.word_writes=0
+        # 账本(codex 修正②):每笔 RMW 一行,read_source 区分 synthetic
+        # (首执行,旧值=合成初值)与 last_write(写后内部读,旧值=上次写回)。
+        self.transactions=[]
+        self.read_attempts_refused=0     # 显式读拒(首写前后同拒)
+        self.store_refusals=0            # 独立写拒(任何 PC/值)
+        self.rmw_pc_refusals=0           # 其余 PC/核的 RMW 拒
+        self.rmw_form_refusals=0         # 形状/掩码不符的 RMW 拒
+        # PC/核溯源(probe_boot step_body 每步刷新;restore 后首步前 None
+        # =未审计,读/写即拒绝——安全默认;授权路径不经此值,五元组的
+        # PC/核由 probe_boot 分发点直接传入当前指令,无过期借用)。
+        self.current_pc=None
+        self.current_pc_core=None
+
+    def handles(self,address):
+        return address==self.ADDRESS
+
+    def note_step(self,pc,core):
+        """probe_boot step_body 每步刷新的读/写拒绝溯源(jl_sync note_step
+        先例;只进 Blocked 细节,不参与授权——授权五元组的 PC/核来自
+        probe_boot 分发点的当前指令,快照 rides as state)。"""
+        self.current_pc=pc
+        self.current_pc_core=core
+
+    def _refusal_pc(self):
+        return 'None' if self.current_pc is None else hex(self.current_pc)
+
+    def rmw(self,pc,insn_id,mask,core):
+        """五元组 RMW 的唯一授权通道(probe_boot 专用分发传入当前指令的
+        pc/insn_id/mask/core):三拍=内部读(返回当前容器值)→OR 0x400→
+        整字写回(幂等也保留写脉冲)。五元组不匹配=消费前停(内部读拍即拒,
+        不给旧值)。"""
+        if pc!=self.AUTHORIZED_PC or core!=self.AUTHORIZED_CORE:
+            self.rmw_pc_refusals+=1
+            raise Blocked('jl_fm_rmw_pc_not_audited',address=hex(self.ADDRESS),
+                          pc='None' if pc is None else hex(pc),core=core)
+        if insn_id!=self.AUTHORIZED_INSN or mask!=self.AUTHORIZED_MASK:
+            self.rmw_form_refusals+=1
+            raise Blocked('jl_fm_rmw_form_not_audited',
+                          address=hex(self.ADDRESS),
+                          instruction_id=insn_id,
+                          mask='None' if mask is None else hex(mask))
+        if self.word_writes>0:
+            source='last_write';old=self.values[-1]
+        else:
+            source='synthetic';old=self.SYNTHETIC_INITIAL_WORD
+        value=(old|self.AUTHORIZED_MASK)&0xffffffff
+        self.values.append(value);self.word_writes+=1
+        self.transactions.append({'read_source':source,'old':hex(old),
+                                  'new':hex(value),'pc':hex(pc),'core':core})
+        return value
+
+    def write(self,address,value,core):
+        if address!=self.ADDRESS:raise ValueError('not the modeled FM CON-head word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        # 独立写一律拒(codex 裁 B:写回更新只经五元组 RMW 通道;同值
+        # store/已审计 PC 的 store/bulk memcpy 写全拒——守卫在总线访问级)。
+        self.store_refusals+=1
+        raise Blocked('jl_fm_store_pc_not_audited',address=hex(address),
+                      pc=self._refusal_pc(),core=core)
+
+    def read(self,address,core=0):
+        if address!=self.ADDRESS:raise ValueError('not the modeled FM CON-head word')
+        # 显式标量读一律拒(首写前后同拒;RMW 内部读走专用分发不经此路径
+        # ——与 TIMERIMPL「拒读含 RMW 内部读」的差异:本站授权就是 RMW)。
+        self.read_attempts_refused+=1
+        raise Blocked('jl_fm_read_not_modeled',address=hex(address),
+                      pc=self._refusal_pc())
+
+    def report(self):
+        return {'addresses':[hex(self.ADDRESS)],
+                'sdk_names':{hex(self.ADDRESS):'btctrler modem window CON head [inferred]'},
+                'word_writes':self.word_writes,
+                'stores':({hex(self.ADDRESS):{'values':[hex(v) for v in self.values[-16:]],
+                                              'writes':self.word_writes}}
+                          if self.word_writes else {}),
+                'transactions':(list(self.transactions[-16:]) if self.transactions
+                                else []),
+                'rmw_authorization':{
+                    'authorized_instruction':{
+                        'pc':hex(self.AUTHORIZED_PC),'instruction_id':self.AUTHORIZED_INSN,
+                        'mask':hex(self.AUTHORIZED_MASK),'core':self.AUTHORIZED_CORE,
+                        'address':hex(self.ADDRESS),'width':4},
+                    'rmw_pc_refusals':self.rmw_pc_refusals,
+                    'rmw_form_refusals':self.rmw_form_refusals,
+                    'semantics':('the authorization unit is ONE COMPLETE INSTRUCTION '
+                                 '(codex correction): core 0 + PC 0x60befa8 + effective '
+                                 'address 0xF00000 + aligned 32-bit + rmw.or.modimm '
+                                 'immediate 0x400 — an ordinary ld.w/st.w at the same '
+                                 'PC, a different mask or any other PC/core never '
+                                 'borrows the RMW permission; fn_resume 0x60bf14e '
+                                 '(the mirror arm behind the same b[obj+6] gate), the '
+                                 'IRQ88 handler 0x60bf238, the thirteen btctrler '
+                                 'writer sites and the 400-byte bulk restore copy '
+                                 'all stop at the internal-read beat '
+                                 '(jl_fm_rmw_pc_not_audited) before any old value '
+                                 'is served')},
+                'read_refusals':{
+                    'refused':self.read_attempts_refused,
+                    'semantics':('every explicit scalar read is refused before and '
+                                 'after writes (jl_fm_read_not_modeled) — zero scalar '
+                                 'readers exist on this chain, the refusal is the '
+                                 'conservative policy shared with BTCLK; the RMW '
+                                 'internal read is NOT this path (it rides the '
+                                 'dedicated dispatch above)')},
+                'store_refusals':{
+                    'refused':self.store_refusals,
+                    'semantics':('every independent store is refused from any PC '
+                                 'with any value (jl_fm_store_pc_not_audited) — the '
+                                 'write-back updates only through the five-tuple RMW '
+                                 'channel; the 400-byte bulk window restore copy stops '
+                                 'HERE at the bus-access level, the guard does NOT '
+                                 'live only at the memcpy call sites (codex '
+                                 'correction)')},
+                'readback_projection':{
+                    'synthetic_initial_word':hex(self.SYNTHETIC_INITIAL_WORD),
+                    'transactions':[dict(t) for t in self.transactions[-16:]],
+                    'semantics':('the RMW read beat answers the current container '
+                                 'word: the FIRST execution reads the explicit '
+                                 'synthetic initial 0 tagged read_source=synthetic '
+                                 '(derived-not-measured, NOT a silicon reset value '
+                                 'claim — the read value has NO on-chain source, '
+                                 'this RMW is the first head-word access of the '
+                                 'prefix, the scout\'s proof by contradiction), '
+                                 'every later execution reads the last written value '
+                                 'tagged read_source=last_write (the ledger '
+                                 'distinction catches whether the second RMW really '
+                                 'reads back the first write — codex correction); '
+                                 'each RMW emits its write transaction even when '
+                                 'numerically idempotent (0x400|0x400=0x400 keeps '
+                                 'the write pulse — silicon repeat-write effects '
+                                 'unknown)')},
+                'modeled_vs_touched':('modeled exactly ONE word 0xF00000 (the modem '
+                                      'window CON head) serving exactly ONE audited '
+                                      'instruction — the fn_config conditional-arm '
+                                      'RMW at 0x60befa8; fn_config has a SECOND '
+                                      'caller (node start 0x607e460 -> 0x607e46c, '
+                                      'dispatched by the framework walker '
+                                      '0x6073514) that re-runs the same instruction '
+                                      'PC on the same object and the same arm — '
+                                      'whether the second transaction falls in the '
+                                      'released segment is decided by the table '
+                                      'dispatch order at runtime and each '
+                                      'transaction is ledgered separately'),
+                'whitelisted_words':('exactly {0xF00000}; only an aligned 32-bit '
+                                     'whole-word five-tuple RMW is served — sub-word, '
+                                     'misaligned and cross-word accesses stay '
+                                     'unmapped; the neighbors (head-segment '
+                                     '0xF00004..0xF000FF, the tail cluster '
+                                     '0xF00100..0xF0018F incl. 0xF00130/0xF00140 '
+                                     'which keep their TIMERIMPL-audited writers '
+                                     'only, the read pair 0xF00144/48 and the '
+                                     '400-byte whole-window bulk both directions) '
+                                     'are NOT covered and wait for independently '
+                                     'approved addresses, never a contiguous range'),
+                'observed_shapes':('the 42,061,478 stop itself: fn_config 0x60bef46 '
+                                   'tail, b[obj+6]==0 arm, 0x60befa4 li r0=0xF00000 '
+                                   'then 0x60befa8 rmw.or.modimm [r0+0]|=0x400 '
+                                   '(bytes 00 ef 80 0e) inside the IPMASK-6 '
+                                   'critical section behind request_irq(88) and the '
+                                   'JL_SYNC four-word transaction; the two arms '
+                                   'diverge ONLY on this one RMW and re-join at '
+                                   '0x60befac; the same instruction form reappears '
+                                   'at fn_resume 0x60bf14e (different PC, off-chain) '
+                                   'and IRQ88 0x60bf238 (no source) — both refused '
+                                   'by the PC guard'),
+                'side_effect_boundary':('no IRQ88, no counting, no completion state, '
+                                        'no other-register change (incl. window '
+                                        'neighbors and the modeled JL_SYNC domain); '
+                                        'the address-exact dispatch isolation proves '
+                                        'WRITE isolation in the model only — whether '
+                                        'a silicon modem write couples back into the '
+                                        'modeled JL_SYNC domain has no basis, a '
+                                        'downstream dependency on such coupling is '
+                                        're-audited at its consumer (codex gap '
+                                        'declaration); the observation faces (IRQ88 '
+                                        'sourceless, 0xF00144/48 read pair, 400B '
+                                        'bulk) all still refuse or never fire'),
+                'access_face_completeness':('dual-track li scan (22 base-load sites '
+                                            'with max offset 0x24), full LE32 '
+                                            'window-value literal scan (54 hits, all '
+                                            'false positives: ramp-table samples and '
+                                            'audio sample data), full reads of the '
+                                            'audio_sync family and the released '
+                                            'segment call targets — covers the '
+                                            'main-core app linear window only; '
+                                            'cross-function register passing '
+                                            '(0x605d3ee r11), the table-dispatch '
+                                            'gap, ROM head-word accesses, q32s and '
+                                            'DMA are NOT covered (no evidence, not '
+                                            'excluded — the bus-level guards stop '
+                                            'them on arrival)'),
+                'model_assumptions':('synthetic-initial-0 + current-value readback '
+                                     'with synthetic/last_write source tags + the '
+                                     'five-tuple instruction-level authorization + '
+                                     'refuse-every-explicit-read/store + neighbors '
+                                     'not covered are the codex decision-B shape '
+                                     '(gpt-6.2-astra advisory, five corrections '
+                                     'adopted); the initial 0 is the minimal '
+                                     'assumption under a prefix with no observation '
+                                     'face able to distinguish it — a future '
+                                     'btctrler-domain head-word release would read '
+                                     '0|0x400 as its baseline and must re-audit '
+                                     'this dependency first'),
+                'known_limitation':('the container stores a config-word record, NOT '
+                                    'silicon state; the silicon initial word, the '
+                                    'bit10 meaning and every modem-window hardware '
+                                    'activity remain unverified — the "CON head" '
+                                    'naming is derived from the RMW/whole-word '
+                                    'access shape and the BTMAP domain label, the '
+                                    'btctrler library is closed-source, the '
+                                    'firmware disassembly IS the first-hand '
+                                    'evidence'),
+                'assumption':('single-word five-tuple RMW container of the codex '
+                              'decision-B shape: synthetic initial 0, RMW read '
+                              'beats answer the current word with ledgered '
+                              'synthetic/last_write sources, explicit reads and '
+                              'independent stores always refused, no side effects, '
+                              'neighbors not covered — this does NOT verify any '
+                              'modem-window, IRQ88 or BT clock scenario')}
+
+
 class P33AwkupRegisters:
     """P3_AWKUP 族 SDK 有名寄存器的「仅记录写访问」+ 单寄存器首次读具名 fixture(opt-in,路 BB)。
 
@@ -8377,6 +8705,7 @@ class BR28Model:
                  jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
                  jl_sync_config_words=False,
                  jl_btclk_timer_words=False,
+                 jl_fm_con_head_rmw=False,
                  cache_status_probe=False,cache_status_words=None,sfc_read_bus=False,initial_sfc_control=None,
                  secondary_sfc_read_bus=False,initial_secondary_sfc_control=None,sfc_clock_gate_projection=False,
                  hardware_crc_projection=False,
@@ -9106,6 +9435,16 @@ class BR28Model:
         # 写者 PC 守卫只认 0x60befee/0x60beff6。默认关:两字保持 unmapped
         # (42,061,359 前沿形状),legacy 逐字节不变。
         self.jl_btclk=JLBtclkTimerWords() if jl_btclk_timer_words else None
+        # 路 FMIMPL:modem 窗 CON 头 0xF00000 恰一字 RMW 容器——42,061,478
+        # 停点 0x60befa8(fn_config 条件臂 [0xF00000]|=0x400 的 RMW 内部读)
+        # 放行(codex 裁 B):合成初值 0(读值无链上来源=硅初始态静态不可知,
+        # RMW 内部读是放行前提故必须合成——与 JL_SYNC CON「无合成初值」先例
+        # 的关键差异)、RMW 读拍返回当前容器值(账本区分 synthetic/last_write
+        # 读来源)、授权=完整指令五元组(PC 0x60befa8+rmw.or.modimm+0x400+
+        # 主核,同 PC 的 ld/st/不同掩码不借用)、显式读/独立写一律拒绝、
+        # 邻接成员一概不承接。默认关:0xF00000 保持 unmapped(42,061,478
+        # 前沿形状),legacy 逐字节不变。
+        self.jl_fm=JLFmConHeadRmw() if jl_fm_con_head_rmw else None
         self.cache_status_probe=cache_status_probe
         self.cache_status_words=dict(cache_status_words or {})
         if any(address not in CACHE_STATUS_REGISTERS or not isinstance(value,int) or not 0<=value<=0xffffffff
@@ -9302,6 +9641,7 @@ class BR28Model:
             (self.jl_src_sync is not None and self.jl_src_sync.handles(address)) or
             (self.jl_sync is not None and self.jl_sync.handles(address)) or
             (self.jl_btclk is not None and self.jl_btclk.handles(address)) or
+            (self.jl_fm is not None and self.jl_fm.handles(address)) or
             (self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8) or address in (TIMER0,TIMER0+4,TIMER0+8,PINR1,PINR0,IPMASK,
             CLOCK0,CLOCK0+4,CLOCK0+8,PLL0,PLL0+4,PLL0+8,PLL0+12,PLL0+16) or
             IRQ_CONFIG<=address<IRQ_CONFIG+128)
@@ -9348,6 +9688,17 @@ class BR28Model:
         # load 不经此分发,落通用读路径后由 read() 严格停。开关关时返回
         # False,0xf2a610 保持 unmapped(41,848,382 前沿形状)。
         return self.p2m_clk_con0 is not None and self.p2m_clk_con0.handles(address)
+
+    def handles_jl_fm_rmw(self,address):
+        # 路 FMIMPL:modem 窗 CON 头 0xF00000 的恰一字 RMW 走专用分发→
+        # jl_fm.rmw()(五元组授权:主核+PC 0x60befa8+有效地址+对齐 32 位+
+        # rmw.or.modimm 0x400;内部读=合成初始 0/当前容器值,账本区分
+        # synthetic/last_write 读来源,幂等写回也保留写脉冲);显式 load/
+        # 独立 store 不经此分发,落通用读写路径后由 read()/write() 严格停
+        # (jl_fm_read_not_modeled/jl_fm_store_pc_not_audited);其余 PC/核/
+        # 形状的 RMW 在 rmw() 五元组检查消费前停。开关关时返回 False,
+        # 0xF00000 保持 unmapped(42,061,478 前沿形状)。
+        return self.jl_fm is not None and self.jl_fm.handles(address)
 
     def gpcnt_rmw(self,address,kind,operand):
         if not self.handles_gpcnt(address):raise ValueError('not modeled GPCNT CON')
@@ -9761,6 +10112,12 @@ class BR28Model:
         if self.jl_btclk is not None and self.jl_btclk.handles(address):
             self.counts['reads']+=1
             return self.jl_btclk.read(address,self.current_core)
+        # modem 窗 CON 头 0xF00000(路 FMIMPL):显式标量读一律拒绝
+        # (codex 裁 B——链上零标量读者,保守拒读与 BTCLK 一致;首写前后
+        # 同拒;RMW 内部读不走此路径,走 probe_boot 五元组专用分发)。
+        if self.jl_fm is not None and self.jl_fm.handles(address):
+            self.counts['reads']+=1
+            return self.jl_fm.read(address,self.current_core)
         if self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:return self.mmu.read(address)
         if self.handles_gpio(address):return self.gpio.setdefault(address,PartialWord()).read(address)
         if TIMER0<=address<=TIMER0+8:return self.timer.read(address-TIMER0)
@@ -10091,6 +10448,11 @@ class BR28Model:
             # (写者 PC 守卫逐地址只认 0x60befee/0x60beff6,其余 PC 写=
             # 消费前停);BT clock timer 硬件活动/IRQ88 一律不建模。
             self.jl_btclk.write(address,value,self.current_core)
+        elif self.jl_fm is not None and self.jl_fm.handles(address):
+            # modem 窗 CON 头(路 FMIMPL):独立写一律拒绝(任何 PC/任何值,
+            # 含已审计 PC 本身——写回更新只经五元组 RMW 通道;bulk 整窗
+            # 恢复 memcpy 写在总线访问级停,守卫不设在 memcpy 调用点)。
+            self.jl_fm.write(address,value,self.current_core)
         elif self.mmu is not None and MMU_BASE<=address<=MMU_BASE+8:self.mmu.write(address,value)
         elif self.handles_gpio(address):
             self.writable_gpio(address);self.gpio[address]=PartialWord(value,0xffffffff)
@@ -11225,6 +11587,36 @@ class BR28Model:
                 'approves the minimal abstraction of the current chain only '
                 'and does NOT verify any BT clock timer, IRQ88 or audio '
                 'synchronization scenario')
+        if self.jl_fm is not None:
+            result['jl_fm_con_head_registers']=self.jl_fm.report()
+            result['assumptions']['jl_fm_con_head_registers']=(
+                'btctrler modem window CON head single-word RMW container '
+                '(0xF00000, the 42,061,478 stop 0x60befa8 rmw.or.modimm '
+                '[r0+0]|=0x400 inside the fn_config b[obj+6]==0 arm behind '
+                'request_irq(88) and the JL_SYNC four-word transaction): codex '
+                'decision B — explicit synthetic initial word 0 (the RMW read '
+                'has NO on-chain source: this RMW is the first head-word access '
+                'of the prefix, proof by contradiction in the scout doc — the '
+                'key difference from the JL_SYNC CON no-synthetic-initial '
+                'precedent: there the first access is a whole-word store, here '
+                'the RMW internal read IS the release precondition), the RMW '
+                'read beat answers the current container word with ledgered '
+                'synthetic/last_write source tags, the authorization unit is '
+                'ONE COMPLETE INSTRUCTION (core 0 + PC 0x60befa8 + effective '
+                'address + aligned 32-bit + rmw.or.modimm immediate 0x400 — a '
+                'same-PC ld/st or a different mask never borrows), every '
+                'explicit scalar read and every independent store refused '
+                '(bus-access level, incl. the 400-byte bulk restore copy), '
+                'neighbors NOT covered, no IRQ88/counting/other-register '
+                'effects; fn_config has a second caller (node start 0x607e46c '
+                'via the framework walker) re-running the same instruction PC '
+                '— each transaction ledgered separately; the model\'s '
+                'address-exact write isolation does not answer whether a '
+                'silicon modem write couples into the modeled JL_SYNC domain '
+                '(codex gap declaration, re-audited at any consumer) — this '
+                'approves the minimal abstraction of the current chain only '
+                'and does NOT verify any modem-window, IRQ88 or BT clock '
+                'scenario')
         if self.p11_heap_info_bytes is not None:
             result['p11_heap_info_fixture']={'address':hex(P11_HEAP_INFO),
                 'bytes':self.p11_heap_info_bytes.hex(),
