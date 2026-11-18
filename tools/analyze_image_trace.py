@@ -1699,76 +1699,18 @@ def check_self_conditional(report, arms=None):
         require(run['completed_steps'] == conditional['completed_steps'] and
                 run['stop_pc'] == conditional['stop_pc'] and
                 run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 41970865, '1': 11496},
+                run['per_core_steps'] == {'0': 42042359, '1': 11496},
                 f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (41965883 @ 0x606e148, the not-modeled JL_AUDIO '
-                'DAC DMA HRP pointer read 0xfe0510 '
-                '4-byte task-stack read at physical 0x18ca64 — reached after the '
-                'route-STOREG3 standalone '
-                'postincrement word-store release executes the byte-unpack '
-                'st.w.pin.l of 0x60649b0 directly (crossing the route-WDFEED '
-                '41,828,530 bookkeeping-read stop) and the route-FD610C single-'
-                'word JL_PLED CON3 container serves the 0x6019458 clear-bit5 '
-                'RMW read as synthetic 0 (derived-not-measured), then the '
-                'helper returns and +503 pure-CPU0 steps walk into the CON0 '
-                'save-restore read; the route-FD610C-con0 JL_PLED CON0 named '
-                'whole-word initial fixture (0x00000000 main arm, codex '
-                'three-way (a), derived-not-measured) serves the 0x60194b4 '
-                'read as 0, the clear-bit0 RMW writes 0, the if(r6&1) restore '
-                'is skipped on the false branch, the save-restore returns, '
-                'and +576 pure-CPU0 steps walk into the 0x6019502 helper whose '
-                'first [0xf2a610]&=0xFFFFFF1F RMW internal read is served by '
-                'the route-P2MCLK P2M_CLK_CON0 single-word config-RMW '
-                'container (SDK macro LED_CLK_SEL(3), codex three-way (a), '
-                'synthetic initial 0 + last-write RMW-internal readback, '
-                'explicit loads refused, derived-not-measured), the second '
-                'leg writes 0x60, the RAM flag is set, the one-shot LED-init '
-                'caller (0x601a30c arm) walks the per-channel reconfig into '
-                'the 0x601a41c pend window (IPMASK 0->6) that calls the LED '
-                'reset helper 0x60195e2 whose CON0 '
-                'clears and zero store are served, the 0x60195f8 st.w '
-                '[0xfd6104]=0 JL_PLED CON1 whole-word clear is served by the '
-                'route-BATCHA 13-word config-family container (CON1/CON2 '
-                'last-write readback after an explicit first write — no '
-                'synthetic initial — and eleven always-read-refused '
-                'BRI/PRD/DUTY words, IRQ41 consumer domain canaried at '
-                '0x6034b06/0x6034aba, codex 20261118), the whole reset helper '
-                'completes (18 config writes: CON1 RMW chain to 0x1c, CON2=0, '
-                'PRD_DIVL=3, DUTY0=1, DUTY3=40, BRI six=200/0 pattern), the '
-                'pend window exits, the S19 ring installs further tasks and '
-                'walks into the resource-VFS EXT_RESERVED/APP partition open '
-                'whose directory-entry rep copy at 0x6010ca6 reads '
-                'its first byte from flash 0x61eafe0 (the TON1 partition-'
-                'container header in the SFC plaintext view; the route-TONMAP '
-                'official-container pair now maps TON [0x61defe0,0x61ea790) '
-                'and TON1 [0x61eafe0,0x61fb320) read-only with the official '
-                'UFW outer-layer bytes — SHA256 three-way pinned, mount-time '
-                'CRC self-check, zero synthesized bytes, official-resource-'
-                'content assumption, conditional / derived-not-measured), '
-                'the second walker call recomputes the container header CRC '
-                'as 0x7e4e == the official hcrc field, walks the container '
-                'directory (index.idx / power_on.wts), opens the tone file, '
-                'the S19 ring installs three further tasks (0x602d3a0, '
-                '0x6086980, 0x6000d6c) and walks +51,493 steps into the '
-                'task-0x6086980 event loop whose second output-parameter '
-                'read [r10+8] touches the never-written task-stack word at '
-                'physical 0x18ca64 — an honest uninitialized stop; and the '
-                'route-EVIMPL single-slot unknown-word release '
-                '(jlstream_kick_param2_unknown, codex five-element context '
-                'guard: the task instance observed at install site '
-                '0x6065f9e with the task body entry never executing, the '
-                'pinned PC and encoding d0 ec a8 60, r10==sp+24 inside the '
-                'TCB-described 0xC00-byte stack window, the MMU '
-                'translation exactly [0x18ca64,0x18ca68), an UnknownWord '
-                'built from the actual known bytes — never zero-filled, '
-                're-validated per load) passes that one 4-byte slot, the '
-                'first jlstream message (cmd 0) dispatches through the '
-                'event loop and +56,377 more steps walk into the audio '
-                'DAC DMA run domain where the pointer-poll body at '
-                '0x606e148 reads JL_AUDIO+4 (DAC DMA HRP 0xfe0510) — an '
-                'honest not-modeled register read; '
-                'per-core 1 unchanged at 11496 — the 0xfe0510 DMA pointer '
-                'read belongs to the next route)')
+                'conditional frontier stop (42037363 @ 0x606a900, the not-modeled copex.ppi '
+                'DSP-coprocessor instruction — reached after the route-DMAIMPL two-word '
+                'DAC HRP/SWP idle-readback release (codex (a) narrowed) serves the four '
+                'pinned pointer-poll loads 0x606e148/0x606e14a/0x606e150/0x606e152 with '
+                'the firmware-last-written values (zero synthesized bytes), the idle '
+                'guard equality arms walk straight into POST, and the audio pipeline '
+                'reconfig runs +71,480 steps into the DSP wall; the full route '
+                'narrative is single-sourced in frontier_registry/HANDOFF; '
+                'per-core 1 unchanged at 11496 — the copex wall belongs to the next '
+                'route)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
                                 'tested_b79': conditional['completed_steps'], 'delta': 0} and
@@ -1805,16 +1747,38 @@ def check_self_conditional(report, arms=None):
     # +2 复触全部属 image 类逐字传播,零 removed 零 value-change,零
     # structural 零 unexplained(寄存器计算传播仍仅既有软件 CRC 累加器 1 例);
     # 无新传播机制,只是同一镜像差异字节在同族地址上的重现。
-    require(spans['count'] == 181,
+    # 路 DMAIMPL:HRP/SWP 两字读回放行段(空闲守卫四调双读相等臂+采样率
+    # 记录+音频管线重配段,+71,480 步到 copex.ppi 停点)继续装载同一批
+    # 镜像差异字节:tone 表项头四字节块(a9 91 66 c9 ↔ f2 64 7f a5)再拷进
+    # 新分配堆对象(0x18b128/0x18b148/0x18d094..0x18d13b/0x18d170 族,
+    # 0x19e0f4 计数 1→2),音量参数区族(d3/c9、00/f6、00/ff)之外首次
+    # 运到该区更深处的字节对(34/5c、00/20、00/c1 @ 0x18b9a8/0x18b9ac/
+    # 0x18baf0/0x18baf8)——spans 181→199(+18 寄存器值分歧段,同族 CONFIG
+    # 拷贝循环),写差异 steps 305→337、cells 186→222:36 新增+1 复触
+    # (0x19e0f4 1→2)中 33 个 image 类逐字传播,3 个(0x18bb10+0..+2,
+    # 55/8e、0c/5d、5d/93)=register 类计算传播(寄存器差切片机械验证;
+    # 该值=停点 r0/r2 携带的 0xc05d0c55↔0xc0935d8e 低三字节——固件算术
+    # 变换后的 DSP 参数,镜像窗口 crc16/ccitt/ibm/modbus/crc32 枚举未
+    # 复算出,精确公式留待 DSP 域建模),零 removed,零 structural 零
+    # unexplained;final report 差异 36→44(归因见下方 diffs require 文本)。
+    require(spans['count'] == 199,
             'the official-vs-b79 conditional divergence-span count changed')
     if arms is not None:
         trace_official, plain_official = arms['official']
         trace_b79, plain_b79 = arms['tested_b79']
         _require_pinned_write_delta(
             'official-vs-b79 (p11_heap_experimental)', trace_official, trace_b79,
-            plain_official, plain_b79, pinned_steps=305, pinned_cells={
+            plain_official, plain_b79, pinned_steps=337, pinned_cells={
                 ('0x1272b8', '28', '88'): 1,
                 ('0x1272b8+1', '33', 'fa'): 1,
+                ('0x18b128', 'a9', 'f2'): 2,
+                ('0x18b129', '91', '64'): 2,
+                ('0x18b12a', '66', '7f'): 2,
+                ('0x18b12b', 'c9', 'a5'): 2,
+                ('0x18b148', 'a9', 'f2'): 1,
+                ('0x18b149', '91', '64'): 1,
+                ('0x18b14a', '66', '7f'): 1,
+                ('0x18b14b', 'c9', 'a5'): 1,
                 ('0x18b290', 'a9', 'f2'): 3,
                 ('0x18b291', '91', '64'): 3,
                 ('0x18b292', '66', '7f'): 3,
@@ -1823,6 +1787,17 @@ def check_self_conditional(report, arms=None):
                 ('0x18b345', '91', '64'): 1,
                 ('0x18b346', '66', '7f'): 1,
                 ('0x18b347', 'c9', 'a5'): 1,
+                ('0x18b9a8+2', '34', '5c'): 1,
+                ('0x18b9ac+2', '00', '20'): 1,
+                ('0x18b9ac+3', '00', 'c1'): 1,
+                ('0x18baf0+3', 'd3', 'c9'): 1,
+                ('0x18baf8', '00', 'f6'): 1,
+                ('0x18baf8+1', '00', 'ff'): 1,
+                ('0x18baf8+2', '00', 'ff'): 1,
+                ('0x18baf8+3', '00', 'ff'): 1,
+                ('0x18bb10', '55', '8e'): 1,
+                ('0x18bb10+1', '0c', '5d'): 1,
+                ('0x18bb10+2', '5d', '93'): 1,
                 ('0x18bb94', 'a9', 'f2'): 1,
                 ('0x18bb95', '91', '64'): 1,
                 ('0x18bb96', '66', '7f'): 1,
@@ -1865,6 +1840,10 @@ def check_self_conditional(report, arms=None):
                 ('0x18d087', 'c9', 'a5'): 1,
                 ('0x18d090', 'a9', 'f2'): 1,
                 ('0x18d090+1', '91', '64'): 1,
+                ('0x18d094', 'a9', 'f2'): 1,
+                ('0x18d095', '91', '64'): 1,
+                ('0x18d096', '66', '7f'): 1,
+                ('0x18d097', 'c9', 'a5'): 1,
                 ('0x18d0a4', 'a9', 'f2'): 7,
                 ('0x18d0a4+1', '91', '64'): 7,
                 ('0x18d0b4', 'a9', 'f2'): 1,
@@ -1901,8 +1880,20 @@ def check_self_conditional(report, arms=None):
                 ('0x18d0fd', 'c1', '7a'): 2,
                 ('0x18d0fe', '9b', 'bd'): 2,
                 ('0x18d0ff', 'a2', '77'): 2,
+                ('0x18d114', 'a9', 'f2'): 1,
+                ('0x18d114+1', '91', '64'): 1,
+                ('0x18d118', 'a9', 'f2'): 1,
+                ('0x18d119', '91', '64'): 1,
+                ('0x18d11a', '66', '7f'): 1,
+                ('0x18d11b', 'c9', 'a5'): 1,
+                ('0x18d138', 'a9', 'f2'): 1,
+                ('0x18d139', '91', '64'): 1,
+                ('0x18d13a', '66', '7f'): 1,
+                ('0x18d13b', 'c9', 'a5'): 1,
                 ('0x18d160', 'a9', 'f2'): 1,
                 ('0x18d160+1', '91', '64'): 1,
+                ('0x18d170', 'a9', 'f2'): 1,
+                ('0x18d170+1', '91', '64'): 1,
                 ('0x18d290', 'a9', 'f2'): 4,
                 ('0x18d291', '91', '64'): 4,
                 ('0x18d292', '66', '7f'): 4,
@@ -1932,7 +1923,8 @@ def check_self_conditional(report, arms=None):
                 ('0x19e0e9', '33', 'fa'): 1,
                 ('0x19e0ea', '7d', 'd2'): 1,
                 ('0x19e0eb', '93', '53'): 1,
-                ('0x19e0f4', 'a9', 'f2'): 1,
+                ('0x19e0f4', 'a9', 'f2'): 2,
+                ('0x19e0f4+1', '91', '64'): 1,
                 ('0x19e0f5', '91', '64'): 1,
                 ('0x19e0f6', '66', '7f'): 1,
                 ('0x19e0f7', 'c9', 'a5'): 1,
@@ -2002,6 +1994,11 @@ def check_self_conditional(report, arms=None):
             })
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
     require(diffs == sorted([
+                             '$.last_registers.r[0]',
+                             '$.last_registers.r[2]',
+                             '$.machine.cores.0.r[0]',
+                             '$.machine.cores.0.r[2]',
+                             '$.memory_events[7].bytes',
                              '$.milestones[23].r0',
                              '$.peripherals.hardware_crc_projection.result_reads[103]',
                              '$.peripherals.hardware_crc_projection.result_reads[109]',
@@ -2027,6 +2024,9 @@ def check_self_conditional(report, arms=None):
                              '$.peripherals.hardware_crc_projection.result_reads[233]',
                              '$.peripherals.hardware_crc_projection.result_reads[239]',
                              '$.peripherals.hardware_crc_projection.result_reads[245]',
+                             '$.peripherals.hardware_crc_projection.result_reads[251]',
+                             '$.peripherals.hardware_crc_projection.result_reads[257]',
+                             '$.peripherals.hardware_crc_projection.result_reads[263]',
                              '$.peripherals.hardware_crc_projection.result_reads[37]',
                              '$.peripherals.hardware_crc_projection.result_reads[43]',
                              '$.peripherals.hardware_crc_projection.result_reads[49]',
@@ -2037,14 +2037,28 @@ def check_self_conditional(report, arms=None):
                              '$.peripherals.hardware_crc_projection.result_reads[77]',
                              '$.peripherals.hardware_crc_projection.result_reads[83]',
                              '$.peripherals.hardware_crc_projection.result_reads[8]',
-                             '$.peripherals.hardware_crc_projection.result_reads[97]']),
+                             '$.peripherals.hardware_crc_projection.result_reads[97]',
+            ]),
             'the official-vs-b79 conditional final-report differences changed: ' + str(diffs)
             + ' (route TONMAP: the container-release segment adds result_reads[215]/[221] '
               '— CRC rounds over tone-parameter CONFIG bytes whose official-vs-b79 -10dB '
               'difference propagates into the accumulator, the same image-delta family '
               'as every other result_reads entry; route EVIMPL: the first-message '
               'dispatch walks four more CONFIG cycles in the audio DAC DMA domain, '
-              'adding result_reads[227]/[233]/[239]/[245] of exactly that family)')
+              'adding result_reads[227]/[233]/[239]/[245] of exactly that family; '
+              'route DMAIMPL: the idle-readback release walks the audio pipeline '
+              'reconfig +71,480 steps into the copex.ppi wall, adding '
+              'result_reads[251]/[257]/[263] of the same family (0x91a9 vs 0x64f2 — '
+              'the tone entry-header CRC pair already documented at [197], the '
+              'spacing-6 sequence continuation) plus five STOP-STATE faces: the '
+              'copex stop instruction never executes, so $.last_registers.r[0]/r[2] '
+              'and $.machine.cores.0.r[0]/r[2] still carry the 32-bit DSP parameter '
+              '0xc05d0c55 vs 0xc0935d8e (a firmware-arithmetic transform of '
+              'image-delta tone/volume bytes — the same value the run stored at '
+              '0x18bb10, whose low three bytes are the three register-class write '
+              'cells), and $.memory_events[7].bytes is that very store (550c5dc0 vs '
+              '8e5d93c0, the trailing memory-event window entry — pure data '
+              'projection, zero control divergence)')
 
 
 def check_self_candidate(report, label, scenario):
