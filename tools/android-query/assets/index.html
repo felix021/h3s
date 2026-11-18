@@ -9,21 +9,28 @@
 
 <script>
 (function () {
-  var choice = 'auto';
-  var storage = true;
+  const key = 'h3s.theme';
+  const modes = ['auto', 'light', 'dark'];
+  const media = window.matchMedia('(prefers-color-scheme: dark)');
+  let choice = 'auto', storage = true;
   try {
-    var saved = localStorage.getItem('h3s.theme');
-    if (['auto', 'light', 'dark'].indexOf(saved) !== -1) choice = saved;
-    localStorage.setItem('h3s.theme', choice);
-  } catch (e) {
+    const saved = localStorage.getItem(key);
+    if (modes.includes(saved)) choice = saved;
+    localStorage.setItem(key, choice);
+  } catch (_) {
     storage = false;
   }
 
-  var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  var theme = choice === 'auto' ? (dark ? 'dark' : 'light') : choice;
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
-  window.H3S_THEME_BOOT = { choice: choice, storage: storage };
+  function paint(value) {
+    const actual = value === 'auto' ? (media.matches ? 'dark' : 'light') : value;
+    const root = document.documentElement;
+    root.dataset.themeChoice = value;
+    root.dataset.theme = actual;
+    root.style.colorScheme = actual;
+  }
+
+  paint(choice);
+  window.H3S_THEME_BOOT = { key, modes, media, choice, storage, paint };
 })();
 </script>
 
@@ -43,7 +50,9 @@
   --ok: #166534;
   --warn: #854d0e;
   --danger: #991b1b;
-  --radius: 18px;
+  --card: var(--surface);
+  --radius: 16px;
+  --target: 44px;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -169,7 +178,7 @@ button.danger:not(:disabled):active {
   margin-top: 10px;
 }
 .ota-sha {
-  font: 12px/1.6 ui-monospace, monospace;
+  font: 13px/1.6 ui-monospace, monospace;
   word-break: break-all;
   color: var(--muted);
 }
@@ -222,7 +231,7 @@ h1 {
   line-height: 1.3;
 }
 h2 {
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1.4;
 }
 h3 {
@@ -311,31 +320,16 @@ header {
 }
 .brand p {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 #themeCycle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box; /* 全局 button min-height:44px 会把 36px 高撑成长方形→border-radius:50% 显椭圆，这里锁正方形 */
-  width: 44px;
-  height: 44px;
+  width: 6.5em;
+  min-width: 44px;
   min-height: 44px;
-  max-width: 44px;
-  padding: 0;
-  border-radius: 50%;
-}
-#themeCycle svg {
-  display: none;
-  width: 20px;
-  height: 20px;
-}
-/* icon 反映用户所选模式（非实际生效色），由 html[data-theme-choice] 控制 */
-html[data-theme-choice='light'] #themeCycle svg[data-theme-icon='light'],
-html[data-theme-choice='dark'] #themeCycle svg[data-theme-icon='dark'],
-html[data-theme-choice='auto'] #themeCycle svg[data-theme-icon='auto'],
-html:not([data-theme-choice]) #themeCycle svg[data-theme-icon='auto'] {
-  display: block;
+  padding: 6px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
 }
 .segment {
   display: grid;
@@ -402,7 +396,7 @@ main {
   border: 1px solid currentColor;
   border-radius: 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 .badge.good { color: var(--ok); }
 .badge.warning { color: var(--warn); }
@@ -499,16 +493,6 @@ main {
   color: var(--muted);
   font-size: 13px;
 }
-.chips {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 12px;
-}
-.chips button {
-  font-size: 13px;
-  padding-inline: 4px;
-}
 /* EQ 我的预设（路 EQFIX）：命名保存/加载/重命名/删除，localStorage 本机持久化 */
 .preset-save-row {
   display: flex;
@@ -549,7 +533,7 @@ main {
 }
 .user-preset-list .preset-meta {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 .user-preset-list input {
   flex: 1;
@@ -594,7 +578,7 @@ main {
 figcaption {
   margin-top: 5px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 .band-grid {
   display: flex;
@@ -630,25 +614,6 @@ figcaption {
 .band .frequency {
   color: var(--muted);
   font-size: 12px;
-}
-.band-freq {
-  min-height: 30px;
-  padding: 2px 1px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--soft);
-  color: var(--text);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.2;
-  cursor: pointer;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.band-freq:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 2px;
 }
 .slider {
   position: relative;
@@ -786,37 +751,6 @@ input[type="range"]::-moz-range-thumb {
   background: var(--accent);
   pointer-events: none;
 }
-.band-inspector {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  margin: 4px 0 12px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--soft);
-  font-size: 13px;
-}
-.band-inspector label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.band-inspector input[type="number"] {
-  width: 84px;
-  min-height: 44px;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-}
-.band-inspector button {
-  min-height: 40px;
-  min-width: 40px;
-  padding: 6px 10px;
-}
 /* —— 助听 tab：10 频段横排纵列（上限数值行 + 拉长的增益条）—— */
 #haBandGrid {
   margin: 12px 0;
@@ -831,7 +765,7 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 8px;
   background: var(--soft);
   color: var(--warn);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
@@ -925,7 +859,7 @@ input[type="range"]::-moz-range-thumb {
 .ha-mpo-summary .note-inline {
   grid-column: 1 / -1;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.6;
 }
 
@@ -952,28 +886,6 @@ summary {
   padding: 10px 0;
   color: var(--muted);
   cursor: pointer;
-}
-.key-row {
-  display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  margin-top: 10px;
-}
-.key-row label {
-  font-weight: 600;
-}
-.key-row small {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-.key-row.dirty select {
-  border: 2px solid var(--warn);
-}
-.key-row.dirty small {
-  color: var(--warn);
 }
 .placeholder-grid {
   display: grid;
@@ -1074,10 +986,222 @@ summary {
   color: var(--muted);
   font: 12px/1.7 ui-monospace, monospace;
 }
-@media (max-width: 339px) {
-  .chips {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+
+/* ---------- 设计规范公共规则（UIREDESIGN）：44px 触控目标 / 焦点环 / 占位符 --- */
+.toc a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--target);
+  min-height: var(--target);
+  background: var(--surface);
+}
+.toc a:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -4px;
+}
+button, select, summary {
+  min-height: var(--target);
+}
+button, select {
+  min-width: var(--target);
+}
+input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+button[data-busy="1"] {
+  cursor: progress;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress > div { transition: none; }
+}
+
+/* ---------- EQ 十段横向推子（UIREDESIGN） ---------- */
+#eqChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+#eqChips button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 6px 12px;
+  border-radius: 999px;
+}
+#eqChips [aria-pressed="true"]::before { content: "✓ "; }
+
+#sec-eq .eq-columns,
+#sec-eq .eq-row {
+  display: grid;
+  grid-template-columns: 5em minmax(44px, 1fr) 3.2em;
+  gap: 4px 8px;
+  align-items: center;
+}
+#sec-eq .eq-columns {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+#sec-eq .eq-columns > :last-child,
+#sec-eq .eq-db { text-align: end; }
+
+#sec-eq .eq-row {
+  padding-block: 3px;
+  border-bottom: 1px solid var(--line);
+}
+#sec-eq .eq-row > button {
+  padding-inline: 4px;
+  font-variant-numeric: tabular-nums;
+}
+#sec-eq .eq-row > button[aria-expanded="true"] {
+  border: 2px solid var(--accent);
+  color: var(--accent);
+}
+#sec-eq .eq-row > input[type="range"] {
+  height: 44px;
+  touch-action: pan-y;
+  background:
+    linear-gradient(var(--line), var(--line))
+    center / 2px 14px no-repeat;
+}
+#sec-eq .eq-db {
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+#sec-eq .eq-edit {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  background: var(--soft);
+  border-radius: 10px;
+}
+#sec-eq .eq-edit input {
+  width: 7em;
+  padding-inline: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+#sec-eq input:not([type="range"]),
+#sec-eq button { min-height: 44px; }
+#sec-eq #customEditor > label { display: block; margin-top: 14px; }
+#sec-eq .chart svg { max-height: 150px; }
+#sec-eq .preset-save-row { flex-wrap: wrap; }
+
+/* ---------- 按键自定义矩阵（UIREDESIGN）：5 手势 × 3 物理键 ---------- */
+.key-map {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 3px 6px;
+}
+.key-map caption {
+  text-align: start;
+  color: var(--muted);
+  padding-bottom: 6px;
+}
+.key-map .gesture-col { width: 3.6em; }
+.key-map th, .key-map td {
+  padding: 0;
+  border: 0;
+  vertical-align: middle;
+}
+.key-map thead th { text-align: center; }
+.key-map tbody th { color: var(--text); }
+.key-map small {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.3;
+}
+.key-map tbody th small { color: var(--warn); }
+
+.map-field {
+  position: relative;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  min-width: 44px;
+  min-height: 60px;
+  padding: 6px 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.map-field strong { font-size: 0.9375rem; color: var(--accent); }
+.map-field small { color: var(--muted); }
+.map-field[data-state="warn"] { border: 2px dashed var(--warn); }
+.map-field[data-state="warn"] small { color: var(--warn); }
+.map-field[data-state="ok"] small { color: var(--ok); }
+.map-field[data-state="waiting"] { background: var(--soft); }
+.map-field:focus-within {
+  outline: 3px solid var(--accent);
+  outline-offset: 1px;
+}
+.map-field select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 44px;
+  opacity: 0;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .map-field:hover { background: var(--soft); }
+}
+.map-field:active { border-color: var(--accent); }
+#sec-keys details > label { display: block; margin-top: 8px; }
+
+/* ---------- 助听 tab 适配（UIREDESIGN）：明确五列（窄屏 5+5 两排），放得下才十列 ---------- */
+#haBandGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.ha-limit {
+  min-height: 44px;
+}
+/* 十列需保证每列（含 .band 左右 padding 4px）≥44px 触控宽：卡内 ≥ 10×48+18 ≈ 498px，
+   对应视口约 552px；实测 560px 视口推子 45px，取 560 为断点，之下保持 5+5 两排 */
+@media (min-width: 560px) {
+  #haBandGrid {
+    grid-template-columns: repeat(10, minmax(0, 1fr));
   }
+}
+
+/* ---------- 窄屏/大字适配（UIREDESIGN，codex 审 #2/#3） ---------- */
+/* 页头品牌行改两行：上行图标+标题，下行日志+主题，避免主题选择器挤压标题逐字换行 */
+@media (max-width: 379px) {
+  .brand {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .brand > svg { grid-column: 1; grid-row: 1; }
+  .brand > div { grid-column: 2; grid-row: 1; }
+  #logToggle { grid-column: 1; grid-row: 2; justify-self: start; }
+  #themeCycle { grid-column: 2; grid-row: 2; justify-self: end; }
+}
+/* EQ 行改两行：上行频点+读数，下行推子独占；列头随之隐藏 */
+@media (max-width: 379px) {
+  #sec-eq .eq-columns { display: none; }
+  #sec-eq .eq-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  #sec-eq .eq-row > input[type="range"] {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+/* 预设名称输入框保住可用宽度，按钮放不下自然换行 */
+.preset-save-row input {
+  min-width: min(10em, 100%);
 }
 </style>
 </head>
@@ -1103,23 +1227,11 @@ summary {
       </div>
       <button id="logToggle" aria-controls="logPanel"
               aria-expanded="false">日志</button>
-      <button id="themeCycle" aria-label="切换外观主题" title="外观：循环切换 亮色/暗色/自动">
-        <svg data-theme-icon="light" viewBox="0 0 32 32" aria-hidden="true">
-          <circle cx="16" cy="16" r="5.5" fill="currentColor"/>
-          <g stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <path d="M16 2.5v4M16 25.5v4M2.5 16h4M25.5 16h4M6.4 6.4l2.8 2.8M22.8 22.8l2.8 2.8M25.6 6.4l-2.8 2.8M9.2 22.8l-2.8 2.8"/>
-          </g>
-        </svg>
-        <svg data-theme-icon="dark" viewBox="0 0 32 32" aria-hidden="true">
-          <path d="M20.5 4.5A12 12 0 1 0 27.5 20 9.5 9.5 0 0 1 20.5 4.5Z"
-                fill="currentColor"/>
-        </svg>
-        <svg data-theme-icon="auto" viewBox="0 0 32 32" aria-hidden="true">
-          <circle cx="16" cy="16" r="11" fill="none"
-                  stroke="currentColor" stroke-width="2.5"/>
-          <path d="M16 5a11 11 0 0 1 0 22Z" fill="currentColor"/>
-        </svg>
-      </button>
+      <select id="themeCycle" aria-label="外观主题">
+        <option value="auto">自动</option>
+        <option value="light">亮色</option>
+        <option value="dark">暗色</option>
+      </select>
     </div>
 
     <div class="segment five tabs" role="tablist" aria-label="工具分类">
@@ -1213,88 +1325,68 @@ summary {
     <article class="card" id="sec-eq">
       <div class="card-head">
         <h2>均衡器</h2>
-        <span id="eqBadge" class="badge">自定义 · 10 段</span>
+        <span class="badge" id="eqBadge">自定义 · 10 段</span>
       </div>
 
-      <div id="eqChips" class="chips" role="group"
-           aria-label="均衡器预设"></div>
-
-      <figure class="chart">
-        <svg id="eqCurve" viewBox="0 0 300 120"
-             role="img" aria-labelledby="curveTitle curveDescription">
-          <title id="curveTitle">各频段增益</title>
-          <desc id="curveDescription">自定义均衡器的十段增益。</desc>
-          <g id="curveGrid"></g>
-          <polyline id="curveLine" class="curve-line"></polyline>
-          <g id="curveDots"></g>
-        </svg>
-        <figcaption>
-          横轴为频率，纵轴为各段增益；连线仅辅助查看，不代表实际滤波响应。
-        </figcaption>
-      </figure>
-
-      <p id="eqDescription" class="note"></p>
+      <div id="eqChips" role="group" aria-label="均衡器预设"></div>
+      <p class="note" id="eqDescription"></p>
 
       <div id="customEditor">
-        <div id="bandGrid" class="band-grid"></div>
-        <div id="bandInspector" class="band-inspector" hidden>
-          <span id="inspectorLabel">第 1 段</span>
-          <button id="freqDown" aria-label="中心频率减 10 Hz">−</button>
-          <label>中心频率
-            <input id="freqInput" type="number" min="20" max="20000" step="10"
-                   inputmode="numeric" aria-label="中心频率 Hz">
-            Hz
-          </label>
-          <button id="freqUp" aria-label="中心频率加 10 Hz">+</button>
-          <span class="muted">点频段数字或拖其滑杆选中；Q / 类型沿用自定义默认。</span>
+        <div class="eq-columns" aria-hidden="true">
+          <span>频点</span><span>增益 · 中线为 0</span><span>dB</span>
         </div>
-        <p class="note">
-          每个频段可调中心频率与增益；先点选频段再上下拖动调增益（鼠标可直接拖）。
-          双击（鼠标）或按 0 归零，方向键微调。频率 20–20000 Hz，增益 −12 至 +12 dB。
-        </p>
+        <div id="bandGrid"></div>
+        <p class="note">横拖调增益，双击推子归零。点频点可改 Hz，也可用“本段归零”。</p>
+
         <label for="master">总增益</label>
         <div class="master-row">
-          <input id="master" type="range" min="-18" max="12"
-                 step="0.5" value="0">
+          <input id="master" type="range" min="-18" max="12" step="0.5" value="0">
           <output id="masterValue" for="master">0.0 dB</output>
         </div>
+        <button id="eqFlat" type="button">所有增益归零</button>
       </div>
 
       <div id="presetView" hidden>
         <p id="presetMaster" class="note"></p>
         <details>
-          <summary>查看原始预设参数</summary>
+          <summary>原厂参数</summary>
           <table>
-            <thead>
-              <tr><th>频率 Hz</th><th>增益 dB</th><th>Q / 类型</th></tr>
-            </thead>
+            <thead><tr><th>频率 Hz</th><th>增益 dB</th><th>Q / 类型</th></tr></thead>
             <tbody id="presetRows"></tbody>
           </table>
         </details>
       </div>
 
+      <details>
+        <summary>查看增益曲线</summary>
+        <figure class="chart">
+          <svg id="eqCurve" viewBox="0 0 300 120" role="img"
+               aria-labelledby="curveTitle curveDescription">
+            <title id="curveTitle">频段增益</title>
+            <desc id="curveDescription"></desc>
+            <g id="curveGrid"></g>
+            <polyline id="curveLine" class="curve-line"></polyline>
+            <g id="curveDots"></g>
+          </svg>
+          <figcaption>横轴为对数频率。各点表示设置值，连线仅辅助读图。</figcaption>
+        </figure>
+      </details>
+
       <div class="actions">
-        <button id="eqSend" class="primary" data-write disabled>
-          发送当前 EQ
-        </button>
-        <button id="eqFlat">自定义全部归零</button>
+        <button id="eqSend" class="primary" data-write disabled>发送当前 EQ</button>
       </div>
-      <p id="eqFeedback" class="feedback" aria-live="polite">
-        本地预览，尚未发送。
-      </p>
+      <p id="eqFeedback" class="feedback" role="status">本地预览，尚未发送。</p>
+      <p id="eqReport" class="note" role="status">暂无设备 EQ 回报。</p>
 
       <details id="userPresetBox">
-        <summary>我的预设（保存在本机）</summary>
+        <summary>我的预设</summary>
         <div class="preset-save-row">
-          <input id="userPresetName" type="text" maxlength="24"
-                 placeholder="预设名称" aria-label="预设名称">
+          <input id="userPresetName" maxlength="24" aria-label="预设名称"
+                 placeholder="预设名称">
           <button id="userPresetSave">保存当前自定义</button>
         </div>
         <ul id="userPresetList" class="user-preset-list"></ul>
-        <p class="note" id="userPresetNote">
-          预设只存本机（localStorage），重进 App 自动保留；「加载」把曲线写回自定义滑杆，
-          仍需点「发送当前 EQ」才下发给耳机。自定义滑杆本身也会自动记忆。
-        </p>
+        <p id="userPresetNote" class="note">预设保存在本机，加载后可继续编辑。</p>
       </details>
     </article>
 
@@ -1319,40 +1411,35 @@ summary {
         <span id="keyDirtyCount" class="badge">无待发送修改</span>
       </div>
 
-      <div id="keyChooser" class="segment" role="group" aria-label="物理按键">
-        <button data-key="7" aria-pressed="true">多功能</button>
-        <button data-key="5" aria-pressed="false">音量＋</button>
-        <button data-key="3" aria-pressed="false">音量－</button>
-      </div>
-
-      <div id="keyRows"></div>
-
-      <details>
-        <summary>通信方式与已知限制</summary>
-        <label for="keyWire">按键写入方式</label>
-        <select id="keyWire">
-          <option value="batch">批量同步 0xC0（固件注册表钉死的默认方式）</option>
-          <option value="adv">ADV type2（旧默认，帧形状假设）</option>
-          <option value="custom">自定义命令 0x2b（固件无此 cmdid，仅对照）</option>
-        </select>
-        <p class="note">
-          写入方式已按固件反解改为「批量同步」——固件按键注册在批量同步表
-          （cmdid 2），此前用的 ADV type2/0x2b 在固件里没有对应命令，发了也不会有回执
-          （这就是之前「发送失败/未确认」的原因）。「从设备读取」发 0xC1 读命令回 45B
-          映射表；长按的事件编号仍是假设，页面明确标记为“待验证”。
-        </p>
-      </details>
+      <table class="key-map">
+        <caption>点动作可修改；点“发送修改”后才写入耳机。</caption>
+        <colgroup><col class="gesture-col"><col><col><col></colgroup>
+        <thead>
+          <tr>
+            <th scope="col">手势</th><th scope="col">多功能</th>
+            <th scope="col">音量＋</th><th scope="col">音量－</th>
+          </tr>
+        </thead>
+        <tbody id="keyRows"></tbody>
+      </table>
 
       <div class="actions">
-        <button id="kmWrite" class="primary" data-write disabled>
-          发送修改
-        </button>
-        <button id="kmRead">读取工作副本</button>
+        <button id="kmWrite" class="primary" data-write disabled>发送修改</button>
         <button id="kmReadDevice" data-write disabled>从设备读取</button>
       </div>
-      <p id="kmFeedback" class="feedback" aria-live="polite">
-        初始值来自旧页面默认配置。
-      </p>
+      <p class="note">设备回读会覆盖表内对应项的草稿。</p>
+      <p id="kmFeedback" class="feedback" role="status">当前显示本地参考值。</p>
+
+      <details>
+        <summary>工作副本与通信方式</summary>
+        <button id="kmRead">读取壳侧工作副本</button>
+        <label for="keyWire">按键写入方式</label>
+        <select id="keyWire">
+          <option value="batch">批量同步 0xC0（默认）</option>
+          <option value="adv">ADV type2（实验对照）</option>
+          <option value="custom">自定义 0x2b（固件无对应命令）</option>
+        </select>
+      </details>
     </article>
 
     <article class="card" id="sec-audio">
@@ -1931,47 +2018,39 @@ function rpc(bridge, method, args) {
   }
 }
 
-/* ---------- 外观 ---------- */
-const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
-let themeChoice = window.H3S_THEME_BOOT.choice;
-let storageAvailable = window.H3S_THEME_BOOT.storage;
+/* ---------- 外观（自动/亮色/暗色 三态选择器，UIREDESIGN） ---------- */
+(function () {
+  const t = window.H3S_THEME_BOOT;
+  const select = $('themeCycle');
 
-function applyTheme() {
-  const actual = themeChoice === 'auto'
-    ? (themeMedia.matches ? 'dark' : 'light')
-    : themeChoice;
-  document.documentElement.dataset.theme = actual;
-  document.documentElement.dataset.themeChoice = themeChoice;
-  document.documentElement.style.colorScheme = actual;
-  const cycle = $('themeCycle');
-  const labels = { light: '亮色', dark: '暗色', auto: '自动（跟随系统）' };
-  cycle.setAttribute('aria-label', '当前外观：' + labels[themeChoice] + '，点击切换');
-  cycle.title = '外观：' + labels[themeChoice] + '（点击循环 亮色/暗色/自动）';
-  $('storageNote').hidden = storageAvailable;
-}
-$('themeCycle').onclick = () => {
-  const order = ['light', 'dark', 'auto'];
-  themeChoice = order[(order.indexOf(themeChoice) + 1) % order.length];
-  try {
-    localStorage.setItem('h3s.theme', themeChoice);
-    storageAvailable = localStorage.getItem('h3s.theme') === themeChoice;
-  } catch (e) {
-    storageAvailable = false;
+  function refresh() {
+    t.paint(t.choice);
+    select.value = t.choice;
+    select.options[0].textContent = t.media.matches ? '自动 · 暗' : '自动 · 亮';
+    $('storageNote').hidden = t.storage;
   }
-  applyTheme();
-};
-if (themeMedia.addEventListener) {
-  themeMedia.addEventListener('change', applyTheme);
-} else {
-  themeMedia.addListener(applyTheme);
-}
-window.addEventListener('storage', event => {
-  if (event.key !== 'h3s.theme') return;
-  if (!['auto', 'light', 'dark'].includes(event.newValue)) return;
-  themeChoice = event.newValue;
-  applyTheme();
-});
-applyTheme();
+
+  select.onchange = () => {
+    t.choice = select.value;
+    try {
+      localStorage.setItem(t.key, t.choice);
+      t.storage = localStorage.getItem(t.key) === t.choice;
+    } catch (_) {
+      t.storage = false;
+    }
+    refresh();
+  };
+
+  if (t.media.addEventListener) t.media.addEventListener('change', refresh);
+  else t.media.addListener(refresh);
+
+  window.addEventListener('storage', e => {
+    if (e.key !== t.key && e.key !== null) return;
+    t.choice = t.modes.includes(e.newValue) ? e.newValue : 'auto';
+    refresh();
+  });
+  refresh();
+})();
 
 /* ---------- 主 tab 与日志 ---------- */
 /* 目录条：跟随当前 tab 的锚点 chip，点击平滑滚动 */
@@ -2299,6 +2378,17 @@ $('battBtn').onclick = () => {
   });
 };
 function clearDeviceDisplays() {
+  // 只清除「本次连接取得的确认来源」（设备已应答/回读），保留本机记录/壳侧副本
+  // 与「失败或未确认」（该项草稿仍待处理，需继续可见）——UIREDESIGN 按蓝图文字语义收窄。
+  sourceOfKey.forEach((source, id) => {
+    if (source === '设备已应答' || source === '设备回读' || source === '回读未知动作') {
+      sourceOfKey.delete(id);
+    }
+  });
+  sendingKey = null;
+  renderKeyRows();
+  $('kmFeedback').textContent = '连接已断开：表内为本地参考值与未发送草稿。';
+  $('eqReport').textContent = '连接已断开，暂无当前设备回报。';
   $('batt').replaceChildren(element('span', '未连接，电量未知'));
   ['ancSeg', 'modeSeg', 'volSeg'].forEach(id => {
     Array.from($(id).children).forEach(button => {
@@ -2397,7 +2487,7 @@ function parseDeviceMessage(payloadHex) {
       let master = parseInt(bytes.slice(2, 4), 16) | (parseInt(bytes.slice(4, 6), 16) << 8);
       if (master > 32767) master -= 65536;
       const typeName = { 1: '槽位回读', 2: '曲线', 10: '空间音效' }[type] || ('type ' + type);
-      $('eqFeedback').textContent = segments > 0
+      $('eqReport').textContent = segments > 0
         ? '设备回报：EQ ' + segments + ' 段 · 总增益 ' + (master / 100).toFixed(1) + ' dB（' + typeName + '）'
         : '设备回报：EQ 0 段（设备未配置自定义曲线）';
     }
@@ -2572,7 +2662,8 @@ function sanitizeEqCurve(raw) {
     if (!numOf(raw.q[i]) || raw.q[i] <= 0 || raw.q[i] > 20) return null;
     if (!Number.isInteger(raw.iir[i]) || !(raw.iir[i] >= 0 && raw.iir[i] <= 4)) return null;
     if (!numOf(raw.gain[i]) || raw.gain[i] < -12 || raw.gain[i] > 12) return null;
-    freq.push(raw.freq[i]); q.push(raw.q[i]); iir.push(raw.iir[i]); gain.push(raw.gain[i]);
+    // UIREDESIGN：推子为 1 dB 步进，旧存储可能带小数增益，载入时规整为整数
+    freq.push(raw.freq[i]); q.push(raw.q[i]); iir.push(raw.iir[i]); gain.push(Math.round(raw.gain[i]));
   }
   return { master: raw.master, freq, q, iir, gain };
 }
@@ -2763,8 +2854,8 @@ function drawCurve() {
   const low = Math.min(-12, ...eq.gain);
   const high = 12;
   const x = f => {
-    const fx = Math.min(16000, Math.max(30, f));
-    return 31 + Math.log(fx / 30) / Math.log(16000 / 30) * 257;
+    const fx = Math.min(20000, Math.max(20, f));
+    return 31 + Math.log(fx / 20) / Math.log(20000 / 20) * 257;
   };
   const y = gain => 12 + (high - gain) / (high - low) * 94;
 
@@ -2787,184 +2878,197 @@ function drawCurve() {
   $('curveDescription').textContent = eq.name + '：' +
     eq.freq.map((f, i) => f + ' Hz ' + signed(eq.gain[i]) + ' dB').join('，');
 }
-function updateSlider(index) {
-  const gain = customEq.gain[index];
-  const item = sliderItems[index];
-  item.output.textContent = signed(gain);
-  item.slider.setAttribute('aria-valuenow', String(gain));
-  item.slider.setAttribute('aria-valuetext', signed(gain) + ' dB');
-  item.slider.style.setProperty('--position', String((12 - gain) / 24));
-}
-function setBand(index, value) {
-  const gain = Math.max(-12, Math.min(12, Math.round(value)));
-  if (customEq.gain[index] === gain) return;
-  customEq.gain[index] = gain;
-  updateSlider(index);
-  localEqChanged();
-}
+/* ---------- EQ 十段编辑器（UIREDESIGN）：十条横向推子 + 行内精调 ---------- */
 let selectedBand = -1;
 
-function setSelectedBand(index) {
-  selectedBand = index;
-  sliderItems.forEach((item, i) => {
-    item.bandEl.classList.toggle('selected', i === index);
-    // 点选后锁定调整：选中滑杆 touch-action:none（拖拽归它），
-    // 未选中的保持 pan-y（纵向滚动走浏览器，不误调增益）。
-    item.slider.style.touchAction = (i === index) ? 'none' : 'pan-y';
+function updateSlider(i) {
+  const { slider, output } = sliderItems[i];
+  const value = customEq.gain[i];
+  slider.value = String(value);
+  output.textContent = signed(value);
+  slider.setAttribute('aria-valuetext', signed(value) + ' dB');
+}
+
+function updateFreqLabel(i) {
+  const item = sliderItems[i];
+  const f = customEq.freq[i];
+  item.freqBtn.textContent = f >= 1000 ? hz(f) : f + ' Hz';
+  item.freqBtn.setAttribute('aria-label', '第 ' + (i + 1) + ' 段，' + f + ' Hz，编辑频率');
+  item.slider.setAttribute('aria-label', '第 ' + (i + 1) + ' 段，' + f + ' Hz 增益');
+  item.input.value = String(f);
+}
+
+function setSelectedBand(i) {
+  selectedBand = i;
+  sliderItems.forEach((item, j) => {
+    item.editor.hidden = j !== i;
+    item.freqBtn.setAttribute('aria-expanded', String(j === i));
   });
-  $('bandInspector').hidden = index < 0;
-  if (index >= 0) {
-    $('inspectorLabel').textContent = '第 ' + (index + 1) + ' 段';
-    $('freqInput').value = customEq.freq[index];
-  }
 }
 
-function updateFreqLabel(index) {
-  const item = sliderItems[index];
-  item.freqBtn.textContent = hz(customEq.freq[index]);
-  item.freqBtn.setAttribute('aria-label', customEq.freq[index] + ' Hz，点按调整中心频率');
-  item.slider.setAttribute('aria-label', customEq.freq[index] + ' Hz 增益');
-}
-
-function applyBandFreq(index, value) {
-  if (index < 0) return;
-  const freq = Math.max(20, Math.min(20000, Math.round(value)));
-  if (customEq.freq[index] === freq) {
-    $('freqInput').value = freq;
-    return;
-  }
-  customEq.freq[index] = freq;
-  updateFreqLabel(index);
-  if (selectedBand === index) $('freqInput').value = freq;
+function setBand(i, n) {
+  if (customEq.gain[i] === n) return;
+  customEq.gain[i] = n;
+  updateSlider(i);
   localEqChanged();
 }
 
-customEq.freq.forEach((frequency, index) => {
-  const band = element('div', undefined, 'band');
-  const freqBtn = element('button', hz(frequency), 'band-freq');
-  freqBtn.type = 'button';
-  freqBtn.setAttribute('aria-label', frequency + ' Hz，点按调整中心频率');
-  const output = element('output', '0');
-  const slider = element('div', undefined, 'slider');
-  slider.id = 'band-' + index;
-  slider.tabIndex = 0;
-  slider.setAttribute('role', 'slider');
-  slider.setAttribute('aria-orientation', 'vertical');
-  slider.setAttribute('aria-label', frequency + ' Hz 增益');
-  slider.setAttribute('aria-valuemin', '-12');
-  slider.setAttribute('aria-valuemax', '12');
-  output.setAttribute('for', slider.id);
-
-  ['rail', 'zero', 'thumb'].forEach(className => {
-    const part = element('span', undefined, className);
-    part.setAttribute('aria-hidden', 'true');
-    slider.appendChild(part);
-  });
-
-  let pointer = null;
-  let tapCandidate = null;
-  let lastTouchAt = 0; // 触屏 tap 会合成 mouse pointerdown（立即设值）——500ms 内忽略
-
-  function updateFromPointer(event) {
-    const rect = slider.getBoundingClientRect();
-    const top = rect.top + 16;
-    const height = Math.max(1, rect.height - 32);
-    const ratio = Math.max(0, Math.min(1, (event.clientY - top) / height));
-    setBand(index, 12 - ratio * 24);
+function setFrequency(i, n) {
+  const item = sliderItems[i];
+  if (!Number.isInteger(n) || n < 20 || n > 20000) {
+    item.input.value = String(customEq.freq[i]);
+    $('eqFeedback').textContent = '请输入 20 至 20000 之间的整数 Hz，已保留原频率。';
+    return;
   }
-  slider.addEventListener('pointerdown', event => {
-    if (event.pointerType === 'mouse') {
-      if (event.button !== 0) return;
-      if (performance.now() - lastTouchAt < 500) return; // 触屏 tap 的合成鼠标事件
-      event.preventDefault();
-      slider.focus({ preventScroll: true });
-      pointer = event.pointerId;
-      slider.setPointerCapture(pointer);
-      updateFromPointer(event);
+  if (customEq.freq[i] === n) return;
+  customEq.freq[i] = n;
+  updateFreqLabel(i);
+  localEqChanged();
+}
+
+/* 触屏防误触：pan-y 允许纵滚，但手势方向确定前浏览器可能已把原生推子跳值并触发
+ * input。未判定期间 oninput 只暂存不提交；确认横拖后恢复即时提交并补交当前值；
+ * 纵滚或 pointercancel 回滚到按下时的值；轻点（未移动即抬起）按原生语义提交
+ * 点按位置。鼠标/笔不经过此判定，保持即时。键盘不受影响。 */
+function bindTouchGuard(slider, i) {
+  let state = null;            // 'pending'（未判定）| 'scroll'（已判纵滚）| null（横拖/鼠标）
+  let pid = -1, sx = 0, sy = 0, startGain = 0;
+
+  slider.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse' || e.pointerType === 'pen') {
+      state = null;
       return;
     }
-    if (event.pointerType === 'touch') lastTouchAt = performance.now();
-    // 触摸：未选中时先记作「点选」候选，不捕获指针（让纵向滚动照常）；选中后才锁定拖动。
-    if (selectedBand !== index) {
-      tapCandidate = { x: event.clientX, y: event.clientY, t: performance.now(), id: event.pointerId };
+    pid = e.pointerId;
+    sx = e.clientX;
+    sy = e.clientY;
+    startGain = customEq.gain[i];
+    state = 'pending';
+  });
+  slider.addEventListener('pointermove', e => {
+    if (state !== 'pending' || e.pointerId !== pid) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.abs(dx) > 8 && Math.abs(dx) >= Math.abs(dy)) {
+      state = null;             // 横拖确认：此后 oninput 直提，并补交判定期已跳到的值
+      setBand(i, Math.round(slider.valueAsNumber));
+    } else if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
+      state = 'scroll';         // 纵滚：回滚浏览器在判定前写入的跳值，customEq 未动
+      slider.value = String(startGain);
+    }
+  });
+  slider.addEventListener('pointerup', e => {
+    if (e.pointerId !== pid) return;
+    if (state === 'pending') setBand(i, Math.round(slider.valueAsNumber));
+    state = null;
+  });
+  slider.addEventListener('pointercancel', e => {
+    if (e.pointerId !== pid) return;
+    if (state !== null) slider.value = String(startGain);
+    state = null;
+  });
+
+  return { deferred: () => state === 'pending' };
+}
+
+/* 双击推子归零：pointer 事件自判（触屏双击 + 鼠标双击），键盘按 0。 */
+function bindBandReset(slider, reset) {
+  let start = null, last = null;
+
+  slider.addEventListener('pointerdown', e => {
+    if (!e.isPrimary || e.button !== 0) {
+      start = last = null;
       return;
     }
-    event.preventDefault();
-    slider.focus({ preventScroll: true });
-    pointer = event.pointerId;
-    slider.setPointerCapture(pointer);
-    updateFromPointer(event);
+    start = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() };
   });
-  slider.addEventListener('pointermove', event => {
-    if (event.pointerId === pointer) {
-      event.preventDefault();
-      updateFromPointer(event);
-    } else if (tapCandidate && event.pointerId === tapCandidate.id) {
-      if (Math.hypot(event.clientX - tapCandidate.x, event.clientY - tapCandidate.y) > 8) {
-        tapCandidate = null; // 移动超过阈值：这是滚动，不是点选
-      }
+  slider.addEventListener('pointermove', e => {
+    if (start && start.id === e.pointerId &&
+        Math.hypot(e.clientX - start.x, e.clientY - start.y) > 8) {
+      start = last = null;
     }
   });
-  function releasePointer(event) {
-    if (event.pointerId === pointer) {
-      const captured = pointer;
-      pointer = null;
-      if (slider.hasPointerCapture(captured)) slider.releasePointerCapture(captured);
-    } else if (tapCandidate && event.pointerId === tapCandidate.id) {
-      const dt = performance.now() - tapCandidate.t;
-      tapCandidate = null;
-      if (dt < 400) setSelectedBand(index); // 点选锁定
+  slider.addEventListener('pointercancel', () => { start = last = null; });
+  slider.addEventListener('pointerup', e => {
+    const p = start, t = performance.now();
+    start = null;
+    if (!p || p.id !== e.pointerId || t - p.t > 250 ||
+        Math.hypot(e.clientX - p.x, e.clientY - p.y) > 8) {
+      last = null;
+      return;
     }
-  }
-  slider.addEventListener('pointerup', releasePointer);
-  slider.addEventListener('pointercancel', event => {
-    if (event.pointerId === pointer) pointer = null;
-    tapCandidate = null;
+    if (last && last.kind === e.pointerType && t - last.t < 350 &&
+        Math.hypot(e.clientX - last.x, e.clientY - last.y) < 18) {
+      last = null;
+      reset();
+    } else {
+      last = { t, x: e.clientX, y: e.clientY, kind: e.pointerType };
+    }
   });
-  slider.addEventListener('lostpointercapture', () => { pointer = null; });
-  slider.addEventListener('dblclick', event => {
-    event.preventDefault();
-    setBand(index, 0);
+  slider.addEventListener('keydown', e => {
+    if (e.key === '0') {
+      e.preventDefault();
+      reset();
+    }
   });
-  slider.addEventListener('keydown', event => {
-    const current = customEq.gain[index];
-    let next;
-    if (event.key === 'ArrowUp' || event.key === 'ArrowRight') next = current + 1;
-    else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') next = current - 1;
-    else if (event.key === 'PageUp') next = current + 3;
-    else if (event.key === 'PageDown') next = current - 3;
-    else if (event.key === 'Home') next = -12;
-    else if (event.key === 'End') next = 12;
-    else if (event.key === '0') next = 0;
-    else return;
-    event.preventDefault();
-    setBand(index, next);
-  });
+}
 
-  freqBtn.addEventListener('click', () => {
-    setSelectedBand(selectedBand === index ? -1 : index);
-  });
+customEq.freq.forEach((_, i) => {
+  const row = element('div', undefined, 'eq-row');
+  const freqBtn = element('button');
+  const slider = element('input');
+  const output = element('span', '', 'eq-db');
+  const editor = element('div', undefined, 'eq-edit');
+  const label = element('label', '中心频率 Hz');
+  const input = element('input');
+  const minus = element('button', '−10 Hz');
+  const plus = element('button', '+10 Hz');
+  const reset = element('button', '本段归零');
 
-  band.append(freqBtn, slider, output);
-  $('bandGrid').appendChild(band);
-  sliderItems.push({ output, slider, freqBtn, bandEl: band });
-  updateSlider(index);
+  editor.id = 'eq-edit-' + i;
+  editor.hidden = true;
+  input.type = 'number';
+  input.min = '20';
+  input.max = '20000';
+  input.step = '1';
+  input.inputMode = 'numeric';
+  input.id = 'eq-freq-' + i;
+  label.htmlFor = input.id;
+  input.onchange = () => setFrequency(i, input.valueAsNumber);
+  input.onkeydown = e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      input.blur();
+    }
+  };
+  minus.onclick = () => setFrequency(i, Math.max(20, customEq.freq[i] - 10));
+  plus.onclick = () => setFrequency(i, Math.min(20000, customEq.freq[i] + 10));
+  reset.onclick = () => setBand(i, 0);
+  editor.append(label, input, minus, plus, reset);
+
+  freqBtn.setAttribute('aria-controls', editor.id);
+  freqBtn.setAttribute('aria-expanded', 'false');
+  freqBtn.onclick = () => setSelectedBand(selectedBand === i ? -1 : i);
+
+  slider.type = 'range';
+  slider.min = '-12';
+  slider.max = '12';
+  slider.step = '1';
+  slider.id = 'band-' + i;
+  const guard = bindTouchGuard(slider, i);
+  slider.oninput = () => {
+    if (guard.deferred()) return;   // 触屏手势未判定：暂存于推子本体，不写草稿
+    setBand(i, Math.round(slider.valueAsNumber));
+  };
+  bindBandReset(slider, () => setBand(i, 0));
+
+  row.append(freqBtn, slider, output, editor);
+  $('bandGrid').append(row);
+  sliderItems.push({ freqBtn, slider, output, input, editor });
+  updateFreqLabel(i);
+  updateSlider(i);
 });
 
-// 中心频率编辑（选中频段后的 inspector）
-$('freqDown').onclick = () => applyBandFreq(selectedBand, customEq.freq[selectedBand] - 10);
-$('freqUp').onclick = () => applyBandFreq(selectedBand, customEq.freq[selectedBand] + 10);
-$('freqInput').onchange = () => applyBandFreq(selectedBand, Number($('freqInput').value));
-$('freqInput').onkeydown = event => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    applyBandFreq(selectedBand, Number($('freqInput').value));
-  }
-};
-
-// 页面滚动即解除选中：避免点选锁定的滑杆挡住后续纵向滚动（EQ 与助听两处同机制）
 window.addEventListener('scroll', () => {
-  if (selectedBand >= 0) setSelectedBand(-1);
   if (haSelectedBand >= 0) setHaSelectedBand(-1);
 }, { passive: true });
 
@@ -3738,11 +3842,13 @@ presetSelect.onchange = () => {
 $('toneFreqInput').oninput = () => syncPresetSelect(readToneFreq());
 syncPresetSelect(1000);
 
-$('toneVolumeWrap').appendChild(createHSlider({
+const toneVolumeSlider = createHSlider({
   min: 0, max: 100, step: 5, value: toneVolume, ariaLabel: '测试音音量',
   format: v => v + '%',
   onChange: v => { toneVolume = v; $('toneVolumeValue').textContent = v + '%'; }
-}));
+});
+toneVolumeSlider.id = 'toneVolume';  // 接通上方 label/output 的 for="toneVolume"
+$('toneVolumeWrap').appendChild(toneVolumeSlider);
 $('tonePlay').onclick = () => {
   if (!T) { notify('离线预览：测试音需要原生壳（h3sha 桥）', true); return; }
   if (playingId === 'tone') { stopPlayback(); $('toneFeedback').textContent = '已停止。'; return; }
@@ -3847,7 +3953,6 @@ const KM_DEFAULT = {
 const keyValues = {};
 const keyBase = {};
 const dirtyKeys = new Set();
-let selectedKey = 7;
 
 KEYS.forEach(key => {
   GESTURES.forEach((gesture, i) => {
@@ -3868,53 +3973,80 @@ function updateKeyCount() {
   $('keyDirtyCount').className = 'badge' + (dirtyKeys.size ? ' warning' : '');
   updateGates();
 }
+/* ---------- 按键矩阵（UIREDESIGN）：5 手势 × 3 物理键，来源/状态分层显示 ----------
+ * keyCells: id → 视图；sourceOfKey: id → 该格当前值的来源标签；
+ * sendingKey: 正在等写应答的项（矩阵显示「等待应答」）。 */
+const keyCells = new Map();
+const sourceOfKey = new Map();
+let sendingKey = null;
+
+function keyCellState(id) {
+  const dirty = dirtyKeys.has(id);
+  if (sendingKey && sendingKey.id === id) {
+    return ['waiting', sendingKey.action === keyValues[id] ? '等待应答' : '另有新草稿'];
+  }
+  const source = sourceOfKey.get(id) || '本地参考';
+  if (source === '失败或未确认') {
+    return ['warn', dirty ? '未确认 · 待发送' : '结果未确认'];
+  }
+  if (dirty) return ['warn', '待发送'];
+  if (source === '设备已应答' || source === '设备回读') return ['ok', source];
+  return ['local', source];
+}
+
 function renderKeyRows() {
-  $('keyRows').replaceChildren();
-  const keyName = KEYS.find(key => key.id === selectedKey).name;
-  GESTURES.forEach((gesture, i) => {
-    const id = (selectedKey << 8) | (i + 1);
-    const row = element('div', undefined, 'key-row');
-    const label = element('label', gesture);
-    const state = element('small', '');
-    const select = element('select');
-    select.id = 'key-' + id;
-    label.htmlFor = select.id;
-    select.setAttribute('aria-label', keyName + ' · ' + gesture);
-    ACTIONS.forEach(action => {
-      const option = element('option', action.name);
-      option.value = String(action.cmd);
-      select.appendChild(option);
+  if (!keyCells.size) {
+    GESTURES.forEach((gesture, g) => {
+      const tr = element('tr');
+      const th = element('th', gesture);
+      th.scope = 'row';
+      if (g === 4) th.append(element('small', '编号待验证'));
+      tr.append(th);
+
+      KEYS.forEach(key => {
+        const id = (key.id << 8) | (g + 1);
+        const td = element('td');
+        const cell = element('div', undefined, 'map-field');
+        const select = element('select');
+        select.id = 'key-' + id;
+        select.setAttribute('aria-label', key.name + '，' + gesture);
+
+        const value = element('strong');
+        value.setAttribute('aria-hidden', 'true');
+        const state = element('small');
+        state.id = 'key-state-' + id;
+        select.setAttribute('aria-describedby', state.id);
+
+        ACTIONS.forEach(a => {
+          const option = element('option', a.name);
+          option.value = String(a.cmd);
+          select.append(option);
+        });
+        select.onchange = () => {
+          keyValues[id] = Number(select.value);
+          recalcDirty(id);
+          renderKeyRows();
+          updateKeyCount();
+        };
+
+        cell.append(value, state, select);
+        td.append(cell);
+        tr.append(td);
+        keyCells.set(id, { cell, select, value, state });
+      });
+      $('keyRows').append(tr);
     });
-    select.value = String(keyValues[id]);
-    function refreshRow() {
-      const dirty = dirtyKeys.has(id);
-      row.classList.toggle('dirty', dirty);
-      state.textContent = [
-        i === 4 ? '待验证' : '',
-        dirty ? '未发送' : ''
-      ].filter(Boolean).join(' · ');
-    }
-    select.onchange = () => {
-      keyValues[id] = Number(select.value);
-      recalcDirty(id);
-      refreshRow();
-      updateKeyCount();
-    };
-    label.appendChild(state);
-    row.append(label, select);
-    refreshRow();
-    $('keyRows').appendChild(row);
+  }
+
+  keyCells.forEach((view, id) => {
+    const action = ACTIONS.find(a => a.cmd === keyValues[id]) || ACTIONS[0];
+    const [kind, text] = keyCellState(id);
+    view.select.value = String(action.cmd);
+    view.value.textContent = action.name;
+    view.state.textContent = text;
+    view.cell.dataset.state = kind;
   });
 }
-all('[data-key]').forEach(button => {
-  button.onclick = () => {
-    selectedKey = Number(button.dataset.key);
-    all('[data-key]').forEach(b => {
-      b.setAttribute('aria-pressed', String(b === button));
-    });
-    renderKeyRows();
-  };
-});
 $('kmRead').onclick = () => {
   const result = rpc(H, 'getKeyRemap', []);
   if (!result.ok || !result.map || typeof result.map !== 'object') return;
@@ -3929,6 +4061,7 @@ $('kmRead').onclick = () => {
     }
     keyValues[id] = value;
     keyBase[id] = value;
+    sourceOfKey.set(Number(id), '壳侧副本');
   });
   renderKeyRows();
   updateKeyCount();
@@ -3975,7 +4108,11 @@ $('kmWrite').onclick = () => {
       return;
     }
     $('kmFeedback').textContent = '正在发送，剩余 ' + (queue.length + 1) + ' 项…';
+    sendingKey = item;
+    renderKeyRows();
     writeCommand(method, [item.id, item.action], (ok, message) => {
+      sendingKey = null;
+      sourceOfKey.set(item.id, ok ? '设备已应答' : '失败或未确认');
       if (ok) {
         accepted++;
         keyBase[item.id] = item.action;
@@ -4026,6 +4163,7 @@ function applyDeviceKeyTable(table) {
     if (!known) unknown++;
     keyValues[id] = known ? action : -1;
     keyBase[id] = keyValues[id];
+    sourceOfKey.set(id, known ? '设备回读' : '回读未知动作');
     if (known) applied++;
     dirtyKeys.delete(id);
   });
@@ -4210,6 +4348,7 @@ function parseKeyTableReadback(hex) {
       if (Object.prototype.hasOwnProperty.call(keyValues, num)) {
         keyValues[num] = Number(savedKeys[id]);
         keyBase[num] = keyValues[num];
+        sourceOfKey.set(num, '本机记录');
       }
     });
     renderKeyRows();
@@ -4734,6 +4873,12 @@ window.onH3sUsbEvent = raw => {
     }
 
     /* —— M3 恢复卡四态事件（计划 → 确认 nonce → 进度 → 结果）—— */
+    // UIREDESIGN：错误用 danger 色加文字（蓝图 USB tab 适配要点），下一操作开始时清除
+    function restoreResult(text, error) {
+      const el = $('restoreResultText');
+      el.textContent = text;
+      el.style.color = error ? 'var(--danger)' : '';
+    }
     if (event.event === 'usb_restore_plan') {
       usbFinishOperation();
       if (event.ok) {
@@ -4743,11 +4888,11 @@ window.onH3sUsbEvent = raw => {
           '扇区 ' + (event.sectors || []).length + ' 个：' + sectors + '\n' +
           '目标 SHA256：' + event.targetSha256 + '\n' +
           'nonce（单次，2 分钟内有效）：' + event.nonce;
-        $('restoreResultText').textContent = '';
+        restoreResult('');
         restoreShow('confirm', '计划已生成，待确认');
       } else {
         restoreShow('plan');
-        $('restoreResultText').textContent = '计划失败：' + (event.error || '');
+        restoreResult('计划失败：' + (event.error || ''), true);
       }
       return;
     }
@@ -4755,11 +4900,11 @@ window.onH3sUsbEvent = raw => {
     if (event.event === 'usb_restore_armed') {
       usbFinishOperation();
       if (event.ok) {
-        $('restoreResultText').textContent = '';
+        restoreResult('');
         restoreShow('run', '已 armed，可开始擦写');
       } else {
         restoreShow('plan');
-        $('restoreResultText').textContent = 'armed 失败：' + (event.error || '');
+        restoreResult('armed 失败：' + (event.error || ''), true);
       }
       return;
     }
@@ -4768,10 +4913,9 @@ window.onH3sUsbEvent = raw => {
       usbFinishOperation();
       if (event.ok) {
         restoreShow('done', '擦写完成');
-        $('restoreResultText').textContent =
-          '全片复读==目标。SHA256：' + event.sha256 + '（点「重启设备收尾」结束会话）';
+        restoreResult('全片复读==目标。SHA256：' + event.sha256 + '（点「重启设备收尾」结束会话）');
       } else {
-        $('restoreResultText').textContent = (event.error || '') + '（保持 armed）';
+        restoreResult((event.error || '') + '（保持 armed）', true);
       }
       return;
     }
@@ -4779,8 +4923,8 @@ window.onH3sUsbEvent = raw => {
     if (event.event === 'usb_restore_reboot') {
       usbFinishOperation();
       restoreShow('plan', '设备重启中，请重新扫描');
-      $('restoreResultText').textContent = event.ok
-        ? event.note : '重启失败：' + (event.error || '');
+      if (event.ok) restoreResult(event.note);
+      else restoreResult('重启失败：' + (event.error || ''), true);
       return;
     }
 
