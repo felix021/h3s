@@ -13,7 +13,8 @@ public final class QueryPolicy {
             boolean md5 = op == 212 && size == 1;
             boolean offset = op == 225 && size == 1;
             // cmdid 白名单：0x2f 电量/0x14 电源/0x10 睡眠/0x17 ANC/0x22 EQ（SIMB1E 读环 E2E 加 0x22）
-            boolean battery = op == 255 && size == 4 && data[pos+8] == (byte)0xfe && data[pos+9] == 1 && (data[pos+10] == 47 || data[pos+10] == 20 || data[pos+10] == 16 || data[pos+10] == 23 || data[pos+10] == 34);
+            // 更多功能只读（MOREFUNC）追加：0x1f 断连关机/0x19 提示音语言/0x23 LDAC/0x24 双设备/0x2e 音频模式
+        boolean battery = op == 255 && size == 4 && data[pos+8] == (byte)0xfe && data[pos+9] == 1 && (data[pos+10] == 47 || data[pos+10] == 20 || data[pos+10] == 16 || data[pos+10] == 23 || data[pos+10] == 34 || data[pos+10] == 31 || data[pos+10] == 25 || data[pos+10] == 35 || data[pos+10] == 36 || data[pos+10] == 46);
             boolean ancCycle = op == 193 && size == 5 && data[pos+8] == 0 && data[pos+9] == 0 && data[pos+10] == 4 && data[pos+11] == 0;
             boolean eligibility = op == 226 && size == 2 && data[pos+8] == 0;
             if (!info && !md5 && !offset && !battery && !eligibility && !ancCycle) return false;

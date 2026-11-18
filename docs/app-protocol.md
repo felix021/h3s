@@ -108,6 +108,11 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 
 ### 2.5 按键重映射 [静态：docs/eq-toggle.md + controlpanel]
 
+> **[2026-11-19 路 MOREFUNC 定案]**：按键重映射的真 wire 已钉死为**批量同步 opcode 0xC0/0xC1，
+> 表 C cmdid 2**（写=item`{len,cmdid=2,三元组或45B全表}`、读=C1 mask `00 00 00 04` 回 45B 表）；
+> 下述 ADV type2 写对偶与 0x2b 两条候选固件侧均无对应（实发必无回执——真机「发送未确认」的
+> 根因），保留作对照。全案见 [docs/morefunc-protocol.md](morefunc-protocol.md) §3。
+
 - App：`setKeyFunction()` 把 eventID 拆成 key+gesture → `JLDeviceImpl.setBtnClickFunction()`。
 - 两种传输实现（[未钉] H3S 实际选哪个分支）：
   1. 标准 ADV 类型 2 三字节 `[key, gesture, action]`；
@@ -206,6 +211,11 @@ FE DC BA | flags | opcode | length_BE16 | body[length] | EF
 | 提示音音量 | FF/`0x1d` | data=`value 占位`（len=2，值 3/6/8） | 帧形状已钉 [静态：docs/cmd-0x17-0x1d-layout.md 路P] |
 | R4 key-store 写/读 key 30 | FF/`0x30` | data=`1E v0..v7`（len 9，写）/ `1E`（len 1，读，同为写形态帧） | 形状已钉+App 侧已实现（KeyStoreFrame，Loopback 端到端）；**固件侧需 `--r4-keyhook` 离线候选（UNTESTED 不刷机）**，官方固件的 0x30 写路径为 no-op——见 docs/r4-command-hook.md |
 | 媒体音量 | AVRCP(经典BT) 或 BLE 音量命令 | — | [未钉]，仓库无证据 |
+
+> **[2026-11-19 路 MOREFUNC 扩表]**：控制面板其余功能已全部钉死并落地（定时关机 0x14、断连
+> 关机 0x1f、提示音语言 0x19、LDAC 0x23、双设备 0x24、设备名/批量同步 cmdid 1、恢复出厂
+> 0xC5/01、找耳机 0xC5/02、清除配对 0x03[推断]；声道平衡=无命令可发），载荷逐字节与证据等级
+> 见 [docs/morefunc-protocol.md](morefunc-protocol.md) §1-§5。
 
 只读查询（电量/ANC/设备信息）已实测，照 §2.6 抄即可。
 

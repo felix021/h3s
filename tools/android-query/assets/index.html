@@ -332,6 +332,9 @@ html:not([data-theme-choice]) #themeCycle svg[data-theme-icon='auto'] {
 .segment.three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.segment.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .segment button {
   padding-inline: 6px;
 }
@@ -349,6 +352,22 @@ main {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
+}
+/* 嵌入式结果卡（H5-READ-01 key30/31 读取结果；与过程提示区分：结果=独立卡片带状态徽标） */
+.card-embedded {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+}
+.card-embedded h3 {
+  font-size: 15px;
+  margin: 0;
+}
+.ha-read-results {
+  margin-top: 10px;
+}
+.note.read-fail {
+  color: var(--danger, #c0392b);
+  font-weight: 600;
 }
 .card-head {
   display: flex;
@@ -1084,11 +1103,13 @@ summary {
       </button>
     </div>
 
-    <div class="segment three tabs" role="tablist" aria-label="工具分类">
+    <div class="segment four tabs" role="tablist" aria-label="工具分类">
       <button id="tabBtnHs" role="tab" aria-selected="true"
               aria-controls="tabHs" tabindex="0">耳机控制</button>
       <button id="tabBtnHa" role="tab" aria-selected="false"
               aria-controls="tabHa" tabindex="-1">助听</button>
+      <button id="tabBtnMore" role="tab" aria-selected="false"
+              aria-controls="tabMore" tabindex="-1">更多功能</button>
       <button id="tabBtnUsb" role="tab" aria-selected="false"
               aria-controls="tabUsb" tabindex="-1">USB 工具</button>
     </div>
@@ -1289,13 +1310,15 @@ summary {
         <summary>通信方式与已知限制</summary>
         <label for="keyWire">按键写入方式</label>
         <select id="keyWire">
-          <option value="adv">ADV type2（原默认方式）</option>
-          <option value="custom">自定义命令 0x2b</option>
+          <option value="batch">批量同步 0xC0（固件注册表钉死的默认方式）</option>
+          <option value="adv">ADV type2（旧默认，帧形状假设）</option>
+          <option value="custom">自定义命令 0x2b（固件无此 cmdid，仅对照）</option>
         </select>
         <p class="note">
-          长按的事件编号仍是假设，页面明确标记为“待验证”。
-          “读取工作副本”只读取原生壳缓存，不代表设备实际映射。
-          两种写入方式均保留现有接口。
+          写入方式已按固件反解改为「批量同步」——固件按键注册在批量同步表
+          （cmdid 2），此前用的 ADV type2/0x2b 在固件里没有对应命令，发了也不会有回执
+          （这就是之前「发送失败/未确认」的原因）。「从设备读取」发 0xC1 读命令回 45B
+          映射表；长按的事件编号仍是假设，页面明确标记为“待验证”。
         </p>
       </details>
 
@@ -1304,6 +1327,7 @@ summary {
           发送修改
         </button>
         <button id="kmRead">读取工作副本</button>
+        <button id="kmReadDevice" data-write disabled>从设备读取</button>
       </div>
       <p id="kmFeedback" class="feedback" aria-live="polite">
         初始值来自旧页面默认配置。
@@ -1378,17 +1402,153 @@ summary {
       </ol>
     </article>
 
-    <article class="card" id="sec-more">
+  </section>
+
+  <section id="tabMore" role="tabpanel" aria-labelledby="tabBtnMore" hidden>
+    <article class="card" id="sec-mf-sleep">
       <div class="card-head">
-        <h2>更多功能</h2>
-        <span class="badge">尚未支持</span>
+        <h2>定时关机</h2>
+        <span class="badge">FF/0x14</span>
       </div>
-      <div class="placeholder-grid">
-        <div class="placeholder">查找耳机<small>协议未调研</small></div>
-        <div class="placeholder">双设备连接<small>协议未调研</small></div>
-        <div class="placeholder">佩戴检测<small>协议未调研</small></div>
-        <div class="placeholder">恢复默认设置<small>协议未调研</small></div>
+      <p class="note">
+        面板档位 5/10/30/60 分钟或不关机。固件 setter 静默无回执，发送后自动回读确认。
+      </p>
+      <div class="actions">
+        <select id="mfSleepSel" aria-label="定时关机时长">
+          <option value="5">5 分钟</option>
+          <option value="10">10 分钟</option>
+          <option value="30">30 分钟</option>
+          <option value="60">60 分钟</option>
+          <option value="65535">不关机</option>
+        </select>
+        <button id="mfSleepSend" class="primary" data-write disabled>发送</button>
       </div>
+      <p id="mfSleepFeedback" class="feedback" aria-live="polite">尚未设置。</p>
+    </article>
+
+    <article class="card" id="sec-mf-autooff">
+      <div class="card-head">
+        <h2>断连关机</h2>
+        <span class="badge">FF/0x1f</span>
+      </div>
+      <p class="note">
+        蓝牙断开后多久自动关机，档位同定时关机；固件默认 5 分钟。
+      </p>
+      <div class="actions">
+        <select id="mfAutoOffSel" aria-label="断连关机时长">
+          <option value="5">5 分钟</option>
+          <option value="10">10 分钟</option>
+          <option value="30">30 分钟</option>
+          <option value="60">60 分钟</option>
+          <option value="65535">不关机</option>
+        </select>
+        <button id="mfAutoOffSend" class="primary" data-write disabled>发送</button>
+      </div>
+      <p id="mfAutoOffFeedback" class="feedback" aria-live="polite">尚未设置。</p>
+    </article>
+
+    <article class="card" id="sec-mf-tone">
+      <div class="card-head">
+        <h2>提示音语言</h2>
+        <span class="badge">FF/0x19</span>
+      </div>
+      <div id="mfToneSeg" class="segment" role="group" aria-label="提示音语言">
+        <button data-write data-tone="0" aria-pressed="false" disabled>英文（JL00）</button>
+        <button data-write data-tone="1" aria-pressed="false" disabled>中文（JL01）</button>
+      </div>
+      <p id="mfToneFeedback" class="feedback" aria-live="polite">尚未设置。</p>
+    </article>
+
+    <article class="card" id="sec-mf-codec">
+      <div class="card-head">
+        <h2>LDAC 与双设备连接</h2>
+        <span class="badge warning">切换会重启耳机</span>
+      </div>
+      <label class="switch-row" for="mfLdacSw">
+        <input id="mfLdacSw" class="toggle" type="checkbox" role="switch">
+        <span>LDAC 高音质编码</span>
+      </label>
+      <p class="note">打开会重启且关闭双设备连接和空间音效（面板原文，固件互斥链已核实）。</p>
+      <label class="switch-row" for="mfDualSw">
+        <input id="mfDualSw" class="toggle" type="checkbox" role="switch">
+        <span>双设备连接（一拖二）</span>
+      </label>
+      <p class="note">
+        打开会重启且关闭 LDAC。连接数上限为固件编译死的 <b>2 台</b>（0x1281fa 2×40B 链路表，
+        详见协议调研文档），不可经命令突破。
+      </p>
+      <div class="actions">
+        <button id="mfCodecSend" class="primary" data-write disabled>应用当前开关</button>
+      </div>
+      <p id="mfCodecFeedback" class="feedback" aria-live="polite">尚未设置。</p>
+    </article>
+
+    <article class="card" id="sec-mf-name">
+      <div class="card-head">
+        <h2>给设备取名</h2>
+        <span class="badge">批量同步 cmdid 1</span>
+      </div>
+      <p class="note">最长 20 字节（面板 maxLength；固件上限 32）。改名通常需重连后广播生效。</p>
+      <div class="actions">
+        <input id="mfNameInput" type="text" maxlength="20" placeholder="如 QCY H3S"
+               aria-label="设备名">
+        <button id="mfNameSend" class="primary" data-write disabled>发送</button>
+      </div>
+      <p id="mfNameFeedback" class="feedback" aria-live="polite">尚未设置。</p>
+    </article>
+
+    <article class="card" id="sec-mf-find">
+      <div class="card-head">
+        <h2>找耳机</h2>
+        <span class="badge">0xC5/02</span>
+      </div>
+      <p class="note">
+        让耳机响两声提示音（需已连接）。官方 App「寻找耳机」的地图定位在手机侧，协议无对应命令。
+      </p>
+      <div class="actions">
+        <button id="mfFindBtn" data-write disabled>响铃找耳机</button>
+      </div>
+      <p id="mfFindFeedback" class="feedback" aria-live="polite">尚未使用。</p>
+    </article>
+
+    <article class="card" id="sec-mf-research">
+      <div class="card-head">
+        <h2>声道平衡与佩戴检测</h2>
+        <span class="badge">调研结论：无命令可发</span>
+      </div>
+      <p class="note">
+        <b>声道平衡</b>：官方控制面板里该项是占位条目（type=8，无 cmdid/取值绑定，说明文案还是
+        从降噪模式复制的）；固件命令注册表 18 个 cmdid 里也没有左右平衡命令，最接近的
+        config key 6 是 3×float32、语义未钉。结论：<b>现固件无「声道平衡」可下发命令</b>——
+        不猜字节、不放假滑杆；要支持需自定义固件命令（空 key 30 已有方案，见
+        docs/morefunc-protocol.md §5）。
+      </p>
+      <p class="note">
+        <b>佩戴检测</b>：H3S 控制面板 JSON 无此条目，注册表亦无对应 cmdid——本机型不支持。
+        <b>读取已连接设备列表</b>：注册表全部 getter 无此命令（JL OTA SDK 命令表亦无）；
+        耳机不会上报它自己连着谁，手机侧系统蓝牙里可见。
+      </p>
+    </article>
+
+    <article class="card" id="sec-mf-danger">
+      <div class="card-head">
+        <h2>危险区</h2>
+        <span class="badge warning">不可撤销</span>
+      </div>
+      <p class="note">
+        <b>恢复默认设置</b>（0xC5/01）：降噪/EQ/按键/音量/定时等全部设置恢复出厂。
+      </p>
+      <div class="actions">
+        <button id="mfResetBtn" class="danger" data-write disabled>恢复默认设置</button>
+      </div>
+      <p class="note">
+        <b>清除配对记录</b>（FF/0x03，<span class="badge warning">实验性</span>——固件侧语义为
+        推断：清除后耳机连接会断开，需重新配对）。
+      </p>
+      <div class="actions">
+        <button id="mfClearPairBtn" class="danger" data-write disabled>清除配对记录</button>
+      </div>
+      <p id="mfDangerFeedback" class="feedback" aria-live="polite">尚未使用。</p>
     </article>
   </section>
 
@@ -1423,6 +1583,16 @@ summary {
         <button id="haInvalidateEq" class="danger" disabled>软回退 key31（坏魔数，§4d）</button>
       </div>
       <p id="haFeedback" class="feedback" aria-live="polite">本地草稿，尚未发送。</p>
+      <div id="haReadResult" class="ha-read-results" hidden>
+        <div class="card card-embedded" id="haReadCard30">
+          <div class="card-head"><h3>key30（MPO，8B）</h3><span id="haReadState30" class="badge">未读取</span></div>
+          <p id="haReadText30" class="note">尚未读取。</p>
+        </div>
+        <div class="card card-embedded" id="haReadCard31">
+          <div class="card-head"><h3>key31（十段 EQ，88B）</h3><span id="haReadState31" class="badge">未读取</span></div>
+          <p id="haReadText31" class="note">尚未读取。</p>
+        </div>
+      </div>
     </article>
 
     <article class="card" id="sec-ha-tone">
@@ -1725,10 +1895,16 @@ const TOC = {
   hs: [
     ['sec-connect', '连接'], ['sec-anc', '降噪'], ['sec-eq', '均衡器'],
     ['sec-prompt', '提示音'], ['sec-keys', '按键'], ['sec-audio', '音频模式'],
-    ['sec-upgrade', '固件升级'], ['sec-more', '更多']
+    ['sec-upgrade', '固件升级']
   ],
   ha: [
     ['sec-ha-bands', '每频段调节'], ['sec-ha-tone', '测试音']
+  ],
+  more: [
+    ['sec-mf-sleep', '定时关机'], ['sec-mf-autooff', '断连关机'],
+    ['sec-mf-tone', '提示音语言'], ['sec-mf-codec', 'LDAC/双设备'],
+    ['sec-mf-name', '设备名'], ['sec-mf-find', '找耳机'],
+    ['sec-mf-research', '声道平衡·调研'], ['sec-mf-danger', '危险区']
   ],
   usb: [
     ['sec-usb-dev', '设备'], ['sec-usb-rom', 'ROM 模式'],
@@ -1795,12 +1971,13 @@ function syncHeaderOffset() {
 }
 window.addEventListener('resize', syncHeaderOffset);
 if (window.ResizeObserver) new ResizeObserver(syncHeaderOffset).observe(document.querySelector('header'));
-const TAB_ORDER = ['hs', 'ha', 'usb'];
+const TAB_ORDER = ['hs', 'ha', 'more', 'usb'];
 function selectTab(name, focus) {
   $('tabHs').hidden = name !== 'hs';
   $('tabHa').hidden = name !== 'ha';
+  $('tabMore').hidden = name !== 'more';
   $('tabUsb').hidden = name !== 'usb';
-  [['tabBtnHs', 'hs'], ['tabBtnHa', 'ha'], ['tabBtnUsb', 'usb']].forEach(([id, n]) => {
+  [['tabBtnHs', 'hs'], ['tabBtnHa', 'ha'], ['tabBtnMore', 'more'], ['tabBtnUsb', 'usb']].forEach(([id, n]) => {
     const button = $(id);
     const selected = n === name;
     button.setAttribute('aria-selected', String(selected));
@@ -1817,6 +1994,7 @@ function selectTab(name, focus) {
 }
 $('tabBtnHs').onclick = () => selectTab('hs', false);
 $('tabBtnHa').onclick = () => selectTab('ha', false);
+$('tabBtnMore').onclick = () => selectTab('more', false);
 $('tabBtnUsb').onclick = () => selectTab('usb', false);
 renderToc('hs');
 syncHeaderOffset();
@@ -1825,7 +2003,8 @@ all('[role="tab"]').forEach(button => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
     const name = button.id === 'tabBtnHs' ? 'hs'
-      : button.id === 'tabBtnHa' ? 'ha' : 'usb';
+      : button.id === 'tabBtnHa' ? 'ha'
+      : button.id === 'tabBtnMore' ? 'more' : 'usb';
     const idx = TAB_ORDER.indexOf(name);
     const next = event.key === 'Home' ? 'hs'
       : event.key === 'End' ? 'usb'
@@ -1927,7 +2106,9 @@ function completeCommand(seq, success, message, event) {
       message = '回执不符：期望 ' + item.expectAck + '，实际 ' + (payload || '（空）');
     }
   }
-  if (item.callback) item.callback(success, message);
+  // 第 3 参透传原始事件（H5-READ-01）：读取类调用方需要区分「超时没回执」和
+  // 「回了但形状不符」——event 为 null 即超时/发送失败，有 event 则 payloadHex 可解析。
+  if (item.callback) item.callback(success, message, event);
 }
 function failPending(message) {
   Array.from(pending.keys()).forEach(seq => {
@@ -2023,6 +2204,11 @@ function clearDeviceDisplays() {
   $('ancFeedback').textContent = '连接已断开，当前设备状态未知。';
   $('volFeedback').textContent = '连接已断开，当前设备状态未知。';
   $('modeFeedback').textContent = '连接已断开，当前设备状态未知。';
+  ['mfSleepFeedback', 'mfAutoOffFeedback', 'mfToneFeedback',
+    'mfCodecFeedback', 'mfFindFeedback', 'mfDangerFeedback'].forEach(id => {
+    $(id).textContent = '连接已断开，设备状态未知。';
+    $(id).className = 'feedback';
+  });
 }
 function markSegment(id, predicate) {
   Array.from($(id).children).forEach(button => {
@@ -2063,6 +2249,8 @@ function parseDeviceMessage(payloadHex) {
   const hex = String(payloadHex || '').replace(/\s+/g, '').toLowerCase();
   if (!/^(?:[0-9a-f]{2})+$/.test(hex)) return;
   if (parseKeyStoreReadback(hex)) return;
+  if (parseMoreFuncReadback(hex)) return;
+  if (parseKeyTableReadback(hex)) return;
 
   const batteryAt = hex.startsWith('2f03') ? 0
     : hex.slice(4, 8) === '2f03' ? 4 : -1;
@@ -2131,7 +2319,7 @@ window.onH3sEvent = raw => {
       mtu = event.mtu;
       connectionNote = '';
       renderConnection();
-      if (firstReady) [47, 23, 34].forEach(id => issue('readStatus', [id]));
+      if (firstReady) [47, 23, 34, 20, 31, 25, 35, 36, 46].forEach(id => issue('readStatus', [id]));
       return;
     }
 
@@ -3039,9 +3227,11 @@ function parseKeyStoreReadback(hex) {
     haLastRead.key30 = value;
     $('haInvalidateMpo').disabled = false;
     const mpo = haDecodeMpoValue(value);
-    $('haFeedback').textContent = 'key30 读回原始值 ' + value
-      + (mpo != null ? '（协议值：MPO ' + mpo + ' dB）' : '（非协议值：历史/测试字节，不能当 MPO 解读）')
-      + '。软回退按钮已按此原值待命（§4d）。';
+    haReadCardDone('key30', true,
+      '原始值 ' + value
+      + (mpo != null ? '<br>协议解码：MPO ' + mpo + ' dB（软回退按钮已按此原值待命）'
+                     : '<br>非协议值：历史/测试字节，不能当 MPO 解读（软回退按钮已按原值待命）'));
+    $('haFeedback').textContent = 'key30 读回成功（见下方结果卡）。';
     return true;
   }
   if (hex.startsWith('3058') && hex.length === 180) {
@@ -3049,17 +3239,65 @@ function parseKeyStoreReadback(hex) {
     haLastRead.key31 = value;
     $('haInvalidateEq').disabled = false;
     const segs = haDecodeEqValue(value);
-    $('haFeedback').textContent = 'key31 读回原始值 ' + value
-      + (segs ? '（协议值：十段 ' + segs.map(s => s.f + 'Hz' + (s.g >= 0 ? '+' : '') + s.g.toFixed(2)).join(', ') + 'dB）'
-              : '（非协议值：不能当 EQ 解读）')
-      + '。软回退按钮已按此原值待命（§4d）。';
+    haReadCardDone('key31', true,
+      '原始值 ' + value.slice(0, 48) + '…（共 88B，完整值见日志）'
+      + (segs ? '<br>协议解码：十段 ' + segs.map(s => s.f + 'Hz' + (s.g >= 0 ? '+' : '') + s.g.toFixed(1)).join(', ') + 'dB'
+              : '<br>非协议值：不能当 EQ 解读'));
+    $('haFeedback').textContent = 'key31 读回成功（见下方结果卡）。';
     return true;
   }
   return false;
 }
+/* key30/key31 读取结果卡（H5-READ-01）：进行中=灰提示，结果=独立卡片，失败给一句人话原因 */
+function haReadCardPending(key, hint) {
+  $('haReadResult').hidden = false;
+  $('haReadState' + key.slice(-2)).textContent = '读取中';
+  $('haReadState' + key.slice(-2)).className = 'badge warning';
+  $('haReadText' + key.slice(-2)).textContent = hint || '已发送读取命令，等待设备回执（最长 15 秒）…';
+}
+function haReadCardDone(key, ok, html) {
+  $('haReadResult').hidden = false;
+  const state = $('haReadState' + key.slice(-2));
+  state.textContent = ok ? '成功' : '失败';
+  state.className = 'badge ' + (ok ? 'good' : 'warning');
+  const text = $('haReadText' + key.slice(-2));
+  text.className = 'note';
+  if (ok) text.innerHTML = html;
+  else { text.textContent = html; text.classList.add('read-fail'); }
+}
+function haReadOneKey(key, method, done) {
+  haReadCardPending(key);
+  issue(method, [], (ok, message, event) => {
+    if (ok) {
+      // 成功路径：parseKeyStoreReadback 已更新结果卡；形状外的成功回执也在此明说
+      if (!hexLooksLikeKeyStoreRead(event, key)) {
+        haReadCardDone(key, false, '收到回执但形状不符：' + ((event && event.payloadHex) || '（空载荷）')
+          + '——期望 key30 为 30 08+8B / key31 为 30 58+88B。原始事件见日志。');
+      }
+    } else if (event && event.event === 'response') {
+      // 有回执但外层失败/形状不符：不是超时，明说
+      haReadCardDone(key, false, '收到回执但形状不符：' + ((event && event.payloadHex) || '（空载荷）')
+        + '——期望 key30 为 30 08+8B / key31 为 30 58+88B。可能：key 从未写入（HAL4/5 候选固件新 key）'
+        + '或当前固件无该读命令。原始事件见日志。');
+    } else if (String(message).includes('未收到') || String(message).includes('暂未')) {
+      haReadCardDone(key, false, '读取失败：15 秒内未收到设备应答。'
+        + '常见原因：① key 从未写入（固件无记录时静默不回）② 当前固件没有该读命令'
+        + '（官方固件 0x30 写路径为空）③ 蓝牙链路断开。收发明细见右上角日志。');
+    } else {
+      haReadCardDone(key, false, '读取失败：' + message);
+    }
+    done && done();
+  });
+}
+/** 成功回执是否像该 key 的读回形状（key30=30 08+8B / key31=30 58+88B）。 */
+function hexLooksLikeKeyStoreRead(event, key) {
+  const hex = String((event && event.payloadHex) || '').toLowerCase();
+  return key === 'key30' ? /^3008[0-9a-f]{16}$/.test(hex) : /^3058[0-9a-f]{176}$/.test(hex);
+}
 $('haReadKeys').onclick = () => {
-  $('haFeedback').textContent = '读取 key30（期望回执 30 08+8B），随后 key31（期望 30 58+88B）…';
-  issue('getHearingCfg', [], () => issue('getHearingEq', []));
+  $('haFeedback').textContent = '已发起读取：key30 → key31（结果见下方两张结果卡，提示与结果分开显示）。';
+  // 串行链：key30 无论成败都接着读 key31（此前回调吞掉失败导致 key31 从不发、界面无结果——H5-READ-01）
+  haReadOneKey('key30', 'getHearingCfg', () => haReadOneKey('key31', 'getHearingEq', () => {}));
 };
 function haInvalidateKey(key) {
   const value = haLastRead[key];
@@ -3597,8 +3835,9 @@ $('kmWrite').onclick = () => {
   }
 
   keyBusy = true;
-  const method = $('keyWire').value === 'custom'
-    ? 'setKeyRemapCustom' : 'setKeyRemap';
+  const wire = $('keyWire').value;
+  const method = wire === 'custom' ? 'setKeyRemapCustom'
+    : wire === 'adv' ? 'setKeyRemapAdv' : 'setKeyRemap';
   let accepted = 0;
   let failed = 0;
   updateGates();
@@ -3607,9 +3846,11 @@ $('kmWrite').onclick = () => {
     keyBusy = false;
     renderKeyRows();
     updateKeyCount();
+    mfStoreSet('keyWire', wire);
     $('kmFeedback').textContent =
       accepted + ' 项收到成功应答，' + failed + ' 项失败或未确认；' +
-      dirtyKeys.size + ' 项本地修改仍待处理。';
+      dirtyKeys.size + ' 项本地修改仍待处理。'
+      + (wire === 'custom' ? '（注意：0x2b 在固件注册表无对应，发出去也不会有回执——请用默认批量同步方式。）' : '');
   }
   function next() {
     if (!queue.length) {
@@ -3626,6 +3867,7 @@ $('kmWrite').onclick = () => {
       if (ok) {
         accepted++;
         keyBase[item.id] = item.action;
+        mfStoreSet('keyValues', keyValues);
       } else {
         failed++;
         log('按键映射未确认', message);
@@ -3642,7 +3884,226 @@ $('kmWrite').onclick = () => {
   }
   next();
 };
+/* 从设备读取映射全表（0xC1 批量同步读，MOREFUNC）：回 45B=15×{key,gesture,action}，
+ * 在 parseDeviceMessage 里解析后经 applyDeviceKeyTable 灌进网格（设备真值优先）。 */
+$('kmReadDevice').onclick = () => {
+  if (keyBusy) return;
+  $('kmFeedback').textContent = '已发送 0xC1 读命令，等待 45B 映射表回包（最长 15 秒）…';
+  issue('readKeyRemapTable', [], (ok, message, event) => {
+    if (!ok) {
+      $('kmFeedback').textContent = '设备读取未确认（' + message + '）——回包形状待真机核对，'
+        + '可先用「读取工作副本」。';
+    } else {
+      const hex = String((event && event.payloadHex) || '');
+      if (!/2e02[0-9a-f]{90}/.test(hex.toLowerCase())) {
+        $('kmFeedback').textContent = '已收到回执但未识别出 45B 映射表（载荷 ' + hex.slice(0, 32)
+          + '…，完整见日志）——回包形状待真机核对。';
+      }
+      // 识别成功时 applyDeviceKeyTable 已更新反馈行
+    }
+  });
+};
+function applyDeviceKeyTable(table) {
+  // table: 15×[key,gesture,action]；只认面板三键，长按/未知动作按原值显示为「未知」
+  let applied = 0;
+  let unknown = 0;
+  table.forEach(([key, gesture, action]) => {
+    const id = (key << 8) | gesture;
+    if (!Object.prototype.hasOwnProperty.call(keyValues, id)) { unknown++; return; }
+    const known = ACTIONS.some(a => a.cmd === action);
+    if (!known) unknown++;
+    keyValues[id] = known ? action : -1;
+    keyBase[id] = keyValues[id];
+    if (known) applied++;
+    dirtyKeys.delete(id);
+  });
+  renderKeyRows();
+  updateKeyCount();
+  mfStoreSet('keyValues', keyValues);
+  $('kmFeedback').textContent = '已从设备读回映射表：' + applied + ' 项可用' +
+    (unknown ? '，' + unknown + ' 项超出面板域（显示为未知，固件可能含长按/保留动作）' : '') +
+    '。';
+}
 renderKeyRows();
+
+/* ---------- 更多功能 tab（MOREFUNC：定时/断连关机、提示音语言、LDAC/双设备、设备名、找耳机、危险区） ----------
+ * 这些 FF setter 固件侧静默无回执（docs/morefunc-protocol.md §2），发送后一律回读确认；
+ * 回包/主动通知由 parseMoreFuncReadback 解析更新 UI。全部选择 localStorage 记忆（h3s.morefunc.*）。 */
+const MF_STORE_PREFIX = 'h3s.morefunc.';
+function mfStoreSet(key, value) {
+  try { localStorage.setItem(MF_STORE_PREFIX + key, JSON.stringify(value)); } catch (e) { /* 壳未开放存储时静默 */ }
+}
+function mfStoreGet(key, fallback) {
+  try {
+    const raw = localStorage.getItem(MF_STORE_PREFIX + key);
+    return raw == null ? fallback : JSON.parse(raw);
+  } catch (e) { return fallback; }
+}
+const MF_MINUTES_LABEL = m => (m === 0xffff ? '不关机' : m + ' 分钟');
+function mfFeedback(id, text, ok) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = 'feedback' + (ok === false ? ' note read-fail' : ok === true ? '' : '');
+}
+/** 静默 setter 通用流程：发送（无回执属预期）→ 回读该 cmdid → 按 parseMoreFuncReadback 更新。 */
+function mfWriteAndReadback(method, args, cmdId, feedbackId, pendingText) {
+  mfFeedback(feedbackId, pendingText || '已发送，设备此命令无回执，自动回读确认…');
+  writeCommand(method, args, () => {
+    // 无论写命令本身超时与否（静默 setter 必然「响应超时」），都回读设备真值收口
+    if (connected) issue('readStatus', [cmdId]);
+  });
+}
+$('mfSleepSend').onclick = () => {
+  const minutes = Number($('mfSleepSel').value);
+  mfStoreSet('sleep', minutes);
+  mfWriteAndReadback('setSleepTimer', [minutes], 0x14, 'mfSleepFeedback',
+    '已发送定时关机 ' + MF_MINUTES_LABEL(minutes) + '，回读确认中…');
+};
+$('mfAutoOffSend').onclick = () => {
+  const minutes = Number($('mfAutoOffSel').value);
+  mfStoreSet('autooff', minutes);
+  mfWriteAndReadback('setAutoOff', [minutes], 0x1f, 'mfAutoOffFeedback',
+    '已发送断连关机 ' + MF_MINUTES_LABEL(minutes) + '，回读确认中…');
+};
+all('#mfToneSeg [data-tone]').forEach(button => {
+  button.onclick = () => {
+    const chinese = Number(button.dataset.tone) === 1;
+    mfStoreSet('tone', chinese);
+    writeCommand('setToneLanguage', [chinese], () => {
+      if (connected) issue('readStatus', [0x19]);
+    });
+    mfFeedback('mfToneFeedback', '已发送提示音语言（' + (chinese ? '中文 JL01' : '英文 JL00') + '），回读确认中…');
+  };
+});
+$('mfCodecSend').onclick = () => {
+  const ldac = $('mfLdacSw').checked;
+  const dual = $('mfDualSw').checked;
+  if (ldac && dual) {
+    mfFeedback('mfCodecFeedback',
+      'LDAC 与双设备互斥（固件钉死）：请只开其中一个，发送已阻止。', false);
+    return;
+  }
+  mfStoreSet('ldac', ldac);
+  mfStoreSet('dual', dual);
+  mfFeedback('mfCodecFeedback', '已发送 LDAC=' + (ldac ? '开' : '关') + '、双设备=' + (dual ? '开' : '关')
+    + '（切换会重启耳机），回读确认中…');
+  writeCommand('setLdac', [ldac], () => {
+    if (!connected) return;
+    issue('readStatus', [0x23]);
+  });
+  // 双设备命令排在 LDAC 之后（串行队列），固件互斥链会自动纠正另一项
+  const dualSend = () => writeCommand('setDualDevice', [dual], () => {
+    if (connected) issue('readStatus', [0x24]);
+  });
+  setTimeout(dualSend, 600);
+};
+$('mfNameSend').onclick = () => {
+  const name = $('mfNameInput').value.trim();
+  if (!name) {
+    mfFeedback('mfNameFeedback', '名字为空，未发送。', false);
+    return;
+  }
+  mfStoreSet('name', name);
+  mfFeedback('mfNameFeedback', '已发送设备名「' + name + '」（此命令走批量同步通道，通常需重连后生效）…');
+  writeCommand('setDeviceName', [name]);
+};
+$('mfFindBtn').onclick = () => {
+  mfFeedback('mfFindFeedback', '已发送响铃命令，耳机应响两声（需已连接）…');
+  writeCommand('findBuds', []);
+};
+$('mfResetBtn').onclick = () => {
+  if (!window.confirm('恢复默认设置：降噪/EQ/按键/音量/定时等全部设置会恢复出厂，'
+    + '不可撤销。确认继续？')) return;
+  mfFeedback('mfDangerFeedback', '已发送恢复出厂命令（0xC5/01）…');
+  writeCommand('restoreDefaults', []);
+};
+$('mfClearPairBtn').onclick = () => {
+  if (!window.confirm('清除配对记录（实验性，固件侧语义为推断）：清除后耳机连接会断开，'
+    + '需重新配对。确认继续？')) return;
+  mfFeedback('mfDangerFeedback', '已发送清除配对命令（实验性 FF/0x03）…');
+  writeCommand('clearPairing', []);
+};
+/** FF 只读回包与 0x80 主动通知的解析（docs/morefunc-protocol.md §2 载荷表）。 */
+function parseMoreFuncReadback(hex) {
+  if (hex.startsWith('1408') && hex.length === 20) {
+    // 主动通知形状（setter 静默后固件广播新值）：8B 里前 2B=分钟 LE16
+    const m = parseInt(hex.slice(4, 8), 16);
+    mfFeedback('mfSleepFeedback', '设备通知：定时关机已设为 ' + MF_MINUTES_LABEL(m) + '。', true);
+    return true;
+  }
+  if (hex.startsWith('1404') && hex.length === 12) {
+    const set = parseInt(hex.slice(4, 8), 16);
+    const left = parseInt(hex.slice(8, 12), 16);
+    mfFeedback('mfSleepFeedback', '设备确认：定时关机 ' + MF_MINUTES_LABEL(set)
+      + (left !== 0xffff && left !== 0 ? '，剩余约 ' + left + ' 分钟' : '') + '。', true);
+    return true;
+  }
+  if (hex.startsWith('1f02') && hex.length === 8) {
+    const m = parseInt(hex.slice(4, 8), 16);
+    mfFeedback('mfAutoOffFeedback', '设备确认：断连关机 ' + MF_MINUTES_LABEL(m) + '。', true);
+    return true;
+  }
+  if (hex.startsWith('1904') && hex.length === 12) {
+    const zh = hex.slice(4) === '4a4c3031';
+    markSegment('mfToneSeg', b => Number(b.dataset.tone) === (zh ? 1 : 0));
+    mfFeedback('mfToneFeedback', '设备确认：提示音语言 ' + (zh ? '中文（JL01）' : '英文（JL00）') + '。', true);
+    return true;
+  }
+  if (hex.startsWith('2301') && hex.length === 6) {
+    mfFeedback('mfCodecFeedback', '设备确认：LDAC ' + (parseInt(hex.slice(4, 6), 16) ? '开' : '关') + '。', true);
+    return true;
+  }
+  if (hex.startsWith('2401') && hex.length === 6) {
+    mfFeedback('mfCodecFeedback', '设备确认：双设备连接 ' + (parseInt(hex.slice(4, 6), 16) ? '开' : '关') + '。', true);
+    return true;
+  }
+  if (hex.startsWith('2e01') && hex.length === 6) {
+    const names = { 1: '音乐', 3: '游戏（低延迟）', 4: '电影' };
+    const mode = parseInt(hex.slice(4, 6), 16);
+    markSegment('modeSeg', b => Number(b.dataset.mode) === mode);
+    $('modeFeedback').textContent = '设备回报：' + (names[mode] || '未知模式 ' + mode) + '。';
+    return true;
+  }
+  return false;
+}
+/** 批量同步 C1 读回的按键映射表（item {len=46, cmdid=02, 45B}；前缀宽容，形状待真机核对）。 */
+function parseKeyTableReadback(hex) {
+  const m = hex.match(/2e02([0-9a-f]{90})/);
+  if (!m) return false;
+  const bytes = [];
+  for (let i = 0; i < 90; i += 2) bytes.push(parseInt(m[1].slice(i, i + 2), 16));
+  const table = [];
+  for (let i = 0; i < 15; i++) table.push([bytes[i * 3], bytes[i * 3 + 1], bytes[i * 3 + 2]]);
+  applyDeviceKeyTable(table);
+  return true;
+}
+/* 本地记忆恢复（不等于设备状态；连接后回读/从设备读取可对齐真值） */
+(function mfRestoreLocal() {
+  const sleep = mfStoreGet('sleep', null);
+  if (sleep != null) $('mfSleepSel').value = String(sleep);
+  const autooff = mfStoreGet('autooff', null);
+  if (autooff != null) $('mfAutoOffSel').value = String(autooff);
+  const tone = mfStoreGet('tone', null);
+  if (tone != null) markSegment('mfToneSeg', b => Number(b.dataset.tone) === (tone ? 1 : 0));
+  $('mfLdacSw').checked = mfStoreGet('ldac', false);
+  $('mfDualSw').checked = mfStoreGet('dual', false);
+  const name = mfStoreGet('name', '');
+  if (name) $('mfNameInput').value = name;
+  const wire = mfStoreGet('keyWire', 'batch');
+  if (['batch', 'adv', 'custom'].includes(wire)) $('keyWire').value = wire;
+  const savedKeys = mfStoreGet('keyValues', null);
+  if (savedKeys && typeof savedKeys === 'object') {
+    Object.keys(savedKeys).forEach(id => {
+      const num = Number(id);
+      if (Object.prototype.hasOwnProperty.call(keyValues, num)) {
+        keyValues[num] = Number(savedKeys[id]);
+        keyBase[num] = keyValues[num];
+      }
+    });
+    renderKeyRows();
+    updateKeyCount();
+  }
+})();
 
 /* ---------- 固件升级（h3sota 桥：文件→候选→准备→确认→进度） ---------- */
 const OTA = window.h3sota || null;

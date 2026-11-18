@@ -10,6 +10,14 @@ package cn.felix021.h3squery;
  *
  *   候选 B「自定义命令 0x2b」：opcode 0xFF cmdid 0x2b，data = [key,gesture,action]（反编译
  *     证据只到「gesture/action 组合」，字节序按 eventID 拆解结果直存；docs/eq-toggle.md）。
+ *     注意：固件注册表两表全 cmdid 里**没有 0x2b**（docs/r4-command-hook.md §1.1）——0x2b
+ *     实发必无回执，保留仅作对照，真机发送用默认 wire（批量同步）。
+ *
+ *   **默认 wire（2026-11-19 路 MOREFUNC 钉死）「批量同步 opcode 0xC0/0xC1」**：固件按键重映射
+ *     四件套在批量同步表（表 C）首项 cmdid=2（0x0600fae0 分发器 case 0 写/case 1 读，
+ *     docs/morefunc-protocol.md §3）：写=item{len,cmdid=2,data}，data=3B 三元组（匹配改写
+ *     单条）或 45B 全表；读=opcode 0xC1 + 4B 大端 mask（bit2=1<<2）回 45B 全表。既有
+ *     ADV type2/0x2b 两条候选保留作对照，默认切到批量同步。
  *
  * 字段域（两端证据互证）：
  *   - key = 逻辑键 3=音量- / 5=音量+ / 7=多功能（App eventID 布局 0x{逻辑键}0{gesture+1}：
@@ -32,6 +40,11 @@ public final class KeyRemapFrame {
     public static final int ADV_WRITE_OPCODE = 0xc2;
     /** ADV 属性 type2（按键重映射）的 4B 大端 mask：1<<2，与 C1 读的 mask 族同构（type10=1<<10）。 */
     public static final int ADV_TYPE2_MASK = 0x00000004;
+    /** 批量同步表 C 里按键重映射的 cmdid（docs/morefunc-protocol.md §3；写 0x06025564/读 0x060254f2）。 */
+    public static final int BATCH_CMDID = 0x02;
+    /** 映射表长度：15 项 × 3B（RAM 表 QCY+3404=0x12730c，config key 48 持久化）。 */
+    public static final int TABLE_LEN = 45;
+    public static final int TABLE_ENTRIES = 15;
     /** H3S 三键布局的逻辑键（音量-/音量+/多功能），面板 eventID 与固件 BW 掩码互证。 */
     public static final int[] KEYS = {3, 5, 7};
     /** gesture 合法域：1..4=单击~四击（面板钉死）；5=长按 [假设]（key 48 表 3 键×5 手势顺延）。 */
@@ -109,7 +122,42 @@ public final class KeyRemapFrame {
         return new byte[]{(byte) key, (byte) gesture, (byte) action};
     }
 
-    // ---------- 候选 A：标准 ADV 类型 2（默认） ----------
+    // ---------- 默认 wire：批量同步（opcode 0xC0 写 / 0xC1 读，表 C cmdid 2） ----------
+
+    /**
+     * 默认 wire 写帧（单三元组匹配改写）：FE DC BA | C0 | C0 | len | SN | 04 02 key gesture action | EF。
+     * item={len=4, cmdid=2, 3B 三元组}（固件写核心 0x0602550e 按 {key,gesture} 匹配改 action）。
+     */
+    public static byte[] buildBatchSyncCommand(int sn, int key, int gesture, int action) {
+        byte[] item = MoreFuncFrame.buildBatchItem(BATCH_CMDID, triple(key, gesture, action));
+        return MoreFuncFrame.buildRawFrame(EqFrame.FLAGS_CMD, MoreFuncFrame.OPCODE_BATCH_WRITE, sn, item);
+    }
+
+    /** 默认 wire 写帧（45B 全表整体替换，len==45 走 memcpy 全表路径）。表=tight 15×3B。 */
+    public static byte[] buildBatchSyncTableCommand(int sn, byte[] table) {
+        check(table != null && table.length == TABLE_LEN, "映射表长度应为 45B（15×3B）: " + (table == null ? 0 : table.length));
+        byte[] item = MoreFuncFrame.buildBatchItem(BATCH_CMDID, table);
+        return MoreFuncFrame.buildRawFrame(EqFrame.FLAGS_CMD, MoreFuncFrame.OPCODE_BATCH_WRITE, sn, item);
+    }
+
+    /** 默认 wire 读帧：FE DC BA | C0 | C1 | 00 05 | SN | 00 00 00 04 | EF（mask bit2=表 C cmdid 2）。 */
+    public static byte[] buildBatchReadCommand(int sn) {
+        return MoreFuncFrame.buildBatchReadCommand(sn, ADV_TYPE2_MASK);
+    }
+
+    /** C1 读回执（MoreFuncFrame.parseBatchReadPayload 提出的 value）→ 15 个三元组。
+     *  回读解析对字段域宽容（设备表可能含面板外动作 127/保留 8/10 或逻辑键 9——
+     *  docs/key-action-map.md），只做长度校验；合法性由调用方按 needsValidate 区分展示。 */
+    public static Triple[] parseBatchTable(byte[] value) {
+        check(value != null && value.length == TABLE_LEN, "映射表回读长度应为 45B: " + (value == null ? 0 : value.length));
+        Triple[] out = new Triple[TABLE_ENTRIES];
+        for (int i = 0; i < TABLE_ENTRIES; i++) {
+            out[i] = new Triple(value[i * 3] & 0xff, value[i * 3 + 1] & 0xff, value[i * 3 + 2] & 0xff);
+        }
+        return out;
+    }
+
+    // ---------- 候选 A：标准 ADV 类型 2 ----------
 
     /** 候选 A 的 data（SN 后的全部 body）：4B 大端 mask + 3B 三元组，共 7B。 */
     public static byte[] buildAdvType2Data(int key, int gesture, int action) {

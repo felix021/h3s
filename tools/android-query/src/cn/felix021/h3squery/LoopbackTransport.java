@@ -36,6 +36,14 @@ public class LoopbackTransport extends SerialBleTransport {
     public byte[] keyStoreValue = new byte[KeyStoreFrame.VALUE_LEN];
     /** R4 key-store key31 读回桩值（data=[31] 的回执 88 字节；测试可改写，全零=非协议值）。 */
     public byte[] eqKeyStoreValue = new byte[KeyStoreFrame.EQ_VALUE_LEN];
+    /** 更多功能（MOREFUNC）FF 只读查询回读桩值：cmdid→getter 载荷（0x14/0x1f/0x19/0x23/0x24/0x2e）。
+     *  FF 写命令按真固件行为**静默**（setter 返回 0），写时同步更新本表——回读即得「设备态」。 */
+    public final java.util.Map<Integer, byte[]> moreFuncState = new java.util.HashMap<>();
+    /** 按键映射表桩（批量同步 C0 写改这里 / C1 读回这里；初始=固件默认表 0x0609e250）。 */
+    public byte[] keyRemapTable = {
+        0x07, 0x01, 0x01, 0x07, 0x02, 0x07, 0x07, 0x03, 0x04, 0x07, 0x04, 0x00, 0x07, 0x05, 0x00,
+        0x03, 0x01, 0x06, 0x03, 0x02, 0x00, 0x03, 0x03, 0x00, 0x03, 0x04, 0x00, 0x03, 0x05, 0x02,
+        0x05, 0x01, 0x05, 0x05, 0x02, 0x00, 0x05, 0x03, 0x00, 0x05, 0x04, 0x00, 0x05, 0x05, 0x03};
 
     /** negotiatedMtu：模拟协商到的 ATT MTU（默认 247=实测值；压小可测跨片路径）。 */
     public LoopbackTransport(int negotiatedMtu) { this.negotiatedMtu = negotiatedMtu; }
@@ -55,6 +63,9 @@ public class LoopbackTransport extends SerialBleTransport {
 
     /** 挂起设备响应（帧照收、片照写完，但不回响应——命令帧在设备侧积压）。 */
     public void pauseResponses() { paused = true; }
+
+    /** 测试钩子：把一帧完整设备通知（如 flags=0x80 主动通知）从 notify 路径喂进接收侧。 */
+    public void injectDeviceNotify(byte[] frame) { deviceNotify(frame); }
 
     /** 放行积压的命令帧：逐条生成响应并走 notify 路径送回（驱动串行队列发下一条帧）。 */
     public void releaseResponses() {
@@ -78,10 +89,11 @@ public class LoopbackTransport extends SerialBleTransport {
         runScheduler();
     }
 
-    /** 设备桩处理一条命令帧：生成响应帧、按 MTU 分片走 notify 路径送回。 */
+    /** 设备桩处理一条命令帧：生成响应帧、按 MTU 分片走 notify 路径送回。
+     *  零长响应=真固件静默 setter（返回 0 不回帧，MOREFUNC 族），同样不出帧。 */
     private void respondTo(byte[] commandFrame) {
         byte[] response = buildDeviceResponse(commandFrame);
-        if (response == null) return;              // 非 setter 形状（如只读 FE 01 cmdid）不响应——真机联调再补
+        if (response == null || response.length == 0) return;  // 非应答形状/静默 setter——不出帧
         for (byte[] piece : BlePacketizer.split(response, mtu())) deviceNotify(piece);
     }
 
@@ -99,7 +111,112 @@ public class LoopbackTransport extends SerialBleTransport {
 
     /** 带 R4 key-store 桩值的版本（key30/key31 各自的读回桩值）。 */
     public byte[] buildDeviceResponse(byte[] commandFrame) {
-        return buildSuccessResponse(commandFrame, keyStoreValue, eqKeyStoreValue);
+        byte[] more = buildMoreFuncResponse(commandFrame);
+        return more != null ? more : buildSuccessResponse(commandFrame, keyStoreValue, eqKeyStoreValue);
+    }
+
+    /**
+     * 更多功能族（MOREFUNC）设备桩：按**真固件反解行为**应答（docs/morefunc-protocol.md）——
+     * FF 写 0x14/0x1f/0x19/0x23/0x24/0x03 setter 返回 0=静默（不回帧，只更新 moreFuncState 供回读）；
+     * FF 只读（FE 01 cmd）回 `cmdid n data`（分发器读路径包装）；批量同步 C0 写 cmdid 2 改
+     * keyRemapTable 后回 0xC0 status 帧（回执前缀形状 [未钉]，桩取 `00 SN 00`）；C1 读 mask
+     * bit2 回 `00 SN 00` + item{2E 02 <45B>}；C5 01 恢复出厂重置全部桩态、C5 02 找耳机回 status。
+     * 返回 null 表示交回既有回显路径（非更多功能族命令）。
+     */
+    private byte[] buildMoreFuncResponse(byte[] f) {
+        if (f == null || f.length < 10) return null;
+        int flags = f[3] & 0xff, opcode = f[4] & 0xff;
+        if (flags != EqFrame.FLAGS_CMD) return null;
+        int sn = f[7] & 0xff;
+        if (opcode == MoreFuncFrame.OPCODE_BATCH_WRITE) return respondBatchWrite(f, sn);
+        if (opcode == MoreFuncFrame.OPCODE_BATCH_READ) return respondBatchRead(f, sn);
+        if (opcode == MoreFuncFrame.OPCODE_RESET_FAMILY) return respondResetFamily(f, sn);
+        if (opcode != EqFrame.OPCODE_CUSTOM) return null;
+        int cmdId = f[8] & 0xff, dataLen = f[9] & 0xff;
+        // FF 只读查询 body=SN FE 01 cmd：只答 moreFuncState 里登记过的 cmdid
+        if (f.length == 12 && (f[8] & 0xff) == 0xfe && (f[9] & 0xff) == 0x01) {
+            byte[] value = moreFuncState.get(f[10] & 0xff);
+            if (value == null) return null;                        // 未登记（如 0x2f 电量）走既有路径/不答
+            byte[] payload = new byte[2 + value.length];
+            payload[0] = (byte) (f[10] & 0xff);
+            payload[1] = (byte) value.length;
+            System.arraycopy(value, 0, payload, 2, value.length);
+            return wrapKeystoreBody(sn, payload, opcode);
+        }
+        switch (cmdId) {                                            // FF 写：静默 + 记桩态
+            case MoreFuncFrame.CMD_SLEEP_TIMER:
+            case MoreFuncFrame.CMD_AUTO_OFF:
+            case MoreFuncFrame.CMD_TONE_LANGUAGE:
+            case MoreFuncFrame.CMD_LDAC:
+            case MoreFuncFrame.CMD_DUAL_DEVICE:
+            case MoreFuncFrame.CMD_CLEAR_PAIRING:
+            case EqWritePolicy.CMD_AUDIO_MODE:
+                if (dataLen != f.length - 11) return null;
+                byte[] value = java.util.Arrays.copyOfRange(f, 10, 10 + dataLen);
+                byte[] getterValue;
+                if (cmdId == MoreFuncFrame.CMD_SLEEP_TIMER && dataLen == 4)
+                    getterValue = new byte[]{value[0], value[1], value[0], value[1]}; // 回读 4B=[设定,剩余]
+                else if (cmdId == EqWritePolicy.CMD_AUDIO_MODE && dataLen == 1)
+                    getterValue = value.clone();
+                else
+                    getterValue = value.clone();                   // 0x1f 2B / 0x19 4B / 0x23,0x24 1B 回读同写值
+                moreFuncState.put(cmdId, getterValue);
+                return new byte[0];                                // 静默：零长响应=不出帧
+            default:
+                return null;                                       // 其余（0x22/0x17/0x1d/0x2b/0x30）走既有回显
+        }
+    }
+
+    /** 批量同步写桩：cmdid 2 三元组/全表改 keyRemapTable（照 0x0602550e 匹配改写），回 0xC0 status。 */
+    private byte[] respondBatchWrite(byte[] f, int sn) {
+        int itemLen = f[8] & 0xff, cmdId = f[9] & 0xff;
+        if (itemLen < 2 || f.length != 8 + 1 + 1 + itemLen) return new byte[0];
+        int dataLen = itemLen - 1;
+        if (cmdId == KeyRemapFrame.BATCH_CMDID && dataLen == 3) {
+            int key = f[10] & 0xff, gesture = f[11] & 0xff;
+            for (int i = 0; i < KeyRemapFrame.TABLE_ENTRIES; i++) {
+                if (keyRemapTable[i * 3] == key && keyRemapTable[i * 3 + 1] == gesture) {
+                    keyRemapTable[i * 3 + 2] = f[12];
+                    break;
+                }
+            }
+        } else if (cmdId == KeyRemapFrame.BATCH_CMDID && dataLen == KeyRemapFrame.TABLE_LEN) {
+            keyRemapTable = java.util.Arrays.copyOfRange(f, 10, 10 + dataLen);
+        } else if (cmdId == MoreFuncFrame.BATCH_CMDID_NAME) {
+            byte[] name = java.util.Arrays.copyOfRange(f, 10, 10 + dataLen); // 名字桩：记态即可
+            moreFuncState.put(0x2100 + MoreFuncFrame.BATCH_CMDID_NAME, name);
+        } else {
+            return new byte[0];                                     // 未知 item：照静默处理
+        }
+        return wrapKeystoreBody(sn, new byte[]{0x00}, MoreFuncFrame.OPCODE_BATCH_WRITE);
+    }
+
+    /** 批量同步读桩：mask bit2 → `00 SN 00` + item{2E 02 <45B>}（回执前缀 [未钉]，桩取单 status 字节）。 */
+    private byte[] respondBatchRead(byte[] f, int sn) {
+        if (f.length != 13) return new byte[0];
+        int mask = ((f[8] & 0xff) << 24) | ((f[9] & 0xff) << 16) | ((f[10] & 0xff) << 8) | (f[11] & 0xff);
+        if (mask != KeyRemapFrame.ADV_TYPE2_MASK) return new byte[0];
+        byte[] payload = new byte[3 + 2 + KeyRemapFrame.TABLE_LEN];
+        payload[0] = 0x00;                                          // [未钉] 前缀 status 字节
+        payload[1] = 0x00;
+        payload[2] = 0x00;
+        payload[3] = (byte) (1 + KeyRemapFrame.TABLE_LEN);          // item len=46=0x2E
+        payload[4] = (byte) KeyRemapFrame.BATCH_CMDID;
+        System.arraycopy(keyRemapTable, 0, payload, 5, KeyRemapFrame.TABLE_LEN);
+        return wrapKeystoreBody(sn, payload, MoreFuncFrame.OPCODE_BATCH_READ);
+    }
+
+    /** 0xC5 桩：01 恢复出厂=重置全部桩态回默认，02 找耳机=直接成功；回 status 帧。 */
+    private byte[] respondResetFamily(byte[] f, int sn) {
+        if (f.length != 10) return new byte[0];            // 8 头尾 + SN + 子命令
+        if ((f[8] & 0xff) == MoreFuncFrame.RESET_SUBCMD_FACTORY) {
+            moreFuncState.clear();
+            keyRemapTable = new byte[]{
+                0x07, 0x01, 0x01, 0x07, 0x02, 0x07, 0x07, 0x03, 0x04, 0x07, 0x04, 0x00, 0x07, 0x05, 0x00,
+                0x03, 0x01, 0x06, 0x03, 0x02, 0x00, 0x03, 0x03, 0x00, 0x03, 0x04, 0x00, 0x03, 0x05, 0x02,
+                0x05, 0x01, 0x05, 0x05, 0x02, 0x00, 0x05, 0x03, 0x00, 0x05, 0x04, 0x00, 0x05, 0x05, 0x03};
+        }
+        return wrapKeystoreBody(sn, new byte[]{0x00}, MoreFuncFrame.OPCODE_RESET_FAMILY);
     }
 
     static byte[] buildSuccessResponse(byte[] commandFrame, byte[] keyStoreValue) {

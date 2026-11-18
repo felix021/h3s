@@ -1,6 +1,6 @@
 # H3S Android 查询与固定候选OTA工具
 
-独立调试客户端，包名 `cn.felix021.h3squery`。通过QCY BLE服务调用官方JL OTA SDK；查询和实际升级分层。当前源码版本0.7.2-eqfix（launcher=WebView 壳双 tab，原生查询页降级为工具入口），保留已实测的协议、传输和固定候选门槛，目标地址由构建生成。
+独立调试客户端，包名 `cn.felix021.h3squery`。通过QCY BLE服务调用官方JL OTA SDK；查询和实际升级分层。当前源码版本0.8.0-morefunc（含 0.7.2-eqfix 的 EQ type 修复；launcher=WebView 壳四 tab：耳机控制/助听/更多功能/USB，原生查询页降级为工具入口），保留已实测的协议、传输和固定候选门槛，目标地址由构建生成。
 
 当前只接受已验证的 ANC 固件 SHA256 `b79cb3a6f8702eb9e1d12eaf181a968f6b5848a66c051b2c792c39aa8b42fa1b`、长度1326848，输入H3S版本280。EQ r2 实机出现运行异常，r1/r2均拒绝。记录见 [EQ 实验故障](../../docs/eq-toggle.md)。当前恢复还依赖可用设备连接；不能把工具准备完毕当作已恢复。
 
@@ -34,8 +34,8 @@ docs/android-ble-connection-diagnosis-20261118.md）。可选环境变量：`H3S
 
 AndroidX Core是SDK权限检查的实际依赖，不能省略。配置只写入 `build/generated/.../DeviceConfig.java`（地址留空=扫描发现模式）；注入了地址的APK含所配目标地址，公开分享自己的APK前要考虑这一点。本仓库不附带原测试APK和签名私钥。
 
-构建运行 tests/ 下全部 JVM 测试（QueryPolicy/UpgradeGate/BlePacketizer/EqFrame/KeyRemapFrame/
-KeyStore/H3SBridge/H3sTransport/TransportContract/UsbScsi/H3sUsbBridge），再编译、打包、签名和检查APK。开始构建即移除旧APK，避免失败后误用旧产物。调试签名在 `build/debug.keystore` 创建；同一设备覆盖安装需要保留自己的签名，不要把它提交Git。输出 `build/h3s-query.apk`。
+构建运行 tests/ 下全部 JVM 测试（QueryPolicy/UpgradeGate/BleDiscovery/BlePacketizer/EqFrame/KeyRemapFrame/
+KeyStore/MoreFunc/H3SBridge/H3sTransport/TransportContract/SimulationGattLink/SimulationUsbLink/UsbScsi/H3sUsbBridge），再编译、打包、签名和检查APK。开始构建即移除旧APK，避免失败后误用旧产物。调试签名在 `build/debug.keystore` 创建；同一设备覆盖安装需要保留自己的签名，不要把它提交Git。输出 `build/h3s-query.apk`。
 
 ## 安装和只读检查
 
@@ -58,7 +58,7 @@ adb -s "$ANDROID_SERIAL" shell am start \
 | --- | --- |
 | 03 | FFFFFFFF00，读取设备信息 |
 | D4 | 空参数，MD5读取；本机能力不支持时SDK不自动请求 |
-| FF | FE012F、FE0114、FE0110、FE0117，只读电量／电源／睡眠／ANC |
+| FF | FE012F、FE0114、FE0110、FE0117，只读电量／电源／睡眠／ANC；更多功能只读追加了 FE011F（断连关机）/FE0119（提示音语言）/FE0123（LDAC）/FE0124（双设备）/FE012E（音频模式），docs/morefunc-protocol.md §2 |
 | C1 | 00000400，只读通用ANC列表属性 |
 | E1 | 空参数，升级检查字段 |
 | E2 | 仅00，且需先确认E1 offset/len0 |
@@ -109,9 +109,15 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 | `setAudioMode(mode)` | 组 FF/0x2E 音频模式帧 | mode 1=音乐/3=游戏(低延迟)/4=电影（docs/wired-game-mode.md §2.1：固件 cmd 46 setter 只读载荷首字节；data_len=1 [假设] 联调对照）；EqWritePolicy 白名单同域收紧 {1,3,4} |
 | `setPromptVolume(level)` | 组 FF/0x1d 提示音音量帧 | 值只收 3/6/8；data=`value 00`（路 P 反汇编钉死，固件只读 data[0]、第二字节忽略不钳） |
 | `readStatus(cmdId)` | 组只读状态查询帧 | cmdId∈{0x2f 电量, 0x17 ANC, 0x14 电源, 0x10 睡眠}；帧=QueryPolicy §battery 形状（body=`SN FE 01 cmd`），回包按 SN 匹配走 response 事件；只读不需武装 |
-| `setKeyRemap(eventId, action)` | 组按键重映射帧（默认 wire=ADV type2） | 走 `KeyRemapFrame.buildAdvType2Command`（opcode C2+type2 mask+三元组，帧形状 [假设]）；eventId 布局 0x{逻辑键}0{连击数}（769/1281/1793..1796，长按低字节 5 [假设]），action 0..7 或 11（ANC） |
-| `setKeyRemapCustom(eventId, action)` | 组按键重映射帧（候选 wire=自定义 0x2b） | 走 `KeyRemapFrame.buildCustomCommand`（FF/0x2b+3B 三元组）；字段域同上，两条 wire 真机抓包定案（docs/app-protocol.md §2.5） |
-| `getKeyRemap()` | 读按键映射（本地工作副本） | `{"ok":true,"map":{"769":6,...}}`，初始=控制面板 defaultFun、set 成功后更新；非设备读回（type2 查询响应形状未钉），长按条目 -1=未知 |
+| `setKeyRemap(eventId, action)` | 组按键重映射帧（默认 wire=批量同步 0xC0） | **2026-11-19 MOREFUNC 钉死**：固件按键注册在批量同步表 cmdid 2（0x0600fae0 case 0），item=`{len=4, cmdid=2, key,gesture,action}`；此前默认的 ADV type2/0x2b 在固件注册表无对应（实发必无回执，即真机「发送未确认」的根因），两条旧候选保留作对照（`setKeyRemapAdv`/`setKeyRemapCustom`）；eventId 布局 0x{逻辑键}0{连击数}（769/1281/1793..1796，长按低字节 5 [假设]），action 0..7 或 11（ANC） |
+| `readKeyRemapTable()` | 从设备读按键映射全表（0xC1 mask 00 00 00 04） | 回 45B=15×{key,gesture,action}（固件读 handler 0x060254f2）；回执前缀形状 [未钉] 宽容解析（`MoreFuncFrame.parseBatchReadPayload`） |
+| `getKeyRemap()` | 读按键映射（本地工作副本） | `{"ok":true,"map":{"769":6,...}}`，初始=控制面板 defaultFun、set/设备读回后更新；长按条目 -1=未知 |
+| `setSleepTimer(minutes)` / `setAutoOff(minutes)` | 定时/断连关机（FF/0x14 / FF/0x1f） | 面板档位 5/10/30/60 分钟或 0xFFFF 不关机（0=立即关机拒绝）；分钟 LE16；固件 setter 静默无回执，UI 发送后回读确认 |
+| `setToneLanguage(chinese)` | 提示音语言（FF/0x19） | data=4B key："JL00"=英文/"JL01"=中文（固件 0x609e284 两项 BE 键表反解） |
+| `setLdac(on)` / `setDualDevice(on)` | LDAC/双设备开关（FF/0x23 / FF/0x24） | data=[01/00]；两功能互斥+切换重启（固件 0x0602262e/0x06022670 互斥链反解）；双设备上限=固件编译死 2 台 |
+| `setDeviceName(name)` | 给设备取名（批量同步 cmdid 1） | ≤20B（面板 maxLength；固件上限 32B NUL 补齐） |
+| `restoreDefaults()` / `findBuds()` | 恢复出厂 / 找耳机响声（opcode 0xC5） | body=SN+子命令：01=跑两表全部恢复默认回调（危险，UI confirm）；02=响两声提示音 [推断] |
+| `clearPairing()` | 清除配对记录（FF/0x03，实验性） | 固件 setter 无视 data 投内部事件 594→BT 控制 [推断]；UI 强警示 |
 | `setHearingCfg(hex)` / `getHearingCfg()` | key30 写/读（FF/0x30 写形态帧） | 8B 值不透明；写回执 `30 01 status`、读回执 `30 08`+8B 经 response 事件 |
 | `setHearingEq(segsJson)` / `getHearingEq()` | key31 十段 EQ 写/读 | 写 data=[31,88B]（encodeEqValue 协议门），读 data=[31] 回执 `30 58`+88B（parseEqReadPayload→decodeEqValue 解码链）；EqWritePolicy 白名单放行 key31 的 89B 写/1B 读精确形状（值不透明，key30 先例同款） |
 | `invalidateHearingCfg(hex)` / `invalidateHearingEq(hex)` | 双 key 软回退（H5-DEF-01，§4d） | 只接受「可解码的真实协议原值」，Java 侧自行把魔数首字节 48→00、其余字节原样发（页面无法借这条入口发任意字节）；原值备份=调用方先 get 后存档 |
@@ -120,7 +126,7 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
 `{"ok":false,"error":"..."}`（坏 JSON、字段缺失/非数值、取值越界、未武装等都有独立错误信息）。
 未匹配 SN 的响应帧以 `device_message` 事件透出（迟到响应/主动通知，页面按前缀启发式解析）。
 
-**页面（`assets/index.html`，单文件内联 CSS/JS、无外部 CDN）**：暗色主题、卡片式、三 tab——
+**页面（`assets/index.html`，单文件内联 CSS/JS、无外部 CDN）**：暗色主题、卡片式、四 tab——
 
 - **耳机 tab**：连接卡（状态/MTU/电量槽位——连接就绪自动查电量，只读 0x2f）、写入门控开关、
   ANC 三态、音频模式（音乐/游戏·低延迟/电影，标注「低延迟=效果重配，帧长未钉」）、EQ 卡
@@ -129,9 +135,14 @@ bridge 方法（`H3SBridge.java`，全部 `@JavascriptInterface`）：
   **0.7.2/路 EQFIX**：①下发 type 字节 1→2 修复「发送无效果」（§EQ 写命令组帧）；
   ②自定义滑杆状态 localStorage 自动记忆/恢复；③「我的预设」——当前自定义可存为命名
   预设，列表加载/重命名/删除，同名单名覆盖，localStorage 持久化，上限 50 组）、
-  按键自定义（3 键×5 手势矩阵，长按列虚线标注 [假设]；wire 单选默认 ADV type2）、提示音
-  音量三档、固件升级卡（跳 MainActivity 升级工具+固定候选说明）、未调研功能占位卡
-  （查找耳机/双设备/佩戴检测/恢复默认，灰态「协议未调研」）。
+  按键自定义（3 键×5 手势矩阵，长按列虚线标注 [假设]；wire 单选默认批量同步 0xC0，可切
+  ADV type2/0x2b 对照；「从设备读取」发 0xC1 回 45B 真值灌网格）、提示音
+  音量三档、固件升级卡（跳 MainActivity 升级工具+固定候选说明）。
+- **更多功能 tab**（MOREFUNC，2026-11-19）：定时关机/断连关机（档位选择+发送后自动回读确认）、
+  提示音语言（英文/中文）、LDAC/双设备（互斥校验+重启警示）、给设备取名（≤20B）、找耳机响声、
+  恢复默认设置/清除配对（危险区 confirm，后者标实验性）、声道平衡与佩戴检测调研结论卡
+  （声道平衡=官方面板占位无命令绑定、固件无 L/R 平衡 key——不放假滑杆）。全部选择
+  localStorage 记忆（`h3s.morefunc.*`），连接就绪自动回读 9 个只读 cmdid 对齐设备真值。
 - **助听 tab**：见下节「助听 tab」——每频段增益/上限（BLE 留桩）+ 测试音/样本播放（h3sha 桥）。
 - **USB tab**：见下节。在无 bridge 的普通浏览器打开会显示降级提示；调用与事件日志抽屉
   常驻（最近 60 条）。

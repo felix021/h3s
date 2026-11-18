@@ -113,8 +113,9 @@ public class H3sTransportTest {
             unhex("2249" + H3SBridge.hex(EqFrame.buildEqData(2, -400, tenBands()))));
     }
 
-    /** 端到端：setKeyRemap 两条 wire 全链路——默认 ADV type2（opcode C2，Loopback 亦回响应）与
-     *  候选 B 0x2b；Loopback 收帧与 KeyRemapFrame 直组逐字节一致，响应按 SN 匹配、缓存已更新。 */
+    /** 端到端：setKeyRemap 两条 wire 全链路——默认批量同步（opcode C0 item cmdid 2，MOREFUNC
+     *  钉死；Loopback 桩改映射表并回 0xC0 status）与候选 A ADV type2 / 候选 B 0x2b；
+     *  Loopback 收帧与 KeyRemapFrame 直组逐字节一致，响应按 SN 匹配、缓存已更新。 */
     static void endToEndKeyRemap() throws Exception {
         LoopbackTransport loopback = new LoopbackTransport();
         Events events = new Events();
@@ -122,23 +123,33 @@ public class H3sTransportTest {
         loopback.connect();
         b.armWrite(true);
 
-        // 默认 wire（ADV type2）：多功能双击→模式切换
-        JSONObject adv = new JSONObject(b.setKeyRemap(1794, 7));
-        expect(adv.getBoolean("ok") && adv.getBoolean("sent"), "setKeyRemap 应发出: " + adv);
-        eq("ADV 设备收帧数", 1, loopback.receivedFrames.size());
-        bytes("ADV type2 逐字节", loopback.receivedFrames.get(0), KeyRemapFrame.buildAdvType2Command(adv.getInt("sn"), 7, 2, 7));
-        JSONObject advResp = events.first("response");
+        // 默认 wire（批量同步 C0 item cmdid 2）：多功能双击→模式切换；桩应改表并回 status
+        JSONObject batch = new JSONObject(b.setKeyRemap(1794, 7));
+        expect(batch.getBoolean("ok") && batch.getBoolean("sent"), "setKeyRemap 应发出: " + batch);
+        eq("批量同步设备收帧数", 1, loopback.receivedFrames.size());
+        bytes("批量同步逐字节", loopback.receivedFrames.get(0), KeyRemapFrame.buildBatchSyncCommand(batch.getInt("sn"), 7, 2, 7));
+        JSONObject batchResp = events.first("response");
+        expect(batchResp.getBoolean("ok"), "批量同步响应 status 应为 0: " + batchResp);
+        eq("批量同步响应 sn", batch.getInt("sn"), batchResp.getInt("sn"));
+        eq("桩表多功能双击动作已改", 7, loopback.keyRemapTable[5] & 0xff);
+
+        // 候选 A wire（ADV type2）：同三元组
+        JSONObject adv = new JSONObject(b.setKeyRemapAdv(1794, 7));
+        expect(adv.getBoolean("ok") && adv.getBoolean("sent"), "setKeyRemapAdv 应发出: " + adv);
+        eq("两条后设备收帧数", 2, loopback.receivedFrames.size());
+        bytes("ADV type2 逐字节", loopback.receivedFrames.get(1), KeyRemapFrame.buildAdvType2Command(adv.getInt("sn"), 7, 2, 7));
+        JSONObject advResp = events.byEvent("response").get(1);
         expect(advResp.getBoolean("ok"), "ADV type2 响应 status 应为 0: " + advResp);
         eq("ADV 响应 sn", adv.getInt("sn"), advResp.getInt("sn"));
         bytes("ADV 响应载荷（mask+三元组回显，桩形状[未钉]）", unhex(advResp.getString("payloadHex")),
             unhex("00000004" + "070207"));
 
-        // 候选 B wire（FF/0x2b）：音量- 单击→上一曲
+        // 候选 B wire（FF/0x2b，固件注册表无对应——仅对照）：音量- 单击→上一曲
         JSONObject custom = new JSONObject(b.setKeyRemapCustom(769, 2));
         expect(custom.getBoolean("ok") && custom.getBoolean("sent"), "setKeyRemapCustom 应发出: " + custom);
-        eq("两条后设备收帧数", 2, loopback.receivedFrames.size());
-        bytes("0x2b 逐字节", loopback.receivedFrames.get(1), KeyRemapFrame.buildCustomCommand(custom.getInt("sn"), 3, 1, 2));
-        JSONObject customResp = events.byEvent("response").get(1);
+        eq("三条后设备收帧数", 3, loopback.receivedFrames.size());
+        bytes("0x2b 逐字节", loopback.receivedFrames.get(2), KeyRemapFrame.buildCustomCommand(custom.getInt("sn"), 3, 1, 2));
+        JSONObject customResp = events.byEvent("response").get(2);
         expect(customResp.getBoolean("ok"), "0x2b 响应 status 应为 0: " + customResp);
         eq("0x2b 响应 seq", custom.getInt("seq"), customResp.getInt("seq"));
         bytes("0x2b 响应载荷（cmdid|n|data 回显）", unhex(customResp.getString("payloadHex")), unhex("2b03" + "030102"));
