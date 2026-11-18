@@ -1234,6 +1234,18 @@ M4_FAMILIES = (
     ('jl_src_sync', 'JLSrcSyncConfigRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads',
       'coef_read_attempts')),
+    # Route SYNCIMPL: the JL_SYNC four-word container (no-synthetic-initial
+    # CON read-back plus the three __WO write-only words) — the captured state
+    # is the write record and the two refusal counters (constant zero in any
+    # captured world: a refusal stops the run; kept for shape symmetry with
+    # BATCHA). current_pc/current_pc_core are transient per-step read-policy
+    # provenance (overwritten each step, DMAIMPL current_pc precedent); they
+    # ride as state so the per-object static guard stays constant. The read
+    # policy sets (branch/write-back read PCs) are CLASS constants under the
+    # class-identity check.
+    ('jl_sync', 'JLSyncConfigWords',
+     ('stores', 'word_writes', 'reads_after_write', 'con_read_attempts',
+      'wo_read_attempts', 'current_pc', 'current_pc_core')),
     ('p2m_mailbox', 'P2mMailboxAck',
      ('pnd_armed', 'echo_armed', 'kicks', 'other_kick_values', 'clr_writes',
       'clear_slot_writes', 'pnd_reads', 'echo_reads', 'message_mirror',

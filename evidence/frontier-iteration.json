@@ -189,5 +189,75 @@
     "note": "\u65b0\u524d\u6cbf 41909506 @ 0x60869ba(uninitialized \u4efb\u52a1\u6808 0x18ca64);+51493 \u6b65;CRC \u590d\u7b97 0x7e4e==\u5b98\u65b9 hcrc;\u4ece 0 \u53c2\u7167\u5f85 merge \u524d\u5168\u91cf",
     "wall_seconds": 2.9,
     "code_fingerprint": ""
+  },
+  {
+    "route": "syncimpl",
+    "name": "off-reproduce",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_or_readonly_write",
+      "access": "write",
+      "address": "0xfe2500",
+      "size": 4,
+      "value_bytes": "00000000"
+    },
+    "completed_steps": 42061357,
+    "report_equal_to_reference": false,
+    "wall_seconds": 7.6,
+    "snapshot_digest": "05ce90eeba4d44aa",
+    "code_fingerprint": "ca76923e6a554d51",
+    "ack": {
+      "reason": "off \u81c2(\u8d1f\u4f8b\u2460):\u5f00\u5173\u5173=\u65e7\u524d\u6cbf 42,061,357 \u4e0e srcsync on-main \u53c2\u7167\u9010\u952e\u76f8\u7b49\u9884\u671f;\u6307\u7eb9\u5dee=base \u6355\u83b7(01:53)\u540e\u4ec5\u6539 check() \u65ad\u8a00\u5b57\u9762\u503c\u4e0e registry FRONTIERS \u6570\u636e(\u81c2\u8def\u5f84 irq_case/scenario \u96f6\u5b57\u8282\u884c\u4e3a\u5dee\u5f02,check() \u4e0d\u8fdb\u81c2),\u884c\u4e3a\u4e2d\u6027",
+      "prior_fingerprint": "4bcc2225292ef34d7f7d2b77b3cd2dc1d5ae9c025d92849315c792ec9c6bc006"
+    }
+  },
+  {
+    "route": "syncimpl",
+    "name": "on-main-ownbase",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_or_readonly_write",
+      "access": "write",
+      "address": "0xf00130",
+      "size": 4,
+      "value_bytes": "f4020000"
+    },
+    "completed_steps": 42061359,
+    "report_equal_to_reference": true,
+    "wall_seconds": 7.6,
+    "snapshot_digest": "05ce90eeba4d44aa",
+    "code_fingerprint": "ca76923e6a554d51",
+    "ack": {
+      "enable_slots": [
+        "jl_sync"
+      ],
+      "reason": "on-main \u81c2:\u81ea\u5efa base(jl_sync \u5173)41.9M \u5e72\u51c0\u8fb9\u754c;jl_sync \u524d\u7f00\u96f6\u89e6\u8fbe(\u5bb9\u5668\u9996\u8bbf\u95ee=\u65e7\u505c\u70b9 42,061,357 \u672c\u8eab=ack \u653e\u884c\u6761\u4ef6),None->on \u8de8\u5f00\u5173\u6062\u590d=\u4ece\u96f6\u5f00\u542f\u7684\u7b49\u4ef7\u7eed\u8dd1;\u6307\u7eb9\u5dee=base \u6355\u83b7\u540e\u4ec5 check() \u5b57\u9762\u503c/registry \u6570\u636e(\u81c2\u8def\u5f84\u96f6\u884c\u4e3a\u5dee\u5f02),\u884c\u4e3a\u4e2d\u6027;\u53c2\u7167=\u8de8\u4ee3\u7801 on-main \u81c2(\u5e94\u9010\u952e\u76f8\u7b49)",
+      "prior_fingerprint": "4bcc2225292ef34d7f7d2b77b3cd2dc1d5ae9c025d92849315c792ec9c6bc006"
+    }
+  },
+  {
+    "route": "syncimpl",
+    "name": "on-main",
+    "kind": "arm",
+    "stop": {
+      "kind": "unmapped_or_readonly_write",
+      "access": "write",
+      "address": "0xf00130",
+      "size": 4,
+      "value_bytes": "f4020000"
+    },
+    "completed_steps": 42061359,
+    "report_equal_to_reference": null,
+    "wall_seconds": 7.8,
+    "snapshot_digest": "abc279deb61c7a93",
+    "code_fingerprint": "ca76923e6a554d51",
+    "ack": {
+      "enable_slots": [
+        "jl_src_sync",
+        "jl_sync"
+      ],
+      "reason": "\u8de8\u4ee3\u7801 on-main:srcsync \u8def\u4ee3\u7801\u6001 base-off \u5feb\u7167(\u4e8c\u8fdb\u5236\u590d\u5236+sha256 \u5bf9 lineage \u6838\u9a8c);jl_src_sync/jl_sync \u524d\u7f00\u96f6\u89e6\u8fbe(\u5bb9\u5668\u9996\u8bbf\u95ee\u5747\u665a\u4e8e 41.9M \u8fb9\u754c),\u53cc enable None/\u7f3a\u952e->on=\u4ece\u96f6\u5f00\u542f\u7b49\u4ef7\u7eed\u8dd1;\u672c\u8def\u6539\u52a8\u4e3a\u65b0\u589e\u5bb9\u5668+\u5b88\u536b,\u524d\u7f00\u884c\u4e3a\u96f6\u5dee\u5f02;\u4e0e\u540c\u4ee3\u7801 on-main-ownbase \u81c2\u9010\u952e\u76f8\u7b49\u4e92\u8bc1",
+      "prior_fingerprint": "7c262e682254bb4a7549e38638d83f557bfd793e64ad93ef7b506c80e0b07b2f"
+    }
   }
 ]

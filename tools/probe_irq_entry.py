@@ -5077,6 +5077,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
              jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
+             jl_sync_config_words=False,
              ancif_official_resources=None,
              ton_official_partition_pair=None,
              jl_rand_seed=None,
@@ -5361,6 +5362,10 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # bit4 关→系数表拷贝→bit22 关),链继续走 eq 设计族/音频配置域——
         # 新停点由实跑取得;预算沿用 60M(余量以实跑核)。
         if jl_src_sync_config_words:budget=60000000
+        # 路 SYNCIMPL:JL_SYNC 四字放行后 creator 0x60befae 的 CON 写停点
+        # 被越过,链在 +2 步的 0x60befee(BT clock timer 0xF00130 写,未建模)
+        # 停——新停点由实跑取得;预算沿用 60M(余量以实跑核)。
+        if jl_sync_config_words:budget=60000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -6618,6 +6623,41 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                     'the SRC_SYNC CON1 sensitivity probe takes exactly the all-ones '
                     'word (sensitivity-probe-not-plausible-state, CV/ADA/ASS precedent)')
             options['jl_src_sync_probe_value']=jl_src_sync_probe_value
+    # jl_sync_config_words(路 SYNCIMPL,codex 20261119 收窄版 a,
+    # docs/frontier-scout-jlsync.md §5,默认 False=关):JL_SYNC(audio_sync)
+    # 四字容器——42,061,357 停点 0x60befe6(creator 0x60befae 体内 li 常量
+    # CON 整字写 0,br28.h audio_sync 块 0x2500-0x25ff 13 成员之 +0 __RW)
+    # 放行。侦察钉死(SYNCSOUT+codex 复核):基址 li 装载驱动(CON li 站点
+    # 恰 12 处全在 0x60beeee-0x60bf1f0 audio_sync 库族,app 零 .data 地址
+    # 字面量);creator→fn_config 链触达恰四字=CON(停点整字写 0+fn_config
+    # 0x60bef62 读→0x60bef9e 读-改-写)+CON1/BT_OFFSET/MIN_SLOT(fn_config
+    # 纯写,CON1=h[obj+10]<<16 预期 0x00C80000、BT_OFFSET=0、MIN_SLOT=
+    # h[obj+12] 预期 80);本次续跑只执行 CON 一写零读(fn_config 在
+    # request_irq/0xF001xx 三道墙后);CON 读值去向逐 PC 分类——写回组装
+    # 读点(fn_clear_b22/fn_config/fn_stop/fn_pause/fn_resume/IRQ RMW 共
+    # 11 处)只进写回,分支读点(IRQ 0x60bf1f6 bit19、0x60bf25c uextra
+    # bit28 vs 槽号、getter 0x60bf19c)拿 CON 决定控制流。容器策略
+    # (codex 裁):CON 无合成初值(首个访问就是写,首写前读拒绝 BATCHA
+    # 先例)、写后读回=最后写值、RMW 内部读走通用 mmio 路径;WO 三字纯写
+    # 记录读一律拒绝(含 RMW 内部读);消费者 PC/核守卫——分支读点/未审计
+    # PC/另一核的 CON 读消费前停(PC 溯源=probe_boot step_body 每步刷新,
+    # DMAIMPL current_pc 先例)。其余 9 成员(DABUF/DASPACE/OFFEND/OFFSUM/
+    # PCMNUM/BTTIME/CON2/OUTSR/INSR)零触达不进白名单(不据 __RW/__WO
+    # 扩整块);0xF00130/40/44/48 timer 域不在容器(将来独立批准,不按
+    # 连续区间映射)。SDK 驱动用法/消费者审计/证据全文见 br28_model.py
+    # JLSyncConfigWords 类注释。依赖边挂 jl_src_sync_config_words=场景
+    # 推进顺序(SRCSYNC 放行后链才到达 creator)非硬件依赖;默认关=四字
+    # 保持 unmapped(42,061,357 停点形状),legacy 逐字节不变。
+    if jl_sync_config_words:
+        require(jl_src_sync_config_words,
+            'the JL_SYNC config container only layers on the JL_SRC_SYNC release '
+            '(the chain reaches the audio sync object creator 0x60befae and its '
+            'CON whole-word store only after the SRC_SYNC reconfiguration '
+            'transaction crosses the 42,059,070 stop — without the SRCSYNC '
+            'release the world still stops at 0x606fbe4; the dependency records '
+            'THIS scenario advance order, not a hardware dependency of the '
+            'JL_SYNC config registers on the SRC_SYNC block)')
+        options['jl_sync_config_words']=True
     # jl_pvdd_trim_writes(路 BM §1/S19 批 1 ①):W4[4] PVDD/trim 域容器——
     # P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/P3_PVDD0_AUTO(0xf2c10c)
     # 合成初始字 0+读回=当前值(AM 容器族;BM §1.1 逐地址访问点钉死:复合
@@ -8325,7 +8365,20 @@ def check(report,firmware):
             '0x2500-0x25ff block), the li-constant full-word zero store '
             'inside an IPMASK-6 critical section after the creator\'s '
             'zalloc/field-init/probe call chain — the JL_SYNC write face, '
-            'a fresh SFR boundary for the next route)')
+            'a fresh SFR boundary for the next route); and the route-SYNCIMPL '
+            'release (this scenario, the codex narrowed-(a) four-word '
+            'container: no-synthetic-initial CON read-back after the first '
+            'write, three __WO write-only words refusing every read, and a '
+            'consumer PC/core guard refusing the branch-consuming loads '
+            'before consumption) serves the creator\'s whole-word zero store '
+            'and the chain walks on (+2 steps, per-core1 still frozen at '
+            '11496, container ledger exactly one CON write and zero reads — '
+            'the scout\'s predicted ledger) to the BT clock timer '
+            'configuration and stops at 42,061,359 @ 0x60befee on the '
+            'unmapped write of 0xf00130 = 0x2F4 — the 0xF001xx BT-clock-'
+            'timer domain (write ports 0xF00130/0xF00140, read ports '
+            '0xF00144/0xF00148; the scout\'s wall-order prediction of +2 '
+            'steps hit exactly), a fresh SFR boundary for the next route)')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 EVIMPL(2026-11-18,docs/frontier-scout-evqueue.md 停点 41,909,506;
@@ -8537,6 +8590,48 @@ def check(report,firmware):
             'same-address-new-consumer re-audit clause, and the assumption '
             'boundary — this does NOT verify any sample-rate conversion, DMA '
             'or audio processing')
+    # 路 SYNCIMPL:四字容器释放记录断言——本次续跑账本恰如侦察预判
+    # (docs/frontier-scout-jlsync.md §5 预期账本):仅 CON 一写(creator
+    # 0x60befe6 整字写 0=停点指令本体)零读;WO 三字零写零读(fn_config
+    # 在 0xF00130/40+request_irq 三道墙后未到达);消费者 PC/核守卫零触发
+    # (IRQ88/getter 不在执行前缀);停点 +2 步=墙序预判命中(0x60befee
+    # 写 0xF00130=0x2F4,BT clock timer 配置,未建模)。
+    syncrel=r['peripherals']['jl_sync_config_registers']
+    require(syncrel['word_writes']==1 and
+            syncrel['stores']=={'0xfe2500':{'values':['0x0'],'writes':1,'cores':[0]}} and
+            syncrel['readback_projection']['con']['reads']==0 and
+            syncrel['readback_projection']['con']['read_attempts_refused']==0 and
+            syncrel['readback_projection']['wo']['read_attempts_refused']==0 and
+            'NO synthetic initial word' in
+            syncrel['readback_projection']['con']['semantics'] and
+            'every read is refused including the internal read an RMW would '
+            'need' in syncrel['readback_projection']['wo']['semantics'] and
+            syncrel['consumer_guard']['branch_read_pcs']==['0x60bf19c','0x60bf1f6','0x60bf25c'] and
+            len(syncrel['consumer_guard']['writeback_read_pcs'])==11 and
+            '0xF00130' in syncrel['whitelisted_words'] and
+            'NOT part of this container' in syncrel['whitelisted_words'] and
+            'thirteen members' in syncrel['sdk_naming'] and
+            'REJECTED' in syncrel['model_assumptions'] and
+            'NOT executed' in syncrel['modeled_vs_touched'] and
+            'audio-sync block' in
+            r['peripherals']['assumptions']['jl_sync_config_registers'],
+            'the route-SYNCIMPL release record must pin the runtime evidence: '
+            'exactly ONE JL_SYNC word access in the released segment — the '
+            'creator whole-word zero store [0xfe2500]=0 at 0x60befe6 (the '
+            '42,061,357 stop instruction itself, core 0), zero CON reads '
+            'served and zero read refusals (the consumer PC/core guard never '
+            'fires — IRQ88 and the getter domain stay off the executed '
+            'prefix), the three __WO words (CON1/BT_OFFSET/MIN_SLOT) with '
+            'zero writes zero reads — fn_config, their only writer, sits '
+            'behind the 0xF00130/0xF00140 BT-clock-timer writes and the '
+            'request_irq ICU RMW and has NOT executed; the no-synthetic-'
+            'initial CON policy wording, the WO refuse-every-read wording, '
+            'the three branch read PCs (0x60bf1f6 bit19, 0x60bf25c bit28-'
+            'uextra vs slot, 0x60bf19c getter) with the eleven write-back '
+            'read PCs, the 0xF001xx NOT-in-this-container clause, the '
+            'thirteen-member naming and the zero-initial-REJECTED assumption '
+            'record — this does NOT verify any audio synchronization, IRQ88, '
+            'timer or DMA scenario')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -8578,7 +8673,7 @@ def check(report,firmware):
             'the route-WDFEED mailbox feed side-effect must reload the WDT exactly '
             'once per closed feed transaction (162 reloads against the 162 closed '
             'transactions, feeds total 163 = one direct init feed + 162 projected), '
-            'leaving the watchdog NOT expired at the stop (elapsed 157 of the 16384 '
+            'leaving the watchdog NOT expired at the stop (elapsed 158 of the 16384 '
             'nominal units of the CON 0x2e period — the route-STOREG3 release '
             'segment past 41,828,530 is a pure CPU0 sequence, no new feed '
             'transaction, only four more nominal units consumed; the route-'
@@ -8589,7 +8684,9 @@ def check(report,firmware):
             'audio-pipeline segment on to 152; the route-COPEXIMPL release (the '
             'mode-22 exponential pass) walks five more nominal units on to 157 — '
             'all pure CPU0 sequences, zero new feed transactions, the 162/163 '
-            'totals frozen) with the '
+            'totals frozen; the route-SRCSYNC and route-SYNCIMPL releases walk '
+            'one more unit on to 158 and freeze it (+2,287 then +2 pure CPU0 '
+            'steps) with the '
             'main-core command accounting untouched (six real commands '
             '[0,0,0,14,46,0x1002E], zero fabricated bus writes) and the '
             'expiry-stays-a-reset honesty flag intact')
@@ -9816,7 +9913,11 @@ def check(report,firmware):
     # 0x606fa7e 全走完→audio sync 对象创建器 0x60befae)计数走表 26,931→
     # 33,792(PRd 35,999 窗内、无到期跨界:交付/到期 15780/15797 冻结),
     # 零新喂狗(163/162 冻结),elapsed 名义单位 157→158。
-    require(timer=={'con':0x1401,'cnt':33792,'prd':35999,'pending':False,
+    # 路 SYNCIMPL:四字容器放行后 +2 步段(creator CON 写→li 0xF00130)
+    # 计数走表 33,792→33,798(恰 +6=2 步×3 STD12M tick,PRD 35,999 窗内、
+    # 无到期跨界:交付/到期 15780/15797 冻结),零新喂狗(163/162 冻结),
+    # elapsed 名义单位 158 冻结。
+    require(timer=={'con':0x1401,'cnt':33798,'prd':35999,'pending':False,
             'expirations':15797},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
@@ -9930,13 +10031,15 @@ def check(report,firmware):
     # 交付(347/347 冻结),cnt 863,504→950,332(恰 +86,828=21,707×4 tick
     # 精确走表,仍 <prd 1,599,999)。
     # 路 SRCSYNC:+2,287 步段零新溢出零新交付(347/347 冻结),cnt
-    # 950,332→959,480(恰 +9,148=2,287×4 tick 精确走表);新停点 0x60befe6
-    # 在 audio sync 对象创建器 0x60befae 体内(JL_SYNC CON0 整字写 0 之前
-    # 的临界区内,IPMASK 6=两中断屏蔽中,ICFG 0x300)。
+    # 950,332→959,480(恰 +9,148=2,287×4 tick 精确走表);路 SYNCIMPL:
+    # +2 步段零新溢出零新交付(347/347 冻结),cnt 959,480→959,488(恰
+    # +8=2×4 tick 精确走表);新停点 0x60befee 在同一创建器临界区内
+    # (JL_SYNC CON 写放行后 +2 步的 BT clock timer 写,IPMASK 6=两中断
+    # 屏蔽中,ICFG 0x300)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==959480 and
+            tick0['cnt']==959488 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and

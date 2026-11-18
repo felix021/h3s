@@ -383,6 +383,24 @@ FEATURES = (
             'probe-not-plausible-state,CV/ADA/ASS 探针先例——零臂 CON1 终值'
             ' 0x0/ones 臂 0xffbfffff(bit22 在全一字本为 1,|0x400000 不变),未覆盖位保留初值进写事务;当前链段内'
             '零纯读段外零读者,敏感性臂证同停点同步数)'),
+    # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
+    # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
+    # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li
+    # 站点全在 audio_sync 库族,零 .data 字面量);链上触达恰四字=CON+
+    # CON1/BT_OFFSET/MIN_SLOT(fn_config 纯写,本次不执行);其余 9 成员
+    # 零触达不进。策略:CON 无合成初值(首写前读拒绝 BATCHA 先例)+写后
+    # 读回=最后写值+消费者 PC/核守卫(分支读点/未审计 PC/另一核消费前
+    # 停),WO 三字纯写记录读一律拒绝(含 RMW 内部读)。----
+    Feature('jl_sync_config_words', 'conditional', ('jl_src_sync_config_words',),
+            False, None,
+            'JL_SYNC(audio_sync)四字容器(CON 0xfe2500/CON1 0xfe251c/'
+            'BT_OFFSET 0xfe2524/MIN_SLOT 0xfe2528;42,061,357 停点'
+            ' 0x60befe6 creator CON 整字写 0 放行;CON 无合成初值首写前读'
+            '拒绝+写后读回=最后写值+消费者 PC/核守卫(IRQ/getter 分支读点/'
+            '未审计 PC/另一核消费前停),WO 三字纯写记录读一律拒绝;本次'
+            '续跑只执行 CON 一写零读,fn_config 在三道墙后不执行;证据='
+            '已验证实现契约与当前前缀推进,不证明 audio_sync/IRQ88/BT '
+            'clock timer/音频同步已运行)'),
     Feature('jl_pvdd_trim_writes', 'conditional', ('p11_power_init',), False, None,
             'W4[4] PVDD/trim 域容器:P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/'
             'P3_PVDD0_AUTO(0xf2c10c) 合成初始字 0+读回=当前值(VOLTAGE_CONFIG/'
@@ -664,10 +682,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42061357,
-        'stop_pc': '0x60befe6',
+        'completed_steps': 42061359,
+        'stop_pc': '0x60befee',
         'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
-                 'address': '0xfe2500', 'size': 4, 'value_bytes': '00000000'},
+                 'address': '0xf00130', 'size': 4, 'value_bytes': 'f4020000'},
         'freshness_fields': ('kind', 'address'),
     },
 }

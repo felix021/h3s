@@ -4013,6 +4013,158 @@ class ModelTests(unittest.TestCase):
                         and allf.handles(0xfd6104,4))
         self.assertFalse(allf.handles(0xfe2608,4) or allf.handles(0xfe2638,4))
 
+    def test_jl_sync_config_words(self):
+        # 路 SYNCIMPL(codex 收窄版 a,负例矩阵 12 项的单测面):42,061,357
+        # 停点 0x60befe6(creator 0x60befae 体内 CON 整字写 0)——四字容器
+        # CON/CON1/BT_OFFSET/MIN_SLOT:CON 无合成初值(首写前读拒绝)+写后
+        # 读回=最后写值+消费者 PC/核守卫,WO 三字纯写记录读一律拒绝;其余
+        # 9 成员与 0xF001xx timer 域不吞;子字/错位不承接。
+        from br28_model import JL_SYNC_CONFIG_WORDS, JLSyncConfigWords
+        self.assertEqual(JL_SYNC_CONFIG_WORDS,(0xfe2500,0xfe251c,0xfe2524,0xfe2528))
+        plain=BR28Model()
+        for address in JL_SYNC_CONFIG_WORDS:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(0xfe2500)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe2500,0)
+        self.assertNotIn('jl_sync_config_registers',plain.report())
+        h=BR28Model(jl_sync_config_words=True)
+        for address in JL_SYNC_CONFIG_WORDS:
+            self.assertTrue(h.handles(address,4))
+        # 负例④:其余 9 成员(DABUF/DASPACE/OFFEND/OFFSUM/PCMNUM/BTTIME/
+        # CON2/OUTSR/INSR)读写不被吞;负例②:0xF00130/40/44/48 timer 域
+        # 各访问均不承接(将来扩展仅接受独立批准地址,不按连续区间映射);
+        # 负例⑦:子字/错位/跨成员不承接(handles 门 size==4+对齐)。
+        for address in (0xfe2504,0xfe2508,0xfe250c,0xfe2510,0xfe2514,0xfe2518,
+                        0xfe2520,0xfe252c,0xfe2530,
+                        0xf00130,0xf00140,0xf00144,0xf00148,
+                        0xfe24fc,0xfe2534,0xfe2502,0xfe251a):
+            self.assertFalse(h.handles(address,4),hex(address))
+        self.assertFalse(h.handles(0xfe2501,4) or h.handles(0xfe2500,2) or
+                         h.handles(0xfe2502,2))
+        gate=h.jl_sync
+        # 负例③:CON 无合成初值——首写前读严格停(隐式补零被拒;含
+        # 已审计写回读点形状)。
+        gate.note_step(0x60bef62,0)
+        with self.assertRaisesRegex(Blocked,
+                'jl_sync_con_read_before_first_write_not_modeled'):
+            h.read(0xfe2500)
+        # 主事务形状(负例⑩:整字写不制造读依赖):creator 停点写 0 后,
+        # 已审计写回读点读回最后写值;记账无读以外的副作用。
+        h.write(0xfe2500,0)
+        self.assertEqual(gate.read(0xfe2500,0),0)
+        h.write(0xfe2500,0x06200000)
+        self.assertEqual(gate.read(0xfe2500,0),0x06200000)
+        # 负例⑥:读回进状态分支的三个消费读点+未知 PC+另一核→消费前停。
+        for pc in (0x60bf1f6,0x60bf25c,0x60bf19c):
+            gate.note_step(pc,0)
+            with self.assertRaisesRegex(Blocked,
+                    'jl_sync_con_branch_read_not_modeled'):
+                gate.read(0xfe2500,0)
+        gate.note_step(0x60bf1f6,0)
+        with self.assertRaisesRegex(Blocked,'jl_sync_con_branch_read_not_modeled'):
+            h.read(0xfe2500)
+        gate.note_step(0x3000000,0)   # 未审计 PC(同址新读者)
+        with self.assertRaisesRegex(Blocked,'jl_sync_con_read_pc_not_audited'):
+            gate.read(0xfe2500,0)
+        gate.note_step(None,0)        # restore 后首步前=无溯源
+        with self.assertRaisesRegex(Blocked,'jl_sync_con_read_pc_not_audited'):
+            gate.read(0xfe2500,0)
+        gate.note_step(0x60bef62,1)   # 另一核
+        with self.assertRaisesRegex(Blocked,
+                'jl_sync_con_other_core_read_not_modeled'):
+            gate.read(0xfe2500,1)
+        # 已审计写回读点全集合服务(fn_clear_b22/fn_config/fn_stop×2/
+        # fn_pause×2/fn_resume×2/IRQ RMW×2+insert 读)。
+        for pc in (0x60beef4,0x60bef62,0x60bf062,0x60bf066,0x60bf0c4,0x60bf0d8,
+                   0x60bf12e,0x60bf142,0x60bf1f8,0x60bf24a,0x60bf276):
+            gate.note_step(pc,0)
+            self.assertEqual(gate.read(0xfe2500,0),0x06200000,hex(pc))
+        # 负例⑤:WO 三字显式读与 RMW 内部读(同 read 路径)均拒绝,写过也
+        # 拒绝(纯写配置口零读观测)。
+        for address in (0xfe251c,0xfe2524,0xfe2528):
+            h.write(address,0x00C80000 if address==0xfe251c else 0)
+            gate.note_step(0x60bef62,0)
+            with self.assertRaisesRegex(Blocked,'jl_sync_wo_read_not_modeled'):
+                gate.read(address,0)
+        # 负例⑨:保留位精确——非零哨兵值跑 fn_config 真实配置段算术
+        # (0x60bef62 读→&0xE9DFC000→组装→二选一整字写),两组装分支按
+        # 掩码 0xE9DFC000/0xF9DEFFFF/0x06210000 精确核值(creator 字段
+        # h[obj+8]=512、h[obj+12]=80、b[obj+3]=0、b[obj+4] 低字节=0;
+        # 运行段在三道墙后未到达,算术按反汇编逐指令单测钉死):
+        # r5=512|(S&0xE9DFC000)|insert(slot&1,p28);arm b[obj+4]!=1 写
+        # (r5&0xF9DEFFFF)|0x06200000,arm ==1 写 0x06210000|r5。
+        for sentinel,arm1,arm2 in ((0xFFFFFFFF,0xEFFFC200,0xEFFEC200),
+                                   (0x12345678,0x06354200,0x06344200)):
+            probe=BR28Model(jl_sync_config_words=True)
+            g=probe.jl_sync
+            g.note_step(0x60befe6,0);g.write(0xfe2500,sentinel,0)
+            g.note_step(0x60bef62,0)
+            old=g.read(0xfe2500,0)
+            self.assertEqual(old,sentinel)
+            r5=(512&0xFFFF3FFF)|(old&0xE9DFC000)|((0&0xFFFFFF01)<<28)
+            g.write(0xfe2500,0x06210000|r5,0)           # arm b[obj+4]==1
+            self.assertEqual(g.read(0xfe2500,0),arm1,hex(sentinel))
+            g.note_step(0x60befe6,0);g.write(0xfe2500,sentinel,0)
+            g.note_step(0x60bef62,0)
+            old=g.read(0xfe2500,0)
+            r5=(512&0xFFFF3FFF)|(old&0xE9DFC000)|((0&0xFFFFFF01)<<28)
+            g.write(0xfe2500,(r5&0xF9DEFFFF)|0x06200000,0)  # arm b[obj+4]!=1
+            self.assertEqual(g.read(0xfe2500,0),arm2,hex(sentinel))
+        # 值域校验(容器直调;白名单外由模型层先拒)。
+        with self.assertRaises(ValueError):
+            gate.write(0xfe2500,-1,0)
+        with self.assertRaises(ValueError):
+            gate.write(0xfe2500,0x100000000,0)
+        with self.assertRaises(ValueError):
+            gate.write(0xfe2508,0,0)
+        with self.assertRaises(ValueError):
+            gate.read(0xfe2508,0)
+        # 报告面(负例⑪:无状态副作用合成——报告无 pending/计时/DMA 键,
+        # 只有写记录/读计数/守卫叙事)。
+        r=h.report()['jl_sync_config_registers']
+        self.assertEqual(r['addresses'],
+                         ['0xfe2500','0xfe251c','0xfe2524','0xfe2528'])
+        self.assertEqual(r['sdk_names'],
+                         {'0xfe2500':'JL_SYNC->CON','0xfe251c':'JL_SYNC->CON1',
+                          '0xfe2524':'JL_SYNC->BT_OFFSET','0xfe2528':'JL_SYNC->MIN_SLOT'})
+        self.assertEqual(r['stores']['0xfe2500']['cores'],[0,0])
+        self.assertEqual(r['readback_projection']['wo']['addresses'],
+                         ['0xfe251c','0xfe2524','0xfe2528'])
+        self.assertEqual(r['consumer_guard']['branch_read_pcs'],
+                         ['0x60bf19c','0x60bf1f6','0x60bf25c'])
+        self.assertEqual(len(r['consumer_guard']['writeback_read_pcs']),11)
+        self.assertIn('0x60bef62',r['observed_shapes'])
+        self.assertIn('0xE9DFC000',r['observed_shapes'])
+        self.assertIn('0xF00130',r['whitelisted_words'])
+        self.assertIn('NOT part of this container',r['whitelisted_words'])
+        self.assertIn('NOT silicon read-back evidence',r['sdk_naming'])
+        self.assertIn('thirteen members',r['sdk_naming'])
+        self.assertIn('NOT covered',r['access_face_completeness'])
+        self.assertIn('REJECTED',r['model_assumptions'])
+        self.assertIn('NOT executed',r['modeled_vs_touched'])
+        self.assertIn('does NOT mean',r['cross_domain_limitations'])
+        self.assertIn('jl_sync_config_registers',h.report()['assumptions'])
+        # 负例⑪:报告无发明状态(键集合里没有任何 pending/计时/DMA 面)。
+        self.assertEqual(sorted(r),sorted(('addresses','sdk_names','word_writes',
+                                           'stores','readback_projection',
+                                           'consumer_guard','modeled_vs_touched',
+                                           'whitelisted_words','observed_shapes',
+                                           'access_face_completeness',
+                                           'model_assumptions',
+                                           'cross_domain_limitations','sdk_naming',
+                                           'known_limitation','assumption')))
+        # 与 SRCSYNC/ASS/ADA/LPV/PLED 容器叠加:地址集互斥互不吞
+        # (0xfe25xx 与 0xfe26xx 相邻块不串)。
+        allf=BR28Model(jl_sync_config_words=True,jl_src_sync_config_words=True,
+                       jl_adc_start_config=True,jl_adda_ada_family=True,
+                       p11_lpvad_config=True,jl_pled_config_words=True)
+        self.assertTrue(allf.handles(0xfe2500,4) and allf.handles(0xfe2600,4)
+                        and allf.handles(0xfe0904,4) and allf.handles(0xfe0a20,4)
+                        and allf.handles(0xf2b404,4) and allf.handles(0xfd6104,4))
+        self.assertFalse(allf.handles(0xfe2504,4) or allf.handles(0xfe2608,4))
+
     def test_p2m_mailbox_ack_projection(self):
         # 路 B2R/S19 批 2 重落地(首版 0b875ed,BM §3):喂狗 0x12cc7e 事务
         # 序列的状态机——清槽(解除回声)→消息字节镜像→kick 0x400(武装)→

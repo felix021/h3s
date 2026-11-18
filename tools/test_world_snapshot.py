@@ -32,7 +32,7 @@ from br28_icfg import IcfgState, IcfgValue
 from br28_machine import DualCoreMachine
 from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT,
                         ICU_BASES, IRQController, JLAdcStartConfigRegisters,
-                        JLSrcSyncConfigRegisters,
+                        JLSyncConfigWords, JLSrcSyncConfigRegisters,
                         P2mMailboxAck, P33AwkupRegisters, P33CanaryWatchRegisters,
                         PartialWord)
 from br28_unknown import UnknownWord
@@ -703,6 +703,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # the current conditional frontier flag set (its first served RMW sits
         # at the 42,059,070 frontier stop).
         jl_src_sync_config_words=True,
+        # Route SYNCIMPL: the JL_SYNC four-word container, ON in the current
+        # conditional frontier flag set (its first recorded store sits at the
+        # 42,061,357 frontier stop).
+        jl_sync_config_words=True,
     )
 
     def build_world(self):
@@ -960,6 +964,15 @@ class M4ProjectionFamilies(unittest.TestCase):
         self.assertEqual(hw.jl_src_sync.read(JLSrcSyncConfigRegisters.WORDS[1]), 0x400000)
         hw.jl_src_sync.read(JLSrcSyncConfigRegisters.WORDS[0])  # synthetic initial 0
         hw.jl_src_sync.write(JLSrcSyncConfigRegisters.WORDS[2], 0, 0)
+        # Route SYNCIMPL: the four-word container carries state — the creator
+        # whole-word zero store on CON (read-after-write via the audited
+        # fn_config read PC) plus a WO word zero store; the per-step PC/core
+        # provenance rides as state.
+        gate = hw.jl_sync
+        gate.note_step(0x60bef62, 0)
+        gate.write(JLSyncConfigWords.WORDS[0], 0, 0)
+        self.assertEqual(gate.read(JLSyncConfigWords.WORDS[0], 0), 0)
+        gate.write(JLSyncConfigWords.WORDS[1], 0x00C80000, 0)
         return hardware
 
     def captured_m4(self, world):

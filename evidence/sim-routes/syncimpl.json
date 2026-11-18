@@ -1,0 +1,46 @@
+{
+ "route": "SYNCIMPL / sim-syncimpl（基线 main 1849a61=SYNCSOUT 合并点，42,061,357 停点实施路）",
+ "recorded_at": "2026-11-19T02:50:00+08:00",
+ "task": "JL_SYNC(audio_sync) 四字容器放行（codex 收窄版 a，docs/frontier-scout-jlsync.md §5）：42,061,357 @ 0x60befe6（creator 0x60befae 体内 CON 整字写 0）放行 → 快照续跑推进新前沿 → off-reproduce 逐键相等 → 负例矩阵 12 项 → 重钉。",
+ "consumer_audit": {
+  "base_address_provenance": "基址 0xfe2500=hs_base+map_adr(0x25,0) li 装载驱动：CON 字 0xfe2500 的 li 站点恰 12 处全在 0x60beeee-0x60bf1f0（audio_sync 库函数族），全 app 零 .data/.rodata 地址字面量（[0xfe2500,0xfe2600) 全部 13 成员地址的 32 位值在 app.bin 的命中恰为 12 个 li 立即数字段——与 JL_SRC_SYNC 的 hw_res 表 0x60a29d4 形成对照，本块纯 li）；DABUF(+4) 无 li 但经基址寄存器读（IRQ handler 0x60bf26c r0=[r5+4]）——li 扫描必须辅以函数体通读才不漏（codex 复核 384 条反汇编记录与 app.bin 字节一致）",
+  "access_face": "creator→fn_config 链触达恰四字：CON（creator 0x60befe6 整字写 0=停点；fn_config 0x60bef62 显式读→0x60bef9e 读-改-写：r1=[CON]&0xE9DFC000 保留位与对象字段组装，if (r4!=1)〔r4=b[obj+4] 对象字节非 CON 值〕两组装臂 0x06210000|r5 vs (r5&0xF9DEFFFF)|0x06200000 二选一整字写）；CON1（0x60bef60 =h[obj+10]<<16，预期 200<<16=0x00C80000）；BT_OFFSET（0x60bef58 整字写 0）；MIN_SLOT（0x60bef96 =h[obj+12]，预期 80）。本次续跑（fn_config 在 0xF00130/40+request_irq 三道墙后）只执行 CON 一写零读，WO 三字零写零读",
+  "read_value_destiny": "CON 读点逐 PC 分类（库族 0x60bee98-0x60bf2c8 全通读）：写回组装读点（读值只进 old|bit/old&~bit/insert 写回，AM/B3/DT/ADA/LPV 判据）11 处=fn_clear_b22 0x60beef4（&=0xFFBFFFFF 原子 RMW 内部读）/fn_config 0x60bef62/fn_stop 0x60bf062·0x60bf066/fn_pause 0x60bf0c4·0x60bf0d8/fn_resume 0x60bf12e·0x60bf142（|=0x1000000）/IRQ 0x60bf1f8·0x60bf24a（原子 RMW）+0x60bf276（insert 写回）；分支消费读点 3 处=IRQ 0x60bf1f6（bit19 if(r0&0x80000) 进分支）、IRQ 0x60bf25c（装载，uextra 0x60bf25e 消费 bit28 vs b[obj+3] 槽号比较进分支——侦察文档引 uextra 站点 0x60bf25e，守卫按装载指令 PC 0x60bf25c 拒，同一访问）、getter get_SLOT_MIX 0x60bf19c（bit28 vs 槽号）。getter 族与 IRQ handler 不在当前执行前缀（SRCSYNC 实测交接的运行事实；回调槽 0x607f5f6 结构上可达——静态不能替代运行排除，故做可执行 PC 守卫）",
+  "branch_completeness": "creator/fn_config 的配置分支（probe 链表空/非空、b[obj+4]∈{1,≠1}、b[obj+6]∈{0,≠0}）全部坐在 RAM 对象字段上，无一消费 CON 值；放行段（+2 步）零读=容器值零控制流影响；两组装臂的保留位算术按反汇编逐指令单测钉死（负例⑨）",
+  "other_9_members": "DABUF(+4)/DASPACE(+8)/OFFEND(+c)/OFFSUM(+10)/PCMNUM(+14)/BTTIME(+18)/CON2(+20)/OUTSR(+2c)/INSR(+30) 零触达不进白名单（不据 __RW/__WO 扩整块），读写到达即按新访问点停；OFFSUM/PCMNUM/INSR 主核 app 线性窗内零访问",
+  "sdk_block": "br28.h（sha 111e29ea…）JL_SYNC=hs_base+map_adr(0x25,0x00)，13 成员：CON(+0 __RW)/DABUF(+4 __RW)/DASPACE(+8 __RO)/OFFEND(+c __RO)/OFFSUM(+10 __RO)/PCMNUM(+14 __RO)/BTTIME(+18 __RO)/CON1(+1c __WO)/CON2(+20 __RW)/BT_OFFSET(+24 __WO)/MIN_SLOT(+28 __WO)/OUTSR(+2c __RW)/INSR(+30 __WO)；IRQ_SYNC_IDX=88（hwi.h，与 IRQ_SRC_SYNC_IDX=89 相邻恰对应 SFR 块 0x25/0x26 相邻）",
+  "timer_domain_preview": "0xF00130 域（不在容器）：写面恰两字（0xF00130=0x2F4、0xF00140=1754，全 app 唯一站点=creator 0x60befe8/0x60beff6）+读面 0xF00144/48（get_BTTIME_calc 0x60bf1c4、IRQ handler 0x60bf216）——BT clock 定时器形状（配置字+计数读回，derived-not-measured；语义无 SDK 证据，公开 SDK 三源无 audio_sync 驱动源〔闭源库〕，固件反汇编即第一手）；0xF00000|=0x400 单点（fn_config/fn_resume 条件臂 b[obj+6]==0，modem 窗）"
+ },
+ "implementation": {
+  "switch": "jl_sync_config_words（conditional，依赖 jl_src_sync_config_words=场景推进顺序非硬件依赖，默认 False=关；默认关世界=42,061,357 停点形状逐字节不变）。无 probe_only 值开关——CON 无合成初值（codex 显式拒绝零初值假设），保留位敏感性按负例⑨以真实写+算术单测钉死",
+  "model": "tools/br28_model.py JLSyncConfigWords：CON 无合成初值（首写前读拒绝 jl_sync_con_read_before_first_write_not_modeled，BATCHA 先例）+写后读回=最后写值（写记录投影 derived-not-measured）+RMW 内部读走 probe_boot 通用 mmio 路径；WO 三字纯写记录读一律拒绝含 RMW 内部读（jl_sync_wo_read_not_modeled，写过也拒绝）；消费者 PC/核守卫（负例⑥）——分支读点 0x60bf1f6/0x60bf25c/0x60bf19c（jl_sync_con_branch_read_not_modeled）、未审计 PC 含 restore 后首步前 current_pc=None（jl_sync_con_read_pc_not_audited）、另一核（jl_sync_con_other_core_read_not_modeled）一律消费前停；写不设 PC 守卫（值透明，cores 照记）",
+  "pc_provenance": "probe_boot step_body 每步 note_step(pc,core)（DMAIMPL current_pc 先例；开关关=槽 None 一次 is-not-None 测试即过 legacy 零变化）；M4 槽 jl_sync 字段 stores/word_writes/reads_after_write/con_read_attempts/wo_read_attempts/current_pc/current_pc_core（瞬态溯源 rides as state 保 per-object static guard 恒定；读策略 PC 集合=类常量走 class-identity check）",
+  "wiring": "br28_model.py（常量+类+构造/handles/read/write/report/assumptions 七点）；probe_boot.py（step_body 溯源）；probe_irq_entry.py（参数+budget+options+require 依赖+check() 重钉）；frontier_registry.py（Feature+FRONTIERS 重钉）；world_snapshot.py（M4 槽）；test_world_snapshot（M4_SWITCHES+poke）；test_br28_model（负例矩阵单测）；test_falsification（依赖破坏）"
+ },
+ "verification_arms": {
+  "base_off": "自建 base-off（本路代码态，条件栈全开+jl_sync 关，41,900,000 干净 budget 边界，01:53-02:17 wall 1462.5s；attempts 41,900,000/completed 41,884,941——idle 等待步耗尝试不计数，口径照旧）",
+  "on_main": "srcsync 路代码态 base-off（fingerprint 7c262e68…，快照二进制复制+sha256 abc279de… 对 lineage 记录核验）跨代码续跑（prior-fingerprint ack+jl_src_sync/jl_sync 双 enable_slots ack，copex-base 先例）→ +2 步 → 42,061,359 @ 0x60befee unmapped_or_readonly_write 0xF00130 value_bytes f4020000（wall 8.1s）；容器账本恰如侦察预期账本：CON 一写（值 0，core 0）零读、WO 三字零写零读、守卫零触发、SRCSYNC 容器 59 写冻结",
+  "on_main_ownbase": "自建 base 同代码态（fingerprint ack 4bcc2225…=base 捕获后仅 check() 字面值/registry 数据改动，臂路径零行为差异）--set jl_sync=true+enable_slots ack → 42,061,359 同停点，与跨代码 on-main 臂**逐键相等**（reference_equal=true，wall 7.6s）——同代码/跨代码双路径互证",
+  "off_reproduce": "自建 base 同代码态开关关续跑 → 42,061,357 @ 0x60befe6，与 srcsync on-main 参照比较**除 SRCSYNC observed_shapes 勘误文本外逐键相等**（differing_keys=['peripherals'] 内唯一差异=srcsync 路自己的 goto 偏移勘误文本〔其臂报告生成早于文本修正，其 probe 从零收口同款已知差异，dmaimpl 先例〕；停点/步数/全部计数/22 键 adapter 计数均同；wall 7.6s）",
+  "wall_order_hit": "墙序预判命中（负向确认项④）：侦察 §6 预判「放行后 +2 步停 0x60befee 写 0xF00130=0x2F4（BT clock timer 配置未建模）」——实测 +2 步同 PC 同址同值精确命中；后续墙序（0xF00140=1754→request_irq 0xffe12c ICU RMW→fn_config→0xF00000|=0x400 条件臂）留下一路对照",
+  "negative_matrix": "①开关关=42,061,357 逐键复现（off-reproduce 臂）②0xF00130/40/44/48 各访问不承接（单测，将来扩展仅接受独立批准地址不按连续区间映射）③CON 未写先读严格停+快照恢复丢写历史=M4 槽字段+missing-state 守卫拒载（单测+poke 往返）④其余 9 成员读写不被吞（单测 handles False）⑤WO 三字显式读+RMW 内部读均拒绝写过也拒绝（单测）⑥分支读点×3+未审计 PC（含 None）+另一核消费前停（单测逐 kind）⑦子字/错位/跨成员拒绝不部分提交（handles 门 size==4+对齐，单测）⑧配置分支完备——分支全在 RAM 对象字段不在 CON 值，段内零读（账本 reads==0 互证）⑨保留位精确——sentinel 0xFFFFFFFF/0x12345678 跑 fn_config 真实段算术两组装臂精确核值（0xEFFFC200/0xEFFEC200；0x06354200/0x06344200；运行段未到达单测钉算术）⑩整字写不制造读依赖（账本 reads==0）⑪无状态副作用合成（报告键集合无 pending/计时/DMA 面；IRQ88/DASPACE/OUTSR/BTTIME 全不建模）⑫快照写前/写后/RMW 前后保存恢复一致（M4 槽+poke 捕获恢复往返）；依赖破坏（falsification：jl_sync 开而 jl_src_sync 关→require 先炸）",
+  "preflight_offline": "assert_preflight 合成报告（srcsync assembly 14 legacy 行+on-main 条件行）225 断言：224 绿，唯一 mismatch=adapter 22 键基线（exact_full_word_store +1=CON 写，待 --recapture，不手钉）；基线重取后全绿"
+ },
+ "repins": {
+  "frontier": "FRONTIERS p11_heap_experimental → 42,061,359 @ 0x60befee（unmapped_or_readonly_write/write/0xf00130/size4/value_bytes f4020000；freshness kind+address）",
+  "counters": "wdt elapsed 158 冻结（feeds 163/162 冻结）；timer0 cnt 33792→33798（恰 +2×3 tick PRD 35999 窗内，交付 15780/到期 15797 冻结）；core-tick cnt 959480→959488（恰 +2×4 tick，347/347 冻结）；CRC 270/73829 冻结（段内零 CRC）；IPMASK 6 不变（同一临界区）；check() 增 SYNCIMPL 释放记录断言块（一写零读+三分支读点+11 写回读点+0xF001xx 不在容器+十三成员命名+零初值拒绝入档）",
+  "adapter_baseline": "22 键 --recapture 重取（exact_full_word_store 715772→715773=CON 写；其余 21 键冻结）",
+  "analyze_image_trace": "未动（红线）——freshness/flags 派生自 registry 自动跟随；per_core 硬钉漂移 {'0':42066357,'1':11496}（per-core0=completed+4,498 口径不变）留主协调统一收口",
+  "probe_full_from_zero": "probe --rom 全量从零 EXIT=0：条件场景 42,061,359 @ 0x60befee 与快照续跑臂逐键相等；其余 14 场景 legacy 形状全部不变；assert_preflight 对从零报告全绿"
+ },
+ "next_stop": {
+  "stop": "42,061,359 @ 0x60befee——creator 0x60befae 体内 st.w.modimm [0xF00130]=0x2F4（756；BT clock timer 配置，未建模），IPMASK=6 临界区内（CON 写放行后 +2 步）",
+  "wall_order": "①0x60befee 写 0xF00130=0x2F4（本停点）→②0x60beff6 写 0xF00140=1754（第二道墙，同域未建模）→③request_irq(88,2,0,0x60bf1e4)（0x6065d86：向量槽 [0x1A01C0]=handler 纯 RAM 写+0xffe12c ICU RMW 清 bit16-19 段后写 5——旧配置字是否已知决定 RMW 读是否停，静态无解运行验证，第三道墙候选）→④fn_config 四字（容器内：BT_OFFSET=0/CON1=200<<16/MIN_SLOT=80/CON 读-改-写 0x60bef62 读点已在白名单）+条件臂 b[obj+6]==0→0xF00000|=0x400（modem 窗新停点候选；b[obj+6]=创建参数=(b[cfgr+4]==2) 运行时值未观测）→⑤链表插入/回调安装（0x607f5f6 进对象[+36]）/exit crit/返回→adapter 0x607e4fe 续走",
+  "classification_for_next_route": "0xF001xx=BT clock 定时器域（两写口+两读口，写侧值均为 li 常量，读侧 0xF00144/48 进算术）——下路先做全域读写审计再裁容器形状；eq 设计族 copex 站点（mode16 0x6072bb8/mode24 0x6072d1a）仍在更下游未到达"
+ },
+ "honesty": {
+  "assumption": "容器=conditional 四字配置容器（codex 收窄版 a）：CON 无合成初值（零初值假设被 codex 显式拒绝——真实路径首访问即写，首写前读=访问顺序变化立即显形）+写后读回=最后写值（写记录投影 derived-not-measured 非硅读回声明非复位值声明）+消费者 PC/核守卫（把「同址新消费者须重审」做成可执行边界）均为显式模型假设；fn_config 的 RMW 指令自己消费旧值（读非死读——保留位进写事务，sentinel 单测钉死）",
+  "not_claimed": "不证明 audio_sync 硬件行为/IRQ88 触发/BT clock timer/槽位对齐/DMA/音频同步已运行；不证明跨函数寄存器传递/RAM 副本/ROM/q32s/其他核无访问（主核 app 线性窗审计的完备性边界，LPV/ADA 措辞）；写记录不设 PC 守卫（同址新写者到达按新访问点重审）；fn_stop 尾 88-call 注销/使能方向仍 [推断]",
+  "parity": "official↔b79 parity 未重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0，evimpl/dmaimpl/copeximpl/srcsync 同款边界）"
+ }
+}
