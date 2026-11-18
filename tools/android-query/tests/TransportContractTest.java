@@ -1,4 +1,5 @@
 import cn.felix021.h3squery.AndroidBleTransport;
+import cn.felix021.h3squery.BleDiscoveryPolicy;
 import cn.felix021.h3squery.BlePacketizer;
 import cn.felix021.h3squery.EqFrame;
 import cn.felix021.h3squery.EqFrame.EqBand;
@@ -21,13 +22,16 @@ import org.json.JSONObject;
  * 验证两者在 H3sTransport 接口语义上一致：分片序列 = BlePacketizer.split、通知重组走
  * RcspDeframer、帧级/片级串行顺序、错误传播、写类型选择。不连真机（红线）。
  *
- * AndroidBleTransport 专属部分（连接状态机/重试/看门狗/MTU 双标志/断线重连）单独覆盖：
- * 默认手动调度器（scheduler=null，与 Loopback 同步驱动）+ FakeScheduler（断言定时值：
- * 扫描 10s/连接 30s/片写看门狗 5s/片间隔 10ms/响应超时 5s）。
+ * AndroidBleTransport 专属部分（连接状态机/发现选优/重试/看门狗/MTU 双标志/断线重连）单独覆盖：
+ * 默认手动调度器（scheduler=null，与 Loopback 同步驱动——settle 在无时钟模式下同步执行）+
+ * FakeScheduler（断言定时值：发现超时 12s/settle 2s/连接 30s/片写看门狗 5s/片间隔 10ms/响应超时 5s）。
  */
 public class TransportContractTest {
     static void expect(boolean b, String msg) { if (!b) throw new AssertionError(msg); }
     static void eq(String name, int a, int b) { if (a != b) throw new AssertionError(name + ": " + a + " != " + b); }
+    static void eq(String name, String a, String b) {
+        if (a == null ? b != null : !a.equals(b)) throw new AssertionError(name + ": " + a + " != " + b);
+    }
     static void bytes(String name, byte[] a, byte[] b) {
         if (!java.util.Arrays.equals(a, b))
             throw new AssertionError(name + ":\n  got " + H3SBridge.hex(a) + "\n  exp " + H3SBridge.hex(b));
@@ -88,6 +92,8 @@ public class TransportContractTest {
      * 假 GATT 链路：实现 AndroidBleTransport.Link，同步回调（JVM 单线程）。
      * 设备侧行为 = 收片 RcspDeframer 重组 + LoopbackTransport.buildSuccessResponse 生成
      * 响应 + 按协商 MTU 分片走 notify 送回（与 LoopbackTransport 同一桩形状）。
+     * 扫描命中 = 同步上报 1-2 个候选广播（默认一个匹配 "QCY H3S" 的名字候选——对应真机
+     * AndroidGattLink 前置过滤后只上报匹配候选的形状）。
      */
     static final class FakeLink implements AndroidBleTransport.Link {
         AndroidBleTransport.Link.Callbacks cb;
@@ -97,6 +103,12 @@ public class TransportContractTest {
         boolean charsPresent = true;
         boolean scanFindsDevice = true;
         boolean scanFails;
+        String candidateName = "QCY H3S";      // 首个候选的广播名
+        String candidateAddress = "02:00:00:00:00:01";
+        int candidateRssi = -50;
+        String secondName;                     // 可选第二候选（null=无）
+        String secondAddress;
+        int secondRssi = -70;
         String notReady;                       // 非 null=前置检查失败原因
         int failConnects;                      // 前 N 次 connectGatt 立即报断开(133)
         boolean rejectMtu;                     // requestMtu 返回 false
@@ -109,6 +121,7 @@ public class TransportContractTest {
         final List<byte[]> writtenChunks = new ArrayList<byte[]>();
         final List<Integer> writeTypes = new ArrayList<Integer>();
         final List<byte[]> deviceFrames = new ArrayList<byte[]>();
+        final List<String> gattAddresses = new ArrayList<String>();
         int scanStarts, scanStops, gattConnects, gattCloses, discovers, cccdWrites;
         final List<Integer> mtuRequests = new ArrayList<Integer>();
         private final SerialBleTransport.RcspDeframer deviceRx = new SerialBleTransport.RcspDeframer();
@@ -119,11 +132,15 @@ public class TransportContractTest {
         @Override public void startScan() {
             scanStarts++;
             if (scanFails) cb.onScanFailed(1);
-            else if (scanFindsDevice) cb.onScanResult();
+            else if (scanFindsDevice) {
+                cb.onCandidate(candidateName, candidateAddress, candidateRssi);
+                if (secondAddress != null) cb.onCandidate(secondName, secondAddress, secondRssi);
+            }
         }
         @Override public void stopScan() { scanStops++; }
-        @Override public void connectGatt() {
+        @Override public void connectGatt(String address) {
             gattConnects++;
+            gattAddresses.add(address);
             if (failConnects > 0) { failConnects--; cb.onConnectionStateChange(133, AndroidBleTransport.STATE_DISCONNECTED); return; }
             cb.onConnectionStateChange(0, AndroidBleTransport.STATE_CONNECTED);
         }
@@ -237,6 +254,7 @@ public class TransportContractTest {
         androidConnectHappyPath();
         androidMtuVariants();
         androidScanVariants();
+        androidDiscoveryVariants();
         androidConnectRetries();
         androidConnectFailures();
         androidUnexpectedDisconnect();
@@ -245,8 +263,8 @@ public class TransportContractTest {
         bridgeConnectionControl();
         System.out.println("TransportContractTest passed: 契约（EQ/串行/跨片/未连接拒绝/断线重连，"
             + "Loopback 与 AndroidBleTransport+FakeLink 同断言）+ Android 状态机（连接五段式/MTU 三变体/"
-            + "扫描三变体/重试/失败路径/意外断线/写看门狗）+ 调度定时值（10s/30s/5s/10ms/5s）"
-            + "+ bridge 连接控制。未连真机。");
+            + "扫描发现变体/发现选优（注入地址优先+多候选最强）/重试/失败路径/意外断线/写看门狗）"
+            + "+ 调度定时值（12s/2s/30s/5s/10ms/5s）+ bridge 连接控制。未连真机。");
     }
 
     /** 端到端契约：EQ 帧→分片序列=BlePacketizer.split→设备逐字节收到→响应经 notify 重组回 listener。 */
@@ -441,40 +459,115 @@ public class TransportContractTest {
         eq("81B/20B 片数", 5, reject.writtenChunks.size() - before);        // 同链路两次写，取增量
     }
 
-    /** 扫描三变体：命中即连、超时转直连、启动失败转直连。 */
+    /** 扫描发现变体：候选发现即连、超时=明确失败（不转直连）、启动失败回退、关扫描直连。 */
     static void androidScanVariants() {
         FakeLink hit = new FakeLink();
-        hit.scanFindsDevice = true;
         AndroidBleTransport t1 = new AndroidBleTransport(hit);
         t1.connect();
-        expect(t1.isReady(), "扫描命中应连接");
-        eq("命中后连接 1 次", 1, hit.gattConnects);
+        expect(t1.isReady(), "发现候选应连接");
+        eq("发现后连接 1 次", 1, hit.gattConnects);
+        eq("连接的是发现的地址", hit.candidateAddress, hit.gattAddresses.get(0));
 
+        // 超时零候选：明确失败文案（不再直连兜底死等——2026-11-18 诊断根因）
         FakeLink none = new FakeLink();
         none.scanFindsDevice = false;
         AndroidBleTransport t2 = new AndroidBleTransport(none);
+        Events e2 = new Events();
+        t2.setListener(e2);
         t2.connect();
-        expect(!t2.isReady(), "扫描未命中时应还在 SCAN 相位等超时");
-        eq("扫描超时前未连接", 0, none.gattConnects);
+        expect(!t2.isReady(), "无候选时应还在 SCAN 相位等超时");
+        eq("超时前未连接", 0, none.gattConnects);
         expect("SCAN".equals(t2.phase()), "等待期相位应为 SCAN: " + t2.phase());
-        t2.runScheduler();                                                  // 推进扫描超时任务→转直连
-        expect(t2.isReady(), "超时转直连应就绪");
-        eq("超时后连接 1 次", 1, none.gattConnects);
+        t2.runScheduler();                                                  // 推进发现超时任务→明确失败
+        expect(!t2.isReady(), "超时后不应就绪");
+        eq("超时后仍零连接", 0, none.gattConnects);
         eq("超时后停扫", 1, none.scanStops);
+        expect(e2.disconnects.get(0).contains("未发现"), "超时错误应含「未发现」: " + e2.disconnects.get(0));
+        expect(e2.disconnects.get(0).contains("广播范围"), "超时错误应给出排查提示: " + e2.disconnects.get(0));
 
+        // 扫描启动失败：无注入地址=明确失败（发现模式没有可回退的已知地址）
         FakeLink fails = new FakeLink();
         fails.scanFails = true;
         AndroidBleTransport t3 = new AndroidBleTransport(fails);
+        Events e3 = new Events();
+        t3.setListener(e3);
         t3.connect();
-        expect(t3.isReady(), "扫描启动失败转直连应就绪");
-        eq("失败后连接 1 次", 1, fails.gattConnects);
+        expect(!t3.isReady(), "扫描失败且无注入地址应失败");
+        eq("扫描失败零连接", 0, fails.gattConnects);
+        expect(e3.disconnects.get(0).contains("扫描启动失败"), "失败原因应透传: " + e3.disconnects.get(0));
 
-        FakeLink l4 = new FakeLink();
-        AndroidBleTransport t5 = new AndroidBleTransport(l4);
+        // 扫描启动失败 + 注入地址：回退直连（保留旧回退，兼容注入构建）
+        FakeLink failsAddr = new FakeLink();
+        failsAddr.scanFails = true;
+        AndroidBleTransport t4 = new AndroidBleTransport(failsAddr,
+            new BleDiscoveryPolicy("AA:BB:CC:DD:EE:FF", "QCY H3S", false), null, null);
+        t4.connect();
+        expect(t4.isReady(), "扫描失败回退直连注入地址应就绪");
+        eq("回退直连地址", "AA:BB:CC:DD:EE:FF", failsAddr.gattAddresses.get(0));
+
+        // 关扫描直连：仅注入地址可用；发现模式明确失败
+        FakeLink noAddr = new FakeLink();
+        AndroidBleTransport t5 = new AndroidBleTransport(noAddr);
         t5.setScanEnabled(false);
+        Events e5 = new Events();
+        t5.setListener(e5);
         t5.connect();
-        expect(t5.isReady(), "关扫描直连应就绪");
-        eq("关扫描零扫描", 0, l4.scanStarts);
+        expect(!t5.isReady(), "无注入地址不能关扫描直连");
+        expect(e5.disconnects.get(0).contains("未注入目标地址"), "应说明无法跳过扫描: " + e5.disconnects.get(0));
+
+        FakeLink withAddr = new FakeLink();
+        AndroidBleTransport t6 = new AndroidBleTransport(withAddr,
+            new BleDiscoveryPolicy("AA:BB:CC:DD:EE:FF", "QCY H3S", false), null, null);
+        t6.setScanEnabled(false);
+        t6.connect();
+        expect(t6.isReady(), "注入地址关扫描直连应就绪");
+        eq("关扫描零扫描", 0, withAddr.scanStarts);
+        eq("直连地址", "AA:BB:CC:DD:EE:FF", withAddr.gattAddresses.get(0));
+    }
+
+    /** 发现选优（FakeScheduler 走真实延时路径）：注入地址候选立即选定；多名字候选 settle 后取最强。 */
+    static void androidDiscoveryVariants() {
+        // 注入地址候选出现 → offer 立即选定（不等 settle 观察窗）
+        FakeScheduler s1 = new FakeScheduler();
+        FakeLink preferred = new FakeLink();
+        preferred.candidateName = "别的设备";           // 名字不匹配也无妨：地址即身份
+        preferred.candidateAddress = "AA:BB:CC:DD:EE:FF";
+        final List<String> states = new ArrayList<String>();
+        AndroidBleTransport t1 = new AndroidBleTransport(preferred,
+            new BleDiscoveryPolicy("aa:bb:cc:dd:ee:ff", "QCY H3S", false), s1, null);   // 小写注入→大写归一
+        t1.setProgress(new AndroidBleTransport.Progress() {
+            @Override public void onConnectState(String state, String detail) { states.add(state); }
+        });
+        t1.connect();
+        s1.runNext();                                                   // 跳转任务 → SCAN → 候选 → 立即选定 → 五段式同步就绪
+        expect(t1.isReady(), "注入地址候选应立即连接就绪");
+        eq("注入地址连接（大写归一）", "AA:BB:CC:DD:EE:FF", preferred.gattAddresses.get(0));
+        expect(states.contains("scanning") && states.contains("connecting"),
+            "进度应含 scanning/connecting: " + states);
+        s1.runAll();                                                    // 过期定时任务 no-op
+
+        // 多个名字候选 → settle 2000ms 后取信号最强者
+        FakeScheduler s2 = new FakeScheduler();
+        FakeLink multi = new FakeLink();
+        multi.candidateRssi = -70;
+        multi.secondName = "QCY H3S";
+        multi.secondAddress = "02:00:00:00:00:02";
+        multi.secondRssi = -50;                                         // 更强的同名候选
+        final List<String> states2 = new ArrayList<String>();
+        AndroidBleTransport t2 = new AndroidBleTransport(multi, null, s2, null);
+        t2.setProgress(new AndroidBleTransport.Progress() {
+            @Override public void onConnectState(String state, String detail) { states2.add(state); }
+        });
+        t2.connect();
+        s2.runNext();                                                   // 跳转 → SCAN → 两个候选 → settle(2000) 入队
+        expect(!t2.isReady(), "settle 前不应连接");
+        eq("settle 前零连接", 0, multi.gattConnects);
+        expect(containsOnce(s2, 2000), "应有 settle 2000ms: " + s2.delays);
+        expect(states2.contains("found"), "进度应含 found: " + states2);
+        s2.runAll();                                                    // 发现超时(12000) 让位 → settle → 连最强 → READY
+        expect(t2.isReady(), "settle 后应就绪");
+        eq("选信号最强者", multi.secondAddress, multi.gattAddresses.get(0));
+        expect(containsOnce(s2, 12000), "应有发现超时 12000ms: " + s2.delays);
     }
 
     /** 连接重试：首次 GATT 断开(133)→退避 1s→第二次成功；重试期间旧帧仍开闸。 */
@@ -590,15 +683,17 @@ public class TransportContractTest {
         expect(r2.ok == null, "断链后的写停在排队（等重连）");
     }
 
-    /** 调度定时值：跳转 0 / 片间隔 10ms / 片写看门狗 5s / 响应超时 5s / 扫描超时 10s / 连接看门狗 30s / 退避 1s。 */
+    /** 调度定时值：跳转 0 / 发现超时 12s / settle 2s / 片间隔 10ms / 片写看门狗 5s / 响应超时 5s / 连接看门狗 30s / 退避 1s。 */
     static void androidSchedulerDelays() {
         FakeLink link = new FakeLink();
         FakeScheduler scheduler = new FakeScheduler();
         AndroidBleTransport t = new AndroidBleTransport(link, scheduler, null);
         t.connect();
-        scheduler.runNext();                                                // 跳转任务（delay 0）→connectInternal
-        // 连接期：扫描超时 10s + 连接看门狗 30s（假链路同步完成五段式）
-        expect(containsOnce(scheduler, 10000), "应有扫描超时 10s: " + scheduler.delays);
+        scheduler.runNext();                                                // 跳转任务（delay 0）→SCAN→候选→settle 入队
+        expect(containsOnce(scheduler, 12000), "应有发现超时 12s: " + scheduler.delays);
+        expect(containsOnce(scheduler, 2000), "应有候选 settle 2000ms: " + scheduler.delays);
+        scheduler.runNext();                                                // 发现超时(12s) 让位（settle 已排的 FIFO 乱序自检）
+        scheduler.runNext();                                                // settle→选定→看门狗 30s+五段式同步就绪
         expect(containsOnce(scheduler, 30000), "应有连接看门狗 30s: " + scheduler.delays);
         expect(t.isReady(), "假链路同步就绪");
         scheduler.runAll();                                                 // 过期定时任务全部 no-op

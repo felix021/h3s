@@ -18,13 +18,22 @@ public final class UpgradeGate {
     private long preparedAt;
     public State state() { return state; }
     public boolean armed() { return state == State.FLASHING || state == State.RECONNECTING; }
+
+    /**
+     * 地址核对：构建注入了地址（H3S_BLE_ADDRESS）才比对（路 BLEDISC 起地址默认空=扫描发现模式）。
+     * 空配置时跳过不会打开「刷错设备」的口子——升级链路在 UpgradeService 侧另有
+     * 「仅连注入地址」的 fail-closed 门（未注入地址时该门恒拒绝）。
+     */
+    public static boolean addressMatches(String expected, String actual) {
+        return expected == null || expected.isEmpty() || expected.equals(actual);
+    }
     public void preparing() {
         if (armed() || state == State.RECHECKING) throw new IllegalStateException("升级进行中");
         nonce = null; state = State.PREPARING;
     }
     public static void validate(Snapshot s, String sha, int bytes) {
         if (!SHA.equals(sha) || bytes != FILE_BYTES) throw new IllegalStateException("文件不是已验证的 ANC 两态恢复镜像");
-        if (s == null || !DeviceConfig.ADDRESS.equals(s.address) || s.pid != 16764 || s.vid != 7250 || s.uid != 7250) throw new IllegalStateException("设备身份不匹配");
+        if (s == null || !addressMatches(DeviceConfig.ADDRESS, s.address) || s.pid != 16764 || s.vid != 7250 || s.uid != 7250) throw new IllegalStateException("设备身份不匹配");
         if (s.version != EXPECTED_VERSION) throw new IllegalStateException("设备版本不是已查询的 0.1.1.8");
         if (!s.doubleBackup || s.needBootloader || s.mandatory) throw new IllegalStateException("仅支持本次确认的双备份正常模式");
         if (s.battery <= 0 || s.battery > 100) throw new IllegalStateException("QCY 电量读值无效");

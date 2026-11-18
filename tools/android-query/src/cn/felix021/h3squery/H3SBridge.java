@@ -204,6 +204,15 @@ public class H3SBridge {
     @JavascriptInterface public boolean isConnected() { return transport != null && transport.isReady(); }
 
     /**
+     * 连接过程状态出口（WebShellActivity 把 AndroidBleTransport.Progress 接到这里）：
+     * 推 {"event":"conn","state":"scanning|found|connecting","detail":"…"}；终态不经此口
+     * （就绪=mtu 事件、失败/断开=disconnected 事件带明确原因）。
+     */
+    public void emitConnectState(String state, String detail) {
+        emitEvent(put(put(eventJson("conn"), "state", state), "detail", detail == null ? "" : detail));
+    }
+
+    /**
      * 组 EQ 写命令（FF/0x22）。bandsJson 是段数组，每段 {freq:Hz, q:x100, gain:centidB, iirType}，
      * q 缺省 100（Q=1.0）、iirType 缺省 255（未指定→固件兜底 band_pass）；数值允许小数，×100 后四舍五入。
      * 单位与 writeEq 的 masterGainCentidB 一致（centidB= dB×100），避免浮点歧义。

@@ -28,8 +28,10 @@ import android.os.Looper;
  * （同 MainActivity/UpgradeService/WebShellActivity），只在 build.sh 按 android.jar 编译；
  * 状态机逻辑全在 AndroidBleTransport（纯 JVM，假 Link 单测覆盖）。
  *
- * 目标门槛（README 清单第 8 条）：只连构造时传入的 address（构建注入的 DeviceConfig.ADDRESS，
- * 照 UpgradeService「禁止连接未确认设备」先例）——扫描也按该地址过滤，不扫/不连任意设备。
+ * 目标门槛（README 清单第 8 条；路 BLEDISC 2026-11-18 起为发现模式）：不连任意设备——
+ * 扫描回调按共享 {@link BleDiscoveryPolicy} 前置过滤（名字匹配 "QCY H3S" 或注入地址命中，
+ * 照 QCY 官方 App 扫描发现的先例），只有被 transport 发现选定的地址才会被 connectGatt；
+ * 构建注入的 DeviceConfig.ADDRESS 仍被优先认（扫到该地址时立即上报，由 transport 优先选定）。
  *
  * 线程模型：平台回调（Binder 线程来的 BluetoothGattCallback/ScanCallback）统一 main.post
  * 后再调 Link.Callbacks；Link 的动作方法由 transport 在主线程调用（transport 注入的
@@ -49,8 +51,9 @@ public class AndroidGattLink implements AndroidBleTransport.Link {
     static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
 
     private final Context context;
-    private final String address;
+    private final BleDiscoveryPolicy discovery;    // 与 transport 共用：前置过滤 + 注入地址优先
     private final Handler main;
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastReport = new java.util.concurrent.ConcurrentHashMap<String, Long>();
     private Callbacks cb;
     private BluetoothGatt gatt;
     private BluetoothGattCharacteristic tx, rx;
@@ -58,9 +61,13 @@ public class AndroidGattLink implements AndroidBleTransport.Link {
     private BluetoothLeScanner scanner;
     private boolean scanning;
 
-    public AndroidGattLink(Context context, String address) {
+    /** 同址候选的上报去抖间隔（LOW_LATENCY 全扫下同一耳机 20-100ms 一包，全转发只会刷主线程）。 */
+    static final long REPORT_DEBOUNCE_MS = 300;
+
+    public AndroidGattLink(Context context, BleDiscoveryPolicy discovery) {
         this.context = context;
-        this.address = address;
+        this.discovery = discovery != null ? discovery
+            : new BleDiscoveryPolicy(null, BleDiscoveryPolicy.DEFAULT_NAME, false);
         this.main = new Handler(Looper.getMainLooper());
     }
 
@@ -81,16 +88,22 @@ public class AndroidGattLink implements AndroidBleTransport.Link {
         BluetoothAdapter adapter = adapter();
         if (adapter == null) return "设备不支持蓝牙";
         if (!adapter.isEnabled()) return "蓝牙未开启";
-        if (!BluetoothAdapter.checkBluetoothAddress(address)) return "目标地址无效: " + address;
+        String preferred = discovery.preferredAddress();
+        if (preferred != null && !BluetoothAdapter.checkBluetoothAddress(preferred)) return "目标地址无效: " + preferred;
         return null;
     }
 
-    /** 按目标地址过滤扫描（不扫任意设备；服务 UUID 过滤不加——H3S 广播是否含 A002 [未钉]，地址过滤即精确门槛）。 */
+    /**
+     * 发现扫描（路 BLEDISC）：无平台过滤全扫——注入地址不保证在广播（地址错时平台过滤会零命中，
+     * 正是 2026-11-18 诊断的死等根因），名字匹配在 {@link #scanCallback} 里按共享策略前置过滤，
+     * 只把匹配候选上报 transport（不扫/不连任意设备）。服务 UUID 过滤不加：H3S 广播是否含 A002 [未钉]。
+     */
     @Override public void startScan() {
         BluetoothLeScanner s = scanner();
         if (s == null) { post(new Runnable() { public void run() { if (cb != null) cb.onScanFailed(-1); } }); return; }
         scanning = true;
-        s.startScan(java.util.Collections.singletonList(new ScanFilter.Builder().setDeviceAddress(address).build()),
+        lastReport.clear();
+        s.startScan(java.util.Collections.<ScanFilter>emptyList(),   // 空 filter=不过滤（匹配在回调里做）
             new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback);
     }
 
@@ -103,17 +116,33 @@ public class AndroidGattLink implements AndroidBleTransport.Link {
 
     private final ScanCallback scanCallback = new ScanCallback() {
         @Override public void onScanResult(int callbackType, ScanResult result) {
-            if (cb == null || result.getDevice() == null || !address.equals(result.getDevice().getAddress())) return;
-            post(new Runnable() { public void run() { if (cb != null) cb.onScanResult(); } });
+            if (cb == null || result.getDevice() == null) return;
+            final String address = result.getDevice().getAddress();
+            if (address == null || address.isEmpty()) return;
+            final String name = scanName(result);
+            boolean preferred = discovery.isPreferred(address);               // 注入地址候选可无名
+            if (!preferred && !discovery.nameMatches(name)) return;           // 前置过滤：非匹配广播不上报
+            long now = android.os.SystemClock.elapsedRealtime();
+            Long last = lastReport.put(address, Long.valueOf(now));
+            if (last != null && now - last.longValue() < REPORT_DEBOUNCE_MS) return;   // 同址去抖
+            final int rssi = result.getRssi();
+            post(new Runnable() { public void run() { if (cb != null) cb.onCandidate(name, address, rssi); } });
         }
         @Override public void onScanFailed(int errorCode) {
             post(new Runnable() { public void run() { if (cb != null) cb.onScanFailed(errorCode); } });
         }
     };
 
-    @Override public void connectGatt() {
+    /** 广播名：scan record 里的 AD 名优先（广播本体），空则用系统缓存名兜底。 */
+    private static String scanName(ScanResult result) {
+        String n = result.getScanRecord() != null ? result.getScanRecord().getDeviceName() : null;
+        if (n == null || n.isEmpty()) n = result.getDevice().getName();
+        return n;
+    }
+
+    @Override public void connectGatt(String address) {
         BluetoothAdapter adapter = adapter();
-        if (adapter == null) { postState(0, BluetoothProfile.STATE_DISCONNECTED); return; }
+        if (adapter == null || address == null) { postState(0, BluetoothProfile.STATE_DISCONNECTED); return; }
         gatt = adapter.getRemoteDevice(address).connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
         if (gatt == null) postState(0, BluetoothProfile.STATE_DISCONNECTED);   // connectGatt 返回空（照 UpgradeService 处理）
     }

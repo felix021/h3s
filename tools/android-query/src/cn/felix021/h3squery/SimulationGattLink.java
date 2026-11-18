@@ -45,8 +45,12 @@ public class SimulationGattLink implements AndroidBleTransport.Link {
     public static final int PROTO = 1;
     /** 默认端口（设计 §4.5 取偏门值避开常见占用；CLI 可换）。 */
     public static final int DEFAULT_PORT = 7788;
-    /** 本地合成扫描命中延迟（走真实扫描相位，不留 10s 超时窗口）。 */
+    /** 本地合成扫描命中延迟（走真实扫描相位，不留 12s 发现超时窗口）。 */
     static final long SCAN_HIT_DELAY_MS = 50;
+    /** 合成候选的广播名/地址/RSSI（名字与默认发现策略匹配；地址是占位，不触真蓝牙）。 */
+    public static final String SIMULATED_NAME = BleDiscoveryPolicy.DEFAULT_NAME;
+    public static final String SIMULATED_ADDRESS = "02:00:00:00:00:02";
+    static final int SIMULATED_RSSI = -50;
     /** socket 拨号超时（对齐 GATT 快速失败语义，不吃 transport 的 30s 看门狗）。 */
     static final int CONNECT_TIMEOUT_MS = 5000;
     /** MTU 回报值（真机实测回调 247，设计 §4.3；transport 请求 517，以回调为准）。 */
@@ -86,14 +90,14 @@ public class SimulationGattLink implements AndroidBleTransport.Link {
         scanning = true;
         postDelayed(SCAN_HIT_DELAY_MS, new Runnable() { public void run() {
             if (!scanning) return;                          // stopScan 后晚到任务 no-op
-            post(new Runnable() { public void run() { if (cb != null) cb.onScanResult(); } });
+            post(new Runnable() { public void run() { if (cb != null) cb.onCandidate(SIMULATED_NAME, SIMULATED_ADDRESS, SIMULATED_RSSI); } });
         }});
     }
 
     @Override public void stopScan() { scanning = false; }
 
-    /** 异步拨号：成功→hello→CONNECTED(0)；失败→断开(133)，transport 按尝试失败重试。 */
-    @Override public void connectGatt() {
+    /** 异步拨号：成功→hello→CONNECTED(0)；失败→断开(133)，transport 按尝试失败重试。地址参数忽略（socket 会话）。 */
+    @Override public void connectGatt(String address) {
         final int mySession = ++session;
         connected = false;
         Thread io = new Thread(new Runnable() { public void run() { connectAndPump(mySession); } }, "sim-link-io");

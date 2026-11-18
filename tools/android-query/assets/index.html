@@ -1077,7 +1077,7 @@ summary {
         <button id="discBtn" disabled>断开</button>
         <button id="battBtn" disabled>查询电量</button>
       </div>
-      <p id="mtuText" class="note">仅连接构建时指定的耳机。</p>
+      <p id="mtuText" class="note">自动扫描发现附近的 QCY H3S 耳机后连接。</p>
     </article>
 
     <article class="card" id="sec-write">
@@ -1788,6 +1788,7 @@ document.addEventListener('keydown', event => {
 /* ---------- BLE 状态与命令生命周期 ---------- */
 let connected = false;
 let connecting = false;
+let connDetail = '';   // 连接过程文案（conn 事件：扫描中/发现/连接中）
 let armed = false;
 let mtu = null;
 let connectionNote = '';
@@ -1836,14 +1837,14 @@ function renderConnection() {
   } else if (connecting) {
     pill.textContent = '连接中';
     pill.classList.add('warning');
-    $('connText').textContent = '正在查找指定耳机并建立连接';
+    $('connText').textContent = connDetail || '正在查找耳机并建立连接';
   } else {
     pill.textContent = '未连接';
     $('connText').textContent = connectionNote || '尚未连接';
   }
   $('mtuText').textContent = mtu
     ? '连接就绪 · MTU ' + mtu
-    : '仅连接构建时指定的耳机；占位地址需在构建时配置。';
+    : '点击连接后自动扫描附近的 QCY H3S 耳机（按广播名发现并连接）。';
   updateGates();
 }
 function completeCommand(seq, success, message, event) {
@@ -1921,9 +1922,11 @@ $('connBtn').onclick = () => {
   if (result.ok) {
     connecting = true;
     connectionNote = '';
+    connDetail = '扫描中：寻找 QCY H3S 蓝牙广播…';
   } else {
     connecting = false;
     connectionNote = result.error || '连接请求失败';
+    connDetail = '';
   }
   renderConnection();
 };
@@ -1932,6 +1935,7 @@ $('discBtn').onclick = () => {
   if (!result.ok) return;
   connected = false;
   connecting = false;
+  connDetail = '';
   connectionNote = '已请求断开';
   mtu = null;
   failPending('连接已断开，未确认的命令结果未知。');
@@ -2038,6 +2042,15 @@ window.onH3sEvent = raw => {
     const event = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (!event || !event.event) return;
     log('BLE ' + event.event, event);
+
+    if (event.event === 'conn') {
+      // 连接过程状态（扫描中/发现/连接中）：实时更新「连接中」文案，不再静默卡死。
+      if (connecting) {
+        connDetail = String(event.detail || '');
+        renderConnection();
+      }
+      return;
+    }
 
     if (event.event === 'mtu') {
       const firstReady = !connected;

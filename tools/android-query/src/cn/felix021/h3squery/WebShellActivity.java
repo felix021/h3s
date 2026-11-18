@@ -77,17 +77,28 @@ public class WebShellActivity extends Activity {
         if (simHostValue == null) simHostValue = "127.0.0.1";
         final String simHost = simHostValue;
         final int simPort = getIntent().getIntExtra("sim_port", SimulationGattLink.DEFAULT_PORT);
+        // 路 BLEDISC：目标地址默认由扫描发现（按广播名 "QCY H3S"，官方 App 先例）；构建注入
+        // H3S_BLE_ADDRESS 时它作为优先地址（扫到即连，兼容注入构建）。GattLink 前置过滤与
+        // transport 发现选优共用同一 policy 实例。
+        BleDiscoveryPolicy discovery = new BleDiscoveryPolicy(DeviceConfig.ADDRESS, DeviceConfig.NAME,
+            "exact".equals(DeviceConfig.NAME_MATCH));
         AndroidBleTransport.Link link = sim
             ? new SimulationGattLink(simHost, simPort, AndroidGattLink.mainScheduler())
-            : new AndroidGattLink(this, DeviceConfig.ADDRESS);
+            : new AndroidGattLink(this, discovery);
         Log.i(TAG, "sim link config: sim=" + sim + " host=" + simHost + " port=" + simPort);
-        transport = new AndroidBleTransport(link, AndroidGattLink.mainScheduler(),
+        transport = new AndroidBleTransport(link, discovery, AndroidGattLink.mainScheduler(),
             new AndroidBleTransport.Logger() {
                 @Override public void log(String message) { Log.i(TAG, message); }
             });
         bridge = new H3SBridge(transport, new H3SBridge.ResultSink() {
             @Override public void emit(final String json) {
                 web.post(new Runnable() { public void run() { web.evaluateJavascript("window.onH3sEvent&&onH3sEvent(" + json + ")", null); } });
+            }
+        });
+        // 连接过程状态（扫描中/发现/连接中）→ 页面 conn 事件；终态仍走 mtu/disconnected。
+        transport.setProgress(new AndroidBleTransport.Progress() {
+            @Override public void onConnectState(String state, String detail) {
+                if (bridge != null) bridge.emitConnectState(state, detail);
             }
         });
         usbLink = sim

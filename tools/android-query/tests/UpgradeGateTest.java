@@ -32,7 +32,16 @@ public class UpgradeGateTest {
         UpgradeGate stale=prepared(); rejected(() -> stale.authorize("nonce", 121001));
         if (stale.armed()) throw new AssertionError("expired approval armed");
         badSnapshot(s -> s.pid=1); badSnapshot(s -> s.vid=1); badSnapshot(s -> s.uid=1);
-        badSnapshot(s -> s.address=null); badSnapshot(s -> s.version=281);
+        badSnapshot(s -> s.version=281);
+        // 地址核对（路 BLEDISC）：未注入地址（默认发现模式）跳过；注入了则必须精确匹配。
+        if (!UpgradeGate.addressMatches("", null) || !UpgradeGate.addressMatches("", "AA:BB:CC:DD:EE:FF")
+                || !UpgradeGate.addressMatches(null, "AA:BB:CC:DD:EE:FF"))
+            throw new AssertionError("empty config should skip address check");
+        if (!UpgradeGate.addressMatches("AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF"))
+            throw new AssertionError("matching address should pass");
+        if (UpgradeGate.addressMatches("AA:BB:CC:DD:EE:FF", "BB:BB:BB:BB:BB:BB")
+                || UpgradeGate.addressMatches("AA:BB:CC:DD:EE:FF", null))
+            throw new AssertionError("mismatched/null address must be rejected");
         rejected(() -> UpgradeGate.validate(snapshot(), "d1f7a067b169285d23457f8c182a8626bc75c01d679f2846a1f7c5e84b9b752d", UpgradeGate.FILE_BYTES));
         rejected(() -> UpgradeGate.validate(snapshot(), "c8dae5233678102aac152f0ff94952edea83c6eeca6afaf216db43226d0b6696", UpgradeGate.FILE_BYTES));
         rejected(() -> UpgradeGate.validate(snapshot(), "516aa05559690be1e1e266f03108ba0ddeb35a4e8b041be336f325573f1ac44d", UpgradeGate.FILE_BYTES));
