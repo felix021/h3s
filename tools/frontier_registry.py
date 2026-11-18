@@ -420,6 +420,24 @@ FEATURES = (
             '0xF00144/48 与 400B 整窗不承接;证据=已验证实现契约与当前'
             '前缀推进,不证明 BT clock timer 启动/计数/IRQ88/音频同步'
             '已运行)'),
+    # ---- 路 FMIMPL(codex 20261119 三选一裁 B):modem 窗 CON 头 0xF00000
+    # 恰一字 RMW 容器 jl_fm_con_head_rmw——42,061,478 停点 0x60befa8
+    # (fn_config 尾段 b[obj+6]==0 条件臂 [0xF00000]|=0x400 的 RMW 内部读)
+    # 放行。读值反证法钉死无链上来源(本 RMW 是前缀内对头字第一次访问)
+    # =硅初始态静态不可知,必须显式合成初值 0(与 JL_SYNC CON「无合成
+    # 初值」先例的关键差异:RMW 内部读是放行前提)。授权=一条完整指令
+    # 五元组(PC 0x60befa8+rmw.or.modimm+0x400+主核);其余 PC/核/形状/
+    # 显式读/独立写全拒;邻接成员一概不承接。----
+    Feature('jl_fm_con_head_rmw', 'conditional', ('jl_btclk_timer_words',),
+            False, None,
+            'modem 窗 CON 头 0xF00000 恰一字 RMW 容器(42,061,478 停点'
+            ' 0x60befa8 fn_config 条件臂 [0xF00000]|=0x400 RMW 内部读放行;'
+            '读值无链上来源=硅初始态静态不可知,合成初值 0+RMW 读拍返回'
+            '当前值(账本区分 synthetic/last_write)+授权=完整指令五元组'
+            '(同 PC 的 ld/st/不同掩码不借用)+显式读/独立写一律拒绝+邻接'
+            '成员不承接;fn_config 第二调用者 0x607e46c 同 PC 幂等第二次'
+            '运行时定;证据=已验证实现契约与当前前缀推进,不证明 modem 窗'
+            '/IRQ88/BT 时序已运行)'),
     Feature('jl_pvdd_trim_writes', 'conditional', ('p11_power_init',), False, None,
             'W4[4] PVDD/trim 域容器:P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/'
             'P3_PVDD0_AUTO(0xf2c10c) 合成初始字 0+读回=当前值(VOLTAGE_CONFIG/'
@@ -701,11 +719,12 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42061478,
-        'stop_pc': '0x60befa8',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read',
-                 'address': '0xf00000', 'size': 4,
-                 'reference_sdk_register': None},
+        'completed_steps': 42172441,
+        'stop_pc': '0x5ea4',
+        'stop': {'kind': 'upstream_store_bookkeeping_read', 'access': 'read',
+                 'address': '0x19e314', 'size': 4, 'region': 'physical_heap',
+                 'first_missing': '0x19e314',
+                 'note': 'upstream store model reads previous words to merge/drop writes; not a guest load'},
         'freshness_fields': ('kind', 'address'),
     },
 }

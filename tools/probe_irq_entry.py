@@ -5079,6 +5079,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
              jl_sync_config_words=False,
              jl_btclk_timer_words=False,
+             jl_fm_con_head_rmw=False,
              ancif_official_resources=None,
              ton_official_partition_pair=None,
              jl_rand_seed=None,
@@ -5371,6 +5372,12 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 停(ICU 0xffe12c RMW 或更下游,侦察 §6 三候选静态无解)——新停点
         # 由实跑取得;预算沿用 60M(余量以实跑核)。
         if jl_btclk_timer_words:budget=60000000
+        # 路 FMIMPL:modem 窗 CON 头 RMW 放行后 fn_config 返回,链走链表
+        # 插入/adapter 续走/表派发段(静态缺口)→节点 walker 第二次
+        # fn_config 或 eq 设计族 copex 站点(mode16 0x6072bb8/mode24
+        # 0x6072d1a,侦察 §6 预判下一停点 dsp_mode_not_modeled,先后运行时
+        # 定)——新停点由实跑取得;预算沿用 60M(余量以实跑核)。
+        if jl_fm_con_head_rmw:budget=60000000
     # 快照接线路(sim-snapwire,默认 None=legacy 不变):snapshot['budget'] 覆盖
     # flag 推导的预算=「可配置步数停点」(instruction_budget 快照点,docs/
     # snapshot-design.md §2.1 任意步停点);capture/restore/expected_context 由
@@ -6694,6 +6701,40 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
             'records THIS scenario advance order, not a hardware dependency of '
             'the modem-window timer words on the JL_SYNC block)')
         options['jl_btclk_timer_words']=True
+    # jl_fm_con_head_rmw(路 FMIMPL,codex 20261119 三选一裁 B,
+    # docs/frontier-scout-fm00000.md §5,默认 False=关):modem 窗 CON 头
+    # 0xF00000 恰一字 RMW 容器——42,061,478 停点 0x60befa8(fn_config
+    # 0x60bef46 尾段 b[obj+6]==0 条件臂 `[r0+0]|=0x400` 的 RMW 内部读)
+    # 放行。侦察钉死(FMSCOUT+codex 复核):读值无任何链上来源(本 RMW
+    # 是前缀内对窗内头字的第一次访问,反证法——任何更早的头字读写都会把
+    # 仿真停得更早)=硅初始态静态不可知,模型必须显式合成初值(与 JL_SYNC
+    # CON「无合成初值」先例的关键差异:RMW 内部读是放行前提);fn_config
+    # 有第二调用者(节点 start 0x607e46c 经 walker 0x6073514 派发,同 PC
+    # 同 obj 同臂——放行后大概率第二次 RMW,账本区分 synthetic/last_write
+    # 读来源分别记账);fn_resume 0x60bf14e 同款 RMW 不同 PC 链外、IRQ88
+    # 0x60bf238 无源、btctrler 13 站域未启动,全拒。容器策略(codex 裁 B,
+    # 五条修正照做):合成初值 0(显式假设 derived-not-measured 非硅复位
+    # 值声明)+RMW 读拍返回当前容器值+授权=一条完整指令五元组(主核+
+    # PC 0x60befa8+有效地址+对齐 32 位+rmw.or.modimm 立即数 0x400 全匹配,
+    # 同 PC 的普通 ld/st/不同掩码不借用)+其余 PC/核消费前停+显式标量读
+    # 一律拒绝+独立写一律拒绝(bulk 守卫在总线访问级,不只查 memcpy 调用
+    # 点)+邻接成员(头段 +4..+FF/尾段/400B 整窗双向)一概不承接+无副作用
+    # (不产生 IRQ88/不改其他寄存器)+复位清态+快照不扩大权限。证据全文见
+    # br28_model.py JLFmConHeadRmw 类注释。依赖边挂 jl_btclk_timer_words=
+    # 场景推进顺序(RMW 停点在 BT clock timer 两写与 request_irq 之后)
+    # 非硬件依赖;默认关=0xF00000 保持 unmapped(42,061,478 停点形状),
+    # legacy 逐字节不变。
+    if jl_fm_con_head_rmw:
+        require(jl_btclk_timer_words,
+            'the FM CON-head RMW container only layers on the BT clock timer '
+            'release (the chain reaches the fn_config conditional arm and its '
+            '[0xF00000]|=0x400 RMW only after the creator\'s BT clock timer '
+            'stores, request_irq(88) and the JL_SYNC four-word transaction '
+            'cross — without the TIMERIMPL release the world still stops at '
+            'the timer store; the dependency records THIS scenario advance '
+            'order, not a hardware dependency of the modem-window head word '
+            'on the timer words)')
+        options['jl_fm_con_head_rmw']=True
     # jl_pvdd_trim_writes(路 BM §1/S19 批 1 ①):W4[4] PVDD/trim 域容器——
     # P3_ANA_CON13(0xf2c274)/P3_ANA_CON1(0xf2c244)/P3_PVDD0_AUTO(0xf2c10c)
     # 合成初始字 0+读回=当前值(AM 容器族;BM §1.1 逐地址访问点钉死:复合
@@ -8436,10 +8477,12 @@ def check(report,firmware):
             '0x60bef62 served exactly once: BT_OFFSET=0, CON1=0x00C80000 '
             '(200<<16, the SYNCIMPL scout\'s predicted value), MIN_SLOT=80, '
             'the CON RMW writing back 0x06200050) to the fn_config '
-            'conditional arm b[obj+6]==0 -> [0xF00000] |= 0x400 and stops '
-            'at 42,061,478 @ 0x60befa8 on the unmapped read of 0xf00000 '
-            '(the modem-window CON head, scout candidate two — the arm IS '
-            'taken at runtime), a fresh SFR boundary for the next route)')
+            'conditional arm b[obj+6]==0 -> [0xF00000] |= 0x400, which '
+            'stopped at 42,061,478 @ 0x60befa8 on the unmapped read of '
+            '0xf00000 through the TIMERIMPL era (the modem-window CON head, '
+            'scout candidate two — the arm IS taken at runtime) and became '
+            'the route-FMIMPL five-tuple RMW release face (the chain now '
+            'walks on past it to 42,172,441)')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 EVIMPL(2026-11-18,docs/frontier-scout-evqueue.md 停点 41,909,506;
@@ -8740,15 +8783,83 @@ def check(report,firmware):
             '— the ICU 0xffe12c RMW read answered 0x00003030 with write-back '
             '0x00003035 (the scout\'s statically-unsolvable candidate one '
             'resolved at runtime as PASSING, recorded for the next scout) — '
-            'and the fn_config JL_SYNC transaction, stopping at 42,061,478 '
-            '@ 0x60befa8 on the unmapped READ of 0xf00000 inside the '
-            'b[obj+6]==0 conditional arm [0xF00000]|=0x400 (scout candidate '
-            'two, the arm IS taken) — the side-effect boundary wording (pure '
+            'and the fn_config JL_SYNC transaction to the b[obj+6]==0 '
+            'conditional arm [0xF00000]|=0x400, whose internal read stopped '
+            'at 42,061,478 @ 0x60befa8 through the TIMERIMPL era (scout '
+            'candidate two, the arm IS taken) and became the route-FMIMPL '
+            'five-tuple RMW release face — the side-effect boundary wording (pure '
             'stores, zero overlap with already-modeled domains, every '
             'observation face still refusing), the WO-is-policy-not-silicon '
             'wording, the per-address writer PC map and the '
             'minimal-abstraction assumption record — this does NOT verify '
             'any BT clock timer, IRQ88 or audio synchronization scenario')
+    # 路 FMIMPL:0xF00000 CON 头恰一字五元组 RMW 容器释放记录断言——账本
+    # 恰如侦察 §5 预期账本的「至少一次」下界:恰一笔 RMW(synthetic 0→
+    # 0x400,core0,PC 0x60befa8)零显式读零独立写零守卫拒绝;fn_config
+    # 第二调用者(节点 start 0x607e46c)未在本段重入(jl_sync 账本冻结
+    # 5 写 1 读=fn_config 全前缀恰执行一次——表派发段运行时先走了任务
+    # 装配而非节点 start);放行段 +110,963 步:fn_config RTS→纯 RAM 段
+    # →adapter 续走→框架表派发(静态缺口,运行时先创建新任务 0x6086c8c
+    # 〔TCB 0x41b158,恰一个新 watched 任务安装〕)→ROM 字节→半字展开环,
+    # 停 42,172,441 @ 0x5ea4(st.h.prer h[++r3]=r7 的 upstream 簿记读撞
+    # 未初始化物理堆半字 0x19e314——WDFEED 停点同类,WDFEED 后由
+    # STOREG3 exact-store 族放行的先例在,本站是半字前增量形状,归下路)。
+    # 墙序预判对账(任务第 4 项):侦察 §6 预判候选=copex 0x6072bb8
+    # mode16/0x6072d1a mode24 dsp_mode_not_modeled 或第二次 RMW(先后
+    # 运行时定)——实测两者都未落本段:表派发段先走任务装配+ROM 字符
+    # 处理,新停点在 copex 与第二次 fn_config 之前(侦察 §7「表派发段
+    # 静态不可见」诚实边界内的运行时答案);copex site16/site24 与节点
+    # start 第二次 RMW 仍在更下游未到达。
+    fmrel=r['peripherals']['jl_fm_con_head_registers']
+    require(fmrel['word_writes']==1 and
+            fmrel['stores']=={'0xf00000':{'values':['0x400'],'writes':1}} and
+            fmrel['transactions']==[{'read_source':'synthetic','old':'0x0',
+                                     'new':'0x400','pc':'0x60befa8','core':0}] and
+            fmrel['readback_projection']['synthetic_initial_word']=='0x0' and
+            fmrel['read_refusals']['refused']==0 and
+            fmrel['store_refusals']['refused']==0 and
+            fmrel['rmw_authorization']['rmw_pc_refusals']==0 and
+            fmrel['rmw_authorization']['rmw_form_refusals']==0 and
+            fmrel['rmw_authorization']['authorized_instruction']=={
+                'pc':'0x60befa8','instruction_id':'rmw.or.modimm',
+                'mask':'0x400','core':0,'address':'0xf00000','width':4} and
+            'ONE COMPLETE INSTRUCTION' in
+            fmrel['rmw_authorization']['semantics'] and
+            'NOT a silicon reset value' in
+            fmrel['readback_projection']['semantics'] and
+            'memcpy call sites' in fmrel['store_refusals']['semantics'] and
+            'never a contiguous range' in fmrel['whitelisted_words'] and
+            'couple' in fmrel['side_effect_boundary'] and
+            'SECOND caller' in fmrel['modeled_vs_touched'] and
+            'modem-window' in
+            r['peripherals']['assumptions']['jl_fm_con_head_registers'],
+            'the route-FMIMPL release record must pin the runtime evidence: '
+            'exactly ONE five-tuple RMW transaction on the modem-window CON '
+            'head — the 42,061,478 stop instruction itself (fn_config '
+            '0x60befa8 [0xF00000]|=0x400, core 0) served with the ledgered '
+            'read source synthetic (first head-word access, explicit initial '
+            '0, derived-not-measured, never reported as a silicon reset '
+            'value) writing 0x400 once — zero explicit reads, zero '
+            'independent stores, zero PC/form-guard refusals (fn_resume '
+            '0x60bf14e, the IRQ88 handler and the btctrler family never '
+            'touch the head word on this prefix); the scout\'s '
+            'at-least-one-at-most-two ledger bounds resolve at runtime to '
+            'the LOWER bound: the second fn_config caller (node start '
+            '0x607e46c via the framework walker) does NOT re-enter within '
+            'the released segment — the jl_sync ledger stays frozen at five '
+            'writes/one read, i.e. fn_config executed exactly once in the '
+            'whole prefix — the table-dispatch gap went to task assembly '
+            'first (exactly ONE new watched task installation, entry '
+            '0x6086c8c, TCB 0x41b158) and then into the ROM '
+            'byte-to-halfword expansion loop, where the new stop 42,172,441 '
+            '@ 0x5ea4 (st.h.prer upstream bookkeeping read of the '
+            'uninitialized physical-heap halfword 0x19e314, not a guest '
+            'load, IPMASK 0 outside any critical section) lands BEFORE both '
+            'scout candidates (the copex mode16/24 sites and the second '
+            'RMW stay unreached downstream); the five-tuple wording, the '
+            'synthetic-not-reset-value wording, the bus-level bulk-guard '
+            'wording and the silicon-coupling gap declaration — this does '
+            'NOT verify any modem-window, IRQ88 or BT clock scenario')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -8777,12 +8888,15 @@ def check(report,firmware):
     # 涨 2 个名义单位到 107——两段均无新喂狗事务,162/163 冻结;路 TONMAP
     # +51,493 步段再涨 13 个名义单位到 120;路 EVIMPL(jlstream 任务栈单点
     # 4B 槽放行)+56,377 步段又涨 14 个名义单位到 134——两段同样零新喂狗
-    # 事务,162/163 冻结),command_values
+    # 事务,162/163 冻结;路 FMIMPL(0xF00000 CON 头 RMW 放行)+110,963
+    # 步段(fn_config 返回→框架表派发→新任务 0x6086c8c 装配→ROM 字节→
+    # 半字展开环)再涨 28 个名义单位到 186,段内零新喂狗事务,162/163
+    # 冻结),command_values
     # 保持主核 6 条真实命令零伪造(副作用不写总线、不消耗 key_phase/
     # commands);已到期拒绝补喂的语义在单测钉死。
     wdt=r['peripherals']['watchdog_projection']
     require(wdt['feeds']==163 and wdt['mailbox_feed_side_effects']==162 and
-            wdt['expired'] is False and wdt['elapsed_nominal_units']==158 and
+            wdt['expired'] is False and wdt['elapsed_nominal_units']==186 and
             wdt['commands']==6 and wdt['command_values']==[0,0,0,14,46,65582] and
             wdt['assumptions']['expiry_reset_or_irq_delivery_simulated'] is False and
             'mailbox_feed_side_effect' in wdt['assumptions'] and
@@ -8790,7 +8904,7 @@ def check(report,firmware):
             'the route-WDFEED mailbox feed side-effect must reload the WDT exactly '
             'once per closed feed transaction (162 reloads against the 162 closed '
             'transactions, feeds total 163 = one direct init feed + 162 projected), '
-            'leaving the watchdog NOT expired at the stop (elapsed 158 of the 16384 '
+            'leaving the watchdog NOT expired at the stop (elapsed 186 of the 16384 '
             'nominal units of the CON 0x2e period — the route-STOREG3 release '
             'segment past 41,828,530 is a pure CPU0 sequence, no new feed '
             'transaction, only four more nominal units consumed; the route-'
@@ -8804,7 +8918,12 @@ def check(report,firmware):
             'totals frozen; the route-SRCSYNC and route-SYNCIMPL releases walk '
             'one more unit on to 158 and freeze it (+2,287 then +2 then '
             '+119 pure CPU0 steps — the TIMERIMPL release segment stays '
-            'inside the same nominal unit) with the '
+            'inside the same nominal unit); the route-FMIMPL release '
+            '(the modem-window CON-head RMW) walks 28 more nominal units on '
+            'to 186 (+110,963 steps through the fn_config return, the '
+            'framework table dispatch, the new 0x6086c8c task installation '
+            'and the ROM byte-to-halfword expansion loop — zero new feed '
+            'transactions, the 162/163 totals stay frozen) with the '
             'main-core command accounting untouched (six real commands '
             '[0,0,0,14,46,0x1002E], zero fabricated bus writes) and the '
             'expiry-stays-a-reset honesty flag intact')
@@ -9645,7 +9764,7 @@ def check(report,firmware):
     # (reti_from=块出口,延期-交付往返实证;机器守卫本身保持拒绝))。core
     # tick 交付 9→10(+1 次溢出,OS tick 级联继续)。
     t0=r['machine']['timer0_irq_entry_projection']
-    require(len(t0['deliveries'])==15780 and
+    require(len(t0['deliveries'])==15802 and
             all((d['core'],d['irq'],d['vector_address'],d['handler'])==(0,4,'0x19fe10','0x12ece8')
                 for d in t0['deliveries']) and
             all(d['reti_from'] in ('0x12e282','0x12e284','0x12e286','0x12b7b6','0x12b608',
@@ -9661,6 +9780,16 @@ def check(report,firmware):
                                    # 消费段(payload 装载)。
                                    '0x4166','0x6010a60','0x6010a82','0x6010e7a',
                                    '0x606454e','0x60742b6',
+                                   # 路 FMIMPL 段新增中断上下文(0xF00000 RMW
+                                   # 放行后 +110,963 步:fn_config 返回→框架
+                                   # 表派发→新任务 0x6086c8c 装配→ROM 字节→
+                                   # 半字展开环):0x6010a5e/0x6010a7a/0x6010ede
+                                   # =sdfile 走查器族第三窗、0x606091e=框架
+                                   # 0x60609xx 段、0x6074e44/0x6075192=eq/
+                                   # jlstream 节点族续走段、0x732a=ROM 展开环
+                                   # 调用域。
+                                   '0x6010a5e','0x6010a7a','0x6010ede','0x606091e',
+                                   '0x6074e44','0x6075192','0x732a',
                                    # 路 JLEQ 稳态新增中断上下文:0x12e2a2/a4/a6/
                                    # ac/aa=延时等待族第二窗(TIMER2 配置后的
                                    # 忙等五件套)、0x12cd76=TIMER2 锚定轮询头
@@ -9694,7 +9823,7 @@ def check(report,firmware):
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12b7b6')==2 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x12c5ca')==12791 and
             sum(1 for d in t0['deliveries'] if d['reti_from']=='0x606b0a2')==1 and
-            t0['deliveries'][-1]['reti_from']=='0x60745fa' and
+            t0['deliveries'][-1]['reti_from']=='0x732a' and
             [d['reti_from'] for d in t0['deliveries'][287:362]]==
             ['0x6010a4e', '0x12b608', '0x6010a5c', '0x12b608', '0x6007b7e',
              '0x4372', '0x6000f4a', '0x6007b7e', '0x12b608', '0x6000f4c',
@@ -9713,9 +9842,9 @@ def check(report,firmware):
              '0x12e282', '0x12e286', '0x12e284', '0x12e282', '0x12e286'] and
             all(d['pending_cleared_by_handler_ack'] and not d['delivery_clears_pending']
                 for d in t0['deliveries']) and
-            r['instruction_adapters'].get('timer0_irq_handler_frame')==31560 and
-            r['instruction_adapters'].get('conditional_timer0_irq_rti')==15780,
-            '15780 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
+            r['instruction_adapters'].get('timer0_irq_handler_frame')==31604 and
+            r['instruction_adapters'].get('conditional_timer0_irq_rti')==15802,
+            '15802 real Timer0 IRQ4 delivery round trips: the first 362 are the historical '
             'route-AK/AN/AS/B1 prefix (287 through the AK stop, the route-R delivery '
             'interrupting the OS veneer 0x12b7b6, the eight route-AN walker-chain '
             'contexts, the route-AS ROM rep-block exit 0x4196 and the sixty-one B1 '
@@ -9774,7 +9903,18 @@ def check(report,firmware):
             'dispatch call) and the LAST one interrupting 0x60745fa (a call '
             'inside the jlstream kick/param function family, the EVIMPL '
             'context 0x6074614 next door) — 15780 total, parked-wake count '
-            'still 12791')
+            'still 12791; the route-FMIMPL release (the modem-window '
+            'CON-head five-tuple RMW, +110,963 steps through the fn_config '
+            'return, the framework table dispatch, the new 0x6086c8c task '
+            'installation and the ROM byte-to-halfword expansion loop) adds '
+            '22 more deliveries 15781..15802 with seven new interrupt '
+            'contexts (the sdfile-walker third window 0x6010a5e/0x6010a7a/'
+            '0x6010ede, the framework 0x606091e, the eq/jlstream node-family '
+            'continuation 0x6074e44/0x6075192 and the ROM expansion-loop '
+            'caller domain 0x732a — ten more scheduler waits 0x12b608 '
+            'beside them) — 15802 total, parked-wake count still 12791 '
+            '(the segment runs CPU0 busy, no parked wake, event clock '
+            'frozen)')
     ct=r['machine']['core_tick_entry_projection']
     require(len(ct['deliveries'])==347 and
             (ct['deliveries'][0]['core'],ct['deliveries'][0]['vector_address'],
@@ -9799,21 +9939,23 @@ def check(report,firmware):
             'parked-wake shape reti_from=0x12c5ca appears 257 times and the delay family '
             'continues; one delivery interrupts the audio zone 0x60750e2)')
     dfr=r['machine']['irq_delivery_deferral_projection']
-    require(dfr['count']==11259 and
+    require(dfr['count']==11467 and
             all(e['irq'] in (3,4,127) and
                 e['deferred_while'] in ('core_tick_handler','timer0_irq_handler',
                                         'software_irq_handler',
                                         'mid_instruction (after_then/repeat in flight)')
                 for e in dfr['events']) and
             all(e['irq']==4 for e in dfr['events']),
-            '11259 delivery requests must be HELD (not dropped) through the 42,037,363 '
-            'stop. The retained 64-event window is now ALL mid-instruction family '
-            '(64 members, Timer0 IRQ4 behind the route-STOREG3 consumption-chain walk: '
-            'the S18 event dispatch calls the ROM delay rep bodies, so IRQ4 requests '
-            'deferred to the instruction boundary dominate the window again — the '
-            'route-AS/LPV shape returning on the longer prefix; the '
-            'handler-mutual-exclusion families rotated out — IRQ nesting stays '
-            'unmodeled); each re-requested by the next advance(), same '
+            '11467 delivery requests must be HELD (not dropped) through the 42,172,441 '
+            'stop. The retained 64-event window is dominated by the mid-instruction '
+            'family (53 of 64 members, Timer0 IRQ4 behind the route-STOREG3 '
+            'consumption-chain walk: the S18 event dispatch calls the ROM delay rep '
+            'bodies, so IRQ4 requests deferred to the instruction boundary dominate '
+            'the window again — the route-AS/LPV shape returning on the longer '
+            'prefix; the route-FMIMPL released segment rotates ten '
+            'timer0-handler-mutual-exclusion members and one software-handler member '
+            'back into the tail of the window — IRQ nesting stays unmodeled); each '
+            're-requested by the next advance(), same '
             'held-not-dropped philosophy as the route-BF masked-pending re-checks')
     # 路 CG→JLEQ 续五/续七:GPCNT 读回投影——本前缀 disable 3/clear 4,配置
     # 字路径(config_words 开启后全字读回接管)151 读(位粒度部分值服务
@@ -10040,8 +10182,13 @@ def check(report,firmware):
     # 计数走表 33,798→34,155(恰 +357=119 步×3 STD12M tick,PRD 35,999 窗
     # 内、无到期跨界:交付/到期 15780/15797 冻结),零新喂狗(163/162 冻结),
     # elapsed 名义单位 158 冻结。
-    require(timer=={'con':0x1401,'cnt':34155,'prd':35999,'pending':False,
-            'expirations':15797},
+    # 路 FMIMPL:0xF00000 CON 头 RMW 放行后 +110,963 步段(fn_config 返回→
+    # 框架表派发→新任务 0x6086c8c 装配→ROM 字节→半字展开环停点)PRD 重编
+    # 35,999→11,999(新延时窗),跨界 22 次到期(15,797→15,819)全交付全
+    # ACK(+22=交付 15,780→15,802),cnt 窗内走表到 5,769;零新喂狗(163/162
+    # 冻结),elapsed 名义单位 158→186。
+    require(timer=={'con':0x1401,'cnt':5769,'prd':11999,'pending':False,
+            'expirations':15819},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
             'with the counter walked on to 9342 inside the freshly reprogrammed delay '
@@ -10159,18 +10306,21 @@ def check(report,firmware):
     # +8=2×4 tick 精确走表);路 TIMERIMPL:+119 步段(BT clock timer 两写
     # →request_irq→fn_config→0xF00000|=0x400 条件臂 RMW 读停)零新溢出
     # 零新交付(347/347 冻结),cnt 959,488→959,964(恰 +476=119×4 tick
-    # 精确走表);新停点 0x60befa8 在 fn_config 体内(b[obj+6]==0 条件臂
-    # [0xF00000]|=0x400 的 RMW 内部读,IPMASK 6=两中断屏蔽中,ICFG
-    # 0x300)。
+    # 精确走表);路 FMIMPL:+110,963 步段(fn_config 返回→框架表派发→
+    # 新任务装配→ROM 展开环)零新溢出零新交付(347/347 冻结),cnt
+    # 959,964→1,403,816(恰 +443,852=110,963×4 tick 精确走表,仍 <prd
+    # 1,599,999);新停点 0x5ea4 在 ROM 字节→半字展开环的 st.h.prer 体内
+    # (upstream 簿记读未初始化物理堆半字 0x19e314,IPMASK 0=临界区外,
+    # ICFG 0x300)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==959964 and
+            tick0['cnt']==1403816 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300' and
-            r['peripherals']['ipmask']==6,
+            r['peripherals']['ipmask']==0,
             'the CPU0 core tick must deliver and ack ALL 116 overflows through the '
             '21,798,206 stop: the historical route-AK landmark, timeout-window, AS and '
             'B1 ones carry the count to eleven, the route-BQ release replays the masked '
@@ -10333,7 +10483,10 @@ def check(report,firmware):
             [(0,127,'0x12ad2a','0x12b608')]+
             # 路 DMAIMPL:set_sample_rate 四调+POST 段的调度往返再增两轮
             # 调度器等待交付(348 交付合计;commands/acks 696/348 同步)。
-            [(0,127,'0x12ad2a','0x12b608')]*2,
+            [(0,127,'0x12ad2a','0x12b608')]*2+
+            # 路 FMIMPL:0xF00000 RMW 放行后框架表派发段新任务 0x6086c8c
+            # 安装的调度往返再增一轮调度器等待交付(349 交付合计)。
+            [(0,127,'0x12ad2a','0x12b608')]*1,
             'the pmu_task creation must round-trip the scheduler with two more CPU0 irq127 '
             'deliveries (the trim-task creation at 0x6067ae0 adds none: its path stops inside '
             'the timer bring-up before any scheduler IPI); the route-CO scheduler helper prefix '
@@ -10347,7 +10500,9 @@ def check(report,firmware):
             'route-WDFEED park extension past the crossed watchdog point adds the '
             'pure steady-state tail: 146 parked-wake/scheduler-wait alternations '
             'plus one final parked wake, 345 deliveries total, every one '
-            'RTI-complete)')
+            'RTI-complete; the route-FMIMPL released segment (the framework table '
+            'dispatch installing the new 0x6086c8c task) adds one more '
+            'scheduler-wait round — 349 deliveries total, every one RTI-complete)')
     # 路 BY 注:pmu_task 入口的 RTI 事件(pc_after 0x6068f0c/sp 0x401ffc,
     # ~300k 步)在路 BY 分歧点(首个 caller A 的轮询退出,~305k)之前——该
     # 前缀与 689,402 地标世界逐字节相同,证据钉在路 BS 检查里。本场景的
@@ -10363,8 +10518,8 @@ def check(report,firmware):
     # CPU1 同步 IPI 往返——交付列表 11→12(尾项仍是 (1,125,'0x12c5ca')),
     # conditional_software_irq_rti 11→12、commands/acks 22/11→24/12。
     require(r['machine']['events_truncated'] is True and
-            r['instruction_adapters'].get('conditional_software_irq_rti')==348,
-            'the software IRQ RTI count must reach 348 = the 348 delivered rounds (the pmu_task-entry RTI event lies '
+            r['instruction_adapters'].get('conditional_software_irq_rti')==349,
+            'the software IRQ RTI count must reach 349 = the 349 delivered rounds (the pmu_task-entry RTI event lies '
             'in the byte-identical pre-305k prefix pinned at the 689,402 landmark; the trimmed '
             '32+32 events window holds the IRQ4 round trips; the route-CO CPU1 sync '
             'IPI is a repeat_irq_delivery round whose handler RTI was still in flight at the '
@@ -10372,14 +10527,18 @@ def check(report,firmware):
             'the route-CW DAC-init tail adds one more CPU1 sync-IPI round, and the route-B3 '
             'OS-wait prefix adds the two CPU0 irq127 rounds, the route-JLEQ steady state '
             'adds six more and the route-GPCNUM park extension eighteen (nine parked '
-            'wake + scheduler-IPI alternations) — all fifty-two RTI-complete)')
-    require(r['peripherals']['software_irq_commands']['commands']==696 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==348,
+            'wake + scheduler-IPI alternations) — all fifty-two RTI-complete; the '
+            'route-FMIMPL released segment adds the new 0x6086c8c task-installation '
+            'round — 349 delivered, 349 RTI-complete)')
+    require(r['peripherals']['software_irq_commands']['commands']==698 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==349,
             'the two scheduler IPI round trips plus the route-CO scheduler-helper sync IPI '
             'and the route-CW DAC-init tail sync IPI carry the historical bookkeeping to '
             '104/52, and the route-WDFEED steady-state park extension runs the scheduler '
             'wait/parked-wake rounds on to 690 commands / 345 acknowledgements (two '
-            'commands per delivered round, every one acked — nothing dropped)')
+            'commands per delivered round, every one acked — nothing dropped); the '
+            'route-FMIMPL released segment carries the bookkeeping on to 698/349 '
+            '(one more delivered round, two more commands, both acked)')
     # 路 V 及之前的新前缀不经硬件 CRC 引擎:CRC 30 次往返 900 字节与
     # crc_bankb_erased_fixture 完全一致。路 AA:CON1 读回放行后 uart_init 收尾+
     # init 链前三项经硬件 CRC 引擎 **+2 轮**(种子 0、结果 0x62eb/0x9c78、
@@ -10390,7 +10549,7 @@ def check(report,firmware):
     crc_heap=r['peripherals']['hardware_crc_projection']
     require(crc_heap['seed_writes'][:30]==crc_ff['seed_writes'] and
             crc_heap['result_reads'][:30]==crc_ff['result_reads'] and
-            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==270 and
+            len(crc_heap['seed_writes'])==32 and len(crc_heap['result_reads'])==306 and
             crc_heap['seed_writes'][30:]==['0x0','0x0'] and
             crc_heap['result_reads'][30:]==['0x62eb','0x9c78']+['0xa1cd','0x9946',
                 '0xd1cf','0x239e','0x7dee','0x91a9']*7+['0xa1cd','0xb37d','0xa11d',
@@ -10404,8 +10563,9 @@ def check(report,firmware):
                 '0x239e','0x7dee','0x91a9','0xc1b0']+['0xa1cd','0x9946','0xd1cf',
                 '0x239e','0x7dee']+['0x66e5','0xc73e','0x60ca']
             +['0x7e4e','0xcf96','0xf5c0']
-            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*10 and
-            crc_heap['fed_bytes']==73829,
+            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*10
+            +['0xa1cd','0x9946','0xd1cf','0x239e','0x7dee','0x91a9']*6 and
+            crc_heap['fed_bytes']==74909,
             'the heap fixture must keep the first thirty hardware CRC round trips '
             'byte-identical to crc_bankb; the route-AA prefix adds the seeded '
             '0x62eb/0x9c78 pair, the route-AN walker chain thirty and the route-AS '
@@ -10437,7 +10597,11 @@ def check(report,firmware):
             'CRC-verified config tables), and the route-COPEXIMPL release (the '
             'mode-22 exponential pass) walks the same CONFIG cycle one more '
             'time (six rounds — the eq open-config coefficient design re-reads '
-            'the CRC-verified config tables again), 73829 fed bytes total')
+            'the CRC-verified config tables again), and the route-FMIMPL released '
+            'segment walks the same CONFIG cycle six more times (thirty-six '
+            'rounds on the standing zero seed — the framework table dispatch '
+            're-reads the CRC-verified config tables for the new 0x6086c8c task '
+            'installation), 74909 fed bytes total')
     require(r['peripherals']['p11_low_power_response']['requests_observed']==1 and
             r['peripherals']['counts'].get('p11_lpwr_post_clear_poll_reads')==1,
             'the PWR_CON bit5 request/poll projection must stay at its single observed round')

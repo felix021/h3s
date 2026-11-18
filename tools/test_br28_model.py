@@ -4301,6 +4301,191 @@ class ModelTests(unittest.TestCase):
                         and allf.handles(0xfe2500,4) and allf.handles(0xfe2600,4))
         self.assertFalse(allf.handles(0xf00144,4) or allf.handles(0xfe2504,4))
 
+    def test_jl_fm_con_head_rmw(self):
+        # 路 FMIMPL(codex 三选一裁 B,负例矩阵 13 项的单测面):
+        # 42,061,478 停点 0x60befa8(fn_config 尾段 b[obj+6]==0 臂
+        # `[r0+0]|=0x400` 的 RMW 内部读)——恰 0xF00000 单字容器:合成
+        # 初值 0(读值无链上来源)+RMW 读拍返回当前值(账本区分
+        # synthetic/last_write)+授权=完整指令五元组+其余 PC/核/形状拒+
+        # 显式读/独立写一律拒+邻接成员不承接。
+        from br28_model import JL_FM_CON_HEAD, JLFmConHeadRmw
+        self.assertEqual(JL_FM_CON_HEAD,0xf00000)
+        # 负例①(单测面):开关关=0xF00000 unmapped,RMW 内部读即
+        # unmapped_memory 停(off-reproduce 臂逐键复现 42,061,478)。
+        plain=BR28Model()
+        self.assertFalse(plain.handles(JL_FM_CON_HEAD,4))
+        with self.assertRaisesRegex(Blocked,'uninitialized_peripheral'):
+            plain.read(JL_FM_CON_HEAD)
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(JL_FM_CON_HEAD,0x400)
+        self.assertNotIn('jl_fm_con_head_registers',plain.report())
+        h=BR28Model(jl_fm_con_head_rmw=True)
+        self.assertTrue(h.handles(JL_FM_CON_HEAD,4))
+        self.assertTrue(h.handles_jl_fm_rmw(JL_FM_CON_HEAD))
+        # 负例⑪:邻接成员一概不承接——头段 +4..+FF、尾段读口、窗尾、
+        # 0xF00130/40(TIMERIMPL 原核准地址,本容器不认领交叉访问)。
+        for address in (0xf00004,0xf00008,0xf0000c,0xf00080,0xf000ff,
+                        0xf00100,0xf00144,0xf00148,0xf0018c,0xf0018f,
+                        0xf00130,0xf00140,0xf00001,0xefffff,0xf00190):
+            self.assertFalse(h.handles(address,4),hex(address))
+            self.assertFalse(h.handles_jl_fm_rmw(address),hex(address))
+        # 负例⑩:子字/错位/跨字不取整不拆分(handles 门 size==4+对齐)。
+        self.assertFalse(h.handles(0xf00000,2) or h.handles(0xf00000,1)
+                         or h.handles(0xf00000,8) or h.handles(0xf00002,4)
+                         or h.handles(0xf00001,4))
+        gate=h.jl_fm
+        # 负例⑧(读面):显式 load 一律拒——首写前后同拒,同 PC 也不借用
+        # (授权=完整指令五元组,普通 ld.w 不是 RMW)。
+        for pc in (0x60befa8,0x60bf1c4,0x6085324,0x3000000,None):
+            gate.note_step(pc,0)
+            with self.assertRaisesRegex(Blocked,'jl_fm_read_not_modeled'):
+                gate.read(JL_FM_CON_HEAD,0)
+        self.assertEqual(gate.read_attempts_refused,5)
+        # 负例⑧(写面):独立 store 一律拒——任何 PC 任何值(含已审计
+        # PC 本身与同值 store);bulk memcpy 写负例⑦同面:守卫在总线
+        # 访问级(read/write 分发),不在 memcpy 调用点。
+        for pc,core in ((0x60befa8,0),(0x60481bc,0),(0x60befee,0),(None,0)):
+            gate.note_step(pc,core)
+            with self.assertRaisesRegex(Blocked,'jl_fm_store_pc_not_audited'):
+                gate.write(JL_FM_CON_HEAD,0x400,core)
+        self.assertEqual(gate.store_refusals,4)
+        # 负例⑤:fn_resume 0x60bf14e/IRQ88 0x60bf238 同款 RMW 不同 PC
+        # ——即使(下述合法事务后)头字已记 0x400 也停在内部读,取不到
+        # 旧值;负例⑨:PC/核来源缺失(None)或过期、CPU1 用合法 PC 与
+        # 指令——全拒,上次 CPU0 留下的 PC 不能授权本次。
+        gate.note_step(0x60befa8,0)
+        for pc,insn,mask,core,kind in (
+                (0x60bf14e,'rmw.or.modimm',0x400,0,'jl_fm_rmw_pc_not_audited'),
+                (0x60bf238,'rmw.or.modimm',0x400,0,'jl_fm_rmw_pc_not_audited'),
+                (None,'rmw.or.modimm',0x400,0,'jl_fm_rmw_pc_not_audited'),
+                (0x60befa8,'rmw.or.modimm',0x400,1,'jl_fm_rmw_pc_not_audited'),
+                (0x60befa8,'rmw.or.modimm',0x8,0,'jl_fm_rmw_form_not_audited'),
+                (0x60befa8,'rmw.and.nmodimm',0xFFFFFBFF,0,'jl_fm_rmw_form_not_audited'),
+                (0x60befa8,'rmw.or.r',None,0,'jl_fm_rmw_form_not_audited')):
+            with self.assertRaisesRegex(Blocked,kind):
+                gate.rmw(pc,insn,mask,core)
+        self.assertEqual(gate.rmw_pc_refusals,4)
+        self.assertEqual(gate.rmw_form_refusals,3)
+        self.assertEqual(gate.word_writes,0)
+        # 负例⑥:btctrler 13 站写者逐个代入(|=0x4/&=0xFFFFFF8F/
+        # |=r10 寄存器操作数/清 bit12)——全部停在内部读,取不到旧值。
+        for pc,insn,mask in ((0x6048348,'rmw.or.modimm',0x4),
+                              (0x605075c,'rmw.or.modimm',0x4),
+                              (0x6050fb4,'rmw.and.nmodimm',0xFFFFFF8F),
+                              (0x6085324,'rmw.or.r',None),
+                              (0x6032332,'rmw.and.nmodimm',0xFFFFEFFF)):
+            with self.assertRaisesRegex(Blocked,'jl_fm_rmw_pc_not_audited'):
+                gate.rmw(pc,insn,mask,0)
+        self.assertEqual(gate.rmw_pc_refusals,9)
+        # 负例②:首合法 RMW——事务前未写态,首读来源=synthetic 0,
+        # 0→0x400 恰一笔写(报告不得把 0 列为硅复位值)。
+        self.assertEqual(gate.rmw(0x60befa8,'rmw.or.modimm',0x400,0),0x400)
+        self.assertEqual(gate.word_writes,1)
+        self.assertEqual(gate.values,[0x400])
+        self.assertEqual(gate.transactions,
+                         [{'read_source':'synthetic','old':'0x0','new':'0x400',
+                           'pc':'0x60befa8','core':0}])
+        # 负例③:原站点连续两次——第二次旧值来源=last_write(上次写回
+        # 0x400),累计一次合成读+一次写后内部读+两笔写(数值幂等也保留
+        # 写脉冲)。
+        self.assertEqual(gate.rmw(0x60befa8,'rmw.or.modimm',0x400,0),0x400)
+        self.assertEqual(gate.word_writes,2)
+        self.assertEqual(gate.values,[0x400,0x400])
+        self.assertEqual([t['read_source'] for t in gate.transactions],
+                         ['synthetic','last_write'])
+        self.assertEqual(gate.transactions[1],
+                         {'read_source':'last_write','old':'0x400',
+                          'new':'0x400','pc':'0x60befa8','core':0})
+        # 负例⑤后置核:头字已记 0x400 后,fn_resume 同款 RMW 仍拒。
+        with self.assertRaisesRegex(Blocked,'jl_fm_rmw_pc_not_audited'):
+            gate.rmw(0x60bf14e,'rmw.or.modimm',0x400,0)
+        # 负例④:非零初值对照(仅测试换初值 0x1014)——两次均写 0x1414、
+        # 第二次旧值 0x1414、两臂局部控制流相同;抓「固定写 0x400」或
+        # 「每拍清零」实现错误(codex 新增)。
+        alt=JLFmConHeadRmw()
+        alt.SYNTHETIC_INITIAL_WORD=0x1014
+        self.assertEqual(alt.rmw(0x60befa8,'rmw.or.modimm',0x400,0),0x1414)
+        self.assertEqual(alt.rmw(0x60befa8,'rmw.or.modimm',0x400,0),0x1414)
+        self.assertEqual(alt.values,[0x1414,0x1414])
+        self.assertEqual([t['read_source'] for t in alt.transactions],
+                         ['synthetic','last_write'])
+        self.assertEqual(alt.transactions[1]['old'],'0x1414')
+        # 负例⑫:报告零硬件事件面——键集合无 pending/计数/IRQ 面;值域
+        # 校验(容器直调;白名单外由模型层先拒)。
+        with self.assertRaises(ValueError):
+            gate.write(0xf00004,0x400,0)
+        with self.assertRaises(ValueError):
+            gate.read(0xf00004,0)
+        with self.assertRaises(ValueError):
+            gate.write(JL_FM_CON_HEAD,-1,0)
+        with self.assertRaises(ValueError):
+            gate.write(JL_FM_CON_HEAD,0x100000000,0)
+        # 负例⑫:复位清除写回值与来源——新容器=未写态,下次合法首读
+        # 重标 synthetic;与 JL_SYNC/BTCLK 容器叠加地址集互斥互不吞。
+        fresh=JLFmConHeadRmw()
+        self.assertEqual(fresh.rmw(0x60befa8,'rmw.or.modimm',0x400,0),0x400)
+        self.assertEqual(fresh.transactions[0]['read_source'],'synthetic')
+        allf=BR28Model(jl_fm_con_head_rmw=True,jl_btclk_timer_words=True,
+                       jl_sync_config_words=True,jl_src_sync_config_words=True)
+        self.assertTrue(allf.handles(0xf00000,4) and allf.handles(0xf00130,4)
+                        and allf.handles(0xfe2500,4) and allf.handles(0xfe2600,4))
+        self.assertFalse(allf.handles(0xf00004,4) or allf.handles(0xf00144,4))
+        # 负例⑬(单测面):M4 状态恢复后续跑与直跑一致——恢复 values
+        # /transactions 后下一次 RMW 读 last_write(非 synthetic);恢复后
+        # 未重新确认当前指令(None 溯源)的读/写仍拒;完整快照往返在
+        # test_world_snapshot M4 poke。
+        restored=JLFmConHeadRmw()
+        restored.values=list(gate.values)
+        restored.word_writes=gate.word_writes
+        restored.transactions=[dict(t) for t in gate.transactions]
+        restored.note_step(None,None)
+        self.assertEqual(restored.rmw(0x60befa8,'rmw.or.modimm',0x400,0),
+                         0x400)
+        self.assertEqual(restored.transactions[-1]['read_source'],'last_write')
+        self.assertEqual(restored.transactions[-1]['old'],'0x400')
+        self.assertEqual(restored.word_writes,3)
+        with self.assertRaisesRegex(Blocked,'jl_fm_read_not_modeled'):
+            restored.read(JL_FM_CON_HEAD,0)
+        with self.assertRaisesRegex(Blocked,'jl_fm_store_pc_not_audited'):
+            restored.write(JL_FM_CON_HEAD,0x400,0)
+        # 报告面(负例⑫:无发明状态——无 pending/计数/IRQ 键;五元组
+        # 授权/读来源账本/副作用边界条目必在,0 不列为硅复位值)。
+        r=h.report()['jl_fm_con_head_registers']
+        self.assertEqual(r['addresses'],['0xf00000'])
+        self.assertEqual(r['word_writes'],2)
+        self.assertEqual(r['stores'],{'0xf00000':{'values':['0x400','0x400'],
+                                                 'writes':2}})
+        self.assertEqual([t['read_source'] for t in r['readback_projection']['transactions']],
+                         ['synthetic','last_write'])
+        self.assertEqual(r['readback_projection']['synthetic_initial_word'],'0x0')
+        self.assertIn('NOT a silicon reset value',r['readback_projection']['semantics'])
+        self.assertIn('first head-word access',r['readback_projection']['semantics'])
+        self.assertIn('read_source=last_write',r['readback_projection']['semantics'])
+        self.assertEqual(r['rmw_authorization']['authorized_instruction'],
+                         {'pc':'0x60befa8','instruction_id':'rmw.or.modimm',
+                          'mask':'0x400','core':0,'address':'0xf00000','width':4})
+        self.assertEqual(r['rmw_authorization']['rmw_pc_refusals'],10)
+        self.assertEqual(r['rmw_authorization']['rmw_form_refusals'],3)
+        self.assertIn('ONE COMPLETE INSTRUCTION',r['rmw_authorization']['semantics'])
+        self.assertEqual(r['read_refusals']['refused'],5)
+        self.assertEqual(r['store_refusals']['refused'],4)
+        self.assertIn('memcpy call sites',r['store_refusals']['semantics'])
+        self.assertIn('0xF00130/0xF00140',r['whitelisted_words'])
+        self.assertIn('never a contiguous range',r['whitelisted_words'])
+        self.assertIn('couple',r['side_effect_boundary'])
+        self.assertIn('no observation',r['model_assumptions'])
+        self.assertIn('synthetic/last_write',r['assumption'])
+        self.assertIn('jl_fm_con_head_registers',h.report()['assumptions'])
+        self.assertEqual(sorted(r),sorted(('addresses','sdk_names','word_writes',
+                                           'stores','transactions',
+                                           'rmw_authorization','read_refusals',
+                                           'store_refusals','readback_projection',
+                                           'modeled_vs_touched','whitelisted_words',
+                                           'observed_shapes','side_effect_boundary',
+                                           'access_face_completeness',
+                                           'model_assumptions','known_limitation',
+                                           'assumption')))
+
     def test_p2m_mailbox_ack_projection(self):
         # 路 B2R/S19 批 2 重落地(首版 0b875ed,BM §3):喂狗 0x12cc7e 事务
         # 序列的状态机——清槽(解除回声)→消息字节镜像→kick 0x400(武装)→
