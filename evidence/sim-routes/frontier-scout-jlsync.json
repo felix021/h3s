@@ -1,0 +1,57 @@
+{
+ "route": "SYNCSOUT / sim-syncscout（基线 main 345b08c，静态侦察路，零 tools/ 改动，不跑条件线）",
+ "recorded_at": "2026-11-19T01:30:00+08:00",
+ "task": "JL_SYNC (audio_sync) 块停点侦察：42,061,357 @ 0x60befe6（creator 0x60befae 体内 CON 整字写 0）→ 13 成员逐字分类 → 三选一预案 → codex 参谋裁决 → 下一停点预判。产出 docs/frontier-scout-jlsync.md。",
+ "method": {
+  "disassembly": "仓外既有 ~/code/headsets/archive/h3s-all/h3s/analysis/anc-cycle-20261109/app-linear.asm（app.bin sha256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041 与 disassemble_app.py 钉死源一致，加载基址 0x06000100，li 立即数为十进制）",
+  "scans": "li 十进制立即数 grep（12 站点）+ app.bin 逐字节偏移 4 字节小端字面量全找（[0xfe2500,0xfe2600) 零独立字面量，全部命中为 li 编码自身）+ 函数族通读（0x60bee98-0x60bf2c8）+ call 目标=指令末尾+有符号字节偏移 python 全量扫描（2/4/6 字节编码三种）+ 函数指针字面量全找（唯一 li 引用=creator 0x60beff8 handler 地址）",
+  "call_target_rule": "目标=指令地址+实际指令长度+objdump 十进制偏移（字节单位，goto 勘误同规则）；长 call（80 ff）目标含低 RAM OS 域（enter/exit critical 0x12b5xx 系、zalloc 0x12e16e）",
+  "codex_independent_check": "gpt-6-astra 独立复核（384 条反汇编记录与 app.bin 原始字节一致），三处实质勘误+三处数字勘误全部 python 复核成立后采纳；codex 自身两处引文（回调目标/向量槽地址）由本路复核修正"
+ },
+ "stop_context": {
+  "instruction": "0x60befe6: 81 60 [r0+0]=r1（前邻 0x60befde li r0=0xfe2500、0x60befe4 r1=0）——JL_SYNC CON 整字写 0，IPMASK=6 临界区内",
+  "function": "creator 0x60befae：zalloc 56B → b[+6]=参数 → enter crit → 字段 init（h[+10]=200/h[+12]=80/h[+8]=512/h[+4]=512）→ probe 0x6073502 → [停点] → 0xF00130=0x2F4 → 0xF00140=1754 → request_irq(88,2,0,0x60bf1e4) → fn_config → 链表插入(0x60735d8) → 回调安装(0x60bf030) → exit crit → 返回",
+  "probe_semantics": "0x6073502：r1=0x12528c(链表头); r2=[r1]; r0=1; if (r2!=r1) r0=0——链表空→1（首对象完整初始化臂）/非空→0（0x60befdc if r0==0 goto 48 跳过整个 SFR 段）——derived（固件形状归纳）",
+  "sdk_block": "br28.h（sha 111e29ea…:424-442）JL_SYNC=hs_base(0xfe0000)+map_adr(0x25,0x00)=0xfe2500，13 成员；IRQ_SYNC_IDX=88（reference-cache 701n-boot hwi.h:68，与 IRQ_SRC_SYNC_IDX=89 相邻对应块 0x25/0x26 相邻）"
+ },
+ "member_classification": {
+  "on_path_four": "CON(+0)：停点整字写 0 + fn_config RMW 内部读→整字写（读值只进写回组装：&0xE9DFC000 保留位合并，分支 if(r4!=1) 判据是对象字节非 CON 值）；CON1(+0x1c __WO)=h[obj+10]<<16（预期 200<<16=0x00C80000）；BT_OFFSET(+0x24 __WO) 整字写 0；MIN_SLOT(+0x28 __WO)=h[obj+12]（预期 80）——fn_config 内、request_irq 之后，本次续跑零执行",
+  "read_into_branch": "CON bit19（IRQ 0x60bf200）/bit28（IRQ 0x60bf25e-264 vs b[obj+3]、get_SLOT_MIX 0x60bf19e-1a4 vs b[r0+3]）；DASPACE（get_DASPACE 0x60bf17c r1!=0 分支、else 返 float 272.0=0x43880000；get_SLOT_MIX 0x60bf19a r2==0 分支）——读者仅 ioctl getter 分发 0x607f5e2（b[node+1]==4 臂）与 IRQ handler，均不在当前执行前缀",
+  "data_plane": "OUTSR 读→写 RAM 对象[+16]（IRQ 0x60bf268、get_SLOT_MIX 0x60bf1a8 条件臂）；DABUF 读−h[obj+14]→写 RAM 对象[+20]（IRQ 0x60bf26c）——数据面消费，handler 未触发",
+  "zero_access_in_window": "OFFSUM(+0x10)/PCMNUM(+0x14)/INSR(+0x30)；CON2(+0x20) 零 SFR 访问（0x60bf18e [r0+20] 系 RAM 对象 getter，r0=0x607f620 传入节点指针，20 十进制=对象偏移 0x14）——主核 app 线性窗完备性边界（LPV/ADA 措辞）",
+  "pure_read_getters": "get_OFFEND 0x60bf16a-172 纯读返回；get_BTTIME 0x60bf1b2-1ba 纯读；get_BTTIME_calc 0x60bf1bc-1e2 读 BTTIME+0xF00144/48 两字段拼算→返回"
+ },
+ "call_chain": {
+  "creator": "唯一直接调用者 0x607e4f8（函数 0x607e488=audio_sync jlstream 节点 open：zalloc 204B+rep 逐字拷贝+检查+r0=(b[cfgr+4]==2)→creator→NULL 检查→fn_register→0x607e50e call 0x60bf030 回调安装→注册回调）；0x607e488 唯一调用者 0x6077f9e（stream 框架）",
+  "adapter_domain": "0x607e376-0x607ea8e：fn_register/fn_config/fn_stop/fn_pause/fn_resume/fn_clear_b22 全部直接调用点（open/close/pause/resume 桩）；fn_config 另有库内 0x60bf00c",
+  "getter_domain": "0x607f604-0x607f696：getter×7 全部直接调用点，在分发函数 0x607f5e2（入口验 cmd r5==1，再 b[node+1]==4 臂——sync 状态 ioctl 查询接口）",
+  "callback_slot": "creator 成功路径 0x607e50e→0x60bf030：[obj+32]=r1、[obj+36]=0x607f5f6（0x607f5e2 分发函数中段入口/thunk——codex 引文作 0x607f5e2，li 实值 101184994=0x607f5f6 差 0x14）——fn_resume 与 IRQ handler 的 call r2 经此槽结构可达 getter 域；「零调用者」仅直接调用意义，当前前缀未到达是运行事实（SRCSYNC 交接）非静态排除",
+  "old_archive_erratum": "rand-to-park-map.md:141 两处不成立：①0x60bee74 是 .text（DSP handler 0x607ae28 装载的函数指针表 0x60738e4/0x60739f6/0x6073a9c…，li 立即数字节被误当 .data 字面量；JL_SYNC 全 app 零 .data 字面量）②0x607aafa/0x607ae22/0x607b10e 是 DSP 搬运 handler 入口不直接读 JL_SYNC，真正消费者=上述 adapter 域；但「不直接读」不能扩大为「无间接依赖」"
+ },
+ "decision": {
+  "verdict": "收窄版 (a) jl_sync_config_words 四字容器（codex 定稿）",
+  "shape": "与 SRCSYNC 三字容器同族但 CON 不设合成初值：当前链首个访问就是 creator 整字写 0，首写前读拒绝（未写字读=停，BATCHA 11 字拒读先例）+写后读回=最后写值；RMW 内部读走 probe_boot 通用 mmio 路径（mem.read→hardware.read→mem.write→hardware.write）；CON1/BT_OFFSET/MIN_SLOT 纯写记录读一律拒绝（含 RMW 内部读）；可选消费者 PC 守卫：IRQ 读点 0x60bf1f6/0x60bf25e 与 getter 读点 0x60bf19c 的 CON 读在消费前拒绝（进控制流），pause/resume/stop 到达时另纳",
+  "rejected": "(a+) 退回——初稿地址集错误（0xF00144/54 写、0xF00158 读全错，实际 0xF00130/40 写、0xF00144/48 读），纠正后仍须另证写入副作用，timer 语义认证不足，下路单独放行；(b) 不引入——第一障碍是写配置无状态读需求，DASPACE/CON 状态位/DABUF/OUTSR 到真实读停点再议；(c) 否——访问面清晰同族，不确定性用范围限制表达",
+  "expected_ledger": "静态预测：仅开 (a)→CON 一次写 0、零读、WO 三字零写零读（fn_config 未到达），停 42,061,359 @ 0x60befee 写 0xF00130=0x2F4；四字一次建好（下路 fn_config 无需改模型），执行断言按一字收口，不宣称整个配置事务已跑通",
+  "negative_matrix_12": "①开关关逐键复现旧停点 ②0xF00130/40/44/48 地址不承接（扩展仅独立批准，不连续区间映射）③CON 未写先读/快照丢写历史→严格停 ④其余 9 成员（DABUF/DASPACE/OUTSR/CON2 重点）读写不吞 ⑤WO 三字显式读+RMW 内部读均拒绝（写过也拒绝）⑥读回进状态分支（IRQ 两读点+SLOT_MIX 读点+未知 PC+另一核）消费前停 ⑦子字/错位/跨成员拒绝不部分提交（并行指令原子性）⑧配置分支完备（链表空/非空、b[obj+4]==1/!=1、b[obj+6]==0/!=0 路径不因 CON 值改变）⑨保留位精确（非零哨兵+掩码 0xE9DFC000/0xF9DEFFFF/0x06210000 逐位核值）⑩整字写不制造读依赖 ⑪无状态副作用合成（IRQ88/DASPACE/OUTSR/BTTIME 无 pending/计时/DMA 进度）⑫快照写前/写后/RMW 前后一致"
+ },
+ "next_stop": {
+  "prediction": "42,061,359 @ 0x60befee 写 0xF00130=0x2F4（st.w.modimm；距当前停点 +2 步——st 完成 +1、li r0=0xF00130 +1；静态预测未续跑验证）",
+  "wall_order": "①0xF00130 写（未建模：br28_model.py 无 0xf0 域——P11WindowRegisters=0xf2a000 系、SoftwareIrqCommands=0xffe1a0 系、0xF00000 modem 窗未建模）→ ②0xF00140=1754 写 → ③request_irq 0x6065d86：向量表 RAM [0x1A0060+88*4=0x1A01C0]=handler（纯 RAM）+0xffe12c RMW（ICU IRQ 配置清 bit16-19 写 5=使能+优先级2；在 br28_model.py IRQ 配置分发范围内但旧配置字未知则 RMW 读停——运行验证）→ ④fn_config 四字（容器内）+条件臂 b[obj+6]==0→0xF00000|=0x400（modem 窗 BTMAP 影子读域，触发即新停点）→ ⑤链表插入/回调安装/返回 adapter 0x607e4fe 续走",
+  "btclk_domain_dossier": "0xF00130 域（供下路）：写面恰两字（0xF00130=0x2F4/756、0xF00140=1754/0x6DA，全 app 唯一站点=creator 0x60befe8/0x60beff6）；读面 0xF00144/0xF00148（get_BTTIME_calc 0x60bf1c4 起与 IRQ handler 0x60bf216 起各读两字）；形状=BT clock 定时器（配置+计数读回，与 BTTIME/MIN_SLOT/slot 对齐语义吻合，derived-not-measured）；公开 SDK 三源无 audio_sync 驱动源（闭源库），固件反汇编即第一手证据",
+  "downstream": "eq 设计族 copex 站点（0x6072bb8 mode16/0x6072d1a mode24）仍在更下游未到达（SRCSYNC 预判维持）"
+ },
+ "advisory": {
+  "model": "gpt-6-astra（codex --yolo，~/tmp/codex/202611190113-jlsync-scout/，2026-11-19 01:06-01:13，仅只读命令）",
+  "verdict_quote": "选收窄版 (a)。不接受原样 (a+)；当前不需要 (b)，也没有必要整路停在 (c)。四个地址确有配置事务依据。CON 只接受已审计配置访问；首写前读拒绝，写后读回最后写值。",
+  "accepted_corrections": "①下一停点地址/步数勘误：写口 0xF00130/0xF00140 非初稿 0xF00144/54，读口 0xF00144/48 非 0xF00158，+2 步非 +4 步 ②fn_register 非纯链表插入（真插入=creator→0x60735d8）+0x60bf030 回调安装活代码（初稿误标死代码）③CON 取消合成初值（首访问即写，SRCSYNC 零初值无收益且掩盖隐式补零）④get_DASPACE else=272.0f(0x43880000) 非 256.0f ⑤fn_config 掩码 0x06210000/0xF9DEFFFF 非 0x06200000/0xF9FFFFFF ⑥库窗口起点 0x60bee98 非 0x60beee6——全部本路 python 逐条复核成立",
+  "codex_errata": "回调目标实为 0x607f5f6（其引文 0x607f5e2 差 0x14——li 实值 101184994）；request_irq 向量槽有效地址 0x1A01C0（其引文 0x19ff60 系基址口误）——0xffe12c ICU 配置结论不受影响",
+  "runtime_assertions_flagged": "「getter 零执行」「IRQ88 不触发」「首对象初始化」为运行事实引用非独立重放；codex 建议落地后补 watchpoint 命中计数区分未到达/守卫拒绝/已执行"
+ },
+ "honesty": {
+  "static_only": "本路零场景运行（红线），步数/停点形状/前缀事实均引用 SRCSYNC 实测交接；下一停点 42,061,359 为静态预测（completed_steps 口径）未续跑测得",
+  "not_claimed": "不证明 JL_SYNC 硬件行为/同步引擎/DMA/IRQ88 交付/0xF00130 timer 语义；「读值只进写回组装」限静态窗口，同址新消费者（新读 PC/新 RMW 掩码/IRQ88 触发/ioctl 激活/其他核）须重审；注册 IRQ88≠证明硅上无源（USB IRQ29 同款边界）；回调槽使 getter 域结构可达，当前前缀未到达不等于永不到达",
+  "derived_items": "probe 语义/creator 参数 (b[cfgr+4]==2)/回调 thunk 0x607f5f6/BT clock timer 域归属/fn_stop 88-call 注销方向——全部 derived（反汇编形状归纳），SDK 无 audio_sync 驱动源佐证",
+  "parity": "official↔b79 parity 未重跑（纯静态侦察路无放行段）"
+ }
+}
