@@ -274,6 +274,7 @@ MPO_HOOK_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_toggle_mpo_hook.S'
 LFIX_OPEN_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open_lfix.S'
 LFIX_OPEN_HOLD_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_open_lfix_hold.S'
 LFIX_CLOSE_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close_lfix.S'
+LFIX2_CLOSE_SOURCE = ROOT / 'tools/hearing-aid/mic_effect_close_lfix2.S'
 ANC_QCY_BASE = 0x1265c0          # QCY device struct base (== QCY_BASE)
 ANC_CTX_PTR_OFFSET = 500         # ANC ctx pointer field
 ANC_TRANSITION_OFFSET = 29       # b[ctx+29]: set 1 by db3c, cleared by exit chain
@@ -340,6 +341,20 @@ LFIX_CLOSE_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'beqz', 'mov.rr',
                        'li.u32', 'call.r', 'li.u32', 'ld.bu', 'beqz', 'li.u32',
                        'li.u32', 'call.r', 'li.u32', 'li.u8', 'st.b', 'li.u8',
                        'pop.pc_rl']
+# F2 close payload shape (50 insns / 164B): F1a close (stock close + A3c
+# flag-gated clock_free) + the C2 ANC-restore tail (route LFIX2-IMPL):
+# settle sleep -> db3c(2,1) -> A1-style completion wait. Extracted from the
+# assembled mic_effect_close_lfix2.S (encode->decode round-trip verified).
+LFIX2_CLOSE_INSN_IDS = ['push.rets_rl', 'li.u32', 'ld.w', 'beqz', 'mov.rr',
+                        'li.u8', 'li.u32', 'call.r', 'mov.rr', 'li.u32',
+                        'call.r', 'li.u32', 'li.u8', 'st.w', 'li.u8', 'li.u32',
+                        'li.u32', 'call.r', 'li.u32', 'ld.bu', 'beqz', 'li.u32',
+                        'li.u32', 'call.r', 'li.u32', 'li.u8', 'st.b', 'li.u8',
+                        'li.u32', 'call.r', 'li.u8', 'li.u8', 'li.u32',
+                        'call.r', 'li.u32', 'ld.w.l', 'beqz', 'li.u8',
+                        'li.u32', 'ld.bu.l', 'bnez', 'ld.bu.l', 'beq.ri',
+                        'add.ri.neg7', 'beqz', 'li.u8', 'call.r', 'goto.s',
+                        'li.u8', 'pop.pc_rl']
 R4_KEYHOOK_SOURCE = ROOT / 'tools/r4cmd/keystore_hook.S'
 R4_REG_ENTRY = 0x060a9c74             # cmdid 0x30 entry base
 R4_REG_SLOT = 0x060a9c7c              # entry+8, the null setter word
@@ -471,7 +486,7 @@ def _strip_eq_sections(text):
 
 def _compose(slot, close_hooks=False, r4_keyhook=False, key7_toggle=False,
              l3_mpo=False, mpo_addrs=None, l4_eq=False, eq_addrs=None,
-             lfix=False, lfix_hold=False, lfix_addrs=None):
+             lfix=False, lfix_hold=False, lfix_addrs=None, lfix2=False):
     """Concatenate payload source (slot-patched) + hook stubs into one text.
 
     key7_toggle=True (route L1KEY) composes open + close + the cmd7_toggle
@@ -502,6 +517,8 @@ def _compose(slot, close_hooks=False, r4_keyhook=False, key7_toggle=False,
         raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
     if lfix_hold and not lfix:
         raise ValueError('lfix_hold requires lfix (F1a = F1 + A3)')
+    if lfix2 and not lfix_hold:
+        raise ValueError('lfix2 requires lfix_hold (F2 = F1a + C2 ANC restore)')
     if lfix and not l4_eq:
         raise ValueError('lfix requires l4_eq (F1 is defined on the HAL5 chain)')
     mpo_addrs = mpo_addrs or (PAYLOAD_ADDRESS, PAYLOAD_ADDRESS)  # pass-1 placeholder
@@ -509,7 +526,8 @@ def _compose(slot, close_hooks=False, r4_keyhook=False, key7_toggle=False,
     name_addr = (lfix_addrs or (PAYLOAD_ADDRESS,))[0]            # pass-1 placeholder
     open_source = (LFIX_OPEN_HOLD_SOURCE if lfix_hold else
                    LFIX_OPEN_SOURCE if lfix else PAYLOAD_SOURCE)
-    close_source = LFIX_CLOSE_SOURCE if lfix_hold else CLOSE_SOURCE
+    close_source = (LFIX2_CLOSE_SOURCE if lfix2 else
+                    LFIX_CLOSE_SOURCE if lfix_hold else CLOSE_SOURCE)
     open_text = _patch_slot(open_source.read_text(), slot)
     if lfix_hold:
         open_text = _patch_lfix_addrs(open_text, name_addr)
@@ -573,7 +591,7 @@ def _assemble(text):
 
 def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
                      key7_toggle=False, l3_mpo=False, l4_eq=False,
-                     lfix=False, lfix_hold=False):
+                     lfix=False, lfix_hold=False, lfix2=False):
     """Assemble payload+stubs at PAYLOAD_ADDRESS with the real slot address.
 
     Two passes: the section length is layout-stable (test_hearing_aid_payload /
@@ -611,6 +629,8 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
         raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
     if lfix_hold and not lfix:
         raise ValueError('lfix_hold requires lfix (F1a = F1 + A3)')
+    if lfix2 and not lfix_hold:
+        raise ValueError('lfix2 requires lfix_hold (F2 = F1a + C2 ANC restore)')
     if lfix and not (l4_eq and r4_keyhook and close_hooks and slot_ram):
         raise ValueError('lfix requires the HAL5 full chain '
                          '(close_hooks+slotram+r4keyhook+l3mpo+l4eq)')
@@ -623,7 +643,7 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
         slot = RAM_SLOT
     _, first = _assemble(_compose(PAYLOAD_ADDRESS, close_hooks, r4_keyhook,
                                   key7_toggle, l3_mpo, l4_eq=l4_eq,
-                                  lfix=lfix, lfix_hold=lfix_hold))
+                                  lfix=lfix, lfix_hold=lfix_hold, lfix2=lfix2))
     mpo_addrs = None
     eq_addrs = None
     lfix_addrs = None
@@ -633,7 +653,7 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
         # layout-stable across passes, same contract as the slot patch)
         probe = ASM.read_object(ASM.assemble_text(
             _compose(slot, close_hooks, r4_keyhook, key7_toggle, l3_mpo,
-                     l4_eq=l4_eq, lfix=lfix, lfix_hold=lfix_hold),
+                     l4_eq=l4_eq, lfix=lfix, lfix_hold=lfix_hold, lfix2=lfix2),
             '<mpo-probe>'))
         want = ('mpo_template', 'mpo_name') + \
             (('eq_pkt_template', 'eq_name') if l4_eq else ()) + \
@@ -652,7 +672,7 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
         slot = PAYLOAD_ADDRESS + len(first)
     obj, code = _assemble(_compose(slot, close_hooks, r4_keyhook, key7_toggle,
                                    l3_mpo, mpo_addrs, l4_eq, eq_addrs,
-                                   lfix, lfix_hold, lfix_addrs))
+                                   lfix, lfix_hold, lfix_addrs, lfix2=lfix2))
     if len(code) != len(first):
         raise ValueError('slot immediate changed the section layout')
     if slot_ram:
@@ -744,7 +764,8 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
                             'bytes': code[slo:shi].hex(), 'insn': None,
                             'text': f'.data {shi - slo}B ({label})'})
     slot_tail = 0 if slot_ram else 4
-    variant = ('open+close+slotram+l4eq+lfixhold' if lfix_hold else
+    variant = ('open+close+slotram+l4eq+lfix2' if lfix2 else
+               'open+close+slotram+l4eq+lfixhold' if lfix_hold else
                'open+close+slotram+l4eq+lfix' if lfix else
                'open+close+slotram+l4eq' if l4_eq else
                'open+close+slotram+l3mpo' if l3_mpo else
@@ -838,13 +859,13 @@ def assemble_segment(close_hooks=False, slot_ram=False, r4_keyhook=False,
     _verify_semantics(code, stub_offsets, slot, report, close_hooks,
                       r4_keyhook=r4_keyhook, key7_toggle=key7_toggle,
                       l3_mpo=l3_mpo, l4_eq=l4_eq, lfix=lfix,
-                      lfix_hold=lfix_hold)
+                      lfix_hold=lfix_hold, lfix2=lfix2)
     return report, code, slot
 
 
 def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
                       r4_keyhook=False, key7_toggle=False, l3_mpo=False,
-                      l4_eq=False, lfix=False, lfix_hold=False):
+                      l4_eq=False, lfix=False, lfix_hold=False, lfix2=False):
     """Decode-level assertions: stub shape, every pinned firmware target."""
     insns = list(ASM.disassemble(code, PAYLOAD_ADDRESS))
     by_off = {a - PAYLOAD_ADDRESS: (iid, t, raw) for a, iid, t, raw in insns}
@@ -853,7 +874,8 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
     # compare against their own payload sources instead (same contract).
     open_source = (LFIX_OPEN_HOLD_SOURCE if lfix_hold else
                    LFIX_OPEN_SOURCE if lfix else PAYLOAD_SOURCE)
-    close_source = LFIX_CLOSE_SOURCE if lfix_hold else CLOSE_SOURCE
+    close_source = (LFIX2_CLOSE_SOURCE if lfix2 else
+                    LFIX_CLOSE_SOURCE if lfix_hold else CLOSE_SOURCE)
     open_text = _patch_slot(open_source.read_text(), slot)
     if lfix_hold:
         open_text = _patch_lfix_addrs(
@@ -878,7 +900,9 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
         close_off = len(standalone_open)
         if code[close_off:close_off + len(standalone_close)] != standalone_close:
             raise ValueError('composed close payload != standalone route-X payload')
-        if lfix_hold:
+        if lfix2:
+            report['close_payload_matches_lfix2_source'] = True
+        elif lfix_hold:
             report['close_payload_matches_lfix_source'] = True
         else:
             report['close_payload_matches_route_X'] = True
@@ -888,7 +912,9 @@ def _verify_semantics(code, stub_offsets, slot, report, close_hooks=False,
         _verify_l4_toggle_stub(code, by_off, report)
         if lfix:
             _verify_lfix_open(code, by_off, report, hold=lfix_hold)
-            if lfix_hold:
+            if lfix2:
+                _verify_lfix2_close(code, by_off, report)
+            elif lfix_hold:
                 _verify_lfix_close(code, by_off, report)
         if r4_keyhook:
             _verify_r4_keyhook(code, by_off, report)
@@ -1234,6 +1260,47 @@ def _verify_lfix_close(code, by_off, report):
     report['lfix_close_shape_matches'] = True
 
 
+def _verify_lfix2_close(code, by_off, report):
+    """The F2 close payload (route LFIX2-IMPL): F1a close + the C2 ANC tail.
+
+    Shape = LFIX2_CLOSE_INSN_IDS (50 insns / 164B): the stock close + A3c
+    flag-gated clock_free prefix (identical loads to F1a) followed by the C2
+    chain — C2a settle sleep (os_time_dly 20 ticks), C2b db3c(2,1) ANC-ON
+    request (flag=1, the official ANC-key calling convention), C2c A1-style
+    completion wait (b[ctx+29]==0 AND b[ctx+33]==2, 60x1tick cap, timeout
+    gives up without rollback — close semantics already complete).
+    """
+    close_off = int(report['close_address'], 16) - PAYLOAD_ADDRESS
+    end = close_off + 164
+    shape = [by_off[o][0] for o in range(close_off, end) if o in by_off]
+    if shape != LFIX2_CLOSE_INSN_IDS:
+        raise ValueError(f'lfix2 close shape mismatch: {shape}')
+    slot = int(report['slot_address'], 16)
+    name_addr = int(report['lfix']['a3_clock_hold']['name_rodata']
+                    .split()[0], 16)
+    loads = [int(by_off[o][1].split('= ')[1])
+             for o in range(close_off, end) if o in by_off and by_off[o][0] == 'li.u32']
+    expected = [slot, 0x060741ee, 0x06074204, slot, 0x060a1de2,
+                0x060057e6, LFIX_HOLD_FLAG, name_addr, CLOCK_FREE,
+                LFIX_HOLD_FLAG, ANC_DELAY_FN, ANC_DISPATCH, ANC_QCY_BASE,
+                ANC_DELAY_FN]
+    if loads != expected:
+        raise ValueError(f'lfix2 close loads mismatch: {[hex(x) for x in loads]}')
+    texts = [by_off[o][1] for o in sorted(by_off) if close_off <= o < end]
+    for needed in ('r0 = 20',                # C2a settle ticks (li.u8)
+                   'r0 = 2',                 # C2b ANC internal mode ON
+                   'r1 = 1',                 # C2b flag (official key path)
+                   'r0 = b[r4+29] (u)',      # C2c poll: transition
+                   'r0 = b[r4+33] (u)',      # C2c poll: target mode
+                   'r5 = 60'):               # C2c 60-try cap
+        # (the C2c completion compare itself is a beq.ri whose text carries a
+        # layout-dependent goto offset; its immediate (2) is pinned by the
+        # shape constant plus the standalone byte-compare above)
+        if needed not in texts:
+            raise ValueError(f'lfix2 close missing: {needed}')
+    report['lfix2_close_shape_matches'] = True
+
+
 def _verify_toggle_stub(code, by_off, report):
     """The cmd7_toggle stub (route L1KEY): exact shape + every firmware target.
 
@@ -1369,7 +1436,7 @@ def _verify_r4_keyhook(code, by_off, report):
 
 def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
                    key7_toggle=False, l3_mpo=False, l4_eq=False,
-                   lfix=False, lfix_hold=False):
+                   lfix=False, lfix_hold=False, lfix2=False):
     """Apply the implant edits to the decrypted flash image in place.
 
     close_hooks=True builds the open+close segment (route Y) and additionally
@@ -1406,6 +1473,8 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
         raise ValueError('l4_eq requires l3_mpo (route HAL4 is an L3 superset)')
     if lfix_hold and not lfix:
         raise ValueError('lfix_hold requires lfix (F1a = F1 + A3)')
+    if lfix2 and not lfix_hold:
+        raise ValueError('lfix2 requires lfix_hold (F2 = F1a + C2 ANC restore)')
     if lfix and not (l4_eq and r4_keyhook and close_hooks and slot_ram):
         raise ValueError('lfix requires the HAL5 full chain '
                          '(close_hooks+slotram+r4keyhook+l3mpo+l4eq)')
@@ -1415,7 +1484,8 @@ def apply_l1_patch(flash, close_hooks=False, slot_ram=False, r4_keyhook=False,
                                            r4_keyhook=r4_keyhook,
                                            key7_toggle=key7_toggle,
                                            l3_mpo=l3_mpo, l4_eq=l4_eq,
-                                           lfix=lfix, lfix_hold=lfix_hold)
+                                           lfix=lfix, lfix_hold=lfix_hold,
+                                           lfix2=lfix2)
     slot_tail = 0 if slot_ram else 4
     end = OLD_APP_END + 32 + 1 + len(code) + slot_tail   # header + 0xff + code (+ slot)
     if end > len(flash) or any(v != 255 for v in flash[OLD_APP_END:end]):
