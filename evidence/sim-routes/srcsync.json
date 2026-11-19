@@ -30,7 +30,7 @@
   "frontier": "FRONTIERS p11_heap_experimental → 42,061,357 @ 0x60befe6（unmapped_or_readonly_write/write/0xfe2500/size4/value_bytes 00000000；freshness kind+address）",
   "counters": "wdt elapsed 157→158（feeds 163/162 冻结）；timer0 cnt 26931→33792（PRD 35999 窗内走表，交付 15780/到期 15797 冻结——零新交付零新喂狗）；core-tick cnt 950332→959480（恰 +9,148=2,287×4 tick 精确走表，347/347 冻结）；CRC 270/73829 冻结（段内零 CRC）；IPMASK 0→6（新停点在 audio sync 创建器临界区内）；check() 增 SRCSYNC 释放记录断言块（59 写逐字钉死+goto 偏移勘误入档）",
   "adapter_baseline": "22 键 --recapture 重取完成（23:20-23:43 wall≈23 分钟，14 键漂移：exact_doubleword_store 186→188、exact_full_word_store 715623→715772、mmio_rmw_always_writes 70175→70183、abstract_task_stack_transport 462809→462890、exact_postincrement_store 68975→69295、cpu0_shared_lock_ownership 42262→42271、exact_subword_store 79492→79520、parallel_byte_store_old_registers 13785→13790、parallel_full_word_store_old_registers 15042→15058、partial_icfg_bit9_only 135970→135996、per_core_visible_cnum 264213→264243、exact_doubleword_store_cross_page_split 7→8、multicore_visible_special_move 897→900、register_rep_multi_block_projection 682→683；copex_exp22_model_execute=3 冻结）",
-  "analyze_image_trace": "未动（红线）——freshness/flags 派生自 registry 自动跟随；per_core 硬钉漂移 {'0':42066355,'1':11496}（per-core0=42,066,355=completed+2,287）留主协调统一收口",
+  "analyze_image_trace": "未动（红线）——freshness/flags 派生自 registry 自动跟随；per_core 硬钉漂移 {'0':42066355,'1':11496}（per-core0=42,066,355=completed+2,287）留主协调统一收口;本路预测 {'0':42066355,'1':11496} 与收口实测 completed+4998 口径一致;本路放行段落在重锁后缀内,两臂逐字节全同、零新可观察面→PARITY4 收口(2026-11-19,main c0a520b 全量 fresh 双镜像重跑重钉):b79 臂同停点记录、步数轴恒差 -2(镜像 -10dB 参数字节经 copex 指数段进入控制流:0x603182a 对增益字 0x18b9a8(official -45.0f↔b79 -55.0f)的数据依赖分支,官方相等落入恰 2 指令特例臂;重锁于 42,051,199/42,051,197,其后 10,279 步两臂逐字节零分歧),per_core official {0:42066476,1:11496}/b79 {0:42066474,1:11496}(per-core0=completed+4998 两臂同式);写差异钉值改「对齐前缀+重锁后缀」两段:前缀 steps 339/cells 228(旧 222 零 removed,+6 全 register 类)、后缀 0/0;final report 差异 44→71 全量枚举逐项归因(json_diff 上限 64→512)。钉值全文=tools/analyze_image_trace.py check_self_conditional 路 PARITY4 注释段",
   "probe_full_from_zero": "probe --rom 全量从零 15 场景完成（23:44-00:11 wall≈27 分钟）EXIT=0：条件场景 42,061,357 @ 0x60befe6 与快照续跑臂逐键相等（唯一差异=observed_shapes 勘误文本——goto 偏移单位修正属有意变更，dmaimpl 先例同款）；其余 14 场景 legacy 形状全部不变；assert_preflight 对从零报告 224/224 全绿"
  },
  "next_stop": {
@@ -42,6 +42,6 @@
  "honesty": {
   "assumption": "容器=conditional 配置事务批容器（AM 族 + BATCHA 分读策略）：合成初值 0+读回=当前值均为显式模型假设（synthetic-not-measured，非硅复位值非静态推导）；RMW 指令自己消费旧值（读非死读——段内零分支消费不等于初值无影响，未覆盖位保留初值进写事务，ones 臂单测+敏感性臂双证）；bit22/bit4 门控语义 derived（固件驱动形状归纳，公开 SDK 无驱动源）",
   "not_claimed": "不证明 SRC_SYNC 硬件行为/采样率转换/DMA/系数 FIFO 语义/IRQ89 交付已运行；不证明跨函数寄存器传递/RAM 副本/ROM/q32s/其他核无访问（主核 app 线性窗审计的完备性边界，LPV/ADA 措辞）；同址新消费者（新读 PC/新写 PC/新 RMW 掩码/其他核）须重审",
-  "parity": "official↔b79 parity 未重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0，evimpl/dmaimpl/copeximpl 同款边界）"
+  "parity": "official↔b79 parity 未重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0，evimpl/dmaimpl/copeximpl 同款边界）;→PARITY4 已收口:实测 delta -2 非 0——「放行段纯 CPU0 无镜像分叉点」判断在copeximpl 的 eq 指数段失效(该段消费镜像差异数据进入控制流,同停点记录;归因钉值=check_self_conditional 路 PARITY4)"
  }
 }

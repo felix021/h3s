@@ -20,7 +20,7 @@
   "preflight_offline": "assert_preflight 合成报告（syncimpl 全量 14 legacy 行+on-main 条件行）226 断言全绿（adapter 基线 --recapture 后 0 mismatch）",
   "counters_repinned": "wdt elapsed 158 冻结（feeds 163/162 冻结）；timer0 cnt 33798→34155（恰 +357=119×3 tick，交付 15780/到期 15797 冻结）；core-tick cnt 959488→959964（恰 +476=119×4 tick，347/347 冻结）；FRONTIERS p11_heap_experimental → 42,061,478 @ 0x60befa8（unmapped_memory/read/0xf00000/size4）",
   "adapter_baseline": "22 键 --recapture 重取（42,061,478 @ 0x60befa8 口径）：漂移恰 4 键全归 +119 步段——exact_full_word_store 715,773→715,785（+12=两 btclk 写+fn_config 四字写+向量槽+段内整字写族）、abstract_task_stack_transport +5、partial_icfg_bit9_only +4、per_core_visible_cnum +4；其余 18 键冻结。任务简报「预期恰 +2 步相关键漂移」前提是停点 42,061,361——实际前沿过两墙后到 42,061,478（+119 步段），漂移面随之扩大，如实记录",
-  "analyze_image_trace": "未动（红线）——freshness/flags 派生自 registry 自动跟随；per_core 硬钉漂移（per-core0=completed+口径）留主协调统一收口（syncimpl 同款边界）",
+  "analyze_image_trace": "未动（红线）——freshness/flags 派生自 registry 自动跟随；per_core 硬钉漂移（per-core0=completed+口径）留主协调统一收口（syncimpl 同款边界）;本路放行段落在重锁后缀内,两臂逐字节全同、零新可观察面;本路记账公式在收口臂上精确兑现:timer0 cnt 差 6=2 步×3 tick、core-tick cnt 差 8=2 步×4 tick(final report 差异面逐项归因)→PARITY4 收口(2026-11-19,main c0a520b 全量 fresh 双镜像重跑重钉):b79 臂同停点记录、步数轴恒差 -2(镜像 -10dB 参数字节经 copex 指数段进入控制流:0x603182a 对增益字 0x18b9a8(official -45.0f↔b79 -55.0f)的数据依赖分支,官方相等落入恰 2 指令特例臂;重锁于 42,051,199/42,051,197,其后 10,279 步两臂逐字节零分歧),per_core official {0:42066476,1:11496}/b79 {0:42066474,1:11496}(per-core0=completed+4998 两臂同式);写差异钉值改「对齐前缀+重锁后缀」两段:前缀 steps 339/cells 228(旧 222 零 removed,+6 全 register 类)、后缀 0/0;final report 差异 44→71 全量枚举逐项归因(json_diff 上限 64→512)。钉值全文=tools/analyze_image_trace.py check_self_conditional 路 PARITY4 注释段",
   "probe_full_from_zero": "probe --rom 全量从零（15 场景，04:54 落盘）EXIT=0：条件场景 42,061,478 @ 0x60befa8 unmapped_memory read 0xf00000 与快照续跑臂逐键相等（differing keys 空集）；其余 14 场景 legacy 形状不变（timer0/core-tick probe 族仍停 0x60116e6 fd31 前沿）；assert_preflight 对从零报告 226/226 全绿；check_local 默认面全绿（无 ROM 段）"
  },
  "next_stop": {
@@ -32,6 +32,6 @@
   "assumption": "容器=conditional 两地址写记录容器（codex 裁 B）：无合成初值+首写前读拒+写后读仍拒（记录值只进账本）+RMW 内部读即拒+写者 PC/核守卫（逐地址 0x60befee/0x60beff6+主核）均为显式模型假设；「WO」是本模型拒读策略非硅属性结论（codex 措辞修正②）；两写值 0x2F4/0x6DA 适合轨迹验收断言但位含义不解读；副作用边界（a/b/c）为落地路自查+codex 裁决要求项，不是硅行为证明",
   "not_claimed": "不证明 BT clock timer 硬件语义/计数行为/IRQ88 交付/写副作用不存在；不证明尾段簇其他成员/btctrler 域零访问（限主核 app 线性窗，动态地址/表驱动/q32s/DMA 盲区照侦察 §7）；主核越过两写不表示真实 BT 时序运行（codex：「批准的是当前执行链的最小抽象，不能据此宣称 BT timer 的启动、计数或 IRQ 语义已经认证」）；ICU 0xffe12c 读值 0x3030 来自 [0]*32 显式 fixture（probe_clock_startup.py:41）非硅初值声明",
   "erratum_prior_route": "syncimpl lineage base 条目 code_fingerprint=4bcc2225 是 runner-init 旧值；快照头部与 base.json snapshot_capture 均记 ca76923e（重钉落在 base 捕获途中）——跨代码续跑 ack 必须引头部值，本路已按此走通并记入 lineage note",
-  "parity": "official↔b79 parity 未重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0，syncimpl/srcsync 同款边界）"
+  "parity": "official↔b79 parity 未重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0，syncimpl/srcsync 同款边界）;→PARITY4 已收口:实测 delta -2 非 0——「放行段纯 CPU0 无镜像分叉点」判断在copeximpl 的 eq 指数段失效(该段消费镜像差异数据进入控制流,同停点记录;归因钉值=check_self_conditional 路 PARITY4)"
  }
 }

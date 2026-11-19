@@ -1123,7 +1123,11 @@ def compare_pair(image_a, run_a, image_b, run_b, budget, scenario='crc_bankb',
             'budget': budget,
             'runs': {label_a: _run_summary(result_a), label_b: _run_summary(result_b)},
             'final_report_diffs': json_diff(_report_for_diff(result_a),
-                                            _report_for_diff(result_b), limit=64)}
+                                            _report_for_diff(result_b), limit=512)}
+            # 路 PARITY4:上限 64→512——条件档 official↔b79 的差异面在四段放行
+            # (copeximpl/srcsync/syncimpl/timerimpl)后过 64,截断会掩盖尾部面
+            # (result_reads[269]/timer0 计数/事件簿记);crc_bankb 档 5 处远低于
+            # 上限,默认场景报告逐字节不变。
     if resumed:
         # SNAPX 尾巴:resume 轮轨迹面字段(trace_lengths=0/first_divergence=None
         # 等)只反映 restore 之后的步,pair 级就近标记消「字段为 0/None」的
@@ -1694,35 +1698,74 @@ def check_self_conditional(report, arms=None):
     p = pairs['official_vs_tested_b79']
     # 条件前沿停点字面值单点在 frontier_registry(推进前沿只改 registry)。
     conditional = frontier_registry.frontier('p11_heap_experimental')
-    for label in ('official', 'tested_b79'):
-        run = p['runs'][label]
-        require(run['completed_steps'] == conditional['completed_steps'] and
-                run['stop_pc'] == conditional['stop_pc'] and
-                run['stop']['kind'] == conditional['stop']['kind'] and
-                run['per_core_steps'] == {'0': 42042359, '1': 11496},
-                f'{label} run changed: the conditional flag set no longer reaches the pinned '
-                'conditional frontier stop (42037363 @ 0x606a900, the not-modeled copex.ppi '
-                'DSP-coprocessor instruction — reached after the route-DMAIMPL two-word '
-                'DAC HRP/SWP idle-readback release (codex (a) narrowed) serves the four '
-                'pinned pointer-poll loads 0x606e148/0x606e14a/0x606e150/0x606e152 with '
-                'the firmware-last-written values (zero synthesized bytes), the idle '
-                'guard equality arms walk straight into POST, and the audio pipeline '
-                'reconfig runs +71,480 steps into the DSP wall; the full route '
-                'narrative is single-sourced in frontier_registry/HANDOFF; '
-                'per-core 1 unchanged at 11496 — the copex wall belongs to the next '
-                'route)')
+    # 路 PARITY4(收口 copeximpl/srcsync/syncimpl/timerimpl 四段实施漂移):官方臂
+    # =registry 单源停点;b79 臂=同停点记录、步数轴恒差 -2(全量实测钉值,因果链
+    # 见下方 first_control_divergence 钉:镜像 -10dB 参数字节→eq 增益字
+    # 0x18b9a8(-45.0f↔-55.0f)→0x603182a 对 li 0xc2340000 字面量的数据依赖分支,
+    # 官方相等落入恰 2 指令特例臂、b79 跳过)。per-core0=completed+4998 两臂同式。
+    run = p['runs']['official']
+    require(run['completed_steps'] == conditional['completed_steps'] and
+            run['stop_pc'] == conditional['stop_pc'] and
+            run['stop']['kind'] == conditional['stop']['kind'] and
+            run['per_core_steps'] == {'0': 42066476, '1': 11496},
+            'official run changed: the conditional flag set no longer reaches the pinned '
+            'conditional frontier stop (42061478 @ 0x60befa8, the fn_config conditional-arm '
+            '[0xF00000] |= 0x400 RMW internal read — reached after the route-COPEXIMPL '
+            'copex.ppi mode-22 model executes the eq-design exponential, the route-SRCSYNC '
+            'JL_SRC_SYNC CON1 container serves the 0xfe2604 config RMW, the route-SYNCIMPL '
+            'JL_SYNC four-word container serves the creator transaction, and the '
+            'route-TIMERIMPL BT-clock 0xF00130/40 two-write release walks request_irq + '
+            'fn_config into the modem-window CON read; the full route narrative is '
+            'single-sourced in frontier_registry/HANDOFF; per-core 1 unchanged at 11496)')
+    run = p['runs']['tested_b79']
+    require(run['completed_steps'] == conditional['completed_steps'] - 2 and
+            run['stop_pc'] == conditional['stop_pc'] and
+            run['stop']['kind'] == conditional['stop']['kind'] and
+            run['per_core_steps'] == {'0': 42066474, '1': 11496},
+            'tested_b79 run changed: the b79 image must reach the IDENTICAL stop record with '
+            'the constant -2 step axis (the image delta enters CONTROL at 0x603182a — see '
+            'the first_control_divergence pin below — so the axes can no longer be equal; '
+            'per-core 1 unchanged at 11496, the divergence is pure CPU0)')
     parity = p['parity']
     require(parity['steps'] == {'official': conditional['completed_steps'],
-                                'tested_b79': conditional['completed_steps'], 'delta': 0} and
+                                'tested_b79': conditional['completed_steps'] - 2, 'delta': -2} and
             parity['stop_pc'] == {'a': conditional['stop_pc'], 'b': conditional['stop_pc'],
                                   'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
             parity['stop_record']['a']['kind'] == conditional['stop']['kind'] and
-            parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
+            parity['per_core_steps']['delta'] == {'0': -2, '1': 0},
             'the official-vs-b79 conditional stop parity changed: both images must reach the '
-            'identical conditional frontier stop')
-    require('first_control_divergence' not in p and 'reconvergence' not in p,
-            'official vs tested_b79 control flow diverged under the conditional flag set')
+            'identical conditional frontier stop record, with the pinned constant -2 step '
+            'axis (delta 0 is no longer the expectation — the released segments consume the '
+            'image delta into control exactly once, bounded at +2 official steps)')
+    # 路 PARITY4:控制流分歧面(此前各路均零控制流分歧,本路首次出现且钉死)。
+    control = p.get('first_control_divergence')
+    require(control and control['step'] == 42037380 and
+            control['pc_a'] == '0x603182a' and control['pc_b'] == '0x603182a' and
+            control['registers'] == {'0': {'a': 'c2340000', 'b': 'c25c0000'}},
+            'the first official-vs-b79 conditional CONTROL divergence changed (expected '
+            '42037380 @ 0x603182a, +17 steps past the old copex.ppi wall: the bfune.rr '
+            'compares the eq-gain word [r5+24]=0x18b9a8 — official 0xc2340000 == -45.0f '
+            'vs tested_b79 0xc25c0000 == -55.0f, the -10dB image-delta family whose '
+            'byte pair 34/5c the aligned prefix already pins as an image-class write '
+            'cell — against the li 0xc2340000 literal; official equals the literal and '
+            'falls into the exactly-2-instruction special-case arm 0x603182e/0x6031830 '
+            '(ld.hu h[r6] + bne.ri r0!=31), tested_b79 differs and jumps past it — the '
+            'image delta entered CONTROL for the first time, net +2 official steps)')
+    rec = p.get('reconvergence')
+    require(rec and rec['realigned'] and rec['lag'] == -2 and not rec['immediate'] and
+            rec['realign_step_a'] == 42051199 and
+            rec['control_zero_divergence_steps'] == conditional['completed_steps'] - 42051199 and
+            rec['signature_after_realignment']['divergent_span_count'] == 0 and
+            rec['signature_after_realignment']['divergent_steps'] == 0 and
+            rec['signature_after_realignment']['spans_with_differing_writes'] == 0,
+            'the official-vs-b79 reconvergence changed (expected the realigned -2 lock at '
+            'step 42051199/42051197 with ZERO signature divergence over the 10279 steps to '
+            'the common stop — the eq-design bracket walks data-dependent paths (three '
+            'misaligned stretches: 3 rows at the divergence, 1074 rows, 1104 rows ending at '
+            'the last Timer0 delivery merge 0x60745fa vs 0x60742aa) and then locks '
+            'byte-identical: every later segment — srcsync, syncimpl, timerimpl and the '
+            'fn_config walk into the stop — executes identically in both arms)')
     first = p['first_divergence']
     require(first and first['step'] == 155390 and first['pc_a'] == '0x6010b16' and
             first['classification'] == 'register_state_divergence' and
@@ -1731,7 +1774,6 @@ def check_self_conditional(report, arms=None):
             'the first official-vs-b79 conditional signature divergence is no longer the '
             'resource-table header CRC byte at 0x6010b16 (it must stay identical to the '
             'crc_bankb-scenario divergence)')
-    spans = p['divergent_signature_spans']
     # 路 PARSTD:count 钉值保留;旧「前 8 段起点 writes_differ 全 False」子条件
     # 由下面的写差异传播钉值蕴含(钉住的 cell 不含任何前 8 段起点步)。
     # 路 TONMAP:官方容器放行段(容器读出+tone 文件 open+三任务安装+事件
@@ -1761,14 +1803,37 @@ def check_self_conditional(report, arms=None):
     # 变换后的 DSP 参数,镜像窗口 crc16/ccitt/ibm/modbus/crc32 枚举未
     # 复算出,精确公式留待 DSP 域建模),零 removed,零 structural 零
     # unexplained;final report 差异 36→44(归因见下方 diffs require 文本)。
-    require(spans['count'] == 199,
-            'the official-vs-b79 conditional divergence-span count changed')
+    # 路 PARITY4(前沿 42,037,363→42,061,478,copeximpl/srcsync/syncimpl/
+    # timerimpl 四段放行统一收口):镜像差异首次进入控制流(见上方
+    # first_control_divergence/reconvergence 钉),写差异钉值改为「对齐前缀
+    # [0, 首控制流分歧) + 重锁后缀 [realign, 停点)」两段机械枚举;控制流
+    # 分歧括号 [42,037,380, 42,051,199) 内两臂指令流交错不可对齐、不做
+    # cell 级钉值,其一切可观察面=final report 差异(逐项归因见下方 diffs
+    # require 文本;括号后 10,279 步两臂逐字节全同,suffix 钉值 0/0)。
+    # 前缀计数:分歧段仍 199(第 199 段 42,037,304 起,旧停点 42,037,363
+    # 处截断、现闭合于首控制流分歧 42,037,380);写差异 steps 337→339、
+    # cells 222→228(distinct)/388→394(出现):旧 222 cell 零 removed 零
+    # value-change,新增 6 cell=恰 2 步——0x18b9a4 半字 06/02↔a4/00(eq 设计
+    # 段 ftoi.trunc 后的 Q15 系数)+ 0x18bb10 四字节 e2 86 01 3d↔0a d7 23
+    # 3c(copex.ppi 指数模型输出 exp(x):official 0x3d0186e2=0.0316↔b79
+    # 0x3c23d70a=0.0100,比值恰 10^(1/2)=−10dB 幅度比;b79 侧为 float 精确
+    # 的 0.01;输入 x=0xc05d0c55↔0xc0935d8e 即 DMAIMPL 期已钉的同一 DSP
+    # 参数,ln↔exp 闭环)——全部 register 类计算传播(寄存器差切片机械
+    # 验证),零 structural 零 unexplained。
     if arms is not None:
         trace_official, plain_official = arms['official']
         trace_b79, plain_b79 = arms['tested_b79']
+        prefix_a = trace_official[:control['step']]
+        prefix_b = trace_b79[:control['step']]
+        spans = _divergent_spans(prefix_a, prefix_b)
+        require(len(spans) == 199,
+                'the official-vs-b79 aligned-prefix divergence-span count changed (199 = the '
+                'DMAIMPL-era count carried over: span 199 starts 42037304 and now closes at '
+                'the first control divergence 42037380 instead of the old copex.ppi stop '
+                '42037363)')
         _require_pinned_write_delta(
-            'official-vs-b79 (p11_heap_experimental)', trace_official, trace_b79,
-            plain_official, plain_b79, pinned_steps=337, pinned_cells={
+            'official-vs-b79 (p11_heap_experimental) aligned prefix [0, first_control_divergence)',
+            prefix_a, prefix_b, plain_official, plain_b79, pinned_steps=339, pinned_cells={
                 ('0x1272b8', '28', '88'): 1,
                 ('0x1272b8+1', '33', 'fa'): 1,
                 ('0x18b128', 'a9', 'f2'): 2,
@@ -1787,6 +1852,8 @@ def check_self_conditional(report, arms=None):
                 ('0x18b345', '91', '64'): 1,
                 ('0x18b346', '66', '7f'): 1,
                 ('0x18b347', 'c9', 'a5'): 1,
+                ('0x18b9a4', '06', 'a4'): 1,
+                ('0x18b9a4+1', '02', '00'): 1,
                 ('0x18b9a8+2', '34', '5c'): 1,
                 ('0x18b9ac+2', '00', '20'): 1,
                 ('0x18b9ac+3', '00', 'c1'): 1,
@@ -1796,8 +1863,12 @@ def check_self_conditional(report, arms=None):
                 ('0x18baf8+2', '00', 'ff'): 1,
                 ('0x18baf8+3', '00', 'ff'): 1,
                 ('0x18bb10', '55', '8e'): 1,
+                ('0x18bb10', 'e2', '0a'): 1,
                 ('0x18bb10+1', '0c', '5d'): 1,
+                ('0x18bb10+1', '86', 'd7'): 1,
+                ('0x18bb10+2', '01', '23'): 1,
                 ('0x18bb10+2', '5d', '93'): 1,
+                ('0x18bb10+3', '3d', '3c'): 1,
                 ('0x18bb94', 'a9', 'f2'): 1,
                 ('0x18bb95', '91', '64'): 1,
                 ('0x18bb96', '66', '7f'): 1,
@@ -1992,73 +2063,127 @@ def check_self_conditional(report, arms=None):
                 ('0x19e3fe', '9b', 'bd'): 1,
                 ('0x19e3ff', 'a2', '77'): 1,
             })
+        _require_pinned_write_delta(
+            'official-vs-b79 (p11_heap_experimental) realigned suffix [realign_step, stop)',
+            trace_official[rec['realign_step_a']:], trace_b79[rec['realign_step_b']:],
+            plain_official, plain_b79, pinned_steps=0, pinned_cells={})
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
+    # 路 PARITY4:final report 差异 44→71(上限 64→512 后全量枚举,此前截断
+    # 面恢复)。五组归因,全部同一条因果链(镜像 -10dB 参数字节→copex 指数
+    # 段计算值→0x603182a 控制流分支→±2 步轴):
+    # ①result_reads 38 项(旧 37+[269] 新):tone 表项头 CRC 对 91a9/64f2
+    #   spacing-6 数列延续(copeximpl 记账 CRC 264→270,尾段六值周期×10);
+    # ②copex_exp22_model 8 项:模型自记输入/输出位型——x_bits=0xc05d0c55↔
+    #   0xc0935d8e(旧停点寄存器同值)、result_bits=0x3d0186e2↔0x3c23d70a
+    #   (exp 输出,恰为 prefix 新增 cell 的同一值);samples[1](x=0→1.0f)
+    #   两臂相同不在差异内;
+    # ③步数轴投影 7 项:completed_steps/cores.0.steps/counts.completed_model_
+    #   steps/debug fetches(±2/±4)/mmu.walks(387089↔387088)/watchdog
+    #   fraction_remainder(1533↔1531)/timer0.cnt(34155↔34149=差 6=2 步×
+    #   3 tick,timerimpl 记账公式);
+    # ④core_tick 4 项:cnt 959964↔959956=差 8=2 步×4 tick(timerimpl 记账
+    #   公式精确兑现)及 held snapshot 同值;
+    # ⑤事件簿记 12 项:末两次 Timer0 交付(15780 冻结)落在控制流分歧括号
+    #   内,中断落点 PC(0x6064754↔0x12cb0e;0x60745fa↔0x60742aa)与栈
+    #   usp/sp(0x4031ec↔0x4031bc)不同,事件/交付计数两臂相同;milestones
+    #   [23].r0 为古老面不变。旧钉 5 面(last_registers r0/r2、cores.0.r、
+    #   memory_events[7].bytes)消失=新停点两臂寄存器/尾事件全同(suffix
+    #   零分歧的直接投影)。
     require(diffs == sorted([
-                             '$.last_registers.r[0]',
-                             '$.last_registers.r[2]',
-                             '$.machine.cores.0.r[0]',
-                             '$.machine.cores.0.r[2]',
-                             '$.memory_events[7].bytes',
-                             '$.milestones[23].r0',
-                             '$.peripherals.hardware_crc_projection.result_reads[103]',
-                             '$.peripherals.hardware_crc_projection.result_reads[109]',
-                             '$.peripherals.hardware_crc_projection.result_reads[115]',
-                             '$.peripherals.hardware_crc_projection.result_reads[121]',
-                             '$.peripherals.hardware_crc_projection.result_reads[127]',
-                             '$.peripherals.hardware_crc_projection.result_reads[130]',
-                             '$.peripherals.hardware_crc_projection.result_reads[137]',
-                             '$.peripherals.hardware_crc_projection.result_reads[147]',
-                             '$.peripherals.hardware_crc_projection.result_reads[154]',
-                             '$.peripherals.hardware_crc_projection.result_reads[15]',
-                             '$.peripherals.hardware_crc_projection.result_reads[161]',
-                             '$.peripherals.hardware_crc_projection.result_reads[168]',
-                             '$.peripherals.hardware_crc_projection.result_reads[175]',
-                             '$.peripherals.hardware_crc_projection.result_reads[182]',
-                             '$.peripherals.hardware_crc_projection.result_reads[189]',
-                             '$.peripherals.hardware_crc_projection.result_reads[197]',
-                             '$.peripherals.hardware_crc_projection.result_reads[1]',
-                             '$.peripherals.hardware_crc_projection.result_reads[215]',
-                             '$.peripherals.hardware_crc_projection.result_reads[221]',
-                             '$.peripherals.hardware_crc_projection.result_reads[227]',
-                             '$.peripherals.hardware_crc_projection.result_reads[22]',
-                             '$.peripherals.hardware_crc_projection.result_reads[233]',
-                             '$.peripherals.hardware_crc_projection.result_reads[239]',
-                             '$.peripherals.hardware_crc_projection.result_reads[245]',
-                             '$.peripherals.hardware_crc_projection.result_reads[251]',
-                             '$.peripherals.hardware_crc_projection.result_reads[257]',
-                             '$.peripherals.hardware_crc_projection.result_reads[263]',
-                             '$.peripherals.hardware_crc_projection.result_reads[37]',
-                             '$.peripherals.hardware_crc_projection.result_reads[43]',
-                             '$.peripherals.hardware_crc_projection.result_reads[49]',
-                             '$.peripherals.hardware_crc_projection.result_reads[55]',
-                             '$.peripherals.hardware_crc_projection.result_reads[61]',
-                             '$.peripherals.hardware_crc_projection.result_reads[67]',
-                             '$.peripherals.hardware_crc_projection.result_reads[73]',
-                             '$.peripherals.hardware_crc_projection.result_reads[77]',
-                             '$.peripherals.hardware_crc_projection.result_reads[83]',
-                             '$.peripherals.hardware_crc_projection.result_reads[8]',
-                             '$.peripherals.hardware_crc_projection.result_reads[97]',
+                             "$.completed_steps",
+                             "$.machine.cores.0.reti",
+                             "$.machine.cores.0.steps",
+                             "$.machine.events[28].reti_from",
+                             "$.machine.events[29].pc_after",
+                             "$.machine.events[29].reti_from_frame",
+                             "$.machine.events[30].entry_banks.usp",
+                             "$.machine.events[30].reti_from",
+                             "$.machine.events[31].pc_after",
+                             "$.machine.events[31].reti_from_frame",
+                             "$.machine.events[31].sp_after",
+                             "$.machine.timer0_irq_entry_projection.deliveries[15778].reti_from",
+                             "$.machine.timer0_irq_entry_projection.deliveries[15779].entry_banks.usp",
+                             "$.machine.timer0_irq_entry_projection.deliveries[15779].reti_from",
+                             "$.milestones[23].r0",
+                             "$.peripherals.copex_exp22_model.first.result_bits",
+                             "$.peripherals.copex_exp22_model.first.x_bits",
+                             "$.peripherals.copex_exp22_model.last.result_bits",
+                             "$.peripherals.copex_exp22_model.last.x_bits",
+                             "$.peripherals.copex_exp22_model.samples[0].result_bits",
+                             "$.peripherals.copex_exp22_model.samples[0].x_bits",
+                             "$.peripherals.copex_exp22_model.samples[2].result_bits",
+                             "$.peripherals.copex_exp22_model.samples[2].x_bits",
+                             "$.peripherals.core_tick_configuration[0].cnt",
+                             "$.peripherals.core_tick_configuration[0].cnt_held_snapshot_projection.stored_snapshot",
+                             "$.peripherals.core_tick_configuration[1].cnt",
+                             "$.peripherals.core_tick_configuration[1].cnt_held_snapshot_projection.stored_snapshot",
+                             "$.peripherals.counts.completed_model_steps",
+                             "$.peripherals.debug_execution_projection.checked_executing_fetches",
+                             "$.peripherals.hardware_crc_projection.result_reads[103]",
+                             "$.peripherals.hardware_crc_projection.result_reads[109]",
+                             "$.peripherals.hardware_crc_projection.result_reads[115]",
+                             "$.peripherals.hardware_crc_projection.result_reads[121]",
+                             "$.peripherals.hardware_crc_projection.result_reads[127]",
+                             "$.peripherals.hardware_crc_projection.result_reads[130]",
+                             "$.peripherals.hardware_crc_projection.result_reads[137]",
+                             "$.peripherals.hardware_crc_projection.result_reads[147]",
+                             "$.peripherals.hardware_crc_projection.result_reads[154]",
+                             "$.peripherals.hardware_crc_projection.result_reads[15]",
+                             "$.peripherals.hardware_crc_projection.result_reads[161]",
+                             "$.peripherals.hardware_crc_projection.result_reads[168]",
+                             "$.peripherals.hardware_crc_projection.result_reads[175]",
+                             "$.peripherals.hardware_crc_projection.result_reads[182]",
+                             "$.peripherals.hardware_crc_projection.result_reads[189]",
+                             "$.peripherals.hardware_crc_projection.result_reads[197]",
+                             "$.peripherals.hardware_crc_projection.result_reads[1]",
+                             "$.peripherals.hardware_crc_projection.result_reads[215]",
+                             "$.peripherals.hardware_crc_projection.result_reads[221]",
+                             "$.peripherals.hardware_crc_projection.result_reads[227]",
+                             "$.peripherals.hardware_crc_projection.result_reads[22]",
+                             "$.peripherals.hardware_crc_projection.result_reads[233]",
+                             "$.peripherals.hardware_crc_projection.result_reads[239]",
+                             "$.peripherals.hardware_crc_projection.result_reads[245]",
+                             "$.peripherals.hardware_crc_projection.result_reads[251]",
+                             "$.peripherals.hardware_crc_projection.result_reads[257]",
+                             "$.peripherals.hardware_crc_projection.result_reads[263]",
+                             "$.peripherals.hardware_crc_projection.result_reads[269]",
+                             "$.peripherals.hardware_crc_projection.result_reads[37]",
+                             "$.peripherals.hardware_crc_projection.result_reads[43]",
+                             "$.peripherals.hardware_crc_projection.result_reads[49]",
+                             "$.peripherals.hardware_crc_projection.result_reads[55]",
+                             "$.peripherals.hardware_crc_projection.result_reads[61]",
+                             "$.peripherals.hardware_crc_projection.result_reads[67]",
+                             "$.peripherals.hardware_crc_projection.result_reads[73]",
+                             "$.peripherals.hardware_crc_projection.result_reads[77]",
+                             "$.peripherals.hardware_crc_projection.result_reads[83]",
+                             "$.peripherals.hardware_crc_projection.result_reads[8]",
+                             "$.peripherals.hardware_crc_projection.result_reads[97]",
+                             "$.peripherals.mmu.walks",
+                             "$.peripherals.timer0.cnt",
+                             "$.peripherals.watchdog_projection.fraction_remainder",
             ]),
             'the official-vs-b79 conditional final-report differences changed: ' + str(diffs)
-            + ' (route TONMAP: the container-release segment adds result_reads[215]/[221] '
-              '— CRC rounds over tone-parameter CONFIG bytes whose official-vs-b79 -10dB '
-              'difference propagates into the accumulator, the same image-delta family '
-              'as every other result_reads entry; route EVIMPL: the first-message '
-              'dispatch walks four more CONFIG cycles in the audio DAC DMA domain, '
-              'adding result_reads[227]/[233]/[239]/[245] of exactly that family; '
-              'route DMAIMPL: the idle-readback release walks the audio pipeline '
-              'reconfig +71,480 steps into the copex.ppi wall, adding '
-              'result_reads[251]/[257]/[263] of the same family (0x91a9 vs 0x64f2 — '
-              'the tone entry-header CRC pair already documented at [197], the '
-              'spacing-6 sequence continuation) plus five STOP-STATE faces: the '
-              'copex stop instruction never executes, so $.last_registers.r[0]/r[2] '
-              'and $.machine.cores.0.r[0]/r[2] still carry the 32-bit DSP parameter '
-              '0xc05d0c55 vs 0xc0935d8e (a firmware-arithmetic transform of '
-              'image-delta tone/volume bytes — the same value the run stored at '
-              '0x18bb10, whose low three bytes are the three register-class write '
-              'cells), and $.memory_events[7].bytes is that very store (550c5dc0 vs '
-              '8e5d93c0, the trailing memory-event window entry — pure data '
-              'projection, zero control divergence)')
+            + ' (route TONMAP: result_reads[215]/[221] — CRC rounds over tone-parameter '
+              'CONFIG bytes, the -10dB image-delta family; route EVIMPL: result_reads[227]/'
+              '[233]/[239]/[245], the first-message dispatch CONFIG cycles; route DMAIMPL: '
+              'result_reads[251]/[257]/[263] plus the five stop-state faces of the copex '
+              'stop (the 0xc05d0c55 vs 0xc0935d8e DSP parameter); route PARITY4: '
+              'result_reads[269] continues the spacing-6 sequence (CRC ledger 264→270, '
+              'six-value cycle x10), the copex_exp22_model records carry x_bits = the very '
+              'same DSP parameter and result_bits = its exponential (0x3d0186e2 vs '
+              '0x3c23d70a, ratio exactly 10^(1/2) — the -10dB amplitude pair, the value '
+              'the prefix write-delta pins at 0x18bb10), seven step-axis projections '
+              '(completed_steps / cores.0.steps / counts / debug fetches / mmu.walks / '
+              'watchdog fraction_remainder / timer0.cnt = 2 steps x 3 ticks), four '
+              'core_tick faces (cnt = 2 steps x 4 ticks — the timerimpl ledger formulas '
+              'realized exactly on the -2 axis), and twelve event-bookkeeping faces: the last two '
+              'Timer0 deliveries (count frozen 15780 in both arms) landed inside the '
+              'control-divergent bracket at different interrupted PCs (0x6064754 vs '
+              '0x12cb0e, 0x60745fa vs 0x60742aa) and stack banks (0x4031ec vs 0x4031bc) '
+              '— records differ, counts identical; the five old stop-state faces are GONE '
+              'because the new stop leaves both arms with identical registers and '
+              'identical trailing memory events, the direct projection of the '
+              'zero-divergence realigned suffix)')
 
 
 def check_self_candidate(report, label, scenario):
