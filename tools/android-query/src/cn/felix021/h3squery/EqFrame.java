@@ -13,8 +13,13 @@ import java.util.List;
  *   data = 3B 头 + 每段 7B，data_len = 3 + 7*N
  *
  * 3B 头：[0]=EQ 类型(u8)、[1..2]=master gain(i16 小端，÷100 得 dB)；
- * 每段 7B：[0..1]=freq(u16 小端，Hz 直存)、[2..3]=q(i16 小端，÷100)、
- *          [4..5]=gain(i16 小端，÷100 得 dB)、[6]=iir_type(u8，255=未指定→固件兜底 band_pass=2)。
+ * 每段 7B：[0..1]=freq(u16 小端，Hz 直存)、[2..3]=gain(i16 小端，÷100 得 dB)、
+ *          [4..5]=q(i16 小端，÷100)、[6]=iir_type(u8，255=未指定→固件兜底 band_pass=2)。
+ *
+ * 段内 gain/Q 字段顺序（2026-11-19 eqproto 字节级修正）：QCY 原生组帧在 DEX 0x5755EE 调
+ * getGain() 写段 +2/+3、0x575632 调 getQ() 写段 +4/+5；固件 0x60251E6/0x60251DC 把两个数
+ * 分别写运行时段结构 +8/+12（SDK 定义 float gain / float q）互证。0.9.1 曾把 +2/+3 当 Q、
+ * +4/+5 当 gain 发反（「流行」预设 170Hz 段：固件读到 gain=+0.4dB、Q=−17），本版已换正。
  *
  * EQ 类型字节语义（路 EQFIX 重解 apply 0x06025118 钉死，docs/eq-cmd-0x22-layout.md §2.3）：
  *   type==1  → 固件调 0x6024fe6("MusicEqBt",0) 装载自定义槽后直接返回，**载荷段被忽略**；
@@ -100,10 +105,10 @@ public final class EqFrame {
         for (EqBand b : bands) {
             data[p + 0] = (byte) b.freq;
             data[p + 1] = (byte) (b.freq >> 8);
-            data[p + 2] = (byte) b.q;
-            data[p + 3] = (byte) (b.q >> 8);
-            data[p + 4] = (byte) b.gain;
-            data[p + 5] = (byte) (b.gain >> 8);
+            data[p + 2] = (byte) b.gain;            // +2/+3=gain（QCY 原生 DEX 0x5755EE 先写 gain）
+            data[p + 3] = (byte) (b.gain >> 8);
+            data[p + 4] = (byte) b.q;               // +4/+5=Q（DEX 0x575632 后写 Q）
+            data[p + 5] = (byte) (b.q >> 8);
             data[p + 6] = (byte) b.iirType;
             p += 7;
         }
@@ -147,8 +152,8 @@ public final class EqFrame {
         List<EqBand> bands = new ArrayList<EqBand>(n);
         int p = 3;
         for (int i = 0; i < n; i++) {
-            bands.add(new EqBand(u16(data[p], data[p + 1]), i16(data[p + 2], data[p + 3]),
-                                 i16(data[p + 4], data[p + 5]), data[p + 6] & 0xff));
+            bands.add(new EqBand(u16(data[p], data[p + 1]), i16(data[p + 4], data[p + 5]),
+                                 i16(data[p + 2], data[p + 3]), data[p + 6] & 0xff));
             p += 7;
         }
         return new Parsed(eqType, masterGain, bands);

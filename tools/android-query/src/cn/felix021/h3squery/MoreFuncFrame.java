@@ -20,18 +20,20 @@ package cn.felix021.h3squery;
  *     关闭双设备（清 QCY+34/config8）与空间音效（清 QCY+33/config14）。getter 回 1B。
  *   - 0x24 双设备连接：data=[01/00]（len 1，面板 "240101"/"240100"）。开=会重启并关 LDAC。
  *     getter 回 1B。连接数上限固件侧编译死 2（0x1281fa 2×40B 链路记录，docs/morefunc-protocol.md §5）。
- *   - 0x03 [推断] 清除配对：setter 无视 data 固定投递内部事件 594→BT 控制；data=[02] 取
- *     面板 cmd 字节。实验性——语义 [推断]，UI 须警示。
+ *   - （已删 0x03 清除配对：旧 [推断] 归属错误——eqproto 字节对照证明 QCY 原生清配对走
+ *     0xC5/02，FF/03 不再构造/放行。）
  *
  * 批量同步（opcode 0xC0 写 / 0xC1 读，body=SN 后接 item 序列，item={u8 len(含 cmdid),
  * u8 cmdid, data[len-1]}，docs/morefunc-protocol.md §3）：
  *   - 表 C cmdid 1 设备名：data=名字字节（≤32B，固件 NUL 补齐；面板 maxLength 20）。
  *   - 表 C cmdid 2 按键映射：见 KeyRemapFrame.buildBatchSyncCommand。
  *
- * 0xC5 恢复/查找族（body=SN|子命令，docs/morefunc-protocol.md §4）：
+ * 0xC5 恢复/清除族（body=SN|子命令）：
  *   - 0xC5 01 恢复出厂：跑两表全部恢复默认 handler（0x600f856）——危险操作，UI 必须 confirm。
- *   - 0xC5 02 找耳机响声：有连接链路时播两声提示音 [推断]（官方 App「寻找耳机」的发声半边；
- *     地图定位半边在手机侧，协议无对应命令）。
+ *   - 0xC5 02 清除配对记录（2026-11-19 eqproto 钉死：QCY 原生面板「清除配对记录」经 SDK
+ *     clearPairedRecord() 组 opcode C5/参数 02，与 0.9.1 误当「找耳机响声」发的字节完全相同）。
+ *     危险操作：清除后连接断开、需重新配对，UI 必须 confirm。原生「响铃找耳机」不发任何
+ *     RCSP 帧（手机侧媒体播放，见 H3SBridge.findBuds 注释）。
  *
  * 纯组帧/解析，无传输副作用；真机未验证（红线：不连真机），[未钉] 处如实标注。
  */
@@ -46,18 +48,16 @@ public final class MoreFuncFrame {
     public static final int CMD_LDAC = 0x23;
     /** 双设备连接 cmdid（面板 cmdid 36）。 */
     public static final int CMD_DUAL_DEVICE = 0x24;
-    /** [推断] 清除配对 cmdid（面板「清除配对记录」id4 cmd02；固件 setter 投内部事件 594）。 */
-    public static final int CMD_CLEAR_PAIRING = 0x03;
     /** 批量同步写 opcode（固件分发器 0x0600fae0 case 0，docs/morefunc-protocol.md §3）。 */
     public static final int OPCODE_BATCH_WRITE = 0xc0;
     /** 批量同步读 opcode（SDK CMD_ADV_NOTIFY_SETTINGS=0xC3 之外的 C1 读，C1 读实测形状见 QueryPolicy §ancCycle）。 */
     public static final int OPCODE_BATCH_READ = 0xc1;
-    /** 恢复/查找族 opcode（RX 分发 0x0600fd78：body[0]=1 恢复出厂 / 2 找耳机响声）。 */
+    /** 恢复/清除族 opcode（RX 分发 0x0600fd78：body[0]=1 恢复出厂 / 2 清除配对记录）。 */
     public static final int OPCODE_RESET_FAMILY = 0xc5;
     /** 0xC5 子命令：恢复出厂（跑两表全部恢复默认回调）。 */
     public static final int RESET_SUBCMD_FACTORY = 0x01;
-    /** 0xC5 子命令：找耳机响声 [推断]（有活动链路播 256/260 两声提示音）。 */
-    public static final int RESET_SUBCMD_FIND = 0x02;
+    /** 0xC5 子命令：清除配对记录（eqproto 字节对照钉死：QCY 原生清配对命令；清后断连需重新配对）。 */
+    public static final int RESET_SUBCMD_CLEAR_PAIRING = 0x02;
     /** 批量同步表 C：设备名 cmdid（32B 字串，读 0x0602557a / 写 0x060255e4）。 */
     public static final int BATCH_CMDID_NAME = 0x01;
     /** 设备名固件上限（32B；面板 maxLength=20，本类从严取 20）。 */
@@ -106,11 +106,6 @@ public final class MoreFuncFrame {
         return new byte[]{(byte) (on ? 1 : 0)};
     }
 
-    /** 0x03 [推断] 清除配对 data=[02]（面板 cmd 字节；固件 setter 无视 data）。 */
-    public static byte[] buildClearPairingData() {
-        return new byte[]{0x02};
-    }
-
     /** 组 FF 自定义命令帧（复用 H3SBridge.buildCustomCommand）。 */
     public static byte[] buildCustomCommand(int sn, int cmdId, byte[] data) {
         return H3SBridge.buildCustomCommand(sn, cmdId, data);
@@ -152,12 +147,12 @@ public final class MoreFuncFrame {
         return buildRawFrame(EqFrame.FLAGS_CMD, OPCODE_BATCH_READ, sn, body);
     }
 
-    // ---------- 0xC5 恢复/查找族 ----------
+    // ---------- 0xC5 恢复/清除族 ----------
 
-    /** 0xC5 帧：FE DC BA | C0 | C5 | len | SN | 子命令 | EF（子命令∈{01 恢复出厂, 02 找耳机}）。 */
+    /** 0xC5 帧：FE DC BA | C0 | C5 | len | SN | 子命令 | EF（子命令∈{01 恢复出厂, 02 清除配对}）。 */
     public static byte[] buildResetFamilyCommand(int sn, int subcmd) {
-        check(subcmd == RESET_SUBCMD_FACTORY || subcmd == RESET_SUBCMD_FIND,
-            "0xC5 子命令非法（01=恢复出厂, 02=找耳机响声）: " + subcmd);
+        check(subcmd == RESET_SUBCMD_FACTORY || subcmd == RESET_SUBCMD_CLEAR_PAIRING,
+            "0xC5 子命令非法（01=恢复出厂, 02=清除配对）: " + subcmd);
         return buildRawFrame(EqFrame.FLAGS_CMD, OPCODE_RESET_FAMILY, sn, new byte[]{(byte) subcmd});
     }
 
