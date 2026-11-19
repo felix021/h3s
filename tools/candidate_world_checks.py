@@ -74,8 +74,20 @@ CONFIG_DAT_SPANS = [('config_dat_header_crc', 0xE2ED3, 0xE2ED5),
                     ('config_dat_index', 0xE2EE1, 0xE2EE2)]
 APPEND_BASE = 0xE3053                                    # mic_effect.bin header start
 
+# f2 / f1ac1 (route F2PREP, docs/hearing-aid-f2-acceptance.md §1): the lfix2
+# open/close graft relocates the hook to a single 8B window at 0x06025404
+# (KEY7 window), and the C1 two-state table / MPO demo add the extra spans
+# below. All coordinates re-measured from the f2-final / precheck-2state
+# build artifacts, not inferred from the l1/r4 geometry.
+F2_HOOK_WINDOWS = [('hook_window:key7', 0x25404, 0x2540C)]
+F2_EXTRA_SPANS = [
+    ('anc_key_table_byte', 0x9E510, 0x9E511),    # C1 two-state ANC key table [1,3,2]->[2,3,2]
+    ('stream_bin_header_crc', 0xE0A2C, 0xE0A30),  # stream.bin JLFS header CRC (MPO demo rewrites content)
+    ('stream_bin_mpo_table', 0xE2305, 0xE2314),   # Drc1Eff threshold entries (MPO demo)
+]
+
 # Windows are whole-8B replacements: each window span must be fully covered.
-FULL_COVERAGE_REGIONS = {name for name, _lo, _hi in HOOK_WINDOWS}
+FULL_COVERAGE_REGIONS = {name for name, _lo, _hi in HOOK_WINDOWS + F2_HOOK_WINDOWS}
 
 CANDIDATES = {
     'l1_slotram': {
@@ -83,6 +95,8 @@ CANDIDATES = {
         'plain_length': 0xE31F8,          # flash end 0xE5218 - 0x2020 (measured)
         'whole_file_diff_bytes': 493,     # hearing-aid-l1-payload §12.3 byte account (fixed open)
         'registry_slot': False,
+        'hook_windows': HOOK_WINDOWS,
+        'extra_spans': (),
     },
     'r4_keyhook': {
         # HAL3 re-pin: keystore_hook status-byte erratum fix (st.w -> st.b at
@@ -95,6 +109,24 @@ CANDIDATES = {
         'plain_length': 0xE3286,          # flash end 0xE52A6 - 0x2020 (measured)
         'whole_file_diff_bytes': 639,     # r4-command-hook §3.3 byte account (fixed open)
         'registry_slot': True,
+        'hook_windows': HOOK_WINDOWS,
+        'extra_spans': (),
+    },
+    'f2': {
+        'sha256': '7e972bf00484920bce0a41b1653d94f5c151455947b08fe3b0fb67e3d3c68348',
+        'plain_length': 0xE34DA,          # app_bytes 931034 (flash end 0xE36FA - 0x2020)
+        'whole_file_diff_bytes': 1210,    # build-report hearing_aid_l1.byte_diff.diff_count
+        'registry_slot': True,
+        'hook_windows': F2_HOOK_WINDOWS,
+        'extra_spans': F2_EXTRA_SPANS,
+    },
+    'f1ac1': {
+        'sha256': '503f427fcefd2cd796b8e992a50275f3257cfb8012419df281a827bd83338351',
+        'plain_length': 0xE3498,          # app_bytes 930968 (flash end 0xE36B8 - 0x2020)
+        'whole_file_diff_bytes': 1146,    # build-report hearing_aid_l1.byte_diff.diff_count
+        'registry_slot': True,
+        'hook_windows': F2_HOOK_WINDOWS,
+        'extra_spans': F2_EXTRA_SPANS,
     },
 }
 
@@ -122,10 +154,11 @@ def byte_diff_runs(a, b):
 
 
 def _regions(spec):
-    """The whitelist region list for one candidate: fixed spans + the appended
-    segment (open at APPEND_BASE, closed at the pinned plain length)."""
-    spans = [APP_AREA_HEAD_CRC, APP_JLFS_CRC, FENCE_IMMEDIATE, *HOOK_WINDOWS,
-             *CONFIG_DAT_SPANS]
+    """The whitelist region list for one candidate: fixed spans + per-candidate
+    hook windows / extra spans + the appended segment (open at APPEND_BASE,
+    closed at the pinned plain length)."""
+    spans = [APP_AREA_HEAD_CRC, APP_JLFS_CRC, FENCE_IMMEDIATE,
+             *spec['hook_windows'], *spec['extra_spans'], *CONFIG_DAT_SPANS]
     if spec['registry_slot']:
         spans.append(REGISTRY_SLOT)
     spans.append(('appended_segment', APPEND_BASE, spec['plain_length']))
