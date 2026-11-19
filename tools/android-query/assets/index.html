@@ -1566,7 +1566,7 @@ summary {
       <section id="sec-mf-find">
         <h3>寻找耳机</h3>
         <div class="actions">
-          <button id="mfFindBtn" data-write disabled>响铃找耳机</button>
+          <button id="mfFindBtn" type="button">响铃找耳机</button>
         </div>
         <p id="mfFindFeedback" class="feedback" aria-live="polite">尚未使用。</p>
       </section>
@@ -4438,9 +4438,25 @@ $('mfNameSend').onclick = () => {
     if (!ok) mfFeedback('mfNameFeedback', '设备名发送失败：' + message, false);
   });
 };
+/* 找耳机：手机播铃声经蓝牙媒体送到耳机，不发任何 BLE 命令（eqproto：原生即如此，
+   我们旧版发的 C5 02 实为原生清配对命令，已归正）。按连接状态启用。 */
+let findRinging = false;
 $('mfFindBtn').onclick = () => {
-  mfFeedback('mfFindFeedback', '已发送响铃命令，耳机应响两声（需已连接）…');
-  writeCommand('findBuds', []);
+  const bridge = window.h3sha;
+  if (!bridge || !bridge.findRing) {
+    mfFeedback('mfFindFeedback', '当前壳不支持响铃。', false);
+    return;
+  }
+  const res = bridge.findRing(!findRinging);
+  let ok = false;
+  try { ok = JSON.parse(res); } catch (e) { /* 桥返回异常按失败 */ }
+  if (ok.ok) {
+    findRinging = !findRinging;
+    $('mfFindBtn').textContent = findRinging ? '停止响铃' : '响铃找耳机';
+    mfFeedback('mfFindFeedback', findRinging ? '铃声播放中（经蓝牙媒体送到耳机），再次点击停止。' : '已停止。', true);
+  } else {
+    mfFeedback('mfFindFeedback', (ok.error || '响铃失败') + '', false);
+  }
 };
 $('mfResetBtn').onclick = () => {
   if (!window.confirm('恢复默认设置：降噪/EQ/按键/音量/定时等全部设置会恢复出厂，'
@@ -4449,9 +4465,9 @@ $('mfResetBtn').onclick = () => {
   writeCommand('restoreDefaults', []);
 };
 $('mfClearPairBtn').onclick = () => {
-  if (!window.confirm('清除配对记录（实验性，固件侧语义为推断）：清除后耳机连接会断开，'
+  if (!window.confirm('清除配对记录：清除后耳机连接会断开，'
     + '需重新配对。确认继续？')) return;
-  mfFeedback('mfDangerFeedback', '已发送清除配对命令（实验性 FF/0x03）…');
+  mfFeedback('mfDangerFeedback', '已发送清除配对命令（C5/02）…');
   writeCommand('clearPairing', []);
 };
 /** FF 只读回包与 0x80 主动通知的解析（docs/morefunc-protocol.md §2 载荷表）。

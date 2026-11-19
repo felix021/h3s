@@ -145,6 +145,59 @@ public class H3sToneBridge {
         return null;
     }
 
+    /** 已连接的蓝牙媒体输出（A2DP）。找耳机响铃要走到耳机，与测试音的内置扬声器路由相反。 */
+    private AudioDeviceInfo bluetoothMedia() {
+        AudioDeviceInfo[] outs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+        for (AudioDeviceInfo d : outs) {
+            if (d.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) return d;
+        }
+        return null;
+    }
+
+    /**
+     * 找耳机响铃（eqproto 调研：QCY 原生找耳机不发任何 BLE 命令，由手机循环播放铃声
+     * 经已连接的蓝牙媒体送到耳机；原生用 R.raw.didi2 循环）。本方法合成「滴滴」双音循环，
+     * 路由首选 A2DP 设备——没有蓝牙媒体时返回明确失败（此时铃声只能落手机扬声器，用户
+     * 找不到耳机没有意义，不如明说）。
+     */
+    @JavascriptInterface
+    public String findRing(boolean on) {
+        if (!on) { stopAndRelease(); return okPlaying(false); }
+        stopAndRelease();
+        AudioDeviceInfo a2dp = bluetoothMedia();
+        if (a2dp == null) {
+            try {
+                return new JSONObject().put("ok", false)
+                    .put("error", "未找到已连接的蓝牙媒体输出（耳机未连接时无法响铃）").toString();
+            } catch (JSONException impossible) { return "{\"ok\":false}"; }
+        }
+        short[] pcm = didiLoop();
+        boolean routed = start(pcm, TONE_SAMPLE_RATE, true, a2dp);
+        if (!routed) { stopAndRelease(); }
+        try {
+            return new JSONObject().put("ok", routed).put("playing", routed)
+                .put("routed", routed ? "bluetooth_a2dp" : "none").toString();
+        } catch (JSONException impossible) { return "{\"ok\":" + routed + "}"; }
+    }
+
+    /** 「滴滴」双音循环段：2093Hz×80ms ×2 声（间隔 80ms）+ 400ms 静音，16kHz 单声道。 */
+    private static short[] didiLoop() {
+        int beep = TONE_SAMPLE_RATE * 80 / 1000;
+        int gap = beep;
+        int pause = TONE_SAMPLE_RATE * 400 / 1000;
+        short[] out = new short[beep * 2 + gap + pause];
+        double w = 2.0 * Math.PI * 2093.0 / TONE_SAMPLE_RATE;
+        int amp = 22000;
+        for (int i = 0; i < beep; i++) out[i] = (short) Math.round(amp * Math.sin(w * i));
+        for (int i = 0; i < beep; i++) out[beep + gap + i] = (short) Math.round(amp * Math.sin(w * i));
+        return out;
+    }
+
+    private static String okPlaying(boolean playing) {
+        try { return new JSONObject().put("ok", true).put("playing", playing).toString(); }
+        catch (JSONException impossible) { return "{\"ok\":true,\"playing\":" + playing + "}"; }
+    }
+
     /** 建 MODE_STATIC AudioTrack、写 PCM、可选循环并播放；返回是否成功把首选设备设为扬声器。 */
     private boolean start(short[] pcm, int sampleRate, boolean loop, AudioDeviceInfo speaker) {
         if (pcm == null || pcm.length == 0) return false;
