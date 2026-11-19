@@ -96,8 +96,22 @@ L1_APP_SHA = 'd830222c902bf5663027ecbbf540d983054fb39af45fd47e0dce955a0c1f52ab'
 R4_KEYHOOK_SHA = '2576df46f583a8ac8b235705fd0bb75eaa6e6ebcb04c86afac125e9b018f00cf'
 R4_APP_SHA = '3a186192370195f9823f0427cf7c6d4f9ab9dffb7e25d8956baab35b7e23451f'
 CANDIDATE_APP_SHAS = {'l1_slotram': L1_APP_SHA, 'r4_keyhook': R4_APP_SHA}
+# f2 / f1ac1 (路 F2PREP): F2 与 F1a+C1 的唯一语义差异(C2 close 补刀 66B)落在
+# 842654 app 切片之外的追加段,切片摘要(上方 CANDIDATE_APP_SHAS 口径)无法可靠
+# 区分两身份,故这两个候选改用全 plain 摘要(UFW sha 已在 candidate_world_checks
+# .CANDIDATES 钉死,此处全 plain 摘要为其增量身份钉值;实测值见下)。
+F2_SHA = '7e972bf00484920bce0a41b1653d94f5c151455947b08fe3b0fb67e3d3c68348'
+F2_PLAIN_SHA = 'cdc4b42b76f9bb4223eae94182a2dd5ca9ab2d3dc9dc71f5f24759e91b3cf7b5'
+F1AC1_SHA = '503f427fcefd2cd796b8e992a50275f3257cfb8012419df281a827bd83338351'
+F1AC1_PLAIN_SHA = '3d2819f9140a2f1e87871a10098cd62dacbb469c9d3df93d9e6565c058625996'
+CANDIDATE_PLAIN_SHAS = {'f2': F2_PLAIN_SHA, 'f1ac1': F1AC1_PLAIN_SHA}
+# 追加段(plain[0xE3053:] = mic_effect.bin 头 + open/close 载荷;plain[i] -> 运行
+# 时地址 0x06000000+i)。C2 hook/open/close 载荷被显式映射为该起点的 readonly 覆盖。
+APPEND_SEGMENT_OFFSET = 0xE3053
+APPEND_SEGMENT_RUNTIME = 0x060E3053
 PLAIN_LENGTHS = {'official': 0xE3053, 'tested_b79': 0xE3053, 'eq_fence_repair': 0xE31C5,
-                 'l1_slotram': 0xE31F8, 'r4_keyhook': 0xE3286}
+                 'l1_slotram': 0xE31F8, 'r4_keyhook': 0xE3286,
+                 'f2': 0xE34DA, 'f1ac1': 0xE3498}
 OFFICIAL_DEFAULT = ROOT / 'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
 
 # Shared-stack scenarios. The crc_bankb flag set is the pinned shared-frontier
@@ -947,6 +961,35 @@ def load_r4_keyhook(path, official_path):
     return _load_candidate_world('r4_keyhook', path, official_path)
 
 
+def _load_f2_candidate_world(name, path, official_path):
+    """f2 / f1ac1 候选镜像世界入口(路 F2PREP)。与 l1/r4 不同:两候选的唯一
+    语义差异(C2 close 补刀 66B)落在 842654 app 切片之外的追加段,切片摘要无法
+    可靠区分两身份,故增量身份钉值改用全 plain 摘要(UFW sha 已在 run_checks 内
+    钉死)。追加段(0x060E3053 起 mic_effect.bin + open/close 载荷)显式映射为
+    readonly 覆盖,使 C2 hook/open/close 载荷可执行(参考 probe_arch_startup 的
+    candidate_view overlay)。候选保持 UNTESTED;本入口不构成刷机或行为验证声明。"""
+    import candidate_world_checks
+    report = candidate_world_checks.run_checks(name, path, official_path)
+    failed = [a['assertion'] for a in report['assertions'] if not a['passed']]
+    require(not failed, f'{name} candidate-world pre-load assertions failed: {failed}')
+    raw, flash, plain = load_image(path)
+    require(len(plain) == PLAIN_LENGTHS[name], f'{name} plaintext length changed')
+    require(hashlib.sha256(plain).hexdigest() == CANDIDATE_PLAIN_SHAS[name],
+            f'{name} full-plain digest changed')
+    app = plain[0x100:0x100 + 842654]
+    readonly = ((APPEND_SEGMENT_RUNTIME, plain[APPEND_SEGMENT_OFFSET:]),)
+    sha = {'f2': F2_SHA, 'f1ac1': F1AC1_SHA}[name]
+    return app, plain, readonly, sha
+
+
+def load_f2(path, official_path):
+    return _load_f2_candidate_world('f2', path, official_path)
+
+
+def load_f1ac1(path, official_path):
+    return _load_f2_candidate_world('f1ac1', path, official_path)
+
+
 def byte_diff_runs(a, b):
     """Non-overlapping [lo,hi) runs where the two plaintexts differ, plus a
     trailing run for the length extension (appended eq_toggle.bin)."""
@@ -1478,7 +1521,9 @@ LOADERS = {'official': load_official,
            'tested_b79': lambda path, official: load_b79(path, official),
            'eq_fence_repair': lambda path, official: load_eq_candidate(path, official),
            'l1_slotram': load_l1_slotram,
-           'r4_keyhook': load_r4_keyhook}
+           'r4_keyhook': load_r4_keyhook,
+           'f2': load_f2,
+           'f1ac1': load_f1ac1}
 
 
 def check_self(report, arms=None):
@@ -2386,8 +2431,8 @@ def main():
     parser.add_argument('--rom', type=Path, required=True)
     parser.add_argument('--image', action='append',
                         help='label=path with label in {official,tested_b79,eq_fence_repair,'
-                             'l1_slotram,r4_keyhook}; repeat 2-3 times; the candidate labels '
-                             'gate on the candidate_world_checks four-fold assertions '
+                             'l1_slotram,r4_keyhook,f2,f1ac1}; repeat 2-3 times; the candidate '
+                             'labels gate on the candidate_world_checks four-fold assertions '
                              '(UNTESTED candidates, no flash approval implied)')
     parser.add_argument('--pair', action='append',
                         help='labelA:labelB to compare (default: every combination)')
