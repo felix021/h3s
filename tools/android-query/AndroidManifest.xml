@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="cn.felix021.h3squery" android:versionCode="16" android:versionName="0.9.1-uifix">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="cn.felix021.h3squery" android:versionCode="17" android:versionName="0.9.2-uifix2">
   <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35"/>
   <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
   <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
