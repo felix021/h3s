@@ -38,7 +38,7 @@
   "frontier_registry": "p11_heap_experimental → 42059070 @ 0x606fbe4 unmapped_memory read 0xfe2604（freshness_fields kind+address；probe require/analyze freshness/test 期望自动跟随单点）",
   "probe_check_counts": "wdt elapsed 157；Timer0 交付 15780/到期 15797/cnt 26931/PRD 35999/handler帧 31560+新中断上下文 2 站+末次 PC 0x60745fa；core-tick cnt 950332（347/347 冻结）；CRC 270/fed 73829（尾段六值周期×10）；COPEXIMPL 释放记录断言块（三样本逐值+措辞钉死 CONDITIONAL MATHEMATICAL APPROXIMATION/NOT a silicon replica/1 ulp BELOW correct rounding）；停点叙事延段（eq 系数设计→SRC_SYNC CON1 RMW→mode-24 预测未命中 codex 裁决）",
   "adapter_baseline": "evidence/p11_heap_adapter_count_baseline.json --recapture 重取（键集合+copex_exp22_model_execute=23 键；本路漂移 14 键）",
-  "analyze_check_self": "不改动 analyze_image_trace.py（红线；sim-dmaimpl 路并行持有该文件改动）——freshness 派生自 registry 自动跟随；per_core 硬钉相对新前沿将漂移为 {'0':42064068,'1':11496}（on-main machine.cores 实测），与 evimpl/dmaimpl 期漂移一并向主协调报告"
+  "analyze_check_self": "不改动 analyze_image_trace.py（红线；sim-dmaimpl 路并行持有该文件改动）——freshness 派生自 registry 自动跟随；per_core 硬钉相对新前沿将漂移为 {'0':42064068,'1':11496}（on-main machine.cores 实测），与 evimpl/dmaimpl 期漂移一并向主协调报告;本路预测漂移 {'0':42064068,'1':11496} 与收口实测 completed+4998 口径一致;控制流首分歧(+17 步,0x603182a)与全部 6 个新 write cell 均落本路放行的 eq 指数段(exp(x) 输出 0x3d0186e2↔0x3c23d70a,比值恰 10^(1/2);x=0xc05d0c55↔0xc0935d8e=dmaimpl 停点寄存器同值)→PARITY4 收口(2026-11-19,main c0a520b 全量 fresh 双镜像重跑重钉):b79 臂同停点记录、步数轴恒差 -2(镜像 -10dB 参数字节经 copex 指数段进入控制流:0x603182a 对增益字 0x18b9a8(official -45.0f↔b79 -55.0f)的数据依赖分支,官方相等落入恰 2 指令特例臂;重锁于 42,051,199/42,051,197,其后 10,279 步两臂逐字节零分歧),per_core official {0:42066476,1:11496}/b79 {0:42066474,1:11496}(per-core0=completed+4998 两臂同式);写差异钉值改「对齐前缀+重锁后缀」两段:前缀 steps 339/cells 228(旧 222 零 removed,+6 全 register 类)、后缀 0/0;final report 差异 44→71 全量枚举逐项归因(json_diff 上限 64→512)。钉值全文=tools/analyze_image_trace.py check_self_conditional 路 PARITY4 注释段"
  },
  "next_stop_classification": {
   "stop": "JL_SRC_SYNC CON1（0xfe2604）rmw.or.modimm |= 0x400000 的内部读——SDK br28.h src_sync 块；勘误（codex）：SRC_SYNC 16 成员=14 __RW+2 __WO（ODAT_ADR_START/END），非 17；__RW/__WO 宏均展开 volatile，无复位值/W1C/自清/完成时序证据",
@@ -50,7 +50,7 @@
   "single_test_oracle_caveat": "部分单测期望值同样用 math.exp+float32 转换对拍——验证软件契约，不提供独立硅数值真值（codex 指出，如实入档）",
   "resume_conditional_pass": "on/off 臂均自建 base-off 快照续跑（7.3s/6.3s 档）；等价性依据=off 臂与 dmaimpl 参照逐键相等+跨代码 smoke 逐键相等+recapture 从零全量逐字复现（resume≡from-0）+断言面离线闭环；合并前全量 probe --rom 从零重放是红线收口",
   "smoke_v1_erratum": "跨代码 smoke v1 的 --from base 按 kind 匹配先命中自家 base-off（实际同代码恢复，跨代码结论不成立）——codex 查证抓出；unique-stem 本地副本重跑后成立。教训：clean_source 的 kind 匹配与多 base 谱系并用时 stem 必须唯一",
-  "parity": "official↔b79 parity 到新停点未在本路重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0——evimpl/dmaimpl 同款边界）；analyze_image_trace 的 per_core 钉值漂移（evimpl+dmaimpl+本路三段）留主协调",
+  "parity": "official↔b79 parity 到新停点未在本路重跑（放行段纯 CPU0 无镜像分叉点，预期 delta 0——evimpl/dmaimpl 同款边界）；analyze_image_trace 的 per_core 钉值漂移（evimpl+dmaimpl+本路三段）留主协调;→PARITY4 已收口:实测 delta -2 非 0——「放行段纯 CPU0 无镜像分叉点」判断在copeximpl 的 eq 指数段失效(该段消费镜像差异数据进入控制流,同停点记录;归因钉值=check_self_conditional 路 PARITY4)",
   "scope": "本放行只覆盖 n==22 的 copex.ppi 基形（contract 全集）；其余 7 模式/控制高位/非 zext 源/域外/.p 两位置/上字消费全维持诚实停；eq 设计族 mode 16/24 站点未建模未触达"
  }
 }
