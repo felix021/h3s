@@ -4013,6 +4013,84 @@ class ModelTests(unittest.TestCase):
                         and allf.handles(0xfd6104,4))
         self.assertFalse(allf.handles(0xfe2608,4) or allf.handles(0xfe2638,4))
 
+    def test_jl_src_sync_full_block(self):
+        # 路 SRCSYNC2(codex 202611200345 总裁决「收窄 A」决策点 3):
+        # 42,231,992 停点 0x6070a9a(函数 B 0x6070a30 体内 CON2 整字写,在
+        # 已放行 jl_src_sync_config_words 容器之外)——全块 11 新字容器:
+        # 整字纯写记录+读一律拒绝;ODAT_ADR_START/END 留表外;CON0|=0x8
+        # 启动请求归原 CON0 容器(五元组+写历史守卫)。
+        from br28_model import JL_SRC_SYNC_FULL_BLOCK_WORDS
+        self.assertEqual(JL_SRC_SYNC_FULL_BLOCK_WORDS,
+                         (0xfe2608,0xfe260c,0xfe2610,0xfe2614,0xfe2618,0xfe261c,
+                          0xfe2620,0xfe262c,0xfe2630,0xfe2634,0xfe2638))
+        plain=BR28Model()
+        for address in JL_SRC_SYNC_FULL_BLOCK_WORDS:
+            self.assertFalse(plain.handles(address,4))
+        with self.assertRaisesRegex(Blocked,'unsupported_peripheral_write'):
+            plain.write(0xfe2608,0x00010002)
+        self.assertNotIn('jl_src_sync_full_block',plain.report())
+        h=BR28Model(jl_src_sync_full_block=True)
+        for address in JL_SRC_SYNC_FULL_BLOCK_WORDS:
+            self.assertTrue(h.handles(address,4))
+        # 表外:ODAT_ADR_START/END(+0x24/+0x28)函数 B 不写;CON0/CON1/COEF
+        # 归另一容器;邻字/子字错位不吞。
+        for address in (0xfe2600,0xfe2604,0xfe2624,0xfe2628,0xfe263c,0xfe2640,
+                        0xfe25fc,0xfe2700):
+            self.assertFalse(h.handles(address,4),hex(address))
+        self.assertFalse(h.handles(0xfe2609,4) or h.handles(0xfe260a,2))
+        # 整字纯写记录 + 读一律拒绝(首写前/写后同拒)。
+        h.write(0xfe2608,0x00010002)
+        h.write(0xfe260c,0x00010002)
+        self.assertEqual(h.jl_src_sync_full_block.word_writes,2)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_full_block_read_not_modeled'):
+            h.read(0xfe2608)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_full_block_read_not_modeled'):
+            h.read(0xfe2638)  # 首写前同拒
+        # 值域校验(容器直调;白名单外由模型层先拒)。
+        with self.assertRaises(ValueError):
+            h.jl_src_sync_full_block.write(0xfe2608,-1,0)
+        with self.assertRaises(ValueError):
+            h.jl_src_sync_full_block.write(0xfe2608,0x100000000,0)
+        with self.assertRaises(ValueError):
+            h.jl_src_sync_full_block.write(0xfe2624,0,0)
+        with self.assertRaises(ValueError):
+            h.jl_src_sync_full_block.read(0xfe2624)
+        # 报告面:11 字/写记录/读拒绝叙事/ODAT_ADR_START/END 表外/derived。
+        r=h.report()['jl_src_sync_full_block']
+        self.assertEqual(len(r['addresses']),11)
+        self.assertEqual(r['sdk_names']['0xfe2608'],'JL_SRC_SYNC->CON2')
+        self.assertEqual(r['stores']['0xfe2608']['writes'],1)
+        self.assertEqual(r['stores']['0xfe2608']['values'],['0x10002'])
+        self.assertEqual(r['read_refusals']['refused'],2)
+        self.assertIn('ODAT_ADR_START/END',r['modeled_vs_touched'])
+        self.assertIn('DERIVED',r['observed_shapes'])
+        self.assertIn('IRQ89',r['read_refusals']['semantics'])
+        self.assertIn('jl_src_sync_full_block',h.report()['assumptions'])
+        # 启动请求 RMW(决策点 1+2③):五元组+写历史守卫;旧值由原 CON0 容器
+        # 提供,写回进原账本不占新容器 11 纯写。
+        h2=BR28Model(jl_src_sync_config_words=True,jl_src_sync_full_block=True)
+        # 五元组:pc/core 不符拒。
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_start_rmw_pc_not_audited'):
+            h2.jl_src_sync.rmw_start(0x606fbfa,'rmw.or.modimm',0x8,0)
+        # 形状:掩码不符拒。
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_start_rmw_form_not_audited'):
+            h2.jl_src_sync.rmw_start(0x6070b1c,'rmw.or.modimm',0x10,0)
+        # 写历史:本次事务未先做 CON0 整字覆盖写即 |=0x8=拒。
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_start_rmw_stale_con0'):
+            h2.jl_src_sync.rmw_start(0x6070b1c,'rmw.or.modimm',0x8,0)
+        # 合法链路:0x6070a90 整字覆盖写(bit3=0)→ 0x6070b1c |=0x8。
+        h2.jl_src_sync.write(0xfe2600,0x82006001,0)
+        self.assertEqual(h2.jl_src_sync.rmw_start(0x6070b1c,'rmw.or.modimm',0x8,0),
+                         0x82006009)
+        self.assertEqual(h2.jl_src_sync.stores[0xfe2600]['values'][-1],0x82006009)
+        # 写历史:旧值已带 bit3(上次启动结果 0x82006009)重入借陈旧值拒。
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_start_rmw_stale_con0'):
+            h2.jl_src_sync.rmw_start(0x6070b1c,'rmw.or.modimm',0x8,0)
+        # CON1 函数 B 标量读(0x6070ac4 并行 mul∥ld.w 第二半)走读回路径服务
+        # (标量读不设 PC 守卫;RMW 内部读的 PC 守卫在 probe_boot 侧)。
+        h2.jl_src_sync.write(0xfe2604,0x41,0)
+        self.assertEqual(h2.jl_src_sync.read(0xfe2604),0x41)
+
     def test_jl_sync_config_words(self):
         # 路 SYNCIMPL(codex 收窄版 a,负例矩阵 12 项的单测面):42,061,357
         # 停点 0x60befe6(creator 0x60befae 体内 CON 整字写 0)——四字容器

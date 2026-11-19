@@ -424,6 +424,27 @@ FEATURES = (
             'probe-not-plausible-state,CV/ADA/ASS 探针先例——零臂 CON1 终值'
             ' 0x0/ones 臂 0xffbfffff(bit22 在全一字本为 1,|0x400000 不变),未覆盖位保留初值进写事务;当前链段内'
             '零纯读段外零读者,敏感性臂证同停点同步数)'),
+    # ---- 路 SRCSYNC2(codex 202611200345 总裁决「收窄 A」决策点 3):JL_SRC_SYNC
+    # 全块 11 新字容器 jl_src_sync_full_block——42,231,992 停点 0x6070a9a
+    # (函数 B 0x6070a30 体内 CON2 0xfe2608 整字写 0x00010002,在已放行
+    # jl_src_sync_config_words 容器 CON0/CON1/COEF 之外)放行。函数 B 的
+    # 11 笔整字纯写(CON2/CON3/IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/
+    # FLTB_ADR/STOP_FLAG/INSR/OUTSR/PHASE);ODAT_ADR_START/END 留表外。
+    # 策略:整字纯写记录+读一律拒绝(jl_src_sync_full_block_read_not_modeled,
+    # 首写前/写后/RMW 内部读都停)。CON0|=0x8 启动请求 @0x6070b1c 归原
+    # CON0 容器(五元组 RMW 专用分发+写历史检查防 0x6070a6c 旁路借陈旧值),
+    # 不占新容器 11 纯写。----
+    Feature('jl_src_sync_full_block', 'conditional', ('jl_src_sync_config_words',),
+            False, None,
+            'JL_SRC_SYNC 全块 11 新字容器(CON2 0xfe2608/CON3 0xfe260c/'
+            'IDAT_ADR 0xfe2610/IDAT_LEN 0xfe2614/ODAT_ADR 0xfe2618/ODAT_LEN '
+            '0xfe261c/FLTB_ADR 0xfe2620/STOP_FLAG 0xfe262c/INSR 0xfe2630/'
+            'OUTSR 0xfe2634/PHASE 0xfe2638;42,231,992 停点 0x6070a9a 函数 B '
+            'CON2 整字写放行;整字纯写记录+读一律拒绝;CON0|=0x8 启动请求归'
+            '原 CON0 容器(五元组+写历史守卫),只报「固件发出启动请求」硬件'
+            '是否接受/搬数据未验证;ODAT_ADR_START/END 留表外;CON2 bit16/bit3 '
+            '语义 derived;证据=已验证实现契约与当前前缀推进,不证明 SRC_SYNC '
+            '硬件/采样率转换/DMA/IRQ89 交付/音频处理已运行)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li
@@ -760,11 +781,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42231992,
-        'stop_pc': '0x6070a9a',
-        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
-                 'address': '0xfe2608', 'size': 4, 'value_bytes': '02000100'},
-        'freshness_fields': ('kind', 'address'),
+        'completed_steps': 42232103,
+        'stop_pc': '0x60709ba',
+        'stop': {'kind': 'jl_src_sync_con_rmw_pc_not_audited',
+                 'address': '0xfe2604', 'pc': '0x60709ba', 'core': 0},
+        'freshness_fields': ('kind', 'address', 'pc'),
     },
 }
 

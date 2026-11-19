@@ -1,0 +1,32 @@
+{
+ "route": "SRCSYNC2 / sim-srcsync2（基线 main 4e49c41=REPCONDIMPL 合并点，42,231,992 停点实施路）",
+ "recorded_at": "2026-11-20T06:00:00+08:00",
+ "task": "JL_SRC_SYNC 全块 11 新字容器（codex 202611200345 总裁决「收窄 A」决策点 3）：42,231,992 @ 0x6070a9a（函数 B 0x6070a30 体内 CON2 0xfe2608 整字写 0x00010002，在已放行 jl_src_sync_config_words 容器 CON0/CON1/COEF 之外）→ 放行函数 B 的 11 笔整字纯写（CON2/CON3/IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/FLTB_ADR/STOP_FLAG/INSR/OUTSR/PHASE，读一律拒绝）→ 前沿推进至 42,232,103 @ 0x60709ba（helper 0x607099c 的 CON1 |=0x400000 RMW 未审计）",
+ "implementation": {
+  "switch": "新开关 jl_src_sync_full_block（registry conditional 层默认关，依赖 jl_src_sync_config_words）→ diagnostics/peripherals jl_src_sync_full_block；无新 adapter 键（整字写沿 exact_full_word_store，COEF 尾写沿 exact_postincrement_store）",
+  "container": "br28_model.py JLSrcSyncFullBlockRegisters：11 字整字纯写记录（值=真实指令结果）+ 读一律拒绝 jl_src_sync_full_block_read_not_modeled（首写前/写后/RMW 内部读都停）；ODAT_ADR_START/END(+0x24/+0x28)函数 B 不写留表外；CON2 bit16 用途、bit3 启动含义标 derived（低字节通道数有同函数字节循环+SDK SRC_CHI=2 旁证）",
+  "retro_audit": [
+   "决策点 2①：0x6070a90/0x6070a94 整字覆盖写追认——CON0=0x82006001、CON1=0x41 归原 CON0/CON1 账本（不占新容器 11 纯写）",
+   "决策点 2②：0x6070ac0/0x6070ad2 读写对——CON1 标量读 0x6070ac4（mul∥ld.w 并行第二半）由读回路径服务（旧值只供 >>16+insert 保高 16 位），0x6070ad2 insert 写回进 CON1 账本",
+   "决策点 2③：0x6070b1c 启动 RMW CON0|=0x8 归原 CON0 容器——五元组授权（主核+PC 0x6070b1c+0xfe2600+对齐 32 位+rmw.or.modimm 0x8）+ 写历史检查（旧值 bit3 必须仍为 0，防 0x6070a6c 旁路跳过两笔整写后借上次启动陈旧值 0x82006009）",
+   "消费者守卫升级：CON0/CON1 RMW 内部读只服务已审计 PC（CON0_RMW_PCS 0x606fbfa/0x606fc0a、CON1_RMW_PCS 0x606fbe4/0x606fc2c）+主核；helper 0x607099c 未审计 RMW（0x60709ba CON1|=0x400000、0x60709da CON0|=0x10）消费前停 jl_src_sync_con_rmw_pc_not_audited——「同址新消费者须重审」从诚实边界升级为可执行边界"
+  ],
+  "wiring": "br28_model.py（JL_SRC_SYNC_FULL_BLOCK_WORDS + JLSrcSyncFullBlockRegisters + JLSrcSyncConfigRegisters.rmw_start/CON0_RMW_PCS/CON1_RMW_PCS/consumer_guard/startup_request 报告键 + BR28Model __init__/handles/write/read/report 分派）;probe_boot.py（启动 RMW 专用分发 + CON0/CON1 RMW PC 守卫）;probe_irq_entry.py（irq_case 参数 jl_src_sync_full_block + budget 60000000 + 接线注释 + SRCSYNC/SEGIMPL/SEGIMPL2/SEGIMPL3/REPCOND 五处释放记录断言随前沿重钉 + timer0/core-tick 全账本钉值）;frontier_registry.py（Feature jl_src_sync_full_block + FRONTIERS 重钉 42,232,103 @ 0x60709ba + freshness_fields kind/address/pc）;world_snapshot.py（M4 槽 jl_src_sync_full_block 三字段 stores/word_writes/read_attempts）;test_br28_model.py（test_jl_src_sync_full_block）;test_world_snapshot.py（M4 槽 poke）"
+ },
+ "verification_arms": {
+  "on_main_cross": "跨代码 on-main（复用 REPCOND ownbase5.bin + --ack-prior-fingerprint e0b57d1f + 三开关全开 + --ack-enable-slot jl_src_sync_full_block）→ **42,232,103 @ 0x60709ba**（wall 14.4s）",
+  "on_main_ownbase": "自建 ownbase6（本路代码捕获，off=postincrement_store_subword+rep_conditional_body+jl_src_sync_full_block，attempts 41,900,000=completed 41,884,941 干净边界）+ 三开关全开 → **42,232,103 @ 0x60709ba**（wall 14.2s）——停点/容器账本/外围计数器（timer0/core-tick/watchdog/ipmask/jl_fm/srcsync 容器/full_block 容器）与从 0 参照逐键相等；instruction_adapters/memory_event_counts/mmu 三键偏差=base 关开关捕获的前缀非等价工件（exact_postincrement_subword_store 166 vs 550 等，与 REPCOND ownbase 同款，红线由从 0 全量收口）",
+  "causal_off": "因果负例（ownbase6 resume + 只开 postincrement_store_subword+rep_conditional_body，full_block 关）→ **42,231,992 @ 0x6070a9a**（unmapped_or_readonly_write/0xfe2608/value 02000100，wall 13.9s）；srcsync 容器 word_writes 61（CON0 3=0x10/0x0/0x82006001 + CON1 3=0x400000/0x0/0x41 + COEF 55），full_block 容器不存在（开关关零触达）——jl_src_sync_full_block 是新停点的唯一因果",
+  "next_stop": "42,232,103 @ 0x60709ba = rmw.or.modimm [r1+4] |= 0x400000（r1=[[obj+16]+12]=0xfe2600 base，r1+4=0xfe2604=CON1，helper 0x607099c 首笔配置事务 RMW，PC 未审计消费前停）；helper 进入路径=0x424c rep+pop.pc_rl 返回 0x60709b0（0x6070ae4 条件未跳过调用→0x6070aea 进 0x607099c）——新停点 IPMASK 6（下游长走段在临界区内，SEGIMPL4 停点 IPMASK 0 的 unmasked 形状不再适用）",
+  "container_ledger": "full_block word_writes 7（CON2/CON3/PHASE/FLTB_ADR/STOP_FLAG/INSR/OUTSR，IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN 四字未触达——停点在其写指令 0x6070b0a/0x6070b0e/0x6070b12/0x6070b16 之前）；srcsync word_writes 61→62（CON1 += 0x6070ad2 insert 写回 0x41）；exact_postincrement_store 78,715→78,770（+55=COEF 55 笔 st.w.pin 尾写）；exact_full_word_store 720,960→720,968（+8=full_block 7 整字写+CON1 0x6070ad2 写回）；timer0 cnt 21,975→24,465（+2,490=830×3，PRD 59,999 窗内零新到期）；core-tick 39,124→42,444（冻结快照口径，+3,320=830×4）；看门狗 elapsed 200→201（+830 步恰 1 个名义单位，零新喂狗 163 冻结）；register_rep_multi_block_projection 827 冻结；exact_postincrement_subword_store 550 冻结",
+  "wall_order_deviation": "新停点 0x60709ba（helper 0x607099c 体内）在地址序上低于被放行的旧停点 0x6070a9a（函数 B 0x6070a30 体内 CON2 写）——地址序≠执行序：函数 B（高地址 0x6070a30..0x6070b2e）做完 11 笔整写后经 0x6070ae4 条件调用进入低地址 helper 0x607099c（0x60709ba/0x60709da/0x60709e0 三个新 PC）；codex 验证顺序第 2 条已静态预判「未批准前两处时应先停在新 PC 0x60709ba」，动态证据兑现该预判"
+ },
+ "probe_full_from_zero": "check_local.py --rom 全量从零（15 场景+单测族）：p11_heap_experimental_config 42,232,103 @ 0x60709ba（jl_src_sync_con_rmw_pc_not_audited/0xfe2604）与预钉一致；legacy 14 场景停点逐键不变——本开关只影响 p11 条件场景释放段，legacy 场景零行为差（check() 断言面内联通过，见 tools/probe_irq_entry.py check）",
+ "recapture": "24 键 --recapture 重取（from-zero 41.9M 步）：abstract_task_stack_transport 466,389→466,392（+3）、exact_full_word_store 720,960→720,968（+8）；其余 22 键逐键不变（evidence/p11_heap_adapter_count_baseline.json 重钉）",
+ "unit_test_matrix": "test_jl_src_sync_full_block 全绿：①默认关 11 字 unmapped+写拒 ②开 11 字 handle、ODAT_ADR_START/END/邻字/子字错位不吞 ③整字纯写记录+读首写前/写后同拒 ④值域校验 ⑤报告面 11 字/写记录/读拒绝叙事/derived/IRQ89 负例 ⑥启动 RMW 五元组 pc/core 拒+掩码拒+写历史拒+合法链路 0x82006001→0x82006009+借陈旧值拒 ⑦CON1 标量读 0x6070ac4 读回路径服务；test_world_snapshot M4 槽 poke 全绿",
+ "honesty": {
+  "assumption": "11 字整字纯写记录（值=真实指令结果，从不发明）+ 读一律拒绝；CON0|=0x8 启动请求只报「固件发出启动请求」，硬件是否接受/搬数据未验证；CON2 bit16 用途、bit3 启动含义标 derived；标量读 0x6070ac4 只服务旧值 >>16+insert 组装（不声称读回语义）",
+  "not_claimed": "不证明 SRC_SYNC 硬件/采样率转换/DMA/IRQ89 交付/音频处理已运行；不证明 COEF 读语义（55 写后仍拒每一次读）；不证明 CON0/CON1 合成初值=硅复位值（沿用 SRCSYNC 原容器合成假设）；不证明 ODAT_ADR_START/END（+0x24/+0x28）语义（留表外 unmapped）",
+  "codex_consult": "本路照 codex 202611200345 总裁决（gpt-6.2-astra）「收窄 A+运行态依赖按 C 停」执行，决策点 1/2/3 三点全落实；验证顺序第 2 条（helper 新 PC 0x60709ba 先停）动态兑现——无方案级分歧"
+ }
+}

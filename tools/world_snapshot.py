@@ -1231,9 +1231,20 @@ M4_FAMILIES = (
     # any captured world (a refusal stops the run, kept for shape symmetry
     # with the BATCHA read_attempts discipline); the probe-only CON1
     # initial-word probe rides the per-object static guard like DT/ADA/ASS.
+    # SRCSYNC2 retro-audit keeps this field list UNCHANGED (the consumer
+    # PC/core guards ride the probe_boot dispatch where self.pc is available,
+    # and the startup write-history check reads the container's own CON0 value
+    # bit3 — neither adds captured state, so cross-code resume from the
+    # SRCSYNC-era snapshots keeps working).
     ('jl_src_sync', 'JLSrcSyncConfigRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads',
       'coef_read_attempts')),
+    # Route SRCSYNC2: the JL_SRC_SYNC full-block eleven-word write-record
+    # container (whole-word stores recorded, every read refused) — the captured
+    # state is the write record and the read-refusal counter (constant zero in
+    # any captured world: a refusal stops the run, kept for shape symmetry).
+    ('jl_src_sync_full_block', 'JLSrcSyncFullBlockRegisters',
+     ('stores', 'word_writes', 'read_attempts')),
     # Route SYNCIMPL: the JL_SYNC four-word container (no-synthetic-initial
     # CON read-back plus the three __WO write-only words) — the captured state
     # is the write record and the two refusal counters (constant zero in any
