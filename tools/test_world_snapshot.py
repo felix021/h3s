@@ -33,7 +33,7 @@ from br28_machine import DualCoreMachine
 from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDAT,
                         ICU_BASES, IRQController, JLAdcStartConfigRegisters,
                         JLBtclkTimerWords, JLFmConHeadRmw, JLSyncConfigWords,
-                        JLSrcSyncConfigRegisters,
+                        JLSrcSyncConfigRegisters, JLSrcSyncFullBlockRegisters,
                         P2mMailboxAck, P33AwkupRegisters, P33CanaryWatchRegisters,
                         PartialWord)
 from br28_unknown import UnknownWord
@@ -704,6 +704,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # the current conditional frontier flag set (its first served RMW sits
         # at the 42,059,070 frontier stop).
         jl_src_sync_config_words=True,
+        # Route SRCSYNC2: the JL_SRC_SYNC full-block eleven-word write-record
+        # container, ON in the current conditional frontier flag set (its first
+        # recorded store sits at the 42,231,992 frontier stop).
+        jl_src_sync_full_block=True,
         # Route SYNCIMPL: the JL_SYNC four-word container, ON in the current
         # conditional frontier flag set (its first recorded store sits at the
         # 42,061,357 frontier stop).
@@ -973,6 +977,11 @@ class M4ProjectionFamilies(unittest.TestCase):
         self.assertEqual(hw.jl_src_sync.read(JLSrcSyncConfigRegisters.WORDS[1]), 0x400000)
         hw.jl_src_sync.read(JLSrcSyncConfigRegisters.WORDS[0])  # synthetic initial 0
         hw.jl_src_sync.write(JLSrcSyncConfigRegisters.WORDS[2], 0, 0)
+        # Route SRCSYNC2: the full-block eleven-word container carries state —
+        # one CON2 whole-word store recorded; every read is refused.
+        hw.jl_src_sync_full_block.write(JLSrcSyncFullBlockRegisters.WORDS[0], 0x00010002, 0)
+        with self.assertRaisesRegex(Exception, 'jl_src_sync_full_block_read_not_modeled'):
+            hw.jl_src_sync_full_block.read(JLSrcSyncFullBlockRegisters.WORDS[0], 0)
         # Route SYNCIMPL: the four-word container carries state — the creator
         # whole-word zero store on CON (read-after-write via the audited
         # fn_config read PC) plus a WO word zero store; the per-step PC/core

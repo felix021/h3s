@@ -113,6 +113,16 @@ JL_ADC_START_CONFIG_WORDS=(0xfe0904,0xfe0908,0xfe0554,0xfe055c)
 # 其余 13 成员(CON2/CON3/IDAT/ODAT/FLTB/ODAT_ADR_START/END/STOP_FLAG/
 # INSR/OUTSR/PHASE)零触达不进白名单,不据 __RW 扩整块。
 JL_SRC_SYNC_CONFIG_WORDS=(0xfe2600,0xfe2604,0xfe263c)
+# 路 SRCSYNC2:JL_SRC_SYNC 全块 11 新字(2026-11-20 codex 202611200345 总裁决
+# 「收窄 A」;基址同 0xfe2600)。函数 B(0x6070a30)的 11 笔整字纯写:CON2(+8)/
+# CON3(+0xc)/IDAT_ADR(+0x10)/IDAT_LEN(+0x14)/ODAT_ADR(+0x18)/ODAT_LEN(+0x1c)/
+# FLTB_ADR(+0x20)/STOP_FLAG(+0x2c)/INSR(+0x30)/OUTSR(+0x34)/PHASE(+0x38)。
+# ODAT_ADR_START/END(+0x24/+0x28)函数 B 不写,留表外。策略=整字纯写记录+
+# 读一律拒绝(jl_src_sync_full_block_read_not_modeled,首写前/写后/RMW 内部读
+# 都停)。CON2 bit16 用途、bit3 启动含义保留为推断(derived)。
+JL_SRC_SYNC_FULL_BLOCK_WORDS=(0xfe2608,0xfe260c,0xfe2610,0xfe2614,0xfe2618,
+                              0xfe261c,0xfe2620,0xfe262c,0xfe2630,0xfe2634,
+                              0xfe2638)
 # 路 SYNCIMPL:JL_SYNC(audio_sync)四字容器(2026-11-19 侦察钉死,
 # docs/frontier-scout-jlsync.md;基址 0xfe2500=hs_base+map_adr(0x25,0),
 # br28.h JL_SYNC_TypeDef 13 成员)。42,061,357 停点 0x60befe6 `[r0+0]=r1`
@@ -6353,6 +6363,26 @@ class JLSrcSyncConfigRegisters:
                0xfe263c:'JL_SRC_SYNC->COEF'}
     READBACK_ADDRESSES=frozenset((0xfe2600,0xfe2604))
     SYNTHETIC_INITIAL_WORD=0
+    # 消费者 RMW PC 守卫(SRCSYNC2 补审,2026-11-20 codex 总裁决决策点 2):
+    # CON0/CON1 的原子 RMW 内部读只服务已审计站点+主核;其余 PC 的 RMW
+    # (helper 0x607099c 的 0x60709ba CON1|=0x400000、0x60709da CON0|=0x10)
+    # 消费前停。守卫设在 probe_boot 通用 mmio RMW 路径(那里有 self.pc),
+    # 不进容器实例状态——保持本容器 M4 字段不变,跨代码续跑照常。显式标量
+    # 读(ld.w)不设 PC 守卫:审计面内 CON0/CON1 的唯一标量读是函数 B 的
+    # 0x6070ac4(0x6070ac0 mul∥ld.w 第二半,读值只供 >>16+insert),helper 的
+    # CON0/CON1 访问全是 RMW(被上面 RMW 守卫拦)。
+    CON0_RMW_PCS=frozenset((0x606fbfa,0x606fc0a))
+    CON1_RMW_PCS=frozenset((0x606fbe4,0x606fc2c))
+    # 启动请求 RMW 五元组(决策点 1+2③):主核+PC 0x6070b1c+有效地址
+    # 0xfe2600+对齐 32 位+rmw.or.modimm 立即数 0x8。旧值由原 CON0 容器
+    # 提供;写历史检查=旧值 bit3 必须仍为 0(本次事务 0x6070a90 整字覆盖写
+    # 0x82006001 的 bit3=0;上次启动留下的陈旧值 0x82006009 bit3=1——
+    # 0x6070a6c 旁路跳过两笔整写、重入时借旧值即被拦)。
+    START_PC=0x6070b1c
+    START_INSN='rmw.or.modimm'
+    START_MASK=0x8
+    START_CORE=0
+    START_OVERWRITE_PC=0x6070a90
 
     def __init__(self,probe_initial=None):
         self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.WORDS}
@@ -6390,6 +6420,35 @@ class JLSrcSyncConfigRegisters:
         # =初值不参与观察路径,ones 探针单测互证)。
         self.synthesized_initial_reads+=1
         return self._initial_word(address)
+
+    def rmw_start(self,pc,insn_id,mask,core):
+        """启动请求 RMW 的唯一授权通道(probe_boot 专用分发传入当前指令的
+        pc/insn_id/mask/core):五元组全匹配+写历史检查通过才服务——内部读
+        (当前 CON0 值)→|0x8→整字写回(进原 CON0 账本,不算新容器 11 纯写)。
+        五元组不符/借陈旧值=消费前停。"""
+        if pc!=self.START_PC or core!=self.START_CORE:
+            raise Blocked('jl_src_sync_start_rmw_pc_not_audited',
+                          address=hex(0xfe2600),
+                          pc='None' if pc is None else hex(pc),core=core)
+        if insn_id!=self.START_INSN or mask!=self.START_MASK:
+            raise Blocked('jl_src_sync_start_rmw_form_not_audited',
+                          address=hex(0xfe2600),instruction_id=insn_id,
+                          mask='None' if mask is None else hex(mask))
+        entry=self.stores[0xfe2600]
+        # 写历史检查:本次事务必须已先做 0x6070a90 整字覆盖写(entry 有写),且
+        # 旧值 bit3 必须仍为 0——本次事务覆盖写 0x82006001 的 bit3=0;0x6070a6c
+        # 旁路跳过两笔整写、重入时 CON0 留上次启动结果 0x82006009(bit3=1),
+        # 同一 PC 0x6070b1c 借旧值即被拦。
+        if entry['writes']==0:
+            raise Blocked('jl_src_sync_start_rmw_stale_con0',
+                          address=hex(0xfe2600),note='CON0 not written in this transaction')
+        old=entry['values'][-1]
+        if old & self.START_MASK:
+            raise Blocked('jl_src_sync_start_rmw_stale_con0',
+                          address=hex(0xfe2600),old=hex(old))
+        value=(old|self.START_MASK)&0xffffffff
+        self.write(0xfe2600,value,core)
+        return value
 
     def report(self):
         touched={hex(a):{'values':[hex(v) for v in e['values'][-16:]],
@@ -6483,6 +6542,38 @@ class JLSrcSyncConfigRegisters:
                               'erratum: sixteen not seventeen); CON0 at +0, CON1 at +4, COEF at '
                               '+0x3c; the __RW labels locate the words, they are NOT silicon '
                               'read-back evidence'),
+                'consumer_guard':{
+                    'con0_rmw_pcs':[hex(pc) for pc in sorted(self.CON0_RMW_PCS)],
+                    'con1_rmw_pcs':[hex(pc) for pc in sorted(self.CON1_RMW_PCS)],
+                    'semantics':('CON0/CON1 atomic-RMW internal reads are served ONLY from the '
+                                 'audited RMW PCs on core 0 — the two CON0 RMWs 0x606fbfa/'
+                                 '0x606fc0a, the two CON1 RMWs 0x606fbe4/0x606fc2c. The guard lives '
+                                 'in the probe_boot generic-mnio RMW dispatch (where self.pc is '
+                                 'available), so the helper 0x607099c\'s unaudited RMWs '
+                                 '(0x60709ba CON1|=0x400000, 0x60709da CON0|=0x10) stop BEFORE '
+                                 'consumption (jl_src_sync_con_rmw_pc_not_audited) — the '
+                                 'same-address new-consumer re-audit clause made executable '
+                                 '(SRCSYNC2 retro-audit); the function-B CON1 scalar load 0x6070ac4 '
+                                 '(the second half of the 0x6070ac0 mul∥ld.w parallel instruction, '
+                                 'old value only feeds >>16 + insert to keep the high 16 bits) is '
+                                 'served by the readback path; the startup RMW internal read rides '
+                                 'the dedicated rmw_start channel')},
+                'startup_request':{
+                    'authorization':{
+                        'pc':hex(self.START_PC),'instruction_id':self.START_INSN,
+                        'mask':hex(self.START_MASK),'core':self.START_CORE,
+                        'address':hex(0xfe2600),'width':4,
+                        'fresh_overwrite_pc':hex(self.START_OVERWRITE_PC)},
+                    'semantics':('the CON0 |= 0x8 at 0x6070b1c is recorded as ONE CPU0 startup '
+                                 'request through the ORIGINAL CON0 ledger (old value audited from '
+                                 'the fresh 0x6070a90 whole-word overwrite, NOT counted in the '
+                                 'full-block container 11 pure writes); the write-history check '
+                                 'refuses a stale borrow when the old value already has bit3 set '
+                                 '(the 0x6070a6c bypass skipped the two whole-word overwrites on '
+                                 're-entry, leaving the previous startup result 0x82006009 — '
+                                 'jl_src_sync_start_rmw_stale_con0); the report only claims '
+                                 '"firmware issued the startup request" — whether the hardware '
+                                 'accepts it or moves any data is UNVERIFIED (honesty)')},
                 'known_limitation':('the container stores synthetic config words, NOT silicon '
                                     'state; silicon reset values and runtime semantics of CON0, '
                                     'CON1 and the COEF port remain unverified; the bit22/bit4 '
@@ -6494,6 +6585,126 @@ class JLSrcSyncConfigRegisters:
                               'initial word 0, COEF refuses every read; this does NOT verify any '
                               'sample-rate conversion, audio path or SRC_SYNC interrupt '
                               'scenario')}
+
+
+class JLSrcSyncFullBlockRegisters:
+    """JL_SRC_SYNC 全块 11 新字容器(opt-in,路 SRCSYNC2,codex 202611200345
+    总裁决「收窄 A」决策点 3)。
+
+    背景:42,231,992 停点 0x6070a9a `[r0+8]=r1`(r0=[[obj+16]+12]=0xfe2600
+    base,r1=b[obj+0]|0x10000=0x00010002)——函数 B(0x6070a30,eq 域 src_sync
+    配置函数)体内 CON2 整字写,在已放行 jl_src_sync_config_words 容器的
+    CON0/CON1/COEF 之外。函数 B 的 11 笔整字纯写(基址 [obj+16]→[+12],
+    与停点函数 0x606fa7e 同款数据驱动):
+
+    CON2(+8)=b[obj+0]|0x10000 @0x6070a9a(低字节=通道数,同函数字节循环
+    与 SDK SRC_CHI=2 旁证)、CON3(+0xc) @0x6070a9c(同值)、PHASE(+0x38)=
+    [obj+68] @0x6070aa2、FLTB_ADR(+0x20)=[obj+28] @0x6070aa6、STOP_FLAG
+    (+0x2c)=[obj+32] @0x6070aaa、INSR(+0x30)=[obj+52] @0x6070aba、OUTSR
+    (+0x34)=[obj+56] @0x6070abe、IDAT_ADR(+0x10)=[obj+36] @0x6070b0a、
+    IDAT_LEN(+0x14)=[obj+40] @0x6070b0e、ODAT_ADR(+0x18)=[obj+44]
+    @0x6070b12、ODAT_LEN(+0x1c)=[obj+48] @0x6070b16。ODAT_ADR_START/END
+    (+0x24/+0x28)函数 B 不写,留表外(不据 __WO 扩整块)。
+
+    建模选择(codex 决策点 3):
+    - 整字纯写记录(值透明,写值=真实指令结果);读一律拒绝
+      jl_src_sync_full_block_read_not_modeled——首写前、写后、RMW 内部读
+      都停(同块 COEF 即使写过 55 次仍拒每一次读;PLED 11 纯写同策略;
+      fd31_adc_con_readback 是实际撞到读、查明位语义后才独立开放——本站
+      11 字没有引入读回的执行需求,故不合成初值)。
+    - 不推进 DMA/采样率转换/IRQ89:启动后首次需要 DMA 输出缓冲内容、
+      IRQ89 完成通知或硬件进度时就停。IRQ89 处理程序 0x12ca24(线性
+      0x60c61fc)读回这些字即被拒——真实静态读者已定位,用作负例。
+    - CON2 bit16 用途、bit3 启动含义保留为推断(derived),低字节通道数
+      有同函数字节循环与 SDK SRC_CHI=2 旁证。
+
+    known_limitation:容器存配置写记录非硅状态位;SRC_SYNC 硬件(采样率
+    转换/DMA/IRQ89 交付)一律不建模;主核越过停点不表示真实 SRC_SYNC 已
+    配置或任何采样率转换/DMA/音频处理运行(codex 措辞)。
+    """
+
+    WORDS=JL_SRC_SYNC_FULL_BLOCK_WORDS
+    SDK_NAMES={0xfe2608:'JL_SRC_SYNC->CON2',0xfe260c:'JL_SRC_SYNC->CON3',
+               0xfe2610:'JL_SRC_SYNC->IDAT_ADR',0xfe2614:'JL_SRC_SYNC->IDAT_LEN',
+               0xfe2618:'JL_SRC_SYNC->ODAT_ADR',0xfe261c:'JL_SRC_SYNC->ODAT_LEN',
+               0xfe2620:'JL_SRC_SYNC->FLTB_ADR',0xfe262c:'JL_SRC_SYNC->STOP_FLAG',
+               0xfe2630:'JL_SRC_SYNC->INSR',0xfe2634:'JL_SRC_SYNC->OUTSR',
+               0xfe2638:'JL_SRC_SYNC->PHASE'}
+
+    def __init__(self):
+        self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.WORDS}
+        self.word_writes=0
+        self.read_attempts=0
+
+    def handles(self,address):
+        return address in self.stores
+
+    def write(self,address,value,core):
+        if address not in self.stores:raise ValueError('not a modeled JL_SRC_SYNC full-block word')
+        if not isinstance(value,int) or not 0<=value<=0xffffffff:raise ValueError('unsigned32 word expected')
+        entry=self.stores[address];entry['values'].append(value);entry['writes']+=1
+        entry['cores'].append(core);self.word_writes+=1
+
+    def read(self,address,core=0):
+        if address not in self.stores:raise ValueError('not a modeled JL_SRC_SYNC full-block word')
+        # 读一律拒绝(codex 决策点 3):首写前/写后/RMW 内部读都停。没有
+        # 引入合成初值的执行需求(与 CON0/CON1 RMW 首读即用旧值的关键差异;
+        # 同块 COEF 先例——即使写过仍拒每一次读)。
+        self.read_attempts+=1
+        raise Blocked('jl_src_sync_full_block_read_not_modeled',address=hex(address))
+
+    def report(self):
+        touched={hex(a):{'values':[hex(v) for v in e['values'][-16:]],
+                         'writes':e['writes'],'cores':e['cores'][-16:]}
+                 for a,e in sorted(self.stores.items()) if e['writes']}
+        return {'addresses':[hex(a) for a in self.WORDS],
+                'sdk_names':{hex(a):name for a,name in sorted(self.SDK_NAMES.items())},
+                'word_writes':self.word_writes,
+                'stores':touched,
+                'read_refusals':{'refused':self.read_attempts,
+                                 'semantics':('every read is refused before and after writes '
+                                              'including the internal read an RMW would need '
+                                              '(jl_src_sync_full_block_read_not_modeled) — zero '
+                                              'read observations exist on the audited face; the '
+                                              'real static reader is the IRQ89 handler 0x12ca24 '
+                                              '(linear 0x60c61fc) which reads IDAT/ODAT/PHASE/'
+                                              'STOP_FLAG/FLTB_ADR back into software state and is '
+                                              'refused here if it runs')},
+                'modeled_vs_touched':('modeled exactly the eleven words written by function B '
+                                      '(0x6070a30, the eq-domain src_sync config function reached '
+                                      'behind the 42,231,992 stop 0x6070a9a CON2 whole-word store): '
+                                      'CON2/CON3/IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/FLTB_ADR/'
+                                      'STOP_FLAG/INSR/OUTSR/PHASE — pure aligned 32-bit whole-word '
+                                      'stores only; the two __WO ODAT_ADR_START/END (+0x24/+0x28) '
+                                      'are NOT written by function B and stay unmapped'),
+                'observed_shapes':('function B (0x6070a30) write sequence: CON2=CON3=b[obj+0]|'
+                                   '0x10000 @0x6070a9a/0x6070a9c (low byte = channel count, the '
+                                   'function\'s own byte loop and the SDK SRC_CHI=2 corroborate; '
+                                   'bit16 purpose and bit3 startup meaning are DERIVED and kept as '
+                                   'inference), PHASE=[obj+68] @0x6070aa2, FLTB_ADR=[obj+28] '
+                                   '@0x6070aa6, STOP_FLAG=[obj+32] @0x6070aaa, INSR=[obj+52] '
+                                   '@0x6070aba, OUTSR=[obj+56] @0x6070abe, IDAT_ADR=[obj+36] '
+                                   '@0x6070b0a, IDAT_LEN=[obj+40] @0x6070b0e, ODAT_ADR=[obj+44] '
+                                   '@0x6070b12, ODAT_LEN=[obj+48] @0x6070b16 — every stored value '
+                                   'is a real instruction result, never invented'),
+                'access_face_completeness':('full linear read of function B 0x6070a30-0x6070b2e '
+                                            '(both the 0x6070a6c r0==r4 bypass and the conditional '
+                                            '0x6070ae4 r1==r0 call-skip arms); covers the main-core '
+                                            'app linear window only — RAM-side copies, ROM, q32s '
+                                            'and other cores are NOT covered; "no other site found" '
+                                            'does NOT mean "the only access in the system" '
+                                            '(LPV/ADA wording)'),
+                'known_limitation':('the container stores config-word write records, NOT silicon '
+                                    'state; SRC_SYNC hardware behavior (sample-rate conversion, '
+                                    'DMA, IRQ89 delivery, the CON2 bit16 and bit3 semantics) is '
+                                    'NOT modeled — the main core passing the stop does NOT mean '
+                                    'the real SRC_SYNC is configured or that any sample-rate '
+                                    'conversion, DMA or audio processing runs (codex wording)'),
+                'assumption':('eleven-word write-record container with a BATCHA-style all-read-'
+                              'refusal policy: every word records its whole-word stores and '
+                              'refuses every read (first-write-before, after-write and RMW '
+                              'internal read alike); this does NOT verify any sample-rate '
+                              'conversion, DMA, IRQ89 or SRC_SYNC hardware scenario')}
 
 
 class JLSyncConfigWords:
@@ -8703,6 +8914,7 @@ class BR28Model:
                  jl_eq_init_writes=False,
                  jl_adc_start_config=False,jl_adc_start_probe_value=None,
                  jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
+                 jl_src_sync_full_block=False,
                  jl_sync_config_words=False,
                  jl_btclk_timer_words=False,
                  jl_fm_con_head_rmw=False,
@@ -9420,6 +9632,13 @@ class BR28Model:
         # 保持 unmapped(42,059,070 前沿形状),legacy 逐字节不变。
         self.jl_src_sync=(JLSrcSyncConfigRegisters(probe_initial=jl_src_sync_probe_value)
                           if jl_src_sync_config_words else None)
+        # 路 SRCSYNC2:JL_SRC_SYNC 全块 11 新字(函数 B 整字纯写记录+读一律
+        # 拒绝)——42,231,992 停点 0x6070a9a(CON2 整字写,在已放行
+        # jl_src_sync_config_words 容器 CON0/CON1/COEF 之外)放行;CON0|=0x8
+        # 启动请求归原 CON0 容器(不占新容器 11 纯写)。默认关:11 字保持
+        # unmapped(42,231,992 前沿形状),legacy 逐字节不变。
+        self.jl_src_sync_full_block=(JLSrcSyncFullBlockRegisters()
+                                     if jl_src_sync_full_block else None)
         # 路 SYNCIMPL:JL_SYNC(audio_sync)四字容器(CON/CON1/BT_OFFSET/
         # MIN_SLOT)——42,061,357 停点 0x60befe6(creator 0x60befae 体内 CON
         # 整字写 0)放行;CON 无合成初值(首写前读拒绝)+写后读回=最后写值
@@ -9639,6 +9858,7 @@ class BR28Model:
             (self.jl_eq_init is not None and self.jl_eq_init.handles(address)) or
             (self.jl_adc_start is not None and self.jl_adc_start.handles(address)) or
             (self.jl_src_sync is not None and self.jl_src_sync.handles(address)) or
+            (self.jl_src_sync_full_block is not None and self.jl_src_sync_full_block.handles(address)) or
             (self.jl_sync is not None and self.jl_sync.handles(address)) or
             (self.jl_btclk is not None and self.jl_btclk.handles(address)) or
             (self.jl_fm is not None and self.jl_fm.handles(address)) or
@@ -9699,6 +9919,16 @@ class BR28Model:
         # 形状的 RMW 在 rmw() 五元组检查消费前停。开关关时返回 False,
         # 0xF00000 保持 unmapped(42,061,478 前沿形状)。
         return self.jl_fm is not None and self.jl_fm.handles(address)
+
+    def handles_jl_src_sync_start_rmw(self,address):
+        # 路 SRCSYNC2(决策点 1+2③):CON0(0xfe2600)的启动请求 RMW 专用
+        # 分发→jl_src_sync.rmw_start()(五元组授权:主核+PC 0x6070b1c+
+        # 有效地址 0xfe2600+对齐 32 位+rmw.or.modimm 0x8;旧值由原 CON0
+        # 容器提供,写历史检查防 0x6070a6c 旁路借陈旧值)。其余 CON0 RMW
+        # (0x606fbfa |=0x10、0x606fc0a &=~0x10)不在此分发,落通用 mmio
+        # 路径由 read() PC 守卫服务。开关关时返回 False,0xfe2600 保持
+        # unmapped(42,059,070 前沿形状)。
+        return self.jl_src_sync is not None and address==0xfe2600
 
     def gpcnt_rmw(self,address,kind,operand):
         if not self.handles_gpcnt(address):raise ValueError('not modeled GPCNT CON')
@@ -10100,6 +10330,11 @@ class BR28Model:
         if self.jl_src_sync is not None and self.jl_src_sync.handles(address):
             self.counts['reads']+=1
             return self.jl_src_sync.read(address)
+        # JL_SRC_SYNC 全块 11 新字(路 SRCSYNC2):读一律拒绝(首写前/写后/
+        # RMW 内部读都停;RMW 内部读经通用 mmio 路径 mem.read→read() 即拒)。
+        if self.jl_src_sync_full_block is not None and self.jl_src_sync_full_block.handles(address):
+            self.counts['reads']+=1
+            return self.jl_src_sync_full_block.read(address)
         # JL_SYNC 四字(路 SYNCIMPL):CON 首写后读回=最后写值(读策略带
         # 消费者 PC/核守卫——分支读点/未审计 PC/另一核消费前停,PC 溯源由
         # probe_boot step_body 每步刷新),WO 三字读一律拒绝。
@@ -10434,10 +10669,18 @@ class BR28Model:
             self.jl_adc_start.write(address,value,self.current_core)
         elif self.jl_src_sync is not None and self.jl_src_sync.handles(address):
             # JL_SRC_SYNC 配置事务三字(路 SRCSYNC):CON1/CON0 RMW 写回
-            # (|=0x400000/0xFFBFFFFF、|=0x10/0xFFFFFFEF)与 COEF 整字写
+            # (|=0x400000/0xFFBFFFFF、|=0x10/0xFFFFFFEF)、函数 B 的 CON0/
+            # CON1 整字覆盖写(0x6070a90/0x6070a94)与 CON1 insert 写回
+            # (0x6070ad2)、启动请求 CON0|=0x8 写回,以及 COEF 整字写
             # (系数装载,55 轮恒零);原子 RMW 内部读=容器当前值(通用 mmio
             # 路径);SRC_SYNC 硬件语义/采样率转换不建模。
             self.jl_src_sync.write(address,value,self.current_core)
+        elif self.jl_src_sync_full_block is not None and self.jl_src_sync_full_block.handles(address):
+            # JL_SRC_SYNC 全块 11 新字(路 SRCSYNC2):函数 B 的整字纯写记录
+            # (CON2/CON3/PHASE/FLTB_ADR/STOP_FLAG/INSR/OUTSR/IDAT_ADR/
+            # IDAT_LEN/ODAT_ADR/ODAT_LEN);读一律拒绝;SRC_SYNC 硬件语义/
+            # DMA/IRQ89 不建模。
+            self.jl_src_sync_full_block.write(address,value,self.current_core)
         elif self.jl_sync is not None and self.jl_sync.handles(address):
             # JL_SYNC 四字(路 SYNCIMPL):creator CON 整字写 0(停点)与
             # fn_config WO 三字纯写/CON RMW 写回的记录;JL_SYNC 硬件语义/
@@ -11534,6 +11777,22 @@ class BR28Model:
                 're-audited; no SRC_SYNC hardware behavior, sample-rate conversion, '
                 'DMA, coefficient FIFO semantics or IRQ89 delivery is modeled — this '
                 'does NOT verify any sample-rate conversion, DMA or audio processing')
+        if self.jl_src_sync_full_block is not None:
+            result['jl_src_sync_full_block']=self.jl_src_sync_full_block.report()
+            result['assumptions']['jl_src_sync_full_block']=(
+                'JL_SRC_SYNC full block (the eleven words written by function B 0x6070a30 '
+                'behind the 42,231,992 stop 0x6070a9a CON2 whole-word store: CON2/CON3/'
+                'IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/FLTB_ADR/STOP_FLAG/INSR/OUTSR/'
+                'PHASE): write-record container — every word records its whole-word aligned '
+                'stores (real instruction results, never invented) and refuses every read '
+                '(first-write-before, after-write and RMW internal read alike); the two '
+                '__WO ODAT_ADR_START/END (+0x24/+0x28) are not written by function B and '
+                'stay unmapped; the CON2 bit16 purpose and bit3 startup meaning are DERIVED '
+                '(the low-byte channel count has the function\'s byte loop and SDK SRC_CHI=2 '
+                'corroboration); the CON0 |= 0x8 startup request at 0x6070b1c rides the '
+                'ORIGINAL CON0 ledger, NOT these eleven words; no SRC_SYNC hardware '
+                'behavior, DMA or IRQ89 delivery is modeled — this does NOT verify any '
+                'sample-rate conversion, DMA or audio processing')
         if self.jl_sync is not None:
             result['jl_sync_config_registers']=self.jl_sync.report()
             result['assumptions']['jl_sync_config_registers']=(

@@ -5080,6 +5080,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
              jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
+             jl_src_sync_full_block=False,
              jl_sync_config_words=False,
              jl_btclk_timer_words=False,
              jl_fm_con_head_rmw=False,
@@ -5465,6 +5466,10 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # bit4 关→系数表拷贝→bit22 关),链继续走 eq 设计族/音频配置域——
         # 新停点由实跑取得;预算沿用 60M(余量以实跑核)。
         if jl_src_sync_config_words:budget=60000000
+        # 路 SRCSYNC2:JL_SRC_SYNC 全块 11 新字放行后链继续走 eq 域 src_sync
+        # 配置函数 B 的后续写/启动请求——新停点由实跑取得;预算沿用 60M
+        # (余量以实跑核)。
+        if jl_src_sync_full_block:budget=60000000
         # 路 SYNCIMPL:JL_SYNC 四字放行后 creator 0x60befae 的 CON 写停点
         # 被越过,链在 +2 步的 0x60befee(BT clock timer 0xF00130 写,未建模)
         # 停——新停点由实跑取得;预算沿用 60M(余量以实跑核)。
@@ -6736,6 +6741,28 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                     'the SRC_SYNC CON1 sensitivity probe takes exactly the all-ones '
                     'word (sensitivity-probe-not-plausible-state, CV/ADA/ASS precedent)')
             options['jl_src_sync_probe_value']=jl_src_sync_probe_value
+    # jl_src_sync_full_block(路 SRCSYNC2,codex 202611200345 总裁决「收窄 A」
+    # 决策点 3,默认 False=关):JL_SRC_SYNC 全块 11 新字容器——42,231,992
+    # 停点 0x6070a9a(CON2 0xfe2608 整字写 0x00010002,函数 B 0x6070a30
+    # 体内,在已放行 jl_src_sync_config_words 容器 CON0/CON1/COEF 之外)
+    # 放行。函数 B 的 11 笔整字纯写:CON2/CON3/IDAT_ADR/IDAT_LEN/ODAT_ADR/
+    # ODAT_LEN/FLTB_ADR/STOP_FLAG/INSR/OUTSR/PHASE;ODAT_ADR_START/END
+    # (+0x24/+0x28)函数 B 不写留表外。策略=整字纯写记录+读一律拒绝
+    # (jl_src_sync_full_block_read_not_modeled,首写前/写后/RMW 内部读都停)。
+    # CON2 bit16 用途、bit3 启动含义保留为推断(derived)。CON0|=0x8 启动
+    # 请求 @0x6070b1c 归原 CON0 容器(五元组 RMW 专用分发+写历史检查),
+    # 不占新容器 11 纯写。依赖边挂 jl_src_sync_config_words(同址块的两段
+    # 分属两容器;场景推进顺序非硬件依赖)。默认关=11 字保持 unmapped
+    # (42,231,992 停点形状),legacy 逐字节不变。
+    if jl_src_sync_full_block:
+        require(jl_src_sync_config_words,
+                'the JL_SRC_SYNC full-block container only layers on the '
+                'jl_src_sync_config_words release (the CON0/CON1/COEF transaction '
+                'container must already be on — the function-B base 0xfe2600 rides '
+                'the same hw_res table and the startup RMW 0x6070b1c reads the CON0 '
+                'old value from the original container; the dependency records THIS '
+                'scenario advance order, not a hardware dependency)')
+        options['jl_src_sync_full_block']=True
     # jl_sync_config_words(路 SYNCIMPL,codex 20261119 收窄版 a,
     # docs/frontier-scout-jlsync.md §5,默认 False=关):JL_SYNC(audio_sync)
     # 四字容器——42,061,357 停点 0x60befe6(creator 0x60befae 体内 li 常量
@@ -8788,14 +8815,14 @@ def check(report,firmware):
     # 形状:CON0 |=0x10 开门恰 1 次(循环外)→55 轮循环体仅 COEF 写零→
     # CON0 &=~0x10 关门;CON1 |=0x400000→段尾 &=0xFFBFFFFF 归 0。
     srcsyncrel=r['peripherals']['jl_src_sync_config_registers']
-    require(srcsyncrel['word_writes']==61 and
-            srcsyncrel['stores']['0xfe2604']=={'values':['0x400000','0x0','0x41'],
-                                               'writes':3,'cores':[0,0,0]} and
+    require(srcsyncrel['word_writes']==62 and
+            srcsyncrel['stores']['0xfe2604']=={'values':['0x400000','0x0','0x41','0x41'],
+                                               'writes':4,'cores':[0,0,0,0]} and
             srcsyncrel['stores']['0xfe2600']=={'values':['0x10','0x0','0x82006001'],
                                                'writes':3,'cores':[0,0,0]} and
             srcsyncrel['stores']['0xfe263c']['writes']==55 and
             all(v=='0x0' for v in srcsyncrel['stores']['0xfe263c']['values']) and
-            srcsyncrel['readback_projection']['reads']==2 and
+            srcsyncrel['readback_projection']['reads']==3 and
             srcsyncrel['readback_projection']['synthesized_initial_reads']==2 and
             srcsyncrel['readback_projection']['coef_read_attempts']==0 and
             'synthetic-not-measured' in
@@ -8808,7 +8835,7 @@ def check(report,firmware):
             'sample-rate conversion' in
             r['peripherals']['assumptions']['jl_src_sync_config_registers'],
             'the route-SRCSYNC config-transaction release record must pin the '
-            'runtime evidence: exactly 59 word writes over the reconfiguration '
+            'runtime evidence: 59 word writes over the reconfiguration '
             'function 0x606fa7e — CON1 twice (|=0x400000 at the released stop '
             '0x606fbe4, then &=0xFFBFFFFF at 0x606fc2c ending at 0x0 with the '
             'zero synthetic initial), CON0 twice (|=0x10 opening the '
@@ -8817,7 +8844,12 @@ def check(report,firmware):
             'body — then &=~0x10 closing it, ending at 0x0), COEF exactly 55 '
             'zero stores (r5=0 every round), two RMW internal reads answered '
             'by the synthetic initial and two by the last written value, zero '
-            'COEF read attempts; the synthetic-initial and read-back=current '
+            'COEF read attempts — PLUS the SRCSYNC2 retro-audited function-B '
+            'writes (CON0 whole-word 0x82006001 @0x6070a90, CON1 whole-word '
+            '0x41 @0x6070a94 then the paired insert write-back 0x41 @0x6070ad2 '
+            'whose 0x6070ac4 parallel-second-half load answered 0x41 with only '
+            'the high 16 bits kept via >>16+insert, reads=3); the '
+            'synthetic-initial and read-back=current '
             'semantics wording (synthetic-not-measured, NOT silicon reset '
             'values), the data-driven base narrative (sole literal .data '
             '0x60a29d4 in the hw_res table, single accessor function), the '
@@ -9010,10 +9042,10 @@ def check(report,firmware):
     # 16 h+41 b 站点未触达)/hi.prer 形(hw 13 条、全库零站点)/st.{w,d}.
     # prer 整字前增量形(38+4 站点)与 ld.*.prer 装载形不在放行族。
     require(r['instruction_adapters'].get('exact_preincrement_subword_store')==20 and
-            r['stop']['kind']=='unmapped_or_readonly_write' and
-            r['stop']['address']=='0xfe2608' and
+            r['stop']['kind']=='jl_src_sync_con_rmw_pc_not_audited' and
+            r['stop']['address']=='0xfe2604' and
             r['peripherals']['jl_fm_con_head_registers']['word_writes']==1 and
-            r['memory_event_counts']['write']==2426707 and
+            r['memory_event_counts']['write']==2426769 and
             'exact_preincrement_subword_stores' in r['assumptions']['diagnostics'],
             'the route-SEGIMPL release record must pin the runtime evidence: exactly TEN '
             'exact_preincrement_subword_store gate firings at the 0x63c2 stop (the st.h.prer/st.b.prer pair '
@@ -9063,9 +9095,9 @@ def check(report,firmware):
     # 1,403,868→1,407,136(恰 +817×4,CPU1 同款 +3,268)、零新喂狗(163/162
     # 冻结)、jl_fm 恰一笔 RMW 冻结、事件钟冻结。
     require(r['instruction_adapters'].get('parallel_halfword_store_old_registers')==774 and
-            r['stop']['address']=='0xfe2608' and r['stop_pc']=='0x6070a9a' and
-            r['peripherals']['timer0']['cnt']==24132 and
-            r['peripherals']['core_tick_configuration'][0]['cnt']==42000 and
+            r['stop']['address']=='0xfe2604' and r['stop_pc']=='0x60709ba' and
+            r['peripherals']['timer0']['cnt']==24465 and
+            r['peripherals']['core_tick_configuration'][0]['cnt']==42444 and
             'exact_parallel_halfword_stores' in r['assumptions']['diagnostics'],
             'the route-SEGIMPL2 release record must pin the runtime evidence: the '
             'extract-prefix (uextra.rrii/insert.rrii) x st.h second half joined the '
@@ -9147,9 +9179,9 @@ def check(report,firmware):
     # (163/162 冻结)、jl_fm 恰一笔冻结。
     require(r['instruction_adapters'].get('parallel_full_word_store_old_registers')==15510 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==774 and
-            r['stop']['address']=='0xfe2608' and r['stop_pc']=='0x6070a9a' and
-            r['peripherals']['timer0']['cnt']==24132 and
-            r['peripherals']['core_tick_configuration'][0]['cnt']==42000 and
+            r['stop']['address']=='0xfe2604' and r['stop_pc']=='0x60709ba' and
+            r['peripherals']['timer0']['cnt']==24465 and
+            r['peripherals']['core_tick_configuration'][0]['cnt']==42444 and
             'exact_parallel_mul_prefixes' in r['assumptions']['diagnostics'],
             'the route-SEGIMPL3 release record must pin the runtime evidence: the '
             'mul-scalar-prefix (16 hw-v3-captured forms) x store-second-half shape '
@@ -9218,26 +9250,29 @@ def check(report,firmware):
     # 覆盖。放行后整环 1(rep 头)+128×4=513 步本核指令:每轮 ld.w+2 个 ifs
     # 开启器+st.w.pin(全零下两 mov 各零次命中,st.w.pin 直写 128 笔=exact_
     # postincrement_store +128),r1 每轮 +4,r0 终 0,bgts.ri 死分支不跳,出口
-    # r1=0x41d50c;环后长走段到达新停点 42,231,992 @ 0x6070a9a=st.w
-    # [0xfe2608]=0x00010002(JL_SRC_SYNC CON2 整字写,在已放行 jl_src_sync_
-    # config_words 容器 CON0 0xfe2600/CON1 0xfe2604/COEF 0xfe263c 之外,归下路
-    # 评审;新停点 IPMASK 6=下游长走段重新进入临界区,0x6070a9a 在临界区内,
-    # SEGIMPL4 停点 IPMASK 0 的 unmasked 形状不再适用)。gate 计数(从零口径):
+    # r1=0x41d50c;环后长走段先过 0x6070a9a(st.w [0xfe2608]=0x00010002 的
+    # CON2 整字写,现由 jl_src_sync_full_block 新容器放行)再放行 COEF 55 笔
+    # st.w.pin(exact_postincrement_store +55)与函数 B 11 字纯写中已触达的 7 笔
+    # (CON2/CON3/PHASE/FLTB_ADR/STOP_FLAG/INSR/OUTSR,IDAT_ADR/IDAT_LEN/
+    # ODAT_ADR/ODAT_LEN 四字未触达),随后 helper 0x607099c 首笔 SRC_SYNC
+    # 配置事务在 0x60709ba 对 0xfe2604(CON1)做 |=0x400000 RMW,该 RMW PC
+    # 未审计,停点 42,232,103 @ 0x60709ba(jl_src_sync_con_rmw_pc_not_audited,
+    # 核 0;新停点 IPMASK 6=下游长走段仍在临界区内,SEGIMPL4 停点 IPMASK 0
+    # 的 unmasked 形状不再适用)。gate 计数(从零口径):
     # register_rep_multi_block_projection 826→827
-    # (钳位环 rep 头恰 1 次)、exact_postincrement_store 78,587→78,715(+128 笔
-    # st.w.pin=128 轮)、exact_postincrement_subword_store 550 冻结(钳位环全
-    # 整字,零迁移);timer0 cnt 21,975→24,132(+2,157=719×3,PRD 59,999 窗内
-    # 走表零新到期/零新交付)、core-tick 39,124→42,000(冻结快照口径,+2,876)、零新喂狗
-    # (163 冻结)、jl_fm 恰一笔冻结。
-    require(r['stop']['kind']=='unmapped_or_readonly_write' and
-            r['stop'].get('address')=='0xfe2608' and r['stop_pc']=='0x6070a9a' and
-            r['stop'].get('size')==4 and r['stop'].get('value_bytes')=='02000100' and
+    # (钳位环 rep 头恰 1 次)、exact_postincrement_store 78,587→78,770(+128 笔
+    # st.w.pin=128 轮+COEF 55 笔)、exact_postincrement_subword_store 550 冻结
+    # (钳位环全整字,零迁移);timer0 cnt 21,975→24,465(+2,490=830×3,PRD
+    # 59,999 窗内走表零新到期/零新交付)、core-tick 39,124→42,444(冻结快照
+    # 口径,+3,320)、零新喂狗(163 冻结)、jl_fm 恰一笔冻结。
+    require(r['stop']['kind']=='jl_src_sync_con_rmw_pc_not_audited' and
+            r['stop'].get('address')=='0xfe2604' and r['stop_pc']=='0x60709ba' and
             r['instruction_adapters'].get('register_rep_multi_block_projection')==827 and
-            r['instruction_adapters'].get('exact_postincrement_store')==78715 and
+            r['instruction_adapters'].get('exact_postincrement_store')==78770 and
             r['instruction_adapters'].get('exact_postincrement_subword_store')==550 and
             r['instruction_adapters'].get('exact_preincrement_subword_store')==20 and
-            r['peripherals']['timer0']['cnt']==24132 and
-            r['peripherals']['core_tick_configuration'][0]['cnt']==42000 and
+            r['peripherals']['timer0']['cnt']==24465 and
+            r['peripherals']['core_tick_configuration'][0]['cnt']==42444 and
             r['peripherals']['watchdog_projection']['feeds']==163 and
             r['peripherals']['jl_fm_con_head_registers']['word_writes']==1 and
             'rep_conditional_body' in r['assumptions']['diagnostics'],
@@ -9255,20 +9290,24 @@ def check(report,firmware):
             'not by this frontier entry), the 128 st.w.pin direct writes pulse '
             'exact_postincrement_store 78587->78715 and the rep header adds the '
             'register_rep_multi_block_projection 826->827 count, then the dead '
-            'bgts.ri falls through and the walk continues to the NEW honest stop '
-            '42,231,992 @ 0x6070a9a: an unmapped_or_readonly_write of 0x00010002 to '
-            '0xfe2608 = JL_SRC_SYNC->CON2 (size 4), OUTSIDE the released '
-            'jl_src_sync_config_words container (CON0 0xfe2600 / CON1 0xfe2604 / '
-            'COEF 0xfe263c) — belongs to the next route; TIMER0 cnt walks '
-            '21975->24132 (exactly +719 x 3 STD12M ticks inside the PRD 59999 '
-            'window, zero new expiry), the CPU0 core tick lands on the '
-            'post-overflow held snapshot 42000, zero new feed (163 frozen) and the '
-            'jl_fm ledger frozen at its single write — this does NOT verify the '
-            'REP x in-body control-flow composition on silicon (derived-not-measured: '
-            'the FM-1 captures the straight-line-addition-body REP net effect and the '
+            'bgts.ri falls through; the 0x6070a9a CON2 whole-word write (0x00010002 '
+            'to 0xfe2608) is now modelled by the jl_src_sync_full_block container '
+            '(7 words reached: CON2/CON3/PHASE/FLTB_ADR/STOP_FLAG/INSR/OUTSR; '
+            'IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN not reached) and the 55-word '
+            'COEF st.w.pin tail walks exact_postincrement_store on to 78770; the '
+            'walk then continues to the NEW honest stop 42,232,103 @ 0x60709ba: '
+            'the helper 0x607099c first SRC_SYNC config transaction performs a '
+            'CON1 |=0x400000 read-modify-write at 0xfe2604 whose RMW PC is not yet '
+            'audited (jl_src_sync_con_rmw_pc_not_audited, core 0); TIMER0 cnt walks '
+            '21975->24465 (+830 x 3 STD12M ticks inside the PRD 59999 window, zero '
+            'new expiry), the CPU0 core tick lands on the post-overflow held '
+            'snapshot 42444, zero new feed (163 frozen) and the jl_fm ledger frozen '
+            'at its single write — this does NOT verify the REP x in-body '
+            'control-flow composition on silicon (derived-not-measured: the FM-1 '
+            'captures the straight-line-addition-body REP net effect and the '
             'independent signed-conditional-block arm selection separately, never the '
             'composition), the 128-round intermediate register states or the IRQ '
-            'visibility points, or the JL_SRC_SYNC CON2 semantics')
+            'visibility points, or the JL_SRC_SYNC full-block word semantics')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -9302,7 +9341,7 @@ def check(report,firmware):
     # 半字展开环)再涨 28 个名义单位到 186,段内零新喂狗事务,162/163
     # 冻结;路 SEGIMPL4 释放段(+57,523 步清零环十轮+长走段)再涨 14 个
     # 名义单位到 200,段内零新喂狗事务,162/163 仍冻结;路 REPCOND 释放段
-    # (+719 步钳位环 128 轮+下游长走段到 0x6070a9a)再涨 1 个名义单位到
+    # (+830 步钳位环 128 轮+下游长走段到 0x60709ba)再涨 1 个名义单位到
     # 201,段内零新喂狗事务,162/163 仍冻结),command_values
     # 保持主核 6 条真实命令零伪造(副作用不写总线、不消耗 key_phase/
     # commands);已到期拒绝补喂的语义在单测钉死。
@@ -9321,8 +9360,8 @@ def check(report,firmware):
             'to 200 through the route-SEGIMPL4 release segment — fourteen more '
             'nominal units across the +57,523-step walk with zero new feed '
             'transactions, and on to 201 through the route-REPCOND release '
-            'segment (+719 steps: the 128-round clamp loop plus the downstream '
-            'walk to 0x6070a9a — one more nominal unit, still zero new feed '
+            'segment (+830 steps: the 128-round clamp loop plus the downstream '
+            'walk to 0x60709ba — one more nominal unit, still zero new feed '
             'transactions); the route-STOREG3 release '
             'segment past 41,828,530 is a pure CPU0 sequence, no new feed '
             'transaction, only four more nominal units consumed; the route-'
@@ -10647,7 +10686,7 @@ def check(report,firmware):
     # 合并读停)零新到期零新交付(15819/15802 冻结),cnt 窗内走表 8,259→
     # 9,696(恰 +1,437=479 步×3 STD12M tick,PRD 11,999 窗内),零新喂狗
     # (163/162 冻结)。
-    require(timer=={'con':0x1401,'cnt':24132,'prd':59999,'pending':False,
+    require(timer=={'con':0x1401,'cnt':24465,'prd':59999,'pending':False,
             'expirations':15832},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
@@ -10798,7 +10837,7 @@ def check(report,firmware):
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==348 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==348 and
-            tick0['cnt']==42000 and
+            tick0['cnt']==42444 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
@@ -10851,8 +10890,8 @@ def check(report,firmware):
             'overflow delivers and acks naturally (348/348) and the reported '
             'cnt becomes the frozen post-overflow held snapshot 39124 (the '
             'explicit CNT-frozen assumption, not a running count), walking on '
-            'to 42000 through the route-REPCOND release segment (+719 steps x 4 '
-            'core ticks = +2876, still zero new overflow, 348/348 frozen); the CPU1 '
+            'to 42444 through the route-REPCOND release segment (+830 steps x 4 '
+            'core ticks = +3320, still zero new overflow, 348/348 frozen); the CPU1 '
             'core tick never overflows and CPU0 partial ICFG stays 0x300 '
             '(bit9 untouched throughout); IPMASK is 0 at the SEGIMPL4 stop — the '
             '0x601a41c pend section closed when the LED reset helper returned, '
@@ -10860,9 +10899,10 @@ def check(report,firmware):
             '0x60869ba task event-loop parameter read sit OUTSIDE any '
             'OS critical section (unmasked execution, the route-STOREG3 shape '
             'again) — and walks to 6 at the REPCOND stop: the downstream walk '
-            'to 0x6070a9a re-enters an OS critical section before the '
-            'JL_SRC_SYNC CON2 store (IPMASK 6, the same critical-section shape '
-            'as the route-FMIMPL modem-window CON-head RMW)')
+            'to 0x60709ba re-enters an OS critical section before the '
+            'JL_SRC_SYNC CON1 |=0x400000 RMW whose PC is not yet audited '
+            '(IPMASK 6, the same critical-section shape as the route-FMIMPL '
+            'modem-window CON-head RMW)')
     # 路 BQ 读回投影面:报告键只在开关开启的世界出现(legacy 逐字节不变),
     # 证据链字段钉死(最近写入=1199999、只覆盖 unresolved 窗的 offset 8、
     # 硅读回行为未测量)。
