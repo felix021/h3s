@@ -1617,6 +1617,18 @@ summary {
         <button id="haInvalidateEq" class="danger" disabled>回退 EQ</button>
       </div>
       <p id="haFeedback" class="feedback" aria-live="polite">本地草稿，尚未发送。</p>
+      <div class="collapsible-row">
+        <details id="haPresetBox">
+          <summary>助听方案（本机）</summary>
+          <div class="preset-save-row">
+            <input id="haPresetName" type="text" maxlength="24"
+                   placeholder="方案名称" aria-label="方案名称">
+            <button id="haPresetSave">保存到本机</button>
+          </div>
+          <ul id="haPresetList" class="user-preset-list"></ul>
+          <p class="note" id="haPresetNote"></p>
+        </details>
+      </div>
       <div id="haReadResult" class="ha-read-results" hidden>
         <div class="card card-embedded" id="haReadCard30">
           <div class="card-head"><h3>key30（MPO，8B）</h3><span id="haReadState30" class="badge">未读取</span></div>
@@ -2256,6 +2268,12 @@ let mtu = null;
 let connectionNote = '';
 let keyBusy = false;
 const pending = new Map();
+// 0x22 回读缓存（问题 1：全部段 + master，按当前连接区分；断连清空）
+let deviceEqCache = null;
+// 首次 READY 已处理标志（问题 2：每次连接独立，别只靠 !connected——writeCommand 也改 connected）
+let readyHandled = false;
+// 权限就绪后的自动扫描只补一次（问题 2：真机首次安装时启动扫描会先因缺权限失败）
+let autoScanAttempted = false;
 
 function boolFromBridge(method) {
   try {
@@ -2357,7 +2375,7 @@ function issue(method, args, callback, expectAck) {
   }
   return result;
 }
-function writeCommand(method, args, callback) {
+function writeCommand(method, args, callback, expectAck) {
   connected = boolFromBridge('isConnected');
   armed = boolFromBridge('isArmed');
   renderConnection();
@@ -2367,7 +2385,7 @@ function writeCommand(method, args, callback) {
     if (callback) callback(false, message);
     return { ok: false, error: message };
   }
-  return issue(method, args, callback);
+  return issue(method, args, callback, expectAck);
 }
 $('armSw').onchange = () => {
   const desired = $('armSw').checked;
@@ -2384,19 +2402,20 @@ $('armSw').onchange = () => {
   // 用户开启开关后补读一次按键表（UIFIX2：选键时未武装只提示不代读）
   if (armed) flushKeyRead();
 };
-$('connBtn').onclick = () => {
+function scanAndConnect() {
+  connecting = true;
+  connectionNote = '';
+  connDetail = '扫描中：寻找 QCY H3S 蓝牙广播…';
+  renderConnection();
   const result = rpc(H, 'connect', []);
-  if (result.ok) {
-    connecting = true;
-    connectionNote = '';
-    connDetail = '扫描中：寻找 QCY H3S 蓝牙广播…';
-  } else {
+  if (!result.ok) {
     connecting = false;
     connectionNote = result.error || '连接请求失败';
     connDetail = '';
+    renderConnection();
   }
-  renderConnection();
-};
+}
+$('connBtn').onclick = scanAndConnect;
 $('discBtn').onclick = () => {
   const result = rpc(H, 'disconnect', []);
   if (!result.ok) return;
@@ -2405,6 +2424,9 @@ $('discBtn').onclick = () => {
   connDetail = '';
   connectionNote = '已请求断开';
   mtu = null;
+  readyHandled = false;
+  if (H) { try { H.armWrite(false); } catch (e) { /* 忽略 */ } }
+  armed = false;
   failPending('连接已断开，未确认的命令结果未知。');
   clearDeviceDisplays();
   renderConnection();
@@ -2424,6 +2446,7 @@ function clearDeviceDisplays() {
   });
   sendingKey = null;
   readingKeyTable = false;
+  deviceEqCache = null;   // EQ 回读缓存随断连作废（按连接区分）
   // 已选键的，断连后记一次待读：重连就绪且用户已武装时补读（UIFIX2）
   keyReadWanted = selectedPhysicalKey !== null;
   renderKeyRows();
@@ -2520,17 +2543,30 @@ function parseDeviceMessage(payloadHex) {
   }
 
   /* EQ 回读（SIMB1E 读环）：形状 `22 n <nB 曲线>`，n=3+7×段数（SIMB1C A3 钉死）。
-     字段布局照 docs/eq-cmd-0x22-layout.md（路 H 钉死、路 EQFIX 复核）：
-     data[0]=type、data[1..2]=master i16 小端 ÷100dB、每段 7B。解码显示摘要。 */
+     字段布局照 docs/eq-cmd-0x22-layout.md（路 H 钉死、路 EQFIX 复核）+ eqproto 修正：
+     每段 7B = freq(u16) | gain(i16) | q(i16) | iir(u8)。解析全部段 + master 缓存
+     （问题 1：自定义曲线合并旧段用，按当前连接区分），同时显示摘要。 */
   if (hex.startsWith('22') && hex.length >= 4) {
     const n = parseInt(hex.slice(2, 4), 16);
     if (n >= 3 && (n - 3) % 7 === 0 && hex.length >= (n + 2) * 2) {
       const segments = (n - 3) / 7;
-      const bytes = hex.slice(4);
+      const bytes = hex.slice(4, 4 + n * 2);
       const type = parseInt(bytes.slice(0, 2), 16);
       let master = parseInt(bytes.slice(2, 4), 16) | (parseInt(bytes.slice(4, 6), 16) << 8);
       if (master > 32767) master -= 65536;
-      const typeName = { 1: '槽位回读', 2: '曲线', 10: '空间音效' }[type] || ('type ' + type);
+      const bands = [];
+      for (let i = 0; i < segments; i++) {
+        const s = 6 + i * 14;   // 3B 头 = 6 hex chars；每段 7B = 14 hex chars
+        const freq = parseInt(bytes.slice(s, s + 4), 16);
+        let gain = parseInt(bytes.slice(s + 4, s + 8), 16);
+        if (gain > 32767) gain -= 65536;
+        let q = parseInt(bytes.slice(s + 8, s + 12), 16);
+        if (q > 32767) q -= 65536;
+        const iir = parseInt(bytes.slice(s + 12, s + 14), 16);
+        bands.push({ freq, q, gain, iirType: iir });
+      }
+      deviceEqCache = { type, master, bands };
+      const typeName = { 1: '默认', 2: '流行', 3: '重低音', 4: '摇滚', 5: '柔和', 6: '古典', 10: '空间音效', 255: '自定义' }[type] || ('type ' + type);
       $('eqReport').textContent = segments > 0
         ? '设备回报：EQ ' + segments + ' 段 · 总增益 ' + (master / 100).toFixed(1) + ' dB（' + typeName + '）'
         : '设备回报：EQ 0 段（设备未配置自定义曲线）';
@@ -2554,21 +2590,27 @@ window.onH3sEvent = raw => {
     }
 
     if (event.event === 'mtu') {
-      const firstReady = !connected;
       connected = true;
       connecting = false;
       mtu = event.mtu;
       connectionNote = '';
+      if (readyHandled) {
+        // 同一连接里的重复 MTU 事件：不重新 arm、不重复九项读（问题 2）
+        renderConnection();
+        return;
+      }
+      readyHandled = true;
+      // 首次 READY：默认允许写入（问题 2）——顺序 arm → 刷新武装态 → 渲染
+      if (H) { try { H.armWrite(true); } catch (e) { /* 忽略 */ } }
+      armed = boolFromBridge('isArmed');
       renderConnection();
       // 连接就绪自动查：电量/ANC/睡眠等状态（原行为）+ 设备信息 03（固件 tab 当前版本展示）
-      if (firstReady) {
-        [47, 23, 34, 20, 31, 25, 35, 36, 46].forEach(id => issue('readStatus', [id]));
-        issue('readInfo', [], (ok, message, ev) => {
-          if (ok) renderOtaInfo(ev && ev.payloadHex);
-        });
-        // 断连期间已选键的，重连就绪且已武装时补读一次（UIFIX2）
-        flushKeyRead();
-      }
+      [47, 23, 34, 20, 31, 25, 35, 36, 46].forEach(id => issue('readStatus', [id]));
+      issue('readInfo', [], (ok, message, ev) => {
+        if (ok) renderOtaInfo(ev && ev.payloadHex);
+      });
+      // 断连期间已选键的，重连就绪且已武装时补读一次（UIFIX2）
+      flushKeyRead();
       return;
     }
 
@@ -2576,7 +2618,10 @@ window.onH3sEvent = raw => {
       connected = false;
       connecting = false;
       mtu = null;
+      readyHandled = false;
       connectionNote = event.reason || '连接已断开';
+      if (H) { try { H.armWrite(false); } catch (e) { /* 忽略 */ } }
+      armed = false;
       failPending('连接已断开，未确认的命令结果未知。');
       clearDeviceDisplays();
       renderConnection();
@@ -2613,50 +2658,53 @@ window.onH3sEvent = raw => {
 };
 
 /* ---------- EQ：七个原始预设，数据不转换 ----------
-   type 语义（docs/eq-cmd-0x22-layout.md §2.3，路 EQFIX 反汇编钉死）：
-   固件 apply 0x06025118 按 type 分支——1=装载自定义槽 MusicEqBt[0]（载荷段被忽略）、
-   10=空间音效、其余=解码载荷曲线应用。下发曲线（预设整组/自定义）必须用 2；
-   旧版发 type=1 是真机「EQ 发送无效果」的根因。 */
-const EQ_TYPE_APPLY = 2;
+   type 语义（docs/eq-cmd-0x22-layout.md §2.3，路 EQFIX 反汇编钉死；2026-11-19 codex
+   补钉官方预设/自定义实发取值）：固件 apply 0x06025118 按 type 分支——1=装载自定义槽
+   MusicEqBt[0]（载荷段被忽略）、10=空间音效、其余=解码载荷曲线应用。官方预设 type=面板
+   id（默认/流行/重低音/摇滚/柔和/古典=01..06、空间=0A）；自定义曲线无历史发 FF(255)、
+   有历史发 80(128)。 */
 const EQ_TYPE_SPATIAL = 10;
+const EQ_TYPE_CUSTOM_NO_HISTORY = 255;  // FF：自定义曲线、无设备历史
+const EQ_TYPE_CUSTOM_HISTORY = 128;     // 80：自定义曲线、已有设备历史（0x22 回读过）
+const EQ_CUSTOM_DEFAULT_MASTER = -1000; // 自定义无历史时的总增益基值 −10 dB（原生 lastBaseGain 缺省）
 const EQ_PRESETS = [
   {
-    name: '默认', type: EQ_TYPE_APPLY, master: -4,
+    name: '默认', type: 1, master: -4,
     freq: [30,170,300,700,1200,2800,5000,10000,11000],
     q: [.8,.6,2,1,2,1,2,3,2],
     iir: [0,2,2,2,2,2,2,2,3],
     gain: [0,-17,-2,2,-2.5,3,-3,-6,2]
   },
   {
-    name: '流行', type: EQ_TYPE_APPLY, master: -4,
+    name: '流行', type: 2, master: -4,
     freq: [30,170,300,700,1200,2800,5000,10000,11000],
     q: [.5,.4,2,1,2,1,2,3,2],
     iir: [0,2,2,2,2,2,2,2,3],
     gain: [0,-17,-2,2,-2.5,4,0,-6,2]
   },
   {
-    name: '重低音', type: EQ_TYPE_APPLY, master: -4,
+    name: '重低音', type: 3, master: -4,
     freq: [70,170,300,700,1200,2800,5000,10000,11000],
     q: [.6,.6,2,1,2,1,1,3,.7],
     iir: [2,2,2,2,2,2,2,2,2],
     gain: [5,-17,-2,2,-2.5,0,-6,-6,0]
   },
   {
-    name: '摇滚', type: EQ_TYPE_APPLY, master: -4,
+    name: '摇滚', type: 4, master: -4,
     freq: [70,170,300,700,1200,2800,5000,10000,11000],
     q: [.5,.6,2,1,2,1,2,3,2],
     iir: [2,2,2,2,2,2,2,2,3],
     gain: [3,-17,-2,0,-2.5,4,0,-3,2]
   },
   {
-    name: '柔和', type: EQ_TYPE_APPLY, master: -4,
+    name: '柔和', type: 5, master: -4,
     freq: [30,170,300,700,1200,2800,5000,10000,11000],
     q: [.5,.6,2,1,2,1,2,3,2],
     iir: [0,2,2,2,2,2,2,2,2],
     gain: [0,-17,-2,2,-2.5,0,-5,-6,0]
   },
   {
-    name: '古典', type: EQ_TYPE_APPLY, master: -4,
+    name: '古典', type: 6, master: -4,
     freq: [30,170,300,700,1200,2800,5000,10000,11000],
     q: [1,.6,2,1,2,1,2,3,2],
     iir: [0,2,2,2,2,2,2,2,3],
@@ -2672,9 +2720,8 @@ const EQ_PRESETS = [
 ];
 const customEq = {
   name: '自定义',
-  type: EQ_TYPE_APPLY,
   master: 0,
-  freq: [31,62,125,250,500,1000,2000,4000,8000,16000],
+  freq: [32,64,125,250,500,1000,2000,4000,8000,16000],
   q: [.4,1.2,1.5,1.5,1.2,.8,1.2,1.2,1.2,1.2],
   iir: [2,2,2,2,2,2,2,2,2,2],
   gain: [0,0,0,0,0,0,0,0,0,0]
@@ -2768,6 +2815,7 @@ function applyCustomCurve(curve) {
   customEq.q = curve.q.slice();
   customEq.iir = curve.iir.slice();
   customEq.gain = curve.gain.slice();
+  changedBands.clear();        // 加载整组曲线后视为新基线，发送时整组下发
   $('master').value = String(curve.master);
   $('masterValue').textContent = Number(curve.master).toFixed(1) + ' dB';
   sliderItems.forEach((item, i) => { updateSlider(i); updateFreqLabel(i); });
@@ -2794,6 +2842,7 @@ function renderUserPresets() {
       selectPreset(-1);                       // 切回自定义视图再写入，避免被预设视图盖住
       applyCustomCurve(preset.curve);
       $('eqFeedback').textContent = '已加载预设「' + preset.name + '」到自定义滑杆（尚未发送）。';
+      if (armed) sendEqFrame();               // 已武装时直接下发（问题 1）
     };
     rename.onclick = () => { renderRenameInput(row, preset); };
     remove.onclick = () => {
@@ -2878,6 +2927,8 @@ let selectedPreset = -1;
 let eqRevision = 0;
 let curveFrame = 0;
 const sliderItems = [];
+// 自定义曲线本次编辑改动过的段索引（问题 1：发送前据此合并设备回读的旧段）
+const changedBands = new Set();
 
 function currentEq() {
   return selectedPreset === -1 ? customEq : EQ_PRESETS[selectedPreset];
@@ -2936,6 +2987,7 @@ function setBand(index, value) {
   const gain = Math.max(-12, Math.min(12, Math.round(value)));
   if (customEq.gain[index] === gain) return;
   customEq.gain[index] = gain;
+  changedBands.add(index);
   updateSlider(index);
   localEqChanged();
 }
@@ -2975,6 +3027,7 @@ function applyBandFreq(index, value) {
     return;
   }
   customEq.freq[index] = value;
+  changedBands.add(index);
   updateFreqLabel(index);
   if (selectedBand === index) $('freqInput').value = value;
   localEqChanged();
@@ -3141,7 +3194,11 @@ function selectPreset(index) {
 ['自定义', ...EQ_PRESETS.map(p => p.name)].forEach((name, i) => {
   const button = element('button', name);
   button.setAttribute('aria-pressed', String(i === 0));
-  button.onclick = () => selectPreset(i - 1);
+  button.onclick = () => {
+    selectPreset(i - 1);
+    // 出厂预设：已武装时点击直接下发（问题 1）；「自定义」入口只切视图不发
+    if (i - 1 >= 0 && armed) sendEqFrame();
+  };
   $('eqChips').appendChild(button);
 });
 $('master').oninput = () => {
@@ -3152,31 +3209,113 @@ $('master').oninput = () => {
 $('eqFlat').onclick = () => {
   customEq.gain.fill(0);
   customEq.master = 0;
+  changedBands.clear();
   sliderItems.forEach((item, i) => updateSlider(i));
   $('master').value = '0';
   $('masterValue').textContent = '0.0 dB';
   saveCustomEq();
   selectPreset(-1);
 };
-$('eqSend').onclick = () => {
+// —— 共用发送函数（问题 1，从 eqSend.onclick 提取）——
+function eqPresetPayload(eq) {
+  return {
+    type: eq.type,
+    master: Math.round(eq.master * 100),
+    bands: eq.freq.map((frequency, i) => ({
+      freq: frequency,
+      q: Math.round(eq.q[i] * 100),
+      gain: Math.round(eq.gain[i] * 100),
+      iirType: eq.iir[i]
+    }))
+  };
+}
+// 叠加各段 44.1kHz 峰值滤波器响应（dB，级联近似），20..20000Hz 每 5Hz 取样，返回峰值与峰频
+function eqPeakResponseDb(bands) {
+  const freqs = [];
+  for (let f = 20; f <= 20000; f += 5) freqs.push(f);
+  const total = new Array(freqs.length).fill(0);
+  bands.forEach(b => {
+    if (!(b.freq > 0)) return;
+    const f0 = b.freq;
+    const A = Math.pow(10, b.gain / 4000);          // gain 为 centidB → /100 得 dB 再 /40
+    const Q = Math.max(0.01, b.q / 100);            // q 为 ×100
+    for (let i = 0; i < freqs.length; i++) {
+      const f = freqs[i];
+      const d = f0 * f0 - f * f;
+      const num = d * d + Math.pow(A * f * f0 / Q, 2);
+      const den = d * d + Math.pow(f * f0 / (A * Q), 2);
+      if (den > 0) total[i] += 10 * Math.log10(num / den);
+    }
+  });
+  let peak = -Infinity, peakFreq = 0;
+  for (let i = 0; i < freqs.length; i++) {
+    if (total[i] > peak) { peak = total[i]; peakFreq = freqs[i]; }
+  }
+  return { peak, peakFreq };
+}
+// 计算自定义下发 master（原生 getMaxGain 同款）：base − max(0, peak+0.5 − limit)，limit 低频 4dB/高频 8dB
+function computeCustomMaster(baseCentidB, bands) {
+  const { peak, peakFreq } = eqPeakResponseDb(bands);
+  const d3 = peak + 0.5;
+  const limit = peakFreq < 1500 ? 4 : 8;
+  return baseCentidB - Math.max(0, d3 - limit) * 100;
+}
+// 自定义曲线发送载荷：改动段在前 + 设备回读旧段（频率与 Q 同时相等去重），十段封顶
+function buildCustomEqPayload() {
+  const indices = changedBands.size > 0
+    ? Array.from(changedBands).sort((a, b) => a - b)
+    : customEq.freq.map((_, i) => i);
+  const newSegs = indices.map(i => ({
+    freq: customEq.freq[i],
+    q: Math.round(customEq.q[i] * 100),
+    gain: Math.round(customEq.gain[i] * 100),
+    iirType: customEq.iir[i]
+  }));
+  const oldBands = deviceEqCache ? deviceEqCache.bands : [];
+  const mergedOld = [];
+  oldBands.forEach(ob => {
+    const dup = newSegs.some(ns => ns.freq === ob.freq && ns.q === ob.q);
+    if (!dup) mergedOld.push(ob);
+  });
+  let bands = newSegs.concat(mergedOld);
+  if (bands.length > 10) {
+    // 超十段：按「离任一新段频距最近」淘汰旧段（原生频距淘汰）
+    const excess = bands.length - 10;
+    const drop = [];
+    for (let i = newSegs.length; i < bands.length; i++) {
+      let d = Infinity;
+      newSegs.forEach(ns => {
+        const dd = Math.abs(bands[i].freq - ns.freq);
+        if (dd > 0 && dd < d) d = dd;
+      });
+      drop.push({ idx: i, d });
+    }
+    drop.sort((a, b) => a.d - b.d);
+    const dropSet = new Set(drop.slice(0, excess).map(x => x.idx));
+    bands = bands.filter((_, i) => !dropSet.has(i));
+  }
+  const hasHistory = !!deviceEqCache;
+  const type = hasHistory ? EQ_TYPE_CUSTOM_HISTORY : EQ_TYPE_CUSTOM_NO_HISTORY;
+  const base = hasHistory ? deviceEqCache.master : EQ_CUSTOM_DEFAULT_MASTER;
+  const master = Math.round(computeCustomMaster(base, bands));
+  return { type, master, bands };
+}
+function sendEqFrame() {
   const eq = currentEq();
   const revision = eqRevision;
   const name = eq.name;
-  const bands = eq.freq.map((frequency, i) => ({
-    freq: frequency,
-    q: Math.round(eq.q[i] * 100),
-    gain: Math.round(eq.gain[i] * 100),
-    iirType: eq.iir[i]
-  }));
+  const custom = selectedPreset === -1;
+  const payload = custom ? buildCustomEqPayload() : eqPresetPayload(eq);
 
   $('eqSend').dataset.busy = '1';
   $('eqFeedback').textContent = '等待设备应答：' + name;
   updateGates();
   writeCommand(
     'writeEq',
-    [eq.type, Math.round(eq.master * 100), JSON.stringify(bands)],
+    [payload.type, payload.master, JSON.stringify(payload.bands)],
     (ok, message) => {
       delete $('eqSend').dataset.busy;
+      if (ok && custom) changedBands.clear();
       $('eqFeedback').textContent = ok
         ? (revision === eqRevision
           ? '设备已应答：' + name
@@ -3187,7 +3326,8 @@ $('eqSend').onclick = () => {
       updateGates();
     }
   );
-};
+}
+$('eqSend').onclick = sendEqFrame;
 // 初始化：同步恢复的总增益到滑杆显示（自定义滑杆值已在构建时读 customEq）
 $('master').value = String(customEq.master);
 $('masterValue').textContent = Number(customEq.master).toFixed(1) + ' dB';
@@ -3516,19 +3656,20 @@ function haReadCardDone(key, ok, html) {
   if (ok) text.innerHTML = html;
   else { text.textContent = html; text.classList.add('read-fail'); }
 }
+// 未武装读取的统一个人话提示（问题 4）
+const UNARMED_READ_MSG = '未武装，请先打开「允许写入」再读取。调试命令 `h3s.armWrite(true)`。';
 function haReadOneKey(key, method, done) {
   haReadCardPending(key);
   issue(method, [], (ok, message, event) => {
     if (ok) {
-      // 成功路径：parseKeyStoreReadback 已更新结果卡；形状外的成功回执也在此明说
+      // 成功路径：parseKeyStoreReadback 已更新结果卡；成功回包载荷不满足预期长度才报格式错误
       if (!hexLooksLikeKeyStoreRead(event, key)) {
-        haReadCardDone(key, false, '收到回执但形状不符：' + ((event && event.payloadHex) || '（空载荷）')
+        haReadCardDone(key, false, '收到回执但载荷不满足预期长度：' + ((event && event.payloadHex) || '（空载荷）')
           + '——期望 key30 为 30 08+8B / key31 为 30 58+88B。原始事件见日志。');
       }
     } else if (event && event.event === 'response') {
-      // 有回执但外层失败/形状不符：不是超时，明说
-      haReadCardDone(key, false, '收到回执但形状不符：' + ((event && event.payloadHex) || '（空载荷）')
-        + '——期望 key30 为 30 08+8B / key31 为 30 58+88B。原始事件见日志。');
+      // 有回执但外层失败（设备拒绝）：如实显示状态码，不是形状不符
+      haReadCardDone(key, false, '设备返回失败，状态码：' + event.status + '。');
     } else if (String(message).includes('未收到') || String(message).includes('暂未')) {
       // 超时只报事实，不把推测列为失败原因（UIFIX2）
       haReadCardDone(key, false, '读取失败：15 秒内未收到应答。');
@@ -3544,6 +3685,15 @@ function hexLooksLikeKeyStoreRead(event, key) {
   return key === 'key30' ? /^3008[0-9a-f]{16}$/.test(hex) : /^3058[0-9a-f]{176}$/.test(hex);
 }
 $('haReadKeys').onclick = () => {
+  // 写出「已发起读取」之前检查桥/连接/arm（问题 4）
+  const fail = message => {
+    $('haFeedback').textContent = message;
+    haReadCardDone('key30', false, message);
+    haReadCardDone('key31', false, message);
+  };
+  if (!H) return fail('离线预览，仅显示本地值。');
+  if (!connected) return fail('未连接，连接耳机后再读取。');
+  if (!armed) return fail(UNARMED_READ_MSG);
   $('haFeedback').textContent = '已发起读取：key30 → key31。';
   // 串行链：key30 无论成败都接着读 key31（此前回调吞掉失败导致 key31 从不发、界面无结果——H5-READ-01）
   haReadOneKey('key30', 'getHearingCfg', () => haReadOneKey('key31', 'getHearingEq', () => {}));
@@ -3786,6 +3936,154 @@ $('haFlat').onclick = () => {
 };
 renderHearingAidBands();
 updateHaMpoSummary();
+
+/* ---------- 助听方案本机保存（问题 3，localStorage） ----------
+ * 方案名 + 十段 {freq,gain,out_threshold} + mpo（min(out_threshold) 重算）。
+ * 同名覆盖保留 ID；只有新增才检查 50 组上限。保存/加载均可离线。 */
+const HA_PRESET_KEY = 'h3s.ha.presets.v1';
+const HA_MAX_PRESETS = 50;
+function sanitizeHaPreset(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+  if (!name) return null;
+  if (!Array.isArray(raw.bands) || raw.bands.length !== HA_FREQS.length) return null;
+  const bands = [];
+  for (let i = 0; i < HA_FREQS.length; i++) {
+    const b = raw.bands[i];
+    if (!b || b.freq !== HA_FREQS[i]) return null;             // 校验 HA_FREQS
+    if (typeof b.gain !== 'number' || !Number.isFinite(b.gain)
+        || b.gain < HA_GAIN_MIN || b.gain > HA_GAIN_MAX) return null;
+    if (typeof b.out_threshold !== 'number' || !Number.isFinite(b.out_threshold)
+        || b.out_threshold < HA_LIMIT_MIN || b.out_threshold > HA_LIMIT_MAX) return null;
+    bands.push({ freq: b.freq, gain: b.gain, out_threshold: b.out_threshold });
+  }
+  return { name: name.slice(0, 24), bands, mpo: Math.min(...bands.map(b => b.out_threshold)) };
+}
+function loadHaPresets() {
+  const raw = loadStoredJson(HA_PRESET_KEY);
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  raw.forEach(item => {
+    if (!item || typeof item.id !== 'number') return;
+    const sanitized = sanitizeHaPreset(item);
+    if (!sanitized) return;
+    out.push({ id: item.id, name: sanitized.name, bands: sanitized.bands, mpo: sanitized.mpo });
+  });
+  return out.slice(0, HA_MAX_PRESETS);
+}
+let haPresets = loadHaPresets();
+function persistHaPresets() {
+  if (!storeJson(HA_PRESET_KEY, haPresets)) {
+    $('haPresetNote').textContent = '本机存储不可用，方案不会保留（页面重进后丢失）。';
+  }
+}
+function applyHaPreset(preset) {
+  preset.bands.forEach((b, i) => {
+    hearingAid.bands[i].freq = b.freq;            // 已校验等于 HA_FREQS[i]
+    hearingAid.bands[i].gain = b.gain;
+    hearingAid.bands[i].out_threshold = b.out_threshold;
+    // iir_type / q 保持默认（2 / 0.7）
+  });
+  renderHearingAidBands();
+  haChanged();
+  $('haFeedback').textContent = '已加载方案「' + preset.name + '」到草稿（尚未发送）。';
+}
+function renderHaPresets() {
+  const list = $('haPresetList');
+  list.replaceChildren();
+  if (!haPresets.length) {
+    const empty = element('li', '还没有保存的方案。');
+    empty.className = 'preset-meta';
+    list.appendChild(empty);
+    return;
+  }
+  haPresets.forEach(preset => {
+    const row = element('li');
+    const name = element('span', preset.name, 'preset-name');
+    const load = element('button', '加载');
+    const rename = element('button', '重命名');
+    const remove = element('button', '删除');
+    load.type = rename.type = remove.type = 'button';
+    load.onclick = () => applyHaPreset(preset);
+    rename.onclick = () => renderHaRenameInput(row, preset);
+    remove.onclick = () => {
+      haPresets = haPresets.filter(p => p.id !== preset.id);
+      persistHaPresets();
+      renderHaPresets();
+      $('haFeedback').textContent = '已删除方案「' + preset.name + '」。';
+    };
+    row.append(name, load, rename, remove);
+    list.appendChild(row);
+  });
+}
+function renderHaRenameInput(row, preset) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.maxLength = 24;
+  input.value = preset.name;
+  input.setAttribute('aria-label', '方案新名称');
+  const confirm = element('button', '确定');
+  const cancel = element('button', '取消');
+  confirm.type = cancel.type = 'button';
+  const commit = () => {
+    const value = input.value.trim();
+    if (value && value !== preset.name) {
+      preset.name = value;
+      persistHaPresets();
+    }
+    renderHaPresets();
+  };
+  confirm.onclick = commit;
+  input.onkeydown = event => {
+    if (event.key === 'Enter') { event.preventDefault(); commit(); }
+    if (event.key === 'Escape') renderHaPresets();
+  };
+  cancel.onclick = () => renderHaPresets();
+  row.replaceChildren(input, confirm, cancel);
+  input.focus();
+  input.select();
+}
+$('haPresetName').onkeydown = event => {
+  if (event.key === 'Enter') { event.preventDefault(); $('haPresetSave').click(); }
+};
+$('haPresetSave').onclick = () => {
+  if (!eqStorage) {
+    $('haPresetNote').textContent = '本机存储不可用，无法保存方案。';
+    return;
+  }
+  const name = $('haPresetName').value.trim();
+  if (!name) {
+    $('haFeedback').textContent = '请先输入方案名称。';
+    return;
+  }
+  const bands = hearingAid.bands.map(b => ({ freq: b.freq, gain: b.gain, out_threshold: b.out_threshold }));
+  const mpo = Math.min(...bands.map(b => b.out_threshold));   // 以 min(out_threshold) 重算 mpo
+  const existing = haPresets.find(p => p.name === name);
+  if (existing) {
+    existing.bands = bands;
+    existing.mpo = mpo;                 // 同名覆盖保留 ID
+    persistHaPresets();
+    renderHaPresets();
+    $('haFeedback').textContent = '已覆盖方案「' + name + '」。';
+  } else {
+    if (haPresets.length >= HA_MAX_PRESETS) {
+      $('haFeedback').textContent = '方案数量已达上限（' + HA_MAX_PRESETS + '），请先删除一些。';
+      return;
+    }
+    haPresets.push({ id: Date.now(), name, bands, mpo });
+    persistHaPresets();
+    renderHaPresets();
+    $('haPresetNote').textContent = '';
+    $('haFeedback').textContent = '已保存方案「' + name + '」到本机（共 ' + haPresets.length + ' 组）。';
+  }
+  $('haPresetName').value = '';
+};
+if (!eqStorage) {
+  $('haPresetSave').disabled = true;
+  $('haPresetName').disabled = true;
+  $('haPresetNote').textContent = '本机存储不可用（localStorage 被禁用），方案不会保留。';
+}
+renderHaPresets();
 
 // —— 测试音与样本（h3sha 桥：AudioTrack + 内置扬声器路由）——
 // 二级选择：先选类型（手动单频/语音/音乐/自然），再选该类型下的具体声音。
@@ -4276,7 +4574,12 @@ function startKeyTableRead() {
     readingKeyTable = false;
     updateGates();
     if (!ok) {
-      $('kmFeedback').textContent = '读取未确认（' + message + '），可点「重新读取」重试。';
+      // 未武装/超时/设备拒绝分别提示（问题 4）；未武装保留 keyReadWanted，开写后自动补读
+      const msg = String(message);
+      if (msg.includes('未武装')) $('kmFeedback').textContent = UNARMED_READ_MSG;
+      else if (msg.includes('未收到') || msg.includes('暂未')) $('kmFeedback').textContent = '读取失败：15 秒内未收到应答。';
+      else if (event && event.event === 'response') $('kmFeedback').textContent = '设备返回失败，状态码：' + event.status + '。';
+      else $('kmFeedback').textContent = '读取未确认（' + message + '），可点「重新读取」重试。';
       return;
     }
     const hex = String((event && event.payloadHex) || '')
@@ -4301,7 +4604,7 @@ function flushKeyRead() {
   if (!H || !connected || !armed) {
     $('kmFeedback').textContent = !H ? '离线预览，仅显示本地值。'
       : !connected ? '未连接，连接后可读取。'
-      : '开启「允许写入」后自动读取。';
+      : UNARMED_READ_MSG;
     return;
   }
   if (keyBusy) return;   // C0 批次中：记一次待读，整批写结束后由 finishBatch 补读
@@ -5164,20 +5467,42 @@ window.onH3sUsbEvent = raw => {
   }
 };
 
-/* ---------- 启动：不自动连接、不自动发写命令 ---------- */
+/* ---------- 启动：自动扫描 + 连接默认允许写入（问题 2） ---------- */
 if (H) {
   // 当前桥没有可展示的蓝牙地址：地址行保持隐藏（UIFIX2）
   try {
-    H.armWrite(false);
-    armed = H.isArmed() === true;
     connected = H.isConnected() === true;
+    armed = H.isArmed() === true;
   } catch (e) {
     log('初始化原生桥失败', String(e));
     notify('原生桥初始化失败，详情见日志。', true);
   }
+  if (connected) {
+    // 桥已 READY（页面重载而连接未断）：进入共同的就绪处理（arm + 九项读）
+    readyHandled = true;
+    if (H) { try { H.armWrite(true); } catch (e) { /* 忽略 */ } }
+    armed = boolFromBridge('isArmed');
+    renderConnection();
+    [47, 23, 34, 20, 31, 25, 35, 36, 46].forEach(id => issue('readStatus', [id]));
+    issue('readInfo', [], (ok, message, ev) => {
+      if (ok) renderOtaInfo(ev && ev.payloadHex);
+    });
+    flushKeyRead();
+  } else if (!connecting) {
+    // 未连接且未在连接：自动扫描并连接（复用 connBtn 同一函数）
+    scanAndConnect();
+  }
 } else {
   notify('当前为离线预览：可编辑 EQ 与按键草稿，不会连接或发送命令。');
 }
+/* 权限就绪回调（问题 2，真机首次安装）：loadUrl 先于权限请求执行，启动自动扫描会赶在授权
+   前触发并因缺权限失败（native 会推 disconnected）；全部授权后由 WebShellActivity
+   onRequestPermissionsResult 调到这里补一次扫描。拒绝则原生不回调，用户可手动点「连接耳机」。 */
+window.onH3sPermissionReady = () => {
+  if (connected || connecting || autoScanAttempted) return;
+  autoScanAttempted = true;
+  scanAndConnect();
+};
 renderConnection();
 updateKeyCount();
 usbInfo();

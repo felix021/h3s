@@ -193,9 +193,9 @@ public class WebShellActivity extends Activity {
                             return;
                         }
                     }
-                    // 默认 type=2（TYPE_APPLY）：type=1 是固件「装载自定义槽」指令、载荷被忽略
-                    //（docs/eq-cmd-0x22-layout.md §2.3），页面 eqSend 同款形状。
-                    bridge.writeEq(intent.getIntExtra("eq_type", EqFrame.TYPE_APPLY),
+                    // 默认 type=255（TYPE_CUSTOM_NO_HISTORY）：自定义曲线无历史时下发；type=1 是
+                    // 固件「装载自定义槽」指令、载荷被忽略（docs/eq-cmd-0x22-layout.md §2.3）。
+                    bridge.writeEq(intent.getIntExtra("eq_type", EqFrame.TYPE_CUSTOM_NO_HISTORY),
                         intent.getIntExtra("master_centid", 0), bandsJson);
                 }
                 // M3 USB 恢复卡驱动口（SIMB3A：与页面按钮同一 H3sUsbBridge 方法/事件/DOM；
@@ -298,6 +298,25 @@ public class WebShellActivity extends Activity {
     private boolean permissionsGranted() {
         return checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
             && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** 首次安装授权结果（问题 2）：loadUrl 先于权限请求执行，页面启动的自动扫描会赶在授权
+     *  前触发并因缺权限失败。全部授予后通知页面补一次扫描；拒绝则什么都不做（页面仍可
+     *  手动点「连接耳机」重试，系统会在下次点击时按需再弹授权）。仅真机构建走到这里
+     *  （sim 模式不请求权限）。 */
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != 1) return;
+        boolean allGranted = grantResults != null && grantResults.length > 0;
+        if (grantResults != null) {
+            for (int r : grantResults) if (r != PackageManager.PERMISSION_GRANTED) allGranted = false;
+        }
+        if (!allGranted) return;
+        web.post(new Runnable() {
+            @Override public void run() {
+                web.evaluateJavascript("window.onH3sPermissionReady&&onH3sPermissionReady()", null);
+            }
+        });
     }
 
     /** SAF 文件选择结果转给 h3sota 桥（升级页在 WebView 内，不再跳原生工具页）。 */

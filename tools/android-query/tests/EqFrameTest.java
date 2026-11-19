@@ -34,20 +34,22 @@ public class EqFrameTest {
         System.out.println("EqFrameTest passed: 往返一致、边界、修正后字节对照（gain 在前）、「流行」预设原生对照、type 语义常量、段数超限、EqWritePolicy 放行/拒绝");
     }
 
-    /** type 字节语义（路 EQFIX 重解 apply 0x06025118 钉死，docs/eq-cmd-0x22-layout.md §2.3）：
-     *  1=装载 MusicEqBt[0] 槽（载荷被忽略）、10=空间音效、其余=解码载荷应用——下发曲线用 2。 */
+    /** type 字节语义（路 EQFIX 重解 apply 0x06025118 钉死，docs/eq-cmd-0x22-layout.md §2.3；
+     *  2026-11-19 codex 补钉官方预设/自定义实发取值）：1=装载 MusicEqBt[0] 槽（载荷被忽略）、
+     *  10=空间音效、其余=解码载荷应用——自定义曲线无历史发 255(FF)、有历史发 128(80)。 */
     static void typeSemantics() {
-        eq("TYPE_APPLY=2", 2, EqFrame.TYPE_APPLY);
         eq("TYPE_RECALL_SLOT=1", 1, EqFrame.TYPE_RECALL_SLOT);
         eq("TYPE_SPATIAL=10", 10, EqFrame.TYPE_SPATIAL);
-        // 推荐下发头：type=2 + mastergain -4dB → 02 70 FE（文档 §7 修正后的示例）
-        bytes("type=2 头", EqFrame.buildEqData(EqFrame.TYPE_APPLY, -400, new ArrayList<EqBand>()),
-              hexBytes("02 70 FE"));
-        // type=2 曲线帧形状过写策略；type=1 帧形状同样是 0x22 setter（策略只钉形状，语义由调用方选择）
-        byte[] apply = EqFrame.buildEqCommand(EqFrame.TYPE_APPLY, -400,
+        eq("TYPE_CUSTOM_NO_HISTORY=255", 255, EqFrame.TYPE_CUSTOM_NO_HISTORY);
+        eq("TYPE_CUSTOM_HISTORY=128", 128, EqFrame.TYPE_CUSTOM_HISTORY);
+        // 自定义无历史下发头：type=255 + mastergain -4dB → FF 70 FE
+        bytes("type=255 头", EqFrame.buildEqData(EqFrame.TYPE_CUSTOM_NO_HISTORY, -400, new ArrayList<EqBand>()),
+              hexBytes("FF 70 FE"));
+        // type=255 曲线帧形状过写策略；type=1 帧形状同样是 0x22 setter（策略只钉形状，语义由调用方选择）
+        byte[] apply = EqFrame.buildEqCommand(EqFrame.TYPE_CUSTOM_NO_HISTORY, -400,
             Arrays.asList(new EqBand(30, 80, 0, 0), new EqBand(170, 60, -1700, 2)));
-        expect(EqWritePolicy.permitted(apply, true), "type=2 曲线下发帧应放行");
-        expect(!EqWritePolicy.permitted(apply, false), "未 armed 应拒绝 type=2 帧");
+        expect(EqWritePolicy.permitted(apply, true), "type=255 曲线下发帧应放行");
+        expect(!EqWritePolicy.permitted(apply, false), "未 armed 应拒绝 type=255 帧");
         expect(EqWritePolicy.permitted(EqFrame.buildEqCommand(EqFrame.TYPE_RECALL_SLOT, -400,
             Arrays.asList(new EqBand(30, 80, 0, 0))), true), "type=1 帧形状合法（策略按形状放行）");
     }
@@ -126,8 +128,8 @@ public class EqFrameTest {
         bytes("完整 RCSP 帧", frame, hexBytes("FE DC BA C0 FF 00 0D 00 22 0A 01 70 FE 1E 00 00 00 50 00 00 EF"));
     }
 
-    /** 「流行」预设对照（eqproto 钉死的 QCY 原生字节）：双方该预设同发 type=02、总增益 −4dB，
-     *  段字节 gain 在前、Q 在后——0.9.1 发反时固件在 170Hz 段读到 gain=+0.4dB、Q=−17。 */
+    /** 「流行」预设对照（eqproto 钉死的 QCY 原生字节）：官方预设「流行」面板 id=02（type=02）、
+     *  总增益 −4dB，段字节 gain 在前、Q 在后——0.9.1 发反时固件在 170Hz 段读到 gain=+0.4dB、Q=−17。 */
     static void popPresetBytes() {
         // 30 Hz，0 dB，Q 0.5 → 1E 00 00 00 32 00 00（gain 0 占 +2/+3，Q 50=0x32 占 +4/+5）
         bytes("流行段0（30Hz）", band(30, 50, 0, 0), hexBytes("01 00 00 1E 00 00 00 32 00 00"));
@@ -142,13 +144,13 @@ public class EqFrameTest {
         int[] gain = {0, -1700, -200, 200, -250, 400, 0, -600, 200};
         int[] iir = {0, 2, 2, 2, 2, 2, 2, 2, 3};
         for (int i = 0; i < 9; i++) pop.add(new EqBand(freq[i], q[i], gain[i], iir[i]));
-        byte[] popFrame = EqFrame.buildEqCommand(0, EqFrame.TYPE_APPLY, -400, pop);
+        byte[] popFrame = EqFrame.buildEqCommand(0, 2, -400, pop);
         eq("流行帧长", 8 + 3 + 3 + 7 * 9, popFrame.length);
         bytes("流行帧头+段0/段1", Arrays.copyOfRange(popFrame, 0, 13 + 14),
             hexBytes("FE DC BA C0 FF 00 45 00 22 42 02 70 FE 1E 00 00 00 32 00 00 AA 00 5C F9 28 00 02"));
         // 反解析与「流行」预设参数一致（gain/Q 各归各位）
         Parsed pp = EqFrame.parseEqCommand(popFrame);
-        eq("流行 eqType", EqFrame.TYPE_APPLY, pp.eqType);
+        eq("流行 eqType", 2, pp.eqType);
         eq("流行 masterGain", -400, pp.masterGainCentidB);
         for (int i = 0; i < 9; i++) {
             eq("流行 freq[" + i + "]", freq[i], pp.bands.get(i).freq);
