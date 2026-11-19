@@ -111,6 +111,11 @@ FEATURES = (
             'adapter 账本,mul_pair/prer 先例;短形 st.h.pin/st.b.pin 由旧 '
             'immediate_rep_projection 短形 gate 先接不迁移;零装载论证限于 '
             'rep 体,外层 0x6242 ld.w.idxs 实有装载照旧)'),
+    Feature('rep_conditional_body', 'conditional', (), False, None,
+            '寄存器计数 rep 体内非嵌套条件块拆解执行(rep_conditional_body 子开关,'
+            '路 REPCOND:ifs.gt.rr/ifs.lt.rr + t=1/e=0 + 块内 mov.rr + 无条件尾 + '
+            '体内不引用计数寄存器;组合投影 derived-not-measured,无 rep×体内控制'
+            '流的硬件组合捕获证据;证据形状 0x60736c8 24 位音频样本原地钳位拷贝环)'),
     Feature('lp_timer_writes', 'conditional', ('p11_power_init',), False, None,
             'LP 定时器初始化写 write-only 记录(lp_timer_init_projection)'),
     Feature('lrct_trim_done', 'conditional', ('lp_timer_writes',), False, None,
@@ -755,10 +760,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42231273,
-        'stop_pc': '0x60736c8',
-        'stop': {'kind': 'rep_multi_block_body_not_straight_line',
-                 'instruction_id': 'ifs.gt.rr', 'address': '0x60736cc'},
+        'completed_steps': 42231992,
+        'stop_pc': '0x6070a9a',
+        'stop': {'kind': 'unmapped_or_readonly_write', 'access': 'write',
+                 'address': '0xfe2608', 'size': 4, 'value_bytes': '02000100'},
         'freshness_fields': ('kind', 'address'),
     },
 }

@@ -3256,4 +3256,141 @@ class StandalonePostincrementSubwordStoreTests(unittest.TestCase):
         self.assertEqual([w['bytes'] for w in writes],['edfe'])
 
 
+class RepConditionalBodyTests(unittest.TestCase):
+    """路 REPCOND:寄存器计数 rep 体内非嵌套条件块拆解执行(rep_conditional_body
+    子开关)。证据形状 0x60736c8 24 位音频样本原地钳位拷贝环
+    `rep 16 r0 { ld.w r4=[r1+0]; ifs.gt.rr(r4>r2){r4=r2}; ifs.lt.rr(r4<r3)
+    {r4=r3}; st.w.pin [r1++=4]=r4 }`(r2=0x7FFFFF/r3=0xFF800000,计数 r0=
+    [r8+8]>>2 无 mask)。multi-block rep gate 体校验 walk 块感知化:只放行
+    非嵌套 ifs.gt.rr/ifs.lt.rr、t=1/e=0、块内唯一 then=有模型 mov.rr、块终点
+    严格早于 rep 终点(块后留无条件尾)、体内不引用计数寄存器。组合投影
+    derived-not-measured(rep×体内控制流无硬件组合捕获)。正例=真实 16 字节体
+    多轮喂上钳/下钳/保持样本,断言每轮原址写、r1 每轮 +4、r0 终 0、bgts.ri
+    不跳;上钳/下钳取真路径由本隔离单测覆盖(前沿全零入口只覆盖两条件都假)。
+    负例=关开关保持诚实拒、块在体末/嵌套块/块内非 mov/体内引用计数寄存器→
+    入口拒绝零部分提交。
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.module=upstream()
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.app=application(firmware);cls.header=package_header(firmware)
+
+    def handoff(self):
+        h=profile(self.header,SENTINEL_A)
+        dst,src,length=RAM_CODE
+        h['seeds'].append((dst,self.app[src-ENTRY:src-ENTRY+length]))
+        h['description']['phase']='isolated real-instruction bus test; not contiguous startup'
+        return h
+
+    PC=0x01c60000
+    # rep 16 r0 体 16 字节(0x60736c8 真实编码):ld.w r4=[r1+0] + ifs.gt.rr
+    # (r4>r2){mov.rr r4=r2} + ifs.lt.rr(r4<r3){mov.rr r4=r3} + st.w.pin
+    # [r1++=4]=r4;体后 bgts.ri (r0>0) goto -22(死分支)。
+    REP=bytes.fromhex('7003')
+    CLAMP_BODY=bytes.fromhex('146014ee0002241694ed000334169405')
+    BGTS=bytes.fromhex('00fef501')
+
+    def run_clamp(self,name,samples,count=None,diagnostics=None,budget=14,seed=None,extra_region=None):
+        pc=self.PC
+        region=self.REP+self.CLAMP_BODY+self.BGTS+bytes.fromhex('2000')
+        h=self.handoff();h['readonly'].append((pc,region))
+        buf=0x124f00
+        payload=b''.join(struct.pack('<I',s) for s in samples)
+        if seed is None:h['seeds'].append((buf,payload))
+        h['snapshots'].append(('clamp_buf',buf,len(payload)))
+        regs=[0]*16;regs[0]=len(samples) if count is None else count
+        regs[1]=buf;regs[2]=0x7FFFFF;regs[3]=0xFF800000;regs[4]=0
+        diag={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+              'immediate_rep_multi_block':True,'rep_conditional_body':True,
+              'immediate_rep_projection':True}
+        diag.update(diagnostics or {})
+        return explore(self.module,self.app,name=name,handoff=h,diagnostics=diag,budget=budget)
+
+    def test_clamp_loop_three_rounds_upper_lower_keep(self):
+        # 上钳(0x00800000>0x7FFFFF→0x7FFFFF)/下钳(0xff7fffff<0xFF800000→
+        # 0xFF800000)/保持(0 不变)三样本,计数 3:1 步 rep + 上钳轮 5 步(ld.w+
+        # ifs.gt.rr 取真+moving+ifs.lt.rr 假+st.w.pin)+下钳轮 5 步+保持轮 4 步
+        # (两条件都假 mov 各被 skip)+1 步 bgts.ri=16 步;每轮 r1 +4,r0 终 0,
+        # bgts.ri 不跳(r0=0)。两 mov 各命中一次(上钳走 ifs.gt.rr 的 then、下钳
+        # 走 ifs.lt.rr 的 then、保持两都假)。
+        result=self.run_clamp('repcond_clamp3',[0x00800000,0xff7fffff,0x00000000],budget=16)
+        self.assertEqual(result['completed_steps'],16)
+        self.assertEqual(result['stop_pc'],hex(self.PC+len(self.REP+self.CLAMP_BODY+self.BGTS)))
+        self.assertEqual(result['last_registers']['r'][0],'0x0')
+        self.assertEqual(result['last_registers']['r'][1],hex(0x124f00+12))
+        self.assertEqual(result['memory_snapshots']['clamp_buf']['bytes_with_unknowns'],
+                         'ffff7f00000080ff00000000')
+        self.assertEqual(result['instruction_adapters'].get('register_rep_multi_block_projection'),1)
+        self.assertEqual(result['instruction_adapters'].get('exact_postincrement_store'),3)
+
+    def test_clamp_loop_all_zero_covers_both_conditions_false(self):
+        # 全零入口(前沿实测形状):两条件都假,两 mov 零次命中(走 skip),写回
+        # 保持 0;r1 每轮 +4,r0 终 0。每轮仍 4 步(ld.w+2 ifs+st.w.pin)。
+        result=self.run_clamp('repcond_clamp_zero',[0,0],count=2,budget=10)
+        self.assertEqual(result['completed_steps'],10)
+        self.assertEqual(result['last_registers']['r'][0],'0x0')
+        self.assertEqual(result['last_registers']['r'][1],hex(0x124f00+8))
+        self.assertEqual(result['memory_snapshots']['clamp_buf']['bytes_with_unknowns'],
+                         '0000000000000000')
+
+    def test_switch_off_keeps_the_honest_rejection(self):
+        # 子开关关:体含条件块开启器照旧诚实拒(旧负例语义不变)。
+        pc=self.PC
+        region=self.REP+self.CLAMP_BODY+self.BGTS+bytes.fromhex('2000')
+        h=self.handoff();h['readonly'].append((pc,region))
+        regs=[0]*16;regs[0]=2;regs[1]=0x124f00;regs[2]=0x7FFFFF;regs[3]=0xFF800000
+        result=explore(self.module,self.app,name='repcond_off',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'immediate_rep_projection':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop_pc'],hex(pc))
+        self.assertEqual(result['stop']['kind'],'rep_multi_block_body_not_straight_line')
+        self.assertEqual(result['stop']['instruction_id'],'ifs.gt.rr')
+        self.assertEqual(result['stop']['address'],hex(pc+2+2))
+
+    def test_block_at_rep_end_refuses_without_tail(self):
+        # 块恰在体末(ifs.gt.rr{mov} 占满 6 字节体,无 st.w.pin 尾)→拒绝
+        # rep_conditional_block_not_before_tail,零部分提交。
+        pc=self.PC
+        region=bytes.fromhex('2003')+bytes.fromhex('14ee00022416')+bytes.fromhex('2000200020002000')
+        h=self.handoff();h['readonly'].append((pc,region))
+        regs=[0]*16;regs[0]=2;regs[1]=0x124f00;regs[2]=0x7FFFFF;regs[3]=0xFF800000
+        result=explore(self.module,self.app,name='repcond_no_tail',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'rep_conditional_body':True,
+                         'immediate_rep_projection':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'rep_conditional_block_not_before_tail')
+        self.assertEqual(result['stop']['instruction_id'],'ifs.gt.rr')
+
+    def test_nested_block_refuses(self):
+        # then 是一条块开启器(ifs.lt.rr)而非 mov.rr→拒绝 then_not_mov。
+        pc=self.PC
+        region=bytes.fromhex('3003')+bytes.fromhex('14ee000294ed0003')+bytes.fromhex('2000')
+        h=self.handoff();h['readonly'].append((pc,region))
+        regs=[0]*16;regs[0]=2;regs[1]=0x124f00;regs[2]=0x7FFFFF;regs[3]=0xFF800000
+        result=explore(self.module,self.app,name='repcond_nested',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'rep_conditional_body':True,
+                         'immediate_rep_projection':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'rep_conditional_body_then_not_mov')
+        self.assertEqual(result['stop']['instruction_id'],'ifs.lt.rr')
+
+    def test_body_referencing_count_register_refuses(self):
+        # 体内引用计数寄存器 r0(mov.rr r0=r2 写 r0)→拒绝 references_count_register。
+        pc=self.PC
+        region=bytes.fromhex('3003')+bytes.fromhex('14ee000220169405')+bytes.fromhex('2000200020002000')
+        h=self.handoff();h['readonly'].append((pc,region))
+        regs=[0]*16;regs[0]=2;regs[1]=0x124f00;regs[2]=0x7FFFFF;regs[3]=0xFF800000
+        result=explore(self.module,self.app,name='repcond_ref_count',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'rep_conditional_body':True,
+                         'immediate_rep_projection':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'rep_multi_block_body_references_count_register')
+        self.assertEqual(result['stop']['register'],0)
+
+
 if __name__=='__main__':unittest.main()
