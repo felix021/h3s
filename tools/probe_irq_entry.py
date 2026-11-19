@@ -5051,6 +5051,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              postincrement_store_word=False,
              preincrement_store_subword=False,
              postincrement_store_subword=False,
+             rep_conditional_body=False,
              mmu_cross_page_split=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
@@ -5301,6 +5302,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # /postincrement_store_word(word 族)无依赖关系(独立指令无 A 半/无宽度
     # 交叠)。默认关,legacy 报告不变。
     if postincrement_store_subword:extra['exact_postincrement_subword_stores']=True
+    # rep_conditional_body:opt-in 的寄存器计数 rep 体内非嵌套条件块拆解执行
+    # (conditional 层子开关,路 REPCOND)。multi-block rep gate 的体校验 walk
+    # 块感知化:只放行非嵌套 ifs.gt.rr/ifs.lt.rr、t=1/e=0、块内唯一 then 是一
+    # 条有模型的 mov.rr、块终点严格早于 rep 终点(块后留无条件尾)、体内不引用
+    # 计数寄存器(计数寄存器每轮由 rep 机制递减,体内读它见未测中间值、写它使
+    # 两计数分离——一律拒绝)。证据形状 0x60736c8 24 位音频样本原地钳位拷贝环
+    # `rep 16 r0 { ld.w r4=[r1+0]; ifs.gt.rr(r4>r2){r4=r2}; ifs.lt.rr(r4<r3)
+    # {r4=r3}; st.w.pin [r1++=4]=r4 }`(r2=0x7FFFFF/r3=0xFF800000,计数 r0=
+    # [r8+8]>>2 无 mask)。组合投影=两个已独立 hw 验证事实(rep 字节计数循环+
+    # 块条件选臂)的组合,标 derived-not-measured:rep×体内控制流的组合行为、
+    # 128 轮中间状态与 IRQ 可见时点均无硅上捕获,上下钳取真路径靠隔离单测。
+    # 默认关(legacy 报告不变);开关关时体含条件块开启器照旧诚实拒
+    # (rep_multi_block_body_not_straight_line)。
+    if rep_conditional_body:extra['rep_conditional_body']=True
     # mmu_cross_page_split:opt-in 的跨 128B MMU 页界双字存储拆分(probe_boot
     # exact_doubleword_stores 独立子开关)。证据形状 app 0x6007af2
     # `st.d.sp.l d[sp+8]=r1_r0`(配置表查名 helper 0x6007ae8 函数头,app_core
@@ -8773,11 +8788,11 @@ def check(report,firmware):
     # 形状:CON0 |=0x10 开门恰 1 次(循环外)→55 轮循环体仅 COEF 写零→
     # CON0 &=~0x10 关门;CON1 |=0x400000→段尾 &=0xFFBFFFFF 归 0。
     srcsyncrel=r['peripherals']['jl_src_sync_config_registers']
-    require(srcsyncrel['word_writes']==59 and
-            srcsyncrel['stores']['0xfe2604']=={'values':['0x400000','0x0'],
-                                               'writes':2,'cores':[0,0]} and
-            srcsyncrel['stores']['0xfe2600']=={'values':['0x10','0x0'],
-                                               'writes':2,'cores':[0,0]} and
+    require(srcsyncrel['word_writes']==61 and
+            srcsyncrel['stores']['0xfe2604']=={'values':['0x400000','0x0','0x41'],
+                                               'writes':3,'cores':[0,0,0]} and
+            srcsyncrel['stores']['0xfe2600']=={'values':['0x10','0x0','0x82006001'],
+                                               'writes':3,'cores':[0,0,0]} and
             srcsyncrel['stores']['0xfe263c']['writes']==55 and
             all(v=='0x0' for v in srcsyncrel['stores']['0xfe263c']['values']) and
             srcsyncrel['readback_projection']['reads']==2 and
@@ -8995,10 +9010,10 @@ def check(report,firmware):
     # 16 h+41 b 站点未触达)/hi.prer 形(hw 13 条、全库零站点)/st.{w,d}.
     # prer 整字前增量形(38+4 站点)与 ld.*.prer 装载形不在放行族。
     require(r['instruction_adapters'].get('exact_preincrement_subword_store')==20 and
-            r['stop']['kind']=='rep_multi_block_body_not_straight_line' and
-            r['stop']['address']=='0x60736cc' and
+            r['stop']['kind']=='unmapped_or_readonly_write' and
+            r['stop']['address']=='0xfe2608' and
             r['peripherals']['jl_fm_con_head_registers']['word_writes']==1 and
-            r['memory_event_counts']['write']==2426540 and
+            r['memory_event_counts']['write']==2426707 and
             'exact_preincrement_subword_stores' in r['assumptions']['diagnostics'],
             'the route-SEGIMPL release record must pin the runtime evidence: exactly TEN '
             'exact_preincrement_subword_store gate firings at the 0x63c2 stop (the st.h.prer/st.b.prer pair '
@@ -9048,9 +9063,9 @@ def check(report,firmware):
     # 1,403,868→1,407,136(恰 +817×4,CPU1 同款 +3,268)、零新喂狗(163/162
     # 冻结)、jl_fm 恰一笔 RMW 冻结、事件钟冻结。
     require(r['instruction_adapters'].get('parallel_halfword_store_old_registers')==774 and
-            r['stop']['address']=='0x60736cc' and r['stop_pc']=='0x60736c8' and
-            r['peripherals']['timer0']['cnt']==21975 and
-            r['peripherals']['core_tick_configuration'][0]['cnt']==39124 and
+            r['stop']['address']=='0xfe2608' and r['stop_pc']=='0x6070a9a' and
+            r['peripherals']['timer0']['cnt']==24132 and
+            r['peripherals']['core_tick_configuration'][0]['cnt']==42000 and
             'exact_parallel_halfword_stores' in r['assumptions']['diagnostics'],
             'the route-SEGIMPL2 release record must pin the runtime evidence: the '
             'extract-prefix (uextra.rrii/insert.rrii) x st.h second half joined the '
@@ -9130,11 +9145,11 @@ def check(report,firmware):
     # cnt 8,259→9,696(恰 +1,437=479×3,PRD 11,999 窗内零新到期)、core-tick
     # cnt 1,407,136→1,409,052(恰 +1,916=479×4,347/347 冻结)、零新喂狗
     # (163/162 冻结)、jl_fm 恰一笔冻结。
-    require(r['instruction_adapters'].get('parallel_full_word_store_old_registers')==15509 and
+    require(r['instruction_adapters'].get('parallel_full_word_store_old_registers')==15510 and
             r['instruction_adapters'].get('parallel_halfword_store_old_registers')==774 and
-            r['stop']['address']=='0x60736cc' and r['stop_pc']=='0x60736c8' and
-            r['peripherals']['timer0']['cnt']==21975 and
-            r['peripherals']['core_tick_configuration'][0]['cnt']==39124 and
+            r['stop']['address']=='0xfe2608' and r['stop_pc']=='0x6070a9a' and
+            r['peripherals']['timer0']['cnt']==24132 and
+            r['peripherals']['core_tick_configuration'][0]['cnt']==42000 and
             'exact_parallel_mul_prefixes' in r['assumptions']['diagnostics'],
             'the route-SEGIMPL3 release record must pin the runtime evidence: the '
             'mul-scalar-prefix (16 hw-v3-captured forms) x store-second-half shape '
@@ -9189,90 +9204,71 @@ def check(report,firmware):
             'this route\'s review), the mul.f form (no v3 capture), or the '
             '0x19e100 window\'s '
             'unknown values')
-    # 路 SEGIMPL4:独立(非并行对)后增量半字/字节存储直写(exact_
-    # postincrement_subword_stores 独立子开关)的释放记录断言——SEGIMPL3
-    # 前沿 42,173,750 @ 0x63c2 的 rep.i 4 16 { st.h.pin.l } 第二轮第 2 半字
-    # 合并读墙由本开关放行(st.{h,b}.{pi,pin} 及 .l 长形 8 形全族,半字/
-    # 字节部分写只写自己的字节,旧值语义无关——word/prer/偏移形三先例同
-    # 一论证;短形 st.h.pin/st.b.pin 由 immediate_rep_projection 旧 gate 先
-    # 接不迁移,gate 次序=STOREG3 同款)。独立子开关而非并入 exact_
-    # subword_stores 偏移形容器:6 个此前无面形在已执行窗口 0..42,173,750
-    # 内恰 407 次真实执行全部走上游模型目标字节已知正常完成(st.b.pin.l
-    # 390=0x6010d48×256/0x6010db2×102/0x6060768×17/0x60650e4×6/0x602f2d8×4/
-    # 0x6075cf4×2/0x606fc6e×2/0x6076412×1+st.h.pin.l 17=ROM 0x63c2 第一轮
-    # 16 次+第二轮第 1 半字;st.h.pi/st.b.pi/st.h.pi.l/st.b.pi.l 零执行——
-    # 从零 watch 双口径〔开关开/关各一次 41.9M attempts 全程注入 8 形全部
-    # 7,233 静态站点〕与跨代码臂 adapter 差 550-166=384 互证;两 pin 短形
-    # 36,889 次执行 OFF/ON 两口径逐键不变=零迁移)。放行段 +57,523 步:
-    # 清零环 0x63c2 共恰 10 轮 rep(第 2 轮补 15 半字+第 3-10 轮 8×16,
-    # 释放段 st.h.pin.l 恰 +143;每半字直写自己的 2 字节零,一轮放行覆盖
-    # 全部轮次——SEGIMPL2「覆盖面比预判大」教训的同族兑现,无第二轮第 2
-    # 半字之后的同族墙),环后长走段到达新停点 42,231,273 @ 0x60736c8=
-    # `rep 34 r0 { ld.w r4=[r1+0]; ifs.gt.rr(r4>r2){r4=r2}; ifs.lt.rr(r4<r3)
-    # {r4=r3}; st.w.pin [r1++=4]=r4 }`(24 位音频样本钳位拷贝环,r2=
-    # 0x7FFFFF/r3=0xFFC0C0C0,计数=r0=[r8+8]>>2)——寄存器计数 rep 体含
-    # 条件块开启器,multi-block gate 诚实拒(rep×体内控制流交互无硬件捕获
-    # 证据,不臆造),归下路 rep 条件体族评审。gate 计数(从零口径):
-    # 本开关 550=st.b.pin.l 390〔全部在边界前,跨代码臂不可见〕+st.h.pin.l
-    # 160〔17 已执行+143 释放段〕;跨代码臂恰 166=160+6〔resume 段 st.b.
-    # pin.l 6 次〕,差 384=快照段迁移账本;旧 gate exact_postincrement_
-    # store 77,123→78,587(+1,464 短形新执行)/prer 10→20/半字对 747→774
-    # (+27)/word 对 15,378→15,509(+131);timer0 9,696→21,975(PRD 11,999
-    # 窗翻转:释放段 13 次新到期+交付)、core-tick 1,409,052→39,124(溢出
-    # 后冻结快照口径,1 次新到期+应答 348/348)、零新喂狗(163/162 冻结)
-    # 、jl_fm 恰一笔冻结;写事件 2,419,763→2,426,540(含 390 笔边界前迁移
-    # 的直写脉冲——上游合并路径在已知同值字上丢弃写,直写每笔都脉冲)。
-    require(r['instruction_adapters'].get('exact_postincrement_subword_store')==550 and
-            r['stop']['kind']=='rep_multi_block_body_not_straight_line' and
-            r['stop'].get('instruction_id')=='ifs.gt.rr' and
-            r['stop']['address']=='0x60736cc' and r['stop_pc']=='0x60736c8' and
-            r['instruction_adapters'].get('exact_postincrement_store')==78587 and
+    # 路 REPCOND:寄存器计数 rep 体内非嵌套条件块拆解执行(rep_conditional_
+    # body 子开关)的释放记录断言——SEGIMPL4 前沿 42,231,273 @ 0x60736c8 的
+    # `rep 16 r0 { ld.w r4=[r1+0]; ifs.gt.rr(r4>r2){r4=r2}; ifs.lt.rr(r4<r3)
+    # {r4=r3}; st.w.pin [r1++=4]=r4 }`(r2=0x7FFFFF/r3=0xFF800000,计数 r0=
+    # [r8+8]>>2 无 mask)由本开关放行:multi-block rep gate 体校验 walk 块感知化,
+    # 只放行寄存器计数 rep 体内的非嵌套 ifs.gt.rr/ifs.lt.rr、t=1/e=0、块内唯一
+    # then=有模型 mov.rr、块终点严格早于 rep 终点(块后留无条件尾)、体内不引用
+    # 计数寄存器(计数寄存器每轮由 rep 机制递减,体内读它见未测中间值、写它使
+    # 两计数分离——一律拒绝)。组合投影=两个已独立 hw 验证事实(rep 字节计数
+    # 循环+块条件选臂)的组合,标 derived-not-measured(rep×体内控制流无硬件
+    # 组合捕获);全零入口只覆盖两条件都假路径,上钳/下钳取真路径由隔离单测
+    # 覆盖。放行后整环 1(rep 头)+128×4=513 步本核指令:每轮 ld.w+2 个 ifs
+    # 开启器+st.w.pin(全零下两 mov 各零次命中,st.w.pin 直写 128 笔=exact_
+    # postincrement_store +128),r1 每轮 +4,r0 终 0,bgts.ri 死分支不跳,出口
+    # r1=0x41d50c;环后长走段到达新停点 42,231,992 @ 0x6070a9a=st.w
+    # [0xfe2608]=0x00010002(JL_SRC_SYNC CON2 整字写,在已放行 jl_src_sync_
+    # config_words 容器 CON0 0xfe2600/CON1 0xfe2604/COEF 0xfe263c 之外,归下路
+    # 评审;新停点 IPMASK 6=下游长走段重新进入临界区,0x6070a9a 在临界区内,
+    # SEGIMPL4 停点 IPMASK 0 的 unmasked 形状不再适用)。gate 计数(从零口径):
+    # register_rep_multi_block_projection 826→827
+    # (钳位环 rep 头恰 1 次)、exact_postincrement_store 78,587→78,715(+128 笔
+    # st.w.pin=128 轮)、exact_postincrement_subword_store 550 冻结(钳位环全
+    # 整字,零迁移);timer0 cnt 21,975→24,132(+2,157=719×3,PRD 59,999 窗内
+    # 走表零新到期/零新交付)、core-tick 39,124→42,000(冻结快照口径,+2,876)、零新喂狗
+    # (163 冻结)、jl_fm 恰一笔冻结。
+    require(r['stop']['kind']=='unmapped_or_readonly_write' and
+            r['stop'].get('address')=='0xfe2608' and r['stop_pc']=='0x6070a9a' and
+            r['stop'].get('size')==4 and r['stop'].get('value_bytes')=='02000100' and
+            r['instruction_adapters'].get('register_rep_multi_block_projection')==827 and
+            r['instruction_adapters'].get('exact_postincrement_store')==78715 and
+            r['instruction_adapters'].get('exact_postincrement_subword_store')==550 and
             r['instruction_adapters'].get('exact_preincrement_subword_store')==20 and
-            r['peripherals']['timer0']['cnt']==21975 and
-            r['peripherals']['core_tick_configuration'][0]['cnt']==39124 and
+            r['peripherals']['timer0']['cnt']==24132 and
+            r['peripherals']['core_tick_configuration'][0]['cnt']==42000 and
             r['peripherals']['watchdog_projection']['feeds']==163 and
             r['peripherals']['jl_fm_con_head_registers']['word_writes']==1 and
-            'exact_postincrement_subword_stores' in r['assumptions']['diagnostics'],
-            'the route-SEGIMPL4 release record must pin the runtime evidence: the '
-            'standalone postincrement SUBWORD store family (st.{h,b}.{pi,pin} plus '
-            '.l long forms, eight forms) rides its OWN opt-in sub-switch '
-            'exact_postincrement_subword_stores (NOT folded into the offset-form '
-            'exact_subword_stores container: the six previously-unserved forms '
-            'executed exactly 407 times in the already-executed window 0..42,173,750 '
-            '— st.b.pin.l x390 across EIGHT app sites (0x6010d48 x256, 0x6010db2 '
-            'x102, 0x6060768 x17, 0x60650e4 x6, 0x602f2d8 x4, 0x6075cf4 x2, '
-            '0x606fc6e x2, 0x6076412 x1) and st.h.pin.l x17 at ROM 0x63c2 (round '
-            'one\'s sixteen body executions plus round two\'s first halfword), all '
-            'served by the upstream store model on known bytes — a from-zero watch '
-            'replay in BOTH switch states over all 7,233 static sites of the eight '
-            'forms cross-checks the 550-vs-166 adapter split against the cross-code '
-            'arm (the 384-execution delta is the snapshot-segment ledger) and the '
-            '36,889 short-pin executions stay byte-identical in both states (the '
-            'old immediate_rep_projection gate keeps serving them — ZERO '
-            'migration, the STOREG3 ordering), releasing the 42,173,750 stop whose '
-            'st.h.pin.l halfword direct-writes its own two zero bytes per body '
-            'execution; the released +57,523-step segment runs the clearing loop '
-            'for exactly TEN rep rounds (0x63c2 fires 160 times from zero = 17 '
-            'pre-stop + 143 released = 15 finishing round two + eight full rounds '
-            'x 16 — ONE shape release covers every round, no same-family wall '
-            'appears behind the old stop) and walks on to the NEW stop 42,231,273 '
-            '@ 0x60736c8: a REGISTER-count REP whose clamp body (ld.w; ifs.gt.rr '
-            '{mov}; ifs.lt.rr {mov}; st.w.pin) opens a conditional block — the '
-            'multi-block gate honestly refuses (REP x in-body control flow has no '
-            'hardware capture; 24-bit audio sample saturation copy, r2=0x7FFFFF, '
-            'r3=0xFFC0C0C0, count=r0=[r8+8]>>2) and belongs to the next route; '
-            'TIMER0 cnt walks 9696->21975 (the PRD 11999 window rolls over: '
-            'thirteen new expiries and deliveries inside the walk), the CPU0 core '
-            'tick lands on the post-overflow held snapshot 39124 with 348/348 '
-            'acknowledgements (one new expiry), zero new feed (163/162 frozen) and '
-            'the jl_fm ledger frozen at its single write; the write event total '
-            'moves 2419763->2426540 (the from-zero row now pulses one write per '
-            'migrated pre-boundary st.b.pin.l execution where the upstream merge '
-            'path had dropped same-value merged words) — this does NOT verify the '
-            'st.b.pi.l form (zero static sites exist anywhere), the st.h.pi/'
-            'st.b.pi/st.h.pi.l forms (zero executions through the new stop), '
-            'st.w.{pi,pin} (STOREG3), st.d.{pi,pin.l} odd-register forms, the '
-            'REP-conditional interaction, or the clamp buffer\'s contents')
+            'rep_conditional_body' in r['assumptions']['diagnostics'],
+            'the route-REPCOND release record must pin the runtime evidence: the '
+            'REGISTER-count REP whose in-body conditional blocks (ifs.gt.rr/ifs.lt.rr '
+            'with t=1/e=0 and a single mov.rr then) are unrolled round-by-round under '
+            'the opt-in rep_conditional_body sub-switch rides the block-aware body '
+            'walk (narrow subset: non-nested signed-compare openers only, one modelled '
+            'mov.rr per block, block end strictly before the unconditional tail, and '
+            'no reference to the count register inside the body) — the 24-bit audio '
+            'sample saturation copy loop at 42,231,273 executes exactly 128 rounds '
+            '(513 native instructions = 1 rep header + 128 x (ld.w + 2 ifs openers + '
+            'st.w.pin)) on the all-zero entry whose two conditions are both false '
+            '(the upper/lower clamp-taken paths are covered by isolated unit tests, '
+            'not by this frontier entry), the 128 st.w.pin direct writes pulse '
+            'exact_postincrement_store 78587->78715 and the rep header adds the '
+            'register_rep_multi_block_projection 826->827 count, then the dead '
+            'bgts.ri falls through and the walk continues to the NEW honest stop '
+            '42,231,992 @ 0x6070a9a: an unmapped_or_readonly_write of 0x00010002 to '
+            '0xfe2608 = JL_SRC_SYNC->CON2 (size 4), OUTSIDE the released '
+            'jl_src_sync_config_words container (CON0 0xfe2600 / CON1 0xfe2604 / '
+            'COEF 0xfe263c) — belongs to the next route; TIMER0 cnt walks '
+            '21975->24132 (exactly +719 x 3 STD12M ticks inside the PRD 59999 '
+            'window, zero new expiry), the CPU0 core tick lands on the '
+            'post-overflow held snapshot 42000, zero new feed (163 frozen) and the '
+            'jl_fm ledger frozen at its single write — this does NOT verify the '
+            'REP x in-body control-flow composition on silicon (derived-not-measured: '
+            'the FM-1 captures the straight-line-addition-body REP net effect and the '
+            'independent signed-conditional-block arm selection separately, never the '
+            'composition), the 128-round intermediate register states or the IRQ '
+            'visibility points, or the JL_SRC_SYNC CON2 semantics')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -9305,12 +9301,14 @@ def check(report,firmware):
     # 步段(fn_config 返回→框架表派发→新任务 0x6086c8c 装配→ROM 字节→
     # 半字展开环)再涨 28 个名义单位到 186,段内零新喂狗事务,162/163
     # 冻结;路 SEGIMPL4 释放段(+57,523 步清零环十轮+长走段)再涨 14 个
-    # 名义单位到 200,段内零新喂狗事务,162/163 仍冻结),command_values
+    # 名义单位到 200,段内零新喂狗事务,162/163 仍冻结;路 REPCOND 释放段
+    # (+719 步钳位环 128 轮+下游长走段到 0x6070a9a)再涨 1 个名义单位到
+    # 201,段内零新喂狗事务,162/163 仍冻结),command_values
     # 保持主核 6 条真实命令零伪造(副作用不写总线、不消耗 key_phase/
     # commands);已到期拒绝补喂的语义在单测钉死。
     wdt=r['peripherals']['watchdog_projection']
     require(wdt['feeds']==163 and wdt['mailbox_feed_side_effects']==162 and
-            wdt['expired'] is False and wdt['elapsed_nominal_units']==200 and
+            wdt['expired'] is False and wdt['elapsed_nominal_units']==201 and
             wdt['commands']==6 and wdt['command_values']==[0,0,0,14,46,65582] and
             wdt['assumptions']['expiry_reset_or_irq_delivery_simulated'] is False and
             'mailbox_feed_side_effect' in wdt['assumptions'] and
@@ -9322,7 +9320,10 @@ def check(report,firmware):
             'nominal units of the CON 0x2e period at the FMIMPL stop, walking on '
             'to 200 through the route-SEGIMPL4 release segment — fourteen more '
             'nominal units across the +57,523-step walk with zero new feed '
-            'transactions; the route-STOREG3 release '
+            'transactions, and on to 201 through the route-REPCOND release '
+            'segment (+719 steps: the 128-round clamp loop plus the downstream '
+            'walk to 0x6070a9a — one more nominal unit, still zero new feed '
+            'transactions); the route-STOREG3 release '
             'segment past 41,828,530 is a pure CPU0 sequence, no new feed '
             'transaction, only four more nominal units consumed; the route-'
             'FD610C-con0 release past 41,847,806 is another pure CPU0 sequence, '
@@ -10646,7 +10647,7 @@ def check(report,firmware):
     # 合并读停)零新到期零新交付(15819/15802 冻结),cnt 窗内走表 8,259→
     # 9,696(恰 +1,437=479 步×3 STD12M tick,PRD 11,999 窗内),零新喂狗
     # (163/162 冻结)。
-    require(timer=={'con':0x1401,'cnt':21975,'prd':59999,'pending':False,
+    require(timer=={'con':0x1401,'cnt':24132,'prd':59999,'pending':False,
             'expirations':15832},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
@@ -10797,12 +10798,12 @@ def check(report,firmware):
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==348 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==348 and
-            tick0['cnt']==39124 and
+            tick0['cnt']==42000 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
             r['machine']['cores']['0']['partial_icfg']['known_value']=='0x300' and
-            r['peripherals']['ipmask']==0,
+            r['peripherals']['ipmask']==6,
             'the CPU0 core tick must deliver and ack ALL 116 overflows through the '
             '21,798,206 stop: the historical route-AK landmark, timeout-window, AS and '
             'B1 ones carry the count to eleven, the route-BQ release replays the masked '
@@ -10849,14 +10850,19 @@ def check(report,firmware):
             'release segment crosses the 1599999 boundary ONCE more — the '
             'overflow delivers and acks naturally (348/348) and the reported '
             'cnt becomes the frozen post-overflow held snapshot 39124 (the '
-            'explicit CNT-frozen assumption, not a running count); the CPU1 '
+            'explicit CNT-frozen assumption, not a running count), walking on '
+            'to 42000 through the route-REPCOND release segment (+719 steps x 4 '
+            'core ticks = +2876, still zero new overflow, 348/348 frozen); the CPU1 '
             'core tick never overflows and CPU0 partial ICFG stays 0x300 '
-            '(bit9 untouched throughout); IPMASK is 0 at the new stop — the '
+            '(bit9 untouched throughout); IPMASK is 0 at the SEGIMPL4 stop — the '
             '0x601a41c pend section closed when the LED reset helper returned, '
             'and both the 0x6010ca6 resource-VFS directory read and the new '
             '0x60869ba task event-loop parameter read sit OUTSIDE any '
             'OS critical section (unmasked execution, the route-STOREG3 shape '
-            'again)')
+            'again) — and walks to 6 at the REPCOND stop: the downstream walk '
+            'to 0x6070a9a re-enters an OS critical section before the '
+            'JL_SRC_SYNC CON2 store (IPMASK 6, the same critical-section shape '
+            'as the route-FMIMPL modem-window CON-head RMW)')
     # 路 BQ 读回投影面:报告键只在开关开启的世界出现(legacy 逐字节不变),
     # 证据链字段钉死(最近写入=1199999、只覆盖 unresolved 窗的 offset 8、
     # 硅读回行为未测量)。

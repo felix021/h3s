@@ -1,0 +1,32 @@
+{
+ "route": "REPCONDIMPL / sim-repcondimpl（基线 main eeac6bd=REPCONDSCOUT 合并点，42,231,273 停点实施路）",
+ "recorded_at": "2026-11-20T02:30:00+08:00",
+ "task": "寄存器计数 rep 体内非嵌套条件块拆解执行：42,231,273 @ 0x60736c8（rep 16 r0 24 位音频样本原地钳位环，multi-block rep gate 体校验要求全直行而 ifs.gt.rr block=True 被诚实拒）→ 体校验 walk 块感知化（rep_conditional_body 子开关）→ 前沿推过钳位环 → 42,231,992 @ 0x6070a9a 新停点（JL_SRC_SYNC CON2 0xfe2608 整字写，在已放行 jl_src_sync_config_words 容器 CON0/CON1/COEF 之外）",
+ "implementation": {
+  "switch": "新开关 rep_conditional_body（registry conditional 层默认关，标 derived-not-measured）→ diagnostics rep_conditional_body；无新 adapter 键（rep 头沿用 register_rep_multi_block_projection，st.w.pin 沿用 exact_postincrement_store）",
+  "gate": "probe_boot.py multi-block gate 体校验 walk 块感知化：只放行寄存器计数 rep 体内的非嵌套 ifs.gt.rr/ifs.lt.rr、t=1/e=0、块内唯一 then=有模型 mov.rr、块终点严格早于 rep 终点（块后留无条件尾）、体内不引用计数寄存器（references_gpr 守卫：计数寄存器每轮由 rep 机制递减，体内读它见未测中间值、写它使两计数分离——一律拒 rep_multi_block_body_references_count_register）。越出子集形状按 Blocked 拒绝：rep_conditional_body_opener_unsupported / not_t1e0 / then_not_mov / block_not_before_tail；开关关时 block 开启器照旧落 rep_multi_block_body_not_straight_line（旧负例语义不变）",
+  "narrow_subset": "寄存器 rep + 非嵌套 ifs.gt.rr/ifs.lt.rr + t=1/e=0 + 块内 mov.rr + 无条件尾 + 体内不引用计数寄存器——codex gpt-6.2-astra 裁 B（拆解执行逐轮收窄子集），组合投影=两个已独立 hw 验证事实（rep 字节计数循环+块条件选臂）的组合，标 derived-not-measured（rep×体内控制流无硬件组合捕获证据，侦察 frontier-scout-repcond §2）",
+  "wiring": "probe_boot.py（references_gpr 方法 + walk 块感知化分支 + 计数寄存器重扫）;probe_irq_entry.py（irq_case 参数 rep_conditional_body + 接线注释 + SRCSYNC/SEGIMPL/SEGIMPL2/SEGIMPL3/timer0/core-tick 六处断言随前沿重钉 + REPCOND 释放记录断言替换 SEGIMPL4 旧断言 + 勘误三处）;frontier_registry.py（Feature rep_conditional_body + FRONTIERS 重钉 42,231,992 @ 0x6070a9a）;test_boot_bus.py（RepConditionalBodyTests 6 例）;segimpl4.json 勘误三处文字",
+  "errata": [
+   "segimpl4.json:29 与 probe_irq_entry.py 旧注释/断言写「rep 34 r0」→ 权威解码 rep 16 r0（n=7 → 2*(7+1)=16 字节体）",
+   "同处写「r3=0xFFC0C0C0」→ 实为 r3=0xFF800000（=-8388608=24 位有符号 min）",
+   "同处写「计数 r0=[r8+8]>>2 masked 0x7FFFFF」→ 计数无 mask（0x7FFFFF 是装入 r2 的钳位上界；lsr.rri 逻辑右移无 and）"
+  ]
+ },
+ "verification_arms": {
+  "on_main_cross": "跨代码 on-main（复用 SEGIMPL4 ownbase4.bin + --ack-prior-fingerprint 762694426cfd + postincrement_store_subword=true + rep_conditional_body=true）→ **42,231,992 @ 0x6070a9a**（wall 14.2s）",
+  "on_main_ownbase": "自建 ownbase5（本路代码捕获，off=postincrement_store_subword+rep_conditional_body，attempts 41,900,000=completed 41,884,941 干净边界，wall 1434.6s）+ 开关开 → **42,231,992 @ 0x6070a9a**（wall 14.2s）——与 on-main-cross 逐键相等（differing_count=0）；ownbase5 与 ownbase4 主体 10,292,479 字节逐字节相同（仅头部 code_fingerprint 字段差，前缀不变性最强证据）",
+  "off_reproduce": "因果负例（ownbase5 resume + rep_conditional_body 关 + postincrement_store_subword 开）→ **42,231,273 @ 0x60736c8**（rep_multi_block_body_not_straight_line/ifs.gt.rr@0x60736cc），与 SEGIMPL4 on-main-ownbase 参照逐键相等（reference_equal=true, differing_count=0）——本开关是新停点的唯一因果",
+  "clamp_loop_evidence": "放行后整环 1(rep 头)+128×4=513 步本核指令：全零入口两条件都假，两 mov 各零次命中，st.w.pin 直写 128 笔=exact_postincrement_store +128（78587→78715），register_rep_multi_block_projection +1（826→827），r1 每轮 +4 出口 r1=0x41d50c，r0 终 0，bgts.ri 死分支不跳；上钳/下钳取真路径由隔离单测覆盖（前沿全零入口只覆盖两条件都假）",
+  "next_stop": "42,231,992 @ 0x6070a9a = st.w [0xfe2608]=0x00010002（JL_SRC_SYNC CON2 整字写，size 4；在已放行 jl_src_sync_config_words 容器 CON0 0xfe2600/CON1 0xfe2604/COEF 0xfe263c 之外，归下路评审）——释放段钳位环（513 步）+环后长走段到达新停点；SRCSYNC 容器账本 +2 写（CON0 += 0x82006001、CON1 += 0x41，word_writes 59→61）；新停点 IPMASK 6（环后长走段重新进入临界区，0x6070a9a 在临界区内，SEGIMPL4 停点 IPMASK 0 的 unmasked 形状不再适用）；看门狗 elapsed 200→201（+719 步恰 1 个名义单位，零新喂狗 163 冻结）；timer0 cnt 21,975→24,132（+2,157=719×3，PRD 59,999 窗内零新到期）",
+  "wall_order_deviation": "新停点=JL_SRC_SYNC CON2 整字写（0x6070a9a）非上站预判的 copex site16/24 或二次 fn_config RMW——地址序≠执行序：0x6070a9a 在 0x60736c8 的地址下游外（0x6070a9a < 0x60736de），执行序经 call 返回走到 src_sync 配置函数尾；静态预判受表派发盲区限制，segimpl4/fmimpl 同族"
+ },
+ "probe_full_from_zero": "probe --rom 全量从零 15 场景（check_local --rom 内）：p11_heap_experimental_config 42,231,992 @ 0x6070a9a（unmapped_or_readonly_write/0xfe2608）与预钉一致；legacy 14 场景停点逐键不变（crc_bankb 289,849 等全旧值）——本开关只影响 p11 条件场景释放段，legacy 场景零行为差",
+ "recapture": "24 键 --recapture 重取（from-zero 41.9M 步，wall 1423s）：register_rep_multi_block_projection 826→827（+1 钳位环 rep 头）、exact_postincrement_subword_store 550 冻结（钳位环全整字零迁移）、parallel_byte_store_old_registers 14292→14293、exact_full_word_store 720947→720960、abstract_task_stack_transport 466380→466389、cpu0_shared_lock_ownership 42656→42659、partial_icfg_bit9_only 137000→137006；其余键逐键不变",
+ "unit_test_matrix": "6 例单测全绿（RepConditionalBodyTests，真实 0x60736c8 16 字节体隔离执行）：①三样本上钳 0x00800000→0x7FFFFF/下钳 0xff7fffff→0xFF800000/保持 0 不变（16 步，r1 +12、r0 终 0、exact_postincrement_store=3、register_rep_multi_block_projection=1）;②全零两条件都假（两 mov 各零次命中，10 步）;③关开关诚实拒 rep_multi_block_body_not_straight_line（旧负例语义不变）;④块在体末拒绝 rep_conditional_block_not_before_tail（零部分提交）;⑤嵌套块拒绝 rep_conditional_body_then_not_mov;⑥体内引用计数寄存器 mov.rr r0=r2 拒绝 rep_multi_block_body_references_count_register",
+ "honesty": {
+  "assumption": "放行形状=非嵌套 ifs.gt.rr/ifs.lt.rr + t=1/e=0 + 块内单 mov.rr + 无条件尾 + 体内不引用计数寄存器的寄存器计数 rep 逐轮拆解：组合投影=两个已独立 hw 验证事实（rep 字节计数循环 FM-1 run3 12 条直行体 + 块条件选臂 FM-1 v3 50 开启器 id）的组合，标 derived-not-measured；rep×体内控制流的组合行为、128 轮中间寄存器状态与 IRQ 可见时点均无硅上捕获；全零入口只覆盖两条件都假路径，上钳/下钳取真路径由隔离单测覆盖",
+  "not_claimed": "不证明 rep×体内控制流组合在硅上的行为（FM-1 只分别捕获直行加法体 REP 出口净效果与独立有符号条件块选臂，从未组合捕获）;不证明体内读/写计数寄存器的中间值（收窄形状拒绝体内引用计数寄存器规避）;不证明逐条推进虚拟时钟时 IRQ 可见时点的组合语义（沿用既有 deferral 机制但不声称硅验证）;不证明 JL_SRC_SYNC CON2 0xfe2608 的语义（新停点如实停）;AC791N(FM-1)≠BR28，rep 与块 hw 捕获只证 ISA 层",
+  "codex_consult": "本路未重新触发 codex 参谋——shape 裁定与组合性五点审查已在侦察路 REPCONDSCOUT 由 codex gpt-6.2-astra 完成并收口（裁 B 拆解执行逐轮收窄子集），本路照做，无方案级分歧（与任务书「方案级分歧才 codex」预设一致）"
+ }
+}

@@ -26,7 +26,7 @@
  },
  "next_stop": {
   "stop": "42,231,273 @ 0x60736c8（三臂+probe 全量从零四口径一致钉死）",
-  "classification_for_next": "寄存器计数 rep 体含条件块族：0x60736c8 `rep 34 r0 { ld.w r4=[r1+0]; ifs.gt.rr(r4>r2){r4=r2}; ifs.lt.rr(r4<r3){r4=r3}; st.w.pin [r1++=4]=r4; … }`——24 位音频样本钳位拷贝环（r2=0x7FFFFF/r3=0xFFC0C0C0，计数 r0=[r8+8]>>2 masked 0x7FFFFF）;multi-block rep gate 对体校验时 ifs.gt.rr（block=True）诚实拒（rep_multi_block_body_not_straight_line）——REP×体内控制流交互无硬件捕获证据不臆造。归下路评审：hw 捕获里 rep 与条件块组合的证据挖掘（fm1 各批 rep 样本有无条件体形状）+否则按「拆解执行」或「诚实停边界收窄」两方案择一",
+  "classification_for_next": "寄存器计数 rep 体含条件块族：0x60736c8 `rep 16 r0 { ld.w r4=[r1+0]; ifs.gt.rr(r4>r2){r4=r2}; ifs.lt.rr(r4<r3){r4=r3}; st.w.pin [r1++=4]=r4; … }`——24 位音频样本钳位拷贝环（r2=0x7FFFFF/r3=0xFF800000，计数 r0=[r8+8]>>2 无 mask）;multi-block rep gate 对体校验时 ifs.gt.rr（block=True）诚实拒（rep_multi_block_body_not_straight_line）——REP×体内控制流交互无硬件捕获证据不臆造。归下路评审：hw 捕获里 rep 与条件块组合的证据挖掘（fm1 各批 rep 样本有无条件体形状）+否则按「拆解执行」或「诚实停边界收窄」两方案择一",
   "wall_order_deviation": "新停点=rep×条件块（0x60736c8 音频样本钳位环）非上站预判的 copex/二次 RMW——释放段走清零环十轮+长走段先撞本族;copex site16 0x6072bb8/site24 0x6072d1a 与二次 fn_config RMW 仍在下游未到达（地址序≠执行序，静态预判受表派发盲区限制，fmimpl/segimpl2/3 同款）",
   "blind_spots": "0x60736c8 后的静态面未扫;copex site16 0x6072bb8/site24 0x6072d1a 仍未到达（本站释放段 copex 计数冻结 3——地址序≠执行序，两站在 0x60736c8 的地址下游但未在路径上执行）;madd./msub./mul.f.rrr 前缀未放行未到达;st.d.{pi,pin.l} 奇偶寄存器序形未放行（app 站点未触达）;ld.* 后增量装载形真读内存不在放行族;st.b.pi.l 全库零站点（空集成员，无形状可验）"
  },

@@ -690,6 +690,24 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if self.after_then is not None:
                 self.after_then[0]-=1;self.check_then()
 
+        def references_gpr(self,insn,raw,register):
+            """任一寄存器型操作数字段(gpr/gpr_lo/gpr_hi/pair/pair_regs)是否引用
+            register。用于收窄形状「体内不引用计数寄存器」:计数寄存器在体内只读
+            不写(rep 机制每轮递减它),体内读它会见到未测中间值、写它会让 rep
+            递减计数与寄存器值分离——一律拒绝(路 REPCOND)。"""
+            op=module.check.operands(insn,raw)
+            for name,f in insn.fields.items():
+                if f.kind not in ('gpr','gpr_lo','gpr_hi','pair','pair_regs'):
+                    continue
+                v=op[name]
+                if f.kind=='pair_regs':
+                    if register in v:return True
+                elif f.kind=='pair':
+                    if register in (v,v+1):return True
+                elif v==register:
+                    return True
+            return False
+
         def effect(self,insn,raw,pc,size,R):
             model=self.models.get(insn.id)
             if use_architectural_models and getattr(model,'__module__',None)=='semantics.v4':
@@ -2354,8 +2372,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 require(self.repeat is None and self.after_then is None,
                         'immediate REP projection has an unsupported context')
                 walk=self.pc+size;covered=0
+                conditional_body_insns=[]
+                saw_conditional_block=False
                 while covered<body_bytes:
-                    inner,_,inner_size=self.decode(walk)
+                    inner,inner_raw,inner_size=self.decode(walk)
                     if inner.id.endswith('.p'):
                         pair,_,pair_size=self.decode(walk+inner_size)
                         base=self.tab.by_id(inner.id[:-2])
@@ -2404,6 +2424,40 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                             raise Blocked('rep_multi_block_body_parallel_pair_unsupported',
                                           instruction_id=inner.id,pair_id=pair.id,address=hex(walk))
                         covered+=inner_size+pair_size;walk+=inner_size+pair_size;continue
+                    if (register is not None and inner.block and
+                            diagnostics.get('rep_conditional_body')):
+                        # 路 REPCOND:体校验 walk 块感知化(conditional 层
+                        # rep_conditional_body,默认关)——收窄子集只放行
+                        # 寄存器计数 rep 体内的非嵌套 ifs.gt.rr/ifs.lt.rr,
+                        # 且 t=1/e=0、块内唯一 then 是一条有模型的 mov.rr、
+                        # 块终点严格早于 rep 终点(块后留无条件尾)。开关关
+                        # 时 block 开启器照旧落下方诚实拒;任何越出子集的
+                        # 形状(nested/else/块内分支/块内并行对/块在体末/块
+                        # 越过体界)都 REQ 入口拒绝、零部分提交。组合投影
+                        # (rep 逐轮拆解 + 块选臂)标 derived-not-measured,
+                        # 无 rep×体内控制流的硬件组合捕获证据(侦察
+                        # frontier-scout-repcond §2)。
+                        if inner.id not in ('ifs.gt.rr','ifs.lt.rr'):
+                            raise Blocked('rep_conditional_body_opener_unsupported',
+                                          instruction_id=inner.id,address=hex(walk))
+                        op=module.check.operands(inner,inner_raw)
+                        if not (op.get('t')==1 and op.get('e')==0):
+                            raise Blocked('rep_conditional_body_not_t1e0',
+                                          instruction_id=inner.id,address=hex(walk),
+                                          t=op.get('t'),e=op.get('e'))
+                        then_insn,then_raw,then_size=self.decode(walk+inner_size)
+                        if not (then_insn.id=='mov.rr' and not then_insn.block and
+                                module.branch_field(then_insn) is None and
+                                self.models.get(then_insn.id) is not None):
+                            raise Blocked('rep_conditional_body_then_not_mov',
+                                          instruction_id=then_insn.id,address=hex(walk+inner_size))
+                        if not (walk+inner_size+then_size < self.pc+size+body_bytes):
+                            raise Blocked('rep_conditional_block_not_before_tail',
+                                          instruction_id=inner.id,address=hex(walk))
+                        conditional_body_insns.append((inner,inner_raw))
+                        conditional_body_insns.append((then_insn,then_raw))
+                        saw_conditional_block=True
+                        covered+=inner_size+then_size;walk+=inner_size+then_size;continue
                     if not (not inner.block and
                             module.branch_field(inner) is None and
                             not inner.id.startswith(('rep','goto','gotoss','call','callns',
@@ -2414,9 +2468,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                             self.models.get(inner.id) is not None):
                         raise Blocked('rep_multi_block_body_not_straight_line',
                                       instruction_id=inner.id,address=hex(walk))
+                    conditional_body_insns.append((inner,inner_raw))
                     covered+=inner_size;walk+=inner_size
                 if covered!=body_bytes:
                     raise Blocked('rep_multi_block_body_unaligned',body_bytes=body_bytes,covered=covered)
+                if saw_conditional_block and register is not None and diagnostics.get('rep_conditional_body'):
+                    # 体内不引用计数寄存器:全体重扫(含块开启器/块内 mov/直行指令;
+                    # 计数寄存器每轮由 rep 机制递减,体内读它见未测中间值、写它使
+                    # 两计数分离)。仅在体确实含条件块时执行(直行体零行为差)。
+                    for _insn,_raw in conditional_body_insns:
+                        if self.references_gpr(_insn,_raw,register):
+                            raise Blocked('rep_multi_block_body_references_count_register',
+                                          instruction_id=_insn.id,register=register)
                 if count==0:
                     # 零计数跳过假设(opt-in zero_count_rep_skip,把 memset 先例
                     # rom_zero_rep_skip/0x4242、0x424c 的零跳过推广到本 gate):
