@@ -357,6 +357,15 @@ def main():
                    help="F1b 变体：去掉 A3 时钟压舱（alloc/配对 free/名串全不出现在镜像中），"
                         "与默认 F1a 仅差 A3——plan §4-C 双产物裁决（运行时开关需 key32 参数通道，"
                         "改造面大不划算）；两个产物一次刷机各验一轮即可做 A/B 对照")
+    p.add_argument("--hearing-aid-lfix2", action="store_true",
+                   help="辅听 lfix2 修复候选 F2（路 LFIX2-IMPL，基座=HAL5 合一全链+F1a 修复载荷）："
+                        "open 载荷沿用 F1a（A1+B1(16)+B2+A3 压舱），close 载荷在 F1a 基础上加"
+                        " C2 ANC 恢复补刀——stop/release/时钟释放全部完成后 os_time_dly(20 tick)"
+                        " 稳定缓冲，db3c(2,1) 请求 ANC ON（与 ANC 键官方路径同参，播「开启降噪」"
+                        "提示音），A1 同款等待进入完成（60 次×1tick 上限，超时放弃不回滚）；"
+                        "把 ANC 从 OFF 冷启的重配链从「用户按键（与 close 残余并发）」挪进受控"
+                        " close 窗口（F1a 真机断联归因见 docs/hearing-aid-lfix2-impl.md）；"
+                        "要求显式 --hearing-aid-mpo M；候选 UNTESTED 不刷机")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT / "firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw")
     p.add_argument("--analysis-dir", type=Path, default=ROOT / "analysis/v1.1.8")
@@ -423,6 +432,13 @@ def main():
         args.hearing_aid_l1_patch = True
     if args.lfix_no_hold and not args.hearing_aid_lfix:
         p.error('--lfix-no-hold requires --hearing-aid-lfix')
+    if args.hearing_aid_lfix2:
+        if not args.hearing_aid_lfix:
+            p.error('--hearing-aid-lfix2 requires --hearing-aid-lfix '
+                    '(F2 = F1a + C2; keep the F1a tier, no --lfix-no-hold)')
+        if args.lfix_no_hold:
+            p.error('--hearing-aid-lfix2 requires the A3 clock hold '
+                    '(F2 is defined on F1a, not F1b)')
     if args.hearing_aid_lfix:
         # 路 LFIX-IMPL：F1 = HAL5 合一基座 + open/close 载荷修复版（A1+B1+B2[+A3]）。
         # 校验契约与 full 相同（显式 M、范围门、demo/key7 互斥）；隐含全链同 full。
@@ -553,9 +569,13 @@ def main():
     if args.hearing_aid_lfix:
         # 路 LFIX-IMPL：F1 候选语义报告（docs/hearing-aid-lfix-impl.md；
         # 方案 docs/hearing-aid-lfix-plan.md §4，codex 裁决修订版已吸收）。
+        # 路 LFIX2-IMPL 的 F2 在 F1a 基础上换 close 载荷（C2 ANC 恢复补刀）
+        # 并叠加上述语义块（docs/hearing-aid-lfix2-impl.md）。
         hearing_aid_lfix = {
-            "candidate": "F1b (A1+B1+B2, no clock hold)" if args.lfix_no_hold
-                         else "F1a (A1+B1+B2+A3 clock hold, diagnostic tier)",
+            "candidate": ("F2 (F1a payloads + C2 close-side ANC restore, "
+                          "route LFIX2-IMPL)" if args.hearing_aid_lfix2 else
+                          "F1b (A1+B1+B2, no clock hold)" if args.lfix_no_hold
+                          else "F1a (A1+B1+B2+A3 clock hold, diagnostic tier)"),
             "base": "HAL5 full chain (l1 toggle + l2 baked MPO + l3 key30 "
                     "+ l4 key31 + r4 keyhook); only the open/close payload "
                     "sources change vs the HAL5 candidate",
@@ -596,6 +616,33 @@ def main():
             "impl_report": "docs/hearing-aid-lfix-impl.md",
             "status": "OFFLINE_UNTESTED",
         }
+        if args.hearing_aid_lfix2:
+            hearing_aid_lfix.update({
+                "c2_close_anc_restore":
+                    "close 载荷尾部（stop/release/清槽/notify/A3c 压舱释放全部"
+                    "完成后）：C2a os_time_dly(20 tick=200ms) 稳定缓冲；C2b "
+                    "db3c(2,1) 请求 ANC ON（flag=1 与 ANC 键官方路径 "
+                    "0x06018a7a-7e 同参，播「开启降噪」提示音——兼症状 3 提示音"
+                    "链的判别信号）；C2c A1 同款等待 b[ctx+29]==0 且 "
+                    "b[ctx+33]==2（60 次×1 tick ≈600ms 上限，超时放弃等待不"
+                    "回滚——close 语义已完成，db3c 已投递 ANC 链自会跑完）；"
+                    "ctx==0 跳过等待。幂等：槽==0 早退在前，未激活不触碰 ANC",
+                "c2_rationale":
+                    "F1a 真机（2026-11-19 17:2x）断联从「进助听」挪到「关助听后"
+                    "按 ANC 键」——开助听必经 db3c(1,1)（ANC→OFF），关助听后 ANC "
+                    "停在 OFF，用户按 ANC 键=引擎从 OFF 冷启（audio_anc_run 停-"
+                    "重配-启全链，d2-audio-input-pre-study §3），与 close 刚拆完"
+                    "的 ADC/DAC/时钟残余并发；b79 两态表+无助听上该路径不可达。"
+                    "C2 把 OFF 冷启挪进受控 close 窗口（资源已拆净+200ms 缓冲），"
+                    "用户按键只剩 ON↔TRANS 浅切换（b79 验证安全）",
+                "f1a_feedback_basis":
+                    "F1a 真机反馈：开机连接正常/开助听两耳无噪（左耳修复= B2 "
+                    "功臣）/助听开着不断联（A1+A3 生效）；新症状=关助听后 ANC 键"
+                    "无提示音+断联+通透消失（三态表）+App EQ 无效（0x22 目标是"
+                    "音乐图 MusicEqBt，与助听图无关，App 0.8.1↔0.9.1 发送链零"
+                    "差异）——逐症状归因见 docs/hearing-aid-lfix2-impl.md",
+                "impl_report": "docs/hearing-aid-lfix2-impl.md",
+            })
     if stream_flow_identifier(stream) != flow_identifier:
         raise ValueError("不应改变在线调音流程标识")
     # 内层 stream.bin 的 JLFS 目录头与原始数据先做交叉校验。
@@ -663,7 +710,8 @@ def main():
                                         l4_eq=args.hearing_aid_l4_eq,
                                         lfix=args.hearing_aid_lfix,
                                         lfix_hold=(args.hearing_aid_lfix
-                                                   and not args.lfix_no_hold))
+                                                   and not args.lfix_no_hold),
+                                        lfix2=args.hearing_aid_lfix2)
     result = bytearray(source)
     ufw_header = encode_header(source[:64])
     count = struct.unpack_from("<H", ufw_header, 8)[0]
@@ -742,9 +790,13 @@ def main():
         suffix += "_eq_toggle_EXPERIMENTAL"
     if args.hearing_aid_lfix:
         # 路 LFIX-IMPL：F1a/F1b 单独命名（F1a=含 A3 压舱诊断档，F1b=仅差 A3 的
-        # 对照镜像）。M 文本同 full 用 float32 化后的 .9g（可往返）。
-        suffix += (f"_LFIX_F1{'B_NOHOLD' if args.lfix_no_hold else 'A_HOLD'}"
-                   f"_MPO{f32(mpo):.9g}_OFFLINE")
+        # 对照镜像）；路 LFIX2-IMPL 的 F2 在此之上换名（close 载荷带 C2 ANC 恢复
+        # 补刀）。M 文本同 full 用 float32 化后的 .9g（可往返）。
+        if args.hearing_aid_lfix2:
+            suffix += f"_LFIX2_F2_MPO{f32(mpo):.9g}_OFFLINE"
+        else:
+            suffix += (f"_LFIX_F1{'B_NOHOLD' if args.lfix_no_hold else 'A_HOLD'}"
+                       f"_MPO{f32(mpo):.9g}_OFFLINE")
     elif args.hearing_aid_full:
         # 路 HAL5：full 单独命名（隐含链的 L4 后缀不再叠加）。M 文本用 float32
         # 化后的 .9g（可往返；:g 的 6 位有效数字会把 119.99999 显示成 120，
