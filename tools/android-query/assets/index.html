@@ -1011,10 +1011,11 @@ summary {
   color: var(--muted);
   cursor: pointer;
 }
-/* 按键自定义：按实体键展开的手势清单（三组 details，各五个手势行） */
-#sec-keys .km-group { margin: 0; border-bottom: 1px solid var(--line); }
-#sec-keys .km-group > summary { color: var(--text); padding: 9px 0; }
-#sec-keys .km-count { margin-inline-start: .75em; color: var(--warn); font-size: 13px; }
+/* 按键自定义：三个横排物理键选择按钮，下方只显示选中键的五个手势行 */
+#keyPicker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+#keyPicker button { min-width: 0; min-height: 44px; padding-inline: 4px; }
+#keyPicker button[aria-pressed="true"] { font-weight: 700; }
+#keyPicker .km-count:not(:empty) { display: block; font-size: .8em; color: inherit; }
 #sec-keys .km-list { list-style: none; margin: 0; padding: 0; }
 #sec-keys .km-item + .km-item { border-top: 1px solid var(--soft); }
 #sec-keys .km-row {
@@ -1046,10 +1047,30 @@ summary {
 }
 #sec-keys .km-editor label { grid-column: 1 / -1; }
 #sec-keys .km-editor select { width: 100%; min-width: 0; }
-#sec-keys .km-row:focus-visible, #sec-keys summary:focus-visible {
+#sec-keys .km-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
+/* —— 标题右侧 ? 帮助按钮 + 共用帮助弹窗（UIFIX2）—— */
+.heading-help { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.heading-help :is(h2, h3) { margin: 0; }
+.help-btn { min-width: 44px; min-height: 44px; padding: 0; border: 0;
+  border-radius: 50%; background: transparent; color: var(--accent); }
+
+#helpDialog { padding: 0; border: 0; border-radius: var(--radius);
+  width: min(28rem, calc(100% - 32px)); max-height: 80vh;
+  color: var(--text); background: var(--surface); }
+#helpDialog::backdrop { background: rgb(0 0 0 / 45%); }
+.help-sheet { padding: 20px; }
+#helpText { white-space: pre-line; }
+
+/* 折叠区标题行的 ? 按钮：与 details 平级放置，点帮助不触发折叠 */
+.collapsible-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+.collapsible-row > details { min-width: 0; }
+
+/* 空的提示/反馈行初始不占高度；有内容立即显示（不隐藏有真实结果的行） */
+#notice:empty { display: none; }
+.feedback:empty { min-height: 0; margin-top: 0; }
 .placeholder-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1174,7 +1195,6 @@ summary {
       </svg>
       <div>
         <h1>H3S 工具</h1>
-        <p>QCY H3S · 本地控制</p>
       </div>
       <button id="logToggle" aria-controls="logPanel"
               aria-expanded="false">日志</button>
@@ -1215,19 +1235,22 @@ summary {
   <p id="storageNote" class="notice warning" hidden>
     当前壳未开放本地存储，外观选择只能保留到本页关闭。
   </p>
-  <div id="notice" class="notice" role="status" aria-live="polite">
-    连接耳机后可查询状态；修改参数需要开启写入开关。
-  </div>
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
 
   <section id="tabHs" role="tabpanel" aria-labelledby="tabBtnHs">
     <article class="card" id="sec-connect">
       <div class="card-head">
-        <h2>连接耳机</h2>
+        <div class="heading-help">
+          <h2>连接耳机</h2>
+          <button type="button" class="help-btn" data-help="connect"
+                  aria-label="连接耳机说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span id="statusPill" class="badge">未连接</span>
       </div>
-      <div class="kv">
+      <div class="kv" id="bleAddrRow" hidden>
         <span>地址</span>
-        <span id="bleAddr">由原生壳指定</span>
+        <span id="bleAddr"></span>
       </div>
       <div class="kv">
         <span>状态</span>
@@ -1244,12 +1267,17 @@ summary {
         <button id="discBtn" disabled>断开</button>
         <button id="battBtn" disabled>查询电量</button>
       </div>
-      <p id="mtuText" class="note">自动扫描发现附近的 QCY H3S 耳机后连接。</p>
+      <p id="mtuText" class="note" hidden></p>
     </article>
 
     <article class="card" id="sec-write">
       <div class="card-head">
-        <h2>允许写入</h2>
+        <div class="heading-help">
+          <h2>允许写入</h2>
+          <button type="button" class="help-btn" data-help="arm"
+                  aria-label="允许写入说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span id="armBadge" class="badge">未武装</span>
       </div>
       <label class="switch-row" for="armSw">
@@ -1257,15 +1285,12 @@ summary {
                role="switch" aria-describedby="armText">
         <span>允许发送耳机设置</span>
       </label>
-      <p id="armText" class="note">
-        已关闭。可编辑本地参数；写命令不会发送。查询不受影响。
-      </p>
+      <p id="armText" class="note"></p>
     </article>
 
     <article class="card" id="sec-anc">
       <div class="card-head">
         <h2>降噪模式</h2>
-        <span class="badge">ANC</span>
       </div>
       <div id="ancSeg" class="segment" role="group" aria-label="降噪模式">
         <button data-write data-anc="1,1,2" aria-pressed="false" disabled>
@@ -1278,15 +1303,17 @@ summary {
           关闭
         </button>
       </div>
-      <p id="ancFeedback" class="feedback" aria-live="polite">
-        尚未取得设备状态。
-      </p>
+      <p id="ancFeedback" class="feedback" aria-live="polite">未读取</p>
     </article>
 
     <article class="card" id="sec-audio">
       <div class="card-head">
-        <h2>音频模式</h2>
-        <span class="badge">音乐与影音</span>
+        <div class="heading-help">
+          <h2>音频模式</h2>
+          <button type="button" class="help-btn" data-help="audio"
+                  aria-label="音频模式说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
       </div>
       <div id="modeSeg" class="segment" role="group" aria-label="音频模式">
         <button data-write data-mode="1" aria-pressed="false" disabled>音乐</button>
@@ -1295,14 +1322,17 @@ summary {
         </button>
         <button data-write data-mode="4" aria-pressed="false" disabled>电影</button>
       </div>
-      <p id="modeFeedback" class="feedback" aria-live="polite">
-        此接口的报文长度仍待真机验证。
-      </p>
+      <p id="modeFeedback" class="feedback" aria-live="polite"></p>
     </article>
 
     <article class="card" id="sec-eq">
       <div class="card-head">
-        <h2>均衡器</h2>
+        <div class="heading-help">
+          <h2>均衡器</h2>
+          <button type="button" class="help-btn" data-help="eq"
+                  aria-label="均衡器说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span id="eqBadge" class="badge">自定义 · 10 段</span>
       </div>
 
@@ -1323,8 +1353,6 @@ summary {
         </figcaption>
       </figure>
 
-      <p id="eqDescription" class="note"></p>
-
       <div id="customEditor">
         <div id="bandGrid" class="band-grid"></div>
         <div id="bandInspector" class="band-inspector" hidden>
@@ -1336,12 +1364,7 @@ summary {
             Hz
           </label>
           <button id="freqUp" aria-label="中心频率加 10 Hz">+</button>
-          <span class="muted">点频段数字或拖其滑杆选中；Q / 类型沿用自定义默认。</span>
         </div>
-        <p class="note">
-          每个频段可调中心频率与增益；先点选频段再上下拖动调增益（鼠标可直接拖）。
-          双击（鼠标）或按 0 归零，方向键微调。频率 20–20000 Hz，增益 −12 至 +12 dB。
-        </p>
         <label for="master">总增益</label>
         <div class="master-row">
           <input id="master" type="range" min="-18" max="12"
@@ -1374,19 +1397,21 @@ summary {
       </p>
       <p id="eqReport" class="note" role="status" hidden></p>
 
-      <details id="userPresetBox">
-        <summary>我的预设（保存在本机）</summary>
-        <div class="preset-save-row">
-          <input id="userPresetName" type="text" maxlength="24"
-                 placeholder="预设名称" aria-label="预设名称">
-          <button id="userPresetSave">保存当前自定义</button>
-        </div>
-        <ul id="userPresetList" class="user-preset-list"></ul>
-        <p class="note" id="userPresetNote">
-          预设只存本机（localStorage），重进 App 自动保留；「加载」把曲线写回自定义滑杆，
-          仍需点「发送当前 EQ」才下发给耳机。自定义滑杆本身也会自动记忆。
-        </p>
-      </details>
+      <div class="collapsible-row">
+        <details id="userPresetBox">
+          <summary>我的预设</summary>
+          <div class="preset-save-row">
+            <input id="userPresetName" type="text" maxlength="24"
+                   placeholder="预设名称" aria-label="预设名称">
+            <button id="userPresetSave">保存当前自定义</button>
+          </div>
+          <ul id="userPresetList" class="user-preset-list"></ul>
+          <p class="note" id="userPresetNote"></p>
+        </details>
+        <button type="button" class="help-btn" data-help="eqPresets"
+                aria-label="我的预设说明" aria-haspopup="dialog"
+                aria-controls="helpDialog">?</button>
+      </div>
     </article>
 
     <article id="sec-prompt" class="card">
@@ -1397,30 +1422,34 @@ summary {
         <button data-write data-vol="6" aria-pressed="false" disabled>中</button>
         <button data-write data-vol="8" aria-pressed="false" disabled>高</button>
       </div>
-      <p id="volFeedback" class="feedback" aria-live="polite">
-        尚未设置。
-      </p>
+      <p id="volFeedback" class="feedback" aria-live="polite"></p>
       <h3 id="sec-mf-tone">语言</h3>
       <div id="mfToneSeg" class="segment" role="group" aria-label="提示音语言">
         <button data-write data-tone="0" aria-pressed="false" disabled>英文</button>
         <button data-write data-tone="1" aria-pressed="false" disabled>中文</button>
       </div>
-      <p id="mfToneFeedback" class="feedback" aria-live="polite">尚未设置。</p>
+      <p id="mfToneFeedback" class="feedback" aria-live="polite"></p>
     </article>
 
     <article id="sec-keys" class="card">
       <div class="card-head">
-        <h2>按键自定义</h2>
+        <div class="heading-help">
+          <h2>按键自定义</h2>
+          <button type="button" class="help-btn" data-help="keys"
+                  aria-label="按键自定义说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span id="keyDirtyCount" class="badge">无待发送修改</span>
       </div>
-      <div id="keyRows"></div>
-      <div class="actions">
-        <button id="kmReadDevice" type="button" data-write disabled>从设备读取</button>
+      <div id="keyPicker" role="group" aria-label="选择物理键"></div>
+      <div id="keyRows" hidden></div>
+      <div class="actions" id="keyActions" hidden>
+        <button id="kmReadDevice" type="button" data-write disabled>重新读取</button>
         <button id="kmWrite" type="button" class="primary" data-write disabled>
-          发送修改
+          发送全部修改
         </button>
       </div>
-      <p id="kmFeedback" class="feedback" role="status">当前显示本地参考值。</p>
+      <p id="kmFeedback" class="feedback" role="status"></p>
       <details>
         <summary>通信方式与工作副本</summary>
         <label for="keyWire">按键写入方式</label>
@@ -1434,10 +1463,7 @@ summary {
     </article>
 
     <template id="keyGroupTemplate">
-      <details class="km-group">
-        <summary><strong class="km-name"></strong><span class="km-count"></span></summary>
-        <ul class="km-list"></ul>
-      </details>
+      <section class="km-group" hidden><ul class="km-list"></ul></section>
     </template>
 
     <template id="keyRowTemplate">
@@ -1472,7 +1498,7 @@ summary {
           </select>
           <button id="mfSleepSend" class="primary" data-write disabled>发送</button>
         </div>
-        <p id="mfSleepFeedback" class="feedback" aria-live="polite">尚未设置。</p>
+        <p id="mfSleepFeedback" class="feedback" aria-live="polite"></p>
       </section>
       <section id="sec-mf-autooff">
         <h3><label for="mfAutoOffSel">断连后自动关机</label></h3>
@@ -1486,33 +1512,50 @@ summary {
           </select>
           <button id="mfAutoOffSend" class="primary" data-write disabled>发送</button>
         </div>
-        <p id="mfAutoOffFeedback" class="feedback" aria-live="polite">尚未设置。</p>
+        <p id="mfAutoOffFeedback" class="feedback" aria-live="polite"></p>
       </section>
     </article>
 
     <article id="sec-mf-codec" class="card">
-      <h2>蓝牙连接</h2>
+      <div class="card-head">
+        <div class="heading-help">
+          <h2>蓝牙连接</h2>
+          <button type="button" class="help-btn" data-help="codec"
+                  aria-label="蓝牙连接说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
+      </div>
       <label class="switch-row" for="mfLdacSw">
         <input id="mfLdacSw" class="toggle" type="checkbox" role="switch">
         <span>LDAC 高音质编码</span>
       </label>
-      <p class="note">开启 LDAC 会重启耳机，并关闭双设备连接和空间音效。</p>
       <label class="switch-row" for="mfDualSw">
         <input id="mfDualSw" class="toggle" type="checkbox" role="switch">
         <span>双设备连接（一拖二）</span>
       </label>
-      <p class="note">最多同时连接两台设备。开启双设备会关闭 LDAC，耳机可能重启。</p>
       <div class="actions">
         <button id="mfCodecSend" class="primary" data-write disabled>应用当前开关</button>
+        <span class="small muted" style="align-self:center">应用后耳机可能重启</span>
       </div>
       <p id="mfCodecFeedback" class="feedback" aria-live="polite">尚未设置。</p>
     </article>
 
     <article id="sec-device" class="card">
-      <h2>设备管理</h2>
+      <div class="card-head">
+        <div class="heading-help">
+          <h2>设备管理</h2>
+          <button type="button" class="help-btn" data-help="device"
+                  aria-label="设备管理说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
+      </div>
       <section id="sec-mf-name">
-        <h3><label for="mfNameInput">设备名称</label></h3>
-        <p class="note">最多 20 个 UTF-8 字节。重连后可查看新名称。</p>
+        <div class="heading-help">
+          <h3><label for="mfNameInput">设备名称</label></h3>
+          <button type="button" class="help-btn" data-help="deviceName"
+                  aria-label="设备名称说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <div class="actions">
           <input id="mfNameInput" type="text" maxlength="20" placeholder="如 QCY H3S"
                  aria-label="设备名">
@@ -1522,89 +1565,80 @@ summary {
       </section>
       <section id="sec-mf-find">
         <h3>寻找耳机</h3>
-        <p class="note">已连接时可请求耳机响铃。</p>
         <div class="actions">
           <button id="mfFindBtn" data-write disabled>响铃找耳机</button>
         </div>
         <p id="mfFindFeedback" class="feedback" aria-live="polite">尚未使用。</p>
       </section>
       <button id="openFirmware" type="button">查看固件与升级</button>
-      <details id="sec-mf-research">
-        <summary>本机功能说明</summary>
-        <p>声道平衡：当前固件没有左右声道平衡命令。</p>
-        <p>佩戴检测：H3S 控制面板和固件均未提供这项设置。</p>
-        <p>连接列表：耳机没有上报已连接设备列表的接口。</p>
-      </details>
     </article>
 
-    <details id="sec-mf-danger" class="card">
-      <summary>重置与配对</summary>
-      <p>恢复默认设置会重置降噪、EQ、按键、提示音和定时设置。</p>
-      <button id="mfResetBtn" type="button" class="danger" data-write disabled>
-        恢复默认设置
-      </button>
-      <p>清除配对记录（实验性）。操作可能断开连接，之后需要重新配对。</p>
-      <button id="mfClearPairBtn" type="button" class="danger" data-write disabled>
-        清除配对记录
-      </button>
-      <p id="mfDangerFeedback" class="feedback" aria-live="polite">尚未操作。</p>
-    </details>
+    <div class="collapsible-row">
+      <details id="sec-mf-danger" class="card">
+        <summary>重置与配对</summary>
+        <button id="mfResetBtn" type="button" class="danger" data-write disabled>
+          恢复默认设置
+        </button>
+        <button id="mfClearPairBtn" type="button" class="danger" data-write disabled>
+          清除配对记录（实验性）
+        </button>
+        <p id="mfDangerFeedback" class="feedback" aria-live="polite">尚未操作。</p>
+      </details>
+      <button type="button" class="help-btn" data-help="danger"
+              aria-label="重置与配对说明" aria-haspopup="dialog"
+              aria-controls="helpDialog">?</button>
+    </div>
 
   </section>
 
   <section id="tabHa" role="tabpanel" aria-labelledby="tabBtnHa" hidden>
     <article class="card" id="sec-ha-bands">
       <div class="card-head">
-        <h2>助听 · 每频段调节</h2>
-        <span class="badge warning">MPO 走 key30（L3 链，候选 UNTESTED）</span>
+        <div class="heading-help">
+          <h2>助听 · 每频段调节</h2>
+          <button type="button" class="help-btn" data-help="haBands"
+                  aria-label="每频段调节说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
+        <span class="badge warning">候选固件未实测</span>
       </div>
-      <p class="note">
-        通透/辅听链（mic→DAC）的逐频段草稿：增益放大环境声，上限是该频段期望的最大
-        输出（数字域 dB，非标定 SPL）。固件为单带 WDRC，每频上限聚合为全带 MPO 生效
-        （见下方汇总行）。全带 MPO 经 BLE 自定义命令 0x30 写入固件 VM key 30
-        （8B 版本化协议），十段 EQ 增益/频点写 key 31（88B 版本化协议），均由候选固件
-        在下次开启辅听时应用（MPO 全带曲线 + EQ 十段逐条段消息，候选 UNTESTED）。
-        十个频段横排：每列上层数字是上限（点击弹窗修改），中间长条是该频段增益
-        （先点选锁定，再上下拖动；鼠标可直接拖，双击归零），最下是频点。
-      </p>
       <div id="haBandGrid" class="band-grid" role="group"
            aria-label="助听十频段调节"></div>
       <div class="ha-mpo-summary">
-        <span>全带 MPO（聚合生效值）</span>
+        <span>全带上限（取最低值）</span>
         <strong id="haMpoValue">110 dB</strong>
-        <span id="haMpoNote" class="note-inline">全带生效（取十频段最小值，任一频段调低都会压低全带上限）；固件 Drc1Eff 为单带 WDRC，每频独立限幅需 multiband（未落地）。</span>
       </div>
       <div class="actions">
-        <button id="haFlat">全部复位</button>
-        <button id="haSaveMpo" class="primary">保存全带 MPO（BLE cmd 0x30）</button>
-        <button id="haSaveEq" class="primary">保存十段 EQ（key 31，L4 候选）</button>
-        <button id="haReadKeys">读取两 key 原始值（回执核对）</button>
-        <button id="haInvalidateMpo" class="danger" disabled>软回退 key30（坏魔数，§4d）</button>
-        <button id="haInvalidateEq" class="danger" disabled>软回退 key31（坏魔数，§4d）</button>
+        <button id="haFlat">复位草稿</button>
+        <button id="haSaveMpo" class="primary">保存全带上限</button>
+        <button id="haSaveEq" class="primary">保存十段 EQ</button>
+        <button id="haReadKeys">读取设备值</button>
+        <button id="haInvalidateMpo" class="danger" disabled>回退上限</button>
+        <button id="haInvalidateEq" class="danger" disabled>回退 EQ</button>
       </div>
       <p id="haFeedback" class="feedback" aria-live="polite">本地草稿，尚未发送。</p>
       <div id="haReadResult" class="ha-read-results" hidden>
         <div class="card card-embedded" id="haReadCard30">
           <div class="card-head"><h3>key30（MPO，8B）</h3><span id="haReadState30" class="badge">未读取</span></div>
-          <p id="haReadText30" class="note">尚未读取。</p>
+          <p id="haReadText30" class="note"></p>
         </div>
         <div class="card card-embedded" id="haReadCard31">
           <div class="card-head"><h3>key31（十段 EQ，88B）</h3><span id="haReadState31" class="badge">未读取</span></div>
-          <p id="haReadText31" class="note">尚未读取。</p>
+          <p id="haReadText31" class="note"></p>
         </div>
       </div>
     </article>
 
     <article class="card" id="sec-ha-tone">
       <div class="card-head">
-        <h2>测试音与样本</h2>
-        <span id="haToneBadge" class="badge">走手机扬声器</span>
+        <div class="heading-help">
+          <h2>测试音与样本</h2>
+          <button type="button" class="help-btn" data-help="tone"
+                  aria-label="测试音与样本说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
+        <span id="haToneBadge" class="badge">等待音频状态</span>
       </div>
-      <p class="note">
-        先选类型，再选该类型下的具体声音；尽量路由到手机内置扬声器，绕开蓝牙耳机
-        （避免拾音→放大→再进同一副耳机形成回环）。语音为 edge-tts 构建期生成，
-        音乐/自然为 Wikimedia Commons 公共领域录音（来源与许可见 assets/samples/manifest.json）。
-      </p>
       <div id="soundTypeSeg" class="segment" role="group" aria-label="声音类型">
         <button data-type="tone" aria-pressed="true">手动单频</button>
         <button data-type="speech" aria-pressed="false">语音</button>
@@ -1613,7 +1647,7 @@ summary {
       </div>
 
       <div id="tonePanel" style="margin-top:12px">
-        <label for="toneFreqPreset">频率预设（听测常用）</label>
+        <label for="toneFreqPreset">频率预设</label>
         <div class="tone-freq-row">
           <select id="toneFreqPreset"></select>
           <input id="toneFreqInput" type="number" min="20" max="20000" step="1"
@@ -1636,11 +1670,9 @@ summary {
 
       <label class="switch-row" for="sampleLoop" style="margin-top:10px">
         <input id="sampleLoop" class="toggle" type="checkbox" role="switch">
-        <span>循环播放（关闭为单次，样本类型有效）</span>
+        <span>样本循环</span>
       </label>
-      <p id="toneFeedback" class="feedback" aria-live="polite">
-        离线预览：测试音与样本需要原生壳（h3sha 桥）。
-      </p>
+      <p id="toneFeedback" class="feedback" aria-live="polite"></p>
     </article>
   </section>
 
@@ -1663,7 +1695,12 @@ summary {
   <section id="tabUsb" role="tabpanel" aria-labelledby="tabBtnUsb" hidden>
     <article class="card" id="sec-usb-dev">
       <div class="card-head">
-        <h2>USB 设备</h2>
+        <div class="heading-help">
+          <h2>USB 设备</h2>
+          <button type="button" class="help-btn" data-help="usbDev"
+                  aria-label="USB 设备说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span id="usbVerifiedTag" class="badge warning">OTG 链路未验证</span>
       </div>
       <p id="usbLinkState" class="muted">未打开设备</p>
@@ -1673,33 +1710,31 @@ summary {
       <div id="devList">
         <div class="empty">用 OTG 线连接耳机后，点击“扫描设备”。</div>
       </div>
-      <p class="note">
-        手机需支持 USB Host。普通 QCY 身份为 3654:4a55，
-        ROM 身份为 4c4a:3442。手机物理链路尚未实测。
-      </p>
     </article>
 
     <article class="card" id="sec-usb-rom">
       <div class="card-head">
-        <h2>进入 ROM 模式</h2>
-        <span class="badge">一次性请求</span>
+        <div class="heading-help">
+          <h2>进入 ROM 模式</h2>
+          <button type="button" class="help-btn" data-help="usbRom"
+                  aria-label="进入 ROM 模式说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
       </div>
-      <p class="muted">
-        对已打开的普通 QCY 设备，先读取能力，再发送一次进入请求。
-        设备随后会重启并重新枚举。
-      </p>
       <div class="actions">
         <button id="usbEnterRom" disabled>发送进入 ROM 请求</button>
+        <span class="small muted" style="align-self:center">请求后重新扫描，请勿重复发送</span>
       </div>
-      <p class="note warning">
-        请求可能因设备重启报错。请重新扫描，以出现 BR28 ROM 身份为准，
-        不要重复发送进入请求。
-      </p>
     </article>
 
     <article class="card" id="sec-usb-read">
       <div class="card-head">
-        <h2>ROM 会话与读取</h2>
+        <div class="heading-help">
+          <h2>ROM 会话与读取</h2>
+          <button type="button" class="help-btn" data-help="usbRead"
+                  aria-label="ROM 会话与读取说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span class="badge">不写 Flash</span>
       </div>
       <div class="actions">
@@ -1718,31 +1753,17 @@ summary {
       </div>
       <p id="usbProgressText" class="feedback" aria-live="polite"></p>
       <pre id="usbResult" class="result" hidden></pre>
-
-      <details>
-        <summary>操作说明</summary>
-        <p class="note">
-          RAM loader 使用原生桥固定摘要校验，通过 FB06 装载、FB08 启动，
-          再以 FC0A 确认 SPI NOR。此步骤会写 RAM 并执行 loader。
-        </p>
-        <p class="note">
-          ROM 窗使用 FD07，Flash 备份使用 FD05。两项均保留双读一致检查，
-          成功后保存到应用私有目录；失败不自动重试。
-          此页没有 Flash 擦除或编程入口。
-        </p>
-      </details>
     </article>
 
     <article class="card flash-card" id="sec-usb-flash">
       <div class="card-head">
-        <h2>刷机区</h2>
+        <div class="heading-help">
+          <h2>刷机区</h2>
+          <button type="button" class="help-btn" data-help="usbFlash"
+                  aria-label="刷机区说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span id="usbFlashBadge" class="badge bad">无写入路径</span>
-      </div>
-      <div id="usbRestoreStatic">
-        <p class="note bad">
-          真机构建无 Flash 写路径（候选镜像 UNTESTED 不刷机）。
-          固件恢复沿用桌面 tools/usb-recovery 的固定档案流程。
-        </p>
       </div>
       <div id="usbRestoreUi" hidden>
         <p class="muted" id="restoreStateText">未生成计划</p>
@@ -1754,7 +1775,7 @@ summary {
         <div id="restoreConfirmBox" hidden>
           <p id="restorePlanSummary" class="feedback" aria-live="polite"></p>
           <div class="actions">
-            <button id="usbConfirmBtn" class="primary">确认计划（nonce 单次）</button>
+            <button id="usbConfirmBtn" class="primary">确认计划</button>
             <button id="usbCancelBtn">取消计划</button>
           </div>
         </div>
@@ -1770,10 +1791,7 @@ summary {
           <div id="restoreBar"></div>
         </div>
         <p id="restoreResultText" class="feedback" aria-live="polite"></p>
-        <p class="note warning">
-          仅仿真 armed 会话：计划外扇区会被设备拒绝；擦写一旦开始没有安全中止点，
-          失败后保持 armed，处置前先核对设备状态。
-        </p>
+        <p class="note warning">擦写开始后无法安全中止</p>
       </div>
     </article>
   </section>
@@ -1781,19 +1799,24 @@ summary {
   <section id="tabOta" role="tabpanel" aria-labelledby="tabBtnOta" hidden>
     <article class="card" id="sec-ota-device">
       <div class="card-head">
-        <h2>设备与当前版本</h2>
+        <div class="heading-help">
+          <h2>设备与当前版本</h2>
+          <button type="button" class="help-btn" data-help="otaDevice"
+                  aria-label="设备与当前版本说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span id="otaConnBadge" class="badge">未连接</span>
       </div>
       <div class="kv">
         <span>连接状态</span>
-        <span id="otaConnText">先在「耳机控制」tab 连接耳机</span>
+        <span id="otaConnText">先在「控制」tab 连接耳机</span>
       </div>
       <div class="kv">
         <span>固件版本</span>
         <span id="otaVersion">未查询</span>
       </div>
       <div class="kv">
-        <span>电量（槽位 1，升级判据同款）</span>
+        <span>电量（槽位 1）</span>
         <span id="otaBatt">未查询</span>
       </div>
       <div class="kv">
@@ -1804,27 +1827,20 @@ summary {
         <button id="otaQueryBtn">查询版本与电量</button>
       </div>
       <p id="otaBattWarn" class="note warning" hidden></p>
-      <p class="note">
-        版本/身份走 RCSP 只读命令 03（docs/protocol.md「设备信息和身份」，属性 05
-        版本码 / 0A 身份）；电量走只读 0x2f 槽位 1（升级服务同款读法）。03 回包
-        载荷形状未留全档，解析不出时如实显示未识别，不猜。
-      </p>
     </article>
 
     <article class="card" id="sec-ota-candidates">
       <div class="card-head">
-        <h2>升级通道 · 固定候选清单</h2>
-        <span class="badge warning">sha 钉死审批门</span>
+        <div class="heading-help">
+          <h2>升级候选</h2>
+          <button type="button" class="help-btn" data-help="otaCandidates"
+                  aria-label="升级候选说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
       </div>
-      <p class="muted">
-        本工具只允许刷入下面清单里逐字节钉死的镜像（清单来自原生侧审批门
-        UpgradeGate，页面不另维护副本）。本地选择的 ufw 文件必须 SHA-256 与
-        长度同时命中清单才能设为候选；不命中会被明确拒绝并给出允许的 SHA。
-        不提供任意固件推送。
-      </p>
       <div id="otaCandidateList" class="empty">清单读取中……</div>
       <details>
-        <summary>本地文件检查（选中后仍需过同一 SHA 门）</summary>
+        <summary>本地文件检查</summary>
         <div class="actions">
           <button id="otaPick">选择 uFW 文件</button>
         </div>
@@ -1834,25 +1850,27 @@ summary {
 
     <article class="card" id="sec-upgrade">
       <div class="card-head">
-        <h2>升级步骤</h2>
+        <div class="heading-help">
+          <h2>升级步骤</h2>
+          <button type="button" class="help-btn" data-help="otaUpgrade"
+                  aria-label="升级步骤说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
         <span class="badge warning">写入操作</span>
       </div>
       <ol class="ota-steps">
         <li>
-          <strong>设为本次候选</strong>
           <div class="actions">
-            <button id="otaInstall" disabled>复制为候选（不写入耳机）</button>
+            <button id="otaInstall" disabled>设为候选</button>
           </div>
           <p id="otaCandidateInfo" class="note" hidden></p>
         </li>
         <li>
-          <strong>准备：核对文件并读取设备准入</strong>
           <div class="actions">
-            <button id="otaPrepare" disabled>开始准备（连接耳机）</button>
+            <button id="otaPrepare" disabled>开始准备</button>
           </div>
         </li>
         <li>
-          <strong>确认并刷写</strong>
           <div id="otaPlan" class="note" hidden></div>
           <div class="actions">
             <button id="otaConfirm" class="danger" disabled>确认刷入</button>
@@ -1872,26 +1890,26 @@ summary {
 
     <article class="card" id="sec-ota-safety">
       <div class="card-head">
-        <h2>安全提示</h2>
-        <span class="badge">升级前必读</span>
+        <div class="heading-help">
+          <h2>安全提示</h2>
+          <button type="button" class="help-btn" data-help="otaSafety"
+                  aria-label="安全提示说明" aria-haspopup="dialog"
+                  aria-controls="helpDialog">?</button>
+        </div>
       </div>
-      <ul class="ota-steps">
-        <li><strong>升级中勿断开</strong>：传输期间保持手机与耳机的 BLE 连接，
-          不要锁屏杀后台（升级以前台服务 + 唤醒锁运行）、不要把手机带离耳机、
-          不要更新 APK 或重启手机、不要重复开始。</li>
-        <li><strong>电量要求</strong>：建议电量 ≥30% 再开始（30% 是 SDK 缺省
-          低电参考值，不是设备上报阈值；设备侧升级条件 E2 会在准备/确认两轮
-          再判一次，电量过低会被拒绝）。</li>
-        <li><strong>确认窗口</strong>：准备通过后的确认令牌 2 分钟内有效，过期
-          需重新准备。</li>
-        <li><strong>失败处置</strong>：失败不自动重试、不自动恢复；先读状态与
-          原因，不要随意放宽代码门槛或换包「试一试」。</li>
-        <li><strong>成功判据</strong>：版本号相同（280/0.1.1.8）不能当成功
-          证据，完成后需重连确认正常连接、声音与按键行为。</li>
-      </ul>
+      <p class="note">升级中保持连接，完成后重连检查声音和按键。</p>
     </article>
   </section>
 </main>
+
+<dialog id="helpDialog" aria-modal="true" aria-labelledby="helpTitle"
+        aria-describedby="helpText">
+  <div class="help-sheet">
+    <h2 id="helpTitle"></h2>
+    <p id="helpText"></p>
+    <button type="button" id="helpClose" autofocus>关闭</button>
+  </div>
+</dialog>
 
 <aside id="logPanel" aria-label="调用与事件日志" hidden>
   <div class="log-head">
@@ -1960,6 +1978,74 @@ function rpc(bridge, method, args) {
     return result;
   }
 }
+
+/* ---------- 标题 ? 帮助弹窗（全页一份，UIFIX2） ---------- */
+const HELP_TEXT = {
+  connect: '点「连接耳机」会自动查找附近的 QCY H3S。',
+  arm: '关闭时仍可编辑草稿、查询电量。读取按键映射也需要开启此开关。'
+    + '选好物理键后，开启开关会自动读取；发送修改仍需手动操作。',
+  audio: '音频模式命令的报文长度仍待真机核对。发送后可在这里查看设备回报。',
+  eq: '选择「自定义」可逐段编辑。点频点改中心频率，触屏先选中滑杆再上下拖动；'
+    + '方向键微调，按 0 或用鼠标双击归零。图线连接各段增益，实际滤波响应可能不同。'
+    + '切换预设会保留自定义草稿。',
+  eqPresets: '预设和自定义草稿保存在本机。加载后可继续编辑，点「发送当前 EQ」才会下发。',
+  keys: '选择物理键会读取三个键的映射。连接耳机并开启「允许写入」后可读取。'
+    + '编辑只改本地草稿；「发送全部修改」会发送三个键中所有待发送项。'
+    + '高级选项里的壳侧副本只供参考。',
+  codec: '开启 LDAC 会重启耳机，并关闭双设备连接和空间音效。'
+    + '开启双设备连接会关闭 LDAC，耳机可能重启。',
+  deviceName: '名称最多 20 个 UTF-8 字节，中文通常每字占 3 字节。重新连接后可查看新名称。',
+  device: '当前 H3S 没有声道平衡、佩戴检测设置，也不提供已连接设备列表。',
+  danger: '恢复默认设置会重置降噪、EQ、按键、提示音和定时设置。'
+    + '清除配对仍属实验功能，操作可能断开连接，之后需重新配对。',
+  haBands: '增益调整环境声的放大量。点频段上方的数字可改输出上限；触屏先选滑杆再拖动。'
+    + '全带最大输出（MPO）取十个上限中的最小值，单位是数字域 dB，未经声压标定。'
+    + '候选固件设计为下次开启辅听时加载已保存的上限和 EQ，实际效果待真机验证。'
+    + '回退会将已读配置标为无效，再次关闭并开启辅听后需核对结果。'
+    + '\n全带上限保存在 key30（8 字节），十段 EQ 保存在 key31（88 字节）。读取结果可展开核对原始值。',
+  tone: '播放会优先选择手机内置扬声器，以免声音经耳机麦克风反复放大。循环播放仅用于样本。'
+    + '语音由 edge-tts 生成，音乐和自然录音来自 Wikimedia Commons；来源和许可收录在样本清单中。',
+  usbDev: '手机需支持 USB Host。用 OTG 线连接耳机后扫描。普通 QCY 的设备编号为 3654:4a55，'
+    + 'BR28 ROM 为 4c4a:3442。',
+  usbRom: '先打开普通 QCY 设备。工具读取能力后发送一次进入请求；耳机会重启，原连接可能报错。'
+    + '重新扫描到 BR28 ROM 即可继续。',
+  usbRead: '装载前会校验 loader 摘要。装载会写入 RAM 并执行 loader，再确认 Flash 型号。'
+    + 'ROM 窗和全片备份均读取两遍，一致后保存到应用私有目录。失败后可查看原因。',
+  // 刷机区按当前构建取正文：仿真可写 / 普通只读
+  usbFlash: () => usbFlashWritable
+    ? '确认仅对本次计划有效。设备会拒绝计划外扇区；失败后会保持已武装状态，请先核对设备状态。'
+    : '此 App 构建未提供 Flash 写入。设备恢复使用桌面端固定档案流程。',
+  otaDevice: '版本和身份从设备读取。升级电量取槽位 1。低于 30% 时建议先充电，'
+    + '实际能否升级由设备在准备和确认时判断。',
+  otaCandidates: '只能选择清单内的固件。本地 uFW 文件的长度和 SHA-256 都须匹配；检查失败时会显示原因。',
+  otaUpgrade: '设为候选会先复制并校验本地文件。准备时连接耳机并检查条件。'
+    + '确认后会再检查一次，随后开始写入。',
+  otaSafety: '升级期间请让手机靠近耳机，保持蓝牙连接和 App 运行，避免锁屏清后台、更新 App、'
+    + '重启手机或重复开始。建议电量达到 30% 再开始。准备通过后请在 2 分钟内确认，过期需重新准备。'
+    + '失败后先看原因；成功后重连，检查声音和按键。同版本升级也需要这些检查。'
+};
+const helpDialog = $('helpDialog');
+let helpOpener = null;
+
+document.addEventListener('click', event => {
+  const button = event.target.closest('button[data-help]');
+  if (!button) return;
+  helpOpener = button;
+  $('helpTitle').textContent = button.getAttribute('aria-label');
+  const body = HELP_TEXT[button.dataset.help];
+  $('helpText').textContent = typeof body === 'function' ? body() : body;
+  helpDialog.showModal();
+  $('helpClose').focus();
+});
+
+$('helpClose').onclick = () => helpDialog.close();
+helpDialog.addEventListener('click', event => {
+  if (event.target === helpDialog) helpDialog.close();
+});
+helpDialog.addEventListener('close', () => {
+  if (helpOpener && helpOpener.isConnected) helpOpener.focus();
+  helpOpener = null;
+});
 
 /* ---------- 外观 ---------- */
 const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
@@ -2158,7 +2244,7 @@ $('logClear').onclick = () => {
   $('logBody').textContent = '日志已清空';
 };
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && !$('logPanel').hidden) setLogOpen(false);
+  if (event.key === 'Escape' && !helpDialog.open && !$('logPanel').hidden) setLogOpen(false);
 });
 
 /* ---------- BLE 状态与命令生命周期 ---------- */
@@ -2187,22 +2273,19 @@ function updateGates() {
   $('armSw').checked = armed;
   $('armBadge').textContent = armed ? '已武装' : '未武装';
   $('armBadge').className = 'badge' + (armed ? ' warning' : '');
-  $('armText').textContent = armed
-    ? (connected
-      ? '已开启。点击发送才会写入；拖动滑块和选择动作只修改本地草稿。'
-      : '已开启，但耳机尚未连接，写入按钮暂不可用。')
-    : '已关闭。可编辑本地参数；写命令不会发送。查询不受影响。';
+  $('armText').textContent = armed && !connected ? '等待连接耳机' : '';
 
   all('[data-write]').forEach(button => {
     button.disabled = !connected || !armed || button.dataset.busy === '1';
   });
-  // 按键卡互斥：C1 读表进行中禁发送/禁再读；发送进行中禁读表；两者期间禁切写入方式
-  $('kmWrite').disabled = $('kmWrite').disabled || readingKeyTable;
-  $('kmReadDevice').disabled = $('kmReadDevice').disabled || keyBusy || readingKeyTable;
-  $('keyWire').disabled = keyBusy || readingKeyTable;
-  $('kmWrite').disabled = !connected || !armed || keyBusy || dirtyKeys.size === 0;
-  $('kmRead').disabled = !H || keyBusy;
-  $('keyWire').disabled = keyBusy;
+  // 按键卡互斥（UIFIX2 只算一次）：读表和写表互斥；未选物理键时读写桥按钮均不可用。
+  // 读表和写表期间，手势动作选择框仍可编辑。
+  const keyLocked = keyBusy || readingKeyTable;
+  const canUseKeyBridge = !!H && connected && armed && selectedPhysicalKey !== null;
+  $('kmReadDevice').disabled = !canUseKeyBridge || keyLocked;
+  $('kmWrite').disabled = !canUseKeyBridge || keyLocked || dirtyKeys.size === 0;
+  $('keyWire').disabled = keyLocked;
+  $('kmRead').disabled = !H || keyLocked;
 }
 function renderConnection() {
   const pill = $('statusPill');
@@ -2222,9 +2305,8 @@ function renderConnection() {
     pill.textContent = '未连接';
     $('connText').textContent = connectionNote || '尚未连接';
   }
-  $('mtuText').textContent = mtu
-    ? '连接就绪 · MTU ' + mtu
-    : '点击连接后自动扫描附近的 QCY H3S 耳机（按广播名发现并连接）。';
+  $('mtuText').hidden = !mtu;
+  if (mtu) $('mtuText').textContent = '连接就绪 · MTU ' + mtu;
   updateGates();
   if (typeof updateOtaConnBadge === 'function') updateOtaConnBadge();
 }
@@ -2299,6 +2381,8 @@ $('armSw').onchange = () => {
     notify('无法更新写入开关：' + e, true);
   }
   updateGates();
+  // 用户开启开关后补读一次按键表（UIFIX2：选键时未武装只提示不代读）
+  if (armed) flushKeyRead();
 };
 $('connBtn').onclick = () => {
   const result = rpc(H, 'connect', []);
@@ -2340,6 +2424,8 @@ function clearDeviceDisplays() {
   });
   sendingKey = null;
   readingKeyTable = false;
+  // 已选键的，断连后记一次待读：重连就绪且用户已武装时补读（UIFIX2）
+  keyReadWanted = selectedPhysicalKey !== null;
   renderKeyRows();
   $('kmFeedback').textContent = '连接已断开：表内为本地参考值与未发送草稿。';
   $('batt').replaceChildren(element('span', '未连接，电量未知'));
@@ -2404,7 +2490,6 @@ function parseDeviceMessage(payloadHex) {
   if (!/^(?:[0-9a-f]{2})+$/.test(hex)) return;
   if (parseKeyStoreReadback(hex)) return;
   if (parseMoreFuncReadback(hex)) return;
-  if (parseKeyTableReadback(hex)) return;
 
   const batteryAt = hex.startsWith('2f03') ? 0
     : hex.slice(4, 8) === '2f03' ? 4 : -1;
@@ -2481,6 +2566,8 @@ window.onH3sEvent = raw => {
         issue('readInfo', [], (ok, message, ev) => {
           if (ok) renderOtaInfo(ev && ev.payloadHex);
         });
+        // 断连期间已选键的，重连就绪且已武装时补读一次（UIFIX2）
+        flushKeyRead();
       }
       return;
     }
@@ -3032,9 +3119,6 @@ function selectPreset(index) {
   $('customEditor').hidden = !custom;
   $('presetView').hidden = custom;
   $('eqBadge').textContent = eq.name + ' · ' + eq.freq.length + ' 段';
-  $('eqDescription').textContent = custom
-    ? '固定十段，−12 至 +12 dB，步进 1 dB。切换预设不会覆盖自定义草稿。'
-    : '保留原始调音参数，不做频率换算或增益截断。若需逐段编辑，请选择“自定义”。';
   $('presetMaster').textContent = '原始总增益：' + signed(eq.master) + ' dB';
   Array.from($('eqChips').children).forEach((button, i) => {
     button.setAttribute('aria-pressed', String(i - 1 === index));
@@ -3286,7 +3370,7 @@ window.h3sHearingAidPayload = buildHearingAidPayload;
 
 function haChanged() {
   updateHaMpoSummary();
-  $('haFeedback').textContent = '本地草稿已修改（逐频增益热更未实现；全带 MPO 可经下方按钮写入固件 key 30）。';
+  $('haFeedback').textContent = '本地草稿已修改，尚未发送。';
 }
 
 // L3 MPO 值协议（与固件 apply_mpo.S / KeyStoreFrame.encodeMpoValue 对齐）：
@@ -3312,11 +3396,11 @@ $('haSaveMpo').onclick = () => {
     $('haFeedback').textContent = 'MPO ' + mpo + ' dB 超出可编码范围 (0.3, 119.9)，未发送。';
     return;
   }
-  $('haFeedback').textContent = 'MPO ' + mpo + ' dB 已提交排队，等待回执（成功判据=精确回执 30 01 00）…';
+  $('haFeedback').textContent = 'MPO ' + mpo + ' dB 已提交，等待设备回执…';
   writeCommand('setHearingCfg', [hex], (ok, message) => {
     $('haFeedback').textContent = ok
-      ? 'key30 写入回执 30 01 00 精确匹配：set_config 成功（≠ 曲线已应用；L3 候选在下次开启辅听时应用）。可用「读取两 key 原始值」复核。'
-      : 'key30 未确认保存（' + message + '）——按回执判据不算保存成功。';
+      ? 'key30 写入成功（回执 30 01 00）。候选固件在下次开启辅听时应用，可「读取设备值」复核。'
+      : 'key30 未确认保存（' + message + '）。';
   }, '300100');
 };
 
@@ -3349,12 +3433,12 @@ $('haSaveEq').onclick = () => {
     $('haFeedback').textContent = '十段 EQ 有频点/增益超出可编码范围（freq 1..21599Hz、|gain|<40dB），未发送。';
     return;
   }
-  $('haFeedback').textContent = '十段 EQ 已提交排队，等待回执（成功判据=精确回执 30 01 00）…';
+  $('haFeedback').textContent = '十段 EQ 已提交，等待设备回执…';
   writeCommand('setHearingEq', [JSON.stringify(bands.map(b => ({ f: b.freq, g: b.gain })))],
     (ok, message) => {
       $('haFeedback').textContent = ok
-        ? 'key31 写入回执 30 01 00 精确匹配：set_config 成功（≠ 曲线已应用；L4 候选在下次开启辅听时逐段应用，非事务性）。可用「读取两 key 原始值」复核。'
-        : 'key31 未确认保存（' + message + '）——按回执判据不算保存成功。';
+        ? 'key31 写入成功（回执 30 01 00）。候选固件在下次开启辅听时逐段应用，可「读取设备值」复核。'
+        : 'key31 未确认保存（' + message + '）。';
     }, '300100');
 };
 
@@ -3398,7 +3482,7 @@ function parseKeyStoreReadback(hex) {
       '原始值 ' + value
       + (mpo != null ? '<br>协议解码：MPO ' + mpo + ' dB（软回退按钮已按此原值待命）'
                      : '<br>非协议值：历史/测试字节，不能当 MPO 解读（软回退按钮已按原值待命）'));
-    $('haFeedback').textContent = 'key30 读回成功（见下方结果卡）。';
+    $('haFeedback').textContent = 'key30 读回成功。';
     return true;
   }
   if (hex.startsWith('3058') && hex.length === 180) {
@@ -3410,7 +3494,7 @@ function parseKeyStoreReadback(hex) {
       '原始值 ' + value.slice(0, 48) + '…（共 88B，完整值见日志）'
       + (segs ? '<br>协议解码：十段 ' + segs.map(s => s.f + 'Hz' + (s.g >= 0 ? '+' : '') + s.g.toFixed(1)).join(', ') + 'dB'
               : '<br>非协议值：不能当 EQ 解读'));
-    $('haFeedback').textContent = 'key31 读回成功（见下方结果卡）。';
+    $('haFeedback').textContent = 'key31 读回成功。';
     return true;
   }
   return false;
@@ -3444,12 +3528,10 @@ function haReadOneKey(key, method, done) {
     } else if (event && event.event === 'response') {
       // 有回执但外层失败/形状不符：不是超时，明说
       haReadCardDone(key, false, '收到回执但形状不符：' + ((event && event.payloadHex) || '（空载荷）')
-        + '——期望 key30 为 30 08+8B / key31 为 30 58+88B。可能：key 从未写入（HAL4/5 候选固件新 key）'
-        + '或当前固件无该读命令。原始事件见日志。');
+        + '——期望 key30 为 30 08+8B / key31 为 30 58+88B。原始事件见日志。');
     } else if (String(message).includes('未收到') || String(message).includes('暂未')) {
-      haReadCardDone(key, false, '读取失败：15 秒内未收到设备应答。'
-        + '常见原因：① key 从未写入（固件无记录时静默不回）② 当前固件没有该读命令'
-        + '（官方固件 0x30 写路径为空）③ 蓝牙链路断开。收发明细见右上角日志。');
+      // 超时只报事实，不把推测列为失败原因（UIFIX2）
+      haReadCardDone(key, false, '读取失败：15 秒内未收到应答。');
     } else {
       haReadCardDone(key, false, '读取失败：' + message);
     }
@@ -3462,7 +3544,7 @@ function hexLooksLikeKeyStoreRead(event, key) {
   return key === 'key30' ? /^3008[0-9a-f]{16}$/.test(hex) : /^3058[0-9a-f]{176}$/.test(hex);
 }
 $('haReadKeys').onclick = () => {
-  $('haFeedback').textContent = '已发起读取：key30 → key31（结果见下方两张结果卡，提示与结果分开显示）。';
+  $('haFeedback').textContent = '已发起读取：key30 → key31。';
   // 串行链：key30 无论成败都接着读 key31（此前回调吞掉失败导致 key31 从不发、界面无结果——H5-READ-01）
   haReadOneKey('key30', 'getHearingCfg', () => haReadOneKey('key31', 'getHearingEq', () => {}));
 };
@@ -3478,7 +3560,7 @@ function haInvalidateKey(key) {
   }
   writeCommand(method, [value], (ok, message) => {
     $('haFeedback').textContent = ok
-      ? key + ' 坏魔数写入回执 30 01 00 精确匹配（set_config 成功 ≠ 已回退生效；需完整关→开后按 §4d 复核读回与默认曲线）。'
+      ? key + ' 坏魔数写入成功（回执 30 01 00）；生效需关闭并重新开启辅听后复核。'
       : key + ' 坏魔数写入未确认（' + message + '）——不算成功。';
   }, '300100');
 }
@@ -3488,9 +3570,6 @@ $('haInvalidateEq').onclick = () => haInvalidateKey('key31');
 function updateHaMpoSummary() {
   const mpo = haEffectiveMpo();
   $('haMpoValue').textContent = mpo + ' dB';
-  $('haMpoNote').textContent =
-    '全带生效（取十频段最小值，任一频段调低都会压低全带上限）；固件 Drc1Eff 为单带 WDRC，'
-    + '每频独立限幅需 multiband（未落地）。';
 }
 
 const HA_GAIN_MIN = -80;
@@ -3870,13 +3949,13 @@ if (T) {
     }
   }, 800);
 } else {
-  $('haToneBadge').textContent = '离线预览';
+  $('haToneBadge').textContent = '预览模式，无法播放';
   $('haToneBadge').className = 'badge';
 }
 
 /* ---------- 按键：选择物理键后编辑五种手势 ---------- */
 const KEYS = [
-  { id: 7, name: '多功能' },
+  { id: 7, name: '多功能键' },
   { id: 5, name: '音量＋' },
   { id: 3, name: '音量－' }
 ];
@@ -3906,11 +3985,15 @@ const keyBase = {};
 const dirtyKeys = new Set();
 /* sourceOfKey: id → 基准值来源（本地参考/本机记录/壳侧副本/写入已应答/设备回读/
  * 回读未知动作/失败或未确认）；keyRaw: id → C1 读到的域外动作原始字节（显示「未知动作 0xNN」）。
- * sendingKey: 正在等写应答的 {id, action}；readingKeyTable: C1 读表进行中（与发送互斥）。 */
+ * sendingKey: 正在等写应答的 {id, action}；readingKeyTable: C1 读表进行中（与发送互斥）。
+ * selectedPhysicalKey: 当前选中的物理键（null=三个按钮均未选）；keyReadWanted:
+ * 用户已选键、等条件具备（连接+武装+空闲）时读一次全表（UIFIX2，不按物理键缓存）。 */
 const sourceOfKey = new Map();
 const keyRaw = new Map();
 let sendingKey = null;
 let readingKeyTable = false;
+let selectedPhysicalKey = null;
+let keyReadWanted = false;
 
 KEYS.forEach(key => {
   GESTURES.forEach((gesture, i) => {
@@ -3931,12 +4014,12 @@ function updateKeyCount() {
   $('keyDirtyCount').className = 'badge' + (dirtyKeys.size ? ' warning' : '');
   updateGates();
 }
-/* 视图：三组实体键（details 可折叠，默认只展开多功能键）× 五个手势行。
+/* 视图：三个横排物理键选择按钮（keyPicker，初始均未选）× 选中键的五个手势行。
  * 行平时只显示手势、动作和状态；点行展开原生动作选择框，同一时刻只开一个，
  * 完成或 Escape 收起并把焦点还给该行；异步刷新只改文本/属性/选择值，
  * 不重建 DOM，展开项和焦点自然保持。 */
 const keyViews = new Map();   // id → {item, rowBtn, gesture, base, state, editor, label, select, done}
-const keyGroups = new Map();  // key.id → {group, name, count}
+const keyGroups = new Map();  // key.id → {button, group, count}
 let openKeyId = null;         // 当前展开编辑器的行 id
 
 function kmActionName(cmd, id) {
@@ -3990,9 +4073,19 @@ function buildKeyViews() {
   const rowTpl = $('keyRowTemplate');
   KEYS.forEach((key, k) => {
     const group = groupTpl.content.firstElementChild.cloneNode(true);
-    group.open = k === 0;   // 默认展开「多功能键」，其它两键折起
-    group.querySelector('.km-name').textContent = key.name;
     const list = group.querySelector('.km-list');
+    // 选键按钮（UIFIX2）：三个横排，初始均未选，点哪个高亮哪个并只看哪个的五行
+    const button = element('button', key.name);
+    button.type = 'button';
+    button.id = 'key-pick-' + key.id;
+    group.id = 'key-group-' + key.id;
+    button.setAttribute('aria-pressed', 'false');
+    button.setAttribute('aria-controls', group.id);
+    group.setAttribute('aria-labelledby', button.id);
+    const count = element('span', '', 'km-count');
+    button.appendChild(count);
+    button.onclick = () => selectPhysicalKey(key.id);
+    $('keyPicker').appendChild(button);
     GESTURES.forEach((gesture, i) => {
       const id = (key.id << 8) | (i + 1);
       const longPress = i === 4;
@@ -4038,12 +4131,24 @@ function buildKeyViews() {
       });
     });
     $('keyRows').appendChild(group);
-    keyGroups.set(key.id, {
-      group,
-      name: group.querySelector('.km-name'),
-      count: group.querySelector('.km-count')
-    });
+    keyGroups.set(key.id, { button, group, count });
   });
+}
+/* 选键：只切显示；读取由 requestKeyRead/flushKeyRead 统一管理（UIFIX2）。
+ * 切键只收起原编辑行；异步回读不重建 DOM、不移动焦点。 */
+function selectPhysicalKey(keyId) {
+  if (selectedPhysicalKey === keyId) return;
+  if (openKeyId !== null) kmCloseEditor(openKeyId, false);
+  selectedPhysicalKey = keyId;
+
+  keyGroups.forEach(({ button, group }, id) => {
+    const selected = id === keyId;
+    button.setAttribute('aria-pressed', String(selected));
+    group.hidden = !selected;
+  });
+  $('keyRows').hidden = false;
+  $('keyActions').hidden = false;
+  requestKeyRead();
 }
 function renderKeyRows() {
   if (!keyViews.size) buildKeyViews();
@@ -4114,6 +4219,8 @@ $('kmWrite').onclick = () => {
       accepted + ' 项收到成功应答，' + failed + ' 项失败或未确认；' +
       dirtyKeys.size + ' 项本地修改仍待处理。'
       + (wire === 'custom' ? '（注意：0x2b 在固件注册表无对应，发出去也不会有回执——请用默认批量同步方式。）' : '');
+    // 批次中切键记下的待读，在整批写结束后补读一次（UIFIX2，不插到写队列中间）
+    flushKeyRead();
   }
   function next() {
     if (!queue.length) {
@@ -4155,32 +4262,53 @@ $('kmWrite').onclick = () => {
 };
 /* 高级选项：切换只保存 keyWire（发送/读表期间禁切，见 updateGates） */
 $('keyWire').onchange = () => mfStoreSet('keyWire', $('keyWire').value);
-/* 从设备读取映射全表（0xC1 批量同步读，MOREFUNC）：回 45B=15×{key,gesture,action}，
- * 在 parseDeviceMessage 里解析后经 applyDeviceKeyTable 灌进行视图（设备真值优先）。
+/* 从设备读取映射全表（0xC1 批量同步读，MOREFUNC）：回 45B=15×{key,gesture,action}。
+ * UIFIX2：解析移入本次读请求的成功回调（只接受本次 C1 的匹配回执），不再走
+ * parseDeviceMessage 的通用入口——超时后迟到的旧表、断开后的孤立消息都不会
+ * 重新贴上「设备回读」。C1 一次返回三个键的表，快速切键共用同一笔在途请求。
  * C1 读与按键发送互斥（readingKeyTable，见 updateGates）；超时/拒绝/断线都会走
- * 回调或断连清理释放。 */
-$('kmReadDevice').onclick = () => {
-  if (keyBusy || readingKeyTable) return;
+ * 回调或断连清理释放；定时器、重绘均不重试。 */
+function startKeyTableRead() {
   readingKeyTable = true;
   updateGates();
-  $('kmFeedback').textContent = '已发送 0xC1 读命令，等待 45B 映射表回包（最长 15 秒）…';
+  $('kmFeedback').textContent = '正在读取按键映射…';
   issue('readKeyRemapTable', [], (ok, message, event) => {
     readingKeyTable = false;
     updateGates();
     if (!ok) {
-      $('kmFeedback').textContent = '设备读取未确认（' + message + '）——回包形状待真机核对，'
-        + '可先用「读取壳侧工作副本」。';
-    } else {
-      const hex = String((event && event.payloadHex) || '');
-      if (!/2e02[0-9a-f]{90}/.test(hex.toLowerCase())) {
-        $('kmFeedback').textContent = '已收到回执但未识别出 45B 映射表（载荷 ' + hex.slice(0, 32)
-          + '…，完整见日志）——回包形状待真机核对。';
-      }
-      // 识别成功时 applyDeviceKeyTable 已在解析路径更新反馈行；response 顺序是
-      // 先完成回调、后解析 payload，成功回灌只在解析路径做这一次。
+      $('kmFeedback').textContent = '读取未确认（' + message + '），可点「重新读取」重试。';
+      return;
     }
+    const hex = String((event && event.payloadHex) || '')
+      .replace(/\s+/g, '').toLowerCase();
+    if (!/^(?:[0-9a-f]{2})+$/.test(hex) || !parseKeyTableReadback(hex)) {
+      // 形状不符：原包留日志，只报事实
+      $('kmFeedback').textContent = '收到应答，未识别按键表（载荷 ' + hex.slice(0, 32)
+        + '…，完整见日志）。';
+    }
+    // 识别成功时 applyDeviceKeyTable 已更新反馈行与基准/草稿
   });
-};
+}
+/* requestKeyRead 同时服务选键与「重新读取」；条件不满足时只提示，keyReadWanted 保持。
+ * 反复点同一个已选按钮不重复读（selectPhysicalKey 直接 return）。 */
+function requestKeyRead() {
+  if (selectedPhysicalKey === null || readingKeyTable) return;
+  keyReadWanted = true;
+  flushKeyRead();
+}
+function flushKeyRead() {
+  if (!keyReadWanted || selectedPhysicalKey === null || readingKeyTable) return;
+  if (!H || !connected || !armed) {
+    $('kmFeedback').textContent = !H ? '离线预览，仅显示本地值。'
+      : !connected ? '未连接，连接后可读取。'
+      : '开启「允许写入」后自动读取。';
+    return;
+  }
+  if (keyBusy) return;   // C0 批次中：记一次待读，整批写结束后由 finishBatch 补读
+  keyReadWanted = false;
+  startKeyTableRead();
+}
+$('kmReadDevice').onclick = requestKeyRead;
 function applyDeviceKeyTable(table) {
   // table: 15×[key,gesture,action]；只认面板三键。先记哪些行已有草稿，再更新基准：
   // 干净行同步草稿，脏行保留用户选择，最后重新比较（回读恰好等于草稿则 dirty 自然消除）。
@@ -4209,7 +4337,8 @@ function applyDeviceKeyTable(table) {
   renderKeyRows();
   updateKeyCount();
   mfStoreSet('keyValues', keyBase);
-  $('kmFeedback').textContent = '已从设备读回映射表：' + applied + ' 项可用' +
+  // 反馈不写具体键名：C1 回来时用户可能已切去另一个键（UIFIX2）
+  $('kmFeedback').textContent = '已读取按键映射：' + applied + ' 项可用' +
     (unknown ? '，' + unknown + ' 项超出面板域（保留原始字节显示，固件可能含长按/保留动作）' : '') +
     '。';
 }
@@ -4455,7 +4584,7 @@ function updateOtaConnBadge() {
   badge.className = 'badge';
   if (connected) { badge.textContent = '已连接'; badge.classList.add('good'); text.textContent = '已连接，可查询'; }
   else if (connecting) { badge.textContent = '连接中'; badge.classList.add('warning'); text.textContent = connDetail || '正在连接'; }
-  else { badge.textContent = '未连接'; text.textContent = connectionNote || '先在「耳机控制」tab 连接耳机'; }
+  else { badge.textContent = '未连接'; text.textContent = connectionNote || '先在「控制」tab 连接耳机'; }
 }
 function renderOtaInfo(payloadHex) {
   if (!H || typeof H.parseInfo !== 'function') return;
@@ -4486,8 +4615,7 @@ function renderOtaBattery(hex, batteryAt) {
   if (percent < OTA_BATT_WARN_PERCENT) {
     warn.hidden = false;
     warn.textContent = '电量偏低（' + percent + '% < ' + OTA_BATT_WARN_PERCENT
-      + '%）：建议先充电再升级。30% 是 SDK 缺省低电参考值，非设备上报阈值；'
-      + '设备侧升级条件仍会在准备/确认时各判一次。';
+      + '%）：建议先充电再升级。';
   } else {
     warn.hidden = true;
   }
@@ -4503,7 +4631,7 @@ function resetOtaDeviceCard(reason) {
 $('otaQueryBtn').onclick = () => {
   updateOtaConnBadge();
   if (!H) { otaNotify('离线预览：版本查询需要原生壳（h3s 桥）。', true); return; }
-  if (!connected) { otaNotify('请先在「耳机控制」tab 连接耳机。', true); return; }
+  if (!connected) { otaNotify('请先在「控制」tab 连接耳机。', true); return; }
   issue('readInfo', [], (ok, message, event) => {
     if (!ok) { otaNotify(message, true); return; }
     renderOtaInfo(event && event.payloadHex);
@@ -4587,7 +4715,7 @@ function otaRenderState(plan) {
     detail.textContent = '本次计划——电量：' + (device.battery == null ? '未知' : device.battery + '%')
       + ' · 版本：' + (device.version == null ? '未知' : device.version)
       + ' · 候选 SHA-256：' + (plan.sha256 ? String(plan.sha256).slice(0, 16) + '…' : '未记录')
-      + '。确认后立即复查设备并开始实际写入。';
+      + '。确认后立即复查设备并开始实际写入。确认有效期 2 分钟。';
     confirmBtn.disabled = false;
     confirmBtn.onclick = () => {
       const result = JSON.parse(OTA.confirm(plan.nonce));
@@ -4668,7 +4796,6 @@ function usbInfo() {
     (result.physicalLinkVerified ? 'good' : 'warning');
   $('usbFlashBadge').textContent = usbFlashWritable ? '仿真 armed' : '无写入路径';
   $('usbFlashBadge').className = 'badge ' + (usbFlashWritable ? 'warning' : 'bad');
-  $('usbRestoreStatic').hidden = usbFlashWritable;
   $('usbRestoreUi').hidden = !usbFlashWritable;
 }
 /** 恢复卡四态切换（plan=生成计划 / confirm=待确认 / run=armed 可擦写 / done=完成待重启）。 */
@@ -4767,7 +4894,7 @@ function renderUsbDevices() {
   if (!usbDevices.length) {
     $('devList').appendChild(element(
       'div',
-      U ? '未检测到设备，请检查 OTG 连接后重新扫描。' : '浏览器预览不枚举设备。',
+      U ? '未发现设备，请检查 OTG 连接' : '浏览器预览不枚举设备。',
       'empty'
     ));
     return;
@@ -5023,7 +5150,7 @@ window.onH3sUsbEvent = raw => {
 
 /* ---------- 启动：不自动连接、不自动发写命令 ---------- */
 if (H) {
-  $('bleAddr').textContent = '构建时指定；原生桥未提供地址读取接口';
+  // 当前桥没有可展示的蓝牙地址：地址行保持隐藏（UIFIX2）
   try {
     H.armWrite(false);
     armed = H.isArmed() === true;
@@ -5033,7 +5160,6 @@ if (H) {
     notify('原生桥初始化失败，详情见日志。', true);
   }
 } else {
-  $('bleAddr').textContent = '离线预览，无原生连接';
   notify('当前为离线预览：可编辑 EQ 与按键草稿，不会连接或发送命令。');
 }
 renderConnection();
