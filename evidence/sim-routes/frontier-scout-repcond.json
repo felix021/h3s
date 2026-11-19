@@ -1,0 +1,97 @@
+{
+ "route": "REPCONDSCOUT / sim-repcondsout（基线 main 8b4de5d worktree，静态侦察+codex 参谋，零 tools/ 改动，不 merge 不 push）",
+ "recorded_at": "2026-11-19T21:40:00+08:00",
+ "task": "REP×体内条件块停点侦察：42,231,273 @ 0x60736c8（rep_multi_block_body_not_straight_line，ifs.gt.rr @ 0x60736cc）——停点反汇编钉死/hw 捕获证据挖掘（rep 体有无条件块）/rep 模型面现状/钳位环运行时形状/三选一预案/codex 裁决",
+ "method": {
+  "firmware": "官方 app.bin sha256 18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041（加载基址 0x06000100），仓内 pi32v2isa 权威解码 0x6073680..0x6073700",
+  "hardware": "pi32v2-isa hw/ 全量 json/jsonl 扫（fm1-2026-10-24 及 v2/v3/v4/v5/app/app2/app3/app4 + followup-*），grep '\"text\":\"*rep*' 与 '\"id\":\"rep*'",
+  "isa": "isa/pi32v2.toml:2471-2501 rep 条目（encoding 00000011nnnnrrrr，n 字段 scale=2 add=2 → 体长 2*(n+1)）+ 3954-3983 rep.i 条目",
+  "model": "probe_boot.py:2317-2437 multi-block gate + 793-801 repeat 消费 + 688-691 finish_exact；upstream tools/llvm/sim.py:145-168 块机制 + 238-248 check_then；tools/hwtest/semantics/v3.py rep/块模型；tools/hwtest/gen.py:293-302 rep 体生成",
+  "runtime": "codex 用 segimpl4 路 ownbase4 快照重放到原停点（只读），从 on-main-ownbase.json 取 last_registers 钉 r0/r1，逐字核源缓冲 MMU 映射",
+  "scripts_local": "~/tmp/codex/202611192124-repcond/（codex prompt.md/final.md/log.md；不落仓）"
+ },
+ "stop": {
+  "frontier": "42231273 @ 0x60736c8",
+  "kind": "rep_multi_block_body_not_straight_line",
+  "instruction_id": "ifs.gt.rr",
+  "address": "0x60736cc",
+  "origin": "probe_boot.py:2407-2416 multi-block gate 体校验：inner.block 为真（块开启器）即拒；regs 计数 rep 体第 2 条 ifs.gt.rr"
+ },
+ "disassembly": {
+  "rep_entry": "isa/pi32v2.toml:2471 status=confirmed sources=oracle+hardware，encoding 00000011nnnnrrrr，n 字段 scale=2 add=2",
+  "site_bytes": "0x60736c8: 70 03 → n=7 r=0 → rep 16 r0 {（16 字节体）",
+  "loop": "0x60736b0 ld.w.l r0=[r8+8]; 0x60736b4 ld.w.l r1=[r8+16]; 0x60736b8 lsr.rri r0>>=2; 0x60736ba li.u32 r2=8388607(0x7FFFFF); 0x60736c0 li.u32 r3=4286578688(0xFF800000); 0x60736c6 li.u8 r4=0; 0x60736c8 rep 16 r0 { ld.w r4=[r1+0]; ifs.gt.rr(r4>r2){r4=r2}; ifs.lt.rr(r4<r3){r4=r3}; st.w.pin [r1++=4]=r4 }; 0x60736da bgts.ri (r0>0) goto -22（死分支）",
+  "body_layout": "16 字节 = ld.w(2) + ifs.gt.rr(4, t=0/e=0 → then 1 条 mov.rr, else 0) + ifs.lt.rr(4, t=0/e=0 → then 1 条 mov.rr) + st.w.pin(2)",
+  "function": "0x607367c push.rets_rl 入参 r0→r5、r1→r8（描述符）、r2→r6；[r8+4]=标志（0x6073698 beqz）、[r8+8]=计数字节、[r8+16]=缓冲指针；[r8+8] 由 helper 0x6073650（归一化循环+st.w [r0+8]=r7）写入，运行时值",
+  "errata_vs_route_notes": [
+   "segimpl4.json:29 与 probe_irq_entry.py:9211/9263 写「rep 34 r0」——权威解码 rep 16 r0（n=7 → 2*(7+1)=16 字节体）",
+   "同处写「r3=0xFFC0C0C0」——实为 r3=0xFF800000（=-8388608=24 位有符号 min）；0xFFC0C0C0=-4144960 非 24 位边界",
+   "同处写「r0=[r8+8]>>2 masked 0x7FFFFF」——计数无 mask；0x7FFFFF 是装入 r2 的钳位上界（lsr.rri 逻辑右移，无 and）"
+  ]
+ },
+ "hw_evidence": {
+  "conclusion": "无 rep×体内条件块组合捕获证据",
+  "rep_captures_total": 24,
+  "rep_breakdown": "12 rep + 12 rep.i，全在 fm1-2026-10-24-v3/results.jsonl batch-block-000",
+  "body_shape": "一律直行 r7 += 1（gen.py:293-302：[rep word]+[add.ri.u5 r7,1]×body+[goto hw_exit0]，body∈{1,2,3}）；v3.py:23-32 只算净差 Δr7=count×(body_bytes/2)，无逐轮回读",
+  "capture_mode": "rep 当作单个整体指令执行，出口聚合读回 r0..r15 净效果（count 寄存器→0、r7+=N）；不回放每轮、不呈现回边、不呈现体内部条件跳过（runner.S 聚合读回）",
+  "conditional_blocks": "只作独立指令记录捕获；v3 主 results.jsonl 实有 50 个条件开启器 id 各 12 条（6 个 iff.ne.rr.1..6 无模型、44 个有模型），从未出现在任何 rep 体内",
+  "register_rep_body_bytes": "2/4 字节体、计数∈{1,2,3,5,7}；6 字节体出现在 rep.i（2/4/6）",
+  "site_extrapolation": "本站 16 字节体+计数 128 超 hw 捕获范围但未超 ISA 文档（2..32）与既有 gate 已放行范围（ROM 0x417e rep 22 r5 22 字节体、计数上界 10000）"
+ },
+ "rep_model_status": {
+  "gate": "probe_boot.py:2317-2437 immediate_rep_multi_block 开关下通用多指令 rep gate",
+  "count_rules": "rep.i count=立即数 n(1..32)；rep count=self.R[register] 真实值，未知→rep_register_count_unknown、0→unverified_zero_count_rep（除非 zero_count_rep_skip）、>10000→超界",
+  "body_validation": "2356-2419：逐条解码恰好覆盖 body_bytes，每条 not inner.block 且 branch_field is None 且非 rep/goto/call/rts/pop.pc/tbb/tbh/lock/idle/cli/sti/... 且有模型，否则 rep_multi_block_body_not_straight_line",
+  "repeat_mechanism": "2432-2436 + 793-801：体逐条真实执行，PC 到体末回卷、计数寄存器递减到 0——即逐轮拆解执行；体指令走常规解码+模型路径",
+  "block_mechanism": "upstream sim.py:145-168 + 238-248：after_then/skip 已正确处理 if/ifs/iff 块（成立执行 then、否则 skip else），独立于 rep 的 hw 验证机制；probe_boot.py:688-691 finish_exact 联动 after_then 递减",
+  "released_so_far": "register_rep_multi_block_projection baseline=826（全是直行体/已放行并行对体：ROM 0x417e 22 字节 memcpy、ROM 0xc70c DCU 并行对）；本站第一个条件体",
+  "existing_test": "test_boot_bus.py:260-273 test_multi_instruction_rep_block_rejects_control_flow_body 显式钉死「rep 体含条件块（0x12cb12 if.eq.ri.modimm）→诚实拒」——B 落地需随新开关分叉，不静默改旧断言"
+ },
+ "runtime_shape": {
+  "count_r0": 128,
+  "count_source": "[r8+8]>>2 = 512 字节/4",
+  "source_pointer_r1": "0x41d30c（=[r8+16]）",
+  "source_buffer": "[0x41d30c, 0x41d50c) 128 个对齐字全部可读、全为零（codex 用 ownbase4 快照逐字核 MMU 映射）",
+  "path_coverage": "全零输入下两条件（r4>0x7FFFFF、r4<0xFF800000）都假 → 两个 mov.rr then 部分零次执行；上钳/下钳取真路径只能靠隔离单测",
+  "loop_steps": "1（rep 头）+ 128×4（ld.w+2 ifs+st.w.pin）= 513 条本核指令；每轮 r1 后增 4，出口 r1=0x41d50c、r0=0；bgts.ri r0=0 死分支不跳",
+  "next_stop_forecast": "源缓冲已知（全零）→ 钳位环内无墙；停点应在 0x60736de 起第二相拷贝/处理 + 0x60736fc call 下游，或下游既知 copex site16/site24（0x6072bb8/0x6072d1a）、二次 fn_config RMW——由实跑决定（地址序≠执行序）"
+ },
+ "plan": {
+  "options": {
+   "a_release_rep_conditional": "放行 rep×条件块（若 hw 有证据）——§hw_evidence 无组合捕获证据，按红线不臆造，排除",
+   "b_unroll_narrow": "拆解执行逐轮，收窄到可验证子集：寄存器 rep + 非嵌套 ifs.gt.rr/ifs.lt.rr + t=1/e=0 + 块内 mov.rr + 无条件尾指令 + 体内不引用计数寄存器 + 块终点严格早于 rep 终点；conditional 层独立开关默认关，标 derived-not-measured",
+   "c_honest_stop_narrow": "保持诚实停前沿停在 42,231,273；钳位环在 app 音频路径，其后 copex site16/24、二次 RMW 等下游全被堵；成本=前沿静止到另案"
+  },
+  "codex_verdict": "选 B：独立、默认关闭的条件投影下，放行本站这种『块内只有一条 mov、两条路径都在无条件尾存储前汇合』的寄存器 REP，沿用现有机制逐轮执行；硬件捕获支持两个组成部分，组合行为仍须标 derived-not-measured",
+  "composition_review": {
+   "block_skip_vs_rep_wrap": "本站模型内无风险、硅上未知——rep 按 step_body 后 pc==end 判一轮（probe_boot.py:793）；两条件假时跳 0x60736d2/0x60736d8 均在体内，所有路径最后都执行 st.w.pin 顺序到 end；不需假设『条件跳过直接命中 rep 末端也算一轮』",
+   "after_then_residue": "本站无风险——两开启器 t=0/e=0，假时不建 after_then、真时建 [1,0] 随 mov.rr 清掉，尾存储入口恒见 None；一般嵌套块有风险（上游 after_then 单槽）",
+   "count_decrement_timing": "本站不敏感、泛化有风险——体内不读不写 r0，末轮 r0=0 后 bgts.ri 自然不跳；体内读 r0 见未测中间值、写 r0 使两计数分离 → 收窄形状拒绝体内引用 r0",
+   "source_read_wall": "本次入口无缺页/未初始化风险（512 字节已逐字核）；每轮真实 ld.w/有符号比较/st.w.pin 照常，保留同值写事件与指针后增",
+   "whole_loop_evidence": "仍有风险——全零输入下两 mov 恒不执行，最终 RAM 看不出真假路径实现错误；须验 PC 命中/写事件/计数，不能只比最终缓冲"
+  },
+  "codex_corrections_verified": [
+   "v3 条件开启器 50 个 id（非 44）：6 个 iff.ne.rr.1..6 无模型、44 个有模型（v3.py:59 排除规则）",
+   "寄存器 rep 12 条只覆盖 2/4 字节体、计数∈{1,2,3,5,7}；6 字节体在 rep.i；v3 净差 Δr7=count×(body_bytes/2) 无逐轮回读",
+   "「rep 34 r0」「r3=0xFFC0C0C0」「masked 0x7FFFFF」三处路由笔记误导（见 disassembly.errata_vs_route_notes），后两处已复制进 probe_irq_entry.py 注释/断言说明（9211/9263 行）"
+  ],
+  "implementation_notes": "体校验 walk 块感知化：REP 用字节界、块 t/e 用逻辑指令数；遇允许开启器查模型+操作数+解码校验其 1 条 mov+按实际宽度推进；守块终点早于 rep 终点、全体恰好覆盖 body_bytes；新开关关时保留原拒绝点（旧直行体/并行对体走旧路径）",
+  "unit_test_matrix": "正例（真实 16 字节体多轮喂 0x00800000/0xff7fffff/0/0x007fffff/0xff800000，断言两 mov 命中、每轮原址写、r1+4、flags 保持、r0 终 0、bgts.ri 不跳、单轮退出 after_then/repeat 清空）；负例（关开关/块越界/块在体末/嵌套块/块内分支调用/块内并行对/体内引用计数寄存器→入口拒绝零部分提交；第二样本缺字节→第一轮写入保留第二轮停 ld.w）",
+  "verification_arms": "跨代码 ON（上站快照恢复，记首 rep 入口/体内 PC 命中/尾存储次数/出口寄存器/IRQ 延后/新停点；全零入口预期 ld.w+2ifs+st.w.pin 各 128、两 mov 各 0、r1=0x41d50c）+ ownbase ON（新代码自建快照两 ON 臂逐键一致）+ ownbase OFF 因果负例（只关新开关逐键复现 42,231,273 @ 0x60736c8 + rep_multi_block_body_not_straight_line/ifs.gt.rr@0x60736cc + 826 计数；主线 289,849 @ 0x60679ba 不动）；合并前从零回放",
+  "evidence_card_wording": "本路 conditional pass / derived-not-measured。FM-1 分别捕获直行加法体 REP 的出口净效果与独立有符号条件块的选臂效果；对固件 0x60736c8 的非嵌套形状，模型假设每轮执行所选条件臂、在共同尾存储后消费一次 REP 计数；组合形状、128 轮中间状态与 IRQ 可见时点均无硅上捕获；当前入口 128 样本全零，上下钳取真路径由隔离单测覆盖"
+ },
+ "evidence_tiers": {
+  "rep_is_byte_counted_loop": "[isa toml 2478 + v3 hw 12 条直行体] 双源",
+  "block_is_conditional_select": "[v3 hw 50 开启器 id×12] 单源（44 有模型、6 无模型）",
+  "rep_x_block_composition": "[模型层推断] 无硅捕获，标 derived-not-measured",
+  "count_128_and_source_all_zero": "[segimpl4 ownbase4 快照 last_registers + MMU 逐字核] 运行时钉死",
+  "r3_0xff800000": "[pi32v2isa 解码 + 24 位有符号 min 语义] 权威（路由笔记 0xFFC0C0C0 勘正）"
+ },
+ "notes": [
+  "本路只读：未改 tools/ 任何代码、未跑任何改状态 probe、不 merge 不 push；codex 参谋在 ~/tmp/codex/202611192124-repcond/ 不进仓",
+  "codex 用 sim-segimpl4 worktree 的 ownbase4 快照重放只读核实（未改文件），钉 r0=128/r1=0x41d30c/128 字全零",
+  "B 落地时 test_boot_bus.py:260 的旧负例（条件体诚实拒）须随新开关分叉：关=保持拒，开=只放行收窄子集；不能静默改旧断言",
+  "上游 sim.py 的 stop 语义（无模型/非直行即停）本身红线友好——扩展点在体校验 walk 侧，不动上游树"
+ ]
+}
