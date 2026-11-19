@@ -2687,4 +2687,175 @@ class StandalonePreincrementSubwordStoreTests(unittest.TestCase):
         self.assertEqual(result['stop']['address'],'0x124f04')
 
 
+class StandaloneParallelExtractHalfwordPairTests(unittest.TestCase):
+    """路 SEGIMPL2:uextra.rrii/insert.rrii 前缀×st.h 第二半并入 exact_parallel_
+    halfword_stores 容器(扩展现有容器族,不新开开关)。
+
+    每例用真实站点/真实 ROM 编码隔离执行:形状(恰 2 字节落盘邻字节保持、
+    A 半按旧寄存器求值、B 半数据取 A 写回前的旧寄存器——含 d==data 别名
+    站点 0x6043610/0x6043e00,FM-1 run3「B 读 A 之前旧寄存器」方向)、负例
+    (半字子开关关→上游 pair 模型合并读诚实停、奇有效地址→零提交诚实拒、
+    st.w 第二半×extract 前缀不在放行面→照旧上游模型执行)、rep 体校验同步
+    (体=单个并行对按 gate 执行)、运输路径(B 半数据含未知字节按字节来源
+    abstract 写)。MMU 虚拟→物理翻译由条件场景主臂(ROM 0x5ed0,
+    v0x404396→p0x19e316)承担,隔离测试不建 MMU 硬件。
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.module=upstream()
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.app=application(firmware);cls.header=package_header(firmware)
+
+    def handoff(self):
+        h=profile(self.header,SENTINEL_A)
+        dst,src,length=RAM_CODE
+        h['seeds'].append((dst,self.app[src-ENTRY:src-ENTRY+length]))
+        h['description']['phase']='isolated real-instruction bus test; not contiguous startup'
+        return h
+
+    def run_one(self,name,pc,regs,snap_addr,snap_name,snap_size=4,seed=None,extra=None):
+        h=self.handoff()
+        if seed is not None:h['seeds'].append(seed)
+        h['snapshots'].append((snap_name,snap_addr,snap_size))
+        diag={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+              'exact_parallel_stores':True,'exact_parallel_halfword_stores':True}
+        diag.update(extra or {})
+        return explore(self.module,self.app,name=name,handoff=h,
+            diagnostics=diag,budget=1)
+
+    def test_uextra_pair_halfword_alias_base_is_data(self):
+        # 0x6043610 `uextra.rrii.p r1=uextra(r1,p:16,l:9) ∥ st.h h[r0+18]=r1`
+        # (app 真实 d==data 别名站点):B 半存 A 半写回前的旧 r1 低 16 位
+        # (FM-1 run3 方向),A 半把 r1 换成 uextra 结果;恰 2 字节落盘。
+        regs=[0]*16;regs[0]=0x124f00;regs[1]=0x0000feed
+        result=self.run_one('segimpl2_uextra_h',0x6043610,regs,0x124f12,'segimpl2_uextra_h')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],hex(0x6043616))
+        self.assertEqual(result['memory_snapshots']['segimpl2_uextra_h']['bytes_with_unknowns'],
+                         'edfe????','exactly two target bytes land; same-word neighbours stay unknown')
+        self.assertEqual(result['last_registers']['r'][1],'0x0',
+                         'the uextra half must replace r1 ((0xfeed>>16)&0x1ff==0)')
+        self.assertEqual(result['instruction_adapters'],{'parallel_halfword_store_old_registers':1})
+        writes=[e for e in result.get('memory_events',[])
+                if e['access']=='write' and int(e['address'],16)==0x124f12]
+        self.assertEqual([w['bytes'] for w in writes],['edfe'])
+
+    def test_insert_pair_halfword(self):
+        # 0x604b57a `insert.rrii.p r9<=insert(r3,p:8,l:24) ∥ st.h h[r6+6]=r4`
+        # (app 真实 insert 前缀站点):A 半位域插入(纯寄存器+立即数),
+        # B 半直写 r4 低 16 位,恰 2 字节落盘。
+        regs=[0]*16;regs[6]=0x124f10;regs[4]=0x0000beef;regs[3]=0x00ccddee;regs[9]=0x000000ab
+        result=self.run_one('segimpl2_insert_h',0x604b57a,regs,0x124f16,'segimpl2_insert_h')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],hex(0x604b580))
+        self.assertEqual(result['memory_snapshots']['segimpl2_insert_h']['bytes_with_unknowns'],'efbe????')
+        self.assertEqual(result['instruction_adapters'],{'parallel_halfword_store_old_registers':1})
+        self.assertEqual(result['last_registers']['r'][9],hex((0x00ccddee<<8)|0xab),
+                         'insert must place r3 low 24 bits into r9 bits[8,32) keeping r9 bit[0,8)')
+
+    def test_halfword_subswitch_off_defaults_to_upstream_pair_model(self):
+        # 负例:不开半字子开关,同一指令照旧落上游通用 pair 模型——写前
+        # 合并读(模型簿记读非 guest 装载)撞未初始化目标字诚实停。指令 id
+        # 是 uextra.rrii.p(A 半命名)、不以 st. 开头,不落 bookkeeping 改名
+        # 路径,kind 保持 uninitialized_memory(与 legacy 形状一致)。
+        regs=[0]*16;regs[0]=0x124f00;regs[1]=0x0000feed
+        h=self.handoff();h['snapshots'].append(('segimpl2_off',0x124f10,4))
+        result=explore(self.module,self.app,name='segimpl2_off',handoff=h,
+            diagnostics={'entry_pc':0x6043610,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'uninitialized_memory')
+        self.assertNotIn('note',result['stop'],'uextra.rrii.p must not hit the st. bookkeeping rename')
+        self.assertEqual(result['stop']['address'],'0x124f10')
+        self.assertNotIn('parallel_halfword_store_old_registers',result['instruction_adapters'])
+
+    def test_odd_effective_address_refuses_with_zero_commit(self):
+        # 负例:奇有效地址(B 半 h[r0+18],r0 奇)→诚实拒,目标字节/寄存器/
+        # PC/计数零提交。
+        regs=[0]*16;regs[0]=0x124f01;regs[1]=0x0000feed
+        h=self.handoff();h['snapshots'].append(('segimpl2_odd',0x124f13,2))
+        result=self.run_one('segimpl2_odd',0x6043610,regs,0x124f13,'segimpl2_odd',2)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'upstream_simulator_failure')
+        self.assertIn('unaligned exact parallel halfword store',result['stop']['message'])
+        self.assertEqual(result['last_registers']['r'][1],'0xfeed')
+        self.assertEqual(result['memory_snapshots']['segimpl2_odd']['bytes_with_unknowns'],'????')
+        self.assertNotIn('parallel_halfword_store_old_registers',result['instruction_adapters'])
+
+    def test_word_second_half_extract_prefix_stays_outside_the_gate(self):
+        # 负例(面边界):uextra 前缀×st.w 第二半(app 真实站点 0x6027088
+        # `uextra.rrii.p r6=uextra(r13,p:0,l:16) ∥ st.w [r5+0]=r0`)不在放行
+        # 面——word 半对 extract 前缀保持关闭,即使两个子开关全开;种子
+        # 初始化目标字后照旧走上游 pair 模型执行(合并整字写,非 gate 直写)。
+        regs=[0]*16;regs[5]=0x124f00;regs[0]=0x11223344;regs[13]=0x1234aaaa
+        result=self.run_one('segimpl2_word_out',0x6027088,regs,0x124f00,'segimpl2_word_out',4,
+                            seed=(0x124f00,b'\x00\x00\x00\x00'),
+                            extra={'exact_parallel_byte_stores':True})
+        self.assertEqual(result['completed_steps'],1)
+        self.assertNotIn('parallel_halfword_store_old_registers',result['instruction_adapters'])
+        self.assertNotIn('parallel_full_word_store_old_registers',result['instruction_adapters'])
+        self.assertEqual(result['last_registers']['r'][6],'0xaaaa')
+        writes=[e for e in result.get('memory_events',[])
+                if e['access']=='write' and int(e['address'],16)==0x124f00]
+        self.assertEqual([w['bytes'] for w in writes],['44332211'],
+                         'the upstream merged WORD write must serve the st.w half')
+
+    def test_rep_body_of_one_extract_pair_executes_via_gate(self):
+        # rep 体校验与主 gate 同步:体=单个并行对(rep.i count=2 body=6,
+        # 体字节=ROM 0x5ed0 的真实编码 b5f10452be61),两次体执行都走 gate;
+        # A 半 r5=uextra(r5,p:4,l:1) 每轮按当时 r1..r5 旧值求值(第二轮读
+        # 第一轮写回的 r5=1),B 半 h[r3+2]=r6 两次直写同一半字。
+        pc=0x01c60020
+        code=bytes.fromhex('2081' 'b5f10452be61' '00000000')
+        h=self.handoff();h['readonly'].append((pc,code))
+        h['snapshots'].append(('segimpl2_rep',0x124f10,4))
+        regs=[0]*16;regs[3]=0x124f0e;regs[5]=0x10;regs[6]=0x0000c0de
+        result=explore(self.module,self.app,name='segimpl2_rep',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,
+                         'exact_parallel_stores':True,'exact_parallel_halfword_stores':True},budget=4)
+        self.assertEqual(result['completed_steps'],3)
+        self.assertEqual(result['stop_pc'],hex(pc+8))
+        self.assertEqual(result['last_registers']['r'][5],'0x0',
+                         'round 2 must uextra the round-1 result (1>>4&1==0)')
+        adapters=result['instruction_adapters']
+        self.assertEqual(adapters.get('parallel_halfword_store_old_registers'),2)
+        self.assertEqual(adapters.get('immediate_rep_multi_block_projection'),1)
+        self.assertEqual(result['memory_snapshots']['segimpl2_rep']['bytes_with_unknowns'],'dec0????')
+
+    def test_transport_unknown_data_bytewise(self):
+        # 运输路径:rep 拷贝体(真实编码 rep 4 4:ld.w.pin r6=[r2++=4]/
+        # st.w.pin [r1++=4]=r6)把含未知字节的字装进 r6,随后 ROM 0x5ed0
+        # 真实编码的并行对(uextra.rrii.p r5=uextra(r5,p:4,l:1) ∥
+        # st.h h[r3+2]=r6)——B 半 abstract 写:byte0 已知落盘、byte1 未知
+        # 保持未知(物理来源传播由 write_abstract_byte 的 unknown_origins
+        # 记录承担,同款 add.rr.p 运输先例;explore 报告面的数值断言为
+        # '11'/'??' 两条事件);A 半按旧寄存器求值(r5=bit4)。任何数值
+        # 消费者仍严格停。
+        pc=0x01c60020;src,dst=0x124f00,0x124f40
+        code=bytes.fromhex('1083' '2605' '9605' 'b5f10452be61' '00000000')
+        h=self.handoff();h['readonly'].append((pc,code))
+        h['seeds'].append((src+12,bytes.fromhex('11')))
+        h['snapshots'].append(('segimpl2_pair_dst',0x124f30,4))
+        regs=[0]*16;regs[1]=dst;regs[2]=src;regs[3]=0x124f2e;regs[5]=0x10
+        result=explore(self.module,self.app,name='segimpl2_transport',handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_multi_block':True,'rep_copy_unknown_transport':True,
+                         'immediate_rep_projection':True,
+                         'exact_parallel_stores':True,'exact_parallel_halfword_stores':True},budget=10)
+        self.assertEqual(result['completed_steps'],10)
+        self.assertEqual(result['stop_pc'],hex(pc+12))
+        self.assertEqual(result['last_registers']['r'][5],'0x1',
+                         'the uextra half must extract bit4 of the old r5')
+        self.assertEqual(result['memory_snapshots']['segimpl2_pair_dst']['bytes_with_unknowns'],
+                         '11??????','byte0 lands; byte1 keeps its unknown origin')
+        adapters=result['instruction_adapters']
+        self.assertEqual(adapters.get('parallel_halfword_store_old_registers'),1)
+        self.assertEqual(adapters.get('rep_copy_unknown_transport_load'),4)
+        self.assertEqual(adapters.get('rep_copy_unknown_transport_store'),4)
+        writes=[e for e in result['memory_events'] if e.get('access')=='abstract_write'
+                and int(e['address'],16) in (0x124f30,0x124f31)]
+        self.assertEqual([e['bytes_with_unknowns'] for e in writes],['11','??'])
+
+
 if __name__=='__main__':unittest.main()

@@ -5157,6 +5157,17 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # legacy 前缀(149,660 之前)已出现 2 次(走上游模型、内存已初始化、
     # 正常执行),并入主开关会改既有报告的 adapter 计数,故单独 opt-in。
     # 默认关闭,legacy 报告不变。
+    # 路 SEGIMPL2:本容器(不新开开关)扩到 uextra.rrii/insert.rrii 前缀×
+    # st.h 第二半——形状与半字族同构(A 半纯寄存器+立即数位运算,效果只有
+    # regs+flags;B 半半字部分写字节粒度直写)。证据形状 ROM 0x5ed0
+    # `uextra.rrii.p r5=uextra(r5,p:4,l:1) ∥ st.h h[r3+2]=r6`(SEGIMPL 前沿
+    # 42,172,454 停点:ROM 0x5e94-0x5ef2 字节→半字展开环每轮高半字的 B 半,
+    # 上游 pair 模型写前合并读撞 SEGIMPL 放行后保留的未知字节 0x19e316);
+    # ROM 0x11144=同族第二实例(同形展开环 0x11134..0x1114a)——放行的是
+    # 形状非站点。静态面上界:app uextra∥st.h 6 站+insert∥st.h 3 站+ROM
+    # 2 站,0..42,172,441 前缀零执行(crc_bankb 289,849 动态 watch 零命中
+    # +off 臂逐键对照,唯一前缀内迁移=展开环迭代 0 已知字上的 0x5ed0,
+    # PARSTOR 同款);st.w 族第二半×extract 前缀不在放行面(到达时诚实停)。
     if halfword_pair:extra['exact_parallel_halfword_stores']=True
     # byte_pair:opt-in 的并行对字节存储第二半(exact_parallel_stores 的独立
     # 子开关 exact_parallel_byte_stores,同半字先例单独 opt-in)。证据形状
@@ -8518,14 +8529,17 @@ def check(report,firmware):
             'preincrement stores — the 42,172,441 stop instruction itself '
             '(st.h.prer h[++r3=r6]=r7 writing the low half of the '
             'transported-unknown word 0x19e314, clearing exactly its two '
-            'byte origins) and its byte-channel sibling 0x5ec6, four gate '
-            'firings total — and +13 steps land at 42,172,454 @ 0x5ed0 on '
-            'the PARALLEL pair uextra.rrii.p||st.h whose halfword B-half '
-            'merge read hits the retained unknown byte 0x19e316 (a raw '
-            'uninitialized_memory stop: the pair records under the A-half '
-            'uextra id, the bookkeeping-read rename does not apply) — the '
-            'parallel-pair halfword family, a fresh instruction-shape '
-            'boundary for the next route')
+            'byte origins) and its byte-channel sibling 0x5ec6 — and +13 '
+            'steps landed at 42,172,454 @ 0x5ed0 on the PARALLEL pair '
+            'uextra.rrii.p||st.h whose halfword B-half merge read hit the '
+            'retained unknown byte 0x19e316 (a raw uninitialized_memory '
+            'stop: the pair records under the A-half uextra id, the '
+            'bookkeeping-read rename does not apply), which the route-'
+            'SEGIMPL2 release then crossed by joining the extract-prefix x '
+            'st.h shape into the exact_parallel_halfword_stores container '
+            '(+817 steps through the full five-iteration loop exit and the '
+            'ROM record building to the 0x6198 mul||st.w.sp merge-read '
+            'stop — see the route-SEGIMPL2 release record)')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 EVIMPL(2026-11-18,docs/frontier-scout-evqueue.md 停点 41,909,506;
@@ -8921,32 +8935,81 @@ def check(report,firmware):
     # 路径不适用),归下路并行对半字族;pre 立即数形(hw 各 13 条但 app
     # 16 h+41 b 站点未触达)/hi.prer 形(hw 13 条、全库零站点)/st.{w,d}.
     # prer 整字前增量形(38+4 站点)与 ld.*.prer 装载形不在放行族。
-    require(r['instruction_adapters'].get('exact_preincrement_subword_store')==4 and
+    require(r['instruction_adapters'].get('exact_preincrement_subword_store')==10 and
             r['stop']['kind']=='uninitialized_memory' and
-            r['stop']['first_missing']=='0x19e316' and
+            r['stop']['first_missing']=='0x19e4bc' and
             r['peripherals']['jl_fm_con_head_registers']['word_writes']==1 and
-            r['memory_event_counts']['write']==2419422 and
+            r['memory_event_counts']['write']==2419593 and
             'exact_preincrement_subword_stores' in r['assumptions']['diagnostics'],
-            'the route-SEGIMPL release record must pin the runtime evidence: exactly FOUR '
+            'the route-SEGIMPL release record must pin the runtime evidence: exactly TEN '
             'exact_preincrement_subword_store gate firings (the st.h.prer/st.b.prer pair '
-            'twice each — expansion-loop iteration 0 on known words taken over from the '
-            'upstream merge-write path with byte-identical RAM results, and iteration 1 '
-            'whose st.h.prer is the released 42,172,441 stop instruction itself), +13 '
-            'steps to the 42,172,454 stop at 0x5ed0 where the PARALLEL pair '
-            'uextra.rrii.p||st.h halfword B-half merge read honestly hits the RETAINED '
-            'unknown byte 0x19e316 (the 8-byte window 0x19e314-0x19e31b holds '
-            'abstract-transported unknown values with origins 0x19f7e8-0x19f7ef — '
-            'written-but-unknown, never never-written; the direct write clears the '
-            'origins of exactly the bytes it covers, which is why a synthetic '
-            'initialization was REJECTED — it would have masked this honest next '
-            'stop), the stop kind stays raw uninitialized_memory (the pair records '
-            'under the A-half uextra id, not st.*, so the bookkeeping-read rename '
-            'does not apply), the jl_fm ledger stays frozen at one write (the '
-            'released segment is pure CPU0 store code), and the write event total '
-            'moves 2419420->2419422 (two gate writes replace two merged word '
-            'writes of iteration 0 and add iteration 1\'s two) — this does NOT '
-            'verify any parallel-pair halfword store, pre immediate-increment '
-            'form, st.w/st.d prer form or the expansion buffer\'s unknown values')
+            'in each of the FIVE expansion-loop iterations — iteration 0 on known words '
+            'taken over from the upstream merge-write path with byte-identical RAM '
+            'results, iteration 1 whose st.h.prer is the released 42,172,441 stop '
+            'instruction itself, iterations 2-4 walked on through the route-SEGIMPL2 '
+            'release that crossed the 42,172,454 pair wall), the 42,172,454 stop at '
+            '0x5ed0 where the PARALLEL pair uextra.rrii.p||st.h halfword B-half merge '
+            'read honestly hit the RETAINED unknown byte 0x19e316 (the 8-byte window '
+            '0x19e314-0x19e31b holds abstract-transported unknown values with origins '
+            '0x19f7e8-0x19f7ef — written-but-unknown, never never-written; the direct '
+            'write clears the origins of exactly the bytes it covers, which is why a '
+            'synthetic initialization was REJECTED — it would have masked this honest '
+            'next stop) is now CROSSED by that SEGIMPL2 release (stop kind stays raw '
+            'uninitialized_memory at the NEW 0x6198 stop on the unmodeled heap word '
+            '0x19e4bc), the jl_fm ledger stays frozen at one write (the released '
+            'segments are pure CPU0 store code), and the write event total moves '
+            '2419420->2419593 (two gate writes replace two merged word writes of '
+            'iteration 0 and add every later gate write through the new stop) — this '
+            'does NOT verify any pre immediate-increment form, st.w/st.d prer form or '
+            'the expansion buffer\'s unknown values')
+    # 路 SEGIMPL2:uextra/insert 前缀×st.h 第二半并入 exact_parallel_halfword_
+    # stores 容器(扩展现有容器族,不新开开关)的释放记录断言——SEGIMPL 前沿
+    # 42,172,454 @ 0x5ed0 的并行对半字墙放行后 +817 步(旧停点→展开环迭代
+    # 1 后半程到迭代 4 走完、环出口 0x5ef6 pop 完成恰 107 步→返回调用域后
+    # 710 步):上站墙序预判的「词 0x19e318 同族墙恰一次」未出现——同一
+    # 0x5ed0 形状放行覆盖全部迭代(迭代 2 高半 0x19e31a 在未知窗口上直写、
+    # 迭代 3-4 已知词直写);返回后进入 ROM 0x6170 函数,序言保存寄存器写
+    # 栈槽(0x6170 push.rets_rl 落 0x19e350/0x19e354、0x6178 mov.rr.p∥
+    # st.w.sp [sp+8] 落 0x19e4c0、0x618c st.w.sp [sp+12] 落 0x19e4c4——
+    # 栈帧写非业务记录,消费者证据未到),停在 0x6198 `mul.modimm.rri.p
+    # r0=r0*9 ∥ st.w.sp [sp+4]=r2` 的上游合并读(虚拟栈 sp=0x4042b8,MMU
+    # 翻译 0x4042bc→物理堆 0x19e4bc 未初始化;mul 前缀不在 pure-ALU 清单、
+    # st.w.sp 是 word 族——归下路 mul 前缀×word 半族评审)。gate 计数:半字
+    # 对容器 740→745(迭代 0 已知字迁移+迭代 1-4 直写恰 5 次)、prer 两形
+    # 4→10;timer0 cnt 5,808→8,259(恰 +817×3 tick,PRD 11,999 窗内零新
+    # 到期/零新交付,到期 15,819/交付 15,802 冻结)、core-tick cnt
+    # 1,403,868→1,407,136(恰 +817×4,CPU1 同款 +3,268)、零新喂狗(163/162
+    # 冻结)、jl_fm 恰一笔 RMW 冻结、事件钟冻结。
+    require(r['instruction_adapters'].get('parallel_halfword_store_old_registers')==745 and
+            r['stop']['address']=='0x19e4bc' and r['stop_pc']=='0x6198' and
+            r['peripherals']['timer0']['cnt']==8259 and
+            r['peripherals']['core_tick_configuration'][0]['cnt']==1407136 and
+            'exact_parallel_halfword_stores' in r['assumptions']['diagnostics'],
+            'the route-SEGIMPL2 release record must pin the runtime evidence: the '
+            'extract-prefix (uextra.rrii/insert.rrii) x st.h second half joined the '
+            'exact_parallel_halfword_stores CONTAINER (no new switch — the shape is '
+            'isomorphic to the halfword family), releasing the 42,172,454 stop pair '
+            'uextra.rrii.p||st.h at ROM 0x5ed0; the expansion loop runs ALL FIVE '
+            'iterations to its 0x5ef6 exit (the predicted word-0x19e318 same-family '
+            'wall NEVER APPEARS — one shape release covers every iteration: iteration '
+            '2 high half 0x19e31a direct-writes over the unknown window and iterations '
+            '3-4 direct-write known words — 107 steps to the 0x5ef6 pop completion '
+            'plus 710 steps after the return, entering the ROM 0x6170 function whose '
+            'prologue saves registers into stack slots (0x19e350/354 via push.rets_rl, '
+            '0x19e4c0/4c4 via st.w.sp — stack saves, not business records), and stops '
+            'at 0x6198 mul.modimm.rri.p||st.w.sp whose upstream merge '
+            'read hits the uninitialized heap frame word 0x19e4bc (mul prefix is not '
+            'in the pure-ALU list and st.w.sp is a word-half — the mul-prefix x '
+            'word-store pair family belongs to the next route); the parallel halfword '
+            'pair adapter walks 740->745 (iteration 0 known-word takeover from the '
+            'upstream merge-write path, byte-identical RAM, plus four direct-write '
+            'firings), the preincrement gate walks 4->10 (five iterations x two '
+            'forms), TIMER0 cnt 5808->8259 = exactly +817 x 3 STD12M ticks inside '
+            'the PRD 11999 window with zero new expiry, the CPU0 core tick walks '
+            '1403868->1407136 = exactly +817 x 4 with 347/347 frozen (CPU1 the '
+            'same +3268), zero new feed (163/162 frozen) and the jl_fm ledger '
+            'frozen at its single write — this does NOT verify any st.w-family '
+            'extract-prefix pair, the mul prefix, or the heap frame word 0x19e4bc')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -10278,7 +10341,12 @@ def check(report,firmware):
     # 并行对停点)零新到期零新交付(15819/15802 冻结),cnt 窗内走表 5,769→
     # 5,808(恰 +39=13 步×3 STD12M tick),零新喂狗(163/162 冻结),elapsed
     # 名义单位 186 冻结(小数余数 496→509 不足一个名义单位)。
-    require(timer=={'con':0x1401,'cnt':5808,'prd':11999,'pending':False,
+    # 路 SEGIMPL2:0x5ed0 并行对半字墙放行后 +817 步段(展开环迭代 1 后半程
+    # →迭代 4 走完→环出口 0x5ef6→ROM 记录构建续走→0x6198 mul∥st.w.sp 合并
+    # 读停)零新到期零新交付(15819/15802 冻结),cnt 窗内走表 5,808→8,259
+    # (恰 +2,451=817 步×3 STD12M tick,PRD 11,999 窗内),零新喂狗(163/162
+    # 冻结),elapsed 名义单位 186 冻结(小数余数 509→1,326 不足一个名义单位)。
+    require(timer=={'con':0x1401,'cnt':8259,'prd':11999,'pending':False,
             'expirations':15819},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
@@ -10407,10 +10475,16 @@ def check(report,firmware):
     # (恰 +52=13×4 tick 精确走表,CPU1 路 322,919,964→322,920,016 同款);
     # 新停点 0x5ed0 在并行对 uextra.rrii.p∥st.h 高半字 B 半的合并读上
     # (未初始化字节 0x19e316=运输写未知值,IPMASK 0=临界区外,ICFG 0x300)。
+    # 路 SEGIMPL2:0x5ed0 并行对半字墙放行后 +817 步段(展开环迭代 1 后半程
+    # →迭代 4 走完→环出口→ROM 记录构建续走)零新溢出零新交付(347/347
+    # 冻结),cnt 1,403,868→1,407,136(恰 +3,268=817×4 tick 精确走表,CPU1
+    # 路 322,920,016→322,923,284 同款);新停点 0x6198 在 mul.modimm.rri.p∥
+    # st.w.sp 的上游合并读上(未初始化物理堆帧字 0x19e4bc,IPMASK 0=临界
+    # 区外,ICFG 0x300)——mul 前缀×word 半族,归下路。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==1403868 and
+            tick0['cnt']==1407136 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and

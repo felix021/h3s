@@ -77,7 +77,12 @@ FEATURES = (
     Feature('insert_load_pair', 'base', (), False, None,
             '「装载+组装」并行对执行(exact_parallel_insert_load,旧值对称假设)'),
     Feature('halfword_pair', 'base', (), False, None,
-            '并行对半字存储第二半(exact_parallel_halfword_stores 子开关)'),
+            '并行对半字存储第二半(exact_parallel_halfword_stores 子开关;路 '
+            'SEGIMPL2 容器扩到 uextra.rrii/insert.rrii 前缀×st.h——证据形状 '
+            'ROM 0x5ed0=42,172,454 停点展开环高半字 B 半,ROM 0x11144 同族'
+            '第二实例;放行形状非站点,静态面 app 6+3 站/ROM 2 站前缀零执行,'
+            '唯一前缀内迁移=展开环迭代 0 已知字上的 0x5ed0〔直写与上游合并'
+            '写 RAM 逐字节同,PARSTOR 同款〕)'),
     Feature('p11_power_init', 'base', (), False, None,
             'power_init 的 P11 依赖链(lpwr 响应/窗口/公共段拷贝/配置 RMW)'),
     # ---- conditional 栈(p11_heap_experimental_config 场景增量,59 个开关) ----
@@ -729,11 +734,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42172454,
-        'stop_pc': '0x5ed0',
+        'completed_steps': 42173271,
+        'stop_pc': '0x6198',
         'stop': {'kind': 'uninitialized_memory', 'access': 'read',
-                 'address': '0x19e314', 'size': 4, 'region': 'physical_heap',
-                 'first_missing': '0x19e316'},
+                 'address': '0x19e4bc', 'size': 4, 'region': 'physical_heap',
+                 'first_missing': '0x19e4bc'},
         'freshness_fields': ('kind', 'address'),
     },
 }
