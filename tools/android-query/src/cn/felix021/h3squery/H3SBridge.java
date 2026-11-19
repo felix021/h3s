@@ -37,8 +37,8 @@ import org.json.JSONObject;
  * 固件 setter 只读 data[0] 当音量值、要求 len>=2、忽略第二字节，值不钳（3/6/8 是面板层档位）；
  * 按键重映射默认走批量同步 opcode 0xC0/0xC1（表 C cmdid 2，docs/morefunc-protocol.md §3，
  * 2026-11-19 MOREFUNC 钉死），ADV type2/0x2b 两条旧候选保留作对照；
- * 更多功能（定时/断连关机、提示音语言、LDAC、双设备、设备名、恢复出厂、找耳机、清除配对）
- * 走 MoreFuncFrame（docs/morefunc-protocol.md）。
+ * 更多功能（定时/断连关机、提示音语言、LDAC、双设备、设备名、恢复出厂、清除配对）
+ * 走 MoreFuncFrame（docs/morefunc-protocol.md）；「找耳机」不发命令（见 findBuds）。
  *
  * 线程模型：transport 回调约定在主线程（Android BLE 适配层保证；Loopback 单线程同步），
  * 本类不加锁。真机 BLE 适配层未实现（红线：不连真机），粘合清单见 README「传输接线骨架」。
@@ -373,23 +373,28 @@ public class H3SBridge {
         return dispatch(MoreFuncFrame.buildResetFamilyCommand(sn, MoreFuncFrame.RESET_SUBCMD_FACTORY), sn);
     }
 
-    /** 找耳机响声（opcode 0xC5 子命令 02 [推断]：有活动链路时播两声提示音；官方 App
-     *  「寻找耳机」的发声半边，地图定位在手机侧协议无对应命令）。 */
+    /**
+     * 找耳机（eqproto 修正：**不发任何 BLE 命令**）。QCY 原生行为是手机侧循环播放铃声
+     * （MediaPlayer.create(R.raw.didi2)+setLooping），走已连接的蓝牙媒体音频；开始/停止
+     * 均无 RCSP 帧。0.9.1 误发的 `C5 02` 实为原生**清除配对记录**命令（已归 clearPairing），
+     * 本方法不再发送。方法名保留（页面 mfFindBtn 调用不打断），响铃侧实现待定——
+     * APK 无 R.raw 铃声资源，三候选（res/raw 新增铃声 / H3sToneBridge 合成音走蓝牙媒体
+     * 路由 / 复用 assets/samples 样本）由 uifix3 合入时定，当前返回明确的待定错误。
+     */
     @JavascriptInterface
     public String findBuds() {
-        if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
-        int sn = transport == null ? 0 : allocSn();
-        return dispatch(MoreFuncFrame.buildResetFamilyCommand(sn, MoreFuncFrame.RESET_SUBCMD_FIND), sn);
+        return err("找耳机改为手机侧媒体播放（原生不发 BLE 命令，本方法已停止发送）；"
+            + "响铃实现待定（eqfix2 报告三候选），与 UI 侧改动（uifix3）一起接线");
     }
 
-    /** 清除配对记录（FF/0x03 data=[02]，[推断] 实验性：固件 setter 无视 data 固定投内部
-     *  事件 594→BT 控制，清除后连接会断开——面板原文）。 */
+    /** 清除配对记录（opcode 0xC5 子命令 02：QCY 原生清配对命令，eqproto 字节对照钉死；
+     *  0.9.1 的 FF/03 是错误推断已移除）——危险操作：清除后连接断开、需重新配对，
+     *  页面必须先 confirm。 */
     @JavascriptInterface
     public String clearPairing() {
         if (!armed) return err("未武装：先调 h3s.armWrite(true)（写门控，未武装拒绝一切写命令）");
         int sn = transport == null ? 0 : allocSn();
-        return dispatch(buildCustomCommand(sn, MoreFuncFrame.CMD_CLEAR_PAIRING,
-            MoreFuncFrame.buildClearPairingData()), sn);
+        return dispatch(MoreFuncFrame.buildResetFamilyCommand(sn, MoreFuncFrame.RESET_SUBCMD_CLEAR_PAIRING), sn);
     }
 
     /**

@@ -6,10 +6,11 @@ import cn.felix021.h3squery.MoreFuncFrame;
 import org.json.JSONObject;
 
 /**
- * 「更多功能」纯 JVM 单测（docs/morefunc-protocol.md，路 MOREFUNC / sim-morefunc）：
- * 新帧形状正例/边界/负例（0x14/0x1f/0x19/0x23/0x24/0x03/0xC0/0xC1/0xC5）、回读载荷解析、
- * EqWritePolicy 白名单放行/拒绝、H3SBridge 方法字节对照，以及 LoopbackTransport
- * 端到端（真固件行为桩：FF 静默 setter→回读确认、C0 写改表→C1 读回 45B、C5 恢复出厂重置桩态）。
+ * 「更多功能」纯 JVM 单测（docs/morefunc-protocol.md，路 MOREFUNC / sim-morefunc + eqproto 勘误）：
+ * 新帧形状正例/边界/负例（0x14/0x1f/0x19/0x23/0x24/0xC0/0xC1/0xC5；FF/0x03 旧清配对已删→拒绝）、
+ * 回读载荷解析、EqWritePolicy 白名单放行/拒绝、H3SBridge 方法字节对照（findBuds 不发帧、
+ * clearPairing=C5/02），以及 LoopbackTransport 端到端（真固件行为桩：FF 静默 setter→回读确认、
+ * C0 写改表→C1 读回 45B、C5 恢复出厂重置桩态、找耳机 0 次 BLE 写/清配对才发 C5/02）。
  */
 public class MoreFuncFrameTest {
     static void expect(boolean b, String msg) { if (!b) throw new AssertionError(msg); }
@@ -28,8 +29,9 @@ public class MoreFuncFrameTest {
         bridgeMethods();
         parsePayloads();
         loopbackEndToEnd();
-        System.out.println("MoreFuncFrameTest passed: 0x14/0x1f/0x19/0x23/0x24/0x03/0xC0/0xC1/0xC5 帧"
-            + "正例+边界+负例、白名单放行/拒绝、bridge 字节对照、回读解析、Loopback 端到端（静默 setter 回读确认+C1 读表+C5 恢复）");
+        System.out.println("MoreFuncFrameTest passed: 0x14/0x1f/0x19/0x23/0x24/0xC0/0xC1/0xC5 帧"
+            + "正例+边界+负例（FF/0x03 已删→拒绝）、白名单放行/拒绝、bridge 字节对照（findBuds 0 写、"
+            + "clearPairing=C5/02）、回读解析、Loopback 端到端（静默 setter 回读确认+C1 读表+C5 恢复+找耳机 0 次 BLE 写）");
     }
 
     /** 帧形状正例/边界/负例。 */
@@ -52,10 +54,10 @@ public class MoreFuncFrameTest {
             unhex("fedcbac0ff0004" + "00" + "2301" + "01" + "ef"));
         bytes("双设备 关", MoreFuncFrame.buildCustomCommand(0, 0x24, MoreFuncFrame.buildBoolData(false)),
             unhex("fedcbac0ff0004" + "00" + "2401" + "00" + "ef"));
-        // 0xC5 恢复出厂 / 找耳机
+        // 0xC5 恢复出厂 / 清除配对（02 原「找耳机」[推断] 已勘误：eqproto 证明是原生清配对命令）
         bytes("恢复出厂", MoreFuncFrame.buildResetFamilyCommand(0, MoreFuncFrame.RESET_SUBCMD_FACTORY),
             unhex("fedcbac0c50002" + "00" + "01" + "ef"));
-        bytes("找耳机", MoreFuncFrame.buildResetFamilyCommand(0, MoreFuncFrame.RESET_SUBCMD_FIND),
+        bytes("清除配对（QCY 原生字节）", MoreFuncFrame.buildResetFamilyCommand(0, MoreFuncFrame.RESET_SUBCMD_CLEAR_PAIRING),
             unhex("fedcbac0c50002" + "00" + "02" + "ef"));
         // 0xC0 设备名：item={len=1+nameLen, cmdid=01, name}
         bytes("设备名写", MoreFuncFrame.buildNameWriteCommand(0, "H3S"),
@@ -109,10 +111,11 @@ public class MoreFuncFrameTest {
             "0x23/0x24 布尔帧应放行");
         expect(!EqWritePolicy.permitted(MoreFuncFrame.buildCustomCommand(0, 0x23, new byte[]{2}), true),
             "0x23 data=2 应拒绝");
-        expect(EqWritePolicy.permitted(MoreFuncFrame.buildCustomCommand(0, 0x03, MoreFuncFrame.buildClearPairingData()), true),
-            "0x03 清除配对帧应放行");
+        // 0.9.1 误推断的 FF/03 清配对命令：eqproto 勘误后不再放行（任何 data 值都拒）
+        expect(!EqWritePolicy.permitted(MoreFuncFrame.buildCustomCommand(0, 0x03, new byte[]{0x02}), true),
+            "FF/0x03 data=02（旧清配对误推断）应拒绝");
         expect(!EqWritePolicy.permitted(MoreFuncFrame.buildCustomCommand(0, 0x03, new byte[]{1}), true),
-            "0x03 data=01（非 02）应拒绝");
+            "FF/0x03 data=01 应拒绝");
         expect(EqWritePolicy.permitted(KeyRemapFrame.buildBatchSyncCommand(0, 7, 2, 7), true),
             "C0 按键三元组帧应放行");
         expect(EqWritePolicy.permitted(KeyRemapFrame.buildBatchSyncTableCommand(0, new byte[45]), true),
@@ -125,9 +128,9 @@ public class MoreFuncFrameTest {
             "C1 读帧（mask 00000004）应放行");
         expect(!EqWritePolicy.permitted(MoreFuncFrame.buildBatchReadCommand(0, 0x00000008), true),
             "C1 读帧（mask bit3 未钉）应拒绝");
-        expect(EqWritePolicy.permitted(MoreFuncFrame.buildResetFamilyCommand(0, 1), true)
-            && EqWritePolicy.permitted(MoreFuncFrame.buildResetFamilyCommand(0, 2), true),
-            "0xC5 子命令 01/02 应放行");
+        expect(EqWritePolicy.permitted(MoreFuncFrame.buildResetFamilyCommand(0, MoreFuncFrame.RESET_SUBCMD_FACTORY), true)
+            && EqWritePolicy.permitted(MoreFuncFrame.buildResetFamilyCommand(0, MoreFuncFrame.RESET_SUBCMD_CLEAR_PAIRING), true),
+            "0xC5 子命令 01 恢复出厂/02 清除配对应放行（调用方负责 UI confirm）");
         byte[] c5bad = unhex("fedcbac0c50002" + "00" + "03" + "ef");   // 手组子命令 03（builder 拒绝）
         expect(!EqWritePolicy.permitted(c5bad, true), "0xC5 子命令 03 武装后也应拒绝");
         // 未武装一律拒绝（退回 QueryPolicy 只读）
@@ -156,10 +159,13 @@ public class MoreFuncFrameTest {
             unhex("fedcbac0c00006" + "00" + "0401" + "483353" + "ef"));
         bytes("restoreDefaults 帧", unhex(result(b.restoreDefaults()).getString("bytesHex")),
             unhex("fedcbac0c50002" + "00" + "01" + "ef"));
-        bytes("findBuds 帧", unhex(result(b.findBuds()).getString("bytesHex")),
+        // findBuds：eqproto 后不发任何命令（原生=手机侧媒体播放），返回明确待定错误
+        JSONObject find = result(b.findBuds());
+        expect(!find.getBoolean("ok"), "findBuds 应返回待定错误（不发 BLE 命令）");
+        expect(!find.has("bytesHex"), "findBuds 不应产出命令帧");
+        // clearPairing：C5/02（QCY 原生清配对字节；0.9.1 的 FF/03 误推断已移除）
+        bytes("clearPairing 帧（C5/02）", unhex(result(b.clearPairing()).getString("bytesHex")),
             unhex("fedcbac0c50002" + "00" + "02" + "ef"));
-        bytes("clearPairing 帧", unhex(result(b.clearPairing()).getString("bytesHex")),
-            unhex("fedcbac0ff0004" + "00" + "0301" + "02" + "ef"));
         bytes("readKeyRemapTable 帧", unhex(result(b.readKeyRemapTable()).getString("bytesHex")),
             unhex("fedcbac0c10005" + "00" + "00000004" + "ef"));
         // readStatus 扩白名单
@@ -240,6 +246,15 @@ public class MoreFuncFrameTest {
         expect(resetAck != null && resetAck.getBoolean("ok"), "C5 恢复应有回执: " + resetAck);
         expect(t.moreFuncState.isEmpty(), "恢复出厂应清空桩态");
         eq("恢复出厂按键表回默认", 7, t.keyRemapTable[5] & 0xff);
+        // 4b) eqproto 回归：找耳机 0 次 BLE 写（原生=手机侧媒体播放）；清配对才发 C5/02
+        int framesBefore = t.receivedFrames.size();
+        JSONObject findRes = result(b.findBuds());
+        expect(!findRes.getBoolean("ok"), "findBuds 应返回待定错误（不发送）: " + findRes);
+        eq("找耳机 BLE 写次数", framesBefore, t.receivedFrames.size());
+        JSONObject clearRes = result(b.clearPairing());
+        expect(clearRes.getBoolean("sent"), "清配对应排队发送: " + clearRes);
+        bytes("清配对写出帧=C5/02", t.receivedFrames.get(t.receivedFrames.size() - 1),
+            unhex("fedcbac0c50002" + String.format("%02x", clearRes.getInt("sn")) + "02" + "ef"));
         // 5) 通知帧（flags=0x80）→ device_message 透出（固件 0x06025642 广播形状：cmdid+len+data，无 SN）
         byte[] notify = unhex("fedcba" + "80" + "ff" + "000a" + "1408" + "1e00000000000000" + "ef");
         t.injectDeviceNotify(notify);

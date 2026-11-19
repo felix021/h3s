@@ -24,10 +24,11 @@ import java.util.Arrays;
  *   - 「更多功能」族（docs/morefunc-protocol.md，控制面板全功能+固件注册表反解）：
  *     0x14 定时关机 len4（分钟 LE16∈{5,10,30,60,FFFF}，0=立即关机拒绝）、0x1f 断连关机
  *     len2（同域）、0x19 提示音语言 len4（key 必为 "JL00"/"JL01"）、0x23 LDAC len1 bool、
- *     0x24 双设备 len1 bool、0x03 清除配对 len1 data=[02]（[推断]，实验性）；
+ *     0x24 双设备 len1 bool（FF/0x03 清除配对是 0.9.1 错误推断，eqproto 后已删、不再放行）；
  *   - 批量同步（默认按键 wire，2026-11-19 路 MOREFUNC 钉死）：opcode 0xC0 item cmdid=2
  *     （data=合法三元组或 45B 全表）/ cmdid=1 设备名（1..20B，固件 32B 上限从严到面板 20）；
- *     opcode 0xC1 读 mask==0x00000004（按键表）；opcode 0xC5 body=SN+{01 恢复出厂,02 找耳机}。
+ *     opcode 0xC1 读 mask==0x00000004（按键表）；opcode 0xC5 body=SN+{01 恢复出厂,
+ *     02 清除配对记录}（0x02 是 QCY 原生清配对命令、非「找耳机」——找耳机不发帧）。
  * 不开任意字节写总开关（AGENTS 红线）。未 armed 时退回 QueryPolicy（只读帧），所有写一律拒绝。
  *
  * 纯逻辑判定，不接真机传输层——传输接线需真机联调，本路不做。
@@ -117,10 +118,8 @@ public final class EqWritePolicy {
             case MoreFuncFrame.CMD_LDAC:          // 0x23 / 0x24：data=[01/00]（len 1 bool）
             case MoreFuncFrame.CMD_DUAL_DEVICE:
                 return dataLen == 1 && ((frame[10] & 255) == 0 || (frame[10] & 255) == 1);
-            case MoreFuncFrame.CMD_CLEAR_PAIRING: // 0x03 [推断] 清除配对：data=[02]（实验性从严）
-                return dataLen == 1 && (frame[10] & 255) == 0x02;
             default:
-                return false;
+                return false;                                     // FF/0x03 清配对（0.9.1 误推断）已删：不放行
         }
     }
 
@@ -152,11 +151,12 @@ public final class EqWritePolicy {
         return mask == KeyRemapFrame.ADV_TYPE2_MASK;
     }
 
-    /** 0xC5 恢复/查找族：body=SN+{01 恢复出厂, 02 找耳机}，其它子命令不放行。 */
+    /** 0xC5 恢复/清除族：body=SN+{01 恢复出厂, 02 清除配对记录}（两子命令均危险，调用方须 UI
+     *  confirm——clearPairing 走 02），其它子命令不放行。 */
     private static boolean isResetFamilySetter(byte[] frame, int n) {
         if (n != 2) return false;
         int sub = frame[8] & 255;
-        return sub == MoreFuncFrame.RESET_SUBCMD_FACTORY || sub == MoreFuncFrame.RESET_SUBCMD_FIND;
+        return sub == MoreFuncFrame.RESET_SUBCMD_FACTORY || sub == MoreFuncFrame.RESET_SUBCMD_CLEAR_PAIRING;
     }
 
     /** ADV type2 写（候选 A）：body=SN+mask(4B 大端=00 00 00 04)+[key,gesture,action]，共 8B。 */

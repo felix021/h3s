@@ -117,10 +117,11 @@ public class LoopbackTransport extends SerialBleTransport {
 
     /**
      * 更多功能族（MOREFUNC）设备桩：按**真固件反解行为**应答（docs/morefunc-protocol.md）——
-     * FF 写 0x14/0x1f/0x19/0x23/0x24/0x03 setter 返回 0=静默（不回帧，只更新 moreFuncState 供回读）；
+     * FF 写 0x14/0x1f/0x19/0x23/0x24 setter 返回 0=静默（不回帧，只更新 moreFuncState 供回读）；
      * FF 只读（FE 01 cmd）回 `cmdid n data`（分发器读路径包装）；批量同步 C0 写 cmdid 2 改
      * keyRemapTable 后回 0xC0 status 帧（回执前缀形状 [未钉]，桩取 `00 SN 00`）；C1 读 mask
-     * bit2 回 `00 SN 00` + item{2E 02 <45B>}；C5 01 恢复出厂重置全部桩态、C5 02 找耳机回 status。
+     * bit2 回 `00 SN 00` + item{2E 02 <45B>}；C5 01 恢复出厂重置全部桩态、C5 02 清除配对回
+     * status（真机清配对后断连，桩不模拟断连）。
      * 返回 null 表示交回既有回显路径（非更多功能族命令）。
      */
     private byte[] buildMoreFuncResponse(byte[] f) {
@@ -149,7 +150,6 @@ public class LoopbackTransport extends SerialBleTransport {
             case MoreFuncFrame.CMD_TONE_LANGUAGE:
             case MoreFuncFrame.CMD_LDAC:
             case MoreFuncFrame.CMD_DUAL_DEVICE:
-            case MoreFuncFrame.CMD_CLEAR_PAIRING:
             case EqWritePolicy.CMD_AUDIO_MODE:
                 if (dataLen != f.length - 11) return null;
                 byte[] value = java.util.Arrays.copyOfRange(f, 10, 10 + dataLen);
@@ -206,7 +206,7 @@ public class LoopbackTransport extends SerialBleTransport {
         return wrapKeystoreBody(sn, payload, MoreFuncFrame.OPCODE_BATCH_READ);
     }
 
-    /** 0xC5 桩：01 恢复出厂=重置全部桩态回默认，02 找耳机=直接成功；回 status 帧。 */
+    /** 0xC5 桩：01 恢复出厂=重置全部桩态回默认，02 清除配对=回 status（真机此时断连，桩不模拟）。 */
     private byte[] respondResetFamily(byte[] f, int sn) {
         if (f.length != 10) return new byte[0];            // 8 头尾 + SN + 子命令
         if ((f[8] & 0xff) == MoreFuncFrame.RESET_SUBCMD_FACTORY) {

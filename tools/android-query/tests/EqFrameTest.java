@@ -27,10 +27,11 @@ public class EqFrameTest {
         roundTrip();
         boundary();
         docBytes();
+        popPresetBytes();
         typeSemantics();
         overLimit();
         policy();
-        System.out.println("EqFrameTest passed: 往返一致、边界、路 H 文档字节对照、type 语义常量、段数超限、EqWritePolicy 放行/拒绝");
+        System.out.println("EqFrameTest passed: 往返一致、边界、修正后字节对照（gain 在前）、「流行」预设原生对照、type 语义常量、段数超限、EqWritePolicy 放行/拒绝");
     }
 
     /** type 字节语义（路 EQFIX 重解 apply 0x06025118 钉死，docs/eq-cmd-0x22-layout.md §2.3）：
@@ -103,25 +104,58 @@ public class EqFrameTest {
     }
 
     static void docBytes() {
-        // 路 H 文档 §7 预设曲线字节示例，逐字节对照
+        // 逐字节对照：字段顺序按 eqproto 修正——每段 +2/+3=gain、+4/+5=Q（QCY 原生 DEX
+        // 0x5755EE 先 getGain 写 +2/+3、0x575632 后 getQ 写 +4/+5；docs 同步待补）。
         // 头：type 1 + mastergain -4 → 01 70 FE；段0 freq30/q80/gain0/iir0；段1 freq170/q60/gain-17/iir2
         List<EqBand> two = Arrays.asList(new EqBand(30, 80, 0, 0), new EqBand(170, 60, -1700, 2));
         byte[] d = EqFrame.buildEqData(1, -400, two);
-        bytes("路 H §7 头+段0/段1", d, hexBytes("01 70 FE 1E 00 50 00 00 00 00 AA 00 3C 00 5C F9 02"));
+        bytes("头+段0/段1", d, hexBytes("01 70 FE 1E 00 00 00 50 00 00 AA 00 5C F9 3C 00 02"));
 
         // master gain -4dB = 0xFE70（i16 小端）
         bytes("master -4dB", EqFrame.buildEqData(1, -400, new ArrayList<EqBand>()), hexBytes("01 70 FE"));
 
-        // freq 1000Hz = 0x03E8 → E8 03；q 0.8=80 → 50 00；gain -17dB=-1700 → 5C F9
-        bytes("freq1000/q80/gain-17", band(1000, 80, -1700, 2), hexBytes("01 00 00 E8 03 50 00 5C F9 02"));
+        // freq 1000Hz = 0x03E8 → E8 03；gain -17dB=-1700 → 5C F9；q 0.8=80 → 50 00
+        bytes("freq1000/gain-17/q80", band(1000, 80, -1700, 2), hexBytes("01 00 00 E8 03 5C F9 50 00 02"));
 
-        // 段 8 示例：freq 11000 / q 2(200) / gain 2(200) / iir 3 → F8 2A C8 00 C8 00 03
-        bytes("路 H §7 段8", band(11000, 200, 200, 3), hexBytes("01 00 00 F8 2A C8 00 C8 00 03"));
+        // 段 8 示例：freq 11000 / gain 2(200) / q 2(200) / iir 3 → F8 2A C8 00 C8 00 03（gain==q 对称，顺序无关）
+        bytes("段8（对称段）", band(11000, 200, 200, 3), hexBytes("01 00 00 F8 2A C8 00 C8 00 03"));
 
-        // 完整 RCSP 帧：1 段（master -4、freq30/q80/gain0/iir0）
-        // FE DC BA C0 FF 00 0D 00 22 0A 01 70 FE 1E 00 50 00 00 00 00 EF
+        // 完整 RCSP 帧：1 段（master -4、freq30/gain0/q80/iir0）
+        // FE DC BA C0 FF 00 0D 00 22 0A 01 70 FE 1E 00 00 00 50 00 00 EF
         byte[] frame = EqFrame.buildEqCommand(1, -400, Arrays.asList(new EqBand(30, 80, 0, 0)));
-        bytes("完整 RCSP 帧", frame, hexBytes("FE DC BA C0 FF 00 0D 00 22 0A 01 70 FE 1E 00 50 00 00 00 00 EF"));
+        bytes("完整 RCSP 帧", frame, hexBytes("FE DC BA C0 FF 00 0D 00 22 0A 01 70 FE 1E 00 00 00 50 00 00 EF"));
+    }
+
+    /** 「流行」预设对照（eqproto 钉死的 QCY 原生字节）：双方该预设同发 type=02、总增益 −4dB，
+     *  段字节 gain 在前、Q 在后——0.9.1 发反时固件在 170Hz 段读到 gain=+0.4dB、Q=−17。 */
+    static void popPresetBytes() {
+        // 30 Hz，0 dB，Q 0.5 → 1E 00 00 00 32 00 00（gain 0 占 +2/+3，Q 50=0x32 占 +4/+5）
+        bytes("流行段0（30Hz）", band(30, 50, 0, 0), hexBytes("01 00 00 1E 00 00 00 32 00 00"));
+        // 170 Hz，−17 dB，Q 0.4 → AA 00 5C F9 28 00 02（gain −1700=0xF95C 在前，Q 40=0x28 在后）
+        bytes("流行段1（170Hz）", band(170, 40, -1700, 2), hexBytes("01 00 00 AA 00 5C F9 28 00 02"));
+
+        // 完整「流行」帧头+前两段（SN=00，原生帧 `FE DC BA C0 FF 00 45 00 22 42 02 70 FE`）：
+        // 9 段 → len=0x0045、data_len=0x42，type=02、master −4dB=70 FE
+        List<EqBand> pop = new ArrayList<EqBand>();
+        int[] freq = {30, 170, 300, 700, 1200, 2800, 5000, 10000, 11000};
+        int[] q = {50, 40, 200, 100, 200, 100, 200, 300, 200};
+        int[] gain = {0, -1700, -200, 200, -250, 400, 0, -600, 200};
+        int[] iir = {0, 2, 2, 2, 2, 2, 2, 2, 3};
+        for (int i = 0; i < 9; i++) pop.add(new EqBand(freq[i], q[i], gain[i], iir[i]));
+        byte[] popFrame = EqFrame.buildEqCommand(0, EqFrame.TYPE_APPLY, -400, pop);
+        eq("流行帧长", 8 + 3 + 3 + 7 * 9, popFrame.length);
+        bytes("流行帧头+段0/段1", Arrays.copyOfRange(popFrame, 0, 13 + 14),
+            hexBytes("FE DC BA C0 FF 00 45 00 22 42 02 70 FE 1E 00 00 00 32 00 00 AA 00 5C F9 28 00 02"));
+        // 反解析与「流行」预设参数一致（gain/Q 各归各位）
+        Parsed pp = EqFrame.parseEqCommand(popFrame);
+        eq("流行 eqType", EqFrame.TYPE_APPLY, pp.eqType);
+        eq("流行 masterGain", -400, pp.masterGainCentidB);
+        for (int i = 0; i < 9; i++) {
+            eq("流行 freq[" + i + "]", freq[i], pp.bands.get(i).freq);
+            eq("流行 q[" + i + "]", q[i], pp.bands.get(i).q);
+            eq("流行 gain[" + i + "]", gain[i], pp.bands.get(i).gain);
+            eq("流行 iir[" + i + "]", iir[i], pp.bands.get(i).iirType);
+        }
     }
 
     static void overLimit() {
