@@ -286,7 +286,7 @@ class Runner:
                              'code_fingerprint': self.fingerprint,
                              'snapshot_sha256': row['snapshot_capture']['sha256'],
                              **({'fingerprint_acknowledged':
-                                 row['snapshot_restore']['fingerprint_acknowledged']}
+                                 row['snapshot_restore'].get('fingerprint_acknowledged')}
                                 if fingerprint_ack else {})})
         print(json.dumps({'snapshot': str(snap), 'attempts': attempts_total - 1,
                           'resume_budget': budget,

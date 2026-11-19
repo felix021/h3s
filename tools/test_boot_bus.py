@@ -2858,4 +2858,202 @@ class StandaloneParallelExtractHalfwordPairTests(unittest.TestCase):
         self.assertEqual([e['bytes_with_unknowns'] for e in writes],['11','??'])
 
 
+class StandaloneParallelMulPairTests(unittest.TestCase):
+    """路 SEGIMPL3:mul.* 标量乘前缀×存储第二半(exact_parallel_mul_prefixes
+    独立子开关,不并入 pure-ALU 清单——已执行窗口内恰两处 mul×st.* 真实
+    执行〔app 0x606fb8c∥st.w、ROM 0x7604∥st.h,均走上游模型目标字已知
+    正常完成〕,halfword_pair/word_store_sp_l/CQ 先例:已执行形状独立
+    opt-in)。
+
+    每例用真实站点/真实 ROM 编码隔离执行:A 半 16 形全部纯寄存器/立即数
+    乘(hw/fm1-2026-10-24-v3 每形∥st.w∥ld.w 各 4 条捕获;B 半存储按
+    「B 读 A 之前旧寄存器」64/64 条捕获核对,含 mul 目的==存储源的别名
+    方向 batch-pair-000 `mul.rr.p r4*=r1 ∥ st.w [r3+8]=r4` mem=旧 r4)。
+    负例:子开关关→上游 pair 模型合并读诚实停;无 v3 捕获形
+    (mul.f.rrr.p)不在 16 形表→子开关开仍走上游模型;半字第二半要
+    halfword 子门(halfword_pair)叠加;rep 体校验与主 gate 同步
+    (子开关关→rep 体形状拒绝)。
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.module=upstream()
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.app=application(firmware);cls.header=package_header(firmware)
+
+    def handoff(self):
+        h=profile(self.header,SENTINEL_A)
+        dst,src,length=RAM_CODE
+        h['seeds'].append((dst,self.app[src-ENTRY:src-ENTRY+length]))
+        h['description']['phase']='isolated real-instruction bus test; not contiguous startup'
+        return h
+
+    def run_one(self,name,pc,code,regs,diag,snap_addr,snap_name,snap_size=4,
+                seeds=(),sp=STACK_TOP,budget=1):
+        h=self.handoff();h['readonly'].append((pc,code))
+        for seed in seeds:h['seeds'].append(seed)
+        h['snapshots'].append((snap_name,snap_addr,snap_size))
+        d={'entry_pc':pc,'initial_sp':sp,'initial_gprs':regs};d.update(diag)
+        return explore(self.module,self.app,name=name,handoff=h,
+            diagnostics=d,budget=budget)
+
+    PC=0x01c60020
+    # ROM 0x6198 `mul.modimm.rri.p r0=r0*0x9 ∥ st.w.sp [sp+4]=r2` 真实编码
+    # (SEGIMPL2 前沿 42,173,271 停点指令,6 字节+4 零余量给 pair 解码)。
+    ROM_6198=bytes.fromhex('e0f109008221')+bytes(4)
+    # ROM 0x7604 `mul.modimm.rri.p r0=r0*0x1f40 ∥ st.h h[r5+0]=r1` 真实编码
+    # (已执行窗口内两处 mul×st.* 迁移之一的 halfword 形)。
+    ROM_7604=bytes.fromhex('e0f1fa0dd960')+bytes(4)
+
+    def test_evidence_shape_rom_6198_word_sp_half(self):
+        # 证据形状:ROM 0x6198(word 半,sp 相对)。A 半 r0=r0*9(纯立即数
+        # 乘,N/Z 随结果),B 半整字直写 [sp+4]=r2——旧值语义无关(4 字节
+        # 全覆盖),未初始化帧槽无需合成初始化恰被覆盖;r0/r2 用非零有效
+        # 向量(0xc544→0x6ef64,r2=0x18a88;停点现场实测 r0=0/r2=1,零
+        # 向量下乘积可读性差,此处只验形状非现场复刻)。
+        regs=[0]*16;regs[0]=0xc544;regs[2]=0x18a88
+        result=self.run_one('segimpl3_6198',self.PC,self.ROM_6198,regs,
+            {'exact_parallel_stores':True,'exact_parallel_mul_prefixes':True},
+            0x124f04,'segimpl3_6198',4,sp=0x124f00)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop_pc'],hex(self.PC+6))
+        self.assertEqual(result['last_registers']['r'][0],hex(0xc544*9),
+                         'the mul half must write r0=r0*9')
+        self.assertEqual(result['memory_snapshots']['segimpl3_6198']['bytes_with_unknowns'],
+                         '888a0100','the whole word [sp+4] lands from old r2')
+        self.assertEqual(result['instruction_adapters'],
+                         {'parallel_full_word_store_old_registers':1})
+        writes=[e for e in result.get('memory_events',[])
+                if e['access']=='write' and int(e['address'],16)==0x124f04]
+        self.assertEqual([w['bytes'] for w in writes],['888a0100'])
+
+    def test_alias_base_is_data_mul_rrr_word(self):
+        # app 0x6061570 `mul.rrr.p r2=r5*r4 ∥ st.w [r0+0]=r2` 真实别名站点
+        # (存储源 r2==mul 目的 r2):B 半存 A 半写回前的旧 r2(hw v3
+        # batch-pair-000 同款方向——捕获 mem=旧 r4 而非 A 半乘积),A 半
+        # r2=r5*r4 按旧寄存器求值,整字直写。
+        pc=0x6061570;code=self.app[pc-ENTRY:pc-ENTRY+6]
+        regs=[0]*16;regs[5]=0x2710;regs[4]=0x3;regs[2]=0x0000feed;regs[0]=0x124f00
+        result=self.run_one('segimpl3_alias',pc,code,regs,
+            {'exact_parallel_stores':True,'exact_parallel_mul_prefixes':True},
+            0x124f00,'segimpl3_alias')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['last_registers']['r'][2],hex(0x2710*3),
+                         'the mul half must write r2=r5*r4')
+        self.assertEqual(result['memory_snapshots']['segimpl3_alias']['bytes_with_unknowns'],
+                         'edfe0000','the store half must land the OLD r2 low word')
+        self.assertEqual(result['instruction_adapters'],
+                         {'parallel_full_word_store_old_registers':1})
+
+    def test_mul_pair_subswitch_off_upstream_honest_stop(self):
+        # 负例:mul_pair 关,同一 ROM 0x6198 指令照旧落上游通用 pair 模型
+        # ——写前合并读(模型簿记读非 guest 装载)撞未初始化帧槽诚实停。
+        # 指令 id 是 mul.modimm.rri.p(不以 st. 开头),不落 bookkeeping
+        # 改名路径,kind 保持 uninitialized_memory。
+        regs=[0]*16;regs[0]=0xc544;regs[2]=0x18a88
+        h=self.handoff();h['readonly'].append((self.PC,self.ROM_6198))
+        h['snapshots'].append(('segimpl3_off',0x124f04,4))
+        result=explore(self.module,self.app,name='segimpl3_off',handoff=h,
+            diagnostics={'entry_pc':self.PC,'initial_sp':0x124f00,
+                         'initial_gprs':regs,'exact_parallel_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'uninitialized_memory')
+        self.assertNotIn('note',result['stop'],
+                         'mul.modimm.rri.p must not hit the st. bookkeeping rename')
+        self.assertEqual(result['stop']['first_missing'],'0x124f04')
+        self.assertNotIn('parallel_full_word_store_old_registers',
+                         result['instruction_adapters'])
+
+    def test_unmodeled_float_mul_prefix_stays_upstream(self):
+        # 负例(面边界):mul.f.rrr.p(浮点乘,app 真实站点 0x60279c2
+        # `mul.f.rrr.p r3=r3*r6 (f) ∥ st.w [r2+0]=r4`)无 v3 捕获、不在
+        # 16 形表——mul_pair 开(且两个宽度子开关全开)仍走上游通用 pair
+        # 模型(种子初始化目标字后正常完成,合并整字写,零 parallel
+        # adapter)。
+        pc=0x60279c2;code=self.app[pc-ENTRY:pc-ENTRY+6]
+        regs=[0]*16;regs[3]=0x00400000;regs[6]=0x00400000
+        regs[2]=0x124f00;regs[4]=0x11223344
+        result=self.run_one('segimpl3_float',pc,code,regs,
+            {'exact_parallel_stores':True,'exact_parallel_mul_prefixes':True,
+             'exact_parallel_halfword_stores':True,'exact_parallel_byte_stores':True},
+            0x124f00,'segimpl3_float',4,seeds=((0x124f00,b'\x00\x00\x00\x00'),))
+        self.assertEqual(result['completed_steps'],1)
+        self.assertNotIn('parallel_full_word_store_old_registers',
+                         result['instruction_adapters'])
+        writes=[e for e in result.get('memory_events',[])
+                if e['access']=='write' and int(e['address'],16)==0x124f00]
+        self.assertEqual([w['bytes'] for w in writes],['44332211'],
+                         'the upstream merged WORD write must serve the st.w half')
+
+    def test_halfword_second_half_layers_on_halfword_subswitch(self):
+        # 半字第二半宽度子门分层(与 ext 传送族同款):ROM 0x7604(已执行
+        # 窗口内两处迁移之一)在 mul_pair+halfword_pair 双开时直写恰 2 字节
+        # (邻字节未知保持);mul_pair 单开(halfword 子门关)时照旧上游
+        # pair 模型——种子初始化目标字后合并整字写完成(4B 事件含保持的
+        # 高半字),零 halfword adapter。
+        regs=[0]*16;regs[0]=0x1234;regs[5]=0x124f10;regs[1]=0x0000beef
+        result=self.run_one('segimpl3_7604_on',self.PC,self.ROM_7604,regs,
+            {'exact_parallel_stores':True,'exact_parallel_mul_prefixes':True,
+             'exact_parallel_halfword_stores':True},
+            0x124f10,'segimpl3_7604_on')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['last_registers']['r'][0],hex(0x1234*8000),
+                         'the mul half must write r0=r0*8000')
+        self.assertEqual(result['memory_snapshots']['segimpl3_7604_on']['bytes_with_unknowns'],
+                         'efbe????','exactly two target bytes land; neighbours stay unknown')
+        self.assertEqual(result['instruction_adapters'],
+                         {'parallel_halfword_store_old_registers':1})
+        result=self.run_one('segimpl3_7604_off',self.PC,self.ROM_7604,regs,
+            {'exact_parallel_stores':True,'exact_parallel_mul_prefixes':True},
+            0x124f10,'segimpl3_7604_off',4,
+            seeds=((0x124f10,bytes.fromhex('00110000')),))
+        self.assertEqual(result['completed_steps'],1)
+        self.assertNotIn('parallel_halfword_store_old_registers',
+                         result['instruction_adapters'])
+        self.assertEqual(result['memory_snapshots']['segimpl3_7604_off']['bytes_with_unknowns'],
+                         'efbe0000',
+                         'upstream merged write lands the halfword, keeps the seeded upper bytes')
+
+    def test_rep_body_mul_pair_gate_sync(self):
+        # rep 体校验与主 gate 同步:体=ROM 0x6198 真实编码(rep.i 2 6),
+        # 两轮体执行都走 gate;第二轮 A 半读第一轮写回的 r0(r0=2→18→162,
+        # 每轮 r0=r0*9),B 半两轮直写同一 [sp+4] 整字(旧 r2)。
+        code=bytes.fromhex('2081')+bytes.fromhex('e0f109008221')+bytes(4)
+        regs=[0]*16;regs[0]=2;regs[2]=0x18a88
+        h=self.handoff();h['readonly'].append((self.PC,code))
+        h['snapshots'].append(('segimpl3_rep',0x124f04,4))
+        result=explore(self.module,self.app,name='segimpl3_rep',handoff=h,
+            diagnostics={'entry_pc':self.PC,'initial_sp':0x124f00,
+                         'initial_gprs':regs,'immediate_rep_multi_block':True,
+                         'exact_parallel_stores':True,
+                         'exact_parallel_mul_prefixes':True},budget=4)
+        self.assertEqual(result['completed_steps'],3)
+        self.assertEqual(result['stop_pc'],hex(self.PC+8))
+        self.assertEqual(result['last_registers']['r'][0],hex(2*9*9),
+                         'round 2 must mul the round-1 result (2*9*9)')
+        adapters=result['instruction_adapters']
+        self.assertEqual(adapters.get('parallel_full_word_store_old_registers'),2)
+        self.assertEqual(adapters.get('immediate_rep_multi_block_projection'),1)
+        self.assertEqual(result['memory_snapshots']['segimpl3_rep']['bytes_with_unknowns'],
+                         '888a0100')
+
+    def test_rep_body_subswitch_off_refuses_the_shape(self):
+        # 负例(rep 体同步):mul_pair 关时 rep 体含 mul 并行对→形状拒绝
+        # (rep_multi_block_body_parallel_pair_unsupported),零提交。
+        code=bytes.fromhex('2081')+bytes.fromhex('e0f109008221')+bytes(4)
+        regs=[0]*16;regs[0]=2;regs[2]=0x18a88
+        h=self.handoff();h['readonly'].append((self.PC,code))
+        h['snapshots'].append(('segimpl3_repoff',0x124f04,4))
+        result=explore(self.module,self.app,name='segimpl3_repoff',handoff=h,
+            diagnostics={'entry_pc':self.PC,'initial_sp':0x124f00,
+                         'initial_gprs':regs,'immediate_rep_multi_block':True,
+                         'exact_parallel_stores':True},budget=4)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],
+                         'rep_multi_block_body_parallel_pair_unsupported')
+        self.assertEqual(result['stop']['instruction_id'],'mul.modimm.rri.p')
+        self.assertEqual(result['stop']['pair_id'],'st.w.sp')
+        self.assertNotIn('parallel_full_word_store_old_registers',
+                         result['instruction_adapters'])
+
+
 if __name__=='__main__':unittest.main()

@@ -90,6 +90,16 @@ FEATURES = (
             'P11 堆信息 4 字节显式 fixture(静态推导候选,derived-not-measured)'),
     Feature('byte_pair', 'conditional', (), False, None,
             '并行对字节存储第二半(exact_parallel_byte_stores 子开关)'),
+    Feature('mul_pair', 'conditional', (), False, None,
+            '并行对 mul.* 标量乘前缀(exact_parallel_mul_prefixes 子开关,路 '
+            'SEGIMPL3:16 形=hw/fm1-2026-10-24-v3 全部 mul 前缀捕获形,B 半存'
+            '储按旧寄存器语义走既有直写路径;证据形状 ROM 0x6198=42,173,271 '
+            '停点 mul.modimm.rri.p∥st.w.sp 撞未初始化帧槽 0x19e4bc;独立子开'
+            '关原因=已执行窗口 0..42,173,271 内恰 8 次/6 站 mul×st.* 真实执行'
+            '〔快照段 word 5+half 1、resume 段 word 1+half 1,从零 watch 与'
+            'base 快照账本双口径互证〕,halfword_pair/word_store_sp_l/CQ 先'
+            '例:已执行形状独立 opt-in 不并入 pure-ALU 主清单;width 子门分'
+            '层照旧)'),
     Feature('lp_timer_writes', 'conditional', ('p11_power_init',), False, None,
             'LP 定时器初始化写 write-only 记录(lp_timer_init_projection)'),
     Feature('lrct_trim_done', 'conditional', ('lp_timer_writes',), False, None,
@@ -734,11 +744,13 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42173271,
-        'stop_pc': '0x6198',
-        'stop': {'kind': 'uninitialized_memory', 'access': 'read',
-                 'address': '0x19e4bc', 'size': 4, 'region': 'physical_heap',
-                 'first_missing': '0x19e4bc'},
+        'completed_steps': 42173750,
+        'stop_pc': '0x63c2',
+        'stop': {'kind': 'upstream_store_bookkeeping_read', 'access': 'read',
+                 'address': '0x19e100', 'size': 4, 'region': 'physical_heap',
+                 'first_missing': '0x19e100',
+                 'note': 'upstream store model reads previous words to merge/drop '
+                         'writes; not a guest load'},
         'freshness_fields': ('kind', 'address'),
     },
 }
