@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """重取 in-tree 22 键 adapter 计数基线(条件场景 p11_heap_experimental_config)。
 
-probe_irq_entry.check() 的 22 个 adapter 计数断言不再钉绝对值,改为读
+probe_irq_entry.check() 的 23 个 adapter 计数断言不再钉绝对值,改为读
 evidence/p11_heap_adapter_count_baseline.json。前沿推进导致计数漂移时,
 用本工具重跑条件场景并显式更新基线:
 
@@ -68,7 +68,7 @@ def main():
     baseline = {'scenario': SCENARIO,
                 'completed_steps': result['completed_steps'],
                 'stop_pc': result['stop_pc'],
-                'note': '22 个 instruction_adapters 计数基线(条件场景前缀)。推进前沿后计数漂移时用 '
+                'note': '23 个 instruction_adapters 计数基线(条件场景前缀)。推进前沿后计数漂移时用 '
                         'tools/capture_p11_heap_adapter_counts.py --recapture 重取;断言见 '
                         'tools/probe_irq_entry.py check()。',
                 'counts': counts}

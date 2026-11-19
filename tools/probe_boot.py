@@ -82,6 +82,43 @@ EXACT_PARALLEL_EXT_TRANSFER_PREFIXES=('ext.b0.u','ext.b0.s','ext.l.u','ext.l.s')
 EXACT_PARALLEL_POSTINCREMENT_STORE_HALVES=('st.w.pi','st.w.pin','st.w.pi.l','st.w.pin.l',
                                            'st.h.pi','st.h.pin','st.h.pi.l','st.h.pin.l',
                                            'st.b.pi','st.b.pin','st.b.pi.l','st.b.pin.l')
+# 独立前增量(寄存器)半字/字节存储直写(exact_preincrement_subword_stores
+# 独立子开关,路 SEGIMPL):st.{h,b}.prer 恰 2 形(非 hi)。与下面各直写族
+# 同一理由——硅上部分字存储只写自己的字节、不读包含字,上游 m2 存储模型
+# Writes.put 的写前合并读(st.load(wa,4))是模型内部簿记读非 guest 装载,
+# 未初始化 RAM 上假停。语义三源=hw/fm1-2026-10-24-v2 followup5-m 硬件捕获
+# 13/13(st.h.prer 样本:in r3=0x1c21bd8 基址兼数据、r15=-8 增量→out
+# r3=0x1c21bd0、mem[新基址]低半字=旧 r3 低 16 位——先基址+=R[x]、存到
+# 新基址、数据取旧寄存器值〔别名 r==t 场景含内〕、flags 不动)+m2 模型
+# memop prer 同语义+ISA 表 encoding confirmed(不单独作行为证据,STOREG3
+# 纪律)。证据形状 ROM 0x5ea4 `st.h.prer h[++r3=r6]=r7`(FMIMPL 前沿
+# 42,172,441 停点:ROM 0x5e94-0x5ef2 字节→半字展开环——ld.bu.pin.l 取源
+# 字节→uextra(p:1,l:3) 提取 bits[3:1]→×9→前增量半字写,每轮同字低半
+# 〔本形〕+高半〔0x5ed0 并行对 uextra.rrii.p∥st.h 的 B 半,走上游 pair
+# 模型〕成对落盘+字节通道两字节〔st.b.prer 本形 + st.b 偏移形(exact_
+# subword_stores 服务,运行时 1 字节直写事件已证)〕;MMU 128B 页
+# v0x404380→p0x19e300,物理堆展开区)。放行审计(第一性,记入 evidence/
+# sim-routes/segimpl.json):base 快照 41,884,941 边界 RAM 镜像 0x19e268-
+# 0x19e313 与 0x19e31c-0x19e3ff 已知,恰 0x19e314-0x19e31b 8 字节=**已被
+# 未知值运输写覆盖**(unknown_origins 逐字节指向 0x19f7e8-0x19f7ef,
+# write_abstract 路径所写、值未知,非「从未写过」——数值写钩子对该洞零
+# 记录);展开环对目的零装载、每轮低半+高半都写=固件语义不消费旧值,
+# 存储恰写自己的字节并清除所写字节的未知来源(邻字节未知来源保留)。
+# 故拒绝「合成初始化」路径(合成已知值会掩盖放行后 +13 步高半字并行对
+# 合并读如实撞上的未知字节;无证据臆造数值违反「模型不臆造数值」先例),
+# 放行存储形状:直写 width 字节(与 exact_subword_stores 偏移形同款字节
+# 粒度;STOREG3 word 族同论证)。放行后下一停点=+13 步 42,172,454 @
+# 0x5ed0(uninitialized_memory 读包含字 0x19e314、first_missing 0x19e316
+# ——并行对 uextra.rrii.p∥st.h 高半字 B 半的上游合并读撞保留的未知字节,
+# 归下路并行对半字族)。边界:增量取寄存器(prer);立即数前增量 pre 形
+# (app 16 h+41 b 站点,hw 各 13 条样本)与 hi.prer 形(hw 13 条、全库零
+# 站点)未被本停点触达——不在本开关,到达时按同纪律评审;st.w.prer/
+# st.d.prer 整字前增量形(hw 13/14 样本但 38+4 站点未触达)归 word/
+# doubleword 族后续路;st.{h,b}.{pi,pi.l,pin.l} 后增量部分字形(app 上千
+# 站点)照旧;ld.*.prer 装载形真读内存不在放行族。静态面(每 2 字节对齐
+# 全解码,上界含数据段假阳性):app st.h.prer 6/st.b.prer 8 站点,ROM 7/2
+# 站点(含停点两形)。默认关,legacy 报告不变。
+EXACT_PREINCREMENT_SUBWORD_STORE_FORMS=('st.h.prer','st.b.prer')
 # 独立(非并行对 B 半)后增量整字存储直写(exact_postincrement_word_stores 独立
 # 子开关,路 STOREG3):st.{w}.{pi,pin} 及 .l 长形 4 形全族。与上面并行族同一
 # 形状语义(存储到旧基址后基址+=增量,寄存器或立即,ISA confirmed 三源+hw/
@@ -1307,6 +1344,32 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 require(address%width==0,'unaligned exact subword store')
                 self.mem.write(address&0xffffffff,(value&((1<<(width*8))-1)).to_bytes(width,'little'))
                 self.finish_exact(self.pc+size);adapters['exact_subword_store']+=1
+                return
+            if (diagnostics and diagnostics.get('exact_preincrement_subword_stores') and
+                    insn.id in EXACT_PREINCREMENT_SUBWORD_STORE_FORMS):
+                # 独立前增量(寄存器)半字/字节存储直写(路 SEGIMPL,判据/证据见
+                # EXACT_PREINCREMENT_SUBWORD_STORE_FORMS 头注释):先基址+=增量
+                # 寄存器、存储到新基址、数据取旧寄存器值(hw followup5-m 13/13;
+                # 别名 base==data 场景含在捕获内)。与 STOREG3 同款纪律:全部增量
+                # 求值在写内存之前完成(基址/增量为抽象值时先停——基址的 & 掩码
+                # 被 UnknownWord.consumed 拦截、增量 require isinstance(int)),
+                # 不污染目标内存;半字要求偶地址(奇地址半字无观测形状,诚实停),
+                # 偶地址半字/单字节永不跨 128B MMU 页界,mem.write 单页翻译安全;
+                # 基址写回在写内存之后(寄存器序=捕获序,数据已在写前取旧值)。
+                op=module.check.operands(insn,raw)
+                base_reg,data_reg,inc_reg=op['r'],op['t'],op['s']
+                address=self.R[base_reg]&0xffffffff
+                step=self.R[inc_reg]
+                require(isinstance(step,int),
+                        'preincrement subword store needs a known increment')
+                address=(address+step)&0xffffffff
+                width=2 if insn.id.startswith('st.h') else 1
+                value=self.R[data_reg]
+                require(address%width==0,'unaligned exact preincrement subword store')
+                self.mem.write(address,(value&((1<<(width*8))-1)).to_bytes(width,'little'))
+                self.R[base_reg]=address
+                self.finish_exact(self.pc+size)
+                adapters['exact_preincrement_subword_store']+=1
                 return
             if diagnostics and diagnostics.get('exact_parallel_stores') and insn.id.endswith('.p'):
                 pair,pair_raw,pair_size=self.decode(self.pc+size)

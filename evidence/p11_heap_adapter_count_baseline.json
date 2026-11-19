@@ -1,8 +1,8 @@
 {
   "scenario": "p11_heap_experimental_config",
-  "completed_steps": 42172441,
-  "stop_pc": "0x5ea4",
-  "note": "22 \u4e2a instruction_adapters \u8ba1\u6570\u57fa\u7ebf(\u6761\u4ef6\u573a\u666f\u524d\u7f00)\u3002\u63a8\u8fdb\u524d\u6cbf\u540e\u8ba1\u6570\u6f02\u79fb\u65f6\u7528 tools/capture_p11_heap_adapter_counts.py --recapture \u91cd\u53d6;\u65ad\u8a00\u89c1 tools/probe_irq_entry.py check()\u3002",
+  "completed_steps": 42172454,
+  "stop_pc": "0x5ed0",
+  "note": "23 个 instruction_adapters 计数基线(条件场景前缀)。推进前沿后计数漂移时用 tools/capture_p11_heap_adapter_counts.py --recapture 重取;断言见 tools/probe_irq_entry.py check()。",
   "counts": {
     "exact_doubleword_store": 218,
     "exact_doubleword_store_cross_page_split": 9,

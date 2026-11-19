@@ -2565,4 +2565,126 @@ class StandalonePostincrementWordStoreTests(unittest.TestCase):
         self.assertEqual(result['stop']['address'],'0x124f00')
 
 
+class StandalonePreincrementSubwordStoreTests(unittest.TestCase):
+    """路 SEGIMPL:独立前增量(寄存器)半字/字节存储直写(exact_preincrement_subword_stores)。
+
+    每例用真实 app 站点隔离执行(budget=1),断言:先基址+=增量、存到新基址、
+    数据取旧寄存器值(别名站点 0x60b8ea6 r==t)、恰好 width 字节落盘(邻字节
+    保持未初始化)、基址写回、完成一步、同值重写仍出写脉冲。行为依据=hw/
+    fm1-2026-10-24-v2 followup5-m 13/13(含基址=数据别名样本:旧 r3=
+    0x1c21bd8、增量 -8→新基址 0x1c21bd0、写入低半字=旧 r3 低 16 位、flags
+    不动)。s==t/r==s 别名变体无真实站点:结构上唯一写回是基址寄存器、
+    增量与数据都在写回前取值(与 m2 模型同序),以注释钉住不单测。MMU
+    虚拟→物理翻译路径(含 128B 页内偶地址半字永不跨页)由条件场景主臂
+    0x5ea4(v0x404394→p0x19e314)承担,隔离测试不建 MMU 硬件。
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.module=upstream()
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.app=application(firmware);cls.header=package_header(firmware)
+
+    def handoff(self):
+        h=profile(self.header,SENTINEL_A)
+        dst,src,length=RAM_CODE
+        h['seeds'].append((dst,self.app[src-ENTRY:src-ENTRY+length]))
+        h['description']['phase']='isolated real-instruction bus test; not contiguous startup'
+        return h
+
+    def run_one(self,name,pc,regs,snap_addr,snap_name,snap_size=4,seed=None):
+        h=self.handoff()
+        if seed is not None:h['seeds'].append(seed)
+        h['snapshots'].append((snap_name,snap_addr,snap_size))
+        return explore(self.module,self.app,name=name,handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_preincrement_subword_stores':True},budget=1)
+
+    def test_prer_halfword_shape_of_the_segimpl_frontier(self):
+        # 0x6001144 `st.h.prer h[++r3=r1]=r2`(FMIMPL 前沿 42,172,441 停点的
+        # app 同形站点;停点本体=ROM 0x5ea4 h[++r3=r6]=r7):存到 base+inc、
+        # 恰 2 字节落盘(高半字保持未初始化)、基址写回新值。
+        regs=[0]*16;regs[3]=0x124f00;regs[1]=4;regs[2]=0x0000feed
+        result=self.run_one('segimpl_prer_h',0x6001144,regs,0x124f04,'segimpl_prer_h')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'instruction_budget')
+        self.assertEqual(result['memory_snapshots']['segimpl_prer_h']['bytes_with_unknowns'],'edfe????')
+        self.assertEqual(result['last_registers']['r'][3],'0x124f04')
+        self.assertEqual(result['instruction_adapters'].get('exact_preincrement_subword_store'),1)
+
+    def test_prer_byte_register_increment(self):
+        # 0x600df88 `st.b.prer b[++r2=r0]=r6`:字节通道形状,1 字节直写,
+        # 奇偶地址皆可(width=1 无对齐约束)。
+        regs=[0]*16;regs[2]=0x124f10;regs[0]=7;regs[6]=0x00000099
+        result=self.run_one('segimpl_prer_b',0x600df88,regs,0x124f17,'segimpl_prer_b',1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl_prer_b']['bytes_with_unknowns'],'99')
+        self.assertEqual(result['last_registers']['r'][2],'0x124f17')
+
+    def test_prer_alias_base_is_data_takes_the_old_register(self):
+        # 0x60b8ea6 `st.h.prer h[++r15=r11]=r15`(app 真实 r==t 别名站点,
+        # hw followup5-m 别名样本同形):数据=基址写回前的旧寄存器低 16 位。
+        regs=[0]*16;regs[15]=0x124f20;regs[11]=4
+        result=self.run_one('segimpl_prer_alias',0x60b8ea6,regs,0x124f24,'segimpl_prer_alias',2)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl_prer_alias']['bytes_with_unknowns'],'204f')
+        self.assertEqual(result['last_registers']['r'][15],'0x124f24')
+
+    def test_prer_negative_and_zero_increments(self):
+        # 负增量(hw 样本形状:增量 -8)与零增量(存到原基址、基址不变)。
+        regs=[0]*16;regs[3]=0x124f00;regs[1]=0xfffffff8;regs[2]=0x0000feed
+        result=self.run_one('segimpl_prer_neg',0x6001144,regs,0x124ef8,'segimpl_prer_neg',2)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl_prer_neg']['bytes_with_unknowns'],'edfe')
+        self.assertEqual(result['last_registers']['r'][3],'0x124ef8')
+        regs=[0]*16;regs[3]=0x124f00;regs[1]=0;regs[2]=0x0000feed
+        result=self.run_one('segimpl_prer_zero',0x6001144,regs,0x124f00,'segimpl_prer_zero',2)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl_prer_zero']['bytes_with_unknowns'],'edfe')
+        self.assertEqual(result['last_registers']['r'][3],'0x124f00')
+
+    def test_prer_alignment_checks_the_effective_address_not_the_old_base(self):
+        # 旧基址奇、加奇增量后有效地址偶→放行(对齐判据=相加回绕后的有效
+        # 地址,不是旧基址);有效地址奇→诚实拒(require,主循环记
+        # upstream_simulator_failure),目标字节/基址/PC/计数零提交。
+        regs=[0]*16;regs[3]=0x124f01;regs[1]=3;regs[2]=0x0000feed
+        result=self.run_one('segimpl_prer_odd_base',0x6001144,regs,0x124f04,'segimpl_prer_odd_base',2)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl_prer_odd_base']['bytes_with_unknowns'],'edfe')
+        self.assertEqual(result['last_registers']['r'][3],'0x124f04')
+        regs=[0]*16;regs[3]=0x124f00;regs[1]=3;regs[2]=0x0000feed
+        h=self.handoff();h['snapshots'].append(('segimpl_prer_odd_refusal',0x124f02,2))
+        result=explore(self.module,self.app,name='segimpl_prer_odd_refusal',handoff=h,
+            diagnostics={'entry_pc':0x6001144,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_preincrement_subword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'upstream_simulator_failure')
+        self.assertIn('unaligned exact preincrement subword store',result['stop']['message'])
+        self.assertEqual(result['last_registers']['r'][3],'0x124f00')
+        self.assertEqual(result['memory_snapshots']['segimpl_prer_odd_refusal']['bytes_with_unknowns'],'????')
+        self.assertNotIn('exact_preincrement_subword_store',result['instruction_adapters'])
+
+    def test_prer_same_value_rewrite_still_pulses_a_write(self):
+        # 同值重写仍出一笔真实 width 字节写事件(区分直写与上游「合并整字、
+        # 相同则丢弃」);种子先把目标半字写成同值。
+        regs=[0]*16;regs[3]=0x124f00;regs[1]=4;regs[2]=0x0000feed
+        result=self.run_one('segimpl_prer_same',0x6001144,regs,0x124f04,'segimpl_prer_same',2,
+                            seed=(0x124f04,b'\xed\xfe'))
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl_prer_same']['bytes_with_unknowns'],'edfe')
+        writes=[e for e in result.get('memory_events',[])
+                if e['access']=='write' and int(e['address'],16)==0x124f04]
+        self.assertEqual([w['bytes'] for w in writes],['edfe'])
+
+    def test_switch_off_leaves_the_store_to_the_upstream_model(self):
+        # 负例:开关关时同一指令照旧落上游模型——未初始化/未知目标字触发
+        # 写前合并读(模型簿记读非 guest 装载),completed_steps=0 诚实停。
+        regs=[0]*16;regs[3]=0x124f00;regs[1]=4;regs[2]=0x0000feed
+        h=self.handoff();h['snapshots'].append(('segimpl_off',0x124f04,4))
+        result=explore(self.module,self.app,name='segimpl_off',handoff=h,
+            diagnostics={'entry_pc':0x6001144,'initial_sp':STACK_TOP,'initial_gprs':regs},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'upstream_store_bookkeeping_read')
+        self.assertEqual(result['stop']['address'],'0x124f04')
+
+
 if __name__=='__main__':unittest.main()
