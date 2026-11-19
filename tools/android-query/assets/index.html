@@ -9,21 +9,28 @@
 
 <script>
 (function () {
-  var choice = 'auto';
-  var storage = true;
+  const key = 'h3s.theme';
+  const modes = ['auto', 'light', 'dark'];
+  const media = window.matchMedia('(prefers-color-scheme: dark)');
+  let choice = 'auto', storage = true;
   try {
-    var saved = localStorage.getItem('h3s.theme');
-    if (['auto', 'light', 'dark'].indexOf(saved) !== -1) choice = saved;
-    localStorage.setItem('h3s.theme', choice);
-  } catch (e) {
+    const saved = localStorage.getItem(key);
+    if (modes.includes(saved)) choice = saved;
+    localStorage.setItem(key, choice);
+  } catch (_) {
     storage = false;
   }
 
-  var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  var theme = choice === 'auto' ? (dark ? 'dark' : 'light') : choice;
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
-  window.H3S_THEME_BOOT = { choice: choice, storage: storage };
+  function paint(value) {
+    const actual = value === 'auto' ? (media.matches ? 'dark' : 'light') : value;
+    const root = document.documentElement;
+    root.dataset.themeChoice = value;
+    root.dataset.theme = actual;
+    root.style.colorScheme = actual;
+  }
+
+  paint(choice);
+  window.H3S_THEME_BOOT = { key, modes, media, choice, storage, paint };
 })();
 </script>
 
@@ -186,6 +193,12 @@ button.danger:not(:disabled):active {
   background: var(--accent);
   transition: width 0.4s ease;
 }
+button[data-busy="1"] {
+  cursor: progress;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress > div { transition: none; }
+}
 button:disabled,
 select:disabled {
   opacity: 1;
@@ -265,17 +278,17 @@ header {
   position: sticky;
   top: 0;
   z-index: 10;
-  padding-top: calc(10px + env(safe-area-inset-top));
-  padding-bottom: 10px;
+  padding-top: calc(4px + env(safe-area-inset-top));
+  padding-bottom: 2px;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
 }
 .brand {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) auto auto;
-  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr) auto 44px;
+  gap: 6px;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 2px;
 }
 /* 目录：横滑 chip 快速跳转，内容跟随当前 tab */
 .toc {
@@ -296,22 +309,37 @@ header {
   font-size: 13px;
   color: var(--text);
   text-decoration: none;
-  background: var(--card);
+  background: var(--surface);
 }
 .toc a.active {
   border-color: var(--accent);
   color: var(--accent);
 }
+.toc a:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -4px;
+}
 /* 跳转锚点让开 sticky header：高度由 JS 按实测 header 高度动态写入 */
 .brand svg {
   display: block;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   color: var(--accent);
+}
+.brand > div {
+  min-width: 0;
+}
+.brand h1 {
+  white-space: nowrap;
 }
 .brand p {
   color: var(--muted);
   font-size: 12px;
+}
+@media (max-width: 379px) {
+  .brand p {
+    display: none;
+  }
 }
 #themeCycle {
   display: inline-flex;
@@ -512,12 +540,13 @@ main {
 /* EQ 我的预设（路 EQFIX）：命名保存/加载/重命名/删除，localStorage 本机持久化 */
 .preset-save-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 10px 0;
 }
 .preset-save-row input {
   flex: 1;
-  min-width: 0;
+  min-width: min(10em, 100%);
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1282,6 +1311,7 @@ summary {
       <p id="eqFeedback" class="feedback" aria-live="polite">
         本地预览，尚未发送。
       </p>
+      <p id="eqReport" class="note" role="status" hidden></p>
 
       <details id="userPresetBox">
         <summary>我的预设（保存在本机）</summary>
@@ -1966,9 +1996,8 @@ if (themeMedia.addEventListener) {
   themeMedia.addListener(applyTheme);
 }
 window.addEventListener('storage', event => {
-  if (event.key !== 'h3s.theme') return;
-  if (!['auto', 'light', 'dark'].includes(event.newValue)) return;
-  themeChoice = event.newValue;
+  if (event.key !== 'h3s.theme' && event.key !== null) return;
+  themeChoice = ['auto', 'light', 'dark'].includes(event.newValue) ? event.newValue : 'auto';
   applyTheme();
 });
 applyTheme();
@@ -2313,6 +2342,8 @@ function clearDeviceDisplays() {
     $(id).textContent = '连接已断开，设备状态未知。';
     $(id).className = 'feedback';
   });
+  $('eqReport').textContent = '';
+  $('eqReport').hidden = true;
   resetOtaDeviceCard('连接已断开');
 }
 function markSegment(id, predicate) {
@@ -2397,9 +2428,10 @@ function parseDeviceMessage(payloadHex) {
       let master = parseInt(bytes.slice(2, 4), 16) | (parseInt(bytes.slice(4, 6), 16) << 8);
       if (master > 32767) master -= 65536;
       const typeName = { 1: '槽位回读', 2: '曲线', 10: '空间音效' }[type] || ('type ' + type);
-      $('eqFeedback').textContent = segments > 0
+      $('eqReport').textContent = segments > 0
         ? '设备回报：EQ ' + segments + ' 段 · 总增益 ' + (master / 100).toFixed(1) + ' dB（' + typeName + '）'
         : '设备回报：EQ 0 段（设备未配置自定义曲线）';
+      $('eqReport').hidden = false;
     }
   }
 }
@@ -2828,14 +2860,18 @@ function updateFreqLabel(index) {
 
 function applyBandFreq(index, value) {
   if (index < 0) return;
-  const freq = Math.max(20, Math.min(20000, Math.round(value)));
-  if (customEq.freq[index] === freq) {
-    $('freqInput').value = freq;
+  if (!Number.isInteger(value) || value < 20 || value > 20000) {
+    $('freqInput').value = customEq.freq[index];
+    $('eqFeedback').textContent = '请输入 20 至 20000 之间的整数 Hz，已保留原频率。';
     return;
   }
-  customEq.freq[index] = freq;
+  if (customEq.freq[index] === value) {
+    $('freqInput').value = value;
+    return;
+  }
+  customEq.freq[index] = value;
   updateFreqLabel(index);
-  if (selectedBand === index) $('freqInput').value = freq;
+  if (selectedBand === index) $('freqInput').value = value;
   localEqChanged();
 }
 
@@ -2951,14 +2987,15 @@ customEq.freq.forEach((frequency, index) => {
   updateSlider(index);
 });
 
-// 中心频率编辑（选中频段后的 inspector）
-$('freqDown').onclick = () => applyBandFreq(selectedBand, customEq.freq[selectedBand] - 10);
-$('freqUp').onclick = () => applyBandFreq(selectedBand, customEq.freq[selectedBand] + 10);
-$('freqInput').onchange = () => applyBandFreq(selectedBand, Number($('freqInput').value));
+// 中心频率编辑（选中频段后的 inspector）：±10 Hz 在 20…20000 两端截住，
+// 手输读 valueAsNumber（空串是 NaN），非法值恢复上一频率并提示
+$('freqDown').onclick = () => applyBandFreq(selectedBand, Math.max(20, customEq.freq[selectedBand] - 10));
+$('freqUp').onclick = () => applyBandFreq(selectedBand, Math.min(20000, customEq.freq[selectedBand] + 10));
+$('freqInput').onchange = () => applyBandFreq(selectedBand, $('freqInput').valueAsNumber);
 $('freqInput').onkeydown = event => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    applyBandFreq(selectedBand, Number($('freqInput').value));
+    applyBandFreq(selectedBand, $('freqInput').valueAsNumber);
   }
 };
 
@@ -3738,11 +3775,13 @@ presetSelect.onchange = () => {
 $('toneFreqInput').oninput = () => syncPresetSelect(readToneFreq());
 syncPresetSelect(1000);
 
-$('toneVolumeWrap').appendChild(createHSlider({
+const toneVolumeSlider = createHSlider({
   min: 0, max: 100, step: 5, value: toneVolume, ariaLabel: '测试音音量',
   format: v => v + '%',
   onChange: v => { toneVolume = v; $('toneVolumeValue').textContent = v + '%'; }
-}));
+});
+toneVolumeSlider.id = 'toneVolume';  // 接通上方 label/output 的 for="toneVolume"
+$('toneVolumeWrap').appendChild(toneVolumeSlider);
 $('tonePlay').onclick = () => {
   if (!T) { notify('离线预览：测试音需要原生壳（h3sha 桥）', true); return; }
   if (playingId === 'tone') { stopPlayback(); $('toneFeedback').textContent = '已停止。'; return; }
@@ -4464,6 +4503,13 @@ function restoreShow(stage, text) {
   if (text !== undefined) $('restoreStateText').textContent = text;
   usbUpdateButtons();
 }
+/* 恢复结果文字 + 错误色（0.9.0 修复保留）：失败用 danger 色，
+ * 下次操作开始或清空结果时同时复位颜色。仅影响 restoreResultText。 */
+function restoreResult(text, error) {
+  const el = $('restoreResultText');
+  el.textContent = text;
+  el.style.color = error ? 'var(--danger)' : '';
+}
 function usbUpdateButtons() {
   $('usbScan').disabled = !U || usbBusy;
   $('usbEnterRom').disabled = !U || usbBusy || !usbOpened || usbRom;
@@ -4529,7 +4575,7 @@ function usbRun(method, args, expectedEvent, withProgress) {
   const result = rpc(U, method, args);
   if (!result.ok) {
     usbFinishOperation();
-    if (isRestoreOp) $('restoreResultText').textContent = result.error || '操作被拒绝';
+    if (isRestoreOp) restoreResult(result.error || '操作被拒绝', true);
     else $('usbProgressText').textContent = result.error || '操作被拒绝';
     usbResult(result.error || '操作被拒绝', true);
   }
@@ -4743,11 +4789,11 @@ window.onH3sUsbEvent = raw => {
           '扇区 ' + (event.sectors || []).length + ' 个：' + sectors + '\n' +
           '目标 SHA256：' + event.targetSha256 + '\n' +
           'nonce（单次，2 分钟内有效）：' + event.nonce;
-        $('restoreResultText').textContent = '';
+        restoreResult('');
         restoreShow('confirm', '计划已生成，待确认');
       } else {
         restoreShow('plan');
-        $('restoreResultText').textContent = '计划失败：' + (event.error || '');
+        restoreResult('计划失败：' + (event.error || ''), true);
       }
       return;
     }
@@ -4755,11 +4801,11 @@ window.onH3sUsbEvent = raw => {
     if (event.event === 'usb_restore_armed') {
       usbFinishOperation();
       if (event.ok) {
-        $('restoreResultText').textContent = '';
+        restoreResult('');
         restoreShow('run', '已 armed，可开始擦写');
       } else {
         restoreShow('plan');
-        $('restoreResultText').textContent = 'armed 失败：' + (event.error || '');
+        restoreResult('armed 失败：' + (event.error || ''), true);
       }
       return;
     }
@@ -4768,10 +4814,10 @@ window.onH3sUsbEvent = raw => {
       usbFinishOperation();
       if (event.ok) {
         restoreShow('done', '擦写完成');
-        $('restoreResultText').textContent =
-          '全片复读==目标。SHA256：' + event.sha256 + '（点「重启设备收尾」结束会话）';
+        restoreResult(
+          '全片复读==目标。SHA256：' + event.sha256 + '（点「重启设备收尾」结束会话）');
       } else {
-        $('restoreResultText').textContent = (event.error || '') + '（保持 armed）';
+        restoreResult((event.error || '') + '（保持 armed）', true);
       }
       return;
     }
@@ -4779,15 +4825,15 @@ window.onH3sUsbEvent = raw => {
     if (event.event === 'usb_restore_reboot') {
       usbFinishOperation();
       restoreShow('plan', '设备重启中，请重新扫描');
-      $('restoreResultText').textContent = event.ok
-        ? event.note : '重启失败：' + (event.error || '');
+      restoreResult(event.ok
+        ? event.note : '重启失败：' + (event.error || ''), !event.ok);
       return;
     }
 
     if (event.event === 'usb_restore_cancelled') {
       usbFinishOperation();
       restoreShow('plan', '计划已取消');
-      $('restoreResultText').textContent = '';
+      restoreResult('');
       return;
     }
   } catch (e) {
