@@ -6,10 +6,12 @@ Named, digest-pinned, bidirectional profiles on top of accept_profile.py
 candidate per flash/rollback pair, selected with --candidate (default hal5:
 b79->HAL5 flash, HAL5->b79 rollback; f1a/f1b: HAL5->F1x flash, F1x->HAL5
 same-layer rollback — retreat to b79 chains the unchanged hal5 rollback
-afterwards). The historical r2->b79 profile in h3s_usb.py/image.py is not
-modified and keeps all of its gates; this tool never writes without --apply
-plus a matching one-shot nonce, and never uses the 942080B UFW flash.bin as
-a 2MiB image.
+afterwards; f2/f1ac1: F1a->F2/F1aC1 flash, same-layer rollback to F1a —
+deeper retreat chains the f1a rollback then the hal5 rollback, i.e.
+F2 -> F1a -> HAL5 -> b79). The historical r2->b79 profile in
+h3s_usb.py/image.py is not modified and keeps all of its gates; this tool
+never writes without --apply plus a matching one-shot nonce, and never uses
+the 942080B UFW flash.bin as a 2MiB image.
 
 Live sequence (flash/rollback, mirrors the verified 2026-11-10 restore):
   reviewed plan (plan.json + target.bin in a workdir fed by `h3s_usb.py
@@ -536,8 +538,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='operation', required=True)
     q = sub.add_parser('plan-flash',
-                       help='offline: bank-B flash plan (hal5: b79->HAL5; f1a/f1b: HAL5->F1x) '
-                            'from a backup workdir + candidate UFW')
+                       help='offline: bank-B flash plan (hal5: b79->HAL5; f1a/f1b: HAL5->F1x; '
+                            'f2/f1ac1: F1a->F2/F1aC1) from a backup workdir + candidate UFW')
     q.add_argument('--workdir', required=True)
     q.add_argument('--package', required=True,
                    help='candidate UFW to install (digest-pinned per --candidate)')
@@ -545,10 +547,12 @@ def main():
                    help='app identity to flash (default hal5 = the original b79->HAL5 pair)')
     q = sub.add_parser('plan-rollback',
                        help='offline: rollback plan (hal5: HAL5->b79, or ALREADY_B79; '
-                            'f1a/f1b: F1x->HAL5 same-layer, or ALREADY_HAL5)')
+                            'f1a/f1b: F1x->HAL5 same-layer, or ALREADY_HAL5; '
+                            'f2/f1ac1: F2/F1aC1->F1a same-layer, or ALREADY_F1A)')
     q.add_argument('--workdir', required=True)
     q.add_argument('--package', required=True,
-                   help='rollback target UFW (b79 for hal5, HAL5 for f1a/f1b; digest-pinned)')
+                   help='rollback target UFW (b79 for hal5, HAL5 for f1a/f1b, F1a for '
+                            'f2/f1ac1; digest-pinned)')
     q.add_argument('--candidate', choices=list(CANDIDATES), default='hal5',
                    help='candidate being rolled back (default hal5 = the original HAL5->b79)')
     for name in ('flash', 'rollback'):
