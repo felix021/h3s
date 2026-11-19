@@ -13,6 +13,13 @@ app identity per flash/rollback direction pair (--candidate, default 'hal5'):
         retreat; a further retreat to b79 is the unchanged hal5 rollback
         profile applied afterwards, i.e. F1x -> HAL5 -> b79, never a direct
         F1x -> b79 profile)
+  - f2 / f1ac1 (hearing-aid fix round 2 on the F1a base, routes LFIXIMPL2 +
+    F2-PREP): F2 is the fix candidate, F1a+C1 the single-variable control
+      accept-f2-flash-v1    : bank B = F1a -> bank B = F2 app
+      accept-f2-rollback-v1 : bank B = F2 -> bank B = F1a (same-layer
+        retreat; a further retreat chains the unchanged f1a rollback then
+        the hal5 rollback, i.e. F2 -> F1a -> HAL5 -> b79, never a direct
+        skip; accept-f1ac1-* has the same shape for the control candidate)
 
 Rules pinned here (codex consult 2026-11-18, ~/tmp/codex/202611180202-pregap):
 
@@ -32,10 +39,11 @@ Rules pinned here (codex consult 2026-11-18, ~/tmp/codex/202611180202-pregap):
     in target; only the live VM region may drift between plan and apply and the
     live target keeps the freshest VM (digest re-bound in the journal).
   - rollback accepts only a complete, CRC-valid, digest-pinned from-state
-    bank B (HAL5 for the hal5 candidate, F1x for f1a/f1b), or reports a
-    zero-write ALREADY_* report when bank B already carries the rollback
-    target app (ALREADY_B79 when both banks are b79; ALREADY_HAL5 when bank B
-    is HAL5 for f1a/f1b); unknown or mixed states are refused (interruption
+    bank B (HAL5 for the hal5 candidate, F1x for f1a/f1b, F2/F1aC1 for
+    f2/f1ac1), or reports a zero-write ALREADY_* report when bank B already
+    carries the rollback target app (ALREADY_B79 when both banks are b79;
+    ALREADY_HAL5 when bank B is HAL5 for f1a/f1b; ALREADY_F1A when bank B is
+    F1a for f2/f1ac1); unknown or mixed states are refused (interruption
     handling lives in accept_usb.analyze_interrupted, never here).
 
 The r2->b79 profile in image.py / h3s_usb.py is untouched: importing its
@@ -75,8 +83,21 @@ F1A_APP_SHA = 'd2499f8f1d8adcb9ae1fc17c49e14531ae07569b0b00806de86b067d81b0a535'
 F1B_UFW_SHA = 'f16576687dae42a583149aa9f8a2f1b89dc777228245a27c289f0faeec00f2c1'
 F1B_APP_LEN = 930854
 F1B_APP_SHA = 'a700de5da57c83f9300a30d602591ea96583d52da7d3f845154f3861c2f6418d'
+# F2 / F1a+C1 = hearing-aid lfix2 fix candidates on the F1a base (route
+# LFIXIMPL2, UNTESTED, private files; docs/hearing-aid-lfix2-impl.md). App
+# pins extracted from the built artifacts with this module's parse_package
+# logic (UFW sha == the pinned values; cross-checked against the build
+# reports' dual_bank_boot_info app_bytes: F2 931034 == F1a 930968 + 66, the
+# C2 close patch; F1a+C1 930968 == F1a — C1 is an equal-length ANC table
+# byte swap, only the content differs).
+F2_UFW_SHA = '7e972bf00484920bce0a41b1653d94f5c151455947b08fe3b0fb67e3d3c68348'
+F2_APP_LEN = 931034
+F2_APP_SHA = '36f103a88e77fab3bc5d4793b330250759a56154e39fa6751b58207b8e1b5b4a'
+F1AC1_UFW_SHA = '503f427fcefd2cd796b8e992a50275f3257cfb8012419df281a827bd83338351'
+F1AC1_APP_LEN = 930968
+F1AC1_APP_SHA = '5b787afb81dcf441de12f03e2330aef11c7d900e25474772388e285abd5dc926'
 
-CANDIDATES = ('hal5', 'f1a', 'f1b')
+CANDIDATES = ('hal5', 'f1a', 'f1b', 'f2', 'f1ac1')
 
 FLASH_PROFILE = 'accept-hal5-flash-v1'
 ROLLBACK_PROFILE = 'accept-b79-rollback-v1'
@@ -84,20 +105,40 @@ F1A_FLASH_PROFILE = 'accept-f1a-flash-v1'
 F1A_ROLLBACK_PROFILE = 'accept-f1a-rollback-v1'
 F1B_FLASH_PROFILE = 'accept-f1b-flash-v1'
 F1B_ROLLBACK_PROFILE = 'accept-f1b-rollback-v1'
+F2_FLASH_PROFILE = 'accept-f2-flash-v1'
+F2_ROLLBACK_PROFILE = 'accept-f2-rollback-v1'
+F1AC1_FLASH_PROFILE = 'accept-f1ac1-flash-v1'
+F1AC1_ROLLBACK_PROFILE = 'accept-f1ac1-rollback-v1'
 
 # ---- named transitions: candidate x direction -> (profile, bank-B from app,
 # installed package app). The hal5 row is the original b79<->HAL5 pair and its
 # behavior is regression-pinned; f1a/f1b flash from the HAL5 base and roll
-# back to it (same layer). ----
+# back to it (same layer); f2/f1ac1 flash from the F1a base and roll back to
+# F1a (same layer; deeper retreat chains the earlier profiles). ----
 _PROFILE_NAMES = {'hal5': {'flash': FLASH_PROFILE, 'rollback': ROLLBACK_PROFILE},
                   'f1a': {'flash': F1A_FLASH_PROFILE, 'rollback': F1A_ROLLBACK_PROFILE},
-                  'f1b': {'flash': F1B_FLASH_PROFILE, 'rollback': F1B_ROLLBACK_PROFILE}}
+                  'f1b': {'flash': F1B_FLASH_PROFILE, 'rollback': F1B_ROLLBACK_PROFILE},
+                  'f2': {'flash': F2_FLASH_PROFILE, 'rollback': F2_ROLLBACK_PROFILE},
+                  'f1ac1': {'flash': F1AC1_FLASH_PROFILE,
+                            'rollback': F1AC1_ROLLBACK_PROFILE}}
 _FROM_APP = {'hal5': {'flash': 'b79', 'rollback': 'hal5'},
              'f1a': {'flash': 'hal5', 'rollback': 'f1a'},
-             'f1b': {'flash': 'hal5', 'rollback': 'f1b'}}
+             'f1b': {'flash': 'hal5', 'rollback': 'f1b'},
+             'f2': {'flash': 'f1a', 'rollback': 'f2'},
+             'f1ac1': {'flash': 'f1a', 'rollback': 'f1ac1'}}
 _TO_PACKAGE = {'hal5': {'flash': 'hal5', 'rollback': 'b79'},
                'f1a': {'flash': 'f1a', 'rollback': 'hal5'},
-               'f1b': {'flash': 'f1b', 'rollback': 'hal5'}}
+               'f1b': {'flash': 'f1b', 'rollback': 'hal5'},
+               'f2': {'flash': 'f2', 'rollback': 'f1a'},
+               'f1ac1': {'flash': 'f1ac1', 'rollback': 'f1a'}}
+
+# zero-write ALREADY_* report per rollback target app (b79 for the hal5
+# candidate, HAL5 for f1a/f1b, F1a for f2/f1ac1): (status, note)
+_ALREADY = {'b79': ('ALREADY_B79', 'both banks already b79; nothing to do'),
+            'hal5': ('ALREADY_HAL5', 'bank B already carries the HAL5 base; '
+                                     'nothing to roll back'),
+            'f1a': ('ALREADY_F1A', 'bank B already carries the F1a base; '
+                                   'nothing to roll back')}
 
 
 def require(condition, message):
@@ -121,12 +162,14 @@ def _app_pins(name):
     """(app len, app sha) for a named app identity, resolved through the
     module globals at call time (tests may patch the shipped pins)."""
     return {'b79': (B79_APP_LEN, B79_APP_SHA), 'hal5': (HAL5_APP_LEN, HAL5_APP_SHA),
-            'f1a': (F1A_APP_LEN, F1A_APP_SHA), 'f1b': (F1B_APP_LEN, F1B_APP_SHA)}[name]
+            'f1a': (F1A_APP_LEN, F1A_APP_SHA), 'f1b': (F1B_APP_LEN, F1B_APP_SHA),
+            'f2': (F2_APP_LEN, F2_APP_SHA), 'f1ac1': (F1AC1_APP_LEN, F1AC1_APP_SHA)}[name]
 
 
 def _ufw_sha(name):
     return {'b79': B79_PROFILE_SHA, 'hal5': HAL5_UFW_SHA,
-            'f1a': F1A_UFW_SHA, 'f1b': F1B_UFW_SHA}[name]
+            'f1a': F1A_UFW_SHA, 'f1b': F1B_UFW_SHA,
+            'f2': F2_UFW_SHA, 'f1ac1': F1AC1_UFW_SHA}[name]
 
 
 def profile_for(direction, candidate='hal5'):
@@ -143,7 +186,8 @@ def package_id(direction, candidate='hal5'):
 def from_state_id(direction, candidate='hal5'):
     """(app len, app sha) the device bank B must carry before this
     direction+candidate transition (b79 for hal5-flash / HAL5 for hal5-rollback
-    and f1x-flash / F1x for f1x-rollback)."""
+    and f1x-flash / F1x for f1x-rollback / F1a for f2- and f1ac1-flash /
+    F2 or F1aC1 for their rollbacks)."""
     return _app_pins(_transition(direction, candidate, _FROM_APP))
 
 
@@ -266,10 +310,11 @@ def _plan_digest(plan):
 def make_plan(direction, before, ufw, nonce, candidate='hal5'):
     """Validate the from-state, build the target, derive the write set and
     return (target, plan). direction='flash' expects the candidate's base app
-    in bank B (b79 for hal5, HAL5 for f1a/f1b); direction='rollback' expects
-    bank B == the candidate app and reports a zero-write ALREADY_* report when
-    bank B already carries the rollback target (both banks b79 for hal5, bank B
-    HAL5 for f1a/f1b)."""
+    in bank B (b79 for hal5, HAL5 for f1a/f1b, F1a for f2/f1ac1);
+    direction='rollback' expects bank B == the candidate app and reports a
+    zero-write ALREADY_* report when bank B already carries the rollback
+    target (both banks b79 for hal5, bank B HAL5 for f1a/f1b, bank B F1a for
+    f2/f1ac1)."""
     require_candidate(candidate)
     pinned_ufw, pinned_len, pinned_sha = package_id(direction, candidate)
     package_app = parse_package(ufw, pinned_ufw, pinned_len, pinned_sha)
@@ -278,7 +323,7 @@ def make_plan(direction, before, ufw, nonce, candidate='hal5'):
         state = device_state(before, from_len, from_sha)
     else:
         base = _transition('rollback', candidate, _TO_PACKAGE)   # rollback target app
-        already = {'b79': 'ALREADY_B79', 'hal5': 'ALREADY_HAL5'}[base]
+        already, already_note = _ALREADY[base]
         header_b, app_b = decode_bank(before, BANK_B)
         base_len, base_sha = _app_pins(base)
         if (len(app_b) == base_len and sha(app_b) == base_sha
@@ -286,9 +331,7 @@ def make_plan(direction, before, ufw, nonce, candidate='hal5'):
             device_state(before, base_len, base_sha)   # full base check (A included)
             return None, {'profile': profile_for(direction, candidate), 'status': already,
                           'before_sha256': sha(before), 'zero_write': True,
-                          'note': ('both banks already b79; nothing to do' if base == 'b79'
-                                   else 'bank B already carries the HAL5 base; '
-                                        'nothing to roll back')}
+                          'note': already_note}
         state = device_state(before, from_len, from_sha)
     target, geometry = build_target(before, package_app)
     sectors = changed_sectors(before, target)

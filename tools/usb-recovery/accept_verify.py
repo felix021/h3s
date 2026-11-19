@@ -12,7 +12,8 @@ Checked, in order:
   2. from-state: full device_state validation of `before` for the
      direction+candidate (bank A always pinned b79; bank B pinned to the
      transition's from-state app — b79 for hal5-flash / HAL5 for hal5-rollback
-     and f1x-flash / F1x for f1x-rollback);
+     and f1x-flash / F1x for f1x-rollback / F1a for f2- and f1ac1-flash /
+     F2 or F1aC1 for their rollbacks);
   3. package app: length/digest match the pins;
   4. target byte rules against `before`: [0, 0xee000) and [0x1da000, 0x200000)
      identical; bank-B header differs only at +0..6 (three CRCs) and +8..12
