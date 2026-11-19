@@ -84,7 +84,7 @@ On 2026-11-10 the CPU ROM address window `0x000000..0x020000` (end exclusive, 12
 
 ## Workflow and validation
 
-Analyze locally by default. Use a configured build host only for Android builds or tools requiring its architecture; no hostnames, accounts or absolute workstation paths belong in scripts. See docs/reproduction.md for exact commands.
+Analyze locally by default. Use a configured build host only for Android builds or tools requiring its architecture; no hostnames, accounts or absolute workstation paths belong in scripts. See docs/reproduction.md for exact commands. A freshly created worktree needs its gitignored ROM-side assets (reference-cache, both .ufw, jl-misctools submodule, analysis/v1.1.8) wired up before check_local passes: run `python3 tools/worktree_bootstrap.py` once inside it (see docs/reproduction.md "新 worktree 初始化").
 
 **User preference: run checks locally, not on GitHub Actions.** Do not add/enable Actions workflows, dispatch runs or use GitHub-hosted CI. `python3 tools/check_local.py` runs the default local host/simulation checks; use `--fetch-inputs` for first-time pinned downloads, `--reproduce` for firmware reproduction, or `--android-build` for a local SDK35 build when appropriate. Publishing repository changes does not require a GitHub CI run.
 

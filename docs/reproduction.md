@@ -28,6 +28,18 @@ python tools/fetch_firmware.py --variant both
 
 `fetch_firmware.py` 从固定的 `firmware` Release 下载，按 `firmware/manifest.json` 核对长度与 SHA256；已有同名不同内容文件会被拒绝，不会静默覆盖。它没有蓝牙代码。
 
+### 新 worktree 初始化
+
+新拉起的 worktree 跑 `check_local`（尤其 units 的 hearing_aid/candidate 用例与 ROM 面）缺 4 项 gitignored 依赖，`tools/worktree_bootstrap.py` 一键补齐（软链主仓资产 + 子模块 init + 本地解包，幂等可重跑）：
+
+```bash
+git worktree add ~/worktrees/h3s/<name> -b <branch> main
+cd ~/worktrees/h3s/<name>
+python3 tools/worktree_bootstrap.py          # --check 只体检；--skip-unpack 跳过解包
+```
+
+补齐项与来源：`tools/reference-cache/`（45M 钉死缓存，软链）、`firmware/*.ufw` 两个镜像（软链，SHA 按 manifest 核对）、`tools/jl-misctools/` 子模块（就地 init）、`analysis/v1.1.8/`（前三项就位后由 `tools/unpack.py` 本地解包生成，缺它 hearing_aid artifact tier 会整体 skip）。默认源为主仓（git common dir 反推），`--source` 可指向任一资产齐全的仓。私有 ROM bin 不在脚本范围，`check_local --rom` 仍按上文显式传路径。
+
 ## 2. 拆包和资源提取
 
 ```bash
