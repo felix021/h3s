@@ -415,13 +415,14 @@ COMPARISON_BASIS = (
 # 资源节)。只用于把首分歧 PC/差异游程标注成人类可读的语义,不参与判定。
 KNOWN_SITE_LABELS = (
     (0x34E92, 0x34E98, 'debug_init lower PC limit load 0x06000100 (shared)'),
-    (0x34E98, 0x34E9E, 'debug_init fence upper PC limit immediate (b79 0x060c3338, eq candidate 0x060e31c5, l1_slotram 0x060e31e0, r4_keyhook 0x060e3286, l4_eq 0x060e33de)'),
+    (0x34E98, 0x34E9E, 'debug_init fence upper PC limit immediate (b79 0x060c3338, eq candidate 0x060e31c5, l1_slotram 0x060e31e0, r4_keyhook 0x060e3286, l4_eq 0x060e33de, f2 0x060e34da, f1ac1 0x060e3498)'),
     (0xDB9A, 0xDBA2, 'hearing-aid hook window ON-1 (whole-8B replacement, l1/r4 candidates)'),
     (0xDBC4, 0xDBCC, 'hearing-aid hook window ON-2 (whole-8B replacement, l1/r4 candidates)'),
     (0xDC74, 0xDC7C, 'hearing-aid hook window OFF-1 (whole-8B replacement, l1/r4 candidates)'),
     (0xDC7E, 0xDC86, 'hearing-aid hook window TRANS-A (whole-8B replacement, l1/r4 candidates)'),
     (0xDC9A, 0xDCA2, 'hearing-aid hook window OFF-2 (whole-8B replacement, l1/r4 candidates)'),
     (0xDCA4, 0xDCAC, 'hearing-aid hook window TRANS-B (whole-8B replacement, l1/r4 candidates)'),
+    (0x25404, 0x2540C, 'hearing-aid hook window KEY7 (whole-8B replacement, f2/f1ac1 candidates)'),
     (0xA9C7C, 0xA9C80, 'cmdid 0x30 registry setter slot 0 -> 0x060e31e0 (r4_keyhook only)'),
     (0x59CE, 0x59D4, 'eq hook site eq_source_read_hook'),
     (0x25030, 0x25036, 'eq hook site eq_record_preset_source'),
@@ -433,9 +434,10 @@ KNOWN_SITE_LABELS = (
     (0x20, 0x24, 'resource table nested CRC word'),
     (0xE0A2C, 0xE0A30, 'stream.bin entry header CRC'),
     (0xE2344, 0xE23A2, 'stream.bin volume parameter region'),
+    (0xE2305, 0xE2314, 'stream.bin MPO demo Drc1Eff threshold entries (f2/f1ac1 candidates)'),
     (0xE2ED3, 0xE2ED5, 'config.dat JLFS header CRC (recomputed over the flipped index field)'),
     (0xE2EE1, 0xE2EE2, 'config.dat JLFS index field (b79 terminator 1, eq/l1/r4 candidates 0: enumeration continues to the appended entry)'),
-    (0xE3053, 0xE3246, 'appended payload segment (eq eq_toggle.bin / l1 mic_effect.bin / r4 mic_effect.bin + keystore_hook)'),
+    (0xE3053, 0xE3246, 'appended payload segment (eq eq_toggle.bin / l1 mic_effect.bin / r4 mic_effect.bin + keystore_hook / f2-f1ac1 mic_effect.bin + lfix2 open-close payload)'),
 )
 
 
@@ -2264,6 +2266,8 @@ def check_self_candidate(report, label, scenario):
     上游前沿推进后按新结论重钉(两条件档的停点/czd 除外——单源跟随)。
     r4_keyhook 走独立钉值函数(路 R4SNAP,
     R4-COT-01 归档报告实测值;见 _check_self_candidate_r4_* docstring)。
+    f2 / f1ac1 走独立钉值函数(路 F2SELFCHECK,2026-11-20 首轮实测;
+    见 _check_self_candidate_f2_* docstring)。
     """
     pairs = {p['name']: p for p in report['pairs']}
     require(set(pairs) == {f'official_vs_{label}'},
@@ -2275,7 +2279,10 @@ def check_self_candidate(report, label, scenario):
     require(p['runs']['official']['completed_steps'] == base['completed_steps'] and
             p['runs']['official']['stop_pc'] == base['stop_pc'],
             'official run changed: the shared-stack prefix is no longer the pinned frontier stop')
-    if label == 'r4_keyhook':
+    if label in ('f2', 'f1ac1'):
+        tier = (_check_self_candidate_f2_crc if scenario == 'crc_bankb'
+                else _check_self_candidate_f2_conditional)
+    elif label == 'r4_keyhook':
         tier = (_check_self_candidate_r4_crc if scenario == 'crc_bankb'
                 else _check_self_candidate_r4_conditional)
     elif scenario == 'crc_bankb':
@@ -2426,6 +2433,90 @@ def _check_self_candidate_r4_conditional(p, label, base):
             'realignment locking at step 19123794 with zero control divergence to the stops)')
 
 
+_F2_FENCE_IMM_B = {'f2': '060e34da', 'f1ac1': '060e3498'}
+
+
+def _check_self_candidate_f2_crc(p, label, base):
+    """f2 / f1ac1 侧 crc 档钉值(路 F2SELFCHECK,2026-11-20 首轮实测,数字源=
+    --candidate-self-check 全量重放):与 l1/r4 对逐锚同形,镜像差仅在值——
+    fence 上限立即数 f2=0x060e34da/f1ac1=0x060e3498(即各自 plain 尾运行
+    时地址,0xE34DA/0xE3498);表尾派生族与 r4 同落 0xE3000 对齐桶(57 段/
+    1,471 步,全签名重合于 step 232,729);byte-diff 分类账 13 条游程全命中
+    已知区,新增 f2/f1ac1 专属 KEY7 钩窗 0x25404..0x2540c 与 MPO 演示
+    Drc1Eff 阈值三项(0xe2305/0xe2309/0xe2311),与 r4 同含 cmdid 0x30 注册
+    表槽。上游前沿推进后按新结论重钉。"""
+    fence_b = _F2_FENCE_IMM_B[label]
+    require(p['parity']['steps'] == {'official': base['completed_steps'],
+                                     label: 290307, 'delta': 458} and
+            p['parity']['same_stop'] and p['parity']['stop_record']['identical'] and
+            p['parity']['stop_pc'] == {'a': base['stop_pc'], 'b': base['stop_pc'], 'same': True} and
+            p['parity']['per_core_steps']['delta'] == {'0': 458, '1': 0},
+            f'the official-vs-{label} crc_bankb stop parity changed (+458 same-stop expected)')
+    first = p['first_divergence']
+    require(first and first['step'] == 116148 and first['pc_a'] == '0x6034e98' and
+            first['classification'] == 'register_state_divergence' and
+            first['registers'] == {'1': {'a': '060c3338', 'b': fence_b}} and
+            first['instruction_bytes_differ_within_instruction'],
+            f'the first official-vs-{label} signature divergence is no longer the fence '
+            f'immediate at 0x6034e98 ({label} upper PC limit 0x06000000 + plain end)')
+    control = p['first_control_divergence']
+    require(control and control['step'] == 169439 and
+            control['pc_a'] == '0x6011154' and control['pc_b'] == '0x6011154',
+            f'the first official-vs-{label} control divergence is no longer the '
+            'config.dat enumeration at 0x6011154')
+    rec = p['reconvergence']
+    require(rec and rec['realigned'] and rec['lag'] == 458 and rec['immediate'],
+            f'the official-vs-{label} reconvergence is no longer the immediate +458 realignment')
+    sig = rec['signature_after_realignment']
+    require(sig['full_signature_realign_step_a'] == 232729 and
+            sig['divergent_span_count'] == 57 and sig['divergent_steps'] == 1471,
+            f'the {label} table-tail derived-family survival changed (expected the r4-shaped '
+            '57 spans / 1,471 divergent steps fully realigning at step 232729; a new shape '
+            'must be re-adjudicated, not silently accepted)')
+    diff_runs = p['image_byte_diff_runs']
+    require(len(diff_runs) == 13 and all(run['known_site'] for run in diff_runs) and
+            ['0x25404', '0x2540c'] in [run['plain_offset'] for run in diff_runs] and
+            ['0xa9c7c', '0xa9c80'] in [run['plain_offset'] for run in diff_runs],
+            f'the official-vs-{label} image byte-diff ledger changed (13 runs all hitting '
+            'known sites, the f2/f1ac1 KEY7 hook window 0x25404..0x2540c and the cmdid '
+            '0x30 registry setter slot 0xa9c7c..0xa9c80 present)')
+
+
+def _check_self_candidate_f2_conditional(p, label, base):
+    """f2 / f1ac1 侧条件档钉值(路 F2SELFCHECK,2026-11-20 首轮实测):与 crc 档
+    同两锚(116,148 fence 立即数 f2=0x060e34da/f1ac1=0x060e3498、169,439
+    config.dat 枚举),但 +458 偏移在条件栈被磨成 -356(per-core CPU0 -358/
+    CPU1 0)——注意这不是 l1/r4 旧钉的 -102/-103:repcondimpl 拆解执行后条件
+    前沿推进到 42,231,992,两臂控制流在 42,224,199(=base−7,793)才重锁,
+    其后 7,793 步控制+签名零分歧到同停点(signature_after_realignment 零
+    段)。停点步数/重锁步数跟 frontier_registry 条件前沿单源(label=base−356、
+    realign=base−7,793);前沿再推进后按新结论重钉(与 l1/r4 条件档同病——
+    -356/7,793 是当前前沿的形状,非跨前沿结构恒量)。"""
+    fence_b = _F2_FENCE_IMM_B[label]
+    require(p['parity']['steps']['delta'] == -356 and
+            p['parity']['steps'][label] == base['completed_steps'] - 356 and
+            p['parity']['same_stop'] and p['parity']['stop_record']['identical'] and
+            p['parity']['per_core_steps']['delta'] == {'0': -358, '1': 0},
+            f'the official-vs-{label} conditional stop parity changed (-356 same-stop, '
+            'CPU1 unchanged, expected)')
+    first = p['first_divergence']
+    require(first and first['step'] == 116148 and first['pc_a'] == '0x6034e98' and
+            first['registers'] == {'1': {'a': '060c3338', 'b': fence_b}},
+            f'the conditional first divergence is no longer the {label} fence immediate '
+            'at 0x6034e98')
+    control = p['first_control_divergence']
+    require(control and control['step'] == 169439 and control['pc_a'] == '0x6011154',
+            f'the conditional first control divergence is no longer the {label} '
+            'config.dat enumeration')
+    rec = p['reconvergence']
+    require(rec and rec['realigned'] and rec['lag'] == -356 and not rec['immediate'] and
+            rec['realign_step_a'] == base['completed_steps'] - 7793 and
+            rec['control_zero_divergence_steps'] == 7793,
+            f'the conditional reconvergence changed (expected the {label} -356 '
+            'realignment locking at step base-7793 with zero control divergence to '
+            'the stops)')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--rom', type=Path, required=True)
@@ -2449,9 +2540,9 @@ def main():
                              'assertions (repository images only, no private artifacts)')
     parser.add_argument('--candidate-self-check', metavar='LABEL=PATH',
                         help='pin the official-vs-<label> candidate differential baseline of the '
-                             'selected scenario (label in {l1_slotram,r4_keyhook}, path = the '
-                             'candidate .ufw built by build_quiet_candidate; independent from the '
-                             '2026-11-12 official-vs-b79 pin; UNTESTED candidate, no flash approval)')
+                             'selected scenario (label in {l1_slotram,r4_keyhook,f2,f1ac1}, path = '
+                             'the candidate .ufw built by build_quiet_candidate; independent from '
+                             'the 2026-11-12 official-vs-b79 pin; UNTESTED candidate, no flash approval)')
     parser.add_argument('--capture-snapshots', type=Path, metavar='DIR',
                         help='(snapshot resume rounds, docs/snapshot-resume.md) while running the '
                              'full replays, also capture each image\'s world at its natural stop '
@@ -2507,7 +2598,7 @@ def main():
         require(not args.image and not args.pair,
                 '--candidate-self-check runs official plus the named candidate')
         clabel, _, cpath = args.candidate_self_check.partition('=')
-        require(clabel in ('l1_slotram', 'r4_keyhook'),
+        require(clabel in ('l1_slotram', 'r4_keyhook', 'f2', 'f1ac1'),
                 f'unknown candidate label {clabel!r} for the candidate self-check')
         candidate_self_check = clabel
         args.image = [f'official={OFFICIAL_DEFAULT}', f'{clabel}={cpath}']
