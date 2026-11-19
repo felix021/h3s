@@ -1,0 +1,29 @@
+{
+ "route": "SRCSYNC3 / sim-srcsync3（基线 main 29a39b4=SRCSYNC2 合并点，42,232,103 停点实施路）",
+ "recorded_at": "2026-11-20T07:10:00+08:00",
+ "task": "helper 0x607099c 的 6 个 CON0/CON1 RMW 放行（scout 方案 B + codex 决策点 3「COEF 始终拒读」）：42,232,103 @ 0x60709ba（helper 首笔 CON1 |=0x400000 RMW PC 未审计）→ 扩充 CON0_RMW_PCS/CON1_RMW_PCS 六个 helper PC → 前沿推进至 42,232,325 @ 0x60709e0（COEF 读 0xfe263c 诚实拒）",
+ "implementation": {
+  "switch": "无新开关——只改 br28_model.py JLSrcSyncConfigRegisters 两个 frozenset 常量（CON1_RMW_PCS += {0x60709ba,0x6070a28}；CON0_RMW_PCS += {0x60709da,0x60709ee,0x6070a0e,0x6070a24}）。守卫在 probe_boot.py:2095-2108 通用 mmio RMW 路径已就位，只认这两个常量；RMW 内部读由原 CON0/CON1 容器提供旧值、写回进原账本",
+  "container": "沿用 jl_src_sync_config_words 容器（CON0/CON1/COEF 三字），不改容器形状；consumer_guard 报告键 con0_rmw_pcs/con1_rmw_pcs 随常量自动列出六新 PC",
+  "retro_audit": [
+   "helper 0x607099c 六 PC 全放行：0x60709ba CON1|=0x400000（开）、0x6070a28 CON1&=0xFFBFFFFF（关）、0x60709da/0x60709ee/0x6070a0e/0x6070a24 CON0 bit4 开/关两轮",
+   "实际只触达前两笔：0x60709ba（CON1 0x41→0x400041）与 0x60709da（CON0 0x82006001→0x82006011）——COEF 读 0x60709e0 在第二轮开/关之前，诚实拒读即停；后四 PC 为 COEF 读放行后的下一路预留"
+  ],
+  "wiring": "br28_model.py（两个 frozenset + consumer_guard 语义串 + 类注释）;frontier_registry.py（FRONTIERS 重钉 42,232,325 @ 0x60709e0 + freshness_fields 去掉 pc）;probe_irq_entry.py（SRCSYNC/SEGIMPL/SEGIMPL2/SEGIMPL3/REPCOND 五处释放记录断言随前沿重钉 + timer0/core-tick/看门狗账本钉值）;evidence/p11_heap_adapter_count_baseline.json（24 键重取）"
+ },
+ "verification_arms": {
+  "on_main_cross": "跨代码 on-main（复用 SRCSYNC2 ownbase6.bin + --ack-prior-fingerprint d231bb7c + 三开关全开 + --ack-enable-slot jl_src_sync_full_block）→ 42,232,325 @ 0x60709e0（wall 14.4s）",
+  "on_main_ownbase": "自建 ownbase7（本路代码 2a2d5005 捕获，off=postincrement_store_subword+rep_conditional_body+jl_src_sync_full_block，attempts 41,900,000=completed 41,884,941 干净边界，与 ownbase6 同边界——前缀零触达）+ 三开关全开 → 42,232,325 @ 0x60709e0（wall 14.1s）——停点/timer0/core-tick/看门狗/ipmask/jl_fm/srcsync 容器/full_block 容器与从 0 参照逐键相等；instruction_adapters/memory_event_counts/mmu（peripherals 内）三键偏差=base 关开关捕获的前缀非等价工件（与 SRCSYNC2 ownbase 同款，红线由从零全量收口）",
+  "causal_off": "因果负例（ownbase7 resume + frozenset 回退到 SRCSYNC2 终态 e68a4a1b + 三开关全开）→ 42,232,103 @ 0x60709ba（jl_src_sync_con_rmw_pc_not_audited/0xfe2604，wall 14.2s）——六个 helper PC 是新停点的唯一因果",
+  "next_stop": "42,232,325 @ 0x60709e0 = ld.w r0 = [r5+60]（r5=[[obj+16]+12]=0xfe2600 base，r5+60=0xfe263c=COEF，helper 0x607099c 的 COEF 读，读一律拒绝 jl_src_sync_coef_read_not_modeled）；helper 流程=0x60709ba CON1|=0x400000 → 0x60709d0 call.xl（memcpy，约 96 笔 st.w.pin）→ 0x60709da CON0|=0x10 → 0x60709de goto → 0x60709ea bne.ri r6!=55 回 0x60709e0（COEF 读 55 轮循环第一轮即拒）——新停点 IPMASK 6（下游长走段在临界区内，与 SRCSYNC2 停点同形状）",
+  "container_ledger": "srcsync word_writes 62→64（CON1 += 0x400041 @0x60709ba、CON0 += 0x82006011 @0x60709da，后四 helper RMW 未触达——停点在 COEF 读）；reads 3→5（helper 两笔 RMW 内部读由 last_write 服务）；coef_read_attempts 0→1（0x60709e0 读拒）；full_block word_writes 7 冻结（四字 IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN 仍未触达）；exact_postincrement_store 78,770→78,866（+96=helper memcpy 96 笔 st.w.pin）；exact_full_word_store 720,968 冻结；exact_postincrement_subword_store 550 冻结；register_rep_multi_block_projection 827→828（+1=helper memcpy 返回 trampoline rep 4 r2 {pop.pc_rl}）；memory_event_counts write 2,426,769→2,426,869（+100）；mmio_rmw_always_writes 70,981→70,983（+2 helper RMW）；abstract_task_stack_transport 466,392→466,394（+2）；zero_count_skip_is_assumption 279→280（+1）；timer0 cnt 24,465→25,131（+666=222×3，PRD 59,999 窗内零新到期 15,832 冻结）；core-tick cnt 42,444→43,332（+888=222×4，零新溢出 348/348 冻结）；看门狗 elapsed 201 冻结（+222 步不足一个名义单位，零新喂狗 163 冻结）；per_core_visible_cnum/cpu0_shared_lock_ownership/parallel_halfword 774/parallel_full_word 15,510 冻结",
+  "wall_order_deviation": "新停点 0x60709e0 仍在 helper 0x607099c 体内（低地址 0x60709xx），地址序低于已放行的函数 B 高地址段（0x6070a30..0x6070b2e）——地址序≠执行序（与 SRCSYNC2 同款：函数 B 经 0x6070ae4 条件调用进入低地址 helper）；下路评审=COEF 读放行后的 helper 55 轮 COEF 读/写循环 + 后四 RMW + IDAT/ODAT 四字"
+ },
+ "probe_full_from_zero": "check_local.py --rom 全量从零（15 场景+单测族）：p11_heap_experimental_config 42,232,325 @ 0x60709e0（jl_src_sync_coef_read_not_modeled/0xfe263c）与预钉一致；legacy 14 场景停点逐键不变——本路只改两个 frozenset 常量，只影响 p11 条件场景释放段，legacy 场景零行为差",
+ "recapture": "24 键 evidence/p11_heap_adapter_count_baseline.json 重取（from-zero 41.9M 步口径）：zero_count_skip_is_assumption 279→280、register_rep_multi_block_projection 827→828、abstract_task_stack_transport 466,392→466,394、mmio_rmw_always_writes 70,981→70,983；其余 20 键逐键不变",
+ "honesty": {
+  "assumption": "helper 六 RMW 放行只意味着「这两笔 CON0/CON1 RMW 的内部读由容器提供旧值、写回进账本」，不声称 SRC_SYNC 硬件/采样率转换/DMA/IRQ89 交付/音频处理已运行；COEF 读 0x60709e0 读一律拒绝（codex 决策点 3），后四 helper RMW 本轮未触达",
+  "not_claimed": "不证明 COEF 读语义（55 写后仍拒每一次读）；不证明 CON0/CON1 合成初值=硅复位值；不证明 helper memcpy 的目的缓冲语义（96 笔 st.w.pin 的真实数据流）；不证明 0x60709d0 call.xl 目标函数的业务语义",
+  "codex_consult": "本路照 scout 方案 B + codex 决策点 3「COEF 始终拒读」执行，无方案级分歧"
+ }
+}

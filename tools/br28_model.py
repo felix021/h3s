@@ -6363,16 +6363,18 @@ class JLSrcSyncConfigRegisters:
                0xfe263c:'JL_SRC_SYNC->COEF'}
     READBACK_ADDRESSES=frozenset((0xfe2600,0xfe2604))
     SYNTHETIC_INITIAL_WORD=0
-    # 消费者 RMW PC 守卫(SRCSYNC2 补审,2026-11-20 codex 总裁决决策点 2):
-    # CON0/CON1 的原子 RMW 内部读只服务已审计站点+主核;其余 PC 的 RMW
-    # (helper 0x607099c 的 0x60709ba CON1|=0x400000、0x60709da CON0|=0x10)
-    # 消费前停。守卫设在 probe_boot 通用 mmio RMW 路径(那里有 self.pc),
-    # 不进容器实例状态——保持本容器 M4 字段不变,跨代码续跑照常。显式标量
-    # 读(ld.w)不设 PC 守卫:审计面内 CON0/CON1 的唯一标量读是函数 B 的
-    # 0x6070ac4(0x6070ac0 mul∥ld.w 第二半,读值只供 >>16+insert),helper 的
-    # CON0/CON1 访问全是 RMW(被上面 RMW 守卫拦)。
-    CON0_RMW_PCS=frozenset((0x606fbfa,0x606fc0a))
-    CON1_RMW_PCS=frozenset((0x606fbe4,0x606fc2c))
+    # 消费者 RMW PC 守卫(SRCSYNC2 补审,SRCSYNC3 扩充 helper 六 PC):
+    # CON0/CON1 的原子 RMW 内部读只服务已审计站点+主核;helper 0x607099c
+    # 的六 PC(0x60709ba CON1|=0x400000、0x6070a28 CON1&=0xFFBFFFFF;
+    # 0x60709da/0x60709ee/0x6070a0e/0x6070a24 CON0 bit4 开/关两轮)由
+    # SRCSYNC3 放行;其余未审计 PC 的 RMW 消费前停。守卫设在 probe_boot
+    # 通用 mmio RMW 路径(那里有 self.pc),不进容器实例状态——保持本容器
+    # M4 字段不变,跨代码续跑照常。显式标量读(ld.w)不设 PC 守卫:审计面内
+    # CON0/CON1 的唯一标量读是函数 B 的 0x6070ac4(0x6070ac0 mul∥ld.w 第二
+    # 半,读值只供 >>16+insert);helper 的 COEF 读 0x60709e0 由 COEF 读拒绝
+    # 策略服务(下一个诚实停点)。
+    CON0_RMW_PCS=frozenset((0x606fbfa,0x606fc0a,0x60709da,0x60709ee,0x6070a0e,0x6070a24))
+    CON1_RMW_PCS=frozenset((0x606fbe4,0x606fc2c,0x60709ba,0x6070a28))
     # 启动请求 RMW 五元组(决策点 1+2③):主核+PC 0x6070b1c+有效地址
     # 0xfe2600+对齐 32 位+rmw.or.modimm 立即数 0x8。旧值由原 CON0 容器
     # 提供;写历史检查=旧值 bit3 必须仍为 0(本次事务 0x6070a90 整字覆盖写
@@ -6547,13 +6549,16 @@ class JLSrcSyncConfigRegisters:
                     'con1_rmw_pcs':[hex(pc) for pc in sorted(self.CON1_RMW_PCS)],
                     'semantics':('CON0/CON1 atomic-RMW internal reads are served ONLY from the '
                                  'audited RMW PCs on core 0 — the two CON0 RMWs 0x606fbfa/'
-                                 '0x606fc0a, the two CON1 RMWs 0x606fbe4/0x606fc2c. The guard lives '
-                                 'in the probe_boot generic-mnio RMW dispatch (where self.pc is '
-                                 'available), so the helper 0x607099c\'s unaudited RMWs '
-                                 '(0x60709ba CON1|=0x400000, 0x60709da CON0|=0x10) stop BEFORE '
+                                 '0x606fc0a, the two CON1 RMWs 0x606fbe4/0x606fc2c, and the '
+                                 'helper 0x607099c six RMWs (CON1 0x60709ba |=0x400000 / '
+                                 '0x6070a28 &=0xFFBFFFFF, CON0 0x60709da/0x60709ee/0x6070a0e/'
+                                 '0x6070a24 bit4 open/close two rounds) released by SRCSYNC3. '
+                                 'The guard lives '
+                                 'in the probe_boot generic mmio RMW dispatch (where self.pc is '
+                                 'available), so any other unaudited RMW stops BEFORE '
                                  'consumption (jl_src_sync_con_rmw_pc_not_audited) — the '
                                  'same-address new-consumer re-audit clause made executable '
-                                 '(SRCSYNC2 retro-audit); the function-B CON1 scalar load 0x6070ac4 '
+                                 '(SRCSYNC2 retro-audit, SRCSYNC3 helper extension); the function-B CON1 scalar load 0x6070ac4 '
                                  '(the second half of the 0x6070ac0 mul∥ld.w parallel instruction, '
                                  'old value only feeds >>16 + insert to keep the high 16 bits) is '
                                  'served by the readback path; the startup RMW internal read rides '

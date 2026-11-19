@@ -445,5 +445,69 @@
       "reason": "SRCSYNC2 causal-off 负例臂:ownbase6(代码 d231bb7c)与最终代码差=check() 断言面重钉(纯离线,前缀中性);关 jl_src_sync_full_block 只开 postincrement_store_subword+rep_conditional_body,复现旧前沿 42,231,992 @ 0x6070a9a + srcsync word_writes 61 + 新容器零触达",
       "prior_fingerprint": "d231bb7ce16971f037cb72df547eff6178bea1765cbe384d06f029b344b2a25f"
     }
+  },
+  {
+    "route": "srcsync3",
+    "name": "on-main-cross",
+    "kind": "arm",
+    "stop": {
+      "kind": "jl_src_sync_coef_read_not_modeled",
+      "address": "0xfe263c"
+    },
+    "completed_steps": 42232325,
+    "report_equal_to_reference": null,
+    "wall_seconds": 14.4,
+    "snapshot_digest": "ad58eb443ba4e267",
+    "code_fingerprint": "2a2d5005ed75c599",
+    "ack": {
+      "enable_slots": [
+        "jl_src_sync_full_block"
+      ],
+      "reason": "SRCSYNC3 跨代码探臂:复用 SRCSYNC2 ownbase6(指纹 d231bb7c),本路代码态差=CON0/CON1 RMW 守卫常量扩充(纯常量,helper 六 PC 消费前守卫由拒改放);前缀零触达,开三开关续跑,预期推进到 COEF 读诚实停",
+      "prior_fingerprint": "d231bb7ce16971f037cb72df547eff6178bea1765cbe384d06f029b344b2a25f"
+    }
+  },
+  {
+    "route": "srcsync3",
+    "name": "on-main-ownbase",
+    "kind": "arm",
+    "stop": {
+      "kind": "jl_src_sync_coef_read_not_modeled",
+      "address": "0xfe263c"
+    },
+    "completed_steps": 42232325,
+    "report_equal_to_reference": false,
+    "wall_seconds": 14.1,
+    "snapshot_digest": "ad58eb443ba4e267",
+    "code_fingerprint": "2a2d5005ed75c599",
+    "ack": {
+      "enable_slots": [
+        "jl_src_sync_full_block"
+      ],
+      "reason": "SRCSYNC3 ownbase 主臂:ownbase7(本路代码 2a2d5005,三开关关 41,884,941 干净边界)开三开关续跑=从零等价,预期同 on-main-cross 停点 42,232,325 @ 0x60709e0;与从零参照逐键比较(instruction_adapters/memory_event_counts/mmu 三键偏差=base 关开关捕获前缀非等价工件,红线由从零全量收口)"
+    }
+  },
+  {
+    "route": "srcsync3",
+    "name": "causal-off",
+    "kind": "arm",
+    "stop": {
+      "kind": "jl_src_sync_con_rmw_pc_not_audited",
+      "address": "0xfe2604",
+      "pc": "0x60709ba",
+      "core": 0
+    },
+    "completed_steps": 42232103,
+    "report_equal_to_reference": null,
+    "wall_seconds": 14.2,
+    "snapshot_digest": "ad58eb443ba4e267",
+    "code_fingerprint": "e68a4a1bdcc06d50",
+    "ack": {
+      "enable_slots": [
+        "jl_src_sync_full_block"
+      ],
+      "reason": "SRCSYNC3 causal-off 负例臂:回退 frozenset(移除 6 个 helper RMW PC)→ 代码态回到 SRCSYNC2 终态(e68a4a1b);ownbase7(2a2d5005)跨代码续跑,helper CON1 RMW 0x60709ba 未审计,预期回旧前沿 42,232,103 @ 0x60709ba",
+      "prior_fingerprint": "2a2d5005ed75c5999f4dd0ff629fe17e54d50e471b3f030646333db4bb8f3017"
+    }
   }
 ]
