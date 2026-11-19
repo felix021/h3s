@@ -38,6 +38,11 @@ EXACT_PARALLEL_WORD_STORE_HALVES=('st.w','st.w.l','st.w.modimm','st.w.idxs','st.
 # stores:该形状在 legacy 前缀里已出现过(走上游通用 pair 模型),并入主开关
 # 会改变既有报告,故单独 opt-in。半字是部分写:只覆盖 2 个目标字节、同字
 # 邻字节保持原状(含 unknown),按字节粒度写入,见 CPU.step_body 的该 gate。
+# 路 SEGIMPL2:容器扩到 uextra.rrii/insert.rrii extract 前缀×st.h 第二半
+# (不新开开关——形状与半字族同构:A 半纯寄存器+立即数位运算、效果只有
+# regs+flags,B 半半字部分写按字节粒度直写;判据/静态面/前缀零执行证据见
+# 主 gate 的 SEGIMPL2 注释;证据形状 ROM 0x5ed0=SEGIMPL 前沿 42,172,454
+# 停点,展开环每轮高半字 B 半,ROM 0x11144 同族第二实例)。
 EXACT_PARALLEL_HALFWORD_STORE_HALVES=('st.h',)
 # 字节第二半(st.b 编码形式 b[r+n]=r)同半字先例单独 opt-in(exact_parallel_
 # byte_stores):ALU.p∥st.b 候选在 app 静态存在多起,未逐一验证哪些落在既有
@@ -1402,7 +1407,36 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 byte_extract=(diagnostics.get('exact_parallel_byte_stores') and
                               base.id in ('uextra.rrii','insert.rrii') and
                               pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)
-                if (pure_alu or byte_extract) and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
+                # 路 SEGIMPL2:同一 extract 前缀族×st.h 第二半——扩展现有
+                # exact_parallel_halfword_stores 容器(不新开开关:形状与
+                # 半字族同构,任务裁定「扩容器族而非新开关」)。证据形状
+                # ROM 0x5ed0 `uextra.rrii.p r5=uextra(r5,p:4,l:1) ∥
+                # st.h h[r3+2]=r6`(SEGIMPL 前沿 42,172,454 停点:ROM
+                # 0x5e94-0x5ef2 字节→半字展开环每轮高半字的 B 半,上游
+                # pair 模型写前合并读撞 SEGIMPL 放行后保留的未知字节
+                # 0x19e316)。ROM 0x11144=同族第二实例(同形展开环
+                # 0x11134..0x1114a,ld.bu.idx→st.b.prer→lsr→mul→本形→
+                # ld.hs.l 与 0x5e94 环逐形相同)——放行的是形状非站点。
+                # 静态面(2 字节对齐全解码扫描,上界含数据段假阳性;
+                # app 偏移以 ENTRY=0x06000100 换算):app uextra.rrii.p∥st.h
+                # 6 站(0x6043610/0x604362a/0x604363a/0x60436c4/0x60436d8/
+                # 0x6043e00)+insert.rrii.p∥st.h 3 站(0x6019e9e/0x604b57a/
+                # 0x604b588,与路 JLEQ 记档的「st.h×3」计数一致)+ROM 2 站
+                # (0x5ed0/0x11144);0..42,172,441 前缀该形唯一执行=展开环
+                # 迭代 0 的 0x5ed0 本体(已审计迁移:目标字 0x19e310 已知,
+                # 直写与上游合并写 RAM 结果逐字节相同,仅 adapter+1 与该笔
+                # 写事件形状 4B→2B+mmu walks -2;off 臂与上站参照恰此三处
+                # 行为差,其余逐键相等)——除它以外零执行(crc_bankb 289,849
+                # 整行与上站逐键相等,gate 命中仍恰 3 次=0x603508c/0x6035094
+                # add.modimm.rri+0x6011370 mov.rr,全 pure-ALU 前缀,新形状
+                # 零命中)。st.w 族第二半×extract 前缀(app 上界 45=st.w 7+
+                # st.w.sp 38/ROM 上界 3=st.w 2+st.w.idxs 1)不随本扩展放行
+                # (到达时仍走上游 pair 模型——目标字已知时正常完成、未知时
+                # 诚实停,单测 0x6027088 已知目标负例钉住;归后续路)。
+                halfword_extract=(diagnostics.get('exact_parallel_halfword_stores') and
+                                  base.id in ('uextra.rrii','insert.rrii') and
+                                  pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES)
+                if (pure_alu or byte_extract or halfword_extract) and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                         (diagnostics.get('exact_parallel_halfword_stores') and
                          pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES) or
                         (diagnostics.get('exact_parallel_byte_stores') and
@@ -2200,12 +2234,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                             diagnostics.get('exact_parallel_ext_transfers') and
                             base.id in EXACT_PARALLEL_EXT_TRANSFER_PREFIXES)
                         # 与主 gate 同步:uextra.rrii/insert.rrii A 半仅在 byte
-                        # 子开关+st.b 第二半时接受(既有前缀零执行,判据见主
-                        # gate 注释;insert.rrii 证据形状 0x6011f20,路 JLEQ 续六)。
+                        # 子开关+st.b 第二半、或 halfword 子开关+st.h 第二半
+                        # (路 SEGIMPL2 扩展)时接受(既有前缀零执行,判据见主
+                        # gate 注释;insert.rrii 证据形状 0x6011f20,路 JLEQ 续六;
+                        # uextra∥st.h 证据形状 ROM 0x5ed0,路 SEGIMPL2)。
                         byte_extract=(diagnostics.get('exact_parallel_byte_stores') and
                                       base.id in ('uextra.rrii','insert.rrii') and
                                       pair.id in EXACT_PARALLEL_BYTE_STORE_HALVES)
-                        supported=(diagnostics.get('exact_parallel_stores') and (pure_alu or byte_extract) and
+                        halfword_extract=(diagnostics.get('exact_parallel_halfword_stores') and
+                                          base.id in ('uextra.rrii','insert.rrii') and
+                                          pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES)
+                        supported=(diagnostics.get('exact_parallel_stores') and (pure_alu or byte_extract or
+                                   halfword_extract) and
                                    (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                                     diagnostics.get('exact_parallel_halfword_stores') and
                                     pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES or
