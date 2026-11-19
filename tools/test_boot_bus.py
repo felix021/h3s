@@ -3056,4 +3056,204 @@ class StandaloneParallelMulPairTests(unittest.TestCase):
                          result['instruction_adapters'])
 
 
+class StandalonePostincrementSubwordStoreTests(unittest.TestCase):
+    """路 SEGIMPL4:独立后增量半字/字节存储直写(exact_postincrement_subword_
+    stores 独立子开关,st.{h,b}.{pi,pin} 及 .l 长形 8 形全族)。
+
+    每例用真实 app/ROM 站点隔离执行(budget=1,rep 例 17),断言:存储到
+    旧基址、恰 width 字节落盘(邻字节保持未初始化)、数据取旧寄存器值
+    (别名站点 0x60ba218 r==s)、基址+=增量后写回、完成步数、同值重写仍
+    出写脉冲。行为依据=hw/fm1-2026-10-24-v2 results.jsonl 独立形 8 形每形
+    12 条捕获逐条核对(唯一变化寄存器=基址、步长 0 时零变化、mem 读回字
+    低 width 字节=旧数据寄存器低位、psr 不动;半字步长全偶/字节步长任意/
+    寄存器步长含 0 与负、含基址=数据别名)。负例:子开关关→上游 m2 模型
+    写前合并读撞未初始化诚实停(42,173,750 停点同款);奇地址半字→诚实拒
+    (require,零提交);短形 st.h.pin 由 immediate_rep_projection 旧 gate
+    先接(次序断言,旧 gate 关时本 gate 兜住);rep 体与本 gate 同步
+    (multi-block rep 体走本 gate,开关关时体走上游模型)。st.b.pi.l 全库
+    零站点为空集成员(家族完整性,无站点可测)。MMU 虚拟→物理翻译(偶
+    地址半字永不跨 128B 页)由条件场景主臂 0x63c2(v0x404400→p0x19e100)
+    承担,隔离测试不建 MMU 硬件。
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.module=upstream()
+        firmware=ROOT/'firmware/QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw'
+        cls.app=application(firmware);cls.header=package_header(firmware)
+
+    def handoff(self):
+        h=profile(self.header,SENTINEL_A)
+        dst,src,length=RAM_CODE
+        h['seeds'].append((dst,self.app[src-ENTRY:src-ENTRY+length]))
+        h['description']['phase']='isolated real-instruction bus test; not contiguous startup'
+        return h
+
+    def run_one(self,name,pc,regs,snap_addr,snap_name,snap_size=4,seed=None,budget=1):
+        h=self.handoff()
+        if seed is not None:h['seeds'].append(seed)
+        h['snapshots'].append((snap_name,snap_addr,snap_size))
+        return explore(self.module,self.app,name=name,handoff=h,
+            diagnostics={'entry_pc':pc,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_postincrement_subword_stores':True},budget=budget)
+
+    PC=0x01c60030
+    # ROM 0x63c0 `rep.i 4 16 { st.h.pin.l h[r11++=2]=r0 }` 真实编码
+    # (SEGIMPL3 前沿 42,173,750 停点指令:rep.i 2 字节 108f+体 4 字节
+    # d0edb300)。
+    ROM_63C0=bytes.fromhex('108fd0edb300')+bytes(8)
+
+    def test_evidence_shape_rom_63c2_rep_body_round_one(self):
+        # 证据形状:ROM 0x63c0 rep.i 4 16 体=st.h.pin.l h[r11++=2]=r0(清零
+        # 循环)。开关开:rep 由 multi-block gate 接(1 步)+体 16 次全部走
+        # 本 gate 直写(半字零覆盖不读包含字),r11 恰 +32,16 笔 2 字节写。
+        regs=[0]*16;regs[11]=0x124f00;regs[0]=0
+        h=self.handoff();h['readonly'].append((self.PC,self.ROM_63C0))
+        h['snapshots'].append(('segimpl4_63c0',0x124f00,32))
+        result=explore(self.module,self.app,name='segimpl4_63c0',handoff=h,
+            diagnostics={'entry_pc':self.PC,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_postincrement_subword_stores':True,
+                         'immediate_rep_multi_block':True},budget=17)
+        self.assertEqual(result['completed_steps'],17)
+        self.assertEqual(result['stop_pc'],hex(self.PC+6))
+        self.assertEqual(result['last_registers']['r'][11],'0x124f20',
+                         'the base must post-increment 16 x 2')
+        self.assertEqual(result['instruction_adapters'].get('exact_postincrement_subword_store'),16)
+        self.assertEqual(result['instruction_adapters'].get('immediate_rep_multi_block_projection'),1)
+        self.assertEqual(result['memory_snapshots']['segimpl4_63c0']['bytes_with_unknowns'],
+                         '00'*32,'sixteen zero halfwords must land without any merge read')
+
+    def test_subswitch_off_rep_body_upstream_honest_stop(self):
+        # 负例:开关关,同一 rep 体照旧落上游 m2 模型——写前合并读(模型
+        # 簿记读非 guest 装载)撞未初始化目标字,completed_steps=1(仅 rep
+        # 投影步)诚实停,kind=42,173,750 停点同款。
+        regs=[0]*16;regs[11]=0x124f00;regs[0]=0
+        h=self.handoff();h['readonly'].append((self.PC,self.ROM_63C0))
+        h['snapshots'].append(('segimpl4_off',0x124f00,4))
+        result=explore(self.module,self.app,name='segimpl4_off',handoff=h,
+            diagnostics={'entry_pc':self.PC,'initial_sp':STACK_TOP,
+                         'initial_gprs':regs,'immediate_rep_multi_block':True},budget=17)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['stop']['kind'],'upstream_store_bookkeeping_read')
+        self.assertEqual(result['stop']['address'],'0x124f00')
+        self.assertNotIn('exact_postincrement_subword_store',result['instruction_adapters'])
+
+    def test_subswitch_off_known_target_completes_upstream(self):
+        # 开关关+目标字已初始化:同一 rep 体走上游模型正常完成(17 次执行
+        # 全部落盘)——已执行窗口 17 次 st.h.pin.l(第一轮 16+第二轮第 1 个
+        # 半字)正是这条路径,放行只是把已知目标上的模型合并读换成等值
+        # 直写。
+        regs=[0]*16;regs[11]=0x124f00;regs[0]=0
+        h=self.handoff();h['readonly'].append((self.PC,self.ROM_63C0))
+        h['seeds'].append((0x124f00,bytes(32)))
+        result=explore(self.module,self.app,name='segimpl4_off_known',handoff=h,
+            diagnostics={'entry_pc':self.PC,'initial_sp':STACK_TOP,
+                         'initial_gprs':regs,'immediate_rep_multi_block':True},budget=17)
+        self.assertEqual(result['completed_steps'],17)
+        self.assertNotIn('exact_postincrement_subword_store',result['instruction_adapters'])
+
+    def test_pinl_halfword_shape_app_6013886(self):
+        # app 0x6013886 `st.h.pin.l h[r1++=2]=r9`(与 ROM 0x63c2 同族立即
+        # 步长形):恰 2 字节落盘(高半字保持未初始化)、基址写回 +2、
+        # 数据取旧 r9 低 16 位。
+        regs=[0]*16;regs[1]=0x124f00;regs[9]=0x0000feed
+        result=self.run_one('segimpl4_pinl_h',0x6013886,regs,0x124f00,'segimpl4_pinl_h')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl4_pinl_h']['bytes_with_unknowns'],'edfe????')
+        self.assertEqual(result['last_registers']['r'][1],'0x124f02')
+        self.assertEqual(result['instruction_adapters'].get('exact_postincrement_subword_store'),1)
+
+    def test_pil_register_step_negative_app_607bb64(self):
+        # app 0x607bb64 `st.h.pi.l h[r6++=r8]=r10`:寄存器步长(hw 样本
+        # 形状:步长含 0 与负),旧基址存储、基址-=8 写回。
+        regs=[0]*16;regs[6]=0x124f10;regs[8]=0xfffffff8;regs[10]=0x0000beef
+        result=self.run_one('segimpl4_pil_h',0x607bb64,regs,0x124f10,'segimpl4_pil_h')
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl4_pil_h']['bytes_with_unknowns'],'efbe????')
+        self.assertEqual(result['last_registers']['r'][6],'0x124f08')
+
+    def test_bpinl_byte_shape_app_6000fde(self):
+        # app 0x6000fde `st.b.pin.l b[r8++=1]=r0`:字节通道 1 字节直写,
+        # 步长任意(hw batch-mem-032 样本 -125..+127)。
+        regs=[0]*16;regs[8]=0x124f07;regs[0]=0x000000c7
+        result=self.run_one('segimpl4_bpinl',0x6000fde,regs,0x124f07,'segimpl4_bpinl',1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl4_bpinl']['bytes_with_unknowns'],'c7')
+        self.assertEqual(result['last_registers']['r'][8],'0x124f08')
+
+    def test_bpinl_alias_base_is_data_app_60ba218(self):
+        # app 0x60ba218 `st.b.pin.l b[r15++=-109]=r15`(全库唯一 r==s 别名
+        # 站点,hw batch-mem-002/034 基址=数据别名捕获同方向):数据=基址
+        # 写回前的旧寄存器低 8 位,负奇步长 -109 回绕写回。
+        regs=[0]*16;regs[15]=0x000124f05
+        result=self.run_one('segimpl4_alias',0x60ba218,regs,0x124f05,'segimpl4_alias',1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl4_alias']['bytes_with_unknowns'],'05')
+        self.assertEqual(result['last_registers']['r'][15],hex((0x124f05-109)&0xffffffff))
+
+    def test_short_pi_register_step_app_60002de(self):
+        # app 0x60002de `st.b.pi b[r4++=r10]=r0`:短形寄存器步长(不在旧
+        # immediate_rep_projection 短形 gate——该 gate 只收 pin 立即形,
+        # 本 gate 实际接手的首批短形)。
+        regs=[0]*16;regs[4]=0x124f10;regs[10]=3;regs[0]=0x0000005a
+        result=self.run_one('segimpl4_bpi',0x60002de,regs,0x124f10,'segimpl4_bpi',1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl4_bpi']['bytes_with_unknowns'],'5a')
+        self.assertEqual(result['last_registers']['r'][4],'0x124f13')
+
+    def test_odd_halfword_address_honest_refusal(self):
+        # 奇地址半字无观测形状(hw 96 条半字样本基址全偶)→诚实拒
+        # (require,主循环记 upstream_simulator_failure),目标字节/基址/
+        # PC/计数零提交。
+        regs=[0]*16;regs[1]=0x124f01;regs[9]=0x0000feed
+        h=self.handoff();h['snapshots'].append(('segimpl4_odd',0x124f02,2))
+        result=explore(self.module,self.app,name='segimpl4_odd',handoff=h,
+            diagnostics={'entry_pc':0x6013886,'initial_sp':STACK_TOP,
+                         'initial_gprs':regs,
+                         'exact_postincrement_subword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop']['kind'],'upstream_simulator_failure')
+        self.assertIn('unaligned exact postincrement subword store',result['stop']['message'])
+        self.assertEqual(result['last_registers']['r'][1],'0x124f01')
+        self.assertEqual(result['memory_snapshots']['segimpl4_odd']['bytes_with_unknowns'],'????')
+        self.assertNotIn('exact_postincrement_subword_store',result['instruction_adapters'])
+
+    def test_short_pin_form_stays_on_the_old_gate_then_falls_back(self):
+        # 次序断言(STOREG3 同款):短形 st.h.pin(app 0x6000198
+        # `st.h.pin h[r6++=2]=r6`,b==d 基址=数据别名站)在旧
+        # immediate_rep_projection+exact_subword_stores 开时由旧 gate 服务
+        # (adapter=exact_postincrement_store);两旧开关关、本开关开时本
+        # gate 兜住短形。基址=数据别名:旧 r6=0x124f00 的低半字 0x4f00
+        # 落盘。
+        regs=[0]*16;regs[6]=0x124f00
+        h=self.handoff();h['snapshots'].append(('segimpl4_short_old',0x124f00,2))
+        result=explore(self.module,self.app,name='segimpl4_short_old',handoff=h,
+            diagnostics={'entry_pc':0x6000198,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'immediate_rep_projection':True,'exact_subword_stores':True,
+                         'exact_postincrement_subword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['instruction_adapters'].get('exact_postincrement_store'),1)
+        self.assertNotIn('exact_postincrement_subword_store',result['instruction_adapters'])
+        self.assertEqual(result['memory_snapshots']['segimpl4_short_old']['bytes_with_unknowns'],'004f')
+        h=self.handoff();h['snapshots'].append(('segimpl4_short_new',0x124f00,2))
+        result=explore(self.module,self.app,name='segimpl4_short_new',handoff=h,
+            diagnostics={'entry_pc':0x6000198,'initial_sp':STACK_TOP,'initial_gprs':regs,
+                         'exact_postincrement_subword_stores':True},budget=1)
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['instruction_adapters'].get('exact_postincrement_subword_store'),1)
+        self.assertNotIn('exact_postincrement_store',result['instruction_adapters'])
+        self.assertEqual(result['last_registers']['r'][6],'0x124f02')
+
+    def test_same_value_rewrite_still_pulses_a_write(self):
+        # 同值重写仍出一笔真实 2 字节写事件(区分直写与上游「合并整字、
+        # 相同则丢弃」);种子先把目标半字写成同值。
+        regs=[0]*16;regs[1]=0x124f00;regs[9]=0x0000feed
+        result=self.run_one('segimpl4_same',0x6013886,regs,0x124f00,'segimpl4_same',2,
+                            seed=(0x124f00,b'\xed\xfe'))
+        self.assertEqual(result['completed_steps'],1)
+        self.assertEqual(result['memory_snapshots']['segimpl4_same']['bytes_with_unknowns'],'edfe')
+        writes=[e for e in result.get('memory_events',[])
+                if e['access']=='write' and int(e['address'],16)==0x124f00]
+        self.assertEqual([w['bytes'] for w in writes],['edfe'])
+
+
 if __name__=='__main__':unittest.main()

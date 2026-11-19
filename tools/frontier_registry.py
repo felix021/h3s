@@ -100,6 +100,17 @@ FEATURES = (
             'base 快照账本双口径互证〕,halfword_pair/word_store_sp_l/CQ 先'
             '例:已执行形状独立 opt-in 不并入 pure-ALU 主清单;width 子门分'
             '层照旧)'),
+    Feature('postincrement_store_subword', 'conditional', (), False, None,
+            '独立(非并行对)后增量半字/字节存储直写(exact_postincrement_'
+            'subword_stores 子开关,路 SEGIMPL4:st.{h,b}.{pi,pin} 及 .l 长形 '
+            '8 形,存储到旧基址后基址+=增量/数据取旧寄存器/flags 不动,hw v2 '
+            '独立形每形 12 条捕获逐条核对;证据形状 ROM 0x63c2=42,173,750 停点 '
+            'rep.i 4 16 清零循环体 st.h.pin.l 第二轮第 2 半字合并读撞未初始化 '
+            '0x19e100;独立子开关原因=st.h.pin.l 在已执行窗口已 17 次真实执行 '
+            '走上游模型目标字节已知,并入 exact_subword_stores 会改条件场景 '
+            'adapter 账本,mul_pair/prer 先例;短形 st.h.pin/st.b.pin 由旧 '
+            'immediate_rep_projection 短形 gate 先接不迁移;零装载论证限于 '
+            'rep 体,外层 0x6242 ld.w.idxs 实有装载照旧)'),
     Feature('lp_timer_writes', 'conditional', ('p11_power_init',), False, None,
             'LP 定时器初始化写 write-only 记录(lp_timer_init_projection)'),
     Feature('lrct_trim_done', 'conditional', ('lp_timer_writes',), False, None,
@@ -744,13 +755,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42173750,
-        'stop_pc': '0x63c2',
-        'stop': {'kind': 'upstream_store_bookkeeping_read', 'access': 'read',
-                 'address': '0x19e100', 'size': 4, 'region': 'physical_heap',
-                 'first_missing': '0x19e100',
-                 'note': 'upstream store model reads previous words to merge/drop '
-                         'writes; not a guest load'},
+        'completed_steps': 42231273,
+        'stop_pc': '0x60736c8',
+        'stop': {'kind': 'rep_multi_block_body_not_straight_line',
+                 'instruction_id': 'ifs.gt.rr', 'address': '0x60736cc'},
         'freshness_fields': ('kind', 'address'),
     },
 }

@@ -182,6 +182,45 @@ EXACT_PREINCREMENT_SUBWORD_STORE_FORMS=('st.h.prer','st.b.prer')
 # 直写的次序关系见 gate 内注释(短形由旧 gate 先接);本开关独立 opt-in
 # (照 word_store_sp_l 先例,默认关,legacy 报告不变)。
 EXACT_POSTINCREMENT_WORD_STORE_FORMS=('st.w.pi','st.w.pin','st.w.pi.l','st.w.pin.l')
+# 独立(非并行对 B 半)后增量半字/字节存储直写(exact_postincrement_subword_
+# stores 独立子开关,路 SEGIMPL4):st.{h,b}.{pi,pin} 及 .l 长形 8 形全族
+# (短形 st.h.pin/st.b.pin 已由上方 immediate_rep_projection 短形 gate 服务
+# ——清单仍收全族保持完整,STOREG3 同款次序注记;旧 gate 关闭时本 gate
+# 兜住短形)。与 STOREG3 word 族/prer 前增量族同一论证:硅上部分字存储只
+# 写自己的 width 字节、不读包含字,上游 m2 存储模型 Writes.put 的写前合并
+# 读(st.load(wa,4))是模型簿记读非 guest 装载,未初始化 RAM 上假停。语义
+# =存储到旧基址、随后基址+=增量(寄存器 pi 或立即 pin;短形立即 ±width,
+# 长形 .l 已符号扩展并按宽度定标),数据取旧寄存器值、flags 不动——hw/
+# fm1-2026-10-24-v2 results.jsonl 独立形 8 形每形 12 条捕获逐条核对(st.h.
+# pin.l batch-mem-027 步长全偶{-110..+120}、st.b.pin.l batch-mem-032 步长
+# 任意{-125..+127}、st.h.pi batch-mem-001/st.h.pi.l batch-mem-030/st.b.pi
+# batch-mem-002/st.b.pi.l batch-mem-034 寄存器步长含 0 与负;全部:唯一变化
+# 寄存器=基址(步长 0 时零变化)、mem 读回字低 width 字节=旧数据寄存器低位
+# 、psr_out==flags_in;并行对 B 半的 12 形容器 EXACT_PARALLEL_POSTINCREMENT_
+# STORE_HALVES〔路 DEBTCLEAR〕已收同 8 形,ISA confirmed 三源引同款)。证据
+# 形状 ROM 0x63c2 `st.h.pin.l h[r11++=2]=r0`(SEGIMPL3 前沿 42,173,750 停点
+# :rep.i 4 16 清零循环体,第二轮第 2 个半字上游合并读撞未初始化堆半字窗
+# 0x19e100,r11 虚拟 0x404400 经 MMU→物理 0x19e100)。独立子开关而非并入
+# exact_subword_stores 偏移形容器(mul_pair/word_store_sp_l/prer 先例同款
+# ):st.h.pin.l 在已执行窗口 0..42,173,750 内已 17 次真实执行(第一轮 16
+# 次+第二轮第 1 个半字,全部走上游模型、目标字节已知正常完成——快照段/
+# resume 段/从零 watch 三口径账本见路记档),并入会改 p11 条件场景报告的
+# adapter 计数与写事件形状,已执行形状独立 opt-in。零装载论证限于 rep 体
+# (体内零 guest load;外层循环 0x6242 ld.w.idxs 实有装载,照旧走上游模型
+# ——与 SEGIMPL 展开环论证的适用域差异如实记档)。边界纪律同 prer:全部
+# 增量求值在写内存之前完成(基址 & 掩码被 UnknownWord.consumed 拦截、
+# pi 步长 require isinstance(int)),半字要求偶地址(奇地址半字无观测形状
+# 诚实停——v2 捕获 96 条半字样本基址全偶),偶地址半字/单字节永不跨
+# 128B MMU 页界,mem.write 单页翻译安全;存储值含 unknown/部分 icfg 位时
+# 数值消费严格停(与 prer 同款,无抽象半字写观测形状)。静态面(2 字节
+# 对齐全解码扫描,上界含数据段假阳性):app st.h.pin.l 12/st.h.pi.l 9/
+# st.b.pin.l 39/st.b.pi.l 0 站,ROM 10/1/2/0 站;短形上界 app st.h.pi
+# 1474/st.h.pin 365/st.b.pi 3036/st.b.pin 1179 站(数据假阳性为主,两 pin
+# 短形由旧 gate 服务不迁移)。st.w.{pi,pin} 族不在本开关(STOREG3 已收)
+# ;st.d.{pi,pin.l} 奇偶寄存器序形与 ld.* 后增量装载形不在放行族。默认
+# 关,legacy 报告不变。
+EXACT_POSTINCREMENT_SUBWORD_STORE_FORMS=('st.h.pi','st.h.pin','st.h.pi.l','st.h.pin.l',
+                                         'st.b.pi','st.b.pin','st.b.pi.l','st.b.pin.l')
 
 
 def check_rom(rom):
@@ -1320,6 +1359,44 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 self.R[base_reg]=next_base
                 self.finish_exact(self.pc+size)
                 adapters['exact_postincrement_word_store']+=1
+                return
+            if (diagnostics and diagnostics.get('exact_postincrement_subword_stores') and
+                    insn.id in EXACT_POSTINCREMENT_SUBWORD_STORE_FORMS):
+                # 独立后增量半字/字节存储直写(路 SEGIMPL4,判据/证据见
+                # EXACT_POSTINCREMENT_SUBWORD_STORE_FORMS 头注释):存储到旧
+                # 基址、随后基址+=增量;增量取寄存器(pi,operands 的 i 已是
+                # gpr_hi 解析后的 r8-r15)或立即数(pin,短形 operands n=
+                # ±width,长形 .l 已符号扩展并按宽度定标)。次序在上方
+                # immediate_rep_projection 的短形 gate 之后(STOREG3 同款):
+                # 主场景链默认开 immediate_rep_projection+exact_subword_
+                # stores,短形 st.h.pin/st.b.pin 已由旧 gate 服务,本 gate
+                # 实际接手其余 6 形(st.{h,b}.pi 与全部 .l 长形;st.b.pi.l
+                # 全库零站点为空集成员);旧 gate 关闭时本 gate 兜住短形。
+                # 全部增量求值在写内存之前完成:基址为抽象值时 & 掩码处被
+                # UnknownWord.consumed 拦截、pi 步长 require isinstance(int),
+                # 不污染目标内存;半字要求偶地址(奇地址半字无观测形状,
+                # 诚实停),偶地址半字/单字节永不跨 128B MMU 页界,mem.write
+                # 单页翻译安全;存储值含 unknown/部分 icfg 位时数值消费
+                # 严格停(与 prer gate 同款,无抽象半字/字节写观测形状);
+                # 基址写回在写内存之后(寄存器序=捕获序,数据已在写前取
+                # 旧值)。
+                op=module.check.operands(insn,raw)
+                if insn.id.endswith('.l'):
+                    if insn.id.endswith('pin.l'):base_reg,data_reg,step=op['r'],op['s'],op['n']
+                    else:base_reg,data_reg,step=op['r'],op['t'],self.R[op['s']]
+                elif insn.id.endswith('pin'):base_reg,data_reg,step=op['b'],op['d'],op['n']
+                else:base_reg,data_reg,step=op['b'],op['d'],self.R[op['i']]
+                address=self.R[base_reg]&0xffffffff
+                require(isinstance(step,int),
+                        'postincrement subword store needs a known increment')
+                width=2 if insn.id.startswith('st.h') else 1
+                value=self.R[data_reg]
+                require(address%width==0,'unaligned exact postincrement subword store')
+                self.mem.write(address&0xffffffff,
+                               (value&((1<<(width*8))-1)).to_bytes(width,'little'))
+                self.R[base_reg]=(address+step)&0xffffffff
+                self.finish_exact(self.pc+size)
+                adapters['exact_postincrement_subword_store']+=1
                 return
             if (diagnostics and diagnostics.get('rep_copy_unknown_transport') and insn.id=='ld.w.pin' and
                     self.repeat is not None and self.repeat.get('multi_block')):
