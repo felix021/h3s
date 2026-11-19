@@ -212,6 +212,16 @@ FEATURES = (
             '独立(非并行)pi/pin 整字存储直写(exact_postincrement_word_stores 子开关;'
             'st.{w}.{pi,pin}+.l 4 形全族,独立 word 形静态 1,045 站点;硬件捕获 53/53;'
             '证据形状 0x60649d0 st.w.pin.l=WDFEED 前沿 41,828,530 停点)'),
+    Feature('preincrement_store_subword', 'conditional', (), False, None,
+            '独立前增量(寄存器)半字/字节存储直写(exact_preincrement_subword_stores '
+            '子开关,路 SEGIMPL;st.{h,b}.prer 恰 2 形,hw followup5-m 捕获 13/13 含'
+            '基址=数据别名;证据形状 ROM 0x5ea4 st.h.prer=FMIMPL 前沿 42,172,441 '
+            '停点,ROM 字节→半字展开环写 MMU 映射物理堆 0x19e300 页;放行审计:'
+            '0x19e314-0x19e31b 8 字节=已被未知值运输写覆盖(unknown_origins 指向 '
+            '0x19f7e8-0x19f7ef)非从未写过,固件纯存储不消费旧值,直写恰清除所写'
+            '字节未知来源,拒绝合成初值路径;放行后 +13 步停 0x5ed0 并行对高半字'
+            '合并读;pre 立即数形(hw 各 13 条)/hi.prer 形(hw 13 条)未触达不在'
+            '开关,st.{w,d}.prer 与 h/b pi/pi.l/pin.l 形照旧到达时诚实停)'),
     Feature('mmu_cross_page_split', 'conditional', (), False, None,
             '跨 128B MMU 页界双字存储拆两半各自翻译(derived-not-measured)'),
     Feature('jl_pled_con3_readback', 'conditional', (), False, None,
@@ -719,12 +729,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42172441,
-        'stop_pc': '0x5ea4',
-        'stop': {'kind': 'upstream_store_bookkeeping_read', 'access': 'read',
+        'completed_steps': 42172454,
+        'stop_pc': '0x5ed0',
+        'stop': {'kind': 'uninitialized_memory', 'access': 'read',
                  'address': '0x19e314', 'size': 4, 'region': 'physical_heap',
-                 'first_missing': '0x19e314',
-                 'note': 'upstream store model reads previous words to merge/drop writes; not a guest load'},
+                 'first_missing': '0x19e316'},
         'freshness_fields': ('kind', 'address'),
     },
 }

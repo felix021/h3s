@@ -5049,6 +5049,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              ext_pair=False,
              postincrement_pair=False,
              postincrement_store_word=False,
+             preincrement_store_subword=False,
              mmu_cross_page_split=False,
              timer0_irq4_delivery=False,timer0_irq4_probe_steps=None,timer0_irq4_masked=False,
              core_tick_irq3_delivery=False,core_tick_irq3_probe_steps=None,core_tick_irq3_masked=False,
@@ -5215,6 +5216,29 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # gate 的次序关系见 probe_boot gate 注释(短形由旧 gate 先接,行为不变)。
     # 默认关,legacy 报告不变。
     if postincrement_store_word:extra['exact_postincrement_word_stores']=True
+    # preincrement_store_subword:opt-in 的独立前增量(寄存器)半字/字节存储
+    # 直写(exact_preincrement_subword_stores 子开关,路 SEGIMPL)。st.{h,b}.
+    # prer=先基址+=增量寄存器、存到新基址、数据取旧寄存器值、flags 不动,
+    # 行为依据=hw/fm1-2026-10-24-v2 followup5-m 硬件捕获 13/13(含基址=数据
+    # 别名样本)与 m2 模型 memop prer 同语义;半字/字节部分写只写自己的
+    # 字节、硅上不读包含字——上游存储模型 Writes.put 写前合并读旧 word 是
+    # 模型簿记读非 guest 装载,未初始化 RAM 上假停(与 exact_subword_stores
+    # 偏移形/exact_postincrement_word_stores word 族同一论证,字节粒度直写
+    # 恰好初始化所写字节)。证据形状 ROM 0x5ea4 `st.h.prer h[++r3=r6]=r7`
+    # (FMIMPL 前沿 42,172,441 停点,ROM 0x5e94-0x5ef2 字节→半字展开环,
+    # MMU v0x404380 页→p0x19e300 物理堆展开区;同环 0x5ec6 st.b.prer 字节
+    # 通道同族)。放行审计(拒绝合成初始化路径):base 快照 41,884,941 边界
+    # RAM 镜像恰 0x19e314-0x19e31b 8 字节=已被未知值运输写覆盖(unknown_
+    # origins 指向 0x19f7e8-0x19f7ef,值未知非从未写过);展开环对目的零
+    # 装载、每轮低半+高半成对写=固件语义不消费旧值,直写恰清除所写字节的
+    # 未知来源、邻字节保留(放行后 +13 步 0x5ed0 并行对 uextra.rrii.p∥st.h
+    # 高半字合并读如实撞保留的未知字节——下一停点 42,172,454,归下路)。
+    # 边界:pre 立即数形(app 16 h+41 b 站点,hw 各 13 条)与 hi.prer 形
+    # (hw 13 条、全库零站点)未被触达不在开关;st.w/st.d.prer 整字前增量
+    # 形(38+4 站点)与 st.{h,b}.{pi,pi.l,pin.l} 后增量部分字形(app 上千
+    # 站点)照旧到达时诚实停;ld.*.prer 真读不在放行族。静态面上界:app
+    # st.h.prer 6/st.b.prer 8 站点,ROM 7/2 站点。默认关,legacy 报告不变。
+    if preincrement_store_subword:extra['exact_preincrement_subword_stores']=True
     # mmu_cross_page_split:opt-in 的跨 128B MMU 页界双字存储拆分(probe_boot
     # exact_doubleword_stores 独立子开关)。证据形状 app 0x6007af2
     # `st.d.sp.l d[sp+8]=r1_r0`(配置表查名 helper 0x6007ae8 函数头,app_core
@@ -7080,7 +7104,9 @@ def check_delivery(r,*,before_rti=True):
     return d
 
 
-# 22 个 instruction_adapters 计数基线(条件场景 p11_heap_experimental_config)。
+# 23 个 instruction_adapters 计数基线(条件场景 p11_heap_experimental_config;
+# 历史注释写「22 键」,COPEXIMPL 加入 copex_exp22_model_execute 后未同步——
+# 以 _ADAPTER_COUNT_KEYS 元组实际长度为准)。
 # 推进前沿会漂移的 adapter 计数不再手工钉绝对值:期望值统一放在
 # evidence/p11_heap_adapter_count_baseline.json,由 tools/capture_p11_heap_adapter_counts.py
 # --recapture 重取。键集合写死在代码里(不能只遍历 JSON 现存键,防删键顺带删检查)。
@@ -8482,7 +8508,24 @@ def check(report,firmware):
             '0xf00000 through the TIMERIMPL era (the modem-window CON head, '
             'scout candidate two — the arm IS taken at runtime) and became '
             'the route-FMIMPL five-tuple RMW release face (the chain now '
-            'walks on past it to 42,172,441)')
+            'walks on past it to 42,172,441 — see the route-FMIMPL release '
+            'record for the +110,963-step segment, the one-shot RMW ledger '
+            'and the task-assembly wall order); and the route-SEGIMPL '
+            'release (this scenario, exact_preincrement_subword_stores: '
+            'the standalone register-preincrement st.h.prer/st.b.prer '
+            'direct-write pair, hw 13/13 each with the base==data alias '
+            'sample) serves the ROM byte-to-halfword expansion loop\'s '
+            'preincrement stores — the 42,172,441 stop instruction itself '
+            '(st.h.prer h[++r3=r6]=r7 writing the low half of the '
+            'transported-unknown word 0x19e314, clearing exactly its two '
+            'byte origins) and its byte-channel sibling 0x5ec6, four gate '
+            'firings total — and +13 steps land at 42,172,454 @ 0x5ed0 on '
+            'the PARALLEL pair uextra.rrii.p||st.h whose halfword B-half '
+            'merge read hits the retained unknown byte 0x19e316 (a raw '
+            'uninitialized_memory stop: the pair records under the A-half '
+            'uextra id, the bookkeeping-read rename does not apply) — the '
+            'parallel-pair halfword family, a fresh instruction-shape '
+            'boundary for the next route')
     require(r['completed_steps']==conditional_frontier['completed_steps'],
             'the heap experimental config changed its step count')
     # 路 EVIMPL(2026-11-18,docs/frontier-scout-evqueue.md 停点 41,909,506;
@@ -8860,6 +8903,50 @@ def check(report,firmware):
             'synthetic-not-reset-value wording, the bus-level bulk-guard '
             'wording and the silicon-coupling gap declaration — this does '
             'NOT verify any modem-window, IRQ88 or BT clock scenario')
+    # 路 SEGIMPL:独立前增量(寄存器)半字/字节存储直写(exact_preincrement_
+    # subword_stores)释放记录断言——FMIMPL 前沿 42,172,441 @ 0x5ea4 的
+    # st.h.prer 簿记读墙由本开关恰两形(st.h.prer/st.b.prer,hw followup5-m
+    # 各 13/13 含基址=数据别名样本)放行:放行段恰 +13 步(展开环迭代 1 后
+    # 半程 0x5ea8..0x5ecc),gate 恰 4 次(迭代 0 两形在已知字上由本 gate 接
+    # 管〔直写与上游合并写 RAM 结果逐字节相同〕+迭代 1 两形——0x5ea4×2/
+    # 0x5ec6×2);第一性审计钉死目的缓冲语义:0x19e314-0x19e31b 8 字节=
+    # write_abstract 未知值运输写所写(unknown_origins 逐字节指向
+    # 0x19f7e8-0x19f7ef)非「从未写过」,数值写钩子对该洞零记录;展开环
+    # 对目的零装载、每轮低半+高半成对写=固件语义不消费旧值,直写恰清除
+    # 所写字节的未知来源、邻字节来源保留——拒绝合成初始化路径(合成已知
+    # 值会掩盖 +13 步后高半字并行对合并读如实撞上的未知字节);新停点
+    # 0x5ed0=并行对 uextra.rrii.p∥st.h 高半字 B 半的上游合并读撞保留的
+    # 未知字节 0x19e316(kind=uninitialized_memory 非 upstream_store_
+    # bookkeeping_read——并行对以 A 半指令 id 记录,不以 st. 开头,改名
+    # 路径不适用),归下路并行对半字族;pre 立即数形(hw 各 13 条但 app
+    # 16 h+41 b 站点未触达)/hi.prer 形(hw 13 条、全库零站点)/st.{w,d}.
+    # prer 整字前增量形(38+4 站点)与 ld.*.prer 装载形不在放行族。
+    require(r['instruction_adapters'].get('exact_preincrement_subword_store')==4 and
+            r['stop']['kind']=='uninitialized_memory' and
+            r['stop']['first_missing']=='0x19e316' and
+            r['peripherals']['jl_fm_con_head_registers']['word_writes']==1 and
+            r['memory_event_counts']['write']==2419422 and
+            'exact_preincrement_subword_stores' in r['assumptions']['diagnostics'],
+            'the route-SEGIMPL release record must pin the runtime evidence: exactly FOUR '
+            'exact_preincrement_subword_store gate firings (the st.h.prer/st.b.prer pair '
+            'twice each — expansion-loop iteration 0 on known words taken over from the '
+            'upstream merge-write path with byte-identical RAM results, and iteration 1 '
+            'whose st.h.prer is the released 42,172,441 stop instruction itself), +13 '
+            'steps to the 42,172,454 stop at 0x5ed0 where the PARALLEL pair '
+            'uextra.rrii.p||st.h halfword B-half merge read honestly hits the RETAINED '
+            'unknown byte 0x19e316 (the 8-byte window 0x19e314-0x19e31b holds '
+            'abstract-transported unknown values with origins 0x19f7e8-0x19f7ef — '
+            'written-but-unknown, never never-written; the direct write clears the '
+            'origins of exactly the bytes it covers, which is why a synthetic '
+            'initialization was REJECTED — it would have masked this honest next '
+            'stop), the stop kind stays raw uninitialized_memory (the pair records '
+            'under the A-half uextra id, not st.*, so the bookkeeping-read rename '
+            'does not apply), the jl_fm ledger stays frozen at one write (the '
+            'released segment is pure CPU0 store code), and the write event total '
+            'moves 2419420->2419422 (two gate writes replace two merged word '
+            'writes of iteration 0 and add iteration 1\'s two) — this does NOT '
+            'verify any parallel-pair halfword store, pre immediate-increment '
+            'form, st.w/st.d prer form or the expansion buffer\'s unknown values')
     # 路 JLEQ:park 稳态证据体断言——喂狗邮箱事务全闭合、事件钟推进、两核
     # parked 唤醒计数、EQ 两字记录、GPCNT 完成位读数。这是 D1「S19 空转+
     # 两核 park」判定的报告面证据(全部只观察不发明)。
@@ -10187,7 +10274,11 @@ def check(report,firmware):
     # 35,999→11,999(新延时窗),跨界 22 次到期(15,797→15,819)全交付全
     # ACK(+22=交付 15,780→15,802),cnt 窗内走表到 5,769;零新喂狗(163/162
     # 冻结),elapsed 名义单位 158→186。
-    require(timer=={'con':0x1401,'cnt':5769,'prd':11999,'pending':False,
+    # 路 SEGIMPL:prer 两形直写放行后 +13 步段(展开环迭代 1 后半程到 0x5ed0
+    # 并行对停点)零新到期零新交付(15819/15802 冻结),cnt 窗内走表 5,769→
+    # 5,808(恰 +39=13 步×3 STD12M tick),零新喂狗(163/162 冻结),elapsed
+    # 名义单位 186 冻结(小数余数 496→509 不足一个名义单位)。
+    require(timer=={'con':0x1401,'cnt':5808,'prd':11999,'pending':False,
             'expirations':15819},
             'TIMER0 must stay on source 5 with the delay-function tick schedule (each delay '
             'call reprograms PRD; the route-STOREG3 stop leaves the 5ms window PRD 59999 '
@@ -10311,11 +10402,15 @@ def check(report,firmware):
     # 959,964→1,403,816(恰 +443,852=110,963×4 tick 精确走表,仍 <prd
     # 1,599,999);新停点 0x5ea4 在 ROM 字节→半字展开环的 st.h.prer 体内
     # (upstream 簿记读未初始化物理堆半字 0x19e314,IPMASK 0=临界区外,
-    # ICFG 0x300)。
+    # ICFG 0x300)。路 SEGIMPL:+13 步段(prer 两形直写放行,展开环迭代 1
+    # 后半程)零新溢出零新交付(347/347 冻结),cnt 1,403,816→1,403,868
+    # (恰 +52=13×4 tick 精确走表,CPU1 路 322,919,964→322,920,016 同款);
+    # 新停点 0x5ed0 在并行对 uextra.rrii.p∥st.h 高半字 B 半的合并读上
+    # (未初始化字节 0x19e316=运输写未知值,IPMASK 0=临界区外,ICFG 0x300)。
     tick0=r['peripherals']['core_tick_configuration'][0]
     require(tick0['pending'] is False and tick0['expirations']==347 and
             tick0['unresolved_overflow'] is False and tick0['acknowledgements']==347 and
-            tick0['cnt']==1403816 and
+            tick0['cnt']==1403868 and
             tick0['irq_delivery_simulated'] and
             r['machine']['core_tick_entry_projection']['enabled'] and
             r['peripherals']['core_tick_configuration'][1]['expirations']==0 and
