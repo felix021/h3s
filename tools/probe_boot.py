@@ -87,6 +87,44 @@ EXACT_PARALLEL_EXT_TRANSFER_PREFIXES=('ext.b0.u','ext.b0.s','ext.l.u','ext.l.s')
 EXACT_PARALLEL_POSTINCREMENT_STORE_HALVES=('st.w.pi','st.w.pin','st.w.pi.l','st.w.pin.l',
                                            'st.h.pi','st.h.pin','st.h.pi.l','st.h.pin.l',
                                            'st.b.pi','st.b.pin','st.b.pi.l','st.b.pin.l')
+# mul.* 标量乘并行前缀(exact_parallel_mul_prefixes 独立子开关,路 SEGIMPL3):
+# 16 形=hw/fm1-2026-10-24-v3 全部 mul 前缀捕获形(每形∥st.w、∥ld.w 各 4 条),
+# 全部是纯寄存器/立即数操作数(标量模型 semantics.p._nz/semantics.r._mul_h/
+# _mul_w/_mk_mulimm/_mk_mulp/_mk_mul2/_mul4_*,效果只有 regs+flags,含乘累加
+# 形的 acc=通用寄存器对 r/r+1 非独立累加器文件);mul.mem1/mul.mem2 无 .p
+# 并行形(内存操作数形不进本表)。B 半存储按 v3 硬件捕获的旧寄存器语义执行
+# (「B 读 A 之前旧寄存器」:64/64 条 mul∥st.w 捕获核对——B 半存源寄存器
+# 写前旧值,如 batch-pair-000 `mul.rr.p r4*=r1 ∥ st.w [r3+8]=r4` mem
+# 0x1c29e68=2=in r4 旧值而非 A 半结果 1881742636)。不并入 pure-ALU 前缀
+# 清单的原因(与 halfword_pair/word_store_sp_l/CQ 先例同款):mul 前缀×st.*
+# 在已执行窗口(0..42,173,271)内恰 8 次真实执行/6 站,全部走上游 pair 模型
+# 目标字已知正常完成——并入主 gate 会改 p11 条件场景报告的 adapter 计数
+# 与写事件形状,已执行形状按先例独立 opt-in。动态 watch 全定位(从零 41.9M
+# attempts 重放+快照账本互证,两口径 adapter 14,615/568 逐键一致):快照段
+# (0..41,884,941)恰 6 次=word 5(0x601d1ee×2/0x601d282×2/0x606df1e×1)+
+# half 1(0x6011be8);resume 段(41,884,941..42,173,271)恰 2 次=word 1
+# (0x606fb8c)+half 1(ROM 0x7604);crc_bankb 289,849 mul×st.* 零命中
+# (base 场景零变化)。放行动机=SEGIMPL2 停点 42,173,271 @ 0x6198
+# `mul.modimm.rri.p r0=r0*0x9 ∥ st.w.sp [sp+4]=r2` 的 B 半上游合并读撞
+# 未初始化虚拟栈字(sp=0x4042b8 经 MMU→物理堆 0x19e4bc,ROM 0x6170 函数
+# 序言帧口袋 [sp+4] 槽未写过——拒绝合成初始化,word 整字 4 字节全覆盖
+# 旧值语义无关,直写恰覆盖该槽)。宽度子门分层照旧(word 无额外/half 要
+# exact_parallel_halfword_stores/byte 要 exact_parallel_byte_stores)。madd.*/
+# msub.*=另族乘累加前缀(v3 另有 madd∥st.w 48 条/msub∥st.w 40 条捕获,未
+# 纳入本路评审——到达时按同纪律评审,与 mul.f.rrr〔确无 v3 捕获〕同款处
+# 理);A 半×pi/pin 后增量第二半照旧落上游模型(DEBTCLEAR 先例同款边界)。
+# 静态面(2 字节对齐上界,含数据段假阳性;A 半按 16 形白名单过滤后):
+# app word 族 94 站(st.w 40/st.w.sp 53/st.w.l 1)+st.h 5 站+st.b 11 站、
+# ROM word 族 24 站(st.w 1/st.w.sp 23)+st.h 1 站(=0x7604)+st.b 0 站
+# (未过滤的全 mul 前缀上界另有 app word 130 站=94+mul.f.rrr 的 15+21 站,
+# mul.f 不在白名单);×ld.* 全程不受影响(上游模型照旧)。
+EXACT_PARALLEL_MUL_SCALAR_PREFIXES=('mul.rr','mul.rrr','mul.modimm.rri',
+                                    'mul.rhrhrhe','mul.rrhrhe',
+                                    'mul.rrhi.ssat','mul.rrhi.usat',
+                                    'mul.s.prr','mul.u.prr',
+                                    'mul2.prhrhi.ssat','mul2.prhrhi.usat',
+                                    'mul2.prhrhrhrhe','mul2.rrhrhrhrhe',
+                                    'mul4.m.pri','mul4.m.prr','mul4.u.prr')
 # 独立前增量(寄存器)半字/字节存储直写(exact_preincrement_subword_stores
 # 独立子开关,路 SEGIMPL):st.{h,b}.prer 恰 2 形(非 hi)。与下面各直写族
 # 同一理由——硅上部分字存储只写自己的字节、不读包含字,上游 m2 存储模型
@@ -1436,7 +1474,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 halfword_extract=(diagnostics.get('exact_parallel_halfword_stores') and
                                   base.id in ('uextra.rrii','insert.rrii') and
                                   pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES)
-                if (pure_alu or byte_extract or halfword_extract) and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
+                # 路 SEGIMPL3:mul.* 标量乘前缀(exact_parallel_mul_prefixes
+                # 独立子开关)——A 半 16 形全部纯寄存器/立即数乘(标量模型
+                # 效果只有 regs+flags,含乘累加形 acc=寄存器对;判据/证据/
+                # 静态面见 EXACT_PARALLEL_MUL_SCALAR_PREFIXES 头注释),B 半
+                # 存储按 hw/fm1-2026-10-24-v3 旧寄存器语义(64/64 捕获核对)
+                # 走既有 word/halfword/byte 直写路径(宽度子门分层照旧)。
+                # 证据形状 ROM 0x6198=SEGIMPL2 前沿 42,173,271 停点
+                # `mul.modimm.rri.p r0=r0*9 ∥ st.w.sp [sp+4]=r2`(B 半上游
+                # 合并读撞未初始化帧槽 0x19e4bc);ROM 0x61aa=同段第二站
+                # (mul∥ld.w,B 半装载照旧上游模型,不属本 gate)。不并入
+                # pure-ALU 清单的原因=已执行窗口内恰两处 mul×st.* 真实
+                # 执行(0x606fb8c/0x7604,上游模型正常完成),halfword_pair/
+                # word_store_sp_l/CQ 先例:已执行形状独立 opt-in。
+                mul_scalar=(diagnostics.get('exact_parallel_mul_prefixes') and
+                            base.id in EXACT_PARALLEL_MUL_SCALAR_PREFIXES)
+                if (pure_alu or byte_extract or halfword_extract or mul_scalar) and (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                         (diagnostics.get('exact_parallel_halfword_stores') and
                          pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES) or
                         (diagnostics.get('exact_parallel_byte_stores') and
@@ -2244,8 +2297,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         halfword_extract=(diagnostics.get('exact_parallel_halfword_stores') and
                                           base.id in ('uextra.rrii','insert.rrii') and
                                           pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES)
+                        # 与主 gate 同步:mul.* 标量乘前缀(路 SEGIMPL3,
+                        # exact_parallel_mul_prefixes 子开关×宽度子门分层,
+                        # 判据/证据见主 gate 与常量头注释)。
+                        mul_scalar=(diagnostics.get('exact_parallel_mul_prefixes') and
+                                    base.id in EXACT_PARALLEL_MUL_SCALAR_PREFIXES)
                         supported=(diagnostics.get('exact_parallel_stores') and (pure_alu or byte_extract or
-                                   halfword_extract) and
+                                   halfword_extract or mul_scalar) and
                                    (pair.id in EXACT_PARALLEL_WORD_STORE_HALVES or
                                     diagnostics.get('exact_parallel_halfword_stores') and
                                     pair.id in EXACT_PARALLEL_HALFWORD_STORE_HALVES or
