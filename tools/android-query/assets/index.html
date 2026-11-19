@@ -1011,27 +1011,44 @@ summary {
   color: var(--muted);
   cursor: pointer;
 }
-.key-row {
+/* 按键自定义：按实体键展开的手势清单（三组 details，各五个手势行） */
+#sec-keys .km-group { margin: 0; border-bottom: 1px solid var(--line); }
+#sec-keys .km-group > summary { color: var(--text); padding: 9px 0; }
+#sec-keys .km-count { margin-inline-start: .75em; color: var(--warn); font-size: 13px; }
+#sec-keys .km-list { list-style: none; margin: 0; padding: 0; }
+#sec-keys .km-item + .km-item { border-top: 1px solid var(--soft); }
+#sec-keys .km-row {
   display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
   align-items: center;
-  margin-top: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: start;
 }
-.key-row label {
-  font-weight: 600;
+#sec-keys .km-gesture { align-self: start; }
+#sec-keys .km-values { display: grid; gap: 2px; min-width: 0; }
+#sec-keys .km-base, #sec-keys .km-edit-label { color: var(--muted); font-size: 13px; }
+#sec-keys .km-item[data-state="dirty"] .km-state { color: var(--warn); }
+#sec-keys .km-item[data-state="failed"] .km-state { color: var(--danger); }
+#sec-keys .km-item[data-state="confirmed"] .km-state { color: var(--ok); }
+#sec-keys .km-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 10px;
 }
-.key-row small {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-.key-row.dirty select {
-  border: 2px solid var(--warn);
-}
-.key-row.dirty small {
-  color: var(--warn);
+#sec-keys .km-editor label { grid-column: 1 / -1; }
+#sec-keys .km-editor select { width: 100%; min-width: 0; }
+#sec-keys .km-row:focus-visible, #sec-keys summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .placeholder-grid {
   display: grid;
@@ -1391,47 +1408,55 @@ summary {
       <p id="mfToneFeedback" class="feedback" aria-live="polite">尚未设置。</p>
     </article>
 
-    <article class="card" id="sec-keys">
+    <article id="sec-keys" class="card">
       <div class="card-head">
         <h2>按键自定义</h2>
         <span id="keyDirtyCount" class="badge">无待发送修改</span>
       </div>
-
-      <div id="keyChooser" class="segment" role="group" aria-label="物理按键">
-        <button data-key="7" aria-pressed="true">多功能</button>
-        <button data-key="5" aria-pressed="false">音量＋</button>
-        <button data-key="3" aria-pressed="false">音量－</button>
-      </div>
-
       <div id="keyRows"></div>
-
-      <details>
-        <summary>通信方式与已知限制</summary>
-        <label for="keyWire">按键写入方式</label>
-        <select id="keyWire">
-          <option value="batch">批量同步 0xC0（固件注册表钉死的默认方式）</option>
-          <option value="adv">ADV type2（旧默认，帧形状假设）</option>
-          <option value="custom">自定义命令 0x2b（固件无此 cmdid，仅对照）</option>
-        </select>
-        <p class="note">
-          写入方式已按固件反解改为「批量同步」——固件按键注册在批量同步表
-          （cmdid 2），此前用的 ADV type2/0x2b 在固件里没有对应命令，发了也不会有回执
-          （这就是之前「发送失败/未确认」的原因）。「从设备读取」发 0xC1 读命令回 45B
-          映射表；长按的事件编号仍是假设，页面明确标记为“待验证”。
-        </p>
-      </details>
-
       <div class="actions">
-        <button id="kmWrite" class="primary" data-write disabled>
+        <button id="kmReadDevice" type="button" data-write disabled>从设备读取</button>
+        <button id="kmWrite" type="button" class="primary" data-write disabled>
           发送修改
         </button>
-        <button id="kmRead">读取工作副本</button>
-        <button id="kmReadDevice" data-write disabled>从设备读取</button>
       </div>
-      <p id="kmFeedback" class="feedback" aria-live="polite">
-        初始值来自旧页面默认配置。
-      </p>
+      <p id="kmFeedback" class="feedback" role="status">当前显示本地参考值。</p>
+      <details>
+        <summary>通信方式与工作副本</summary>
+        <label for="keyWire">按键写入方式</label>
+        <select id="keyWire">
+          <option value="batch">批量同步 0xC0（默认）</option>
+          <option value="adv">ADV type2（旧方式，对照用）</option>
+          <option value="custom">0x2b（固件无对应命令，对照用）</option>
+        </select>
+        <button id="kmRead" type="button">读取壳侧工作副本</button>
+      </details>
     </article>
+
+    <template id="keyGroupTemplate">
+      <details class="km-group">
+        <summary><strong class="km-name"></strong><span class="km-count"></span></summary>
+        <ul class="km-list"></ul>
+      </details>
+    </template>
+
+    <template id="keyRowTemplate">
+      <li class="km-item">
+        <button type="button" class="km-row" aria-expanded="false">
+          <span class="km-gesture"></span>
+          <span class="km-values">
+            <span class="km-base"></span>
+            <strong class="km-state"></strong>
+          </span>
+          <span class="km-edit-label">修改</span>
+        </button>
+        <div class="km-editor" hidden>
+          <label></label>
+          <select></select>
+          <button type="button" class="km-done">完成</button>
+        </div>
+      </li>
+    </template>
 
     <article id="sec-power" class="card">
       <h2>电源</h2>
@@ -2171,6 +2196,10 @@ function updateGates() {
   all('[data-write]').forEach(button => {
     button.disabled = !connected || !armed || button.dataset.busy === '1';
   });
+  // 按键卡互斥：C1 读表进行中禁发送/禁再读；发送进行中禁读表；两者期间禁切写入方式
+  $('kmWrite').disabled = $('kmWrite').disabled || readingKeyTable;
+  $('kmReadDevice').disabled = $('kmReadDevice').disabled || keyBusy || readingKeyTable;
+  $('keyWire').disabled = keyBusy || readingKeyTable;
   $('kmWrite').disabled = !connected || !armed || keyBusy || dirtyKeys.size === 0;
   $('kmRead').disabled = !H || keyBusy;
   $('keyWire').disabled = keyBusy;
@@ -2302,6 +2331,17 @@ $('battBtn').onclick = () => {
   });
 };
 function clearDeviceDisplays() {
+  // 按键卡：只清「本次连接取得的设备来源」（写入已应答/回读/回读未知动作）与在途/读表
+  // 标志，保留本机记录/壳侧副本来源、草稿和「失败或未确认」提示（仍待处理需可见）
+  sourceOfKey.forEach((source, id) => {
+    if (source === '写入已应答' || source === '设备回读' || source === '回读未知动作') {
+      sourceOfKey.delete(id);
+    }
+  });
+  sendingKey = null;
+  readingKeyTable = false;
+  renderKeyRows();
+  $('kmFeedback').textContent = '连接已断开：表内为本地参考值与未发送草稿。';
   $('batt').replaceChildren(element('span', '未连接，电量未知'));
   ['ancSeg', 'modeSeg', 'volSeg'].forEach(id => {
     Array.from($(id).children).forEach(button => {
@@ -3864,7 +3904,13 @@ const KM_DEFAULT = {
 const keyValues = {};
 const keyBase = {};
 const dirtyKeys = new Set();
-let selectedKey = 7;
+/* sourceOfKey: id → 基准值来源（本地参考/本机记录/壳侧副本/写入已应答/设备回读/
+ * 回读未知动作/失败或未确认）；keyRaw: id → C1 读到的域外动作原始字节（显示「未知动作 0xNN」）。
+ * sendingKey: 正在等写应答的 {id, action}；readingKeyTable: C1 读表进行中（与发送互斥）。 */
+const sourceOfKey = new Map();
+const keyRaw = new Map();
+let sendingKey = null;
+let readingKeyTable = false;
 
 KEYS.forEach(key => {
   GESTURES.forEach((gesture, i) => {
@@ -3885,53 +3931,136 @@ function updateKeyCount() {
   $('keyDirtyCount').className = 'badge' + (dirtyKeys.size ? ' warning' : '');
   updateGates();
 }
-function renderKeyRows() {
-  $('keyRows').replaceChildren();
-  const keyName = KEYS.find(key => key.id === selectedKey).name;
-  GESTURES.forEach((gesture, i) => {
-    const id = (selectedKey << 8) | (i + 1);
-    const row = element('div', undefined, 'key-row');
-    const label = element('label', gesture);
-    const state = element('small', '');
-    const select = element('select');
-    select.id = 'key-' + id;
-    label.htmlFor = select.id;
-    select.setAttribute('aria-label', keyName + ' · ' + gesture);
-    ACTIONS.forEach(action => {
-      const option = element('option', action.name);
-      option.value = String(action.cmd);
-      select.appendChild(option);
+/* 视图：三组实体键（details 可折叠，默认只展开多功能键）× 五个手势行。
+ * 行平时只显示手势、动作和状态；点行展开原生动作选择框，同一时刻只开一个，
+ * 完成或 Escape 收起并把焦点还给该行；异步刷新只改文本/属性/选择值，
+ * 不重建 DOM，展开项和焦点自然保持。 */
+const keyViews = new Map();   // id → {item, rowBtn, gesture, base, state, editor, label, select, done}
+const keyGroups = new Map();  // key.id → {group, name, count}
+let openKeyId = null;         // 当前展开编辑器的行 id
+
+function kmActionName(cmd, id) {
+  if (cmd === -1) {
+    const raw = keyRaw.get(id);
+    return raw === undefined ? '未知' : '未知动作 0x' + raw.toString(16).padStart(2, '0');
+  }
+  const found = ACTIONS.find(a => a.cmd === cmd);
+  return found ? found.name : '未知动作 0x' + cmd.toString(16);
+}
+function kmBaseText(id) {
+  const source = sourceOfKey.get(id) || '本地参考';
+  const deviceRead = source === '写入已应答' || source === '设备回读' || source === '回读未知动作';
+  return source + '：' + kmActionName(keyBase[id], id) + (deviceRead ? '' : ' · 设备尚未读取');
+}
+function kmRowState(id) {
+  const draft = '待发送：' + kmActionName(keyValues[id], id);
+  if (sendingKey && sendingKey.id === id) {
+    const waiting = '等待应答：' + kmActionName(sendingKey.action, id);
+    return keyValues[id] === sendingKey.action
+      ? ['dirty', waiting]
+      : ['dirty', waiting + ' · 新草稿：' + kmActionName(keyValues[id], id)];
+  }
+  const source = sourceOfKey.get(id);
+  if (source === '失败或未确认') {
+    return dirtyKeys.has(id) ? ['failed', '未确认 · ' + draft] : ['failed', '结果未确认'];
+  }
+  if (dirtyKeys.has(id)) return ['dirty', draft];
+  if (source === '写入已应答' || source === '设备回读' || source === '回读未知动作') {
+    return ['confirmed', ''];
+  }
+  return ['', ''];
+}
+function kmCloseEditor(id, focusRow) {
+  const view = keyViews.get(id);
+  if (!view) return;
+  view.editor.hidden = true;
+  view.rowBtn.setAttribute('aria-expanded', 'false');
+  if (openKeyId === id) openKeyId = null;
+  if (focusRow) view.rowBtn.focus();
+}
+function kmOpenEditor(id) {
+  if (openKeyId !== null && openKeyId !== id) kmCloseEditor(openKeyId, false);
+  const view = keyViews.get(id);
+  view.editor.hidden = false;
+  view.rowBtn.setAttribute('aria-expanded', 'true');
+  openKeyId = id;
+}
+function buildKeyViews() {
+  const groupTpl = $('keyGroupTemplate');
+  const rowTpl = $('keyRowTemplate');
+  KEYS.forEach((key, k) => {
+    const group = groupTpl.content.firstElementChild.cloneNode(true);
+    group.open = k === 0;   // 默认展开「多功能键」，其它两键折起
+    group.querySelector('.km-name').textContent = key.name;
+    const list = group.querySelector('.km-list');
+    GESTURES.forEach((gesture, i) => {
+      const id = (key.id << 8) | (i + 1);
+      const longPress = i === 4;
+      const item = rowTpl.content.firstElementChild.cloneNode(true);
+      const rowBtn = item.querySelector('.km-row');
+      const editor = item.querySelector('.km-editor');
+      const label = editor.querySelector('label');
+      const select = editor.querySelector('select');
+      const done = editor.querySelector('.km-done');
+      select.id = 'key-' + id;
+      label.htmlFor = select.id;
+      label.textContent = key.name + ' · ' + gesture + (longPress ? '（手势编号待验证）' : '') + '：选择动作';
+      editor.id = 'key-editor-' + id;
+      rowBtn.setAttribute('aria-controls', editor.id);
+      item.querySelector('.km-gesture').textContent = gesture + (longPress ? '（编号待验证）' : '');
+      // 选择框只提供合法动作（0…7、11）；-1 与域外值仅在行内展示
+      ACTIONS.filter(a => a.cmd >= 0).forEach(action => {
+        const option = element('option', action.name);
+        option.value = String(action.cmd);
+        select.appendChild(option);
+      });
+      select.onchange = () => {
+        keyValues[id] = Number(select.value);
+        recalcDirty(id);
+        renderKeyRows();
+        updateKeyCount();
+      };
+      rowBtn.onclick = () => {
+        if (editor.hidden) kmOpenEditor(id);
+        else kmCloseEditor(id, true);
+      };
+      done.onclick = () => kmCloseEditor(id, true);
+      item.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        event.stopPropagation();
+        kmCloseEditor(id, true);
+      });
+      list.appendChild(item);
+      keyViews.set(id, {
+        item, rowBtn, editor, label, select,
+        base: item.querySelector('.km-base'),
+        state: item.querySelector('.km-state')
+      });
     });
-    select.value = String(keyValues[id]);
-    function refreshRow() {
-      const dirty = dirtyKeys.has(id);
-      row.classList.toggle('dirty', dirty);
-      state.textContent = [
-        i === 4 ? '待验证' : '',
-        dirty ? '未发送' : ''
-      ].filter(Boolean).join(' · ');
-    }
-    select.onchange = () => {
-      keyValues[id] = Number(select.value);
-      recalcDirty(id);
-      refreshRow();
-      updateKeyCount();
-    };
-    label.appendChild(state);
-    row.append(label, select);
-    refreshRow();
-    $('keyRows').appendChild(row);
+    $('keyRows').appendChild(group);
+    keyGroups.set(key.id, {
+      group,
+      name: group.querySelector('.km-name'),
+      count: group.querySelector('.km-count')
+    });
   });
 }
-all('[data-key]').forEach(button => {
-  button.onclick = () => {
-    selectedKey = Number(button.dataset.key);
-    all('[data-key]').forEach(b => {
-      b.setAttribute('aria-pressed', String(b === button));
-    });
-    renderKeyRows();
-  };
-});
+function renderKeyRows() {
+  if (!keyViews.size) buildKeyViews();
+  keyViews.forEach((view, id) => {
+    const [kind, text] = kmRowState(id);
+    if (kind) view.item.dataset.state = kind;
+    else delete view.item.dataset.state;
+    view.state.textContent = text;
+    view.base.textContent = kmBaseText(id);
+    view.select.value = String(keyValues[id]);   // -1/域外无可选项 → 空值，提示需选择
+  });
+  keyGroups.forEach((view, keyId) => {
+    const pending = GESTURES.reduce((sum, _, i) =>
+      sum + (dirtyKeys.has((keyId << 8) | (i + 1)) ? 1 : 0), 0);
+    view.count.textContent = pending ? pending + ' 项待发送' : '';
+  });
+}
 $('kmRead').onclick = () => {
   const result = rpc(H, 'getKeyRemap', []);
   if (!result.ok || !result.map || typeof result.map !== 'object') return;
@@ -3940,21 +4069,26 @@ $('kmRead').onclick = () => {
     if (!Object.prototype.hasOwnProperty.call(result.map, id)) return;
     const value = Number(result.map[id]);
     if (!ACTIONS.some(action => action.cmd === value)) return;
-    if (dirtyKeys.has(Number(id))) {
+    const num = Number(id);
+    if (dirtyKeys.has(num)) {
       preserved++;
       return;
     }
-    keyValues[id] = value;
-    keyBase[id] = value;
+    // 本次连接已有设备证据（写入已应答/回读）的项不被壳侧副本覆盖
+    const source = sourceOfKey.get(num);
+    if (source === '写入已应答' || source === '设备回读' || source === '回读未知动作') return;
+    keyValues[num] = value;
+    keyBase[num] = value;
+    sourceOfKey.set(num, '壳侧副本');
   });
   renderKeyRows();
   updateKeyCount();
   $('kmFeedback').textContent =
-    '已读取壳侧工作副本，不代表设备实际状态。' +
+    '已读取壳侧工作副本（命令提交成功即更新，不代表设备已确认）。' +
     (preserved ? '保留了 ' + preserved + ' 项本地修改。' : '');
 };
 $('kmWrite').onclick = () => {
-  if (keyBusy) return;
+  if (keyBusy || readingKeyTable) return;
   const queue = Array.from(dirtyKeys)
     .filter(id => keyValues[id] >= 0)
     .map(id => ({ id, action: keyValues[id] }));
@@ -3992,11 +4126,17 @@ $('kmWrite').onclick = () => {
       return;
     }
     $('kmFeedback').textContent = '正在发送，剩余 ' + (queue.length + 1) + ' 项…';
+    sendingKey = item;   // 行内显示「等待应答：A」；期间改 B 显示「等待应答：A · 新草稿：B」
+    renderKeyRows();
     writeCommand(method, [item.id, item.action], (ok, message) => {
+      sendingKey = null;
+      sourceOfKey.set(item.id, ok ? '写入已应答' : '失败或未确认');
       if (ok) {
         accepted++;
+        // 成功只认发送快照：基准=快照动作。持久化存基准表——否则 A 成功会把
+        // 同批未发送的 B 草稿一起存成下次启动基准
         keyBase[item.id] = item.action;
-        mfStoreSet('keyValues', keyValues);
+        mfStoreSet('keyValues', keyBase);
       } else {
         failed++;
         log('按键映射未确认', message);
@@ -4013,44 +4153,64 @@ $('kmWrite').onclick = () => {
   }
   next();
 };
+/* 高级选项：切换只保存 keyWire（发送/读表期间禁切，见 updateGates） */
+$('keyWire').onchange = () => mfStoreSet('keyWire', $('keyWire').value);
 /* 从设备读取映射全表（0xC1 批量同步读，MOREFUNC）：回 45B=15×{key,gesture,action}，
- * 在 parseDeviceMessage 里解析后经 applyDeviceKeyTable 灌进网格（设备真值优先）。 */
+ * 在 parseDeviceMessage 里解析后经 applyDeviceKeyTable 灌进行视图（设备真值优先）。
+ * C1 读与按键发送互斥（readingKeyTable，见 updateGates）；超时/拒绝/断线都会走
+ * 回调或断连清理释放。 */
 $('kmReadDevice').onclick = () => {
-  if (keyBusy) return;
+  if (keyBusy || readingKeyTable) return;
+  readingKeyTable = true;
+  updateGates();
   $('kmFeedback').textContent = '已发送 0xC1 读命令，等待 45B 映射表回包（最长 15 秒）…';
   issue('readKeyRemapTable', [], (ok, message, event) => {
+    readingKeyTable = false;
+    updateGates();
     if (!ok) {
       $('kmFeedback').textContent = '设备读取未确认（' + message + '）——回包形状待真机核对，'
-        + '可先用「读取工作副本」。';
+        + '可先用「读取壳侧工作副本」。';
     } else {
       const hex = String((event && event.payloadHex) || '');
       if (!/2e02[0-9a-f]{90}/.test(hex.toLowerCase())) {
         $('kmFeedback').textContent = '已收到回执但未识别出 45B 映射表（载荷 ' + hex.slice(0, 32)
           + '…，完整见日志）——回包形状待真机核对。';
       }
-      // 识别成功时 applyDeviceKeyTable 已更新反馈行
+      // 识别成功时 applyDeviceKeyTable 已在解析路径更新反馈行；response 顺序是
+      // 先完成回调、后解析 payload，成功回灌只在解析路径做这一次。
     }
   });
 };
 function applyDeviceKeyTable(table) {
-  // table: 15×[key,gesture,action]；只认面板三键，长按/未知动作按原值显示为「未知」
+  // table: 15×[key,gesture,action]；只认面板三键。先记哪些行已有草稿，再更新基准：
+  // 干净行同步草稿，脏行保留用户选择，最后重新比较（回读恰好等于草稿则 dirty 自然消除）。
+  // 域外动作保留原始字节显示「未知动作 0xNN」，选择框仍只提供合法值。
   let applied = 0;
   let unknown = 0;
   table.forEach(([key, gesture, action]) => {
     const id = (key << 8) | gesture;
     if (!Object.prototype.hasOwnProperty.call(keyValues, id)) { unknown++; return; }
     const known = ACTIONS.some(a => a.cmd === action);
-    if (!known) unknown++;
-    keyValues[id] = known ? action : -1;
-    keyBase[id] = keyValues[id];
-    if (known) applied++;
-    dirtyKeys.delete(id);
+    if (known) {
+      keyRaw.delete(id);
+      if (!dirtyKeys.has(id)) keyValues[id] = action;
+      keyBase[id] = action;
+      sourceOfKey.set(id, '设备回读');
+      applied++;
+    } else {
+      unknown++;
+      keyRaw.set(id, action);
+      if (!dirtyKeys.has(id)) keyValues[id] = -1;
+      keyBase[id] = -1;
+      sourceOfKey.set(id, '回读未知动作');
+    }
+    recalcDirty(id);
   });
   renderKeyRows();
   updateKeyCount();
-  mfStoreSet('keyValues', keyValues);
+  mfStoreSet('keyValues', keyBase);
   $('kmFeedback').textContent = '已从设备读回映射表：' + applied + ' 项可用' +
-    (unknown ? '，' + unknown + ' 项超出面板域（显示为未知，固件可能含长按/保留动作）' : '') +
+    (unknown ? '，' + unknown + ' 项超出面板域（保留原始字节显示，固件可能含长按/保留动作）' : '') +
     '。';
 }
 renderKeyRows();
@@ -4261,11 +4421,13 @@ function parseKeyTableReadback(hex) {
   if (['batch', 'adv', 'custom'].includes(wire)) $('keyWire').value = wire;
   const savedKeys = mfStoreGet('keyValues', null);
   if (savedKeys && typeof savedKeys === 'object') {
+    // 现存储的是基准表；早期版本存的草稿表形状相同同样可读。启动统一标「本机记录」。
     Object.keys(savedKeys).forEach(id => {
       const num = Number(id);
       if (Object.prototype.hasOwnProperty.call(keyValues, num)) {
         keyValues[num] = Number(savedKeys[id]);
         keyBase[num] = keyValues[num];
+        sourceOfKey.set(num, '本机记录');
       }
     });
     renderKeyRows();
