@@ -51,7 +51,8 @@ DERIVED heap-info candidate (P11_HEAP_INFO_DERIVED: begin 0x3d0c / size
 derivation chain next to the constant) on top of crc_bankb_erased_fixture
 through that explicit fixture. The value is derived, not measured: the q32s
 init path is statically decoded (raw wide-immediate bytes cross-checked),
-never executed here, and every conclusion past 177,491 in this scenario is a
+never executed here, and every conclusion past 293,277 (the heap-info boundary
+the base scenario now honestly stops at) in this scenario is a
 CONDITIONAL pass that must not be reported as verified. With the candidate
 bytes the chain consumes them for real (0x60679ba/be first read assembles
 begin 0x3d0c, r0=0xf20000|begin=0xf23d0c, the region call 0x60114ca
@@ -120,8 +121,11 @@ preserving, no SDK bit definition invented), and the chain then stops
 honestly at 301,651 on the P3_WKUP_DLY (0xf2c114) &=0x7F8 RMW — an
 independent, not-yet-modeled P33 register, the next decision; power_init's
 return still lies beyond. No new scheduler round trips occur.
-The crc_bankb_erased_fixture frontier itself stays pinned at 177,491
-without the fixture. Later routes advanced the conditional frontier through
+The crc_bankb_erased_fixture frontier itself (with core_tick_irq3_delivery
+in base) now advances to 293,277 @ 0x60679ba — the same heap-info first read
+the fixture releases — after four real core-tick IRQ3 deliveries; without
+the delivery switch (the explicit no-delivery negative) it still stops at
+177,491 @ 0x12ba42. Later routes advanced the conditional frontier through
 the WKUP_DLY/PORT_SEL/P3_AWKUP/P3_LS/P11_SYS_CON1 boundaries to 304,036
 (see HANDOFF route AZ..BD entries); route BG adds the opt-in
 fd31_adc_con_projection: the B4-opening "power helper" 0x60115b4 is really
@@ -7641,17 +7645,18 @@ def check(report,firmware):
     require(reference_ff==0x75f8 and reference_ff not in (0,0xffff),
             'the golden CRC of an erased 0xFF header must stay a non-matching value')
     # 前 14 次往返与 crc_engine_roundtrip 完全相同(fixture 不改变既有前缀),
-    # 第 15 次(result_reads[14])是 0xFF 头的真实计算值,后 4 次是探测失败后
-    # VM init 链继续运行时的真实 CRC 使用——失败分支确实继续执行的证据。
+    # 第 15 次(result_reads[14])是 0xFF 头的真实计算值;后 15 次(16..30)是探测
+    # 失败后 VM init 链继续运行时的真实 CRC 使用(跨越 core-tick 首溢出交付与
+    # 其后的 power_init 公共段拷贝/堆信息消费)——失败分支确实继续执行的证据。
     crc_base=rows['crc_engine_roundtrip']['peripherals']['hardware_crc_projection']
     require(crc_ff['seed_writes'][:14]==crc_base['seed_writes'] and
             crc_ff['result_reads'][:14]==crc_base['result_reads'],
             'the erased fixture must not change the first fourteen CRC round trips')
-    require(crc_ff['result_reads'][14]=='0x75f8' and len(crc_ff['seed_writes'])==15 and
-            crc_ff['fed_bytes']==450 and len(crc_ff['result_reads'])==15,
-            'the fifth probe entry must really CRC the 0xFF header bytes; the core-tick '
-            'overflow (correct 40-tick timebase) then stops the scenario before the '
-            'post-probe VM-init CRC usages')
+    require(crc_ff['result_reads'][14]=='0x75f8' and len(crc_ff['seed_writes'])==30 and
+            crc_ff['fed_bytes']==900 and len(crc_ff['result_reads'])==30,
+            'the fifth probe entry must really CRC the 0xFF header bytes; the extended '
+            'prefix (core-tick IRQ3 delivery + P11 power-init downstream) must carry '
+            'fifteen further real CRC usages to the heap-info stop')
     # 簿记读边界已解决(st.d.sp.l 双字全 8 字节覆盖写,exact_doubleword_stores
     # 两半直写);第二数据窗的表 walker(上一路钉死:有限小窗两项、-248 跳过
     # 零副作用)与 qcy_bss 16 字节 VM 配置块(SET 路径已写入、7 未知字节与
@@ -7737,28 +7742,53 @@ def check(report,firmware):
     # (0x6068cf2,复位投影记为 flag-clear),轮询读回按 lpwr 投影的
     # post_flag_clear_read(快照&~bit7,bit5=0)第一轮就退出:PWR_CON bit5
     # 请求-响应投影在真实前缀检验通过(requests=1、poll read=1)。
-    # (40,40) core tick 时间基修正后,基座场景在 177,491 @ 0x12ba42 诚实停在
-    # core_tick_overflow_delivery_unresolved:CPU0 核心 tick IRQ3 首次溢出、模型
-    # 无交付猜测(内部 pending 置位、无读回位/唤醒/中断入口猜测)——core_tick_irq3
-    # _delivery 属条件层,基座场景不含该开关;旧前沿 289,849 @ 0x60679ba 读
-    # 0xf27f4b(P11 堆信息首读)下移到条件场景(p11_heap_experimental 显式 heap
-    # fixture 后继续消费)。
+    # core_tick_irq3_delivery 已提入 base 层(本路):基座场景从 177,491 @
+    # 0x12ba42(核心 tick IRQ3 首溢出 terminal 停点)推进到 293,277 @ 0x60679ba。
+    # CPU0 核心 tick 溢出共 4 次(40-tick 时基、PRD 1,199,999,周期 30,000
+    # 模型步),每次按核仲裁取 IRQ3 向量槽 0x19fe0c=handler 0x60661a4、真实
+    # 进入处理函数、`[0xffe0ec]|=0x40` ACK 一次(模型 core_tick_ack_rmw 只收
+    # |=0x40 形状、不钉执行 PC——但 handler 由普通执行器逐步走 0x60661a4..
+    # 0x60661e6,RTI 尾锚 0x60661e6 由 return_core_tick require 钉死,故 ACK
+    # 必经 0x60661ca;此 PC 绑定=反汇编+尾锚的 derived-not-measured 结论)、
+    # 0x60661e6 RTI 一次。4 次交付后 power_init 链走 P11 公共段拷贝/PWR_CON
+    # 请求/堆信息消费,停在 0xf27f4b 首读(unmapped_memory,size 1)——只有
+    # p11_heap_experimental 的 heap fixture 能放行,基座诚实停。旧 289,849 @
+    # 0x60679ba 读 0xf27f4b 即此停点(时间基修正前的历史前沿)。
     # 前沿契约单点:停点/步数字面值从 frontier_registry 派生(推进前沿只改
     # registry,本处断言叙事保持手写)。
     crc_bankb_frontier=frontier('crc_bankb')
     require(r['stop_core']==0 and r['stop_pc']==crc_bankb_frontier['stop_pc'] and
             r['stop']['kind']==crc_bankb_frontier['stop']['kind'] and
-            r['stop']['core']==crc_bankb_frontier['stop']['core'],
-            'the core-tick overflow at the correct 40-tick timebase must stop the base scenario '
-            'honestly (core_tick_irq3_delivery is conditional-tier); the P11 power-init downstream '
-            '(common-code copy/PWR_CON/heap-info read) is covered by the conditional scenario')
+            r['stop']['address']==crc_bankb_frontier['stop']['address'],
+            'the base-tier core-tick IRQ3 delivery must carry the scenario past the first '
+            'overflow to the P11 heap-info first read (unmapped 0xf27f4b), not stop terminal')
     require(r['completed_steps']==crc_bankb_frontier['completed_steps'],
             'the erased fixture scenario changed its step count')
+    # CPU0 core tick:4 次到期、4 次交付、4 次 |=0x40 ACK;最终计数从余数继续
+    # (CNT=1,008,600),pending 已清、无 unresolved 溢出;40-tick 时基不变。
     tick=r['peripherals']['core_tick_configuration'][0]
-    require(tick['con']==1 and tick['cnt']==0 and tick['prd']==1199999 and tick['pending'] is True and
-            tick['expirations']==1 and tick['unresolved_overflow'] is True and
-            tick['virtual_source_ticks_per_step']==40,
-            'the CPU0 core tick must reach its first overflow exactly at the 40-tick timebase')
+    require(tick['con']==1 and tick['prd']==1199999 and tick['virtual_source_ticks_per_step']==40 and
+            tick['expirations']==4 and tick['acknowledgements']==4 and
+            tick['pending'] is False and tick['unresolved_overflow'] is False,
+            'the CPU0 core tick must overflow and be delivered/ACKed exactly four times '
+            'before the heap-info stop, with the counter resuming from its remainder')
+    ct=r['machine']['core_tick_entry_projection']
+    require(ct['enabled'] is True and len(ct['deliveries'])==4 and
+            all(d['core']==0 and d['irq']==3 and d['vector_address']=='0x19fe0c' and
+                d['handler']=='0x60661a4' for d in ct['deliveries']),
+            'every core-tick delivery must enter the real CPU0 IRQ3 handler via 0x19fe0c')
+    first=ct['deliveries'][0]
+    require(first['reti_from']=='0x12b608' and first['entry_banks'] and
+            not first['entry_banks']['silicon_bank_switch_certified'] and
+            first['pending_cleared_by_handler_ack'] is True and
+            first['delivery_clears_pending'] is False,
+            'the first delivery must be the masked-then-unmasked first overflow, keeping '
+            'pending set for the handler |=0x40 ACK (not clearing it at entry)')
+    adapters=r['instruction_adapters']
+    require(adapters.get('core_tick_ack_rmw')==4 and adapters.get('conditional_core_tick_rti')==4 and
+            adapters.get('core_tick_handler_frame')==8,
+            'the four deliveries must each ACK once (|=0x40 RMW) and RTI once (0x60661e6), '
+            'with the handler frame pushes/pops executed exactly twice per delivery')
     require(r['peripherals']['software_irq_commands']['commands']==16 and
             r['peripherals']['software_irq_commands']['acknowledgements']==8,
             'the extended VM-init sync requests changed the software IRQ bookkeeping')
@@ -7766,14 +7796,29 @@ def check(report,firmware):
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
             [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7,
             'the extra cross-core delivery after the probe mismatch differs from the repeat projection')
-    require(r['instruction_adapters'].get('immediate_rep_multi_block_projection')==80 and
-            r['instruction_adapters'].get('zero_count_skip_is_assumption')==3 and
-            r['instruction_adapters'].get('register_rep_multi_block_projection')==7 and
-            r['instruction_adapters'].get('rep_copy_unknown_transport_load')==2 and
-            r['instruction_adapters'].get('rep_copy_unknown_transport_store')==2 and
-            r['instruction_adapters'].get('exact_doubleword_store')==9 and
-            r['instruction_adapters'].get('parallel_halfword_store_old_registers')==2,
+    require(adapters.get('immediate_rep_multi_block_projection')==165 and
+            adapters.get('zero_count_skip_is_assumption')==3 and
+            adapters.get('register_rep_multi_block_projection')==26 and
+            adapters.get('rep_copy_unknown_transport_load')==9 and
+            adapters.get('rep_copy_unknown_transport_store')==9 and
+            adapters.get('exact_doubleword_store')==25 and
+            adapters.get('parallel_halfword_store_old_registers')==3,
             'the fixture-scenario REP projections differ from the observed prefix')
+    # 显式关开关负例:core_tick_irq3_delivery=False 时必须逐字段复现旧前沿
+    # 177,491 @ 0x12ba42(核心 tick IRQ3 首溢出 terminal、pending 置位、零 ACK)。
+    neg=rows['crc_bankb_no_delivery_negative']
+    require(neg['completed_steps']==177491 and neg['stop_core']==0 and neg['stop_pc']=='0x12ba42' and
+            neg['stop']=={'kind':'core_tick_overflow_delivery_unresolved','core':0,'irq':3,
+                          'note':'internal pending set; no guessed readback bit, wake or interrupt entry'},
+            'the explicit no-delivery negative must still reproduce the strict 177,491 overflow stop')
+    ntick=neg['peripherals']['core_tick_configuration'][0]
+    require(ntick['pending'] is True and ntick['acknowledgements']==0 and
+            ntick['unresolved_overflow'] is True and ntick['expirations']==1,
+            'the negative arm must keep the terminal pending overflow (no delivery, no ACK)')
+    require(neg['peripherals']['ipmask']==6,
+            'the first overflow must sit behind the IPMASK 6 critical section (priority 1 masked)')
+    require('core_tick_entry_projection' not in neg['machine'],
+            'the negative arm must not enable the core-tick entry projection')
     r=rows['p11_heap_experimental_config']
     # 堆信息 4 字节的显式实验配置(P11_HEAP_INFO_DERIVED 静态推导候选,derived-
     # not-measured):本场景的一切结论都是条件通过,不构成对堆值或 P11 执行的验证。
@@ -11541,8 +11586,9 @@ def check(report,firmware):
         'TIMER0-clock-source stop and the 301,540 STD12M pass-through to the LP-timer '
         'CON2 readback boundary) '
         'is a CONDITIONAL PASS that must not be reported as verified; without the fixture the '
-        'crc_bankb_erased_fixture frontier stays pinned at 177,491 on the core-tick overflow '
-        '(core 0, IRQ3)')
+        'crc_bankb_erased_fixture frontier now honestly stops at 293,277 @ 0x60679ba on the '
+        'same P11 heap-info first read (0xf27f4b) the conditional fixture releases, after four '
+        'real core-tick IRQ3 deliveries (core 0)')
     report['p11_m2p_message_window_assumption']=(
         'the p11 scenarios with p11_power_init map the SDK-declared P11 M2P message area '
         '(p11_app.h M2P_MESSAGE_RAM_BEGIN 0xF27F80 .. +M2P_MESSAGE_SIZE 0x60, i.e. '
@@ -12151,6 +12197,12 @@ def main():
                               dcu_cmo=True,zero_rep_skip=True,flash_image_bytes=image),
                      irq_case(module,app,header,rom,PROBE_SCENARIO_NAMES['crc_bankb'],
                               **crc_bankb_flags,flash_image_bytes=image),
+                     # 显式关开关负例:core_tick_irq3_delivery 提入 base 后,
+                     # 基座场景自然交付;此负例显式关掉交付,逐字段复现旧前沿
+                     # 177,491 @ 0x12ba42(核心 tick IRQ3 首溢出 terminal)。
+                     irq_case(module,app,header,rom,'crc_bankb_no_delivery_negative',
+                              **{**crc_bankb_flags,'core_tick_irq3_delivery':False},
+                              flash_image_bytes=image),
                      irq_case(module,app,header,rom,PROBE_SCENARIO_NAMES['p11_heap_experimental'],
                               **conditional_frontier_flags,flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',

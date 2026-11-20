@@ -41,7 +41,7 @@ from collections import namedtuple
 Feature = namedtuple('Feature', 'switch stack requires value_switch value_attr summary')
 
 FEATURES = (
-    # ---- base 栈(crc_bankb_erased_fixture 场景,19 个开关) ----
+    # ---- base 栈(crc_bankb_erased_fixture 场景,20 个开关) ----
     Feature('entry', 'base', (), False, None,
             '软件中断进入投影:RETI 载入被中断 PC,入口银行为显式假设'),
     Feature('banks', 'base', (), False, None,
@@ -85,6 +85,11 @@ FEATURES = (
             '写 RAM 逐字节同,PARSTOR 同款〕)'),
     Feature('p11_power_init', 'base', (), False, None,
             'power_init 的 P11 依赖链(lpwr 响应/窗口/公共段拷贝/配置 RMW)'),
+    Feature('core_tick_irq3_delivery', 'base', (), False, None,
+            'CPU0 core tick 溢出→IRQ3 交付机制(unresolved_overflow 防重入;'
+            '机制件 c85323d 已就位,原属 conditional——crc_bankb 基座只取 base '
+            '层故停在 177,491;本次提入 base 后基座自然交付到下一停点;显式关'
+            '开关负例继续复现 177,491)'),
     # ---- conditional 栈(p11_heap_experimental_config 场景增量,59 个开关) ----
     Feature('heap_info_bytes', 'conditional', ('p11_power_init',), True, 'P11_HEAP_INFO_DERIVED',
             'P11 堆信息 4 字节显式 fixture(静态推导候选,derived-not-measured)'),
@@ -334,8 +339,6 @@ FEATURES = (
             '消费负例仍停;conditional/derived-not-measured)'),
     Feature('timer0_irq4_delivery', 'conditional', ('p11_power_init', 'timer0_std12m'), False, None,
             'Timer0 pending→IRQ4 交付机制(进入投影+一次性 RTI)'),
-    Feature('core_tick_irq3_delivery', 'conditional', (), False, None,
-            'CPU0 core tick 溢出→IRQ3 交付机制(unresolved_overflow 防重入)'),
     Feature('core_tick_prd_readback', 'conditional', ('core_tick_irq3_delivery',), False, None,
             'core-tick PRD 读回=最近真实写入投影(BQ 一案:unresolved 溢出窗内只放行 offset 8,'
             '回放 tick_timer_init 的 PRD store 1199999;缺失继续严格停;CON/CNT 读与 CNT/pending/'
@@ -818,11 +821,11 @@ SCENARIO_LAYERS = {'crc_bankb': ('base',),
 # 钉子检查的 stop 子集字段。
 FRONTIERS = {
     'crc_bankb': {
-        'completed_steps': 177491,
-        'stop_pc': '0x12ba42',
-        'stop': {'kind': 'core_tick_overflow_delivery_unresolved', 'core': 0, 'irq': 3,
-                 'note': 'internal pending set; no guessed readback bit, wake or interrupt entry'},
-        'freshness_fields': ('kind', 'core'),
+        'completed_steps': 293277,
+        'stop_pc': '0x60679ba',
+        'stop': {'kind': 'unmapped_memory', 'access': 'read', 'address': '0xf27f4b', 'size': 1,
+                 'reference_sdk_register': None},
+        'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
         'completed_steps': 31312835,

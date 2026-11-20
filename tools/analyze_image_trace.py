@@ -1536,29 +1536,28 @@ LOADERS = {'official': load_official,
 
 
 def check_self(report, arms=None):
-    """钉死 official vs tested_b79 结论(全量到 crc_bankb 前沿停点;2026-11-20
-    核心 tick 时间基 (4,4)→(40,40) 修正后前沿从 289,849 @ 0x60679ba 前移到
-    177,491 @ 0x12ba42,按新前沿重钉):
+    """钉死 official vs tested_b79 结论(全量到 crc_bankb 前沿停点;core_tick_irq3
+    _delivery 提入 base 层后前沿从 177,491 @ 0x12ba42(核心 tick IRQ3 首溢出
+    terminal)推进到 293,277 @ 0x60679ba(P11 堆信息 0xf27f4b 首读),按新前沿
+    重钉):
 
-    - 双方 177,491 步、同停点 0x12ba42(core_tick_overflow_delivery_unresolved:
-      CPU0 核心 tick IRQ3 溢出,模型无交付猜测,core 0/irq 3)、per-core 步数
-      一致(CPU0 166,338 / CPU1 11,167);stop parity 字段(步数/每核/完整停点
-      记录)全同;
-    - 控制流(核调度/PC/next_pc)177,491 步零分歧,无 reconvergence 字段;
-    - 首个签名分歧 step 155,390 @ 0x6010b16(rep 4 32 资源表头拷贝体首装载
-      r2=b[r1++]),r2=0x28 vs 0x88——两镜像资源表头 CRC 字节差异(plain 0x0
-      首字节)被运输进寄存器;共 11 个分歧段,每段都是表头 CRC 字节经 rep 拷贝
-      /硬件 CRC 引擎计算显形(CRC 读回结果 2 处不同),全部不改变控制流;
-    - 存储差异标准(路 PARSTD 升级,替代旧「前 8 段起点 writes_differ 全
-      False」——该口径漏检段内 store 与第 9 段以后,且镜像字节复制进 RAM
-      本来就合法产生存储差异):全程 22 个写差异步、16 个差异字节 cell
-      (全部=镜像 diff run 字节对的逐字拷贝:资源表头 CRC 字经 rep 拷贝运输
-      进 RAM),写流结构(次数/地址/宽度)两臂全同,零未解释差异——需要活的
-      traces(arms 参数;fresh --self-check 总是提供;assert_preflight 的纯
-      报告重放无法重验该面,跳过);
+    - 双方 293,277 步、同停点 0x60679ba(unmapped_memory 读 0xf27f4b,size 1)、
+      per-core 步数一致(CPU0 282,115 / CPU1 11,181);stop parity 字段(步数/
+      每核/完整停点记录)全同;
+    - 控制流(核调度/PC/next_pc)293,277 步零分歧,无 first_control_divergence/
+      reconvergence 字段;
+    - 首个签名分歧仍 step 155,390 @ 0x6010b16(rep 4 32 资源表头拷贝体首装载
+      r2=b[r1++]),r2=0x28 vs 0x88;共 30 个分歧段(扩展前缀新增 19 段:post-probe
+      VM init CRC 引擎再算、公共段拷贝与堆信息消费里的表头 CRC 字节运输),全部
+      不改变控制流;
+    - 存储差异标准(路 PARSTD):全程 51 个写差异步、48 个差异字节 cell,全部
+      =镜像 diff run 字节对的逐字拷贝或计算传播(寄存器切片),写流结构(次数/
+      地址/宽度)两臂全同,零未解释差异——需要活 traces(arms 参数;fresh
+      --self-check 总是提供;assert_preflight 的纯报告重放无法重验该面,跳过);
     - ANC 键表字节(0x609e510/app.bin 0x9e410)与 stream.bin 音量参数区
       (0x60e2344..)在前缀内零读取(任何装载都会显形为 GPR/写分歧);
-    - final report 差异恰好 2 处(2 处 CRC result_reads)。
+    - final report 差异恰好 5 处(milestones[23].r0 一处计算传播 + 4 处 CRC
+      result_reads[1/8/15/22])。
     上游前沿推进后按新结论重钉。
     """
     pairs = {p['name']: p for p in report['pairs']}
@@ -1571,15 +1570,13 @@ def check_self(report, arms=None):
         require(run['completed_steps'] == base['completed_steps'] and
                 run['stop_pc'] == base['stop_pc'] and
                 run['stop']['kind'] == base['stop']['kind'] and
-                run['per_core_steps'] == {'0': 166338, '1': 11167},
+                run['per_core_steps'] == {'0': 282115, '1': 11181},
                 f'{label} run changed: the shared-stack prefix is no longer the pinned frontier stop')
     parity = p['parity']
     require(parity['steps'] == {'official': base['completed_steps'],
                                 'tested_b79': base['completed_steps'], 'delta': 0} and
             parity['stop_pc'] == {'a': base['stop_pc'], 'b': base['stop_pc'], 'same': True} and
             parity['stop_record']['identical'] and parity['same_stop'] and
-            parity['stop_record']['a']['core'] == base['stop']['core'] and
-            parity['stop_record']['a']['irq'] == base['stop']['irq'] and
             parity['per_core_steps']['delta'] == {'0': 0, '1': 0},
             'the official-vs-b79 stop parity changed: both images must reach the identical frontier stop')
     require('first_control_divergence' not in p and 'reconvergence' not in p,
@@ -1593,26 +1590,45 @@ def check_self(report, arms=None):
             'CRC byte transported by the rep 4 32 copy at 0x6010b16')
     spans = p['divergent_signature_spans']
     # 路 PARSTD:count 钉值保留;旧「前 8 段起点 writes_differ 全 False」子条件
-    # 由下面的写差异传播钉值蕴含(钉住的 16 个 cell 不含任何前 8 段起点步)。
-    require(spans['count'] == 11,
+    # 由下面的写差异传播钉值蕴含(钉住的 48 个 cell 不含任何前 8 段起点步)。
+    require(spans['count'] == 30,
             'the official-vs-b79 divergence-span count changed')
     if arms is not None:
         trace_official, plain_official = arms['official']
         trace_b79, plain_b79 = arms['tested_b79']
         _require_pinned_write_delta(
             'official-vs-b79 (crc_bankb)', trace_official, trace_b79,
-            plain_official, plain_b79, pinned_steps=22, pinned_cells={
-                ('0x19e2c0', '28', '88'): 1, ('0x19e2c0', 'a9', 'f2'): 1,
-                ('0x19e2c1', '33', 'fa'): 1, ('0x19e2c1', '91', '64'): 1,
-                ('0x19e2c2', '66', '7f'): 1, ('0x19e2c2', '7d', 'd2'): 1,
-                ('0x19e2c3', '93', '53'): 1, ('0x19e2c3', 'c9', 'a5'): 1,
+            plain_official, plain_b79, pinned_steps=51, pinned_cells={
                 ('0x19e35c', '28', '88'): 3, ('0x19e35d', '33', 'fa'): 3,
                 ('0x19e35e', '7d', 'd2'): 3, ('0x19e35f', '93', '53'): 3,
-                ('0x19e37c', '28', '88'): 1, ('0x19e37c', 'a9', 'f2'): 1,
-                ('0x19e37c+1', '33', 'fa'): 1, ('0x19e37c+1', '91', '64'): 1})
+                ('0x19e2c0', '28', '88'): 1, ('0x19e2c1', '33', 'fa'): 1,
+                ('0x19e2c2', '7d', 'd2'): 1, ('0x19e2c3', '93', '53'): 1,
+                ('0x19e37c', '28', '88'): 1, ('0x19e37c+1', '33', 'fa'): 1,
+                ('0x19e2c0', 'a9', 'f2'): 1, ('0x19e2c1', '91', '64'): 1,
+                ('0x19e2c2', '66', '7f'): 1, ('0x19e2c3', 'c9', 'a5'): 1,
+                ('0x19e37c', 'a9', 'f2'): 1, ('0x19e37c+1', '91', '64'): 1,
+                ('0x19e350', '28', '88'): 1, ('0x19e351', '33', 'fa'): 1,
+                ('0x19e352', '7d', 'd2'): 1, ('0x19e353', '93', '53'): 1,
+                ('0x19e3fc', '90', '41'): 1, ('0x19e3fd', 'c1', '7a'): 1,
+                ('0x19e3fe', '9b', 'bd'): 1, ('0x19e3ff', 'a2', '77'): 1,
+                ('0x19e3d8', '90', '41'): 1, ('0x19e3d8+1', 'c1', '7a'): 1,
+                ('0x19e2c8', '28', '88'): 2, ('0x19e2cc', '33', 'fa'): 2,
+                ('0x19e2a8', '33', 'fa'): 1, ('0x1272b8', '28', '88'): 1,
+                ('0x1272b8+1', '33', 'fa'): 1, ('0x19e2c8+1', '33', 'fa'): 1,
+                ('0x19e2a4', '33', 'fa'): 1, ('0x19e370', '33', 'fa'): 2,
+                ('0x19e37c', '33', 'fa'): 1, ('0x19e284', '33', 'fa'): 1,
+                ('0x19e374', '33', 'fa'): 1, ('0x19e298', 'b7', 'fb'): 1,
+                ('0x19e358', '28', '88'): 1, ('0x19e359', '33', 'fa'): 1,
+                ('0x19e35a', '7d', 'd2'): 1, ('0x19e35b', '93', '53'): 1,
+                ('0x19e304', '90', '41'): 1, ('0x19e305', 'c1', '7a'): 1,
+                ('0x19e306', '9b', 'bd'): 1, ('0x19e307', 'a2', '77'): 1,
+                ('0x19e3e0', '90', '41'): 1, ('0x19e3e0+1', 'c1', '7a'): 1})
     diffs = sorted(d['path'] for d in p['final_report_diffs'])
-    require(diffs == sorted(['$.peripherals.hardware_crc_projection.result_reads[1]',
-                             '$.peripherals.hardware_crc_projection.result_reads[8]']),
+    require(diffs == sorted(['$.milestones[23].r0',
+                             '$.peripherals.hardware_crc_projection.result_reads[1]',
+                             '$.peripherals.hardware_crc_projection.result_reads[8]',
+                             '$.peripherals.hardware_crc_projection.result_reads[15]',
+                             '$.peripherals.hardware_crc_projection.result_reads[22]']),
             'the official-vs-b79 final-report differences changed: ' + str(diffs))
 
 
