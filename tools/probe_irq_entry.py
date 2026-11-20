@@ -8908,17 +8908,31 @@ def check(report,firmware):
     # (codex 措辞:证据=已验证实现契约与当前前缀推进,不证明 SRC_SYNC
     # 硬件/采样率转换/DMA/音频处理已运行)。goto 偏移单位勘误后的事务
     # 形状:CON0 |=0x10 开门恰 1 次(循环外)→55 轮循环体仅 COEF 写零→
-    # CON0 &=~0x10 关门;CON1 |=0x400000→段尾 &=0xFFBFFFFF 归 0。
+    # CON0 &=~0x10 关门;CON1 |=0x400000→段尾 &=0xFFBFFFFF 归 0。SRCSYNC5
+    # 打开 IRQ89 交付后,SRC 完成唤醒 jlstream_N 重入函数 B 的启动/ACK
+    # 循环(handler CON0|=0x40 W1C 清 pending + 启动 CON0|=0x8),CON0/CON1
+    # 账本随之膨胀(8→36 / 6→24),COEF 55+55 与合成初值读回 2 不变。
     srcsyncrel=r['peripherals']['jl_src_sync_config_registers']
-    require(srcsyncrel['word_writes']==124 and
-            srcsyncrel['stores']['0xfe2604']=={'values':['0x400000','0x0','0x41','0x41','0x400041','0x41'],
-                                               'writes':6,'cores':[0,0,0,0,0,0]} and
-            srcsyncrel['stores']['0xfe2600']=={'values':['0x10','0x0','0x82006001','0x82006011',
-                                                       '0x82006001','0x82006011','0x82006001','0x82006009'],
-                                               'writes':8,'cores':[0,0,0,0,0,0,0,0]} and
+    require(srcsyncrel['word_writes']==170 and
+            srcsyncrel['stores']['0xfe2604']=={'values':['0x41','0x41','0x41','0x41',
+                                                       '0x41','0x41','0x41','0x41',
+                                                       '0x41','0x41','0x41','0x41',
+                                                       '0x41','0x41','0x41','0x41'],
+                                               'writes':24,'cores':[0,0,0,0,0,0,0,0,
+                                                                    0,0,0,0,0,0,0,0]} and
+            srcsyncrel['stores']['0xfe2600']=={'values':['0x82006049','0x82006041',
+                                                       '0x82006049','0x82006049',
+                                                       '0x82006041','0x82006049',
+                                                       '0x82006049','0x82006041',
+                                                       '0x82006049','0x82006049',
+                                                       '0x82006041','0x82006049',
+                                                       '0x82006049','0x82006041',
+                                                       '0x82006049','0x82006049'],
+                                               'writes':36,'cores':[0,0,0,0,0,0,0,0,
+                                                                    0,0,0,0,0,0,0,0]} and
             srcsyncrel['stores']['0xfe263c']['writes']==110 and
             all(v=='0x0' for v in srcsyncrel['stores']['0xfe263c']['values']) and
-            srcsyncrel['readback_projection']['reads']==9 and
+            srcsyncrel['readback_projection']['reads']==48 and
             srcsyncrel['readback_projection']['synthesized_initial_reads']==2 and
             srcsyncrel['readback_projection']['coef_read_attempts']==0 and
             'synthetic-not-measured' in
@@ -8931,36 +8945,36 @@ def check(report,firmware):
             'sample-rate conversion' in
             r['peripherals']['assumptions']['jl_src_sync_config_registers'],
             'the route-SRCSYNC config-transaction release record must pin the '
-            'runtime evidence: 59 word writes over the reconfiguration '
-            'function 0x606fa7e — CON1 twice (|=0x400000 at the released stop '
-            '0x606fbe4, then &=0xFFBFFFFF at 0x606fc2c ending at 0x0 with the '
-            'zero synthetic initial), CON0 twice (|=0x10 opening the '
-            'coefficient-load gate ONCE before the loop — the goto-offset '
-            'erratum: byte units, the |=0x10 does NOT sit inside the 55-round '
-            'body — then &=~0x10 closing it, ending at 0x0), COEF exactly 55 '
-            'zero stores (r5=0 every round), two RMW internal reads answered '
-            'by the synthetic initial and two by the last written value, zero '
-            'COEF read attempt — PLUS the SRCSYNC2 retro-audited function-B '
-            'writes (CON0 whole-word 0x82006001 @0x6070a90, CON1 whole-word '
-            '0x41 @0x6070a94 then the paired insert write-back 0x41 @0x6070ad2 '
-            'whose 0x6070ac4 parallel-second-half load answered 0x41 with only '
-            'the high 16 bits kept via >>16+insert) and the SRCSYNC3+SRCSYNC4 '
-            'helper 0x607099c RMWs (CON1 |=0x400000 @0x60709ba writes 0x400041, '
-            'CON0 |=0x10 @0x60709da writes 0x82006011, CON0 &=~0x10 @0x60709ee, '
-            'CON0 |=0x10 @0x6070a0e, CON0 &=~0x10 @0x6070a24, CON1 &=~0x400000 '
-            '@0x6070a28 — the full two-round open/close gate around the COEF '
-            'read and write-back loops, reads=9) and the COEF 55-word write-back '
-            '@0x6070a1c (the firmware\'s actual 55 values, COEF writes=110=55 '
-            'init + 55 write-back; the 55 read-back reads at 0x60709e0 are '
-            'served by the separate jl_src_sync_coef_batch_readback container, '
-            'so coef_read_attempts stays 0); the synthetic-initial and read-back=current '
-            'semantics wording (synthetic-not-measured, NOT silicon reset '
-            'values), the data-driven base narrative (sole literal .data '
-            '0x60a29d4 in the hw_res table, single accessor function), the '
-            'sixteen-member naming with the 14 __RW + 2 __WO erratum, the '
-            'same-address-new-consumer re-audit clause, and the assumption '
-            'boundary — this does NOT verify any sample-rate conversion, DMA '
-            'or audio processing')
+            'runtime evidence: 170 word writes over the released prefix — the '
+            'original 59-write reconfiguration transaction (function 0x606fa7e: '
+            'CON1 |=0x400000 @0x606fbe4 then &=0xFFBFFFFF @0x606fc2c ending '
+            'at 0x0, CON0 |=0x10 @0x606fbfa once BEFORE the loop then &=~0x10 '
+            '@0x606fc0a ending at 0x0, COEF exactly 55 zero stores @0x606fc02) '
+            'PLUS the SRCSYNC2 function-B writes (CON0 whole-word 0x82006001 '
+            '@0x6070a90, CON1 whole-word 0x41 @0x6070a94 + paired insert 0x41 '
+            '@0x6070ad2) PLUS the SRCSYNC3+SRCSYNC4 helper 0x607099c RMWs '
+            '(CON1 |=0x400000 @0x60709ba writes 0x400041, CON0 |=0x10 '
+            '@0x60709da writes 0x82006011, CON0 &=~0x10 @0x60709ee, CON0 '
+            '|=0x10 @0x6070a0e, CON0 &=~0x10 @0x6070a24, CON1 &=~0x400000 '
+            '@0x6070a28) and the COEF 55-word write-back @0x6070a1c (COEF '
+            'writes=110=55 init + 55 write-back, the 55 read-back reads at '
+            '0x60709e0 served by the separate coef batch container so '
+            'coef_read_attempts stays 0) PLUS the SRCSYNC5 SRC-completion IRQ89 '
+            'delivery re-entry — the handler 0x12ca24 ACK CON0|=0x40 W1C and '
+            'the woken jlstream_N task re-entering the function-B/startup/ACK '
+            'cycle (CON0 whole-word 0x82006001 → startup |=0x8 → ACK |=0x40 '
+            'alternating 0x82006041/0x82006049, CON1 whole-word 0x41 re-written), '
+            'so the ledger now records CON0 36 writes / CON1 24 writes / COEF '
+            '110 writes and readback reads 48 (was 9) while '
+            'synthesized_initial_reads stays 2 and coef_read_attempts stays 0 — '
+            'the frontier stops at 0x41b2b2 AFTER the completion and IRQ89 '
+            'delivery; the synthetic-initial and read-back=current semantics '
+            'wording (synthetic-not-measured, NOT silicon reset values), the '
+            'data-driven base narrative (sole literal .data 0x60a29d4 in the '
+            'hw_res table, single accessor function), the sixteen-member naming '
+            'with the 14 __RW + 2 __WO erratum, the same-address-new-consumer '
+            're-audit clause, and the assumption boundary — this does NOT '
+            'verify any sample-rate conversion, DMA or audio processing')
     # 路 SRCSYNC4:COEF 口「初始化后 55 字批次回读」释放记录断言——独立容器
     # 账本逐字段钉死:55 笔初始化写填满批次→0x60709e0 顺序读回 55 个 0 推进
     # 游标→0x6070a1c 按固件实际 55 值写回(不是通用 FIFO/破坏性弹出/写满丢
