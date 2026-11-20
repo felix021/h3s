@@ -569,6 +569,39 @@ class MachineTests(unittest.TestCase):
         self.assertIn('core_woken_by_delivery',[ev['kind'] for ev in events])
         self.assertEqual(r['machine']['cores']['0']['pc'],hex(LOOP))  # 醒后跑在真实槽读出的 handler
 
+    def test_idle_wake_consumes_idle_returns_past_the_parked_instruction(self):
+        # 路 WDTFEED2:停泊核被 IRQ 交付唤醒时,中断返回地址消费 idle(pc+2)。
+        # 与上一测试同构,只多开 idle_wake_consumes_idle——reti_from 应为停泊
+        # idle 地址 +2(下一指令),而非 idle 指令本身。
+        e=self.enc
+        c0=(e('li.u32',r=2,n=CPU1_CONTROL)+e('li.u8',r=0,n=1)+e('st.w',d=0,b=2,n=0)
+            +e('li.u32',r=15,n=LOOP)+e('idle')
+            +e('li.u32',r=15,n=LOOP)+e('goto.r',x=15)+bytes(8))
+        c1=e('li.u32',r=15,n=LOOP)+e('goto.r',x=15)
+        rom=c1+bytes(8)
+        h={'regions':[(STACK_TOP-256,STACK_TOP,'stack'),(0x19fe10,0x19fe14,'vector_slot')],
+           'readonly':[(0,rom),(LOOP,e('goto.r',x=15)+bytes(8))],
+           'seeds':[(0x19fe10,struct.pack('<I',LOOP))],
+           'description':{'phase':'synthetic parking-step idle-consume delivery test; not H3S boot'},
+           'snapshots':[]}
+        hardware=BR28Model(cpu1_held_projection=True,initial_cpu1_control=0,
+                           initial_irq_config=[0x30000]+[0]*31,initial_ipmask=0,
+                           timer0_irq_delivery_requests=True)
+        hardware.write(TIMER0,0x4000);hardware.write(TIMER0+8,119)
+        hardware.write(TIMER0+4,92);hardware.write(TIMER0,0x1001)
+        machine=DualCoreMachine(cpu1_reset_pc=0,cpu1_icfg=0,irq1_config=[0]*32,ipmask1=0,
+                                software_irq_entry=True,idle_wait_projection=True,
+                                timer0_irq_entry=True,idle_wake_consumes_idle=True)
+        r=explore(self.module,c0,name='synthetic_idle_consume_delivery',handoff=h,
+                  hardware=hardware,machine=machine,
+                  diagnostics={'initial_sp':STACK_TOP,'icfg_initial':0x300},budget=40)
+        self.assertEqual(r['stop']['kind'],'instruction_budget')
+        deliveries=r['machine']['timer0_irq_entry_projection']['deliveries']
+        self.assertEqual(len(deliveries),1)
+        parked=[ev['pc'] for ev in r['machine']['events'] if ev['kind']=='core_idle_wait_entered']
+        # 中断返回地址=停泊 idle 的下一条(pc+2),不是 idle 指令本身。
+        self.assertEqual([hex(int(pc,16)+2) for pc in parked],[deliveries[0]['reti_from']])
+
     def test_icu_busy_completion_requires_explicit_progress_and_independent_status(self):
         base=0xffec00
         h=IcuInitializationProjection({base:0x80000000})

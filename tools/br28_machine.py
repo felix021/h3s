@@ -71,6 +71,7 @@ class DualCoreMachine:
                  audio_irq_entry=False,audio_irq_entry_banks=False,audio_irq_rti=False,
                  gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False,
                  event_clock_projection=False,timer2_delay_projection=False,
+                 idle_wake_consumes_idle=False,
                  cfg523_object_bytes=None,d1_window=False,d1_window_steps=None):
         if cpu1_reset_pc is not None:require(cpu1_reset_pc==0,'only explicit ROM reset-vector0 supported')
         if cpu1_icfg is not None:require(isinstance(cpu1_icfg,int) and 0<=cpu1_icfg<=0xffffffff,'invalid CPU1 ICFG fixture')
@@ -162,6 +163,11 @@ class DualCoreMachine:
         require(not timer2_delay_projection or (idle_wait_projection and event_clock_projection),
                 'the TIMER2 delay projection requires the IDLE wait and event clock projections')
         self.timer2_delay_projection=timer2_delay_projection;self.timer2_poll_wakes=[]
+        # 路 WDTFEED2:停泊核被 IRQ 交付唤醒时消费 idle 指令(reti=pc+2)。
+        # 默认关=保留旧语义(唤醒返回地址=idle 指令本身,核在同址再停泊);
+        # 开=与 wake_timer2_poll/wake_cpu1_control_kick 的 pc+=size 先例一致。
+        require(isinstance(idle_wake_consumes_idle,bool),'idle wake consume projection is opt-in boolean')
+        self.idle_wake_consumes_idle=idle_wake_consumes_idle
         # codex 暂停点1最小闭环:同核 handler RTI 返回后允许再次交付(见
         # deliver_software_irq/deliver_core_tick);默认关闭时保持每核一次性限制。
         self.repeat_irq_delivery=repeat_irq_delivery
@@ -631,6 +637,18 @@ class DualCoreMachine:
                'hardware_mode_certified':False}
         self.first_task_returns[cpu.core_id]=event;self.record_event(event)
 
+    def _idle_wake_return_address(self,cpu):
+        # 停泊核被 IRQ 交付唤醒时,中断保存的返回地址应是 IDLE 之后(消费 idle)。
+        # 模型在 c.step() 前截住 IDLE(probe_boot.py:2789),PC 停在 idle 指令
+        # 本身;真实硅上 IDLE 已发出、PC 已指向下一条指令,中断返回地址是下一
+        # 条。因此停泊核(woke=True)的 reti=pc+2(idle 固定 2 字节,与
+        # wake_timer2_poll/wake_cpu1_control_kick 的 pc+=size 消费 idle 先例
+        # 一致);非停泊核(IRQ 抢在指令执行前)仍保存 pc 以重执行被中断指令。
+        # 只在 idle_wait_cores 里的核调用(enter_idle_wait 仅在 idle 指令处
+        # 登记,故停泊 PC 必是 idle;重复解码校验不必要,且会破坏最小 CPU 桩)。
+        # 开关 idle_wake_consumes_idle 关时保持旧语义(返回 idle 指令本身)。
+        return cpu.pc+2 if self.idle_wake_consumes_idle else cpu.pc
+
     def deliver_software_irq(self,cpu,irq):
         # Opt-in minimal CPU entry for the actual per-core scheduler IPI
         # (IRQ 127-cnum; both handlers are the firmware-registered 0x12AD2A).
@@ -672,7 +690,7 @@ class DualCoreMachine:
         if cpu.core_id in self.idle_wait_cores:
             self.idle_wait_cores.discard(cpu.core_id)
             self.record_event({'kind':'core_woken_by_delivery','core':cpu.core_id,'irq':irq})
-        interrupted=cpu.pc
+        interrupted=self._idle_wake_return_address(cpu) if woke else cpu.pc
         cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
         cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
         if self.software_irq_entry_banks:
@@ -727,7 +745,7 @@ class DualCoreMachine:
         if core in self.idle_wait_cores:
             self.idle_wait_cores.discard(core)
             self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':3})
-        interrupted=cpu.pc
+        interrupted=self._idle_wake_return_address(cpu) if woke else cpu.pc
         cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
         cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
         if self.core_tick_entry_banks:
@@ -802,7 +820,7 @@ class DualCoreMachine:
         if core in self.idle_wait_cores:
             self.idle_wait_cores.discard(core)
             self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':4})
-        interrupted=cpu.pc
+        interrupted=self._idle_wake_return_address(cpu) if woke else cpu.pc
         cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
         cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
         if self.timer0_irq_entry_banks:
@@ -912,7 +930,7 @@ class DualCoreMachine:
         if core in self.idle_wait_cores:
             self.idle_wait_cores.discard(core)
             self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':68})
-        interrupted=cpu.pc
+        interrupted=self._idle_wake_return_address(cpu) if woke else cpu.pc
         cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
         cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
         if not nested and self.audio_irq_entry_banks:

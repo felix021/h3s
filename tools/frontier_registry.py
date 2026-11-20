@@ -532,6 +532,12 @@ FEATURES = (
             '+LRC 源名义 200kHz 计数器(PRD 跨越置 pending)+CON 读回 bit15+完成唤醒'
             '(kick 先例,锚 0x12cd76,无 IRQ6 交付——ICU 使能无证据)+IWKUP_NUM '
             '0xFFE1B0 写记录;1ms=200 LRC tick=4000 模型步闭式;路 BK 设计'),
+    Feature('idle_wake_consumes_idle', 'conditional', ('idle_wait',), False, None,
+            '停泊核被 IRQ 交付唤醒时消费 idle 指令(中断返回地址=pc+2,与 '
+            'wake_timer2_poll/wake_cpu1_control_kick 的 pc+=size 先例一致;默认关='
+            '旧语义返回 idle 指令本身,核在同址再停泊,双核喂狗循环不执行;路 WDTFEED2 '
+            '诊断+最小修正:模型在 c.step() 前截停 IDLE 时 PC 留 idle 指令地址,真实硅 '
+            'IDLE 已发出、PC 指向下一条)'),
     Feature('p33_canary', 'conditional', ('p11_power_init',), False, None,
             'P3_VLVD_CON(0xf2c044)/P3_PCNT_CON(0xf2c124) 金丝雀写记录+首读具名 fixture'
             '(BV 备而未接线;W4[4] 0x12c29a 量测分支首读 0xf2c044——BA §2.2 修正后健康'
@@ -803,8 +809,8 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 53130036,
-        'stop_pc': '0x12c5ca',
+        'completed_steps': 57527233,
+        'stop_pc': '0x12b5c6',
         'stop': {'kind': 'watchdog_expired_delivery_not_implemented',
                  'control': '0x2e', 'elapsed_nominal_units': 16384},
         'freshness_fields': ('kind', 'control'),

@@ -1,0 +1,28 @@
+{
+ "route": "WDTFEED2 / sim-wdtfeed2（idle 唤醒语义修正：被唤醒的停泊核消费 IDLE，跑下一条 0x12c5cc）",
+ "recorded_at": "2026-11-20T14:00:00+08:00",
+ "task": "按 codex 202611201137 裁决「走 C」诊断并修正 idle 唤醒语义：模型在 c.step() 前截住 IDLE，PC 留在 0x12c5ca；Timer0 唤醒停泊核时把这个 PC 存为 RETI，RTI 回到同址原地再次停泊，双核喂狗循环（0x12c5a4 登记核号→0x12c5b8 比较目标掩码 3→0x12c5bc 喂狗→0x12c5ca IDLE→0x12c5cc 查询空闲时间）永远走不到 0x12c5cc。修正=让 IDLE 唤醒的返回地址前进到 0x12c5cc（PC+2），验证前沿能否越过 53,130,036 @ 0x12c5ca（看门狗到期）",
+ "implementation": {
+  "switch": "新开关 idle_wake_consumes_idle（'conditional' 层，依赖 idle_wait）。开=IDLE 唤醒返回地址取 pc+2（消费 IDLE），关=取 pc（旧语义，原地重泊）",
+  "wiring": "br28_machine.py（BR28Machine 构造参数 idle_wake_consumes_idle=False + _idle_wake_return_address(cpu) 返回 cpu.pc+2/cpu.pc + 四个交付函数 deliver_software_irq/deliver_core_tick/deliver_timer0_irq/deliver_audio_dma_irq 把 interrupted 改为 woke 时取 _idle_wake_return_address）;frontier_registry.py（Feature + FRONTIERS['p11_heap_experimental'] 重钉 57,527,233 @ 0x12b5c6）;probe_irq_entry.py（irq_case 新参 idle_wake_consumes_idle + check() 断言随前沿重钉）;test_br28_machine.py（新单测）",
+  "minimal": "零模型/硬件改动，只改四个 IRQ 交付函数里「停泊核被唤醒时保存的 RETI 地址」；不用统一改 RTI 语义，避免破坏其他返回"
+ },
+ "verification_arms": {
+  "from_zero": "reference 从 0 全量（开关全开，budget 60M）→ 57,527,233 @ 0x12b5c6（watchdog_expired_delivery_not_implemented/0x2e/16384，wall 2175.5s）——新前沿越过 53,130,036",
+  "on_main": "reference 从 0 全量（同代码态，开关全开）→ 57,527,233 @ 0x12b5c6（wall 2154.7s）——与 from-zero 逐键相等（除 wall 秒），从零确定性复现",
+  "off_reproduce": "reference 从 0 全量，--off idle_wake_consumes_idle → 53,130,036 @ 0x12c5ca（feeds 163/162，t0 交付 24826，ct[0] reti_from 0x12b7b6，wall 2006.0s）——开关关=旧 B 停点，legacy 不变性",
+  "early_prefix": "开关开改变很早的启动前缀（ct[0] reti_from 0x12b7b6→0x12e286、dmaidle 写步 3204348→3204978、早期交付列移位），经 defer_core1_first_idle 机制传导——codex 已预警「影响很早的启动前缀」；off-reproduce 复现 0x12b7b6 证明源断言非陈旧，re-pin 正确对应开关开世界"
+ },
+ "probe_full_from_zero": "check_local.py --rom 全量从零（15 场景+单测族）：p11_heap_experimental_config 57,527,233 @ 0x12b5c6 与预钉一致；legacy 8 场景停点逐键不变（idle_wake_consumes_idle 只作用于 conditional 层，legacy 场景默认关）",
+ "recapture": "23 键 evidence/p11_heap_adapter_count_baseline.json 重取（from-zero 57.5M 步口径）：parallel_byte_store 18371/abstract_task_stack 867302/cpu0_shared_lock 114059/exact_full_word 1240809/mmio_rmw 100548/partial_icfg_bit9 318888/per_core_visible_cnum 550699 等漂移重取",
+ "feed_loop_result": {
+  "feeds": "168（163→168，+5 次喂狗），mailbox 167（162→167）——喂狗循环确实执行了",
+  "but_watchdog_still_expires": "到期前掩码==3 的双核登记障碍极少满足：CPU1 极少被唤醒、CPU0 空闲时间总 < 5 不进低功耗喂狗分支 0x12d796，喂狗不持续——前沿推进但看门狗仍到期（elapsed 16384）",
+  "parked": "停泊唤醒 reti_from 0x12c5cc：Timer0 21753、core-tick 397、software 233（CPU0 217+CPU1 16）；事件钟 131,981,860 虚拟步"
+ },
+ "honesty": {
+  "assumption": "idle 唤醒消费 IDLE（PC+2）是模型侧对真机行为的修正假设，derived-not-measured；未统一改 RTI 语义",
+  "not_claimed": "不证明双核喂狗能持续保活（掩码==3 障碍仍在）；不证明 WDT 到期后「先 IRQ 再复位」两阶段时序、P2M bit4 通知、复位传播；不证明音频消费者往下执行",
+  "codex_consult": "照 codex 202611201137 裁决「走 C」：优先查双核 idle 任务被中断唤醒后能否执行 0x12c5cc——已证实能执行（喂狗 +5 次），但持续保活需另查 CPU1 唤醒来源与低功耗分支，与裁决第 2 条一致"
+ }
+}
