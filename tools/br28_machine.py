@@ -663,6 +663,14 @@ class DualCoreMachine:
         # 开关 idle_wake_consumes_idle 关时保持旧语义(返回 idle 指令本身)。
         return cpu.pc+2 if self.idle_wake_consumes_idle else cpu.pc
 
+    def _require_no_inflight_irq(self,cpu,what,allow=()):
+        # repeat_irq_delivery 的嵌套拒绝:在途 handler 一律拒绝新交付(不扩展
+        # 嵌套)。allow 是例外族——仅 audio DMA 允许抢占嵌套 timer0(优先级
+        # 严格更高,由 AUDIO_NESTABLE_CONTEXTS 与 _audio_priority_nibble 互证)。
+        reject=tuple(c for c in self.IRQ_HANDLER_CONTEXTS if c not in allow)
+        require(getattr(cpu,'active_context',None) not in reject,
+                f'repeated {what} delivery must not nest on an in-flight IRQ handler')
+
     def deliver_software_irq(self,cpu,irq):
         # Opt-in minimal CPU entry for the actual per-core scheduler IPI
         # (IRQ 127-cnum; both handlers are the firmware-registered 0x12AD2A).
@@ -678,8 +686,7 @@ class DualCoreMachine:
             # 银行假设等校验每次交付都完整重走,pending 由固件重新 pend、交付照旧
             # acknowledge,不复用旧状态。不要求严格 None:首次交付本来就允许落在
             # first_task_return/bootstrap 等线程态投影上下文上并覆盖之。
-            require(getattr(cpu,'active_context',None) not in ('software_irq_handler','core_tick_handler'),
-                    'repeated software IRQ delivery must not nest on an in-flight IRQ handler')
+            self._require_no_inflight_irq(cpu,'software IRQ')
         else:
             require(all(d['core']!=cpu.core_id for d in self.software_irq_deliveries),
                     'software IRQ entry is one-shot per core without the repeat delivery projection')
@@ -731,8 +738,7 @@ class DualCoreMachine:
         cpu=self.cores[core]
         if self.repeat_irq_delivery:
             # 与 deliver_software_irq 对称:handler RTI 返回后可再次交付,在途拒绝。
-            require(getattr(cpu,'active_context',None) not in ('software_irq_handler','core_tick_handler'),
-                    'repeated core tick delivery must not nest on an in-flight IRQ handler')
+            self._require_no_inflight_irq(cpu,'core tick')
         else:
             require(all(d['core']!=core for d in self.core_tick_deliveries),
                     'core tick entry is one-shot per core without the repeat delivery projection')
@@ -788,6 +794,13 @@ class DualCoreMachine:
     AUDIO_DMA_IRQ_NUMBER=68
     AUDIO_IRQ_DISPATCHER=0x602f406
     AUDIO_IRQ_RTI_TAIL=0x602f452
+    # 全部 IRQ handler 的在途上下文标识(单一枚举源)。repeat_irq_delivery 下
+    # 任一 handler 在途即拒绝新交付(不扩展嵌套)——五类 handler 统一枚举,
+    # 新增 IRQ 类型只改这一处。历史教训:SRCSYNC5 新增 src_sync_irq_handler
+    # 时只补了新增 deliver 函数、没回补既有函数,core_tick 嵌套进在途 SRC_SYNC
+    # handler 污染上下文切换,前沿 139M→31M @ 0x41b2b2(数据字节当指令解码)。
+    IRQ_HANDLER_CONTEXTS=('software_irq_handler','core_tick_handler','timer0_irq_handler',
+                          'audio_dma_irq_handler','src_sync_irq_handler')
     # 允许 IRQ68 嵌套进入的在途 handler 族:仅 timer0(park 稳态事件循环=
     # Timer0 handler,IRQ68 prio2>IRQ4 prio1 真实 ICFG 严格更高,真实中断
     # 控制器会抢占)。software/core-tick(unmaskable IPI 族)与自身一律拒绝。
@@ -817,8 +830,7 @@ class DualCoreMachine:
         if self.repeat_irq_delivery:
             # 与 deliver_software_irq/deliver_core_tick 对称:handler RTI 返回后
             # 可再次交付,任一 handler 在途仍然拒绝,不扩展嵌套。
-            require(getattr(cpu,'active_context',None) not in ('software_irq_handler','core_tick_handler','timer0_irq_handler'),
-                    'repeated Timer0 IRQ4 delivery must not nest on an in-flight IRQ handler')
+            self._require_no_inflight_irq(cpu,'Timer0 IRQ4')
         else:
             require(all(d['core']!=core for d in self.timer0_irq_deliveries),
                     'Timer0 IRQ4 entry is one-shot per core without the repeat delivery projection')
@@ -909,9 +921,7 @@ class DualCoreMachine:
                 'audio IRQ68 entry requires an eligible pending episode on a launched core')
         cpu=self.cores[core]
         if self.repeat_irq_delivery:
-            require(getattr(cpu,'active_context',None) not in
-                    ('software_irq_handler','core_tick_handler','audio_dma_irq_handler'),
-                    'repeated audio IRQ68 delivery must not nest on an in-flight handler')
+            self._require_no_inflight_irq(cpu,'audio IRQ68',allow=self.AUDIO_NESTABLE_CONTEXTS)
         else:
             require(all(d['core']!=core for d in self.audio_irq_deliveries),
                     'audio IRQ68 entry is one-shot per core without the repeat delivery projection')
@@ -1031,10 +1041,7 @@ class DualCoreMachine:
                 'SRC_SYNC IRQ89 entry requires an eligible pending episode on a launched core')
         cpu=self.cores[core]
         if self.repeat_irq_delivery:
-            require(getattr(cpu,'active_context',None) not in
-                    ('software_irq_handler','core_tick_handler','timer0_irq_handler',
-                     'src_sync_irq_handler'),
-                    'repeated SRC_SYNC IRQ89 delivery must not nest on an in-flight IRQ handler')
+            self._require_no_inflight_irq(cpu,'SRC_SYNC IRQ89')
         else:
             require(all(d['core']!=core for d in self.src_sync_irq_deliveries),
                     'SRC_SYNC IRQ89 entry is one-shot per core without the repeat delivery projection')

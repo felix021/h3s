@@ -2730,7 +2730,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                           getattr(target_cpu,'repeat',None) is not None))
         in_flight_handler=(target_cpu is not None and
                            getattr(target_cpu,'active_context',None) in
-                           ('software_irq_handler','core_tick_handler','timer0_irq_handler'))
+                           ('software_irq_handler','core_tick_handler','timer0_irq_handler',
+                            'audio_dma_irq_handler','src_sync_irq_handler'))
         if request.details['irq']==68:
             # 路 D2AI:IRQ68 允许优先级抢占式嵌套进 timer0 handler(park 稳态
             # 事件循环;机器侧 deliver_audio_dma_irq 用真实 ICFG nibble 严格
@@ -2738,7 +2739,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             # software-IPI 与 core-tick 在途(unmaskable 族不可被 prio2 抢占)。
             context=getattr(target_cpu,'active_context',None) if target_cpu is not None else None
             in_flight_handler=(context in ('software_irq_handler','core_tick_handler',
-                                           'audio_dma_irq_handler'))
+                                           'audio_dma_irq_handler','src_sync_irq_handler'))
         if request.details['irq']==89:
             # 路 SRCSYNC5:IRQ89 不建模嵌套抢占——指令中途/自身在途/software-
             # IPI/core-tick/Timer0 在途一律挂起不丢弃(与 timer0 同族纪律,
@@ -2746,7 +2747,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             # pending 片即干净边界交付。
             context=getattr(target_cpu,'active_context',None) if target_cpu is not None else None
             in_flight_handler=(context in ('software_irq_handler','core_tick_handler',
-                                           'timer0_irq_handler','src_sync_irq_handler'))
+                                           'timer0_irq_handler','src_sync_irq_handler',
+                                           'audio_dma_irq_handler'))
         if mid_instruction or in_flight_handler:
             deferred_while=('mid_instruction (after_then/repeat in flight)'
                             if mid_instruction and not in_flight_handler
