@@ -828,10 +828,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 31312835,
-        'stop_pc': '0x41b2b2',
-        'stop': {'kind': 'upstream_simulator_failure', 'error_type': 'RuntimeError',
-                 'message': '0x41b2b2: no instruction decodes here'},
+        'completed_steps': 104077119,
+        'stop_pc': '0x6070b16',
+        'stop': {'kind': 'watchdog_expired_delivery_not_implemented', 'control': '0x2e',
+                 'elapsed_nominal_units': 16384},
         'freshness_fields': ('kind',),
     },
 }
