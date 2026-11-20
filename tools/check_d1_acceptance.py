@@ -701,8 +701,14 @@ def d1_3_core_tick(scenario):
     deliveries=_deliveries(scenario,'core_tick_entry_projection')
     checks=[]
 
-    # ACK |=0x40 恰一次/交付(any-context;acknowledgements 键已存在)
-    ack=tick.get('acknowledgements')
+    # ACK |=0x40 恰一次/交付(any-context;acknowledgements 键已存在)。双核 core
+    # tick:配置按核分条、每核各自 ACK((40,40) 时间基修正后 core0 26833 + core1
+    # 72 == 交付 26905),恰一次判定须用「全核 ack 和」对「全核交付和」,不能拿
+    # core0 的 ack 去比全量交付(否则把 core1 的 72 次交付误判成丢 ack)。
+    ticks=_peripherals(scenario).get('core_tick_configuration')
+    acks=[t.get('acknowledgements') for t in (ticks or []) if isinstance(t,dict)
+          and isinstance(t.get('acknowledgements'),int)]
+    ack=sum(acks) if acks else tick.get('acknowledgements')
     if isinstance(ack,int) and deliveries:
         checks.append(_check('ack_exactly_once_per_delivery',status='pass' if ack==len(deliveries) else 'fail',
             window='any-context',

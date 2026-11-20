@@ -2,12 +2,11 @@
 """Opt-in per-core system tick IRQ3 delivery on the real startup prefix.
 
 The actual per-core timer init (0x60661e8) enables CPU0's tick with PRD=1199999
-(~1.2M tick period). With the virtual tick rate of 4 per model step the first
-CPU0 overflow lands around 450k steps. That is unreachable today: the CPU1 peer
-IPI (IRQ125, priority 6) is raised as an unmaskable IRQ at 153430 steps, before
-the tick overflows, and its delivery is the separate preceding task. These three
-scenarios therefore all stop at that same boundary; the delivery machinery is
-exercised by tools/test_core_tick.py. No flash approval.
+(~1.2M tick period). With the corrected 40-ticks-per-model-step timebase
+(sys_clk=160MHz) the first CPU0 overflow lands around 177k steps, still after
+the CPU1 peer IPI (IRQ125, priority 6) raised as an unmaskable IRQ at 153430
+steps. These three scenarios therefore all stop at that same boundary; the
+delivery machinery is exercised by tools/test_core_tick.py. No flash approval.
 """
 import argparse
 import json

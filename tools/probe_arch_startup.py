@@ -29,7 +29,7 @@ def architecture_case(module,app,header,rom,name,*,options=None,diagnostic_optio
                       post_stop=None,snapshot=None):
     parameters={'voltage_configuration_projection':True,'pll1_configuration_projection':True,
                 'cache_status_probe':True,'cache_status_words':dict.fromkeys(CACHE_STATUS_REGISTERS,0x80000000),
-                'sfc_read_bus':True,'initial_sfc_control':1,'core_tick_progress':(4,4),
+                'sfc_read_bus':True,'initial_sfc_control':1,'core_tick_progress':(40,40),
                 'core_tick_count_while_held':True}
     parameters.update(options or {})
     diagnostics={'opaque_pwm_read':True,'exact_subword_stores':True,'immediate_rep_projection':True,
