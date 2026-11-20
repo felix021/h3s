@@ -363,6 +363,14 @@ TIMER0_IRQ_FRAMES={0x12ece8:'frame12_push',0x12ed08:'frame12_pop'}
 # diagnostics audio_irq_frames 并入 probe_boot frames 合并)。
 AUDIO_IRQ_FRAMES={0x602f406:'frame12_push',0x602f44e:'frame12_pop'}
 
+# 路 SRCSYNC5(sim-srcsync5):IRQ89 SRC_SYNC 完成 handler 0x12ca24(RAM 拷贝,
+# flash 母本 0x60c61fc)的 12B 特殊帧锚——入口 push.srl {psr,rets,reti}+
+# push.rmask r6-r0(普通寄存器组走既有抽象栈运输);尾部 pop.rmask+pop.srl
+# (特殊帧恢复,本表 pop 锚)→csync→rti(RTI 尾锚=机器侧 SRC_SYNC_IRQ_RTI_TAIL
+# =0x12cad2,与 flash 母本 0x60c62a2 pop.rmask/0x60c62a6 pop.srl 的偏移 0xAE
+# 折算,经 diagnostics src_sync_irq_frames 并入 probe_boot frames 合并)。
+SRC_SYNC_IRQ_FRAMES={0x12ca24:'frame12_push',0x12cace:'frame12_pop'}
+
 # 路 BF:core tick IRQ3 handler 0x60661a4 的 12B 特殊帧锚(本路证据核验,
 # 真实 app 反汇编三方互证:tick_timer_init 0x60661e8 的 0x6066204
 # li.u32 r2=101081508=0x60661a4 经 request_irq(0x6065d86)写进向量槽
@@ -5081,6 +5089,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
              jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
              jl_src_sync_full_block=False,jl_src_sync_coef_batch_readback=False,
+             src_sync_delivery=False,
              jl_sync_config_words=False,
              jl_btclk_timer_words=False,
              jl_fm_con_head_rmw=False,
@@ -5475,6 +5484,10 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # 回写,链继续走函数 B 的启动请求/后续 eq 域——新停点由实跑取得;
         # 预算沿用 60M(余量以实跑核)。
         if jl_src_sync_coef_batch_readback:budget=60000000
+        # 路 SRCSYNC5:SRC_SYNC 完成+IRQ89 交付放行后 jlstream_N 的 3 tick
+        # 等待被唤醒、状态变 2,链继续推进到下一个诚实边界——新停点由实跑
+        # 取得;完成事件在启动写后 1 步即触发,预算沿用 60M(余量以实跑核)。
+        if src_sync_delivery:budget=60000000
         # 路 SYNCIMPL:JL_SYNC 四字放行后 creator 0x60befae 的 CON 写停点
         # 被越过,链在 +2 步的 0x60befee(BT clock timer 0xF00130 写,未建模)
         # 停——新停点由实跑取得;预算沿用 60M(余量以实跑核)。
@@ -6796,6 +6809,31 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'is only reached behind the full-block function B; the dependency '
                 'records THIS scenario advance order, not a hardware dependency)')
         options['jl_src_sync_coef_batch_readback']=True
+    # src_sync_delivery(路 SRCSYNC5,codex 202611201614 总裁决 §2「数字模型
+    # 建到哪里」,默认 False=关):SRC_SYNC 完成事件 + IRQ89 交付——从真实
+    # 启动写 CON0|=0x8 @0x6070b1c 开始,completion_steps 个模型步后完成
+    # (显式时序假设 derived-not-measured,不从任务 3 tick 超时反推)置 IRQ89
+    # pending;advance() 逐 pending 片至多一次 IrqDeliveryRequest(core=0,
+    # irq=89);机器侧最小进入/一次性 RTI 投影镜像 audio IRQ68(向量槽
+    # 0x19ff64→handler 0x12ca24 RAM 拷贝,flash 母本 0x60c61fc),handler 的
+    # CON0|=0x40 W1C 清 pending;转换结果/连续数据流不建模(读回=最后写值、
+    # 输入消耗=0、输出数据不合成,消费即 BLOCKED)。依赖边挂
+    # jl_src_sync_config_words+jl_src_sync_full_block(启动写/ACK 归原 CON0
+    # 容器,handler 九字读回归全块 readback 半边);默认关=启动写后无完成
+    # 事件、无 IRQ89 pending,legacy 逐字节不变。
+    if src_sync_delivery:
+        require(jl_src_sync_config_words and jl_src_sync_full_block,
+                'the SRC_SYNC delivery only layers on the jl_src_sync_config_words and '
+                'jl_src_sync_full_block releases (the startup CON0|=0x8 and the handler '
+                'ACK |=0x40 ride the config container; the handler progress readback of '
+                'IDAT/ODAT/FLTB/STOP_FLAG/OUTSR rides the full-block readback half)')
+        machine_options['src_sync_irq_entry']=True
+        machine_options['src_sync_irq_entry_banks']=True
+        machine_options['src_sync_irq_rti']=True
+        options['jl_src_sync_delivery']=True
+        options['jl_src_sync_delivery_requests']=True
+        options['jl_src_sync_completion_steps']=1
+        extra['src_sync_irq_frames']=dict(SRC_SYNC_IRQ_FRAMES)
     # jl_sync_config_words(路 SYNCIMPL,codex 20261119 收窄版 a,
     # docs/frontier-scout-jlsync.md §5,默认 False=关):JL_SYNC(audio_sync)
     # 四字容器——42,061,357 停点 0x60befe6(creator 0x60befae 体内 li 常量

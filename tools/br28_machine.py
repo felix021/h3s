@@ -69,6 +69,7 @@ class DualCoreMachine:
                  core_tick_entry=False,core_tick_entry_banks=False,core_tick_rti=False,
                  timer0_irq_entry=False,timer0_irq_entry_banks=False,timer0_irq_rti=False,
                  audio_irq_entry=False,audio_irq_entry_banks=False,audio_irq_rti=False,
+                 src_sync_irq_entry=False,src_sync_irq_entry_banks=False,src_sync_irq_rti=False,
                  gpio_out_readback=False,cpu1_control_kick_wake=False,repeat_irq_delivery=False,
                  event_clock_projection=False,timer2_delay_projection=False,
                  idle_wake_consumes_idle=False,
@@ -140,6 +141,19 @@ class DualCoreMachine:
         require(isinstance(audio_irq_rti,bool) or audio_irq_rti is None,'audio IRQ68 RTI projection must be explicit')
         require(not audio_irq_rti or audio_irq_entry,'audio IRQ68 RTI projection requires the entry projection')
         self.audio_irq_rti=audio_irq_rti
+        # 路 SRCSYNC5(sim-srcsync5):IRQ89 SRC_SYNC 完成中断的最小进入投影+
+        # 可选入口银行假设+对称一次性 RTI(Timer0/audio 两先例镜像;向量槽
+        # 0x19fe00+89*4=0x19ff64 由固件 hw_res 表 ram2=0x12ca24 真实写入,
+        # flash 母本 0x60c61fc)。不建模嵌套抢占(handler 跑在启动写后的线程
+        # 上下文);入口银行为显式未验证假设。
+        require(isinstance(src_sync_irq_entry,bool),'SRC_SYNC IRQ89 entry projection is opt-in boolean')
+        self.src_sync_irq_entry=src_sync_irq_entry;self.src_sync_irq_deliveries=[]
+        require(isinstance(src_sync_irq_entry_banks,bool),'SRC_SYNC IRQ89 entry banks are an opt-in assumption')
+        require(not src_sync_irq_entry_banks or src_sync_irq_entry,'SRC_SYNC IRQ89 entry bank assumption requires the entry projection')
+        self.src_sync_irq_entry_banks=src_sync_irq_entry_banks
+        require(isinstance(src_sync_irq_rti,bool) or src_sync_irq_rti is None,'SRC_SYNC IRQ89 RTI projection must be explicit')
+        require(not src_sync_irq_rti or src_sync_irq_entry,'SRC_SYNC IRQ89 RTI projection requires the entry projection')
+        self.src_sync_irq_rti=src_sync_irq_rti
         require(isinstance(gpio_out_readback,bool),'GPIO OUT read-back is an opt-in boolean')
         self.gpio_out_readback=gpio_out_readback
         require(isinstance(cpu1_control_kick_wake,bool),'CPU1 control kick wake is an opt-in boolean')
@@ -779,6 +793,17 @@ class DualCoreMachine:
     # 控制器会抢占)。software/core-tick(unmaskable IPI 族)与自身一律拒绝。
     AUDIO_NESTABLE_CONTEXTS=('timer0_irq_handler',)
 
+    # 路 SRCSYNC5(sim-srcsync5):IRQ89 SRC_SYNC 完成 handler 的 RTI 尾锚。向量
+    # 槽 0x19ff64=0x12ca24(固件 hw_res 表 ram2 RAM 拷贝;flash 母本 0x60c61fc)。
+    # RAM 尾锚=0x12ca24+(flash rti 0x60c62aa − flash entry 0x60c61fc)=
+    # 0x12ca24+0xAE=0x12cad2(flash 母本尾部 0x60c62a2 pop.rmask/0x60c62a6
+    # pop.srl/0x60c62a8 csync/0x60c62aa rti;RAM 对应 0x12caca pop.rmask/
+    # 0x12cace pop.srl/0x12cad0 csync/0x12cad2 rti;入口/尾部 12B 特殊帧锚见
+    # probe_irq_entry 侧 SRC_SYNC_IRQ_FRAMES)。
+    SRC_SYNC_IRQ_NUMBER=89
+    SRC_SYNC_IRQ_HANDLER=0x12ca24
+    SRC_SYNC_IRQ_RTI_TAIL=0x12cad2
+
     def deliver_timer0_irq(self,core):
         # Opt-in minimal CPU entry for a Timer0 IRQ4 pending episode. Mirrors
         # deliver_core_tick: RETI-load and the vector-slot read are checked
@@ -995,6 +1020,87 @@ class DualCoreMachine:
         if d1_window_observer is not None:
             d1_window_observer.note_irq_rti(self,'audio_dma_irq_rti',cpu)
 
+    def deliver_src_sync_irq(self,core):
+        # 路 SRCSYNC5(sim-srcsync5;镜像 deliver_audio_dma_irq):IRQ89 SRC_SYNC
+        # 完成 pending 片的最小 CPU 进入。向量槽 0x19fe00+89*4=0x19ff64 读真实
+        # handler(固件 hw_res 表 ram2=0x12ca24 RAM 拷贝;未注册/未拷贝则
+        # vector_slot_uninitialized 诚实停,不许合成向量)。pending 不在此清:
+        # handler 0x12ca24 的真实 CON0|=0x40 W1C 清(模型侧
+        # JLSrcSyncDelivery.note_con_write)。不建模嵌套抢占。
+        require(self.src_sync_irq_entry and core in self.cores,
+                'SRC_SYNC IRQ89 entry requires an eligible pending episode on a launched core')
+        cpu=self.cores[core]
+        if self.repeat_irq_delivery:
+            require(getattr(cpu,'active_context',None) not in
+                    ('software_irq_handler','core_tick_handler','timer0_irq_handler',
+                     'src_sync_irq_handler'),
+                    'repeated SRC_SYNC IRQ89 delivery must not nest on an in-flight IRQ handler')
+        else:
+            require(all(d['core']!=core for d in self.src_sync_irq_deliveries),
+                    'SRC_SYNC IRQ89 entry is one-shot per core without the repeat delivery projection')
+        require(not cpu.bootstrap_context and cpu.after_then is None and cpu.repeat is None,
+                'SRC_SYNC IRQ89 entry requires an instruction boundary')
+        slot=0x19fe00+self.SRC_SYNC_IRQ_NUMBER*4
+        try:handler=int.from_bytes(cpu.mem.read(slot,4),'little')
+        except Blocked:raise Blocked('vector_slot_uninitialized',core=core,irq=self.SRC_SYNC_IRQ_NUMBER,
+                                     address=hex(slot)) from None
+        # Validate the whole entry before committing any state change.
+        entry_banks=None;bank_usp=None;bank_ssp=None
+        if self.src_sync_irq_entry_banks:
+            # 显式未验证假设(software-IRQ/core-tick/Timer0/audio 四先例同款):
+            # 线程态进入切 SP 到内核栈(SSP=最后显式 SSP fixture),USP 保持任务栈。
+            bank_ssp=getattr(cpu,'last_explicit_ssp',None)
+            require(bank_ssp is not None,'SRC_SYNC IRQ89 entry bank assumption lacks an explicit SSP fixture')
+            require(cpu.sp_known,'interrupted task stack pointer is unknown')
+            bank_usp=cpu.sp
+            entry_banks={'usp':hex(bank_usp),'ssp':hex(bank_ssp),
+                         'entry_sp':'ssp (assumed)','silicon_bank_switch_certified':False}
+        # Commit atomically: no further failure is possible past this point.
+        woke=core in self.idle_wait_cores
+        if core in self.idle_wait_cores:
+            self.idle_wait_cores.discard(core)
+            self.record_event({'kind':'core_woken_by_delivery','core':core,'irq':self.SRC_SYNC_IRQ_NUMBER})
+        interrupted=self._idle_wake_return_address(cpu) if woke else cpu.pc
+        cpu.reti=interrupted;cpu.pc=handler;cpu.steps+=1
+        cpu.irq_psr=cpu.flags  # entry PSR: low flags from the interrupted context; high bits unknown
+        if self.src_sync_irq_entry_banks:
+            cpu.usp=bank_usp;cpu.ssp=bank_ssp;cpu.sp=bank_ssp;cpu.sp_known=True
+        cpu.active_context='src_sync_irq_handler'
+        event={'kind':'src_sync_irq_entry','core':core,'irq':self.SRC_SYNC_IRQ_NUMBER,
+               'vector_address':hex(slot),'handler':hex(handler),'reti_from':hex(interrupted),
+               'entry_counted_as_model_step':True,'reti_load_is_assumption':True,
+               'delivery_clears_pending':False,'pending_cleared_by_handler_ack':True,
+               'handler_ack_shape':'real W1C rmw [0xfe2600] |= 0x40 (bit6) at handler '
+                                   '0x12ca42 (RAM copy of flash 0x60c621a); modeled by '
+                                   'JLSrcSyncDelivery.note_con_write',
+               'entry_psr_high_bits_unknown_pushed_as_zero':True,
+               'entry_banks':entry_banks,'nested':False,
+               'entry_sp_bank_or_icfg_effects_certified':False,'hardware_frame_write_modeled':False}
+        self.src_sync_irq_deliveries.append(event);self.record_event(event)
+        if d1_window_observer is not None:
+            d1_window_observer.note_irq_delivery(self,event,woke)
+
+    def return_src_sync_irq(self,cpu):
+        # 路 SRCSYNC5:IRQ89 handler 的对称一次性 RTI(尾锚 0x12cad2,RAM 拷贝
+        # 0x12ca24 的 rti;flash 母本 0x60c62aa)。RETI/PSR 来自真实弹出帧;
+        # PC=RETI、SP=USP;银行回写/ICFG 效果是未认证假设。
+        require(self.src_sync_irq_rti and cpu.pc==self.SRC_SYNC_IRQ_RTI_TAIL and
+                getattr(cpu,'active_context',None)=='src_sync_irq_handler' and
+                cpu.after_then is None and cpu.repeat is None,
+                'SRC_SYNC IRQ89 RTI projection requires the exact handler tail')
+        require(any(d['core']==cpu.core_id for d in self.src_sync_irq_deliveries),
+                'SRC_SYNC IRQ89 RTI tail does not match a delivered entry')
+        require(cpu.usp is not None and isinstance(cpu.reti,int),
+                'SRC_SYNC IRQ89 RTI lacks a restored frame or task stack')
+        interrupted_task=cpu.reti
+        cpu.pc=interrupted_task;cpu.sp=cpu.usp;cpu.sp_known=True;cpu.steps+=1
+        cpu.active_context=None
+        self.record_event({'kind':'src_sync_irq_rti','core':cpu.core_id,'pc_after':hex(cpu.pc),
+                           'sp_after':hex(cpu.sp),'reti_from_frame':hex(interrupted_task),
+                           'bank_writeback_is_assumption':True,'icfg_effects_certified':False})
+        if d1_window_observer is not None:
+            d1_window_observer.note_irq_rti(self,'src_sync_irq_rti',cpu)
+
     def note_stall(self,cpu,details):
         self.stalls+=1
         self.record_event({'core':cpu.core_id,**details})
@@ -1039,9 +1145,11 @@ class DualCoreMachine:
         # different bank values become unknown until an explicit bank write.
         # Inside an IRQ handler context the entry bank fixtures stay: the
         # handler's pushes/pops are balanced frame pairs, not bank
-        # reassignments (software-IRQ/core-tick/Timer0-IRQ4/audio-IRQ68 entries alike).
+        # reassignments (software-IRQ/core-tick/Timer0-IRQ4/audio-IRQ68/
+        # SRC-SYNC-IRQ89 entries alike).
         if getattr(cpu,'active_context',None) in ('software_irq_handler','core_tick_handler',
-                                                  'timer0_irq_handler','audio_dma_irq_handler'):return
+                                                  'timer0_irq_handler','audio_dma_irq_handler',
+                                                  'src_sync_irq_handler'):return
         for name in ('usp','ssp'):
             value=getattr(cpu,name)
             if value is not None and value!=cpu.sp:setattr(cpu,name,None)
@@ -1137,6 +1245,23 @@ class DualCoreMachine:
                               'prio2 vs prio1); every other in-flight context is refused — this is the '
                               'single justified exception to the no-nesting rule',
                     'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.audio_irq_entry else {}),
+                **({'src_sync_irq_entry_projection':{'enabled':True,'deliveries':self.src_sync_irq_deliveries,
+                    'vector_slot_formula':'0x19fe00+89*4 = 0x19ff64 (IRQ89, JL_SRC_SYNC completion); '
+                                          'handler 0x12ca24 is the firmware hw_res-table ram2 RAM copy '
+                                          '(flash source 0x60c61fc)',
+                    'entry_bank_assumption':self.src_sync_irq_entry_banks,
+                    'bank_switch_silicon_semantics_certified':False,
+                    'pending_cleared_by_handler_ack_not_delivery':True,
+                    'handler_ack':'real W1C rmw [0xfe2600] |= 0x40 (bit6) at handler 0x12ca42 (RAM copy '
+                                  'of flash 0x60c621a); modeled by JLSrcSyncDelivery.note_con_write',
+                    'rti_tail':'0x12cad2 (RAM copy rti; flash source 0x60c62aa; symmetric one-shot RTI '
+                               'projection; the 0x12cace pop.srl restores the real {reti,rets,psr} frame '
+                               'first)'
+                               if self.src_sync_irq_rti else 'not enabled',
+                    'nesting':'not modeled — the completion lands in the post-startup thread context '
+                              '(the first pending episode is delivered at a clean instruction boundary); '
+                              'any in-flight handler defers the delivery',
+                    'minimal_entry_only':True,'generic_irq_entry_implemented':False}} if self.src_sync_irq_entry else {}),
                 **({'timer2_poll_wake_projection':{'enabled':True,
                     'anchor':'0x12cd76 (TIMER2 poll loop head, route BK §1.3; the only anchored site in the app)',
                     'wakes':list(self.timer2_poll_wakes),

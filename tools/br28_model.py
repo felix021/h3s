@@ -6636,10 +6636,18 @@ class JLSrcSyncFullBlockRegisters:
                0xfe2630:'JL_SRC_SYNC->INSR',0xfe2634:'JL_SRC_SYNC->OUTSR',
                0xfe2638:'JL_SRC_SYNC->PHASE'}
 
-    def __init__(self):
+    def __init__(self,readback=False):
+        # readback(路 SRCSYNC5 交付半边):IRQ89 处理程序 0x12ca24 会把 IDAT_
+        # ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/FLTB_ADR/STOP_FLAG/OUTSR 读回软件对象
+        # 字段——交付模式下这些标量读按「最后写值」服务(值=function B 自己写
+        # 下的配置字,零转换的诚实答案;输入消耗量=0、输出数据不合成)。
+        # 默认关:读一律拒绝(jl_src_sync_full_block_read_not_modeled),legacy
+        # 逐字节不变。
+        self.readback=readback
         self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.WORDS}
         self.word_writes=0
         self.read_attempts=0
+        self.reads_served=0
 
     def handles(self,address):
         return address in self.stores
@@ -6652,6 +6660,17 @@ class JLSrcSyncFullBlockRegisters:
 
     def read(self,address,core=0):
         if address not in self.stores:raise ValueError('not a modeled JL_SRC_SYNC full-block word')
+        if self.readback:
+            # 交付模式(路 SRCSYNC5):读回=最后写值。未写过的字读仍拒绝(读
+            # 空没有可服务的内容——ODAT_ADR_START/END 等 function B 不写的字
+            # 或异常提前读会显形)。不合成初值:handler 读的是固件自己写下的
+            # 配置,零转换的诚实投影。
+            entry=self.stores[address]
+            if entry['writes']==0:
+                self.read_attempts+=1
+                raise Blocked('jl_src_sync_full_block_word_unwritten',address=hex(address))
+            self.reads_served+=1
+            return entry['values'][-1]
         # 读一律拒绝(codex 决策点 3):首写前/写后/RMW 内部读都停。没有
         # 引入合成初值的执行需求(与 CON0/CON1 RMW 首读即用旧值的关键差异;
         # 同块 COEF 先例——即使写过仍拒每一次读)。
@@ -6675,6 +6694,16 @@ class JLSrcSyncFullBlockRegisters:
                                               '(linear 0x60c61fc) which reads IDAT/ODAT/PHASE/'
                                               'STOP_FLAG/FLTB_ADR back into software state and is '
                                               'refused here if it runs')},
+                **({'readback_projection':{
+                    'enabled':True,
+                    'reads_served':self.reads_served,
+                    'semantics':('delivery half (route SRCSYNC5): the IRQ89 handler 0x12ca24 '
+                                 'plain reads of IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/FLTB_ADR/'
+                                 'STOP_FLAG/OUTSR are served as the LAST firmware-written value '
+                                 '(function B\'s own config words) — the honest zero-conversion '
+                                 'answer: input consumption 0, output data NOT synthesized, the '
+                                 'conversion result and continuous data flow stay BLOCKED. An '
+                                 'unwritten word still stops (no synthetic initial word).')}} if self.readback else {}),
                 'modeled_vs_touched':('modeled exactly the eleven words written by function B '
                                       '(0x6070a30, the eq-domain src_sync config function reached '
                                       'behind the 42,231,992 stop 0x6070a9a CON2 whole-word store): '
@@ -6953,6 +6982,131 @@ class JLSrcSyncCoefBatchReadback:
                           'accept 55 zero writes yet serve an older word first, so this is a '
                           'stated assumption, not a silicon claim; physical depth, the content '
                           'after a read and the overflow policy are unmeasured)')}
+
+
+class JLSrcSyncDelivery:
+    """SRC_SYNC 完成事件 + IRQ89 交付模型(opt-in,路 SRCSYNC5)。
+
+    依据 codex 202611201614 总裁决(final.md §2「数字模型建到哪里」):SRC_SYNC
+    从固件真实启动写 CON0|=0x8 @0x6070b1c 开始,完成时要交代输入消耗量/输出
+    地址和长度/处理程序会读回的进度/实际要消费的输出数据,再让 IRQ89 走真实
+    入口 0x12ca24。本模型只落「外部指定的完成结果」这一档(codex 明示允许):
+    - **完成时间来自显式假设(derived-not-measured)**:启动写后 completion_steps
+      个模型步置 IRQ89 pending,不从任务 3 tick 超时反推硬件延迟;
+    - 输入消耗量 = 0、输出数据不合成——转换结果与连续数据流保持 BLOCKED
+      (下游真消费到输出缓冲字节时诚实停);
+    - 处理程序读回的进度 = function B 自己写下的配置字「最后写值」读回
+      (由 jl_src_sync_full_block 的 readback 半边服务),零转换的诚实投影;
+    - IRQ89 pending 后 advance() 逐 pending 片至多抛一次
+      IrqDeliveryRequest(core=0,irq=89);handler 的 CON0|=0x40(bit6)是真实
+      W1C——清 pending + 解除 delivery_in_flight。
+
+    交付入口:向量槽 0x19fe00+89*4=0x19ff64,handler=0x12ca24(固件 hw_res 表
+    ram2 字段,SFR 驱动代码 RAM 拷贝;flash 母本 0x60c61fc)。handler 读回
+    CON0/CON1/IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/FLTB_ADR/STOP_FLAG/OUTSR
+    九字进软件对象字段,置 b[obj+1]=2 并 OSSemPost(obj+128)——jlstream_N 的
+    3 tick 等待由此被唤醒。
+
+    红线:不直接发中断、不直接 post 信号量——完成事件置 pending 后必须走
+    真实 IRQ89 入口(机器侧 deliver_src_sync_irq 读真实向量槽)。
+    """
+
+    IRQ_NUMBER=89
+    CON0=0xfe2600
+    START_BIT=0x8
+    ACK_BIT=0x40
+    # IRQ89 handler 的 |=0x40 W1C RMW:flash 母本 0x60c621a,其 RAM 拷贝
+    # 0x12ca24(向量槽内容)上的对应 PC=0x12ca24+(0x60c621a-0x60c61fc)=
+    # 0x12ca42。两者都放行(真实执行体是 RAM 拷贝,flash 母本为静态审计锚)。
+    ACK_RMW_PCS=frozenset((0x12ca42,0x60c621a))
+
+    def __init__(self,completion_steps=1):
+        if not isinstance(completion_steps,int) or completion_steps<1:
+            raise ValueError('SRC_SYNC completion steps must be a positive model-step count')
+        self.completion_steps=completion_steps
+        self.started=False
+        self.start_step=None
+        self.pending=False
+        self.delivery_in_flight=False
+        self.starts=0
+        self.completions=0
+        self.acks=0
+
+    def note_start(self,hardware):
+        """probe_boot 在 CON0|=0x8 启动 RMW 专用分发后调用(rmw_start 通道)。
+        记录启动时刻;同一事务的重复启动(陈旧值被 rmw_start 拦)不会到达。"""
+        self.started=True
+        self.start_step=hardware.counts['completed_model_steps']
+        self.starts+=1
+
+    def advance(self,hardware):
+        """BR28Model.advance 每模型步调用:启动后 completion_steps 步完成。
+        完成即置 pending(一次一个 pending 片;handler ACK 清 pending 后可
+        再次启动→再次完成)。"""
+        if self.started and not self.pending:
+            elapsed=hardware.counts['completed_model_steps']-self.start_step
+            if elapsed>=self.completion_steps:
+                self.started=False
+                self.pending=True
+                self.completions+=1
+
+    def note_con_write(self,value):
+        """CON0(0xfe2600)每笔写回后的 W1C 联动(经 BR28Model.write 通用路径
+        观察):bit6(0x40)置位的写=IRQ89 handler 的真实清 pending 写,清
+        pending + 解除 delivery_in_flight(与 ADC_CON |=0x40 先例同款)。"""
+        if value&self.ACK_BIT:
+            self.pending=False
+            self.delivery_in_flight=False
+            self.acks+=1
+
+    def rmw_ack(self,pc,insn_id,mask,core,hardware):
+        """IRQ89 handler CON0|=0x40 的专用 RMW 分发(probe_boot 调用):五元组
+        (已审计 PC+rmw.or.modimm+0x40+主核)匹配才服务——内部读取原 CON0 容器
+        当前值,|0x40 写回(进原 CON0 账本),并清 pending。其余 PC/掩码/核
+        消费前停。"""
+        if core!=0 or insn_id!='rmw.or.modimm' or mask!=self.ACK_BIT:
+            raise Blocked('jl_src_sync_ack_rmw_form_not_audited',
+                          address=hex(self.CON0),instruction_id=insn_id,
+                          mask='None' if mask is None else hex(mask),core=core)
+        if pc not in self.ACK_RMW_PCS:
+            raise Blocked('jl_src_sync_ack_rmw_pc_not_audited',
+                          address=hex(self.CON0),
+                          pc='None' if pc is None else hex(pc),core=core)
+        old=hardware.jl_src_sync.read(self.CON0)
+        value=(old|self.ACK_BIT)&0xffffffff
+        hardware.jl_src_sync.write(self.CON0,value,core)
+        self.note_con_write(value)
+        return value
+
+    def report(self):
+        return {
+            'enabled':True,
+            'irq':self.IRQ_NUMBER,
+            'vector_slot':hex(0x19fe00+self.IRQ_NUMBER*4),
+            'handler':hex(0x12ca24),
+            'flash_handler':hex(0x60c61fc),
+            'state':{'started':self.started,'pending':self.pending,
+                     'delivery_in_flight':self.delivery_in_flight,
+                     'starts':self.starts,'completions':self.completions,'acks':self.acks},
+            'completion_timing_assumption':{
+                'completion_steps':self.completion_steps,
+                'semantics':('SRC completes completion_steps model steps after the real '
+                             'CON0|=0x8 startup write — an EXPLICIT assumption '
+                             '(derived-not-measured), NOT reverse-engineered from the '
+                             'task\'s 3-tick semaphore timeout and NOT a silicon latency '
+                             'measurement')},
+            'completion_result':{
+                'input_consumed':0,
+                'output_data_synthesized':False,
+                'progress_readback':'last firmware-written value (function B config words)',
+                'semantics':('the externally-specified completion result: zero input '
+                             'consumed, output address/length read back as the firmware\'s '
+                             'own config, no output samples synthesized — this verifies '
+                             '"the notification wakes the task" while the conversion result '
+                             'and continuous data flow stay BLOCKED (codex §2 wording)')},
+            'red_line':('no direct interrupt or direct OSSemPost: completion sets IRQ89 '
+                        'pending and the machine delivers it through the real vector slot '
+                        '0x19ff64 -> handler 0x12ca24')}
 
 
 class JLSyncConfigWords:
@@ -9163,6 +9317,8 @@ class BR28Model:
                  jl_adc_start_config=False,jl_adc_start_probe_value=None,
                  jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
                  jl_src_sync_full_block=False,jl_src_sync_coef_batch_readback=False,
+                 jl_src_sync_delivery=False,jl_src_sync_delivery_requests=False,
+                 jl_src_sync_completion_steps=1,
                  jl_sync_config_words=False,
                  jl_btclk_timer_words=False,
                  jl_fm_con_head_rmw=False,
@@ -9885,8 +10041,24 @@ class BR28Model:
         # jl_src_sync_config_words 容器 CON0/CON1/COEF 之外)放行;CON0|=0x8
         # 启动请求归原 CON0 容器(不占新容器 11 纯写)。默认关:11 字保持
         # unmapped(42,231,992 前沿形状),legacy 逐字节不变。
-        self.jl_src_sync_full_block=(JLSrcSyncFullBlockRegisters()
+        self.jl_src_sync_full_block=(JLSrcSyncFullBlockRegisters(readback=jl_src_sync_delivery)
                                      if jl_src_sync_full_block else None)
+        # 路 SRCSYNC5:SRC_SYNC 完成事件 + IRQ89 交付半边。必须在
+        # jl_src_sync_config_words(启动写 CON0 归原容器+ACK RMW 内部读走原容器
+        # 读回)与 jl_src_sync_full_block(handler 读回的 IDAT/ODAT 等九字靠它
+        # 服务)之上;completion_steps 是显式完成时序假设(derived-not-measured)。
+        # 默认关:启动写后无完成事件、无 IRQ89 pending,legacy 逐字节不变。
+        if jl_src_sync_delivery and not (jl_src_sync_config_words and jl_src_sync_full_block):
+            raise ValueError('jl_src_sync_delivery requires jl_src_sync_config_words and '
+                             'jl_src_sync_full_block (the startup CON0|=0x8 and the handler '
+                             'ACK |=0x40 ride the config container; the handler progress '
+                             'readback of IDAT/ODAT/FLTB/STOP_FLAG/OUTSR rides the full-block '
+                             'readback half)')
+        if jl_src_sync_delivery_requests and not jl_src_sync_delivery:
+            raise ValueError('jl_src_sync_delivery_requests requires jl_src_sync_delivery')
+        self.jl_src_sync_delivery_requests=jl_src_sync_delivery_requests
+        self.jl_src_sync_delivery=(JLSrcSyncDelivery(completion_steps=jl_src_sync_completion_steps)
+                                   if jl_src_sync_delivery else None)
         # 路 SRCSYNC4:JL_SRC_SYNC COEF 口「本次初始化后 55 字批次回读」模型
         # ——42,232,325 停点 0x60709e0(helper 0x607099c 的 ld.w r0=[r5+60]
         # 读 0xfe263c,jl_src_sync_coef_read_not_modeled 诚实拒)放行。独立容器
@@ -10194,6 +10366,18 @@ class BR28Model:
         # 路径由 read() PC 守卫服务。开关关时返回 False,0xfe2600 保持
         # unmapped(42,059,070 前沿形状)。
         return self.jl_src_sync is not None and address==0xfe2600
+
+    def handles_jl_src_sync_ack_rmw(self,address):
+        # 路 SRCSYNC5:CON0(0xfe2600)的 IRQ89 handler ACK RMW 专用分发→
+        # jl_src_sync_delivery.rmw_ack()(|=0x40 清 pending)。与启动 RMW
+        # (|=0x8)同址不同掩码,由 probe_boot 依 op['m'] 分流。开关关时
+        # 返回 False,handler 不会运行故零触达。
+        return self.jl_src_sync_delivery is not None and address==0xfe2600
+
+    def note_src_sync_start(self):
+        """启动 RMW(rmw_start 通道)完成后的启动时刻记录(SRCSYNC5)。"""
+        if self.jl_src_sync_delivery is not None:
+            self.jl_src_sync_delivery.note_start(self)
 
     def gpcnt_rmw(self,address,kind,operand):
         if not self.handles_gpcnt(address):raise ValueError('not modeled GPCNT CON')
@@ -10946,11 +11130,15 @@ class BR28Model:
             # (系数装载,55 轮恒零);原子 RMW 内部读=容器当前值(通用 mmio
             # 路径);SRC_SYNC 硬件语义/采样率转换不建模。
             self.jl_src_sync.write(address,value,self.current_core)
+            # 路 SRCSYNC5:CON0 每笔写回后观察 W1C——IRQ89 handler 的 |=0x40
+            # (bit6)写清 pending+解除 delivery_in_flight(ADC_CON 先例同款)。
+            if (self.jl_src_sync_delivery is not None and address==JLSrcSyncDelivery.CON0):
+                self.jl_src_sync_delivery.note_con_write(value)
         elif self.jl_src_sync_full_block is not None and self.jl_src_sync_full_block.handles(address):
             # JL_SRC_SYNC 全块 11 新字(路 SRCSYNC2):函数 B 的整字纯写记录
             # (CON2/CON3/PHASE/FLTB_ADR/STOP_FLAG/INSR/OUTSR/IDAT_ADR/
-            # IDAT_LEN/ODAT_ADR/ODAT_LEN);读一律拒绝;SRC_SYNC 硬件语义/
-            # DMA/IRQ89 不建模。
+            # IDAT_LEN/ODAT_ADR/ODAT_LEN);读一律拒绝(交付半边读回=最后写值);
+            # SRC_SYNC 硬件语义/DMA/IRQ89 完成事件不建模(见 JLSrcSyncDelivery)。
             self.jl_src_sync_full_block.write(address,value,self.current_core)
         elif self.jl_sync is not None and self.jl_sync.handles(address):
             # JL_SYNC 四字(路 SYNCIMPL):creator CON 整字写 0(停点)与
@@ -11345,6 +11533,10 @@ class BR28Model:
 
     def advance(self,icfg):
         self.counts['completed_model_steps']+=1
+        # 路 SRCSYNC5:SRC_SYNC 完成事件步进——启动写后 completion_steps 个
+        # 模型步完成并置 IRQ89 pending(显式时序假设 derived-not-measured)。
+        if self.jl_src_sync_delivery is not None:
+            self.jl_src_sync_delivery.advance(self)
         if self.icu is not None:self.icu.advance()
         if self.watchdog is not None:self.watchdog.advance()
         if self.core_ticks is not None:
@@ -11443,6 +11635,28 @@ class BR28Model:
                 if not dma.delivery_in_flight:
                     dma.delivery_in_flight=True
                     raise IrqDeliveryRequest(core=0,irq=68)
+        # 路 SRCSYNC5:SRC_SYNC 完成→IRQ89 交付扫描(ADC DMA IRQ68 后同位)。
+        # IRQ89 是 SRC_SYNC 驱动的采样率转换完成中断,注册于 CPU0 语境
+        # (hw_res 表 ram2=0x12ca24,向量槽 0x19FF64);核选择钉 CPU0(handler
+        # 运行在 RAM 0x12ca24 拷贝,由机器侧读真实向量槽进入)。pending 且
+        # 非 in-flight 时按真实 ICFG nibble+IPMASK 判资格,合格即抛
+        # IrqDeliveryRequest(core=0,irq=89)(每 pending 片至多一次;真实
+        # CON0|=0x40 W1C 清 pending 时一并解除 in-flight)。
+        src=self.jl_src_sync_delivery
+        if src is not None and src.pending:
+            gate=self.core_icfg.get(0) if self.multicore_enabled else icfg
+            try:eligible=self.irq.eligible(89,0x300 if gate is None else gate)
+            except Blocked as e:
+                raise Blocked('src_sync_irq_delivery_blocked',core=0,irq=89,
+                              reason=e.details['kind']) from None
+            if eligible:
+                if not self.jl_src_sync_delivery_requests:
+                    raise Blocked('interrupt_delivery_not_implemented',core=0,irq=89,
+                                  note='SRC_SYNC completion pending and eligible; CPU entry '
+                                       'not bypassed — enable the SRC_SYNC delivery requests')
+                if not src.delivery_in_flight:
+                    src.delivery_in_flight=True
+                    raise IrqDeliveryRequest(core=0,irq=89)
         if self.software_irq is not None:
             for core,word in enumerate(self.software_irq.pending):
                 if core==1 and (not self.multicore_enabled or not self.cpu1_control&1):continue
@@ -12077,6 +12291,21 @@ class BR28Model:
                 'modification kept); an excess write, unknown write PC, read at another PC/core/'
                 'gate, or re-init after startup all fail closed; 初始化后 55 字批次回读，'
                 'derived-not-measured；适用至本次 helper，物理容量、读后内容及溢出策略未测')
+        if self.jl_src_sync_delivery is not None:
+            result['jl_src_sync_delivery']=self.jl_src_sync_delivery.report()
+            result['assumptions']['jl_src_sync_delivery']=(
+                'SRC_SYNC completion event + IRQ89 delivery (route SRCSYNC5, codex '
+                '202611201614 verdict §2): the completion time is an EXPLICIT assumption '
+                '(derived-not-measured — completion_steps model steps after the real '
+                'CON0|=0x8 startup write at 0x6070b1c, NOT reverse-engineered from the '
+                'task\'s 3-tick semaphore timeout and NOT a silicon latency measurement); '
+                'the externally-specified completion result accounts zero input consumed '
+                'and no synthesized output data, the handler 0x12ca24 reads back the '
+                'function-B config words as progress — the conversion result and '
+                'continuous data flow stay BLOCKED; the IRQ89 delivery enters through the '
+                'real vector slot 0x19ff64 (handler 0x12ca24, flash 0x60c61fc) and the '
+                'handler CON0|=0x40 W1C clears pending; no direct interrupt or direct '
+                'OSSemPost is injected')
         if self.jl_sync is not None:
             result['jl_sync_config_registers']=self.jl_sync.report()
             result['assumptions']['jl_sync_config_registers']=(

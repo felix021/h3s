@@ -1172,6 +1172,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # 特殊帧;嵌套进入时恢复外层 timer0 handler 上下文)。
                     machine.return_audio_dma_irq(self);adapters['conditional_audio_irq_rti']+=1
                     return
+                if (insn.id=='rti' and machine.src_sync_irq_rti and
+                        getattr(self,'active_context',None)=='src_sync_irq_handler' and
+                        self.pc==machine.SRC_SYNC_IRQ_RTI_TAIL):
+                    # 路 SRCSYNC5:IRQ89 handler 的对称一次性 RTI(尾锚 0x12cad2,
+                    # RAM 拷贝 0x12ca24 的 rti;flash 母本 0x60c62aa;0x12cace 的
+                    # pop.srl 已从真实栈弹回特殊帧)。
+                    machine.return_src_sync_irq(self);adapters['conditional_src_sync_irq_rti']+=1
+                    return
                 if self.pc==0x06066126:
                     require(insn.id=='pop.srl' and raw.get('m',raw.get('n'))==0x29 and self.task_frame_restore and
                             self.sp==self.task_frame_restore['base'],'first-task special frame lacks its selected stack')
@@ -1252,6 +1260,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 frames.update(timer0_frames)
                 audio_frames=(diagnostics or {}).get('audio_irq_frames') or {}
                 frames.update(audio_frames)
+                src_sync_frames=(diagnostics or {}).get('src_sync_irq_frames') or {}
+                frames.update(src_sync_frames)
                 if insn.id in ('push.srl','pop.srl','push.srmask','pop.srmask') and self.pc in frames:
                     shape=frames[self.pc];push=shape.endswith('push')
                     require(shape in ('psr_push','psr_pop','frame12_push','frame12_pop') and
@@ -1269,10 +1279,19 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     elif shape=='frame12_push':
                         self.sp-=12
                         psr=(getattr(self,'irq_psr',0)&~15)|(self.flags&15)
-                        self.mem.write(self.sp,struct.pack('<III',self.reti,self.rets,psr))
+                        # 12B 帧按三个独立 4 字节字写执行(每字一次 MMU 翻译),
+                        # 而非单次 12B 写——与 exact_doubleword_stores 的跨页
+                        # 拆分(路 AN)同一论证:压缩成单请求才撞 translate 的
+                        # mmu_cross_page_access_not_split 拒绝。IRQ89 handler
+                        # 入口栈 0x404604、push 后 sp=0x4045f8,12B 跨 0x404600
+                        # 页界;拆分后三字各自页内写正常落盘。derived-not-measured
+                        # (每字独立翻译的拆分假设无 BR28 测量证据)。
+                        for i,w in enumerate((self.reti,self.rets,psr)):
+                            self.mem.write(self.sp+4*i,struct.pack('<I',w))
                         self.flags=0
                     else:
-                        self.reti,self.rets,psr=struct.unpack('<III',self.mem.read(self.sp,12))
+                        self.reti,self.rets,psr=(struct.unpack('<I',self.mem.read(self.sp+4*i,4))[0]
+                                                 for i in range(3))
                         self.reti&=0x07fffffe;self.rets&=0x07fffffe
                         self.irq_psr=psr;self.flags=psr&15;self.sp+=12
                     self.pc+=size;self.steps+=1
@@ -1288,6 +1307,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         # 路 D2AI:IRQ68 分发器的 12B 特殊帧锚(0x602f406 push/
                         # 0x602f44e pop,PRE §4.4 反汇编钉死)。
                         adapters['audio_irq_handler_frame']+=1
+                    elif self.pc-size in src_sync_frames:
+                        # 路 SRCSYNC5:IRQ89 handler 的 12B 特殊帧锚(0x12ca24
+                        # push/0x12cace pop,flash 母本 0x60c61fc/0x60c62a6)。
+                        adapters['src_sync_irq_handler_frame']+=1
                     else:adapters['software_irq_handler_psr_frame' if shape.startswith('psr') else
                                  'software_irq_handler_context_frame']+=1
                     return
@@ -2112,6 +2135,23 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         # 落下面通用 mmio 路径(由下面 RMW PC 守卫服务)。
                         hardware.jl_src_sync.rmw_start(self.pc,insn.id,op.get('m'),self.core_id)
                         if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
+                        # 路 SRCSYNC5:启动 RMW 完成后记录启动时刻(完成事件从
+                        # 这里开始计时;completion_steps 显式假设)。
+                        hardware.note_src_sync_start()
+                        self.finish_exact(self.pc+size)
+                        adapters['mmio_rmw_always_writes']+=1
+                        return
+                    if (hardware.handles_jl_src_sync_ack_rmw(address)
+                            and insn.id=='rmw.or.modimm' and op.get('m')==0x40
+                            and self.core_id==0):
+                        # 路 SRCSYNC5:IRQ89 handler CON0|=0x40 的 ACK RMW 专用
+                        # 分发(|=0x40 清 pending,与启动 |=0x8 同址不同掩码)。
+                        # 五元组(已审计 PC+rmw.or.modimm+0x40+主核)由
+                        # rmw_ack() 逐项核验;内部读走原 CON0 容器,写回进原
+                        # 账本并清 pending/delivery_in_flight。
+                        hardware.jl_src_sync_delivery.rmw_ack(self.pc,insn.id,op.get('m'),
+                                                             self.core_id,hardware)
+                        if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
                         self.finish_exact(self.pc+size)
                         adapters['mmio_rmw_always_writes']+=1
                         return
@@ -2699,6 +2739,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             context=getattr(target_cpu,'active_context',None) if target_cpu is not None else None
             in_flight_handler=(context in ('software_irq_handler','core_tick_handler',
                                            'audio_dma_irq_handler'))
+        if request.details['irq']==89:
+            # 路 SRCSYNC5:IRQ89 不建模嵌套抢占——指令中途/自身在途/software-
+            # IPI/core-tick/Timer0 在途一律挂起不丢弃(与 timer0 同族纪律,
+            # 不扩展优先级抢占)。SRC 完成恰落在启动写后线程上下文,首个
+            # pending 片即干净边界交付。
+            context=getattr(target_cpu,'active_context',None) if target_cpu is not None else None
+            in_flight_handler=(context in ('software_irq_handler','core_tick_handler',
+                                           'timer0_irq_handler','src_sync_irq_handler'))
         if mid_instruction or in_flight_handler:
             deferred_while=('mid_instruction (after_then/repeat in flight)'
                             if mid_instruction and not in_flight_handler
@@ -2710,6 +2758,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     hardware.timer.delivery_in_flight=False
                 elif request.details['irq']==68 and getattr(hardware,'jl_audio_adc_dma',None) is not None:
                     hardware.jl_audio_adc_dma.delivery_in_flight=False
+                elif request.details['irq']==89 and getattr(hardware,'jl_src_sync_delivery',None) is not None:
+                    hardware.jl_src_sync_delivery.delivery_in_flight=False
             machine.note_delivery_deferral(request.details,deferred_while)
             row['deferred_delivery']=request.details
             return
@@ -2734,6 +2784,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 raise ValueError('audio IRQ68 delivery request without the opt-in machine entry projection')
             machine.deliver_audio_dma_irq(request.details['core'])
             row['audio_irq_entry']=request.details
+        elif request.details['irq']==89:
+            # 路 SRCSYNC5:SRC_SYNC 完成→IRQ89 合格的交付请求(模型侧
+            # jl_src_sync_delivery_requests 逐 pending 片至多抛一次)。
+            if not machine.src_sync_irq_entry:
+                raise ValueError('SRC_SYNC IRQ89 delivery request without the opt-in machine entry projection')
+            machine.deliver_src_sync_irq(request.details['core'])
+            row['src_sync_irq_entry']=request.details
         else:
             if not machine.software_irq_entry:
                 raise ValueError('delivery request without the opt-in machine entry projection')

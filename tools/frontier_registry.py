@@ -467,6 +467,22 @@ FEATURES = (
             'derived-not-measured,适用至本次 helper,物理容量/读后内容/'
             '溢出策略未测;证据=已验证实现契约与当前前缀推进,不证明 '
             'SRC_SYNC 硬件/系数 FIFO 语义/IRQ89 交付已运行)'),
+    # ---- 路 SRCSYNC5(codex 202611201614 总裁决 §2):SRC_SYNC 完成事件 +
+    # IRQ89 交付。从真实启动写 CON0|=0x8 @0x6070b1c 开始,completion_steps
+    # 个模型步后完成(显式时序假设 derived-not-measured,不从任务 3 tick
+    # 超时反推)置 IRQ89 pending;advance() 逐 pending 片至多一次
+    # IrqDeliveryRequest(core=0,irq=89);机器侧最小进入/一次性 RTI 镜像 audio
+    # IRQ68(向量槽 0x19ff64→handler 0x12ca24 RAM 拷贝,flash 母本 0x60c61fc),
+    # handler CON0|=0x40 W1C 清 pending;转换结果/连续数据流不建模(读回=
+    # 最后写值、输入消耗=0、输出数据不合成,消费即 BLOCKED)。----
+    Feature('src_sync_delivery', 'conditional',
+            ('jl_src_sync_config_words', 'jl_src_sync_full_block'),
+            False, None,
+            'SRC_SYNC 完成事件+IRQ89 交付(启动写 CON0|=0x8 @0x6070b1c 后 '
+            'completion_steps 步完成=显式假设 derived-not-measured;IRQ89 走真实'
+            '入口 0x12ca24/向量槽 0x19ff64,handler CON0|=0x40 W1C 清 pending;'
+            '输入消耗=0/输出数据不合成,转换结果与连续数据流 BLOCKED;证据='
+            '已验证实现契约与单测,不证明 SRC_SYNC 硬件/采样率转换已运行)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li
@@ -809,9 +825,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'core'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 139947000,
-        'stop_pc': '0x606541a',
-        'stop': {'kind': 'instruction_budget'},
+        'completed_steps': 31312835,
+        'stop_pc': '0x41b2b2',
+        'stop': {'kind': 'upstream_simulator_failure', 'error_type': 'RuntimeError',
+                 'message': '0x41b2b2: no instruction decodes here'},
         'freshness_fields': ('kind',),
     },
 }
