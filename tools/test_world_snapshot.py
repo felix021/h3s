@@ -34,6 +34,7 @@ from br28_model import (BR28Model, CRC_ENGINE, EFUSE_CON0, EFUSE_CON1, EFUSE_RDA
                         ICU_BASES, IRQController, JLAdcStartConfigRegisters,
                         JLBtclkTimerWords, JLFmConHeadRmw, JLSyncConfigWords,
                         JLSrcSyncConfigRegisters, JLSrcSyncFullBlockRegisters,
+                        JLSrcSyncCoefBatchReadback,
                         P2mMailboxAck, P33AwkupRegisters, P33CanaryWatchRegisters,
                         PartialWord)
 from br28_unknown import UnknownWord
@@ -708,6 +709,11 @@ class M4ProjectionFamilies(unittest.TestCase):
         # container, ON in the current conditional frontier flag set (its first
         # recorded store sits at the 42,231,992 frontier stop).
         jl_src_sync_full_block=True,
+        # Route SRCSYNC4: the COEF post-initialization 55-word batch read-back
+        # (independent container, DAC-idle precedent), ON in the current
+        # conditional frontier flag set (its first served read sits at the
+        # 42,232,325-era stop).
+        jl_src_sync_coef_batch_readback=True,
         # Route SYNCIMPL: the JL_SYNC four-word container, ON in the current
         # conditional frontier flag set (its first recorded store sits at the
         # 42,061,357 frontier stop).
@@ -982,6 +988,14 @@ class M4ProjectionFamilies(unittest.TestCase):
         hw.jl_src_sync_full_block.write(JLSrcSyncFullBlockRegisters.WORDS[0], 0x00010002, 0)
         with self.assertRaisesRegex(Exception, 'jl_src_sync_full_block_read_not_modeled'):
             hw.jl_src_sync_full_block.read(JLSrcSyncFullBlockRegisters.WORDS[0], 0)
+        # Route SRCSYNC4: the COEF batch read-back carries state — the init fill
+        # advances through the audited 0x606fc02 write site (per-step PC
+        # provenance rides as state), plus the CON0/CON1 gate mirrors.
+        coef = hw.jl_src_sync_coef_batch
+        coef.note_step(JLSrcSyncCoefBatchReadback.INIT_WRITE_PC, 0)
+        hw.write(0xfe263c, 0)
+        self.assertEqual(coef.init_writes, 1)
+        self.assertEqual(len(coef.batch), 1)
         # Route SYNCIMPL: the four-word container carries state — the creator
         # whole-word zero store on CON (read-after-write via the audited
         # fn_config read PC) plus a WO word zero store; the per-step PC/core

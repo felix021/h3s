@@ -1,0 +1,24 @@
+{
+ "route": "SRCSYNC4 / sim-srcsync4（基线 main 639a989=SRCSYNC3 合并点，42,232,325 停点实施路）",
+ "recorded_at": "2026-11-20T10:00:00+08:00",
+ "task": "COEF 口「初始化后 55 字批次回读」放行（codex 202611200751 总裁决「改红线收窄」）：42,232,325 @ 0x60709e0（helper 0x607099c 的 ld.w r0=[r5+60] 读 0xfe263c=COEF，jl_src_sync_coef_read_not_modeled 诚实拒）→ 记录重配驱动 0x606fa7e 在 0x606fc02 的 55 笔对齐零写填满批次，helper 在 0x60709e0 顺序读回各位置值推进游标，写回 0x6070a1c 按固件实际 55 值记账 → 前沿推进至 53,130,036 @ 0x12c5ca（看门狗到期交付未建模）。不是通用 FIFO/破坏性弹出/写满丢最旧",
+ "implementation": {
+  "switch": "新开关 jl_src_sync_coef_batch_readback（'conditional' 层，依赖 jl_src_sync_config_words+jl_src_sync_full_block）。独立容器 JLSrcSyncCoefBatchReadback（DAC JLAudioDacDmaIdleReadback 先例，不加在既有容器上——旧快照字段兼容红线），COEF=0xfe263c/CON0=0xfe2600/CON1=0xfe2604 三字 WATCH_WORDS 记录门态与批次",
+  "container": "独立 M4 槽 ('jl_src_sync_coef_batch','JLSrcSyncCoefBatchReadback', 16 字段)。note_step 记 pc/core；note_write 记 CON0 bit4/CON1 bit22 门态、INIT_WRITE_PC=0x606fc02 填批次、WRITE_BACK_PC=0x6070a1c 记回写；serve 在 probe_boot step_body 通用路径：require(insn.id=='ld.w' and raw==READ_SHAPE{'d':0,'b':5,'n':15})+SITE_BYTES='506f'+serve——位置化读回(读 i 返回 batch[i] 非「永远最后写值」)，成功读推进游标、第 56 次读读空即停；拒绝路径=base 不符/他核/PC 未审计/门未开/未初始化/失效/读空/写满丢最旧/启动后重入",
+  "wiring": "br28_model.py（新容器类+BR28Model 构造参数+Hardware.write note_write 挂点）;probe_boot.py（step_body 里 note_step+READ_PC 0x60709e0 的 ld.w 放行+serve 装 r0+finish_exact 返回）;world_snapshot.py（新 M4 槽 16 字段）;frontier_registry.py（Feature+FRONTIERS 重钉 53,130,036 @ 0x12c5ca 看门狗+freshness_fields kind/control）;probe_irq_entry.py（srcsyncrel 重钉 124 写/COEF 110/reads 9/coef_read_attempts 0+新 coefrel 断言+SEGIMPL/SEGIMPL2/SEGIMPL3/REPCOND 释放记录断言随前沿重钉）;analyze_image_trace.py（default_budget 50M→60M，单测钉 >=前沿+1000）;test_br28_model.py/test_world_snapshot.py（新容器单测）;evidence/p11_heap_adapter_count_baseline.json（24 键重取）"
+ },
+ "verification_arms": {
+  "off_reproduce": "ownbase8（本路代码 c1cd3c9a 四开关全关捕获，41,884,941 干净边界与 ownbase7 同）+ 开三开关（postincrement/rep/full_block）关 coef_batch → 42,232,325 @ 0x60709e0（jl_src_sync_coef_read_not_modeled/0xfe263c，wall 15.1s）——SRCSYNC4 代码关新开关复现 SRCSYNC3 前沿",
+  "on_main_probe": "跨代码 on-main（复用 SRCSYNC3 ownbase7.bin 2a2d5005 + --ack-prior-fingerprint 2a2d5005 + 三开关全开 + coef_batch 开 + --ack-enable-slot jl_src_sync_full_block jl_src_sync_coef_batch）→ 53,130,036 @ 0x12c5ca（watchdog_expired_delivery_not_implemented/0x2e/16384，wall 570.4s）",
+  "on_main_ownbase": "ownbase8 + 四开关全开 → 53,130,036 @ 0x12c5ca（wall 601.8s）——与 on-main-probe 停点逐键相等；coef 批次账本逐笔核对：phase=consumed/reads_served=55/init_writes=55/write_back_writes=55/cursor=55、COEF 总写数=110=55 初始化写+55 回写、adapter jl_src_sync_coef_batch_read=55、srcsync reads=9/coef_read_attempts=0",
+  "causal_off": "因果负例（ownbase8 + 四开关全开但关 coef_batch）→ 42,232,325 @ 0x60709e0（wall 14.6s）——coef_batch 开关是新前沿的唯一因果",
+  "next_stop": "53,130,036 @ 0x12c5ca = 看门狗到期交付未建模（watchdog_expired_delivery_not_implemented，elapsed_nominal_units=16384，CON 0x2e）；helper 0x607099c 走完后（55 COEF 读+55 回写+后四 RMW 全放行）进入看门狗/OS 时间域——新停点 IPMASK 0（下游段在临界区外）"
+ },
+ "probe_full_from_zero": "check_local.py --rom 全量从零（15 场景+单测族+24 键重取收口）：p11_heap_experimental_config 53,130,036 @ 0x12c5ca（watchdog_expired_delivery_not_implemented）与预钉一致；legacy 14 场景停点逐键不变——本路只加 conditional 层开关，只影响 p11 条件场景释放段",
+ "recapture": "24 键 evidence/p11_heap_adapter_count_baseline.json 重取（from-zero 53.1M 步口径）：随前沿推进的 adapter 计数漂移重取，check() 的 23 键 adapter 计数断言读此基线",
+ "honesty": {
+  "assumption": "初始化后 55 字批次回读，derived-not-measured；适用至本次 helper，物理容量、读后内容及溢出策略未测。55 笔初始化写覆盖的 55 个位置与下次开门读的 55 个位置相同是显式假设（64 深 FIFO 也可吃 55 零写却先出更旧字），非硅证明",
+  "not_claimed": "不证明 COEF 口物理容量/深度、读后内容是否清空、溢出策略（写满丢最旧被拒绝）;不证明 SRC_SYNC 硬件/系数 FIFO 语义/采样率转换/DMA/IRQ89 交付已运行;写回 55 值全 0 是本前缀 [obj+168] 空缓冲的 memcpy 切片无操作结果，不证明通道切片替换真实数据流",
+  "codex_consult": "本路照 codex 202611200751 总裁决「改红线收窄」执行：只批准 CPU0+0x60709e0+ld.w+正确门态+游标 0..54 的顺序读回，B 方案「写满丢最旧」不通过；无方案级分歧"
+ }
+}

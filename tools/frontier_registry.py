@@ -445,6 +445,28 @@ FEATURES = (
             '是否接受/搬数据未验证;ODAT_ADR_START/END 留表外;CON2 bit16/bit3 '
             '语义 derived;证据=已验证实现契约与当前前缀推进,不证明 SRC_SYNC '
             '硬件/采样率转换/DMA/IRQ89 交付/音频处理已运行)'),
+    # ---- 路 SRCSYNC4(codex 202611200751 总裁决「改红线收窄」):COEF 口
+    # 「本次初始化后 55 字批次回读」 jl_src_sync_coef_batch_readback——
+    # 42,232,325 停点 0x60709e0(helper 0x607099c 的 ld.w r0=[r5+60] 读
+    # 0xfe263c=COEF,jl_src_sync_coef_read_not_modeled 诚实拒)放行。不是通用
+    # FIFO/破坏性弹出/写满丢最旧:记录重配驱动 0x606fa7e 在 0x606fc02 的
+    # 55 笔对齐零写填满批次;helper 在 0x60709e0 顺序读回第 i 位各返回该
+    # 位置的值,成功读推进游标、第 56 次读读空即停;写回 0x6070a1c 按固件
+    # 实际 55 值记账(通道切片修改保留);超量写/未知写 PC/他 PC 读/他核读/
+    # 门未开/启动后重入一律改状态前停。假设=初始化后 55 字批次回读
+    # derived-not-measured;适用至本次 helper,物理容量/读后内容/溢出策略未测。
+    Feature('jl_src_sync_coef_batch_readback', 'conditional',
+            ('jl_src_sync_config_words', 'jl_src_sync_full_block'),
+            False, None,
+            'COEF 口「初始化后 55 字批次回读」(42,232,325 停点 0x60709e0 '
+            'helper ld.w r0=[r5+60] 读 0xfe263c 放行;非通用 FIFO/破坏性弹出/'
+            '写满丢最旧:重配驱动 0x606fc02 的 55 笔对齐零写填满批次,helper '
+            '0x60709e0 顺序读回各位置值(CPU0+正确门态+游标 0..54),写回 '
+            '0x6070a1c 按固件实际 55 值记账;超量写/未知写 PC/他 PC/他核/'
+            '门未开/启动后重入改状态前停;初始化后 55 字批次回读 '
+            'derived-not-measured,适用至本次 helper,物理容量/读后内容/'
+            '溢出策略未测;证据=已验证实现契约与当前前缀推进,不证明 '
+            'SRC_SYNC 硬件/系数 FIFO 语义/IRQ89 交付已运行)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li
@@ -781,11 +803,11 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 42232325,
-        'stop_pc': '0x60709e0',
-        'stop': {'kind': 'jl_src_sync_coef_read_not_modeled',
-                 'address': '0xfe263c'},
-        'freshness_fields': ('kind', 'address'),
+        'completed_steps': 53130036,
+        'stop_pc': '0x12c5ca',
+        'stop': {'kind': 'watchdog_expired_delivery_not_implemented',
+                 'control': '0x2e', 'elapsed_nominal_units': 16384},
+        'freshness_fields': ('kind', 'control'),
     },
 }
 

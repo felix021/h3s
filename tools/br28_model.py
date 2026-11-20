@@ -6712,6 +6712,249 @@ class JLSrcSyncFullBlockRegisters:
                               'conversion, DMA, IRQ89 or SRC_SYNC hardware scenario')}
 
 
+class JLSrcSyncCoefBatchReadback:
+    """JL_SRC_SYNC COEF 口「本次初始化后 55 字批次回读」模型(opt-in,路
+    SRCSYNC4,codex 202611200751 总裁决「改红线收窄」)。
+
+    背景:42,232,325 停点 0x60709e0 = helper 0x607099c 的 `ld.w r0=[r5+60]`
+    读 0xfe263c=COEF(r5=[[obj+16]+12]=0xfe2600 base,+60=0xfe263c),此前
+    jl_src_sync_config_words 容器对 COEF 读一律拒绝(jl_src_sync_coef_read_
+    not_modeled,零读观测)。codex 总裁决:改红线收窄,只批准 CPU0 在本次初始化
+    之后由 0x60709e0 顺序读回完整 55 字批次,条件结果为 55 个 0;原样 B 方案
+    不通过,尤其不实现「写满丢最旧」。
+
+    证据(2026-11-20 路 SRCSYNC4 静态审计,app-linear.asm 反汇编;公开 SDK
+    src_sync 驱动闭源,固件内置驱动即第一手):
+    - 初始化=重配驱动 0x606fa7e 的 55 笔对齐零写 @0x606fc02 `[r1+60]=r5`
+      (r5=0 恒零),介于 CON1 |=0x400000 @0x606fbe4(bit22 配置事务总门开)与
+      CON0 |=0x10 @0x606fbfa(bit4 系数装载门开)之后、CON0 &=~0x10 @0x606fc0a
+      与 CON1 &=~0x400000 @0x606fc2c 关门之前——55 写覆盖下次开门可见的同一
+      批 55 个位置(假设,见下)。
+    - 回读=helper 0x607099c 的 55 轮 `ld.w r0=[r5+60]` @0x60709e0(r6=0..54,
+      字节 50 6f=ld.w {d:0,b:5,n:15}),位于 helper CON1 |=0x400000 @0x60709ba
+      与 CON0 |=0x10 @0x60709da 开门之后、CON0 &=~0x10 @0x60709ee 关门之前;
+      每轮 `[sp+r6<<2]=r0` 存栈。
+    - 写回=helper 的 55 笔 `[r5+60]=r1` @0x6070a1c(r0=0..54),介于 CON0
+      |=0x10 @0x6070a0e 与 CON0 &=~0x10 @0x6070a24 之间;helper 先读整批
+      (存入 memset 清零的 220B 栈)→ROM memcpy 0x6070a08 把 [obj+168] 的
+      count×44 字节按通道切片复制进栈(目的=sp+44×(1+b[obj+7]),count=
+      b[obj+0])→写回 55 字——**不是原样写回**(scout 勘误),通道切片修改保留。
+
+    建模选择(codex 总裁决):
+    - **不是通用 FIFO**:顺序数据口成立,但「破坏性弹出」未证实;建模为
+      「本次初始化后 55 字批次回读」,不是「读弹出+写满弃最旧」。
+    - 位置化读回:第 i 位读回批次里第 i 个位置的值(55 个互异标记单测互证,
+      非「永远返回最后写值」);每个成功读推进游标,第 56 次读(读空)停。
+    - 只授权 CPU0+0x60709e0+`ld.w [r5+60]`(形状/字节由 probe_boot require
+      钉死)+正确门态(CON0 bit4+CON1 bit22 开,note_write 观察)+游标 0..54。
+    - 拒绝:GET(读 PC 0x6070966)、新读 PC、RMW 内部读、另一核、部分写入
+      (handles 白名单层拒)、启动后重入、来源不明写、第 56 次读(读空)、写满
+      丢最旧(意外超量写改状态前停)。
+    - 写回 0x6070a1c 按固件实际 55 个写值记账(值=真实指令结果,进原 COEF
+      账本 jl_src_sync_config_words;本容器只观察不重复记账),通道切片修改保留。
+
+    假设(必须明列):这 55 笔初始化写覆盖了下次开门可见的同一批 55 个位置,
+    期间已观察到的配置写没有换掉/改动这批内容——仅凭「中间无 CPU 访问 COEF」
+    推不出(例如 64 深 FIFO 也能接受 55 次零写,首读仍可能取到旧字)。报告措辞:
+    「初始化后 55 字批次回读，derived-not-measured；适用至本次 helper，物理
+    容量、读后内容及溢出策略未测。」(COPEX 先例尺度)
+
+    known_limitation:本容器不建模 SRC_SYNC 硬件行为(采样率转换/DMA/IRQ89
+    交付/系数 FIFO 物理语义);主核越过停点不表示真实 SRC_SYNC 已配置或任何
+    采样率转换/音频处理运行(codex 措辞)。
+    """
+
+    COEF=0xfe263c
+    CON0=0xfe2600
+    CON1=0xfe2604
+    BATCH_LEN=55
+    INIT_WRITE_PC=0x606fc02
+    READ_PC=0x60709e0
+    WRITE_BACK_PC=0x6070a1c
+    # ld.w r0=[r5+60]:d=0(r0)/b=5(r5)/n=15(字索引,60=15×4),字节 50 6f。
+    READ_SHAPE={'d':0,'b':5,'n':15}
+    SITE_BYTES='506f'
+    CON0_GATE_BIT=0x10
+    CON1_GATE_BIT=0x400000
+    WATCH_WORDS=frozenset((COEF,CON0,CON1))
+    AUDIT_BOUND=8
+
+    def __init__(self):
+        self.current_pc=None
+        self.current_pc_core=None
+        self.phase='awaiting_init'   # awaiting_init/initialized/consumed/invalidated
+        self.batch=[]
+        self.read_cursor=0
+        self.init_writes=0
+        self.write_back_writes=0
+        self.reads_served=0
+        self.first_read=None
+        self.last_read=None
+        self.invalidations=[]
+        self.rejections={}
+        self.write_events=[]
+        self.con0_bit4=False
+        self.con1_bit22=False
+
+    # ------------------------------------------------------------- 溯源面
+    def note_step(self,pc,core):
+        """probe_boot step_body 每步刷新的写事件溯源(jl_sync note_step 先例;
+        开关关=槽 None,一次 is-not-None 测试即过,legacy 零变化)。"""
+        self.current_pc=pc
+        self.current_pc_core=core
+
+    def note_write(self,address,value,core,hardware):
+        """Hardware.write 对观察字集合(CON0/CON1/COEF)的每笔写调用(先于各
+        容器分发——门态与批次记账在自然 Blocked 前已入历史)。COEF 值本身仍
+        由 jl_src_sync_config_words 容器记录,本容器只观察/守卫。"""
+        if address==self.CON0:
+            self.con0_bit4=bool(value&self.CON0_GATE_BIT)
+            return
+        if address==self.CON1:
+            self.con1_bit22=bool(value&self.CON1_GATE_BIT)
+            return
+        if address!=self.COEF:return
+        pc=self.current_pc
+        step=hardware.counts['completed_model_steps']
+        event={'pc':hex(pc) if isinstance(pc,int) else None,'step':step,
+               'core':core,'value':hex(value),
+               'gate':{'con0_bit4':self.con0_bit4,'con1_bit22':self.con1_bit22}}
+        self.write_events.append(event)
+        if len(self.write_events)>self.AUDIT_BOUND:self.write_events.pop(0)
+        if self.phase=='invalidated':
+            return   # 已失效:不再推进批次(写值仍进原账本)
+        if pc==self.INIT_WRITE_PC:
+            self.init_writes+=1
+            if self.init_writes>self.BATCH_LEN:
+                self._invalidate('excess_init_write',event)
+                return
+            if self.phase=='awaiting_init':
+                self.batch.append(value)
+                if len(self.batch)==self.BATCH_LEN:
+                    self.phase='initialized'
+                    self.read_cursor=0
+            else:
+                self._invalidate('reinit_after_initialization',event)
+            return
+        if pc==self.WRITE_BACK_PC:
+            self.write_back_writes+=1
+            if self.write_back_writes>self.BATCH_LEN:
+                self._invalidate('excess_write_back',event)
+            return
+        # 未知写来源(部分写入已在 handles 白名单层拒;此处=新写 PC 同址新消费者)
+        self._invalidate('unknown_write_pc',event)
+
+    # ------------------------------------------------------------- 守卫面
+    def _invalidate(self,event,detail):
+        if self.phase!='invalidated':
+            self.phase='invalidated'
+        self.invalidations.append({'event':event,'detail':detail})
+        if len(self.invalidations)>self.AUDIT_BOUND:self.invalidations.pop(0)
+
+    def _reject(self,reason):
+        self.rejections[reason]=self.rejections.get(reason,0)+1
+
+    def serve(self,cpu,hardware,raw):
+        """已核验读点 0x60709e0 的装载门(probe_boot step_body 调用,指令形状/
+        字节由调用方 require 钉死)。返回 int=放行值;守卫拒绝=抛 Blocked(不同
+        于 DAC 的「返回 None 回落」——COEF 的回落路径 jl_src_sync.read 只会给
+        jl_src_sync_coef_read_not_modeled 一个泛 kind,读空/换门/他核需要各自
+        的诚实停)。"""
+        address=(cpu.R[raw['b']]+raw['n']*4)&0xffffffff
+        if address!=self.COEF:
+            self._reject('base_register_mismatch')
+            raise Blocked('jl_src_sync_coef_read_base_mismatch',
+                          address=hex(address),expected=hex(self.COEF))
+        if cpu.core_id!=0:
+            self._reject('other_core')
+            raise Blocked('jl_src_sync_coef_read_other_core_not_modeled',
+                          address=hex(self.COEF),core=cpu.core_id)
+        if self.current_pc!=self.READ_PC:
+            self._reject('pc_not_audited')
+            raise Blocked('jl_src_sync_coef_read_pc_not_audited',
+                          address=hex(self.COEF),
+                          pc='None' if self.current_pc is None else hex(self.current_pc))
+        if not (self.con0_bit4 and self.con1_bit22):
+            self._reject('gate_not_open')
+            raise Blocked('jl_src_sync_coef_read_gate_not_open',
+                          address=hex(self.COEF),
+                          con0_bit4=self.con0_bit4,con1_bit22=self.con1_bit22)
+        if self.phase=='awaiting_init':
+            self._reject('not_initialized')
+            raise Blocked('jl_src_sync_coef_read_not_initialized',
+                          address=hex(self.COEF),init_writes=self.init_writes)
+        if self.phase=='invalidated':
+            self._reject('invalidated')
+            raise Blocked('jl_src_sync_coef_read_invalidated',
+                          address=hex(self.COEF),
+                          invalidations=list(self.invalidations[-3:]))
+        if self.phase=='consumed' or self.read_cursor>=self.BATCH_LEN:
+            self._reject('empty')
+            raise Blocked('jl_src_sync_coef_read_empty',address=hex(self.COEF))
+        # 位置化读回:第 cursor 位返回批次里该位置的值(非「永远最后写值」——
+        # 55 个互异标记单测互证;本路由批次=55 个 0)。
+        value=self.batch[self.read_cursor]
+        evidence={'pc':hex(cpu.pc),'core':cpu.core_id,
+                  'step':hardware.counts['completed_model_steps'],
+                  'cursor_before':self.read_cursor,'value':hex(value)}
+        self.read_cursor+=1
+        self.reads_served+=1
+        if self.first_read is None:self.first_read=dict(evidence)
+        self.last_read=evidence
+        if self.read_cursor>=self.BATCH_LEN:
+            self.phase='consumed'
+        return value
+
+    # ------------------------------------------------------------- 报告面
+    def report(self):
+        return {
+            'enabled':True,
+            'phase':self.phase,
+            'batch_len':len(self.batch),
+            'batch_values':[hex(v) for v in self.batch[-16:]],
+            'read_cursor':self.read_cursor,
+            'reads_served':self.reads_served,
+            'init_writes':self.init_writes,
+            'write_back_writes':self.write_back_writes,
+            'first_read':self.first_read,
+            'last_read':self.last_read,
+            'invalidations':list(self.invalidations),
+            'rejections':dict(sorted(self.rejections.items())),
+            'write_audit':{'last_events':list(self.write_events[-8:])},
+            'guard':{
+                'init_write_pc':hex(self.INIT_WRITE_PC),
+                'read_pc':hex(self.READ_PC),
+                'read_shape':dict(self.READ_SHAPE),
+                'site_bytes':self.SITE_BYTES,
+                'write_back_pc':hex(self.WRITE_BACK_PC),
+                'gate_bits':{'con0':hex(self.CON0_GATE_BIT),
+                             'con1':hex(self.CON1_GATE_BIT)}},
+            'semantics':('NOT a general FIFO and NOT destructive-pop: the COEF port is '
+                         'modeled as a positional 55-word batch — the reconfiguration '
+                         'driver 0x606fa7e records 55 aligned zero stores at 0x606fc02 '
+                         '(between CON0 |=0x10 0x606fbfa and CON0 &=~0x10 0x606fc0a, '
+                         'CON1 bit22 set throughout) filling the batch; the helper '
+                         '0x607099c then reads position i back for i=0..54 at 0x60709e0 '
+                         '(ld.w r0=[r5+60], CPU0, gate CON0 bit4 + CON1 bit22 open via '
+                         '0x60709ba/0x60709da) each returning the value stored at that '
+                         'position — NOT "always the last written value"; each successful '
+                         'read advances the cursor, the 56th read (batch empty) stops; the '
+                         'write-back at 0x6070a1c records the firmware\'s actual 55 values '
+                         '(helper reads the whole batch, memcpy replaces the selected '
+                         'channel slice from [obj+168], writes 55 words back) — the channel-'
+                         'slice modification is kept; an excess write (56th in a fill '
+                         'window), an unknown write PC, a read at another PC / core / gate '
+                         'state, or re-init after startup all fail closed before changing '
+                         'state (write-full-drop-oldest is REJECTED)'),
+            'assumption':('初始化后 55 字批次回读，derived-not-measured；适用至本次 helper，'
+                          '物理容量、读后内容及溢出策略未测。 (EXPLICIT INITIALIZATION-'
+                          'BATCH ASSUMPTION: the 55 init stores are assumed to cover the same '
+                          '55 positions the next gate-open reads — a 64-deep FIFO could also '
+                          'accept 55 zero writes yet serve an older word first, so this is a '
+                          'stated assumption, not a silicon claim; physical depth, the content '
+                          'after a read and the overflow policy are unmeasured)')}
+
+
 class JLSyncConfigWords:
     """JL_SYNC(audio_sync)四字容器 CON/CON1/BT_OFFSET/MIN_SLOT(opt-in,路
     SYNCIMPL,codex 收窄版 (a),docs/frontier-scout-jlsync.md §5)。
@@ -8919,7 +9162,7 @@ class BR28Model:
                  jl_eq_init_writes=False,
                  jl_adc_start_config=False,jl_adc_start_probe_value=None,
                  jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
-                 jl_src_sync_full_block=False,
+                 jl_src_sync_full_block=False,jl_src_sync_coef_batch_readback=False,
                  jl_sync_config_words=False,
                  jl_btclk_timer_words=False,
                  jl_fm_con_head_rmw=False,
@@ -9644,6 +9887,23 @@ class BR28Model:
         # unmapped(42,231,992 前沿形状),legacy 逐字节不变。
         self.jl_src_sync_full_block=(JLSrcSyncFullBlockRegisters()
                                      if jl_src_sync_full_block else None)
+        # 路 SRCSYNC4:JL_SRC_SYNC COEF 口「本次初始化后 55 字批次回读」模型
+        # ——42,232,325 停点 0x60709e0(helper 0x607099c 的 ld.w r0=[r5+60]
+        # 读 0xfe263c,jl_src_sync_coef_read_not_modeled 诚实拒)放行。独立容器
+        # (DAC idle 读回先例):观察 CON0/CON1/COEF 写(门态+批次记账)+0x60709e0
+        # 装载门服务 55 读;COEF 值记账仍在 jl_src_sync_config_words 原账本。
+        # 不是通用 FIFO/破坏性弹出/写满丢最旧;假设=初始化后 55 字批次回读
+        # derived-not-measured,适用至本次 helper,物理容量/读后内容/溢出策略
+        # 未测。默认关:COEF 读仍拒(42,232,325 前沿形状),legacy 逐字节不变。
+        if jl_src_sync_coef_batch_readback and not (jl_src_sync_config_words
+                                                    and jl_src_sync_full_block):
+            raise ValueError('jl_src_sync_coef_batch_readback requires '
+                             'jl_src_sync_config_words and jl_src_sync_full_block '
+                             '(the COEF batch read-back answers from the config-'
+                             'transaction CON0/CON1/COEF container and the helper '
+                             '0x607099c is only reached behind the full-block function B)')
+        self.jl_src_sync_coef_batch=(JLSrcSyncCoefBatchReadback()
+                                     if jl_src_sync_coef_batch_readback else None)
         # 路 SYNCIMPL:JL_SYNC(audio_sync)四字容器(CON/CON1/BT_OFFSET/
         # MIN_SLOT)——42,061,357 停点 0x60befe6(creator 0x60befae 体内 CON
         # 整字写 0)放行;CON 无合成初值(首写前读拒绝)+写后读回=最后写值
@@ -10374,6 +10634,12 @@ class BR28Model:
         if (self.jl_audio_dac_dma_idle is not None
                 and address in self.jl_audio_dac_dma_idle.WATCH_WRITE_WORDS):
             self.jl_audio_dac_dma_idle.note_write(address,value,self.current_core,self)
+        # 路 SRCSYNC4:COEF 批次回读容器观察 CON0/CON1/COEF 写(门态+批次
+        # 记账/失效判定,先于 handles 门,DAC idle 先例;值记账仍在原 config
+        # 容器)。
+        if (self.jl_src_sync_coef_batch is not None
+                and address in self.jl_src_sync_coef_batch.WATCH_WORDS):
+            self.jl_src_sync_coef_batch.note_write(address,value,self.current_core,self)
         if not self.handles(address,4):raise Blocked('unsupported_peripheral_write',address=hex(address))
         if self.software_irq is not None and self.software_irq.handles(address):
             raise Blocked('software_irq_full_store_contract_unmodeled',address=hex(address))
@@ -11798,6 +12064,19 @@ class BR28Model:
                 'ORIGINAL CON0 ledger, NOT these eleven words; no SRC_SYNC hardware '
                 'behavior, DMA or IRQ89 delivery is modeled — this does NOT verify any '
                 'sample-rate conversion, DMA or audio processing')
+        if self.jl_src_sync_coef_batch is not None:
+            result['jl_src_sync_coef_batch_readback']=self.jl_src_sync_coef_batch.report()
+            result['assumptions']['jl_src_sync_coef_batch_readback']=(
+                'JL_SRC_SYNC COEF post-initialization 55-word batch read-back (behind the '
+                '42,232,325 stop 0x60709e0 helper ld.w r0=[r5+60] reading 0xfe263c): NOT a '
+                'general FIFO and NOT destructive-pop — the reconfiguration driver 0x606fa7e '
+                '55 aligned zero stores at 0x606fc02 fill the batch, the helper 0x607099c '
+                'reads position i back for i=0..54 at 0x60709e0 (CPU0, gate CON0 bit4 + CON1 '
+                'bit22 open) each returning the value stored at that position, and the '
+                'write-back at 0x6070a1c records the firmware\'s actual 55 values (channel-slice '
+                'modification kept); an excess write, unknown write PC, read at another PC/core/'
+                'gate, or re-init after startup all fail closed; 初始化后 55 字批次回读，'
+                'derived-not-measured；适用至本次 helper，物理容量、读后内容及溢出策略未测')
         if self.jl_sync is not None:
             result['jl_sync_config_registers']=self.jl_sync.report()
             result['assumptions']['jl_sync_config_registers']=(

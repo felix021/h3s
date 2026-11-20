@@ -4091,6 +4091,130 @@ class ModelTests(unittest.TestCase):
         h2.jl_src_sync.write(0xfe2604,0x41,0)
         self.assertEqual(h2.jl_src_sync.read(0xfe2604),0x41)
 
+    class _FakeCpu:
+        __slots__ = ('core_id','pc','R')
+        def __init__(self,core_id=0,pc=0x60709e0,base=0xfe2600):
+            self.core_id=core_id;self.pc=pc;self.R={5:base}
+
+    def test_jl_src_sync_coef_batch_readback(self):
+        # 路 SRCSYNC4(codex 202611200751 总裁决「改红线收窄」):COEF 口
+        # 「本次初始化后 55 字批次回读」——不是通用 FIFO/破坏性弹出/写满丢
+        # 最旧;只授权 CPU0+0x60709e0+ld.w [r5+60]+正确门态+游标 0..54 的
+        # 成功读推进游标,返回值=批次该位置的值(非「永远最后写值」)。
+        from br28_model import JLSrcSyncCoefBatchReadback
+        # 依赖:开关开必须 config_words+full_block 都开(否则 ValueError)。
+        with self.assertRaises(ValueError):
+            BR28Model(jl_src_sync_coef_batch_readback=True)
+        with self.assertRaises(ValueError):
+            BR28Model(jl_src_sync_config_words=True,jl_src_sync_coef_batch_readback=True)
+        h=BR28Model(jl_src_sync_config_words=True,jl_src_sync_full_block=True,
+                    jl_src_sync_coef_batch_readback=True)
+        gate=h.jl_src_sync_coef_batch
+        self.assertIsNotNone(gate)
+        self.assertEqual(gate.phase,'awaiting_init')
+        self.assertNotIn('jl_src_sync_coef_batch_readback',
+                         BR28Model(jl_src_sync_config_words=True).report())
+        self.assertIn('jl_src_sync_coef_batch_readback',h.report())
+        # 初始化:重配驱动 0x606fa7e 形状(CON1 |=0x400000、CON0 |=0x10 开门,
+        # 55 笔 [r1+60]=r5 零写,再关门)。
+        gate.note_step(0x606fbe4,0);h.write(0xfe2604,0|0x400000)
+        gate.note_step(0x606fbfa,0);h.write(0xfe2600,0|0x10)
+        for _ in range(55):
+            gate.note_step(0x606fc02,0);h.write(0xfe263c,0)
+        gate.note_step(0x606fc0a,0);h.write(0xfe2600,0x10&0xffffffef)
+        gate.note_step(0x606fc2c,0);h.write(0xfe2604,0x400000&0xffbfffff)
+        self.assertEqual(gate.phase,'initialized')
+        self.assertEqual(len(gate.batch),55)
+        self.assertEqual(gate.read_cursor,0)
+        # 读前换门(门未开)拒:helper 尚未 CON1|=0x400000 / CON0|=0x10。
+        gate.note_step(0x60709e0,0)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_coef_read_gate_not_open'):
+            gate.serve(self._FakeCpu(),h,JLSrcSyncCoefBatchReadback.READ_SHAPE)
+        # helper 开门后 55 轮顺序读回 55 个 0,游标推进。
+        gate.note_step(0x60709ba,0);h.write(0xfe2604,0x400041)
+        gate.note_step(0x60709da,0);h.write(0xfe2600,0x82006001|0x10)
+        for i in range(55):
+            gate.note_step(0x60709e0,0)
+            self.assertEqual(gate.serve(self._FakeCpu(),h,
+                                        JLSrcSyncCoefBatchReadback.READ_SHAPE),0,i)
+        self.assertEqual(gate.phase,'consumed')
+        self.assertEqual(gate.read_cursor,55)
+        self.assertEqual(gate.reads_served,55)
+        # 第 56 次读(读空即停)。
+        gate.note_step(0x60709e0,0)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_coef_read_empty'):
+            gate.serve(self._FakeCpu(),h,JLSrcSyncCoefBatchReadback.READ_SHAPE)
+        # 错误 PC(GET 0x6070966/新读 PC/None)拒。
+        gate.note_step(0x6070966,0)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_coef_read_pc_not_audited'):
+            gate.serve(self._FakeCpu(),h,JLSrcSyncCoefBatchReadback.READ_SHAPE)
+        gate.note_step(None,0)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_coef_read_pc_not_audited'):
+            gate.serve(self._FakeCpu(),h,JLSrcSyncCoefBatchReadback.READ_SHAPE)
+        # 另一核拒。
+        gate.note_step(0x60709e0,1)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_coef_read_other_core_not_modeled'):
+            gate.serve(self._FakeCpu(core_id=1),h,JLSrcSyncCoefBatchReadback.READ_SHAPE)
+        # 写回 @0x6070a1c 55 笔(值真实,进原 COEF 账本,总写数 110)。
+        for i in range(55):
+            gate.note_step(0x6070a1c,0);h.write(0xfe263c,i)
+        self.assertEqual(gate.write_back_writes,55)
+        self.assertEqual(h.jl_src_sync.stores[0xfe263c]['writes'],110)
+        # 位置化读回互证(55 个互异标记,非「永远最后写值」)。
+        h2=BR28Model(jl_src_sync_config_words=True,jl_src_sync_full_block=True,
+                     jl_src_sync_coef_batch_readback=True)
+        g2=h2.jl_src_sync_coef_batch
+        g2.note_step(0x606fbfa,0);h2.write(0xfe2600,0x10)
+        g2.note_step(0x606fbe4,0);h2.write(0xfe2604,0x400000)
+        for v in range(55):
+            g2.note_step(0x606fc02,0);h2.write(0xfe263c,0x1000+v)
+        g2.note_step(0x60709da,0);h2.write(0xfe2600,0x82006011)
+        g2.note_step(0x60709ba,0);h2.write(0xfe2604,0x400041)
+        for i in range(55):
+            g2.note_step(0x60709e0,0)
+            self.assertEqual(g2.serve(self._FakeCpu(),h2,
+                                      JLSrcSyncCoefBatchReadback.READ_SHAPE),0x1000+i,i)
+        # 54 笔初始化(不足 55)→ 读未初始化拒。
+        h3=BR28Model(jl_src_sync_config_words=True,jl_src_sync_full_block=True,
+                     jl_src_sync_coef_batch_readback=True)
+        g3=h3.jl_src_sync_coef_batch
+        g3.note_step(0x606fbfa,0);h3.write(0xfe2600,0x10)
+        g3.note_step(0x606fbe4,0);h3.write(0xfe2604,0x400000)
+        for _ in range(54):
+            g3.note_step(0x606fc02,0);h3.write(0xfe263c,0)
+        g3.note_step(0x60709e0,0)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_coef_read_not_initialized'):
+            g3.serve(self._FakeCpu(),h3,JLSrcSyncCoefBatchReadback.READ_SHAPE)
+        # 超量写(56th init)失效;来源不明写 PC 失效。
+        h4=BR28Model(jl_src_sync_config_words=True,jl_src_sync_full_block=True,
+                     jl_src_sync_coef_batch_readback=True)
+        g4=h4.jl_src_sync_coef_batch
+        g4.note_step(0x606fbfa,0);h4.write(0xfe2600,0x10)
+        g4.note_step(0x606fbe4,0);h4.write(0xfe2604,0x400000)
+        for _ in range(56):
+            g4.note_step(0x606fc02,0);h4.write(0xfe263c,0)
+        self.assertEqual(g4.phase,'invalidated')
+        self.assertEqual(g4.invalidations[-1]['event'],'excess_init_write')
+        g4.note_step(0x60709e0,0)
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_coef_read_invalidated'):
+            g4.serve(self._FakeCpu(),h4,JLSrcSyncCoefBatchReadback.READ_SHAPE)
+        h5=BR28Model(jl_src_sync_config_words=True,jl_src_sync_full_block=True,
+                     jl_src_sync_coef_batch_readback=True)
+        g5=h5.jl_src_sync_coef_batch
+        g5.note_step(0x606fbfa,0);h5.write(0xfe2600,0x10)
+        g5.note_step(0x6030000,0);h5.write(0xfe263c,0)  # 未知写 PC
+        self.assertEqual(g5.phase,'invalidated')
+        self.assertEqual(g5.invalidations[-1]['event'],'unknown_write_pc')
+        # 报告面:phase/guard/假设措辞。
+        r=h.report()['jl_src_sync_coef_batch_readback']
+        self.assertEqual(r['phase'],'consumed')
+        self.assertEqual(r['reads_served'],55)
+        self.assertEqual(r['init_writes'],55)
+        self.assertEqual(r['write_back_writes'],55)
+        self.assertIn('初始化后 55 字批次回读',r['assumption'])
+        self.assertIn('derived-not-measured',r['assumption'])
+        self.assertIn('jl_src_sync_coef_batch_readback',h.report()['assumptions'])
+
     def test_jl_sync_config_words(self):
         # 路 SYNCIMPL(codex 收窄版 a,负例矩阵 12 项的单测面):42,061,357
         # 停点 0x60befe6(creator 0x60befae 体内 CON 整字写 0)——四字容器

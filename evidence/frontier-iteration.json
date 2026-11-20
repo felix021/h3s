@@ -129,7 +129,7 @@
     "snapshot_digest": "eaad5d8081ce796e",
     "code_fingerprint": "558b53b24e015e2f",
     "ack": {
-      "reason": "负例臂:开关关=13字unmapped,世界与捕获前缀逐字节同"
+      "reason": "\u8d1f\u4f8b\u81c2:\u5f00\u5173\u5173=13\u5b57unmapped,\u4e16\u754c\u4e0e\u6355\u83b7\u524d\u7f00\u9010\u5b57\u8282\u540c"
     }
   },
   {
@@ -152,7 +152,7 @@
       "enable_slots": [
         "jl_pled_config_words"
       ],
-      "reason": "批A 13字首次触达=旧停点0x60195f8前缀零触达;canary PC 0x6034b06/0x6034aba 前缀零执行(IRQ41无源)"
+      "reason": "\u6279A 13\u5b57\u9996\u6b21\u89e6\u8fbe=\u65e7\u505c\u70b90x60195f8\u524d\u7f00\u96f6\u89e6\u8fbe;canary PC 0x6034b06/0x6034aba \u524d\u7f00\u96f6\u6267\u884c(IRQ41\u65e0\u6e90)"
     }
   },
   {
@@ -168,7 +168,7 @@
     },
     "completed_steps": 41858013,
     "report_equal_to_reference": false,
-    "note": "differing=[peripherals]=batchb2 已知新键(预期非意外),其余逐键相等含 22 键 adapter;跨代码 ack-prior 558b53b2+enable_slots x2",
+    "note": "differing=[peripherals]=batchb2 \u5df2\u77e5\u65b0\u952e(\u9884\u671f\u975e\u610f\u5916),\u5176\u4f59\u9010\u952e\u76f8\u7b49\u542b 22 \u952e adapter;\u8de8\u4ee3\u7801 ack-prior 558b53b2+enable_slots x2",
     "wall_seconds": 0.8,
     "code_fingerprint": ""
   },
@@ -186,7 +186,7 @@
     },
     "completed_steps": 41909506,
     "report_equal_to_reference": null,
-    "note": "新前沿 41909506 @ 0x60869ba(uninitialized 任务栈 0x18ca64);+51493 步;CRC 复算 0x7e4e==官方 hcrc;从 0 参照待 merge 前全量",
+    "note": "\u65b0\u524d\u6cbf 41909506 @ 0x60869ba(uninitialized \u4efb\u52a1\u6808 0x18ca64);+51493 \u6b65;CRC \u590d\u7b97 0x7e4e==\u5b98\u65b9 hcrc;\u4ece 0 \u53c2\u7167\u5f85 merge \u524d\u5168\u91cf",
     "wall_seconds": 2.9,
     "code_fingerprint": ""
   },
@@ -207,7 +207,7 @@
     "snapshot_digest": "05ce90eeba4d44aa",
     "code_fingerprint": "ca76923e6a554d51",
     "ack": {
-      "reason": "off 臂(负例①):开关关=旧前沿 42,061,357 与 srcsync on-main 参照逐键相等预期;指纹差=base 捕获(01:53)后仅改 check() 断言字面值与 registry FRONTIERS 数据(臂路径 irq_case/scenario 零字节行为差异,check() 不进臂),行为中性",
+      "reason": "off \u81c2(\u8d1f\u4f8b\u2460):\u5f00\u5173\u5173=\u65e7\u524d\u6cbf 42,061,357 \u4e0e srcsync on-main \u53c2\u7167\u9010\u952e\u76f8\u7b49\u9884\u671f;\u6307\u7eb9\u5dee=base \u6355\u83b7(01:53)\u540e\u4ec5\u6539 check() \u65ad\u8a00\u5b57\u9762\u503c\u4e0e registry FRONTIERS \u6570\u636e(\u81c2\u8def\u5f84 irq_case/scenario \u96f6\u5b57\u8282\u884c\u4e3a\u5dee\u5f02,check() \u4e0d\u8fdb\u81c2),\u884c\u4e3a\u4e2d\u6027",
       "prior_fingerprint": "4bcc2225292ef34d7f7d2b77b3cd2dc1d5ae9c025d92849315c792ec9c6bc006"
     }
   },
@@ -231,7 +231,7 @@
       "enable_slots": [
         "jl_sync"
       ],
-      "reason": "on-main 臂:自建 base(jl_sync 关)41.9M 干净边界;jl_sync 前缀零触达(容器首访问=旧停点 42,061,357 本身=ack 放行条件),None->on 跨开关恢复=从零开启的等价续跑;指纹差=base 捕获后仅 check() 字面值/registry 数据(臂路径零行为差异),行为中性;参照=跨代码 on-main 臂(应逐键相等)",
+      "reason": "on-main \u81c2:\u81ea\u5efa base(jl_sync \u5173)41.9M \u5e72\u51c0\u8fb9\u754c;jl_sync \u524d\u7f00\u96f6\u89e6\u8fbe(\u5bb9\u5668\u9996\u8bbf\u95ee=\u65e7\u505c\u70b9 42,061,357 \u672c\u8eab=ack \u653e\u884c\u6761\u4ef6),None->on \u8de8\u5f00\u5173\u6062\u590d=\u4ece\u96f6\u5f00\u542f\u7684\u7b49\u4ef7\u7eed\u8dd1;\u6307\u7eb9\u5dee=base \u6355\u83b7\u540e\u4ec5 check() \u5b57\u9762\u503c/registry \u6570\u636e(\u81c2\u8def\u5f84\u96f6\u884c\u4e3a\u5dee\u5f02),\u884c\u4e3a\u4e2d\u6027;\u53c2\u7167=\u8de8\u4ee3\u7801 on-main \u81c2(\u5e94\u9010\u952e\u76f8\u7b49)",
       "prior_fingerprint": "4bcc2225292ef34d7f7d2b77b3cd2dc1d5ae9c025d92849315c792ec9c6bc006"
     }
   },
@@ -256,7 +256,7 @@
         "jl_src_sync",
         "jl_sync"
       ],
-      "reason": "跨代码 on-main:srcsync 路代码态 base-off 快照(二进制复制+sha256 对 lineage 核验);jl_src_sync/jl_sync 前缀零触达(容器首访问均晚于 41.9M 边界),双 enable None/缺键->on=从零开启等价续跑;本路改动为新增容器+守卫,前缀行为零差异;与同代码 on-main-ownbase 臂逐键相等互证",
+      "reason": "\u8de8\u4ee3\u7801 on-main:srcsync \u8def\u4ee3\u7801\u6001 base-off \u5feb\u7167(\u4e8c\u8fdb\u5236\u590d\u5236+sha256 \u5bf9 lineage \u6838\u9a8c);jl_src_sync/jl_sync \u524d\u7f00\u96f6\u89e6\u8fbe(\u5bb9\u5668\u9996\u8bbf\u95ee\u5747\u665a\u4e8e 41.9M \u8fb9\u754c),\u53cc enable None/\u7f3a\u952e->on=\u4ece\u96f6\u5f00\u542f\u7b49\u4ef7\u7eed\u8dd1;\u672c\u8def\u6539\u52a8\u4e3a\u65b0\u589e\u5bb9\u5668+\u5b88\u536b,\u524d\u7f00\u884c\u4e3a\u96f6\u5dee\u5f02;\u4e0e\u540c\u4ee3\u7801 on-main-ownbase \u81c2\u9010\u952e\u76f8\u7b49\u4e92\u8bc1",
       "prior_fingerprint": "7c262e682254bb4a7549e38638d83f557bfd793e64ad93ef7b506c80e0b07b2f"
     }
   },
@@ -281,7 +281,7 @@
         "jl_sync",
         "jl_btclk"
       ],
-      "reason": "跨代码 on-main 重跑:仅 jl_sync 容器报告文本随 TIMERIMPL 时代更新(fn_config 已执行叙事),世界行为与首跑逐字节同;ack 同首跑",
+      "reason": "\u8de8\u4ee3\u7801 on-main \u91cd\u8dd1:\u4ec5 jl_sync \u5bb9\u5668\u62a5\u544a\u6587\u672c\u968f TIMERIMPL \u65f6\u4ee3\u66f4\u65b0(fn_config \u5df2\u6267\u884c\u53d9\u4e8b),\u4e16\u754c\u884c\u4e3a\u4e0e\u9996\u8dd1\u9010\u5b57\u8282\u540c;ack \u540c\u9996\u8dd1",
       "prior_fingerprint": "ca76923e6a554d5127dd1e91b0caefd273252ecf2c19f4de59f03d2dd46cdd54"
     }
   },
@@ -305,7 +305,7 @@
       "enable_slots": [
         "jl_btclk"
       ],
-      "reason": "on-main-ownbase 臂:自建 base(jl_btclk 关)41.9M 干净边界;jl_btclk 前缀零触达(容器首访问=旧停点 42,061,359 本身=ack 放行条件),None->on 跨开关恢复=从零开启的等价续跑;指纹差=base 捕获(03:51)后仅 check() 断言字面值/registry 数据/jl_sync 报告文本改动(臂路径 irq_case 零字节行为差异),行为中性;参照=跨代码 on-main 臂(应逐键相等)",
+      "reason": "on-main-ownbase \u81c2:\u81ea\u5efa base(jl_btclk \u5173)41.9M \u5e72\u51c0\u8fb9\u754c;jl_btclk \u524d\u7f00\u96f6\u89e6\u8fbe(\u5bb9\u5668\u9996\u8bbf\u95ee=\u65e7\u505c\u70b9 42,061,359 \u672c\u8eab=ack \u653e\u884c\u6761\u4ef6),None->on \u8de8\u5f00\u5173\u6062\u590d=\u4ece\u96f6\u5f00\u542f\u7684\u7b49\u4ef7\u7eed\u8dd1;\u6307\u7eb9\u5dee=base \u6355\u83b7(03:51)\u540e\u4ec5 check() \u65ad\u8a00\u5b57\u9762\u503c/registry \u6570\u636e/jl_sync \u62a5\u544a\u6587\u672c\u6539\u52a8(\u81c2\u8def\u5f84 irq_case \u96f6\u5b57\u8282\u884c\u4e3a\u5dee\u5f02),\u884c\u4e3a\u4e2d\u6027;\u53c2\u7167=\u8de8\u4ee3\u7801 on-main \u81c2(\u5e94\u9010\u952e\u76f8\u7b49)",
       "prior_fingerprint": "aa3c4d27cbf951e79a419209ac14b158be3e8eaab127508c6c2454be79a5f1de"
     }
   },
@@ -326,7 +326,7 @@
     "snapshot_digest": "66d4a582fa80a23a",
     "code_fingerprint": "10f4a02ff3712424",
     "ack": {
-      "reason": "off 臂(负例①):开关关=旧前沿 42,061,359 与 syncimpl on-main 参照逐键相等预期(允许 jl_sync 报告文本差异=TIMERIMPL 时代 fn_config 已执行叙事更新,数据面应全同);指纹差=base 捕获后仅 check()/registry/jl_sync 文本改动,臂路径零行为差异,行为中性",
+      "reason": "off \u81c2(\u8d1f\u4f8b\u2460):\u5f00\u5173\u5173=\u65e7\u524d\u6cbf 42,061,359 \u4e0e syncimpl on-main \u53c2\u7167\u9010\u952e\u76f8\u7b49\u9884\u671f(\u5141\u8bb8 jl_sync \u62a5\u544a\u6587\u672c\u5dee\u5f02=TIMERIMPL \u65f6\u4ee3 fn_config \u5df2\u6267\u884c\u53d9\u4e8b\u66f4\u65b0,\u6570\u636e\u9762\u5e94\u5168\u540c);\u6307\u7eb9\u5dee=base \u6355\u83b7\u540e\u4ec5 check()/registry/jl_sync \u6587\u672c\u6539\u52a8,\u81c2\u8def\u5f84\u96f6\u884c\u4e3a\u5dee\u5f02,\u884c\u4e3a\u4e2d\u6027",
       "prior_fingerprint": "aa3c4d27cbf951e79a419209ac14b158be3e8eaab127508c6c2454be79a5f1de"
     }
   },
@@ -353,7 +353,7 @@
         "jl_btclk",
         "jl_fm"
       ],
-      "reason": "跨代码 on-main:快照=timerimpl 路最终代码态(头部指纹 10f4a02f,lineage runner-init 值 aa3c4d27 属同款勘误——重钉在捕获途中落地)base-off(jl_btclk 关)41.9M 干净边界,二进制复制+sha256 核验;jl_btclk/jl_fm 前缀均零触达(两容器首访问=各自旧停点本身=ack 放行条件),None/缺键→on 跨开关恢复=从零开启的等价续跑;本路改动为新增容器+守卫+registry/check 重钉,前缀行为零差异",
+      "reason": "\u8de8\u4ee3\u7801 on-main:\u5feb\u7167=timerimpl \u8def\u6700\u7ec8\u4ee3\u7801\u6001(\u5934\u90e8\u6307\u7eb9 10f4a02f,lineage runner-init \u503c aa3c4d27 \u5c5e\u540c\u6b3e\u52d8\u8bef\u2014\u2014\u91cd\u9489\u5728\u6355\u83b7\u9014\u4e2d\u843d\u5730)base-off(jl_btclk \u5173)41.9M \u5e72\u51c0\u8fb9\u754c,\u4e8c\u8fdb\u5236\u590d\u5236+sha256 \u6838\u9a8c;jl_btclk/jl_fm \u524d\u7f00\u5747\u96f6\u89e6\u8fbe(\u4e24\u5bb9\u5668\u9996\u8bbf\u95ee=\u5404\u81ea\u65e7\u505c\u70b9\u672c\u8eab=ack \u653e\u884c\u6761\u4ef6),None/\u7f3a\u952e\u2192on \u8de8\u5f00\u5173\u6062\u590d=\u4ece\u96f6\u5f00\u542f\u7684\u7b49\u4ef7\u7eed\u8dd1;\u672c\u8def\u6539\u52a8\u4e3a\u65b0\u589e\u5bb9\u5668+\u5b88\u536b+registry/check \u91cd\u9489,\u524d\u7f00\u884c\u4e3a\u96f6\u5dee\u5f02",
       "prior_fingerprint": "10f4a02ff3712424"
     }
   },
@@ -379,7 +379,7 @@
       "enable_slots": [
         "jl_fm"
       ],
-      "reason": "on-main-ownbase 臂:自建 base(jl_fm 关)41.9M 干净边界,指纹=当前代码态(base 捕获后零代码改动,无指纹差);jl_fm 前缀零触达(容器首访问=旧停点 42,061,478 本身=ack 放行条件),None→on 跨开关恢复=从零开启的等价续跑;参照=跨代码 on-main 臂(应逐键相等)"
+      "reason": "on-main-ownbase \u81c2:\u81ea\u5efa base(jl_fm \u5173)41.9M \u5e72\u51c0\u8fb9\u754c,\u6307\u7eb9=\u5f53\u524d\u4ee3\u7801\u6001(base \u6355\u83b7\u540e\u96f6\u4ee3\u7801\u6539\u52a8,\u65e0\u6307\u7eb9\u5dee);jl_fm \u524d\u7f00\u96f6\u89e6\u8fbe(\u5bb9\u5668\u9996\u8bbf\u95ee=\u65e7\u505c\u70b9 42,061,478 \u672c\u8eab=ack \u653e\u884c\u6761\u4ef6),None\u2192on \u8de8\u5f00\u5173\u6062\u590d=\u4ece\u96f6\u5f00\u542f\u7684\u7b49\u4ef7\u7eed\u8dd1;\u53c2\u7167=\u8de8\u4ee3\u7801 on-main \u81c2(\u5e94\u9010\u952e\u76f8\u7b49)"
     }
   },
   {
@@ -399,7 +399,7 @@
     "snapshot_digest": "b1f3b061554ddc7e",
     "code_fingerprint": "2922e6c5e11e1f8a",
     "ack": {
-      "reason": "off 臂(负例①):开关关=旧前沿 42,061,478 @ 0x60befa8 与 timerimpl on-main 参照逐键相等预期(本路对 jl_sync/jl_btclk 报告文本零改动,预期零差异键);base 捕获后零代码改动,臂路径零行为差异"
+      "reason": "off \u81c2(\u8d1f\u4f8b\u2460):\u5f00\u5173\u5173=\u65e7\u524d\u6cbf 42,061,478 @ 0x60befa8 \u4e0e timerimpl on-main \u53c2\u7167\u9010\u952e\u76f8\u7b49\u9884\u671f(\u672c\u8def\u5bf9 jl_sync/jl_btclk \u62a5\u544a\u6587\u672c\u96f6\u6539\u52a8,\u9884\u671f\u96f6\u5dee\u5f02\u952e);base \u6355\u83b7\u540e\u96f6\u4ee3\u7801\u6539\u52a8,\u81c2\u8def\u5f84\u96f6\u884c\u4e3a\u5dee\u5f02"
     }
   },
   {
@@ -421,7 +421,7 @@
       "enable_slots": [
         "jl_src_sync_full_block"
       ],
-      "reason": "SRCSYNC2 ownbase 主臂:ownbase6(代码 d231bb7c)与最终代码差=probe_irq_entry check() 断言面重钉(纯离线断言零仿真行为,前缀中性);开 postincrement_store_subword+rep_conditional_body+jl_src_sync_full_block 三开关续跑,验证 ownbase 续跑≡从0(42,232,103 @ 0x60709ba)",
+      "reason": "SRCSYNC2 ownbase \u4e3b\u81c2:ownbase6(\u4ee3\u7801 d231bb7c)\u4e0e\u6700\u7ec8\u4ee3\u7801\u5dee=probe_irq_entry check() \u65ad\u8a00\u9762\u91cd\u9489(\u7eaf\u79bb\u7ebf\u65ad\u8a00\u96f6\u4eff\u771f\u884c\u4e3a,\u524d\u7f00\u4e2d\u6027);\u5f00 postincrement_store_subword+rep_conditional_body+jl_src_sync_full_block \u4e09\u5f00\u5173\u7eed\u8dd1,\u9a8c\u8bc1 ownbase \u7eed\u8dd1\u2261\u4ece0(42,232,103 @ 0x60709ba)",
       "prior_fingerprint": "d231bb7ce16971f037cb72df547eff6178bea1765cbe384d06f029b344b2a25f"
     }
   },
@@ -442,7 +442,7 @@
     "snapshot_digest": "b360b1c0310ef909",
     "code_fingerprint": "e68a4a1bdcc06d50",
     "ack": {
-      "reason": "SRCSYNC2 causal-off 负例臂:ownbase6(代码 d231bb7c)与最终代码差=check() 断言面重钉(纯离线,前缀中性);关 jl_src_sync_full_block 只开 postincrement_store_subword+rep_conditional_body,复现旧前沿 42,231,992 @ 0x6070a9a + srcsync word_writes 61 + 新容器零触达",
+      "reason": "SRCSYNC2 causal-off \u8d1f\u4f8b\u81c2:ownbase6(\u4ee3\u7801 d231bb7c)\u4e0e\u6700\u7ec8\u4ee3\u7801\u5dee=check() \u65ad\u8a00\u9762\u91cd\u9489(\u7eaf\u79bb\u7ebf,\u524d\u7f00\u4e2d\u6027);\u5173 jl_src_sync_full_block \u53ea\u5f00 postincrement_store_subword+rep_conditional_body,\u590d\u73b0\u65e7\u524d\u6cbf 42,231,992 @ 0x6070a9a + srcsync word_writes 61 + \u65b0\u5bb9\u5668\u96f6\u89e6\u8fbe",
       "prior_fingerprint": "d231bb7ce16971f037cb72df547eff6178bea1765cbe384d06f029b344b2a25f"
     }
   },
@@ -463,7 +463,7 @@
       "enable_slots": [
         "jl_src_sync_full_block"
       ],
-      "reason": "SRCSYNC3 跨代码探臂:复用 SRCSYNC2 ownbase6(指纹 d231bb7c),本路代码态差=CON0/CON1 RMW 守卫常量扩充(纯常量,helper 六 PC 消费前守卫由拒改放);前缀零触达,开三开关续跑,预期推进到 COEF 读诚实停",
+      "reason": "SRCSYNC3 \u8de8\u4ee3\u7801\u63a2\u81c2:\u590d\u7528 SRCSYNC2 ownbase6(\u6307\u7eb9 d231bb7c),\u672c\u8def\u4ee3\u7801\u6001\u5dee=CON0/CON1 RMW \u5b88\u536b\u5e38\u91cf\u6269\u5145(\u7eaf\u5e38\u91cf,helper \u516d PC \u6d88\u8d39\u524d\u5b88\u536b\u7531\u62d2\u6539\u653e);\u524d\u7f00\u96f6\u89e6\u8fbe,\u5f00\u4e09\u5f00\u5173\u7eed\u8dd1,\u9884\u671f\u63a8\u8fdb\u5230 COEF \u8bfb\u8bda\u5b9e\u505c",
       "prior_fingerprint": "d231bb7ce16971f037cb72df547eff6178bea1765cbe384d06f029b344b2a25f"
     }
   },
@@ -484,7 +484,7 @@
       "enable_slots": [
         "jl_src_sync_full_block"
       ],
-      "reason": "SRCSYNC3 ownbase 主臂:ownbase7(本路代码 2a2d5005,三开关关 41,884,941 干净边界)开三开关续跑=从零等价,预期同 on-main-cross 停点 42,232,325 @ 0x60709e0;与从零参照逐键比较(instruction_adapters/memory_event_counts/mmu 三键偏差=base 关开关捕获前缀非等价工件,红线由从零全量收口)"
+      "reason": "SRCSYNC3 ownbase \u4e3b\u81c2:ownbase7(\u672c\u8def\u4ee3\u7801 2a2d5005,\u4e09\u5f00\u5173\u5173 41,884,941 \u5e72\u51c0\u8fb9\u754c)\u5f00\u4e09\u5f00\u5173\u7eed\u8dd1=\u4ece\u96f6\u7b49\u4ef7,\u9884\u671f\u540c on-main-cross \u505c\u70b9 42,232,325 @ 0x60709e0;\u4e0e\u4ece\u96f6\u53c2\u7167\u9010\u952e\u6bd4\u8f83(instruction_adapters/memory_event_counts/mmu \u4e09\u952e\u504f\u5dee=base \u5173\u5f00\u5173\u6355\u83b7\u524d\u7f00\u975e\u7b49\u4ef7\u5de5\u4ef6,\u7ea2\u7ebf\u7531\u4ece\u96f6\u5168\u91cf\u6536\u53e3)"
     }
   },
   {
@@ -506,8 +506,73 @@
       "enable_slots": [
         "jl_src_sync_full_block"
       ],
-      "reason": "SRCSYNC3 causal-off 负例臂:回退 frozenset(移除 6 个 helper RMW PC)→ 代码态回到 SRCSYNC2 终态(e68a4a1b);ownbase7(2a2d5005)跨代码续跑,helper CON1 RMW 0x60709ba 未审计,预期回旧前沿 42,232,103 @ 0x60709ba",
+      "reason": "SRCSYNC3 causal-off \u8d1f\u4f8b\u81c2:\u56de\u9000 frozenset(\u79fb\u9664 6 \u4e2a helper RMW PC)\u2192 \u4ee3\u7801\u6001\u56de\u5230 SRCSYNC2 \u7ec8\u6001(e68a4a1b);ownbase7(2a2d5005)\u8de8\u4ee3\u7801\u7eed\u8dd1,helper CON1 RMW 0x60709ba \u672a\u5ba1\u8ba1,\u9884\u671f\u56de\u65e7\u524d\u6cbf 42,232,103 @ 0x60709ba",
       "prior_fingerprint": "2a2d5005ed75c5999f4dd0ff629fe17e54d50e471b3f030646333db4bb8f3017"
+    }
+  },
+  {
+    "route": "srcsync4",
+    "name": "off-reproduce",
+    "kind": "arm",
+    "stop": {
+      "kind": "jl_src_sync_coef_read_not_modeled",
+      "address": "0xfe263c"
+    },
+    "completed_steps": 42232325,
+    "report_equal_to_reference": null,
+    "wall_seconds": 15.1,
+    "snapshot_digest": "f3615de9a6819232",
+    "code_fingerprint": "5b418bfdf5466dd0",
+    "ack": {
+      "enable_slots": [
+        "jl_src_sync_full_block"
+      ],
+      "reason": "SRCSYNC4 off-reproduce: ownbase8 \u6355\u83b7\u540e\u4ec5\u6539 check() \u65ad\u8a00(\u62a5\u544a\u4fa7,\u6a21\u578b\u884c\u4e3a\u4e0d\u53d8),\u8de8\u4ee3\u7801\u7eed\u8dd1;\u5f00\u4e09\u5f00\u5173\u5173 coef_batch,\u9884\u671f\u590d\u73b0 SRCSYNC3 \u524d\u6cbf 42,232,325 @ 0x60709e0",
+      "prior_fingerprint": "c1cd3c9a864900a780726150603ec1325a58563bd70631c0232d64439e3f25f5"
+    }
+  },
+  {
+    "route": "srcsync4",
+    "name": "causal-off",
+    "kind": "arm",
+    "stop": {
+      "kind": "jl_src_sync_coef_read_not_modeled",
+      "address": "0xfe263c"
+    },
+    "completed_steps": 42232325,
+    "report_equal_to_reference": null,
+    "wall_seconds": 14.6,
+    "snapshot_digest": "f3615de9a6819232",
+    "code_fingerprint": "5b418bfdf5466dd0",
+    "ack": {
+      "enable_slots": [
+        "jl_src_sync_full_block"
+      ],
+      "reason": "SRCSYNC4 causal-off \u8d1f\u4f8b\u81c2:ownbase8 \u56db\u5f00\u5173\u5168\u5f00\u4f46\u5173 coef_batch=\u56e0\u679c\u8d1f\u4f8b,\u8bc1\u660e\u524d\u6cbf\u63a8\u8fdb\u552f\u4e00\u56e0\u679c\u662f\u65b0\u5bb9\u5668;\u9884\u671f\u56de\u65e7\u524d\u6cbf 42,232,325 @ 0x60709e0",
+      "prior_fingerprint": "c1cd3c9a864900a780726150603ec1325a58563bd70631c0232d64439e3f25f5"
+    }
+  },
+  {
+    "route": "srcsync4",
+    "name": "on-main-ownbase",
+    "kind": "arm",
+    "stop": {
+      "kind": "watchdog_expired_delivery_not_implemented",
+      "control": "0x2e",
+      "elapsed_nominal_units": 16384
+    },
+    "completed_steps": 53130036,
+    "report_equal_to_reference": null,
+    "wall_seconds": 601.8,
+    "snapshot_digest": "f3615de9a6819232",
+    "code_fingerprint": "5b418bfdf5466dd0",
+    "ack": {
+      "enable_slots": [
+        "jl_src_sync_full_block",
+        "jl_src_sync_coef_batch"
+      ],
+      "reason": "SRCSYNC4 on-main-ownbase: ownbase8 \u6355\u83b7\u540e\u4ec5\u6539 check() \u65ad\u8a00(\u62a5\u544a\u4fa7,\u6a21\u578b\u884c\u4e3a\u4e0d\u53d8),\u8de8\u4ee3\u7801\u7eed\u8dd1;\u56db\u5f00\u5173\u5168\u5f00,\u9884\u671f\u63a8\u8fdb\u81f3\u770b\u95e8\u72d7\u524d\u6cbf 53,130,036 @ 0x12c5ca",
+      "prior_fingerprint": "c1cd3c9a864900a780726150603ec1325a58563bd70631c0232d64439e3f25f5"
     }
   }
 ]

@@ -202,7 +202,10 @@ SCENARIOS = {
         # 三任务安装,再 +51,493 步(纯 CPU0 段,per-core1 11496 不变)到
         # 41,909,506 @ 0x60869ba(事件循环任务读第二输出参数=任务栈物理
         # 0x18ca64 未初始化,physical_heap 诚实停,归下一路)。预算 50M 保持。
-        'default_budget': 50000000,
+        # 路 SRCSYNC4:COEF 口「初始化后 55 字批次回读」放行后过 helper
+        # 0x607099c 55 读+55 写回,前沿 53,130,036 @ 0x12c5ca(看门狗到期交付
+        # 未建模),预算 50M→60M(留停点后余量,单测钉 default_budget>=前沿+1000)。
+        'default_budget': 60000000,
         # 条件前沿新鲜度钉子:official 在条件 flag 集下必须复现当前条件前沿停点
         # (probe_irq_entry 的 p11_heap_experimental_config 场景前沿)。停点字面值
         # 单点在 tools/frontier_registry.py,前沿推进后只改 registry(本值自动

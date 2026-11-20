@@ -880,6 +880,29 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # PC、另一核读在消费前拒(jl_sync_con_*_not_modeled)。开关
                 # 关=槽 None,一次 is-not-None 测试即过,legacy 世界零变化。
                 hardware.jl_sync.note_step(self.pc,self.core_id)
+            if hardware is not None and hardware.jl_src_sync_coef_batch is not None:
+                # 路 SRCSYNC4(codex 202611200751 总裁决「改红线收窄」):COEF
+                # 「本次初始化后 55 字批次回读」的装载门+写事件溯源。note_step
+                # 每步刷新(写事件 PC 来源);装载门只在 0x60709e0 拦(ld.w
+                # r0=[r5+60],形状/字节 require 钉死),守卫见
+                # JLSrcSyncCoefBatchReadback.serve(他核/错误 PC/门未开/未初始化/
+                # 读空/失效=抛 Blocked 诚实停)。开关关=槽 None,一次 is-not-None
+                # 测试即过,legacy 世界零变化。
+                gate=hardware.jl_src_sync_coef_batch
+                gate.note_step(self.pc,self.core_id)
+                if self.pc==gate.READ_PC:
+                    require(insn.id=='ld.w' and raw==gate.READ_SHAPE,
+                            'the COEF batch read-back site must keep its pinned '
+                            'shape (ld.w r0=[r5+60], word-index n=15, expected '
+                            f'{gate.READ_SHAPE})')
+                    require(self.mem.read(self.pc,2)==bytes.fromhex(gate.SITE_BYTES),
+                            'the COEF batch read-back site bytes changed '
+                            f'(expected {gate.SITE_BYTES})')
+                    value=gate.serve(self,hardware,raw)
+                    self.R[raw['d']]=value
+                    self.finish_exact(self.pc+size)
+                    adapters['jl_src_sync_coef_batch_read']+=1
+                    return
             if hardware is not None and hardware.jl_btclk is not None:
                 # 路 TIMERIMPL(codex 裁 B):BT clock timer 两字容器的写者
                 # PC/读策略溯源(每步刷新,jl_sync note_step 先例)。写者

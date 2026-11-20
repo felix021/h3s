@@ -1245,6 +1245,19 @@ M4_FAMILIES = (
     # any captured world: a refusal stops the run, kept for shape symmetry).
     ('jl_src_sync_full_block', 'JLSrcSyncFullBlockRegisters',
      ('stores', 'word_writes', 'read_attempts')),
+    # Route SRCSYNC4: the JL_SRC_SYNC COEF post-initialization 55-word batch
+    # read-back (independent container, DAC-idle precedent): the captured state
+    # is the phase machine, the 55-word batch content, the read cursor, the
+    # init/write-back write counts, the read provenance (first/last) and the
+    # invalidation/rejection ledgers. current_pc/current_pc_core are transient
+    # per-step provenance (overwritten each step, jl_sync precedent); con0_bit4/
+    # con1_bit22 are gate-state mirrors driven by note_write. The guard
+    # constants (read/init/write-back PCs, read shape, site bytes, gate bits)
+    # are CLASS constants under the class-identity check.
+    ('jl_src_sync_coef_batch', 'JLSrcSyncCoefBatchReadback',
+     ('phase', 'batch', 'read_cursor', 'init_writes', 'write_back_writes',
+      'reads_served', 'first_read', 'last_read', 'invalidations', 'rejections',
+      'write_events', 'con0_bit4', 'con1_bit22', 'current_pc', 'current_pc_core')),
     # Route SYNCIMPL: the JL_SYNC four-word container (no-synthetic-initial
     # CON read-back plus the three __WO write-only words) — the captured state
     # is the write record and the two refusal counters (constant zero in any
