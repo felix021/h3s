@@ -2,7 +2,8 @@
 
 两层:
 - 纯守卫单测(GuardCpu/GuardHardware 鸭子类型,不跑仿真):ADR/LEN/SWP 读回=
-  最近一次整字写值、SWN 读回=具名假设初值 0 后=提交写值、拒绝(执行核/
+  最近一次整字写值、SWN 读回=空环自洽 LEN-1(由运行时 LEN 写记录推导)
+  后=提交写值、拒绝(执行核/
   有效地址/零写/写记录缺失)。
 - 模型级单测(BR28Model 直构):依赖缺失配置错误、开关关世界槽 None 且 SWN
   仍 unmapped、开启时槽存在且依赖链完整、SWN 写 write-only 记录。
@@ -73,8 +74,15 @@ class DacDmaPcmGuardTests(unittest.TestCase):
         self.assertEqual(guard.serve(GuardCpu(0x607169e), hw, {'r': 6, 's': 12, 'n': 5}), 0)
 
     def test_swn_serves_initial_assumption(self):
+        # 空环(0 已缓冲)自洽读值=LEN-1,由运行时 LEN 整字写记录推导(非字面量)。
         guard, hw = armed()
-        self.assertEqual(guard.serve(GuardCpu(0x6071564), hw, {'r': 1, 's': 12, 'n': 6}), 0)
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        self.assertEqual(guard.serve(GuardCpu(0x6071564), hw, {'r': 1, 's': 12, 'n': 6}), 0x1dff)
+
+    def test_swn_initial_missing_len_write_refuses(self):
+        guard, hw = armed()
+        self.assertIsNone(guard.serve(GuardCpu(0x6071564), hw, {'r': 1, 's': 12, 'n': 6}))
+        self.assertEqual(guard.rejections.get('zero_write:0xfe0518'), 1)
 
     def test_swn_serves_committed_value_after_write(self):
         guard, hw = armed()
