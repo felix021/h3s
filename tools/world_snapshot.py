@@ -1203,6 +1203,13 @@ M4_FAMILIES = (
     # target world.
     ('jl_audio_dac_dma_pns', 'JLAudioDacDmaPnsWrite',
      ('stores', 'word_writes')),
+    # Route DACDMAPCM: the DAC DMA PCM production-path readback + SWN commit
+    # record. served/rejections/served_values/swN/swN_writes are runtime STATE
+    # (the served per-site counts, the read-back values ledger and the SWN
+    # commit writes); the READ_SITES/SWN_INITIAL/SWN_WRITE_* are class constants
+    # riding the per-object static guard like every other M4 fixture.
+    ('jl_audio_dac_dma_pcm', 'JLAudioDacDmaPcmProduce',
+     ('served', 'rejections', 'served_values', 'swN', 'swN_writes')),
     ('jl_adda_family', 'JLAddaAnalogFamilyRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('timer2', 'Timer2Delay',

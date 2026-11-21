@@ -5988,6 +5988,170 @@ class JLAudioDacDmaPnsWrite:
                            'this does NOT verify any audio output')}
 
 
+class JLAudioDacDmaPcmProduce:
+    """JL_AUDIO DAC DMA PCM 数据相生产路径读回 + SWN 提交记录(opt-in,路 DACDMAPCM)。
+
+    背景:31,409,349 停点 @ 0x6071560——PCM 数据相生产路径函数 0x607152c 体内
+    首读 `ld.w.l r0=[r12+8]` 读 LEN(0xfe0508)算差。该函数是 SRC 产出 PCM 之后
+    的 DAC 环缓冲生产侧:0x6071560/1564 用 LEN、SWN 算差 q=LEN-1-SWN(剩余可
+    生产槽数,喂 helper 0x607da7e 与软件 watermark h[obj+118]),0x607169e/16c2
+    活读 SWP(0xfe0514,生产侧写位置)算环段起点,0x607171a/173c 读 ADR
+    (0xfe0504)算目的地址,搬运 helper 0x60714ae 的 0x607151a 读 LEN 作容量回绕
+    边界,0x6071782 在 r14!=0 时写 SWN(0xfe0518)并 csync 提交(r14=本次生产
+    的样本数)。
+
+    放行形状(codex 202611211512 方案 §4 优先级 2「LEN/SWN 算差读 + SWP 活读」):
+    1. ADR/LEN/SWP 读回=JLAudioDacDmaWriteRecords 里对应字最近一次整字写值
+       (ADR=0x18e180、LEN=0x606b2b0 重写的实际值、SWP=0——本段生产不推进 SWP;
+       零合成字节、值=固件自己的写)。
+    2. SWN 读回=具名假设初值 0(derived-not-measured,需硅测):本臂路径中 SWN
+       从未被固件写过(0x606b20e 的「取零臂」SWN=1 写不在本路径),复位值未知,
+       具名假设 0=「首次生产前无已提交样本」;0x6071782 提交写之后读回=最近
+       一次写值(r14,固件自己的提交计数)。
+    3. SWN 写(0x6071782 st.w.l [r12+24]=r14)write-only 记录(PNS 先例):值=
+       固件真实指令结果;不建模 SWN/HRP 的真实活动期推进量(需硅测),不声明
+       硬件已消费。
+    4. 逐条重验(非地址豁免):执行核/PC/原始字节/指令形状/有效地址任一不符
+       回落普通严格路径(kind 与开关关世界一致)。
+    5. 依赖 jl_audio_dac_dma_pns_write(同一函数链,PNS 写放行是到达 0x6071560
+       的前置)。开关关=槽 None,legacy 世界零变化。
+
+    证据分级:「读回值=固件自己写记录/具名假设 0,零合成字节」成立;不声明
+    DMA 数据流/SWN 推进/HRP 消费已运行——DAC 提交(生产侧 SWN=固件写入值)与
+    消费(硬件 HRP 推进)分账,本段消费数=0(需硅测的真实活动期推进量不建模)。
+    """
+
+    BASE = 0xfe0500
+    ADR = 0xfe0504
+    LEN = 0xfe0508
+    HRP = 0xfe0510
+    SWP = 0xfe0514
+    SWN = 0xfe0518
+    SWN_INITIAL = 0
+    # 读站点表:pc -> {'insn','raw','word','bytes'}。insn/raw/bytes 钉死;
+    # word=有效地址必须落到的字(raw 的 n×4 与基址寄存器合算,基址寄存器
+    # r12=0xfe0500,helper 0x607151a 基址 r0=0xfe0508)。
+    READ_SITES = {
+        0x6071560: {'insn': 'ld.w.l', 'raw': {'r': 0, 's': 12, 'n': 2}, 'word': LEN, 'bytes': 'd0ecc800'},
+        0x6071564: {'insn': 'ld.w.l', 'raw': {'r': 1, 's': 12, 'n': 6}, 'word': SWN, 'bytes': 'd0ecc811'},
+        0x607169e: {'insn': 'ld.w.l', 'raw': {'r': 6, 's': 12, 'n': 5}, 'word': SWP, 'bytes': 'd0ecc461'},
+        0x60716c2: {'insn': 'ld.w.l', 'raw': {'r': 1, 's': 12, 'n': 5}, 'word': SWP, 'bytes': 'd0ecc411'},
+        0x60716d2: {'insn': 'ld.w.l', 'raw': {'r': 0, 's': 12, 'n': 2}, 'word': LEN, 'bytes': 'd0ecc800'},
+        0x60716d8: {'insn': 'ld.w.l', 'raw': {'r': 0, 's': 12, 'n': 2}, 'word': LEN, 'bytes': 'd0ecc800'},
+        0x60716e4: {'insn': 'ld.w.l', 'raw': {'r': 0, 's': 12, 'n': 2}, 'word': LEN, 'bytes': 'd0ecc800'},
+        0x607171a: {'insn': 'ld.w.l', 'raw': {'r': 2, 's': 12, 'n': 1}, 'word': ADR, 'bytes': 'd0ecc420'},
+        0x607173c: {'insn': 'ld.w.l', 'raw': {'r': 2, 's': 12, 'n': 1}, 'word': ADR, 'bytes': 'd0ecc420'},
+        0x607180a: {'insn': 'ld.w.l', 'raw': {'r': 0, 's': 12, 'n': 6}, 'word': SWN, 'bytes': 'd0ecc801'},
+        0x6071830: {'insn': 'ld.w.l', 'raw': {'r': 2, 's': 12, 'n': 6}, 'word': SWN, 'bytes': 'd0ecc821'},
+        0x607183e: {'insn': 'ld.w.l', 'raw': {'r': 7, 's': 12, 'n': 6}, 'word': SWN, 'bytes': 'd0ecc871'},
+        0x607184a: {'insn': 'ld.w.l', 'raw': {'r': 2, 's': 12, 'n': 2}, 'word': LEN, 'bytes': 'd0ecc820'},
+        0x607188c: {'insn': 'ld.w.l', 'raw': {'r': 1, 's': 12, 'n': 6}, 'word': SWN, 'bytes': 'd0ecc811'},
+        0x60718a8: {'insn': 'ld.w.l', 'raw': {'r': 2, 's': 12, 'n': 6}, 'word': SWN, 'bytes': 'd0ecc821'},
+        0x60718e8: {'insn': 'ld.w.l', 'raw': {'r': 1, 's': 12, 'n': 5}, 'word': SWP, 'bytes': 'd0ecc411'},
+        # 搬运 helper 0x60714ae:0x6071514 li.u32 r0=0xfe0508 后 0x607151a
+        # ld.w r0=[r0+0](短形,2 字节)读 LEN。
+        0x607151a: {'insn': 'ld.w', 'raw': {'d': 0, 'b': 0, 'n': 0}, 'word': LEN, 'bytes': '0060'},
+    }
+    # SWN 提交写站点(0x6071782 st.w.l [r12+24]=r14 + 0x6071786 csync)。csync
+    # 是真实指令照常执行,不额外建模。
+    SWN_WRITE_PC = 0x6071782
+    SWN_WRITE_SHAPE = {'insn': 'st.w.l', 'raw': {'r': 12, 'n': 6, 's': 14}}
+    SWN_WRITE_BYTES = 'd0ecc9e1'
+
+    def __init__(self):
+        self.served = {hex(pc): 0 for pc in self.READ_SITES}
+        self.rejections = {}
+        self.swN = self.SWN_INITIAL
+        self.swN_writes = []          # 提交写记录(值=固件 r14)
+        self.served_values = {}       # hex(word) -> 放行的读回值列表
+
+    def shape_for(self, pc):
+        return self.READ_SITES.get(pc)
+
+    def _reject(self, reason, address):
+        key = f'{reason}:{hex(address)}'
+        self.rejections[key] = self.rejections.get(key, 0) + 1
+
+    def serve(self, cpu, hardware, raw):
+        """已核验读点的装载门(probe_boot step_body 调用;指令形状/字节由调用
+        方 require 钉死)。返回 int=放行值,None=守卫拒绝(调用方回落普通严格
+        路径,kind 与开关关世界一致)。逐条重验,非地址豁免。"""
+        shape = self.shape_for(cpu.pc)
+        if shape is None:
+            return None
+        if cpu.core_id != 0:
+            self._reject('core_mismatch', shape['word']); return None
+        base_reg = raw['s'] if 's' in raw else raw['b']
+        address = (cpu.R[base_reg] + raw['n'] * 4) & 0xffffffff
+        if address != shape['word']:
+            self._reject('effective_address_mismatch', address); return None
+        if shape['word'] == self.SWN:
+            # 通知既有 SWN/PNS 访问审计(阶段失效)——装载门截走会漏记。
+            if hardware.jl_audio_dac_dma_idle is not None:
+                hardware.jl_audio_dac_dma_idle.note_read(self.SWN)
+            value = self.swN
+        else:
+            records = hardware.jl_audio_dac_dma
+            if records is None:
+                self._reject('write_records_missing', shape['word']); return None
+            values = records.stores[shape['word']]['values']
+            if not values:
+                self._reject('zero_write', shape['word']); return None
+            value = values[-1]
+        self.served[hex(cpu.pc)] = self.served.get(hex(cpu.pc), 0) + 1
+        self.served_values.setdefault(hex(shape['word']), []).append(value)
+        return value
+
+    def handles(self, address):
+        return address == self.SWN
+
+    def write(self, address, value, core):
+        if address != self.SWN:
+            raise ValueError('not a modeled JL_AUDIO DAC DMA PCM SWN word')
+        if not isinstance(value, int) or not 0 <= value <= 0xffffffff:
+            raise ValueError('unsigned32 word expected')
+        self.swN = value
+        self.swN_writes.append({'value': value, 'core': core})
+
+    def read(self, address):
+        # 已核验读点由 probe_boot serve() 装载门拦截;达此处的 SWN 读=未核验
+        # 位置,维持严格停(kind 优先于泛 unmapped,与开关关世界一致)。
+        raise Blocked('jl_audio_dac_dma_pcm_swN_read_not_modeled', address=hex(address))
+
+    def report(self):
+        return {
+            'enabled': True,
+            'release_sites': {hex(pc): shape['word'] for pc, shape in sorted(self.READ_SITES.items())},
+            'served': {hex(pc): self.served.get(hex(pc), 0)
+                       for pc in sorted(self.READ_SITES)},
+            'served_values': {word: [hex(v) for v in values[-8:]]
+                              for word, values in sorted(self.served_values.items())},
+            'swN': {'initial_assumed': hex(self.SWN_INITIAL),
+                    'current': hex(self.swN),
+                    'commit_writes': [{'value': hex(w['value']), 'core': w['core']}
+                                      for w in self.swN_writes]},
+            'rejections': dict(sorted(self.rejections.items())),
+            'semantics': ('ADR/LEN/SWP reads return the last whole-word firmware write '
+                          'recorded by JLAudioDacDmaWriteRecords (zero synthesized bytes — '
+                          'ADR=0x18e180, LEN=the 0x606b2b0 recomputed value, SWP=0, which '
+                          'this segment does not advance); SWN reads return the named '
+                          'initial assumption 0 before the 0x6071782 commit and the '
+                          'firmware\'s committed value (r14) after it; the 0x6071782 SWN '
+                          'store is a write-only commit record (value = the firmware\'s own '
+                          'produced-sample count, never invented)'),
+            'assumption': ('derived-not-measured: SWN initial value 0 = "no committed '
+                           'samples before the first production" (the firmware never wrote '
+                           'SWN on this arm\'s path — the 0x606b20e take-zero branch that '
+                           'writes SWN=1 is not taken) — the real SWN reset value, its '
+                           'active-period progression and the hardware HRP consumption are '
+                           'NOT silicon-measured and need 需硅测确认; the DAC commit '
+                           '(production-side SWN store) and consumption (hardware HRP '
+                           'advance) are kept as SEPARATE accounts — this segment commits '
+                           'the firmware\'s produced count and consumes ZERO (no DMA data '
+                           'flow / IRQ68 consumption is modeled), so this does NOT verify '
+                           'any audio output')}
+
+
 class JLAudioAdcDmaWriteRecords:
     """JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c)写侧 write-only
     整字记录(opt-in,路 JLA)。
@@ -9824,6 +9988,7 @@ class BR28Model:
                  jl_audio_dac_dma_setup_discarded_sites=5,
                  jl_audio_dac_dma_len_readback=False,
                  jl_audio_dac_dma_pns_write=False,
+                 jl_audio_dac_dma_pcm_produce=False,
                  jl_audio_adc_dma_writes=False,
                  audio_adc_dma_delivery=False,audio_adc_dma_delivery_requests=False,
                  jl_eq_init_writes=False,
@@ -10550,6 +10715,23 @@ class BR28Model:
             self.jl_audio_dac_dma_pns=JLAudioDacDmaPnsWrite()
         else:
             self.jl_audio_dac_dma_pns=None
+        # 路 DACDMAPCM(codex 202611211512 方案 §4 优先级 2):DAC DMA PCM 数据
+        # 相生产路径(0x607152c)读回+SWN 提交记录——31,409,349 停点 0x6071560
+        # (LEN 活读算差)放行。ADR/LEN/SWP 读回=四字写记录最近一次整字写值,
+        # SWN 读回=具名假设初值 0(derived-not-measured,需硅测)后=0x6071782
+        # 提交写值;SWN 写 write-only 记录。不建模 SWN/HRP 真实活动期推进量/
+        # DMA 数据流/IRQ68 消费。显式依赖 jl_audio_dac_dma_pns_write(同一
+        # 函数链,PNS 写放行是到达 0x6071560 的前置)。默认关:SWN 保持
+        # unmapped,legacy 逐字节不变。
+        if jl_audio_dac_dma_pcm_produce:
+            if not jl_audio_dac_dma_pns_write:
+                raise ValueError('jl_audio_dac_dma_pcm_produce requires '
+                                 'jl_audio_dac_dma_pns_write (0x6071560 is reached only '
+                                 'after the PNS store 0x606de56 of the same function chain '
+                                 'is released)')
+            self.jl_audio_dac_dma_pcm=JLAudioDacDmaPcmProduce()
+        else:
+            self.jl_audio_dac_dma_pcm=None
         # 路 COPEXIMPL(codex 裁 (a) 收窄版):copex.ppi mode-22 指数近似模型
         # ——42,037,363 停点 0x606a900(upstream『copex.ppi has no model』)
         # 的放行。非内存映射寄存器容器:拦截/执行在 probe_boot CPU.step_body
@@ -10874,6 +11056,7 @@ class BR28Model:
             (self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address)) or
             (self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address)) or
             (self.jl_audio_dac_dma_pns is not None and self.jl_audio_dac_dma_pns.handles(address)) or
+            (self.jl_audio_dac_dma_pcm is not None and self.jl_audio_dac_dma_pcm.handles(address)) or
             (self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address)) or
             (self.jl_eq_init is not None and self.jl_eq_init.handles(address)) or
             (self.jl_adc_start is not None and self.jl_adc_start.handles(address)) or
@@ -11344,6 +11527,12 @@ class BR28Model:
         if self.jl_audio_dac_dma_pns is not None and self.jl_audio_dac_dma_pns.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_dac_dma_pns.read(address)
+        # JL_AUDIO DAC DMA PCM SWN(路 DACDMAPCM):已核验读点由 probe_boot
+        # serve() 装载门拦截;达此处的 SWN 读=未核验位置,读侧显式严格停
+        # (kind 优先于泛 unmapped)。
+        if self.jl_audio_dac_dma_pcm is not None and self.jl_audio_dac_dma_pcm.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_dac_dma_pcm.read(address)
         # JL_AUDIO ADC DMA 五字(路 JLA):write-only 记录,读回显式严格停
         # (audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b 完成投影后域)。
         # 路 D2AI:交付投影开启时读回由容器服务(五字+SRN,见类注释);
@@ -11691,6 +11880,11 @@ class BR28Model:
             # (值 0x60)与 0x6072496 st.w 阈值写,write-only 记录;衰减语义/
             # DMA 推进/PNS 运行时状态推进不建模。
             self.jl_audio_dac_dma_pns.write(address,value,self.current_core)
+        elif self.jl_audio_dac_dma_pcm is not None and self.jl_audio_dac_dma_pcm.handles(address):
+            # JL_AUDIO DAC DMA PCM SWN(路 DACDMAPCM):0x6071782 st.w.l 提交写
+            # (值=固件 r14=本次生产样本数),write-only 记录;SWN 真实活动期
+            # 推进量/硬件消费不建模。
+            self.jl_audio_dac_dma_pcm.write(address,value,self.current_core)
         elif self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address):
             # JL_AUDIO ADC DMA 五字(路 JLA):set_buffer 0x606dee4 的五条
             # 连续整字写(ADR/LEN/PNS/HWP/SRP,首写=停点并行对 store 半),
@@ -12770,6 +12964,25 @@ class BR28Model:
                 'no runtime PNS state progression and no DMA transfer is modeled; DAC '
                 'submit/consume counts stay zero in this segment — this does NOT verify '
                 'any audio output. derived-not-measured, NOT a silicon-equivalence claim')
+        if self.jl_audio_dac_dma_pcm is not None:
+            result['jl_audio_dac_dma_pcm_produce']=self.jl_audio_dac_dma_pcm.report()
+            result['assumptions']['jl_audio_dac_dma_pcm_produce']=(
+                'JL_AUDIO DAC DMA PCM data-phase production path readback + SWN commit '
+                'record (route DACDMAPCM, codex 202611211512 §4 priority-2 "LEN/SWN '
+                'difference read + SWP live read"): ADR/LEN/SWP reads return the last '
+                'firmware whole-word write recorded by JLAudioDacDmaWriteRecords '
+                '(ADR=0x18e180, LEN=the 0x606b2b0 recomputed value, SWP=0 which this '
+                'segment does not advance — zero synthesized bytes); SWN reads return the '
+                'NAMED initial assumption 0 before the 0x6071782 commit and the firmware\'s '
+                'committed r14 after it; the 0x6071782 st.w.l [r12+24]=r14 SWN store is a '
+                'write-only commit record (value = the firmware\'s own produced-sample '
+                'count, never invented). The DAC commit (production-side SWN store) and '
+                'consumption (hardware HRP advance) are SEPARATE accounts: this segment '
+                'commits the firmware\'s produced count and consumes ZERO. The SWN reset '
+                'value / active-period progression and the hardware HRP consumption are '
+                'NOT silicon-measured and need 需硅测确认; no DMA data flow / IRQ68 '
+                'consumption is modeled — derived-not-measured, NOT a silicon-equivalence '
+                'claim, does NOT verify any audio output')
         # 路 COPEXIMPL:mode-22 指数近似模型报告(开关关=槽 None=零键,
         # legacy 报告不变)。
         if self.copex_exp22 is not None:

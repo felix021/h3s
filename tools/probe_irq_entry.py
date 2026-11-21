@@ -5106,6 +5106,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_dma_setup_discarded_sites=5,
              jl_audio_dac_dma_len_readback=False,
              jl_audio_dac_dma_pns_write=False,
+             jl_audio_dac_dma_pcm_produce=False,
              jl_audio_adc_dma_writes=False,
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
@@ -6789,6 +6790,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 '(0x606de56 is reached only after 0x606ddc4/cc are released on the '
                 'same function chain)')
         options['jl_audio_dac_dma_pns_write']=True
+    # jl_audio_dac_dma_pcm_produce(路 DACDMAPCM,codex 202611211512 方案 §4
+    # 优先级 2,默认 False=关):DAC DMA PCM 数据相生产路径(0x607152c)读回+SWN
+    # 提交记录——31,409,349 停点 0x6071560(LEN 活读算差,非 len_readback 两
+    # 站点)放行。ADR/LEN/SWP 读回=四字写记录最近一次整字写值,SWN 读回=具名
+    # 假设初值 0 后=0x6071782 提交写值,SWN 写 write-only 记录;不建模 SWN/HRP
+    # 真实活动期推进量/DMA 数据流/IRQ68 消费。依赖边挂 jl_audio_dac_dma_pns_
+    # write(同一函数链,PNS 写放行是到达 0x6071560 的前置)。默认关:SWN 保持
+    # unmapped(0x6071560 前沿形状),legacy 逐字节不变。
+    if jl_audio_dac_dma_pcm_produce:
+        require(jl_audio_dac_dma_pns_write,
+                'the DAC DMA PCM production-path release rides on the PNS write world '
+                '(0x6071560 is reached only after the PNS store 0x606de56 of the same '
+                'function chain is released)')
+        options['jl_audio_dac_dma_pcm_produce']=True
     # copex_exp22_model(路 COPEXIMPL,codex 裁 (a) 收窄版,默认 False=关):
     # copex.ppi mode-22 指数近似模型——42,037,363 停点 0x606a900(upstream
     # 『copex.ppi has no model』,音频管线重配段 exp 叶子 0x606a8fc 体内)
@@ -12417,6 +12432,25 @@ def main():
                                  'jl_audio_dac_dma_setup_discarded_reads':True,
                                  'jl_audio_dac_dma_len_readback':True,
                                  'jl_audio_dac_dma_pns_write':True},
+                              flash_image_bytes=image),
+                     # 路 DACDMAPCM(codex 202611211512 方案 §4 优先级 2 实跑落地):
+                     # 在 DACDMAPNS 臂上追加 PCM 数据相生产路径(0x607152c)读回+
+                     # SWN 提交记录。旧臂 31,409,349 @ 0x6071560 逐字节不变(pcm_
+                     # produce 开关关);开生产路径读回的臂越过 0x6071560/64(LEN、
+                     # SWN 算差读)继续走到下一个诚实边界:实跑只放行 LEN=0x1e00
+                     # (0x606b2b0 重写值)+SWN=0(具名假设)各一次,生产函数 0x607152c
+                     # 在 helper 0x607da7e 处按 watermark 分流(本臂未走到 0x607169e
+                     # SWP/0x607171a ADR/0x6071782 SWN 提交,提交数=0 消费数=0),
+                     # 正臂 +9,331 步停在 31,418,680 @ 0x12cc48(喂狗函数 0x12cc7e
+                     # 前身,P3_PCNT_SET0 0xf2c128 读,kind=unknown_reset_configuration_
+                     # bits,known_mask=0xffff00ff——bit8-15 未建模,归下路复位配置域);
+                     # 本臂不重钉 dacdmapns_probe 前沿。
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_dacdmapcm_probe',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
+                                 'jl_audio_dac_dma_setup_discarded_reads':True,
+                                 'jl_audio_dac_dma_len_readback':True,
+                                 'jl_audio_dac_dma_pns_write':True,
+                                 'jl_audio_dac_dma_pcm_produce':True},
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,

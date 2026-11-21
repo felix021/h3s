@@ -951,6 +951,34 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         return
                     # 守卫拒绝:落回普通严格路径(执行核/基址/有效地址/零写
                     # 负例即在此处诚实停,kind 与开关关世界一致)。
+            if hardware is not None and hardware.jl_audio_dac_dma_pcm is not None:
+                # 路 DACDMAPCM(codex 202611211512 方案 §4 优先级 2):DAC DMA PCM
+                # 数据相生产路径读回的装载门。装载门只在已核验读点上拦
+                # (0x607152c 体内 r12=0xfe0500 的 ld.w.l 读 LEN/SWN/SWP/ADR 与
+                # helper 0x60714ae 的 ld.w r0=[r0+0] 读 LEN;形状/字节钉死),
+                # 回读=ADR/LEN/SWP 最近一次整字写值、SWN 具名假设初值 0 后
+                # 提交写值。守卫见 JLAudioDacDmaPcmProduce.serve(执行核/有效
+                # 地址/零写→回落普通严格路径,kind 与开关关世界一致)。开关关=
+                # 槽 None,一次 is-not-None 测试即过,legacy 世界零变化。
+                gate=hardware.jl_audio_dac_dma_pcm
+                shape=gate.shape_for(self.pc)
+                if shape is not None:
+                    require(insn.id==shape['insn'] and raw==shape['raw'],
+                            'the DAC DMA PCM produce site must keep its pinned shape '
+                            f'(expected {shape["insn"]} {shape["raw"]})')
+                    require(self.mem.read(self.pc,len(shape['bytes'])//2)==
+                            bytes.fromhex(shape['bytes']),
+                            'the DAC DMA PCM produce site bytes changed '
+                            f'(expected {shape["bytes"]})')
+                    value=gate.serve(self,hardware,raw)
+                    if value is not None:
+                        dest=raw['r'] if 'r' in raw else raw['d']
+                        self.R[dest]=value
+                        self.finish_exact(self.pc+size)
+                        adapters['jl_audio_dac_dma_pcm_produce_load']+=1
+                        return
+                    # 守卫拒绝:落回普通严格路径(执行核/有效地址/零写负例
+                    # 即在此处诚实停,kind 与开关关世界一致)。
             if hardware is not None and hardware.jl_sync is not None:
                 # 路 SYNCIMPL(codex 裁收窄版 a):JL_SYNC 四字容器读策略的
                 # PC/核溯源(每步刷新,DMAIMPL current_pc 先例)。CON 读只

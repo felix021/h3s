@@ -102,6 +102,8 @@ def main():
     run(sys.executable,'tools/test_jl_audio_dac_dma_idle.py')  # DMAIMPL:HRP/SWP 两字读回守卫/失效矩阵/真件形状钉子
     run(sys.executable,'tools/test_jl_audio_dac_dma_setup.py')  # DACDMAREAD:配置五死读放行守卫/sites=4 负例/真件形状钉子
     run(sys.executable,'tools/test_jl_audio_dac_dma_len.py')  # DACDMALEN:LEN 活读回读守卫/零写负例/真件形状钉子
+    run(sys.executable,'tools/test_jl_audio_dac_dma_pns.py')  # DACDMAPNS:PNS write-only 记录守卫/真件形状钉子
+    run(sys.executable,'tools/test_jl_audio_dac_dma_pcm.py')  # DACDMAPCM:PCM 生产路径读回+SWN 提交记录守卫/真件形状钉子
     run(sys.executable,'tools/test_br28_dsp_models.py')  # COPEXIMPL:mode-22 指数近似守卫/域外停点/.p 拒绝/真件形状钉子
     run(sys.executable,'tools/test_frontier_iteration.py')  # CKPT:前沿迭代 runner 纯函数面(比较口径/值解析)
     run(sys.executable,'tools/test_handoff_lint.py')
