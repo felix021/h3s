@@ -2128,12 +2128,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         # 路 SRCSYNC2(决策点 1+2③):CON0(0xfe2600)启动请求
                         # `|=0x8` @0x6070b1c 专用分发——五元组(主核+PC
                         # 0x6070b1c+rmw.or.modimm 0x8)与写历史检查(旧值 bit3
-                        # 必须仍为 0,防 0x6070a6c 旁路重入借上次启动陈旧值)
+                        # 必须仍为 0;0x6070a6c 旁路重入的幂等 |=0x8 由
+                        # reentry_authorized() 授权放行,真实 stale 双启动仍拒)
                         # 由 rmw_start() 逐项核验;旧值由原 CON0 容器提供,写回
                         # 进原账本(不占新容器 11 纯写)。其余 CON0 RMW
                         # (|=0x10/&=~0x10 @0x606fbfa/0x606fc0a)不满足本条件,
                         # 落下面通用 mmio 路径(由下面 RMW PC 守卫服务)。
-                        hardware.jl_src_sync.rmw_start(self.pc,insn.id,op.get('m'),self.core_id)
+                        hardware.jl_src_sync.rmw_start(self.pc,insn.id,op.get('m'),self.core_id,
+                            reentry_ok=(getattr(hardware,'jl_src_sync_delivery',None) is not None
+                                        and hardware.jl_src_sync_delivery.reentry_authorized()))
                         if self.after_then is not None:adapters['mmio_conditional_rmw']+=1
                         # 路 SRCSYNC5:启动 RMW 完成后记录启动时刻(完成事件从
                         # 这里开始计时;completion_steps 显式假设)。

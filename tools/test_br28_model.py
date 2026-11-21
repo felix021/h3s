@@ -4086,6 +4086,17 @@ class ModelTests(unittest.TestCase):
         # 写历史:旧值已带 bit3(上次启动结果 0x82006009)重入借陈旧值拒。
         with self.assertRaisesRegex(Blocked,'jl_src_sync_start_rmw_stale_con0'):
             h2.jl_src_sync.rmw_start(0x6070b1c,'rmw.or.modimm',0x8,0)
+        # 重入授权:上一圈已完成(completions>0)时,bit3=1 的 |=0x8 是合法幂等
+        # 重入(0x6070a6c 旁路跳过覆盖写、寄存器保留上次结果),reentry_ok=True
+        # 放行、结果幂等仍 0x82006049。
+        h2.jl_src_sync.write(0xfe2600,0x82006049,0)
+        self.assertEqual(h2.jl_src_sync.rmw_start(0x6070b1c,'rmw.or.modimm',0x8,0,
+                                                  reentry_ok=True),
+                         0x82006049)
+        self.assertEqual(h2.jl_src_sync.stores[0xfe2600]['values'][-1],0x82006049)
+        # reentry_ok=False(默认)时 bit3=1 仍拒:未授权重入=真实 stale 双启动。
+        with self.assertRaisesRegex(Blocked,'jl_src_sync_start_rmw_stale_con0'):
+            h2.jl_src_sync.rmw_start(0x6070b1c,'rmw.or.modimm',0x8,0)
         # CON1 函数 B 标量读(0x6070ac4 并行 mul∥ld.w 第二半)走读回路径服务
         # (标量读不设 PC 守卫;RMW 内部读的 PC 守卫在 probe_boot 侧)。
         h2.jl_src_sync.write(0xfe2604,0x41,0)

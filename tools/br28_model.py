@@ -6423,11 +6423,13 @@ class JLSrcSyncConfigRegisters:
         self.synthesized_initial_reads+=1
         return self._initial_word(address)
 
-    def rmw_start(self,pc,insn_id,mask,core):
+    def rmw_start(self,pc,insn_id,mask,core,reentry_ok=False):
         """启动请求 RMW 的唯一授权通道(probe_boot 专用分发传入当前指令的
         pc/insn_id/mask/core):五元组全匹配+写历史检查通过才服务——内部读
         (当前 CON0 值)→|0x8→整字写回(进原 CON0 账本,不算新容器 11 纯写)。
-        五元组不符/借陈旧值=消费前停。"""
+        五元组不符/借陈旧值=消费前停。reentry_ok=上一圈已 start→complete→ack
+        的合法幂等重入(0x6070a6c 旁路跳过覆盖写、寄存器 bit3 保留 1),由
+        reentry_authorized() 授权放行;否则 bit3=1 借陈旧值仍拒。"""
         if pc!=self.START_PC or core!=self.START_CORE:
             raise Blocked('jl_src_sync_start_rmw_pc_not_audited',
                           address=hex(0xfe2600),
@@ -6439,13 +6441,16 @@ class JLSrcSyncConfigRegisters:
         entry=self.stores[0xfe2600]
         # 写历史检查:本次事务必须已先做 0x6070a90 整字覆盖写(entry 有写),且
         # 旧值 bit3 必须仍为 0——本次事务覆盖写 0x82006001 的 bit3=0;0x6070a6c
-        # 旁路跳过两笔整写、重入时 CON0 留上次启动结果 0x82006009(bit3=1),
-        # 同一 PC 0x6070b1c 借旧值即被拦。
+        # 旁路跳过两笔整写、重入时 CON0 留上次启动结果 0x82006049(bit3=1)。
+        # 该重入是合法「配置没变、只换 IDAT/ODAT 缓冲再触发」路径(handler 把
+        # CON0&~0x8=0x82006041 写进 [obj+20] 软件副本、寄存器 bit3 保留),
+        # |=0x8 幂等(结果仍 0x82006049)——reentry_ok=True(上一圈已完成)放行;
+        # 否则是真实 stale 双启动,同一 PC 借旧值即被拦。
         if entry['writes']==0:
             raise Blocked('jl_src_sync_start_rmw_stale_con0',
                           address=hex(0xfe2600),note='CON0 not written in this transaction')
         old=entry['values'][-1]
-        if old & self.START_MASK:
+        if old & self.START_MASK and not reentry_ok:
             raise Blocked('jl_src_sync_start_rmw_stale_con0',
                           address=hex(0xfe2600),old=hex(old))
         value=(old|self.START_MASK)&0xffffffff
@@ -7031,6 +7036,13 @@ class JLSrcSyncDelivery:
         self.starts=0
         self.completions=0
         self.acks=0
+
+    def reentry_authorized(self):
+        """残余 bit3=1 的 |=0x8 是合法幂等重入(0x6070a6c 旁路跳过覆盖写、
+        寄存器保留上次启动结果)——当且仅当已经有过一次完整 start→complete→ack
+        循环(首圈覆盖写必把 bit3 清零,故 completions>0 等价于「bit3 残留必来自
+        一次已完成启动」)。否则是真实 stale 双启动,仍拒。"""
+        return self.completions>0
 
     def note_start(self,hardware):
         """probe_boot 在 CON0|=0x8 启动 RMW 专用分发后调用(rmw_start 通道)。
