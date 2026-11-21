@@ -1204,14 +1204,17 @@ M4_FAMILIES = (
     ('jl_audio_dac_dma_pns', 'JLAudioDacDmaPnsWrite',
      ('stores', 'word_writes')),
     # Route DACDMAPCM: the DAC DMA PCM production-path readback + SWN commit
-    # record. served/rejections/served_values/swN/swN_writes are runtime STATE
-    # (the served per-site counts, the read-back values ledger and the SWN
-    # commit writes); the READ_SITES/SWN_WRITE_* are class constants
-    # riding the per-object static guard like every other M4 fixture. The SWN
-    # empty-ring initial read value (LEN-1) is derived at serve time from the
-    # runtime LEN write record, not a class constant.
+    # record. served/rejections/served_values/swN/swN_writes/swp/swp_seen_writes
+    # are runtime STATE (the served per-site counts, the read-back values
+    # ledger, the SWN commit writes and the current SWP frame position with its
+    # explicit-rewrite baseline counter); the READ_SITES/SWN_WRITE_* are class
+    # constants riding the per-object static guard like every other M4 fixture.
+    # The SWN empty-ring initial read value (LEN-1) and the SWP initial position
+    # are derived at serve time from the runtime LEN/SWP write records, not
+    # class constants.
     ('jl_audio_dac_dma_pcm', 'JLAudioDacDmaPcmProduce',
-     ('served', 'rejections', 'served_values', 'swN', 'swN_writes')),
+     ('served', 'rejections', 'served_values', 'swN', 'swN_writes',
+      'swp', 'swp_seen_writes')),
     # Route DACDMAPCNT 续:the P3_VLVD bit2 write-back read-back gate
     # (0x12cc54/56). Only the served/rejection ledgers are runtime STATE;
     # current_pc/current_pc_core are transient per-step provenance

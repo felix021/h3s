@@ -6001,9 +6001,13 @@ class JLAudioDacDmaPcmProduce:
     的样本数)。
 
     放行形状(codex 202611211512 方案 §4 优先级 2「LEN/SWN 算差读 + SWP 活读」):
-    1. ADR/LEN/SWP 读回=JLAudioDacDmaWriteRecords 里对应字最近一次整字写值
-       (ADR=0x18e180、LEN=0x606b2b0 重写的实际值、SWP=0——本段生产不推进 SWP;
-       零合成字节、值=固件自己的写)。
+    1. ADR/LEN 读回=JLAudioDacDmaWriteRecords 里对应字最近一次整字写值
+       (ADR=0x18e180、LEN=0x606b2b0 重写的实际值;零合成字节、值=固件自己的写)。
+       SWP 读回=当前 SWP 位置(帧):初值=固件最近显式写 SWP 的整字值
+       (0x6071ea8 尾段写 0),0x6071782 提交成功按当次写值 commit_frames 推进一次
+       (SWP_new=(SWP_old+commit_frames)%LEN,本臂 0+0x300=0x300);重复读不推进,
+       csync 后首次读看到新位置;显式重写出现时以新写值重新起算
+       (derived-not-measured,与固件消费者自洽,非硅测值)。
     2. SWN 读回=空环(0 已缓冲)自洽读值 LEN-1(derived-not-measured,需硅测):
        本臂路径中 SWN 从未被固件写过(0x606b20e 的「取零臂」SWN=1 写不在本
        路径),复位值未知;LEN 取运行时 JLAudioDacDmaWriteRecords 记录的整字
@@ -6018,9 +6022,11 @@ class JLAudioDacDmaPcmProduce:
     5. 依赖 jl_audio_dac_dma_pns_write(同一函数链,PNS 写放行是到达 0x6071560
        的前置)。开关关=槽 None,legacy 世界零变化。
 
-    证据分级:「读回值=固件自己写记录/空环自洽 LEN-1,零合成字节」成立;不声明
-    DMA 数据流/SWN 推进/HRP 消费已运行——DAC 提交(生产侧 SWN=固件写入值)与
-    消费(硬件 HRP 推进)分账,本段消费数=0(需硅测的真实活动期推进量不建模)。
+    证据分级:「ADR/LEN 读回值=固件自己写记录、SWN 空环自洽 LEN-1、SWP=提交按
+    commit_frames 推进的帧位置(与固件消费者自洽,derived-not-measured),零合成
+    字节」成立;不声明 DMA 数据流/SWN 活动期推进/HRP 消费已运行——DAC 提交
+    (生产侧 SWN=固件写入值,SWP 按提交量推进)与消费(硬件 HRP 推进)分账,
+    本段消费数=0(需硅测的真实活动期推进量不建模)。
     """
 
     BASE = 0xfe0500
@@ -6067,6 +6073,8 @@ class JLAudioDacDmaPcmProduce:
         self.rejections = {}
         self.swN = None               # 最近提交写值;提交前 None(空环读值按需从 LEN 推导)
         self.swN_writes = []          # 提交写记录(值=固件 r14)
+        self.swp = None               # 当前 SWP 位置(帧);None=尚未按固件写记录定基
+        self.swp_seen_writes = 0      # 已纳入基线的显式 SWP 整字写次数(检测显式重写)
         self.served_values = {}       # hex(word) -> 放行的读回值列表
 
     def shape_for(self, pc):
@@ -6089,7 +6097,24 @@ class JLAudioDacDmaPcmProduce:
         address = (cpu.R[base_reg] + raw['n'] * 4) & 0xffffffff
         if address != shape['word']:
             self._reject('effective_address_mismatch', address); return None
-        if shape['word'] == self.SWN:
+        if shape['word'] == self.SWP:
+            # SWP 读回=当前 SWP 位置(帧)。初值=固件最近显式写 SWP 的整字值
+            # (0x6071ea8 尾段写 0);0x6071782 提交成功按当次写值 commit_frames
+            # 推进一次(见 write(),SWP_new=(SWP_old+commit_frames)%LEN)。重复读
+            # 不推进;csync 是真实指令,提交即已推进,故提交后首次读(0x60718e8)
+            # 看到新位置。记录里出现新的显式整字写(固件重写 SWP)即以新写值
+            # 重新起算。derived-not-measured,与固件消费者自洽,非硅测值。
+            records = hardware.jl_audio_dac_dma
+            if records is None:
+                self._reject('write_records_missing', self.SWP); return None
+            swp_values = records.stores[self.SWP]['values']
+            if not swp_values:
+                self._reject('zero_write', self.SWP); return None
+            if self.swp is None or len(swp_values) != self.swp_seen_writes:
+                self.swp = swp_values[-1]
+                self.swp_seen_writes = len(swp_values)
+            value = self.swp
+        elif shape['word'] == self.SWN:
             # 通知既有 SWN/PNS 访问审计(阶段失效)——装载门截走会漏记。
             if hardware.jl_audio_dac_dma_idle is not None:
                 hardware.jl_audio_dac_dma_idle.note_read(self.SWN)
@@ -6121,13 +6146,30 @@ class JLAudioDacDmaPcmProduce:
     def handles(self, address):
         return address == self.SWN
 
-    def write(self, address, value, core):
+    def write(self, address, value, core, hardware=None):
         if address != self.SWN:
             raise ValueError('not a modeled JL_AUDIO DAC DMA PCM SWN word')
         if not isinstance(value, int) or not 0 <= value <= 0xffffffff:
             raise ValueError('unsigned32 word expected')
         self.swN = value
         self.swN_writes.append({'value': value, 'core': core})
+        # 提交成功推进一次 SWP 位置(帧):SWP_new=(SWP_old+commit_frames)%LEN。
+        # 初值=固件最近显式写 SWP 的整字值、LEN=运行时 LEN 整字写记录(本臂
+        # 0+0x300=0x300)。提交前 SWP 可能已被读点初始化;未初始化或记录里出现
+        # 新的显式整字写时先按写记录定基。derived-not-measured,与固件消费者
+        # 自洽,非硅测值。hardware=None(守卫单测直调)时不做推进。
+        if hardware is None or hardware.jl_audio_dac_dma is None:
+            return
+        records = hardware.jl_audio_dac_dma
+        swp_values = records.stores[self.SWP]['values']
+        len_values = records.stores[self.LEN]['values']
+        if not swp_values or not len_values or not len_values[-1]:
+            # SWP/LEN 写记录缺失(或 LEN=0)时无法定基/回绕,不推进(读侧会拒绝)。
+            return
+        if self.swp is None or len(swp_values) != self.swp_seen_writes:
+            self.swp = swp_values[-1]
+            self.swp_seen_writes = len(swp_values)
+        self.swp = (self.swp + value) % len_values[-1]
 
     def read(self, address):
         # 已核验读点由 probe_boot serve() 装载门拦截;达此处的 SWN 读=未核验
@@ -6149,29 +6191,46 @@ class JLAudioDacDmaPcmProduce:
                                 else 'LEN-1 (no commit write yet)'),
                     'commit_writes': [{'value': hex(w['value']), 'core': w['core']}
                                       for w in self.swN_writes]},
+            'swp': {'initial': ('the firmware\'s most recent explicit SWP whole-word '
+                                'write (0x6071ea8 tail store = 0)'),
+                    'current': (hex(self.swp) if self.swp is not None
+                                else 'not yet based (no SWP read / commit yet)'),
+                    'advance': ('on the 0x6071782 SWN commit: SWP_new = (SWP_old + '
+                                'commit_frames) % LEN (derived-not-measured, '
+                                'self-consistent with the firmware consumer; NOT '
+                                'silicon-measured)')},
             'rejections': dict(sorted(self.rejections.items())),
-            'semantics': ('ADR/LEN/SWP reads return the last whole-word firmware write '
+            'semantics': ('ADR/LEN reads return the last whole-word firmware write '
                           'recorded by JLAudioDacDmaWriteRecords (zero synthesized bytes — '
-                          'ADR=0x18e180, LEN=the 0x606b2b0 recomputed value, SWP=0, which '
-                          'this segment does not advance); SWN reads before the 0x6071782 '
-                          'commit return the empty-ring self-consistent value LEN-1 (0 '
-                          'buffered frames, q=LEN-1-SWN=0) derived from the runtime LEN '
-                          'write record, and the firmware\'s committed value (r14) after '
-                          'the commit; the 0x6071782 SWN store is a write-only commit '
-                          'record (value = the firmware\'s own produced-sample count, never '
-                          'invented)'),
+                          'ADR=0x18e180, LEN=the 0x606b2b0 recomputed value); SWP reads '
+                          'return the current SWP position in frames — the firmware\'s most '
+                          'recent explicit SWP whole-word write initially (0x6071ea8 tail '
+                          'store = 0), advanced once per successful 0x6071782 commit by '
+                          'commit_frames with % LEN wrap (this arm: 0 + 0x300 = 0x300); '
+                          'repeated reads do not advance, the first read after csync sees '
+                          'the new position, and a later explicit SWP rewrite re-bases; SWN '
+                          'reads before the 0x6071782 commit return the empty-ring '
+                          'self-consistent value LEN-1 (0 buffered frames, q=LEN-1-SWN=0) '
+                          'derived from the runtime LEN write record, and the firmware\'s '
+                          'committed value (r14) after the commit; the 0x6071782 SWN store '
+                          'is a write-only commit record (value = the firmware\'s own '
+                          'produced-sample count, never invented)'),
             'assumption': ('derived-not-measured: SWN empty-ring initial value LEN-1 = '
                            '"0 buffered frames before the first production" (consistent '
                            'with the consumer-side q=LEN-1-SWN reading; the firmware never '
                            'wrote SWN on this arm\'s path — the 0x606b20e take-zero branch '
-                           'that writes SWN=1 is not taken) — the real SWN reset value, '
-                           'its active-period progression and the hardware HRP consumption '
+                           'that writes SWN=1 is not taken); the SWP position advance '
+                           '(SWP_new = (SWP_old + commit_frames) % LEN) is a '
+                           'self-consistent-with-the-firmware-consumer derived value, NOT '
+                           'a silicon measurement. The real SWN reset value, its '
+                           'active-period progression and the hardware HRP consumption '
                            'are NOT silicon-measured and need 需硅测确认; the DAC commit '
-                           '(production-side SWN store) and consumption (hardware HRP '
-                           'advance) are kept as SEPARATE accounts — this segment commits '
-                           'the firmware\'s produced count and consumes ZERO (no DMA data '
-                           'flow / IRQ68 consumption is modeled), so this does NOT verify '
-                           'any audio output')}
+                           '(production-side SWN store, SWP advanced by the committed '
+                           'frames) and consumption (hardware HRP advance) are kept as '
+                           'SEPARATE accounts — this segment commits the firmware\'s '
+                           'produced count and consumes ZERO (no DMA data flow / IRQ68 '
+                           'consumption is modeled), so this does NOT verify any audio '
+                           'output')}
 
 
 class JLAudioAdcDmaWriteRecords:
@@ -12219,9 +12278,11 @@ class BR28Model:
             self.jl_audio_dac_dma_pns.write(address,value,self.current_core)
         elif self.jl_audio_dac_dma_pcm is not None and self.jl_audio_dac_dma_pcm.handles(address):
             # JL_AUDIO DAC DMA PCM SWN(路 DACDMAPCM):0x6071782 st.w.l 提交写
-            # (值=固件 r14=本次生产样本数),write-only 记录;SWN 真实活动期
-            # 推进量/硬件消费不建模。
-            self.jl_audio_dac_dma_pcm.write(address,value,self.current_core)
+            # (值=固件 r14=本次生产样本数),write-only 记录;提交时按 commit_frames
+            # 推进 SWP 位置(SWP_new=(SWP_old+commit_frames)%LEN,derived-not-measured)。
+            # SWN 真实活动期推进量/硬件消费不建模。传 self(硬件)供 write() 取
+            # 运行时 SWP/LEN 写记录定基与回绕。
+            self.jl_audio_dac_dma_pcm.write(address,value,self.current_core,self)
         elif self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address):
             # JL_AUDIO ADC DMA 五字(路 JLA):set_buffer 0x606dee4 的五条
             # 连续整字写(ADR/LEN/PNS/HWP/SRP,首写=停点并行对 store 半),
@@ -13306,20 +13367,28 @@ class BR28Model:
             result['assumptions']['jl_audio_dac_dma_pcm_produce']=(
                 'JL_AUDIO DAC DMA PCM data-phase production path readback + SWN commit '
                 'record (route DACDMAPCM, codex 202611211512 §4 priority-2 "LEN/SWN '
-                'difference read + SWP live read"): ADR/LEN/SWP reads return the last '
+                'difference read + SWP live read"): ADR/LEN reads return the last '
                 'firmware whole-word write recorded by JLAudioDacDmaWriteRecords '
-                '(ADR=0x18e180, LEN=the 0x606b2b0 recomputed value, SWP=0 which this '
-                'segment does not advance — zero synthesized bytes); SWN reads before the '
+                '(ADR=0x18e180, LEN=the 0x606b2b0 recomputed value — zero synthesized '
+                'bytes); SWP reads return the current SWP position in frames — the '
+                'firmware\'s most recent explicit SWP whole-word write initially '
+                '(0x6071ea8 tail store = 0), advanced once per successful 0x6071782 '
+                'commit by commit_frames with % LEN wrap (this arm: 0 + 0x300 = 0x300); '
+                'repeated reads do not advance, the first read after csync sees the new '
+                'position, and a later explicit SWP rewrite re-bases; SWN reads before the '
                 '0x6071782 commit return the empty-ring self-consistent value LEN-1 (0 '
                 'buffered frames, q=LEN-1-SWN=0) derived from the runtime LEN write record, '
                 'and the firmware\'s committed r14 after it; the 0x6071782 st.w.l '
                 '[r12+24]=r14 SWN store is a '
                 'write-only commit record (value = the firmware\'s own produced-sample '
-                'count, never invented). The DAC commit (production-side SWN store) and '
+                'count, never invented). The DAC commit (production-side SWN store, SWP '
+                'advanced by the committed frames) and '
                 'consumption (hardware HRP advance) are SEPARATE accounts: this segment '
-                'commits the firmware\'s produced count and consumes ZERO. The SWN reset '
+                'commits the firmware\'s produced count and consumes ZERO. The SWP '
+                'position advance is derived-not-measured (self-consistent with the '
+                'firmware consumer, NOT a silicon measurement); the SWN reset '
                 'value / active-period progression and the hardware HRP consumption are '
-                'NOT silicon-measured and need 需硅测确认; no DMA data flow / IRQ68 '
+                'also NOT silicon-measured and need 需硅测确认; no DMA data flow / IRQ68 '
                 'consumption is modeled — derived-not-measured, NOT a silicon-equivalence '
                 'claim, does NOT verify any audio output')
         # 路 DACDMAPCNT 续:P3_VLVD bit2 写后读回放行报告(开关关=槽 None=
