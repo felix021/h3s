@@ -4,8 +4,8 @@
 - 纯守卫单测(GuardCpu/GuardHardware 鸭子类型,不跑仿真):ADR/LEN 读回=
   最近一次整字写值、SWP 读回=当前 SWP 位置(初值=固件显式写 SWP 值,提交后
   按 commit_frames 推进,% LEN 回绕,重复读不推进,显式重写重定基)、SWN 读回
-  =空环自洽 LEN-1(由运行时 LEN 写记录推导)后=提交写值、拒绝(执行核/
-  有效地址/零写/写记录缺失)。
+  =当前可写帧数 LEN-1-Q(Q=占用量,初值 0,提交累加;由运行时 LEN 写记录与
+  Q 推导)、拒绝(执行核/有效地址/零写/写记录缺失/重配/超剩余空间)。
 - 模型级单测(BR28Model 直构):依赖缺失配置错误、开关关世界槽 None 且 SWN
   仍 unmapped、开启时槽存在且依赖链完整、SWN 写 write-only 记录且提交推进
   SWP 位置。
@@ -126,11 +126,42 @@ class DacDmaPcmGuardTests(unittest.TestCase):
         self.assertIsNone(guard.serve(GuardCpu(0x6071564), hw, {'r': 1, 's': 12, 'n': 6}))
         self.assertEqual(guard.rejections.get('zero_write:0xfe0518'), 1)
 
-    def test_swn_serves_committed_value_after_write(self):
+    def test_swn_serves_free_frames_after_write(self):
+        # 提交 0x60 后 SWN 读回=空闲帧数 LEN-1-Q=0x1e00-1-0x60(非回显提交量)。
         guard, hw = armed()
-        guard.write(SWN, 0x60, 0)
-        self.assertEqual(guard.serve(GuardCpu(0x607180a), hw, {'r': 0, 's': 12, 'n': 6}), 0x60)
+        hw.jl_audio_dac_dma.stores[SWP]['values'] = [0]
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        guard.write(SWN, 0x60, 0, hw)
+        self.assertEqual(guard.serve(GuardCpu(0x607180a), hw, {'r': 0, 's': 12, 'n': 6}), 0x1d9f)
         self.assertEqual(guard.swN_writes, [{'value': 0x60, 'core': 0}])
+
+    def test_swn_free_frames_matches_acceptance_value(self):
+        # 本臂最小验收:提交 0x300 后第二次 0x6071564 读 0x1aff(=LEN-1-Q)。
+        guard, hw = armed()
+        hw.jl_audio_dac_dma.stores[SWP]['values'] = [0]
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        self.assertEqual(guard.serve(GuardCpu(0x6071564), hw, {'r': 1, 's': 12, 'n': 6}), 0x1dff)
+        guard.write(SWN, 0x300, 0, hw)
+        self.assertEqual(guard.serve(GuardCpu(0x6071564), hw, {'r': 1, 's': 12, 'n': 6}), 0x1aff)
+
+    def test_swn_overcommit_stops(self):
+        # 提交超剩余空间(空闲=LEN-1-Q)即停。
+        guard, hw = armed()
+        hw.jl_audio_dac_dma.stores[SWP]['values'] = [0]
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        guard.write(SWN, 0x1d00, 0, hw)  # 0x1d00 <= 0x1dff,放行
+        with self.assertRaisesRegex(Blocked, 'swN_overcommit'):
+            guard.write(SWN, 0x200, 0, hw)  # 0x1d00+0x200 > 0x1dff,停
+
+    def test_swn_len_reconfigured_stops(self):
+        # 运行中重配环(LEN 末值变化)旧 Q 失去依据即停。
+        guard, hw = armed()
+        hw.jl_audio_dac_dma.stores[SWP]['values'] = [0]
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        guard.write(SWN, 0x100, 0, hw)
+        hw.jl_audio_dac_dma.stores[LEN]['values'].append(0x2000)
+        with self.assertRaisesRegex(Blocked, 'swN_len_reconfigured'):
+            guard.write(SWN, 0x10, 0, hw)
 
     def test_unreleased_pc_refuses(self):
         guard, hw = armed()
@@ -216,6 +247,8 @@ class DacDmaPcmModelTests(unittest.TestCase):
         on.jl_audio_dac_dma.write(LEN, 0x1e00, 0)
         on.jl_audio_dac_dma_pcm.write(SWN, 0x300, 0, on)
         self.assertEqual(on.jl_audio_dac_dma_pcm.swN, 0x300)
+        self.assertEqual(on.jl_audio_dac_dma_pcm.q, 0x300)
+        self.assertEqual(on.jl_audio_dac_dma_pcm.q_len, 0x1e00)
         self.assertEqual(on.jl_audio_dac_dma_pcm.swp, 0x300)
         self.assertEqual(on.jl_audio_dac_dma_pcm.swp_seen_writes, 1)
 
