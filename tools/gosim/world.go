@@ -46,6 +46,27 @@ type Core struct {
 	ICFGKnown    bool
 	Steps        uint64
 	RepeatActive bool // repeat / after_then pending (yield before attempt)
+
+	// M6C special registers + execution context (br28_machine deliver_*
+	// projections). A nil pointer is the Python None (unknown); an empty
+	// ActiveContext string is the Python None active_context.
+	USP              *uint32               // user stack pointer (nil = unknown)
+	SSP              *uint32               // kernel stack pointer (nil = unknown)
+	RETI             *uint32               // return-from-interrupt pc (nil = unknown)
+	IRQPSR           *uint32               // entry PSR snapshot (nil = unknown)
+	ActiveContext    string                // "" = None (thread mode)
+	BootstrapContext bool                  // cpu.bootstrap_context
+	LastExplicitSSP  *uint32               // cpu.last_explicit_ssp (nil = unknown)
+	AudioIrqOuter    *AudioIrqOuterContext // audio IRQ68 nested outer context (nil = None)
+}
+
+// AudioIrqOuterContext mirrors the cpu.audio_irq_outer_context dict saved when
+// IRQ68 nests into the Timer0 handler (active_context / reti / sp). RETI is a
+// pointer so it can round-trip the Python None (unknown) reti.
+type AudioIrqOuterContext struct {
+	ActiveContext string
+	RETI          *uint32
+	SP            uint32
 }
 
 // IrqReq is a pending interrupt delivery request (mirrors Python's
@@ -145,11 +166,14 @@ func (w *World) RunLoop(n int) LoopResult {
 		return yieldBeforeAttempt("no core 0 present")
 	}
 	if w.Cores[1] != nil {
-		// Stage A ported the select phase (machine.go Machine.Select) and
-		// Stage B ported the after_step no-op judgment (after_step.go); the
-		// dual-core loop still cannot close because the deliver_* projections
-		// (Stage C) and the dual-core advance scan live in Python.
-		return yieldBeforeAttempt("dual-core loop not closed: select ported (M6A) and after_step judged (M6B) but deliver projections still in Python (M6C)")
+		// Stage A ported the select phase (machine.go Machine.Select), Stage B
+		// the after_step no-op judgment (after_step.go), Stage C the deliver_*
+		// projections (deliver.go, differential-tested). The dual-core loop
+		// still cannot close because these three pieces are not yet wired into
+		// one RunLoop (the select/deliver state lives in the standalone Machine
+		// / DeliverMachine, not World), and the dual-core advance scan is
+		// single-core only. That wiring is the remaining integration step.
+		return yieldBeforeAttempt("dual-core loop not closed: select (M6A), after_step (M6B) and deliver projections (M6C) are ported and differential-tested, but the whole-loop wiring is not done")
 	}
 	if !w.Concrete {
 		return yieldBeforeAttempt("non-concrete (abstract) cpu state")
