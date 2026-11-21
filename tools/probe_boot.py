@@ -27,6 +27,43 @@ from br28_arch_models import architectural_k2, K2_SHA
 import gosim_observe
 gosim_observer = gosim_observe.GosimObserver() if gosim_observe.enabled() else None
 
+# 整段搬 Go 批量执行引擎(opt-in;默认 None=逐条 Python step,零行为变化)。
+# 测量驱动(见 tools/gosim_batch_engine.py / tools/gosim_measure.py)在运行时
+# 置为 BatchEngine,explore 内层循环即把「连续安全段」交给 Go 一次 cgo 调用
+# 执行,再把逐步观测喂回 trace 行;报告逐字节不变由 measure 自检钉死。
+gosim_batch_engine = None
+gosim_batch_steps = 0  # 批量快路径执行的指令步数(测量用,不进报告字节)
+gosim_batch_fills = 0  # Go run_segment 调用次数(测量用)
+gosim_batch_zero_fills = 0  # 其中返回 0 步(段头即非 ALU)的次数(测量用)
+
+# 批量段头的安全预判(保守镜像 tools/gosim 的 safeALU+batchUnsafe;Go 仍是执行
+# 权威,预判放行的段 Go 会在第一条真正不安全处诚实停)。只用来省掉对非安全指令
+# 的白费 Go 调用,不参与正确性。第二阶段把安全集从「顺序 ALU」放宽到含 control
+# flow:无条件分支(goto.s/goto.l/goto.r)、bc.* 条件分支、零测试分支(beqz/bnez)、
+# 递减分支(dbnz.r)与寄存器比较分支族(beq/bne/bge/bgt/ble/blt + b*es 带符号
+# 变体)。call/return(rets/sp 副作用)与访存/抽象值/IRQ/Blocked 边界不动。
+_BATCH_ALU_GROUPS=frozenset(('arithmetic','logic','shifts','bitops','moves','constants','multiply','fpu'))
+_BATCH_ALU_SP=frozenset(('add.sp_i','add.sp_i.l','add.r_sp_i','add.r_sp_i.l'))
+_BATCH_REGCMP=('beq.','bne.','bge.','bgt.','ble.','blt.','bges.','bgts.','bles.','blts.')
+
+
+def _batch_allow_branch(iid):
+    if iid.startswith('bc.'):return True
+    if iid in ('goto.s','goto.l','goto.r','beqz','bnez','dbnz.r'):return True
+    return any(iid.startswith(c) for c in _BATCH_REGCMP)
+
+
+def _batch_safe(insn,module):
+    iid=insn.id
+    if getattr(insn,'group','') not in _BATCH_ALU_GROUPS:
+        if not _batch_allow_branch(iid):return False
+    if any(f.kind=='sr' for f in getattr(insn,'fields',{}).values()):return False
+    if iid in _BATCH_ALU_SP or iid.startswith(('mov.sp_','mov.ssp_','mov.usp_')):return False
+    if iid.endswith('.p'):return False
+    if getattr(insn,'block',None) or getattr(insn,'body',''):return False
+    if module.branch_field(insn) is not None and not _batch_allow_branch(iid):return False
+    return True
+
 OFFICIAL_SHA='65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af'
 APP_SHA='18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041'
 ENTRY=0x06000100
@@ -282,6 +319,7 @@ def flash_image(path):
 def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,budget=100_000,
             handoff=None,startup_loops=False,diagnostics=None,rom=None,hardware=None,machine=None,
             post_stop=None,snapshot=None):
+    global gosim_batch_steps, gosim_batch_fills, gosim_batch_zero_fills
     # post_stop(opt-in,路 S/key-chain):主循环停点后、报告组装前的回调
     # post_stop(machine,hardware,stopped_cpu)->dict|None。用于在活机器上做
     # 「停点后直调」类探测(键链扫描直调等);返回的 dict 并进场景报告。
@@ -793,6 +831,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             before_sp=self.sp
             helper_return=bool(self.repeat and self.repeat.get('allow_helper_return') and self.pc==0x0012cb2a)
             self.step_body()
+            self._post_step(before_pc,before_sp,helper_return)
+
+        def _post_step(self,before_pc,before_sp,helper_return):
+            # 步后簿记(里程碑/rom_steps/sp 写/任务帧/repeat 收尾)。从 step()
+            # 抽出来是为了 Go 批量快路径能对同一观测复用同一段簿记:快路径
+            # 用 Go 返回的 pc/next_pc/flags/R 覆盖 CPU 态后调它,慢路径照旧
+            # step_body()+_post_step()。两路径行为逐字节一致。
             if isinstance(self.pc,IcfgValue):self.pc=self.pc.concrete()
             if machine is not None and self.sp!=before_sp:machine.note_sp_write(self)
             if machine is not None and before_pc==0x06066120:
@@ -2953,6 +2998,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     rebuilt['text']=module.codec.format(insn,raw)
             row.clear();row.update(rebuilt)
 
+    # 整段搬 Go 批量执行(opt-in,gosim_batch_engine 默认 None=legacy 逐步)。
+    # batch_buf 是当前「连续安全段」的逐步观测缓冲:段头命中预条件时用 Go
+    # 一次 cgo 调用填满(Go 在第一条不安全指令处诚实停并返回前缀),此后每圈
+    # 消费一条喂回 trace 行;访存/抽象值/IRQ/Blocked/观察器停点都在段边界
+    # 交回下面逐步 except 通道。批量只替代 CPU 核的 decode+effect+apply,
+    # machine.select/after_step、hardware.advance、里程碑、报告组装照旧逐步。
+    batch_buf=[]
+    batch_engine=None
+    if gosim_batch_engine is not None:
+        from gosim_batch_engine import BatchEngine, BATCH_CAP
+        batch_engine=BatchEngine(rom,app,ENTRY)
+
     for _ in range(budget):
         attempts+=1
         if machine is not None:c=machine.select()
@@ -2981,6 +3038,34 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if machine is not None:row['core']=c.core_id
         clean=False
         post_reason=None
+        # 整段搬 Go:段头命中预条件时用 Go 一次 cgo 调用填 batch_buf,之后每圈
+        # 消费一条逐步观测(batched)走快路径。先 Python decode 头指令做安全预判
+        # (ALU + 放行的分支族),非安全(访存/sr/并行/sp 库/call/return)直接走
+        # 慢路径,省掉白费 Go 调用;预判放行的段由 Go 在第一条真正不安全处诚实
+        # 停。Go 是执行权威。
+        batched=None
+        if batch_engine is not None and batch_buf:
+            batched=batch_buf.pop(0)
+        elif batch_engine is not None:
+            try:
+                _hinsn=c.decode(c.pc)[0]
+            except Exception:
+                _hinsn=None
+            if (_hinsn is not None and _batch_safe(_hinsn,module)
+                    and (machine is None or len(machine.cores)==1)
+                    and gosim_observe.concrete_int(c.pc)
+                    and all(gosim_observe.concrete_int(v) for v in c.R)
+                    and gosim_observe.concrete_int(getattr(c,'icfg',0))
+                    and gosim_observe.immutable_fetch_pc(c.pc,rom)
+                    and getattr(c,'repeat',None) is None
+                    and getattr(c,'after_then',None) is None):
+                _sc,_spc,steps=batch_engine.run_segment(c,BATCH_CAP)
+                gosim_batch_fills+=1
+                if steps:
+                    batch_buf=list(steps)
+                    batched=batch_buf.pop(0)
+                else:
+                    gosim_batch_zero_fills+=1
         try:
             if hardware is not None and hardware.debug is not None:hardware.debug.check_fetch(c.pc,1,c.core_id)
             insn,raw,size=c.decode(c.pc)
@@ -3005,7 +3090,20 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # real delivery wakes it. No wake injection, no held-bit edit.
                 machine.enter_idle_wait(c)
                 raise CoreStall('core_idle_waiting',core=c.core_id)
-            c.step()
+            if batched is not None:
+                # 快路径:用 Go 返回的逐步观测覆盖 CPU 态(等价于 c.step() 的
+                # 核内 decode+effect+apply;sp/rets 对安全段不变),再跑同一段
+                # 步后簿记。before_pc 必须等于段头 pc(逐步消费保证)。
+                _pc,_next_pc,_flags,_R=batched
+                before_sp=c.sp
+                c.pc=_next_pc
+                c.R=list(_R)
+                c.flags=_flags
+                c.steps+=1
+                gosim_batch_steps+=1
+                c._post_step(_pc,before_sp,False)
+            else:
+                c.step()
             completed+=1
             row['next_pc']=hex(c.pc)
             if machine is not None:
@@ -3033,6 +3131,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             post_reason=gosim_observe.UPSTREAM
             stop={'kind':'upstream_simulator_failure','error_type':type(e).__name__,'message':str(e)}
         if gosim_observer is not None:gosim_observer.finalize(clean,post_reason)
+        if not clean:
+            # 任意异常(IRQ 交付/Blocked/CoreStall/上游失败)后 CPU/machine/
+            # hardware 状态已偏离批量假设,残留的未消费观测必须丢弃,下一圈
+            # 从干净边界重新判段或走逐步慢路径。
+            batch_buf=[]
         trace.append(row)
         if len(trace)>64:
             trace.pop(0)

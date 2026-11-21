@@ -25,17 +25,38 @@ from pi32v2isa import asm  # noqa: E402
 ALLOWED = {"arithmetic", "logic", "shifts", "bitops", "moves", "constants", "multiply", "fpu"}
 SP_BANK = {"add.sp_i", "add.sp_i.l", "add.r_sp_i", "add.r_sp_i.l"}
 
+# Stage-2 relaxation: the segment contract now also runs control flow — direct
+# unconditional branches (goto.s/goto.l/goto.r), flag conditional branches
+# (bc.*), zero-test branches (beqz/bnez), decrement-and-branch (dbnz.r), and the
+# register-compare branch family (beq/bne/bge/bgt/ble/blt plus the signed b*es
+# variants). Call/return (rets/sp side effects) and if-block/rep stay out.
+_REG_CMP = ("beq.", "bne.", "bge.", "bgt.", "ble.", "blt.",
+            "bges.", "bgts.", "bles.", "blts.")
+
+
+def _allow_branch(iid):
+    if iid.startswith("bc."):
+        return True
+    if iid in ("goto.s", "goto.l", "goto.r", "beqz", "bnez", "dbnz.r"):
+        return True
+    return any(iid.startswith(c) for c in _REG_CMP)
+
 
 def is_unsafe(insn):
     if insn.group not in ALLOWED:
-        return True
+        if not _allow_branch(insn.id):
+            return True
     if any(f.kind == "sr" for f in insn.fields.values()):
         return True
     if insn.id in SP_BANK or insn.id.startswith(("mov.sp_", "mov.ssp_", "mov.usp_")):
         return True
     if insn.id.endswith(".p"):
         return True
-    if asm.branch_field(insn) is not None or insn.block or getattr(insn, "body", ""):
+    if insn.block or getattr(insn, "body", ""):
+        return True
+    # branch_field is now allowed for the relaxed branch families above; any
+    # other branch-marked instruction (call.*/rts/... ) stays unsafe.
+    if asm.branch_field(insn) is not None and not _allow_branch(insn.id):
         return True
     return False
 

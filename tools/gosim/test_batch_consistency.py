@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Stage-1 segment-batch parity + wall-clock measurement.
+"""Stage-2 segment-batch parity + wall-clock measurement.
 
-Proves the "whole-loop-to-Go" protocol on real firmware code: find stretches of
-the official application that are single-core sequential scalar ALU (no memory,
-no branch, no parallel pair, no special register, no rep/if-block), then run the
-exact same stretch (a) one instruction at a time through the Python reference
-(upstream sim.CPU + architectural_k2, which is what probe_boot's CPU reduces to
-for such a stretch) and (b) in one cgo call through tools/gosim/segment.go. The
-two are serialized to the same byte layout (tools/gosim/gosim_batch.py) and
-compared byte-for-byte.
+Proves the "whole-loop-to-Go" protocol on real firmware code, now covering the
+stage-2 contract (sequential scalar ALU plus control-flow branches): find
+stretches of the official application that are safe under the contract, then run
+the exact same stretch (a) one instruction at a time through the Python
+reference (upstream sim.CPU + architectural_k2, which is what probe_boot's CPU
+reduces to for such a stretch) and (b) in one cgo call through
+tools/gosim/segment.go. The two are serialized to the same byte layout
+(tools/gosim/gosim_batch.py) and compared byte-for-byte.
 
-The segment predicate mirrors tools/gosim_observe.py's safety taxonomy, narrowed
-to the stage-1 contract (sequential ALU only). Real frontier data (crc_bankb,
-320k budget): 62,261 of 301,219 attempts (20.7%) qualify as observer-safe, in
-11,085 runs whose lengths are 1-40 (87.8% in the 2-8 bucket) — see
-tools/gosim_observe.py / tools/gosim_measure.py.
+Because branches make the executed pc sequence non-sequential, the parity is
+computed on the DYNAMIC prefix: both engines start from the same pc with the
+same registers/flags/sp/rets, follow the same branch decisions, and stop at the
+first instruction outside the contract. The comparison is on the per-step
+observations (pc/next_pc/flags/16 registers), i.e. the branch-target sequence
+is compared against the step-by-step pc sequence, plus the honest-stop boundary.
 
 Usage:
     python3 tools/gosim/test_batch_consistency.py            # parity over found segments
@@ -52,18 +53,38 @@ ALLOWED_GROUPS = {"arithmetic", "logic", "shifts", "bitops", "moves", "constants
 SP_BANK = {"add.sp_i", "add.sp_i.l", "add.r_sp_i", "add.r_sp_i.l"}
 RETS_MASK = 0x07FFFFFE
 
+# Stage-2 relaxation: the contract now also runs control flow — direct
+# unconditional branches (goto.s/goto.l/goto.r), flag conditional branches
+# (bc.*), zero-test branches (beqz/bnez), decrement-and-branch (dbnz.r) and the
+# register-compare branch family (beq/bne/bge/bgt/ble/blt plus signed b*es).
+# Call/return (rets/sp side effects) and if-block/rep stay out.
+_REG_CMP = ("beq.", "bne.", "bge.", "bgt.", "ble.", "blt.",
+            "bges.", "bgts.", "bles.", "blts.")
+
+
+def _allow_branch(iid):
+    if iid.startswith("bc."):
+        return True
+    if iid in ("goto.s", "goto.l", "goto.r", "beqz", "bnez", "dbnz.r"):
+        return True
+    return any(iid.startswith(c) for c in _REG_CMP)
+
 
 def is_safe(insn):
-    """Stage-1 contract predicate (mirror of segment.go safeALU + batchUnsafe)."""
+    """Segment contract predicate (mirror of segment.go safeALU + batchUnsafe,
+    now including the stage-2 branch families)."""
     if insn.group not in ALLOWED_GROUPS:
-        return False
+        if not _allow_branch(insn.id):
+            return False
     if any(f.kind == "sr" for f in insn.fields.values()):
         return False
     if insn.id in SP_BANK or insn.id.startswith(("mov.sp_", "mov.ssp_", "mov.usp_")):
         return False
     if insn.id.endswith(".p"):
         return False
-    if asm.branch_field(insn) is not None or insn.block or getattr(insn, "body", ""):
+    if insn.block or getattr(insn, "body", ""):
+        return False
+    if asm.branch_field(insn) is not None and not _allow_branch(insn.id):
         return False
     return insn.id in arch_models
 
@@ -134,13 +155,18 @@ def reset_py(c, R, flags, sp, rets, pc, clear_cache=True):
     c.icfg = 0x02050500
 
 
-def run_reference(cpu, mem, seg, R, flags, sp, rets, clear_cache=True):
-    """Python step-by-step over the segment; returns list of per-step observations."""
-    reset_py(cpu, R, flags, sp, rets, seg[0][0], clear_cache=clear_cache)
+def run_reference(cpu, mem, start_pc, R, flags, sp, rets, cap, clear_cache=True):
+    """Python step-by-step from start_pc, following branches dynamically and
+    stopping at the first instruction outside the contract (or after cap steps).
+    Returns the per-step observations (before_pc, next_pc, flags, R, mem)."""
+    reset_py(cpu, R, flags, sp, rets, start_pc, clear_cache=clear_cache)
     mem.writes.clear()
     obs = []
-    for pc, _insn, _raw, _size in seg:
+    for _ in range(cap):
         before = cpu.pc
+        got = cpu.decode(cpu.pc)
+        if got is None or not is_safe(got[0]):
+            break
         cpu.step()
         if mem.writes:
             raise AssertionError(
@@ -149,33 +175,21 @@ def run_reference(cpu, mem, seg, R, flags, sp, rets, clear_cache=True):
     return obs
 
 
-def ref_bytes(obs):
-    return (gosim_batch.encode_header(len(obs), gosim_batch.BATCH_OK, 0)
-            + b"".join(gosim_batch.encode_step(pc, npc, fl, R, mem)
-                       for pc, npc, fl, R, mem in obs))
+def ref_step_bytes(obs):
+    return b"".join(gosim_batch.encode_step(pc, npc, fl, R, mem)
+                    for pc, npc, fl, R, mem in obs)
 
 
-def run_go(go, seg, R, flags, sp, rets, n=None):
-    if n is None:
-        n = len(seg)
+def run_go(go, start_pc, R, flags, sp, rets, n=None):
     go.set_regs(R)
-    go.set_state(flags, sp, rets, seg[0][0])
-    return go.run_segment(n, ENTRY, ENTRY + len(app), gosim_batch.outcap(n))
+    go.set_state(flags, sp, rets, start_pc)
+    return go.run_segment(n, ENTRY, ENTRY + len(app),
+                          gosim_batch.HDR_SIZE + n * (gosim_batch.STEP_FIXED + gosim_batch.MEM_SIZE))
 
 
-def segment_next(seg):
-    """The instruction immediately after a maximal safe run: (pc, insn-or-None).
-
-    None pc means the run ends at the application boundary (nothing to check)."""
-    last_pc, _insn, _raw, last_size = seg[-1]
-    off = last_pc - ENTRY + last_size
-    nxt_pc = last_pc + last_size
-    if off + 2 > len(app):
-        return None, None
-    got = codec.decode(tab, _read6(app, off))
-    if got is None:
-        return nxt_pc, None
-    return nxt_pc, got[0]
+def go_step_bytes(steps):
+    return b"".join(gosim_batch.encode_step(pc, npc, fl, R, mem)
+                    for pc, npc, fl, R, mem in steps)
 
 
 def main():
@@ -205,7 +219,7 @@ def main():
         bench(segs, args.bench_repeats, args.seed)
         return 0
 
-    # ---- parity ----
+    # ---- parity (dynamic prefix, following branches) ----
     rng = random.Random(args.seed)
     py_cpu = make_py_cpu()
     mem = RecordingMemory()
@@ -223,56 +237,50 @@ def main():
         flags = rng.randrange(16)
         sp = rng.getrandbits(32)
         rets = rng.getrandbits(32) & RETS_MASK
-        obs = run_reference(py_cpu, mem, seg, R, flags, sp, rets)
-        want = ref_bytes(obs)
-        got = run_go(go, seg, R, flags, sp, rets)
+        start_pc = seg[0][0]
+        cap = len(seg) + 4  # a little headroom past the static run
+        obs = run_reference(py_cpu, mem, start_pc, R, flags, sp, rets, cap)
+        L = len(obs)
+        got = run_go(go, start_pc, R, flags, sp, rets, cap)
+        (executed, stop_code, stop_pc), gsteps = gosim_batch.parse_buffer(got)
         tested += 1
-        steps += len(seg)
-        if want != got:
-            failures.append((seg, want, got))
+        steps += L
+        want = ref_step_bytes(obs)
+        have = go_step_bytes(gsteps)
+        if want != have or executed != L:
+            failures.append((seg, L, executed, want, have, stop_code, stop_pc))
             if len(failures) >= 5:
                 break
-        # Honest-stop: extending by one instruction past a maximal safe run must
-        # return the whole prefix and stop at the boundary, never fabricate.
-        nxt_pc, nxt_insn = segment_next(seg)
-        if nxt_pc is not None:
-            ext = run_go(go, seg, R, flags, sp, rets, n=len(seg) + 1)
-            (executed, stop_code, stop_pc), _ = gosim_batch.parse_buffer(ext)
-            ok = (executed == len(seg)
-                  and stop_code in (gosim_batch.BATCH_UNSAFE, gosim_batch.BATCH_NO_MODEL,
-                                    gosim_batch.BATCH_NO_INSTR)
-                  and stop_pc == nxt_pc
-                  and (stop_code == gosim_batch.BATCH_NO_INSTR) == (nxt_insn is None)
-                  and (nxt_insn is None or not is_safe(nxt_insn)))
-            if not ok:
-                stop_failures.append((seg, executed, stop_code, stop_pc, nxt_pc,
-                                      nxt_insn.id if nxt_insn is not None else None))
-                if len(stop_failures) >= 5:
-                    break
+        # Honest-stop: extending past the safe prefix must stop at the boundary
+        # (the pc after the last safe step), never fabricate extra steps.
+        if L < cap and not (executed == L and stop_code != gosim_batch.BATCH_OK
+                            and stop_pc == obs[-1][1]):
+            stop_failures.append((seg, executed, stop_code, stop_pc, obs[-1][1]))
+            if len(stop_failures) >= 5:
+                break
 
     if failures:
-        for seg, want, got in failures:
-            (_executed, stop_code, stop_pc), _steps = gosim_batch.parse_buffer(got)
-            print(f"\nMISMATCH segment@{seg[0][0]:#010x} len={len(seg)} "
-                  f"go_stop_code={stop_code} go_stop_pc={stop_pc:#x}")
-            limit = min(len(want), len(got))
-            i = next((i for i in range(limit) if want[i] != got[i]), limit)
-            print(f"  first byte diff at {i} (want len={len(want)} got len={len(got)}):")
+        for seg, L, executed, want, have, stop_code, stop_pc in failures:
+            print(f"\nMISMATCH segment@{seg[0][0]:#010x} static_len={len(seg)} "
+                  f"ref_steps={L} go_executed={executed} go_stop_code={stop_code} go_stop_pc={stop_pc:#x}")
+            limit = min(len(want), len(have))
+            i = next((i for i in range(limit) if want[i] != have[i]), limit)
+            print(f"  first byte diff at {i} (want len={len(want)} got len={len(have)}):")
             print(f"    want {want[max(0, i - 16):i + 16].hex()}")
-            print(f"    got  {got[max(0, i - 16):i + 16].hex()}")
+            print(f"    got  {have[max(0, i - 16):i + 16].hex()}")
         print(f"\nRESULT: FAIL ({len(failures)}/{tested} segments mismatched)")
         return 1
 
     if stop_failures:
-        for seg, executed, stop_code, stop_pc, nxt_pc, nxt_id in stop_failures:
+        for seg, executed, stop_code, stop_pc, nxt_pc in stop_failures:
             print(f"\nHONEST-STOP MISMATCH segment@{seg[0][0]:#010x} len={len(seg)} "
                   f"executed={executed} stop_code={stop_code} stop_pc={stop_pc:#x} "
-                  f"expected_stop_pc={nxt_pc:#x} next_insn={nxt_id}")
+                  f"expected_stop_pc={nxt_pc:#x if nxt_pc is not None else None}")
         print(f"\nRESULT: FAIL ({len(stop_failures)} honest-stop boundary violations)")
         return 1
 
     print(f"RESULT: PASS — {tested} segments, {steps} steps, byte-for-byte identical; "
-          f"honest-stop boundary verified (max len={max(lengths) if lengths else 0})")
+          f"honest-stop boundary verified (max static len={max(lengths) if lengths else 0})")
     return 0
 
 
@@ -297,12 +305,12 @@ def bench(segs, repeats, seed):
     go.write(ENTRY, app)
 
     # warm up decode caches (both engines keep them across the timed loop)
-    run_reference(py_cpu, mem, seg, R, flags, sp, rets)
-    run_go(go, seg, R, flags, sp, rets)
+    run_reference(py_cpu, mem, seg[0][0], R, flags, sp, rets, N)
+    run_go(go, seg[0][0], R, flags, sp, rets, N)
 
     t0 = time.perf_counter()
     for _ in range(repeats):
-        run_reference(py_cpu, mem, seg, R, flags, sp, rets, clear_cache=False)
+        run_reference(py_cpu, mem, seg[0][0], R, flags, sp, rets, N, clear_cache=False)
     py_sec = time.perf_counter() - t0
 
     t0 = time.perf_counter()

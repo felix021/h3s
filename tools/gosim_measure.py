@@ -33,9 +33,13 @@ def _digest_trace(trace):
     return h.hexdigest(), n
 
 
-def run_scenario(module, app, plain, readonly, header, rom, scenario, budget, observer):
-    """observer: None(关) or a GosimObserver(开)。返回 (result, trace)。"""
+def run_scenario(module, app, plain, readonly, header, rom, scenario, budget, observer,
+                 batch_engine=None):
+    """observer: None(关) or a GosimObserver(开)。batch_engine: None(关) or a
+    BatchEngine(开,整段搬 Go 快路径)。返回 (result, trace)。"""
     probe_boot.gosim_observer = observer
+    probe_boot.gosim_batch_engine = batch_engine
+    probe_boot.gosim_batch_steps = 0
     if observer is not None:
         observer.reset()
     result, trace = ait.frontier_run(
@@ -60,6 +64,10 @@ def main():
                     help='force observation off (else env H3S_GOSIM_OBSERVE)')
     ap.add_argument('--self-check-byte', action='store_true',
                     help='run off+on and assert report/trace byte-identical')
+    ap.add_argument('--self-check-batch', action='store_true',
+                    help='run batch off+on and assert report/trace byte-identical')
+    ap.add_argument('--batch', action='store_true',
+                    help='enable the Go segment batch (default off)')
     args = ap.parse_args()
 
     rom = args.rom.read_bytes()
@@ -93,8 +101,32 @@ def main():
             args.report.write_text(json.dumps(result_off, sort_keys=True))
         return 0 if (report_same and trace_same) else 1
 
+    if args.self_check_batch:
+        from gosim_batch_engine import BatchEngine
+        engine = BatchEngine(rom, app, probe_boot.ENTRY)
+        result_off, trace_off = run_scenario(module, app, plain, readonly, header, rom, scenario, budget, None)
+        result_on, trace_on = run_scenario(module, app, plain, readonly, header, rom, scenario, budget,
+                                           None, engine)
+        report_same = json.dumps(result_off, sort_keys=True) == json.dumps(result_on, sort_keys=True)
+        dig_off, n_off = _digest_trace(trace_off)
+        dig_on, n_on = _digest_trace(trace_on)
+        trace_same = (n_off == n_on and dig_off == dig_on)
+        batch_steps = probe_boot.gosim_batch_steps
+        completed = result_on.get('completed_steps', 0)
+        print('byte-identity: report_same=%s trace_same=%s (trace_rows=%d)' %
+              (report_same, trace_same, n_off), flush=True)
+        print('batch coverage: %d of %d completed steps (%d attempts total in off arm)' %
+              (batch_steps, completed, 0), flush=True)
+        print('PASS' if (report_same and trace_same) else 'FAIL', flush=True)
+        if args.report:
+            args.report.write_text(json.dumps(result_off, sort_keys=True))
+        return 0 if (report_same and trace_same) else 1
+
+    from gosim_batch_engine import BatchEngine
+    batch_engine = BatchEngine(rom, app, probe_boot.ENTRY) if args.batch else None
     observer = gosim_observe.GosimObserver() if observe else None
-    result, trace = run_scenario(module, app, plain, readonly, header, rom, scenario, budget, observer)
+    result, trace = run_scenario(module, app, plain, readonly, header, rom, scenario, budget,
+                                 observer, batch_engine)
 
     report_text = json.dumps(result, sort_keys=True)
     args.report.write_text(report_text)
@@ -111,8 +143,9 @@ def main():
         dig, n = _digest_trace(trace)
         args.trace_digest.write_text(json.dumps({'sha256': dig, 'rows': n}))
 
-    print('scenario=%s budget=%d completed_steps=%s stop=%s observe=%s' %
-          (scenario, budget, result.get('completed_steps'), result.get('stop'), observe),
+    print('scenario=%s budget=%d completed_steps=%s stop=%s observe=%s batch=%s batch_steps=%d' %
+          (scenario, budget, result.get('completed_steps'), result.get('stop'), observe,
+           batch_engine is not None, probe_boot.gosim_batch_steps),
           flush=True)
     return 0
 
