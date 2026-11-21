@@ -1112,6 +1112,58 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     require(self.R[pair_raw['b']] == gate.VLVD,
                             'the P3_VLVD bit2 writeback read site base register changed '
                             '(expected r2=0xf2c044)')
+            if hardware is not None and hardware.p3_pr_pwr is not None:
+                # 路 DACDMAPCNT 续二(codex 202611212300):P3_PR_PWR(0xf2c280)
+                # 软复位读/写点守卫。note_step 每步刷新(current_pc 供硬件
+                # read/write 路径溯源);读点 0x12cc6a 处 require 钉死 ld.w.l
+                # 形状/字节/基址 r2=0xf2c044/有效地址 0xf2c280,并钉后续消费链
+                # 0x12cc6e/72/74/78 字节;写点 0x12cc78 处 require 钉死 st.w.l
+                # 形状/字节/基址/源 r0。值由硬件 read 的 answer() 提供
+                # (保留位 fixture),写回由硬件 write 停在 p33_soft_reset_requested。
+                # 开关关=槽 None,一次 is-not-None 测试即过,legacy 世界零变化。
+                gate = hardware.p3_pr_pwr
+                gate.note_step(self.pc, self.core_id)
+                if self.pc == gate.READ_PC:
+                    require(insn.id == 'ld.w.l' and raw == gate.READ_SHAPE,
+                            'the P3_PR_PWR soft-reset read site must keep its pinned '
+                            'shape (ld.w.l r0=[r2+572] at 0x12cc6a)')
+                    require(self.mem.read(self.pc, 4) == bytes.fromhex(gate.READ_BYTES),
+                            'the P3_PR_PWR soft-reset read site bytes changed '
+                            '(expected d2ec2c03 at 0x12cc6a)')
+                    require(self.R[raw['s']] == gate.BASE,
+                            'the P3_PR_PWR soft-reset read site base register changed '
+                            '(expected r2=0xf2c044)')
+                    require(self.R[raw['s']] + raw['n'] * 4 == gate.PR_PWR,
+                            'the P3_PR_PWR soft-reset read site effective address changed '
+                            '(expected 0xf2c280)')
+                    require(self.mem.read(gate.READ_PC + 4, 4) == bytes.fromhex(gate.CHAIN_BYTES[0]),
+                            'the P3_PR_PWR soft-reset consumption chain changed '
+                            '(expected 41e0cf3f at 0x12cc6e: li.s16 r1=0x3fcf)')
+                    require(self.mem.read(gate.READ_PC + 8, 2) == bytes.fromhex(gate.CHAIN_BYTES[1]),
+                            'the P3_PR_PWR soft-reset consumption chain changed '
+                            '(expected 9019 at 0x12cc72: and.rr r0&=r1)')
+                    require(self.mem.read(gate.READ_PC + 10, 4) == bytes.fromhex(gate.CHAIN_BYTES[2]),
+                            'the P3_PR_PWR soft-reset consumption chain changed '
+                            '(expected 40e13000 at 0x12cc74: or.modimm.rri r0|=0x30)')
+                    require(self.mem.read(gate.READ_PC + 14, 4) == bytes.fromhex(gate.WRITE_BYTES),
+                            'the P3_PR_PWR soft-reset consumption chain changed '
+                            '(expected d2ec2d03 at 0x12cc78: st.w.l [r2+572]=r0)')
+                if self.pc == gate.WRITE_PC:
+                    require(insn.id == 'st.w.l' and raw == gate.WRITE_SHAPE,
+                            'the P3_PR_PWR soft-reset write site must keep its pinned '
+                            'shape (st.w.l [r2+572]=r0 at 0x12cc78)')
+                    require(self.mem.read(self.pc, 4) == bytes.fromhex(gate.WRITE_BYTES),
+                            'the P3_PR_PWR soft-reset write site bytes changed '
+                            '(expected d2ec2d03 at 0x12cc78)')
+                    require(self.R[raw['r']] == gate.BASE,
+                            'the P3_PR_PWR soft-reset write site base register changed '
+                            '(expected r2=0xf2c044)')
+                    require(raw['s'] == 0,
+                            'the P3_PR_PWR soft-reset write site source changed '
+                            '(expected r0)')
+                    require(self.R[raw['r']] + raw['n'] * 4 == gate.PR_PWR,
+                            'the P3_PR_PWR soft-reset write site effective address changed '
+                            '(expected 0xf2c280)')
             if machine is not None:
                 if machine.first_task_return_hypothesis is not None:
                     machine.first_task_tail(self,insn,raw)

@@ -634,6 +634,32 @@ FEATURES = (
             '字节,读点不符走严格路径;新停点 0x12cc6a 读 0xf2c280=P3_PR_PWR'
             '(预计 unmapped_memory);证据=已验证实现契约与当前前缀推进,'
             '不证明 VLVD bit2 硅语义/硬件异步改写)'),
+    # ---- 路 DACDMAPCNT 续二(codex 202611212300 P3_PR_PWR 软复位读建模):
+    # 31,418,688 停点 0x12cc6a 读 0xf2c280=P3_PR_PWR(unmapped_memory)放行。
+    # 该读是 SDK 具名函数 p33_soft_reset 体内 ld.w.l r0=[r2+572](r2=0xf2c044
+    # →0xf2c280),读值后续 &0x3fcf|0x30 于 0x12cc78 st.w.l 写回同一地址=
+    # 软件请求 P33 软复位。读值有 12 个保留位(mask 0x3fcf)当前无软件写值
+    # 证据,须显式具名假设:本开关取显式传入的保留位作为 r0 代表值(source=
+    # fixture)。默认 None=关(读点保持 unmapped_memory 严格停,31,418,688
+    # 前沿形状);显式 0/1 时读点放行、0x12cc78 写回停因 p33_soft_reset_
+    # requested(写值 (retained&0x3fcf)|0x30)。依赖 p3_vlvd_bit2_writeback_
+    # readback(同函数链 0x12cc54 VLVD 读放行是到达 0x12cc6a 的前置)。第二组
+    # 同址访问 0x12cffc/0x12d008(power_set_soft_poweroff_legacy 计数分支)
+    # 守卫 PC 不符,继续严格停不放行。----
+    Feature('p3_pr_pwr_retained_bits', 'probe_only',
+            ('p3_vlvd_bit2_writeback_readback',),
+            True, None,
+            'P3_PR_PWR(0xf2c280)软复位读点 12 个保留位显式 fixture(31,418,688 '
+            '停点 0x12cc6a 读 0xf2c280,p33_soft_reset 体内 ld.w.l r0=[r2+572],'
+            'r2=0xf2c044):读值=显式传入保留位(source=fixture,mask=0x3fcf),'
+            '真实指令 &0x3fcf|0x30 后 0x12cc78 st.w.l 写回=软件请求 P33 软复位,'
+            '停因 p33_soft_reset_requested(写值 (retained&0x3fcf)|0x30);保留位无'
+            '软件写值证据,显式具名假设(derived-not-measured,非复位值证据);'
+            '守卫=读点 PC 0x12cc6a/写点 PC 0x12cc78+指令字节+有效地址 0xf2c280+'
+            '源 r0,钉消费链 0x12cc6e/72/74 字节;第二组同址 0x12cffc/0x12d008 '
+            '守卫 PC 不符继续严格停;默认 None=关(读点 unmapped_memory 逐字节'
+            '不变),证据=已验证实现契约与当前前缀推进,不证明保留位硅语义/'
+            '软件复位交付时序)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li

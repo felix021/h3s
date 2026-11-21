@@ -717,6 +717,11 @@ class M4ProjectionFamilies(unittest.TestCase):
         # (probe_only; the M4 slot is in M4_FAMILIES so the all-families world
         # turns it on for the round-trip inventory).
         p3_vlvd_bit2_writeback_readback=True,
+        # Route DACDMAPCNT 续二: the P3_PR_PWR soft-reset read fixture gate
+        # (probe_only; the M4 slot is in M4_FAMILIES so the all-families world
+        # turns it on for the round-trip inventory; the retained-bits value is
+        # a construction constant riding the per-object static guard).
+        p3_pr_pwr_retained_bits=0,
         # Route COPEXIMPL: the copex mode-22 exponential approximation gate,
         # ON in the current conditional frontier flag set (its first intercepted
         # copex sits at the 42,037,363-era frontier stop).

@@ -9071,6 +9071,122 @@ class P3VlvdBit2WritebackReadback:
         }
 
 
+class P3PrPwrRetainedBits:
+    """P3_PR_PWR(0xf2c280)软复位读点 12 个保留位显式 fixture(opt-in,路
+    DACDMAPCNT 续二,codex 202611212300 方案)。
+
+    背景:31,418,688 停点 @ 0x12cc6a——p33_soft_reset 体内读 0xf2c280,当前
+    unmapped_memory。该读是 `ld.w.l r0=[r2+572]`(r2=0xf2c044=P3_VLVD_CON,
+    +0x23c=572=143×4 → 0xf2c280),读值后续 `&0x3fcf | 0x30` 于 0x12cc78
+    `st.w.l [r2+572]=r0` 写回同一地址=软件请求 P33 软复位(SDK reset.c.o
+    `p33_soft_reset`;cpu.h 调用链已核实)。读值有 12 个保留位(mask 0x3fcf)
+    当前无软件写值证据(旧记录 0x12ceb8 的 0xff 实际写 0xf2c160/164/19c/1a0,
+    不是本地址),故读值只能显式具名假设:本开关把显式传入的保留位作为 r0
+    代表值(source=fixture),真实指令链 &0x3fcf|0x30 后写出 (retained&0x3fcf)
+    |0x30。这不是复位值证据,也不拆分 bit4/5 的电气作用。
+
+    守卫(codex §4):读点=运行 PC 0x12cc6a(ld.w.l r0=[r2+572],d2ec2c03,基址
+    r2=0xf2c044,有效地址 0xf2c280)+钉消费链 0x12cc6e(41e0cf3f)/0x12cc72
+    (9019)/0x12cc74(40e13000)/0x12cc78(d2ec2d03);写点=运行 PC 0x12cc78
+    (st.w.l [r2+572]=r0,源 r0)。answer() 只在 current_pc==0x12cc6a 且主核时
+    提供读值;write() 只在 current_pc==0x12cc78 时以 p33_soft_reset_requested
+    停,其余读点/写点(第二组同址 0x12cffc/0x12d008,power_set_soft_poweroff_
+    legacy 计数分支)守卫不符走严格停不放行。默认 None=关:0xf2c280 保持
+    unmapped(31,418,688 前沿形状),legacy 逐字节不变。
+    """
+
+    PR_PWR = 0xf2c280
+    BASE = 0xf2c044          # 基址 r2=0xf2c044(ld/st 共用)
+    READ_PC = 0x12cc6a
+    WRITE_PC = 0x12cc78
+    MASK = 0x3fcf            # 12 个保留位掩码
+    OR = 0x30                # bit4/5 成对置位
+    READ_SHAPE = {'r': 0, 's': 2, 'n': 143}   # ld.w.l r0=[r2+143*4]
+    WRITE_SHAPE = {'r': 2, 'n': 143, 's': 0}  # st.w.l [r2+143*4]=r0
+    READ_BYTES = 'd2ec2c03'
+    WRITE_BYTES = 'd2ec2d03'
+    CHAIN_BYTES = ('41e0cf3f', '9019', '40e13000')  # 0x12cc6e/72/74
+
+    def __init__(self, retained_bits):
+        self.retained_bits = retained_bits
+        self.current_pc = None
+        self.current_pc_core = None
+        self.served = {}
+        self.rejections = {}
+        self.served_values = []
+        self.write_served = {}
+        self.written_values = []
+
+    def note_step(self, pc, core):
+        """probe_boot step_body 每步刷新的读/写点溯源(jl_sync note_step 先例;
+        开关关=槽 None,一次 is-not-None 测试即过,legacy 零变化)。"""
+        self.current_pc = pc
+        self.current_pc_core = core
+
+    def _reject(self, reason):
+        self.rejections[reason] = self.rejections.get(reason, 0) + 1
+
+    def handles(self, address):
+        return address == self.PR_PWR
+
+    def answer(self, address):
+        """已核验读点的读值提供门(硬件 read 路径调用)。返回显式保留位=
+        放行值,None=守卫拒绝(回落严格停)。"""
+        if address != self.PR_PWR:
+            self._reject('address_mismatch'); return None
+        if self.current_pc != self.READ_PC:
+            self._reject('pc_not_read_site'); return None
+        if self.current_pc_core != 0:
+            self._reject('core_mismatch'); return None
+        self.served[hex(self.READ_PC)] = self.served.get(hex(self.READ_PC), 0) + 1
+        self.served_values.append(self.retained_bits)
+        return self.retained_bits
+
+    def write(self, address, value):
+        """写点拦截:只在 current_pc==0x12cc78 时以 p33_soft_reset_requested 停,
+        报告真实准备写出的值;其余写点(第二组同址 0x12d008 等)严格停不放行。
+        """
+        if address != self.PR_PWR:
+            raise Blocked('p3_pr_pwr_word_store_not_modeled',
+                          address=hex(address), value=hex(value))
+        if self.current_pc != self.WRITE_PC:
+            raise Blocked('p3_pr_pwr_off_site_write', address=hex(address),
+                          value=hex(value),
+                          pc='None' if self.current_pc is None else hex(self.current_pc))
+        self.write_served[hex(self.WRITE_PC)] = self.write_served.get(hex(self.WRITE_PC), 0) + 1
+        self.written_values.append(value)
+        raise Blocked('p33_soft_reset_requested', address=hex(address), value=hex(value))
+
+    def report(self):
+        return {
+            'enabled': True,
+            'register': hex(self.PR_PWR),
+            'retained_bits': hex(self.retained_bits),
+            'mask': hex(self.MASK),
+            'read_site': hex(self.READ_PC),
+            'write_site': hex(self.WRITE_PC),
+            'served': {hex(pc): self.served.get(hex(pc), 0) for pc in (self.READ_PC,)},
+            'served_values': [hex(v) for v in self.served_values],
+            'write_served': {hex(pc): self.write_served.get(hex(pc), 0) for pc in (self.WRITE_PC,)},
+            'written_values': [hex(v) for v in self.written_values],
+            'rejections': dict(sorted(self.rejections.items())),
+            'source': 'fixture',
+            'semantics': ('the single pinned read ld.w.l r0=[r2+572] (r2=0xf2c044 → '
+                          '0xf2c280) at 0x12cc6a returns the explicitly-supplied retained '
+                          'bits as the r0 representative value; the real instructions then '
+                          'compute r0=(value & 0x3fcf)|0x30 and the 0x12cc78 st.w.l '
+                          'write-back requests the P33 soft reset (reported value = the '
+                          'firmware\'s own executed result, never invented)'),
+            'assumption': ('derived-not-measured: the 12 retained bits (mask 0x3fcf) have no '
+                           'software-write evidence at this point, so the read value is an '
+                           'explicit named fixture (source=fixture), NOT a reset-value claim; '
+                           'bits 4/5 are set together by the named soft-reset function and '
+                           'their separate electrical roles are not split; how the chip '
+                           'delivers the soft reset (before/after the 0x12cc7c pop) has no '
+                           'silicon evidence — this stops at the request delivery boundary'),
+        }
+
+
 class Fd31AdcConRegisters:
     """0xfd3100 = JL_ADC->CON 的 write-only 整字记录(opt-in,路 BG/sim-pwrdomain)。
 
@@ -10141,6 +10257,7 @@ class BR28Model:
                  reset_history_projection=False,reset_history_words=None,
                  p3_pcnt_set0_readback=False,
                  p3_vlvd_bit2_writeback_readback=False,
+                 p3_pr_pwr_retained_bits=None,
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,icu_region_projection=False,
                  dcu_cmo_projection=False,l1p_idle_projection=False,l1p_idle_word=0x80000000,
@@ -10764,6 +10881,28 @@ class BR28Model:
             self.p3_vlvd_bit2 = P3VlvdBit2WritebackReadback()
         else:
             self.p3_vlvd_bit2 = None
+        # p3_pr_pwr_retained_bits(路 DACDMAPCNT 续二,codex 202611212300,默认
+        # None=关):P3_PR_PWR(0xf2c280)软复位读点 12 个保留位显式 fixture——
+        # 31,418,688 停点 0x12cc6a 读 0xf2c280 放行,读值=显式传入保留位
+        # (source=fixture),真实指令 &0x3fcf|0x30 后 0x12cc78 写回=软件请求
+        # P33 软复位(停因 p33_soft_reset_requested)。value_switch 约定区分
+        # None(关)与数值 0(开,保留位全零假设)。显式依赖 p3_vlvd_bit2_
+        # writeback_readback(同函数链 0x12cc54 VLVD 读放行是到达 0x12cc6a 的
+        # 前置)。默认关:0xf2c280 保持 unmapped(31,418,688 前沿形状),legacy
+        # 逐字节不变。
+        if p3_pr_pwr_retained_bits is not None:
+            if not p3_vlvd_bit2_writeback_readback:
+                raise ValueError('p3_pr_pwr_retained_bits requires p3_vlvd_bit2_writeback_readback '
+                                 '(the soft-reset read 0x12cc6a is reached only after the '
+                                 '0x12cc54 VLVD bit2 read is released on the same function chain)')
+            if (not isinstance(p3_pr_pwr_retained_bits, int)
+                    or not 0 <= p3_pr_pwr_retained_bits <= 0xffffffff
+                    or p3_pr_pwr_retained_bits & ~P3PrPwrRetainedBits.MASK):
+                raise ValueError('p3_pr_pwr_retained_bits must be an int whose bits are '
+                                 'all within the 0x3fcf mask')
+            self.p3_pr_pwr = P3PrPwrRetainedBits(p3_pr_pwr_retained_bits)
+        else:
+            self.p3_pr_pwr = None
         # 路 BM §1(S19 批 1 ①):W4[4] PVDD/trim 域容器——P3_ANA_CON13(0xf2c274)/
         # P3_ANA_CON1(0xf2c244)/P3_PVDD0_AUTO(0xf2c10c)按路 AM 容器同款「显式
         # 合成初始字 0+读回=当前寄存器值」seed(seed 语句在 additional_
@@ -11206,6 +11345,7 @@ class BR28Model:
             (self.jl_pled_config_words is not None and self.jl_pled_config_words.handles(address)) or
             (self.p11_lpvad is not None and self.p11_lpvad.handles(address)) or
             (self.p33_canary is not None and self.p33_canary.handles(address)) or
+            (self.p3_pr_pwr is not None and self.p3_pr_pwr.handles(address)) or
             (self.timer2 is not None and (self.timer2.handles(address)
                                           or self.timer2.handles_iwkup(address))) or
             (self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address)) or
@@ -11664,6 +11804,15 @@ class BR28Model:
                 if value is not None:
                     return value
             return self.p33_canary.read(address)
+        # P3_PR_PWR(0xf2c280,路 DACDMAPCNT 续二):软复位读点——只在 current_pc
+        # ==0x12cc6a 且主核时返回显式保留位 fixture,其余读点(第二组同址
+        # 0x12cffc 等)守卫不符严格停(kind 优先于泛 unmapped,便于诊断)。
+        if self.p3_pr_pwr is not None and self.p3_pr_pwr.handles(address):
+            self.counts['reads']+=1
+            value = self.p3_pr_pwr.answer(address)
+            if value is not None:
+                return value
+            raise Blocked('p3_pr_pwr_read_not_modeled', address=hex(address))
         # JL_TIMER2(路 BK/S19 批 1):CON/CNT/PRD 读回=存储值|pending bit15
         # (Timer0.read 同式);IWKUP_NUM(0xFFE1B0)write-only,读回一律严格停
         # (显式 kind 优先于泛 unmapped,便于诊断)。
@@ -12017,6 +12166,12 @@ class BR28Model:
             # 金丝雀树/低功耗域(路 BV):DVFS st.w.modimm 关断与消费型写回
             # st.w 的整字记录(P_IE 写回先例同款);其余形状由投影拒绝。
             self.p33_canary.write(address,value)
+        elif self.p3_pr_pwr is not None and self.p3_pr_pwr.handles(address):
+            # P3_PR_PWR(0xf2c280,路 DACDMAPCNT 续二):0x12cc78 st.w.l 整字直写
+            # 经通用 mmio 路径到此处——报告真实写值并停在复位交付边界
+            # (p33_soft_reset_requested);第二组同址写 0x12d008 守卫 PC 不符
+            # 严格停不放行。
+            self.p3_pr_pwr.write(address,value)
         elif self.timer2 is not None and self.timer2.handles(address):
             # JL_TIMER2(路 BK/S19 批 1):CON/CNT/PRD 整字写(0x4000/1/200/
             # 0xC01 启动/0xCC01 W1C/0 停表,全 26 指令钉死),字段位图校验在
@@ -13159,6 +13314,25 @@ class BR28Model:
                 'claim — the bit\'s real electrical meaning and any hardware asynchronous '
                 'rewrite still need silicon confirmation (SDK evidence is an address macro '
                 'only; the firmware takes only this single bit)')
+        # 路 DACDMAPCNT 续二:P3_PR_PWR 软复位读点 fixture 报告(开关关=
+        # None=零键,legacy 报告不变)。
+        if self.p3_pr_pwr is not None:
+            result['p3_pr_pwr_retained_bits'] = self.p3_pr_pwr.report()
+            result['assumptions']['p3_pr_pwr_retained_bits'] = (
+                'P3_PR_PWR (0xf2c280) soft-reset read released (route DACDMAPCNT 续二, '
+                'codex 202611212300): only the pinned read ld.w.l r0=[r2+572] (r2=0xf2c044 '
+                '→ 0xf2c280) at 0x12cc6a answers with the explicitly-supplied retained bits '
+                'as the r0 representative value (source=fixture, mask=0x3fcf); the real '
+                'instructions then compute r0=(value&0x3fcf)|0x30 and the 0x12cc78 st.w.l '
+                'write-back requests the P33 soft reset (reported write value = the '
+                'firmware\'s own executed result). derived-not-measured, NOT a '
+                'silicon-equivalence claim: the 12 retained bits have no software-write '
+                'evidence here (the 0x12ceb8 0xff writes land on 0xf2c160/164/19c/1a0, not '
+                'this address), so the read value is an explicit named assumption, not a '
+                'reset-value claim; bits 4/5 are set together and their separate electrical '
+                'roles are not split; how the chip delivers the soft reset (before/after the '
+                '0x12cc7c pop) has no silicon evidence — the stop sits at the request '
+                'delivery boundary')
         # 路 COPEXIMPL:mode-22 指数近似模型报告(开关关=槽 None=零键,
         # legacy 报告不变)。
         if self.copex_exp22 is not None:

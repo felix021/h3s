@@ -5109,6 +5109,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_dma_pcm_produce=False,
              p3_pcnt_set0_readback=False,
              p3_vlvd_bit2_writeback_readback=False,
+             p3_pr_pwr_retained_bits=None,
              jl_audio_adc_dma_writes=False,
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
@@ -6833,6 +6834,27 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 '(0x12cc54/56 is reached only after the 0x12cc48 PCNT_SET0 read is '
                 'released on the same function chain)')
         options['p3_vlvd_bit2_writeback_readback']=True
+    # p3_pr_pwr_retained_bits(路 DACDMAPCNT 续二,codex 202611212300,默认
+    # None=关):P3_PR_PWR(0xf2c280)软复位读点 12 个保留位显式 fixture——
+    # 31,418,688 停点 0x12cc6a 读 0xf2c280 放行,读值=显式传入保留位(source=
+    # fixture,mask=0x3fcf),真实指令 &0x3fcf|0x30 后 0x12cc78 st.w.l 写回=
+    # 软件请求 P33 软复位(停因 p33_soft_reset_requested,写值 (retained&0x3fcf)
+    # |0x30)。value_switch 约定区分 None(关)与数值 0(开,保留位全零假设)。
+    # 依赖边挂 p3_vlvd_bit2_writeback_readback(同函数链 0x12cc54 VLVD 读放行
+    # 是到达 0x12cc6a 的前置)。默认关:0xf2c280 读保持 unmapped(31,418,688
+    # 前沿形状),legacy 逐字节不变。
+    if p3_pr_pwr_retained_bits is not None:
+        require(p3_vlvd_bit2_writeback_readback,
+                'the P3_PR_PWR retained-bits fixture rides on the P3_VLVD bit2 writeback '
+                'readback (0x12cc6a is reached only after the 0x12cc54 VLVD read is '
+                'released on the same function chain)')
+        require(isinstance(p3_pr_pwr_retained_bits, int)
+                and 0 <= p3_pr_pwr_retained_bits <= 0xffffffff
+                and not (p3_pr_pwr_retained_bits & ~0x3fcf),
+                'the P3_PR_PWR retained-bits fixture is an int whose bits are all '
+                'within the 0x3fcf mask (the value is an explicit named assumption, '
+                'not a reset-value claim)')
+        options['p3_pr_pwr_retained_bits']=p3_pr_pwr_retained_bits
     # copex_exp22_model(路 COPEXIMPL,codex 裁 (a) 收窄版,默认 False=关):
     # copex.ppi mode-22 指数近似模型——42,037,363 停点 0x606a900(upstream
     # 『copex.ppi has no model』,音频管线重配段 exp 叶子 0x606a8fc 体内)
@@ -12514,6 +12536,38 @@ def main():
                                  'jl_audio_dac_dma_pcm_produce':True,
                                  'p3_pcnt_set0_readback':True,
                                  'p3_vlvd_bit2_writeback_readback':True},
+                              flash_image_bytes=image),
+                     # 路 DACDMAPCNT 续二:在 VLVD 臂上追加 P3_PR_PWR(0xf2c280)
+                     # 软复位读点保留位 fixture=0(显式假设「本次 12 个保留位为
+                     # 零」)。旧臂 31,418,688 @ 0x12cc6a 逐字节不变(pr_pwr 开关
+                     # None=关);开 fixture 的臂越过 0x12cc6a(读值=0)→ 真实指令
+                     # &0x3fcf|0x30 → 0x12cc78 写回 0x30,停因 p33_soft_reset_
+                     # requested(停在复位交付边界,写值=固件自己的执行结果)。
+                     # 第二组同址访问 0x12cffc/0x12d008 在更后未到达,守卫 PC
+                     # 不符继续严格停。本臂不重钉 vlvd_probe 前沿。
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_dacdmapcnt_vlvd_prpwr0_probe',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
+                                 'jl_audio_dac_dma_setup_discarded_reads':True,
+                                 'jl_audio_dac_dma_len_readback':True,
+                                 'jl_audio_dac_dma_pns_write':True,
+                                 'jl_audio_dac_dma_pcm_produce':True,
+                                 'p3_pcnt_set0_readback':True,
+                                 'p3_vlvd_bit2_writeback_readback':True,
+                                 'p3_pr_pwr_retained_bits':0},
+                              flash_image_bytes=image),
+                     # 同臂 fixture=1 反例:读值保留位最低位=1 → 0x12cc78 写回
+                     # (1&0x3fcf)|0x30=0x31,其余与 prpwr0 臂一致。对照钉死
+                     # 「写值取决于这 12 个保留位」这一核心结论(控制流对读值
+                     # 不敏感,写出的总线数据敏感)。
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_dacdmapcnt_vlvd_prpwr1_probe',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
+                                 'jl_audio_dac_dma_setup_discarded_reads':True,
+                                 'jl_audio_dac_dma_len_readback':True,
+                                 'jl_audio_dac_dma_pns_write':True,
+                                 'jl_audio_dac_dma_pcm_produce':True,
+                                 'p3_pcnt_set0_readback':True,
+                                 'p3_vlvd_bit2_writeback_readback':True,
+                                 'p3_pr_pwr_retained_bits':1},
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,

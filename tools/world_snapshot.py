@@ -1217,6 +1217,15 @@ M4_FAMILIES = (
     # site-bytes are CLASS constants under the class-identity check.
     ('p3_vlvd_bit2', 'P3VlvdBit2WritebackReadback',
      ('served', 'rejections', 'served_values', 'current_pc', 'current_pc_core')),
+    # Route DACDMAPCNT 续二:the P3_PR_PWR soft-reset read fixture gate
+    # (0x12cc6a read / 0x12cc78 write). Only the served/rejection/write
+    # ledgers are runtime STATE; current_pc/current_pc_core are transient
+    # per-step provenance (overwritten each step, p3_vlvd precedent). The
+    # retained-bits fixture value and the read/write pins are construction
+    # constants riding the per-object static guard.
+    ('p3_pr_pwr', 'P3PrPwrRetainedBits',
+     ('served', 'rejections', 'served_values', 'write_served', 'written_values',
+      'current_pc', 'current_pc_core')),
     ('jl_adda_family', 'JLAddaAnalogFamilyRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('timer2', 'Timer2Delay',

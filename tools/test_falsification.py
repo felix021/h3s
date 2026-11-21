@@ -107,6 +107,10 @@ class WiringGuardFalsificationTests(unittest.TestCase):
         ('P3_VLVD bit2 写后读回撤掉 PCNT_SET0 读回(路 DACDMAPCNT 续依赖边)',
          dict(p3_vlvd_bit2_writeback_readback=True),
          'the P3_VLVD bit2 writeback readback rides on the P3_PCNT_SET0 readback'),
+        ('P3_PR_PWR 保留位 fixture 撤掉 VLVD 读回(路 DACDMAPCNT 续二依赖边)',
+         dict(p3_pr_pwr_retained_bits=0),
+         'the P3_PR_PWR retained-bits fixture rides on the P3_VLVD bit2 writeback '
+         'readback'),
     )
 
     def test_dependency_sabotage_is_refused_before_any_simulation(self):

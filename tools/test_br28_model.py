@@ -121,6 +121,49 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'requires the reset history projection'):
             BR28Model(p3_pcnt_set0_readback=True)
 
+    def test_pr_pwr_retained_bits_switch_requires_vlvd_and_stays_opt_in(self):
+        # value_switch:None=关(0xf2c280 不接白名单,读保持 unmapped 严格停),
+        # 数值 0/1=开(读点放行 fixture,写点停 p33_soft_reset_requested)。
+        off=BR28Model(p33_canary_projection=True,p3_vlvd_bit2_writeback_readback=True)
+        self.assertFalse(off.handles(0xf2c280,4))
+        self.assertIsNone(off.p3_pr_pwr)
+        on=BR28Model(p33_canary_projection=True,p3_vlvd_bit2_writeback_readback=True,
+                     p3_pr_pwr_retained_bits=0)
+        self.assertTrue(on.handles(0xf2c280,4))
+        self.assertIsNotNone(on.p3_pr_pwr)
+        # 依赖守卫:撤掉 vlvd 必须在构造前拒绝;越掩码值也拒绝。
+        with self.assertRaisesRegex(ValueError,'requires p3_vlvd_bit2_writeback_readback'):
+            BR28Model(p3_pr_pwr_retained_bits=0)
+        with self.assertRaisesRegex(ValueError,'within the 0x3fcf mask'):
+            BR28Model(p33_canary_projection=True,p3_vlvd_bit2_writeback_readback=True,
+                      p3_pr_pwr_retained_bits=0x4000)
+        # 位语义校验:0x30 数值落在 0x3fcf 内但置了 bit4/5(OR 位,非保留位),
+        # 必须拒绝——只接受掩码内的保留位。
+        with self.assertRaisesRegex(ValueError,'within the 0x3fcf mask'):
+            BR28Model(p33_canary_projection=True,p3_vlvd_bit2_writeback_readback=True,
+                      p3_pr_pwr_retained_bits=0x30)
+
+    def test_pr_pwr_read_site_serves_fixture_and_write_stops_with_value(self):
+        on=BR28Model(p33_canary_projection=True,p3_vlvd_bit2_writeback_readback=True,
+                     p3_pr_pwr_retained_bits=1)
+        gate=on.p3_pr_pwr
+        gate.note_step(0x12cc6a,0)
+        self.assertEqual(on.read(0xf2c280),1)
+        # 读点不符(第二组同址 0x12cffc/他核)严格停不放行。
+        gate.note_step(0x12cffc,0)
+        with self.assertRaisesRegex(Blocked,'p3_pr_pwr_read_not_modeled'):on.read(0xf2c280)
+        gate.note_step(0x12cc6a,1)
+        with self.assertRaisesRegex(Blocked,'p3_pr_pwr_read_not_modeled'):on.read(0xf2c280)
+        # 写点:0x12cc78 停 p33_soft_reset_requested 并报真实写值 (1&0x3fcf)|0x30。
+        gate.note_step(0x12cc78,0)
+        with self.assertRaises(Blocked) as cm:
+            on.write(0xf2c280,0x31)
+        self.assertEqual(cm.exception.details,
+                         {'kind':'p33_soft_reset_requested','address':'0xf2c280','value':'0x31'})
+        # 第二组同址写 0x12d008 守卫 PC 不符严格停。
+        gate.note_step(0x12d008,0)
+        with self.assertRaisesRegex(Blocked,'p3_pr_pwr_off_site_write'):on.write(0xf2c280,0x31)
+
     def test_wake_clear_is_a_command_and_retains_unselected_pending_bits(self):
         h=ResetHistoryProjection({0xf2c158:0x123})
         h.write(0xf2c160,1)
