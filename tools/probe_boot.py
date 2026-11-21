@@ -1039,6 +1039,34 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 if hardware.copex_exp22.intercept(self,insn,raw,size,module.check.operands):
                     adapters['copex_exp22_model_execute']+=1
                     return
+            if hardware is not None and hardware.p3_vlvd_bit2 is not None:
+                # 路 DACDMAPCNT 续(codex 202611212109 canary-readback):P3_VLVD
+                # bit2 写后读回放行的读点守卫。note_step 每步刷新(current_pc
+                # 供硬件 read 路径 answer() 溯源);读点组首 0x12cc54 处 require
+                # 钉死并行对形状(A 半 and.rr.p r1&=r4 / B 半 ld.w r3=[r2+0])、
+                # 指令字节与基址 r2=0xf2c044。值由硬件 read 的 answer() 提供
+                # (0 或 4,掩码 0x4);读点不符/开关关仍走 canary 严格停
+                # (canary_readback_after_write_not_modeled)。开关关=槽 None,
+                # 一次 is-not-None 测试即过,legacy 世界零变化。
+                gate = hardware.p3_vlvd_bit2
+                gate.note_step(self.pc, self.core_id)
+                if self.pc == gate.GROUP_HEAD:
+                    pair_insn, pair_raw, pair_size = self.decode(self.pc + size)
+                    require(insn.id == 'and.rr.p' and raw == gate.A_SHAPE,
+                            'the P3_VLVD bit2 writeback read site must keep its pinned '
+                            'A-half shape (and.rr.p r1&=r4 at 0x12cc54)')
+                    require(pair_insn.id == 'ld.w' and pair_raw == gate.B_SHAPE,
+                            'the P3_VLVD bit2 writeback read site must keep its pinned '
+                            'B-half shape (ld.w r3=[r2+0] at 0x12cc56)')
+                    require(self.mem.read(self.pc, 2) == bytes.fromhex(gate.GROUP_BYTES),
+                            'the P3_VLVD bit2 writeback read site A-half bytes changed '
+                            '(expected c1d9 at 0x12cc54)')
+                    require(self.mem.read(self.pc + 2, 2) == bytes.fromhex(gate.B_HALF_BYTES),
+                            'the P3_VLVD bit2 writeback read site B-half bytes changed '
+                            '(expected 2360 at 0x12cc56)')
+                    require(self.R[pair_raw['b']] == gate.VLVD,
+                            'the P3_VLVD bit2 writeback read site base register changed '
+                            '(expected r2=0xf2c044)')
             if machine is not None:
                 if machine.first_task_return_hypothesis is not None:
                     machine.first_task_tail(self,insn,raw)

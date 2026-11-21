@@ -2450,6 +2450,64 @@ class BusInstructionTests(unittest.TestCase):
         self.assertEqual(result['stop']['kind'],'unmapped_memory')
         self.assertEqual(result['stop']['address'],'0xf2c124')
 
+    def test_p3_vlvd_bit2_writeback_readback(self):
+        # 路 DACDMAPCNT 续(codex 202611212109 canary-readback):P3_VLVD_CON
+        # (0xf2c044)bit2 写后读回=软件最后写入值放行。读点=0x12cc54/56 并行
+        # 对(and.rr.p r1&=r4 ∥ ld.w r3=[r2+0],r2=0xf2c044),bit2<<5&0x80 折进
+        # 0xf2c128 写回 bit7。取值顺序:bits.known&4 → stores[-1]&4 → 回落
+        # 严格停;只提供 0 或 4(掩码 0x4)。守卫=读点 PC/有效地址/主核,读点
+        # 不符走 canary 严格停。
+        def run(hw, regs, budget=6):
+            return explore(self.module,self.app,name='vlvd_bit2_rb',handoff=self.handoff(),
+                hardware=hw,diagnostics={'entry_pc':0x12cc54,'initial_sp':STACK_TOP,
+                                          'initial_gprs':regs},budget=budget)
+        regs=[0]*16;regs[2]=0xf2c044;regs[4]=0xff7f;regs[0]=0xf2c128
+        # ①正例 1:整字写 0 两次 → bit2=0 → PCNT 写回值 0。
+        hw=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c044:0},
+                     p3_vlvd_bit2_writeback_readback=True)
+        hw.p33_canary.write(0xf2c044,0);hw.p33_canary.write(0xf2c044,0)
+        result=run(hw,regs)
+        self.assertEqual(result['stop']['kind'],'unmapped_or_readonly_write')
+        self.assertEqual(result['stop']['address'],'0xf2c128')
+        self.assertEqual(result['stop']['value_bytes'],'00000000')
+        self.assertEqual(hw.report()['p3_vlvd_bit2_writeback_readback']['served_values'],['0x0'])
+        # ②正例 2:整字写 0 后 |=4 → bit2=4 → PCNT 写回值 0x80(抓误用 stores[-1])。
+        hw=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c044:0},
+                     p3_vlvd_bit2_writeback_readback=True)
+        hw.p33_canary.write(0xf2c044,0);hw.p33_canary.rmw(0xf2c044,'or',0x4)
+        result=run(hw,regs)
+        self.assertEqual(result['stop']['value_bytes'],'80000000')
+        self.assertEqual(hw.report()['p3_vlvd_bit2_writeback_readback']['served_values'],['0x4'])
+        # ③负例 1:无 bit2 来源(仅清 bit0 的 RMW,无整字写)→ 原停点。
+        hw=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c044:0},
+                     p3_vlvd_bit2_writeback_readback=True)
+        hw.p33_canary.rmw(0xf2c044,'and',0xfffffffe)
+        result=run(hw,regs)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'canary_readback_after_write_not_modeled',
+                                         'address':'0xf2c044'})
+        # ④负例 2:0xf2c124(P3_PCNT_CON)与另一读点(cleanup 0x60c66ac 读同地址
+        # bit0)不借用门——写后读都严格停。
+        g=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c124:0},
+                    p3_vlvd_bit2_writeback_readback=True)
+        g.p33_canary.write(0xf2c124,0)
+        self.assertRaisesRegex(Blocked,'canary_readback_after_write_not_modeled',g.read,0xf2c124)
+        h2=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c044:0},
+                     p3_vlvd_bit2_writeback_readback=True)
+        h2.p33_canary.write(0xf2c044,0)
+        h2.p3_vlvd_bit2.note_step(0x60c66ac,0)
+        self.assertRaisesRegex(Blocked,'canary_readback_after_write_not_modeled',h2.read,0xf2c044)
+        # ⑤负例 3:开关关 → 原停点。
+        off=BR28Model(p33_canary_projection=True,p33_canary_first_read_words={0xf2c044:0})
+        off.p33_canary.write(0xf2c044,0)
+        result=run(off,regs)
+        self.assertEqual(result['completed_steps'],0)
+        self.assertEqual(result['stop'],{'kind':'canary_readback_after_write_not_modeled',
+                                         'address':'0xf2c044'})
+        # ⑥依赖校验:p3_vlvd_bit2_writeback_readback 需要 p33_canary 投影。
+        with self.assertRaisesRegex(ValueError,'requires the P33 canary projection'):
+            BR28Model(p3_vlvd_bit2_writeback_readback=True)
+
     def test_mem_pwr_con_rmw_and_dead_read_shapes(self):
         # 0x606772a li r8=0xf2a62c → 0x6067730 `[r8+0] |= r0`(rmw.or.r)。boot
         # 路径 b[0x129D1C]=0 → operand=r0=0。strict(无投影)停在 0xf2a62c 未建模

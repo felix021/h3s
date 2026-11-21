@@ -104,6 +104,9 @@ class WiringGuardFalsificationTests(unittest.TestCase):
          dict(jl_fm_con_head_rmw=True),
          'the FM CON-head RMW container only layers on the BT clock timer '
          'release'),
+        ('P3_VLVD bit2 写后读回撤掉 PCNT_SET0 读回(路 DACDMAPCNT 续依赖边)',
+         dict(p3_vlvd_bit2_writeback_readback=True),
+         'the P3_VLVD bit2 writeback readback rides on the P3_PCNT_SET0 readback'),
     )
 
     def test_dependency_sabotage_is_refused_before_any_simulation(self):

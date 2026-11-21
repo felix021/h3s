@@ -8976,6 +8976,101 @@ class P33CanaryWatchRegisters:
                               '0x601249c/0x60124ae remains a wrong-direction signal')}
 
 
+class P3VlvdBit2WritebackReadback:
+    """P3_VLVD_CON(0xf2c044)bit2 写后读回=软件最后写入值放行(opt-in,路
+    DACDMAPCNT 续,codex 202611212109 canary-readback 方案)。
+
+    背景:31,418,682 停点 @ 0x12cc54——P3_PCNT_SET0(0xf2c128)bit8-15 读回放行
+    后,前沿推进到 0x12cc40 函数体的并行对:0x12cc54 `and.rr.p r1&=r4`(A 半,
+    r4=0xFF7F)+ 0x12cc56 `ld.w r3=[r2+0]`(B 半,r2=0xf2c044=P3_VLVD_CON)。B 半
+    读值是真实消费:r3<<5&0x80 折进 PCNT_SET0 写回 bit7。当前写序列在 0x12cc54
+    读点之前已对 0xf2c044 整字写 0 两次(0x12c180/0x12c216 量测助手),bit2
+    最后软件写出 0,因此该指令链应写 PCNT_SET0.bit7=0。
+
+    取值顺序(codex §3.2,顺序重要):
+    1. 若 bits[address].known & 4:RMW 位知识覆盖 bit2,取 bits.value & 4;
+    2. 否则若有整字写:取 stores[address]['values'][-1] & 4;
+    3. 两者都不能确定 bit2:返回 None(回落原严格停点)。
+    write() 会清空 PartialWord,因此 bits 保留的是最后一次整字覆盖之后的 RMW
+    知识——直接返回 stores[-1] 会漏掉后续置位/清位。只向已核验消费链提供
+    0 或 4(有效掩码 0x4),不声称整个 VLVD 读回语义或 bit2 电气含义(真实
+    电气/硬件是否异步改写仍需硅测)。
+
+    守卫(codex §3.3):读点=运行态组首 0x12cc54 + B 半地址 0x12cc56 + 有效
+    地址 0xf2c044 + 指令字节校验(step_body 处 require 钉死 A 半 and.rr.p/
+    B 半 ld.w 形状与字节、r2=0xf2c044);answer() 只在 current_pc==0x12cc54
+    且 address==0xf2c044 且主核时提供值,其余读点(cleanup 读同地址 bit0
+    等)与开关关世界走同一严格路径。依赖 p33_canary(stores/bits 是取值来源)。
+    """
+
+    VLVD = 0xf2c044
+    GROUP_HEAD = 0x12cc54
+    B_HALF = 0x12cc56
+    A_SHAPE = {'d': 1, 's': 4}            # and.rr.p r1 &= r4
+    B_SHAPE = {'d': 3, 'b': 2, 'n': 0}    # ld.w r3 = [r2+0]
+    GROUP_BYTES = 'c1d9'
+    B_HALF_BYTES = '2360'
+
+    def __init__(self):
+        self.current_pc = None
+        self.current_pc_core = None
+        self.served = {}
+        self.rejections = {}
+        self.served_values = []
+
+    def note_step(self, pc, core):
+        """probe_boot step_body 每步刷新的读点溯源(jl_sync note_step 先例;
+        开关关=槽 None,一次 is-not-None 测试即过,legacy 零变化)。"""
+        self.current_pc = pc
+        self.current_pc_core = core
+
+    def _reject(self, reason, address):
+        key = f'{reason}:{hex(address)}'
+        self.rejections[key] = self.rejections.get(key, 0) + 1
+
+    def answer(self, address, canary):
+        """已核验读点的读值提供门(硬件 read 路径调用)。返回 0/4=放行值,
+        None=守卫拒绝(回落 canary 严格路径)。取值顺序见类注释。"""
+        if address != self.VLVD:
+            self._reject('address_mismatch', address); return None
+        if self.current_pc != self.GROUP_HEAD:
+            self._reject('pc_not_read_site', address); return None
+        if self.current_pc_core != 0:
+            self._reject('core_mismatch', address); return None
+        bits = canary.bits[address]
+        if bits.known & 0x4:
+            value = bits.value & 0x4
+        else:
+            values = canary.stores[address]['values']
+            if not values:
+                self._reject('bit2_undetermined', address); return None
+            value = values[-1] & 0x4
+        self.served[hex(self.GROUP_HEAD)] = self.served.get(hex(self.GROUP_HEAD), 0) + 1
+        self.served_values.append(value)
+        return value
+
+    def report(self):
+        return {
+            'enabled': True,
+            'read_site': hex(self.GROUP_HEAD),
+            'b_half': hex(self.B_HALF),
+            'served': {hex(pc): self.served.get(hex(pc), 0) for pc in (self.GROUP_HEAD,)},
+            'served_values': [hex(v) for v in self.served_values],
+            'rejections': dict(sorted(self.rejections.items())),
+            'semantics': ('each released B-half load r3=[r2+0] (r2=0xf2c044) at the '
+                          '0x12cc54/56 parallel pair returns ONLY bit2 of the last '
+                          'software-written VLVD word — bits.known&4 first (post-word-write '
+                          'RMW knowledge), else stores[-1]&4; the value feeds r3<<5&0x80 '
+                          'folded into the 0xf2c128 P3_PCNT_SET0 write-back bit7. Valid '
+                          'mask 0x4 only; no whole-word VLVD read-back semantics'),
+            'assumption': ('derived-not-measured: releasing the read implies bit2 echoes the '
+                           'last software-written value at this point; the bit\'s real '
+                           'electrical meaning and whether hardware rewrites it asynchronously '
+                           'still need silicon confirmation (SDK evidence is an address macro '
+                           'only; the firmware takes only this single bit)'),
+        }
+
+
 class Fd31AdcConRegisters:
     """0xfd3100 = JL_ADC->CON 的 write-only 整字记录(opt-in,路 BG/sim-pwrdomain)。
 
@@ -10045,6 +10140,7 @@ class BR28Model:
                  debug_execution_projection=False,initial_debug_controls=None,
                  reset_history_projection=False,reset_history_words=None,
                  p3_pcnt_set0_readback=False,
+                 p3_vlvd_bit2_writeback_readback=False,
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,icu_region_projection=False,
                  dcu_cmo_projection=False,l1p_idle_projection=False,l1p_idle_word=0x80000000,
@@ -10652,6 +10748,22 @@ class BR28Model:
                 raise ValueError('invalid P33 canary first-read fixture')
         self.p33_canary=(P33CanaryWatchRegisters(p33_canary_first_read_words)
                          if p33_canary_projection else None)
+        # p3_vlvd_bit2_writeback_readback(路 DACDMAPCNT 续,codex 202611212109
+        # canary-readback,默认关):P3_VLVD_CON(0xf2c044)bit2 写后读回=软件最后
+        # 写入值放行——31,418,682 停点 0x12cc54/56 并行对 B 半读放行。取值顺序
+        # bits.known&4→stores[-1]&4→回落严格停,只给已核验消费链 0 或 4(掩码
+        # 0x4);守卫=读点 PC/有效地址/主核,读点不符走 canary 严格停。显式依赖
+        # p33_canary_projection(stores/bits 是取值来源)。默认关:读点走
+        # canary_readback_after_write_not_modeled 严格停(31,418,682 前沿形状),
+        # legacy 逐字节不变。
+        if p3_vlvd_bit2_writeback_readback:
+            if not p33_canary_projection:
+                raise ValueError('p3_vlvd_bit2_writeback_readback requires the P33 canary '
+                                 'projection (the bit2 answer rides the canary stores/bits '
+                                 'records)')
+            self.p3_vlvd_bit2 = P3VlvdBit2WritebackReadback()
+        else:
+            self.p3_vlvd_bit2 = None
         # 路 BM §1(S19 批 1 ①):W4[4] PVDD/trim 域容器——P3_ANA_CON13(0xf2c274)/
         # P3_ANA_CON1(0xf2c244)/P3_PVDD0_AUTO(0xf2c10c)按路 AM 容器同款「显式
         # 合成初始字 0+读回=当前寄存器值」seed(seed 语句在 additional_
@@ -11547,6 +11659,10 @@ class BR28Model:
         # (路 BB 同款;显式 kind 便于诊断)。
         if self.p33_canary is not None and self.p33_canary.handles(address):
             self.counts['reads']+=1
+            if self.p3_vlvd_bit2 is not None:
+                value = self.p3_vlvd_bit2.answer(address, self.p33_canary)
+                if value is not None:
+                    return value
             return self.p33_canary.read(address)
         # JL_TIMER2(路 BK/S19 批 1):CON/CNT/PRD 读回=存储值|pending bit15
         # (Timer0.read 同式);IWKUP_NUM(0xFFE1B0)write-only,读回一律严格停
@@ -13026,6 +13142,23 @@ class BR28Model:
                 'NOT silicon-measured and need 需硅测确认; no DMA data flow / IRQ68 '
                 'consumption is modeled — derived-not-measured, NOT a silicon-equivalence '
                 'claim, does NOT verify any audio output')
+        # 路 DACDMAPCNT 续:P3_VLVD bit2 写后读回放行报告(开关关=槽 None=
+        # 零键,legacy 报告不变)。
+        if self.p3_vlvd_bit2 is not None:
+            result['p3_vlvd_bit2_writeback_readback'] = self.p3_vlvd_bit2.report()
+            result['assumptions']['p3_vlvd_bit2_writeback_readback'] = (
+                'P3_VLVD_CON (0xf2c044) bit2 write-back read-back released (route '
+                'DACDMAPCNT, codex 202611212109 canary-readback): only the pinned parallel '
+                'pair 0x12cc54/0x12cc56 (and.rr.p r1&=r4 + ld.w r3=[r2+0], r2=0xf2c044) '
+                'answers with bit2 of the last software-written VLVD word — bits.known&4 '
+                'first (post-word-write RMW knowledge), else the last whole-word store\'s '
+                'bit2; the value feeds r3<<5&0x80 folded into the 0xf2c128 P3_PCNT_SET0 '
+                'write-back bit7. Valid mask 0x4 only (0 or 4), never a whole-word VLVD '
+                'read-back; any other read site (cleanup bit0 read, off-PC read) keeps the '
+                'ordinary strict stop. derived-not-measured, NOT a silicon-equivalence '
+                'claim — the bit\'s real electrical meaning and any hardware asynchronous '
+                'rewrite still need silicon confirmation (SDK evidence is an address macro '
+                'only; the firmware takes only this single bit)')
         # 路 COPEXIMPL:mode-22 指数近似模型报告(开关关=槽 None=零键,
         # legacy 报告不变)。
         if self.copex_exp22 is not None:

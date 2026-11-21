@@ -1210,6 +1210,13 @@ M4_FAMILIES = (
     # riding the per-object static guard like every other M4 fixture.
     ('jl_audio_dac_dma_pcm', 'JLAudioDacDmaPcmProduce',
      ('served', 'rejections', 'served_values', 'swN', 'swN_writes')),
+    # Route DACDMAPCNT 续:the P3_VLVD bit2 write-back read-back gate
+    # (0x12cc54/56). Only the served/rejection ledgers are runtime STATE;
+    # current_pc/current_pc_core are transient per-step provenance
+    # (overwritten each step, jl_sync precedent). The read-site table and
+    # site-bytes are CLASS constants under the class-identity check.
+    ('p3_vlvd_bit2', 'P3VlvdBit2WritebackReadback',
+     ('served', 'rejections', 'served_values', 'current_pc', 'current_pc_core')),
     ('jl_adda_family', 'JLAddaAnalogFamilyRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('timer2', 'Timer2Delay',

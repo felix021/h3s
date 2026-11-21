@@ -614,6 +614,26 @@ FEATURES = (
             '@ 0x12cc54(同函数 VLVD 0xf2c044 写后读,canary_readback_after_write_'
             'not_modeled,归金丝雀读后读域);证据=已验证实现契约与当前前缀推进,'
             '不证明复位配置位硅语义/软件复位标志含义)'),
+    # ---- 路 DACDMAPCNT 续(codex 202611212109 canary-readback):31,418,682
+    # 停点 0x12cc54(P3_VLVD 0xf2c044 写后读,canary_readback_after_write_
+    # not_modeled)放行。0x12cc54/56 并行对 B 半读 VLVD bit2→r3<<5&0x80 折进
+    # PCNT_SET0 写回 bit7;bit2 回读=软件最后写入值(整字写 0 两次→bit2=0→
+    # PCNT 写值 0)。取值顺序:bits.known&4→stores[-1]&4→回落严格停;只给已
+    # 核验消费链 0 或 4(掩码 0x4)。守卫=读点组首 0x12cc54+B 半 0x12cc56+
+    # 有效地址 0xf2c044+指令字节,钉后接移位掩码。依赖 p3_pcnt_set0_readback
+    # (同函数链 bit2 折入前置)。默认关:读点严格停(31,418,682 前沿形状),
+    # legacy 逐字节不变。----
+    Feature('p3_vlvd_bit2_writeback_readback', 'probe_only',
+            ('p3_pcnt_set0_readback',),
+            False, None,
+            'P3_VLVD_CON(0xf2c044)bit2 写后读回=软件最后写入值放行(31,418,682 '
+            '停点 0x12cc54/56 并行对 B 半读,canary_readback_after_write_not_'
+            'modeled):bit2<<5&0x80 折进 0xf2c128 写回 bit7;取值 bits.known&4→'
+            'stores[-1]&4→回落严格停;只提供 0 或 4(掩码 0x4),不声明 VLVD 全字'
+            '读回/bit2 电气语义(需硅测);守卫=读点 PC/B 半地址/有效地址/指令'
+            '字节,读点不符走严格路径;新停点 0x12cc6a 读 0xf2c280=P3_PR_PWR'
+            '(预计 unmapped_memory);证据=已验证实现契约与当前前缀推进,'
+            '不证明 VLVD bit2 硅语义/硬件异步改写)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li
