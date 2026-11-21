@@ -591,6 +591,29 @@ FEATURES = (
             '0xf2c128 读,kind=unknown_reset_configuration_bits,bit8-15 未建模);'
             '证据=已验证实现契约与当前前缀推进,不证明 DMA 数据流'
             '已运行)'),
+    # ---- 路 DACDMAPCNT:31,418,680 停点 0x12cc48(喂狗函数 0x12cc7e 前身)
+    # 0xf2c128(P3_PCNT_SET0)读,kind=unknown_reset_configuration_bits(bit8-15
+    # 未建模)。0x12cc40 函数对 0xf2c128 做 ld/st RMW:读整字(bit8-15 携带到
+    # 写回值、bit7 折入 VLVD bit2)、写回整字。bit8-15=软件复位标记暂存
+    # (复位历史 `&=0xff00` 保留位),语义是复位历史运行时值,但本场景固定
+    # POR(无软件复位)=合成初始 0(derived-not-measured),读值零分支零比较。
+    # 开关开:给 0xf2c128 bit8-15 合成初始 0(RMW 后整字可读回)+ 整字写回
+    # 记录(写值=真实执行结果);不发明复位配置位运行时语义。依赖 p33_canary
+    # (同函数链 VLVD bit2 折入写回 bit7 的前置)。默认关:读回保持严格停
+    # (31,418,680 前沿形状),legacy 逐字节不变。----
+    Feature('p3_pcnt_set0_readback', 'probe_only',
+            ('p33_canary',),
+            False, None,
+            'P3_PCNT_SET0(0xf2c128)bit8-15 读回+ld/st RMW 写回记录(31,418,680 '
+            '停点 0x12cc48,喂狗函数 0x12cc7e 前身;kind=unknown_reset_configuration_bits,'
+            'bit8-15 未建模):0x12cc40 读整字后 r1&=0xFF7F、bit7 折入 VLVD bit2、'
+            'st.w 写回;bit8-15=软件复位标记暂存(复位历史 &=0xff00 保留位),固定 '
+            'POR 下合成初始 0(derived-not-measured,非复位值证据),读值只进写回'
+            '组装零分支;写回值=真实执行结果(bits 除 bit7 外携带读值),仅记录不发明'
+            '复位配置位运行时语义;本段 DAC/音频账本不受影响;新停点 31,418,682 '
+            '@ 0x12cc54(同函数 VLVD 0xf2c044 写后读,canary_readback_after_write_'
+            'not_modeled,归金丝雀读后读域);证据=已验证实现契约与当前前缀推进,'
+            '不证明复位配置位硅语义/软件复位标志含义)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li

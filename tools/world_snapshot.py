@@ -1156,7 +1156,7 @@ M4_FAMILIES = (
      ('stores', 'word_writes', 'pnd_forced_reads', 'res_served', 'res_named_values',
       'con_reads')),
     ('reset', 'ResetHistoryProjection',
-     ('words', 'configuration', 'flag_clear_commands', 'clear_commands')),
+     ('words', 'configuration', 'flag_clear_commands', 'clear_commands', 'config_word_writes')),
     # Post-BL families (wiring route sim-snapwire): these six projection classes
     # merged AFTER route BL froze the table (CV daa_con1, CW dac_vl0, S19 batch 1
     # cop/dma/timer2, B3 adda_analog_family) and are all ON in the conditional

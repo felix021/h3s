@@ -5107,6 +5107,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_dma_len_readback=False,
              jl_audio_dac_dma_pns_write=False,
              jl_audio_dac_dma_pcm_produce=False,
+             p3_pcnt_set0_readback=False,
              jl_audio_adc_dma_writes=False,
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
@@ -6804,6 +6805,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 '(0x6071560 is reached only after the PNS store 0x606de56 of the same '
                 'function chain is released)')
         options['jl_audio_dac_dma_pcm_produce']=True
+    # p3_pcnt_set0_readback(路 DACDMAPCNT,默认 False=关):P3_PCNT_SET0(0xf2c128)
+    # bit8-15 读回+ld/st RMW 写回记录——31,418,680 停点 0x12cc48(喂狗函数
+    # 0x12cc7e 前身)放行。0x12cc40 读整字(bit8-15 携带到写回值、bit7 折入
+    # VLVD bit2)、写回整字;bit8-15=软件复位标记暂存(复位历史 &=0xff00 保留
+    # 位),固定 POR 下合成初始 0(derived-not-measured),读值零分支零比较;
+    # 写回值=真实执行结果,仅记录不发明复位配置位运行时语义。依赖边挂
+    # p33_canary(同函数链 VLVD 读放行是写回 bit7 折入的前置,本栈恒开)。
+    # 默认关:0xf2c128 读保持严格停(31,418,680 前沿形状),legacy 逐字节不变。
+    if p3_pcnt_set0_readback:
+        require(p33_canary,
+                'the P3_PCNT_SET0 readback rides on the P33 canary world '
+                '(0x12cc40 folds the VLVD 0xf2c044 bit2 read into the 0xf2c128 '
+                'write-back bit7; the canary first-read fixture is the fold source)')
+        options['p3_pcnt_set0_readback']=True
     # copex_exp22_model(路 COPEXIMPL,codex 裁 (a) 收窄版,默认 False=关):
     # copex.ppi mode-22 指数近似模型——42,037,363 停点 0x606a900(upstream
     # 『copex.ppi has no model』,音频管线重配段 exp 叶子 0x606a8fc 体内)
@@ -12451,6 +12466,24 @@ def main():
                                  'jl_audio_dac_dma_len_readback':True,
                                  'jl_audio_dac_dma_pns_write':True,
                                  'jl_audio_dac_dma_pcm_produce':True},
+                              flash_image_bytes=image),
+                     # 路 DACDMAPCNT:在 DACDMAPCM 臂上追加 P3_PCNT_SET0(0xf2c128)
+                     # bit8-15 读回放行。旧臂 31,418,680 @ 0x12cc48 逐字节不变(pcnt_
+                     # readback 开关关);开读回的臂越过 0x12cc48(P3_PCNT_SET0 读 0
+                     # 合成初始位)+2 步停在 31,418,682 @ 0x12cc54——0x12cc54/56
+                     # 并行对读 P3_VLVD_CON 0xf2c044,kind=canary_readback_after_
+                     # write_not_modeled(0xf2c044 在本稳态前缀已被先写/先 RMW,
+                     # 首读 fixture 只服务未写过的首次读,写后读严格停);0x12cc64
+                     # 写回 0xf2c128 与 0x12cc6a 读 0xf2c280=P3_PR_PWR 都在更后
+                     # 未到达。下一墙归金丝雀读后读域(需要复位配置域/金丝雀域
+                     # 专门参谋),本臂不重钉 dacdmapcm_probe 前沿。
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_dacdmapcnt_probe',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
+                                 'jl_audio_dac_dma_setup_discarded_reads':True,
+                                 'jl_audio_dac_dma_len_readback':True,
+                                 'jl_audio_dac_dma_pns_write':True,
+                                 'jl_audio_dac_dma_pcm_produce':True,
+                                 'p3_pcnt_set0_readback':True},
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,

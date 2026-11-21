@@ -83,6 +83,44 @@ class ModelTests(unittest.TestCase):
             with self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits'):h.read(address)
         with self.assertRaisesRegex(Blocked,'operation_not_modeled'):h.rmw(0xf2a628,'or',16)
 
+    def test_pcnt_set0_config_initial_bits_release_read_and_record_write_back(self):
+        # 默认(无合成初始位):0xf2c128 &=0xff00 后 bit8-15 未知,读回严格停。
+        off=ResetHistoryProjection()
+        off.rmw(0xf2c128,'and',0xff00)
+        self.assertEqual(off.configuration[0xf2c128].known,0xffff00ff)
+        with self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits'):off.read(0xf2c128)
+        self.assertNotIn('config_initial_bits',off.report())
+        # 开关开:bit8-15 合成初始 0(derived-not-measured),RMW 后整字可读回。
+        on=ResetHistoryProjection(config_initial_bits={0xf2c128:(0,0xff00)})
+        on.rmw(0xf2c128,'and',0xff00)
+        self.assertEqual(on.configuration[0xf2c128].known,0xffffffff)
+        self.assertEqual(on.read(0xf2c128),0)
+        # 0x12cc40 的 ld/st RMW 整字写回(写值=读值&0xFF7F|VLVD bit2<<7)记录。
+        on.write(0xf2c128,0)
+        self.assertEqual(on.config_word_writes,[{'address':'0xf2c128','value':'0x0'}])
+        self.assertEqual(on.configuration[0xf2c128].known,0xffffffff)
+        rep=on.report()
+        self.assertEqual(rep['config_initial_bits'],{'0xf2c128':{'value':'0x0','known_mask':'0xff00'}})
+        self.assertTrue(rep['config_initial_bits_synthetic_not_measured'])
+        self.assertEqual(rep['config_word_writes'],[{'address':'0xf2c128','value':'0x0'}])
+        # 合成初始位必须落在该地址掩码的保留位内,不能预置掩码要清掉的位。
+        with self.assertRaisesRegex(ValueError,'invalid reset configuration initial bits'):
+            ResetHistoryProjection(config_initial_bits={0xf2c128:(0,0xffffffff)})
+        with self.assertRaisesRegex(ValueError,'invalid reset configuration initial bits'):
+            ResetHistoryProjection(config_initial_bits={0xf2c054:(0,0xff00)})
+
+    def test_pcnt_set0_readback_switch_requires_reset_projection_and_stays_opt_in(self):
+        # BR28Model 开关:开时 0xf2c128 读回 0,关时复位配置读回保持严格停。
+        on=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80},
+                     p3_pcnt_set0_readback=True)
+        on.reset.rmw(0xf2c128,'and',0xff00)
+        self.assertEqual(on.read(0xf2c128),0)
+        off=BR28Model(reset_history_projection=True,reset_history_words={PWR_CON:0x80})
+        off.reset.rmw(0xf2c128,'and',0xff00)
+        with self.assertRaisesRegex(Blocked,'unknown_reset_configuration_bits'):off.read(0xf2c128)
+        with self.assertRaisesRegex(ValueError,'requires the reset history projection'):
+            BR28Model(p3_pcnt_set0_readback=True)
+
     def test_wake_clear_is_a_command_and_retains_unselected_pending_bits(self):
         h=ResetHistoryProjection({0xf2c158:0x123})
         h.write(0xf2c160,1)

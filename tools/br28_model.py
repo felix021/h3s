@@ -9573,7 +9573,8 @@ class ResetHistoryProjection:
     Flag-clear commands do not erase the reason snapshot read afterwards.
     Their post-command readback is unknown. No mailbox, IRQ or wake generation.
     """
-    def __init__(self,words=None,extra_configuration_masks=None,extra_configuration_mask_sets=None):
+    def __init__(self,words=None,extra_configuration_masks=None,extra_configuration_mask_sets=None,
+                 config_initial_bits=None):
         self.initial_words=dict(words or {});self.words=dict(self.initial_words)
         allowed=RESET_FLAGS+RESET_REASON_INPUTS
         if any(a not in allowed or not isinstance(v,int) or not 0<=v<=0xffffffff for a,v in self.words.items()):
@@ -9600,6 +9601,22 @@ class ResetHistoryProjection:
         self.config_masks=masks
         self.config_mask_sets=mask_sets
         self.configuration={a:PartialWord() for a in masks}
+        # config_initial_bits(opt-in):{address:(value,known_mask)} 给配置寄存器的
+        # 「掩码保留位」一个合成初始字位(derived-not-measured,无复位值证据)——只
+        # 允许落在该地址掩码的保留位内(掩码清掉的位由 RMW 自己置已知 0,不得预置),
+        # 使 RMW 后整字可读回;只服务 0xf2c128 的 bit8-15(软件复位标记暂存,POR 下
+        # 合成 0)。默认 None:legacy 配置字空起、保留位未知、读回严格停不变。
+        if config_initial_bits:
+            if any(a not in self.configuration or not isinstance(pair,(tuple,list)) or len(pair)!=2
+                   or not isinstance(pair[0],int) or not 0<=pair[0]<=0xffffffff
+                   or not isinstance(pair[1],int) or not 0<=pair[1]<=0xffffffff
+                   or pair[1]&~masks[a] for a,pair in config_initial_bits.items()):
+                raise ValueError('invalid reset configuration initial bits (address must be in the '
+                                 'config table and the known mask must stay inside the address mask)')
+            for a,(value,known) in config_initial_bits.items():
+                self.configuration[a]=PartialWord(value,known)
+        self.config_initial_bits=dict(config_initial_bits) if config_initial_bits else None
+        self.config_word_writes=[]
         self.flag_clear_commands=set();self.clear_commands=[]
 
     def handles(self,address):
@@ -9638,6 +9655,15 @@ class ResetHistoryProjection:
                 if target not in self.words:raise Blocked('unknown_wake_pending_before_clear',address=hex(target))
                 self.words[target]&=~value&0xffffffff
             self.clear_commands.append({'address':hex(address),'value':hex(value)})
+        elif address in self.configuration:
+            # 配置寄存器的整字覆盖写(0x12cc40 的 ld/st RMW 写回:[0xf2c128]=
+            # (读值&0xFF7F)|(VLVD bit2<<7),bit8-15 由读值携带、bit7 由 VLVD
+            # bit2 折入)。写值是真实执行结果(读值来自合成初始位),整字覆盖后
+            # 该地址全部位已知=写值;仅记录,不发明任何复位/唤醒语义。
+            if not isinstance(value,int) or not 0<=value<=0xffffffff:
+                raise ValueError('unsigned32 word expected')
+            self.configuration[address]=PartialWord(value,0xffffffff)
+            self.config_word_writes.append({'address':hex(address),'value':hex(value)})
         else:raise Blocked('reset_history_snapshot_or_config_write_not_modeled',address=hex(address))
 
     def report(self):
@@ -9650,6 +9676,12 @@ class ResetHistoryProjection:
                 'reason_snapshots_preserved_after_flag_clear':True}
         multi={hex(a):[hex(m) for m in ms] for a,ms in self.config_mask_sets.items() if len(ms)>1}
         if multi:result['accepted_configuration_mask_sets']=multi
+        if self.config_initial_bits:
+            result['config_initial_bits']={hex(a):{'value':hex(value),'known_mask':hex(known)}
+                                           for a,(value,known) in self.config_initial_bits.items()}
+            result['config_initial_bits_synthetic_not_measured']=True
+        if self.config_word_writes:
+            result['config_word_writes']=self.config_word_writes
         return result
 
 
@@ -10012,6 +10044,7 @@ class BR28Model:
                  port_initialization_projection=False,port_input_words=None,initial_usb_io_word=None,
                  debug_execution_projection=False,initial_debug_controls=None,
                  reset_history_projection=False,reset_history_words=None,
+                 p3_pcnt_set0_readback=False,
                  mpu_configuration_projection=False,initial_mpu_write_gate=None,
                  icu_initialization_projection=False,icu_command_steps=None,icu_region_projection=False,
                  dcu_cmo_projection=False,l1p_idle_projection=False,l1p_idle_word=0x80000000,
@@ -10900,6 +10933,8 @@ class BR28Model:
             raise ValueError('P11_SYS_CON1 mask sets require the reset history projection')
         if power_init_wkup_dly_rmw and not reset_history_projection:
             raise ValueError('power_init wakeup-delay config RMW requires the reset history projection')
+        if p3_pcnt_set0_readback and not reset_history_projection:
+            raise ValueError('the P3_PCNT_SET0 readback requires the reset history projection')
         extra_config_masks=None
         if power_init_config_rmw:
             extra_config_masks=dict(POWER_INIT_CONFIG_MASKS)
@@ -10909,9 +10944,17 @@ class BR28Model:
         extra_mask_sets={}
         if power_init_rstcon_mask_sets:extra_mask_sets.update(POWER_INIT_RSTCON_MASK_SETS)
         if p11_syscon1_mask_sets:extra_mask_sets.update(P11_SYSCON1_MASK_SETS)
+        # p3_pcnt_set0_readback(路 DACDMAPCNT,opt-in,默认关):0xf2c128(P3_PCNT_SET0)
+        # 的 bit8-15(软件复位标记暂存,复位历史 `&=0xff00` 保留位)合成初始 0 +
+        # 0x12cc40 的 ld/st RMW 整字写回记录。读值只进写回组装(bit8-15 携带、bit7
+        # 折入 VLVD bit2),零分支零比较。bit8-15 语义是复位历史运行时值(POR 下
+        # 「非软件复位」=0,derived-not-measured),写回值是真实执行结果;不发明
+        # 复位配置位运行时语义,本段 DAC/音频账本不受影响。
+        config_initial_bits={0xf2c128:(0,0xff00)} if p3_pcnt_set0_readback else None
         self.reset=(ResetHistoryProjection(reset_history_words,
                     extra_config_masks,
-                    extra_mask_sets or None)
+                    extra_mask_sets or None,
+                    config_initial_bits)
                     if reset_history_projection else None)
         self.mpu=MPUConfigurationProjection(initial_mpu_write_gate) if mpu_configuration_projection else None
         self.port_initialization_projection=port_initialization_projection
