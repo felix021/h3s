@@ -87,10 +87,11 @@ type Ledger struct {
 	Milestones     []LoopEvent
 }
 
-// LoopStep is one committed attempt's observation: pc before/after, flags and
-// the 16 registers after, and any memory writes the step produced (always empty
-// under the side-effect-free stage-1/2 contract).
+// LoopStep is one committed attempt's observation: the core it ran on, pc
+// before/after, flags and the 16 registers after, and any memory writes the
+// step produced (always empty under the side-effect-free stage-1/2 contract).
 type LoopStep struct {
+	Core   int
 	PC     uint32
 	NextPC uint32
 	Flags  uint8
@@ -110,14 +111,27 @@ type LoopEvent struct {
 // constructs it, drives it, and reads back the ledger.
 type World struct {
 	Cores  [2]*Core
-	Exec   *CPU    // decode+execute engine (nil = cannot run)
+	Exec   *CPU    // core-0 decode+execute engine (nil = cannot run)
+	Exec1  *CPU    // core-1 decode+execute engine (nil = core 1 cannot run)
 	Mem    *Memory // strict whole-loop memory (M2)
 	Periph *PeriphState
 	Ledger Ledger
 
+	// Machine is the M6A dual-core select state (machine.go); Deliver is the
+	// M6C delivery projection state (deliver.go). Both are wired into the
+	// dual-core RunLoop. nil = not bound, so the dual-core loop yields.
+	Machine *Machine
+	Deliver *DeliverMachine
+
 	// FetchLo/FetchHi is the immutable fetch window the execute phase must stay
 	// inside (the ROM or flash app window, caller-supplied).
 	FetchLo, FetchHi uint32
+
+	// Fetch-guard diagnostic stops (Python explore-level stop_before_pc /
+	// stop_on_rom_return). When armed, the loop yields before the attempt
+	// rather than guessing their semantics.
+	StopBeforePC    *uint32
+	StopOnRomReturn bool
 
 	// Loop-level preconditions the caller (Python) asserts. Single-core is
 	// derived structurally (Cores[1] == nil); the rest are explicit, never
@@ -166,14 +180,7 @@ func (w *World) RunLoop(n int) LoopResult {
 		return yieldBeforeAttempt("no core 0 present")
 	}
 	if w.Cores[1] != nil {
-		// Stage A ported the select phase (machine.go Machine.Select), Stage B
-		// the after_step no-op judgment (after_step.go), Stage C the deliver_*
-		// projections (deliver.go, differential-tested). The dual-core loop
-		// still cannot close because these three pieces are not yet wired into
-		// one RunLoop (the select/deliver state lives in the standalone Machine
-		// / DeliverMachine, not World), and the dual-core advance scan is
-		// single-core only. That wiring is the remaining integration step.
-		return yieldBeforeAttempt("dual-core loop not closed: select (M6A), after_step (M6B) and deliver projections (M6C) are ported and differential-tested, but the whole-loop wiring is not done")
+		return w.runDualCore(n)
 	}
 	if !w.Concrete {
 		return yieldBeforeAttempt("non-concrete (abstract) cpu state")
@@ -299,4 +306,264 @@ func currentPC(res LoopResult) uint32 {
 		return 0
 	}
 	return res.Steps[len(res.Steps)-1].NextPC
+}
+
+// execFor returns the per-core decode+execute engine.
+func (w *World) execFor(core int) *CPU {
+	if core == 1 {
+		return w.Exec1
+	}
+	return w.Exec
+}
+
+// syncCPUFromCore copies the architectural state from the Core twin into the
+// CPU engine before an execute step. The CPU's internal step counter is left
+// alone (it is not read by the segment contract; Core.Steps is authoritative).
+func syncCPUFromCore(cpu *CPU, c *Core) {
+	cpu.R = c.R
+	cpu.flags = c.Flags
+	cpu.sp = c.SP
+	cpu.rets = c.RETS
+	cpu.pc = c.PC
+	cpu.icfg = c.ICFG
+	cpu.afterT = nil
+}
+
+// syncCoreFromCPU copies the architectural state back from the CPU engine after
+// one execute step and bumps the core step counter.
+func syncCoreFromCPU(c *Core, cpu *CPU) {
+	c.R = cpu.R
+	c.Flags = cpu.flags
+	c.SP = cpu.sp
+	c.RETS = cpu.rets
+	c.PC = cpu.pc
+	c.ICFG = cpu.icfg
+	c.Steps++
+}
+
+// syncMachineCores copies the select-relevant view (pc / steps / icfg / decoded
+// instruction id+size at pc) from the World cores into the Machine cores. The
+// decoded instruction is what the two select wake helpers (CPU1-control kick,
+// TIMER2 anchored poll) require exactly, so a pc that does not decode leaves the
+// wake precondition unverifiable and the select helper honestly refuses.
+func (w *World) syncMachineCores() {
+	for core := 0; core < 2; core++ {
+		c := w.Cores[core]
+		if c == nil {
+			continue
+		}
+		mc := w.Machine.Cores[core]
+		if mc == nil {
+			mc = &MCore{ID: core}
+			w.Machine.Cores[core] = mc
+		}
+		mc.PC = c.PC
+		mc.Steps = c.Steps
+		mc.ICFG = c.ICFG
+		mc.ICFGKnown = c.ICFGKnown
+		mc.InsnID = ""
+		mc.InsnSize = 0
+		if cpu := w.execFor(core); cpu != nil {
+			if im, _, size, err := cpu.decode(c.PC); err == nil {
+				mc.InsnID = im.id
+				mc.InsnSize = uint32(size)
+			}
+		}
+	}
+}
+
+// deliveryDeferred mirrors the dispatch_delivery deferral judgment (probe_boot
+// 路 CB/AS): a delivery request whose target core is mid-instruction
+// (after_then/repeat in flight) or inside an in-flight handler is deferred, not
+// delivered. The per-irq narrowing matches the Python in_flight_handler sets
+// (IRQ68 may nest into the Timer0 handler, so only the stricter contexts defer;
+// IRQ89 never nests). The deferral bookkeeping itself (note_delivery_deferral
+// event + row['deferred_delivery']) stays Python, so the Go loop hands the
+// request back instead of silently continuing.
+func (w *World) deliveryDeferred(req *IrqReq) (bool, string) {
+	c := w.Cores[req.Core]
+	if c == nil {
+		return false, ""
+	}
+	mid := c.RepeatActive
+	ctx := c.ActiveContext
+	inFlight := false
+	switch req.Irq {
+	case AudioDmaIRQNumber:
+		inFlight = ctx == "software_irq_handler" || ctx == "core_tick_handler" ||
+			ctx == "audio_dma_irq_handler" || ctx == "src_sync_irq_handler"
+	case SrcSyncIRQNumber:
+		inFlight = ctx == "software_irq_handler" || ctx == "core_tick_handler" ||
+			ctx == "timer0_irq_handler" || ctx == "src_sync_irq_handler" || ctx == "audio_dma_irq_handler"
+	default:
+		inFlight = ctx == "software_irq_handler" || ctx == "core_tick_handler" ||
+			ctx == "timer0_irq_handler" || ctx == "audio_dma_irq_handler" || ctx == "src_sync_irq_handler"
+	}
+	if mid && !inFlight {
+		return true, "mid-instruction (after_then/repeat in flight)"
+	}
+	if inFlight {
+		return true, "in-flight IRQ handler " + ctx
+	}
+	return false, ""
+}
+
+// dispatchDelivery routes a pending-eligible delivery request to the right M6C
+// delivery projection (the dispatch_delivery mapping for a clean instruction
+// boundary). The delivery mutates the target Core in place (w.Deliver.Cores is
+// bound to w.Cores).
+func (w *World) dispatchDelivery(req *IrqReq) error {
+	w.Deliver.Cores = w.Cores
+	switch req.Irq {
+	case 3:
+		return w.Deliver.DeliverCoreTick(req.Core)
+	case 4:
+		return w.Deliver.DeliverTimer0Irq(req.Core)
+	case AudioDmaIRQNumber:
+		return w.Deliver.DeliverAudioDmaIrq(req.Core)
+	case SrcSyncIRQNumber:
+		return w.Deliver.DeliverSrcSyncIrq(req.Core)
+	default:
+		return w.Deliver.DeliverSoftwareIrq(req.Core, req.Irq)
+	}
+}
+
+// deliveryStopReason renders a delivery-projection failure into an honest Stop
+// reason (DeliverValueError = Python require/ValueError, PeriphError = Blocked).
+func deliveryStopReason(err error) string {
+	switch e := err.(type) {
+	case *DeliverValueError:
+		return "delivery require violated: " + e.Msg
+	case *PeriphError:
+		return "delivery strict stop: " + e.JSON()
+	default:
+		return "delivery error: " + err.Error()
+	}
+}
+
+// runDualCore wires the three M6 pieces (select / after_step / deliver) into
+// one execution loop over both cores: select -> fetch guard -> decode ->
+// execute -> after_step -> advance -> trace. It is the honest whole-loop
+// skeleton: the ported pieces (select, the after_step no-op judgment, the
+// dual-core advance chain, the delivery projections at a clean boundary) run
+// inside Go, and every phase still Python-only (enter_idle_wait, event clock,
+// trace-row text/bytes/delivery-key materialization, strict-memory load/fetch
+// semantics, abstract values, the dispatch_delivery deferral bookkeeping) hands
+// back via YieldBeforeAttempt / Stop — nothing is fabricated.
+func (w *World) runDualCore(n int) LoopResult {
+	if w.Machine == nil {
+		return yieldBeforeAttempt("dual-core select (M6A Machine) not bound")
+	}
+	if w.Deliver == nil {
+		return yieldBeforeAttempt("dual-core deliver projections (M6C DeliverMachine) not bound")
+	}
+	if w.Exec == nil || w.Exec1 == nil {
+		return yieldBeforeAttempt("per-core execute engines not bound")
+	}
+	if !w.Concrete {
+		return yieldBeforeAttempt("non-concrete (abstract) cpu state")
+	}
+	if w.AfterStep != nil && w.AfterStep.ObserverActive {
+		return yieldBeforeAttempt("observer hook active")
+	}
+	if w.Periph == nil {
+		return yieldBeforeAttempt("no peripheral model bound")
+	}
+	if w.StopBeforePC != nil || w.StopOnRomReturn {
+		return yieldBeforeAttempt("fetch-guard diagnostic stop armed (stays in Python)")
+	}
+	if w.Cores[0] == nil || w.Cores[1] == nil {
+		return yieldBeforeAttempt("dual-core world needs both cores present")
+	}
+	if w.Cores[0].RepeatActive || w.Cores[1].RepeatActive {
+		return yieldBeforeAttempt("repeat/after_then active on a core")
+	}
+
+	// Bind the delivery machine's cores to the world cores so delivery state
+	// changes land on the same Core objects the select/execute phases read.
+	w.Deliver.Cores = w.Cores
+
+	res := LoopResult{Exit: Stop}
+	for i := 0; i < n; i++ {
+		w.syncMachineCores()
+
+		// 1. select (dual-core round-robin + the two wake fallbacks).
+		core, err := w.Machine.Select()
+		if err != nil {
+			res.StopPC = w.Cores[core].PC
+			res.Reason = "select wake require violated: " + err.Error()
+			return res
+		}
+		w.Deliver.IdleWait = w.Machine.IdleWait
+		w.Periph.CoreIcfg = w.Machine.CoreIcfg
+
+		// 2. fetch guard: the immutable-window check is per-step inside the
+		// execute engine; the armed diagnostic stops yielded above.
+
+		// 3+4. decode + execute one safe-ALU step on the selected core.
+		beforePC := w.Cores[core].PC
+		cpu := w.execFor(core)
+		syncCPUFromCore(cpu, w.Cores[core])
+		seg := cpu.RunSegment(1, w.FetchLo, w.FetchHi)
+		if seg.StopCode != BatchOK {
+			res.StopPC = seg.StopPC
+			res.Reason = segmentStopReason(seg.StopCode)
+			return res
+		}
+		s := seg.Steps[0]
+		syncCoreFromCPU(w.Cores[core], cpu)
+
+		// 7. trace row (the Go twin: core/pc/next_pc/flags/registers; the
+		// Python text/bytes/delivery-key materialization stays Python). The
+		// committed step is recorded before the after_step/advance phases, so a
+		// hazard in those phases still carries the executed prefix — exactly as
+		// Python appends the row even when after_step/advance raises.
+		res.Steps = append(res.Steps, LoopStep{
+			Core:   core,
+			PC:     s.PC,
+			NextPC: s.NextPC,
+			Flags:  s.Flags,
+			R:      s.R,
+			Mem:    nil,
+		})
+
+		// 5. after_step judgment (hook bodies stay Python).
+		if w.AfterStep != nil {
+			if ok, why := w.AfterStep.CanProveNoop(core, beforePC, s.NextPC); !ok {
+				res.StopPC = s.NextPC
+				res.Reason = "after_step hook fires: " + why + " (handed back to Python)"
+				return res
+			}
+		}
+
+		// 6. advance (dual-core scan) and, on a pending-eligible IRQ at a clean
+		// boundary, the M6C delivery projection. A deferred request hands back.
+		adv := w.Periph.Advance(w.Cores[core].ICFG)
+		if adv.Irq != nil {
+			if deferred, why := w.deliveryDeferred(adv.Irq); deferred {
+				res.Irq = adv.Irq
+				res.StopPC = s.NextPC
+				res.Reason = "delivery deferral (dispatch_delivery 路 CB/AS) not ported: " + why + " (handed back to Python)"
+				return res
+			}
+			if err := w.dispatchDelivery(adv.Irq); err != nil {
+				res.Irq = adv.Irq
+				res.StopPC = s.NextPC
+				res.Reason = deliveryStopReason(err)
+				return res
+			}
+			// Delivery mutated the target core; reconcile the shared views.
+			w.Machine.IdleWait = w.Deliver.IdleWait
+			w.syncMachineCores()
+			w.Periph.CoreIcfg = w.Machine.CoreIcfg
+		}
+		if adv.Err != nil {
+			res.StopPC = s.NextPC
+			res.Reason = "advance strict stop: " + adv.Err.JSON()
+			return res
+		}
+	}
+	res.StopPC = 0
+	res.Reason = fmt.Sprintf("ran %d dual-core attempts with select/after_step/advance/deliver wiring (no hazard)", len(res.Steps))
+	return res
 }
