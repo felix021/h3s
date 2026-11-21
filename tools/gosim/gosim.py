@@ -46,6 +46,7 @@ class Gosim:
         self.lib.gosim_run_segment.argtypes = [_HANDLE, c_int, c_uint32, c_uint32,
                                                POINTER(c_uint8), c_int]
         self.lib.gosim_run_segment.restype = c_int
+        self.lib.gosim_cpu_set_dmem.argtypes = [_HANDLE, _HANDLE]
         self.handle = self.lib.gosim_new_arch() if arch else self.lib.gosim_new()
 
     def write(self, addr, data):
@@ -76,6 +77,11 @@ class Gosim:
 
     def reset(self):
         self.lib.gosim_reset(self.handle)
+
+    def set_data_mem(self, smem_handle):
+        """Bind a strict Memory (gosim_mem.StrictMem.handle) as this CPU's data
+        memory. smem_handle == 0 unbinds (flat-memory fallback)."""
+        self.lib.gosim_cpu_set_dmem(self.handle, smem_handle)
 
     def step(self):
         return self.lib.gosim_step(self.handle)

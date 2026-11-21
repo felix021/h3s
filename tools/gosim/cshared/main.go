@@ -212,6 +212,20 @@ func gosim_smem_free(h C.uintptr_t) {
 	cgo.Handle(h).Delete()
 }
 
+// gosim_cpu_set_dmem binds a strict Memory (gosim_smem_*) to a CPU as its data
+// memory, so the execute engine's load/store paths route through it (reads of
+// unwritten/unmapped bytes raise instead of returning zero). smem == 0 unbinds
+// (reverts to the flat memory the raw core / segment contract use).
+//
+//export gosim_cpu_set_dmem
+func gosim_cpu_set_dmem(h C.uintptr_t, smem C.uintptr_t) {
+	if smem == 0 {
+		cpu(h).SetDataMem(nil)
+		return
+	}
+	cpu(h).SetDataMem(mem(smem))
+}
+
 //export gosim_smem_set_rom
 func gosim_smem_set_rom(h C.uintptr_t, data *C.uint8_t, n C.int) {
 	mem(h).SetROM(cloneBytes(data, n))

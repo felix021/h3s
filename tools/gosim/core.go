@@ -27,10 +27,37 @@ type State struct {
 	scratch                         uint32
 	batch                           string
 	mem                             *flatMem
+	dmem                            *Memory
 	rec                             map[string]any
+	// err carries a strict-memory fault out of load without changing the model
+	// function signatures: load records the fault here and returns 0; effect
+	// checks it after the model returns and surfaces the *MemError.
+	err *MemError
 }
 
+// load reads a data word. When the CPU is bound to a strict Memory (dmem, the
+// whole-loop path), a read of an unwritten or unmapped byte records the
+// *MemError on the State (never fabricates a zero); the caller (effect)
+// surfaces it. Otherwise it falls back to the flat memory the raw core and the
+// segment contract use (upstream simulator semantics). The first fault wins;
+// later loads on an already-faulted State are no-ops so the fault is never
+// overwritten.
 func (st *State) load(addr uint32, size int) uint32 {
+	if st.dmem != nil {
+		if st.err != nil {
+			return 0
+		}
+		b, err := st.dmem.Read(addr, size)
+		if err != nil {
+			st.err = err
+			return 0
+		}
+		var v uint32
+		for i := 0; i < size && i < 4; i++ {
+			v |= uint32(b[i]) << (8 * i)
+		}
+		return v
+	}
 	b := st.mem.read(addr&0xFFFFFFFF, size)
 	var v uint32
 	for i := 0; i < size && i < 4; i++ {
@@ -88,6 +115,7 @@ type CPU struct {
 	pc       uint32
 	steps    uint64
 	mem      *flatMem
+	dmem     *Memory
 	tab      []insnMeta
 	models   map[string]modelFunc
 	cache    map[uint32]decodeResult
@@ -152,6 +180,16 @@ func (c *CPU) GetState() (flags, sp, rets, pc uint32) {
 func (c *CPU) SetICFG(v uint32) { c.icfg = v }
 func (c *CPU) GetICFG() uint32  { return c.icfg }
 
+// SetDataMem binds the strict data memory the execute engine's load/store
+// paths read and write. A nil m reverts to the flat memory (upstream simulator
+// semantics) the raw core and the segment contract use. Fetch stays on the
+// immutable flatMem window (mem).
+func (c *CPU) SetDataMem(m *Memory) { c.dmem = m }
+
+// DataMem returns the strict data memory, or nil when unbound (flat-memory
+// fallback).
+func (c *CPU) DataMem() *Memory { return c.dmem }
+
 // Reset clears per-run state (memory, decode cache, step counter, pending
 // if-block state) so one CPU handle can be reused across differential cases.
 func (c *CPU) Reset() {
@@ -162,6 +200,7 @@ func (c *CPU) Reset() {
 	c.pc = 0
 	c.steps = 0
 	c.mem = newFlatMem()
+	c.dmem = nil
 	c.cache = make(map[uint32]decodeResult)
 	c.seq = 0
 	c.afterT = nil
@@ -245,9 +284,13 @@ func (c *CPU) effect(im *insnMeta, raw map[string]uint32, pc uint32, size int) (
 		scratch: 0,
 		batch:   "sim",
 		mem:     c.mem,
+		dmem:    c.dmem,
 		rec:     map[string]any{"text": ""},
 	}
 	res, err := model(c, op, st)
+	if st.err != nil {
+		return nil, op, tgt, st.err
+	}
 	return res, op, tgt, err
 }
 
@@ -258,7 +301,7 @@ func tgtVal(t *uint32) uint32 {
 	return *t
 }
 
-func (c *CPU) apply(res *Effect) {
+func (c *CPU) apply(res *Effect) *MemError {
 	for r, v := range res.regs {
 		c.R[r] = v & 0xFFFFFFFF
 	}
@@ -266,7 +309,13 @@ func (c *CPU) apply(res *Effect) {
 		c.flags = res.flags & 0xF
 	}
 	for a, v := range res.mem {
-		c.mem.writeWordLE(a, v)
+		if c.dmem != nil {
+			if err := c.dmem.Write(a, wordBytes(v)); err != nil {
+				return err
+			}
+		} else {
+			c.mem.writeWordLE(a, v)
+		}
 	}
 	if res.hasSp {
 		c.sp = res.sp & 0xFFFFFFFF
@@ -274,9 +323,26 @@ func (c *CPU) apply(res *Effect) {
 	if res.hasRets {
 		c.rets = res.rets & 0xFFFFFFFF
 	}
+	return nil
 }
 
-func (c *CPU) memWord(a uint32) uint32 { return c.mem.wordLE(a) }
+// memWord reads a 32-bit little-endian data word through the strict Memory when
+// one is bound, else through the flat memory.
+func (c *CPU) memWord(a uint32) (uint32, *MemError) {
+	if c.dmem != nil {
+		b, err := c.dmem.Read(a, 4)
+		if err != nil {
+			return 0, err
+		}
+		return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24, nil
+	}
+	return c.mem.wordLE(a), nil
+}
+
+// wordBytes serializes a 32-bit value as 4 little-endian bytes.
+func wordBytes(v uint32) []byte {
+	return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)}
+}
 
 // ---- control flow ---------------------------------------------------------
 
@@ -335,14 +401,24 @@ func (c *CPU) specialList(im *insnMeta, raw map[string]uint32, size int) error {
 			if _, ok := vals[r]; !ok {
 				return fmt.Errorf("%#x: push of special register %d", c.pc, r)
 			}
-			c.mem.writeWordLE(c.sp+uint32(4*k), vals[r])
+			a := c.sp + uint32(4*k)
+			if c.dmem != nil {
+				if err := c.dmem.Write(a, wordBytes(vals[r])); err != nil {
+					return err
+				}
+			} else {
+				c.mem.writeWordLE(a, vals[r])
+			}
 		}
 		c.pc += uint32(size)
 	} else {
 		a := c.sp
 		newPC := c.pc + uint32(size)
 		for _, r := range regs {
-			v := c.memWord(a)
+			v, err := c.memWord(a)
+			if err != nil {
+				return err
+			}
 			a += 4
 			switch r {
 			case 3:
@@ -368,9 +444,15 @@ func (c *CPU) step1(im *insnMeta, raw map[string]uint32, size int) error {
 		if err != nil {
 			return err
 		}
-		c.apply(res)
+		if err := c.apply(res); err != nil {
+			return err
+		}
 		if strings.HasPrefix(bIm.id, "pop.pc") {
-			c.pc = c.memWord(c.sp-4) & 0xFFFFFFFE
+			v, err := c.memWord(c.sp - 4)
+			if err != nil {
+				return err
+			}
+			c.pc = v & 0xFFFFFFFE
 		} else {
 			c.pc = end
 		}
@@ -382,14 +464,20 @@ func (c *CPU) step1(im *insnMeta, raw map[string]uint32, size int) error {
 		return err
 	}
 	before := c.R
-	c.apply(res)
+	if err := c.apply(res); err != nil {
+		return err
+	}
 	end := c.pc + uint32(size)
 	id := im.id
 	switch {
 	case id == "rts":
 		c.pc = c.rets
 	case strings.HasPrefix(id, "pop.pc"):
-		c.pc = c.memWord(c.sp-4) & 0xFFFFFFFE
+		v, err := c.memWord(c.sp - 4)
+		if err != nil {
+			return err
+		}
+		c.pc = v & 0xFFFFFFFE
 	case id == "call.r" || id == "goto.r":
 		c.pc = before[op.Num("x")]
 	case tgt != nil:
@@ -529,7 +617,16 @@ func (c *CPU) Step() error {
 		if im.id == "tbh" {
 			w = 2
 		}
-		b := c.mem.read(end+c.R[op.Num("x")], w)
+		var b []byte
+		if c.dmem != nil {
+			var err *MemError
+			b, err = c.dmem.Read(end+c.R[op.Num("x")], w)
+			if err != nil {
+				return err
+			}
+		} else {
+			b = c.mem.read(end+c.R[op.Num("x")], w)
+		}
 		entry := uint32(b[0])
 		if w == 2 {
 			entry |= uint32(b[1]) << 8
