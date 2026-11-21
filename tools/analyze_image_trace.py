@@ -1538,13 +1538,13 @@ LOADERS = {'official': load_official,
 def check_self(report, arms=None):
     """钉死 official vs tested_b79 结论(全量到 crc_bankb 前沿停点;core_tick_irq3
     _delivery 提入 base 层后前沿从 177,491 @ 0x12ba42(核心 tick IRQ3 首溢出
-    terminal)推进到 293,277 @ 0x60679ba(P11 堆信息 0xf27f4b 首读),按新前沿
-    重钉):
+    terminal)推进到 299,063 @ 0x12b0c2(第 5 次 core tick 溢出被 IPMASK=6 屏蔽、
+    CNT 读点诚实停,按新前沿重钉):
 
-    - 双方 293,277 步、同停点 0x60679ba(unmapped_memory 读 0xf27f4b,size 1)、
-      per-core 步数一致(CPU0 282,115 / CPU1 11,181);stop parity 字段(步数/
+    - 双方 299,063 步、同停点 0x12b0c2(core_tick_overflow_requires_resolution)、
+      per-core 步数一致(CPU0 287,902 / CPU1 11,181);stop parity 字段(步数/
       每核/完整停点记录)全同;
-    - 控制流(核调度/PC/next_pc)293,277 步零分歧,无 first_control_divergence/
+    - 控制流(核调度/PC/next_pc)299,063 步零分歧,无 first_control_divergence/
       reconvergence 字段;
     - 首个签名分歧仍 step 155,390 @ 0x6010b16(rep 4 32 资源表头拷贝体首装载
       r2=b[r1++]),r2=0x28 vs 0x88;共 30 个分歧段(扩展前缀新增 19 段:post-probe
@@ -1570,7 +1570,7 @@ def check_self(report, arms=None):
         require(run['completed_steps'] == base['completed_steps'] and
                 run['stop_pc'] == base['stop_pc'] and
                 run['stop']['kind'] == base['stop']['kind'] and
-                run['per_core_steps'] == {'0': 282115, '1': 11181},
+                run['per_core_steps'] == {'0': 287902, '1': 11181},
                 f'{label} run changed: the shared-stack prefix is no longer the pinned frontier stop')
     parity = p['parity']
     require(parity['steps'] == {'official': base['completed_steps'],

@@ -821,11 +821,10 @@ SCENARIO_LAYERS = {'crc_bankb': ('base',),
 # 钉子检查的 stop 子集字段。
 FRONTIERS = {
     'crc_bankb': {
-        'completed_steps': 293277,
-        'stop_pc': '0x60679ba',
-        'stop': {'kind': 'unmapped_memory', 'access': 'read', 'address': '0xf27f4b', 'size': 1,
-                 'reference_sdk_register': None},
-        'freshness_fields': ('kind', 'address'),
+        'completed_steps': 299063,
+        'stop_pc': '0x12b0c2',
+        'stop': {'kind': 'core_tick_overflow_requires_resolution'},
+        'freshness_fields': ('kind',),
     },
     'p11_heap_experimental': {
         'completed_steps': 139947345,

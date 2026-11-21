@@ -40,10 +40,19 @@ the P11_CLOCK SYS_DIV/CLK_CON0 word stores (write-only records), the real
 into the P11 RAM window 0xf20080 (snapshot cross-checked byte-exact against
 the CRC-valid resource), the PWR_CON bit5 request and its post-flag-clear
 poll exit through the p11_lpwr_response projection (the real-prefix test of
-the P11 request/response hypothesis), and finally stops honestly at the
-first heap-info byte read 0xf27f4b (P2M message area +0xa, value written by
-P11 init and unproven): the explicit p11_heap_info_bytes fixture is the only
-way past this boundary.
+the P11 request/response hypothesis). The P2M heap descriptor 0xf27f4a..4d
+(P2M message area +0xa, value written by P11 init and unproven) is mapped in
+this scenario as a read-only region seeded with the statically derived
+candidate (P11_HEAP_INFO_DERIVED, same family as the erased_bankb 0xFF
+fixture; derived-not-measured), so the chain consumes the descriptor for
+real (assembles begin 0x3d0c, protects [0xf20000, heap begin), re-reads the
+four bytes), then the pmu_task creation round-trips the scheduler and the
+fifth core-tick overflow (masked by the IPMASK 6 critical section) is left
+pending/unresolved; the firmware reads the core-tick CNT register (0xffe0f0)
+at 0x12b0c2, where the scenario honestly stops
+(core_tick_overflow_requires_resolution). The explicit p11_heap_info_bytes
+fixture (conditional) remains the p11_heap_experimental_config-only path;
+it is not how this scenario crosses the descriptor read.
 
 The trailing p11_heap_experimental_config scenario layers the STATICALLY
 DERIVED heap-info candidate (P11_HEAP_INFO_DERIVED: begin 0x3d0c / size
@@ -51,9 +60,9 @@ DERIVED heap-info candidate (P11_HEAP_INFO_DERIVED: begin 0x3d0c / size
 derivation chain next to the constant) on top of crc_bankb_erased_fixture
 through that explicit fixture. The value is derived, not measured: the q32s
 init path is statically decoded (raw wide-immediate bytes cross-checked),
-never executed here, and every conclusion past 293,277 (the heap-info boundary
-the base scenario now honestly stops at) in this scenario is a
-CONDITIONAL pass that must not be reported as verified. With the candidate
+never executed here, and every conclusion past 299,063 (the masked core-tick
+overflow CNT read where the base tier now honestly stops) in this scenario is
+a CONDITIONAL pass that must not be reported as verified. With the candidate
 bytes the chain consumes them for real (0x60679ba/be first read assembles
 begin 0x3d0c, r0=0xf20000|begin=0xf23d0c, the region call 0x60114ca
 protects [0xf20000, heap begin), the four bytes are re-read at 0x60679ee..f4,
@@ -122,8 +131,10 @@ honestly at 301,651 on the P3_WKUP_DLY (0xf2c114) &=0x7F8 RMW — an
 independent, not-yet-modeled P33 register, the next decision; power_init's
 return still lies beyond. No new scheduler round trips occur.
 The crc_bankb_erased_fixture frontier itself (with core_tick_irq3_delivery
-in base) now advances to 293,277 @ 0x60679ba — the same heap-info first read
-the fixture releases — after four real core-tick IRQ3 deliveries; without
+in base) now advances to 299,063 @ 0x12b0c2 — the fifth (masked) core-tick
+overflow CNT read, reached after the base tier maps the P2M heap descriptor
+as a derived-candidate read-only region and consumes it for real — after
+four real core-tick IRQ3 deliveries; without
 the delivery switch (the explicit no-delivery negative) it still stops at
 177,491 @ 0x12ba42. Later routes advanced the conditional frontier through
 the WKUP_DLY/PORT_SEL/P3_AWKUP/P3_LS/P11_SYS_CON1 boundaries to 304,036
@@ -341,6 +352,7 @@ import struct
 import sys
 from pathlib import Path
 
+from br28_model import P11_HEAP_INFO
 from br28_unknown import word
 from frontier_registry import PROBE_SCENARIO_NAMES, scenario_flags, frontier
 from probe_dualcore import dual_case
@@ -4193,9 +4205,11 @@ P11_COMMON_CODE_WINDOW=(0xf20080,0xf20080+12112,'p11_common_code_window')
 # b[0xF27FD6](M2P_RVD2PVDD_EN,实测落盘 0x00:静态看 0x6067a6c `r4=1` 在被
 # icfg 位图跳过的块内,实际路径 r4=0),0x60674b8(写 LRC 周期字节)随后
 # 自己回读 b[0xF27F80] 三次推导定时器分频字节,「写后读回」由真实代码消费。P2M 区
-# (0xF27F40..0xF27F80,P11→主核,含堆信息 4 字节)保持不映射:本前缀固件不写
-# P2M(堆信息仍按 p11_heap_info_bytes 显式 fixture 读);若后续前缀出现 P2M
-# 写,再同语义扩窗。
+# (0xF27F40..0xF27F80,P11→主核,含堆信息 4 字节)除堆描述符外保持不映射:本前缀
+# 固件不写 P2M,但会读 0xf27f4a..4d 堆描述符——base 层把该 4 字节按 readonly
+# 区(种子=静态推导候选 P11_HEAP_INFO_DERIVED)挂载,条件场景仍走
+# p11_heap_info_bytes 显式 fixture(见 irq_case p11_power_init 块);若后续前缀
+# 出现 P2M 写,再同语义扩窗。
 P11_M2P_MESSAGE_WINDOW=(0xF27F80,0xF27FE0,'p11_m2p_message_area')
 
 # 路JLEQ：向量表顶(0x1a0000)以上固件静态上层缓冲窗(scoped harness region)。
@@ -5388,6 +5402,15 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         # p11_code.bin 公共段拷贝循环(0x6067990..96,每字节 4 条指令 ×12112 字节
         # ≈48k 步)超出默认 250k 预算,前沿场景放宽到 320k。
         budget=320000
+        # base 层:P2M 堆描述符 0xf27f4a..4d 只读映射,种子=静态推导候选
+        # (P11_HEAP_INFO_DERIVED:begin=0x3d0c/size=0x39f4,link-time 立即数,
+        # derived-not-measured——与 erased_bankb 0xFF fixture 同级的显式环境
+        # 假设)。只在该场景未显式传 heap_info_bytes 时挂载:P2M 是 P11→主核
+        # 方向,本前缀固件只读不写,readonly 区(与 flash_image/erased_bankb
+        # 同机制)按已知字节回放,不再停 unmapped_memory。条件场景仍走
+        # p11_heap_info_bytes 显式 fixture(报告键 p11_heap_info_fixture 不变)。
+        if heap_info_bytes is None:
+            readonly=tuple(readonly)+((P11_HEAP_INFO,P11_HEAP_INFO_DERIVED),)
         # fd31 ADC CON 读回投影(路 BN)把前沿拉进轮询 helper 0x601163a 的
         # 1000 轮忙等(投影世界不发明 ADC 完成,bit7 恒不置位;每轮 call RAM
         # 延时 0x12e256 ≈386 步 → ~400k 步),途中跨过 Timer0 STD12M 首次
@@ -7747,7 +7770,8 @@ def check(report,firmware):
     # post_flag_clear_read(快照&~bit7,bit5=0)第一轮就退出:PWR_CON bit5
     # 请求-响应投影在真实前缀检验通过(requests=1、poll read=1)。
     # core_tick_irq3_delivery 已提入 base 层(本路):基座场景从 177,491 @
-    # 0x12ba42(核心 tick IRQ3 首溢出 terminal 停点)推进到 293,277 @ 0x60679ba。
+    # 0x12ba42(核心 tick IRQ3 首溢出 terminal 停点)推进到 299,063 @ 0x12b0c2
+    # (堆描述符 readonly 放行后第 5 次溢出的 CNT 读点)。
     # CPU0 核心 tick 溢出共 4 次(40-tick 时基、PRD 1,199,999,周期 30,000
     # 模型步),每次按核仲裁取 IRQ3 向量槽 0x19fe0c=handler 0x60661a4、真实
     # 进入处理函数、`[0xffe0ec]|=0x40` ACK 一次(模型 core_tick_ack_rmw 只收
@@ -7755,27 +7779,31 @@ def check(report,firmware):
     # 0x60661e6,RTI 尾锚 0x60661e6 由 return_core_tick require 钉死,故 ACK
     # 必经 0x60661ca;此 PC 绑定=反汇编+尾锚的 derived-not-measured 结论)、
     # 0x60661e6 RTI 一次。4 次交付后 power_init 链走 P11 公共段拷贝/PWR_CON
-    # 请求/堆信息消费,停在 0xf27f4b 首读(unmapped_memory,size 1)——只有
-    # p11_heap_experimental 的 heap fixture 能放行,基座诚实停。旧 289,849 @
-    # 0x60679ba 读 0xf27f4b 即此停点(时间基修正前的历史前沿)。
+    # 请求/堆信息消费(0xf27f4b 首读由 base 层 P2M 堆描述符 readonly 区放行,
+    # 种子=静态推导候选 P11_HEAP_INFO_DERIVED)→pmu_task 创建 0x6067242
+    # 往返调度器(再多一次 irq127 交付)→第 5 次 core tick 溢出落在 IPMASK=6
+    # 临界区内被屏蔽、交付挂起(unresolved),固件在 0x12b0c2 读 core tick CNT
+    # (r5=0xffe0f0)时诚实停(core_tick_overflow_requires_resolution;放行靠
+    # conditional 的 prd_readback/cnt_held_snapshot,base 不取)。旧 293,277 @
+    # 0x60679ba 读 0xf27f4b 即上一停点(堆信息首读)。
     # 前沿契约单点:停点/步数字面值从 frontier_registry 派生(推进前沿只改
     # registry,本处断言叙事保持手写)。
     crc_bankb_frontier=frontier('crc_bankb')
     require(r['stop_core']==0 and r['stop_pc']==crc_bankb_frontier['stop_pc'] and
-            r['stop']['kind']==crc_bankb_frontier['stop']['kind'] and
-            r['stop']['address']==crc_bankb_frontier['stop']['address'],
-            'the base-tier core-tick IRQ3 delivery must carry the scenario past the first '
-            'overflow to the P11 heap-info first read (unmapped 0xf27f4b), not stop terminal')
+            r['stop']['kind']==crc_bankb_frontier['stop']['kind'],
+            'the base tier must carry the scenario past the P11 heap-info read to the '
+            'fifth (masked) core-tick overflow CNT read, not stop terminal')
     require(r['completed_steps']==crc_bankb_frontier['completed_steps'],
             'the erased fixture scenario changed its step count')
-    # CPU0 core tick:4 次到期、4 次交付、4 次 |=0x40 ACK;最终计数从余数继续
-    # (CNT=1,008,600),pending 已清、无 unresolved 溢出;40-tick 时基不变。
+    # CPU0 core tick:5 次到期、前 4 次交付并 |=0x40 ACK;第 5 次到期落在
+    # IPMASK=6 临界区(pending=1、unresolved=1、ACK 仍 4)被 CNT 读点停住;
+    # 40-tick 时基不变。
     tick=r['peripherals']['core_tick_configuration'][0]
     require(tick['con']==1 and tick['prd']==1199999 and tick['virtual_source_ticks_per_step']==40 and
-            tick['expirations']==4 and tick['acknowledgements']==4 and
-            tick['pending'] is False and tick['unresolved_overflow'] is False,
-            'the CPU0 core tick must overflow and be delivered/ACKed exactly four times '
-            'before the heap-info stop, with the counter resuming from its remainder')
+            tick['expirations']==5 and tick['acknowledgements']==4 and
+            tick['pending'] is True and tick['unresolved_overflow'] is True,
+            'the CPU0 core tick must overflow five times, deliver/ACK the first four, '
+            'and hold the fifth masked overflow (pending, unresolved) at the CNT read')
     ct=r['machine']['core_tick_entry_projection']
     require(ct['enabled'] is True and len(ct['deliveries'])==4 and
             all(d['core']==0 and d['irq']==3 and d['vector_address']=='0x19fe0c' and
@@ -7793,19 +7821,21 @@ def check(report,firmware):
             adapters.get('core_tick_handler_frame')==8,
             'the four deliveries must each ACK once (|=0x40 RMW) and RTI once (0x60661e6), '
             'with the handler frame pushes/pops executed exactly twice per delivery')
-    require(r['peripherals']['software_irq_commands']['commands']==16 and
-            r['peripherals']['software_irq_commands']['acknowledgements']==8,
-            'the extended VM-init sync requests changed the software IRQ bookkeeping')
+    require(r['peripherals']['software_irq_commands']['commands']==17 and
+            r['peripherals']['software_irq_commands']['acknowledgements']==9,
+            'the extended VM-init sync requests plus the pmu_task scheduler round trip '
+            'changed the software IRQ bookkeeping')
     deliveries=r['machine']['software_irq_entry_projection']['deliveries']
     require([(d['core'],d['irq'],d['handler'],d['reti_from']) for d in deliveries]==
-            [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7,
+            [(0,127,'0x12ad2a','0x12b608')]+[(1,125,'0x60662c8','0x12c5ca')]*7+
+            [(0,127,'0x12ad2a','0x12b608')],
             'the extra cross-core delivery after the probe mismatch differs from the repeat projection')
     require(adapters.get('immediate_rep_multi_block_projection')==165 and
             adapters.get('zero_count_skip_is_assumption')==3 and
             adapters.get('register_rep_multi_block_projection')==26 and
             adapters.get('rep_copy_unknown_transport_load')==9 and
             adapters.get('rep_copy_unknown_transport_store')==9 and
-            adapters.get('exact_doubleword_store')==25 and
+            adapters.get('exact_doubleword_store')==26 and
             adapters.get('parallel_halfword_store_old_registers')==3,
             'the fixture-scenario REP projections differ from the observed prefix')
     # 显式关开关负例:core_tick_irq3_delivery=False 时必须逐字段复现旧前沿
@@ -11603,10 +11633,11 @@ def check(report,firmware):
         'the 300,240 LRCT NUM boundary, the trim-result probe consumption, the 301,097 '
         'TIMER0-clock-source stop and the 301,540 STD12M pass-through to the LP-timer '
         'CON2 readback boundary) '
-        'is a CONDITIONAL PASS that must not be reported as verified; without the fixture the '
-        'crc_bankb_erased_fixture frontier now honestly stops at 293,277 @ 0x60679ba on the '
-        'same P11 heap-info first read (0xf27f4b) the conditional fixture releases, after four '
-        'real core-tick IRQ3 deliveries (core 0)')
+        'is a CONDITIONAL PASS that must not be reported as verified; the '
+        'crc_bankb_erased_fixture base tier maps the same descriptor bytes as a read-only '
+        'derived-candidate region (not the conditional fixture), consumes them for real, and '
+        'honestly stops at 299,063 @ 0x12b0c2 on the fifth (masked) core-tick overflow CNT read '
+        'after four real core-tick IRQ3 deliveries (core 0)')
     report['p11_m2p_message_window_assumption']=(
         'the p11 scenarios with p11_power_init map the SDK-declared P11 M2P message area '
         '(p11_app.h M2P_MESSAGE_RAM_BEGIN 0xF27F80 .. +M2P_MESSAGE_SIZE 0x60, i.e. '
