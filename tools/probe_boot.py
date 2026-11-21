@@ -1001,9 +1001,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # 数据相生产路径读回的装载门。装载门只在已核验读点上拦
                 # (0x607152c 体内 r12=0xfe0500 的 ld.w.l 读 LEN/SWN/SWP/ADR 与
                 # helper 0x60714ae 的 ld.w r0=[r0+0] 读 LEN;形状/字节钉死),
-                # 回读=ADR/LEN/SWP 最近一次整字写值、SWN 具名假设初值 0 后
-                # 提交写值。守卫见 JLAudioDacDmaPcmProduce.serve(执行核/有效
-                # 地址/零写→回落普通严格路径,kind 与开关关世界一致)。开关关=
+                # 回读=ADR/LEN/SWP 最近一次整字写值、SWN 空环自洽 LEN-1(由
+                # 运行时 LEN 写记录推导)后=提交写值。守卫见
+                # JLAudioDacDmaPcmProduce.serve(执行核/有效地址/零写→回落普通
+                # 严格路径,kind 与开关关世界一致)。开关关=
                 # 槽 None,一次 is-not-None 测试即过,legacy 世界零变化。
                 gate=hardware.jl_audio_dac_dma_pcm
                 shape=gate.shape_for(self.pc)

@@ -572,8 +572,8 @@ FEATURES = (
     # 相生产路径(0x607152c)读回+SWN 提交记录——31,409,349 停点 0x6071560
     # (LEN 活读算差,非 len_readback 两站点)放行。ADR/LEN/SWP 读回=四字写记录
     # 最近一次整字写值(ADR=0x18e180、LEN=0x606b2b0 重写值、SWP=0 本段不推
-    # 进);SWN 读回=具名假设初值 0(derived-not-measured,需硅测)后=0x6071782
-    # 提交写值;SWN 写(0x6071782)write-only 记录(值=固件 r14=本次生产样本数)。
+    # 进);SWN 读回=空环自洽 LEN-1(derived-not-measured,需硅测;由运行时 LEN
+    # 写记录推导)后=0x6071782 提交写值;SWN 写(0x6071782)write-only 记录(值=固件 r14=本次生产样本数)。
     # 不建模 SWN/HRP 真实活动期推进量/DMA 数据流/IRQ68 消费——DAC 提交(生产
     # 侧 SWN 写)与消费(硬件 HRP 推进)分账,本段消费数=0。依赖
     # jl_audio_dac_dma_pns_write(同一函数链)。----
@@ -583,8 +583,9 @@ FEATURES = (
             'JL_AUDIO DAC DMA PCM 数据相生产路径(31,409,349 停点 0x6071560 LEN '
             '活读算差,非 len_readback 两站点)读回+SWN 提交记录:ADR/LEN/SWP 读回='
             '四字写记录最近一次整字写值(ADR=0x18e180、LEN=0x606b2b0 重写值、'
-            'SWP=0 本段不推进);SWN 读回=具名假设初值 0(derived-not-measured,'
-            '需硅测)后=0x6071782 提交写值;SWN 写(0x6071782)write-only 记录(值='
+            'SWP=0 本段不推进);SWN 读回=空环自洽 LEN-1(derived-not-measured,'
+            '需硅测;由运行时 LEN 写记录推导)后=0x6071782 提交写值;SWN 写'
+            '(0x6071782)write-only 记录(值='
             '固件 r14=本次生产样本数);不建模 SWN/HRP 真实活动期推进量/DMA 数据'
             '流/IRQ68 消费——DAC 提交(生产侧 SWN 写)与消费(硬件 HRP 推进)分账,'
             '本段消费数=0;新停点 31,418,680 @ 0x12cc48(喂狗函数前身 P3_PCNT_SET0 '
