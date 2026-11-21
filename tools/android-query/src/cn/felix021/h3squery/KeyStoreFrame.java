@@ -55,11 +55,11 @@ public final class KeyStoreFrame {
     /** 协议版本 1（保留字节必须为 0）。 */
     public static final byte MPO_VERSION = 1;
     /** MPO 取值范围（数字域 dB 刻度，与固件位型边界一致；UI 滑杆范围同源）。 */
-    public static final float MPO_MIN_DB = 0.3f, MPO_MAX_DB = 119.9f;
+    public static final float MPO_MIN_DB = 0.3f, MPO_MAX_DB = 120.0f;
 
     /** 把全带 MPO 值编成 8B key 30 值：{ 'H','A', ver=1, rsv=0, float32 LE }。
-     *  非有限值或超出 (0.3, 119.9) 拒绝——固件侧 apply_mpo.S 的位型门
-     *  （0x3E99999A < bits < 0x42F00000）在 App 侧先挡一道。 */
+     *  非有限值或超出 (0.3, 120.0) 拒绝——固件侧 apply_mpo.S 的位型门
+     *  （0x3E99999A < bits < 0x42F00000，即 0.3 < M < 120.0 独占）在 App 侧先挡一道。 */
     public static byte[] encodeMpoValue(float mpoDb) {
         check(Float.isFinite(mpoDb), "MPO 必须是有限数: " + mpoDb);
         check(mpoDb > MPO_MIN_DB && mpoDb < MPO_MAX_DB,
@@ -133,7 +133,7 @@ public final class KeyStoreFrame {
     /**
      * 把十段曲线编成 88B key 31 值：{'H','A', ver=2, rsv=0, seg_count=10, pad[3],
      * 10 × {u16 freq LE, u16 pad=0, float32 gain LE}}。任一段频点出
-     * [1, 21599]Hz、增益非有限或 |gain|>=40dB、段数≠10 都拒绝——固件侧
+     * [1, 21599]Hz、增益非有限或 |gain|>40dB、段数≠10 都拒绝——固件侧
      * apply_eq.S 整包先验同门（App 侧先挡一道）。
      */
     public static byte[] encodeEqValue(EqSeg[] segs) {
@@ -143,8 +143,8 @@ public final class KeyStoreFrame {
             check(s != null, "段不能为 null");
             check(s.freqHz >= EQ_FREQ_MIN_HZ && s.freqHz <= EQ_FREQ_MAX_HZ,
                     "freq 超出 [" + EQ_FREQ_MIN_HZ + ", " + EQ_FREQ_MAX_HZ + "]Hz: " + s.freqHz);
-            check(Float.isFinite(s.gainDb) && Math.abs(s.gainDb) < EQ_GAIN_MAX_DB,
-                    "gain 超出 (-" + EQ_GAIN_MAX_DB + ", " + EQ_GAIN_MAX_DB + ")dB: " + s.gainDb);
+            check(Float.isFinite(s.gainDb) && Math.abs(s.gainDb) <= EQ_GAIN_MAX_DB,
+                    "gain 超出 [-" + EQ_GAIN_MAX_DB + ", " + EQ_GAIN_MAX_DB + "]dB: " + s.gainDb);
         }
         byte[] value = new byte[EQ_VALUE_LEN];
         value[0] = MPO_MAGIC_H;
@@ -177,7 +177,7 @@ public final class KeyStoreFrame {
             int freq = (value[off] & 0xff) | ((value[off + 1] & 0xff) << 8);
             float gain = getFloat(value, off + 4);
             if (freq < EQ_FREQ_MIN_HZ || freq > EQ_FREQ_MAX_HZ
-                    || !Float.isFinite(gain) || Math.abs(gain) >= EQ_GAIN_MAX_DB) return null;
+                    || !Float.isFinite(gain) || Math.abs(gain) > EQ_GAIN_MAX_DB) return null;
             segs[i] = new EqSeg(freq, gain);
         }
         return segs;

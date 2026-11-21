@@ -70,6 +70,11 @@ public class KeyStoreFrameTest {
         rejected(() -> KeyStoreFrame.encodeMpoValue(Float.NaN), "NaN 应拒绝");
         rejected(() -> KeyStoreFrame.encodeMpoValue(Float.POSITIVE_INFINITY), "Inf 应拒绝");
         rejected(() -> KeyStoreFrame.encodeMpoValue(-90.0f), "负数应拒绝");
+        // 边界对齐：固件 0.3 < M < 120.0 独占；此前 App 用 119.9 误拒 [119.9, 120)（缺口第 4 项）
+        expect(KeyStoreFrame.decodeMpoValue(KeyStoreFrame.encodeMpoValue(119.95f)) != null,
+                "MPO=119.95 应可编码（固件门 <120.0）");
+        expect(KeyStoreFrame.decodeMpoValue(KeyStoreFrame.encodeMpoValue(119.9f)) != null,
+                "MPO=119.9 应可编码");
         // 旧格式/任意测试字节不被误读（历史 key30 值 5730dead… 解码为 null）
         expect(KeyStoreFrame.decodeMpoValue(unhex("5730deadbeef2100")) == null,
                 "非协议值必须解不出 MPO");
@@ -104,15 +109,18 @@ public class KeyStoreFrameTest {
             expect(back[i].freqHz == freqs[i], "freq 往返[" + i + "]: " + back[i].freqHz);
             expect(Math.abs(back[i].gainDb - gains[i]) < 1e-4, "gain 往返[" + i + "]: " + back[i].gainDb);
         }
-        // 门：段数错 / freq=0 / freq>21599 / |gain|>=40 / NaN / Inf
+        // 门：段数错 / freq=0 / freq>21599 / |gain|>40 / NaN / Inf（边界 ±40.0 含——固件 |bits|<=40.0f 同界）
         KeyStoreFrame.EqSeg[] nine = java.util.Arrays.copyOf(segs, 9);
         rejected(() -> KeyStoreFrame.encodeEqValue(nine), "9 段应拒绝");
         rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 0, 0, 0f)), "freq=0 应拒绝");
         rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 9, 21600, 0f)), "freq>21599 应拒绝");
-        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, 40.0f)), "gain>=40 应拒绝");
-        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, -40.0f)), "gain<=-40 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, 40.01f)), "gain>40 应拒绝");
+        rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, -40.01f)), "gain<-40 应拒绝");
         rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, Float.NaN)), "NaN 应拒绝");
         rejected(() -> KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, Float.POSITIVE_INFINITY)), "Inf 应拒绝");
+        // 边界 ±40.0 含：此前 <40 误拒 40.0（缺口第 4 项），现已对齐固件 <=40.0f 放行
+        expect(KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, 40.0f)).length == 88, "gain=+40 应放行");
+        expect(KeyStoreFrame.encodeEqValue(mut(segs, 5, 1000, -40.0f)).length == 88, "gain=-40 应放行");
         // 头破损 / 段数错 / 段值越界 → 解码 null；key30 的 8B MPO 值不被误读成 EQ
         expect(KeyStoreFrame.decodeEqValue(unhex("4841010000000000" + "00".repeat(80))) == null, "ver=1 不解为 EQ");
         byte[] bad = v.clone(); bad[4] = 9;

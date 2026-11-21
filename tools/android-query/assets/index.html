@@ -3515,9 +3515,9 @@ function haChanged() {
 
 // L3 MPO 值协议（与固件 apply_mpo.S / KeyStoreFrame.encodeMpoValue 对齐）：
 // 8B = { 'H','A', ver=1, rsv=0, float32 LE(MPO dB 位型) }。位型即 IEEE754
-// 字节序，JS 侧用 DataView 手工编码；范围 (0.3, 119.9) 与固件位型门一致。
+// 字节序，JS 侧用 DataView 手工编码；范围 (0.3, 120) 与固件位型门一致（0.3 < M < 120.0 独占）。
 function haEncodeMpoValue(mpo) {
-  if (!isFinite(mpo) || mpo <= 0.3 || mpo >= 119.9) return null;
+  if (!isFinite(mpo) || mpo <= 0.3 || mpo >= 120) return null;
   const buf = new ArrayBuffer(8);
   const u8 = new Uint8Array(buf);
   u8[0] = 0x48; u8[1] = 0x41; u8[2] = 0x01; u8[3] = 0x00;
@@ -3533,7 +3533,7 @@ $('haSaveMpo').onclick = () => {
   const mpo = haEffectiveMpo();
   const hex = haEncodeMpoValue(mpo);
   if (!hex) {
-    $('haFeedback').textContent = 'MPO ' + mpo + ' dB 超出可编码范围 (0.3, 119.9)，未发送。';
+    $('haFeedback').textContent = 'MPO ' + mpo + ' dB 超出可编码范围 (0.3, 120)，未发送。';
     return;
   }
   $('haFeedback').textContent = 'MPO ' + mpo + ' dB 已提交，等待设备回执…';
@@ -3546,7 +3546,7 @@ $('haSaveMpo').onclick = () => {
 
 // L4 EQ 十段值协议（与固件 apply_eq.S / KeyStoreFrame.encodeEqValue 对齐）：
 // 88B = {'H','A', ver=2, rsv=0, seg_count=10, pad[3], 10×{u16 freq LE, u16 pad,
-// float32 LE(gain dB 位型)}}。固件整包先验同门（freq 1..21599、|gain|<40dB）。
+// float32 LE(gain dB 位型)}}。固件整包先验同门（freq 1..21599、|gain|≤40dB 含边界）。
 // 本按钮只发本表十段 {freq, gain}；iir=band_pass/q=0.7 由固件段包模板烘定。
 function haEncodeEqValue(bands) {
   if (bands.length !== 10) return null;
@@ -3556,7 +3556,7 @@ function haEncodeEqValue(bands) {
   for (let i = 0; i < 10; i++) {
     const b = bands[i];
     if (!isFinite(b.freq) || b.freq < 1 || b.freq > 21599) return null;
-    if (!isFinite(b.gain) || Math.abs(b.gain) >= 40) return null;
+    if (!isFinite(b.gain) || Math.abs(b.gain) > 40) return null;
     dv.setUint16(8 + i * 8, b.freq, true);
     dv.setUint16(10 + i * 8, 0, true);
     dv.setFloat32(12 + i * 8, b.gain, true);
@@ -3570,7 +3570,7 @@ $('haSaveEq').onclick = () => {
   const bands = hearingAid.bands;
   const hex = haEncodeEqValue(bands);
   if (!hex) {
-    $('haFeedback').textContent = '十段 EQ 有频点/增益超出可编码范围（freq 1..21599Hz、|gain|<40dB），未发送。';
+    $('haFeedback').textContent = '十段 EQ 有频点/增益超出可编码范围（freq 1..21599Hz、|gain|≤40dB），未发送。';
     return;
   }
   $('haFeedback').textContent = '十段 EQ 已提交，等待设备回执…';
@@ -3597,7 +3597,7 @@ function haDecodeMpoValue(hex) {
   if (!/^[0-9a-f]{16}$/.test(hex)) return null;
   if (hex.slice(0, 8) !== '48410100') return null;      // 'H','A',ver=1,rsv=0
   const mpo = haFloat32FromHexLE(hex.slice(8));
-  return mpo != null && mpo > 0.3 && mpo < 119.9 ? mpo : null;
+  return mpo != null && mpo > 0.3 && mpo < 120 ? mpo : null;
 }
 function haDecodeEqValue(hex) {
   if (!/^[0-9a-f]{176}$/.test(hex)) return null;
@@ -3607,7 +3607,7 @@ function haDecodeEqValue(hex) {
     const off = 16 + i * 16;                            // 8B 头 + 每段 8B
     const freq = parseInt(hex.slice(off, off + 4), 16);
     const gain = haFloat32FromHexLE(hex.slice(off + 8, off + 16));
-    if (!(freq >= 1 && freq <= 21599) || gain == null || Math.abs(gain) >= 40) return null;
+    if (!(freq >= 1 && freq <= 21599) || gain == null || Math.abs(gain) > 40) return null;
     segs.push({ f: freq, g: gain });
   }
   return segs;
