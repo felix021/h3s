@@ -5108,6 +5108,10 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
              jl_src_sync_full_block=False,jl_src_sync_coef_batch_readback=False,
              src_sync_delivery=False,
+             src_sync_cursor_progress=False,
+             src_sync_cursor_sample_bytes=4,
+             src_sync_cursor_consume=None,
+             src_sync_cursor_produce=None,
              jl_sync_config_words=False,
              jl_btclk_timer_words=False,
              jl_fm_con_head_rmw=False,
@@ -6865,6 +6869,29 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['jl_src_sync_delivery_requests']=True
         options['jl_src_sync_completion_steps']=40000
         extra['src_sync_irq_frames']=dict(SRC_SYNC_IRQ_FRAMES)
+    # src_sync_cursor_progress(路 SRCSYNC6,codex 202611211240 方案,默认 False=关):
+    # SRC 硬件游标进度投影——在 src_sync_delivery 的完成事件之上,给 IDAT_ADR/
+    # IDAT_LEN/ODAT_ADR/ODAT_LEN 四字一个「完成即提交」的硬件结果:note_start()
+    # 锁存本次描述符+配置+事务号,advance() 到期验证后原子提交,full_block read()
+    # 返回已提交快照(ACK 后保留)。消耗量 c/产出量 p/样本宽 W 为具名假设
+    # (derived-not-measured):C=CON2 低字节通道数、W 默认 4(tone 路径 32 位样本)、
+    # c 默认一次消费全部剩余「跑到输入耗尽」、p 默认与消费量相同「1:1 速率」;
+    # 真实每 completion 次数与 SRC 速率比需硅测确认。逐块守恒 0<=c<=L前/
+    # 0<=p<=O前/L后=L前-c/A后-A前=c*C*W/无回绕;一次启动只准提交一次。依赖边挂
+    # src_sync_delivery(完成事件里提交,快照走 full_block 读回半边);默认关=
+    # 四游标字读回=最后写值(139,947,345 @ 0x6064220 零消费臂),legacy 逐字节不变。
+    if src_sync_cursor_progress:
+        require(src_sync_delivery,
+                'the SRC cursor progress only layers on the src_sync_delivery release '
+                '(the cursor commits inside the completion event and its snapshot rides '
+                'the full-block readback half)')
+        options['jl_src_sync_cursor_progress']=True
+        if src_sync_cursor_sample_bytes != 4:
+            options['jl_src_sync_cursor_sample_bytes']=src_sync_cursor_sample_bytes
+        if src_sync_cursor_consume is not None:
+            options['jl_src_sync_cursor_consume']=src_sync_cursor_consume
+        if src_sync_cursor_produce is not None:
+            options['jl_src_sync_cursor_produce']=src_sync_cursor_produce
     # jl_sync_config_words(路 SYNCIMPL,codex 20261119 收窄版 a,
     # docs/frontier-scout-jlsync.md §5,默认 False=关):JL_SYNC(audio_sync)
     # 四字容器——42,061,357 停点 0x60befe6(creator 0x60befae 体内 li 常量
@@ -12287,6 +12314,15 @@ def main():
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,PROBE_SCENARIO_NAMES['p11_heap_experimental'],
                               **conditional_frontier_flags,flash_image_bytes=image),
+                     # 路 SRCSYNC6:SRC 硬件游标进度新实验臂——条件前沿栈全量 +
+                     # src_sync_cursor_progress(具名 (c,p,W) 假设默认值:一次消费
+                     # 全部剩余/1:1 产出/32 位样本)。IDAT_LEN 递减到 0 后 SRC 循环
+                     # 退出,链继续走到下一个诚实边界(可能停在 DAC/DMA 或更后);
+                     # 新停点由实跑取得,本臂不重钉 p11_heap_experimental 前沿
+                     # (旧臂零消费对照 139,947,345 @ 0x6064220 保持不变)。
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_probe',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True},
+                              flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
                               sfc_suspend=True,gpio_out_readback=True,kick_wake=True,hardware_crc=True,

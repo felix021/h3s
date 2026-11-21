@@ -486,6 +486,29 @@ FEATURES = (
             '入口 0x12ca24/向量槽 0x19ff64,handler CON0|=0x40 W1C 清 pending;'
             '输入消耗=0/输出数据不合成,转换结果与连续数据流 BLOCKED;证据='
             '已验证实现契约与单测,不证明 SRC_SYNC 硬件/采样率转换已运行)'),
+    # ---- 路 SRCSYNC6(codex 202611211240 方案):SRC 硬件游标进度投影。依赖
+    # src_sync_delivery(完成事件里提交、快照走 full_block 读回半边)。默认关,
+    # 仅新实验臂启用——p11_heap_experimental 条件栈保持零消费对照 139,947,345
+    # @ 0x6064220 不变;probe_only 不进共享栈。 ----
+    Feature('src_sync_cursor_progress', 'probe_only', ('src_sync_delivery',),
+            False, None,
+            'SRC 硬件游标进度投影(IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN 完成即提交,'
+            'IRQ89 handler 读回已推进游标使 obj+40 递减到 0;消耗量 c/产出量 p/'
+            '样本宽 W 为具名假设 derived-not-measured,真实次数与速率比需硅测确认;'
+            '逐块守恒 0<=c<=L前/0<=p<=O前/L后=L前-c/A后-A前=c*C*W;只动 IDAT 不动 '
+            'ODAT 的臂过不了 tone 播完验收=反例)'),
+    Feature('src_sync_cursor_sample_bytes', 'probe_only', ('src_sync_cursor_progress',),
+            True, None,
+            'SRC 游标每样本存储字节数 W 具名假设(tone 路径 32 位样本默认 4;'
+            'b[obj+4]!=1 的另支取 2;敏感性探针值,场景传值)'),
+    Feature('src_sync_cursor_consume', 'probe_only', ('src_sync_cursor_progress',),
+            True, None,
+            'SRC 游标每 completion 消费的每通道样本数 c 具名假设(None=一次消费'
+            '全部剩余「跑到输入耗尽」;敏感性探针值,场景传值,真实次数需硅测确认)'),
+    Feature('src_sync_cursor_produce', 'probe_only', ('src_sync_cursor_progress',),
+            True, None,
+            'SRC 游标每 completion 产出的每通道样本数 p 具名假设(None=与消费量'
+            '相同「1:1 速率」;敏感性探针值,场景传值,速率比需硅测确认)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li

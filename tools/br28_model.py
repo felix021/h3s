@@ -6641,14 +6641,17 @@ class JLSrcSyncFullBlockRegisters:
                0xfe2630:'JL_SRC_SYNC->INSR',0xfe2634:'JL_SRC_SYNC->OUTSR',
                0xfe2638:'JL_SRC_SYNC->PHASE'}
 
-    def __init__(self,readback=False):
+    def __init__(self,readback=False,cursor=None):
         # readback(路 SRCSYNC5 交付半边):IRQ89 处理程序 0x12ca24 会把 IDAT_
         # ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN/FLTB_ADR/STOP_FLAG/OUTSR 读回软件对象
         # 字段——交付模式下这些标量读按「最后写值」服务(值=function B 自己写
         # 下的配置字,零转换的诚实答案;输入消耗量=0、输出数据不合成)。
+        # cursor(路 SRCSYNC6 游标半边):游标进度投影开启时,IDAT_ADR/IDAT_LEN/
+        # ODAT_ADR/ODAT_LEN 四字的读回改由已提交硬件快照服务(其余字仍最后写值)。
         # 默认关:读一律拒绝(jl_src_sync_full_block_read_not_modeled),legacy
         # 逐字节不变。
         self.readback=readback
+        self.cursor=cursor
         self.stores={address:{'values':[],'writes':0,'cores':[]} for address in self.WORDS}
         self.word_writes=0
         self.read_attempts=0
@@ -6656,6 +6659,13 @@ class JLSrcSyncFullBlockRegisters:
 
     def handles(self,address):
         return address in self.stores
+
+    def last_value(self,address):
+        """本容器账本里某字的最后写值(未写过返回 None)——游标进度锁存用,
+        不计读服务/拒绝计数,不合成初值。"""
+        if address not in self.stores:raise ValueError('not a modeled JL_SRC_SYNC full-block word')
+        entry=self.stores[address]
+        return entry['values'][-1] if entry['writes'] else None
 
     def write(self,address,value,core):
         if address not in self.stores:raise ValueError('not a modeled JL_SRC_SYNC full-block word')
@@ -6670,11 +6680,18 @@ class JLSrcSyncFullBlockRegisters:
             # 空没有可服务的内容——ODAT_ADR_START/END 等 function B 不写的字
             # 或异常提前读会显形)。不合成初值:handler 读的是固件自己写下的
             # 配置,零转换的诚实投影。
+            # 路 SRCSYNC6:游标半边开启时,IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN
+            # 四字读回=已提交硬件快照(ACK 后保留,handler 先清 IRQ 再依次读
+            # IDAT/ODAT);未提交仍回落最后写值(启动前/首完成前同旧臂)。
             entry=self.stores[address]
             if entry['writes']==0:
                 self.read_attempts+=1
                 raise Blocked('jl_src_sync_full_block_word_unwritten',address=hex(address))
             self.reads_served+=1
+            if self.cursor is not None and address in self.cursor.CURSOR_WORDS:
+                committed=self.cursor.read(address)
+                if committed is not None:
+                    return committed
             return entry['values'][-1]
         # 读一律拒绝(codex 决策点 3):首写前/写后/RMW 内部读都停。没有
         # 引入合成初值的执行需求(与 CON0/CON1 RMW 首读即用旧值的关键差异;
@@ -7025,10 +7042,11 @@ class JLSrcSyncDelivery:
     # 0x12ca42。两者都放行(真实执行体是 RAM 拷贝,flash 母本为静态审计锚)。
     ACK_RMW_PCS=frozenset((0x12ca42,0x60c621a))
 
-    def __init__(self,completion_steps=40000):
+    def __init__(self,completion_steps=40000,cursor=None):
         if not isinstance(completion_steps,int) or completion_steps<1:
             raise ValueError('SRC_SYNC completion steps must be a positive model-step count')
         self.completion_steps=completion_steps
+        self.cursor=cursor
         self.started=False
         self.start_step=None
         self.pending=False
@@ -7046,18 +7064,24 @@ class JLSrcSyncDelivery:
 
     def note_start(self,hardware):
         """probe_boot 在 CON0|=0x8 启动 RMW 专用分发后调用(rmw_start 通道)。
-        记录启动时刻;同一事务的重复启动(陈旧值被 rmw_start 拦)不会到达。"""
+        记录启动时刻;同一事务的重复启动(陈旧值被 rmw_start 拦)不会到达。
+        游标半边(路 SRCSYNC6)顺带锁存本次输入/输出描述符+配置+事务号。"""
         self.started=True
         self.start_step=hardware.counts['completed_model_steps']
         self.starts+=1
+        if self.cursor is not None:
+            self.cursor.note_start(hardware)
 
     def advance(self,hardware):
         """BR28Model.advance 每模型步调用:启动后 completion_steps 步完成。
         完成即置 pending(一次一个 pending 片;handler ACK 清 pending 后可
-        再次启动→再次完成)。"""
+        再次启动→再次完成)。游标半边(路 SRCSYNC6)在置 pending 前原子提交
+        本次硬件结果(先验证 c/p、地址范围、输出有效性)。"""
         if self.started and not self.pending:
             elapsed=hardware.counts['completed_model_steps']-self.start_step
             if elapsed>=self.completion_steps:
+                if self.cursor is not None:
+                    self.cursor.commit(hardware)
                 self.started=False
                 self.pending=True
                 self.completions+=1
@@ -7119,6 +7143,182 @@ class JLSrcSyncDelivery:
             'red_line':('no direct interrupt or direct OSSemPost: completion sets IRQ89 '
                         'pending and the machine delivers it through the real vector slot '
                         '0x19ff64 -> handler 0x12ca24')}
+
+
+class JLSrcSyncCursorProgress:
+    """SRC_SYNC 硬件游标进度投影(opt-in,路 SRCSYNC6,codex 202611211240 方案)。
+
+    背景:src_sync_delivery(路 SRCSYNC5)把完成事件置 IRQ89 pending 后,handler
+    0x12ca24 读回的 IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN 仍是 function B 自己写下的
+    配置字(progress_readback=最后写值)——IDAT_LEN 永不递减,固件 0x6070d06-08 的
+    `[obj+40]==0` 结束比较永不触发,p11_heap 前沿在 139,947,345 @ 0x6064220 的
+    「无限 SRC 循环」即此伪影。真实机制:SRC 硬件推进 IDAT_ADR/IDAT_LEN/ODAT_ADR/
+    ODAT_LEN(0xfe2610/14/18/1c),IRQ89 handler(RAM 0x12ca24,flash 0x60c61fc)每轮
+    读回写进软件对象 obj+36/40/44/48。本投影给这四个游标字一个「完成即提交」的
+    硬件结果:note_start() 锁存本次描述符+配置+事务号,advance() 到期时验证后原子
+    提交,read() 返回已提交快照(ACK 后保留,handler 先清 IRQ 再依次读 IDAT/ODAT)。
+
+    具名假设(全部显式,consumption/production 的真实次数与速率比需硅测确认):
+    - C=通道数:取自 CON2(0xfe2608)低字节,function B 写 b[obj+0]|0x10000=0x00010002,
+      SDK SRC_CHI=2 旁证,静态已证。
+    - W=每样本存储字节数(sample_bytes):tone 路径 24 位样本钳位后存 32 位,默认 4
+      (IDAT_LEN=64=512 字节/4 字节/2 通道与 REPCOND scout「0x41d30c 源 128 字全零」
+      互证);b[obj+4]!=1 的另支取 2,默认 4 是具名假设非硅测量。
+    - c=每 completion 消费的每通道样本数(consume):None=一次消费全部剩余
+      「跑到输入耗尽」假设(首块输入 64/通道 < 输出容量 256/通道,容量充足);
+      真实分块次数需硅测确认。
+    - p=每 completion 产出的每通道样本数(produce):None=与消费量相同「1:1 速率」
+      假设;SRC 采样率转换比值未测,需硅测确认。
+
+    守恒契约:每笔验证 0<=c<=L前、0<=p<=O前、L后=L前-c、A后-A前=c*C*W(地址无
+    回绕);一次启动只准提交一次,下一次合法启动承接上一笔剩余量。只动 IDAT 不动
+    ODAT 的臂(produce=0)过不了「tone 播完」验收——固件 obj+76=obj+44-obj+72
+    算出的产出字节数为 0,诚实显形为反例而非 claim 成功。
+    """
+
+    CURSOR_WORDS = (0xfe2610, 0xfe2614, 0xfe2618, 0xfe261c)
+    SDK_NAMES = {0xfe2610: 'JL_SRC_SYNC->IDAT_ADR', 0xfe2614: 'JL_SRC_SYNC->IDAT_LEN',
+                 0xfe2618: 'JL_SRC_SYNC->ODAT_ADR', 0xfe261c: 'JL_SRC_SYNC->ODAT_LEN'}
+    CON2 = 0xfe2608
+
+    def __init__(self, sample_bytes=4, consume=None, produce=None):
+        if not isinstance(sample_bytes, int) or sample_bytes not in (2, 4):
+            raise ValueError('SRC_SYNC cursor sample width must be 2 or 4 bytes (W)')
+        if consume is not None and (not isinstance(consume, int) or consume < 0):
+            raise ValueError('SRC_SYNC cursor consume must be a non-negative per-channel '
+                             'sample count or None (exhaust the remaining input)')
+        if produce is not None and (not isinstance(produce, int) or produce < 0):
+            raise ValueError('SRC_SYNC cursor produce must be a non-negative per-channel '
+                             'sample count or None (equal to the consumed count)')
+        self.sample_bytes = sample_bytes
+        self.consume = consume
+        self.produce = produce
+        self.transaction = 0
+        self.commits = 0
+        self.channels = None
+        self.latched = {}
+        self.committed = {}
+        self.input_consumed_samples = 0
+        self.output_produced_samples = 0
+        self.history = []
+
+    def note_start(self, hardware):
+        """probe_boot 的 CON0|=0x8 启动 RMW 后由 delivery.note_start 转发调用:
+        锁存本次 function B 写下的输入/输出描述符、CON2 通道数与事务号。"""
+        fb = hardware.jl_src_sync_full_block
+        for address in self.CURSOR_WORDS:
+            value = fb.last_value(address)
+            if value is None:
+                raise Blocked('jl_src_sync_cursor_latch_unwritten', address=hex(address))
+            self.latched[address] = value
+        con2 = fb.last_value(self.CON2)
+        if con2 is None:
+            raise Blocked('jl_src_sync_cursor_latch_unwritten', address=hex(self.CON2))
+        self.channels = con2 & 0xff
+        if self.channels == 0:
+            raise Blocked('jl_src_sync_cursor_channel_count_zero', con2=hex(con2))
+        # 新事务开始:清旧快照,启动后、提交前读回回落 function B 本次写下的
+        # 最后写值(与旧臂一致),提交后才是新快照。
+        self.committed = {}
+        self.transaction += 1
+
+    def commit(self, hardware):
+        """advance() 到期时的原子提交:先验证 c/p、地址范围与输出有效性,再一次性
+        置 committed 快照(在置 pending 之前)。一次启动只准提交一次。"""
+        if self.transaction == 0 or not self.latched:
+            raise Blocked('jl_src_sync_cursor_commit_without_start')
+        length = self.latched[0xfe2614]          # IDAT_LEN (per-channel samples)
+        capacity = self.latched[0xfe261c]        # ODAT_LEN (per-channel samples)
+        idat_adr = self.latched[0xfe2610]
+        odat_adr = self.latched[0xfe2618]
+        channels = self.channels
+        width = self.sample_bytes
+        consumed = self.consume if self.consume is not None else length
+        produced = self.produce if self.produce is not None else consumed
+        if not 0 <= consumed <= length:
+            raise Blocked('jl_src_sync_cursor_consume_out_of_range',
+                          consumed=consumed, remaining=length)
+        if not 0 <= produced <= capacity:
+            raise Blocked('jl_src_sync_cursor_produce_out_of_range',
+                          produced=produced, capacity=capacity)
+        idat_delta = consumed * channels * width
+        odat_delta = produced * channels * width
+        idat_next = (idat_adr + idat_delta) & 0xffffffff
+        odat_next = (odat_adr + odat_delta) & 0xffffffff
+        if idat_delta and idat_next < idat_adr:
+            raise Blocked('jl_src_sync_cursor_idat_address_overflow',
+                          address=hex(idat_adr), delta=idat_delta)
+        if odat_delta and odat_next < odat_adr:
+            raise Blocked('jl_src_sync_cursor_odat_address_overflow',
+                          address=hex(odat_adr), delta=odat_delta)
+        self.committed = {
+            0xfe2610: idat_next,
+            0xfe2614: length - consumed,
+            0xfe2618: odat_next,
+            0xfe261c: capacity - produced,
+        }
+        self.input_consumed_samples += consumed
+        self.output_produced_samples += produced
+        self.commits += 1
+        self.history.append({
+            'transaction': self.transaction,
+            'channels': channels,
+            'sample_bytes': width,
+            'consumed': consumed,
+            'produced': produced,
+            'idat_before': idat_adr,
+            'idat_after': idat_next,
+            'idat_len_before': length,
+            'idat_len_after': length - consumed,
+            'odat_before': odat_adr,
+            'odat_after': odat_next,
+            'odat_len_before': capacity,
+            'odat_len_after': capacity - produced,
+        })
+
+    def read(self, address):
+        """已提交游标快照的读取(未提交返回 None,由 full-block 容器回落最后写值)。"""
+        return self.committed.get(address)
+
+    def report(self):
+        return {
+            'enabled': True,
+            'cursor_words': {hex(a): name for a, name in sorted(self.SDK_NAMES.items())},
+            'state': {
+                'transaction': self.transaction,
+                'commits': self.commits,
+                'channels': self.channels,
+                'sample_bytes': self.sample_bytes,
+                'input_consumed_samples': self.input_consumed_samples,
+                'output_produced_samples': self.output_produced_samples,
+                'latched': {hex(a): hex(v) for a, v in sorted(self.latched.items())},
+                'committed': {hex(a): hex(v) for a, v in sorted(self.committed.items())},
+                'history': [{**h, 'idat_before': hex(h['idat_before']),
+                             'idat_after': hex(h['idat_after']),
+                             'odat_before': hex(h['odat_before']),
+                             'odat_after': hex(h['odat_after'])} for h in self.history],
+            },
+            'named_assumptions': {
+                'sample_bytes': self.sample_bytes,
+                'consume': ('all remaining (run-to-input-exhaustion)' if self.consume is None
+                            else self.consume),
+                'produce': ('equal to consumed (1:1 rate)' if self.produce is None
+                            else self.produce),
+                'semantics': ('C=channel count from CON2 low byte (0x00010002, SDK '
+                              'SRC_CHI=2); W=storage bytes per sample (4 for the 32-bit '
+                              'tone path, named assumption); c/p = per-channel samples '
+                              'consumed/produced per completion — the real per-completion '
+                              'counts and the SRC rate ratio are NOT silicon-measured and '
+                              'need 需硅测确认; conservation: 0<=c<=L_before, '
+                              '0<=p<=O_before, L_after=L_before-c, A_after-A_before='
+                              'c*C*W, no address wrap; one commit per start, the next '
+                              'start resumes the remainder'),
+            },
+            'anti_pattern': ('a produce=0 arm advances IDAT to exhaustion but leaves '
+                             'ODAT at its start word, so the firmware\'s obj+76=obj+44-'
+                             'obj+72 byte count is zero — "input exhausted + zero output" '
+                             'is a FALSE tone-completed signal, kept as a negative example'),
+        }
 
 
 class JLSyncConfigWords:
@@ -9331,6 +9531,10 @@ class BR28Model:
                  jl_src_sync_full_block=False,jl_src_sync_coef_batch_readback=False,
                  jl_src_sync_delivery=False,jl_src_sync_delivery_requests=False,
                  jl_src_sync_completion_steps=40000,
+                 jl_src_sync_cursor_progress=False,
+                 jl_src_sync_cursor_sample_bytes=4,
+                 jl_src_sync_cursor_consume=None,
+                 jl_src_sync_cursor_produce=None,
                  jl_sync_config_words=False,
                  jl_btclk_timer_words=False,
                  jl_fm_con_head_rmw=False,
@@ -10053,7 +10257,21 @@ class BR28Model:
         # jl_src_sync_config_words 容器 CON0/CON1/COEF 之外)放行;CON0|=0x8
         # 启动请求归原 CON0 容器(不占新容器 11 纯写)。默认关:11 字保持
         # unmapped(42,231,992 前沿形状),legacy 逐字节不变。
-        self.jl_src_sync_full_block=(JLSrcSyncFullBlockRegisters(readback=jl_src_sync_delivery)
+        # 路 SRCSYNC6:SRC 硬件游标进度投影。必须先于 full_block 与 delivery 构造
+        # (两者都要引用同一游标对象:full_block 的 read() 服务已提交快照,delivery
+        # 的 note_start/advance 锁存/提交)。默认关:四游标字读回=最后写值
+        # (139,947,345 @ 0x6064220 零消费臂),legacy 逐字节不变。
+        if jl_src_sync_cursor_progress and not jl_src_sync_delivery:
+            raise ValueError('jl_src_sync_cursor_progress requires jl_src_sync_delivery '
+                             '(the cursor progress commits inside the completion event and '
+                             'its snapshot rides the full-block readback half)')
+        self.jl_src_sync_cursor=(JLSrcSyncCursorProgress(
+                                     sample_bytes=jl_src_sync_cursor_sample_bytes,
+                                     consume=jl_src_sync_cursor_consume,
+                                     produce=jl_src_sync_cursor_produce)
+                                 if jl_src_sync_cursor_progress else None)
+        self.jl_src_sync_full_block=(JLSrcSyncFullBlockRegisters(readback=jl_src_sync_delivery,
+                                                                 cursor=self.jl_src_sync_cursor)
                                      if jl_src_sync_full_block else None)
         # 路 SRCSYNC5:SRC_SYNC 完成事件 + IRQ89 交付半边。必须在
         # jl_src_sync_config_words(启动写 CON0 归原容器+ACK RMW 内部读走原容器
@@ -10069,7 +10287,8 @@ class BR28Model:
         if jl_src_sync_delivery_requests and not jl_src_sync_delivery:
             raise ValueError('jl_src_sync_delivery_requests requires jl_src_sync_delivery')
         self.jl_src_sync_delivery_requests=jl_src_sync_delivery_requests
-        self.jl_src_sync_delivery=(JLSrcSyncDelivery(completion_steps=jl_src_sync_completion_steps)
+        self.jl_src_sync_delivery=(JLSrcSyncDelivery(completion_steps=jl_src_sync_completion_steps,
+                                                     cursor=self.jl_src_sync_cursor)
                                    if jl_src_sync_delivery else None)
         # 路 SRCSYNC4:JL_SRC_SYNC COEF 口「本次初始化后 55 字批次回读」模型
         # ——42,232,325 停点 0x60709e0(helper 0x607099c 的 ld.w r0=[r5+60]
@@ -12318,6 +12537,20 @@ class BR28Model:
                 'real vector slot 0x19ff64 (handler 0x12ca24, flash 0x60c61fc) and the '
                 'handler CON0|=0x40 W1C clears pending; no direct interrupt or direct '
                 'OSSemPost is injected')
+        if self.jl_src_sync_cursor is not None:
+            result['jl_src_sync_cursor_progress']=self.jl_src_sync_cursor.report()
+            result['assumptions']['jl_src_sync_cursor_progress']=(
+                'SRC hardware cursor progress (route SRCSYNC6, codex 202611211240 '
+                'verdict): the IDAT_ADR/IDAT_LEN/ODAT_ADR/ODAT_LEN words are advanced by '
+                'the hardware and the IRQ89 handler 0x12ca24 reads them back into obj+36/'
+                '40/44/48, so the firmware\'s obj+40==0 exit comparison (0x6070d06-08) '
+                'and obj+76=obj+44-obj+72 byte accounting can close; the per-completion '
+                'consumption c and production p are NAMED assumptions (C=channels from '
+                'CON2 low byte, W=sample bytes, c=consume, p=produce) — the real silicon '
+                'per-completion counts and the SRC rate ratio are NOT measured and need '
+                '需硅测确认; conservation per commit: 0<=c<=L_before, 0<=p<=O_before, '
+                'L_after=L_before-c, A_after-A_before=c*C*W, no address wrap, one commit '
+                'per start')
         if self.jl_sync is not None:
             result['jl_sync_config_registers']=self.jl_sync.report()
             result['assumptions']['jl_sync_config_registers']=(

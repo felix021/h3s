@@ -194,6 +194,110 @@ class SrcSyncModelTests(unittest.TestCase):
         self.assertFalse(h.jl_src_sync_delivery.delivery_in_flight)
 
 
+def cursor_model(**extra):
+    # 路 SRCSYNC6:在 delivery 之上叠 SRC 硬件游标进度。fixture 值同 function_b_writes:
+    # C=CON2 低字节=2 通道、W=4 字节样本、IDAT_ADR=0x41d30c/IDAT_LEN=64、
+    # ODAT_ADR=0x41d9ac/ODAT_LEN=930。默认 consume=exhaust(一次吃光 64)、
+    # produce=1:1(产 64)。
+    extra.setdefault('jl_src_sync_completion_steps', 1)
+    return BR28Model(jl_src_sync_config_words=True, jl_src_sync_full_block=True,
+                     jl_src_sync_delivery=True, jl_src_sync_delivery_requests=True,
+                     jl_src_sync_cursor_progress=True,
+                     initial_irq_config=[0] * 11 + [IRQ89_NIBBLE_WORD] + [0] * 20,
+                     initial_ipmask=0, **extra)
+
+
+class SrcSyncCursorProgressTests(unittest.TestCase):
+    def test_cursor_progress_requires_delivery(self):
+        with self.assertRaises(ValueError):
+            BR28Model(jl_src_sync_config_words=True, jl_src_sync_full_block=True,
+                      jl_src_sync_cursor_progress=True)
+
+    def test_completion_commits_idat_and_odat_progress(self):
+        h = cursor_model()
+        function_b_writes(h)
+        self.assertEqual(h.read(0xfe2614), 0x40)          # before start: last-written
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaises(IrqDeliveryRequest):
+            h.advance(0x300)                             # commit + pending + request
+        self.assertTrue(h.jl_src_sync_delivery.pending)
+        # 逐块守恒:IDAT_LEN 64->0,IDAT_ADR +c*C*W=+64*2*4=+512。
+        self.assertEqual(h.read(0xfe2614), 0x0)           # input exhausted -> loop exits
+        self.assertEqual(h.read(0xfe2610), 0x41d30c + 512)
+        # 输出端也推进:ODAT_ADR +p*C*W=+512,ODAT_LEN 930->866。
+        self.assertEqual(h.read(0xfe2618), 0x41d9ac + 512)
+        self.assertEqual(h.read(0xfe261c), 930 - 64)
+        # 其余字仍最后写值(不受游标影响)。
+        self.assertEqual(h.read(0xfe2638), 0x41f000)      # PHASE
+        self.assertEqual(h.read(0xfe262c), 0)             # STOP_FLAG
+
+    def test_committed_snapshot_survives_the_ack(self):
+        h = cursor_model()
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaises(IrqDeliveryRequest):
+            h.advance(0x300)
+        # handler 先清 IRQ(ACK),再依次读 IDAT/ODAT——ACK 后快照仍保留。
+        h.jl_src_sync_delivery.rmw_ack(ACK_PC, 'rmw.or.modimm', 0x40, 0, h)
+        self.assertFalse(h.jl_src_sync_delivery.pending)
+        self.assertEqual(h.read(0xfe2614), 0x0)
+        self.assertEqual(h.read(0xfe2610), 0x41d30c + 512)
+        self.assertEqual(h.read(0xfe2618), 0x41d9ac + 512)
+
+    def test_conservation_is_per_commit(self):
+        h = cursor_model()
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaises(IrqDeliveryRequest):
+            h.advance(0x300)
+        cursor = h.jl_src_sync_cursor
+        self.assertEqual(cursor.commits, 1)
+        rec = cursor.history[-1]
+        self.assertEqual((rec['channels'], rec['sample_bytes']), (2, 4))
+        self.assertEqual(rec['consumed'], 64)
+        self.assertEqual(rec['produced'], 64)
+        self.assertEqual(rec['idat_len_after'], rec['idat_len_before'] - rec['consumed'])
+        self.assertEqual(rec['idat_after'] - rec['idat_before'],
+                         rec['consumed'] * rec['channels'] * rec['sample_bytes'])
+        self.assertEqual(rec['odat_after'] - rec['odat_before'],
+                         rec['produced'] * rec['channels'] * rec['sample_bytes'])
+
+    def test_out_of_range_consumption_fails_closed(self):
+        # consume 显式给 65 > 剩余 64:验证在前、提交前即停,不置 pending。
+        h = cursor_model(jl_src_sync_cursor_consume=65)
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaisesRegex(Blocked, 'jl_src_sync_cursor_consume_out_of_range'):
+            h.advance(0x300)
+        self.assertFalse(h.jl_src_sync_delivery.pending)
+        self.assertEqual(h.jl_src_sync_cursor.commits, 0)
+
+    def test_idat_only_without_odat_is_the_tone_done_negative(self):
+        # 只动 IDAT、ODAT 原地(produce=0):输入耗尽但产出字节数为零。
+        # 固件 obj+76=obj+44-obj+72 算出的产出=0——「输入耗尽+零产出」不是
+        # tone 播完,这是反例,须过不了 tone 播完验收。
+        h = cursor_model(jl_src_sync_cursor_produce=0)
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaises(IrqDeliveryRequest):
+            h.advance(0x300)
+        self.assertEqual(h.read(0xfe2614), 0x0)           # IDAT 耗尽(循环会退出)
+        # ODAT_ADR 原地 -> 固件 obj+76=obj+44-obj+72 算出的产出字节数为 0
+        # (obj+44 读回仍=输出起始字),「输入耗尽+零产出」=假 tone 播完。
+        self.assertEqual(h.read(0xfe2618), 0x41d9ac)      # ODAT_ADR 原地
+
+    def test_unchanged_arm_still_serves_last_written_value(self):
+        # 旧臂(delivery 无游标)四游标字读回仍=最后写值——139,947,345 零消费对照。
+        h = armed_model()
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaises(IrqDeliveryRequest):
+            h.advance(0x300)
+        self.assertEqual(h.read(0xfe2614), 0x40)          # IDAT_LEN 不减
+        self.assertEqual(h.read(0xfe2610), 0x41d30c)      # IDAT_ADR 不动
+        self.assertEqual(h.read(0xfe2618), 0x41d9ac)      # ODAT_ADR 不动
+
+
 def machine(entry=True, banks=False, rti=False, repeat=False):
     return DualCoreMachine(src_sync_irq_entry=entry, src_sync_irq_entry_banks=banks,
                            src_sync_irq_rti=rti, repeat_irq_delivery=repeat)
