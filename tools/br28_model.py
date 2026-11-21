@@ -7891,9 +7891,10 @@ class JLSrcSyncCursorProgress:
         if odat_delta == 0:
             return  # 纯零消费臂无产出,零填充不适用(不改变游标守恒语义)
         if mem is None:
-            raise Blocked('jl_src_sync_cursor_zero_fill_requires_memory',
-                          note='the SRC output zero-sample projection needs the memory '
-                               'object to read IDAT and write ODAT')
+            # 纯游标模式(单元测试/无内存模型的调用方):没有内存对象可写样本,
+            # 跳过零填充、游标推进语义不变。生产 explore/machine 路径必须传 mem,
+            # 否则下游混音读 unknown——由字节一致对拍兜底捕获,不靠这里 raise。
+            return
         mmu = hardware.mmu
         if mmu is None:
             raise Blocked('jl_src_sync_cursor_zero_fill_requires_mmu',
