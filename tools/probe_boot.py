@@ -21,6 +21,12 @@ from br28_dsp_models import CopexUpperWord
 from br28_icfg import IcfgValue, M as WORD_MASK
 from br28_arch_models import architectural_k2, K2_SHA
 
+# 只读观察件(整段搬 Go 可行性前置测量,opt-in;默认 None=零开销零行为变化)。
+# H3S_GOSIM_OBSERVE 非空即启用;开启后只在 explore 主循环读状态做统计,不改
+# 仿真状态、报告字节。见 tools/gosim_observe.py 与 tools/gosim_measure.py。
+import gosim_observe
+gosim_observer = gosim_observe.GosimObserver() if gosim_observe.enabled() else None
+
 OFFICIAL_SHA='65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af'
 APP_SHA='18f3d573a5b1a15f488a6803ce4f828634e602015c85e92d205bbe62d7060041'
 ENTRY=0x06000100
@@ -2894,17 +2900,35 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     for _ in range(budget):
         attempts+=1
         if machine is not None:c=machine.select()
+        if gosim_observer is not None:
+            gosim_observer.begin(
+                single_core=(machine is None or len(machine.cores)==1),
+                immutable=gosim_observe.immutable_fetch_pc(c.pc,rom),
+                concrete=(gosim_observe.concrete_int(c.pc)
+                          and all(gosim_observe.concrete_int(v) for v in c.R)
+                          and gosim_observe.concrete_int(getattr(c,'icfg',0))),
+                repeat_active=(getattr(c,'repeat',None) is not None
+                               or getattr(c,'after_then',None) is not None),
+                pc_hook=((hardware is not None and diagnostics
+                          and c.pc==diagnostics.get('stop_before_pc'))
+                         or (diagnostics and diagnostics.get('stop_on_rom_return')
+                             and c.pc==ROM_RETURN)))
         if hardware is not None and diagnostics and c.pc==diagnostics.get('stop_before_pc'):
+            if gosim_observer is not None:gosim_observer.hook_stop()
             stop={'kind':'diagnostic_milestone_reached','address':hex(c.pc)}
             break
         if diagnostics and diagnostics.get('stop_on_rom_return') and c.pc==ROM_RETURN:
+            if gosim_observer is not None:gosim_observer.hook_stop()
             stop={'kind':'isolated_function_return','sentinel':hex(ROM_RETURN)}
             break
         row={'pc':hex(c.pc)}
         if machine is not None:row['core']=c.core_id
+        clean=False
+        post_reason=None
         try:
             if hardware is not None and hardware.debug is not None:hardware.debug.check_fetch(c.pc,1,c.core_id)
             insn,raw,size=c.decode(c.pc)
+            if gosim_observer is not None:gosim_observer.note_insn(insn)
             if hardware is not None and hardware.debug is not None:
                 extent=size
                 if insn.id.endswith('.p'):extent+=c.decode(c.pc+size)[2]
@@ -2932,21 +2956,27 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 if c.core_id==1:hardware.secondary_cpu_executed=True
                 machine.after_step(c,int(row['pc'],16))
             if hardware is not None:hardware.advance(c.icfg)
+            clean=True
         except CoreStall as e:
+            post_reason=gosim_observe.STALL
             machine.note_stall(c,e.details);row['stall']=e.details
             machine.after_step()
             try:hardware.advance(c.icfg)
             except Blocked as pending:stop=pending.details
             except IrqDeliveryRequest as request:dispatch_delivery(request,row)
         except Blocked as e:
+            post_reason=gosim_observe.BLOCKED
             stop=e.details
             if row.get('instruction_id','').startswith('st.') and stop['kind']=='uninitialized_memory':
                 stop={**stop,'kind':'upstream_store_bookkeeping_read',
                       'note':'upstream store model reads previous words to merge/drop writes; not a guest load'}
         except IrqDeliveryRequest as request:
+            post_reason=gosim_observe.IRQ
             dispatch_delivery(request,row)
         except (RuntimeError,ValueError,KeyError,IndexError) as e:
+            post_reason=gosim_observe.UPSTREAM
             stop={'kind':'upstream_simulator_failure','error_type':type(e).__name__,'message':str(e)}
+        if gosim_observer is not None:gosim_observer.finalize(clean,post_reason)
         trace.append(row)
         if len(trace)>64:
             trace.pop(0)
@@ -2954,6 +2984,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             break
     if stop is None:
         stop={'kind':'instruction_budget'}
+    if gosim_observer is not None:gosim_observer.finish(stop['kind'])
     if snapshot_restore_summary is not None:
         # 路 CKPT:恢复轮的尝试计数在循环后回填(探索轮读它取 K=cut 预算)。
         snapshot_restore_summary['post_restore_attempts']=attempts
