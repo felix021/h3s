@@ -530,6 +530,22 @@ FEATURES = (
             True, None,
             '放行站点数敏感性探针(默认 5=含第五个 SWN 死读;4=只放行四字配置读、'
             '钉住第五读 SWN=负例,臂停在 0x606b2ba;场景传值)'),
+    # ---- 路 DACDMALEN(codex 202611211512 方案 §3「活读到达时再扩」):DAC DMA
+    # LEN 活读回读=最近一次整字写放行——31,391,419 停点 0x606ddc4(音频参数
+    # 计算函数 0x606dd96 体内,r8=0xfe0508)的钳位比较首读与 0x606ddcc then 臂
+    # 再读。回读=JLAudioDacDmaWriteRecords 里 0xfe0508 最近一次整字写值
+    # (0x606b2b0 重写的实际 LEN,不是 0x6071e92 的 LEN=1),零合成字节;无写来源/
+    # 守卫不符→回落普通严格路径。依赖 jl_audio_dac_dma_setup_discarded_reads
+    # (同一条配置函数链,五死读放行是到达 0x606ddc4 的前置)。----
+    Feature('jl_audio_dac_dma_len_readback', 'probe_only',
+            ('jl_audio_dac_dma_setup_discarded_reads',),
+            False, None,
+            'JL_AUDIO DAC DMA LEN 活读(31,391,419 停点 0x606ddc4 钳位比较首读+'
+            '0x606ddcc then 臂再读)回读=0xfe0508 最近一次整字写值:零合成字节,'
+            '值=固件自己的写(0x606b2b0 重写的实际 LEN,非 0x6071e92 的 LEN=1);'
+            '值喂 0x606ddc8 if (r1>r3) 钳位比较与 h[r5+14]=r1 写回;无写来源/'
+            '守卫不符→回落普通严格路径(jl_audio_dac_dma_read_not_modeled);'
+            '不声明 LEN 随播放递减/DMA 数据流已运行;DAC 提交/消费数本段为零)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li

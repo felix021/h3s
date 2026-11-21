@@ -5815,6 +5815,106 @@ class JLAudioDacDmaSetupDiscardedReads:
                            'write and any PNS access keeps the original strict stop')}
 
 
+class JLAudioDacDmaLenReadback:
+    """JL_AUDIO DAC DMA LEN(0xfe0508)活读回读=最近一次整字写放行
+    (opt-in,路 DACDMALEN,codex 202611211512 方案 §3「活读到达时再扩」)。
+
+    背景:31,391,419 停点 @ 0x606ddc4——DAC DMA 配置函数 0x606b20e 五死读
+    (0x606b2b2..b2ba)放行后,前沿推进到音频参数计算函数(0x606dd96 体内,
+    0x606dda2 `li.u32 r8=0xfe0508`)的首个 LEN 活读 `ld.w.l r3=[r8+0]`
+    (字节 d0 ec 80 30)。此读值参与钳位比较(0x606ddc8 `if.gt.rr (r1>r3)`):
+    r1 是刚算出的缓冲帧数(0x606ddb0/14 `r1=r0/(1000/h[r5+10])` 后
+    0x606ddbe `& 0xfffc`),若超过 LEN 则钳到 LEN(0x606ddcc 再读 LEN
+    `ld.w.l r1=[r8+0]`,字节 d0 ec 80 10,0x606ddd0 写回 h[r5+14])。两条
+    LEN 读都是**活读**(值进比较/写回),不像上一路五死读那样被下一条
+    立即数覆盖——必须回读一个真值,否则钳位比较吃不到 LEN。
+
+    放行形状(codex §3「活读到达时再扩」,与五死读同一窄 PC 门纪律):
+    1. 只批准 0x606ddc4/0x606ddcc 两个读点(ld.w.l {r,s:8,n:0} 形状+字节
+       钉死),回读=JLAudioDacDmaWriteRecords 记录里 0xfe0508 最近一次整字
+       写值(零合成字节,值=固件自己的写:0x606b2b0 重写 LEN 之后的实际值,
+       不是 0x6071e92 尾段的 LEN=1)。
+    2. 无写来源(0xfe0508 零写)或守卫不符→回落普通严格路径
+       (kind=jl_audio_dac_dma_read_not_modeled),不补零、不臆造一个值。
+    3. 逐条重验(非地址豁免):执行核(core0)、PC、原始字节、ld.w.l、基址
+       r8=0xfe0508、有效地址==0xfe0508。
+    4. 依赖 jl_audio_dac_dma_setup_discarded_reads(同一条配置函数链:五死读
+       放行是到达 0x606ddc4 的前置);开关关=槽 None,legacy 世界零变化。
+    5. 证据分级:「回读值=固件自己写记录、零合成字节」成立;不声明 DMA
+       数据流/LEN 随播放递减/HRP 推进/SWN 初值已运行——LEN 用作容量与
+       回绕边界,当前段没有让 LEN 随播放递减的依据(codex 裁决)。本段 DAC
+       提交数/消费数仍为零(本容器不回读就推进 DMA,只喂钳位比较)。
+    """
+
+    BASE = 0xfe0500
+    LEN = 0xfe0508
+    # 两条 LEN 活读站点:同一函数(0x606dd96 体内,r8=0xfe0508 基址)的钳位
+    # 比较首读与 then 臂再读。s 是基址寄存器 r8,n=0 字索引×4 → 有效地址
+    # 0xfe0508;字节 d0 ec 80 30/d0 ec 80 10 钉死。
+    READ_SITES = {0x606ddc4: {'r': 3, 's': 8, 'n': 0},
+                  0x606ddcc: {'r': 1, 's': 8, 'n': 0}}
+    SITE_BYTES = {0x606ddc4: 'd0ec8030', 0x606ddcc: 'd0ec8010'}
+
+    def __init__(self):
+        self.served = {hex(pc): 0 for pc in self.READ_SITES}
+        self.rejections = {}
+        self.served_values = []
+
+    def _reject(self, reason, address):
+        key = f'{reason}:{hex(address)}'
+        self.rejections[key] = self.rejections.get(key, 0) + 1
+
+    def serve(self, cpu, hardware, raw):
+        """已核验读点的装载门(probe_boot step_body 调用;指令形状/字节由
+        调用方 require 钉死)。返回 int=放行值(最近一次整字写的 LEN 值),
+        None=守卫拒绝(调用方回落普通严格路径,kind 与开关关世界一致)。
+        逐条重验,非地址豁免。"""
+        shape = self.READ_SITES.get(cpu.pc)
+        if shape is None:
+            return None  # 站点未放行
+        if cpu.core_id != 0:
+            self._reject('core_mismatch', self.LEN); return None
+        address = (cpu.R[raw['s']] + raw['n'] * 4) & 0xffffffff
+        if cpu.R[raw['s']] != self.LEN:
+            self._reject('base_register_mismatch', address); return None
+        if address != self.LEN:
+            self._reject('effective_address_mismatch', address); return None
+        records = hardware.jl_audio_dac_dma
+        if records is None:
+            self._reject('write_records_missing', self.LEN); return None
+        values = records.stores[self.LEN]['values']
+        if not values:
+            self._reject('zero_write', self.LEN); return None
+        value = values[-1]
+        self.served[hex(cpu.pc)] = self.served.get(hex(cpu.pc), 0) + 1
+        self.served_values.append(value)
+        return value
+
+    def report(self):
+        return {
+            'enabled': True,
+            'release_sites': [hex(pc) for pc in sorted(self.READ_SITES)],
+            'served': {hex(pc): self.served.get(hex(pc), 0)
+                       for pc in sorted(self.READ_SITES)},
+            'served_values': [hex(v) for v in self.served_values],
+            'rejections': dict(sorted(self.rejections.items())),
+            'semantics': ('each released load returns the last whole-word firmware '
+                          'write on LEN (0xfe0508) recorded by JLAudioDacDmaWriteRecords '
+                          '— zero synthesized bytes, the value is the firmware\'s own '
+                          'store (the 0x606b2b0 recomputed LEN, not the 0x6071e92 tail '
+                          'LEN=1); the value feeds the clamp comparison 0x606ddc8 '
+                          'if (r1>r3) and, when taken, the then-arm re-read 0x606ddcc '
+                          'feeds the clamped store h[r5+14]=r1'),
+            'assumption': ('derived-not-measured: releasing the reads implies the new '
+                           'assumption that LEN holds its last software-written value at '
+                           'this point (the hardware has not rewritten it); NOT a '
+                           'silicon-equivalence claim — no DMA data flow, no LEN decrement '
+                           'over playback, no HRP advance, no SWN initial value is modeled; '
+                           'LEN is used as the capacity/wrap boundary, and this segment '
+                           'gives no basis for making LEN decrement during playback '
+                           '(codex ruling)')}
+
+
 class JLAudioAdcDmaWriteRecords:
     """JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c)写侧 write-only
     整字记录(opt-in,路 JLA)。
@@ -9649,6 +9749,7 @@ class BR28Model:
                  jl_audio_dac_dma_idle_readback=False,
                  jl_audio_dac_dma_setup_discarded_reads=False,
                  jl_audio_dac_dma_setup_discarded_sites=5,
+                 jl_audio_dac_dma_len_readback=False,
                  jl_audio_adc_dma_writes=False,
                  audio_adc_dma_delivery=False,audio_adc_dma_delivery_requests=False,
                  jl_eq_init_writes=False,
@@ -10341,6 +10442,23 @@ class BR28Model:
                 sites=jl_audio_dac_dma_setup_discarded_sites)
         else:
             self.jl_audio_dac_dma_setup=None
+        # 路 DACDMALEN(codex 202611211512 方案 §3「活读到达时再扩」):DAC DMA
+        # LEN 活读回读=最近一次整字写放行——31,391,419 停点 0x606ddc4(音频
+        # 参数计算函数 0x606dd96 体内,r8=0xfe0508)的钳位比较首读与 0x606ddcc
+        # then 臂再读。回读=JLAudioDacDmaWriteRecords 里 0xfe0508 最近一次
+        # 整字写值(0x606b2b0 重写的实际 LEN,不是 0x6071e92 的 LEN=1),零合成
+        # 字节;无写来源/守卫不符→回落普通严格路径。显式依赖
+        # jl_audio_dac_dma_setup_discarded_reads(同一条配置函数链,五死读放行
+        # 是到达 0x606ddc4 的前置)。默认关:读点行为与开关关世界逐字节一致。
+        if jl_audio_dac_dma_len_readback:
+            if not jl_audio_dac_dma_setup_discarded_reads:
+                raise ValueError('jl_audio_dac_dma_len_readback requires '
+                                 'jl_audio_dac_dma_setup_discarded_reads (the LEN live '
+                                 'read is reached only after the five dead reads of the '
+                                 'same config-function chain are released)')
+            self.jl_audio_dac_dma_len=JLAudioDacDmaLenReadback()
+        else:
+            self.jl_audio_dac_dma_len=None
         # 路 COPEXIMPL(codex 裁 (a) 收窄版):copex.ppi mode-22 指数近似模型
         # ——42,037,363 停点 0x606a900(upstream『copex.ppi has no model』)
         # 的放行。非内存映射寄存器容器:拦截/执行在 probe_boot CPU.step_body
@@ -12519,6 +12637,22 @@ class BR28Model:
                 'dead read is released ONLY at 0x606b2ba; every other SWN read/any SWN '
                 'write/PNS access keeps the original strict stop. derived-not-measured, '
                 'NOT a silicon-equivalence claim')
+        if self.jl_audio_dac_dma_len is not None:
+            result['jl_audio_dac_dma_len_readback']=self.jl_audio_dac_dma_len.report()
+            result['assumptions']['jl_audio_dac_dma_len_readback']=(
+                'JL_AUDIO DAC DMA LEN live read returns the last firmware whole-word '
+                'write on 0xfe0508 (route DACDMALEN, codex 202611211512 §3 "expand at '
+                'the live read"): only the two pinned sites 0x606ddc4/0x606ddcc '
+                '(ld.w.l r3/r1=[r8+0] after li r8=0xfe0508), the value feeds the clamp '
+                'comparison 0x606ddc8 if (r1>r3) and, when taken, the then-arm re-read '
+                'feeds the clamped store h[r5+14]=r1 — zero synthesized bytes, the '
+                'value is the firmware\'s own store (the 0x606b2b0 recomputed LEN, not '
+                'the 0x6071e92 tail LEN=1). No write source / off-site load falls back '
+                'to the ordinary strict stop (jl_audio_dac_dma_read_not_modeled). '
+                'derived-not-measured, NOT a silicon-equivalence claim — no DMA data '
+                'flow, no LEN decrement over playback, no HRP advance, no SWN initial '
+                'value is modeled; LEN is the capacity/wrap boundary and this segment '
+                'gives no basis for making LEN decrement during playback (codex)')
         # 路 COPEXIMPL:mode-22 指数近似模型报告(开关关=槽 None=零键,
         # legacy 报告不变)。
         if self.copex_exp22 is not None:
