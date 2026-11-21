@@ -265,11 +265,13 @@ type PeriphState struct {
 	Timer *Timer0        // nil = no Timer0 model present
 	IRQ   *IRQController // nil = no IRQ controller present
 
-	CoreTicks   [2]*CoreTickStopped      // per-core core tick; nil = absent
-	Watchdog    *WatchdogProjection      // nil = absent
+	CoreTicks   [2]*CoreTickStopped          // per-core core tick; nil = absent
+	Watchdog    *WatchdogProjection          // nil = absent
 	ICU         *IcuInitializationProjection // nil = absent
-	Timer2      *Timer2Delay             // nil = absent
-	SoftwareIRQ *SoftwareIrqCommands     // nil = absent
+	Timer2      *Timer2Delay                 // nil = absent
+	SoftwareIRQ *SoftwareIrqCommands         // nil = absent
+	SrcSync     *JLSrcSyncDelivery           // nil = no SRC-SYNC delivery model (M5)
+	AudioAdcDma *AudioAdcDmaDelivery         // nil = no ADC-DMA model (M5)
 
 	// Delivery-request flags (mirror the BR28Model kwargs of the same names).
 	// False = a pending-and-eligible IRQ is a strict stop (the strict default);
@@ -278,6 +280,8 @@ type PeriphState struct {
 	CoreTickDeliveryRequests    bool
 	Timer0IRQDeliveryRequests   bool
 	SoftwareIRQDeliveryRequests bool
+	SrcSyncDeliveryRequests     bool
+	AudioAdcDmaDeliveryRequests bool
 
 	// SourceTicksPerStep is the RC16M reference tick rate per model step
 	// (Python source_ticks_per_step, default 4).
@@ -286,11 +290,10 @@ type PeriphState struct {
 	// (Python timer_lsb_ticks_per_step).
 	TimerLsbTicksPerStep *int64
 
-	// OtherAdvanceActive marks any still-unported advance-chain model
-	// (SRC-SYNC / ADC-DMA delivery detection, M5) as potentially active. When
-	// true, Go cannot prove the advance phase safe and must hand the attempt
-	// back to Python.
-	OtherAdvanceActive bool
+	// CompletedModelSteps is the per-model-step counter (Python
+	// counts['completed_model_steps']), incremented once per Advance call. The
+	// SRC-SYNC completion timing reads it.
+	CompletedModelSteps int64
 }
 
 // AdvanceResult is the outcome of one whole-loop advance phase over the ported
@@ -312,9 +315,10 @@ func (p *PeriphState) irqEligible(index int, icfg uint32) (bool, *PeriphError) {
 }
 
 // Advance performs one model-step advance over the ported counting models in
-// the Python BR28Model.advance order (ICU, watchdog, core tick 0, Timer0,
-// Timer2, software IRQ pending scan) for the single-core configuration, and
-// detects pending-and-eligible deliveries. It does NOT execute the delivery
+// the Python BR28Model.advance order (SRC-SYNC completion stepping, ICU,
+// watchdog, core tick 0, Timer0, Timer2, ADC-DMA pending scan, SRC-SYNC
+// pending scan, software IRQ pending scan) for the single-core configuration,
+// and detects pending-and-eligible deliveries. It does NOT execute the delivery
 // projection — a pending eligible IRQ is returned as Irq to hand back to
 // Python (docs/gosim-wholeloop-design.md §4). A model whose own advance raises
 // a strict stop (e.g. watchdog expiry) is returned as Err, exactly as the
@@ -327,6 +331,19 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 	srcTicks := p.SourceTicksPerStep
 	if srcTicks == 0 {
 		srcTicks = 4 // Python source_ticks_per_step default
+	}
+
+	// Per-model-step counter (Python counts['completed_model_steps']), bumped
+	// once per advance call before any model reads it.
+	p.CompletedModelSteps++
+
+	// SRC-SYNC completion stepping (Python advance order, before ICU): the
+	// explicit completion_steps timing flips started -> pending.
+	if p.SrcSync != nil {
+		if p.SrcSync.Started || p.SrcSync.Pending {
+			empty = false
+		}
+		p.SrcSync.Advance(p.CompletedModelSteps)
 	}
 
 	// ICU command countdown: no delivery, no strict stop.
@@ -436,6 +453,42 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		}
 	}
 
+	// ADC-DMA pending scan (IRQ68, single-core: pinned to core 0 as in the
+	// Python delivery scan).
+	if dma := p.AudioAdcDma; dma != nil && dma.Delivery && dma.Pending {
+		empty = false
+		if eligible, err := p.irqEligible(AudioAdcDmaIRQ68, icfg); err != nil {
+			return AdvanceResult{Err: periphErr("audio_dma_irq_delivery_blocked", "core", 0, "irq", AudioAdcDmaIRQ68, "reason", err.Kind)}
+		} else if eligible {
+			if !p.AudioAdcDmaDeliveryRequests {
+				return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "core", 0, "irq", AudioAdcDmaIRQ68,
+					"note", "audio ADC DMA pending and eligible; CPU entry not bypassed — enable the audio ADC DMA delivery requests")}
+			}
+			if !dma.DeliveryInFlight {
+				dma.DeliveryInFlight = true
+				return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: AudioAdcDmaIRQ68}}
+			}
+		}
+	}
+
+	// SRC-SYNC pending scan (IRQ89, single-core: pinned to core 0 as in the
+	// Python delivery scan).
+	if src := p.SrcSync; src != nil && src.Pending {
+		empty = false
+		if eligible, err := p.irqEligible(JLSrcSyncIRQ89, icfg); err != nil {
+			return AdvanceResult{Err: periphErr("src_sync_irq_delivery_blocked", "core", 0, "irq", JLSrcSyncIRQ89, "reason", err.Kind)}
+		} else if eligible {
+			if !p.SrcSyncDeliveryRequests {
+				return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "core", 0, "irq", JLSrcSyncIRQ89,
+					"note", "SRC_SYNC completion pending and eligible; CPU entry not bypassed — enable the SRC_SYNC delivery requests")}
+			}
+			if !src.DeliveryInFlight {
+				src.DeliveryInFlight = true
+				return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: JLSrcSyncIRQ89}}
+			}
+		}
+	}
+
 	// Software IRQ pending scan (single-core: core 0).
 	if p.SoftwareIRQ != nil {
 		word := p.SoftwareIRQ.Pending[0]
@@ -465,15 +518,12 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 
 // HasActiveAdvance reports whether the advance phase has anything to do (a
 // counting model, a pending bit, or a pending-eligible scan that would run).
-// It is the M4 replacement for the M3 "other model active" flag: the five
-// counting models are now real fields, so only the still-unported M5 models
-// (SRC-SYNC / ADC-DMA) keep the loop from proving advance safety.
+// It is the M5 form of the M3 "other model active" flag: every advance-chain
+// model is now a real field (SRC-SYNC / ADC-DMA landed in M5), so nothing is
+// left on an explicit unported-model flag.
 func (p *PeriphState) HasActiveAdvance() bool {
 	if p == nil {
 		return false
-	}
-	if p.OtherAdvanceActive {
-		return true
 	}
 	if p.Timer != nil {
 		if p.Timer.Pending {
@@ -521,20 +571,25 @@ func (p *PeriphState) HasActiveAdvance() bool {
 	if p.SoftwareIRQ != nil {
 		return true // the pending scan runs and may consult eligibility
 	}
+	if p.SrcSync != nil {
+		if p.SrcSync.Started || p.SrcSync.Pending {
+			return true
+		}
+	}
+	if p.AudioAdcDma != nil && p.AudioAdcDma.Delivery && p.AudioAdcDma.Pending {
+		return true
+	}
 	return false
 }
 
 // CanProveAdvanceNoop reports whether this attempt's advance phase is
 // statically provable as a no-op. It returns the verdict and, when false, an
 // honest reason. The M3 "no timer counting" judgment is now extended across
-// the full ported model set: advance is empty only when no unported model is
-// active and every ported model is absent, not counting, and not pending.
+// the full ported model set: advance is empty only when every ported model is
+// absent, not counting, and not pending.
 func (p *PeriphState) CanProveAdvanceNoop() (bool, string) {
 	if p == nil {
 		return false, "no peripheral model present"
-	}
-	if p.OtherAdvanceActive {
-		return false, "unported advance-chain model active (SRC-SYNC/ADC-DMA, M5)"
 	}
 	if p.HasActiveAdvance() {
 		return false, "advance-chain model counting or pending"

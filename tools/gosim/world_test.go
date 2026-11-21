@@ -116,13 +116,20 @@ func TestWorldRunLoopCoreTickOverflow(t *testing.T) {
 	}
 }
 
-// An active unported advance model yields (Go cannot prove advance empty).
-func TestWorldRunLoopYieldsOtherAdvance(t *testing.T) {
+// A pending SRC-SYNC delivery model (the last advance-chain leaf, M5) is now a
+// real field: RunLoop interleaves one execute step with one advance step and
+// surfaces the IrqReq instead of yielding.
+func TestWorldRunLoopSrcSyncIrq(t *testing.T) {
 	w := runnableWorld()
-	w.Periph.OtherAdvanceActive = true
+	w.Periph.SrcSync = &JLSrcSyncDelivery{Pending: true}
+	ic := NewIRQController()
+	ic.Config[11] = u32p(0x5 << (1 * 4)) // irq 89 nibble 1: enabled, priority 2
+	ic.IPMask = u32p(2)
+	w.Periph.IRQ = ic
+	w.Periph.SrcSyncDeliveryRequests = true
 	res := w.RunLoop(1)
-	if res.Exit != YieldBeforeAttempt || len(res.Steps) != 0 {
-		t.Fatalf("other advance model must yield empty, got %+v", res)
+	if res.Exit != Stop || res.Irq == nil || res.Irq.Irq != 89 {
+		t.Fatalf("expected IRQ89 delivery request, got %+v", res)
 	}
 }
 

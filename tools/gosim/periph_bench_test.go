@@ -67,11 +67,11 @@ func benchM4() *PeriphState {
 	t2.Write(Timer2+4, 1)
 	t2.Write(Timer2, 0xc01)
 	return &PeriphState{
-		Timer:           benchTimer(true),
-		IRQ:             NewIRQController(),
-		CoreTicks:       [2]*CoreTickStopped{ct, nil},
-		Watchdog:        wd,
-		Timer2:          t2,
+		Timer:              benchTimer(true),
+		IRQ:                NewIRQController(),
+		CoreTicks:          [2]*CoreTickStopped{ct, nil},
+		Watchdog:           wd,
+		Timer2:             t2,
 		SourceTicksPerStep: 4,
 	}
 }
@@ -80,6 +80,23 @@ func benchM4() *PeriphState {
 // models (the "counting but no delivery" case the whole-loop closure now pays).
 func BenchmarkM4AdvanceCounting(b *testing.B) {
 	p := benchM4()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = p.Advance(0x300)
+	}
+}
+
+// BenchmarkM5AdvanceCounting measures one full advance over the complete M5
+// advance chain: the M4 counting models plus a started SRC-SYNC (completion
+// stepping, no delivery yet) and a present-but-not-pending ADC-DMA delivery
+// model. This is the whole advance chain Go now owns.
+func BenchmarkM5AdvanceCounting(b *testing.B) {
+	p := benchM4()
+	src, _ := NewJLSrcSyncDelivery(40000)
+	src.NoteStart(0)
+	p.SrcSync = src
+	p.AudioAdcDma = NewAudioAdcDmaDelivery(true)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

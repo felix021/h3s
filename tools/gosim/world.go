@@ -124,15 +124,16 @@ func yieldBeforeAttempt(reason string) LoopResult {
 // execute → after_step → advance → trace) inside Go.
 //
 // M3 scope: it only ran when the advance phase was statically empty (no timer
-// counting). M4 extends the advance judgment across the ported counting models
-// (core tick / watchdog / ICU / Timer2 / software IRQ): when a counting model
-// is active but no delivery will be thrown, the loop now interleaves one
-// execute step with one advance step inside Go instead of yielding; when the
-// advance detects a pending-and-eligible IRQ it returns Stop with the IrqReq so
-// Python executes the delivery projection; when the advance hits a strict stop
-// (e.g. watchdog expiry, unmodeled delivery) it returns Stop with the reason.
-// The after_step phase is still asserted no-op (its hooks stay in Python until
-// the M4+ anchor proof lands).
+// counting). M4/M5 extends the advance judgment across the full ported
+// advance-chain model set (core tick / watchdog / ICU / Timer2 / software IRQ /
+// SRC-SYNC / ADC-DMA): when a counting model is active but no delivery will be
+// thrown, the loop now interleaves one execute step with one advance step
+// inside Go instead of yielding; when the advance detects a pending-and-eligible
+// IRQ it returns Stop with the IrqReq so Python executes the delivery
+// projection; when the advance hits a strict stop (e.g. watchdog expiry,
+// unmodeled delivery) it returns Stop with the reason. The after_step phase is
+// still asserted no-op (its hooks stay in Python until the anchor proof lands),
+// and the dual-core select stays in Python (M6).
 func (w *World) RunLoop(n int) LoopResult {
 	if w == nil {
 		return yieldBeforeAttempt("nil world")
@@ -160,9 +161,6 @@ func (w *World) RunLoop(n int) LoopResult {
 	}
 	if w.Periph == nil {
 		return yieldBeforeAttempt("no peripheral model bound")
-	}
-	if w.Periph.OtherAdvanceActive {
-		return yieldBeforeAttempt("unported advance-chain model active (SRC-SYNC/ADC-DMA, M5)")
 	}
 
 	// Fast path: the advance phase is provably empty (no counting/pending

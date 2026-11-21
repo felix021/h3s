@@ -212,7 +212,10 @@ func TestCanProveAdvanceNoop(t *testing.T) {
 		{"no timer", &PeriphState{}, true},
 		{"timer not counting", &PeriphState{Timer: NewTimer0()}, true},
 		{"timer pending", &PeriphState{Timer: &Timer0{Pending: true}}, false},
-		{"other model active", &PeriphState{OtherAdvanceActive: true}, false},
+		{"src_sync started", &PeriphState{SrcSync: &JLSrcSyncDelivery{Started: true}}, false},
+		{"src_sync pending", &PeriphState{SrcSync: &JLSrcSyncDelivery{Pending: true}}, false},
+		{"adc_dma pending", &PeriphState{AudioAdcDma: &AudioAdcDmaDelivery{Delivery: true, Pending: true}}, false},
+		{"adc_dma no delivery", &PeriphState{AudioAdcDma: &AudioAdcDmaDelivery{Delivery: false, Pending: true}}, true},
 	}
 	for _, tc := range cases {
 		ok, why := tc.p.CanProveAdvanceNoop()
