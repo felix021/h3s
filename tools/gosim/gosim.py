@@ -43,6 +43,9 @@ class Gosim:
         self.lib.gosim_signature_batch.argtypes = [POINTER(c_uint8), c_int, c_int,
                                                    POINTER(c_uint8), c_int]
         self.lib.gosim_signature_batch.restype = c_int
+        self.lib.gosim_run_segment.argtypes = [_HANDLE, c_int, c_uint32, c_uint32,
+                                               POINTER(c_uint8), c_int]
+        self.lib.gosim_run_segment.restype = c_int
         self.handle = self.lib.gosim_new_arch() if arch else self.lib.gosim_new()
 
     def write(self, addr, data):
@@ -92,4 +95,14 @@ class Gosim:
         written = self.lib.gosim_signature_batch(inbuf, len(inbuf), n, outbuf, outcap)
         if written < 0:
             raise MemoryError('gosim_signature_batch: output buffer too small')
+        return bytes(outbuf[:written])
+
+    def run_segment(self, n, fetch_lo, fetch_hi, outcap):
+        """Run up to n contract-compliant steps in one cgo call (see
+        segment.go / gosim_batch.py). Returns the raw serialized result bytes,
+        or raises if the output buffer was too small (written == -1)."""
+        outbuf = (c_uint8 * outcap)()
+        written = self.lib.gosim_run_segment(self.handle, n, fetch_lo, fetch_hi, outbuf, outcap)
+        if written < 0:
+            raise MemoryError('gosim_run_segment: output buffer too small')
         return bytes(outbuf[:written])

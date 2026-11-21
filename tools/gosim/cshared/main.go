@@ -117,6 +117,13 @@ func gosim_signature_batch(in *C.uint8_t, inLen C.int, n C.int, out *C.uint8_t, 
 	return C.int(gosim.SignaturesBatch(inBytes, int(n), outBytes))
 }
 
+//export gosim_run_segment
+func gosim_run_segment(h C.uintptr_t, n C.int, fetchLo C.uint32_t, fetchHi C.uint32_t, out *C.uint8_t, outCap C.int) C.int {
+	outBytes := unsafe.Slice((*byte)(unsafe.Pointer(out)), int(outCap))
+	written := gosim.WriteSegmentBuffer(outBytes, cpu(h).RunSegment(int(n), uint32(fetchLo), uint32(fetchHi)))
+	return C.int(written)
+}
+
 func mapErr(err error) C.int {
 	if err == nil {
 		return stepOK
