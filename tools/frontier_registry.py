@@ -828,10 +828,9 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 36422190,
-        'stop_pc': '0x6070b1c',
-        'stop': {'kind': 'jl_src_sync_start_rmw_stale_con0', 'address': '0xfe2600',
-                 'old': '0x82006049'},
+        'completed_steps': 139947345,
+        'stop_pc': '0x6064220',
+        'stop': {'kind': 'instruction_budget'},
         'freshness_fields': ('kind',),
     },
 }
