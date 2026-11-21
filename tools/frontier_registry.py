@@ -828,10 +828,10 @@ FRONTIERS = {
         'freshness_fields': ('kind', 'address'),
     },
     'p11_heap_experimental': {
-        'completed_steps': 104077119,
-        'stop_pc': '0x6070b16',
-        'stop': {'kind': 'watchdog_expired_delivery_not_implemented', 'control': '0x2e',
-                 'elapsed_nominal_units': 16384},
+        'completed_steps': 36422190,
+        'stop_pc': '0x6070b1c',
+        'stop': {'kind': 'jl_src_sync_start_rmw_stale_con0', 'address': '0xfe2600',
+                 'old': '0x82006049'},
         'freshness_fields': ('kind',),
     },
 }
