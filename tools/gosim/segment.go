@@ -64,12 +64,16 @@ type SegmentResult struct {
 	Steps    []SegmentStep
 }
 
-// safeALU reports whether the decoded instruction belongs to the stage-1
-// segment contract. The structural checks (branch/block/body/.p) are redundant
-// with batchUnsafe for most ids but are kept as a cheap, self-documenting fast
-// path; batchUnsafe adds the memory/stack/cache/control/dsp/sr/sp-bank families.
+// safeALU reports whether the decoded instruction belongs to the segment
+// contract. Stage 2 relaxes the contract from sequential ALU to include
+// unconditional branches (goto.s/goto.l) and flag conditional branches
+// (bc.*), which the Go core already executes via the step1 control-flow
+// (tgt + model exit). blockThen/body (if-blocks / rep) and .p parallel pairs
+// remain structural rejects; batchUnsafe adds the memory/stack/cache/control/
+// dsp/sr/sp-bank families plus the still-unrelaxed call/rts/register-compare
+// branches.
 func (c *CPU) safeALU(im *insnMeta) bool {
-	if im.branch != "" || im.blockThen != "" || im.body != "" {
+	if im.blockThen != "" || im.body != "" {
 		return false
 	}
 	if strings.HasSuffix(im.id, ".p") {
