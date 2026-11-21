@@ -553,14 +553,14 @@ class SimWorldDriver:
                 if isinstance(cpu.sp, int) and (self.min_sp_seen is None or cpu.sp < self.min_sp_seen):
                     self.min_sp_seen = cpu.sp
                 machine.after_step(cpu, before)
-                hardware.advance(cpu.icfg)
+                hardware.advance(cpu.icfg,cpu.mem)
             except Exception as exc:
                 name = type(exc).__name__
                 if name == 'CoreStall':
                     machine.note_stall(cpu, getattr(exc, 'details', {}))
                     machine.after_step()
                     try:
-                        hardware.advance(cpu.icfg)
+                        hardware.advance(cpu.icfg,cpu.mem)
                     except Exception as advance_exc:
                         # 对齐 probe_boot:2043-2047 的真实执行循环：停泊分支嵌套
                         # advance 抛出的 IrqDeliveryRequest 走交付分发（codex P1：
