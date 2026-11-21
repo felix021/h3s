@@ -5105,6 +5105,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_dma_setup_discarded_reads=False,
              jl_audio_dac_dma_setup_discarded_sites=5,
              jl_audio_dac_dma_len_readback=False,
+             jl_audio_dac_dma_pns_write=False,
              jl_audio_adc_dma_writes=False,
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
@@ -6774,6 +6775,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 '(0x606ddc4 is reached only after 0x606b2b2..b2ba are released on the '
                 'same config-function chain)')
         options['jl_audio_dac_dma_len_readback']=True
+    # jl_audio_dac_dma_pns_write(路 DACDMAPNS,codex 202611211512 方案 §4 优先级
+    # 1 实跑落地,默认 False=关):DAC DMA PNS(0xfe050c)写侧 write-only 整字记录
+    # ——31,391,525 停点 0x606de56(st.w.l [r8+4]=r2,r8=0xfe0508,+4=0xfe050c=
+    # PNS,值 0x60)放行。全 app 恰两处 PNS 纯整字写(0x606de56 与 0x6072496 阈值
+    # 写)、零读回零 RMW(静态扫描),write-only 记录;读回显式严格停,不建模
+    # 衰减语义/DMA 推进/PNS 运行时状态推进。依赖边挂 jl_audio_dac_dma_len_
+    # readback(同一函数链,LEN 活读放行是到达 0x606de56 的前置)。默认关:PNS
+    # 保持 unmapped(0x606de56 前沿形状),legacy 逐字节不变。
+    if jl_audio_dac_dma_pns_write:
+        require(jl_audio_dac_dma_len_readback,
+                'the DAC DMA PNS write release rides on the LEN live-read world '
+                '(0x606de56 is reached only after 0x606ddc4/cc are released on the '
+                'same function chain)')
+        options['jl_audio_dac_dma_pns_write']=True
     # copex_exp22_model(路 COPEXIMPL,codex 裁 (a) 收窄版,默认 False=关):
     # copex.ppi mode-22 指数近似模型——42,037,363 停点 0x606a900(upstream
     # 『copex.ppi has no model』,音频管线重配段 exp 叶子 0x606a8fc 体内)
@@ -12387,6 +12402,21 @@ def main():
                               **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
                                  'jl_audio_dac_dma_setup_discarded_reads':True,
                                  'jl_audio_dac_dma_len_readback':True},
+                              flash_image_bytes=image),
+                     # 路 DACDMAPNS(codex 202611211512 方案 §4 优先级 1 实跑落地):
+                     # 在 DACDMALEN 臂上追加 PNS(0xfe050c)写侧 write-only 记录放行。
+                     # 旧臂 31,391,525 @ 0x606de56 逐字节不变(pns_write 开关关);开
+                     # PNS 写的臂越过 0x606de56(PNS 写 0x60 记录 1 次)+17,824 步停在
+                     # 31,409,349 @ 0x6071560——PCM 数据相生产路径 0x607152c 体内
+                     # 首读 [r12+8]=LEN(0xfe0508)算差,kind=jl_audio_dac_dma_read_
+                     # not_modeled(非 len_readback 两站点 0x606ddc4/cc,活读回落普通
+                     # 严格路径);下一墙按 codex §4 优先级 2 是 0x6071564 读 SWN 或
+                     # 0x607169e 活读 SWP;本臂不重钉 dacdmalen_probe 前沿。
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_dacdmapns_probe',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
+                                 'jl_audio_dac_dma_setup_discarded_reads':True,
+                                 'jl_audio_dac_dma_len_readback':True,
+                                 'jl_audio_dac_dma_pns_write':True},
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,

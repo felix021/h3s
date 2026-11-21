@@ -1196,6 +1196,13 @@ M4_FAMILIES = (
     # like every other M4 fixture.
     ('jl_audio_dac_dma_len', 'JLAudioDacDmaLenReadback',
      ('served', 'rejections', 'served_values')),
+    # Route DACDMAPNS: the PNS write-only record (0xfe050c). stores/word_writes
+    # are runtime STATE (the recorded whole-word store values/cores); the single
+    # PNS address is a construction constant riding the per-object static guard
+    # like every other M4 fixture — a restore refuses a differently-switched
+    # target world.
+    ('jl_audio_dac_dma_pns', 'JLAudioDacDmaPnsWrite',
+     ('stores', 'word_writes')),
     ('jl_adda_family', 'JLAddaAnalogFamilyRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('timer2', 'Timer2Delay',
