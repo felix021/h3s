@@ -6,6 +6,7 @@ fetches stop; two diagnostic PLL values and one R0 pointer are hypotheses only.
 This is application handoff exploration, not architectural reset or boot proof.
 """
 import argparse
+import os
 from bisect import bisect_right
 from collections import Counter
 import hashlib
@@ -35,6 +36,22 @@ gosim_batch_engine = None
 gosim_batch_steps = 0  # 批量快路径执行的指令步数(测量用,不进报告字节)
 gosim_batch_fills = 0  # Go run_segment 调用次数(测量用)
 gosim_batch_zero_fills = 0  # 其中返回 0 步(段头即非 ALU)的次数(测量用)
+
+# 双核整圈引擎(opt-in;默认 None=legacy)。接线第五刀:双核 phase 的
+# select+execute+advance 也搬进 Go(World.RunLoop),每圈一次 cgo 调用跑一段
+# 安全 ALU 前缀,边界(idle/访存/hook/IRQ/Blocked)交回 Python。报告逐字节不变
+# 由 gosim_measure --self-check-dual 钉死。
+gosim_dual_engine = None
+gosim_dual_steps = 0  # 双核 Go 快路径执行的指令步数(测量用)
+gosim_dual_fills = 0  # Go run_loop 调用次数(测量用)
+gosim_dual_kinds = {}  # kind -> fills(测量用)
+gosim_dual_lens = {}   # steps -> fills(测量用)
+
+class _DualIrqRequest:
+    """Go 交回的 pending-eligible IRQ 伪装成 IrqDeliveryRequest,复用既有的
+    dispatch_delivery 分发通道(交付投影/延期簿记全在 Python 侧)。"""
+    def __init__(self, details):
+        self.details = details
 
 # 批量段头的安全预判(保守镜像 tools/gosim 的 safeALU+batchUnsafe;Go 仍是执行
 # 权威,预判放行的段 Go 会在第一条真正不安全处诚实停)。只用来省掉对非安全指令
@@ -320,6 +337,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             handoff=None,startup_loops=False,diagnostics=None,rom=None,hardware=None,machine=None,
             post_stop=None,snapshot=None):
     global gosim_batch_steps, gosim_batch_fills, gosim_batch_zero_fills
+    global gosim_dual_steps, gosim_dual_fills
     # post_stop(opt-in,路 S/key-chain):主循环停点后、报告组装前的回调
     # post_stop(machine,hardware,stopped_cpu)->dict|None。用于在活机器上做
     # 「停点后直调」类探测(键链扫描直调等);返回的 dict 并进场景报告。
@@ -3063,8 +3081,150 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         from gosim_batch_engine import BatchEngine, BATCH_CAP
         batch_engine=BatchEngine(rom,app,ENTRY)
 
+    # 双核整圈引擎(第五刀):双核 phase 的 select+execute+advance 整圈搬 Go。
+    # dual_buf 是已提交安全步的逐步观测缓冲;dual_hazard 是未处理的交回点。
+    dual_engine=None
+    dual_buf=[]
+    dual_hazard=None
+    if gosim_dual_engine is not None:
+        from gosim_dual_engine import DualCoreEngine
+        dual_engine=DualCoreEngine(rom,app,ENTRY)
+    DUAL_CAP=256
+
+    def _dual_kind(res):
+        # 把 Go 的交回 reason 前缀映射为结构化 kind(见 world.go 的诚实停文案)。
+        r=res.get('reason','')
+        if res.get('exit')!=1:return 'yield'
+        if r.startswith('idle instruction'):return 'idle'
+        if r.startswith('after_step hook fires'):return 'hook'
+        if r.startswith('delivery deferral') or r.startswith('pending eligible irq'):return 'irq'
+        if r.startswith('advance strict stop'):return 'blocked'
+        if r.startswith('fetch pc outside'):return 'fetch'
+        if r.startswith('no instruction decodes'):return 'noinstr'
+        if r.startswith('decoded instruction has no model'):return 'nomodel'
+        if r.startswith('instruction outside'):return 'unsafe'
+        if r.startswith('select wake require'):return 'upstream'
+        return 'clean'
+
+    def _dual_commit(core,pc,next_pc,flags,R):
+        # 一条已由 Go 执行的步的 Python 侧簿记:fetch 守卫计数、trace 行物化、
+        # 步后簿记(_post_step)与 after_step(TraceMachine 签名/钩子本体/
+        # core_icfg 刷新)。advance 已在 Go 内跑过,这里不重复。返回 trace 行。
+        c=machine.cores[core]
+        row={'pc':hex(pc),'core':core}
+        if hardware is not None and hardware.debug is not None:hardware.debug.check_fetch(pc,1,core)
+        insn,raw,size=c.decode(pc)
+        if hardware is not None and hardware.debug is not None:
+            extent=size
+            if insn.id.endswith('.p'):extent+=c.decode(pc+size)[2]
+            hardware.debug.check_fetch(pc,extent,core)
+        row['instruction_id']=insn.id
+        row['bytes']=c.mem.read(pc,size).hex()
+        row['_pending_text']=(insn,raw)
+        row['next_pc']=hex(next_pc)
+        before_sp=c.sp
+        c.pc=next_pc;c.R=list(R);c.flags=flags
+        c._post_step(pc,before_sp,False)
+        if machine is not None:
+            if c.core_id==1:hardware.secondary_cpu_executed=True
+            machine.after_step(c,pc)
+        return row
+
     for _ in range(budget):
         attempts+=1
+        # ---- 双核整圈 Go 快路径(第五刀,opt-in) ----
+        # 一次 cgo 调用在 Go 内跑一段 select+execute+advance 安全前缀,逐步观测
+        # 喂回 trace;边界(idle/访存/hook/IRQ/Blocked)交回下面逐步慢路径。
+        if dual_engine is not None and machine is not None and len(machine.cores)==2 \
+                and (diagnostics is None or (not diagnostics.get('stop_before_pc')
+                     and not diagnostics.get('stop_on_rom_return'))) \
+                and dual_engine.cores_concrete(machine.cores[0],machine.cores[1]):
+            if dual_buf:
+                core,_pc,_next_pc,_flags,_R=dual_buf.pop(0)
+                row=_dual_commit(core,_pc,_next_pc,_flags,_R)
+                completed+=1
+                gosim_dual_steps+=1
+                trace.append(row)
+                if len(trace)>64:trace.pop(0)
+                if stop is not None:break
+                continue
+            if dual_hazard is not None:
+                hb=dual_hazard;dual_hazard=None
+                kind=hb['kind']
+                if kind=='blocked':
+                    # advance 严格停:末条已提交步照常物化(行+after_step 签名),
+                    # 再停(advance 在 Go 内已抛 Blocked,这里直接转停点)。
+                    core=hb['core']
+                    _pc=hb['step_pc'];_next_pc=hb['stop_pc']
+                    row=_dual_commit(core,_pc,_next_pc,hb.get('flags',0),hb.get('R',[0]*16))
+                    completed+=1
+                    gosim_dual_steps+=1
+                    trace.append(row)
+                    if len(trace)>64:trace.pop(0)
+                    stop=hb.get('err') or {'kind':'advance_strict_stop'}
+                    break
+                if kind in ('irq','hook'):
+                    # 末条已提交步的 advance/after_step 触发的交回:先按正常口径
+                    # 物化这最后一行的 pc/instruction_id/bytes/next_pc,再跑
+                    # dispatch_delivery(irq)或 advance(hook;advance 在 Go 内没跑,
+                    # after_step 钩子本体由 _dual_commit 内的 machine.after_step
+                    # 已真实触发)。
+                    core=hb['core']
+                    _pc=hb['step_pc'];_next_pc=hb['stop_pc']
+                    row=_dual_commit(core,_pc,_next_pc,hb.get('flags',0),hb.get('R',[0]*16))
+                    completed+=1
+                    gosim_dual_steps+=1
+                    if kind=='irq':
+                        _req=_DualIrqRequest({'core':hb['irq']['core'],'irq':hb['irq']['irq']})
+                        dispatch_delivery(_req,row)
+                    else:
+                        try:
+                            if hardware is not None:hardware.advance(machine.cores[core].icfg)
+                        except Blocked as e:
+                            stop=e.details
+                        except IrqDeliveryRequest as request:
+                            dispatch_delivery(request,row)
+                    trace.append(row)
+                    if len(trace)>64:trace.pop(0)
+                    if stop is not None:break
+                    continue
+                # 前置交回(idle/unsafe/fetch/noinstr/nomodel):Go 在 hazard 核
+                # 指令执行前停。把 last_core 拨到该核,让下面慢路径的 select()
+                # 恰好选回它,逐步慢路径(decode→idle 停泊/c.step)接手。
+                if hb.get('core',-1)>=0:
+                    machine.last_core=1-hb['core']
+                # yield/upstream:未执行任何 attempt,状态未动,直接走慢路径。
+            else:
+                res=dual_engine.run_loop(machine,hardware,machine.cores[0],machine.cores[1],DUAL_CAP)
+                gosim_dual_fills+=1
+                kind=_dual_kind(res)
+                steps=res.get('steps') or []
+                if os.environ.get('H3S_DUAL_KINDS'):
+                    gosim_dual_kinds[kind]=gosim_dual_kinds.get(kind,0)+1
+                    gosim_dual_lens[len(steps)]=gosim_dual_lens.get(len(steps),0)+1
+                if steps:
+                    if kind in ('hook','irq','blocked') and len(steps)>=1:
+                        dual_buf=[(s['core'],s['pc'],s['next_pc'],s['flags'],s['r']) for s in steps[:-1]]
+                        last=steps[-1]
+                        dual_hazard={'kind':kind,'core':res.get('stop_core',-1),
+                                     'step_pc':last['pc'],'stop_pc':res.get('stop_pc',0),
+                                     'flags':last['flags'],'R':last['r'],
+                                     'irq':res.get('irq'),'err':res.get('err')}
+                    else:
+                        dual_buf=[(s['core'],s['pc'],s['next_pc'],s['flags'],s['r']) for s in steps]
+                        if kind!='clean':
+                            dual_hazard={'kind':kind,'core':res.get('stop_core',-1),
+                                         'irq':res.get('irq'),'err':res.get('err'),
+                                         'stop_pc':res.get('stop_pc',0)}
+                elif kind!='clean':
+                    dual_hazard={'kind':kind,'core':res.get('stop_core',-1),
+                                 'irq':res.get('irq'),'err':res.get('err'),
+                                 'stop_pc':res.get('stop_pc',0)}
+                if dual_buf:
+                    continue
+                if dual_hazard is not None:
+                    continue
+                # clean 且 0 步(不应发生):走慢路径兜底,不空转。
         if machine is not None:c=machine.select()
         if gosim_observer is not None:
             gosim_observer.begin(

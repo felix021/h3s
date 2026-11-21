@@ -43,6 +43,8 @@ class _Lib:
         lib.gosim_world_set_afterstep.restype = c_int
         lib.gosim_world_set_core_inflight.argtypes = [_HANDLE, c_int, c_int, c_char_p]
         lib.gosim_world_set_core_inflight.restype = c_int
+        lib.gosim_world_dual_set_cores.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
+        lib.gosim_world_dual_set_cores.restype = c_int
         lib.gosim_world_free.argtypes = [_HANDLE]
         lib.gosim_world_run_loop.argtypes = [_HANDLE, c_int, POINTER(c_uint8), c_int]
         lib.gosim_world_run_loop.restype = c_int
@@ -125,6 +127,15 @@ class GosimDualWorld:
             self.handle, core, 1 if repeat_active else 0, active_context.encode("utf-8"))
         if rc != 0:
             raise ValueError("gosim core inflight context set failed")
+
+    def set_cores(self, cores):
+        """Replace both World cores with the live Python CPU snapshot (see
+        coreStateJSON in cshared/world.go)."""
+        raw = json.dumps({"cores": cores}).encode("utf-8")
+        buf = (c_uint8 * len(raw)).from_buffer_copy(raw)
+        rc = _LIB_SINGLETON.lib.gosim_world_dual_set_cores(self.handle, buf, len(raw))
+        if rc != 0:
+            raise ValueError("gosim dual core state set failed")
 
     def run_loop(self, n):
         return _out(_LIB_SINGLETON.lib.gosim_world_run_loop, self.handle, n)
