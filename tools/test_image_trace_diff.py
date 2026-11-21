@@ -639,7 +639,7 @@ def test_scenario_registry_shapes():
     assert SCENARIOS['crc_bankb']['freshness'] == frontier_registry.freshness('crc_bankb')
     assert SCENARIOS['p11_heap_experimental']['freshness'] == \
         frontier_registry.freshness('p11_heap_experimental')
-    assert SCENARIOS['crc_bankb']['default_budget'] == 300000
+    assert SCENARIOS['crc_bankb']['default_budget'] == 320000
     assert SCENARIOS['p11_heap_experimental']['default_budget'] >= \
         SCENARIOS['p11_heap_experimental']['freshness']['completed_steps'] + 1000
 

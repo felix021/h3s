@@ -135,7 +135,11 @@ SCENARIOS = {
         'irq_case_flags': BASE_SCENARIO_FLAGS,
         'stack_description': ('probe_irq_entry.irq_case with the crc_bankb_erased_fixture '
                               'frontier flag set (imported)'),
-        'default_budget': 300000,
+        # 前沿 293,277 时 300000 够用;P2M 堆描述符 readonly 放行后前沿推进到
+        # 299,063 @ 0x12b0c2,300000 在 297,845 @ 0x12b066 就撞 instruction_budget
+        # (双核算总指令>步数),改 320000 与 probe_irq_entry.irq_case 的 budget 对齐
+        # (留余量,单测钉 ==320000)。
+        'default_budget': 320000,
         # 配置新鲜度钉子:official 必须复现主前沿停点,否则本工具的 flag 集已与
         # 主前沿场景漂移(或上游场景变更),结果不可信。停点字面值单点在
         # tools/frontier_registry.py,前沿推进后只改 registry(本值自动跟随)。
