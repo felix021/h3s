@@ -263,7 +263,18 @@ func (ic *IRQController) Eligible(index int, icfg uint32) (bool, *PeriphError) {
 // realization of the M1 Periph placeholder.
 type PeriphState struct {
 	Timer *Timer0        // nil = no Timer0 model present
-	IRQ   *IRQController // nil = no IRQ controller present
+	IRQ   *IRQController // nil = no core-0 IRQ controller present
+	IRQ1  *IRQController // nil = no core-1 IRQ controller present (multicore)
+
+	// Multicore delivery-scan state (br28_model.BR28Model multicore fields):
+	// whether the dual-core select/advance path is active, the per-core ICFG
+	// gates (hardware.core_icfg; nil = unknown), and the CPU1 held-projection
+	// bookkeeping the core-tick / Timer0 / software scans gate on.
+	MulticoreEnabled       bool
+	CoreIcfg               [2]*uint32 // hardware.core_icfg per core (nil = unknown)
+	Cpu1Control            *uint32    // hardware.cpu1_control (nil = unknown)
+	Cpu1HeldProjection     bool
+	CoreTickCountWhileHeld *bool // nil = unknown
 
 	CoreTicks   [2]*CoreTickStopped          // per-core core tick; nil = absent
 	Watchdog    *WatchdogProjection          // nil = absent
@@ -304,25 +315,67 @@ type AdvanceResult struct {
 	Err   *PeriphError // a strict stop surfaced during the advance (hazard)
 }
 
-// irqEligible wraps the IRQ controller eligibility judgment, surfacing a
-// missing controller as an uninitialized-configuration stop (the same shape
-// Python raises when the per-IRQ config word is unknown).
-func (p *PeriphState) irqEligible(index int, icfg uint32) (bool, *PeriphError) {
-	if p.IRQ == nil {
+// irqForCore returns the per-core IRQ controller (core 0 -> p.IRQ, core 1 ->
+// p.IRQ1). A nil controller surfaces as an uninitialized-configuration stop in
+// irqEligible, matching the Python `irq`/`irq1` split.
+func (p *PeriphState) irqForCore(core int) *IRQController {
+	if core == 1 {
+		return p.IRQ1
+	}
+	return p.IRQ
+}
+
+// coreGate returns the per-core ICFG gate under the multicore delivery scan
+// (Python hardware.core_icfg.get(core)); nil = unknown. It is always nil in the
+// single-core path, matching `core_icfg.get(core) if multicore_enabled else None`.
+func (p *PeriphState) coreGate(core int) *uint32 {
+	if !p.MulticoreEnabled {
+		return nil
+	}
+	return p.CoreIcfg[core]
+}
+
+// gateArg returns the eligibility icfg argument for a delivery scan: multicore
+// uses the per-core gate (0x300 when the gate is unknown), single-core uses the
+// caller's icfg directly (Python `0x300 if gate is None else gate`).
+func (p *PeriphState) gateArg(core int, icfg uint32) uint32 {
+	if g := p.coreGate(core); g != nil {
+		return *g
+	}
+	if p.MulticoreEnabled {
+		return 0x300
+	}
+	return icfg
+}
+
+// irqEligible wraps the IRQ controller eligibility judgment for one core,
+// surfacing a missing controller as an uninitialized-configuration stop (the
+// same shape Python raises when the per-IRQ config word is unknown).
+func (p *PeriphState) irqEligible(core, index int, icfg uint32) (bool, *PeriphError) {
+	ic := p.irqForCore(core)
+	if ic == nil {
 		return false, periphErr("uninitialized_irq_configuration", "irq", index)
 	}
-	return p.IRQ.Eligible(index, icfg)
+	return ic.Eligible(index, icfg)
 }
 
 // Advance performs one model-step advance over the ported counting models in
 // the Python BR28Model.advance order (SRC-SYNC completion stepping, ICU,
-// watchdog, core tick 0, Timer0, Timer2, ADC-DMA pending scan, SRC-SYNC
-// pending scan, software IRQ pending scan) for the single-core configuration,
-// and detects pending-and-eligible deliveries. It does NOT execute the delivery
-// projection — a pending eligible IRQ is returned as Irq to hand back to
-// Python (docs/gosim-wholeloop-design.md §4). A model whose own advance raises
-// a strict stop (e.g. watchdog expiry) is returned as Err, exactly as the
-// Python model raises Blocked.
+// watchdog, core ticks, Timer0, Timer2, ADC-DMA pending scan, SRC-SYNC pending
+// scan, software IRQ pending scan) and detects pending-and-eligible deliveries.
+//
+// This is the dual-core form: the core-tick (IRQ3), Timer0 (IRQ4) and software
+// IRQ (IRQ124-127) scans walk both cores using the per-core controller
+// (IRQ/IRQ1) and the per-core ICFG gate (CoreIcfg) when multicore is enabled,
+// with the CPU1 held-projection gate for core 1; the ADC-DMA (IRQ68) and
+// SRC-SYNC (IRQ89) scans stay pinned to core 0 exactly as the Python delivery
+// scans pin them. The single-core path is unchanged (core 0 only, gate = the
+// caller's icfg).
+//
+// It does NOT execute the delivery projection — a pending eligible IRQ is
+// returned as Irq to hand back to Python (docs/gosim-wholeloop-design.md §4). A
+// model whose own advance raises a strict stop (e.g. watchdog expiry) is
+// returned as Err, exactly as the Python model raises Blocked.
 func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 	if p == nil {
 		return AdvanceResult{}
@@ -364,8 +417,25 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		}
 	}
 
-	// Core tick (single-core: core 0). Overflow → IRQ3 delivery detection.
-	if ct := p.CoreTicks[0]; ct != nil {
+	// Core ticks (IRQ3) — both cores, in core order. The CPU1 held-projection
+	// preflight mirrors the Python gate before the per-core loop.
+	if p.CoreTicks[1] != nil && p.CoreTicks[1].Con != nil && *p.CoreTicks[1].Con&1 != 0 {
+		if !p.Cpu1HeldProjection || p.Cpu1Control == nil {
+			return AdvanceResult{Err: periphErr("core1_execution_state_unknown")}
+		}
+		if *p.Cpu1Control == 0 && p.CoreTickCountWhileHeld == nil {
+			return AdvanceResult{Err: periphErr("core1_tick_held_clock_unknown")}
+		}
+	}
+	for core := 0; core < 2; core++ {
+		ct := p.CoreTicks[core]
+		if ct == nil {
+			continue
+		}
+		if core == 1 && p.Cpu1HeldProjection && p.Cpu1Control != nil && *p.Cpu1Control == 0 &&
+			p.CoreTickCountWhileHeld != nil && !*p.CoreTickCountWhileHeld {
+			continue
+		}
 		if ct.Con != nil && *ct.Con&1 != 0 {
 			empty = false
 		}
@@ -373,30 +443,31 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 			if !p.CoreTickDeliveryRequests {
 				return AdvanceResult{Err: periphErr("core_tick_overflow_requires_resolution")}
 			}
-			if !ct.DeliveryInFlight {
-				if eligible, err := p.irqEligible(3, 0x300); err != nil {
-					return AdvanceResult{Err: periphErr("core_tick_delivery_blocked", "core", 0, "irq", 3, "reason", err.Kind)}
-				} else if eligible {
-					ct.DeliveryInFlight = true
-					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 3}}
-				}
+			if ct.DeliveryInFlight {
+				continue
 			}
-		} else {
-			before := ct.Expirations
-			if err := ct.Advance(); err != nil {
-				return AdvanceResult{Err: err}
+			if eligible, err := p.irqEligible(core, 3, p.gateArg(core, 0x300)); err != nil {
+				return AdvanceResult{Err: periphErr("core_tick_delivery_blocked", "core", core, "irq", 3, "reason", err.Kind)}
+			} else if eligible {
+				ct.DeliveryInFlight = true
+				return AdvanceResult{Irq: &IrqReq{Core: core, Irq: 3}}
 			}
-			if ct.Expirations != before {
-				if !p.CoreTickDeliveryRequests {
-					return AdvanceResult{Err: periphErr("core_tick_overflow_delivery_unresolved", "core", 0, "irq", 3,
-						"note", "internal pending set; no guessed readback bit, wake or interrupt entry")}
-				}
-				if eligible, err := p.irqEligible(3, 0x300); err != nil {
-					return AdvanceResult{Err: periphErr("core_tick_delivery_blocked", "core", 0, "irq", 3, "reason", err.Kind)}
-				} else if eligible {
-					ct.DeliveryInFlight = true
-					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 3}}
-				}
+			continue
+		}
+		before := ct.Expirations
+		if err := ct.Advance(); err != nil {
+			return AdvanceResult{Err: err}
+		}
+		if ct.Expirations != before {
+			if !p.CoreTickDeliveryRequests {
+				return AdvanceResult{Err: periphErr("core_tick_overflow_delivery_unresolved", "core", core, "irq", 3,
+					"note", "internal pending set; no guessed readback bit, wake or interrupt entry")}
+			}
+			if eligible, err := p.irqEligible(core, 3, p.gateArg(core, 0x300)); err != nil {
+				return AdvanceResult{Err: periphErr("core_tick_delivery_blocked", "core", core, "irq", 3, "reason", err.Kind)}
+			} else if eligible {
+				ct.DeliveryInFlight = true
+				return AdvanceResult{Irq: &IrqReq{Core: core, Irq: 3}}
 			}
 		}
 	}
@@ -423,16 +494,48 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		}
 		if p.Timer.Pending {
 			empty = false
-			if eligible, err := p.irqEligible(4, icfg); err != nil {
-				return AdvanceResult{Err: err}
-			} else if eligible {
-				if !p.Timer0IRQDeliveryRequests {
-					return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "irq", 4,
-						"note", "Timer0 pending and enabled after priority filtering; CPU entry not bypassed")}
+			if p.MulticoreEnabled {
+				for core := 0; core < 2; core++ {
+					if core == 1 && (p.Cpu1Control == nil || *p.Cpu1Control&1 == 0) {
+						continue
+					}
+					if gate := p.coreGate(core); gate == nil {
+						// Unknown gate: a 0x300-eligible Timer0 is a strict stop
+						// (pending_irq_with_unknown_core_icfg), not a delivery.
+						if eligible, err := p.irqEligible(core, 4, 0x300); err != nil {
+							return AdvanceResult{Err: err}
+						} else if eligible {
+							return AdvanceResult{Err: periphErr("pending_irq_with_unknown_core_icfg", "core", core, "irq", 4)}
+						}
+						continue
+					} else {
+						eligible, err := p.irqEligible(core, 4, *gate)
+						if err != nil {
+							return AdvanceResult{Err: err}
+						}
+						if eligible {
+							if !p.Timer0IRQDeliveryRequests {
+								return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "core", core, "irq", 4)}
+							}
+							if !p.Timer.DeliveryInFlight {
+								p.Timer.DeliveryInFlight = true
+								return AdvanceResult{Irq: &IrqReq{Core: core, Irq: 4}}
+							}
+						}
+					}
 				}
-				if !p.Timer.DeliveryInFlight {
-					p.Timer.DeliveryInFlight = true
-					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 4}}
+			} else {
+				if eligible, err := p.irqEligible(0, 4, icfg); err != nil {
+					return AdvanceResult{Err: err}
+				} else if eligible {
+					if !p.Timer0IRQDeliveryRequests {
+						return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "irq", 4,
+							"note", "Timer0 pending and enabled after priority filtering; CPU entry not bypassed")}
+					}
+					if !p.Timer.DeliveryInFlight {
+						p.Timer.DeliveryInFlight = true
+						return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 4}}
+					}
 				}
 			}
 		}
@@ -453,11 +556,11 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		}
 	}
 
-	// ADC-DMA pending scan (IRQ68, single-core: pinned to core 0 as in the
-	// Python delivery scan).
+	// ADC-DMA pending scan (IRQ68, pinned to core 0 as in the Python delivery
+	// scan).
 	if dma := p.AudioAdcDma; dma != nil && dma.Delivery && dma.Pending {
 		empty = false
-		if eligible, err := p.irqEligible(AudioAdcDmaIRQ68, icfg); err != nil {
+		if eligible, err := p.irqEligible(0, AudioAdcDmaIRQ68, p.gateArg(0, icfg)); err != nil {
 			return AdvanceResult{Err: periphErr("audio_dma_irq_delivery_blocked", "core", 0, "irq", AudioAdcDmaIRQ68, "reason", err.Kind)}
 		} else if eligible {
 			if !p.AudioAdcDmaDeliveryRequests {
@@ -471,11 +574,11 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		}
 	}
 
-	// SRC-SYNC pending scan (IRQ89, single-core: pinned to core 0 as in the
-	// Python delivery scan).
+	// SRC-SYNC pending scan (IRQ89, pinned to core 0 as in the Python delivery
+	// scan).
 	if src := p.SrcSync; src != nil && src.Pending {
 		empty = false
-		if eligible, err := p.irqEligible(JLSrcSyncIRQ89, icfg); err != nil {
+		if eligible, err := p.irqEligible(0, JLSrcSyncIRQ89, p.gateArg(0, icfg)); err != nil {
 			return AdvanceResult{Err: periphErr("src_sync_irq_delivery_blocked", "core", 0, "irq", JLSrcSyncIRQ89, "reason", err.Kind)}
 		} else if eligible {
 			if !p.SrcSyncDeliveryRequests {
@@ -489,26 +592,50 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		}
 	}
 
-	// Software IRQ pending scan (single-core: core 0).
+	// Software IRQ pending scan (IRQ124-127), both cores.
 	if p.SoftwareIRQ != nil {
-		word := p.SoftwareIRQ.Pending[0]
-		for bit := uint32(0); bit < 4; bit++ {
-			if word.Known&(1<<bit) != 0 && word.Value&(1<<bit) == 0 {
+		for core := 0; core < 2; core++ {
+			if core == 1 && (!p.MulticoreEnabled || p.Cpu1Control == nil || *p.Cpu1Control&1 == 0) {
 				continue
 			}
-			eligible, err := p.irqEligible(int(124+bit), icfg)
-			if err != nil {
-				return AdvanceResult{Err: err}
-			}
-			if eligible {
-				if p.SoftwareIRQDeliveryRequests {
-					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 124 + bit}}
+			gate := p.coreGate(core)
+			word := p.SoftwareIRQ.Pending[core]
+			for bit := uint32(0); bit < 4; bit++ {
+				if word.Known&(1<<bit) != 0 && word.Value&(1<<bit) == 0 {
+					continue
 				}
-				kind := "software_irq_delivery_not_implemented"
-				if word.Known&(1<<bit) == 0 {
-					kind = "software_irq_pending_unknown"
+				gateICFG := uint32(0x300)
+				if gate != nil {
+					gateICFG = *gate
+				} else if !p.MulticoreEnabled {
+					gateICFG = icfg
 				}
-				return AdvanceResult{Err: periphErr(kind, "core", 0, "irq", 124+bit)}
+				eligible, err := p.irqEligible(core, int(124+bit), gateICFG)
+				if err != nil {
+					if err.Kind == "unmodeled_unmaskable_irq" && p.MulticoreEnabled {
+						gateDemand := "unknown"
+						if gate != nil {
+							gateDemand = hexWord(*gate)
+						}
+						return AdvanceResult{Err: periphErr("unmodeled_unmaskable_irq", "core", core, "irq", 124+bit,
+							"priority", mapInt(err.Details["priority"]), "source", "software_irq",
+							"pending_known", word.Known&(1<<bit) != 0, "icfg_gate_demand", gateDemand)}
+					}
+					return AdvanceResult{Err: err}
+				}
+				if eligible {
+					if gate == nil && p.MulticoreEnabled {
+						return AdvanceResult{Err: periphErr("software_irq_with_unknown_icfg", "core", core, "irq", 124+bit)}
+					}
+					if p.SoftwareIRQDeliveryRequests {
+						return AdvanceResult{Irq: &IrqReq{Core: core, Irq: 124 + bit}}
+					}
+					kind := "software_irq_delivery_not_implemented"
+					if word.Known&(1<<bit) == 0 {
+						kind = "software_irq_pending_unknown"
+					}
+					return AdvanceResult{Err: periphErr(kind, "core", core, "irq", 124+bit)}
+				}
 			}
 		}
 	}
