@@ -26,7 +26,7 @@ type State struct {
 	sp, rets, stub, end, tgt, taken uint32
 	scratch                         uint32
 	batch                           string
-	mem                             *Memory
+	mem                             *flatMem
 	rec                             map[string]any
 }
 
@@ -87,7 +87,7 @@ type CPU struct {
 	rets     uint32
 	pc       uint32
 	steps    uint64
-	mem      *Memory
+	mem      *flatMem
 	tab      []insnMeta
 	models   map[string]modelFunc
 	cache    map[uint32]decodeResult
@@ -109,7 +109,7 @@ type decodeResult struct {
 
 func NewCPU() *CPU {
 	return &CPU{
-		mem:    NewMemory(),
+		mem:    newFlatMem(),
 		tab:    decodeTable,
 		cache:  make(map[uint32]decodeResult),
 		icfg:   0x02050500, // as m-bootloader leaves it
@@ -121,7 +121,7 @@ func NewCPU() *CPU {
 // H3S simulator installs via architectural_k2.
 func NewArchCPU() *CPU {
 	return &CPU{
-		mem:    NewMemory(),
+		mem:    newFlatMem(),
 		tab:    decodeTable,
 		cache:  make(map[uint32]decodeResult),
 		icfg:   0x02050500,
@@ -161,7 +161,7 @@ func (c *CPU) Reset() {
 	c.rets = 0
 	c.pc = 0
 	c.steps = 0
-	c.mem = NewMemory()
+	c.mem = newFlatMem()
 	c.cache = make(map[uint32]decodeResult)
 	c.seq = 0
 	c.afterT = nil

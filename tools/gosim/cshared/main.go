@@ -143,4 +143,132 @@ func errIs(err, target error) bool {
 	return gosim.ErrIs(err, target)
 }
 
+// ---- strict memory (M2) exports -------------------------------------------
+//
+// A standalone strict memory (gosim.Memory) with the probe_boot.Memory
+// semantics, for the byte-for-byte differential test test_mem_consistency.py.
+
+// Strict-memory error codes (negative, mirrored in gosim_mem.py).
+const (
+	memErrInvalid       = -1 // invalid_memory_request
+	memErrUninitialized = -2 // uninitialized_memory
+	memErrUnmapped      = -3 // unmapped_memory
+	memErrUnmappedFetch = -4 // unmapped_instruction_fetch
+	memErrReadonlyWrite = -5 // unmapped_or_readonly_write
+)
+
+func mem(h C.uintptr_t) *gosim.Memory {
+	return cgo.Handle(h).Value().(*gosim.Memory)
+}
+
+func memErrCode(kind string) C.int {
+	switch kind {
+	case "uninitialized_memory":
+		return memErrUninitialized
+	case "unmapped_memory":
+		return memErrUnmapped
+	case "unmapped_instruction_fetch":
+		return memErrUnmappedFetch
+	case "unmapped_or_readonly_write":
+		return memErrReadonlyWrite
+	}
+	return memErrInvalid
+}
+
+// writeMemErr copies the MemError JSON (NUL-terminated) into errBuf.
+func writeMemErr(errBuf *C.uint8_t, errCap C.int, err *gosim.MemError) {
+	if errBuf == nil || errCap <= 0 {
+		return
+	}
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(errBuf)), int(errCap))
+	s := err.JSON()
+	n := copy(dst, s)
+	if n < len(dst) {
+		dst[n] = 0
+	}
+}
+
+func copyBytes(dst *C.uint8_t, n C.int, src []byte) {
+	if dst == nil || n <= 0 {
+		return
+	}
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(dst)), int(n)), src)
+}
+
+func cloneBytes(src *C.uint8_t, n C.int) []byte {
+	if src == nil || n <= 0 {
+		return nil
+	}
+	return append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(src)), int(n))...)
+}
+
+//export gosim_smem_new
+func gosim_smem_new() C.uintptr_t {
+	return C.uintptr_t(cgo.NewHandle(gosim.NewMemory()))
+}
+
+//export gosim_smem_free
+func gosim_smem_free(h C.uintptr_t) {
+	cgo.Handle(h).Delete()
+}
+
+//export gosim_smem_set_rom
+func gosim_smem_set_rom(h C.uintptr_t, data *C.uint8_t, n C.int) {
+	mem(h).SetROM(cloneBytes(data, n))
+}
+
+//export gosim_smem_set_app
+func gosim_smem_set_app(h C.uintptr_t, entry C.uint32_t, data *C.uint8_t, n C.int) {
+	mem(h).SetApp(uint32(entry), cloneBytes(data, n))
+}
+
+//export gosim_smem_add_region
+func gosim_smem_add_region(h C.uintptr_t, lo, hi C.uint32_t, kind *C.char) {
+	mem(h).AddRegion(uint32(lo), uint32(hi), C.GoString(kind))
+}
+
+//export gosim_smem_add_readonly
+func gosim_smem_add_readonly(h C.uintptr_t, base C.uint32_t, data *C.uint8_t, n C.int) {
+	mem(h).AddReadonly(uint32(base), cloneBytes(data, n))
+}
+
+//export gosim_smem_set_pll
+func gosim_smem_set_pll(h C.uintptr_t, v C.uint32_t, present C.int) {
+	mem(h).SetPLL(uint32(v), present != 0)
+}
+
+//export gosim_smem_set_fetch
+func gosim_smem_set_fetch(h C.uintptr_t, fetch C.int) {
+	mem(h).SetFetch(fetch != 0)
+}
+
+//export gosim_smem_read
+func gosim_smem_read(h C.uintptr_t, addr C.uint32_t, buf *C.uint8_t, n C.int, errBuf *C.uint8_t, errCap C.int) C.int {
+	out, err := mem(h).Read(uint32(addr), int(n))
+	if err != nil {
+		writeMemErr(errBuf, errCap, err)
+		return memErrCode(err.Kind)
+	}
+	copyBytes(buf, n, out)
+	return 0
+}
+
+//export gosim_smem_write
+func gosim_smem_write(h C.uintptr_t, addr C.uint32_t, data *C.uint8_t, n C.int, errBuf *C.uint8_t, errCap C.int) C.int {
+	if data == nil || n < 0 {
+		err := mem(h).Write(uint32(addr), nil)
+		if err != nil {
+			writeMemErr(errBuf, errCap, err)
+			return memErrCode(err.Kind)
+		}
+		return 0
+	}
+	err := mem(h).Write(uint32(addr), unsafe.Slice((*byte)(unsafe.Pointer(data)), int(n)))
+	if err != nil {
+		writeMemErr(errBuf, errCap, err)
+		return memErrCode(err.Kind)
+	}
+	return 0
+}
+
 func main() {}
