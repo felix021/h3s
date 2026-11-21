@@ -192,7 +192,7 @@ func decodeOne(tab []insnMeta, b []byte) (*insnMeta, map[string]uint32, int, boo
 	w0 := uint16(b[0]) | uint16(b[1])<<8
 	w1 := uint16(b[2]) | uint16(b[3])<<8
 	w2 := uint16(b[4]) | uint16(b[5])<<8
-	for i := range tab {
+	for _, i := range decodeIndex[w0] {
 		im := &tab[i]
 		var w uint64
 		switch im.nwords {
