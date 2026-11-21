@@ -80,6 +80,11 @@ func gosim_set_state(h C.uintptr_t, flags C.uint32_t, sp C.uint32_t, rets C.uint
 	cpu(h).SetState(uint32(flags), uint32(sp), uint32(rets), uint32(pc))
 }
 
+//export gosim_cpu_set_icfg
+func gosim_cpu_set_icfg(h C.uintptr_t, icfg C.uint32_t) {
+	cpu(h).SetICFG(uint32(icfg))
+}
+
 //export gosim_clear_cache
 func gosim_clear_cache(h C.uintptr_t) {
 	cpu(h).ClearCache()

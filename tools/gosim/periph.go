@@ -472,7 +472,9 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		}
 	}
 
-	// Timer0 count + pending (IRQ4) delivery scan.
+	// Timer0 count (Python advance order: count first, then Timer2 count, then
+	// the Timer0 pending delivery scan — so a Timer0 delivery and a Timer2 count
+	// both land before either is observed, byte-identical to BR28Model.advance).
 	if p.Timer != nil {
 		if p.Timer.Con != nil && *p.Timer.Con&3 != 0 {
 			empty = false
@@ -492,57 +494,12 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		if err := p.Timer.Advance(rate); err != nil {
 			return AdvanceResult{Err: periphErr("timer_advance_error")}
 		}
-		if p.Timer.Pending {
-			empty = false
-			if p.MulticoreEnabled {
-				for core := 0; core < 2; core++ {
-					if core == 1 && (p.Cpu1Control == nil || *p.Cpu1Control&1 == 0) {
-						continue
-					}
-					if gate := p.coreGate(core); gate == nil {
-						// Unknown gate: a 0x300-eligible Timer0 is a strict stop
-						// (pending_irq_with_unknown_core_icfg), not a delivery.
-						if eligible, err := p.irqEligible(core, 4, 0x300); err != nil {
-							return AdvanceResult{Err: err}
-						} else if eligible {
-							return AdvanceResult{Err: periphErr("pending_irq_with_unknown_core_icfg", "core", core, "irq", 4)}
-						}
-						continue
-					} else {
-						eligible, err := p.irqEligible(core, 4, *gate)
-						if err != nil {
-							return AdvanceResult{Err: err}
-						}
-						if eligible {
-							if !p.Timer0IRQDeliveryRequests {
-								return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "core", core, "irq", 4)}
-							}
-							if !p.Timer.DeliveryInFlight {
-								p.Timer.DeliveryInFlight = true
-								return AdvanceResult{Irq: &IrqReq{Core: core, Irq: 4}}
-							}
-						}
-					}
-				}
-			} else {
-				if eligible, err := p.irqEligible(0, 4, icfg); err != nil {
-					return AdvanceResult{Err: err}
-				} else if eligible {
-					if !p.Timer0IRQDeliveryRequests {
-						return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "irq", 4,
-							"note", "Timer0 pending and enabled after priority filtering; CPU entry not bypassed")}
-					}
-					if !p.Timer.DeliveryInFlight {
-						p.Timer.DeliveryInFlight = true
-						return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 4}}
-					}
-				}
-			}
-		}
 	}
 
-	// Timer2 count; pending is NOT an IRQ delivery but a machine-side anchored
-	// poll wake, which the Go loop cannot model — hand it back as a stop.
+	// Timer2 count (before the Timer0 pending scan, matching Python order). A
+	// pending Timer2 is consumed by the machine-side anchored poll wake, which
+	// the whole loop hands back (world.go) — it is not part of this advance's
+	// BR28Model.advance parity surface.
 	if p.Timer2 != nil {
 		if p.Timer2.Con != nil && *p.Timer2.Con&3 != 0 {
 			empty = false
@@ -550,9 +507,54 @@ func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
 		if err := p.Timer2.Advance(srcTicks); err != nil {
 			return AdvanceResult{Err: periphErr("timer2_advance_error")}
 		}
-		if p.Timer2.Pending {
-			empty = false
-			return AdvanceResult{Err: periphErr("timer2_completion_wake", "address", hexWord(Timer2))}
+	}
+
+	// Timer0 pending (IRQ4) delivery scan.
+	if p.Timer != nil && p.Timer.Pending {
+		empty = false
+		if p.MulticoreEnabled {
+			for core := 0; core < 2; core++ {
+				if core == 1 && (p.Cpu1Control == nil || *p.Cpu1Control&1 == 0) {
+					continue
+				}
+				if gate := p.coreGate(core); gate == nil {
+					// Unknown gate: a 0x300-eligible Timer0 is a strict stop
+					// (pending_irq_with_unknown_core_icfg), not a delivery.
+					if eligible, err := p.irqEligible(core, 4, 0x300); err != nil {
+						return AdvanceResult{Err: err}
+					} else if eligible {
+						return AdvanceResult{Err: periphErr("pending_irq_with_unknown_core_icfg", "core", core, "irq", 4)}
+					}
+					continue
+				} else {
+					eligible, err := p.irqEligible(core, 4, *gate)
+					if err != nil {
+						return AdvanceResult{Err: err}
+					}
+					if eligible {
+						if !p.Timer0IRQDeliveryRequests {
+							return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "core", core, "irq", 4)}
+						}
+						if !p.Timer.DeliveryInFlight {
+							p.Timer.DeliveryInFlight = true
+							return AdvanceResult{Irq: &IrqReq{Core: core, Irq: 4}}
+						}
+					}
+				}
+			}
+		} else {
+			if eligible, err := p.irqEligible(0, 4, icfg); err != nil {
+				return AdvanceResult{Err: err}
+			} else if eligible {
+				if !p.Timer0IRQDeliveryRequests {
+					return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "irq", 4,
+						"note", "Timer0 pending and enabled after priority filtering; CPU entry not bypassed")}
+				}
+				if !p.Timer.DeliveryInFlight {
+					p.Timer.DeliveryInFlight = true
+					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 4}}
+				}
+			}
 		}
 	}
 

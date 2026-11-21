@@ -32,6 +32,7 @@ class Gosim:
         self.lib.gosim_set_regs.argtypes = [_HANDLE, POINTER(c_uint32)]
         self.lib.gosim_get_regs.argtypes = [_HANDLE, POINTER(c_uint32)]
         self.lib.gosim_set_state.argtypes = [_HANDLE, c_uint32, c_uint32, c_uint32, c_uint32]
+        self.lib.gosim_cpu_set_icfg.argtypes = [_HANDLE, c_uint32]
         self.lib.gosim_get_state.argtypes = [_HANDLE, POINTER(c_uint32), POINTER(c_uint32),
                                              POINTER(c_uint32), POINTER(c_uint32)]
         self.lib.gosim_step.argtypes = [_HANDLE]
@@ -70,6 +71,9 @@ class Gosim:
 
     def set_state(self, flags, sp, rets, pc):
         self.lib.gosim_set_state(self.handle, flags, sp, rets, pc)
+
+    def set_icfg(self, icfg):
+        self.lib.gosim_cpu_set_icfg(self.handle, icfg)
 
     def get_state(self):
         flags, sp, rets, pc = c_uint32(), c_uint32(), c_uint32(), c_uint32()

@@ -255,6 +255,14 @@ func (w *World) RunLoop(n int) LoopResult {
 			res.Reason = "advance strict stop: " + adv.Err.JSON()
 			return res
 		}
+		// A pending Timer2 is a machine-side anchored poll wake (select-side,
+		// br28_machine.timer2_poll_due), which this single-core loop has no
+		// select phase to consume — hand it back rather than silently continue.
+		if w.Periph.Timer2 != nil && w.Periph.Timer2.Pending {
+			res.StopPC = currentPC(res)
+			res.Reason = "timer2 completion wake at " + hexWord(Timer2) + " (machine-side anchored poll, handed back to Python)"
+			return res
+		}
 	}
 	res.StopPC = 0
 	res.Reason = fmt.Sprintf("ran %d attempts with interleaved after_step/advance judgment (no hazard)", len(res.Steps))

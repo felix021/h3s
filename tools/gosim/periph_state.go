@@ -5,13 +5,17 @@ package gosim
 // (and back out) so the two advance chains step from byte-identical state and
 // are compared after every step.
 //
-// Scope (docs/gosim-wholeloop-design.md §4 M3-M4): Timer0 + IRQController +
-// CoreTickStopped plus the advance-chain scalar flags. The remaining M4/M5
-// leaves (watchdog / ICU / Timer2 / software IRQ / SRC-SYNC / ADC-DMA) already
-// have per-model StateMap exports (periph_m4.go / periph_m5.go) but are NOT
-// carried here yet; a PeriphState with those models bound must still be
-// transferred model-by-model through their own exports. Nothing is fabricated:
-// a field that Python holds as None round-trips as JSON null -> nil.
+// Scope (docs/gosim-wholeloop-design.md §4 M3-M5): the full advance-chain leaf
+// set — Timer0 + IRQController + CoreTickStopped + WatchdogProjection +
+// IcuInitializationProjection + Timer2Delay + SoftwareIrqCommands +
+// JLSrcSyncDelivery + AudioAdcDmaDelivery — plus the advance-chain scalar flags.
+// The watchdog/icu/timer2/software-irq/src-sync/adc-dma leaves carry exactly
+// the advance-relevant runtime fields their per-model StateMap exports
+// (periph_m4.go / periph_m5.go) expose; the report-only bookkeeping (watchdog
+// command_values, ICU region write records, ADC-DMA store/block records) stays
+// Python-side and is never silently dropped from an advance parity view. A field
+// Python holds as None round-trips as JSON null -> nil, and an absent model
+// (JSON null) clears the corresponding PeriphState slot.
 
 import (
 	"encoding/json"
@@ -148,6 +152,252 @@ func coreTickToJSON(t *CoreTickStopped) *coreTickStateJSON {
 	}
 }
 
+// ---- WatchdogProjection (br28_model.WatchdogProjection) -----------------------
+
+type watchdogStateJSON struct {
+	ProgressNum  *int64  `json:"progress_num"`
+	ProgressDen  int64   `json:"progress_den"`
+	Con          *uint32 `json:"con"`
+	KeyPhase     int64   `json:"key_phase"`
+	Elapsed      int64   `json:"elapsed"`
+	Remainder    int64   `json:"remainder"`
+	Commands     int64   `json:"commands"`
+	Feeds        int64   `json:"feeds"`
+	Expired      bool    `json:"expired"`
+	MailboxFeeds int64   `json:"mailbox_feeds"`
+}
+
+func watchdogFromJSON(s *watchdogStateJSON) (*WatchdogProjection, error) {
+	var progress []int64
+	if s.ProgressNum != nil {
+		progress = []int64{*s.ProgressNum, s.ProgressDen}
+	}
+	w, err := NewWatchdogProjection(progress)
+	if err != nil {
+		return nil, err
+	}
+	w.Con = s.Con
+	w.KeyPhase = s.KeyPhase
+	w.Elapsed = s.Elapsed
+	w.Remainder = s.Remainder
+	w.Commands = s.Commands
+	w.Feeds = s.Feeds
+	w.Expired = s.Expired
+	w.MailboxFeeds = s.MailboxFeeds
+	return w, nil
+}
+
+func watchdogToJSON(w *WatchdogProjection) *watchdogStateJSON {
+	return &watchdogStateJSON{
+		ProgressNum:  w.ProgressNum,
+		ProgressDen:  w.ProgressDen,
+		Con:          w.Con,
+		KeyPhase:     w.KeyPhase,
+		Elapsed:      w.Elapsed,
+		Remainder:    w.Remainder,
+		Commands:     w.Commands,
+		Feeds:        w.Feeds,
+		Expired:      w.Expired,
+		MailboxFeeds: w.MailboxFeeds,
+	}
+}
+
+// ---- IcuInitializationProjection ----------------------------------------------
+
+type icuStateJSON struct {
+	Control0     *uint32   `json:"control0"`
+	Control1     *uint32   `json:"control1"`
+	CommandSteps *int64    `json:"command_steps"`
+	Pending      [2]*int64 `json:"pending"`
+	Completed    int64     `json:"completed"`
+	BusyReads    int64     `json:"busy_reads"`
+}
+
+func icuFromJSON(s *icuStateJSON) (*IcuInitializationProjection, error) {
+	icu, err := NewIcuInitializationProjection(s.Control0, s.Control1, s.CommandSteps, false)
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; i < 2; i++ {
+		if s.Pending[i] == nil {
+			icu.HasPending[i] = false
+			icu.Pending[i] = 0
+		} else {
+			icu.HasPending[i] = true
+			icu.Pending[i] = *s.Pending[i]
+		}
+	}
+	icu.Completed = s.Completed
+	icu.BusyReads = s.BusyReads
+	return icu, nil
+}
+
+func icuToJSON(icu *IcuInitializationProjection) *icuStateJSON {
+	s := &icuStateJSON{
+		Control0:     icu.Control[0],
+		Control1:     icu.Control[1],
+		CommandSteps: icu.CommandSteps,
+		Completed:    icu.Completed,
+		BusyReads:    icu.BusyReads,
+	}
+	for i := 0; i < 2; i++ {
+		if icu.HasPending[i] {
+			v := icu.Pending[i]
+			s.Pending[i] = &v
+		}
+	}
+	return s
+}
+
+// ---- Timer2Delay --------------------------------------------------------------
+
+type timer2StateJSON struct {
+	Con          *uint32 `json:"con"`
+	Cnt          *uint32 `json:"cnt"`
+	Prd          *uint32 `json:"prd"`
+	Pending      bool    `json:"pending"`
+	LrcRemainder int64   `json:"lrc_remainder"`
+	Remainder    int64   `json:"remainder"`
+	Expirations  int64   `json:"expirations"`
+	Writes       int64   `json:"writes"`
+	ConReads     int64   `json:"con_reads"`
+	AdvanceCalls int64   `json:"advance_calls"`
+}
+
+func timer2FromJSON(s *timer2StateJSON) *Timer2Delay {
+	t := NewTimer2Delay()
+	t.Con = s.Con
+	t.Cnt = s.Cnt
+	t.Prd = s.Prd
+	t.Pending = s.Pending
+	t.LrcRemainder = s.LrcRemainder
+	t.Remainder = s.Remainder
+	t.Expirations = s.Expirations
+	t.Writes = s.Writes
+	t.ConReads = s.ConReads
+	t.AdvanceCalls = s.AdvanceCalls
+	return t
+}
+
+func timer2ToJSON(t *Timer2Delay) *timer2StateJSON {
+	return &timer2StateJSON{
+		Con:          t.Con,
+		Cnt:          t.Cnt,
+		Prd:          t.Prd,
+		Pending:      t.Pending,
+		LrcRemainder: t.LrcRemainder,
+		Remainder:    t.Remainder,
+		Expirations:  t.Expirations,
+		Writes:       t.Writes,
+		ConReads:     t.ConReads,
+		AdvanceCalls: t.AdvanceCalls,
+	}
+}
+
+// ---- SoftwareIrqCommands ------------------------------------------------------
+
+type partialWordJSON struct {
+	Value uint32 `json:"value"`
+	Known uint32 `json:"known"`
+}
+
+type softwareIrqStateJSON struct {
+	Pending          [2]partialWordJSON `json:"pending"`
+	SourceEnable     [2]partialWordJSON `json:"source_enable"`
+	Commands         int64              `json:"commands"`
+	Acknowledgements int64              `json:"acknowledgements"`
+	SourceCommands   int64              `json:"source_commands"`
+}
+
+func softwareIrqFromJSON(s *softwareIrqStateJSON) *SoftwareIrqCommands {
+	sw, _ := NewSoftwareIrqCommands(nil, nil)
+	for i := 0; i < 2; i++ {
+		sw.Pending[i] = NewPartialWord(s.Pending[i].Value, s.Pending[i].Known)
+		sw.SourceEnable[i] = NewPartialWord(s.SourceEnable[i].Value, s.SourceEnable[i].Known)
+	}
+	sw.Commands = s.Commands
+	sw.Acknowledgements = s.Acknowledgements
+	sw.SourceCommands = s.SourceCommands
+	return sw
+}
+
+func softwareIrqToJSON(s *SoftwareIrqCommands) *softwareIrqStateJSON {
+	out := &softwareIrqStateJSON{
+		Commands:         s.Commands,
+		Acknowledgements: s.Acknowledgements,
+		SourceCommands:   s.SourceCommands,
+	}
+	for i := 0; i < 2; i++ {
+		out.Pending[i] = partialWordJSON{Value: s.Pending[i].Value, Known: s.Pending[i].Known}
+		out.SourceEnable[i] = partialWordJSON{Value: s.SourceEnable[i].Value, Known: s.SourceEnable[i].Known}
+	}
+	return out
+}
+
+// ---- JLSrcSyncDelivery --------------------------------------------------------
+
+type srcSyncStateJSON struct {
+	CompletionSteps  int64  `json:"completion_steps"`
+	Started          bool   `json:"started"`
+	StartStep        *int64 `json:"start_step"`
+	Pending          bool   `json:"pending"`
+	DeliveryInFlight bool   `json:"delivery_in_flight"`
+	Starts           int64  `json:"starts"`
+	Completions      int64  `json:"completions"`
+	Acks             int64  `json:"acks"`
+}
+
+func srcSyncFromJSON(s *srcSyncStateJSON) (*JLSrcSyncDelivery, error) {
+	d, err := NewJLSrcSyncDelivery(s.CompletionSteps)
+	if err != nil {
+		return nil, err
+	}
+	d.Started = s.Started
+	d.StartStep = s.StartStep
+	d.Pending = s.Pending
+	d.DeliveryInFlight = s.DeliveryInFlight
+	d.Starts = s.Starts
+	d.Completions = s.Completions
+	d.Acks = s.Acks
+	return d, nil
+}
+
+func srcSyncToJSON(d *JLSrcSyncDelivery) *srcSyncStateJSON {
+	return &srcSyncStateJSON{
+		CompletionSteps:  d.CompletionSteps,
+		Started:          d.Started,
+		StartStep:        d.StartStep,
+		Pending:          d.Pending,
+		DeliveryInFlight: d.DeliveryInFlight,
+		Starts:           d.Starts,
+		Completions:      d.Completions,
+		Acks:             d.Acks,
+	}
+}
+
+// ---- AudioAdcDmaDelivery ------------------------------------------------------
+
+type audioAdcDmaStateJSON struct {
+	Delivery         bool `json:"delivery"`
+	Pending          bool `json:"pending"`
+	DeliveryInFlight bool `json:"delivery_in_flight"`
+}
+
+func audioAdcDmaFromJSON(s *audioAdcDmaStateJSON) *AudioAdcDmaDelivery {
+	a := NewAudioAdcDmaDelivery(s.Delivery)
+	a.Pending = s.Pending
+	a.DeliveryInFlight = s.DeliveryInFlight
+	return a
+}
+
+func audioAdcDmaToJSON(a *AudioAdcDmaDelivery) *audioAdcDmaStateJSON {
+	return &audioAdcDmaStateJSON{
+		Delivery:         a.Delivery,
+		Pending:          a.Pending,
+		DeliveryInFlight: a.DeliveryInFlight,
+	}
+}
+
 // ---- PeriphState (whole advance-chain state) ----------------------------------
 
 type periphStateJSON struct {
@@ -168,6 +418,12 @@ type periphStateJSON struct {
 	IRQ                          *irqStateJSON       `json:"irq"`
 	IRQ1                         *irqStateJSON       `json:"irq1"`
 	CoreTicks                    [2]*coreTickStateJSON `json:"core_ticks"`
+	Watchdog                     *watchdogStateJSON  `json:"watchdog"`
+	ICU                          *icuStateJSON       `json:"icu"`
+	Timer2                       *timer2StateJSON    `json:"timer2"`
+	SoftwareIRQ                  *softwareIrqStateJSON `json:"software_irq"`
+	SrcSync                      *srcSyncStateJSON   `json:"src_sync"`
+	AudioAdcDma                  *audioAdcDmaStateJSON `json:"audio_adc_dma"`
 }
 
 // StateJSON serializes the advance-relevant PeriphState (Timer0 / IRQ / core
@@ -205,6 +461,24 @@ func (p *PeriphState) StateJSON() ([]byte, error) {
 		if p.CoreTicks[i] != nil {
 			s.CoreTicks[i] = coreTickToJSON(p.CoreTicks[i])
 		}
+	}
+	if p.Watchdog != nil {
+		s.Watchdog = watchdogToJSON(p.Watchdog)
+	}
+	if p.ICU != nil {
+		s.ICU = icuToJSON(p.ICU)
+	}
+	if p.Timer2 != nil {
+		s.Timer2 = timer2ToJSON(p.Timer2)
+	}
+	if p.SoftwareIRQ != nil {
+		s.SoftwareIRQ = softwareIrqToJSON(p.SoftwareIRQ)
+	}
+	if p.SrcSync != nil {
+		s.SrcSync = srcSyncToJSON(p.SrcSync)
+	}
+	if p.AudioAdcDma != nil {
+		s.AudioAdcDma = audioAdcDmaToJSON(p.AudioAdcDma)
 	}
 	return json.Marshal(s)
 }
@@ -263,10 +537,48 @@ func (p *PeriphState) LoadStateJSON(data []byte) error {
 		}
 		p.CoreTicks[i] = ct
 	}
-
-	// Models outside the transferred scope are never carried, so binding them
-	// here would silently drop their state. They are left untouched; the
-	// harness only transfers Timer0 / IRQ / core ticks through this entry point.
+	if s.Watchdog == nil {
+		p.Watchdog = nil
+	} else {
+		w, err := watchdogFromJSON(s.Watchdog)
+		if err != nil {
+			return err
+		}
+		p.Watchdog = w
+	}
+	if s.ICU == nil {
+		p.ICU = nil
+	} else {
+		icu, err := icuFromJSON(s.ICU)
+		if err != nil {
+			return err
+		}
+		p.ICU = icu
+	}
+	if s.Timer2 == nil {
+		p.Timer2 = nil
+	} else {
+		p.Timer2 = timer2FromJSON(s.Timer2)
+	}
+	if s.SoftwareIRQ == nil {
+		p.SoftwareIRQ = nil
+	} else {
+		p.SoftwareIRQ = softwareIrqFromJSON(s.SoftwareIRQ)
+	}
+	if s.SrcSync == nil {
+		p.SrcSync = nil
+	} else {
+		d, err := srcSyncFromJSON(s.SrcSync)
+		if err != nil {
+			return err
+		}
+		p.SrcSync = d
+	}
+	if s.AudioAdcDma == nil {
+		p.AudioAdcDma = nil
+	} else {
+		p.AudioAdcDma = audioAdcDmaFromJSON(s.AudioAdcDma)
+	}
 	return nil
 }
 
