@@ -271,4 +271,177 @@ func gosim_smem_write(h C.uintptr_t, addr C.uint32_t, data *C.uint8_t, n C.int, 
 	return 0
 }
 
+// ---- peripheral models (M3) exports ----------------------------------------
+//
+// Timer0 and IRQController (gosim.PeriphState / periph.go), callable from
+// Python for the byte-for-byte differential test test_timer0_irq_consistency.py.
+
+// Peripheral error codes (mirrored in gosim_periph.py).
+const (
+	periphErrBlocked = -6 // strict stop (Python Blocked); errBuf carries the JSON
+	periphErrValue   = -7 // value error (Python ValueError)
+)
+
+func timer(h C.uintptr_t) *gosim.Timer0 {
+	return cgo.Handle(h).Value().(*gosim.Timer0)
+}
+
+func irq(h C.uintptr_t) *gosim.IRQController {
+	return cgo.Handle(h).Value().(*gosim.IRQController)
+}
+
+func writeErrJSON(errBuf *C.uint8_t, errCap C.int, s string) {
+	if errBuf == nil || errCap <= 0 {
+		return
+	}
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(errBuf)), int(errCap))
+	n := copy(dst, s)
+	if n < len(dst) {
+		dst[n] = 0
+	}
+}
+
+//export gosim_timer_new
+func gosim_timer_new(allowedMask C.uint32_t) C.uintptr_t {
+	var allowed []uint32
+	for i := 0; i < 16; i++ {
+		if allowedMask&(1<<uint(i)) != 0 {
+			allowed = append(allowed, uint32(i))
+		}
+	}
+	if len(allowed) == 0 {
+		allowed = []uint32{4}
+	}
+	return C.uintptr_t(cgo.NewHandle(gosim.NewTimer0(allowed...)))
+}
+
+//export gosim_timer_free
+func gosim_timer_free(h C.uintptr_t) {
+	cgo.Handle(h).Delete()
+}
+
+//export gosim_timer_write
+func gosim_timer_write(h C.uintptr_t, offset C.int, value C.uint32_t, errBuf *C.uint8_t, errCap C.int) C.int {
+	if err := timer(h).Write(int(offset), uint32(value)); err != nil {
+		writeErrJSON(errBuf, errCap, err.JSON())
+		return periphErrBlocked
+	}
+	return 0
+}
+
+//export gosim_timer_read
+func gosim_timer_read(h C.uintptr_t, offset C.int, out *C.uint32_t, errBuf *C.uint8_t, errCap C.int) C.int {
+	v, err := timer(h).Read(int(offset))
+	if err != nil {
+		writeErrJSON(errBuf, errCap, err.JSON())
+		return periphErrBlocked
+	}
+	*out = C.uint32_t(v)
+	return 0
+}
+
+//export gosim_timer_advance
+func gosim_timer_advance(h C.uintptr_t, sourceTicks C.longlong) C.int {
+	if err := timer(h).Advance(int64(sourceTicks)); err != nil {
+		return periphErrValue
+	}
+	return 0
+}
+
+//export gosim_timer_steps_to_next
+func gosim_timer_steps_to_next(h C.uintptr_t, rate C.longlong, ok *C.int) C.longlong {
+	s, has := timer(h).StepsToNextExpiration(int64(rate))
+	if !has {
+		*ok = 0
+		return 0
+	}
+	*ok = 1
+	return C.longlong(s)
+}
+
+// gosim_timer_state returns the Timer0 snapshot. The return value is a 3-bit
+// mask: bit0 con present, bit1 cnt present, bit2 prd present (a missing word is
+// Python None). remainders/expirations are always written.
+//
+//export gosim_timer_state
+func gosim_timer_state(h C.uintptr_t, con, cnt, prd *C.uint32_t, pending, deliveryInFlight *C.int,
+	remainder, sourceRemainder, expirations *C.longlong) C.int {
+	t := timer(h)
+	has := C.int(0)
+	if t.Con != nil {
+		has |= 1
+		*con = C.uint32_t(*t.Con)
+	}
+	if t.Cnt != nil {
+		has |= 2
+		*cnt = C.uint32_t(*t.Cnt)
+	}
+	if t.Prd != nil {
+		has |= 4
+		*prd = C.uint32_t(*t.Prd)
+	}
+	if t.Pending {
+		*pending = 1
+	} else {
+		*pending = 0
+	}
+	if t.DeliveryInFlight {
+		*deliveryInFlight = 1
+	} else {
+		*deliveryInFlight = 0
+	}
+	*remainder = C.longlong(t.Remainder)
+	*sourceRemainder = C.longlong(t.SourceRemainder)
+	*expirations = C.longlong(t.Expirations)
+	return has
+}
+
+//export gosim_irq_new
+func gosim_irq_new(unmaskable C.int) C.uintptr_t {
+	return C.uintptr_t(cgo.NewHandle(&gosim.IRQController{UnmaskableIRQProjection: unmaskable != 0}))
+}
+
+//export gosim_irq_free
+func gosim_irq_free(h C.uintptr_t) {
+	cgo.Handle(h).Delete()
+}
+
+//export gosim_irq_set_config_word
+func gosim_irq_set_config_word(h C.uintptr_t, index C.int, has C.int, value C.uint32_t) {
+	ic := irq(h)
+	if has != 0 {
+		v := uint32(value)
+		ic.Config[index] = &v
+	} else {
+		ic.Config[index] = nil
+	}
+}
+
+//export gosim_irq_set_ipmask
+func gosim_irq_set_ipmask(h C.uintptr_t, has C.int, value C.uint32_t) {
+	ic := irq(h)
+	if has != 0 {
+		v := uint32(value)
+		ic.IPMask = &v
+	} else {
+		ic.IPMask = nil
+	}
+}
+
+//export gosim_irq_eligible
+func gosim_irq_eligible(h C.uintptr_t, index C.int, icfg C.uint32_t, errBuf *C.uint8_t, errCap C.int) C.int {
+	if index < 0 || index >= 32 {
+		return periphErrValue
+	}
+	ok, err := irq(h).Eligible(int(index), uint32(icfg))
+	if err != nil {
+		writeErrJSON(errBuf, errCap, err.JSON())
+		return periphErrBlocked
+	}
+	if ok {
+		return 1
+	}
+	return 0
+}
+
 func main() {}
