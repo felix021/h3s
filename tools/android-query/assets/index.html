@@ -2666,7 +2666,6 @@ window.onH3sEvent = raw => {
 const EQ_TYPE_SPATIAL = 10;
 const EQ_TYPE_CUSTOM_NO_HISTORY = 255;  // FF：自定义曲线、无设备历史
 const EQ_TYPE_CUSTOM_HISTORY = 128;     // 80：自定义曲线、已有设备历史（0x22 回读过）
-const EQ_CUSTOM_DEFAULT_MASTER = -1000; // 自定义无历史时的总增益基值 −10 dB（原生 lastBaseGain 缺省）
 const EQ_PRESETS = [
   {
     name: '默认', type: 1, master: -4,
@@ -3229,37 +3228,6 @@ function eqPresetPayload(eq) {
     }))
   };
 }
-// 叠加各段 44.1kHz 峰值滤波器响应（dB，级联近似），20..20000Hz 每 5Hz 取样，返回峰值与峰频
-function eqPeakResponseDb(bands) {
-  const freqs = [];
-  for (let f = 20; f <= 20000; f += 5) freqs.push(f);
-  const total = new Array(freqs.length).fill(0);
-  bands.forEach(b => {
-    if (!(b.freq > 0)) return;
-    const f0 = b.freq;
-    const A = Math.pow(10, b.gain / 4000);          // gain 为 centidB → /100 得 dB 再 /40
-    const Q = Math.max(0.01, b.q / 100);            // q 为 ×100
-    for (let i = 0; i < freqs.length; i++) {
-      const f = freqs[i];
-      const d = f0 * f0 - f * f;
-      const num = d * d + Math.pow(A * f * f0 / Q, 2);
-      const den = d * d + Math.pow(f * f0 / (A * Q), 2);
-      if (den > 0) total[i] += 10 * Math.log10(num / den);
-    }
-  });
-  let peak = -Infinity, peakFreq = 0;
-  for (let i = 0; i < freqs.length; i++) {
-    if (total[i] > peak) { peak = total[i]; peakFreq = freqs[i]; }
-  }
-  return { peak, peakFreq };
-}
-// 计算自定义下发 master（原生 getMaxGain 同款）：base − max(0, peak+0.5 − limit)，limit 低频 4dB/高频 8dB
-function computeCustomMaster(baseCentidB, bands) {
-  const { peak, peakFreq } = eqPeakResponseDb(bands);
-  const d3 = peak + 0.5;
-  const limit = peakFreq < 1500 ? 4 : 8;
-  return baseCentidB - Math.max(0, d3 - limit) * 100;
-}
 // 自定义曲线发送载荷：改动段在前 + 设备回读旧段（频率与 Q 同时相等去重），十段封顶
 function buildCustomEqPayload() {
   const indices = changedBands.size > 0
@@ -3296,8 +3264,7 @@ function buildCustomEqPayload() {
   }
   const hasHistory = !!deviceEqCache;
   const type = hasHistory ? EQ_TYPE_CUSTOM_HISTORY : EQ_TYPE_CUSTOM_NO_HISTORY;
-  const base = hasHistory ? deviceEqCache.master : EQ_CUSTOM_DEFAULT_MASTER;
-  const master = Math.round(computeCustomMaster(base, bands));
+  const master = Math.round(customEq.master * 100);
   return { type, master, bands };
 }
 function sendEqFrame() {
