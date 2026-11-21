@@ -1,0 +1,3 @@
+# Generated c-shared build artifacts (go build -buildmode=c-shared)
+libgosim.so
+libgosim.h
