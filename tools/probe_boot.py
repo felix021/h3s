@@ -916,6 +916,35 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         return
                     # 守卫拒绝:落回普通严格路径(执行核/基址/有效地址不符
                     # 负例即在此处诚实停,kind 与开关关世界一致)。
+            if hardware is not None and hardware.jl_audio_dac_dma_len is not None:
+                # 路 DACDMALEN(codex 202611211512 方案 §3「活读到达时再扩」):
+                # DAC DMA LEN 活读回读=最近一次整字写放行的装载门。装载门
+                # 只在两个已核验读点上拦(0x606ddc4/0x606ddcc,ld.w.l
+                # {r,s:8,n:0} 形状+字节钉死),回读=JLAudioDacDmaWriteRecords
+                # 里 0xfe0508 最近一次整字写值(0x606b2b0 重写的实际 LEN,不是
+                # 0x6071e92 的 LEN=1),零合成字节;不是全地址通用回读、不是
+                # DMA 推进模型。守卫见 JLAudioDacDmaLenReadback.serve(执行核/
+                # 基址/有效地址/零写→回落普通严格路径,kind 与开关关世界
+                # 一致)。开关关=槽 None,一次 is-not-None 测试即过,legacy
+                # 世界零变化。
+                gate=hardware.jl_audio_dac_dma_len
+                shape=gate.READ_SITES.get(self.pc)
+                if shape is not None:
+                    require(insn.id=='ld.w.l' and raw==shape,
+                            'the DAC DMA LEN live-read site must keep its pinned '
+                            f'shape (ld.w.l r{shape["r"]}=[r{shape["s"]}+'
+                            f'{shape["n"]*4}], expected {shape})')
+                    require(self.mem.read(self.pc,4)==bytes.fromhex(gate.SITE_BYTES[self.pc]),
+                            'the DAC DMA LEN live-read site bytes changed '
+                            f'(expected {gate.SITE_BYTES[self.pc]})')
+                    value=gate.serve(self,hardware,raw)
+                    if value is not None:
+                        self.R[raw['r']]=value
+                        self.finish_exact(self.pc+size)
+                        adapters['jl_audio_dac_dma_len_readback_load']+=1
+                        return
+                    # 守卫拒绝:落回普通严格路径(执行核/基址/有效地址/零写
+                    # 负例即在此处诚实停,kind 与开关关世界一致)。
             if hardware is not None and hardware.jl_sync is not None:
                 # 路 SYNCIMPL(codex 裁收窄版 a):JL_SYNC 四字容器读策略的
                 # PC/核溯源(每步刷新,DMAIMPL current_pc 先例)。CON 读只

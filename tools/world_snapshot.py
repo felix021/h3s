@@ -1190,6 +1190,12 @@ M4_FAMILIES = (
     # M4 fixture — a restore refuses a differently-switched target world.
     ('jl_audio_dac_dma_setup', 'JLAudioDacDmaSetupDiscardedReads',
      ('served', 'rejections')),
+    # Route DACDMALEN: the LEN live-read gate (0x606ddc4/cc). served/
+    # rejections/served_values are runtime STATE; the read-site table and
+    # site-bytes are construction constants riding the per-object static guard
+    # like every other M4 fixture.
+    ('jl_audio_dac_dma_len', 'JLAudioDacDmaLenReadback',
+     ('served', 'rejections', 'served_values')),
     ('jl_adda_family', 'JLAddaAnalogFamilyRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('timer2', 'Timer2Delay',

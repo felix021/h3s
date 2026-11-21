@@ -701,6 +701,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # but the M4 slot is in M4_FAMILIES so the all-families world turns it on
         # for the round-trip inventory).
         jl_audio_dac_dma_setup_discarded_reads=True,
+        # Route DACDMALEN: the DAC DMA LEN live-read gate (probe_only, layered
+        # on the five-dead-read gate; the M4 slot is in M4_FAMILIES so the
+        # all-families world turns it on for the round-trip inventory).
+        jl_audio_dac_dma_len_readback=True,
         # Route COPEXIMPL: the copex mode-22 exponential approximation gate,
         # ON in the current conditional frontier flag set (its first intercepted
         # copex sits at the 42,037,363-era frontier stop).

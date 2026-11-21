@@ -5104,6 +5104,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_dma_idle_readback=False,
              jl_audio_dac_dma_setup_discarded_reads=False,
              jl_audio_dac_dma_setup_discarded_sites=5,
+             jl_audio_dac_dma_len_readback=False,
              jl_audio_adc_dma_writes=False,
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
@@ -6759,6 +6760,20 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         options['jl_audio_dac_dma_setup_discarded_reads']=True
         if jl_audio_dac_dma_setup_discarded_sites != 5:
             options['jl_audio_dac_dma_setup_discarded_sites']=jl_audio_dac_dma_setup_discarded_sites
+    # jl_audio_dac_dma_len_readback(路 DACDMALEN,codex 202611211512 方案 §3
+    # 「活读到达时再扩」,默认 False=关):DAC DMA LEN 活读回读=最近一次整字写
+    # 放行——31,391,419 停点 0x606ddc4(音频参数计算函数 0x606dd96 体内,
+    # r8=0xfe0508)的钳位比较首读与 0x606ddcc then 臂再读。回读=四字写记录
+    # 里 0xfe0508 最近一次整字写值(0x606b2b0 重写的实际 LEN,不是 0x6071e92
+    # 的 LEN=1),零合成字节;无写来源/守卫不符→回落普通严格路径。依赖边挂
+    # jl_audio_dac_dma_setup_discarded_reads(同一条配置函数链,五死读放行是
+    # 到达 0x606ddc4 的前置)。默认关:读点停点形状与开关关世界逐字节一致。
+    if jl_audio_dac_dma_len_readback:
+        require(jl_audio_dac_dma_setup_discarded_reads,
+                'the DAC DMA LEN live read requires the five-dead-read release '
+                '(0x606ddc4 is reached only after 0x606b2b2..b2ba are released on the '
+                'same config-function chain)')
+        options['jl_audio_dac_dma_len_readback']=True
     # copex_exp22_model(路 COPEXIMPL,codex 裁 (a) 收窄版,默认 False=关):
     # copex.ppi mode-22 指数近似模型——42,037,363 停点 0x606a900(upstream
     # 『copex.ppi has no model』,音频管线重配段 exp 叶子 0x606a8fc 体内)
@@ -12361,6 +12376,17 @@ def main():
                               **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
                                  'jl_audio_dac_dma_setup_discarded_reads':True,
                                  'jl_audio_dac_dma_setup_discarded_sites':4},
+                              flash_image_bytes=image),
+                     # 路 DACDMALEN(codex 202611211512 方案 §3「活读到达时再扩」):
+                     # 在 DACDMA 五死读放行臂上追加 LEN 活读回读(0x606ddc4/cc 钳位
+                     # 比较首读+then 臂再读)。旧臂 31,391,419 @ 0x606ddc4 逐字节不变
+                     # (len_readback 开关关);开活读回读的臂越过 0x606ddc4 继续走到
+                     # 下一个诚实边界(0x606de56 写 PNS 0xfe050c 未映射,或更后);
+                     # 新停点由实跑取得,本臂不重钉 dacdma_probe 前沿。
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_dacdmalen_probe',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
+                                 'jl_audio_dac_dma_setup_discarded_reads':True,
+                                 'jl_audio_dac_dma_len_readback':True},
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,
