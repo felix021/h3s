@@ -713,6 +713,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # commit record (probe_only; the M4 slot is in M4_FAMILIES so the
         # all-families world turns it on for the round-trip inventory).
         jl_audio_dac_dma_pcm_produce=True,
+        # Route DACDMAPCNT 续: the P3_VLVD bit2 write-back read-back gate
+        # (probe_only; the M4 slot is in M4_FAMILIES so the all-families world
+        # turns it on for the round-trip inventory).
+        p3_vlvd_bit2_writeback_readback=True,
         # Route COPEXIMPL: the copex mode-22 exponential approximation gate,
         # ON in the current conditional frontier flag set (its first intercepted
         # copex sits at the 42,037,363-era frontier stop).
