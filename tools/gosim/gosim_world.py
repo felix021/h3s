@@ -19,7 +19,7 @@ Build the shared library first:
 import ctypes
 import json
 import os
-from ctypes import c_int, c_uint32, c_uint64, c_uint8, POINTER
+from ctypes import c_int, c_uint32, c_uint64, c_uint8, c_char_p, POINTER
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _LIB = os.path.join(_HERE, "libgosim.so")
@@ -35,7 +35,14 @@ class _Lib:
 
         lib.gosim_world_new.argtypes = [_HANDLE, _HANDLE, c_uint32, c_uint32]
         lib.gosim_world_new.restype = _HANDLE
+        lib.gosim_world_dual_new.argtypes = [_HANDLE, _HANDLE, _HANDLE, _HANDLE,
+                                             _HANDLE, c_uint32, c_uint32]
+        lib.gosim_world_dual_new.restype = _HANDLE
         lib.gosim_world_set_periph.argtypes = [_HANDLE, _HANDLE]
+        lib.gosim_world_set_afterstep.argtypes = [_HANDLE, c_char_p]
+        lib.gosim_world_set_afterstep.restype = c_int
+        lib.gosim_world_set_core_inflight.argtypes = [_HANDLE, c_int, c_int, c_char_p]
+        lib.gosim_world_set_core_inflight.restype = c_int
         lib.gosim_world_free.argtypes = [_HANDLE]
         lib.gosim_world_run_loop.argtypes = [_HANDLE, c_int, POINTER(c_uint8), c_int]
         lib.gosim_world_run_loop.restype = c_int
@@ -77,6 +84,47 @@ class GosimWorld:
 
     def set_periph(self, periph_handle):
         _LIB_SINGLETON.lib.gosim_world_set_periph(self.handle, periph_handle)
+
+    def run_loop(self, n):
+        return _out(_LIB_SINGLETON.lib.gosim_world_run_loop, self.handle, n)
+
+    def free(self):
+        _LIB_SINGLETON.lib.gosim_world_free(self.handle)
+
+
+def _afterstep_cfg(cfg):
+    """JSON-encode an after_step hook configuration (see gosim.AfterStep.LoadJSON)."""
+    return json.dumps(cfg).encode("utf-8") if not isinstance(cfg, str) else cfg.encode("utf-8")
+
+
+class GosimDualWorld:
+    """One dual-core World: both execute engines + the M6A select Machine and M6C
+    DeliverMachine bound. World.RunLoop then takes the dual-core path (select ->
+    execute -> after_step judgment -> advance -> delivery dispatch). Periph and
+    AfterStep are bound separately via set_periph / set_afterstep."""
+
+    def __init__(self, cpu0_handle, cpu1_handle, smem_handle=0, machine_handle=0,
+                 deliver_handle=0, fetch_lo=0, fetch_hi=0):
+        self.handle = _LIB_SINGLETON.lib.gosim_world_dual_new(
+            cpu0_handle, cpu1_handle, smem_handle, machine_handle, deliver_handle,
+            fetch_lo, fetch_hi)
+
+    def set_periph(self, periph_handle):
+        _LIB_SINGLETON.lib.gosim_world_set_periph(self.handle, periph_handle)
+
+    def set_afterstep(self, cfg):
+        """Bind the after_step hook configuration (dict or JSON string)."""
+        raw = _afterstep_cfg(cfg)
+        rc = _LIB_SINGLETON.lib.gosim_world_set_afterstep(self.handle, raw)
+        if rc != 0:
+            raise ValueError("gosim after_step config parse failed")
+
+    def set_core_inflight(self, core, repeat_active=False, active_context=""):
+        """Set the delivery-deferral execution context of one core."""
+        rc = _LIB_SINGLETON.lib.gosim_world_set_core_inflight(
+            self.handle, core, 1 if repeat_active else 0, active_context.encode("utf-8"))
+        if rc != 0:
+            raise ValueError("gosim core inflight context set failed")
 
     def run_loop(self, n):
         return _out(_LIB_SINGLETON.lib.gosim_world_run_loop, self.handle, n)

@@ -491,6 +491,19 @@ func (w *World) runDualCore(n int) LoopResult {
 	// changes land on the same Core objects the select/execute phases read.
 	w.Deliver.Cores = w.Cores
 
+	// Third-wiring leftover observation: Machine.Timer2 (read by the select-side
+	// timer2_poll_due check) and Periph.Timer2 (mutated by the advance-side Timer2
+	// count) are two independent objects whose pending flag only aligned at
+	// LoadJSON. In Python both are the single hardware.timer2 object, so bind them
+	// to the same Go object — a Timer2 expiry the advance sets Pending on is then
+	// visible to the select-side anchored-poll-due check on the next iteration.
+	// (The poll wake itself still cannot fire here: it requires a core parked at
+	// the TIMER2 anchor, and enter_idle_wait stays Python-only, so the loop hands
+	// back at the idle instruction first — honest, nothing fabricated.)
+	if w.Machine.Timer2DelayProjection {
+		w.Machine.Timer2 = w.Periph.Timer2
+	}
+
 	res := LoopResult{Exit: Stop}
 	for i := 0; i < n; i++ {
 		w.syncMachineCores()

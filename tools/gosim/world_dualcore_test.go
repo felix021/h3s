@@ -1,6 +1,9 @@
 package gosim
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // dualCoreWorld builds a runnable dual-core World: both cores bound to execute
 // engines with one safe ALU instruction (add r0,r0 = 0x1800) at pc 0x100, the
@@ -139,5 +142,58 @@ func TestDualCoreRunLoopHonestStopOnUnsafe(t *testing.T) {
 	}
 	if len(res.Steps) != 0 {
 		t.Fatalf("an undecodable instruction must not be committed, got %d steps", len(res.Steps))
+	}
+}
+
+// The third-wiring leftover: Machine.Timer2 (select-side poll-due check) and
+// Periph.Timer2 (advance-side count) must become the single hardware.timer2
+// object so a Timer2 pending flag set by advance is visible to the select-side
+// check. This pins the runDualCore binding fix.
+func TestDualCoreRunLoopBindsMachineTimer2ToPeriph(t *testing.T) {
+	w := dualCoreWorld()
+	w.Machine.Timer2DelayProjection = true
+	w.Machine.Timer2 = NewTimer2Delay() // a stale separate object, Pending false
+	w.Periph.Timer2 = NewTimer2Delay()
+	w.Periph.Timer2.Pending = true
+
+	res := w.RunLoop(1)
+	if res.Exit != Stop || len(res.Steps) != 1 {
+		t.Fatalf("expected one clean step, got %+v", res)
+	}
+	if w.Machine.Timer2 != w.Periph.Timer2 {
+		t.Fatalf("Machine.Timer2 must be bound to Periph.Timer2 (single hardware.timer2 object)")
+	}
+	if !w.Machine.Timer2.Pending {
+		t.Fatalf("the select-side Timer2 must observe the advance-side pending flag")
+	}
+}
+
+// A pending-eligible delivery landing on a core whose IRQ handler is in flight
+// is deferred, not fabricated: the loop hands the request back to Python with the
+// honest reason. (Mid-instruction deferral is subsumed by the RepeatActive
+// precondition yield, so the reachable deferral in the loop is the in-flight-
+// handler branch.)
+func TestDualCoreRunLoopDefersInFlightHandlerDelivery(t *testing.T) {
+	w := dualCoreWorld()
+	ic := NewIRQController()
+	ic.Config[0] = u32p(0x50000) // irq 4 nibble: enabled, priority 2
+	ic.IPMask = u32p(2)
+	w.Periph.IRQ = ic
+	w.Periph.Timer = &Timer0{Pending: true}
+	w.Periph.Timer0IRQDeliveryRequests = true
+	w.Cores[0].ActiveContext = "timer0_irq_handler" // in-flight handler: deferral
+
+	res := w.RunLoop(1)
+	if res.Exit != Stop || res.Irq == nil {
+		t.Fatalf("expected a deferred-request hand-back, got %+v", res)
+	}
+	if res.Irq.Core != 0 || res.Irq.Irq != 4 {
+		t.Fatalf("expected Irq(0,4), got %+v", res.Irq)
+	}
+	if len(res.Steps) != 1 {
+		t.Fatalf("the executed step must be committed before the deferral, got %d steps", len(res.Steps))
+	}
+	if !strings.Contains(res.Reason, "delivery deferral") {
+		t.Fatalf("reason must name the deferral, got %q", res.Reason)
 	}
 }
