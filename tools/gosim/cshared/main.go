@@ -80,6 +80,11 @@ func gosim_set_state(h C.uintptr_t, flags C.uint32_t, sp C.uint32_t, rets C.uint
 	cpu(h).SetState(uint32(flags), uint32(sp), uint32(rets), uint32(pc))
 }
 
+//export gosim_clear_cache
+func gosim_clear_cache(h C.uintptr_t) {
+	cpu(h).ClearCache()
+}
+
 //export gosim_get_state
 func gosim_get_state(h C.uintptr_t, flags *C.uint32_t, sp *C.uint32_t, rets *C.uint32_t, pc *C.uint32_t) {
 	f, s, r, p := cpu(h).GetState()
