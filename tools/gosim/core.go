@@ -180,6 +180,9 @@ func (c *CPU) GetState() (flags, sp, rets, pc uint32) {
 func (c *CPU) SetICFG(v uint32) { c.icfg = v }
 func (c *CPU) GetICFG() uint32  { return c.icfg }
 
+// ClearCache drops the pc-keyed decode cache (the cold-cache benchmark entry).
+func (c *CPU) ClearCache() { c.cache = make(map[uint32]decodeResult) }
+
 // SetDataMem binds the strict data memory the execute engine's load/store
 // paths read and write. A nil m reverts to the flat memory (upstream simulator
 // semantics) the raw core and the segment contract use. Fetch stays on the
