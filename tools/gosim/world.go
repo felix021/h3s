@@ -142,7 +142,11 @@ func (w *World) RunLoop(n int) LoopResult {
 		return yieldBeforeAttempt("no core 0 present")
 	}
 	if w.Cores[1] != nil {
-		return yieldBeforeAttempt("dual-core select not ported (M6)")
+		// Stage A ported the select phase (machine.go Machine.Select); the
+		// dual-core loop cannot close here yet because the after_step hooks
+		// (Stage B) and the deliver_* projections (Stage C) still live in
+		// Python.
+		return yieldBeforeAttempt("dual-core loop not closed: select ported (M6A) but after_step/deliver projections still in Python (M6B/C)")
 	}
 	if !w.Concrete {
 		return yieldBeforeAttempt("non-concrete (abstract) cpu state")
