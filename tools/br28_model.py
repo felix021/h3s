@@ -7643,16 +7643,18 @@ class JLSrcSyncDelivery:
         if self.cursor is not None:
             self.cursor.note_start(hardware)
 
-    def advance(self,hardware):
+    def advance(self,hardware,mem=None):
         """BR28Model.advance 每模型步调用:启动后 completion_steps 步完成。
         完成即置 pending(一次一个 pending 片;handler ACK 清 pending 后可
         再次启动→再次完成)。游标半边(路 SRCSYNC6)在置 pending 前原子提交
-        本次硬件结果(先验证 c/p、地址范围、输出有效性)。"""
+        本次硬件结果(先验证 c/p、地址范围、输出有效性)。mem=运行循环内存
+        对象,透传给游标提交做零输入→零输出样本建模(缺省 None 时游标侧按
+        诚实停处理)。"""
         if self.started and not self.pending:
             elapsed=hardware.counts['completed_model_steps']-self.start_step
             if elapsed>=self.completion_steps:
                 if self.cursor is not None:
-                    self.cursor.commit(hardware)
+                    self.cursor.commit(hardware,mem)
                 self.started=False
                 self.pending=True
                 self.completions+=1
@@ -7704,13 +7706,19 @@ class JLSrcSyncDelivery:
                              'measurement')},
             'completion_result':{
                 'input_consumed':0,
-                'output_data_synthesized':False,
+                'output_data_synthesized':'zero-fill under the silent-input guard '
+                                          '(cursor route SRCSYNC6)',
                 'progress_readback':'last firmware-written value (function B config words)',
-                'semantics':('the externally-specified completion result: zero input '
-                             'consumed, output address/length read back as the firmware\'s '
-                             'own config, no output samples synthesized — this verifies '
-                             '"the notification wakes the task" while the conversion result '
-                             'and continuous data flow stay BLOCKED (codex §2 wording)')},
+                'semantics':('the externally-specified completion result: the delivery half '
+                             'itself consumes zero input and only sets IRQ89 pending; the '
+                             'cursor half (JLSrcSyncCursorProgress.commit) advances the four '
+                             'cursor words and, when this transaction\'s input IDAT is known '
+                             'and all-zero, writes the locked ODAT region as zero samples '
+                             '(zero-input -> zero-output linear-filter zero-history assumption, '
+                             'named; a non-zero or unknown input keeps the strict stop). This '
+                             'verifies "the notification wakes the task" AND the silent-block '
+                             'buffer flow; the non-silent conversion and continuous data flow '
+                             'stay BLOCKED (codex §2 wording)')},
             'red_line':('no direct interrupt or direct OSSemPost: completion sets IRQ89 '
                         'pending and the machine delivers it through the real vector slot '
                         '0x19ff64 -> handler 0x12ca24')}
@@ -7740,6 +7748,10 @@ class JLSrcSyncCursorProgress:
       真实分块次数需硅测确认。
     - p=每 completion 产出的每通道样本数(produce):None=与消费量相同「1:1 速率」
       假设;SRC 采样率转换比值未测,需硅测确认。
+    - 零输入→零输出(路 SRCSYNC6 最小样本建模):本笔输入 IDAT 已知且全零时,
+      把锁存的 ODAT 输出区间写成零样本;前提是 SRC 线性滤波器零历史、无附加
+      信号,两者均需硅测确认。输入含 unknown 或非零字节时诚实停,不伪造非零
+      样本的转换。
 
     守恒契约:每笔验证 0<=c<=L前、0<=p<=O前、L后=L前-c、A后-A前=c*C*W(地址无
     回绕);一次启动只准提交一次,下一次合法启动承接上一笔剩余量。只动 IDAT 不动
@@ -7793,9 +7805,10 @@ class JLSrcSyncCursorProgress:
         self.committed = {}
         self.transaction += 1
 
-    def commit(self, hardware):
+    def commit(self, hardware, mem=None):
         """advance() 到期时的原子提交:先验证 c/p、地址范围与输出有效性,再一次性
-        置 committed 快照(在置 pending 之前)。一次启动只准提交一次。"""
+        置 committed 快照(在置 pending 之前)。一次启动只准提交一次。
+        mem=运行循环内存对象;零输入→零输出样本建模见 _zero_fill_odat_if_silent_input。"""
         if self.transaction == 0 or not self.latched:
             raise Blocked('jl_src_sync_cursor_commit_without_start')
         length = self.latched[0xfe2614]          # IDAT_LEN (per-channel samples)
@@ -7822,6 +7835,8 @@ class JLSrcSyncCursorProgress:
         if odat_delta and odat_next < odat_adr:
             raise Blocked('jl_src_sync_cursor_odat_address_overflow',
                           address=hex(odat_adr), delta=odat_delta)
+        self._zero_fill_odat_if_silent_input(hardware, mem, idat_adr, idat_delta,
+                                             odat_adr, odat_delta)
         self.committed = {
             0xfe2610: idat_next,
             0xfe2614: length - consumed,
@@ -7846,6 +7861,63 @@ class JLSrcSyncCursorProgress:
             'odat_len_before': capacity,
             'odat_len_after': capacity - produced,
         })
+
+    def _zero_fill_odat_if_silent_input(self, hardware, mem, idat_adr, idat_delta,
+                                        odat_adr, odat_delta):
+        """路 SRCSYNC6 最小样本建模:本笔输入 IDAT 已知且全零时,把锁存的 ODAT
+        输出区间写成零样本(零输入→零输出,SRC 线性滤波零历史假设)。
+
+        守卫(诚实停红线):输入含 unknown 或非零字节、MMU/mem 缺失、或产出非零
+        却无输入可校验时,保留严格停点,绝不伪造非零样本的转换。写入走
+        mem.write(物理地址,零字节),只动本笔 ODAT 区间,不碰混音/DAC 环/select。
+        固件随后自行 memcpy 该输出到下游混音输入帧(见 mixobs 诊断)。"""
+        if odat_delta == 0:
+            return  # 纯零消费臂无产出,零填充不适用(不改变游标守恒语义)
+        if mem is None:
+            raise Blocked('jl_src_sync_cursor_zero_fill_requires_memory',
+                          note='the SRC output zero-sample projection needs the memory '
+                               'object to read IDAT and write ODAT')
+        mmu = hardware.mmu
+        if mmu is None:
+            raise Blocked('jl_src_sync_cursor_zero_fill_requires_mmu',
+                          note='the SRC output zero-sample projection needs the MMU to '
+                               'resolve the IDAT/ODAT virtual descriptors')
+        if idat_delta == 0:
+            raise Blocked('jl_src_sync_cursor_zero_fill_without_input',
+                          odat_delta=odat_delta,
+                          note='cannot justify zero output from a zero-input projection '
+                               'when this transaction consumed no input')
+        for phys, length in self._translate_range(mmu, mem, idat_adr, idat_delta):
+            for i in range(length):
+                byte = mem.ram.get(phys + i)
+                if byte is None:
+                    raise Blocked('jl_src_sync_cursor_zero_fill_input_unknown',
+                                  address=hex(phys + i),
+                                  note='input IDAT byte is unknown; the zero-output '
+                                       'projection only applies to a known all-zero input')
+                if byte != 0:
+                    raise Blocked('jl_src_sync_cursor_zero_fill_input_nonzero',
+                                  address=hex(phys + i), byte=byte,
+                                  note='input IDAT byte is non-zero; the model does not '
+                                       'synthesize the conversion of non-zero samples')
+        for phys, length in self._translate_range(mmu, mem, odat_adr, odat_delta):
+            mem.write(phys, bytes(length))
+
+    @staticmethod
+    def _translate_range(mmu, mem, vaddr, length):
+        """把虚拟字节区间拆成 128B 页内段并翻译为物理段(逐页,遵守 MMU
+        不跨页约束)。vaddr 取低 32 位;length>0 由调用方保证。"""
+        segments = []
+        cur = vaddr & 0xffffffff
+        remaining = length
+        while remaining > 0:
+            page_off = cur & 127
+            chunk = min(128 - page_off, remaining)
+            phys = mmu.translate(cur, chunk, mem.read)
+            segments.append((phys, chunk))
+            cur = (cur + chunk) & 0xffffffff
+            remaining -= chunk
+        return segments
 
     def read(self, address):
         """已提交游标快照的读取(未提交返回 None,由 full-block 容器回落最后写值)。"""
@@ -7875,6 +7947,13 @@ class JLSrcSyncCursorProgress:
                             else self.consume),
                 'produce': ('equal to consumed (1:1 rate)' if self.produce is None
                             else self.produce),
+                'zero_input_zero_output': ('when this transaction\'s input IDAT is known and '
+                                           'all-zero, the locked ODAT region is written as '
+                                           'zero samples — requires the SRC linear filter to '
+                                           'hold zero history with no added signal; both '
+                                           'premises 需硅测确认 (named, not a universal '
+                                           'truth); a non-zero or unknown input keeps the '
+                                           'strict stop and never fakes a non-zero conversion'),
                 'semantics': ('C=channel count from CON2 low byte (0x00010002, SDK '
                               'SRC_CHI=2); W=storage bytes per sample (4 for the 32-bit '
                               'tone path, named assumption); c/p = per-channel samples '
@@ -12745,12 +12824,13 @@ class BR28Model:
             return None
         return timer.steps_to_next_expiration(self.source_ticks_per_step)
 
-    def advance(self,icfg):
+    def advance(self,icfg,mem=None):
         self.counts['completed_model_steps']+=1
         # 路 SRCSYNC5:SRC_SYNC 完成事件步进——启动写后 completion_steps 个
         # 模型步完成并置 IRQ89 pending(显式时序假设 derived-not-measured)。
+        # mem 透传给游标提交的零输入→零输出样本建模(缺省 None 时诚实停)。
         if self.jl_src_sync_delivery is not None:
-            self.jl_src_sync_delivery.advance(self)
+            self.jl_src_sync_delivery.advance(self,mem)
         if self.icu is not None:self.icu.advance()
         if self.watchdog is not None:self.watchdog.advance()
         if self.core_ticks is not None:
@@ -13645,7 +13725,11 @@ class BR28Model:
                 'consumption c and production p are NAMED assumptions (C=channels from '
                 'CON2 low byte, W=sample bytes, c=consume, p=produce) — the real silicon '
                 'per-completion counts and the SRC rate ratio are NOT measured and need '
-                '需硅测确认; conservation per commit: 0<=c<=L_before, 0<=p<=O_before, '
+                '需硅测确认; zero-input -> zero-output minimal sample modeling (route '
+                'SRCSYNC6): when the input IDAT is known all-zero the locked ODAT region '
+                'is written as zero samples under the linear-filter zero-history assumption '
+                '(named, 需硅测确认), and a non-zero/unknown input keeps the strict stop; '
+                'conservation per commit: 0<=c<=L_before, 0<=p<=O_before, '
                 'L_after=L_before-c, A_after-A_before=c*C*W, no address wrap, one commit '
                 'per start')
         if self.jl_sync is not None:

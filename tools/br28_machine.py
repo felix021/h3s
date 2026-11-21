@@ -480,7 +480,7 @@ class DualCoreMachine:
                     horizon=min(horizon,limit)
             for _ in range(horizon):
                 self.event_clock_advances+=1
-                self.hardware.advance(cpu.icfg)  # IrqDeliveryRequest/Blocked 原样传播
+                self.hardware.advance(cpu.icfg,cpu.mem)  # IrqDeliveryRequest/Blocked 原样传播
                 if self.timer2_delay_projection and self.timer2_poll_due():
                     # 到期点落在推进中:唤醒并退出推进循环(与交付同一出口纪律)。
                     for core in self.timer2_anchored_parked_cores():

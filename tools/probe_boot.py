@@ -3162,13 +3162,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if machine is not None:
                 if c.core_id==1:hardware.secondary_cpu_executed=True
                 machine.after_step(c,int(row['pc'],16))
-            if hardware is not None:hardware.advance(c.icfg)
+            if hardware is not None:hardware.advance(c.icfg,c.mem)
             clean=True
         except CoreStall as e:
             post_reason=gosim_observe.STALL
             machine.note_stall(c,e.details);row['stall']=e.details
             machine.after_step()
-            try:hardware.advance(c.icfg)
+            try:hardware.advance(c.icfg,c.mem)
             except Blocked as pending:stop=pending.details
             except IrqDeliveryRequest as request:dispatch_delivery(request,row)
         except Blocked as e:
