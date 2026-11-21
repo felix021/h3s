@@ -21,6 +21,7 @@ import "C"
 import (
 	"encoding/json"
 	"runtime/cgo"
+	"unsafe"
 
 	"h3s/gosim"
 )
@@ -167,15 +168,142 @@ func gosim_world_set_periph(wH C.uintptr_t, periphH C.uintptr_t) {
 	world(wH).Periph = periph(periphH)
 }
 
+// coreStateJSON is the JSON round-trip shape of one World Core (the full
+// architectural state plus the delivery-deferral context). It lets the explore
+// engine snapshot the live Python CPU into Go and read the post-loop core state
+// back without guessing. nil u32 pointers mirror the Python None.
+type coreStateJSON struct {
+	ID               int               `json:"id"`
+	R                [16]uint32        `json:"r"`
+	Flags            uint32            `json:"flags"`
+	SP               uint32            `json:"sp"`
+	SPKnown          bool              `json:"sp_known"`
+	RETS             uint32            `json:"rets"`
+	PC               uint32            `json:"pc"`
+	ICFG             uint32            `json:"icfg"`
+	ICFGKnown        bool              `json:"icfg_known"`
+	Steps            uint64            `json:"steps"`
+	RepeatActive     bool              `json:"repeat_active"`
+	USP              *uint32           `json:"usp"`
+	SSP              *uint32           `json:"ssp"`
+	RETI             *uint32           `json:"reti"`
+	IRQPSR           *uint32           `json:"irq_psr"`
+	ActiveContext    string            `json:"active_context"`
+	BootstrapContext bool              `json:"bootstrap_context"`
+	LastExplicitSSP  *uint32           `json:"last_explicit_ssp"`
+	AudioIrqOuter    *audioIrqOuterJSON `json:"audio_irq_outer_context"`
+}
+
+type audioIrqOuterJSON struct {
+	ActiveContext string  `json:"active_context"`
+	RETI          *uint32 `json:"reti"`
+	SP            uint32  `json:"sp"`
+}
+
+func coreFromJSON(s *coreStateJSON) *gosim.Core {
+	if s == nil {
+		return nil
+	}
+	c := &gosim.Core{
+		ID:               s.ID,
+		R:                s.R,
+		Flags:            s.Flags,
+		SP:               s.SP,
+		SPKnown:          s.SPKnown,
+		RETS:             s.RETS,
+		PC:               s.PC,
+		ICFG:             s.ICFG,
+		ICFGKnown:        s.ICFGKnown,
+		Steps:            s.Steps,
+		RepeatActive:     s.RepeatActive,
+		USP:              s.USP,
+		SSP:              s.SSP,
+		RETI:             s.RETI,
+		IRQPSR:           s.IRQPSR,
+		ActiveContext:    s.ActiveContext,
+		BootstrapContext: s.BootstrapContext,
+		LastExplicitSSP:  s.LastExplicitSSP,
+	}
+	if s.AudioIrqOuter != nil {
+		c.AudioIrqOuter = &gosim.AudioIrqOuterContext{
+			ActiveContext: s.AudioIrqOuter.ActiveContext,
+			RETI:          s.AudioIrqOuter.RETI,
+			SP:            s.AudioIrqOuter.SP,
+		}
+	}
+	return c
+}
+
+func coreToJSON(c *gosim.Core) *coreStateJSON {
+	if c == nil {
+		return nil
+	}
+	var outer *audioIrqOuterJSON
+	if c.AudioIrqOuter != nil {
+		outer = &audioIrqOuterJSON{
+			ActiveContext: c.AudioIrqOuter.ActiveContext,
+			RETI:          c.AudioIrqOuter.RETI,
+			SP:            c.AudioIrqOuter.SP,
+		}
+	}
+	return &coreStateJSON{
+		ID:               c.ID,
+		R:                c.R,
+		Flags:            c.Flags,
+		SP:               c.SP,
+		SPKnown:          c.SPKnown,
+		RETS:             c.RETS,
+		PC:               c.PC,
+		ICFG:             c.ICFG,
+		ICFGKnown:        c.ICFGKnown,
+		Steps:            c.Steps,
+		RepeatActive:     c.RepeatActive,
+		USP:              c.USP,
+		SSP:              c.SSP,
+		RETI:             c.RETI,
+		IRQPSR:           c.IRQPSR,
+		ActiveContext:    c.ActiveContext,
+		BootstrapContext: c.BootstrapContext,
+		LastExplicitSSP:  c.LastExplicitSSP,
+		AudioIrqOuter:    outer,
+	}
+}
+
+type coresStateJSON struct {
+	Cores [2]*coreStateJSON `json:"cores"`
+}
+
+// gosim_world_dual_set_cores replaces both World cores with the JSON snapshot
+// (the live Python CPU state: architectural registers + steps + the
+// delivery-deferral context). It must be called before the first run_loop; the
+// per-core execute engines are re-synced from these cores on the next step.
+// Returns 0 on success, -1 on a parse failure.
+//
+//export gosim_world_dual_set_cores
+func gosim_world_dual_set_cores(wH C.uintptr_t, in *C.uint8_t, inLen C.int) C.int {
+	w := world(wH)
+	var s coresStateJSON
+	if err := json.Unmarshal(C.GoBytes(unsafe.Pointer(in), inLen), &s); err != nil {
+		return -1
+	}
+	for i := 0; i < 2; i++ {
+		w.Cores[i] = coreFromJSON(s.Cores[i])
+	}
+	return 0
+}
+
 //export gosim_world_free
 func gosim_world_free(h C.uintptr_t) { cgo.Handle(h).Delete() }
 
 type loopResultJSON struct {
-	Exit   int               `json:"exit"`
-	StopPC uint32            `json:"stop_pc"`
-	Reason string            `json:"reason"`
-	Irq    *gosim.IrqReqJSON `json:"irq"`
-	Steps  []loopStepJSON    `json:"steps"`
+	Exit     int               `json:"exit"`
+	StopPC   uint32            `json:"stop_pc"`
+	StopCore int               `json:"stop_core"`
+	Reason   string            `json:"reason"`
+	Irq      *gosim.IrqReqJSON `json:"irq"`
+	Err      json.RawMessage   `json:"err"`
+	Steps    []loopStepJSON    `json:"steps"`
+	Cores    [2]*coreStateJSON `json:"cores"`
 }
 
 type loopStepJSON struct {
@@ -186,15 +314,23 @@ type loopStepJSON struct {
 	R      [16]uint32 `json:"r"`
 }
 
-func loopResultToJSON(res gosim.LoopResult) ([]byte, error) {
-	out := &loopResultJSON{Exit: int(res.Exit), StopPC: res.StopPC, Reason: res.Reason}
+func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
+	out := &loopResultJSON{Exit: int(res.Exit), StopPC: res.StopPC, StopCore: res.StopCore, Reason: res.Reason}
 	if res.Irq != nil {
 		out.Irq = &gosim.IrqReqJSON{Core: res.Irq.Core, Irq: res.Irq.Irq}
+	}
+	if len(res.ErrJSON) > 0 {
+		out.Err = json.RawMessage(res.ErrJSON)
 	}
 	for _, s := range res.Steps {
 		out.Steps = append(out.Steps, loopStepJSON{
 			Core: s.Core, PC: s.PC, NextPC: s.NextPC, Flags: s.Flags, R: s.R,
 		})
+	}
+	if w != nil {
+		for i := 0; i < 2; i++ {
+			out.Cores[i] = coreToJSON(w.Cores[i])
+		}
 	}
 	return json.Marshal(out)
 }
@@ -202,7 +338,7 @@ func loopResultToJSON(res gosim.LoopResult) ([]byte, error) {
 //export gosim_world_run_loop
 func gosim_world_run_loop(wH C.uintptr_t, n C.int, out *C.uint8_t, outCap C.int) C.int {
 	res := world(wH).RunLoop(int(n))
-	b, err := loopResultToJSON(res)
+	b, err := loopResultToJSON(res, world(wH))
 	if err != nil {
 		return writePeriphBuf(out, outCap, []byte("null"))
 	}

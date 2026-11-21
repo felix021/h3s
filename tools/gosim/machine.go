@@ -69,6 +69,12 @@ type Machine struct {
 	Timer2DelayProjection bool
 	Timer2                *Timer2Delay // hardware.timer2 (nil = absent)
 
+	// IdleWaitProjection mirrors machine.idle_wait_projection: when armed, the
+	// dual-core loop hands back at the idle instruction (enter_idle_wait stays
+	// Python) instead of executing it. This is a loop-level precondition the
+	// caller supplies; it never guesses it.
+	IdleWaitProjection bool
+
 	Events          []map[string]any
 	EventCount      int
 	Timer2PollWakes []map[string]any
@@ -252,6 +258,17 @@ type machineInput struct {
 	HardwareKicks         *int64          `json:"hardware_kicks"`
 	Timer2DelayProjection bool            `json:"timer2_delay_projection"`
 	Timer2Pending         bool            `json:"timer2_pending"`
+	IdleWaitProjection    bool            `json:"idle_wait_projection"`
+	// Events / EventCount / Timer2PollWakes are the accumulated ledger the
+	// explore engine carries over from the live Python machine so the bounded
+	// event windows stay identical across a snapshot -> run -> restore cycle.
+	Events          []map[string]any `json:"events"`
+	EventCount      int              `json:"event_count"`
+	Timer2PollWakes []map[string]any `json:"timer2_poll_wakes"`
+	// CurrentCore / CoreIcfg are the hardware.current_core / hardware.core_icfg
+	// twins, carried over so a yield-before-first-select still round-trips them.
+	CurrentCore int        `json:"current_core"`
+	CoreIcfg    [2]*uint32 `json:"core_icfg"`
 }
 
 // LoadJSON restores the input state from JSON and resets the accumulated
@@ -299,11 +316,18 @@ func (m *Machine) LoadJSON(data []byte) error {
 	} else {
 		m.Timer2 = nil
 	}
-	m.Events = []map[string]any{}
-	m.EventCount = 0
-	m.Timer2PollWakes = []map[string]any{}
-	m.CurrentCore = 0
-	m.CoreIcfg = [2]*uint32{}
+	m.IdleWaitProjection = in.IdleWaitProjection
+	m.Events = in.Events
+	if m.Events == nil {
+		m.Events = []map[string]any{}
+	}
+	m.EventCount = in.EventCount
+	m.Timer2PollWakes = in.Timer2PollWakes
+	if m.Timer2PollWakes == nil {
+		m.Timer2PollWakes = []map[string]any{}
+	}
+	m.CurrentCore = in.CurrentCore
+	m.CoreIcfg = in.CoreIcfg
 	return nil
 }
 
@@ -353,6 +377,7 @@ func (m *Machine) StateJSON() []byte {
 		"hardware_kicks":          hwKicks,
 		"timer2_delay_projection": m.Timer2DelayProjection,
 		"timer2_pending":          m.Timer2 != nil && m.Timer2.Pending,
+		"idle_wait_projection":    m.IdleWaitProjection,
 		"events":                  m.Events,
 		"event_count":             m.EventCount,
 		"timer2_poll_wakes":       m.Timer2PollWakes,

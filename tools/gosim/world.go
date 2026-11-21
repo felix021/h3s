@@ -151,11 +151,20 @@ type LoopResult struct {
 	Irq    *IrqReq
 	Reason string // why the loop stopped or yielded (honest, never a guess)
 	Steps  []LoopStep
+	// StopCore is the core id that hit the hazard (the one select picked when
+	// the loop stopped), or -1 when the stop is not core-specific (a
+	// YieldBeforeAttempt / a loop-level precondition). The caller (Python)
+	// uses it to resume the explore loop from the exact post-stop core.
+	StopCore int
+	// ErrJSON is the advance strict-stop details (a PeriphError.JSON() string,
+	// byte-identical to Python Blocked.details) when the loop stopped on an
+	// advance strict stop; empty otherwise. The caller surfaces it as the stop.
+	ErrJSON []byte
 }
 
 // yieldBeforeAttempt builds an empty-prefix result for a failed precondition.
 func yieldBeforeAttempt(reason string) LoopResult {
-	return LoopResult{Exit: YieldBeforeAttempt, Reason: reason}
+	return LoopResult{Exit: YieldBeforeAttempt, Reason: reason, StopCore: -1}
 }
 
 // RunLoop executes up to n whole-loop attempts (select → fetch guard → decode →
@@ -504,19 +513,34 @@ func (w *World) runDualCore(n int) LoopResult {
 		w.Machine.Timer2 = w.Periph.Timer2
 	}
 
-	res := LoopResult{Exit: Stop}
+	res := LoopResult{Exit: Stop, StopCore: -1}
 	for i := 0; i < n; i++ {
 		w.syncMachineCores()
 
 		// 1. select (dual-core round-robin + the two wake fallbacks).
 		core, err := w.Machine.Select()
 		if err != nil {
+			res.StopCore = core
 			res.StopPC = w.Cores[core].PC
 			res.Reason = "select wake require violated: " + err.Error()
 			return res
 		}
 		w.Deliver.IdleWait = w.Machine.IdleWait
 		w.Periph.CoreIcfg = w.Machine.CoreIcfg
+
+		// 1b. idle hand-back: the selected core is parked at an idle instruction
+		// and the IDLE wait projection is armed — enter_idle_wait (and the
+		// event-clock advance behind it) stays Python, so hand the attempt back
+		// before executing the idle instead of fabricating a wake. (The idle
+		// instruction is also outside the stage-1/2 contract, so this is purely
+		// a cleaner reason; the instruction is never executed either way.)
+		if w.Machine.IdleWaitProjection && w.Machine.Cores[core] != nil &&
+			w.Machine.Cores[core].InsnID == "idle" {
+			res.StopCore = core
+			res.StopPC = w.Cores[core].PC
+			res.Reason = "idle instruction (enter_idle_wait stays Python)"
+			return res
+		}
 
 		// 2. fetch guard: the immutable-window check is per-step inside the
 		// execute engine; the armed diagnostic stops yielded above.
@@ -527,6 +551,7 @@ func (w *World) runDualCore(n int) LoopResult {
 		syncCPUFromCore(cpu, w.Cores[core])
 		seg := cpu.RunSegment(1, w.FetchLo, w.FetchHi)
 		if seg.StopCode != BatchOK {
+			res.StopCore = core
 			res.StopPC = seg.StopPC
 			res.Reason = segmentStopReason(seg.StopCode)
 			return res
@@ -551,40 +576,38 @@ func (w *World) runDualCore(n int) LoopResult {
 		// 5. after_step judgment (hook bodies stay Python).
 		if w.AfterStep != nil {
 			if ok, why := w.AfterStep.CanProveNoop(core, beforePC, s.NextPC); !ok {
+				res.StopCore = core
 				res.StopPC = s.NextPC
 				res.Reason = "after_step hook fires: " + why + " (handed back to Python)"
 				return res
 			}
 		}
 
-		// 6. advance (dual-core scan) and, on a pending-eligible IRQ at a clean
-		// boundary, the M6C delivery projection. A deferred request hands back.
+		// 6. advance (dual-core scan). A pending-eligible IRQ — deferred or
+		// clean-boundary — is handed back to Python for dispatch_delivery (the
+		// delivery projections stay Python in this cut; the in-Go dispatch path
+		// is not wired into explore yet). Nothing is fabricated.
 		adv := w.Periph.Advance(w.Cores[core].ICFG)
 		if adv.Irq != nil {
+			res.Irq = adv.Irq
+			res.StopCore = core
+			res.StopPC = s.NextPC
 			if deferred, why := w.deliveryDeferred(adv.Irq); deferred {
-				res.Irq = adv.Irq
-				res.StopPC = s.NextPC
 				res.Reason = "delivery deferral (dispatch_delivery 路 CB/AS) not ported: " + why + " (handed back to Python)"
-				return res
+			} else {
+				res.Reason = fmt.Sprintf("pending eligible irq %d on core %d (delivery handed back to Python)", adv.Irq.Irq, adv.Irq.Core)
 			}
-			if err := w.dispatchDelivery(adv.Irq); err != nil {
-				res.Irq = adv.Irq
-				res.StopPC = s.NextPC
-				res.Reason = deliveryStopReason(err)
-				return res
-			}
-			// Delivery mutated the target core; reconcile the shared views.
-			w.Machine.IdleWait = w.Deliver.IdleWait
-			w.syncMachineCores()
-			w.Periph.CoreIcfg = w.Machine.CoreIcfg
+			return res
 		}
 		if adv.Err != nil {
+			res.StopCore = core
 			res.StopPC = s.NextPC
 			res.Reason = "advance strict stop: " + adv.Err.JSON()
+			res.ErrJSON = []byte(adv.Err.JSON())
 			return res
 		}
 	}
 	res.StopPC = 0
-	res.Reason = fmt.Sprintf("ran %d dual-core attempts with select/after_step/advance/deliver wiring (no hazard)", len(res.Steps))
+	res.Reason = fmt.Sprintf("ran %d dual-core attempts with select/after_step/advance wiring (no hazard)", len(res.Steps))
 	return res
 }

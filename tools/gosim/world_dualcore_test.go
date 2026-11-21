@@ -71,9 +71,10 @@ func TestDualCoreRunLoopYieldsWithoutDeliver(t *testing.T) {
 	}
 }
 
-// A pending-eligible Timer0 IRQ4 at a clean boundary is delivered in-Go: the
-// M6C DeliverTimer0Irq projection moves core 0 into the timer0 handler.
-func TestDualCoreRunLoopDeliversTimer0Irq(t *testing.T) {
+// A pending-eligible Timer0 IRQ4 at a clean boundary is handed back to Python
+// (the delivery projections stay Python in the fifth wiring): the executed step
+// is committed, the request is reported, and no delivery is fabricated in-Go.
+func TestDualCoreRunLoopHandsBackTimer0Irq(t *testing.T) {
 	w := dualCoreWorld()
 	ic := NewIRQController()
 	ic.Config[0] = u32p(0x50000) // irq 4 nibble: enabled, priority 2
@@ -86,20 +87,20 @@ func TestDualCoreRunLoopDeliversTimer0Irq(t *testing.T) {
 	w.Deliver.VectorSlots = map[uint32]*uint32{VectorSlotBase + 4*4: u32p(Timer0Handler)}
 
 	res := w.RunLoop(1)
-	if res.Exit != Stop || res.Irq != nil {
-		t.Fatalf("expected a clean Timer0 delivery (no handback), got %+v", res)
+	if res.Exit != Stop || res.Irq == nil {
+		t.Fatalf("expected an IRQ hand-back, got %+v", res)
+	}
+	if res.Irq.Core != 0 || res.Irq.Irq != 4 {
+		t.Fatalf("expected Irq(0,4), got %+v", res.Irq)
 	}
 	if len(res.Steps) != 1 {
-		t.Fatalf("the executed step must be committed before delivery, got %d steps", len(res.Steps))
+		t.Fatalf("the executed step must be committed before the hand-back, got %d steps", len(res.Steps))
 	}
-	if len(w.Deliver.Timer0IrqDeliveries) != 1 {
-		t.Fatalf("expected 1 timer0 delivery, got %d", len(w.Deliver.Timer0IrqDeliveries))
+	if len(w.Deliver.Timer0IrqDeliveries) != 0 {
+		t.Fatalf("delivery must stay Python (no in-Go delivery), got %d", len(w.Deliver.Timer0IrqDeliveries))
 	}
-	if w.Cores[0].ActiveContext != "timer0_irq_handler" {
-		t.Fatalf("core 0 should be in the timer0 handler, got %q", w.Cores[0].ActiveContext)
-	}
-	if w.Cores[0].PC != Timer0Handler {
-		t.Fatalf("core 0 pc should be handler 0x%x, got 0x%x", Timer0Handler, w.Cores[0].PC)
+	if w.Cores[0].ActiveContext != "" {
+		t.Fatalf("core 0 must not enter a handler in-Go, got %q", w.Cores[0].ActiveContext)
 	}
 }
 
