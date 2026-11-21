@@ -40,6 +40,9 @@ class Gosim:
         self.lib.gosim_batch_step.restype = c_int
         self.lib.gosim_steps.argtypes = [_HANDLE]
         self.lib.gosim_steps.restype = c_uint64
+        self.lib.gosim_signature_batch.argtypes = [POINTER(c_uint8), c_int, c_int,
+                                                   POINTER(c_uint8), c_int]
+        self.lib.gosim_signature_batch.restype = c_int
         self.handle = self.lib.gosim_new_arch() if arch else self.lib.gosim_new()
 
     def write(self, addr, data):
@@ -79,3 +82,14 @@ class Gosim:
 
     def steps(self):
         return self.lib.gosim_steps(self.handle)
+
+    def signature_batch(self, inbuf, n, outcap):
+        """Format n type-tagged register descriptors (see signature.go) into
+        u16-length-prefixed strings. Returns the raw out bytes, or raises if
+        the output buffer was too small (written == -1)."""
+        inbuf = (c_uint8 * len(inbuf)).from_buffer_copy(inbuf)
+        outbuf = (c_uint8 * outcap)()
+        written = self.lib.gosim_signature_batch(inbuf, len(inbuf), n, outbuf, outcap)
+        if written < 0:
+            raise MemoryError('gosim_signature_batch: output buffer too small')
+        return bytes(outbuf[:written])

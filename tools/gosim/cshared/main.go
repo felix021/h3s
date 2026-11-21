@@ -110,6 +110,13 @@ func gosim_steps(h C.uintptr_t) C.uint64_t {
 	return C.uint64_t(cpu(h).Steps())
 }
 
+//export gosim_signature_batch
+func gosim_signature_batch(in *C.uint8_t, inLen C.int, n C.int, out *C.uint8_t, outCap C.int) C.int {
+	inBytes := unsafe.Slice((*byte)(unsafe.Pointer(in)), int(inLen))
+	outBytes := unsafe.Slice((*byte)(unsafe.Pointer(out)), int(outCap))
+	return C.int(gosim.SignaturesBatch(inBytes, int(n), outBytes))
+}
+
 func mapErr(err error) C.int {
 	if err == nil {
 		return stepOK

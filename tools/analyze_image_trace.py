@@ -60,6 +60,7 @@ import hashlib
 import io
 import itertools
 import json
+import os
 import pickle
 import sys
 import tempfile
@@ -490,6 +491,26 @@ def _register_signature(value):
     return '?'
 
 
+# 路 GOSIM2:寄存器签名 Go 换核(可插拔加速)。等价性由
+# tools/gosim/test_signature_consistency.py 钉死(逐字节,全类型×值空间),
+# 整轮 frontier 报告与 Python 路径逐字节相等(sha256 一致);默认关闭——
+# 本机实测负 ROI:crc_bankb 299,063 步双镜像整轮 Python 24.5s user vs Go
+# 32.1s user(+31%),每步 ctypes+序列化/反序列化边界(~5µs)超过已 memo 化
+# 的逐值格式化(int 路径 ~1.7µs),与 Phase 1 指令核换核同一根因。保持
+# Python 主路径,Go 路径仅经环境变量 H3S_GO_SIGNATURE=1 opt-in。
+def _register_signature_batch(R):
+    """16 寄存器签名走 Go(SignaturesBatch)一次成型;返回 intern 串列表,
+    或 None(任一值不可编码/库缺失时回退纯 Python)。"""
+    try:
+        from gosim import signature_glue
+        return signature_glue.register_signatures(R)
+    except Exception:
+        return None
+
+
+_GO_SIGNATURE_ENABLED = os.environ.get('H3S_GO_SIGNATURE') == '1'
+
+
 class TraceSpool:
     """Spill-backed trace sequence with plain-list semantics (route O6).
 
@@ -672,6 +693,15 @@ class TraceMachine(DualCoreMachine):
             # 串池形状(路 DT):寄存器签名/flags 字符串每步全新分配但取值
             # 高度重复——intern 去重后唯一集极小(值语义/行形状/相等比较/
             # 报告零变化,trace 本就不序列化;O6 落盘按值序列化同样受益)。
+            if _GO_SIGNATURE_ENABLED:
+                sigs = _register_signature_batch(cpu.R)
+                if sigs is not None:
+                    self.trace.append((cpu.core_id, before_pc, cpu.pc,
+                                       sys.intern(f'{flags:02x}') if isinstance(flags, int) else repr(flags),
+                                       tuple(sigs),
+                                       tuple(self.pending_writes)))
+                    self.pending_writes = []
+                    return
             self.trace.append((cpu.core_id, before_pc, cpu.pc,
                                sys.intern(f'{flags:02x}') if isinstance(flags, int) else repr(flags),
                                tuple(sys.intern(s) for s in map(_register_signature, cpu.R)),
