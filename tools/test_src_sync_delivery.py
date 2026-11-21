@@ -62,7 +62,9 @@ class UnwrittenMem:
 
 def armed_model(**extra):
     # SRC_SYNC write-side predecessors + the delivery projection; IRQ89 nibble
-    # enabled prio1, ipmask 0.
+    # enabled prio1, ipmask 0. 测试固定 completion_steps=1(快速触发完成事件),
+    # 显式传 jl_src_sync_completion_steps 可覆盖;真实场景用 40000(1 OS tick)。
+    extra.setdefault('jl_src_sync_completion_steps', 1)
     return BR28Model(jl_src_sync_config_words=True, jl_src_sync_full_block=True,
                      jl_src_sync_delivery=True, jl_src_sync_delivery_requests=True,
                      initial_irq_config=[0] * 11 + [IRQ89_NIBBLE_WORD] + [0] * 20,
@@ -173,6 +175,7 @@ class SrcSyncModelTests(unittest.TestCase):
     def test_advance_strict_stop_without_the_request_switch(self):
         h = BR28Model(jl_src_sync_config_words=True, jl_src_sync_full_block=True,
                       jl_src_sync_delivery=True,
+                      jl_src_sync_completion_steps=1,
                       initial_irq_config=[0] * 11 + [IRQ89_NIBBLE_WORD] + [0] * 20,
                       initial_ipmask=0)
         function_b_writes(h)

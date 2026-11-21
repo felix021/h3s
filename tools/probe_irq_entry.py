@@ -6816,8 +6816,12 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
     # src_sync_delivery(路 SRCSYNC5,codex 202611201614 总裁决 §2「数字模型
     # 建到哪里」,默认 False=关):SRC_SYNC 完成事件 + IRQ89 交付——从真实
     # 启动写 CON0|=0x8 @0x6070b1c 开始,completion_steps 个模型步后完成
-    # (显式时序假设 derived-not-measured,不从任务 3 tick 超时反推)置 IRQ89
-    # pending;advance() 逐 pending 片至多一次 IrqDeliveryRequest(core=0,
+    # (显式时序假设 derived-not-measured,不从任务 3 tick 超时反推;
+    # completion_steps=40000=1 OS tick 量级——1 tick=10ms、1ms≈4000 步,
+    # 非硅测量:SRC 真实完成延迟取决于采样率与缓冲块,ODAT_LEN≈930 样本
+    # 下 48kHz≈2 tick;取 1 tick 让 jlstream_N 真实睡眠一个 tick 周期、
+    # OSSemPost 唤醒路径走到且 <3 tick 不总走超时,idle 喂狗循环恢复)置
+    # IRQ89 pending;advance() 逐 pending 片至多一次 IrqDeliveryRequest(core=0,
     # irq=89);机器侧最小进入/一次性 RTI 投影镜像 audio IRQ68(向量槽
     # 0x19ff64→handler 0x12ca24 RAM 拷贝,flash 母本 0x60c61fc),handler 的
     # CON0|=0x40 W1C 清 pending;转换结果/连续数据流不建模(读回=最后写值、
@@ -6836,7 +6840,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         machine_options['src_sync_irq_rti']=True
         options['jl_src_sync_delivery']=True
         options['jl_src_sync_delivery_requests']=True
-        options['jl_src_sync_completion_steps']=1
+        options['jl_src_sync_completion_steps']=40000
         extra['src_sync_irq_frames']=dict(SRC_SYNC_IRQ_FRAMES)
     # jl_sync_config_words(路 SYNCIMPL,codex 20261119 收窄版 a,
     # docs/frontier-scout-jlsync.md §5,默认 False=关):JL_SYNC(audio_sync)

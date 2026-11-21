@@ -7020,7 +7020,7 @@ class JLSrcSyncDelivery:
     # 0x12ca42。两者都放行(真实执行体是 RAM 拷贝,flash 母本为静态审计锚)。
     ACK_RMW_PCS=frozenset((0x12ca42,0x60c621a))
 
-    def __init__(self,completion_steps=1):
+    def __init__(self,completion_steps=40000):
         if not isinstance(completion_steps,int) or completion_steps<1:
             raise ValueError('SRC_SYNC completion steps must be a positive model-step count')
         self.completion_steps=completion_steps
@@ -9318,7 +9318,7 @@ class BR28Model:
                  jl_src_sync_config_words=False,jl_src_sync_probe_value=None,
                  jl_src_sync_full_block=False,jl_src_sync_coef_batch_readback=False,
                  jl_src_sync_delivery=False,jl_src_sync_delivery_requests=False,
-                 jl_src_sync_completion_steps=1,
+                 jl_src_sync_completion_steps=40000,
                  jl_sync_config_words=False,
                  jl_btclk_timer_words=False,
                  jl_fm_con_head_rmw=False,
