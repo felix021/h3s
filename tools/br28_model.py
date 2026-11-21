@@ -5691,6 +5691,130 @@ class JLAudioDacDmaIdleReadback:
                           'and do not by themselves confer hardware semantics')}
 
 
+class JLAudioDacDmaSetupDiscardedReads:
+    """JL_AUDIO DAC DMA 配置函数五死读放行(opt-in,路 DACDMAREAD,codex
+    202611211512 方案,docs/见 codex 意见书 ~/tmp/codex/202611211512-dacdma-
+    read-model/final.md)。
+
+    背景:31,391,166 停点 @ 0x606b2b2——音频 DAC 重配函数(0x606b20e 体内,
+    0x606b264 li r6=0xfe0500)在重置 SWP/HRP、写回 ADR/LEN 后,连续五次
+    `ld.w r0=[r6+n*4]` 读 ADR(0xfe0504)/LEN(0xfe0508)/HRP(0xfe0510)/
+    SWP(0xfe0514)/SWN(0xfe0518),五个读值都不参与比较/寻址/写回,下一条
+    0x606b2bc `li.u8 r0=4` 由真实立即数覆盖。当前四字(ADR/LEN/HRP/SWP)
+    由 JLAudioDacDmaWriteRecords write-only 记录持有,读回=jl_audio_dac_dma_
+    read_not_modeled 严格停;SWN(0xfe0518)不映射,读=unmapped 严格停。
+
+    放行形状(codex 意见书要点,全文见 tmp codex final.md):
+    1. 只批准 0x606b2b2/b2b4/b2b6/b2b8/b2ba 五个读点(ld.w {d:0,b:6,n:1/2/4/5/6}
+       形状+字节钉死),放行=把读值标为「不可用于计算的未知值」(R[0]=None,
+       opaque),读本身放行不 Blocked;不是四字全地址通用回读,不是 DMA 推进
+       模型(不推进指针、不合成数值)。
+    2. 逐条重验(非地址豁免):执行核(core0)、PC、原始字节、ld.w、目标 r0、
+       r6=0xfe0500、对齐有效地址(==该站点的字);任一不符回落普通严格路径
+       (ADR/LEN/HRP/SWP=jL_audio_dac_dma_read_not_modeled,SWN=unmapped)。
+    3. SWN(0xfe0518)范围写进开关契约:只放行 0x606b2ba 这一次死读,其余 PC
+       读 SWN、任何写 SWN、PNS 访问仍走原路径(SWN/PNS 触达失效条件保留);
+       本死读仍通知既有 SWN/PNS 审计(note_read)。sites=4 时 SWN 站点不进
+       放行表=负例,臂自然停在 0x606b2ba(SWN 未映射)。
+    4. 每条读单独退休(retire,finish_exact 保留中断边界);读值未知,0x606b2bc
+       由真实 r0=4 覆盖,不臆造读回值。DAC 提交数/消费数在本段为零(本容器
+       不推进 DMA,SRC 账本/四字写记录不受影响)。
+    5. 证据分级:放行=已验证实现契约与当前前缀推进(读值确无消费),不证明
+       DMA 数据流/HRP 推进/SWN 初值已运行——真实活动期指针推进量与 SWN
+       读写关系需硅测确认。
+    """
+
+    BASE = 0xfe0500
+    ADR = 0xfe0504
+    LEN = 0xfe0508
+    HRP = 0xfe0510
+    SWP = 0xfe0514
+    SWN = 0xfe0518
+
+    # 五个死读站点:四个四字配置读(ADR/LEN/HRP/SWP)+第五个 SWN 死读。
+    # word=该站点必须落到的有效地址(==r6=0xfe0500+n*4)。
+    FOUR_WORD_SITES = {0x606b2b2: {'d': 0, 'b': 6, 'n': 1, 'word': 0xfe0504},
+                       0x606b2b4: {'d': 0, 'b': 6, 'n': 2, 'word': 0xfe0508},
+                       0x606b2b6: {'d': 0, 'b': 6, 'n': 4, 'word': 0xfe0510},
+                       0x606b2b8: {'d': 0, 'b': 6, 'n': 5, 'word': 0xfe0514}}
+    SWN_SITE = {0x606b2ba: {'d': 0, 'b': 6, 'n': 6, 'word': 0xfe0518}}
+    SWN_SITE_PC = 0x606b2ba
+    READ_SITES = {**FOUR_WORD_SITES, **SWN_SITE}
+    SITE_BYTES = {0x606b2b2: '6061', 0x606b2b4: '6062', 0x606b2b6: '6064',
+                  0x606b2b8: '6065', 0x606b2ba: '6066'}
+
+    def __init__(self, sites=5):
+        if sites not in (4, 5):
+            raise ValueError('jl_audio_dac_dma_setup_discarded_sites takes 4 or 5')
+        self.sites = sites
+        self.served = {hex(pc): 0 for pc in self.released_pcs()}
+        self.rejections = {}
+
+    def released_pcs(self):
+        """本实例实际放行的读点(sites=4 负例不含 SWN 站点)。"""
+        pcs = list(self.FOUR_WORD_SITES)
+        if self.sites >= 5:
+            pcs.append(self.SWN_SITE_PC)
+        return pcs
+
+    def shape_for(self, pc):
+        """本实例对该 PC 实际放行的形状(sites=4 负例对 SWN 站点返回 None)。"""
+        shape = self.FOUR_WORD_SITES.get(pc)
+        if shape is None and self.sites >= 5:
+            shape = self.SWN_SITE.get(pc)
+        return shape
+
+    def _reject(self, reason, address):
+        key = f'{reason}:{hex(address)}'
+        self.rejections[key] = self.rejections.get(key, 0) + 1
+
+    def serve(self, cpu, hardware, raw):
+        """已核验读点的装载门(probe_boot step_body 调用;指令形状/字节由
+        调用方 require 钉死)。返回 'unknown'=放行为不可用于计算的未知值,
+        None=守卫拒绝(调用方回落普通严格路径,kind 与开关关世界一致)。
+        逐条重验,非地址豁免。"""
+        shape = self.shape_for(cpu.pc)
+        if shape is None:
+            return None  # 站点未放行(sites=4 负例的 SWN 读回落普通路径)
+        if cpu.core_id != 0:
+            self._reject('core_mismatch', shape['word']); return None
+        if cpu.R[raw['b']] != self.BASE:
+            address = (cpu.R[raw['b']] + raw['n'] * 4) & 0xffffffff
+            self._reject('base_register_mismatch', address); return None
+        address = (cpu.R[raw['b']] + raw['n'] * 4) & 0xffffffff
+        if address != shape['word']:
+            self._reject('effective_address_mismatch', address); return None
+        if shape['word'] == self.SWN and hardware.jl_audio_dac_dma_idle is not None:
+            # 通知既有 SWN/PNS 访问审计:SWN 读触达在自然路径(未映射)下
+            # 不会达 note_read,装载门截走会漏记;此处显式补记触达。
+            hardware.jl_audio_dac_dma_idle.note_read(self.SWN)
+        self.served[hex(cpu.pc)] = self.served.get(hex(cpu.pc), 0) + 1
+        return 'unknown'
+
+    def report(self):
+        return {
+            'enabled': True,
+            'sites': self.sites,
+            'released_sites': [hex(pc) for pc in sorted(self.released_pcs())],
+            'served': {hex(pc): self.served.get(hex(pc), 0)
+                       for pc in sorted(self.released_pcs())},
+            'four_word_config_reads': {hex(pc): self.served.get(hex(pc), 0)
+                                       for pc in sorted(self.FOUR_WORD_SITES)},
+            'swN_discarded_read': {hex(self.SWN_SITE_PC):
+                                   self.served.get(hex(self.SWN_SITE_PC), 0)},
+            'rejections': dict(sorted(self.rejections.items())),
+            'semantics': ('each released load retires as an unknown value unusable for '
+                          'computation (R0=None opaque, never a fabricated readback); the '
+                          'next instruction 0x606b2bc overwrites R0 with the real li.u8 '
+                          'r0=4 — the five values never feed comparison/addressing/write-back'),
+            'assumption': ('derived-not-measured: releasing the reads implies the new '
+                           'assumption that the five values are discarded before any '
+                           'consumer; NOT a silicon-equivalence claim — no DMA data flow, '
+                           'HRP advance or SWN initial value is modeled; the SWN dead '
+                           'read is released ONLY at 0x606b2ba, every other SWN read/'
+                           'write and any PNS access keeps the original strict stop')}
+
+
 class JLAudioAdcDmaWriteRecords:
     """JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c)写侧 write-only
     整字记录(opt-in,路 JLA)。
@@ -9523,6 +9647,8 @@ class BR28Model:
                  jl_pvdd_trim_writes=False,timer2_delay_projection=False,
                  jl_audio_dac_cop_writes=False,jl_audio_dac_dma_writes=False,
                  jl_audio_dac_dma_idle_readback=False,
+                 jl_audio_dac_dma_setup_discarded_reads=False,
+                 jl_audio_dac_dma_setup_discarded_sites=5,
                  jl_audio_adc_dma_writes=False,
                  audio_adc_dma_delivery=False,audio_adc_dma_delivery_requests=False,
                  jl_eq_init_writes=False,
@@ -10199,6 +10325,22 @@ class BR28Model:
             self.jl_audio_dac_dma_idle=JLAudioDacDmaIdleReadback()
         else:
             self.jl_audio_dac_dma_idle=None
+        # 路 DACDMAREAD(codex 202611211512 方案):DAC DMA 配置函数五死读放行
+        # ——只放行 0x606b2b2/b2b4/b2b6/b2b8/b2ba 五个已核验读点(形状/字节/
+        # 执行核/r6=0xfe0500/有效地址钉死),放行=标为不可用于计算的未知值
+        # 逐条退休(R0=None opaque,下一条 0x606b2bc 真实 r0=4 覆盖);不是四字
+        # 全地址通用回读、不是 DMA 推进模型。SWN 只放行 0x606b2ba 这一次
+        # (sites=4 负例不含 SWN 站点)。显式依赖 jl_audio_dac_dma_writes(四字
+        # 写记录是审计来源)。默认关:读点行为与开关关世界逐字节一致。
+        if jl_audio_dac_dma_setup_discarded_reads:
+            if not jl_audio_dac_dma_writes:
+                raise ValueError('jl_audio_dac_dma_setup_discarded_reads requires '
+                                 'jl_audio_dac_dma_writes (the four-word write records '
+                                 'are the audit source for the released reads)')
+            self.jl_audio_dac_dma_setup=JLAudioDacDmaSetupDiscardedReads(
+                sites=jl_audio_dac_dma_setup_discarded_sites)
+        else:
+            self.jl_audio_dac_dma_setup=None
         # 路 COPEXIMPL(codex 裁 (a) 收窄版):copex.ppi mode-22 指数近似模型
         # ——42,037,363 停点 0x606a900(upstream『copex.ppi has no model』)
         # 的放行。非内存映射寄存器容器:拦截/执行在 probe_boot CPU.step_body
@@ -12364,6 +12506,19 @@ class BR28Model:
                 'silicon-equivalence claim (no IRQ39 in the simulation cannot '
                 'disprove silicon DMA activity; SWN-unwritten is not a zero-reset '
                 'claim; LEN=1 unexplained; control-bit quiescence unaudited)')
+        if self.jl_audio_dac_dma_setup is not None:
+            result['jl_audio_dac_dma_setup_discarded_reads']=self.jl_audio_dac_dma_setup.report()
+            result['assumptions']['jl_audio_dac_dma_setup_discarded_reads']=(
+                'JL_AUDIO DAC DMA config five dead reads released (route DACDMAREAD, '
+                'codex 202611211512): only the five pinned sites 0x606b2b2/b2b4/b2b6/'
+                'b2b8/b2ba (ld.w r0=[r6+4/8/16/20/24] after li r6=0xfe0500 base), each '
+                'load retires as an unknown value unusable for computation and the next '
+                'instruction 0x606b2bc overwrites R0 with the real li.u8 r0=4 — NOT a '
+                'whole-address readback and NOT a DMA advance model (no pointer/count '
+                'progress, DAC submit/consume counts stay zero in this segment). The SWN '
+                'dead read is released ONLY at 0x606b2ba; every other SWN read/any SWN '
+                'write/PNS access keeps the original strict stop. derived-not-measured, '
+                'NOT a silicon-equivalence claim')
         # 路 COPEXIMPL:mode-22 指数近似模型报告(开关关=槽 None=零键,
         # legacy 报告不变)。
         if self.copex_exp22 is not None:

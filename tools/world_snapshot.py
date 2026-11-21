@@ -1184,6 +1184,12 @@ M4_FAMILIES = (
      ('phase', 'invalidations', 'write_events', 'write_totals', 'last_dac_con',
       'hrp_reset_step', 'init_core', 'reads_served', 'first_read', 'last_read',
       'rejections', 'current_pc')),
+    # Route DACDMAREAD: the five-dead-read gate (0x606b2b2..b2ba). Only the
+    # served/rejection ledgers are runtime STATE; 'sites' (4/5 probe value) is a
+    # construction constant riding the per-object static guard like every other
+    # M4 fixture — a restore refuses a differently-switched target world.
+    ('jl_audio_dac_dma_setup', 'JLAudioDacDmaSetupDiscardedReads',
+     ('served', 'rejections')),
     ('jl_adda_family', 'JLAddaAnalogFamilyRegisters',
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads')),
     ('timer2', 'Timer2Delay',

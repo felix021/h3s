@@ -509,6 +509,27 @@ FEATURES = (
             True, None,
             'SRC 游标每 completion 产出的每通道样本数 p 具名假设(None=与消费量'
             '相同「1:1 速率」;敏感性探针值,场景传值,速率比需硅测确认)'),
+    # ---- 路 DACDMAREAD(codex 202611211512 方案):JL_AUDIO DAC DMA 配置
+    # 五死读放行——31,391,166 停点 0x606b2b2..b2ba 依次读 ADR(0xfe0504)/
+    # LEN(0xfe0508)/HRP(0xfe0510)/SWP(0xfe0514)/SWN(0xfe0518),读值均不参与
+    # 比较/寻址/写回,下一条 0x606b2bc 由真实 r0=4 覆盖。放行=标为不可用于
+    # 计算的未知值逐条退休(非全地址通用回读、非 DMA 推进模型);SWN 只放行
+    # 0x606b2ba 这一次死读,其余 PC 读 SWN/任何写 SWN/PNS 访问仍走原路径。
+    # 依赖 jl_audio_dac_dma_writes(读站点的四字写记录是审计来源)。----
+    Feature('jl_audio_dac_dma_setup_discarded_reads', 'probe_only',
+            ('jl_audio_dac_dma_writes',),
+            False, None,
+            'JL_AUDIO DAC DMA 配置五死读(31,391,166 停点 0x606b2b2..b2ba 依次读 '
+            'ADR/LEN/HRP/SWP/SWN)放行:读值均不参与比较/寻址/写回、下一条 '
+            '0x606b2bc 由真实 r0=4 覆盖;放行=标为不可用于计算的未知值逐条退休;'
+            'SWN 只放行 0x606b2ba 这一次,其余 PC 读 SWN/任何写 SWN/PNS 访问仍走'
+            '原路径;DAC 提交数/消费数本段为零;证据=已验证实现契约与当前前缀推进,'
+            '不证明 DMA 数据流已运行)'),
+    Feature('jl_audio_dac_dma_setup_discarded_sites', 'probe_only',
+            ('jl_audio_dac_dma_setup_discarded_reads',),
+            True, None,
+            '放行站点数敏感性探针(默认 5=含第五个 SWN 死读;4=只放行四字配置读、'
+            '钉住第五读 SWN=负例,臂停在 0x606b2ba;场景传值)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li

@@ -646,6 +646,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                          0x06067848:('pop.pc_rl',{'l':5})}
                 require(diagnostics and diagnostics.get('mem_pwr_con_projection') and
                         allowed.get(self.pc)==(insn.id,raw),'opaque MEM_PWR_CON value would be consumed')
+            elif self.opaque_source=='dac_dma_setup_dead_read':
+                # 路 DACDMAREAD:五次死读各自把 R0 标为未知,唯一允许的后续
+                # 指令=下一次死读(也写 R0)或 0x606b2bc 的真实 r0=4 覆盖。
+                # 其它指令读到 R0=未知即消费,在此时诚实停(fail-closed)。
+                allowed={0x606b2b4:('ld.w',{'d':0,'b':6,'n':2}),
+                         0x606b2b6:('ld.w',{'d':0,'b':6,'n':4}),
+                         0x606b2b8:('ld.w',{'d':0,'b':6,'n':5}),
+                         0x606b2ba:('ld.w',{'d':0,'b':6,'n':6}),
+                         0x606b2bc:('li.u8',{'r':0,'n':4})}
+                require(hardware is not None and hardware.jl_audio_dac_dma_setup is not None and
+                        allowed.get(self.pc)==(insn.id,raw),
+                        'opaque DAC DMA setup value would be consumed')
             else:
                 require(diagnostics and diagnostics.get('opaque_pin_read') and
                         ((self.pc==0x06067462 and insn.id=='pop.pc_rl' and raw=={'l':8}) or
@@ -872,6 +884,37 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         adapters['jl_audio_dac_dma_idle_readback_load']+=1
                         return
                     # 守卫拒绝:落回普通严格路径(零写/阶段失效/基址不符
+                    # 负例即在此处诚实停,kind 与开关关世界一致)。
+            if hardware is not None and hardware.jl_audio_dac_dma_setup is not None:
+                # 路 DACDMAREAD(codex 202611211512 方案):DAC DMA 配置函数
+                # 五死读放行的装载门。装载门只在五个已核验读点上拦
+                # (0x606b2b2/b2b4/b2b6/b2b8/b2ba,ld.w {d:0,b:6,n:1/2/4/5/6}
+                # 形状+字节钉死),放行=把读值标为不可用于计算的未知值
+                # (R0=None opaque,下一条 0x606b2bc 由真实 r0=4 覆盖),读本身
+                # 放行不 Blocked;不是四字全地址通用回读、不是 DMA 推进模型。
+                # 守卫见 JLAudioDacDmaSetupDiscardedReads.serve(执行核/基址/
+                # 有效地址不符→回落普通严格路径,kind 与开关关世界一致)。
+                # sites=4 负例:shape_for 对 SWN 站点返回 None,读自然落到
+                # 未映射严格停。开关关=槽 None,一次 is-not-None 测试即过,
+                # legacy 世界零变化。
+                gate=hardware.jl_audio_dac_dma_setup
+                shape=gate.shape_for(self.pc)
+                if shape is not None:
+                    require(insn.id=='ld.w' and
+                            raw=={'d':shape['d'],'b':shape['b'],'n':shape['n']},
+                            'the DAC DMA setup discarded-read site must keep its pinned '
+                            f'shape (ld.w r0=[r6+{shape["n"]*4}], expected {shape})')
+                    require(self.mem.read(self.pc,2)==bytes.fromhex(gate.SITE_BYTES[self.pc]),
+                            'the DAC DMA setup discarded-read site bytes changed '
+                            f'(expected {gate.SITE_BYTES[self.pc]})')
+                    value=gate.serve(self,hardware,raw)
+                    if value is not None:
+                        self.R[raw['d']]=None
+                        self.opaque_source='dac_dma_setup_dead_read'
+                        self.finish_exact(self.pc+size)
+                        adapters['jl_audio_dac_dma_setup_discarded_read']+=1
+                        return
+                    # 守卫拒绝:落回普通严格路径(执行核/基址/有效地址不符
                     # 负例即在此处诚实停,kind 与开关关世界一致)。
             if hardware is not None and hardware.jl_sync is not None:
                 # 路 SYNCIMPL(codex 裁收窄版 a):JL_SYNC 四字容器读策略的

@@ -5102,6 +5102,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_audio_dac_cop_writes=False,
              jl_audio_dac_dma_writes=False,
              jl_audio_dac_dma_idle_readback=False,
+             jl_audio_dac_dma_setup_discarded_reads=False,
+             jl_audio_dac_dma_setup_discarded_sites=5,
              jl_audio_adc_dma_writes=False,
              audio_adc_dma_delivery=False,
              jl_adc_start_config=False,jl_adc_start_probe_value=None,
@@ -6735,6 +6737,28 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                 'stores — without jl_audio_dac_dma_writes the world still stops at '
                 'the 0x6071e92 unmapped store)')
         options['jl_audio_dac_dma_idle_readback']=True
+    # jl_audio_dac_dma_setup_discarded_reads(路 DACDMAREAD,codex 202611211512
+    # 方案,默认 False=关):DAC DMA 配置函数五死读放行——31,391,166 停点
+    # 0x606b2b2..b2ba 依次读 ADR/LEN/HRP/SWP/SWN,读值均不参与比较/寻址/
+    # 写回、下一条 0x606b2bc 由真实 r0=4 覆盖。放行=标为不可用于计算的未知
+    # 值逐条退休(R0=None opaque),不是四字全地址通用回读、不是 DMA 推进模型;
+    # SWN 只放行 0x606b2ba 这一次,其余 PC 读 SWN/任何写 SWN/PNS 访问仍走原
+    # 路径。依赖边挂 jl_audio_dac_dma_writes(四字写记录是审计来源)。sites=4
+    # 负例只放行四字配置读、钉住第五读。默认关:读点停点形状与开关关世界
+    # 逐字节一致。
+    if jl_audio_dac_dma_setup_discarded_reads:
+        require(jl_audio_dac_dma_writes,
+                'the DAC DMA setup discarded reads require the four-word write records '
+                '(the released reads ride the ADR/LEN/HRP/SWP stores of '
+                'JLAudioDacDmaWriteRecords — without jl_audio_dac_dma_writes the world '
+                'still stops at the 0x6071e92 unmapped store)')
+        require(jl_audio_dac_dma_setup_discarded_sites in (4, 5),
+                'the DAC DMA setup discarded-sites probe takes exactly 4 or 5 '
+                '(4 = release only the four-word config reads and pin the fifth SWN '
+                'dead read, the negative arm; 5 = also release the SWN dead read)')
+        options['jl_audio_dac_dma_setup_discarded_reads']=True
+        if jl_audio_dac_dma_setup_discarded_sites != 5:
+            options['jl_audio_dac_dma_setup_discarded_sites']=jl_audio_dac_dma_setup_discarded_sites
     # copex_exp22_model(路 COPEXIMPL,codex 裁 (a) 收窄版,默认 False=关):
     # copex.ppi mode-22 指数近似模型——42,037,363 停点 0x606a900(upstream
     # 『copex.ppi has no model』,音频管线重配段 exp 叶子 0x606a8fc 体内)
@@ -12322,6 +12346,21 @@ def main():
                      # (旧臂零消费对照 139,947,345 @ 0x6064220 保持不变)。
                      irq_case(module,app,header,rom,'src_sync_cursor_progress_probe',
                               **{**conditional_frontier_flags,'src_sync_cursor_progress':True},
+                              flash_image_bytes=image),
+                     # 路 DACDMAREAD(codex 202611211512 方案):在 SRCSYNC6 臂上
+                     # 追加 DAC DMA 配置五死读放行。旧臂 31,391,166 @ 0x606b2b2
+                     # 逐字节不变(开关关);开五读的臂继续走到下一墙(0x606b2bc
+                     # r0=4 覆盖后,或 0x606b2ec/2f2 的 LEN 活读——活读到达时再扩,
+                     # 本次若撞活读诚实停并记录)。sites=4 负例只放行四字配置读、
+                     # 钉住第五读 SWN,臂必须停在 0x606b2ba。
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_dacdma_probe',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
+                                 'jl_audio_dac_dma_setup_discarded_reads':True},
+                              flash_image_bytes=image),
+                     irq_case(module,app,header,rom,'src_sync_cursor_progress_dacdma_negative',
+                              **{**conditional_frontier_flags,'src_sync_cursor_progress':True,
+                                 'jl_audio_dac_dma_setup_discarded_reads':True,
+                                 'jl_audio_dac_dma_setup_discarded_sites':4},
                               flash_image_bytes=image),
                      irq_case(module,app,header,rom,'key_chain_scan_direct',
                               entry=True,banks=True,idle_wait=True,rti=True,unmaskable=True,

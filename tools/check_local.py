@@ -100,6 +100,7 @@ def main():
     run(sys.executable,'tools/test_world_snapshot.py')
     run(sys.executable,'tools/test_jlstream_kick_param2.py')  # EVIMPL:单点槽 unknown 放行守卫/消费负例/具体值对照
     run(sys.executable,'tools/test_jl_audio_dac_dma_idle.py')  # DMAIMPL:HRP/SWP 两字读回守卫/失效矩阵/真件形状钉子
+    run(sys.executable,'tools/test_jl_audio_dac_dma_setup.py')  # DACDMAREAD:配置五死读放行守卫/sites=4 负例/真件形状钉子
     run(sys.executable,'tools/test_br28_dsp_models.py')  # COPEXIMPL:mode-22 指数近似守卫/域外停点/.p 拒绝/真件形状钉子
     run(sys.executable,'tools/test_frontier_iteration.py')  # CKPT:前沿迭代 runner 纯函数面(比较口径/值解析)
     run(sys.executable,'tools/test_handoff_lint.py')

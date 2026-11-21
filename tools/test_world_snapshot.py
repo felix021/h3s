@@ -697,6 +697,10 @@ class M4ProjectionFamilies(unittest.TestCase):
         # current conditional frontier flag set (its first served load sits at
         # the 41,965,883-era frontier stop).
         jl_audio_dac_dma_idle_readback=True,
+        # Route DACDMAREAD: the DAC DMA config five-dead-read gate (probe_only,
+        # but the M4 slot is in M4_FAMILIES so the all-families world turns it on
+        # for the round-trip inventory).
+        jl_audio_dac_dma_setup_discarded_reads=True,
         # Route COPEXIMPL: the copex mode-22 exponential approximation gate,
         # ON in the current conditional frontier flag set (its first intercepted
         # copex sits at the 42,037,363-era frontier stop).
