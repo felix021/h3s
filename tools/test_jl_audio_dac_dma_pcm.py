@@ -1,12 +1,14 @@
 """JL_AUDIO DAC DMA PCM 数据相生产路径读回+SWN 提交记录的定向测试(路 DACDMAPCM)。
 
 两层:
-- 纯守卫单测(GuardCpu/GuardHardware 鸭子类型,不跑仿真):ADR/LEN/SWP 读回=
-  最近一次整字写值、SWN 读回=空环自洽 LEN-1(由运行时 LEN 写记录推导)
-  后=提交写值、拒绝(执行核/
+- 纯守卫单测(GuardCpu/GuardHardware 鸭子类型,不跑仿真):ADR/LEN 读回=
+  最近一次整字写值、SWP 读回=当前 SWP 位置(初值=固件显式写 SWP 值,提交后
+  按 commit_frames 推进,% LEN 回绕,重复读不推进,显式重写重定基)、SWN 读回
+  =空环自洽 LEN-1(由运行时 LEN 写记录推导)后=提交写值、拒绝(执行核/
   有效地址/零写/写记录缺失)。
 - 模型级单测(BR28Model 直构):依赖缺失配置错误、开关关世界槽 None 且 SWN
-  仍 unmapped、开启时槽存在且依赖链完整、SWN 写 write-only 记录。
+  仍 unmapped、开启时槽存在且依赖链完整、SWN 写 write-only 记录且提交推进
+  SWP 位置。
 - 真件字节钉子:读点/写点形状表与官方镜像字节/解码互证(codec 反查,防站点
   表笔误)。
 
@@ -72,6 +74,46 @@ class DacDmaPcmGuardTests(unittest.TestCase):
         guard, hw = armed()
         hw.jl_audio_dac_dma.stores[SWP]['values'] = [0]
         self.assertEqual(guard.serve(GuardCpu(0x607169e), hw, {'r': 6, 's': 12, 'n': 5}), 0)
+
+    def test_swp_advances_on_commit(self):
+        # 提交前读=显式写值 0(0x607169e);0x6071782 提交 0x300 后读=0+0x300。
+        guard, hw = armed()
+        hw.jl_audio_dac_dma.stores[SWP]['values'] = [0]
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        self.assertEqual(guard.serve(GuardCpu(0x607169e), hw, {'r': 6, 's': 12, 'n': 5}), 0)
+        guard.write(SWN, 0x300, 0, hw)
+        self.assertEqual(guard.serve(GuardCpu(0x60718e8), hw, {'r': 1, 's': 12, 'n': 5}), 0x300)
+
+    def test_swp_read_is_idempotent(self):
+        # 重复读不推进:提交后连续两次读都返回同一新位置。
+        guard, hw = armed()
+        hw.jl_audio_dac_dma.stores[SWP]['values'] = [0]
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        guard.write(SWN, 0x300, 0, hw)
+        self.assertEqual(guard.serve(GuardCpu(0x60718e8), hw, {'r': 1, 's': 12, 'n': 5}), 0x300)
+        self.assertEqual(guard.serve(GuardCpu(0x60718e8), hw, {'r': 1, 's': 12, 'n': 5}), 0x300)
+
+    def test_swp_wraps_at_len(self):
+        # SWP_new=(SWP_old+commit_frames)%LEN:0x1d00+0x200 越界回绕到 0x100。
+        guard, hw = armed()
+        hw.jl_audio_dac_dma.stores[SWP]['values'] = [0x1d00]
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        guard.write(SWN, 0x200, 0, hw)
+        self.assertEqual(guard.serve(GuardCpu(0x60718e8), hw, {'r': 1, 's': 12, 'n': 5}), 0x100)
+
+    def test_swp_rebases_on_explicit_rewrite(self):
+        # 固件显式重写 SWP(记录里出现新整字写)即以新写值重新起算。
+        guard, hw = armed()
+        hw.jl_audio_dac_dma.stores[SWP]['values'] = [0]
+        hw.jl_audio_dac_dma.stores[LEN]['values'] = [0x1e00]
+        self.assertEqual(guard.serve(GuardCpu(0x607169e), hw, {'r': 6, 's': 12, 'n': 5}), 0)
+        hw.jl_audio_dac_dma.stores[SWP]['values'].append(5)
+        self.assertEqual(guard.serve(GuardCpu(0x607169e), hw, {'r': 6, 's': 12, 'n': 5}), 5)
+
+    def test_swp_zero_write_refuses(self):
+        guard, hw = armed()
+        self.assertIsNone(guard.serve(GuardCpu(0x607169e), hw, {'r': 6, 's': 12, 'n': 5}))
+        self.assertEqual(guard.rejections.get('zero_write:0xfe0514'), 1)
 
     def test_swn_serves_initial_assumption(self):
         # 空环(0 已缓冲)自洽读值=LEN-1,由运行时 LEN 整字写记录推导(非字面量)。
@@ -162,6 +204,20 @@ class DacDmaPcmModelTests(unittest.TestCase):
         # 未核验位置的 SWN 读显式严格停(kind 优先于泛 unmapped)。
         with self.assertRaisesRegex(Blocked, 'jl_audio_dac_dma_pcm_swN_read_not_modeled'):
             on.read(SWN)
+
+    def test_swN_commit_advances_swp_position(self):
+        on = BR28Model(jl_audio_dac_dma_writes=True,
+                       jl_audio_dac_dma_setup_discarded_reads=True,
+                       jl_audio_dac_dma_len_readback=True,
+                       jl_audio_dac_dma_pns_write=True,
+                       jl_audio_dac_dma_pcm_produce=True)
+        # 固件显式写 SWP=0、LEN=0x1e00 后,0x6071782 提交 0x300 推进一次。
+        on.jl_audio_dac_dma.write(SWP, 0, 0)
+        on.jl_audio_dac_dma.write(LEN, 0x1e00, 0)
+        on.jl_audio_dac_dma_pcm.write(SWN, 0x300, 0, on)
+        self.assertEqual(on.jl_audio_dac_dma_pcm.swN, 0x300)
+        self.assertEqual(on.jl_audio_dac_dma_pcm.swp, 0x300)
+        self.assertEqual(on.jl_audio_dac_dma_pcm.swp_seen_writes, 1)
 
 
 class DacDmaPcmShapePins(unittest.TestCase):
