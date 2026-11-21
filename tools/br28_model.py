@@ -6021,6 +6021,14 @@ class JLAudioDacDmaPcmProduce:
        回落普通严格路径(kind 与开关关世界一致)。
     5. 依赖 jl_audio_dac_dma_pns_write(同一函数链,PNS 写放行是到达 0x6071560
        的前置)。开关关=槽 None,legacy 世界零变化。
+    6. 环空间访问器 0x6073176(路 DACRING):SRC 缺样本修好、生产路径提交后,
+       前沿走到 0x6073198——该函数是 jlstream 状态机的 DAC 环空间访问器
+       (caller 0x6076734/6802/6a12/6a28,r0=r7+24 对象),0x6073192 li.u32
+       r0=0xfe0508 后 0x6073198/319a 短形 ld.w 读 LEN/SWN,再读声道数
+       h[r6+28] 与 h[[r6+40]+18] 调 0x607dfee((s16)r1-(s16)r0)算
+       r5=LEN-1-SWN-((s16)h[[r6+40]+18]-(s16)h[r6+28]),ifs(r5<=0) 钳 0。
+       两处 MMIO 读与生产路径同语义(LEN=最后写值、SWN=空闲帧数 LEN-1-Q),
+       复用同一 Q 账本;声道数/阈值是 RAM 读照常走内存模型,不另建模。
 
     证据分级:「ADR/LEN 读回值=固件自己写记录、SWN 读回=空闲帧数 LEN-1-Q、SWP=
     提交按 commit_frames 推进的帧位置(与固件消费者自洽,derived-not-measured),
@@ -6062,6 +6070,15 @@ class JLAudioDacDmaPcmProduce:
         # 搬运 helper 0x60714ae:0x6071514 li.u32 r0=0xfe0508 后 0x607151a
         # ld.w r0=[r0+0](短形,2 字节)读 LEN。
         0x607151a: {'insn': 'ld.w', 'raw': {'d': 0, 'b': 0, 'n': 0}, 'word': LEN, 'bytes': '0060'},
+        # 环空间访问器 0x6073176(路 DACRING):caller 0x6076734/6802/6a12/6a28
+        # (jlstream 状态机,r0=r7+24 对象)。0x6073192 li.u32 r0=0xfe0508 后
+        # 0x6073198 ld.w r2=[r0+0] 读 LEN、0x607319a ld.w r3=[r0+16] 读 SWN
+        # (短形,2 字节);再读声道数 h[r6+28] 与 h[[r6+40]+18] 调 0x607dfee
+        # ((s16)r1-(s16)r0) 算 r5=LEN-1-SWN-((s16)h[[r6+40]+18]-(s16)h[r6+28]),
+        # ifs(r5<=0) 钳 0——两处 MMIO 读与生产路径同语义(LEN=最后写值、
+        # SWN=空闲帧数 LEN-1-Q),声道数/阈值是 RAM 读照常走内存模型。
+        0x6073198: {'insn': 'ld.w', 'raw': {'d': 2, 'b': 0, 'n': 0}, 'word': LEN, 'bytes': '0260'},
+        0x607319a: {'insn': 'ld.w', 'raw': {'d': 3, 'b': 0, 'n': 4}, 'word': SWN, 'bytes': '0364'},
     }
     # SWN 提交写站点(0x6071782 st.w.l [r12+24]=r14 + 0x6071786 csync)。csync
     # 是真实指令照常执行,不额外建模。
