@@ -121,13 +121,18 @@ func yieldBeforeAttempt(reason string) LoopResult {
 }
 
 // RunLoop executes up to n whole-loop attempts (select → fetch guard → decode →
-// execute → after_step → advance → trace) inside Go. M3 scope: it only runs
-// when every loop-level precondition is proven, the after_step phase is
-// asserted no-op, and the advance phase is statically empty (no timer counting,
-// no unported advance model active). The execute phase reuses the stage-1/2
-// segment contract; after_step and advance are then skipped because they are
-// provably side-effect-free. Any failing proof yields the whole attempt back to
-// Python untouched.
+// execute → after_step → advance → trace) inside Go.
+//
+// M3 scope: it only ran when the advance phase was statically empty (no timer
+// counting). M4 extends the advance judgment across the ported counting models
+// (core tick / watchdog / ICU / Timer2 / software IRQ): when a counting model
+// is active but no delivery will be thrown, the loop now interleaves one
+// execute step with one advance step inside Go instead of yielding; when the
+// advance detects a pending-and-eligible IRQ it returns Stop with the IrqReq so
+// Python executes the delivery projection; when the advance hits a strict stop
+// (e.g. watchdog expiry, unmodeled delivery) it returns Stop with the reason.
+// The after_step phase is still asserted no-op (its hooks stay in Python until
+// the M4+ anchor proof lands).
 func (w *World) RunLoop(n int) LoopResult {
 	if w == nil {
 		return yieldBeforeAttempt("nil world")
@@ -150,15 +155,64 @@ func (w *World) RunLoop(n int) LoopResult {
 	if !w.AfterStepNoop {
 		return yieldBeforeAttempt("after_step hook not provably no-op (M4+)")
 	}
-	if ok, why := w.Periph.CanProveAdvanceNoop(); !ok {
-		return yieldBeforeAttempt("advance not provably empty: " + why)
-	}
 	if w.Exec == nil {
 		return yieldBeforeAttempt("no execute engine bound")
 	}
+	if w.Periph == nil {
+		return yieldBeforeAttempt("no peripheral model bound")
+	}
+	if w.Periph.OtherAdvanceActive {
+		return yieldBeforeAttempt("unported advance-chain model active (SRC-SYNC/ADC-DMA, M5)")
+	}
 
-	// All preconditions hold: run the execute phase under the segment contract.
-	// advance/after_step are provably empty and skipped.
+	// Fast path: the advance phase is provably empty (no counting/pending
+	// model). Run the execute segment in one batch and skip the advance.
+	if !w.Periph.HasActiveAdvance() {
+		return w.runEmptyAdvance(n)
+	}
+
+	// Counting/pending models are active: interleave one execute step with one
+	// advance step, stopping at the first delivery request or strict stop.
+	res := LoopResult{Exit: Stop}
+	icfg := w.Cores[0].ICFG
+	for i := 0; i < n; i++ {
+		seg := w.Exec.RunSegment(1, w.FetchLo, w.FetchHi)
+		if len(seg.Steps) > 0 {
+			s := seg.Steps[0]
+			res.Steps = append(res.Steps, LoopStep{
+				PC:     s.PC,
+				NextPC: s.NextPC,
+				Flags:  s.Flags,
+				R:      s.R,
+				Mem:    nil,
+			})
+		}
+		if seg.StopCode != BatchOK {
+			res.StopPC = seg.StopPC
+			res.Reason = segmentStopReason(seg.StopCode)
+			return res
+		}
+		adv := w.Periph.Advance(icfg)
+		if adv.Irq != nil {
+			res.Irq = adv.Irq
+			res.StopPC = currentPC(res)
+			res.Reason = fmt.Sprintf("pending eligible irq %d on core %d (delivery handed back to Python)", adv.Irq.Irq, adv.Irq.Core)
+			return res
+		}
+		if adv.Err != nil {
+			res.StopPC = currentPC(res)
+			res.Reason = "advance strict stop: " + adv.Err.JSON()
+			return res
+		}
+	}
+	res.StopPC = 0
+	res.Reason = fmt.Sprintf("ran %d attempts with interleaved advance (no delivery)", len(res.Steps))
+	return res
+}
+
+// runEmptyAdvance is the M3 fast path: execute a segment batch and skip the
+// provably-empty advance.
+func (w *World) runEmptyAdvance(n int) LoopResult {
 	seg := w.Exec.RunSegment(n, w.FetchLo, w.FetchHi)
 	res := LoopResult{Exit: Stop, StopPC: seg.StopPC}
 	for _, s := range seg.Steps {
@@ -174,16 +228,30 @@ func (w *World) RunLoop(n int) LoopResult {
 	case BatchOK:
 		res.StopPC = 0
 		res.Reason = fmt.Sprintf("ran %d attempts; advance and after_step provably empty", len(res.Steps))
-	case BatchFetch:
-		res.Reason = "fetch pc outside immutable window"
-	case BatchUnsafe:
-		res.Reason = "instruction outside the stage-1/2 ALU contract"
-	case BatchNoInstr:
-		res.Reason = "no instruction decodes at fetch pc"
-	case BatchNoModel:
-		res.Reason = "decoded instruction has no model"
 	default:
-		res.Reason = "unexpected error while stepping"
+		res.Reason = segmentStopReason(seg.StopCode)
 	}
 	return res
+}
+
+func segmentStopReason(code int) string {
+	switch code {
+	case BatchFetch:
+		return "fetch pc outside immutable window"
+	case BatchUnsafe:
+		return "instruction outside the stage-1/2 ALU contract"
+	case BatchNoInstr:
+		return "no instruction decodes at fetch pc"
+	case BatchNoModel:
+		return "decoded instruction has no model"
+	default:
+		return "unexpected error while stepping"
+	}
+}
+
+func currentPC(res LoopResult) uint32 {
+	if len(res.Steps) == 0 {
+		return 0
+	}
+	return res.Steps[len(res.Steps)-1].NextPC
 }

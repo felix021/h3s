@@ -50,3 +50,39 @@ func BenchmarkCanProveAdvanceNoop(b *testing.B) {
 		_, _ = p.CanProveAdvanceNoop()
 	}
 }
+
+// benchM4 builds the crc_bankb-like counting advance chain (core tick +
+// watchdog + Timer0 + Timer2, no software IRQ model, no delivery requests).
+func benchM4() *PeriphState {
+	ct, _ := NewCoreTickStopped(u32p(0), i64p(4), false, false, false)
+	ct.Write(8, 119999)
+	ct.Write(4, 0)
+	ct.Write(0, 0x1)
+	wd, _ := NewWatchdogProjection([]int64{4, 1})
+	wd.Write(WDTKey, WdtKeyFirst)
+	wd.Write(WDTKey, WdtKeySecond)
+	wd.Write(WDTCon, 0x10031) // feed + enable + time_code 17 (period 131072)
+	t2 := NewTimer2Delay()
+	t2.Write(Timer2+8, 200)
+	t2.Write(Timer2+4, 1)
+	t2.Write(Timer2, 0xc01)
+	return &PeriphState{
+		Timer:           benchTimer(true),
+		IRQ:             NewIRQController(),
+		CoreTicks:       [2]*CoreTickStopped{ct, nil},
+		Watchdog:        wd,
+		Timer2:          t2,
+		SourceTicksPerStep: 4,
+	}
+}
+
+// BenchmarkM4AdvanceCounting measures one full advance over the M4 counting
+// models (the "counting but no delivery" case the whole-loop closure now pays).
+func BenchmarkM4AdvanceCounting(b *testing.B) {
+	p := benchM4()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = p.Advance(0x300)
+	}
+}

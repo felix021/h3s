@@ -256,41 +256,288 @@ func (ic *IRQController) Eligible(index int, icfg uint32) (bool, *PeriphError) {
 	return priority >= *ic.IPMask, nil
 }
 
-// PeriphState is the M3 peripheral world state: the two ported models plus an
-// explicit flag for the advance-chain models not yet ported. It is the
-// concrete realization of the M1 Periph placeholder.
+// PeriphState is the peripheral world state: the ported advance-chain leaf
+// models (M3 Timer0 / IRQController, M4 core ticks / watchdog / ICU / Timer2 /
+// software IRQ) plus an explicit flag for the advance-chain models still not
+// ported (SRC-SYNC / ADC-DMA delivery detection, M5). It is the concrete
+// realization of the M1 Periph placeholder.
 type PeriphState struct {
 	Timer *Timer0        // nil = no Timer0 model present
 	IRQ   *IRQController // nil = no IRQ controller present
 
-	// OtherAdvanceActive marks any unported advance-chain model (core_ticks,
-	// watchdog, ICU, Timer2, software IRQ, SRC-SYNC / ADC-DMA delivery) as
-	// potentially active. When true, Go cannot prove the advance phase empty
-	// and must hand the attempt back to Python.
+	CoreTicks   [2]*CoreTickStopped      // per-core core tick; nil = absent
+	Watchdog    *WatchdogProjection      // nil = absent
+	ICU         *IcuInitializationProjection // nil = absent
+	Timer2      *Timer2Delay             // nil = absent
+	SoftwareIRQ *SoftwareIrqCommands     // nil = absent
+
+	// Delivery-request flags (mirror the BR28Model kwargs of the same names).
+	// False = a pending-and-eligible IRQ is a strict stop (the strict default);
+	// true = it becomes an IrqReq handed back to Python for the delivery
+	// projection.
+	CoreTickDeliveryRequests    bool
+	Timer0IRQDeliveryRequests   bool
+	SoftwareIRQDeliveryRequests bool
+
+	// SourceTicksPerStep is the RC16M reference tick rate per model step
+	// (Python source_ticks_per_step, default 4).
+	SourceTicksPerStep int64
+	// TimerLsbTicksPerStep, when non-nil, is the Timer0 source-0 (LSB) rate
+	// (Python timer_lsb_ticks_per_step).
+	TimerLsbTicksPerStep *int64
+
+	// OtherAdvanceActive marks any still-unported advance-chain model
+	// (SRC-SYNC / ADC-DMA delivery detection, M5) as potentially active. When
+	// true, Go cannot prove the advance phase safe and must hand the attempt
+	// back to Python.
 	OtherAdvanceActive bool
+}
+
+// AdvanceResult is the outcome of one whole-loop advance phase over the ported
+// counting models. Exactly one of the three is populated.
+type AdvanceResult struct {
+	Empty bool         // nothing counted and nothing pending: the phase is a no-op
+	Irq   *IrqReq      // a pending-and-eligible delivery request to hand back
+	Err   *PeriphError // a strict stop surfaced during the advance (hazard)
+}
+
+// irqEligible wraps the IRQ controller eligibility judgment, surfacing a
+// missing controller as an uninitialized-configuration stop (the same shape
+// Python raises when the per-IRQ config word is unknown).
+func (p *PeriphState) irqEligible(index int, icfg uint32) (bool, *PeriphError) {
+	if p.IRQ == nil {
+		return false, periphErr("uninitialized_irq_configuration", "irq", index)
+	}
+	return p.IRQ.Eligible(index, icfg)
+}
+
+// Advance performs one model-step advance over the ported counting models in
+// the Python BR28Model.advance order (ICU, watchdog, core tick 0, Timer0,
+// Timer2, software IRQ pending scan) for the single-core configuration, and
+// detects pending-and-eligible deliveries. It does NOT execute the delivery
+// projection — a pending eligible IRQ is returned as Irq to hand back to
+// Python (docs/gosim-wholeloop-design.md §4). A model whose own advance raises
+// a strict stop (e.g. watchdog expiry) is returned as Err, exactly as the
+// Python model raises Blocked.
+func (p *PeriphState) Advance(icfg uint32) AdvanceResult {
+	if p == nil {
+		return AdvanceResult{}
+	}
+	empty := true
+	srcTicks := p.SourceTicksPerStep
+	if srcTicks == 0 {
+		srcTicks = 4 // Python source_ticks_per_step default
+	}
+
+	// ICU command countdown: no delivery, no strict stop.
+	if p.ICU != nil {
+		if p.ICU.HasPending[0] || p.ICU.HasPending[1] {
+			empty = false
+		}
+		p.ICU.Advance()
+	}
+
+	// Watchdog count; expiry is a strict stop (delivery not implemented).
+	if p.Watchdog != nil {
+		if p.Watchdog.Con != nil && *p.Watchdog.Con&32 != 0 {
+			empty = false
+		}
+		if err := p.Watchdog.Advance(); err != nil {
+			return AdvanceResult{Err: err}
+		}
+	}
+
+	// Core tick (single-core: core 0). Overflow → IRQ3 delivery detection.
+	if ct := p.CoreTicks[0]; ct != nil {
+		if ct.Con != nil && *ct.Con&1 != 0 {
+			empty = false
+		}
+		if ct.UnresolvedOverflow {
+			if !p.CoreTickDeliveryRequests {
+				return AdvanceResult{Err: periphErr("core_tick_overflow_requires_resolution")}
+			}
+			if !ct.DeliveryInFlight {
+				if eligible, err := p.irqEligible(3, 0x300); err != nil {
+					return AdvanceResult{Err: periphErr("core_tick_delivery_blocked", "core", 0, "irq", 3, "reason", err.Kind)}
+				} else if eligible {
+					ct.DeliveryInFlight = true
+					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 3}}
+				}
+			}
+		} else {
+			before := ct.Expirations
+			if err := ct.Advance(); err != nil {
+				return AdvanceResult{Err: err}
+			}
+			if ct.Expirations != before {
+				if !p.CoreTickDeliveryRequests {
+					return AdvanceResult{Err: periphErr("core_tick_overflow_delivery_unresolved", "core", 0, "irq", 3,
+						"note", "internal pending set; no guessed readback bit, wake or interrupt entry")}
+				}
+				if eligible, err := p.irqEligible(3, 0x300); err != nil {
+					return AdvanceResult{Err: periphErr("core_tick_delivery_blocked", "core", 0, "irq", 3, "reason", err.Kind)}
+				} else if eligible {
+					ct.DeliveryInFlight = true
+					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 3}}
+				}
+			}
+		}
+	}
+
+	// Timer0 count + pending (IRQ4) delivery scan.
+	if p.Timer != nil {
+		if p.Timer.Con != nil && *p.Timer.Con&3 != 0 {
+			empty = false
+		}
+		var rate int64
+		if p.Timer.Con == nil || *p.Timer.Con&3 == 0 {
+			rate = 0
+		} else if (*p.Timer.Con>>10)&15 == 0 {
+			if p.TimerLsbTicksPerStep != nil {
+				rate = *p.TimerLsbTicksPerStep
+			} else {
+				rate = 0 // LSB source with no explicit rate: advance is a no-op
+			}
+		} else {
+			rate = srcTicks
+		}
+		if err := p.Timer.Advance(rate); err != nil {
+			return AdvanceResult{Err: periphErr("timer_advance_error")}
+		}
+		if p.Timer.Pending {
+			empty = false
+			if eligible, err := p.irqEligible(4, icfg); err != nil {
+				return AdvanceResult{Err: err}
+			} else if eligible {
+				if !p.Timer0IRQDeliveryRequests {
+					return AdvanceResult{Err: periphErr("interrupt_delivery_not_implemented", "irq", 4,
+						"note", "Timer0 pending and enabled after priority filtering; CPU entry not bypassed")}
+				}
+				if !p.Timer.DeliveryInFlight {
+					p.Timer.DeliveryInFlight = true
+					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 4}}
+				}
+			}
+		}
+	}
+
+	// Timer2 count; pending is NOT an IRQ delivery but a machine-side anchored
+	// poll wake, which the Go loop cannot model — hand it back as a stop.
+	if p.Timer2 != nil {
+		if p.Timer2.Con != nil && *p.Timer2.Con&3 != 0 {
+			empty = false
+		}
+		if err := p.Timer2.Advance(srcTicks); err != nil {
+			return AdvanceResult{Err: periphErr("timer2_advance_error")}
+		}
+		if p.Timer2.Pending {
+			empty = false
+			return AdvanceResult{Err: periphErr("timer2_completion_wake", "address", hexWord(Timer2))}
+		}
+	}
+
+	// Software IRQ pending scan (single-core: core 0).
+	if p.SoftwareIRQ != nil {
+		word := p.SoftwareIRQ.Pending[0]
+		for bit := uint32(0); bit < 4; bit++ {
+			if word.Known&(1<<bit) != 0 && word.Value&(1<<bit) == 0 {
+				continue
+			}
+			eligible, err := p.irqEligible(int(124+bit), icfg)
+			if err != nil {
+				return AdvanceResult{Err: err}
+			}
+			if eligible {
+				if p.SoftwareIRQDeliveryRequests {
+					return AdvanceResult{Irq: &IrqReq{Core: 0, Irq: 124 + bit}}
+				}
+				kind := "software_irq_delivery_not_implemented"
+				if word.Known&(1<<bit) == 0 {
+					kind = "software_irq_pending_unknown"
+				}
+				return AdvanceResult{Err: periphErr(kind, "core", 0, "irq", 124+bit)}
+			}
+		}
+	}
+
+	return AdvanceResult{Empty: empty}
+}
+
+// HasActiveAdvance reports whether the advance phase has anything to do (a
+// counting model, a pending bit, or a pending-eligible scan that would run).
+// It is the M4 replacement for the M3 "other model active" flag: the five
+// counting models are now real fields, so only the still-unported M5 models
+// (SRC-SYNC / ADC-DMA) keep the loop from proving advance safety.
+func (p *PeriphState) HasActiveAdvance() bool {
+	if p == nil {
+		return false
+	}
+	if p.OtherAdvanceActive {
+		return true
+	}
+	if p.Timer != nil {
+		if p.Timer.Pending {
+			return true
+		}
+		if p.Timer.Con != nil && *p.Timer.Con&3 != 0 {
+			return true
+		}
+	}
+	for _, ct := range p.CoreTicks {
+		if ct == nil {
+			continue
+		}
+		if ct.UnresolvedOverflow {
+			return true
+		}
+		if ct.Pending != nil && *ct.Pending {
+			return true
+		}
+		if ct.Con != nil && *ct.Con&1 != 0 {
+			return true
+		}
+	}
+	if p.Watchdog != nil {
+		if p.Watchdog.Expired {
+			return true
+		}
+		if p.Watchdog.Con != nil && *p.Watchdog.Con&32 != 0 {
+			return true
+		}
+	}
+	if p.ICU != nil {
+		if p.ICU.HasPending[0] || p.ICU.HasPending[1] {
+			return true
+		}
+	}
+	if p.Timer2 != nil {
+		if p.Timer2.Pending {
+			return true
+		}
+		if p.Timer2.Con != nil && *p.Timer2.Con&3 != 0 {
+			return true
+		}
+	}
+	if p.SoftwareIRQ != nil {
+		return true // the pending scan runs and may consult eligibility
+	}
+	return false
 }
 
 // CanProveAdvanceNoop reports whether this attempt's advance phase is
 // statically provable as a no-op. It returns the verdict and, when false, an
-// honest reason. This is the M3 "no timer counting" judgment: the only way
-// advance is empty is (a) no unported model is active, and (b) Timer0 is either
-// absent or not counting and not pending (in which case BR28Model.advance runs
-// timer.advance(0), a no-op, and the pending-delivery scan is skipped).
+// honest reason. The M3 "no timer counting" judgment is now extended across
+// the full ported model set: advance is empty only when no unported model is
+// active and every ported model is absent, not counting, and not pending.
 func (p *PeriphState) CanProveAdvanceNoop() (bool, string) {
 	if p == nil {
 		return false, "no peripheral model present"
 	}
 	if p.OtherAdvanceActive {
-		return false, "unported advance-chain model active (core_ticks/watchdog/ICU/Timer2/software-IRQ/SRC-SYNC/ADC-DMA)"
+		return false, "unported advance-chain model active (SRC-SYNC/ADC-DMA, M5)"
 	}
-	if p.Timer == nil {
-		return true, "no Timer0 present"
+	if p.HasActiveAdvance() {
+		return false, "advance-chain model counting or pending"
 	}
-	if p.Timer.Pending {
-		return false, "Timer0 pending (delivery scan would run)"
-	}
-	if p.Timer.Con == nil || *p.Timer.Con&3 == 0 {
-		return true, "Timer0 not counting"
-	}
-	return false, "Timer0 counting"
+	return true, "no advance-chain model active"
 }
