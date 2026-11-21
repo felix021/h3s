@@ -101,9 +101,12 @@ type World struct {
 	// Loop-level preconditions the caller (Python) asserts. Single-core is
 	// derived structurally (Cores[1] == nil); the rest are explicit, never
 	// guessed.
-	Concrete       bool // pc / R[16] / icfg all concrete integers
-	ObserverActive bool // a Python-side observer hook is armed
-	AfterStepNoop  bool // after_step provably has no hook at this pc (M4+)
+	Concrete bool // pc / R[16] / icfg all concrete integers
+	// AfterStep is the after_step hook configuration plus the first-task
+	// tracking state. nil = no hooks configured, so after_step is provably
+	// empty for every pc; a non-nil config is judged per-pc by CanProveNoop
+	// (M6B) instead of a blanket flag.
+	AfterStep *AfterStep
 }
 
 // LoopResult is the outcome of one RunLoop call.
@@ -142,23 +145,20 @@ func (w *World) RunLoop(n int) LoopResult {
 		return yieldBeforeAttempt("no core 0 present")
 	}
 	if w.Cores[1] != nil {
-		// Stage A ported the select phase (machine.go Machine.Select); the
-		// dual-core loop cannot close here yet because the after_step hooks
-		// (Stage B) and the deliver_* projections (Stage C) still live in
-		// Python.
-		return yieldBeforeAttempt("dual-core loop not closed: select ported (M6A) but after_step/deliver projections still in Python (M6B/C)")
+		// Stage A ported the select phase (machine.go Machine.Select) and
+		// Stage B ported the after_step no-op judgment (after_step.go); the
+		// dual-core loop still cannot close because the deliver_* projections
+		// (Stage C) and the dual-core advance scan live in Python.
+		return yieldBeforeAttempt("dual-core loop not closed: select ported (M6A) and after_step judged (M6B) but deliver projections still in Python (M6C)")
 	}
 	if !w.Concrete {
 		return yieldBeforeAttempt("non-concrete (abstract) cpu state")
 	}
-	if w.ObserverActive {
+	if w.AfterStep != nil && w.AfterStep.ObserverActive {
 		return yieldBeforeAttempt("observer hook active")
 	}
 	if w.Cores[0].RepeatActive {
 		return yieldBeforeAttempt("repeat/after_then active")
-	}
-	if !w.AfterStepNoop {
-		return yieldBeforeAttempt("after_step hook not provably no-op (M4+)")
 	}
 	if w.Exec == nil {
 		return yieldBeforeAttempt("no execute engine bound")
@@ -167,14 +167,21 @@ func (w *World) RunLoop(n int) LoopResult {
 		return yieldBeforeAttempt("no peripheral model bound")
 	}
 
-	// Fast path: the advance phase is provably empty (no counting/pending
-	// model). Run the execute segment in one batch and skip the advance.
-	if !w.Periph.HasActiveAdvance() {
+	// after_step: an armed hook means the loop must judge each committed step's
+	// before/next pc (CanProveNoop) instead of trusting a blanket flag. An
+	// empty hook set + empty advance keeps the M3-M5 batch fast path.
+	afterStepArmed := w.AfterStep != nil && w.AfterStep.HasArmedHook()
+
+	// Fast path: advance empty and no after_step hook armed. Run the execute
+	// segment in one batch and skip both the advance and the per-step after_step
+	// judgment (both provably empty for every pc).
+	if !w.Periph.HasActiveAdvance() && !afterStepArmed {
 		return w.runEmptyAdvance(n)
 	}
 
-	// Counting/pending models are active: interleave one execute step with one
-	// advance step, stopping at the first delivery request or strict stop.
+	// Interleaved: one execute step, then the after_step judgment, then the
+	// advance (when active), stopping at the first after_step hook, delivery
+	// request, or strict stop.
 	res := LoopResult{Exit: Stop}
 	icfg := w.Cores[0].ICFG
 	for i := 0; i < n; i++ {
@@ -194,6 +201,17 @@ func (w *World) RunLoop(n int) LoopResult {
 			res.Reason = segmentStopReason(seg.StopCode)
 			return res
 		}
+		if afterStepArmed {
+			s := res.Steps[len(res.Steps)-1]
+			if ok, why := w.AfterStep.CanProveNoop(0, s.PC, s.NextPC); !ok {
+				res.StopPC = s.NextPC
+				res.Reason = "after_step hook fires: " + why + " (handed back to Python)"
+				return res
+			}
+		}
+		if !w.Periph.HasActiveAdvance() {
+			continue
+		}
 		adv := w.Periph.Advance(icfg)
 		if adv.Irq != nil {
 			res.Irq = adv.Irq
@@ -208,12 +226,13 @@ func (w *World) RunLoop(n int) LoopResult {
 		}
 	}
 	res.StopPC = 0
-	res.Reason = fmt.Sprintf("ran %d attempts with interleaved advance (no delivery)", len(res.Steps))
+	res.Reason = fmt.Sprintf("ran %d attempts with interleaved after_step/advance judgment (no hazard)", len(res.Steps))
 	return res
 }
 
 // runEmptyAdvance is the M3 fast path: execute a segment batch and skip the
-// provably-empty advance.
+// provably-empty advance and after_step (both are provably no-op for every pc
+// in this configuration).
 func (w *World) runEmptyAdvance(n int) LoopResult {
 	seg := w.Exec.RunSegment(n, w.FetchLo, w.FetchHi)
 	res := LoopResult{Exit: Stop, StopPC: seg.StopPC}

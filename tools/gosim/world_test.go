@@ -20,9 +20,8 @@ func runnableWorld() *World {
 		FetchLo: 0x100,
 		FetchHi: 0x200,
 
-		Concrete:       true,
-		ObserverActive: false,
-		AfterStepNoop:  true,
+		Concrete:  true,
+		AfterStep: &AfterStep{},
 	}
 }
 
