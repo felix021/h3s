@@ -5915,6 +5915,79 @@ class JLAudioDacDmaLenReadback:
                            '(codex ruling)')}
 
 
+class JLAudioDacDmaPnsWrite:
+    """JL_AUDIO DAC DMA PNS(0xfe050c)写侧 write-only 整字记录(opt-in,路 DACDMAPNS)。
+
+    背景:31,391,525 停点 @ 0x606de56——LEN 活读回读(0x606ddc4/cc)放行后,
+    前沿推进到音频参数计算函数 0x606dd96 体内的 PNS 写 `st.w.l [r8+4]=r2`
+    (r8=0xfe0508,+4=0xfe050c=PNS,字节 d0 ec 85 20),值 0x60。
+
+    证据(静态扫描,全 app):
+    - 无 `li 0xfe050c` 字面量:PNS 只能经基址+偏移触达。基址装载点全枚举
+      (0xfe0500 共 15 站、0xfe0508 共 3 站、0xfe0504 共 6 站)后,PNS
+      (0xfe050c)恰两处**纯整字写**、零读回、零 RMW:
+      0x606de56(st.w.l [r8+4]=r2,值=[obj+64]/1000 低 16 位;obj+64=96000
+      →96=0x60)与 0x6072496(st.w [r5+12]=r1,值=obj+86 阈值,函数 0x6072470
+      体内——先读 LEN/SWN/obj+86 比较,超阈值才写 PNS)。
+    - 写后函数 0x606dd96 立即返回(0x606de5a..60 只读写 obj 字段),不读回
+      PNS;0x6072470 同样写后不读回。
+
+    裁决:纯配置整字写(全字覆盖、旧值无关、值=真实指令结果)→write-only
+    记录(DAC DMA 四字/DAC_COP 同族);读回显式严格停(显式 kind 优先于泛
+    unmapped);PNS 的衰减语义/运行时状态推进一律不建模。
+    """
+
+    PNS = 0xfe050c
+    ADDRESSES = (PNS,)
+
+    def __init__(self):
+        self.stores = {self.PNS: {'values': [], 'writes': 0, 'cores': []}}
+        self.word_writes = 0
+
+    def handles(self, address):
+        return address == self.PNS
+
+    def write(self, address, value, core):
+        if address != self.PNS:
+            raise ValueError('not a modeled JL_AUDIO DAC DMA PNS word')
+        if not isinstance(value, int) or not 0 <= value <= 0xffffffff:
+            raise ValueError('unsigned32 word expected')
+        entry = self.stores[address]
+        entry['values'].append(value); entry['writes'] += 1
+        entry['cores'].append(core); self.word_writes += 1
+
+    def read(self, address):
+        raise Blocked('jl_audio_dac_dma_pns_read_not_modeled', address=hex(address))
+
+    def report(self):
+        e = self.stores[self.PNS]
+        return {
+            'addresses': [hex(a) for a in self.ADDRESSES],
+            'word_writes': self.word_writes,
+            'stores': {hex(self.PNS): {'values': [hex(v) for v in e['values'][-16:]],
+                                       'writes': e['writes'],
+                                       'cores': e['cores'][-16:]}}
+            if e['writes'] else {},
+            'sdk_naming': ('JL_AUDIO = hs_base + map_adr(0x05, 0x00) = 0xfe0500; PNS at '
+                           '+0x0c=0xfe050c is the period/noise-source member adjacent to LEN '
+                           '(0xfe0508) — route-DMAIMPL erratum placed it here after the '
+                           'off-by-one member correction'),
+            'whitelisted_words': ('exactly the single PNS word; the whole-app static scan '
+                                  'found exactly two whole-word stores (0x606de56 and '
+                                  '0x6072496) and zero reads/RMWs on it'),
+            'observed_shapes': ('0x606de56 st.w.l [r8+4]=r2 (bytes d0 ec 85 20, r8=0xfe0508, '
+                                'value=[obj+64]/1000 low-16 = 96kHz/1000 = 96 = 0x60) and '
+                                '0x6072496 st.w [r5+12]=r1 (bytes d1 63, r5=0xfe0500, value='
+                                'obj+86 threshold) — both whole-word, old-value-independent, '
+                                'no read-back after either store'),
+            'write_only': True, 'readback_not_modeled': True,
+            'assumption': ('write-only word record (values are real executed results, never '
+                           'invented; the zero-read consumption face justifies the record, not '
+                           'a measured WO property claim); no PNS attenuation semantics, no '
+                           'DMA transfer and no runtime PNS state progression is modeled — '
+                           'this does NOT verify any audio output')}
+
+
 class JLAudioAdcDmaWriteRecords:
     """JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c)写侧 write-only
     整字记录(opt-in,路 JLA)。
@@ -9750,6 +9823,7 @@ class BR28Model:
                  jl_audio_dac_dma_setup_discarded_reads=False,
                  jl_audio_dac_dma_setup_discarded_sites=5,
                  jl_audio_dac_dma_len_readback=False,
+                 jl_audio_dac_dma_pns_write=False,
                  jl_audio_adc_dma_writes=False,
                  audio_adc_dma_delivery=False,audio_adc_dma_delivery_requests=False,
                  jl_eq_init_writes=False,
@@ -10459,6 +10533,23 @@ class BR28Model:
             self.jl_audio_dac_dma_len=JLAudioDacDmaLenReadback()
         else:
             self.jl_audio_dac_dma_len=None
+        # 路 DACDMAPNS(codex 202611211512 方案 §4 优先级 1 实跑落地):DAC DMA
+        # PNS(0xfe050c)写侧 write-only 整字记录——31,391,525 停点 0x606de56
+        # (st.w.l [r8+4]=r2,r8=0xfe0508,值 0x60)放行。全 app 恰两处 PNS 纯
+        # 整字写、零读回零 RMW(静态扫描),write-only 记录(DAC DMA 四字/
+        # DAC_COP 同族);读回显式严格停(jl_audio_dac_dma_pns_read_not_modeled),
+        # 不建模衰减语义/DMA 推进/PNS 运行时状态推进。显式依赖
+        # jl_audio_dac_dma_len_readback(同一函数链,LEN 活读放行是到达
+        # 0x606de56 的前置)。默认关:PNS 保持 unmapped,legacy 逐字节不变。
+        if jl_audio_dac_dma_pns_write:
+            if not jl_audio_dac_dma_len_readback:
+                raise ValueError('jl_audio_dac_dma_pns_write requires '
+                                 'jl_audio_dac_dma_len_readback (0x606de56 is reached '
+                                 'only after the LEN live reads 0x606ddc4/cc of the same '
+                                 'function chain are released)')
+            self.jl_audio_dac_dma_pns=JLAudioDacDmaPnsWrite()
+        else:
+            self.jl_audio_dac_dma_pns=None
         # 路 COPEXIMPL(codex 裁 (a) 收窄版):copex.ppi mode-22 指数近似模型
         # ——42,037,363 停点 0x606a900(upstream『copex.ppi has no model』)
         # 的放行。非内存映射寄存器容器:拦截/执行在 probe_boot CPU.step_body
@@ -10782,6 +10873,7 @@ class BR28Model:
                                           or self.timer2.handles_iwkup(address))) or
             (self.jl_audio_dac_cop is not None and self.jl_audio_dac_cop.handles(address)) or
             (self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address)) or
+            (self.jl_audio_dac_dma_pns is not None and self.jl_audio_dac_dma_pns.handles(address)) or
             (self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address)) or
             (self.jl_eq_init is not None and self.jl_eq_init.handles(address)) or
             (self.jl_adc_start is not None and self.jl_adc_start.handles(address)) or
@@ -11247,6 +11339,11 @@ class BR28Model:
         if self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address):
             self.counts['reads']+=1
             return self.jl_audio_dac_dma.read(address)
+        # JL_AUDIO DAC DMA PNS(路 DACDMAPNS):write-only 记录,读回显式严格停
+        # (全 app 零静态读者;出现即在读侧显形,kind 优先于泛 unmapped)。
+        if self.jl_audio_dac_dma_pns is not None and self.jl_audio_dac_dma_pns.handles(address):
+            self.counts['reads']+=1
+            return self.jl_audio_dac_dma_pns.read(address)
         # JL_AUDIO ADC DMA 五字(路 JLA):write-only 记录,读回显式严格停
         # (audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b 完成投影后域)。
         # 路 D2AI:交付投影开启时读回由容器服务(五字+SRN,见类注释);
@@ -11587,8 +11684,13 @@ class BR28Model:
             self.jl_audio_dac_cop.write(address,value,self.current_core)
         elif self.jl_audio_dac_dma is not None and self.jl_audio_dac_dma.handles(address):
             # JL_AUDIO DAC DMA 四字(路 BM/S19 批 1 ④续):0x6071e92..ea8 四条
-            # 整字写(LEN/ADR/HRP/PNS),write-only 记录;DMA 传输不建模。
+            # 整字写(LEN/ADR/HRP/SWP),write-only 记录;DMA 传输不建模。
             self.jl_audio_dac_dma.write(address,value,self.current_core)
+        elif self.jl_audio_dac_dma_pns is not None and self.jl_audio_dac_dma_pns.handles(address):
+            # JL_AUDIO DAC DMA PNS(路 DACDMAPNS):0x606de56 st.w.l 整字写
+            # (值 0x60)与 0x6072496 st.w 阈值写,write-only 记录;衰减语义/
+            # DMA 推进/PNS 运行时状态推进不建模。
+            self.jl_audio_dac_dma_pns.write(address,value,self.current_core)
         elif self.jl_audio_adc_dma is not None and self.jl_audio_adc_dma.handles(address):
             # JL_AUDIO ADC DMA 五字(路 JLA):set_buffer 0x606dee4 的五条
             # 连续整字写(ADR/LEN/PNS/HWP/SRP,首写=停点并行对 store 半),
@@ -12653,6 +12755,21 @@ class BR28Model:
                 'flow, no LEN decrement over playback, no HRP advance, no SWN initial '
                 'value is modeled; LEN is the capacity/wrap boundary and this segment '
                 'gives no basis for making LEN decrement during playback (codex)')
+        if self.jl_audio_dac_dma_pns is not None:
+            result['jl_audio_dac_dma_pns_write']=self.jl_audio_dac_dma_pns.report()
+            result['assumptions']['jl_audio_dac_dma_pns_write']=(
+                'JL_AUDIO DAC DMA PNS (0xfe050c = base +0x0c) write-only whole-word '
+                'record (route DACDMAPNS, codex 202611211512 §4 priority-1 runtime '
+                'landing): the whole-app static scan found exactly two PNS whole-word '
+                'stores (0x606de56 st.w.l [r8+4]=r2 with r8=0xfe0508, value=[obj+64]/'
+                '1000 low-16 = 96kHz/1000 = 96 = 0x60; 0x6072496 st.w [r5+12]=r1 with '
+                'r5=0xfe0500, value=obj+86 threshold) and ZERO reads/RMWs (no li '
+                '0xfe050c literal exists) — the values are the firmware\'s own executed '
+                'results, never invented; reads stay strictly stopped '
+                '(jl_audio_dac_dma_pns_read_not_modeled). No PNS attenuation semantics, '
+                'no runtime PNS state progression and no DMA transfer is modeled; DAC '
+                'submit/consume counts stay zero in this segment — this does NOT verify '
+                'any audio output. derived-not-measured, NOT a silicon-equivalence claim')
         # 路 COPEXIMPL:mode-22 指数近似模型报告(开关关=槽 None=零键,
         # legacy 报告不变)。
         if self.copex_exp22 is not None:

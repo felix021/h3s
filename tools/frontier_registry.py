@@ -546,6 +546,28 @@ FEATURES = (
             '值喂 0x606ddc8 if (r1>r3) 钳位比较与 h[r5+14]=r1 写回;无写来源/'
             '守卫不符→回落普通严格路径(jl_audio_dac_dma_read_not_modeled);'
             '不声明 LEN 随播放递减/DMA 数据流已运行;DAC 提交/消费数本段为零)'),
+    # ---- 路 DACDMAPNS(codex 202611211512 方案 §4 优先级 1 实跑落地):DAC DMA
+    # PNS(0xfe050c)写侧 write-only 整字记录——31,391,525 停点 0x606de56
+    # (st.w.l [r8+4]=r2,r8=0xfe0508,+4=0xfe050c=PNS)写 0x60 放行。静态扫描:
+    # 全 app 无 li 0xfe050c 字面量,PNS 只经基址+偏移触达;基址装载点全枚举
+    # 后 PNS 恰两处纯整字写(0x606de56=音频参数计算函数 0x606dd96 体内,值=
+    # [obj+64]/1000 低 16 位,obj+64=96000→96=0x60;0x6072496=阈值函数
+    # 0x6072470 体内,值=obj+86 阈值)、零读回、零 RMW。write-only 记录
+    # (DAC DMA 四字/DAC_COP 同族),读回显式严格停;不建模衰减语义/DMA 推进/
+    # PNS 运行时状态推进。依赖 jl_audio_dac_dma_len_readback(同一函数链,
+    # LEN 活读放行是到达 0x606de56 的前置)。----
+    Feature('jl_audio_dac_dma_pns_write', 'probe_only',
+            ('jl_audio_dac_dma_len_readback',),
+            False, None,
+            'JL_AUDIO DAC DMA PNS(0xfe050c)写侧 write-only 整字记录(31,391,525 '
+            '停点 0x606de56 st.w.l [r8+4]=r2,r8=0xfe0508,+4=0xfe050c=PNS,值 '
+            '0x60):纯整字写、旧值无关、值=固件真实指令结果(96kHz 采样率/1000'
+            '=96=0x60);全 app 恰两处 PNS 写(0x606de56 与 0x6072496 阈值写)、'
+            '零读回零 RMW(静态扫描);读回显式严格停(jl_audio_dac_dma_pns_read_'
+            'not_modeled);不建模衰减语义/PNS 运行时状态推进;DAC 提交/消费数本'
+            '段为零;新停点 31,409,349 @ 0x6071560(PCM 生产路径 LEN 活读,非 len_'
+            'readback 站点);证据=已验证实现契约与当前前缀推进,不证明 DMA 数据'
+            '流已运行)'),
     # ---- 路 SYNCIMPL(codex 20261119 收窄版 a):JL_SYNC(audio_sync)四字
     # 容器 jl_sync_config_words——42,061,357 停点 0x60befe6(creator
     # 0x60befae 体内 CON 整字写 0)放行。审计:基址 li 装载驱动(12 li
