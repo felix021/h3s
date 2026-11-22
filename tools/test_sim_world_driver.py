@@ -102,7 +102,7 @@ class FakeHardware:
     def __init__(self):
         self.advances = 0
 
-    def advance(self, icfg):
+    def advance(self, icfg, mem=None):
         self.advances += 1
 
 
@@ -485,7 +485,7 @@ class ResumeTest(unittest.TestCase):
 
     def test_resume_world_death_on_blocked(self):
         class BlockedHardware(FakeHardware):
-            def advance(self, icfg):
+            def advance(self, icfg, mem=None):
                 raise swd.Blocked('unmapped_or_readonly_write', address='0xfe1500')
 
         cpu = FakeCpu({})
@@ -505,7 +505,7 @@ class ResumeTest(unittest.TestCase):
                 super().__init__()
                 self.grace = 2                       # 前两次 advance 放行（让 watch 先命中）
 
-            def advance(self, icfg):
+            def advance(self, icfg, mem=None):
                 if self.grace > 0:
                     self.grace -= 1
                     return
@@ -534,7 +534,7 @@ class ResumeTest(unittest.TestCase):
                 super().__init__()
                 self.raised = False
 
-            def advance(self, icfg):
+            def advance(self, icfg, mem=None):
                 if not self.raised:
                     self.raised = True
                     raise IrqDeliveryRequest(core=0, irq=3)
@@ -566,7 +566,7 @@ class ResumeTest(unittest.TestCase):
     def test_resume_stall_branch_blocked_advances_still_stop(self):
         """对照负例：停泊分支 advance 抛 Blocked（无事件可推）仍是诚实停。"""
         class BlockedHardware(FakeHardware):
-            def advance(self, icfg):
+            def advance(self, icfg, mem=None):
                 raise swd.Blocked('all_cores_idle_waiting', idle_cores=[0])
 
         cpu = FakeCpu({})
