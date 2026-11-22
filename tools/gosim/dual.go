@@ -73,6 +73,11 @@ type DualTagInfo struct {
 	MovTag bool
 	MovSrc int
 	MovDst int
+	// Direct is true when RunDualStepCore committed the step itself (an ICFG
+	// instruction or the abstract task-stack transport): the core twin already
+	// carries the post-step state, so the caller must not re-sync from the CPU
+	// engine (and must not re-apply Writes clearing).
+	Direct bool
 }
 
 // RunDualStepCore executes one whole-loop step on c (strict fetch + dual
@@ -86,14 +91,38 @@ type DualTagInfo struct {
 // instruction would consume numerically is reported as BatchAbstract without
 // committing the step; Python re-runs the instruction and raises the identical
 // consumed() Blocked.
-func (c *CPU) RunDualStepCore(core *Core) (SegmentStep, DualTagInfo, int, uint32, error) {
+func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (SegmentStep, DualTagInfo, int, uint32, error) {
 	pc := c.pc
-	im, raw, _, err := c.decode(pc)
+	im, raw, size, err := c.decode(pc)
 	if err != nil {
 		if isMemError(err) {
 			return SegmentStep{}, DualTagInfo{}, BatchMemFault, pc, err
 		}
 		return SegmentStep{}, DualTagInfo{}, BatchNoInstr, pc, err
+	}
+	// Abstract-value instruction handlers run before the structural contract:
+	// they own the ICFG instruction forms and the task-stack transport, which
+	// the stage-1/2 deny set otherwise rejects.
+	insnBytes, err := c.InsnBytes(pc)
+	if err != nil {
+		if isMemError(err) {
+			return SegmentStep{}, DualTagInfo{}, BatchMemFault, pc, err
+		}
+		return SegmentStep{}, DualTagInfo{}, BatchNoInstr, pc, err
+	}
+	if partialIcfg {
+		if s, code, ok := c.runIcfgStep(core, im, raw, pc, uint32(size), insnBytes); ok {
+			if code == BatchOK {
+				// ICFG handlers never move SP; carry the (unchanged) value.
+				s.BeforeSP, s.SP = core.SP, core.SP
+			}
+			return s, DualTagInfo{Direct: code == BatchOK}, code, pc, nil
+		}
+	}
+	if unknownTaskGprs {
+		if s, code, ok := c.runStackStep(core, im, raw, pc, uint32(size), insnBytes); ok {
+			return s, DualTagInfo{Direct: code == BatchOK}, code, pc, nil
+		}
 	}
 	if !c.safeDual(im) {
 		return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
@@ -121,13 +150,6 @@ func (c *CPU) RunDualStepCore(core *Core) (SegmentStep, DualTagInfo, int, uint32
 	if consumesSP(im) && !core.SPKnown {
 		return SegmentStep{}, DualTagInfo{}, BatchAbstract, pc, nil
 	}
-	insnBytes, err := c.InsnBytes(pc)
-	if err != nil {
-		if isMemError(err) {
-			return SegmentStep{}, DualTagInfo{}, BatchMemFault, pc, err
-		}
-		return SegmentStep{}, DualTagInfo{}, BatchNoInstr, pc, err
-	}
 	if err := c.Step(); err != nil {
 		if isMemError(err) {
 			return SegmentStep{}, DualTagInfo{}, BatchMemFault, pc, err
@@ -137,16 +159,24 @@ func (c *CPU) RunDualStepCore(core *Core) (SegmentStep, DualTagInfo, int, uint32
 	adapter := ""
 	if dualStoreAdapter[im.id] {
 		adapter = "exact_full_word_store"
+	} else if im.id == "mov.rr" && tag.MovTag {
+		if core.RT[tag.MovSrc].Kind == "icfg_value" {
+			adapter = "partial_icfg_register_copy"
+		} else {
+			adapter = "unknown_gpr_copy"
+		}
 	}
 	tag.Writes = c.TakeRegWrites()
 	return SegmentStep{
-		PC:      pc,
-		NextPC:  c.pc,
-		Flags:   uint8(c.flags & 0xF),
-		R:       c.R,
-		Mem:     c.TakeWrites(),
-		Insn:    insnBytes,
-		Adapter: adapter,
+		PC:       pc,
+		NextPC:   c.pc,
+		Flags:    uint8(c.flags & 0xF),
+		R:        c.R,
+		Mem:      c.TakeWrites(),
+		BeforeSP: c.sp,
+		SP:       c.sp,
+		Insn:     insnBytes,
+		Adapter:  adapter,
 	}, tag, BatchOK, 0, nil
 }
 

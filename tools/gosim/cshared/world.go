@@ -194,6 +194,9 @@ type coreStateJSON struct {
 	ICFG             uint32             `json:"icfg"`
 	ICFGKnown        bool               `json:"icfg_known"`
 	ICFGKnownMask    uint32             `json:"icfg_known_mask"`
+	ICFGStatusGen    int                `json:"icfg_status_gen"`
+	ICFGWrites       int                `json:"icfg_writes"`
+	ICFGBit9Updates  int                `json:"icfg_bit9_updates"`
 	Steps            uint64             `json:"steps"`
 	RepeatActive     bool               `json:"repeat_active"`
 	USP              *uint32            `json:"usp"`
@@ -228,6 +231,9 @@ func coreFromJSON(s *coreStateJSON) *gosim.Core {
 		ICFG:             s.ICFG,
 		ICFGKnown:        s.ICFGKnown,
 		ICFGKnownMask:    s.ICFGKnownMask,
+		ICFGStatusGen:    s.ICFGStatusGen,
+		ICFGWrites:       s.ICFGWrites,
+		ICFGBit9Updates:  s.ICFGBit9Updates,
 		Steps:            s.Steps,
 		RepeatActive:     s.RepeatActive,
 		USP:              s.USP,
@@ -272,6 +278,9 @@ func coreToJSON(c *gosim.Core) *coreStateJSON {
 		ICFG:             c.ICFG,
 		ICFGKnown:        c.ICFGKnown,
 		ICFGKnownMask:    c.ICFGKnownMask,
+		ICFGStatusGen:    c.ICFGStatusGen,
+		ICFGWrites:       c.ICFGWrites,
+		ICFGBit9Updates:  c.ICFGBit9Updates,
 		Steps:            c.Steps,
 		RepeatActive:     c.RepeatActive,
 		USP:              c.USP,
@@ -323,20 +332,30 @@ type loopResultJSON struct {
 }
 
 type loopMemWriteJSON struct {
-	Addr  uint32 `json:"addr"`
-	Bytes string `json:"bytes"`
+	Addr  uint32           `json:"addr"`
+	Bytes string           `json:"bytes,omitempty"`
+	Abs   *gosim.RegTag    `json:"abs,omitempty"`
+}
+
+type stepEventJSON struct {
+	Access     string `json:"access"`
+	KnownMask  string `json:"known_mask"`
+	KnownValue string `json:"known_value"`
 }
 
 type loopStepJSON struct {
-	Core    int                `json:"core"`
-	PC      uint32             `json:"pc"`
-	NextPC  uint32             `json:"next_pc"`
-	Flags   uint8              `json:"flags"`
-	R       [16]uint32         `json:"r"`
-	RT      [16]*gosim.RegTag  `json:"rt"`
-	Mem     []loopMemWriteJSON `json:"mem,omitempty"`
-	Insn    string             `json:"insn,omitempty"`
-	Adapter string             `json:"adapter,omitempty"`
+	Core     int                `json:"core"`
+	PC       uint32             `json:"pc"`
+	NextPC   uint32             `json:"next_pc"`
+	Flags    uint8              `json:"flags"`
+	R        [16]uint32         `json:"r"`
+	RT       [16]*gosim.RegTag  `json:"rt"`
+	Mem      []loopMemWriteJSON `json:"mem,omitempty"`
+	Events   []stepEventJSON    `json:"events,omitempty"`
+	BeforeSP uint32             `json:"before_sp"`
+	SP       uint32             `json:"sp"`
+	Insn     string             `json:"insn,omitempty"`
+	Adapter  string             `json:"adapter,omitempty"`
 }
 
 func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
@@ -350,12 +369,17 @@ func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
 	for _, s := range res.Steps {
 		js := loopStepJSON{
 			Core: s.Core, PC: s.PC, NextPC: s.NextPC, Flags: s.Flags, R: s.R,
-			RT:      s.RT,
-			Insn:    hexBytes(s.Insn),
-			Adapter: s.Adapter,
+			RT:       s.RT,
+			BeforeSP: s.BeforeSP,
+			SP:       s.SP,
+			Insn:     hexBytes(s.Insn),
+			Adapter:  s.Adapter,
 		}
 		for _, w := range s.Mem {
-			js.Mem = append(js.Mem, loopMemWriteJSON{Addr: w.Addr, Bytes: hexBytes(w.Bytes)})
+			js.Mem = append(js.Mem, loopMemWriteJSON{Addr: w.Addr, Bytes: hexBytes(w.Bytes), Abs: w.Abs})
+		}
+		for _, e := range s.Events {
+			js.Events = append(js.Events, stepEventJSON{Access: e.Access, KnownMask: e.KnownMask, KnownValue: e.KnownValue})
 		}
 		out.Steps = append(out.Steps, js)
 	}

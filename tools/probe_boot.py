@@ -3151,11 +3151,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if r.startswith('select wake require'):return 'upstream'
         return 'clean'
 
-    def _dual_commit(core,pc,next_pc,flags,R,insn_hex=None,memwrites=None,adapter=None,rt=None):
+    def _dual_commit(core,pc,next_pc,flags,R,insn_hex=None,memwrites=None,adapter=None,rt=None,events=None,sp=None,before_sp=None):
         # 一条已由 Go 执行的步的 Python 侧簿记:fetch 守卫计数、trace 行物化、
-        # 本步有序写回放(mem.write=note_memory_write+write 事件,执行核与写前
-        # PC 对齐)、adapter 计数、步后簿记(_post_step)与 after_step(TraceMachine
-        # 签名/钩子本体/core_icfg 刷新)。advance 已在 Go 内跑过,这里不重复。
+        # 本步有序写回放(具体写=mem.write=note_memory_write+write 事件;抽象写
+        # =mem.write_abstract_word=icfg_spills/unknown_origins overlay+抽象写事件;
+        # 执行核与写前 PC 对齐)、adapter 计数、ICFG special-read/write 事件、步后
+        # 簿记(_post_step)与 after_step。advance 已在 Go 内跑过,这里不重复。
         _t0 = time.perf_counter() if gosim_dual_engine is not None else None
         c=machine.cores[core]
         if hardware is not None:hardware.current_core=core
@@ -3172,34 +3173,41 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         row['bytes']=insn_hex if insn_hex is not None else c.mem.read(pc,size).hex()
         row['_pending_text']=(insn,raw)
         row['next_pc']=hex(next_pc)
-        # 有序写回放:必须在 c.pc 推进前落 mem.write,note_memory_write 才读到
-        # 写前 PC(与慢路径 exact_full_word_store 的写序一致)。回放的字节 Go
-        # 在执行时已写入自己的 ram map,这里只是让 Python ram 追平,不是 Python
-        # 侧的净变更,所以临时关掉脏跟踪,避免把已同步字节再塞进增量集。
+        # 有序写回放:必须在 c.pc 推进前落,note_memory_write 才读到写前 PC
+        # (与慢路径写序一致)。回放的字节 Go 在执行时已写入自己的 map,这里只是
+        # 让 Python 追平,不是 Python 侧的净变更,所以临时关掉脏跟踪,避免把已
+        # 同步字节再塞进增量集。
         if memwrites:
             _dirty_save = c.mem._gosim_dirty
             c.mem._gosim_dirty = None
             try:
                 for mw in memwrites:
-                    c.mem.write(mw['addr'], bytes.fromhex(mw['bytes']))
+                    if mw.get('abs') is not None:
+                        c.mem.write_abstract_word(mw['addr'], decode_reg_tag(mw['abs']))
+                    else:
+                        c.mem.write(mw['addr'], bytes.fromhex(mw['bytes']))
             finally:
                 c.mem._gosim_dirty = _dirty_save
+        # ICFG special-read/special-write 事件(Go 侧已改状态,这里补事件簿记)。
+        if events:
+            for ev in events:
+                event({'access': ev['access'], 'register': 'icfg',
+                       'known_mask': ev['known_mask'], 'known_value': ev['known_value']})
         if adapter:
             adapters[adapter]+=1
-        # Go 执行的标量 ld.w(5 形)在 icfg_spills 非空时,慢路径会走
-        # abstract_word 重载并计 partial_icfg_word_reload(地址不在 spill 内也照
-        # 计——abstract_word 对普通 RAM 地址返回具体值,与 Go 直读同值,差异只有
-        # 适配器计数);Go 侧操作数具体、直读具体字节,值一致但该计数缺失,这里按
-        # 慢路径同口径补计,保证 report 的 instruction_adapters 逐字节一致。
-        if insn.id in ('ld.w','ld.w.l','ld.w.sp','ld.w.idxs','ld.w.idx') and getattr(c.mem,'icfg_spills',None):
-            adapters['partial_icfg_word_reload']+=1
-        before_sp=c.sp
+        # 步后 SP:抽象任务栈搬运会改 SP,note_sp_write 需要步前 SP(慢路径
+        # step() 里的 before_sp)。Go 回传了 before_sp/sp,这里按它恢复并传
+        # 给 _post_step,保证 usp/ssp 失效与慢路径逐字节一致。老观测(无
+        # sp 字段)退化为旧行为(SP 不变)。
+        _before_sp = c.sp if before_sp is None else before_sp
+        if sp is not None:
+            c.sp = sp
         c.pc=next_pc;c.flags=flags
         if rt is None:
             c.R=[v if type(v) is int else 0 for v in R]
         else:
             c.R=[v if tag is None else decode_reg_tag(tag) for v,tag in zip(R,rt)]
-        c._post_step(pc,before_sp,False)
+        c._post_step(pc,_before_sp,False)
         if machine is not None:
             if c.core_id==1:hardware.secondary_cpu_executed=True
             machine.after_step(c,pc)
@@ -3363,7 +3371,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 s=dual_buf.pop(0)
                 row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                  insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                 adapter=s.get('adapter'),rt=s.get('rt'))
+                                 adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'))
                 completed+=1
                 gosim_dual_steps+=1
                 trace.append(row)
@@ -3381,7 +3389,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                                          'flags':hb.get('flags',0),'r':hb.get('R',[0]*16)}
                     row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                      insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                     adapter=s.get('adapter'),rt=s.get('rt'))
+                                     adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'))
                     completed+=1
                     gosim_dual_steps+=1
                     trace.append(row)
@@ -3400,7 +3408,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     core=s['core']
                     row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                      insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                     adapter=s.get('adapter'),rt=s.get('rt'))
+                                     adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'))
                     completed+=1
                     gosim_dual_steps+=1
                     if kind=='irq':
@@ -3474,7 +3482,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         s=dual_buf.pop(0)
                         row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                          insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                         adapter=s.get('adapter'),rt=s.get('rt'))
+                                         adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'))
                         completed+=1
                         gosim_dual_steps+=1
                         trace.append(row)

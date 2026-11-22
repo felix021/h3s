@@ -40,21 +40,38 @@ const (
 	BatchAbstract = 7 // a tagged (abstract) value would be consumed (hand back)
 )
 
-// MemWrite is one whole-word store observed during a step.
+// MemWrite is one whole-word store observed during a step. A concrete store
+// carries Value; an abstract store (partial-ICFG spill / abstract stack push)
+// carries Abs and is replayed by Python via Memory.write_abstract_word.
 type MemWrite struct {
 	Addr  uint32
 	Value uint32
+	Abs   *RegTag
+}
+
+// StepEvent is one memory event an abstract step emits (the special-read /
+// special-write events of the partial-ICFG handlers); Python appends it to the
+// run's events list so the report stays byte-identical.
+type StepEvent struct {
+	Access     string
+	KnownMask  string
+	KnownValue string
 }
 
 // SegmentStep is the per-step observation: pc before the step, pc after it,
 // flags after it, the 16 registers after it, and this step's memory writes
-// (always empty under the stage-1 contract).
+// (always empty under the stage-1 contract). BeforeSP / SP carry the stack
+// pointer before/after the step so the Python replay can fire note_sp_write
+// exactly as the slow path does (the abstract task-stack transport moves SP).
 type SegmentStep struct {
-	PC     uint32
-	NextPC uint32
-	Flags  uint8
-	R      [16]uint32
-	Mem    []MemWrite
+	PC       uint32
+	NextPC   uint32
+	Flags    uint8
+	R        [16]uint32
+	Mem      []MemWrite
+	Events   []StepEvent
+	BeforeSP uint32
+	SP       uint32
 
 	// Insn is the executed instruction's bytes (whole-loop path only; the
 	// stage-1 serialization ignores it). Adapter names the Python instruction

@@ -48,8 +48,14 @@ type Core struct {
 	// ICFGKnownMask is the full 32-bit known mask of the ICFG value (partial
 	// ICFG only); 0xffffffff = fully known. It feeds the select-side gate_demand.
 	ICFGKnownMask uint32
-	Steps         uint64
-	RepeatActive  bool // repeat / after_then pending (yield before attempt)
+	// ICFGStatusGen / ICFGWrites / ICFGBit9Updates are the br28_icfg.IcfgState
+	// generation and counters the report reads back; the partial-ICFG
+	// instruction handlers in icfg.go mutate them alongside ICFG/ICFGKnownMask.
+	ICFGStatusGen   int
+	ICFGWrites      int
+	ICFGBit9Updates int
+	Steps           uint64
+	RepeatActive    bool // repeat / after_then pending (yield before attempt)
 
 	// M6C special registers + execution context (br28_machine deliver_*
 	// projections). A nil pointer is the Python None (unknown); an empty
@@ -91,36 +97,48 @@ type Ledger struct {
 	Milestones     []LoopEvent
 }
 
-// LoopMemWrite is one byte-granular store observed during a committed step.
+// LoopMemWrite is one ordered memory operation observed during a committed
+// step. A concrete store carries Bytes; an abstract store (partial-ICFG spill /
+// abstract stack push) carries Abs and is replayed by Python via
+// Memory.write_abstract_word.
 type LoopMemWrite struct {
 	Addr  uint32
 	Bytes []byte
+	Abs   *RegTag
 }
 
 // LoopStep is one committed attempt's observation: the core it ran on, pc
 // before/after, flags and the 16 registers after, this step's ordered memory
 // writes, the executed instruction bytes (so self-modifying code's old trace is
-// not polluted), and the Python adapter to count ("" = none).
+// not polluted), the memory events to append, and the Python adapter to count
+// ("" = none).
 type LoopStep struct {
-	Core    int
-	PC      uint32
-	NextPC  uint32
-	Flags   uint8
-	R       [16]uint32
-	RT      [16]*RegTag
-	Mem     []LoopMemWrite
-	Insn    []byte
-	Adapter string
+	Core     int
+	PC       uint32
+	NextPC   uint32
+	Flags    uint8
+	R        [16]uint32
+	RT       [16]*RegTag
+	Mem      []LoopMemWrite
+	Events   []StepEvent
+	BeforeSP uint32
+	SP       uint32
+	Insn     []byte
+	Adapter  string
 }
 
-// loopMemWrites converts the core's word writes into byte-granular observations.
+// loopMemWrites converts the core's ordered word writes (concrete or abstract)
+// into the serializable observations.
 func loopMemWrites(in []MemWrite) []LoopMemWrite {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]LoopMemWrite, len(in))
 	for i, w := range in {
-		out[i] = LoopMemWrite{Addr: w.Addr, Bytes: wordBytes(w.Value)}
+		out[i] = LoopMemWrite{Addr: w.Addr, Abs: w.Abs}
+		if w.Abs == nil {
+			out[i].Bytes = wordBytes(w.Value)
+		}
 	}
 	return out
 }
@@ -619,7 +637,9 @@ func (w *World) runDualCore(n int) LoopResult {
 		beforePC := w.Cores[core].PC
 		cpu := w.execFor(core)
 		syncCPUFromCore(cpu, w.Cores[core])
-		s, tag, code, stopPC, stepErr := cpu.RunDualStepCore(w.Cores[core])
+		s, tag, code, stopPC, stepErr := cpu.RunDualStepCore(w.Cores[core],
+			w.Machine != nil && w.Machine.PartialIcfg,
+			w.Machine != nil && w.Machine.UnknownTaskGprs)
 		if code != BatchOK {
 			res.StopCore = core
 			res.StopPC = stopPC
@@ -629,11 +649,13 @@ func (w *World) runDualCore(n int) LoopResult {
 			}
 			return res
 		}
-		syncCoreFromCPU(w.Cores[core], cpu, tag.Writes)
-		if tag.MovTag {
-			// mov.rr transport: the destination inherits the source tag after the
-			// write-clear pass (the write itself cleared the destination's old tag).
-			w.Cores[core].RT[tag.MovDst] = w.Cores[core].RT[tag.MovSrc]
+		if !tag.Direct {
+			syncCoreFromCPU(w.Cores[core], cpu, tag.Writes)
+			if tag.MovTag {
+				// mov.rr transport: the destination inherits the source tag after the
+				// write-clear pass (the write itself cleared the destination's old tag).
+				w.Cores[core].RT[tag.MovDst] = w.Cores[core].RT[tag.MovSrc]
+			}
 		}
 
 		// A store invalidates both cores' decode caches (self-modifying code
@@ -650,15 +672,18 @@ func (w *World) runDualCore(n int) LoopResult {
 		// carries the executed prefix — exactly as Python appends the row even
 		// when after_step/advance raises.
 		res.Steps = append(res.Steps, LoopStep{
-			Core:    core,
-			PC:      s.PC,
-			NextPC:  s.NextPC,
-			Flags:   s.Flags,
-			R:       s.R,
-			RT:      w.Cores[core].RT,
-			Mem:     loopMemWrites(s.Mem),
-			Insn:    s.Insn,
-			Adapter: s.Adapter,
+			Core:     core,
+			PC:       s.PC,
+			NextPC:   s.NextPC,
+			Flags:    s.Flags,
+			R:        s.R,
+			RT:       w.Cores[core].RT,
+			Mem:      loopMemWrites(s.Mem),
+			Events:   s.Events,
+			BeforeSP: s.BeforeSP,
+			SP:       s.SP,
+			Insn:     s.Insn,
+			Adapter:  s.Adapter,
 		})
 
 		// 5. after_step judgment (hook bodies stay Python).

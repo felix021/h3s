@@ -59,6 +59,10 @@ class StrictMem:
         self.lib.gosim_smem_import_ram.restype = None
         self.lib.gosim_smem_remove_ram.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
         self.lib.gosim_smem_remove_ram.restype = None
+        self.lib.gosim_smem_replace_unknown_origins.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
+        self.lib.gosim_smem_replace_unknown_origins.restype = None
+        self.lib.gosim_smem_replace_icfg_spills.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
+        self.lib.gosim_smem_replace_icfg_spills.restype = None
         self.handle = self.lib.gosim_smem_new()
 
     def _buf(self, data):
@@ -133,3 +137,16 @@ class StrictMem:
             return
         buf = (c_uint8 * len(addrs)).from_buffer_copy(addrs)
         self.lib.gosim_smem_remove_ram(self.handle, buf, len(addrs))
+
+    def replace_unknown_origins(self, entries):
+        """Install the whole unknown_origins map (full replace, no side effects).
+        entries is a flat bytes buffer of [u32 addr][u32 origin] per byte."""
+        buf = (c_uint8 * len(entries)).from_buffer_copy(entries)
+        self.lib.gosim_smem_replace_unknown_origins(self.handle, buf, len(entries))
+
+    def replace_icfg_spills(self, entries):
+        """Install the whole icfg_spills map (full replace, no side effects).
+        entries is a flat bytes buffer of [u32 addr][u32 value][u32 known]
+        [u32 identity][i32 origin_core][i32 origin_gen] per spill word."""
+        buf = (c_uint8 * len(entries)).from_buffer_copy(entries)
+        self.lib.gosim_smem_replace_icfg_spills(self.handle, buf, len(entries))

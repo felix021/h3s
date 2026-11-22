@@ -153,6 +153,14 @@ def _icfg_bits(c):
         c.icfg_known
 
 
+def _icfg_extra(c):
+    """(status_generation, writes, bit9_updates) of one CPU's ICFG state."""
+    st = getattr(c, 'icfg_state', None)
+    if st is not None:
+        return st.status_generation, st.writes, st.bit9_updates
+    return 0, 0, 0
+
+
 # The three select-side literal anchors (mirror gosim/machine.go).
 _TIMER2_POLL_ANCHOR = 0x12CD76
 _CORE1_IDLE_PC = 0x12C5CA
@@ -234,6 +242,7 @@ def core_state(c):
 
     r, rt = regs()
     icfg, icfg_mask, icfg_known = _icfg_bits(c)
+    icfg_gen, icfg_writes, icfg_bit9 = _icfg_extra(c)
     return {
         'id': c.core_id,
         'r': r,
@@ -246,6 +255,9 @@ def core_state(c):
         'icfg': icfg,
         'icfg_known': icfg_known,
         'icfg_known_mask': icfg_mask,
+        'icfg_status_gen': icfg_gen,
+        'icfg_writes': icfg_writes,
+        'icfg_bit9_updates': icfg_bit9,
         'steps': c.steps,
         'repeat_active': (getattr(c, 'repeat', None) is not None
                           or getattr(c, 'after_then', None) is not None),
@@ -308,6 +320,7 @@ def machine_state(m):
         'current_core': getattr(hw, 'current_core', 0),
         'core_icfg': [_opt_int(core_icfg.get(0)), _opt_int(core_icfg.get(1))],
         'partial_icfg': m.partial_icfg,
+        'unknown_task_gprs': m.unknown_task_gprs,
     }
 
 
@@ -457,13 +470,12 @@ def periph_state(hw):
 def restore_core(c, gc):
     """Write one Go coreStateJSON back into the live Python CPU.
 
-    Only R / flags / pc / steps are written back: the stage-1/2 segment contract
-    never touches sp / rets / icfg / the special registers (no memory, no sp move,
-    no sr move, no call/return), and delivery projections stay Python, so those
-    fields are unchanged by the Go run and must not be clobbered by a fabricated
-    placeholder (e.g. an unknown sp would otherwise be turned into 0). The typed
-    register side table ('rt') reconstructs any abstract GPR losslessly; when it
-    is absent (legacy concrete shape) each R slot stays a concrete int."""
+    R / flags / pc / steps are always written back. sp / rets / icfg are also
+    written back now: the ICFG instruction handlers and the abstract task-stack
+    transport the Go loop executes mutate them, so the restore must carry their
+    post-loop values. The typed register side table ('rt') reconstructs any
+    abstract GPR losslessly; when it is absent (legacy concrete shape) each R
+    slot stays a concrete int."""
     if gc is None:
         return
     rt = gc.get('rt')
@@ -476,6 +488,20 @@ def restore_core(c, gc):
     c.flags = gc['flags'] & 0xFFFFFFFF
     c.pc = gc['pc'] & 0xFFFFFFFF
     c.steps = gc['steps']
+    c.sp = gc['sp'] & 0xFFFFFFFF
+    c.sp_known = bool(gc.get('sp_known', True))
+    c.rets = gc['rets'] & 0xFFFFFFFF
+    icfg = gc.get('icfg', 0) & 0xFFFFFFFF
+    st = getattr(c, 'icfg_state', None)
+    if st is not None:
+        st.value = icfg
+        st.known = gc.get('icfg_known_mask', 0xffffffff) & 0xFFFFFFFF
+        st.status_generation = gc.get('icfg_status_gen', 0)
+        st.writes = gc.get('icfg_writes', 0)
+        st.bit9_updates = gc.get('icfg_bit9_updates', 0)
+    else:
+        c.icfg = icfg
+        c.icfg_known = bool(gc.get('icfg_known', False))
 
 
 def restore_machine(m, gs):
@@ -666,6 +692,29 @@ class DualCoreEngine:
             out += struct.pack('<IB', addr & 0xffffffff, byte & 0xff)
         return bytes(out)
 
+    def _pack_unknown_origins(self):
+        out = bytearray()
+        for addr, origin in self.mem.unknown_origins.items():
+            out += struct.pack('<II', addr & 0xffffffff, origin & 0xffffffff)
+        return bytes(out)
+
+    def _pack_icfg_spills(self):
+        out = bytearray()
+        for addr, v in self.mem.icfg_spills.items():
+            origin = getattr(v, 'origin', None)
+            core = origin[0] if origin is not None else 0
+            gen = origin[1] if origin is not None else 0
+            out += struct.pack('<IIIIii', addr & 0xffffffff, v.value & 0xffffffff,
+                               v.known & 0xffffffff, v.identity & 0xffffffff, core, gen)
+        return bytes(out)
+
+    def _sync_abstract_mem(self):
+        """Full-replace the Go unknown_origins / icfg_spills maps from the live
+        Python memory (both are tiny; a wholesale replace is always correct and
+        cheaper than a delta for these provenance overlays)."""
+        self.smem.replace_unknown_origins(self._pack_unknown_origins())
+        self.smem.replace_icfg_spills(self._pack_icfg_spills())
+
     def _sync_ram(self):
         """Reconcile the Go ram map with the live Python mem.ram.
 
@@ -733,6 +782,7 @@ class DualCoreEngine:
         after_step config), re-syncing the RAM bytes Python wrote since the last
         Go run (slow-path stores / abstract writes)."""
         changed = self._sync_ram()
+        self._sync_abstract_mem()
 
         t0 = time.perf_counter()
         cs0 = core_state(c0)

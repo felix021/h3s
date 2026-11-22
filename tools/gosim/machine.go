@@ -90,6 +90,9 @@ type Machine struct {
 	// derives the per-core hardware gate demand (gate_demand) from the partial
 	// known mask instead of the whole-word known/nil fallback.
 	PartialIcfg bool
+	// UnknownTaskGprs mirrors DualCoreMachine.unknown_task_gprs: the abstract
+	// task-stack transport (PUSH/POP of tagged GPRs) is active.
+	UnknownTaskGprs bool
 }
 
 // NewMachine returns a Machine with the Python constructor's select-relevant
@@ -305,6 +308,8 @@ type machineInput struct {
 	CoreIcfg    [2]*uint32 `json:"core_icfg"`
 	// PartialIcfg mirrors DualCoreMachine.partial_icfg.
 	PartialIcfg bool `json:"partial_icfg"`
+	// UnknownTaskGprs mirrors DualCoreMachine.unknown_task_gprs.
+	UnknownTaskGprs bool `json:"unknown_task_gprs"`
 }
 
 // LoadJSON restores the input state from JSON and resets the accumulated
@@ -366,6 +371,7 @@ func (m *Machine) LoadJSON(data []byte) error {
 	m.CurrentCore = in.CurrentCore
 	m.CoreIcfg = in.CoreIcfg
 	m.PartialIcfg = in.PartialIcfg
+	m.UnknownTaskGprs = in.UnknownTaskGprs
 	return nil
 }
 
@@ -423,6 +429,7 @@ func (m *Machine) StateJSON() []byte {
 		"current_core":            m.CurrentCore,
 		"core_icfg":               icfg,
 		"partial_icfg":            m.PartialIcfg,
+		"unknown_task_gprs":       m.UnknownTaskGprs,
 	}
 	b, _ := json.Marshal(out)
 	return b

@@ -369,6 +369,50 @@ func gosim_smem_remove_ram(h C.uintptr_t, addrs *C.uint8_t, n C.int) {
 	mem(h).RemoveRAMBytes(out)
 }
 
+// gosim_smem_replace_unknown_origins installs the whole unknown_origins map:
+// entries is a flat [u32 little-endian addr][u32 little-endian origin] sequence.
+// It replaces the Go map wholesale (no events, no guest-write side effect).
+//
+//export gosim_smem_replace_unknown_origins
+func gosim_smem_replace_unknown_origins(h C.uintptr_t, entries *C.uint8_t, n C.int) {
+	m := map[uint32]uint32{}
+	if entries != nil && n > 0 {
+		data := unsafe.Slice((*byte)(unsafe.Pointer(entries)), int(n))
+		for i := 0; i+8 <= len(data); i += 8 {
+			addr := uint32(data[i]) | uint32(data[i+1])<<8 | uint32(data[i+2])<<16 | uint32(data[i+3])<<24
+			origin := uint32(data[i+4]) | uint32(data[i+5])<<8 | uint32(data[i+6])<<16 | uint32(data[i+7])<<24
+			m[addr] = origin
+		}
+	}
+	mem(h).ReplaceUnknownOrigins(m)
+}
+
+// gosim_smem_replace_icfg_spills installs the whole icfg_spills map: entries is
+// a flat [u32 addr][u32 value][u32 known][u32 identity][i32 origin_core][i32
+// origin_gen] sequence. It replaces the Go map wholesale.
+//
+//export gosim_smem_replace_icfg_spills
+func gosim_smem_replace_icfg_spills(h C.uintptr_t, entries *C.uint8_t, n C.int) {
+	m := map[uint32]*gosim.IcfgSpill{}
+	if entries != nil && n > 0 {
+		data := unsafe.Slice((*byte)(unsafe.Pointer(entries)), int(n))
+		for i := 0; i+24 <= len(data); i += 24 {
+			addr := u32le(data[i:])
+			value := u32le(data[i+4:])
+			known := u32le(data[i+8:])
+			identity := u32le(data[i+12:])
+			core := int(int32(u32le(data[i+16:])))
+			gen := int(int32(u32le(data[i+20:])))
+			m[addr] = &gosim.IcfgSpill{Value: value, Known: known, Identity: identity, Origin: &[2]int{core, gen}}
+		}
+	}
+	mem(h).ReplaceIcfgSpills(m)
+}
+
+func u32le(b []byte) uint32 {
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+}
+
 // ---- peripheral models (M3) exports ----------------------------------------
 //
 // Timer0 and IRQController (gosim.PeriphState / periph.go), callable from

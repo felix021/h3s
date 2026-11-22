@@ -59,13 +59,16 @@ type ReadonlyMirror struct {
 	Data []byte
 }
 
-// IcfgSpill is a partial-ICFG spilled word (M2 provenance structure; the full
-// abstract-value algebra is M4). Known and Identity are 32-bit byte masks in
-// the Python IcfgValue layout: bit (8*i)..(8*i+7) belong to byte i.
+// IcfgSpill is a partial-ICFG spilled word. Known and Identity are 32-bit byte
+// masks in the Python IcfgValue layout: bit (8*i)..(8*i+7) belong to byte i.
+// Origin is the (core, status_generation) provenance br28_icfg.IcfgValue keeps;
+// it must survive a spill -> reload so a reloaded value can still be written
+// back to the same core's ICFG.
 type IcfgSpill struct {
 	Value    uint32
 	Known    uint32
 	Identity uint32
+	Origin   *[2]int
 }
 
 // overlayBytes writes concrete bytes at offset into the spill, marking the
@@ -81,7 +84,7 @@ func (s *IcfgSpill) overlayBytes(offset int, data []byte) *IcfgSpill {
 		known |= mask
 		identity &^= mask
 	}
-	return &IcfgSpill{Value: value, Known: known, Identity: identity}
+	return &IcfgSpill{Value: value, Known: known, Identity: identity, Origin: s.Origin}
 }
 
 // WriteEvent is one observed write (mirror of Python
@@ -209,6 +212,16 @@ func (m *Memory) RemoveRAMBytes(addrs []uint32) {
 	for _, a := range addrs {
 		delete(m.ram, a)
 	}
+}
+
+// ReplaceUnknownOrigins installs a whole unknown_origins map (no side effects).
+func (m *Memory) ReplaceUnknownOrigins(entries map[uint32]uint32) {
+	m.unknownOrigins = entries
+}
+
+// ReplaceIcfgSpills installs a whole icfg_spills map (no side effects).
+func (m *Memory) ReplaceIcfgSpills(entries map[uint32]*IcfgSpill) {
+	m.icfgSpills = entries
 }
 
 // HasIcfgSpills reports whether any partial-ICFG spill words are resident.
