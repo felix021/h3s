@@ -113,6 +113,12 @@ def build_machine():
                                         'handler': '0x12ad2a', 'reti_from': '0x6066128'}]
     machine.core_tick_deliveries = [{'kind': 'core_tick_entry', 'core': 0, 'irq': 3}]
     machine.timer0_irq_deliveries = [{'kind': 'timer0_irq_entry', 'core': 1, 'irq': 4}]
+    # Route SRCSYNC5: the IRQ89 delivery bookkeeping is runtime state (a
+    # delivered SRC episode; the park world carries one entry per episode).
+    machine.src_sync_irq_deliveries = [
+        {'kind': 'src_sync_irq_entry', 'core': 0, 'irq': 89,
+         'vector_address': '0x19ff64', 'handler': '0x12ca24',
+         'reti_from': '0x12b56c'}]
     machine.irq_delivery_deferrals = 1
     machine.irq_delivery_deferral_events = [
         {'kind': 'irq_delivery_deferred', 'core': 0, 'irq': 4,
@@ -739,6 +745,12 @@ class M4ProjectionFamilies(unittest.TestCase):
         # conditional frontier flag set (its first served read sits at the
         # 42,232,325-era stop).
         jl_src_sync_coef_batch_readback=True,
+        # Route SRCSYNC5/6: the completion-event + IRQ89 delivery model and the
+        # hardware cursor-progress projection (both opt-in, layers on the
+        # write-side predecessors above; the M4 slots are in M4_FAMILIES so the
+        # all-families world turns them on for the round-trip inventory).
+        jl_src_sync_delivery=True, jl_src_sync_delivery_requests=True,
+        jl_src_sync_cursor_progress=True,
         # Route SYNCIMPL: the JL_SYNC four-word container, ON in the current
         # conditional frontier flag set (its first recorded store sits at the
         # 42,061,357 frontier stop).
@@ -1009,10 +1021,12 @@ class M4ProjectionFamilies(unittest.TestCase):
         hw.jl_src_sync.read(JLSrcSyncConfigRegisters.WORDS[0])  # synthetic initial 0
         hw.jl_src_sync.write(JLSrcSyncConfigRegisters.WORDS[2], 0, 0)
         # Route SRCSYNC2: the full-block eleven-word container carries state —
-        # one CON2 whole-word store recorded; every read is refused.
+        # one CON2 whole-word store recorded. With the SRCSYNC5 delivery half on
+        # (this all-families world), the read-back serves the last-written value;
+        # the read-refusal path is covered by the delivery-off world elsewhere.
         hw.jl_src_sync_full_block.write(JLSrcSyncFullBlockRegisters.WORDS[0], 0x00010002, 0)
-        with self.assertRaisesRegex(Exception, 'jl_src_sync_full_block_read_not_modeled'):
-            hw.jl_src_sync_full_block.read(JLSrcSyncFullBlockRegisters.WORDS[0], 0)
+        self.assertEqual(hw.jl_src_sync_full_block.read(JLSrcSyncFullBlockRegisters.WORDS[0], 0),
+                         0x00010002)
         # Route SRCSYNC4: the COEF batch read-back carries state — the init fill
         # advances through the audited 0x606fc02 write site (per-step PC
         # provenance rides as state), plus the CON0/CON1 gate mirrors.
@@ -1021,6 +1035,47 @@ class M4ProjectionFamilies(unittest.TestCase):
         hw.write(0xfe263c, 0)
         self.assertEqual(coef.init_writes, 1)
         self.assertEqual(len(coef.batch), 1)
+        # Route SRCSYNC5: the delivery phase machine carries state — an
+        # already-acked episode mid-loop (the IRQ89 handler W1C already cleared
+        # pending/delivery_in_flight; the per-episode ledgers counted). A
+        # restore without them would re-arm an already-served completion.
+        delivery = hw.jl_src_sync_delivery
+        delivery.started = False
+        delivery.start_step = 31_580_000
+        delivery.pending = False
+        delivery.delivery_in_flight = False
+        delivery.starts = 2
+        delivery.completions = 2
+        delivery.acks = 2
+        # Route SRCSYNC6: the cursor-progress projection carries state — two
+        # committed transactions (C=2 channels, W=4-byte samples, consume=64 =
+        # exhaust / produce=1:1), the last latched descriptor + committed
+        # snapshot, the cumulative sample ledgers and the bounded history log.
+        # Values are the function-B descriptors from test_src_sync_delivery
+        # (IDAT_ADR 0x41d30c/IDAT_LEN 64, ODAT_ADR 0x41d9ac/ODAT_LEN 930).
+        cursor = hw.jl_src_sync_cursor
+        cursor.transaction = 2
+        cursor.commits = 2
+        cursor.channels = 2
+        cursor.latched = {0xfe2610: 0x41d50c, 0xfe2614: 64,
+                          0xfe2618: 0x41dbac, 0xfe261c: 866}
+        cursor.committed = {0xfe2610: 0x41d70c, 0xfe2614: 0,
+                            0xfe2618: 0x41ddac, 0xfe261c: 802}
+        cursor.input_consumed_samples = 128
+        cursor.output_produced_samples = 128
+        cursor.history = [
+            {'transaction': 1, 'channels': 2, 'sample_bytes': 4,
+             'consumed': 64, 'produced': 64,
+             'idat_before': 0x41d30c, 'idat_after': 0x41d50c,
+             'idat_len_before': 64, 'idat_len_after': 0,
+             'odat_before': 0x41d9ac, 'odat_after': 0x41dbac,
+             'odat_len_before': 930, 'odat_len_after': 866},
+            {'transaction': 2, 'channels': 2, 'sample_bytes': 4,
+             'consumed': 64, 'produced': 64,
+             'idat_before': 0x41d50c, 'idat_after': 0x41d70c,
+             'idat_len_before': 64, 'idat_len_after': 0,
+             'odat_before': 0x41dbac, 'odat_after': 0x41ddac,
+             'odat_len_before': 866, 'odat_len_after': 802}]
         # Route SYNCIMPL: the four-word container carries state — the creator
         # whole-word zero store on CON (read-after-write via the audited
         # fn_config read PC) plus a WO word zero store; the per-step PC/core

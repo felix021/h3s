@@ -1288,11 +1288,17 @@ M4_FAMILIES = (
      ('stores', 'word_writes', 'reads_after_write', 'synthesized_initial_reads',
       'coef_read_attempts')),
     # Route SRCSYNC2: the JL_SRC_SYNC full-block eleven-word write-record
-    # container (whole-word stores recorded, every read refused) — the captured
-    # state is the write record and the read-refusal counter (constant zero in
-    # any captured world: a refusal stops the run, kept for shape symmetry).
+    # container (whole-word stores recorded; every read refused when the
+    # delivery half is off). The captured state is the write record, the
+    # read-refusal counter, and — once SRCSYNC5 delivery turns the read-back
+    # half on — the served-read counter (reads_served): the IRQ89 handler reads
+    # the cursor words back every episode, so a restore without it would
+    # under-count the served reads and diverge. `cursor` is a cross-wiring
+    # back-reference to the cursor partner (M4_WIRING_SKIP). readback rides as
+    # static (it mirrors the jl_src_sync_delivery switch, already double-guarded
+    # by that slot's own record).
     ('jl_src_sync_full_block', 'JLSrcSyncFullBlockRegisters',
-     ('stores', 'word_writes', 'read_attempts')),
+     ('stores', 'word_writes', 'read_attempts', 'reads_served')),
     # Route SRCSYNC4: the JL_SRC_SYNC COEF post-initialization 55-word batch
     # read-back (independent container, DAC-idle precedent): the captured state
     # is the phase machine, the 55-word batch content, the read cursor, the
@@ -1306,6 +1312,32 @@ M4_FAMILIES = (
      ('phase', 'batch', 'read_cursor', 'init_writes', 'write_back_writes',
       'reads_served', 'first_read', 'last_read', 'invalidations', 'rejections',
       'write_events', 'con0_bit4', 'con1_bit22', 'current_pc', 'current_pc_core')),
+    # Route SRCSYNC5: the JL_SRC_SYNC completion-event + IRQ89 delivery model
+    # (opt-in). Runtime STATE is the delivery phase machine + ledgers — started/
+    # start_step (the in-flight episode anchor), pending/delivery_in_flight (the
+    # armed W1C bits the machine/IRQ89 handler clears), starts/completions/acks
+    # (the per-episode counters; a restore without them would re-arm or miscount
+    # an already-served completion). completion_steps is the construction
+    # assumption (static fixture); `cursor` is a cross-wiring back-reference to
+    # the cursor partner (skipped via M4_WIRING_SKIP like M3's
+    # cpu1_release_handler).
+    ('jl_src_sync_delivery', 'JLSrcSyncDelivery',
+     ('started', 'start_step', 'pending', 'delivery_in_flight', 'starts',
+      'completions', 'acks')),
+    # Route SRCSYNC6: the JL_SRC_SYNC hardware cursor-progress projection
+    # (opt-in, layers on delivery). Runtime STATE is the per-transaction latched
+    # descriptor/commit snapshot + the cumulative ledgers — transaction/commits/
+    # channels (the episode identity + channel count), latched/committed (the
+    # four IDAT/ODAT cursor words the IRQ89 handler reads back), input_consumed/
+    # output_produced samples and the per-commit history log. A restore without
+    # them would lose the hardware cursor advance (the SRC loop would re-read the
+    # stale IDAT_LEN and either double-commit or resurrect the infinite-SRC-loop
+    # artifact). sample_bytes/consume/produce are construction assumptions
+    # (static fixtures). This slot fixes the missing-state guard that previously
+    # refused any cursor-progress world capture.
+    ('jl_src_sync_cursor', 'JLSrcSyncCursorProgress',
+     ('transaction', 'commits', 'channels', 'latched', 'committed',
+      'input_consumed_samples', 'output_produced_samples', 'history')),
     # Route SYNCIMPL: the JL_SYNC four-word container (no-synthetic-initial
     # CON read-back plus the three __WO write-only words) — the captured state
     # is the write record and the two refusal counters (constant zero in any
@@ -1435,6 +1467,20 @@ M4_FAMILIES = (
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 
+# Cross-wiring reference attributes on projection objects that are neither state
+# nor static fixtures (delivery holds its cursor partner): skipped from the
+# per-object static guard exactly like M3_WIRING_SKIP's cpu1_release_handler. The
+# reference itself is rebuilt by the construction chain (note_start forwards into
+# the partner), so restore must NOT touch it.
+M4_WIRING_SKIP = {
+    'jl_src_sync_delivery': ('cursor',),
+    'jl_src_sync_full_block': ('cursor',),
+}
+
+
+def _m4_static_skip(slot, fields):
+    return fields + M4_WIRING_SKIP.get(slot, ())
+
 
 def _capture_m4(world):
     if world.hardware is None:
@@ -1450,7 +1496,7 @@ def _capture_m4(world):
                                 f'but the adapter family table says {cls_name} — the model '
                                 'shape drifted; update the M4 families table')
         record = capture_object(obj, fields, 'M4', slot, encode=encode_value_pairs)
-        record['static'] = capture_static(obj, f'M4.{slot}', skip=fields)
+        record['static'] = capture_static(obj, f'M4.{slot}', skip=_m4_static_skip(slot, fields))
         objects[slot] = record
     return {'objects': objects, 'scalars': {}, 'static': {}}
 
@@ -1527,7 +1573,8 @@ def _restore_m4(payload, world):
             # delta actually waived rides the summary for audit.
             _slot_virgin(record, obj, fields, 'M4', slot)
             if applied is not None:
-                current_static = capture_static(obj, f'M4.{slot}', skip=fields)
+                current_static = capture_static(obj, f'M4.{slot}',
+                                                skip=_m4_static_skip(slot, fields))
                 waived = {name: {'snapshot': record['static'].get(name),
                                  'target': current_static.get(name)}
                           for name in sorted(set(record['static']) | set(current_static))
@@ -1541,7 +1588,8 @@ def _restore_m4(payload, world):
             # instead of silently dropping the operator's acknowledgement.
             applied.setdefault('unused_enable_slots', []).append(slot)
         try:
-            check_static(record['static'], obj, f'M4.{slot}', skip=fields)  # switches first...
+            check_static(record['static'], obj, f'M4.{slot}',
+                         skip=_m4_static_skip(slot, fields))  # switches first...
         except SnapshotError as error:
             raise SnapshotError(f'{error} — rebuild the target with the same switches, or '
                                 '(a fixture-VALUE-only delta on a never-touched container) '
@@ -1594,7 +1642,14 @@ M5_STATE = ('last_core', 'idle_wait_cores', 'stalls', 'launches', 'deferred_core
             # Route D2AI: the audio IRQ68 delivery bookkeeping (bounded event
             # list) — a restore without it would re-refuse the one-shot entry
             # on an already-delivered core.
-            'audio_irq_deliveries')
+            'audio_irq_deliveries',
+            # Route SRCSYNC5: the IRQ89 delivery bookkeeping (bounded event
+            # list) — a restore without it would re-refuse the one-shot entry
+            # on an already-delivered core (the park world delivers IRQ89 once
+            # per SRC episode, so the list is non-empty at any mid-loop capture;
+            # it surfaced as a capture-time list-of-dicts static refusal, same
+            # shape as timer2_poll_wakes/audio_irq_deliveries).
+            'src_sync_irq_deliveries')
 # Observation-layer attributes of analyze_image_trace.TraceMachine (route O6):
 # the per-run signature spool and its pending-writes buffer record what THIS
 # comparator run executed, not simulated world state — a restored world starts a
