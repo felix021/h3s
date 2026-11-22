@@ -361,6 +361,9 @@ class D1WindowObserver:
         # 事件序列(自累计,不依赖 machine.events 滑窗)
         self._park_log=[]       # entered/woken 序列(条目含 model_step,§2.6)
         self._engagements=[]    # 每次 engage 的计数器快照(§2.6 路CH需求键)
+        self._seg_engage_step=None       # 当前段 engage 的模型步(段守恒锚)
+        self._seg_engage_advances=None   # 当前段 engage 时的事件时钟推进计数
+        self._seg_advances=None          # 当前段首段 advances(交付钩子落定)
         self._deliveries=[]     # 窗口判别用交付记录(含 model_step,§2.4)
         self._rtis=[]           # RTI 记录(timer0/core_tick)
         self._chain=_ChainTracker()
@@ -457,14 +460,25 @@ class D1WindowObserver:
         step=self._model_step(machine)
         timer=machine.hardware.timer
         ticks=machine.hardware.core_ticks or ()
+        # 段边界钩子(BI-A2 段守恒,§2.6 路 CH 需求):上一段的首段 advances 已由
+        # 交付钩子落定(self._seg_advances);段间执行=本 engage 步号 − 上 engage
+        # 步号 − 首段 advances(首段 advances 是纯事件时钟推进,无执行;段间执行=
+        # 唤醒后 handler/应用代码/nested 运行期交付直到重新 park 的全部执行)。
+        # 上段无唤醒交付(如 TIMER2 poll 唤醒不产生 IRQ 交付)时 _seg_advances 仍
+        # None,段间执行保持 None=观测缺口(checker pending 非 pass,不臆造)。
+        if self._engagements and self._seg_engage_step is not None \
+                and self._seg_advances is not None:
+            inter=step-self._seg_engage_step-self._seg_advances
+            self._engagements[-1]['inter_segment_execution']=inter
+        self._seg_engage_step=step
+        self._seg_engage_advances=getattr(machine,'event_clock_advances',0)
+        self._seg_advances=None
         self._engagements.append({
             'model_step':step,
             'timer0':{'con':timer.con,'cnt':timer.cnt,'prd':timer.prd,
                       'remainder':timer.remainder,'source_remainder':timer.source_remainder},
             'core_ticks':{'0':{'con':ticks[0].con,'cnt':ticks[0].cnt,'prd':ticks[0].prd,
                                'progress':ticks[0].progress}} if ticks else {},
-            # [待 PR-2 实测核对差值]:段级 advances/段间执行需要 advance_event_clock
-            # 的段边界钩子,本半边不挂——BI-A1/A2 消费面按观测缺口 pending。
             'first_segment_advances':None,'inter_segment_execution':None})
         if self._w_park is None and self._pend_write_seen:
             self._open_window(machine,cpu,step)
@@ -473,6 +487,15 @@ class D1WindowObserver:
         extra=0 if woke_from_idle_wait else 1
         step=self._model_step(machine,extra)
         self._sample_pending_edges(machine)   # 快进段终点=交付点的到期边沿
+        # 段边界钩子(BI-A1/A2):woke_from_idle_wait=True=该交付是事件时钟快进段
+        # 的终点(核 idle 被唤醒)。首段 advances=事件时钟推进计数差(快进段无执行,
+        # 推进计数差==模型步差)。只落第一次——段内后续 running 期交付(woke=False)
+        # 不覆盖首段值(它们属段间执行面)。
+        if woke_from_idle_wait and self._seg_advances is None \
+                and self._seg_engage_advances is not None and self._engagements:
+            advances=getattr(machine,'event_clock_advances',0)-self._seg_engage_advances
+            self._engagements[-1]['first_segment_advances']=advances
+            self._seg_advances=advances
         record={**event,'model_step':step,'woke_from_idle_wait':woke_from_idle_wait}
         if event.get('irq')==3:
             # D1-3 资格面([路 CH 需求] 键的观察器落地):交付时刻采样 ipmask/

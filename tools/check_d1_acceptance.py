@@ -47,6 +47,9 @@ from br28_model import DIVISORS  # 与模型同源的 divisor 表(非等比),不
 # ── 文档锚点常量(docs 出处:docs/d1-acceptance.md §1、docs/d1-idle-event-clock.md
 #    §1.1/§4、docs/d1-s18-consumption.md §1/§2、HANDOFF 路 BE/BF) ─────────────
 PARK_IDLE_PC='0x12c5ca'            # 两核 idle 任务体 idle 指令(BP §1.1,trace 钉死)
+IDLE_RESUME_PCS=('0x12c5ca','0x12c5cc')  # 唤醒返回地址:idle 循环内的合法 resume 点——
+# 消费 idle 后的下一条 0x12c5cc(idle_wake_consumes_idle=True,停泊核 reti=pc+2)或
+# idle 指令本身 0x12c5ca(开关关,reti=pc 重执行 idle);两者都是真实 idle 循环成员。
 K1_PC='0x601249c'                  # 金丝雀 K1(d1-acceptance §1 D1-1,tail-map §4)
 K2_PC='0x60124ae'                  # 金丝雀 K2(同上)
 S19_LOOP_HEAD='0x60123e6'          # S19 消息循环头(d1-acceptance §2.1)
@@ -725,8 +728,13 @@ def d1_2_timer0_cycles(scenario):
                    for e in rti_events)
         repark_candidates=[e for e in log if e.get('kind')=='core_idle_wait_entered'
                            and e.get('core')==0]
+        # re-park 配对按 Timer0(irq4)唤醒:H4 已定「非必要源(irq89 SRC 完成等)在途
+        # 唤醒不判 stuck」(2440e22),D1-2 的 RTI/re-park 四查同理只对 Timer0 周期
+        # 成立——irq89/irq3 唤醒的 handler 长跑(如 SRC 处理)可在窗口右边界仍开
+        # (未回等待),计入唤醒会误判「漏回等待」(2026-11-22 实测:200k 窗口 6 唤醒
+        # =irq4×3+irq3×1+irq89×2 vs 5 回等待,irq89 末段在途)。
         wake_candidates=[e for e in log if e.get('kind')=='core_woken_by_delivery'
-                         and e.get('core')==0]
+                         and e.get('core')==0 and e.get('irq')==4]
         def _in_window(entries):
             if park_boundary is not None:
                 return sum(1 for e in entries
@@ -734,9 +742,10 @@ def d1_2_timer0_cycles(scenario):
             return len(entries)
         reparks=_in_window(repark_candidates)
         wakes=_in_window(wake_candidates)
-        # re-park 配对对象=唤醒数(非交付数):Timer0 交付可打断运行中的应用代码
-        # (非 idle 唤醒),此时 handler RTI 返回应用代码、不产生 core_idle_wait_entered;
-        # src_sync 场景 14 交付 vs 6 唤醒/6 回等待,配对须按唤醒走(2026-11-22 归因)。
+        # re-park 配对对象=Timer0 唤醒数(非交付数):Timer0 交付可打断运行中的应用
+        # 代码(非 idle 唤醒),此时 handler RTI 返回应用代码、不产生 core_idle_wait_
+        # entered;src_sync 场景 14 交付 vs 6 唤醒/6 回等待,配对须按唤醒走
+        # (2026-11-22 归因)。irq89/irq3 唤醒不进配对(见上)。
         ok=rti_ok and len(rti_events)>=len(window_deliveries) and reparks>=wakes
         checks.append(_check('rti_to_actual_reti_and_re_park',fail=not ok,
             detail=(f'{len(rti_events)} RTIs (>= {len(window_deliveries)} deliveries) returned to the '
@@ -1088,11 +1097,20 @@ def bi_a1_first_timer0_wake(scenario):
                else 'no event_clock_engaged although the park window opened'))
 
     deliveries=_deliveries(scenario,'timer0_irq_entry_projection')
-    # 与 d1_2 同口径:窗口内=步号>park 边界(idle_wait_park_log 首条 park 的 model_step)
-    log=_park_log(scenario);park_boundary=None
-    for entry in (log or []):
-        if entry.get('kind')=='core_idle_wait_entered' and isinstance(entry.get('model_step'),int):
-            park_boundary=entry['model_step'];break
+    # 首个唤醒锚(BI 语义 §4 A1:「两核 park 后」首个唤醒)——「两核 park」=首次事件
+    # 时钟 engage(engagements[0].model_step),不是首条 core_idle_wait_entered(boot 期
+    # CPU1 先 idle 而 CPU0 仍在跑,首条 park log 早于 engage,把 boot 前缀 running 期
+    # 交付算进「窗口内」会污染首个唤醒)。键缺回退首条 park log(合成 parked/
+    # boot_prefix 世界两者同值,零行为变化)。
+    engagements=_engagements(scenario)
+    park_boundary=None
+    if engagements and isinstance(engagements[0].get('model_step'),int):
+        park_boundary=engagements[0]['model_step']
+    else:
+        log=_park_log(scenario)
+        for entry in (log or []):
+            if entry.get('kind')=='core_idle_wait_entered' and isinstance(entry.get('model_step'),int):
+                park_boundary=entry['model_step'];break
     window_deliveries=([d for d in deliveries if isinstance(d.get('model_step'),int)
                         and (park_boundary is None or d['model_step']>park_boundary)]
                        if deliveries and all(isinstance(d.get('model_step'),int) for d in deliveries)
@@ -1101,10 +1119,12 @@ def bi_a1_first_timer0_wake(scenario):
         first=window_deliveries[0]
         ok=first.get('core')==0 and first.get('irq')==4
         # 「首个唤醒」跨 IRQ 类核对(codex 复核修正):窗口内 core tick 交付若带步号,
-        # 不得早于首个 Timer0 交付;软件 IRQ 交付无步号观测时如实标注。
+        # 不得早于首个 Timer0 交付;软件 IRQ 交付无步号观测时如实标注。窗口内=park
+        # 边界之后(首个 engage 之后),boot 前缀 core tick 溢出不参与。
         tick_deliveries=_deliveries(scenario,'core_tick_entry_projection')
         earlier_tick=[d for d in tick_deliveries if isinstance(d.get('model_step'),int)
-                      and d['model_step']<first['model_step']]
+                      and d['model_step']<first['model_step']
+                      and (park_boundary is None or d['model_step']>park_boundary)]
         ok=ok and not earlier_tick
         checks.append(_check('first_wake_is_timer0_irq4',fail=not ok,
             detail=(f'first in-window wake = IrqDeliveryRequest(core=0, irq=4) at model step '
@@ -1118,6 +1138,9 @@ def bi_a1_first_timer0_wake(scenario):
             missing='timer0_irq_entry_projection.deliveries[].model_step(首个窗口内交付步号)'))
 
     engagements=_engagements(scenario)
+    # 首个事件(BI 语义)=首次停泊-唤醒往返,锚=首条 park log/首个 engage(boot 期
+    # W2[0] os_time_dly 停泊,任务书 §1.1 第 4 条);不锚 d1_window.park(§2.7 适配
+    # 点 4:BI-A1/A2 语义=首次往返,与 D1 窗口锚无关)。
     if engagements and isinstance(engagements[0].get('timer0'),dict) and \
             isinstance(engagements[0].get('first_segment_advances'),int):
         snap=engagements[0]['timer0'];advances=engagements[0]['first_segment_advances']
@@ -1156,22 +1179,23 @@ def bi_a1_first_timer0_wake(scenario):
     else:
         checks.append(_check('w1c_and_in_flight_reset',missing='窗口内交付序列'))
 
-    # RTI 回实际保存的 RETI(=首个交付的 reti_from,idle 指令地址)并重新 park——
+    # RTI 回实际保存的 RETI(=首个交付的 reti_from,idle 循环 resume 点)并重新 park——
     # 首对首绑定(codex 复核修正:首个 RTI 必须对应首个交付,不拿任意一次 RTI 充数)
     log=_park_log(scenario)
     rti,_=_rti_events(scenario,park_boundary)
     if log is not None and rti and window_deliveries:
         first_rti=rti[0];first_delivery=window_deliveries[0]
-        ok=(first_rti.get('reti_from_frame')==first_delivery.get('reti_from')
-            ==PARK_IDLE_PC)
+        resume=first_delivery.get('reti_from')
+        ok=(first_rti.get('reti_from_frame')==resume
+            and resume in IDLE_RESUME_PCS)
         repark=sum(1 for e in log if e.get('kind')=='core_idle_wait_entered'
                    and e.get('core')==0 and e is not (log and log[0]))
         ok=ok and repark>=1
         checks.append(_check('rti_to_idle_and_re_park',fail=not ok,
-            detail=(f'first RTI returned to the saved RETI {PARK_IDLE_PC} (matches the first '
+            detail=(f'first RTI returned to the saved RETI {resume} (matches the first '
                     f'delivery); core0 re-parked afterwards' if ok else
                     f'first RTI reti_from_frame={first_rti.get("reti_from_frame")} vs first '
-                    f'delivery reti_from={first_delivery.get("reti_from")} (expected {PARK_IDLE_PC})')))
+                    f'delivery reti_from={resume} (expected one of {IDLE_RESUME_PCS})')))
     else:
         checks.append(_check('rti_to_idle_and_re_park',
             missing='machine.idle_wait_park_log + timer0_irq_rti 事件(首个 RTI 回首个交付保存的 '
@@ -1221,39 +1245,44 @@ def bi_a2_period_conservation(scenario):
                     f'no reversal/zero-gap); offending {bad} (park period {ctx})')))
 
     engagements=_engagements(scenario)
-    # 段守恒(codex 复核修正口径):每段 advances+段间执行 == 该段实际的 horizon——
-    # 首段=首次到期−park 步号,后续段=相邻到期差,不强制等于完整周期
-    # (首段可能是半周期,后续段也可能先撞上其它可交付事件)。
-    if engagements and all(isinstance(e.get('first_segment_advances'),int) and
-                           isinstance(e.get('inter_segment_execution'),int)
-                           and isinstance(e.get('model_step'),int) for e in engagements):
-        expiry=(timer0.get('expiration_model_steps')
-                if isinstance(timer0.get('expiration_model_steps'),list) else [])
-        # 时间线:park →A_1→ 到期1 →X_1→ park →A_2→ 到期2 →X_2→ ……
-        # 守恒等式:A_1 == expiry[0]−park;A_{i+1}+X_i == expiry[i+1]−expiry[i]
-        advances=[e['first_segment_advances'] for e in engagements]
-        inters=[e['inter_segment_execution'] for e in engagements]
-        n=len(engagements)
-        if len(expiry)>=n and n>=1:
-            park_step=engagements[0]['model_step']
-            totals=[advances[0]]+[advances[i+1]+inters[i] for i in range(n-1)]
-            anchors=[expiry[0]-park_step]+[b-a for a,b in zip(expiry,expiry[1:])][:n-1]
-            pairs=list(zip(totals,anchors))
-            bad=[(t,a) for t,a in pairs if t!=a]
-            checks.append(_check('segment_advances_conservation',fail=bool(bad),
-                detail=(f'segment advances/execution totals {totals} == actual per-segment horizons '
-                        f'{anchors} (A_1 vs park→expiry[0]; A_(i+1)+X_i vs expiry gaps): no double '
-                        'counting, advancement stops at the next deliverable event' if not bad
-                        else f'segment totals {totals} != anchored horizons {anchors} '
-                             '(double counting or overrun)')))
-        else:
-            checks.append(_check('segment_advances_conservation',
-                missing='expiration_model_steps 与 engagements 段数不匹配(段 horizon 锚定需要 '
-                        '每段对应的到期步号+engagement 的 model_step)'))
-    else:
+    # 段守恒(2026-11-22 适配,实测归因):原「engage 1:1 对齐 Timer0 到期」假设被
+    # 固件真实行为打破——Timer0 既经事件时钟(全核 idle 快进段)到期、也经运行
+    # 路径(核在跑 audio/SRC 时 hardware.advance)到期,engage 数与到期数不再 1:1
+    # (267k 窗口实测 7 engage vs 14 到期)。守恒改为 engage 层面自闭合:相邻 engage
+    # 步号差 == 首段 advances + 段间执行(每个模型步恰计一次,无重复计时/无越跑
+    # ——首段 advances 是纯事件时钟推进计数,段间执行是唤醒后全部执行,两者拼满
+    # 相邻 engage 差即守恒)。全程序自闭合,无需按 d1_window.park 切分(BI 语义=
+    # 首次往返,boot 段与窗口段同一守恒律,§2.7 适配点 4 保持 BI 不读 d1_window)。
+    pairs=[]
+    for i in range(len(engagements)-1):
+        cur,nxt=engagements[i],engagements[i+1]
+        if isinstance(cur.get('first_segment_advances'),int) and \
+                isinstance(cur.get('inter_segment_execution'),int) and \
+                isinstance(cur.get('model_step'),int) and \
+                isinstance(nxt.get('model_step'),int):
+            pairs.append((cur,nxt))
+    if not pairs:
         checks.append(_check('segment_advances_conservation',
-            missing='machine.event_clock_engagements[](每段 model_step + first_segment_advances + '
-                    'inter_segment_execution;无重复计时/到可交付事件立即停推进的核验)'))
+            missing='machine.event_clock_engagements[](相邻 engage 的 model_step + '
+                    'first_segment_advances + inter_segment_execution;段守恒需至少一对'
+                    '相邻 engage,无重复计时/到可交付事件立即停推进的核验)'))
+    else:
+        bad=[]
+        for cur,nxt in pairs:
+            delta=nxt['model_step']-cur['model_step']
+            total=cur['first_segment_advances']+cur['inter_segment_execution']
+            if delta!=total:
+                bad.append({'engage':cur['model_step'],'delta':delta,
+                            'advances':cur['first_segment_advances'],
+                            'execution':cur['inter_segment_execution']})
+        checks.append(_check('segment_advances_conservation',fail=bool(bad),
+            detail=(f'{len(pairs)} adjacent engage segments each satisfy '
+                    f'Δengage == first_segment_advances + inter_segment_execution '
+                    f'(each model step accounted once, no double counting/overrun, '
+                    'advancement stops at the next deliverable event)' if not bad
+                    else f'engage-step conservation violated at {bad}: '
+                         'Δengage != first_segment_advances + inter_segment_execution '
+                         '(double counting or overrun)')))
     return _finalize(result,checks)
 
 
