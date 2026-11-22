@@ -358,7 +358,8 @@ from frontier_registry import PROBE_SCENARIO_NAMES, scenario_flags, frontier
 from probe_dualcore import dual_case
 from probe_task_returns import EMPTY_PRIORITIES
 from probe_arch_startup import candidate_view, REPAIRED_SHA, FAILED_SHA
-from probe_boot import application, flash_image, check_rom, ROM_SHA, OFFICIAL_SHA, APP_SHA, Blocked, ENTRY
+from probe_boot import (application, flash_image, check_rom, ROM_SHA, OFFICIAL_SHA, APP_SHA,
+                        Blocked, IrqDeliveryRequest, ENTRY)
 from probe_boot_handoff import package_header
 from probe_pi32v2 import ROOT, PIN, upstream, require
 
@@ -5026,6 +5027,437 @@ def make_d1_window_post_stop():
             observer.detach()
     return post_stop
 
+
+# ---------------------------------------------------------------------------
+# 路 D2A/sim-d2a:D2-a 按键输入响应最短闭环——把「post 入队→S19 消费分发→handler
+# 被生产路径调用」三段接成证据链+二次输入证明循环健康(d2a-loop-taskbook §1-3/
+# §1-7;ACT-10 blocked_missing 收口;P 表缺三项 P7/P8/S19 生产分发)。
+#
+# 世界起点=D1 窗口场景世界(d1_acceptance_window,S19 park 后 window_complete 停点,
+# 任务书 §2.3:不从 M 前沿停点世界跑——那里 S19 不可达)。机制核心增量=「post 后
+# 交还世界」:直调扫描回调(档 A,S/AJ 拍驱动)让固件真实认出手势并 post 入队→
+# 恢复 advance(不再是直调驱动器的「不调 advance=中断冻结」)→S19 从 pend 醒来
+# 消费注入事件。复用:S/AJ 的 key_chain 直调机制+M1-c resume_steps 同款恢复推进。
+# ---------------------------------------------------------------------------
+D2A_LOOP_PRESS_BEATS=13          # 短按拍数(AJ §8.2:有效稳定按压 ~10 拍<75 确认阈值)
+D2A_LOOP_TAIL_BEATS=25           # 末次释放稳定拍数(≥20 触发点击计数消费)
+D2A_LOOP_PAYLOAD=0x10a00         # key10 单击(S 路实测 post 载荷字;手势 0)
+D2A_MAP_TABLE=0x1265C0+3404      # 映射表 QCY+3404(0x12730C;0x602533e/0x602534a 消费,
+                                  # 15×3B {key,gesture,action} 首匹配)
+D2A_DEFAULT_MAP_FLASH=0x609e250  # flash 默认表 45B(0x60254ce 装载源;AO §3.2)
+D2A_RING_PTR_SLOT=0x1265C0+416   # [QCY+416] 动作名环对象指针(0x6018bfc;ACT-01 观察点)
+D2A_TASK_LOOKUP=0x60647fa        # 按名查任务对象(poster 同款查找,纯查询零入队)
+D2A_POST_NAME_ADDR=0x60a1d11     # 'app_core'(0x6000cc2 li 立即数)
+D2A_LOOP_HEAD=0x60123e6          # S19 消息循环头
+D2A_GET_EVENT=0x60123ea          # get-event call
+D2A_ID_READ=0x60123f4            # [sp] id 读锚
+D2A_BIT20=0x60123f6              # bit20 门
+D2A_SPECIAL_PATH=0x60108fe       # 0x10000c 特路
+D2A_TABLE2_WALK=0x601240a        # 表2 walk
+D2A_INDIRECT_CALL=0x601241e      # 间接 call handler
+D2A_HANDLER_RET=0x6012420        # handler 返回检查
+D2A_EVENT_DONE=0x6012422         # 事件终结(handler 返非 0)
+D2A_PEND_FACE=0x6064cf6          # 空队列 pend 写面首 PC
+D2A_KEY_HANDLER=0x060252c6       # 表2[5] 按键 handler
+D2A_CMD1_BRANCH=0x06025396       # cmd1 分支(跳表目标)
+D2A_PUBLISHER=0x06018bf4         # 动作名发布器('music_pp' 环追加)
+D2A_MUSIC_PP_NAME=0x60a1cc0      # 'music_pp' 名串指针(NAME_BASE 0x60A18C0+1024;KEYCONS 钉)
+D2A_POST_SITE=0x6001b5e          # 手势 post 装载点(r0=载荷字)
+D2A_ENQUEUE=0x606487c            # os_taskq_post 内层(环形缓冲写)
+# 队列几何(任务对象坐标,+8 写游标/+10 读游标/+12 容量/+14 计数/+16 缓冲)
+D2A_TASK_WCUR,D2A_TASK_RCUR,D2A_TASK_CAP,D2A_TASK_CNT,D2A_TASK_BUF=8,10,12,14,16
+# D2-a 七段锚点(任务书 §6 PR-A 观察件:post/入队/S19 消费分发/handler/动作/返回)
+D2A_ANCHORS=(D2A_POST_SITE,D2A_ENQUEUE,D2A_LOOP_HEAD,D2A_GET_EVENT,D2A_ID_READ,
+             D2A_BIT20,D2A_SPECIAL_PATH,D2A_TABLE2_WALK,D2A_INDIRECT_CALL,
+             D2A_HANDLER_RET,D2A_EVENT_DONE,D2A_PEND_FACE,D2A_KEY_HANDLER,
+             D2A_CMD1_BRANCH,D2A_PUBLISHER)
+
+
+def _d2a_dispatch_delivery(machine,hardware,details,fallback_cpu):
+    """交付分发(probe_boot.dispatch_delivery 最小复刻;D2-a 恢复推进用)。
+
+    mid/in-flight 延期不丢弃;irq3/4/68/89 走各自交付投影,其余走软件 IRQ。
+    铁证纪律:恢复段撞墙前已发生的 watch 流水不丢(调用方持有 hits)。"""
+    target=machine.cores.get(details.get('core'))
+    mid=(target is not None and
+         (getattr(target,'after_then',None) is not None or
+          getattr(target,'repeat',None) is not None))
+    if details.get('irq')==89:
+        context=getattr(target,'active_context',None) if target is not None else None
+        in_flight=(context in ('software_irq_handler','core_tick_handler',
+                               'timer0_irq_handler','src_sync_irq_handler',
+                               'audio_dma_irq_handler'))
+    else:
+        in_flight=(target is not None and
+                   getattr(target,'active_context',None) in
+                   ('software_irq_handler','core_tick_handler','timer0_irq_handler',
+                    'audio_dma_irq_handler','src_sync_irq_handler'))
+    if mid or in_flight:
+        if hardware is not None:
+            if details.get('irq')==3:
+                hardware.core_ticks[details['core']].delivery_in_flight=False
+            elif details.get('irq')==4:
+                hardware.timer.delivery_in_flight=False
+            elif details.get('irq')==68 and getattr(hardware,'jl_audio_adc_dma',None) is not None:
+                hardware.jl_audio_adc_dma.delivery_in_flight=False
+            elif details.get('irq')==89 and getattr(hardware,'jl_src_sync_delivery',None) is not None:
+                hardware.jl_src_sync_delivery.delivery_in_flight=False
+        machine.note_delivery_deferral(details,
+                                       ('mid_instruction' if mid and not in_flight
+                                        else getattr(target,'active_context',None)))
+        return
+    irq=details.get('irq')
+    if irq==3:
+        machine.deliver_core_tick(details['core'])
+    elif irq==4:
+        machine.deliver_timer0_irq(details['core'])
+    elif irq==68:
+        machine.deliver_audio_dma_irq(details['core'])
+    elif irq==89:
+        machine.deliver_src_sync_irq(details['core'])
+    else:
+        machine.deliver_software_irq(target,irq)
+
+
+def d2a_resume_steps(machine,hardware,watch=(),max_steps=800_000,
+                     stop_after_consume=False):
+    """post 后恢复推进(「交还世界」):explore 慢路径最小复刻。
+
+    select→decode→(idle 停泊)→step→after_step→hardware.advance;CoreStall/
+    IrqDeliveryRequest/Blocked 走主循环同款分发。watch=PC 命中记录(r0..r7);
+    max_steps=指令步预算;stop_after_consume=按键 handler 执行过且其后回 pend
+    即停(事件已消费+世界回等待)。返回 {steps,watch_hits,stop,stopped_at}——
+    撞墙也返回(不丢铁证),stop 非 None 记 wall。
+    """
+    import br28_machine
+    hits=[]
+    steps=0
+    stop=None
+    stopped_at=None
+    handler_seen=False
+    repend_after_handler=False
+    while steps<max_steps:
+        cpu=machine.select()
+        pc=cpu.pc
+        if pc in watch:
+            hits.append({'pc':hex(pc),'r':[word(x) for x in cpu.R[:8]],'step':steps})
+        if pc==D2A_KEY_HANDLER:
+            handler_seen=True
+        if pc==D2A_PEND_FACE and handler_seen:
+            repend_after_handler=True
+        if stop_after_consume and handler_seen and repend_after_handler:
+            stopped_at=hex(pc);break
+        try:
+            insn,_raw,_size=cpu.decode(pc)
+            if insn.id=='idle' and getattr(machine,'idle_wait_projection',False):
+                machine.enter_idle_wait(cpu)
+                raise br28_machine.CoreStall('core_idle_waiting',core=cpu.core_id)
+            before=pc
+            cpu.step();steps+=1
+            machine.after_step(cpu,before)
+            hardware.advance(cpu.icfg,cpu.mem)
+        except br28_machine.CoreStall as e:
+            machine.note_stall(cpu,e.details)
+            machine.after_step()
+            try:
+                hardware.advance(cpu.icfg,cpu.mem)
+            except Blocked as pending:
+                stop=pending.details
+            except IrqDeliveryRequest as request:
+                _d2a_dispatch_delivery(machine,hardware,request.details,cpu)
+        except Blocked as e:
+            stop=e.details
+        except IrqDeliveryRequest as request:
+            _d2a_dispatch_delivery(machine,hardware,request.details,cpu)
+        except Exception as e:
+            stop={'kind':'upstream_simulator_failure','error_type':type(e).__name__,
+                  'message':str(e)[:200]}
+        if stop is not None:
+            break
+    return {'steps':steps,'watch_hits':hits,'stop':stop,'stopped_at':stopped_at}
+
+
+def make_d2a_loop_post_stop(app):
+    """构造 D2-a 最短闭环场景的 post_stop 回调(路 D2A/sim-d2a)。
+
+    在 D1 窗口世界(window_complete 停点,S19 park 稳态)上:
+      ① 先 finalize+detach D1 观察器(保住 D1 verdicts——D2-a 注入/resume 不得
+         污染 D1 窗口健康面/消息链样本);
+      ② world_prep:config 523 分档器 fixture(S 路合成对象)+映射表 flash 默认表
+         45B 装入(KEYCONS s6b 同款 synthetic-load-of-real-bytes)+键通道注册+
+         app_core 任务按名查找+模式查询;
+      ③ 两轮单击(round1=首次完整链+恢复等待;round2=二次输入证明循环健康):
+         每轮=直调扫描回调(档 A 拍驱动)→post 真实入队→断言环形缓冲落盘→
+         d2a_resume_steps 恢复推进→断言 S19 消费分发(get-event→0x10000c 特路→
+         表2 walk→间接 call handler)→handler/动作执行→回 pend。两轮之间不重置
+         识别状态/不清队列(任务书 §1-7 参谋风险条款原文)。
+    """
+    d1_finalize=make_d1_window_post_stop()
+    ctx_blob=app[0x60C3380-ENTRY:0x60C3380-ENTRY+24]
+
+    def read_ram(cpu,address,size):
+        try:
+            return int.from_bytes(cpu.mem.read(address,size),'little')
+        except Blocked:
+            return None
+
+    def write_ram(cpu,address,data):
+        cpu.mem.write(address,data)
+
+    def queue_face(cpu,task):
+        if not isinstance(task,int):
+            return None
+        cnt=read_ram(cpu,task+D2A_TASK_CNT,2)
+        wcur=read_ram(cpu,task+D2A_TASK_WCUR,2)
+        rcur=read_ram(cpu,task+D2A_TASK_RCUR,2)
+        cap=read_ram(cpu,task+D2A_TASK_CAP,2)
+        buf=read_ram(cpu,task+D2A_TASK_BUF,4)
+        words=[]
+        if isinstance(buf,int) and isinstance(cap,int):
+            for i in range(min(cap,16)):
+                words.append(read_ram(cpu,buf+4*i,4))
+        tail=[]
+        if isinstance(buf,int) and isinstance(cap,int) and isinstance(wcur,int) and cap>0:
+            for k in (3,2,1):
+                tail.append(read_ram(cpu,buf+4*((wcur-k)%cap),4))
+        return {'task':hex(task),'count':cnt,'write_cursor':wcur,
+                'read_cursor':rcur,'capacity':cap,'buffer':hex(buf) if buf else None,
+                'buffer_words':[hex(w) if isinstance(w,int) else None for w in words],
+                'tail_words':[hex(w) if isinstance(w,int) else None for w in tail]}
+
+    def ring_face(cpu):
+        ring=read_ram(cpu,D2A_RING_PTR_SLOT,4)
+        if not isinstance(ring,int) or ring==0:
+            return {'ring_ptr':hex(ring) if ring else None}
+        cursor=read_ram(cpu,ring,1)
+        name_bytes=[]
+        for i in range(40):
+            b=read_ram(cpu,ring+i,1)
+            name_bytes.append(b)
+        return {'ring_ptr':hex(ring),'cursor_b0':cursor,'bytes_40':name_bytes}
+
+    def sample(cpu,machine,hardware,res_value,label,log):
+        hardware.fd31_adc_con.res_named_values[KEY_CHAIN_CHANNEL_WORD]=res_value
+        value,steps,_=key_chain_direct_call(cpu,machine,0x60116D0,[KEY_CHAIN_CHANNEL_WORD])
+        entry={'phase':label,'res_fixture':res_value,'sampled_value':value,'steps':steps}
+        if value!=res_value:
+            raise Blocked('d2a_sample_mismatch',**entry)
+        slot=None
+        for idx in range(11):
+            if read_ram(cpu,0x127D08+16*idx+4,4)==KEY_CHAIN_CHANNEL_WORD:
+                slot=idx;break
+        if slot is None:
+            raise Blocked('d2a_queue_slot_missing',**entry)
+        write_ram(cpu,KEY_CHAIN_ADC_QUEUE_VALUE_BASE+16*slot,struct.pack('<H',value))
+        entry['queue_slot']=slot
+        log.append(entry)
+        return value
+
+    def scan_beat(cpu,machine,tick,beat_states):
+        write_ram(cpu,KEY_CHAIN_SYS_TICK,struct.pack('<I',tick))
+        _,steps,posts=key_chain_direct_call(cpu,machine,0x6001944,[KEY_CHAIN_REGISTRY_ENTRY],
+                                            watch=(D2A_POST_SITE,))
+        beat_states.append({
+            'click_count':read_ram(cpu,KEY_CHAIN_CLICK_COUNT,1),
+            'tracked_key':read_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,1),
+            'post_payloads':[p['args'][0] for p in posts if p['pc']==hex(D2A_POST_SITE)]})
+        return steps,posts
+
+    def run_click(cpu,machine,hardware,label,reset,beat_states,seq_log):
+        """一次单击:press 13 拍+release 25 拍;post 0x10a00 在 release 稳定段
+        装载(0x6001b5e)。reset=True 时先重置 ctx/跟踪键/点击计数(round1 世界
+        未知扫描态);round2 不重置(任务书 §1-7 禁止)。"""
+        if reset:
+            write_ram(cpu,0x124888,ctx_blob)
+            write_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,bytes([255]))
+            write_ram(cpu,KEY_CHAIN_CLICK_COUNT,bytes([0]))
+            beat_states.append({'sequence_reset':True,'label':label})
+        else:
+            beat_states.append({'sequence_reset':False,'label':label,
+                                'pre_click_count':read_ram(cpu,KEY_CHAIN_CLICK_COUNT,1),
+                                'pre_tracked_key':read_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,1)})
+        tick=read_ram(cpu,KEY_CHAIN_SYS_TICK,4)
+        if tick is None:tick=0
+        posts=[]
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_PRESSED,f'{label}_press',seq_log)
+        for _ in range(D2A_LOOP_PRESS_BEATS):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick,beat_states)
+            posts.extend(beat_posts)
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_RELEASE,f'{label}_release',seq_log)
+        for _ in range(D2A_LOOP_TAIL_BEATS):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick,beat_states)
+            posts.extend(beat_posts)
+        return posts
+
+    def anchor_counts(hits):
+        out={hex(pc):0 for pc in D2A_ANCHORS}
+        for h in hits:
+            if h['pc'] in out:
+                out[h['pc']]+=1
+        return out
+
+    def post_stop(machine,hardware,cpu,stop=None):
+        # ① 先收 D1 窗口(finalize+detach 观察器)——D1 verdicts 不被 D2-a 污染
+        result=d1_finalize(machine,hardware,cpu,stop=stop) or {}
+        d2a={'banner':{
+            'world':'D1 acceptance window (d1_acceptance_window) park steady state, '
+                   'window_complete stop; S19 running, app_core parked in get-event pend',
+            'synthetic_inputs':[
+                'config 523 分档器对象 fixture(synthetic-not-measured;real config 523 '
+                'in bank-B record area, erased world bypasses the key chain — route Q/S)',
+                '映射表=flash 默认表 45B@0x609e250 装入 0x12730C(synthetic-load-of-real-bytes;'
+                'config 48 缺档致擦除态世界原表全零 — KEYCONS s6b 同款先例)',
+                'RES 档位值 700/400(分压网络两种稳态代表值,EMA 0.2/0.8 稳态假设;S 路同款)',
+                '一拍=一个 sys_timer tick=10ms(显式假设;S 路同款)'],
+            'mechanism':'档 A 恢复推进:post 链完全退栈(直调事务返回)后交还世界,'
+                        'S19 从 pend 醒来消费注入事件(不再「不调 advance=中断冻结」)',
+            'two_inputs_interval':'两轮输入之间不重置识别状态/不清队列/不重载快照'
+                                  '(任务书 §1-7);第二轮紧随第一轮恢复等待之后'}}
+        beat_states=[]
+        seq_log=[]
+        rounds=[]
+        overall_pass=True
+        try:
+            if machine is None or hardware is None:
+                raise Blocked('d2a_requires_dualcore_world')
+            if cpu.core_id!=0:
+                raise Blocked('d2a_stopped_on_cpu1')
+            # ② world_prep
+            # config 523 分档器 fixture(S 路两档合成对象)+指针槽
+            write_ram(cpu,KEY_CHAIN_SENSOR_OBJECT,key_chain_sensor_object_bytes())
+            write_ram(cpu,KEY_CHAIN_OBJECT_POINTER,struct.pack('<I',KEY_CHAIN_SENSOR_OBJECT))
+            # 映射表:flash 默认表 45B → 0x12730C
+            try:
+                default_map=bytes(app[D2A_DEFAULT_MAP_FLASH-ENTRY:D2A_DEFAULT_MAP_FLASH-ENTRY+45])
+                write_ram(cpu,D2A_MAP_TABLE,default_map)
+                map_note='default map 45B loaded from flash 0x609e250'
+            except Exception as e:
+                default_map=None
+                map_note='default map load failed: %s' % e
+            # 键通道注册(真实代码 adc_add_sample_ch;S 路同款)
+            _,reg_steps,_=key_chain_direct_call(cpu,machine,0x6001230,[KEY_CHAIN_CHANNEL_WORD])
+            # app_core 任务按名查找(纯查询)+模式查询
+            app_core,_,_=key_chain_direct_call(cpu,machine,D2A_TASK_LOOKUP,[D2A_POST_NAME_ADDR])
+            mode,_,_=key_chain_direct_call(cpu,machine,0x6008170,[])
+            d2a['world_prep']={
+                'sensor_object':{'address':hex(KEY_CHAIN_SENSOR_OBJECT),
+                                 'pointer_slot':hex(KEY_CHAIN_OBJECT_POINTER)},
+                'map_table':{'address':hex(D2A_MAP_TABLE),'note':map_note,
+                             'bytes':list(default_map) if default_map else None},
+                'adc_add_sample_ch_steps':reg_steps,
+                'app_core_task':hex(app_core) if isinstance(app_core,int) else app_core,
+                'mode_query':mode,
+                'queue_before':queue_face(cpu,app_core),
+                'ring_before':ring_face(cpu)}
+            for rnd,label in ((1,'first_input'),(2,'second_input')):
+                pre_queue=queue_face(cpu,app_core)
+                pre_ring=ring_face(cpu)
+                posts=run_click(cpu,machine,hardware,label,reset=(rnd==1),
+                                beat_states=beat_states,seq_log=seq_log)
+                post_queue=queue_face(cpu,app_core)
+                # leg1:post 入队落盘断言(环形缓冲写成功;post=头字+{载荷,0} 三字)。
+                # 落盘判据=尾三字恰为本轮单击事件(扫描拍还会 post 0x300000 族回调
+                # 事件,队列计数增量不固定,故不以 count+3 判)。
+                header_word=(0x10000C<<8)|3
+                tail=post_queue.get('tail_words') or []
+                landed=(len(tail)>=3
+                        and tail[0]==hex(header_word)
+                        and tail[1]==hex(D2A_LOOP_PAYLOAD)
+                        and tail[2]==hex(0))
+                post_payloads=[p['args'][0] for p in posts if p['pc']==hex(D2A_POST_SITE)]
+                # leg2/3:恢复推进 → S19 消费分发
+                resume=d2a_resume_steps(machine,hardware,watch=D2A_ANCHORS,
+                                        stop_after_consume=True)
+                hits=resume['watch_hits']
+                counts=anchor_counts(hits)
+                if counts[hex(D2A_KEY_HANDLER)]==0:
+                    # 任务书 §2.4 运行观测项:直调后调度器若不切回 app_core,
+                    # 记 BLOCKED(调度机制缺件)而非 FAIL。
+                    raise Blocked('d2a_scheduler_no_app_core_switch',
+                                  round=rnd,label=label,steps=resume['steps'],
+                                  stop=resume['stop'])
+                ind_hit=next((h for h in hits if h['pc']==hex(D2A_INDIRECT_CALL)),None)
+                key_call_hit=next((h for h in hits if h['pc']==hex(D2A_INDIRECT_CALL)
+                                   and h['r'][1]==hex(D2A_KEY_HANDLER)),None)
+                handler_hit=next((h for h in hits if h['pc']==hex(D2A_KEY_HANDLER)),None)
+                cmd1_hit=next((h for h in hits if h['pc']==hex(D2A_CMD1_BRANCH)),None)
+                pub_hit=next((h for h in hits if h['pc']==hex(D2A_PUBLISHER)
+                              and h['r'][1]==hex(D2A_MUSIC_PP_NAME)),None)
+                id_hit=next((h for h in hits if h['pc']==hex(D2A_ID_READ)),None)
+                bit20_hit=next((h for h in hits if h['pc']==hex(D2A_BIT20)),None)
+                end_queue=queue_face(cpu,app_core)
+                end_ring=ring_face(cpu)
+                checks={
+                    # leg1:post 入队落盘(扫描回调直调段生产,队列落盘观测)
+                    'post_payload_0x10a00':bool(post_payloads
+                                               and post_payloads[-1]==hex(D2A_LOOP_PAYLOAD)),
+                    'ring_enqueue_landed':bool(landed),
+                    # leg2:S19 生产分发(get-event→id=0x10000c→特路→表2 walk→间接 call handler)
+                    'get_event_ran':counts[hex(D2A_GET_EVENT)]>=1,
+                    'id_read_anchor_reached':counts[hex(D2A_ID_READ)]>=1,
+                    'id_value_0x10000c':bool(bit20_hit and bit20_hit['r'][0]==hex(0x10000C)),
+                    'special_path_taken':counts[hex(D2A_SPECIAL_PATH)]>=1,
+                    'table2_walk_ran':counts[hex(D2A_TABLE2_WALK)]>=1,
+                    'indirect_call_handler_0x60252c6':bool(key_call_hit is not None),
+                    # leg3:handler 被生产路径调用→动作(cmd1 发布 'music_pp')
+                    'key_handler_called':counts[hex(D2A_KEY_HANDLER)]>=1,
+                    'cmd1_branch_taken':counts[hex(D2A_CMD1_BRANCH)]>=1,
+                    'publisher_reached':counts[hex(D2A_PUBLISHER)]>=1,
+                    'publisher_music_pp_name':bool(pub_hit is not None),
+                    'handler_returned_event_done':counts[hex(D2A_EVENT_DONE)]>=1,
+                    # 恢复等待:handler 返回后回 pend
+                    'repend_after_consume':counts[hex(D2A_PEND_FACE)]>=1,
+                    'queue_empty_after':bool(end_queue and end_queue.get('count')==0),
+                    # 状态复位直接观察(点击计数终值=0)
+                    'click_count_zero':bool(beat_states and beat_states[-1].get('click_count')==0),
+                }
+                round_pass=all(checks.values())
+                overall_pass=overall_pass and round_pass
+                rounds.append({'round':rnd,'label':label,
+                               'post_payloads':[hex(p) if isinstance(p,int) else p
+                                                for p in post_payloads],
+                               'pre_queue':pre_queue,'post_queue':post_queue,
+                               'end_queue':end_queue,
+                               'pre_ring':pre_ring,'end_ring':end_ring,
+                               'indirect_call_r1_first':(ind_hit['r'][1]
+                                                        if ind_hit else None),
+                               'indirect_call_r1_key_handler':(key_call_hit['r'][1]
+                                                               if key_call_hit else None),
+                               'handler_r0_payload_ptr':(handler_hit['r'][0]
+                                                         if handler_hit else None),
+                               'id_read_anchor_r0':(id_hit['r'][0] if id_hit else None),
+                               'id_value_at_bit20':(bit20_hit['r'][0] if bit20_hit else None),
+                               'cmd1_branch_hit':bool(cmd1_hit),
+                               'publisher_hit_r1':(pub_hit['r'][1] if pub_hit else None),
+                               'resume':resume,
+                               'anchor_counts':counts,'checks':checks,'pass':round_pass})
+            d2a['beat_states']=beat_states
+            d2a['res_fixture_switches']=seq_log
+            d2a['rounds']=rounds
+            d2a['summary']={'pass':overall_pass,
+                            'two_inputs':overall_pass and len(rounds)==2,
+                            'verdict':'PASS' if overall_pass else 'FAIL'}
+        except Blocked as e:
+            d2a['beat_states']=beat_states
+            d2a['res_fixture_switches']=seq_log
+            d2a['rounds']=rounds
+            d2a['wall']={'kind':e.details.get('kind'),'note':e.details.get('note'),
+                         'stop':e.details}
+            d2a['summary']={'pass':False,'verdict':'BLOCKED'}
+        except Exception as e:
+            d2a['beat_states']=beat_states
+            d2a['res_fixture_switches']=seq_log
+            d2a['rounds']=rounds
+            d2a['wall']={'kind':'upstream_simulator_failure',
+                         'error_type':type(e).__name__,'message':str(e)[:300]}
+            d2a['summary']={'pass':False,'verdict':'BLOCKED'}
+        result['d2a_loop']=d2a
+        return result
+    return post_stop
+
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -5139,6 +5571,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              key_chain_matrix=None,
              post_stop=None,
              d1_acceptance=False,d1_window_steps=None,d1_post_inject=None,
+             d2a_loop=False,
              flash_image_bytes=None,readonly=(),
              snapshot=None):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
@@ -7449,7 +7882,15 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         require(post_stop is None,'the D1 acceptance window owns its post_stop slot')
         machine_options['d1_window']=True
         if d1_window_steps is not None:machine_options['d1_window_steps']=d1_window_steps
-        post_stop=make_d1_window_post_stop()
+        if d2a_loop:
+            # 路 D2A:D2-a 最短闭环接管 D1 窗口场景的 post_stop 槽(post_stop 内部先
+            # finalize+detach D1 观察器保住 D1 verdicts,再做按键注入+恢复推进)。
+            post_stop=make_d2a_loop_post_stop(app)
+        else:
+            post_stop=make_d1_window_post_stop()
+    elif d2a_loop:
+        raise Blocked('d2a_loop_requires_d1_window',
+                      note='the D2-a loop runs in the D1 acceptance window park world')
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=budget,
                      extra_diagnostics=extra or None,extra_regions=p11_regions+eq_regions,
@@ -12398,6 +12839,10 @@ def main():
                         'the formula N '
                         '(S_tick+160k) crosses it — an explicit N inside the frontier is the '
                         'workable window until a release route moves the stop back inside')
+    p.add_argument('--with-d2a-loop',action='store_true',
+                   help='append the D2-a key-input loop on the D1 window park world (post 入队→'
+                        'S19 消费分发→handler 生产调用 + 二次输入;d2a-loop-taskbook;requires '
+                        '--with-d1-window) — default off keeps every legacy report identical')
     args=p.parse_args()
     rom=args.rom.read_bytes();check_rom(rom);module=upstream();app=application(args.firmware);header=package_header(args.firmware)
     image=flash_image(args.firmware)
@@ -12715,6 +13160,7 @@ def main():
     if args.with_d1_window:
         d1_kwargs={'d1_acceptance':True}
         if args.d1_window_steps is not None:d1_kwargs['d1_window_steps']=args.d1_window_steps
+        if args.with_d2a_loop:d1_kwargs['d2a_loop']=True
         report['scenarios'].append(
             irq_case(module,app,header,rom,'d1_acceptance_window',
                      **scenario_flags('p11_heap_experimental',sys.modules[__name__]),
