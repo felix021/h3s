@@ -87,16 +87,37 @@ type Ledger struct {
 	Milestones     []LoopEvent
 }
 
+// LoopMemWrite is one byte-granular store observed during a committed step.
+type LoopMemWrite struct {
+	Addr  uint32
+	Bytes []byte
+}
+
 // LoopStep is one committed attempt's observation: the core it ran on, pc
-// before/after, flags and the 16 registers after, and any memory writes the
-// step produced (always empty under the side-effect-free stage-1/2 contract).
+// before/after, flags and the 16 registers after, this step's ordered memory
+// writes, the executed instruction bytes (so self-modifying code's old trace is
+// not polluted), and the Python adapter to count ("" = none).
 type LoopStep struct {
-	Core   int
-	PC     uint32
-	NextPC uint32
-	Flags  uint8
-	R      [16]uint32
-	Mem    []MemWrite
+	Core    int
+	PC      uint32
+	NextPC  uint32
+	Flags   uint8
+	R       [16]uint32
+	Mem     []LoopMemWrite
+	Insn    []byte
+	Adapter string
+}
+
+// loopMemWrites converts the core's word writes into byte-granular observations.
+func loopMemWrites(in []MemWrite) []LoopMemWrite {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]LoopMemWrite, len(in))
+	for i, w := range in {
+		out[i] = LoopMemWrite{Addr: w.Addr, Bytes: wordBytes(w.Value)}
+	}
+	return out
 }
 
 // LoopEvent is a generic ledger event (memory event, milestone, adapter hit).
@@ -313,6 +334,8 @@ func segmentStopReason(code int) string {
 		return "no instruction decodes at fetch pc"
 	case BatchNoModel:
 		return "decoded instruction has no model"
+	case BatchMemFault:
+		return "strict memory fault (handed back to Python)"
 	default:
 		return "unexpected error while stepping"
 	}
@@ -549,15 +572,24 @@ func (w *World) runDualCore(n int) LoopResult {
 		beforePC := w.Cores[core].PC
 		cpu := w.execFor(core)
 		syncCPUFromCore(cpu, w.Cores[core])
-		seg := cpu.RunSegment(1, w.FetchLo, w.FetchHi)
-		if seg.StopCode != BatchOK {
+		s, code, stopPC, stepErr := cpu.RunDualStep()
+		if code != BatchOK {
 			res.StopCore = core
-			res.StopPC = seg.StopPC
-			res.Reason = segmentStopReason(seg.StopCode)
+			res.StopPC = stopPC
+			res.Reason = segmentStopReason(code)
+			if stepErr != nil {
+				res.ErrJSON = []byte(stepErr.Error())
+			}
 			return res
 		}
-		s := seg.Steps[0]
 		syncCoreFromCPU(w.Cores[core], cpu)
+
+		// A store invalidates both cores' decode caches (self-modifying code
+		// would otherwise re-execute the stale bytes).
+		if len(s.Mem) > 0 {
+			w.Exec.ClearCache()
+			w.Exec1.ClearCache()
+		}
 
 		// 7. trace row (the Go twin: core/pc/next_pc/flags/registers; the
 		// Python text/bytes/delivery-key materialization stays Python). The
@@ -565,12 +597,14 @@ func (w *World) runDualCore(n int) LoopResult {
 		// hazard in those phases still carries the executed prefix — exactly as
 		// Python appends the row even when after_step/advance raises.
 		res.Steps = append(res.Steps, LoopStep{
-			Core:   core,
-			PC:     s.PC,
-			NextPC: s.NextPC,
-			Flags:  s.Flags,
-			R:      s.R,
-			Mem:    nil,
+			Core:    core,
+			PC:      s.PC,
+			NextPC:  s.NextPC,
+			Flags:   s.Flags,
+			R:       s.R,
+			Mem:     loopMemWrites(s.Mem),
+			Insn:    s.Insn,
+			Adapter: s.Adapter,
 		})
 
 		// 5. after_step judgment (hook bodies stay Python).

@@ -36,6 +36,7 @@ const (
 	BatchNoModel = 3 // decoded instruction has no model
 	BatchOther   = 4 // unexpected error while stepping
 	BatchFetch   = 5 // fetch pc outside [fetchLo, fetchHi)
+	BatchMemFault = 6 // strict-memory fault while executing (hand back to Python)
 )
 
 // MemWrite is one whole-word store observed during a step.
@@ -53,6 +54,12 @@ type SegmentStep struct {
 	Flags  uint8
 	R      [16]uint32
 	Mem    []MemWrite
+
+	// Insn is the executed instruction's bytes (whole-loop path only; the
+	// stage-1 serialization ignores it). Adapter names the Python instruction
+	// adapter the commit must count ("" when the step needs none).
+	Insn    []byte
+	Adapter string
 }
 
 // SegmentResult is the whole batch outcome. The executed-step count is implied

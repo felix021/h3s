@@ -20,6 +20,7 @@ Byte-parity is the differential witness (test_dualcore_consistency.py and the
 gosim_measure --self-check-batch harness); nothing here invents a value.
 """
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -28,6 +29,7 @@ if str(_GOSIM) not in sys.path:
     sys.path.insert(0, str(_GOSIM))
 
 import gosim as _glue            # noqa: E402
+import gosim_mem as _smem        # noqa: E402
 import gosim_world as _world     # noqa: E402
 from gosim_world import GosimDualWorld, GosimPeriph  # noqa: E402
 import gosim_m6 as _m6           # noqa: E402
@@ -430,36 +432,58 @@ def _restore_audio_adc_dma(a, s):
 class DualCoreEngine:
     """One Go dual-core world reused across a single explore run.
 
-    The two execute engines share the immutable ROM/app fetch bytes (loaded
-    once); the machine / periph handles are rebound in place each run so the Go
-    world stays in sync with the live Python objects.
+    The two execute engines and the World share one strict Memory handle: fetch
+    (ROM/app/readonly + physical RAM code), scalar loads and the standalone
+    full-word stores run against it. The machine / periph handles are rebound in
+    place each run so the Go world stays in sync with the live Python objects.
     """
 
-    def __init__(self, rom, app, entry):
+    def __init__(self, rom, app, entry, regions=(), readonly=(), mem=None):
         self.go0 = _glue.Gosim(arch=True)
         self.go1 = _glue.Gosim(arch=True)
         self.rom = rom
         self.app = app
         self.entry = entry
-        self._load()
+        self.mem = mem  # the live probe_boot Memory (RAM re-sync source)
+
+        # One shared strict memory: regions / ROM / app / readonly imported in
+        # Python's own order, plus the current known RAM bytes. The initial
+        # import and every re-sync use the bulk ram map, never a guest Write, so
+        # no spurious write record is fabricated.
+        self.smem = _smem.StrictMem()
+        if rom is not None:
+            self.smem.set_rom(rom)
+        self.smem.set_app(entry, app)
+        for lo, hi, kind in regions:
+            self.smem.add_region(lo, hi, kind)
+        for base, data in readonly:
+            self.smem.add_readonly(base, data)
+        self._sync_ram()
+
+        # Both execute engines and the World bind the one strict memory.
+        self.go0.set_data_mem(self.smem.handle)
+        self.go1.set_data_mem(self.smem.handle)
 
         self.machine = _m6.GosimMachine()
         self.periph = GosimPeriph()
 
-        # Fetch window = the immutable flash app slice. RAM (handler copies) and
-        # ROM (CPU1 bootstrap) are outside it, so those steps hand back honestly
-        # via BatchFetch and Python steps them.
-        self.world = GosimDualWorld(self.go0.handle, self.go1.handle, 0,
-                                    self.machine.handle, 0,
-                                    entry, entry + len(app))
+        # Fetch window = the whole physical address space; the strict decode is
+        # the honest guard (RAM code / ROM now fetchable, unmapped/uninitialized
+        # faults hand back to Python which re-derives the identical Blocked).
+        self.world = GosimDualWorld(self.go0.handle, self.go1.handle, self.smem.handle,
+                                    self.machine.handle, 0, 0, 0xFFFFFFFF)
         self.world.set_periph(self.periph.handle)
 
-    def _load(self):
-        if self.rom is not None:
-            self.go0.write(0, self.rom)
-            self.go1.write(0, self.rom)
-        self.go0.write(self.entry, self.app)
-        self.go1.write(self.entry, self.app)
+    def _pack_ram(self):
+        out = bytearray()
+        for addr, byte in self.mem.ram.items():
+            out += struct.pack('<IB', addr & 0xffffffff, byte & 0xff)
+        return bytes(out)
+
+    def _sync_ram(self):
+        if self.mem is None:
+            return
+        self.smem.replace_ram(self._pack_ram())
 
     @staticmethod
     def cores_concrete(c0, c1):
@@ -468,7 +492,12 @@ class DualCoreEngine:
 
     def snapshot(self, machine, hardware, c0, c1):
         """Snapshot the live state into the Go world (cores / select / periph /
-        after_step config)."""
+        after_step config), re-syncing the RAM bytes Python wrote since the last
+        Go run (slow-path stores / abstract writes)."""
+        self._sync_ram()
+        # Python-side RAM changes invalidate the Go decode caches.
+        self.go0.clear_cache()
+        self.go1.clear_cache()
         self.world.set_cores([core_state(c0), core_state(c1)])
         self.machine.load(machine_state(machine))
         self.periph.load(periph_state(hardware))
@@ -492,3 +521,4 @@ class DualCoreEngine:
     def free(self):
         self.world.free()
         self.periph.free()
+        self.smem.free()

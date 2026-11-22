@@ -123,6 +123,10 @@ type CPU struct {
 	afterT   *afterThen
 	icfg     uint32
 	hasAfter bool
+
+	// lastWrites collects this step's ordered memory stores (whole-loop path).
+	// apply appends here; the dual loop reads and resets it per step.
+	lastWrites []MemWrite
 }
 
 type afterThen struct {
@@ -183,6 +187,13 @@ func (c *CPU) GetICFG() uint32  { return c.icfg }
 // ClearCache drops the pc-keyed decode cache (the cold-cache benchmark entry).
 func (c *CPU) ClearCache() { c.cache = make(map[uint32]decodeResult) }
 
+// TakeWrites returns and clears this step's ordered store observations.
+func (c *CPU) TakeWrites() []MemWrite {
+	w := c.lastWrites
+	c.lastWrites = nil
+	return w
+}
+
 // SetDataMem binds the strict data memory the execute engine's load/store
 // paths read and write. A nil m reverts to the flat memory (upstream simulator
 // semantics) the raw core and the segment contract use. Fetch stays on the
@@ -208,6 +219,7 @@ func (c *CPU) Reset() {
 	c.seq = 0
 	c.afterT = nil
 	c.icfg = 0x02050500
+	c.lastWrites = nil
 }
 
 // ErrIs is errors.Is for the core's sentinel errors.
@@ -218,6 +230,9 @@ func ErrIs(err, target error) bool {
 // ---- decode ---------------------------------------------------------------
 
 func (c *CPU) decode(pc uint32) (*insnMeta, map[string]uint32, int, error) {
+	if c.dmem != nil {
+		return c.decodeStrict(pc)
+	}
 	if got, ok := c.cache[pc]; ok {
 		return got.im, got.raw, got.size, nil
 	}
@@ -228,6 +243,63 @@ func (c *CPU) decode(pc uint32) (*insnMeta, map[string]uint32, int, error) {
 	}
 	c.cache[pc] = decodeResult{im, raw, size}
 	return im, raw, size, nil
+}
+
+// decodeStrict is the whole-loop fetch path: bytes come from the strict Memory
+// with Python's fetch semantics (odd-address guard, ROM tail short read). A
+// fault is returned as a *MemError so the dual loop hands the step back to
+// Python, which re-derives the identical Blocked. The decode cache is kept
+// valid by clearing it on every memory store (self-modifying code) and on every
+// Python-side RAM re-sync.
+func (c *CPU) decodeStrict(pc uint32) (*insnMeta, map[string]uint32, int, error) {
+	if pc%2 != 0 {
+		return nil, nil, 0, &MemError{Kind: "unaligned_instruction_fetch", Access: "fetch", Address: pc, Size: 6}
+	}
+	if got, ok := c.cache[pc]; ok {
+		return got.im, got.raw, got.size, nil
+	}
+	b, err := c.fetchBytes(pc)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	im, raw, size, ok := decodeOne(c.tab, b)
+	if !ok {
+		if rom := c.dmem.ROM(); rom != nil && uint64(pc) < uint64(len(rom)) && int64(len(rom))-6 < int64(pc) {
+			return nil, nil, 0, &MemError{Kind: "truncated_rom_instruction_fetch", Access: "fetch", Address: pc, Size: len(b)}
+		}
+		return nil, nil, 0, fmt.Errorf("%#x: %w", pc, ErrNoInstruction)
+	}
+	c.cache[pc] = decodeResult{im, raw, size}
+	return im, raw, size, nil
+}
+
+// fetchBytes returns the bytes the strict decode reads for pc (6 bytes, or the
+// remaining ROM tail), mirroring Python CPU.decode.
+func (c *CPU) fetchBytes(pc uint32) ([]byte, *MemError) {
+	if rom := c.dmem.ROM(); rom != nil {
+		n := len(rom)
+		if int64(pc) < int64(n) && int64(n)-6 < int64(pc) {
+			return c.dmem.Fetch(pc, n-int(pc))
+		}
+	}
+	return c.dmem.Fetch(pc, 6)
+}
+
+// InsnBytes returns the size bytes of the instruction at pc (the trace-row
+// bytes as executed), reading through the strict memory when bound.
+func (c *CPU) InsnBytes(pc uint32) ([]byte, error) {
+	_, _, size, err := c.decode(pc)
+	if err != nil {
+		return nil, err
+	}
+	if c.dmem != nil {
+		b, merr := c.dmem.Fetch(pc, size)
+		if merr != nil {
+			return nil, merr
+		}
+		return b, nil
+	}
+	return c.mem.read(pc, size), nil
 }
 
 func decodeOne(tab []insnMeta, b []byte) (*insnMeta, map[string]uint32, int, bool) {
@@ -316,6 +388,7 @@ func (c *CPU) apply(res *Effect) *MemError {
 			if err := c.dmem.Write(a, wordBytes(v)); err != nil {
 				return err
 			}
+			c.lastWrites = append(c.lastWrites, MemWrite{Addr: a, Value: v})
 		} else {
 			c.mem.writeWordLE(a, v)
 		}

@@ -185,6 +185,54 @@ func (m *Memory) SetBus(b Bus)         { m.bus = b }
 func (m *Memory) SetFetch(f bool)      { m.fetch = f }
 func (m *Memory) Writes() []WriteEvent { return m.writes }
 
+// ReplaceRAM installs a whole known-byte map (the Python mem.ram snapshot)
+// without any guest-write side effect: no events, no OnMemoryWrite, no
+// icfg-spill overlay, no unknown-origin pops. It is the initial import and the
+// per-fill re-sync path; a byte that Python marks unknown is simply absent from
+// the new map, so the strict read falls back to uninitialized exactly as
+// Python does.
+func (m *Memory) ReplaceRAM(entries map[uint32]byte) {
+	m.ram = entries
+}
+
+// ImportRAMBytes bulk-fills known bytes (additive; used by the delta sync when
+// only newly-known bytes are pushed). A byte is never removed by this path.
+func (m *Memory) ImportRAMBytes(entries map[uint32]byte) {
+	for a, b := range entries {
+		m.ram[a] = b
+	}
+}
+
+// RemoveRAMBytes marks bytes unknown (Python ram.pop) so a later strict read
+// faults uninitialized. No side effects beyond the byte removal.
+func (m *Memory) RemoveRAMBytes(addrs []uint32) {
+	for _, a := range addrs {
+		delete(m.ram, a)
+	}
+}
+
+// HasIcfgSpills reports whether any partial-ICFG spill words are resident.
+// While any spill exists the dual loop must not execute scalar ld/st (Python's
+// partial_icfg reload/spill adapters would observe an abstract value).
+func (m *Memory) HasIcfgSpills() bool { return len(m.icfgSpills) > 0 }
+
+// HasUnknownOrigins reports whether any abstract byte provenance is resident.
+func (m *Memory) HasUnknownOrigins() bool { return len(m.unknownOrigins) > 0 }
+
+// Fetch reads n bytes with fetch access semantics (MMIO/PLL routes disabled,
+// unmapped reported as unmapped_instruction_fetch). It is the instruction-fetch
+// entry the strict decode path uses; the m.fetch flag is scoped to the call.
+func (m *Memory) Fetch(addr uint32, n int) ([]byte, *MemError) {
+	m.fetch = true
+	b, err := m.Read(addr, n)
+	m.fetch = false
+	return b, err
+}
+
+// ROM returns the ROM image (nil when absent), so the strict decode path can
+// apply the ROM-tail short read.
+func (m *Memory) ROM() []byte { return m.rom }
+
 // region returns the kind of the first region that fully contains the request,
 // or "" (Python returns None).
 func (m *Memory) region(addr uint32, size int) string {

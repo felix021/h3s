@@ -19,12 +19,22 @@ package main
 import "C"
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"runtime/cgo"
 	"unsafe"
 
 	"h3s/gosim"
 )
+
+// hexBytes renders a byte slice as lowercase hex ("" for nil/empty), the same
+// shape Python's bytes.hex() produces.
+func hexBytes(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
 
 func world(h C.uintptr_t) *gosim.World {
 	return cgo.Handle(h).Value().(*gosim.World)
@@ -306,12 +316,20 @@ type loopResultJSON struct {
 	Cores    [2]*coreStateJSON `json:"cores"`
 }
 
+type loopMemWriteJSON struct {
+	Addr  uint32 `json:"addr"`
+	Bytes string `json:"bytes"`
+}
+
 type loopStepJSON struct {
-	Core   int        `json:"core"`
-	PC     uint32     `json:"pc"`
-	NextPC uint32     `json:"next_pc"`
-	Flags  uint8      `json:"flags"`
-	R      [16]uint32 `json:"r"`
+	Core    int                `json:"core"`
+	PC      uint32             `json:"pc"`
+	NextPC  uint32             `json:"next_pc"`
+	Flags   uint8              `json:"flags"`
+	R       [16]uint32         `json:"r"`
+	Mem     []loopMemWriteJSON `json:"mem,omitempty"`
+	Insn    string             `json:"insn,omitempty"`
+	Adapter string             `json:"adapter,omitempty"`
 }
 
 func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
@@ -323,9 +341,15 @@ func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
 		out.Err = json.RawMessage(res.ErrJSON)
 	}
 	for _, s := range res.Steps {
-		out.Steps = append(out.Steps, loopStepJSON{
+		js := loopStepJSON{
 			Core: s.Core, PC: s.PC, NextPC: s.NextPC, Flags: s.Flags, R: s.R,
-		})
+			Insn:    hexBytes(s.Insn),
+			Adapter: s.Adapter,
+		}
+		for _, w := range s.Mem {
+			js.Mem = append(js.Mem, loopMemWriteJSON{Addr: w.Addr, Bytes: hexBytes(w.Bytes)})
+		}
+		out.Steps = append(out.Steps, js)
 	}
 	if w != nil {
 		for i := 0; i < 2; i++ {
