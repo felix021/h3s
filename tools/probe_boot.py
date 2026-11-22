@@ -3743,6 +3743,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         if stop is not None:break
                         continue
                     if dual_hazard is not None:
+                        if 'step' in dual_hazard:
+                            # 单条已提交步的 hook/irq/blocked fill:末条已存进
+                            # dual_hazard(dual_buf 为空),本圈顶层 attempts+=1
+                            # 已把这条指令计入一次;下一圈物化时不应再计一次,
+                            # 否则一次 fill=两次 attempt,预算提前 1 步耗尽。
+                            attempts -= 1
                         continue
                     # clean 且 0 步(不应发生):走慢路径兜底,不空转。
         if dual_engine is not None:
