@@ -321,8 +321,12 @@ def machine_state(m):
         'timer2_delay_projection': m.timer2_delay_projection,
         'timer2_pending': bool(timer2 is not None and timer2.pending),
         'idle_wait_projection': m.idle_wait_projection,
-        'events': [dict(e) for e in m.events],
-        'event_count': m.event_count,
+        # gosim29 第一刀:events 只回传本批新增项。Python 持有完整历史与累计数,
+        # Go 选核只在唤醒时追加事件(调度判断不读旧历史),故每批传空账本、
+        # 构造快照时不复制历史——砍掉 events 的双向整份往返。恢复侧由
+        # restore_machine 把 Go 返回的新增事件按序喂回 m.record_event。
+        'events': [],
+        'event_count': 0,
         'timer2_poll_wakes': [dict(w) for w in m.timer2_poll_wakes],
         'current_core': getattr(hw, 'current_core', 0),
         'core_icfg': [_opt_int(core_icfg.get(0)), _opt_int(core_icfg.get(1))],
@@ -520,8 +524,20 @@ def restore_machine(m, gs):
     m.deferred_core1_turns = gs['deferred_core1_turns']
     m.seen_cpu1_control_kicks = gs['seen_cpu1_control_kicks']
     m.timer2_poll_wakes = [dict(w) for w in gs['timer2_poll_wakes']]
-    m.events = [dict(e) for e in gs['events']]
-    m.event_count = gs['event_count']
+    # gosim29 第一刀:Go 每批只回传新增的 select 唤醒事件(输入账本为空)。按序
+    # 喂回 m.record_event,Python 沿用自身的「前16+后16」有界窗口并继续累积
+    # event_count。返回列表被当作增量使用,必须完整无丢项:现有唤醒结构下每次
+    # 唤醒都会把该核移出 idle_wait、重新停泊发生在 Python 侧,故单个 fill 最多
+    # 新增 kick+至多两条锚定轮询唤醒(远小于 32),Go 的 recordEvent 不会触发
+    # pop。用断言钉住这个不变量,而不是猜。
+    new_events = [dict(e) for e in gs['events']]
+    if gs['event_count'] != len(new_events):
+        raise ValueError(
+            'dual-engine select events must round-trip whole (bounded list used '
+            'as a per-batch increment): event_count=%d len=%d'
+            % (gs['event_count'], len(new_events)))
+    for e in new_events:
+        m.record_event(e)
     m.hardware.current_core = gs['current_core']
     m.hardware.core_icfg = {i: gs['core_icfg'][i]
                             for i in (0, 1) if gs['core_icfg'][i] is not None}
