@@ -183,3 +183,109 @@ func TestMachineSelectKickRequiresIdle(t *testing.T) {
 		t.Fatal("kick wake must refuse a non-idle parked instruction")
 	}
 }
+
+// gateDemand mirrors br28_icfg.IcfgState.gate_demand on the 0x300 gate bits:
+// any known closed gate -> 0, both gates known and open -> 0x300, else nil.
+func TestGateDemand(t *testing.T) {
+	cases := []struct {
+		name  string
+		value uint32
+		known uint32
+		want  int // -1 = nil
+	}{
+		{"both gates known open", 0x300, 0x300, 0x300},
+		{"gate8 known closed", 0x0, 0x100, 0},
+		{"gate9 known closed", 0x0, 0x200, 0},
+		{"gate8 closed gate9 unknown", 0x0, 0x100, 0},
+		{"gate8 open gate9 unknown", 0x100, 0x100, -1},
+		{"neither gate known", 0x0, 0x0, -1},
+		{"gate8 open gate9 closed", 0x100, 0x300, 0},
+		// The IRQ127 counterexample shape: whole word partially known, but the
+		// two gate bits are still both determined and open.
+		{"partial word, gates known open", 0x300, 0x00000303, 0x300},
+		{"partial word, gates known closed", 0x200, 0x00000303, 0},
+	}
+	for _, tc := range cases {
+		got := gateDemand(tc.value, tc.known)
+		if tc.want == -1 {
+			if got != nil {
+				t.Fatalf("%s: want nil, got %#x", tc.name, *got)
+			}
+			continue
+		}
+		if got == nil || *got != uint32(tc.want) {
+			t.Fatalf("%s: want %#x, got %v", tc.name, tc.want, got)
+		}
+	}
+}
+
+// icfgDemands on the partial-icfg path derives the per-core gate demand even
+// when the whole ICFG word is not fully known (the software_irq_with_unknown_icfg
+// fix): a determined gate must surface instead of nil.
+func TestMachineICFGDemandsPartial(t *testing.T) {
+	m := NewMachine()
+	m.PartialIcfg = true
+	m.Cores[0] = &MCore{ID: 0, PC: 0x100, ICFG: 0x300, ICFGKnownMask: 0x303}
+	m.Cores[1] = &MCore{ID: 1, PC: 0x200, ICFG: 0x0, ICFGKnownMask: 0x100}
+	got := m.icfgDemands()
+	if got[0] == nil || *got[0] != 0x300 {
+		t.Fatalf("core 0 gate demand must be 0x300, got %v", got[0])
+	}
+	if got[1] == nil || *got[1] != 0 {
+		t.Fatalf("core 1 gate demand must be 0, got %v", got[1])
+	}
+}
+
+// icfgDemands keeps the concrete-path fallback: whole word known -> value,
+// unknown -> nil.
+func TestMachineICFGDemandsConcrete(t *testing.T) {
+	m := NewMachine()
+	m.Cores[0] = &MCore{ID: 0, PC: 0x100, ICFG: 0x300, ICFGKnown: true}
+	m.Cores[1] = &MCore{ID: 1, PC: 0x200, ICFG: 0x300, ICFGKnown: false}
+	got := m.icfgDemands()
+	if got[0] == nil || *got[0] != 0x300 {
+		t.Fatalf("core 0 demand must be 0x300, got %v", got[0])
+	}
+	if got[1] != nil {
+		t.Fatalf("core 1 demand must be nil, got %#x", *got[1])
+	}
+}
+
+// The IRQ127 counterexample (sim-gosim20-relax3.log step 147342): a partially
+// known ICFG whose two gate bits are still determined open must feed the
+// software-IRQ scan a concrete gate (0x300) through select's CoreIcfg, not a
+// nil that the scan rejects as software_irq_with_unknown_icfg.
+func TestMachineSelectPartialGateFeedsPeriphIrq127(t *testing.T) {
+	m := NewMachine()
+	m.PartialIcfg = true
+	m.Cores[0] = &MCore{ID: 0, PC: 0x100, ICFG: 0x300, ICFGKnownMask: 0x303} // gates open, rest partial
+	m.Cores[1] = &MCore{ID: 1, PC: 0x200, ICFG: 0x0, ICFGKnownMask: 0x100}   // gate8 closed
+
+	if core, err := m.Select(); err != nil || core != 0 {
+		t.Fatalf("select: want (0, nil), got (%d, %v)", core, err)
+	}
+	if m.CoreIcfg[0] == nil || *m.CoreIcfg[0] != 0x300 {
+		t.Fatalf("core 0 gate demand must be 0x300, got %v", m.CoreIcfg[0])
+	}
+	if m.CoreIcfg[1] == nil || *m.CoreIcfg[1] != 0 {
+		t.Fatalf("core 1 gate demand must be 0, got %v", m.CoreIcfg[1])
+	}
+
+	// Feed the select-side demand into the periph scan exactly as runDualCore
+	// does (w.Periph.CoreIcfg = w.Machine.CoreIcfg): a pending software IRQ on
+	// core 0 bit 3 (irq 127) must deliver, not raise the unknown-icfg stop.
+	p := dualPeriph()
+	p.CoreIcfg = m.CoreIcfg
+	p.SoftwareIRQDeliveryRequests = true
+	s, _ := NewSoftwareIrqCommands([]*uint32{u32p(1 << 3), u32p(0)}, nil)
+	p.SoftwareIRQ = s
+	p.IRQ.Config[15] = u32p(0x50000000) // irq 127 nibble (index%8==7): enabled, priority 2
+	p.IRQ.IPMask = u32p(2)
+	res := p.Advance(0x300)
+	if res.Err != nil && res.Err.JSON() == `{"core":0,"irq":127,"kind":"software_irq_with_unknown_icfg"}` {
+		t.Fatalf("IRQ127 counterexample not fixed: %v", res.Err)
+	}
+	if res.Irq == nil || res.Irq.Core != 0 || res.Irq.Irq != 127 {
+		t.Fatalf("expected software IRQ127 delivery on core 0, got %+v", res)
+	}
+}

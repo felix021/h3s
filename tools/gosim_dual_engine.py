@@ -66,6 +66,9 @@ import gosim_world as _world     # noqa: E402
 from gosim_world import GosimDualWorld, GosimPeriph  # noqa: E402
 import gosim_m6 as _m6           # noqa: E402
 
+from br28_unknown import UnknownWord  # noqa: E402
+from br28_icfg import IcfgValue       # noqa: E402
+
 # ICU register bases mirrored from test_advance_consistency.py (the differential
 # witness for the whole advance-chain state round-trip).
 ICU_BASES = (0xFFE400, 0xFFEC00)
@@ -88,17 +91,119 @@ def cores_concrete(c0, c1):
     return ok(c0) and ok(c1)
 
 
+def encode_reg_tag(v):
+    """One GPR slot -> the Go RegTag shape, or None for a concrete int.
+
+    Abstract values round-trip losslessly through the side table: UnknownWord
+    carries its 4 bytes + 4 origins, IcfgValue its value/known/origin/identity
+    (the world_snapshot._ABSTRACT_FIELDS shapes). Anything else refuses loudly
+    (the bridge never fabricates a value)."""
+    if type(v) is int:
+        return None
+    if isinstance(v, UnknownWord):
+        return {'kind': 'unknown_word',
+                'bytes': list(v.bytes), 'origins': list(v.origins)}
+    if isinstance(v, IcfgValue):
+        return {'kind': 'icfg_value',
+                'value': v.value, 'known': v.known,
+                'origin': list(v.origin), 'identity': v.identity}
+    raise ValueError('dual engine snapshots only concrete or UnknownWord/IcfgValue '
+                     'GPRs (never fabricate a value)')
+
+
+def decode_reg_tag(tag):
+    """Go RegTag shape -> the live Python abstract value (None = concrete int)."""
+    if tag is None:
+        return None
+    kind = tag['kind']
+    if kind == 'unknown_word':
+        return UnknownWord(tuple(tag['bytes']), tuple(tag['origins']))
+    if kind == 'icfg_value':
+        return IcfgValue(tag['value'], tag['known'], tuple(tag['origin']),
+                         tag.get('identity', 0xffffffff))
+    raise ValueError('unknown register tag kind: ' + repr(kind))
+
+
+def _icfg_bits(c):
+    """(value, known_mask, fully_known) of one CPU's ICFG, partial-icfg aware."""
+    st = getattr(c, 'icfg_state', None)
+    if st is not None:
+        return st.value, st.known, st.known == 0xffffffff
+    return (c.icfg if c.icfg_known else 0), (0xffffffff if c.icfg_known else 0), \
+        c.icfg_known
+
+
+# The three select-side literal anchors (mirror gosim/machine.go).
+_TIMER2_POLL_ANCHOR = 0x12CD76
+_CORE1_IDLE_PC = 0x12C5CA
+_CORE1_IDLE_DELAY_LIMIT = 4096
+
+
+def predict_select(machine, hardware):
+    """Side-effect-free mirror of DualCoreMachine.select(): the core the real
+    select would pick, its CPU (or None), and that core's effective pc AFTER any
+    wake that applies to it (CPU1-control kick / TIMER2 anchored poll).
+
+    The real select commits side effects (idle_wait removal, pc += idle size,
+    steps += 1, event records, last_core / deferred turns, core_icfg demand)
+    exactly once per attempt inside Go. This predictor only REPLIES which core
+    and pc the head check should observe, so a call here never double-commits a
+    wake and a wrong prediction (this is a pure optimization) can only waste or
+    skip a fill, never change the selected core's behavior."""
+    kicks = getattr(hardware, 'cpu1_control_kick_writes', None)
+    idle = set(machine.idle_wait_cores)
+    cores = machine.cores
+    pc = {cid: c.pc for cid, c in cores.items()}
+    decoded = {}
+    for cid, c in cores.items():
+        try:
+            insn, _, size = c.decode(c.pc)
+            decoded[cid] = (insn.id, size)
+        except Exception:
+            decoded[cid] = (None, 0)
+
+    if machine.cpu1_control_kick_wake and kicks is not None and kicks != machine.seen_cpu1_control_kicks:
+        if 1 in cores and 1 in idle and decoded.get(1, (None, 0))[0] == 'idle':
+            idle.discard(1)
+            pc[1] += decoded[1][1]
+
+    timer2 = getattr(hardware, 'timer2', None)
+    if machine.timer2_delay_projection and timer2 is not None and timer2.pending:
+        for core in sorted(cid for cid in idle
+                           if cid in cores and pc[cid] == _TIMER2_POLL_ANCHOR):
+            if decoded.get(core, (None, 0))[0] == 'idle' and pc[core] == _TIMER2_POLL_ANCHOR:
+                idle.discard(core)
+                pc[core] += decoded[core][1]
+
+    core = 1 - machine.last_core
+    if core not in cores:
+        core = 0
+    if core in idle:
+        other = 1 - core
+        if other in cores and other not in idle:
+            core = other
+    if (core == 1 and machine.defer_core1_first_idle and 1 in machine.first_task_returns
+            and pc.get(1) == _CORE1_IDLE_PC
+            and machine.deferred_core1_turns < _CORE1_IDLE_DELAY_LIMIT):
+        core = 0
+    return core, cores.get(core), pc.get(core)
+
+
 # ---- snapshot: live Python objects -> Go JSON shapes ---------------------------
 
 def core_state(c):
     """One live Python CPU -> the coreStateJSON shape (cshared/world.go)."""
     def regs():
         out = []
+        rt = []
         for v in c.R:
-            if type(v) is not int:
-                raise ValueError('dual engine snapshots only concrete GPRs (never fabricate a value)')
-            out.append(v)
-        return out
+            tag = encode_reg_tag(v)
+            if tag is None:
+                out.append(v)
+            else:
+                out.append(0)  # placeholder; the side table is authoritative
+            rt.append(tag)
+        return out, rt
 
     def outer():
         o = getattr(c, 'audio_irq_outer_context', None)
@@ -107,16 +212,20 @@ def core_state(c):
         return {'active_context': o.get('active_context') or '',
                 'reti': _opt_int(o.get('reti')), 'sp': o.get('sp', 0)}
 
+    r, rt = regs()
+    icfg, icfg_mask, icfg_known = _icfg_bits(c)
     return {
         'id': c.core_id,
-        'r': regs(),
+        'r': r,
+        'rt': rt,
         'flags': c.flags,
         'sp': c.sp if c.sp_known else 0,
         'sp_known': c.sp_known,
         'rets': c.rets,
         'pc': c.pc,
-        'icfg': c.icfg if c.icfg_known else 0,
-        'icfg_known': c.icfg_known,
+        'icfg': icfg,
+        'icfg_known': icfg_known,
+        'icfg_known_mask': icfg_mask,
         'steps': c.steps,
         'repeat_active': (getattr(c, 'repeat', None) is not None
                           or getattr(c, 'after_then', None) is not None),
@@ -138,10 +247,11 @@ def machine_state(m):
             return None
         c = m.cores[cid]
         insn, _, size = c.decode(c.pc)
+        icfg, icfg_mask, icfg_known = _icfg_bits(c)
         return {
             'id': c.core_id, 'pc': c.pc, 'steps': c.steps,
-            'icfg': c.icfg if c.icfg_known else 0,
-            'icfg_known': c.icfg_known,
+            'icfg': icfg, 'icfg_known': icfg_known,
+            'icfg_known_mask': icfg_mask,
             'insn_id': insn.id, 'insn_size': size,
         }
 
@@ -167,6 +277,7 @@ def machine_state(m):
         'timer2_poll_wakes': [dict(w) for w in m.timer2_poll_wakes],
         'current_core': getattr(hw, 'current_core', 0),
         'core_icfg': [_opt_int(core_icfg.get(0)), _opt_int(core_icfg.get(1))],
+        'partial_icfg': m.partial_icfg,
     }
 
 
@@ -320,10 +431,18 @@ def restore_core(c, gc):
     never touches sp / rets / icfg / the special registers (no memory, no sp move,
     no sr move, no call/return), and delivery projections stay Python, so those
     fields are unchanged by the Go run and must not be clobbered by a fabricated
-    placeholder (e.g. an unknown sp would otherwise be turned into 0)."""
+    placeholder (e.g. an unknown sp would otherwise be turned into 0). The typed
+    register side table ('rt') reconstructs any abstract GPR losslessly; when it
+    is absent (legacy concrete shape) each R slot stays a concrete int."""
     if gc is None:
         return
-    c.R = [v if type(v) is int else 0 for v in gc['r']]
+    rt = gc.get('rt')
+    if rt is None:
+        c.R = [v if type(v) is int else 0 for v in gc['r']]
+    else:
+        r = gc['r']
+        c.R = [v if tag is None else decode_reg_tag(tag)
+               for v, tag in zip(r, rt)]
     c.flags = gc['flags'] & 0xFFFFFFFF
     c.pc = gc['pc'] & 0xFFFFFFFF
     c.steps = gc['steps']

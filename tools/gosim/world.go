@@ -35,17 +35,21 @@ const (
 // CPU plus the machine-side per-core bookkeeping fields that after_step and the
 // delivery projections read (see br28_machine.py launch/select).
 type Core struct {
-	ID           int
-	R            [16]uint32
-	Flags        uint32
-	SP           uint32
-	SPKnown      bool
-	RETS         uint32
-	PC           uint32
-	ICFG         uint32
-	ICFGKnown    bool
-	Steps        uint64
-	RepeatActive bool // repeat / after_then pending (yield before attempt)
+	ID        int
+	R         [16]uint32
+	RT        [16]*RegTag // typed register side table (abstract GPR round-trip)
+	Flags     uint32
+	SP        uint32
+	SPKnown   bool
+	RETS      uint32
+	PC        uint32
+	ICFG      uint32
+	ICFGKnown bool
+	// ICFGKnownMask is the full 32-bit known mask of the ICFG value (partial
+	// ICFG only); 0xffffffff = fully known. It feeds the select-side gate_demand.
+	ICFGKnownMask uint32
+	Steps         uint64
+	RepeatActive  bool // repeat / after_then pending (yield before attempt)
 
 	// M6C special registers + execution context (br28_machine deliver_*
 	// projections). A nil pointer is the Python None (unknown); an empty
@@ -370,9 +374,14 @@ func syncCPUFromCore(cpu *CPU, c *Core) {
 }
 
 // syncCoreFromCPU copies the architectural state back from the CPU engine after
-// one execute step and bumps the core step counter.
+// one execute step and bumps the core step counter. The execute engine only
+// runs concrete integer registers (this cut never executes an abstract value),
+// so the whole typed side table is cleared — any register the step produced is
+// concrete, and any register it left alone was already concrete or its tag must
+// not survive a concrete re-sync.
 func syncCoreFromCPU(c *Core, cpu *CPU) {
 	c.R = cpu.R
+	c.RT = [16]*RegTag{}
 	c.Flags = cpu.flags
 	c.SP = cpu.sp
 	c.RETS = cpu.rets
@@ -401,6 +410,7 @@ func (w *World) syncMachineCores() {
 		mc.Steps = c.Steps
 		mc.ICFG = c.ICFG
 		mc.ICFGKnown = c.ICFGKnown
+		mc.ICFGKnownMask = c.ICFGKnownMask
 		mc.InsnID = ""
 		mc.InsnSize = 0
 		if cpu := w.execFor(core); cpu != nil {

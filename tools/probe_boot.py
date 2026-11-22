@@ -3127,7 +3127,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     dual_buf=[]
     dual_hazard=None
     if gosim_dual_engine is not None:
-        from gosim_dual_engine import DualCoreEngine, _t as _dual_t
+        from gosim_dual_engine import DualCoreEngine, predict_select, _t as _dual_t
         dual_engine=DualCoreEngine(rom,app,ENTRY,regions=Memory.regions,
                                    readonly=(handoff['readonly'] if handoff else ()),
                                    mem=c.mem)
@@ -3246,11 +3246,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             return (c.sp+op['n'])&0xffffffff
         return None
 
-    def _dual_head_ok(c):
+    def _dual_head_ok(c, pc=None):
         # 纯优化预判,任何异常(形状猜错/字段缺失/MMU 抛 Blocked)一律视为
-        # 不安全走慢路径,绝不让预判本身把主循环带崩。
+        # 不安全走慢路径,绝不让预判本身把主循环带崩。pc 覆盖用于真实选核
+        # 预判:被 kick/TIMER2 唤醒的核,其段头观察的是唤醒后(消费 idle 之后)
+        # 的 PC,而 live CPU 的 pc 仍是唤醒前的旧值(predict_select 无副作用)。
         try:
-            insn,raw,size=c.decode(c.pc)
+            insn,raw,size=c.decode(c.pc if pc is None else pc)
         except Exception:
             return False
         iid=insn.id
@@ -3288,21 +3290,20 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 and os.environ.get('H3S_DUAL_KINDS')):
             _es=gosim_entry_stats
             _es['total']=_es.get('total',0)+1
-            _pcore=1-machine.last_core
-            _pco=machine.cores.get(_pcore)
+            _pcore,_pco,_ppc=predict_select(machine,hardware)
             _c0=machine.cores[0];_c1=machine.cores[1]
             _concrete=dual_engine.cores_concrete(_c0,_c1)
             _insn=_raw=None;_iid='<nodecode>';_grp=''
             if _pco is not None:
                 try:
-                    _insn,_raw,_size=_pco.decode(_pco.pc)
+                    _insn,_raw,_size=_pco.decode(_ppc)
                     _iid=_insn.id;_grp=getattr(_insn,'group','') or ''
                 except Exception:
                     pass
             if _concrete:
                 _es['concrete:pass']=_es.get('concrete:pass',0)+1
                 # 段头预判(保守镜像):预判不安全的头在 fill 前就被拦,浪费为 0
-                _hok=_pco is not None and _dual_head_ok(_pco)
+                _hok=_pco is not None and _dual_head_ok(_pco,_ppc)
                 _es['head:'+('ok' if _hok else 'unsafe')]=_es.get('head:'+('ok' if _hok else 'unsafe'),0)+1
                 if not _hok:
                     _es['head_unsafe:'+_iid]=_es.get('head_unsafe:'+_iid,0)+1
@@ -3330,7 +3331,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 _rexec='no'
                 if _relax=='yes' and _pco is not None:
                     try:
-                        if _dual_head_ok(_pco):_rexec='yes'
+                        if _dual_head_ok(_pco,_ppc):_rexec='yes'
                     except Exception:
                         pass
                 _es['relax_exec:'+_rexec]=_es.get('relax_exec:'+_rexec,0)+1
@@ -3410,9 +3411,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     machine.last_core=1-hb['core']
                 # yield/upstream:未执行任何 attempt,状态未动,直接走慢路径。
             else:
-                _pcore=1-machine.last_core
-                _pco=machine.cores.get(_pcore)
-                if _pco is None or not _dual_head_ok(_pco):
+                # 段头观察与真实 select 一致(predict_select 无副作用,处理停泊/
+                # 唤醒/延期,不因未选中核 PC 无法预解码而改选中核行为):预判不安全
+                # 的核若真实 select 会转选另一核,这里照常放行,不因 naive
+                # `1-last_core` 停在已停泊核上而漏填。
+                _pcore,_pco,_ppc=predict_select(machine,hardware)
+                if _pco is None or not _dual_head_ok(_pco,_ppc):
                     # 段头预判不安全(访存到 MMIO/未映射/非 Go 可执行形状):跳过
                     # 白费 fill,直接落慢路径 select+step(字节等价)。
                     pass

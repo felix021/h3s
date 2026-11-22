@@ -183,24 +183,26 @@ func gosim_world_set_periph(wH C.uintptr_t, periphH C.uintptr_t) {
 // engine snapshot the live Python CPU into Go and read the post-loop core state
 // back without guessing. nil u32 pointers mirror the Python None.
 type coreStateJSON struct {
-	ID               int               `json:"id"`
-	R                [16]uint32        `json:"r"`
-	Flags            uint32            `json:"flags"`
-	SP               uint32            `json:"sp"`
-	SPKnown          bool              `json:"sp_known"`
-	RETS             uint32            `json:"rets"`
-	PC               uint32            `json:"pc"`
-	ICFG             uint32            `json:"icfg"`
-	ICFGKnown        bool              `json:"icfg_known"`
-	Steps            uint64            `json:"steps"`
-	RepeatActive     bool              `json:"repeat_active"`
-	USP              *uint32           `json:"usp"`
-	SSP              *uint32           `json:"ssp"`
-	RETI             *uint32           `json:"reti"`
-	IRQPSR           *uint32           `json:"irq_psr"`
-	ActiveContext    string            `json:"active_context"`
-	BootstrapContext bool              `json:"bootstrap_context"`
-	LastExplicitSSP  *uint32           `json:"last_explicit_ssp"`
+	ID               int                `json:"id"`
+	R                [16]uint32         `json:"r"`
+	RT               [16]*gosim.RegTag  `json:"rt,omitempty"`
+	Flags            uint32             `json:"flags"`
+	SP               uint32             `json:"sp"`
+	SPKnown          bool               `json:"sp_known"`
+	RETS             uint32             `json:"rets"`
+	PC               uint32             `json:"pc"`
+	ICFG             uint32             `json:"icfg"`
+	ICFGKnown        bool               `json:"icfg_known"`
+	ICFGKnownMask    uint32             `json:"icfg_known_mask"`
+	Steps            uint64             `json:"steps"`
+	RepeatActive     bool               `json:"repeat_active"`
+	USP              *uint32            `json:"usp"`
+	SSP              *uint32            `json:"ssp"`
+	RETI             *uint32            `json:"reti"`
+	IRQPSR           *uint32            `json:"irq_psr"`
+	ActiveContext    string             `json:"active_context"`
+	BootstrapContext bool               `json:"bootstrap_context"`
+	LastExplicitSSP  *uint32            `json:"last_explicit_ssp"`
 	AudioIrqOuter    *audioIrqOuterJSON `json:"audio_irq_outer_context"`
 }
 
@@ -217,6 +219,7 @@ func coreFromJSON(s *coreStateJSON) *gosim.Core {
 	c := &gosim.Core{
 		ID:               s.ID,
 		R:                s.R,
+		RT:               s.RT,
 		Flags:            s.Flags,
 		SP:               s.SP,
 		SPKnown:          s.SPKnown,
@@ -224,6 +227,7 @@ func coreFromJSON(s *coreStateJSON) *gosim.Core {
 		PC:               s.PC,
 		ICFG:             s.ICFG,
 		ICFGKnown:        s.ICFGKnown,
+		ICFGKnownMask:    s.ICFGKnownMask,
 		Steps:            s.Steps,
 		RepeatActive:     s.RepeatActive,
 		USP:              s.USP,
@@ -259,6 +263,7 @@ func coreToJSON(c *gosim.Core) *coreStateJSON {
 	return &coreStateJSON{
 		ID:               c.ID,
 		R:                c.R,
+		RT:               c.RT,
 		Flags:            c.Flags,
 		SP:               c.SP,
 		SPKnown:          c.SPKnown,
@@ -266,6 +271,7 @@ func coreToJSON(c *gosim.Core) *coreStateJSON {
 		PC:               c.PC,
 		ICFG:             c.ICFG,
 		ICFGKnown:        c.ICFGKnown,
+		ICFGKnownMask:    c.ICFGKnownMask,
 		Steps:            c.Steps,
 		RepeatActive:     c.RepeatActive,
 		USP:              c.USP,

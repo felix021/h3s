@@ -43,6 +43,10 @@ type MCore struct {
 	Steps     uint64
 	ICFG      uint32
 	ICFGKnown bool
+	// ICFGKnownMask is the full 32-bit known mask of the ICFG value (partial
+	// ICFG only). It is unused on the non-partial path (ICFGKnown suffices).
+	// 0xffffffff means fully known; a partial mask drives gate_demand.
+	ICFGKnownMask uint32
 	// InsnID / InsnSize are the decoded instruction at PC (caller-supplied).
 	// The two wake helpers require InsnID == "idle" exactly as the Python
 	// cpu.decode(pc)[0].id == 'idle' precondition does.
@@ -81,6 +85,11 @@ type Machine struct {
 
 	CurrentCore int        // hardware.current_core
 	CoreIcfg    [2]*uint32 // hardware.core_icfg per launched core (nil = None)
+
+	// PartialIcfg mirrors DualCoreMachine.partial_icfg: when set, icfgDemands
+	// derives the per-core hardware gate demand (gate_demand) from the partial
+	// known mask instead of the whole-word known/nil fallback.
+	PartialIcfg bool
 }
 
 // NewMachine returns a Machine with the Python constructor's select-relevant
@@ -175,13 +184,37 @@ func (m *Machine) wakeTimer2Poll(core int) error {
 	return nil
 }
 
-// icfgDemands mirrors the non-partial-icfg branch of icfg_demands: per launched
-// core, c.icfg when known else None. (The partial-icfg gate_demand branch is a
-// Stage B concern and is not modeled here.)
+// gateDemand mirrors br28_icfg.IcfgState.gate_demand (GATES = 0x300): any known
+// closed gate proves delivery impossible (0), both gates known and open give
+// 0x300, anything else is unknown (nil). value is the masked ICFG value and
+// known the full 32-bit known mask (value is already value&known on the Python
+// side, exactly like IcfgState keeps its invariant).
+func gateDemand(value, known uint32) *uint32 {
+	const gates uint32 = 0x300
+	if known&^value&gates != 0 {
+		v := uint32(0)
+		return &v
+	}
+	if known&gates == gates {
+		v := gates
+		return &v
+	}
+	return nil
+}
+
+// icfgDemands mirrors icfg_demands: on the partial-icfg path it is the per-core
+// gate_demand; on the concrete path it is c.icfg when known else None. This is
+// the fix for the software_irq_with_unknown_icfg counterexample: a partially
+// known ICFG whose two gate bits are still determined must surface that gate
+// demand instead of nil (which the software-IRQ scan rejects).
 func (m *Machine) icfgDemands() [2]*uint32 {
 	var out [2]*uint32
 	for core := 0; core < 2; core++ {
 		if m.Cores[core] == nil {
+			continue
+		}
+		if m.PartialIcfg {
+			out[core] = gateDemand(m.Cores[core].ICFG, m.Cores[core].ICFGKnownMask)
 			continue
 		}
 		if m.Cores[core].ICFGKnown {
@@ -236,13 +269,14 @@ func (m *Machine) Select() (int, error) {
 
 // mcCoreState is the JSON shape of one MCore.
 type mcCoreState struct {
-	ID        int    `json:"id"`
-	PC        uint32 `json:"pc"`
-	Steps     uint64 `json:"steps"`
-	ICFG      uint32 `json:"icfg"`
-	ICFGKnown bool   `json:"icfg_known"`
-	InsnID    string `json:"insn_id"`
-	InsnSize  uint32 `json:"insn_size"`
+	ID            int    `json:"id"`
+	PC            uint32 `json:"pc"`
+	Steps         uint64 `json:"steps"`
+	ICFG          uint32 `json:"icfg"`
+	ICFGKnown     bool   `json:"icfg_known"`
+	ICFGKnownMask uint32 `json:"icfg_known_mask"`
+	InsnID        string `json:"insn_id"`
+	InsnSize      uint32 `json:"insn_size"`
 }
 
 // machineInput is the JSON input shape the harness loads before a select batch.
@@ -269,6 +303,8 @@ type machineInput struct {
 	// twins, carried over so a yield-before-first-select still round-trips them.
 	CurrentCore int        `json:"current_core"`
 	CoreIcfg    [2]*uint32 `json:"core_icfg"`
+	// PartialIcfg mirrors DualCoreMachine.partial_icfg.
+	PartialIcfg bool `json:"partial_icfg"`
 }
 
 // LoadJSON restores the input state from JSON and resets the accumulated
@@ -286,13 +322,14 @@ func (m *Machine) LoadJSON(data []byte) error {
 		}
 		c := in.Cores[i]
 		m.Cores[i] = &MCore{
-			ID:        c.ID,
-			PC:        c.PC,
-			Steps:     c.Steps,
-			ICFG:      c.ICFG,
-			ICFGKnown: c.ICFGKnown,
-			InsnID:    c.InsnID,
-			InsnSize:  c.InsnSize,
+			ID:            c.ID,
+			PC:            c.PC,
+			Steps:         c.Steps,
+			ICFG:          c.ICFG,
+			ICFGKnown:     c.ICFGKnown,
+			ICFGKnownMask: c.ICFGKnownMask,
+			InsnID:        c.InsnID,
+			InsnSize:      c.InsnSize,
 		}
 	}
 	if len(in.IdleWait) >= 2 {
@@ -328,6 +365,7 @@ func (m *Machine) LoadJSON(data []byte) error {
 	}
 	m.CurrentCore = in.CurrentCore
 	m.CoreIcfg = in.CoreIcfg
+	m.PartialIcfg = in.PartialIcfg
 	return nil
 }
 
@@ -342,13 +380,14 @@ func (m *Machine) StateJSON() []byte {
 		}
 		c := m.Cores[i]
 		cores[i] = map[string]any{
-			"id":         c.ID,
-			"pc":         c.PC,
-			"steps":      c.Steps,
-			"icfg":       c.ICFG,
-			"icfg_known": c.ICFGKnown,
-			"insn_id":    c.InsnID,
-			"insn_size":  c.InsnSize,
+			"id":              c.ID,
+			"pc":              c.PC,
+			"steps":           c.Steps,
+			"icfg":            c.ICFG,
+			"icfg_known":      c.ICFGKnown,
+			"icfg_known_mask": c.ICFGKnownMask,
+			"insn_id":         c.InsnID,
+			"insn_size":       c.InsnSize,
 		}
 	}
 	icfg := make([]any, 2)
@@ -383,6 +422,7 @@ func (m *Machine) StateJSON() []byte {
 		"timer2_poll_wakes":       m.Timer2PollWakes,
 		"current_core":            m.CurrentCore,
 		"core_icfg":               icfg,
+		"partial_icfg":            m.PartialIcfg,
 	}
 	b, _ := json.Marshal(out)
 	return b
