@@ -137,7 +137,11 @@ func loopMemWrites(in []MemWrite) []LoopMemWrite {
 	for i, w := range in {
 		out[i] = LoopMemWrite{Addr: w.Addr, Abs: w.Abs}
 		if w.Abs == nil {
-			out[i].Bytes = wordBytes(w.Value)
+			if w.Bytes != nil {
+				out[i].Bytes = w.Bytes
+			} else {
+				out[i].Bytes = wordBytes(w.Value)
+			}
 		}
 	}
 	return out

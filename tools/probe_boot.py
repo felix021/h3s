@@ -3294,6 +3294,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 if hardware is not None and hardware.handles(addr,4):return False
                 if addr%4:return False
                 return True
+            if iid=='st.b.pin':
+                # 短形字节后增存储(Go 侧 runPinByteStore / exact_postincrement_
+                # store 适配器):写旧基址 1 字节后基址+=±1。字节写无对齐约束;
+                # 目标为 MMIO 字/字节寄存器时交回慢路径(Go 会诚实 fault 交回,
+                # 这里只是省白费 fill)。源寄存器具体性由 Go 每步 gate 兜底。
+                op=module.check.operands(insn,raw)
+                addr=c.R[op['b']]&0xffffffff
+                if hardware is not None and hardware.handles_byte_write(addr):return False
+                return True
         except Exception:
             return False
         return _batch_safe(insn,module)

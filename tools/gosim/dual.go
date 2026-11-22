@@ -124,6 +124,9 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 			return s, DualTagInfo{Direct: code == BatchOK}, code, pc, nil
 		}
 	}
+	if s, code, ok := c.runPinByteStore(core, im, raw, pc, uint32(size), insnBytes); ok {
+		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, nil
+	}
 	if !c.safeDual(im) {
 		return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
 	}
@@ -223,4 +226,54 @@ func modelExactFullWordStore(id string) modelFunc {
 		}
 		return ef().memw(addr, val).fl(c.flags), nil
 	}
+}
+
+// runPinByteStore executes the standalone short-form byte postincrement store
+// st.b.pin (syntax b[{b}++={n}] = {d}) the dual loop runs byte-for-byte against
+// Python's exact_postincrement_store adapter (probe_boot step_body's
+// immediate_rep_projection + exact_subword_stores short-form gate). It writes
+// the source register's low byte to the old base address, then writes the base
+// register back to base + n (n = -1 or +1), leaving flags untouched — the
+// exact semantics the adapter pins. ok is true when the instruction is
+// st.b.pin (committed or handed back); every other id returns ok == false so
+// the caller falls through to the shared safeDual/model path.
+//
+// A tagged base or source register is handed back (BatchAbstract) so Python
+// re-derives the identical consumed() Blocked; a strict-memory fault on the
+// byte write is handed back (BatchMemFault) so Python re-derives the identical
+// unmapped/readonly/uninitialized Blocked. The raw core (dmem == nil) keeps the
+// upstream deny-set semantics (BatchUnsafe), which the differential tests pin.
+func (c *CPU) runPinByteStore(core *Core, im *insnMeta, raw map[string]uint32, pc uint32, size uint32, insnBytes []byte) (SegmentStep, int, bool) {
+	if im.id != "st.b.pin" {
+		return SegmentStep{}, 0, false
+	}
+	if c.dmem == nil {
+		return SegmentStep{}, BatchUnsafe, true
+	}
+	op := newOperands(im, raw)
+	b := int(op.Num("b"))
+	d := int(op.Num("d"))
+	if core.RT[b] != nil || core.RT[d] != nil {
+		return SegmentStep{}, BatchAbstract, true
+	}
+	addr := core.R[b]
+	n := op.Num("n") // uimm, scale -2 add 1: +1 or -1
+	byteVal := byte(core.R[d])
+	if err := c.dmem.Write(addr, []byte{byteVal}); err != nil {
+		return SegmentStep{}, BatchMemFault, true
+	}
+	core.R[b] = uint32(int64(addr)+n) & wordMask
+	core.PC = pc + size
+	core.Steps++
+	return SegmentStep{
+		PC:       pc,
+		NextPC:   core.PC,
+		Flags:    uint8(core.Flags & 0xF),
+		R:        core.R,
+		BeforeSP: core.SP,
+		SP:       core.SP,
+		Insn:     insnBytes,
+		Adapter:  "exact_postincrement_store",
+		Mem:      []MemWrite{{Addr: addr, Bytes: []byte{byteVal}}},
+	}, BatchOK, true
 }
