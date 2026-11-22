@@ -209,7 +209,7 @@ IDLE 不够」。机检规则 [设计]，全部在窗口报告键上可判定：
 | # | 规则 | 机检判据（PASS） | FAIL 信号 | 报告键 |
 |---|---|---|---|---|
 | H1 | 定时事件确实发生 | 窗口内 Timer0 到期 ≥3 次（与 D1-2 同数互证） | 到期 <3 或周期漂移 | `health.timer0_expiries` |
-| H2 | 同源重发有界 | 每源交付数 ≤ ⌈N/P_i⌉+1：Timer0 P=40,000；core tick P=300,000（park 态实读为准）；软件 IRQ124-127 预期 0 | 超上界=风暴/无限重发 | `health.per_source.{source,period,deliveries,upper_bound}` |
+| H2 | 同源重发有界 | 每源交付数 ≤ ⌈N/P_i⌉+1：Timer0 P=40,000；core tick P=300,000（park 态实读为准）；irq127（RTOS tick 调度器软件 IRQ）P=core tick 周期 40,000；非周期源（irq89 等事件驱动）≤ 4 | 超上界=风暴/无限重发 | `health.per_source.{source,period,deliveries,upper_bound}` |
 | H3 | 无同事件无限重发 | 同一 (事件 id,子码) 的入队次数 ≤ 上界（S18 预置=2；注入变体=+1）；消费次数=入队次数（无重复消费） | 消费>入队（重复分发）或入队无界增长 | `health.event_reposts`, `health.queue_balance` |
 | H4 | 必要任务可唤醒 | 窗口内 CPU0 被 Timer0/core tick 唤醒 ≥1 次且**每次唤醒处理后重新** `core_idle_wait_entered`（唤醒→处理→回等待的循环可数） | 唤醒后不回等待（卡运行态）；零唤醒 | `health.per_core.{wake_count,rewait_count,wake_reasons}` |
 | H5 | 无任务饿死 | 除 idle 外就绪任务集 R（停点 TCB 扫描 state==ready）：R=∅ 时 vacuous PASS 并记录；R≠∅ 时每个 r∈R 窗口内 ≥1 次调度（PC 进入其任务体） | 有就绪任务全程未调度 | `health.ready_tasks.{tcb,entry,scheduled}` |

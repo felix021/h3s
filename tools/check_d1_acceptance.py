@@ -250,6 +250,23 @@ def _message_chain(scenario):
     return None
 
 
+def _rti_events(scenario,park_boundary=None):
+    """窗口内 timer0_irq_rti 记录。观察器全量日志(machine.timer0_irq_rti_log,
+    model_step 字段随行)优先且不受 events 32 条滑窗截断影响;键缺回退 machine.
+    events(kind=='timer0_irq_rti',受截断)。返回 (list, reliable):reliable=True=
+    全量日志在场。"""
+    log=_machine(scenario).get('timer0_irq_rti_log')
+    if isinstance(log,list):
+        events=[e for e in log if isinstance(e,dict)
+                and e.get('kind')=='timer0_irq_rti']
+        if park_boundary is not None:
+            events=[e for e in events if isinstance(e.get('model_step'),int)
+                    and e['model_step']>park_boundary]
+        return events,True
+    events=[e for e in _events(scenario) if e.get('kind')=='timer0_irq_rti']
+    return events,False
+
+
 def park_window(scenario):
     """D1 验收窗口是否已开(两核 park)。
 
@@ -662,13 +679,27 @@ def d1_2_timer0_cycles(scenario):
     # 逐周期四查之 ACK:每交付恰一次 W1C(计数器需求)
     w1c=timer0.get('w1c_acknowledgements')
     if w1c is None:
+        # 观察器侧计数(0x12ecf8 W1C 写指令窗口内执行次数;模型 Timer0 无此
+        # 计数器,br28_model 只读域,由观察器以真实指令执行计数带出,d1_window
+        # 树键 timer0_w1c_acknowledgements)
+        window=scenario.get('d1_window')
+        w1c=window.get('timer0_w1c_acknowledgements') if isinstance(window,dict) else None
+    if w1c is None:
         checks.append(_check('w1c_ack_per_delivery',
-            missing='peripherals.timer0.w1c_acknowledgements(W1C bit14 清 pending 次数;'
+            missing='peripherals.timer0.w1c_acknowledgements 或 d1_window.'
+                    'timer0_w1c_acknowledgements(W1C bit14 清 pending 次数;'
                     '逐周期四查之 ACK 项)'))
     else:
-        # 无交付步号观测时退化为全量对照(运行中世界的一致性检查,措辞如实)
-        n=len(window_deliveries) if window_deliveries else len(deliveries)
-        scope='in-window deliveries' if window_deliveries else 'all deliveries (no step numbers to split the window)'
+        # 窗口口径 n 对齐:观察器侧 w1c 计数=窗口内 W1C 写(0x12ecf8 执行次数),
+        # 应与窗口内交付数相等(每到期恰一次交付→一次 W1C)。timer0 交付无步号
+        # (观察器只给 core tick 交付注入 model_step),故用 window_expiries 当
+        # 窗口内交付数代理;交付步号在场则优先;都缺才退全量对照(措辞如实)。
+        if window_deliveries:
+            n=len(window_deliveries);scope='in-window deliveries'
+        elif window_expiries:
+            n=len(window_expiries);scope='in-window deliveries (== in-window expiries)'
+        else:
+            n=len(deliveries);scope='all deliveries (no step numbers to split the window)'
         checks.append(_check('w1c_ack_per_delivery',fail=w1c!=n,
             detail=f'w1c acknowledgements {w1c} == {n} {scope}' if w1c==n
                    else f'w1c acknowledgements {w1c} != {n} {scope} (lost or duplicate ack)'))
@@ -678,11 +709,13 @@ def d1_2_timer0_cycles(scenario):
     # RTI 数 >= 交付数 + 重新 park 数 >= 交付数——数量级配对,防某周期重复另一周期漏失)
     log=_park_log(scenario)
     truncated=bool(_machine(scenario).get('events_truncated'))
-    rti_events=[e for e in _events(scenario) if e.get('kind')=='timer0_irq_rti']
+    rti_events,rti_reliable=_rti_events(scenario,park_boundary)
+    truncated=truncated and not rti_reliable  # 观察器全量日志在场则不受滑窗截断影响
     if truncated or not window_deliveries or log is None:
         checks.append(_check('rti_to_actual_reti_and_re_park',
             missing='machine.idle_wait_park_log + timer0_irq_rti 记录(RTI reti_from_frame 与交付 '
-                    'reti_from 一致 + 重新 core_idle_wait_entered;events 滑窗截断时不可靠)'))
+                    'reti_from 一致 + 重新 core_idle_wait_entered;events 滑窗截断且无观察器'
+                    '全量日志时不可靠)'))
     elif not rti_events:
         checks.append(_check('rti_to_actual_reti_and_re_park',fail=True,
             detail=f'{len(window_deliveries)} in-window deliveries but zero timer0_irq_rti events '
@@ -692,15 +725,23 @@ def d1_2_timer0_cycles(scenario):
                    for e in rti_events)
         repark_candidates=[e for e in log if e.get('kind')=='core_idle_wait_entered'
                            and e.get('core')==0]
-        if park_boundary is not None:
-            reparks=sum(1 for e in repark_candidates
-                        if isinstance(e.get('model_step'),int) and e['model_step']>park_boundary)
-        else:
-            reparks=len(repark_candidates)
-        ok=rti_ok and len(rti_events)>=len(window_deliveries) and reparks>=len(window_deliveries)
+        wake_candidates=[e for e in log if e.get('kind')=='core_woken_by_delivery'
+                         and e.get('core')==0]
+        def _in_window(entries):
+            if park_boundary is not None:
+                return sum(1 for e in entries
+                           if isinstance(e.get('model_step'),int) and e['model_step']>park_boundary)
+            return len(entries)
+        reparks=_in_window(repark_candidates)
+        wakes=_in_window(wake_candidates)
+        # re-park 配对对象=唤醒数(非交付数):Timer0 交付可打断运行中的应用代码
+        # (非 idle 唤醒),此时 handler RTI 返回应用代码、不产生 core_idle_wait_entered;
+        # src_sync 场景 14 交付 vs 6 唤醒/6 回等待,配对须按唤醒走(2026-11-22 归因)。
+        ok=rti_ok and len(rti_events)>=len(window_deliveries) and reparks>=wakes
         checks.append(_check('rti_to_actual_reti_and_re_park',fail=not ok,
             detail=(f'{len(rti_events)} RTIs (>= {len(window_deliveries)} deliveries) returned to the '
-                    f'actual saved RETI; {reparks} in-window re-parks' if ok else
+                    f'actual saved RETI; {reparks} in-window re-parks (>= {wakes} in-window wakes)'
+                    if ok else
                     'RTI/re-park mismatch (lost return, duplicate RTI or missing re-park)')))
 
     # 分发之后再覆盖一完整周期(若窗口内发生消息分发;完整周期=分发之后既有到期又有交付)
@@ -1118,7 +1159,7 @@ def bi_a1_first_timer0_wake(scenario):
     # RTI 回实际保存的 RETI(=首个交付的 reti_from,idle 指令地址)并重新 park——
     # 首对首绑定(codex 复核修正:首个 RTI 必须对应首个交付,不拿任意一次 RTI 充数)
     log=_park_log(scenario)
-    rti=[e for e in _events(scenario) if e.get('kind')=='timer0_irq_rti']
+    rti,_=_rti_events(scenario,park_boundary)
     if log is not None and rti and window_deliveries:
         first_rti=rti[0];first_delivery=window_deliveries[0]
         ok=(first_rti.get('reti_from_frame')==first_delivery.get('reti_from')
@@ -1775,6 +1816,22 @@ def _h3_reposts(health):
 
 # ── H4 必要任务可唤醒(蓝图 §3 H4:窗口内 CPU0 被 Timer0/core tick 唤醒 ≥1 次且
 #     每次唤醒处理后重新 core_idle_wait_entered;FAIL=唤醒后不回等待/零唤醒) ──────
+def _open_wake_irq(timeline,open_wake):
+    """末态未闭合唤醒的归属源 irq 号。timeline 末条 woken/running 的 irq 优先
+    (观察器逐条记录);回退 last_open_wake.in_flight_irq。None=无法判定。"""
+    if isinstance(timeline,list):
+        for entry in reversed(timeline):
+            if isinstance(entry,dict) and entry.get('kind') in ('woken','running'):
+                irq=entry.get('irq')
+                if isinstance(irq,int):
+                    return irq
+    if isinstance(open_wake,dict):
+        irq=open_wake.get('in_flight_irq')
+        if isinstance(irq,int):
+            return irq
+    return None
+
+
 def _h4_wake_rewait(health):
     per_core=health.get('per_core')
     if not isinstance(per_core,dict):
@@ -1825,6 +1882,20 @@ def _h4_wake_rewait(health):
                    f'(nested wakes may share one re-wait); reasons {reasons}')]
     if last in ('woken','running'):
         open_wake=core0.get('last_open_wake')
+        # 相位容忍修正(2026-11-22):末态未闭合唤醒按「归属源」分流。H4 判据面=
+        # 「必要任务可唤醒」=Timer0(irq4)/core tick(irq3);非必要源(irq89 SRC
+        # 完成/irq68 音频/软件 IPI 等)的在途唤醒不在 H4 判据内(其 re-park 由
+        # 各自投影/断言负责)——据此误 FAIL 是窗口右缘相位假阳性(200k 窗口
+        # 实测:末态 irq89 在途,同一场景 267k/500k 全部 re-park;src_sync 的
+        # 唤醒→回等待环 37k-127k 步,长于 Timer0 周期,任意窗口长度都可能切在
+        # 环中间,不可用「挑更长窗口」根治)。
+        open_irq=_open_wake_irq(timeline,open_wake)
+        if open_irq is not None and open_irq not in (3,4):
+            return [_check(name,
+                detail=f'CPU0 woken {wake}x, re-waited {rewait}x; the open wake is '
+                       f'irq{open_irq} (non-periodic event source, outside H4\'s '
+                       f'necessary-task scope — not a stuck necessary wake); '
+                       f'reasons {reasons}')]
         # 未闭合唤醒区间证据:最后 PC/在途 IRQ/嵌套层级(任务书 §1.0b 第 8 条 H4 专条)
         if complete is True:
             idx=len(timeline)-1

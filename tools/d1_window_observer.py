@@ -64,6 +64,10 @@ ADC_SCAN_CALLBACK=0x60349d2        # adc_scan 回调入口(S8 §1.1)
 TIMER0_HANDLER_PC='0x12ece8'       # Timer0 IRQ4 handler(路 BE)
 JIFFIES_WORD=0x124CA4              # core tick handler 的 jiffies 计数字(0x124C80+36,D1-3 jiffies+1 面)
 TIMER0_RTI_PC='0x12ed0c'           # Timer0 RTI 尾(路 BE)
+TIMER0_W1C_PC=0x12ecf8             # Timer0 handler 内 W1C 写(rmw.or.modimm
+                                   # [0xfd0400]|=0x4000,bit14;br28_machine 报告
+                                   # handler_ack_shape 钉死)——每交付恰执行一次,
+                                   # 观察器以该 PC 执行次数计数 w1c_acknowledgements
 CORE_TICK_HANDLER_PC='0x60661a4'   # core tick handler(路 BF)
 TASK_TABLE_PTR=0x126c5c            # 任务表[cnum=0]→TCB(first_task_setup 先例)
 QUEUE_COUNT_OFFSET=6               # h[TCB+6] 队列计数(BA §6.2,半字)
@@ -386,19 +390,44 @@ class D1WindowObserver:
 
     # ── machine 侧钩子(br28_machine 调用;全部只读) ──────────────────────────
     def _eligibility_note(self,machine,event):
-        """core-tick 交付时刻的资格面快照(IRQController.eligible 同款只读判定)。"""
+        """core-tick 交付时刻的资格面快照(IRQController.eligible 同款只读判定)。
+
+        gate 取法与模型自身的资格门对齐(BR28Model.advance 的 core tick 扫描与
+        timer0_irq4_could_fire):partial_icfg → icfg_state.gate_demand();全已知 →
+        cpu.icfg;都不可得 → 0x300(两 gate 全开,与模型「gate is None → 0x300」
+        同口径)。此前用 cpu.icfg_known 全量要求——partial_icfg 世界里恒 False,
+        icfg=None 使 irq.eligible 抛异常被 try/except 静默吞掉、eligibility_note
+        恒 None(2026-11-22 归因:观测缺口非「没走到」而是「计数条件 bug」)。
+        eligible 无法判定(未初始化 config/ipmask/unmaskable)时如实记 False+
+        原因,绝不臆造 eligible。"""
         irq=machine.hardware.irq
         index=event.get('irq')
-        value=irq.config[index//8]
-        nibble=(value>>4*(index%8))&15
-        priority=nibble>>1
         core=event.get('core',0)
         cpu=machine.cores.get(core)
-        icfg=cpu.icfg if cpu is not None and getattr(cpu,'icfg_known',False) else None
-        return {'core':core,'ipmask':irq.ipmask,'priority':priority,
-                'eligible':bool(irq.eligible(index,icfg)),
-                'note':'sampled at delivery dispatch (pending recheck per BF semantics; '
-                       'delivery having happened = the gate check passed at that time)'}
+        state=getattr(cpu,'icfg_state',None)
+        if state is not None and getattr(state,'gate_demand',None) is not None:
+            gate=state.gate_demand()
+        elif getattr(cpu,'icfg_known',False):
+            gate=getattr(cpu,'icfg',None)
+        else:
+            gate=None
+        icfg=0x300 if gate is None else gate
+        gate_face=hex(icfg) if isinstance(icfg,int) else None
+        try:
+            value=irq.config[index//8]
+            if value is None:
+                raise ValueError('uninitialized_irq_configuration')
+            nibble=(value>>4*(index%8))&15
+            priority=nibble>>1
+            eligible=bool(irq.eligible(index,icfg))
+            return {'core':core,'ipmask':irq.ipmask,'priority':priority,
+                    'eligible':eligible,'gate':gate_face,
+                    'note':'sampled at delivery dispatch (pending recheck per BF semantics; '
+                           'delivery having happened = the gate check passed at that time)'}
+        except Exception as exc:
+            return {'core':core,'ipmask':irq.ipmask,'priority':None,
+                    'eligible':False,'gate':gate_face,
+                    'note':f'eligibility undecidable at delivery dispatch: {exc}'}
 
     def _sample_pending_edges(self,machine):
         """Timer0/core-tick pending False→True 边沿=到期步号(观察器侧观察面,
@@ -810,6 +839,12 @@ class D1WindowObserver:
             tree['canaries']={f'k1_{K1_PC}':self._watch.get(K1_PC,0),
                               f'k2_{K2_PC}':self._watch.get(K2_PC,0)}
             tree['timer0_cycles']=self._timer0_cycles(window_expiries)
+            # W1C bit14 清 pending 计数(逐周期四查之 ACK 项,D1-2 checker 消费):
+            # 以 Timer0 handler 内 W1C 写指令 PC 0x12ecf8 的窗口内执行次数计数,
+            # 与机器侧 Timer0.write 建模同锚(每交付恰一次 W1C 写)。模型 Timer0
+            # 无此计数器(br28_model 只读域,不改),观察器侧以真实指令执行计数。
+            tree['timer0_w1c_acknowledgements']=self._window_watch.get(
+                hex(TIMER0_W1C_PC),0)
             tree['core_tick']=self._core_tick_face(list(self._expiry_steps['core_tick']))
             tree['d1_4']=self._d1_4_face(natural,broken)
             tree['health']=self._health_face(stop,total,window_expiries,natural)
@@ -1111,25 +1146,35 @@ class D1WindowObserver:
                 # 误读为 MISSING(pending)。
                 'idle_wait_park_log':self._park_log,
                 'event_clock_engagements':self._engagements,
+                'timer0_irq_rti_log':[r for r in self._rtis
+                                     if r.get('kind')=='timer0_irq_rti'],
                 'jiffies_observations':self._jiffies_observations,
                 'task_switch_observations':self._task_switch_observations,
                 'message_chain_observations':observations}
 
     def project_delivery_faces(self,machine_report):
-        """把观察器的交付步号/资格面注入机器 projection 的 deliveries(D1-3
-        checker 消费 core_tick_entry_projection.deliveries[].{model_step,
-        eligibility_note};观察器记录与机器 deliveries 按同序追加,zip 对齐,
-        短的截断=错位不冒充)。返回注入后的 report(原 dict 原位修改)。"""
+        """把观察器的交付步号/资格面注入机器 projection 的 deliveries(D1-2/
+        D1-3/BI-A1 checker 消费 timer0/core_tick_entry_projection.deliveries
+        [].model_step + core_tick deliveries[].eligibility_note;观察器记录与
+        机器 deliveries 按同序追加,zip 对齐,短的截断=错位不冒充)。返回注入后
+        的 report(原 dict 原位修改)。"""
+        # core tick(irq3):model_step + eligibility_note(D1-3/BI-A1)
         projection=machine_report.get('core_tick_entry_projection')
-        if not isinstance(projection,dict):return machine_report
-        deliveries=projection.get('deliveries')
-        if not isinstance(deliveries,list):return machine_report
-        observed=[d for d in self._deliveries if d.get('irq')==3]
-        for entry,record in zip(deliveries,observed):
-            if isinstance(entry,dict):
-                entry.setdefault('model_step',record.get('model_step'))
-                if record.get('eligibility_note') is not None:
-                    entry.setdefault('eligibility_note',record['eligibility_note'])
+        if isinstance(projection,dict) and isinstance(projection.get('deliveries'),list):
+            observed=[d for d in self._deliveries if d.get('irq')==3]
+            for entry,record in zip(projection['deliveries'],observed):
+                if isinstance(entry,dict):
+                    entry.setdefault('model_step',record.get('model_step'))
+                    if record.get('eligibility_note') is not None:
+                        entry.setdefault('eligibility_note',record['eligibility_note'])
+        # Timer0(irq4):model_step(D1-2 窗口切分/BI-A1 首唤醒;此前缺失使
+        # window_deliveries 恒空,rti/w1c/首唤醒判据被迫 pending)
+        projection=machine_report.get('timer0_irq_entry_projection')
+        if isinstance(projection,dict) and isinstance(projection.get('deliveries'),list):
+            observed=[d for d in self._deliveries if d.get('irq')==4]
+            for entry,record in zip(projection['deliveries'],observed):
+                if isinstance(entry,dict):
+                    entry.setdefault('model_step',record.get('model_step'))
         return machine_report
 
 
