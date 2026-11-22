@@ -5,6 +5,7 @@ Build the shared library first:
 """
 import ctypes
 import os
+import struct
 from ctypes import c_int, c_uint32, c_uint64, POINTER, c_uint8
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +50,7 @@ class Gosim:
         self.lib.gosim_run_segment.restype = c_int
         self.lib.gosim_cpu_set_dmem.argtypes = [_HANDLE, _HANDLE]
         self.lib.gosim_clear_cache.argtypes = [_HANDLE]
+        self.lib.gosim_invalidate_ram.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
         self.handle = self.lib.gosim_new_arch() if arch else self.lib.gosim_new()
 
     def write(self, addr, data):
@@ -85,6 +87,15 @@ class Gosim:
 
     def clear_cache(self):
         self.lib.gosim_clear_cache(self.handle)
+
+    def invalidate_ram(self, addrs):
+        """Drop decode-cache entries overlapping a list of changed RAM byte
+        addresses (incremental-sync cache invalidation)."""
+        if not addrs:
+            return
+        raw = struct.pack('<%dI' % len(addrs), *addrs)
+        buf = (c_uint8 * len(raw)).from_buffer_copy(raw)
+        self.lib.gosim_invalidate_ram(self.handle, buf, len(raw))
 
     def set_data_mem(self, smem_handle):
         """Bind a strict Memory (gosim_mem.StrictMem.handle) as this CPU's data

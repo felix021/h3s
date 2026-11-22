@@ -20,9 +20,41 @@ Byte-parity is the differential witness (test_dualcore_consistency.py and the
 gosim_measure --self-check-batch harness); nothing here invents a value.
 """
 import json
+import os
 import struct
 import sys
+import time
 from pathlib import Path
+
+# 分项计时(H3S_DUAL_TIMING=1 时开启):把一次 fill 的各个环节拆开累计 µs。
+# 键形如 'pack_ram'/'go_map'/...,'n:<key>' 记对应环节的执行次数,便于换算
+# µs/fill。关闭时 _t 是空操作,零开销(不改变行为与字节产物)。
+TIMING = None
+if os.environ.get('H3S_DUAL_TIMING'):
+    TIMING = {}
+
+
+def _t(key, dt):
+    if TIMING is not None:
+        TIMING[key] = TIMING.get(key, 0.0) + dt
+        TIMING['n:' + key] = TIMING.get('n:' + key, 0) + 1
+
+
+def timing_report():
+    """分项计时汇总:{环节: (总 µs, 次数, µs/次)}。TIMING=None 时返回 {}。"""
+    if TIMING is None:
+        return {}
+    out = {}
+    for k, v in TIMING.items():
+        if k.startswith('n:'):
+            continue
+        if k in ('dirty_sum', 'dirty_max'):
+            out[k] = (v, TIMING.get('n:dirty', 0), 0.0)
+            continue
+        n = TIMING.get('n:' + k, 0)
+        out[k] = (v * 1e6, n, v * 1e6 / n if n else 0.0)
+    return out
+
 
 _GOSIM = Path(__file__).resolve().parent / 'gosim'
 if str(_GOSIM) not in sys.path:
@@ -445,11 +477,14 @@ class DualCoreEngine:
         self.app = app
         self.entry = entry
         self.mem = mem  # the live probe_boot Memory (RAM re-sync source)
+        if self.mem is not None and self.mem._gosim_dirty is None:
+            self.mem._gosim_dirty = set()  # enable Python-side dirty tracking
 
         # One shared strict memory: regions / ROM / app / readonly imported in
         # Python's own order, plus the current known RAM bytes. The initial
-        # import and every re-sync use the bulk ram map, never a guest Write, so
-        # no spurious write record is fabricated.
+        # import is the only full bulk ram map; every later re-sync is a delta
+        # (import/remove the bytes Python changed). Never a guest Write, so no
+        # spurious write record is fabricated.
         self.smem = _smem.StrictMem()
         if rom is not None:
             self.smem.set_rom(rom)
@@ -458,6 +493,8 @@ class DualCoreEngine:
             self.smem.add_region(lo, hi, kind)
         for base, data in readonly:
             self.smem.add_readonly(base, data)
+        self._ram_synced = False
+        self._ram_dict = None
         self._sync_ram()
 
         # Both execute engines and the World bind the one strict memory.
@@ -481,9 +518,55 @@ class DualCoreEngine:
         return bytes(out)
 
     def _sync_ram(self):
+        """Reconcile the Go ram map with the live Python mem.ram.
+
+        The first call (and any wholesale dict replacement, e.g. a snapshot
+        restore) does a full import and returns None (decode caches must be
+        fully cleared). Afterwards only the bytes Python changed since the last
+        sync are pushed: a byte still known is imported with its final value, a
+        byte now unknown is removed. Returns the changed-address list for
+        targeted decode-cache invalidation (empty = nothing changed)."""
         if self.mem is None:
-            return
-        self.smem.replace_ram(self._pack_ram())
+            return None
+        if not self._ram_synced or self.mem.ram is not self._ram_dict:
+            t0 = time.perf_counter()
+            packed = self._pack_ram()
+            _t('pack_ram', time.perf_counter() - t0)
+            t0 = time.perf_counter()
+            self.smem.replace_ram(packed)
+            _t('go_map', time.perf_counter() - t0)
+            self._ram_dict = self.mem.ram
+            self._ram_synced = True
+            if self.mem._gosim_dirty is not None:
+                self.mem._gosim_dirty.clear()
+            return None
+        dirty = self.mem._gosim_dirty
+        if dirty is None or not dirty:
+            return []
+        changed = list(dirty)
+        if TIMING is not None:
+            TIMING['dirty_sum'] = TIMING.get('dirty_sum', 0) + len(changed)
+            TIMING['dirty_max'] = max(TIMING.get('dirty_max', 0), len(changed))
+            TIMING['n:dirty'] = TIMING.get('n:dirty', 0) + 1
+        ram = self.mem.ram
+        t0 = time.perf_counter()
+        writes = bytearray()
+        removes = bytearray()
+        for a in changed:
+            b = ram.get(a)
+            if b is None:
+                removes += struct.pack('<I', a & 0xffffffff)
+            else:
+                writes += struct.pack('<IB', a & 0xffffffff, b & 0xff)
+        _t('pack_ram', time.perf_counter() - t0)
+        t0 = time.perf_counter()
+        if writes:
+            self.smem.import_ram(bytes(writes))
+        if removes:
+            self.smem.remove_ram(bytes(removes))
+        _t('go_map', time.perf_counter() - t0)
+        dirty.clear()
+        return changed
 
     @staticmethod
     def cores_concrete(c0, c1):
@@ -494,29 +577,56 @@ class DualCoreEngine:
         """Snapshot the live state into the Go world (cores / select / periph /
         after_step config), re-syncing the RAM bytes Python wrote since the last
         Go run (slow-path stores / abstract writes)."""
-        self._sync_ram()
-        # Python-side RAM changes invalidate the Go decode caches.
-        self.go0.clear_cache()
-        self.go1.clear_cache()
-        self.world.set_cores([core_state(c0), core_state(c1)])
-        self.machine.load(machine_state(machine))
-        self.periph.load(periph_state(hardware))
-        self.world.set_afterstep(after_step_state(machine))
+        changed = self._sync_ram()
+
+        t0 = time.perf_counter()
+        cs0 = core_state(c0)
+        cs1 = core_state(c1)
+        ms = machine_state(machine)
+        ps = periph_state(hardware)
+        aps = after_step_state(machine)
+        _t('json_state', time.perf_counter() - t0)
+
+        # Invalidate only the decode-cache windows whose executed bytes changed
+        # (a full clear was the per-fill cost; the delta keeps the cache warm
+        # across fills). A full import (first sync / wholesale replacement)
+        # still clears both caches.
+        t0 = time.perf_counter()
+        if changed is None:
+            self.go0.clear_cache()
+            self.go1.clear_cache()
+        elif changed:
+            self.go0.invalidate_ram(changed)
+            self.go1.invalidate_ram(changed)
+        _t('clear_cache', time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        self.world.set_cores([cs0, cs1])
+        self.machine.load(ms)
+        self.periph.load(ps)
+        self.world.set_afterstep(aps)
+        _t('load_state', time.perf_counter() - t0)
 
     def run_loop(self, machine, hardware, c0, c1, n):
         """Snapshot -> run one Go RunLoop call -> restore. Returns the raw
         LoopResult dict (exit/stop_pc/stop_core/reason/irq/steps/cores)."""
         self.snapshot(machine, hardware, c0, c1)
+        t0 = time.perf_counter()
         res = self.world.run_loop(n)
+        _t('run_loop', time.perf_counter() - t0)
         self.restore(machine, hardware, c0, c1, res)
         return res
 
     def restore(self, machine, hardware, c0, c1, res):
+        t0 = time.perf_counter()
         cores = res.get('cores') or [None, None]
         restore_core(c0, cores[0])
         restore_core(c1, cores[1])
-        restore_machine(machine, self.machine.state())
-        restore_periph(hardware, self.periph.state())
+        ms = self.machine.state()
+        ps = self.periph.state()
+        restore_machine(machine, ms)
+        restore_periph(hardware, ps)
+        _t('restore', time.perf_counter() - t0)
 
     def free(self):
         self.world.free()

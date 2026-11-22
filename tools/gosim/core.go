@@ -187,6 +187,32 @@ func (c *CPU) GetICFG() uint32  { return c.icfg }
 // ClearCache drops the pc-keyed decode cache (the cold-cache benchmark entry).
 func (c *CPU) ClearCache() { c.cache = make(map[uint32]decodeResult) }
 
+// InvalidateRAMByte drops the decode cache entries whose fetch window overlaps a
+// single changed RAM byte. A decode at pc reads bytes [pc, pc+6) (or the ROM
+// tail), so a byte at addr invalidates pc in [addr-5, addr]. This is the
+// incremental-sync twin of the per-fill full ClearCache: only the pc windows
+// whose executed bytes actually changed are dropped.
+func (c *CPU) InvalidateRAMByte(addr uint32) {
+	lo := addr
+	if lo >= 5 {
+		lo = addr - 5
+	} else {
+		lo = 0
+	}
+	for pc := lo; pc <= addr; pc++ {
+		delete(c.cache, pc)
+	}
+}
+
+// InvalidateRAMBytes invalidates the decode cache for each changed byte (see
+// InvalidateRAMByte). The loop tolerates overlapping windows (deleting an
+// absent key is a no-op).
+func (c *CPU) InvalidateRAMBytes(addrs []uint32) {
+	for _, a := range addrs {
+		c.InvalidateRAMByte(a)
+	}
+}
+
 // TakeWrites returns and clears this step's ordered store observations.
 func (c *CPU) TakeWrites() []MemWrite {
 	w := c.lastWrites

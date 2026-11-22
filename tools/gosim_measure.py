@@ -150,6 +150,11 @@ def main():
               (report_same, trace_same, n_off), flush=True)
         print('dual coverage: %d of %d completed steps (%d run_loop fills)' %
               (dual_steps, completed, dual_fills), flush=True)
+        from gosim_dual_engine import timing_report
+        tr = timing_report()
+        if tr:
+            print('dual_timing_us=%s' % {k: (round(t, 1), n, round(p, 2))
+                                         for k, (t, n, p) in sorted(tr.items())}, flush=True)
         print('PASS' if (report_same and trace_same) else 'FAIL', flush=True)
         if args.report:
             args.report.write_text(json.dumps(result_off, sort_keys=True))
@@ -187,6 +192,11 @@ def main():
         print('dual_lens=%s' % dict(sorted(probe_boot.gosim_dual_lens.items())), flush=True)
     if probe_boot.gosim_entry_stats:
         print('entry_stats=%s' % dict(sorted(probe_boot.gosim_entry_stats.items())), flush=True)
+    from gosim_dual_engine import timing_report
+    tr = timing_report()
+    if tr:
+        print('dual_timing_us=%s' % {k: (round(t, 1), n, round(p, 2))
+                                     for k, (t, n, p) in sorted(tr.items())}, flush=True)
     return 0
 
 

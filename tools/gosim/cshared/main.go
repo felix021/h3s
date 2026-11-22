@@ -90,6 +90,23 @@ func gosim_clear_cache(h C.uintptr_t) {
 	cpu(h).ClearCache()
 }
 
+// gosim_invalidate_ram drops the decode-cache entries overlapping a flat
+// [u32 little-endian] list of changed RAM byte addresses (the incremental-sync
+// decode-cache invalidation; see CPU.InvalidateRAMBytes).
+//
+//export gosim_invalidate_ram
+func gosim_invalidate_ram(h C.uintptr_t, addrs *C.uint8_t, n C.int) {
+	if addrs == nil || n <= 0 {
+		return
+	}
+	data := unsafe.Slice((*byte)(unsafe.Pointer(addrs)), int(n))
+	out := make([]uint32, 0, len(data)/4)
+	for i := 0; i+4 <= len(data); i += 4 {
+		out = append(out, uint32(data[i])|uint32(data[i+1])<<8|uint32(data[i+2])<<16|uint32(data[i+3])<<24)
+	}
+	cpu(h).InvalidateRAMBytes(out)
+}
+
 //export gosim_get_state
 func gosim_get_state(h C.uintptr_t, flags *C.uint32_t, sp *C.uint32_t, rets *C.uint32_t, pc *C.uint32_t) {
 	f, s, r, p := cpu(h).GetState()
@@ -307,12 +324,49 @@ func gosim_smem_replace_ram(h C.uintptr_t, entries *C.uint8_t, n C.int) {
 		return
 	}
 	data := unsafe.Slice((*byte)(unsafe.Pointer(entries)), int(n))
-	m := make(map[uint32]byte, int(n)/5)
+	mem(h).ReplaceRAM(parseRAMEntries(data))
+}
+
+// parseRAMEntries decodes a flat [u32 little-endian addr][u8 value] sequence
+// into a known-byte map (shared by replace/import).
+func parseRAMEntries(data []byte) map[uint32]byte {
+	m := make(map[uint32]byte, len(data)/5)
 	for i := 0; i+5 <= len(data); i += 5 {
 		addr := uint32(data[i]) | uint32(data[i+1])<<8 | uint32(data[i+2])<<16 | uint32(data[i+3])<<24
 		m[addr] = data[i+4]
 	}
-	mem(h).ReplaceRAM(m)
+	return m
+}
+
+// gosim_smem_import_ram adds known bytes to the Go ram map (the incremental
+// delta sync): entries has the same [u32 addr][u8 value] layout. A byte present
+// in the map is overwritten; a byte absent stays absent. No events, no
+// guest-write side effect (mirrors ImportRAMBytes).
+//
+//export gosim_smem_import_ram
+func gosim_smem_import_ram(h C.uintptr_t, entries *C.uint8_t, n C.int) {
+	if entries == nil || n <= 0 {
+		return
+	}
+	data := unsafe.Slice((*byte)(unsafe.Pointer(entries)), int(n))
+	mem(h).ImportRAMBytes(parseRAMEntries(data))
+}
+
+// gosim_smem_remove_ram marks bytes unknown (Python ram.pop): addrs is a flat
+// [u32 little-endian] array. Removing an already-absent byte is a no-op.
+// No events, no guest-write side effect (mirrors RemoveRAMBytes).
+//
+//export gosim_smem_remove_ram
+func gosim_smem_remove_ram(h C.uintptr_t, addrs *C.uint8_t, n C.int) {
+	if addrs == nil || n <= 0 {
+		return
+	}
+	data := unsafe.Slice((*byte)(unsafe.Pointer(addrs)), int(n))
+	out := make([]uint32, 0, len(data)/4)
+	for i := 0; i+4 <= len(data); i += 4 {
+		out = append(out, uint32(data[i])|uint32(data[i+1])<<8|uint32(data[i+2])<<16|uint32(data[i+3])<<24)
+	}
+	mem(h).RemoveRAMBytes(out)
 }
 
 // ---- peripheral models (M3) exports ----------------------------------------

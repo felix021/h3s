@@ -55,6 +55,10 @@ class StrictMem:
         self.lib.gosim_smem_write.restype = c_int
         self.lib.gosim_smem_replace_ram.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
         self.lib.gosim_smem_replace_ram.restype = None
+        self.lib.gosim_smem_import_ram.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
+        self.lib.gosim_smem_import_ram.restype = None
+        self.lib.gosim_smem_remove_ram.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
+        self.lib.gosim_smem_remove_ram.restype = None
         self.handle = self.lib.gosim_smem_new()
 
     def _buf(self, data):
@@ -112,3 +116,20 @@ class StrictMem:
         Replaces the Go ram map wholesale (no guest-write side effects)."""
         buf = (c_uint8 * len(entries)).from_buffer_copy(entries)
         self.lib.gosim_smem_replace_ram(self.handle, buf, len(entries))
+
+    def import_ram(self, entries):
+        """Add known bytes to the Go ram map (incremental delta sync). entries
+        has the same [u32 addr][u8 value] layout as replace_ram, but only the
+        changed bytes. Additive; absent bytes stay absent."""
+        if not entries:
+            return
+        buf = (c_uint8 * len(entries)).from_buffer_copy(entries)
+        self.lib.gosim_smem_import_ram(self.handle, buf, len(entries))
+
+    def remove_ram(self, addrs):
+        """Mark bytes unknown (incremental delta sync). addrs is a bytes buffer
+        of [u32 little-endian] addresses to drop from the Go ram map."""
+        if not addrs:
+            return
+        buf = (c_uint8 * len(addrs)).from_buffer_copy(addrs)
+        self.lib.gosim_smem_remove_ram(self.handle, buf, len(addrs))

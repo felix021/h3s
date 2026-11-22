@@ -7,6 +7,7 @@ This is application handoff exploration, not architectural reset or boot proof.
 """
 import argparse
 import os
+import time
 from bisect import bisect_right
 from collections import Counter
 import hashlib
@@ -420,6 +421,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # (该 region 完全包含请求),无需不重叠前提;未命中走索引/线性扫。
         _region_sorted=None
         _region_hint=None
+        # 双核增量 RAM 同步的脏地址集:类属性默认 None=零跟踪零行为变化,且
+        # 不进 vars(mem)(SNAP M2 属性集守卫 world_snapshot._check_m2_shape 只
+        # 看实例属性,类属性不触发)。gosim_dual_engine 激活时按实例置 set(),
+        # 记录自上次 Go 同步以来 Python 侧改过的 RAM 字节地址(write/abstract
+        # write/remove),同步时按最终值批量搬进 Go,同步后清空。
+        _gosim_dirty=None
 
         def __init__(self):
             self.ram={}
@@ -542,6 +549,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     if updated.known==WORD_MASK:del self.icfg_spills[base]
                     else:self.icfg_spills[base]=updated
             self.ram.update((address+i,byte) for i,byte in enumerate(data))
+            if self._gosim_dirty is not None:
+                self._gosim_dirty.update(range(address,address+len(data)))
             for a in range(address,address+len(data)):self.unknown_origins.pop(a,None)
             if machine is not None:machine.note_memory_write(address,data)
             event({'access':'write','address':hex(address),'bytes':data.hex(),'region':region})
@@ -584,6 +593,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             byte,origin=value.bytes[index],value.origins[index]
             if byte is None:self.ram.pop(physical,None);self.unknown_origins[physical]=origin
             else:self.ram[physical]=byte;self.unknown_origins.pop(physical,None)
+            if self._gosim_dirty is not None:self._gosim_dirty.add(physical)
             event({'access':'abstract_write','address':hex(physical),'size':1,'region':self.region(physical,1),
                    'bytes_with_unknowns':'??' if byte is None else f'{byte:02x}'})
 
@@ -600,6 +610,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     if value.known&mask==mask:self.ram[a]=(value.value>>(8*i))&255
                     else:self.ram.pop(a,None)
                     self.unknown_origins.pop(a,None)
+                if self._gosim_dirty is not None:
+                    self._gosim_dirty.update(range(physical,physical+4))
                 event({'access':'abstract_write','address':hex(physical),'size':4,'region':region,
                        'known_mask':hex(value.known),'known_value':hex(value.value)})
                 return
@@ -609,6 +621,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 a=physical+i
                 if v is None:self.ram.pop(a,None);self.unknown_origins[a]=value.origins[i]
                 else:self.ram[a]=v;self.unknown_origins.pop(a,None)
+            if self._gosim_dirty is not None:
+                self._gosim_dirty.update(range(physical,physical+4))
             event({'access':'abstract_write','address':hex(physical),'size':4,'region':region,
                    'bytes_with_unknowns':''.join('??' if v is None else f'{v:02x}' for v in value.bytes)})
 
@@ -3088,7 +3102,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     dual_buf=[]
     dual_hazard=None
     if gosim_dual_engine is not None:
-        from gosim_dual_engine import DualCoreEngine
+        from gosim_dual_engine import DualCoreEngine, _t as _dual_t
         dual_engine=DualCoreEngine(rom,app,ENTRY,regions=Memory.regions,
                                    readonly=(handoff['readonly'] if handoff else ()),
                                    mem=c.mem)
@@ -3115,6 +3129,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # 本步有序写回放(mem.write=note_memory_write+write 事件,执行核与写前
         # PC 对齐)、adapter 计数、步后簿记(_post_step)与 after_step(TraceMachine
         # 签名/钩子本体/core_icfg 刷新)。advance 已在 Go 内跑过,这里不重复。
+        _t0 = time.perf_counter() if gosim_dual_engine is not None else None
         c=machine.cores[core]
         if hardware is not None:hardware.current_core=core
         row={'pc':hex(pc),'core':core}
@@ -3131,10 +3146,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         row['_pending_text']=(insn,raw)
         row['next_pc']=hex(next_pc)
         # 有序写回放:必须在 c.pc 推进前落 mem.write,note_memory_write 才读到
-        # 写前 PC(与慢路径 exact_full_word_store 的写序一致)。
+        # 写前 PC(与慢路径 exact_full_word_store 的写序一致)。回放的字节 Go
+        # 在执行时已写入自己的 ram map,这里只是让 Python ram 追平,不是 Python
+        # 侧的净变更,所以临时关掉脏跟踪,避免把已同步字节再塞进增量集。
         if memwrites:
-            for mw in memwrites:
-                c.mem.write(mw['addr'], bytes.fromhex(mw['bytes']))
+            _dirty_save = c.mem._gosim_dirty
+            c.mem._gosim_dirty = None
+            try:
+                for mw in memwrites:
+                    c.mem.write(mw['addr'], bytes.fromhex(mw['bytes']))
+            finally:
+                c.mem._gosim_dirty = _dirty_save
         if adapter:
             adapters[adapter]+=1
         before_sp=c.sp
@@ -3143,6 +3165,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if machine is not None:
             if c.core_id==1:hardware.secondary_cpu_executed=True
             machine.after_step(c,pc)
+        if _t0 is not None:
+            _dual_t('replay', time.perf_counter() - _t0)
         return row
 
     # 双核快路径段头安全预判(纯省白费 fill 的优化,不参与正确性):只对「Go
