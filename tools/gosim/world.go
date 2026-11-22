@@ -125,6 +125,11 @@ type LoopStep struct {
 	SP       uint32
 	Insn     []byte
 	Adapter  string
+
+	// Walks / MMIOReads are the read-side effects the commit must replay into
+	// Python's report (mmu.walks / counts['reads']).
+	Walks     []WalkInfo
+	MMIOReads int
 }
 
 // loopMemWrites converts the core's ordered word writes (concrete or abstract)
@@ -676,18 +681,20 @@ func (w *World) runDualCore(n int) LoopResult {
 		// carries the executed prefix — exactly as Python appends the row even
 		// when after_step/advance raises.
 		res.Steps = append(res.Steps, LoopStep{
-			Core:     core,
-			PC:       s.PC,
-			NextPC:   s.NextPC,
-			Flags:    s.Flags,
-			R:        s.R,
-			RT:       w.Cores[core].RT,
-			Mem:      loopMemWrites(s.Mem),
-			Events:   s.Events,
-			BeforeSP: s.BeforeSP,
-			SP:       s.SP,
-			Insn:     s.Insn,
-			Adapter:  s.Adapter,
+			Core:      core,
+			PC:        s.PC,
+			NextPC:    s.NextPC,
+			Flags:     s.Flags,
+			R:         s.R,
+			RT:        w.Cores[core].RT,
+			Mem:       loopMemWrites(s.Mem),
+			Events:    s.Events,
+			BeforeSP:  s.BeforeSP,
+			SP:        s.SP,
+			Insn:      s.Insn,
+			Adapter:   s.Adapter,
+			Walks:     s.Walks,
+			MMIOReads: s.MMIOReads,
 		})
 
 		// 5. after_step judgment (hook bodies stay Python).

@@ -278,6 +278,31 @@ func gosim_smem_set_pll(h C.uintptr_t, v C.uint32_t, present C.int) {
 	mem(h).SetPLL(uint32(v), present != 0)
 }
 
+// gosim_smem_set_mmu installs the live MMU page-table projection (con/begin/
+// end) on the strict memory so virtual [0x400000, 0x800000) accesses translate
+// exactly as br28_model.MMU.translate does. A present flag per field mirrors the
+// Python None (uninitialized) register.
+//
+//export gosim_smem_set_mmu
+func gosim_smem_set_mmu(h C.uintptr_t, con C.uint32_t, begin C.uint32_t, end C.uint32_t,
+	conPresent, beginPresent, endPresent C.int) {
+	m := mem(h)
+	var c, b, e *uint32
+	if conPresent != 0 {
+		v := uint32(con)
+		c = &v
+	}
+	if beginPresent != 0 {
+		v := uint32(begin)
+		b = &v
+	}
+	if endPresent != 0 {
+		v := uint32(end)
+		e = &v
+	}
+	m.SetMMU(c, b, e)
+}
+
 //export gosim_smem_set_fetch
 func gosim_smem_set_fetch(h C.uintptr_t, fetch C.int) {
 	mem(h).SetFetch(fetch != 0)

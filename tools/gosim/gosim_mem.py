@@ -46,6 +46,7 @@ class StrictMem:
         self.lib.gosim_smem_add_region.argtypes = [_HANDLE, c_uint32, c_uint32, c_char_p]
         self.lib.gosim_smem_add_readonly.argtypes = [_HANDLE, c_uint32, POINTER(c_uint8), c_int]
         self.lib.gosim_smem_set_pll.argtypes = [_HANDLE, c_uint32, c_int]
+        self.lib.gosim_smem_set_mmu.argtypes = [_HANDLE, c_uint32, c_uint32, c_uint32, c_int, c_int, c_int]
         self.lib.gosim_smem_set_fetch.argtypes = [_HANDLE, c_int]
         self.lib.gosim_smem_read.argtypes = [_HANDLE, c_uint32, POINTER(c_uint8), c_int,
                                              POINTER(c_uint8), c_int]
@@ -88,6 +89,19 @@ class StrictMem:
 
     def set_pll(self, v, present=True):
         self.lib.gosim_smem_set_pll(self.handle, v, 1 if present else 0)
+
+    def set_mmu(self, con=None, begin=None, end=None):
+        """Install the live MMU page-table projection. A None field mirrors the
+        Python uninitialized register; the triple None clears the MMU (identity
+        translation for the virtual window)."""
+        self.lib.gosim_smem_set_mmu(
+            self.handle,
+            con if con is not None else 0,
+            begin if begin is not None else 0,
+            end if end is not None else 0,
+            1 if con is not None else 0,
+            1 if begin is not None else 0,
+            1 if end is not None else 0)
 
     def set_fetch(self, fetch):
         self.lib.gosim_smem_set_fetch(self.handle, 1 if fetch else 0)

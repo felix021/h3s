@@ -124,8 +124,8 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 			return s, DualTagInfo{Direct: code == BatchOK}, code, pc, nil
 		}
 	}
-	if s, code, ok := c.runPinByteStore(core, im, raw, pc, uint32(size), insnBytes); ok {
-		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, nil
+	if s, code, err, ok := c.runPinByteStore(core, im, raw, pc, uint32(size), insnBytes); ok {
+		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
 	}
 	if !c.safeDual(im) {
 		return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
@@ -153,11 +153,24 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 	if consumesSP(im) && !core.SPKnown {
 		return SegmentStep{}, DualTagInfo{}, BatchAbstract, pc, nil
 	}
+	// Drain any stale read-side effect counters before the step, then collect
+	// this step's MMU walks / MMIO reads for the Python replay. (The raw-core
+	// differential tests bind no strict memory, so dmem is nil there.)
+	if c.dmem != nil {
+		c.dmem.TakeWalks()
+		c.dmem.TakeMMIOReads()
+	}
 	if err := c.Step(); err != nil {
 		if isMemError(err) {
 			return SegmentStep{}, DualTagInfo{}, BatchMemFault, pc, err
 		}
 		return SegmentStep{}, DualTagInfo{}, BatchOther, pc, err
+	}
+	var walks []WalkInfo
+	var mmioReads int
+	if c.dmem != nil {
+		walks = c.dmem.TakeWalks()
+		mmioReads = c.dmem.TakeMMIOReads()
 	}
 	adapter := ""
 	if dualStoreAdapter[im.id] {
@@ -171,15 +184,17 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 	}
 	tag.Writes = c.TakeRegWrites()
 	return SegmentStep{
-		PC:       pc,
-		NextPC:   c.pc,
-		Flags:    uint8(c.flags & 0xF),
-		R:        c.R,
-		Mem:      c.TakeWrites(),
-		BeforeSP: c.sp,
-		SP:       c.sp,
-		Insn:     insnBytes,
-		Adapter:  adapter,
+		PC:        pc,
+		NextPC:    c.pc,
+		Flags:     uint8(c.flags & 0xF),
+		R:         c.R,
+		Mem:       c.TakeWrites(),
+		BeforeSP:  c.sp,
+		SP:        c.sp,
+		Insn:      insnBytes,
+		Adapter:   adapter,
+		Walks:     walks,
+		MMIOReads: mmioReads,
 	}, tag, BatchOK, 0, nil
 }
 
@@ -243,24 +258,24 @@ func modelExactFullWordStore(id string) modelFunc {
 // byte write is handed back (BatchMemFault) so Python re-derives the identical
 // unmapped/readonly/uninitialized Blocked. The raw core (dmem == nil) keeps the
 // upstream deny-set semantics (BatchUnsafe), which the differential tests pin.
-func (c *CPU) runPinByteStore(core *Core, im *insnMeta, raw map[string]uint32, pc uint32, size uint32, insnBytes []byte) (SegmentStep, int, bool) {
+func (c *CPU) runPinByteStore(core *Core, im *insnMeta, raw map[string]uint32, pc uint32, size uint32, insnBytes []byte) (SegmentStep, int, error, bool) {
 	if im.id != "st.b.pin" {
-		return SegmentStep{}, 0, false
+		return SegmentStep{}, 0, nil, false
 	}
 	if c.dmem == nil {
-		return SegmentStep{}, BatchUnsafe, true
+		return SegmentStep{}, BatchUnsafe, nil, true
 	}
 	op := newOperands(im, raw)
 	b := int(op.Num("b"))
 	d := int(op.Num("d"))
 	if core.RT[b] != nil || core.RT[d] != nil {
-		return SegmentStep{}, BatchAbstract, true
+		return SegmentStep{}, BatchAbstract, nil, true
 	}
 	addr := core.R[b]
 	n := op.Num("n") // uimm, scale -2 add 1: +1 or -1
 	byteVal := byte(core.R[d])
 	if err := c.dmem.Write(addr, []byte{byteVal}); err != nil {
-		return SegmentStep{}, BatchMemFault, true
+		return SegmentStep{}, BatchMemFault, err, true
 	}
 	core.R[b] = uint32(int64(addr)+n) & wordMask
 	core.PC = pc + size
@@ -275,5 +290,5 @@ func (c *CPU) runPinByteStore(core *Core, im *insnMeta, raw map[string]uint32, p
 		Insn:     insnBytes,
 		Adapter:  "exact_postincrement_store",
 		Mem:      []MemWrite{{Addr: addr, Bytes: []byte{byteVal}}},
-	}, BatchOK, true
+	}, BatchOK, nil, true
 }

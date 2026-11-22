@@ -30,6 +30,16 @@ const (
 	pllInitSymbolAddr = 0x1fe14
 	// wordMask is the fully-known 32-bit mask (Python WORD_MASK / br28_icfg.M).
 	wordMask = 0xffffffff
+
+	// mmuVirtLo / mmuVirtHi is the MMU-virtual window [0x400000, 0x800000)
+	// Python translates through hardware.mmu (br28_model.MMU.translate); every
+	// other address is identity.
+	mmuVirtLo = 0x400000
+	mmuVirtHi = 0x800000
+	// mmuPageShift is the 128-byte page size (br28_model.MMU.translate).
+	mmuPageShift = 7
+	// mmuValidTag is the page-table tag validity bit (bit 15).
+	mmuValidTag = 0x8000
 )
 
 // Bus is the MMIO routing hook. It is an interface placeholder for M2: the
@@ -39,12 +49,17 @@ const (
 // hardware=None.
 type Bus interface {
 	Handles(addr uint32, size int) bool
-	Read(addr uint32) uint32
+	// Read returns the modeled word at addr, or a *MemError the strict-memory
+	// path surfaces (handed back to Python, which re-derives the identical
+	// Blocked) instead of fabricating a value.
+	Read(addr uint32) (uint32, *MemError)
 	// ReadBytes returns a byte-granular fixture, or nil when there is none.
 	ReadBytes(addr uint32, size int) []byte
-	Write(addr uint32, value uint32)
+	// Write records a modeled word store, or a *MemError to hand back.
+	Write(addr uint32, value uint32) *MemError
 	HandlesByteWrite(addr uint32) bool
-	WriteByteAt(addr uint32, b byte)
+	// WriteByteAt records a modeled byte store, or a *MemError to hand back.
+	WriteByteAt(addr uint32, b byte) *MemError
 }
 
 // Region is one writable RAM region: [Lo, Hi) with a kind name.
@@ -85,6 +100,26 @@ func (s *IcfgSpill) overlayBytes(offset int, data []byte) *IcfgSpill {
 		identity &^= mask
 	}
 	return &IcfgSpill{Value: value, Known: known, Identity: identity, Origin: s.Origin}
+}
+
+// mmuState is the live MMU page-table projection (br28_model.MMU): con enables
+// translation, begin/end bound the 2-byte-tag page table in physical RAM. nil
+// con/begin/end mirror Python None (uninitialized). A nil *mmuState on Memory
+// means no MMU is present, so virtual addresses are treated as plain physical
+// (identity), exactly as probe_boot does with hardware=None.
+type mmuState struct {
+	con, begin, end *uint32
+}
+
+// WalkInfo is one successful MMU page-table walk (br28_model.MMU.translate's
+// walks/last_walk bookkeeping). It is recorded only on the read path (a store's
+// walk is re-derived by Python's Memory.write replay, so recording it here would
+// double-count the walk).
+type WalkInfo struct {
+	Virtual  uint32
+	Physical uint32
+	Entry    uint32
+	Tag      uint32
 }
 
 // WriteEvent is one observed write (mirror of Python
@@ -147,12 +182,19 @@ type Memory struct {
 	readonly []ReadonlyMirror
 	pll      *uint32 // nil = absent
 	bus      Bus
+	mmu      *mmuState // nil = no MMU model present (identity translation)
 	fetch    bool // operation == 'fetch'
 
 	ram            map[uint32]byte
 	unknownOrigins map[uint32]uint32
 	icfgSpills     map[uint32]*IcfgSpill
 	writes         []WriteEvent
+
+	// walks / mmioReads are the per-step read-side effects the dual loop hands
+	// back to Python for report bookkeeping (mmu.walks / counts['reads']). They
+	// are accumulated during one step and drained by TakeWalks / TakeMMIOReads.
+	walks     []WalkInfo
+	mmioReads int
 
 	// OnMemoryWrite mirrors machine.note_memory_write; the M3+ ledger wires it.
 	OnMemoryWrite func(addr uint32, data []byte)
@@ -185,6 +227,25 @@ func (m *Memory) SetPLL(v uint32, present bool) {
 	}
 }
 func (m *Memory) SetBus(b Bus)         { m.bus = b }
+func (m *Memory) SetMMU(con, begin, end *uint32) {
+	m.mmu = &mmuState{con: con, begin: begin, end: end}
+}
+
+// TakeWalks drains and returns the successful MMU walks recorded since the last
+// drain (one scalar step's read path).
+func (m *Memory) TakeWalks() []WalkInfo {
+	w := m.walks
+	m.walks = nil
+	return w
+}
+
+// TakeMMIOReads drains and returns the successful MMIO bus reads recorded since
+// the last drain (one scalar step's read path).
+func (m *Memory) TakeMMIOReads() int {
+	n := m.mmioReads
+	m.mmioReads = 0
+	return n
+}
 func (m *Memory) SetFetch(f bool)      { m.fetch = f }
 func (m *Memory) Writes() []WriteEvent { return m.writes }
 
@@ -265,14 +326,68 @@ func (m *Memory) access() string {
 	return "read"
 }
 
+// translate mirrors br28_model.MMU.translate: addresses inside the virtual
+// window [0x400000, 0x800000) are walked through the 2-byte-tag page table in
+// physical RAM; every other address is identity. A nil mmuState means no MMU is
+// present, so virtual addresses are treated as plain physical (identity), the
+// probe_boot hardware=None behavior. The tag read goes through the full
+// readPhysical path (region ram), exactly as Python passes Memory.read as the
+// read_physical callback.
+func (m *Memory) translate(addr uint32, size int, recordWalk bool) (uint32, *MemError) {
+	if m.mmu == nil || addr < mmuVirtLo || addr >= mmuVirtHi {
+		return addr, nil
+	}
+	mmu := m.mmu
+	if mmu.con == nil {
+		return 0, &MemError{Kind: "uninitialized_mmu_enable", Access: m.access(), Address: addr, Size: size}
+	}
+	if *mmu.con&1 == 0 {
+		return 0, &MemError{Kind: "virtual_access_with_mmu_disabled", Access: m.access(), Address: addr, Size: size}
+	}
+	if mmu.begin == nil || mmu.end == nil {
+		return 0, &MemError{Kind: "uninitialized_mmu_enable", Access: m.access(), Address: addr, Size: size}
+	}
+	page := (addr - mmuVirtLo) >> mmuPageShift
+	entry := *mmu.begin + page*2
+	if entry+1 > *mmu.end {
+		return 0, &MemError{Kind: "mmu_page_outside_table", Access: m.access(), Address: addr, Size: size}
+	}
+	if int(addr&((1<<mmuPageShift)-1))+size > 1<<mmuPageShift {
+		return 0, &MemError{Kind: "mmu_cross_page_access_not_split", Access: m.access(), Address: addr, Size: size}
+	}
+	tagBytes, err := m.readPhysical(entry, 2)
+	if err != nil {
+		return 0, err
+	}
+	tag := uint32(tagBytes[0]) | uint32(tagBytes[1])<<8
+	if tag&mmuValidTag == 0 {
+		return 0, &MemError{Kind: "mmu_invalid_page", Access: m.access(), Address: addr, Size: size}
+	}
+	physical := ((tag & 0x7fff) << mmuPageShift) + (addr & ((1 << mmuPageShift) - 1))
+	if recordWalk {
+		m.walks = append(m.walks, WalkInfo{Virtual: addr, Physical: physical, Entry: entry, Tag: tag})
+	}
+	return physical, nil
+}
+
 // Read mirrors Python Memory.read, in the exact dispatch order: validate,
-// app mirror, ROM mirror, readonly mirrors, MMIO word route, byte-granular
-// fixture route, PLL fixture, region ram (first uninitialized byte stops), and
-// finally unmapped (fetch vs read distinction).
+// MMU translate, app mirror, ROM mirror, readonly mirrors, MMIO word route,
+// byte-granular fixture route, PLL fixture, region ram (first uninitialized
+// byte stops), and finally unmapped (fetch vs read distinction).
 func (m *Memory) Read(addr uint32, n int) ([]byte, *MemError) {
 	if n <= 0 || uint64(addr)+uint64(n) > 0x100000000 {
 		return nil, &MemError{Kind: "invalid_memory_request", Access: m.access(), Address: addr, Size: n}
 	}
+	physical, err := m.translate(addr, n, true)
+	if err != nil {
+		return nil, err
+	}
+	return m.readPhysical(physical, n)
+}
+
+// readPhysical is the post-translation body of Read (Python Memory.read after
+// the mmu.translate step). addr is already physical.
+func (m *Memory) readPhysical(addr uint32, n int) ([]byte, *MemError) {
 	ua, un := uint64(addr), uint64(n)
 	// app mirror: ENTRY <= address and address+size <= ENTRY+len(app)
 	if m.entry <= addr && ua+un <= uint64(m.entry)+uint64(len(m.app)) {
@@ -292,7 +407,11 @@ func (m *Memory) Read(addr uint32, n int) ([]byte, *MemError) {
 	}
 	// MMIO word route (data reads only, never fetch)
 	if m.bus != nil && !m.fetch && m.bus.Handles(addr, n) {
-		v := m.bus.Read(addr)
+		v, err := m.bus.Read(addr)
+		if err != nil {
+			return nil, err
+		}
+		m.mmioReads++
 		return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)}, nil
 	}
 	// byte-granular fixture route
@@ -327,11 +446,21 @@ func (m *Memory) Read(addr uint32, n int) ([]byte, *MemError) {
 	return nil, &MemError{Kind: "unmapped_memory", Access: "read", Address: addr, Size: n}
 }
 
-// Write mirrors Python Memory.write: ROM partial-overlap rejection, MMIO word
-// route, byte-granular MMIO route, region check (else unmapped_or_readonly
-// write), icfg_spills overlay, ram update, unknown_origins pop, observer hook,
-// and the write observation event.
+// Write mirrors Python Memory.write: MMU translate, ROM partial-overlap
+// rejection, MMIO word route, byte-granular MMIO route, region check (else
+// unmapped_or_readonly write), icfg_spills overlay, ram update,
+// unknown_origins pop, observer hook, and the write observation event.
 func (m *Memory) Write(addr uint32, data []byte) *MemError {
+	physical, err := m.translate(addr, len(data), false)
+	if err != nil {
+		return err
+	}
+	return m.writePhysical(physical, data)
+}
+
+// writePhysical is the post-translation body of Write (Python Memory.write
+// after the mmu.translate step). addr is already physical.
+func (m *Memory) writePhysical(addr uint32, data []byte) *MemError {
 	n := len(data)
 	ua, un := uint64(addr), uint64(n)
 	// ROM write rejection: any overlap with the ROM window is readonly.
@@ -340,13 +469,11 @@ func (m *Memory) Write(addr uint32, data []byte) *MemError {
 	}
 	// MMIO word route
 	if m.bus != nil && m.bus.Handles(addr, n) {
-		m.bus.Write(addr, leUint32(data))
-		return nil
+		return m.bus.Write(addr, leUint32(data))
 	}
 	// byte-granular MMIO route (single-byte stores to modeled byte registers)
 	if m.bus != nil && n == 1 && m.bus.HandlesByteWrite(addr) {
-		m.bus.WriteByteAt(addr, data[0])
-		return nil
+		return m.bus.WriteByteAt(addr, data[0])
 	}
 	kind := m.region(addr, n)
 	if kind == "" {

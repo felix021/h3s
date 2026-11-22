@@ -783,6 +783,16 @@ class DualCoreEngine:
         Go run (slow-path stores / abstract writes)."""
         changed = self._sync_ram()
         self._sync_abstract_mem()
+        # MMU page-table projection: virtual [0x400000, 0x800000) addresses the
+        # Go strict memory would otherwise fault on now translate through the
+        # same page table Python walks (the table bytes live in the synced ram).
+        # hardware.mmu is stable during the dual phase, but re-sync is cheap and
+        # keeps the two sides honest if a slow-path store ever touches it.
+        mmu = getattr(hardware, 'mmu', None)
+        if mmu is None:
+            self.smem.set_mmu()
+        else:
+            self.smem.set_mmu(_opt_int(mmu.con), _opt_int(mmu.begin), _opt_int(mmu.end))
 
         t0 = time.perf_counter()
         cs0 = core_state(c0)
