@@ -66,12 +66,14 @@ class _Lib:
 _LIB_SINGLETON = _Lib()
 
 
-def _out(fn, *args):
-    buf = (c_uint8 * _BUF_CAP)()
+def _out(fn, buf, *args):
     n = fn(*args, buf, _BUF_CAP)
     if n < 0:
         return None
-    return json.loads(bytes(buf[:n]).split(b"\x00", 1)[0].decode())
+    if n > _BUF_CAP:
+        n = _BUF_CAP
+    # string_at 按 Go 返回的有效长度直接取 bytes,避免 buf[:n] 先造整数列表再转回。
+    return json.loads(ctypes.string_at(buf, n).split(b"\x00", 1)[0].decode())
 
 
 def _in(payload):
@@ -85,12 +87,14 @@ class GosimWorld:
     def __init__(self, cpu_handle, smem_handle=0, fetch_lo=0, fetch_hi=0):
         self.handle = _LIB_SINGLETON.lib.gosim_world_new(cpu_handle, smem_handle,
                                                          fetch_lo, fetch_hi)
+        self._outbuf = (c_uint8 * _BUF_CAP)()
 
     def set_periph(self, periph_handle):
         _LIB_SINGLETON.lib.gosim_world_set_periph(self.handle, periph_handle)
 
     def run_loop(self, n):
-        return _out(_LIB_SINGLETON.lib.gosim_world_run_loop, self.handle, n)
+        return _out(_LIB_SINGLETON.lib.gosim_world_run_loop, self._outbuf,
+                    self.handle, n)
 
     def free(self):
         _LIB_SINGLETON.lib.gosim_world_free(self.handle)
@@ -112,6 +116,7 @@ class GosimDualWorld:
         self.handle = _LIB_SINGLETON.lib.gosim_world_dual_new(
             cpu0_handle, cpu1_handle, smem_handle, machine_handle, deliver_handle,
             fetch_lo, fetch_hi)
+        self._outbuf = (c_uint8 * _BUF_CAP)()
 
     def set_periph(self, periph_handle):
         _LIB_SINGLETON.lib.gosim_world_set_periph(self.handle, periph_handle)
@@ -149,7 +154,8 @@ class GosimDualWorld:
             raise ValueError("gosim dual core state set failed (core=%d)" % core)
 
     def run_loop(self, n):
-        return _out(_LIB_SINGLETON.lib.gosim_world_run_loop, self.handle, n)
+        return _out(_LIB_SINGLETON.lib.gosim_world_run_loop, self._outbuf,
+                    self.handle, n)
 
     def free(self):
         _LIB_SINGLETON.lib.gosim_world_free(self.handle)
@@ -160,6 +166,7 @@ class GosimPeriph:
 
     def __init__(self):
         self.handle = _LIB_SINGLETON.lib.gosim_periph_new()
+        self._outbuf = (c_uint8 * _BUF_CAP)()
 
     def load(self, state):
         """Move the live state (a dict of Python BR28Model attrs) into Go."""
@@ -171,11 +178,12 @@ class GosimPeriph:
 
     def state(self):
         """Read the advance-relevant PeriphState back as a dict."""
-        return _out(_LIB_SINGLETON.lib.gosim_periph_state, self.handle)
+        return _out(_LIB_SINGLETON.lib.gosim_periph_state, self._outbuf, self.handle)
 
     def advance(self, icfg):
         """Run one Advance(icfg); returns {"empty", "irq", "err"}."""
-        return _out(_LIB_SINGLETON.lib.gosim_periph_advance, self.handle, icfg)
+        return _out(_LIB_SINGLETON.lib.gosim_periph_advance, self._outbuf,
+                    self.handle, icfg)
 
     def free(self):
         _LIB_SINGLETON.lib.gosim_periph_free(self.handle)
