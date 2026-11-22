@@ -49,6 +49,10 @@ def run_scenario(module, app, plain, readonly, header, rom, scenario, budget, ob
     probe_boot.gosim_entry_stats = {}
     probe_boot.gosim_dual_batch_steps = 0
     probe_boot.gosim_dual_batch_calls = 0
+    probe_boot.gosim_dual_batch_writes = 0
+    probe_boot.gosim_dual_batch_write_steps = 0
+    probe_boot.gosim_dual_stepwise_pin_writes = 0
+    probe_boot.gosim_dual_pin_mmuwin = 0
     if observer is not None:
         observer.reset()
     result, trace = ait.frontier_run(
@@ -155,6 +159,9 @@ def main():
         print('dual batch: %d qualified steps in %d batches (%d per-step commits avoided)' %
               (probe_boot.gosim_dual_batch_steps, probe_boot.gosim_dual_batch_calls,
                probe_boot.gosim_dual_batch_steps - probe_boot.gosim_dual_batch_calls), flush=True)
+        print('dual write batch: %d st.b.pin writes in %d steps; stepwise pin writes left=%d (mmu_win=%d)' %
+              (probe_boot.gosim_dual_batch_writes, probe_boot.gosim_dual_batch_write_steps,
+               probe_boot.gosim_dual_stepwise_pin_writes, probe_boot.gosim_dual_pin_mmuwin), flush=True)
         from gosim_dual_engine import timing_report
         tr = timing_report()
         if tr:
@@ -201,6 +208,10 @@ def main():
         print('dual_batch_steps=%d dual_batch_calls=%d avoided=%d' %
               (probe_boot.gosim_dual_batch_steps, probe_boot.gosim_dual_batch_calls,
                probe_boot.gosim_dual_batch_steps - probe_boot.gosim_dual_batch_calls), flush=True)
+    if probe_boot.gosim_dual_batch_writes or probe_boot.gosim_dual_stepwise_pin_writes:
+        print('dual_write_batch=%d writes in %d steps; stepwise_pin_writes=%d (mmu_win=%d)' %
+              (probe_boot.gosim_dual_batch_writes, probe_boot.gosim_dual_batch_write_steps,
+               probe_boot.gosim_dual_stepwise_pin_writes, probe_boot.gosim_dual_pin_mmuwin), flush=True)
     from gosim_dual_engine import timing_report
     tr = timing_report()
     if tr:

@@ -50,6 +50,10 @@ gosim_dual_lens = {}   # steps -> fills(测量用)
 gosim_entry_stats = {} # 入口门统计: reason x 指令族 x 数据地址类别(H3S_DUAL_KINDS)
 gosim_dual_batch_steps = 0  # 第二刀:成批消费的合格步数(测量用)
 gosim_dual_batch_calls = 0  # 第二刀:成批消费的批次数(测量用)
+gosim_dual_batch_writes = 0  # 第三刀:成批接管的具体 st.b.pin 写次数(测量用)
+gosim_dual_batch_write_steps = 0  # 第三刀:含成批写的步数(测量用)
+gosim_dual_stepwise_pin_writes = 0  # 第三刀:仍走旧 mem.write 回放的具体 1 字节写次数(目标 0)
+gosim_dual_pin_mmuwin = 0  # 第三刀:其中落在 MMU 窗的具体 1 字节写次数(诊断)
 
 class _DualIrqRequest:
     """Go 交回的 pending-eligible IRQ 伪装成 IrqDeliveryRequest,复用既有的
@@ -343,6 +347,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     global gosim_batch_steps, gosim_batch_fills, gosim_batch_zero_fills
     global gosim_dual_steps, gosim_dual_fills
     global gosim_dual_batch_steps, gosim_dual_batch_calls
+    global gosim_dual_batch_writes, gosim_dual_batch_write_steps, gosim_dual_stepwise_pin_writes
+    global gosim_dual_pin_mmuwin
     # post_stop(opt-in,路 S/key-chain):主循环停点后、报告组装前的回调
     # post_stop(machine,hardware,stopped_cpu)->dict|None。用于在活机器上做
     # 「停点后直调」类探测(键链扫描直调等);返回的 dict 并进场景报告。
@@ -3157,6 +3163,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         return 'clean'
 
     def _dual_commit(core,pc,next_pc,flags,R,insn_hex=None,memwrites=None,adapter=None,rt=None,events=None,sp=None,before_sp=None,walks=None,mmio_reads=None):
+        global gosim_dual_stepwise_pin_writes, gosim_dual_pin_mmuwin
         # 一条已由 Go 执行的步的 Python 侧簿记:fetch 守卫计数、trace 行物化、
         # 本步有序写回放(具体写=mem.write=note_memory_write+write 事件;抽象写
         # =mem.write_abstract_word=icfg_spills/unknown_origins overlay+抽象写事件;
@@ -3203,7 +3210,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     if mw.get('abs') is not None:
                         c.mem.write_abstract_word(mw['addr'], decode_reg_tag(mw['abs']))
                     else:
-                        c.mem.write(mw['addr'], bytes.fromhex(mw['bytes']))
+                        _mbytes = bytes.fromhex(mw['bytes'])
+                        if len(_mbytes) == 1:
+                            gosim_dual_stepwise_pin_writes += 1
+                            if 0x400000 <= mw['addr'] < 0x800000:
+                                gosim_dual_pin_mmuwin += 1
+                        c.mem.write(mw['addr'], _mbytes)
             finally:
                 c.mem._gosim_dirty = _dirty_save
         # ICFG special-read/special-write 事件(Go 侧已改状态,这里补事件簿记)。
@@ -3249,32 +3261,81 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             except (TypeError, ValueError):
                 pass
 
-    def _dual_step_simple(s):
-        if s.get('mem') or s.get('events') or s.get('walks') or s.get('mmio_reads'):
+    # 第三刀:具体 RAM st.b.pin 写成批的准入。只接恒等映射(不在 MMU 窗
+    # [0x400000,0x800000))、且写目标不是有副作用的字节槽(guest notification
+    # 0x1265f5 / P2M 邮箱消息字节 0xF27F87)或已溢出 ICFG 字的具体 1 字节写;
+    # 其余写(带来源整字写/抽象写/ICFG spill/MMU 窗)仍走逐步 _dual_commit 的
+    # mem.write 原回调。watch(d1_window_observer)只在 D1 验收流激活、双核 Go
+    # 不参与,但按「有副作用即逐步」的守则在此显式关门(懒导入避免 probe_boot
+    # <-> br28_machine 循环导入;explore 每轮运行一次,计算代价可忽略)。
+    _dual_side_effect_byte = frozenset((0x1265f5, 0xf27f87))
+    try:
+        import br28_machine as _bm
+        _dual_watch_active = _bm.d1_window_observer is not None
+    except Exception:
+        _dual_watch_active = False
+
+    def _dual_mw_batchable(mw, mem):
+        if mw.get('abs') is not None:
             return False
-        # 具体寄存器 = rt 缺省或 16 个 tag 全 None(Go 侧 [16]*RegTag 恒定回传,
-        # 具体步全 None,抽象步含 dict tag)。
-        _rt = s.get('rt')
-        if _rt is not None:
-            for _t in _rt:
-                if _t is not None:
-                    return False
+        _b = mw.get('bytes')
+        if not _b or len(_b) != 2:  # 1 字节 hex(非整字/半字具体写)
+            return False
+        _addr = mw['addr']
+        if hardware is not None and hardware.mmu is not None and 0x400000 <= _addr < 0x800000:
+            return False  # MMU 窗写:走表副作用留在逐步路径(后续刀再接)
+        if _addr in _dual_side_effect_byte:
+            return False
+        if any(_base <= _addr < _base + 4 for _base in mem.icfg_spills):
+            return False
+        return True
+
+    def _dual_step_simple(s):
+        # 事件(ICFG 读写)、读副作用(walks/mmio_reads)仍逐步;抽象寄存器标签
+        # 已进批量账本(第三刀):rt 里的 UnknownWord/IcfgValue 由批内
+        # decode_reg_tag 重建签名与末态,与逐步 _dual_commit 逐字节一致。
+        # Go 只提交「不数值消费抽象寄存器」的步(consumedRegs gate),故批内
+        # 抽象寄存器只被携带/掩码/运输,不改变 icfg(icfg 变更步必带 Events,
+        # 已在上方拒绝;icfg_demands 整批恒定成立)。
+        if s.get('events') or s.get('walks') or s.get('mmio_reads'):
+            return False
         _sp = s.get('sp')
         if _sp is not None and _sp != s.get('before_sp'):
             return False
         if s['pc'] in _dual_simple_excl:
             return False
+        _mem = s.get('mem')
+        if _mem and _dual_watch_active:
+            return False  # watch 激活:任何写都逐步喂观察器
+        if _mem:
+            _cmem = machine.cores[s['core']].mem
+            for _mw in _mem:
+                if not _dual_mw_batchable(_mw, _cmem):
+                    return False
         return True
+
+    def _dual_rvals(s):
+        # 成批步的寄存器值重建(与 _dual_commit 的 rt 解码逐字节一致):rt 缺省
+        # 时是具体 int(防御性把非 int 归 0);rt 带 tag 时按 tag 还原 UnknownWord/
+        # IcfgValue,供签名(_reg_sig)与末态落盘共用。
+        _rt = s.get('rt')
+        if _rt is None:
+            return [v if type(v) is int else 0 for v in s['r']]
+        return [v if tag is None else decode_reg_tag(tag) for v, tag in zip(s['r'], _rt)]
 
     def _dual_commit_batch(steps):
         # 第二刀成批消费:对一段连续合格步,批量生成原格式寄存器签名并直接追加
         # 签名 spool(与 TraceMachine.after_step 逐条路径逐字节一致),只对末步
         # 落 CPU 态、合并 rom_steps、只算一次 icfg_demands;诊断 64 行窗口的 row
         # 仍逐条构造(decode 保留),返回按序的 row 列表供外层记账。
+        # 第三刀:合格步含具体 RAM st.b.pin 写时,写按步序/步内序用显式写前
+        # core 直接落盘(pending_writes + write 事件),不再走 mem.write 慢回放。
         global gosim_dual_batch_steps, gosim_dual_batch_calls
+        global gosim_dual_batch_writes, gosim_dual_batch_write_steps
         _t0 = time.perf_counter() if gosim_dual_engine is not None else None
         rows = []
         rom_count = 0
+        _any_write = False
         spool = machine.trace
         _last_by_core = {}
         for s in steps:
@@ -3296,15 +3357,41 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             row['_pending_text'] = (insn, raw)
             row['next_pc'] = hex(next_pc)
             rows.append(row)
+            # 有序写回放(具体 st.b.pin 1 字节):写前 core 对齐 write 事件的
+            # core 字段;pending_writes 按步内序追加进本步签名,步末清空。写
+            # 目标是恒等映射 RAM 且无副作用(准入已判),不走 MMU 翻译/MMIO/
+            # 溢出 overlay 分支;已同步字节不标脏(Go 执行时已写入其自身 map)。
+            _mw = s.get('mem')
+            if _mw:
+                _any_write = True
+                if hardware is not None:
+                    hardware.current_core = core
+                _cmem = cc.mem
+                for _w in _mw:
+                    _addr = _w['addr']
+                    _bhex = _w['bytes']
+                    _cmem.ram[_addr] = int(_bhex, 16)
+                    _cmem.unknown_origins.pop(_addr, None)
+                    event({'access': 'write', 'address': hex(_addr), 'bytes': _bhex,
+                           'region': _cmem.region(_addr, 1)})
+                    machine.pending_writes.append((_addr, _bhex))
+                gosim_dual_batch_writes += len(_mw)
+                gosim_dual_batch_write_steps += 1
             _flags = s['flags']
             _flags_str = _sys.intern(f'{_flags:02x}') if type(_flags) is int else repr(_flags)
             spool.append((core, pc, next_pc, _flags_str,
-                          tuple(_sys.intern(v) for v in map(_reg_sig, s['r'])), ()))
+                          tuple(_sys.intern(v) for v in map(_reg_sig, _dual_rvals(s))),
+                          tuple(machine.pending_writes)))
+            machine.pending_writes = []
             if rom is not None and 0 <= pc < len(rom):
                 rom_count += 1
             if s.get('adapter'):
                 adapters[s['adapter']] += 1
             _last_by_core[core] = s
+        # 写落盘使区域读 memo 失效(O3-A3b:与慢路径 Memory.write 每次 clear
+        # 等价——批内无数据读,批末清一次即可)。
+        if _any_write:
+            ram_read_memo.clear()
         # 末态:每个核各自落到它在批内最后一步的 next_pc/flags/R(dual_buf 两核
         # 交错,只更新最后一条所在的核会把另一核留在 restore 的整批末态,而不是
         # 批内末态——后一步的写前 PC/note_memory_write 会读错)。
@@ -3312,7 +3399,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             _lc = machine.cores[core]
             _lc.pc = s['next_pc']
             _lc.flags = s['flags']
-            _lc.R = [v if type(v) is int else 0 for v in s['r']]
+            _lc.R = _dual_rvals(s)
         if rom_count:
             rom_steps['completed_model_steps_in_rom'] += rom_count
         if hardware is not None:
