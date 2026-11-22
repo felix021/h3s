@@ -44,6 +44,9 @@ def run_scenario(module, app, plain, readonly, header, rom, scenario, budget, ob
     probe_boot.gosim_batch_steps = 0
     probe_boot.gosim_dual_steps = 0
     probe_boot.gosim_dual_fills = 0
+    probe_boot.gosim_dual_kinds = {}
+    probe_boot.gosim_dual_lens = {}
+    probe_boot.gosim_entry_stats = {}
     if observer is not None:
         observer.reset()
     result, trace = ait.frontier_run(
@@ -182,6 +185,8 @@ def main():
     if probe_boot.gosim_dual_kinds or probe_boot.gosim_dual_lens:
         print('dual_kinds=%s' % dict(sorted(probe_boot.gosim_dual_kinds.items())), flush=True)
         print('dual_lens=%s' % dict(sorted(probe_boot.gosim_dual_lens.items())), flush=True)
+    if probe_boot.gosim_entry_stats:
+        print('entry_stats=%s' % dict(sorted(probe_boot.gosim_entry_stats.items())), flush=True)
     return 0
 
 

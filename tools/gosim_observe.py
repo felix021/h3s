@@ -51,6 +51,97 @@ BUDGET = 'budget'
 _MEMORY_GROUPS = ('memory', 'stack')
 _SPECIAL_REG_GROUPS = ('cache',)
 
+# Register-operand field kinds (mirrors pi32v2isa check.operands / regs_of).
+# A gpr-kind operand names one or two general registers; everything else is an
+# immediate / special register / mask and is never a GPR read.
+_REG_KINDS = frozenset(('gpr', 'gpr_lo', 'gpr_hi', 'pair', 'pair_regs'))
+
+import re as _re
+# A top-level assignment operator: compound ops first, then a plain '=' that is
+# not part of '==', '!=', '<=', '>='.  'beqz'/'bne' comparison '==' is skipped.
+_ASSIGN_RE = _re.compile(r'(?P<op>\+=|-=|\*=|&=|\|=|\^=|<<=|>>=|(?<![<>=!])=(?!=))')
+_SYNTAX_TOK = _re.compile(r'\{\{|\}\}|\{(\+?)(\w+)\}')
+
+
+def _field_regs(insn, raw, name):
+    """The register indices one register-kind operand field names (regs_of twin)."""
+    f = insn.fields[name]
+    r = raw[name]
+    if f.kind in ('gpr', 'gpr_lo'):
+        return [r]
+    if f.kind == 'gpr_hi':
+        return [r + 8]
+    if f.kind == 'pair':
+        return [2 * r, 2 * r + 1]
+    if f.kind == 'pair_regs':
+        return [2 * (r >> 2) + (r >> 1 & 1), 2 * (r >> 2) + (r & 1)]
+    return []
+
+
+def _lhs_dest_fields(insn, lhs):
+    """Field NAMES that are pure write destinations: register-kind tokens in the
+    left-hand side of an assignment, at bracket depth 0 (not inside a `[...]`
+    memory address)."""
+    dests = set()
+    depth = 0
+    i = 0
+    n = len(lhs)
+    while i < n:
+        ch = lhs[i]
+        if ch == '{':
+            j = lhs.find('}', i)
+            if j < 0:
+                break
+            inner = lhs[i + 1:j]
+            if inner not in ('{', '}'):
+                name = inner.lstrip('+')
+                f = insn.fields.get(name)
+                if f is not None and f.kind in _REG_KINDS and depth == 0:
+                    dests.add(name)
+            i = j + 1
+            continue
+        if ch == '[':
+            depth += 1
+        elif ch == ']':
+            depth -= 1
+        i += 1
+    return dests
+
+
+def read_field_names(insn):
+    """The field names an instruction READS (consumes) as register operands.
+
+    Conservative-but-honest: every register-kind field is a read except a pure
+    write destination of a plain `=` assignment (`{d} = ...`, `{d} = [..]`); a
+    compound `+=`/`*=` destination is read-modify-write and therefore still a
+    read, as are address bases, index registers, branch conditions and store
+    sources.  Static per instruction id — independent of raw operand values."""
+    fields = insn.fields
+    reads = {name for name, f in fields.items() if f.kind in _REG_KINDS}
+    m = _ASSIGN_RE.search(insn.syntax)
+    if m is None:
+        return reads
+    if m.group('op') == '=':
+        reads -= _lhs_dest_fields(insn, insn.syntax[:m.start()])
+    return reads
+
+
+def reads_sp(insn):
+    """Whether the instruction consumes sp (a sp-relative memory base)."""
+    return bool(_re.search(r'\[sp', insn.syntax))
+
+
+def consumed_regs(insn, raw):
+    """The GPR indices an instruction READS (consumes).
+
+    Conservative-but-honest: every register-kind operand is a read except a pure
+    write destination of a plain `=` assignment (`{d} = ...`, `{d} = [..]`); a
+    compound `+=`/`*=` destination is read-modify-write and therefore still a
+    read, as are address bases, index registers, branch conditions and store
+    sources.  sp-relative forms (`ld.w.sp`/`add.sp_i`/...) also consume sp, which
+    is tracked separately via sp_known, not the R array."""
+    return {r for name in read_field_names(insn) for r in _field_regs(insn, raw, name)}
+
 
 def enabled():
     """Non-empty H3S_GOSIM_OBSERVE turns the observer on (default off)."""
