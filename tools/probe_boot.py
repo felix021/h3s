@@ -555,6 +555,30 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if machine is not None:machine.note_memory_write(address,data)
             event({'access':'write','address':hex(address),'bytes':data.hex(),'region':region})
 
+        def mark_unknown(self,address,length,origin):
+            # SRC 非零样本输出的诚实建模(路 SRCSYNC6):把 [address,address+length)
+            # 的 RAM 字节标为带来源未知值——已知字节移除、unknown_origins 逐字节
+            # 指向 origin(首个非零输入字节的物理地址)。不臆造数值:后续 rep
+            # memcpy 的装载适配器按 unknown_origins 运输来源,任何算术/判零/分支
+            # 消费仍经 UnknownWord.consumed 诚实停。address 已是物理地址(调用方
+            # 经 MMU 翻译,<0x400000 恒等),与 mem.write 的 region 判定同域。
+            region=self.region(address,length)
+            if not region:
+                raise Blocked('unknown_mark_requires_ram',address=hex(address),size=length)
+            if any(address < base+4 and base < address+length for base in self.icfg_spills):
+                raise Blocked('unknown_mark_overlaps_icfg_spill',
+                              address=hex(address),size=length,
+                              note='an unknown-sample region must not overlap a partial '
+                                   'icfg spill word')
+            ram_read_memo.clear()  # O3-A3b 失效:下方的逐字节直改(known→unknown)
+            for a in range(address,address+length):
+                self.ram.pop(a,None)
+                self.unknown_origins[a]=origin
+            if self._gosim_dirty is not None:
+                self._gosim_dirty.update(range(address,address+length))
+            event({'access':'unknown_mark','address':hex(address),'size':length,
+                   'origin':hex(origin),'region':region})
+
         def abstract_word(self,address,*,task_frame=False):
             # Only task-frame loads may introduce new unknowns. A later stack
             # reload must have provenance from an explicit abstract store.
@@ -1743,7 +1767,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 values=[self.mem.ram.get(physical+i) for i in range(4)] if region else None
                 if (region and address%4==0 and physical not in self.mem.icfg_spills and
                         any(v is None for v in values)):
-                    origins=[physical+i if v is None else None for i,v in enumerate(values)]
+                    origins=[self.mem.unknown_origins.get(physical+i,physical+i)
+                             if v is None else None for i,v in enumerate(values)]
                     self.R[op['d']]=UnknownWord(values,origins)
                     self.R[op['b']]=(address+op['n'])&0xffffffff
                     event({'access':'abstract-read','address':hex(physical),'size':4,'region':region,

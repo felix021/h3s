@@ -7723,19 +7723,22 @@ class JLSrcSyncDelivery:
                              'measurement')},
             'completion_result':{
                 'input_consumed':0,
-                'output_data_synthesized':'zero-fill under the silent-input guard '
-                                          '(cursor route SRCSYNC6)',
+                'output_data_synthesized':'zero-fill under the silent-input guard; '
+                                          'unknown-with-origin under the non-zero-input '
+                                          'guard (cursor route SRCSYNC6)',
                 'progress_readback':'last firmware-written value (function B config words)',
                 'semantics':('the externally-specified completion result: the delivery half '
                              'itself consumes zero input and only sets IRQ89 pending; the '
                              'cursor half (JLSrcSyncCursorProgress.commit) advances the four '
-                             'cursor words and, when this transaction\'s input IDAT is known '
-                             'and all-zero, writes the locked ODAT region as zero samples '
-                             '(zero-input -> zero-output linear-filter zero-history assumption, '
-                             'named; a non-zero or unknown input keeps the strict stop). This '
-                             'verifies "the notification wakes the task" AND the silent-block '
-                             'buffer flow; the non-silent conversion and continuous data flow '
-                             'stay BLOCKED (codex §2 wording)')},
+                             'cursor words and resolves the locked ODAT region: a known '
+                             'all-zero input IDAT writes zero samples (zero-input -> zero-output '
+                             'linear-filter zero-history assumption, named); a known non-zero '
+                             'input marks the ODAT region as unknown-with-origin samples that '
+                             'may only be memcpy-transported (any arithmetic/judge/branch '
+                             'consumer stops honestly, provenance retained); an unknown input '
+                             'keeps the strict stop. This verifies "the notification wakes the '
+                             'task" AND the silent-block buffer flow; the non-silent sample '
+                             'conversion itself stays unmodeled (codex low-cost tier)')},
             'red_line':('no direct interrupt or direct OSSemPost: completion sets IRQ89 '
                         'pending and the machine delivers it through the real vector slot '
                         '0x19ff64 -> handler 0x12ca24')}
@@ -7767,8 +7770,12 @@ class JLSrcSyncCursorProgress:
       假设;SRC 采样率转换比值未测,需硅测确认。
     - 零输入→零输出(路 SRCSYNC6 最小样本建模):本笔输入 IDAT 已知且全零时,
       把锁存的 ODAT 输出区间写成零样本;前提是 SRC 线性滤波器零历史、无附加
-      信号,两者均需硅测确认。输入含 unknown 或非零字节时诚实停,不伪造非零
-      样本的转换。
+      信号,两者均需硅测确认。
+    - 非零输入→带来源未知输出(低成本档):本笔输入 IDAT 已知且含非零字节时,
+      把整个锁存 ODAT 区间标为带来源未知值(逐字节 origin 指向首个非零输入
+      字节),只允许固件 memcpy 搬运、不臆造任何输出数值;混音算术/判零/分支
+      一旦消费其值即诚实停。SRC 采样率转换的真实输出值/滤波/舍入/饱和属高
+      成本档,需硅测,本路不做。输入含 unknown 仍诚实停,不伪造转换。
 
     守恒契约:每笔验证 0<=c<=L前、0<=p<=O前、L后=L前-c、A后-A前=c*C*W(地址无
     回绕);一次启动只准提交一次,下一次合法启动承接上一笔剩余量。只动 IDAT 不动
@@ -7825,7 +7832,8 @@ class JLSrcSyncCursorProgress:
     def commit(self, hardware, mem=None):
         """advance() 到期时的原子提交:先验证 c/p、地址范围与输出有效性,再一次性
         置 committed 快照(在置 pending 之前)。一次启动只准提交一次。
-        mem=运行循环内存对象;零输入→零输出样本建模见 _zero_fill_odat_if_silent_input。"""
+        mem=运行循环内存对象;零输入→零输出/非零输入→带来源未知样本建模见
+        _resolve_odat_samples。"""
         if self.transaction == 0 or not self.latched:
             raise Blocked('jl_src_sync_cursor_commit_without_start')
         length = self.latched[0xfe2614]          # IDAT_LEN (per-channel samples)
@@ -7852,8 +7860,8 @@ class JLSrcSyncCursorProgress:
         if odat_delta and odat_next < odat_adr:
             raise Blocked('jl_src_sync_cursor_odat_address_overflow',
                           address=hex(odat_adr), delta=odat_delta)
-        self._zero_fill_odat_if_silent_input(hardware, mem, idat_adr, idat_delta,
-                                             odat_adr, odat_delta)
+        self._resolve_odat_samples(hardware, mem, idat_adr, idat_delta,
+                                   odat_adr, odat_delta)
         self.committed = {
             0xfe2610: idat_next,
             0xfe2614: length - consumed,
@@ -7879,47 +7887,63 @@ class JLSrcSyncCursorProgress:
             'odat_len_after': capacity - produced,
         })
 
-    def _zero_fill_odat_if_silent_input(self, hardware, mem, idat_adr, idat_delta,
-                                        odat_adr, odat_delta):
-        """路 SRCSYNC6 最小样本建模:本笔输入 IDAT 已知且全零时,把锁存的 ODAT
-        输出区间写成零样本(零输入→零输出,SRC 线性滤波零历史假设)。
+    def _resolve_odat_samples(self, hardware, mem, idat_adr, idat_delta,
+                              odat_adr, odat_delta):
+        """路 SRCSYNC6 最小样本建模:把本笔锁存的 ODAT 输出区间写成「能诚实
+        支撑下游搬运/消费」的形式,绝不伪造非零样本的转换。
 
-        守卫(诚实停红线):输入含 unknown 或非零字节、MMU/mem 缺失、或产出非零
-        却无输入可校验时,保留严格停点,绝不伪造非零样本的转换。写入走
-        mem.write(物理地址,零字节),只动本笔 ODAT 区间,不碰混音/DAC 环/select。
+        两条诚实分支:
+        - 本笔输入 IDAT 已知且全零:把 ODAT 区间写成零样本(零输入→零输出,
+          SRC 线性滤波零历史假设,具名、需硅测)。
+        - 本笔输入 IDAT 已知且含非零字节:把整个 ODAT 区间标为带来源未知值
+          (逐字节 unknown_origins 指向首个非零输入字节),不臆造任何输出数值。
+          固件随后的 rep memcpy 搬运(rep_copy_unknown_transport 适配器)按来源
+          运输这些未知字节;混音算术/判零/分支一旦消费其值即诚实停
+          (UnknownWord.consumed,provenance 保留)。SRC 采样率转换的真实输出
+          值/滤波/舍入/饱和仍属高成本档,本路不做。
+
+        守卫(诚实停红线):输入含 unknown、MMU/mem 缺失、或产出非零却无输入
+        可校验时保留严格停点。写入只动本笔 ODAT 区间,不碰混音/DAC 环/select。
         固件随后自行 memcpy 该输出到下游混音输入帧(见 mixobs 诊断)。"""
         if odat_delta == 0:
-            return  # 纯零消费臂无产出,零填充不适用(不改变游标守恒语义)
+            return  # 纯零消费臂无产出,样本建模不适用(不改变游标守恒语义)
         if mem is None:
             # 纯游标模式(单元测试/无内存模型的调用方):没有内存对象可写样本,
-            # 跳过零填充、游标推进语义不变。生产 explore/machine 路径必须传 mem,
+            # 跳过样本建模、游标推进语义不变。生产 explore/machine 路径必须传 mem,
             # 否则下游混音读 unknown——由字节一致对拍兜底捕获,不靠这里 raise。
             return
         mmu = hardware.mmu
         if mmu is None:
             raise Blocked('jl_src_sync_cursor_zero_fill_requires_mmu',
-                          note='the SRC output zero-sample projection needs the MMU to '
+                          note='the SRC output sample projection needs the MMU to '
                                'resolve the IDAT/ODAT virtual descriptors')
         if idat_delta == 0:
             raise Blocked('jl_src_sync_cursor_zero_fill_without_input',
                           odat_delta=odat_delta,
-                          note='cannot justify zero output from a zero-input projection '
+                          note='cannot justify output from a sample projection '
                                'when this transaction consumed no input')
+        first_nonzero = None
         for phys, length in self._translate_range(mmu, mem, idat_adr, idat_delta):
             for i in range(length):
                 byte = mem.ram.get(phys + i)
                 if byte is None:
                     raise Blocked('jl_src_sync_cursor_zero_fill_input_unknown',
                                   address=hex(phys + i),
-                                  note='input IDAT byte is unknown; the zero-output '
-                                       'projection only applies to a known all-zero input')
+                                  note='input IDAT byte is unknown; the sample '
+                                       'projection only applies to a known input')
                 if byte != 0:
-                    raise Blocked('jl_src_sync_cursor_zero_fill_input_nonzero',
-                                  address=hex(phys + i), byte=byte,
-                                  note='input IDAT byte is non-zero; the model does not '
-                                       'synthesize the conversion of non-zero samples')
+                    first_nonzero = phys + i
+                    break
+            if first_nonzero is not None:
+                break
         for phys, length in self._translate_range(mmu, mem, odat_adr, odat_delta):
-            mem.write(phys, bytes(length))
+            if first_nonzero is None:
+                # 全零输入→零输出(零历史线性滤波假设)
+                mem.write(phys, bytes(length))
+            else:
+                # 非零输入:输出样本未验证,标为带来源未知值(provenance=首个
+                # 非零输入字节),仅允许固件搬运,消费即停。
+                mem.mark_unknown(phys, length, first_nonzero)
 
     @staticmethod
     def _translate_range(mmu, mem, vaddr, length):
@@ -7969,9 +7993,19 @@ class JLSrcSyncCursorProgress:
                                            'all-zero, the locked ODAT region is written as '
                                            'zero samples — requires the SRC linear filter to '
                                            'hold zero history with no added signal; both '
-                                           'premises 需硅测确认 (named, not a universal '
-                                           'truth); a non-zero or unknown input keeps the '
-                                           'strict stop and never fakes a non-zero conversion'),
+                                           'premises 需硅测确认 (named, not a universal truth)'),
+                'nonzero_input_unknown_output': ('when this transaction\'s input IDAT is '
+                                                 'known and contains a non-zero byte, the whole '
+                                                 'locked ODAT region is marked as unknown-with-'
+                                                 'origin samples (per-byte origin = the first '
+                                                 'non-zero input byte) that may only be memcpy-'
+                                                 'transported; any arithmetic/judge/branch '
+                                                 'consumer stops honestly with provenance '
+                                                 'retained — the real SRC rate conversion, '
+                                                 'filter, rounding and saturation stay '
+                                                 'unmodeled (high-cost tier, 需硅测); an '
+                                                 'unknown input keeps the strict stop and '
+                                                 'never fakes a non-zero conversion'),
                 'semantics': ('C=channel count from CON2 low byte (0x00010002, SDK '
                               'SRC_CHI=2); W=storage bytes per sample (4 for the 32-bit '
                               'tone path, named assumption); c/p = per-channel samples '
