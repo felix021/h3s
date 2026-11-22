@@ -40,12 +40,15 @@ const (
 	BatchAbstract = 7 // a tagged (abstract) value would be consumed (hand back)
 )
 
-// MemWrite is one whole-word store observed during a step. A concrete store
-// carries Value; an abstract store (partial-ICFG spill / abstract stack push)
-// carries Abs and is replayed by Python via Memory.write_abstract_word.
+// MemWrite is one memory store observed during a step. A concrete word store
+// carries Value; a concrete sub-word store (st.b.pin) carries Bytes (1..3
+// bytes, never a full word); an abstract store (partial-ICFG spill / abstract
+// stack push) carries Abs and is replayed by Python via
+// Memory.write_abstract_word.
 type MemWrite struct {
 	Addr  uint32
 	Value uint32
+	Bytes []byte
 	Abs   *RegTag
 }
 
