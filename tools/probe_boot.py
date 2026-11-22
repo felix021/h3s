@@ -46,6 +46,7 @@ gosim_dual_steps = 0  # 双核 Go 快路径执行的指令步数(测量用)
 gosim_dual_fills = 0  # Go run_loop 调用次数(测量用)
 gosim_dual_kinds = {}  # kind -> fills(测量用)
 gosim_dual_lens = {}   # steps -> fills(测量用)
+gosim_entry_stats = {} # 入口门统计: reason x 指令族 x 数据地址类别(H3S_DUAL_KINDS)
 
 class _DualIrqRequest:
     """Go 交回的 pending-eligible IRQ 伪装成 IrqDeliveryRequest,复用既有的
@@ -3227,6 +3228,67 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
 
     for _ in range(budget):
         attempts+=1
+        # ---- 入口门统计(H3S_DUAL_KINDS,纯只读,不改仿真状态) ----
+        # 只在「新鲜入口」(双核 Go 使能、无缓冲步/无待处理 hazard、无诊断截停)
+        # 时计数一次;回答「cores_concrete 挡了多少、放宽到消费寄存器具体能兑现
+        # 多少、交回原因 x 指令族 x 数据地址类别」,供第七刀决定投入方向。
+        if (dual_engine is not None and machine is not None and len(machine.cores)==2
+                and not dual_buf and dual_hazard is None
+                and (diagnostics is None or (not diagnostics.get('stop_before_pc')
+                     and not diagnostics.get('stop_on_rom_return')))
+                and os.environ.get('H3S_DUAL_KINDS')):
+            _es=gosim_entry_stats
+            _es['total']=_es.get('total',0)+1
+            _pcore=1-machine.last_core
+            _pco=machine.cores.get(_pcore)
+            _c0=machine.cores[0];_c1=machine.cores[1]
+            _concrete=dual_engine.cores_concrete(_c0,_c1)
+            _insn=_raw=None;_iid='<nodecode>';_grp=''
+            if _pco is not None:
+                try:
+                    _insn,_raw,_size=_pco.decode(_pco.pc)
+                    _iid=_insn.id;_grp=getattr(_insn,'group','') or ''
+                except Exception:
+                    pass
+            if _concrete:
+                _es['concrete:pass']=_es.get('concrete:pass',0)+1
+                # 段头预判(保守镜像):预判不安全的头在 fill 前就被拦,浪费为 0
+                _hok=_pco is not None and _dual_head_ok(_pco)
+                _es['head:'+('ok' if _hok else 'unsafe')]=_es.get('head:'+('ok' if _hok else 'unsafe'),0)+1
+                if not _hok:
+                    _es['head_unsafe:'+_iid]=_es.get('head_unsafe:'+_iid,0)+1
+            else:
+                _es['concrete:fail']=_es.get('concrete:fail',0)+1
+                _es['head_fail:'+_iid]=_es.get('head_fail:'+_iid,0)+1
+                for _cid,_cc in ((0,_c0),(1,_c1)):
+                    if _cc is None:continue
+                    for _ri,_v in enumerate(_cc.R):
+                        if type(_v) is not int:
+                            _es['reg:%d:%d'%(_cid,_ri)]=_es.get('reg:%d:%d'%(_cid,_ri),0)+1
+                _relax='no'
+                if _insn is not None and _raw is not None and _pco is not None:
+                    try:
+                        if all(type(_pco.R[_r]) is int for _r in gosim_observe.consumed_regs(_insn,_raw)):
+                            _relax='yes'
+                    except Exception:
+                        pass
+                _es['relax:'+_relax]=_es.get('relax:'+_relax,0)+1
+                _es[('head_relax:' if _relax=='yes' else 'head_norelax:')+_iid]= \
+                    _es.get(('head_relax:' if _relax=='yes' else 'head_norelax:')+_iid,0)+1
+                # 放宽到「消费寄存器具体」后,头指令是否真能进 Go(还需通过
+                # _dual_head_ok/safeDual 合同——idle/csync/lockset 等 Python 侧
+                # 或 batchUnsafe 拒绝的头不算)。
+                _rexec='no'
+                if _relax=='yes' and _pco is not None:
+                    try:
+                        if _dual_head_ok(_pco):_rexec='yes'
+                    except Exception:
+                        pass
+                _es['relax_exec:'+_rexec]=_es.get('relax_exec:'+_rexec,0)+1
+                if _rexec=='yes':
+                    _es['relax_exec_head:'+_iid]=_es.get('relax_exec_head:'+_iid,0)+1
+            _es['fam:'+(_grp or 'none')+':'+('fail' if not _concrete else 'pass')]= \
+                _es.get('fam:'+(_grp or 'none')+':'+('fail' if not _concrete else 'pass'),0)+1
         # ---- 双核整圈 Go 快路径(第五刀,opt-in) ----
         # 一次 cgo 调用在 Go 内跑一段 select+execute+advance 安全前缀,逐步观测
         # 喂回 trace;边界(idle/访存/hook/IRQ/Blocked)交回下面逐步慢路径。
@@ -3313,6 +3375,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     if os.environ.get('H3S_DUAL_KINDS'):
                         gosim_dual_kinds[kind]=gosim_dual_kinds.get(kind,0)+1
                         gosim_dual_lens[len(steps)]=gosim_dual_lens.get(len(steps),0)+1
+                        gosim_entry_stats['kindlens:%s:%d'%(kind,len(steps))]= \
+                            gosim_entry_stats.get('kindlens:%s:%d'%(kind,len(steps)),0)+1
                         if kind=='memfault':
                             _ek=(res.get('err') or {}).get('kind','?')
                             gosim_dual_kinds['memfault:'+str(_ek)]=gosim_dual_kinds.get('memfault:'+str(_ek),0)+1
