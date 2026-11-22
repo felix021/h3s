@@ -32,6 +32,20 @@ var dualStoreAdapter = map[string]bool{
 	"st.w.idxs": true, "st.w.sp": true, "st.w.idx": true,
 }
 
+// dualDirectFlowAllowed is the whitelist of plain direct call/return and the
+// flag-preserving csync the dual loop executes byte-for-byte against Python.
+// call.s/l/xl write RETS to the return address (pc+size) and jump to the
+// branch target (modelCall's retsv + exitv, applied by step1); rts jumps to
+// the concrete RETS register; csync only carries the flags forward (upstream
+// k2 model: {"flags": fl}). The task-stack forms (pop.pc*/push.rets*) and the
+// indirect call.r / conditional rtss stay rejected via batchUnsafe — those are
+// the abstract-value / timing-sensitive boundaries this cut does not touch.
+var dualDirectFlowAllowed = map[string]bool{
+	"call.s": true, "call.l": true, "call.xl": true,
+	"rts":   true,
+	"csync": true,
+}
+
 // dualIfBlockAllowed is the whitelist of register/immediate-compare if-block
 // openers the dual loop executes. Each is a pure condition (eq/ne/ge/lt/gt/le
 // over concrete GPRs, or a GPR-vs-immediate mask in the and.rr/and.rm forms)
@@ -74,7 +88,7 @@ func (c *CPU) safeDual(im *insnMeta) bool {
 	if strings.HasSuffix(im.id, ".p") {
 		return false
 	}
-	if dualAllowed[im.id] {
+	if dualAllowed[im.id] || dualDirectFlowAllowed[im.id] {
 		return true
 	}
 	if batchUnsafe[im.id] {
