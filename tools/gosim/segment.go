@@ -37,6 +37,7 @@ const (
 	BatchOther   = 4 // unexpected error while stepping
 	BatchFetch   = 5 // fetch pc outside [fetchLo, fetchHi)
 	BatchMemFault = 6 // strict-memory fault while executing (hand back to Python)
+	BatchAbstract = 7 // a tagged (abstract) value would be consumed (hand back)
 )
 
 // MemWrite is one whole-word store observed during a step.

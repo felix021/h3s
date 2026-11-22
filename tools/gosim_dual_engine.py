@@ -91,6 +91,26 @@ def cores_concrete(c0, c1):
     return ok(c0) and ok(c1)
 
 
+def cores_head_ok(c0, c1):
+    """Both cores can enter the Go dual loop with abstract register tags: pc and
+    icfg must be concrete (select needs a decodable pc), every R slot must be
+    either a concrete int or an UnknownWord/IcfgValue the bridge round-trips
+    losslessly, and neither core may be mid-instruction (repeat/after_then in
+    flight — the Go loop yields immediately on RepeatActive, so the fill would be
+    a wasted cgo call). Anything else (GpioOutValue, bool, ...) refuses loudly.
+    Go is still the execution authority — it hands a step back the moment an
+    actual numeric input is tagged, so the per-step gate lives in RunDualStepCore."""
+    def ok(c):
+        return (c is not None
+                and type(c.pc) is int
+                and type(getattr(c, 'icfg', 0)) is int
+                and getattr(c, 'repeat', None) is None
+                and getattr(c, 'after_then', None) is None
+                and all(type(v) is int or isinstance(v, (UnknownWord, IcfgValue))
+                        for v in c.R))
+    return ok(c0) and ok(c1)
+
+
 def encode_reg_tag(v):
     """One GPR slot -> the Go RegTag shape, or None for a concrete int.
 
@@ -246,13 +266,23 @@ def machine_state(m):
         if cid not in m.cores:
             return None
         c = m.cores[cid]
-        insn, _, size = c.decode(c.pc)
+        # A core can sit at a pc Python cannot decode right now (e.g. flash
+        # fetch while SFC is disabled); the select twin only needs insn_id/
+        # insn_size for the two idle-wake helpers, so an undecodable pc is
+        # reported as ''/0 exactly like predict_select and the Go syncMachineCores
+        # fallback. The selected core's execution is still guarded by
+        # _dual_head_ok, which refuses an undecodable head.
+        try:
+            insn, _, size = c.decode(c.pc)
+            insn_id, insn_size = insn.id, size
+        except Exception:
+            insn_id, insn_size = '', 0
         icfg, icfg_mask, icfg_known = _icfg_bits(c)
         return {
             'id': c.core_id, 'pc': c.pc, 'steps': c.steps,
             'icfg': icfg, 'icfg_known': icfg_known,
             'icfg_known_mask': icfg_mask,
-            'insn_id': insn.id, 'insn_size': size,
+            'insn_id': insn_id, 'insn_size': insn_size,
         }
 
     hw = m.hardware
@@ -691,6 +721,12 @@ class DualCoreEngine:
     def cores_concrete(c0, c1):
         """Both cores strictly concrete (pc/icfg/R all exact ints)."""
         return cores_concrete(c0, c1)
+
+    @staticmethod
+    def cores_head_ok(c0, c1):
+        """Both cores can enter the Go dual loop (pc/icfg concrete; R concrete or
+        UnknownWord/IcfgValue tags)."""
+        return cores_head_ok(c0, c1)
 
     def snapshot(self, machine, hardware, c0, c1):
         """Snapshot the live state into the Go world (cores / select / periph /

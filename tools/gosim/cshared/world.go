@@ -333,6 +333,7 @@ type loopStepJSON struct {
 	NextPC  uint32             `json:"next_pc"`
 	Flags   uint8              `json:"flags"`
 	R       [16]uint32         `json:"r"`
+	RT      [16]*gosim.RegTag  `json:"rt"`
 	Mem     []loopMemWriteJSON `json:"mem,omitempty"`
 	Insn    string             `json:"insn,omitempty"`
 	Adapter string             `json:"adapter,omitempty"`
@@ -349,6 +350,7 @@ func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
 	for _, s := range res.Steps {
 		js := loopStepJSON{
 			Core: s.Core, PC: s.PC, NextPC: s.NextPC, Flags: s.Flags, R: s.R,
+			RT:      s.RT,
 			Insn:    hexBytes(s.Insn),
 			Adapter: s.Adapter,
 		}
