@@ -993,6 +993,11 @@ FEATURES = (
             'D2-a 最短闭环(路 D2A/sim-d2a;接管 D1 窗口场景 post_stop 槽:'
             'post 入队落盘→S19 生产消费分发→handler 生产调用+二次输入循环健康;'
             'd2a-loop-taskbook §1-3)'),
+    Feature('f2_l1_loop', 'probe_only', ('d1_acceptance',), False, None,
+            'F2 候选 L1 双击 open/close 闭环(路 F2L1;接管 D1 窗口场景 post_stop 槽:'
+            '双击 0x10a04→S19→cmd 7→KEY7 桩 0x06025404→toggle 桩 0x060e3418→'
+            'open/close handler→槽 0x125574 0→stream→0;两轮双击循环健康;'
+            '候选镜像由 load_f2 装载,不改官方 UFW)'),
 )
 
 # 两个共享栈场景(analyze_image_trace.SCENARIOS 同名;probe 场景名在

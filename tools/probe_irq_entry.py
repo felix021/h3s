@@ -5458,6 +5458,350 @@ def make_d2a_loop_post_stop(app):
     return post_stop
 
 
+# ---------------------------------------------------------------------------
+# 路 F2L1:F2 候选 L1 双击 open/close 闭环(F2 由 load_f2 装载,不走官方 UFW)。
+# 世界起点=D2-a 同款 D1 窗口世界(S19 park 稳态,window_complete 停点)。机制
+# 与 D2-a 相同(post 后交还世界→恢复推进→S19 消费),差别仅三点:
+#   ① 手势=双击(短按 13→释放 11→短按 13→释放 25,post 0x10a04),动作=KEY7 桩
+#      (0x06025404→li.u32 r6=0x060e3418;goto r6)跳进 toggle 桩 0x060e3418;
+#   ② toggle 桩读槽 0x125574:0→open(0x060e3074)/非 0→close(0x060e31a8);
+#   ③ 观察面=槽 0→stream→0 两轮变化 + open 成功门(桩尾无条件 r4=1 不能证明
+#      open 成功;open 失败臂观测不调用 apply_mpo/apply_eq)。
+# F2 构建报告实值:KEY7 0x06025404→0x060e3418、open=0x060e3074、close=0x060e31a8、
+# apply_mpo=0x060e324c、apply_eq=0x060e3328、槽写点 0x060e3154、槽清点 0x060e31d2。
+# ---------------------------------------------------------------------------
+F2_L1_PRESS_BEATS=13              # 双击短按拍数(route S 序列 A 同款)
+F2_L1_MID_RELEASE_BEATS=11        # 两次短按之间的释放拍数(>阈值保持点击计数 1)
+F2_L1_TAIL_RELEASE_BEATS=25       # 末次释放稳定拍数(≥20 触发点击计数消费→post 双击)
+F2_L1_PAYLOAD=0x10a04             # key10 双击(手势 4=点击计数 2+2;route S/BW 互证)
+F2_L1_MAP_TABLE=D2A_MAP_TABLE            # 映射表 0x12730C(flash 默认表 45B 装载)
+F2_L1_DEFAULT_MAP_FLASH=D2A_DEFAULT_MAP_FLASH  # flash 默认表 0x609e250
+F2_L1_KEY_HANDLER=D2A_KEY_HANDLER         # 表2[5] 按键 handler 0x060252c6(未改)
+F2_L1_KEY7_STUB=0x06025404                # cmd 7 分支体入口(F2 替换为 goto toggle 桩)
+F2_L1_TOGGLE_STUB=0x060e3418              # cmd7_toggle_l4:读槽→open/close
+F2_L1_OPEN_ENTRY=0x060e3074               # mic_effect_open 入口(lfix_hold)
+F2_L1_OPEN_SLOT_WRITE=0x060e3154          # open 成功路径 st.w [0x125574]=stream
+F2_L1_OPEN_SUCCESS_RET=0x060e3156         # open 成功返回 li.u8 r0=0
+F2_L1_OPEN_CANCEL=0x060e315a              # open 失败返回 li.neg5 r0=-22
+F2_L1_CLOSE_ENTRY=0x060e31a8              # mic_effect_close 入口(lfix2+C2)
+F2_L1_CLOSE_SLOT_CLEAR=0x060e31d2         # close st.w [0x125574]=0
+F2_L1_TOGGLE_OPEN_CALL=0x060e342e         # toggle 桩 call open(-958)
+F2_L1_TOGGLE_OPEN_CHECK=0x060e3432        # toggle 桩 bnez r0(open 失败跳 done)
+F2_L1_TOGGLE_APPLY_MPO=0x060e3434         # toggle 桩 call apply_mpo(open 成功才到)
+F2_L1_TOGGLE_APPLY_EQ=0x060e3438          # toggle 桩 call apply_eq(open 成功才到)
+F2_L1_TOGGLE_CLOSE_CALL=0x060e343e        # toggle 桩 call close(-666)
+F2_L1_TOGGLE_DONE=0x060e3442              # toggle 桩 r4=1(已处理)
+F2_L1_SLOT=0x125574                       # HA 状态槽(open 写 stream/close 清 0)
+F2_L1_APPLY_MPO_ENTRY=0x060e324c          # apply_mpo 入口(key30;L3 消费)
+F2_L1_APPLY_EQ_ENTRY=0x060e3328           # apply_eq 入口(key31;L4 消费)
+# F2 L1 观察锚(S19 七段 + F2 专属 KEY7/toggle/open/close/apply)
+F2_L1_ANCHORS=(D2A_POST_SITE,D2A_ENQUEUE,D2A_LOOP_HEAD,D2A_GET_EVENT,D2A_ID_READ,
+               D2A_BIT20,D2A_SPECIAL_PATH,D2A_TABLE2_WALK,D2A_INDIRECT_CALL,
+               D2A_HANDLER_RET,D2A_EVENT_DONE,D2A_PEND_FACE,D2A_KEY_HANDLER,
+               F2_L1_KEY7_STUB,F2_L1_TOGGLE_STUB,F2_L1_OPEN_ENTRY,
+               F2_L1_OPEN_SLOT_WRITE,F2_L1_OPEN_CANCEL,F2_L1_CLOSE_ENTRY,
+               F2_L1_CLOSE_SLOT_CLEAR,F2_L1_TOGGLE_OPEN_CALL,
+               F2_L1_TOGGLE_OPEN_CHECK,F2_L1_TOGGLE_APPLY_MPO,
+               F2_L1_TOGGLE_APPLY_EQ,F2_L1_TOGGLE_CLOSE_CALL,
+               F2_L1_TOGGLE_DONE,F2_L1_APPLY_MPO_ENTRY,F2_L1_APPLY_EQ_ENTRY)
+
+
+def make_f2_l1_loop_post_stop(app):
+    """构造 F2 候选 L1 双击 open/close 闭环场景的 post_stop 回调(路 F2L1)。
+
+    在 D1 窗口世界(window_complete 停点,S19 park 稳态)上:
+      ① finalize+detach D1 观察器(保住 D1 verdicts);
+      ② world_prep:config 523 分档器 fixture+映射表 flash 默认表 45B+键通道
+         注册+app_core 任务查找+模式查询(与 D2-a 同款合成输入,如实标注);
+      ③ 两轮双击(round1=open:槽 0→stream;round2=close:槽 stream→0):每轮=直调
+         扫描回调(档 A 拍驱动)→post 0x10a04 真实入队→d2a_resume_steps 恢复推进
+         →S19 消费分发→cmd 7→KEY7 桩→toggle 桩→open/close handler→回 pend。
+         两轮间不重置识别状态/不清队列(保持同一世界)。
+    假成功检查:桩尾无条件 r4=1,「已处理」不证明 open 成功——open 成功必须观测
+      open 槽写点 0x060e3154 命中 + toggle 桩 apply_mpo 调用点 0x060e3434 命中;
+      open 失败臂(0x060e315a)只观测槽仍为 0 且 0x060e3434/0x060e3438 不命中。
+    """
+    d1_finalize=make_d1_window_post_stop()
+    ctx_blob=app[0x60C3380-ENTRY:0x60C3380-ENTRY+24]
+
+    def read_ram(cpu,address,size):
+        try:
+            return int.from_bytes(cpu.mem.read(address,size),'little')
+        except Blocked:
+            return None
+
+    def write_ram(cpu,address,data):
+        cpu.mem.write(address,data)
+
+    def queue_face(cpu,task):
+        if not isinstance(task,int):
+            return None
+        cnt=read_ram(cpu,task+D2A_TASK_CNT,2)
+        wcur=read_ram(cpu,task+D2A_TASK_WCUR,2)
+        rcur=read_ram(cpu,task+D2A_TASK_RCUR,2)
+        cap=read_ram(cpu,task+D2A_TASK_CAP,2)
+        buf=read_ram(cpu,task+D2A_TASK_BUF,4)
+        tail=[]
+        if isinstance(buf,int) and isinstance(cap,int) and isinstance(wcur,int) and cap>0:
+            for k in (3,2,1):
+                tail.append(read_ram(cpu,buf+4*((wcur-k)%cap),4))
+        return {'task':hex(task),'count':cnt,'write_cursor':wcur,
+                'read_cursor':rcur,'capacity':cap,'buffer':hex(buf) if buf else None,
+                'tail_words':[hex(w) if isinstance(w,int) else None for w in tail]}
+
+    def slot_face(cpu):
+        return {'slot':read_ram(cpu,F2_L1_SLOT,4),
+                'hold_flag':read_ram(cpu,0x125578,1)}
+
+    def sample(cpu,machine,hardware,res_value,label,log):
+        hardware.fd31_adc_con.res_named_values[KEY_CHAIN_CHANNEL_WORD]=res_value
+        value,steps,_=key_chain_direct_call(cpu,machine,0x60116D0,[KEY_CHAIN_CHANNEL_WORD])
+        entry={'phase':label,'res_fixture':res_value,'sampled_value':value,'steps':steps}
+        if value!=res_value:
+            raise Blocked('f2_l1_sample_mismatch',**entry)
+        slot=None
+        for idx in range(11):
+            if read_ram(cpu,0x127D08+16*idx+4,4)==KEY_CHAIN_CHANNEL_WORD:
+                slot=idx;break
+        if slot is None:
+            raise Blocked('f2_l1_queue_slot_missing',**entry)
+        write_ram(cpu,KEY_CHAIN_ADC_QUEUE_VALUE_BASE+16*slot,struct.pack('<H',value))
+        entry['queue_slot']=slot
+        log.append(entry)
+        return value
+
+    def scan_beat(cpu,machine,tick,beat_states):
+        write_ram(cpu,KEY_CHAIN_SYS_TICK,struct.pack('<I',tick))
+        _,steps,posts=key_chain_direct_call(cpu,machine,0x6001944,[KEY_CHAIN_REGISTRY_ENTRY],
+                                            watch=(D2A_POST_SITE,))
+        beat_states.append({
+            'click_count':read_ram(cpu,KEY_CHAIN_CLICK_COUNT,1),
+            'tracked_key':read_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,1),
+            'post_payloads':[p['args'][0] for p in posts if p['pc']==hex(D2A_POST_SITE)]})
+        return steps,posts
+
+    def run_double_click(cpu,machine,hardware,label,reset,beat_states,seq_log):
+        """一次双击:短按 13 拍+释放 11 拍+短按 13 拍+释放 25 拍;post 0x10a04
+        在末段释放稳定段装载(0x6001b5e)。reset=True 时先重置 ctx/跟踪键/点击
+        计数(round1 世界未知扫描态);round2 不重置(保持同一世界)。"""
+        if reset:
+            write_ram(cpu,0x124888,ctx_blob)
+            write_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,bytes([255]))
+            write_ram(cpu,KEY_CHAIN_CLICK_COUNT,bytes([0]))
+            beat_states.append({'sequence_reset':True,'label':label})
+        else:
+            beat_states.append({'sequence_reset':False,'label':label,
+                                'pre_click_count':read_ram(cpu,KEY_CHAIN_CLICK_COUNT,1),
+                                'pre_tracked_key':read_ram(cpu,KEY_CHAIN_GESTURE_STRUCT,1)})
+        tick=read_ram(cpu,KEY_CHAIN_SYS_TICK,4)
+        if tick is None:tick=0
+        posts=[]
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_PRESSED,f'{label}_press1',seq_log)
+        for _ in range(F2_L1_PRESS_BEATS):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick,beat_states)
+            posts.extend(beat_posts)
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_RELEASE,f'{label}_release1',seq_log)
+        for _ in range(F2_L1_MID_RELEASE_BEATS):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick,beat_states)
+            posts.extend(beat_posts)
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_PRESSED,f'{label}_press2',seq_log)
+        for _ in range(F2_L1_PRESS_BEATS):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick,beat_states)
+            posts.extend(beat_posts)
+        sample(cpu,machine,hardware,KEY_CHAIN_RES_RELEASE,f'{label}_release2',seq_log)
+        for _ in range(F2_L1_TAIL_RELEASE_BEATS):
+            tick+=KEY_CHAIN_TICKS_PER_SCAN
+            _,beat_posts=scan_beat(cpu,machine,tick,beat_states)
+            posts.extend(beat_posts)
+        return posts
+
+    def anchor_counts(hits):
+        out={hex(pc):0 for pc in F2_L1_ANCHORS}
+        for h in hits:
+            if h['pc'] in out:
+                out[h['pc']]+=1
+        return out
+
+    def post_stop(machine,hardware,cpu,stop=None):
+        result=d1_finalize(machine,hardware,cpu,stop=stop) or {}
+        f2l1={'banner':{
+            'world':'F2 candidate L1 double-click loop (D1 acceptance window park steady state, '
+                   'window_complete stop; S19 running, app_core parked in get-event pend)',
+            'candidate':'F2 lfix2 (A1+B1+B2+A3 + C1 two-state table + C2 close ANC restore)',
+            'candidate_ufw_sha':'7e972bf00484920bce0a41b1653d94f5c151455947b08fe3b0fb67e3d3c68348',
+            'key7_window':'0x06025404 -> 0x060e3418 (li.u32 r6; goto r6)',
+            'synthetic_inputs':[
+                'config 523 分档器对象 fixture(synthetic-not-measured;real config 523 '
+                'in bank-B record area, erased world bypasses the key chain)',
+                '映射表=flash 默认表 45B@0x609e250 装入 0x12730C(synthetic-load-of-real-bytes)',
+                'RES 档位值 700/400(分压网络两种稳态代表值,EMA 0.2/0.8 稳态假设)',
+                '一拍=一个 sys_timer tick=10ms(显式假设)'],
+            'mechanism':'两轮双击每轮只入队一个 0x10a04;S19 从 pend 醒来消费注入事件;'
+                        'round1=open(槽 0→stream),round2=close(槽 stream→0),两轮间同一世界'}}
+        beat_states=[]
+        seq_log=[]
+        rounds=[]
+        overall_pass=True
+        try:
+            if machine is None or hardware is None:
+                raise Blocked('f2_l1_requires_dualcore_world')
+            if cpu.core_id!=0:
+                raise Blocked('f2_l1_stopped_on_cpu1')
+            # ② world_prep(与 D2-a 同款)
+            write_ram(cpu,KEY_CHAIN_SENSOR_OBJECT,key_chain_sensor_object_bytes())
+            write_ram(cpu,KEY_CHAIN_OBJECT_POINTER,struct.pack('<I',KEY_CHAIN_SENSOR_OBJECT))
+            try:
+                default_map=bytes(app[D2A_DEFAULT_MAP_FLASH-ENTRY:D2A_DEFAULT_MAP_FLASH-ENTRY+45])
+                write_ram(cpu,D2A_MAP_TABLE,default_map)
+                map_note='default map 45B loaded from flash 0x609e250'
+            except Exception as e:
+                default_map=None
+                map_note='default map load failed: %s' % e
+            _,reg_steps,_=key_chain_direct_call(cpu,machine,0x6001230,[KEY_CHAIN_CHANNEL_WORD])
+            app_core,_,_=key_chain_direct_call(cpu,machine,D2A_TASK_LOOKUP,[D2A_POST_NAME_ADDR])
+            mode,_,_=key_chain_direct_call(cpu,machine,0x6008170,[])
+            f2l1['world_prep']={
+                'sensor_object':{'address':hex(KEY_CHAIN_SENSOR_OBJECT),
+                                 'pointer_slot':hex(KEY_CHAIN_OBJECT_POINTER)},
+                'map_table':{'address':hex(D2A_MAP_TABLE),'note':map_note,
+                             'bytes':list(default_map) if default_map else None},
+                'adc_add_sample_ch_steps':reg_steps,
+                'app_core_task':hex(app_core) if isinstance(app_core,int) else app_core,
+                'mode_query':mode,
+                'slot_before':slot_face(cpu),
+                'queue_before':queue_face(cpu,app_core)}
+            for rnd,label in ((1,'first_double_click'),(2,'second_double_click')):
+                pre_queue=queue_face(cpu,app_core)
+                pre_slot=slot_face(cpu)
+                posts=run_double_click(cpu,machine,hardware,label,reset=(rnd==1),
+                                       beat_states=beat_states,seq_log=seq_log)
+                post_queue=queue_face(cpu,app_core)
+                header_word=(0x10000C<<8)|3
+                tail=post_queue.get('tail_words') or []
+                landed=(len(tail)>=3
+                        and tail[0]==hex(header_word)
+                        and tail[1]==hex(F2_L1_PAYLOAD)
+                        and tail[2]==hex(0))
+                post_payloads=[p['args'][0] for p in posts if p['pc']==hex(D2A_POST_SITE)]
+                resume=d2a_resume_steps(machine,hardware,watch=F2_L1_ANCHORS,
+                                        stop_after_consume=True,max_steps=12_000_000)
+                hits=resume['watch_hits']
+                counts=anchor_counts(hits)
+                if counts[hex(D2A_KEY_HANDLER)]==0:
+                    raise Blocked('f2_l1_scheduler_no_app_core_switch',
+                                  round=rnd,label=label,steps=resume['steps'],
+                                  stop=resume['stop'])
+                key_call_hit=next((h for h in hits if h['pc']==hex(D2A_INDIRECT_CALL)
+                                   and h['r'][1]==hex(F2_L1_KEY_HANDLER)),None)
+                key7_hit=next((h for h in hits if h['pc']==hex(F2_L1_KEY7_STUB)),None)
+                toggle_hit=next((h for h in hits if h['pc']==hex(F2_L1_TOGGLE_STUB)),None)
+                open_call_hit=next((h for h in hits if h['pc']==hex(F2_L1_TOGGLE_OPEN_CALL)),None)
+                open_check_hit=next((h for h in hits if h['pc']==hex(F2_L1_TOGGLE_OPEN_CHECK)),None)
+                apply_mpo_hit=next((h for h in hits if h['pc']==hex(F2_L1_TOGGLE_APPLY_MPO)),None)
+                close_call_hit=next((h for h in hits if h['pc']==hex(F2_L1_TOGGLE_CLOSE_CALL)),None)
+                open_slot_write_hit=next((h for h in hits if h['pc']==hex(F2_L1_OPEN_SLOT_WRITE)),None)
+                open_cancel_hit=next((h for h in hits if h['pc']==hex(F2_L1_OPEN_CANCEL)),None)
+                close_slot_clear_hit=next((h for h in hits if h['pc']==hex(F2_L1_CLOSE_SLOT_CLEAR)),None)
+                bit20_hit=next((h for h in hits if h['pc']==hex(D2A_BIT20)),None)
+                end_queue=queue_face(cpu,app_core)
+                end_slot=slot_face(cpu)
+                # open 成功门(假成功检查):桩尾无条件 r4=1,「已处理」不证明 open
+                # 成功。open 成功必须同时观测 open 槽写点 0x060e3154 + toggle 桩
+                # apply_mpo 调用点 0x060e3434(open 失败臂 bnez 跳 done,不调 apply_*)。
+                slot_after=end_slot.get('slot')
+                if rnd==1:
+                    slot_open=bool(open_slot_write_hit and slot_after is not None and slot_after!=0)
+                    open_ok=bool(apply_mpo_hit)  # open 返回 0 才调 apply_mpo
+                    open_failed=bool(open_cancel_hit) and not bool(open_slot_write_hit)
+                else:
+                    slot_open=True
+                    open_ok=True
+                    open_failed=False
+                # 分发/动作层共同断言(两轮都必须 True)
+                checks={
+                    'post_payload_0x10a04':bool(post_payloads
+                                                and post_payloads[-1]==hex(F2_L1_PAYLOAD)),
+                    'ring_enqueue_landed':bool(landed),
+                    'id_read_anchor_reached':counts[hex(D2A_ID_READ)]>=1,
+                    'id_value_0x10000c':bool(bit20_hit and bit20_hit['r'][0]==hex(0x10000C)),
+                    'special_path_taken':counts[hex(D2A_SPECIAL_PATH)]>=1,
+                    'table2_walk_ran':counts[hex(D2A_TABLE2_WALK)]>=1,
+                    'indirect_call_handler_0x60252c6':bool(key_call_hit is not None),
+                    'key_handler_called':counts[hex(D2A_KEY_HANDLER)]>=1,
+                    'key7_stub_reached':counts[hex(F2_L1_KEY7_STUB)]>=1,
+                    'toggle_stub_reached':counts[hex(F2_L1_TOGGLE_STUB)]>=1,
+                    'handler_returned_event_done':counts[hex(D2A_EVENT_DONE)]>=1,
+                    'repend_after_consume':counts[hex(D2A_PEND_FACE)]>=1,
+                    'queue_empty_after':bool(end_queue and end_queue.get('count')==0),
+                }
+                if rnd==1:
+                    # round1=open:槽 0→stream;open 成功门=槽写点+apply_mpo 调用点
+                    # (桩尾无条件 r4=1 不证明 open 成功;失败臂 bnez 跳 done 不调 apply_*)
+                    checks['open_call_taken']=bool(open_call_hit is not None)
+                    checks['open_slot_write_hit']=counts[hex(F2_L1_OPEN_SLOT_WRITE)]>=1
+                    checks['apply_mpo_called']=counts[hex(F2_L1_TOGGLE_APPLY_MPO)]>=1
+                    checks['slot_after_open_nonzero']=slot_open
+                    checks['open_returned_zero']=open_ok
+                else:
+                    # round2=close:槽 stream→0;close 幂等早退或清槽都要求槽终值 0
+                    checks['close_call_taken']=bool(close_call_hit is not None)
+                    checks['close_slot_clear_hit']=counts[hex(F2_L1_CLOSE_SLOT_CLEAR)]>=1
+                    checks['slot_after_close_zero']=(slot_after==0)
+                round_pass=all(checks.values())
+                overall_pass=overall_pass and round_pass
+                rounds.append({'round':rnd,'label':label,
+                               'post_payloads':[hex(p) if isinstance(p,int) else p
+                                                for p in post_payloads],
+                               'pre_queue':pre_queue,'post_queue':post_queue,'end_queue':end_queue,
+                               'pre_slot':pre_slot,'end_slot':end_slot,
+                               'key7_stub_r6':(key7_hit['r'][6] if key7_hit else None),
+                               'toggle_open_check_r0':(open_check_hit['r'][0] if open_check_hit else None),
+                               'open_slot_write_r4':(open_slot_write_hit['r'][4] if open_slot_write_hit else None),
+                               # 负形观察(不算断言,供假成功审查)
+                               'open_cancel_hit':counts[hex(F2_L1_OPEN_CANCEL)]>=1,
+                               'close_call_taken_obs':bool(close_call_hit is not None),
+                               'apply_eq_called_obs':counts[hex(F2_L1_TOGGLE_APPLY_EQ)]>=1,
+                               'resume':resume,
+                               'anchor_counts':counts,'checks':checks,'pass':round_pass})
+                if resume['stop'] is not None:
+                    # 恢复推进撞墙(诚实停):open/close 载荷内部的未建模面(如 copex.ppi
+                    # 模式 16=HEARING_AID 场景)。记墙并停跑后续轮(世界已停在墙内,下一
+                    # 轮 resume 只会立刻重撞同一墙)——BLOCKED 而非 FAIL。
+                    f2l1['wall']={'kind':'f2_l1_resume_wall','round':rnd,'label':label,
+                                  'stop':resume['stop']}
+                    blocked=True
+                    break
+            else:
+                blocked=False
+            f2l1['beat_states']=beat_states
+            f2l1['res_fixture_switches']=seq_log
+            f2l1['rounds']=rounds
+            f2l1['summary']={'pass':overall_pass and not blocked,
+                            'two_rounds':(not blocked) and len(rounds)==2,
+                            'verdict':('BLOCKED' if blocked else
+                                       ('PASS' if overall_pass else 'FAIL'))}
+        except Blocked as e:
+            f2l1['beat_states']=beat_states
+            f2l1['res_fixture_switches']=seq_log
+            f2l1['rounds']=rounds
+            f2l1['wall']={'kind':e.details.get('kind'),'note':e.details.get('note'),
+                         'stop':e.details}
+            f2l1['summary']={'pass':False,'verdict':'BLOCKED'}
+        except Exception as e:
+            f2l1['beat_states']=beat_states
+            f2l1['res_fixture_switches']=seq_log
+            f2l1['rounds']=rounds
+            f2l1['wall']={'kind':'upstream_simulator_failure',
+                         'error_type':type(e).__name__,'message':str(e)[:300]}
+            f2l1['summary']={'pass':False,'verdict':'BLOCKED'}
+        result['f2_l1_loop']=f2l1
+        return result
+    return post_stop
+
+
 # 0xfd1c00 在 SFC 挂起/恢复周期里按位的 RMW 记录；前三条来自挂起尾与恢复头，
 # 中间的 0x4000 是 0x12ba38 轮询返回后的 PLL 状态位写入，末尾两条是恢复尾的清位。
 SFC_RESUME_OPERATIONS=(
@@ -5572,6 +5916,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              post_stop=None,
              d1_acceptance=False,d1_window_steps=None,d1_post_inject=None,
              d2a_loop=False,
+             f2_l1_loop=False,
              flash_image_bytes=None,readonly=(),
              snapshot=None):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
@@ -7886,11 +8231,18 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
             # 路 D2A:D2-a 最短闭环接管 D1 窗口场景的 post_stop 槽(post_stop 内部先
             # finalize+detach D1 观察器保住 D1 verdicts,再做按键注入+恢复推进)。
             post_stop=make_d2a_loop_post_stop(app)
+        elif f2_l1_loop:
+            # 路 F2L1:F2 候选 L1 双击闭环接管 D1 窗口场景的 post_stop 槽(与 D2-a
+            # 同机制、独立实现;双击 0x10a04→cmd 7→KEY7 桩→toggle 桩→open/close)。
+            post_stop=make_f2_l1_loop_post_stop(app)
         else:
             post_stop=make_d1_window_post_stop()
     elif d2a_loop:
         raise Blocked('d2a_loop_requires_d1_window',
                       note='the D2-a loop runs in the D1 acceptance window park world')
+    elif f2_l1_loop:
+        raise Blocked('f2_l1_loop_requires_d1_window',
+                      note='the F2 L1 loop runs in the D1 acceptance window park world')
     return dual_case(module,app,header,rom,name,abstract=True,readonly=readonly,
                      machine_options=machine_options,options=options,budget=budget,
                      extra_diagnostics=extra or None,extra_regions=p11_regions+eq_regions,
