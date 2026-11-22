@@ -989,6 +989,10 @@ FEATURES = (
     Feature('d1_post_inject', 'probe_only', ('d1_acceptance',), True, None,
             "park 后事件注入变体('s18_18' 直调 0x6000cba,显式合成假设,默认关;"
             '行为实现归 PR-4)'),
+    Feature('d2a_loop', 'probe_only', ('d1_acceptance',), False, None,
+            'D2-a 最短闭环(路 D2A/sim-d2a;接管 D1 窗口场景 post_stop 槽:'
+            'post 入队落盘→S19 生产消费分发→handler 生产调用+二次输入循环健康;'
+            'd2a-loop-taskbook §1-3)'),
 )
 
 # 两个共享栈场景(analyze_image_trace.SCENARIOS 同名;probe 场景名在
