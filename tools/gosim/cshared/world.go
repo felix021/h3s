@@ -205,6 +205,8 @@ type coreStateJSON struct {
 	ICFGBit9Updates  int                `json:"icfg_bit9_updates"`
 	Steps            uint64             `json:"steps"`
 	RepeatActive     bool               `json:"repeat_active"`
+	RepeatInFlight   bool               `json:"repeat_in_flight"`
+	AfterThen        *gosim.AfterThenState `json:"after_then,omitempty"`
 	USP              *uint32            `json:"usp"`
 	SSP              *uint32            `json:"ssp"`
 	RETI             *uint32            `json:"reti"`
@@ -242,6 +244,8 @@ func coreFromJSON(s *coreStateJSON) *gosim.Core {
 		ICFGBit9Updates:  s.ICFGBit9Updates,
 		Steps:            s.Steps,
 		RepeatActive:     s.RepeatActive,
+		RepeatInFlight:   s.RepeatInFlight,
+		AfterThen:        s.AfterThen,
 		USP:              s.USP,
 		SSP:              s.SSP,
 		RETI:             s.RETI,
@@ -289,6 +293,8 @@ func coreToJSON(c *gosim.Core) *coreStateJSON {
 		ICFGBit9Updates:  c.ICFGBit9Updates,
 		Steps:            c.Steps,
 		RepeatActive:     c.RepeatActive,
+		RepeatInFlight:   c.RepeatInFlight,
+		AfterThen:        c.AfterThen,
 		USP:              c.USP,
 		SSP:              c.SSP,
 		RETI:             c.RETI,

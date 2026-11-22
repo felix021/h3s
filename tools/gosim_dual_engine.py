@@ -95,17 +95,18 @@ def cores_head_ok(c0, c1):
     """Both cores can enter the Go dual loop with abstract register tags: pc and
     icfg must be concrete (select needs a decodable pc), every R slot must be
     either a concrete int or an UnknownWord/IcfgValue the bridge round-trips
-    losslessly, and neither core may be mid-instruction (repeat/after_then in
-    flight — the Go loop yields immediately on RepeatActive, so the fill would be
-    a wasted cgo call). Anything else (GpioOutValue, bool, ...) refuses loudly.
-    Go is still the execution authority — it hands a step back the moment an
-    actual numeric input is tagged, so the per-step gate lives in RunDualStepCore."""
+    losslessly, and neither core may be mid-repeat (the Go loop yields
+    immediately on repeat active, so the fill would be a wasted cgo call). An
+    open if-block (after_then) is now carried by the Go loop (the if.* family is
+    migrated), so it no longer refuses the entry. Anything else (GpioOutValue,
+    bool, ...) refuses loudly. Go is still the execution authority — it hands a
+    step back the moment an actual numeric input is tagged, so the per-step gate
+    lives in RunDualStepCore."""
     def ok(c):
         return (c is not None
                 and type(c.pc) is int
                 and type(getattr(c, 'icfg', 0)) is int
                 and getattr(c, 'repeat', None) is None
-                and getattr(c, 'after_then', None) is None
                 and all(type(v) is int or isinstance(v, (UnknownWord, IcfgValue))
                         for v in c.R))
     return ok(c0) and ok(c1)
@@ -261,6 +262,12 @@ def core_state(c):
         'steps': c.steps,
         'repeat_active': (getattr(c, 'repeat', None) is not None
                           or getattr(c, 'after_then', None) is not None),
+        # repeat_in_flight is repeat-only (the loop-entry yield); after_then is
+        # the in-flight if-block state the Go loop now persists and round-trips
+        # (mirrors cpu.after_then == [left, elseN]).
+        'repeat_in_flight': getattr(c, 'repeat', None) is not None,
+        'after_then': (None if getattr(c, 'after_then', None) is None else
+                       {'left': c.after_then[0], 'else': c.after_then[1]}),
         'usp': _opt_int(getattr(c, 'usp', None)),
         'ssp': _opt_int(getattr(c, 'ssp', None)),
         'reti': _opt_int(getattr(c, 'reti', None)),
@@ -491,6 +498,8 @@ def restore_core(c, gc):
     c.sp = gc['sp'] & 0xFFFFFFFF
     c.sp_known = bool(gc.get('sp_known', True))
     c.rets = gc['rets'] & 0xFFFFFFFF
+    at = gc.get('after_then')
+    c.after_then = None if at is None else [at['left'], at['else']]
     icfg = gc.get('icfg', 0) & 0xFFFFFFFF
     st = getattr(c, 'icfg_state', None)
     if st is not None:

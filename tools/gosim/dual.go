@@ -32,17 +32,44 @@ var dualStoreAdapter = map[string]bool{
 	"st.w.idxs": true, "st.w.sp": true, "st.w.idx": true,
 }
 
+// dualIfBlockAllowed is the whitelist of register/immediate-compare if-block
+// openers the dual loop executes. Each is a pure condition (eq/ne/ge/lt/gt/le
+// over concrete GPRs, or a GPR-vs-immediate mask in the and.rr/and.rm forms)
+// with no memory access, no flags change and no abstract output beyond the
+// (internal) block sentinel: the model evaluates the compare and the core's
+// Step machinery opens the conditional block (afterThen) exactly like Python's
+// cpu.after_then. Floating (iff.*) and the guessed and_block (if.unknown.rr.*)
+// forms stay rejected.
+var dualIfBlockAllowed = map[string]bool{
+	"if.eq.rr": true, "if.eq.ri.modimm": true, "if.eq.ri.s12": true,
+	"if.ne.rr": true, "if.ne.ri.modimm": true, "if.ne.ri.s12": true,
+	"if.ge.rr": true, "if.ge.ri.modimm": true, "if.ge.ri.s12": true,
+	"if.lt.rr": true, "if.lt.ri.modimm": true, "if.lt.ri.s12": true,
+	"if.gt.rr": true, "if.gt.ri.modimm": true, "if.gt.ri.s12": true,
+	"if.le.rr": true, "if.le.ri.modimm": true, "if.le.ri.s12": true,
+	"if.eq.and.rr": true, "if.ne.and.rr": true,
+	"if.eq.and.rm": true, "if.ne.and.rm": true,
+	"ifs.ge.rr": true, "ifs.ge.ri.modimm": true, "ifs.ge.ri.s12": true,
+	"ifs.lt.rr": true, "ifs.lt.ri.modimm": true, "ifs.lt.ri.s12": true,
+	"ifs.gt.rr": true, "ifs.gt.ri.modimm": true, "ifs.gt.ri.s12": true,
+	"ifs.le.rr": true, "ifs.le.ri.modimm": true, "ifs.le.ri.s12": true,
+}
+
 // safeDual reports whether the dual loop can execute the decoded instruction
-// exactly. It is the stage-1 safeALU contract relaxed with dualAllowed. Without
-// a strict memory bound (dmem == nil) the loop degrades to the pure segment
-// contract (safeALU), which the differential test test_dualcore_consistency.py
-// pins on the zero-handle construction.
+// exactly. It is the stage-1 safeALU contract relaxed with dualAllowed and the
+// register-compare if-block openers (dualIfBlockAllowed). Without a strict
+// memory bound (dmem == nil) the loop degrades to the pure segment contract
+// (safeALU), which the differential test test_dualcore_consistency.py pins on
+// the zero-handle construction.
 func (c *CPU) safeDual(im *insnMeta) bool {
 	if c.dmem == nil {
 		return c.safeALU(im)
 	}
-	if im.blockThen != "" || im.body != "" {
+	if im.body != "" {
 		return false
+	}
+	if im.blockThen != "" {
+		return dualIfBlockAllowed[im.id]
 	}
 	if strings.HasSuffix(im.id, ".p") {
 		return false

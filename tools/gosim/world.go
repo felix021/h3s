@@ -55,7 +55,15 @@ type Core struct {
 	ICFGWrites      int
 	ICFGBit9Updates int
 	Steps           uint64
-	RepeatActive    bool // repeat / after_then pending (yield before attempt)
+	RepeatActive    bool // repeat / after_then pending (delivery deferral + single-core yield)
+
+	// RepeatInFlight is repeat active only (rep.i/rep): the dual loop still
+	// yields before attempt. AfterThen carries the in-flight if-block state
+	// (nil = no open conditional block); the dual loop persists it across steps
+	// and hands it back to Python (cpu.after_then) so a hand-back mid-block
+	// resumes exactly.
+	RepeatInFlight bool
+	AfterThen      *AfterThenState
 
 	// M6C special registers + execution context (br28_machine deliver_*
 	// projections). A nil pointer is the Python None (unknown); an empty
@@ -68,6 +76,20 @@ type Core struct {
 	BootstrapContext bool                  // cpu.bootstrap_context
 	LastExplicitSSP  *uint32               // cpu.last_explicit_ssp (nil = unknown)
 	AudioIrqOuter    *AudioIrqOuterContext // audio IRQ68 nested outer context (nil = None)
+}
+
+// AfterThenState is the round-trippable if-block state, mirroring Python's
+// cpu.after_then == [left, elseN]: Left is the then-instructions remaining,
+// ElseN the else-instructions to skip when the then-part falls through.
+type AfterThenState struct {
+	Left  int `json:"left"`
+	ElseN int `json:"else"`
+}
+
+// midInstruction reports whether the core is mid-instruction (a repeat or an
+// open if-block in flight), the delivery-deferral predicate.
+func (c *Core) midInstruction() bool {
+	return c.RepeatActive || c.AfterThen != nil
 }
 
 // AudioIrqOuterContext mirrors the cpu.audio_irq_outer_context dict saved when
@@ -401,6 +423,9 @@ func syncCPUFromCore(cpu *CPU, c *Core) {
 	cpu.pc = c.PC
 	cpu.icfg = c.ICFG
 	cpu.afterT = nil
+	if c.AfterThen != nil {
+		cpu.afterT = &afterThen{left: c.AfterThen.Left, elseN: c.AfterThen.ElseN}
+	}
 }
 
 // syncCoreFromCPU copies the architectural state back from the CPU engine after
@@ -420,6 +445,11 @@ func syncCoreFromCPU(c *Core, cpu *CPU, writes []int) {
 	c.PC = cpu.pc
 	c.ICFG = cpu.icfg
 	c.Steps++
+	if cpu.afterT != nil {
+		c.AfterThen = &AfterThenState{Left: cpu.afterT.left, ElseN: cpu.afterT.elseN}
+	} else {
+		c.AfterThen = nil
+	}
 }
 
 // syncMachineCores copies the select-relevant view (pc / steps / icfg / decoded
@@ -498,7 +528,7 @@ func (w *World) deliveryDeferred(req *IrqReq) (bool, string) {
 	if c == nil {
 		return false, ""
 	}
-	mid := c.RepeatActive
+	mid := c.midInstruction()
 	ctx := c.ActiveContext
 	inFlight := false
 	switch req.Irq {
@@ -588,8 +618,8 @@ func (w *World) runDualCore(n int) LoopResult {
 	if w.Cores[0] == nil || w.Cores[1] == nil {
 		return yieldBeforeAttempt("dual-core world needs both cores present")
 	}
-	if w.Cores[0].RepeatActive || w.Cores[1].RepeatActive {
-		return yieldBeforeAttempt("repeat/after_then active on a core")
+	if w.Cores[0].RepeatInFlight || w.Cores[1].RepeatInFlight {
+		return yieldBeforeAttempt("repeat active on a core")
 	}
 
 	// Bind the delivery machine's cores to the world cores so delivery state

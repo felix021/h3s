@@ -3237,6 +3237,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                               'ld.bu.pin','ld.hu.pin','ld.bu.pre','ld.hu.pre',
                               'ld.bu.prer','ld.hu.prer'))
     _DUAL_ST_FORMS=frozenset(('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'))
+    # 条件分支族(刀⑦):Go 侧 dualIfBlockAllowed 的 Python 镜像。纯寄存器/立即
+    # 数比较的 if/ifs 块开启器(无访存/无 flags 变更/无抽象输出);iff.*(浮点)与
+    # if.unknown.rr.*(猜测 and_block)保持拒绝。Go 仍是执行权威,这里只是段头
+    # 省白费 fill 的优化。
+    _DUAL_IF_FORMS=frozenset((
+        'if.eq.rr','if.eq.ri.modimm','if.eq.ri.s12',
+        'if.ne.rr','if.ne.ri.modimm','if.ne.ri.s12',
+        'if.ge.rr','if.ge.ri.modimm','if.ge.ri.s12',
+        'if.lt.rr','if.lt.ri.modimm','if.lt.ri.s12',
+        'if.gt.rr','if.gt.ri.modimm','if.gt.ri.s12',
+        'if.le.rr','if.le.ri.modimm','if.le.ri.s12',
+        'if.eq.and.rr','if.ne.and.rr','if.eq.and.rm','if.ne.and.rm',
+        'ifs.ge.rr','ifs.ge.ri.modimm','ifs.ge.ri.s12',
+        'ifs.lt.rr','ifs.lt.ri.modimm','ifs.lt.ri.s12',
+        'ifs.gt.rr','ifs.gt.ri.modimm','ifs.gt.ri.s12',
+        'ifs.le.rr','ifs.le.ri.modimm','ifs.le.ri.s12'))
 
     def _dual_ld_addr(c,iid,op):
         R=c.R
@@ -3290,7 +3306,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         except Exception:
             return False
         iid=insn.id
-        if getattr(insn,'block',None) or getattr(insn,'body',''):return False
+        if getattr(insn,'body',''):return False
+        if getattr(insn,'block',None):
+            return iid in _DUAL_IF_FORMS
         if iid.endswith('.p'):return False
         try:
             if iid in _DUAL_LD_FORMS:
