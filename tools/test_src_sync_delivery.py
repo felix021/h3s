@@ -297,6 +297,43 @@ class SrcSyncCursorProgressTests(unittest.TestCase):
         self.assertEqual(h.read(0xfe2610), 0x41d30c)      # IDAT_ADR 不动
         self.assertEqual(h.read(0xfe2618), 0x41d9ac)      # ODAT_ADR 不动
 
+    def test_eof_guard_stops_commit_when_total_reached(self):
+        # 有限输入数据源(总量 64)消费完后再启动:SRC 停止提交/交付——不置
+        # pending、不发 IrqDeliveryRequest,固件 3 tick 信号量等待超时进播完。
+        h = cursor_model(jl_src_sync_cursor_total_input_samples=64)
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaises(IrqDeliveryRequest):
+            h.advance(0x300)                              # 第一笔:提交 64,置 pending
+        self.assertEqual(h.jl_src_sync_cursor.input_consumed_samples, 64)
+        self.assertEqual(h.jl_src_sync_cursor.commits, 1)
+        h.jl_src_sync_delivery.rmw_ack(ACK_PC, 'rmw.or.modimm', 0x40, 0, h)
+        # 固件重投喂(function B 再写同值+再启动),但总量已耗完——EOF 守卫拦下。
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        h.advance(0x300)                                  # 无 IrqDeliveryRequest
+        self.assertFalse(h.jl_src_sync_delivery.pending)
+        self.assertEqual(h.jl_src_sync_cursor.commits, 1)  # 不追加提交
+        self.assertEqual(h.jl_src_sync_cursor.input_consumed_samples, 64)
+        self.assertEqual(h.jl_src_sync_delivery.eof_stops, 1)
+        self.assertEqual(h.jl_src_sync_cursor.eof_stops, 1)
+
+    def test_eof_guard_inert_when_total_not_pinned(self):
+        # total_input_samples=None(数据源总量未钉实):EOF 守卫不触发,保持
+        # 无界重投喂行为(不伪造「播完」)——第二笔照样提交交付。
+        h = cursor_model()
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaises(IrqDeliveryRequest):
+            h.advance(0x300)
+        h.jl_src_sync_delivery.rmw_ack(ACK_PC, 'rmw.or.modimm', 0x40, 0, h)
+        function_b_writes(h)
+        h.jl_src_sync_delivery.note_start(h)
+        with self.assertRaises(IrqDeliveryRequest):
+            h.advance(0x300)
+        self.assertEqual(h.jl_src_sync_cursor.commits, 2)
+        self.assertEqual(h.jl_src_sync_delivery.eof_stops, 0)
+
 
 def machine(entry=True, banks=False, rti=False, repeat=False):
     return DualCoreMachine(src_sync_irq_entry=entry, src_sync_irq_entry_banks=banks,
