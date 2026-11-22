@@ -3088,7 +3088,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     dual_hazard=None
     if gosim_dual_engine is not None:
         from gosim_dual_engine import DualCoreEngine
-        dual_engine=DualCoreEngine(rom,app,ENTRY)
+        dual_engine=DualCoreEngine(rom,app,ENTRY,regions=Memory.regions,
+                                   readonly=(handoff['readonly'] if handoff else ()),
+                                   mem=c.mem)
     DUAL_CAP=256
 
     def _dual_kind(res):
@@ -3099,6 +3101,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if r.startswith('after_step hook fires'):return 'hook'
         if r.startswith('delivery deferral') or r.startswith('pending eligible irq'):return 'irq'
         if r.startswith('advance strict stop'):return 'blocked'
+        if r.startswith('strict memory fault'):return 'memfault'
         if r.startswith('fetch pc outside'):return 'fetch'
         if r.startswith('no instruction decodes'):return 'noinstr'
         if r.startswith('decoded instruction has no model'):return 'nomodel'
@@ -3106,11 +3109,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if r.startswith('select wake require'):return 'upstream'
         return 'clean'
 
-    def _dual_commit(core,pc,next_pc,flags,R):
+    def _dual_commit(core,pc,next_pc,flags,R,insn_hex=None,memwrites=None,adapter=None):
         # 一条已由 Go 执行的步的 Python 侧簿记:fetch 守卫计数、trace 行物化、
-        # 步后簿记(_post_step)与 after_step(TraceMachine 签名/钩子本体/
-        # core_icfg 刷新)。advance 已在 Go 内跑过,这里不重复。返回 trace 行。
+        # 本步有序写回放(mem.write=note_memory_write+write 事件,执行核与写前
+        # PC 对齐)、adapter 计数、步后簿记(_post_step)与 after_step(TraceMachine
+        # 签名/钩子本体/core_icfg 刷新)。advance 已在 Go 内跑过,这里不重复。
         c=machine.cores[core]
+        if hardware is not None:hardware.current_core=core
         row={'pc':hex(pc),'core':core}
         if hardware is not None and hardware.debug is not None:hardware.debug.check_fetch(pc,1,core)
         insn,raw,size=c.decode(pc)
@@ -3119,9 +3124,18 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if insn.id.endswith('.p'):extent+=c.decode(pc+size)[2]
             hardware.debug.check_fetch(pc,extent,core)
         row['instruction_id']=insn.id
-        row['bytes']=c.mem.read(pc,size).hex()
+        # 执行当时的指令字节(自改写代码下延迟重读会取到被改后的值,污染旧
+        # trace);Go 未回传(前置交回/旧观测)时退回步内实读。
+        row['bytes']=insn_hex if insn_hex is not None else c.mem.read(pc,size).hex()
         row['_pending_text']=(insn,raw)
         row['next_pc']=hex(next_pc)
+        # 有序写回放:必须在 c.pc 推进前落 mem.write,note_memory_write 才读到
+        # 写前 PC(与慢路径 exact_full_word_store 的写序一致)。
+        if memwrites:
+            for mw in memwrites:
+                c.mem.write(mw['addr'], bytes.fromhex(mw['bytes']))
+        if adapter:
+            adapters[adapter]+=1
         before_sp=c.sp
         c.pc=next_pc;c.R=list(R);c.flags=flags
         c._post_step(pc,before_sp,False)
@@ -3129,6 +3143,87 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if c.core_id==1:hardware.secondary_cpu_executed=True
             machine.after_step(c,pc)
         return row
+
+    # 双核快路径段头安全预判(纯省白费 fill 的优化,不参与正确性):只对「Go
+    # 一定能提交 ≥1 步」的指令放行 run_loop,访存到 MMIO/未映射/未对齐等一律
+    # 交回慢路径。Go 仍是执行权威,预判错只会少覆盖或白费一次 fill,不会错执行。
+    _DUAL_LD_FORMS=frozenset(('ld.w','ld.bu','ld.hu','ld.w.l','ld.w.sp','ld.w.idx','ld.w.idxs',
+                              'ld.bu.l','ld.hu.l','ld.bu.sp.l','ld.hu.sp.l',
+                              'ld.bu.idx','ld.hu.idx','ld.bu.pi','ld.hu.pi',
+                              'ld.bu.pin','ld.hu.pin','ld.bu.pre','ld.hu.pre',
+                              'ld.bu.prer','ld.hu.prer'))
+    _DUAL_ST_FORMS=frozenset(('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'))
+
+    def _dual_ld_addr(c,iid,op):
+        R=c.R
+        if iid in ('ld.w','ld.bu','ld.hu'):
+            return ((R[op['b']]+op['n'])&0xffffffff,{'ld.w':4,'ld.bu':1,'ld.hu':2}[iid])
+        if iid in ('ld.bu.sp.l','ld.hu.sp.l'):
+            return ((c.sp+op['n'])&0xffffffff,1 if iid=='ld.bu.sp.l' else 2)
+        if iid=='ld.w.sp':
+            return ((c.sp+op['n'])&0xffffffff,4)
+        if iid in ('ld.bu.l','ld.hu.l'):
+            return ((R[op['s']]+op['n'])&0xffffffff,1 if iid=='ld.bu.l' else 2)
+        if iid=='ld.w.l':
+            return ((R[op['s']]+op['n'])&0xffffffff,4)
+        if iid in ('ld.bu.idx','ld.hu.idx'):
+            return ((R[op['s']]+R[op['t']])&0xffffffff,1 if iid=='ld.bu.idx' else 2)
+        if iid=='ld.w.idx':
+            return ((R[op['s']]+R[op['t']])&0xffffffff,4)
+        if iid=='ld.w.idxs':
+            return ((R[op['s']]+(R[op['t']]<<2))&0xffffffff,4)
+        if iid in ('ld.bu.pi','ld.hu.pi','ld.bu.pin','ld.hu.pin'):
+            return (R[op['b']]&0xffffffff,1 if iid.startswith('ld.bu') else 2)
+        if iid in ('ld.bu.pre','ld.hu.pre'):
+            return ((R[op['s']]+op['n'])&0xffffffff,1 if iid.startswith('ld.bu') else 2)
+        if iid in ('ld.bu.prer','ld.hu.prer'):
+            return ((R[op['s']]+R[op['t']])&0xffffffff,1 if iid.startswith('ld.bu') else 2)
+        return None
+
+    def _dual_st_addr(c,iid,op):
+        R=c.R
+        if iid=='st.w':
+            return (R[op['b']]+op['n'])&0xffffffff
+        if iid=='st.w.modimm':
+            return (R[op['r']]+op['n'])&0xffffffff
+        if iid=='st.w.idxs':
+            return (R[op['r']]+(R[op['s']]<<2))&0xffffffff
+        if iid=='st.w.idx':
+            return (R[op['r']]+R[op['s']])&0xffffffff
+        if iid=='st.w.l':
+            return (R[op['r']]+op['n'])&0xffffffff
+        if iid=='st.w.sp':
+            return (c.sp+op['n'])&0xffffffff
+        return None
+
+    def _dual_head_ok(c):
+        # 纯优化预判,任何异常(形状猜错/字段缺失/MMU 抛 Blocked)一律视为
+        # 不安全走慢路径,绝不让预判本身把主循环带崩。
+        try:
+            insn,raw,size=c.decode(c.pc)
+        except Exception:
+            return False
+        iid=insn.id
+        if getattr(insn,'block',None) or getattr(insn,'body',''):return False
+        if iid.endswith('.p'):return False
+        try:
+            if iid in _DUAL_LD_FORMS:
+                op=module.check.operands(insn,raw)
+                r=_dual_ld_addr(c,iid,op)
+                if r is None:return False
+                addr,sz=r
+                if hardware is not None and hardware.handles(addr,sz):return False
+                return True
+            if iid in _DUAL_ST_FORMS:
+                op=module.check.operands(insn,raw)
+                addr=_dual_st_addr(c,iid,op)
+                if addr is None:return False
+                if hardware is not None and hardware.handles(addr,4):return False
+                if addr%4:return False
+                return True
+        except Exception:
+            return False
+        return _batch_safe(insn,module)
 
     for _ in range(budget):
         attempts+=1
@@ -3140,8 +3235,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                      and not diagnostics.get('stop_on_rom_return'))) \
                 and dual_engine.cores_concrete(machine.cores[0],machine.cores[1]):
             if dual_buf:
-                core,_pc,_next_pc,_flags,_R=dual_buf.pop(0)
-                row=_dual_commit(core,_pc,_next_pc,_flags,_R)
+                s=dual_buf.pop(0)
+                row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
+                                 insn_hex=s.get('insn'),memwrites=s.get('mem'),
+                                 adapter=s.get('adapter'))
                 completed+=1
                 gosim_dual_steps+=1
                 trace.append(row)
@@ -3154,9 +3251,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 if kind=='blocked':
                     # advance 严格停:末条已提交步照常物化(行+after_step 签名),
                     # 再停(advance 在 Go 内已抛 Blocked,这里直接转停点)。
-                    core=hb['core']
-                    _pc=hb['step_pc'];_next_pc=hb['stop_pc']
-                    row=_dual_commit(core,_pc,_next_pc,hb.get('flags',0),hb.get('R',[0]*16))
+                    s=hb.get('step') or {'core':hb['core'],'pc':hb['step_pc'],
+                                         'next_pc':hb.get('stop_pc',0),
+                                         'flags':hb.get('flags',0),'r':hb.get('R',[0]*16)}
+                    row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
+                                     insn_hex=s.get('insn'),memwrites=s.get('mem'),
+                                     adapter=s.get('adapter'))
                     completed+=1
                     gosim_dual_steps+=1
                     trace.append(row)
@@ -3169,9 +3269,13 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # dispatch_delivery(irq)或 advance(hook;advance 在 Go 内没跑,
                     # after_step 钩子本体由 _dual_commit 内的 machine.after_step
                     # 已真实触发)。
-                    core=hb['core']
-                    _pc=hb['step_pc'];_next_pc=hb['stop_pc']
-                    row=_dual_commit(core,_pc,_next_pc,hb.get('flags',0),hb.get('R',[0]*16))
+                    s=hb.get('step') or {'core':hb['core'],'pc':hb['step_pc'],
+                                         'next_pc':hb.get('stop_pc',0),
+                                         'flags':hb.get('flags',0),'r':hb.get('R',[0]*16)}
+                    core=s['core']
+                    row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
+                                     insn_hex=s.get('insn'),memwrites=s.get('mem'),
+                                     adapter=s.get('adapter'))
                     completed+=1
                     gosim_dual_steps+=1
                     if kind=='irq':
@@ -3195,36 +3299,47 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     machine.last_core=1-hb['core']
                 # yield/upstream:未执行任何 attempt,状态未动,直接走慢路径。
             else:
-                res=dual_engine.run_loop(machine,hardware,machine.cores[0],machine.cores[1],DUAL_CAP)
-                gosim_dual_fills+=1
-                kind=_dual_kind(res)
-                steps=res.get('steps') or []
-                if os.environ.get('H3S_DUAL_KINDS'):
-                    gosim_dual_kinds[kind]=gosim_dual_kinds.get(kind,0)+1
-                    gosim_dual_lens[len(steps)]=gosim_dual_lens.get(len(steps),0)+1
-                if steps:
-                    if kind in ('hook','irq','blocked') and len(steps)>=1:
-                        dual_buf=[(s['core'],s['pc'],s['next_pc'],s['flags'],s['r']) for s in steps[:-1]]
-                        last=steps[-1]
-                        dual_hazard={'kind':kind,'core':res.get('stop_core',-1),
-                                     'step_pc':last['pc'],'stop_pc':res.get('stop_pc',0),
-                                     'flags':last['flags'],'R':last['r'],
-                                     'irq':res.get('irq'),'err':res.get('err')}
-                    else:
-                        dual_buf=[(s['core'],s['pc'],s['next_pc'],s['flags'],s['r']) for s in steps]
-                        if kind!='clean':
+                _pcore=1-machine.last_core
+                _pco=machine.cores.get(_pcore)
+                if _pco is None or not _dual_head_ok(_pco):
+                    # 段头预判不安全(访存到 MMIO/未映射/非 Go 可执行形状):跳过
+                    # 白费 fill,直接落慢路径 select+step(字节等价)。
+                    pass
+                else:
+                    res=dual_engine.run_loop(machine,hardware,machine.cores[0],machine.cores[1],DUAL_CAP)
+                    gosim_dual_fills+=1
+                    kind=_dual_kind(res)
+                    steps=res.get('steps') or []
+                    if os.environ.get('H3S_DUAL_KINDS'):
+                        gosim_dual_kinds[kind]=gosim_dual_kinds.get(kind,0)+1
+                        gosim_dual_lens[len(steps)]=gosim_dual_lens.get(len(steps),0)+1
+                        if kind=='memfault':
+                            _ek=(res.get('err') or {}).get('kind','?')
+                            gosim_dual_kinds['memfault:'+str(_ek)]=gosim_dual_kinds.get('memfault:'+str(_ek),0)+1
+                    if steps:
+                        if kind in ('hook','irq','blocked') and len(steps)>=1:
+                            dual_buf=list(steps[:-1])
+                            last=steps[-1]
                             dual_hazard={'kind':kind,'core':res.get('stop_core',-1),
-                                         'irq':res.get('irq'),'err':res.get('err'),
-                                         'stop_pc':res.get('stop_pc',0)}
-                elif kind!='clean':
-                    dual_hazard={'kind':kind,'core':res.get('stop_core',-1),
-                                 'irq':res.get('irq'),'err':res.get('err'),
-                                 'stop_pc':res.get('stop_pc',0)}
-                if dual_buf:
-                    continue
-                if dual_hazard is not None:
-                    continue
-                # clean 且 0 步(不应发生):走慢路径兜底,不空转。
+                                         'step':last,'step_pc':last['pc'],
+                                         'stop_pc':res.get('stop_pc',0),
+                                         'flags':last['flags'],'R':last['r'],
+                                         'irq':res.get('irq'),'err':res.get('err')}
+                        else:
+                            dual_buf=list(steps)
+                            if kind!='clean':
+                                dual_hazard={'kind':kind,'core':res.get('stop_core',-1),
+                                             'irq':res.get('irq'),'err':res.get('err'),
+                                             'stop_pc':res.get('stop_pc',0)}
+                    elif kind!='clean':
+                        dual_hazard={'kind':kind,'core':res.get('stop_core',-1),
+                                     'irq':res.get('irq'),'err':res.get('err'),
+                                     'stop_pc':res.get('stop_pc',0)}
+                    if dual_buf:
+                        continue
+                    if dual_hazard is not None:
+                        continue
+                    # clean 且 0 步(不应发生):走慢路径兜底,不空转。
         if machine is not None:c=machine.select()
         if gosim_observer is not None:
             gosim_observer.begin(

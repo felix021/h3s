@@ -295,6 +295,26 @@ func gosim_smem_write(h C.uintptr_t, addr C.uint32_t, data *C.uint8_t, n C.int, 
 	return 0
 }
 
+// gosim_smem_replace_ram installs a whole known-byte map (the Python mem.ram
+// snapshot): entries is a flat [u32 little-endian addr][u8 value] sequence.
+// It replaces the Go ram map wholesale (no events, no guest-write side effect),
+// so a byte Python marks unknown is simply absent afterwards.
+//
+//export gosim_smem_replace_ram
+func gosim_smem_replace_ram(h C.uintptr_t, entries *C.uint8_t, n C.int) {
+	if entries == nil || n <= 0 {
+		mem(h).ReplaceRAM(map[uint32]byte{})
+		return
+	}
+	data := unsafe.Slice((*byte)(unsafe.Pointer(entries)), int(n))
+	m := make(map[uint32]byte, int(n)/5)
+	for i := 0; i+5 <= len(data); i += 5 {
+		addr := uint32(data[i]) | uint32(data[i+1])<<8 | uint32(data[i+2])<<16 | uint32(data[i+3])<<24
+		m[addr] = data[i+4]
+	}
+	mem(h).ReplaceRAM(m)
+}
+
 // ---- peripheral models (M3) exports ----------------------------------------
 //
 // Timer0 and IRQController (gosim.PeriphState / periph.go), callable from

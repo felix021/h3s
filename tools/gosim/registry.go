@@ -207,6 +207,15 @@ func registerBase() map[string]modelFunc {
 	m["ld.w.npc"] = modelNpc
 	m["ld.w.npc.r"] = modelNpc
 
+	// Standalone full-word stores: the dual loop executes these via the direct
+	// exact_full_word_store shape (no merge-read), mirroring probe_boot's
+	// adapter. The raw core (dmem == nil) keeps the upstream flat-memory write
+	// semantics (the unaligned guard only fires on the strict-memory path), so
+	// the stage-1/raw differential tests are unchanged.
+	for _, id := range []string{"st.w", "st.w.l", "st.w.modimm", "st.w.idxs", "st.w.sp", "st.w.idx"} {
+		m[id] = modelExactFullWordStore(id)
+	}
+
 	// ---- v3/v4/v5 block + rep -----------------------------------------
 	for _, b := range blockModels {
 		if b.andBlock {

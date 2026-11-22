@@ -53,6 +53,8 @@ class StrictMem:
         self.lib.gosim_smem_write.argtypes = [_HANDLE, c_uint32, POINTER(c_uint8), c_int,
                                               POINTER(c_uint8), c_int]
         self.lib.gosim_smem_write.restype = c_int
+        self.lib.gosim_smem_replace_ram.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
+        self.lib.gosim_smem_replace_ram.restype = None
         self.handle = self.lib.gosim_smem_new()
 
     def _buf(self, data):
@@ -103,3 +105,10 @@ class StrictMem:
         if code == MEM_OK:
             return ("ok", None)
         return ("error", self._err(errbuf))
+
+    def replace_ram(self, entries):
+        """Install a whole known-byte map. entries is a flat bytes buffer of
+        [u32 little-endian addr][u8 value] per byte (Python mem.ram snapshot).
+        Replaces the Go ram map wholesale (no guest-write side effects)."""
+        buf = (c_uint8 * len(entries)).from_buffer_copy(entries)
+        self.lib.gosim_smem_replace_ram(self.handle, buf, len(entries))
