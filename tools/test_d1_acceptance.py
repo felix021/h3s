@@ -413,8 +413,9 @@ class FailTests(unittest.TestCase):
         self.assertEqual(d1_1_park(scenario)['status'],'fail')
 
     def test_interval_off_by_one_fails_d1_2(self):
+        # 放宽后判据=gap>0(PRD 重编打破单一 period);同一步重复到期(gap=0)是违规
         scenario=self._mutated()
-        scenario['peripherals']['timer0']['expiration_model_steps']=[36780,76781,116780]
+        scenario['peripherals']['timer0']['expiration_model_steps']=[36780,36780,116780]
         result=d1_2_timer0_cycles(scenario)
         self.assertEqual(result['status'],'fail')
 
@@ -861,8 +862,9 @@ class D1_5FailTests(unittest.TestCase):
         self.assertTrue(_failed_checks(result,'h1_timer0_expiries'))
 
     def test_h1_gap_drift_fails(self):
+        # 放宽后 h1 判据=gap>0;同一步重复到期(gap=0)是违规
         scenario=d1_health_scenario()
-        scenario['d1_window']['health']['timer0_expiry_steps']=[36880,76880,117880]
+        scenario['d1_window']['health']['timer0_expiry_steps']=[36880,36880,117880]
         result=_d15(scenario)
         self.assertEqual(result['status'],'fail')
         self.assertTrue(_failed_checks(result,'h1_expiry_interval'))
@@ -883,9 +885,9 @@ class D1_5FailTests(unittest.TestCase):
         self.assertTrue(_failed_checks(result,'h2_timer0_'))
 
     def test_h2_software_irq_delivery_fails(self):
-        # 软件 IRQ 预期 0(D1 世界事件源封闭):出现交付=风暴形状
+        # 放宽后非周期源 bound=4;deliveries=5 超上界=无界增长(风暴)
         scenario=d1_health_scenario()
-        scenario['d1_window']['health']['per_source'][2]['deliveries']=1
+        scenario['d1_window']['health']['per_source'][2]['deliveries']=5
         result=_d15(scenario)
         self.assertEqual(result['status'],'fail')
         self.assertTrue(_failed_checks(result,'h2_irq124'))
@@ -1261,19 +1263,19 @@ class D1_5H2SysTimerSourcesTests(unittest.TestCase):
         self.assertEqual(result['status'],'pass')
 
     def test_keyscan_storm_fails(self):
-        # 负例:超上界=风暴(P=400,000、N=200,000 → bound=⌈N/P⌉+1=1;deliveries=3)
+        # 放宽后 bound=⌈N/(10×4000)⌉+1=6(最快火折算);deliveries=7 超上界=风暴
         scenario=d1_health_scenario()
         _h2_source(scenario,'keyscan').update(
-            deliveries=3,expirations=3,completions=3)
+            deliveries=7,expirations=7,completions=7)
         result=_d15(scenario)
         self.assertEqual(result['status'],'fail')
         self.assertTrue(_failed_checks(result,'h2_keyscan'))
 
     def test_adc_scan_storm_fails(self):
-        # 负例:同款超上界(P=200,000、N=200,000 → bound=2;deliveries=4)
+        # 放宽后 bound=⌈N/(5×4000)⌉+1=11(最快火折算);deliveries=12 超上界=风暴
         scenario=d1_health_scenario()
         _h2_source(scenario,'adc_scan').update(
-            deliveries=4,expirations=4,completions=4)
+            deliveries=12,expirations=12,completions=12)
         result=_d15(scenario)
         self.assertEqual(result['status'],'fail')
         self.assertTrue(_failed_checks(result,'h2_adc_scan'))
