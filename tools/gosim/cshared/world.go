@@ -173,9 +173,15 @@ func gosim_world_set_core_inflight(wH C.uintptr_t, core C.int, repeatActive C.in
 func gosim_world_set_periph(wH C.uintptr_t, periphH C.uintptr_t) {
 	if periphH == 0 {
 		world(wH).Periph = &gosim.PeriphState{}
+		world(wH).Mem.SetBus(nil)
 		return
 	}
-	world(wH).Periph = periph(periphH)
+	p := periph(periphH)
+	world(wH).Periph = p
+	// Bind the same *PeriphState as the strict memory's MMIO bus. LoadStateJSON
+	// swaps the Timer/IRQ leaf objects on p in place, but p itself is stable, so
+	// the bus keeps seeing the live periph state across snapshots.
+	world(wH).Mem.SetBus(p)
 }
 
 // coreStateJSON is the JSON round-trip shape of one World Core (the full
@@ -343,19 +349,28 @@ type stepEventJSON struct {
 	KnownValue string `json:"known_value"`
 }
 
+type loopWalkJSON struct {
+	Virtual  uint32 `json:"virtual"`
+	Physical uint32 `json:"physical"`
+	Entry    uint32 `json:"entry"`
+	Tag      uint32 `json:"tag"`
+}
+
 type loopStepJSON struct {
-	Core     int                `json:"core"`
-	PC       uint32             `json:"pc"`
-	NextPC   uint32             `json:"next_pc"`
-	Flags    uint8              `json:"flags"`
-	R        [16]uint32         `json:"r"`
-	RT       [16]*gosim.RegTag  `json:"rt"`
-	Mem      []loopMemWriteJSON `json:"mem,omitempty"`
-	Events   []stepEventJSON    `json:"events,omitempty"`
-	BeforeSP uint32             `json:"before_sp"`
-	SP       uint32             `json:"sp"`
-	Insn     string             `json:"insn,omitempty"`
-	Adapter  string             `json:"adapter,omitempty"`
+	Core      int                `json:"core"`
+	PC        uint32             `json:"pc"`
+	NextPC    uint32             `json:"next_pc"`
+	Flags     uint8              `json:"flags"`
+	R         [16]uint32         `json:"r"`
+	RT        [16]*gosim.RegTag  `json:"rt"`
+	Mem       []loopMemWriteJSON `json:"mem,omitempty"`
+	Events    []stepEventJSON    `json:"events,omitempty"`
+	BeforeSP  uint32             `json:"before_sp"`
+	SP        uint32             `json:"sp"`
+	Insn      string             `json:"insn,omitempty"`
+	Adapter   string             `json:"adapter,omitempty"`
+	Walks     []loopWalkJSON     `json:"walks,omitempty"`
+	MMIOReads int                `json:"mmio_reads,omitempty"`
 }
 
 func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
@@ -369,17 +384,21 @@ func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
 	for _, s := range res.Steps {
 		js := loopStepJSON{
 			Core: s.Core, PC: s.PC, NextPC: s.NextPC, Flags: s.Flags, R: s.R,
-			RT:       s.RT,
-			BeforeSP: s.BeforeSP,
-			SP:       s.SP,
-			Insn:     hexBytes(s.Insn),
-			Adapter:  s.Adapter,
+			RT:        s.RT,
+			BeforeSP:  s.BeforeSP,
+			SP:        s.SP,
+			Insn:      hexBytes(s.Insn),
+			Adapter:   s.Adapter,
+			MMIOReads: s.MMIOReads,
 		}
 		for _, w := range s.Mem {
 			js.Mem = append(js.Mem, loopMemWriteJSON{Addr: w.Addr, Bytes: hexBytes(w.Bytes), Abs: w.Abs})
 		}
 		for _, e := range s.Events {
 			js.Events = append(js.Events, stepEventJSON{Access: e.Access, KnownMask: e.KnownMask, KnownValue: e.KnownValue})
+		}
+		for _, w := range s.Walks {
+			js.Walks = append(js.Walks, loopWalkJSON{Virtual: w.Virtual, Physical: w.Physical, Entry: w.Entry, Tag: w.Tag})
 		}
 		out.Steps = append(out.Steps, js)
 	}

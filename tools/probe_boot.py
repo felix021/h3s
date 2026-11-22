@@ -3151,12 +3151,14 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if r.startswith('select wake require'):return 'upstream'
         return 'clean'
 
-    def _dual_commit(core,pc,next_pc,flags,R,insn_hex=None,memwrites=None,adapter=None,rt=None,events=None,sp=None,before_sp=None):
+    def _dual_commit(core,pc,next_pc,flags,R,insn_hex=None,memwrites=None,adapter=None,rt=None,events=None,sp=None,before_sp=None,walks=None,mmio_reads=None):
         # 一条已由 Go 执行的步的 Python 侧簿记:fetch 守卫计数、trace 行物化、
         # 本步有序写回放(具体写=mem.write=note_memory_write+write 事件;抽象写
         # =mem.write_abstract_word=icfg_spills/unknown_origins overlay+抽象写事件;
         # 执行核与写前 PC 对齐)、adapter 计数、ICFG special-read/write 事件、步后
         # 簿记(_post_step)与 after_step。advance 已在 Go 内跑过,这里不重复。
+        # walks/mmio_reads 是 Go 侧读副作用回放(mmu.walks/counts['reads']),
+        # 补上快路径绕过的慢路径簿记,报告逐字节一致。
         _t0 = time.perf_counter() if gosim_dual_engine is not None else None
         c=machine.cores[core]
         if hardware is not None:hardware.current_core=core
@@ -3173,6 +3175,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         row['bytes']=insn_hex if insn_hex is not None else c.mem.read(pc,size).hex()
         row['_pending_text']=(insn,raw)
         row['next_pc']=hex(next_pc)
+        # MMU 走表回放:Go 的虚拟装载在 Go 内完成了页表走表,这里按步序补
+        # mmu.walks/last_walk(写路径的走表由下方 memwrites 的 c.mem.write 慢
+        # 路径重放自然补上,不回传,避免双重计数)。
+        if walks and hardware is not None and getattr(hardware, 'mmu', None) is not None:
+            mmu=hardware.mmu
+            for w in walks:
+                mmu.walks+=1
+                mmu.last_walk={'virtual':hex(w['virtual']),'physical':hex(w['physical']),
+                               'entry_address':hex(w['entry']),'tag':hex(w['tag'])}
+        if mmio_reads and hardware is not None:
+            hardware.counts['reads']+=mmio_reads
         # 有序写回放:必须在 c.pc 推进前落,note_memory_write 才读到写前 PC
         # (与慢路径写序一致)。回放的字节 Go 在执行时已写入自己的 map,这里只是
         # 让 Python 追平,不是 Python 侧的净变更,所以临时关掉脏跟踪,避免把已
@@ -3380,7 +3393,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 s=dual_buf.pop(0)
                 row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                  insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                 adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'))
+                                 adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'),walks=s.get('walks'),mmio_reads=s.get('mmio_reads'))
                 completed+=1
                 gosim_dual_steps+=1
                 trace.append(row)
@@ -3398,7 +3411,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                                          'flags':hb.get('flags',0),'r':hb.get('R',[0]*16)}
                     row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                      insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                     adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'))
+                                     adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'),walks=s.get('walks'),mmio_reads=s.get('mmio_reads'))
                     completed+=1
                     gosim_dual_steps+=1
                     trace.append(row)
@@ -3417,7 +3430,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     core=s['core']
                     row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                      insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                     adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'))
+                                     adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'),walks=s.get('walks'),mmio_reads=s.get('mmio_reads'))
                     completed+=1
                     gosim_dual_steps+=1
                     if kind=='irq':
@@ -3491,7 +3504,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         s=dual_buf.pop(0)
                         row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                          insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                         adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'))
+                                         adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'),walks=s.get('walks'),mmio_reads=s.get('mmio_reads'))
                         completed+=1
                         gosim_dual_steps+=1
                         trace.append(row)

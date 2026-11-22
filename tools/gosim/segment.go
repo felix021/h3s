@@ -81,6 +81,14 @@ type SegmentStep struct {
 	// adapter the commit must count ("" when the step needs none).
 	Insn    []byte
 	Adapter string
+
+	// Walks / MMIOReads are the read-side effects the dual loop hands back for
+	// Python's report bookkeeping (mmu.walks / counts['reads']). A scalar load to
+	// a virtual address records one WalkInfo; a load to a modeled MMIO word
+	// records one MMIORead. A store leaves both empty (its MMU walk is re-derived
+	// by the Python Memory.write replay).
+	Walks     []WalkInfo
+	MMIOReads int
 }
 
 // SegmentResult is the whole batch outcome. The executed-step count is implied
