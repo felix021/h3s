@@ -1,0 +1,150 @@
+{
+  "route": "DACRING-park-determinism（codex §5.4 要求的报告确定性单独签收；主仓 main 40f1d89）",
+  "recorded_at": "2026-11-22T02:03:25Z",
+  "task": "新臂 prpwr0_dacring 双核 park 结果（31,581,249 @ 0x12c5ca）从零重放与同配置快照恢复的逐键等价性固化。只做验证与记录，不改模型/执行逻辑。",
+  "verdict": "确定性成立。同一份配置下：从零全量重放与「干净预算停点快照 + restore 续跑」逐键一致——81,008 个扁平键 0 差异；剥离恢复路径按设计新增的 snapshot_restore 键后两份报告字节级相同（SHA-256 同 204c28bb…）。",
+  "fixed_config": {
+    "arm": "src_sync_cursor_progress_dacdmapcnt_vlvd_prpwr0_dacring",
+    "entry": "0x6000100",
+    "image": {
+      "file": "QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw",
+      "kind": "官方原版 OTA 镜像（unmodified official；非 b79 测试镜像，本臂单镜像、无 parity 对）",
+      "bytes": 1326848,
+      "sha256": "65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af"
+    },
+    "rom_window": {
+      "file": "QCY_H3S_BR28_ROM_000000-020000.bin",
+      "window": "0x000000..0x020000（128 KiB，end-exclusive）",
+      "sha256": "7cae0a02e3ab3755c1e392f03c89222dd701065ec9bd3ec8ac109a7b3f40f793",
+      "readonly": true,
+      "silicon_extent_not_established": true
+    },
+    "code_version": "main 40f1d894fd41289c9d52984c097c9bc1b6f6373b（SRC cursor/delivery 快照适配器经 sim-srcsnapshot a0ee7d5 合入，merge bf1ff7d）",
+    "scenario": "p11_heap_experimental（conditional 前沿 flag 集）",
+    "arm_flags": {
+      "src_sync_cursor_progress": true,
+      "jl_audio_dac_dma_setup_discarded_reads": true,
+      "jl_audio_dac_dma_len_readback": true,
+      "jl_audio_dac_dma_pns_write": true,
+      "jl_audio_dac_dma_pcm_produce": true,
+      "p3_pcnt_set0_readback": true,
+      "p3_vlvd_bit2_writeback_readback": true,
+      "p3_pr_pwr_retained_bits": 0
+    },
+    "fixture_note": "p3_pr_pwr_retained_bits=0 为具名值 fixture（int 0），其余为布尔开关；完整 assumptions 见 dacring_result.json 顶层 assumptions 段。"
+  },
+  "stop": {
+    "completed_steps": 31581249,
+    "stop_pc": "0x12c5ca",
+    "stop_core": 0,
+    "kind": "jl_src_sync_cursor_zero_fill_input_nonzero",
+    "address": "0x18979c",
+    "byte": 8,
+    "note": "input IDAT byte is non-zero; the model does not synthesize the conversion of non-zero samples"
+  },
+  "key_by_key": {
+    "dual_core_pc": {
+      "cpu0": {"pc": "0x12c5ca", "steps": 31572560},
+      "cpu1": {"pc": "0x12c5ca", "steps": 12942},
+      "note": "两核同停 0x12c5ca（park 稳态）；停点核=0。"
+    },
+    "stop_point": {
+      "physical_address": "0x18979c",
+      "byte": 8,
+      "stop_core": 0,
+      "stop_kind": "jl_src_sync_cursor_zero_fill_input_nonzero",
+      "note": "停点物理地址与字节在从零/快照两份报告中一致。"
+    },
+    "src_cursor": {
+      "transaction": 4,
+      "commits": 3,
+      "channels": 2,
+      "input_consumed_samples": 192,
+      "output_produced_samples": 192,
+      "latched_four_words": {
+        "IDAT_ADR (0xfe2610)": "0x41d30c",
+        "IDAT_LEN (0xfe2614)": "0x40",
+        "ODAT_ADR (0xfe2618)": "0x41d76c",
+        "ODAT_LEN (0xfe261c)": "0x3a2"
+      },
+      "committed": {},
+      "delivery_state": {"starts": 4, "completions": 3, "acks": 6},
+      "full_block_word_writes": 44,
+      "note": "四笔锁存（第 4 次交易的四字 IDAT/ODAT 游标）、三笔提交（committed 为空=第 4 笔未提交即停：非零输入诚实拒）。"
+    },
+    "irq89_delivery": {
+      "deliveries": 3,
+      "irq": 89,
+      "vector_address": "0x19ff64",
+      "handler": "0x12ca24",
+      "reti_from": "0x12c5cc",
+      "core": 0,
+      "note": "IRQ89 交付 3 笔，与 3 次 completion 一一对应；pending 由 handler 内 W1C rmw [0xfe2600]|=0x40 清除（JLSrcSyncDelivery.note_con_write 建模）。"
+    },
+    "dac_ring": {
+      "swN": {"q": "0x3c0", "q_len": "0x1e00", "commit_writes": ["0x300", "0x40", "0x40", "0x40"]},
+      "swp": {"current": "0x3c0"},
+      "adr_readback": "0x18e180",
+      "len_readback": "0x1e00",
+      "note": "Q（占用帧）=0x3c0=0x300+0x40×3（4 笔 SWN 提交累计）；SWP 自初值 0 按提交帧数推进至 0x3c0。SWN/SWP/Q 均为 derived-not-measured 投影（见 jl_audio_dac_dma_pcm_produce.assumption）。"
+    },
+    "event_clock": {
+      "virtual_model_steps_advanced": 7293669,
+      "note": "事件钟虚拟步；另 machine 侧 irq_delivery_deferrals=40027、stalls=2178、launches=1。"
+    }
+  },
+  "step_count_distinction": {
+    "completed_steps": {
+      "value": 31581249,
+      "meaning": "指令步：主循环每完成一条指令计 1（两核合计的主计数器；stalls/事件钟快进另计，不进此数）。"
+    },
+    "virtual_model_steps_advanced": {
+      "value": 7293669,
+      "meaning": "事件钟虚拟步：由建模计时器计数（两核 core-tick + PRD+1 SDK 公式 + 共享 Timer0 计数）驱动的 event_clock_advances，非指令步、无 wall-clock 换算。"
+    },
+    "per_core_steps": {
+      "cpu0": 31572560,
+      "cpu1": 12942,
+      "meaning": "各核自身执行的指令计数（含停泊/交付迭代的核侧视角），与 completed_steps 口径不同。"
+    }
+  },
+  "method": {
+    "from_zero": "python3 ~/tmp/run_dacring.py（sim-dacring @ 0b40275）→ dacring_result.json，wall 951.9s，31,581,249 @ 0x12c5ca。",
+    "equivalence_arm": "subagent 驱动（sim-srcsnapshot @ a0ee7d5，~/tmp/sim-srcsnapshot-verify/driver.py）：从零 full.json（1000.5s，同停点）+ 干净预算停点快照 park-n31578000.bin（budget=31,578,000 → 捕获 31,575,099 @ 0x60662c4，kind=instruction_budget）+ restore+7000 步 → 31,581,249 @ 0x12c5ca。",
+    "compare": "~/tmp/sim-srcsnapshot-verify/compare.py 扁平化两报告 → keys total=81008, only_a=0, only_b=0, diffs=0（exit 0）。",
+    "byte_identical": "resumed 报告仅比从零报告多 snapshot_restore 键（恢复溯源，按设计）；driver 剥离该键后 sort_keys 序列化，两份文件 SHA-256 相同（204c28bb…）。"
+  },
+  "artifacts": {
+    "from_zero_original": {
+      "path": "~/tmp/dacring_result.json",
+      "sha256": "c23189dfe7b16eed55a1af9a636e2a9f42b41f57251c53249bb00087d70400e8",
+      "arm": "src_sync_cursor_progress_dacdmapcnt_vlvd_prpwr0_dacring"
+    },
+    "from_zero_probe_label": {
+      "path": "~/tmp/sim-srcsnapshot-verify/full.json",
+      "sha256": "204c28bba3911192cba54c14b9440cbf102594a1d1b1af4ad0a8e8123114ccf0",
+      "arm": "src_sync_cursor_progress_dacdmapcnt_vlvd_prpwr0_probe（同配置，仅 name 标签不同）"
+    },
+    "resumed_report": {
+      "path": "~/tmp/sim-srcsnapshot-verify/resumed-park-n31578000-7000.json",
+      "sha256": "204c28bba3911192cba54c14b9440cbf102594a1d1b1af4ad0a8e8123114ccf0"
+    },
+    "snapshot_file": {
+      "path": "~/tmp/sim-srcsnapshot-verify/park-n31578000.bin",
+      "sha256": "0ff793f384a653ea1c22dcc02f6cba89258bc96de13ba45af26ea4aa8c9d3b8d",
+      "code_fingerprint": "6391d8495e541bd41206bfde1472905d507cb871cad65cd56ccf8b30e8745793",
+      "note": "含 RAM 镜像，红线不进 git（本记录只进摘要行）。"
+    }
+  },
+  "honest_notes": [
+    "比对在并 main 前的适配器分支 sim-srcsnapshot @ a0ee7d5 上实测；仿真语义源（world_snapshot.py/br28_model.py/br28_machine.py/probe_irq_entry.py 等）与 main 40f1d89 逐字节相同。main 相对 a0ee7d5 的增量仅：probe_boot.py 新增 H3S_DUAL_KINDS 环境门控的只读 gosim 入口统计（dual_engine is None 时不执行）、D1 checker/observer、gosim 测量与测试文件——对本臂非 gosim Python 路径零影响。",
+    "dacring_result.json 的产生处 sim-dacring @ 0b40275 是 main 的祖先；其产出与 a0ee7d5 从零 full.json 除 name 标签外 81,007 个扁平键全同（唯一差异是报告 name 字段：_dacring vs _probe，仅标签、不参与仿真）。",
+    "快照 park-n31578000.bin 在 a0ee7d5 下捕获（code_fingerprint 6391d849…）。main 40f1d89 的 code_fingerprint 因 probe_boot.py 变化而不同，若日后在 main 上 restore 该快照需带 resume_ack（prior_fingerprint=6391d849…，reason 说明 probe_boot 增量为环境门控 gosim 统计、前缀中性）。",
+    "自然停点是脏停点（step-Blocked）；等价性用其前的干净 instruction_budget 边界（31,575,099 @ 0x60662c4）取快照，restore 后 6,150 指令步抵达同一停点。",
+    "签收边界：本记录固化的是「同一代码态、同一配置」下从零与快照恢复的逐键一致，属仿真确定性；SRC 四笔锁存/三笔提交、DAC 环账、事件钟均为 derived-not-measured 投影（具名假设见 dacring_result.json 各段），不是硅片测量。"
+  ],
+  "reproduce": [
+    "从零：python3 ~/tmp/run_dacring.py（或按 fixed_config.arm_flags 复刻 arm）",
+    "等价性：cd ~/tmp/sim-srcsnapshot-verify && python3 driver.py capture 31578000 && python3 driver.py resume park-n31578000.bin 7000 && python3 compare.py full.json resumed-park-n31578000-7000.json"
+  ]
+}
