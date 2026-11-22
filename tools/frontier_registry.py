@@ -509,6 +509,14 @@ FEATURES = (
             True, None,
             'SRC 游标每 completion 产出的每通道样本数 p 具名假设(None=与消费量'
             '相同「1:1 速率」;敏感性探针值,场景传值,速率比需硅测确认)'),
+    Feature('src_sync_cursor_total_input_samples', 'probe_only',
+            ('src_sync_cursor_progress',),
+            True, None,
+            'SRC 游标有限输入数据源每通道样本总量 EOF 边界(None=无界=legacy '
+            '重投喂行为;非负值=consumed 达到该总量后 SRC 停止提交/交付,固件'
+            '3 tick 信号量超时自然进播完收尾。power_on.wts 的解码样本总量'
+            '无法从 WTS 头钉实——WTGV2 硬件协处理器闭源解码,值是具名假设 '
+            'derived-not-measured,需硅测确认;钉不实即不伪造播完)'),
     # ---- 路 DACDMAREAD(codex 202611211512 方案):JL_AUDIO DAC DMA 配置
     # 五死读放行——31,391,166 停点 0x606b2b2..b2ba 依次读 ADR(0xfe0504)/
     # LEN(0xfe0508)/HRP(0xfe0510)/SWP(0xfe0514)/SWN(0xfe0518),读值均不参与

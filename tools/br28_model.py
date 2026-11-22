@@ -7642,6 +7642,7 @@ class JLSrcSyncDelivery:
         self.starts=0
         self.completions=0
         self.acks=0
+        self.eof_stops=0
 
     def reentry_authorized(self):
         """残余 bit3=1 的 |=0x8 是合法幂等重入(0x6070a6c 旁路跳过覆盖写、
@@ -7666,8 +7667,20 @@ class JLSrcSyncDelivery:
         再次启动→再次完成)。游标半边(路 SRCSYNC6)在置 pending 前原子提交
         本次硬件结果(先验证 c/p、地址范围、输出有效性)。mem=运行循环内存
         对象,透传给游标提交做零输入→零输出样本建模(缺省 None 时游标侧按
-        诚实停处理)。"""
+        诚实停处理)。
+
+        EOF 守卫(路 SRCSYNC6 数据源边界):启动到期、即将提交前,若游标的
+        有限输入数据源总量已被消费完(cursor.input_exhausted() 为真),则本笔
+        启动不提交游标、不置 IRQ89 pending——SRC 在输入耗尽后停止继续提交/
+        交付。固件随后在 jlstream_N 的 3 tick 信号量等待上超时,自然进入
+        「播完」收尾(不再反复发 irq89/irq127)。total_input_samples=None 时
+        守卫恒不触发,旧臂无界重投喂行为逐字节不变。"""
         if self.started and not self.pending:
+            if self.cursor is not None and self.cursor.input_exhausted():
+                self.started=False
+                self.cursor.eof_stops+=1
+                self.eof_stops+=1
+                return
             elapsed=hardware.counts['completed_model_steps']-self.start_step
             if elapsed>=self.completion_steps:
                 if self.cursor is not None:
@@ -7713,7 +7726,8 @@ class JLSrcSyncDelivery:
             'flash_handler':hex(0x60c61fc),
             'state':{'started':self.started,'pending':self.pending,
                      'delivery_in_flight':self.delivery_in_flight,
-                     'starts':self.starts,'completions':self.completions,'acks':self.acks},
+                     'starts':self.starts,'completions':self.completions,
+                     'acks':self.acks,'eof_stops':self.eof_stops},
             'completion_timing_assumption':{
                 'completion_steps':self.completion_steps,
                 'semantics':('SRC completes completion_steps model steps after the real '
@@ -7788,7 +7802,8 @@ class JLSrcSyncCursorProgress:
                  0xfe2618: 'JL_SRC_SYNC->ODAT_ADR', 0xfe261c: 'JL_SRC_SYNC->ODAT_LEN'}
     CON2 = 0xfe2608
 
-    def __init__(self, sample_bytes=4, consume=None, produce=None):
+    def __init__(self, sample_bytes=4, consume=None, produce=None,
+                 total_input_samples=None):
         if not isinstance(sample_bytes, int) or sample_bytes not in (2, 4):
             raise ValueError('SRC_SYNC cursor sample width must be 2 or 4 bytes (W)')
         if consume is not None and (not isinstance(consume, int) or consume < 0):
@@ -7797,9 +7812,14 @@ class JLSrcSyncCursorProgress:
         if produce is not None and (not isinstance(produce, int) or produce < 0):
             raise ValueError('SRC_SYNC cursor produce must be a non-negative per-channel '
                              'sample count or None (equal to the consumed count)')
+        if total_input_samples is not None and (not isinstance(total_input_samples, int)
+                                                or total_input_samples < 0):
+            raise ValueError('SRC_SYNC cursor total_input_samples must be a non-negative '
+                             'per-channel sample count or None (unbounded input source)')
         self.sample_bytes = sample_bytes
         self.consume = consume
         self.produce = produce
+        self.total_input_samples = total_input_samples
         self.transaction = 0
         self.commits = 0
         self.channels = None
@@ -7807,6 +7827,7 @@ class JLSrcSyncCursorProgress:
         self.committed = {}
         self.input_consumed_samples = 0
         self.output_produced_samples = 0
+        self.eof_stops = 0
         self.history = []
 
     def note_start(self, hardware):
@@ -7828,6 +7849,20 @@ class JLSrcSyncCursorProgress:
         # 最后写值(与旧臂一致),提交后才是新快照。
         self.committed = {}
         self.transaction += 1
+
+    def input_exhausted(self):
+        """EOF 判定(路 SRCSYNC6 数据源边界):有限输入数据源的每通道样本总量
+        total_input_samples 已被历次提交消费完时返回 True。
+
+        诚实守卫:total_input_samples=None(数据源总量未钉实)一律返回 False,
+        保持旧臂无界重投喂行为、不伪造「播完」;只有显式给出非负总量时,SRC
+        才在 consumed 达到总量后停止继续提交/交付。总量是具名假设
+        derived-not-measured——power_on.wts 的解码样本数需要 WTGV2 硬件/硅测
+        确认,本模型不臆造转换也不臆造总帧数。
+        """
+        if self.total_input_samples is None:
+            return False
+        return self.input_consumed_samples >= self.total_input_samples
 
     def commit(self, hardware, mem=None):
         """advance() 到期时的原子提交:先验证 c/p、地址范围与输出有效性,再一次性
@@ -7976,6 +8011,8 @@ class JLSrcSyncCursorProgress:
                 'sample_bytes': self.sample_bytes,
                 'input_consumed_samples': self.input_consumed_samples,
                 'output_produced_samples': self.output_produced_samples,
+                'total_input_samples': self.total_input_samples,
+                'eof_stops': self.eof_stops,
                 'latched': {hex(a): hex(v) for a, v in sorted(self.latched.items())},
                 'committed': {hex(a): hex(v) for a, v in sorted(self.committed.items())},
                 'history': [{**h, 'idat_before': hex(h['idat_before']),
@@ -8015,6 +8052,18 @@ class JLSrcSyncCursorProgress:
                               '0<=p<=O_before, L_after=L_before-c, A_after-A_before='
                               'c*C*W, no address wrap; one commit per start, the next '
                               'start resumes the remainder'),
+                'total_input_samples': ('EOF boundary: when total_input_samples is set, '
+                                        'the SRC stops committing (and stops delivering '
+                                        'IRQ89) once input_consumed_samples reaches it, so '
+                                        'the firmware\'s 3-tick semaphore wait times out '
+                                        'and it enters the play-finished path instead of '
+                                        'looping. The exact per-channel sample total of the '
+                                        'finite power_on.wts is NOT pinned by the WTS '
+                                        'header (the WTGV2 hardware coprocessor does the '
+                                        'decode, closed source); the value is a named '
+                                        'assumption derived-not-measured and 需硅测确认. '
+                                        'None = unbounded (legacy re-feed behaviour, byte '
+                                        'identical).'),
             },
             'anti_pattern': ('a produce=0 arm advances IDAT to exhaustion but leaves '
                              'ODAT at its start word, so the firmware\'s obj+76=obj+44-'
@@ -10485,6 +10534,7 @@ class BR28Model:
                  jl_src_sync_cursor_sample_bytes=4,
                  jl_src_sync_cursor_consume=None,
                  jl_src_sync_cursor_produce=None,
+                 jl_src_sync_cursor_total_input_samples=None,
                  jl_sync_config_words=False,
                  jl_btclk_timer_words=False,
                  jl_fm_con_head_rmw=False,
@@ -11327,7 +11377,8 @@ class BR28Model:
         self.jl_src_sync_cursor=(JLSrcSyncCursorProgress(
                                      sample_bytes=jl_src_sync_cursor_sample_bytes,
                                      consume=jl_src_sync_cursor_consume,
-                                     produce=jl_src_sync_cursor_produce)
+                                     produce=jl_src_sync_cursor_produce,
+                                     total_input_samples=jl_src_sync_cursor_total_input_samples)
                                  if jl_src_sync_cursor_progress else None)
         self.jl_src_sync_full_block=(JLSrcSyncFullBlockRegisters(readback=jl_src_sync_delivery,
                                                                  cursor=self.jl_src_sync_cursor)

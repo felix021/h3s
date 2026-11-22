@@ -5120,6 +5120,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              src_sync_cursor_sample_bytes=4,
              src_sync_cursor_consume=None,
              src_sync_cursor_produce=None,
+             src_sync_cursor_total_input_samples=None,
              jl_sync_config_words=False,
              jl_btclk_timer_words=False,
              jl_fm_con_head_rmw=False,
@@ -7012,6 +7013,8 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
             options['jl_src_sync_cursor_consume']=src_sync_cursor_consume
         if src_sync_cursor_produce is not None:
             options['jl_src_sync_cursor_produce']=src_sync_cursor_produce
+        if src_sync_cursor_total_input_samples is not None:
+            options['jl_src_sync_cursor_total_input_samples']=src_sync_cursor_total_input_samples
     # jl_sync_config_words(路 SYNCIMPL,codex 20261119 收窄版 a,
     # docs/frontier-scout-jlsync.md §5,默认 False=关):JL_SYNC(audio_sync)
     # 四字容器——42,061,357 停点 0x60befe6(creator 0x60befae 体内 li 常量
