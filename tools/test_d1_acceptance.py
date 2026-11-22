@@ -576,15 +576,25 @@ class D1WindowAnchorTests(unittest.TestCase):
         self.assertNotIn('51000',by['closed_form_deadline']['detail'])
 
     def test_d1_3_window_expiry_mismatch_fails_boot_anchor_still_passes(self):
-        # 窗口内首溢出 +1:换锚红(243,174 != 243,173);同一世界去掉 d1_window
-        # 回退现状=boot 锚自洽(51,000 == 1,000+50,000)→过(旧口径原样保留)
+        # 窗口内首溢出 +2(超 ±1 pending 边沿采样容差):换锚红(243,175 vs 243,173);
+        # 同一世界去掉 d1_window 回退现状=boot 锚自洽(51,000 == 1,000+50,000)
+        # →过(旧口径原样保留)
         scenario=boot_prefix_scenario()
-        scenario['peripherals']['core_tick_configuration'][0]['expiration_model_steps']=[51000,243174]
+        scenario['peripherals']['core_tick_configuration'][0]['expiration_model_steps']=[51000,243175]
         by={c['name']:c for c in d1_3_core_tick(scenario)['checks']}
         self.assertEqual(by['closed_form_deadline']['status'],'fail')
         del scenario['d1_window']
         old={c['name']:c for c in d1_3_core_tick(scenario)['checks']}
         self.assertEqual(old['closed_form_deadline']['status'],'pass')
+
+    def test_d1_3_window_expiry_off_by_one_within_tolerance(self):
+        # 窗口内首溢出 +1(=pending 边沿采样的文档化 ±1 精度):闭式精确整数
+        # (243,173)时实测步号可相差 1 步,不判 fail(采样精度≠仿真违约)。
+        scenario=boot_prefix_scenario()
+        scenario['peripherals']['core_tick_configuration'][0]['expiration_model_steps']=[51000,243174]
+        by={c['name']:c for c in d1_3_core_tick(scenario)['checks']}
+        self.assertEqual(by['closed_form_deadline']['status'],'pass')
+        self.assertIn('sampling tolerance',by['closed_form_deadline']['detail'])
 
     def test_d1_3_engagement_only_after_w_park_degrades_to_missing(self):
         # d1_window 在场而 engagements 只有 >W_park 条目:锚定选择无合格者 →

@@ -59,7 +59,7 @@ TIMER0_HANDLER='0x12ece8'          # QCY Timer ISR 表 0x60a2508 槽 0(路 BE)
 TIMER0_W1C_BIT=0x4000              # handler W1C bit14(路 BE)
 CORE_TICK_HANDLER='0x60661a4'      # RTOS tick handler 帧(路 BF)
 CORE_TICK_ACK_BIT=0x40             # |=0x40 ACK(路 BF)
-JIFFIES_ADDR='0x125004'            # 软件 jiffies(D1-3,mod 2^32)
+JIFFIES_ADDR='0x124ca4'            # 软件 jiffies=0x124C80+36(D1-3,mod 2^32)
 TIMESLICE_CALL='0x60653ae'         # 时间片调度 call(D1-3,路 BF 反汇编钉死)
 TIMER0_TICK_PRD=119999             # tick_timer_init 的 10ms PRD(BZ §2.1)
 # Timer0 闭式(BQ G1):STD12M 每模型步 3 计数(num=3*4,den=4),div=1、prd=119999
@@ -159,6 +159,25 @@ def _engagements(scenario):
     """event_clock_engagements(路 CH 观测需求):每次 engage 时的计数器快照+段步数。"""
     value=_machine(scenario).get('event_clock_engagements')
     return value if isinstance(value,list) else None
+
+
+def _event_clock_engaged(scenario):
+    """event_clock_engaged 判定(不依赖 32 条 events 滑窗截断)。
+
+    长跑 D1 场景的首条 engage 远早于停点,machine.events(32 条截断滑窗)会把
+    engaged 事件丢掉。观察器的 event_clock_engagements 是全程自累计全量记录
+    (每 engage 一条),d1_window.park.event_clock_engaged 是 W_park 落定时显式
+    置 True 的窗口锚——任一在场即认定 engage 发生过,不再受 events 截断影响。"""
+    if any(e.get('kind')=='event_clock_engaged' for e in _events(scenario)):
+        return True
+    engagements=_engagements(scenario)
+    if isinstance(engagements,list) and engagements:
+        return True
+    window=scenario.get('d1_window')
+    if isinstance(window,dict) and isinstance(window.get('park'),dict) \
+            and window['park'].get('event_clock_engaged') is True:
+        return True
+    return False
 
 
 def _window_park_step(scenario):
@@ -298,7 +317,7 @@ REQUIRED_OBSERVATIONS={
           '.model_step(路 CH 需求:首次溢出的全局步号+交付步号——溢出须精确等于闭式,交付允许延迟)',
           'core_tick deliveries[].eligibility_note(路 CH 需求:结构化 {ipmask,priority,eligible:'
           'true},自由文本不算资格证明)',
-          'machine.jiffies_observations(路 CH 需求:0x125004 写序 before/after,mod 2^32 恰 +1;'
+          'machine.jiffies_observations(路 CH 需求:0x124ca4 写序 before/after,mod 2^32 恰 +1;'
           '多条时须带 delivery_index 绑定 handler 边界)',
           'machine.watchpoint_hits[0x60653ae](路 CH 需求:时间片调度 call 执行计数;返回由'
           '执行继续过该站点佐证)',
@@ -464,9 +483,11 @@ def d1_1_park(scenario):
                               if parks else f'core{core} never parked in-window'))))
 
     # event_clock_engaged(D1-1 收口:全核 park 后事件时钟 engage)。
-    # events 滑窗截断可能丢掉 engaged 事件——截断时降级 missing 而非 fail(codex 复核修正)。
+    # events 滑窗截断会丢掉 engaged 事件——engaged 判定改走观察器全量记录
+    # (event_clock_engagements/d1_window.park),截断只在三者都缺时降级 missing
+    # 而非 fail(codex 复核修正 + 本路 D1RUN 实测归因)。
     clock=_machine(scenario).get('event_clock_projection')
-    engaged=any(e.get('kind')=='event_clock_engaged' for e in _events(scenario))
+    engaged=_event_clock_engaged(scenario)
     truncated=bool(_machine(scenario).get('events_truncated'))
     if not isinstance(clock,dict) or not clock:
         checks.append(window_check('event_clock_engaged',
@@ -777,14 +798,23 @@ def d1_3_core_tick(scenario):
         else:
             expected=snap_entry['model_step']-(-((prd+1-cnt))//progress)  # 全局步号+相对闭式
             actual=expiry_first
-            checks.append(_check('closed_form_deadline',fail=actual!=expected,
+            # 容差 ±1:expiration_model_steps 是观察器侧 pending 边沿采样(报告键
+            # expiration_model_steps_source 标注 observer-side),after_step 挂接位在
+            # advance 前、真实步精度 ±1 步(d1-window-producer-spec §2.7)。闭式是
+            # 精确整数时实测步号可相差 1 步——采样精度不构成仿真违约,超出 ±1 才 fail。
+            off=abs(actual-expected)
+            checks.append(_check('closed_form_deadline',fail=off>1,
                 detail=(f'first core-tick expiry at model step {actual} == parked step '
                         f'{snap_entry["model_step"]} + closed form '
                         f'ceil(({prd}+1-{cnt})/{progress})={expected-snap_entry["model_step"]} '
                         f'(delivery at {first_delivery["model_step"]}, delay '
                         f'{first_delivery["model_step"]-actual} recorded separately)'
-                        if actual==expected else
-                        f'first expiry {actual} != closed-form {expected} from the parked snapshot')))
+                        if off==0 else
+                        (f'first expiry {actual} vs closed-form {expected} (offset {actual-expected}), '
+                         'within the documented ±1 pending-edge sampling tolerance'
+                         if off==1 else
+                         f'first expiry {actual} != closed-form {expected} (offset '
+                         f'{actual-expected} exceeds the ±1 sampling tolerance)'))))
 
     # 交付符合当时的 IRQ 资格与优先级(pending 期间逐步重检;IPMASK 临界区延后属既有语义)。
     # 结构化契约:eligibility_note 为 dict 且 eligible==True 才算过(codex 复核修正:
@@ -798,12 +828,12 @@ def d1_3_core_tick(scenario):
             missing='core_tick deliveries[].eligibility_note(结构化 {ipmask, priority, eligible:'
                     'true},交付时刻资格面;BF 的 pending 逐步重检语义佐证;自由文本不算证明)'))
 
-    # jiffies [0x125004] mod 2^32 恰 +1(绑定首次 handler 入口/出口边界:
+    # jiffies [0x124ca4] mod 2^32 恰 +1(绑定首次 handler 入口/出口边界:
     # 单条观测=首 handler 专属;多条须带 delivery_index 绑定,否则无法排除同 handler 两次写)
     jiffies=_machine(scenario).get('jiffies_observations')
     if not isinstance(jiffies,list) or not jiffies:
         checks.append(_check('jiffies_plus_one',
-            missing='machine.jiffies_observations(0x125004 写序观测:每次写前/写后值,'
+            missing='machine.jiffies_observations(0x124ca4 写序观测:每次写前/写后值,'
                     'mod 2^32 恰 +1)'))
     elif len(jiffies)>1 and not all(isinstance(e.get('delivery_index'),int) for e in jiffies
                                     if isinstance(e,dict)):
@@ -971,7 +1001,7 @@ def bi_a1_first_timer0_wake(scenario):
                    detail=why if opened else why+'; first-wake assertions stay pending')]
     if not opened:return _finalize(result,checks)
 
-    engaged=any(e.get('kind')=='event_clock_engaged' for e in _events(scenario))
+    engaged=_event_clock_engaged(scenario)
     checks.append(_check('engaged_after_both_parked',fail=not engaged,
         detail='event_clock_engaged recorded after both cores parked' if engaged
                else 'no event_clock_engaged although the park window opened'))

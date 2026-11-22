@@ -987,9 +987,9 @@ class JiffiesAndProjectionTests(unittest.TestCase):
         machine=FakeMachine()
         observer=make_observer(machine)
         reach_park(machine,observer)
-        observer.note_memory_write(0x125004,b'\x05\x00\x00\x00')
-        observer.note_memory_write(0x125002,b'\xff\xff\x06\x00\x00\x00')  # 跨字写也要命中
-        observer.note_memory_write(0x125004,b'\x07\x00\x00\x00')
+        observer.note_memory_write(0x124CA4,b'\x05\x00\x00\x00')
+        observer.note_memory_write(0x124CA2,b'\xff\xff\x06\x00\x00\x00')  # 跨字写也要命中
+        observer.note_memory_write(0x124CA4,b'\x07\x00\x00\x00')
         obs=observer.machine_face()['jiffies_observations']
         self.assertEqual([(o['before'],o['after']) for o in obs],
                          [(None,5),(5,6),(6,7)])

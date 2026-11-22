@@ -62,7 +62,7 @@ SYS_TIMER_FIRE_SITES=(0x6066e32,0x6066e7c)  # 火回调点(到期判定命中,§
 KEYSCAN_CALLBACK=0x6001944         # 键扫回调入口(S9 §1.1)
 ADC_SCAN_CALLBACK=0x60349d2        # adc_scan 回调入口(S8 §1.1)
 TIMER0_HANDLER_PC='0x12ece8'       # Timer0 IRQ4 handler(路 BE)
-JIFFIES_WORD=0x125004              # core tick handler 的 jiffies 计数字(D1-3 jiffies+1 面)
+JIFFIES_WORD=0x124CA4              # core tick handler 的 jiffies 计数字(0x124C80+36,D1-3 jiffies+1 面)
 TIMER0_RTI_PC='0x12ed0c'           # Timer0 RTI 尾(路 BE)
 CORE_TICK_HANDLER_PC='0x60661a4'   # core tick handler(路 BF)
 TASK_TABLE_PTR=0x126c5c            # 任务表[cnum=0]→TCB(first_task_setup 先例)
@@ -267,11 +267,20 @@ class _ChainTracker:
     def _close_one(self,sample):
         last_observed=max((i for i,stage in enumerate(CHAIN_STAGES)
                            if sample['hits'][stage]>0),default=-1)
+        # S18 专用锚(special_path 0x60108fe / handler_executed 0x6023962)只在
+        # 特路样本(id==0x10000c)上才构成链的一环:非特路 id(如 0x100006 走通用
+        # 分发表、别的 handler 认领)对这两个锚零命中 ≠ 「观察到没发生」,而是锚
+        # 不适用——记 None(未观测)不记 False(链断)。id_read 未观测(值 None)时
+        # 保持原语义(后续站命中而本站零命中=已钉锚未命中→False)。
+        non_special=(isinstance(sample.get('id_read_value'),str)
+                     and sample['id_read_value']!='0x10000c')
         stages={}
         for i,stage in enumerate(CHAIN_STAGES):
             hits=sample['hits'][stage]
             if hits>0:
                 stages[stage]=True
+            elif stage in ('special_path','handler_executed') and non_special:
+                stages[stage]=None  # S18 专用锚对非特路样本不适用:0 命中≠观察到没发生
             elif stage in STAGE_SITES and i<last_observed:
                 stages[stage]=False  # 已钉锚:后续站命中而本站零命中=观测到没发生
             else:
@@ -329,7 +338,7 @@ class D1WindowObserver:
         # (after_step 挂接位在 advance 前),快进段边沿=段终点即到期点)。
         self._pending_edges={'timer0':None,'core_tick':None}
         self._expiry_steps={'timer0':[],'core_tick':[]}
-        # jiffies 写序观测(D1-3;0x125004,写后值影子链)
+        # jiffies 写序观测(D1-3;0x124CA4=0x124C80+36,写后值影子链)
         self._jiffies_observations=[];self._jiffies_last=None
         self._loop_head_after_drain=0
         # W_park 锚定(§2.2,⑤ 收口:S19 循环头 0x60123e6 首达后的首次空队列
@@ -472,7 +481,7 @@ class D1WindowObserver:
                            'model_step':self._model_step(machine,1)})
 
     def note_memory_write(self,address,data):
-        """RAM 写钩子(D1-3 jiffies 面):0x125004 4 字节写序观测。写后值=写
+        """RAM 写钩子(D1-3 jiffies 面):0x124CA4 4 字节写序观测。写后值=写
         载荷,写前值=观察器影子(上次写后值;首次不可知=RAM 已被覆盖,记 None
         ——+1 语义由相邻写后值差判定,等价口径如实标注)。全程记录带模型步,
         窗口切分归 checker。"""
