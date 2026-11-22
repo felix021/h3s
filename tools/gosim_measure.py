@@ -47,6 +47,8 @@ def run_scenario(module, app, plain, readonly, header, rom, scenario, budget, ob
     probe_boot.gosim_dual_kinds = {}
     probe_boot.gosim_dual_lens = {}
     probe_boot.gosim_entry_stats = {}
+    probe_boot.gosim_dual_batch_steps = 0
+    probe_boot.gosim_dual_batch_calls = 0
     if observer is not None:
         observer.reset()
     result, trace = ait.frontier_run(
@@ -150,6 +152,9 @@ def main():
               (report_same, trace_same, n_off), flush=True)
         print('dual coverage: %d of %d completed steps (%d run_loop fills)' %
               (dual_steps, completed, dual_fills), flush=True)
+        print('dual batch: %d qualified steps in %d batches (%d per-step commits avoided)' %
+              (probe_boot.gosim_dual_batch_steps, probe_boot.gosim_dual_batch_calls,
+               probe_boot.gosim_dual_batch_steps - probe_boot.gosim_dual_batch_calls), flush=True)
         from gosim_dual_engine import timing_report
         tr = timing_report()
         if tr:
@@ -192,6 +197,10 @@ def main():
         print('dual_lens=%s' % dict(sorted(probe_boot.gosim_dual_lens.items())), flush=True)
     if probe_boot.gosim_entry_stats:
         print('entry_stats=%s' % dict(sorted(probe_boot.gosim_entry_stats.items())), flush=True)
+    if probe_boot.gosim_dual_batch_steps or probe_boot.gosim_dual_batch_calls:
+        print('dual_batch_steps=%d dual_batch_calls=%d avoided=%d' %
+              (probe_boot.gosim_dual_batch_steps, probe_boot.gosim_dual_batch_calls,
+               probe_boot.gosim_dual_batch_steps - probe_boot.gosim_dual_batch_calls), flush=True)
     from gosim_dual_engine import timing_report
     tr = timing_report()
     if tr:

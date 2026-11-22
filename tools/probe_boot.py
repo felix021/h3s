@@ -48,6 +48,8 @@ gosim_dual_fills = 0  # Go run_loop 调用次数(测量用)
 gosim_dual_kinds = {}  # kind -> fills(测量用)
 gosim_dual_lens = {}   # steps -> fills(测量用)
 gosim_entry_stats = {} # 入口门统计: reason x 指令族 x 数据地址类别(H3S_DUAL_KINDS)
+gosim_dual_batch_steps = 0  # 第二刀:成批消费的合格步数(测量用)
+gosim_dual_batch_calls = 0  # 第二刀:成批消费的批次数(测量用)
 
 class _DualIrqRequest:
     """Go 交回的 pending-eligible IRQ 伪装成 IrqDeliveryRequest,复用既有的
@@ -340,6 +342,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             post_stop=None,snapshot=None):
     global gosim_batch_steps, gosim_batch_fills, gosim_batch_zero_fills
     global gosim_dual_steps, gosim_dual_fills
+    global gosim_dual_batch_steps, gosim_dual_batch_calls
     # post_stop(opt-in,路 S/key-chain):主循环停点后、报告组装前的回调
     # post_stop(machine,hardware,stopped_cpu)->dict|None。用于在活机器上做
     # 「停点后直调」类探测(键链扫描直调等);返回的 dict 并进场景报告。
@@ -3132,6 +3135,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         dual_engine=DualCoreEngine(rom,app,ENTRY,regions=Memory.regions,
                                    readonly=(handoff['readonly'] if handoff else ()),
                                    mem=c.mem)
+        import sys as _sys
+        from analyze_image_trace import _register_signature as _reg_sig
     DUAL_CAP=256
 
     def _dual_kind(res):
@@ -3227,6 +3232,124 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if _t0 is not None:
             _dual_t('replay', time.perf_counter() - _t0)
         return row
+
+    # 第二刀:合格步(无写/无 SP 变化/无 hook/无 watch/具体寄存器)的成批消费。
+    # 合格步的 _post_step 只剩 rom_steps 计数(可加)、after_step 只剩签名追加
+    # 与恒定的 icfg_demands(可只算一次);decode 因诊断 64 行窗口仍需逐条保留。
+    # _dual_simple_excl 汇集 _post_step 里所有按 before_pc 触发的副作用锚点:
+    # task_frame_load + 诊断里程碑 + watch_pcs/watch_ram。after_step 的 hook
+    # 锚点(cfg523/启动锚/first-task)由 Go 的 CanProveNoop 已保证不在 dual_buf。
+    _dual_simple_excl = {0x06066120}
+    if diagnostics:
+        _dual_simple_excl.update((0x06000192, 0x06000f08, 0x060108bc))
+        _dual_simple_excl.update(diagnostics.get('watch_pcs', ()))
+        for _k in diagnostics.get('watch_ram_after_pc', ()):
+            try:
+                _dual_simple_excl.add(int(_k))
+            except (TypeError, ValueError):
+                pass
+
+    def _dual_step_simple(s):
+        if s.get('mem') or s.get('events') or s.get('walks') or s.get('mmio_reads'):
+            return False
+        # 具体寄存器 = rt 缺省或 16 个 tag 全 None(Go 侧 [16]*RegTag 恒定回传,
+        # 具体步全 None,抽象步含 dict tag)。
+        _rt = s.get('rt')
+        if _rt is not None:
+            for _t in _rt:
+                if _t is not None:
+                    return False
+        _sp = s.get('sp')
+        if _sp is not None and _sp != s.get('before_sp'):
+            return False
+        if s['pc'] in _dual_simple_excl:
+            return False
+        return True
+
+    def _dual_commit_batch(steps):
+        # 第二刀成批消费:对一段连续合格步,批量生成原格式寄存器签名并直接追加
+        # 签名 spool(与 TraceMachine.after_step 逐条路径逐字节一致),只对末步
+        # 落 CPU 态、合并 rom_steps、只算一次 icfg_demands;诊断 64 行窗口的 row
+        # 仍逐条构造(decode 保留),返回按序的 row 列表供外层记账。
+        global gosim_dual_batch_steps, gosim_dual_batch_calls
+        _t0 = time.perf_counter() if gosim_dual_engine is not None else None
+        rows = []
+        rom_count = 0
+        spool = machine.trace
+        _last_by_core = {}
+        for s in steps:
+            core = s['core']
+            pc = s['pc']
+            next_pc = s['next_pc']
+            cc = machine.cores[core]
+            if hardware is not None and hardware.debug is not None:
+                hardware.debug.check_fetch(pc, 1, core)
+            insn, raw, size = cc.decode(pc)
+            if hardware is not None and hardware.debug is not None:
+                extent = size
+                if insn.id.endswith('.p'):
+                    extent += cc.decode(pc + size)[2]
+                hardware.debug.check_fetch(pc, extent, core)
+            row = {'pc': hex(pc), 'core': core}
+            row['instruction_id'] = insn.id
+            row['bytes'] = s.get('insn')
+            row['_pending_text'] = (insn, raw)
+            row['next_pc'] = hex(next_pc)
+            rows.append(row)
+            _flags = s['flags']
+            _flags_str = _sys.intern(f'{_flags:02x}') if type(_flags) is int else repr(_flags)
+            spool.append((core, pc, next_pc, _flags_str,
+                          tuple(_sys.intern(v) for v in map(_reg_sig, s['r'])), ()))
+            if rom is not None and 0 <= pc < len(rom):
+                rom_count += 1
+            if s.get('adapter'):
+                adapters[s['adapter']] += 1
+            _last_by_core[core] = s
+        # 末态:每个核各自落到它在批内最后一步的 next_pc/flags/R(dual_buf 两核
+        # 交错,只更新最后一条所在的核会把另一核留在 restore 的整批末态,而不是
+        # 批内末态——后一步的写前 PC/note_memory_write 会读错)。
+        for core, s in _last_by_core.items():
+            _lc = machine.cores[core]
+            _lc.pc = s['next_pc']
+            _lc.flags = s['flags']
+            _lc.R = [v if type(v) is int else 0 for v in s['r']]
+        if rom_count:
+            rom_steps['completed_model_steps_in_rom'] += rom_count
+        if hardware is not None:
+            hardware.current_core = steps[-1]['core']
+            if any(s['core'] == 1 for s in steps):
+                hardware.secondary_cpu_executed = True
+        if machine is not None:
+            # 合格步不改 icfg,icfg_demands() 在整个 dual_buf 消费期恒定;与逐条
+            # after_step 在每步写入同一个值等价,故只写一次。
+            hardware.core_icfg = machine.icfg_demands()
+        gosim_dual_batch_steps += len(steps)
+        gosim_dual_batch_calls += 1
+        if _t0 is not None:
+            _dual_t('replay', time.perf_counter() - _t0)
+        return rows
+
+    def _dual_drain():
+        # 从 dual_buf 头部消费一段:连续合格步(≥2)走 _dual_commit_batch 成批,
+        # 否则逐条 _dual_commit。受剩余预算封顶:instruction_budget 按 attempts
+        # 计(每步一次 attempt),批内 n 步等价 n 次 attempt,故封顶
+        # budget-attempts+1(本轮 attempt 已计入)。
+        cap = budget - attempts + 1
+        if cap <= 0:
+            return []
+        n = 0
+        while n < cap and n < len(dual_buf) and _dual_step_simple(dual_buf[n]):
+            n += 1
+        if n >= 2:
+            rows = _dual_commit_batch(dual_buf[:n])
+            del dual_buf[:n]
+            return rows
+        s = dual_buf.pop(0)
+        return [_dual_commit(s['core'], s['pc'], s['next_pc'], s['flags'], s['r'],
+                             insn_hex=s.get('insn'), memwrites=s.get('mem'),
+                             adapter=s.get('adapter'), rt=s.get('rt'), events=s.get('events'),
+                             sp=s.get('sp'), before_sp=s.get('before_sp'),
+                             walks=s.get('walks'), mmio_reads=s.get('mmio_reads'))]
 
     # 双核快路径段头安全预判(纯省白费 fill 的优化,不参与正确性):只对「Go
     # 一定能提交 ≥1 步」的指令放行 run_loop,访存到 MMIO/未映射/未对齐等一律
@@ -3338,7 +3461,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             return False
         return _batch_safe(insn,module)
 
-    for _ in range(budget):
+    while attempts < budget:
         attempts+=1
         # ---- 入口门统计(H3S_DUAL_KINDS,纯只读,不改仿真状态) ----
         # 只在「新鲜入口」(双核 Go 使能、无缓冲步/无待处理 hazard、无诊断截停)
@@ -3408,14 +3531,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                      and not diagnostics.get('stop_on_rom_return'))) \
                 and dual_engine.cores_head_ok(machine.cores[0],machine.cores[1]):
             if dual_buf:
-                s=dual_buf.pop(0)
-                row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
-                                 insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                 adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'),walks=s.get('walks'),mmio_reads=s.get('mmio_reads'))
-                completed+=1
-                gosim_dual_steps+=1
-                trace.append(row)
-                if len(trace)>64:trace.pop(0)
+                _rows=_dual_drain()
+                if not _rows:
+                    break  # 预算耗尽:剩余步不再提交,转 instruction_budget 停点
+                for row in _rows:
+                    completed+=1
+                    gosim_dual_steps+=1
+                    trace.append(row)
+                    if len(trace)>64:trace.pop(0)
+                attempts += len(_rows) - 1  # 成批 n 步等价 n 次 attempt(本轮已计 1)
                 if stop is not None:break
                 continue
             if dual_hazard is not None:
@@ -3518,15 +3642,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                         # 下一圈再 pop),让「一次 fill=一次 attempt」的账本与
                         # 「每 attempt 产出 1 步」对齐:fill 本身不再空耗一次
                         # attempt,instruction_budget 按步数而非迭代数计。提交
-                        # 口径与下方 dual_buf 消费分支逐字一致。
-                        s=dual_buf.pop(0)
-                        row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
-                                         insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                         adapter=s.get('adapter'),rt=s.get('rt'),events=s.get('events'),sp=s.get('sp'),before_sp=s.get('before_sp'),walks=s.get('walks'),mmio_reads=s.get('mmio_reads'))
-                        completed+=1
-                        gosim_dual_steps+=1
-                        trace.append(row)
-                        if len(trace)>64:trace.pop(0)
+                        # 口径与下方 dual_buf 消费分支逐字一致(第二刀:连续合格
+                        # 步在此成批消费)。
+                        _rows=_dual_drain()
+                        if not _rows:
+                            break  # 预算耗尽
+                        for row in _rows:
+                            completed+=1
+                            gosim_dual_steps+=1
+                            trace.append(row)
+                            if len(trace)>64:trace.pop(0)
+                        attempts += len(_rows) - 1  # 成批 n 步等价 n 次 attempt
                         if stop is not None:break
                         continue
                     if dual_hazard is not None:
