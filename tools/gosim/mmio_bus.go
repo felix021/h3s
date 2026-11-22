@@ -16,9 +16,81 @@ const (
 	ipmaskAddr    = 0xffe1a8
 	irqConfigSpan = 128
 	irq1Offset    = 0x800
+
+	// CRC engine block (br28_model.HardwareCrcEngine, opt-in via the same
+	// hardware_crc_projection flag Python gates on): 0xfd3500 feeds one byte,
+	// 0xfd3504 loads the seed / returns the current CRC.
+	crcEngineBase = 0xfd3500
+	crcEnginePoly = 0x1021
 )
 
 func irqWordIndex(addr uint32) int { return int((addr - irqConfigBase) / 4) }
+
+// CrcEngine is the opt-in hardware CRC engine functional-equivalence projection
+// (br28_model.HardwareCrcEngine): the algorithm is the app software CRC-16 table
+// parameters — polynomial 0x1021, MSB-first left shift, initial value = the
+// written seed, no xor-out / reflection. Crc == nil means unseeded (the reset
+// state is unknown; a feed or read before a seed is a strict stop). The Go side
+// carries only the accumulator value: the report bookkeeping (seed_writes /
+// fed_bytes / result_reads) and the general write ledger stay Python-side,
+// re-derived by the replay of each committed feed/seed through c.mem.write, so a
+// feed is applied exactly once per side (never twice to one accumulator).
+type CrcEngine struct {
+	Crc *uint32 // nil = unseeded (reset state unknown)
+}
+
+// handlesCRCWord reports whether addr is a CRC engine word (0xfd3500 feed or
+// 0xfd3504 seed/result) with the projection enabled, matching br28_model's
+// `crc_engine is not None and crc_engine.handles(address)` gate exactly.
+func (p *PeriphState) handlesCRCWord(addr uint32) bool {
+	return p.Crc != nil && (addr == crcEngineBase || addr == crcEngineBase+4)
+}
+
+// crcFeed mirrors HardwareCrcEngine._feed: crc ^= byte<<8 then eight rounds of
+// MSB-first left shift with the 0x1021 polynomial.
+func crcFeed(crc uint32, b byte) uint32 {
+	crc ^= uint32(b) << 8
+	for i := 0; i < 8; i++ {
+		if crc&0x8000 != 0 {
+			crc = ((crc << 1) ^ crcEnginePoly) & 0xffff
+		} else {
+			crc = (crc << 1) & 0xffff
+		}
+	}
+	return crc
+}
+
+func (p *PeriphState) readCRC(addr uint32) (uint32, *MemError) {
+	if addr == crcEngineBase {
+		return 0, &MemError{Kind: "crc_data_port_read_not_modeled", Access: "read", Address: addr, Size: 4}
+	}
+	if p.Crc.Crc == nil {
+		return 0, &MemError{Kind: "unknown_crc_engine_reset_state", Access: "read", Address: addr, Size: 4}
+	}
+	return *p.Crc.Crc, nil
+}
+
+func (p *PeriphState) writeCRC(addr uint32, value uint32) *MemError {
+	if addr == crcEngineBase+4 {
+		if value > 0xffff {
+			return &MemError{Kind: "crc_seed_width_not_modeled", Access: "write", Address: addr, Size: 4}
+		}
+		v := value
+		p.Crc.Crc = &v
+		return nil
+	}
+	// addr == crcEngineBase (the feed port; any other CRC word never routes
+	// here because handlesCRCWord only admits base/base+4).
+	if value > 0xff {
+		return &MemError{Kind: "crc_feed_width_not_modeled", Access: "write", Address: addr, Size: 4}
+	}
+	if p.Crc.Crc == nil {
+		return &MemError{Kind: "crc_feed_before_seed_unknown", Access: "write", Address: addr, Size: 4}
+	}
+	v := crcFeed(*p.Crc.Crc, byte(value))
+	p.Crc.Crc = &v
+	return nil
+}
 
 // handlesIRQWord reports whether addr is one of the IRQ-controller words the Go
 // periph models (core 0 always; core 1 only under multicore), matching the
@@ -46,13 +118,16 @@ func (p *PeriphState) handlesIRQWord(addr uint32) bool {
 // Handles is the Bus.Handles method: aligned 4-byte words only, mirroring
 // hardware.handles()'s size==4 and address%4==0 gate.
 func (p *PeriphState) Handles(addr uint32, size int) bool {
-	return size == 4 && addr%4 == 0 && p.handlesIRQWord(addr)
+	return size == 4 && addr%4 == 0 && (p.handlesIRQWord(addr) || p.handlesCRCWord(addr))
 }
 
-// Read is the Bus.Read method: the IRQ config / IPMASK readback. A nil
-// register raises the same strict stop Python does (core-1 uses the distinct
-// cpu1 kinds).
+// Read is the Bus.Read method: the CRC result read, then the IRQ config / IPMASK
+// readback. A nil register raises the same strict stop Python does (core-1 uses
+// the distinct cpu1 kinds).
 func (p *PeriphState) Read(addr uint32) (uint32, *MemError) {
+	if p.handlesCRCWord(addr) {
+		return p.readCRC(addr)
+	}
 	if p.MulticoreEnabled && addr >= irqConfigBase+irq1Offset {
 		ic := p.IRQ1
 		if addr == ipmaskAddr+irq1Offset {
@@ -81,9 +156,12 @@ func (p *PeriphState) Read(addr uint32) (uint32, *MemError) {
 	return *v, nil
 }
 
-// Write is the Bus.Write method: the IRQ config / IPMASK store (including the
-// 0..7 priority-mask bound).
+// Write is the Bus.Write method: the CRC feed/seed store, then the IRQ config /
+// IPMASK store (including the 0..7 priority-mask bound).
 func (p *PeriphState) Write(addr uint32, value uint32) *MemError {
+	if p.handlesCRCWord(addr) {
+		return p.writeCRC(addr, value)
+	}
 	if p.MulticoreEnabled && addr >= irqConfigBase+irq1Offset {
 		ic := p.IRQ1
 		if addr == ipmaskAddr+irq1Offset {

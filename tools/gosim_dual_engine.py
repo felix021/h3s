@@ -445,6 +445,15 @@ def _audio_adc_dma_state(a):
     }
 
 
+def _crc_state(e):
+    # The Go side only needs the accumulator value (to keep feeding inside one
+    # segment). seed_writes / fed_bytes / result_reads and the general write
+    # ledger stay Python-side: the replay of each committed feed/seed through
+    # c.mem.write re-derives them exactly once, so a feed is applied once per
+    # side (never twice to one accumulator) and the write ledger stays intact.
+    return {'crc': e.crc}
+
+
 def periph_state(hw):
     core_icfg = [hw.core_icfg.get(0), hw.core_icfg.get(1)]
     core_ticks = ([_coretick_state(t) for t in hw.core_ticks]
@@ -473,6 +482,7 @@ def periph_state(hw):
         'software_irq': _software_irq_state(hw.software_irq) if hw.software_irq is not None else None,
         'src_sync': _src_sync_state(hw.jl_src_sync_delivery) if hw.jl_src_sync_delivery is not None else None,
         'audio_adc_dma': _audio_adc_dma_state(hw.jl_audio_adc_dma) if hw.jl_audio_adc_dma is not None else None,
+        'crc': _crc_state(hw.crc_engine) if hw.crc_engine is not None else None,
     }
 
 
@@ -580,6 +590,10 @@ def restore_periph(hw, gs):
         _restore_src_sync(hw.jl_src_sync_delivery, gs['src_sync'])
     if hw.jl_audio_adc_dma is not None and gs['audio_adc_dma'] is not None:
         _restore_audio_adc_dma(hw.jl_audio_adc_dma, gs['audio_adc_dma'])
+    # crc is intentionally NOT restored back into hw.crc_engine: the committed
+    # feed/seed steps are replayed through c.mem.write, which updates the live
+    # crc_engine (accumulator + bookkeeping + write ledger) exactly once.
+    # Restoring the Go accumulator here would double-apply the feeds.
 
 
 def _restore_timer(t, s):

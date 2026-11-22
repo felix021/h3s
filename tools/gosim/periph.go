@@ -283,6 +283,7 @@ type PeriphState struct {
 	SoftwareIRQ *SoftwareIrqCommands         // nil = absent
 	SrcSync     *JLSrcSyncDelivery           // nil = no SRC-SYNC delivery model (M5)
 	AudioAdcDma *AudioAdcDmaDelivery         // nil = no ADC-DMA model (M5)
+	Crc         *CrcEngine                   // nil = hardware CRC projection disabled
 
 	// Delivery-request flags (mirror the BR28Model kwargs of the same names).
 	// False = a pending-and-eligible IRQ is a strict stop (the strict default);

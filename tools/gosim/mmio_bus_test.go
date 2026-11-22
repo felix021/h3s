@@ -74,6 +74,72 @@ func TestMMIOBusIRQRouting(t *testing.T) {
 	}
 }
 
+// TestMMIOBusCRCRouting pins the CRC-engine MMIO routing and functional
+// projection against the br28_model.HardwareCrcEngine semantics (polynomial
+// 0x1021, MSB-first left shift, initial value = written seed): the known
+// CRC-16/CCITT vector and the strict stops (unseeded read / feed before seed /
+// width bounds / data-port read / unmodeled register).
+func TestMMIOBusCRCRouting(t *testing.T) {
+	p := &PeriphState{Crc: &CrcEngine{}}
+	if !p.Handles(crcEngineBase, 4) || !p.Handles(crcEngineBase+4, 4) {
+		t.Fatal("CRC engine words not handled")
+	}
+	// unseeded read is a strict stop.
+	if _, err := p.Read(crcEngineBase + 4); err == nil || err.Kind != "unknown_crc_engine_reset_state" {
+		t.Fatalf("unseeded result read = %v", err)
+	}
+	// feed before seed is a strict stop.
+	if err := p.Write(crcEngineBase, 0); err == nil || err.Kind != "crc_feed_before_seed_unknown" {
+		t.Fatalf("feed before seed = %v", err)
+	}
+	// seed width bound.
+	if err := p.Write(crcEngineBase+4, 0x10000); err == nil || err.Kind != "crc_seed_width_not_modeled" {
+		t.Fatalf("seed width = %v", err)
+	}
+	// data port read is a strict stop.
+	if _, err := p.Read(crcEngineBase); err == nil || err.Kind != "crc_data_port_read_not_modeled" {
+		t.Fatalf("data port read = %v", err)
+	}
+
+	// known vector: seed 0, feed "123456789" -> 0x31c3 (CRC-16/XMODEM).
+	if err := p.Write(crcEngineBase+4, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []byte("123456789") {
+		if err := p.Write(crcEngineBase, uint32(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v, err := p.Read(crcEngineBase + 4)
+	if err != nil || v != 0x31c3 {
+		t.Fatalf("123456789 CRC = %#x, %v", v, err)
+	}
+	// seed reads back before any feed.
+	if err := p.Write(crcEngineBase+4, 0xffff); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := p.Read(crcEngineBase + 4); err != nil || v != 0xffff {
+		t.Fatalf("seed readback = %#x, %v", v, err)
+	}
+	if err := p.Write(crcEngineBase, 0x100); err == nil || err.Kind != "crc_feed_width_not_modeled" {
+		t.Fatalf("feed width = %v", err)
+	}
+	// a write to an unmodeled CRC word is not handled (faults back to Python).
+	if p.Handles(crcEngineBase+8, 4) {
+		t.Fatal("unmodeled CRC word wrongly handled")
+	}
+
+	// disabled projection (nil Crc) does not handle the words.
+	d := &PeriphState{}
+	if d.Handles(crcEngineBase, 4) || d.Handles(crcEngineBase+4, 4) {
+		t.Fatal("disabled CRC projection wrongly handled")
+	}
+	// unaligned / non-word sizes are not handled.
+	if p.Handles(crcEngineBase, 1) || p.Handles(crcEngineBase+1, 4) {
+		t.Fatal("unaligned or byte-sized CRC access wrongly handled")
+	}
+}
+
 // TestMMUTranslate pins the virtual-window translation against the br28_model
 // MMU semantics: identity outside [0x400000, 0x800000), page-table walk inside.
 func TestMMUTranslate(t *testing.T) {

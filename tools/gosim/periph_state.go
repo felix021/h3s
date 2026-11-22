@@ -398,6 +398,26 @@ func audioAdcDmaToJSON(a *AudioAdcDmaDelivery) *audioAdcDmaStateJSON {
 	}
 }
 
+// ---- CrcEngine (br28_model.HardwareCrcEngine) --------------------------------
+
+type crcStateJSON struct {
+	Crc *uint32 `json:"crc"`
+}
+
+func crcFromJSON(s *crcStateJSON) *CrcEngine {
+	if s == nil {
+		return nil
+	}
+	return &CrcEngine{Crc: s.Crc}
+}
+
+func crcToJSON(e *CrcEngine) *crcStateJSON {
+	if e == nil {
+		return nil
+	}
+	return &crcStateJSON{Crc: e.Crc}
+}
+
 // ---- PeriphState (whole advance-chain state) ----------------------------------
 
 type periphStateJSON struct {
@@ -424,6 +444,7 @@ type periphStateJSON struct {
 	SoftwareIRQ                  *softwareIrqStateJSON `json:"software_irq"`
 	SrcSync                      *srcSyncStateJSON   `json:"src_sync"`
 	AudioAdcDma                  *audioAdcDmaStateJSON `json:"audio_adc_dma"`
+	Crc                          *crcStateJSON        `json:"crc"`
 }
 
 // StateJSON serializes the advance-relevant PeriphState (Timer0 / IRQ / core
@@ -479,6 +500,9 @@ func (p *PeriphState) StateJSON() ([]byte, error) {
 	}
 	if p.AudioAdcDma != nil {
 		s.AudioAdcDma = audioAdcDmaToJSON(p.AudioAdcDma)
+	}
+	if p.Crc != nil {
+		s.Crc = crcToJSON(p.Crc)
 	}
 	return json.Marshal(s)
 }
@@ -578,6 +602,11 @@ func (p *PeriphState) LoadStateJSON(data []byte) error {
 		p.AudioAdcDma = nil
 	} else {
 		p.AudioAdcDma = audioAdcDmaFromJSON(s.AudioAdcDma)
+	}
+	if s.Crc == nil {
+		p.Crc = nil
+	} else {
+		p.Crc = crcFromJSON(s.Crc)
 	}
 	return nil
 }

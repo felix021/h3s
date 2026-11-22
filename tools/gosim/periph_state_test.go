@@ -143,3 +143,45 @@ func TestPeriphStateJSONRoundTripFullModels(t *testing.T) {
 		t.Fatalf("full-model advance from transferred state diverged:\n  want=%s\n  got =%s", want, got)
 	}
 }
+
+// TestPeriphStateJSONRoundTripCRC pins the CrcEngine round-trip through the same
+// StateJSON/LoadStateJSON entry point (seeded value and unseeded nil crc) with
+// byte-identity.
+func TestPeriphStateJSONRoundTripCRC(t *testing.T) {
+	p := &PeriphState{SourceTicksPerStep: 4, MulticoreEnabled: true}
+	p.Crc = &CrcEngine{Crc: u32p(0x31c3)}
+	first, err := p.StateJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := &PeriphState{}
+	if err := fresh.LoadStateJSON(first); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Crc == nil || *fresh.Crc.Crc != 0x31c3 {
+		t.Fatalf("crc round-trip mismatch: %+v", fresh.Crc)
+	}
+	second, err := fresh.StateJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("crc state transfer round-trip changed bytes:\n  first =%s\n  second=%s", first, second)
+	}
+
+	// Unseeded engine (Crc != nil with nil crc value) must round-trip as null,
+	// not vanish.
+	u := &PeriphState{SourceTicksPerStep: 4}
+	u.Crc = &CrcEngine{}
+	uFirst, err := u.StateJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	uFresh := &PeriphState{}
+	if err := uFresh.LoadStateJSON(uFirst); err != nil {
+		t.Fatal(err)
+	}
+	if uFresh.Crc == nil || uFresh.Crc.Crc != nil {
+		t.Fatalf("unseeded crc round-trip mismatch: %+v", uFresh.Crc)
+	}
+}

@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tools" / "gosim"))
 
 from probe_boot import Blocked, IrqDeliveryRequest  # noqa: E402
-from br28_model import BR28Model, ICU_BASES, TIMER2, WDT_CON, WDT_KEY  # noqa: E402
+from br28_model import BR28Model, CRC_ENGINE, ICU_BASES, TIMER2, WDT_CON, WDT_KEY  # noqa: E402
 from gosim_world import GosimPeriph  # noqa: E402
 
 
@@ -134,6 +134,10 @@ def audio_adc_dma_state(a):
     }
 
 
+def crc_state(e):
+    return {"crc": e.crc}
+
+
 def py_state(hw):
     core_icfg = [hw.core_icfg.get(0), hw.core_icfg.get(1)]
     core_ticks = [coretick_state(t) for t in hw.core_ticks] if hw.core_ticks else [None, None]
@@ -161,6 +165,7 @@ def py_state(hw):
         "software_irq": software_irq_state(hw.software_irq) if hw.software_irq is not None else None,
         "src_sync": src_sync_state(hw.jl_src_sync_delivery) if hw.jl_src_sync_delivery is not None else None,
         "audio_adc_dma": audio_adc_dma_state(hw.jl_audio_adc_dma) if hw.jl_audio_adc_dma is not None else None,
+        "crc": crc_state(hw.crc_engine) if hw.crc_engine is not None else None,
     }
 
 
@@ -301,6 +306,17 @@ def _drive_audio_adc_dma(hw, rng):
         a.note_con_write(0x40)  # W1C clears pending + delivery_in_flight
 
 
+def _drive_crc(hw, rng):
+    e = hw.crc_engine
+    sub = rng.random()
+    if sub < 0.35:
+        e.write(CRC_ENGINE + 4, rng.randrange(0x10000))
+    elif sub < 0.9 and e.crc is not None:
+        e.write(CRC_ENGINE, rng.randrange(0x100))
+    elif e.crc is not None:
+        e.read(CRC_ENGINE + 4)
+
+
 def mutate_py(hw, rng):
     """Drive every present model through real ops so the live state carries
     fractional remainders / expirations / delivery_in_flight / pending, then let
@@ -321,6 +337,8 @@ def mutate_py(hw, rng):
         _drive_src_sync(hw, rng)
     if hw.jl_audio_adc_dma is not None:
         _drive_audio_adc_dma(hw, rng)
+    if hw.crc_engine is not None:
+        _drive_crc(hw, rng)
 
 
 # ---- configs ------------------------------------------------------------------
@@ -376,6 +394,7 @@ def build_configs():
                                           audio_adc_dma_delivery=True,
                                           audio_adc_dma_delivery_requests=True,
                                           initial_irq_config=_cfg_word(8, 4))),
+        dict(label="crc", kwargs=dict(base, hardware_crc_projection=True)),
         dict(label="all-models", kwargs=dict(
             initial_ipmask=2,
             initial_irq_config=_all_cfg(),
@@ -394,7 +413,8 @@ def build_configs():
             audio_adc_dma_delivery=True, audio_adc_dma_delivery_requests=True,
             jl_src_sync_config_words=True, jl_src_sync_full_block=True,
             jl_src_sync_delivery=True, jl_src_sync_delivery_requests=True,
-            jl_src_sync_completion_steps=10)),
+            jl_src_sync_completion_steps=10,
+            hardware_crc_projection=True)),
     ]
     return configs
 
