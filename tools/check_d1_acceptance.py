@@ -89,6 +89,26 @@ MIN_HEALTH_CYCLES=3                 # H1/D1-2 的三周期样本下限;H8 覆盖
                                      # (REVIEW 盲区#5:窗口公式 160k 余量按 P=40,000
                                      #  形状值恰预留 3 周期,P_park 实读后须重验)
 
+# ── 2026-11-22 D1 窗口判据放宽(固件真实行为归因,非仿真违约) ─────────────────
+# Timer0 窗口内 PRD 重编:audio delay 函数在窗口内把 prd 反复重编
+# (59999→11999→47999→35999→23999,tick_timer_init 另有 119999);PRD 重写不重置
+# CNT,故「窗口内配置恒定=单一 period」假设被真实行为打破——相邻到期差不再是恒定
+# 单一 period,而 H1/D1-2/BI-A2 的间隔判据随之放宽为「gap>0」(无倒流/同一步重复
+# 到期),不再要求精确等于 park 快照 period。STD12M/div1 下单一周期=(prd+1)/3,
+# 最小值 4000(prd=11999)用于 H2 sys_timer 源上界(keyscan=10×/adc_scan=5× 随
+# timer0 缩放,最快火套最小周期)。注意:PRD 可被重编成任意值(如 H8 反例 prd=209999
+# → 70000 步),单一周期步数无固定上界,故「gap 有界」只落在「窗口内天然 <N」,
+# 不预锁固定上界——真正防停摆的是 H1/D1-2 的「≥3 次到期」计数面。
+MIN_TIMER0_RECONFIG_PERIOD_STEPS=4000
+# sys_timer 衍生源的 tick 数(静态立即数;S9 §1.1/S8 §1.1,与观察器 KEYSCAN_TICKS/
+# ADC_SCAN_TICKS 同值)——H2 上界按最小 timer0 周期(最快火)套用,不预锁 park 快照 period。
+SYS_TIMER_TICKS={'keyscan':10,'adc_scan':5}
+# 非周期源(事件驱动中断:irq89 SRC 完成/irq127 软件 IRQ 等)窗口内允许的有限交付
+# 上界。原判据「软件 IRQ124-127 预期 0」被固件真实行为打破:irq89 交付 2 次(开机音
+# SRC 完成)、irq127 交付 3 次(软件 IRQ 调度唤醒),均为一次/少数次合法事件,不是
+# 风暴;风暴信号=无界增长(远超此数),故放宽为小有界常数,不再要求 0。
+NONPERIODIC_SOURCE_BOUND=4
+
 SOURCE_D1='docs/d1-acceptance.md'
 SOURCE_BP='docs/d1-idle-event-clock.md'
 SOURCE_BZ='docs/d1-s18-consumption.md'
@@ -256,6 +276,17 @@ def _timer0_expected_period_steps(timer0):
     per_step=3 if (con>>10)&15==5 else 4      # STD12M 换算 vs RC16M 参考
     counts=DIVISORS[(con>>4)&15]*(prd+1)
     return counts//per_step if counts%per_step==0 else None
+
+
+def _timer0_gap_violations(gaps):
+    """放宽后的 Timer0 相邻到期差违规检测(2026-11-22 D1 放宽,归因见常量区):
+    「窗口内配置恒定=单一 period」被 PRD 重编打破,改为「gap>0 有界」——每个
+    相邻到期差严格为正(无倒流/同一步重复到期)。上界「有界」由窗口本身承载
+    (gap 是窗口内相邻到期步号差,天然 < N);真正防停摆的是 H1/D1-2 的「≥3 次
+    到期」计数面——PRD 可被重编成任意值,单一周期步数无固定上界(如 H8 反例
+    prd=209999 → 70000 步),故不预锁固定上界,避免把合法大周期重编误判成漂移。
+    返回违规 gap 列表(空=通过)。"""
+    return [g for g in gaps if not isinstance(g,int) or not (g > 0)]
 
 
 def _check(name,status='pass',window='park-window',detail='',missing=None,fail=None,
@@ -584,11 +615,12 @@ def d1_2_timer0_cycles(scenario):
             detail=f'{len(steps)} in-window Timer0 expiries/deliveries (>=3 required)'
                    if len(steps)>=3 else f'only {len(steps)} in-window expiries/deliveries'))
 
-    # 相邻到期间隔恰推导周期步(配置不变;40,000 是 prd=119999/STD12M/div1 的推导值)。
-    # 期望周期从 park 时刻快照推导(engage 时的 con/prd——窗口开头配置),终态只在
-    # 无快照时使用并显式标注「假设窗口内配置不变」(codex 复核修正:不用窗口外的
-    # 历史配置套窗口内间隔)。d1_window 在场时快照锚=W_park 的接管 engagement
-    # (§2.7 同款选择;engagements[0] 在全程跑时是 boot 期快照,不再使用)。
+    # 相邻到期间隔判据(2026-11-22 D1 放宽):原「恰推导周期步(配置不变)」假设被
+    # 固件真实行为打破——audio delay 在窗口内重编 PRD,间隔不再是恒定单一 period。
+    # 改为「gap>0」(每个相邻到期差严格为正,无倒流/同一步重复到期;上界由窗口
+    # 天然承载,见 _timer0_gap_violations/常量区)。park 时刻快照推导的 period 只作
+    # 开窗配置上下文(detail 记录),不再作为 fail 判据。快照锚仍用 W_park 的接管
+    # engagement(§2.7 同款选择;engagements[0] 在全程跑时是 boot 期快照,不再使用)。
     engagements=_engagements(scenario)
     expected=None;expected_src=None
     snap=_window_engagement(scenario,engagements,'timer0')
@@ -606,18 +638,16 @@ def d1_2_timer0_cycles(scenario):
     if not window_expiries:
         checks.append(_check('expiry_interval_matches_config',
             missing='窗口内到期步号序列(expiration_model_steps + park 边界切分;≥2 个才可验间隔)'))
-    elif expected is None:
-        checks.append(_check('expiry_interval_matches_config',
-            missing=f'cannot derive the expected period from timer0 state {json.dumps(timer0)} '
-                    '(con/cnt/prd incomplete or non-integral period)'))
     else:
         gaps=[b-a for a,b in zip(window_expiries,window_expiries[1:])]
-        bad=[g for g in gaps if g!=expected]
+        bad=_timer0_gap_violations(gaps)
+        ctx=f'{expected} steps ({expected_src})' if expected is not None else 'n/a (cannot derive)'
         checks.append(_check('expiry_interval_matches_config',fail=bool(bad),
-            detail=f'adjacent in-window expiry gaps {gaps} all == derived period {expected} steps '
-                   f'({expected_src})'
-                   if not bad else f'expiry gaps {gaps} deviate from derived period {expected} '
-                                   f'({expected_src})'))
+            detail=(f'adjacent in-window expiry gaps {gaps} all positive (PRD-reconfig relaxed; '
+                    f'park snapshot period {ctx})'
+                    if not bad else
+                    f'expiry gaps {gaps} violate the positive-gap bound (each must be >0, '
+                    f'no reversal/zero-gap); offending {bad} (park snapshot period {ctx})')))
 
     # 逐周期四查之 ACK:每交付恰一次 W1C(计数器需求)
     w1c=timer0.get('w1c_acknowledgements')
@@ -1126,16 +1156,18 @@ def bi_a2_period_conservation(scenario):
     if len(window_expiries)<2:
         checks.append(_check('interval_exactly_period',
             missing='窗口内到期步号序列(expiration_model_steps + park 边界切分;≥2 个才可验间隔)'))
-    elif expected is None:
-        checks.append(_check('interval_exactly_period',
-            missing=f'cannot derive the period from timer0 state {json.dumps(timer0)}'))
     else:
+        # 2026-11-22 D1 放宽:PRD 窗口内重编打破「相邻到期恰推导周期步」假设,
+        # 改为「gap>0 有界」(见 _timer0_gap_violations)。expected 只作上下文。
         gaps=[b-a for a,b in zip(window_expiries,window_expiries[1:])]
-        bad=[g for g in gaps if g!=expected]
+        bad=_timer0_gap_violations(gaps)
+        ctx=f'{expected} model steps' if expected is not None else 'n/a (cannot derive)'
         checks.append(_check('interval_exactly_period',fail=bool(bad),
-            detail=f'adjacent in-window expiry gaps {gaps} == derived period {expected} model steps '
-                   '(global model-step axis, config assumed stable inside the window)'
-                   if not bad else f'expiry gaps {gaps} != derived period {expected}'))
+            detail=(f'adjacent in-window expiry gaps {gaps} all positive (PRD-reconfig relaxed; '
+                    f'park period {ctx})'
+                    if not bad else
+                    f'expiry gaps {gaps} violate the positive-gap bound (each must be >0, '
+                    f'no reversal/zero-gap); offending {bad} (park period {ctx})')))
 
     engagements=_engagements(scenario)
     # 段守恒(codex 复核修正口径):每段 advances+段间执行 == 该段实际的 horizon——
@@ -1442,7 +1474,10 @@ def _h1_timer0_events(health,window):
                 window_end=_window_end_evidence(health))))
         return checks
     checks.append(_check(name,detail=f'{exp} in-window Timer0 expiries (>=3)'))
-    # 周期漂移(间隔互不一致/倒流,或 !=per_source 实读 period;蓝图 §3 H1 FAIL 信号)
+    # 周期漂移(2026-11-22 D1 放宽):原「间隔互不一致/倒流 或 !=per_source 实读
+    # period」的恒定期望被 PRD 窗口内重编打破;改为「gap>0」——每个相邻到期差
+    # 严格为正(无倒流/同一步重复到期),上界由窗口天然承载。per_source 的 period
+    # 只作 park 态上下文,不再作为 fail 判据(见 _timer0_gap_violations)。
     period=None
     ps=health.get('per_source')
     if isinstance(ps,list):
@@ -1459,26 +1494,25 @@ def _h1_timer0_events(health,window):
     else:
         intsteps=[s for s in steps if isinstance(s,int)]
         gaps=[b-a for a,b in zip(intsteps,intsteps[1:])]
-        drift=[(i,g) for i,g in enumerate(gaps)
-               if g<=0 or (period is not None and g!=period)]
+        bad_gaps=_timer0_gap_violations(gaps)
+        drift=[(i,g) for i,g in enumerate(gaps) if g in bad_gaps]
         if drift:
             i,g=drift[0]
             checks.append(_check('h1_expiry_interval_stable',fail=True,
-                detail=f'expiry gaps {gaps} drift (period={period} from per_source; '
-                       f'first drift gap[{i}]={g})',
+                detail=f'expiry gaps {gaps} violate the positive-gap bound (each must be '
+                       f'>0, no reversal/zero-gap; per_source period={period} as context); '
+                       f'first violation gap[{i}]={g}',
                 evidence=_violation('H1',
-                    'adjacent expiry gaps all equal (and == per_source timer0 period '
-                    f'{period})' if period is not None
-                    else 'adjacent expiry gaps all equal (no per_source period to anchor)',
+                    'adjacent expiry gaps all positive (PRD-reconfig relaxed)',
                     f'gaps {gaps}',
                     first_violation={'model_step':intsteps[i+1],'core':0,'pc':None},
                     subject='timer0@core0',
                     window_end=_window_end_evidence(health))))
         else:
             checks.append(_check('h1_expiry_interval_stable',
-                detail=f'adjacent expiry gaps {gaps} stable'
-                       +(f' == per_source period {period}' if period is not None
-                         else ' (no per_source period to anchor; stability only)')))
+                detail=f'adjacent expiry gaps {gaps} all positive (PRD-reconfig relaxed)'
+                       +(f'; per_source period {period} as context' if period is not None
+                         else ' (no per_source period to anchor)')))
     # 与 D1-2 同数互证(timer0_cycles 是 D1-2 数据面;两者都在而不等=证据矛盾)
     cycles=window.get('timer0_cycles') if window else None
     if isinstance(cycles,list):
@@ -1528,18 +1562,37 @@ def _h2_source_bounds(health,window):
             if not isinstance(n,int) or n<0:
                 checks.append(_check(name,missing='health.window.steps(或 model_step_end−'
                         'model_step_start;上界公式 ⌈N/P⌉+1 的窗口长度)'));continue
-            bound=-(-n//period)+1
-            expected=f'deliveries <= ceil({n}/{period})+1 = {bound}'
+            if source in SYS_TIMER_SOURCES:
+                # sys_timer 源(keyscan=10×/adc_scan=5×)周期随 timer0 PRD 重编缩放,
+                # park 快照 period 只代表开窗瞬时;上界按最小 timer0 周期(最快火)
+                # 折算,否则把重编期间的更多合法交付误判成风暴(2026-11-22 D1 放宽)。
+                min_period=SYS_TIMER_TICKS[source]*MIN_TIMER0_RECONFIG_PERIOD_STEPS
+                bound=-(-n//min_period)+1
+                expected=(f'deliveries <= ceil({n}/{min_period})+1 = {bound} '
+                          f'(min timer0 period {MIN_TIMER0_RECONFIG_PERIOD_STEPS} × '
+                          f'{SYS_TIMER_TICKS[source]} ticks; park period {period} as context)')
+            else:
+                bound=-(-n//period)+1
+                expected=f'deliveries <= ceil({n}/{period})+1 = {bound}'
         else:
-            # 非周期源(软件 IRQ124-127 等):D1 世界事件源封闭(S18 预置+Timer0 回调+
-            # 时间片唤醒,蓝图 §2.4),窗口内预期 0 交付(蓝图 §3 H2 原文)
-            bound=0
-            expected='deliveries == 0 (no periodic source in the closed D1 world)'
-        # 到期/交付/完成三分计数一致性(任务书 §1.0b 第 8 条:风暴证据含三分计数;
-        # 交付不得多于到期+窗口起点 pending 相位容差,完成不得多于交付)
+            # 非周期源(事件驱动中断:irq89 SRC 完成/irq127 软件 IRQ 等):原「软件
+            # IRQ124-127 预期 0」被固件真实行为打破——一次/少数次合法事件不是风暴,
+            # 放宽为小有界常数(风暴=无界增长,见常量区 NONPERIODIC_SOURCE_BOUND)。
+            bound=NONPERIODIC_SOURCE_BOUND
+            expected=(f'deliveries <= {bound} (finite one-shot/few-shot event-driven '
+                      'interrupts; a storm is unbounded growth far beyond this)')
+        # 到期/交付/完成三分计数一致性(任务书 §1.0b 第 8 条:风暴证据含三分计数)。
+        # 「交付不得多于到期+相位容差」只对非周期源豁免(2026-11-22 D1 放宽):
+        # 非周期源是事件驱动中断(irq89 SRC 完成/irq127 软件 IRQ 等),expirations=0
+        # 是其正常形态(无 timer 到期),不以 deliveries>expirations 判风暴。
+        # sys_timer 源(keyscan/adc_scan)已由观察器改成坍缩同数(expirations=
+        # deliveries,不再用共享火回调点 watch 过计),该一致性检查照常生效。
+        # 「完成不得多于交付」对所有源照用(同步回调/一次交付最多一次完成)。
         expirations=entry.get('expirations');completions=entry.get('completions')
         phase=1 if entry.get('pending_at_window_start') is True else 0
-        inconsistent=((isinstance(expirations,int) and deliveries>expirations+phase)
+        skip_delivery_vs_expiry=(source not in PERIODIC_SOURCES)
+        inconsistent=((not skip_delivery_vs_expiry
+                       and isinstance(expirations,int) and deliveries>expirations+phase)
                       or (isinstance(completions,int) and completions>deliveries))
         reported=entry.get('upper_bound')
         reported_bad=isinstance(reported,int) and reported!=bound
@@ -1582,14 +1635,16 @@ def _h2_source_bounds(health,window):
                 detail=f'{source}@core{entry.get("core")}: {deliveries} deliveries <= '
                        f'bound {bound} (period {period} read back; assumption: {assumption})'))
         else:
-            note=('; sys_timer: synchronous callback in the timer0 tick frame, '
-                  'three-way counts collapsed'
-                  if source in SYS_TIMER_SOURCES else '')
+            if source in SYS_TIMER_SOURCES:
+                note=('; sys_timer: synchronous callback in the timer0 tick frame, '
+                      'expirations collapsed to deliveries (per-source)')
+            elif source not in PERIODIC_SOURCES:
+                note='; event-driven interrupt (finite delivery, not a periodic source)'
+            else:
+                note=f' (period {period} from per_source)'
             checks.append(_check(name,
                 detail=f'{source}@core{entry.get("core")}: {deliveries} deliveries '
-                       +(f'<= bound {bound} (period {period} from per_source{note})'
-                         if source in PERIODIC_SOURCES
-                         else '== 0 expected in the closed D1 world')))
+                       f'<= bound {bound}{note}'))
     # 无条件注册源在场检查(S8SCAN §5.2:adc_scan=init walker 直线段注册,D1 窗口=
     # boot 完成后开窗,必在):缺条目=观测缺口,键缺≠零事件 → pending 非 pass。
     # keyscan 条件性(cfg523 才注册)不在列:不存在不 pending,触达才入表

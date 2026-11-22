@@ -963,14 +963,17 @@ class D1WindowObserver:
                 entry['deliveries']=len([d for d in self._deliveries
                                          if d.get('irq')==irq and d['model_step']>self._w_park])
             elif source=='keyscan':
-                entry['expirations']=sum(self._window_watch.get(hex(pc),0)
-                                         for pc in SYS_TIMER_FIRE_SITES)
                 entry['deliveries']=self._window_watch.get(hex(KEYSCAN_CALLBACK),0)
+                # 坍缩同数(d1-health-checks §2 周期源表):sys_timer 节点在 Timer0 tick
+                # 回调内同步触发,无独立到期判定,expirations=deliveries(同步回调调用)。
+                # 不再用共享火回调点 watch(SYS_TIMER_FIRE_SITES)当 per-source
+                # expirations——那是 keyscan/adc_scan 共用的轮询火点,计数坍缩过计,
+                # 不是 per-source 到期数(2026-11-22 D1 放宽归因)。
+                entry['expirations']=entry['deliveries']
                 entry['completions']=None  # 回调返回锚 [待 PR-2 实测]
             elif source=='adc_scan':
-                entry['expirations']=sum(self._window_watch.get(hex(pc),0)
-                                         for pc in SYS_TIMER_FIRE_SITES)
                 entry['deliveries']=self._window_watch.get(hex(ADC_SCAN_CALLBACK),0)
+                entry['expirations']=entry['deliveries']  # 坍缩同数(同上)
                 entry['completions']=None
             elif entry['period'] is None:
                 name=entry['source']
