@@ -3127,7 +3127,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     dual_buf=[]
     dual_hazard=None
     if gosim_dual_engine is not None:
-        from gosim_dual_engine import DualCoreEngine, predict_select, _t as _dual_t
+        from gosim_dual_engine import (DualCoreEngine, predict_select, decode_reg_tag,
+                                       _t as _dual_t)
         dual_engine=DualCoreEngine(rom,app,ENTRY,regions=Memory.regions,
                                    readonly=(handoff['readonly'] if handoff else ()),
                                    mem=c.mem)
@@ -3141,6 +3142,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if r.startswith('after_step hook fires'):return 'hook'
         if r.startswith('delivery deferral') or r.startswith('pending eligible irq'):return 'irq'
         if r.startswith('advance strict stop'):return 'blocked'
+        if r.startswith('abstract value consumed'):return 'abstract'
         if r.startswith('strict memory fault'):return 'memfault'
         if r.startswith('fetch pc outside'):return 'fetch'
         if r.startswith('no instruction decodes'):return 'noinstr'
@@ -3149,7 +3151,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if r.startswith('select wake require'):return 'upstream'
         return 'clean'
 
-    def _dual_commit(core,pc,next_pc,flags,R,insn_hex=None,memwrites=None,adapter=None):
+    def _dual_commit(core,pc,next_pc,flags,R,insn_hex=None,memwrites=None,adapter=None,rt=None):
         # 一条已由 Go 执行的步的 Python 侧簿记:fetch 守卫计数、trace 行物化、
         # 本步有序写回放(mem.write=note_memory_write+write 事件,执行核与写前
         # PC 对齐)、adapter 计数、步后簿记(_post_step)与 after_step(TraceMachine
@@ -3184,8 +3186,19 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 c.mem._gosim_dirty = _dirty_save
         if adapter:
             adapters[adapter]+=1
+        # Go 执行的标量 ld.w(5 形)在 icfg_spills 非空时,慢路径会走
+        # abstract_word 重载并计 partial_icfg_word_reload(地址不在 spill 内也照
+        # 计——abstract_word 对普通 RAM 地址返回具体值,与 Go 直读同值,差异只有
+        # 适配器计数);Go 侧操作数具体、直读具体字节,值一致但该计数缺失,这里按
+        # 慢路径同口径补计,保证 report 的 instruction_adapters 逐字节一致。
+        if insn.id in ('ld.w','ld.w.l','ld.w.sp','ld.w.idxs','ld.w.idx') and getattr(c.mem,'icfg_spills',None):
+            adapters['partial_icfg_word_reload']+=1
         before_sp=c.sp
-        c.pc=next_pc;c.R=list(R);c.flags=flags
+        c.pc=next_pc;c.flags=flags
+        if rt is None:
+            c.R=[v if type(v) is int else 0 for v in R]
+        else:
+            c.R=[v if tag is None else decode_reg_tag(tag) for v,tag in zip(R,rt)]
         c._post_step(pc,before_sp,False)
         if machine is not None:
             if c.core_id==1:hardware.secondary_cpu_executed=True
@@ -3345,12 +3358,12 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         if dual_engine is not None and machine is not None and len(machine.cores)==2 \
                 and (diagnostics is None or (not diagnostics.get('stop_before_pc')
                      and not diagnostics.get('stop_on_rom_return'))) \
-                and dual_engine.cores_concrete(machine.cores[0],machine.cores[1]):
+                and dual_engine.cores_head_ok(machine.cores[0],machine.cores[1]):
             if dual_buf:
                 s=dual_buf.pop(0)
                 row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                  insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                 adapter=s.get('adapter'))
+                                 adapter=s.get('adapter'),rt=s.get('rt'))
                 completed+=1
                 gosim_dual_steps+=1
                 trace.append(row)
@@ -3368,7 +3381,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                                          'flags':hb.get('flags',0),'r':hb.get('R',[0]*16)}
                     row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                      insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                     adapter=s.get('adapter'))
+                                     adapter=s.get('adapter'),rt=s.get('rt'))
                     completed+=1
                     gosim_dual_steps+=1
                     trace.append(row)
@@ -3387,7 +3400,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     core=s['core']
                     row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
                                      insn_hex=s.get('insn'),memwrites=s.get('mem'),
-                                     adapter=s.get('adapter'))
+                                     adapter=s.get('adapter'),rt=s.get('rt'))
                     completed+=1
                     gosim_dual_steps+=1
                     if kind=='irq':
@@ -3453,6 +3466,20 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                                      'irq':res.get('irq'),'err':res.get('err'),
                                      'stop_pc':res.get('stop_pc',0)}
                     if dual_buf:
+                        # 段内第一条已执行步在本次 fill 迭代就地提交(而非留到
+                        # 下一圈再 pop),让「一次 fill=一次 attempt」的账本与
+                        # 「每 attempt 产出 1 步」对齐:fill 本身不再空耗一次
+                        # attempt,instruction_budget 按步数而非迭代数计。提交
+                        # 口径与下方 dual_buf 消费分支逐字一致。
+                        s=dual_buf.pop(0)
+                        row=_dual_commit(s['core'],s['pc'],s['next_pc'],s['flags'],s['r'],
+                                         insn_hex=s.get('insn'),memwrites=s.get('mem'),
+                                         adapter=s.get('adapter'),rt=s.get('rt'))
+                        completed+=1
+                        gosim_dual_steps+=1
+                        trace.append(row)
+                        if len(trace)>64:trace.pop(0)
+                        if stop is not None:break
                         continue
                     if dual_hazard is not None:
                         continue

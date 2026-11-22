@@ -107,6 +107,7 @@ type LoopStep struct {
 	NextPC  uint32
 	Flags   uint8
 	R       [16]uint32
+	RT      [16]*RegTag
 	Mem     []LoopMemWrite
 	Insn    []byte
 	Adapter string
@@ -340,6 +341,8 @@ func segmentStopReason(code int) string {
 		return "decoded instruction has no model"
 	case BatchMemFault:
 		return "strict memory fault (handed back to Python)"
+	case BatchAbstract:
+		return "abstract value consumed (handed back to Python)"
 	default:
 		return "unexpected error while stepping"
 	}
@@ -374,14 +377,16 @@ func syncCPUFromCore(cpu *CPU, c *Core) {
 }
 
 // syncCoreFromCPU copies the architectural state back from the CPU engine after
-// one execute step and bumps the core step counter. The execute engine only
-// runs concrete integer registers (this cut never executes an abstract value),
-// so the whole typed side table is cleared — any register the step produced is
-// concrete, and any register it left alone was already concrete or its tag must
-// not survive a concrete re-sync.
-func syncCoreFromCPU(c *Core, cpu *CPU) {
+// one execute step and bumps the core step counter. Tags survive on every
+// register the step did not write; the written registers (writes) are concrete,
+// so their tags are cleared. The execute engine only reads concrete operands
+// (RunDualStepCore proves this per step), so a tagged register is never
+// numerically consumed here.
+func syncCoreFromCPU(c *Core, cpu *CPU, writes []int) {
 	c.R = cpu.R
-	c.RT = [16]*RegTag{}
+	for _, r := range writes {
+		c.RT[r] = nil
+	}
 	c.Flags = cpu.flags
 	c.SP = cpu.sp
 	c.RETS = cpu.rets
@@ -415,6 +420,37 @@ func (w *World) syncMachineCores() {
 		mc.InsnSize = 0
 		if cpu := w.execFor(core); cpu != nil {
 			if im, _, size, err := cpu.decode(c.PC); err == nil {
+				mc.InsnID = im.id
+				mc.InsnSize = uint32(size)
+			}
+		}
+	}
+}
+
+// syncWakeBumps propagates the select-side wake fallbacks' pc/steps advance back
+// into the World cores and re-decodes the Machine twin's instruction id at the
+// new pc. The two wake helpers (CPU1-control kick / TIMER2 anchored poll) advance
+// the parked core on the Machine twin exactly as Python's wake bumps the CPU
+// directly; the World core is what the execute engine runs and what the restore
+// reads back, so a bump that stays on the Machine twin is lost — the stale
+// "idle" InsnID would re-trigger the idle hand-back and the advanced pc would
+// never reach the execute step (the woken core would be re-parked on restore).
+func (w *World) syncWakeBumps() {
+	for i := 0; i < 2; i++ {
+		mc := w.Machine.Cores[i]
+		wc := w.Cores[i]
+		if mc == nil || wc == nil {
+			continue
+		}
+		if mc.PC == wc.PC && mc.Steps == wc.Steps {
+			continue
+		}
+		wc.PC = mc.PC
+		wc.Steps = mc.Steps
+		mc.InsnID = ""
+		mc.InsnSize = 0
+		if cpu := w.execFor(i); cpu != nil {
+			if im, _, size, err := cpu.decode(mc.PC); err == nil {
 				mc.InsnID = im.id
 				mc.InsnSize = uint32(size)
 			}
@@ -558,6 +594,7 @@ func (w *World) runDualCore(n int) LoopResult {
 			res.Reason = "select wake require violated: " + err.Error()
 			return res
 		}
+		w.syncWakeBumps()
 		w.Deliver.IdleWait = w.Machine.IdleWait
 		w.Periph.CoreIcfg = w.Machine.CoreIcfg
 
@@ -582,7 +619,7 @@ func (w *World) runDualCore(n int) LoopResult {
 		beforePC := w.Cores[core].PC
 		cpu := w.execFor(core)
 		syncCPUFromCore(cpu, w.Cores[core])
-		s, code, stopPC, stepErr := cpu.RunDualStep()
+		s, tag, code, stopPC, stepErr := cpu.RunDualStepCore(w.Cores[core])
 		if code != BatchOK {
 			res.StopCore = core
 			res.StopPC = stopPC
@@ -592,7 +629,12 @@ func (w *World) runDualCore(n int) LoopResult {
 			}
 			return res
 		}
-		syncCoreFromCPU(w.Cores[core], cpu)
+		syncCoreFromCPU(w.Cores[core], cpu, tag.Writes)
+		if tag.MovTag {
+			// mov.rr transport: the destination inherits the source tag after the
+			// write-clear pass (the write itself cleared the destination's old tag).
+			w.Cores[core].RT[tag.MovDst] = w.Cores[core].RT[tag.MovSrc]
+		}
 
 		// A store invalidates both cores' decode caches (self-modifying code
 		// would otherwise re-execute the stale bytes).
@@ -601,17 +643,19 @@ func (w *World) runDualCore(n int) LoopResult {
 			w.Exec1.ClearCache()
 		}
 
-		// 7. trace row (the Go twin: core/pc/next_pc/flags/registers; the
-		// Python text/bytes/delivery-key materialization stays Python). The
-		// committed step is recorded before the after_step/advance phases, so a
-		// hazard in those phases still carries the executed prefix — exactly as
-		// Python appends the row even when after_step/advance raises.
+		// 7. trace row (the Go twin: core/pc/next_pc/flags/registers + the
+		// post-step register side table; the Python text/bytes/delivery-key
+		// materialization stays Python). The committed step is recorded before
+		// the after_step/advance phases, so a hazard in those phases still
+		// carries the executed prefix — exactly as Python appends the row even
+		// when after_step/advance raises.
 		res.Steps = append(res.Steps, LoopStep{
 			Core:    core,
 			PC:      s.PC,
 			NextPC:  s.NextPC,
 			Flags:   s.Flags,
 			R:       s.R,
+			RT:      w.Cores[core].RT,
 			Mem:     loopMemWrites(s.Mem),
 			Insn:    s.Insn,
 			Adapter: s.Adapter,

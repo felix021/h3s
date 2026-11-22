@@ -61,45 +61,84 @@ func isMemError(err error) bool {
 	return ok
 }
 
-// RunDualStep executes one whole-loop step on c (strict fetch + dual contract)
-// and returns the observation plus a stop code, stop pc, and the underlying
-// error detail (nil on success). On BatchOK the SegmentStep carries the executed
-// instruction bytes, this step's ordered writes, and the adapter the Python
-// commit must count. A strict-memory fault (unmapped/uninitialized/unaligned) is
-// reported as BatchMemFault without committing the step; Python re-runs the
-// instruction and re-derives the identical Blocked (or MMIO side effect).
-func (c *CPU) RunDualStep() (SegmentStep, int, uint32, error) {
+// DualTagInfo is the per-step abstract-value bookkeeping the dual loop needs to
+// maintain the register side table after a committed step.
+type DualTagInfo struct {
+	// Writes is the GPR indices the step wrote (apply's effect.regs keys); the
+	// caller clears their tags because they are now concrete.
+	Writes []int
+	// MovTag is true for a mov.rr whose source carried a tag: the destination
+	// inherits the source tag (a pure transport, not a numeric consumption), so
+	// the caller sets RT[MovDst] = RT[MovSrc] after clearing Writes.
+	MovTag bool
+	MovSrc int
+	MovDst int
+}
+
+// RunDualStepCore executes one whole-loop step on c (strict fetch + dual
+// contract) with abstract-value awareness, and returns the observation plus a
+// stop code, stop pc, and the underlying error detail (nil on success). On
+// BatchOK the SegmentStep carries the executed instruction bytes, this step's
+// ordered writes, and the adapter the Python commit must count. A strict-memory
+// fault (unmapped/uninitialized/unaligned) is reported as BatchMemFault without
+// committing the step; Python re-runs the instruction and re-derives the
+// identical Blocked (or MMIO side effect). A tagged (abstract) value that the
+// instruction would consume numerically is reported as BatchAbstract without
+// committing the step; Python re-runs the instruction and raises the identical
+// consumed() Blocked.
+func (c *CPU) RunDualStepCore(core *Core) (SegmentStep, DualTagInfo, int, uint32, error) {
 	pc := c.pc
-	im, _, _, err := c.decode(pc)
+	im, raw, _, err := c.decode(pc)
 	if err != nil {
 		if isMemError(err) {
-			return SegmentStep{}, BatchMemFault, pc, err
+			return SegmentStep{}, DualTagInfo{}, BatchMemFault, pc, err
 		}
-		return SegmentStep{}, BatchNoInstr, pc, err
+		return SegmentStep{}, DualTagInfo{}, BatchNoInstr, pc, err
 	}
 	if !c.safeDual(im) {
-		return SegmentStep{}, BatchUnsafe, pc, nil
+		return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
 	}
 	if c.models[im.id] == nil {
-		return SegmentStep{}, BatchNoModel, pc, nil
+		return SegmentStep{}, DualTagInfo{}, BatchNoModel, pc, nil
+	}
+	// abstract-value gate: every consumed register must be concrete. mov.rr is
+	// the one pure transport — a tagged source is moved to the destination
+	// instead of consumed.
+	tag := DualTagInfo{}
+	if im.id == "mov.rr" {
+		tag.MovSrc = int(raw["y"])
+		tag.MovDst = int(raw["x"])
+		if core.RT[tag.MovSrc] != nil {
+			tag.MovTag = true
+		}
+	} else {
+		for r := range consumedRegs(im, raw) {
+			if core.RT[r] != nil {
+				return SegmentStep{}, DualTagInfo{}, BatchAbstract, pc, nil
+			}
+		}
+	}
+	if consumesSP(im) && !core.SPKnown {
+		return SegmentStep{}, DualTagInfo{}, BatchAbstract, pc, nil
 	}
 	insnBytes, err := c.InsnBytes(pc)
 	if err != nil {
 		if isMemError(err) {
-			return SegmentStep{}, BatchMemFault, pc, err
+			return SegmentStep{}, DualTagInfo{}, BatchMemFault, pc, err
 		}
-		return SegmentStep{}, BatchNoInstr, pc, err
+		return SegmentStep{}, DualTagInfo{}, BatchNoInstr, pc, err
 	}
 	if err := c.Step(); err != nil {
 		if isMemError(err) {
-			return SegmentStep{}, BatchMemFault, pc, err
+			return SegmentStep{}, DualTagInfo{}, BatchMemFault, pc, err
 		}
-		return SegmentStep{}, BatchOther, pc, err
+		return SegmentStep{}, DualTagInfo{}, BatchOther, pc, err
 	}
 	adapter := ""
 	if dualStoreAdapter[im.id] {
 		adapter = "exact_full_word_store"
 	}
+	tag.Writes = c.TakeRegWrites()
 	return SegmentStep{
 		PC:      pc,
 		NextPC:  c.pc,
@@ -108,7 +147,7 @@ func (c *CPU) RunDualStep() (SegmentStep, int, uint32, error) {
 		Mem:     c.TakeWrites(),
 		Insn:    insnBytes,
 		Adapter: adapter,
-	}, BatchOK, 0, nil
+	}, tag, BatchOK, 0, nil
 }
 
 // ---- exact full-word store models -------------------------------------------

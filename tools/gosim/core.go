@@ -127,6 +127,11 @@ type CPU struct {
 	// lastWrites collects this step's ordered memory stores (whole-loop path).
 	// apply appends here; the dual loop reads and resets it per step.
 	lastWrites []MemWrite
+
+	// lastRegWrites collects the GPR indices apply wrote this step, so the
+	// abstract-value dual loop can clear the tags of exactly the registers the
+	// step produced and preserve tags on the ones it left alone.
+	lastRegWrites []int
 }
 
 type afterThen struct {
@@ -220,6 +225,13 @@ func (c *CPU) TakeWrites() []MemWrite {
 	return w
 }
 
+// TakeRegWrites returns and clears the GPR indices this step's apply wrote.
+func (c *CPU) TakeRegWrites() []int {
+	w := c.lastRegWrites
+	c.lastRegWrites = nil
+	return w
+}
+
 // SetDataMem binds the strict data memory the execute engine's load/store
 // paths read and write. A nil m reverts to the flat memory (upstream simulator
 // semantics) the raw core and the segment contract use. Fetch stays on the
@@ -246,6 +258,7 @@ func (c *CPU) Reset() {
 	c.afterT = nil
 	c.icfg = 0x02050500
 	c.lastWrites = nil
+	c.lastRegWrites = nil
 }
 
 // ErrIs is errors.Is for the core's sentinel errors.
@@ -405,6 +418,7 @@ func tgtVal(t *uint32) uint32 {
 func (c *CPU) apply(res *Effect) *MemError {
 	for r, v := range res.regs {
 		c.R[r] = v & 0xFFFFFFFF
+		c.lastRegWrites = append(c.lastRegWrites, r)
 	}
 	if res.flagsSet {
 		c.flags = res.flags & 0xF
