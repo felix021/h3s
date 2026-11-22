@@ -1,36 +1,46 @@
 {
   "case_id": "D2-b-INJ-04",
-  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；开链静态源=app.bin sha 18f3d573…（采集链全图 AR §1.8③）+公开 stream.bin（MicEff blob @0x1DA4+0x9c2d 图描述符，CFG-03/04）",
-  "initial_state": "预填用例（未执行）。计划起点=同 INJ-03 世界（post_stop 直调）；开链两步=直调 0x6074938(0x9c2d, 0xD06D)（descriptor walk 建管道，CP d2c_effect_pipeline 先例换 (scene,plug) 参）→直调源节点 ioctl 0x603293e(node, 0x40001, …)（=jlstream_start 0x6074ffe 内部对流激活发的 START 命令；绕过的 jlstream_start 外围状态面显式标注，蓝图 §3.2 B1）",
-  "inputs_schedule": "计划注入（未执行）：B3 注入 N≥12 块 1ch（N=max(12, 2×⌈环形总长/PNS⌋+2)——12 保住前 10 帧丢弃门后仍有消费样本，蓝图 §3 交付块数约定）；样本 sample(0,k,n) 单通道公式",
-  "observation_boundary": "计划观察点（未执行）：B2 五写读回（buf_num=2 与 esco 的 3 不同——布局差异本身是断言点）+SR 码记录（三态裁决 R1）+nodecfg 面（b[nodecfg+0]=1、h[nodecfg+8]=0x1——AR §5.7 动态复核接口）+hdl 面（+78 bit0/+79[0]≥1）+B4 消费面（0x6032e80 调用计数+前 10 帧门行为+第 11 块起 frame+32 字节+下游水位/时间戳字段）",
+  "firmware_identity": "official UFW（QCY_H3S_7018F_1T2_release_note_V1.1.8_011.ufw，SHA256 65cafc7f9a7545c5c30701d141c77db334e37065589e42c51306132c94c879af）；开链/消费链静态源=app.bin sha 18f3d573…（采集链全图 AR §1.8③+§4.4）+公开 stream.bin（MicEff blob @0x1DA4+0x9c2d 图描述符，CFG-03/04）",
+  "initial_state": "已执行（路 D2MIC/sim-d2mic，2026-11-23，park 停点 29,601,125 @ 0x606955c 世界上直调；快照 analysis/snapshots 一次 capture ~14min 后 restore ~秒级重跑）。开链两步=直调 0x6074938(0x9c2d, 0xD06D)（descriptor walk 建管道，CP d2c_effect_pipeline 先例换 (scene,plug) 参，106,607 步完整返回 stream 0x41a80c，park 全机器 real zalloc 下 26 边链不撞 路 O 的 12 边合成堆墙）→直调源节点 ioctl 0x603293e(adc_priv, 0x40001, 0)（=jlstream_start 0x6074ffe 内部对流激活发的 START 命令；绕过的 jlstream_start 外围 0x20002 首查+os_time_dly 重试环显式标注）。**源节点定位勘误**：蓝图 §3.2 B1 的「源节点 ioctl(node, …)」第一参不是 [stream+40] 本身——[stream+40]=根节点(0x1100, subid 3)，[根节点+12]=48B 源上下文(0x6076b7a 源 bind zalloc)，[源上下文+4]=88B ADC plug priv(create 0x6032924 返回)——ioctl 0x603293e 第一参=88B ADC priv（反汇编 0x6074938/0x6076b7a 钉死，运行时 0x41a88c→0x41a8cc→0x41a90c 三跳实测）",
+  "inputs_schedule": "已注入（执行证据 analysis/local-checks/d2mic/scene.json）：B3 注入 17 块 1ch（k=1..17，样本 sample(0,k,n)=((0+1)<<8)|((k&0xF)<<4)|(n&0xF)），k=1 单发 b2、k=2..10 丢弃门计数 1→10、k=11..16 真路径、k=17 负例①静音块（全零样本）；每块 produce_block 写当前环窗口（LEN=512 样本=2 块/环，ADR=0x41858c，PNS=0x100，块 512B=256 样本×1ch×2B）→IRQ68 真实交付（INJ-02 机制复用）",
+  "observation_boundary": "b3 观察面（全真实固件执行）：①output handler 0x6032e80 调用 17 次（=17 次交付，含静音块）；②丢弃门 b[priv+27] 逐调用前后值（0→10 后保持 10，前 10 次入口即返——0x6032e86/0x6032e8e/0x6032e92 命中、0x6032e94 真路径不命中）；③真路径（k=11 起）PC 锚——0x6032e94 真路径首站/0x6032e9a 帧分配 0x6074080/0x6032ec8 memcpy 0x1fd74/0x6032efc 提交 0x6074100；④memcpy 交织帧进 frame+32 的字节=注入序（DSP 前精确样本逐字节相等——k=11 frame+32 首 16 字节 [176,1,177,1,…]=0x01B0+n 样本序）；⑤模式字节 b[priv+24]=0（zalloc 默认）→0x602f5fa 门+0x6032da6 解交织不执行（R3 条件性如实维持）；⑥静音块 frame+32 全零、环窗口全零；⑦b1 面——nodecfg zalloc(48) 挂 [priv+84]=0x41b074、mode=0/started=1/drop_counter=0/channel_count=1（en_map=0x1 只开 ch0）、SR h[priv+30]=0（绕过 fmt 协商未置）、大缓冲复用 [QCY+3504]=0x41858c、hdl+78=0x1/hdl+79=1、handler 0x6032e80 挂 hdl+0/+4 链、CON 0x18937（bit5+bit4 置位）",
   "assertions": [
-    "d1-acceptance §6.2 b1+蓝图 §3.2 B1/B2：START 开链真实执行（CFG-03 第 4 条全链）——nodecfg（模式字节 1→静态 QCY+3452 与 esco 共享 blob 区/否则 zalloc(48)——模式字节运行值观测）→0x6075686 取名 \"MicEff\"+blob（event 18 主路径 0x607565c vs 兜底 0x6032b40——注册者观测 R2）→en_map=0x1 只开 ch0（0x606b4d0/0x606de92 档 0x0a/0x606c3aa）→SR 0x606dee0（GET_FMT 三态 16000/全局/44100，0x603297e..96——R1 观测）→set_buffer 0x606dee4(buf,256<<1=512,buf_num=2)→挂 [priv+76]=0x6032e80 进 hdl+92 链→0x606df66 启动→0x6072712(ch_map)",
-    "b2：同 INJ-03 时序（每块 pending→真实 IRQ68→|=0x40 清→SRN/PNS 重装逐块四查）——1ch 布局下帧长=1×ssize",
-    "b3+蓝图 §3.2 B4：0x6032e80 调用次数=N；前 10 次入口即返（b[priv+27]++≤9 丢弃门实测——穿透断言从第 11 次交付起算，AE §4 D2-b4 草案已钉）；第 11 块起 0x6074080 帧分配→（模式字节==1 时 0x602f5fa()==1 门+0x6032da6 解交织——布局观测 R3，条件性：模式字节≠1 则不执行维持开放）→memcpy 交织帧进 frame+32 的字节=注入序（DSP 前精确样本）→投递节点后的下游提交面=jlstream 帧/水位（cmd5 时间戳族，CI/CK 钉的形状；具体提交 PC 实施时按 coverage 钉，断言以「帧对象+32 字节+水位/时间戳字段变化」为观察面）——「到达对应消费者」通过条件；辅听检测/算法结果不在验收（「有足够证据时再验收检测结果」照 d1-acceptance §6.2 表）",
-    "d1-acceptance §6.3 共同断言五条随执行补验（本记录预填未执行）——含「未启用消费者不被调」：本场景世界若 esco/ANC 未开则其 handler（0x6031D5A/ANC 侧）不被调"
+    "d1-acceptance §6.2 b1+蓝图 §3.2 B1/B2：START 开链真实执行（CFG-03 第 4 条全链）——ioctl watch PC 序 0x603293e→0x6032ac8(START 入口)→0x6075686(取名+40B blob，event 18 主路径成功=兜底 0x6032b40 不执行，R2)→0x606dee0(SR 写)→0x606b4d0(adc_mic_open 只开 ch0)→0x606de92(ADA_CON8 档 0x0a)→0x606c3aa(ADA_CON4..7 bit0)→0x606dee4(set_buffer 五写)→0x606df3a(挂 handler)→0x606df66(启动)→0x6072712(ch_map)，全链覆盖【b1 8/8 PASS】",
+    "b2：同 INJ-03 时序（每块 pending→真实 IRQ68→|=0x40 清→SRN/PNS 重装逐块四查）——1ch 布局下帧长=1×ssize；首个交付丢弃门计数 0→1、样本逐字节相等、pending 由真实 W1C 清、RTI 回 park 停点【b2 9/9 PASS】",
+    "b3+蓝图 §3.2 B4：0x6032e80 调用次数=17（=交付块数）；前 10 次入口即返（b[priv+27]++≤9 丢弃门实测——穿透断言从第 11 次交付起算）；第 11 块起 0x6074080 帧分配→memcpy 交织帧进 frame+32 的字节=注入序（DSP 前精确样本逐字节相等）→0x6074100 提交面（下游 jlstream 帧对象）——「到达对应消费者」通过；辅听检测/算法结果不在验收【b3 消费闭环 PASS】",
+    "d1-acceptance §6.2 b4+蓝图 §3.2 B5：连续运行跨 8 圈（ring_wraps=8≥2）、块号字段 k 单调（consumed_sequence k=1..17 严格递增）、data 指针逐块=SRP 投影环位、每轮 RTI——旧帧重复消费即 FAIL 的负例由块号字段客观携带；负例①静音块全零样本照常交付/消费（frame+32 全零+窗口全零）【b4 连续性 PASS】",
+    "d1-acceptance §6.3 共同断言——「未启用消费者不被调」：本场景世界 esco/ANC 未开（[QCY+620]=0、IRQ67 未注册），hdl+0/+4 链仅 0x6032e80 一节点（chain_after 单节点），audio handler 0x6072628 遍历只触达 mic_effect 消费侧；多消费者世界待 SW-02"
   ],
-  "timeout_budget": "场景步进以断言点/诚实停点为界（直调开链+N 块受控交付，无固定步预算）",
+  "timeout_budget": "场景步进以断言点/诚实停点为界（直调开链 walk 106,607 步+ioctl 3,272,692 步+N 块受控交付；restore 全程 ~2min；无超时事件）",
   "model_assumptions": [
-    "本记录=预填：断言锚点全部出自蓝图 §3.2/§4+audio-input-paths §1.8③+CFG-03/04（静态），非执行证据",
-    "DMA 完成行为投影（同 INJ-01）",
-    "模式字节/SR 三态/event18 注册者/解交织布局四项是本场景要回答的运行观测项（R1/R2/R3+AR §1.8⑤(d)），断言不预设取值",
-    "图预期=1 个 ADC 源节点（CFG-04 勘误口径：0x9c2d 图头 0xD0=边表长非节点计数）"
+    "样本字节=显式合成 fixture（蓝图 §3.1 数据公式，synthetic-not-measured；场景报告标注）",
+    "DMA 完成时序=投影（produce_block 即完成事件；SRP 读投影=(hwp-PNS) mod LEN+HWP 读回=环内位置，INJ-01 路 D2AJ 扩展；环形绕回=对齐折返）",
+    "h[priv+32]=256 缓冲样本数 fixture（直调绕过 jlstream_start fmt 协商外围状态面）",
+    "st.h.idxs 半字写直写适配（解交织惯用形假墙补偿，INJ-03 路 D2AJ）——本场景 1ch 无解交织，但沿用同一模型面",
+    "丢弃门计数/帧分配/memcpy/提交面全部真实固件执行；frame+32 字节=提交前读回（memcpy 后、0x6074100 前），帧对象仍存活",
+    "直调 ioctl 绕过 jlstream_start 外围状态面（0x20002 首查+os_time_dly 重试环 0x607503c..0x607504a 冻结世界不可跑）——由此 mode 字节/SR 保持 zalloc 默认 0（R1 三态如实观测为「未置」），开链以下全真固件"
   ],
-  "result": "NOT_RUN",
+  "result": "PASS",
   "uncovered_items": [
-    "mic_effect 管道场景本体(descriptor walk 直调 0x6074938(0x9c2d,0xD06D) 开链+N 块交付+B4 消费)未执行——本路只收窄标志面(见 evidence_refs);管道实施归后续路(S19 前世界直调可达性已由消费者面证明,无 S19 硬依赖)",
-    "运行时标志真写点 b[QCY+476]=0x6028b6e 配置合并尾/场景激活链(boot 五标志0x12657C 族只经 0x602eba4..bc0 boot G3 OR 读),frozen 世界不可达——「标志生效→行为变化」最小验证已用 named synthetic-flag-fixture 单字节完成双臂差分(park 臂 6 步 gate 跳过 0x602747e 返 0/置位臂 9 步进门 0x60271EA 返 0xB5;[QCY+472] 对象指针 park=0x0,44B 堆对象族=管道世界依赖)",
-    "R1 SR 三态/R2 event18 注册者/R3 解交织布局(管道世界观测项;R3 条件性)",
-    "辅听检测结果/算法效果(不在验收,「有足够证据时再验收」)",
-    "与 esco/ANC 共开的多 handler 链遍历场景(蓝图工程风险第 3 条——归 SW-02;本路 ANC 侧已记:共享链遍历不触达 ANC 节点)"
+    "R3 0x6032da6 解交织布局（模式字节==1 时执行——本场景模式字节=zalloc 默认 0，0x602f5fa/0x6032da6 两锚如实不执行，维持条件性开放，AR §1.8⑤(d)）",
+    "R1 SR 三态真实值（绕过 fmt 协商致 mode 字节未置，SR 写入=0；真实 16000/全局/44100 三态归 jlstream_start 完整路径或 SET_MODE/SET_SR 直调补测）",
+    "下游 jlstream 帧/水位/时间戳字段（cmd5 时间戳族）的队列消费面——0x6074100 提交面已执行，但框架任务对提交帧的后续消费（消息循环）属 D1 过线后回归位，本场景证据止于「帧对象+32 字节精确样本+提交调用」",
+    "辅听检测结果/算法效果（不在验收，「有足够证据时再验收检测结果」照 d1-acceptance §6.2 表）",
+    "与 esco/ANC 共开的多 handler 链遍历场景（蓝图工程风险第 3 条——归 SW-02；本场景单节点链平凡成立）"
   ],
-  "evidence_level": "none",
-  "evidence_conditions": [],
+  "evidence_level": "conditional",
+  "evidence_conditions": [
+    "样本字节=显式合成 fixture（蓝图 §3.1 数据公式，synthetic-not-measured；场景报告标注）",
+    "DMA 完成时序=投影（produce_block 即完成事件；SRP 读投影=(hwp-PNS) mod LEN+HWP 读回=环内位置，INJ-01 路 D2AJ 扩展；环形绕回=对齐折返）",
+    "h[priv+32]=256 缓冲样本数 fixture（直调绕过 jlstream_start fmt 协商外围状态面）",
+    "st.h.idxs 半字写直写适配（解交织惯用形假墙补偿，INJ-03 路 D2AJ）——本场景 1ch 无解交织，但沿用同一模型面"
+  ],
   "evidence_refs": [
-    "analysis/local-checks/d2anc/scene.json(mic_effect_flags 段:五标志 park 值+运行时标志双臂差分;git 忽略运行态)",
-    "tools/d2_audio_scene.py(mic_effect_flags 场景段:SCENE_MIC_FLAGS/MIC_EFFECT_* 常量+双臂直调)"
+    "analysis/local-checks/d2mic/scene.json（b1 开链+b2 单发+b3 丢弃门/b4 消费+负例①全序列证据，git 忽略运行态）",
+    "tools/d2_audio_mic_effect_scene.py（场景 runner：world_prep/b1_open_chain/b2_single_delivery/b3_deliveries/b4_deliveries/negative_mute/b4_aggregate）",
+    "tools/d2_audio_scene.py（D2AI/D2AJ 先例：produce_block/deliver_audio_dma_irq/丢弃门同形）+tools/br28_model.py JLAudioAdcDmaWriteRecords+tools/br28_machine.py deliver_audio_dma_irq（复用件）",
+    "docs/acceptance-samples/d2b/D2-b-INJ-01.json / D2-b-INJ-02.json（模型件/IRQ68 交付 PASS 依赖件）"
   ],
   "blocked_missing": null,
-  "recorded_at": "2026-11-17T10:52:00"
+  "recorded_at": "2026-11-23T02:40:00"
 }
