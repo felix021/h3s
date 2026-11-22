@@ -79,8 +79,11 @@ def parked_scenario():
     timer0_snap={'con':0x1401,'cnt':9660,'prd':119999,'remainder':0,'source_remainder':0}
     segments=[]
     for i in range(3):
-        segments.append({'model_step':park,'timer0':dict(timer0_snap),
-                         'first_segment_advances':36780 if i==0 else 36780,
+        # 段守恒(2026-11-22 适配):每段 engage 步号=park + i*(首段 advances+段间
+        # 执行)=100 + i*40,000(段间执行 3,220 拼满相邻 engage 差 40,000=完整周期;
+        # engage 步号现参与守恒,须逐段递增,不再复用 park)。
+        segments.append({'model_step':park+i*40000,'timer0':dict(timer0_snap),
+                         'first_segment_advances':36780,
                          'inter_segment_execution':3220,
                          'core_ticks':{'0':{'con':1,'cnt':627308,'prd':1199999,'progress':4}}})
     # 段守恒锚定:段1=36,780+3,220(半周期+执行),段2/3=36,780+3,220=40,000=周期 ✓
