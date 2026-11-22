@@ -103,10 +103,20 @@ MIN_TIMER0_RECONFIG_PERIOD_STEPS=4000
 # sys_timer 衍生源的 tick 数(静态立即数;S9 §1.1/S8 §1.1,与观察器 KEYSCAN_TICKS/
 # ADC_SCAN_TICKS 同值)——H2 上界按最小 timer0 周期(最快火)套用,不预锁 park 快照 period。
 SYS_TIMER_TICKS={'keyscan':10,'adc_scan':5}
-# 非周期源(事件驱动中断:irq89 SRC 完成/irq127 软件 IRQ 等)窗口内允许的有限交付
-# 上界。原判据「软件 IRQ124-127 预期 0」被固件真实行为打破:irq89 交付 2 次(开机音
-# SRC 完成)、irq127 交付 3 次(软件 IRQ 调度唤醒),均为一次/少数次合法事件,不是
-# 风暴;风暴信号=无界增长(远超此数),故放宽为小有界常数,不再要求 0。
+# irq127 = RTOS tick 调度器的软件调度 IRQ(任务切换/自抢占),不是事件驱动非周期源:
+# core tick handler 0x60661a4 每 tick 调用一次 timeslice 调度器 0x60653ae
+# (0x60661da 的 call -3634 → 0x60653ae),调度器在时片耗尽/优先级切换时请求软件 IRQ,
+# 最多每 core tick 一次。2026-11-22 重验:irq127 随窗口线性增长(3/4/8 @ 200k/267k/
+# 500k,比值≈2/3 core_tick),真正的非周期源 irq89 固定 2-3 次不随窗口增长。
+# 上界按 ⌈N/P⌉+1、P=CORE_TICK_PERIOD_STEPS(core tick 周期=40,000 模型步,1 tick=
+# 10ms=4×10⁴ 模型步,s19-batch3-taskbook §;500k 窗口实测相邻 core tick 差
+# =40004/40005)。expirations 一致性对 irq127 照旧豁免(无 timer 到期,expirations=0)。
+CORE_TICK_PERIOD_STEPS=40000
+IRQ127_PERIOD_STEPS=CORE_TICK_PERIOD_STEPS
+# 非周期源(事件驱动中断:irq89 SRC 完成等)窗口内允许的有限交付上界。原判据
+# 「软件 IRQ124-127 预期 0」被固件真实行为打破:irq89 交付 2-3 次(开机音 SRC 完成)
+# 等一次/少数次合法事件不是风暴;风暴信号=无界增长(远超此数),故放宽为小有界常数,
+# 不再要求 0。irq127 已改判周期源(见上),不走此分支。
 NONPERIODIC_SOURCE_BOUND=4
 
 SOURCE_D1='docs/d1-acceptance.md'
@@ -1532,7 +1542,8 @@ def _h1_timer0_events(health,window):
 
 # ── H2 同源重发有界(蓝图 §3 H2:每源交付 ≤⌈N/P_i⌉+1,P 从 per_source.period 实读,
 #     不预锁 40,000/300,000/4×10⁵/2×10⁵;周期源含 sys_timer 衍生 keyscan/adc_scan,
-#     d1-health-checks §2 周期源表;软件 IRQ124-127 预期 0;FAIL=超上界=风暴/无限重发) ─
+#     以及 irq127(core tick 调度器软件 IRQ,见常量区);软件 IRQ124-126/irq89 等
+#     事件驱动非周期源仍预期 0/小有界常数;FAIL=超上界=风暴/无限重发) ─
 def _h2_source_bounds(health,window):
     per_source=health.get('per_source')
     if not isinstance(per_source,list) or not per_source:
@@ -1554,7 +1565,22 @@ def _h2_source_bounds(health,window):
             checks.append(_check(name,missing=f'per_source[{source!r}].deliveries'
                     '(非负整数交付计数)'));continue
         period=entry.get('period')
-        if source in PERIODIC_SOURCES:
+        if source=='irq127':
+            # irq127 = RTOS tick 调度器的软件调度 IRQ(任务切换/自抢占):core tick
+            # handler 每 tick 调用一次 timeslice 调度器,最多每 core tick 一次——是
+            # 周期源而非事件驱动非周期源(2026-11-22 重验,证据链见常量区)。上界按
+            # ⌈N/P⌉+1、P=IRQ127_PERIOD_STEPS 折算,不预锁 per_source.period(观察器
+            # 对 irq 源留 None)。expirations 一致性对 irq127 豁免:无 timer 到期,
+            # expirations=0 是其正常形态(见下方 skip_delivery_vs_expiry)。
+            if not isinstance(n,int) or n<0:
+                checks.append(_check(name,missing='health.window.steps(或 model_step_end−'
+                        'model_step_start;上界公式 ⌈N/P⌉+1 的窗口长度)'));continue
+            min_period=IRQ127_PERIOD_STEPS
+            bound=-(-n//min_period)+1
+            expected=(f'deliveries <= ceil({n}/{min_period})+1 = {bound} '
+                      f'(irq127 <= once per core tick; core tick period '
+                      f'{CORE_TICK_PERIOD_STEPS} steps)')
+        elif source in PERIODIC_SOURCES:
             if not isinstance(period,int) or period<=0:
                 checks.append(_check(name,missing=f'per_source[{source!r}].period'
                         '(park 态实读周期;蓝图 §3「不预锁 40,000/300,000」,缺=无法算上界)'))
@@ -1575,16 +1601,17 @@ def _h2_source_bounds(health,window):
                 bound=-(-n//period)+1
                 expected=f'deliveries <= ceil({n}/{period})+1 = {bound}'
         else:
-            # 非周期源(事件驱动中断:irq89 SRC 完成/irq127 软件 IRQ 等):原「软件
-            # IRQ124-127 预期 0」被固件真实行为打破——一次/少数次合法事件不是风暴,
-            # 放宽为小有界常数(风暴=无界增长,见常量区 NONPERIODIC_SOURCE_BOUND)。
+            # 非周期源(事件驱动中断:irq89 SRC 完成等):原「软件 IRQ124-127 预期 0」
+            # 被固件真实行为打破——一次/少数次合法事件不是风暴,放宽为小有界常数
+            # (风暴=无界增长,见常量区 NONPERIODIC_SOURCE_BOUND)。irq127 已改判
+            # 周期源(见上方专支),不走此分支。
             bound=NONPERIODIC_SOURCE_BOUND
             expected=(f'deliveries <= {bound} (finite one-shot/few-shot event-driven '
                       'interrupts; a storm is unbounded growth far beyond this)')
         # 到期/交付/完成三分计数一致性(任务书 §1.0b 第 8 条:风暴证据含三分计数)。
-        # 「交付不得多于到期+相位容差」只对非周期源豁免(2026-11-22 D1 放宽):
-        # 非周期源是事件驱动中断(irq89 SRC 完成/irq127 软件 IRQ 等),expirations=0
-        # 是其正常形态(无 timer 到期),不以 deliveries>expirations 判风暴。
+        # 「交付不得多于到期+相位容差」对无 timer 到期的源豁免(2026-11-22 D1 放宽):
+        # 事件驱动中断(irq89 SRC 完成)与调度软件 IRQ(irq127)的 expirations=0 是其
+        # 正常形态(无 timer 到期),不以 deliveries>expirations 判风暴。
         # sys_timer 源(keyscan/adc_scan)已由观察器改成坍缩同数(expirations=
         # deliveries,不再用共享火回调点 watch 过计),该一致性检查照常生效。
         # 「完成不得多于交付」对所有源照用(同步回调/一次交付最多一次完成)。
@@ -1638,6 +1665,9 @@ def _h2_source_bounds(health,window):
             if source in SYS_TIMER_SOURCES:
                 note=('; sys_timer: synchronous callback in the timer0 tick frame, '
                       'expirations collapsed to deliveries (per-source)')
+            elif source=='irq127':
+                note=(f'; core-tick scheduler software IRQ, <= once per core tick '
+                      f'(period {IRQ127_PERIOD_STEPS} steps)')
             elif source not in PERIODIC_SOURCES:
                 note='; event-driven interrupt (finite delivery, not a periodic source)'
             else:

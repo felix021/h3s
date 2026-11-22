@@ -892,6 +892,26 @@ class D1_5FailTests(unittest.TestCase):
         self.assertEqual(result['status'],'fail')
         self.assertTrue(_failed_checks(result,'h2_irq124'))
 
+    def test_h2_irq127_periodic_not_event_driven(self):
+        # irq127 已改判周期源(core tick 调度器软件 IRQ):N=200,000、P=40,000 →
+        # bound=⌈200000/40000⌉+1=6;deliveries=5 在界内=pass(旧的
+        # NONPERIODIC_SOURCE_BOUND=4 会把 5 误判成风暴)。
+        scenario=d1_health_scenario()
+        scenario['d1_window']['health']['per_source'].append(
+            {'source':'irq127','core':0,'period':None,'expirations':0,'deliveries':5,
+             'completions':0,'first_deadline':None,'pending_at_window_start':False})
+        result=_d15(scenario)
+        self.assertFalse(_failed_checks(result,'h2_irq127'))
+
+    def test_h2_irq127_storm_fails(self):
+        # 真正的风暴(远超每 core tick 一次的线性包络)仍要 FAIL。
+        scenario=d1_health_scenario()
+        scenario['d1_window']['health']['per_source'].append(
+            {'source':'irq127','core':0,'period':None,'expirations':0,'deliveries':100,
+             'completions':0,'first_deadline':None,'pending_at_window_start':False})
+        result=_d15(scenario)
+        self.assertTrue(_failed_checks(result,'h2_irq127'))
+
     def test_h3_unbounded_repost_fails(self):
         scenario=d1_health_scenario()
         health=scenario['d1_window']['health']
