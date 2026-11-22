@@ -711,6 +711,31 @@ class DualCoreEngine:
                                     self.machine.handle, 0, 0, 0xFFFFFFFF)
         self.world.set_periph(self.periph.handle)
 
+        # 第四刀:CPU/machine/periph 跨 fill 常驻。Go World 在 run_loop 之间
+        # 保持其 Cores/Machine/PeriphState/AfterStep 不动,Python 侧也不再每批
+        # 全量重装:
+        #   * _resident=True 表示 Go 已持有与 Python 一致的状态(上一个 clean
+        #     批刚跑完、Python 的 dual_buf 消费只是把 Go 的末态镜像回 Python),
+        #     下一个相邻 clean 批直接续跑,整段跳过 json_state+load_state。
+        #   * _cs/_ms/_ps/_aps 缓存「上一次实际推给 Go 的分片」(diff 基准);
+        #     _resident=False 的真实再入按分片对比,只推 Python 慢步真正改过的
+        #     核/machine/periph/after_step,不变的分片不再 cgo 往返。
+        self._resident = False
+        self._cs = [None, None]
+        self._ms = None
+        self._ps = None
+        self._aps = None
+
+    def _sync_mmu(self, hardware):
+        """MMU page-table projection (mirrors the snapshot body). Stable during
+        the dual phase, but the re-sync is a cheap cgo call and keeps the two
+        sides honest if a slow-path store ever touches the table."""
+        mmu = getattr(hardware, 'mmu', None)
+        if mmu is None:
+            self.smem.set_mmu()
+        else:
+            self.smem.set_mmu(_opt_int(mmu.con), _opt_int(mmu.begin), _opt_int(mmu.end))
+
     def _pack_ram(self):
         out = bytearray()
         for addr, byte in self.mem.ram.items():
@@ -802,22 +827,33 @@ class DualCoreEngine:
         UnknownWord/IcfgValue tags)."""
         return cores_head_ok(c0, c1)
 
+    def note_slow_path(self):
+        """Python 慢路径(select/c.step/advance/交付投影)会改写 live 状态,使
+        Go 常驻状态不再等于 Python;下一次进入必须重新快照。probe_boot 在慢
+        路径入口调用,清掉 clean 续跑的 _resident 标志(缓存仍可用于分片 diff,
+        故不清)。"""
+        self._resident = False
+
+    def _is_clean(self, res):
+        """True when the fill ran to its step cap with no hazard (the Go 'ran N
+        dual-core attempts ... no hazard' reason) and committed at least one
+        step. Only such a fill leaves Python == Go after the dual_buf drain, so
+        only it can make the next fill a direct continue."""
+        return (res.get('exit') == 1
+                and res.get('reason', '').startswith('ran ')
+                and len(res.get('steps') or []) > 0)
+
     def snapshot(self, machine, hardware, c0, c1):
         """Snapshot the live state into the Go world (cores / select / periph /
         after_step config), re-syncing the RAM bytes Python wrote since the last
-        Go run (slow-path stores / abstract writes)."""
+        Go run (slow-path stores / abstract writes).
+
+        第四刀:真实再入只推分片。cs/ms/ps/aps 与上次推入的缓存对比,不变的
+        分片不再 cgo 往返(核按 per-core set_core 只推改过的那个;after_step
+        配置变化稀少、通常整段跳过)。"""
         changed = self._sync_ram()
         self._sync_abstract_mem()
-        # MMU page-table projection: virtual [0x400000, 0x800000) addresses the
-        # Go strict memory would otherwise fault on now translate through the
-        # same page table Python walks (the table bytes live in the synced ram).
-        # hardware.mmu is stable during the dual phase, but re-sync is cheap and
-        # keeps the two sides honest if a slow-path store ever touches it.
-        mmu = getattr(hardware, 'mmu', None)
-        if mmu is None:
-            self.smem.set_mmu()
-        else:
-            self.smem.set_mmu(_opt_int(mmu.con), _opt_int(mmu.begin), _opt_int(mmu.end))
+        self._sync_mmu(hardware)
 
         t0 = time.perf_counter()
         cs0 = core_state(c0)
@@ -841,31 +877,62 @@ class DualCoreEngine:
         _t('clear_cache', time.perf_counter() - t0)
 
         t0 = time.perf_counter()
-        self.world.set_cores([cs0, cs1])
-        self.machine.load(ms)
-        self.periph.load(ps)
-        self.world.set_afterstep(aps)
+        if self._cs[0] != cs0:
+            self.world.set_core(0, cs0)
+            self._cs[0] = cs0
+        if self._cs[1] != cs1:
+            self.world.set_core(1, cs1)
+            self._cs[1] = cs1
+        if self._ms != ms:
+            self.machine.load(ms)
+            self._ms = ms
+        if self._ps != ps:
+            self.periph.load(ps)
+            self._ps = ps
+        if self._aps != aps:
+            self.world.set_afterstep(aps)
+            self._aps = aps
         _t('load_state', time.perf_counter() - t0)
 
     def run_loop(self, machine, hardware, c0, c1, n):
         """Snapshot -> run one Go RunLoop call -> restore. Returns the raw
-        LoopResult dict (exit/stop_pc/stop_core/reason/irq/steps/cores)."""
-        self.snapshot(machine, hardware, c0, c1)
+        LoopResult dict (exit/stop_pc/stop_core/reason/irq/steps/cores).
+
+        第四刀:上一个 fill 是 clean 时(_resident)相邻批直接续跑——Go 已持有
+        正确状态,跳过 json_state+load_state 的整段重建,只保留 RAM/抽象内存/
+        MMU 的廉价重同步(抽象写与慢路径存需要在再入前追平)。"""
+        if self._resident:
+            changed = self._sync_ram()
+            self._sync_abstract_mem()
+            self._sync_mmu(hardware)
+            if changed is None:
+                self.go0.clear_cache()
+                self.go1.clear_cache()
+            elif changed:
+                self.go0.invalidate_ram(changed)
+                self.go1.invalidate_ram(changed)
+        else:
+            self.snapshot(machine, hardware, c0, c1)
         t0 = time.perf_counter()
         res = self.world.run_loop(n)
         _t('run_loop', time.perf_counter() - t0)
+        # 下一个 fill 能否直接续跑,取决于本 fill 是否 clean。非 clean(边界
+        # 交回)会让 Python 慢步改写状态,必须在再入时重新快照。
+        self._resident = self._is_clean(res)
         self.restore(machine, hardware, c0, c1, res)
         return res
 
     def restore(self, machine, hardware, c0, c1, res):
+        """Write one Go LoopResult back into the live Python objects. The
+        post-run select / advance state arrives folded into the run_loop result
+        (machine / periph keys), so there are no separate cgo round-trips for
+        machine.state() / periph.state() (第四刀:restore 侧 3 次 cgo -> 1 次)."""
         t0 = time.perf_counter()
         cores = res.get('cores') or [None, None]
         restore_core(c0, cores[0])
         restore_core(c1, cores[1])
-        ms = self.machine.state()
-        ps = self.periph.state()
-        restore_machine(machine, ms)
-        restore_periph(hardware, ps)
+        restore_machine(machine, res.get('machine'))
+        restore_periph(hardware, res.get('periph'))
         _t('restore', time.perf_counter() - t0)
 
     def free(self):

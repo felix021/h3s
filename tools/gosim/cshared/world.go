@@ -329,6 +329,25 @@ func gosim_world_dual_set_cores(wH C.uintptr_t, in *C.uint8_t, inLen C.int) C.in
 	return 0
 }
 
+// gosim_world_dual_set_core replaces a single World core with its JSON snapshot.
+// The other core is left untouched, so the caller can push only the core the
+// slow path actually mutated (第四刀:真实再入按实际修改同步). Returns 0 on
+// success, -1 on a bad core index or a parse failure.
+//
+//export gosim_world_dual_set_core
+func gosim_world_dual_set_core(wH C.uintptr_t, core C.int, in *C.uint8_t, inLen C.int) C.int {
+	w := world(wH)
+	if int(core) < 0 || int(core) >= 2 {
+		return -1
+	}
+	var s coreStateJSON
+	if err := json.Unmarshal(C.GoBytes(unsafe.Pointer(in), inLen), &s); err != nil {
+		return -1
+	}
+	w.Cores[int(core)] = coreFromJSON(&s)
+	return 0
+}
+
 //export gosim_world_free
 func gosim_world_free(h C.uintptr_t) { cgo.Handle(h).Delete() }
 
@@ -341,6 +360,12 @@ type loopResultJSON struct {
 	Err      json.RawMessage   `json:"err"`
 	Steps    []loopStepJSON    `json:"steps"`
 	Cores    [2]*coreStateJSON `json:"cores"`
+	// Machine / Periph are the post-run select / advance state, folded into the
+	// run_loop result so the caller does not need two extra cgo round-trips to
+	// read them back (第四刀:restore 侧也免掉 machine.state/periph.state 的独立
+	// 往返;序列化成本并入 run_loop 的这一次封送,总 cgo 次数 3->1)。
+	Machine json.RawMessage `json:"machine,omitempty"`
+	Periph  json.RawMessage `json:"periph,omitempty"`
 }
 
 type loopMemWriteJSON struct {
@@ -411,6 +436,14 @@ func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
 	if w != nil {
 		for i := 0; i < 2; i++ {
 			out.Cores[i] = coreToJSON(w.Cores[i])
+		}
+		if w.Machine != nil {
+			out.Machine = json.RawMessage(w.Machine.StateJSON())
+		}
+		if w.Periph != nil {
+			if b, err := w.Periph.StateJSON(); err == nil {
+				out.Periph = json.RawMessage(b)
+			}
 		}
 	}
 	return json.Marshal(out)

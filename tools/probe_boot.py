@@ -3745,6 +3745,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     if dual_hazard is not None:
                         continue
                     # clean 且 0 步(不应发生):走慢路径兜底,不空转。
+        if dual_engine is not None:
+            dual_engine.note_slow_path()
         if machine is not None:c=machine.select()
         if gosim_observer is not None:
             gosim_observer.begin(
