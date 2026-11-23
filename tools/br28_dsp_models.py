@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""copex.ppi mode-22 指数近似模型(路 COPEXIMPL,codex 裁 (a) 收窄版)。
+"""copex.ppi 近似模型:mode-22 指数(路 COPEXIMPL)+ mode-16 浮点 sincos(路 COPEX16)。
 
 背景与证据(docs/frontier-scout-copex.md,侦察双源钉死):
 - mode 22 = e^x。SDK DSP 库 math_fast_funtion.c 的 exp_float 就是
@@ -56,10 +56,18 @@ import struct
 
 WORD_MASK = 0xFFFFFFFF
 EXP22 = 22
+SINCOS16 = 16
 
 # 声明域(闭区间):e^x 在 float32 正常态可表出的精确 x 边界。
 X_MIN = math.log(2.0 ** -126)                    # ≈ -87.3365 (0xc2aeac50)
 X_MAX = math.log((2.0 - 2.0 ** -23) * 2.0 ** 127)  # ≈ +88.7228 (0x42b17218)
+
+# mode-16 声明域(闭区间):[-2π, +2π],一周各一侧。sin/cos 以 2π 为周期,
+# 此域内主机 double sin/cos → float32 是良态近似;app 的 eq 设计族输入
+# (归一化频率比值,实测远小于 1)在域内。域外=新执行形状,dsp_domain_boundary
+# 停(不钳位不饱和:BR28 对 |x|>2π 的范围归约精度无硬件捕获证据)。
+SINCOS_X_MIN = -2.0 * math.pi
+SINCOS_X_MAX = +2.0 * math.pi
 
 
 class CopexUpperWord:
@@ -106,6 +114,20 @@ def copex_exp22_lower(x):
     return struct.unpack('<I', struct.pack('<f', math.exp(x)))[0]
 
 
+def copex_sincos16_pair(x):
+    """mode-16 输出对 (lo, hi)=(cos(x), sin(x)):host double → float32 就近舍入。
+
+    SDK IR 钉死方向(sin_float 取 lshr 32 上字、cos_float 取 trunc 下字),与
+    固件 0x6072bb2 叶子「[r1]=r5(sin)/[r2]=r4(cos)」逐指令同形。近似语义
+    derived-not-measured,非硅复刻:BR28 的 sincos 数值(舍入/范围归约)无硬件
+    捕获证据,AC791N 捕获的 mode-16 样本全部落在无效探测域(输出 1.0),零数值
+    互证——比 mode 22 更弱的单源 SDK 具名。
+    """
+    lo = struct.unpack('<I', struct.pack('<f', math.cos(x)))[0]
+    hi = struct.unpack('<I', struct.pack('<f', math.sin(x)))[0]
+    return lo, hi
+
+
 def assert_copex_exp22_installable(models):
     """坑⑤:上游模型面冲突检查(装机点=probe_boot CPU 构造,k2 同级)。
 
@@ -131,9 +153,11 @@ class CopexExp22Model:
     独立 stop kind,不经上游 effect() 的 ValueError 路由)。
     """
 
-    STOP_NOTE_OTHER_MODES = ('the other seven app copex modes (24/16/17/23/0/6/7) are '
-                             'SDK-named but single-source; each needs its own parameter-'
-                             'order/unit/word-shape review before modelling')
+    STOP_NOTE_OTHER_MODES = ('the other app copex modes (24/16/17/23/0/6/7) are '
+                             'SDK-named but single-source; mode 16 is modelled separately '
+                             'by route COPEX16 (CopexSincos16Model, opt-in) and each of '
+                             'the rest needs its own parameter-order/unit/word-shape '
+                             'review before modelling')
 
     def __init__(self, probe_ul_bias=None):
         # 账本(M4 族 copex_exp22 快照状态):executions/逐次样本(有界,首
@@ -233,6 +257,135 @@ class CopexExp22Model:
         # 提交:下字=float32(e^x),上字=不透明结果;flags 保持(捕获共识)。
         cpu.R[dst] = result_bits
         cpu.R[dst + 1] = CopexUpperWord(cpu.pc)
+        cpu.finish_exact(cpu.pc + size)
+        return True
+
+    # ------------------------------------------------------------------ 报告
+    def report(self):
+        return {'executions': self.executions,
+                'samples': [dict(row) for row in self.samples],
+                'first': dict(self.first) if self.first else None,
+                'last': dict(self.last) if self.last else None,
+                'modes': {str(key): value for key, value in sorted(self.modes.items())}}
+
+
+class CopexSincos16Model:
+    """mode-16 浮点 sincos 近似模型的拦截门+账本(路 COPEX16,另案)。
+
+    与 CopexExp22Model 同款接线(step_body 指令级拦截门,先于 upstream pair()),
+    但只认 mode 16;其余 copex 模式返回 False 落回 exp22 门(exp22 门对 24/17/
+    23/0/6/7 继续 dsp_mode_not_modeled)——registry 依赖边挂 copex_exp22_model
+    (场景推进顺序:链穿过 exp 站点 0x606a900/0x606600c 后才到达 0x6072bb8)。
+    契约(fail-closed):
+    - n == 16 精确(不 n&31 推广);bit4=浮点族选择推断不作放行依据。
+    - 源上字已知 0(SDK zext 形状);非零或抽象值=dsp_operand_shape_not_modeled。
+    - 源下字有限 float32 且在声明域 [-2π, +2π] 内(闭区间);NaN/Inf 比较为
+      False 一并落域外。域外=dsp_domain_boundary(不钳位不饱和:BR28 对
+      |x|>2π 的范围归约精度无硬件捕获证据)。
+    - .p 并行孪生两位置提交前拒绝(基形注册会被上游 pair() 自动派发)。
+    - 输出对 (lo,hi)=(cos,sin) 都是真实 float32 数值,非不透明上字——与
+      mode 22 的关键差异:mode 16 的 sin 结果走 dst 上字且被固件消费
+      (0x6072bb2 叶子 [r1]=r5/[r2]=r4)。
+    - flags 保持(364 条捕获共识:只写 dst pair、psr 低 4 位不动)。
+
+    证据等级:SDK 具名单源(mode 16 = sin_float+cos_float 的双目 sincos 对,
+    math_fast_funtion.c.o.ll 逐函数钉死输出方向);AC791N 捕获的 mode-16 样本
+    全落在无效探测域(输出 1.0),零数值互证——比 mode 22 更弱的
+    derived-not-measured;HEARING_AID DSP 系数计算可能依赖精确值,若近似导致
+    下游分歧须如实报告。
+    """
+
+    def __init__(self):
+        self.executions = 0
+        self.samples = []
+        self.first = None
+        self.last = None
+        self.modes = {}
+
+    # ------------------------------------------------------------------ 拦截
+    MAX_SAMPLES = 32
+
+    def _note_mode(self, mode):
+        self.modes[mode] = self.modes.get(mode, 0) + 1
+
+    def _sample(self, cpu, x_bits, cos_bits, sin_bits):
+        row = {'pc': hex(cpu.pc), 'core': cpu.core_id,
+               'x_bits': hex(x_bits), 'cos_bits': hex(cos_bits),
+               'sin_bits': hex(sin_bits)}
+        if self.first is None:
+            self.first = row
+        self.last = row
+        if len(self.samples) < self.MAX_SAMPLES:
+            self.samples.append(row)
+
+    def intercept(self, cpu, insn, raw, size, operands):
+        """step_body 指令级拦截门;True=已执行完,False=非本门指令/非 mode 16。
+
+        非 mode 16 的 copex.ppi 返回 False 落回 exp22 门(它负责 22 放行与
+        其余模式拒绝);registry 依赖保证 exp22 门在本门之后存在。
+        """
+        if insn.id == 'copex.ppi.p':
+            self._note_mode(operands(insn, raw)['n'])
+            from probe_boot import Blocked
+            raise Blocked('dsp_operand_shape_not_modeled', pc=hex(cpu.pc),
+                          instruction_id=insn.id,
+                          position='parallel_twin_first_half',
+                          note='the copex.ppi.p parallel twin dispatches to the base '
+                               'form in the upstream pair() path; no hardware capture '
+                               'covers copex inside a parallel slot, so both halves are '
+                               'rejected before any effect commits')
+        if insn.id.endswith('.p'):
+            pair_insn, _pair_raw, _pair_size = cpu.decode(cpu.pc + size)
+            if pair_insn.id in ('copex.ppi', 'copex.ppi.p'):
+                self._note_mode(operands(pair_insn, _pair_raw)['n'])
+                from probe_boot import Blocked
+                raise Blocked('dsp_operand_shape_not_modeled', pc=hex(cpu.pc),
+                              instruction_id=pair_insn.id,
+                              position='parallel_second_half',
+                              note='copex as the second half of a parallel pair has no '
+                                   'hardware capture; rejected before either half commits')
+            return False
+        if insn.id != 'copex.ppi':
+            return False
+        from probe_boot import Blocked
+        op = operands(insn, raw)
+        dst, src, mode = op['r'], op['s'], op['n']
+        if mode != SINCOS16:
+            # 非本门模式:交给 exp22 门(22=放行,24/17/23/0/6/7=诚实停)。
+            return False
+        src_hi, src_lo = cpu.R[src + 1], cpu.R[src]
+        if not (isinstance(src_hi, int) and src_hi == 0):
+            raise Blocked('dsp_operand_shape_not_modeled', pc=hex(cpu.pc),
+                          instruction_id=insn.id,
+                          source_register=src + 1,
+                          reason='source upper word is not the SDK zero-extended shape',
+                          value=(hex(src_hi) if isinstance(src_hi, int)
+                                 else 'unknown:%s' % type(src_hi).__name__))
+        if not isinstance(src_lo, int):
+            raise Blocked('dsp_operand_shape_not_modeled', pc=hex(cpu.pc),
+                          instruction_id=insn.id,
+                          source_register=src,
+                          reason='source lower word is not a known integer',
+                          value='unknown:%s' % type(src_lo).__name__)
+        x = struct.unpack('<f', struct.pack('<I', src_lo))[0]
+        if not (SINCOS_X_MIN <= x <= SINCOS_X_MAX):      # NaN 比较为 False
+            raise Blocked('dsp_domain_boundary', pc=hex(cpu.pc), instruction_id=insn.id,
+                          x_bits=hex(src_lo), x=repr(x),
+                          domain=[repr(SINCOS_X_MIN), repr(SINCOS_X_MAX)],
+                          domain_meaning='one full 2pi period each way, where host '
+                                         'double sin/cos is a well-conditioned '
+                                         'approximation; the app filter-design inputs '
+                                         '(normalized-frequency ratios) sit well inside',
+                          note='BR28 range-reduction numerics for |x| > 2pi have no '
+                               'capture evidence; an out-of-domain input is a new '
+                               'execution shape, not a value to clamp or saturate')
+        cos_bits, sin_bits = copex_sincos16_pair(x)
+        self.executions += 1
+        self._note_mode(SINCOS16)
+        self._sample(cpu, src_lo, cos_bits, sin_bits)
+        # 提交:lo=cos、hi=sin 都是真实 float32(无不透明上字);flags 保持。
+        cpu.R[dst] = cos_bits
+        cpu.R[dst + 1] = sin_bits
         cpu.finish_exact(cpu.pc + size)
         return True
 

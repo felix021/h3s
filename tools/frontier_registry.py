@@ -401,6 +401,23 @@ FEATURES = (
             'probe_only 不进共享栈;sensitivity-probe-not-plausible-state,'
             'CV/ADA 双探针先例——三镜像 parity 只证相对行为不证共同模型'
             '误差,扰动臂单测近似误差对下游路径的影响)'),
+    # ---- 路 COPEX16(另案,默认关):copex.ppi mode-16 浮点 sincos 近似模型
+    # ——F2 L1 双击 open 动作的 set_scene(16) HEARING_AID 场景 DSP 系数计算
+    # 0x6072bb2 叶子(0x6072bb8 停点)放行。mode 16=sin_float+cos_float
+    # SDK 具名单源(math_fast_funtion.c.o.ll sin=上字/cos=下字);输出对
+    # (lo,hi)=(cos,sin) 都是真实 float32(与 mode 22 上字不透明不同);
+    # 域 [-2π,+2π] 外=新执行形状 dsp_domain_boundary 停。依赖边挂
+    # copex_exp22_model=场景推进顺序(链穿过 exp 站点后到达 sincos 站点)
+    # 非硬件依赖;默认关=拦截门不装,0x6072bb8 停点形状不变。
+    Feature('copex_sincos16_model', 'conditional', ('copex_exp22_model',),
+            False, None,
+            'copex.ppi mode-16 浮点 sincos 近似模型(F2 L1 open 动作 0x6072bb2 '
+            '叶子放行;输出对=float32(double sin/cos) 条件近似 derived-not-'
+            'measured,SDK 具名单源零硬件数值互证;n==16 精确+源上字 0+域 '
+            '[-2π,+2π] 三重契约,违反走专用停点;.p 两位置拒绝;非 mode 16 '
+            'copex 落回 exp22 门;证据=已验证实现契约与当前前缀推进,不证明 '
+            'BR28 sincos 数值等价/其余 17 个 mode-16 站点覆盖/HEARING_AID '
+            '系数精确性)'),
     # ---- 路 SRCSYNC(codex 20261118 下路指引:「CON1 单字配置 RMW 容器」的
     # 同函数事务扩展):JL_SRC_SYNC 配置事务三字容器 jl_src_sync_config_
     # words——42,059,070 停点 0x606fbe4(rmw.or.modimm [r0+4]|=0x400000 内部

@@ -1464,6 +1464,13 @@ M4_FAMILIES = (
     # not static fixtures. Switch off = slot None like every family.
     ('copex_exp22', 'CopexExp22Model',
      ('executions', 'samples', 'first', 'last', 'modes')),
+    # Route COPEX16: the copex mode-16 floating-point sincos approximation gate.
+    # Same guard/ledger contract as copex_exp22 (guard pins are class constants;
+    # captured state is the release ledger). The sample rows differ (cos/sin bits
+    # instead of a single result word); the ledger is real report state so the
+    # resumed report equals the from-zero report. Switch off = slot None.
+    ('copex_sincos16', 'CopexSincos16Model',
+     ('executions', 'samples', 'first', 'last', 'modes')),
 )
 M4_SLOTS = tuple(slot for slot, _, _ in M4_FAMILIES)
 

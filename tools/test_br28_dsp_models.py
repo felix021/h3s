@@ -22,7 +22,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from br28_dsp_models import (CopexExp22Model, CopexUpperWord, X_MAX, X_MIN,
-                             assert_copex_exp22_installable, copex_exp22_lower)
+                             assert_copex_exp22_installable, copex_exp22_lower,
+                             CopexSincos16Model, SINCOS16, SINCOS_X_MAX, SINCOS_X_MIN,
+                             copex_sincos16_pair)
 from br28_unknown import UnknownWord
 from probe_boot import Blocked
 from probe_pi32v2 import ROOT
@@ -349,6 +351,205 @@ class FirmwareShapePins(unittest.TestCase):
         self.assertEqual((insn.id, raw), ('st.w', {'d': 2, 'b': 1, 'n': 0}))
         insn, raw, _ = module.codec.decode(table, leaf[10:12])
         self.assertEqual(insn.id, 'rts')
+
+
+class CopexSincos16ContractTests(unittest.TestCase):
+    """mode-16 浮点 sincos 契约矩阵(路 COPEX16,单源 SDK 具名,另案)。"""
+
+    def execute(self, x_bits, n=16, src_hi=0, pc=0x6072BB8, insn_id='copex.ppi'):
+        gate = CopexSincos16Model()
+        cpu = GateCpu(pc=pc)
+        cpu.R[2] = x_bits          # 源 pair lo=s*2=2
+        cpu.R[3] = src_hi
+        done = gate.intercept(cpu, Insn(insn_id), copex_raw(n=n), 4, operands)
+        return gate, cpu, done
+
+    def test_domain_constants(self):
+        # 声明域边界:±2π(闭区间端点,Python double 值)。
+        self.assertEqual((f32_bits(SINCOS_X_MIN), f32_bits(SINCOS_X_MAX)),
+                         (0xC0C90FDB, 0x40C90FDB))
+
+    def test_execute_zero(self):
+        # x=0:cos=1.0、sin=0.0,两个目的字都是真实 float32(无不透明上字)。
+        gate, cpu, done = self.execute(0x0)
+        self.assertTrue(done)
+        self.assertEqual(cpu.R[2], 0x3F800000)   # lo=cos(0)
+        self.assertEqual(cpu.R[3], 0x00000000)   # hi=sin(0)
+        self.assertEqual(cpu.finished, cpu.pc + 4)
+        self.assertEqual(gate.executions, 1)
+        self.assertEqual(gate.modes, {16: 1})
+        self.assertEqual(gate.first['cos_bits'], '0x3f800000')
+        self.assertEqual(gate.first['sin_bits'], '0x0')
+
+    def test_execute_common_vectors(self):
+        # 已知 sincos 位型(独立于模型函数:同一 float32 输入直接 double
+        # sin/cos 再取 float32,与模型函数分离)。这些向量同时钉死 SDK IR 的
+        # 方向(lo=cos/hi=sin,不是反的)。
+        import math
+        for x_bits in (0x3F490FDB,   # π/4:cos=sin=√2/2
+                       0x3FC90FDB,   # π/2:cos≈0,sin≈1
+                       0x40490FDB,   # π:cos=-1,sin≈0
+                       0xC0490FDB):  # -π
+            x = f32_value(x_bits)
+            exp_cos = f32_bits(math.cos(x))
+            exp_sin = f32_bits(math.sin(x))
+            self.assertEqual(copex_sincos16_pair(x), (exp_cos, exp_sin),
+                             'x_bits=%#x' % x_bits)
+            _, cpu, done = self.execute(x_bits)
+            self.assertTrue(done)
+            self.assertEqual(cpu.R[2], exp_cos, 'x_bits=%#x' % x_bits)
+            self.assertEqual(cpu.R[3], exp_sin, 'x_bits=%#x' % x_bits)
+
+    def test_dst_is_src_pair_shape(self):
+        # 停点形状 0x6072bb8:dst=src=r5_r4(先读源再写目的,同 pair 正确)。
+        gate = CopexSincos16Model()
+        cpu = GateCpu(pc=0x6072BB8)
+        cpu.R[4], cpu.R[5] = 0x3F490FDB, 0   # lo=r4=x, hi=r5=0
+        done = gate.intercept(cpu, Insn('copex.ppi'), {'r': 2, 's': 2, 'n': 16},
+                              4, operands)
+        self.assertTrue(done)
+        self.assertEqual(cpu.R[4], 0x3F3504F3)   # cos(π/4)
+        self.assertEqual(cpu.R[5], 0x3F3504F3)   # sin(π/4)
+        self.assertEqual(cpu.finished, 0x6072BBC)
+
+    def test_non_16_mode_falls_through_to_exp22(self):
+        # 非本门模式(含 22 与他模式)返回 False 落回 exp22 门,不消费不提交。
+        for mode in (0, 6, 7, 17, 22, 23, 24, 16 | 32, 255):
+            gate = CopexSincos16Model()
+            cpu = GateCpu()
+            cpu.R[2], cpu.R[3] = 0x3F800000, 0
+            self.assertFalse(gate.intercept(cpu, Insn('copex.ppi'), copex_raw(n=mode), 4, operands))
+            self.assertIsNone(cpu.finished)
+            self.assertEqual(gate.executions, 0)
+
+    def test_source_upper_word_nonzero_stops(self):
+        # SDK zext 形状:上字非零=操作数形状未建模,不是域外。
+        gate = CopexSincos16Model()
+        cpu = GateCpu()
+        cpu.R[2], cpu.R[3] = 0x3F800000, 0x3F800000
+        with self.assertRaises(Blocked) as caught:
+            gate.intercept(cpu, Insn('copex.ppi'), copex_raw(n=16), 4, operands)
+        self.assertEqual(caught.exception.details['kind'], 'dsp_operand_shape_not_modeled')
+        self.assertEqual(gate.executions, 0)
+
+    def test_source_abstract_values_stop(self):
+        for slot, value in ((3, UnknownWord((None, 0, 0, 0), (0x19f640, None, None, None))),
+                            (2, CopexUpperWord(0x6072BB8))):
+            gate = CopexSincos16Model()
+            cpu = GateCpu()
+            cpu.R[2], cpu.R[3] = 0x3F800000, 0
+            cpu.R[slot] = value
+            with self.assertRaises(Blocked) as caught:
+                gate.intercept(cpu, Insn('copex.ppi'), copex_raw(n=16), 4, operands)
+            self.assertEqual(caught.exception.details['kind'], 'dsp_operand_shape_not_modeled',
+                             'slot %d' % slot)
+
+    def test_domain_boundary_stops(self):
+        # 域外(闭区间外侧)+ NaN/Inf。±2π 的 float32 网格点恰在双精度 ±2π
+        # 外侧一位,故取最近的域内网格点放行(exp22 同款对齐)。
+        outside = (f32_bits(2.0 * 3.1416), f32_bits(-2.0 * 3.1416),
+                   f32_bits(10.0), f32_bits(-10.0),
+                   0x7F800000, 0xFF800000, 0x7FC00000)
+        for bits in outside:
+            gate = CopexSincos16Model()
+            cpu = GateCpu()
+            cpu.R[2], cpu.R[3] = bits, 0
+            with self.assertRaises(Blocked) as caught:
+                gate.intercept(cpu, Insn('copex.ppi'), copex_raw(n=16), 4, operands)
+            self.assertEqual(caught.exception.details['kind'], 'dsp_domain_boundary',
+                             'bits %#x' % bits)
+            self.assertEqual(gate.executions, 0)
+        # 域内贴边值放行(闭区间端点对齐到 float32 网格)。
+        lo_bits = f32_bits(SINCOS_X_MIN)
+        while f32_value(lo_bits) < SINCOS_X_MIN:
+            lo_bits -= 1                      # 负数:位模式减 1 = 向上一步
+        hi_bits = f32_bits(SINCOS_X_MAX)
+        while f32_value(hi_bits) > SINCOS_X_MAX:
+            hi_bits -= 1                      # 正数:位模式减 1 = 向下一步
+        for bits in (lo_bits, hi_bits, 0x0, 0x3F490FDB):
+            _, cpu, done = self.execute(bits)
+            self.assertTrue(done, 'bits=%#x' % bits)
+
+    def test_parallel_twin_first_half_rejected(self):
+        gate = CopexSincos16Model()
+        cpu = GateCpu()
+        cpu.R[2], cpu.R[3] = 0x0, 0
+        with self.assertRaises(Blocked) as caught:
+            gate.intercept(cpu, Insn('copex.ppi.p'), copex_raw(n=16), 6, operands)
+        self.assertEqual(caught.exception.details['kind'], 'dsp_operand_shape_not_modeled')
+        self.assertEqual(caught.exception.details['position'], 'parallel_twin_first_half')
+        self.assertEqual(cpu.finished, None)
+
+    def test_copex_as_parallel_second_half_rejected(self):
+        gate = CopexSincos16Model()
+        cpu = GateCpu(pc=0x6000000)
+        cpu.R[2], cpu.R[3] = 0x0, 0
+        _DECODE_TABLE[0x6000004] = (Insn('copex.ppi'), copex_raw(n=16), 4)
+        with self.assertRaises(Blocked) as caught:
+            gate.intercept(cpu, Insn('add.rrr.p'), {}, 4, operands)
+        self.assertEqual(caught.exception.details['position'], 'parallel_second_half')
+        _DECODE_TABLE[0x6000004] = (Insn('ld.w'), {}, 4)
+        self.assertFalse(gate.intercept(cpu, Insn('add.rrr.p'), {}, 4, operands))
+
+    def test_non_copex_instruction_falls_through(self):
+        gate = CopexSincos16Model()
+        cpu = GateCpu()
+        self.assertFalse(gate.intercept(cpu, Insn('add.rrr'), {}, 4, operands))
+        self.assertIsNone(cpu.finished)
+
+    def test_ledger_first_last_modes(self):
+        gate = CopexSincos16Model()
+        for i, bits in enumerate((0x0, 0x3F490FDB, 0x3FC90FDB)):
+            cpu = GateCpu(pc=0x6072BB8 + 8 * i, core=i % 2)
+            cpu.R[2], cpu.R[3] = bits, 0
+            self.assertTrue(gate.intercept(cpu, Insn('copex.ppi'), copex_raw(n=16), 4, operands))
+        report = gate.report()
+        self.assertEqual(report['executions'], 3)
+        self.assertEqual(report['first']['pc'], '0x6072bb8')
+        self.assertEqual(report['last']['pc'], '0x6072bc8')
+        self.assertEqual(report['modes'], {'16': 3})
+
+
+class FirmwareSincos16ShapePins(unittest.TestCase):
+    """真件字节钉子:0x6072bb2 叶子与 SDK IR 形状互证(需 reference cache)。"""
+
+    def test_stop_site_encoding_decodes_as_copex16(self):
+        # 0x6072bb8 四字节 ff e1 10 44 = r5_r4 = copex(r5_r4)(16)。
+        from probe_pi32v2 import upstream
+        module = upstream()
+        table = module.CPU().tab
+        insn, raw, size = module.codec.decode(table, bytes.fromhex('ffe11044'))
+        self.assertEqual(insn.id, 'copex.ppi')
+        self.assertEqual(size, 4)
+        self.assertEqual(raw, {'r': 2, 's': 2, 'n': 16})
+        self.assertEqual(module.check.operands(insn, raw),
+                         {'raw': {'r': 2, 's': 2, 'n': 16}, 'r': 4, 's': 4, 'n': 16})
+
+    def test_leaf_bytes_in_official_app(self):
+        # 官方镜像 0x6072bb2 叶子:push {rets,r5,r4} / r4=r0 / r5=0 /
+        # copex.ppi r5_r4(16) / [r1]=r5(sin) / [r2]=r4(cos) / pop——与 SDK IR
+        # 的 sin_float(上字)/cos_float(下字)逐指令同形。
+        from probe_boot import application, ENTRY
+        from probe_pi32v2 import upstream
+        app = application(FIRMWARE)
+        module = upstream()
+        table = module.CPU().tab
+        offset = 0x6072BB2 - ENTRY
+        leaf = app[offset:offset + 16]
+        insn, raw, _ = module.codec.decode(table, leaf[0:2])
+        self.assertEqual((insn.id, raw), ('push.rets_rl', {'l': 5}))
+        insn, raw, _ = module.codec.decode(table, leaf[2:4])
+        self.assertEqual((insn.id, raw), ('mov.rr', {'x': 4, 'y': 0}))
+        insn, raw, _ = module.codec.decode(table, leaf[4:6])
+        self.assertEqual((insn.id, raw), ('li.u8', {'r': 5, 'n': 0}))
+        self.assertEqual(leaf[6:10].hex(), 'ffe11044')
+        insn, raw, _ = module.codec.decode(table, leaf[6:10])
+        self.assertEqual((insn.id, module.check.operands(insn, raw)),
+                         ('copex.ppi', {'raw': {'r': 2, 's': 2, 'n': 16}, 'r': 4, 's': 4, 'n': 16}))
+        insn, raw, _ = module.codec.decode(table, leaf[10:12])
+        self.assertEqual((insn.id, raw), ('st.w', {'d': 5, 'b': 1, 'n': 0}))
+        insn, raw, _ = module.codec.decode(table, leaf[12:14])
+        self.assertEqual((insn.id, raw), ('st.w', {'d': 4, 'b': 2, 'n': 0}))
 
 
 if __name__ == '__main__':
