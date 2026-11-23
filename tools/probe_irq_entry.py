@@ -5586,6 +5586,36 @@ def make_f2_l1_loop_post_stop(app, vm_keys=None):
         return {'slot':read_ram(cpu,F2_L1_SLOT,4),
                 'hold_flag':read_ram(cpu,0x125578,1)}
 
+    def zero_clock_node_slack(cpu):
+        """SDK 时钟链表节点 zalloc 清零建模(路 F2L1-CLOCKFREE)。
+
+        时钟节点是 zalloc(44) 分配的 44B 对象:真实固件里 zalloc 会把整块
+        清零,clock_alloc(0x06000978)再覆写 next(+0)/prev(+4)/name(+8 起,
+        strcpy 只写到空终止符)/freq(+40)。本仿真世界 clock_alloc 的分配
+        路径不清零,导致 name 串空终止符之后的 name 缓冲松弛字节(如
+        "mic_effect" 的 name[11]、"lfix_hold" 的 name[9] 之后的字)保持
+        未初始化;close 侧 clock_free(0x0600572c)→ ROM strcmp(0x4300,
+        按 4 字节整字加速)读名串时越过空终止符读到该松弛字节,诚实撞
+        uninitialized_memory。
+
+        这里按「zalloc 应清零」建模:遍历 0x124880 时钟链表,把每个节点
+        44B 内尚未初始化的字节补写为 0。next/prev/name/freq 已由
+        clock_alloc 真实写通、读得通,不会被补写覆盖——这是对 SDK zalloc
+        语义的建模,不是跳过未初始化读、也不臆造 clock 树。
+        """
+        sentinel = 0x124880
+        node = read_ram(cpu, sentinel, 4)
+        guard = 0
+        while isinstance(node, int) and node != sentinel and guard < 64:
+            guard += 1
+            nxt = read_ram(cpu, node, 4)
+            for off in range(44):
+                try:
+                    cpu.mem.read(node + off, 1)
+                except Blocked:
+                    write_ram(cpu, node + off, b'\x00')
+            node = nxt
+
     def sample(cpu,machine,hardware,res_value,label,log):
         hardware.fd31_adc_con.res_named_values[KEY_CHAIN_CHANNEL_WORD]=res_value
         value,steps,_=key_chain_direct_call(cpu,machine,0x60116D0,[KEY_CHAIN_CHANNEL_WORD])
@@ -5903,6 +5933,12 @@ def make_f2_l1_loop_post_stop(app, vm_keys=None):
                                'hearing_obs':hearing_obs,
                                'resume':resume,
                                'anchor_counts':counts,'checks':checks,'pass':round_pass})
+                if rnd == 1:
+                    # round1 open 后、round2 close 前:按 zalloc 语义补清零时钟
+                    # 链表节点的松弛字节(open 分配节点的 name 缓冲空终止符之后),
+                    # 否则 round2 clock_free 的 strcmp 字加速读会越过空终止符
+                    # 读到未初始化堆、BLOCKED。
+                    zero_clock_node_slack(cpu)
                 if resume['stop'] is not None:
                     # 恢复推进撞墙(诚实停):open/close 载荷内部的未建模面(如 copex.ppi
                     # 模式 16=HEARING_AID 场景)。记墙并停跑后续轮(世界已停在墙内,下一
