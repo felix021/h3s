@@ -3693,7 +3693,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # 白费 fill,直接落慢路径 select+step(字节等价)。
                     pass
                 else:
-                    res=dual_engine.run_loop(machine,hardware,machine.cores[0],machine.cores[1],DUAL_CAP)
+                    # 整段执行上限受剩余预算封顶:instruction_budget 按 attempts 计,
+                    # run_loop 让 Go 一次执行 n 步后 restore 会把整段计数器写回 Python,
+                    # 若 n>剩余预算,状态会超前预算边界;封顶后整段恰落在预算边界。
+                    res=dual_engine.run_loop(machine,hardware,machine.cores[0],machine.cores[1],min(DUAL_CAP, budget - attempts + 1))
                     gosim_dual_fills+=1
                     kind=_dual_kind(res)
                     steps=res.get('steps') or []
