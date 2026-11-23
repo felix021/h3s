@@ -48,7 +48,12 @@ const (
 // unmapped/uninitialized paths exactly as the Python Memory does with
 // hardware=None.
 type Bus interface {
+	// Handles reports whether the bus models a data WRITE at addr (the word
+	// store route). Reads use HandlesRead so a read-only word (Timer0 CON) can
+	// be owned by Go without absorbing its store/RMW side effects.
 	Handles(addr uint32, size int) bool
+	// HandlesRead reports whether the bus models a data READ at addr.
+	HandlesRead(addr uint32, size int) bool
 	// Read returns the modeled word at addr, or a *MemError the strict-memory
 	// path surfaces (handed back to Python, which re-derives the identical
 	// Blocked) instead of fabricating a value.
@@ -233,11 +238,19 @@ func (m *Memory) SetMMU(con, begin, end *uint32) {
 
 // HandlesMMIO reports whether the configured bus models a data access at
 // addr+size (the Python hardware.handles(addr, size) membership). The dual loop
-// uses it to hand read-modify-write instructions back before the bus would
-// absorb the read/write side effects (Python's peripheral model owns those, so
-// a Go-side bus round-trip would double-apply or diverge).
+// uses it to hand store-shaped instructions (pin stores) back before the bus
+// would absorb the write side effect (Python's peripheral model owns those).
 func (m *Memory) HandlesMMIO(addr uint32, size int) bool {
 	return m.bus != nil && m.bus.Handles(addr, size)
+}
+
+// HandlesReadMMIO reports whether the configured bus models a data READ at
+// addr+size. The dual loop uses it to hand read-modify-write instructions back
+// before the bus would absorb the internal read (Python's peripheral model owns
+// the full read-modify-write side effect for an MMIO word, including read-only
+// words like Timer0 CON whose write is not modeled in Go).
+func (m *Memory) HandlesReadMMIO(addr uint32, size int) bool {
+	return m.bus != nil && m.bus.HandlesRead(addr, size)
 }
 
 // HandlesByteWrite reports whether the configured bus models a byte-granular
@@ -421,7 +434,7 @@ func (m *Memory) readPhysical(addr uint32, n int) ([]byte, *MemError) {
 		}
 	}
 	// MMIO word route (data reads only, never fetch)
-	if m.bus != nil && !m.fetch && m.bus.Handles(addr, n) {
+	if m.bus != nil && !m.fetch && m.bus.HandlesRead(addr, n) {
 		v, err := m.bus.Read(addr)
 		if err != nil {
 			return nil, err

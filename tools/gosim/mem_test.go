@@ -23,6 +23,10 @@ func (f *fakeBus) Handles(addr uint32, size int) bool {
 	return addr == f.wordAddr && size == 4
 }
 
+func (f *fakeBus) HandlesRead(addr uint32, size int) bool {
+	return f.Handles(addr, size)
+}
+
 func (f *fakeBus) Read(addr uint32) (uint32, *MemError) { return f.wordValue, nil }
 
 func (f *fakeBus) ReadBytes(addr uint32, size int) []byte {

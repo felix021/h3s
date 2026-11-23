@@ -115,10 +115,30 @@ func (p *PeriphState) handlesIRQWord(addr uint32) bool {
 	return false
 }
 
-// Handles is the Bus.Handles method: aligned 4-byte words only, mirroring
-// hardware.handles()'s size==4 and address%4==0 gate.
+// handlesTimer0ReadWord reports whether addr is the Timer0 CON word (0xfd0400)
+// whose aligned 4-byte read the Go model now owns. The polling loop reads CON
+// and checks bit 15; the read returns Con with 0x8000 projected while pending.
+// The write/RMW side stays on Python (Timer0.write owns the W1C bit-14 and
+// config side effects), so Handles (the write gate) deliberately excludes it.
+func (p *PeriphState) handlesTimer0ReadWord(addr uint32) bool {
+	return p.Timer != nil && addr == TIMER0
+}
+
+// Handles is the Bus.Handles method (the WRITE gate): aligned 4-byte words only,
+// mirroring hardware.handles()'s size==4 and address%4==0 gate. It admits only
+// the words whose store side effects Go owns (IRQ config / IPMASK / CRC); a
+// Timer0 store/RMW is not admitted, so it faults back to Python and re-derives
+// the identical Timer0.write effect there.
 func (p *PeriphState) Handles(addr uint32, size int) bool {
 	return size == 4 && addr%4 == 0 && (p.handlesIRQWord(addr) || p.handlesCRCWord(addr))
+}
+
+// HandlesRead is the Bus.HandlesRead method (the READ gate): the write route
+// plus the read-only Timer0 CON word. Reads are gated separately so Timer0 CON
+// reads stay in Go while its writes remain on the Python path.
+func (p *PeriphState) HandlesRead(addr uint32, size int) bool {
+	return size == 4 && addr%4 == 0 &&
+		(p.handlesIRQWord(addr) || p.handlesCRCWord(addr) || p.handlesTimer0ReadWord(addr))
 }
 
 // Read is the Bus.Read method: the CRC result read, then the IRQ config / IPMASK
@@ -127,6 +147,16 @@ func (p *PeriphState) Handles(addr uint32, size int) bool {
 func (p *PeriphState) Read(addr uint32) (uint32, *MemError) {
 	if p.handlesCRCWord(addr) {
 		return p.readCRC(addr)
+	}
+	if p.handlesTimer0ReadWord(addr) {
+		v, err := p.Timer.Read(0)
+		if err != nil {
+			// Timer0.Read's PeriphError (uninitialized_peripheral at 0xfd0400)
+			// surfaces as a strict-memory fault; Python re-derives the identical
+			// Blocked. In the observed trace CON is initialized before the poll.
+			return 0, &MemError{Kind: err.Kind, Access: "read", Address: addr, Size: 4}
+		}
+		return v, nil
 	}
 	if p.MulticoreEnabled && addr >= irqConfigBase+irq1Offset {
 		ic := p.IRQ1

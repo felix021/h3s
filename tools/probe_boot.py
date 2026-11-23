@@ -3604,6 +3604,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 r=_dual_ld_addr(c,iid,op)
                 if r is None:return False
                 addr,sz=r
+                # Timer0 CON 只读接线(第四刀):对齐整字读 0xfd0400(br28_model.
+                # TIMER0)由 Go 侧 Timer0.Read(0) 接管,pending 时置 0x8000,段头
+                # 放行;其余 MMIO 读仍交回(handles 继续拒)。
+                if sz==4 and addr==0xfd0400:return True
                 if hardware is not None and hardware.handles(addr,sz):return False
                 return True
             if iid in _DUAL_ST_FORMS:
