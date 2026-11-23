@@ -62,6 +62,9 @@ def main():
     p.add_argument('--official', type=Path, default=Path(OFFICIAL_PATH))
     p.add_argument('--f2', type=Path, default=Path(F2_PATH))
     p.add_argument('--snapshot-dir', default='analysis/snapshots')
+    p.add_argument('--resume-ack-reason', default='',
+                   help='跨代码恢复承认原因(非空时对快照加 resume_ack,'
+                        ' prior_fingerprint 自动取自快照自身记录)')
     p.add_argument('--out', default='analysis/local-checks/f2l1/scene.json')
     args = p.parse_args()
 
@@ -81,6 +84,20 @@ def main():
         snapshot_cfg = {'restore': target,
                         'expected_context': {'scenario': WORLD_NAME},
                         'budget': 0}
+        if args.resume_ack_reason:
+            # 路 CKPT 恢复承认(world_snapshot.normalize_resume_ack 同款):快照
+            # 在旧代码指纹下捕获,当前代码只改了 post-stop 观察面(不触前缀)——
+            # 显式引用快照自身记录的指纹承认此来源差,结果仍条件通过,合并前
+            # 全量重放收口。
+            import json as _json
+            import struct as _struct
+            _raw = target.read_bytes()
+            _off = 8 + 4
+            _ln, _off = _struct.unpack_from('<I', _raw, _off)[0], _off + 4
+            _hdr = _json.loads(_raw[_off:_off + _ln].decode('utf-8'))
+            snapshot_cfg['resume_ack'] = {
+                'prior_fingerprint': _hdr['code_fingerprint'],
+                'reason': args.resume_ack_reason}
 
     result = probe_irq_entry.irq_case(module, app, header, rom, WORLD_NAME,
                                       **flags, d1_acceptance=True, f2_l1_loop=True,
