@@ -36,7 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from probe_boot import check_rom                                            # noqa: E402
+from probe_boot import check_rom, require                                    # noqa: E402
 from probe_boot_handoff import package_header                               # noqa: E402
 from probe_pi32v2 import upstream                                           # noqa: E402
 from analyze_image_trace import load_f2, F2_SHA                             # noqa: E402
@@ -65,6 +65,11 @@ def main():
     p.add_argument('--resume-ack-reason', default='',
                    help='跨代码恢复承认原因(非空时对快照加 resume_ack,'
                         ' prior_fingerprint 自动取自快照自身记录)')
+    p.add_argument('--vm-fixture', type=Path, default=None,
+                   help='VM 窗口字节 fixture(8192B,tools/hearing-aid/gen_vm_fixture.py '
+                        '产出):注入 plain 的 flash 0x1da000,使 boot vm_init 真解析 '
+                        'key30/key31 记录、get_config 真读回(L3/L4 正例用;缺省=擦除态 VM,'
+                        '验 L2 镜像 + key30 跳过)')
     p.add_argument('--out', default='analysis/local-checks/f2l1/scene.json')
     args = p.parse_args()
 
@@ -75,6 +80,21 @@ def main():
     rom = args.rom.read_bytes()
     check_rom(rom)
     flags = frontier_registry.scenario_flags('p11_heap_experimental', probe_irq_entry)
+
+    # VM 窗口注入:把 key30/key31 记录 fixture 作为 readonly overlay 挂在 VM 区
+    # CPU 地址 0x61d7fe0(=ERASED_BANKB_VM_RANGE;flash 0x1da000 经 boot 直接映射
+    # -0x2020)。overlay 排在 irq_case 内 erased_bankb 0xFF 窗之前(调用方 readonly
+    # 在前),boot vm_init 真解析(route AB world B 同款),get_config 真读回。
+    # 缺省=擦除态 VM(erased_bankb 0xFF)。
+    vm_note = 'erased VM (no key30/key31; erased_bankb 0xFF window)'
+    if args.vm_fixture:
+        vm_bytes = args.vm_fixture.read_bytes()
+        require(len(vm_bytes) == 0x2000, 'VM fixture must be 8192 bytes')
+        vm_base, vm_len = probe_irq_entry.ERASED_BANKB_VM_RANGE
+        require(vm_len == len(vm_bytes), 'VM fixture length must match ERASED_BANKB_VM_RANGE')
+        readonly = ((vm_base, vm_bytes),) + tuple(readonly)
+        vm_note = f'VM fixture injected at {hex(vm_base)} ({args.vm_fixture}, sha256 '
+        vm_note += hashlib.sha256(vm_bytes).hexdigest()[:16] + '...)'
 
     target = snapshot_path(args.snapshot_dir)
     Path(args.snapshot_dir).mkdir(parents=True, exist_ok=True)
@@ -99,13 +119,20 @@ def main():
                 'prior_fingerprint': _hdr['code_fingerprint'],
                 'reason': args.resume_ack_reason}
 
+    # VM key->offset 数组注入(与 --vm-fixture 配对):gen_vm_fixture 产出 key30 在
+    # 窗内偏移 0x30、key31 在 0x3c(见 gen_vm_fixture 头部注释)。只有注入 fixture
+    # 时才写数组项(L3/L4 正例面);否则保持擦除态(get_config 读回「无记录」)。
+    vm_keys = {30: 0x30, 31: 0x3c} if args.vm_fixture else None
+
     result = probe_irq_entry.irq_case(module, app, header, rom, WORLD_NAME,
                                       **flags, d1_acceptance=True, f2_l1_loop=True,
+                                      f2_l1_vm_keys=vm_keys,
                                       flash_image_bytes=plain, readonly=readonly,
                                       snapshot=snapshot_cfg)
     payload = {'elapsed_s': round(time.time() - t0, 1),
                'candidate_ufw_sha256': sha,
                'candidate_ufw_sha256_matches_f2': sha == F2_SHA,
+               'vm_injection': vm_note,
                'candidate_plain_sha256': hashlib.sha256(plain).hexdigest(),
                'candidate_plain_length': hex(len(plain)),
                'append_segment_runtime': hex(0x060E3053),
