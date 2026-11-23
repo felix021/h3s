@@ -3151,7 +3151,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                                        _t as _dual_t)
         dual_engine=DualCoreEngine(rom,app,ENTRY,regions=Memory.regions,
                                    readonly=(handoff['readonly'] if handoff else ()),
-                                   mem=c.mem)
+                                   mem=c.mem, single_start=True)
         import sys as _sys
         from analyze_image_trace import _register_signature as _reg_sig
     DUAL_CAP=256
@@ -3615,7 +3615,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # 只在「新鲜入口」(双核 Go 使能、无缓冲步/无待处理 hazard、无诊断截停)
         # 时计数一次;回答「cores_concrete 挡了多少、放宽到消费寄存器具体能兑现
         # 多少、交回原因 x 指令族 x 数据地址类别」,供第七刀决定投入方向。
-        if (dual_engine is not None and machine is not None and len(machine.cores)==2
+        if (dual_engine is not None and machine is not None and len(machine.cores)>=1
                 and not dual_buf and dual_hazard is None
                 and (diagnostics is None or (not diagnostics.get('stop_before_pc')
                      and not diagnostics.get('stop_on_rom_return')))
@@ -3623,7 +3623,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             _es=gosim_entry_stats
             _es['total']=_es.get('total',0)+1
             _pcore,_pco,_ppc=predict_select(machine,hardware)
-            _c0=machine.cores[0];_c1=machine.cores[1]
+            _c0=machine.cores[0];_c1=machine.cores.get(1)
             _concrete=dual_engine.cores_concrete(_c0,_c1)
             _insn=_raw=None;_iid='<nodecode>';_grp=''
             if _pco is not None:
@@ -3674,10 +3674,10 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         # ---- 双核整圈 Go 快路径(第五刀,opt-in) ----
         # 一次 cgo 调用在 Go 内跑一段 select+execute+advance 安全前缀,逐步观测
         # 喂回 trace;边界(idle/访存/hook/IRQ/Blocked)交回下面逐步慢路径。
-        if dual_engine is not None and machine is not None and len(machine.cores)==2 \
+        if dual_engine is not None and machine is not None and len(machine.cores)>=1 \
                 and (diagnostics is None or (not diagnostics.get('stop_before_pc')
                      and not diagnostics.get('stop_on_rom_return'))) \
-                and dual_engine.cores_head_ok(machine.cores[0],machine.cores[1]):
+                and dual_engine.cores_head_ok(machine.cores[0],machine.cores.get(1)):
             if dual_buf:
                 _rows=_dual_drain()
                 if not _rows:
@@ -3757,7 +3757,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                     # 整段执行上限受剩余预算封顶:instruction_budget 按 attempts 计,
                     # run_loop 让 Go 一次执行 n 步后 restore 会把整段计数器写回 Python,
                     # 若 n>剩余预算,状态会超前预算边界;封顶后整段恰落在预算边界。
-                    res=dual_engine.run_loop(machine,hardware,machine.cores[0],machine.cores[1],min(DUAL_CAP, budget - attempts + 1))
+                    res=dual_engine.run_loop(machine,hardware,machine.cores[0],machine.cores.get(1),min(DUAL_CAP, budget - attempts + 1))
                     gosim_dual_fills+=1
                     kind=_dual_kind(res)
                     steps=res.get('steps') or []
