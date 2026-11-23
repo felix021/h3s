@@ -5797,6 +5797,14 @@ def make_f2_l1_loop_post_stop(app):
             f2l1['wall']={'kind':'upstream_simulator_failure',
                          'error_type':type(e).__name__,'message':str(e)[:300]}
             f2l1['summary']={'pass':False,'verdict':'BLOCKED'}
+        # 路 COPEX16:open 载荷内 copex mode-16/22 模型账本(双击循环后的运行面,
+        # 与 d1_finalize 的 pre-resume peripherals 快照互补——这里记 resume 里
+        # 真实执行的 sincos/exp 次数与逐次样本,供「N 次执行是否同一输入形状/
+        # 域检查是否触发」从报告面判定)。
+        f2l1['copex']={
+            'exp22':(hardware.copex_exp22.report() if hardware.copex_exp22 is not None else None),
+            'sincos16':(hardware.copex_sincos16.report()
+                        if hardware.copex_sincos16 is not None else None)}
         result['f2_l1_loop']=f2l1
         return result
     return post_stop
@@ -5873,6 +5881,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              jl_pled_config_words=False,
              jlstream_kick_param2_unknown=False,
              copex_exp22_model=False,copex_exp22_probe_ul_bias=None,
+             copex_sincos16_model=False,
              p11_lpvad_config=False,
              event_clock=False,
              jl_audio_dac_cop_writes=False,
@@ -7656,6 +7665,25 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
                     'the copex ul sensitivity probe takes exactly +1 or -1 '
                     '(sensitivity-probe-not-plausible-state, CV/ADA precedent)')
             options['copex_exp22_probe_ul_bias']=copex_exp22_probe_ul_bias
+    # copex_sincos16_model(路 COPEX16,另案,默认 False=关):copex.ppi mode-16
+    # 浮点 sincos 近似模型——F2 L1 双击 open 动作 set_scene(16) 的 HEARING_AID
+    # 场景 DSP 系数计算 0x6072bb2 叶子(0x6072bb8 停点)放行。mode 16=
+    # sin_float+cos_float SDK 具名单源(math_fast_funtion.c.o.ll sin=上字/
+    # cos=下字,与固件 0x6072bb2 叶子 [r1]=r5/[r2]=r4 逐指令同形);输出对
+    # (lo,hi)=(cos,sin) 都是真实 float32(与 mode 22 上字不透明不同);域
+    # [-2π,+2π]。模型是 conditional mathematical approximation/
+    # derived-not-measured(SDK 单源、AC791N mode-16 捕获全无效探测域零数值
+    # 互证)。拦截门先于 exp22 门(step_body 顺序),非 mode 16 落回 exp22 门。
+    # 依赖边挂 copex_exp22_model=场景推进顺序(链穿过 exp 站点后到达 sincos
+    # 站点)非硬件依赖;默认关=拦截门不装,0x6072bb8 停点形状不变。
+    if copex_sincos16_model:
+        require(copex_exp22_model,
+                'the copex mode-16 sincos release rides on the copex mode-22 world '
+                '(the chain reaches the sincos site 0x6072bb2 only after the exp '
+                'sites 0x606a900/0x606600c cross; the dependency records THIS '
+                'scenario advance order, not a hardware dependency of the sincos '
+                'mode on the exp mode)')
+        options['copex_sincos16_model']=True
     # jl_src_sync_config_words(路 SRCSYNC,codex 20261118 下路指引「CON1 单字
     # 配置 RMW 容器」(AM/ADA/LPV 先例)的同函数事务扩展,默认 False=关):
     # JL_SRC_SYNC 配置事务三字——42,059,070 停点 0x606fbe4(rmw.or.modimm

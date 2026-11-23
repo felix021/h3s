@@ -8,7 +8,7 @@ import operator
 import struct
 
 from probe_boot import Blocked, IrqDeliveryRequest
-from br28_dsp_models import CopexExp22Model
+from br28_dsp_models import CopexExp22Model, CopexSincos16Model
 
 TIMER0=0xfd0400
 # 路 BK/S19 批 1:JL_TIMER2(br28.h ls_base+map_adr(0x06,0),CON/CNT/PRD 与
@@ -10573,6 +10573,7 @@ class BR28Model:
                  jlstream_kick_param2_unknown=False,
                  p11_lpvad_config=False,
                  copex_exp22_model=False,copex_exp22_probe_ul_bias=None,
+                 copex_sincos16_model=False,
                  timer0_irq_delivery_requests=False,
                  timer0_irq4_expiry_probe_steps=None,timer0_irq4_masked_probe=False):
         if not 0<=source_ticks_per_step<=256:raise ValueError('invalid virtual tick increment')
@@ -11317,6 +11318,12 @@ class BR28Model:
         # None=一次 is-not-None 即过,legacy 报告零变化。
         self.copex_exp22=(CopexExp22Model(probe_ul_bias=copex_exp22_probe_ul_bias)
                           if copex_exp22_model else None)
+        # 路 COPEX16:copex.ppi mode-16 浮点 sincos 近似模型(0x6072bb2 叶子的
+        # 放行)。与 copex_exp22 同款接线,但 mode 16 输出对 (lo,hi)=(cos,sin)
+        # 都是真实 float32(无不透明上字)。拦截门先于 exp22 门(step_body 顺序),
+        # 非 mode 16 的 copex 落回 exp22 门。开关关=槽 None,一次 is-not-None
+        # 测试即过,legacy 报告零变化。
+        self.copex_sincos16=(CopexSincos16Model() if copex_sincos16_model else None)
         # 路 JLA:JL_AUDIO ADC 通道缓冲配置五字(0xfe053c/40/44/48/4c,set_buffer
         # 0x606dee4 五写)写侧 write-only 整字记录——恰五写零读(本前缀),与
         # BM DAC DMA 四字同族;audio_adc_irq_handler 的 ADR/PNS/SRP 读属 D2-b
@@ -13671,6 +13678,25 @@ class BR28Model:
                 'positions before either half commits; the other seven app modes '
                 'are NOT modelled by this switch. AC791N != BR28 caveat applies '
                 'to every number this model emits')
+        if self.copex_sincos16 is not None:
+            result['copex_sincos16_model']=self.copex_sincos16.report()
+            result['assumptions']['copex_sincos16_model']=(
+                'copex.ppi mode-16 floating-point sincos approximation (route '
+                'COPEX16, codex-narrowed): mode 16 = sin_float+cos_float is SDK-'
+                'named (math_fast_funtion.c.o.ll: sin_float takes the lshr-32 upper '
+                'word, cos_float takes the trunc lower word; shape-identical to the '
+                'firmware leaf 0x6072bb2 [r1]=r5(sin)/[r2]=r4(cos)) — a CONDITIONAL '
+                'MATHEMATICAL APPROXIMATION, derived-not-measured: the destination '
+                'pair is float32 round-to-nearest of host double sin/cos and is NOT '
+                'a silicon replica (BR28 sincos numerics/range reduction unmeasured; '
+                'AC791N mode-16 captures all fell in an invalid probe domain, zero '
+                'numeric cross-check — single-source SDK, weaker than mode 22). '
+                'Contract fail-closed: n==16 exactly, source upper word known zero, '
+                'finite float32 input inside [-2pi, +2pi]; anything else stops with '
+                'the dedicated kinds dsp_mode_not_modeled / dsp_operand_shape_not_'
+                'modeled / dsp_domain_boundary; the .p twin is rejected before either '
+                'half commits. AC791N != BR28 caveat applies to every number this '
+                'model emits')
         if self.jl_audio_adc_dma is not None:
             result['jl_audio_adc_dma_write_records']=self.jl_audio_adc_dma.report()
             delivery_on=self.jl_audio_adc_dma.delivery

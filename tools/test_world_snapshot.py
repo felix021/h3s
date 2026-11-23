@@ -732,6 +732,11 @@ class M4ProjectionFamilies(unittest.TestCase):
         # ON in the current conditional frontier flag set (its first intercepted
         # copex sits at the 42,037,363-era frontier stop).
         copex_exp22_model=True,
+        # Route COPEX16: the copex mode-16 floating-point sincos approximation
+        # gate (opt-in conditional, layered on the mode-22 world; the M4 slot is
+        # in M4_FAMILIES so the all-families world turns it on for the round-trip
+        # inventory).
+        copex_sincos16_model=True,
         # Route SRCSYNC: the JL_SRC_SYNC config-transaction container, ON in
         # the current conditional frontier flag set (its first served RMW sits
         # at the 42,059,070 frontier stop).

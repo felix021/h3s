@@ -1139,6 +1139,17 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 # 总线访问级拒。开关关=槽 None,一次 is-not-None 测试即过,
                 # legacy 世界零变化。
                 hardware.jl_fm.note_step(self.pc,self.core_id)
+            if hardware is not None and hardware.copex_sincos16 is not None:
+                # 路 COPEX16:copex.ppi mode-16 浮点 sincos 近似模型的指令级
+                # 拦截门。与 copex_exp22 同款(先于 upstream pair()/step1,
+                # .p 孪生两位置提交前拒绝、契约不满足抛 Blocked 独立 stop
+                # kind)。本门只认 mode 16;非 mode 16 的 copex.ppi 返回 False
+                # 落回下面的 exp22 门(22=放行、其余模式=诚实停)——registry
+                # 依赖边保证 copex_exp22_model 与本开关同开,故该落回恒有
+                # exp22 门接。开关关=槽 None,一次 is-not-None 测试即过。
+                if hardware.copex_sincos16.intercept(self,insn,raw,size,module.check.operands):
+                    adapters['copex_sincos16_model_execute']+=1
+                    return
             if hardware is not None and hardware.copex_exp22 is not None:
                 # 路 COPEXIMPL(codex 裁 (a) 收窄版,坑②):copex.ppi mode-22
                 # 指数近似模型的指令级拦截门。必须在 upstream pair()/step1
