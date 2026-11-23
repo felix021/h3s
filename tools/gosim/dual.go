@@ -199,6 +199,9 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 			return s, DualTagInfo{Direct: code == BatchOK}, code, pc, nil
 		}
 	}
+	if s, code, err, ok := c.runRepRegisterStore(core, im, raw, pc, uint32(size), insnBytes); ok {
+		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
+	}
 	if s, code, err, ok := c.runRepImmediateSingleStore(core, im, raw, pc, uint32(size), insnBytes); ok {
 		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
 	}
@@ -499,6 +502,193 @@ func (c *CPU) runPinHalfStore(core *Core, im *insnMeta, raw map[string]uint32, p
 	}, BatchOK, nil, true
 }
 
+// runRepRegisterStore executes the register-count rep gates the dual loop owns
+// (the startup bounded copy/clear loops and the ROM memset), plus their single-
+// or two-instruction pin-store bodies with the register countdown + pc
+// roll-back. The Python slow path's _post_step does the identical bookkeeping
+// (decrement the count register AND Repeat.Remaining, roll pc back to
+// Repeat.Start while remaining > 0, clear Repeat on the last iteration); Go
+// owns it here so consecutive body stores run inside one fill.
+//
+// The gate set is exactly the probe_boot step_body gates this cut migrates:
+//   - ROM memset 0x4242 (register 4) / 0x424c (register 2), raw n==0, body is
+//     one st.w.pin (0x4244) / one st.b.pin (0x424e) — rom_nonzero_rep_countdown
+//     or rom_zero_rep_skip (count==0).
+//   - Startup bounded rep 0x06000130 (body_size 2, single st.w.pin) and
+//     0x0600014a / 0x06000166 / 0x06000182 (body_size 4, a ld.w.pin + st.w.pin
+//     copy pair) — bounded_startup_rep_controller or zero_rep_skip (count==0,
+//     0x06000182 only).
+//
+// ok is true when the instruction is one of these gates or a body instruction
+// (committed or handed back). The first body instruction of the copy-loop form
+// (ld.w.pin) returns ok == false so it falls through to the shared safeDual /
+// model path (a plain postincrement load with no countdown); every other id
+// returns ok == false so the caller falls through. A register-count rep at any
+// other pc, or a body shape this cut does not own, is handed back (BatchUnsafe)
+// so Python re-derives the identical gate. The raw core (dmem == nil) keeps the
+// deny-set semantics (BatchUnsafe).
+func (c *CPU) runRepRegisterStore(core *Core, im *insnMeta, raw map[string]uint32, pc uint32, size uint32, insnBytes []byte) (SegmentStep, int, error, bool) {
+	// Mid-repeat with a register count: the current instruction is a body
+	// instruction of a repeat this handler owns.
+	if core.Repeat != nil && core.Repeat.Register >= 0 {
+		if c.dmem == nil {
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		switch im.id {
+		case "st.w.pin", "st.b.pin":
+			// Last body instruction: the store, then the register countdown.
+			var s SegmentStep
+			var code int
+			var err error
+			var ok bool
+			if im.id == "st.w.pin" {
+				s, code, err, ok = c.runPinWordStore(core, im, raw, pc, size, insnBytes)
+			} else {
+				s, code, err, ok = c.runPinByteStore(core, im, raw, pc, size, insnBytes)
+			}
+			if !ok {
+				return SegmentStep{}, BatchUnsafe, nil, true
+			}
+			if code != BatchOK {
+				return s, code, err, true
+			}
+			// Register countdown + pc roll-back (mirrors Python _post_step).
+			reg := core.Repeat.Register
+			core.R[reg] = core.R[reg] - 1
+			core.Repeat.Remaining--
+			if core.Repeat.Remaining > 0 {
+				core.PC = core.Repeat.Start
+				s.NextPC = core.PC
+			} else {
+				core.Repeat = nil
+			}
+			s.R = core.R
+			return s, BatchOK, nil, true
+		case "ld.w.pin":
+			// First body instruction of the startup copy-loop form: a plain
+			// postincrement load executed by the shared safeDual/model path
+			// (no countdown — the countdown fires when the store reaches End).
+			return SegmentStep{}, 0, nil, false
+		default:
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+	}
+
+	// The register-count rep gate (only when no repeat is in flight).
+	if im.id != "rep" {
+		return SegmentStep{}, 0, nil, false
+	}
+	if c.dmem == nil {
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	if core.Repeat != nil {
+		// A nested rep (or a rep while an immediate rep.i is in flight) stays
+		// Python — Python's gate requires cpu.repeat is None.
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	op := newOperands(im, raw)
+	r := int(op.Num("r"))
+
+	// ROM memset: 0x4242 (register 4) / 0x424c (register 2), single-store body.
+	if pc == 0x4242 || pc == 0x424c {
+		reg := 4
+		if pc == 0x424c {
+			reg = 2
+		}
+		if raw["n"] != 0 || r != reg {
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		if core.RT[reg] != nil {
+			return SegmentStep{}, BatchAbstract, nil, true
+		}
+		count := core.R[reg]
+		if count == 0 {
+			// rom_zero_rep_skip: the 2-byte body never executes.
+			core.PC = pc + size + 2
+			core.Steps++
+			return SegmentStep{
+				PC:       pc,
+				NextPC:   core.PC,
+				Flags:    uint8(core.Flags & 0xF),
+				R:        core.R,
+				BeforeSP: core.SP,
+				SP:       core.SP,
+				Insn:     insnBytes,
+				Adapter:  "rom_zero_rep_skip_hypothesis",
+			}, BatchOK, nil, true
+		}
+		if count > 100000 {
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		core.Repeat = &RepeatState{Start: pc + size, End: pc + size + 2, Register: reg, Remaining: count}
+		core.PC = pc + size
+		core.Steps++
+		return SegmentStep{
+			PC:       pc,
+			NextPC:   core.PC,
+			Flags:    uint8(core.Flags & 0xF),
+			R:        core.R,
+			BeforeSP: core.SP,
+			SP:       core.SP,
+			Insn:     insnBytes,
+			Adapter:  "rom_nonzero_rep_countdown_hypothesis",
+		}, BatchOK, nil, true
+	}
+
+	// Startup bounded rep.
+	if pc == 0x06000130 || pc == 0x0600014a || pc == 0x06000166 || pc == 0x06000182 {
+		bodySize := uint32(4)
+		if pc == 0x06000130 {
+			bodySize = 2
+		}
+		if r != 2 || op.Num("n") != int64(bodySize) {
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		if core.RT[2] != nil {
+			return SegmentStep{}, BatchAbstract, nil, true
+		}
+		count := core.R[2]
+		if count == 0 {
+			if pc != 0x06000182 {
+				// Zero count at a non-skip site: Python raises Blocked.
+				return SegmentStep{}, BatchUnsafe, nil, true
+			}
+			// zero_rep_skip: the empty PSRAM copy body never executes.
+			core.PC = pc + size + bodySize
+			core.Steps++
+			return SegmentStep{
+				PC:       pc,
+				NextPC:   core.PC,
+				Flags:    uint8(core.Flags & 0xF),
+				R:        core.R,
+				BeforeSP: core.SP,
+				SP:       core.SP,
+				Insn:     insnBytes,
+				Adapter:  "zero_rep_skip_hypothesis",
+			}, BatchOK, nil, true
+		}
+		if count > 10000 {
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		core.Repeat = &RepeatState{Start: pc + size, End: pc + size + bodySize, Register: 2, Remaining: count}
+		core.PC = pc + size
+		core.Steps++
+		return SegmentStep{
+			PC:       pc,
+			NextPC:   core.PC,
+			Flags:    uint8(core.Flags & 0xF),
+			R:        core.R,
+			BeforeSP: core.SP,
+			SP:       core.SP,
+			Insn:     insnBytes,
+			Adapter:  "bounded_startup_rep_controller",
+		}, BatchOK, nil, true
+	}
+
+	// A register-count rep at any other pc stays Python.
+	return SegmentStep{}, BatchUnsafe, nil, true
+}
+
 // runRepImmediateSingleStore executes the immediate_rep_single_store_projection
 // gate (probe_boot step_body's immediate_rep_projection short-form gate) inside
 // the dual loop: a rep.i whose body is a single short-form postincrement store
@@ -523,9 +713,11 @@ func (c *CPU) runRepImmediateSingleStore(core *Core, im *insnMeta, raw map[strin
 			return SegmentStep{}, BatchUnsafe, nil, true
 		}
 		if core.Repeat.Register >= 0 {
-			// A register-count repeat is not the immediate single-store
-			// projection; hand it back (Python owns it).
-			return SegmentStep{}, BatchUnsafe, nil, true
+			// A register-count repeat is handled by runRepRegisterStore, which
+			// runs before this handler. Its first body instruction (ld.w.pin of
+			// the startup copy-loop form) falls through here to the shared
+			// safeDual/model path with no countdown.
+			return SegmentStep{}, 0, nil, false
 		}
 		// An MMIO target is handed back before the bus absorbs the side effect
 		// (Python's peripheral model owns MMIO writes), mirroring the standalone
