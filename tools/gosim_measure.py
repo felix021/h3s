@@ -41,6 +41,7 @@ def run_scenario(module, app, plain, readonly, header, rom, scenario, budget, ob
     probe_boot.gosim_observer = observer
     probe_boot.gosim_batch_engine = batch_engine
     probe_boot.gosim_dual_engine = dual_engine
+    probe_boot.gosim_dual_engine_instance = None
     probe_boot.gosim_batch_steps = 0
     probe_boot.gosim_dual_steps = 0
     probe_boot.gosim_dual_fills = 0
@@ -83,6 +84,9 @@ def main():
                     help='enable the Go segment batch (default off)')
     ap.add_argument('--self-check-dual', action='store_true',
                     help='run dual-core engine off+on and assert report/trace byte-identical')
+    ap.add_argument('--self-check-dual-digest', action='store_true',
+                    help='run dual engine on with the Go whole-run digest and assert it matches '
+                         '_digest_trace (SHA-256 + per-row line-by-line)')
     ap.add_argument('--dual', action='store_true',
                     help='enable the Go dual-core whole-loop engine (default off)')
     args = ap.parse_args()
@@ -171,6 +175,38 @@ def main():
         if args.report:
             args.report.write_text(json.dumps(result_off, sort_keys=True))
         return 0 if (report_same and trace_same) else 1
+
+    if args.self_check_dual_digest:
+        from gosim_dual_engine import DualCoreEngine
+        probe_boot.gosim_dual_digest = True
+        probe_boot.gosim_dual_digest_debug = True
+        # dual_engine 只是「启用双核引擎」的标志(probe_boot 内部自建真正引擎并
+        # 存进 gosim_dual_engine_instance);摘要从该实例读回。
+        result_on, trace_on = run_scenario(module, app, plain, readonly, header, rom, scenario, budget,
+                                           None, None, DualCoreEngine(rom, app, probe_boot.ENTRY))
+        engine = probe_boot.gosim_dual_engine_instance
+        dig_py, n_py = _digest_trace(trace_on)
+        dig_go = engine.digest_hex()
+        n_go = engine.digest_count()
+        digest_same = (n_py == n_go and dig_py == dig_go)
+        first_mismatch = None
+        mismatches = 0
+        for i, row in enumerate(trace_on):
+            ref = repr(row).encode('utf-8')
+            got = engine.digest_step_get(i)
+            if got != ref:
+                if first_mismatch is None:
+                    first_mismatch = i
+                mismatches += 1
+        line_same = (mismatches == 0 and n_py == n_go)
+        print('digest-identity: go_rows=%d py_rows=%d digest_same=%s (go=%s py=%s)' %
+              (n_go, n_py, digest_same, dig_go, dig_py), flush=True)
+        print('line-by-line: rows=%d mismatches=%d first_mismatch=%s' %
+              (n_py, mismatches, first_mismatch), flush=True)
+        print('PASS' if (digest_same and line_same) else 'FAIL', flush=True)
+        if args.report:
+            args.report.write_text(json.dumps(result_on, sort_keys=True))
+        return 0 if (digest_same and line_same) else 1
 
     from gosim_batch_engine import BatchEngine
     batch_engine = BatchEngine(rom, app, probe_boot.ENTRY) if args.batch else None

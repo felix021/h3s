@@ -43,6 +43,9 @@ gosim_batch_zero_fills = 0  # 其中返回 0 步(段头即非 ALU)的次数(测�
 # 安全 ALU 前缀,边界(idle/访存/hook/IRQ/Blocked)交回 Python。报告逐字节不变
 # 由 gosim_measure --self-check-dual 钉死。
 gosim_dual_engine = None
+gosim_dual_digest = False  # 第四刀第②步:Go 摘要对拍开关(慢步喂字节进 Go 哈希器)
+gosim_dual_digest_debug = False  # 对拍调试:逐行捕获字节供首个不一致步号定位
+gosim_dual_engine_instance = None  # probe_boot 实际创建/使用的引擎(供外部读摘要)
 gosim_dual_steps = 0  # 双核 Go 快路径执行的指令步数(测量用)
 gosim_dual_fills = 0  # Go run_loop 调用次数(测量用)
 gosim_dual_kinds = {}  # kind -> fills(测量用)
@@ -349,6 +352,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     global gosim_dual_batch_steps, gosim_dual_batch_calls
     global gosim_dual_batch_writes, gosim_dual_batch_write_steps, gosim_dual_stepwise_pin_writes
     global gosim_dual_pin_mmuwin
+    global gosim_dual_engine_instance
     # post_stop(opt-in,路 S/key-chain):主循环停点后、报告组装前的回调
     # post_stop(machine,hardware,stopped_cpu)->dict|None。用于在活机器上做
     # 「停点后直调」类探测(键链扫描直调等);返回的 dict 并进场景报告。
@@ -3152,6 +3156,9 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         dual_engine=DualCoreEngine(rom,app,ENTRY,regions=Memory.regions,
                                    readonly=(handoff['readonly'] if handoff else ()),
                                    mem=c.mem, single_start=True)
+        gosim_dual_engine_instance = dual_engine
+        if gosim_dual_digest:
+            dual_engine.digest_enable(debug=gosim_dual_digest_debug)
         import sys as _sys
         from analyze_image_trace import _register_signature as _reg_sig
     DUAL_CAP=256
@@ -3973,6 +3980,11 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             if machine is not None:
                 if c.core_id==1:hardware.secondary_cpu_executed=True
                 machine.after_step(c,int(row['pc'],16))
+            if (dual_engine is not None and getattr(dual_engine,'_digest_on',False)):
+                # 第四刀第②步:慢路径/边界步的参考字节(repr(row))按全局完成
+                # 顺序喂进 Go 哈希器,与 Go 内部哈希的普通完成步同一条 SHA-256
+                # 状态,最终摘要与 _digest_trace 对齐。
+                dual_engine.digest_feed(repr(machine.trace[-1]).encode('utf-8'))
             if hardware is not None:hardware.advance(c.icfg,c.mem)
             clean=True
         except CoreStall as e:

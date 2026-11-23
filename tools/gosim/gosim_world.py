@@ -54,6 +54,18 @@ class _Lib:
         lib.gosim_world_run_loop.argtypes = [_HANDLE, c_int, POINTER(c_uint8), c_int]
         lib.gosim_world_run_loop.restype = c_int
 
+        lib.gosim_world_digest_enable.argtypes = [_HANDLE, c_int]
+        lib.gosim_world_digest_reset.argtypes = [_HANDLE]
+        lib.gosim_world_digest_feed.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
+        lib.gosim_world_digest_count.argtypes = [_HANDLE]
+        lib.gosim_world_digest_count.restype = c_uint64
+        lib.gosim_world_digest_hex.argtypes = [_HANDLE, POINTER(c_uint8), c_int]
+        lib.gosim_world_digest_hex.restype = c_int
+        lib.gosim_world_digest_step_len.argtypes = [_HANDLE, c_uint64]
+        lib.gosim_world_digest_step_len.restype = c_int
+        lib.gosim_world_digest_step_get.argtypes = [_HANDLE, c_uint64, POINTER(c_uint8), c_int]
+        lib.gosim_world_digest_step_get.restype = c_int
+
         lib.gosim_periph_new.argtypes = []
         lib.gosim_periph_new.restype = _HANDLE
         lib.gosim_periph_free.argtypes = [_HANDLE]
@@ -161,6 +173,39 @@ class GosimDualWorld:
     def run_loop(self, n):
         return _out(_LIB_SINGLETON.lib.gosim_world_run_loop, self._outbuf,
                     self.handle, n)
+
+    def digest_enable(self, debug=False):
+        _LIB_SINGLETON.lib.gosim_world_digest_enable(self.handle, 1 if debug else 0)
+
+    def digest_reset(self):
+        _LIB_SINGLETON.lib.gosim_world_digest_reset(self.handle)
+
+    def digest_feed(self, data):
+        if not data:
+            return
+        buf = (c_uint8 * len(data)).from_buffer_copy(data)
+        _LIB_SINGLETON.lib.gosim_world_digest_feed(self.handle, buf, len(data))
+
+    def digest_count(self):
+        return _LIB_SINGLETON.lib.gosim_world_digest_count(self.handle)
+
+    def digest_hex(self):
+        buf = (c_uint8 * 64)()
+        n = _LIB_SINGLETON.lib.gosim_world_digest_hex(self.handle, buf, 64)
+        return bytes(buf[:n]).decode()
+
+    def digest_step_len(self, index):
+        return _LIB_SINGLETON.lib.gosim_world_digest_step_len(self.handle, index)
+
+    def digest_step_get(self, index):
+        n = _LIB_SINGLETON.lib.gosim_world_digest_step_len(self.handle, index)
+        if n < 0:
+            return None
+        buf = (c_uint8 * n)()
+        got = _LIB_SINGLETON.lib.gosim_world_digest_step_get(self.handle, index, buf, n)
+        if got != n:
+            return None
+        return bytes(buf[:n])
 
     def free(self):
         _LIB_SINGLETON.lib.gosim_world_free(self.handle)
