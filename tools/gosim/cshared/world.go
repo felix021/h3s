@@ -128,6 +128,58 @@ func gosim_world_dual_new(cpu0H, cpu1H, smemH, machineH, deliverH C.uintptr_t,
 	return C.uintptr_t(cgo.NewHandle(w))
 }
 
+// gosim_world_single_new builds the single-core-start World: core 0 present,
+// core 1 not yet launched (Cores[1] == nil) but its execute engine (cpu1H) is
+// already bound as Exec1, so the caller can push core 1 into this same world at
+// the CPU1 release (gosim_world_dual_set_core) and the next RunLoop takes the
+// dual-core path without rebuilding the world. The M6A select Machine / M6C
+// deliver projections are bound like the dual constructor; RunLoop then runs the
+// whole-loop path (select -> execute -> after_step judgment -> advance) over the
+// single present core until the release boundary hands back. A zero cpu1H leaves
+// Exec1 nil (the loop then yields "per-core execute engines not bound").
+//
+//export gosim_world_single_new
+func gosim_world_single_new(cpu0H, cpu1H, smemH, machineH, deliverH C.uintptr_t,
+	fetchLo, fetchHi C.uint32_t) C.uintptr_t {
+	cpu0 := cgo.Handle(cpu0H).Value().(*gosim.CPU)
+	var cpu1 *gosim.CPU
+	if cpu1H != 0 {
+		cpu1 = cgo.Handle(cpu1H).Value().(*gosim.CPU)
+	}
+	var mem *gosim.Memory
+	if smemH != 0 {
+		mem = cgo.Handle(smemH).Value().(*gosim.Memory)
+	} else {
+		mem = gosim.NewMemory()
+	}
+	var machine *gosim.Machine
+	if machineH != 0 {
+		machine = cgo.Handle(machineH).Value().(*gosim.Machine)
+	} else {
+		machine = gosim.NewMachine()
+	}
+	var deliver *gosim.DeliverMachine
+	if deliverH != 0 {
+		deliver = cgo.Handle(deliverH).Value().(*gosim.DeliverMachine)
+	} else {
+		deliver = gosim.NewDeliverMachine()
+	}
+	w := &gosim.World{
+		Cores:     [2]*gosim.Core{buildCore(cpu0, 0), nil},
+		Exec:      cpu0,
+		Exec1:     cpu1,
+		Mem:       mem,
+		Periph:    &gosim.PeriphState{},
+		FetchLo:   uint32(fetchLo),
+		FetchHi:   uint32(fetchHi),
+		Concrete:  true,
+		Machine:   machine,
+		Deliver:   deliver,
+		AfterStep: nil,
+	}
+	return C.uintptr_t(cgo.NewHandle(w))
+}
+
 // gosim_world_set_afterstep binds the M6B after_step hook configuration (JSON,
 // see gosim.AfterStep.LoadJSON / afterStepConfig). cfg == nil clears the config
 // (after_step provably empty for every pc). Returns 0 on success, -1 on a parse

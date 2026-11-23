@@ -263,7 +263,12 @@ func (w *World) RunLoop(n int) LoopResult {
 	if w.Cores[0] == nil {
 		return yieldBeforeAttempt("no core 0 present")
 	}
-	if w.Cores[1] != nil {
+	// A dual-capable world (select Machine + deliver projections bound) runs the
+	// whole-loop select->execute->advance path even while only core 0 is present,
+	// so the same World keeps ownership across the CPU1 release: the loop hands
+	// back at the release instruction and the caller pushes core 1 into this very
+	// world (no rebuild), which then takes the dual-core path on the next call.
+	if w.Cores[1] != nil || (w.Machine != nil && w.Deliver != nil) {
 		return w.runDualCore(n)
 	}
 	if !w.Concrete {
@@ -615,10 +620,10 @@ func (w *World) runDualCore(n int) LoopResult {
 	if w.StopBeforePC != nil || w.StopOnRomReturn {
 		return yieldBeforeAttempt("fetch-guard diagnostic stop armed (stays in Python)")
 	}
-	if w.Cores[0] == nil || w.Cores[1] == nil {
-		return yieldBeforeAttempt("dual-core world needs both cores present")
+	if w.Cores[0] == nil {
+		return yieldBeforeAttempt("world needs core 0 present")
 	}
-	if w.Cores[0].RepeatInFlight || w.Cores[1].RepeatInFlight {
+	if w.Cores[0].RepeatInFlight || (w.Cores[1] != nil && w.Cores[1].RepeatInFlight) {
 		return yieldBeforeAttempt("repeat active on a core")
 	}
 
