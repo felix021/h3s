@@ -88,6 +88,9 @@ def cores_concrete(c0, c1):
                 and type(c.pc) is int
                 and type(getattr(c, 'icfg', 0)) is int
                 and all(type(v) is int for v in c.R))
+    # c1 None = 单核阶段(CPU1 未 release):只要求 CPU0 具体。
+    if c1 is None:
+        return ok(c0)
     return ok(c0) and ok(c1)
 
 
@@ -109,6 +112,9 @@ def cores_head_ok(c0, c1):
                 and getattr(c, 'repeat', None) is None
                 and all(type(v) is int or isinstance(v, (UnknownWord, IcfgValue))
                         for v in c.R))
+    # c1 None = 单核阶段(CPU1 未 release):只要求 CPU0 可进 Go 整圈。
+    if c1 is None:
+        return ok(c0)
     return ok(c0) and ok(c1)
 
 
@@ -684,7 +690,8 @@ class DualCoreEngine:
     place each run so the Go world stays in sync with the live Python objects.
     """
 
-    def __init__(self, rom, app, entry, regions=(), readonly=(), mem=None):
+    def __init__(self, rom, app, entry, regions=(), readonly=(), mem=None,
+                 single_start=False):
         self.go0 = _glue.Gosim(arch=True)
         self.go1 = _glue.Gosim(arch=True)
         self.rom = rom
@@ -722,7 +729,8 @@ class DualCoreEngine:
         # the honest guard (RAM code / ROM now fetchable, unmapped/uninitialized
         # faults hand back to Python which re-derives the identical Blocked).
         self.world = GosimDualWorld(self.go0.handle, self.go1.handle, self.smem.handle,
-                                    self.machine.handle, 0, 0, 0xFFFFFFFF)
+                                    self.machine.handle, 0, 0, 0xFFFFFFFF,
+                                    single_start=single_start)
         self.world.set_periph(self.periph.handle)
 
         # 第四刀:CPU/machine/periph 跨 fill 常驻。Go World 在 run_loop 之间
@@ -871,7 +879,9 @@ class DualCoreEngine:
 
         t0 = time.perf_counter()
         cs0 = core_state(c0)
-        cs1 = core_state(c1)
+        # c1 None = 单核阶段:核 1 尚未 launch,Go 世界保持 Cores[1]=nil;核 1
+        # 只会在 Python 慢路径真正 release 后出现,届时下一次快照把它推进原世界。
+        cs1 = core_state(c1) if c1 is not None else None
         ms = machine_state(machine)
         ps = periph_state(hardware)
         aps = after_step_state(machine)
@@ -944,7 +954,8 @@ class DualCoreEngine:
         t0 = time.perf_counter()
         cores = res.get('cores') or [None, None]
         restore_core(c0, cores[0])
-        restore_core(c1, cores[1])
+        if c1 is not None:
+            restore_core(c1, cores[1])
         restore_machine(machine, res.get('machine'))
         restore_periph(hardware, res.get('periph'))
         _t('restore', time.perf_counter() - t0)
