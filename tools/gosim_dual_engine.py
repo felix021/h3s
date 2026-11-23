@@ -98,20 +98,42 @@ def cores_head_ok(c0, c1):
     """Both cores can enter the Go dual loop with abstract register tags: pc and
     icfg must be concrete (select needs a decodable pc), every R slot must be
     either a concrete int or an UnknownWord/IcfgValue the bridge round-trips
-    losslessly, and any in-flight repeat must be the immediate rep.i
-    single-store projection Go owns (register None, exactly the four
-    start/end/register/remaining keys) — every other repeat form (register
-    count / multi-block / allow_helper_return) stays Python. An open if-block
-    (after_then) is now carried by the Go loop (the if.* family is migrated), so
-    it no longer refuses the entry. Anything else (GpioOutValue, bool, ...)
-    refuses loudly. Go is still the execution authority — it hands a step back
-    the moment an actual numeric input is tagged, so the per-step gate lives in
-    RunDualStepCore."""
+    losslessly, and any in-flight repeat must be one the Go loop owns: the
+    immediate rep.i single-store projection (register None, exactly the four
+    start/end/register/remaining keys) or the register-count startup / ROM
+    memset gates (the bounded copy/clear loops and the memset single-store
+    bodies, register 2/4 at their pinned start/end addresses). Every other
+    repeat form (multi-block / allow_helper_return / other register-count
+    shapes) stays Python. An open if-block (after_then) is now carried by the
+    Go loop (the if.* family is migrated), so it no longer refuses the entry.
+    Anything else (GpioOutValue, bool, ...) refuses loudly. Go is still the
+    execution authority — it hands a step back the moment an actual numeric
+    input is tagged, so the per-step gate lives in RunDualStepCore."""
+    def _owned_register_repeat(rp):
+        if set(rp.keys()) != {'start', 'end', 'register', 'remaining'}:
+            return False
+        reg = rp.get('register')
+        start = rp.get('start')
+        end = rp.get('end')
+        if reg is None:
+            return False
+        # Startup bounded rep: register 2, single-store (0x06000132) or
+        # ld.w.pin + st.w.pin copy body (0x0600014c / 0x06000168 / 0x06000184).
+        if reg == 2 and start in (0x06000132, 0x0600014c, 0x06000168, 0x06000184):
+            return end in (start + 2, start + 4)
+        # ROM memset: register 4 (0x4242, st.w.pin body) / register 2
+        # (0x424c, st.b.pin body), both single-store 2-byte bodies.
+        if reg == 4 and start == 0x4244 and end == 0x4246:
+            return True
+        if reg == 2 and start == 0x424e and end == 0x4250:
+            return True
+        return False
+
     def ok(c):
         rp = getattr(c, 'repeat', None)
         repeat_ok = (rp is None or
-                     (rp.get('register') is None and
-                      set(rp.keys()) == {'start', 'end', 'register', 'remaining'}))
+                     (set(rp.keys()) == {'start', 'end', 'register', 'remaining'} and
+                      (rp.get('register') is None or _owned_register_repeat(rp))))
         return (c is not None
                 and type(c.pc) is int
                 and type(getattr(c, 'icfg', 0)) is int

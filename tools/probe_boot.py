@@ -3576,6 +3576,24 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             except Exception:
                 return False
             return True
+        if iid=='rep':
+            # 寄存器计数 rep 段头预判:仅放行 Go 接管的 startup 有界拷贝/清零
+            # 环与 ROM memset 门(Go 侧 runRepRegisterStore 是执行权威)。其它
+            # rep 门(multi_block 等)保持交回。
+            if getattr(c,'repeat',None) is not None:
+                return False
+            try:
+                op=module.check.operands(insn,raw)
+                r=op['r']
+                head=c.pc if pc is None else pc
+                if head in (0x4242,0x424c):
+                    return raw.get('n')==0 and r==(4 if head==0x4242 else 2)
+                if head in (0x06000130,0x0600014a,0x06000166,0x06000182):
+                    body_size=2 if head==0x06000130 else 4
+                    return r==2 and op['n']==body_size
+            except Exception:
+                return False
+            return False
         if getattr(insn,'body',''):return False
         if getattr(insn,'block',None):
             return iid in _DUAL_IF_FORMS
