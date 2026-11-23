@@ -787,6 +787,8 @@ class DualCoreEngine:
         self._ms = None
         self._ps = None
         self._aps = None
+        self._digest_debug = False
+        self._digest_on = False
 
     def _sync_mmu(self, hardware):
         """MMU page-table projection (mirrors the snapshot body). Stable during
@@ -1004,3 +1006,32 @@ class DualCoreEngine:
         self.world.free()
         self.periph.free()
         self.smem.free()
+
+    # ---- whole-run trace digest (第四刀第②步) ------------------------------
+    # Go hashes its committed steps inside run_loop; Python feeds the slow /
+    # boundary steps' reference bytes (repr(row)) through digest_feed so the one
+    # hash state stays in global completion order. debug=True captures every
+    # hashed row's bytes for a line-by-line comparison.
+
+    def digest_enable(self, debug=False):
+        self.world.digest_enable(debug=debug)
+        self._digest_debug = debug
+        self._digest_on = True
+
+    def digest_reset(self):
+        self.world.digest_reset()
+
+    def digest_feed(self, data):
+        self.world.digest_feed(data)
+
+    def digest_count(self):
+        return self.world.digest_count()
+
+    def digest_hex(self):
+        return self.world.digest_hex()
+
+    def digest_step_len(self, index):
+        return self.world.digest_step_len(index)
+
+    def digest_step_get(self, index):
+        return self.world.digest_step_get(index)

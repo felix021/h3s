@@ -504,6 +504,10 @@ func loopResultToJSON(res gosim.LoopResult, w *gosim.World) ([]byte, error) {
 //export gosim_world_run_loop
 func gosim_world_run_loop(wH C.uintptr_t, n C.int, out *C.uint8_t, outCap C.int) C.int {
 	res := world(wH).RunLoop(int(n))
+	// Digest the committed steps after the loop, in commit order, against the
+	// post-fill world state — the same timing Python's replay (which runs after
+	// the fill) uses to derive note_memory_write's physical addresses.
+	world(wH).DigestSteps(res.Steps)
 	b, err := loopResultToJSON(res, world(wH))
 	if err != nil {
 		return writePeriphBuf(out, outCap, []byte("null"))

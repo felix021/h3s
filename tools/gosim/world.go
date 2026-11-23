@@ -232,6 +232,11 @@ type World struct {
 	// empty for every pc; a non-nil config is judged per-pc by CanProveNoop
 	// (M6B) instead of a blanket flag.
 	AfterStep *AfterStep
+
+	// Digest is the optional whole-run trace SHA-256 accumulator (digest.go):
+	// Go hashes its committed steps; Python feeds the slow-path reference bytes
+	// into the same state via cgo. nil = disabled (zero overhead).
+	Digest *Digest
 }
 
 // LoopResult is the outcome of one RunLoop call.
