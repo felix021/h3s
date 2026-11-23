@@ -231,6 +231,15 @@ func (m *Memory) SetMMU(con, begin, end *uint32) {
 	m.mmu = &mmuState{con: con, begin: begin, end: end}
 }
 
+// HandlesMMIO reports whether the configured bus models a data access at
+// addr+size (the Python hardware.handles(addr, size) membership). The dual loop
+// uses it to hand read-modify-write instructions back before the bus would
+// absorb the read/write side effects (Python's peripheral model owns those, so
+// a Go-side bus round-trip would double-apply or diverge).
+func (m *Memory) HandlesMMIO(addr uint32, size int) bool {
+	return m.bus != nil && m.bus.Handles(addr, size)
+}
+
 // TakeWalks drains and returns the successful MMU walks recorded since the last
 // drain (one scalar step's read path).
 func (m *Memory) TakeWalks() []WalkInfo {
