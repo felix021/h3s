@@ -140,6 +140,64 @@ func TestMMIOBusCRCRouting(t *testing.T) {
 	}
 }
 
+// TestMMIOBusTimer0ReadRouting pins the Timer0 CON read-only route (fourth
+// wiring): a read of 0xfd0400 returns Con with 0x8000 projected while pending,
+// and is gated by HandlesRead only — Handles (the write gate) does not admit it,
+// so a store/RMW still faults back to Python. Uninitialized CON reads surface
+// the same strict stop as br28_model.Timer0.read.
+func TestMMIOBusTimer0ReadRouting(t *testing.T) {
+	p := &PeriphState{Timer: NewTimer0()}
+	// write CNT/PRD/CON through the Go Timer0 model (as the Python world does;
+	// a running CON write requires CNT/PRD already present).
+	if err := p.Timer.Write(4, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Timer.Write(8, 119999); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Timer.Write(0, 0x1001); err != nil {
+		t.Fatal(err)
+	}
+
+	if !p.HandlesRead(TIMER0, 4) {
+		t.Fatal("Timer0 CON read not handled")
+	}
+	v, err := p.Read(TIMER0)
+	if err != nil || v != 0x1001 {
+		t.Fatalf("Timer0 CON read = %#x, %v", v, err)
+	}
+
+	// pending projects bit 15, matching br28_model.Timer0.read.
+	p.Timer.Pending = true
+	if v, err := p.Read(TIMER0); err != nil || v != 0x9001 {
+		t.Fatalf("pending Timer0 CON read = %#x, %v", v, err)
+	}
+	p.Timer.Pending = false
+
+	// CNT / PRD reads are not routed (CON only).
+	if p.HandlesRead(TIMER0+4, 4) || p.HandlesRead(TIMER0+8, 4) {
+		t.Fatal("Timer0 CNT/PRD read wrongly handled")
+	}
+	// the write gate does not admit the CON word: stores/RMW stay on Python.
+	if p.Handles(TIMER0, 4) {
+		t.Fatal("Timer0 CON write wrongly handled")
+	}
+	// unaligned / byte-sized reads are not handled.
+	if p.HandlesRead(TIMER0, 1) || p.HandlesRead(TIMER0+1, 4) {
+		t.Fatal("unaligned or byte-sized Timer0 read wrongly handled")
+	}
+	// no Timer0 model -> the read word is not handled.
+	d := &PeriphState{}
+	if d.HandlesRead(TIMER0, 4) {
+		t.Fatal("Timer0 read handled without a Timer0 model")
+	}
+	// uninitialized CON read surfaces the identical strict stop.
+	u := &PeriphState{Timer: NewTimer0()}
+	if _, err := u.Read(TIMER0); err == nil || err.Kind != "uninitialized_peripheral" {
+		t.Fatalf("uninitialized Timer0 CON read = %v", err)
+	}
+}
+
 // TestMMUTranslate pins the virtual-window translation against the br28_model
 // MMU semantics: identity outside [0x400000, 0x800000), page-table walk inside.
 func TestMMUTranslate(t *testing.T) {

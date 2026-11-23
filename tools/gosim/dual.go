@@ -216,9 +216,12 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 	}
 	// rmw MMIO guard: an atomic read-modify-write whose target is a modeled MMIO
 	// word is handed back before the bus would absorb the read/write (Python's
-	// peripheral model owns those side effects). A non-MMIO target falls through
-	// to safeDual + makeRmw; the strict-memory read/write faults still hand back
-	// through BatchMemFault.
+	// peripheral model owns those side effects). The guard uses the READ gate so
+	// a read-only word (Timer0 CON) is also handed back before Go's makeRmw
+	// could absorb its internal read and drop an unchanged write (Python's MMIO
+	// rmw always emits the write). A non-MMIO target falls through to safeDual +
+	// makeRmw; the strict-memory read/write faults still hand back through
+	// BatchMemFault.
 	if dualRmwAllowed[im.id] {
 		if c.dmem == nil {
 			return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
@@ -226,7 +229,7 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 		op := newOperands(im, raw)
 		if core.RT[int(op.Num("r"))] == nil {
 			addr := (c.R[int(op.Num("r"))] + uint32(op.Num("n"))) & wordMask
-			if c.dmem.HandlesMMIO(addr, 4) {
+			if c.dmem.HandlesReadMMIO(addr, 4) {
 				return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
 			}
 		}
