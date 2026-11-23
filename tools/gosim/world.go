@@ -57,13 +57,14 @@ type Core struct {
 	Steps           uint64
 	RepeatActive    bool // repeat / after_then pending (delivery deferral + single-core yield)
 
-	// RepeatInFlight is repeat active only (rep.i/rep): the dual loop still
-	// yields before attempt. AfterThen carries the in-flight if-block state
-	// (nil = no open conditional block); the dual loop persists it across steps
-	// and hands it back to Python (cpu.after_then) so a hand-back mid-block
-	// resumes exactly.
-	RepeatInFlight bool
-	AfterThen      *AfterThenState
+	// Repeat is the in-flight repeat state the dual loop owns (immediate
+	// rep.i single-store projection only: register is -1 = none). nil = no
+	// repeat in flight. The dual loop persists it across steps, does the
+	// countdown + pc roll-back itself, and hands it back to Python (cpu.repeat)
+	// so a hand-back mid-repeat resumes exactly. AfterThen carries the
+	// in-flight if-block state (nil = no open conditional block).
+	Repeat    *RepeatState
+	AfterThen *AfterThenState
 
 	// M6C special registers + execution context (br28_machine deliver_*
 	// projections). A nil pointer is the Python None (unknown); an empty
@@ -86,10 +87,24 @@ type AfterThenState struct {
 	ElseN int `json:"else"`
 }
 
+// RepeatState is the round-trippable repeat state, mirroring Python's
+// cpu.repeat dict for the immediate_rep_single_store_projection gate:
+// {start, end, register, remaining}. Register is -1 = no count register
+// (immediate rep.i); the dual loop only owns the register-less single-store
+// projection, so a non-(-1) Register never round-trips from Go.
+type RepeatState struct {
+	Start     uint32 `json:"start"`
+	End       uint32 `json:"end"`
+	Register  int    `json:"register"`
+	Remaining uint32 `json:"remaining"`
+}
+
 // midInstruction reports whether the core is mid-instruction (a repeat or an
-// open if-block in flight), the delivery-deferral predicate.
+// open if-block in flight), the delivery-deferral predicate. Repeat covers both
+// the JSON-loaded RepeatActive (Python-set repeats that stay Python) and the
+// in-loop Repeat state the dual loop owns.
 func (c *Core) midInstruction() bool {
-	return c.RepeatActive || c.AfterThen != nil
+	return c.RepeatActive || c.Repeat != nil || c.AfterThen != nil
 }
 
 // AudioIrqOuterContext mirrors the cpu.audio_irq_outer_context dict saved when
@@ -623,9 +638,12 @@ func (w *World) runDualCore(n int) LoopResult {
 	if w.Cores[0] == nil {
 		return yieldBeforeAttempt("world needs core 0 present")
 	}
-	if w.Cores[0].RepeatInFlight || (w.Cores[1] != nil && w.Cores[1].RepeatInFlight) {
-		return yieldBeforeAttempt("repeat active on a core")
-	}
+	// A mid-repeat core resumes inside the dual loop: the immediate rep.i
+	// single-store projection is owned by Go (RunDualStepCore executes the body
+	// store and does the countdown + pc roll-back), so an in-flight Repeat is a
+	// resumable state, not a reason to yield. Every other repeat form stays in
+	// Python (cores_head_ok refuses their c.repeat shapes), so Go never sees a
+	// repeat state it does not own.
 
 	// Bind the delivery machine's cores to the world cores so delivery state
 	// changes land on the same Core objects the select/execute phases read.

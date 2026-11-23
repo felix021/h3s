@@ -199,6 +199,9 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 			return s, DualTagInfo{Direct: code == BatchOK}, code, pc, nil
 		}
 	}
+	if s, code, err, ok := c.runRepImmediateSingleStore(core, im, raw, pc, uint32(size), insnBytes); ok {
+		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
+	}
 	if s, code, err, ok := c.runPinByteStore(core, im, raw, pc, uint32(size), insnBytes); ok {
 		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
 	}
@@ -443,6 +446,191 @@ func (c *CPU) runPinWordStore(core *Core, im *insnMeta, raw map[string]uint32, p
 		Insn:     insnBytes,
 		Adapter:  "exact_postincrement_store",
 		Mem:      []MemWrite{{Addr: addr, Bytes: b4}},
+	}, BatchOK, nil, true
+}
+
+// runPinHalfStore executes the standalone short-form halfword postincrement
+// store st.h.pin (syntax h[{b}++={n}] = {d}) the dual loop runs byte-for-byte
+// against Python's exact_postincrement_store adapter (probe_boot step_body's
+// immediate_rep_projection + exact_subword_stores short-form gate). It writes
+// the source register's low halfword to the old base address, then writes the
+// base register back to base + n (n = +2 or -2), leaving flags untouched. ok is
+// true when the instruction is st.h.pin; every other id returns ok == false.
+//
+// A tagged base or source register is handed back (BatchAbstract); an odd base
+// or a strict-memory fault is handed back (BatchMemFault). The raw core
+// (dmem == nil) keeps the upstream deny-set semantics (BatchUnsafe).
+func (c *CPU) runPinHalfStore(core *Core, im *insnMeta, raw map[string]uint32, pc uint32, size uint32, insnBytes []byte) (SegmentStep, int, error, bool) {
+	if im.id != "st.h.pin" {
+		return SegmentStep{}, 0, nil, false
+	}
+	if c.dmem == nil {
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	op := newOperands(im, raw)
+	b := int(op.Num("b"))
+	d := int(op.Num("d"))
+	if core.RT[b] != nil || core.RT[d] != nil {
+		return SegmentStep{}, BatchAbstract, nil, true
+	}
+	addr := core.R[b]
+	if addr%2 != 0 {
+		return SegmentStep{}, BatchMemFault, &MemError{Kind: "unaligned_exact_postincrement_store", Access: "write", Address: addr, Size: 2}, true
+	}
+	n := op.Num("n") // uimm scale -4 add 2: +2 or -2
+	half := uint16(core.R[d])
+	b2 := []byte{byte(half), byte(half >> 8)}
+	if err := c.dmem.Write(addr, b2); err != nil {
+		return SegmentStep{}, BatchMemFault, err, true
+	}
+	core.R[b] = uint32(int64(addr)+n) & wordMask
+	core.PC = pc + size
+	core.Steps++
+	return SegmentStep{
+		PC:       pc,
+		NextPC:   core.PC,
+		Flags:    uint8(core.Flags & 0xF),
+		R:        core.R,
+		BeforeSP: core.SP,
+		SP:       core.SP,
+		Insn:     insnBytes,
+		Adapter:  "exact_postincrement_store",
+		Mem:      []MemWrite{{Addr: addr, Bytes: b2}},
+	}, BatchOK, nil, true
+}
+
+// runRepImmediateSingleStore executes the immediate_rep_single_store_projection
+// gate (probe_boot step_body's immediate_rep_projection short-form gate) inside
+// the dual loop: a rep.i whose body is a single short-form postincrement store
+// (st.w.pin / st.h.pin / st.b.pin). The rep.i itself sets core.Repeat and
+// advances pc to the body; each body-store step executes the store and then does
+// the repeat countdown + pc roll-back (register is -1 = immediate rep.i, so the
+// countdown decrements Repeat.Remaining and rolls pc back to Repeat.Start while
+// remaining > 0, clearing Repeat on the last iteration). The Python slow path's
+// _post_step does the identical bookkeeping; Go owns it here so consecutive body
+// stores run inside one fill.
+//
+// ok is true when the instruction is rep.i (gate) or the repeat body store
+// (committed or handed back); every other id returns ok == false so the caller
+// falls through to the shared safeDual/model path. A rep.i whose body is not one
+// of the three supported single stores is handed back (BatchUnsafe) so Python
+// re-derives the identical gate (a multi-block / unknown-body rep.i must not be
+// silently re-shaped). The raw core (dmem == nil) keeps the deny-set semantics.
+func (c *CPU) runRepImmediateSingleStore(core *Core, im *insnMeta, raw map[string]uint32, pc uint32, size uint32, insnBytes []byte) (SegmentStep, int, error, bool) {
+	// Mid-repeat: the current instruction must be the repeat body store.
+	if core.Repeat != nil {
+		if c.dmem == nil {
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		if core.Repeat.Register >= 0 {
+			// A register-count repeat is not the immediate single-store
+			// projection; hand it back (Python owns it).
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		// An MMIO target is handed back before the bus absorbs the side effect
+		// (Python's peripheral model owns MMIO writes), mirroring the standalone
+		// postincrement-store head check the dual loop relies on.
+		if im.id == "st.w.pin" || im.id == "st.h.pin" || im.id == "st.b.pin" {
+			op := newOperands(im, raw)
+			b := int(op.Num("b"))
+			if core.RT[b] == nil {
+				addr := core.R[b]
+				switch im.id {
+				case "st.b.pin":
+					if c.dmem.HandlesByteWrite(addr) {
+						return SegmentStep{}, BatchUnsafe, nil, true
+					}
+				case "st.h.pin":
+					if c.dmem.HandlesMMIO(addr, 2) {
+						return SegmentStep{}, BatchUnsafe, nil, true
+					}
+				default: // st.w.pin
+					if c.dmem.HandlesMMIO(addr, 4) {
+						return SegmentStep{}, BatchUnsafe, nil, true
+					}
+				}
+			}
+		}
+		var s SegmentStep
+		var code int
+		var err error
+		var ok bool
+		switch im.id {
+		case "st.w.pin":
+			s, code, err, ok = c.runPinWordStore(core, im, raw, pc, size, insnBytes)
+		case "st.h.pin":
+			s, code, err, ok = c.runPinHalfStore(core, im, raw, pc, size, insnBytes)
+		case "st.b.pin":
+			s, code, err, ok = c.runPinByteStore(core, im, raw, pc, size, insnBytes)
+		default:
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		if !ok {
+			return SegmentStep{}, BatchUnsafe, nil, true
+		}
+		if code != BatchOK {
+			return s, code, err, true
+		}
+		// Store committed at body end (s.NextPC == core.PC == body end); now
+		// the repeat countdown + roll-back.
+		core.Repeat.Remaining--
+		if core.Repeat.Remaining > 0 {
+			core.PC = core.Repeat.Start
+			s.NextPC = core.PC
+		} else {
+			core.Repeat = nil
+		}
+		return s, BatchOK, nil, true
+	}
+
+	// The rep.i gate.
+	if im.id != "rep.i" {
+		return SegmentStep{}, 0, nil, false
+	}
+	if c.dmem == nil {
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	if core.AfterThen != nil {
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	op := newOperands(im, raw)
+	n := op.Num("n")   // count, 1..32
+	bodyBytes := op.Num("b")
+	if n < 1 || n > 32 {
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	bIm, _, bSize, err := c.decode(pc + uint32(size))
+	if err != nil {
+		if isMemError(err) {
+			return SegmentStep{}, BatchMemFault, err, true
+		}
+		return SegmentStep{}, BatchNoInstr, err, true
+	}
+	if int64(bSize) != bodyBytes {
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	switch bIm.id {
+	case "st.w.pin", "st.h.pin", "st.b.pin":
+	default:
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	core.Repeat = &RepeatState{
+		Start:     pc + uint32(size),
+		End:       pc + uint32(size) + uint32(bodyBytes),
+		Register:  -1,
+		Remaining: uint32(n),
+	}
+	core.PC = pc + uint32(size)
+	core.Steps++
+	return SegmentStep{
+		PC:       pc,
+		NextPC:   core.PC,
+		Flags:    uint8(core.Flags & 0xF),
+		R:        core.R,
+		BeforeSP: core.SP,
+		SP:       core.SP,
+		Insn:     insnBytes,
+		Adapter:  "immediate_rep_single_store_projection",
 	}, BatchOK, nil, true
 }
 
