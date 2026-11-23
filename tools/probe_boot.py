@@ -3456,8 +3456,24 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                               'ld.bu.l','ld.hu.l','ld.bu.sp.l','ld.hu.sp.l',
                               'ld.bu.idx','ld.hu.idx','ld.bu.pi','ld.hu.pi',
                               'ld.bu.pin','ld.hu.pin','ld.bu.pre','ld.hu.pre',
-                              'ld.bu.prer','ld.hu.prer'))
+                              'ld.bu.prer','ld.hu.prer','ld.w.pin'))
     _DUAL_ST_FORMS=frozenset(('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'))
+    # 子字偏移存储族(Go 侧 dualSubwordStoreAllowed / runExactSubwordStore /
+    # exact_subword_store 适配器):Python 侧 exact_subword_stores gate 的镜像。直写
+    # width 字节(无包含字合并读),半字要求偶地址;源/基址寄存器具体性由 Go 每步
+    # gate 兜底,这里只是段头省白费 fill。
+    _DUAL_SUBWORD_ST_FORMS=frozenset(('st.b','st.h','st.b.l','st.h.l',
+                                      'st.b.sp.l','st.h.sp.l','st.h.idxs'))
+    # 原子读改写族(Go 侧 dualRmwAllowed / makeRmw):只接普通 RAM 目标,MMIO 目标
+    # 交回(外设副作用归 Python)。段头预判只挡 MMIO;未对齐/失败前由 Go 严格内存
+    # fault 诚实交回。
+    _DUAL_RMW_FORMS=frozenset(('rmw.add.modimm','rmw.add.r','rmw.add.s12',
+                               'rmw.and.bitr','rmw.and.invbitr','rmw.and.invr',
+                               'rmw.and.modimm','rmw.and.nmodimm','rmw.and.r',
+                               'rmw.asr.i','rmw.asr.r','rmw.lsl.i','rmw.lsl.r',
+                               'rmw.lsr.i','rmw.lsr.r','rmw.or.bitr','rmw.or.modimm',
+                               'rmw.or.r','rmw.shl3.i','rmw.shl3.r','rmw.sub.r',
+                               'rmw.xor.bitr','rmw.xor.modimm','rmw.xor.r'))
     # 条件分支族(刀⑦):Go 侧 dualIfBlockAllowed 的 Python 镜像。纯寄存器/立即
     # 数比较的 if/ifs 块开启器(无访存/无 flags 变更/无抽象输出);iff.*(浮点)与
     # if.unknown.rr.*(猜测 and_block)保持拒绝。Go 仍是执行权威,这里只是段头
@@ -3495,6 +3511,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             return ((R[op['s']]+(R[op['t']]<<2))&0xffffffff,4)
         if iid in ('ld.bu.pi','ld.hu.pi','ld.bu.pin','ld.hu.pin'):
             return (R[op['b']]&0xffffffff,1 if iid.startswith('ld.bu') else 2)
+        if iid=='ld.w.pin':
+            return (R[op['b']]&0xffffffff,4)
         if iid in ('ld.bu.pre','ld.hu.pre'):
             return ((R[op['s']]+op['n'])&0xffffffff,1 if iid.startswith('ld.bu') else 2)
         if iid in ('ld.bu.prer','ld.hu.prer'):
@@ -3515,6 +3533,19 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             return (R[op['r']]+op['n'])&0xffffffff
         if iid=='st.w.sp':
             return (c.sp+op['n'])&0xffffffff
+        return None
+
+    def _dual_subword_st_addr(c,iid,op):
+        # exact_subword_stores gate 的地址计算镜像(直写 width 字节,无合并读)。
+        R=c.R
+        if iid=='st.h.idxs':
+            return (R[op['r']]+(R[op['s']]<<1))&0xffffffff
+        if iid in ('st.b.sp.l','st.h.sp.l'):
+            return (c.sp+op['n'])&0xffffffff
+        if iid in ('st.b.l','st.h.l'):
+            return (R[op['r']]+op['n'])&0xffffffff
+        if iid in ('st.b','st.h'):
+            return (R[op['b']]+op['n'])&0xffffffff
         return None
 
     def _dual_head_ok(c, pc=None):
@@ -3554,6 +3585,25 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 op=module.check.operands(insn,raw)
                 addr=c.R[op['b']]&0xffffffff
                 if hardware is not None and hardware.handles_byte_write(addr):return False
+                return True
+            if iid in _DUAL_SUBWORD_ST_FORMS:
+                # 子字偏移存储(Go 侧 runExactSubwordStore / exact_subword_store
+                # 适配器):直写 width 字节无合并读,半字要求偶地址;目标为 MMIO
+                # 字节寄存器时交回慢路径。具体性由 Go 每步 gate 兜底。
+                op=module.check.operands(insn,raw)
+                addr=_dual_subword_st_addr(c,iid,op)
+                if addr is None:return False
+                width=2 if iid.startswith('st.h') else 1
+                if addr%width:return False
+                if hardware is not None and width==1 and hardware.handles_byte_write(addr):return False
+                return True
+            if iid in _DUAL_RMW_FORMS:
+                # 原子读改写(Go 侧 makeRmw + dualRmwAllowed):只接普通 RAM 目标,
+                # MMIO 目标交回(外设副作用归 Python 慢路径)。未对齐/失败前由
+                # Go 严格内存 fault 诚实交回。
+                op=module.check.operands(insn,raw)
+                addr=(c.R[op['r']]+op['n'])&0xffffffff
+                if hardware is not None and hardware.handles(addr,4):return False
                 return True
         except Exception:
             return False

@@ -20,9 +20,43 @@ var dualAllowed = map[string]bool{
 	"ld.bu.idx": true, "ld.hu.idx": true, "ld.bu.pi": true, "ld.hu.pi": true,
 	"ld.bu.pin": true, "ld.hu.pin": true, "ld.bu.pre": true, "ld.hu.pre": true,
 	"ld.bu.prer": true, "ld.hu.prer": true,
+	"ld.w.pin": true,
 
 	"st.w": true, "st.w.l": true, "st.w.modimm": true,
 	"st.w.idxs": true, "st.w.sp": true, "st.w.idx": true,
+}
+
+// dualSubwordStoreAllowed is the whitelist of standalone byte/halfword offset
+// stores the dual loop executes byte-for-byte against Python's
+// exact_subword_stores adapter (probe_boot step_body). Each writes exactly its
+// width bytes (1 for st.b, 2 for st.h) with no merge-read of the containing
+// word; a tagged address/value operand is handed back (BatchAbstract) and an
+// odd halfword address is handed back (BatchMemFault) so Python re-derives the
+// identical Blocked.
+var dualSubwordStoreAllowed = map[string]bool{
+	"st.b": true, "st.h": true,
+	"st.b.l": true, "st.h.l": true,
+	"st.b.sp.l": true, "st.h.sp.l": true,
+	"st.h.idxs": true,
+}
+
+// dualRmwAllowed is the whitelist of read-modify-write forms the dual loop
+// executes byte-for-byte against Python's upstream m2 rmw model (makeRmw).
+// Only a plain-RAM target is executed: an MMIO target is handed back
+// (BatchUnsafe) so Python's peripheral model owns the read/write side effects,
+// and a strict-memory fault (uninitialized read / readonly write) hands back
+// through the ordinary BatchMemFault path.
+var dualRmwAllowed = map[string]bool{
+	"rmw.add.modimm": true, "rmw.add.r": true, "rmw.add.s12": true,
+	"rmw.and.bitr": true, "rmw.and.invbitr": true, "rmw.and.invr": true,
+	"rmw.and.modimm": true, "rmw.and.nmodimm": true, "rmw.and.r": true,
+	"rmw.asr.i": true, "rmw.asr.r": true,
+	"rmw.lsl.i": true, "rmw.lsl.r": true,
+	"rmw.lsr.i": true, "rmw.lsr.r": true,
+	"rmw.or.bitr": true, "rmw.or.modimm": true, "rmw.or.r": true,
+	"rmw.shl3.i": true, "rmw.shl3.r": true,
+	"rmw.sub.r": true,
+	"rmw.xor.bitr": true, "rmw.xor.modimm": true, "rmw.xor.r": true,
 }
 
 // dualStoreAdapter maps the store ids the commit must count as Python's
@@ -88,7 +122,7 @@ func (c *CPU) safeDual(im *insnMeta) bool {
 	if strings.HasSuffix(im.id, ".p") {
 		return false
 	}
-	if dualAllowed[im.id] || dualDirectFlowAllowed[im.id] {
+	if dualAllowed[im.id] || dualDirectFlowAllowed[im.id] || dualRmwAllowed[im.id] {
 		return true
 	}
 	if batchUnsafe[im.id] {
@@ -167,6 +201,26 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 	}
 	if s, code, err, ok := c.runPinByteStore(core, im, raw, pc, uint32(size), insnBytes); ok {
 		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
+	}
+	if s, code, err, ok := c.runExactSubwordStore(core, im, raw, pc, uint32(size), insnBytes); ok {
+		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
+	}
+	// rmw MMIO guard: an atomic read-modify-write whose target is a modeled MMIO
+	// word is handed back before the bus would absorb the read/write (Python's
+	// peripheral model owns those side effects). A non-MMIO target falls through
+	// to safeDual + makeRmw; the strict-memory read/write faults still hand back
+	// through BatchMemFault.
+	if dualRmwAllowed[im.id] {
+		if c.dmem == nil {
+			return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
+		}
+		op := newOperands(im, raw)
+		if core.RT[int(op.Num("r"))] == nil {
+			addr := (c.R[int(op.Num("r"))] + uint32(op.Num("n"))) & wordMask
+			if c.dmem.HandlesMMIO(addr, 4) {
+				return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
+			}
+		}
 	}
 	if !c.safeDual(im) {
 		return SegmentStep{}, DualTagInfo{}, BatchUnsafe, pc, nil
@@ -331,5 +385,85 @@ func (c *CPU) runPinByteStore(core *Core, im *insnMeta, raw map[string]uint32, p
 		Insn:     insnBytes,
 		Adapter:  "exact_postincrement_store",
 		Mem:      []MemWrite{{Addr: addr, Bytes: []byte{byteVal}}},
+	}, BatchOK, nil, true
+}
+
+// runExactSubwordStore executes the standalone byte/halfword offset stores the
+// dual loop runs byte-for-byte against Python's exact_subword_stores adapter
+// (probe_boot step_body's exact_subword_stores gate): address and value are
+// masked to 32 bits, the store writes exactly width bytes (1/2) with no
+// merge-read, and flags stay untouched. ok is true when the instruction is one
+// of the subword-store ids (committed or handed back); every other id returns
+// ok == false so the caller falls through to safeDual/model.
+//
+// A tagged address/value/index operand is handed back (BatchAbstract) so Python
+// re-derives the identical consumed() Blocked; an odd halfword address is
+// handed back (BatchMemFault) so Python re-derives the identical "unaligned
+// exact subword store" Blocked. The raw core (dmem == nil) keeps the upstream
+// deny-set semantics (BatchUnsafe), which the differential tests pin.
+func (c *CPU) runExactSubwordStore(core *Core, im *insnMeta, raw map[string]uint32, pc uint32, size uint32, insnBytes []byte) (SegmentStep, int, error, bool) {
+	id := im.id
+	if !dualSubwordStoreAllowed[id] {
+		return SegmentStep{}, 0, nil, false
+	}
+	if c.dmem == nil {
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	op := newOperands(im, raw)
+	width := 1
+	if strings.HasPrefix(id, "st.h") {
+		width = 2
+	}
+	var addr uint32
+	baseReg, idxReg, valReg := -1, -1, -1
+	switch id {
+	case "st.h.idxs":
+		baseReg, idxReg, valReg = int(op.Num("r")), int(op.Num("s")), int(op.Num("t"))
+		addr = core.R[baseReg] + (core.R[idxReg] << 1)
+	case "st.b.sp.l", "st.h.sp.l":
+		if !core.SPKnown {
+			return SegmentStep{}, BatchAbstract, nil, true
+		}
+		valReg = int(op.Num("r"))
+		addr = core.SP + uint32(op.Num("n"))
+	case "st.b.l", "st.h.l":
+		baseReg, valReg = int(op.Num("r")), int(op.Num("s"))
+		addr = core.R[baseReg] + uint32(op.Num("n"))
+	default: // st.b, st.h
+		baseReg, valReg = int(op.Num("b")), int(op.Num("d"))
+		addr = core.R[baseReg] + uint32(op.Num("n"))
+	}
+	addr &= wordMask
+	if baseReg >= 0 && core.RT[baseReg] != nil {
+		return SegmentStep{}, BatchAbstract, nil, true
+	}
+	if idxReg >= 0 && core.RT[idxReg] != nil {
+		return SegmentStep{}, BatchAbstract, nil, true
+	}
+	if valReg >= 0 && core.RT[valReg] != nil {
+		return SegmentStep{}, BatchAbstract, nil, true
+	}
+	if addr%uint32(width) != 0 {
+		return SegmentStep{}, BatchMemFault, &MemError{Kind: "unaligned_exact_subword_store", Access: "write", Address: addr, Size: width}, true
+	}
+	b := make([]byte, width)
+	for i := 0; i < width; i++ {
+		b[i] = byte(core.R[valReg] >> (8 * i))
+	}
+	if err := c.dmem.Write(addr, b); err != nil {
+		return SegmentStep{}, BatchMemFault, err, true
+	}
+	core.PC = pc + size
+	core.Steps++
+	return SegmentStep{
+		PC:       pc,
+		NextPC:   core.PC,
+		Flags:    uint8(core.Flags & 0xF),
+		R:        core.R,
+		BeforeSP: core.SP,
+		SP:       core.SP,
+		Insn:     insnBytes,
+		Adapter:  "exact_subword_store",
+		Mem:      []MemWrite{{Addr: addr, Bytes: b}},
 	}, BatchOK, nil, true
 }
