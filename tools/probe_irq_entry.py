@@ -5120,12 +5120,15 @@ def _d2a_dispatch_delivery(machine,hardware,details,fallback_cpu):
 
 
 def d2a_resume_steps(machine,hardware,watch=(),max_steps=800_000,
-                     stop_after_consume=False):
+                     stop_after_consume=False, mem_watch=()):
     """post 后恢复推进(「交还世界」):explore 慢路径最小复刻。
 
     select→decode→(idle 停泊)→step→after_step→hardware.advance;CoreStall/
     IrqDeliveryRequest/Blocked 走主循环同款分发。watch=PC 命中记录(r0..r7);
-    max_steps=指令步预算;stop_after_consume=按键 handler 已消费事件(handler 返
+    mem_watch=(pc, addr_reg, size_reg) 三元组:PC 命中时读 cpu.mem.read(R[addr],
+    R[size]) 落进 hit['mem'](hex/None)——用于在 apply_mpo/apply_eq 提交点即时抓
+    参数包字节(栈包在 resume 结束后已被回收,事后读不可靠)。max_steps=指令步
+    预算;stop_after_consume=按键 handler 已消费事件(handler 返
     非 0 的 0x6012422 事件终结面)且其后世界回 pend 即停(事件已消费+世界回等
     待)。用事件终结面而非 handler 入口面做闸:open/close 载荷内部会 yield(流
     建立/同步回收),handler 入口后第一个 pend 面出现时载荷还没写完槽,若以入
@@ -5143,7 +5146,20 @@ def d2a_resume_steps(machine,hardware,watch=(),max_steps=800_000,
         cpu=machine.select()
         pc=cpu.pc
         if pc in watch:
-            hits.append({'pc':hex(pc),'r':[word(x) for x in cpu.R[:8]],'step':steps})
+            hit={'pc':hex(pc),'r':[word(x) for x in cpu.R[:8]],'step':steps}
+            for mpc, addr_reg, size_spec in mem_watch:
+                if pc == mpc:
+                    addr = cpu.R[addr_reg] if addr_reg < len(cpu.R) else None
+                    size = (cpu.R[size_spec] if size_spec < len(cpu.R)
+                            else size_spec)
+                    if isinstance(addr, int) and isinstance(size, int) and size > 0:
+                        try:
+                            hit['mem'] = cpu.mem.read(addr, size).hex()
+                        except Blocked:
+                            hit['mem'] = None
+                    else:
+                        hit['mem'] = None
+            hits.append(hit)
         if pc==D2A_EVENT_DONE:
             event_done_seen=True
         if pc==D2A_PEND_FACE and event_done_seen:
@@ -5497,6 +5513,17 @@ F2_L1_TOGGLE_DONE=0x060e3442              # toggle 桩 r4=1(已处理)
 F2_L1_SLOT=0x125574                       # HA 状态槽(open 写 stream/close 清 0)
 F2_L1_APPLY_MPO_ENTRY=0x060e324c          # apply_mpo 入口(key30;L3 消费)
 F2_L1_APPLY_EQ_ENTRY=0x060e3328           # apply_eq 入口(key31;L4 消费)
+# L2/L3/L4 参数消费链锚(L1 open 成功后 apply_mpo/apply_eq 载荷内部的消费面)
+F2_L1_GET_CONFIG=0x06000f88               # get_config 入口(key30/31 读回;r0=key,r1=buf,r2=len)
+F2_L1_SET_NODE_PARAM=0x0607538a           # jlstream_set_node_param 入口(apply_mpo/apply_eq 提交;
+                                           # r0=uuid16,r1=name16,r2=param,r3=len)
+F2_L1_WDRC_IOCTL=0x06078d0a               # wdrc ioctl 0x2000F 分支(消费者分发)
+F2_L1_WDRC_UPDATE=0x0607c7c6              # wdrc 热更 memcpy 76B 入口(运行句柄非空)
+F2_L1_WDRC_UPDATE_FLAG=0x0607c7e8         # b[r4+19]=1 updata 标志(运行中 WDRC 登记更新)
+F2_L1_EQ_IOCTL=0x0607898e                 # eq ioctl subcmd 7 分支(消费者分发)
+F2_L1_EQ_UPDATE=0x0607c6aa                # eq 段热更(16B 段写运行段数组)
+F2_L1_VM_KEY_OFFSET_ARRAY=0x129088        # VM key->offset 数组基(RAM,2B 每项=窗内偏移;
+                                           # route AB 钉死:key30→0x30/key31→0x3c)
 # F2 L1 观察锚(S19 七段 + F2 专属 KEY7/toggle/open/close/apply)
 F2_L1_ANCHORS=(D2A_POST_SITE,D2A_ENQUEUE,D2A_LOOP_HEAD,D2A_GET_EVENT,D2A_ID_READ,
                D2A_BIT20,D2A_SPECIAL_PATH,D2A_TABLE2_WALK,D2A_INDIRECT_CALL,
@@ -5506,10 +5533,13 @@ F2_L1_ANCHORS=(D2A_POST_SITE,D2A_ENQUEUE,D2A_LOOP_HEAD,D2A_GET_EVENT,D2A_ID_READ
                F2_L1_CLOSE_SLOT_CLEAR,F2_L1_TOGGLE_OPEN_CALL,
                F2_L1_TOGGLE_OPEN_CHECK,F2_L1_TOGGLE_APPLY_MPO,
                F2_L1_TOGGLE_APPLY_EQ,F2_L1_TOGGLE_CLOSE_CALL,
-               F2_L1_TOGGLE_DONE,F2_L1_APPLY_MPO_ENTRY,F2_L1_APPLY_EQ_ENTRY)
+               F2_L1_TOGGLE_DONE,F2_L1_APPLY_MPO_ENTRY,F2_L1_APPLY_EQ_ENTRY,
+               F2_L1_GET_CONFIG,F2_L1_SET_NODE_PARAM,
+               F2_L1_WDRC_IOCTL,F2_L1_WDRC_UPDATE,F2_L1_WDRC_UPDATE_FLAG,
+               F2_L1_EQ_IOCTL,F2_L1_EQ_UPDATE)
 
 
-def make_f2_l1_loop_post_stop(app):
+def make_f2_l1_loop_post_stop(app, vm_keys=None):
     """构造 F2 候选 L1 双击 open/close 闭环场景的 post_stop 回调(路 F2L1)。
 
     在 D1 窗口世界(window_complete 停点,S19 park 稳态)上:
@@ -5676,6 +5706,19 @@ def make_f2_l1_loop_post_stop(app):
                 'mode_query':mode,
                 'slot_before':slot_face(cpu),
                 'queue_before':queue_face(cpu,app_core)}
+            # VM key->offset 数组注入(合成 fixture):把 key30/key31 的窗内偏移写进
+            # RAM 数组,使 get_config(30/31) 真读回 VM 窗口记录(readonly overlay 的
+            # 字节由真实固件 set_config 生成,见 tools/hearing-aid/gen_vm_fixture.py;
+            # 数组项=真机 App 下发 set_config 后固件会写出的同款偏移)。缺省不注入,
+            # get_config 读回「无记录」→apply_mpo/apply_eq 静默跳过(L2 负例面)。
+            vm_key_note='no vm_key injection (erased VM; key30/31 absent)'
+            if vm_keys:
+                for key, off in vm_keys.items():
+                    write_ram(cpu, F2_L1_VM_KEY_OFFSET_ARRAY + 2 * key,
+                              struct.pack('<H', off))
+                vm_key_note=f'vm_key offsets injected: {vm_keys} '
+                vm_key_note += f'at 0x{F2_L1_VM_KEY_OFFSET_ARRAY:x}'
+            f2l1['world_prep']['vm_key_note']=vm_key_note
             for rnd,label in ((1,'first_double_click'),(2,'second_double_click')):
                 pre_queue=queue_face(cpu,app_core)
                 pre_slot=slot_face(cpu)
@@ -5690,7 +5733,10 @@ def make_f2_l1_loop_post_stop(app):
                         and tail[2]==hex(0))
                 post_payloads=[p['args'][0] for p in posts if p['pc']==hex(D2A_POST_SITE)]
                 resume=d2a_resume_steps(machine,hardware,watch=F2_L1_ANCHORS,
-                                        stop_after_consume=True,max_steps=12_000_000)
+                                        stop_after_consume=True,max_steps=12_000_000,
+                                        mem_watch=((F2_L1_SET_NODE_PARAM, 2, 3),
+                                                   (F2_L1_WDRC_IOCTL, 2, 76),
+                                                   (F2_L1_EQ_IOCTL, 2, 44)))
                 hits=resume['watch_hits']
                 counts=anchor_counts(hits)
                 if counts[hex(D2A_KEY_HANDLER)]==0:
@@ -5711,6 +5757,93 @@ def make_f2_l1_loop_post_stop(app):
                 bit20_hit=next((h for h in hits if h['pc']==hex(D2A_BIT20)),None)
                 end_queue=queue_face(cpu,app_core)
                 end_slot=slot_face(cpu)
+                # L2/L3/L4 参数消费面观察(get_config 读回 / set_node_param 提交包 /
+                # wdrc/eq ioctl 与热更命中)。get_config/set_node_param 的调用点只
+                # 记录入口寄存器面;读回值在 resume 结束后从 buf/param 指针处读 RAM。
+                gc_obs = []
+                for h in hits:
+                    if h['pc'] != hex(F2_L1_GET_CONFIG):
+                        continue
+                    r = h['r']
+                    gc_obs.append({'key': r[0], 'buf': hex(r[1]) if isinstance(r[1], int) else r[1],
+                                   'len': r[2]})
+                snp_obs = []
+                for h in hits:
+                    if h['pc'] != hex(F2_L1_SET_NODE_PARAM):
+                        continue
+                    r = h['r']
+                    snp_obs.append({'uuid': hex(r[0]) if isinstance(r[0], int) else r[0],
+                                    'name': hex(r[1]) if isinstance(r[1], int) else r[1],
+                                    'len': r[3],
+                                    'param_hex': h.get('mem')})
+                wdrc_ioctl_obs = []
+                for h in hits:
+                    if h['pc'] != hex(F2_L1_WDRC_IOCTL):
+                        continue
+                    r = h['r']
+                    wdrc_ioctl_obs.append({'subcmd': hex(r[1]) if isinstance(r[1], int) else r[1],
+                                           'param': h.get('mem')})
+                eq_ioctl_obs = []
+                for h in hits:
+                    if h['pc'] != hex(F2_L1_EQ_IOCTL):
+                        continue
+                    r = h['r']
+                    eq_ioctl_obs.append({'subcmd': hex(r[1]) if isinstance(r[1], int) else r[1],
+                                         'param': h.get('mem')})
+                # 运行节点读回:L3/L4 消费链终面——wdrc 运行句柄参数缓存(76B,
+                # [[handle+8]];热更后=MPO 85,无 key30 时=镜像 95)与 eq 运行段数组
+                # ([handle+100] 基址 + index<<4,十段 16B)。handle 取自热更入口命中
+                # 的 r0(0x607c7c6=wdrc handle、0x607c6aa=eq handle)。
+                def reg_int(h, i):
+                    v = h['r'][i]
+                    return int(v, 16) if isinstance(v, str) else (v if isinstance(v, int) else None)
+                wdrc_running = None
+                wdrc_h = next((h for h in hits if h['pc'] == hex(F2_L1_WDRC_UPDATE)), None)
+                if wdrc_h is not None:
+                    handle = reg_int(wdrc_h, 0)
+                    ptr = read_ram(cpu, handle + 8, 4) if isinstance(handle, int) else None
+                    param_hex = None
+                    if isinstance(ptr, int) and ptr:
+                        try:
+                            param_hex = cpu.mem.read(ptr, 76).hex()
+                        except Blocked:
+                            param_hex = None
+                    wdrc_running = {'handle': hex(handle) if isinstance(handle, int) else handle,
+                                    'param_cache_ptr': hex(ptr) if isinstance(ptr, int) else ptr,
+                                    'param_hex': param_hex}
+                eq_running = None
+                eq_h = next((h for h in hits if h['pc'] == hex(F2_L1_EQ_UPDATE)), None)
+                if eq_h is not None:
+                    handle = reg_int(eq_h, 0)
+                    def seg_read(base):
+                        segs = []
+                        if isinstance(base, int) and base:
+                            for i in range(10):
+                                try:
+                                    segs.append(cpu.mem.read(base + 16 * i, 16).hex())
+                                except Blocked:
+                                    segs.append(None)
+                        return segs
+                    eq_running = {'handle': hex(handle) if isinstance(handle, int) else handle,
+                                  'slot96_base': hex(read_ram(cpu, handle + 96, 4))
+                                  if isinstance(handle, int) else None,
+                                  'slot96_segments': seg_read(read_ram(cpu, handle + 96, 4)),
+                                  'slot100_base': hex(read_ram(cpu, handle + 100, 4))
+                                  if isinstance(handle, int) else None,
+                                  'slot100_segments': seg_read(read_ram(cpu, handle + 100, 4))}
+                hearing_obs = {
+                    'get_config_calls': gc_obs,
+                    'set_node_param_calls': snp_obs,
+                    'wdrc_ioctl': counts[hex(F2_L1_WDRC_IOCTL)],
+                    'wdrc_update': counts[hex(F2_L1_WDRC_UPDATE)],
+                    'wdrc_update_flag': counts[hex(F2_L1_WDRC_UPDATE_FLAG)],
+                    'eq_ioctl': counts[hex(F2_L1_EQ_IOCTL)],
+                    'eq_update': counts[hex(F2_L1_EQ_UPDATE)],
+                    'wdrc_ioctl_calls': wdrc_ioctl_obs,
+                    'eq_ioctl_calls': eq_ioctl_obs,
+                    'wdrc_running': wdrc_running,
+                    'eq_running': eq_running,
+                }
                 # open 成功门(假成功检查):桩尾无条件 r4=1,「已处理」不证明 open
                 # 成功。open 成功必须同时观测 open 槽写点 0x060e3154 + toggle 桩
                 # apply_mpo 调用点 0x060e3434(open 失败臂 bnez 跳 done,不调 apply_*)。
@@ -5767,6 +5900,7 @@ def make_f2_l1_loop_post_stop(app):
                                'open_cancel_hit':counts[hex(F2_L1_OPEN_CANCEL)]>=1,
                                'close_call_taken_obs':bool(close_call_hit is not None),
                                'apply_eq_called_obs':counts[hex(F2_L1_TOGGLE_APPLY_EQ)]>=1,
+                               'hearing_obs':hearing_obs,
                                'resume':resume,
                                'anchor_counts':counts,'checks':checks,'pass':round_pass})
                 if resume['stop'] is not None:
@@ -5929,6 +6063,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
              d1_acceptance=False,d1_window_steps=None,d1_post_inject=None,
              d2a_loop=False,
              f2_l1_loop=False,
+             f2_l1_vm_keys=None,
              flash_image_bytes=None,readonly=(),
              snapshot=None):
     machine_options={**EMPTY_PRIORITIES,'first_task_return_hypothesis':'open_gate8',
@@ -8265,7 +8400,7 @@ def irq_case(module,app,header,rom,name,*,entry=False,banks=False,idle_wait=Fals
         elif f2_l1_loop:
             # 路 F2L1:F2 候选 L1 双击闭环接管 D1 窗口场景的 post_stop 槽(与 D2-a
             # 同机制、独立实现;双击 0x10a04→cmd 7→KEY7 桩→toggle 桩→open/close)。
-            post_stop=make_f2_l1_loop_post_stop(app)
+            post_stop=make_f2_l1_loop_post_stop(app, vm_keys=f2_l1_vm_keys)
         else:
             post_stop=make_d1_window_post_stop()
     elif d2a_loop:
