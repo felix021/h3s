@@ -5125,8 +5125,11 @@ def d2a_resume_steps(machine,hardware,watch=(),max_steps=800_000,
 
     select→decode→(idle 停泊)→step→after_step→hardware.advance;CoreStall/
     IrqDeliveryRequest/Blocked 走主循环同款分发。watch=PC 命中记录(r0..r7);
-    max_steps=指令步预算;stop_after_consume=按键 handler 执行过且其后回 pend
-    即停(事件已消费+世界回等待)。返回 {steps,watch_hits,stop,stopped_at}——
+    max_steps=指令步预算;stop_after_consume=按键 handler 已消费事件(handler 返
+    非 0 的 0x6012422 事件终结面)且其后世界回 pend 即停(事件已消费+世界回等
+    待)。用事件终结面而非 handler 入口面做闸:open/close 载荷内部会 yield(流
+    建立/同步回收),handler 入口后第一个 pend 面出现时载荷还没写完槽,若以入
+    口面为闸会过早停、漏掉槽写/槽清。返回 {steps,watch_hits,stop,stopped_at}——
     撞墙也返回(不丢铁证),stop 非 None 记 wall。
     """
     import br28_machine
@@ -5134,18 +5137,18 @@ def d2a_resume_steps(machine,hardware,watch=(),max_steps=800_000,
     steps=0
     stop=None
     stopped_at=None
-    handler_seen=False
-    repend_after_handler=False
+    event_done_seen=False
+    repend_after_event_done=False
     while steps<max_steps:
         cpu=machine.select()
         pc=cpu.pc
         if pc in watch:
             hits.append({'pc':hex(pc),'r':[word(x) for x in cpu.R[:8]],'step':steps})
-        if pc==D2A_KEY_HANDLER:
-            handler_seen=True
-        if pc==D2A_PEND_FACE and handler_seen:
-            repend_after_handler=True
-        if stop_after_consume and handler_seen and repend_after_handler:
+        if pc==D2A_EVENT_DONE:
+            event_done_seen=True
+        if pc==D2A_PEND_FACE and event_done_seen:
+            repend_after_event_done=True
+        if stop_after_consume and event_done_seen and repend_after_event_done:
             stopped_at=hex(pc);break
         try:
             insn,_raw,_size=cpu.decode(pc)
