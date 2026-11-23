@@ -3560,6 +3560,22 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
         except Exception:
             return False
         iid=insn.id
+        if iid=='rep.i':
+            # immediate_rep_single_store_projection 段头预判:仅放行单 store 体
+            # (st.w.pin/st.h.pin/st.b.pin)的立即 rep.i。Go 侧 runRepImmediate-
+            # SingleStore 是执行权威,这里只省白费 fill;其它 rep 门保持交回。
+            if getattr(c,'repeat',None) is not None or getattr(c,'after_then',None) is not None:
+                return False
+            try:
+                op=module.check.operands(insn,raw)
+                n=op['n']
+                if not (1<=n<=32):return False
+                body,_,body_size=c.decode((c.pc if pc is None else pc)+size)
+                if body_size!=op['b'] or body.id not in ('st.w.pin','st.h.pin','st.b.pin'):
+                    return False
+            except Exception:
+                return False
+            return True
         if getattr(insn,'body',''):return False
         if getattr(insn,'block',None):
             return iid in _DUAL_IF_FORMS
@@ -3597,6 +3613,15 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 addr=c.R[op['b']]&0xffffffff
                 if addr%4:return False
                 if hardware is not None and hardware.handles(addr,4):return False
+                return True
+            if iid=='st.h.pin':
+                # 短形半字后增存储(Go 侧 runPinHalfStore / exact_postincrement_
+                # store 适配器):写旧基址 2 字节后基址+=±2。半字要求偶地址;
+                # 无独立半字 MMIO 建模(与子字偏移存储同款),不查 MMIO。源/基址
+                # 寄存器具体性由 Go 每步 gate 兜底。
+                op=module.check.operands(insn,raw)
+                addr=c.R[op['b']]&0xffffffff
+                if addr%2:return False
                 return True
             if iid in _DUAL_SUBWORD_ST_FORMS:
                 # 子字偏移存储(Go 侧 runExactSubwordStore / exact_subword_store

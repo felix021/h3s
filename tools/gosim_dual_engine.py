@@ -98,18 +98,24 @@ def cores_head_ok(c0, c1):
     """Both cores can enter the Go dual loop with abstract register tags: pc and
     icfg must be concrete (select needs a decodable pc), every R slot must be
     either a concrete int or an UnknownWord/IcfgValue the bridge round-trips
-    losslessly, and neither core may be mid-repeat (the Go loop yields
-    immediately on repeat active, so the fill would be a wasted cgo call). An
-    open if-block (after_then) is now carried by the Go loop (the if.* family is
-    migrated), so it no longer refuses the entry. Anything else (GpioOutValue,
-    bool, ...) refuses loudly. Go is still the execution authority — it hands a
-    step back the moment an actual numeric input is tagged, so the per-step gate
-    lives in RunDualStepCore."""
+    losslessly, and any in-flight repeat must be the immediate rep.i
+    single-store projection Go owns (register None, exactly the four
+    start/end/register/remaining keys) — every other repeat form (register
+    count / multi-block / allow_helper_return) stays Python. An open if-block
+    (after_then) is now carried by the Go loop (the if.* family is migrated), so
+    it no longer refuses the entry. Anything else (GpioOutValue, bool, ...)
+    refuses loudly. Go is still the execution authority — it hands a step back
+    the moment an actual numeric input is tagged, so the per-step gate lives in
+    RunDualStepCore."""
     def ok(c):
+        rp = getattr(c, 'repeat', None)
+        repeat_ok = (rp is None or
+                     (rp.get('register') is None and
+                      set(rp.keys()) == {'start', 'end', 'register', 'remaining'}))
         return (c is not None
                 and type(c.pc) is int
                 and type(getattr(c, 'icfg', 0)) is int
-                and getattr(c, 'repeat', None) is None
+                and repeat_ok
                 and all(type(v) is int or isinstance(v, (UnknownWord, IcfgValue))
                         for v in c.R))
     # c1 None = 单核阶段(CPU1 未 release):只要求 CPU0 可进 Go 整圈。
@@ -250,6 +256,7 @@ def core_state(c):
     r, rt = regs()
     icfg, icfg_mask, icfg_known = _icfg_bits(c)
     icfg_gen, icfg_writes, icfg_bit9 = _icfg_extra(c)
+    _repeat = getattr(c, 'repeat', None)
     return {
         'id': c.core_id,
         'r': r,
@@ -266,12 +273,16 @@ def core_state(c):
         'icfg_writes': icfg_writes,
         'icfg_bit9_updates': icfg_bit9,
         'steps': c.steps,
-        'repeat_active': (getattr(c, 'repeat', None) is not None
+        'repeat_active': (_repeat is not None
                           or getattr(c, 'after_then', None) is not None),
-        # repeat_in_flight is repeat-only (the loop-entry yield); after_then is
-        # the in-flight if-block state the Go loop now persists and round-trips
-        # (mirrors cpu.after_then == [left, elseN]).
-        'repeat_in_flight': getattr(c, 'repeat', None) is not None,
+        # repeat is the structured in-flight repeat state the Go loop owns
+        # (immediate rep.i single-store projection; register None -> -1).
+        # after_then is the in-flight if-block state the Go loop persists and
+        # round-trips (mirrors cpu.after_then == [left, elseN]).
+        'repeat': (None if _repeat is None else
+                   {'start': _repeat['start'], 'end': _repeat['end'],
+                    'register': -1 if _repeat.get('register') is None else _repeat['register'],
+                    'remaining': _repeat['remaining']}),
         'after_then': (None if getattr(c, 'after_then', None) is None else
                        {'left': c.after_then[0], 'else': c.after_then[1]}),
         'usp': _opt_int(getattr(c, 'usp', None)),
@@ -518,6 +529,13 @@ def restore_core(c, gc):
     c.sp = gc['sp'] & 0xFFFFFFFF
     c.sp_known = bool(gc.get('sp_known', True))
     c.rets = gc['rets'] & 0xFFFFFFFF
+    rp = gc.get('repeat')
+    if rp is None:
+        c.repeat = None
+    else:
+        c.repeat = {'start': rp['start'] & 0xFFFFFFFF, 'end': rp['end'] & 0xFFFFFFFF,
+                    'register': None if rp.get('register', -1) < 0 else rp['register'],
+                    'remaining': rp['remaining']}
     at = gc.get('after_then')
     c.after_then = None if at is None else [at['left'], at['else']]
     icfg = gc.get('icfg', 0) & 0xFFFFFFFF

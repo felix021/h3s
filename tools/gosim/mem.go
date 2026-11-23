@@ -240,6 +240,12 @@ func (m *Memory) HandlesMMIO(addr uint32, size int) bool {
 	return m.bus != nil && m.bus.Handles(addr, size)
 }
 
+// HandlesByteWrite reports whether the configured bus models a byte-granular
+// store at addr (the Python hardware.handles_byte_write membership).
+func (m *Memory) HandlesByteWrite(addr uint32) bool {
+	return m.bus != nil && m.bus.HandlesByteWrite(addr)
+}
+
 // TakeWalks drains and returns the successful MMU walks recorded since the last
 // drain (one scalar step's read path).
 func (m *Memory) TakeWalks() []WalkInfo {
