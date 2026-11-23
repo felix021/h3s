@@ -3454,7 +3454,7 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
     # 交回慢路径。Go 仍是执行权威,预判错只会少覆盖或白费一次 fill,不会错执行。
     _DUAL_LD_FORMS=frozenset(('ld.w','ld.bu','ld.hu','ld.w.l','ld.w.sp','ld.w.idx','ld.w.idxs',
                               'ld.bu.l','ld.hu.l','ld.bu.sp.l','ld.hu.sp.l',
-                              'ld.bu.idx','ld.hu.idx','ld.bu.pi','ld.hu.pi',
+                              'ld.bu.idx','ld.hu.idx','ld.hu.idxs','ld.bu.pi','ld.hu.pi',
                               'ld.bu.pin','ld.hu.pin','ld.bu.pre','ld.hu.pre',
                               'ld.bu.prer','ld.hu.prer','ld.w.pin'))
     _DUAL_ST_FORMS=frozenset(('st.w','st.w.l','st.w.modimm','st.w.idxs','st.w.sp','st.w.idx'))
@@ -3505,6 +3505,8 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
             return ((R[op['s']]+op['n'])&0xffffffff,4)
         if iid in ('ld.bu.idx','ld.hu.idx'):
             return ((R[op['s']]+R[op['t']])&0xffffffff,1 if iid=='ld.bu.idx' else 2)
+        if iid=='ld.hu.idxs':
+            return ((R[op['s']]+(R[op['t']]<<1))&0xffffffff,2)
         if iid=='ld.w.idx':
             return ((R[op['s']]+R[op['t']])&0xffffffff,4)
         if iid=='ld.w.idxs':
@@ -3585,6 +3587,16 @@ def explore(module,app,*,name,adapt_stack=False,adapt_store=False,pll=None,r0=0,
                 op=module.check.operands(insn,raw)
                 addr=c.R[op['b']]&0xffffffff
                 if hardware is not None and hardware.handles_byte_write(addr):return False
+                return True
+            if iid=='st.w.pin':
+                # 短形整字后增存储(Go 侧 runPinWordStore / exact_postincrement_
+                # store 适配器):写旧基址 4 字节后基址+=±4。整字要求 4 对齐;
+                # 目标为 MMIO 字时交回慢路径(外设副作用归 Python)。源/基址
+                # 寄存器具体性由 Go 每步 gate 兜底。
+                op=module.check.operands(insn,raw)
+                addr=c.R[op['b']]&0xffffffff
+                if addr%4:return False
+                if hardware is not None and hardware.handles(addr,4):return False
                 return True
             if iid in _DUAL_SUBWORD_ST_FORMS:
                 # 子字偏移存储(Go 侧 runExactSubwordStore / exact_subword_store
