@@ -17,7 +17,7 @@ var dualAllowed = map[string]bool{
 	"ld.w": true, "ld.bu": true, "ld.hu": true,
 	"ld.w.l": true, "ld.w.sp": true, "ld.w.idx": true, "ld.w.idxs": true,
 	"ld.bu.l": true, "ld.hu.l": true, "ld.bu.sp.l": true, "ld.hu.sp.l": true,
-	"ld.bu.idx": true, "ld.hu.idx": true, "ld.bu.pi": true, "ld.hu.pi": true,
+	"ld.bu.idx": true, "ld.hu.idx": true, "ld.hu.idxs": true, "ld.bu.pi": true, "ld.hu.pi": true,
 	"ld.bu.pin": true, "ld.hu.pin": true, "ld.bu.pre": true, "ld.hu.pre": true,
 	"ld.bu.prer": true, "ld.hu.prer": true,
 	"ld.w.pin": true,
@@ -200,6 +200,9 @@ func (c *CPU) RunDualStepCore(core *Core, partialIcfg, unknownTaskGprs bool) (Se
 		}
 	}
 	if s, code, err, ok := c.runPinByteStore(core, im, raw, pc, uint32(size), insnBytes); ok {
+		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
+	}
+	if s, code, err, ok := c.runPinWordStore(core, im, raw, pc, uint32(size), insnBytes); ok {
 		return s, DualTagInfo{Direct: code == BatchOK}, code, pc, err
 	}
 	if s, code, err, ok := c.runExactSubwordStore(core, im, raw, pc, uint32(size), insnBytes); ok {
@@ -385,6 +388,61 @@ func (c *CPU) runPinByteStore(core *Core, im *insnMeta, raw map[string]uint32, p
 		Insn:     insnBytes,
 		Adapter:  "exact_postincrement_store",
 		Mem:      []MemWrite{{Addr: addr, Bytes: []byte{byteVal}}},
+	}, BatchOK, nil, true
+}
+
+// runPinWordStore executes the standalone short-form word postincrement store
+// st.w.pin (syntax [{b}++={n}] = {d}) the dual loop runs byte-for-byte against
+// Python's immediate_rep_projection short-form gate (exact_postincrement_store
+// adapter, probe_boot step_body): it writes the source register's full word to
+// the old base address, then writes the base register back to base + n (n = +4
+// or -4, the signed increment from the n field), leaving flags untouched. ok is
+// true when the instruction is st.w.pin (committed or handed back); every other
+// id returns ok == false so the caller falls through to the shared
+// safeDual/model path.
+//
+// A tagged base or source register is handed back (BatchAbstract) so Python
+// re-derives the identical consumed() Blocked; an unaligned base or a
+// strict-memory fault on the word write is handed back (BatchMemFault) so
+// Python re-derives the identical unaligned/unmapped/readonly Blocked. The raw
+// core (dmem == nil) keeps the upstream deny-set semantics (BatchUnsafe), which
+// the differential tests pin.
+func (c *CPU) runPinWordStore(core *Core, im *insnMeta, raw map[string]uint32, pc uint32, size uint32, insnBytes []byte) (SegmentStep, int, error, bool) {
+	if im.id != "st.w.pin" {
+		return SegmentStep{}, 0, nil, false
+	}
+	if c.dmem == nil {
+		return SegmentStep{}, BatchUnsafe, nil, true
+	}
+	op := newOperands(im, raw)
+	b := int(op.Num("b"))
+	d := int(op.Num("d"))
+	if core.RT[b] != nil || core.RT[d] != nil {
+		return SegmentStep{}, BatchAbstract, nil, true
+	}
+	addr := core.R[b]
+	if addr%4 != 0 {
+		return SegmentStep{}, BatchMemFault, &MemError{Kind: "unaligned_exact_postincrement_store", Access: "write", Address: addr, Size: 4}, true
+	}
+	n := op.Num("n") // uimm scale -8 add 4: +4 or -4
+	word := core.R[d]
+	b4 := []byte{byte(word), byte(word >> 8), byte(word >> 16), byte(word >> 24)}
+	if err := c.dmem.Write(addr, b4); err != nil {
+		return SegmentStep{}, BatchMemFault, err, true
+	}
+	core.R[b] = uint32(int64(addr)+n) & wordMask
+	core.PC = pc + size
+	core.Steps++
+	return SegmentStep{
+		PC:       pc,
+		NextPC:   core.PC,
+		Flags:    uint8(core.Flags & 0xF),
+		R:        core.R,
+		BeforeSP: core.SP,
+		SP:       core.SP,
+		Insn:     insnBytes,
+		Adapter:  "exact_postincrement_store",
+		Mem:      []MemWrite{{Addr: addr, Bytes: b4}},
 	}, BatchOK, nil, true
 }
 
