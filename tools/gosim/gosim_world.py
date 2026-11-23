@@ -38,6 +38,9 @@ class _Lib:
         lib.gosim_world_dual_new.argtypes = [_HANDLE, _HANDLE, _HANDLE, _HANDLE,
                                              _HANDLE, c_uint32, c_uint32]
         lib.gosim_world_dual_new.restype = _HANDLE
+        lib.gosim_world_single_new.argtypes = [_HANDLE, _HANDLE, _HANDLE, _HANDLE,
+                                               _HANDLE, c_uint32, c_uint32]
+        lib.gosim_world_single_new.restype = _HANDLE
         lib.gosim_world_set_periph.argtypes = [_HANDLE, _HANDLE]
         lib.gosim_world_set_afterstep.argtypes = [_HANDLE, c_char_p]
         lib.gosim_world_set_afterstep.restype = c_int
@@ -112,8 +115,10 @@ class GosimDualWorld:
     AfterStep are bound separately via set_periph / set_afterstep."""
 
     def __init__(self, cpu0_handle, cpu1_handle, smem_handle=0, machine_handle=0,
-                 deliver_handle=0, fetch_lo=0, fetch_hi=0):
-        self.handle = _LIB_SINGLETON.lib.gosim_world_dual_new(
+                 deliver_handle=0, fetch_lo=0, fetch_hi=0, single_start=False):
+        new = _LIB_SINGLETON.lib.gosim_world_single_new if single_start else \
+            _LIB_SINGLETON.lib.gosim_world_dual_new
+        self.handle = new(
             cpu0_handle, cpu1_handle, smem_handle, machine_handle, deliver_handle,
             fetch_lo, fetch_hi)
         self._outbuf = (c_uint8 * _BUF_CAP)()
